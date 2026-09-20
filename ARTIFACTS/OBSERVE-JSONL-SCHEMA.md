@@ -14,7 +14,8 @@
 | --- | --- | --- | --- |
 | `schema_version` | string | yes | `observe_hot_v0` |
 | `type` | string | yes | `ingest_hot` |
-| `t_ws` | string (ISO-8601 UTC) | yes | Wall-clock at message receipt |
+| `t_ws` | string (ISO-8601 UTC) | yes | Wall-clock at WebSocket message receipt (latency anchor) |
+| `t_event` | string (ISO-8601 UTC) or `null` | yes | Event time from WS payload when knowable-at-T (`timestamp` or `blockTime`); **`null` if absent** — never synthesized |
 | `stream` | string | yes | `subscribeNewToken` \| `subscribeMigration` |
 | `source` | string | yes | `pumpportal_ws` |
 | `commitment` | string | yes | `processed` (FAQ assumption) |
@@ -45,6 +46,12 @@
 ```
 
 `reserves_source` is `UNK` on migration rows until inventory proves reserve fields.
+
+## Dual timestamps (latency-as-data)
+
+- **`t_ws`:** always set at ingest (local receipt).
+- **`t_event`:** copied from vendor payload only when `timestamp` or `blockTime` is present; numeric values normalized to ISO-8601 UTC. If neither field is in the payload, **`t_event` is JSON `null`** (typical for current PumpPortal create stream per inventory).
+- Proof / EXP may compute `t_ws − t_event` only on rows where `t_event` is non-null; RPC `blockTime` enrich uses a separate packet per matrix.
 
 ## Example line (truncated)
 

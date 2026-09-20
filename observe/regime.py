@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Mapping
+
+# WS payload keys that may carry event time when vendor sends them (inventory: often absent).
+EVENT_TIME_PAYLOAD_KEYS = ("timestamp", "blockTime")
 
 # Canonical stage vocabulary (DEC-004)
 STAGES = frozenset(
@@ -34,6 +38,8 @@ KNOWN_CREATE_FIELDS = frozenset(
         "vTokensInBondingCurve",
         "vSolInBondingCurve",
         "marketCapSol",
+        "timestamp",
+        "blockTime",
     }
 )
 
@@ -44,8 +50,28 @@ KNOWN_MIGRATION_FIELDS = frozenset(
         "pool",
         "signature",
         "traderPublicKey",
+        "timestamp",
+        "blockTime",
     }
 )
+
+
+def extract_t_event(payload: Mapping[str, Any]) -> str | None:
+    """Event time from WS payload when present; never synthesized."""
+    for key in EVENT_TIME_PAYLOAD_KEYS:
+        if key not in payload:
+            continue
+        val = payload[key]
+        if val is None:
+            continue
+        if isinstance(val, str):
+            return val
+        if isinstance(val, (int, float)):
+            ts = float(val)
+            if ts > 1e12:
+                ts /= 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="milliseconds")
+    return None
 
 
 def _stage_for_event(stream: str, payload: Mapping[str, Any]) -> str:
@@ -134,6 +160,7 @@ def seal_ingest_record(
         "schema_version": "observe_hot_v0",
         "type": "ingest_hot",
         "t_ws": t_ws,
+        "t_event": extract_t_event(payload),
         "stream": stream,
         "source": "pumpportal_ws",
         "commitment": "processed",

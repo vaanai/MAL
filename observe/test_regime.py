@@ -21,6 +21,34 @@ class RegimeIdTests(unittest.TestCase):
         self.assertEqual(row["stage"], "bonding")
         self.assertIn("stage=bonding", row["regime_id"])
         self.assertFalse(row["knowable_at_t"]["quote_verified"])
+        self.assertIsNone(row["t_event"])
+
+    def test_seal_t_event_from_timestamp_string(self) -> None:
+        row = seal_ingest_record(
+            t_ws="2026-09-20T00:00:01+00:00",
+            stream="subscribeNewToken",
+            payload={
+                "txType": "create",
+                "mint": "M",
+                "signature": "S",
+                "timestamp": "2026-09-20T00:00:00.500+00:00",
+            },
+        )
+        self.assertEqual(row["t_event"], "2026-09-20T00:00:00.500+00:00")
+
+    def test_seal_t_event_from_timestamp_unix(self) -> None:
+        row = seal_ingest_record(
+            t_ws="2026-09-20T00:00:02+00:00",
+            stream="subscribeMigration",
+            payload={
+                "txType": "migration",
+                "mint": "M",
+                "signature": "S",
+                "timestamp": 1_700_000_000,
+            },
+        )
+        self.assertIsNotNone(row["t_event"])
+        self.assertIn("2023", row["t_event"])
 
 
 if __name__ == "__main__":

@@ -24,7 +24,8 @@ PumpPortal free WebSocket streams (`subscribeNewToken`, `subscribeMigration`) de
 
 | Field | Purpose |
 | --- | --- |
-| `t_ws` | Knowable-at-T receipt time |
+| `t_ws` | Knowable-at-T WebSocket receipt time (always set) |
+| `t_event` | Vendor event time when `timestamp` / `blockTime` present in payload; else `null` |
 | `stream`, `source`, `commitment` | Spine provenance |
 | `stage`, `regime_id` | Regime-at-ingest (DEC-004) |
 | `signature`, `mint`, `txType` | Event identity |
