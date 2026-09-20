@@ -9,11 +9,13 @@ import json
 import logging
 import os
 import signal
+import ssl
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import certifi
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -23,6 +25,23 @@ DEFAULT_WS_URL = "wss://pumpportal.fun/api/data"
 DEFAULT_OUTPUT_DIR = Path("data/observe")
 
 log = logging.getLogger("mal.observe")
+
+_INSECURE_SSL_ENV = "MAL_OBSERVE_SSL_INSECURE"
+
+
+def observe_ssl_context() -> ssl.SSLContext:
+    """TLS context for PumpPortal WebSocket (certifi CA bundle; optional insecure override)."""
+    if os.environ.get(_INSECURE_SSL_ENV, "").strip() in ("1", "true", "yes"):
+        log.warning(
+            "%s is set — TLS certificate verification is DISABLED. "
+            "Use only for emergency debugging; fix certifi or install pip-system-certs instead.",
+            _INSECURE_SSL_ENV,
+        )
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def _utc_iso() -> str:
@@ -100,6 +119,7 @@ async def run_client(ws_url: str, output_dir: Path, stop: asyncio.Event) -> None
             log.info("ws_connect url=%s", ws_url.split("?")[0])
             async with websockets.connect(
                 ws_url,
+                ssl=observe_ssl_context(),
                 ping_interval=20,
                 ping_timeout=20,
                 close_timeout=5,

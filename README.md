@@ -36,13 +36,27 @@ Meme coin alpha lab — **Pump.fun / Solana first**, observe-before-act, memory-
 
 Local-first PumpPortal WebSocket ingest with **regime_id at ingest** ([DEC-004](DEC/DEC-004-regime-id-encoding.md)). No API key required for `subscribeNewToken` + `subscribeMigration`.
 
-### Setup (WSL / Linux / macOS)
+### Setup (WSL / Linux / macOS / Windows)
 
 ```bash
 cd /path/to/MAL
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements-observe.txt
+```
+
+On **Windows**, if Chrome trusts a site but Python fails TLS with `CERTIFICATE_VERIFY_FAILED`, the observe client uses the [certifi](https://github.com/certifi/python-certifi) CA bundle (not the OS store). After upgrading dependencies, you can also point Python at the Windows certificate store:
+
+```bash
+pip install pip-system-certs
+```
+
+Or set `SSL_CERT_FILE` to certifi’s bundle for that shell session (PowerShell example):
+
+```powershell
+python -c "import certifi; print(certifi.where())"   # copy path
+$env:SSL_CERT_FILE = "<path printed above>"
+python -m observe
 ```
 
 ### Run
@@ -62,6 +76,16 @@ python -m observe
 | `MAL_PUMPPORTAL_WS_URL` | `wss://pumpportal.fun/api/data` | WebSocket endpoint (no key for free streams) |
 | `MAL_OBSERVE_OUTPUT_DIR` | `data/observe` | JSONL output directory |
 | `MAL_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `MAL_OBSERVE_SSL_INSECURE` | *(unset)* | If `1` / `true` / `yes`, disables TLS verification (logged as **WARNING**; emergency only) |
+
+### Windows TLS troubleshooting
+
+| Symptom | What to try |
+| --- | --- |
+| `[SSL: CERTIFICATE_VERIFY_FAILED]` connecting to PumpPortal | `pip install -U -r requirements-observe.txt` (refreshes **certifi**) |
+| Still fails after upgrade | `pip install pip-system-certs`, then rerun `python -m observe` |
+| One-off without changing packages | Set `SSL_CERT_FILE` to the path from `python -c "import certifi; print(certifi.where())"` |
+| Last resort (insecure) | `MAL_OBSERVE_SSL_INSECURE=1` — only for debugging; fix CA trust instead |
 
 Schema: [ARTIFACTS/OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md). First capture EXP: [EXP/EXP-001-24h-ws-capture.md](EXP/EXP-001-24h-ws-capture.md).
 
