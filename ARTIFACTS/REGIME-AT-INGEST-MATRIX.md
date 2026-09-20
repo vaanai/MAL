@@ -18,7 +18,7 @@
 | **Event identity** (`signature`, `mint`) | Yes — if present in WS | Recommended confirm | T = `t_ws`; signature/mint treated as true when WS delivers | `signature`, `mint`, `t_ws`, `stream` | Replacing `signature`/`mint` after RPC mismatch — emit **new** correction packet with link `supersedes=` |
 | **Stream type** | Yes | No | Known from subscription handler | `stream`, `txType` (raw WS) | Changing `stream` retroactively |
 | **Commitment level** | Assumed | Optional lag measure | T assumes FAQ `processed` | `commitment=processed`, `source=pumpportal_ws` | Upgrading to `confirmed` on same row — new row with `t_rpc_confirm` |
-| **Stage** (`bonding` / `migrating` / `pumpswap`) | Partial — migration WS; create⇒bonding | Yes for `bonding_complete`, pool program | At create T: `stage=bonding` if `txType=create`; at migration T: `stage=migrating` + `pool`; refine with RPC in **same** ingest only if RPC completes before emit deadline | `stage`, `pool` (if migration), coarse reserves from WS | Setting `stage=pumpswap` on create row without migration event; patching stage after packet sealed |
+| **Stage** (`bonding` \| `bonding_complete` \| `migrating` \| `pumpswap` \| `legacy_raydium`) | Partial — migration WS; create⇒bonding | Yes for `bonding_complete`, pool program | At create T: `stage=bonding` if `txType=create`; at migration T: `stage=migrating` + `pool`; `pumpswap` / `legacy_raydium` only after RPC pool decode | `stage`, `pool` (if migration), coarse reserves from WS | Setting `stage=pumpswap` on create row without migration event; patching stage after packet sealed |
 | **Quote asset** | No | Yes (`quote_mint`) | Not knowable from free WS create alone | `quote=wsol_assumed` + `quote_verified=false` | Flipping `quote_verified` true on sealed packet — use child `enrich` packet |
 | **Instruction lineage** (`create` vs `create_v2`, trade v2) | No | Yes | Not at first WS byte unless txType encodes it (UNK) | `instr=pending_rpc` | Backfilling `instr=` on sealed ingest row |
 | **Fee regime** | No | Yes (Global + per-coin) | Default uncertain at create | `fee=unverified` or `fee=global_100bps` if RPC cached | Changing fee tag after trades executed under old label |
@@ -59,10 +59,10 @@
 - [x] Field inventory — [PUMPPORTAL-PAYLOAD-INVENTORY.md](PUMPPORTAL-PAYLOAD-INVENTORY.md)
 - [x] Regime enum v0 — [REGIME-ENUM-V0.md](REGIME-ENUM-V0.md)
 - [x] This matrix
-- [ ] Scout implements WS client + JSONL schema (next PR)
-- [ ] Proof EXP: mis-label rate on 100 random creates
+- [x] Scout implements WS client + JSONL schema — [observe/client.py](../observe/client.py), [OBSERVE-JSONL-SCHEMA.md](OBSERVE-JSONL-SCHEMA.md), [DEC-004](../DEC/DEC-004-regime-id-encoding.md)
+- [ ] Proof EXP: mis-label rate on 100 random creates — [EXP-001](../EXP/EXP-001-24h-ws-capture.md)
 
-Until the last two items pass, **observe-wiring** is schema-unblocked but not code-complete.
+Until EXP-001 capture + Proof sample complete, **observe-wiring** is code-complete but not measurement-validated.
 
 ## Sources
 

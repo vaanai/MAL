@@ -8,13 +8,13 @@
 
 **Purpose:** Satisfy constitution **regime ID at ingest** ([CONSTITUTION.md](../CONSTITUTION.md) §4) with a finite, enumerable set of dimensions that can be stamped on the hot packet **at observation time T** without paid indexers.
 
-**Format:** `regime_id` is a stable string built from orthogonal tags (below). Example composite (illustrative):
+**Format:** `regime_id` is a stable **pipe-separated `key=value`** string per [DEC-004](../DEC/DEC-004-regime-id-encoding.md). Example composite:
 
 ```text
-pump|stage=bonding|quote=wsol|instr=create_v2|fee=global_100bps|venue=pump_program|env=mainnet
+env=mainnet|source=pumpportal_ws|stream=subscribeNewToken|stage=bonding|quote=wsol_assumed|commitment=processed|venue=pump_program|instr=pending_rpc|fee=unverified|market=bonding_curve
 ```
 
-v0 allows either **pipe-separated key=value** or a short **canonical slug** table; Scout picks one encoding in the hot-packet JSON spec (next artifact after this PR).
+**Stage vocabulary (unified):** `bonding` | `bonding_complete` | `migrating` | `pumpswap` | `legacy_raydium` (plus `UNK` only when WS classification fails).
 
 ---
 

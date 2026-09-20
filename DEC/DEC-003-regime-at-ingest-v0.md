@@ -12,9 +12,10 @@
 1. **Regime taxonomy v0** in [ARTIFACTS/REGIME-ENUM-V0.md](../ARTIFACTS/REGIME-ENUM-V0.md) is the canonical phase-0 enum for Scout ingest and hot-packet stamping.
 2. **Regime-at-ingest matrix** in [ARTIFACTS/REGIME-AT-INGEST-MATRIX.md](../ARTIFACTS/REGIME-AT-INGEST-MATRIX.md) governs WS vs RPC, knowable-at-T, and forbidden backfills.
 3. **PumpPortal payload inventory** in [ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md](../ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md) is the reference for observe stream fields until vendor publishes a schema.
-4. Every hot observe packet MUST carry non-empty `regime_id` and explicit unverified flags where RPC has not completed in the ingest window.
-5. **Birdeye paid tiers:** hard **Defer** for phase-0 spine (no paid CU budget); free Standard remains non-spine only per [API brief](../ARTIFACTS/API-COST-LATENCY-BRIEF.md).
-6. **Dexscreener:** **debug enrich only** — never on hot spine packet.
+4. **`regime_id` encoding and stage vocabulary** are locked in [DEC-004](DEC-004-regime-id-encoding.md) (pipe `key=value`; hot JSONL per [OBSERVE-JSONL-SCHEMA.md](../ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)).
+5. Every hot observe packet MUST carry non-empty `regime_id` and explicit unverified flags where RPC has not completed in the ingest window.
+6. **Birdeye paid tiers:** hard **Defer** for phase-0 spine (no paid CU budget); free Standard remains non-spine only per [API brief](../ARTIFACTS/API-COST-LATENCY-BRIEF.md).
+7. **Dexscreener:** **debug enrich only** — never on hot spine packet.
 
 ## Rationale
 
