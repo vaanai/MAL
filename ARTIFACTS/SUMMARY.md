@@ -2,15 +2,13 @@
 
 **As-of:** 2026-09-20
 
-- Lab memory skeleton: `LAB_STATE.md`, `CONSTITUTION.md`, `DEC/`, `EXP/`, `ARTIFACTS/`.
-- **Regime-at-ingest v0:** inventory, enum, matrix + [DEC-003](../DEC/DEC-003-regime-at-ingest-v0.md); encoding locked [DEC-004](../DEC/DEC-004-regime-id-encoding.md).
-- **Observe-wiring (phase 0):** `python -m observe` → JSONL [OBSERVE-JSONL-SCHEMA.md](OBSERVE-JSONL-SCHEMA.md); EXP-001 24h capture + Proof n=100 pending.
-- Phase-0 **blocking** APIs: PumpPortal WS (`subscribeNewToken` / `subscribeMigration` free) + light Solana RPC.
-- **Hard defer:** Birdeye paid; X API; gRPC/Yellowstone; dedicated nodes; Jito/send; PumpPortal trading API.
-- **Dexscreener:** debug enrich only — never on regime-tagged hot spine.
-- **Cost:** free-only **~$0/mo** infra; light paid **~$49/mo** RPC class — not serious latency tier.
-- PumpPortal FAQ: processed WS often **&lt;100 ms** behind gRPC (NYC); log `t_ws` vs RPC in EXP.
-- Public RPC: ~100 req/10s/IP — spot checks only ([Solana clusters](https://solana.com/docs/references/clusters)).
-- Constitution: every ingest row needs `regime_id`; no backfill into sealed packets ([matrix](REGIME-AT-INGEST-MATRIX.md)).
-- Full API detail: [API-COST-LATENCY-BRIEF.md](API-COST-LATENCY-BRIEF.md).
-- Next: run [EXP-001](../EXP/EXP-001-24h-ws-capture.md); Proof mis-label sample on 100 creates; hot-packet spec.
+- **New:** [STARTER-STACK-OPTIONS-BRIEF.md](STARTER-STACK-OPTIONS-BRIEF.md) — JEV/hot-path budgets, X feed options, create-feed vendors, starter stack **options** (not one mandate).
+- Lab memory: `LAB_STATE.md`, `CONSTITUTION.md`, `DEC/`, `EXP/`, `ARTIFACTS/`.
+- **Regime-at-ingest v0:** [DEC-003](../DEC/DEC-003-regime-at-ingest-v0.md), encoding [DEC-004](../DEC/DEC-004-regime-id-encoding.md); matrix + JSONL schema unchanged.
+- **Phase-0 observe:** PumpPortal WS → sealed JSONL; X/social **reassess only** after mint on spine — no discovery path in brief.
+- **JEV path:** precompute → hot packet → JEV → risk gate → exec; ms on inference rarely beats observe/stage correctness on bonding memes until exec DEC.
+- **Social:** official X pay-per-use ($0.005/post read, webhooks $0.005/event) vs third-party scrapers — compliance risk; defer firehose.
+- **Create feeds:** PumpPortal free WS baseline; Helius/Bitquery/gRPC are **measure-before-buy** alternates ([API brief](API-COST-LATENCY-BRIEF.md)).
+- **Recommended starter:** keep $0 spine; Helius free/$49 RPC only on 429/lag metrics; rules JEV + deterministic gate; A/B packet timing before any gRPC.
+- **Hard defer:** Birdeye paid, Dexscreener on spine, buy-infra-first, PumpPortal trading API.
+- **Next:** EXP-001 latency columns; Proof n=100; read full options brief before infra DEC.

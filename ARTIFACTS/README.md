@@ -14,6 +14,7 @@ Research briefs, decision packet exports, and manager summaries land here. **Git
 | File | Purpose |
 | --- | --- |
 | [API-COST-LATENCY-BRIEF.md](API-COST-LATENCY-BRIEF.md) | Phase-0 API connections, cost tiers, latency gap vs Pump.fun |
+| [STARTER-STACK-OPTIONS-BRIEF.md](STARTER-STACK-OPTIONS-BRIEF.md) | JEV path, X feeds, create feeds, starter stack options for Vaan |
 | [PUMPPORTAL-PAYLOAD-INVENTORY.md](PUMPPORTAL-PAYLOAD-INVENTORY.md) | PumpPortal WS field inventory (WS / RPC / unknown) |
 | [REGIME-ENUM-V0.md](REGIME-ENUM-V0.md) | Phase-0 regime taxonomy (draft, EXP-revisable) |
 | [REGIME-AT-INGEST-MATRIX.md](REGIME-AT-INGEST-MATRIX.md) | WS vs RPC, knowable-at-T, hot-packet stamp rules |
