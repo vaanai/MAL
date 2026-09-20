@@ -50,6 +50,18 @@ class RegimeIdTests(unittest.TestCase):
         self.assertIsNotNone(row["t_event"])
         self.assertIn("2023", row["t_event"])
 
+    def test_seal_migration_tx_type_migrate_alias(self) -> None:
+        for tx_type in ("migrate", "migration", "MIGRATE"):
+            with self.subTest(tx_type=tx_type):
+                row = seal_ingest_record(
+                    t_ws="2026-09-20T00:00:03+00:00",
+                    stream="subscribeMigration",
+                    payload={"txType": tx_type, "mint": "M", "signature": "S"},
+                )
+                self.assertEqual(row["stage"], "migrating")
+                self.assertIn("stage=migrating", row["regime_id"])
+                self.assertEqual(row["txType"], tx_type)
+
 
 if __name__ == "__main__":
     unittest.main()

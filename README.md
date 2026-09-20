@@ -65,6 +65,12 @@ python -m observe
 
 Schema: [ARTIFACTS/OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md). First capture EXP: [EXP/EXP-001-24h-ws-capture.md](EXP/EXP-001-24h-ws-capture.md).
 
+### Troubleshooting (Windows / long captures)
+
+- **`ws_closed code=1006`** or **`ws_handshake_rejected status_code=502`** — usually a PumpPortal or network blip. The client logs a warning, backs off, and **retries until you stop it** (`Ctrl+C`). Capture should resume on the same daily JSONL file.
+- **Process exited on reconnect** — you were likely on an older build that did not catch handshake failures. `git pull`, `pip install -r requirements-observe.txt` (includes **certifi** for reliable TLS on Windows), then restart `python -m observe`.
+- **TLS / certificate errors on Windows** — ensure `certifi` is installed from `requirements-observe.txt`; the client uses Mozilla’s CA bundle via certifi for `wss://` connections.
+
 ## Seats (override legacy org chart)
 
 See [DEC-001](DEC/DEC-001-lean-four-override.md): **Helm, Scout, Graph, Proof** — not Research/Strategy/Ops as runtime roles.
