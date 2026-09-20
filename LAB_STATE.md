@@ -28,6 +28,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Lean four seats override org chart → see [DEC-001](DEC/DEC-001-lean-four-override.md)
 - Memory-first, no DB phase 0, local-first → see [DEC-002](DEC/DEC-002-memory-first-no-db-local.md)
 - Regime-at-ingest v0 (working law) → see [DEC-003](DEC/DEC-003-regime-at-ingest-v0.md), encoding [DEC-004](DEC/DEC-004-regime-id-encoding.md)
+- Hot-packet clocks, `Δ_exec`, precompute as-of, create-spine provenance → see [DEC-005](DEC/DEC-005-hot-packet-clocks-and-provenance.md) (council 2026-09-20)
 - Non-negotiables → [CONSTITUTION.md](CONSTITUTION.md)
 
 ## Open hypotheses

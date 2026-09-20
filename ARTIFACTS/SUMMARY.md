@@ -5,6 +5,7 @@
 - **New:** [STARTER-STACK-OPTIONS-BRIEF.md](STARTER-STACK-OPTIONS-BRIEF.md) — JEV/hot-path budgets, X feed options, create-feed vendors, starter stack **options** (not one mandate).
 - Lab memory: `LAB_STATE.md`, `CONSTITUTION.md`, `DEC/`, `EXP/`, `ARTIFACTS/`.
 - **Regime-at-ingest v0:** [DEC-003](../DEC/DEC-003-regime-at-ingest-v0.md), encoding [DEC-004](../DEC/DEC-004-regime-id-encoding.md); matrix + JSONL schema unchanged.
+- **Clocks / provenance (council 2026-09-20):** sealed `T` = `t_event` or `t_ws`; `Δ_exec` = economic fill; precompute as-of on hot packet — [DEC-005](../DEC/DEC-005-hot-packet-clocks-and-provenance.md).
 - **Phase-0 observe:** PumpPortal WS → sealed JSONL; X/social **reassess only** after mint on spine — no discovery path in brief.
 - **JEV path:** precompute → hot packet → JEV → risk gate → exec; ms on inference rarely beats observe/stage correctness on bonding memes until exec DEC.
 - **Social:** official X pay-per-use ($0.005/post read, webhooks $0.005/event) vs third-party scrapers — compliance risk; defer firehose.
