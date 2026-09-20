@@ -9,13 +9,15 @@ import json
 import logging
 import os
 import signal
+import ssl
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import certifi
 import websockets
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidStatusCode
 
 from observe.regime import STREAM_MIGRATION, STREAM_NEW_TOKEN, seal_ingest_record
 
@@ -23,6 +25,11 @@ DEFAULT_WS_URL = "wss://pumpportal.fun/api/data"
 DEFAULT_OUTPUT_DIR = Path("data/observe")
 
 log = logging.getLogger("mal.observe")
+
+
+def _ws_ssl_context() -> ssl.SSLContext:
+    """Use certifi CA bundle (helps Windows observe installs without system certs)."""
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def _utc_iso() -> str:
@@ -103,6 +110,7 @@ async def run_client(ws_url: str, output_dir: Path, stop: asyncio.Event) -> None
                 ping_interval=20,
                 ping_timeout=20,
                 close_timeout=5,
+                ssl=_ws_ssl_context(),
             ) as ws:
                 backoff = 1.0
                 await _subscribe(ws)
@@ -116,6 +124,10 @@ async def run_client(ws_url: str, output_dir: Path, stop: asyncio.Event) -> None
                         log.warning("ws_invalid_json len=%s", len(message))
         except ConnectionClosed as exc:
             log.warning("ws_closed code=%s reason=%s", exc.code, exc.reason)
+        except InvalidStatusCode as exc:
+            log.warning("ws_handshake_rejected status_code=%s", exc.status_code)
+        except asyncio.TimeoutError:
+            log.warning("ws_timeout during connect or read")
         except OSError as exc:
             log.warning("ws_error err=%s", exc)
         if stop.is_set():
