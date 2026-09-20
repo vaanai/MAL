@@ -1,0 +1,8 @@
+# Observe JSONL captures (local-first; do not commit live data)
+data/observe/*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
