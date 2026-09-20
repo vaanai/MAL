@@ -27,6 +27,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 
 - Lean four seats override org chart → see [DEC-001](DEC/DEC-001-lean-four-override.md)
 - Memory-first, no DB phase 0, local-first → see [DEC-002](DEC/DEC-002-memory-first-no-db-local.md)
+- Regime-at-ingest v0 (working law) → see [DEC-003](DEC/DEC-003-regime-at-ingest-v0.md)
 - Non-negotiables → [CONSTITUTION.md](CONSTITUTION.md)
 
 ## Open hypotheses
@@ -57,11 +58,13 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 
 ## Next work
 
-1. Wire phase-0 observe path: PumpPortal `subscribeNewToken` (+ selective RPC reads) on public or Helius free tier
-2. Log experiments per [EXP/README.md](EXP/README.md) with regime labels and 1s/5s/15s/30s/60s windows
-3. Implement hot-packet schema (capped graph + market spine) as JSON spec in repo
-4. Defer X API until social hypothesis has a cheap proxy or manual sample set
-5. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
+1. **Observe-wiring (schema-unblocked):** implement Scout WS client + JSONL using [PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md), [REGIME-ENUM-V0.md](ARTIFACTS/REGIME-ENUM-V0.md), [REGIME-AT-INGEST-MATRIX.md](ARTIFACTS/REGIME-AT-INGEST-MATRIX.md) — regime ID on every hot row per [DEC-003](DEC/DEC-003-regime-at-ingest-v0.md)
+2. Capture 24h WS sample EXP; RPC-spot-check signatures; update payload inventory if keys differ
+3. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules
+4. Log experiments per [EXP/README.md](EXP/README.md) with regime labels and 1s/5s/15s/30s/60s windows
+5. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only** (not spine) — [API brief](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
+6. Defer X API until social hypothesis has a cheap proxy or manual sample set
+7. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
 
 ## Pointers
 
@@ -69,3 +72,4 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Experiments: `EXP/`
 - Research: `ARTIFACTS/`
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
+- Regime at ingest: [ARTIFACTS/REGIME-AT-INGEST-MATRIX.md](ARTIFACTS/REGIME-AT-INGEST-MATRIX.md), [ARTIFACTS/REGIME-ENUM-V0.md](ARTIFACTS/REGIME-ENUM-V0.md), [ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md)

@@ -22,8 +22,8 @@ Legend: **Blocking** = needed to start observe-only spine. **Optional** = enrich
 | **Helius** (free tier) | Higher headroom RPC + optional LaserStream WSS (standard) | **Optional (recommended light paid alt)** | Free: 1M credits/mo, 10 RPC req/s. Developer $49/mo: 50 req/s, enhanced WS extensions. [Pricing](https://www.helius.dev/pricing), [Plans doc](https://www.helius.dev/docs/billing/plans) |
 | **QuickNode** free trial | Private RPC endpoint | **Optional** | 10M credits, 15 req/s trial; paid from $49/mo. [Pricing](https://www.quicknode.com/pricing) |
 | **Triton One** PAYG | RPC + Yellowstone gRPC (Dragon’s Mouth) | **Defer** | $125 min deposit, $0.08/GB + $10/M calls; streaming included. Phase 0 observe via PumpPortal + free RPC first. [Pricing](https://triton.one/pricing) |
-| **Dexscreener REST** `api.dexscreener.com` | Pair metadata, search, liquidity context | **Optional** | No API key; ~60 or 300 req/min per route. Paid tier mentioned at checkout only. [API reference](https://docs.dexscreener.com/api/reference), [Terms](https://docs.dexscreener.com/api/api-terms-and-conditions) |
-| **Birdeye Data** | Token/wallet/trade index, WS on higher tiers | **Optional** | Free Standard: 30k compute units/mo, 1 rps. Lite $39+ for production-ish polling. [Pricing](https://docs.birdeye.so/docs/pricing), [CU costs](https://docs.birdeye.so/docs/compute-unit-cost) |
+| **Dexscreener REST** `api.dexscreener.com` | Pair metadata, search, liquidity context | **Debug enrich only** | No API key; ~60 or 300 req/min per route. **Not** hot-packet spine — human/debug stamps only ([DEC-003](../DEC/DEC-003-regime-at-ingest-v0.md)). [API reference](https://docs.dexscreener.com/api/reference), [Terms](https://docs.dexscreener.com/api/api-terms-and-conditions) |
+| **Birdeye Data** | Token/wallet/trade index, WS on higher tiers | **Defer (hard)** | Paid Lite+ **not** phase 0. Free Standard (30k CU/mo, 1 rps) optional non-spine spot checks only. [Pricing](https://docs.birdeye.so/docs/pricing), [CU costs](https://docs.birdeye.so/docs/compute-unit-cost) |
 | **X (Twitter) API** | Social reassess | **Defer (phase 0)** | Official tiers historically **$200/mo Basic**, **$5k/mo Pro**, enterprise **~$42k/mo**; pay-per-use beta with per-endpoint pricing (verify in Developer Console). Too expensive for H-social until proxy/manual sampling. [TechCrunch on pay-per-use](https://techcrunch.com/2025/10/21/x-is-testing-a-pay-per-use-pricing-model-for-its-api/), [Pay-per-use preview doc](https://x-preview.mintlify.app/x-api/getting-started/pricing) |
 | **Jito / private relays / bundles** | Transaction landing | **Defer** | Relevant when **exec** and speed-to-fill matter; PumpPortal documents Jito paths for trades, not phase-0 observe. |
 | **Yellowstone / Geyser gRPC** (Helius LaserStream, Triton, self-hosted) | Sub-slot streaming, program filters | **Defer** | Helius mainnet gRPC from **Business $499/mo**; dedicated nodes **~$2,900+/mo** cited on Helius pricing. [Helius pricing](https://www.helius.dev/pricing), [LaserStream](https://www.helius.dev/docs/laserstream) |
@@ -48,8 +48,8 @@ Everything else is hypothesis-driven optional enrichment.
 | --- | --- |
 | PumpPortal new token / migration WS | $0 |
 | Solana public RPC | $0 |
-| Dexscreener (polite polling) | $0 |
-| Birdeye Standard (sparse calls) | $0 |
+| Dexscreener (debug-only polling) | $0 |
+| Birdeye Standard (non-spine spot checks only) | $0 |
 | **Total infra** | **~$0/mo** |
 
 **Risks:** RPC 429/403, WS disconnects, no SLA, cannot sustain high `getTransaction` volume.
@@ -60,9 +60,9 @@ Everything else is hypothesis-driven optional enrichment.
 | --- | --- |
 | Helius Developer **or** QuickNode Build | **~$49/mo** |
 | PumpPortal metered trade WS (if watching many mints’ trades) | Variable; e.g. 100k trade msgs ≈ **0.1 SOL** (~$15–25 if SOL ~$150–250) — **needs measurement** |
-| Birdeye Lite (optional index) | **$39/mo** |
-| Dexscreener | $0 |
-| **Total infra** | **~$49–90/mo** (+ metered SOL if heavy trade WS) |
+| Birdeye Lite | **Defer** — not in phase-0 budget |
+| Dexscreener | $0 (debug only) |
+| **Total infra** | **~$49/mo** class (+ metered SOL if heavy trade WS) |
 
 ### C) “Serious latency” path (exec / competitive streaming — **not phase 0**)
 
@@ -132,14 +132,14 @@ Without these logs, vendor latency claims stay **unknown** for MAL.
 
 1. **PumpPortal** single WS: `subscribeNewToken` (+ migration if needed).
 2. **Solana RPC:** start **public**; switch to **Helius free** on throttle.
-3. **Skip** X API, Birdeye paid, gRPC, dedicated nodes, Jito send path.
-4. **Optional:** Dexscreener for human/debug enrichment only (respect 60/300 rpm).
+3. **Skip** X API, **Birdeye paid (hard defer)**, gRPC, dedicated nodes, Jito send path.
+4. **Dexscreener:** debug enrich only — never on regime-tagged hot spine ([DEC-003](../DEC/DEC-003-regime-at-ingest-v0.md)).
 5. **Log latency** metrics above into EXP registry before any infra upgrade DEC.
 
 ### Defer
 
 - X/Twitter official API until H-social has manual or scraped **sample** with labeled regimes
-- Birdeye/Business indexing unless graph/scout hypothesis needs CU-heavy wallet graphs
+- Birdeye paid/Business indexing (hard defer phase 0; revisit only via DEC after observe spine proven)
 - Helius Business+ / Triton dedicated / colo until observe-only logs show **missed decisions** correlated with Δ latency
 - PumpPortal Lightning trading API until risk gate + paper/live DEC
 
