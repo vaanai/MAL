@@ -10,7 +10,18 @@ from unittest.mock import patch
 
 from websockets.exceptions import InvalidStatusCode
 
-from observe.client import run_client
+from observe.client import _classify_stream, run_client
+from observe.regime import STREAM_MIGRATION
+
+
+class ClassifyStreamTests(unittest.TestCase):
+    def test_migration_tx_type_aliases(self) -> None:
+        for tx_type in ("migrate", "migration", "Migrate"):
+            with self.subTest(tx_type=tx_type):
+                self.assertEqual(
+                    _classify_stream({"txType": tx_type, "mint": "M"}),
+                    STREAM_MIGRATION,
+                )
 
 
 class ReconnectLoopTests(unittest.IsolatedAsyncioTestCase):

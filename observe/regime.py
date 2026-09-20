@@ -22,6 +22,22 @@ STAGES = frozenset(
 STREAM_NEW_TOKEN = "subscribeNewToken"
 STREAM_MIGRATION = "subscribeMigration"
 
+_CANONICAL_TX_CREATE = "create"
+_CANONICAL_TX_MIGRATION = "migration"
+_MIGRATION_TX_ALIASES = frozenset({"migration", "migrate"})
+
+
+def canonical_tx_type(tx_type: Any) -> str | None:
+    """Normalize vendor txType for stream/stage classification (case-insensitive)."""
+    if not isinstance(tx_type, str):
+        return None
+    key = tx_type.strip().lower()
+    if key == _CANONICAL_TX_CREATE:
+        return _CANONICAL_TX_CREATE
+    if key in _MIGRATION_TX_ALIASES:
+        return _CANONICAL_TX_MIGRATION
+    return None
+
 # Known WS fields from PUMPPORTAL-PAYLOAD-INVENTORY (creation)
 KNOWN_CREATE_FIELDS = frozenset(
     {
@@ -75,13 +91,13 @@ def extract_t_event(payload: Mapping[str, Any]) -> str | None:
 
 
 def _stage_for_event(stream: str, payload: Mapping[str, Any]) -> str:
-    tx_type = payload.get("txType")
+    tx_type = canonical_tx_type(payload.get("txType"))
     if stream == STREAM_NEW_TOKEN:
-        if tx_type == "create":
+        if tx_type == _CANONICAL_TX_CREATE:
             return "bonding"
         return "UNK"
     if stream == STREAM_MIGRATION:
-        if tx_type == "migration":
+        if tx_type == _CANONICAL_TX_MIGRATION:
             return "migrating"
         return "UNK"
     return "UNK"

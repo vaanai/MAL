@@ -88,7 +88,7 @@ PumpPortal documents **subscribe/unsubscribe methods** and commitment level (`pr
 
 | Field | Tag | Notes |
 | --- | --- | --- |
-| `txType` | **WS** | Reported `"migration"` in integrations; vendor schema **UNK** |
+| `txType` | **WS** | Reported `"migration"` in integrations; live capture also sees `"migrate"` — observe client treats both (case-insensitive) as `subscribeMigration` / `stage=migrating`; vendor schema **UNK** |
 | `mint` | **WS** | Graduated token |
 | `pool` | **WS** | Destination pool pubkey; post-2025 default graduation target is **PumpSwap** per [pump-public-docs](https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_PROGRAM_README.md) — **RPC** decode pool owner/program to label `pumpswap` vs legacy Raydium |
 | `signature` | **WS** | **RPC** verify migrate instruction |

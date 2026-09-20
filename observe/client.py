@@ -19,7 +19,12 @@ import certifi
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidStatusCode
 
-from observe.regime import STREAM_MIGRATION, STREAM_NEW_TOKEN, seal_ingest_record
+from observe.regime import (
+    STREAM_MIGRATION,
+    STREAM_NEW_TOKEN,
+    canonical_tx_type,
+    seal_ingest_record,
+)
 
 DEFAULT_WS_URL = "wss://pumpportal.fun/api/data"
 DEFAULT_OUTPUT_DIR = Path("data/observe")
@@ -67,7 +72,7 @@ def _normalize_messages(raw: str) -> list[dict[str, Any]]:
 
 
 def _classify_stream(payload: dict[str, Any]) -> str | None:
-    tx = payload.get("txType")
+    tx = canonical_tx_type(payload.get("txType"))
     if tx == "create":
         return STREAM_NEW_TOKEN
     if tx == "migration":
