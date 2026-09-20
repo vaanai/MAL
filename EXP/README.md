@@ -1,0 +1,49 @@
+# Experiment registry (EXP-xxx)
+
+Phase-0 experiments are **files in this directory**, not a database. One experiment per file: `EXP-001-short-slug.md` (or `.json` if machine-heavy).
+
+## Required fields
+
+| Field | Description |
+| --- | --- |
+| **ID** | `EXP-xxx` monotonic |
+| **Hypothesis** | Falsifiable claim tied to [LAB_STATE.md](../LAB_STATE.md) open hypothesis |
+| **Method** | Data sources, as-of-T rules, filters, baseline comparator |
+| **As-of-T rules** | What information is allowed at decision time T (no lookahead) |
+| **Regime labels** | Regime ID at ingest (define taxonomy in experiment) |
+| **Windows** | Evaluate at **1s / 5s / 15s / 30s / 60s** from trigger event (state which are primary) |
+| **Result** | Metrics, plots, or links to artifact paths (no secrets) |
+| **Kill-attempt** | Explicit test that would **reject** hypothesis if failed |
+| **Conclusion** | Promote / iterate / kill; update LAB_STATE if promoted or killed |
+
+## Template (markdown)
+
+```markdown
+# EXP-xxx — Title
+
+- **Status:** planned | running | done
+- **Owner seat:** Scout | Graph | Proof | Helm
+- **Started:** YYYY-MM-DD
+- **Hypothesis:** …
+- **Method:** …
+- **As-of-T:** …
+- **Regime labels:** …
+- **Windows:** 1s, 5s, 15s, 30s, 60s — primary: …
+- **Kill-attempt:** …
+- **Result:** …
+- **Conclusion:** …
+```
+
+## Rules
+
+- **Kill-attempt before promote** — No promotion to “active decision” without a documented failed kill-attempt or passed kill criteria.
+- **Immutable snapshots** — Export decision packets to `ARTIFACTS/` when an experiment closes; do not rewrite past results.
+- **Fast mode** — Stay OFF unless constitution exception (imperative).
+
+## Index
+
+Maintain a table in this README when experiments exist:
+
+| ID | Title | Status | Conclusion |
+| --- | --- | --- | --- |
+| _(none yet)_ | | | |
