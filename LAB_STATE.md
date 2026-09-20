@@ -58,11 +58,11 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 
 ## Next work
 
-1. **EXP-001:** 24h WS capture with `python -m observe`; inventory key diff vs [PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md)
-2. **Proof:** mis-label audit on 100 random creates per [EXP-001](EXP/EXP-001-24h-ws-capture.md)
-3. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)
+1. **Population for EXP-001:** Vaan starts 24h local `python -m observe`; Scout inventory key diff vs [PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md)
+2. **EXP-001 (locked):** Proof regime/stage mislabel sample — n=100 sealed create packets, stratified when volume allows; [EXP/EXP-001-regime-stage-mislabel.md](EXP/EXP-001-regime-stage-mislabel.md)
+3. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md) — measurement-validated only after EXP-001 scoring
 4. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules
-5. Log experiments per [EXP/README.md](EXP/README.md) with regime labels and 1s/5s/15s/30s/60s windows
+5. Log further EXPs per [EXP/README.md](EXP/README.md) with regime labels and 1s/5s/15s/30s/60s windows (EXP-001 windows are N/A)
 6. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only** (not spine) — [API brief](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 7. Defer X API until social hypothesis has a cheap proxy or manual sample set
 8. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
