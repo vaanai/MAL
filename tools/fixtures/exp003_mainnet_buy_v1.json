@@ -1,0 +1,21 @@
+{
+  "blockTime": 1790020746,
+  "version": 1,
+  "meta": {
+    "err": null,
+    "logMessages": [
+      "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]",
+      "Program log: Instruction: BuyExactSolIn",
+      "Program data: vdt/007mYe4QKVLrt6AWRljQ4rcxC0aduQrx/xmw48hD245uQ4w4j2SbHQAAAAAA2esuEBAAAAABFOlXsG7OjdDYeAhvvt3VThJll9ABw10c2ch0IQ3lJl+KjLFqAAAAAOG2eQEHAAAALpwm+vvMAwDhClYFAAAAAC4EFK5qzgIASsL40N1cvJfjKJwZfLUGKlTz2Va5zm5RFfllZ6pcs+ZfAAAAAAAAAAJIAAAAAAAA/ZB3i+PDpu49QBsvH84DjXxHJ40fvYnYcfoKLBc1pXIeAAAAAAAAAL0WAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAGJ1eV9leGFjdF9zb2xfaW4AAAAAAAAAAAAAAAAAAAAAAIgTAAAAAAAAASQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABkmx0AAAAAAOG2eQEHAAAA4QpWBQAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    ]
+  },
+  "transaction": {
+    "signatures": [
+      "FxCKFg7erV9CR8FcbbfHfrCipHtBsfYY9XsFeB8ncaAegt2ArjbbbWKMZs7yjrALK6f4nukC9cZPwNBABEvg7ai"
+    ],
+    "message": {
+      "version": 1,
+      "accountKeys": []
+    }
+  }
+}

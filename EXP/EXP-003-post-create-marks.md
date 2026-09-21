@@ -165,7 +165,9 @@ Coverage CLI `overall=INCOMPLETE` when **no marks file** is **not** a kill (expe
 python3 -m unittest tools.test_marks tools.test_exp003_marks tools.test_exp003_rpc_backfill
 ```
 
-**Producer (v0 RPC backfill, Vaan PC):** subsample bonding creates, paginate `getSignaturesForAddress` on `bondingCurveKey` (else `mint`) until `blockTime < T`, `getTransaction` (`confirmed`/`finalized`), append `outcome_mark` to `data/observe/marks-YYYY-MM-DD.jsonl`. Public RPC via `SOLANA_RPC_URL` (default mainnet-beta public URL). Subsample default **300** (`--seed` reproducible). Progress logs use ASCII only.
+**Producer (v0 RPC backfill, Vaan PC):** subsample bonding creates, paginate `getSignaturesForAddress` on `bondingCurveKey` (else `mint`) until `blockTime < T`, `getTransaction` with `maxSupportedTransactionVersion: 1` (`confirmed`/`finalized`), append `outcome_mark` to `data/observe/marks-YYYY-MM-DD.jsonl`. Public RPC via `SOLANA_RPC_URL` (default mainnet-beta public URL). Subsample default **300** (`--seed` reproducible). Progress logs use ASCII only.
+
+**Price decode (v0.1 fix):** Mainnet `getTransaction` JSON does **not** include PumpPortal WS fields (`marketCapSol`, `vSolInBondingCurve`) on the tx object — walking the response always yielded `no_price`. The producer decodes pump.fun **Anchor CPI events** from `meta.logMessages` (`Program data:` base64): `TradeEvent` / `CreateEvent` per [pump IDL](https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json). `price_proxy` prefers **`marketCapSol`** when `CreateEvent.token_total_supply` is present (`virtual_sol_reserves * token_total_supply / virtual_token_reserves`, lamports → SOL); else **`vSolInBondingCurve`** = `virtual_sol_reserves / 1e9` (same proxies as EXP-002). Undecodable txs increment `no_price` — never fabricated.
 
 ```powershell
 $env:SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"

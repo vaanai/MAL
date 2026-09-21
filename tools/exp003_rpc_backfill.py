@@ -10,6 +10,8 @@ Stdlib only. Public RPC via SOLANA_RPC_URL (no secrets in repo).
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import logging
 import os
@@ -41,6 +43,12 @@ DEFAULT_COMMITMENT = "confirmed"
 DEFAULT_RPC_URL = "https://api.mainnet-beta.solana.com"
 ALLOWED_COMMITMENTS = frozenset({"confirmed", "finalized"})
 HORIZON_LOG_KEYS = ("1s", "5s", "15s", "30s", "60s")
+
+LAMPORTS_PER_SOL = 1_000_000_000
+PUMP_TOKEN_DECIMALS = 6
+# Anchor event discriminators: sha256("event:<Name>")[:8] (pump.fun IDL).
+_PUMP_TRADE_EVENT_DISC = bytes.fromhex("bddb7fd34ee661ee")
+_PUMP_CREATE_EVENT_DISC = bytes.fromhex("1b72a94ddeeb6376")
 
 LOG = logging.getLogger("exp003_rpc_backfill")
 
@@ -124,17 +132,164 @@ def _walk_for_reserve_fields(obj: Any, found: dict[str, float]) -> None:
             _walk_for_reserve_fields(item, found)
 
 
-def price_from_transaction(tx_response: Mapping[str, Any]) -> tuple[float, str] | None:
-    """Map WS-equivalent reserve fields from getTransaction JSON."""
+def _borsh_read_string(data: bytes, offset: int) -> tuple[str | None, int]:
+    if offset + 4 > len(data):
+        return None, offset
+    length = int.from_bytes(data[offset : offset + 4], "little")
+    offset += 4
+    end = offset + length
+    if end > len(data):
+        return None, offset
+    try:
+        text = data[offset:end].decode("utf-8")
+    except UnicodeDecodeError:
+        return None, end
+    return text, end
+
+
+def _parse_pump_trade_event(payload: bytes) -> dict[str, Any] | None:
+    """Fixed-prefix decode for pump.fun TradeEvent (Anchor CPI log)."""
+    if len(payload) < 113 or payload[:8] != _PUMP_TRADE_EVENT_DISC:
+        return None
+    off = 8 + 32  # mint
+    if off + 8 + 8 + 1 + 32 + 8 + 8 + 8 > len(payload):
+        return None
+    sol_amount = int.from_bytes(payload[off : off + 8], "little")
+    off += 8
+    token_amount = int.from_bytes(payload[off : off + 8], "little")
+    off += 8
+    is_buy = payload[off] != 0
+    off += 1 + 32 + 8  # user, timestamp
+    virtual_sol = int.from_bytes(payload[off : off + 8], "little")
+    off += 8
+    virtual_token = int.from_bytes(payload[off : off + 8], "little")
+    if virtual_sol <= 0 or virtual_token <= 0:
+        return None
+    return {
+        "virtual_sol_reserves": virtual_sol,
+        "virtual_token_reserves": virtual_token,
+        "sol_amount": sol_amount,
+        "token_amount": token_amount,
+        "is_buy": is_buy,
+    }
+
+
+def _parse_pump_create_event(payload: bytes) -> dict[str, Any] | None:
+    """Borsh decode for pump.fun CreateEvent (name/symbol/uri strings then fixed tail)."""
+    if len(payload) < 8 or payload[:8] != _PUMP_CREATE_EVENT_DISC:
+        return None
+    off = 8
+    for _ in range(3):
+        _, off = _borsh_read_string(payload, off)
+    # mint, bonding_curve, user, creator
+    if off + 32 * 4 + 8 + 8 * 4 > len(payload):
+        return None
+    off += 32 * 4
+    off += 8  # timestamp i64
+    virtual_token = int.from_bytes(payload[off : off + 8], "little")
+    off += 8
+    virtual_sol = int.from_bytes(payload[off : off + 8], "little")
+    off += 8
+    off += 8  # real_token_reserves
+    token_total_supply = int.from_bytes(payload[off : off + 8], "little")
+    if virtual_sol <= 0 or virtual_token <= 0:
+        return None
+    return {
+        "virtual_sol_reserves": virtual_sol,
+        "virtual_token_reserves": virtual_token,
+        "token_total_supply": token_total_supply,
+    }
+
+
+def _pump_market_cap_sol(
+    virtual_sol_lamports: int,
+    virtual_token_reserves: int,
+    token_total_supply: int,
+) -> float | None:
+    if virtual_token_reserves <= 0 or token_total_supply <= 0:
+        return None
+    cap_lamports = (virtual_sol_lamports * token_total_supply) // virtual_token_reserves
+    if cap_lamports <= 0:
+        return None
+    return cap_lamports / LAMPORTS_PER_SOL
+
+
+def _price_from_pump_log_messages(
+    log_messages: Sequence[Any],
+) -> tuple[float, str, dict[str, Any]] | None:
+    """Decode pump.fun CreateEvent / TradeEvent from meta.logMessages Program data lines."""
+    create_ev: dict[str, Any] | None = None
+    trade_ev: dict[str, Any] | None = None
+    for line in log_messages:
+        if not isinstance(line, str) or not line.startswith("Program data: "):
+            continue
+        blob = line[len("Program data: ") :].strip()
+        if not blob:
+            continue
+        try:
+            raw = base64.b64decode(blob, validate=False)
+        except (ValueError, binascii.Error):
+            continue
+        trade = _parse_pump_trade_event(raw)
+        if trade is not None:
+            trade_ev = trade
+            continue
+        create = _parse_pump_create_event(raw)
+        if create is not None:
+            create_ev = create
+
+    state = trade_ev or create_ev
+    if state is None:
+        return None
+
+    virtual_sol = int(state["virtual_sol_reserves"])
+    virtual_token = int(state["virtual_token_reserves"])
+    v_sol_sol = virtual_sol / LAMPORTS_PER_SOL
+    extra: dict[str, Any] = {
+        "vSolInBondingCurve": v_sol_sol,
+        "vTokensInBondingCurve": virtual_token / (10**PUMP_TOKEN_DECIMALS),
+    }
+    supply: int | None = None
+    if create_ev is not None:
+        supply = int(create_ev.get("token_total_supply") or 0)
+    if trade_ev is not None:
+        extra["txType"] = "buy" if trade_ev.get("is_buy") else "sell"
+        extra["solAmount"] = int(trade_ev["sol_amount"]) / LAMPORTS_PER_SOL
+        extra["tokenAmount"] = int(trade_ev["token_amount"]) / (10**PUMP_TOKEN_DECIMALS)
+    elif create_ev is not None:
+        extra["txType"] = "create"
+
+    if supply and supply > 0:
+        mcap = _pump_market_cap_sol(virtual_sol, virtual_token, supply)
+        if mcap is not None and mcap > 0:
+            extra["marketCapSol"] = mcap
+            return mcap, "marketCapSol", extra
+
+    if v_sol_sol > 0:
+        return v_sol_sol, "vSolInBondingCurve", extra
+    return None
+
+
+def price_from_transaction(
+    tx_response: Mapping[str, Any],
+) -> tuple[float, str, dict[str, Any]] | None:
+    """Price proxy from getTransaction: pump.fun program logs, else legacy test fields."""
     meta = tx_response.get("meta")
     if isinstance(meta, dict) and meta.get("err") is not None:
         return None
+    if isinstance(meta, dict):
+        logs = meta.get("logMessages")
+        if isinstance(logs, list) and logs:
+            parsed = _price_from_pump_log_messages(logs)
+            if parsed is not None:
+                return parsed
     found: dict[str, float] = {}
     _walk_for_reserve_fields(tx_response, found)
+    extra_legacy = {k: found[k] for k in found}
     if "marketCapSol" in found:
-        return found["marketCapSol"], "marketCapSol"
+        return found["marketCapSol"], "marketCapSol", extra_legacy
     if "vSolInBondingCurve" in found:
-        return found["vSolInBondingCurve"], "vSolInBondingCurve"
+        return found["vSolInBondingCurve"], "vSolInBondingCurve", extra_legacy
     return None
 
 
@@ -417,10 +572,8 @@ def process_create(
         if priced is None:
             stats["no_price_n"] += 1
             continue
-        price, price_field = priced
-        found_reserves: dict[str, float] = {}
-        _walk_for_reserve_fields(tx, found_reserves)
-        extra: dict[str, Any] = dict(found_reserves)
+        price, price_field, extra = priced
+        extra = dict(extra)
         row = build_outcome_mark_row(
             create=create,
             tx_signature=sig,
