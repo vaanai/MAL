@@ -19,6 +19,7 @@ Meme coin alpha lab — **Pump.fun / Solana first**, observe-before-act, memory-
 | `EXP/` | Experiment registry format + `EXP-xxx` files |
 | `ARTIFACTS/` | Research briefs and manager summaries |
 | `observe/` | Scout WS client (phase 0) |
+| `tools/` | Local audit CLIs (sealed-row stamp sampler) |
 | `data/observe/` | Local JSONL captures (samples gitignored) |
 
 ## Phase 0
@@ -64,6 +65,16 @@ python -m observe
 | `MAL_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 Schema: [ARTIFACTS/OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md). First capture EXP: [EXP/EXP-001-24h-ws-capture.md](EXP/EXP-001-24h-ws-capture.md).
+
+### Stamp sealed rows (local re-audit)
+
+Day-wide Scout sampler; stdlib-only; does **not** reopen manager PASS on Vaan’s local capture.
+
+```bash
+python tools/observe_sealed_row_stamp.py data/observe/observe-YYYY-MM-DD.jsonl
+```
+
+Exit 0 = hard gates PASS; non-zero = FAIL. Soft inventory (non-pump pool still bonding, `ws_fields_unknown`) never fails the stamp. See [ARTIFACTS/OBSERVE-SEALED-ROW-STAMP.md](ARTIFACTS/OBSERVE-SEALED-ROW-STAMP.md).
 
 ### Troubleshooting (Windows / long captures)
 

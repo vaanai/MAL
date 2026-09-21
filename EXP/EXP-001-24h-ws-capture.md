@@ -65,3 +65,4 @@ PumpPortal free WebSocket streams (`subscribeNewToken`, `subscribeMigration`) de
 
 - No Birdeye paid, no Dexscreener on spine, no trading API.
 - Sealed rows are immutable; corrections are new packets only.
+- **Sealed-row re-audit:** `python tools/observe_sealed_row_stamp.py data/observe/observe-YYYY-MM-DD.jsonl` ([ARTIFACTS/OBSERVE-SEALED-ROW-STAMP.md](../ARTIFACTS/OBSERVE-SEALED-ROW-STAMP.md)). Scout manager PASS on Vaan’s local capture stands; the CLI replaces ad-hoc `data/observe/_scout_*` notes. This is **not** the Proof n=100 RPC mis-label sample.

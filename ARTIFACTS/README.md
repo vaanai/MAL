@@ -18,6 +18,8 @@ Research briefs, decision packet exports, and manager summaries land here. **Git
 | [PUMPPORTAL-PAYLOAD-INVENTORY.md](PUMPPORTAL-PAYLOAD-INVENTORY.md) | PumpPortal WS field inventory (WS / RPC / unknown) |
 | [REGIME-ENUM-V0.md](REGIME-ENUM-V0.md) | Phase-0 regime taxonomy (draft, EXP-revisable) |
 | [REGIME-AT-INGEST-MATRIX.md](REGIME-AT-INGEST-MATRIX.md) | WS vs RPC, knowable-at-T, hot-packet stamp rules |
+| [OBSERVE-JSONL-SCHEMA.md](OBSERVE-JSONL-SCHEMA.md) | Hot observe JSONL row shape |
+| [OBSERVE-SEALED-ROW-STAMP.md](OBSERVE-SEALED-ROW-STAMP.md) | Day-wide Scout sealed-row stamp CLI (hard gates + soft inventory) |
 | [SUMMARY.md](SUMMARY.md) | Short manager digest of latest research |
 
 ## Provenance
