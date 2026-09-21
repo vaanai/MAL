@@ -4,6 +4,8 @@ data/observe/*.jsonl
 data/observe/_exp001_*
 # EXP-002 local paper book outputs
 data/observe/_exp002_*
+# EXP-003 local marks coverage
+data/observe/_exp003_*
 
 # Python
 __pycache__/

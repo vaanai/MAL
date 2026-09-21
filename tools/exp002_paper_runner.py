@@ -25,6 +25,7 @@ from tools.exp001_mislabel import (
     t_ws_missing,
 )
 from observe.regime import canonical_tx_type
+from tools.marks import is_as_of_tick, is_outcome_mark, parse_mark_tick
 
 DEFAULT_SEED = 1
 DEFAULT_OUTPUT_DIR = Path("data/observe")
@@ -114,18 +115,29 @@ class PriceMark:
 def build_mint_price_series(
     loaded: Sequence[LoadedRow],
 ) -> dict[str, list[PriceMark]]:
+    """Price ticks from later ingest rows and/or EXP-003 outcome_mark side files.
+
+    Outcome marks use ``t_mark`` (not create ``t_ws``). Create rows at T remain in
+    the series for entry but are excluded from horizon join (see ``is_as_of_tick``).
+    """
     by_mint: dict[str, list[PriceMark]] = {}
     for item in loaded:
         row = item.row
-        mint = row.get("mint")
-        if not isinstance(mint, str) or mint in ("", "UNK"):
-            continue
-        price = _price_proxy_from_row(row)
-        if price is None:
-            continue
-        t = _parse_iso_ts(row.get("t_ws"))
-        if t is None:
-            continue
+        if is_outcome_mark(row):
+            parsed = parse_mark_tick(row)
+            if parsed is None:
+                continue
+            mint, t, price = parsed
+        else:
+            mint = row.get("mint")
+            if not isinstance(mint, str) or mint in ("", "UNK"):
+                continue
+            price = _price_proxy_from_row(row)
+            if price is None:
+                continue
+            t = _parse_iso_ts(row.get("t_ws"))
+            if t is None:
+                continue
         by_mint.setdefault(mint, []).append(
             PriceMark(
                 t=t,
@@ -139,16 +151,18 @@ def build_mint_price_series(
     return by_mint
 
 
-def _nearest_mark_at_or_after(
+def _last_mark_as_of(
     marks: Sequence[PriceMark],
-    target: datetime,
-    *,
     t0: datetime,
+    horizon_s: float,
 ) -> PriceMark | None:
+    """Last tick with T < t_mark <= T+H (EXP-003 honesty; no future leak)."""
+    chosen: PriceMark | None = None
     for m in marks:
-        if m.t >= t0 and m.t >= target:
-            return m
-    return None
+        if is_as_of_tick(t0, m.t, horizon_s):
+            if chosen is None or m.t >= chosen.t:
+                chosen = m
+    return chosen
 
 
 def _marks_in_window(
@@ -271,8 +285,7 @@ def compute_outcomes(
         }
 
     for name, offset_s in HORIZON_SECONDS.items():
-        target = t0 + timedelta(seconds=offset_s)
-        mark = _nearest_mark_at_or_after(marks, target, t0=t0)
+        mark = _last_mark_as_of(marks, t0, offset_s)
         if mark is None:
             horizons[name] = HorizonOutcome(
                 horizon=name,
@@ -497,7 +510,8 @@ def build_summary(
         },
         "overall": overall,
         "limitations": [
-            "Post-create marks only when later sealed rows carry price proxies for the mint.",
+            "Post-create marks from later ingest rows and/or EXP-003 outcome_mark files.",
+            "Horizon join is last tick with T < t_mark <= T+H (no future leak).",
             "Δ_exec always N/A from JSONL alone in v0.",
         ],
     }
@@ -542,9 +556,14 @@ def run_paper_book(
     prefix: str = DEFAULT_PREFIX,
     rules: EvaluateRules | None = None,
     primary_horizon: str = PRIMARY_HORIZON,
+    marks_paths: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     rules = rules or EvaluateRules()
     loaded, malformed_n = load_jsonl_files(paths)
+    if marks_paths:
+        extra, extra_mal = load_jsonl_files(marks_paths)
+        loaded.extend(extra)
+        malformed_n += extra_mal
     price_series = build_mint_price_series(loaded)
 
     eligible: list[LoadedRow] = []
@@ -594,6 +613,7 @@ def run_paper_book(
     summary["malformed_n"] = malformed_n
     summary["void_n"] = void_n
     summary["eligible_population_n"] = len(eligible)
+    summary["marks_paths"] = [str(p) for p in (marks_paths or [])]
 
     paths_out = write_outputs(
         output_dir=output_dir,
@@ -743,6 +763,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(HORIZON_SECONDS.keys()),
         help=f"Horizon for kill gates (default: {PRIMARY_HORIZON})",
     )
+    p.add_argument(
+        "--marks",
+        nargs="*",
+        default=[],
+        type=Path,
+        help="EXP-003 outcome_mark JSONL path(s); last-at-or-before join (default: none)",
+    )
     return p
 
 
@@ -751,6 +778,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     missing = [p for p in args.jsonl if not p.is_file()]
     if missing:
         print(f"error: JSONL not found: {', '.join(str(p) for p in missing)}", file=sys.stderr)
+        return 1
+    marks_missing = [p for p in args.marks if not p.is_file()]
+    if marks_missing:
+        print(
+            f"error: marks JSONL not found: {', '.join(str(p) for p in marks_missing)}",
+            file=sys.stderr,
+        )
         return 1
     rules = EvaluateRules(
         exclude_bonk_pool=args.exclude_bonk_pool,
@@ -763,6 +797,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prefix=args.prefix,
         rules=rules,
         primary_horizon=args.primary_horizon,
+        marks_paths=args.marks,
     )
     _print_summary(summary)
     return _exit_code(str(summary["overall"]))

@@ -71,12 +71,12 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 
 ## Next work
 
-1. **EXP-002 local run (Vaan / Proof):** `python -m tools.exp002_paper_runner` on sealed bonding creates in `observe-2026-09-20` + `observe-2026-09-21`. Runbook: [EXP/EXP-002-evaluate-runner-v0.md](EXP/EXP-002-evaluate-runner-v0.md) §11.
-2. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py); optional archive run on same JSONL.
-3. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)
-4. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules
-5. Log further EXPs per [EXP/README.md](EXP/README.md) with runner horizons per DEC-006
-6. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only** (not spine) — [API brief](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
+1. **EXP-003 marks (Scout / Vaan local):** Attach post-create ticks without rewriting sealed rows. Brief: [ARTIFACTS/POST-CREATE-MARKS-BRIEF.md](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md). EXP: [EXP/EXP-003-post-create-marks.md](EXP/EXP-003-post-create-marks.md). Coverage: `python -m tools.exp003_marks` on `observe-2026-09-20` + `observe-2026-09-21` plus `marks-*.jsonl` when produced. **v0 producer:** RPC historical subsample on Vaan PC (not in cloud).
+2. **EXP-002 re-run (Proof):** After coverage `READY`, `python -m tools.exp002_paper_runner … --marks data/observe/marks-….jsonl`. Runbook: [EXP/EXP-002-evaluate-runner-v0.md](EXP/EXP-002-evaluate-runner-v0.md) §11.
+3. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py); optional archive run on same JSONL.
+4. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md) (`ingest_hot` + `outcome_mark`)
+5. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules
+6. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only** (not spine; not EXP-003 `source`) — [API brief](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 7. Defer X API until social hypothesis has a cheap proxy or manual sample set
 8. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
 
@@ -85,7 +85,8 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Decisions: `DEC/`
 - Experiments: `EXP/`
 - Local EXP-001 CLI: `python -m tools.exp001_mislabel`
-- Local EXP-002 CLI: `python -m tools.exp002_paper_runner`
-- Research: `ARTIFACTS/`
+- Local EXP-002 CLI: `python -m tools.exp002_paper_runner` (`--marks` for EXP-003 ticks)
+- Local EXP-003 coverage: `python -m tools.exp003_marks`
+- Research: `ARTIFACTS/` (marks: [POST-CREATE-MARKS-BRIEF.md](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md))
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 - Regime at ingest: [ARTIFACTS/REGIME-AT-INGEST-MATRIX.md](ARTIFACTS/REGIME-AT-INGEST-MATRIX.md), [ARTIFACTS/REGIME-ENUM-V0.md](ARTIFACTS/REGIME-ENUM-V0.md), [ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md)

@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **As-of** | 2026-09-20 |
+| **As-of** | 2026-09-21 |
 | **Producer** | [observe/client.py](../observe/client.py) |
 | **Encoding law** | [DEC-004](../DEC/DEC-004-regime-id-encoding.md) |
 
@@ -63,3 +63,31 @@
 
 - Dexscreener or Birdeye fields
 - Retroactive edits (fix forward with new line / enrich type per matrix)
+- Post-create outcome ticks (those are `type=outcome_mark`, never patched onto this object)
+
+---
+
+## Sibling row shape (`type=outcome_mark`) — EXP-003
+
+Post-create price ticks for paper horizons. **New lines only** (side file `data/observe/marks-YYYY-MM-DD.jsonl` preferred). Join: `mint` + `parent_signature` (create `signature`). Consumer: last tick with **`T < t_mark ≤ T+H`** ([POST-CREATE-MARKS-BRIEF.md](POST-CREATE-MARKS-BRIEF.md), [EXP-003](../EXP/EXP-003-post-create-marks.md)).
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `schema_version` | string | yes | `observe_mark_v0` |
+| `type` | string | yes | `outcome_mark` |
+| `mint` | string | yes | Join to sealed create |
+| `parent_signature` | string | yes | Create `signature` |
+| `t_mark` | string (ISO-8601 UTC) | yes | Tick time (RPC `blockTime` or trade receipt) |
+| `source` | string | yes | `rpc_tx` \| `rpc_account_poll` \| `pumpportal_ws_trade` — **not** Dexscreener/Birdeye |
+| `price_proxy` | number | yes* | Finite `>0`; *else* `marketCapSol` or `vSolInBondingCurve` |
+| `t_decision` | string or omit | no | Copy of parent `t_ws` (audit) |
+| `signature` | string | no | Trade/tx signature |
+| `commitment` | string | no | `confirmed` typical for RPC |
+| `price_field` | string | no | Which field fed `price_proxy` |
+| `txType`, `solAmount`, `tokenAmount`, reserves | various | no | Optional for later paper `Δ_exec` |
+
+Example:
+
+```json
+{"schema_version":"observe_mark_v0","type":"outcome_mark","mint":"…","parent_signature":"…","t_mark":"2026-09-21T12:00:05.000+00:00","source":"rpc_tx","price_proxy":1.25,"t_decision":"2026-09-21T12:00:00.000+00:00","commitment":"confirmed","price_field":"vSolInBondingCurve"}
+```

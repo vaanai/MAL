@@ -51,6 +51,7 @@
 | `t_rpc_confirm`, Δ latency | New metric row linked by `signature` |
 | Graph scores | Separate capped packet per [CONSTITUTION.md](../CONSTITUTION.md) §5 |
 | Human debug (Dexscreener) | `type=debug_dexscreener`, never merged into hot spine |
+| Post-create price ticks (1s–60s paper marks) | New JSONL line: `type=outcome_mark` in **side** `marks-YYYY-MM-DD.jsonl` (or `--marks`); join `mint` + `parent_signature`; **never** edit `ingest_hot` — [POST-CREATE-MARKS-BRIEF.md](POST-CREATE-MARKS-BRIEF.md), [EXP-003](../EXP/EXP-003-post-create-marks.md) |
 
 ---
 

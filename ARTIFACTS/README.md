@@ -18,6 +18,7 @@ Research briefs, decision packet exports, and manager summaries land here. **Git
 | [PUMPPORTAL-PAYLOAD-INVENTORY.md](PUMPPORTAL-PAYLOAD-INVENTORY.md) | PumpPortal WS field inventory (WS / RPC / unknown) |
 | [REGIME-ENUM-V0.md](REGIME-ENUM-V0.md) | Phase-0 regime taxonomy (draft, EXP-revisable) |
 | [REGIME-AT-INGEST-MATRIX.md](REGIME-AT-INGEST-MATRIX.md) | WS vs RPC, knowable-at-T, hot-packet stamp rules |
+| [POST-CREATE-MARKS-BRIEF.md](POST-CREATE-MARKS-BRIEF.md) | Options for 1s–60s post-create ticks on sealed creates (unblock EXP-002) |
 | [SUMMARY.md](SUMMARY.md) | Short manager digest of latest research |
 
 ## Provenance
