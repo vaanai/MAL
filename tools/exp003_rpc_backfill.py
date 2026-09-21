@@ -307,7 +307,7 @@ class SolanaRpcClient:
                 {
                     "encoding": "json",
                     "commitment": self.commitment,
-                    "maxSupportedTransactionVersion": 0,
+                    "maxSupportedTransactionVersion": 1,
                 },
             ],
         )
