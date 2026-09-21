@@ -63,16 +63,27 @@ Side artifact, not a mutation: `data/observe/marks-YYYY-MM-DD.jsonl` (gitignored
 
 ## What Vaan runs locally
 
-Cloud cannot see JSONL. After this PR:
+Cloud cannot see JSONL. PowerShell runbook (ASCII logs):
 
 ```text
-python -m unittest tools.test_marks tools.test_exp003_marks tools.test_exp002_paper_runner
+python -m unittest tools.test_marks tools.test_exp003_marks tools.test_exp003_rpc_backfill tools.test_exp002_paper_runner
+
+set SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+python -m tools.exp003_rpc_backfill ^
+  data\observe\observe-2026-09-20.jsonl data\observe\observe-2026-09-21.jsonl ^
+  --output-dir data\observe --sample 300 --seed 1 --window-s 60
+
 python -m tools.exp003_marks ^
   data\observe\observe-2026-09-20.jsonl data\observe\observe-2026-09-21.jsonl ^
   --marks data\observe\marks-2026-09-20.jsonl data\observe\marks-2026-09-21.jsonl
+
+python -m tools.exp002_paper_runner ^
+  data\observe\observe-2026-09-20.jsonl data\observe\observe-2026-09-21.jsonl ^
+  --marks data\observe\marks-2026-09-20.jsonl data\observe\marks-2026-09-21.jsonl ^
+  --rules v1
 ```
 
-Without a marks file, coverage is **INCOMPLETE** (expected). RPC backfill **producer** is specified in EXP-003, **not** implemented in this PR (no secrets, no live RPC from cloud). When marks exist, re-run EXP-002 with `--marks`.
+Without marks files, coverage is **INCOMPLETE** (expected). RPC producer uses **public** cluster URL only (no API keys in git); subsample on 429 before full book.
 
 ---
 
