@@ -71,21 +71,21 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 
 ## Next work
 
-1. **EXP-001 local run (Vaan / Proof):** `python -m tools.exp001_mislabel` against sealed `data/observe/observe-2026-09-20.jsonl` (~15k) + `observe-2026-09-21.jsonl` (~19k). Cloud cannot read that JSONL. Runbook: [EXP/EXP-001-regime-stage-mislabel.md](EXP/EXP-001-regime-stage-mislabel.md) §12.
-2. **EXP-001 (locked):** n=100 sealed create packets, stratified when volume allows; independent re-derive vs DEC/matrix; `t_event` null legal; kill **>1%** DEC/enum review, **>5%** wiring block. Scout stamp-hygiene reported PASS day-wide — this EXP is regime/stage **mislabel**, not capture hygiene.
-3. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md) — measurement-validated only after EXP-001 scoring
+1. **EXP-002 local run (Vaan / Proof):** `python -m tools.exp002_paper_runner` on sealed bonding creates in `observe-2026-09-20` + `observe-2026-09-21`. Runbook: [EXP/EXP-002-evaluate-runner-v0.md](EXP/EXP-002-evaluate-runner-v0.md) §11.
+2. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py); optional archive run on same JSONL.
+3. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)
 4. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules
-5. After EXP-001 scores: **name first evaluate→runner EXP** (per [DEC-006](DEC/DEC-006-detect-decode-evaluate-runners.md) / [DEC-007](DEC/DEC-007-full-detect-book-anti-selection-bias.md))
-6. Log further EXPs per [EXP/README.md](EXP/README.md) with regime labels and 1s/5s/15s/30s/60s windows (EXP-001 windows are N/A)
-7. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only** (not spine) — [API brief](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
-8. Defer X API until social hypothesis has a cheap proxy or manual sample set
-9. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
+5. Log further EXPs per [EXP/README.md](EXP/README.md) with runner horizons per DEC-006
+6. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only** (not spine) — [API brief](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
+7. Defer X API until social hypothesis has a cheap proxy or manual sample set
+8. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
 
 ## Pointers
 
 - Decisions: `DEC/`
 - Experiments: `EXP/`
 - Local EXP-001 CLI: `python -m tools.exp001_mislabel`
+- Local EXP-002 CLI: `python -m tools.exp002_paper_runner`
 - Research: `ARTIFACTS/`
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 - Regime at ingest: [ARTIFACTS/REGIME-AT-INGEST-MATRIX.md](ARTIFACTS/REGIME-AT-INGEST-MATRIX.md), [ARTIFACTS/REGIME-ENUM-V0.md](ARTIFACTS/REGIME-ENUM-V0.md), [ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md)

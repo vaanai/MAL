@@ -19,7 +19,7 @@ Meme coin alpha lab — **Pump.fun / Solana first**, observe-before-act, memory-
 | `EXP/` | Experiment registry format + `EXP-xxx` files |
 | `ARTIFACTS/` | Research briefs and manager summaries |
 | `observe/` | Scout WS client (phase 0) |
-| `tools/` | Local offline CLIs (EXP-001 mislabel audit; no live trading) |
+| `tools/` | Local offline CLIs (EXP-001 mislabel; EXP-002 paper runner; no live trading) |
 | `data/observe/` | Local JSONL captures (samples gitignored) |
 
 ## Phase 0

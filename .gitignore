@@ -2,6 +2,8 @@
 data/observe/*.jsonl
 # EXP-001 local audit outputs (judgments CSV/JSONL + summary JSON)
 data/observe/_exp001_*
+# EXP-002 local paper book outputs
+data/observe/_exp002_*
 
 # Python
 __pycache__/

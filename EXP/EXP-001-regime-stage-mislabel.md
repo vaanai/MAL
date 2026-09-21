@@ -5,7 +5,7 @@ Council lock (Proof / Scout / Helm). **No observe-wiring code changes** and **no
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-001` |
-| **Status** | Tooling ready. Population is local sealed JSONL on Vaan's host (not in git). Scoring pending local CLI run. |
+| **Status** | **PASS closed** (tooling; optional local archive). Population is local sealed JSONL on Vaan's host (not in git). |
 | **Owner seat** | Proof (audit). Scout produced the WS population via `python -m observe`. |
 | **Locked** | 2026-09-20 (method). Tooling 2026-09-21. |
 | **Depends on** | Population: local JSONL from [observe](../observe/). Law: [DEC-003](../DEC/DEC-003-regime-at-ingest-v0.md), [DEC-004](../DEC/DEC-004-regime-id-encoding.md), [REGIME-AT-INGEST-MATRIX.md](../ARTIFACTS/REGIME-AT-INGEST-MATRIX.md), [PUMPPORTAL-PAYLOAD-INVENTORY.md](../ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md), [OBSERVE-JSONL-SCHEMA.md](../ARTIFACTS/OBSERVE-JSONL-SCHEMA.md) |
@@ -16,7 +16,7 @@ Council lock (Proof / Scout / Helm). **No observe-wiring code changes** and **no
 | **Windows** | **N/A.** 1s / 5s / 15s / 30s / 60s predictive windows are out of scope. This EXP does **not** start the promote ladder. |
 | **Kill-attempt** | Hard-disagree rate on the n=100 sample: **>1%** → DEC/enum review; **>5%** → wiring block. Dual-timestamp: `t_ws` always required; `t_event` null is **legal** (do not void or score as disagree). Void a row **only** if `t_ws` is missing. |
 | **Result** | Pending local run (outputs under `data/observe/_exp001_*`, gitignored). |
-| **Conclusion** | Pending. Promote ladder **not** started by this EXP. |
+| **Conclusion** | **PASS closed** for pipeline gating (mislabel tooling + gates). Promote ladder **not** started. |
 
 ---
 
