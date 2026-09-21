@@ -167,7 +167,14 @@ python3 -m unittest tools.test_marks tools.test_exp003_marks tools.test_exp003_r
 
 **Producer (v0 RPC backfill, Vaan PC):** subsample bonding creates, paginate `getSignaturesForAddress` on `bondingCurveKey` (else `mint`) until `blockTime < T`, `getTransaction` with `maxSupportedTransactionVersion: 1` (`confirmed`/`finalized`), append `outcome_mark` to `data/observe/marks-YYYY-MM-DD.jsonl`. Public RPC via `SOLANA_RPC_URL` (default mainnet-beta public URL). Subsample default **300** (`--seed` reproducible). Progress logs use ASCII only.
 
-**Price decode (v0.1 fix):** Mainnet `getTransaction` JSON does **not** include PumpPortal WS fields (`marketCapSol`, `vSolInBondingCurve`) on the tx object — walking the response always yielded `no_price`. The producer decodes pump.fun **Anchor CPI events** from `meta.logMessages` (`Program data:` base64): `TradeEvent` / `CreateEvent` per [pump IDL](https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json). `price_proxy` prefers **`marketCapSol`** when `CreateEvent.token_total_supply` is present (`virtual_sol_reserves * token_total_supply / virtual_token_reserves`, lamports → SOL); else **`vSolInBondingCurve`** = `virtual_sol_reserves / 1e9` (same proxies as EXP-002). Undecodable txs increment `no_price` — never fabricated.
+**Price decode (scout prefs, v0.1 fix):**
+
+| Priority | Path | `source` | Notes |
+| --- | --- | --- | --- |
+| 1 | Pump **program logs** — `TradeEvent` / `CreateEvent` (`Program data:` base64) + buy/sell ix lines | `rpc_tx` | Mint + side from event / `Instruction: Buy*` / `Sell`. **Do not** use `meta.preTokenBalances` / `postTokenBalances` alone — they omit Pump reserve fields on real mainnet `getTransaction`. |
+| 2 | **Bonding-curve account** reserves (virtual SOL + token + supply → mcap or vSol spot proxy) | `account_state` | Fallback when logs thin; `decode_path=bonding_curve_account`. Skips graduated curves (`complete`). Best-effort RPC snapshot — stratify coverage by `source`. |
+
+`getTransaction`: `maxSupportedTransactionVersion: 1`; try **`jsonParsed`** then **`json`**; decode uses pump IDL layout (stdlib base64), not vendor JSON fields on the tx root. `price_proxy` prefers **`marketCapSol`** when supply is known; else **`vSolInBondingCurve`** = `virtual_sol_reserves / 1e9` (EXP-002-aligned). Event mint must match sealed create mint or tick is dropped. Undecodable → `no_price` — never fabricated. Marks stay **side JSONL only** (no `ingest_hot` / `regime_id` / `knowable_at_t` rewrite). Join law unchanged: last tick with **`T < t_mark ≤ T+H`**. Default run remains **subsample-first** (`--sample 300`); scale full book only after coverage READY. Dexscreener/Birdeye forbidden on spine (K4).
 
 ```powershell
 $env:SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"

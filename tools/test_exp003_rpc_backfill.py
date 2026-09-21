@@ -12,11 +12,16 @@ from typing import Any
 
 from observe.regime import STREAM_NEW_TOKEN, seal_ingest_record
 from tools.exp003_rpc_backfill import (
+    MARK_SOURCE_ACCOUNT,
+    MARK_SOURCE_LOG,
+    _b58encode,
     _PUMP_CREATE_EVENT_DISC,
+    _PUMP_CURVE_ACCOUNT_DISC,
     _PUMP_TRADE_EVENT_DISC,
     block_time_in_window,
     build_outcome_mark_row,
     collect_signatures_in_window,
+    decode_mark_price_for_tx,
     horizon_coverage_log,
     price_from_transaction,
     process_create,
@@ -56,14 +61,32 @@ def _build_create_program_data(
     return base64.b64encode(bytes(payload)).decode("ascii")
 
 
+def _build_bonding_curve_account_bytes(
+    *,
+    virtual_token: int = 1_000_000_000_000_000,
+    virtual_sol: int = 30_000_000_000,
+    token_total_supply: int = 1_000_000_000_000_000,
+    complete: bool = False,
+) -> bytes:
+    data = bytearray(_PUMP_CURVE_ACCOUNT_DISC)
+    data.extend(virtual_token.to_bytes(8, "little"))
+    data.extend(virtual_sol.to_bytes(8, "little"))
+    data.extend((0).to_bytes(8, "little"))
+    data.extend((0).to_bytes(8, "little"))
+    data.extend(token_total_supply.to_bytes(8, "little"))
+    data.append(1 if complete else 0)
+    return bytes(data)
+
+
 def _build_trade_program_data(
     *,
     virtual_sol: int = 30_089_524_961,
     virtual_token: int = 1_069_807_535_823_918,
     is_buy: bool = True,
+    mint_bytes: bytes | None = None,
 ) -> str:
     payload = bytearray(_PUMP_TRADE_EVENT_DISC)
-    payload.extend(bytes(32))
+    payload.extend(mint_bytes if mint_bytes is not None else bytes(32))
     payload.extend((1_940_324).to_bytes(8, "little"))
     payload.extend((68_990_987_225).to_bytes(8, "little"))
     payload.append(1 if is_buy else 0)
@@ -127,21 +150,23 @@ class PriceExtractTests(unittest.TestCase):
         tx = json.loads(MAINNET_BUY_V1.read_text(encoding="utf-8"))
         parsed = price_from_transaction(tx)
         self.assertIsNotNone(parsed)
-        price, field, extra = parsed
-        self.assertEqual(field, "vSolInBondingCurve")
-        self.assertAlmostEqual(price, 30.089524961, places=6)
-        self.assertAlmostEqual(extra["vSolInBondingCurve"], price, places=6)
-        self.assertEqual(extra.get("txType"), "buy")
+        assert parsed is not None
+        self.assertEqual(parsed.source, MARK_SOURCE_LOG)
+        self.assertEqual(parsed.price_field, "vSolInBondingCurve")
+        self.assertAlmostEqual(parsed.price, 30.089524961, places=6)
+        self.assertAlmostEqual(parsed.extra["vSolInBondingCurve"], parsed.price, places=6)
+        self.assertEqual(parsed.extra.get("txType"), "buy")
+        self.assertIsInstance(parsed.event_mint, str)
 
     def test_create_event_market_cap_from_supply(self) -> None:
         b64 = _build_create_program_data()
         tx = _tx_from_logs("sigCreate", T_UNIX + 2, b64)
         parsed = price_from_transaction(tx)
         self.assertIsNotNone(parsed)
-        price, field, extra = parsed
-        self.assertEqual(field, "marketCapSol")
-        self.assertAlmostEqual(price, 30.0, places=6)
-        self.assertAlmostEqual(extra["marketCapSol"], 30.0, places=6)
+        assert parsed is not None
+        self.assertEqual(parsed.price_field, "marketCapSol")
+        self.assertAlmostEqual(parsed.price, 30.0, places=6)
+        self.assertAlmostEqual(parsed.extra["marketCapSol"], 30.0, places=6)
 
     def test_trade_with_create_supply_prefers_market_cap(self) -> None:
         logs = [
@@ -154,9 +179,9 @@ class PriceExtractTests(unittest.TestCase):
         }
         parsed = price_from_transaction(tx)
         self.assertIsNotNone(parsed)
-        price, field, _extra = parsed
-        self.assertEqual(field, "marketCapSol")
-        self.assertGreater(price, 0)
+        assert parsed is not None
+        self.assertEqual(parsed.price_field, "marketCapSol")
+        self.assertGreater(parsed.price, 0)
 
     def test_no_logs_no_invented_price(self) -> None:
         tx = {
@@ -185,9 +210,34 @@ class MockRpcTests(unittest.TestCase):
 
         client = SolanaRpcClient(url="http://mock", _post_fn=post)
         client.get_transaction("sigZ")
-        self.assertEqual(len(seen), 1)
+        self.assertGreaterEqual(len(seen), 1)
         cfg = seen[0][1]
         self.assertEqual(cfg.get("maxSupportedTransactionVersion"), 1)
+        self.assertEqual(cfg.get("encoding"), "jsonParsed")
+
+    def test_account_state_fallback_when_logs_empty(self) -> None:
+        curve_raw = _build_bonding_curve_account_bytes()
+        acct_b64 = base64.b64encode(curve_raw).decode("ascii")
+        tx = {
+            "meta": {"err": None, "logMessages": ["Program log: Instruction: Buy"]},
+            "transaction": {"signatures": ["sigA"]},
+        }
+
+        def post(method: str, params: list[Any]) -> Any:
+            if method == "getAccountInfo":
+                return {"value": {"data": [acct_b64, "base64"]}}
+            raise AssertionError(method)
+
+        client = SolanaRpcClient(url="http://mock", _post_fn=post)
+        parsed = decode_mark_price_for_tx(
+            tx, bonding_curve_address="CurveAddr", client=client
+        )
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.source, MARK_SOURCE_ACCOUNT)
+        self.assertEqual(parsed.extra.get("decode_path"), "bonding_curve_account")
+        self.assertAlmostEqual(parsed.price, 30.0, places=6)
+        self.assertEqual(parsed.extra.get("txType"), "buy")
 
     def test_collect_signatures_paginates_until_before_t(self) -> None:
         pages = {
@@ -247,6 +297,7 @@ class MockRpcTests(unittest.TestCase):
         for row in marks:
             self.assertIsNone(mark_void_reason(row))
             self.assertEqual(row["price_field"], "vSolInBondingCurve")
+            self.assertEqual(row["source"], MARK_SOURCE_LOG)
         t_decision = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
         ticks = [
             (datetime.fromtimestamp(T_UNIX + 1, tz=timezone.utc), marks[0]["price_proxy"]),
@@ -273,6 +324,8 @@ class MockRpcTests(unittest.TestCase):
                 return sig_infos
             if method == "getTransaction":
                 return txs[params[0]]
+            if method == "getAccountInfo":
+                return {"value": None}
             raise AssertionError(method)
 
         client = SolanaRpcClient(url="http://mock", _post_fn=post)
@@ -281,6 +334,28 @@ class MockRpcTests(unittest.TestCase):
         )
         self.assertEqual(marks, [])
         self.assertEqual(stats["no_price_n"], 1)
+
+    def test_process_create_rejects_event_mint_mismatch(self) -> None:
+        sealed_mint = _b58encode(bytes([7] * 32))
+        event_mint = _b58encode(bytes([9] * 32))
+        trade_b64 = _build_trade_program_data(mint_bytes=bytes([9] * 32))
+        sig_infos = [{"signature": "sigA", "blockTime": T_UNIX + 1, "err": None}]
+        txs = {"sigA": _tx_from_logs("sigA", T_UNIX + 1, trade_b64)}
+
+        def post(method: str, params: list[Any]) -> Any:
+            if method == "getSignaturesForAddress":
+                return sig_infos
+            if method == "getTransaction":
+                return txs[params[0]]
+            raise AssertionError(method)
+
+        client = SolanaRpcClient(url="http://mock", _post_fn=post)
+        marks, stats = process_create(
+            client, _create_row(mint=sealed_mint), window_s=60, commitment="confirmed"
+        )
+        self.assertNotEqual(sealed_mint, event_mint)
+        self.assertEqual(marks, [])
+        self.assertEqual(stats.get("mint_mismatch_n"), 1)
 
     def test_run_backfill_appends_jsonl(self) -> None:
         trade_b64 = _build_trade_program_data()

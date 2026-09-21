@@ -48,6 +48,13 @@ class VoidRulesTests(unittest.TestCase):
         row = _mark(t_mark="2026-09-20T12:00:01.000+00:00", source="dexscreener")
         self.assertEqual(mark_void_reason(row), "forbidden_source")
 
+    def test_account_state_source_ok(self) -> None:
+        row = _mark(
+            t_mark="2026-09-20T12:00:01.000+00:00",
+            source="account_state",
+        )
+        self.assertIsNone(mark_void_reason(row))
+
     def test_missing_parent(self) -> None:
         row = _mark(t_mark="2026-09-20T12:00:01.000+00:00")
         row["parent_signature"] = "UNK"

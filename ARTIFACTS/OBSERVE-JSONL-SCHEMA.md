@@ -78,7 +78,8 @@ Post-create price ticks for paper horizons. **New lines only** (side file `data/
 | `mint` | string | yes | Join to sealed create |
 | `parent_signature` | string | yes | Create `signature` |
 | `t_mark` | string (ISO-8601 UTC) | yes | Tick time (RPC `blockTime` or trade receipt) |
-| `source` | string | yes | `rpc_tx` \| `rpc_account_poll` \| `pumpportal_ws_trade` — **not** Dexscreener/Birdeye |
+| `source` | string | yes | `rpc_tx` \| `account_state` \| `rpc_account_poll` \| `pumpportal_ws_trade` — **not** Dexscreener/Birdeye |
+| `decode_path` | string | no | `program_log` \| `bonding_curve_account` — RPC stratification (EXP-003) |
 | `price_proxy` | number | yes* | Finite `>0`; *else* `marketCapSol` or `vSolInBondingCurve` |
 | `t_decision` | string or omit | no | Copy of parent `t_ws` (audit) |
 | `signature` | string | no | Trade/tx signature |

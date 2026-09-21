@@ -17,6 +17,7 @@ MARK_SOURCES = frozenset(
     {
         "rpc_tx",
         "rpc_account_poll",
+        "account_state",
         "pumpportal_ws_trade",
     }
 )
