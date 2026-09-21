@@ -1,6 +1,6 @@
 # Manager summary (≤20 lines)
 
-**As-of:** 2026-09-20
+**As-of:** 2026-09-21
 
 - **New:** [STARTER-STACK-OPTIONS-BRIEF.md](STARTER-STACK-OPTIONS-BRIEF.md) — JEV/hot-path budgets, X feed options, create-feed vendors, starter stack **options** (not one mandate).
 - Lab memory: `LAB_STATE.md`, `CONSTITUTION.md`, `DEC/`, `EXP/`, `ARTIFACTS/`.
@@ -12,5 +12,5 @@
 - **Create feeds:** PumpPortal free WS baseline; Helius/Bitquery/gRPC are **measure-before-buy** alternates ([API brief](API-COST-LATENCY-BRIEF.md)).
 - **Recommended starter:** keep $0 spine; Helius free/$49 RPC only on 429/lag metrics; rules JEV + deterministic gate; A/B packet timing before any gRPC.
 - **Hard defer:** Birdeye paid, Dexscreener on spine, buy-infra-first, PumpPortal trading API.
-- **Overnight park:** capture on; no stack spend / no live capital tonight; after ~24h → Scout sealed-row sanity + Proof EXP-001 mislabel → name first evaluate→runner EXP.
-- **Next:** EXP-001 latency columns; Proof n=100; read full options brief before infra DEC.
+- **EXP-001:** local mislabel CLI `python -m tools.exp001_mislabel` vs sealed JSONL on Vaan's PC (`observe-2026-09-20` ~15k, `observe-2026-09-21` ~19k); [lock + runbook](../EXP/EXP-001-regime-stage-mislabel.md).
+- **Next:** Vaan runs EXP-001 (n=100, seed=1, PASS/FAIL vs >1% / >5%); then name first evaluate→runner EXP.

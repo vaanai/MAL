@@ -46,4 +46,4 @@ Maintain a table in this README when experiments exist:
 
 | ID | Title | Status | Conclusion |
 | --- | --- | --- | --- |
-| _(none yet)_ | | | |
+| [EXP-001](EXP-001-regime-stage-mislabel.md) | Regime/stage mislabel sample | Tooling ready; local scoring pending | Pending — promote ladder not started |

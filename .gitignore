@@ -1,5 +1,7 @@
 # Observe JSONL captures (local-first; do not commit live data)
 data/observe/*.jsonl
+# EXP-001 local audit outputs (judgments CSV/JSONL + summary JSON)
+data/observe/_exp001_*
 
 # Python
 __pycache__/

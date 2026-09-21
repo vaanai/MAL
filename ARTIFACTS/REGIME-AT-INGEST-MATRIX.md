@@ -60,9 +60,9 @@
 - [x] Regime enum v0 — [REGIME-ENUM-V0.md](REGIME-ENUM-V0.md)
 - [x] This matrix
 - [x] Scout implements WS client + JSONL schema — [observe/client.py](../observe/client.py), [OBSERVE-JSONL-SCHEMA.md](OBSERVE-JSONL-SCHEMA.md), [DEC-004](../DEC/DEC-004-regime-id-encoding.md)
-- [ ] Proof EXP: mis-label rate on 100 random creates — [EXP-001](../EXP/EXP-001-24h-ws-capture.md)
+- [ ] Proof EXP: mis-label rate on 100 creates (stratified when volume allows) — [EXP-001](../EXP/EXP-001-regime-stage-mislabel.md) (local CLI: `python -m tools.exp001_mislabel`)
 
-Until EXP-001 capture + Proof sample complete, **observe-wiring** is code-complete but not measurement-validated.
+Until EXP-001 scoring complete, **observe-wiring** is code-complete but not measurement-validated.
 
 ## Sources
 
