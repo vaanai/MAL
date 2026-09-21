@@ -47,4 +47,5 @@ Maintain a table in this README when experiments exist:
 | ID | Title | Status | Conclusion |
 | --- | --- | --- | --- |
 | [EXP-001](EXP-001-regime-stage-mislabel.md) | Regime/stage mislabel sample | **PASS closed** (tooling; local scoring optional archive) | Mislabel gates satisfied for pipeline; promote ladder not started |
-| [EXP-002](EXP-002-evaluate-runner-v0.md) | Evaluate→runner v0 (rules-only paper) | Tooling ready; local scoring pending | Pending |
+| [EXP-002](EXP-002-evaluate-runner-v0.md) | Evaluate→runner v0 (rules-only paper) | **INCOMPLETE closed** (vacuous v0 filter; tooling OK) | Tooling only; see EXP-002b |
+| [EXP-002b](EXP-002b-evaluate-rules-v1.md) | Evaluate→runner rules v1 (stricter) | Tooling ready; local scoring pending | Pending |

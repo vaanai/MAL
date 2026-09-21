@@ -5,7 +5,7 @@ Council lock (Proof / Scout / Helm). **No live capital**, **no paid APIs**, **no
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-002` |
-| **Status** | Tooling ready. Scoring pending local CLI run on sealed bonding creates. |
+| **Status** | **INCOMPLETE closed (tooling).** Local v0 run: vacuous filter (0% reject). Scoring superseded by [EXP-002b](EXP-002b-evaluate-rules-v1.md). |
 | **Owner seat** | Proof (evaluate + paper outcomes). Scout supplies detect book via `python -m observe`. |
 | **Locked** | 2026-09-21 (method + rules v0). |
 | **Depends on** | Population: local JSONL from [observe](../observe/). Law: [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md), [OBSERVE-JSONL-SCHEMA.md](../ARTIFACTS/OBSERVE-JSONL-SCHEMA.md). Prior gate: [EXP-001](EXP-001-regime-stage-mislabel.md) **PASS closed** (regime/stage mislabel tooling; promote ladder not started by EXP-001). |
@@ -141,7 +141,7 @@ Costs: when `Δ_exec` is N/A, kill (2) uses **gross** returns only — documente
 - Bonk-pool toggle is a soft string heuristic, default off.
 - Rules v0 is intentionally weak; purpose is pipeline + kill machinery, not production alpha.
 
-Follow-on: EXP with trade stream or RPC enrich for marks; optional rules v1 thresholds.
+Follow-on: [EXP-002b](EXP-002b-evaluate-rules-v1.md) rules v1 (stricter evaluate); trade stream or RPC enrich for marks.
 
 ---
 
@@ -205,5 +205,5 @@ python3 -m unittest tools.test_exp002_paper_runner
 
 | Field | Value |
 | --- | --- |
-| **Result** | _Pending — local CLI not yet run against Vaan's sealed JSONL._ |
-| **Conclusion** | _Pending. Does not authorize live capital._ |
+| **Result** | Local run (rules v0): **32,896** bonding creates, **100%** runners, **0** rejects; gates **INCOMPLETE** / no_lift **FAIL** (vacuous). |
+| **Conclusion** | **INCOMPLETE (tooling validated).** Do not promote v0 filter. Use [EXP-002b](EXP-002b-evaluate-rules-v1.md) for hypothesis kill-attempt. |

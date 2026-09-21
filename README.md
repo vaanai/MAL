@@ -19,7 +19,7 @@ Meme coin alpha lab — **Pump.fun / Solana first**, observe-before-act, memory-
 | `EXP/` | Experiment registry format + `EXP-xxx` files |
 | `ARTIFACTS/` | Research briefs and manager summaries |
 | `observe/` | Scout WS client (phase 0) |
-| `tools/` | Local offline CLIs (EXP-001 mislabel; EXP-002 paper runner; no live trading) |
+| `tools/` | Local offline CLIs (EXP-001 mislabel; EXP-002/002b paper runner; no live trading) |
 | `data/observe/` | Local JSONL captures (samples gitignored) |
 
 ## Phase 0
@@ -65,6 +65,19 @@ python -m observe
 | `MAL_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 Schema: [ARTIFACTS/OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md). Capture is local `python -m observe` (population). Locked Proof sample: [EXP/EXP-001-regime-stage-mislabel.md](EXP/EXP-001-regime-stage-mislabel.md) (`python -m tools.exp001_mislabel`).
+
+### EXP-002b paper runner (rules v1, offline)
+
+PowerShell from repo root (sealed JSONL on disk only):
+
+```powershell
+python -m tools.exp002_paper_runner `
+  data\observe\observe-2026-09-20.jsonl `
+  data\observe\observe-2026-09-21.jsonl `
+  --rules v1 --seed 1 --output-dir data\observe --prefix _exp002b
+```
+
+Docs: [EXP/EXP-002b-evaluate-rules-v1.md](EXP/EXP-002b-evaluate-rules-v1.md). Vacuous v0 archive: `--rules v0 --prefix _exp002`.
 
 ### Troubleshooting (Windows / long captures)
 

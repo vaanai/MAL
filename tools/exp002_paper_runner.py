@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EXP-002 evaluate→runner v0 — rules-only filter + paper outcomes (local JSONL).
+"""EXP-002 / EXP-002b evaluate->runner — rules-only filter + paper outcomes (local JSONL).
 
 Offline CLI: sealed ingest JSONL only. No RPC, no live capital, no paid APIs.
 Full detect book: every eligible bonding create gets evaluate label + outcome marks.
@@ -17,7 +17,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence, TextIO
+from typing import Any, Literal, Mapping, Protocol, Sequence, TextIO
 
 from tools.exp001_mislabel import (
     LoadedRow,
@@ -28,7 +28,25 @@ from observe.regime import canonical_tx_type
 
 DEFAULT_SEED = 1
 DEFAULT_OUTPUT_DIR = Path("data/observe")
-DEFAULT_PREFIX = "_exp002"
+DEFAULT_PREFIX_V0 = "_exp002"
+DEFAULT_PREFIX_V1 = "_exp002b"
+
+RulesVersion = Literal["v0", "v1"]
+
+# EXP-002b defaults — tuned for ~5-30% runners on sealed bonding creates (local calibration).
+RULES_V1_DEFAULTS: dict[str, float | bool] = {
+    "exclude_bonk_pool": True,
+    "require_metadata": True,
+    "reject_zero_creator_buy": True,
+    "min_sol_amount": 0.5,
+    "max_sol_amount": 2.5,
+    "min_market_cap_sol": 28.0,
+    "max_market_cap_sol": 34.0,
+    "min_v_sol_in_bonding_curve": 29.0,
+    "max_v_sol_in_bonding_curve": 33.5,
+    "min_initial_buy": 1.0,
+    "max_initial_buy": 900_000_000.0,
+}
 
 EvaluateLabel = Literal["runner", "reject"]
 GateResult = Literal["PASS", "FAIL", "INCOMPLETE"]
@@ -84,6 +102,32 @@ def _parse_iso_ts(value: Any) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _sealed_field(row: Mapping[str, Any], key: str) -> Any:
+    if key in row:
+        return row.get(key)
+    payload = row.get("ws_payload")
+    if isinstance(payload, dict) and key in payload:
+        return payload.get(key)
+    return None
+
+
+def _sealed_float(row: Mapping[str, Any], key: str) -> float | None:
+    val = _sealed_field(row, key)
+    if val is None:
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f):
+        return None
+    return f
+
+
+def _non_empty_str(val: Any) -> bool:
+    return isinstance(val, str) and bool(val.strip())
 
 
 def _price_proxy_from_row(row: Mapping[str, Any]) -> float | None:
@@ -201,24 +245,40 @@ def _bonk_pool_hint(row: Mapping[str, Any]) -> bool:
     return False
 
 
+class EvaluateRulesProtocol(Protocol):
+    version: RulesVersion
+
+    def evaluate(self, row: Mapping[str, Any]) -> tuple[EvaluateLabel, list[str]]: ...
+
+    def summary_spec(self) -> dict[str, Any]: ...
+
+
+def _base_identity_rejects(row: Mapping[str, Any]) -> list[str]:
+    reject_reasons: list[str] = []
+    if row.get("stage") != "bonding":
+        reject_reasons.append("stage_not_bonding")
+    sig = row.get("signature")
+    mint = row.get("mint")
+    if not isinstance(sig, str) or sig in ("", "UNK"):
+        reject_reasons.append("missing_signature")
+    if not isinstance(mint, str) or mint in ("", "UNK"):
+        reject_reasons.append("missing_mint")
+    honest, honesty_failures = knowable_at_t_honest(row)
+    if not honest:
+        reject_reasons.extend(honesty_failures)
+    return reject_reasons
+
+
 @dataclass
-class EvaluateRules:
+class EvaluateRulesV0:
+    """EXP-002 vacuous-tolerant rules (honesty + optional toggles)."""
+
+    version: RulesVersion = "v0"
     exclude_bonk_pool: bool = False
     min_market_cap_sol: float = 0.0
 
     def evaluate(self, row: Mapping[str, Any]) -> tuple[EvaluateLabel, list[str]]:
-        reject_reasons: list[str] = []
-        if row.get("stage") != "bonding":
-            reject_reasons.append("stage_not_bonding")
-        sig = row.get("signature")
-        mint = row.get("mint")
-        if not isinstance(sig, str) or sig in ("", "UNK"):
-            reject_reasons.append("missing_signature")
-        if not isinstance(mint, str) or mint in ("", "UNK"):
-            reject_reasons.append("missing_mint")
-        honest, honesty_failures = knowable_at_t_honest(row)
-        if not honest:
-            reject_reasons.extend(honesty_failures)
+        reject_reasons = _base_identity_rejects(row)
         if self.exclude_bonk_pool and _bonk_pool_hint(row):
             reject_reasons.append("bonk_pool_excluded")
         if self.min_market_cap_sol > 0:
@@ -228,6 +288,124 @@ class EvaluateRules:
         if reject_reasons:
             return "reject", reject_reasons
         return "runner", []
+
+    def summary_spec(self) -> dict[str, Any]:
+        return {
+            "version": "v0",
+            "stage": "bonding_only",
+            "knowable_at_t_honesty": True,
+            "exclude_bonk_pool": self.exclude_bonk_pool,
+            "min_market_cap_sol": self.min_market_cap_sol,
+        }
+
+
+# Backward-compatible alias used in tests and v0 runs.
+EvaluateRules = EvaluateRulesV0
+
+
+@dataclass
+class EvaluateRulesV1:
+    """EXP-002b stricter knowable-at-T bands (default ON bonk exclude + metadata)."""
+
+    version: RulesVersion = "v1"
+    exclude_bonk_pool: bool = True
+    require_metadata: bool = True
+    reject_zero_creator_buy: bool = True
+    min_sol_amount: float = float(RULES_V1_DEFAULTS["min_sol_amount"])
+    max_sol_amount: float = float(RULES_V1_DEFAULTS["max_sol_amount"])
+    min_market_cap_sol: float = float(RULES_V1_DEFAULTS["min_market_cap_sol"])
+    max_market_cap_sol: float = float(RULES_V1_DEFAULTS["max_market_cap_sol"])
+    min_v_sol_in_bonding_curve: float = float(RULES_V1_DEFAULTS["min_v_sol_in_bonding_curve"])
+    max_v_sol_in_bonding_curve: float = float(RULES_V1_DEFAULTS["max_v_sol_in_bonding_curve"])
+    min_initial_buy: float = float(RULES_V1_DEFAULTS["min_initial_buy"])
+    max_initial_buy: float = float(RULES_V1_DEFAULTS["max_initial_buy"])
+
+    def evaluate(self, row: Mapping[str, Any]) -> tuple[EvaluateLabel, list[str]]:
+        reject_reasons = _base_identity_rejects(row)
+        if self.exclude_bonk_pool and _bonk_pool_hint(row):
+            reject_reasons.append("bonk_pool_excluded")
+        if self.require_metadata:
+            for key in ("name", "symbol", "uri"):
+                if not _non_empty_str(_sealed_field(row, key)):
+                    reject_reasons.append(f"missing_metadata_{key}")
+        sol_amount = _sealed_float(row, "solAmount")
+        initial_buy = _sealed_float(row, "initialBuy")
+        if self.reject_zero_creator_buy:
+            if sol_amount is not None and sol_amount <= 0:
+                reject_reasons.append("zero_sol_amount")
+            if initial_buy is not None and initial_buy <= 0:
+                reject_reasons.append("zero_initial_buy")
+        if sol_amount is not None:
+            if sol_amount < self.min_sol_amount:
+                reject_reasons.append("below_min_sol_amount")
+            if sol_amount > self.max_sol_amount:
+                reject_reasons.append("above_max_sol_amount")
+        if initial_buy is not None:
+            if initial_buy < self.min_initial_buy:
+                reject_reasons.append("below_min_initial_buy")
+            if initial_buy > self.max_initial_buy:
+                reject_reasons.append("above_max_initial_buy")
+        cap = _sealed_float(row, "marketCapSol")
+        if cap is None:
+            reject_reasons.append("missing_market_cap_sol")
+        else:
+            if cap < self.min_market_cap_sol:
+                reject_reasons.append("below_min_market_cap_sol")
+            if cap > self.max_market_cap_sol:
+                reject_reasons.append("above_max_market_cap_sol")
+        v_sol = _sealed_float(row, "vSolInBondingCurve")
+        if v_sol is None:
+            reject_reasons.append("missing_v_sol_in_bonding_curve")
+        else:
+            if v_sol < self.min_v_sol_in_bonding_curve:
+                reject_reasons.append("below_min_v_sol_in_bonding_curve")
+            if v_sol > self.max_v_sol_in_bonding_curve:
+                reject_reasons.append("above_max_v_sol_in_bonding_curve")
+        if reject_reasons:
+            return "reject", reject_reasons
+        return "runner", []
+
+    def summary_spec(self) -> dict[str, Any]:
+        return {
+            "version": "v1",
+            "stage": "bonding_only",
+            "knowable_at_t_honesty": True,
+            "exclude_bonk_pool": self.exclude_bonk_pool,
+            "require_metadata": self.require_metadata,
+            "reject_zero_creator_buy": self.reject_zero_creator_buy,
+            "min_sol_amount": self.min_sol_amount,
+            "max_sol_amount": self.max_sol_amount,
+            "min_market_cap_sol": self.min_market_cap_sol,
+            "max_market_cap_sol": self.max_market_cap_sol,
+            "min_v_sol_in_bonding_curve": self.min_v_sol_in_bonding_curve,
+            "max_v_sol_in_bonding_curve": self.max_v_sol_in_bonding_curve,
+            "min_initial_buy": self.min_initial_buy,
+            "max_initial_buy": self.max_initial_buy,
+        }
+
+
+def rules_from_cli(
+    *,
+    version: RulesVersion,
+    exclude_bonk_pool: bool | None,
+    include_bonk_pool: bool,
+    min_market_cap_sol: float | None,
+) -> EvaluateRulesProtocol:
+    if version == "v0":
+        bonk = exclude_bonk_pool if exclude_bonk_pool is not None else False
+        cap_min = min_market_cap_sol if min_market_cap_sol is not None else 0.0
+        return EvaluateRulesV0(exclude_bonk_pool=bonk, min_market_cap_sol=cap_min)
+    bonk = True
+    if include_bonk_pool:
+        bonk = False
+    elif exclude_bonk_pool is not None:
+        bonk = exclude_bonk_pool
+    cap_min = (
+        min_market_cap_sol
+        if min_market_cap_sol is not None
+        else float(RULES_V1_DEFAULTS["min_market_cap_sol"])
+    )
+    return EvaluateRulesV1(exclude_bonk_pool=bonk, min_market_cap_sol=cap_min)
 
 
 @dataclass
@@ -425,7 +603,7 @@ def build_summary(
     paths: Sequence[Path],
     seed: int,
     book: Sequence[BookRow],
-    rules: EvaluateRules,
+    rules: EvaluateRulesProtocol,
     random_baseline: Mapping[str, Any],
     primary_horizon: str,
 ) -> dict[str, Any]:
@@ -451,20 +629,18 @@ def build_summary(
     label_counts = Counter(r.evaluate_label for r in book)
     priced_entry = sum(1 for r in book if r.entry_price is not None)
 
+    exp_id = "EXP-002b" if rules.version == "v1" else "EXP-002"
+    rules_key = f"rules_{rules.version}"
     return {
-        "exp": "EXP-002",
+        "exp": exp_id,
+        "rules_version": rules.version,
         "unit": "sealed_ingest_hot_bonding_create_full_book",
         "paths": [str(p) for p in paths],
         "seed": seed,
         "population_n": len(book),
         "void_excluded_n": 0,
         "evaluate_label_counts": dict(label_counts),
-        "rules_v0": {
-            "stage": "bonding_only",
-            "knowable_at_t_honesty": True,
-            "exclude_bonk_pool": rules.exclude_bonk_pool,
-            "min_market_cap_sol": rules.min_market_cap_sol,
-        },
+        rules_key: rules.summary_spec(),
         "primary_horizon": primary_horizon,
         "horizons_sec": HORIZON_SECONDS,
         "priced_entry_n": priced_entry,
@@ -539,11 +715,11 @@ def run_paper_book(
     *,
     seed: int = DEFAULT_SEED,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
-    prefix: str = DEFAULT_PREFIX,
-    rules: EvaluateRules | None = None,
+    prefix: str = DEFAULT_PREFIX_V1,
+    rules: EvaluateRulesProtocol | None = None,
     primary_horizon: str = PRIMARY_HORIZON,
 ) -> dict[str, Any]:
-    rules = rules or EvaluateRules()
+    rules = rules or EvaluateRulesV1()
     loaded, malformed_n = load_jsonl_files(paths)
     price_series = build_mint_price_series(loaded)
 
@@ -675,8 +851,10 @@ def _print_summary(summary: Mapping[str, Any], out: TextIO = sys.stdout) -> None
     rc = summary["runner_cohort"]
     rj = summary["reject_cohort"]
     rb = summary["random_baseline"]
+    exp_id = summary.get("exp", "EXP-002")
+    rules_version = summary.get("rules_version", "v0")
     print(
-        "EXP-002 evaluate→runner v0 (paper)\n"
+        f"{exp_id} evaluate->runner {rules_version} (paper)\n"
         f"  population_n={summary['population_n']} "
         f"runners={summary['evaluate_label_counts'].get('runner', 0)} "
         f"rejects={summary['evaluate_label_counts'].get('reject', 0)}\n"
@@ -704,7 +882,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m tools.exp002_paper_runner",
         description=(
-            "EXP-002 rules-only evaluate→paper runner on full bonding-create detect book "
+            "EXP-002/002b rules-only evaluate->paper runner on full bonding-create detect book "
             "(sealed JSONL; no live capital)."
         ),
     )
@@ -722,20 +900,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output directory (default: data/observe)",
     )
     p.add_argument(
+        "--rules",
+        choices=("v0", "v1"),
+        default="v1",
+        help="Evaluate rules version (default: v1 / EXP-002b)",
+    )
+    p.add_argument(
         "--prefix",
-        default=DEFAULT_PREFIX,
-        help="Output filename prefix (default: _exp002)",
+        default=None,
+        help="Output filename prefix (default: _exp002 for v0, _exp002b for v1)",
     )
     p.add_argument(
         "--exclude-bonk-pool",
         action="store_true",
-        help="Soft exclude bonk-pool hints (default OFF)",
+        default=None,
+        help="Force bonk-pool soft exclude ON (v0: default OFF; v1: default ON)",
+    )
+    p.add_argument(
+        "--include-bonk-pool",
+        action="store_true",
+        help="Disable bonk-pool exclude (v1 only)",
     )
     p.add_argument(
         "--min-market-cap-sol",
         type=float,
-        default=0.0,
-        help="Optional reject below this entry marketCapSol/vSol proxy (default 0=off)",
+        default=None,
+        help="Override min marketCapSol band (v0: optional floor; v1: default 28)",
     )
     p.add_argument(
         "--primary-horizon",
@@ -752,15 +942,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     if missing:
         print(f"error: JSONL not found: {', '.join(str(p) for p in missing)}", file=sys.stderr)
         return 1
-    rules = EvaluateRules(
+    rules_version: RulesVersion = args.rules
+    prefix = args.prefix
+    if prefix is None:
+        prefix = DEFAULT_PREFIX_V0 if rules_version == "v0" else DEFAULT_PREFIX_V1
+    rules = rules_from_cli(
+        version=rules_version,
         exclude_bonk_pool=args.exclude_bonk_pool,
+        include_bonk_pool=args.include_bonk_pool,
         min_market_cap_sol=args.min_market_cap_sol,
     )
     summary = run_paper_book(
         args.jsonl,
         seed=args.seed,
         output_dir=args.output_dir,
-        prefix=args.prefix,
+        prefix=prefix,
         rules=rules,
         primary_horizon=args.primary_horizon,
     )

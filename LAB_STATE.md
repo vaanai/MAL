@@ -71,7 +71,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 
 ## Next work
 
-1. **EXP-002 local run (Vaan / Proof):** `python -m tools.exp002_paper_runner` on sealed bonding creates in `observe-2026-09-20` + `observe-2026-09-21`. Runbook: [EXP/EXP-002-evaluate-runner-v0.md](EXP/EXP-002-evaluate-runner-v0.md) §11.
+1. **EXP-002b (Vaan / Proof):** `python -m tools.exp002_paper_runner` (**`--rules v1`**, default) on sealed bonding creates in `observe-2026-09-20` + `observe-2026-09-21`. [EXP-002](EXP/EXP-002-evaluate-runner-v0.md) v0 **INCOMPLETE closed** (vacuous filter); runbook: [EXP/EXP-002b-evaluate-rules-v1.md](EXP/EXP-002b-evaluate-rules-v1.md).
 2. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py); optional archive run on same JSONL.
 3. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)
 4. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules
@@ -85,7 +85,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Decisions: `DEC/`
 - Experiments: `EXP/`
 - Local EXP-001 CLI: `python -m tools.exp001_mislabel`
-- Local EXP-002 CLI: `python -m tools.exp002_paper_runner`
+- Local EXP-002/002b CLI: `python -m tools.exp002_paper_runner` (`--rules v0` | `v1`, default **v1**)
 - Research: `ARTIFACTS/`
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 - Regime at ingest: [ARTIFACTS/REGIME-AT-INGEST-MATRIX.md](ARTIFACTS/REGIME-AT-INGEST-MATRIX.md), [ARTIFACTS/REGIME-ENUM-V0.md](ARTIFACTS/REGIME-ENUM-V0.md), [ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md)
