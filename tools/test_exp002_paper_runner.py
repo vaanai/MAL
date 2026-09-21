@@ -158,6 +158,18 @@ class OutcomeTests(unittest.TestCase):
         self.assertEqual(out["horizons"]["60s"]["status"], "na")
         self.assertIsNone(out["delta_exec"])
 
+    def test_tick_after_horizon_does_not_fill_shorter_window(self) -> None:
+        t0 = _parse_iso_ts(T0)
+        assert t0 is not None
+        t3 = t0 + timedelta(seconds=3)
+        from tools.exp002_paper_runner import PriceMark
+
+        marks = [PriceMark(t=t3, price=130.0, source_path="m", line_no=1)]
+        out = compute_outcomes(t0=t0, p0=100.0, marks=marks)
+        self.assertEqual(out["horizons"]["1s"]["status"], "na")
+        self.assertEqual(out["horizons"]["5s"]["status"], "ok")
+        self.assertAlmostEqual(out["horizons"]["5s"]["return_pct"], 30.0)
+
 
 class IntegrationTests(unittest.TestCase):
     def test_run_writes_summary_v0(self) -> None:
@@ -230,6 +242,46 @@ class IntegrationTests(unittest.TestCase):
         text = buf.getvalue()
         self.assertIn("evaluate->runner", text)
         self.assertNotIn("\u2192", text)
+
+    def test_marks_file_last_at_or_before(self) -> None:
+        row = _create_row(t_ws=T0, mint="MintA", market_cap=100.0)
+        mark = {
+            "schema_version": "observe_mark_v0",
+            "type": "outcome_mark",
+            "mint": "MintA",
+            "parent_signature": row["signature"],
+            "t_mark": T60,
+            "source": "rpc_tx",
+            "price_proxy": 150.0,
+        }
+        leak = {
+            **mark,
+            "t_mark": "2026-09-20T12:00:03.000+00:00",
+            "price_proxy": 999.0,
+            "parent_signature": row["signature"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "observe.jsonl"
+            marks_path = Path(tmp) / "marks.jsonl"
+            with path.open("w", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+            with marks_path.open("w", encoding="utf-8") as fh:
+                fh.write(json.dumps(leak) + "\n")
+                fh.write(json.dumps(mark) + "\n")
+            out_dir = Path(tmp) / "out"
+            summary = run_paper_book(
+                [path],
+                seed=1,
+                output_dir=out_dir,
+                prefix="_exp002",
+                marks_paths=[marks_path],
+            )
+            self.assertEqual(summary["marks_paths"], [str(marks_path)])
+            book_path = out_dir / "_exp002_book.jsonl"
+            book_row = json.loads(book_path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(book_row["horizons"]["1s"]["status"], "na")
+            self.assertEqual(book_row["horizons"]["60s"]["status"], "ok")
+            self.assertAlmostEqual(book_row["horizons"]["60s"]["return_pct"], 50.0)
 
 
 if __name__ == "__main__":

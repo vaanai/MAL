@@ -96,7 +96,7 @@ Seconds from **evaluate T** (`t_ws`):
 | +2s, +10s, +5m | 2, 10, 300 |
 | Peak / max drawdown | Path over **[T, T+5m]** using available marks |
 
-**Price path source (v0):** later sealed JSONL rows with the same `mint` and a price proxy (`marketCapSol` or `vSolInBondingCurve`) and `t_ws` ≥ T. Typical phase-0 capture is **create + migration only**, so **most post-create horizons will be N/A** until trade/subscribe enrich or a follow-on EXP attaches marks — **do not invent prices**.
+**Price path source (v0):** [EXP-003](EXP-003-post-create-marks.md) `outcome_mark` side JSONL (`--marks`) and/or later sealed rows with the same `mint` and a price proxy. **Join:** last tick with **`T < t_mark ≤ T+H`** (no future leak; create row at `T` is entry, not a horizon mark). Typical phase-0 capture is **create + migration only**, so **most horizons stay N/A until EXP-003 marks exist** — **do not invent prices**.
 
 Return at horizon H (when mark exists):
 
@@ -136,12 +136,13 @@ Costs: when `Δ_exec` is N/A, kill (2) uses **gross** returns only — documente
 
 ## 9. Limitations
 
-- No post-create marks in JSONL → horizons **N/A** (expected on current WS subscriptions).
-- `Δ_exec` **N/A** — no fee/slippage model from sealed rows alone.
+- No post-create marks in JSONL → horizons **N/A** (expected on current WS subscriptions until [EXP-003](EXP-003-post-create-marks.md)).
+- Horizon join is last-at-or-before (`T < t_mark ≤ T+H`); a later tick must not fill a shorter window.
+- `Δ_exec` **N/A** — no fee/slippage model from sealed rows alone (marks unlock **gross** lift first).
 - Bonk-pool toggle is a soft string heuristic, default off.
 - Rules v0 is intentionally weak; purpose is pipeline + kill machinery, not production alpha.
 
-Follow-on: [EXP-002b](EXP-002b-evaluate-rules-v1.md) rules v1 (stricter evaluate); trade stream or RPC enrich for marks.
+Follow-on: [EXP-002b](EXP-002b-evaluate-rules-v1.md) rules v1 (stricter evaluate); [EXP-003](EXP-003-post-create-marks.md) attaches post-create marks for horizons/lift.
 
 ---
 
@@ -174,6 +175,8 @@ cd /path/to/MAL
 python3 -m tools.exp002_paper_runner \
   data/observe/observe-2026-09-20.jsonl \
   data/observe/observe-2026-09-21.jsonl \
+  --marks data/observe/marks-2026-09-20.jsonl \
+          data/observe/marks-2026-09-21.jsonl \
   --seed 1 \
   --output-dir data/observe \
   --prefix _exp002
@@ -186,10 +189,12 @@ Set-Location C:\Users\vivaa\dev\MAL
 python -m tools.exp002_paper_runner `
   data\observe\observe-2026-09-20.jsonl `
   data\observe\observe-2026-09-21.jsonl `
+  --marks data\observe\marks-2026-09-20.jsonl `
+          data\observe\marks-2026-09-21.jsonl `
   --seed 1 --output-dir data\observe --prefix _exp002
 ```
 
-Optional flags: `--exclude-bonk-pool`, `--min-market-cap-sol 30`, `--primary-horizon 60s`.
+Optional flags: `--exclude-bonk-pool`, `--min-market-cap-sol 30`, `--primary-horizon 60s`, `--marks data/observe/marks-YYYY-MM-DD.jsonl` ([EXP-003](EXP-003-post-create-marks.md)).
 
 **Exit codes:** `0` PASS; `2` FAIL_NO_LIFT or FAIL_SELECTION_BIAS; `3` INCOMPLETE; `1` missing files.
 
