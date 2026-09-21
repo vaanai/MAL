@@ -5,7 +5,7 @@ Scout lock. **No live capital**, **no JEV**, **no sealed-row rewrite**, **no bon
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-003` |
-| **Status** | Planned (schema + coverage CLI landed; mark **producer** is local RPC/WS — not in this tooling PR). |
+| **Status** | In progress (coverage CLI + **RPC backfill producer** `tools.exp003_rpc_backfill`; trade WS producer v0.1 still local). |
 | **Owner seat** | Scout (sourcing + wiring). Proof re-runs EXP-002 once coverage is READY. |
 | **Locked** | 2026-09-21 (method + honesty). |
 | **Depends on** | Sealed JSONL from [observe](../observe/). Law: [DEC-003](../DEC/DEC-003-regime-at-ingest-v0.md), [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md), matrix enrich-forward. Brief: [POST-CREATE-MARKS-BRIEF.md](../ARTIFACTS/POST-CREATE-MARKS-BRIEF.md). Prior: [EXP-001](EXP-001-regime-stage-mislabel.md) PASS; [EXP-002](EXP-002-evaluate-runner-v0.md) tooling ready, scoring N/A-heavy. |
@@ -27,7 +27,7 @@ Scout lock. **No live capital**, **no JEV**, **no sealed-row rewrite**, **no bon
 | **Name** | EXP-003 — post-create marks onto sealed observe |
 | **Unit** | Side `outcome_mark` rows joined to sealed `ingest_hot` creates |
 | **Population** | Same bonding creates as EXP-002 (`type=ingest_hot`, `txType=create`, `stage=bonding`, valid `t_ws`) |
-| **Producer v0** | RPC historical (backfill). **Not** implemented in the cloud PR. |
+| **Producer v0** | RPC historical (backfill). CLI: `python -m tools.exp003_rpc_backfill` (Vaan PC; public `SOLANA_RPC_URL`). |
 | **Producer v0.1** | PumpPortal trade WS TTL. Metered; local API key only. |
 | **Composer / Fast** | Fast **OFF** |
 
@@ -153,32 +153,55 @@ Coverage CLI `overall=INCOMPLETE` when **no marks file** is **not** a kill (expe
 - Rewriting sealed observe rows or backfilling `regime_id`
 - Dexscreener or Birdeye as mark `source`
 - Observe-client subscribe changes in **this** PR (v0.1 sketch only)
-- Heavy RPC/WS producer in-repo until Vaan runs v0 locally
+- PumpPortal trade WS TTL producer (v0.1) — separate follow-on
 
 ---
 
 ## 10. Local runbook
 
-**Coverage (stdlib; no network):**
+**Tests (no network):**
 
 ```bash
-python3 -m tools.exp003_marks \
-  data/observe/observe-2026-09-20.jsonl \
-  data/observe/observe-2026-09-21.jsonl \
-  --marks data/observe/marks-2026-09-20.jsonl \
-          data/observe/marks-2026-09-21.jsonl \
-  --output-dir data/observe --prefix _exp003
+python3 -m unittest tools.test_marks tools.test_exp003_marks tools.test_exp003_rpc_backfill
 ```
 
-Windows / PowerShell: same module; paths `data\observe\…`.
+**Producer (v0 RPC backfill, Vaan PC):** subsample bonding creates, paginate `getSignaturesForAddress` on `bondingCurveKey` (else `mint`) until `blockTime < T`, `getTransaction` (`confirmed`/`finalized`), append `outcome_mark` to `data/observe/marks-YYYY-MM-DD.jsonl`. Public RPC via `SOLANA_RPC_URL` (default mainnet-beta public URL). Subsample default **300** (`--seed` reproducible). Progress logs use ASCII only.
 
-**Producer (v0, Vaan PC — not this PR’s CLI):** For each sampled bonding create, `getSignaturesForAddress(bondingCurveKey)` paginating until `blockTime < T`, keep txs with `T < blockTime ≤ T+60` (or +300s), `getTransaction`, map curve/WS-equivalent price → append `outcome_mark` (`source=rpc_tx`). Public RPC first; stop/subsample on 429. No keys in git.
+```powershell
+$env:SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
+python -m tools.exp003_rpc_backfill `
+  data\observe\observe-2026-09-20.jsonl `
+  data\observe\observe-2026-09-21.jsonl `
+  --output-dir data\observe `
+  --sample 300 `
+  --seed 1 `
+  --window-s 60 `
+  --commitment confirmed
+```
 
-**Then Proof:** `python -m tools.exp002_paper_runner … --marks data/observe/marks-….jsonl`
+**Coverage (stdlib; no network):**
 
-**Tests:** `python3 -m unittest tools.test_marks tools.test_exp003_marks`
+```powershell
+python -m tools.exp003_marks `
+  data\observe\observe-2026-09-20.jsonl `
+  data\observe\observe-2026-09-21.jsonl `
+  --marks data\observe\marks-2026-09-20.jsonl `
+          data\observe\marks-2026-09-21.jsonl `
+  --output-dir data\observe --prefix _exp003
+```
 
-**Exit codes (coverage):** `0` READY; `3` INCOMPLETE; `1` missing observe JSONL.
+**Then Proof (EXP-002):**
+
+```powershell
+python -m tools.exp002_paper_runner `
+  data\observe\observe-2026-09-20.jsonl `
+  data\observe\observe-2026-09-21.jsonl `
+  --marks data\observe\marks-2026-09-20.jsonl `
+          data\observe\marks-2026-09-21.jsonl `
+  --rules v1
+```
+
+**Exit codes:** coverage CLI `0` READY / `3` INCOMPLETE / `1` missing JSONL; RPC producer `0` ok / `1` bad args / `2` RPC failure.
 
 ---
 
