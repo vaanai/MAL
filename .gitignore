@@ -1,5 +1,7 @@
 # Observe JSONL captures (local-first; do not commit live data)
 data/observe/*.jsonl
+data/observe/*stamp*.json
+data/observe/observe-sealed-row-stamp.json
 
 # Python
 __pycache__/

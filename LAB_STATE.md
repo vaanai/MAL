@@ -71,7 +71,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 
 ## Next work
 
-1. **Overnight park (2026-09-20 PT):** capture continues; **no stack spend / no live capital tonight.** Resume after ~24h for Scout sealed-row sanity + Proof **EXP-001** mislabel audit; then **name first evaluate→runner EXP** (per [DEC-006](DEC/DEC-006-detect-decode-evaluate-runners.md) / [DEC-007](DEC/DEC-007-full-detect-book-anti-selection-bias.md)).
+1. **Overnight park (2026-09-20 PT):** capture continues; **no stack spend / no live capital tonight.** Scout manager **PASS** on Vaan local capture stands (re-audit via `python tools/observe_sealed_row_stamp.py`, do not reopen). Next: Proof **EXP-001** mislabel audit; then **name first evaluate→runner EXP** (per [DEC-006](DEC/DEC-006-detect-decode-evaluate-runners.md) / [DEC-007](DEC/DEC-007-full-detect-book-anti-selection-bias.md)).
 2. **EXP-001:** 24h WS capture with `python -m observe`; inventory key diff vs [PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md)
 3. **Proof:** mis-label audit on 100 random creates per [EXP-001](EXP/EXP-001-24h-ws-capture.md) (blocks evaluate→runner EXP naming until done)
 4. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)
@@ -88,3 +88,4 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Research: `ARTIFACTS/`
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 - Regime at ingest: [ARTIFACTS/REGIME-AT-INGEST-MATRIX.md](ARTIFACTS/REGIME-AT-INGEST-MATRIX.md), [ARTIFACTS/REGIME-ENUM-V0.md](ARTIFACTS/REGIME-ENUM-V0.md), [ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md)
+- Sealed-row re-audit CLI: `python tools/observe_sealed_row_stamp.py` — [ARTIFACTS/OBSERVE-SEALED-ROW-STAMP.md](ARTIFACTS/OBSERVE-SEALED-ROW-STAMP.md). Scout manager PASS on Vaan local capture is **not** reopened.
