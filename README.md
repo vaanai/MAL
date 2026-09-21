@@ -19,7 +19,7 @@ Meme coin alpha lab — **Pump.fun / Solana first**, observe-before-act, memory-
 | `EXP/` | Experiment registry format + `EXP-xxx` files |
 | `ARTIFACTS/` | Research briefs and manager summaries |
 | `observe/` | Scout WS client (phase 0) |
-| `tools/` | Local offline CLIs (EXP-001 mislabel; EXP-002 paper runner; EXP-003 marks coverage; no live trading) |
+| `tools/` | Local offline CLIs (EXP-001 mislabel; EXP-002 paper runner; EXP-003 marks + RPC backfill; no live trading) |
 | `data/observe/` | Local JSONL captures (samples gitignored) |
 
 ## Phase 0
@@ -64,8 +64,9 @@ python -m observe
 | `MAL_PUMPPORTAL_WS_URL` | `wss://pumpportal.fun/api/data` | WebSocket endpoint (no key for free streams) |
 | `MAL_OBSERVE_OUTPUT_DIR` | `data/observe` | JSONL output directory |
 | `MAL_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `SOLANA_RPC_URL` | `https://api.mainnet-beta.solana.com` | EXP-003 RPC historical marks producer (public cluster; no secrets in repo) |
 
-Schema: [ARTIFACTS/OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md). Capture is local `python -m observe` (population). Locked Proof sample: [EXP/EXP-001-regime-stage-mislabel.md](EXP/EXP-001-regime-stage-mislabel.md) (`python -m tools.exp001_mislabel`). Paper book: [EXP/EXP-002-evaluate-runner-v0.md](EXP/EXP-002-evaluate-runner-v0.md). Marks: [EXP/EXP-003-post-create-marks.md](EXP/EXP-003-post-create-marks.md) (`python -m tools.exp003_marks`).
+Schema: [ARTIFACTS/OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md). Capture is local `python -m observe` (population). Locked Proof sample: [EXP/EXP-001-regime-stage-mislabel.md](EXP/EXP-001-regime-stage-mislabel.md) (`python -m tools.exp001_mislabel`). Paper book: [EXP/EXP-002-evaluate-runner-v0.md](EXP/EXP-002-evaluate-runner-v0.md). Marks: [EXP/EXP-003-post-create-marks.md](EXP/EXP-003-post-create-marks.md) — RPC backfill `python -m tools.exp003_rpc_backfill`, coverage `python -m tools.exp003_marks`, then EXP-002 `--marks` (PowerShell runbook in EXP-003 §10).
 
 ### Troubleshooting (Windows / long captures)
 
