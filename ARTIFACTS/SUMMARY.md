@@ -11,4 +11,5 @@
 - **Phase-0 observe:** PumpPortal WS → sealed JSONL; X **reassess only**.
 - **Hard defer:** Birdeye paid, Dexscreener on spine, live capital, PumpPortal trading API.
 - **Starter stack options:** [STARTER-STACK-OPTIONS-BRIEF.md](STARTER-STACK-OPTIONS-BRIEF.md).
+- **Laya vs VPS / spend gates:** [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VPS-BRIEF.md); [DEC-008](../DEC/DEC-008-stack-phase-gates.md) (draft gates, default cheap).
 - Cloud agents cannot read Vaan's JSONL — local CLI only for EXP scoring.
