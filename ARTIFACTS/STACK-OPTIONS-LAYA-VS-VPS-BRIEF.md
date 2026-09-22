@@ -5,7 +5,7 @@
 | **Research as-of** | 2026-09-21 |
 | **Audience** | Vaan / Helm / Scout / Graph / Proof |
 | **Scope** | Honest compare of **deployment + hot-path** options for observe → packet → evaluate → (later) exec; **not** a purchase order |
-| **Lab locks** | Cheap-first; measure before pay; paper before live capital; profitability is hypothesis; X = reassess only; [DEC-002](../DEC/DEC-002-memory-first-no-db-local.md); companion [STARTER-STACK-OPTIONS-BRIEF.md](STARTER-STACK-OPTIONS-BRIEF.md), [API-COST-LATENCY-BRIEF.md](API-COST-LATENCY-BRIEF.md) |
+| **Lab locks** | Cheap-first; measure before pay; paper before live capital; profitability is hypothesis; X = reassess only; [DEC-002](../DEC/DEC-002-memory-first-no-db-local.md) **amended by** [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md); companion [STARTER-STACK-OPTIONS-BRIEF.md](STARTER-STACK-OPTIONS-BRIEF.md), [API-COST-LATENCY-BRIEF.md](API-COST-LATENCY-BRIEF.md) |
 
 ---
 
@@ -18,6 +18,8 @@ A common “serious hobbyist” stack cited in meta-discussion lands around **~$
 **This brief does not mandate that stack.** Phase 0 remains: **Windows local observe**, **PumpPortal free WS spine**, **public or Helius-free RPC** for light backfill, **JSONL + in-repo artifacts**, **rules-only evaluate** until EXP lift gates clear.
 
 **Decision gates (not a buy list):** [DEC-008](../DEC/DEC-008-stack-phase-gates.md).
+
+**Phase-0 host experiment ([DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md), 2026-09-22):** Oracle **Always Free** Ampere A1 **`mal-core-0`** (**2 OCPU / 12 GB**, **not 4/24**; **pending Vaan provision**) is the chosen continuous-host experiment. This is **not** a paid VPS and does **not** open DEC-008 Gate 5. Laptop remains operator + data courier until cutover. Local Laya remains an open hypothesis to run **on that host** (aarch64) after the rules baseline — not a reason to buy cloud JEV or a ~$180–200 stack. BOM: [ORACLE-ALWAYS-FREE-BOM-v0.md](ORACLE-ALWAYS-FREE-BOM-v0.md).
 
 ---
 
@@ -82,10 +84,10 @@ A common “serious hobbyist” stack cited in meta-discussion lands around **~$
 
 | Store | Est. $/mo | When it pays | MAL phase-0 |
 | --- | --- | --- | --- |
-| **JSONL + markdown** | **$0** | Single writer; replay via CLI; EXP-sized books | **Yes** ([DEC-002](../DEC/DEC-002-memory-first-no-db-local.md)) |
+| **JSONL + markdown** | **$0** | Single writer; replay via CLI; EXP-sized books | **Yes** — EXP / knowable-at-T spine ([DEC-002](../DEC/DEC-002-memory-first-no-db-local.md) as amended) |
 | **SQLite** (local file) | **$0** | Indexed replay, ad hoc SQL on **one** machine; still no Redis | **Maybe** when EXP queries hurt; still no DEC required if file-local |
 | **Redis** | **$0** self-host or **$15–30** managed | Sub-ms **dev reputation / holder sets** shared by **multiple** hot-path workers; eviction TTL state | **Defer** until multi-process precompute or &gt;1 writer; not for EXP-002b |
-| **Postgres** | **$0** self-host or **$15–50** managed | Multi-seat concurrent writes, relational graph at scale, retained **GB/day** history | **Defer** until DEC-002 review triggers (volume, multi-writer, query pain) |
+| **Postgres** | **$0** self-host (Always Free on-box) or **$15–50** managed | Layer-2 cache / continuous ops; graph working set | **On-box OK** per [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) as **cache**, **not** EXP SoT. Managed/Autonomous **defer**. |
 
 **Failure modes that force upgrade from flat files:** cannot retain **full detect book** reject outcomes; replay **&gt; tens of minutes** per EXP iteration; **corruption** from concurrent writers without merge discipline.
 
@@ -168,8 +170,8 @@ Explicit **do-not-buy** until EXP-002b closes lift/parity gates (or records hone
 | --- | --- |
 | **Helius/QuickNode paid ~$50** | 429 pain unquantified; misses not attributed to RPC on audit |
 | **Twitter / X ~$100** | H-social unsettled; X not discovery; EXP-002b does not need it |
-| **VPS 24/7 / $180–200 bundle** | Uptime problem not proven; local observe is spine |
-| **Redis / Postgres** | DEC-002 phase 0; no multi-writer |
+| **VPS 24/7 / $180–200 bundle** | Uptime problem not proven vs Always Free `mal-core-0`; do not treat DEC-009 as this buy |
+| **Managed Redis / Autonomous Postgres** | On-box Postgres OK as Layer-2 cache; JSONL remains EXP spine |
 | **Yellowstone / Helius Business gRPC** | No regret vs PumpPortal at T |
 | **Jito / bundles / Lightning send** | No exec DEC; no paper edge |
 | **Birdeye paid, Bitquery paid spine** | Hard defer per constitution |

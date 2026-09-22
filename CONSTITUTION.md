@@ -34,4 +34,4 @@ Violations require an explicit DEC override with kill-attempt evidence.
 ## Phase 0 scope fence
 
 - Observe-only and research unless a future DEC explicitly enables execution.
-- **No database** in phase 0 (see DEC-002).
+- GitHub remains SoT for DEC/EXP/LAB_STATE. Sealed JSONL remains the EXP/knowable-at-T spine. On-box Postgres is allowed as a Layer-2 cache / continuous ops aid ([DEC-009](DEC/DEC-009-oracle-always-free-phase0-host.md)); no managed/Autonomous DB in phase 0.

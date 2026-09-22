@@ -1,10 +1,12 @@
 # DEC-002 — Memory first; no DB; local-first; managers only persistent
 
+> **Amended by [DEC-009](DEC-009-oracle-always-free-phase0-host.md) (2026-09-22).** Memory-first, GitHub as DEC/EXP/`LAB_STATE` SoT, and Grok managers as the only persistent agents **remain**. **No-database / laptop-only-forever for continuous runtime is superseded:** intended primary 24/7 host is Oracle Always Free `mal-core-0` (**VM.Standard.A1.Flex, 2 OCPU / 12 GB**, **pending provision**); on-box Postgres is allowed as a **Layer-2 cache / continuous ops aid**. **Sealed JSONL remains the EXP / knowable-at-T spine day-1** — do **not** force-migrate observe marks or EXP provenance into Postgres on day-1. Original decision text below is **historical**.
+
 | Field | Value |
 | --- | --- |
-| **Status** | Active |
+| **Status** | Active (**amended by DEC-009**) |
 | **Decider** | Vaan (lab policy) |
-| **Date** | 2026-09-20 (recorded) |
+| **Date** | 2026-09-20 (recorded); amended 2026-09-22 |
 
 ## Decision
 

@@ -24,14 +24,15 @@ Meme coin alpha lab — **Pump.fun / Solana first**, observe-before-act, memory-
 ## Phase 0
 
 - **Observe-only** — no trading bot in this repo yet  
-- **No database** — markdown/JSON in git ([DEC-002](DEC/DEC-002-memory-first-no-db-local.md))  
-- **Local-first** — home PC / WSL2+Docker when needed  
-- **Persistent agents:** Grok managers (Helm / Scout / Graph / Proof); Cursor workers ship artifacts via PR  
+- **Lab memory** — GitHub SoT for DEC/EXP/LAB_STATE; sealed JSONL is EXP spine; on-box Postgres = Layer-2 cache ([DEC-002](DEC/DEC-002-memory-first-no-db-local.md) amended by [DEC-009](DEC/DEC-009-oracle-always-free-phase0-host.md))  
+- **Phase-0 host** — Oracle Always Free `mal-core-0` (**2 OCPU / 12 GB A1**, **pending provision**); laptop = operator + data courier until cutover  
+- **Persistent agents:** Grok managers (Helm / Scout / Graph / Proof); Cursor workers ship artifacts via PR; **trading keys isolated from agents**  
 
 ## Research
 
 - [API, cost & latency brief](ARTIFACTS/API-COST-LATENCY-BRIEF.md) — phase-0 API matrix, monthly cost tiers, latency gaps vs Pump.fun  
-- [Post-create marks brief](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md) — 1s–60s ticks on sealed creates (EXP-003; unblocks EXP-002) 
+- [Post-create marks brief](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md) — 1s–60s ticks on sealed creates (EXP-003; unblocks EXP-002)
+- [Oracle Always Free BOM v0](ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md) — phase-0 host inventory (**2 OCPU / 12 GB**; pending provision) 
 
 ## Observe client (phase 0)
 
