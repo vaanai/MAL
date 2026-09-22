@@ -1,21 +1,21 @@
 # EXP-002c — Evaluate rules v2 (anti-adverse-selection)
 
-Council lock (Proof / Scout / Helm). Same sealed detect book, horizons, marks join, and kill gates as [EXP-002](EXP-002-evaluate-runner-v0.md). **Evaluate rules v2** follows a **DISCOVERY** pass on why [EXP-002b](EXP-002b-evaluate-rules-v1.md) **rules v1** failed, then a minimal **rules-only** v2 proposal. **Do not promote** v1; **do not** use denser marks to retune evaluate.
+Council lock (Proof / Scout / Helm). Same sealed detect book, horizons, marks join, and kill gates as [EXP-002](EXP-002-evaluate-runner-v0.md). **Evaluate rules v2** followed a **DISCOVERY** pass on why [EXP-002b](EXP-002b-evaluate-rules-v1.md) **rules v1** failed, then a minimal **rules-only** v2 proposal. Local scoring is **INCOMPLETE closed** — **do not promote** v1 or v2; **do not** use denser marks to retune evaluate; **do not** OPTIMIZE-to-gate.
 
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-002c` |
-| **Status** | Tooling ready. Local scoring pending (reuse EXP-003 marks JSONL). |
+| **Status** | **INCOMPLETE closed** (Proof scored). **Do not promote.** |
 | **Owner seat** | Scout (constraints) + Proof (kill gates) |
-| **Locked** | 2026-09-22 (council hard constraints + rules v2 defaults) |
+| **Locked** | 2026-09-22 (council hard constraints + rules v2 defaults). Scored local `--rules v2` + existing marks, seed 1 (tooling [PR #18](https://github.com/vaanai/MAL/pull/18) @ `842cb21`; 26/26 tests OK). |
 | **Depends on** | EXP-002 pipeline; EXP-003 side marks; EXP-002b **FAIL closed** |
 | **Hypothesis** | After removing v1’s adverse **sweet-spot** gates (and all **parked** bonk/mayhem/pool features), a **regime-aligned**, **knowable-at-T-only** v2 filter still yields a **70–95%** reject book with **non-adverse** runner lift vs random at **60s** (kill-attempt). |
 | **Method** | **Full detect book** (every bonding create labeled; rejects keep outcomes) → **rules v2** → paper stamp at `t_ws` → marks as **outcome meter only**. CLI: `python -m tools.exp002_paper_runner --rules v2` (`_exp002c`). |
 | **As-of-T** | Sealed create at `t_ws`: top-level fields, `ws_payload`, `knowable_at_t`, `regime_id`. **No** mark/outcome fields, post-T social, future liquidity, Dexscreener/Birdeye, or RPC-at-evaluate. |
 | **Windows** | Same as EXP-002; **primary kill horizon: 60s** |
 | **Kill-attempt** | **70–95%** reject rate on full book; **no_lift_vs_random**; reject↔runner **parity** (≤5% relative gross); priced_n≥10 per arm or **INCOMPLETE**; **no promote** on incomplete marks |
-| **Result** | Pending local re-run on Vaan JSONL + existing `marks-*.jsonl` |
-| **Conclusion** | Pending |
+| **Result** | population_n=32896, runner_n=12112, reject_n=20784, reject_pct≈**63.18%**. reject_rate_band 70–95%: **INCOMPLETE** (below 70% floor). Runner priced_n=96 mean_return_pct≈**0.385**; reject priced_n=888 mean≈**3202.76**; random priced_n=410 mean≈**2500.58**. Gates: reject_rate_band **INCOMPLETE**; no_lift_vs_random **FAIL**; reject_runner_parity_after_costs **PASS**. Overall **INCOMPLETE**. |
+| **Conclusion** | Proof stamp **INCOMPLETE** (primary: reject_rate_band). Soft/directional lift **FAIL** again. **Do not promote.** Do **not** tighten constants to hit 70–95% (OPTIMIZE-to-gate). **DISCOVERY** first on dual failure (v2 too permissive; survivors still adverse vs random), then **EXP-002d** only with a **new kill-list hyp** — or **pause**. Soft denser marks still not the fix. |
 
 ---
 
@@ -38,7 +38,7 @@ Council lock (Proof / Scout / Helm). Same sealed detect book, horizons, marks jo
 | Item | Rule |
 | --- | --- |
 | Kill criteria | Unchanged: **70–95%** reject; **no_lift_vs_random**; reject↔runner parity; knowable-at-T only; **no promote** on **INCOMPLETE** marks/gates. |
-| Must-avoid | Baking bonk/mayhem/pool into rules; **densifying marks** to rescue lift; **optimizing** v2 constants **before** documenting **DISCOVERY** on why v1 was adverse. |
+| Must-avoid | Baking bonk/mayhem/pool into rules; **densifying marks** to rescue lift; **optimizing** v2 constants **before** documenting **DISCOVERY** on why v1 was adverse; **OPTIMIZE-to-gate** (tightening constants just to hit 70–95%) after v2 scored **INCOMPLETE**. |
 | Marks cadence | Re-run with **existing** `--marks` first; denser marks only if a **non-adverse** directional result needs power. |
 
 ---
@@ -127,8 +127,8 @@ Implemented as `EvaluateRulesV2` (`RULES_V2_DEFAULTS`). **No** bonk/mayhem/pool 
 
 ### Calibration plan (Vaan)
 
-1. `python -m tools.exp002_paper_runner … --rules v2 --marks <existing marks>` on the **same ~300** RPC subsample.
-2. If lift is **directionally non-adverse** but arms are thin → Proof may authorize **denser marks for power only** — not to retune v1/v2 bands.
+1. **Done:** `python -m tools.exp002_paper_runner … --rules v2 --marks <existing marks>`, seed 1, on the same subsample. See §5 — overall **INCOMPLETE**; do **not** retune v2 constants to enter 70–95%.
+2. If a **later** hyp is **directionally non-adverse** but arms are thin → Proof may authorize **denser marks for power only** — not to rescue lift or to hit the reject-rate band.
 
 ---
 
@@ -151,9 +151,24 @@ Archive v1 (002b reproduction only): `--rules v1 --prefix _exp002b`.
 
 ---
 
-## 5. Result / conclusion
+## 5. Result / conclusion (closed)
 
-| Field | Value |
+Local run: `--rules v2` + existing EXP-003 marks, seed 1. Tooling: 26/26 tests OK; rules v2 merged [PR #18](https://github.com/vaanai/MAL/pull/18) @ `842cb21`.
+
+| Metric | Value |
 | --- | --- |
-| **Result** | _Pending — sealed JSONL + existing marks._ |
-| **Conclusion** | _Pending. Does not authorize live capital or promote v1._ |
+| population_n | 32896 |
+| runner_n | 12112 |
+| reject_n | 20784 |
+| reject_pct | ≈**63.18%** |
+| reject_rate_band (70–95%) | **INCOMPLETE** (below 70% floor) |
+| runner priced_n / mean_return_pct | 96 / ≈**0.385** |
+| reject priced_n / mean | 888 / ≈**3202.76** |
+| random priced_n / mean | 410 / ≈**2500.58** |
+| no_lift_vs_random | **FAIL** |
+| reject_runner_parity_after_costs | **PASS** |
+| **Overall / Proof stamp** | **INCOMPLETE** (primary: reject_rate_band) |
+
+Soft/directional lift **FAIL** again (runners adverse vs random on the marked subsample). **Do not promote** rules v2.
+
+**Next law:** do **not** tighten v2 constants just to hit 70–95% (OPTIMIZE-to-gate). **DISCOVERY** first on the dual failure: v2 is **too permissive** (reject below floor) **and** survivors are still **adverse vs random**. Then **EXP-002d** only with a **new kill-list hyp** — or **pause**. Soft denser marks still not the fix. Does not authorize live capital.
