@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EXP-002 / EXP-002b evaluate->runner — rules-only filter + paper outcomes (local JSONL).
+"""EXP-002 / EXP-002b / EXP-002c evaluate->runner — rules-only filter + paper outcomes (local JSONL).
 
 Offline CLI: sealed ingest JSONL only. No RPC, no live capital, no paid APIs.
 Full detect book: every eligible bonding create gets evaluate label + outcome marks.
@@ -31,8 +31,10 @@ DEFAULT_SEED = 1
 DEFAULT_OUTPUT_DIR = Path("data/observe")
 DEFAULT_PREFIX_V0 = "_exp002"
 DEFAULT_PREFIX_V1 = "_exp002b"
+DEFAULT_PREFIX_V2 = "_exp002c"
 
-RulesVersion = Literal["v0", "v1"]
+RulesVersion = Literal["v0", "v1", "v2"]
+MAX_RANDOM_SIGNATURE_SAMPLES = 20
 
 # EXP-002b defaults — tuned for ~5-30% runners on sealed bonding creates (local calibration).
 RULES_V1_DEFAULTS: dict[str, float | bool] = {
@@ -47,6 +49,18 @@ RULES_V1_DEFAULTS: dict[str, float | bool] = {
     "max_v_sol_in_bonding_curve": 33.5,
     "min_initial_buy": 1.0,
     "max_initial_buy": 900_000_000.0,
+}
+
+# EXP-002c — drop v1 sweet-spot bands; integrity floors + extreme-high cap only.
+RULES_V2_DEFAULTS: dict[str, float | bool] = {
+    "exclude_bonk_pool": True,
+    "require_metadata": True,
+    "reject_zero_creator_buy": True,
+    "require_price_proxy": True,
+    "min_sol_amount": 0.25,
+    "min_market_cap_sol": 20.0,
+    "extreme_max_market_cap_sol": 50.0,
+    "min_initial_buy": 1.0,
 }
 
 EvaluateLabel = Literal["runner", "reject"]
@@ -398,6 +412,76 @@ class EvaluateRulesV1:
         }
 
 
+@dataclass
+class EvaluateRulesV2:
+    """EXP-002c anti-adverse-selection: no narrow mcap/vSol/sol sweet-spot bands."""
+
+    version: RulesVersion = "v2"
+    exclude_bonk_pool: bool = True
+    require_metadata: bool = True
+    reject_zero_creator_buy: bool = True
+    require_price_proxy: bool = True
+    min_sol_amount: float = float(RULES_V2_DEFAULTS["min_sol_amount"])
+    min_market_cap_sol: float = float(RULES_V2_DEFAULTS["min_market_cap_sol"])
+    extreme_max_market_cap_sol: float = float(RULES_V2_DEFAULTS["extreme_max_market_cap_sol"])
+    min_initial_buy: float = float(RULES_V2_DEFAULTS["min_initial_buy"])
+
+    def evaluate(self, row: Mapping[str, Any]) -> tuple[EvaluateLabel, list[str]]:
+        reject_reasons = _base_identity_rejects(row)
+        if self.exclude_bonk_pool and _bonk_pool_hint(row):
+            reject_reasons.append("bonk_pool_excluded")
+        if self.require_metadata:
+            for key in ("name", "symbol", "uri"):
+                if not _non_empty_str(_sealed_field(row, key)):
+                    reject_reasons.append(f"missing_metadata_{key}")
+        sol_amount = _sealed_float(row, "solAmount")
+        initial_buy = _sealed_float(row, "initialBuy")
+        if self.reject_zero_creator_buy:
+            if sol_amount is not None and sol_amount <= 0:
+                reject_reasons.append("zero_sol_amount")
+            if initial_buy is not None and initial_buy <= 0:
+                reject_reasons.append("zero_initial_buy")
+        if sol_amount is not None and sol_amount < self.min_sol_amount:
+            reject_reasons.append("below_min_sol_amount")
+        if initial_buy is not None and initial_buy < self.min_initial_buy:
+            reject_reasons.append("below_min_initial_buy")
+        cap = _sealed_float(row, "marketCapSol")
+        v_sol = _sealed_float(row, "vSolInBondingCurve")
+        if self.require_price_proxy and cap is None and v_sol is None:
+            reject_reasons.append("missing_price_proxy")
+        if cap is None:
+            reject_reasons.append("missing_market_cap_sol")
+        else:
+            if cap < self.min_market_cap_sol:
+                reject_reasons.append("below_min_market_cap_sol")
+            if cap > self.extreme_max_market_cap_sol:
+                reject_reasons.append("above_extreme_market_cap_sol")
+        if reject_reasons:
+            return "reject", reject_reasons
+        return "runner", []
+
+    def summary_spec(self) -> dict[str, Any]:
+        return {
+            "version": "v2",
+            "stage": "bonding_only",
+            "knowable_at_t_honesty": True,
+            "exclude_bonk_pool": self.exclude_bonk_pool,
+            "require_metadata": self.require_metadata,
+            "reject_zero_creator_buy": self.reject_zero_creator_buy,
+            "require_price_proxy": self.require_price_proxy,
+            "min_sol_amount": self.min_sol_amount,
+            "min_market_cap_sol": self.min_market_cap_sol,
+            "extreme_max_market_cap_sol": self.extreme_max_market_cap_sol,
+            "min_initial_buy": self.min_initial_buy,
+            "dropped_v1_features": [
+                "narrow_market_cap_band_28_34",
+                "narrow_v_sol_band",
+                "max_sol_amount",
+                "max_initial_buy",
+            ],
+        }
+
+
 def rules_from_cli(
     *,
     version: RulesVersion,
@@ -409,6 +493,18 @@ def rules_from_cli(
         bonk = exclude_bonk_pool if exclude_bonk_pool is not None else False
         cap_min = min_market_cap_sol if min_market_cap_sol is not None else 0.0
         return EvaluateRulesV0(exclude_bonk_pool=bonk, min_market_cap_sol=cap_min)
+    if version == "v2":
+        bonk = True
+        if include_bonk_pool:
+            bonk = False
+        elif exclude_bonk_pool is not None:
+            bonk = exclude_bonk_pool
+        cap_min = (
+            min_market_cap_sol
+            if min_market_cap_sol is not None
+            else float(RULES_V2_DEFAULTS["min_market_cap_sol"])
+        )
+        return EvaluateRulesV2(exclude_bonk_pool=bonk, min_market_cap_sol=cap_min)
     bonk = True
     if include_bonk_pool:
         bonk = False
@@ -642,7 +738,8 @@ def build_summary(
     label_counts = Counter(r.evaluate_label for r in book)
     priced_entry = sum(1 for r in book if r.entry_price is not None)
 
-    exp_id = "EXP-002b" if rules.version == "v1" else "EXP-002"
+    exp_ids = {"v0": "EXP-002", "v1": "EXP-002b", "v2": "EXP-002c"}
+    exp_id = exp_ids.get(rules.version, "EXP-002")
     rules_key = f"rules_{rules.version}"
     return {
         "exp": exp_id,
@@ -715,12 +812,16 @@ def draw_random_baseline(
         sample = rng.sample(pool, runner_n)
     rows = [r.as_dict() for r in sample]
     mean, priced_n = _mean_returns(rows, horizon)
+    signatures = [r.signature for r in sample]
+    capped = signatures[:MAX_RANDOM_SIGNATURE_SAMPLES]
     return {
         "sample_n": len(sample),
         "priced_n": priced_n,
         "mean_return_pct": mean,
         "allocation": "simple_random_same_n_as_runners",
-        "sample_signatures": [r.signature for r in sample],
+        "sample_signatures": capped,
+        "sample_signatures_total": len(signatures),
+        "sample_signatures_truncated": len(signatures) > len(capped),
     }
 
 
@@ -734,7 +835,7 @@ def run_paper_book(
     primary_horizon: str = PRIMARY_HORIZON,
     marks_paths: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
-    rules = rules or EvaluateRulesV1()
+    rules = rules or EvaluateRulesV2()
     loaded, malformed_n = load_jsonl_files(paths)
     if marks_paths:
         extra, extra_mal = load_jsonl_files(marks_paths)
@@ -866,6 +967,12 @@ def write_outputs(
     return {"jsonl": jsonl_path, "csv": csv_path, "summary": summary_path}
 
 
+def _fmt_pct(val: Any) -> str:
+    if val is None or not isinstance(val, (int, float)):
+        return "N/A"
+    return f"{val:.4f}"
+
+
 def _print_summary(summary: Mapping[str, Any], out: TextIO = sys.stdout) -> None:
     gates = summary["gates"]
     rc = summary["runner_cohort"]
@@ -873,21 +980,26 @@ def _print_summary(summary: Mapping[str, Any], out: TextIO = sys.stdout) -> None
     rb = summary["random_baseline"]
     exp_id = summary.get("exp", "EXP-002")
     rules_version = summary.get("rules_version", "v0")
-    print(
-        f"{exp_id} evaluate->runner {rules_version} (paper)\n"
-        f"  population_n={summary['population_n']} "
-        f"runners={summary['evaluate_label_counts'].get('runner', 0)} "
-        f"rejects={summary['evaluate_label_counts'].get('reject', 0)}\n"
-        f"  primary={summary['primary_horizon']} "
-        f"runner_mean={rc.get('mean_return_pct')} (priced_n={rc.get('priced_n')}) "
-        f"reject_mean={rj.get('mean_return_pct')} (priced_n={rj.get('priced_n')})\n"
-        f"  random_mean={rb.get('mean_return_pct')} (priced_n={rb.get('priced_n')})\n"
-        f"  no_lift_vs_random={gates['no_lift_vs_random']['result']} "
-        f"parity_kill={gates['reject_runner_parity_after_costs']['result']}\n"
-        f"  overall={summary['overall']}\n"
-        f"  outputs: {summary.get('output_paths')}",
-        file=out,
-    )
+    runners = summary["evaluate_label_counts"].get("runner", 0)
+    rejects = summary["evaluate_label_counts"].get("reject", 0)
+    ph = summary["primary_horizon"]
+    lift = gates["no_lift_vs_random"]["result"]
+    parity = gates["reject_runner_parity_after_costs"]["result"]
+    overall = summary["overall"]
+    lines = [
+        f"{exp_id} evaluate->runner {rules_version} (paper)",
+        "+------------------+-----------+-----------+",
+        "| cohort           | priced_n  | mean_%    |",
+        "+------------------+-----------+-----------+",
+        f"| runner @{ph:<9} | {rc.get('priced_n', 0):>9} | {_fmt_pct(rc.get('mean_return_pct')):>9} |",
+        f"| reject @{ph:<9} | {rj.get('priced_n', 0):>9} | {_fmt_pct(rj.get('mean_return_pct')):>9} |",
+        f"| random same-n    | {rb.get('priced_n', 0):>9} | {_fmt_pct(rb.get('mean_return_pct')):>9} |",
+        "+------------------+-----------+-----------+",
+        f"population_n={summary['population_n']} runners={runners} rejects={rejects}",
+        f"no_lift_vs_random={lift} parity_kill={parity} overall={overall}",
+        f"outputs: {summary.get('output_paths')}",
+    ]
+    print("\n".join(lines), file=out)
 
 
 def _exit_code(overall: str) -> int:
@@ -902,7 +1014,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m tools.exp002_paper_runner",
         description=(
-            "EXP-002/002b rules-only evaluate->paper runner on full bonding-create detect book "
+            "EXP-002/002b/002c rules-only evaluate->paper runner on full bonding-create detect book "
             "(sealed JSONL; no live capital)."
         ),
     )
@@ -921,14 +1033,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--rules",
-        choices=("v0", "v1"),
-        default="v1",
-        help="Evaluate rules version (default: v1 / EXP-002b)",
+        choices=("v0", "v1", "v2"),
+        default="v2",
+        help="Evaluate rules version (default: v2 / EXP-002c)",
     )
     p.add_argument(
         "--prefix",
         default=None,
-        help="Output filename prefix (default: _exp002 for v0, _exp002b for v1)",
+        help="Output filename prefix (default: _exp002 / _exp002b / _exp002c by rules)",
     )
     p.add_argument(
         "--exclude-bonk-pool",
@@ -979,7 +1091,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     rules_version: RulesVersion = args.rules
     prefix = args.prefix
     if prefix is None:
-        prefix = DEFAULT_PREFIX_V0 if rules_version == "v0" else DEFAULT_PREFIX_V1
+        prefix_map = {
+            "v0": DEFAULT_PREFIX_V0,
+            "v1": DEFAULT_PREFIX_V1,
+            "v2": DEFAULT_PREFIX_V2,
+        }
+        prefix = prefix_map.get(rules_version, DEFAULT_PREFIX_V2)
     rules = rules_from_cli(
         version=rules_version,
         exclude_bonk_pool=args.exclude_bonk_pool,

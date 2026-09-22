@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers (Grok bots). **As-of:** 2026-09-21. No live-trading claims.
+Compact reload for managers (Grok bots). **As-of:** 2026-09-22. No live-trading claims.
 
 ## Objective
 
@@ -72,11 +72,12 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 
 ## Next work
 
-1. **EXP-003 marks (Scout / Vaan local):** Attach post-create ticks without rewriting sealed rows. Brief: [ARTIFACTS/POST-CREATE-MARKS-BRIEF.md](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md). EXP: [EXP/EXP-003-post-create-marks.md](EXP/EXP-003-post-create-marks.md). **Producer:** `python -m tools.exp003_rpc_backfill` (public `SOLANA_RPC_URL`, subsample 300). **Coverage:** `python -m tools.exp003_marks` with `marks-*.jsonl`.
-2. **EXP-002b re-run (Proof):** After coverage `READY`, `python -m tools.exp002_paper_runner … --rules v1 --marks data/observe/marks-….jsonl`. Runbook: [EXP/EXP-002b-evaluate-rules-v1.md](EXP/EXP-002b-evaluate-rules-v1.md); [EXP-002](EXP/EXP-002-evaluate-runner-v0.md) §11.3. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py); optional archive run on same JSONL.
-4. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md) (`ingest_hot` + `outcome_mark`)
+1. **EXP-002c (Proof / Vaan local):** Re-score with **rules v2** on sealed JSONL + **existing** EXP-003 marks (same ~300 subsample). Runbook: [EXP/EXP-002c-rules-v2-adverse-selection.md](EXP/EXP-002c-rules-v2-adverse-selection.md). CLI: `python -m tools.exp002_paper_runner … --rules v2 --marks data/observe/marks-….jsonl`. **EXP-002b:** **FAIL closed** — **FAIL_NO_LIFT_VS_RANDOM** (~81% reject; runner ~3% vs random ~20–30% @60s); do **not** promote v1 or denser marks as the fix.
+2. **EXP-003 marks (Scout / Vaan local):** Coverage tooling + RPC backfill landed; reuse marks for 002c before requesting denser ticks. [EXP/EXP-003-post-create-marks.md](EXP/EXP-003-post-create-marks.md).
+3. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py).
+4. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)
 5. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules
-6. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only** (not spine; not EXP-003 `source`) — [API brief](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
+6. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only**; bonk/mayhem reclass **parked**
 7. Defer X API until social hypothesis has a cheap proxy or manual sample set
 8. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
 
@@ -85,8 +86,9 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Decisions: `DEC/`
 - Experiments: `EXP/`
 - Local EXP-001 CLI: `python -m tools.exp001_mislabel`
-- Local EXP-002/002b CLI: `python -m tools.exp002_paper_runner` (`--rules v0` | `v1`, default **v1**; `--marks` for EXP-003 ticks)
-- Local EXP-003 RPC backfill: `python -m tools.exp003_rpc_backfill`- Local EXP-003 coverage: `python -m tools.exp003_marks`
+- Local EXP-002/002b/002c CLI: `python -m tools.exp002_paper_runner` (`--rules v0` | `v1` | `v2`, default **v2**; `--marks` for EXP-003 ticks)
+- Local EXP-003 RPC backfill: `python -m tools.exp003_rpc_backfill`
+- Local EXP-003 coverage: `python -m tools.exp003_marks`
 - Research: `ARTIFACTS/` (marks: [POST-CREATE-MARKS-BRIEF.md](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md))
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 - Laya vs VPS stack compare: [ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md)

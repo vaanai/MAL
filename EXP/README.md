@@ -48,5 +48,6 @@ Maintain a table in this README when experiments exist:
 | --- | --- | --- | --- |
 | [EXP-001](EXP-001-regime-stage-mislabel.md) | Regime/stage mislabel sample | **PASS closed** (tooling; local scoring optional archive) | Mislabel gates satisfied for pipeline; promote ladder not started |
 | [EXP-002](EXP-002-evaluate-runner-v0.md) | Evaluate→runner v0 (rules-only paper) | **INCOMPLETE closed** (vacuous v0 filter; tooling OK) | Tooling only; see EXP-002b |
-| [EXP-002b](EXP-002b-evaluate-rules-v1.md) | Evaluate→runner rules v1 (stricter) | **INCOMPLETE closed** locally (~81% reject; marks pending) | Pending lift after EXP-003 marks |
+| [EXP-002b](EXP-002b-evaluate-rules-v1.md) | Evaluate→runner rules v1 (stricter) | **FAIL closed** (~81% reject; adverse lift) | **FAIL_NO_LIFT_VS_RANDOM**; see EXP-002c |
+| [EXP-002c](EXP-002c-rules-v2-adverse-selection.md) | Evaluate rules v2 (anti-adverse-selection) | Tooling ready; scoring pending | Pending re-run with existing marks |
 | [EXP-003](EXP-003-post-create-marks.md) | Post-create marks onto sealed observe | Schema + coverage CLI landed (#14) | Pending RPC producer + READY coverage |

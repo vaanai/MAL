@@ -1,15 +1,14 @@
 # Manager summary (≤20 lines)
 
-**As-of:** 2026-09-21
+**As-of:** 2026-09-22
 
-- **New:** [POST-CREATE-MARKS-BRIEF.md](POST-CREATE-MARKS-BRIEF.md) + [EXP-003](../EXP/EXP-003-post-create-marks.md) — post-create ticks onto sealed observe (unblock EXP-002 lift).
-- **v0 path:** RPC historical subsample on Vaan’s JSONL → side `outcome_mark` JSONL; last tick with `T < t_mark ≤ T+H`. Trade WS is **v0.1 forward** (does not backfill). Dexscreener **not** spine.
-- **Vaan:** `python -m tools.exp003_rpc_backfill` (public `SOLANA_RPC_URL`, subsample) → `python -m tools.exp003_marks` → EXP-002/002b `--rules v1 --marks`. Runbook: [EXP-003](../EXP/EXP-003-post-create-marks.md) §10.
-- **EXP-002b:** **INCOMPLETE closed** pre-marks (~81% reject); re-score after marks **READY**.- Lab memory: `LAB_STATE.md`, `CONSTITUTION.md`, `DEC/`, `EXP/`, `ARTIFACTS/`.
+- **EXP-002b:** **FAIL closed** — **FAIL_NO_LIFT_VS_RANDOM** (~81% reject; runner ~3% vs random ~20–30% @60s on marked subsample). **Do not promote** rules v1; denser marks are **not** the adverse-selection fix.
+- **EXP-002c:** Rules v2 landed (drop v1 sweet-spot bands). Vaan: `python -m tools.exp002_paper_runner … --rules v2 --marks` (reuse existing marks JSONL). [EXP-002c](../EXP/EXP-002c-rules-v2-adverse-selection.md).
+- **EXP-003:** Post-create `outcome_mark` side JSONL + RPC subsample producer; join `T < t_mark ≤ T+H`. [EXP-003](../EXP/EXP-003-post-create-marks.md).
+- Lab memory: `LAB_STATE.md`, `CONSTITUTION.md`, `DEC/`, `EXP/`, `ARTIFACTS/`.
 - **Pipeline:** detect→decode→evaluate→runners [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md); full detect book + filter kill [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md).
-- **EXP-001:** **PASS closed** — mislabel audit tooling [`tools.exp001_mislabel`](../tools/exp001_mislabel.py).
+- **EXP-001:** **PASS closed** — [`tools.exp001_mislabel`](../tools/exp001_mislabel.py).
 - **Phase-0 observe:** PumpPortal WS → sealed JSONL; X **reassess only**.
-- **Hard defer:** Birdeye paid, Dexscreener on spine, live capital, PumpPortal trading API, bonk/mayhem reclass.
-- **Starter stack options:** [STARTER-STACK-OPTIONS-BRIEF.md](STARTER-STACK-OPTIONS-BRIEF.md).
-- **Laya vs VPS / spend gates:** [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VPS-BRIEF.md); [DEC-008](../DEC/DEC-008-stack-phase-gates.md) (draft gates, default cheap).
+- **Hard defer:** Birdeye paid, Dexscreener on spine, live capital, PumpPortal trading API, bonk/mayhem reclass expansion.
+- **Starter stack:** [STARTER-STACK-OPTIONS-BRIEF.md](STARTER-STACK-OPTIONS-BRIEF.md); Laya vs VPS [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md).
 - Cloud agents cannot read Vaan's JSONL — local CLI only for EXP scoring.

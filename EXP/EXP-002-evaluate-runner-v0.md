@@ -211,4 +211,4 @@ python3 -m unittest tools.test_exp002_paper_runner
 | Field | Value |
 | --- | --- |
 | **Result** | Local run (rules v0): **32,896** bonding creates, **100%** runners, **0** rejects; gates **INCOMPLETE** / no_lift **FAIL** (vacuous). |
-| **Conclusion** | **INCOMPLETE (tooling validated).** Do not promote v0 filter. Use [EXP-002b](EXP-002b-evaluate-rules-v1.md) for hypothesis kill-attempt. |
+| **Conclusion** | **INCOMPLETE (tooling validated).** Do not promote v0 filter. EXP-002b **FAIL**; active hypothesis path: [EXP-002c](EXP-002c-rules-v2-adverse-selection.md). |

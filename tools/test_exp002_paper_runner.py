@@ -13,15 +13,19 @@ from observe.regime import STREAM_NEW_TOKEN, seal_ingest_record
 from tools.exp002_paper_runner import (
     EvaluateRulesV0,
     EvaluateRulesV1,
+    EvaluateRulesV2,
+    MAX_RANDOM_SIGNATURE_SAMPLES,
     _gate_lift,
     _gate_parity,
     _print_summary,
     build_mint_price_series,
     compute_outcomes,
+    draw_random_baseline,
     is_bonding_create,
     knowable_at_t_honest,
     run_paper_book,
     _parse_iso_ts,
+    BookRow,
 )
 from tools.exp001_mislabel import LoadedRow
 
@@ -119,6 +123,35 @@ class HonestyAndEvaluateTests(unittest.TestCase):
         label, reasons = EvaluateRulesV1().evaluate(row)
         self.assertEqual(label, "runner")
         self.assertEqual(reasons, [])
+
+    def test_v2_runner_without_narrow_v1_band(self) -> None:
+        row = _create_row(market_cap=40.0, v_sol=40.0, sol_amount=5.0)
+        label, reasons = EvaluateRulesV2().evaluate(row)
+        self.assertEqual(label, "runner")
+        self.assertEqual(reasons, [])
+
+    def test_v2_rejects_v1_sweet_spot_that_v1_accepted(self) -> None:
+        row = _create_row(market_cap=30.0, v_sol=30.5, sol_amount=1.0)
+        v1_label, _ = EvaluateRulesV1().evaluate(row)
+        v2_label, v2_reasons = EvaluateRulesV2().evaluate(row)
+        self.assertEqual(v1_label, "runner")
+        self.assertEqual(v2_label, "runner")
+
+    def test_v2_rejects_extreme_high_cap(self) -> None:
+        row = _create_row(market_cap=80.0)
+        label, reasons = EvaluateRulesV2().evaluate(row)
+        self.assertEqual(label, "reject")
+        self.assertIn("above_extreme_market_cap_sol", reasons)
+
+    def test_v2_rejects_missing_price_proxy(self) -> None:
+        row = _create_row(market_cap=30.0)
+        row.pop("marketCapSol", None)
+        row["ws_payload"].pop("marketCapSol", None)
+        row.pop("vSolInBondingCurve", None)
+        row["ws_payload"].pop("vSolInBondingCurve", None)
+        label, reasons = EvaluateRulesV2().evaluate(row)
+        self.assertEqual(label, "reject")
+        self.assertIn("missing_price_proxy", reasons)
 
 
 class GateTests(unittest.TestCase):
@@ -222,8 +255,8 @@ class IntegrationTests(unittest.TestCase):
         buf = io.StringIO()
         _print_summary(
             {
-                "exp": "EXP-002b",
-                "rules_version": "v1",
+                "exp": "EXP-002c",
+                "rules_version": "v2",
                 "population_n": 1,
                 "evaluate_label_counts": {"runner": 1},
                 "primary_horizon": "60s",
@@ -241,7 +274,44 @@ class IntegrationTests(unittest.TestCase):
         )
         text = buf.getvalue()
         self.assertIn("evaluate->runner", text)
+        self.assertIn("+---", text)
         self.assertNotIn("\u2192", text)
+
+    def test_v2_integration_exp_id(self) -> None:
+        row = _create_row(mint="V2")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "observe.jsonl"
+            with path.open("w", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+            summary = run_paper_book(
+                [path],
+                seed=1,
+                output_dir=Path(tmp) / "out",
+                prefix="_exp002c",
+                rules=EvaluateRulesV2(),
+            )
+            self.assertEqual(summary["exp"], "EXP-002c")
+            self.assertEqual(summary["rules_version"], "v2")
+
+    def test_random_baseline_caps_signatures(self) -> None:
+        book = [
+            BookRow(
+                source_path="a",
+                line_no=i,
+                signature=f"sig-{i}",
+                mint=f"m{i}",
+                t_ws=T0,
+                evaluate_label="runner",
+                evaluate_reasons=[],
+                entry_price=30.0,
+                outcomes={"horizons": {"60s": {"status": "ok", "return_pct": 1.0}}},
+            )
+            for i in range(30)
+        ]
+        baseline = draw_random_baseline(book, horizon="60s", seed=1)
+        self.assertEqual(len(baseline["sample_signatures"]), MAX_RANDOM_SIGNATURE_SAMPLES)
+        self.assertEqual(baseline["sample_signatures_total"], 30)
+        self.assertTrue(baseline["sample_signatures_truncated"])
 
     def test_marks_file_last_at_or_before(self) -> None:
         row = _create_row(t_ws=T0, mint="MintA", market_cap=100.0)

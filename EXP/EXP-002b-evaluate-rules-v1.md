@@ -5,17 +5,17 @@ Council lock (Proof / Scout / Helm). Same sealed detect book, horizons, and kill
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-002b` |
-| **Status** | Tooling ready. Local scoring pending on sealed bonding creates. |
+| **Status** | **FAIL closed** (Proof scored with marks). |
 | **Owner seat** | Proof |
 | **Locked** | 2026-09-21 (rules v1 defaults + CLI `--rules v1`) |
 | **Depends on** | [EXP-002](EXP-002-evaluate-runner-v0.md) pipeline + kill machinery; population unchanged |
 | **Hypothesis** | A **stricter rules-only** filter on knowable-at-T sealed creates still yields a **runner** cohort with **gross** lift vs random same-n at primary horizon, while **reject** returns **differ** from runners (selection-bias falsifier). |
-| **Method** | Full bonding-create book → **rules v1** → paper stamp at `t_ws` → same horizon marks as EXP-002. CLI: `python -m tools.exp002_paper_runner --rules v1` (default). |
+| **Method** | Full bonding-create book → **rules v1** → paper stamp at `t_ws` → same horizon marks as EXP-002. CLI: `python -m tools.exp002_paper_runner --rules v1` (archive; default CLI is v2 / [EXP-002c](EXP-002c-rules-v2-adverse-selection.md)). |
 | **As-of-T** | Sealed row at `t_ws` only: top-level create fields + `ws_payload` + `knowable_at_t` honesty. **No** RPC, enrich rows, JEV, LLM, or future marks in evaluate. |
 | **Windows** | Same as EXP-002; **primary kill horizon: 60s** |
 | **Kill-attempt** | Unchanged from EXP-002 §8 (no lift vs random; reject≈runner parity ≤5% relative on gross when priced_n≥10 per arm; else **INCOMPLETE**) |
-| **Result** | Pending local run (`data/observe/_exp002b_*`, gitignored) |
-| **Conclusion** | Pending |
+| **Result** | ~**81%** reject; runner **60s** mean ~**3%** vs random ~**20–30%** on marked subsample; parity **PASS** |
+| **Conclusion** | **FAIL_NO_LIFT_VS_RANDOM** — do **not** promote v1; follow [EXP-002c](EXP-002c-rules-v2-adverse-selection.md) |
 
 ---
 
@@ -35,7 +35,7 @@ Identical to [EXP-002 §2](EXP-002-evaluate-runner-v0.md#2-population): `ingest_
 
 ## 3. Evaluate rules v1 (defaults)
 
-Implemented in `tools/exp002_paper_runner.py` as `EvaluateRulesV1`. CLI default `--rules v1`; outputs default prefix `_exp002b`.
+Implemented in `tools/exp002_paper_runner.py` as `EvaluateRulesV1`. Reproduce with `--rules v1`; outputs prefix `_exp002b`.
 
 | Rule | Default | Reject reason key | Rationale (knowable at T) |
 | --- | --- | --- | --- |
@@ -76,7 +76,7 @@ python -m tools.exp002_paper_runner `
   --prefix _exp002b
 ```
 
-(`--rules v1` is the default; prefix defaults to `_exp002b`.)
+(Prefix defaults to `_exp002b` when `--rules v1`.)
 
 ### WSL / Linux / macOS
 
@@ -111,5 +111,5 @@ python3 -m unittest tools.test_exp002_paper_runner
 
 | Field | Value |
 | --- | --- |
-| **Result** | _Pending — local CLI on Vaan sealed JSONL._ |
-| **Conclusion** | _Pending. Does not authorize live capital._ |
+| **Result** | Scored on Vaan sealed JSONL + EXP-003 marks (300-create RPC subsample). |
+| **Conclusion** | **FAIL_NO_LIFT_VS_RANDOM** (adverse runner selection). Denser marks are **not** the fix. |
