@@ -15,7 +15,8 @@ Research briefs, decision packet exports, and manager summaries land here. **Git
 | --- | --- |
 | [API-COST-LATENCY-BRIEF.md](API-COST-LATENCY-BRIEF.md) | Phase-0 API connections, cost tiers, latency gap vs Pump.fun |
 | [STARTER-STACK-OPTIONS-BRIEF.md](STARTER-STACK-OPTIONS-BRIEF.md) | JEV path, X feeds, create feeds, starter stack options for Vaan |
-| [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md) | Local Laya vs VPS-first vs phase-0; RPC/X/VPS/Jito; do-not-buy while EXP-002b open |
+| [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md) | Local Laya vs VPS-first vs phase-0; Always Free `mal-core-0` is the chosen host experiment (not a paid VPS) |
+| [ORACLE-ALWAYS-FREE-BOM-v0.md](ORACLE-ALWAYS-FREE-BOM-v0.md) | Phase-0 Always Free inventory (**2 OCPU / 12 GB** A1); **pending provision** |
 | [PUMPPORTAL-PAYLOAD-INVENTORY.md](PUMPPORTAL-PAYLOAD-INVENTORY.md) | PumpPortal WS field inventory (WS / RPC / unknown) |
 | [REGIME-ENUM-V0.md](REGIME-ENUM-V0.md) | Phase-0 regime taxonomy (draft, EXP-revisable) |
 | [REGIME-AT-INGEST-MATRIX.md](REGIME-AT-INGEST-MATRIX.md) | WS vs RPC, knowable-at-T, hot-packet stamp rules |

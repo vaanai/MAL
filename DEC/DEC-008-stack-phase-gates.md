@@ -12,6 +12,8 @@
 
 **Default:** remain on **phase-0 cheap path** (~**$0/mo** infra) until each gate below is satisfied. Spending is **rung-based**; skipping rungs requires a new DEC with kill-attempt or measured failure logs.
 
+Oracle Always Free **`mal-core-0`** ([DEC-009](DEC-009-oracle-always-free-phase0-host.md)) is a **Gate 0** $0 host experiment (**2 OCPU / 12 GB** A1; **pending provision**), **not** Gate 5 paid VPS and **not** the ~$180–200 meta stack.
+
 This DEC does **not** authorize purchases. It defines **what must be true** before a separate spend DEC or Vaan explicit approval.
 
 ### Gate 0 — Always on (current)
@@ -19,6 +21,7 @@ This DEC does **not** authorize purchases. It defines **what must be true** befo
 | Must be true | Rung |
 | --- | --- |
 | Observe via **PumpPortal WS** + sealed JSONL | **$0** |
+| Continuous host: Oracle Always Free `mal-core-0` (**2 OCPU / 12 GB**; pending) **or** laptop until cutover | **$0** |
 | Evaluate **rules-only** on knowable-at-T packet until H-jev ladder runs | **$0** |
 | **No live capital**, no exec send, no Jito | **$0** |
 | X **off spine** (manual reassess samples only) | **$0** |
@@ -66,13 +69,15 @@ This DEC does **not** authorize purchases. It defines **what must be true** befo
 
 ### Gate 5 — VPS 24/7 (or ~$180–200 bundled stack)
 
-**May reassess** only if all:
+**Not this gate:** Oracle Always Free `mal-core-0` ([DEC-009](DEC-009-oracle-always-free-phase0-host.md)) is Gate 0.
+
+**May reassess** a **paid** VPS only if all:
 
 1. Gate 3 closed.
 2. **14-day** uptime log: home observe miss **&gt; agreed threshold** during peak windows **or** documented network block — not preference for “always-on server.”
 3. Pilot week on smallest VPS proves **lower** `Δ_observe` or **higher** capture vs home — **needs measurement**, not assumption.
 
-Bundled Redis/Postgres in meta stacks: **separate** — only if [DEC-002](DEC-002-memory-first-no-db-local.md) review triggers fire (volume, multi-writer, query time).
+Bundled Redis/managed Postgres in meta stacks: **separate** — on-box Postgres is already allowed as Layer-2 cache ([DEC-009](DEC-009-oracle-always-free-phase0-host.md)); managed/Autonomous still wait on volume/multi-writer/query pain.
 
 ### Gate 6 — Jito bundles / paid send path
 
