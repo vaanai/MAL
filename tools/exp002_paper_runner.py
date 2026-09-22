@@ -53,15 +53,20 @@ RULES_V1_DEFAULTS: dict[str, float | bool] = {
 
 # EXP-002c — drop v1 sweet-spot bands; integrity floors + extreme-high cap only.
 RULES_V2_DEFAULTS: dict[str, float | bool] = {
-    "exclude_bonk_pool": True,
     "require_metadata": True,
     "reject_zero_creator_buy": True,
     "require_price_proxy": True,
+    "require_regime_bonding": True,
     "min_sol_amount": 0.25,
     "min_market_cap_sol": 20.0,
     "extreme_max_market_cap_sol": 50.0,
     "min_initial_buy": 1.0,
 }
+
+REJECT_RATE_MIN = 0.70
+REJECT_RATE_MAX = 0.95
+BONDING_REGIME_STAGE = "bonding"
+BONDING_REGIME_MARKETS = frozenset({"bonding_curve", "UNK"})
 
 EvaluateLabel = Literal["runner", "reject"]
 GateResult = Literal["PASS", "FAIL", "INCOMPLETE"]
@@ -253,6 +258,38 @@ def knowable_at_t_honest(row: Mapping[str, Any]) -> tuple[bool, list[str]]:
     return (len(reasons) == 0, reasons)
 
 
+def _parse_regime_id(regime_id: Any) -> dict[str, str]:
+    if not isinstance(regime_id, str) or not regime_id.strip():
+        return {}
+    out: dict[str, str] = {}
+    for part in regime_id.split("|"):
+        if "=" not in part:
+            continue
+        key, val = part.split("=", 1)
+        out[key.strip()] = val.strip()
+    return out
+
+
+def _regime_bonding_gate(row: Mapping[str, Any]) -> list[str]:
+    """Regime-aware gate: sealed stage + regime_id must agree on bonding-first (no graduated mix)."""
+    reasons: list[str] = []
+    rid = row.get("regime_id")
+    if not isinstance(rid, str) or not rid.strip():
+        reasons.append("missing_regime_id")
+        return reasons
+    kv = _parse_regime_id(rid)
+    regime_stage = kv.get("stage")
+    row_stage = row.get("stage")
+    if regime_stage != BONDING_REGIME_STAGE:
+        reasons.append("regime_id_stage_not_bonding")
+    if isinstance(row_stage, str) and regime_stage is not None and row_stage != regime_stage:
+        reasons.append("regime_id_stage_mismatch_row_stage")
+    market = kv.get("market")
+    if market is not None and market not in BONDING_REGIME_MARKETS:
+        reasons.append("regime_id_market_not_bonding_curve")
+    return reasons
+
+
 def _bonk_pool_hint(row: Mapping[str, Any]) -> bool:
     """Soft bonk-pool exclude when toggle ON; documented heuristic on sealed fields."""
     pool = row.get("pool")
@@ -417,10 +454,10 @@ class EvaluateRulesV2:
     """EXP-002c anti-adverse-selection: no narrow mcap/vSol/sol sweet-spot bands."""
 
     version: RulesVersion = "v2"
-    exclude_bonk_pool: bool = True
     require_metadata: bool = True
     reject_zero_creator_buy: bool = True
     require_price_proxy: bool = True
+    require_regime_bonding: bool = True
     min_sol_amount: float = float(RULES_V2_DEFAULTS["min_sol_amount"])
     min_market_cap_sol: float = float(RULES_V2_DEFAULTS["min_market_cap_sol"])
     extreme_max_market_cap_sol: float = float(RULES_V2_DEFAULTS["extreme_max_market_cap_sol"])
@@ -428,8 +465,8 @@ class EvaluateRulesV2:
 
     def evaluate(self, row: Mapping[str, Any]) -> tuple[EvaluateLabel, list[str]]:
         reject_reasons = _base_identity_rejects(row)
-        if self.exclude_bonk_pool and _bonk_pool_hint(row):
-            reject_reasons.append("bonk_pool_excluded")
+        if self.require_regime_bonding:
+            reject_reasons.extend(_regime_bonding_gate(row))
         if self.require_metadata:
             for key in ("name", "symbol", "uri"):
                 if not _non_empty_str(_sealed_field(row, key)):
@@ -465,7 +502,8 @@ class EvaluateRulesV2:
             "version": "v2",
             "stage": "bonding_only",
             "knowable_at_t_honesty": True,
-            "exclude_bonk_pool": self.exclude_bonk_pool,
+            "bonk_mayhem_pool_features": "PARKED_not_used_in_v2",
+            "require_regime_bonding": self.require_regime_bonding,
             "require_metadata": self.require_metadata,
             "reject_zero_creator_buy": self.reject_zero_creator_buy,
             "require_price_proxy": self.require_price_proxy,
@@ -478,6 +516,7 @@ class EvaluateRulesV2:
                 "narrow_v_sol_band",
                 "max_sol_amount",
                 "max_initial_buy",
+                "bonk_pool_soft_exclude",
             ],
         }
 
@@ -494,17 +533,12 @@ def rules_from_cli(
         cap_min = min_market_cap_sol if min_market_cap_sol is not None else 0.0
         return EvaluateRulesV0(exclude_bonk_pool=bonk, min_market_cap_sol=cap_min)
     if version == "v2":
-        bonk = True
-        if include_bonk_pool:
-            bonk = False
-        elif exclude_bonk_pool is not None:
-            bonk = exclude_bonk_pool
         cap_min = (
             min_market_cap_sol
             if min_market_cap_sol is not None
             else float(RULES_V2_DEFAULTS["min_market_cap_sol"])
         )
-        return EvaluateRulesV2(exclude_bonk_pool=bonk, min_market_cap_sol=cap_min)
+        return EvaluateRulesV2(min_market_cap_sol=cap_min)
     bonk = True
     if include_bonk_pool:
         bonk = False
@@ -613,6 +647,7 @@ class BookRow:
     signature: Any
     mint: Any
     t_ws: Any
+    regime_id: str | None
     evaluate_label: EvaluateLabel
     evaluate_reasons: list[str]
     entry_price: float | None
@@ -625,6 +660,7 @@ class BookRow:
             "signature": self.signature,
             "mint": self.mint,
             "t_ws": self.t_ws,
+            "regime_id": self.regime_id,
             "evaluate_label": self.evaluate_label,
             "evaluate_reasons": list(self.evaluate_reasons),
             "entry_price": self.entry_price,
@@ -662,6 +698,31 @@ def _gate_lift(
     if runner_mean is None or random_mean is None:
         return "INCOMPLETE"
     return "PASS" if runner_mean > random_mean + LIFT_EPSILON else "FAIL"
+
+
+def _gate_reject_rate(reject_n: int, population_n: int) -> GateResult:
+    if population_n == 0:
+        return "INCOMPLETE"
+    rate = reject_n / population_n
+    if REJECT_RATE_MIN <= rate <= REJECT_RATE_MAX:
+        return "PASS"
+    return "INCOMPLETE"
+
+
+def build_regime_stratification(book: Sequence[BookRow]) -> dict[str, Any]:
+    """Diagnostic stratification on sealed regime_id (not a selection feature)."""
+    by_stage: Counter[str] = Counter()
+    label_by_stage: Counter[str] = Counter()
+    for row in book:
+        rid = row.regime_id or ""
+        stage = _parse_regime_id(rid).get("stage", "missing")
+        by_stage[stage] += 1
+        label_by_stage[f"stage={stage}|label={row.evaluate_label}"] += 1
+    return {
+        "by_regime_stage": dict(sorted(by_stage.items())),
+        "evaluate_label_by_regime_stage": dict(sorted(label_by_stage.items())),
+        "note": "Population already filtered to bonding creates; flags regime_id drift.",
+    }
 
 
 def _gate_parity(
@@ -725,8 +786,15 @@ def build_summary(
 
     lift_gate = _gate_lift(runner_mean, rand_mean if isinstance(rand_mean, (int, float)) else None, runner_n, int(rand_n))
     parity_gate = _gate_parity(runner_mean, reject_mean, runner_n, reject_n)
+    reject_n_pop = len(reject_rows)
+    reject_rate_gate = _gate_reject_rate(reject_n_pop, len(book))
+    reject_rate_pct = (reject_n_pop / len(book) * 100.0) if book else None
 
-    if lift_gate == "INCOMPLETE" or parity_gate == "INCOMPLETE":
+    if (
+        lift_gate == "INCOMPLETE"
+        or parity_gate == "INCOMPLETE"
+        or reject_rate_gate == "INCOMPLETE"
+    ):
         overall: str = "INCOMPLETE"
     elif lift_gate == "FAIL":
         overall = "FAIL_NO_LIFT_VS_RANDOM"
@@ -766,7 +834,14 @@ def build_summary(
         },
         "random_baseline": dict(random_baseline),
         "confusion_matrix": build_confusion_matrix(book, primary_horizon),
+        "regime_stratification": build_regime_stratification(book),
+        "reject_rate_pct": reject_rate_pct,
         "gates": {
+            "reject_rate_band": {
+                "comparator": f"{REJECT_RATE_MIN:.0%} <= reject_rate <= {REJECT_RATE_MAX:.0%}",
+                "reject_rate_pct": reject_rate_pct,
+                "result": reject_rate_gate,
+            },
             "no_lift_vs_random": {
                 "comparator": f"runner_mean_{primary_horizon} > random_mean_{primary_horizon}",
                 "min_priced_per_arm": MIN_PRICED_FOR_KILL,
@@ -786,6 +861,8 @@ def build_summary(
             "Post-create marks from later ingest rows and/or EXP-003 outcome_mark files.",
             "Horizon join is last tick with T < t_mark <= T+H (no future leak).",
             "Δ_exec always N/A from JSONL alone in v0.",
+            "Evaluate uses sealed create fields only; marks are outcome meters, not features.",
+            "Bonk/mayhem/pool WS unknowns are PARKED — not v2 selection features.",
         ],
     }
 
@@ -864,6 +941,8 @@ def run_paper_book(
             outcomes = compute_outcomes(t0=t0 or datetime.now(timezone.utc), p0=None, marks=marks)
         else:
             outcomes = compute_outcomes(t0=t0, p0=p0, marks=marks)
+        rid = item.row.get("regime_id")
+        regime_id = rid if isinstance(rid, str) else None
         book.append(
             BookRow(
                 source_path=item.source_path,
@@ -871,6 +950,7 @@ def run_paper_book(
                 signature=item.row.get("signature"),
                 mint=item.row.get("mint"),
                 t_ws=item.row.get("t_ws"),
+                regime_id=regime_id,
                 evaluate_label=label,
                 evaluate_reasons=reasons,
                 entry_price=p0,
@@ -927,6 +1007,7 @@ def write_outputs(
         "signature",
         "mint",
         "t_ws",
+        "regime_id",
         "evaluate_label",
         "evaluate_reasons",
         "entry_price",
@@ -948,6 +1029,7 @@ def write_outputs(
                 "signature": d["signature"],
                 "mint": d["mint"],
                 "t_ws": d["t_ws"],
+                "regime_id": d.get("regime_id"),
                 "evaluate_label": d["evaluate_label"],
                 "evaluate_reasons": ";".join(d["evaluate_reasons"]),
                 "entry_price": d["entry_price"],
@@ -1046,12 +1128,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--exclude-bonk-pool",
         action="store_true",
         default=None,
-        help="Force bonk-pool soft exclude ON (v0: default OFF; v1: default ON)",
+        help="Force bonk-pool soft exclude ON (v0/v1 only; v2 ignores — bonk PARKED)",
     )
     p.add_argument(
         "--include-bonk-pool",
         action="store_true",
-        help="Disable bonk-pool exclude (v1 only)",
+        help="Disable bonk-pool exclude (v0/v1 only)",
     )
     p.add_argument(
         "--min-market-cap-sol",

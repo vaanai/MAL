@@ -72,7 +72,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 
 ## Next work
 
-1. **EXP-002c (Proof / Vaan local):** Re-score with **rules v2** on sealed JSONL + **existing** EXP-003 marks (same ~300 subsample). Runbook: [EXP/EXP-002c-rules-v2-adverse-selection.md](EXP/EXP-002c-rules-v2-adverse-selection.md). CLI: `python -m tools.exp002_paper_runner … --rules v2 --marks data/observe/marks-….jsonl`. **EXP-002b:** **FAIL closed** — **FAIL_NO_LIFT_VS_RANDOM** (~81% reject; runner ~3% vs random ~20–30% @60s); do **not** promote v1 or denser marks as the fix.
+1. **EXP-002c (Proof / Vaan local):** DISCOVERY-first doc + **rules v2** (no bonk/mayhem/pool selection; regime_id bonding gate; knowable-at-T only; marks = outcomes). Re-score with **existing** marks. [EXP/EXP-002c-rules-v2-adverse-selection.md](EXP/EXP-002c-rules-v2-adverse-selection.md). **EXP-002b:** **FAIL closed** — **FAIL_NO_LIFT_VS_RANDOM**; denser marks **not** a retune lever.
 2. **EXP-003 marks (Scout / Vaan local):** Coverage tooling + RPC backfill landed; reuse marks for 002c before requesting denser ticks. [EXP/EXP-003-post-create-marks.md](EXP/EXP-003-post-create-marks.md).
 3. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py).
 4. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)

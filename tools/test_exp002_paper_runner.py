@@ -21,6 +21,7 @@ from tools.exp002_paper_runner import (
     build_mint_price_series,
     compute_outcomes,
     draw_random_baseline,
+    _regime_bonding_gate,
     is_bonding_create,
     knowable_at_t_honest,
     run_paper_book,
@@ -136,6 +137,20 @@ class HonestyAndEvaluateTests(unittest.TestCase):
         v2_label, v2_reasons = EvaluateRulesV2().evaluate(row)
         self.assertEqual(v1_label, "runner")
         self.assertEqual(v2_label, "runner")
+
+    def test_v2_does_not_use_bonk_soft_exclude(self) -> None:
+        row = _create_row(name="Bonk clone", symbol="BNK")
+        label, reasons = EvaluateRulesV2().evaluate(row)
+        self.assertEqual(label, "runner")
+        self.assertNotIn("bonk_pool_excluded", reasons)
+
+    def test_v2_regime_gate_rejects_non_bonding_regime_id(self) -> None:
+        row = _create_row()
+        row["regime_id"] = row["regime_id"].replace("stage=bonding", "stage=pumpswap")
+        reasons = _regime_bonding_gate(row)
+        self.assertIn("regime_id_stage_not_bonding", reasons)
+        label, eval_reasons = EvaluateRulesV2().evaluate(row)
+        self.assertEqual(label, "reject")
 
     def test_v2_rejects_extreme_high_cap(self) -> None:
         row = _create_row(market_cap=80.0)
@@ -301,6 +316,7 @@ class IntegrationTests(unittest.TestCase):
                 signature=f"sig-{i}",
                 mint=f"m{i}",
                 t_ws=T0,
+                regime_id="env=mainnet|stage=bonding|market=bonding_curve",
                 evaluate_label="runner",
                 evaluate_reasons=[],
                 entry_price=30.0,
