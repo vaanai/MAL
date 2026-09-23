@@ -69,11 +69,12 @@ Oracle re-score **2026-09-23** on sealed 2026-09-20/21 observe+marks ([EXP-004 �
 
 ---
 
-## 4. Sequencing (post pick lock)
+## 4. Sequencing (post pick lock; after §6 score)
 
-1. **EXP-004b / NH-G1a** (this doc) — first falsifier budget.
-2. **NH-G3a** — pattern-conditioned weak recurrence ([GRAPH-EXP004-NEXT-HYP-V0.md](../ARTIFACTS/GRAPH-EXP004-NEXT-HYP-V0.md) §3) **only if** ordinal G1a stays soft or INCOMPLETE without kill.
-3. **NH-Index** — parked until council unparks.
+1. **EXP-004b / NH-G1a** (this doc) — **scored**; cross-day **KILL**.
+2. **Ordinal refinement lane** — **parked** (falsifier met; pick lock does **not** authorize NH-G3a after ordinal kill).
+3. **NH-G3a** — **not next**; was **only if** G1a stayed soft / INCOMPLETE without kill ([GRAPH-EXP004-NEXT-HYP-V0.md](../ARTIFACTS/GRAPH-EXP004-NEXT-HYP-V0.md) §3) — requires **new** council pick before any run.
+4. **NH-Index** — parked until council unparks.
 
 ---
 
@@ -111,4 +112,4 @@ Oracle re-score **2026-09-23** on sealed 2026-09-20/21 observe+marks ([EXP-004 �
 | Field | Value |
 | --- | --- |
 | **Cross-day overall** | **KILL** — NH-G1a falsifier: **no** ordinal bucket beats spine **and** random @ **60s** on **both** courier days (`bucket_3plus` soft on **20 only**; **21** fails spine). |
-| **Conclusion** | **No promotion.** Ordinal depth does **not** upgrade parent H-G1 binary soft watch to a replicable signal. **H-G2 burst kill unchanged.** Sequencing: **NH-G3a** eligible per pick lock (G1a did not stay soft on both days). **NH-Index** still parked. |
+| **Conclusion** | **No promotion.** Ordinal depth does **not** upgrade parent H-G1 binary soft watch to a replicable signal. **H-G2 burst kill unchanged.** Sequencing: **ordinal lane parked** (NH-G1a cross-day **KILL**). Helm pick lock chains **NH-G3a** only if G1a **stays soft** — **not** next after kill; any NH-G3a needs a **new** council pick. **NH-Index** still parked. |

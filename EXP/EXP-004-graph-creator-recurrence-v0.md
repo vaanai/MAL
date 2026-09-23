@@ -95,4 +95,4 @@ Day-aligned sealed JSONL only (`observe-YYYY-MM-DD` + `marks-YYYY-MM-DD`). EXP-0
 
 Sealed inputs on host: marks **3356** / **3439** lines; observe **15324** / **18862** lines (unchanged `observe-2026-09-23` ingest).
 
-**Next hypotheses (docs only):** Post H-G2@60s kill — candidate Index refinements and PARK list: [GRAPH-EXP004-NEXT-HYP-V0.md](../ARTIFACTS/GRAPH-EXP004-NEXT-HYP-V0.md) (**Proposed**, not run; no promotion). **Pick lock (2026-09-23):** child [EXP-004b NH-G1a](EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) — ordinal prior-mint depth (**Proposed, not run**).
+**Next hypotheses (docs only):** Post H-G2@60s kill — candidate Index refinements and PARK list: [GRAPH-EXP004-NEXT-HYP-V0.md](../ARTIFACTS/GRAPH-EXP004-NEXT-HYP-V0.md) (**Proposed**, not run; no promotion). **Pick lock (2026-09-23):** child [EXP-004b NH-G1a](EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) — ordinal prior-mint depth (**Scored 2026-09-23**, cross-day **KILL**); **ordinal lane parked** — NH-G3a **not next** per lock (new council pick for any G3a).
