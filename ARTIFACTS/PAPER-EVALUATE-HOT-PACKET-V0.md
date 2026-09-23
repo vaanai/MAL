@@ -226,3 +226,4 @@ Checked-in fixtures are **synthetic**. They are not Oracle extracts and they are
 - Full book: [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)
 - Clocks draft (unmerged): [PR #8](https://github.com/vaanai/MAL/pull/8)
 - Vocabulary only (do not retune): [EXP-002](../EXP/EXP-002-evaluate-runner-v0.md), [EXP-006](../EXP/EXP-006-paper-would-have-happened-harness-v0.md), [PAPER-TRADING-SURFACE-BRIEF.md](PAPER-TRADING-SURFACE-BRIEF.md)
+- Local-set counts of these stamps (Proposed, sealed-day fixtures only): [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md)
