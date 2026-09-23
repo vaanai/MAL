@@ -10,13 +10,33 @@
 
 **Primary sources in repo:** [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md), [OBSERVE-JSONL-SCHEMA.md](OBSERVE-JSONL-SCHEMA.md), [REGIME-AT-INGEST-MATRIX.md](REGIME-AT-INGEST-MATRIX.md), [PUMPPORTAL-PAYLOAD-INVENTORY.md](PUMPPORTAL-PAYLOAD-INVENTORY.md), [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md).
 
+**Scout alignment:** Parallel Scout Discovery run `bc-865e96ca` (Cursor Cloud) — **same vocabulary** for signals and falsifiers below; Graph owns relationship precompute, Scout owns regime gate + ingest law.
+
+---
+
+## 0. Scout soft constraints (v0 vocabulary)
+
+Working law for Graph Discovery and any later cluster / smart-wallet **label** (not production follow bots).
+
+| # | Constraint | Graph vocabulary |
+| --- | --- | --- |
+| **S1** | **Regime gate first** | Every cluster label, wallet tag, or graph snapshot MUST carry the parent row’s **`regime_id`** (or an explicit **`regime_gate=unknown`** stub with reason). Dimensions include bonding-curve **instruction lineage** (`instr=`), **fee** (`fee=`), **graduation / stage** (`stage=`, `market=`), **quote / pair asset** (`quote=`) per [REGIME-ENUM-V0.md](REGIME-ENUM-V0.md). **No cross-regime merge** — recurrence counts, bursts, and “clusters” are scoped per `regime_gate_key` (hash or normalized prefix of `regime_id` at ingest). |
+| **S2** | **Knowable-as-of-T only** | Cluster **membership** and edges are fixed at **`T_decision`** with `t_precompute_as_of ≤ T_decision`. **No post-hoc cluster assignment** (no “this wallet was in the cluster all along” after later trades). **`t_ws` vs `t_event`** delta is **latency-as-data** (log, stratify); do not rewrite `T`. |
+| **S3** | **Follow ≠ mirror** | Layer 3 **follow** means **feature / veto / select / enrich** on the paper → gated path — **never** “mirror this wallet” as the strategy. Graph v0 emits **capped scalars and falsifiers**, not copy-trade targets. |
+| **S4** | **Executable windows** | Paper horizons **1s / 5s / 15s / 30s / 60s** ([DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md)). **Prefer signals computable from sealed observe before or at `T_decision`** so they are **ready inside** the decision window. **Late enrich** (async RPC, Postgres L2 cache refresh) may update **cache** for **later** rows only — **not** as entry trigger for the same sealed `signature`. |
+| **S5** | **Bonk / mayhem parked** | Do **not** define clusters or wallet sets around bonk/mayhem/pool venues unless work **necessarily** touches them ([EXP-002c](../EXP/EXP-002c-rules-v2-adverse-selection.md) Scout lock). Default population: bonding creates with parked flags excluded from cluster seeds. |
+| **S6** | **Taxonomy + falsifiers only** | Discovery delivers **named hypotheses, regime gates, and kill falsifiers** — **not** mark densification or evaluate retune ([EXP-002c](../EXP/EXP-002c-rules-v2-adverse-selection.md), [EXP-003](../EXP/EXP-003-post-create-marks.md)). Outcome joins use **existing** marks; **INCOMPLETE** when arms lack priced coverage (EXP law), without inventing lift thresholds in briefs. |
+| **S7** | **X / social = Layer 4** | **Not** a cluster seed for v0. No social edges, cashtag co-occurrence, or X-attached wallet lists in `graph_snapshot_v0`. |
+
+**Graph soft prefs (unchanged):** prioritize **sealed-history creator age / prior-mints**, **recurring creator↔buyer** (weak then RPC), **early-wallet Δt clusters** when observe proves timing; **park** single-wallet PnL leaderboards, copy-trade framing, and **unverified funding** on the hot packet ([DEC-005](https://github.com/vaanai/MAL/pull/8) §4).
+
 ---
 
 ## 1. Executive summary
 
 Layer-2 **entity / relationship / graph** is product-critical ([DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) § Product alignment) but **unimplemented in git** beyond naming, matrix rows, and constitution caps. The live Oracle box has **Postgres installed** (`meme_core` / `mal_app`) with **no checked-in schema, migrations, or graph workers** — only policy text and BOM “bootstrap later” bullets ([ORACLE-ALWAYS-FREE-BOM-v0.md](ORACLE-ALWAYS-FREE-BOM-v0.md) §5, §Next).
 
-**Smallest useful next slice:** offline, **JSONL-first** **creator recurrence** and **weak wallet identity** from the **free create spine** only — emit **new** `type=graph_snapshot_v0` lines (or sidecar JSONL) with explicit `t_precompute_as_of` / `T_decision` law ([DEC-005](https://github.com/vaanai/MAL/pull/8) §1, §3), score **full detect book** outcomes per [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md), and **kill H-graph** if capped features do not lift vs spine-only at 60s. **Do not** stand up Neo4j, wallet-index APIs, or Postgres-as-SoT graph tables until this paper slice closes or fails.
+**Smallest useful next slice:** offline, **JSONL-first** **regime-gated** creator history (**age / prior-mints**), weak **creator↔buyer** recurrence, and (where sealed timing allows) **early-wallet Δt** proxies from the **free create spine** — emit **`type=graph_snapshot_v0`** sidecar lines with `regime_id`, `regime_gate_key`, `t_precompute_as_of`, and `T_decision` ([DEC-005](https://github.com/vaanai/MAL/pull/8) §1, §3). Score **full detect book** per [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md) using **existing** marks at **1s/5s/15s/30s/60s**; **falsify H-graph** with taxonomy + gates (no mark densify, no invented lift constants). **Do not** stand up Neo4j, wallet-index APIs, or Postgres-as-SoT graph tables until this paper slice closes or fails.
 
 **Park:** multi-hop funding graphs, community detection at scale, metered `subscribeAccountTrade` / Birdeye wallet index, smart-wallet follow lists, and “graph scores in decode” before a scored EXP.
 
@@ -73,10 +93,10 @@ Per [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md): Postgres **16.1
 
 | Step | Deliverable | Owner bias |
 | --- | --- | --- |
-| **G0 — Spec** | `graph_snapshot_v0` JSONL line shape: `parent_signature`, `mint`, `T_decision`, `t_precompute_as_of`, capped `features{}`, `evidence_tier` (`weak_ws` \| `rpc_verified`), link to [DEC-004](../DEC/DEC-004-regime-id-encoding.md) `regime_id` | Graph + Scout |
-| **G1 — Offline precompute** | Single-pass (or day-chunked) scan of sealed `ingest_hot` creates sorted by `T_decision`; rolling state **only** from rows with `t_ws` (or `t_event`) **&lt; current** `T_decision` | Graph (tooling in `tools/`) |
-| **G2 — Feature v0 (capped)** | ≤5 scalars, e.g. `creator_prior_create_count_24h`, `creator_prior_create_count_7d`, `creator_seconds_since_last_create`, `creator_median_initial_buy_sol_prior`, `wallet_is_repeat_creator` (same `traderPublicKey`) | Graph |
-| **G3 — Proof join** | Join snapshots to EXP-002 book by `signature`/`mint`; stratify graph flags on **runners and rejects** ([DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)); primary horizon **60s**; gates mirror H-graph in `LAB_STATE.md` | Proof |
+| **G0 — Spec** | `graph_snapshot_v0`: `parent_signature`, `mint`, `T_decision`, `t_precompute_as_of`, **`regime_id`**, **`regime_gate_key`**, capped `features{}`, `evidence_tier` (`weak_ws` \| `rpc_verified`), optional `latency_delta_ws_event_ms` (S2) | Graph + Scout |
+| **G1 — Offline precompute** | Single-pass scan of sealed `ingest_hot` **bonding creates**, sorted by `T_decision`; rolling state **per `regime_gate_key`** only from rows with **`T_prior < T_decision`** (strict); bonk/mayhem excluded from seeds (S5) | Graph (`tools/`) |
+| **G2 — Feature v0 (capped)** | ≤5 scalars aligned with Scout prefs: **`creator_age_seconds`** (first-seen → T), **`prior_mint_count_*`**, **`seconds_since_last_create`**, **`creator_buyer_recurrence_weak`** (same `traderPublicKey` prior `initialBuy`/`solAmount` pattern), **`early_wallet_dt_min_seconds`** (only if derivable from sealed rows before T — else omit, do not backfill) | Graph |
+| **G3 — Proof join** | Join to EXP-002 labels by `signature`/`mint`; graph flags on **full book** (S6, DEC-007); outcome meter at **1/5/15/30/60s** with **signals required knowable at T** for in-window decode (S4); report **INCOMPLETE** arms per EXP-003 — **no densify to retune** | Proof |
 | **G4 — Postgres (optional)** | **After** JSONL snapshot EXP is reproducible: idempotent upsert into `meme_core` **cache** tables for fast rolling windows on host — **still not** provenance | Scout + Graph |
 
 **Why this order:** Reuses existing sealed population and marks; no new paid feeds; respects weak-link law until a **documented** RPC enrich EXP shows EV (separate child rows `type=regime_enrich` / `graph_enrich`, never in-place hot patch).
@@ -86,7 +106,8 @@ Per [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md): Postgres **16.1
 | Item | Why park |
 | --- | --- |
 | **Smart-wallet follow (Layer 3)** | Requires proven L2 signals + filter economics; not discovery |
-| **Single-wallet copy-trading / “alpha wallet” lists** | Explicit non-goal; conflicts with filtered-follow product |
+| **Single-wallet copy-trading / “alpha wallet” / PnL mirror lists** | S3: follow is feature/veto/select/enrich — not mirror-wallet strategy |
+| **Unverified funding on hot packet** | Funding path only in `graph_enrich` child rows; never silent hot upgrade (DEC-005 §4) |
 | **Full funding-tree / mixer tracing** | Needs heavy RPC or paid index; no Gate-1 trip documented |
 | **Community / NLP / X graph** | Layer 4 / defer; no X on host |
 | **Real-time graph on every trade** | Metered PumpPortal WS; use only if a **later** EXP proves create-spine graph insufficient **and** meters justify |
@@ -96,38 +117,45 @@ Per [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md): Postgres **16.1
 
 ---
 
-## 4. Candidate hypotheses and sequence definitions (as-of-T, thin enough to kill)
+## 4. Candidate hypotheses — taxonomy, regime gates, falsifiers (as-of-T)
 
-All definitions use **`T_decision`** per sealed create row ([DEC-005](https://github.com/vaanai/MAL/pull/8) §1: `t_event` if non-null else `t_ws`). **State for features at `T`** may only include prior events with **`T_prior < T_decision`** (strict).
+All definitions use **`T_decision`** ([DEC-005](https://github.com/vaanai/MAL/pull/8) §1). Prior events **`T_prior < T_decision`** only, scoped by **`regime_gate_key`** (S1). **Falsifiers** are pass/fail/INCOMPLETE per EXP gates — this brief does **not** state numeric lift targets.
 
-### H-G1 — Creator serial launcher (weak identity)
+### H-G1 — Sealed-history **creator age** / **prior-mints** (weak identity)
 
-- **Entity:** `traderPublicKey` as **reported** creator wallet (weak).
-- **At T:** `prior_n = count(creates where traderPublicKey = P and T_i < T)`.
-- **Kill:** Runner 60s mean vs spine-only **no lift** when stratifying `prior_n ≥ 1` vs `prior_n = 0` on full book; or lift only on tiny priced_n.
+- **Entities:** `traderPublicKey` (reported creator); **regime:** same `regime_gate_key`.
+- **At T:** `creator_age_seconds`, `prior_mint_count` (and optional windowed counts).
+- **Falsifiers:** Stratified outcomes vs spine-only show **no separable arm** at any of **1/5/15/30/60s**; or **INCOMPLETE** priced coverage; or effect **vanishes** when split by `regime_id` / `instr=` / `fee=` (cross-regime leak).
 
-### H-G2 — Creator burst / cluster (temporal sequence)
+### H-G2 — **Creator burst cluster** (temporal sequence, regime-gated)
 
-- **Sequence:** Within lookback `W` (e.g. 1h), creates with same `P` where `T_i ∈ (T−W, T)`.
-- **At T:** `burst_count`, `min_gap_seconds` since previous create by `P`.
-- **Kill:** No stable lift vs H-G1 marginals; or burst correlates only with **modal launch snapshot** (EXP-002c adverse-selection pattern).
+- **Sequence:** Prior creates by same `P` within lookback `W` before T, same `regime_gate_key`.
+- **At T:** `burst_count`, `min_gap_seconds` since previous create.
+- **Falsifiers:** Burst flags **redundant** with H-G1 marginals; or collinear with **modal launch snapshot** at T (EXP-002c discovery pattern — attribute, do not retune rules).
 
-### H-G3 — Recurring collaborator (multi-wallet — **needs enrich, phase G1.5**)
+### H-G3 — **Recurring creator↔buyer** (weak → strong)
 
-- **Weak proxy v0 (create feed only):** Same `traderPublicKey` appears as creator on mint A and mint B — **not** co-signer detection.
-- **Strong (RPC child packet):** Within tx `T`, second signer or known program-derived address — **only** in `graph_enrich` rows after `getTransaction` on **subsample**; compare lift weak vs strong; kill if weak flags invert after RPC verify.
+- **Weak (create spine):** Same `P` as creator on prior mints **and** repeated `initialBuy` / `solAmount` signature at those `T_j < T` — **not** a distinct buyer wallet yet.
+- **Strong (subsample `graph_enrich` only):** Distinct buyer pubkeys from RPC txs — **L2 cache**, must not trigger entry on the same `signature` if enrich completes after T (S4).
+- **Falsifiers:** Weak and strong tiers **disagree** on stratification; or buyer recurrence **only** appears cross-regime (S1 fail).
 
-### H-G4 — Reserve / launch-style sequence (spine-only)
+### H-G4 — **Early-wallet Δt cluster** (timing proxy)
 
-- **At T:** Prior creates by same `P` — distribution of `initialBuy`, `solAmount`, `marketCapSol` at **their** `T_j < T`.
-- **Kill:** Graph adds nothing beyond EXP-002c “modal launch” failure mode (features collinear with spine reserves).
+- **Intent:** Wallets (or weak pubkey identities) that appear within **Δt** of T on **sealed observe** before decision — latency-as-data for cluster tightness.
+- **v0 bound:** Create feed alone may only expose **creator** timing; non-creator “early wallets” need trade/RPC subsample — label `cluster_tier=weak_creator_only` vs `enrich_trade` and **park** copy-trade interpretation.
+- **Falsifiers:** Δt features **empty** on book; or **not ready** inside 1s window from sealed rows (S4); or clusters **unstable** under regime split.
 
-### H-G5 — Migration follow-through (cross-stage edge)
+### H-G5 — Reserve / launch-style sequence (spine-only)
 
-- **Entity edge:** create `signature` → later `subscribeMigration` row same `mint` (knowable only **after** migration event).
-- **At create T:** **Not** knowable — must be **separate** post-migration label for **retrospective** cohort studies, **not** decode input at create T without leak. Park for v0 create-time graph; note for later **stage-transition** EXP.
+- **At T:** Prior creates by same `P` — `initialBuy`, `solAmount`, `marketCapSol` at `T_j < T`.
+- **Falsifiers:** Graph scalars **collinear** with spine reserves at T (no incremental falsifier beyond L1).
 
-**Sequence typing (v0 enum):** `edge_type ∈ {creator_repeat, creator_burst, weak_same_pubkey, enrich_cosigner}` with `as_of_T` and `t_precompute_as_of` on every emitted edge record.
+### H-G6 — Migration follow-through (cross-stage edge)
+
+- **Edge:** create → later migration row same `mint` — knowable only **after** migration.
+- **At create T:** **Not** a decode input (leak). Retrospective cohort label only; park for create-time graph v0.
+
+**Sequence typing (v0 enum):** `edge_type ∈ {creator_age_prior_mints, creator_burst, creator_buyer_recurrence_weak, creator_buyer_recurrence_enrich, early_wallet_dt, reserve_history, stage_migration_retro}` — each record carries `as_of_T`, `t_precompute_as_of`, `regime_id`, `regime_gate_key`.
 
 ---
 
@@ -182,8 +210,8 @@ flowchart LR
   PRE -.->|only after H-graph PASS| L3
 ```
 
-- **Today:** EXP-002 skips PRE → graph; DISCOVERY should score PRE **in parallel** to rules, not inside rules v2/v3 tuning.
-- **Layer 3** consumes **filtered** wallet **sets** derived from L1+L2 — **never** blind copy. v0 does not pick wallets to follow; it only tests whether **creator-centric** caps help **create-time** paper.
+- **Today:** EXP-002 skips PRE → graph; DISCOVERY scores PRE **in parallel** to rules (S6 — no evaluate retune).
+- **Layer 3 (later):** **Follow** = graph/L1 features as **veto, select, enrich** into paper → gated path (S3). v0 does **not** emit mirror-wallet strategies or single-wallet PnL copy lists.
 
 ---
 
@@ -191,10 +219,10 @@ flowchart LR
 
 1. Live trading, signing, wallet keys, or execution surface choice (Axiom / Phantom / …).
 2. Paid Birdeye / Helius wallet index / gRPC streaming for graph.
-3. Dexscreener or social edges on spine or graph packets.
+3. Dexscreener, **X/social cluster seeds**, or social edges on spine or graph packets (S7).
 4. Postgres as provenance or EXP SoT; mutating sealed `ingest_hot` rows.
 5. Neo4j, managed graph SaaS, or multi-service graph mesh on `mal-core-0`.
-6. Smart-wallet follow lists, copy-trade bots, or “track wallet X” product.
+6. Smart-wallet **mirror** lists, copy-trade bots, or “track wallet X” as the strategy (S3).
 7. Claiming `traderPublicKey` = on-chain `creator` without `creator_verified` or child enrich row.
 8. Graph-driven evaluate rule changes **before** EXP-004-style kill test closes.
 9. SSH / tunnel / live Oracle changes by agents ([DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)).
@@ -207,7 +235,7 @@ flowchart LR
 | --- | --- | --- |
 | **Create-spine miss** | WS gap / parse failure rate | Scout ingest — not graph |
 | **RPC 429 on wallet history** | 7d log above DEC-008 Gate 1 tolerance | Escalate Helm; **not** default in v0 |
-| **Mark holes** | priced_n &lt; 10 | INCOMPLETE — same as EXP-002 |
+| **Mark holes** | priced_n below EXP arm floor | **INCOMPLETE** — same as EXP-002; **forbidden:** densify marks to retune graph (S6) |
 | **Graph compute** | CPU on 2 OCPU box | Batch offline; no always-on graph service until measured need |
 
 **No paid RPC recommendation** in v0 path — public RPC subsample only, aligned with [EXP-003](../EXP/EXP-003-post-create-marks.md) discipline.
@@ -219,8 +247,8 @@ flowchart LR
 | Field | Proposed value |
 | --- | --- |
 | **ID** | **`EXP-004-graph-creator-recurrence-v0`** |
-| **Hypothesis** | Capped as-of-T **creator recurrence** features from weak create spine improve **60s** paper lift vs spine-only on **full detect book** ([H-graph](../LAB_STATE.md)). |
-| **Kill** | No stable lift at 1s/5s/15s/30s/60s; or lift disappears when stratified by regime; or graph flags redundant with reserve modal (H-G4). |
+| **Hypothesis** | Regime-gated, capped as-of-T graph features (**creator age / prior-mints**, weak **creator↔buyer**, optional **early-wallet Δt**) falsify or survive vs spine-only on **full detect book** at **1/5/15/30/60s** ([H-graph](../LAB_STATE.md)). |
+| **Falsifiers** | No separable arm vs spine at any horizon; **INCOMPLETE** coverage; regime-stratified **collapse** (S1); redundancy with spine reserves (H-G5); weak/strong tier inversion (H-G3). **No** mark densify retune (S6). |
 | **Depends on** | Sealed JSONL; existing `--marks`; DEC-005 clocks when merged; DEC-007 book law |
 | **Out of scope** | Evaluate rule promotion; Layer 3 wallet follow; paid index |
 
@@ -233,8 +261,9 @@ Alternate name if council prefers sequence emphasis: `EXP-004-graph-weak-creator
 1. **Lookback caps:** 24h vs 7d vs all-time for `prior_n` — trade memory vs non-stationarity of meme meta.
 2. **Identity:** Treat `traderPublicKey` swaps / RPC `creator` mismatch as separate entities or merge via enrich?
 3. **Packet shape:** Side file `graph-YYYY-MM-DD.jsonl` vs sibling type on main observe file (prefer **side file** to keep spine pure).
-4. **Bonk/mayhem:** Stay parked in graph features per EXP-002c Scout lock.
-5. **When to mirror Postgres:** After DEC-011 bootstrap only, or laptop JSONL sufficient until host ingest is live?
+4. **Bonk/mayhem:** Stay parked (S5) unless a future DEC unparks ingest.
+5. **`regime_gate_key` normalization:** Full `regime_id` string vs hashed prefix for state keys — Scout/Graph pick one in G0 spec.
+6. **When to mirror Postgres:** After DEC-011 bootstrap only, or laptop JSONL sufficient until host ingest is live?
 
 ---
 
