@@ -24,6 +24,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-002 — Cursor↔Oracle access decided (DEC-011)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-002 |
+| **Date** | 2026-09-22 (decision); recorded 2026-09-23 |
+| **What changed** | DEC-010 open access ask → **DEC-011 lock.** Chosen: Cloudflare Tunnel (`cloudflared`) on `mal-core-0` + Cloudflare Access gating SSH + dedicated `mal-cursor` ed25519 deploy key (not owner personal). Backup: Tailscale on Oracle VM + ephemeral agent auth keys. Rejected: PC jump host, owner-key share, public Postgres, `:22` to the world. My Machines on-box **parked** as phase-0 default. |
+| **Why** | Helm recommendation + Scout/Graph/Proof soft-OK + owner accepted. Need agent path to the live box without a human PC hop or a public DB. |
+| **What was tested** | Docs-only / N/A. No tunnel, Access app, or `mal-cursor` key claimed in this PR. |
+| **Verification** | Decision recorded. Owner will implement. Agents still have **no** SSH. |
+| **Current state** | Access **decided; owner implementing.** Next owner ask = implement DEC-011; then team bootstrap. EXP-002c facts **unchanged**. |
+| **Rollback** | Docs: revert this PR / new DEC. Infra: do **not** tear down Always Free resources. Do not open `:22` or public Postgres as a workaround. |
+| **Unresolved** | Owner implementation of tunnel/Access/`mal-cursor`. Optional real paper-trading utility (ask first). Trading/wallet execution surface (Axiom / Phantom / etc.) — **no pick**. |
+| **Implications** | Postgres remains localhost-only (never a public/tunneled DB). JSONL stays provenance spine. Human PC is not a hop. No owner personal key to agents. |
+| **Pointers** | [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md), [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md), [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md) |
+
+---
+
 ## EDL-001 — Oracle Phase 0 host provisioned (handoff)
 
 | Field | Value |
@@ -34,8 +52,8 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 | **Why** | Vaan provisioned Always Free inventory and handed autonomy to Grok+Cursor within fences. Pre-create DEC-009 text was stale. |
 | **What was tested** | Owner-verified: SSH baseline, NSG, Postgres 16.15 localhost bind, `mal_app` on `meme_core`, data dir on `/var/lib/mal`. This PR is **docs-only** (no agent SSH). |
 | **Verification** | Owner: host live, paper-only, no wallet/trading keys on box. Agents: **no** host access yet. |
-| **Current state** | Secure blank Oracle workshop. Next = Cursor↔Oracle **access recommendation** (owner implements) then bootstrap dirs/schema/ingest. EXP-002c facts **unchanged**. |
-| **Rollback** | Docs: revert this PR. Infra: do **not** destroy Always Free resources without Vaan. Do not revert to “laptop is 24/7 host.” |
-| **Unresolved** | Access architecture (My Machines / Tailscale-on-Oracle / Cloudflare Tunnel / …) with tradeoffs. Optional real paper-trading utility (ask first). Trading/wallet execution surface research (Axiom / Phantom / etc.) — **no pick**. |
+| **Current state** | Secure blank Oracle workshop. Access architecture **locked in DEC-011** (owner implementing; tunnel not live). Then bootstrap dirs/schema/ingest. EXP-002c facts **unchanged**. |
+| **Rollback** | Docs: revert that PR. Infra: do **not** destroy Always Free resources without Vaan. Do not revert to “laptop is 24/7 host.” |
+| **Unresolved** | Owner implementation of DEC-011. Optional real paper-trading utility (ask first). Trading/wallet execution surface research (Axiom / Phantom / etc.) — **no pick**. |
 | **Implications** | JSONL stays provenance spine; Postgres is ops/state only. Human PC must not be a permanent networking hop. DM Vaan a Cursor status card on every Cursor launch. |
-| **Pointers** | [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md), [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md), [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md), [ORACLE-ALWAYS-FREE-BOM-v0.md](ORACLE-ALWAYS-FREE-BOM-v0.md) |
+| **Pointers** | [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md), [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md), [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md), [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md), [ORACLE-ALWAYS-FREE-BOM-v0.md](ORACLE-ALWAYS-FREE-BOM-v0.md) |

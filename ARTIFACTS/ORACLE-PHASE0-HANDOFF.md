@@ -4,7 +4,7 @@
 | --- | --- |
 | **As-of** | 2026-09-23 |
 | **Status** | **Provisioned and verified by Vaan.** Host is live. Agents do **not** yet have SSH or Cursor→Oracle access. |
-| **Locks** | [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) (Always Free envelope), [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md) (handoff + autonomy) |
+| **Locks** | [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) (Always Free envelope), [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md) (handoff + autonomy), [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (access **decided**; owner implementing) |
 | **BOM (envelope / foot-guns)** | [ORACLE-ALWAYS-FREE-BOM-v0.md](ORACLE-ALWAYS-FREE-BOM-v0.md) — inventory names here supersede pre-create placeholders |
 | **Decision log format** | [ENGINEERING-DECISION-LOG.md](ENGINEERING-DECISION-LOG.md) |
 
@@ -96,7 +96,7 @@ PostgreSQL **must remain private** and **must never** be exposed publicly.
 - **No trading capital** accessible to development agents
 - System is **paper-only**
 
-**Do not claim agents already have SSH or host access.** Access plumbing is the next owner ask (§7).
+**Do not claim agents already have SSH or host access.** Access plumbing is **decided** ([DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)); **owner implementing** — not live yet (§7).
 
 ---
 
@@ -134,7 +134,7 @@ The owner must be able to see running / done and **open the run** (instructions 
 
 ---
 
-## 7. Cursor → Oracle access (open owner ask)
+## 7. Cursor → Oracle access (**DEC-011 decided**; owner implementing)
 
 Desired path (no human PC in the loop):
 
@@ -144,21 +144,23 @@ Human  →  Grok  →  Cursor Cloud / agents  →  mal-core-0  →  Postgres / J
 
 **The human PC must not be a permanent networking dependency.** Owner should be able to shut the PC and have agents continue.
 
-**Team must recommend** an access architecture **with security/operational tradeoffs** **before** changing the security boundary. Options to evaluate (non-exhaustive):
+**Locked in [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)** (Helm recommendation; Scout/Graph/Proof soft-OK; owner accepted):
 
-- Cursor **My Machines** / self-hosted machine
-- **Tailscale on the Oracle VM** (not on the owner PC as the required hop)
-- **Cloudflare Tunnel**
-- other secure private-networking mechanisms
+| | Path |
+| --- | --- |
+| **Chosen** | Cloudflare Tunnel (`cloudflared`) **on `mal-core-0`** + Cloudflare Access gating **SSH** + dedicated **`mal-cursor` ed25519** deploy key (**not** the owner personal key) |
+| **Backup** | Tailscale **on the Oracle VM** (not the owner PC) + ephemeral agent auth keys |
+| **Parked** | Cursor **My Machines on-box** as phase-0 default (aarch64 / resource risk on 2 OCPU / 12 GB ARM) |
 
-Once recommended, **tell Vaan**; he implements in-console / on-host.
+**Status:** **decided; owner implementing.** Do **not** claim the tunnel, Access app, or `mal-cursor` key already exist. Owner implements in-console / on-host; then tell Helm.
 
 **Do not:**
 
-- expose Postgres (or extra app ports) publicly to simplify agent access
+- expose Postgres (or extra app ports) publicly — including as a “convenient” tunnel hostname for the DB
 - hand agents the owner’s **personal SSH private key** as a shortcut
 - make the owner PC a required always-on hop
-- deploy access plumbing autonomously before the recommendation + owner implementation
+- open SSH `:22` to the world
+- deploy access plumbing autonomously before owner implementation
 
 Agents **do not** currently have SSH to `mal-core-0`.
 
@@ -205,7 +207,7 @@ Paper path now: observe → parse → store → track → analyze → paper mark
 
 Foundation is a **secure blank Oracle workshop**. Next: smallest robust path to **observable, reproducible, continuously operable** research infra.
 
-**Owner ask first:** Cursor↔Oracle access decision (§7).
+**Owner ask first:** implement [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (CF Tunnel + Access + `mal-cursor` key). **Not done.** Do not claim tunnel exists.
 
 **Then bootstrap (team, once access exists):** `/var/lib/mal` subdirs, app layout, sealed JSONL storage, Postgres schema, token/wallet/relationship state, event ingestion, paper marks, logging, monitoring, backups, services, runtime orchestration, tests, deployment, persistent engineering memory.
 
@@ -216,6 +218,7 @@ Do **not** over-engineer. Do **not** wait idle for the owner PC.
 ## 11. What this document is not
 
 - Not a claim that agents can SSH today
+- Not a claim that the Cloudflare tunnel / Access app / `mal-cursor` key already exist ([DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) is **decided**; owner implementing)
 - Not a license to put secrets in git or chat
 - Not a 4 OCPU / 24 GB resize
 - Not a live-trading enablement
