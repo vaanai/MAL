@@ -9,6 +9,8 @@
 
 **Hot packet** here means the first immutable observe record emitted by Scout for an event (JSONL line or capped JSON artifact). Constitution: regime at ingest, knowable-at-T, immutable decision packets.
 
+**Decode contract (Proposed, not wiring):** [HOT-PACKET-V0.md](HOT-PACKET-V0.md) is the capped projection LAYA would read. It does not amend the backfill rules below. `global_95bps` and `launchlab_init` stay Proposed.
+
 ---
 
 ## Matrix

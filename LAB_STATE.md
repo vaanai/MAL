@@ -15,7 +15,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 | Layer 3 — smart-wallet follow | Filtered follow set; never blind copy — combine with L1/L2 before LAYA |
 | Precompute | As-of-T features, regime tags, graph scores (ready **before** decision) |
 | LAYA | Real-time decision on **precomputed** features (rules now; local model later) |
-| Hot packet | Regime-tagged market spine + capped graph scores |
+| Hot packet | **Proposed** paper contract: L1 spine + regime tags + capped graph slots — [HOT-PACKET-V0.md](ARTIFACTS/HOT-PACKET-V0.md) (not observe-wiring) |
 | Risk gate | Deterministic, immutable decision packets |
 | Exec | Deferred until phase-0 observation + backtest gates pass |
 | X (Twitter) | **Layer 4 later** — reassess-only cherry-on-top; **not** primary discovery; **no X keys on host in phase 0** |
@@ -46,6 +46,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Oracle Always Free host **`mal-core-0` live** (**2 OCPU / 12 GB**, Phoenix AD-1, **provisioned + verified**) → [DEC-010](DEC/DEC-010-oracle-phase0-handoff-autonomy.md), handoff [ORACLE-PHASE0-HANDOFF.md](ARTIFACTS/ORACLE-PHASE0-HANDOFF.md), BOM [ORACLE-ALWAYS-FREE-BOM-v0.md](ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md)
 - Cursor↔Oracle access **LIVE** (CF Tunnel + Access Service Auth + dedicated agent key via Runtime Secrets; smoke 2026-09-23; hostname `mal-core-vnic`; paper-only) → [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)
 - Hot-packet clocks / `Δ_exec` → [DEC-005](DEC/DEC-005-hot-packet-clocks-and-provenance.md) (draft PR #8; cross-link only until merge)
+- Hot-packet v0 **Proposed** paper schema (L1 spine, regime locks, capped graph slots) → [HOT-PACKET-V0.md](ARTIFACTS/HOT-PACKET-V0.md). Clock field names follow the DEC-005 draft and are not a claim that PR #8 merged. `global_95bps` / `launchlab_init` stay **Proposed**
 - Non-negotiables → [CONSTITUTION.md](CONSTITUTION.md)
 
 ## Open hypotheses
@@ -108,7 +109,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 9d. **EXP-007d Proposed `global_95bps` + fee gate re-score (2026-09-23):** Decode-only rescore on **same** `_exp007c-oracle-*` sample — **K-fee-knowable-at-t PASS** both days (**0%** `unverified`; **428**/**447** `global_95bps`; **72**/**53** `creator_dynamic`). Enriched **K-platform-rpc-resolved** still **INCOMPLETE**; sealed book **100%** fee `unverified`. CLI [`tools/exp007d_fee_rescore`](tools/exp007d_fee_rescore.py); [`tools/exp007d_oracle_run.md`](tools/exp007d_oracle_run.md); host `_exp007d-oracle-*`. **Merge ≠ enum production lock ≠ wiring.** [EXP-007d](EXP/EXP-007d-fee-global-95bps-enum-v0.md).
 9e. **EXP-007e instr/quote residual restamp (2026-09-23):** Reused `_exp007d-oracle-*` — enriched **K-platform-rpc-resolved PASS** (instr pending **0%** / **0.2%**; quote_verified **100%** / **99.8%**); **1×** `instr_log_gap` day **21**; sealed book **INCOMPLETE**. CLI [`tools.exp007e_instr_quote_rescore`](tools/exp007e_instr_quote_rescore.py); [`tools/exp007e_oracle_run.md`](tools/exp007e_oracle_run.md); host `_exp007e-oracle-*`. **Merge ≠ wiring ≠ enum production lock.** [EXP-007e](EXP/EXP-007e-instr-quote-residual-v0.md).
 10. **EXP-008 X Layer-4 brief (Proposed, not run):** Helm/Vaan **2026-09-23** authorized **docs-only** Discovery pick — account-quality + propagation/engagement structure as **additive** reassess on spine-known mints ([STARTER-STACK-OPTIONS-BRIEF.md](ARTIFACTS/STARTER-STACK-OPTIONS-BRIEF.md) §2); **observe first**; **H-social** unsettled. Scout owns brief; **EXP-007** stratify law on future social measures. **No X keys**; **no scraper/CLI** in registration PR; sealed measure needs **separate Helm re-auth** after merge. Scout soft PASS pending; **Proof GATE**. [EXP-008](EXP/EXP-008-x-account-quality-propagation-v0.md).
-11. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules
+11. **Hot-packet v0 (Proposed paper contract, 2026-09-23):** [HOT-PACKET-V0.md](ARTIFACTS/HOT-PACKET-V0.md) + [hot-packet-v0.schema.json](ARTIFACTS/hot-packet-v0.schema.json). L1 create spine, regime tags under EXP-007* overlay law (`global_95bps` / `launchlab_init` stay **Proposed**), capped graph slots (null/empty = Graph cold; H-G2 / ordinal lanes not revived). CLI `python -m tools.hot_packet_v0` validates synthetic fixtures only. **Not** continuous observe-wiring, **not** encoder promote, **not** enum production lock, **not** Discovery promote. DEC-005 clocks remain draft PR #8.
 12. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only**; bonk/mayhem reclass **parked**
 13. Defer live X API on host until **EXP-008** follow-on measure authorized; phase-0 = manual/offline sample only (**no X keys on `mal-core-0`**)
 14. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
@@ -129,6 +130,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Local EXP-007b RPC enrich: `python -m tools.exp007_rpc_enrich` (≤500/day; append-only `regime_enrich`); re-audit with `--enrich-jsonl`
 - Local EXP-007e instr/quote restamp: `python -m tools.exp007e_instr_quote_rescore` (reuse 007d enrich + sealed observe); diagnose `python -m tools.exp007e_residual_diagnose`
 - Local EXP-007c fee restamp: `python -m tools.exp007c_fee_at_t` (reuse 007b enrich JSONL; Global + curve fee decode)
+- Local hot-packet v0 (Proposed, fixtures only): `python -m tools.hot_packet_v0` (`example` / `validate`); contract [HOT-PACKET-V0.md](ARTIFACTS/HOT-PACKET-V0.md)
 - Research: `ARTIFACTS/` (marks: [POST-CREATE-MARKS-BRIEF.md](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md); paper/fill-sim: [PAPER-TRADING-SURFACE-BRIEF.md](ARTIFACTS/PAPER-TRADING-SURFACE-BRIEF.md); wallet/follow Discovery: [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](ARTIFACTS/DISCOVERY-WALLET-FOLLOW-SIGNALS.md))
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 - Laya vs VPS stack compare: [ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md) (Always Free `mal-core-0` is the phase-0 host experiment, not a paid VPS)

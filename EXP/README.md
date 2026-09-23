@@ -62,3 +62,11 @@ Maintain a table in this README when experiments exist:
 | [EXP-007d](EXP-007d-fee-global-95bps-enum-v0.md) | Proposed `global_95bps` enum + fee gate re-score (reuse 007c) | **PASS (K-fee)** / **Proposed enum** (Oracle 2026-09-20/21) | **K-fee-knowable-at-t PASS** (0% `unverified`); **85.6%** / **89.4%** `global_95bps`; enriched composite **INCOMPLETE** (instr/quote); merge ≠ wiring |
 | [EXP-007e](EXP-007e-instr-quote-residual-v0.md) | Instr/quote residual diagnosis + restamp (reuse 007d sample) | **PASS (K-platform-rpc-resolved)** enriched (Oracle 2026-09-20/21) | Quote offset + LaunchLab + `create_v2` SOL fallback; **1×** `instr_log_gap` day **21**; sealed book **INCOMPLETE**; merge ≠ wiring |
 | [EXP-008](EXP-008-x-account-quality-propagation-v0.md) | X account-quality / propagation brief v0 (Layer 4 additive) | **Proposed, not run** (docs registration only) | Scout owns social brief; observe spine first; EXP-007 stratify law; no X keys / no social CLI in registration PR |
+
+## Decode contracts (not experiments)
+
+Hot-packet v0 is **not** an EXP id. It has no hypothesis, windows, or kill-attempt. LAYA designers cite the artifact.
+
+| Artifact | Role | Status |
+| --- | --- | --- |
+| [HOT-PACKET-V0](../ARTIFACTS/HOT-PACKET-V0.md) | Proposed paper packet: L1 spine, regime locks, capped graph slots | **Proposed** registration — not a measure; merge ≠ observe-wiring ≠ enum production lock ≠ Discovery promote |

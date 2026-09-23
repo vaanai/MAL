@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hot-packet-v0.schema.json",
+  "title": "MAL hot-packet v0 (Proposed paper)",
+  "description": "Proposed capped decode packet LAYA would read. Not observe-wiring, not an encoder promote, not an enum production lock. global_95bps and launchlab_init stay Proposed and are legal only on an enriched overlay. Graph slots may be null or empty. See ARTIFACTS/HOT-PACKET-V0.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "type",
+    "paper_only",
+    "byte_cap",
+    "l1_spine",
+    "regime",
+    "knowable_at_t",
+    "graph",
+    "clocks",
+    "delta_exec",
+    "provenance",
+    "dual_read",
+    "honesty"
+  ],
+  "properties": {
+    "schema_version": { "const": "hot_packet_v0" },
+    "type": { "const": "hot_packet" },
+    "paper_only": { "const": true },
+    "byte_cap": { "const": 8192 },
+    "l1_spine": { "$ref": "#/$defs/l1Spine" },
+    "regime": { "$ref": "#/$defs/regime" },
+    "knowable_at_t": { "$ref": "#/$defs/knowableAtT" },
+    "graph": { "$ref": "#/$defs/graph" },
+    "clocks": { "$ref": "#/$defs/clocks" },
+    "delta_exec": { "$ref": "#/$defs/deltaExec" },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "dual_read": { "$ref": "#/$defs/dualRead" },
+    "honesty": { "$ref": "#/$defs/honesty" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "regime": {
+            "properties": { "components": { "properties": { "fee": { "const": "global_95bps" } }, "required": ["fee"] } },
+            "required": ["components"]
+          }
+        },
+        "required": ["regime"]
+      },
+      "then": {
+        "properties": {
+          "regime": {
+            "properties": { "component_lock": { "properties": { "fee": { "const": "proposed" } }, "required": ["fee"] } },
+            "required": ["component_lock"]
+          },
+          "dual_read": { "properties": { "overlay": { "const": "enriched" } }, "required": ["overlay"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "regime": {
+            "properties": { "components": { "properties": { "instr": { "const": "launchlab_init" } }, "required": ["instr"] } },
+            "required": ["components"]
+          }
+        },
+        "required": ["regime"]
+      },
+      "then": {
+        "properties": {
+          "regime": {
+            "properties": { "component_lock": { "properties": { "instr": { "const": "proposed" } }, "required": ["instr"] } },
+            "required": ["component_lock"]
+          },
+          "dual_read": { "properties": { "overlay": { "const": "enriched" } }, "required": ["overlay"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "regime": {
+            "properties": { "components": { "properties": { "venue": { "const": "launchlab" } }, "required": ["venue"] } },
+            "required": ["components"]
+          }
+        },
+        "required": ["regime"]
+      },
+      "then": {
+        "properties": {
+          "regime": {
+            "properties": { "component_lock": { "properties": { "venue": { "const": "proposed" } }, "required": ["venue"] } },
+            "required": ["component_lock"]
+          },
+          "dual_read": { "properties": { "overlay": { "const": "enriched" } }, "required": ["overlay"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "regime": {
+            "properties": { "components": { "properties": { "market": { "const": "launchlab_pool" } }, "required": ["market"] } },
+            "required": ["components"]
+          }
+        },
+        "required": ["regime"]
+      },
+      "then": {
+        "properties": {
+          "regime": {
+            "properties": { "component_lock": { "properties": { "market": { "const": "proposed" } }, "required": ["market"] } },
+            "required": ["component_lock"]
+          },
+          "dual_read": { "properties": { "overlay": { "const": "enriched" } }, "required": ["overlay"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "dual_read": { "properties": { "overlay": { "const": "sealed" } }, "required": ["overlay"] } },
+        "required": ["dual_read"]
+      },
+      "then": {
+        "properties": {
+          "dual_read": { "properties": { "enrich_type": { "const": null } }, "required": ["enrich_type"] },
+          "regime": {
+            "properties": {
+              "components": {
+                "properties": {
+                  "fee": { "const": "unverified" },
+                  "instr": { "const": "pending_rpc" },
+                  "venue": { "const": "pump_program" },
+                  "quote": { "const": "wsol_assumed" },
+                  "market": { "const": "bonding_curve" },
+                  "stage": { "const": "bonding" }
+                }
+              }
+            }
+          },
+          "knowable_at_t": {
+            "properties": {
+              "quote_verified": { "const": false },
+              "venue_verified": { "const": false },
+              "creator_verified": { "const": false }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "lock": { "enum": ["production", "proposed"] },
+    "fee": {
+      "enum": ["global_100bps", "global_95bps", "creator_dynamic", "pumpswap_pool", "unverified"]
+    },
+    "instr": {
+      "enum": ["create", "create_v2", "pending_rpc", "unknown_until_rpc", "launchlab_init"]
+    },
+    "venue": { "enum": ["pump_program", "launchlab"] },
+    "market": {
+      "enum": ["bonding_curve", "pumpswap", "pumpswap_pending", "external", "legacy_raydium", "UNK", "launchlab_pool"]
+    },
+    "quote": { "enum": ["wsol", "wsol_assumed", "usdc", "other"] },
+    "stage": {
+      "enum": ["bonding", "bonding_complete", "migrating", "pumpswap", "legacy_raydium", "UNK"]
+    },
+    "l1Spine": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Market and create fields knowable at decision T. Null means absent at T, never synthesized. No ws_payload blob.",
+      "required": [
+        "signature",
+        "mint",
+        "txType",
+        "stream",
+        "source",
+        "commitment",
+        "stage",
+        "traderPublicKey",
+        "name",
+        "symbol",
+        "uri",
+        "bondingCurveKey",
+        "initialBuy",
+        "solAmount",
+        "vTokensInBondingCurve",
+        "vSolInBondingCurve",
+        "marketCapSol",
+        "pool"
+      ],
+      "properties": {
+        "signature": { "type": "string", "minLength": 1 },
+        "mint": { "type": "string", "minLength": 1 },
+        "txType": { "const": "create" },
+        "stream": { "const": "subscribeNewToken" },
+        "source": { "const": "pumpportal_ws" },
+        "commitment": { "const": "processed" },
+        "stage": { "$ref": "#/$defs/stage" },
+        "traderPublicKey": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "symbol": { "type": ["string", "null"] },
+        "uri": { "type": ["string", "null"] },
+        "bondingCurveKey": { "type": ["string", "null"] },
+        "initialBuy": { "type": ["number", "null"], "minimum": 0 },
+        "solAmount": { "type": ["number", "null"], "minimum": 0 },
+        "vTokensInBondingCurve": { "type": ["number", "null"], "minimum": 0 },
+        "vSolInBondingCurve": { "type": ["number", "null"], "minimum": 0 },
+        "marketCapSol": { "type": ["number", "null"], "minimum": 0 },
+        "pool": {
+          "type": ["string", "null"],
+          "description": "Null on stage=bonding. Do not infer migration."
+        }
+      }
+    },
+    "regime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["regime_id", "components", "component_lock"],
+      "properties": {
+        "regime_id": {
+          "type": "string",
+          "description": "DEC-004 pipe key=value in canonical order. Must equal components.",
+          "pattern": "^env=[^| ]+\\|source=[^| ]+\\|stream=[^| ]+\\|stage=[^| ]+\\|quote=[^| ]+\\|commitment=[^| ]+\\|venue=[^| ]+\\|instr=[^| ]+\\|fee=[^| ]+\\|market=[^| ]+$"
+        },
+        "components": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["env", "source", "stream", "stage", "quote", "commitment", "venue", "instr", "fee", "market"],
+          "properties": {
+            "env": { "const": "mainnet" },
+            "source": { "const": "pumpportal_ws" },
+            "stream": { "enum": ["subscribeNewToken", "subscribeMigration"] },
+            "stage": { "$ref": "#/$defs/stage" },
+            "quote": { "$ref": "#/$defs/quote" },
+            "commitment": { "const": "processed" },
+            "venue": { "$ref": "#/$defs/venue" },
+            "instr": { "$ref": "#/$defs/instr" },
+            "fee": { "$ref": "#/$defs/fee" },
+            "market": { "$ref": "#/$defs/market" }
+          }
+        },
+        "component_lock": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "proposed means the tag is not production-locked. global_95bps, launchlab_init, launchlab, and launchlab_pool must be proposed.",
+          "required": ["env", "source", "stream", "stage", "quote", "commitment", "venue", "instr", "fee", "market"],
+          "properties": {
+            "env": { "$ref": "#/$defs/lock" },
+            "source": { "$ref": "#/$defs/lock" },
+            "stream": { "$ref": "#/$defs/lock" },
+            "stage": { "$ref": "#/$defs/lock" },
+            "quote": { "$ref": "#/$defs/lock" },
+            "commitment": { "$ref": "#/$defs/lock" },
+            "venue": { "$ref": "#/$defs/lock" },
+            "instr": { "$ref": "#/$defs/lock" },
+            "fee": { "$ref": "#/$defs/lock" },
+            "market": { "$ref": "#/$defs/lock" }
+          }
+        }
+      }
+    },
+    "knowableAtT": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["quote", "quote_verified", "instr", "fee", "venue", "venue_verified", "creator_verified", "reserves_source"],
+      "properties": {
+        "quote": { "$ref": "#/$defs/quote" },
+        "quote_verified": { "type": "boolean" },
+        "instr": { "$ref": "#/$defs/instr" },
+        "fee": { "$ref": "#/$defs/fee" },
+        "venue": { "$ref": "#/$defs/venue" },
+        "venue_verified": { "type": "boolean" },
+        "creator_verified": { "const": false },
+        "reserves_source": { "enum": ["ws", "UNK"] }
+      }
+    },
+    "graphSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot_id", "value", "evidence_tier", "hypothesis_status", "t_precompute_as_of"],
+      "properties": {
+        "slot_id": {
+          "enum": [
+            "creator_age_seconds",
+            "prior_mint_count",
+            "min_gap_seconds",
+            "creator_buyer_recurrence_weak",
+            "early_wallet_dt_min_seconds"
+          ]
+        },
+        "value": { "type": ["number", "boolean", "null"] },
+        "evidence_tier": { "const": "weak_ws" },
+        "hypothesis_status": {
+          "enum": ["directional_watch_not_promoted", "incomplete_do_not_densify"]
+        },
+        "t_precompute_as_of": { "type": "string", "minLength": 1 }
+      }
+    },
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cold", "max_slots", "lane_policy", "slots"],
+      "properties": {
+        "cold": {
+          "type": "boolean",
+          "description": "True when slots is null, empty, or every value is null. Graph cold is the v0 default."
+        },
+        "max_slots": { "const": 5 },
+        "lane_policy": { "const": "exp004_capped_scalars_only" },
+        "slots": {
+          "type": ["array", "null"],
+          "maxItems": 5,
+          "items": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/graphSlot" }] }
+        }
+      }
+    },
+    "clocks": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Field names follow DEC-005 draft PR #8, which is not merged. clock_source records that.",
+      "required": ["t_ws", "t_event", "T_decision", "t_precompute_as_of", "precompute_features_merged", "clock_source"],
+      "properties": {
+        "t_ws": { "type": "string", "minLength": 1 },
+        "t_event": { "type": ["string", "null"] },
+        "T_decision": { "type": "string", "minLength": 1 },
+        "t_precompute_as_of": { "type": "string", "minLength": 1 },
+        "precompute_features_merged": { "type": "boolean" },
+        "clock_source": { "const": "dec005_draft_pr8_unmerged" }
+      }
+    },
+    "deltaExec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defined_in", "value", "reason"],
+      "properties": {
+        "defined_in": { "const": "dec005_draft_pr8_unmerged" },
+        "value": { "const": null },
+        "reason": { "const": "paper_packet_has_no_fill" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spine",
+        "source_day",
+        "parent_type",
+        "parent_schema",
+        "parent_signature",
+        "mint",
+        "fixture_origin",
+        "supersedes",
+        "day_aligned"
+      ],
+      "properties": {
+        "spine": { "const": "sealed_jsonl" },
+        "source_day": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "parent_type": { "const": "ingest_hot" },
+        "parent_schema": { "const": "observe_hot_v0" },
+        "parent_signature": { "type": "string", "minLength": 1 },
+        "mint": { "type": "string", "minLength": 1 },
+        "fixture_origin": { "enum": ["synthetic", "sealed_row_projection"] },
+        "supersedes": { "const": null },
+        "day_aligned": { "const": true }
+      }
+    },
+    "dualRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["overlay", "sealed_book_rpc_slice", "enrich_type"],
+      "properties": {
+        "overlay": { "enum": ["sealed", "enriched"] },
+        "sealed_book_rpc_slice": {
+          "const": "incomplete",
+          "description": "EXP-007e enriched PASS does not close the sealed full book."
+        },
+        "enrich_type": { "enum": ["regime_enrich", null] }
+      }
+    },
+    "honesty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration",
+        "continuous_observe_wiring",
+        "encoder_promoted",
+        "enum_production_lock",
+        "discovery_promoted",
+        "graph_lane_revived",
+        "invented_lift"
+      ],
+      "properties": {
+        "registration": { "const": "proposed" },
+        "continuous_observe_wiring": { "const": false },
+        "encoder_promoted": { "const": false },
+        "enum_production_lock": { "const": false },
+        "discovery_promoted": { "const": false },
+        "graph_lane_revived": { "const": false },
+        "invented_lift": { "const": false }
+      }
+    }
+  }
+}
