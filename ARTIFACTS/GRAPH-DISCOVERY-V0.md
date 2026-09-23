@@ -242,17 +242,18 @@ flowchart LR
 
 ---
 
-## 9. Suggested next EXP (do not run in this PR)
+## 9. EXP-004 — Graph creator-recurrence v0 (**landed — run locally**)
 
-| Field | Proposed value |
+| Field | Value |
 | --- | --- |
 | **ID** | **`EXP-004-graph-creator-recurrence-v0`** |
-| **Hypothesis** | Regime-gated, capped as-of-T graph features (**creator age / prior-mints**, weak **creator↔buyer**, optional **early-wallet Δt**) falsify or survive vs spine-only on **full detect book** at **1/5/15/30/60s** ([H-graph](../LAB_STATE.md)). |
-| **Falsifiers** | No separable arm vs spine at any horizon; **INCOMPLETE** coverage; regime-stratified **collapse** (S1); redundancy with spine reserves (H-G5); weak/strong tier inversion (H-G3). **No** mark densify retune (S6). |
-| **Depends on** | Sealed JSONL; existing `--marks`; DEC-005 clocks when merged; DEC-007 book law |
-| **Out of scope** | Evaluate rule promotion; Layer 3 wallet follow; paid index |
+| **Status** | Tooling on `main` branch path: [EXP-004](../EXP/EXP-004-graph-creator-recurrence-v0.md); CLI `python -m tools.exp004_graph_discovery`. **Scored result INCOMPLETE** until operator courier JSONL + marks (cloud agents have no Vaan book). |
+| **Hypothesis** | Regime-gated, capped as-of-T **H-G1…H-G4** vs spine-only on **full detect book** at **1/5/15/30/60s** ([H-graph](../LAB_STATE.md)). **H-G5/H-G6** taxonomy only — not scored for lift. |
+| **Falsifiers** | No separable arm vs spine; **no_lift_vs_random**; **INCOMPLETE** `priced_n`; regime-stratified collapse (S1); H-G4 empty on create-spine (honest, not fabricated). **No** mark densify retune (S6). |
+| **Depends on** | Sealed JSONL; existing `--marks`; DEC-005 weak create-spine; DEC-007 book law |
+| **Out of scope** | Evaluate rule promotion; Layer 3 wallet follow; paid index; Scout EXP stub |
 
-Alternate name if council prefers sequence emphasis: `EXP-004-graph-weak-creator-sequences-v0`.
+Scout taxonomy cross-link (I1–I4, Park): [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](DISCOVERY-WALLET-FOLLOW-SIGNALS.md). Alternate name (unused): `EXP-004-graph-weak-creator-sequences-v0`.
 
 ---
 

@@ -97,10 +97,11 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 3. **EXP-003 marks (unchanged law):** Subsample marks exist; book-wide N/A expected. Reuse existing marks for paper EXPs. Densify only after a non-adverse directional hyp needs power — never as lift rescue. [EXP-003](EXP/EXP-003-post-create-marks.md).
 4. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py).
 5. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)
-6. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules; **Graph DISCOVERY brief:** [GRAPH-DISCOVERY-V0.md](ARTIFACTS/GRAPH-DISCOVERY-V0.md) (creator recurrence / weak links first; EXP-004 proposed, not run)
-7. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only**; bonk/mayhem reclass **parked**
-8. Defer X API until social hypothesis has a cheap proxy or manual sample set (**no X keys on `mal-core-0`**)
-9. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
+6. **EXP-004 Graph Discovery:** CLI [`tools.exp004_graph_discovery`](tools/exp004_graph_discovery.py) — H-G1…H-G4 vs spine at 1/5/15/30/60s; **INCOMPLETE** until courier JSONL+marks. Brief: [GRAPH-DISCOVERY-V0.md](ARTIFACTS/GRAPH-DISCOVERY-V0.md) §9; [EXP-004](EXP/EXP-004-graph-creator-recurrence-v0.md). Scout taxonomy only: [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](ARTIFACTS/DISCOVERY-WALLET-FOLLOW-SIGNALS.md).
+7. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules
+8. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only**; bonk/mayhem reclass **parked**
+9. Defer X API until social hypothesis has a cheap proxy or manual sample set (**no X keys on `mal-core-0`**)
+10. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
 
 ## Pointers
 
@@ -110,6 +111,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Local EXP-002/002b/002c CLI: `python -m tools.exp002_paper_runner` (`--rules v0` | `v1` | `v2`, default **v2**; `--marks` for EXP-003 ticks)
 - Local EXP-003 RPC backfill: `python -m tools.exp003_rpc_backfill`
 - Local EXP-003 coverage: `python -m tools.exp003_marks`
+- Local EXP-004 Graph Discovery: `python -m tools.exp004_graph_discovery` (`--marks` for EXP-003 ticks)
 - Research: `ARTIFACTS/` (marks: [POST-CREATE-MARKS-BRIEF.md](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md); paper/fill-sim: [PAPER-TRADING-SURFACE-BRIEF.md](ARTIFACTS/PAPER-TRADING-SURFACE-BRIEF.md); wallet/follow Discovery: [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](ARTIFACTS/DISCOVERY-WALLET-FOLLOW-SIGNALS.md))
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 - Laya vs VPS stack compare: [ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md) (Always Free `mal-core-0` is the phase-0 host experiment, not a paid VPS)

@@ -6,6 +6,8 @@ data/observe/_exp001_*
 data/observe/_exp002_*
 # EXP-003 local marks coverage
 data/observe/_exp003_*
+# EXP-004 local graph discovery outputs
+data/observe/_exp004_*
 
 # Python
 __pycache__/
