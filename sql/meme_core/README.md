@@ -14,7 +14,7 @@ PostgreSQL on `mal-core-0` is the **ops/state** layer (tokens, wallets, relation
 On `mal-core-0` as `ubuntu` (NOPASSWD sudo → `postgres` peer):
 
 ```bash
-sudo -u postgres psql -d meme_core -v ON_ERROR_STOP=1 -f sql/meme_core/001_ops_state_stubs.sql
+sudo -u postgres psql -d meme_core -v ON_ERROR_STOP=1 < sql/meme_core/001_ops_state_stubs.sql
 ```
 
 Or: `scripts/mal-core/apply-schema.sh` after checkout.

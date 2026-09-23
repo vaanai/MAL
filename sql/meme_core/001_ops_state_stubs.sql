@@ -2,7 +2,7 @@
 -- Provenance/event spine remains sealed JSONL — this is NOT a provenance replacement.
 --
 -- Apply on mal-core-0 without the mal_app password:
---   sudo -u postgres psql -d meme_core -v ON_ERROR_STOP=1 -f sql/meme_core/001_ops_state_stubs.sql
+--   sudo -u postgres psql -d meme_core -v ON_ERROR_STOP=1 < sql/meme_core/001_ops_state_stubs.sql
 -- If sudo/postgres peer is unavailable, do not guess a password: record BLOCKED:needs_db_password.
 
 BEGIN;

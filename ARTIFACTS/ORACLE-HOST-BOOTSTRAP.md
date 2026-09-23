@@ -54,7 +54,13 @@ This hostname `ssh.tradervaan.com` is **Access-gated**. It is **not** public SSH
 
 - Version **16.15**, DB **`meme_core`**, role **`mal_app`**, **localhost only**.
 - Migration: `sql/meme_core/001_ops_state_stubs.sql` (tokens, wallets, relationships, paper_positions, ops_meta, schema_migrations).
-- Applied as `sudo -u postgres psql` (peer). **No password in git.** If that path dies: `BLOCKED:needs_db_password` (file `SCHEMA-BLOCKED.txt` in this directory).
+- Applied as `sudo -u postgres psql` via **stdin** (the `postgres` OS user cannot read `/home/ubuntu`):
+
+  ```bash
+  sudo -u postgres psql -d meme_core -v ON_ERROR_STOP=1 < sql/meme_core/001_ops_state_stubs.sql
+  ```
+
+  **No password in git.** If that path dies: `BLOCKED:needs_db_password` (file `SCHEMA-BLOCKED.txt` in this directory).
 - Convenience: Postgres role **`ubuntu`** is **LOGIN + SELECT-only** via local **peer** (narrower than ubuntu’s existing NOPASSWD sudo). App writes stay `mal_app`.
 
 ---

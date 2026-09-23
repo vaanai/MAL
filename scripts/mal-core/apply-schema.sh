@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Apply meme_core ops/state stub migrations via postgres peer (no password).
+# Use stdin (not -f): the postgres OS user cannot read /home/ubuntu.
 # If this cannot run, record BLOCKED:needs_db_password — do not guess.
 set -euo pipefail
 export LC_ALL=C.UTF-8 LANG=C.UTF-8
@@ -17,7 +18,7 @@ if ! command -v psql >/dev/null 2>&1; then
   exit 1
 fi
 
-if sudo -n -u postgres psql -d meme_core -v ON_ERROR_STOP=1 -f "${SQL}"; then
+if sudo -n -u postgres psql -d meme_core -v ON_ERROR_STOP=1 < "${SQL}"; then
   echo "apply-schema: applied ${SQL} as postgres (peer) on meme_core"
   exit 0
 fi

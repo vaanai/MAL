@@ -13,21 +13,21 @@ Use with [ORACLE-HOST-BOOTSTRAP.md](ORACLE-HOST-BOOTSTRAP.md) and [tools/oracle_
 
 ## Host layout
 
-- [ ] `/var/lib/mal/{sealed/jsonl,paper,logs,run,backups,eng}` exist; `ubuntu`-owned
-- [ ] `/var/lib/mal/postgresql/` left `postgres`-owned
-- [ ] `/var/lib/mal/eng/BOOTSTRAP.md` present (no secrets)
+- [x] `/var/lib/mal/{sealed/jsonl,paper,logs,run,backups,eng}` exist; `ubuntu`-owned
+- [x] `/var/lib/mal/postgresql/` left `postgres`-owned
+- [x] `/var/lib/mal/eng/BOOTSTRAP.md` present (no secrets)
 
 ## Postgres
 
-- [ ] `001_ops_state_stubs.sql` applied via `sudo -u postgres psql -d meme_core` **or** documented `BLOCKED:needs_db_password`
-- [ ] `pg_isready -h 127.0.0.1 -p 5432` accepting
-- [ ] Still localhost-only; no public/tunneled DB hostname
+- [x] `001_ops_state_stubs.sql` applied via `sudo -u postgres psql -d meme_core` **or** documented `BLOCKED:needs_db_password`
+- [x] `pg_isready -h 127.0.0.1 -p 5432` accepting
+- [x] Still localhost-only; no public/tunneled DB hostname
 
 ## JSONL + health
 
-- [ ] Observe venv at `/home/ubuntu/mal/.venv` with `requirements-observe.txt`
-- [ ] User unit `mal-observe.service` installed (started only if venv works)
-- [ ] `/var/lib/mal/eng/healthcheck.sh` exits 0; log under `/var/lib/mal/logs`
+- [x] Observe venv at `/home/ubuntu/mal/.venv` with `requirements-observe.txt`
+- [x] User unit `mal-observe.service` installed (started only if venv works)
+- [x] `/var/lib/mal/eng/healthcheck.sh` exits 0; log under `/var/lib/mal/logs`
 
 ## Fences
 

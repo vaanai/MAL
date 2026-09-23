@@ -56,7 +56,8 @@ fi
 
 SCHEMA="${ROOT}/sql/meme_core/001_ops_state_stubs.sql"
 log "schema: ${SCHEMA}"
-if [[ -f "${SCHEMA}" ]] && sudo -n -u postgres psql -d meme_core -v ON_ERROR_STOP=1 -f "${SCHEMA}"; then
+# Pipe via stdin: the postgres OS user cannot read /home/ubuntu (mode 750).
+if [[ -f "${SCHEMA}" ]] && sudo -n -u postgres psql -d meme_core -v ON_ERROR_STOP=1 < "${SCHEMA}"; then
   log "schema: applied 001_ops_state_stubs (postgres peer; no password)"
   rm -f "${MAL_ROOT}/eng/SCHEMA-BLOCKED.txt"
 else
