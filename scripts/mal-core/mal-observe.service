@@ -1,0 +1,22 @@
+[Unit]
+Description=MAL paper observe JSONL ingest (PumpPortal WS, no paid RPC)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mal
+Environment=MAL_OBSERVE_OUTPUT_DIR=/var/lib/mal/sealed/jsonl
+Environment=MAL_LOG_LEVEL=INFO
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+ExecStart=%h/mal/.venv/bin/python -m observe --output-dir /var/lib/mal/sealed/jsonl
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/lib/mal/logs/observe.log
+StandardError=append:/var/lib/mal/logs/observe.log
+
+[Install]
+WantedBy=default.target

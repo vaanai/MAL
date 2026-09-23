@@ -2,9 +2,9 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Decided; owner implementing.** Tunnel / Access / `mal-cursor` key do **not** exist in Lab memory as live plumbing. **Do not** claim agents already have SSH. |
+| **Status** | **LIVE** (implemented). Cursor agents SSH via Cloudflare Access Service Auth + Runtime Secrets. Smoke **2026-09-23** (`mal-core-vnic`, paper-only). |
 | **Decider** | Vaan (accepted). **Helm recommendation.** Council **soft-OK** Scout / Graph / Proof (2026-09-22). |
-| **Date** | 2026-09-22 (decision); recorded 2026-09-23 |
+| **Date** | 2026-09-22 (decision); recorded 2026-09-23; **implementation LIVE 2026-09-23** |
 | **Amends** | [DEC-010](DEC-010-oracle-phase0-handoff-autonomy.md) §5 (open recommend → **chosen path**; owner still implements) |
 | **Does not amend** | Always Free **2 OCPU / 12 GB** envelope ([DEC-009](DEC-009-oracle-always-free-phase0-host.md)); cheap-first ([DEC-008](DEC-008-stack-phase-gates.md)); paper path ([DEC-006](DEC-006-detect-decode-evaluate-runners.md)); JSONL provenance spine; no trading / X keys on host; EXP-002c closed facts |
 | **Handoff** | [ORACLE-PHASE0-HANDOFF.md](../ARTIFACTS/ORACLE-PHASE0-HANDOFF.md) §7 |
@@ -22,7 +22,7 @@
 
 5. **Secrets / names.** No tunnel hostnames, Access policy IDs, account IDs, CIDRs, or key material in git, this DEC, or chat. Placeholder identity in Lab memory: **`mal-cursor`**. Password / trading / X rules unchanged: **none of those on the host.**
 
-6. **Implementation status.** **Decided.** **Owner implements** in-console / on-host. Agents must **not** deploy `cloudflared`, Access, Tailscale, or keys autonomously. After owner says plumbing is ready, team bootstraps `/var/lib/mal` (dirs, `meme_core` schema, sealed JSONL ingest, paper, monitoring).
+6. **Implementation status.** **LIVE** (2026-09-23). Owner implemented Tunnel + Access Service Auth + dedicated agent key. Cursor Cloud agents reconnect via Runtime Secrets (names only in git). Runbook: [oracle_ssh_smoke.md](../tools/oracle_ssh_smoke.md). Team bootstraps `/var/lib/mal` (dirs, `meme_core` schema, sealed JSONL ingest, paper, monitoring) — paper-only. **Do not** re-deploy Access/Tunnel as a “fix.” **Do not** weaken Access.
 
 7. **Cursor My Machines parked** as the phase-0 **default** (aarch64 / resource risk on the 2 OCPU / 12 GB ARM box). Not a forever ban; not the access design we are implementing now.
 
@@ -43,7 +43,7 @@
 - **Sealed JSONL** remains the provenance / EXP spine. Postgres remains **ops/state** (`meme_core` / `mal_app`). This DEC does not migrate provenance into Postgres.
 - **No trading keys and no X keys** on `mal-core-0`. Paper only. Agents never get trading capital.
 - **No invented hostnames / CIDRs / secrets** in Lab memory.
-- **Do not** claim the tunnel already exists. Status is **decided; owner implementing.**
+- **Do not** claim the path is still “owner implementing / no agent SSH.” Status is **LIVE** (2026-09-23 smoke).
 
 ## Council
 
@@ -66,32 +66,36 @@ Helm recommended the chosen path. Scout / Graph / Proof **soft-OK** (2026-09-22)
 
 ## Out of scope (this DEC)
 
-- Installing `cloudflared` / Access / Tailscale / keys (owner action; **not done**)
-- Granting agents SSH today
 - Public 443 as a website; public Postgres; extra public app ports
 - Live execution, wallet keys, X credentials, capital
 - PAYG / leaving Always Free / 4 OCPU / 24 GB
 - Unparking bonk/mayhem; choosing a trading/wallet surface
+- Weakening Access / exposing `:22` / sharing the owner personal key
+
+## Implementation (2026-09-23)
+
+Owner plumbing is **in place**. Cursor Cloud Agent smoke **passed**:
+
+- `cloudflared` **2026.9.1** on the **agent** hop: `access tcp` to the Access-gated hostname `ssh.tradervaan.com` → local `127.0.0.1:2222` with `--id/--secret` (Service Auth)
+- SSH as `ubuntu` using Runtime Secret `CURSOR_CLOUD_AGENT_SSH_KEY` (base64 PEM, mode-600 tempfile)
+- Remote: hostname **`mal-core-vnic`**, `whoami ubuntu`, `uname -m aarch64`, paper-only
+- Key fingerprint: `SHA256:HH+tRTOIpyvYorf+FhZ7INifqOm2L7NTcvPLdqMPVTo` (comment `cursor-cloud-agent`, ED25519)
+- Host already runs `cloudflared.service` (outbound tunnel). Postgres remains localhost-only.
+
+Operator runbook (no secret **values**): [tools/oracle_ssh_smoke.md](../tools/oracle_ssh_smoke.md). Cleanup `/tmp` key + temp `cloudflared` after each session.
+
+The Access TCP hostname is documented here because agents must reconnect without the owner PC. It is **not** a public SSH port. Service-token **values** and private key material stay out of git.
 
 ## Next steps
 
-**Owner (implements DEC-011):**
-
-1. Run **`cloudflared`** on **`mal-core-0`** (outbound to Cloudflare; **no** extra public listeners).
-2. Gate **SSH** with **Cloudflare Access** (identity / service-token — owner chooses; **do not** document secrets here).
-3. Create dedicated **`mal-cursor` ed25519** deploy key: public half on the host; private half owner-held for agents. **Not** the owner personal key. **Not** in git.
-4. Keep owner personal key + home-IP `:22` as **owner break-glass**. **Do not** open `:22` to the world.
-5. Confirm Postgres still **localhost-only**. **Do not** publish a public/tunneled DB hostname.
-6. Tell Helm when plumbing is ready. Until then, agents **do not** have SSH.
-
-**Team (after owner says access exists):** bootstrap `/var/lib/mal` subdirs, sealed JSONL on the host, `meme_core` schema, ingest, paper marks, logging/monitoring/backups, services. Do **not** idle-wait on the owner PC. Do **not** fake Always Free keep-alive.
+**Team (access exists):** bootstrap `/var/lib/mal` subdirs, sealed JSONL on the host, `meme_core` schema, ingest, paper marks, logging/monitoring/backups, services. Do **not** idle-wait on the owner PC. Do **not** fake Always Free keep-alive. **Do not** re-open Access/Tunnel design.
 
 ## Review trigger
 
-- Owner reports tunnel/Access/`mal-cursor` ready — or rejects and falls back to Tailscale-on-Oracle (same fences; log in [ENGINEERING-DECISION-LOG.md](../ARTIFACTS/ENGINEERING-DECISION-LOG.md)).
+- Access Service Auth or deploy-key rotation — update runbook fingerprint; do not commit new secrets.
 - Proposal to unpark My Machines on-box, open public app ports, or expose Postgres.
 - `cloudflared` aarch64/resource miss on the 2/12 envelope → Helm, then consider backup path.
 
 ## Overturn path
 
-New DEC. Default remains: **CF Tunnel + Access + `mal-cursor` key**, owner implementing, Postgres localhost, JSONL provenance spine, no agent SSH until owner says so.
+New DEC. Default remains: **CF Tunnel + Access Service Auth + dedicated agent key**, Postgres localhost, JSONL provenance spine, paper-only, no public `:22`.

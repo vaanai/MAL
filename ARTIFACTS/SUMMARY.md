@@ -3,8 +3,8 @@
 **As-of:** 2026-09-23
 
 - **Product:** 3 layers (new-coin / entity-graph / filtered smart-wallet) + **LAYA** → risk gate → exec (deferred). **X = layer 4 later**. Paper first; free-first. Plans = directions; profit is the goal.
-- **DEC-010:** `mal-core-0` **LIVE** (Phoenix AD-1, **2 OCPU / 12 GB A1**, Ubuntu 24.04, `/var/lib/mal` 150 GB). Postgres **16.15** `meme_core`/`mal_app` localhost. **No agent SSH yet.** Handoff: [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md).
-- **DEC-011:** Cursor↔Oracle access **decided** — CF Tunnel (`cloudflared`) on box + Access gating SSH + dedicated `mal-cursor` ed25519 key (not owner personal). Backup: Tailscale-on-Oracle + ephemeral keys. My Machines on-box **parked**. **Owner implementing — tunnel not claimed live.** Next owner ask = implement DEC-011; then bootstrap. [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md).
+- **DEC-010:** `mal-core-0` **LIVE** (Phoenix AD-1, **2 OCPU / 12 GB A1**, Ubuntu 24.04, `/var/lib/mal` 150 GB). Postgres **16.15** `meme_core`/`mal_app` localhost. Handoff: [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md).
+- **DEC-011:** Cursor↔Oracle access **LIVE** — CF Access Service Auth + Runtime Secrets; smoke **2026-09-23**; hostname **`mal-core-vnic`**; paper-only. Runbook [oracle_ssh_smoke.md](../tools/oracle_ssh_smoke.md). Bootstrap [ORACLE-HOST-BOOTSTRAP.md](ORACLE-HOST-BOOTSTRAP.md). My Machines on-box **parked**. **Do not** expose Postgres or open `:22`. [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md).
 - **Storage:** GitHub SoT. Sealed **JSONL** = provenance/event spine. Postgres = **ops/state** — **not** a provenance replacement. Password/secrets **never** in repo. [DEC-002](../DEC/DEC-002-memory-first-no-db-local.md) amended by DEC-009/010.
 - **Workflow:** Grok plan/review/integrate; Cursor implement/test (aggressive). **DM Vaan a Cursor status card** on every launch. Escalate before spend/security/public Postgres/keys/capital. No fake idle keep-alive.
 - **Open (no pick):** trading/wallet surface (Axiom / Phantom / …); optional real paper-trading utility — **ask first**.
