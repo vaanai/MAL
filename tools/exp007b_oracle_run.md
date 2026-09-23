@@ -50,5 +50,5 @@ scripts/mal-core/agent-ssh.sh -- bash -lc 'cd /var/lib/mal/src/MAL && …'
 
 ## Stamp honesty
 
-- Report **PENDING_ORACLE_RUN** in the EXP-007b doc until host artifacts exist.
-- Never fabricate coverage — stamp from real `regime_enrich` + audit summary JSON only.
+- EXP-007b Oracle stamp lives in [EXP-007b](../EXP/EXP-007b-platform-regime-rpc-enrich-v0.md) § Result (host artifacts under `_exp007b-oracle-*`).
+- Fee **100% unverified** root cause + restamp: [EXP-007c](../EXP/EXP-007c-fee-knowable-at-t-v0.md) — never fabricate coverage.

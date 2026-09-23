@@ -1,6 +1,6 @@
 # EXP-007c — Fee dimension knowable-at-T (Discovery stamp)
 
-> **Status:** Helm-authorized **2026-09-23** follow-on to [EXP-007b](EXP-007b-platform-regime-rpc-enrich-v0.md). Diagnose **why fee stayed 100% `unverified`** on the **reused** capped RPC enrich sample; add minimal **Global + bonding-curve fee** decode; re-stamp **K-fee-knowable-at-t** on enriched overlay only. **Merge ≠ authorize** continuous observe-wiring.
+> **Status:** **INCOMPLETE (scored)** — Oracle **`mal-core-vnic`** **2026-09-23** fee restamp on reused EXP-007b sample.
 
 | Field | Value |
 | --- | --- |
@@ -65,18 +65,29 @@
 
 ---
 
-## Result / conclusion
+## Result / conclusion (Oracle sealed 2026-09-23)
 
-**Claim (fee knowable-at-T on reused 007b sample):** _Pending Oracle restamp in PR branch — code path lands; stamp table updated after `mal-core-vnic` run._
+**Host:** `mal-core-vnic` — fee restamp on reused `_exp007b-oracle-*` sample via [`tools/exp007c_oracle_run.md`](../tools/exp007c_oracle_run.md). Public mainnet RPC; throttle under load.
 
-| Courier day | rows | fee `global_100bps` | fee `creator_dynamic` | fee `unverified` | **K-fee-knowable-at-t** |
-| --- | ---: | ---: | ---: | ---: | --- |
-| **2026-09-20** | 500 | TBD | TBD | TBD | TBD |
-| **2026-09-21** | 500 | TBD | TBD | TBD | TBD |
+**Claim (fee knowable-at-T on reused 007b sample):** **INCOMPLETE** — RPC fee **decode lands** in `rpc_meta.fee_resolve`, but v0 **`regime_id.fee` enum** stays mostly **`unverified`** (honest; no invented bps).
 
-**Sealed full-book fee:** **INCOMPLETE** (100% `unverified` WS default) — unchanged.
+| Courier day | rows | `global_100bps` | `creator_dynamic` | `unverified` | residual unverified % | **K-fee-knowable-at-t** |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| **2026-09-20** | **500** | **0** | **72** (14.4%) | **428** | **85.6%** | **INCOMPLETE** |
+| **2026-09-21** | **500** | **0** | **53** (10.6%) | **447** | **89.4%** | **INCOMPLETE** |
 
-**Soft locks:** merge ≠ continuous observe-wiring; no Discovery promote; no invented fee bps; EXP-007b instr/quote gaps unchanged.
+**What blocked enum PASS (not missing RPC wiring):**
+
+| Blocker | Evidence |
+| --- | --- |
+| **EXP-007b never fetched Global** | Pre-007c enrich hard-coded `fee=unverified` — fixed in enrich + restamp path |
+| **Global bps ≠ enum `global_100bps`** | At create `minContextSlot`, Pump `Global.fee_basis_points == **95**` — **428/500** (20) and **447/500** (21) rows stay `unverified` with `global.fee_basis_points_nonstandard_95` |
+| **Holder-reward slice** | **72** / **53** rows per day → `fee=creator_dynamic` (`bonding_curve.is_holder_reward`) |
+| **Sealed full book** | Unchanged **100%** `fee=unverified` — dual read honest |
+
+**Cross-day enriched overall:** **INCOMPLETE** (`K-fee-knowable-at-t` + **K-platform-rpc-resolved** unchanged from EXP-007b instr/quote mix).
+
+**Conclusion:** Fee dimension is **partially knowable-at-T** on the same capped sample (holder-reward + decoded Global bps in side metadata), but **v0 fee enum PASS** remains **INCOMPLETE** until REGIME-ENUM admits observed Global bps or on-chain returns 100 bps — **do not fabricate `global_100bps`**. **Merge ≠ authorize** continuous observe-wiring. **No Discovery promote.**
 
 ---
 

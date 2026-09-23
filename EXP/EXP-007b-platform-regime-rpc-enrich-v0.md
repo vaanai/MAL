@@ -68,7 +68,7 @@
 | **2026-09-21** | **500** | **0** | **INCOMPLETE** | **INCOMPLETE** | **INCOMPLETE** (instr pending **16.0%**; quote_verified **70.0%**) |
 
 **Cross-day sealed overall:** **INCOMPLETE** (unchanged — full book WS defaults).  
-**Cross-day enriched overall:** **INCOMPLETE** — RPC overlay improves coverage but does not clear **K-platform-rpc-resolved** (fee remains **100%** `unverified`; instr/quote still mixed).
+**Cross-day enriched overall:** **INCOMPLETE** — RPC overlay improves instr/quote; fee was **100%** `unverified` pre-007c (no Global fetch) — see [EXP-007c](EXP-007c-fee-knowable-at-t-v0.md).
 
 | Gate (enriched sample) | 2026-09-20 | 2026-09-21 |
 | --- | --- | --- |
@@ -84,4 +84,5 @@
 
 - Parent audit: [EXP-007](EXP-007-platform-regime-taxonomy-v0.md)
 - Enum: [REGIME-ENUM-V0.md](../ARTIFACTS/REGIME-ENUM-V0.md)
+- Fee stamp follow-on: [EXP-007c](EXP-007c-fee-knowable-at-t-v0.md)
 - [LAB_STATE.md](../LAB_STATE.md) · [EXP/README.md](README.md) · [ARTIFACTS/SUMMARY.md](../ARTIFACTS/SUMMARY.md)
