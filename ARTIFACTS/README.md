@@ -26,6 +26,7 @@ Research briefs, decision packet exports, and manager summaries land here. **Git
 | [REGIME-AT-INGEST-MATRIX.md](REGIME-AT-INGEST-MATRIX.md) | WS vs RPC, knowable-at-T, hot-packet stamp rules |
 | [POST-CREATE-MARKS-BRIEF.md](POST-CREATE-MARKS-BRIEF.md) | Options for 1s–60s post-create ticks on sealed creates (unblock EXP-002) |
 | [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) | Graph Layer-2 discovery: inventory, v0 slice vs theater, H-G hypotheses, EXP-004 proposal |
+| [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](DISCOVERY-WALLET-FOLLOW-SIGNALS.md) | Scout wallet / follow signal taxonomy for paper→gated (Index/Park; S1–S7 / H-G aligned) |
 | [SUMMARY.md](SUMMARY.md) | Short manager digest of latest research |
 
 ## Provenance
