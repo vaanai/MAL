@@ -75,7 +75,15 @@ def classify_fee_tag(
             is_holder_reward=is_holder_reward,
             creator_fee_bps=creator_fee_bps,
         )
-    if global_fee_bps is not None and global_fee_bps != 100:
+    if global_fee_bps == 95:
+        return FeeResolve(
+            fee="global_95bps",
+            reason="global.fee_basis_points",
+            global_fee_bps=global_fee_bps,
+            is_holder_reward=is_holder_reward,
+            creator_fee_bps=creator_fee_bps,
+        )
+    if global_fee_bps is not None and global_fee_bps not in (95, 100):
         return FeeResolve(
             fee="unverified",
             reason=f"global.fee_basis_points_nonstandard_{global_fee_bps}",

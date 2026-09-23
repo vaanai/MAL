@@ -22,6 +22,7 @@ from tools.exp007_rpc_enrich import apply_enrich_overlay, load_enrich_by_parent
 EXP_ID = "EXP-007-platform-regime-taxonomy-v0"
 EXP007B_ID = "EXP-007b-platform-regime-rpc-enrich-v0"
 EXP007C_ID = "EXP-007c-fee-knowable-at-t-v0"
+EXP007D_ID = "EXP-007d-fee-global-95bps-enum-v0"
 
 
 def regime_gate_key(regime_id: str | None) -> str:
@@ -344,8 +345,8 @@ def _gate_k_fee_knowable_at_t(
     else:
         result = "INCOMPLETE"
         note = (
-            f"{fee_uv:.1%} fee=unverified — Global/curve fee decode gap or holder-reward slice "
-            "(see EXP-007c diagnosis)."
+            f"{fee_uv:.1%} fee=unverified — Global/curve fee decode gap, nonstandard bps, "
+            "or enum gap (see EXP-007c/007d diagnosis)."
         )
     return {
         "id": "K-fee-knowable-at-t",
