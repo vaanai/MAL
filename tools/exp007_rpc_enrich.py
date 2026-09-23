@@ -30,6 +30,12 @@ from tools.exp003_rpc_backfill import (
     resolve_rpc_url,
     subsample_creates,
 )
+from tools.exp007_fee_resolve import (
+    PUMP_GLOBAL_PDA,
+    classify_fee_tag,
+    parse_bonding_curve_fee_extension,
+    parse_global_fee_bps,
+)
 from tools.marks import parse_iso_ts
 
 EXP_ID = "EXP-007b-platform-regime-rpc-enrich-v0"
@@ -189,6 +195,7 @@ def knowable_at_t_ok(t_ws_unix: int, rpc_block_time: int, *, slack_s: int = T_WS
 class PlatformResolve:
     instr: str
     fee: str
+    fee_reason: str
     quote: str
     quote_verified: bool
     venue: str
@@ -199,6 +206,9 @@ class PlatformResolve:
     quote_mint: str | None
     leak_reject: bool
     leak_reason: str | None
+    global_fee_bps: int | None = None
+    is_holder_reward: bool | None = None
+    creator_fee_bps: int | None = None
 
 
 def resolve_platform_at_t(
@@ -234,17 +244,31 @@ def resolve_platform_at_t(
     stage = str(row_stage) if row_stage else "bonding"
     market = "bonding_curve"
     fee = "unverified"
+    fee_reason = "not_attempted"
     quote = "wsol_assumed"
     quote_verified = False
     quote_mint: str | None = None
+    global_fee_bps: int | None = None
+    is_holder_reward: bool | None = None
+    creator_fee_bps: int | None = None
+    global_ok = False
 
     curve_addr = bonding_curve_address(create)
     slot = _slot_from_transaction(tx)
+    if slot is not None and not leak:
+        ginfo = client.get_account_info_at_slot(PUMP_GLOBAL_PDA, min_context_slot=slot)
+        if ginfo is not None:
+            raw_g = _account_info_data_bytes(ginfo)
+            if raw_g is not None:
+                global_fee_bps = parse_global_fee_bps(raw_g)
+                global_ok = global_fee_bps is not None
+
     if curve_addr and slot is not None and not leak:
         account_info = client.get_account_info_at_slot(curve_addr, min_context_slot=slot)
         if account_info is not None:
             raw = _account_info_data_bytes(account_info)
             if raw is not None:
+                is_holder_reward, creator_fee_bps = parse_bonding_curve_fee_extension(raw)
                 parsed = _parse_bonding_curve_extended(raw)
                 if parsed is not None:
                     if parsed.get("complete"):
@@ -257,9 +281,20 @@ def resolve_platform_at_t(
                         # Legacy create path — SOL quote implied when mint field absent.
                         quote, quote_verified = ("wsol", True) if instr == "create" else ("wsol_assumed", False)
 
+    if not leak and slot is not None:
+        fee_res = classify_fee_tag(
+            global_fee_bps=global_fee_bps,
+            global_ok=global_ok,
+            is_holder_reward=is_holder_reward,
+            creator_fee_bps=creator_fee_bps,
+        )
+        fee = fee_res.fee
+        fee_reason = fee_res.reason
+
     return PlatformResolve(
         instr=instr,
         fee=fee,
+        fee_reason=fee_reason,
         quote=quote,
         quote_verified=quote_verified,
         venue="pump_program",
@@ -270,6 +305,9 @@ def resolve_platform_at_t(
         quote_mint=quote_mint,
         leak_reject=leak,
         leak_reason=leak_reason,
+        global_fee_bps=global_fee_bps,
+        is_holder_reward=is_holder_reward,
+        creator_fee_bps=creator_fee_bps,
     )
 
 
@@ -322,6 +360,7 @@ def build_enrich_row(
         "platform_resolved": {
             "instr": resolved.instr,
             "fee": resolved.fee,
+            "fee_reason": resolved.fee_reason,
             "quote": resolved.quote,
             "quote_verified": resolved.quote_verified,
             "stage": resolved.stage,
@@ -333,6 +372,13 @@ def build_enrich_row(
             "rpc_block_time": resolved.rpc_block_time,
             "leak_reject": resolved.leak_reject,
             "leak_reason": resolved.leak_reason,
+            "fee_resolve": {
+                "fee": resolved.fee,
+                "reason": resolved.fee_reason,
+                "global_fee_bps": resolved.global_fee_bps,
+                "is_holder_reward": resolved.is_holder_reward,
+                "creator_fee_bps": resolved.creator_fee_bps,
+            },
         },
         "provenance": {"observe_source_path": source_path, "observe_line_no": line_no},
     }

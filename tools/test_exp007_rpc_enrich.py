@@ -69,6 +69,7 @@ class OverlayTests(unittest.TestCase):
         resolved = PlatformResolve(
             instr="create_v2",
             fee="unverified",
+            fee_reason="test",
             quote="wsol",
             quote_verified=True,
             venue="pump_program",
