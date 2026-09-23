@@ -1,6 +1,6 @@
 # EXP-004b — NH-G1a ordinal prior-mint depth (Graph child measurement)
 
-> **Status: Proposed, not run** — hypothesis registration only. **No CLI execution, no scored result, no lift claim** in this document.
+> **Status: Scored** — Oracle sealed re-score **2026-09-23** (operator EXP-004b / Helm→Vaan authorized run). Paper-only; **no promotion**.
 
 | Field | Value |
 | --- | --- |
@@ -48,6 +48,8 @@ Oracle re-score **2026-09-23** on sealed 2026-09-20/21 observe+marks ([EXP-004 �
 
 **Explicitly out of scope for this path:** mark densify, cross-day join (e.g. 20/21 marks on `observe-2026-09-23`), EXP-002c retune, evaluate promotion, runner changes, Fast mode.
 
+**CLI (landed this run):** `python -m tools.exp004b_nh_g1a` — same day-aligned `--marks` as EXP-004.
+
 ---
 
 ## 3. Soft locks (council law — do not violate on run)
@@ -61,7 +63,7 @@ Oracle re-score **2026-09-23** on sealed 2026-09-20/21 observe+marks ([EXP-004 �
 | **No Discovery promotion** | DIRECTIONAL_WATCH / NON_KILL ≠ decode or evaluate promote |
 | **No invented lift** | Report gates and taxonomy only; no fabricated means |
 | **Follow ≠ mirror** | S3 / DEC-005 — feature / veto / select / enrich; never wallet mirror lists |
-| **This registration** | **Proposed, not run** until operator executes sealed re-score |
+| **This registration** | **Scored 2026-09-23** — sealed re-score on Oracle 20/21 JSONL; see §6 |
 
 **Parked (not EXP-004b):** NH-Index bundle; NH-G3a unless G1a remains soft after run; H-G4 on create-only spine; Layer-4 X clusters.
 
@@ -86,9 +88,27 @@ Oracle re-score **2026-09-23** on sealed 2026-09-20/21 observe+marks ([EXP-004 �
 
 ---
 
-## 6. Result / conclusion (placeholder)
+## 6. Result / conclusion (Oracle sealed re-score 2026-09-23)
+
+**Inputs:** `/var/lib/mal/sealed/jsonl/observe-2026-09-{20,21}.jsonl` + matching `marks-*.jsonl` (courier lines unchanged from EXP-004 §7). **Host artifacts (gitignored):** `/var/lib/mal/paper/_exp004b-oracle-2026-09-{20,21}_*`. **Repo CLI:** [`tools/exp004b_nh_g1a.py`](../tools/exp004b_nh_g1a.py) on `main` branch commit for this stamp.
+
+| Day | CLI exit | overall @60s | priced_60s_n (floor 10) | Passing buckets (sep **and** random PASS) | H-G2 ref @60s |
+| --- | ---: | --- | ---: | --- | --- |
+| 2026-09-20 | 0 | **DIRECTIONAL_NON_KILL** (soft) | 102 | `bucket_3plus` only | **KILL_NO_SEPARABLE_ARM** (kill intact) |
+| 2026-09-21 | 0 | **KILL_NO_ORDINAL_SEPARABLE_BUCKET** | 122 | *(none)* | **KILL_NO_SEPARABLE_ARM** (kill intact) |
+
+**Per-bucket @60s (priced_n honest; gates only in git):**
+
+| Bucket | 2026-09-20 priced_n | 2026-09-20 overall | 2026-09-21 priced_n | 2026-09-21 overall |
+| --- | ---: | --- | ---: | --- |
+| `bucket_0` (novel) | 32 | KILL_NO_SEPARABLE_ARM | 42 | KILL_NO_SEPARABLE_ARM |
+| `bucket_1` | 11 | FAIL_NO_LIFT_VS_SPINE | 9 | **INCOMPLETE** (&lt;10) |
+| `bucket_2` | 5 | **INCOMPLETE** (&lt;10) | 7 | **INCOMPLETE** (&lt;10) |
+| `bucket_3plus` | 54 | DIRECTIONAL_NON_KILL | 64 | FAIL_NO_LIFT_VS_SPINE |
+
+**S1 collapse falsifier:** not triggered (no aggregate bucket passed both days; per-`regime_gate_key` pass counts N/A).
 
 | Field | Value |
 | --- | --- |
-| **Result** | *Not run — no metrics.* |
-| **Conclusion** | *Pending operator sealed re-score; do not update LAB_STATE promotion fields from this file alone.* |
+| **Cross-day overall** | **KILL** — NH-G1a falsifier: **no** ordinal bucket beats spine **and** random @ **60s** on **both** courier days (`bucket_3plus` soft on **20 only**; **21** fails spine). |
+| **Conclusion** | **No promotion.** Ordinal depth does **not** upgrade parent H-G1 binary soft watch to a replicable signal. **H-G2 burst kill unchanged.** Sequencing: **NH-G3a** eligible per pick lock (G1a did not stay soft on both days). **NH-Index** still parked. |

@@ -6,7 +6,7 @@
 | **As-of** | 2026-09-23 |
 | **Audience** | Graph / Scout / Proof / Helm |
 | **Locks** | No Discovery promotion; H-G2 kill intact; no mark densify; no cross-day join; no EXP-002c retune; sealed knowable-at-T; follow = feature/veto/select/enrich (S3); free create = weak links (DEC-005) |
-| **Pick (2026-09-23)** | **EXP-004b** registered for **NH-G1a** — [EXP-004b-nh-g1a-ordinal-prior-mint-v0.md](../EXP/EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) (**Proposed, not run**). Sequence **NH-G3a** only if G1a stays soft; **NH-Index** parked. |
+| **Pick (2026-09-23)** | **EXP-004b** registered for **NH-G1a** — [EXP-004b-nh-g1a-ordinal-prior-mint-v0.md](../EXP/EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) (**Scored 2026-09-23** — cross-day **KILL**). Sequence **NH-G3a** per pick lock; **NH-Index** parked. |
 | **Primary inputs** | [EXP-004-graph-creator-recurrence-v0.md](../EXP/EXP-004-graph-creator-recurrence-v0.md) §7; [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) §4; Oracle courier re-score stamped on `main` @ `cc84dac` (PR #32) |
 
 ---
