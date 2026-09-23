@@ -256,6 +256,8 @@ flowchart LR
 
 Scout taxonomy cross-link (I1–I4, Park): [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](DISCOVERY-WALLET-FOLLOW-SIGNALS.md). Alternate name (unused): `EXP-004-graph-weak-creator-sequences-v0`.
 
+**After Oracle day-aligned re-score (2026-09-20/21):** H-G2 **killed** @ 60s; overall **DIRECTIONAL_WATCH** — next-hypothesis path (burst parked; Index refinements **Proposed, not run**): [GRAPH-EXP004-NEXT-HYP-V0.md](GRAPH-EXP004-NEXT-HYP-V0.md).
+
 ---
 
 ## 10. Open questions (needs council / owner)
