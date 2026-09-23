@@ -88,6 +88,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - **Autonomy:** routine ops OK; **escalate** before billing, leaving Always Free, weakening security, paid RPC/GPU/extra VMs/OKE/NAT/LB/Autonomous DB, public Postgres, trading keys / X creds on host, or capital access.
 - **Idle reclaim:** legitimate ingest/monitor/paper workload — **never fake keep-alive**.
 - **Secrets:** no trading keys and **no X keys** on the host. Paper only. Agents never get trading capital. Bonk/mayhem **parked**.
+- **Last Oracle host health (read-only):** **2026-09-23T15:33:46Z** — Cursor agent via DEC-011; checks **PASS** (SSH smoke, `/var/lib/mal` layout, Postgres localhost, `mal-observe` active, health script `ok`); sealed JSONL `observe-2026-09-23.jsonl` **8313** lines / **~13.9 MiB**; schema migration **2026-09-23 07:58:11 UTC**.
 
 ## Next work
 
