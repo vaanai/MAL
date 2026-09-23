@@ -5,7 +5,7 @@
 | **As-of** | 2026-09-23 |
 | **Status** | **Provisioned and verified by Vaan.** Live inventory in [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md). This BOM keeps the Always Free **envelope**, charge foot-guns, and **as-built** names/paths. Pre-create “nothing created” language is **historical**. |
 | **Target** | **$0 / mo** Always Free (home region). Not a paid VPS. |
-| **Decision** | [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) (envelope); [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md) (provisioned + autonomy); [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (access **decided**; owner implementing) |
+| **Decision** | [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) (envelope); [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md) (provisioned + autonomy); [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (access **LIVE** 2026-09-23) |
 | **Limits source** | [Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) |
 
 **Critical sizing (do not invent 4 / 24):** Always Free Ampere A1 for **free tenancies** = **2 OCPU + 12 GB RAM total** (pool: **1,500 OCPU-hours + 9,000 GB-hours / month**). Paid tenancies advertise a larger Ampere *hour* pool (3,000 / 18,000 ≡ 4 / 24) — **MAL does not claim or use that** unless a future spend DEC says the tenancy is paid **and** Vaan accepts it. **This BOM is 2 OCPU / 12 GB.**
@@ -37,7 +37,7 @@ Bind the instance VNIC to this NSG. Mirror in **ufw** on the box.
 | Direction | Rule | Notes |
 | --- | --- | --- |
 | Ingress | TCP **22** from **owner home public IP only** | Never commit the real CIDR. Placeholder in git: `VAAN_SSH_CIDR`. |
-| Ingress | **No public app ports** (no public 443) | Cursor access must **not** open Postgres or extra listeners. DEC-011: CF Tunnel + Access (owner implementing). |
+| Ingress | **No public app ports** (no public 443) | Cursor access must **not** open Postgres or extra listeners. DEC-011: CF Tunnel + Access **LIVE** (Access TCP, not public `:22`). |
 | Egress | Allow **443** (HTTPS / WSS) and **53** (DNS) | PumpPortal WS, free RPC, GitHub, OS updates. |
 | Deny / do not open | Public **5432**, **6379**, **3000**, **8080**, metrics | Postgres, Redis (if any), dev UIs, Prometheus — localhost / tunnel only. |
 
@@ -58,7 +58,7 @@ No extra public listeners “for convenience.” **Do not expose Postgres public
 | Data volume | **`mal-core-data`**, **150 GB**, mounted **`/var/lib/mal`** |
 | **Block total** | **50 + 150 = 200 GB** — **at the Always Free cap**. No third volume. |
 | Public IP | Ephemeral public IPv4 as provisioned. **Reserved public IP only if Console still labels it Always Free.** |
-| Agent SSH | **Not granted yet.** Access **decided** ([DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)); owner implementing. Do **not** claim tunnel live. |
+| Agent SSH | **LIVE** via DEC-011 Access TCP (smoke 2026-09-23; hostname `mal-core-vnic`). Owner home-IP `:22` remains break-glass. Do **not** open public `:22` or Postgres. |
 
 **A1 capacity was available; instance exists.** If a **future** resize/recreate hits an A1 capacity miss: **STOP.** Do **not** pick paid shapes, do **not** “just use AMD standard,” do **not** upgrade the account without a spend DEC. **Escalate to Helm / Vaan.**
 
