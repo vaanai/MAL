@@ -152,7 +152,7 @@ Calendar estimates are misleading for agents; this is what is **technically** ac
 | **Research + recommendation** (this artifact) | **Done in PR** | — | — |
 | **Thin pointers** in `LAB_STATE.md` / `SUMMARY.md` / `ARTIFACTS/README.md` | **Done in PR** | — | — |
 | **paper_fill JSONL schema + DEC stub** | Spec in this brief only | Draft DEC amendment or OBSERVE schema PR | — |
-| **Fill-sim CLI** (`tools.paper_fill_sim` or extend `exp002_paper_runner`) | **Out of scope** this PR; scope in [EXP-006](../EXP/EXP-006-paper-would-have-happened-harness-v0.md) (**Proposed, not run**) | **Feasible** on Owner-local JSONL; unit tests with fixtures — **Helm re-auth** after docs merge | Subsample marks coverage |
+| **Fill-sim CLI** (`tools.exp006_paper_fill_sim`) | **Landed** — Oracle sealed **2026-09-20/21** stamp [EXP-006](../EXP/EXP-006-paper-would-have-happened-harness-v0.md) (**INCOMPLETE** cross-day; **no promote**) | Owner-local replay on same JSONL law | Subsample marks coverage |
 | **Calibrated latency / fail rate** | Research-only | Needs forward capture or **C1** micro-live calibration run | Wallet + API key + SOL |
 | **Dense trade ticks forward** | Documented | `subscribeTokenTrade` TTL on new creates | PumpPortal API key + ≥0.02 SOL wallet |
 | **Automated Axiom paper** | **Not feasible** | Still **no** — no API | Axiom auth / extension automation |
@@ -214,7 +214,7 @@ Append-only under `data/observe/paper-YYYY-MM-DD.jsonl` (gitignored), same couri
 
 | Question | Answer |
 | --- | --- |
-| **Day-1 paper path?** | **P0** — in-lab fill-sim on sealed JSONL + marks; no external paper broker. Harness registration: [EXP-006](../EXP/EXP-006-paper-would-have-happened-harness-v0.md) (**Proposed, not run**). |
+| **Day-1 paper path?** | **P0** — [`tools.exp006_paper_fill_sim`](../tools/exp006_paper_fill_sim.py) on sealed JSONL + marks ([EXP-006](../EXP/EXP-006-paper-would-have-happened-harness-v0.md) scored **INCOMPLETE**; **no promote**). |
 | **Marks path?** | **Keep** — gross horizons and coverage unchanged. |
 | **Axiom / Phantom?** | **Human or live** — not MAL spine; extensions **parked** for automation. |
 | **PumpPortal trading API?** | **Live exec** — park for calibration only with Owner-local keys + spend approval. |
