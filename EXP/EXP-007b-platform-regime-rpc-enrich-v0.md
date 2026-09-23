@@ -54,22 +54,29 @@
 | Inputs | `/var/lib/mal/sealed/jsonl/observe-2026-09-{20,21}.jsonl` |
 | Artifacts | `/var/lib/mal/paper/_exp007b-oracle-2026-09-{20,21}_*` (gitignored on host) |
 
-**Stamp block below is updated from real host summaries after Oracle run completes.**
+**Stamp:** Oracle **`mal-core-vnic`** **2026-09-23** — host `/var/lib/mal/paper/_exp007b-oracle-*` (gitignored).
 
 ---
 
-## Result / conclusion
+## Result / conclusion (Oracle sealed 2026-09-23)
 
-**Oracle run status:** _See stamp table after host execution._
+**Host:** `mal-core-vnic` — enrich + audit via [`tools/exp007b_oracle_run.md`](../tools/exp007b_oracle_run.md). Public mainnet RPC (`SOLANA_RPC_URL`); throttle/backoff under 429 load.
 
-| Courier day | enrich_n (cap 500) | sealed overall | enriched sample overall | K-platform-rpc-resolved (enriched) |
-| --- | ---: | --- | --- | --- |
-| **2026-09-20** | _pending_ | **INCOMPLETE** | _pending_ | _pending_ |
-| **2026-09-21** | _pending_ | **INCOMPLETE** | _pending_ | _pending_ |
+| Courier day | enrich_n (cap 500) | leak_reject_n | sealed overall | enriched sample overall | K-platform-rpc-resolved (enriched) |
+| --- | ---: | ---: | --- | --- | --- |
+| **2026-09-20** | **500** | **0** | **INCOMPLETE** | **INCOMPLETE** | **INCOMPLETE** (instr pending **12.4%**; quote_verified **76.4%**) |
+| **2026-09-21** | **500** | **0** | **INCOMPLETE** | **INCOMPLETE** | **INCOMPLETE** (instr pending **16.0%**; quote_verified **70.0%**) |
 
-**Cross-day enriched overall:** _pending_
+**Cross-day sealed overall:** **INCOMPLETE** (unchanged — full book WS defaults).  
+**Cross-day enriched overall:** **INCOMPLETE** — RPC overlay improves coverage but does not clear **K-platform-rpc-resolved** (fee remains **100%** `unverified`; instr/quote still mixed).
 
-**Conclusion:** EXP-007b closes the **RPC-resolved platform slice** on a **capped, knowable-at-T** subsample without promoting continuous observe-wiring. Full-book WS defaults stay **INCOMPLETE** until a separate wiring Helm re-auth. **No Discovery promote.**
+| Gate (enriched sample) | 2026-09-20 | 2026-09-21 |
+| --- | --- | --- |
+| **K-blank** / **K-knowable-at-t** / **K-id-kat-consistency** | PASS | PASS |
+| **K-leak-enriched** | PASS | PASS |
+| **K-platform-rpc-resolved** | INCOMPLETE | INCOMPLETE |
+
+**Conclusion:** EXP-007b lands **honest, knowable-at-T** RPC enrich on a **500/day capped** subsample (`regime_enrich` append-only) and re-scores the stratify audit. **Wiring readiness** on platform keys remains **INCOMPLETE** on both full book and enriched sample — no fabricated PASS. **Merge ≠ authorize** continuous observe-wiring or encoder production promote. **No Discovery promote.**
 
 ---
 
