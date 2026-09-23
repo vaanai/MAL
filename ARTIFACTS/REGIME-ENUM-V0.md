@@ -37,10 +37,11 @@ env=mainnet|source=pumpportal_ws|stream=subscribeNewToken|stage=bonding|quote=ws
 | Tag | Meaning | How to know at T |
 | --- | --- | --- |
 | `fee=global_100bps` | Global `fee_basis_points == 100` (1%) on bonding trades | **RPC** `Global` account or event logs — [PUMP_PROGRAM_README](https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_PROGRAM_README.md) |
+| `fee=global_95bps` | Global `fee_basis_points == 95` (0.95%) on bonding trades | **Proposed (EXP-007d)** — **RPC** `Global` at create `minContextSlot` only; observed on mainnet courier **2026-09-20/21**; **not** production-locked until Helm/Proof promote |
 | `fee=creator_dynamic` | Per-coin creator fee / holder-reward routing | **RPC** `sharing_config`, `is_holder_reward` flags — [README holder rewards](https://github.com/pump-fun/pump-public-docs/blob/main/README.md) |
 | `fee=pumpswap_pool` | PumpSwap pool fee parameters | **RPC** pool state after migration |
 
-**v0 rule:** At **create** ingest, stamp `fee=global_100bps` only if RPC/read confirms; else `fee=unverified` (still tagged — never blank).
+**v0 rule:** At **create** ingest, stamp `fee=global_100bps` only if RPC/read confirms **100** bps; stamp **`fee=global_95bps`** only under **Proposed** EXP-007d law when RPC confirms **95** bps (never map 95 → `global_100bps`); else `fee=unverified` (still tagged — never blank).
 
 ---
 

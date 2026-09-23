@@ -72,14 +72,25 @@ class ClassifyFeeTests(unittest.TestCase):
         )
         self.assertEqual(res.fee, "creator_dynamic")
 
-    def test_nonstandard_global_stays_unverified(self) -> None:
+    def test_global_95bps_proposed_enum(self) -> None:
         res = classify_fee_tag(
             global_fee_bps=95,
             global_ok=True,
             is_holder_reward=False,
             creator_fee_bps=0,
         )
+        self.assertEqual(res.fee, "global_95bps")
+        self.assertEqual(res.reason, "global.fee_basis_points")
+
+    def test_other_nonstandard_global_stays_unverified(self) -> None:
+        res = classify_fee_tag(
+            global_fee_bps=90,
+            global_ok=True,
+            is_holder_reward=False,
+            creator_fee_bps=0,
+        )
         self.assertEqual(res.fee, "unverified")
+        self.assertIn("nonstandard_90", res.reason)
 
 
 if __name__ == "__main__":
