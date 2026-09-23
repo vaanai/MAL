@@ -24,6 +24,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-004 — Hot-packet v0 Proposed paper contract
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-004 |
+| **Date** | 2026-09-23 |
+| **What changed** | Registered **Proposed** `hot_packet_v0`: [HOT-PACKET-V0.md](HOT-PACKET-V0.md), [hot-packet-v0.schema.json](hot-packet-v0.schema.json), synthetic fixtures, `python -m tools.hot_packet_v0` (example / validate). |
+| **Why** | LAYA design needs a citeable capped decode packet (L1 spine, regime locks, graph slots) without continuous observe-wiring. |
+| **What was tested** | `python3 -m unittest tools.test_hot_packet_v0`. Fixture CLI validate. No RPC. No host JSONL. |
+| **Verification** | Unit tests pass. Examples match fixtures. Proposed tags rejected on sealed overlay. Burst slot and non-null H-G4 rejected. |
+| **Current state** | Contract is **Proposed**. `global_95bps` and `launchlab_init` stay Proposed. Graph default is cold. Sealed book RPC slice stays incomplete. DEC-005 remains draft PR #8. |
+| **Rollback** | Revert this registration. Sealed `ingest_hot` rows are untouched. |
+| **Unresolved** | Encoder / observe-wiring not authorized. Enum production lock not authorized. DEC-005 not merged. No Discovery promote. |
+| **Implications** | Decode designers cite this packet. Do not treat merge as wiring, encoder promote, or a scored measure. |
+| **Pointers** | [HOT-PACKET-V0.md](HOT-PACKET-V0.md), [EXP-007e](../EXP/EXP-007e-instr-quote-residual-v0.md), [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md) |
+
+---
+
 ## EDL-003 — DEC-011 access LIVE + mal-core-0 paper bootstrap
 
 | Field | Value |

@@ -24,6 +24,7 @@ Research briefs, decision packet exports, and manager summaries land here. **Git
 | [PUMPPORTAL-PAYLOAD-INVENTORY.md](PUMPPORTAL-PAYLOAD-INVENTORY.md) | PumpPortal WS field inventory (WS / RPC / unknown) |
 | [REGIME-ENUM-V0.md](REGIME-ENUM-V0.md) | Phase-0 regime taxonomy (draft, EXP-revisable) |
 | [REGIME-AT-INGEST-MATRIX.md](REGIME-AT-INGEST-MATRIX.md) | WS vs RPC, knowable-at-T, hot-packet stamp rules |
+| [HOT-PACKET-V0.md](HOT-PACKET-V0.md) | Proposed paper hot-packet contract (L1 spine, regime locks, capped graph slots) + [hot-packet-v0.schema.json](hot-packet-v0.schema.json) |
 | [POST-CREATE-MARKS-BRIEF.md](POST-CREATE-MARKS-BRIEF.md) | Options for 1s–60s post-create ticks on sealed creates (unblock EXP-002) |
 | [PAPER-TRADING-SURFACE-BRIEF.md](PAPER-TRADING-SURFACE-BRIEF.md) | Paper / fill-sim surfaces vs marks-only path; day-1 P0 recommendation (no broker impl) |
 | [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) | Graph Layer-2 discovery: inventory, v0 slice vs theater, H-G hypotheses, **EXP-004** §9 (tooling landed) |

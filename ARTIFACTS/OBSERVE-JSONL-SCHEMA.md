@@ -59,6 +59,10 @@
 {"schema_version":"observe_hot_v0","type":"ingest_hot","t_ws":"2026-09-20T12:00:00.123+00:00","stream":"subscribeNewToken","source":"pumpportal_ws","commitment":"processed","stage":"bonding","regime_id":"env=mainnet|source=pumpportal_ws|stream=subscribeNewToken|stage=bonding|quote=wsol_assumed|commitment=processed|venue=pump_program|instr=pending_rpc|fee=unverified|market=bonding_curve","txType":"create","signature":"…","mint":"…","knowable_at_t":{"quote":"wsol_assumed","quote_verified":false,"instr":"pending_rpc","fee":"unverified","venue":"pump_program","venue_verified":false,"creator_verified":false,"reserves_source":"ws"},"ws_payload":{},"ws_fields_unknown":[]}
 ```
 
+## Not this row — hot packet v0
+
+`ingest_hot` is the sealed detect row. The Proposed decode object LAYA designers cite is [HOT-PACKET-V0.md](HOT-PACKET-V0.md) (`type=hot_packet`). This schema does not emit that object. Registering the contract is not observe-wiring.
+
 ## Forbidden on hot row
 
 - Dexscreener or Birdeye fields
