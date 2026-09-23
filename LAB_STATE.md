@@ -59,10 +59,10 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 | H-survival | Backtest signals survive live observation regime | Live metrics diverge beyond tolerance |
 | H-rpc | Free / light RPC + PumpPortal WS sufficient for phase-0 observe-only | Missed events, 429s, or stale commitment block hypotheses |
 
-## Open research (no pick)
+## Open research
 
-- **Trading / wallet execution surface** (Axiom, Phantom, other) — may affect design. Research before live or a real paper-trading venue. **Do not invent a pick** in Lab memory; if a Cursor research run is launched, **DM Vaan the status card**.
-- **Real paper-trading utility** for meme coins (beyond “would have” marks) — owner-offered **option**. **Ask before adopting.**
+- **Paper-trading / execution-realism layer (above marks):** Research **closed** in artifact — day-1 **in-lab fill-sim on sealed JSONL + marks** (P0); Axiom extensions / PumpPortal live **parked** (credentials + spend). [PAPER-TRADING-SURFACE-BRIEF.md](ARTIFACTS/PAPER-TRADING-SURFACE-BRIEF.md). Implementation = follow-on PR; **no broker in artifact PR**.
+- **Live trading / wallet surface** (Axiom UI, Phantom mainnet, PumpPortal Lightning) — still **defer** until paper sim + Proof gates; **no keys on host**.
 
 ## Superseded ideas
 
@@ -109,7 +109,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Local EXP-002/002b/002c CLI: `python -m tools.exp002_paper_runner` (`--rules v0` | `v1` | `v2`, default **v2**; `--marks` for EXP-003 ticks)
 - Local EXP-003 RPC backfill: `python -m tools.exp003_rpc_backfill`
 - Local EXP-003 coverage: `python -m tools.exp003_marks`
-- Research: `ARTIFACTS/` (marks: [POST-CREATE-MARKS-BRIEF.md](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md); wallet/follow Discovery: [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](ARTIFACTS/DISCOVERY-WALLET-FOLLOW-SIGNALS.md))
+- Research: `ARTIFACTS/` (marks: [POST-CREATE-MARKS-BRIEF.md](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md); paper/fill-sim: [PAPER-TRADING-SURFACE-BRIEF.md](ARTIFACTS/PAPER-TRADING-SURFACE-BRIEF.md); wallet/follow Discovery: [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](ARTIFACTS/DISCOVERY-WALLET-FOLLOW-SIGNALS.md))
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 - Laya vs VPS stack compare: [ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md) (Always Free `mal-core-0` is the phase-0 host experiment, not a paid VPS)
 - Always Free BOM: [ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md](ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md)
