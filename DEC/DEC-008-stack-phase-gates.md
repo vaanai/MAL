@@ -12,7 +12,7 @@
 
 **Default:** remain on **phase-0 cheap path** (~**$0/mo** infra) until each gate below is satisfied. Spending is **rung-based**; skipping rungs requires a new DEC with kill-attempt or measured failure logs.
 
-Oracle Always Free **`mal-core-0`** ([DEC-009](DEC-009-oracle-always-free-phase0-host.md)) is a **Gate 0** $0 host experiment (**2 OCPU / 12 GB** A1; **pending provision**), **not** Gate 5 paid VPS and **not** the ~$180–200 meta stack.
+Oracle Always Free **`mal-core-0`** ([DEC-009](DEC-009-oracle-always-free-phase0-host.md), [DEC-010](DEC-010-oracle-phase0-handoff-autonomy.md)) is a **Gate 0** $0 host experiment (**2 OCPU / 12 GB** A1; **provisioned and verified**), **not** Gate 5 paid VPS and **not** the ~$180–200 meta stack.
 
 This DEC does **not** authorize purchases. It defines **what must be true** before a separate spend DEC or Vaan explicit approval.
 
@@ -21,7 +21,7 @@ This DEC does **not** authorize purchases. It defines **what must be true** befo
 | Must be true | Rung |
 | --- | --- |
 | Observe via **PumpPortal WS** + sealed JSONL | **$0** |
-| Continuous host: Oracle Always Free `mal-core-0` (**2 OCPU / 12 GB**; pending) **or** laptop until cutover | **$0** |
+| Continuous host: Oracle Always Free `mal-core-0` (**2 OCPU / 12 GB**; **provisioned**). Laptop = operator/courier (not 24/7 host; not a permanent Cursor hop) | **$0** |
 | Evaluate **rules-only** on knowable-at-T packet until H-jev ladder runs | **$0** |
 | **No live capital**, no exec send, no Jito | **$0** |
 | X **off spine** (manual reassess samples only) | **$0** |
