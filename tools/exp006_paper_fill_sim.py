@@ -533,6 +533,7 @@ def run_single_day(
             "total_fee_bps": TOTAL_FEE_BPS,
             "max_slippage_bps": MAX_SLIPPAGE_BPS,
             "sim_reject_on_slip": SIM_REJECT_ON_SLIP,
+            "lift_rescue_rel_epsilon": LIFT_RESCUE_REL_EPSILON,
         },
         "precompute_meta": pre_meta,
         "malformed_lines": malformed,
