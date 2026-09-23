@@ -1,0 +1,485 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json",
+  "title": "MAL paper-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc v0 (Proposed dry-run receipt)",
+  "description": "Proposed receipt for an operator-local dry-run of paper_batch_oracle_sealed_day_incomplete_rpc_v0 against day-aligned sealed observe JSONL. dual_read.sealed_book_rpc_slice stays incomplete. closed_book_claim stays false. measure.kind stays none. host_jsonl_read may be true, and an operator path under /var/lib/mal may be recorded, without a closed-book claim or a scored measure. This registration does not define a PASS or FAIL_NO_LIFT measure exit. See ARTIFACTS/PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "type",
+    "id",
+    "paper_only",
+    "receipt_kind",
+    "parent",
+    "invocation",
+    "input",
+    "parent_digest",
+    "carries",
+    "full_book",
+    "graph_lift",
+    "graph_policy",
+    "dual_read",
+    "measure",
+    "soft_watches",
+    "honesty"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0"
+    },
+    "type": { "const": "paper_dry_run_receipt" },
+    "id": {
+      "const": "paper-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0"
+    },
+    "paper_only": { "const": true },
+    "receipt_kind": {
+      "enum": ["synthetic_replay", "projection_on_synthetic", "operator_declared"]
+    },
+    "parent": { "$ref": "#/$defs/parent" },
+    "invocation": { "$ref": "#/$defs/invocation" },
+    "input": { "$ref": "#/$defs/input" },
+    "parent_digest": { "$ref": "#/$defs/parentDigest" },
+    "carries": { "$ref": "#/$defs/carries" },
+    "full_book": { "$ref": "#/$defs/fullBook" },
+    "graph_lift": {
+      "const": null,
+      "description": "This stamp does not invent graph lift. Graph stays cold."
+    },
+    "graph_policy": { "const": "cold" },
+    "dual_read": { "$ref": "#/$defs/dualRead" },
+    "measure": { "$ref": "#/$defs/measure" },
+    "soft_watches": { "$ref": "#/$defs/softWatches" },
+    "honesty": { "$ref": "#/$defs/honesty" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "receipt_kind": { "const": "synthetic_replay" } },
+        "required": ["receipt_kind"]
+      },
+      "then": {
+        "properties": {
+          "input": {
+            "properties": {
+              "fixture_origin": { "const": "synthetic" },
+              "host_jsonl_read": { "const": false },
+              "host_path_declared": { "const": false },
+              "parent_invoked": { "const": true },
+              "paths_opened": { "const": true }
+            }
+          },
+          "invocation": {
+            "properties": {
+              "fixture_origin": { "const": "synthetic" },
+              "executed_by_this_process": { "const": true }
+            }
+          },
+          "parent_digest": {
+            "properties": {
+              "included": { "const": true },
+              "host_jsonl_read": { "const": false }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "receipt_kind": { "const": "projection_on_synthetic" } },
+        "required": ["receipt_kind"]
+      },
+      "then": {
+        "properties": {
+          "input": {
+            "properties": {
+              "fixture_origin": { "const": "sealed_row_projection" },
+              "host_jsonl_read": { "const": true },
+              "host_path_declared": { "const": false },
+              "parent_invoked": { "const": true },
+              "paths_opened": { "const": true },
+              "var_lib_mal_opened": { "const": false }
+            }
+          },
+          "invocation": {
+            "properties": {
+              "fixture_origin": { "const": "sealed_row_projection" },
+              "executed_by_this_process": { "const": true },
+              "host_contacted": { "const": false }
+            }
+          },
+          "parent_digest": {
+            "properties": {
+              "included": { "const": true },
+              "host_jsonl_read": { "const": true },
+              "sealed_book_rpc_slice": { "const": "incomplete" },
+              "closed_book_claim": { "const": false },
+              "measure_kind": { "const": "none" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "receipt_kind": { "const": "operator_declared" } },
+        "required": ["receipt_kind"]
+      },
+      "then": {
+        "properties": {
+          "input": {
+            "properties": {
+              "fixture_origin": { "const": "sealed_row_projection" },
+              "host_jsonl_read": { "const": true },
+              "host_path_declared": { "const": true },
+              "parent_invoked": { "const": false },
+              "paths_opened": { "const": false },
+              "var_lib_mal_opened": { "const": false }
+            }
+          },
+          "invocation": {
+            "properties": {
+              "fixture_origin": { "const": "sealed_row_projection" },
+              "executed_by_this_process": { "const": false },
+              "host_contacted": { "const": false }
+            }
+          },
+          "parent_digest": {
+            "properties": {
+              "included": { "const": false }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "parent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "schema_version",
+        "pull_request",
+        "commit",
+        "cli",
+        "rewritten_by_this_stamp"
+      ],
+      "properties": {
+        "id": { "const": "paper-batch-oracle-sealed-day-incomplete-rpc-v0" },
+        "schema_version": {
+          "const": "paper_batch_oracle_sealed_day_incomplete_rpc_v0"
+        },
+        "pull_request": { "const": 52 },
+        "commit": { "const": "243e11b" },
+        "cli": {
+          "const": "python -m tools.paper_batch_oracle_sealed_day_incomplete_rpc_v0"
+        },
+        "rewritten_by_this_stamp": { "const": false }
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "host_contacted",
+        "executed_by_this_process",
+        "fixture_origin",
+        "days",
+        "jsonl",
+        "expectation",
+        "argv_shape"
+      ],
+      "properties": {
+        "host": { "const": "mal-core-vnic" },
+        "host_contacted": {
+          "const": false,
+          "description": "This process does not SSH and does not contact the host."
+        },
+        "executed_by_this_process": { "type": "boolean" },
+        "fixture_origin": { "enum": ["synthetic", "sealed_row_projection"] },
+        "days": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            { "const": "2026-09-20" },
+            { "const": "2026-09-21" }
+          ],
+          "items": false
+        },
+        "jsonl": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "expectation": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "argv_shape": {
+          "type": "array",
+          "minItems": 8,
+          "items": { "type": "string" },
+          "description": "Operator or replay argv for the parent batch CLI. A string under /var/lib/mal is a documented path, not a file this registration opened."
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_json_only",
+        "rpc",
+        "ssh_to_host",
+        "observe_jsonl_tail",
+        "host_extract_checked_into_git",
+        "var_lib_mal_opened",
+        "host_jsonl_read",
+        "host_path_declared",
+        "fixture_origin",
+        "parent_invoked",
+        "paths_opened",
+        "graph_policy"
+      ],
+      "properties": {
+        "local_json_only": { "const": true },
+        "rpc": { "const": false },
+        "ssh_to_host": { "const": false },
+        "observe_jsonl_tail": { "const": false },
+        "host_extract_checked_into_git": { "const": false },
+        "var_lib_mal_opened": {
+          "const": false,
+          "description": "This CLI does not open /var/lib/mal. A true host_jsonl_read bit does not flip this."
+        },
+        "host_jsonl_read": {
+          "type": "boolean",
+          "description": "Mirrors the parent flag. True when fixture_origin is sealed_row_projection. True does not close the sealed book and does not mean this process read /var/lib/mal."
+        },
+        "host_path_declared": {
+          "type": "boolean",
+          "description": "True only on the operator-declared receipt, which stores host path strings and does not open them."
+        },
+        "fixture_origin": { "enum": ["synthetic", "sealed_row_projection"] },
+        "parent_invoked": { "type": "boolean" },
+        "paths_opened": { "type": "boolean" },
+        "graph_policy": { "const": "cold" }
+      }
+    },
+    "parentDigest": {
+      "oneOf": [
+        { "$ref": "#/$defs/parentDigestAbsent" },
+        { "$ref": "#/$defs/parentDigestPresent" }
+      ]
+    },
+    "parentDigestAbsent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["included", "reason", "batch_embedded"],
+      "properties": {
+        "included": { "const": false },
+        "reason": { "const": "operator_shape_not_executed_by_this_registration" },
+        "batch_embedded": { "const": false }
+      }
+    },
+    "parentDigestPresent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Honesty bits copied from a parent batch run on in-repo files. The batch body is not embedded.",
+      "required": [
+        "included",
+        "schema_version",
+        "id",
+        "sealed_book_rpc_slice",
+        "closed_book_claim",
+        "measure_kind",
+        "graph_policy",
+        "executed_host_sealed_book",
+        "scored_oracle_measure",
+        "batch_embedded",
+        "host_jsonl_read"
+      ],
+      "properties": {
+        "included": { "const": true },
+        "schema_version": {
+          "const": "paper_batch_oracle_sealed_day_incomplete_rpc_v0"
+        },
+        "id": { "const": "paper-batch-oracle-sealed-day-incomplete-rpc-v0" },
+        "sealed_book_rpc_slice": { "const": "incomplete" },
+        "closed_book_claim": { "const": false },
+        "measure_kind": { "const": "none" },
+        "graph_policy": { "const": "cold" },
+        "executed_host_sealed_book": { "const": false },
+        "scored_oracle_measure": { "const": false },
+        "batch_embedded": { "const": false },
+        "host_jsonl_read": { "type": "boolean" }
+      }
+    },
+    "carries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_batch_body",
+        "horizons",
+        "delta_exec",
+        "rollup_counts",
+        "host_bytes"
+      ],
+      "properties": {
+        "parent_batch_body": { "const": false },
+        "horizons": { "const": false },
+        "delta_exec": { "const": false },
+        "rollup_counts": { "const": false },
+        "host_bytes": { "const": false }
+      }
+    },
+    "fullBook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "arm_retained",
+        "deletes_detect_history",
+        "reject_stamps_dropped",
+        "local_set_is_not_the_sealed_book",
+        "both_arms_unchanged"
+      ],
+      "properties": {
+        "policy": { "const": "dec007_both_arms_retained" },
+        "arm_retained": { "const": true },
+        "deletes_detect_history": { "const": false },
+        "reject_stamps_dropped": { "const": 0 },
+        "local_set_is_not_the_sealed_book": { "const": true },
+        "both_arms_unchanged": { "const": true }
+      }
+    },
+    "dualRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sealed_book_rpc_slice", "closed_book_claim", "incomplete_reason"],
+      "properties": {
+        "sealed_book_rpc_slice": { "const": "incomplete" },
+        "closed_book_claim": { "const": false },
+        "incomplete_reason": {
+          "const": "host_local_dry_run_does_not_close_the_sealed_book"
+        }
+      }
+    },
+    "measure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "claims_alpha",
+        "invented_ev",
+        "invented_lift",
+        "pass_fail_no_lift"
+      ],
+      "properties": {
+        "kind": { "const": "none" },
+        "claims_alpha": { "const": false },
+        "invented_ev": { "const": false },
+        "invented_lift": { "const": false },
+        "pass_fail_no_lift": { "const": false }
+      }
+    },
+    "softWatches": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Soft watches from paper-batch PR #52 ride here with blocking false, plus dry-run watches. Soft GATE is still required before merge.",
+      "required": ["blocking", "source", "inherited_from", "items"],
+      "properties": {
+        "blocking": { "const": false },
+        "source": {
+          "const": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_batch_pr52"
+        },
+        "inherited_from": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            { "const": "hot_packet_v0_soft_gate_pr49" },
+            { "const": "paper_evaluate_hot_packet_v0_pr50" },
+            { "const": "paper_scoreboard_sealed_fixture_v0_pr51" },
+            { "const": "paper_batch_oracle_sealed_day_incomplete_rpc_v0_pr52" }
+          ],
+          "items": false
+        },
+        "items": {
+          "type": "array",
+          "minItems": 15,
+          "maxItems": 15,
+          "items": {
+            "enum": [
+              "schema_looser_than_cli",
+              "synthetic_launchlab_shape",
+              "graph_slot_shape_not_a_score",
+              "dec005_draft_unmerged",
+              "sealed_book_rpc_slice_incomplete",
+              "label_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history",
+              "host_jsonl_not_readable_from_ci",
+              "counts_are_not_returns",
+              "graph_stays_cold_on_this_stamp",
+              "host_jsonl_read_is_not_a_closed_book",
+              "operator_path_string_is_not_a_host_extract",
+              "dry_run_does_not_ssh_or_open_var_lib_mal",
+              "parent_stamp_not_rewritten"
+            ]
+          }
+        }
+      }
+    },
+    "honesty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration",
+        "scored_oracle_measure",
+        "executed_host_sealed_book",
+        "ci_claimed_sealed_book_close",
+        "continuous_observe_wiring",
+        "encoder_promoted",
+        "enum_production_lock",
+        "discovery_promoted",
+        "graph_lane_revived",
+        "invented_lift",
+        "invented_ev",
+        "claims_alpha",
+        "exp002c_retuned",
+        "live_capital",
+        "trading_keys",
+        "pumpportal_trade_api",
+        "ssh_to_host",
+        "host_extract_checked_into_git",
+        "var_lib_mal_read"
+      ],
+      "properties": {
+        "registration": { "const": "proposed" },
+        "scored_oracle_measure": { "const": false },
+        "executed_host_sealed_book": { "const": false },
+        "ci_claimed_sealed_book_close": { "const": false },
+        "continuous_observe_wiring": { "const": false },
+        "encoder_promoted": { "const": false },
+        "enum_production_lock": { "const": false },
+        "discovery_promoted": { "const": false },
+        "graph_lane_revived": { "const": false },
+        "invented_lift": { "const": false },
+        "invented_ev": { "const": false },
+        "claims_alpha": { "const": false },
+        "exp002c_retuned": { "const": false },
+        "live_capital": { "const": false },
+        "trading_keys": { "const": false },
+        "pumpportal_trade_api": { "const": false },
+        "ssh_to_host": { "const": false },
+        "host_extract_checked_into_git": { "const": false },
+        "var_lib_mal_read": { "const": false }
+      }
+    }
+  }
+}

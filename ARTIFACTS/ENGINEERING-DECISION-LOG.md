@@ -24,6 +24,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-008 — Host-local sealed JSONL dry-run receipt, incomplete RPC (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-008 |
+| **Date** | 2026-09-23 |
+| **What changed** | Registered **Proposed** `paper-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0`: [PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [paper-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json](paper-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json), synthetic receipts, `python -m tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0` (example / validate / receipt). Parent stamp `243e11b` is not rewritten. |
+| **Why** | Scout asked for a citeable operator-local dry-run shape: the merged paper-batch CLI against host-local sealed observe JSONL for `2026-09-20` / `2026-09-21` on `mal-core-vnic`, with incomplete-RPC honesty held even when a receipt notes `host_jsonl_read=true`. |
+| **What was tested** | `python3 -m unittest tools.test_paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0`. Receipt CLI validate / receipt on synthetic fixtures. No RPC. No SSH. No `/var/lib/mal` read. No host extract in git. `observe/client.py` untouched. |
+| **Verification** | Unit tests pass. `sealed_book_rpc_slice` stays `incomplete`. `closed_book_claim` stays false. `measure.kind` stays `none` when `host_jsonl_read` is true. Graph stays cold. DEC-007 both arms unchanged. No measure exit. |
+| **Current state** | Contract is **Proposed**. Not a scored measure. Not an executed host dry-run. Soft GATE is required before merge. Soft watches from #52 stay non-blocking (`blocking=false`). `global_95bps` and `launchlab_init` stay Proposed. |
+| **Rollback** | Revert this registration. The parent batch CLI, parent artifact, and `observe/client.py` are untouched. |
+| **Unresolved** | No observe-wiring, no encoder promote, no enum production lock, no Discovery / Graph revive, no EXP-002c retune, no filled `Δ_exec`, no closed sealed book, no executed host result in git. |
+| **Implications** | Proof cites this receipt for the host-local dry-run shape only. Merge is not a sealed-book measure and not alpha. |
+| **Pointers** | [PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md) |
+
+---
+
 ## EDL-007 — Oracle sealed-day paper batch, incomplete RPC (Proposed)
 
 | Field | Value |
