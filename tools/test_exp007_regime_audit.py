@@ -84,6 +84,7 @@ class RunSingleDayTests(unittest.TestCase):
         resolved = PlatformResolve(
             instr="create",
             fee="unverified",
+            fee_reason="test",
             quote="wsol",
             quote_verified=True,
             venue="pump_program",
@@ -110,7 +111,8 @@ class RunSingleDayTests(unittest.TestCase):
         row = _sealed_create()
         resolved = PlatformResolve(
             instr="create",
-            fee="unverified",
+            fee="global_100bps",
+            fee_reason="global.fee_basis_points",
             quote="wsol",
             quote_verified=True,
             venue="pump_program",

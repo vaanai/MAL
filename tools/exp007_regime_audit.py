@@ -21,6 +21,7 @@ from tools.exp002_paper_runner import is_bonding_create
 from tools.exp007_rpc_enrich import apply_enrich_overlay, load_enrich_by_parent
 EXP_ID = "EXP-007-platform-regime-taxonomy-v0"
 EXP007B_ID = "EXP-007b-platform-regime-rpc-enrich-v0"
+EXP007C_ID = "EXP-007c-fee-knowable-at-t-v0"
 
 
 def regime_gate_key(regime_id: str | None) -> str:
@@ -325,6 +326,37 @@ def _gate_k_platform_resolved(
     }
 
 
+def _gate_k_fee_knowable_at_t(
+    coverage: Mapping[str, Any],
+    *,
+    scope: str = "enriched_sample",
+) -> dict[str, Any]:
+    """EXP-007c — fee tag resolved at T on RPC overlay (not WS default unverified)."""
+    n = int(coverage.get("population_n") or 0)
+    fee_uv = float(coverage.get("fee_unverified_rate") or 0.0)
+    resolved = 1.0 - fee_uv
+    if n == 0:
+        result: GateResult = "INCOMPLETE"
+        note = "empty enriched population"
+    elif fee_uv <= 0.05:
+        result = "PASS"
+        note = "≤5% fee=unverified on enriched sample — knowable-at-T fee dimension landed."
+    else:
+        result = "INCOMPLETE"
+        note = (
+            f"{fee_uv:.1%} fee=unverified — Global/curve fee decode gap or holder-reward slice "
+            "(see EXP-007c diagnosis)."
+        )
+    return {
+        "id": "K-fee-knowable-at-t",
+        "result": result,
+        "scope": scope,
+        "fee_unverified_rate": fee_uv,
+        "fee_resolved_rate": resolved,
+        "note": note,
+    }
+
+
 def _gate_k_leak_enriched(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     bad = [r for r in rows if r.get("_exp007b_leak_reject")]
     n = len(rows)
@@ -356,6 +388,7 @@ def _audit_bundle(
     ]
     if scope == "enriched_sample":
         gates.append(_gate_k_leak_enriched(rows))
+        gates.append(_gate_k_fee_knowable_at_t(coverage, scope=scope))
     overall = _overall_from_gates(gates)
     return {
         "scope": scope,
