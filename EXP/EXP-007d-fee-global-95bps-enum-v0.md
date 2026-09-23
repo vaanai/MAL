@@ -1,6 +1,6 @@
 # EXP-007d — `global_95bps` enum proposal + fee gate re-score (Discovery stamp)
 
-> **Status:** **Proposed enum extension** — Oracle re-score on reused EXP-007b/c sample (fill **Result** after host run).
+> **Status:** **PASS (K-fee-knowable-at-t)** under **Proposed** `global_95bps` — Oracle decode-only re-score **`mal-core-vnic`** **2026-09-23** on reused EXP-007b/c sample. Enriched composite **INCOMPLETE** (instr/quote gaps unchanged). **Merge ≠ enum production lock ≠ observe-wiring.**
 
 | Field | Value |
 | --- | --- |
@@ -54,20 +54,24 @@ EXP-007c showed **~86–89%** `fee=unverified` on the enriched sample **not** be
 
 ---
 
-## Result / conclusion (Oracle sealed — update from host)
+## Result / conclusion (Oracle sealed 2026-09-23)
 
-**Claim (under Proposed `global_95bps` on reused sample):** _Pending Oracle run — expect **K-fee-knowable-at-t PASS** both days if 007c residual was entirely 95 bps + `creator_dynamic` (0% other unverified)._
+**Host:** `mal-core-vnic` — decode-only rescore from `_exp007c-oracle-*` via [`tools/exp007d_oracle_run.md`](../tools/exp007d_oracle_run.md) (no new RPC).
+
+**Claim (fee knowable-at-T under Proposed enum):** **PASS** — **0%** residual `fee=unverified` on enriched overlay both days; **K-fee-knowable-at-t PASS**. **Not** a claim that REGIME-ENUM v0 production law changed — label is **Proposed** until Helm/Proof promote.
 
 | Courier day | rows | `global_95bps` | `global_100bps` | `creator_dynamic` | `unverified` | residual unverified % | **K-fee-knowable-at-t** |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| **2026-09-20** | **500** | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| **2026-09-21** | **500** | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+| **2026-09-20** | **500** | **428** (85.6%) | **0** | **72** (14.4%) | **0** | **0%** | **PASS** |
+| **2026-09-21** | **500** | **447** (89.4%) | **0** | **53** (10.6%) | **0** | **0%** | **PASS** |
 
-**Sealed full book:** unchanged **INCOMPLETE** on fee (100% WS `unverified`).
+**Enriched composite (EXP-007b gates):** cross-day **INCOMPLETE** — **K-platform-rpc-resolved** still **INCOMPLETE** (instr pending **12.4%** / **16.0%**; quote_verified **76.4%** / **70.0%**); fee dimension no longer blocks.
 
-**What remains blocked after stamp:** continuous observe-wiring; encoder production promote; other non-95/100 Global bps without new enum rows; instr/quote gaps on **K-platform-rpc-resolved**.
+**Sealed full book:** dual read honest — **100%** `fee=unverified` on eligible creates (no enrich overlay on book).
 
-**Conclusion:** _Fill after Oracle._ **Merge ≠ authorize** wiring or enum production lock without Helm/Proof.
+**What remains blocked:** continuous observe-wiring; encoder production promote; enum **production** lock for `global_95bps`; any future Global bps ≠ 95/100 without new enum rows; instr/quote RPC gaps on capped sample.
+
+**Conclusion:** EXP-007c residual was an **enum gap**, not missing Global decode. **Proposed** `global_95bps` closes knowable-at-T fee labeling on the reused sample. **Merge ≠ authorize** wiring or enum production lock without Helm/Proof. **No Discovery promote.**
 
 ---
 
