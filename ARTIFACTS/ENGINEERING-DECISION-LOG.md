@@ -24,6 +24,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-006 — Paper scoreboard on sealed-day fixtures (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-006 |
+| **Date** | 2026-09-23 |
+| **What changed** | Registered **Proposed** `paper-scoreboard-sealed-fixture-v0`: [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md), [paper-scoreboard-sealed-fixture-v0.schema.json](paper-scoreboard-sealed-fixture-v0.schema.json), synthetic fixtures, `python -m tools.paper_scoreboard_sealed_fixture_v0` (example / validate / score). |
+| **Why** | Proof needs a citeable local-set count of `paper_evaluate_hot_packet_v0` stamps against a checked-in sealed-day expectation, with both arms retained and no invented EV. |
+| **What was tested** | `python3 -m unittest tools.test_paper_scoreboard_sealed_fixture_v0`. Fixture CLI validate / score. No RPC. No host JSONL. `observe/client.py` untouched. |
+| **Verification** | Unit tests pass. Mixed set keeps the identity reject. All-runner keeps a zero reject row. Horizons and `delta_exec` stay null (`fixture_joined_null_explicit`). `sealed_book_rpc_slice` stays `incomplete`. No measure exit. |
+| **Current state** | Contract is **Proposed**. Not a scored measure. Soft GATE is required for Proof. Inherited soft watches stay non-blocking. `global_95bps` and `launchlab_init` stay Proposed. |
+| **Rollback** | Revert this registration. Sealed `ingest_hot` rows and `observe/client.py` are untouched. |
+| **Unresolved** | No observe-wiring, no encoder promote, no enum production lock, no Discovery / Graph revive, no EXP-002c retune, no filled `Δ_exec`, no closed sealed book. |
+| **Implications** | Proof cites this scoreboard for fixture counts only. Merge is not a sealed-book measure and not alpha. |
+| **Pointers** | [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md), [PAPER-EVALUATE-HOT-PACKET-V0.md](PAPER-EVALUATE-HOT-PACKET-V0.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md) |
+
+---
+
 ## EDL-005 — Paper evaluate→runners on hot-packet v0 (Proposed stamp)
 
 | Field | Value |

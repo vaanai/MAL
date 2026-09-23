@@ -1,0 +1,552 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-scoreboard-sealed-fixture-v0.schema.json",
+  "title": "MAL paper-scoreboard-sealed-fixture v0 (Proposed paper scoreboard)",
+  "description": "Proposed scoreboard over a local set of paper_evaluate_hot_packet_v0 stamps joined to a synthetic sealed-day expectation. Count rates are not returns. Horizons and delta_exec stay null with an explicit fixture-joined status. sealed_book_rpc_slice stays incomplete. This registration does not define a PASS or FAIL_NO_LIFT measure exit. See ARTIFACTS/PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "type",
+    "id",
+    "paper_only",
+    "input",
+    "full_book",
+    "label_rates",
+    "reason_histogram",
+    "graph_lift",
+    "graph_lift_aggregate_status",
+    "graph_status_counts",
+    "horizons",
+    "delta_exec",
+    "dual_read",
+    "fixture_join",
+    "measure",
+    "sealed_days",
+    "stamp_rows",
+    "soft_watches",
+    "honesty"
+  ],
+  "properties": {
+    "schema_version": { "const": "paper_scoreboard_sealed_fixture_v0" },
+    "type": { "const": "paper_scoreboard" },
+    "id": { "const": "paper-scoreboard-sealed-fixture-v0" },
+    "paper_only": { "const": true },
+    "input": { "$ref": "#/$defs/input" },
+    "full_book": { "$ref": "#/$defs/fullBook" },
+    "label_rates": { "$ref": "#/$defs/labelRates" },
+    "reason_histogram": { "$ref": "#/$defs/reasonHistogram" },
+    "graph_lift": {
+      "const": null,
+      "description": "v0 does not invent graph lift. Null on cold stamps and on stamps with a filled allowlisted slot."
+    },
+    "graph_lift_aggregate_status": {
+      "enum": ["not_used_graph_cold", "not_used_slots_not_scored", "not_scored_mixed"]
+    },
+    "graph_status_counts": { "$ref": "#/$defs/graphStatusCounts" },
+    "horizons": { "$ref": "#/$defs/horizons" },
+    "delta_exec": { "$ref": "#/$defs/deltaExec" },
+    "dual_read": { "$ref": "#/$defs/dualRead" },
+    "fixture_join": { "$ref": "#/$defs/fixtureJoin" },
+    "measure": { "$ref": "#/$defs/measure" },
+    "sealed_days": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/sealedDay" }
+    },
+    "stamp_rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/stampRow" }
+    },
+    "soft_watches": { "$ref": "#/$defs/softWatches" },
+    "honesty": { "$ref": "#/$defs/honesty" }
+  },
+  "$defs": {
+    "share": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Count fraction of this local set. A zero numerator is a stamp count of zero. It is not a 0% return and not lift.",
+      "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": { "type": "integer", "minimum": 0 },
+        "denominator": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "local_json_only",
+        "rpc",
+        "observe_jsonl_tail",
+        "host_extract_required",
+        "fixture_side",
+        "stamps",
+        "expectation"
+      ],
+      "properties": {
+        "contract": { "const": "paper_evaluate_hot_packet_v0" },
+        "local_json_only": { "const": true },
+        "rpc": { "const": false },
+        "observe_jsonl_tail": { "const": false },
+        "host_extract_required": { "const": false },
+        "fixture_side": { "const": "sealed_day_checked_in" },
+        "stamps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "paper-evaluate-hot-packet-v0.schema.json",
+            "description": "Validated paper_evaluate_hot_packet_v0 stamps. Both labels stay in the array."
+          }
+        },
+        "expectation": { "$ref": "#/$defs/expectation" }
+      }
+    },
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Synthetic sealed-day checklist. Not a host extract and not a closed book.",
+      "required": [
+        "schema_version",
+        "fixture_kind",
+        "origin",
+        "day",
+        "sealed_book_rpc_slice",
+        "closed_book_claim",
+        "horizon_join",
+        "delta_exec_join",
+        "rows"
+      ],
+      "properties": {
+        "schema_version": { "const": "paper_scoreboard_sealed_fixture_v0" },
+        "fixture_kind": { "const": "sealed_day_expectation" },
+        "origin": { "const": "synthetic" },
+        "day": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "sealed_book_rpc_slice": { "const": "incomplete" },
+        "closed_book_claim": { "const": false },
+        "horizon_join": { "$ref": "#/$defs/horizonJoin" },
+        "delta_exec_join": { "$ref": "#/$defs/deltaExec" },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/expectationRow" }
+        }
+      }
+    },
+    "horizonJoin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "values_supplied", "null_is_not_zero_return"],
+      "properties": {
+        "status": { "const": "fixture_joined_null_explicit" },
+        "values_supplied": {
+          "const": false,
+          "description": "The fixture names a status. It does not supply prices or returns."
+        },
+        "null_is_not_zero_return": { "const": true }
+      }
+    },
+    "expectationRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_day", "signature", "mint", "evaluate_label", "reasons"],
+      "properties": {
+        "source_day": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "signature": { "type": "string", "minLength": 1 },
+        "mint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "UNK is a concrete identity on the reject fixture. It is not a wildcard."
+        },
+        "evaluate_label": { "enum": ["runner", "reject"] },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "missing_signature",
+              "missing_mint",
+              "stage_not_bonding",
+              "honesty_reject",
+              "overlay_discipline"
+            ]
+          }
+        }
+      }
+    },
+    "fullBook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "arm_retained",
+        "deletes_detect_history",
+        "reject_stamps_dropped",
+        "local_set_is_not_the_sealed_book",
+        "n",
+        "runner_n",
+        "reject_n"
+      ],
+      "properties": {
+        "policy": { "const": "dec007_both_arms_retained" },
+        "arm_retained": { "const": true },
+        "deletes_detect_history": { "const": false },
+        "reject_stamps_dropped": { "const": 0 },
+        "local_set_is_not_the_sealed_book": { "const": true },
+        "n": { "type": "integer", "minimum": 1 },
+        "runner_n": { "type": "integer", "minimum": 0 },
+        "reject_n": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "labelRates": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Runner vs reject counts on this local set. The reject row is always present.",
+      "required": ["n_meaning", "share_kind", "n", "runner_n", "reject_n", "rows"],
+      "properties": {
+        "n_meaning": { "const": "stamp_count_not_a_return" },
+        "share_kind": { "const": "count_fraction_not_a_return" },
+        "n": { "type": "integer", "minimum": 1 },
+        "runner_n": { "type": "integer", "minimum": 0 },
+        "reject_n": { "type": "integer", "minimum": 0 },
+        "rows": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/labelRow" },
+                { "properties": { "label": { "const": "runner" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/labelRow" },
+                { "properties": { "label": { "const": "reject" } } }
+              ]
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "labelRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "n", "share"],
+      "properties": {
+        "label": { "enum": ["runner", "reject"] },
+        "n": { "type": "integer", "minimum": 0 },
+        "share": { "$ref": "#/$defs/share" }
+      }
+    },
+    "reasonHistogram": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Closed paper-evaluate reason list. Counts are stamp occurrences. They are not lift.",
+      "required": ["n_meaning", "share_kind", "closed_list", "rows"],
+      "properties": {
+        "n_meaning": { "const": "stamp_occurrences_not_a_return" },
+        "share_kind": { "const": "count_fraction_not_a_return" },
+        "closed_list": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "enum": [
+              "missing_signature",
+              "missing_mint",
+              "stage_not_bonding",
+              "honesty_reject",
+              "overlay_discipline"
+            ]
+          }
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            { "allOf": [{ "$ref": "#/$defs/reasonRow" }, { "properties": { "reason": { "const": "missing_signature" } } }] },
+            { "allOf": [{ "$ref": "#/$defs/reasonRow" }, { "properties": { "reason": { "const": "missing_mint" } } }] },
+            { "allOf": [{ "$ref": "#/$defs/reasonRow" }, { "properties": { "reason": { "const": "stage_not_bonding" } } }] },
+            { "allOf": [{ "$ref": "#/$defs/reasonRow" }, { "properties": { "reason": { "const": "honesty_reject" } } }] },
+            { "allOf": [{ "$ref": "#/$defs/reasonRow" }, { "properties": { "reason": { "const": "overlay_discipline" } } }] }
+          ],
+          "items": false
+        }
+      }
+    },
+    "reasonRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "n", "share"],
+      "properties": {
+        "reason": {
+          "enum": [
+            "missing_signature",
+            "missing_mint",
+            "stage_not_bonding",
+            "honesty_reject",
+            "overlay_discipline"
+          ]
+        },
+        "n": { "type": "integer", "minimum": 0 },
+        "share": { "$ref": "#/$defs/share" }
+      }
+    },
+    "graphStatusCounts": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "n"],
+          "properties": {
+            "status": { "const": "not_used_graph_cold" },
+            "n": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "n"],
+          "properties": {
+            "status": { "const": "not_used_slots_not_scored" },
+            "n": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ],
+      "items": false
+    },
+    "horizonMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "DEC-006 horizons. Null is legal. Null is not a 0% return.",
+      "required": ["1s", "5s", "15s", "30s", "60s", "+2s", "+10s", "+5m", "peak", "drawdown"],
+      "properties": {
+        "1s": { "const": null },
+        "5s": { "const": null },
+        "15s": { "const": null },
+        "30s": { "const": null },
+        "60s": { "const": null },
+        "+2s": { "const": null },
+        "+10s": { "const": null },
+        "+5m": { "const": null },
+        "peak": { "const": null },
+        "drawdown": { "const": null }
+      }
+    },
+    "horizons": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "null_is_not_zero_return", "source", "values"],
+      "properties": {
+        "status": { "const": "fixture_joined_null_explicit" },
+        "null_is_not_zero_return": { "const": true },
+        "source": { "const": "sealed_day_expectation_and_stamp_runner_stamp" },
+        "values": { "$ref": "#/$defs/horizonMap" }
+      }
+    },
+    "deltaExec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "also_called", "value", "status", "reason", "null_is_not_zero_cost"],
+      "properties": {
+        "field": { "const": "delta_exec" },
+        "also_called": { "const": "Δ_exec" },
+        "value": { "const": null },
+        "status": {
+          "const": "fixture_joined_null_explicit",
+          "description": "Explicit status from the sealed-day fixture. Null is legal. It is not a zero fill and not an invented fee."
+        },
+        "reason": { "const": "sealed_day_fixture_has_no_fill" },
+        "null_is_not_zero_cost": { "const": true }
+      }
+    },
+    "dualRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sealed_book_rpc_slice", "closed_book_claim", "incomplete_reason"],
+      "properties": {
+        "sealed_book_rpc_slice": {
+          "const": "incomplete",
+          "description": "A fixture join does not close the sealed book. EXP-007e enriched PASS stays a sample overlay."
+        },
+        "closed_book_claim": { "const": false },
+        "incomplete_reason": { "const": "fixture_join_does_not_close_the_sealed_book" }
+      }
+    },
+    "fixtureJoin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "origin",
+        "day",
+        "matched_n",
+        "label_disagree_n",
+        "reason_disagree_n",
+        "unmatched_stamp_n",
+        "expectation_rows_not_in_local_set",
+        "duplicate_identity_n",
+        "closed_book"
+      ],
+      "properties": {
+        "mode": { "const": "sealed_day_checked_in" },
+        "origin": { "const": "synthetic" },
+        "day": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "matched_n": { "type": "integer", "minimum": 0 },
+        "label_disagree_n": { "type": "integer", "minimum": 0 },
+        "reason_disagree_n": { "type": "integer", "minimum": 0 },
+        "unmatched_stamp_n": { "type": "integer", "minimum": 0 },
+        "expectation_rows_not_in_local_set": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Checklist rows absent from this local set. Absence here is not a deleted reject arm."
+        },
+        "duplicate_identity_n": { "type": "integer", "minimum": 0 },
+        "closed_book": { "const": false }
+      }
+    },
+    "measure": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "No measure. kind=none. No PASS or FAIL_NO_LIFT exit is defined.",
+      "required": ["kind", "claims_alpha", "invented_ev", "invented_lift", "pass_fail_no_lift"],
+      "properties": {
+        "kind": { "const": "none" },
+        "claims_alpha": { "const": false },
+        "invented_ev": { "const": false },
+        "invented_lift": { "const": false },
+        "pass_fail_no_lift": { "const": false }
+      }
+    },
+    "sealedDay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["day", "n", "fixture_origin", "sealed_book_rpc_slice"],
+      "properties": {
+        "day": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "n": { "type": "integer", "minimum": 1 },
+        "fixture_origin": { "enum": ["synthetic", "sealed_row_projection", "mixed"] },
+        "sealed_book_rpc_slice": { "const": "incomplete" }
+      }
+    },
+    "stampRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "source_day",
+        "signature",
+        "mint",
+        "evaluate_label",
+        "reasons",
+        "graph_lift",
+        "graph_lift_status",
+        "horizon_status",
+        "delta_exec_value",
+        "delta_exec_status",
+        "sealed_book_rpc_slice",
+        "fixture_join"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "source_day": { "type": "string" },
+        "signature": { "type": "string", "minLength": 1 },
+        "mint": { "type": "string", "minLength": 1 },
+        "evaluate_label": { "enum": ["runner", "reject"] },
+        "reasons": { "type": "array", "items": { "type": "string" } },
+        "graph_lift": { "const": null },
+        "graph_lift_status": {
+          "enum": ["not_used_graph_cold", "not_used_slots_not_scored"]
+        },
+        "horizon_status": { "const": "null_ok_no_marks_on_this_stamp" },
+        "delta_exec_value": { "const": null },
+        "delta_exec_status": { "const": "null_ok" },
+        "sealed_book_rpc_slice": { "const": "incomplete" },
+        "fixture_join": {
+          "enum": ["matched", "label_disagree", "reason_disagree", "unmatched"]
+        }
+      }
+    },
+    "softWatches": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Inherited hot-packet PR #49 and paper-evaluate PR #50 Soft GATE watches, plus scoreboard misread watches. blocking is false.",
+      "required": ["blocking", "source", "inherited_from", "items"],
+      "properties": {
+        "blocking": { "const": false },
+        "source": { "const": "hot_packet_v0_soft_gate_pr49_and_paper_evaluate_pr50" },
+        "inherited_from": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            { "const": "hot_packet_v0_soft_gate_pr49" },
+            { "const": "paper_evaluate_hot_packet_v0_pr50" }
+          ],
+          "items": false
+        },
+        "items": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "items": {
+            "enum": [
+              "schema_looser_than_cli",
+              "synthetic_launchlab_shape",
+              "graph_slot_shape_not_a_score",
+              "dec005_draft_unmerged",
+              "sealed_book_rpc_slice_incomplete",
+              "label_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history"
+            ]
+          }
+        }
+      }
+    },
+    "honesty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration",
+        "scored_oracle_measure",
+        "continuous_observe_wiring",
+        "encoder_promoted",
+        "enum_production_lock",
+        "discovery_promoted",
+        "graph_lane_revived",
+        "invented_lift",
+        "invented_ev",
+        "claims_alpha",
+        "exp002c_retuned",
+        "live_capital",
+        "trading_keys",
+        "pumpportal_trade_api"
+      ],
+      "properties": {
+        "registration": { "const": "proposed" },
+        "scored_oracle_measure": { "const": false },
+        "continuous_observe_wiring": { "const": false },
+        "encoder_promoted": { "const": false },
+        "enum_production_lock": { "const": false },
+        "discovery_promoted": { "const": false },
+        "graph_lane_revived": { "const": false },
+        "invented_lift": { "const": false },
+        "invented_ev": { "const": false },
+        "claims_alpha": { "const": false },
+        "exp002c_retuned": { "const": false },
+        "live_capital": { "const": false },
+        "trading_keys": { "const": false },
+        "pumpportal_trade_api": { "const": false }
+      }
+    }
+  }
+}

@@ -1,0 +1,466 @@
+{
+  "schema_version": "paper_scoreboard_sealed_fixture_v0",
+  "type": "paper_scoreboard",
+  "id": "paper-scoreboard-sealed-fixture-v0",
+  "paper_only": true,
+  "input": {
+    "contract": "paper_evaluate_hot_packet_v0",
+    "local_json_only": true,
+    "rpc": false,
+    "observe_jsonl_tail": false,
+    "host_extract_required": false,
+    "fixture_side": "sealed_day_checked_in",
+    "stamps": [
+      {
+        "schema_version": "paper_evaluate_hot_packet_v0",
+        "type": "paper_evaluate_stamp",
+        "id": "paper-evaluate-hot-packet-v0",
+        "paper_only": true,
+        "input": {
+          "contract": "hot_packet_v0",
+          "only_decode_input": true,
+          "raw_ws_replay": false,
+          "post_hoc_enrich_on_evaluate": false,
+          "packet": {
+            "schema_version": "hot_packet_v0",
+            "type": "hot_packet",
+            "paper_only": true,
+            "byte_cap": 8192,
+            "l1_spine": {
+              "signature": "SigExampleSealed",
+              "mint": "MintExampleSealed",
+              "txType": "create",
+              "stream": "subscribeNewToken",
+              "source": "pumpportal_ws",
+              "commitment": "processed",
+              "stage": "bonding",
+              "traderPublicKey": "TraderExampleWeakWs",
+              "name": "Example",
+              "symbol": "EX",
+              "uri": "https://example.invalid/meta.json",
+              "bondingCurveKey": "CurveExample",
+              "initialBuy": 1000.0,
+              "solAmount": 0.1,
+              "vTokensInBondingCurve": 1000000.0,
+              "vSolInBondingCurve": 30.0,
+              "marketCapSol": 30.0,
+              "pool": null
+            },
+            "regime": {
+              "regime_id": "env=mainnet|source=pumpportal_ws|stream=subscribeNewToken|stage=bonding|quote=wsol_assumed|commitment=processed|venue=pump_program|instr=pending_rpc|fee=unverified|market=bonding_curve",
+              "components": {
+                "env": "mainnet",
+                "source": "pumpportal_ws",
+                "stream": "subscribeNewToken",
+                "stage": "bonding",
+                "quote": "wsol_assumed",
+                "commitment": "processed",
+                "venue": "pump_program",
+                "instr": "pending_rpc",
+                "fee": "unverified",
+                "market": "bonding_curve"
+              },
+              "component_lock": {
+                "env": "production",
+                "source": "production",
+                "stream": "production",
+                "stage": "production",
+                "quote": "production",
+                "commitment": "production",
+                "venue": "production",
+                "instr": "production",
+                "fee": "production",
+                "market": "production"
+              }
+            },
+            "knowable_at_t": {
+              "quote": "wsol_assumed",
+              "quote_verified": false,
+              "instr": "pending_rpc",
+              "fee": "unverified",
+              "venue": "pump_program",
+              "venue_verified": false,
+              "creator_verified": false,
+              "reserves_source": "ws"
+            },
+            "graph": {
+              "cold": true,
+              "max_slots": 5,
+              "lane_policy": "exp004_capped_scalars_only",
+              "slots": null
+            },
+            "clocks": {
+              "t_ws": "2026-09-20T12:00:00.000+00:00",
+              "t_event": null,
+              "T_decision": "2026-09-20T12:00:00.000+00:00",
+              "t_precompute_as_of": "2026-09-20T12:00:00.000+00:00",
+              "precompute_features_merged": false,
+              "clock_source": "dec005_draft_pr8_unmerged"
+            },
+            "delta_exec": {
+              "defined_in": "dec005_draft_pr8_unmerged",
+              "value": null,
+              "reason": "paper_packet_has_no_fill"
+            },
+            "provenance": {
+              "spine": "sealed_jsonl",
+              "source_day": "2026-09-20",
+              "parent_type": "ingest_hot",
+              "parent_schema": "observe_hot_v0",
+              "parent_signature": "SigExampleSealed",
+              "mint": "MintExampleSealed",
+              "fixture_origin": "synthetic",
+              "supersedes": null,
+              "day_aligned": true
+            },
+            "dual_read": {
+              "overlay": "sealed",
+              "sealed_book_rpc_slice": "incomplete",
+              "enrich_type": null
+            },
+            "honesty": {
+              "registration": "proposed",
+              "continuous_observe_wiring": false,
+              "encoder_promoted": false,
+              "enum_production_lock": false,
+              "discovery_promoted": false,
+              "graph_lane_revived": false,
+              "invented_lift": false
+            }
+          }
+        },
+        "evaluate_label": "runner",
+        "reasons": [],
+        "ruleset": "paper_evaluate_hot_packet_v0_rules",
+        "knowable_at_t_only": true,
+        "graph_lift": null,
+        "graph_lift_status": "not_used_graph_cold",
+        "runner_stamp": {
+          "kind": "paper_promotion",
+          "pretend_buy": true,
+          "live_capital": false,
+          "T": "2026-09-20T12:00:00.000+00:00",
+          "clock_source": "dec005_draft_pr8_unmerged",
+          "horizons": {
+            "1s": null,
+            "5s": null,
+            "15s": null,
+            "30s": null,
+            "60s": null,
+            "+2s": null,
+            "+10s": null,
+            "+5m": null,
+            "peak": null,
+            "drawdown": null
+          },
+          "horizon_status": "null_ok_no_marks_on_this_stamp",
+          "delta_exec": {
+            "field": "delta_exec",
+            "also_called": "Δ_exec",
+            "value": null,
+            "status": "null_ok",
+            "reason": "paper_stamp_has_no_fill"
+          }
+        },
+        "full_book": {
+          "policy": "dec007_both_arms_retained",
+          "arm_retained": true,
+          "deletes_detect_history": false
+        },
+        "soft_watches": {
+          "blocking": false,
+          "source": "hot_packet_v0_soft_gate_pr49",
+          "items": [
+            "schema_looser_than_cli",
+            "synthetic_launchlab_shape",
+            "graph_slot_shape_not_a_score",
+            "dec005_draft_unmerged",
+            "sealed_book_rpc_slice_incomplete"
+          ]
+        },
+        "honesty": {
+          "registration": "proposed",
+          "scored_oracle_measure": false,
+          "continuous_observe_wiring": false,
+          "encoder_promoted": false,
+          "enum_production_lock": false,
+          "discovery_promoted": false,
+          "graph_lane_revived": false,
+          "invented_lift": false,
+          "exp002c_retuned": false,
+          "live_capital": false,
+          "trading_keys": false,
+          "pumpportal_trade_api": false
+        }
+      }
+    ],
+    "expectation": {
+      "schema_version": "paper_scoreboard_sealed_fixture_v0",
+      "fixture_kind": "sealed_day_expectation",
+      "origin": "synthetic",
+      "day": "2026-09-20",
+      "sealed_book_rpc_slice": "incomplete",
+      "closed_book_claim": false,
+      "horizon_join": {
+        "status": "fixture_joined_null_explicit",
+        "values_supplied": false,
+        "null_is_not_zero_return": true
+      },
+      "delta_exec_join": {
+        "field": "delta_exec",
+        "also_called": "Δ_exec",
+        "value": null,
+        "status": "fixture_joined_null_explicit",
+        "reason": "sealed_day_fixture_has_no_fill",
+        "null_is_not_zero_cost": true
+      },
+      "rows": [
+        {
+          "source_day": "2026-09-20",
+          "signature": "SigExampleEnrichedFee",
+          "mint": "MintExampleEnrichedFee",
+          "evaluate_label": "runner",
+          "reasons": []
+        },
+        {
+          "source_day": "2026-09-20",
+          "signature": "SigExampleGraphSlots",
+          "mint": "MintExampleGraphSlots",
+          "evaluate_label": "runner",
+          "reasons": []
+        },
+        {
+          "source_day": "2026-09-20",
+          "signature": "SigExampleLaunchlab",
+          "mint": "MintExampleLaunchlab",
+          "evaluate_label": "runner",
+          "reasons": []
+        },
+        {
+          "source_day": "2026-09-20",
+          "signature": "SigExampleRejectIdentity",
+          "mint": "UNK",
+          "evaluate_label": "reject",
+          "reasons": [
+            "missing_mint"
+          ]
+        },
+        {
+          "source_day": "2026-09-20",
+          "signature": "SigExampleSealed",
+          "mint": "MintExampleSealed",
+          "evaluate_label": "runner",
+          "reasons": []
+        }
+      ]
+    }
+  },
+  "full_book": {
+    "policy": "dec007_both_arms_retained",
+    "arm_retained": true,
+    "deletes_detect_history": false,
+    "reject_stamps_dropped": 0,
+    "local_set_is_not_the_sealed_book": true,
+    "n": 1,
+    "runner_n": 1,
+    "reject_n": 0
+  },
+  "label_rates": {
+    "n_meaning": "stamp_count_not_a_return",
+    "share_kind": "count_fraction_not_a_return",
+    "n": 1,
+    "runner_n": 1,
+    "reject_n": 0,
+    "rows": [
+      {
+        "label": "runner",
+        "n": 1,
+        "share": {
+          "numerator": 1,
+          "denominator": 1
+        }
+      },
+      {
+        "label": "reject",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 1
+        }
+      }
+    ]
+  },
+  "reason_histogram": {
+    "n_meaning": "stamp_occurrences_not_a_return",
+    "share_kind": "count_fraction_not_a_return",
+    "closed_list": [
+      "missing_signature",
+      "missing_mint",
+      "stage_not_bonding",
+      "honesty_reject",
+      "overlay_discipline"
+    ],
+    "rows": [
+      {
+        "reason": "missing_signature",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 1
+        }
+      },
+      {
+        "reason": "missing_mint",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 1
+        }
+      },
+      {
+        "reason": "stage_not_bonding",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 1
+        }
+      },
+      {
+        "reason": "honesty_reject",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 1
+        }
+      },
+      {
+        "reason": "overlay_discipline",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 1
+        }
+      }
+    ]
+  },
+  "graph_lift": null,
+  "graph_lift_aggregate_status": "not_used_graph_cold",
+  "graph_status_counts": [
+    {
+      "status": "not_used_graph_cold",
+      "n": 1
+    },
+    {
+      "status": "not_used_slots_not_scored",
+      "n": 0
+    }
+  ],
+  "horizons": {
+    "status": "fixture_joined_null_explicit",
+    "null_is_not_zero_return": true,
+    "source": "sealed_day_expectation_and_stamp_runner_stamp",
+    "values": {
+      "1s": null,
+      "5s": null,
+      "15s": null,
+      "30s": null,
+      "60s": null,
+      "+2s": null,
+      "+10s": null,
+      "+5m": null,
+      "peak": null,
+      "drawdown": null
+    }
+  },
+  "delta_exec": {
+    "field": "delta_exec",
+    "also_called": "Δ_exec",
+    "value": null,
+    "status": "fixture_joined_null_explicit",
+    "reason": "sealed_day_fixture_has_no_fill",
+    "null_is_not_zero_cost": true
+  },
+  "dual_read": {
+    "sealed_book_rpc_slice": "incomplete",
+    "closed_book_claim": false,
+    "incomplete_reason": "fixture_join_does_not_close_the_sealed_book"
+  },
+  "fixture_join": {
+    "mode": "sealed_day_checked_in",
+    "origin": "synthetic",
+    "day": "2026-09-20",
+    "matched_n": 1,
+    "label_disagree_n": 0,
+    "reason_disagree_n": 0,
+    "unmatched_stamp_n": 0,
+    "expectation_rows_not_in_local_set": 4,
+    "duplicate_identity_n": 0,
+    "closed_book": false
+  },
+  "measure": {
+    "kind": "none",
+    "claims_alpha": false,
+    "invented_ev": false,
+    "invented_lift": false,
+    "pass_fail_no_lift": false
+  },
+  "sealed_days": [
+    {
+      "day": "2026-09-20",
+      "n": 1,
+      "fixture_origin": "synthetic",
+      "sealed_book_rpc_slice": "incomplete"
+    }
+  ],
+  "stamp_rows": [
+    {
+      "ordinal": 0,
+      "source_day": "2026-09-20",
+      "signature": "SigExampleSealed",
+      "mint": "MintExampleSealed",
+      "evaluate_label": "runner",
+      "reasons": [],
+      "graph_lift": null,
+      "graph_lift_status": "not_used_graph_cold",
+      "horizon_status": "null_ok_no_marks_on_this_stamp",
+      "delta_exec_value": null,
+      "delta_exec_status": "null_ok",
+      "sealed_book_rpc_slice": "incomplete",
+      "fixture_join": "matched"
+    }
+  ],
+  "soft_watches": {
+    "blocking": false,
+    "source": "hot_packet_v0_soft_gate_pr49_and_paper_evaluate_pr50",
+    "inherited_from": [
+      "hot_packet_v0_soft_gate_pr49",
+      "paper_evaluate_hot_packet_v0_pr50"
+    ],
+    "items": [
+      "schema_looser_than_cli",
+      "synthetic_launchlab_shape",
+      "graph_slot_shape_not_a_score",
+      "dec005_draft_unmerged",
+      "sealed_book_rpc_slice_incomplete",
+      "label_share_is_not_a_return",
+      "synthetic_sealed_day_not_a_host_extract",
+      "local_subset_is_not_dropped_history"
+    ]
+  },
+  "honesty": {
+    "registration": "proposed",
+    "scored_oracle_measure": false,
+    "continuous_observe_wiring": false,
+    "encoder_promoted": false,
+    "enum_production_lock": false,
+    "discovery_promoted": false,
+    "graph_lane_revived": false,
+    "invented_lift": false,
+    "invented_ev": false,
+    "claims_alpha": false,
+    "exp002c_retuned": false,
+    "live_capital": false,
+    "trading_keys": false,
+    "pumpportal_trade_api": false
+  }
+}
