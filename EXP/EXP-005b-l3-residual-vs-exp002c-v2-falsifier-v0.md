@@ -133,6 +133,7 @@ Map to Discovery ARTIFACT §8 + parent EXP-005 gates. **No fabricated mean_retur
 - Lab: [LAB_STATE.md](../LAB_STATE.md)
 - Manager: [ARTIFACTS/SUMMARY.md](../ARTIFACTS/SUMMARY.md)
 - Registry: [EXP/README.md](README.md)
+- Paper fill harness (Proposed, not run): [EXP-006-paper-would-have-happened-harness-v0.md](EXP-006-paper-would-have-happened-harness-v0.md) — **L3_minus_v2** on soft-watch candidate list only
 - Graph measurement: [EXP-004-graph-creator-recurrence-v0.md](EXP-004-graph-creator-recurrence-v0.md)
 - Book law: [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)
 

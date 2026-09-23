@@ -120,6 +120,7 @@ Map to Discovery ARTIFACT §8 + Graph gates. **No fabricated mean_return_pct or 
 - Book law: [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)
 - Marks: [EXP-003-post-create-marks.md](EXP-003-post-create-marks.md)
 - Evaluate baseline overlap reference: [EXP-002c-rules-v2-adverse-selection.md](EXP-002c-rules-v2-adverse-selection.md) (**INCOMPLETE closed** — cohort reference only)
+- Paper would-have-happened harness (Proposed, not run): [EXP-006-paper-would-have-happened-harness-v0.md](EXP-006-paper-would-have-happened-harness-v0.md)
 
 ---
 
@@ -146,3 +147,5 @@ High overlap with the v2 modal runner slice remains a **cohort falsifier risk** 
 **Conclusion:** L3 **packet** cohort (`L3_PACKET_V0`) passes **separable_vs_spine** and **no_lift_vs_random** @60s on **both** courier days with honest priced floors; **S1 collapse** falsifier **not** triggered. **Does not** clear EXP-002c adverse-selection failure or authorize evaluate changes. **Parked:** ordinal / NH-G3a / NH-Index / fill-sim / H-G2 revive.
 
 **Child falsifier (scored 2026-09-23):** [EXP-005b](EXP-005b-l3-residual-vs-exp002c-v2-falsifier-v0.md) — **L3_minus_v2** sealed re-auth → cross-day **DIRECTIONAL_WATCH (residual)** @60s (sep+random **PASS** both days; thin residual priced_n; **no promote**).
+
+**Sibling registration (not run):** [EXP-006](EXP-006-paper-would-have-happened-harness-v0.md) — paper **would-have-happened** fill harness (**Proposed, not run**); L3 / v2 watch-list cohorts only — **not** promote.
