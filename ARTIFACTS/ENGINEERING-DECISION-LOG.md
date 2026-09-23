@@ -24,6 +24,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-007 — Oracle sealed-day paper batch, incomplete RPC (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-007 |
+| **Date** | 2026-09-23 |
+| **What changed** | Registered **Proposed** `paper-batch-oracle-sealed-day-incomplete-rpc-v0`: [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [paper-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json](paper-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json), synthetic `2026-09-20` / `2026-09-21` JSONL, `python -m tools.paper_batch_oracle_sealed_day_incomplete_rpc_v0` (example / validate / batch). |
+| **Why** | Proof needs a citeable day-aligned paper path from sealed observe JSONL through hot-packet, paper-evaluate, and paper-scoreboard, with incomplete-RPC honesty explicit. |
+| **What was tested** | `python3 -m unittest tools.test_paper_batch_oracle_sealed_day_incomplete_rpc_v0`. Fixture CLI validate / batch. No RPC. No host JSONL. `observe/client.py` untouched. |
+| **Verification** | Unit tests pass. Both days keep runner and reject. `sealed_book_rpc_slice` stays `incomplete`. `closed_book_claim` stays false. Graph stays cold. Horizons stay null. No measure exit. |
+| **Current state** | Contract is **Proposed**. Not a scored measure. Soft GATE is required before merge. Soft watches stay non-blocking. `global_95bps` and `launchlab_init` stay Proposed. |
+| **Rollback** | Revert this registration. Sealed `ingest_hot` rows and `observe/client.py` are untouched. |
+| **Unresolved** | No observe-wiring, no encoder promote, no enum production lock, no Discovery / Graph revive, no EXP-002c retune, no filled `Δ_exec`, no closed sealed book, no executed host result in git. |
+| **Implications** | Proof cites this batch for a synthetic day-aligned projection only. Merge is not a sealed-book measure and not alpha. |
+| **Pointers** | [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md), [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md) |
+
+---
+
 ## EDL-006 — Paper scoreboard on sealed-day fixtures (Proposed)
 
 | Field | Value |

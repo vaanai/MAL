@@ -221,3 +221,4 @@ Checked-in fixtures are **synthetic**. They are not Oracle extracts and they are
 - Full book: [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)
 - Clocks draft (unmerged): [PR #8](https://github.com/vaanai/MAL/pull/8)
 - Parent registrations: [PR #49](https://github.com/vaanai/MAL/pull/49), [PR #50](https://github.com/vaanai/MAL/pull/50)
+- Day-aligned batch of these scoreboards (Proposed, synthetic JSONL, sealed book stays incomplete): [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md)
