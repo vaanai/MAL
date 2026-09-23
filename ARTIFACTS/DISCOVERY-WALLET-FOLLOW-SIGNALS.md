@@ -6,7 +6,7 @@
 | **Owner seat** | Scout (signal **taxonomy** + paper path). Layer-2 precompute remains Graph. |
 | **Sibling** | [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) (landed PR #25) — **same S1–S7 / H-G vocabulary** |
 | **This file** | Discovery **taxonomy ARTIFACT** only. **Does not mint an EXP id.** |
-| **Graph measurement** | EXP-004 (`EXP-004-graph-creator-recurrence-v0`) is **Graph-owned** ([GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) §9). Proposed, not run. Scout does not register it here. |
+| **Graph measurement** | EXP-004 (`EXP-004-graph-creator-recurrence-v0`) is **Graph-owned** — contract + CLI on `main` ([EXP-004](../EXP/EXP-004-graph-creator-recurrence-v0.md), [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) §9). **Full-book Oracle score INCOMPLETE** until operator courier JSONL + marks (`priced_n` floors). Scout **taxonomy only** — does not register EXP-004 here. |
 | **Lab locks** | Paper only. Knowable-at-T. Sealed JSONL = provenance spine. Postgres = Layer-2 ops/relationship **cache**. X = Layer 4 later. Soft bonk/mayhem **parked**. No live keys. No invented lift numbers. No EXP-002c retune. |
 
 **Question:** which wallet / smart-wallet / follow signals should MAL **actually use**, and how do they inform **maximize-profit on the paper→gated path** (detect→decode→evaluate→runners), not live trading?
@@ -207,9 +207,9 @@ Proof gates for **EXP-004** (Graph, not this artifact): full-book labels; `no_li
 
 ## 9. Cheap-first measurement path
 
-**This artifact does not run an EXP.** The first scoring child is Graph **`EXP-004-graph-creator-recurrence-v0`** ([GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) §9): regime-gated, capped as-of-T **H-G1 / H-G3 / optional H-G4** vs spine-only on the full detect book at 1/5/15/30/60s.
+**This artifact does not run an EXP.** Graph **`EXP-004-graph-creator-recurrence-v0`** is **landed on `main`** ([EXP-004](../EXP/EXP-004-graph-creator-recurrence-v0.md), [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) §9): regime-gated, capped as-of-T **H-G1 / H-G3 / optional H-G4** vs spine-only on the full detect book at 1/5/15/30/60s. Operator runs `python -m tools.exp004_graph_discovery` on laptop/Oracle JSONL + existing marks; cloud agents have no courier book — **no scored lift claimed here**.
 
-Scout cheap-first inputs to that EXP (laptop courier JSONL, same as EXP-002*):
+Scout cheap-first inputs aligned to that EXP (laptop courier JSONL, same as EXP-002*):
 
 | Step | What | Not |
 | --- | --- | --- |
@@ -252,7 +252,7 @@ Scout cheap-first inputs to that EXP (laptop courier JSONL, same as EXP-002*):
 
 ## Sources
 
-- Graph sibling: [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) (S1–S7, H-G1…H-G6, EXP-004 proposal §9)
+- Graph sibling: [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) (S1–S7, H-G1…H-G6, EXP-004 §9 landed); measurement: [EXP-004](../EXP/EXP-004-graph-creator-recurrence-v0.md)
 - Lab: [LAB_STATE.md](../LAB_STATE.md), [CONSTITUTION.md](../CONSTITUTION.md), [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md), [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md)
 - DEC-005 (draft PR #8): [hot-packet clocks + weak create-spine links](https://github.com/vaanai/MAL/pull/8)
 - Spine: [OBSERVE-JSONL-SCHEMA.md](OBSERVE-JSONL-SCHEMA.md), [PUMPPORTAL-PAYLOAD-INVENTORY.md](PUMPPORTAL-PAYLOAD-INVENTORY.md), [REGIME-AT-INGEST-MATRIX.md](REGIME-AT-INGEST-MATRIX.md)

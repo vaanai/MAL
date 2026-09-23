@@ -5,7 +5,7 @@
 | **Research as-of** | 2026-09-23 |
 | **Audience** | Graph / Scout / Proof / Helm (council overnight) |
 | **Scope** | **Discovery only** — what Layer-2 graph needs next to feed a **later** filtered smart-wallet-follow layer. **Paper-first**, knowable-at-T, as-of-T edges. **Not** single-wallet copy-trading, **not** production graph plumbing theater. |
-| **Context** | EXP-002c **INCOMPLETE closed**; council direction is **DISCOVERY** before EXP-002d. Spine-only evaluate rules failed lift; **H-graph** (`LAB_STATE.md`) remains unmeasured. Host `mal-core-0` is live but agents have **no SSH**; bootstrap (dirs, `meme_core` schema, host JSONL) waits on [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md). |
+| **Context** | EXP-002c **INCOMPLETE closed**; council direction is **DISCOVERY** before EXP-002d. Spine-only evaluate rules failed lift; **H-graph** kill test: [EXP-004](../EXP/EXP-004-graph-creator-recurrence-v0.md) contract + CLI **landed on `main`** — **full-book score INCOMPLETE** until courier JSONL + marks on operator machine. Host `mal-core-0` live; Cursor↔Oracle access **LIVE** ([DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)). |
 | **Locks** | Sealed **JSONL** = EXP provenance spine ([DEC-002](../DEC/DEC-002-memory-first-no-db-local.md), [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md), [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md)). Postgres = Layer-2 **ops/state cache** only — not provenance SoT. Free create feed = **weak links** until RPC enrich proves EV ([DEC-005](https://github.com/vaanai/MAL/pull/8) draft PR #8, §4). Cheap-first; no paid RPC without Gate-1 meters ([DEC-008](../DEC/DEC-008-stack-phase-gates.md), [API-COST-LATENCY-BRIEF.md](API-COST-LATENCY-BRIEF.md)). |
 
 **Primary sources in repo:** [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md), [OBSERVE-JSONL-SCHEMA.md](OBSERVE-JSONL-SCHEMA.md), [REGIME-AT-INGEST-MATRIX.md](REGIME-AT-INGEST-MATRIX.md), [PUMPPORTAL-PAYLOAD-INVENTORY.md](PUMPPORTAL-PAYLOAD-INVENTORY.md), [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md).
@@ -34,11 +34,11 @@ Working law for Graph Discovery and any later cluster / smart-wallet **label** (
 
 ## 1. Executive summary
 
-Layer-2 **entity / relationship / graph** is product-critical ([DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) § Product alignment) but **unimplemented in git** beyond naming, matrix rows, and constitution caps. The live Oracle box has **Postgres installed** (`meme_core` / `mal_app`) with **no checked-in schema, migrations, or graph workers** — only policy text and BOM “bootstrap later” bullets ([ORACLE-ALWAYS-FREE-BOM-v0.md](ORACLE-ALWAYS-FREE-BOM-v0.md) §5, §Next).
+Layer-2 **entity / relationship / graph** is product-critical ([DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) § Product alignment). **EXP-004** landed offline precompute + gates in git ([`tools/exp004_graph_discovery`](../tools/exp004_graph_discovery.py), [EXP-004](../EXP/EXP-004-graph-creator-recurrence-v0.md)); **no** always-on graph workers, decode-time graph in evaluate, or Postgres-as-SoT graph tables yet. Oracle box has **Postgres** (`meme_core` / `mal_app`) + ops stubs — not provenance SoT ([ORACLE-ALWAYS-FREE-BOM-v0.md](ORACLE-ALWAYS-FREE-BOM-v0.md)).
 
-**Smallest useful next slice:** offline, **JSONL-first** **regime-gated** creator history (**age / prior-mints**), weak **creator↔buyer** recurrence, and (where sealed timing allows) **early-wallet Δt** proxies from the **free create spine** — emit **`type=graph_snapshot_v0`** sidecar lines with `regime_id`, `regime_gate_key`, `t_precompute_as_of`, and `T_decision` ([DEC-005](https://github.com/vaanai/MAL/pull/8) §1, §3). Score **full detect book** per [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md) using **existing** marks at **1s/5s/15s/30s/60s**; **falsify H-graph** with taxonomy + gates (no mark densify, no invented lift constants). **Do not** stand up Neo4j, wallet-index APIs, or Postgres-as-SoT graph tables until this paper slice closes or fails.
+**Smallest useful slice (EXP-004):** offline, **JSONL-first** **regime-gated** creator history (**age / prior-mints**), weak **creator↔buyer** recurrence, and (where sealed timing allows) **early-wallet Δt** from the **free create spine** — optional **`type=graph_snapshot_v0`** sidecar with `regime_id`, `regime_gate_key`, `t_precompute_as_of`, and `T_decision` ([DEC-005](https://github.com/vaanai/MAL/pull/8) §1, §3). Score **full detect book** per [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md) with **existing** marks at **1s/5s/15s/30s/60s**; **falsify H-graph** with taxonomy + gates (no mark densify, no invented lift). **Oracle book score** remains **INCOMPLETE** until operator runs CLI on courier JSONL + marks.
 
-**Park:** multi-hop funding graphs, community detection at scale, metered `subscribeAccountTrade` / Birdeye wallet index, smart-wallet follow lists, and “graph scores in decode” before a scored EXP.
+**Park:** multi-hop funding graphs, community detection at scale, metered `subscribeAccountTrade` / Birdeye wallet index, smart-wallet follow lists, and “graph scores in decode” before EXP-004 kill gates close.
 
 ---
 
@@ -53,6 +53,7 @@ Layer-2 **entity / relationship / graph** is product-critical ([DEC-009](../DEC/
 | [tools/exp002_paper_runner.py](../tools/exp002_paper_runner.py) | Rules evaluate + marks join | **Graph scores out of scope** ([EXP-002](../EXP/EXP-002-evaluate-runner-v0.md) §3) |
 | [tools/exp003_*](../tools/exp003_marks.py) | Post-create marks (RPC subsample) | Outcome meter for **H-graph A/B**, not graph features |
 | [EXP-001](../EXP/EXP-001-regime-stage-mislabel.md) | Regime/stage mislabel | Explicitly excludes graph scores from scope |
+| [tools/exp004_graph_discovery.py](../tools/exp004_graph_discovery.py) + [EXP-004](../EXP/EXP-004-graph-creator-recurrence-v0.md) | Offline H-G1…H-G4 precompute + full-book gates vs spine | **Discovery measurement** — not evaluate promotion |
 
 ### 2.2 Policy / architecture (real intent — not code)
 
@@ -73,7 +74,7 @@ Layer-2 **entity / relationship / graph** is product-critical ([DEC-009](../DEC/
 | **`meme_core` wallet / token / relationship tables** | **No SQL, no migrations, no ORM** in GitHub; handoff says “schema for implementation team” |
 | **`/var/lib/mal` app subdirs** | Documented intent (JSONL, Postgres data dir) — **not** specified layout for `graph/` or `state/` in git |
 | **Graph workers / precompute service** | **None** |
-| **Capped graph packet JSON spec** | Listed in `LAB_STATE.md` Next work #6 — **not landed** |
+| **Capped graph packet JSON spec** | Listed in `LAB_STATE.md` Next work (hot-packet) — **not landed**; EXP-004 sidecar shape in CLI |
 | **Decode-time graph scores in evaluate** | **Never used** in EXP-002 family |
 | **Neo4j / graph DB / “wallet intelligence platform”** | **No** — would violate cheap-first and duplicate Postgres role |
 | **PumpPortal metered trade/account WS for all mints** | **Not** spine; costs SOL + API key ([PUMPPORTAL-PAYLOAD-INVENTORY.md](PUMPPORTAL-PAYLOAD-INVENTORY.md) §4) — **not** graph v0 |
