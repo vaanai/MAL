@@ -70,3 +70,4 @@ Hot-packet v0 is **not** an EXP id. It has no hypothesis, windows, or kill-attem
 | Artifact | Role | Status |
 | --- | --- | --- |
 | [HOT-PACKET-V0](../ARTIFACTS/HOT-PACKET-V0.md) | Proposed paper packet: L1 spine, regime locks, capped graph slots | **Proposed** registration — not a measure; merge ≠ observe-wiring ≠ enum production lock ≠ Discovery promote |
+| [PAPER-EVALUATE-HOT-PACKET-V0](../ARTIFACTS/PAPER-EVALUATE-HOT-PACKET-V0.md) | Proposed evaluate→runners stamp; input is `hot_packet_v0` only | **Proposed** registration — not a measure; merge ≠ wiring ≠ enum lock ≠ Discovery / Graph revive ≠ EXP-002c retune |

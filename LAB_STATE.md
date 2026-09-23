@@ -16,6 +16,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 | Precompute | As-of-T features, regime tags, graph scores (ready **before** decision) |
 | LAYA | Real-time decision on **precomputed** features (rules now; local model later) |
 | Hot packet | **Proposed** paper contract: L1 spine + regime tags + capped graph slots — [HOT-PACKET-V0.md](ARTIFACTS/HOT-PACKET-V0.md) (not observe-wiring) |
+| Paper evaluate→runners | **Proposed** stamp on `hot_packet_v0` only — [PAPER-EVALUATE-HOT-PACKET-V0.md](ARTIFACTS/PAPER-EVALUATE-HOT-PACKET-V0.md) (not a scored measure) |
 | Risk gate | Deterministic, immutable decision packets |
 | Exec | Deferred until phase-0 observation + backtest gates pass |
 | X (Twitter) | **Layer 4 later** — reassess-only cherry-on-top; **not** primary discovery; **no X keys on host in phase 0** |
@@ -47,6 +48,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Cursor↔Oracle access **LIVE** (CF Tunnel + Access Service Auth + dedicated agent key via Runtime Secrets; smoke 2026-09-23; hostname `mal-core-vnic`; paper-only) → [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)
 - Hot-packet clocks / `Δ_exec` → [DEC-005](DEC/DEC-005-hot-packet-clocks-and-provenance.md) (draft PR #8; cross-link only until merge)
 - Hot-packet v0 **Proposed** paper schema (L1 spine, regime locks, capped graph slots) → [HOT-PACKET-V0.md](ARTIFACTS/HOT-PACKET-V0.md). Clock field names follow the DEC-005 draft and are not a claim that PR #8 merged. `global_95bps` / `launchlab_init` stay **Proposed**
+- Paper evaluate→runners v0 **Proposed** stamp (evaluate on `hot_packet_v0` only; both arms retained; horizons and `Δ_exec` null-OK) → [PAPER-EVALUATE-HOT-PACKET-V0.md](ARTIFACTS/PAPER-EVALUATE-HOT-PACKET-V0.md). Merge ≠ wiring ≠ enum lock ≠ Discovery / Graph revive ≠ EXP-002c retune
 - Non-negotiables → [CONSTITUTION.md](CONSTITUTION.md)
 
 ## Open hypotheses
@@ -110,6 +112,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 9e. **EXP-007e instr/quote residual restamp (2026-09-23):** Reused `_exp007d-oracle-*` — enriched **K-platform-rpc-resolved PASS** (instr pending **0%** / **0.2%**; quote_verified **100%** / **99.8%**); **1×** `instr_log_gap` day **21**; sealed book **INCOMPLETE**. CLI [`tools.exp007e_instr_quote_rescore`](tools/exp007e_instr_quote_rescore.py); [`tools/exp007e_oracle_run.md`](tools/exp007e_oracle_run.md); host `_exp007e-oracle-*`. **Merge ≠ wiring ≠ enum production lock.** [EXP-007e](EXP/EXP-007e-instr-quote-residual-v0.md).
 10. **EXP-008 X Layer-4 brief (Proposed, not run):** Helm/Vaan **2026-09-23** authorized **docs-only** Discovery pick — account-quality + propagation/engagement structure as **additive** reassess on spine-known mints ([STARTER-STACK-OPTIONS-BRIEF.md](ARTIFACTS/STARTER-STACK-OPTIONS-BRIEF.md) §2); **observe first**; **H-social** unsettled. Scout owns brief; **EXP-007** stratify law on future social measures. **No X keys**; **no scraper/CLI** in registration PR; sealed measure needs **separate Helm re-auth** after merge. Scout soft PASS pending; **Proof GATE**. [EXP-008](EXP/EXP-008-x-account-quality-propagation-v0.md).
 11. **Hot-packet v0 (Proposed paper contract, 2026-09-23):** [HOT-PACKET-V0.md](ARTIFACTS/HOT-PACKET-V0.md) + [hot-packet-v0.schema.json](ARTIFACTS/hot-packet-v0.schema.json). L1 create spine, regime tags under EXP-007* overlay law (`global_95bps` / `launchlab_init` stay **Proposed**), capped graph slots (null/empty = Graph cold; H-G2 / ordinal lanes not revived). CLI `python -m tools.hot_packet_v0` validates synthetic fixtures only. **Not** continuous observe-wiring, **not** encoder promote, **not** enum production lock, **not** Discovery promote. DEC-005 clocks remain draft PR #8.
+11b. **Paper evaluate→runners on hot-packet v0 (Proposed stamp, 2026-09-23):** [PAPER-EVALUATE-HOT-PACKET-V0.md](ARTIFACTS/PAPER-EVALUATE-HOT-PACKET-V0.md) + [paper-evaluate-hot-packet-v0.schema.json](ARTIFACTS/paper-evaluate-hot-packet-v0.schema.json). Rules-only `runner` \| `reject` on a validated `hot_packet_v0` only; both arms retained; horizons and `Δ_exec` null-OK. CLI `python -m tools.paper_evaluate_hot_packet_v0` on synthetic fixtures. **Not** a scored measure, **not** observe-wiring, **not** encoder promote, **not** enum lock, **not** Discovery / Graph revive, **not** EXP-002c retune. Soft watches from hot-packet PR #49 stay non-blocking.
 12. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only**; bonk/mayhem reclass **parked**
 13. Defer live X API on host until **EXP-008** follow-on measure authorized; phase-0 = manual/offline sample only (**no X keys on `mal-core-0`**)
 14. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
@@ -131,6 +134,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Local EXP-007e instr/quote restamp: `python -m tools.exp007e_instr_quote_rescore` (reuse 007d enrich + sealed observe); diagnose `python -m tools.exp007e_residual_diagnose`
 - Local EXP-007c fee restamp: `python -m tools.exp007c_fee_at_t` (reuse 007b enrich JSONL; Global + curve fee decode)
 - Local hot-packet v0 (Proposed, fixtures only): `python -m tools.hot_packet_v0` (`example` / `validate`); contract [HOT-PACKET-V0.md](ARTIFACTS/HOT-PACKET-V0.md)
+- Local paper evaluate→runners v0 (Proposed, fixtures only): `python -m tools.paper_evaluate_hot_packet_v0` (`example` / `validate` / `evaluate`); contract [PAPER-EVALUATE-HOT-PACKET-V0.md](ARTIFACTS/PAPER-EVALUATE-HOT-PACKET-V0.md)
 - Research: `ARTIFACTS/` (marks: [POST-CREATE-MARKS-BRIEF.md](ARTIFACTS/POST-CREATE-MARKS-BRIEF.md); paper/fill-sim: [PAPER-TRADING-SURFACE-BRIEF.md](ARTIFACTS/PAPER-TRADING-SURFACE-BRIEF.md); wallet/follow Discovery: [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](ARTIFACTS/DISCOVERY-WALLET-FOLLOW-SIGNALS.md))
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 - Laya vs VPS stack compare: [ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md) (Always Free `mal-core-0` is the phase-0 host experiment, not a paid VPS)
