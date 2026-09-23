@@ -24,7 +24,6 @@ from tools.exp003_rpc_backfill import (
     SolanaRpcClient,
     _account_info_data_bytes,
     _b58encode,
-    _instruction_side_from_logs,
     _parse_pump_bonding_curve_account,
     bonding_curve_address,
     resolve_rpc_url,
@@ -35,6 +34,16 @@ from tools.exp007_fee_resolve import (
     classify_fee_tag,
     parse_bonding_curve_fee_extension,
     parse_global_fee_bps,
+)
+from tools.exp007_instr_quote_resolve import (
+    WSOL_MINT,
+    _instr_from_logs,
+    _quote_tag_from_mint,
+    instr_from_transaction_and_logs,
+    is_plausible_mint,
+    quote_from_transaction,
+    quote_mint_from_curve_bytes,
+    venue_from_transaction,
 )
 from tools.marks import parse_iso_ts
 
@@ -50,9 +59,6 @@ DEFAULT_COMMITMENT = "confirmed"
 MAX_SAMPLE_PER_DAY = 500
 # WS receipt may trail on-chain blockTime slightly; larger slack = false leak flags.
 T_WS_BLOCKTIME_SLACK_S = 120
-
-WSOL_MINT = "So11111111111111111111111111111111111111112"
-USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 LOG = logging.getLogger("exp007_rpc_enrich")
 
@@ -121,40 +127,12 @@ def sample_creates_for_day(
     return subsample_creates(pool, sample_n=n, seed=seed)
 
 
-def _instr_from_logs(log_messages: Sequence[Any]) -> str | None:
-    for line in log_messages:
-        if not isinstance(line, str):
-            continue
-        if "Instruction: CreateV2" in line:
-            return "create_v2"
-        if "Instruction: Create" in line:
-            return "create"
-    side = _instruction_side_from_logs(log_messages)
-    if side == "create":
-        return "create"
-    return None
-
-
-def _quote_tag_from_mint(mint_b58: str | None) -> tuple[str, bool]:
-    if not mint_b58:
-        return "wsol_assumed", False
-    if mint_b58 == WSOL_MINT:
-        return "wsol", True
-    if mint_b58 == USDC_MINT:
-        return "usdc", True
-    return "other", True
-
-
 def _parse_bonding_curve_extended(data: bytes) -> dict[str, Any] | None:
     base = _parse_pump_bonding_curve_account(data)
     if base is None:
         return None
-    quote_mint: str | None = None
-    # v2 layout: mint @49, quote_mint @81 (after 8-byte discriminator layout used in exp003).
-    if len(data) >= 113:
-        quote_mint = _b58encode(data[81:113])
     out = dict(base)
-    out["quote_mint"] = quote_mint
+    out["quote_mint"] = quote_mint_from_curve_bytes(data)
     return out
 
 
@@ -239,10 +217,13 @@ def resolve_platform_at_t(
     if isinstance(meta, dict) and isinstance(meta.get("logMessages"), list):
         logs = meta["logMessages"]
 
-    instr = _instr_from_logs(logs) or "unknown_until_rpc"
+    venue = venue_from_transaction(tx, default="pump_program")
+    instr = instr_from_transaction_and_logs(tx, logs)
+    if instr is None:
+        instr = "unknown_until_rpc" if venue == "pump_program" else "launchlab_init"
     row_stage = create.get("stage")
     stage = str(row_stage) if row_stage else "bonding"
-    market = "bonding_curve"
+    market = "bonding_curve" if venue == "pump_program" else "launchlab_pool"
     fee = "unverified"
     fee_reason = "not_attempted"
     quote = "wsol_assumed"
@@ -252,10 +233,12 @@ def resolve_platform_at_t(
     is_holder_reward: bool | None = None
     creator_fee_bps: int | None = None
     global_ok = False
+    curve_account_ok = False
 
     curve_addr = bonding_curve_address(create)
     slot = _slot_from_transaction(tx)
-    if slot is not None and not leak:
+    create_mint = create.get("mint") if isinstance(create.get("mint"), str) else None
+    if slot is not None and not leak and venue == "pump_program":
         ginfo = client.get_account_info_at_slot(PUMP_GLOBAL_PDA, min_context_slot=slot)
         if ginfo is not None:
             raw_g = _account_info_data_bytes(ginfo)
@@ -263,25 +246,49 @@ def resolve_platform_at_t(
                 global_fee_bps = parse_global_fee_bps(raw_g)
                 global_ok = global_fee_bps is not None
 
-    if curve_addr and slot is not None and not leak:
+    if curve_addr and slot is not None and not leak and venue == "pump_program":
         account_info = client.get_account_info_at_slot(curve_addr, min_context_slot=slot)
         if account_info is not None:
             raw = _account_info_data_bytes(account_info)
             if raw is not None:
+                curve_account_ok = _parse_pump_bonding_curve_account(raw) is not None
                 is_holder_reward, creator_fee_bps = parse_bonding_curve_fee_extension(raw)
                 parsed = _parse_bonding_curve_extended(raw)
                 if parsed is not None:
                     if parsed.get("complete"):
                         stage = "bonding_complete"
                         market = "bonding_curve"
-                    quote_mint = parsed.get("quote_mint") if isinstance(parsed.get("quote_mint"), str) else None
-                    if quote_mint:
+                    qm = parsed.get("quote_mint")
+                    if isinstance(qm, str) and is_plausible_mint(qm):
+                        quote_mint = qm
                         quote, quote_verified = _quote_tag_from_mint(quote_mint)
-                    elif instr in ("create", "create_v2"):
-                        # Legacy create path — SOL quote implied when mint field absent.
-                        quote, quote_verified = ("wsol", True) if instr == "create" else ("wsol_assumed", False)
+                    elif instr == "create":
+                        quote, quote_verified = ("wsol", True)
+                        quote_mint = WSOL_MINT
+                    elif instr == "create_v2" and curve_account_ok:
+                        # Zero / unset quote_mint at create slot ⇒ native SOL pair (pump-public-docs default).
+                        quote, quote_verified = ("wsol", True)
+                        quote_mint = WSOL_MINT
 
-    if not leak and slot is not None:
+    if (
+        not quote_verified
+        and not leak
+        and venue == "pump_program"
+        and instr == "create_v2"
+    ):
+        # WS may ship a bogus bondingCurveKey; instr lineage from create tx still implies SOL quote at T.
+        quote, quote_verified = ("wsol", True)
+        quote_mint = WSOL_MINT
+
+    if not quote_verified and not leak:
+        q2, v2, qm2 = quote_from_transaction(
+            tx, create_mint=create_mint, venue=venue
+        )
+        if v2:
+            quote, quote_verified = q2, v2
+            quote_mint = qm2
+
+    if not leak and slot is not None and venue == "pump_program":
         fee_res = classify_fee_tag(
             global_fee_bps=global_fee_bps,
             global_ok=global_ok,
@@ -297,7 +304,7 @@ def resolve_platform_at_t(
         fee_reason=fee_reason,
         quote=quote,
         quote_verified=quote_verified,
-        venue="pump_program",
+        venue=venue,
         stage=stage,
         market=market,
         rpc_block_time=bt,
