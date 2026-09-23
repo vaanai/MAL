@@ -145,4 +145,4 @@ High overlap with the v2 modal runner slice remains a **cohort falsifier risk** 
 
 **Conclusion:** L3 **packet** cohort (`L3_PACKET_V0`) passes **separable_vs_spine** and **no_lift_vs_random** @60s on **both** courier days with honest priced floors; **S1 collapse** falsifier **not** triggered. **Does not** clear EXP-002c adverse-selection failure or authorize evaluate changes. **Parked:** ordinal / NH-G3a / NH-Index / fill-sim / H-G2 revive.
 
-**Next falsifier (Proposed, not run):** [EXP-005b](EXP-005b-l3-residual-vs-exp002c-v2-falsifier-v0.md) — score **L3_minus_v2** (L3 packet signatures not in EXP-002c v2 runner set) on the same sealed 2026-09-20/21 courier days; **merge ≠ authorize run**.
+**Child falsifier (scored 2026-09-23):** [EXP-005b](EXP-005b-l3-residual-vs-exp002c-v2-falsifier-v0.md) — **L3_minus_v2** sealed re-auth → cross-day **DIRECTIONAL_WATCH (residual)** @60s (sep+random **PASS** both days; thin residual priced_n; **no promote**).
