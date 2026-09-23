@@ -52,6 +52,8 @@ FEE_MODEL_ID = "pump_assumed_bps_v0"
 TOTAL_FEE_BPS = 125.0
 MAX_SLIPPAGE_BPS = 500.0
 SIM_REJECT_ON_SLIP = True
+# Relative improvement cap (documented constant — not fitted to cohort lift).
+LIFT_RESCUE_REL_EPSILON = 0.005
 
 STAMP_HORIZONS = ("1s", "5s", "15s", "30s", "60s")
 
@@ -280,7 +282,10 @@ def _gate_lift_rescue(
         return "INCOMPLETE"
     if marks_mean is None or paper_mean is None:
         return "INCOMPLETE"
-    if paper_mean > marks_mean + LIFT_EPSILON + 0.25:
+    if paper_mean <= marks_mean + LIFT_EPSILON:
+        return "PASS"
+    rel_improve = (paper_mean - marks_mean) / max(abs(marks_mean), 1.0)
+    if rel_improve > LIFT_RESCUE_REL_EPSILON:
         return "FAIL"
     return "PASS"
 
