@@ -1,0 +1,184 @@
+{
+  "schema_version": "paper_evaluate_hot_packet_v0",
+  "type": "paper_evaluate_stamp",
+  "id": "paper-evaluate-hot-packet-v0",
+  "paper_only": true,
+  "input": {
+    "contract": "hot_packet_v0",
+    "only_decode_input": true,
+    "raw_ws_replay": false,
+    "post_hoc_enrich_on_evaluate": false,
+    "packet": {
+      "schema_version": "hot_packet_v0",
+      "type": "hot_packet",
+      "paper_only": true,
+      "byte_cap": 8192,
+      "l1_spine": {
+        "signature": "SigExampleRejectIdentity",
+        "mint": "UNK",
+        "txType": "create",
+        "stream": "subscribeNewToken",
+        "source": "pumpportal_ws",
+        "commitment": "processed",
+        "stage": "bonding",
+        "traderPublicKey": "TraderExampleWeakWs",
+        "name": "Example",
+        "symbol": "EX",
+        "uri": "https://example.invalid/meta.json",
+        "bondingCurveKey": "CurveExample",
+        "initialBuy": 1000.0,
+        "solAmount": 0.1,
+        "vTokensInBondingCurve": 1000000.0,
+        "vSolInBondingCurve": 30.0,
+        "marketCapSol": 30.0,
+        "pool": null
+      },
+      "regime": {
+        "regime_id": "env=mainnet|source=pumpportal_ws|stream=subscribeNewToken|stage=bonding|quote=wsol_assumed|commitment=processed|venue=pump_program|instr=pending_rpc|fee=unverified|market=bonding_curve",
+        "components": {
+          "env": "mainnet",
+          "source": "pumpportal_ws",
+          "stream": "subscribeNewToken",
+          "stage": "bonding",
+          "quote": "wsol_assumed",
+          "commitment": "processed",
+          "venue": "pump_program",
+          "instr": "pending_rpc",
+          "fee": "unverified",
+          "market": "bonding_curve"
+        },
+        "component_lock": {
+          "env": "production",
+          "source": "production",
+          "stream": "production",
+          "stage": "production",
+          "quote": "production",
+          "commitment": "production",
+          "venue": "production",
+          "instr": "production",
+          "fee": "production",
+          "market": "production"
+        }
+      },
+      "knowable_at_t": {
+        "quote": "wsol_assumed",
+        "quote_verified": false,
+        "instr": "pending_rpc",
+        "fee": "unverified",
+        "venue": "pump_program",
+        "venue_verified": false,
+        "creator_verified": false,
+        "reserves_source": "ws"
+      },
+      "graph": {
+        "cold": true,
+        "max_slots": 5,
+        "lane_policy": "exp004_capped_scalars_only",
+        "slots": null
+      },
+      "clocks": {
+        "t_ws": "2026-09-20T12:00:00.000+00:00",
+        "t_event": null,
+        "T_decision": "2026-09-20T12:00:00.000+00:00",
+        "t_precompute_as_of": "2026-09-20T12:00:00.000+00:00",
+        "precompute_features_merged": false,
+        "clock_source": "dec005_draft_pr8_unmerged"
+      },
+      "delta_exec": {
+        "defined_in": "dec005_draft_pr8_unmerged",
+        "value": null,
+        "reason": "paper_packet_has_no_fill"
+      },
+      "provenance": {
+        "spine": "sealed_jsonl",
+        "source_day": "2026-09-20",
+        "parent_type": "ingest_hot",
+        "parent_schema": "observe_hot_v0",
+        "parent_signature": "SigExampleRejectIdentity",
+        "mint": "UNK",
+        "fixture_origin": "synthetic",
+        "supersedes": null,
+        "day_aligned": true
+      },
+      "dual_read": {
+        "overlay": "sealed",
+        "sealed_book_rpc_slice": "incomplete",
+        "enrich_type": null
+      },
+      "honesty": {
+        "registration": "proposed",
+        "continuous_observe_wiring": false,
+        "encoder_promoted": false,
+        "enum_production_lock": false,
+        "discovery_promoted": false,
+        "graph_lane_revived": false,
+        "invented_lift": false
+      }
+    }
+  },
+  "evaluate_label": "reject",
+  "reasons": [
+    "missing_mint"
+  ],
+  "ruleset": "paper_evaluate_hot_packet_v0_rules",
+  "knowable_at_t_only": true,
+  "graph_lift": null,
+  "graph_lift_status": "not_used_graph_cold",
+  "runner_stamp": {
+    "kind": "reject_arm_retained",
+    "pretend_buy": false,
+    "live_capital": false,
+    "T": "2026-09-20T12:00:00.000+00:00",
+    "clock_source": "dec005_draft_pr8_unmerged",
+    "horizons": {
+      "1s": null,
+      "5s": null,
+      "15s": null,
+      "30s": null,
+      "60s": null,
+      "+2s": null,
+      "+10s": null,
+      "+5m": null,
+      "peak": null,
+      "drawdown": null
+    },
+    "horizon_status": "null_ok_no_marks_on_this_stamp",
+    "delta_exec": {
+      "field": "delta_exec",
+      "also_called": "Δ_exec",
+      "value": null,
+      "status": "null_ok",
+      "reason": "paper_stamp_has_no_fill"
+    }
+  },
+  "full_book": {
+    "policy": "dec007_both_arms_retained",
+    "arm_retained": true,
+    "deletes_detect_history": false
+  },
+  "soft_watches": {
+    "blocking": false,
+    "source": "hot_packet_v0_soft_gate_pr49",
+    "items": [
+      "schema_looser_than_cli",
+      "synthetic_launchlab_shape",
+      "graph_slot_shape_not_a_score",
+      "dec005_draft_unmerged",
+      "sealed_book_rpc_slice_incomplete"
+    ]
+  },
+  "honesty": {
+    "registration": "proposed",
+    "scored_oracle_measure": false,
+    "continuous_observe_wiring": false,
+    "encoder_promoted": false,
+    "enum_production_lock": false,
+    "discovery_promoted": false,
+    "graph_lane_revived": false,
+    "invented_lift": false,
+    "exp002c_retuned": false,
+    "live_capital": false,
+    "trading_keys": false,
+    "pumpportal_trade_api": false
+  }
+}

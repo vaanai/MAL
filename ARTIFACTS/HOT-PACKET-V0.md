@@ -212,6 +212,7 @@ The tool reads local JSON and checks the rules in this file. It does not call RP
 ## Cross-links
 
 - Pipeline: [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md)
+- Evaluate→runners consumer (Proposed, packet only): [PAPER-EVALUATE-HOT-PACKET-V0.md](PAPER-EVALUATE-HOT-PACKET-V0.md)
 - Clocks draft (unmerged): [PR #8](https://github.com/vaanai/MAL/pull/8)
 - Encoding: [DEC-004](../DEC/DEC-004-regime-id-encoding.md), [REGIME-ENUM-V0.md](REGIME-ENUM-V0.md), [REGIME-AT-INGEST-MATRIX.md](REGIME-AT-INGEST-MATRIX.md)
 - Sealed row: [OBSERVE-JSONL-SCHEMA.md](OBSERVE-JSONL-SCHEMA.md)

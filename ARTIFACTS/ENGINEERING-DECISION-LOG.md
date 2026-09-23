@@ -24,6 +24,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-005 — Paper evaluate→runners on hot-packet v0 (Proposed stamp)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-005 |
+| **Date** | 2026-09-23 |
+| **What changed** | Registered **Proposed** `paper-evaluate-hot-packet-v0`: [PAPER-EVALUATE-HOT-PACKET-V0.md](PAPER-EVALUATE-HOT-PACKET-V0.md), [paper-evaluate-hot-packet-v0.schema.json](paper-evaluate-hot-packet-v0.schema.json), synthetic fixtures, `python -m tools.paper_evaluate_hot_packet_v0` (example / validate / evaluate). |
+| **Why** | LAYA / DEC-006 need a citeable evaluate→runners stamp whose only decode input is `hot_packet_v0`. |
+| **What was tested** | `python3 -m unittest tools.test_paper_evaluate_hot_packet_v0`. Fixture CLI validate. No RPC. No host JSONL. `observe/client.py` untouched. |
+| **Verification** | Unit tests pass. Sealed cold and enriched Proposed fee / LaunchLab shapes stamp `runner` with null lift. `mint=UNK` stamps `reject` and keeps the arm. Horizons and `delta_exec` stay null (`null_ok`). |
+| **Current state** | Contract is **Proposed**. Not a scored measure. `global_95bps` and `launchlab_init` stay Proposed. Graph lift stays null. Soft watches from hot-packet PR #49 stay non-blocking. |
+| **Rollback** | Revert this registration. Sealed `ingest_hot` rows and `observe/client.py` are untouched. |
+| **Unresolved** | No observe-wiring, no encoder promote, no enum production lock, no Discovery / Graph revive, no EXP-002c retune, no filled `Δ_exec`. |
+| **Implications** | Evaluate designers cite this stamp. Merge is not wiring and not a book score. |
+| **Pointers** | [PAPER-EVALUATE-HOT-PACKET-V0.md](PAPER-EVALUATE-HOT-PACKET-V0.md), [HOT-PACKET-V0.md](HOT-PACKET-V0.md), [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md) |
+
+---
+
 ## EDL-004 — Hot-packet v0 Proposed paper contract
 
 | Field | Value |

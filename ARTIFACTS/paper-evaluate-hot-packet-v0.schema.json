@@ -1,0 +1,245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-evaluate-hot-packet-v0.schema.json",
+  "title": "MAL paper-evaluate-hot-packet v0 (Proposed paper stamp)",
+  "description": "Proposed evaluate→runners stamp. The only decode input is one hot_packet_v0 object. Not a scored Oracle measure, not observe-wiring, not an EXP-002c retune. Horizons and delta_exec are null-OK. See ARTIFACTS/PAPER-EVALUATE-HOT-PACKET-V0.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "type",
+    "id",
+    "paper_only",
+    "input",
+    "evaluate_label",
+    "reasons",
+    "ruleset",
+    "knowable_at_t_only",
+    "graph_lift",
+    "graph_lift_status",
+    "runner_stamp",
+    "full_book",
+    "soft_watches",
+    "honesty"
+  ],
+  "properties": {
+    "schema_version": { "const": "paper_evaluate_hot_packet_v0" },
+    "type": { "const": "paper_evaluate_stamp" },
+    "id": { "const": "paper-evaluate-hot-packet-v0" },
+    "paper_only": { "const": true },
+    "input": { "$ref": "#/$defs/input" },
+    "evaluate_label": { "enum": ["runner", "reject"] },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "missing_signature",
+          "missing_mint",
+          "stage_not_bonding",
+          "honesty_reject",
+          "overlay_discipline"
+        ]
+      }
+    },
+    "ruleset": { "const": "paper_evaluate_hot_packet_v0_rules" },
+    "knowable_at_t_only": { "const": true },
+    "graph_lift": {
+      "const": null,
+      "description": "v0 does not invent graph lift. Null on cold packets and on packets with a filled allowlisted slot."
+    },
+    "graph_lift_status": {
+      "enum": ["not_used_graph_cold", "not_used_slots_not_scored"]
+    },
+    "runner_stamp": { "$ref": "#/$defs/runnerStamp" },
+    "full_book": { "$ref": "#/$defs/fullBook" },
+    "soft_watches": { "$ref": "#/$defs/softWatches" },
+    "honesty": { "$ref": "#/$defs/honesty" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "evaluate_label": { "const": "runner" } },
+        "required": ["evaluate_label"]
+      },
+      "then": {
+        "properties": {
+          "reasons": { "maxItems": 0 },
+          "runner_stamp": {
+            "properties": {
+              "kind": { "const": "paper_promotion" },
+              "pretend_buy": { "const": true }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "evaluate_label": { "const": "reject" } },
+        "required": ["evaluate_label"]
+      },
+      "then": {
+        "properties": {
+          "reasons": { "minItems": 1 },
+          "runner_stamp": {
+            "properties": {
+              "kind": { "const": "reject_arm_retained" },
+              "pretend_buy": { "const": false }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "only_decode_input",
+        "raw_ws_replay",
+        "post_hoc_enrich_on_evaluate",
+        "packet"
+      ],
+      "properties": {
+        "contract": { "const": "hot_packet_v0" },
+        "only_decode_input": { "const": true },
+        "raw_ws_replay": { "const": false },
+        "post_hoc_enrich_on_evaluate": { "const": false },
+        "packet": {
+          "$ref": "hot-packet-v0.schema.json",
+          "description": "The only decode input. Must be a validated hot_packet_v0 object. No ws_payload beside it."
+        }
+      }
+    },
+    "horizonMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "DEC-006 horizons. Null is legal on this registration: no marks are joined and no prices are invented.",
+      "required": ["1s", "5s", "15s", "30s", "60s", "+2s", "+10s", "+5m", "peak", "drawdown"],
+      "properties": {
+        "1s": { "const": null },
+        "5s": { "const": null },
+        "15s": { "const": null },
+        "30s": { "const": null },
+        "60s": { "const": null },
+        "+2s": { "const": null },
+        "+10s": { "const": null },
+        "+5m": { "const": null },
+        "peak": { "const": null },
+        "drawdown": { "const": null }
+      }
+    },
+    "deltaExec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "also_called", "value", "status", "reason"],
+      "properties": {
+        "field": { "const": "delta_exec" },
+        "also_called": { "const": "Δ_exec" },
+        "value": { "const": null },
+        "status": {
+          "const": "null_ok",
+          "description": "Explicit status. Null is legal. It is not a zero fill and not an invented fee."
+        },
+        "reason": { "const": "paper_stamp_has_no_fill" }
+      }
+    },
+    "runnerStamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Paper promotion shape at the packet decision clock. Present on runner and reject arms (DEC-007).",
+      "required": [
+        "kind",
+        "pretend_buy",
+        "live_capital",
+        "T",
+        "clock_source",
+        "horizons",
+        "horizon_status",
+        "delta_exec"
+      ],
+      "properties": {
+        "kind": { "enum": ["paper_promotion", "reject_arm_retained"] },
+        "pretend_buy": { "type": "boolean" },
+        "live_capital": { "const": false },
+        "T": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Copied from packet clocks.T_decision (DEC-005 draft: t_event when set, else t_ws)."
+        },
+        "clock_source": { "const": "dec005_draft_pr8_unmerged" },
+        "horizons": { "$ref": "#/$defs/horizonMap" },
+        "horizon_status": { "const": "null_ok_no_marks_on_this_stamp" },
+        "delta_exec": { "$ref": "#/$defs/deltaExec" }
+      }
+    },
+    "fullBook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "arm_retained", "deletes_detect_history"],
+      "properties": {
+        "policy": { "const": "dec007_both_arms_retained" },
+        "arm_retained": { "const": true },
+        "deletes_detect_history": { "const": false }
+      }
+    },
+    "softWatches": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Inherited hot-packet v0 Soft GATE watches. blocking is false. They do not fail this registration.",
+      "required": ["blocking", "source", "items"],
+      "properties": {
+        "blocking": { "const": false },
+        "source": { "const": "hot_packet_v0_soft_gate_pr49" },
+        "items": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "enum": [
+              "schema_looser_than_cli",
+              "synthetic_launchlab_shape",
+              "graph_slot_shape_not_a_score",
+              "dec005_draft_unmerged",
+              "sealed_book_rpc_slice_incomplete"
+            ]
+          }
+        }
+      }
+    },
+    "honesty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration",
+        "scored_oracle_measure",
+        "continuous_observe_wiring",
+        "encoder_promoted",
+        "enum_production_lock",
+        "discovery_promoted",
+        "graph_lane_revived",
+        "invented_lift",
+        "exp002c_retuned",
+        "live_capital",
+        "trading_keys",
+        "pumpportal_trade_api"
+      ],
+      "properties": {
+        "registration": { "const": "proposed" },
+        "scored_oracle_measure": { "const": false },
+        "continuous_observe_wiring": { "const": false },
+        "encoder_promoted": { "const": false },
+        "enum_production_lock": { "const": false },
+        "discovery_promoted": { "const": false },
+        "graph_lane_revived": { "const": false },
+        "invented_lift": { "const": false },
+        "exp002c_retuned": { "const": false },
+        "live_capital": { "const": false },
+        "trading_keys": { "const": false },
+        "pumpportal_trade_api": { "const": false }
+      }
+    }
+  }
+}
