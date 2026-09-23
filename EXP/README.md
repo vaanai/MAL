@@ -53,3 +53,4 @@ Maintain a table in this README when experiments exist:
 | [EXP-003](EXP-003-post-create-marks.md) | Post-create marks onto sealed observe | Schema + coverage CLI landed (#14) | Pending RPC producer + READY coverage |
 | [EXP-004](EXP-004-graph-creator-recurrence-v0.md) | Graph creator-recurrence Discovery (H-G1…H-G4) | **DIRECTIONAL_WATCH** (Oracle 2026-09-20/21 courier); H-G2 **kill** @60s | No promote; see EXP-004b |
 | [EXP-004b](EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) | NH-G1a ordinal prior-mint depth (Graph child) | **Scored** (Oracle 2026-09-20/21 sealed) | **KILL** cross-day — ordinal lane **parked**; NH-G3a **not next** (new council pick) |
+| [EXP-005](EXP-005-smart-wallet-follow-discovery-v0.md) | Smart-wallet / follow L3 Discovery (Scout) | **Proposed, not run** (docs-only) | Owner **Scout**; L3 S3 packet falsifiers — no scored result |

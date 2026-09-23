@@ -5,7 +5,7 @@
 | **Research as-of** | 2026-09-23 |
 | **Owner seat** | Scout (signal **taxonomy** + paper path). Layer-2 precompute remains Graph. |
 | **Sibling** | [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) (landed PR #25) — **same S1–S7 / H-G vocabulary** |
-| **This file** | Discovery **taxonomy ARTIFACT** only. **Does not mint an EXP id.** |
+| **This file** | Discovery **taxonomy ARTIFACT**. Scout measurement registration: [EXP-005](../EXP/EXP-005-smart-wallet-follow-discovery-v0.md) (**Proposed, not run**). Graph measurement remains **EXP-004** / **EXP-004b**. |
 | **Graph measurement** | EXP-004 (`EXP-004-graph-creator-recurrence-v0`) is **Graph-owned** — contract + CLI on `main` ([EXP-004](../EXP/EXP-004-graph-creator-recurrence-v0.md), [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) §9). **Full-book Oracle score INCOMPLETE** until operator courier JSONL + marks (`priced_n` floors). Scout **taxonomy only** — does not register EXP-004 here. |
 | **Lab locks** | Paper only. Knowable-at-T. Sealed JSONL = provenance spine. Postgres = Layer-2 ops/relationship **cache**. X = Layer 4 later. Soft bonk/mayhem **parked**. No live keys. No invented lift numbers. No EXP-002c retune. |
 
@@ -224,7 +224,7 @@ Scout cheap-first inputs aligned to that EXP (laptop courier JSONL, same as EXP-
 
 ## 10. Non-goals (this artifact)
 
-- Minting an EXP id in this PR (Graph owns EXP-004 measurement on main)
+- Replacing Graph **EXP-004** / **EXP-004b** measurement (Scout **EXP-005** is L3 path registration only — see [EXP-005](../EXP/EXP-005-smart-wallet-follow-discovery-v0.md))
 - **EXP-002c retune** / OPTIMIZE-to-gate / new v2 constants
 - Live trading, live keys, capital, PumpPortal trading API
 - X collectors or X keys on `mal-core-0` (S7)
