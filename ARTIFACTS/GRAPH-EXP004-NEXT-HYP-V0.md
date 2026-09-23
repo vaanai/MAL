@@ -6,7 +6,7 @@
 | **As-of** | 2026-09-23 |
 | **Audience** | Graph / Scout / Proof / Helm |
 | **Locks** | No Discovery promotion; H-G2 kill intact; no mark densify; no cross-day join; no EXP-002c retune; sealed knowable-at-T; follow = feature/veto/select/enrich (S3); free create = weak links (DEC-005) |
-| **Pick (2026-09-23)** | **EXP-004b** registered for **NH-G1a** — [EXP-004b-nh-g1a-ordinal-prior-mint-v0.md](../EXP/EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) (**Proposed, not run**). Sequence **NH-G3a** only if G1a stays soft; **NH-Index** parked. |
+| **Pick (2026-09-23)** | **EXP-004b** registered for **NH-G1a** — [EXP-004b-nh-g1a-ordinal-prior-mint-v0.md](../EXP/EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) (**Scored 2026-09-23** — cross-day **KILL**). **Ordinal lane parked**; **NH-G3a not next** (pick lock: G3a only if G1a stays soft — **new** council pick required); **NH-Index** parked. |
 | **Primary inputs** | [EXP-004-graph-creator-recurrence-v0.md](../EXP/EXP-004-graph-creator-recurrence-v0.md) §7; [GRAPH-DISCOVERY-V0.md](GRAPH-DISCOVERY-V0.md) §4; Oracle courier re-score stamped on `main` @ `cc84dac` (PR #32) |
 
 ---
@@ -110,10 +110,11 @@ Each candidate is a **child measurement** (new EXP id or EXP-004 appendix) reusi
 
 ## 5. Suggested council sequencing (cheap)
 
-1. **Pick one** of NH-G1a / NH-G3a / NH-Index (or sequence NH-G1a → NH-G3a if first stays soft).
-2. Register as **EXP-004b** or **EXP-005** one-pager (hypothesis + falsifier only) — **still Graph seat**. **Done (docs):** [EXP-004b NH-G1a](../EXP/EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) — **Proposed, not run**.
-3. Re-run courier CLI on **same** 2026-09-20/21 sealed files before any new observe days.
-4. If all refined arms **kill or INCOMPLETE**, **pause** graph lift lane; keep L1 spine + DISCOVERY taxonomy; do not open Layer-3 follow.
+1. **NH-G1a** — **scored** ([EXP-004b](../EXP/EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) cross-day **KILL**). **Ordinal lane parked**; pick lock does **not** chain NH-G1a → NH-G3a after kill.
+2. **NH-G3a / NH-Index** — **not** auto-sequenced from G1a outcome; any NH-G3a run needs a **new** council pick (G3a was **only if** G1a stayed soft).
+3. Register further children as **EXP-004c** / **EXP-005** one-pager (hypothesis + falsifier only) — **still Graph seat**. **Done:** EXP-004b NH-G1a — **Scored 2026-09-23**.
+4. Re-run courier CLI on **same** 2026-09-20/21 sealed files before any new observe days (already done for EXP-004b).
+5. With ordinal **KILL** + H-G2 burst **KILL**, **pause** graph lift lane unless council picks a new falsifier; keep L1 spine + DISCOVERY taxonomy; do not open Layer-3 follow.
 
 ---
 
