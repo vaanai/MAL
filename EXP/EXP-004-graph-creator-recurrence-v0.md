@@ -5,7 +5,7 @@ Graph seat. **Paper-only.** Measurement layer for **H-graph** — regime-gated, 
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-004-graph-creator-recurrence-v0` |
-| **Status** | **Running** (tooling landed; local score **INCOMPLETE** until courier JSONL + marks on operator machine) |
+| **Status** | **INCOMPLETE** (Oracle paper run 2026-09-23: observe-only on host; marks absent; priced_60s_n=2) |
 | **Owner seat** | Graph (measurement); Proof re-stamps when data READY |
 | **Locked** | 2026-09-23 (Helm/Vaan morning go) |
 | **Depends on** | Sealed `ingest_hot` JSONL; existing EXP-003 `--marks`; [GRAPH-DISCOVERY-V0.md](../ARTIFACTS/GRAPH-DISCOVERY-V0.md); Scout taxonomy cross-link [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](../ARTIFACTS/DISCOVERY-WALLET-FOLLOW-SIGNALS.md) (Index I1–I4 — **no Scout EXP stub**) |
@@ -15,7 +15,7 @@ Graph seat. **Paper-only.** Measurement layer for **H-graph** — regime-gated, 
 | **Regime labels** | Every snapshot carries parent `regime_id` + `regime_gate_key`; **no cross-regime merge** (S1). |
 | **Windows** | **1s / 5s / 15s / 30s / 60s** — primary kill read: **60s** |
 | **Kill-attempt** | Per H-G: **separable_vs_spine** and **no_lift_vs_random** at priced arms; **INCOMPLETE** below `MIN_PRICED_FOR_KILL=10`; H-G4 empty arms honest (create-spine). **Soft fence:** no densify-for-power / no EXP-002c retune. |
-| **Result** | Cloud agent run: **no Vaan JSONL** → `data/observe/_exp004_*` with **DATA BLOCKER** only. Operator: run CLI on `observe-*.jsonl` + `marks-*.jsonl`. |
+| **Result** | Oracle **2026-09-23:** `observe-2026-09-23.jsonl` only → `/var/lib/mal/paper/_exp004-oracle_*`; blockers: no `--marks`, priced_60s_n=2. Re-run with courier marks. |
 | **Conclusion** | Pending scored book. Discovery **kill** reported cleanly if gates FAIL — **no fake profit**. |
 
 ---
