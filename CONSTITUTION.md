@@ -35,4 +35,4 @@ Violations require an explicit DEC override with kill-attempt evidence.
 
 - Observe-only and research unless a future DEC explicitly enables execution.
 - GitHub remains SoT for DEC/EXP/LAB_STATE. Sealed JSONL remains the provenance/EXP spine. On-box Postgres is the ops/state layer, not a provenance replacement ([DEC-009](DEC/DEC-009-oracle-always-free-phase0-host.md), [DEC-010](DEC/DEC-010-oracle-phase0-handoff-autonomy.md)); no managed/Autonomous DB in phase 0.
-- Escalate to the owner before spend, Always Free exit, security-boundary weakening, public Postgres, trading/X credentials on host, or capital access. Human PC is not a permanent Cursor→Oracle hop. Access path: [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (decided; owner implementing — do not claim tunnel live).
+- Escalate to the owner before spend, Always Free exit, security-boundary weakening, public Postgres, trading/X credentials on host, or capital access. Human PC is not a permanent Cursor→Oracle hop. Access path: [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (LIVE 2026-09-23 via CF Access Service Auth + Runtime Secrets; paper-only).

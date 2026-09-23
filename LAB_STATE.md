@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers (Grok bots). **As-of:** 2026-09-23. No live-trading claims. **`mal-core-0` is provisioned and verified.** Access **decided** ([DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)); owner implementing. Agents do **not** yet have SSH.
+Compact reload for managers (Grok bots). **As-of:** 2026-09-23. No live-trading claims. **`mal-core-0` is provisioned and verified.** Cursor↔Oracle access **LIVE** ([DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)): CF Access Service Auth + Runtime Secrets; smoke passed 2026-09-23; remote hostname **`mal-core-vnic`**; paper-only.
 
 ## Objective
 
@@ -44,7 +44,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Full detect book / anti-selection-bias kill → [DEC-007](DEC/DEC-007-full-detect-book-anti-selection-bias.md)
 - Stack spend phase gates (cheap-first; local Laya open hypothesis) → [DEC-008](DEC/DEC-008-stack-phase-gates.md) (draft); brief [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md)
 - Oracle Always Free host **`mal-core-0` live** (**2 OCPU / 12 GB**, Phoenix AD-1, **provisioned + verified**) → [DEC-010](DEC/DEC-010-oracle-phase0-handoff-autonomy.md), handoff [ORACLE-PHASE0-HANDOFF.md](ARTIFACTS/ORACLE-PHASE0-HANDOFF.md), BOM [ORACLE-ALWAYS-FREE-BOM-v0.md](ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md)
-- Cursor↔Oracle access **decided** (CF Tunnel + Access + `mal-cursor` key; owner implementing; **no agent SSH yet**) → [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)
+- Cursor↔Oracle access **LIVE** (CF Tunnel + Access Service Auth + dedicated agent key via Runtime Secrets; smoke 2026-09-23; hostname `mal-core-vnic`; paper-only) → [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)
 - Hot-packet clocks / `Δ_exec` → [DEC-005](DEC/DEC-005-hot-packet-clocks-and-provenance.md) (draft PR #8; cross-link only until merge)
 - Non-negotiables → [CONSTITUTION.md](CONSTITUTION.md)
 
@@ -73,15 +73,15 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Hermes as **live trading** manager (managers remain Grok; workers produce artifacts)
 - Laptop-only 24/7 observe host (superseded by DEC-009/010 Always Free `mal-core-0`, **now provisioned**)
 - No database forever in phase 0 (on-box Postgres OK as **ops/state**; JSONL remains provenance/EXP spine)
-- Human PC as a **permanent** Cursor→Oracle networking hop (DEC-011: CF Tunnel + Access; owner implementing)
+- Human PC as a **permanent** Cursor→Oracle networking hop (DEC-011: CF Tunnel + Access **LIVE** 2026-09-23)
 - Sharing the owner personal SSH key with agents; public Postgres; SSH `:22` to the world (DEC-011 rejected)
 - Cursor My Machines **on-box** as phase-0 **default** (DEC-011 **park** — aarch64/resource risk)
 
 ## Infra posture (phase 0)
 
-- **Primary continuous host (LIVE):** Oracle Always Free **`mal-core-0`** — Phoenix **AD-1**, **`VM.Standard.A1.Flex`, 2 OCPU / 12 GB, aarch64**, Ubuntu 24.04 Minimal, 2 GB swap. Boot 50 GB; **`mal-core-data` 150 GB @ `/var/lib/mal`**. VCN `mal-vcn` / subnet `mal-public` / IGW `mal-igw` / NSG `mal-core-nsg`. SSH = owner home IP only; **no public app ports**. **Not** a paid VPS. **Not** 4 OCPU / 24 GB. **Agents do not have SSH yet.**
-- **Postgres:** **16.15**, DB **`meme_core`**, role **`mal_app`** (non-superuser), **localhost only**, data dir `/var/lib/mal/postgresql/16/main`. Password = owner only (never in repo).
-- **Laptop:** operator console + **data courier**. Must **not** be a permanent Cursor→Oracle networking dependency. Access path: [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (**decided**; owner implementing — tunnel **not** claimed live).
+- **Primary continuous host (LIVE):** Oracle Always Free **`mal-core-0`** — Phoenix **AD-1**, **`VM.Standard.A1.Flex`, 2 OCPU / 12 GB, aarch64**, Ubuntu 24.04 Minimal, 2 GB swap. Boot 50 GB; **`mal-core-data` 150 GB @ `/var/lib/mal`**. VCN `mal-vcn` / subnet `mal-public` / IGW `mal-igw` / NSG `mal-core-nsg`. SSH break-glass = owner home IP only; agents use **Access TCP** (no public app ports). **Not** a paid VPS. **Not** 4 OCPU / 24 GB. Remote hostname **`mal-core-vnic`**.
+- **Postgres:** **16.15**, DB **`meme_core`**, role **`mal_app`** (non-superuser), **localhost only**, data dir `/var/lib/mal/postgresql/16/main`. Password = owner only (never in repo). Ops/state stub schema: [sql/meme_core/](sql/meme_core/).
+- **Laptop:** operator console + **data courier**. Must **not** be a permanent Cursor→Oracle networking dependency. Access path: [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (**LIVE** 2026-09-23 — CF Access Service Auth + Runtime Secrets; smoke passed; hostname `mal-core-vnic`). Runbook: [tools/oracle_ssh_smoke.md](tools/oracle_ssh_smoke.md).
 - **Lab memory SoT:** GitHub (`DEC/`, `EXP/`, `LAB_STATE.md`, `ARTIFACTS/`). Seat agents keep **direction**; git holds **ops detail**.
 - **Provenance spine:** sealed **JSONL** (append-only). Postgres = **ops/state** (token/wallet/relationship/derived/paper/ops) — **not** a mandatory provenance replacement.
 - **Workflow:** Grok plans/reviews/integrates → Cursor implements/tests (aggressively). **DM Vaan a Cursor status card** on every Cursor launch.
@@ -92,7 +92,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 ## Next work
 
 1. **EXP-002c:** **INCOMPLETE closed** — do **not** promote. Local `--rules v2` + existing marks, seed 1 (PR #18 @ `842cb21`; 26/26 tests OK). population_n=32896, runner_n=12112, reject_n=20784, reject_pct≈**63.18%** → reject_rate_band **INCOMPLETE** (below 70% floor). Runner priced_n=96 mean_return_pct≈**0.385**; reject priced_n=888 mean≈**3202.76**; random priced_n=410 mean≈**2500.58**. Gates: reject_rate_band **INCOMPLETE**; no_lift_vs_random **FAIL**; reject_runner_parity_after_costs **PASS**. Proof stamp **INCOMPLETE** (primary: reject_rate_band). Soft/directional lift FAIL again. **Next:** **DISCOVERY** first on dual failure (v2 too permissive; survivors still adverse vs random) — then **EXP-002d** only with a **new kill-list hyp**, or **pause**. Do **not** tighten constants to hit 70–95% (OPTIMIZE-to-gate). Soft denser marks still not the fix. [EXP-002c](EXP/EXP-002c-rules-v2-adverse-selection.md). **EXP-002b** remains **FAIL closed** (**FAIL_NO_LIFT_VS_RANDOM**).
-2. **Cursor↔Oracle access (DEC-011, owner implementing):** Path **decided** — Cloudflare Tunnel (`cloudflared`) on `mal-core-0` + Cloudflare Access gating SSH + dedicated `mal-cursor` ed25519 deploy key (not owner personal key). Backup: Tailscale on the Oracle VM + ephemeral agent auth keys. My Machines on-box **parked**. **Do not** claim tunnel exists; agents **cannot** SSH yet. **Do not** expose Postgres (including via tunnel hostname); **do not** open `:22` to the world. Vaan implements. **Then** bootstrap `/var/lib/mal` dirs, `meme_core` schema, sealed JSONL ingest, paper, monitoring. [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md).
+2. **Cursor↔Oracle access (DEC-011) LIVE.** Smoke **2026-09-23** (`mal-core-vnic`, aarch64, paper-only) via CF Access Service Auth + Runtime Secrets. Host bootstrap (this memory): `/var/lib/mal` layout, `meme_core` ops/state stubs, sealed JSONL ingest path, health script. Runbook [tools/oracle_ssh_smoke.md](tools/oracle_ssh_smoke.md); on-host [BOOTSTRAP.md](ARTIFACTS/ORACLE-HOST-BOOTSTRAP.md). **Do not** expose Postgres; **do not** open `:22` to the world; **do not** put DB passwords in git. [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md).
 3. **EXP-003 marks (unchanged law):** Subsample marks exist; book-wide N/A expected. Reuse existing marks for paper EXPs. Densify only after a non-adverse directional hyp needs power — never as lift rescue. [EXP-003](EXP/EXP-003-post-create-marks.md).
 4. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py).
 5. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)
@@ -114,6 +114,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Laya vs VPS stack compare: [ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md) (Always Free `mal-core-0` is the phase-0 host experiment, not a paid VPS)
 - Always Free BOM: [ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md](ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md)
 - Phase-0 handoff (live inventory + laws): [ARTIFACTS/ORACLE-PHASE0-HANDOFF.md](ARTIFACTS/ORACLE-PHASE0-HANDOFF.md)
-- Cursor↔Oracle access (DEC-011, owner implementing): [DEC/DEC-011-cursor-oracle-access-cf-tunnel.md](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)
+- Cursor↔Oracle access (DEC-011 **LIVE**): [DEC/DEC-011-cursor-oracle-access-cf-tunnel.md](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md), runbook [tools/oracle_ssh_smoke.md](tools/oracle_ssh_smoke.md)
+- Host bootstrap (paper): [ARTIFACTS/ORACLE-HOST-BOOTSTRAP.md](ARTIFACTS/ORACLE-HOST-BOOTSTRAP.md), [sql/meme_core/](sql/meme_core/)
 - Engineering decision log: [ARTIFACTS/ENGINEERING-DECISION-LOG.md](ARTIFACTS/ENGINEERING-DECISION-LOG.md)
 - Regime at ingest: [ARTIFACTS/REGIME-AT-INGEST-MATRIX.md](ARTIFACTS/REGIME-AT-INGEST-MATRIX.md), [ARTIFACTS/REGIME-ENUM-V0.md](ARTIFACTS/REGIME-ENUM-V0.md), [ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md)

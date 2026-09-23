@@ -24,6 +24,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-003 — DEC-011 access LIVE + mal-core-0 paper bootstrap
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-003 |
+| **Date** | 2026-09-23 |
+| **What changed** | DEC-011 path **LIVE** for Cursor Cloud agents: CF Access Service Auth + Runtime Secrets; smoke `mal-core-vnic` / aarch64 / paper-only. Host bootstrap: `/var/lib/mal` subdirs, `meme_core` ops/state stub schema, sealed JSONL ingest path (user systemd `mal-observe` + run script), healthcheck, on-host `eng/BOOTSTRAP.md`. Lab memory no longer claims agents lack SSH. |
+| **Why** | Overnight greenlight: owner implemented Access plumbing; agents must bootstrap the blank workshop without the owner PC. |
+| **What was tested** | Agent hop: cloudflared 2026.9.1 Access TCP → SSH ubuntu. Host: layout, `sudo -u postgres` schema apply (or `BLOCKED:needs_db_password`), healthcheck, observe unit. Key fingerprint matched. Temp key/`cloudflared` cleaned after session. |
+| **Verification** | See PR + `/var/lib/mal/eng/BOOTSTRAP.md` + `/var/lib/mal/logs/health-latest.json`. EXP-002c facts **unchanged** (no promotion, no optimize-to-gate). |
+| **Current state** | Agents **can** SSH via Access. Postgres localhost-only. JSONL = provenance spine. Paper-only. No trading/X keys on host. |
+| **Rollback** | Docs: revert this PR. Host dirs/unit/schema: stop `mal-observe`, leave PG data; do **not** open `:22` or public Postgres. Do not delete Always Free resources. |
+| **Unresolved** | Helm morning review. Optional real paper-trading utility (ask first). Trading/wallet surface — **no pick**. Backups not scheduled yet. |
+| **Implications** | Human PC is not a hop. Runtime Secret **names** may appear in runbooks; **values** never in git. Access TCP hostname is gated, not public SSH. |
+| **Pointers** | [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md), [ORACLE-HOST-BOOTSTRAP.md](ORACLE-HOST-BOOTSTRAP.md), [oracle_ssh_smoke.md](../tools/oracle_ssh_smoke.md), [sql/meme_core/](../sql/meme_core/) |
+
+---
+
 ## EDL-002 — Cursor↔Oracle access decided (DEC-011)
 
 | Field | Value |
@@ -34,7 +52,7 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 | **Why** | Helm recommendation + Scout/Graph/Proof soft-OK + owner accepted. Need agent path to the live box without a human PC hop or a public DB. |
 | **What was tested** | Docs-only / N/A. No tunnel, Access app, or `mal-cursor` key claimed in this PR. |
 | **Verification** | Decision recorded. Owner will implement. Agents still have **no** SSH. |
-| **Current state** | Access **decided; owner implementing.** Next owner ask = implement DEC-011; then team bootstrap. EXP-002c facts **unchanged**. |
+| **Current state** | **Superseded by EDL-003** (path LIVE 2026-09-23). This entry is the decision-time snapshot. |
 | **Rollback** | Docs: revert this PR / new DEC. Infra: do **not** tear down Always Free resources. Do not open `:22` or public Postgres as a workaround. |
 | **Unresolved** | Owner implementation of tunnel/Access/`mal-cursor`. Optional real paper-trading utility (ask first). Trading/wallet execution surface (Axiom / Phantom / etc.) — **no pick**. |
 | **Implications** | Postgres remains localhost-only (never a public/tunneled DB). JSONL stays provenance spine. Human PC is not a hop. No owner personal key to agents. |
