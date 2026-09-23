@@ -1,13 +1,13 @@
 # EXP-006 — Paper “would-have-happened” fill harness v0
 
-> **Status: INCOMPLETE (scored stamp)** — Oracle sealed paper fill-sim **2026-09-23** (Helm/Vaan **authorized run 2026-09-23 ~10:08 PT**). Scout soft PASS pending; **Proof GATE** required before promotion language. **Merge ≠ Discovery promote.**
+> **Status: INCOMPLETE (scored stamp)** — Oracle sealed paper fill-sim **2026-09-23** (Helm/Vaan **authorized run 2026-09-23 ~10:08 PT**). Implementation **GATE PASS + merged** (squash `31609b6` / PR #43) — **scientific stamp INCOMPLETE retained**; merge ≠ Discovery promote. Scout soft PASS pending; **Proof GATE** required before promotion language.
 
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-006-paper-would-have-happened-harness-v0` |
 | **Owner seat** | **Scout + Proof** (paper book + execution realism above marks) |
 | **Source** | [PAPER-TRADING-SURFACE-BRIEF.md](../ARTIFACTS/PAPER-TRADING-SURFACE-BRIEF.md) **P0** — in-lab fill-sim on sealed JSONL + marks |
-| **Status** | **INCOMPLETE (scored)** — P0 CLI landed; Oracle **2026-09-20/21** sealed measure stamped; **no Discovery promote** |
+| **Status** | **INCOMPLETE (scored)** — P0 CLI **GATE PASS + merged**; Oracle **2026-09-20/21** sealed measure stamped; **no Discovery promote** |
 | **Paper-only** | Yes — no live keys, no trading API, no broker on `mal-core-0` |
 | **Pick lock** | **Helm/Vaan 2026-09-23** — unpark fill-sim for EXP-006; sealed paper would-have-happened on courier days **2026-09-20** and **2026-09-21** only |
 | **Depends on** | Day-aligned sealed courier: `observe-2026-09-{20,21}.jsonl` + matching `marks-*.jsonl` — **no cross-day marks join** |
@@ -126,4 +126,4 @@ Paper-only; no live keys; no cross-day join; no densify; no EXP-002c retune; no 
 - **K-lift-rescue** on **2026-09-20** flags paper Δ_exec **above** marks-only on thin **L3_minus_v2** — treat as **audit / sparse-mark variance**, not execution alpha or promote.
 - **EXP-002c** adverse-selection **FAIL** remains; paper layer does not rescue evaluate.
 
-**Conclusion:** P0 fill-sim **implemented and sealed** on courier **2026-09-20/21**. Primary stamp **INCOMPLETE** cross-day due to **K-lift-rescue** split + sparse horizons at 1s. **No Discovery promote.** Scout soft PASS pending; **Proof GATE** before any promotion wording.
+**Conclusion:** P0 fill-sim **implemented and sealed** on courier **2026-09-20/21**; harness code **GATE PASS + merged** to `main`. Primary **scientific** stamp **INCOMPLETE** cross-day due to **K-lift-rescue** split + sparse horizons at 1s. **No Discovery promote.** Scout soft PASS pending; **Proof GATE** before any promotion wording.
