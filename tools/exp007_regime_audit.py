@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
-from tools.exp001_mislabel import load_jsonl_files, parse_regime_id, t_ws_missing
+from tools.exp001_mislabel import LoadedRow, load_jsonl_files, parse_regime_id, t_ws_missing
 from tools.exp002_paper_runner import is_bonding_create
+from tools.exp007_rpc_enrich import apply_enrich_overlay, load_enrich_by_parent
 EXP_ID = "EXP-007-platform-regime-taxonomy-v0"
+EXP007B_ID = "EXP-007b-platform-regime-rpc-enrich-v0"
 
 
 def regime_gate_key(regime_id: str | None) -> str:
@@ -279,31 +281,89 @@ def _gate_k_id_kat(audits: Sequence[RowAudit]) -> dict[str, Any]:
     }
 
 
-def _gate_k_platform_resolved(coverage: Mapping[str, Any]) -> dict[str, Any]:
+def _gate_k_platform_resolved(
+    coverage: Mapping[str, Any],
+    *,
+    scope: str = "sealed_book",
+) -> dict[str, Any]:
     """Honest wiring readiness — WS-only defaults are stamped but not RPC-resolved."""
     n = int(coverage.get("population_n") or 0)
     if n == 0:
-        return {"id": "K-platform-rpc-resolved", "result": "INCOMPLETE", "note": "empty population"}
+        return {
+            "id": "K-platform-rpc-resolved",
+            "result": "INCOMPLETE",
+            "note": "empty population",
+            "scope": scope,
+        }
     pending = float(coverage.get("instr_pending_or_unknown_rate") or 0.0)
     fee_uv = float(coverage.get("fee_unverified_rate") or 0.0)
     quote_asm = float(coverage.get("quote_assumed_or_unk_rate") or 0.0)
+    quote_ver = float(coverage.get("quote_verified_true_rate") or 0.0)
     # All rows still on WS defaults → INCOMPLETE (expected phase-0 observe).
     if pending >= 0.99 and fee_uv >= 0.99 and quote_asm >= 0.99:
         result: GateResult = "INCOMPLETE"
         note = "≥99% instr pending + fee unverified + quote assumed — taxonomy stamped, RPC enrich not landed."
     elif pending > 0.05 or fee_uv > 0.05 or quote_asm > 0.05:
-        result = "INCOMPLETE"
-        note = "Mixed resolved/unverified platform slice — stratify mandatory on measures."
+        if scope == "enriched_sample" and quote_ver >= 0.90 and pending <= 0.05:
+            result = "PASS"
+            note = "EXP-007b enriched sample: instr resolved + quote verified on ≥90% of RPC overlay rows."
+        else:
+            result = "INCOMPLETE"
+            note = "Mixed resolved/unverified platform slice — stratify mandatory on measures."
     else:
         result = "PASS"
         note = "Majority RPC-resolved platform keys on book."
     return {
         "id": "K-platform-rpc-resolved",
         "result": result,
+        "scope": scope,
         "instr_pending_or_unknown_rate": pending,
         "fee_unverified_rate": fee_uv,
         "quote_assumed_or_unk_rate": quote_asm,
+        "quote_verified_true_rate": quote_ver,
         "note": note,
+    }
+
+
+def _gate_k_leak_enriched(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    bad = [r for r in rows if r.get("_exp007b_leak_reject")]
+    n = len(rows)
+    result: GateResult = "PASS" if n and not bad else ("INCOMPLETE" if not n else "FAIL")
+    return {
+        "id": "K-leak-enriched",
+        "result": result,
+        "violations_n": len(bad),
+        "violation_rate": (len(bad) / n) if n else None,
+        "note": "Enriched overlay rows must not use RPC timestamps after decision T.",
+    }
+
+
+def _audit_bundle(
+    eligible: Sequence[Any],
+    *,
+    scope: str,
+) -> dict[str, Any]:
+    rows = [item.row for item in eligible]
+    audits = [
+        audit_row(item.row, source_path=item.source_path, line_no=item.line_no) for item in eligible
+    ]
+    coverage = _coverage_block(rows)
+    gates = [
+        _gate_k_blank(audits),
+        _gate_k_kat(audits),
+        _gate_k_id_kat(audits),
+        _gate_k_platform_resolved(coverage, scope=scope),
+    ]
+    if scope == "enriched_sample":
+        gates.append(_gate_k_leak_enriched(rows))
+    overall = _overall_from_gates(gates)
+    return {
+        "scope": scope,
+        "eligible_n": len(eligible),
+        "coverage": coverage,
+        "gates": {g["id"]: g for g in gates},
+        "overall": overall,
+        "row_audits": audits,
     }
 
 
@@ -321,25 +381,34 @@ def run_single_day(
     *,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     prefix: str = DEFAULT_PREFIX,
+    enrich_paths: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     loaded, malformed_n = load_jsonl_files([observe_path])
     creates = [item for item in loaded if is_bonding_create(item.row)]
     voided = [item for item in creates if t_ws_missing(item.row)]
     eligible = [item for item in creates if not t_ws_missing(item.row)]
-    rows = [item.row for item in eligible]
 
-    audits = [
-        audit_row(item.row, source_path=item.source_path, line_no=item.line_no) for item in eligible
-    ]
-    coverage = _coverage_block(rows)
+    sealed_bundle = _audit_bundle(eligible, scope="sealed_book")
 
-    gates = [
-        _gate_k_blank(audits),
-        _gate_k_kat(audits),
-        _gate_k_id_kat(audits),
-        _gate_k_platform_resolved(coverage),
-    ]
-    overall = _overall_from_gates(gates)
+    enrich_map: dict[str, dict[str, Any]] = {}
+    enriched_bundle: dict[str, Any] | None = None
+    if enrich_paths:
+        enrich_map = load_enrich_by_parent(enrich_paths)
+        enriched_items: list[Any] = []
+        for item in eligible:
+            sig = item.row.get("signature")
+            if not isinstance(sig, str) or sig not in enrich_map:
+                continue
+            overlay_row = apply_enrich_overlay(item.row, enrich_map[sig])
+            enriched_items.append(
+                LoadedRow(
+                    row=overlay_row,
+                    source_path=item.source_path,
+                    line_no=item.line_no,
+                )
+            )
+        if enriched_items:
+            enriched_bundle = _audit_bundle(enriched_items, scope="enriched_sample")
 
     day_key = _day_key_from_path(observe_path)
     summary: dict[str, Any] = {
@@ -351,15 +420,28 @@ def run_single_day(
         "population_create_n": len(creates),
         "void_missing_t_ws_n": len(voided),
         "eligible_n": len(eligible),
-        "coverage": coverage,
-        "gates": {g["id"]: g for g in gates},
-        "overall": overall,
+        "coverage": sealed_bundle["coverage"],
+        "gates": sealed_bundle["gates"],
+        "overall": sealed_bundle["overall"],
         "limitations": [
             "Stratify-only audit — no independent RPC reconstruction (not EXP-001 mislabel sample).",
             "regime_gate_key policy matches EXP-004 (full regime_id string).",
             "trade_iface not in observe_hot_v0 regime_id — bonding lineage = venue+instr only.",
         ],
     }
+    if enrich_paths:
+        enriched_public = None
+        if enriched_bundle:
+            enriched_public = {
+                k: v for k, v in enriched_bundle.items() if k != "row_audits"
+            }
+        summary["exp007b"] = {
+            "exp": EXP007B_ID,
+            "enrich_paths": [str(p) for p in enrich_paths],
+            "enrich_rows_loaded_n": len(enrich_map),
+            "enriched_sample": enriched_public,
+            "overall": enriched_bundle["overall"] if enriched_bundle else "INCOMPLETE",
+        }
 
     output_dir.mkdir(parents=True, exist_ok=True)
     day_prefix = f"{prefix}-{day_key}"
@@ -367,6 +449,7 @@ def run_single_day(
     summary_path = output_dir / f"{day_prefix}_summary.json"
     report_path = output_dir / f"{day_prefix}_report.md"
 
+    audits = sealed_bundle["row_audits"]
     with jsonl_path.open("w", encoding="utf-8") as fh:
         for a in audits:
             fh.write(json.dumps(a.as_dict(), ensure_ascii=False) + "\n")
@@ -376,11 +459,19 @@ def run_single_day(
         fh.write("\n")
 
     report_path.write_text(_render_report(summary), encoding="utf-8")
-    summary["_artifacts"] = {
+    artifacts: dict[str, str] = {
         "row_audit_jsonl": str(jsonl_path),
         "summary_json": str(summary_path),
         "report_md": str(report_path),
     }
+    if enriched_bundle:
+        enrich_prefix = f"{prefix}-{day_key}_enriched"
+        enrich_jsonl = output_dir / f"{enrich_prefix}_row_audit.jsonl"
+        with enrich_jsonl.open("w", encoding="utf-8") as fh:
+            for a in enriched_bundle["row_audits"]:
+                fh.write(json.dumps(a.as_dict(), ensure_ascii=False) + "\n")
+        artifacts["enriched_row_audit_jsonl"] = str(enrich_jsonl)
+    summary["_artifacts"] = artifacts
     return summary
 
 
@@ -407,6 +498,22 @@ def _render_report(summary: Mapping[str, Any]) -> str:
     ]
     for gid, gate in (summary.get("gates") or {}).items():
         lines.append(f"- **{gid}:** {gate.get('result')} — {gate.get('note')}")
+    exp007b = summary.get("exp007b")
+    if isinstance(exp007b, dict):
+        es = exp007b.get("enriched_sample")
+        if isinstance(es, dict):
+            lines.extend(
+                [
+                    "",
+                    f"## EXP-007b enriched sample ({es.get('eligible_n')} rows)",
+                    "",
+                    f"**Overall (enriched):** {es.get('overall')}",
+                    "",
+                ]
+            )
+            for gid, gate in (es.get("gates") or {}).items():
+                lines.append(f"- **{gid}:** {gate.get('result')} — {gate.get('note')}")
+            lines.append("")
     lines.append("")
     vc = cov.get("value_counts") or {}
     for label, counts in sorted(vc.items()):
@@ -422,19 +529,42 @@ def run_multi_day(
     *,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     prefix: str = DEFAULT_PREFIX,
+    enrich_paths: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     per_day: dict[str, Any] = {}
     day_overalls: list[str] = []
+    enriched_overalls: list[str] = []
     for path in observe_paths:
-        summary = run_single_day(path, output_dir=output_dir, prefix=prefix)
+        day_enrich = None
+        if enrich_paths:
+            day_key = _day_key_from_path(path)
+            day_enrich = [p for p in enrich_paths if day_key in p.stem]
+        summary = run_single_day(
+            path,
+            output_dir=output_dir,
+            prefix=prefix,
+            enrich_paths=day_enrich or None,
+        )
         per_day[summary["courier_day"]] = summary
         day_overalls.append(summary["overall"])
+        b = summary.get("exp007b")
+        if isinstance(b, dict) and isinstance(b.get("overall"), str):
+            enriched_overalls.append(b["overall"])
 
     cross = "FAIL" if "FAIL" in day_overalls else ("INCOMPLETE" if "INCOMPLETE" in day_overalls else "PASS")
+    cross_enriched = None
+    if enriched_overalls:
+        cross_enriched = (
+            "FAIL"
+            if "FAIL" in enriched_overalls
+            else ("INCOMPLETE" if "INCOMPLETE" in enriched_overalls else "PASS")
+        )
     return {
         "exp": EXP_ID,
         "cross_day_overall": cross,
+        "cross_day_enriched_overall": cross_enriched,
         "day_overalls": day_overalls,
+        "enriched_day_overalls": enriched_overalls,
         "per_day": per_day,
     }
 
@@ -444,6 +574,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("observe_paths", nargs="+", type=Path, help="Day-aligned sealed observe JSONL.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--prefix", default=DEFAULT_PREFIX)
+    parser.add_argument(
+        "--enrich-jsonl",
+        nargs="*",
+        type=Path,
+        default=None,
+        help="EXP-007b regime_enrich side JSONL (optional overlay audit).",
+    )
     args = parser.parse_args(argv)
 
     if len(args.observe_paths) == 1:
@@ -451,6 +588,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.observe_paths[0],
             output_dir=args.output_dir,
             prefix=args.prefix,
+            enrich_paths=args.enrich_jsonl,
         )
         print(
             json.dumps(
@@ -467,12 +605,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1 if summary["overall"] in ("INCOMPLETE", "FAIL") else 0
 
-    multi = run_multi_day(args.observe_paths, output_dir=args.output_dir, prefix=args.prefix)
+    multi = run_multi_day(
+        args.observe_paths,
+        output_dir=args.output_dir,
+        prefix=args.prefix,
+        enrich_paths=args.enrich_jsonl,
+    )
     print(
         json.dumps(
             {
                 "cross_day_overall": multi["cross_day_overall"],
+                "cross_day_enriched_overall": multi.get("cross_day_enriched_overall"),
                 "day_overalls": multi["day_overalls"],
+                "enriched_day_overalls": multi.get("enriched_day_overalls"),
                 "per_day_eligible_n": {
                     k: v.get("eligible_n") for k, v in multi["per_day"].items()
                 },

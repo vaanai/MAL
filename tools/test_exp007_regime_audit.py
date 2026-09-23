@@ -14,7 +14,9 @@ from tools.exp007_regime_audit import (
     run_single_day,
     _gate_k_blank,
     _gate_k_kat,
+    _gate_k_platform_resolved,
 )
+from tools.exp007_rpc_enrich import build_enrich_row, PlatformResolve
 
 T_WS = "2026-09-20T12:00:00.000+00:00"
 
@@ -76,6 +78,62 @@ class RunSingleDayTests(unittest.TestCase):
             self.assertEqual(summary["gates"]["K-blank"]["result"], "PASS")
             self.assertEqual(summary["gates"]["K-knowable-at-t"]["result"], "PASS")
             self.assertEqual(summary["gates"]["K-platform-rpc-resolved"]["result"], "INCOMPLETE")
+
+    def test_enriched_sample_gate_can_pass(self) -> None:
+        row = _sealed_create()
+        resolved = PlatformResolve(
+            instr="create",
+            fee="unverified",
+            quote="wsol",
+            quote_verified=True,
+            venue="pump_program",
+            stage="bonding",
+            market="bonding_curve",
+            rpc_block_time=1_700_000_000,
+            rpc_slot=1,
+            quote_mint=None,
+            leak_reject=False,
+            leak_reason=None,
+        )
+        enrich = build_enrich_row(row, resolved, source_path="f", line_no=1)
+        coverage = {
+            "population_n": 1,
+            "instr_pending_or_unknown_rate": 0.0,
+            "fee_unverified_rate": 1.0,
+            "quote_assumed_or_unk_rate": 0.0,
+            "quote_verified_true_rate": 1.0,
+        }
+        gate = _gate_k_platform_resolved(coverage, scope="enriched_sample")
+        self.assertEqual(gate["result"], "PASS")
+
+    def test_run_with_enrich_overlay(self) -> None:
+        row = _sealed_create()
+        resolved = PlatformResolve(
+            instr="create",
+            fee="unverified",
+            quote="wsol",
+            quote_verified=True,
+            venue="pump_program",
+            stage="bonding",
+            market="bonding_curve",
+            rpc_block_time=1_700_000_000,
+            rpc_slot=1,
+            quote_mint=None,
+            leak_reject=False,
+            leak_reason=None,
+        )
+        enrich = build_enrich_row(row, resolved, source_path="f", line_no=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            obs = Path(tmp) / "observe-2026-09-20.jsonl"
+            obs.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            enrich_path = Path(tmp) / "enrich.jsonl"
+            enrich_path.write_text(json.dumps(enrich) + "\n", encoding="utf-8")
+            out = Path(tmp) / "out"
+            summary = run_single_day(
+                obs, output_dir=out, prefix="_exp007-test", enrich_paths=[enrich_path]
+            )
+            b = summary.get("exp007b") or {}
+            self.assertEqual(b.get("overall"), "PASS")
 
 
 if __name__ == "__main__":
