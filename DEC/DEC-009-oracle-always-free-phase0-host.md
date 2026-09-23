@@ -1,6 +1,6 @@
 # DEC-009 — Oracle Always Free phase-0 continuous host
 
-> **Amended 2026-09-23 by [DEC-010](DEC-010-oracle-phase0-handoff-autonomy.md).** Always Free **2 OCPU / 12 GB** envelope, JSONL EXP spine, and paper/no-keys rules **remain**. **Pending provision is superseded:** Vaan **provisioned and verified** `mal-core-0`. Live inventory + autonomy/access laws: [ORACLE-PHASE0-HANDOFF.md](../ARTIFACTS/ORACLE-PHASE0-HANDOFF.md). Original pre-create text below is **historical** except where still true (sizing, cheap-first, JSONL spine).
+> **Amended 2026-09-23 by [DEC-010](DEC-010-oracle-phase0-handoff-autonomy.md)** (provisioned) **and [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md)** (access **decided**; owner implementing). Always Free **2 OCPU / 12 GB** envelope, JSONL EXP spine, and paper/no-keys rules **remain**. Live inventory + autonomy: [ORACLE-PHASE0-HANDOFF.md](../ARTIFACTS/ORACLE-PHASE0-HANDOFF.md). Original pre-create text below is **historical** except where still true (sizing, cheap-first, JSONL spine).
 
 | Field | Value |
 | --- | --- |
@@ -8,7 +8,7 @@
 | **Decider** | Vaan (lab policy). Council **soft-OK** Scout / Graph / Proof (2026-09-22) — soft flags below, not hard blockers. |
 | **Date** | 2026-09-22 (recorded); amended 2026-09-23 |
 | **Amends** | [DEC-002](DEC-002-memory-first-no-db-local.md) (no-DB / laptop-only-forever for continuous runtime) |
-| **Amended by** | [DEC-010](DEC-010-oracle-phase0-handoff-autonomy.md) (pending → provisioned; workflow / access / escalate laws) |
+| **Amended by** | [DEC-010](DEC-010-oracle-phase0-handoff-autonomy.md) (pending → provisioned); [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) (access path decided; owner implementing) |
 | **Does not amend** | Cheap-first / measure-before-pay ([DEC-008](DEC-008-stack-phase-gates.md)); paper path ([DEC-006](DEC-006-detect-decode-evaluate-runners.md)); full detect book ([DEC-007](DEC-007-full-detect-book-anti-selection-bias.md)); EXP-002c closed facts |
 | **BOM** | [ORACLE-ALWAYS-FREE-BOM-v0.md](../ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md) (provisioned names) |
 | **Handoff** | [ORACLE-PHASE0-HANDOFF.md](../ARTIFACTS/ORACLE-PHASE0-HANDOFF.md) |
@@ -37,7 +37,7 @@ MAL is a **low-cost, high-speed Solana meme-coin intelligence** lab. Phase 0 is 
 4. **No live keys on this host in phase 0.** Wallet / trading private keys **never**. **No X / Twitter API tokens.** Paper only. RPC/chat/OCI/DB secrets stay off git and off world-readable disk (systemd creds or root-only).
 5. **GitHub Lab memory remains SoT.** Managers reload `LAB_STATE.md` + `ARTIFACTS/SUMMARY.md` + DECs. Workers do not become persistent agents.
 6. **Measure before paid upgrades.** Capacity miss, 429s, disk, or uptime pain → log + Helm/Vaan; **do not** silently pick paid shapes, NAT Gateway, paid RPC, OKE, GPU, or a second fat VM. (DEC-010: escalate before any spend / security-boundary change.)
-7. **Laptop role:** operator console + **data courier**. Laptop is **not** the 24/7 observe host. **Human PC must not** become a permanent Cursor→Oracle networking hop ([DEC-010](DEC-010-oracle-phase0-handoff-autonomy.md) §5). Agents do **not** yet have SSH.
+7. **Laptop role:** operator console + **data courier**. Laptop is **not** the 24/7 observe host. **Human PC must not** become a permanent Cursor→Oracle networking hop ([DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md)). Agents do **not** yet have SSH (owner implementing DEC-011).
 
 ### Council soft flags (not hard blockers)
 
@@ -65,7 +65,7 @@ MAL is a **low-cost, high-speed Solana meme-coin intelligence** lab. Phase 0 is 
 
 ## Review trigger
 
-- **Provision complete (2026-09-23).** Remaining: Cursor→Oracle access recommendation + owner implementation ([DEC-010](DEC-010-oracle-phase0-handoff-autonomy.md)); then observe/paper bootstrap on `/var/lib/mal`.
+- **Provision complete (2026-09-23).** Access **decided** ([DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md)); owner implementing (tunnel **not** claimed live). Then observe/paper bootstrap on `/var/lib/mal`.
 - Idle-instance reclamation risk (Always Free idle policy) or block-volume approaching **200 GB** combined — legitimate workload only; never fake keep-alive.
 - Measured need that would open a DEC-008 rung (RPC 429s, disk, uptime) — new DEC, not silent spend.
 - aarch64 gap that blocks observe/paper cutover → Helm, then amend BOM (still Always Free first).
