@@ -144,3 +144,5 @@ Map to Discovery ARTIFACT §8 + Graph gates. **No fabricated mean_return_pct or 
 High overlap with the v2 modal runner slice remains a **cohort falsifier risk** (**M2** / **K-L3-cohort**) even when sep+random gates PASS at thin priced_n — Proof should treat **DIRECTIONAL_WATCH** as soft, not decode promotion.
 
 **Conclusion:** L3 **packet** cohort (`L3_PACKET_V0`) passes **separable_vs_spine** and **no_lift_vs_random** @60s on **both** courier days with honest priced floors; **S1 collapse** falsifier **not** triggered. **Does not** clear EXP-002c adverse-selection failure or authorize evaluate changes. **Parked:** ordinal / NH-G3a / NH-Index / fill-sim / H-G2 revive.
+
+**Next falsifier (Proposed, not run):** [EXP-005b](EXP-005b-l3-residual-vs-exp002c-v2-falsifier-v0.md) — score **L3_minus_v2** (L3 packet signatures not in EXP-002c v2 runner set) on the same sealed 2026-09-20/21 courier days; **merge ≠ authorize run**.
