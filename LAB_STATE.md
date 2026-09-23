@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers (Grok bots). **As-of:** 2026-09-23. No live-trading claims. **`mal-core-0` is provisioned and verified.** Agents do **not** yet have SSH.
+Compact reload for managers (Grok bots). **As-of:** 2026-09-23. No live-trading claims. **`mal-core-0` is provisioned and verified.** Cursor↔Oracle access **DEC-011 decided, pending owner implement.** Agents do **not** yet have SSH.
 
 ## Objective
 
@@ -44,6 +44,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Full detect book / anti-selection-bias kill → [DEC-007](DEC/DEC-007-full-detect-book-anti-selection-bias.md)
 - Stack spend phase gates (cheap-first; local Laya open hypothesis) → [DEC-008](DEC/DEC-008-stack-phase-gates.md) (draft); brief [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md)
 - Oracle Always Free host **`mal-core-0` live** (**2 OCPU / 12 GB**, Phoenix AD-1, **provisioned + verified**) → [DEC-010](DEC/DEC-010-oracle-phase0-handoff-autonomy.md), handoff [ORACLE-PHASE0-HANDOFF.md](ARTIFACTS/ORACLE-PHASE0-HANDOFF.md), BOM [ORACLE-ALWAYS-FREE-BOM-v0.md](ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md)
+- Cursor↔Oracle access **decided** (CF Tunnel + Access + `mal-cursor` key; **pending owner implement**) → [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)
 - Hot-packet clocks / `Δ_exec` → [DEC-005](DEC/DEC-005-hot-packet-clocks-and-provenance.md) (draft PR #8; cross-link only until merge)
 - Non-negotiables → [CONSTITUTION.md](CONSTITUTION.md)
 
@@ -72,11 +73,11 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - Hermes as **live trading** manager (managers remain Grok; workers produce artifacts)
 - Laptop-only 24/7 observe host (superseded by DEC-009/010 Always Free `mal-core-0`, **now provisioned**)
 - No database forever in phase 0 (on-box Postgres OK as **ops/state**; JSONL remains provenance/EXP spine)
-- Human PC as a **permanent** Cursor→Oracle networking hop (DEC-010: recommend access arch first; owner implements)
+- Human PC as a **permanent** Cursor→Oracle networking hop (DEC-010/011: CF Tunnel + Access chosen; owner implements; PC is not the hop)
 
 ## Infra posture (phase 0)
 
-- **Primary continuous host (LIVE):** Oracle Always Free **`mal-core-0`** — Phoenix **AD-1**, **`VM.Standard.A1.Flex`, 2 OCPU / 12 GB, aarch64**, Ubuntu 24.04 Minimal, 2 GB swap. Boot 50 GB; **`mal-core-data` 150 GB @ `/var/lib/mal`**. VCN `mal-vcn` / subnet `mal-public` / IGW `mal-igw` / NSG `mal-core-nsg`. SSH = owner home IP only; **no public app ports**. **Not** a paid VPS. **Not** 4 OCPU / 24 GB. **Agents do not have SSH yet.**
+- **Primary continuous host (LIVE):** Oracle Always Free **`mal-core-0`** — Phoenix **AD-1**, **`VM.Standard.A1.Flex`, 2 OCPU / 12 GB, aarch64**, Ubuntu 24.04 Minimal, 2 GB swap. Boot 50 GB; **`mal-core-data` 150 GB @ `/var/lib/mal`**. VCN `mal-vcn` / subnet `mal-public` / IGW `mal-igw` / NSG `mal-core-nsg`. SSH = owner home IP only; **no public app ports**. **Not** a paid VPS. **Not** 4 OCPU / 24 GB. **Agents do not have SSH yet.** Access design = [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (**decided, pending owner implement** — do not claim tunnel exists).
 - **Postgres:** **16.15**, DB **`meme_core`**, role **`mal_app`** (non-superuser), **localhost only**, data dir `/var/lib/mal/postgresql/16/main`. Password = owner only (never in repo).
 - **Laptop:** operator console + **data courier**. Must **not** be a permanent Cursor→Oracle networking dependency.
 - **Lab memory SoT:** GitHub (`DEC/`, `EXP/`, `LAB_STATE.md`, `ARTIFACTS/`). Seat agents keep **direction**; git holds **ops detail**.
@@ -89,7 +90,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 ## Next work
 
 1. **EXP-002c:** **INCOMPLETE closed** — do **not** promote. Local `--rules v2` + existing marks, seed 1 (PR #18 @ `842cb21`; 26/26 tests OK). population_n=32896, runner_n=12112, reject_n=20784, reject_pct≈**63.18%** → reject_rate_band **INCOMPLETE** (below 70% floor). Runner priced_n=96 mean_return_pct≈**0.385**; reject priced_n=888 mean≈**3202.76**; random priced_n=410 mean≈**2500.58**. Gates: reject_rate_band **INCOMPLETE**; no_lift_vs_random **FAIL**; reject_runner_parity_after_costs **PASS**. Proof stamp **INCOMPLETE** (primary: reject_rate_band). Soft/directional lift FAIL again. **Next:** **DISCOVERY** first on dual failure (v2 too permissive; survivors still adverse vs random) — then **EXP-002d** only with a **new kill-list hyp**, or **pause**. Do **not** tighten constants to hit 70–95% (OPTIMIZE-to-gate). Soft denser marks still not the fix. [EXP-002c](EXP/EXP-002c-rules-v2-adverse-selection.md). **EXP-002b** remains **FAIL closed** (**FAIL_NO_LIFT_VS_RANDOM**).
-2. **Cursor↔Oracle access (owner ask, DEC-010):** Host is live; agents **cannot** SSH yet. Recommend architecture (Cursor My Machines / Tailscale **on Oracle** / Cloudflare Tunnel / etc.) **with security tradeoffs before** changing the boundary. **Do not** expose Postgres publicly; **do not** hand agents Vaan’s personal SSH key; **do not** make the human PC a permanent hop. Vaan implements once recommended. Then bootstrap `/var/lib/mal` dirs, `meme_core` schema, sealed JSONL ingest, paper, monitoring.
+2. **Cursor↔Oracle access (DEC-011 — implementing):** Design **decided** ([DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)): Cloudflare Tunnel + Access for SSH + dedicated `mal-cursor` ed25519 key. Backup = Tailscale on Oracle + ephemeral keys. My Machines **parked**. **Status: pending owner implement** — do **not** claim the tunnel exists. Agents **cannot** SSH until owner confirms hostname + `mal-cursor` as a **Cursor secret** (never in repo). **Do not** expose Postgres publicly; **do not** hand agents Vaan’s personal SSH key; **do not** make the human PC a permanent hop. Then bootstrap `/var/lib/mal` dirs, `meme_core` schema, sealed JSONL ingest, paper, monitoring.
 3. **EXP-003 marks (unchanged law):** Subsample marks exist; book-wide N/A expected. Reuse existing marks for paper EXPs. Densify only after a non-adverse directional hyp needs power — never as lift rescue. [EXP-003](EXP/EXP-003-post-create-marks.md).
 4. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py).
 5. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)
@@ -100,7 +101,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 
 ## Pointers
 
-- Decisions: `DEC/`
+- Decisions: `DEC/` ([DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) access design)
 - Experiments: `EXP/`
 - Local EXP-001 CLI: `python -m tools.exp001_mislabel`
 - Local EXP-002/002b/002c CLI: `python -m tools.exp002_paper_runner` (`--rules v0` | `v1` | `v2`, default **v2**; `--marks` for EXP-003 ticks)
@@ -110,6 +111,6 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 - API/cost/latency: [ARTIFACTS/API-COST-LATENCY-BRIEF.md](ARTIFACTS/API-COST-LATENCY-BRIEF.md)
 - Laya vs VPS stack compare: [ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](ARTIFACTS/STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md) (Always Free `mal-core-0` is the phase-0 host experiment, not a paid VPS)
 - Always Free BOM: [ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md](ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md)
-- Phase-0 handoff (live inventory + laws): [ARTIFACTS/ORACLE-PHASE0-HANDOFF.md](ARTIFACTS/ORACLE-PHASE0-HANDOFF.md)
+- Phase-0 handoff (live inventory + laws; access → DEC-011): [ARTIFACTS/ORACLE-PHASE0-HANDOFF.md](ARTIFACTS/ORACLE-PHASE0-HANDOFF.md)
 - Engineering decision log: [ARTIFACTS/ENGINEERING-DECISION-LOG.md](ARTIFACTS/ENGINEERING-DECISION-LOG.md)
 - Regime at ingest: [ARTIFACTS/REGIME-AT-INGEST-MATRIX.md](ARTIFACTS/REGIME-AT-INGEST-MATRIX.md), [ARTIFACTS/REGIME-ENUM-V0.md](ARTIFACTS/REGIME-ENUM-V0.md), [ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md](ARTIFACTS/PUMPPORTAL-PAYLOAD-INVENTORY.md)
