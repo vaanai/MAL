@@ -19,7 +19,7 @@ A common “serious hobbyist” stack cited in meta-discussion lands around **~$
 
 **Decision gates (not a buy list):** [DEC-008](../DEC/DEC-008-stack-phase-gates.md).
 
-**Phase-0 host experiment ([DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md), 2026-09-22):** Oracle **Always Free** Ampere A1 **`mal-core-0`** (**2 OCPU / 12 GB**, **not 4/24**; **pending Vaan provision**) is the chosen continuous-host experiment. This is **not** a paid VPS and does **not** open DEC-008 Gate 5. Laptop remains operator + data courier until cutover. Local Laya remains an open hypothesis to run **on that host** (aarch64) after the rules baseline — not a reason to buy cloud JEV or a ~$180–200 stack. BOM: [ORACLE-ALWAYS-FREE-BOM-v0.md](ORACLE-ALWAYS-FREE-BOM-v0.md).
+**Phase-0 host experiment ([DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md), [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md)):** Oracle **Always Free** Ampere A1 **`mal-core-0`** (**2 OCPU / 12 GB**, **not 4/24**; **provisioned and verified**) is the continuous host. This is **not** a paid VPS and does **not** open DEC-008 Gate 5. Laptop remains operator + data courier (not a permanent Cursor hop). Local Laya remains an open hypothesis to run **on that host** (aarch64) after the rules baseline — not a reason to buy cloud JEV or a ~$180–200 stack. Handoff: [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md). BOM: [ORACLE-ALWAYS-FREE-BOM-v0.md](ORACLE-ALWAYS-FREE-BOM-v0.md).
 
 ---
 

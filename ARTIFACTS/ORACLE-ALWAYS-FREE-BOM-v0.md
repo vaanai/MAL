@@ -2,48 +2,48 @@
 
 | | |
 | --- | --- |
-| **As-of** | 2026-09-22 |
-| **Status** | **Pending Vaan provision — nothing created.** Docs + DEC only. |
+| **As-of** | 2026-09-23 |
+| **Status** | **Provisioned and verified by Vaan.** Live inventory in [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md). This BOM keeps the Always Free **envelope**, charge foot-guns, and **as-built** names/paths. Pre-create “nothing created” language is **historical**. |
 | **Target** | **$0 / mo** Always Free (home region). Not a paid VPS. |
-| **Decision** | [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) |
-| **Limits source** | [Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) (verify in Console **Limits, Quotas and Usage** before create) |
+| **Decision** | [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) (envelope); [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md) (provisioned + autonomy) |
+| **Limits source** | [Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) |
 
 **Critical sizing (do not invent 4 / 24):** Always Free Ampere A1 for **free tenancies** = **2 OCPU + 12 GB RAM total** (pool: **1,500 OCPU-hours + 9,000 GB-hours / month**). Paid tenancies advertise a larger Ampere *hour* pool (3,000 / 18,000 ≡ 4 / 24) — **MAL does not claim or use that** unless a future spend DEC says the tenancy is paid **and** Vaan accepts it. **This BOM is 2 OCPU / 12 GB.**
 
-Council **soft-OK** (Scout / Graph / Proof): JSONL stays EXP spine day-1; aarch64 gaps escalate **after** create (not a veto); no trading/X keys on host; bonk/mayhem parked. Soft flags, not pre-create blockers.
+Council **soft-OK** (Scout / Graph / Proof): JSONL stays EXP/provenance spine; aarch64 gaps escalate to Helm (not a veto); no trading/X keys on host; bonk/mayhem parked.
 
 ---
 
-## Create now (target $0 Always Free)
+## As-built inventory (provisioned)
 
-Nothing below exists until Vaan provisions. Names are the intended inventory.
+Names/paths below are **verified**. Do not “re-create” this BOM. Do not invent **4 OCPU / 24 GB**.
 
 ### 1. Optional compartment
 
-- Name: `mal-phase0` (optional; tenancy root is acceptable if Vaan prefers fewer IAM objects)
+- Name: `mal-phase0` (optional; tenancy root is acceptable). Not required to match a specific as-built name in Lab memory.
 
-### 2. Network
+### 2. Network (as-built)
 
-- VCN `mal-vcn` — `10.0.0.0/16`
-- Public subnet `mal-public` — `10.0.1.0/24`
-- **Internet Gateway** (no NAT Gateway — NAT **can charge**; not on the Always Free resource list)
+- VCN **`mal-vcn`** — `10.0.0.0/16`
+- Public subnet **`mal-public`** — `10.0.1.0/24`
+- Internet Gateway **`mal-igw`** (no NAT Gateway — NAT **can charge**)
 
 Free-tier tenancies: up to **2 VCNs**. One is enough.
 
-### 3. NSG `mal-nsg`
+### 3. NSG **`mal-core-nsg`** (as-built; pre-create placeholder was `mal-nsg`)
 
 Bind the instance VNIC to this NSG. Mirror in **ufw** on the box.
 
 | Direction | Rule | Notes |
 | --- | --- | --- |
-| Ingress | TCP **22** from **Vaan SSH CIDR only** | Placeholder `VAAN_SSH_CIDR` — replace at provision; never commit the real CIDR if it is sensitive. |
-| Ingress | **No public 443 day-1** | Prefer **SSH tunnel** / Cloudflare Tunnel later. Free UI is not a public website on day-1. |
+| Ingress | TCP **22** from **owner home public IP only** | Never commit the real CIDR. Placeholder in git: `VAAN_SSH_CIDR`. |
+| Ingress | **No public app ports** (no public 443) | Cursor access must **not** open Postgres or extra listeners. Prefer recommended private path (DEC-010) then owner implements. |
 | Egress | Allow **443** (HTTPS / WSS) and **53** (DNS) | PumpPortal WS, free RPC, GitHub, OS updates. |
 | Deny / do not open | Public **5432**, **6379**, **3000**, **8080**, metrics | Postgres, Redis (if any), dev UIs, Prometheus — localhost / tunnel only. |
 
-No extra public listeners “for convenience.”
+No extra public listeners “for convenience.” **Do not expose Postgres publicly.**
 
-### 4. ONE compute — `mal-core-0`
+### 4. ONE compute — `mal-core-0` (as-built)
 
 | Field | Value |
 | --- | --- |
@@ -51,26 +51,28 @@ No extra public listeners “for convenience.”
 | OCPU | **2** (the **entire** Always Free A1 pool) |
 | RAM | **12 GB** (the **entire** Always Free A1 memory pool) |
 | Arch | **aarch64 / ARM** |
-| Image | Canonical **Ubuntu 22.04 or 24.04 Minimal aarch64**, Console **Always Free eligible** |
+| Image | Canonical **Ubuntu 24.04 Minimal** aarch64; **2 GB swap** |
 | Name | `mal-core-0` |
-| Boot volume | **50 GB** (default Always Free-friendly; counts toward 200 GB) |
-| Extra block volume | **150 GB** → mount **`/var/lib/mal`** (Postgres data + sealed JSONL + paper marks) |
-| **Block total** | **50 + 150 = 200 GB** — **at the Always Free cap** (boot + data **combined**). No third volume. |
-| Public IP | **Ephemeral public IPv4 OK** (instance in public subnet + IGW). **Reserved public IP only if Console still labels it Always Free** — if attaching a reserved IP would **charge**, **skip it** and keep ephemeral. Flag in provision notes. |
-| Region | **Home region only** (Always Free compute + block must be home region). |
+| Region / AD | **Phoenix**, **AD-1** (home region) |
+| Boot volume | **50 GB** |
+| Data volume | **`mal-core-data`**, **150 GB**, mounted **`/var/lib/mal`** |
+| **Block total** | **50 + 150 = 200 GB** — **at the Always Free cap**. No third volume. |
+| Public IP | Ephemeral public IPv4 as provisioned. **Reserved public IP only if Console still labels it Always Free.** |
+| Agent SSH | **Not granted.** Access architecture is an open owner ask ([DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md)). |
 
-**If A1 capacity is missing in the home region: STOP.** Do **not** pick paid shapes, do **not** “just use AMD standard,” do **not** upgrade the account to get capacity without a spend DEC. **Escalate to Helm / Vaan.** Retry later or another AD in the **same** home region.
+**A1 capacity was available; instance exists.** If a **future** resize/recreate hits an A1 capacity miss: **STOP.** Do **not** pick paid shapes, do **not** “just use AMD standard,” do **not** upgrade the account without a spend DEC. **Escalate to Helm / Vaan.**
 
 **Degraded emergency-only note:** Always Free also includes **2× `VM.Standard.E2.1.Micro`** (AMD, **1/8 OCPU + 1 GB** each). **Not viable** as the primary continuous **WS + DB** host. Do not split the observe spine onto micros as a capacity workaround.
 
 Also unused in phase 0 (available, **defer**): **2× Always Free Autonomous AI Database** slots (1 OCPU / 20 GB each). **Do not create.** Use **on-box Postgres 16**.
 
-### 5. Database
+### 5. Database (as-built)
 
-- **PostgreSQL 16 on the VM** (package or aarch64 container), data dir under `/var/lib/mal`.
+- **PostgreSQL 16.15** on the VM. Data dir **`/var/lib/mal/postgresql/16/main`**.
+- Database **`meme_core`**. Role **`mal_app`** (non-superuser; cannot create DBs/roles). Password = **owner only** — never in git/docs/chat.
 - **Not** Autonomous DB, **not** managed HeatWave, **not** Redis-as-SoT.
-- **Role (council S1):** Layer-2 **cache / continuous ops aid** (entity graph working set, ops indexes). **Sealed JSONL remains the EXP / knowable-at-T spine day-1.** Do **not** force-migrate observe marks or EXP provenance into Postgres on day-1.
-- Listen **localhost** (and/or private VCN IP). NSG/ufw **deny public 5432**.
+- **Role (DEC-010):** **operational / state** layer (token/wallet/relationship/derived/paper/ops). **Sealed JSONL = provenance/event spine.** Do **not** treat Postgres as a mandatory provenance replacement. Do **not** force-migrate observe marks or EXP provenance into Postgres as SoT.
+- Bound **localhost only**. NSG/ufw **deny public 5432**. Connection owner-tested.
 
 ### 6. Optional Object Storage
 
@@ -92,19 +94,22 @@ Also unused in phase 0 (available, **defer**): **2× Always Free Autonomous AI D
 
 ---
 
-## OS baseline (document only — apply at provision)
+## OS baseline (as-built + remaining)
 
-Not executed in this PR.
+Owner-verified on host:
 
-- `docker` + **docker compose plugin**
-- `fail2ban`
-- `unattended-upgrades`
-- `ufw` **mirroring NSG** (22 from `VAAN_SSH_CIDR` only; no public 5432/6379/3000/8080/metrics; egress 443/53)
-- `chrony` (clocks for `t_ws` / paper marks)
-- SSH: **Vaan pubkey only**; **password auth off**; no other keys
-- Containers **must be multi-arch / aarch64**. **S2:** Solana client / replay / LAYA binary gaps = **post-create escalate to Helm**, not a reason to skip create or switch to x86 paid shapes.
+- Ubuntu **24.04 Minimal**; **unattended security updates** enabled
+- SSH: public-key **on**; password auth **off**; keyboard-interactive **off**; root password login **off**
+- OCI NSG **`mal-core-nsg`** as primary perimeter; Postgres **localhost**
+- **No** wallet/trading keys; **no** trading capital for agents; paper-only
 
-**Idle reclamation (operator note):** Always Free instances may be reclaimed if, over 7 days, CPU p95 **and** network **and** (A1) memory utilization are all **&lt; 20%**. Continuous WS + Postgres is the intended keep-alive; a silent idle box is a foot-gun. Source: same Always Free doc, “Idle Compute Instances.”
+Still for bootstrap (not claimed done by this docs PR):
+
+- `docker` + **docker compose plugin** (if used)
+- `fail2ban`, `ufw` mirroring NSG, `chrony` (clocks for `t_ws` / paper marks)
+- Containers **must be multi-arch / aarch64**. **S2:** Solana client / replay / LAYA binary gaps = escalate to Helm, not a reason to switch to x86 paid shapes.
+
+**Idle reclamation:** Always Free instances may be reclaimed if, over 7 days, CPU p95 **and** network **and** (A1) memory utilization are all **&lt; 20%**. Prefer **legitimate** continuous workload (ingest / monitor / paper) — **never fake keep-alive**. Source: same Always Free doc, “Idle Compute Instances.”
 
 ---
 
@@ -116,7 +121,7 @@ Not executed in this PR.
 | Future X / Twitter tokens | **Do not place on this host in phase 0** (council S3) |
 | Chat / LLM tokens | Off box or root-only; not needed for observe spine |
 | OCI API keys | Vaan laptop / operator; not world-readable on `mal-core-0` |
-| DB password | systemd credentials or root-only |
+| DB password (`mal_app`) | **Owner only.** systemd credentials or root-only on host when app bootstrap happens. **Never** in repo, docs, or chat. |
 | **Wallet / trading private keys** | **NEVER on this host in phase 0** — paper only. Isolated from agents. |
 
 Placeholder only in git: `VAAN_SSH_CIDR`. No real CIDRs, keys, or OCIDs in this repo.
@@ -141,13 +146,13 @@ Stay inside Always Free or **STOP** and ask Helm/Vaan.
 
 ---
 
-## Cutover intent (after provision)
+## Next (host already exists)
 
-1. Vaan creates inventory **exactly** as this BOM (or records a STOP).
-2. OS baseline + Postgres on `/var/lib/mal` + docker aarch64.
-3. Observe client writes **sealed JSONL** on the host (EXP spine). Optional Postgres **cache** for Layer-2 / ops — **no** day-1 provenance migration.
-4. Laptop becomes operator + **data courier** (pull JSONL/marks for local EXP CLIs / GitHub PRs).
-5. Paper path unchanged: detect → decode → evaluate → runners. **No live keys.** Bonk/mayhem **parked**.
+1. **Owner ask:** Cursor↔Oracle access architecture recommendation + tradeoffs ([DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md)). Owner implements. **No** public Postgres; **no** owner personal SSH key to agents; **no** PC-as-permanent-hop.
+2. Bootstrap `/var/lib/mal` app dirs, sealed JSONL on the host, `meme_core` schema, ingest, paper marks, logging/monitoring/backups — **after** access exists.
+3. Laptop = operator + **data courier** (local EXP CLIs / GitHub PRs). Not the 24/7 host.
+4. Paper path unchanged: detect → decode → evaluate → runners. **No live keys.** Bonk/mayhem **parked**.
+5. Open research (no pick): trading/wallet execution surface (Axiom / Phantom / etc.). Optional real paper-trading utility — **ask Vaan first**.
 
 ---
 
@@ -155,4 +160,4 @@ Stay inside Always Free or **STOP** and ask Helm/Vaan.
 
 - Always Free resource list (A1 **2 OCPU / 12 GB**, **200 GB** block, **20 GB** object, 2× E2.1.Micro, 2× Autonomous, 10 TB egress, idle reclaim): https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
 - Paid-tenancy Ampere hour pool (do **not** treat as this BOM): https://www.oracle.com/cloud/price-list/
-- Lab: [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md), [DEC-002](../DEC/DEC-002-memory-first-no-db-local.md) (amended), [DEC-008](../DEC/DEC-008-stack-phase-gates.md)
+- Lab: [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md), [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md), [DEC-002](../DEC/DEC-002-memory-first-no-db-local.md) (amended), [DEC-008](../DEC/DEC-008-stack-phase-gates.md), [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md)
