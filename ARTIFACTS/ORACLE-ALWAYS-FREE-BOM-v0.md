@@ -5,7 +5,7 @@
 | **As-of** | 2026-09-23 |
 | **Status** | **Provisioned and verified by Vaan.** Live inventory in [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md). This BOM keeps the Always Free **envelope**, charge foot-guns, and **as-built** names/paths. Pre-create “nothing created” language is **historical**. |
 | **Target** | **$0 / mo** Always Free (home region). Not a paid VPS. |
-| **Decision** | [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) (envelope); [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md) (provisioned + autonomy) |
+| **Decision** | [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md) (envelope); [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md) (provisioned + autonomy); [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (access design, pending implement) |
 | **Limits source** | [Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) |
 
 **Critical sizing (do not invent 4 / 24):** Always Free Ampere A1 for **free tenancies** = **2 OCPU + 12 GB RAM total** (pool: **1,500 OCPU-hours + 9,000 GB-hours / month**). Paid tenancies advertise a larger Ampere *hour* pool (3,000 / 18,000 ≡ 4 / 24) — **MAL does not claim or use that** unless a future spend DEC says the tenancy is paid **and** Vaan accepts it. **This BOM is 2 OCPU / 12 GB.**
@@ -37,7 +37,7 @@ Bind the instance VNIC to this NSG. Mirror in **ufw** on the box.
 | Direction | Rule | Notes |
 | --- | --- | --- |
 | Ingress | TCP **22** from **owner home public IP only** | Never commit the real CIDR. Placeholder in git: `VAAN_SSH_CIDR`. |
-| Ingress | **No public app ports** (no public 443) | Cursor access must **not** open Postgres or extra listeners. Prefer recommended private path (DEC-010) then owner implements. |
+| Ingress | **No public app ports** (no public 443) | Cursor access = [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (CF Tunnel + Access, **pending owner implement**). **Do not** open Postgres or extra listeners. |
 | Egress | Allow **443** (HTTPS / WSS) and **53** (DNS) | PumpPortal WS, free RPC, GitHub, OS updates. |
 | Deny / do not open | Public **5432**, **6379**, **3000**, **8080**, metrics | Postgres, Redis (if any), dev UIs, Prometheus — localhost / tunnel only. |
 
@@ -58,7 +58,7 @@ No extra public listeners “for convenience.” **Do not expose Postgres public
 | Data volume | **`mal-core-data`**, **150 GB**, mounted **`/var/lib/mal`** |
 | **Block total** | **50 + 150 = 200 GB** — **at the Always Free cap**. No third volume. |
 | Public IP | Ephemeral public IPv4 as provisioned. **Reserved public IP only if Console still labels it Always Free.** |
-| Agent SSH | **Not granted.** Access architecture is an open owner ask ([DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md)). |
+| Agent SSH | **Not granted.** Design locked in [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (**decided, pending owner implement**). Do **not** claim tunnel exists. |
 
 **A1 capacity was available; instance exists.** If a **future** resize/recreate hits an A1 capacity miss: **STOP.** Do **not** pick paid shapes, do **not** “just use AMD standard,” do **not** upgrade the account without a spend DEC. **Escalate to Helm / Vaan.**
 
@@ -148,7 +148,7 @@ Stay inside Always Free or **STOP** and ask Helm/Vaan.
 
 ## Next (host already exists)
 
-1. **Owner ask:** Cursor↔Oracle access architecture recommendation + tradeoffs ([DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md)). Owner implements. **No** public Postgres; **no** owner personal SSH key to agents; **no** PC-as-permanent-hop.
+1. **Owner implement:** Cursor↔Oracle access per [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) (CF Tunnel + Access + `mal-cursor` Cursor secret). **Pending** — do not claim live. **No** public Postgres; **no** owner personal SSH key to agents; **no** PC-as-permanent-hop.
 2. Bootstrap `/var/lib/mal` app dirs, sealed JSONL on the host, `meme_core` schema, ingest, paper marks, logging/monitoring/backups — **after** access exists.
 3. Laptop = operator + **data courier** (local EXP CLIs / GitHub PRs). Not the 24/7 host.
 4. Paper path unchanged: detect → decode → evaluate → runners. **No live keys.** Bonk/mayhem **parked**.
@@ -160,4 +160,4 @@ Stay inside Always Free or **STOP** and ask Helm/Vaan.
 
 - Always Free resource list (A1 **2 OCPU / 12 GB**, **200 GB** block, **20 GB** object, 2× E2.1.Micro, 2× Autonomous, 10 TB egress, idle reclaim): https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
 - Paid-tenancy Ampere hour pool (do **not** treat as this BOM): https://www.oracle.com/cloud/price-list/
-- Lab: [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md), [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md), [DEC-002](../DEC/DEC-002-memory-first-no-db-local.md) (amended), [DEC-008](../DEC/DEC-008-stack-phase-gates.md), [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md)
+- Lab: [DEC-011](../DEC/DEC-011-cursor-oracle-access-cf-tunnel.md), [DEC-010](../DEC/DEC-010-oracle-phase0-handoff-autonomy.md), [DEC-009](../DEC/DEC-009-oracle-always-free-phase0-host.md), [DEC-002](../DEC/DEC-002-memory-first-no-db-local.md) (amended), [DEC-008](../DEC/DEC-008-stack-phase-gates.md), [ORACLE-PHASE0-HANDOFF.md](ORACLE-PHASE0-HANDOFF.md)

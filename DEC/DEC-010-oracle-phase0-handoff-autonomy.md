@@ -1,11 +1,14 @@
 # DEC-010 — Oracle Phase-0 handoff: provisioned host, data roles, autonomy
 
+> **Access ask amended 2026-09-23 by [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md).** Cursor↔Oracle access design is **decided** (Cloudflare Tunnel + Access + dedicated `mal-cursor` key). **Pending owner implement** — do **not** claim tunnel/SSH for agents exists. All other DEC-010 laws remain.
+
 | Field | Value |
 | --- | --- |
-| **Status** | Active (working law) |
+| **Status** | Active (working law). Access design → [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) (**decided, pending owner implement**). |
 | **Decider** | Vaan (lab policy; host **provisioned and verified**) |
-| **Date** | 2026-09-23 (recorded) |
+| **Date** | 2026-09-23 (recorded); access ask amended 2026-09-23 (council 2026-09-22) |
 | **Amends** | [DEC-009](DEC-009-oracle-always-free-phase0-host.md) (pending → **provisioned**; ops/autonomy/access laws) |
+| **Amended by** | [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) (open access ask → decided design; plumbing not yet deployed) |
 | **Does not amend** | Cheap-first / measure-before-pay ([DEC-008](DEC-008-stack-phase-gates.md)); paper path ([DEC-006](DEC-006-detect-decode-evaluate-runners.md)); full detect book ([DEC-007](DEC-007-full-detect-book-anti-selection-bias.md)); EXP-002c closed facts; Always Free **2 OCPU / 12 GB** envelope (DEC-009) |
 | **Handoff** | [ORACLE-PHASE0-HANDOFF.md](../ARTIFACTS/ORACLE-PHASE0-HANDOFF.md) |
 | **BOM** | [ORACLE-ALWAYS-FREE-BOM-v0.md](../ARTIFACTS/ORACLE-ALWAYS-FREE-BOM-v0.md) (provisioned names; envelope still DEC-009) |
@@ -21,7 +24,7 @@
 
 4. **Cursor DM status-card rule.** Whenever **any** manager launches a Cursor agent — **even after group-chat collab** — **DM Vaan a Cursor-agent status card** so he can see running/done and open the run. Transparency, not required supervision of every run.
 
-5. **No permanent PC networking dependency.** Desired path: Human → Grok → Cursor Cloud → `mal-core-0` → Postgres/JSONL/runtime. Team **recommends** access architecture (Cursor My Machines / Tailscale **on Oracle** / Cloudflare Tunnel / equivalent) **with security tradeoffs before** changing the security boundary. Owner implements. **Do not** expose Postgres publicly. **Do not** hand agents the owner’s personal SSH private key. **Do not** make the human PC a required always-on hop.
+5. **No permanent PC networking dependency.** Desired path: Human → Grok → Cursor Cloud → `mal-core-0` → Postgres/JSONL/runtime. Access design is **locked in [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md)** (Cloudflare Tunnel + Access for SSH + dedicated `mal-cursor` ed25519 key; Tailscale-on-Oracle = backup; My Machines parked). **Owner implements; agents wait for hostname + Cursor-secret confirm.** **Do not** claim the tunnel exists. **Do not** expose Postgres publicly. **Do not** hand agents the owner’s personal SSH private key. **Do not** make the human PC a required always-on hop.
 
 6. **Autonomy inside the fence; escalate before spend/security.** Routine ops on the approved box are in-bounds. **Escalate to Vaan before** billing, leaving Always Free, weakening security, paid RPC/GPU/extra VMs/OKE/NAT/LB/Autonomous DB, public Postgres, extra public app ports, trading keys or X creds on host, or capital access. Always Free idle-reclaim: **legitimate** continuous workload (ingest/monitor/paper) — **never** fake keep-alive.
 
@@ -35,12 +38,12 @@
 - Provenance vs ops split keeps EXP knowable-at-T audit (JSONL) while unblocking Layer-2 / paper / indexes on the already-installed `meme_core`.
 - Cursor-as-workforce + Grok-as-managers matches the owner’s operating model and existing lean-four seats.
 - Status cards give the owner cheap observability without blocking autonomy.
-- Access architecture is a **security-boundary** change: recommend first, owner implements, no public DB, no owner-key shortcut, no PC-as-hop.
+- Access architecture is a **security-boundary** change: design **decided in DEC-011**; owner implements; no public DB, no owner-key shortcut, no PC-as-hop; **do not** claim plumbing is live.
 - Escalate-before-spend preserves cheap-first (DEC-008) and Always Free 2/12 (DEC-009) without pretending the owner will never pay.
 
 ## Out of scope (this DEC)
 
-- Granting agents SSH or deploying Tailscale/Tunnel/My Machines (recommendation + owner action still required)
+- Deploying CF Tunnel / Access / `mal-cursor` (or Tailscale backup) — **DEC-011 decided the design**; owner implement + confirm still required; agents still have **no** SSH
 - Live execution, Jito, PumpPortal trading API, wallet signing, capital
 - Choosing Axiom vs Phantom vs other execution surfaces
 - Adopting a real paper-trading venue without asking
@@ -50,11 +53,11 @@
 
 ## Review trigger
 
-- Owner implements (or rejects) a Cursor→Oracle access design.
+- Owner implements (or rejects) [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) tunnel/Access/`mal-cursor` (then Lab memory may say access ready — still no secrets in git).
 - Measured need that would open a DEC-008 rung or leave Always Free — new DEC, not silent spend.
 - Proposal to put any trading/X credential on `mal-core-0` or to enable live exec.
 - Idle-reclaim event or block-volume pressure at the 200 GB cap.
 
 ## Overturn path
 
-New DEC. Default remains: provisioned Always Free **2 OCPU / 12 GB** `mal-core-0`, JSONL provenance spine, Postgres ops/state, paper-only, no agent capital, no PC-as-permanent-hop, escalate-before-spend/security.
+New DEC. Default remains: provisioned Always Free **2 OCPU / 12 GB** `mal-core-0`, JSONL provenance spine, Postgres ops/state, paper-only, no agent capital, no PC-as-permanent-hop, escalate-before-spend/security. Cursor↔Oracle **design** = [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) (pending owner implement).
