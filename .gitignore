@@ -9,6 +9,7 @@ data/observe/_exp003_*
 # EXP-004 local graph discovery outputs
 data/observe/_exp004_*
 data/observe/_exp004b_*
+data/observe/_exp005_*
 data/observe/sealed/
 
 # Python
