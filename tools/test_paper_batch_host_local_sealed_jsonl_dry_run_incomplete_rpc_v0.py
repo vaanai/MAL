@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -321,6 +322,68 @@ class PaperBatchHostLocalSealedJsonlDryRunIncompleteRpcV0Tests(unittest.TestCase
             code = _quiet(escaped)
         self.assertEqual(code, 1)
         self.assertEqual(called, [])
+
+    def test_validate_refuses_var_lib_mal_before_read_text(self) -> None:
+        """Host-path validate exits 1 and does not read, even if the bytes would be a valid receipt."""
+        reads: list[str] = []
+        parent_calls: list[object] = []
+
+        def _read_text(self: Path, *args: object, **kwargs: object) -> str:
+            reads.append(os.fspath(self))
+            return json.dumps(example_operator_declared())
+
+        def _parent(argv: object = None) -> int:
+            parent_calls.append(argv)
+            return 0
+
+        host = (
+            "/var/lib/mal/paper/"
+            "paper-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0/receipt.json"
+        )
+        err = io.StringIO()
+        with (
+            mock.patch.object(Path, "read_text", _read_text),
+            mock.patch(
+                "tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.parent_main",
+                _parent,
+            ),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(err),
+        ):
+            code = main(["validate", host])
+        self.assertEqual(code, 1)
+        self.assertEqual(reads, [])
+        self.assertEqual(parent_calls, [])
+        self.assertIn("does not open", err.getvalue())
+        self.assertIn(HOST_ROOT, err.getvalue())
+
+        real_realpath = os.path.realpath
+
+        def _realpath(path: str) -> str:
+            if str(path).endswith("not-host-receipt.json"):
+                return "/var/lib/mal/sealed/jsonl/observe-2026-09-20.jsonl"
+            return real_realpath(path)
+
+        disguised = str(ROOT / "not-host-receipt.json")
+        err = io.StringIO()
+        with (
+            mock.patch.object(Path, "read_text", _read_text),
+            mock.patch(
+                "tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.parent_main",
+                _parent,
+            ),
+            mock.patch(
+                "tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.os.path.realpath",
+                _realpath,
+            ),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(err),
+        ):
+            code = main(["validate", disguised])
+        self.assertEqual(code, 1)
+        self.assertEqual(reads, [])
+        self.assertEqual(parent_calls, [])
+        self.assertIn("does not open", err.getvalue())
 
     def test_closed_book_tamper_fails_validate(self) -> None:
         receipt = example_synthetic_replay()

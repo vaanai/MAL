@@ -151,6 +151,27 @@ def _under_var_lib_mal(text: str) -> bool:
     return normalized == HOST_ROOT or normalized.startswith(HOST_ROOT + "/")
 
 
+def _host_path_message(text: str) -> str:
+    return (
+        f"{text}: this receipt CLI does not open {HOST_ROOT} and does not SSH. "
+        "The operator-declared shape is example --which operator-declared."
+    )
+
+
+def _host_open_refusal(text: str) -> str | None:
+    """Refuse a host path before any file read.
+
+    Same order as receipt: lexical check first (no stat), then realpath.
+    A lexical hit does not call realpath and does not read the file.
+    """
+    if _under_var_lib_mal(text):
+        return _host_path_message(text)
+    real = os.path.realpath(_lexical_posix(text))
+    if _under_var_lib_mal(real):
+        return _host_path_message(text)
+    return None
+
+
 def _display(text: str) -> str:
     lexical = _lexical_posix(text)
     prefix = REPO.as_posix().rstrip("/") + "/"
@@ -684,6 +705,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "validate":
         path: Path = args.path
+        refusal = _host_open_refusal(os.fspath(path))
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
+            return 1
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -698,12 +723,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     for text in list(args.jsonl) + list(args.expectation):
-        if _under_var_lib_mal(text):
-            print(
-                f"{text}: this receipt CLI does not open {HOST_ROOT} and does not SSH. "
-                "The operator-declared shape is example --which operator-declared.",
-                file=sys.stderr,
-            )
+        refusal = _host_open_refusal(text)
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
             return 1
     kind = (
         "synthetic_replay"
