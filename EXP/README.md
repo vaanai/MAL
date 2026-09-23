@@ -54,3 +54,4 @@ Maintain a table in this README when experiments exist:
 | [EXP-004](EXP-004-graph-creator-recurrence-v0.md) | Graph creator-recurrence Discovery (H-G1…H-G4) | **DIRECTIONAL_WATCH** (Oracle 2026-09-20/21 courier); H-G2 **kill** @60s | No promote; see EXP-004b |
 | [EXP-004b](EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) | NH-G1a ordinal prior-mint depth (Graph child) | **Scored** (Oracle 2026-09-20/21 sealed) | **KILL** cross-day — ordinal lane **parked**; NH-G3a **not next** (new council pick) |
 | [EXP-005](EXP-005-smart-wallet-follow-discovery-v0.md) | Smart-wallet / follow L3 Discovery (Scout) | **DIRECTIONAL_WATCH** (Oracle 2026-09-20/21 sealed) | L3 packet `L3_PACKET_V0`; high v2-runner overlap — soft watch only; **no promote** |
+| [EXP-005b](EXP-005b-l3-residual-vs-exp002c-v2-falsifier-v0.md) | L3 residual vs EXP-002c v2-runner overlap falsifier (Scout) | **Proposed, not run** | Kill: does L3 add beyond v2-runner slice? **Merge ≠ authorize run** |
