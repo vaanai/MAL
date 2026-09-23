@@ -1,17 +1,17 @@
 # EXP-005b — L3 residual vs EXP-002c v2-runner overlap falsifier (Scout)
 
-> **Status: Proposed, not run** — Helm/Vaan **authorized EXP-005b** (Scout Discovery one-pager only). Paper-only. **No sealed measure** in this registration. Scout soft PASS pending; **Proof GATE** required before any Oracle run.
+> **Status: DIRECTIONAL_WATCH (residual)** — Oracle sealed re-score **2026-09-23** (Helm/Vaan **explicit sealed-measure re-auth** for EXP-005b; docs #38 merge `bf31d49` was registration only). Paper-only. Scout soft PASS pending; **Proof GATE** required before any promotion claim.
 
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-005b-l3-residual-vs-exp002c-v2-falsifier-v0` |
 | **Owner seat** | **Scout** (L3 follow path; residual cohort falsifier) |
 | **Parent / context** | [EXP-005-smart-wallet-follow-discovery-v0.md](EXP-005-smart-wallet-follow-discovery-v0.md) (**DIRECTIONAL_WATCH**, Oracle 2026-09-20/21) |
-| **Status** | **Proposed, not run** |
-| **Paper-only** | Yes — no live keys, no trading API, no evaluate promotion from a future measure |
+| **Status** | **DIRECTIONAL_WATCH (residual)** — primary **L3_minus_v2** sep+random **PASS** @60s both courier days; **not** lift proof; **no Discovery promotion** |
+| **Paper-only** | Yes — no live keys, no trading API, no evaluate promotion from this measurement |
 | **Pick lock** | **Helm/Vaan 2026-09-23** — Discovery next falsifier after EXP-005 **#37** stamp: does L3 add anything **beyond** the EXP-002c v2-runner slice? Graph sibling measurement stays **EXP-004** / **EXP-004b** — do **not** reassign. |
 | **Depends on** | Same sealed courier spine as EXP-005: day-aligned `observe-2026-09-20.jsonl` + `marks-2026-09-20.jsonl` and `observe-2026-09-21.jsonl` + `marks-2026-09-21.jsonl`; `exp004` precompute / `graph_snapshot_v0` scalars; EXP-002c **EvaluateRulesV2** runner labels on the same rows (**reference only** — **no retune**) |
-| **CLI (when authorized)** | Extend [`tools/exp005_smart_wallet_follow`](../tools/exp005_smart_wallet_follow.py) with documented residual arms (or equivalent post-process on the same scored book) — **not** part of this docs-only PR |
+| **CLI** | [`tools/exp005_smart_wallet_follow`](../tools/exp005_smart_wallet_follow.py) with `--residual-falsifier` (primary arm **L3_minus_v2**) |
 
 ---
 
@@ -91,7 +91,7 @@ Map to Discovery ARTIFACT §8 + parent EXP-005 gates. **No fabricated mean_retur
 
 ---
 
-## 4. Sealed measure plan (**Proposed** — not executed)
+## 4. Sealed measure plan (**executed 2026-09-23**)
 
 | Step | What | Not |
 | --- | --- | --- |
@@ -102,7 +102,7 @@ Map to Discovery ARTIFACT §8 + parent EXP-005 gates. **No fabricated mean_retur
 | 5 | S1 stratification by `regime_gate_key`; overlap Jaccard / % vs v2 runners | Mark **densify** for power |
 | 6 | Host-only reports under `/var/lib/mal/paper/_exp005b-oracle-2026-09-{20,21}_*` (gitignored) | Committing host means or lifts |
 
-**Authorization:** **Merge of this doc ≠ authorize run.** Requires explicit **Helm** sealed-measure authorization (same law as EXP-005 §4). Scout soft PASS pending on registration; **Proof GATE** before promotion claims.
+**Authorization:** **Helm/Vaan 2026-09-23 explicit sealed-measure re-auth** for EXP-005b (this run). Registration merge **#38** (`bf31d49`) **≠** authorize-run. Scout soft PASS pending; **Proof GATE** before promotion claims.
 
 **Still out of scope:** ordinal / **NH-G3a** / **NH-Index** / fill-sim / **H-G2 revive** / evaluate promotion / Fast mode.
 
@@ -121,7 +121,7 @@ Map to Discovery ARTIFACT §8 + parent EXP-005 gates. **No fabricated mean_retur
 | **H-G2 stay killed** | No burst lookback retune or H-G2 arm revival |
 | **Parked lanes** | Ordinal / **NH-G3a** / **NH-Index** / fill-sim unpark / **H-G2 revive** — **parked** |
 | **Graph seat** | EXP-004 / EXP-004b measurement ownership unchanged |
-| **Merge ≠ authorize run** | This PR registers the falsifier only; **no Oracle measure** until Helm authorizes |
+| **Merge ≠ authorize run** | Docs registration does not authorize Oracle; **this Helm re-auth run** is the scored stamp |
 
 ---
 
@@ -138,6 +138,44 @@ Map to Discovery ARTIFACT §8 + parent EXP-005 gates. **No fabricated mean_retur
 
 ---
 
-## 7. Result / conclusion
+## 7. Result / conclusion (Oracle sealed re-score 2026-09-23)
 
-**Not run.** Pending Helm-authorized sealed measure on 2026-09-20/21 courier JSONL. No conclusion until Proof re-stamp on host artifacts.
+**Authorization:** Helm/Vaan **2026-09-23** explicit EXP-005b sealed-measure re-auth (not docs-only #38). **Inputs:** `/var/lib/mal/sealed/jsonl/observe-2026-09-{20,21}.jsonl` + matching `marks-*.jsonl`. **Host artifacts (gitignored):** `/var/lib/mal/paper/_exp005b-oracle-2026-09-{20,21}_*`. **Repo CLI:** `python -m tools.exp005_smart_wallet_follow --residual-falsifier`.
+
+### Primary arm **L3_minus_v2** @60s (per day)
+
+| Day | CLI exit | overall @60s | population_n | priced_60s_n (book) | L3_minus_v2 arm_n | residual priced_n @60s | separable_vs_spine | no_lift_vs_random | S1 collapse | H-G2 ref @60s |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |
+| 2026-09-20 | 0 | **DIRECTIONAL_NON_KILL** | 13029 | 102 | 1175 | 14 | **PASS** | **PASS** | false | **KILL_NO_SEPARABLE_ARM** (kill intact) |
+| 2026-09-21 | 0 | **DIRECTIONAL_NON_KILL** | 15487 | 122 | 1380 | 11 | **PASS** | **PASS** | false | **KILL_NO_SEPARABLE_ARM** (kill intact) |
+
+**Cross-day overall (primary):** **DIRECTIONAL_WATCH (residual)** — both days soft non-kill at 60s on **L3_minus_v2**; **not** scored lift proof; **no Discovery promotion**.
+
+### Reference **L3_full** and contrast **L3_intersect_v2** @60s (attribution)
+
+| Day | L3_full sep / random | L3_full priced_n @60s | L3_intersect_v2 overall | L3_intersect_v2 priced_n @60s |
+| --- | --- | ---: | --- | ---: |
+| 2026-09-20 | PASS / PASS | 22 | **INCOMPLETE** (thin) | 8 |
+| 2026-09-21 | PASS / PASS | 18 | **INCOMPLETE** (thin) | 7 |
+
+**L3_intersect_v2** is attribution-only; **INCOMPLETE** at thin priced_n does **not** overturn residual primary gates.
+
+### Overlap (unchanged parent attribution; no retune)
+
+| Day | L3_minus_v2_n | L3∩v2_runner_n | % of L3 that are v2 runners | Jaccard (L3 vs v2 runners) |
+| --- | ---: | ---: | ---: | ---: |
+| 2026-09-20 | 1175 | 1150 | ~49.5% | ~0.165 |
+| 2026-09-21 | 1380 | 1198 | ~46.5% | ~0.156 |
+
+### Soft watches (Proof — not promote)
+
+| Watch | Read |
+| --- | --- |
+| **Thin residual priced_n** | Primary residual **priced_n @60s** (14 / 11) is above floor **10** but **thinner** than parent L3_full packet (22 / 18) — same sparse-mark regime as EXP-005 |
+| **K-L3-cohort / M2** | ~half of L3 packet remains v2-modal overlap; residual pass does **not** clear evaluate adverse-selection failure |
+| **Contrast arm thin** | **L3_intersect_v2** **INCOMPLETE** on priced floor — expected under S6; not a promote path |
+| **DIRECTIONAL ≠ promote** | **DIRECTIONAL_WATCH (residual)** is Scout falsifier taxonomy only; **Proof GATE** still required |
+
+**Conclusion:** **L3_minus_v2** passes **separable_vs_spine** and **no_lift_vs_random** @60s on **both** courier days with honest priced floors; **K-S1-collapse** **not** triggered; **K-residual-empty** **not** triggered. Does **not** authorize evaluate changes or Discovery decode promotion. Parent modal overlap remains a **cohort falsifier risk** even when residual gates PASS.
+
+**Parked:** ordinal / NH-G3a / NH-Index / fill-sim / H-G2 revive.
