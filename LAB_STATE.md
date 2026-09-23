@@ -96,7 +96,7 @@ Build a **knowable-at-T** observation and decision pipeline for **Pump.fun / Sol
 3. **EXP-003 marks (unchanged law):** Subsample marks exist; book-wide N/A expected. Reuse existing marks for paper EXPs. Densify only after a non-adverse directional hyp needs power — never as lift rescue. [EXP-003](EXP/EXP-003-post-create-marks.md).
 4. **EXP-001:** **PASS closed** — mislabel CLI [`tools.exp001_mislabel`](tools/exp001_mislabel.py).
 5. Observe-wiring **landed:** [observe/client.py](observe/client.py), [OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md)
-6. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules
+6. Hot-packet JSON spec (capped graph + market spine) aligned to matrix backfill rules; **Graph DISCOVERY brief:** [GRAPH-DISCOVERY-V0.md](ARTIFACTS/GRAPH-DISCOVERY-V0.md) (creator recurrence / weak links first; EXP-004 proposed, not run)
 7. **Hard defer:** Birdeye paid; **Dexscreener debug enrich only**; bonk/mayhem reclass **parked**
 8. Defer X API until social hypothesis has a cheap proxy or manual sample set (**no X keys on `mal-core-0`**)
 9. Managers reload this file + latest [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) each session
