@@ -94,3 +94,5 @@ Day-aligned sealed JSONL only (`observe-YYYY-MM-DD` + `marks-YYYY-MM-DD`). EXP-0
 | 2026-09-21 | 0 | DIRECTIONAL_WATCH | 15487 | 122 | DIRECTIONAL_NON_KILL | KILL_NO_SEPARABLE_ARM | DIRECTIONAL_NON_KILL | INCOMPLETE |
 
 Sealed inputs on host: marks **3356** / **3439** lines; observe **15324** / **18862** lines (unchanged `observe-2026-09-23` ingest).
+
+**Next hypotheses (docs only):** Post H-G2@60s kill — candidate Index refinements and PARK list: [GRAPH-EXP004-NEXT-HYP-V0.md](../ARTIFACTS/GRAPH-EXP004-NEXT-HYP-V0.md) (**Proposed**, not run; no promotion).
