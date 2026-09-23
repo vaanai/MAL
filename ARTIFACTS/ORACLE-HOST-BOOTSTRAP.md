@@ -38,7 +38,7 @@ Repo checkout + venv: **`/home/ubuntu/mal`** (observe client). Not a trading sta
 1. Runtime Secrets on the **Cursor Cloud Agent** (not on this host, not in git):
    - `CURSOR_CLOUD_AGENT_SSH_KEY` — base64 of dedicated agent OpenSSH PEM
    - `CLOUDFLARE_ACCESS_CLIENT_ID` / `CLOUDFLARE_ACCESS_CLIENT_SECRET` — Access service token
-2. On the agent: download **cloudflared 2026.9.1** to `/tmp` → `access tcp --hostname ssh.tradervaan.com --url 127.0.0.1:2222 --id/--secret`.
+2. On the agent: download **cloudflared 2026.9.1** (SHA256-pinned) to `/tmp` → `access tcp --hostname ssh.tradervaan.com --url 127.0.0.1:2222` with Access Service Auth via `TUNNEL_SERVICE_TOKEN_*` env (not `--id/--secret` on argv).
 3. Decode the key to a **mode 600** tempfile. Expect fingerprint `SHA256:HH+tRTOIpyvYorf+FhZ7INifqOm2L7NTcvPLdqMPVTo`.
 4. `ssh -i <tempkey> -p 2222 -o IdentitiesOnly=yes ubuntu@127.0.0.1`
 5. Expect `hostname` = `mal-core-vnic`, `whoami` = `ubuntu`, `uname -m` = `aarch64`.

@@ -1,0 +1,6 @@
+# mal-core-0 SSH host keys as seen through Access TCP on 127.0.0.1:2222 (2026-09-23).
+# Not secrets. Used by scripts/mal-core/agent-ssh.sh with StrictHostKeyChecking=yes.
+# ED25519 SHA256:Hy68mL6wisJ2t+z/JDcSNATPlyA8sudv4Za7A2Y8Ejs
+[127.0.0.1]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBThXuu7qgvSbmol9GnGEALEJioMIxosZ8MCxQzuKWv+
+[127.0.0.1]:2222 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBJN1JEZrb9S/Bbhn8YVTmwpRpdikN13Z2kDpCciZvnCadrzABIHyAoFKWF3cEXibKd+uULj+ARjJiuAceloUwms=
+[127.0.0.1]:2222 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC5wRA1cqe9qFrE0t71XIhGF6l8XQlDeZdikAktk7tZQ4uMVleOztGDaSFtXefLm/oKFn5mEnDtKspq9ZB9Re8QO7HBg0u+sn/s1qwc038w4YvAwAq8qPsc/0kHAItNLcuicWm5ypsNlNfr8SNjPiOC47STpmZ6cJBakK+CCqFUOqMFhCdIevN/z+xOfatqtbsSg89MWM5ia5Y4x6DNiPj6HfdaZHE2XvjTz9AoO0+nvABrKuKP9mUTvjMZb7zZPr9XWHxMaEaARS4gH430qaGQVk/LRmPs3uWQxytnw6JqFhuH+TtLcPwuDqLsnEfAkMgL+ejegrIAc1Bwh2tgMuGZ9mZqnCcJITQ/tl39tSbp2sNU/dp4DOzr6VvpNfK+mxWTnRXIbe/CFkFcltJD16/bubmTQW6vak+OcnS/cH3aGbNkgUCY8TkgsVU/y9AfaaUfNmcZcPHfS5dyxYc7rCpd2LFf2xnb7zaEfvlAoL2Zw67NVEB1nDqFElKnmvPEBfM=

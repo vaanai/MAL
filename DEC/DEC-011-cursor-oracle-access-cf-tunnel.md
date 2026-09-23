@@ -20,7 +20,7 @@
 
 4. **Owner SSH break-glass stays owner-only.** Home-IP `:22` (never commit the real CIDR) + the owner’s personal key remain **Vaan’s** console path. **Do not** open SSH `:22` to the world to “make agents work.” **Do not** hand agents the owner personal private key.
 
-5. **Secrets / names.** No tunnel hostnames, Access policy IDs, account IDs, CIDRs, or key material in git, this DEC, or chat. Placeholder identity in Lab memory: **`mal-cursor`**. Password / trading / X rules unchanged: **none of those on the host.**
+5. **Secrets / names.** **Never** commit Access policy IDs, account IDs, CIDRs, service-token **values**, or private key material. Password / trading / X rules unchanged: **none of those on the host.** Placeholder key identity: **`mal-cursor`**. The Access-**gated** TCP hostname used by agents (`ssh.tradervaan.com`) **may** live in the operator runbook so Cursor can reconnect without the owner PC — it is **not** a public `:22` and **not** a Postgres hostname. Do **not** invent extra hostnames.
 
 6. **Implementation status.** **LIVE** (2026-09-23). Owner implemented Tunnel + Access Service Auth + dedicated agent key. Cursor Cloud agents reconnect via Runtime Secrets (names only in git). Runbook: [oracle_ssh_smoke.md](../tools/oracle_ssh_smoke.md). Team bootstraps `/var/lib/mal` (dirs, `meme_core` schema, sealed JSONL ingest, paper, monitoring) — paper-only. **Do not** re-deploy Access/Tunnel as a “fix.” **Do not** weaken Access.
 
@@ -42,7 +42,7 @@
 
 - **Sealed JSONL** remains the provenance / EXP spine. Postgres remains **ops/state** (`meme_core` / `mal_app`). This DEC does not migrate provenance into Postgres.
 - **No trading keys and no X keys** on `mal-core-0`. Paper only. Agents never get trading capital.
-- **No invented hostnames / CIDRs / secrets** in Lab memory.
+- **No invented extra hostnames / CIDRs / secret values** in Lab memory. The Access-gated TCP hostname in the runbook is the live reconnect target, not a public SSH port.
 - **Do not** claim the path is still “owner implementing / no agent SSH.” Status is **LIVE** (2026-09-23 smoke).
 
 ## Council
@@ -76,7 +76,7 @@ Helm recommended the chosen path. Scout / Graph / Proof **soft-OK** (2026-09-22)
 
 Owner plumbing is **in place**. Cursor Cloud Agent smoke **passed**:
 
-- `cloudflared` **2026.9.1** on the **agent** hop: `access tcp` to the Access-gated hostname `ssh.tradervaan.com` → local `127.0.0.1:2222` with `--id/--secret` (Service Auth)
+- `cloudflared` **2026.9.1** on the **agent** hop: `access tcp` to the Access-gated hostname `ssh.tradervaan.com` → local `127.0.0.1:2222` with Access Service Auth (helper uses `TUNNEL_SERVICE_TOKEN_*` env, not `--id/--secret` on argv)
 - SSH as `ubuntu` using Runtime Secret `CURSOR_CLOUD_AGENT_SSH_KEY` (base64 PEM, mode-600 tempfile)
 - Remote: hostname **`mal-core-vnic`**, `whoami ubuntu`, `uname -m aarch64`, paper-only
 - Key fingerprint: `SHA256:HH+tRTOIpyvYorf+FhZ7INifqOm2L7NTcvPLdqMPVTo` (comment `cursor-cloud-agent`, ED25519)

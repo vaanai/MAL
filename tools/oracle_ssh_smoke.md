@@ -43,22 +43,26 @@ Lab placeholder name: **`mal-cursor`**. Key comment observed at smoke: `cursor-c
 
 ## Procedure (agent hop is x86_64; Oracle is aarch64)
 
-1. Download **cloudflared 2026.9.1** to `/tmp` (Linux amd64 on Cursor Cloud; do not install a daemon on the agent).
+1. Download **cloudflared 2026.9.1** to `/tmp` (Linux amd64 on Cursor Cloud; do not install a daemon on the agent). Verify SHA256 `03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc` (arm64: `3d97437c71848bd8df68041e12436b484a661d95073ea1937f01a845ce88faa3`) from the [GitHub release](https://github.com/cloudflare/cloudflared/releases/tag/2026.9.1).
 2. Base64-decode `CURSOR_CLOUD_AGENT_SSH_KEY` to a **mode 600** tempfile. Confirm fingerprint with `ssh-keygen -lf`. **Do not cat the key.**
-3. Start Access TCP:
+3. Start Access TCP. Prefer env (avoids token values in `ps`):
 
    ```bash
+   export TUNNEL_SERVICE_TOKEN_ID="$CLOUDFLARE_ACCESS_CLIENT_ID"
+   export TUNNEL_SERVICE_TOKEN_SECRET="$CLOUDFLARE_ACCESS_CLIENT_SECRET"
    /tmp/cloudflared access tcp \
      --hostname ssh.tradervaan.com \
-     --url 127.0.0.1:2222 \
-     --id "$CLOUDFLARE_ACCESS_CLIENT_ID" \
-     --secret "$CLOUDFLARE_ACCESS_CLIENT_SECRET"
+     --url 127.0.0.1:2222
    ```
 
-4. SSH:
+   `--id/--secret` flags are equivalent but show in process listings; the helper does **not** use them.
+
+4. SSH with the bundled host keys (`StrictHostKeyChecking=yes`):
 
    ```bash
    ssh -i /path/to/temp-key -p 2222 \
+     -o StrictHostKeyChecking=yes \
+     -o UserKnownHostsFile=scripts/mal-core/mal-core-known_hosts \
      -o IdentitiesOnly=yes -o BatchMode=yes \
      ubuntu@127.0.0.1
    ```
@@ -67,7 +71,7 @@ Lab placeholder name: **`mal-cursor`**. Key comment observed at smoke: `cursor-c
 
 6. **Cleanup after every remote session:** delete the tempfile key; stop `cloudflared access tcp`; remove the temp binary in `/tmp` if you downloaded one. Do not leave key material in `/tmp`.
 
-Helper (same rules): [`scripts/mal-core/agent-ssh.sh`](../scripts/mal-core/agent-ssh.sh).
+Helper (same rules): [`scripts/mal-core/agent-ssh.sh`](../scripts/mal-core/agent-ssh.sh) — SHA256-pins `cloudflared` 2026.9.1, passes the service token via `TUNNEL_SERVICE_TOKEN_*` env (not `--id/--secret` on argv), and uses `StrictHostKeyChecking=yes` against [`scripts/mal-core/mal-core-known_hosts`](../scripts/mal-core/mal-core-known_hosts). Host ED25519 fingerprint: `SHA256:Hy68mL6wisJ2t+z/JDcSNATPlyA8sudv4Za7A2Y8Ejs` (distinct from the **deploy-key** fingerprint above).
 
 ## On-host after login
 
