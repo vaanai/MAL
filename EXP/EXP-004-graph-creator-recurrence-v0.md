@@ -5,7 +5,7 @@ Graph seat. **Paper-only.** Measurement layer for **H-graph** — regime-gated, 
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-004-graph-creator-recurrence-v0` |
-| **Status** | **INCOMPLETE** (Oracle paper run 2026-09-23: observe-only on host; marks absent; priced_60s_n=2) |
+| **Status** | **DIRECTIONAL_WATCH** (Oracle day-aligned courier re-score 2026-09-23; see §7) |
 | **Owner seat** | Graph (measurement); Proof re-stamps when data READY |
 | **Locked** | 2026-09-23 (Helm/Vaan morning go) |
 | **Depends on** | Sealed `ingest_hot` JSONL; existing EXP-003 `--marks`; [GRAPH-DISCOVERY-V0.md](../ARTIFACTS/GRAPH-DISCOVERY-V0.md); Scout taxonomy cross-link [DISCOVERY-WALLET-FOLLOW-SIGNALS.md](../ARTIFACTS/DISCOVERY-WALLET-FOLLOW-SIGNALS.md) (Index I1–I4 — **no Scout EXP stub**) |
@@ -15,8 +15,8 @@ Graph seat. **Paper-only.** Measurement layer for **H-graph** — regime-gated, 
 | **Regime labels** | Every snapshot carries parent `regime_id` + `regime_gate_key`; **no cross-regime merge** (S1). |
 | **Windows** | **1s / 5s / 15s / 30s / 60s** — primary kill read: **60s** |
 | **Kill-attempt** | Per H-G: **separable_vs_spine** and **no_lift_vs_random** at priced arms; **INCOMPLETE** below `MIN_PRICED_FOR_KILL=10`; H-G4 empty arms honest (create-spine). **Soft fence:** no densify-for-power / no EXP-002c retune. |
-| **Result** | Oracle **2026-09-23:** `observe-2026-09-23.jsonl` only → `/var/lib/mal/paper/_exp004-oracle_*`; blockers: no `--marks`, priced_60s_n=2. Re-run with courier marks. |
-| **Conclusion** | Pending scored book. Discovery **kill** reported cleanly if gates FAIL — **no fake profit**. |
+| **Result** | Oracle **2026-09-23 (prior):** observe-only on host; priced_60s_n=2 → **INCOMPLETE**. **Courier re-score (same day):** sealed 2026-09-20 + 2026-09-21 observe/marks on `mal-core-vnic` @ `bdc004a` → `/var/lib/mal/paper/_exp004-oracle-marks-2026-09-{20,21}_*` (gitignored). |
+| **Conclusion** | **No promotion.** Primary **60s:** H-G2 **KILL_NO_SEPARABLE_ARM** both days; H-G1/H-G3 **DIRECTIONAL_NON_KILL** at 60s (soft watch — **not** scored lift proof). H-G4 **INCOMPLETE** (empty positive arm). **No densify / no invented join** with 2026-09-23 observe. |
 
 ---
 
@@ -81,3 +81,16 @@ Exit codes: `0` scored evaluable; `1` INCOMPLETE gates; `2` DATA BLOCKER.
 - Brief: [GRAPH-DISCOVERY-V0.md](../ARTIFACTS/GRAPH-DISCOVERY-V0.md)
 - Book law: [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)
 - Marks: [EXP-003](EXP-003-post-create-marks.md)
+
+---
+
+## 7. Oracle day-aligned runs (EXP-004 courier, 2026-09-23)
+
+Day-aligned sealed JSONL only (`observe-YYYY-MM-DD` + `marks-YYYY-MM-DD`). EXP-003 RPC backfill marks from laptop courier; **not** attached to `observe-2026-09-23.jsonl`.
+
+| Day | CLI exit | overall | population_n | priced_60s_n (floor 10) | H-G1 @60s | H-G2 @60s | H-G3 @60s | H-G4 @60s |
+| --- | ---: | --- | ---: | ---: | --- | --- | --- | --- |
+| 2026-09-20 | 0 | DIRECTIONAL_WATCH | 13029 | 102 | DIRECTIONAL_NON_KILL | KILL_NO_SEPARABLE_ARM | DIRECTIONAL_NON_KILL | INCOMPLETE |
+| 2026-09-21 | 0 | DIRECTIONAL_WATCH | 15487 | 122 | DIRECTIONAL_NON_KILL | KILL_NO_SEPARABLE_ARM | DIRECTIONAL_NON_KILL | INCOMPLETE |
+
+Sealed inputs on host: marks **3356** / **3439** lines; observe **15324** / **18862** lines (unchanged `observe-2026-09-23` ingest).
