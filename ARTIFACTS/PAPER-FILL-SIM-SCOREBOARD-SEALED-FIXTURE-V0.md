@@ -3,13 +3,13 @@
 | | |
 | --- | --- |
 | **ID** | `paper-fill-sim-scoreboard-sealed-fixture-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-1ba845c2-c2a7-5846-8768-169b2c403c72`; implement `bc-24029f87-19f0-5297-9b6e-56f6074d7a6f`; [PR #58](https://github.com/vaanai/MAL/pull/58) tip `15cdd67`; squash-merge on `main` pending). Not a measure. Not run. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-1ba845c2-c2a7-5846-8768-169b2c403c72`; implement `bc-24029f87-19f0-5297-9b6e-56f6074d7a6f`; merged [PR #58](https://github.com/vaanai/MAL/pull/58) squash `dfbab7a` on `main`). Not a measure. Not run. |
 | **Owner seat** | Proof (scoreboard + Soft GATE); Scout (fill-sim bind spine stays on embedded stamps); Helm (AUTH) |
 | **Commission** | Consumer of merged paper-fill-sim evaluate ([PR #57](https://github.com/vaanai/MAL/pull/57) squash `6217773`) and paper scoreboard sealed-fixture v0 ([PR #51](https://github.com/vaanai/MAL/pull/51)). Parent #49–#57 CLIs are **not** rewritten. |
 | **Schema** | [paper-fill-sim-scoreboard-sealed-fixture-v0.schema.json](paper-fill-sim-scoreboard-sealed-fixture-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_fill_sim_scoreboard_sealed_fixture_v0/](../fixtures/paper_fill_sim_scoreboard_sealed_fixture_v0/) — synthetic, not host extracts |
 | **CLI** | `python -m tools.paper_fill_sim_scoreboard_sealed_fixture_v0` — validate / example / score on local JSON only |
-| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-1ba845c2-c2a7-5846-8768-169b2c403c72`; implement `bc-24029f87-19f0-5297-9b6e-56f6074d7a6f`; [PR #58](https://github.com/vaanai/MAL/pull/58) tip `15cdd67`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-1ba845c2-c2a7-5846-8768-169b2c403c72`; implement `bc-24029f87-19f0-5297-9b6e-56f6074d7a6f`; squash `dfbab7a` on `main`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers how a local set of validated [`paper_fill_sim_hot_packet_evaluate_v0`](PAPER-FILL-SIM-HOT-PACKET-EVALUATE-V0.md) stamps is counted against a **checked-in sealed-day expectation**. Same honesty class as [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md), but the stamp input is the fill-sim bind from #57, not raw paper-evaluate.
 
