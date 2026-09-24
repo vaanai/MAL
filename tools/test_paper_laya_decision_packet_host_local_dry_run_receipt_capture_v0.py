@@ -25,8 +25,10 @@ from tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_inco
     RECEIPT_ID as PARENT_DRY_RUN_ID,
 )
 from tools.paper_laya_decision_packet_host_local_dry_run_receipt_capture_v0 import (
+    DISHONEST_PROBES,
     RECEIPT_PATHS,
     SOFT_WATCH_ITEMS,
+    _host_path_forms,
     main,
     validate_capture,
 )
@@ -333,6 +335,31 @@ class PaperLayaDecisionPacketHostLocalDryRunReceiptCaptureV0Tests(unittest.TestC
                 cursor[path[-1]] = value
                 self.assertTrue(_schema_errors(doc))
                 self.assertTrue(validate_capture(doc))
+
+    def test_refuse_subject_forms_and_probes_match_outcome(self) -> None:
+        dishonest = copy.deepcopy(_load(FIXTURES / "refuse_dishonest_receipt.json"))
+        dishonest["subject"]["forms"] = _host_path_forms()
+        self.assertTrue(_schema_errors(dishonest))
+        self.assertTrue(validate_capture(dishonest))
+
+        host_path = copy.deepcopy(_load(FIXTURES / "refuse_host_path.json"))
+        host_path["subject"]["probes"] = list(DISHONEST_PROBES)
+        self.assertTrue(_schema_errors(host_path))
+        self.assertTrue(validate_capture(host_path))
+
+    def test_capture_kind_subject_kind_and_outcome_reason_stay_coupled(self) -> None:
+        doc = copy.deepcopy(_load(FIXTURES / "refuse_host_path.json"))
+        doc["subject"]["kind"] = "cited_receipt"
+        doc["outcome"]["reason"] = "receipt_rebuilt"
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_capture(doc))
+
+        receipt = copy.deepcopy(_load(FIXTURES / "receipt_synthetic_replay.json"))
+        receipt["capture_kind"] = "refuse"
+        receipt["subject"]["kind"] = "host_path_not_opened"
+        receipt["outcome"]["reason"] = "host_path_not_opened"
+        self.assertTrue(_schema_errors(receipt))
+        self.assertTrue(validate_capture(receipt))
 
     def test_host_path_catalog_collapse_rejected_by_schema_and_cli(self) -> None:
         day = "2026-09-20"

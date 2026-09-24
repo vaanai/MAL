@@ -188,6 +188,12 @@
         "properties": {
           "subject": {
             "properties": {
+              "kind": {
+                "enum": [
+                  "host_path_not_opened",
+                  "dishonest_receipt_refused"
+                ]
+              },
               "receipt_kind": false,
               "receipt_path": false
             }
@@ -199,6 +205,12 @@
               },
               "refused": {
                 "const": true
+              },
+              "reason": {
+                "enum": [
+                  "host_path_not_opened",
+                  "dishonest_receipt_refused"
+                ]
               },
               "exit_class": {
                 "const": 1
@@ -494,6 +506,9 @@
       },
       "then": {
         "properties": {
+          "capture_kind": {
+            "const": "refuse"
+          },
           "subject": {
             "properties": {
               "kind": {
@@ -524,8 +539,13 @@
                   }
                 ],
                 "items": false
-              }
-            }
+              },
+              "probes": false,
+              "probe_document_checked_in": false
+            },
+            "required": [
+              "forms"
+            ]
           },
           "outcome": {
             "properties": {
@@ -567,12 +587,46 @@
       },
       "then": {
         "properties": {
+          "capture_kind": {
+            "const": "refuse"
+          },
           "subject": {
             "properties": {
               "kind": {
                 "const": "dishonest_receipt_refused"
+              },
+              "forms": false,
+              "probes": {
+                "type": "array",
+                "minItems": 5,
+                "maxItems": 5,
+                "prefixItems": [
+                  {
+                    "const": "closed_book_claim"
+                  },
+                  {
+                    "const": "measure_kind"
+                  },
+                  {
+                    "const": "var_lib_mal_opened"
+                  },
+                  {
+                    "const": "var_lib_mal_read"
+                  },
+                  {
+                    "const": "invented_ev"
+                  }
+                ],
+                "items": false
+              },
+              "probe_document_checked_in": {
+                "const": false
               }
-            }
+            },
+            "required": [
+              "probes",
+              "probe_document_checked_in"
+            ]
           },
           "outcome": {
             "properties": {
@@ -591,6 +645,96 @@
             "properties": {
               "basis": {
                 "const": "dishonest_receipt_probe"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subject": {
+            "properties": {
+              "kind": {
+                "const": "cited_receipt"
+              }
+            }
+          }
+        },
+        "required": [
+          "subject"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capture_kind": {
+            "const": "receipt"
+          },
+          "outcome": {
+            "properties": {
+              "reason": {
+                "const": "receipt_rebuilt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subject": {
+            "properties": {
+              "kind": {
+                "const": "host_path_not_opened"
+              }
+            }
+          }
+        },
+        "required": [
+          "subject"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capture_kind": {
+            "const": "refuse"
+          },
+          "outcome": {
+            "properties": {
+              "reason": {
+                "const": "host_path_not_opened"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subject": {
+            "properties": {
+              "kind": {
+                "const": "dishonest_receipt_refused"
+              }
+            }
+          }
+        },
+        "required": [
+          "subject"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capture_kind": {
+            "const": "refuse"
+          },
+          "outcome": {
+            "properties": {
+              "reason": {
+                "const": "dishonest_receipt_refused"
               }
             }
           }
