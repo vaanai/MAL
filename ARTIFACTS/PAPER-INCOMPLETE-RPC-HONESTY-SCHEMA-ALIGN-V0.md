@@ -119,5 +119,6 @@ The test loads the parent schemas with JSON Schema 2020-12. Honest fixtures from
 - Scoreboard: [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md), [PR #51](https://github.com/vaanai/MAL/pull/51)
 - Batch: [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [PR #52](https://github.com/vaanai/MAL/pull/52)
 - Host-local dry-run: [PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [PR #53](https://github.com/vaanai/MAL/pull/53) @ `f17b59f`
+- Host dry-run receipt capture (the item this stamp left waiting): [PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md)
 - Proof test: [tools/test_paper_incomplete_rpc_honesty_schema_align_v0.py](../tools/test_paper_incomplete_rpc_honesty_schema_align_v0.py)
 - Manager digest: [SUMMARY.md](SUMMARY.md)
