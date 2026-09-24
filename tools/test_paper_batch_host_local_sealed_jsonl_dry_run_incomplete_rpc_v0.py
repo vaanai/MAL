@@ -386,40 +386,46 @@ class PaperBatchHostLocalSealedJsonlDryRunIncompleteRpcV0Tests(unittest.TestCase
         self.assertIn("does not open", err.getvalue())
 
     def test_validate_refuses_relative_cwd_abspath_under_var_lib_mal(self) -> None:
-        """Relative validate arg whose cwd abspath is under /var/lib/mal is not read."""
-        reads: list[str] = []
-        parent_calls: list[object] = []
+        """Proof forms: cwd=/ + var/lib/mal/..., and cwd=/var/lib + mal/..., are not read."""
+        cases = (
+            ("/", "var/lib/mal/paper/receipt.json"),
+            ("/var/lib", "mal/paper/receipt.json"),
+        )
+        for cwd, relative in cases:
+            with self.subTest(cwd=cwd, arg=relative):
+                reads: list[str] = []
+                parent_calls: list[object] = []
 
-        def _read_text(self: Path, *args: object, **kwargs: object) -> str:
-            reads.append(os.fspath(self))
-            return json.dumps(example_operator_declared())
+                def _read_text(self: Path, *args: object, **kwargs: object) -> str:
+                    reads.append(os.fspath(self))
+                    return json.dumps(example_operator_declared())
 
-        def _parent(argv: object = None) -> int:
-            parent_calls.append(argv)
-            return 0
+                def _parent(argv: object = None) -> int:
+                    parent_calls.append(argv)
+                    return 0
 
-        relative = "receipt.json"
-        self.assertFalse(os.path.isabs(relative))
-        err = io.StringIO()
-        with (
-            mock.patch.object(Path, "read_text", _read_text),
-            mock.patch(
-                "tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.parent_main",
-                _parent,
-            ),
-            mock.patch(
-                "tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.os.getcwd",
-                return_value="/var/lib/mal",
-            ),
-            redirect_stdout(io.StringIO()),
-            redirect_stderr(err),
-        ):
-            code = main(["validate", relative])
-        self.assertEqual(code, 1)
-        self.assertEqual(reads, [])
-        self.assertEqual(parent_calls, [])
-        self.assertIn("does not open", err.getvalue())
-        self.assertIn(HOST_ROOT, err.getvalue())
+                self.assertFalse(os.path.isabs(relative))
+                self.assertTrue(os.path.normpath(os.path.join(cwd, relative)).startswith(HOST_ROOT))
+                err = io.StringIO()
+                with (
+                    mock.patch.object(Path, "read_text", _read_text),
+                    mock.patch(
+                        "tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.parent_main",
+                        _parent,
+                    ),
+                    mock.patch(
+                        "tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.os.getcwd",
+                        return_value=cwd,
+                    ),
+                    redirect_stdout(io.StringIO()),
+                    redirect_stderr(err),
+                ):
+                    code = main(["validate", relative])
+                self.assertEqual(code, 1)
+                self.assertEqual(reads, [])
+                self.assertEqual(parent_calls, [])
+                self.assertIn("does not open", err.getvalue())
+                self.assertIn(HOST_ROOT, err.getvalue())
 
     def test_closed_book_tamper_fails_validate(self) -> None:
         receipt = example_synthetic_replay()
