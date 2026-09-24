@@ -12,7 +12,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, ValidationError
+from jsonschema.validators import extend
 from referencing import Registry, Resource
 
 from tools.hot_packet_v0 import validate_packet
@@ -67,6 +68,22 @@ def _load(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _mal_strict_json_integer(validator, enabled, instance, schema):
+    """Draft 2020-12 type integer accepts 1.0. The CLI does not."""
+    if not enabled:
+        return
+    if isinstance(instance, bool) or not isinstance(instance, int):
+        yield ValidationError(
+            "integer slot rejects a whole-number float; JSON integer only"
+        )
+
+
+PaperValidator = extend(
+    Draft202012Validator,
+    {"malStrictJsonInteger": _mal_strict_json_integer},
+)
+
+
 def _registry() -> Registry:
     resources = []
     for name in SCHEMA_FILES:
@@ -82,7 +99,7 @@ def _validator(ref: str, registry: Registry) -> Draft202012Validator:
     else:
         name = ref
         schema = _load(ART / name)
-    return Draft202012Validator(schema, registry=registry)
+    return PaperValidator(schema, registry=registry)
 
 
 def _schema_errors(ref: str, doc: Any, registry: Registry) -> list[str]:
@@ -223,6 +240,33 @@ class SchemaAlignV0Tests(unittest.TestCase):
         self.assertTrue(_schema_errors(bref, board, self.registry))
         self.assertTrue(_cli_errors("scoreboard", board))
 
+    def test_whole_number_float_on_integer_slot_fails_schema_and_cli(self) -> None:
+        ref = "hot-packet-v0.schema.json"
+        for number in (1.0, 2.0):
+            with self.subTest(number=number):
+                packet = _load(ROOT / "fixtures/hot_packet_v0/sealed_graph_slots_nullable.json")
+                slot = packet["graph"]["slots"][0]
+                self.assertEqual(slot["slot_id"], "prior_mint_count")
+                self.assertIsInstance(slot["value"], int)
+                slot["value"] = number
+                self.assertIsInstance(slot["value"], float)
+                self.assertTrue(_schema_errors(ref, packet, self.registry))
+                self.assertTrue(_cli_errors("packet", packet))
+
+    def test_unfilled_graph_cold_false_fails_schema_and_cli(self) -> None:
+        ref = "hot-packet-v0.schema.json"
+        null_slots = _load(ROOT / "fixtures/hot_packet_v0/sealed_create_cold_graph.json")
+        self.assertIsNone(null_slots["graph"]["slots"])
+        null_slots["graph"]["cold"] = False
+        self.assertTrue(_schema_errors(ref, null_slots, self.registry))
+        self.assertTrue(_cli_errors("packet", null_slots))
+
+        empty = _load(ROOT / "fixtures/hot_packet_v0/sealed_create_cold_graph.json")
+        empty["graph"]["slots"] = [None, None]
+        empty["graph"]["cold"] = False
+        self.assertTrue(_schema_errors(ref, empty, self.registry))
+        self.assertTrue(_cli_errors("packet", empty))
+
     def test_slot_kind_and_cold_claim_fail_schema_and_cli(self) -> None:
         packet = _load(ROOT / "fixtures/hot_packet_v0/sealed_graph_slots_nullable.json")
         early = packet["graph"]["slots"][1]
@@ -244,6 +288,17 @@ class SchemaAlignV0Tests(unittest.TestCase):
         ref = "paper-evaluate-hot-packet-v0.schema.json"
         self.assertTrue(_schema_errors(ref, stamp, self.registry))
         self.assertTrue(_cli_errors("stamp", stamp))
+
+    def test_case_variant_forbidden_names_fail_schema_and_cli(self) -> None:
+        ref = "paper-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json"
+        for key in ("Mean_Return", "EV", "burst_count", "outcome_mark"):
+            with self.subTest(key=key):
+                batch = _load(
+                    ROOT / "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/two_day.json"
+                )
+                batch["input"]["days"][0]["source_rows"][0][key] = 1
+                self.assertTrue(_schema_errors(ref, batch, self.registry))
+                self.assertTrue(_cli_errors("batch", batch))
 
     def test_batch_source_row_return_key_fails_schema_and_cli(self) -> None:
         batch = _load(ROOT / "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/two_day.json")

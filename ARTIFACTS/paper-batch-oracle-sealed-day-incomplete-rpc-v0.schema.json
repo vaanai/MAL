@@ -46,26 +46,8 @@
   },
   "$defs": {
     "dishonestName": {
-      "enum": [
-        "mean_return",
-        "mean",
-        "lift_vs_random",
-        "expected_value",
-        "alpha",
-        "cohort_alpha",
-        "ev",
-        "verdict",
-        "fail_no_lift",
-        "exit_code",
-        "closed_book_claim",
-        "invented_ev",
-        "invented_lift",
-        "claims_alpha",
-        "var_lib_mal_opened",
-        "var_lib_mal_read",
-        "ci_claimed_sealed_book_close",
-        "host_extract_checked_into_git"
-      ]
+      "pattern": "(?i)^(dexscreener|birdeye|api_key|private_key|secret|twitter|x_account|outcome_mark|mean_return|mean|lift_vs_random|burst_count|expected_value|alpha|cohort_alpha|ev|verdict|fail_no_lift|exit_code|closed_book_claim|invented_ev|invented_lift|claims_alpha|var_lib_mal_opened|var_lib_mal_read|ci_claimed_sealed_book_close|host_extract_checked_into_git)$",
+      "description": "Case-insensitive. Same names the batch CLI forbids after lowercasing, plus closed-book and host-open claim names. ws_payload and price_proxy stay legal on a source row."
     },
     "sourceNode": {
       "type": "object",

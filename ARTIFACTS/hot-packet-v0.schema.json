@@ -318,7 +318,7 @@
           },
           "then": {
             "properties": {
-              "value": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "const": null }] },
+              "value": { "$ref": "#/$defs/jsonIntegerOrNull" },
               "hypothesis_status": { "const": "directional_watch_not_promoted" }
             }
           }
@@ -425,8 +425,56 @@
           "then": {
             "properties": { "cold": { "const": false } }
           }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": { "slots": { "const": null } },
+                "required": ["slots"]
+              },
+              {
+                "properties": { "slots": { "type": "array", "maxItems": 0 } },
+                "required": ["slots"]
+              },
+              {
+                "properties": {
+                  "slots": {
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        { "type": "null" },
+                        {
+                          "type": "object",
+                          "properties": { "value": { "const": null } },
+                          "required": ["value"]
+                        }
+                      ]
+                    }
+                  }
+                },
+                "required": ["slots"]
+              }
+            ]
+          },
+          "then": {
+            "properties": { "cold": { "const": true } },
+            "description": "Unfilled slots are Graph cold. cold=false with null, empty, or all-null slots is refused."
+          }
         }
       ]
+    },
+    "jsonIntegerOrNull": {
+      "anyOf": [
+        { "const": null },
+        {
+          "allOf": [
+            { "type": "integer", "minimum": 0 },
+            { "malStrictJsonInteger": true }
+          ]
+        }
+      ],
+      "description": "JSON integer only. Draft 2020-12 type integer accepts 1.0 and 2.0; malStrictJsonInteger refuses those whole-number floats so the slot matches the CLI."
     },
     "clocks": {
       "type": "object",

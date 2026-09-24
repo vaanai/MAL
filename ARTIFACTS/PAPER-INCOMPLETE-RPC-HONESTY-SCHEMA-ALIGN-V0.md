@@ -24,6 +24,9 @@ JSON Schema on the paper chain is the citeable shape. Before this stamp it was l
 | Host-path open claims: `var_lib_mal_opened=true`, `honesty.var_lib_mal_read=true`, `ci_claimed_sealed_book_close=true`, `host_extract_checked_into_git=true` | `const: false` on the host-local receipt. Those names are not legal keys inside a batch source row. An operator-declared path string under `/var/lib/mal` stays legal. The string is not an open claim. |
 | Numeric horizon or `Δ_exec` while status is `null_ok` or `fixture_joined_null_explicit` | Horizon map values and `delta_exec.value` stay `const: null` on hot-packet, paper-evaluate, and scoreboard. Null is not a zero return. |
 | Graph slot value kind, and `graph.cold=true` while a slot value is filled | Hot-packet `graphSlot` if/then. `early_wallet_dt_min_seconds` stays null. |
+| Whole-number float on an integer slot (`1.0`, `2.0` on `prior_mint_count`) | `malStrictJsonInteger`. Draft 2020-12 `type: integer` accepts those floats. The align-test validator asserts the keyword and refuses them. A JSON integer such as `2` still passes. |
+| `graph.cold=false` when slots are null, empty, or every value is null | Unfilled ⇒ `cold` const true. |
+| Case-variant return keys and the batch CLI forbidden set (`Mean_Return`, `EV`, `burst_count`, `outcome_mark`, and the rest of that set) | Batch `propertyNames` pattern is case-insensitive and lists the CLI forbidden names. |
 | `graph_lift_status` disagreeing with `packet.graph.cold` | Paper-evaluate if/then. |
 | Return keys on a batch source row (`mean_return`, `lift_vs_random`, `ev`, and the same family the batch CLI forbids) | Batch `sourceNode.propertyNames`. `ws_payload` and `price_proxy` stay legal on the row. They are not copied onto the hot packet as a return. |
 
@@ -51,7 +54,7 @@ There is no `paper-incomplete-rpc-honesty-schema-align-v0.schema.json`. Operator
 
 | Watch id | Status |
 | --- | --- |
-| `schema_looser_than_cli` | **CLOSED** for the dishonest shapes in [What aligned](#what-aligned). Schema validation refuses them. The CLIs still refuse them. Do not widen a CLI down to an older schema. |
+| `schema_looser_than_cli` | **CLOSED** for the dishonest shapes in [What aligned](#what-aligned), including the three Soft GATE holes on `42e9a1a` (whole-number float on an integer slot, unfilled `graph.cold=false`, case-variant forbidden names). Schema validation refuses them. The CLIs still refuse them. Do not widen a CLI down to an older schema. |
 
 Parent stamps #49–#53 still emit `schema_looser_than_cli` inside `soft_watches.items`. That list is the historical registration of those stamps. It is not a claim that the honesty shapes above still pass schema. This stamp does not rewrite those CLIs and does not drop the id from parent fixtures.
 
