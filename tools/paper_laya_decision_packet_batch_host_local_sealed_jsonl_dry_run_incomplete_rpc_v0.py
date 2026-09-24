@@ -117,9 +117,8 @@ FORBIDDEN_KEYS: frozenset[str] = PARENT_FORBIDDEN_KEYS | frozenset(
     }
 )
 
-CALENDAR_LABEL_PREFIX = (
-    "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/"
-    "calendar_labels/"
+PARENT_FIXTURE_PREFIX = (
+    "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/"
 )
 HOST_JSONL: dict[str, str] = {
     day: f"{HOST_ROOT}/sealed/jsonl/observe-{day}.jsonl" for day in COURIER_DAYS
@@ -132,21 +131,13 @@ HOST_EXPECTATION: dict[str, str] = {
     for day in COURIER_DAYS
 }
 SYNTHETIC_JSONL: dict[str, str] = {
-    day: f"{CALENDAR_LABEL_PREFIX}observe-{day}.jsonl" for day in COURIER_DAYS
+    day: f"{PARENT_FIXTURE_PREFIX}observe-{day}.jsonl" for day in COURIER_DAYS
 }
 SYNTHETIC_MANIFEST: dict[str, str] = {
-    day: (
-        "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/"
-        f"decision-day-{day}.json"
-    )
-    for day in COURIER_DAYS
+    day: f"{PARENT_FIXTURE_PREFIX}decision-day-{day}.json" for day in COURIER_DAYS
 }
 SYNTHETIC_EXPECTATION: dict[str, str] = {
-    day: (
-        "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/"
-        f"sealed_day_{day}_expectation.json"
-    )
-    for day in COURIER_DAYS
+    day: f"{PARENT_FIXTURE_PREFIX}sealed_day_{day}_expectation.json" for day in COURIER_DAYS
 }
 
 JSONL_NAME_RE_TEXT = r"^observe-(\d{4}-\d{2}-\d{2})\.jsonl$"
@@ -210,8 +201,40 @@ def _kernel_realpath_refusal(text: str) -> str | None:
     return None
 
 
+def _lexical_collapse_refusal(text: str) -> str | None:
+    raw = text.replace("\\", "/")
+    if "\\" in text:
+        return f"{text}: backslash paths are refused lexically"
+    if raw != text.strip():
+        return f"{text}: path must not have leading or trailing whitespace"
+    if raw.startswith("./") or "/./" in raw or raw.endswith("/"):
+        return f"{text}: non-canonical repo-relative path"
+    if raw.startswith("//") or "///" in raw or "//" in raw:
+        return f"{text}: non-canonical repo-relative path"
+    if ".." in raw.split("/"):
+        return f"{text}: parent-segment paths are refused"
+    return None
+
+
+def _host_local_repo_path_refusal(text: str) -> str | None:
+    """Lexical refuse before FS: host root, absolute, .., collapse, backslash."""
+    refusal = _batch_path_refusal(text)
+    if refusal:
+        return refusal
+    refusal = _lexical_collapse_refusal(text)
+    if refusal:
+        return refusal
+    raw = text.replace("\\", "/")
+    if posixpath.isabs(raw):
+        return f"{text}: absolute paths are refused"
+    return None
+
+
 def _validate_path_refusal(text: str) -> str | None:
     refusal = _batch_path_refusal(text)
+    if refusal is not None:
+        return refusal
+    refusal = _lexical_collapse_refusal(text)
     if refusal is not None:
         return refusal
     return _kernel_realpath_refusal(text)
@@ -226,7 +249,7 @@ def _display(text: str) -> str:
 
 
 def _openable_repo_path(text: str) -> Path | None:
-    if _batch_path_refusal(text) is not None:
+    if _host_local_repo_path_refusal(text) is not None:
         return None
     if _under_var_lib_mal(text):
         return None
@@ -613,6 +636,14 @@ def assemble_receipt(
     if pair_errors or paired is None:
         return None, pair_errors or ["invocation: could not pair paths"]
 
+    if receipt_kind != "operator_declared":
+        for day in COURIER_DAYS:
+            jsonl_text, manifest_text, expectation_text = paired[day]
+            for candidate in (jsonl_text, manifest_text, expectation_text):
+                refusal = _host_local_repo_path_refusal(candidate)
+                if refusal:
+                    return None, [refusal]
+
     if receipt_kind == "operator_declared":
         for day in COURIER_DAYS:
             got_jsonl, got_manifest, got_expectation = paired[day]
@@ -665,12 +696,6 @@ def assemble_receipt(
     display_expectation: list[str] = []
     for day in COURIER_DAYS:
         jsonl_text, manifest_text, expectation_text = paired[day]
-        for candidate in (manifest_text, expectation_text):
-            if _batch_path_refusal(candidate):
-                return None, [
-                    f"{candidate}: this receipt CLI does not open {HOST_ROOT} and does not SSH. "
-                    "The operator-declared shape is example --which operator-declared."
-                ]
         manifest_path = _openable_repo_path(manifest_text)
         expectation_path = _openable_repo_path(expectation_text)
         if manifest_path is None or expectation_path is None:
@@ -853,7 +878,7 @@ def main(argv: list[str] | None = None) -> int:
     example.add_argument("--which", choices=sorted(EXAMPLES), required=True)
 
     validate = sub.add_parser("validate", help="Validate one dry-run receipt JSON file")
-    validate.add_argument("path", type=Path)
+    validate.add_argument("path", type=str)
 
     receipt_cmd = sub.add_parser(
         "receipt",
@@ -881,27 +906,27 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "validate":
-        path: Path = args.path
-        text = os.fspath(path)
+        text: str = args.path
         refusal = _validate_path_refusal(text)
         if refusal is not None:
             print(refusal, file=sys.stderr)
             return 1
+        path = Path(text)
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            print(f"{path}: {exc}", file=sys.stderr)
+            print(f"{text}: {exc}", file=sys.stderr)
             return 1
         problems = validate_receipt(payload)
         if problems:
             for problem in problems:
                 print(problem, file=sys.stderr)
             return 1
-        print(f"ok {path}")
+        print(f"ok {text}")
         return 0
 
     for text in list(args.jsonl) + list(args.manifest) + list(args.expectation):
-        refusal = _batch_path_refusal(text)
+        refusal = _host_local_repo_path_refusal(text)
         if refusal is not None:
             print(refusal, file=sys.stderr)
             return 1

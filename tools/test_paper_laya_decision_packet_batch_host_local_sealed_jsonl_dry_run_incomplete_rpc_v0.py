@@ -20,7 +20,9 @@ from tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_inco
     HOST_EXPECTATION,
     HOST_JSONL,
     HOST_MANIFEST,
+    PARENT_FIXTURE_PREFIX,
     SOFT_WATCH_ITEMS,
+    SYNTHETIC_MANIFEST,
     assemble_receipt,
     example_operator_declared,
     example_projection_on_synthetic,
@@ -154,10 +156,6 @@ class PaperLayaDecisionPacketBatchHostLocalSealedJsonlDryRunIncompleteRpcV0Tests
 
     def test_receipt_cli_on_synthetic_fixtures(self) -> None:
         buf = io.StringIO()
-        label_prefix = (
-            "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/"
-            "calendar_labels/"
-        )
         with redirect_stdout(buf):
             code = main(
                 [
@@ -165,17 +163,17 @@ class PaperLayaDecisionPacketBatchHostLocalSealedJsonlDryRunIncompleteRpcV0Tests
                     "--receipt-kind",
                     "projection_on_synthetic",
                     "--jsonl",
-                    f"{label_prefix}observe-2026-09-21.jsonl",
+                    f"{PARENT_FIXTURE_PREFIX}observe-2026-09-21.jsonl",
                     "--jsonl",
-                    f"{label_prefix}observe-2026-09-20.jsonl",
+                    f"{PARENT_FIXTURE_PREFIX}observe-2026-09-20.jsonl",
                     "--manifest",
-                    "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-21.json",
+                    SYNTHETIC_MANIFEST["2026-09-21"],
                     "--manifest",
-                    "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-20.json",
+                    SYNTHETIC_MANIFEST["2026-09-20"],
                     "--expectation",
-                    "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-21_expectation.json",
+                    f"{PARENT_FIXTURE_PREFIX}sealed_day_2026-09-21_expectation.json",
                     "--expectation",
-                    "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-20_expectation.json",
+                    f"{PARENT_FIXTURE_PREFIX}sealed_day_2026-09-20_expectation.json",
                 ]
             )
         self.assertEqual(code, 0)
@@ -346,12 +344,90 @@ class PaperLayaDecisionPacketBatchHostLocalSealedJsonlDryRunIncompleteRpcV0Tests
         self.assertTrue(OBSERVE_CLIENT.is_file())
         self.assertTrue(PARENT_MODULE.is_file())
 
+    def test_validate_refuses_fixture_collapse_without_fs_touch(self) -> None:
+        def _guarded_read_text(self: Path, *args: object, **kwargs: object) -> str:
+            raise AssertionError(f"read_text during lexical refuse test: {self}")
+
+        def _guarded_open(self: Path, *args: object, **kwargs: object) -> object:
+            raise AssertionError(f"open during lexical refuse test: {self}")
+
+        def _guarded_stat(self: Path, *args: object, **kwargs: object) -> object:
+            raise AssertionError(f"stat during lexical refuse test: {self}")
+
+        base = (
+            "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/"
+            "synthetic_replay.json"
+        )
+        for candidate in (
+            base.replace("/synthetic", "//synthetic"),
+            f"./{base}",
+            f"{base}/",
+        ):
+            with (
+                mock.patch.object(Path, "read_text", _guarded_read_text),
+                mock.patch.object(Path, "open", _guarded_open),
+                mock.patch.object(Path, "stat", _guarded_stat),
+            ):
+                err = io.StringIO()
+                with redirect_stderr(err):
+                    code = main(["validate", candidate])
+            self.assertEqual(code, 1)
+            self.assertIn("non-canonical", err.getvalue())
+
+    def test_validate_refuses_backslash_fixture_path_without_fs_touch(self) -> None:
+        candidate = (
+            "fixtures\\paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_"
+            "incomplete_rpc_v0\\synthetic_replay.json"
+        )
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = main(["validate", candidate])
+        self.assertEqual(code, 1)
+        self.assertIn("backslash", err.getvalue())
+
+    def test_receipt_refuses_collapsed_manifest_without_parent(self) -> None:
+        called: list[object] = []
+
+        def _record(argv=None):
+            called.append(argv)
+            return 0
+
+        bad_manifest = SYNTHETIC_MANIFEST["2026-09-20"].replace(
+            "/decision-day", "//decision-day"
+        )
+        argv = [
+            "receipt",
+            "--receipt-kind",
+            "synthetic_replay",
+            "--jsonl",
+            f"{PARENT_FIXTURE_PREFIX}observe-2026-09-20.jsonl",
+            "--jsonl",
+            f"{PARENT_FIXTURE_PREFIX}observe-2026-09-21.jsonl",
+            "--manifest",
+            bad_manifest,
+            "--manifest",
+            SYNTHETIC_MANIFEST["2026-09-21"],
+            "--expectation",
+            f"{PARENT_FIXTURE_PREFIX}sealed_day_2026-09-20_expectation.json",
+            "--expectation",
+            f"{PARENT_FIXTURE_PREFIX}sealed_day_2026-09-21_expectation.json",
+        ]
+        with mock.patch(
+            "tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.parent_main",
+            _record,
+        ):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code = main(argv)
+        self.assertEqual(code, 1)
+        self.assertEqual(called, [])
+        self.assertIn("non-canonical", err.getvalue())
+
     def test_checked_in_fixture_dir_has_only_receipt_json(self) -> None:
         names = sorted(path.name for path in FIXTURES.iterdir())
         self.assertEqual(
             names,
             [
-                "calendar_labels",
                 "operator_declared.json",
                 "projection_on_synthetic.json",
                 "synthetic_replay.json",

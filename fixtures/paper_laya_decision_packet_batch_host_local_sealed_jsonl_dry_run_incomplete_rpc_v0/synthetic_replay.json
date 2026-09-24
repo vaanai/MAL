@@ -22,8 +22,8 @@
       "2026-09-21"
     ],
     "jsonl": [
-      "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/calendar_labels/observe-2026-09-20.jsonl",
-      "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/calendar_labels/observe-2026-09-21.jsonl"
+      "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-20.jsonl",
+      "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-21.jsonl"
     ],
     "manifest": [
       "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-20.json",

@@ -41,7 +41,7 @@ Three checked-in receipts, all synthetic as files in git:
 | `receipt_kind` | What it records |
 | --- | --- |
 | `synthetic_replay` | Parent batch CLI invoked on checked-in synthetic manifests. `fixture_origin=synthetic`. `host_jsonl_read=false` |
-| `projection_on_synthetic` | Same synthetic manifests; receipt `fixture_origin=sealed_row_projection`. `host_jsonl_read=true`. Sealed JSONL paths stay under `fixtures/.../calendar_labels/`. `var_lib_mal_opened=false` |
+| `projection_on_synthetic` | Same synthetic manifests; receipt `fixture_origin=sealed_row_projection`. `host_jsonl_read=true`. Sealed JSONL label strings cite parent #69 fixtures under `fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/` (not opened). `var_lib_mal_opened=false` |
 | `operator_declared` | Documented `/var/lib/mal/...` sealed JSONL, manifest, and expectation path strings. `host_jsonl_read=true`. `host_path_declared=true`. `parent_invoked=false`. This process does not open those paths |
 
 When the parent is invoked, `parent_digest.digest_label_arms` lists `runner` then `reject` (DEC-007 order on digest stamp counts). The batch body and scoreboards are not embedded.
@@ -127,8 +127,8 @@ python -m tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run
   fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/operator_declared.json
 python -m tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0 receipt \
   --receipt-kind projection_on_synthetic \
-  --jsonl fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/calendar_labels/observe-2026-09-20.jsonl \
-  --jsonl fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/calendar_labels/observe-2026-09-21.jsonl \
+  --jsonl fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-20.jsonl \
+  --jsonl fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-21.jsonl \
   --manifest fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-20.json \
   --manifest fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-21.json \
   --expectation fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-20_expectation.json \

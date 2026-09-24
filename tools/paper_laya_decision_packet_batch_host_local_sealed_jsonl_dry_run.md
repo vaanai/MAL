@@ -40,8 +40,8 @@ python -m tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run
 python -m tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0 example --which operator-declared
 python -m tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0 receipt \
   --receipt-kind projection_on_synthetic \
-  --jsonl fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/calendar_labels/observe-2026-09-20.jsonl \
-  --jsonl fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/calendar_labels/observe-2026-09-21.jsonl \
+  --jsonl fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-20.jsonl \
+  --jsonl fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-21.jsonl \
   --manifest fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-20.json \
   --manifest fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-21.json \
   --expectation fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-20_expectation.json \

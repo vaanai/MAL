@@ -227,6 +227,55 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "receipt_kind": {
+            "not": {
+              "const": "operator_declared"
+            }
+          }
+        },
+        "required": [
+          "receipt_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "invocation": {
+            "properties": {
+              "jsonl": {
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/repoFixturePathHonesty"
+                    }
+                  ]
+                }
+              },
+              "manifest": {
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/repoFixturePathHonesty"
+                    }
+                  ]
+                }
+              },
+              "expectation": {
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/repoFixturePathHonesty"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -860,6 +909,70 @@
           "const": false
         }
       }
+    },
+    "repoFixturePathHonesty": {
+      "allOf": [
+        {
+          "not": {
+            "pattern": "\\.\\."
+          }
+        },
+        {
+          "not": {
+            "pattern": "/var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^/var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^//+var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^\\.\\./var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^\\./var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "\\.\\./lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "//"
+          }
+        },
+        {
+          "not": {
+            "pattern": "/$"
+          }
+        },
+        {
+          "not": {
+            "pattern": "(^|/)\\.(\\/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "\\\\"
+          }
+        }
+      ]
     }
   }
 }
