@@ -1,6 +1,6 @@
 # Manager summary (≤20 lines)
 
-**As-of:** 2026-09-24 UTC (**2026-09-24T08:30Z**). `main` @ `cc8a051` (post-merge #64 squash `277a142`).
+**As-of:** 2026-09-24 UTC (**2026-09-24T08:30Z**). `main` @ `adafe4c` (post-merge #64 squash `277a142`).
 
 - **Paper chain:** Citeable stack **on `main` through #64** (squash `277a142`): #49–#58 as prior; #59–#63 fill-sim batch / dry-run / honesty / capture / fill-sim LAYA surround (`171cd61`); **#64** non-fill-sim LAYA surround assembles #51 scoreboard digests ± optional #52 `rollup`; Soft GATE PASS kill `bc-40cf0f7a-1530-5934-8c60-c2554ccf3d66`; implement `bc-ef3c4636-2b3d-5e24-b291-910b6f094c15`; Lyra Formal. `measure.kind=none`; sealed book incomplete; Graph cold; `laya.authorize_run=false`; `laya.risk_gate_unlock=false`; `laya.live_trading=false`. Soft GATE PASS ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 promote / LAYA authorize-run / risk-gate unlock.
 - **Product:** 3 layers (new-coin / entity-graph / filtered smart-wallet) + **LAYA** → risk gate → exec (deferred). **X = layer 4 later**. Paper first; free-first. Plans = directions; profit is the goal.

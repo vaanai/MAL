@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers (Grok bots). **As-of:** 2026-09-24 UTC (**2026-09-24T08:30Z**). `main` @ `cc8a051` (post-merge #64 squash `277a142`). No live-trading claims. **`mal-core-0` is provisioned and verified.** Cursor↔Oracle access **LIVE** ([DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)): CF Access Service Auth + Runtime Secrets; smoke passed 2026-09-23; remote hostname **`mal-core-vnic`**; paper-only.
+Compact reload for managers (Grok bots). **As-of:** 2026-09-24 UTC (**2026-09-24T08:30Z**). `main` @ `adafe4c` (post-merge #64 squash `277a142`). No live-trading claims. **`mal-core-0` is provisioned and verified.** Cursor↔Oracle access **LIVE** ([DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)): CF Access Service Auth + Runtime Secrets; smoke passed 2026-09-23; remote hostname **`mal-core-vnic`**; paper-only.
 
 ## Objective
 
