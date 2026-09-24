@@ -1,0 +1,153 @@
+{
+  "schema_version": "paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0",
+  "type": "paper_dry_run_receipt",
+  "id": "paper-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0",
+  "paper_only": true,
+  "receipt_kind": "projection_on_synthetic",
+  "parent": {
+    "id": "paper-batch-oracle-sealed-day-incomplete-rpc-v0",
+    "schema_version": "paper_batch_oracle_sealed_day_incomplete_rpc_v0",
+    "pull_request": 52,
+    "commit": "243e11b",
+    "cli": "python -m tools.paper_batch_oracle_sealed_day_incomplete_rpc_v0",
+    "rewritten_by_this_stamp": false
+  },
+  "invocation": {
+    "host": "mal-core-vnic",
+    "host_contacted": false,
+    "executed_by_this_process": true,
+    "fixture_origin": "sealed_row_projection",
+    "days": [
+      "2026-09-20",
+      "2026-09-21"
+    ],
+    "jsonl": [
+      "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-20.jsonl",
+      "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-21.jsonl"
+    ],
+    "expectation": [
+      "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-20_expectation.json",
+      "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-21_expectation.json"
+    ],
+    "argv_shape": [
+      "python",
+      "-m",
+      "tools.paper_batch_oracle_sealed_day_incomplete_rpc_v0",
+      "batch",
+      "--fixture-origin",
+      "sealed_row_projection",
+      "--jsonl",
+      "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-20.jsonl",
+      "--jsonl",
+      "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-21.jsonl",
+      "--expectation",
+      "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-20_expectation.json",
+      "--expectation",
+      "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-21_expectation.json"
+    ]
+  },
+  "input": {
+    "local_json_only": true,
+    "rpc": false,
+    "ssh_to_host": false,
+    "observe_jsonl_tail": false,
+    "host_extract_checked_into_git": false,
+    "var_lib_mal_opened": false,
+    "host_jsonl_read": true,
+    "host_path_declared": false,
+    "fixture_origin": "sealed_row_projection",
+    "parent_invoked": true,
+    "paths_opened": true,
+    "graph_policy": "cold"
+  },
+  "parent_digest": {
+    "included": true,
+    "schema_version": "paper_batch_oracle_sealed_day_incomplete_rpc_v0",
+    "id": "paper-batch-oracle-sealed-day-incomplete-rpc-v0",
+    "sealed_book_rpc_slice": "incomplete",
+    "closed_book_claim": false,
+    "measure_kind": "none",
+    "graph_policy": "cold",
+    "executed_host_sealed_book": false,
+    "scored_oracle_measure": false,
+    "batch_embedded": false,
+    "host_jsonl_read": true
+  },
+  "carries": {
+    "parent_batch_body": false,
+    "horizons": false,
+    "delta_exec": false,
+    "rollup_counts": false,
+    "host_bytes": false
+  },
+  "full_book": {
+    "policy": "dec007_both_arms_retained",
+    "arm_retained": true,
+    "deletes_detect_history": false,
+    "reject_stamps_dropped": 0,
+    "local_set_is_not_the_sealed_book": true,
+    "both_arms_unchanged": true
+  },
+  "graph_lift": null,
+  "graph_policy": "cold",
+  "dual_read": {
+    "sealed_book_rpc_slice": "incomplete",
+    "closed_book_claim": false,
+    "incomplete_reason": "host_local_dry_run_does_not_close_the_sealed_book"
+  },
+  "measure": {
+    "kind": "none",
+    "claims_alpha": false,
+    "invented_ev": false,
+    "invented_lift": false,
+    "pass_fail_no_lift": false
+  },
+  "soft_watches": {
+    "blocking": false,
+    "source": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_batch_pr52",
+    "inherited_from": [
+      "hot_packet_v0_soft_gate_pr49",
+      "paper_evaluate_hot_packet_v0_pr50",
+      "paper_scoreboard_sealed_fixture_v0_pr51",
+      "paper_batch_oracle_sealed_day_incomplete_rpc_v0_pr52"
+    ],
+    "items": [
+      "schema_looser_than_cli",
+      "synthetic_launchlab_shape",
+      "graph_slot_shape_not_a_score",
+      "dec005_draft_unmerged",
+      "sealed_book_rpc_slice_incomplete",
+      "label_share_is_not_a_return",
+      "synthetic_sealed_day_not_a_host_extract",
+      "local_subset_is_not_dropped_history",
+      "host_jsonl_not_readable_from_ci",
+      "counts_are_not_returns",
+      "graph_stays_cold_on_this_stamp",
+      "host_jsonl_read_is_not_a_closed_book",
+      "operator_path_string_is_not_a_host_extract",
+      "dry_run_does_not_ssh_or_open_var_lib_mal",
+      "parent_stamp_not_rewritten"
+    ]
+  },
+  "honesty": {
+    "registration": "proposed",
+    "scored_oracle_measure": false,
+    "executed_host_sealed_book": false,
+    "ci_claimed_sealed_book_close": false,
+    "continuous_observe_wiring": false,
+    "encoder_promoted": false,
+    "enum_production_lock": false,
+    "discovery_promoted": false,
+    "graph_lane_revived": false,
+    "invented_lift": false,
+    "invented_ev": false,
+    "claims_alpha": false,
+    "exp002c_retuned": false,
+    "live_capital": false,
+    "trading_keys": false,
+    "pumpportal_trade_api": false,
+    "ssh_to_host": false,
+    "host_extract_checked_into_git": false,
+    "var_lib_mal_read": false
+  }
+}
