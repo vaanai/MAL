@@ -24,6 +24,26 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+---
+
+## EDL-013 — LAYA precompute fill-sim surround packet (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-013 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-laya-precompute-fill-sim-surround-packet-v0`: [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md), [paper-laya-precompute-fill-sim-surround-packet-v0.schema.json](paper-laya-precompute-fill-sim-surround-packet-v0.schema.json), two surround fixtures, `python -m tools.paper_laya_precompute_fill_sim_surround_packet_v0` (example / validate / assemble). Parent #49–#62 CLIs not rewritten. |
+| **Why** | North-star precompute surround around fill-sim paper stack: cite validated #58 scoreboard digests and optional #59 batch rollup for a later LAYA consumption shape without authorize-run or live claims. |
+| **What was tested** | `python3 -m unittest tools.test_paper_laya_precompute_fill_sim_surround_packet_v0`. Honest fixtures pass schema and CLI. Dishonest copies fail both. Host-path refuses before `read_text` / `stat`. No RPC. `observe/client.py` untouched. |
+| **Verification** | Soft GATE **pending** before merge (15 unittest OK on branch). |
+| **Current state** | **Proposed** registration on draft PR only. Not a measure. Not LAYA authorize-run. Graph cold. Sealed book incomplete. |
+| **Rollback** | Revert surround contract, schema, fixtures, CLI, and tests. |
+| **Unresolved** | Soft GATE Formal stamp required before merge. |
+| **Implications** | Fixtures-only surround shape can sit beside hot-packet spine without wiring LAYA or risk gate. |
+| **Pointers** | [PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md), [PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md) |
+
+---
+
 ## EDL-012 — Fill-sim host-local dry-run receipt capture (Proposed)
 
 | Field | Value |
