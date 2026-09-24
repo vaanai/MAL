@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import posixpath
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -31,6 +33,7 @@ from tools.paper_fill_sim_hot_packet_evaluate_v0 import bind_from_evaluate_stamp
 from tools.paper_fill_sim_scoreboard_sealed_fixture_v0 import (
     DELTA_JOIN_REASON,
     EXPECTATION_KIND,
+    HOST_ROOT,
     HORIZON_JOIN_STATUS,
     SCHEMA_VERSION as SCOREBOARD_SCHEMA,
     SOFT_WATCH_ITEMS as INHERITED_SOFT_WATCH_ITEMS,
@@ -460,6 +463,14 @@ def _specs_from_files(
     specs: list[dict[str, Any]] = []
     errors: list[str] = []
     for jsonl_path, expectation_path in pairs:
+        pair_refusals: list[str] = []
+        for candidate in (jsonl_path, expectation_path):
+            refusal = _batch_path_refusal(str(candidate))
+            if refusal:
+                pair_refusals.append(refusal)
+        if pair_refusals:
+            errors.extend(pair_refusals)
+            continue
         day = day_from_jsonl_name(jsonl_path)
         if day is None:
             errors.append(f"{jsonl_path}: basename must be observe-YYYY-MM-DD.jsonl")
@@ -568,9 +579,52 @@ def _pair_inputs(
     return pairs, []
 
 
+def _collapse_leading_slashes(posix_path: str) -> str:
+    if posix_path.startswith("//"):
+        return "/" + posix_path.lstrip("/")
+    return posix_path
+
+
+def _normpath_string_only(text: str) -> str:
+    """Normalize a path string without anchoring at the repo or touching the filesystem."""
+    raw = text.replace("\\", "/").strip()
+    return _collapse_leading_slashes(posixpath.normpath(raw))
+
+
+def _lexical_under_host_root(posix_path: str) -> bool:
+    normalized = _collapse_leading_slashes(posixpath.normpath(posix_path))
+    return normalized == HOST_ROOT or normalized.startswith(HOST_ROOT + "/")
+
+
+def _relative_joined_under_host_root(text: str, cwd: str) -> bool:
+    """Whether cwd/text lands under /var/lib/mal lexically (no stat/read/resolve)."""
+    joined = posixpath.join(cwd, text)
+    return _lexical_under_host_root(joined)
+
+
+def _batch_path_refusal(text: str) -> str | None:
+    """Refuse host paths before any filesystem touch.
+
+    Inherited scoreboard refusal anchors relative paths at the repo; batch CLI also
+    refuses relative shapes that would open /var/lib/mal when joined with / or cwd.
+    """
+    refusal = _host_open_refusal(text)
+    if refusal:
+        return refusal
+    norm = _normpath_string_only(text)
+    if posixpath.isabs(norm):
+        if _lexical_under_host_root(norm):
+            return f"{text}: does not open {HOST_ROOT}"
+        return None
+    for cwd in ("/", os.getcwd()):
+        if _relative_joined_under_host_root(text, cwd):
+            return f"{text}: does not open {HOST_ROOT}"
+    return None
+
+
 def _refuse_host_paths(*candidates: str) -> str | None:
     for text in candidates:
-        refusal = _host_open_refusal(text)
+        refusal = _batch_path_refusal(text)
         if refusal:
             return refusal
     return None
@@ -620,7 +674,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "validate":
         path: Path = args.path
-        refusal = _host_open_refusal(str(path))
+        refusal = _batch_path_refusal(str(path))
         if refusal:
             print(refusal, file=sys.stderr)
             return 1
@@ -638,7 +692,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     for candidate in (*args.jsonl, *args.expectation):
-        refusal = _host_open_refusal(str(candidate))
+        refusal = _batch_path_refusal(str(candidate))
         if refusal:
             print(refusal, file=sys.stderr)
             return 1

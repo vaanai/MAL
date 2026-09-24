@@ -210,6 +210,104 @@ class PaperFillSimBatchOracleSealedDayIncompleteRpcV0Tests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("does not open", err.getvalue())
 
+    def _assert_refuses_without_host_fs_touch(
+        self,
+        argv: list[str],
+        *,
+        cwd: str = "/",
+    ) -> None:
+        real_read_text = Path.read_text
+        real_open = Path.open
+        real_stat = Path.stat
+        real_resolve = Path.resolve
+
+        def _is_host_path(text: str) -> bool:
+            collapsed = "/" + text.lstrip("/") if text.startswith("//") else text
+            norm = os.path.normpath(collapsed)
+            return norm == HOST_ROOT or norm.startswith(HOST_ROOT + os.sep)
+
+        def _guarded_read_text(self: Path, *args: object, **kwargs: object) -> str:
+            text = os.fspath(self)
+            if _is_host_path(text):
+                raise AssertionError(f"read_text called on host path: {text}")
+            return real_read_text(self, *args, **kwargs)
+
+        def _guarded_open(self: Path, *args: object, **kwargs: object) -> object:
+            text = os.fspath(self)
+            if _is_host_path(text):
+                raise AssertionError(f"open called on host path: {text}")
+            return real_open(self, *args, **kwargs)
+
+        def _guarded_stat(self: Path, *args: object, **kwargs: object) -> object:
+            text = os.fspath(self)
+            if _is_host_path(text):
+                raise AssertionError(f"stat called on host path: {text}")
+            return real_stat(self, *args, **kwargs)
+
+        def _guarded_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+            text = os.fspath(self)
+            if _is_host_path(text):
+                raise AssertionError(f"resolve called on host path: {text}")
+            return real_resolve(self, *args, **kwargs)
+
+        with (
+            mock.patch.object(Path, "read_text", _guarded_read_text),
+            mock.patch.object(Path, "open", _guarded_open),
+            mock.patch.object(Path, "stat", _guarded_stat),
+            mock.patch.object(Path, "resolve", _guarded_resolve),
+            mock.patch("os.getcwd", return_value=cwd),
+        ):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code = main(argv)
+        self.assertEqual(code, 1)
+        self.assertIn("does not open", err.getvalue())
+        self.assertIn(HOST_ROOT, err.getvalue())
+
+    def test_batch_refuses_relative_var_lib_mal_jsonl_at_root_cwd_without_fs_touch(
+        self,
+    ) -> None:
+        self._assert_refuses_without_host_fs_touch(
+            [
+                "batch",
+                "--jsonl",
+                "var/lib/mal/observe-2026-09-20.jsonl",
+                "--expectation",
+                str(FIXTURES / "sealed_day_2026-09-20_expectation.json"),
+            ],
+        )
+
+    def test_batch_refuses_relative_var_lib_mal_expectation_at_root_cwd_without_fs_touch(
+        self,
+    ) -> None:
+        self._assert_refuses_without_host_fs_touch(
+            [
+                "batch",
+                "--jsonl",
+                str(FIXTURES / "observe-2026-09-20.jsonl"),
+                "--expectation",
+                "var/lib/mal/sealed_day_2026-09-20_expectation.json",
+            ],
+        )
+
+    def test_validate_refuses_relative_var_lib_mal_at_root_cwd_without_fs_touch(
+        self,
+    ) -> None:
+        self._assert_refuses_without_host_fs_touch(["validate", "var/lib/mal/two_day.json"])
+
+    def test_batch_refuses_dot_slash_var_lib_mal_at_root_cwd_without_fs_touch(
+        self,
+    ) -> None:
+        self._assert_refuses_without_host_fs_touch(
+            [
+                "batch",
+                "--jsonl",
+                "./var/lib/mal/observe-2026-09-20.jsonl",
+                "--expectation",
+                str(FIXTURES / "sealed_day_2026-09-20_expectation.json"),
+            ],
+        )
+
     def test_validate_refuses_double_slash_batch_path_without_open(self) -> None:
         real_open = Path.read_text
 
