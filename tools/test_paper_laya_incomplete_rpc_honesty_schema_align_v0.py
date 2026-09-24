@@ -251,6 +251,59 @@ class LayaSchemaAlignV0Tests(unittest.TestCase):
         self.assertTrue(_schema_errors(ref, doc, self.registry))
         self.assertTrue(_cli_errors("non_fill_surround", doc))
 
+    def test_graph_lift_aggregate_status_in_enum_swap_fail_schema_and_cli(self) -> None:
+        batch_ref = "paper-laya-precompute-surround-packet-v0.schema.json"
+        batch_path = ROOT / "fixtures/paper_laya_precompute_surround_packet_v0/batch_two_day_with_digest.json"
+        batch_doc = _load(batch_path)
+        batch_doc["scoreboard_digests"][0]["graph_lift_aggregate_status"] = "not_scored_mixed"
+        self.assertTrue(_schema_errors(batch_ref, batch_doc, self.registry))
+        self.assertTrue(_cli_errors("non_fill_surround", batch_doc))
+
+        mixed_path = ROOT / "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+        mixed_doc = _load(mixed_path)
+        mixed_doc["scoreboard_digests"][0]["graph_lift_aggregate_status"] = "not_used_graph_cold"
+        self.assertTrue(_schema_errors(batch_ref, mixed_doc, self.registry))
+        self.assertTrue(_cli_errors("non_fill_surround", mixed_doc))
+
+        fs_ref = "paper-laya-precompute-fill-sim-surround-packet-v0.schema.json"
+        fs_batch = _load(
+            ROOT / "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/batch_two_day_with_digest.json"
+        )
+        fs_batch["scoreboard_digests"][0]["graph_lift_aggregate_status"] = "not_scored_mixed"
+        self.assertTrue(_schema_errors(fs_ref, fs_batch, self.registry))
+        self.assertTrue(_cli_errors("fill_sim_surround", fs_batch))
+
+        fs_mixed = _load(
+            ROOT / "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+        )
+        fs_mixed["scoreboard_digests"][0]["graph_lift_aggregate_status"] = "not_used_graph_cold"
+        self.assertTrue(_schema_errors(fs_ref, fs_mixed, self.registry))
+        self.assertTrue(_cli_errors("fill_sim_surround", fs_mixed))
+
+    def test_lock_receipt_host_paths_fail_schema_and_cli(self) -> None:
+        ref = "paper-laya-risk-gate-lock-receipt-v0.schema.json"
+        path = ROOT / "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+        host = "/var/lib/mal/sealed.jsonl"
+        doc = _load(path)
+        doc["surround_citations"][0]["fixture_path"] = host
+        doc["input"]["assembly"]["surround_paths"] = [host]
+        self.assertTrue(_schema_errors(ref, doc, self.registry))
+        self.assertTrue(_cli_errors("lock_receipt", doc))
+
+    def test_non_fill_citation_fill_sim_status_counts_fail_schema_and_cli(self) -> None:
+        ref = "paper-laya-risk-gate-lock-receipt-v0.schema.json"
+        non_fill = _load(
+            ROOT / "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_non_fill_sim_surround.json"
+        )
+        fill_sim = _load(
+            ROOT / "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+        )
+        non_fill["surround_citations"][0]["digest"]["fill_sim_status_counts"] = fill_sim[
+            "surround_citations"
+        ][0]["digest"]["fill_sim_status_counts"]
+        self.assertTrue(_schema_errors(ref, non_fill, self.registry))
+        self.assertTrue(_cli_errors("lock_receipt", non_fill))
+
     def test_host_path_open_claims_fail_schema_and_cli(self) -> None:
         ref = "paper-laya-precompute-surround-packet-v0.schema.json"
         path = ROOT / "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"

@@ -267,105 +267,6 @@
         }
       }
     },
-    "scoreboardDigest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "citation",
-        "sealed_day",
-        "full_book",
-        "label_rates",
-        "fixture_join",
-        "graph_lift_aggregate_status",
-        "dual_read",
-        "stamp_bodies_embedded"
-      ],
-      "properties": {
-        "citation": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "repo_path",
-            "parent"
-          ],
-          "properties": {
-            "repo_path": {
-              "type": "string"
-            },
-            "parent": {
-              "$ref": "#/$defs/parentScoreboard"
-            }
-          }
-        },
-        "sealed_day": {
-          "type": "string",
-          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
-        },
-        "full_book": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "policy",
-            "reject_stamps_dropped",
-            "n",
-            "runner_n",
-            "reject_n"
-          ],
-          "properties": {
-            "policy": {
-              "const": "dec007_both_arms_retained"
-            },
-            "reject_stamps_dropped": {
-              "const": 0
-            },
-            "n": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "runner_n": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "reject_n": {
-              "type": "integer",
-              "minimum": 0
-            }
-          }
-        },
-        "label_rates": {
-          "$ref": "#/$defs/labelRates"
-        },
-        "fixture_join": {
-          "$ref": "#/$defs/fixtureJoinSummary"
-        },
-        "graph_lift_aggregate_status": {
-          "enum": [
-            "not_scored_mixed",
-            "not_used_graph_cold",
-            "not_used_slots_not_scored"
-          ]
-        },
-        "dual_read": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "sealed_book_rpc_slice",
-            "closed_book_claim"
-          ],
-          "properties": {
-            "sealed_book_rpc_slice": {
-              "const": "incomplete"
-            },
-            "closed_book_claim": {
-              "const": false
-            }
-          }
-        },
-        "stamp_bodies_embedded": {
-          "const": false
-        }
-      }
-    },
     "batchDigest": {
       "oneOf": [
         {
@@ -1014,6 +915,194 @@
           "const": false
         }
       }
+    },
+    "scoreboardDigestGraphStatusFromCitation": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "citation": {
+                "properties": {
+                  "repo_path": {
+                    "pattern": "(graph_cold\\.json|identity_reject\\.json|two_day\\.json)"
+                  }
+                },
+                "required": [
+                  "repo_path"
+                ]
+              }
+            },
+            "required": [
+              "citation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "graph_lift_aggregate_status": {
+                "const": "not_used_graph_cold"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "citation": {
+                "properties": {
+                  "repo_path": {
+                    "pattern": "slots_not_scored\\.json"
+                  }
+                },
+                "required": [
+                  "repo_path"
+                ]
+              }
+            },
+            "required": [
+              "citation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "graph_lift_aggregate_status": {
+                "const": "not_used_slots_not_scored"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "citation": {
+                "properties": {
+                  "repo_path": {
+                    "pattern": "(mixed_runner_reject\\.json|all_runner\\.json)"
+                  }
+                },
+                "required": [
+                  "repo_path"
+                ]
+              }
+            },
+            "required": [
+              "citation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "graph_lift_aggregate_status": {
+                "const": "not_scored_mixed"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "scoreboardDigest": {
+      "allOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "citation",
+            "sealed_day",
+            "full_book",
+            "label_rates",
+            "fixture_join",
+            "graph_lift_aggregate_status",
+            "dual_read",
+            "stamp_bodies_embedded"
+          ],
+          "properties": {
+            "citation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "repo_path",
+                "parent"
+              ],
+              "properties": {
+                "repo_path": {
+                  "type": "string"
+                },
+                "parent": {
+                  "$ref": "#/$defs/parentScoreboard"
+                }
+              }
+            },
+            "sealed_day": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            "full_book": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "policy",
+                "reject_stamps_dropped",
+                "n",
+                "runner_n",
+                "reject_n"
+              ],
+              "properties": {
+                "policy": {
+                  "const": "dec007_both_arms_retained"
+                },
+                "reject_stamps_dropped": {
+                  "const": 0
+                },
+                "n": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "runner_n": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "reject_n": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "label_rates": {
+              "$ref": "#/$defs/labelRates"
+            },
+            "fixture_join": {
+              "$ref": "#/$defs/fixtureJoinSummary"
+            },
+            "graph_lift_aggregate_status": {
+              "enum": [
+                "not_scored_mixed",
+                "not_used_graph_cold",
+                "not_used_slots_not_scored"
+              ]
+            },
+            "dual_read": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sealed_book_rpc_slice",
+                "closed_book_claim"
+              ],
+              "properties": {
+                "sealed_book_rpc_slice": {
+                  "const": "incomplete"
+                },
+                "closed_book_claim": {
+                  "const": false
+                }
+              }
+            },
+            "stamp_bodies_embedded": {
+              "const": false
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/scoreboardDigestGraphStatusFromCitation"
+        }
+      ]
     }
   }
 }

@@ -184,8 +184,7 @@
               "type": "array",
               "minItems": 1,
               "items": {
-                "type": "string",
-                "minLength": 1
+                "$ref": "#/$defs/layaSurroundFixturePath"
               }
             }
           }
@@ -204,256 +203,255 @@
             "surround_body_embedded",
             "digest"
           ],
-      "properties": {
-        "registration": {
-          "oneOf": [
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "id",
-                "schema_version",
-                "pull_request",
-                "commit",
-                "rewritten_by_this_stamp"
-              ],
-              "properties": {
-                "id": {
-                  "const": "paper-laya-precompute-surround-packet-v0"
-                },
-                "schema_version": {
-                  "const": "paper_laya_precompute_surround_packet_v0"
-                },
-                "pull_request": {
-                  "const": 64
-                },
-                "commit": {
-                  "const": "277a142"
-                },
-                "rewritten_by_this_stamp": {
-                  "const": false
-                }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "id",
-                "schema_version",
-                "pull_request",
-                "commit",
-                "rewritten_by_this_stamp"
-              ],
-              "properties": {
-                "id": {
-                  "const": "paper-laya-precompute-fill-sim-surround-packet-v0"
-                },
-                "schema_version": {
-                  "const": "paper_laya_precompute_fill_sim_surround_packet_v0"
-                },
-                "pull_request": {
-                  "const": 63
-                },
-                "commit": {
-                  "const": "171cd61"
-                },
-                "rewritten_by_this_stamp": {
-                  "const": false
-                }
-              }
-            }
-          ]
-        },
-        "fixture_path": {
-          "type": "string",
-          "minLength": 1
-        },
-        "validated_by_parent_cli": {
-          "const": true
-        },
-        "surround_body_embedded": {
-          "const": false
-        },
-        "digest": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "counts_are_stamp_counts_not_returns",
-            "full_book",
-            "label_rates"
-          ],
           "properties": {
-            "counts_are_stamp_counts_not_returns": {
+            "registration": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "schema_version",
+                    "pull_request",
+                    "commit",
+                    "rewritten_by_this_stamp"
+                  ],
+                  "properties": {
+                    "id": {
+                      "const": "paper-laya-precompute-surround-packet-v0"
+                    },
+                    "schema_version": {
+                      "const": "paper_laya_precompute_surround_packet_v0"
+                    },
+                    "pull_request": {
+                      "const": 64
+                    },
+                    "commit": {
+                      "const": "277a142"
+                    },
+                    "rewritten_by_this_stamp": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "schema_version",
+                    "pull_request",
+                    "commit",
+                    "rewritten_by_this_stamp"
+                  ],
+                  "properties": {
+                    "id": {
+                      "const": "paper-laya-precompute-fill-sim-surround-packet-v0"
+                    },
+                    "schema_version": {
+                      "const": "paper_laya_precompute_fill_sim_surround_packet_v0"
+                    },
+                    "pull_request": {
+                      "const": 63
+                    },
+                    "commit": {
+                      "const": "171cd61"
+                    },
+                    "rewritten_by_this_stamp": {
+                      "const": false
+                    }
+                  }
+                }
+              ]
+            },
+            "fixture_path": {
+              "$ref": "#/$defs/layaSurroundFixturePath"
+            },
+            "validated_by_parent_cli": {
               "const": true
             },
-            "full_book": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "policy",
-                "reject_stamps_dropped",
-                "n",
-                "runner_n",
-                "reject_n"
-              ],
-              "properties": {
-                "policy": {
-                  "const": "dec007_both_arms_retained"
-                },
-                "reject_stamps_dropped": {
-                  "const": 0
-                },
-                "n": {
-                  "type": "integer",
-                  "minimum": 0
-                },
-                "runner_n": {
-                  "type": "integer",
-                  "minimum": 0
-                },
-                "reject_n": {
-                  "type": "integer",
-                  "minimum": 0
-                }
-              }
+            "surround_body_embedded": {
+              "const": false
             },
-            "label_rates": {
+            "digest": {
               "type": "object",
               "additionalProperties": false,
               "required": [
-                "share_kind",
-                "rows"
+                "counts_are_stamp_counts_not_returns",
+                "full_book",
+                "label_rates"
               ],
               "properties": {
-                "share_kind": {
-                  "const": "count_fraction_not_a_return"
+                "counts_are_stamp_counts_not_returns": {
+                  "const": true
                 },
-                "rows": {
-                  "type": "array",
-                  "minItems": 1,
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "label",
-                      "n",
-                      "share"
-                    ],
-                    "properties": {
-                      "label": {
-                        "type": "string"
-                      },
-                      "n": {
-                        "type": "integer",
-                        "minimum": 0
-                      },
-                      "share": {
+                "full_book": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "policy",
+                    "reject_stamps_dropped",
+                    "n",
+                    "runner_n",
+                    "reject_n"
+                  ],
+                  "properties": {
+                    "policy": {
+                      "const": "dec007_both_arms_retained"
+                    },
+                    "reject_stamps_dropped": {
+                      "const": 0
+                    },
+                    "n": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "runner_n": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "reject_n": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                },
+                "label_rates": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "share_kind",
+                    "rows"
+                  ],
+                  "properties": {
+                    "share_kind": {
+                      "const": "count_fraction_not_a_return"
+                    },
+                    "rows": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
                         "type": "object",
                         "additionalProperties": false,
                         "required": [
-                          "numerator",
-                          "denominator"
+                          "label",
+                          "n",
+                          "share"
                         ],
                         "properties": {
-                          "numerator": {
+                          "label": {
+                            "type": "string"
+                          },
+                          "n": {
                             "type": "integer",
                             "minimum": 0
                           },
-                          "denominator": {
-                            "type": "integer",
-                            "minimum": 1
+                          "share": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "numerator",
+                              "denominator"
+                            ],
+                            "properties": {
+                              "numerator": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "denominator": {
+                                "type": "integer",
+                                "minimum": 1
+                              }
+                            }
                           }
                         }
                       }
                     }
                   }
+                },
+                "fill_sim_status_counts": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "prefixItems": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "status",
+                        "n",
+                        "share"
+                      ],
+                      "properties": {
+                        "status": {
+                          "const": "documented_model_only"
+                        },
+                        "n": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "share": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "numerator",
+                            "denominator"
+                          ],
+                          "properties": {
+                            "numerator": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "denominator": {
+                              "type": "integer",
+                              "minimum": 1
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "status",
+                        "n",
+                        "share"
+                      ],
+                      "properties": {
+                        "status": {
+                          "const": "reject_arm_no_pretend_buy"
+                        },
+                        "n": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "share": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "numerator",
+                            "denominator"
+                          ],
+                          "properties": {
+                            "numerator": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "denominator": {
+                              "type": "integer",
+                              "minimum": 1
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "items": false
                 }
               }
-            },
-            "fill_sim_status_counts": {
-              "type": "array",
-              "minItems": 2,
-              "maxItems": 2,
-              "prefixItems": [
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "status",
-                    "n",
-                    "share"
-                  ],
-                  "properties": {
-                    "status": {
-                      "const": "documented_model_only"
-                    },
-                    "n": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "share": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "numerator",
-                        "denominator"
-                      ],
-                      "properties": {
-                        "numerator": {
-                          "type": "integer",
-                          "minimum": 0
-                        },
-                        "denominator": {
-                          "type": "integer",
-                          "minimum": 1
-                        }
-                      }
-                    }
-                  }
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "status",
-                    "n",
-                    "share"
-                  ],
-                  "properties": {
-                    "status": {
-                      "const": "reject_arm_no_pretend_buy"
-                    },
-                    "n": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "share": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "numerator",
-                        "denominator"
-                      ],
-                      "properties": {
-                        "numerator": {
-                          "type": "integer",
-                          "minimum": 0
-                        },
-                        "denominator": {
-                          "type": "integer",
-                          "minimum": 1
-                        }
-                      }
-                    }
-                  }
-                }
-              ],
-              "items": false
             }
           }
-        }
-      }
         },
         {
           "if": {
@@ -486,6 +484,37 @@
             "required": [
               "digest"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "registration": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "const": "paper-laya-precompute-surround-packet-v0"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              }
+            },
+            "required": [
+              "registration"
+            ]
+          },
+          "then": {
+            "properties": {
+              "digest": {
+                "not": {
+                  "required": [
+                    "fill_sim_status_counts"
+                  ]
+                }
+              }
+            }
           }
         }
       ]
@@ -599,7 +628,7 @@
           "const": "delta_exec"
         },
         "also_called": {
-          "const": "Δ_exec"
+          "const": "\u0394_exec"
         },
         "value": {
           "type": "null"
@@ -843,6 +872,43 @@
           "const": false
         }
       }
+    },
+    "layaSurroundFixturePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(fixtures/paper_laya_precompute_surround_packet_v0/|fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/).+",
+      "allOf": [
+        {
+          "not": {
+            "pattern": "^/var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^//+var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^\\.\\./var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^\\./var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "\\.\\./lib/mal(/|$)"
+          }
+        }
+      ]
     }
   }
 }
