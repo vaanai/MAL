@@ -158,6 +158,23 @@ def _host_path_message(text: str) -> str:
     )
 
 
+def _kernel_realpath_refusal(text: str) -> str | None:
+    """Refuse when the kernel realpath is under /var/lib/mal.
+
+    Relative args are joined with getcwd via os.path.join only. The string
+    passed to realpath is not run through abspath or _lexical_posix, so a
+    symlink/.. component is not stripped before the kernel resolves it.
+    """
+    if os.path.isabs(text):
+        candidate = text
+    else:
+        candidate = os.path.join(os.getcwd(), text)
+    real = os.path.realpath(candidate)
+    if real == HOST_ROOT or real.startswith(HOST_ROOT + os.sep):
+        return _host_path_message(text)
+    return None
+
+
 def _host_open_refusal(text: str) -> str | None:
     """Refuse a host path before any file read.
 
@@ -711,6 +728,8 @@ def main(argv: list[str] | None = None) -> int:
         refusal = _host_open_refusal(text)
         if refusal is None:
             refusal = _host_open_refusal(os.path.abspath(text))
+        if refusal is None:
+            refusal = _kernel_realpath_refusal(text)
         if refusal is not None:
             print(refusal, file=sys.stderr)
             return 1

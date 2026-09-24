@@ -6,8 +6,9 @@ import copy
 import io
 import json
 import os
+import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -426,6 +427,59 @@ class PaperBatchHostLocalSealedJsonlDryRunIncompleteRpcV0Tests(unittest.TestCase
                 self.assertEqual(parent_calls, [])
                 self.assertIn("does not open", err.getvalue())
                 self.assertIn(HOST_ROOT, err.getvalue())
+
+    def test_validate_refuses_symlink_dotdot_realpath_before_read_text(self) -> None:
+        """Symlink/.. realpath under /var/lib/mal is refused; normpath would miss it."""
+        reads: list[str] = []
+        parent_calls: list[object] = []
+
+        def _read_text(self: Path, *args: object, **kwargs: object) -> str:
+            reads.append(os.fspath(self))
+            return json.dumps(example_operator_declared())
+
+        def _parent(argv: object = None) -> int:
+            parent_calls.append(argv)
+            return 0
+
+        tail = "link/../var/lib/mal/paper/receipt.json"
+        with tempfile.TemporaryDirectory() as tmp:
+            os.symlink("/var", os.path.join(tmp, "link"))
+            absolute = os.path.join(tmp, tail)
+            lexical = os.path.normpath(absolute)
+            self.assertFalse(lexical == HOST_ROOT or lexical.startswith(HOST_ROOT + os.sep))
+            self.assertTrue(os.path.realpath(absolute).startswith(HOST_ROOT + os.sep))
+            cases = (
+                (None, absolute),
+                (tmp, tail),
+            )
+            for cwd, arg in cases:
+                with self.subTest(cwd=cwd, arg=arg):
+                    reads.clear()
+                    parent_calls.clear()
+                    err = io.StringIO()
+                    getcwd_patch = (
+                        mock.patch(
+                            "tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.os.getcwd",
+                            return_value=cwd,
+                        )
+                        if cwd is not None
+                        else nullcontext()
+                    )
+                    with (
+                        mock.patch.object(Path, "read_text", _read_text),
+                        mock.patch(
+                            "tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.parent_main",
+                            _parent,
+                        ),
+                        getcwd_patch,
+                        redirect_stdout(io.StringIO()),
+                        redirect_stderr(err),
+                    ):
+                        code = main(["validate", arg])
+                    self.assertEqual(code, 1)
+                    self.assertEqual(reads, [])
+                    self.assertEqual(parent_calls, [])
+                    self.assertIn("does not open", err.getvalue())
 
     def test_closed_book_tamper_fails_validate(self) -> None:
         receipt = example_synthetic_replay()
