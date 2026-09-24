@@ -3,15 +3,15 @@
 | | |
 | --- | --- |
 | **ID** | `paper-fill-sim-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-6d12d7af-2c6d-5f23-98f1-5d4dc8717db0`; implement `bc-7863de85-9f38-5fce-89e0-8f25464b2272`; [PR #60](https://github.com/vaanai/MAL/pull/60) tip `ec94ce5`; squash-merge on `main` pending). Not a measure. Not an executed host dry-run. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-6d12d7af-2c6d-5f23-98f1-5d4dc8717db0`; implement `bc-7863de85-9f38-5fce-89e0-8f25464b2272`; merged [PR #60](https://github.com/vaanai/MAL/pull/60) squash `d3b5554` on `main`). Not a measure. Not an executed host dry-run. |
 | **Owner seat** | Proof (receipt + Soft GATE); Scout (host-local path shape); Helm (AUTH) |
-| **Commission** | Receipt around the merged fill-sim parent batch ([PR #59](https://github.com/vaanai/MAL/pull/59) squash `4664363` on `main` @ `d352ea6` lab tip). Parent #49–#59 CLIs and EXP-006 harness are **not** rewritten. |
+| **Commission** | Receipt around the merged fill-sim parent batch ([PR #59](https://github.com/vaanai/MAL/pull/59) squash `4664363` on `main`). Parent #49–#59 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-fill-sim-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json](paper-fill-sim-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/](../fixtures/paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/) — synthetic receipts, not host extracts |
 | **CLI** | `python -m tools.paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0` — example / validate / receipt on local files only |
 | **Operator shape** | [paper_fill_sim_batch_host_local_sealed_jsonl_dry_run.md](../tools/paper_fill_sim_batch_host_local_sealed_jsonl_dry_run.md) — paths and flags only. No executed host stdout |
 | **Parent** | [PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md). Not rewritten. |
-| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-6d12d7af-2c6d-5f23-98f1-5d4dc8717db0`; implement `bc-7863de85-9f38-5fce-89e0-8f25464b2272`; [PR #60](https://github.com/vaanai/MAL/pull/60) tip `ec94ce5`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-6d12d7af-2c6d-5f23-98f1-5d4dc8717db0`; implement `bc-7863de85-9f38-5fce-89e0-8f25464b2272`; squash `d3b5554` on `main`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers the **operator-local dry-run shape** for running the merged fill-sim parent CLI against host-local day-aligned sealed observe JSONL. Courier calendar days are `2026-09-20` and `2026-09-21`. The host name in the receipt is `mal-core-vnic`. The documented paths sit under `/var/lib/mal`.
 
