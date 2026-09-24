@@ -529,6 +529,89 @@ class PaperLayaDecisionPacketBatchOracleSealedDayIncompleteRpcV0Tests(unittest.T
         _, _, errors = project_day(manifest, day=split_day, fixture_origin="synthetic")
         self.assertTrue(errors)
 
+    def _assert_soft_gate_fail4(self, mutate: object, *, label: str) -> None:
+        batch = copy.deepcopy(example_two_day())
+        mutate(batch)
+        with self.subTest(label=label):
+            self.assertTrue(_schema_errors(batch), label)
+            self.assertTrue(validate_batch(batch), label)
+
+    def test_soft_gate_fail4_expectation_rows_bound_on_day20_paths_fail_schema_and_cli(
+        self,
+    ) -> None:
+        self._assert_soft_gate_fail4(
+            lambda b: b["input"]["days"][0]["expectation"]["rows"][0].update(
+                {"digest_n": 99}
+            ),
+            label="mutated digest_n on day-20 expectation row",
+        )
+        self._assert_soft_gate_fail4(
+            lambda b: b["input"]["days"][0]["expectation"]["rows"][0].update(
+                {"source_day": "2026-09-21"}
+            ),
+            label="mutated source_day on day-20 expectation row",
+        )
+        self._assert_soft_gate_fail4(
+            lambda b: b["input"]["days"][0]["expectation"]["rows"][0].update(
+                {"assembly_fingerprint": "phantom|fingerprint"}
+            ),
+            label="mutated assembly_fingerprint on day-20 expectation row",
+        )
+        self._assert_soft_gate_fail4(
+            lambda b: b["input"]["days"][0]["expectation"]["rows"].pop(),
+            label="dropped day-20 expectation row",
+        )
+        self._assert_soft_gate_fail4(
+            lambda b: b["input"]["days"][0]["expectation"]["rows"].append(
+                copy.deepcopy(b["input"]["days"][0]["expectation"]["rows"][0])
+            ),
+            label="extra day-20 expectation row",
+        )
+
+    def test_soft_gate_fail4_output_manifest_name_bound_fail_schema_and_cli(self) -> None:
+        self._assert_soft_gate_fail4(
+            lambda b: b["days"][0].__setitem__(
+                "manifest_name", "decision-day-1999-01-01.json"
+            ),
+            label="phantom output manifest_name on day-20",
+        )
+
+    def test_soft_gate_fail4_day21_only_rollup_full_book_bound_fail_schema_and_cli(
+        self,
+    ) -> None:
+        day = "2026-09-21"
+        manifest = manifest_for_day(day)
+        packets, _, errors = project_day(manifest, day=day, fixture_origin="synthetic")
+        self.assertEqual(errors, [])
+        spec = [
+            {
+                "day": day,
+                "manifest_name": f"decision-day-{day}.json",
+                "manifest": manifest,
+                "expectation": expectation_from_packets(day, packets),
+            }
+        ]
+        batch, problems = assemble(spec, fixture_origin="synthetic")
+        self.assertEqual(problems, [])
+        self.assertIsNotNone(batch)
+
+        def _rollup_n(batch_doc: dict) -> None:
+            batch_doc["rollup"]["n"] = 99
+
+        def _packet_n(batch_doc: dict) -> None:
+            batch_doc["rollup"]["packet_n"] = 99
+            batch_doc["full_book"]["packet_n"] = 99
+
+        for mutate, label in (
+            (_rollup_n, "day-21-only rollup.n drift"),
+            (_packet_n, "day-21-only rollup/full_book packet_n drift"),
+        ):
+            doc = copy.deepcopy(batch)
+            mutate(doc)
+            with self.subTest(label=label):
+                self.assertTrue(_schema_errors(doc), label)
+                self.assertTrue(validate_batch(doc), label)
+
     def test_soft_gate_fail1_cli_refuses_lexical_manifest_paths_before_fs(self) -> None:
         bad_paths = [
             "fixtures\\paper_laya_precompute_decision_packet_v0\\decision_non_fill_sim_surround.json",

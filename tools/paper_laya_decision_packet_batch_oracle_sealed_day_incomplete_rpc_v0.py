@@ -586,6 +586,14 @@ def assemble(
         if project_errors:
             errors.extend(project_errors)
             continue
+        canonical_expectation = expectation_from_packets(day, packets)
+        if expectation != canonical_expectation:
+            _err(
+                errors,
+                f"{day}.expectation",
+                "must match the checked-in fixture expectation for this manifest composition",
+            )
+            continue
         board, score_errors = _score_packets_for_calendar_day(packets, expectation)
         if score_errors or board is None:
             errors.extend(f"{day}.scoreboard: {problem}" for problem in score_errors)
