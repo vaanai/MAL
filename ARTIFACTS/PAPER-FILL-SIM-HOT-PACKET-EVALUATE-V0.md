@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **ID** | `paper-fill-sim-hot-packet-evaluate-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). Not a measure. Not an EXP run. Not an EXP-006 Oracle replay. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-b3ba78ee-601f-596b-b59e-eaf7e19d62de`; implement `bc-e10783d6-26d8-54b5-b072-87959ee86e58`; [PR #57](https://github.com/vaanai/MAL/pull/57) tip `60649eb`; squash-merge pending → **Proposed on `main`** after merge). Not a measure. Not an EXP run. Not an EXP-006 Oracle replay. |
 | **Owner seat** | Proof (fill-sim bind + Soft GATE); Scout (hot-packet / evaluate spine); Helm (AUTH) |
 | **Commission** | Helm AUTH. Soft GATE required before merge. Consumer of merged paper-evaluate ([PR #50](https://github.com/vaanai/MAL/pull/50) @ `224166c`) and the #49–#55 citeable chain on `main` (tip includes #56 Lab-memory night close @ `3529b47`). |
 | **Schema** | [paper-fill-sim-hot-packet-evaluate-v0.schema.json](paper-fill-sim-hot-packet-evaluate-v0.schema.json) (JSON Schema 2020-12) |
@@ -11,7 +11,7 @@
 | **CLI** | `python -m tools.paper_fill_sim_hot_packet_evaluate_v0` — example / validate / sim (fixtures only) |
 | **Parent evaluate** | [PAPER-EVALUATE-HOT-PACKET-V0.md](PAPER-EVALUATE-HOT-PACKET-V0.md). Not rewritten. |
 | **Vocabulary** | [PAPER-TRADING-SURFACE-BRIEF.md](PAPER-TRADING-SURFACE-BRIEF.md), [EXP-006](../EXP/EXP-006-paper-would-have-happened-harness-v0.md) — **vocabulary only**; do **not** promote EXP-006 or re-run the Oracle measure. |
-| **Soft GATE** | **Required** before merge. Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-b3ba78ee-601f-596b-b59e-eaf7e19d62de`; implement `bc-e10783d6-26d8-54b5-b072-87959ee86e58`). Squash-merge pending. Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers how **EXP-006-style fill-sim honesty** (documented P0 constants and field names) binds onto a validated [`paper_evaluate_hot_packet_v0`](PAPER-EVALUATE-HOT-PACKET-V0.md) stamp — **runner and reject arms** — without joining marks, without tailing observe JSONL, and without scoring a sealed book.
 
@@ -156,7 +156,7 @@ Checked-in fixtures are **synthetic**. They are not Oracle extracts and not lift
 
 ## Soft watches (non-blocking)
 
-**Soft GATE is required** before merge. `soft_watches.blocking=false`. Inherited watches from #49–#55 remain listed and non-blocking. `schema_looser_than_cli` stays the historical id closed by [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) for parent shapes; this schema const-refuses closed book, non-`none` measure, numeric horizons / `Δ_exec` under null status, and non-null fill outcomes on this registration. The CLI still rebuilds the bind.
+**Soft GATE PASS** (Formal stamp Lyra). `soft_watches.blocking=false`. Inherited watches from #49–#55 remain listed and non-blocking. `schema_looser_than_cli` stays the historical id closed by [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) for parent shapes; this schema const-refuses closed book, non-`none` measure, numeric horizons / `Δ_exec` under null status, and non-null fill outcomes on this registration. The CLI still rebuilds the bind.
 
 | Watch id | What it is | Why it does not block |
 | --- | --- | --- |
