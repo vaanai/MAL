@@ -3,13 +3,13 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE pending.** Not a measure. Not a host run. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE Formal still pending** (FAIL #1 schema/CLI holes closed on branch; no PASS claim). Not a measure. Not a host run. |
 | **Owner seat** | Proof (batch + Soft GATE); Scout (decision-packet spine stays on cited packets); Helm (AUTH) |
 | **Commission** | Mirror of merged #52 / #59 batch shape, but stamped inputs are validated [`paper_laya_precompute_decision_packet_v0`](PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md) (#67 squash `52a06e7`) counted by [`paper_laya_decision_packet_scoreboard_sealed_fixture_v0`](PAPER-LAYA-DECISION-PACKET-SCOREBOARD-SEALED-FIXTURE-V0.md) (#68 squash `d31af86`). Decision-packet cite chain on main: #63/#64 surround + #65 lock through #67. Parent #49–#68 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json](paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/](../fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/) — synthetic calendar labels `2026-09-20` / `2026-09-21`; not host extracts |
 | **CLI** | `python -m tools.paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0` — `example` / `validate` / `batch` on local JSON only |
-| **Soft GATE** | **Pending** before merge. Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **Formal pending.** FAIL #1 `schema_looser_than_cli` holes (numeric horizons/Δ_exec, unbound rollup/census/spine/label/packet-row counts, soft_watches order/uniqueness, manifest path honesty, embedded scoreboard shape, invented keys) closed in schema + batch CLI on this branch. Watches stay **non-blocking** (`blocking=false`). |
 
 This file registers a **fixtures-only** day-aligned batch: `decision-day-YYYY-MM-DD.json` manifest → cite/assemble validated #67 decision packets (themselves citing #63/#64 surround + #65 lock) → count with the #68 scoreboard path → one scoreboard per day + rollup.
 

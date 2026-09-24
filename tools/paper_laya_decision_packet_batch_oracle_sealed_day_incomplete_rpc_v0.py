@@ -27,9 +27,9 @@ from tools.paper_laya_decision_packet_scoreboard_sealed_fixture_v0 import (
     SCHEMA_VERSION as SCOREBOARD_SCHEMA,
     SOFT_WATCH_ITEMS as INHERITED_SOFT_WATCH_ITEMS,
     _expectation_row_from_packet,
-    score_packets,
     validate_expectation,
 )
+import tools.paper_laya_decision_packet_scoreboard_sealed_fixture_v0 as _scoreboard_mod
 from tools.paper_laya_precompute_decision_packet_v0 import (
     PREFIX_FILL_SIM,
     PREFIX_LOCK_RECEIPT,
@@ -182,6 +182,93 @@ def _relative_joined_under_host_root(text: str, cwd: str) -> bool:
     return _lexical_under_host_root(joined)
 
 
+def _score_packets_for_calendar_day(
+    packets: Any, expectation: Any
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Score one day using #68 path without rewriting parent CLI (calendar-day identity)."""
+    if not isinstance(expectation, Mapping):
+        return None, ["expectation: must be a JSON object"]
+    sealed_day = expectation.get("day")
+    if not isinstance(sealed_day, str):
+        return None, ["expectation.day: must be YYYY-MM-DD"]
+
+    def _identity(packet: Mapping[str, Any]) -> tuple[str, str, str]:
+        return (
+            sealed_day,
+            _scoreboard_mod._spine_profile(packet),
+            _scoreboard_mod._assembly_fingerprint(packet),
+        )
+
+    def _join_status(
+        packet: Mapping[str, Any],
+        exp_rows: Mapping[tuple[str, str, str], Mapping[str, Any]],
+    ) -> str:
+        key = _identity(packet)
+        row = exp_rows.get(key)
+        if row is None:
+            return _scoreboard_mod.JOIN_UNMATCHED
+        if row.get("spine_profile") != _scoreboard_mod._spine_profile(packet):
+            return _scoreboard_mod.JOIN_SPINE
+        total, runner, reject = _scoreboard_mod._digest_totals(packet)
+        if (
+            int(row.get("digest_n", -1)) != total
+            or int(row.get("digest_runner_n", -1)) != runner
+            or int(row.get("digest_reject_n", -1)) != reject
+        ):
+            return _scoreboard_mod.JOIN_DIGEST
+        rg = packet.get("risk_gate", {})
+        if not isinstance(rg, Mapping) or rg.get("decision") != row.get("risk_gate_decision"):
+            return _scoreboard_mod.JOIN_RISK_GATE
+        return _scoreboard_mod.JOIN_MATCHED
+
+    original_build = _scoreboard_mod._build_scoreboard
+
+    def _build_scoreboard(
+        packet_list: Sequence[Mapping[str, Any]], exp: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        board = original_build(packet_list, exp)
+        board["sealed_days"] = [
+            {**board["sealed_days"][0], "day": sealed_day},
+        ]
+        return board
+
+    saved = (
+        _scoreboard_mod._identity,
+        _scoreboard_mod._join_status,
+        _scoreboard_mod._build_scoreboard,
+    )
+    _scoreboard_mod._identity = _identity
+    _scoreboard_mod._join_status = _join_status
+    _scoreboard_mod._build_scoreboard = _build_scoreboard
+    try:
+        return _scoreboard_mod.score_packets(packets, expectation)
+    finally:
+        _scoreboard_mod._identity = saved[0]
+        _scoreboard_mod._join_status = saved[1]
+        _scoreboard_mod._build_scoreboard = saved[2]
+
+
+def _decision_repo_path_refusal(text: str) -> str | None:
+    """Lexical refuse before FS: host root, absolute, .., collapse, backslash."""
+    refusal = _batch_path_refusal(text)
+    if refusal:
+        return refusal
+    raw = text.replace("\\", "/")
+    if "\\" in text:
+        return f"{text}: backslash paths are refused lexically"
+    if raw != text.strip():
+        return f"{text}: path must not have leading or trailing whitespace"
+    if raw.startswith("./") or "/./" in raw or raw.endswith("/"):
+        return f"{text}: non-canonical repo-relative path"
+    if raw.startswith("//") or "///" in raw:
+        return f"{text}: non-canonical repo-relative path"
+    if ".." in raw.split("/"):
+        return f"{text}: parent-segment paths are refused"
+    if posixpath.isabs(raw):
+        return f"{text}: absolute paths are refused"
+    return None
+
+
 def _batch_path_refusal(text: str) -> str | None:
     norm = _normpath_string_only(text)
     if _lexical_under_host_root(norm):
@@ -199,15 +286,17 @@ def _batch_path_refusal(text: str) -> str | None:
 
 
 def _repo_relative_allowed(text: str, prefixes: Sequence[str]) -> bool:
-    if _batch_path_refusal(text):
+    if _decision_repo_path_refusal(text):
         return False
     raw = text.replace("\\", "/").strip()
-    if raw.startswith("./"):
-        raw = raw[2:]
-    while raw.startswith("//"):
-        raw = raw[1:]
-    if raw.endswith("/"):
-        raw = raw.rstrip("/")
+    if raw != text.replace("\\", "/").strip():
+        return False
+    if raw.startswith("./") or raw.endswith("/") or "//" in raw or "/./" in raw:
+        return False
+    if ".." in raw.split("/"):
+        return False
+    if posixpath.isabs(raw):
+        return False
     path = Path(raw)
     if not path.is_absolute():
         try:
@@ -305,7 +394,7 @@ def _packets_from_manifest(manifest: Mapping[str, Any]) -> tuple[list[dict[str, 
         for index, rel_path in enumerate(paths):
             if not isinstance(rel_path, str):
                 continue
-            refusal = _batch_path_refusal(rel_path)
+            refusal = _decision_repo_path_refusal(rel_path)
             if refusal:
                 errors.append(refusal)
                 continue
@@ -335,7 +424,7 @@ def _packets_from_manifest(manifest: Mapping[str, Any]) -> tuple[list[dict[str, 
                 continue
             for candidate in [*surround_paths, *lock_receipt_paths]:
                 if isinstance(candidate, str):
-                    refusal = _batch_path_refusal(candidate)
+                    refusal = _decision_repo_path_refusal(candidate)
                     if refusal:
                         errors.append(refusal)
             packet, problems = assemble_decision_packet(
@@ -489,7 +578,7 @@ def assemble(
         if project_errors:
             errors.extend(project_errors)
             continue
-        board, score_errors = score_packets(packets, expectation)
+        board, score_errors = _score_packets_for_calendar_day(packets, expectation)
         if score_errors or board is None:
             errors.extend(f"{day}.scoreboard: {problem}" for problem in score_errors)
             continue

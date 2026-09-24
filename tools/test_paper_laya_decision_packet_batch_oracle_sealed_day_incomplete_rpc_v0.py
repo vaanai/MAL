@@ -267,6 +267,160 @@ class PaperLayaDecisionPacketBatchOracleSealedDayIncompleteRpcV0Tests(unittest.T
             list(PIPELINE),
         )
 
+    def _assert_soft_gate_fail1(self, mutate: object, *, label: str) -> None:
+        batch = copy.deepcopy(example_two_day())
+        mutate(batch)
+        with self.subTest(label=label):
+            self.assertTrue(_schema_errors(batch), label)
+            self.assertTrue(validate_batch(batch), label)
+
+    def test_soft_gate_fail1_numeric_horizons_and_delta_exec_fail_schema_and_cli(self) -> None:
+        self._assert_soft_gate_fail1(
+            lambda b: b["days"][0]["scoreboard"]["horizons"]["values"].update({"5s": 0.01}),
+            label="numeric horizon",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["days"][0]["scoreboard"]["delta_exec"].update({"value": 0}),
+            label="numeric delta_exec",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["days"][0]["scoreboard"]["horizons"]["values"].update({"15s": 1}),
+            label="numeric horizon joined slot",
+        )
+
+    def test_soft_gate_fail1_unbound_counts_fail_schema_and_cli(self) -> None:
+        self._assert_soft_gate_fail1(
+            lambda b: b["rollup"].update({"n": 99}),
+            label="rollup n",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["rollup"]["rows"][0].update({"n": 99}),
+            label="rollup runner n",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["full_book"].update({"packet_n": 99}),
+            label="full_book packet_n",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["days"][0]["packet_census"].update({"listed_n": 99}),
+            label="packet_census listed_n",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["days"][0]["scoreboard"]["spine_profile_counts"][0].update({"n": 99}),
+            label="spine_profile_counts n",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["days"][0]["scoreboard"]["label_rates"]["rows"][0].update({"n": 99}),
+            label="label_rates runner n",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["days"][0]["scoreboard"]["packet_rows"][0].update({"digest_n": 99}),
+            label="packet_row digest_n",
+        )
+
+    def test_soft_gate_fail1_soft_watches_order_and_uniqueness_fail_schema_and_cli(self) -> None:
+        items = example_two_day()["soft_watches"]["items"]
+        self._assert_soft_gate_fail1(
+            lambda b: b["soft_watches"].update({"items": list(reversed(items))}),
+            label="reversed soft_watches",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["soft_watches"].update(
+                {"items": [items[0], items[0], *items[1:]]}
+            ),
+            label="duplicate soft_watches",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["soft_watches"].update({"items": items[:-1]}),
+            label="dropped soft_watches",
+        )
+
+    def test_soft_gate_fail1_manifest_paths_fail_schema_and_cli(self) -> None:
+        bad = "fixtures/paper_laya_precompute_decision_packet_v0/../paper_laya_precompute_decision_packet_v0/decision_non_fill_sim_surround.json"
+        self._assert_soft_gate_fail1(
+            lambda b: b["input"]["days"][0]["manifest"]["decision_packet_paths"].append(bad),
+            label="manifest dotdot path",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["input"]["days"][0]["manifest"]["decision_packet_paths"].__setitem__(
+                0, "/fixtures/paper_laya_precompute_decision_packet_v0/decision_non_fill_sim_surround.json"
+            ),
+            label="manifest absolute path",
+        )
+        collapse = (
+            "fixtures/paper_laya_precompute_decision_packet_v0//decision_non_fill_sim_surround.json"
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["input"]["days"][0]["manifest"]["decision_packet_paths"].__setitem__(
+                0, collapse
+            ),
+            label="manifest double slash",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["input"]["days"][0]["manifest"]["decision_packet_paths"].__setitem__(
+                0,
+                "fixtures/paper_laya_precompute_decision_packet_v0/./decision_non_fill_sim_surround.json",
+            ),
+            label="manifest dot segment",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["input"]["days"][0]["manifest"]["decision_packet_paths"].__setitem__(
+                0,
+                "fixtures/paper_laya_precompute_decision_packet_v0/decision_non_fill_sim_surround.json/",
+            ),
+            label="manifest trailing slash",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["input"]["days"][0]["manifest"]["decision_packet_paths"].__setitem__(
+                0,
+                "fixtures\\paper_laya_precompute_decision_packet_v0\\decision_non_fill_sim_surround.json",
+            ),
+            label="manifest backslash",
+        )
+
+    def test_soft_gate_fail1_incomplete_reason_and_ev_fail_schema_and_cli(self) -> None:
+        self._assert_soft_gate_fail1(
+            lambda b: b["dual_read"].update(
+                {"incomplete_reason": "closed_book_projection"}
+            ),
+            label="batch incomplete_reason drift",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b["days"][0]["scoreboard"]["dual_read"].update(
+                {"incomplete_reason": "host_sealed_book_close"}
+            ),
+            label="embedded scoreboard incomplete_reason drift",
+        )
+        self._assert_soft_gate_fail1(
+            lambda b: b.update({"ev": 1.0}),
+            label="invented ev key",
+        )
+
+    def test_soft_gate_fail1_dropped_spine_row_fail_schema_and_cli(self) -> None:
+        self._assert_soft_gate_fail1(
+            lambda b: b["days"][0]["scoreboard"].update(
+                {
+                    "spine_profile_counts": [
+                        b["days"][0]["scoreboard"]["spine_profile_counts"][0]
+                    ]
+                }
+            ),
+            label="dropped spine_profile_counts row",
+        )
+
+    def test_soft_gate_fail1_cli_refuses_lexical_manifest_paths_before_fs(self) -> None:
+        bad_paths = [
+            "fixtures\\paper_laya_precompute_decision_packet_v0\\decision_non_fill_sim_surround.json",
+            "fixtures/paper_laya_precompute_decision_packet_v0//decision_non_fill_sim_surround.json",
+            "./fixtures/paper_laya_precompute_decision_packet_v0/decision_non_fill_sim_surround.json",
+        ]
+        for bad in bad_paths:
+            with self.subTest(path=bad):
+                manifest = manifest_for_day("2026-09-20")
+                manifest["decision_packet_paths"] = [bad]
+                _, _, errors = project_day(manifest, day="2026-09-20", fixture_origin="synthetic")
+                self.assertTrue(errors)
+
 
 if __name__ == "__main__":
     unittest.main()

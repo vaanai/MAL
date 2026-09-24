@@ -319,9 +319,9 @@ def _fill_sim_digest_counts(packet: Mapping[str, Any]) -> dict[str, int]:
     return counts
 
 
-def _identity(packet: Mapping[str, Any], sealed_day: str) -> tuple[str, str, str]:
+def _identity(packet: Mapping[str, Any]) -> tuple[str, str, str]:
     return (
-        sealed_day,
+        SEALED_DAY,
         _spine_profile(packet),
         _assembly_fingerprint(packet),
     )
@@ -446,13 +446,8 @@ def validate_expectation(expectation: Any) -> list[str]:
     return errors
 
 
-def _join_status(
-    packet: Mapping[str, Any],
-    exp_rows: Mapping[tuple[str, str, str], Mapping[str, Any]],
-    *,
-    sealed_day: str,
-) -> str:
-    key = _identity(packet, sealed_day)
+def _join_status(packet: Mapping[str, Any], exp_rows: Mapping[tuple[str, str, str], Mapping[str, Any]]) -> str:
+    key = _identity(packet)
     row = exp_rows.get(key)
     if row is None:
         return JOIN_UNMATCHED
@@ -472,8 +467,7 @@ def _join_status(
 
 
 def _build_scoreboard(packets: Sequence[Mapping[str, Any]], expectation: Mapping[str, Any]) -> dict[str, Any]:
-    sealed_day = str(expectation["day"])
-    ordered = sorted(packets, key=lambda packet: _identity(packet, sealed_day))
+    ordered = sorted(packets, key=_identity)
     packet_n = len(ordered)
     spine_counts = {profile: 0 for profile in SPINE_PROFILE_ORDER}
     fill_sim_counts = {status: 0 for status in FILL_SIM_STATUS_ORDER}
@@ -493,7 +487,7 @@ def _build_scoreboard(packets: Sequence[Mapping[str, Any]], expectation: Mapping
     packet_rows: list[dict[str, Any]] = []
 
     for ordinal, packet in enumerate(ordered):
-        day, spine, fingerprint = _identity(packet, sealed_day)
+        day, spine, fingerprint = _identity(packet)
         seen[(day, spine, fingerprint)] = seen.get((day, spine, fingerprint), 0) + 1
         profile = _spine_profile(packet)
         if profile in spine_counts:
@@ -504,7 +498,7 @@ def _build_scoreboard(packets: Sequence[Mapping[str, Any]], expectation: Mapping
         digest_reject += reject
         for status, count in _fill_sim_digest_counts(packet).items():
             fill_sim_counts[status] += count
-        joined = _join_status(packet, exp_rows, sealed_day=sealed_day)
+        joined = _join_status(packet, exp_rows)
         join_counts[joined] += 1
         packet_rows.append(
             {
@@ -642,7 +636,7 @@ def _build_scoreboard(packets: Sequence[Mapping[str, Any]], expectation: Mapping
         },
         "sealed_days": [
             {
-                "day": sealed_day,
+                "day": SEALED_DAY,
                 "packet_n": packet_n,
                 "fixture_origin": "synthetic",
                 "sealed_book_rpc_slice": "incomplete",
