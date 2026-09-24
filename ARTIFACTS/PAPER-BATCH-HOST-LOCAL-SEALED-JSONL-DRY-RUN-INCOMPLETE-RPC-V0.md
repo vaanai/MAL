@@ -228,3 +228,4 @@ The command an operator would run **on the host** against `/var/lib/mal` remains
 - Full book: [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)
 - Manager digest: [SUMMARY.md](SUMMARY.md)
 - Parent registrations: [PR #49](https://github.com/vaanai/MAL/pull/49), [PR #50](https://github.com/vaanai/MAL/pull/50), [PR #51](https://github.com/vaanai/MAL/pull/51), [PR #52](https://github.com/vaanai/MAL/pull/52)
+- Receipt capture (cites this stamp; does not rewrite it): [PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md)

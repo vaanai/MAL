@@ -24,6 +24,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-010 — Host-local dry-run receipt capture (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-010 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-host-local-dry-run-receipt-capture-v0`: [PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md), [paper-host-local-dry-run-receipt-capture-v0.schema.json](paper-host-local-dry-run-receipt-capture-v0.schema.json), five capture fixtures, `python -m tools.paper_host_local_dry_run_receipt_capture_v0` (example / validate). The #53 dry-run CLI is called, not rewritten. |
+| **Why** | #54 left host dry-run receipt capture waiting. Incomplete-RPC honesty on the #53 path needs citeable refuse and receipt records: what was refused, what was recorded, and what is knowable at T. |
+| **What was tested** | `python3 -m unittest tools.test_paper_host_local_dry_run_receipt_capture_v0`. Honest captures pass schema and CLI. Dishonest copies fail both. No RPC. No SSH. No `/var/lib/mal` read. `observe/client.py` untouched. |
+| **Verification** | Unit tests pass. `sealed_book_rpc_slice` stays `incomplete`. `closed_book_claim` stays false. `measure.kind` stays `none`. Graph stays cold. A host-path refuse does not embed host bytes. |
+| **Current state** | Contract is **Proposed**. Not a scored measure. Not an executed host dry-run. Soft GATE is required before merge. Soft watches stay non-blocking (`blocking=false`). `global_95bps` and `launchlab_init` stay Proposed. |
+| **Rollback** | Revert this registration. The #53 CLI, parent CLIs, and `observe/client.py` are untouched. |
+| **Unresolved** | Sealed book stays incomplete. No invented EV. No observe-wiring. |
+| **Implications** | Proof cites these captures for the #53 refuse and receipt shapes only. Merge is not a sealed-book close and not alpha. |
+| **Pointers** | [PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md), [PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md) |
+
+---
+
 ## EDL-009 — Paper incomplete-RPC honesty schema align (Proposed)
 
 | Field | Value |
