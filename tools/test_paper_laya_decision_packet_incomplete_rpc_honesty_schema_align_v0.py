@@ -314,6 +314,26 @@ class LayaDecisionPacketSchemaAlignV0Tests(unittest.TestCase):
         self.assertTrue(_schema_errors(ref, doc, self.registry))
         self.assertTrue(_cli_errors("scoreboard", doc))
 
+    def test_dry_run_invocation_fixture_origin_swap_fail_schema_and_cli(self) -> None:
+        ref = (
+            "paper-laya-decision-packet-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json"
+        )
+        dry_dir = (
+            ROOT
+            / "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0"
+        )
+        cases: tuple[tuple[str, str], ...] = (
+            ("synthetic_replay.json", "sealed_row_projection"),
+            ("projection_on_synthetic.json", "synthetic"),
+            ("operator_declared.json", "synthetic"),
+        )
+        for filename, wrong_origin in cases:
+            with self.subTest(fixture=filename, wrong_origin=wrong_origin):
+                doc = copy.deepcopy(_load(dry_dir / filename))
+                doc["invocation"]["fixture_origin"] = wrong_origin
+                self.assertTrue(_schema_errors(ref, doc, self.registry))
+                self.assertTrue(_cli_errors("dry_run_receipt", doc))
+
     def test_dry_run_non_operator_invocation_paths_and_executed_flag_fail_schema_and_cli(
         self,
     ) -> None:

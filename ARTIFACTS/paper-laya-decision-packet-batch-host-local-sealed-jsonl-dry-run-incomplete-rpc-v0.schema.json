@@ -134,6 +134,9 @@
           },
           "invocation": {
             "properties": {
+              "fixture_origin": {
+                "const": "synthetic"
+              },
               "executed_by_this_process": {
                 "const": true
               },
@@ -192,6 +195,9 @@
           },
           "invocation": {
             "properties": {
+              "fixture_origin": {
+                "const": "sealed_row_projection"
+              },
               "executed_by_this_process": {
                 "const": true
               },
@@ -247,6 +253,9 @@
           },
           "invocation": {
             "properties": {
+              "fixture_origin": {
+                "const": "sealed_row_projection"
+              },
               "executed_by_this_process": {
                 "const": false
               },
