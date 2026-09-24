@@ -114,10 +114,11 @@ class PaperLayaDecisionPacketBatchHostLocalSealedJsonlDryRunIncompleteRpcV0Tests
         self.assertEqual(schema["$defs"]["parent"]["properties"]["pull_request"]["const"], 69)
         watches = schema["$defs"]["softWatches"]["properties"]
         self.assertIs(watches["blocking"]["const"], False)
-        items = watches["items"]["items"]["enum"]
-        self.assertEqual(items, list(SOFT_WATCH_ITEMS))
+        prefix = watches["items"]["prefixItems"]
+        self.assertEqual(len(prefix), len(SOFT_WATCH_ITEMS))
+        self.assertEqual([item["const"] for item in prefix], list(SOFT_WATCH_ITEMS))
         for item in PARENT_SOFT_WATCH_ITEMS:
-            self.assertIn(item, items)
+            self.assertIn(item, [entry["const"] for entry in prefix])
 
     def test_host_jsonl_read_true_does_not_close_the_book(self) -> None:
         projection = example_projection_on_synthetic()
