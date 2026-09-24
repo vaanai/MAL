@@ -28,6 +28,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-018 — LAYA decision-packet scoreboard sealed-fixture (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-018 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-laya-decision-packet-scoreboard-sealed-fixture-v0`: [PAPER-LAYA-DECISION-PACKET-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-LAYA-DECISION-PACKET-SCOREBOARD-SEALED-FIXTURE-V0.md), [paper-laya-decision-packet-scoreboard-sealed-fixture-v0.schema.json](paper-laya-decision-packet-scoreboard-sealed-fixture-v0.schema.json), fixtures under `fixtures/paper_laya_decision_packet_scoreboard_sealed_fixture_v0/`, added `fixtures/paper_laya_precompute_decision_packet_v0/decision_mixed_spines.json`, `python -m tools.paper_laya_decision_packet_scoreboard_sealed_fixture_v0` (example / validate / score), `tools/test_paper_laya_decision_packet_scoreboard_sealed_fixture_v0.py`. [LAB_STATE.md](../LAB_STATE.md) §11s. Parent #49–#67 CLIs not rewritten. |
+| **Why** | Mirror #51 / #58 scoreboard pattern on validated #67 decision packets: local-set counts vs synthetic sealed-day expectation without unlock, authorize-run, or live claims. |
+| **What was tested** | `python3 -m unittest tools.test_paper_laya_decision_packet_scoreboard_sealed_fixture_v0` (28 tests). Honest fixtures pass schema (with decision-packet schema registry) and CLI. Dishonest unlock/authorize/live, closed book, measure kind, numeric horizons, and zero `delta_exec` fail schema and CLI. Host-path refuses before `read_text`. No RPC. `observe/client.py` untouched. |
+| **Verification** | Soft GATE **pending** (draft PR). Unittest green on branch. |
+| **Current state** | **Proposed** registration on open PR. Soft GATE not claimed PASS. Caps: `measure.kind=none`; sealed book **incomplete**; Graph **cold**; `risk_gate.unlock=false`; `laya.authorize_run=false`; `laya.live_trading=false`. |
+| **Rollback** | Revert PR; remove §11s from Lab memory. |
+| **Unresolved** | Proof Soft GATE on draft PR. |
+| **Implications** | Next LAYA citeable step after #67 decision packet; does not unlock risk gate or authorize LAYA run. |
+| **Pointers** | Parent [PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md) (#67). |
+
+---
+
 ## EDL-017 — LAYA precompute decision packet (Proposed)
 
 | Field | Value |
