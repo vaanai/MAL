@@ -12,6 +12,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from jsonschema import Draft202012Validator
+
 from tools.paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0 import (
     SOFT_WATCH_ITEMS as PARENT_SOFT_WATCH_ITEMS,
 )
@@ -59,6 +61,19 @@ def _quiet(argv: list[str]) -> int:
         return main(argv)
 
 
+def _schema_errors(doc: object) -> list[str]:
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    return [err.message for err in validator.iter_errors(doc)]
+
+
+def _set_path(doc: dict[str, object], path: tuple[str, ...], value: object) -> None:
+    cursor: object = doc
+    for key in path[:-1]:
+        cursor = cursor[key]  # type: ignore[index]
+    cursor[path[-1]] = value  # type: ignore[index]
+
+
 class PaperLayaDecisionPacketBatchHostLocalSealedJsonlDryRunIncompleteRpcV0Tests(
     unittest.TestCase
 ):
@@ -76,6 +91,7 @@ class PaperLayaDecisionPacketBatchHostLocalSealedJsonlDryRunIncompleteRpcV0Tests
         for which, builder in cases.items():
             receipt = builder()
             self.assertEqual(validate_receipt(receipt), [])
+            self.assertEqual(_schema_errors(receipt), [])
             on_disk = json.loads((FIXTURES / names[which]).read_text(encoding="utf-8"))
             self.assertEqual(on_disk, receipt)
             self.assertEqual(_quiet(["validate", str(FIXTURES / names[which])]), 0)
@@ -433,6 +449,67 @@ class PaperLayaDecisionPacketBatchHostLocalSealedJsonlDryRunIncompleteRpcV0Tests
                 "synthetic_replay.json",
             ],
         )
+
+    def test_operator_declared_invocation_collapse_rejected_by_schema_and_cli(
+        self,
+    ) -> None:
+        day = "2026-09-20"
+        manifest = HOST_MANIFEST[day]
+        jsonl = HOST_JSONL[day]
+        expectation = HOST_EXPECTATION[day]
+        cases: tuple[tuple[tuple[str, ...], object], ...] = (
+            (("invocation", "manifest", 0), "//" + manifest.lstrip("/")),
+            (
+                ("invocation", "manifest", 0),
+                manifest.replace("/paper/", "/./paper/"),
+            ),
+            (("invocation", "jsonl", 0), jsonl + "/"),
+            (("invocation", "expectation", 0), "./" + expectation.lstrip("/")),
+            (
+                ("invocation", "manifest", 0),
+                manifest.replace("/", "\\", 1),
+            ),
+            (
+                ("invocation", "manifest", 0),
+                (
+                    "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_"
+                    "dry_run_incomplete_rpc_v0/../../var/lib/mal/paper/"
+                    "paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/"
+                    f"decision-day-{day}.json"
+                ),
+            ),
+            (("invocation", "manifest", 0), "///" + manifest.lstrip("/")),
+        )
+        for path, value in cases:
+            with self.subTest(path=path, value=value):
+                doc = copy.deepcopy(example_operator_declared())
+                _set_path(doc, path, value)
+                self.assertTrue(_schema_errors(doc))
+                self.assertTrue(validate_receipt(doc))
+
+    def test_argv_shape_collapse_rejected_by_schema_and_cli(self) -> None:
+        synthetic = copy.deepcopy(example_synthetic_replay())
+        bad_syn_manifest = synthetic["invocation"]["argv_shape"][7].replace(
+            "/decision-day", "//decision-day"
+        )
+        synthetic["invocation"]["argv_shape"][7] = bad_syn_manifest
+        self.assertTrue(_schema_errors(synthetic))
+        self.assertTrue(validate_receipt(synthetic))
+
+        projection = copy.deepcopy(example_projection_on_synthetic())
+        projection["invocation"]["argv_shape"][7] = (
+            "./" + projection["invocation"]["argv_shape"][7]
+        )
+        self.assertTrue(_schema_errors(projection))
+        self.assertTrue(validate_receipt(projection))
+
+        operator = copy.deepcopy(example_operator_declared())
+        operator["invocation"]["argv_shape"][7] = (
+            "//var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-"
+            "incomplete-rpc-v0/decision-day-2026-09-20.json"
+        )
+        self.assertTrue(_schema_errors(operator))
+        self.assertTrue(validate_receipt(operator))
 
 
 if __name__ == "__main__":

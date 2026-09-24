@@ -131,6 +131,13 @@
                 "const": false
               }
             }
+          },
+          "invocation": {
+            "properties": {
+              "argv_shape": {
+                "$ref": "#/$defs/syntheticReplayArgvShape"
+              }
+            }
           }
         }
       }
@@ -179,6 +186,13 @@
                 "const": false
               }
             }
+          },
+          "invocation": {
+            "properties": {
+              "argv_shape": {
+                "$ref": "#/$defs/projectionOnSyntheticArgvShape"
+              }
+            }
           }
         }
       }
@@ -222,6 +236,22 @@
             "properties": {
               "included": {
                 "const": false
+              }
+            }
+          },
+          "invocation": {
+            "properties": {
+              "jsonl": {
+                "$ref": "#/$defs/operatorDeclaredInvocationJsonl"
+              },
+              "manifest": {
+                "$ref": "#/$defs/operatorDeclaredInvocationManifest"
+              },
+              "expectation": {
+                "$ref": "#/$defs/operatorDeclaredInvocationExpectation"
+              },
+              "argv_shape": {
+                "$ref": "#/$defs/operatorDeclaredArgvShape"
               }
             }
           }
@@ -909,6 +939,228 @@
           "const": false
         }
       }
+    },
+    "operatorDeclaredInvocationJsonl": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "/var/lib/mal/sealed/jsonl/observe-2026-09-20.jsonl"
+        },
+        {
+          "const": "/var/lib/mal/sealed/jsonl/observe-2026-09-21.jsonl"
+        }
+      ],
+      "items": false
+    },
+    "operatorDeclaredInvocationManifest": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/decision-day-2026-09-20.json"
+        },
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/decision-day-2026-09-21.json"
+        }
+      ],
+      "items": false
+    },
+    "operatorDeclaredInvocationExpectation": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/sealed_day_2026-09-20_expectation.json"
+        },
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/sealed_day_2026-09-21_expectation.json"
+        }
+      ],
+      "items": false
+    },
+    "syntheticReplayArgvShape": {
+      "type": "array",
+      "minItems": 14,
+      "maxItems": 14,
+      "prefixItems": [
+        {
+          "const": "python"
+        },
+        {
+          "const": "-m"
+        },
+        {
+          "const": "tools.paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0"
+        },
+        {
+          "const": "batch"
+        },
+        {
+          "const": "--fixture-origin"
+        },
+        {
+          "const": "synthetic"
+        },
+        {
+          "const": "--manifest"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-20.json"
+        },
+        {
+          "const": "--manifest"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-21.json"
+        },
+        {
+          "const": "--expectation"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-20_expectation.json"
+        },
+        {
+          "const": "--expectation"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-21_expectation.json"
+        }
+      ],
+      "items": false
+    },
+    "projectionOnSyntheticArgvShape": {
+      "type": "array",
+      "minItems": 19,
+      "maxItems": 19,
+      "prefixItems": [
+        {
+          "const": "python"
+        },
+        {
+          "const": "-m"
+        },
+        {
+          "const": "tools.paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0"
+        },
+        {
+          "const": "batch"
+        },
+        {
+          "const": "--fixture-origin"
+        },
+        {
+          "const": "synthetic"
+        },
+        {
+          "const": "--manifest"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-20.json"
+        },
+        {
+          "const": "--manifest"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-21.json"
+        },
+        {
+          "const": "--expectation"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-20_expectation.json"
+        },
+        {
+          "const": "--expectation"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-21_expectation.json"
+        },
+        {
+          "const": "#"
+        },
+        {
+          "const": "operator"
+        },
+        {
+          "const": "sealed_jsonl_labels"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-20.jsonl"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-21.jsonl"
+        }
+      ],
+      "items": false
+    },
+    "operatorDeclaredArgvShape": {
+      "type": "array",
+      "minItems": 19,
+      "maxItems": 19,
+      "prefixItems": [
+        {
+          "const": "python"
+        },
+        {
+          "const": "-m"
+        },
+        {
+          "const": "tools.paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0"
+        },
+        {
+          "const": "batch"
+        },
+        {
+          "const": "--fixture-origin"
+        },
+        {
+          "const": "synthetic"
+        },
+        {
+          "const": "--manifest"
+        },
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/decision-day-2026-09-20.json"
+        },
+        {
+          "const": "--manifest"
+        },
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/decision-day-2026-09-21.json"
+        },
+        {
+          "const": "--expectation"
+        },
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/sealed_day_2026-09-20_expectation.json"
+        },
+        {
+          "const": "--expectation"
+        },
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/sealed_day_2026-09-21_expectation.json"
+        },
+        {
+          "const": "#"
+        },
+        {
+          "const": "operator"
+        },
+        {
+          "const": "sealed_jsonl_labels"
+        },
+        {
+          "const": "/var/lib/mal/sealed/jsonl/observe-2026-09-20.jsonl"
+        },
+        {
+          "const": "/var/lib/mal/sealed/jsonl/observe-2026-09-21.jsonl"
+        }
+      ],
+      "items": false
     },
     "repoFixturePathHonesty": {
       "allOf": [
