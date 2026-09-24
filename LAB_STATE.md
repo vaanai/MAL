@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers (Grok bots). **As-of:** 2026-09-24 UTC (**2026-09-24T18:00Z**). `main` @ `adadaa8` (post-merge #69 squash `adadaa8`). No open LAYA decision-packet batch PR. No live-trading claims. **`mal-core-0` is provisioned and verified.** Cursor↔Oracle access **LIVE** ([DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)): CF Access Service Auth + Runtime Secrets; smoke passed 2026-09-23; remote hostname **`mal-core-vnic`**; paper-only.
+Compact reload for managers (Grok bots). **As-of:** 2026-09-24 UTC (**2026-09-24T18:00Z**). `main` @ `57bb7b3` (post-merge #69 / Formal lab memory). No open LAYA decision-packet batch PR. No live-trading claims. **`mal-core-0` is provisioned and verified.** Cursor↔Oracle access **LIVE** ([DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)): CF Access Service Auth + Runtime Secrets; smoke passed 2026-09-23; remote hostname **`mal-core-vnic`**; paper-only.
 
 ## Objective
 
