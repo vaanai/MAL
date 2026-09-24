@@ -33,10 +33,10 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 | **What changed** | Registered **Proposed** `paper-fill-sim-host-local-dry-run-receipt-capture-v0`: [PAPER-FILL-SIM-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-FILL-SIM-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md), [paper-fill-sim-host-local-dry-run-receipt-capture-v0.schema.json](paper-fill-sim-host-local-dry-run-receipt-capture-v0.schema.json), five capture fixtures, `python -m tools.paper_fill_sim_host_local_dry_run_receipt_capture_v0` (example / validate). The #60 dry-run CLI is called, not rewritten. |
 | **Why** | Mirror parent #55 receipt capture against merged fill-sim host-local dry-run #60. Citeable refuse and receipt digests without host extract or sealed-book close. |
 | **What was tested** | `python3 -m unittest tools.test_paper_fill_sim_host_local_dry_run_receipt_capture_v0`. Honest captures pass schema and CLI. Dishonest copies fail both. Host-path refuses before `read_text` / `stat`. No RPC. No SSH. `observe/client.py` untouched. |
-| **Verification** | 11 unittest OK on branch. Soft GATE **pending** before merge. |
-| **Current state** | **Proposed** on open PR. Not a measure. Not an executed host dry-run. Graph cold. |
+| **Verification** | Soft GATE **PASS** Formal-stamped Lyra (kill `bc-b734540b-bd7c-586f-b18a-03a726adc849`; implement `bc-b1559a7e-f390-5fdb-8de1-ed305d224c8b`; [PR #62](https://github.com/vaanai/MAL/pull/62) tip `abf3b6c`; 11 unittest OK). |
+| **Current state** | **Proposed** registration on open PR (squash-merge pending). Not a measure. Not an executed host dry-run. Graph cold. `measure.kind=none`; sealed book incomplete. |
 | **Rollback** | Revert capture contract, schema, fixtures, CLI, and tests. |
-| **Unresolved** | Soft GATE Formal stamp before merge. |
+| **Unresolved** | Squash-merge Formal stamp to `main`. |
 | **Implications** | Fill-sim citeable chain can record #60 outcomes without rewriting parent CLIs. |
 | **Pointers** | [PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md) |
 
