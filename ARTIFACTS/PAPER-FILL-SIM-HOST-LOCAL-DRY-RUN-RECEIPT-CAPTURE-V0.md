@@ -3,18 +3,18 @@
 | | |
 | --- | --- |
 | **ID** | `paper-fill-sim-host-local-dry-run-receipt-capture-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-b734540b-bd7c-586f-b18a-03a726adc849`; implement `bc-b1559a7e-f390-5fdb-8de1-ed305d224c8b`; [PR #62](https://github.com/vaanai/MAL/pull/62) tip `abf3b6c`; squash-merge on `main` pending). Not a measure. Not an EXP. Not an executed host dry-run. Not a sealed-book close. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-b734540b-bd7c-586f-b18a-03a726adc849`; implement `bc-b1559a7e-f390-5fdb-8de1-ed305d224c8b`; merged [PR #62](https://github.com/vaanai/MAL/pull/62) squash `a1a3f26` on `main`). Not a measure. Not an EXP. Not an executed host dry-run. Not a sealed-book close. |
 | **Owner seat** | Proof (capture + Soft GATE); Scout (host-local path shape); Helm (AUTH) |
 | **Commission** | Helm AUTH. Capture around the merged fill-sim host-local dry-run ([PR #60](https://github.com/vaanai/MAL/pull/60) @ `d3b5554`). Honesty align on the fill-sim chain: [PR #61](https://github.com/vaanai/MAL/pull/61) @ `677e88b`. The #60 dry-run CLI is **not** rewritten. |
 | **Schema** | [paper-fill-sim-host-local-dry-run-receipt-capture-v0.schema.json](paper-fill-sim-host-local-dry-run-receipt-capture-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_fill_sim_host_local_dry_run_receipt_capture_v0/](../fixtures/paper_fill_sim_host_local_dry_run_receipt_capture_v0/) — capture records, not host extracts |
 | **CLI** | `python -m tools.paper_fill_sim_host_local_dry_run_receipt_capture_v0` — example / validate. Calls the #60 CLI. Does not rewrite it. |
 | **Parent dry-run** | [PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md). Not rewritten. |
-| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-b734540b-bd7c-586f-b18a-03a726adc849`; implement `bc-b1559a7e-f390-5fdb-8de1-ed305d224c8b`; [PR #62](https://github.com/vaanai/MAL/pull/62) tip `abf3b6c`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-b734540b-bd7c-586f-b18a-03a726adc849`; implement `bc-b1559a7e-f390-5fdb-8de1-ed305d224c8b`; squash `a1a3f26` on `main`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers how refuse and receipt outcomes from the #60 fill-sim host-local sealed JSONL dry-run are captured and cited. The capture is knowable from the invocation and from the dry-run rebuild or refuse. It does not read `/var/lib/mal`. It does not embed a receipt body, a parent batch, host bytes, a horizon, `Δ_exec`, or a return.
 
-Citeable stack on `main` through #61 Formal @ `677e88b` (squash); parent dry-run #60 @ `d3b5554`. This capture: [PR #62](https://github.com/vaanai/MAL/pull/62) Soft GATE PASS Formal @ tip `abf3b6c`.
+Citeable stack on `main` through #62 Formal @ `a1a3f26` (squash); parent dry-run #60 @ `d3b5554`; honesty align #61 @ `677e88b`.
 
 Merge ≠ executed host dry-run ≠ Oracle measure ≠ EXP-006 promote.
 
@@ -142,6 +142,7 @@ Honest fixtures pass schema and CLI. In-memory dishonest copies fail both. `obse
 
 - Dry-run this capture cites: [PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [PR #60](https://github.com/vaanai/MAL/pull/60) @ `d3b5554`
 - Honesty align: [PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md), [PR #61](https://github.com/vaanai/MAL/pull/61) @ `677e88b`
+- This capture: [PR #62](https://github.com/vaanai/MAL/pull/62) squash `a1a3f26` on `main` (Soft GATE PASS Formal-stamped)
 - Oracle batch dry-run receipt (#55 pattern): [PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md)
 - [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)
 - [SUMMARY.md](SUMMARY.md)
