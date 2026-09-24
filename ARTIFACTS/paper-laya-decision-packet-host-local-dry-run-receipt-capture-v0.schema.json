@@ -271,6 +271,13 @@
       },
       "then": {
         "properties": {
+          "subject": {
+            "properties": {
+              "receipt_path": {
+                "$ref": "#/$defs/citedReceiptPathSyntheticReplay"
+              }
+            }
+          },
           "outcome": {
             "properties": {
               "path_opened": {
@@ -286,6 +293,9 @@
               "receipt_kind": {
                 "const": "synthetic_replay"
               },
+              "receipt_path": {
+                "$ref": "#/$defs/citedReceiptPathSyntheticReplay"
+              },
               "host_jsonl_read_on_receipt": {
                 "const": false
               },
@@ -340,6 +350,13 @@
       },
       "then": {
         "properties": {
+          "subject": {
+            "properties": {
+              "receipt_path": {
+                "$ref": "#/$defs/citedReceiptPathProjectionOnSynthetic"
+              }
+            }
+          },
           "outcome": {
             "properties": {
               "path_opened": {
@@ -354,6 +371,9 @@
             "properties": {
               "receipt_kind": {
                 "const": "projection_on_synthetic"
+              },
+              "receipt_path": {
+                "$ref": "#/$defs/citedReceiptPathProjectionOnSynthetic"
               },
               "host_jsonl_read_on_receipt": {
                 "const": true
@@ -409,6 +429,13 @@
       },
       "then": {
         "properties": {
+          "subject": {
+            "properties": {
+              "receipt_path": {
+                "$ref": "#/$defs/citedReceiptPathOperatorDeclared"
+              }
+            }
+          },
           "outcome": {
             "properties": {
               "path_opened": {
@@ -423,6 +450,9 @@
             "properties": {
               "receipt_kind": {
                 "const": "operator_declared"
+              },
+              "receipt_path": {
+                "$ref": "#/$defs/citedReceiptPathOperatorDeclared"
               },
               "host_jsonl_read_on_receipt": {
                 "const": true
@@ -468,6 +498,32 @@
             "properties": {
               "kind": {
                 "const": "host_path_not_opened"
+              },
+              "forms": {
+                "type": "array",
+                "minItems": 6,
+                "maxItems": 6,
+                "prefixItems": [
+                  {
+                    "$ref": "#/$defs/hostPathCaptureLexicalAbsoluteValidate"
+                  },
+                  {
+                    "$ref": "#/$defs/hostPathCaptureLexicalAbsoluteReceipt"
+                  },
+                  {
+                    "$ref": "#/$defs/hostPathCaptureCwdAbspathValidateRoot"
+                  },
+                  {
+                    "$ref": "#/$defs/hostPathCaptureCwdAbspathValidateVarLib"
+                  },
+                  {
+                    "$ref": "#/$defs/hostPathCaptureRealpathSymlinkDotdotValidate"
+                  },
+                  {
+                    "$ref": "#/$defs/hostPathCaptureOutsideRepoReceipt"
+                  }
+                ],
+                "items": false
               }
             }
           },
@@ -660,71 +716,280 @@
         }
       }
     },
-    "hostPathForm": {
+    "citedReceiptPathSyntheticReplay": {
+      "const": "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/synthetic_replay.json"
+    },
+    "citedReceiptPathProjectionOnSynthetic": {
+      "const": "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/projection_on_synthetic.json"
+    },
+    "citedReceiptPathOperatorDeclared": {
+      "const": "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/operator_declared.json"
+    },
+    "hostPathCaptureHostJsonl": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "/var/lib/mal/sealed/jsonl/observe-2026-09-20.jsonl"
+        },
+        {
+          "const": "/var/lib/mal/sealed/jsonl/observe-2026-09-21.jsonl"
+        }
+      ],
+      "items": false
+    },
+    "hostPathCaptureHostManifest": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/decision-day-2026-09-20.json"
+        },
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/decision-day-2026-09-21.json"
+        }
+      ],
+      "items": false
+    },
+    "hostPathCaptureHostExpectation": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/sealed_day_2026-09-20_expectation.json"
+        },
+        {
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0/sealed_day_2026-09-21_expectation.json"
+        }
+      ],
+      "items": false
+    },
+    "hostPathCaptureOutsideRepoJsonl": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "/tmp/mal-paper-laya-capture-outside-repo/observe-2026-09-20.jsonl"
+        },
+        {
+          "const": "/tmp/mal-paper-laya-capture-outside-repo/observe-2026-09-21.jsonl"
+        }
+      ],
+      "items": false
+    },
+    "hostPathCaptureOutsideRepoManifest": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "/tmp/mal-paper-laya-capture-outside-repo/decision-day-2026-09-20.json"
+        },
+        {
+          "const": "/tmp/mal-paper-laya-capture-outside-repo/decision-day-2026-09-21.json"
+        }
+      ],
+      "items": false
+    },
+    "hostPathCaptureOutsideRepoExpectation": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "/tmp/mal-paper-laya-capture-outside-repo/sealed_day_2026-09-20_expectation.json"
+        },
+        {
+          "const": "/tmp/mal-paper-laya-capture-outside-repo/sealed_day_2026-09-21_expectation.json"
+        }
+      ],
+      "items": false
+    },
+    "hostPathCaptureLexicalAbsoluteValidate": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "form",
         "command",
-        "cwd"
+        "cwd",
+        "path"
       ],
       "properties": {
         "form": {
-          "enum": [
-            "lexical_absolute_validate",
-            "lexical_absolute_receipt",
-            "cwd_abspath_validate",
-            "realpath_symlink_dotdot_validate",
-            "outside_repo_receipt"
-          ]
+          "const": "lexical_absolute_validate"
         },
         "command": {
-          "enum": [
-            "validate",
-            "receipt"
-          ]
+          "const": "validate"
         },
         "cwd": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "const": null
         },
         "path": {
-          "type": "string",
-          "minLength": 1
+          "const": "/var/lib/mal/paper/paper-laya-decision-packet-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0/receipt.json"
+        }
+      }
+    },
+    "hostPathCaptureLexicalAbsoluteReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "form",
+        "command",
+        "cwd",
+        "jsonl",
+        "manifest",
+        "expectation"
+      ],
+      "properties": {
+        "form": {
+          "const": "lexical_absolute_receipt"
+        },
+        "command": {
+          "const": "receipt"
+        },
+        "cwd": {
+          "const": null
+        },
+        "jsonl": {
+          "$ref": "#/$defs/hostPathCaptureHostJsonl"
+        },
+        "manifest": {
+          "$ref": "#/$defs/hostPathCaptureHostManifest"
+        },
+        "expectation": {
+          "$ref": "#/$defs/hostPathCaptureHostExpectation"
+        }
+      }
+    },
+    "hostPathCaptureCwdAbspathValidateRoot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "form",
+        "command",
+        "cwd",
+        "path"
+      ],
+      "properties": {
+        "form": {
+          "const": "cwd_abspath_validate"
+        },
+        "command": {
+          "const": "validate"
+        },
+        "cwd": {
+          "const": "/"
+        },
+        "path": {
+          "const": "var/lib/mal/paper/receipt.json"
+        }
+      }
+    },
+    "hostPathCaptureCwdAbspathValidateVarLib": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "form",
+        "command",
+        "cwd",
+        "path"
+      ],
+      "properties": {
+        "form": {
+          "const": "cwd_abspath_validate"
+        },
+        "command": {
+          "const": "validate"
+        },
+        "cwd": {
+          "const": "/var/lib"
+        },
+        "path": {
+          "const": "mal/paper/receipt.json"
+        }
+      }
+    },
+    "hostPathCaptureRealpathSymlinkDotdotValidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "form",
+        "command",
+        "cwd",
+        "path_stored"
+      ],
+      "properties": {
+        "form": {
+          "const": "realpath_symlink_dotdot_validate"
+        },
+        "command": {
+          "const": "validate"
+        },
+        "cwd": {
+          "const": null
         },
         "path_stored": {
           "const": false
-        },
-        "jsonl": {
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "expectation": {
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "manifest": {
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
         }
       }
+    },
+    "hostPathCaptureOutsideRepoReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "form",
+        "command",
+        "cwd",
+        "jsonl",
+        "manifest",
+        "expectation"
+      ],
+      "properties": {
+        "form": {
+          "const": "outside_repo_receipt"
+        },
+        "command": {
+          "const": "receipt"
+        },
+        "cwd": {
+          "const": null
+        },
+        "jsonl": {
+          "$ref": "#/$defs/hostPathCaptureOutsideRepoJsonl"
+        },
+        "manifest": {
+          "$ref": "#/$defs/hostPathCaptureOutsideRepoManifest"
+        },
+        "expectation": {
+          "$ref": "#/$defs/hostPathCaptureOutsideRepoExpectation"
+        }
+      }
+    },
+    "hostPathForm": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/hostPathCaptureLexicalAbsoluteValidate"
+        },
+        {
+          "$ref": "#/$defs/hostPathCaptureLexicalAbsoluteReceipt"
+        },
+        {
+          "$ref": "#/$defs/hostPathCaptureCwdAbspathValidateRoot"
+        },
+        {
+          "$ref": "#/$defs/hostPathCaptureCwdAbspathValidateVarLib"
+        },
+        {
+          "$ref": "#/$defs/hostPathCaptureRealpathSymlinkDotdotValidate"
+        },
+        {
+          "$ref": "#/$defs/hostPathCaptureOutsideRepoReceipt"
+        }
+      ]
     },
     "outcome": {
       "type": "object",

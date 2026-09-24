@@ -20,9 +20,12 @@ from jsonschema import Draft202012Validator
 
 from tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0 import (
     DIGEST_LABEL_ARMS,
+    HOST_JSONL,
+    HOST_MANIFEST,
     RECEIPT_ID as PARENT_DRY_RUN_ID,
 )
 from tools.paper_laya_decision_packet_host_local_dry_run_receipt_capture_v0 import (
+    RECEIPT_PATHS,
     SOFT_WATCH_ITEMS,
     main,
     validate_capture,
@@ -296,6 +299,66 @@ class PaperLayaDecisionPacketHostLocalDryRunReceiptCaptureV0Tests(unittest.TestC
         tampered["subject"]["probe_document_checked_in"] = True
         self.assertTrue(_schema_errors(tampered))
         self.assertIs(original["subject"]["probe_document_checked_in"], False)
+
+    def test_cited_receipt_path_collapse_rejected_by_schema_and_cli(self) -> None:
+        operator_path = RECEIPT_PATHS["operator_declared"]
+        cases: tuple[tuple[str, tuple[str, ...], object], ...] = (
+            (
+                "receipt_operator_declared.json",
+                ("subject", "receipt_path"),
+                "//" + operator_path.lstrip("/"),
+            ),
+            (
+                "receipt_operator_declared.json",
+                ("subject", "receipt_path"),
+                "./" + operator_path,
+            ),
+            (
+                "receipt_operator_declared.json",
+                ("recorded", "receipt_path"),
+                operator_path + "/",
+            ),
+            (
+                "receipt_synthetic_replay.json",
+                ("subject", "receipt_path"),
+                "//" + RECEIPT_PATHS["synthetic_replay"].lstrip("/"),
+            ),
+        )
+        for name, path, value in cases:
+            with self.subTest(name=name, path=path, value=value):
+                doc = copy.deepcopy(_load(FIXTURES / name))
+                cursor: Any = doc
+                for key in path[:-1]:
+                    cursor = cursor[key]
+                cursor[path[-1]] = value
+                self.assertTrue(_schema_errors(doc))
+                self.assertTrue(validate_capture(doc))
+
+    def test_host_path_catalog_collapse_rejected_by_schema_and_cli(self) -> None:
+        day = "2026-09-20"
+        cases: tuple[tuple[int, tuple[str, ...], object], ...] = (
+            (0, ("path",), "//var/lib/mal/x"),
+            (1, ("jsonl", 0), HOST_JSONL[day] + "/"),
+            (1, ("jsonl", 0), "./" + HOST_JSONL[day].lstrip("/")),
+            (1, ("manifest", 0), HOST_MANIFEST[day].replace("/", "\\", 1)),
+            (
+                2,
+                ("path",),
+                (
+                    "fixtures/paper_laya_decision_packet_host_local_dry_run_receipt_capture_v0/"
+                    "../../var/lib/mal/paper/receipt.json"
+                ),
+            ),
+        )
+        for form_index, path, value in cases:
+            with self.subTest(form_index=form_index, path=path, value=value):
+                doc = copy.deepcopy(_load(FIXTURES / "refuse_host_path.json"))
+                cursor: Any = doc["subject"]["forms"][form_index]
+                for key in path[:-1]:
+                    cursor = cursor[key]
+                cursor[path[-1]] = value
+                self.assertTrue(_schema_errors(doc))
+                self.assertTrue(validate_capture(doc))
 
 
 if __name__ == "__main__":
