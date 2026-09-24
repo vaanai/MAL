@@ -1,0 +1,701 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-fill-sim-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json",
+  "title": "MAL paper-fill-sim-batch-oracle-sealed-day-incomplete-rpc v0 (Proposed paper batch)",
+  "description": "Proposed batch with fill-sim. Day-aligned sealed observe JSONL is projected to hot_packet_v0, stamped by paper_evaluate_hot_packet_v0, bound by paper_fill_sim_hot_packet_evaluate_v0, and counted by paper_fill_sim_scoreboard_sealed_fixture_v0. sealed_book_rpc_slice stays incomplete. See ARTIFACTS/PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "type",
+    "id",
+    "paper_only",
+    "input",
+    "days",
+    "rollup",
+    "full_book",
+    "graph_lift",
+    "graph_policy",
+    "dual_read",
+    "measure",
+    "soft_watches",
+    "honesty"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0"
+    },
+    "type": {
+      "const": "paper_batch"
+    },
+    "id": {
+      "const": "paper-fill-sim-batch-oracle-sealed-day-incomplete-rpc-v0"
+    },
+    "paper_only": {
+      "const": true
+    },
+    "input": {
+      "$ref": "#/$defs/input"
+    },
+    "days": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/dayResult"
+      }
+    },
+    "rollup": {
+      "$ref": "#/$defs/rollup"
+    },
+    "full_book": {
+      "$ref": "#/$defs/fullBook"
+    },
+    "graph_lift": {
+      "const": null,
+      "description": "This stamp does not invent graph lift. Slots stay null."
+    },
+    "graph_policy": {
+      "const": "cold"
+    },
+    "dual_read": {
+      "$ref": "#/$defs/dualRead"
+    },
+    "measure": {
+      "$ref": "#/$defs/measure"
+    },
+    "soft_watches": {
+      "$ref": "#/$defs/softWatches"
+    },
+    "honesty": {
+      "$ref": "#/$defs/honesty"
+    }
+  },
+  "$defs": {
+    "dishonestName": {
+      "pattern": "(?i)^(dexscreener|birdeye|api_key|private_key|secret|twitter|x_account|outcome_mark|mean_return|mean|lift_vs_random|burst_count|expected_value|alpha|cohort_alpha|ev|verdict|fail_no_lift|exit_code|closed_book_claim|invented_ev|invented_lift|claims_alpha|var_lib_mal_opened|var_lib_mal_read|ci_claimed_sealed_book_close|host_extract_checked_into_git)$",
+      "description": "Case-insensitive. Same names the batch CLI forbids after lowercasing, plus closed-book and host-open claim names. ws_payload and price_proxy stay legal on a source row."
+    },
+    "sourceNode": {
+      "type": "object",
+      "propertyNames": {
+        "not": {
+          "$ref": "#/$defs/dishonestName"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/sourceValue"
+      }
+    },
+    "sourceValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceValue"
+          }
+        },
+        {
+          "$ref": "#/$defs/sourceNode"
+        }
+      ]
+    },
+    "share": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Count fraction of projected stamps. A numerator is a stamp count. It is not a return and not lift.",
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "properties": {
+        "numerator": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "denominator": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeline",
+        "local_json_only",
+        "rpc",
+        "observe_jsonl_tail",
+        "host_extract_required",
+        "host_jsonl_read",
+        "fixture_origin",
+        "graph_policy",
+        "days",
+        "marks_joined"
+      ],
+      "properties": {
+        "pipeline": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "const": "sealed_observe_jsonl"
+            },
+            {
+              "const": "hot_packet_v0"
+            },
+            {
+              "const": "paper_evaluate_hot_packet_v0"
+            },
+            {
+              "const": "paper_fill_sim_hot_packet_evaluate_v0"
+            },
+            {
+              "const": "paper_fill_sim_scoreboard_sealed_fixture_v0"
+            }
+          ],
+          "items": false
+        },
+        "local_json_only": {
+          "const": true
+        },
+        "rpc": {
+          "const": false
+        },
+        "observe_jsonl_tail": {
+          "const": false
+        },
+        "host_extract_required": {
+          "const": false
+        },
+        "host_jsonl_read": {
+          "type": "boolean",
+          "description": "False on the checked-in synthetic example. True only when fixture_origin is sealed_row_projection. Neither value closes the sealed book."
+        },
+        "fixture_origin": {
+          "enum": [
+            "synthetic",
+            "sealed_row_projection"
+          ]
+        },
+        "graph_policy": {
+          "const": "cold"
+        },
+        "days": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/dayInput"
+          }
+        },
+        "marks_joined": {
+          "const": false
+        }
+      }
+    },
+    "dayInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "day",
+        "jsonl_name",
+        "source_rows",
+        "expectation"
+      ],
+      "properties": {
+        "day": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "jsonl_name": {
+          "type": "string",
+          "pattern": "^observe-\\d{4}-\\d{2}-\\d{2}\\.jsonl$"
+        },
+        "source_rows": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Parsed non-blank JSONL objects for this calendar day. Checked-in rows are synthetic. ws_payload and price_proxy may appear here and are not copied onto the hot packet. A return key, a closed-book claim, or a host-path open claim is refused at every object in the row.",
+          "items": {
+            "$ref": "#/$defs/sourceNode"
+          }
+        },
+        "expectation": {
+          "$ref": "paper-fill-sim-scoreboard-sealed-fixture-v0.schema.json#/$defs/expectation"
+        }
+      }
+    },
+    "dayResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "day",
+        "jsonl_name",
+        "fixture_origin",
+        "row_census",
+        "scoreboard"
+      ],
+      "properties": {
+        "day": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "jsonl_name": {
+          "type": "string",
+          "pattern": "^observe-\\d{4}-\\d{2}-\\d{2}\\.jsonl$"
+        },
+        "fixture_origin": {
+          "enum": [
+            "synthetic",
+            "sealed_row_projection"
+          ]
+        },
+        "row_census": {
+          "$ref": "#/$defs/rowCensus"
+        },
+        "scoreboard": {
+          "$ref": "paper-fill-sim-scoreboard-sealed-fixture-v0.schema.json"
+        }
+      }
+    },
+    "rowCensus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lines",
+        "projected_n",
+        "skipped_n",
+        "skipped",
+        "skipped_types",
+        "skip_is_not_a_dropped_evaluate_arm"
+      ],
+      "properties": {
+        "lines": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "projected_n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "skipped_n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/skipRow"
+          }
+        },
+        "skipped_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skip_is_not_a_dropped_evaluate_arm": {
+          "const": true
+        }
+      }
+    },
+    "skipRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "n"
+      ],
+      "properties": {
+        "reason": {
+          "const": "not_create_row"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "rollup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "n_meaning",
+        "share_kind",
+        "counts_are_not_returns",
+        "n",
+        "runner_n",
+        "reject_n",
+        "rows",
+        "days"
+      ],
+      "properties": {
+        "n_meaning": {
+          "const": "stamp_count_not_a_return"
+        },
+        "share_kind": {
+          "const": "count_fraction_not_a_return"
+        },
+        "counts_are_not_returns": {
+          "const": true
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runner_n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reject_n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/runnerShare"
+            },
+            {
+              "$ref": "#/$defs/rejectShare"
+            }
+          ],
+          "items": false
+        },
+        "days": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        }
+      }
+    },
+    "runnerShare": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "n",
+        "share"
+      ],
+      "properties": {
+        "label": {
+          "const": "runner"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "share": {
+          "$ref": "#/$defs/share"
+        }
+      }
+    },
+    "rejectShare": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "n",
+        "share"
+      ],
+      "properties": {
+        "label": {
+          "const": "reject"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "share": {
+          "$ref": "#/$defs/share"
+        }
+      }
+    },
+    "fullBook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "arm_retained",
+        "deletes_detect_history",
+        "reject_stamps_dropped",
+        "local_set_is_not_the_sealed_book",
+        "n",
+        "runner_n",
+        "reject_n"
+      ],
+      "properties": {
+        "policy": {
+          "const": "dec007_both_arms_retained"
+        },
+        "arm_retained": {
+          "const": true
+        },
+        "deletes_detect_history": {
+          "const": false
+        },
+        "reject_stamps_dropped": {
+          "const": 0
+        },
+        "local_set_is_not_the_sealed_book": {
+          "const": true
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runner_n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reject_n": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "dualRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sealed_book_rpc_slice",
+        "closed_book_claim",
+        "incomplete_reason"
+      ],
+      "properties": {
+        "sealed_book_rpc_slice": {
+          "const": "incomplete"
+        },
+        "closed_book_claim": {
+          "const": false
+        },
+        "incomplete_reason": {
+          "const": "fill_sim_batch_projection_does_not_close_the_sealed_book"
+        }
+      }
+    },
+    "measure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "claims_alpha",
+        "invented_ev",
+        "invented_lift",
+        "pass_fail_no_lift"
+      ],
+      "properties": {
+        "kind": {
+          "const": "none"
+        },
+        "claims_alpha": {
+          "const": false
+        },
+        "invented_ev": {
+          "const": false
+        },
+        "invented_lift": {
+          "const": false
+        },
+        "pass_fail_no_lift": {
+          "const": false
+        }
+      }
+    },
+    "softWatches": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Inherited Soft GATE watches plus honesty-gap watches. blocking is false.",
+      "required": [
+        "blocking",
+        "source",
+        "inherited_from",
+        "items"
+      ],
+      "properties": {
+        "blocking": {
+          "const": false
+        },
+        "source": {
+          "const": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_fill_sim_hot_packet_evaluate_v0_pr57_fill_sim_scoreboard_sealed_fixture_v0_pr58_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0"
+        },
+        "inherited_from": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "const": "hot_packet_v0_soft_gate_pr49"
+            },
+            {
+              "const": "paper_evaluate_hot_packet_v0_pr50"
+            },
+            {
+              "const": "paper_scoreboard_sealed_fixture_v0_pr51"
+            },
+            {
+              "const": "paper_fill_sim_hot_packet_evaluate_v0_pr57"
+            },
+            {
+              "const": "paper_fill_sim_scoreboard_sealed_fixture_v0_pr58"
+            }
+          ],
+          "items": false
+        },
+        "items": {
+          "type": "array",
+          "minItems": 30,
+          "maxItems": 30,
+          "items": {
+            "enum": [
+              "schema_looser_than_cli",
+              "synthetic_launchlab_shape",
+              "graph_slot_shape_not_a_score",
+              "dec005_draft_unmerged",
+              "sealed_book_rpc_slice_incomplete",
+              "label_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history",
+              "host_jsonl_not_readable_from_ci",
+              "counts_are_not_returns",
+              "graph_stays_cold_on_this_stamp",
+              "host_jsonl_read_is_not_a_closed_book",
+              "operator_path_string_is_not_a_host_extract",
+              "dry_run_does_not_ssh_or_open_var_lib_mal",
+              "parent_stamp_not_rewritten",
+              "capture_records_refusal_not_a_measure",
+              "cited_receipt_is_not_a_host_extract",
+              "path_string_on_a_refuse_is_not_file_bytes",
+              "fill_sim_vocabulary_not_exp006_promote",
+              "documented_constants_not_a_scored_fill",
+              "parent_evaluate_cli_not_rewritten",
+              "exp006_harness_not_rewritten",
+              "label_share_is_not_a_return",
+              "fill_sim_status_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history",
+              "fill_sim_vocabulary_not_exp006_promote",
+              "documented_constants_not_a_scored_fill",
+              "fill_sim_batch_not_a_host_extract",
+              "fill_sim_batch_counts_are_not_returns"
+            ]
+          }
+        }
+      }
+    },
+    "honesty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration",
+        "scored_oracle_measure",
+        "executed_host_sealed_book",
+        "ci_claimed_sealed_book_close",
+        "continuous_observe_wiring",
+        "encoder_promoted",
+        "enum_production_lock",
+        "discovery_promoted",
+        "graph_lane_revived",
+        "invented_lift",
+        "invented_ev",
+        "claims_alpha",
+        "exp002c_retuned",
+        "exp006_promoted",
+        "exp006_harness_rewritten",
+        "marks_joined_on_this_stamp",
+        "live_capital",
+        "trading_keys",
+        "pumpportal_trade_api",
+        "ssh_to_host",
+        "host_extract_checked_into_git",
+        "var_lib_mal_read"
+      ],
+      "properties": {
+        "registration": {
+          "const": "proposed"
+        },
+        "scored_oracle_measure": {
+          "const": false
+        },
+        "executed_host_sealed_book": {
+          "const": false
+        },
+        "continuous_observe_wiring": {
+          "const": false
+        },
+        "encoder_promoted": {
+          "const": false
+        },
+        "enum_production_lock": {
+          "const": false
+        },
+        "discovery_promoted": {
+          "const": false
+        },
+        "graph_lane_revived": {
+          "const": false
+        },
+        "invented_lift": {
+          "const": false
+        },
+        "invented_ev": {
+          "const": false
+        },
+        "claims_alpha": {
+          "const": false
+        },
+        "exp002c_retuned": {
+          "const": false
+        },
+        "live_capital": {
+          "const": false
+        },
+        "trading_keys": {
+          "const": false
+        },
+        "pumpportal_trade_api": {
+          "const": false
+        },
+        "ci_claimed_sealed_book_close": {
+          "const": false
+        },
+        "exp006_promoted": {
+          "const": false
+        },
+        "exp006_harness_rewritten": {
+          "const": false
+        },
+        "marks_joined_on_this_stamp": {
+          "const": false
+        },
+        "ssh_to_host": {
+          "const": false
+        },
+        "host_extract_checked_into_git": {
+          "const": false
+        },
+        "var_lib_mal_read": {
+          "const": false
+        }
+      }
+    }
+  }
+}
