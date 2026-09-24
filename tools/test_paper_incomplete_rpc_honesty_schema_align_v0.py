@@ -16,6 +16,15 @@ from jsonschema import Draft202012Validator, ValidationError
 from jsonschema.validators import extend
 from referencing import Registry, Resource
 
+# Draft 2020-12's integer type accepts 1.0 / 2.0. $ref into hot-packet switches
+# to that stock validator (the $schema evaluate and scoreboard declare), which
+# drops malStrictJsonInteger. Tighten the declared integer check so a
+# whole-number float fails on the nested packet too.
+Draft202012Validator.TYPE_CHECKER = Draft202012Validator.TYPE_CHECKER.redefine(
+    "integer",
+    lambda checker, instance: isinstance(instance, int) and not isinstance(instance, bool),
+)
+
 from tools.hot_packet_v0 import validate_packet
 from tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0 import (
     validate_receipt,
@@ -239,6 +248,37 @@ class SchemaAlignV0Tests(unittest.TestCase):
         bref = "paper-scoreboard-sealed-fixture-v0.schema.json"
         self.assertTrue(_schema_errors(bref, board, self.registry))
         self.assertTrue(_cli_errors("scoreboard", board))
+
+    def test_nested_whole_number_float_fails_evaluate_and_scoreboard(self) -> None:
+        """1.0/2.0 on prior_mint_count inside #50 and #51 documents."""
+        cases = (
+            (
+                "paper-evaluate-hot-packet-v0.schema.json",
+                ROOT / "fixtures/paper_evaluate_hot_packet_v0/sealed_graph_slots_not_scored_runner.json",
+                "stamp",
+                ("input", "packet", "graph", "slots", 0, "value"),
+            ),
+            (
+                "paper-scoreboard-sealed-fixture-v0.schema.json",
+                ROOT / "fixtures/paper_scoreboard_sealed_fixture_v0/slots_not_scored.json",
+                "scoreboard",
+                ("input", "stamps", 0, "input", "packet", "graph", "slots", 0, "value"),
+            ),
+        )
+        for ref, path, kind, pointer in cases:
+            for number in (1.0, 2.0):
+                with self.subTest(kind=kind, number=number):
+                    doc = _load(path)
+                    self.assertEqual(doc["input"]["packet"]["graph"]["slots"][0]["slot_id"] if kind == "stamp" else doc["input"]["stamps"][0]["input"]["packet"]["graph"]["slots"][0]["slot_id"], "prior_mint_count")
+                    _set_path(doc, pointer, number)
+                    self.assertIsInstance(doc["input"]["packet"]["graph"]["slots"][0]["value"] if kind == "stamp" else doc["input"]["stamps"][0]["input"]["packet"]["graph"]["slots"][0]["value"], float)
+                    stock = Draft202012Validator(
+                        _load(ART / ref),
+                        registry=self.registry,
+                    )
+                    self.assertTrue(list(stock.iter_errors(doc)))
+                    self.assertTrue(_schema_errors(ref, doc, self.registry))
+                    self.assertTrue(_cli_errors(kind, doc))
 
     def test_whole_number_float_on_integer_slot_fails_schema_and_cli(self) -> None:
         ref = "hot-packet-v0.schema.json"
