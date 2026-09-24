@@ -1,6 +1,6 @@
 # Manager summary (≤20 lines)
 
-**As-of:** 2026-09-24 UTC. `main` @ `5361652` (post-merge #71).
+**As-of:** 2026-09-24 UTC. `main` @ `dd5f576` (post-merge #71).
 
 - **Paper chain:** Citeable stack **on `main` through #71** (squash `3d83622`; receipt capture mirrors #62 on #70); #49–#69 as prior; decision-packet batch host-local dry-run (mirror #53/#60 on #69; Soft GATE **PASS** Formal-stamped): #49–#68 as prior; #59–#63 fill-sim batch / dry-run / honesty / capture / fill-sim LAYA surround; **#64–#66** non-fill surround / lock receipt / LAYA honesty align; **#67** decision packet (`52a06e7`); **#68** decision-packet scoreboard (`d31af86`). `measure.kind=none`; sealed book incomplete; Graph cold; LAYA caps + `risk_gate.unlock=false`. Soft GATE PASS (when it comes) ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 promote / LAYA authorize-run / **risk-gate unlock**.
 - **Product:** 3 layers (new-coin / entity-graph / filtered smart-wallet) + **LAYA** → risk gate → exec (deferred). **X = layer 4 later**. Paper first; free-first. Plans = directions; profit is the goal.
