@@ -131,7 +131,7 @@ Inherited from hot-packet v0 (PR #49), paper-evaluate (PR #50), paper-scoreboard
 
 | Watch id | What it is | Why it does not block |
 | --- | --- | --- |
-| `schema_looser_than_cli` | JSON Schema is the citeable shape. The CLI rebuilds the receipt and refuses a closed book, a measure kind, and a host-path open. | Do not widen the CLI down to the schema. Do not hold this consumer for a schema rewrite. |
+| `schema_looser_than_cli` | Historical id on this stamp. Schema already const-refuses a closed book, `measure.kind` other than `none`, and a host-path open (`var_lib_mal_opened`, `var_lib_mal_read`, `ci_claimed_sealed_book_close`). [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) closes the watch. The CLI still rebuilds the receipt. | Do not widen the CLI. A path string under `/var/lib/mal` is not an open claim. |
 | `synthetic_launchlab_shape` | Inherited name from the parent chain. | Still not an enum lock. |
 | `graph_slot_shape_not_a_score` | Inherited name. This stamp keeps graph lift null. | `graph_lift` stays null. |
 | `dec005_draft_unmerged` | Inherited from the parent chain. | Hooks only. Not a claim that DEC-005 merged. |

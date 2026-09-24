@@ -45,6 +45,43 @@
     "honesty": { "$ref": "#/$defs/honesty" }
   },
   "$defs": {
+    "dishonestName": {
+      "enum": [
+        "mean_return",
+        "mean",
+        "lift_vs_random",
+        "expected_value",
+        "alpha",
+        "cohort_alpha",
+        "ev",
+        "verdict",
+        "fail_no_lift",
+        "exit_code",
+        "closed_book_claim",
+        "invented_ev",
+        "invented_lift",
+        "claims_alpha",
+        "var_lib_mal_opened",
+        "var_lib_mal_read",
+        "ci_claimed_sealed_book_close",
+        "host_extract_checked_into_git"
+      ]
+    },
+    "sourceNode": {
+      "type": "object",
+      "propertyNames": { "not": { "$ref": "#/$defs/dishonestName" } },
+      "additionalProperties": { "$ref": "#/$defs/sourceValue" }
+    },
+    "sourceValue": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        { "type": "array", "items": { "$ref": "#/$defs/sourceValue" } },
+        { "$ref": "#/$defs/sourceNode" }
+      ]
+    },
     "share": {
       "type": "object",
       "additionalProperties": false,
@@ -109,8 +146,8 @@
         "source_rows": {
           "type": "array",
           "minItems": 1,
-          "description": "Parsed non-blank JSONL objects for this calendar day. Checked-in rows are synthetic. ws_payload stays on these rows and is not copied onto the hot packet.",
-          "items": { "type": "object" }
+          "description": "Parsed non-blank JSONL objects for this calendar day. Checked-in rows are synthetic. ws_payload and price_proxy may appear here and are not copied onto the hot packet. A return key, a closed-book claim, or a host-path open claim is refused at every object in the row.",
+          "items": { "$ref": "#/$defs/sourceNode" }
         },
         "expectation": {
           "$ref": "paper-scoreboard-sealed-fixture-v0.schema.json#/$defs/expectation"
