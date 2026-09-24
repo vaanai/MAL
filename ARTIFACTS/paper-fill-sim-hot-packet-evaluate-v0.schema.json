@@ -1,0 +1,405 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-fill-sim-hot-packet-evaluate-v0.schema.json",
+  "title": "MAL paper-fill-sim-hot-packet-evaluate v0 (Proposed paper stamp)",
+  "description": "Proposed fill-sim honesty bind on validated paper_evaluate_hot_packet_v0 stamps. EXP-006 vocabulary and documented constants only — not an Oracle run, not a PASS/FAIL_NO_LIFT measure. Horizons and delta_exec stay null with explicit status. sealed_book_rpc_slice stays incomplete. See ARTIFACTS/PAPER-FILL-SIM-HOT-PACKET-EVALUATE-V0.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "type",
+    "id",
+    "paper_only",
+    "input",
+    "parent_evaluate",
+    "exp006_vocabulary",
+    "evaluate_label",
+    "reasons",
+    "fill_model",
+    "fill_sim",
+    "graph_lift",
+    "graph_lift_status",
+    "graph_policy",
+    "horizons",
+    "delta_exec",
+    "dual_read",
+    "full_book",
+    "measure",
+    "soft_watches",
+    "honesty"
+  ],
+  "properties": {
+    "schema_version": { "const": "paper_fill_sim_hot_packet_evaluate_v0" },
+    "type": { "const": "paper_fill_sim_stamp" },
+    "id": { "const": "paper-fill-sim-hot-packet-evaluate-v0" },
+    "paper_only": { "const": true },
+    "input": { "$ref": "#/$defs/input" },
+    "parent_evaluate": { "$ref": "#/$defs/parentEvaluate" },
+    "exp006_vocabulary": { "$ref": "#/$defs/exp006Vocabulary" },
+    "evaluate_label": { "enum": ["runner", "reject"] },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "missing_signature",
+          "missing_mint",
+          "stage_not_bonding",
+          "honesty_reject",
+          "overlay_discipline"
+        ]
+      }
+    },
+    "fill_model": { "$ref": "#/$defs/fillModel" },
+    "fill_sim": { "$ref": "#/$defs/fillSim" },
+    "graph_lift": {
+      "const": null,
+      "description": "Graph cold. No graph revive. No invented lift."
+    },
+    "graph_lift_status": {
+      "enum": ["not_used_graph_cold", "not_used_slots_not_scored"]
+    },
+    "graph_policy": { "const": "cold" },
+    "horizons": { "$ref": "#/$defs/horizons" },
+    "delta_exec": { "$ref": "#/$defs/deltaExec" },
+    "dual_read": { "$ref": "#/$defs/dualRead" },
+    "full_book": { "$ref": "#/$defs/fullBook" },
+    "measure": { "$ref": "#/$defs/measure" },
+    "soft_watches": { "$ref": "#/$defs/softWatches" },
+    "honesty": { "$ref": "#/$defs/honesty" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "evaluate_label": { "const": "runner" } },
+        "required": ["evaluate_label"]
+      },
+      "then": {
+        "properties": {
+          "reasons": { "maxItems": 0 },
+          "fill_sim": {
+            "properties": {
+              "status": { "const": "documented_model_only" },
+              "pretend_buy": { "const": true }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "evaluate_label": { "const": "reject" } },
+        "required": ["evaluate_label"]
+      },
+      "then": {
+        "properties": {
+          "reasons": { "minItems": 1 },
+          "fill_sim": {
+            "properties": {
+              "status": { "const": "reject_arm_no_pretend_buy" },
+              "pretend_buy": { "const": false }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "local_json_only",
+        "rpc",
+        "observe_jsonl_tail",
+        "host_extract_required",
+        "marks_joined",
+        "stamp"
+      ],
+      "properties": {
+        "contract": { "const": "paper_evaluate_hot_packet_v0" },
+        "local_json_only": { "const": true },
+        "rpc": { "const": false },
+        "observe_jsonl_tail": { "const": false },
+        "host_extract_required": { "const": false },
+        "marks_joined": { "const": false },
+        "stamp": {
+          "$ref": "paper-evaluate-hot-packet-v0.schema.json",
+          "description": "Validated paper_evaluate_hot_packet_v0. Both runner and reject arms are legal inputs."
+        }
+      }
+    },
+    "parentEvaluate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "schema_version",
+        "pull_request",
+        "commit",
+        "cli",
+        "rewritten_by_this_stamp"
+      ],
+      "properties": {
+        "id": { "const": "paper-evaluate-hot-packet-v0" },
+        "schema_version": { "const": "paper_evaluate_hot_packet_v0" },
+        "pull_request": { "const": 50 },
+        "commit": { "const": "224166c" },
+        "cli": { "const": "python -m tools.paper_evaluate_hot_packet_v0" },
+        "rewritten_by_this_stamp": { "const": false }
+      }
+    },
+    "exp006Vocabulary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exp_id", "cli", "harness_rewritten", "oracle_run", "promoted", "vocabulary_only"],
+      "properties": {
+        "exp_id": { "const": "EXP-006-paper-would-have-happened-harness-v0" },
+        "cli": { "const": "python -m tools.exp006_paper_fill_sim" },
+        "harness_rewritten": { "const": false },
+        "oracle_run": { "const": false },
+        "promoted": { "const": false },
+        "vocabulary_only": { "const": true }
+      }
+    },
+    "fillModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Documented EXP-006 P0 constants. Not fitted to lift. Not a scored fill on this registration.",
+      "required": [
+        "latency_ms",
+        "paper_size_sol",
+        "fee_model_id",
+        "total_fee_bps",
+        "max_slippage_bps",
+        "sim_reject_on_slip",
+        "source",
+        "fitted_to_lift",
+        "vocabulary_from"
+      ],
+      "properties": {
+        "latency_ms": { "const": 500 },
+        "paper_size_sol": { "const": 0.1 },
+        "fee_model_id": { "const": "pump_assumed_bps_v0" },
+        "total_fee_bps": { "const": 125.0 },
+        "max_slippage_bps": { "const": 500.0 },
+        "sim_reject_on_slip": { "const": true },
+        "source": { "const": "documented_constants_exp006_p0" },
+        "fitted_to_lift": { "const": false },
+        "vocabulary_from": { "const": "EXP-006-paper-would-have-happened-harness-v0" }
+      }
+    },
+    "fillSim": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Fill-sim path honesty on this stamp. Numeric fill outcomes stay null on this registration.",
+      "required": [
+        "status",
+        "pretend_buy",
+        "fill_status",
+        "t_fill",
+        "fill_price_proxy",
+        "fee_sol",
+        "slippage_bps",
+        "notes"
+      ],
+      "properties": {
+        "status": {
+          "enum": ["documented_model_only", "reject_arm_no_pretend_buy"]
+        },
+        "pretend_buy": { "type": "boolean" },
+        "fill_status": { "const": null },
+        "t_fill": { "const": null },
+        "fill_price_proxy": { "const": null },
+        "fee_sol": { "const": null },
+        "slippage_bps": { "const": null },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+    "horizonMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["1s", "5s", "15s", "30s", "60s", "+2s", "+10s", "+5m", "peak", "drawdown"],
+      "properties": {
+        "1s": { "const": null },
+        "5s": { "const": null },
+        "15s": { "const": null },
+        "30s": { "const": null },
+        "60s": { "const": null },
+        "+2s": { "const": null },
+        "+10s": { "const": null },
+        "+5m": { "const": null },
+        "peak": { "const": null },
+        "drawdown": { "const": null }
+      }
+    },
+    "horizons": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "null_is_not_zero_return", "source", "values"],
+      "properties": {
+        "status": { "const": "fill_sim_registration_null_explicit" },
+        "null_is_not_zero_return": { "const": true },
+        "source": {
+          "const": "parent_evaluate_runner_stamp_and_fill_sim_registration"
+        },
+        "values": { "$ref": "#/$defs/horizonMap" }
+      }
+    },
+    "deltaExec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "also_called", "value", "status", "reason", "null_is_not_zero_cost"],
+      "properties": {
+        "field": { "const": "delta_exec" },
+        "also_called": { "const": "Δ_exec" },
+        "value": { "const": null },
+        "status": { "const": "fill_sim_registration_null_explicit" },
+        "reason": { "const": "fill_sim_stamp_has_no_scored_delta" },
+        "null_is_not_zero_cost": { "const": true }
+      }
+    },
+    "dualRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sealed_book_rpc_slice", "closed_book_claim", "incomplete_reason"],
+      "properties": {
+        "sealed_book_rpc_slice": { "const": "incomplete" },
+        "closed_book_claim": { "const": false },
+        "incomplete_reason": { "const": "fill_sim_bind_does_not_close_the_sealed_book" }
+      }
+    },
+    "fullBook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "arm_retained", "deletes_detect_history", "reject_stamps_dropped"],
+      "properties": {
+        "policy": { "const": "dec007_both_arms_retained" },
+        "arm_retained": { "const": true },
+        "deletes_detect_history": { "const": false },
+        "reject_stamps_dropped": { "const": 0 }
+      }
+    },
+    "measure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "claims_alpha", "invented_ev", "invented_lift", "pass_fail_no_lift"],
+      "properties": {
+        "kind": { "const": "none" },
+        "claims_alpha": { "const": false },
+        "invented_ev": { "const": false },
+        "invented_lift": { "const": false },
+        "pass_fail_no_lift": { "const": false }
+      }
+    },
+    "softWatches": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocking", "source", "inherited_from", "items"],
+      "properties": {
+        "blocking": { "const": false },
+        "source": {
+          "const": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_batch_pr52_dry_run_pr53_schema_align_pr54_dry_run_capture_pr55_fill_sim_hot_packet_evaluate_v0"
+        },
+        "inherited_from": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "prefixItems": [
+            { "const": "hot_packet_v0_soft_gate_pr49" },
+            { "const": "paper_evaluate_hot_packet_v0_pr50" },
+            { "const": "paper_scoreboard_sealed_fixture_v0_pr51" },
+            { "const": "paper_batch_oracle_sealed_day_incomplete_rpc_v0_pr52" },
+            { "const": "paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0_pr53" },
+            { "const": "paper_incomplete_rpc_honesty_schema_align_v0_pr54" },
+            { "const": "paper_host_local_dry_run_receipt_capture_v0_pr55" }
+          ],
+          "items": false
+        },
+        "items": {
+          "type": "array",
+          "minItems": 22,
+          "maxItems": 22,
+          "items": {
+            "enum": [
+              "schema_looser_than_cli",
+              "synthetic_launchlab_shape",
+              "graph_slot_shape_not_a_score",
+              "dec005_draft_unmerged",
+              "sealed_book_rpc_slice_incomplete",
+              "label_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history",
+              "host_jsonl_not_readable_from_ci",
+              "counts_are_not_returns",
+              "graph_stays_cold_on_this_stamp",
+              "host_jsonl_read_is_not_a_closed_book",
+              "operator_path_string_is_not_a_host_extract",
+              "dry_run_does_not_ssh_or_open_var_lib_mal",
+              "parent_stamp_not_rewritten",
+              "capture_records_refusal_not_a_measure",
+              "cited_receipt_is_not_a_host_extract",
+              "path_string_on_a_refuse_is_not_file_bytes",
+              "fill_sim_vocabulary_not_exp006_promote",
+              "documented_constants_not_a_scored_fill",
+              "parent_evaluate_cli_not_rewritten",
+              "exp006_harness_not_rewritten"
+            ]
+          }
+        }
+      }
+    },
+    "honesty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration",
+        "scored_oracle_measure",
+        "executed_host_sealed_book",
+        "ci_claimed_sealed_book_close",
+        "continuous_observe_wiring",
+        "encoder_promoted",
+        "enum_production_lock",
+        "discovery_promoted",
+        "graph_lane_revived",
+        "invented_lift",
+        "invented_ev",
+        "claims_alpha",
+        "exp002c_retuned",
+        "exp006_promoted",
+        "exp006_harness_rewritten",
+        "marks_joined_on_this_stamp",
+        "live_capital",
+        "trading_keys",
+        "pumpportal_trade_api",
+        "ssh_to_host",
+        "host_extract_checked_into_git",
+        "var_lib_mal_read"
+      ],
+      "properties": {
+        "registration": { "const": "proposed" },
+        "scored_oracle_measure": { "const": false },
+        "executed_host_sealed_book": { "const": false },
+        "ci_claimed_sealed_book_close": { "const": false },
+        "continuous_observe_wiring": { "const": false },
+        "encoder_promoted": { "const": false },
+        "enum_production_lock": { "const": false },
+        "discovery_promoted": { "const": false },
+        "graph_lane_revived": { "const": false },
+        "invented_lift": { "const": false },
+        "invented_ev": { "const": false },
+        "claims_alpha": { "const": false },
+        "exp002c_retuned": { "const": false },
+        "exp006_promoted": { "const": false },
+        "exp006_harness_rewritten": { "const": false },
+        "marks_joined_on_this_stamp": { "const": false },
+        "live_capital": { "const": false },
+        "trading_keys": { "const": false },
+        "pumpportal_trade_api": { "const": false },
+        "ssh_to_host": { "const": false },
+        "host_extract_checked_into_git": { "const": false },
+        "var_lib_mal_read": { "const": false }
+      }
+    }
+  }
+}
