@@ -3,14 +3,16 @@
 | | |
 | --- | --- |
 | **ID** | `paper-fill-sim-incomplete-rpc-honesty-schema-align-v0` |
-| **Status** | **Proposed** registration (2026-09-24). Not a measure. Not an EXP. Not a sealed-book close. |
+| **Status** | **Proposed** registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-ad05f533-0b48-562c-815f-b6fbbe9de646`; implement `bc-49b65bee-fd81-5d5d-a4f1-7bdfb45a0c2a`; [PR #61](https://github.com/vaanai/MAL/pull/61) tip `b5ccb1f`; squash-merge on `main` pending). Not a measure. Not an EXP. Not a sealed-book close. |
 | **Owner seat** | Scout commission. Helm AUTH 2026-09-23. |
 | **Parent** | Paper fill-sim chain PRs [#57](https://github.com/vaanai/MAL/pull/57)–[#60](https://github.com/vaanai/MAL/pull/60), main tip `6b2921c` after Formal #60 |
 | **Mirror** | [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) (#54) — same honesty caps on the fill-sim citeable schemas; **no** rewrite of parent #49–#60 CLIs |
 | **Runtime object** | **None.** This stamp does not add a receipt schema or a CLI. Cite the tightened fill-sim schemas. |
-| **Soft GATE** | **Required** before merge. Watches that stay true stay **non-blocking**. |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-ad05f533-0b48-562c-815f-b6fbbe9de646`; implement `bc-49b65bee-fd81-5d5d-a4f1-7bdfb45a0c2a`; [PR #61](https://github.com/vaanai/MAL/pull/61) tip `b5ccb1f`). Watches that stay true stay **non-blocking**. |
 
 JSON Schema on the fill-sim paper chain (#57–#60) is the citeable shape. Before this stamp, `graph_lift_status` on the fill-sim bind could disagree with `input.stamp.input.packet.graph.cold` while the CLI rebuild refused that bind. The #57–#60 registrations already `const`-lock closed book, `measure.kind=none`, null horizons / `Δ_exec`, DEC-007 arm rows, batch source-row forbidden names, and host-local open-claim bits. This registration closes the remaining watched gap and documents the align pass.
+
+**Soft GATE PASS** (Formal stamp Lyra). Soft watch `schema_looser_than_cli` is **CLOSED** for watched fill-sim shapes. Soft GATE PASS ≠ Discovery promote / continuous observe-wiring / production enum lock / densify / EXP-002c retune / Graph revive / X on host / live trading / EXP-006 promote. No new runtime object. No CLI rewrite.
 
 `measure.kind` stays `none` on these stamps. `dual_read.sealed_book_rpc_slice` stays `incomplete`. `closed_book_claim` stays `false`. Graph stays cold. `global_95bps` and `launchlab_init` stay Proposed.
 
@@ -57,7 +59,7 @@ There is no `paper-fill-sim-incomplete-rpc-honesty-schema-align-v0.schema.json`.
 
 Parent stamps #57–#60 still emit `schema_looser_than_cli` inside `soft_watches.items`. That list is the historical registration of those stamps. It is not a claim that the honesty shapes above still pass schema only after this align pass closes the last gap.
 
-**Still true, non-blocking** (`blocking=false` on the parent stamps). Soft GATE is still required. This stamp does not close them.
+**Still true, non-blocking** (`blocking=false` on the parent stamps). **Soft GATE PASS** (Formal stamp Lyra). This stamp does not close them.
 
 | Watch id | What stays true |
 | --- | --- |
@@ -122,7 +124,8 @@ Soft GATE PASS ≠ Discovery promote / continuous observe-wiring / production en
 - Fill-sim bind: [PAPER-FILL-SIM-HOT-PACKET-EVALUATE-V0.md](PAPER-FILL-SIM-HOT-PACKET-EVALUATE-V0.md), [PR #57](https://github.com/vaanai/MAL/pull/57)
 - Fill-sim scoreboard: [PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md), [PR #58](https://github.com/vaanai/MAL/pull/58)
 - Fill-sim batch: [PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [PR #59](https://github.com/vaanai/MAL/pull/59)
-- Fill-sim host-local dry-run: [PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [PR #60](https://github.com/vaanai/MAL/pull/60) @ `6b2921c`
+- Fill-sim host-local dry-run: [PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [PR #60](https://github.com/vaanai/MAL/pull/60) squash `d3b5554` on `main`
+- This align pass: [PR #61](https://github.com/vaanai/MAL/pull/61) tip `b5ccb1f` (Soft GATE PASS Formal-stamped; squash pending)
 - Parent honesty align: [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md), [PR #54](https://github.com/vaanai/MAL/pull/54)
 - Proof test: [tools/test_paper_fill_sim_incomplete_rpc_honesty_schema_align_v0.py](../tools/test_paper_fill_sim_incomplete_rpc_honesty_schema_align_v0.py)
 - Manager digest: [SUMMARY.md](SUMMARY.md)
