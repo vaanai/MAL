@@ -28,6 +28,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-020 — LAYA decision-packet batch host-local sealed JSONL dry-run (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-020 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-laya-decision-packet-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0`: [PAPER-LAYA-DECISION-PACKET-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-LAYA-DECISION-PACKET-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [paper-laya-decision-packet-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json](paper-laya-decision-packet-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json), fixtures under `fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/`, `python -m tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0` (example / validate / receipt), path note [paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run.md](../tools/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run.md), `tools/test_paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0.py`. [LAB_STATE.md](../LAB_STATE.md) §11u. Parent #49–#69 CLIs not rewritten. |
+| **Why** | Mirror #53 / #60 host-local dry-run receipt on parent #69: document operator shape for sealed JSONL calendar labels plus decision-day manifests without unlock, authorize-run, live, or closed-book claims. |
+| **What was tested** | `python3 -m unittest tools.test_paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0` (16 tests). Honest fixtures pass CLI validator. Host-path refuses before `read_text` / parent invocation. No RPC. `observe/client.py` untouched. |
+| **Verification** | Soft GATE **pending** (open PR). |
+| **Current state** | **Proposed** registration on feature branch. Caps: `measure.kind=none`; sealed book **incomplete**; Graph **cold**; `risk_gate.decision=locked`; `risk_gate.unlock=false`; `laya.authorize_run=false`. |
+| **Rollback** | Close PR; remove §11u from Lab memory. |
+| **Unresolved** | Soft GATE not run on this registration. |
+| **Implications** | Citeable operator receipt after #69 batch; does not execute host dry-run or unlock risk gate. |
+| **Pointers** | [#69 batch](PAPER-LAYA-DECISION-PACKET-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [#60 fill-sim dry-run](PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [#53 batch dry-run](PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md). |
+
+---
+
 ## EDL-019 — LAYA decision-packet batch oracle sealed-day incomplete-RPC (Proposed)
 
 | Field | Value |
