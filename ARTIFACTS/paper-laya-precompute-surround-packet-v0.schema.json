@@ -339,7 +339,11 @@
           "$ref": "#/$defs/fixtureJoinSummary"
         },
         "graph_lift_aggregate_status": {
-          "type": "string"
+          "enum": [
+            "not_scored_mixed",
+            "not_used_graph_cold",
+            "not_used_slots_not_scored"
+          ]
         },
         "dual_read": {
           "type": "object",
@@ -879,7 +883,25 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": {
-            "type": "string"
+            "enum": [
+              "schema_looser_than_cli",
+              "synthetic_launchlab_shape",
+              "graph_slot_shape_not_a_score",
+              "dec005_draft_unmerged",
+              "sealed_book_rpc_slice_incomplete",
+              "label_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history",
+              "host_jsonl_not_readable_from_ci",
+              "counts_are_not_returns",
+              "graph_stays_cold_on_this_stamp",
+              "surround_counts_are_not_returns",
+              "surround_not_laya_authorize_run",
+              "surround_not_risk_gate_unlock",
+              "surround_not_live_trading",
+              "synthetic_scoreboard_not_a_host_extract",
+              "batch_digest_optional_not_a_measure"
+            ]
           }
         }
       }

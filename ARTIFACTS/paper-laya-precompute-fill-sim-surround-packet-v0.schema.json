@@ -413,7 +413,11 @@
           "$ref": "#/$defs/fixtureJoinSummary"
         },
         "graph_lift_aggregate_status": {
-          "type": "string"
+          "enum": [
+            "not_scored_mixed",
+            "not_used_graph_cold",
+            "not_used_slots_not_scored"
+          ]
         },
         "dual_read": {
           "type": "object",
@@ -982,7 +986,37 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": {
-            "type": "string"
+            "enum": [
+              "schema_looser_than_cli",
+              "synthetic_launchlab_shape",
+              "graph_slot_shape_not_a_score",
+              "dec005_draft_unmerged",
+              "sealed_book_rpc_slice_incomplete",
+              "label_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history",
+              "host_jsonl_not_readable_from_ci",
+              "counts_are_not_returns",
+              "graph_stays_cold_on_this_stamp",
+              "host_jsonl_read_is_not_a_closed_book",
+              "operator_path_string_is_not_a_host_extract",
+              "dry_run_does_not_ssh_or_open_var_lib_mal",
+              "parent_stamp_not_rewritten",
+              "capture_records_refusal_not_a_measure",
+              "cited_receipt_is_not_a_host_extract",
+              "path_string_on_a_refuse_is_not_file_bytes",
+              "fill_sim_vocabulary_not_exp006_promote",
+              "documented_constants_not_a_scored_fill",
+              "parent_evaluate_cli_not_rewritten",
+              "exp006_harness_not_rewritten",
+              "fill_sim_status_share_is_not_a_return",
+              "surround_counts_are_not_returns",
+              "surround_not_laya_authorize_run",
+              "surround_not_risk_gate_unlock",
+              "surround_not_live_trading",
+              "synthetic_scoreboard_not_a_host_extract",
+              "batch_digest_optional_not_a_measure"
+            ]
           }
         }
       }

@@ -26,6 +26,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-016 — LAYA incomplete-RPC honesty schema align (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-016 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-laya-incomplete-rpc-honesty-schema-align-v0`: [PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md). Tightened [paper-laya-precompute-surround-packet-v0.schema.json](paper-laya-precompute-surround-packet-v0.schema.json) and [paper-laya-precompute-fill-sim-surround-packet-v0.schema.json](paper-laya-precompute-fill-sim-surround-packet-v0.schema.json) with `soft_watches.items` enums and `graph_lift_aggregate_status` enums on digests. Tightened [paper-laya-risk-gate-lock-receipt-v0.schema.json](paper-laya-risk-gate-lock-receipt-v0.schema.json) with DEC-007 `prefixItems` on fill-sim citation digests. No new runtime schema. No CLI rewrite. |
+| **Why** | Mirror parent #54 and fill-sim #61 on the LAYA citeable chain (#63–#65). Schema must refuse dishonest shapes those CLIs already refuse before Soft GATE merge. |
+| **What was tested** | `python3 -m unittest tools.test_paper_laya_incomplete_rpc_honesty_schema_align_v0` plus existing #63–#65 unit tests. Honest fixtures pass schema and CLI. Dishonest copies fail both. No RPC. No host read. `observe/client.py` untouched. |
+| **Verification** | Soft GATE **pending**. `schema_looser_than_cli` **CLOSED** for watched LAYA shapes. `sealed_book_rpc_slice` stays `incomplete`. `closed_book_claim` stays false. `measure.kind` stays `none`. Graph stays cold. Risk gate stays locked. |
+| **Current state** | **Proposed** registration (draft PR). Not a measure. Not risk-gate unlock. Not LAYA authorize-run. |
+| **Rollback** | Revert schema enum / `prefixItems` edits and drop align contract/tests. |
+| **Unresolved** | Formal Soft GATE stamp required before merge. |
+| **Implications** | LAYA JSON Schema matches CLI honesty caps; no change to runtime CLIs or EXP-006 harness. |
+| **Pointers** | [PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md), [PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md](PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md) |
+
+---
+
 ## EDL-015 — LAYA risk-gate lock receipt (Proposed)
 
 | Field | Value |
