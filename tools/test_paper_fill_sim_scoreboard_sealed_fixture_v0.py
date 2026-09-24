@@ -5,9 +5,13 @@ from __future__ import annotations
 import copy
 import io
 import json
+import os
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
+
+from jsonschema import Draft202012Validator
 
 from tools.paper_fill_sim_hot_packet_evaluate_v0 import (
     FILL_SIM_REJECT,
@@ -39,6 +43,7 @@ FIXTURES = ROOT / "fixtures" / "paper_fill_sim_scoreboard_sealed_fixture_v0"
 STAMP_FIXTURES = ROOT / "fixtures" / "paper_fill_sim_hot_packet_evaluate_v0"
 SCHEMA = ROOT / "ARTIFACTS" / "paper-fill-sim-scoreboard-sealed-fixture-v0.schema.json"
 EXPECTATION_NAME = "sealed_day_2026-09-20_expectation.json"
+HOST_ROOT = "/var/lib/mal"
 
 FIXTURE_NAMES = {
     "all-runner": "all_runner.json",
@@ -172,6 +177,90 @@ class PaperFillSimScoreboardSealedFixtureV0Tests(unittest.TestCase):
             ),
             1,
         )
+
+    def test_score_refuses_var_lib_mal_dir_without_stat(self) -> None:
+        real_stat = os.stat
+
+        def _guarded_stat(path: os.PathLike[str] | str | int, *args: object, **kwargs: object) -> os.stat_result:
+            text = os.fspath(path)
+            if text == HOST_ROOT or text.startswith(HOST_ROOT + os.sep):
+                raise AssertionError(f"os.stat called on host path: {text}")
+            return real_stat(path, *args, **kwargs)
+
+        real_is_dir = Path.is_dir
+
+        def _guarded_is_dir(self: Path) -> bool:
+            text = os.fspath(self)
+            if text == HOST_ROOT or text.startswith(HOST_ROOT + os.sep):
+                raise AssertionError(f"Path.is_dir called on host path: {text}")
+            return real_is_dir(self)
+
+        argv = [
+            "score",
+            "--expectation",
+            str(FIXTURES / EXPECTATION_NAME),
+            "--dir",
+            HOST_ROOT,
+        ]
+        with (
+            mock.patch("os.stat", _guarded_stat),
+            mock.patch.object(Path, "is_dir", _guarded_is_dir),
+        ):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code = main(argv)
+        self.assertEqual(code, 1)
+        self.assertIn(HOST_ROOT, err.getvalue())
+        self.assertIn("does not open", err.getvalue())
+
+    def test_score_refuses_lexical_escape_to_var_lib_mal_without_stat(self) -> None:
+        lexical = str(
+            ROOT
+            / "fixtures"
+            / ".."
+            / ".."
+            / "var"
+            / "lib"
+            / "mal"
+            / "paper"
+            / "stamps"
+        )
+        real_stat = os.stat
+
+        def _guarded_stat(path: os.PathLike[str] | str | int, *args: object, **kwargs: object) -> os.stat_result:
+            text = os.fspath(path)
+            normalized = os.path.normpath(text)
+            if normalized == HOST_ROOT or normalized.startswith(HOST_ROOT + os.sep):
+                raise AssertionError(f"os.stat called on host path: {text}")
+            return real_stat(path, *args, **kwargs)
+
+        argv = [
+            "score",
+            "--expectation",
+            str(FIXTURES / EXPECTATION_NAME),
+            lexical,
+        ]
+        with mock.patch("os.stat", _guarded_stat):
+            self.assertEqual(_quiet(argv), 1)
+
+    def test_schema_rejects_board_missing_reject_fill_sim_status_row(self) -> None:
+        board = copy.deepcopy(example_mixed())
+        board["fill_sim_status_counts"] = [board["fill_sim_status_counts"][0]]
+        schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+        fill_sim_schema = {
+            "$schema": schema["$schema"],
+            "$defs": {
+                "share": schema["$defs"]["share"],
+                "fillSimStatusCountRow": schema["$defs"]["fillSimStatusCountRow"],
+            },
+            "type": "object",
+            "required": ["fill_sim_status_counts"],
+            "properties": {
+                "fill_sim_status_counts": schema["properties"]["fill_sim_status_counts"],
+            },
+        }
+        errors = list(Draft202012Validator(fill_sim_schema).iter_errors(board))
+        self.assertTrue(errors)
 
     def test_all_runner_keeps_a_zero_reject_row(self) -> None:
         board = example_all_runner()

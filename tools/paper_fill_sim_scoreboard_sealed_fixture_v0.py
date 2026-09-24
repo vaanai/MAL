@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -120,9 +121,31 @@ FORBIDDEN_KEYS: frozenset[str] = frozenset(
 )
 
 REPO = Path(__file__).resolve().parents[1]
+HOST_ROOT = "/var/lib/mal"
 ALLOWED_STAMP_PREFIXES: tuple[str, ...] = (
     "fixtures/paper_fill_sim_hot_packet_evaluate_v0/",
 )
+
+
+def _lexical_posix(text: str) -> str:
+    """Normalize a path string without reading the filesystem."""
+    raw = text.replace("\\", "/").strip()
+    path = Path(raw)
+    if not path.is_absolute():
+        path = REPO / path
+    return posixpath.normpath(path.as_posix())
+
+
+def _under_var_lib_mal(text: str) -> bool:
+    """Lexical check only. Does not stat or read the path."""
+    normalized = _lexical_posix(text)
+    return normalized == HOST_ROOT or normalized.startswith(HOST_ROOT + "/")
+
+
+def _host_open_refusal(text: str) -> str | None:
+    if _under_var_lib_mal(text):
+        return f"{text}: does not open {HOST_ROOT}"
+    return None
 
 EXPECTATION_KEYS: tuple[str, ...] = (
     "schema_version",
@@ -745,7 +768,7 @@ def load_json(path: Path) -> Any:
 
 
 def _stamp_path_allowed(path: Path) -> bool:
-    if str(path).startswith("/var/lib/mal"):
+    if _under_var_lib_mal(str(path)):
         return False
     try:
         rel = path.resolve().relative_to(REPO.resolve())
@@ -826,9 +849,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ok {path}")
         return 0
 
-    if str(args.expectation).startswith("/var/lib/mal"):
-        print(f"{args.expectation}: does not open /var/lib/mal", file=sys.stderr)
-        return 1
+    for candidate in (args.expectation, *args.paths):
+        refusal = _host_open_refusal(str(candidate))
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 1
+    if args.stamp_dir is not None:
+        refusal = _host_open_refusal(str(args.stamp_dir))
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 1
 
     try:
         expectation = load_json(args.expectation)
@@ -847,6 +877,10 @@ def main(argv: list[str] | None = None) -> int:
     stamps: list[Any] = []
     load_errors: list[str] = []
     for path in stamp_paths:
+        refusal = _host_open_refusal(str(path))
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 1
         if not _stamp_path_allowed(path):
             print(
                 f"{path}: score accepts fixtures under {', '.join(ALLOWED_STAMP_PREFIXES)} only",

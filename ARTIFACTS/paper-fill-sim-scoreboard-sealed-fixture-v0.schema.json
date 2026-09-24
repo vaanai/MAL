@@ -106,30 +106,38 @@
       "type": "array",
       "minItems": 2,
       "maxItems": 2,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "status",
-          "n",
-          "share"
-        ],
-        "properties": {
-          "status": {
-            "enum": [
-              "documented_model_only",
-              "reject_arm_no_pretend_buy"
-            ]
-          },
-          "n": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "share": {
-            "$ref": "#/$defs/share"
-          }
+      "description": "Fill-sim status rows in DEC-007 order. The reject row is always present.",
+      "prefixItems": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/fillSimStatusCountRow"
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "documented_model_only"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/fillSimStatusCountRow"
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "reject_arm_no_pretend_buy"
+                }
+              }
+            }
+          ]
         }
-      }
+      ],
+      "items": false
     }
   },
   "$defs": {
@@ -431,6 +439,30 @@
             }
           ],
           "items": false
+        }
+      }
+    },
+    "fillSimStatusCountRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "n",
+        "share"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "documented_model_only",
+            "reject_arm_no_pretend_buy"
+          ]
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "share": {
+          "$ref": "#/$defs/share"
         }
       }
     },
