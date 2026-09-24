@@ -176,7 +176,7 @@ python -m tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0 re
 
 `receipt` wraps the parent batch CLI in-process. It prints a receipt, not the parent batch body. It accepts only the courier pair `2026-09-20` / `2026-09-21`. A path under `/var/lib/mal` exits `1` before the parent CLI is called. There is no SSH client in this module.
 
-`validate` uses that same refuse, lexical check then realpath, before `read_text`. Soft GATE FAIL on this draft (a host-path receipt was accepted because `validate` read `/var/lib/mal` first) is closed by that order: exit `1`, no file open, no `parent_main`.
+`validate` uses that same refuse, lexical check then realpath, before `read_text`. Soft GATE FAIL on this draft (a host-path receipt was accepted because `validate` read `/var/lib/mal` first) is closed by that order: exit `1`, no file open, no `parent_main`. Soft GATE FAIL #2 is closed the same way for a relative arg: refuse `os.path.abspath` (the cwd path `read_text` opens) before any read, including when that abspath is under `/var/lib/mal` and the repo-joined path is not.
 
 `example --which operator-declared` writes the documented host paths and does not open them. `host_jsonl_read` on that receipt is the declared parent flag. `closed_book_claim` stays false.
 

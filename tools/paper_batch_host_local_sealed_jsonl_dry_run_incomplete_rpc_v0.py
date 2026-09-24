@@ -705,7 +705,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "validate":
         path: Path = args.path
-        refusal = _host_open_refusal(os.fspath(path))
+        text = os.fspath(path)
+        # Repo-joined lexical+realpath (absolute args and FAIL #1), then the
+        # cwd abspath read_text will open. Relative args can diverge.
+        refusal = _host_open_refusal(text)
+        if refusal is None:
+            refusal = _host_open_refusal(os.path.abspath(text))
         if refusal is not None:
             print(refusal, file=sys.stderr)
             return 1
