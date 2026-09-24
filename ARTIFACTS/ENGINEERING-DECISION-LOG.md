@@ -26,6 +26,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-015 — LAYA risk-gate lock receipt (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-015 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-laya-risk-gate-lock-receipt-v0`: [PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md](PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md), [paper-laya-risk-gate-lock-receipt-v0.schema.json](paper-laya-risk-gate-lock-receipt-v0.schema.json), fixtures `fixtures/paper_laya_risk_gate_lock_receipt_v0/`, `python -m tools.paper_laya_risk_gate_lock_receipt_v0` (example / validate / assemble), `tools/test_paper_laya_risk_gate_lock_receipt_v0.py`. Cites validated #64 [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md) and/or #63 [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md) surround fixtures. [LAB_STATE.md](../LAB_STATE.md) §11p. Parent #49–#64 CLIs not rewritten. |
+| **Why** | North-star paper step after surround LAYA precompute shape: record risk gate **locked** on fixtures without unlock, authorize-run, or live claims. |
+| **What was tested** | `python3 -m unittest tools.test_paper_laya_risk_gate_lock_receipt_v0`. Honest fixtures pass schema and CLI. Dishonest copies fail both. Host-path refuses before `read_text`. No RPC. `observe/client.py` untouched. |
+| **Verification** | Soft GATE **pending** (draft PR). |
+| **Current state** | **Proposed** registration on branch. Not a measure. Not risk-gate unlock. Not LAYA authorize-run. Graph cold. Sealed book incomplete. |
+| **Rollback** | Revert lock receipt contract, schema, fixtures, CLI, and tests. |
+| **Unresolved** | Soft GATE Formal stamp required before merge. |
+| **Implications** | Fixtures-only lock receipt can sit after surround packets without wiring risk gate or LAYA execution. |
+| **Pointers** | [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md), [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md), [PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md), [LAB_STATE.md](../LAB_STATE.md) |
+
+---
+
 ## EDL-014 — LAYA precompute surround packet (non-fill-sim spine, Proposed)
 
 | Field | Value |
