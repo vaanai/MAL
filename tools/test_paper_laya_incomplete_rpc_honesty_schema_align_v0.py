@@ -518,6 +518,89 @@ class LayaSchemaAlignV0Tests(unittest.TestCase):
         self.assertTrue(_schema_errors(fs_ref, fs_mixed, self.registry))
         self.assertTrue(_cli_errors("fill_sim_surround", fs_mixed))
 
+    def test_lexical_path_collapse_inside_prefix_fail_schema_and_cli(self) -> None:
+        lr_ref = "paper-laya-risk-gate-lock-receipt-v0.schema.json"
+        lr_path = ROOT / "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+        fill_sim_surround_collapses = (
+            "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0//mixed_scoreboard.json",
+            "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0///mixed_scoreboard.json",
+            "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/./mixed_scoreboard.json",
+            "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0//./mixed_scoreboard.json",
+            "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json/",
+            "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/.//mixed_scoreboard.json",
+        )
+        for candidate in fill_sim_surround_collapses:
+            with self.subTest(kind="lock_receipt", path=candidate):
+                doc = _load(lr_path)
+                doc["surround_citations"][0]["fixture_path"] = candidate
+                doc["input"]["assembly"]["surround_paths"] = [candidate]
+                self.assertTrue(_schema_errors(lr_ref, doc, self.registry))
+                self.assertTrue(_cli_errors("lock_receipt", doc))
+
+        nf_ref = "paper-laya-precompute-surround-packet-v0.schema.json"
+        nf_mixed = ROOT / "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+        nf_batch = ROOT / "fixtures/paper_laya_precompute_surround_packet_v0/batch_two_day_with_digest.json"
+        non_fill_scoreboard_collapses = (
+            "fixtures/paper_scoreboard_sealed_fixture_v0//mixed_runner_reject.json",
+            "fixtures/paper_scoreboard_sealed_fixture_v0///mixed_runner_reject.json",
+            "fixtures/paper_scoreboard_sealed_fixture_v0/./mixed_runner_reject.json",
+            "fixtures/paper_scoreboard_sealed_fixture_v0/mixed_runner_reject.json/",
+            "fixtures/paper_scoreboard_sealed_fixture_v0/.//mixed_runner_reject.json",
+        )
+        for candidate in non_fill_scoreboard_collapses:
+            with self.subTest(kind="non_fill_scoreboard", path=candidate):
+                doc = _load(nf_mixed)
+                doc["input"]["assembly"]["scoreboard_paths"][0] = candidate
+                self.assertTrue(_schema_errors(nf_ref, doc, self.registry))
+                self.assertTrue(_cli_errors("non_fill_surround", doc))
+
+        for candidate in (
+            "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0//two_day.json",
+            "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/./two_day.json",
+            "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/two_day.json/",
+        ):
+            with self.subTest(kind="non_fill_batch", path=candidate):
+                doc = _load(nf_batch)
+                doc["input"]["assembly"]["batch_path"] = candidate
+                self.assertTrue(_schema_errors(nf_ref, doc, self.registry))
+                self.assertTrue(_cli_errors("non_fill_surround", doc))
+
+        fs_ref = "paper-laya-precompute-fill-sim-surround-packet-v0.schema.json"
+        fs_mixed = ROOT / "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+        fs_batch = ROOT / "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/batch_two_day_with_digest.json"
+        fill_sim_scoreboard_collapses = (
+            "fixtures/paper_fill_sim_scoreboard_sealed_fixture_v0//mixed_runner_reject.json",
+            "fixtures/paper_fill_sim_scoreboard_sealed_fixture_v0///mixed_runner_reject.json",
+            "fixtures/paper_fill_sim_scoreboard_sealed_fixture_v0/./mixed_runner_reject.json",
+            "fixtures/paper_fill_sim_scoreboard_sealed_fixture_v0/mixed_runner_reject.json/",
+        )
+        for candidate in fill_sim_scoreboard_collapses:
+            with self.subTest(kind="fill_sim_scoreboard", path=candidate):
+                doc = _load(fs_mixed)
+                doc["input"]["assembly"]["scoreboard_paths"][0] = candidate
+                self.assertTrue(_schema_errors(fs_ref, doc, self.registry))
+                self.assertTrue(_cli_errors("fill_sim_surround", doc))
+
+        for candidate in (
+            "fixtures/paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0//two_day.json",
+            "fixtures/paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0/./two_day.json",
+            "fixtures/paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0/two_day.json/",
+        ):
+            with self.subTest(kind="fill_sim_batch", path=candidate):
+                doc = _load(fs_batch)
+                doc["input"]["assembly"]["batch_path"] = candidate
+                self.assertTrue(_schema_errors(fs_ref, doc, self.registry))
+                self.assertTrue(_cli_errors("fill_sim_surround", doc))
+
+        backslash = (
+            "fixtures\\paper_laya_precompute_fill_sim_surround_packet_v0\\mixed_scoreboard.json"
+        )
+        doc = _load(lr_path)
+        doc["surround_citations"][0]["fixture_path"] = backslash
+        doc["input"]["assembly"]["surround_paths"] = [backslash]
+        self.assertTrue(_schema_errors(lr_ref, doc, self.registry))
+        self.assertTrue(_cli_errors("lock_receipt", doc))
+
     def test_fill_sim_fixture_path_with_non_fill_registration_fail_schema_and_cli(self) -> None:
         ref = "paper-laya-risk-gate-lock-receipt-v0.schema.json"
         path = ROOT / "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
