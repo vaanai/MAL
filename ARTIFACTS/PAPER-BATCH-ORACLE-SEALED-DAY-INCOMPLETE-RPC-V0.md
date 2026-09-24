@@ -145,7 +145,7 @@ Inherited from hot-packet v0 (PR #49), paper-evaluate (PR #50), and paper-scoreb
 
 | Watch id | What it is | Why it does not block |
 | --- | --- | --- |
-| `schema_looser_than_cli` | JSON Schema is the citeable shape. The CLI recomputes the batch from the embedded JSONL rows and refuses a closed book, a numeric horizon, and a non-cold graph. | Do not widen the CLI down to the schema. Do not hold this consumer for a schema rewrite. |
+| `schema_looser_than_cli` | Historical id on this stamp. [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) closes it: schema refuses a closed book, a numeric horizon, a return key on a source row, and a non-cold graph claim that the parent schemas already const-lock. The CLI still recomputes the batch. | Do not widen the CLI. |
 | `synthetic_launchlab_shape` | Inherited name. This batch's checked-in rows are sealed defaults, so the LaunchLab shape is not in the example. | Still not an enum lock if a later reader meets the parent fixture. |
 | `graph_slot_shape_not_a_score` | Inherited name. This stamp keeps slots null. | `graph_lift` stays null. |
 | `dec005_draft_unmerged` | Embedded packets still carry `clock_source=dec005_draft_pr8_unmerged`. | Hooks only. Not a claim that DEC-005 merged. |

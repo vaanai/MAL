@@ -24,6 +24,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-009 — Paper incomplete-RPC honesty schema align (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-009 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-incomplete-rpc-honesty-schema-align-v0`: [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md). Tightened [hot-packet-v0.schema.json](hot-packet-v0.schema.json), [paper-evaluate-hot-packet-v0.schema.json](paper-evaluate-hot-packet-v0.schema.json), and batch source-row names in [paper-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json](paper-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json). Scoreboard and host-local schemas already const-refused the same honesty bits; tests cite them. No new runtime schema. No CLI rewrite. |
+| **Why** | JSON Schema is the citeable shape and was looser than the paper-chain CLIs on closed book, measure kind, host-path open claims, and numeric horizons read as returns. |
+| **What was tested** | `python3 -m unittest tools.test_paper_incomplete_rpc_honesty_schema_align_v0`. Honest #49–#53 fixtures pass schema and CLI. Dishonest in-memory copies fail both. No RPC. No `/var/lib/mal` read. `observe/client.py` untouched. |
+| **Verification** | `schema_looser_than_cli` is **CLOSED** for those dishonest shapes. `sealed_book_rpc_slice` stays `incomplete`. `closed_book_claim` stays false. `measure.kind` stays `none`. Graph stays cold. |
+| **Current state** | Contract is **Proposed**. Not a scored measure. Soft GATE is required before merge. Watches that stay true stay non-blocking. `global_95bps` and `launchlab_init` stay Proposed. |
+| **Rollback** | Revert this registration and the parent schema diffs. Parent CLIs and `observe/client.py` are untouched. |
+| **Unresolved** | Sealed book stays incomplete. Host dry-run receipt capture still waits. No invented EV. |
+| **Implications** | Proof can cite schema validation for the honesty refusals the CLIs already made. Merge is not a sealed-book close and not alpha. |
+| **Pointers** | [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md), [PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md) |
+
+---
+
 ## EDL-008 — Host-local sealed JSONL dry-run receipt, incomplete RPC (Proposed)
 
 | Field | Value |

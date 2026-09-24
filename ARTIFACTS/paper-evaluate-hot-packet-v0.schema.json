@@ -89,6 +89,54 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "input": {
+            "properties": {
+              "packet": {
+                "properties": {
+                  "graph": {
+                    "properties": { "cold": { "const": true } },
+                    "required": ["cold"]
+                  }
+                },
+                "required": ["graph"]
+              }
+            },
+            "required": ["packet"]
+          }
+        },
+        "required": ["input"]
+      },
+      "then": {
+        "properties": { "graph_lift_status": { "const": "not_used_graph_cold" } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "input": {
+            "properties": {
+              "packet": {
+                "properties": {
+                  "graph": {
+                    "properties": { "cold": { "const": false } },
+                    "required": ["cold"]
+                  }
+                },
+                "required": ["graph"]
+              }
+            },
+            "required": ["packet"]
+          }
+        },
+        "required": ["input"]
+      },
+      "then": {
+        "properties": { "graph_lift_status": { "const": "not_used_slots_not_scored" } }
+      }
     }
   ],
   "$defs": {

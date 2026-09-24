@@ -145,7 +145,7 @@ Inherited from hot-packet v0 Soft GATE (PR #49) via paper-evaluate (PR #50):
 
 | Watch id | What it is | Why it does not block |
 | --- | --- | --- |
-| `schema_looser_than_cli` | JSON Schema is the citeable shape. The CLI recomputes the board from the embedded stamps and the expectation, and it refuses numeric horizons. | Do not widen the CLI down to the schema. Do not hold this consumer for a schema rewrite. |
+| `schema_looser_than_cli` | Historical id on this stamp. Schema already const-refuses a closed book, `measure.kind` other than `none`, and numeric horizons under `fixture_joined_null_explicit`. [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) closes the watch. The CLI still recomputes the board. | Do not widen the CLI. Counts stay counts. |
 | `synthetic_launchlab_shape` | `all-runner` and `mixed` embed the paper-evaluate LaunchLab shape stamp. | Not a LaunchLab cohort, not a sealed-book rate, not an enum lock. |
 | `graph_slot_shape_not_a_score` | `slots-not-scored` embeds the allowlisted slot stamp. | `graph_lift` stays null. The integer is not lift. |
 | `dec005_draft_unmerged` | Embedded stamps still carry `clock_source=dec005_draft_pr8_unmerged`. | Hooks only. Not a claim that DEC-005 merged. |

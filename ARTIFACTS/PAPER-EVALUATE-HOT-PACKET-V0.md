@@ -146,7 +146,7 @@ Inherited from the hot-packet v0 Soft GATE (PR #49). `soft_watches.blocking=fals
 
 | Watch id | What it is | Why it does not block |
 | --- | --- | --- |
-| `schema_looser_than_cli` | JSON Schema is the citeable shape. The CLI is tighter: it recomputes the label from the embedded packet, checks `T` against `clocks.T_decision`, and checks `graph_lift_status` against `graph.cold`. The same gap exists on hot-packet v0 (regime pipe vs components, `graph.cold` vs filled slots, `source_day` vs `t_ws`, slot value kinds). | Do not widen the CLI down to the schema. Do not hold this consumer for a schema rewrite. |
+| `schema_looser_than_cli` | Historical id on this stamp. [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) closes it for dishonest shapes: closed book, measure kind, host-path open claims, numeric horizons, slot value kinds, `graph.cold` vs filled slots, and `graph_lift_status` vs `graph.cold`. The CLI still recomputes the label and `T`. | Do not widen the CLI. Do not read this id as permission to cite a dishonest shape. |
 | `synthetic_launchlab_shape` | `enriched_launchlab_init_runner.json` is a shape example: Proposed `launchlab_init` / `launchlab` / `launchlab_pool`, fee left `unverified`. | Not a LaunchLab cohort, not a sealed-book rate, not an enum lock. |
 | `graph_slot_shape_not_a_score` | `sealed_graph_slots_not_scored_runner.json` copies the hot-packet slot shape (one H-G1-shaped integer, H-G4 null). | `graph_lift` stays null. The integer is not lift and not a promote. |
 | `dec005_draft_unmerged` | Clock field names follow draft PR #8. | Hooks only. Not a claim that DEC-005 merged. |

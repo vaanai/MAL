@@ -289,13 +289,77 @@
             "early_wallet_dt_min_seconds"
           ]
         },
-        "value": { "type": ["number", "boolean", "null"] },
+        "value": {
+          "description": "Kind follows slot_id. early_wallet_dt_min_seconds stays null. A number here is not a return and not lift."
+        },
         "evidence_tier": { "const": "weak_ws" },
         "hypothesis_status": {
           "enum": ["directional_watch_not_promoted", "incomplete_do_not_densify"]
         },
         "t_precompute_as_of": { "type": "string", "minLength": 1 }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "slot_id": { "const": "creator_age_seconds" } },
+            "required": ["slot_id"]
+          },
+          "then": {
+            "properties": {
+              "value": { "anyOf": [{ "type": "number", "minimum": 0 }, { "const": null }] },
+              "hypothesis_status": { "const": "directional_watch_not_promoted" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "slot_id": { "const": "prior_mint_count" } },
+            "required": ["slot_id"]
+          },
+          "then": {
+            "properties": {
+              "value": { "$ref": "#/$defs/jsonIntegerOrNull" },
+              "hypothesis_status": { "const": "directional_watch_not_promoted" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "slot_id": { "const": "min_gap_seconds" } },
+            "required": ["slot_id"]
+          },
+          "then": {
+            "properties": {
+              "value": { "anyOf": [{ "type": "number", "minimum": 0 }, { "const": null }] },
+              "hypothesis_status": { "const": "directional_watch_not_promoted" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "slot_id": { "const": "creator_buyer_recurrence_weak" } },
+            "required": ["slot_id"]
+          },
+          "then": {
+            "properties": {
+              "value": { "anyOf": [{ "type": "boolean" }, { "const": null }] },
+              "hypothesis_status": { "const": "directional_watch_not_promoted" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "slot_id": { "const": "early_wallet_dt_min_seconds" } },
+            "required": ["slot_id"]
+          },
+          "then": {
+            "properties": {
+              "value": { "const": null },
+              "hypothesis_status": { "const": "incomplete_do_not_densify" }
+            }
+          }
+        }
+      ]
     },
     "graph": {
       "type": "object",
@@ -313,7 +377,100 @@
           "maxItems": 5,
           "items": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/graphSlot" }] }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "cold": { "const": true } },
+            "required": ["cold"]
+          },
+          "then": {
+            "properties": {
+              "slots": {
+                "anyOf": [
+                  { "type": "null" },
+                  { "type": "array", "maxItems": 0 },
+                  {
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        { "type": "null" },
+                        {
+                          "type": "object",
+                          "properties": { "value": { "const": null } },
+                          "required": ["value"]
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "slots": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "properties": { "value": { "not": { "const": null } } },
+                  "required": ["value"]
+                }
+              }
+            },
+            "required": ["slots"]
+          },
+          "then": {
+            "properties": { "cold": { "const": false } }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": { "slots": { "const": null } },
+                "required": ["slots"]
+              },
+              {
+                "properties": { "slots": { "type": "array", "maxItems": 0 } },
+                "required": ["slots"]
+              },
+              {
+                "properties": {
+                  "slots": {
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        { "type": "null" },
+                        {
+                          "type": "object",
+                          "properties": { "value": { "const": null } },
+                          "required": ["value"]
+                        }
+                      ]
+                    }
+                  }
+                },
+                "required": ["slots"]
+              }
+            ]
+          },
+          "then": {
+            "properties": { "cold": { "const": true } },
+            "description": "Unfilled slots are Graph cold. cold=false with null, empty, or all-null slots is refused."
+          }
+        }
+      ]
+    },
+    "jsonIntegerOrNull": {
+      "$schema": "http://json-schema.org/draft-04/schema#",
+      "anyOf": [
+        { "type": "null" },
+        { "type": "integer", "minimum": 0 }
+      ],
+      "description": "Dialect the prior_mint_count $ref selects. Draft-04 integer rejects whole-number floats 1.0 and 2.0. Draft 2020-12 integer accepts them. A JSON integer such as 2 still passes."
     },
     "clocks": {
       "type": "object",
