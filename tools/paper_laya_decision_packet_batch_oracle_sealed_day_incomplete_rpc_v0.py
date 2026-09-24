@@ -47,6 +47,11 @@ MANIFEST_KIND = "decision_day_manifest"
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MANIFEST_NAME_RE = re.compile(r"^decision-day-(\d{4}-\d{2}-\d{2})\.json$")
 EXAMPLE_DAYS: tuple[str, ...] = ("2026-09-20", "2026-09-21")
+KNOWN_ROLLUP_DAYS: tuple[tuple[str, ...], ...] = (
+    ("2026-09-20", "2026-09-21"),
+    ("2026-09-20",),
+    ("2026-09-21",),
+)
 FIXTURE_ORIGINS: tuple[str, ...] = ("synthetic",)
 
 PIPELINE: tuple[str, ...] = (
@@ -753,12 +758,27 @@ def _diff_paths(expected: Any, actual: Any, path: str, out: list[str]) -> None:
         out.append(f"{path}: expected {expected!r}")
 
 
+def _rollup_days_tuple(rollup: Any) -> tuple[str, ...] | None:
+    if not isinstance(rollup, Mapping):
+        return None
+    days = rollup.get("days")
+    if not isinstance(days, list) or not days:
+        return None
+    if not all(isinstance(day, str) for day in days):
+        return None
+    return tuple(days)
+
+
 def validate_batch(batch: Any) -> list[str]:
     if not isinstance(batch, Mapping):
         return ["batch: must be a JSON object"]
     errors: list[str] = []
     _reject_forbidden_keys(errors, batch, "batch")
     if errors:
+        return errors
+    rollup_days = _rollup_days_tuple(batch.get("rollup"))
+    if rollup_days is None or rollup_days not in KNOWN_ROLLUP_DAYS:
+        errors.append("rollup.days: must be a known sealed-day composition")
         return errors
     inp = batch.get("input")
     if not isinstance(inp, Mapping):

@@ -612,6 +612,115 @@ class PaperLayaDecisionPacketBatchOracleSealedDayIncompleteRpcV0Tests(unittest.T
                 self.assertTrue(_schema_errors(doc), label)
                 self.assertTrue(validate_batch(doc), label)
 
+    def _day21_only_batch(self) -> dict:
+        day = "2026-09-21"
+        manifest = manifest_for_day(day)
+        packets, _, errors = project_day(manifest, day=day, fixture_origin="synthetic")
+        self.assertEqual(errors, [])
+        spec = [
+            {
+                "day": day,
+                "manifest_name": f"decision-day-{day}.json",
+                "manifest": manifest,
+                "expectation": expectation_from_packets(day, packets),
+            }
+        ]
+        batch, problems = assemble(spec, fixture_origin="synthetic")
+        self.assertEqual(problems, [])
+        self.assertIsNotNone(batch)
+        return batch
+
+    def _assert_soft_gate_fail5(self, base: dict, mutate: object, *, label: str) -> None:
+        doc = copy.deepcopy(base)
+        mutate(doc)
+        with self.subTest(label=label):
+            self.assertTrue(_schema_errors(doc), label)
+            self.assertTrue(validate_batch(doc), label)
+
+    def test_soft_gate_fail5_foreign_rollup_days_unbound_counts_fail_schema_and_cli(
+        self,
+    ) -> None:
+        foreign = "1999-01-01"
+
+        def _foreign_counts(batch: dict) -> None:
+            batch["rollup"]["days"] = [foreign]
+            batch["rollup"].update({"n": 99, "packet_n": 99, "runner_n": 99, "reject_n": 99})
+            batch["full_book"].update(
+                {
+                    "packet_n": 99,
+                    "digest_stamp_n": 99,
+                    "digest_runner_n": 99,
+                    "digest_reject_n": 99,
+                }
+            )
+
+        self._assert_soft_gate_fail5(
+            example_two_day(),
+            _foreign_counts,
+            label="foreign rollup.days with unbound counts",
+        )
+
+    def test_soft_gate_fail5_reversed_and_extra_rollup_day_lists_fail_schema_and_cli(
+        self,
+    ) -> None:
+        self._assert_soft_gate_fail5(
+            example_two_day(),
+            lambda b: b["rollup"].__setitem__(
+                "days", ["2026-09-21", "2026-09-20"]
+            ),
+            label="reversed two-day rollup.days",
+        )
+        self._assert_soft_gate_fail5(
+            example_two_day(),
+            lambda b: b["rollup"].__setitem__(
+                "days", ["2026-09-20", "2026-09-21", "2026-09-21"]
+            ),
+            label="extra duplicated day on rollup.days",
+        )
+
+    def test_soft_gate_fail5_honest_day22_rollup_list_mismatch_fail_schema_and_cli(
+        self,
+    ) -> None:
+        split_day = "2026-09-22"
+        self._assert_soft_gate_fail5(
+            self._day21_only_batch(),
+            lambda b: b["rollup"].__setitem__("days", [split_day]),
+            label="rollup.days list mismatch on day-21-only batch",
+        )
+
+    def test_soft_gate_fail5_phantom_output_row_when_rollup_leaves_singleton_fail_schema_and_cli(
+        self,
+    ) -> None:
+        base = self._day21_only_batch()
+
+        def _phantom_row(batch: dict) -> None:
+            batch["rollup"]["days"] = list(EXAMPLE_DAYS)
+            extra = copy.deepcopy(batch["days"][0])
+            extra["day"] = "1999-01-01"
+            extra["manifest_name"] = "decision-day-1999-01-01.json"
+            extra["packet_census"]["listed_n"] = 99
+            batch["days"].append(extra)
+
+        self._assert_soft_gate_fail5(
+            base,
+            _phantom_row,
+            label="phantom output row when rollup.days leaves singleton",
+        )
+
+    def test_soft_gate_fail5_duplicate_input_day21_fail_schema_and_cli(self) -> None:
+        base = self._day21_only_batch()
+
+        def _dup_input(batch: dict) -> None:
+            dup = copy.deepcopy(batch["input"]["days"][0])
+            batch["input"]["days"].append(dup)
+            batch["rollup"]["days"] = ["2026-09-21", "2026-09-21"]
+
+        self._assert_soft_gate_fail5(
+            base,
+            _dup_input,
+            label="duplicate day-21 input.days with duplicated rollup.days",
+        )
+
     def test_soft_gate_fail1_cli_refuses_lexical_manifest_paths_before_fs(self) -> None:
         bad_paths = [
             "fixtures\\paper_laya_precompute_decision_packet_v0\\decision_non_fill_sim_surround.json",
