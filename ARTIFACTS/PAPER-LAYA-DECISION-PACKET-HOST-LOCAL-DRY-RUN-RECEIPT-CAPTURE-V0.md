@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-decision-packet-host-local-dry-run-receipt-capture-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-583eb833-6443-55f7-a685-b1ad3e166b6b`; head `cecdf6767c71d34da3927ba32646b674787eab45`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/71#issuecomment-5813702684); FAIL #1 [closed](https://github.com/vaanai/MAL/pull/71#issuecomment-5813349728); FAIL #2 [closed](https://github.com/vaanai/MAL/pull/71#issuecomment-5813497572); open [PR #71](https://github.com/vaanai/MAL/pull/71) squash pending on `main`). Not a measure. Not an EXP. Not an executed host dry-run. Not a sealed-book close. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-583eb833-6443-55f7-a685-b1ad3e166b6b`; head `cecdf6767c71d34da3927ba32646b674787eab45`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/71#issuecomment-5813702684); FAIL #1 [closed](https://github.com/vaanai/MAL/pull/71#issuecomment-5813349728); FAIL #2 [closed](https://github.com/vaanai/MAL/pull/71#issuecomment-5813497572); merged [PR #71](https://github.com/vaanai/MAL/pull/71) squash `3d83622` on `main`). Not a measure. Not an EXP. Not an executed host dry-run. Not a sealed-book close. |
 | **Owner seat** | Proof (capture + Soft GATE); Scout (host-local path shape); Helm (AUTH) |
 | **Commission** | Helm AUTH. Capture around the merged LAYA decision-packet host-local dry-run ([PR #70](https://github.com/vaanai/MAL/pull/70) @ `d020fc9`). Honesty align on the LAYA chain: [PR #66](https://github.com/vaanai/MAL/pull/66) @ `3128128`. The #70 dry-run CLI is **not** rewritten. |
 | **Schema** | [paper-laya-decision-packet-host-local-dry-run-receipt-capture-v0.schema.json](paper-laya-decision-packet-host-local-dry-run-receipt-capture-v0.schema.json) (JSON Schema 2020-12) |
@@ -14,7 +14,7 @@
 
 This file registers how refuse and receipt outcomes from the #70 LAYA decision-packet host-local sealed JSONL dry-run are captured and cited. The capture is knowable from the invocation and from the dry-run rebuild or refuse. It does not read `/var/lib/mal`. It does not embed a receipt body, a parent batch, host bytes, a horizon, `Δ_exec`, or a return.
 
-Citeable stack on `main` through parent dry-run #70 @ `d020fc9` (squash); honesty align #66 @ `3128128`. Mirror of #55 / #62 on the LAYA decision-packet host-local dry-run.
+Citeable stack on `main` through #71 Formal @ `3d83622` (squash); parent dry-run #70 @ `d020fc9`; honesty align #66 @ `3128128`. Mirror of #55 / #62 on the LAYA decision-packet host-local dry-run.
 
 Merge ≠ executed host dry-run ≠ Oracle measure ≠ LAYA authorize-run ≠ risk-gate unlock ≠ live.
 
@@ -152,6 +152,6 @@ Soft GATE **pending**. `soft_watches.blocking=false`. Inherited LAYA chain watch
 - Honesty align: [PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md), [PR #66](https://github.com/vaanai/MAL/pull/66) @ `3128128`
 - Oracle batch dry-run receipt (#55 pattern): [PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md)
 - Fill-sim capture (#62 pattern): [PAPER-FILL-SIM-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-FILL-SIM-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md)
-- This capture: [PR #71](https://github.com/vaanai/MAL/pull/71) (Soft GATE PASS Formal-stamped; squash pending on `main`)
+- This capture: [PR #71](https://github.com/vaanai/MAL/pull/71) squash `3d83622` on `main` (Soft GATE PASS Formal-stamped)
 - [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)
 - [SUMMARY.md](SUMMARY.md)
