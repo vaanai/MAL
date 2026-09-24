@@ -3,12 +3,12 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-incomplete-rpc-honesty-schema-align-v0` |
-| **Status** | **Proposed** registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-b59bd3fd-d786-5475-83f6-02f421b95098`; fix `bc-ef9eef8d-8dc0-5340-a1d3-563926df1b6e`; head `81be82c7c6dd2ea69a6c6163f1215fd23271b0a1`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/66#issuecomment-5810546271); [PR #66](https://github.com/vaanai/MAL/pull/66)). Not a measure. Not an EXP. Not a sealed-book close. |
+| **Status** | **Proposed** registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-b59bd3fd-d786-5475-83f6-02f421b95098`; fix `bc-ef9eef8d-8dc0-5340-a1d3-563926df1b6e`; head `81be82c7c6dd2ea69a6c6163f1215fd23271b0a1`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/66#issuecomment-5810546271); merged [PR #66](https://github.com/vaanai/MAL/pull/66) squash `3128128` on `main`). Not a measure. Not an EXP. Not a sealed-book close. |
 | **Owner seat** | Scout commission. Helm AUTH 2026-09-23. |
-| **Parent** | LAYA paper stack PRs [#63](https://github.com/vaanai/MAL/pull/63)–[#65](https://github.com/vaanai/MAL/pull/65), main tip `9d866b0` (post-#65 squash `7979988`) |
+| **Parent** | LAYA paper stack PRs [#63](https://github.com/vaanai/MAL/pull/63)–[#65](https://github.com/vaanai/MAL/pull/65), main tip `3128128` after Formal #66 |
 | **Mirror** | [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) (#54), [PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) (#61) — same honesty caps on the LAYA citeable schemas; **no** rewrite of parent #49–#65 CLIs |
 | **Runtime object** | **None.** This stamp does not add a receipt schema or a CLI. Cite the tightened LAYA parent schemas. |
-| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-b59bd3fd-d786-5475-83f6-02f421b95098`; fix `bc-ef9eef8d-8dc0-5340-a1d3-563926df1b6e`; head `81be82c7c6dd2ea69a6c6163f1215fd23271b0a1`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/66#issuecomment-5810546271); [PR #66](https://github.com/vaanai/MAL/pull/66)). Watches that stay true stay **non-blocking**. |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-b59bd3fd-d786-5475-83f6-02f421b95098`; fix `bc-ef9eef8d-8dc0-5340-a1d3-563926df1b6e`; head `81be82c7c6dd2ea69a6c6163f1215fd23271b0a1`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/66#issuecomment-5810546271); squash `3128128` on `main`). Watches that stay true stay **non-blocking**. |
 
 JSON Schema on the LAYA paper stack (#63–#65) is the citeable shape. Before this stamp, a few dishonest shapes the CLIs already refused still passed schema-only validation (notably unregistered `soft_watches.items`, dishonest `graph_lift_aggregate_status` strings on surround digests, and single-arm `fill_sim_status_counts` on lock-receipt fill-sim digests). The #63–#65 registrations already `const`-lock closed book, `measure.kind=none`, null horizons / `Δ_exec`, LAYA caps (`authorize_run` / `risk_gate_unlock` / `live_trading` false), risk-gate lock, digest-only surround citations, and Graph cold. This registration closes the remaining watched gaps and documents the align pass.
 
@@ -124,6 +124,6 @@ The align test loads the LAYA schemas with JSON Schema 2020-12 and a registry of
 - Non-fill-sim surround (#64): [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md), [PR #64](https://github.com/vaanai/MAL/pull/64) squash `277a142`
 - Risk-gate lock receipt (#65): [PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md](PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md), [PR #65](https://github.com/vaanai/MAL/pull/65) squash `7979988`
 - Parent honesty align: [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md), [PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md)
-- This align pass: [PR #66](https://github.com/vaanai/MAL/pull/66) (Soft GATE PASS Formal-stamped)
+- This align pass: [PR #66](https://github.com/vaanai/MAL/pull/66) squash `3128128` on `main` (Soft GATE PASS Formal-stamped)
 - Proof test: [tools/test_paper_laya_incomplete_rpc_honesty_schema_align_v0.py](../tools/test_paper_laya_incomplete_rpc_honesty_schema_align_v0.py)
 - Manager digest: [SUMMARY.md](SUMMARY.md)
