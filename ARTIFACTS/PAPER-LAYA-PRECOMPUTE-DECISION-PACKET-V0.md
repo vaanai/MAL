@@ -3,13 +3,13 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-precompute-decision-packet-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE pending** Formal. Not a measure. Not LAYA authorize-run. Not risk-gate unlock. Not live. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-84b8db98-a158-5530-8e30-9e33587231fa`; fix `bc-0361a565-20bd-5763-bd67-a6a9a1034c57`; implement `bc-d0648945-6ec4-5891-91e6-0d94f7bd4056`; head `f2e4508678bff71a1c55e990f2ce52dae2aa2b0a`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/67#issuecomment-5810922748); [PR #67](https://github.com/vaanai/MAL/pull/67)). Not a measure. Not LAYA authorize-run. Not risk-gate unlock. Not live. |
 | **Owner seat** | Proof (decision packet + Soft GATE); Scout (surround + lock citation paths); Helm (AUTH) |
 | **Commission** | North-star step after merged LAYA lock receipt [#65](https://github.com/vaanai/MAL/pull/65) (`7979988`): package validated [#64](https://github.com/vaanai/MAL/pull/64) and/or [#63](https://github.com/vaanai/MAL/pull/63) surround fixtures with [#65](https://github.com/vaanai/MAL/pull/65) lock-receipt fixtures for later LAYA consumption. Parent #49–#65 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-laya-precompute-decision-packet-v0.schema.json](paper-laya-precompute-decision-packet-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_laya_precompute_decision_packet_v0/](../fixtures/paper_laya_precompute_decision_packet_v0/) — decision packets citing surround + lock receipt fixtures only |
 | **CLI** | `python -m tools.paper_laya_precompute_decision_packet_v0` — example / validate / assemble on local JSON only |
-| **Soft GATE** | **Pending** Formal — Soft GATE FAIL #1 `schema_looser_than_cli` holes **closed** on [PR #67](https://github.com/vaanai/MAL/pull/67) (union rule, mixed-spine citation cardinality, digest/path binding, `soft_watches` identity). Formal stamp still pending. |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-84b8db98-a158-5530-8e30-9e33587231fa`; fix `bc-0361a565-20bd-5763-bd67-a6a9a1034c57`; implement `bc-d0648945-6ec4-5891-91e6-0d94f7bd4056`; head `f2e4508678bff71a1c55e990f2ce52dae2aa2b0a`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/67#issuecomment-5810922748); [PR #67](https://github.com/vaanai/MAL/pull/67)). Watches that stay true stay **non-blocking**. |
 
 This file registers a **fixtures-only decision packet** that cites validated LAYA precompute surround JSON (#63/#64) and lock receipts (#65) already on `main`. The packet records surround digests plus lock-receipt digests while the risk gate stays **locked**: `laya.risk_gate_unlock=false`, `laya.authorize_run=false`, `laya.live_trading=false`, `risk_gate.decision=locked`, `risk_gate.unlock=false`. It does **not** unlock the gate, authorize a LAYA run, or enable live trading.
 
@@ -17,7 +17,7 @@ Citeable inputs on `main`: [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md](PAPER-L
 
 Merge ≠ risk-gate unlock ≠ LAYA authorize-run ≠ live trading ≠ Oracle measure ≠ EXP-006 promote.
 
-**Soft GATE pending** Formal. Schema now matches CLI on assembly union, mixed-spine dual citations, fixture-anchored digests and paths, and ordered `soft_watches` identity (not only const caps). Caps held on honest fixtures: `measure.kind=none`; sealed book **incomplete**; `closed_book_claim=false`; Graph **cold**; `risk_gate.decision=locked`; `risk_gate.unlock=false`; `laya.authorize_run=false`; `laya.risk_gate_unlock=false`; `laya.live_trading=false`. Soft GATE PASS (when stamped) ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
+**Soft GATE PASS** (Formal stamp Lyra; 2026-09-24; head `f2e4508678bff71a1c55e990f2ce52dae2aa2b0a`; kill `bc-84b8db98-a158-5530-8e30-9e33587231fa`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/67#issuecomment-5810922748); `python3 -m unittest tools.test_paper_laya_precompute_decision_packet_v0` — 29 OK per Soft GATE; parent #63–#65 unit tests 15 / 19 / 22 OK per Soft GATE — 85 combined). Schema matches CLI on assembly union, mixed-spine dual citations, fixture-anchored digests and paths, and ordered `soft_watches` identity (not only const caps). Schema may be tighter than CLI on some assemble orders/duplicates — not a Soft GATE FAIL basis. Caps held on honest fixtures: `measure.kind=none`; sealed book **incomplete**; `closed_book_claim=false`; Graph **cold**; `risk_gate.decision=locked`; `risk_gate.unlock=false`; `laya.authorize_run=false`; `laya.risk_gate_unlock=false`; `laya.live_trading=false`. Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**. Paper-only. No new runtime object. Parent #49–#65 CLIs and EXP-006 harness not rewritten. `observe/client.py` untouched.
 
 ---
 
@@ -135,7 +135,7 @@ Honest fixtures pass schema and CLI. In-memory dishonest copies fail both. `obse
 | Scored Oracle measure, invented EV / lift / alpha | Out. `measure.kind=none` |
 | Closing `sealed_book_rpc_slice` | Out. Stays `incomplete` |
 | Embedding full surround or lock receipt bodies | Out. Digest only |
-| Soft GATE PASS at merge | **Pending** — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / **risk-gate unlock** |
+| Soft GATE PASS at merge | **PASS** (Formal stamp Lyra; kill `bc-84b8db98-a158-5530-8e30-9e33587231fa`; head `f2e4508`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / **risk-gate unlock** |
 
 ---
 
@@ -145,5 +145,6 @@ Honest fixtures pass schema and CLI. In-memory dishonest copies fail both. `obse
 - Fill-sim surround (#63): [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md)
 - Lock receipt (#65): [PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md](PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md)
 - Schema align (#66): [PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md)
+- This registration: [PR #67](https://github.com/vaanai/MAL/pull/67) (Soft GATE PASS Formal-stamped)
 - Lab memory: [LAB_STATE.md](../LAB_STATE.md) (§11r); EDL: [ENGINEERING-DECISION-LOG.md](ENGINEERING-DECISION-LOG.md) (EDL-017)
 - LAYA stack brief: [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md)
