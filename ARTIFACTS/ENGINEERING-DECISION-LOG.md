@@ -26,6 +26,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-014 — LAYA precompute surround packet (non-fill-sim spine, Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-014 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-laya-precompute-surround-packet-v0`: [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md), [paper-laya-precompute-surround-packet-v0.schema.json](paper-laya-precompute-surround-packet-v0.schema.json), two surround fixtures, `python -m tools.paper_laya_precompute_surround_packet_v0` (example / validate / assemble). Consumes #51 scoreboard digests ± optional #52 batch `rollup`. Parent #49–#63 CLIs not rewritten. |
+| **Why** | Mirror merged #63 fill-sim surround on the non-fill-sim paper spine for LAYA precompute shape without authorize-run, risk-gate unlock, or live claims. |
+| **What was tested** | `python3 -m unittest tools.test_paper_laya_precompute_surround_packet_v0`. Honest fixtures pass schema and CLI. Dishonest copies fail both. Host-path refuses before `read_text` / `stat`. No RPC. `observe/client.py` untouched. |
+| **Verification** | Soft GATE **pending** Formal stamp (draft PR). |
+| **Current state** | **Proposed** registration in flight. Not a measure. Not LAYA authorize-run. Graph cold. Sealed book incomplete. |
+| **Rollback** | Revert surround contract, schema, fixtures, CLI, and tests. |
+| **Unresolved** | Soft GATE Formal stamp before merge. |
+| **Implications** | Fixtures-only surround beside #51/#52 paper chain; fill-sim surround (#63) remains separate. |
+| **Pointers** | [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md), [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md) |
+
+---
+
 ## EDL-013 — LAYA precompute fill-sim surround packet (Proposed)
 
 | Field | Value |
