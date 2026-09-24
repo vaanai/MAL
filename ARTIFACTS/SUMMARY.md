@@ -1,6 +1,6 @@
 # Manager summary (≤20 lines)
 
-**As-of:** 2026-09-24 UTC. `main` @ `c372f1d` (post-merge #72 Formal lab memory). **Draft PR:** none.
+**As-of:** 2026-09-24 UTC. `main` @ `28185a5` (post-merge #72 Formal lab memory). **Draft PR:** none.
 
 - **Paper chain:** Citeable stack **on `main` through #72** (squash `8d7a2d7`; honesty align closes `schema_looser_than_cli` on #70/#71 `soft_watches.items` enum-bag hole; #67–#69 cite-tight from prior Soft GATE); receipt capture #71 squash `3d83622`.
 - **Product:** 3 layers (new-coin / entity-graph / filtered smart-wallet) + **LAYA** → risk gate → exec (deferred). **X = layer 4 later**. Paper first; free-first. Plans = directions; profit is the goal.
