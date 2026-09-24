@@ -26,6 +26,26 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+---
+
+## EDL-017 — LAYA precompute decision packet (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-017 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-laya-precompute-decision-packet-v0`: [PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md), [paper-laya-precompute-decision-packet-v0.schema.json](paper-laya-precompute-decision-packet-v0.schema.json), fixtures `fixtures/paper_laya_precompute_decision_packet_v0/`, `python -m tools.paper_laya_precompute_decision_packet_v0` (example / validate / assemble), `tools/test_paper_laya_precompute_decision_packet_v0.py`. Cites validated #63/#64 surround fixtures and #65 lock receipts; digest only. [LAB_STATE.md](../LAB_STATE.md) §11r. Parent #49–#65 CLIs not rewritten. |
+| **Why** | North-star packaging step: surround precompute + lock receipt digests for later LAYA consumption without authorize-run, risk-gate unlock, or live claims. |
+| **What was tested** | `python3 -m unittest tools.test_paper_laya_precompute_decision_packet_v0`. Honest fixtures pass schema and CLI. Dishonest copies fail both. Host-path refuses before `read_text` / `stat`. No RPC. `observe/client.py` untouched. |
+| **Verification** | Soft GATE **pending** Formal. |
+| **Current state** | **Proposed** registration on branch (not yet on `main`). Not a measure. Not LAYA authorize-run. Graph cold. Sealed book incomplete. `risk_gate.unlock=false`. |
+| **Rollback** | Revert decision packet contract, schema, fixtures, CLI, and tests. |
+| **Unresolved** | Soft GATE Formal stamp pending. |
+| **Implications** | Fixtures-only decision packet can sit after lock receipt without wiring LAYA execution or risk-gate unlock. |
+| **Pointers** | [PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md](PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md), [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md), [LAB_STATE.md](../LAB_STATE.md) |
+
+---
+
 ## EDL-016 — LAYA incomplete-RPC honesty schema align (Proposed)
 
 | Field | Value |
