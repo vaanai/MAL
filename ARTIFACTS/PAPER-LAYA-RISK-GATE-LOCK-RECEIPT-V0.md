@@ -3,13 +3,13 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-risk-gate-lock-receipt-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE pending** before merge. Not a measure. Not LAYA authorize-run. Not risk-gate unlock. Not live. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-aafaf4ca-d06f-5b11-b5cc-ca3f2ababd80`; head `6d238a141bc0d143815d2ac8eacc07dabe07aaec`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/65#issuecomment-5809577563); [PR #65](https://github.com/vaanai/MAL/pull/65)). Not a measure. Not LAYA authorize-run. Not risk-gate unlock. Not live. |
 | **Owner seat** | Proof (lock receipt + Soft GATE); Scout (surround citation paths); Helm (AUTH) |
 | **Commission** | North-star step after merged LAYA precompute surround packets: [#64](https://github.com/vaanai/MAL/pull/64) non-fill-sim (`277a142`) and/or [#63](https://github.com/vaanai/MAL/pull/63) fill-sim (`171cd61`). Parent #49–#64 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-laya-risk-gate-lock-receipt-v0.schema.json](paper-laya-risk-gate-lock-receipt-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_laya_risk_gate_lock_receipt_v0/](../fixtures/paper_laya_risk_gate_lock_receipt_v0/) — lock receipts citing surround fixtures only |
 | **CLI** | `python -m tools.paper_laya_risk_gate_lock_receipt_v0` — example / validate / assemble on local JSON only |
-| **Soft GATE** | **Pending** before merge. Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-aafaf4ca-d06f-5b11-b5cc-ca3f2ababd80`; head `6d238a141bc0d143815d2ac8eacc07dabe07aaec`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers a **fixtures-only lock receipt** that cites validated LAYA precompute surround packets already on `main`. The receipt records that the risk gate stays **locked**: `laya.risk_gate_unlock=false`, `laya.authorize_run=false`, `laya.live_trading=false`, `risk_gate.decision=locked`, `risk_gate.unlock=false`. It does **not** unlock the gate, authorize a LAYA run, or enable live trading.
 
@@ -17,7 +17,7 @@ Citeable surround inputs on `main`: [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md
 
 Merge ≠ risk-gate unlock ≠ LAYA authorize-run ≠ live trading ≠ Oracle measure ≠ EXP-006 promote.
 
-**Soft GATE pending.** Caps held: `measure.kind=none`; sealed book **incomplete**; `closed_book_claim=false`; Graph **cold**; horizons and `Δ_exec` null with explicit status. Soft GATE PASS on a future Formal stamp ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
+**Soft GATE PASS** (Formal stamp Lyra; 2026-09-24; head `6d238a141bc0d143815d2ac8eacc07dabe07aaec`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/65#issuecomment-5809577563); `python3 -m unittest tools.test_paper_laya_risk_gate_lock_receipt_v0` — 22 OK per Soft GATE). Caps held: `measure.kind=none`; sealed book **incomplete**; `closed_book_claim=false`; Graph **cold**; `risk_gate.decision=locked`; `risk_gate.unlock=false`; `laya.authorize_run=false`; `laya.risk_gate_unlock=false`; `laya.live_trading=false`; surround digest only (`surround_body_embedded=false`). Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
 
 ---
 
@@ -102,7 +102,7 @@ Honest fixtures pass schema and CLI. In-memory dishonest copies fail both. `obse
 
 ## Soft watches (non-blocking)
 
-**Soft GATE pending.** `soft_watches.blocking=false`. Inherited surround-chain watches plus receipt watches. They do not fail merge once Soft GATE passes.
+**Soft GATE PASS** (Formal stamp Lyra). `soft_watches.blocking=false`. Inherited surround-chain watches plus receipt watches. They do not fail merge once Soft GATE passes.
 
 | Watch id | Why it does not block |
 | --- | --- |
@@ -128,6 +128,7 @@ Honest fixtures pass schema and CLI. In-memory dishonest copies fail both. `obse
 | Scored Oracle measure, invented EV / lift / alpha | Out. `measure.kind=none` |
 | Closing `sealed_book_rpc_slice` | Out. Stays `incomplete` |
 | Embedding full surround bodies | Out. Digest only |
+| Soft GATE PASS at merge | **PASS** (Formal stamp Lyra; kill `bc-aafaf4ca-d06f-5b11-b5cc-ca3f2ababd80`; head `6d238a1`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / **risk-gate unlock** |
 
 ---
 
@@ -136,5 +137,6 @@ Honest fixtures pass schema and CLI. In-memory dishonest copies fail both. `obse
 - Non-fill-sim surround (#64): [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md), fixtures `fixtures/paper_laya_precompute_surround_packet_v0/`, CLI `python -m tools.paper_laya_precompute_surround_packet_v0`
 - Fill-sim surround (#63): [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md), fixtures `fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/`, CLI `python -m tools.paper_laya_precompute_fill_sim_surround_packet_v0`
 - Receipt capture mirrors: [PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md) (#55), [PAPER-FILL-SIM-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-FILL-SIM-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md) (#62)
+- This lock receipt: [PR #65](https://github.com/vaanai/MAL/pull/65) (Soft GATE PASS Formal-stamped)
 - Lab memory: [LAB_STATE.md](../LAB_STATE.md) (§11p); EDL: [ENGINEERING-DECISION-LOG.md](ENGINEERING-DECISION-LOG.md) (EDL-015)
 - LAYA stack brief: [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md)
