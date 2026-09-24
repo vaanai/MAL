@@ -3,19 +3,19 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-precompute-fill-sim-surround-packet-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). Not a measure. Not LAYA authorize-run. Not risk-gate unlock. Not live. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-18aa6b2a-3c7a-54e5-a5a2-4a0e83faea48`; implement `bc-1f7c99a8-a086-5265-b622-bee310fe63aa`; head `f7eeb849cb31385cc652249e70b2913ecba945a5`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/63#issuecomment-5809183727); [PR #63](https://github.com/vaanai/MAL/pull/63) tip `f7eeb84`; squash-merge on `main` pending). Not a measure. Not LAYA authorize-run. Not risk-gate unlock. Not live. |
 | **Owner seat** | Proof (surround + Soft GATE); Scout (fill-sim spine on cited scoreboards); Helm (AUTH) |
 | **Commission** | Consumer of merged fill-sim scoreboard ([PR #58](https://github.com/vaanai/MAL/pull/58) squash `dfbab7a`) and optional fill-sim batch rollup ([PR #59](https://github.com/vaanai/MAL/pull/59) squash `4664363`). Parent #49–#62 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-laya-precompute-fill-sim-surround-packet-v0.schema.json](paper-laya-precompute-fill-sim-surround-packet-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/](../fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/) — synthetic surround packets only |
 | **CLI** | `python -m tools.paper_laya_precompute_fill_sim_surround_packet_v0` — example / validate / assemble on local JSON only |
-| **Soft GATE** | **Required** before merge. Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-18aa6b2a-3c7a-54e5-a5a2-4a0e83faea48`; implement `bc-1f7c99a8-a086-5265-b622-bee310fe63aa`; head `f7eeb849cb31385cc652249e70b2913ecba945a5`; [comment](https://github.com/vaanai/MAL/pull/63#issuecomment-5809183727); [PR #63](https://github.com/vaanai/MAL/pull/63) tip `f7eeb84`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers how validated [`paper_fill_sim_scoreboard_sealed_fixture_v0`](PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md) digests (and optionally a #59 batch `rollup` citation) are assembled into a **fixtures-only surround packet** shaped for later LAYA precompute consumption. The packet cites counts and join summaries. It does **not** embed fill-sim stamp bodies, hot packets, horizons, `Δ_exec`, EV, or lift.
 
 Merge ≠ LAYA authorize-run ≠ risk-gate unlock ≠ live trading ≠ Oracle measure ≠ EXP-006 promote ≠ Discovery promote.
 
-**Soft GATE required** before merge. Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote.
+**Soft GATE PASS** (Formal stamp Lyra; 2026-09-24; head `f7eeb849cb31385cc652249e70b2913ecba945a5`). Caps held: `measure.kind=none`; sealed book **incomplete**; `closed_book_claim=false`; `laya.authorize_run=false`; `laya.risk_gate_unlock=false`; `laya.live_trading=false`; DEC-007 both arms; horizons and `Δ_exec` null. Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ risk-gate unlock.
 
 ---
 
@@ -75,13 +75,13 @@ Null with explicit status on the surround object and on the nested `precompute` 
 | Host | CLI refuses `/var/lib/mal`, `//var/lib/mal`, and relative `var/lib/mal/...` **lexically** before FS touch |
 | Measure | `measure.kind=none`. No `PASS` / `FAIL_NO_LIFT` process exit |
 
-**Soft GATE required** before merge. Soft GATE PASS ≠ Discovery promote ≠ wiring ≠ enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live ≠ EXP-006 promote.
+**Soft GATE PASS** (Formal stamp Lyra). Soft GATE PASS ≠ Discovery promote ≠ wiring ≠ enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live ≠ EXP-006 promote.
 
 ---
 
 ## Soft watches (non-blocking)
 
-**Soft GATE required** before merge. `soft_watches.blocking=false`. Inherited watches from #49–#59 remain listed and non-blocking.
+**Soft GATE PASS** (Formal stamp Lyra). `soft_watches.blocking=false`. Inherited watches from #49–#62 remain listed and non-blocking.
 
 Named on this registration:
 
@@ -135,7 +135,7 @@ python3 -m unittest tools.test_paper_laya_precompute_fill_sim_surround_packet_v0
 | Host paths, SSH, Oracle re-run, marks join as scored measure | Out |
 | LAYA authorize-run / risk-gate unlock / live | Out |
 | Closing `sealed_book_rpc_slice` | Out. Stays `incomplete` |
-| Soft GATE PASS at merge | **Pending** — required before merge |
+| Soft GATE PASS at merge | **PASS** (Formal stamp Lyra; kill `bc-18aa6b2a-3c7a-54e5-a5a2-4a0e83faea48`; head `f7eeb84`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / risk-gate unlock |
 
 ---
 
@@ -144,4 +144,5 @@ python3 -m unittest tools.test_paper_laya_precompute_fill_sim_surround_packet_v0
 - Scoreboards cited: [PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md)
 - Optional batch rollup: [PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md)
 - LAYA stack brief: [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md)
+- This surround packet: [PR #63](https://github.com/vaanai/MAL/pull/63) tip `f7eeb84` (Soft GATE PASS Formal-stamped; squash pending)
 - Pipeline: [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)

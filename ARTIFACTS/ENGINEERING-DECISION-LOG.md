@@ -35,10 +35,10 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 | **What changed** | Registered **Proposed** `paper-laya-precompute-fill-sim-surround-packet-v0`: [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md), [paper-laya-precompute-fill-sim-surround-packet-v0.schema.json](paper-laya-precompute-fill-sim-surround-packet-v0.schema.json), two surround fixtures, `python -m tools.paper_laya_precompute_fill_sim_surround_packet_v0` (example / validate / assemble). Parent #49–#62 CLIs not rewritten. |
 | **Why** | North-star precompute surround around fill-sim paper stack: cite validated #58 scoreboard digests and optional #59 batch rollup for a later LAYA consumption shape without authorize-run or live claims. |
 | **What was tested** | `python3 -m unittest tools.test_paper_laya_precompute_fill_sim_surround_packet_v0`. Honest fixtures pass schema and CLI. Dishonest copies fail both. Host-path refuses before `read_text` / `stat`. No RPC. `observe/client.py` untouched. |
-| **Verification** | Soft GATE **pending** before merge (15 unittest OK on branch). |
-| **Current state** | **Proposed** registration on draft PR only. Not a measure. Not LAYA authorize-run. Graph cold. Sealed book incomplete. |
+| **Verification** | Soft GATE **PASS** Formal-stamped Lyra (kill `bc-18aa6b2a-3c7a-54e5-a5a2-4a0e83faea48`; implement `bc-1f7c99a8-a086-5265-b622-bee310fe63aa`; head `f7eeb849cb31385cc652249e70b2913ecba945a5`; [comment](https://github.com/vaanai/MAL/pull/63#issuecomment-5809183727); [PR #63](https://github.com/vaanai/MAL/pull/63) tip `f7eeb84`; squash pending on `main`; 15 unittest OK). |
+| **Current state** | **Proposed** registration on [PR #63](https://github.com/vaanai/MAL/pull/63) Formal-stamped; squash pending. Not a measure. Not LAYA authorize-run. Graph cold. Sealed book incomplete. |
 | **Rollback** | Revert surround contract, schema, fixtures, CLI, and tests. |
-| **Unresolved** | Soft GATE Formal stamp required before merge. |
+| **Unresolved** | Squash-merge to `main` (Formal stamp recorded). |
 | **Implications** | Fixtures-only surround shape can sit beside hot-packet spine without wiring LAYA or risk gate. |
 | **Pointers** | [PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md), [PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md) |
 
