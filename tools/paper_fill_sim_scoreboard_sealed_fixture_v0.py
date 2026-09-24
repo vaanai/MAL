@@ -127,13 +127,20 @@ ALLOWED_STAMP_PREFIXES: tuple[str, ...] = (
 )
 
 
+def _collapse_leading_slashes(posix_path: str) -> str:
+    """posixpath.normpath keeps a leading //; collapse before host-root checks."""
+    if posix_path.startswith("//"):
+        return "/" + posix_path.lstrip("/")
+    return posix_path
+
+
 def _lexical_posix(text: str) -> str:
     """Normalize a path string without reading the filesystem."""
     raw = text.replace("\\", "/").strip()
     path = Path(raw)
     if not path.is_absolute():
         path = REPO / path
-    return posixpath.normpath(path.as_posix())
+    return _collapse_leading_slashes(posixpath.normpath(path.as_posix()))
 
 
 def _under_var_lib_mal(text: str) -> bool:
@@ -836,6 +843,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "validate":
         path: Path = args.path
+        refusal = _host_open_refusal(str(path))
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 1
         try:
             payload = load_json(path)
         except (OSError, json.JSONDecodeError) as exc:

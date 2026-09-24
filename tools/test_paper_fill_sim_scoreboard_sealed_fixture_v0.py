@@ -243,6 +243,97 @@ class PaperFillSimScoreboardSealedFixtureV0Tests(unittest.TestCase):
         with mock.patch("os.stat", _guarded_stat):
             self.assertEqual(_quiet(argv), 1)
 
+    def test_score_refuses_double_slash_var_lib_mal_dir_without_stat(self) -> None:
+        real_stat = os.stat
+
+        def _guarded_stat(path: os.PathLike[str] | str | int, *args: object, **kwargs: object) -> os.stat_result:
+            text = os.fspath(path)
+            collapsed = "/" + text.lstrip("/") if text.startswith("//") else text
+            if collapsed == HOST_ROOT or collapsed.startswith(HOST_ROOT + os.sep):
+                raise AssertionError(f"os.stat called on host path: {text}")
+            return real_stat(path, *args, **kwargs)
+
+        real_is_dir = Path.is_dir
+
+        def _guarded_is_dir(self: Path) -> bool:
+            text = os.fspath(self)
+            collapsed = "/" + text.lstrip("/") if text.startswith("//") else text
+            if collapsed == HOST_ROOT or collapsed.startswith(HOST_ROOT + os.sep):
+                raise AssertionError(f"Path.is_dir called on host path: {text}")
+            return real_is_dir(self)
+
+        argv = [
+            "score",
+            "--expectation",
+            str(FIXTURES / EXPECTATION_NAME),
+            "--dir",
+            "//var/lib/mal",
+        ]
+        with (
+            mock.patch("os.stat", _guarded_stat),
+            mock.patch.object(Path, "is_dir", _guarded_is_dir),
+        ):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code = main(argv)
+        self.assertEqual(code, 1)
+        self.assertIn("does not open", err.getvalue())
+        self.assertIn(HOST_ROOT, err.getvalue())
+
+    def test_score_refuses_double_slash_stamp_path_without_resolve(self) -> None:
+        real_resolve = Path.resolve
+
+        def _guarded_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+            text = os.fspath(self)
+            collapsed = "/" + text.lstrip("/") if text.startswith("//") else text
+            if collapsed == HOST_ROOT or collapsed.startswith(HOST_ROOT + os.sep):
+                raise AssertionError(f"Path.resolve called on host path: {text}")
+            return real_resolve(self, *args, **kwargs)
+
+        real_lstat = os.lstat
+
+        def _guarded_lstat(path: os.PathLike[str] | str | int, *args: object, **kwargs: object) -> os.stat_result:
+            text = os.fspath(path)
+            collapsed = "/" + text.lstrip("/") if text.startswith("//") else text
+            if collapsed == HOST_ROOT or collapsed.startswith(HOST_ROOT + os.sep):
+                raise AssertionError(f"os.lstat called on host path: {text}")
+            return real_lstat(path, *args, **kwargs)
+
+        argv = [
+            "score",
+            "--expectation",
+            str(FIXTURES / EXPECTATION_NAME),
+            "//var/lib/mal/stamp.json",
+        ]
+        with (
+            mock.patch.object(Path, "resolve", _guarded_resolve),
+            mock.patch("os.lstat", _guarded_lstat),
+        ):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code = main(argv)
+        self.assertEqual(code, 1)
+        self.assertIn("does not open", err.getvalue())
+
+    def test_validate_refuses_var_lib_mal_board_without_open(self) -> None:
+        real_open = Path.read_text
+
+        def _guarded_read_text(self: Path, *args: object, **kwargs: object) -> str:
+            text = os.fspath(self)
+            collapsed = "/" + text.lstrip("/") if text.startswith("//") else text
+            if collapsed == HOST_ROOT or collapsed.startswith(HOST_ROOT + os.sep):
+                raise AssertionError(f"Path.read_text called on host path: {text}")
+            return real_open(self, *args, **kwargs)
+
+        for board_path in (f"{HOST_ROOT}/board.json", f"//{HOST_ROOT.lstrip('/')}/board.json"):
+            with self.subTest(board_path=board_path):
+                with mock.patch.object(Path, "read_text", _guarded_read_text):
+                    err = io.StringIO()
+                    with redirect_stderr(err):
+                        code = main(["validate", board_path])
+                self.assertEqual(code, 1)
+                self.assertIn("does not open", err.getvalue())
+
     def test_schema_rejects_board_missing_reject_fill_sim_status_row(self) -> None:
         board = copy.deepcopy(example_mixed())
         board["fill_sim_status_counts"] = [board["fill_sim_status_counts"][0]]
