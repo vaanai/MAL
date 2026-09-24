@@ -1,0 +1,171 @@
+{
+  "schema_version": "paper_fill_sim_host_local_dry_run_receipt_capture_v0",
+  "type": "paper_dry_run_capture",
+  "id": "paper-fill-sim-host-local-dry-run-receipt-capture-v0",
+  "paper_only": true,
+  "capture_kind": "receipt",
+  "parent_dry_run": {
+    "id": "paper-fill-sim-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0",
+    "schema_version": "paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0",
+    "pull_request": 60,
+    "commit": "d3b5554",
+    "cli": "python -m tools.paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0",
+    "rewritten_by_this_stamp": false
+  },
+  "honesty_align": {
+    "id": "paper-fill-sim-incomplete-rpc-honesty-schema-align-v0",
+    "pull_request": 61,
+    "commit": "677e88b",
+    "rewritten_by_this_stamp": false
+  },
+  "subject": {
+    "kind": "cited_receipt",
+    "receipt_kind": "operator_declared",
+    "receipt_path": "fixtures/paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/operator_declared.json"
+  },
+  "outcome": {
+    "recorded": true,
+    "refused": false,
+    "reason": "receipt_rebuilt",
+    "exit_class": 0,
+    "path_opened": false,
+    "parent_batch_invoked_by_capture": false,
+    "var_lib_mal_opened": false,
+    "forms_refused": 0,
+    "probes_refused": 0
+  },
+  "recorded": {
+    "receipt_kind": "operator_declared",
+    "receipt_path": "fixtures/paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/operator_declared.json",
+    "host_jsonl_read_on_receipt": true,
+    "host_path_declared_on_receipt": true,
+    "parent_invoked_on_receipt": false,
+    "paths_opened_on_receipt": false,
+    "parent_digest_included": false,
+    "fill_sim_status_arms_on_receipt": null,
+    "receipt_body_embedded": false,
+    "host_bytes_embedded": false,
+    "probe_document_checked_in": false
+  },
+  "carries": {
+    "parent_batch_body": false,
+    "receipt_body": false,
+    "horizons": false,
+    "delta_exec": false,
+    "rollup_counts": false,
+    "host_bytes": false
+  },
+  "knowable_at_t": {
+    "basis": "rebuilt_receipt_honesty_digest",
+    "host_file_bytes_required": false,
+    "numeric_horizon_known": false,
+    "delta_exec_known": false,
+    "return_known": false,
+    "sealed_book_status": "incomplete"
+  },
+  "full_book": {
+    "policy": "dec007_both_arms_retained",
+    "arm_retained": true,
+    "deletes_detect_history": false,
+    "reject_stamps_dropped": 0,
+    "local_set_is_not_the_sealed_book": true,
+    "both_arms_unchanged": true,
+    "fill_sim_status_arms": [
+      "documented_model_only",
+      "reject_arm_no_pretend_buy"
+    ]
+  },
+  "graph_lift": null,
+  "graph_policy": "cold",
+  "dual_read": {
+    "sealed_book_rpc_slice": "incomplete",
+    "closed_book_claim": false,
+    "incomplete_reason": "capture_does_not_close_the_sealed_book"
+  },
+  "measure": {
+    "kind": "none",
+    "claims_alpha": false,
+    "invented_ev": false,
+    "invented_lift": false,
+    "pass_fail_no_lift": false
+  },
+  "soft_watches": {
+    "blocking": false,
+    "source": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_fill_sim_hot_packet_evaluate_v0_pr57_fill_sim_scoreboard_sealed_fixture_v0_pr58_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0_pr59_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0_pr60_fill_sim_incomplete_rpc_honesty_schema_align_v0_pr61",
+    "inherited_from": [
+      "hot_packet_v0_soft_gate_pr49",
+      "paper_evaluate_hot_packet_v0_pr50",
+      "paper_scoreboard_sealed_fixture_v0_pr51",
+      "paper_fill_sim_hot_packet_evaluate_v0_pr57",
+      "paper_fill_sim_scoreboard_sealed_fixture_v0_pr58",
+      "paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0_pr59",
+      "paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0_pr60",
+      "paper_fill_sim_incomplete_rpc_honesty_schema_align_v0_pr61"
+    ],
+    "items": [
+      "schema_looser_than_cli",
+      "synthetic_launchlab_shape",
+      "graph_slot_shape_not_a_score",
+      "dec005_draft_unmerged",
+      "sealed_book_rpc_slice_incomplete",
+      "label_share_is_not_a_return",
+      "synthetic_sealed_day_not_a_host_extract",
+      "local_subset_is_not_dropped_history",
+      "host_jsonl_not_readable_from_ci",
+      "counts_are_not_returns",
+      "graph_stays_cold_on_this_stamp",
+      "host_jsonl_read_is_not_a_closed_book",
+      "operator_path_string_is_not_a_host_extract",
+      "dry_run_does_not_ssh_or_open_var_lib_mal",
+      "parent_stamp_not_rewritten",
+      "capture_records_refusal_not_a_measure",
+      "cited_receipt_is_not_a_host_extract",
+      "path_string_on_a_refuse_is_not_file_bytes",
+      "fill_sim_vocabulary_not_exp006_promote",
+      "documented_constants_not_a_scored_fill",
+      "parent_evaluate_cli_not_rewritten",
+      "exp006_harness_not_rewritten",
+      "label_share_is_not_a_return",
+      "fill_sim_status_share_is_not_a_return",
+      "synthetic_sealed_day_not_a_host_extract",
+      "local_subset_is_not_dropped_history",
+      "fill_sim_vocabulary_not_exp006_promote",
+      "documented_constants_not_a_scored_fill",
+      "fill_sim_batch_not_a_host_extract",
+      "fill_sim_batch_counts_are_not_returns",
+      "host_jsonl_read_is_not_a_closed_book",
+      "operator_path_string_is_not_a_host_extract",
+      "dry_run_does_not_ssh_or_open_var_lib_mal",
+      "parent_stamp_not_rewritten",
+      "fill_sim_host_local_not_a_host_extract",
+      "fill_sim_status_share_is_not_a_return",
+      "capture_records_refusal_not_a_measure",
+      "cited_receipt_is_not_a_host_extract",
+      "path_string_on_a_refuse_is_not_file_bytes"
+    ]
+  },
+  "honesty": {
+    "registration": "proposed",
+    "scored_oracle_measure": false,
+    "executed_host_sealed_book": false,
+    "ci_claimed_sealed_book_close": false,
+    "continuous_observe_wiring": false,
+    "encoder_promoted": false,
+    "enum_production_lock": false,
+    "discovery_promoted": false,
+    "graph_lane_revived": false,
+    "invented_lift": false,
+    "invented_ev": false,
+    "claims_alpha": false,
+    "exp002c_retuned": false,
+    "exp006_promoted": false,
+    "exp006_harness_rewritten": false,
+    "marks_joined_on_this_stamp": false,
+    "live_capital": false,
+    "trading_keys": false,
+    "pumpportal_trade_api": false,
+    "ssh_to_host": false,
+    "host_extract_checked_into_git": false,
+    "var_lib_mal_read": false
+  }
+}

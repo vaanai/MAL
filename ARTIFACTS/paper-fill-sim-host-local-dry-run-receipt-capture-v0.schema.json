@@ -1,0 +1,1215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-fill-sim-host-local-dry-run-receipt-capture-v0.schema.json",
+  "title": "MAL paper-fill-sim-host-local-dry-run-receipt-capture v0 (Proposed capture)",
+  "description": "Proposed capture of refuse and receipt outcomes from paper-fill-sim-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0 (#60). A receipt citation does not embed the receipt body. dual_read.sealed_book_rpc_slice stays incomplete. measure.kind stays none. DEC-007 both fill-sim arms are cited on full_book and on recorded digests when included. See ARTIFACTS/PAPER-FILL-SIM-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "type",
+    "id",
+    "paper_only",
+    "capture_kind",
+    "parent_dry_run",
+    "honesty_align",
+    "subject",
+    "outcome",
+    "recorded",
+    "carries",
+    "knowable_at_t",
+    "full_book",
+    "graph_lift",
+    "graph_policy",
+    "dual_read",
+    "measure",
+    "soft_watches",
+    "honesty"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "paper_fill_sim_host_local_dry_run_receipt_capture_v0"
+    },
+    "type": {
+      "const": "paper_dry_run_capture"
+    },
+    "id": {
+      "const": "paper-fill-sim-host-local-dry-run-receipt-capture-v0"
+    },
+    "paper_only": {
+      "const": true
+    },
+    "capture_kind": {
+      "enum": [
+        "receipt",
+        "refuse"
+      ]
+    },
+    "parent_dry_run": {
+      "$ref": "#/$defs/parentDryRun"
+    },
+    "honesty_align": {
+      "$ref": "#/$defs/honestyAlign"
+    },
+    "subject": {
+      "$ref": "#/$defs/subject"
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    },
+    "recorded": {
+      "$ref": "#/$defs/recorded"
+    },
+    "carries": {
+      "$ref": "#/$defs/carries"
+    },
+    "knowable_at_t": {
+      "$ref": "#/$defs/knowableAtT"
+    },
+    "full_book": {
+      "$ref": "#/$defs/fullBook"
+    },
+    "graph_lift": {
+      "const": null
+    },
+    "graph_policy": {
+      "const": "cold"
+    },
+    "dual_read": {
+      "$ref": "#/$defs/dualRead"
+    },
+    "measure": {
+      "$ref": "#/$defs/measure"
+    },
+    "soft_watches": {
+      "$ref": "#/$defs/softWatches"
+    },
+    "honesty": {
+      "$ref": "#/$defs/honesty"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "capture_kind": {
+            "const": "receipt"
+          }
+        },
+        "required": [
+          "capture_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "properties": {
+              "kind": {
+                "const": "cited_receipt"
+              },
+              "forms": false,
+              "probes": false,
+              "probe_document_checked_in": false
+            },
+            "required": [
+              "kind",
+              "receipt_kind",
+              "receipt_path"
+            ]
+          },
+          "outcome": {
+            "properties": {
+              "recorded": {
+                "const": true
+              },
+              "refused": {
+                "const": false
+              },
+              "reason": {
+                "const": "receipt_rebuilt"
+              },
+              "exit_class": {
+                "const": 0
+              },
+              "var_lib_mal_opened": {
+                "const": false
+              },
+              "forms_refused": {
+                "const": 0
+              },
+              "probes_refused": {
+                "const": 0
+              }
+            }
+          },
+          "knowable_at_t": {
+            "properties": {
+              "basis": {
+                "const": "rebuilt_receipt_honesty_digest"
+              }
+            }
+          },
+          "recorded": {
+            "properties": {
+              "receipt_body_embedded": {
+                "const": false
+              },
+              "host_bytes_embedded": {
+                "const": false
+              },
+              "probe_document_checked_in": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "capture_kind": {
+            "const": "refuse"
+          }
+        },
+        "required": [
+          "capture_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "properties": {
+              "receipt_kind": false,
+              "receipt_path": false
+            }
+          },
+          "outcome": {
+            "properties": {
+              "recorded": {
+                "const": false
+              },
+              "refused": {
+                "const": true
+              },
+              "exit_class": {
+                "const": 1
+              },
+              "path_opened": {
+                "const": false
+              },
+              "var_lib_mal_opened": {
+                "const": false
+              }
+            }
+          },
+          "recorded": {
+            "properties": {
+              "receipt_kind": {
+                "const": null
+              },
+              "receipt_path": {
+                "const": null
+              },
+              "host_jsonl_read_on_receipt": {
+                "const": null
+              },
+              "host_path_declared_on_receipt": {
+                "const": null
+              },
+              "parent_invoked_on_receipt": {
+                "const": null
+              },
+              "paths_opened_on_receipt": {
+                "const": null
+              },
+              "parent_digest_included": {
+                "const": null
+              },
+              "receipt_body_embedded": {
+                "const": false
+              },
+              "host_bytes_embedded": {
+                "const": false
+              },
+              "probe_document_checked_in": {
+                "const": false
+              },
+              "fill_sim_status_arms_on_receipt": {
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subject": {
+            "required": [
+              "receipt_kind"
+            ],
+            "properties": {
+              "receipt_kind": {
+                "const": "synthetic_replay"
+              }
+            }
+          }
+        },
+        "required": [
+          "subject"
+        ]
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "properties": {
+              "path_opened": {
+                "const": true
+              },
+              "parent_batch_invoked_by_capture": {
+                "const": true
+              }
+            }
+          },
+          "recorded": {
+            "properties": {
+              "receipt_kind": {
+                "const": "synthetic_replay"
+              },
+              "host_jsonl_read_on_receipt": {
+                "const": false
+              },
+              "host_path_declared_on_receipt": {
+                "const": false
+              },
+              "parent_invoked_on_receipt": {
+                "const": true
+              },
+              "paths_opened_on_receipt": {
+                "const": true
+              },
+              "parent_digest_included": {
+                "const": true
+              },
+              "fill_sim_status_arms_on_receipt": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "prefixItems": [
+                  {
+                    "const": "documented_model_only"
+                  },
+                  {
+                    "const": "reject_arm_no_pretend_buy"
+                  }
+                ],
+                "items": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subject": {
+            "required": [
+              "receipt_kind"
+            ],
+            "properties": {
+              "receipt_kind": {
+                "const": "projection_on_synthetic"
+              }
+            }
+          }
+        },
+        "required": [
+          "subject"
+        ]
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "properties": {
+              "path_opened": {
+                "const": true
+              },
+              "parent_batch_invoked_by_capture": {
+                "const": true
+              }
+            }
+          },
+          "recorded": {
+            "properties": {
+              "receipt_kind": {
+                "const": "projection_on_synthetic"
+              },
+              "host_jsonl_read_on_receipt": {
+                "const": true
+              },
+              "host_path_declared_on_receipt": {
+                "const": false
+              },
+              "parent_invoked_on_receipt": {
+                "const": true
+              },
+              "paths_opened_on_receipt": {
+                "const": true
+              },
+              "parent_digest_included": {
+                "const": true
+              },
+              "fill_sim_status_arms_on_receipt": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "prefixItems": [
+                  {
+                    "const": "documented_model_only"
+                  },
+                  {
+                    "const": "reject_arm_no_pretend_buy"
+                  }
+                ],
+                "items": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subject": {
+            "required": [
+              "receipt_kind"
+            ],
+            "properties": {
+              "receipt_kind": {
+                "const": "operator_declared"
+              }
+            }
+          }
+        },
+        "required": [
+          "subject"
+        ]
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "properties": {
+              "path_opened": {
+                "const": false
+              },
+              "parent_batch_invoked_by_capture": {
+                "const": false
+              }
+            }
+          },
+          "recorded": {
+            "properties": {
+              "receipt_kind": {
+                "const": "operator_declared"
+              },
+              "host_jsonl_read_on_receipt": {
+                "const": true
+              },
+              "host_path_declared_on_receipt": {
+                "const": true
+              },
+              "parent_invoked_on_receipt": {
+                "const": false
+              },
+              "paths_opened_on_receipt": {
+                "const": false
+              },
+              "parent_digest_included": {
+                "const": false
+              },
+              "fill_sim_status_arms_on_receipt": {
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "properties": {
+              "reason": {
+                "const": "host_path_not_opened"
+              }
+            }
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "properties": {
+              "kind": {
+                "const": "host_path_not_opened"
+              }
+            }
+          },
+          "outcome": {
+            "properties": {
+              "parent_batch_invoked_by_capture": {
+                "const": false
+              },
+              "forms_refused": {
+                "const": 6
+              },
+              "probes_refused": {
+                "const": 0
+              }
+            }
+          },
+          "knowable_at_t": {
+            "properties": {
+              "basis": {
+                "const": "host_path_refuse_without_open"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "properties": {
+              "reason": {
+                "const": "dishonest_receipt_refused"
+              }
+            }
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "properties": {
+              "kind": {
+                "const": "dishonest_receipt_refused"
+              }
+            }
+          },
+          "outcome": {
+            "properties": {
+              "parent_batch_invoked_by_capture": {
+                "const": true
+              },
+              "forms_refused": {
+                "const": 0
+              },
+              "probes_refused": {
+                "const": 5
+              }
+            }
+          },
+          "knowable_at_t": {
+            "properties": {
+              "basis": {
+                "const": "dishonest_receipt_probe"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "parentDryRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "schema_version",
+        "pull_request",
+        "commit",
+        "cli",
+        "rewritten_by_this_stamp"
+      ],
+      "properties": {
+        "id": {
+          "const": "paper-fill-sim-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0"
+        },
+        "schema_version": {
+          "const": "paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0"
+        },
+        "pull_request": {
+          "const": 60
+        },
+        "commit": {
+          "const": "d3b5554"
+        },
+        "cli": {
+          "const": "python -m tools.paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0"
+        },
+        "rewritten_by_this_stamp": {
+          "const": false
+        }
+      }
+    },
+    "honestyAlign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "pull_request",
+        "commit",
+        "rewritten_by_this_stamp"
+      ],
+      "properties": {
+        "id": {
+          "const": "paper-fill-sim-incomplete-rpc-honesty-schema-align-v0"
+        },
+        "pull_request": {
+          "const": 61
+        },
+        "commit": {
+          "const": "677e88b"
+        },
+        "rewritten_by_this_stamp": {
+          "const": false
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "cited_receipt",
+            "host_path_not_opened",
+            "dishonest_receipt_refused"
+          ]
+        },
+        "receipt_kind": {
+          "enum": [
+            "synthetic_replay",
+            "projection_on_synthetic",
+            "operator_declared"
+          ]
+        },
+        "receipt_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "forms": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/hostPathForm"
+          }
+        },
+        "probes": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "const": "closed_book_claim"
+            },
+            {
+              "const": "measure_kind"
+            },
+            {
+              "const": "var_lib_mal_opened"
+            },
+            {
+              "const": "var_lib_mal_read"
+            },
+            {
+              "const": "invented_ev"
+            }
+          ],
+          "items": false
+        },
+        "probe_document_checked_in": {
+          "const": false
+        }
+      }
+    },
+    "hostPathForm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "form",
+        "command",
+        "cwd"
+      ],
+      "properties": {
+        "form": {
+          "enum": [
+            "lexical_absolute_validate",
+            "lexical_absolute_receipt",
+            "cwd_abspath_validate",
+            "realpath_symlink_dotdot_validate",
+            "outside_repo_receipt"
+          ]
+        },
+        "command": {
+          "enum": [
+            "validate",
+            "receipt"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path_stored": {
+          "const": false
+        },
+        "jsonl": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "expectation": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recorded",
+        "refused",
+        "reason",
+        "exit_class",
+        "path_opened",
+        "parent_batch_invoked_by_capture",
+        "var_lib_mal_opened",
+        "forms_refused",
+        "probes_refused"
+      ],
+      "properties": {
+        "recorded": {
+          "type": "boolean"
+        },
+        "refused": {
+          "type": "boolean"
+        },
+        "reason": {
+          "enum": [
+            "receipt_rebuilt",
+            "host_path_not_opened",
+            "dishonest_receipt_refused"
+          ]
+        },
+        "exit_class": {
+          "enum": [
+            0,
+            1
+          ]
+        },
+        "path_opened": {
+          "type": "boolean"
+        },
+        "parent_batch_invoked_by_capture": {
+          "type": "boolean"
+        },
+        "var_lib_mal_opened": {
+          "const": false
+        },
+        "forms_refused": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "probes_refused": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "recorded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receipt_kind",
+        "receipt_path",
+        "host_jsonl_read_on_receipt",
+        "host_path_declared_on_receipt",
+        "parent_invoked_on_receipt",
+        "paths_opened_on_receipt",
+        "parent_digest_included",
+        "receipt_body_embedded",
+        "host_bytes_embedded",
+        "probe_document_checked_in",
+        "fill_sim_status_arms_on_receipt"
+      ],
+      "properties": {
+        "receipt_kind": {
+          "enum": [
+            "synthetic_replay",
+            "projection_on_synthetic",
+            "operator_declared",
+            null
+          ]
+        },
+        "receipt_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host_jsonl_read_on_receipt": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "host_path_declared_on_receipt": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "parent_invoked_on_receipt": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "paths_opened_on_receipt": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "parent_digest_included": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "receipt_body_embedded": {
+          "const": false
+        },
+        "host_bytes_embedded": {
+          "const": false
+        },
+        "probe_document_checked_in": {
+          "const": false
+        },
+        "fill_sim_status_arms_on_receipt": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "const": "documented_model_only"
+            },
+            {
+              "const": "reject_arm_no_pretend_buy"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "carries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_batch_body",
+        "receipt_body",
+        "horizons",
+        "delta_exec",
+        "rollup_counts",
+        "host_bytes"
+      ],
+      "properties": {
+        "parent_batch_body": {
+          "const": false
+        },
+        "receipt_body": {
+          "const": false
+        },
+        "horizons": {
+          "const": false
+        },
+        "delta_exec": {
+          "const": false
+        },
+        "rollup_counts": {
+          "const": false
+        },
+        "host_bytes": {
+          "const": false
+        }
+      }
+    },
+    "knowableAtT": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Facts knowable from the dry-run invocation and its rebuild or refuse. Host file bytes, horizons, delta_exec, and returns are not knowable here.",
+      "required": [
+        "basis",
+        "host_file_bytes_required",
+        "numeric_horizon_known",
+        "delta_exec_known",
+        "return_known",
+        "sealed_book_status"
+      ],
+      "properties": {
+        "basis": {
+          "enum": [
+            "rebuilt_receipt_honesty_digest",
+            "host_path_refuse_without_open",
+            "dishonest_receipt_probe"
+          ]
+        },
+        "host_file_bytes_required": {
+          "const": false
+        },
+        "numeric_horizon_known": {
+          "const": false
+        },
+        "delta_exec_known": {
+          "const": false
+        },
+        "return_known": {
+          "const": false
+        },
+        "sealed_book_status": {
+          "const": "incomplete"
+        }
+      }
+    },
+    "fullBook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "arm_retained",
+        "deletes_detect_history",
+        "reject_stamps_dropped",
+        "local_set_is_not_the_sealed_book",
+        "both_arms_unchanged",
+        "fill_sim_status_arms"
+      ],
+      "properties": {
+        "policy": {
+          "const": "dec007_both_arms_retained"
+        },
+        "arm_retained": {
+          "const": true
+        },
+        "deletes_detect_history": {
+          "const": false
+        },
+        "reject_stamps_dropped": {
+          "const": 0
+        },
+        "local_set_is_not_the_sealed_book": {
+          "const": true
+        },
+        "both_arms_unchanged": {
+          "const": true
+        },
+        "fill_sim_status_arms": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "const": "documented_model_only"
+            },
+            {
+              "const": "reject_arm_no_pretend_buy"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "dualRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sealed_book_rpc_slice",
+        "closed_book_claim",
+        "incomplete_reason"
+      ],
+      "properties": {
+        "sealed_book_rpc_slice": {
+          "const": "incomplete"
+        },
+        "closed_book_claim": {
+          "const": false
+        },
+        "incomplete_reason": {
+          "const": "capture_does_not_close_the_sealed_book"
+        }
+      }
+    },
+    "measure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "claims_alpha",
+        "invented_ev",
+        "invented_lift",
+        "pass_fail_no_lift"
+      ],
+      "properties": {
+        "kind": {
+          "const": "none"
+        },
+        "claims_alpha": {
+          "const": false
+        },
+        "invented_ev": {
+          "const": false
+        },
+        "invented_lift": {
+          "const": false
+        },
+        "pass_fail_no_lift": {
+          "const": false
+        }
+      }
+    },
+    "softWatches": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Soft watches from the paper chain ride here with blocking false. Soft GATE is still required before merge. schema_looser_than_cli stays the historical id closed by paper-incomplete-rpc-honesty-schema-align-v0.",
+      "required": [
+        "blocking",
+        "source",
+        "inherited_from",
+        "items"
+      ],
+      "properties": {
+        "blocking": {
+          "const": false
+        },
+        "source": {
+          "const": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_fill_sim_hot_packet_evaluate_v0_pr57_fill_sim_scoreboard_sealed_fixture_v0_pr58_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0_pr59_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0_pr60_fill_sim_incomplete_rpc_honesty_schema_align_v0_pr61"
+        },
+        "inherited_from": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "prefixItems": [
+            {
+              "const": "hot_packet_v0_soft_gate_pr49"
+            },
+            {
+              "const": "paper_evaluate_hot_packet_v0_pr50"
+            },
+            {
+              "const": "paper_scoreboard_sealed_fixture_v0_pr51"
+            },
+            {
+              "const": "paper_fill_sim_hot_packet_evaluate_v0_pr57"
+            },
+            {
+              "const": "paper_fill_sim_scoreboard_sealed_fixture_v0_pr58"
+            },
+            {
+              "const": "paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0_pr59"
+            },
+            {
+              "const": "paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0_pr60"
+            },
+            {
+              "const": "paper_fill_sim_incomplete_rpc_honesty_schema_align_v0_pr61"
+            }
+          ],
+          "items": false
+        },
+        "items": {
+          "type": "array",
+          "minItems": 39,
+          "maxItems": 39,
+          "items": {
+            "enum": [
+              "schema_looser_than_cli",
+              "synthetic_launchlab_shape",
+              "graph_slot_shape_not_a_score",
+              "dec005_draft_unmerged",
+              "sealed_book_rpc_slice_incomplete",
+              "label_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history",
+              "host_jsonl_not_readable_from_ci",
+              "counts_are_not_returns",
+              "graph_stays_cold_on_this_stamp",
+              "host_jsonl_read_is_not_a_closed_book",
+              "operator_path_string_is_not_a_host_extract",
+              "dry_run_does_not_ssh_or_open_var_lib_mal",
+              "parent_stamp_not_rewritten",
+              "capture_records_refusal_not_a_measure",
+              "cited_receipt_is_not_a_host_extract",
+              "path_string_on_a_refuse_is_not_file_bytes",
+              "fill_sim_vocabulary_not_exp006_promote",
+              "documented_constants_not_a_scored_fill",
+              "parent_evaluate_cli_not_rewritten",
+              "exp006_harness_not_rewritten",
+              "label_share_is_not_a_return",
+              "fill_sim_status_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history",
+              "fill_sim_vocabulary_not_exp006_promote",
+              "documented_constants_not_a_scored_fill",
+              "fill_sim_batch_not_a_host_extract",
+              "fill_sim_batch_counts_are_not_returns",
+              "host_jsonl_read_is_not_a_closed_book",
+              "operator_path_string_is_not_a_host_extract",
+              "dry_run_does_not_ssh_or_open_var_lib_mal",
+              "parent_stamp_not_rewritten",
+              "fill_sim_host_local_not_a_host_extract",
+              "fill_sim_status_share_is_not_a_return",
+              "capture_records_refusal_not_a_measure",
+              "cited_receipt_is_not_a_host_extract",
+              "path_string_on_a_refuse_is_not_file_bytes"
+            ]
+          }
+        },
+        "description": "Soft watches from the fill-sim paper chain ride here with blocking false. Soft GATE is required before merge. schema_looser_than_cli is CLOSED for watched fill-sim shapes (#61)."
+      }
+    },
+    "honesty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration",
+        "scored_oracle_measure",
+        "executed_host_sealed_book",
+        "ci_claimed_sealed_book_close",
+        "continuous_observe_wiring",
+        "encoder_promoted",
+        "enum_production_lock",
+        "discovery_promoted",
+        "graph_lane_revived",
+        "invented_lift",
+        "invented_ev",
+        "claims_alpha",
+        "exp002c_retuned",
+        "exp006_promoted",
+        "exp006_harness_rewritten",
+        "marks_joined_on_this_stamp",
+        "live_capital",
+        "trading_keys",
+        "pumpportal_trade_api",
+        "ssh_to_host",
+        "host_extract_checked_into_git",
+        "var_lib_mal_read"
+      ],
+      "properties": {
+        "registration": {
+          "const": "proposed"
+        },
+        "scored_oracle_measure": {
+          "const": false
+        },
+        "executed_host_sealed_book": {
+          "const": false
+        },
+        "ci_claimed_sealed_book_close": {
+          "const": false
+        },
+        "continuous_observe_wiring": {
+          "const": false
+        },
+        "encoder_promoted": {
+          "const": false
+        },
+        "enum_production_lock": {
+          "const": false
+        },
+        "discovery_promoted": {
+          "const": false
+        },
+        "graph_lane_revived": {
+          "const": false
+        },
+        "invented_lift": {
+          "const": false
+        },
+        "invented_ev": {
+          "const": false
+        },
+        "claims_alpha": {
+          "const": false
+        },
+        "exp002c_retuned": {
+          "const": false
+        },
+        "exp006_promoted": {
+          "const": false
+        },
+        "exp006_harness_rewritten": {
+          "const": false
+        },
+        "marks_joined_on_this_stamp": {
+          "const": false
+        },
+        "live_capital": {
+          "const": false
+        },
+        "trading_keys": {
+          "const": false
+        },
+        "pumpportal_trade_api": {
+          "const": false
+        },
+        "ssh_to_host": {
+          "const": false
+        },
+        "host_extract_checked_into_git": {
+          "const": false
+        },
+        "var_lib_mal_read": {
+          "const": false
+        }
+      }
+    }
+  }
+}
