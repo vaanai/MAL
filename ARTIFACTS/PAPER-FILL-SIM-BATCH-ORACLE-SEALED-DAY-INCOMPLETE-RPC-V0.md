@@ -3,13 +3,13 @@
 | | |
 | --- | --- |
 | **ID** | `paper-fill-sim-batch-oracle-sealed-day-incomplete-rpc-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-0e1391cf-be21-5491-a9e9-026f19c486e0`; implement `bc-3aa00e4f-01c6-556d-9b6c-c44b26fe7181`; [PR #59](https://github.com/vaanai/MAL/pull/59) tip `479d251`; squash-merge on `main` pending). Not a measure. Not a host run. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-0e1391cf-be21-5491-a9e9-026f19c486e0`; implement `bc-3aa00e4f-01c6-556d-9b6c-c44b26fe7181`; merged [PR #59](https://github.com/vaanai/MAL/pull/59) squash `4664363` on `main`). Not a measure. Not a host run. |
 | **Owner seat** | Proof (batch + Soft GATE); Scout (fill-sim spine stays on embedded stamps); Helm (AUTH) |
 | **Commission** | Consumer of merged fill-sim scoreboard ([PR #58](https://github.com/vaanai/MAL/pull/58) squash `dfbab7a`), fill-sim bind ([PR #57](https://github.com/vaanai/MAL/pull/57)), and the #49–#52 packet spine. Parent #49–#58 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-fill-sim-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json](paper-fill-sim-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0/](../fixtures/paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0/) — synthetic, not host extracts |
 | **CLI** | `python -m tools.paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0` — example / validate / batch on local JSON only |
-| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-0e1391cf-be21-5491-a9e9-026f19c486e0`; implement `bc-3aa00e4f-01c6-556d-9b6c-c44b26fe7181`; [PR #59](https://github.com/vaanai/MAL/pull/59) tip `479d251`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-0e1391cf-be21-5491-a9e9-026f19c486e0`; implement `bc-3aa00e4f-01c6-556d-9b6c-c44b26fe7181`; squash `4664363` on `main`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers a **fixtures-only** day-aligned paper batch with fill-sim: sealed observe JSONL → [`hot_packet_v0`](HOT-PACKET-V0.md) → [`paper_evaluate_hot_packet_v0`](PAPER-EVALUATE-HOT-PACKET-V0.md) → [`paper_fill_sim_hot_packet_evaluate_v0`](PAPER-FILL-SIM-HOT-PACKET-EVALUATE-V0.md) → [`paper_fill_sim_scoreboard_sealed_fixture_v0`](PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md).
 
