@@ -7,6 +7,7 @@ import io
 import json
 import os
 import unittest
+from typing import Any
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -284,6 +285,109 @@ class PaperLayaDecisionPacketScoreboardSealedFixtureV0Tests(unittest.TestCase):
         board = copy.deepcopy(example_all_spines())
         board["label_rates"]["rows"] = [board["label_rates"]["rows"][0]]
         self.assertTrue(_schema_errors(board))
+
+    def test_soft_gate_fail1_unbound_counts_fail_schema_and_cli(self) -> None:
+        cases: list[tuple[str, Any]] = [
+            (
+                "spine_profile_counts n",
+                lambda b: b.__setitem__(
+                    "spine_profile_counts",
+                    [{**b["spine_profile_counts"][0], "n": 99}] + b["spine_profile_counts"][1:],
+                ),
+            ),
+            (
+                "spine_profile_counts share",
+                lambda b: b.__setitem__(
+                    "spine_profile_counts",
+                    [
+                        {
+                            **b["spine_profile_counts"][0],
+                            "share": {"numerator": 7, "denominator": 3},
+                        }
+                    ]
+                    + b["spine_profile_counts"][1:],
+                ),
+            ),
+            (
+                "label_rates n",
+                lambda b: b["label_rates"].update({"n": 1}),
+            ),
+            (
+                "label_rates runner n",
+                lambda b: b["label_rates"]["rows"][0].update({"n": 99}),
+            ),
+            (
+                "label_rates share denominator",
+                lambda b: b["label_rates"]["rows"][0]["share"].update({"denominator": 99}),
+            ),
+            (
+                "fill_sim_status_counts n",
+                lambda b: b.__setitem__(
+                    "fill_sim_status_counts",
+                    [{**b["fill_sim_status_counts"][0], "n": 50}, b["fill_sim_status_counts"][1]],
+                ),
+            ),
+            (
+                "fill_sim_status_counts share",
+                lambda b: b["fill_sim_status_counts"][1]["share"].update({"numerator": 3}),
+            ),
+            (
+                "full_book packet_n",
+                lambda b: b["full_book"].update({"packet_n": 9, "digest_stamp_n": 1}),
+            ),
+            (
+                "fixture_join day and matched_n",
+                lambda b: b["fixture_join"].update({"day": "1999-01-01", "matched_n": 0}),
+            ),
+            (
+                "sealed_days day",
+                lambda b: b.__setitem__(
+                    "sealed_days",
+                    [{**b["sealed_days"][0], "day": "1999-01-01"}],
+                ),
+            ),
+            (
+                "packet_rows digest_n",
+                lambda b: b["packet_rows"][0].update({"digest_n": 123}),
+            ),
+            (
+                "reason_histogram duplicate reasons",
+                lambda b: b["reason_histogram"].update(
+                    {
+                        "rows": [
+                            {
+                                "reason": "missing_signature",
+                                "n": 0,
+                                "share": {"numerator": 0, "denominator": 3},
+                            }
+                            for _ in range(5)
+                        ]
+                    }
+                ),
+            ),
+            (
+                "reason_histogram share denominator",
+                lambda b: b["reason_histogram"]["rows"][0]["share"].update({"denominator": 9}),
+            ),
+            (
+                "expectation day",
+                lambda b: b["input"]["expectation"].update({"day": "2026-09-21"}),
+            ),
+            (
+                "expectation row digest_n",
+                lambda b: b["input"]["expectation"]["rows"][0].update({"digest_n": 999}),
+            ),
+            (
+                "expectation row source_day",
+                lambda b: b["input"]["expectation"]["rows"][0].update({"source_day": "2020-01-01"}),
+            ),
+        ]
+        for label, mutate in cases:
+            with self.subTest(label=label):
+                board = copy.deepcopy(example_all_spines())
+                mutate(board)
+                self.assertTrue(_schema_errors(board))
+                self.assertTrue(validate_scoreboard(board))
 
 
 if __name__ == "__main__":

@@ -102,6 +102,8 @@ python3 -m unittest tools.test_paper_laya_decision_packet_scoreboard_sealed_fixt
 
 **Soft GATE is pending** before Proof treats this registration as cited law. `soft_watches.blocking=false`. Inherited items from the #67 decision-packet Soft GATE chain stay non-blocking. Local watches name digest/spine share misreads and decision-packet lock caps.
 
+Draft 2020-12 now binds scoreboard aggregates to the cited decision-packet fixture sets (same rescore path as `validate_scoreboard`): `spine_profile_counts`, `label_rates`, `fill_sim_status_counts`, `full_book` stamp counts, `fixture_join` / `sealed_days` day and join counts, `packet_rows` digests, `reason_histogram.rows` ordered `prefixItems`, and the checked-in `input.expectation` object. Mutated `n`/shares, duplicate reason rows, and expectation day/digest drift fail schema and CLI. Soft GATE **Formal** is still **pending** — this is not a PASS claim.
+
 Soft GATE **pending** ≠ Discovery promote ≠ observe-wiring ≠ enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
 
 ---
