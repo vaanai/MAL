@@ -3,13 +3,13 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-decision-packet-scoreboard-sealed-fixture-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). Not a measure. Not run. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-2fd452de-34a6-5c47-8076-3840fb2b6af7`; fix `bc-1908e01a-bed7-5580-b561-10eb7e67b9cd`; head `e52fb490589cc0246589edd2444f7d3f866c0c64`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/68#issuecomment-5811344383); [PR #68](https://github.com/vaanai/MAL/pull/68)). Not a measure. Not run. |
 | **Owner seat** | Proof (scoreboard + Soft GATE); Scout (decision-packet spine stays on embedded packets); Helm (FORMAL auth) |
 | **Commission** | Consumer of merged LAYA precompute decision packet ([#67](https://github.com/vaanai/MAL/pull/67) squash `52a06e7` on `main`) and paper scoreboard sealed-fixture pattern ([#51](https://github.com/vaanai/MAL/pull/51), [#58](https://github.com/vaanai/MAL/pull/58)). Parent #49–#67 CLIs are **not** rewritten. |
 | **Schema** | [paper-laya-decision-packet-scoreboard-sealed-fixture-v0.schema.json](paper-laya-decision-packet-scoreboard-sealed-fixture-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_laya_decision_packet_scoreboard_sealed_fixture_v0/](../fixtures/paper_laya_decision_packet_scoreboard_sealed_fixture_v0/) — synthetic, not host extracts |
 | **CLI** | `python -m tools.paper_laya_decision_packet_scoreboard_sealed_fixture_v0` — validate / example / score on local JSON only |
-| **Soft GATE** | **Pending** for Proof. Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-2fd452de-34a6-5c47-8076-3840fb2b6af7`; fix `bc-1908e01a-bed7-5580-b561-10eb7e67b9cd`; head `e52fb490589cc0246589edd2444f7d3f866c0c64`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/68#issuecomment-5811344383)). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers how a local set of validated [`paper_laya_precompute_decision_packet_v0`](PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md) objects is counted against a **checked-in sealed-day expectation**. Same honesty class as [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md) and [PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md), but the stamp input is the #67 decision packet, not raw paper-evaluate or fill-sim bind.
 
@@ -100,14 +100,28 @@ python3 -m unittest tools.test_paper_laya_decision_packet_scoreboard_sealed_fixt
 
 ## Soft watches (non-blocking)
 
-**Soft GATE is pending** before Proof treats this registration as cited law. `soft_watches.blocking=false`. Inherited items from the #67 decision-packet Soft GATE chain stay non-blocking. Local watches name digest/spine share misreads and decision-packet lock caps.
+**Soft GATE PASS** (Formal stamp Lyra). `soft_watches.blocking=false`. Inherited items from the #67 decision-packet Soft GATE chain stay non-blocking. Local watches name digest/spine share misreads and decision-packet lock caps.
 
-Draft 2020-12 now binds scoreboard aggregates to the cited decision-packet fixture sets (same rescore path as `validate_scoreboard`): `spine_profile_counts`, `label_rates`, `fill_sim_status_counts`, `full_book` stamp counts, `fixture_join` / `sealed_days` day and join counts, `packet_rows` digests, `reason_histogram.rows` ordered `prefixItems`, and the checked-in `input.expectation` object. Mutated `n`/shares, duplicate reason rows, and expectation day/digest drift fail schema and CLI. Soft GATE **Formal** is still **pending** — this is not a PASS claim.
+Draft 2020-12 binds scoreboard aggregates to the cited decision-packet fixture sets (same rescore path as `validate_scoreboard`): `spine_profile_counts`, `label_rates`, `fill_sim_status_counts`, `full_book` stamp counts, `fixture_join` / `sealed_days` day and join counts, `packet_rows` digests, `reason_histogram.rows` ordered `prefixItems`, and the checked-in `input.expectation` object. Mutated `n`/shares, duplicate reason rows, and expectation day/digest drift fail schema and CLI. Soft GATE FAIL #1 holes **closed**; `schema_looser_than_cli` **CLOSED** for watched shapes.
 
-Soft GATE **pending** ≠ Discovery promote ≠ observe-wiring ≠ enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
+**Soft GATE PASS** (Formal stamp Lyra; 2026-09-24; head `e52fb490589cc0246589edd2444f7d3f866c0c64`; kill `bc-2fd452de-34a6-5c47-8076-3840fb2b6af7`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/68#issuecomment-5811344383); `python3 -m unittest tools.test_paper_laya_decision_packet_scoreboard_sealed_fixture_v0` — 29 OK; parent #67 test 29 OK; parent #63–#66 tests 15 / 19 / 22 / 30 OK per Soft GATE). Caps held on honest fixtures: `measure.kind=none`; sealed book **incomplete**; `closed_book_claim=false`; Graph **cold**; `risk_gate.decision=locked`; `risk_gate.unlock=false`; `laya.authorize_run=false`; `laya.risk_gate_unlock=false`; `laya.live_trading=false`. Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**. Paper-only. No new runtime object. Parent #49–#67 CLIs and EXP-006 harness not rewritten. `observe/client.py` untouched.
 
 ---
 
 ## Parent chain
 
 Citeable on `main` through #67: [PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md). This scoreboard does not rewrite `python -m tools.paper_laya_precompute_decision_packet_v0` or parent #49–#67 CLIs. `observe/client.py` is untouched.
+
+---
+
+## Non-goals
+
+| Cap | Held |
+| --- | --- |
+| Rewrite #49–#67 parent CLIs or EXP-006 harness | Out |
+| `observe/client.py` | Untouched |
+| Host paths, SSH, Oracle re-run, marks join as scored measure | Out |
+| `PASS` / `FAIL_NO_LIFT` measure exit | Out |
+| Closing `sealed_book_rpc_slice` | Out. Stays `incomplete` |
+| LAYA authorize-run / risk-gate unlock / live | Out |
+| Soft GATE PASS at merge | **PASS** (Formal stamp Lyra; kill `bc-2fd452de-34a6-5c47-8076-3840fb2b6af7`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / **risk-gate unlock** |
