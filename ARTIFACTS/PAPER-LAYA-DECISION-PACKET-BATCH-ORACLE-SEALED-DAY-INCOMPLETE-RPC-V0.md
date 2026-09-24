@@ -3,19 +3,19 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE Formal still pending** (FAIL #1–#5 schema/CLI holes closed on branch; no PASS claim). Not a measure. Not a host run. |
-| **Owner seat** | Proof (batch + Soft GATE); Scout (decision-packet spine stays on cited packets); Helm (AUTH) |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-5e4e8d4d-c120-59ce-915f-43ee1d7eedf1`; fix `bc-dd6817fa-6217-5dca-86b1-0449370f5d29`; head `e13fbd76a6c14c57af8d3cf1ca2ba517b0e3ee59`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/69#issuecomment-5812462969); merged [PR #69](https://github.com/vaanai/MAL/pull/69) squash pending on `main`). Not a measure. Not a host run. |
+| **Owner seat** | Proof (batch + Soft GATE); Scout (decision-packet spine stays on cited packets); Helm (FORMAL auth) |
 | **Commission** | Mirror of merged #52 / #59 batch shape, but stamped inputs are validated [`paper_laya_precompute_decision_packet_v0`](PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md) (#67 squash `52a06e7`) counted by [`paper_laya_decision_packet_scoreboard_sealed_fixture_v0`](PAPER-LAYA-DECISION-PACKET-SCOREBOARD-SEALED-FIXTURE-V0.md) (#68 squash `d31af86`). Decision-packet cite chain on main: #63/#64 surround + #65 lock through #67. Parent #49–#68 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json](paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/](../fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/) — synthetic calendar labels `2026-09-20` / `2026-09-21`; not host extracts |
 | **CLI** | `python -m tools.paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0` — `example` / `validate` / `batch` on local JSON only |
-| **Soft GATE** | **Formal still pending** (no PASS claim). FAIL #1 `schema_looser_than_cli` holes closed on branch. FAIL #2 holes closed (shortened manifest path lists, day order, `assemblies` beside `decision_packet_paths`, duplicate day block, phantom fixture filenames) in schema + batch CLI. FAIL #3 holes closed (neither manifest mode, assemblies-only unbound counts, split day identity) in schema + batch CLI. FAIL #4 holes closed (unbound input expectation rows on bound day-20/21 path lists, loose `output.days[].manifest_name`, day-21-only and day-20-only unbound rollup/full_book) in schema + batch CLI. FAIL #5 holes closed (`rollup.days` enum-locked to known two-day / day-20-only / day-21-only compositions; foreign, reversed, duplicated, and list-mismatch `rollup.days` cannot leave rollup/full_book counts unbound; duplicate `input.days` calendar rows fail schema + batch CLI) in schema + batch CLI. Watches stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-5e4e8d4d-c120-59ce-915f-43ee1d7eedf1`; fix `bc-dd6817fa-6217-5dca-86b1-0449370f5d29`; head `e13fbd76a6c14c57af8d3cf1ca2ba517b0e3ee59`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/69#issuecomment-5812462969)). FAIL #1–#5 **closed**; `schema_looser_than_cli` **CLOSED** for watched shapes. Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers a **fixtures-only** day-aligned batch: `decision-day-YYYY-MM-DD.json` manifest → cite/assemble validated #67 decision packets (themselves citing #63/#64 surround + #65 lock) → count with the #68 scoreboard path → one scoreboard per day + rollup.
 
 Merge ≠ Oracle measure ≠ LAYA authorize-run ≠ risk-gate unlock ≠ live trading ≠ Discovery promote.
 
-**Soft GATE pending.** Soft GATE PASS (when it comes) ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
+**Soft GATE PASS** (Formal stamp Lyra). Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
 
 Cloud agents cannot read host Oracle JSONL. Checked-in day strings are calendar labels used elsewhere; they are not a read of host `observe-*.jsonl`.
 
@@ -79,13 +79,15 @@ Null with explicit status on embedded decision packets and scoreboards. `null` �
 | Host | CLI refuses `/var/lib/mal`, `//var/lib/mal`, `///var/lib/mal`, relative/`./` forms, lexical `..` under that root, and collapse forms before any filesystem touch |
 | Oracle measure | **No** |
 
-**Soft GATE pending.** Soft GATE PASS (when it comes) ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
+**Soft GATE PASS** (Formal stamp Lyra). Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
 
 ---
 
 ## Soft watches (non-blocking)
 
-**Soft GATE pending.** `soft_watches.blocking=false`. Inherited watches from #67/#68 stay listed and non-blocking.
+**Soft GATE PASS** (Formal stamp Lyra). `soft_watches.blocking=false`. Inherited watches from #67/#68 stay listed and non-blocking.
+
+Draft 2020-12 binds batch aggregates to cited decision-packet fixture sets (same rescore path as `validate_batch`): per-day scoreboards, `rollup` / `full_book` digest stamp counts, `knownRollupDaysList` enum on `rollup.days`, and checked-in expectation rows. FAIL #1–#5 holes **closed**; `schema_looser_than_cli` **CLOSED** for watched shapes.
 
 Named on this registration:
 
@@ -95,6 +97,8 @@ Named on this registration:
 | `decision_packet_batch_counts_are_not_returns` | Rollup and digest shares are stamp counts | Not EV or lift |
 | `decision_packet_batch_not_risk_gate_unlock` | Batch does not set unlock | Receipt-only registration |
 | `decision_packet_batch_not_laya_authorize_run` | LAYA caps stay false on batch and boards | Not authorize-run |
+
+**Soft GATE PASS** (Formal stamp Lyra; 2026-09-24; head `e13fbd76a6c14c57af8d3cf1ca2ba517b0e3ee59`; kill `bc-5e4e8d4d-c120-59ce-915f-43ee1d7eedf1`; fix `bc-dd6817fa-6217-5dca-86b1-0449370f5d29`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/69#issuecomment-5812462969); `python3 -m unittest tools.test_paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0` — **38 OK**; parent #68 test **29 OK**; parent #67 test **29 OK**; parent #63–#66 tests **15 / 19 / 22 / 30 OK** per Soft GATE). Caps held on honest fixtures: `measure.kind=none`; sealed book **incomplete**; `closed_book_claim=false`; Graph **cold**; `risk_gate.decision=locked`; `risk_gate.unlock=false`; `laya.authorize_run=false`; `laya.risk_gate_unlock=false`; `laya.live_trading=false`. Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**. Paper-only. No new runtime object. Parent #49–#68 CLIs and EXP-006 harness not rewritten. `observe/client.py` untouched.
 
 ---
 
@@ -134,7 +138,7 @@ Citeable on `main` through #68: [#67 decision packet](PAPER-LAYA-PRECOMPUTE-DECI
 | Rewrite #49–#68 parent CLIs or EXP-006 harness | Out |
 | Host paths, SSH, Oracle re-run, marks join as scored measure | Out |
 | `PASS` / `FAIL_NO_LIFT` exit | Out |
-| Soft GATE PASS at merge | **Pending** — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / **risk-gate unlock** |
+| Soft GATE PASS at merge | **PASS** (Formal stamp Lyra; kill `bc-5e4e8d4d-c120-59ce-915f-43ee1d7eedf1`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / **risk-gate unlock** |
 
 ---
 
