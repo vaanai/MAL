@@ -456,24 +456,44 @@
         {
           "if": {
             "properties": {
-              "registration": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "const": "paper-laya-precompute-fill-sim-surround-packet-v0"
-                  }
-                },
-                "required": [
-                  "id"
-                ]
+              "fixture_path": {
+                "pattern": "^fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/"
               }
             },
             "required": [
-              "registration"
+              "fixture_path"
             ]
           },
           "then": {
             "properties": {
+              "registration": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "schema_version",
+                  "pull_request",
+                  "commit",
+                  "rewritten_by_this_stamp"
+                ],
+                "properties": {
+                  "id": {
+                    "const": "paper-laya-precompute-fill-sim-surround-packet-v0"
+                  },
+                  "schema_version": {
+                    "const": "paper_laya_precompute_fill_sim_surround_packet_v0"
+                  },
+                  "pull_request": {
+                    "const": 63
+                  },
+                  "commit": {
+                    "const": "171cd61"
+                  },
+                  "rewritten_by_this_stamp": {
+                    "const": false
+                  }
+                }
+              },
               "digest": {
                 "type": "object",
                 "required": [
@@ -482,6 +502,7 @@
               }
             },
             "required": [
+              "registration",
               "digest"
             ]
           }
@@ -489,24 +510,44 @@
         {
           "if": {
             "properties": {
-              "registration": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "const": "paper-laya-precompute-surround-packet-v0"
-                  }
-                },
-                "required": [
-                  "id"
-                ]
+              "fixture_path": {
+                "pattern": "^fixtures/paper_laya_precompute_surround_packet_v0/"
               }
             },
             "required": [
-              "registration"
+              "fixture_path"
             ]
           },
           "then": {
             "properties": {
+              "registration": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "schema_version",
+                  "pull_request",
+                  "commit",
+                  "rewritten_by_this_stamp"
+                ],
+                "properties": {
+                  "id": {
+                    "const": "paper-laya-precompute-surround-packet-v0"
+                  },
+                  "schema_version": {
+                    "const": "paper_laya_precompute_surround_packet_v0"
+                  },
+                  "pull_request": {
+                    "const": 64
+                  },
+                  "commit": {
+                    "const": "277a142"
+                  },
+                  "rewritten_by_this_stamp": {
+                    "const": false
+                  }
+                }
+              },
               "digest": {
                 "not": {
                   "required": [
@@ -514,7 +555,10 @@
                   ]
                 }
               }
-            }
+            },
+            "required": [
+              "registration"
+            ]
           }
         }
       ]
@@ -873,11 +917,18 @@
         }
       }
     },
-    "layaSurroundFixturePath": {
-      "type": "string",
-      "minLength": 1,
-      "pattern": "^(fixtures/paper_laya_precompute_surround_packet_v0/|fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/).+",
+    "repoFixturePathHonesty": {
       "allOf": [
+        {
+          "not": {
+            "pattern": "\\.\\."
+          }
+        },
+        {
+          "not": {
+            "pattern": "/var/lib/mal(/|$)"
+          }
+        },
         {
           "not": {
             "pattern": "^/var/lib/mal(/|$)"
@@ -907,6 +958,18 @@
           "not": {
             "pattern": "\\.\\./lib/mal(/|$)"
           }
+        }
+      ]
+    },
+    "layaSurroundFixturePath": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        {
+          "pattern": "^(fixtures/paper_laya_precompute_surround_packet_v0/|fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/).+"
+        },
+        {
+          "$ref": "#/$defs/repoFixturePathHonesty"
         }
       ]
     }

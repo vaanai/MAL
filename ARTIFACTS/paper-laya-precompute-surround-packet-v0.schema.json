@@ -202,8 +202,7 @@
         "scoreboard_paths": {
           "type": "array",
           "items": {
-            "type": "string",
-            "pattern": "^fixtures/paper_scoreboard_sealed_fixture_v0/"
+            "$ref": "#/$defs/scoreboardAssemblyPath"
           }
         },
         "batch_path": {
@@ -212,8 +211,7 @@
               "type": "null"
             },
             {
-              "type": "string",
-              "pattern": "^fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/"
+              "$ref": "#/$defs/batchAssemblyPath"
             }
           ]
         }
@@ -916,6 +914,88 @@
         }
       }
     },
+    "repoFixturePathHonesty": {
+      "allOf": [
+        {
+          "not": {
+            "pattern": "\\.\\."
+          }
+        },
+        {
+          "not": {
+            "pattern": "/var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^/var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^//+var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^\\.\\./var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^\\./var/lib/mal(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "\\.\\./lib/mal(/|$)"
+          }
+        }
+      ]
+    },
+    "scoreboardAssemblyPath": {
+      "type": "string",
+      "allOf": [
+        {
+          "pattern": "^fixtures/paper_scoreboard_sealed_fixture_v0/"
+        },
+        {
+          "$ref": "#/$defs/repoFixturePathHonesty"
+        }
+      ]
+    },
+    "batchAssemblyPath": {
+      "type": "string",
+      "allOf": [
+        {
+          "pattern": "^fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/"
+        },
+        {
+          "$ref": "#/$defs/repoFixturePathHonesty"
+        }
+      ]
+    },
+    "scoreboardDigestKnownRepoPath": {
+      "anyOf": [
+        {
+          "pattern": "^fixtures/paper_scoreboard_sealed_fixture_v0/(graph_cold|identity_reject)\\.json$"
+        },
+        {
+          "pattern": "^fixtures/paper_scoreboard_sealed_fixture_v0/slots_not_scored\\.json$"
+        },
+        {
+          "pattern": "^fixtures/paper_scoreboard_sealed_fixture_v0/(mixed_runner_reject|all_runner)\\.json$"
+        },
+        {
+          "pattern": "^fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/two_day\\.json(#days\\[[0-9]{4}-[0-9]{2}-[0-9]{2}\\]\\.scoreboard)?$"
+        }
+      ]
+    },
     "scoreboardDigestGraphStatusFromCitation": {
       "allOf": [
         {
@@ -924,7 +1004,7 @@
               "citation": {
                 "properties": {
                   "repo_path": {
-                    "pattern": "(graph_cold\\.json|identity_reject\\.json|two_day\\.json)"
+                    "pattern": "^fixtures/paper_scoreboard_sealed_fixture_v0/(graph_cold|identity_reject)\\.json$"
                   }
                 },
                 "required": [
@@ -950,7 +1030,7 @@
               "citation": {
                 "properties": {
                   "repo_path": {
-                    "pattern": "slots_not_scored\\.json"
+                    "pattern": "^fixtures/paper_scoreboard_sealed_fixture_v0/slots_not_scored\\.json$"
                   }
                 },
                 "required": [
@@ -976,7 +1056,7 @@
               "citation": {
                 "properties": {
                   "repo_path": {
-                    "pattern": "(mixed_runner_reject\\.json|all_runner\\.json)"
+                    "pattern": "^fixtures/paper_scoreboard_sealed_fixture_v0/(mixed_runner_reject|all_runner)\\.json$"
                   }
                 },
                 "required": [
@@ -994,6 +1074,56 @@
                 "const": "not_scored_mixed"
               }
             }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "citation": {
+                "properties": {
+                  "repo_path": {
+                    "pattern": "^fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/two_day\\.json(#days\\[[0-9]{4}-[0-9]{2}-[0-9]{2}\\]\\.scoreboard)?$"
+                  }
+                },
+                "required": [
+                  "repo_path"
+                ]
+              }
+            },
+            "required": [
+              "citation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "graph_lift_aggregate_status": {
+                "const": "not_used_graph_cold"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "citation": {
+                "properties": {
+                  "repo_path": {
+                    "not": {
+                      "$ref": "#/$defs/scoreboardDigestKnownRepoPath"
+                    }
+                  }
+                },
+                "required": [
+                  "repo_path"
+                ]
+              }
+            },
+            "required": [
+              "citation"
+            ]
+          },
+          "then": {
+            "not": {}
           }
         }
       ]
@@ -1023,7 +1153,7 @@
               ],
               "properties": {
                 "repo_path": {
-                  "type": "string"
+                  "$ref": "#/$defs/scoreboardDigestKnownRepoPath"
                 },
                 "parent": {
                   "$ref": "#/$defs/parentScoreboard"
