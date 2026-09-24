@@ -3,13 +3,13 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-precompute-surround-packet-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-40cf0f7a-1530-5934-8c60-c2554ccf3d66`; implement `bc-ef3c4636-2b3d-5e24-b291-910b6f094c15`; head `80d6f752903e9c384b83f8a0c05939ed8719576d`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/64#issuecomment-5809364025); draft [PR #64](https://github.com/vaanai/MAL/pull/64) squash pending on `main`). Not a measure. Not LAYA authorize-run. Not risk-gate unlock. Not live. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-40cf0f7a-1530-5934-8c60-c2554ccf3d66`; implement `bc-ef3c4636-2b3d-5e24-b291-910b6f094c15`; head `80d6f752903e9c384b83f8a0c05939ed8719576d`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/64#issuecomment-5809364025); merged [PR #64](https://github.com/vaanai/MAL/pull/64) squash `277a142` on `main`). Not a measure. Not LAYA authorize-run. Not risk-gate unlock. Not live. |
 | **Owner seat** | Proof (surround + Soft GATE); Scout (paper spine on cited scoreboards); Helm (AUTH) |
 | **Commission** | Consumer of merged paper scoreboard ([PR #51](https://github.com/vaanai/MAL/pull/51) squash `aa31768`) and optional paper batch rollup ([PR #52](https://github.com/vaanai/MAL/pull/52) squash `243e11b`). Parent #49–#63 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-laya-precompute-surround-packet-v0.schema.json](paper-laya-precompute-surround-packet-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_laya_precompute_surround_packet_v0/](../fixtures/paper_laya_precompute_surround_packet_v0/) — synthetic surround packets only |
 | **CLI** | `python -m tools.paper_laya_precompute_surround_packet_v0` — example / validate / assemble on local JSON only |
-| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-40cf0f7a-1530-5934-8c60-c2554ccf3d66`; implement `bc-ef3c4636-2b3d-5e24-b291-910b6f094c15`; squash pending on `main`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-40cf0f7a-1530-5934-8c60-c2554ccf3d66`; implement `bc-ef3c4636-2b3d-5e24-b291-910b6f094c15`; squash `277a142` on `main`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers how validated [`paper_scoreboard_sealed_fixture_v0`](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md) digests (and optionally a #52 batch `rollup` citation) are assembled into a **fixtures-only surround packet** shaped for later LAYA precompute consumption on the **non-fill-sim** paper spine. The packet cites counts and join summaries. It does **not** embed stamp bodies, hot packets, horizons, `Δ_exec`, EV, or lift.
 
@@ -144,7 +144,7 @@ python3 -m unittest tools.test_paper_laya_precompute_surround_packet_v0
 - Scoreboards cited (#51): [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md), [paper-scoreboard-sealed-fixture-v0.schema.json](paper-scoreboard-sealed-fixture-v0.schema.json), fixtures `fixtures/paper_scoreboard_sealed_fixture_v0/`, CLI `python -m tools.paper_scoreboard_sealed_fixture_v0`
 - Optional batch rollup (#52): [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [paper-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json](paper-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json), fixtures `fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/`, CLI `python -m tools.paper_batch_oracle_sealed_day_incomplete_rpc_v0`
 - Fill-sim mirror (merged #63): [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md), [paper-laya-precompute-fill-sim-surround-packet-v0.schema.json](paper-laya-precompute-fill-sim-surround-packet-v0.schema.json), fixtures `fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/`, CLI `python -m tools.paper_laya_precompute_fill_sim_surround_packet_v0`, tests `tools/test_paper_laya_precompute_fill_sim_surround_packet_v0.py`
-- This surround packet: [PR #64](https://github.com/vaanai/MAL/pull/64) (Soft GATE PASS Formal-stamped; squash pending on `main`)
+- This surround packet: [PR #64](https://github.com/vaanai/MAL/pull/64) squash `277a142` on `main` (Soft GATE PASS Formal-stamped)
 - Lab memory: [LAB_STATE.md](../LAB_STATE.md) (§11o); EDL: [ENGINEERING-DECISION-LOG.md](ENGINEERING-DECISION-LOG.md) (EDL-014)
 - LAYA stack brief: [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md)
 - Pipeline: [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)
