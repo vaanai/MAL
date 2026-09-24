@@ -1,0 +1,779 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json",
+  "title": "MAL paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc v0 (Proposed paper batch)",
+  "description": "Proposed batch. Day-aligned decision-day manifests cite validated paper_laya_precompute_decision_packet_v0 objects and count them with paper_laya_decision_packet_scoreboard_sealed_fixture_v0. sealed_book_rpc_slice stays incomplete. Digest shares are stamp counts, not returns. measure.kind stays none.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "type",
+    "id",
+    "paper_only",
+    "input",
+    "days",
+    "rollup",
+    "full_book",
+    "graph_lift",
+    "graph_policy",
+    "dual_read",
+    "measure",
+    "soft_watches",
+    "honesty"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0"
+    },
+    "type": {
+      "const": "paper_batch"
+    },
+    "id": {
+      "const": "paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0"
+    },
+    "paper_only": {
+      "const": true
+    },
+    "input": {
+      "$ref": "#/$defs/input"
+    },
+    "days": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/dayResult"
+      }
+    },
+    "rollup": {
+      "$ref": "#/$defs/rollup"
+    },
+    "full_book": {
+      "$ref": "#/$defs/fullBook"
+    },
+    "graph_lift": {
+      "const": null
+    },
+    "graph_policy": {
+      "const": "cold"
+    },
+    "dual_read": {
+      "$ref": "#/$defs/dualRead"
+    },
+    "measure": {
+      "$ref": "#/$defs/measure"
+    },
+    "soft_watches": {
+      "$ref": "#/$defs/softWatches"
+    },
+    "honesty": {
+      "$ref": "#/$defs/honesty"
+    }
+  },
+  "$defs": {
+    "share": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "properties": {
+        "numerator": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "denominator": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeline",
+        "local_json_only",
+        "rpc",
+        "observe_jsonl_tail",
+        "host_extract_required",
+        "host_jsonl_read",
+        "marks_joined",
+        "fixture_origin",
+        "graph_policy",
+        "days"
+      ],
+      "properties": {
+        "pipeline": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "const": "paper_laya_precompute_decision_packet_v0"
+            },
+            {
+              "const": "paper_laya_decision_packet_scoreboard_sealed_fixture_v0"
+            }
+          ],
+          "items": false
+        },
+        "local_json_only": {
+          "const": true
+        },
+        "rpc": {
+          "const": false
+        },
+        "observe_jsonl_tail": {
+          "const": false
+        },
+        "host_extract_required": {
+          "const": false
+        },
+        "host_jsonl_read": {
+          "const": false
+        },
+        "marks_joined": {
+          "const": false
+        },
+        "fixture_origin": {
+          "enum": [
+            "synthetic"
+          ]
+        },
+        "graph_policy": {
+          "const": "cold"
+        },
+        "days": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/dayInput"
+          }
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "fixture_kind",
+        "origin",
+        "day"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0"
+        },
+        "fixture_kind": {
+          "const": "decision_day_manifest"
+        },
+        "origin": {
+          "const": "synthetic"
+        },
+        "day": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "decision_packet_paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "assemblies": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "dayInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "day",
+        "manifest_name",
+        "manifest",
+        "expectation"
+      ],
+      "properties": {
+        "day": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "manifest_name": {
+          "type": "string",
+          "pattern": "^decision-day-\\d{4}-\\d{2}-\\d{2}\\.json$"
+        },
+        "manifest": {
+          "$ref": "#/$defs/manifest"
+        },
+        "expectation": {
+          "$ref": "paper-laya-decision-packet-scoreboard-sealed-fixture-v0.schema.json#/$defs/expectation"
+        }
+      }
+    },
+    "packetCensus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "listed_n",
+        "loaded_n",
+        "skipped_n",
+        "skip_is_not_a_dropped_spine_arm"
+      ],
+      "properties": {
+        "listed_n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "loaded_n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "skipped_n": {
+          "const": 0
+        },
+        "skip_is_not_a_dropped_spine_arm": {
+          "const": true
+        }
+      }
+    },
+    "embeddedScoreboard": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "type",
+        "id",
+        "paper_only",
+        "laya",
+        "risk_gate",
+        "dual_read",
+        "measure",
+        "graph_policy",
+        "graph_lift",
+        "full_book",
+        "fixture_join",
+        "sealed_days"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "paper_laya_decision_packet_scoreboard_sealed_fixture_v0"
+        },
+        "type": {
+          "const": "paper_laya_decision_packet_scoreboard"
+        },
+        "id": {
+          "const": "paper-laya-decision-packet-scoreboard-sealed-fixture-v0"
+        },
+        "paper_only": {
+          "const": true
+        },
+        "laya": {
+          "$ref": "paper-laya-decision-packet-scoreboard-sealed-fixture-v0.schema.json#/$defs/layaCaps"
+        },
+        "risk_gate": {
+          "$ref": "paper-laya-decision-packet-scoreboard-sealed-fixture-v0.schema.json#/$defs/riskGate"
+        },
+        "dual_read": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sealed_book_rpc_slice",
+            "closed_book_claim",
+            "incomplete_reason"
+          ],
+          "properties": {
+            "sealed_book_rpc_slice": {
+              "const": "incomplete"
+            },
+            "closed_book_claim": {
+              "const": false
+            },
+            "incomplete_reason": {
+              "type": "string"
+            }
+          }
+        },
+        "measure": {
+          "$ref": "paper-laya-decision-packet-scoreboard-sealed-fixture-v0.schema.json#/$defs/measure"
+        },
+        "graph_policy": {
+          "const": "cold"
+        },
+        "graph_lift": {
+          "const": null
+        },
+        "full_book": {
+          "$ref": "paper-laya-decision-packet-scoreboard-sealed-fixture-v0.schema.json#/$defs/fullBook"
+        },
+        "fixture_join": {
+          "type": "object",
+          "required": ["closed_book", "day"],
+          "properties": {
+            "closed_book": {
+              "const": false
+            },
+            "day": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            }
+          }
+        },
+        "sealed_days": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["day", "sealed_book_rpc_slice"],
+            "properties": {
+              "day": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+              },
+              "sealed_book_rpc_slice": {
+                "const": "incomplete"
+              }
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "dayResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "day",
+        "manifest_name",
+        "fixture_origin",
+        "packet_census",
+        "scoreboard"
+      ],
+      "properties": {
+        "day": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "manifest_name": {
+          "type": "string",
+          "pattern": "^decision-day-\\d{4}-\\d{2}-\\d{2}\\.json$"
+        },
+        "fixture_origin": {
+          "enum": [
+            "synthetic"
+          ]
+        },
+        "packet_census": {
+          "$ref": "#/$defs/packetCensus"
+        },
+        "scoreboard": {
+          "$ref": "#/$defs/embeddedScoreboard"
+        }
+      }
+    },
+    "rollup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "n_meaning",
+        "share_kind",
+        "counts_are_not_returns",
+        "packet_n",
+        "n",
+        "runner_n",
+        "reject_n",
+        "rows",
+        "days"
+      ],
+      "properties": {
+        "n_meaning": {
+          "const": "digest_stamp_count_not_a_return"
+        },
+        "share_kind": {
+          "const": "count_fraction_not_a_return"
+        },
+        "counts_are_not_returns": {
+          "const": true
+        },
+        "packet_n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runner_n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reject_n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/runnerShare"
+            },
+            {
+              "$ref": "#/$defs/rejectShare"
+            }
+          ],
+          "items": false
+        },
+        "days": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        }
+      }
+    },
+    "runnerShare": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "n",
+        "share"
+      ],
+      "properties": {
+        "label": {
+          "const": "runner"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "share": {
+          "$ref": "#/$defs/share"
+        }
+      }
+    },
+    "rejectShare": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "n",
+        "share"
+      ],
+      "properties": {
+        "label": {
+          "const": "reject"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "share": {
+          "$ref": "#/$defs/share"
+        }
+      }
+    },
+    "fullBook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "arm_retained",
+        "deletes_detect_history",
+        "reject_stamps_dropped",
+        "local_set_is_not_the_sealed_book",
+        "packet_n",
+        "digest_stamp_n",
+        "digest_runner_n",
+        "digest_reject_n"
+      ],
+      "properties": {
+        "policy": {
+          "const": "dec007_both_arms_retained"
+        },
+        "arm_retained": {
+          "const": true
+        },
+        "deletes_detect_history": {
+          "const": false
+        },
+        "reject_stamps_dropped": {
+          "const": 0
+        },
+        "local_set_is_not_the_sealed_book": {
+          "const": true
+        },
+        "packet_n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "digest_stamp_n": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "digest_runner_n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "digest_reject_n": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "dualRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sealed_book_rpc_slice",
+        "closed_book_claim",
+        "incomplete_reason"
+      ],
+      "properties": {
+        "sealed_book_rpc_slice": {
+          "const": "incomplete"
+        },
+        "closed_book_claim": {
+          "const": false
+        },
+        "incomplete_reason": {
+          "const": "laya_decision_packet_batch_does_not_close_the_sealed_book"
+        }
+      }
+    },
+    "measure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "claims_alpha",
+        "invented_ev",
+        "invented_lift",
+        "pass_fail_no_lift"
+      ],
+      "properties": {
+        "kind": {
+          "const": "none"
+        },
+        "claims_alpha": {
+          "const": false
+        },
+        "invented_ev": {
+          "const": false
+        },
+        "invented_lift": {
+          "const": false
+        },
+        "pass_fail_no_lift": {
+          "const": false
+        }
+      }
+    },
+    "softWatches": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blocking",
+        "source",
+        "inherited_from",
+        "items"
+      ],
+      "properties": {
+        "blocking": {
+          "const": false
+        },
+        "source": {
+          "const": "hot_packet_v0_soft_gate_pr49_through_paper_laya_decision_packet_scoreboard_pr68_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0"
+        },
+        "inherited_from": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "const": "paper_laya_precompute_decision_packet_v0_pr67"
+            },
+            {
+              "const": "paper_laya_decision_packet_scoreboard_sealed_fixture_v0_pr68"
+            }
+          ],
+          "items": false
+        },
+        "items": {
+          "type": "array",
+          "minItems": 46,
+          "maxItems": 46,
+          "items": {
+            "enum": [
+              "schema_looser_than_cli",
+              "synthetic_launchlab_shape",
+              "graph_slot_shape_not_a_score",
+              "dec005_draft_unmerged",
+              "sealed_book_rpc_slice_incomplete",
+              "label_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history",
+              "host_jsonl_not_readable_from_ci",
+              "counts_are_not_returns",
+              "graph_stays_cold_on_this_stamp",
+              "surround_counts_are_not_returns",
+              "surround_not_laya_authorize_run",
+              "surround_not_risk_gate_unlock",
+              "surround_not_live_trading",
+              "synthetic_scoreboard_not_a_host_extract",
+              "batch_digest_optional_not_a_measure",
+              "host_jsonl_read_is_not_a_closed_book",
+              "operator_path_string_is_not_a_host_extract",
+              "dry_run_does_not_ssh_or_open_var_lib_mal",
+              "parent_stamp_not_rewritten",
+              "capture_records_refusal_not_a_measure",
+              "cited_receipt_is_not_a_host_extract",
+              "path_string_on_a_refuse_is_not_file_bytes",
+              "fill_sim_vocabulary_not_exp006_promote",
+              "documented_constants_not_a_scored_fill",
+              "parent_evaluate_cli_not_rewritten",
+              "exp006_harness_not_rewritten",
+              "fill_sim_status_share_is_not_a_return",
+              "receipt_not_risk_gate_unlock",
+              "receipt_not_laya_authorize_run",
+              "receipt_not_live",
+              "synthetic_surround_not_host_extract",
+              "lock_counts_are_stamp_counts_not_returns",
+              "decision_packet_not_risk_gate_unlock",
+              "decision_packet_not_laya_authorize_run",
+              "decision_packet_not_live",
+              "decision_packet_cites_lock_receipt_not_unlock",
+              "decision_counts_are_stamp_counts_not_returns",
+              "digest_label_share_is_not_a_return",
+              "spine_profile_share_is_not_a_return",
+              "fill_sim_digest_share_is_not_a_return",
+              "decision_packet_batch_not_a_host_extract",
+              "decision_packet_batch_counts_are_not_returns",
+              "decision_packet_batch_not_risk_gate_unlock",
+              "decision_packet_batch_not_laya_authorize_run"
+            ]
+          }
+        }
+      }
+    },
+    "honesty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration",
+        "scored_oracle_measure",
+        "executed_host_sealed_book",
+        "ci_claimed_sealed_book_close",
+        "continuous_observe_wiring",
+        "encoder_promoted",
+        "enum_production_lock",
+        "discovery_promoted",
+        "graph_lane_revived",
+        "invented_lift",
+        "invented_ev",
+        "claims_alpha",
+        "exp002c_retuned",
+        "exp006_promoted",
+        "exp006_harness_rewritten",
+        "marks_joined_on_this_stamp",
+        "live_capital",
+        "trading_keys",
+        "pumpportal_trade_api",
+        "ssh_to_host",
+        "host_extract_checked_into_git",
+        "var_lib_mal_read",
+        "laya_authorize_run",
+        "risk_gate_unlock",
+        "live_trading_enabled"
+      ],
+      "properties": {
+        "registration": {
+          "const": "proposed"
+        },
+        "scored_oracle_measure": {
+          "const": false
+        },
+        "executed_host_sealed_book": {
+          "const": false
+        },
+        "ci_claimed_sealed_book_close": {
+          "const": false
+        },
+        "continuous_observe_wiring": {
+          "const": false
+        },
+        "encoder_promoted": {
+          "const": false
+        },
+        "enum_production_lock": {
+          "const": false
+        },
+        "discovery_promoted": {
+          "const": false
+        },
+        "graph_lane_revived": {
+          "const": false
+        },
+        "invented_lift": {
+          "const": false
+        },
+        "invented_ev": {
+          "const": false
+        },
+        "claims_alpha": {
+          "const": false
+        },
+        "exp002c_retuned": {
+          "const": false
+        },
+        "exp006_promoted": {
+          "const": false
+        },
+        "exp006_harness_rewritten": {
+          "const": false
+        },
+        "marks_joined_on_this_stamp": {
+          "const": false
+        },
+        "live_capital": {
+          "const": false
+        },
+        "trading_keys": {
+          "const": false
+        },
+        "pumpportal_trade_api": {
+          "const": false
+        },
+        "ssh_to_host": {
+          "const": false
+        },
+        "host_extract_checked_into_git": {
+          "const": false
+        },
+        "var_lib_mal_read": {
+          "const": false
+        },
+        "laya_authorize_run": {
+          "const": false
+        },
+        "risk_gate_unlock": {
+          "const": false
+        },
+        "live_trading_enabled": {
+          "const": false
+        }
+      }
+    }
+  }
+}

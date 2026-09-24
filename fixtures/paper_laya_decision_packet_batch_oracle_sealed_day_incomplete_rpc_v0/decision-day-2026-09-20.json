@@ -1,0 +1,11 @@
+{
+  "schema_version": "paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0",
+  "fixture_kind": "decision_day_manifest",
+  "origin": "synthetic",
+  "day": "2026-09-20",
+  "decision_packet_paths": [
+    "fixtures/paper_laya_precompute_decision_packet_v0/decision_non_fill_sim_surround.json",
+    "fixtures/paper_laya_precompute_decision_packet_v0/decision_fill_sim_surround.json",
+    "fixtures/paper_laya_precompute_decision_packet_v0/decision_mixed_spines.json"
+  ]
+}
