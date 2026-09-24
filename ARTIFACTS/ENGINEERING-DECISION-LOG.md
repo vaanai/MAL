@@ -24,6 +24,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-012 — Fill-sim host-local dry-run receipt capture (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-012 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-fill-sim-host-local-dry-run-receipt-capture-v0`: [PAPER-FILL-SIM-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-FILL-SIM-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md), [paper-fill-sim-host-local-dry-run-receipt-capture-v0.schema.json](paper-fill-sim-host-local-dry-run-receipt-capture-v0.schema.json), five capture fixtures, `python -m tools.paper_fill_sim_host_local_dry_run_receipt_capture_v0` (example / validate). The #60 dry-run CLI is called, not rewritten. |
+| **Why** | Mirror parent #55 receipt capture against merged fill-sim host-local dry-run #60. Citeable refuse and receipt digests without host extract or sealed-book close. |
+| **What was tested** | `python3 -m unittest tools.test_paper_fill_sim_host_local_dry_run_receipt_capture_v0`. Honest captures pass schema and CLI. Dishonest copies fail both. Host-path refuses before `read_text` / `stat`. No RPC. No SSH. `observe/client.py` untouched. |
+| **Verification** | 11 unittest OK on branch. Soft GATE **pending** before merge. |
+| **Current state** | **Proposed** on open PR. Not a measure. Not an executed host dry-run. Graph cold. |
+| **Rollback** | Revert capture contract, schema, fixtures, CLI, and tests. |
+| **Unresolved** | Soft GATE Formal stamp before merge. |
+| **Implications** | Fill-sim citeable chain can record #60 outcomes without rewriting parent CLIs. |
+| **Pointers** | [PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md) |
+
+---
+
 ## EDL-011 — Fill-sim incomplete-RPC honesty schema align (Proposed)
 
 | Field | Value |
