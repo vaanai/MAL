@@ -3,17 +3,19 @@
 | | |
 | --- | --- |
 | **ID** | `paper-fill-sim-batch-oracle-sealed-day-incomplete-rpc-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). Not a measure. Not a host run. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-0e1391cf-be21-5491-a9e9-026f19c486e0`; implement `bc-3aa00e4f-01c6-556d-9b6c-c44b26fe7181`; [PR #59](https://github.com/vaanai/MAL/pull/59) tip `479d251`; squash-merge on `main` pending). Not a measure. Not a host run. |
 | **Owner seat** | Proof (batch + Soft GATE); Scout (fill-sim spine stays on embedded stamps); Helm (AUTH) |
 | **Commission** | Consumer of merged fill-sim scoreboard ([PR #58](https://github.com/vaanai/MAL/pull/58) squash `dfbab7a`), fill-sim bind ([PR #57](https://github.com/vaanai/MAL/pull/57)), and the #49–#52 packet spine. Parent #49–#58 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-fill-sim-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json](paper-fill-sim-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0/](../fixtures/paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0/) — synthetic, not host extracts |
 | **CLI** | `python -m tools.paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0` — example / validate / batch on local JSON only |
-| **Soft GATE** | **Pending** before merge. Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-0e1391cf-be21-5491-a9e9-026f19c486e0`; implement `bc-3aa00e4f-01c6-556d-9b6c-c44b26fe7181`; [PR #59](https://github.com/vaanai/MAL/pull/59) tip `479d251`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers a **fixtures-only** day-aligned paper batch with fill-sim: sealed observe JSONL → [`hot_packet_v0`](HOT-PACKET-V0.md) → [`paper_evaluate_hot_packet_v0`](PAPER-EVALUATE-HOT-PACKET-V0.md) → [`paper_fill_sim_hot_packet_evaluate_v0`](PAPER-FILL-SIM-HOT-PACKET-EVALUATE-V0.md) → [`paper_fill_sim_scoreboard_sealed_fixture_v0`](PAPER-FILL-SIM-SCOREBOARD-SEALED-FIXTURE-V0.md).
 
-Merge ≠ Oracle measure ≠ EXP-006 promote ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ Graph revive ≠ live trading. **Soft GATE pending** ≠ any of those promotes.
+Merge ≠ Oracle measure ≠ EXP-006 promote ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ Graph revive ≠ live trading.
+
+**Soft GATE PASS** (Formal stamp Lyra). Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote.
 
 Cloud agents cannot read host Oracle JSONL. Checked-in day strings `2026-09-20` and `2026-09-21` are calendar labels used elsewhere; they are not a read of host `observe-*.jsonl`.
 
@@ -81,11 +83,13 @@ Null with explicit status on embedded fill-sim stamps and scoreboards. Skipped m
 | Host | CLI refuses `/var/lib/mal` and `//var/lib/mal` **lexically** before any filesystem touch |
 | Oracle measure | **No** |
 
+**Soft GATE PASS** (Formal stamp Lyra). Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote.
+
 ---
 
 ## Soft watches (non-blocking)
 
-**Soft GATE pending** before merge. `soft_watches.blocking=false`. Inherited watches from #49–#58 remain listed.
+**Soft GATE PASS** (Formal stamp Lyra). `soft_watches.blocking=false`. Inherited watches from #49–#58 remain listed and non-blocking.
 
 Named on this registration:
 
@@ -93,8 +97,6 @@ Named on this registration:
 | --- | --- | --- |
 | `fill_sim_batch_not_a_host_extract` | Checked-in JSONL is synthetic | Not an Oracle extract |
 | `fill_sim_batch_counts_are_not_returns` | Rollup and fill-sim status shares are stamp counts | Not EV or lift |
-
-**Soft GATE pending** ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote.
 
 ---
 
@@ -113,6 +115,12 @@ python -m tools.paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0 batch \
 
 `batch` and `validate` refuse host-root paths lexically (including a leading `//` before normalization). Exit `0` when a batch prints; exit `1` on invalid input. No measure exit.
 
+Proof:
+
+```bash
+python3 -m unittest tools.test_paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0
+```
+
 ---
 
 ## Non-goals
@@ -122,7 +130,7 @@ python -m tools.paper_fill_sim_batch_oracle_sealed_day_incomplete_rpc_v0 batch \
 | Rewrite #49–#58 parent CLIs or EXP-006 harness | Out |
 | Host paths, SSH, Oracle re-run, marks join as scored measure | Out |
 | `PASS` / `FAIL_NO_LIFT` exit | Out |
-| Soft GATE PASS | **Not claimed** — pending before merge |
+| Soft GATE PASS at merge | **PASS** (Formal stamp Lyra; kill `bc-0e1391cf-be21-5491-a9e9-026f19c486e0`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 |
 
 ---
 
