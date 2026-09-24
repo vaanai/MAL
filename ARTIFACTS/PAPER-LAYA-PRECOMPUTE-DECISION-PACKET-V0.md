@@ -3,13 +3,13 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-precompute-decision-packet-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-84b8db98-a158-5530-8e30-9e33587231fa`; fix `bc-0361a565-20bd-5763-bd67-a6a9a1034c57`; implement `bc-d0648945-6ec4-5891-91e6-0d94f7bd4056`; head `f2e4508678bff71a1c55e990f2ce52dae2aa2b0a`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/67#issuecomment-5810922748); [PR #67](https://github.com/vaanai/MAL/pull/67)). Not a measure. Not LAYA authorize-run. Not risk-gate unlock. Not live. |
+| **Status** | **Proposed** registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-84b8db98-a158-5530-8e30-9e33587231fa`; fix `bc-0361a565-20bd-5763-bd67-a6a9a1034c57`; implement `bc-d0648945-6ec4-5891-91e6-0d94f7bd4056`; head `f2e4508678bff71a1c55e990f2ce52dae2aa2b0a`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/67#issuecomment-5810922748); merged [PR #67](https://github.com/vaanai/MAL/pull/67) squash `52a06e7` on `main`). Not a measure. Not LAYA authorize-run. Not risk-gate unlock. Not live. |
 | **Owner seat** | Proof (decision packet + Soft GATE); Scout (surround + lock citation paths); Helm (AUTH) |
 | **Commission** | North-star step after merged LAYA lock receipt [#65](https://github.com/vaanai/MAL/pull/65) (`7979988`): package validated [#64](https://github.com/vaanai/MAL/pull/64) and/or [#63](https://github.com/vaanai/MAL/pull/63) surround fixtures with [#65](https://github.com/vaanai/MAL/pull/65) lock-receipt fixtures for later LAYA consumption. Parent #49–#65 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-laya-precompute-decision-packet-v0.schema.json](paper-laya-precompute-decision-packet-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_laya_precompute_decision_packet_v0/](../fixtures/paper_laya_precompute_decision_packet_v0/) — decision packets citing surround + lock receipt fixtures only |
 | **CLI** | `python -m tools.paper_laya_precompute_decision_packet_v0` — example / validate / assemble on local JSON only |
-| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-84b8db98-a158-5530-8e30-9e33587231fa`; fix `bc-0361a565-20bd-5763-bd67-a6a9a1034c57`; implement `bc-d0648945-6ec4-5891-91e6-0d94f7bd4056`; head `f2e4508678bff71a1c55e990f2ce52dae2aa2b0a`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/67#issuecomment-5810922748); [PR #67](https://github.com/vaanai/MAL/pull/67)). Watches that stay true stay **non-blocking**. |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-84b8db98-a158-5530-8e30-9e33587231fa`; fix `bc-0361a565-20bd-5763-bd67-a6a9a1034c57`; implement `bc-d0648945-6ec4-5891-91e6-0d94f7bd4056`; head `f2e4508678bff71a1c55e990f2ce52dae2aa2b0a`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/67#issuecomment-5810922748); squash `52a06e7` on `main`). Watches that stay true stay **non-blocking**. |
 
 This file registers a **fixtures-only decision packet** that cites validated LAYA precompute surround JSON (#63/#64) and lock receipts (#65) already on `main`. The packet records surround digests plus lock-receipt digests while the risk gate stays **locked**: `laya.risk_gate_unlock=false`, `laya.authorize_run=false`, `laya.live_trading=false`, `risk_gate.decision=locked`, `risk_gate.unlock=false`. It does **not** unlock the gate, authorize a LAYA run, or enable live trading.
 
@@ -145,6 +145,6 @@ Honest fixtures pass schema and CLI. In-memory dishonest copies fail both. `obse
 - Fill-sim surround (#63): [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md)
 - Lock receipt (#65): [PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md](PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md)
 - Schema align (#66): [PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md)
-- This registration: [PR #67](https://github.com/vaanai/MAL/pull/67) (Soft GATE PASS Formal-stamped)
+- This registration: [PR #67](https://github.com/vaanai/MAL/pull/67) squash `52a06e7` on `main` (Soft GATE PASS Formal-stamped)
 - Lab memory: [LAB_STATE.md](../LAB_STATE.md) (§11r); EDL: [ENGINEERING-DECISION-LOG.md](ENGINEERING-DECISION-LOG.md) (EDL-017)
 - LAYA stack brief: [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md)
