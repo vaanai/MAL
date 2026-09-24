@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **ID** | `paper-fill-sim-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). Not a measure. Not an executed host dry-run. **Soft GATE pending** before merge. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-6d12d7af-2c6d-5f23-98f1-5d4dc8717db0`; implement `bc-7863de85-9f38-5fce-89e0-8f25464b2272`; [PR #60](https://github.com/vaanai/MAL/pull/60) tip `ec94ce5`; squash-merge on `main` pending). Not a measure. Not an executed host dry-run. |
 | **Owner seat** | Proof (receipt + Soft GATE); Scout (host-local path shape); Helm (AUTH) |
 | **Commission** | Receipt around the merged fill-sim parent batch ([PR #59](https://github.com/vaanai/MAL/pull/59) squash `4664363` on `main` @ `d352ea6` lab tip). Parent #49–#59 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-fill-sim-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json](paper-fill-sim-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json) (JSON Schema 2020-12) |
@@ -11,13 +11,15 @@
 | **CLI** | `python -m tools.paper_fill_sim_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0` — example / validate / receipt on local files only |
 | **Operator shape** | [paper_fill_sim_batch_host_local_sealed_jsonl_dry_run.md](../tools/paper_fill_sim_batch_host_local_sealed_jsonl_dry_run.md) — paths and flags only. No executed host stdout |
 | **Parent** | [PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-FILL-SIM-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md). Not rewritten. |
-| **Soft GATE** | **Required** before merge (pending on this draft). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). #59 watches ride on this stamp with `blocking=false`. |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-6d12d7af-2c6d-5f23-98f1-5d4dc8717db0`; implement `bc-7863de85-9f38-5fce-89e0-8f25464b2272`; [PR #60](https://github.com/vaanai/MAL/pull/60) tip `ec94ce5`). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers the **operator-local dry-run shape** for running the merged fill-sim parent CLI against host-local day-aligned sealed observe JSONL. Courier calendar days are `2026-09-20` and `2026-09-21`. The host name in the receipt is `mal-core-vnic`. The documented paths sit under `/var/lib/mal`.
 
 It is the same receipt class as [PR #53](https://github.com/vaanai/MAL/pull/53), but the parent CLI is the fill-sim batch from [PR #59](https://github.com/vaanai/MAL/pull/59). It is **not** an EXP. It is **not** a scored Oracle measure. It is **not** a claim that CI, or this registration, executed a sealed-book close.
 
 Merge ≠ executed host dry-run ≠ Oracle measure ≠ EXP-006 promote.
+
+**Soft GATE PASS** (Formal stamp Lyra). Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote.
 
 ---
 
@@ -90,14 +92,14 @@ Graph stays cold. Horizons and `Δ_exec` are not on this receipt (`carries.horiz
 | --- | --- |
 | Merge of this registration | Docs + receipt schema + synthetic receipts + receipt CLI. **Does not** run the host dry-run |
 | `observe/client.py` | **Untouched** |
-| Soft GATE at merge | **Pending** on this draft. Soft GATE PASS ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 promote |
+| Soft GATE at merge | **PASS** (Formal stamp Lyra; kill `bc-6d12d7af-2c6d-5f23-98f1-5d4dc8717db0`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 promote |
 | Host access from this CLI | No RPC. No SSH. Refuses `/var/lib/mal`, `//var/lib/mal`, and relative `var/lib/mal/...` **lexically before any filesystem touch** |
 
 ---
 
 ## Soft watches (non-blocking)
 
-**Soft GATE is required** before merge. `soft_watches.blocking=false`. Inherited #49–#59 watches plus dry-run watches on this stamp. They do not fail merge of this registration.
+**Soft GATE PASS** (Formal stamp Lyra). `soft_watches.blocking=false`. Inherited #49–#59 watches plus dry-run watches on this stamp. They do not fail merge of this registration.
 
 Named on this registration:
 
@@ -145,7 +147,7 @@ python3 -m unittest tools.test_paper_fill_sim_batch_host_local_sealed_jsonl_dry_
 | Rewrite #49–#59 parent CLIs or EXP-006 harness | Out |
 | Host extract in git, SSH, RPC, `/var/lib/mal` read from CI | Out |
 | `PASS` / `FAIL_NO_LIFT` exit | Out |
-| Soft GATE PASS at merge | **Pending** — required before merge |
+| Soft GATE PASS at merge | **PASS** (Formal stamp Lyra; kill `bc-6d12d7af-2c6d-5f23-98f1-5d4dc8717db0`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 |
 
 ---
 
