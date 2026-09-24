@@ -9,7 +9,7 @@
 | **Schema** | [paper-laya-precompute-decision-packet-v0.schema.json](paper-laya-precompute-decision-packet-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_laya_precompute_decision_packet_v0/](../fixtures/paper_laya_precompute_decision_packet_v0/) — decision packets citing surround + lock receipt fixtures only |
 | **CLI** | `python -m tools.paper_laya_precompute_decision_packet_v0` — example / validate / assemble on local JSON only |
-| **Soft GATE** | **Pending** — schema must not be looser than CLI on unlock/authorize/live consts, path honesty, required citations, measure/sealed-book honesty, and Graph-cold shapes. |
+| **Soft GATE** | **Pending** Formal — Soft GATE FAIL #1 `schema_looser_than_cli` holes **closed** on [PR #67](https://github.com/vaanai/MAL/pull/67) (union rule, mixed-spine citation cardinality, digest/path binding, `soft_watches` identity). Formal stamp still pending. |
 
 This file registers a **fixtures-only decision packet** that cites validated LAYA precompute surround JSON (#63/#64) and lock receipts (#65) already on `main`. The packet records surround digests plus lock-receipt digests while the risk gate stays **locked**: `laya.risk_gate_unlock=false`, `laya.authorize_run=false`, `laya.live_trading=false`, `risk_gate.decision=locked`, `risk_gate.unlock=false`. It does **not** unlock the gate, authorize a LAYA run, or enable live trading.
 
@@ -17,7 +17,7 @@ Citeable inputs on `main`: [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md](PAPER-L
 
 Merge ≠ risk-gate unlock ≠ LAYA authorize-run ≠ live trading ≠ Oracle measure ≠ EXP-006 promote.
 
-**Soft GATE pending.** Caps held on honest fixtures: `measure.kind=none`; sealed book **incomplete**; `closed_book_claim=false`; Graph **cold**; `risk_gate.decision=locked`; `risk_gate.unlock=false`; `laya.authorize_run=false`; `laya.risk_gate_unlock=false`; `laya.live_trading=false`. Soft GATE PASS (when stamped) ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
+**Soft GATE pending** Formal. Schema now matches CLI on assembly union, mixed-spine dual citations, fixture-anchored digests and paths, and ordered `soft_watches` identity (not only const caps). Caps held on honest fixtures: `measure.kind=none`; sealed book **incomplete**; `closed_book_claim=false`; Graph **cold**; `risk_gate.decision=locked`; `risk_gate.unlock=false`; `laya.authorize_run=false`; `laya.risk_gate_unlock=false`; `laya.live_trading=false`. Soft GATE PASS (when stamped) ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
 
 ---
 

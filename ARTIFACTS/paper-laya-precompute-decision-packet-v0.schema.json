@@ -194,14 +194,16 @@
               "minItems": 1,
               "items": {
                 "$ref": "#/$defs/layaSurroundFixturePath"
-              }
+              },
+              "uniqueItems": true
             },
             "lock_receipt_paths": {
               "type": "array",
               "minItems": 1,
               "items": {
                 "$ref": "#/$defs/layaLockReceiptFixturePath"
-              }
+              },
+              "uniqueItems": true
             }
           }
         }
@@ -576,6 +578,9 @@
               "registration"
             ]
           }
+        },
+        {
+          "$ref": "#/$defs/surroundCitationDigestFromFixturePath"
         }
       ]
     },
@@ -692,7 +697,7 @@
           "const": "delta_exec"
         },
         "also_called": {
-          "const": "Δ_exec"
+          "const": "\u0394_exec"
         },
         "value": {
           "type": "null"
@@ -770,63 +775,139 @@
           "const": false
         },
         "source": {
-          "type": "string"
+          "const": "hot_packet_v0_soft_gate_pr49_through_paper_laya_risk_gate_lock_receipt_pr65_laya_precompute_decision_packet_v0"
         },
         "inherited_from": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string"
-          }
+          "const": [
+            "paper_laya_precompute_fill_sim_surround_packet_v0_pr63",
+            "paper_laya_precompute_surround_packet_v0_pr64",
+            "paper_laya_risk_gate_lock_receipt_v0_pr65"
+          ]
         },
         "items": {
           "type": "array",
           "minItems": 39,
           "maxItems": 39,
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "schema_looser_than_cli",
-              "synthetic_launchlab_shape",
-              "graph_slot_shape_not_a_score",
-              "dec005_draft_unmerged",
-              "sealed_book_rpc_slice_incomplete",
-              "label_share_is_not_a_return",
-              "synthetic_sealed_day_not_a_host_extract",
-              "local_subset_is_not_dropped_history",
-              "host_jsonl_not_readable_from_ci",
-              "counts_are_not_returns",
-              "graph_stays_cold_on_this_stamp",
-              "surround_counts_are_not_returns",
-              "surround_not_laya_authorize_run",
-              "surround_not_risk_gate_unlock",
-              "surround_not_live_trading",
-              "synthetic_scoreboard_not_a_host_extract",
-              "batch_digest_optional_not_a_measure",
-              "host_jsonl_read_is_not_a_closed_book",
-              "operator_path_string_is_not_a_host_extract",
-              "dry_run_does_not_ssh_or_open_var_lib_mal",
-              "parent_stamp_not_rewritten",
-              "capture_records_refusal_not_a_measure",
-              "cited_receipt_is_not_a_host_extract",
-              "path_string_on_a_refuse_is_not_file_bytes",
-              "fill_sim_vocabulary_not_exp006_promote",
-              "documented_constants_not_a_scored_fill",
-              "parent_evaluate_cli_not_rewritten",
-              "exp006_harness_not_rewritten",
-              "fill_sim_status_share_is_not_a_return",
-              "receipt_not_risk_gate_unlock",
-              "receipt_not_laya_authorize_run",
-              "receipt_not_live",
-              "synthetic_surround_not_host_extract",
-              "lock_counts_are_stamp_counts_not_returns",
-              "decision_packet_not_risk_gate_unlock",
-              "decision_packet_not_laya_authorize_run",
-              "decision_packet_not_live",
-              "decision_packet_cites_lock_receipt_not_unlock",
-              "decision_counts_are_stamp_counts_not_returns"
-            ]
-          }
+          "prefixItems": [
+            {
+              "const": "schema_looser_than_cli"
+            },
+            {
+              "const": "synthetic_launchlab_shape"
+            },
+            {
+              "const": "graph_slot_shape_not_a_score"
+            },
+            {
+              "const": "dec005_draft_unmerged"
+            },
+            {
+              "const": "sealed_book_rpc_slice_incomplete"
+            },
+            {
+              "const": "label_share_is_not_a_return"
+            },
+            {
+              "const": "synthetic_sealed_day_not_a_host_extract"
+            },
+            {
+              "const": "local_subset_is_not_dropped_history"
+            },
+            {
+              "const": "host_jsonl_not_readable_from_ci"
+            },
+            {
+              "const": "counts_are_not_returns"
+            },
+            {
+              "const": "graph_stays_cold_on_this_stamp"
+            },
+            {
+              "const": "surround_counts_are_not_returns"
+            },
+            {
+              "const": "surround_not_laya_authorize_run"
+            },
+            {
+              "const": "surround_not_risk_gate_unlock"
+            },
+            {
+              "const": "surround_not_live_trading"
+            },
+            {
+              "const": "synthetic_scoreboard_not_a_host_extract"
+            },
+            {
+              "const": "batch_digest_optional_not_a_measure"
+            },
+            {
+              "const": "host_jsonl_read_is_not_a_closed_book"
+            },
+            {
+              "const": "operator_path_string_is_not_a_host_extract"
+            },
+            {
+              "const": "dry_run_does_not_ssh_or_open_var_lib_mal"
+            },
+            {
+              "const": "parent_stamp_not_rewritten"
+            },
+            {
+              "const": "capture_records_refusal_not_a_measure"
+            },
+            {
+              "const": "cited_receipt_is_not_a_host_extract"
+            },
+            {
+              "const": "path_string_on_a_refuse_is_not_file_bytes"
+            },
+            {
+              "const": "fill_sim_vocabulary_not_exp006_promote"
+            },
+            {
+              "const": "documented_constants_not_a_scored_fill"
+            },
+            {
+              "const": "parent_evaluate_cli_not_rewritten"
+            },
+            {
+              "const": "exp006_harness_not_rewritten"
+            },
+            {
+              "const": "fill_sim_status_share_is_not_a_return"
+            },
+            {
+              "const": "receipt_not_risk_gate_unlock"
+            },
+            {
+              "const": "receipt_not_laya_authorize_run"
+            },
+            {
+              "const": "receipt_not_live"
+            },
+            {
+              "const": "synthetic_surround_not_host_extract"
+            },
+            {
+              "const": "lock_counts_are_stamp_counts_not_returns"
+            },
+            {
+              "const": "decision_packet_not_risk_gate_unlock"
+            },
+            {
+              "const": "decision_packet_not_laya_authorize_run"
+            },
+            {
+              "const": "decision_packet_not_live"
+            },
+            {
+              "const": "decision_packet_cites_lock_receipt_not_unlock"
+            },
+            {
+              "const": "decision_counts_are_stamp_counts_not_returns"
+            }
+          ],
+          "items": false
         }
       }
     },
@@ -1011,11 +1092,9 @@
       ]
     },
     "layaSurroundFixturePath": {
-      "type": "string",
-      "minLength": 1,
       "allOf": [
         {
-          "pattern": "^(fixtures/paper_laya_precompute_surround_packet_v0/|fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/).+"
+          "$ref": "#/$defs/layaSurroundKnownFixturePath"
         },
         {
           "$ref": "#/$defs/repoFixturePathHonesty"
@@ -1023,11 +1102,9 @@
       ]
     },
     "layaLockReceiptFixturePath": {
-      "type": "string",
-      "minLength": 1,
       "allOf": [
         {
-          "pattern": "^fixtures\\/paper_laya_risk_gate_lock_receipt_v0\\/.+"
+          "$ref": "#/$defs/layaLockReceiptKnownFixturePath"
         },
         {
           "$ref": "#/$defs/repoFixturePathHonesty"
@@ -1035,87 +1112,94 @@
       ]
     },
     "lockReceiptCitation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "registration",
-        "fixture_path",
-        "validated_by_parent_cli",
-        "lock_receipt_body_embedded",
-        "digest"
-      ],
-      "properties": {
-        "registration": {
+      "allOf": [
+        {
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "id",
-            "schema_version",
-            "pull_request",
-            "commit",
-            "rewritten_by_this_stamp"
+            "registration",
+            "fixture_path",
+            "validated_by_parent_cli",
+            "lock_receipt_body_embedded",
+            "digest"
           ],
           "properties": {
-            "id": {
-              "const": "paper-laya-risk-gate-lock-receipt-v0"
-            },
-            "schema_version": {
-              "const": "paper_laya_risk_gate_lock_receipt_v0"
-            },
-            "pull_request": {
-              "const": 65
-            },
-            "commit": {
-              "const": "7979988"
-            },
-            "rewritten_by_this_stamp": {
-              "const": false
-            }
-          }
-        },
-        "fixture_path": {
-          "$ref": "#/$defs/layaLockReceiptFixturePath"
-        },
-        "validated_by_parent_cli": {
-          "const": true
-        },
-        "lock_receipt_body_embedded": {
-          "const": false
-        },
-        "digest": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "receipt_kind",
-            "counts_are_stamp_counts_not_returns",
-            "risk_gate",
-            "surround_fixture_paths",
-            "surround_citation_count"
-          ],
-          "properties": {
-            "receipt_kind": {
-              "const": "lock"
-            },
-            "counts_are_stamp_counts_not_returns": {
-              "const": true
-            },
-            "risk_gate": {
-              "$ref": "#/$defs/lockReceiptDigestRiskGate"
-            },
-            "surround_fixture_paths": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "$ref": "#/$defs/layaSurroundFixturePath"
+            "registration": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "schema_version",
+                "pull_request",
+                "commit",
+                "rewritten_by_this_stamp"
+              ],
+              "properties": {
+                "id": {
+                  "const": "paper-laya-risk-gate-lock-receipt-v0"
+                },
+                "schema_version": {
+                  "const": "paper_laya_risk_gate_lock_receipt_v0"
+                },
+                "pull_request": {
+                  "const": 65
+                },
+                "commit": {
+                  "const": "7979988"
+                },
+                "rewritten_by_this_stamp": {
+                  "const": false
+                }
               }
             },
-            "surround_citation_count": {
-              "type": "integer",
-              "minimum": 1
+            "fixture_path": {
+              "$ref": "#/$defs/layaLockReceiptFixturePath"
+            },
+            "validated_by_parent_cli": {
+              "const": true
+            },
+            "lock_receipt_body_embedded": {
+              "const": false
+            },
+            "digest": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "receipt_kind",
+                "counts_are_stamp_counts_not_returns",
+                "risk_gate",
+                "surround_fixture_paths",
+                "surround_citation_count"
+              ],
+              "properties": {
+                "receipt_kind": {
+                  "const": "lock"
+                },
+                "counts_are_stamp_counts_not_returns": {
+                  "const": true
+                },
+                "risk_gate": {
+                  "$ref": "#/$defs/lockReceiptDigestRiskGate"
+                },
+                "surround_fixture_paths": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "#/$defs/layaSurroundFixturePath"
+                  }
+                },
+                "surround_citation_count": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
             }
           }
+        },
+        {
+          "$ref": "#/$defs/lockReceiptCitationDigestFromFixturePath"
         }
-      }
+      ]
     },
     "lockReceiptDigestRiskGate": {
       "type": "object",
@@ -1136,6 +1220,1034 @@
           "const": "paper_registration_fixture_receipt_only_not_risk_gate_unlock"
         }
       }
+    },
+    "layaSurroundKnownFixturePath": {
+      "type": "string",
+      "enum": [
+        "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json",
+        "fixtures/paper_laya_precompute_surround_packet_v0/batch_two_day_with_digest.json",
+        "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json",
+        "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/batch_two_day_with_digest.json"
+      ]
+    },
+    "layaLockReceiptKnownFixturePath": {
+      "type": "string",
+      "enum": [
+        "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_non_fill_sim_surround.json",
+        "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+      ]
+    },
+    "surroundCitationDigestFromFixturePath": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "fixture_path": {
+                "const": "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+              }
+            },
+            "required": [
+              "fixture_path"
+            ]
+          },
+          "then": {
+            "properties": {
+              "digest": {
+                "const": {
+                  "counts_are_stamp_counts_not_returns": true,
+                  "full_book": {
+                    "policy": "dec007_both_arms_retained",
+                    "reject_stamps_dropped": 0,
+                    "n": 5,
+                    "runner_n": 4,
+                    "reject_n": 1
+                  },
+                  "label_rates": {
+                    "share_kind": "count_fraction_not_a_return",
+                    "rows": [
+                      {
+                        "label": "runner",
+                        "n": 4,
+                        "share": {
+                          "numerator": 4,
+                          "denominator": 5
+                        }
+                      },
+                      {
+                        "label": "reject",
+                        "n": 1,
+                        "share": {
+                          "numerator": 1,
+                          "denominator": 5
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "required": [
+              "digest"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "fixture_path": {
+                "const": "fixtures/paper_laya_precompute_surround_packet_v0/batch_two_day_with_digest.json"
+              }
+            },
+            "required": [
+              "fixture_path"
+            ]
+          },
+          "then": {
+            "properties": {
+              "digest": {
+                "const": {
+                  "counts_are_stamp_counts_not_returns": true,
+                  "full_book": {
+                    "policy": "dec007_both_arms_retained",
+                    "reject_stamps_dropped": 0,
+                    "n": 4,
+                    "runner_n": 2,
+                    "reject_n": 2
+                  },
+                  "label_rates": {
+                    "share_kind": "count_fraction_not_a_return",
+                    "rows": [
+                      {
+                        "label": "runner",
+                        "n": 2,
+                        "share": {
+                          "numerator": 2,
+                          "denominator": 4
+                        }
+                      },
+                      {
+                        "label": "reject",
+                        "n": 2,
+                        "share": {
+                          "numerator": 2,
+                          "denominator": 4
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "required": [
+              "digest"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "fixture_path": {
+                "const": "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+              }
+            },
+            "required": [
+              "fixture_path"
+            ]
+          },
+          "then": {
+            "properties": {
+              "digest": {
+                "const": {
+                  "counts_are_stamp_counts_not_returns": true,
+                  "full_book": {
+                    "policy": "dec007_both_arms_retained",
+                    "reject_stamps_dropped": 0,
+                    "n": 5,
+                    "runner_n": 4,
+                    "reject_n": 1
+                  },
+                  "label_rates": {
+                    "share_kind": "count_fraction_not_a_return",
+                    "rows": [
+                      {
+                        "label": "runner",
+                        "n": 4,
+                        "share": {
+                          "numerator": 4,
+                          "denominator": 5
+                        }
+                      },
+                      {
+                        "label": "reject",
+                        "n": 1,
+                        "share": {
+                          "numerator": 1,
+                          "denominator": 5
+                        }
+                      }
+                    ]
+                  },
+                  "fill_sim_status_counts": [
+                    {
+                      "status": "documented_model_only",
+                      "n": 4,
+                      "share": {
+                        "numerator": 4,
+                        "denominator": 5
+                      }
+                    },
+                    {
+                      "status": "reject_arm_no_pretend_buy",
+                      "n": 1,
+                      "share": {
+                        "numerator": 1,
+                        "denominator": 5
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "required": [
+              "digest"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "fixture_path": {
+                "const": "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/batch_two_day_with_digest.json"
+              }
+            },
+            "required": [
+              "fixture_path"
+            ]
+          },
+          "then": {
+            "properties": {
+              "digest": {
+                "const": {
+                  "counts_are_stamp_counts_not_returns": true,
+                  "full_book": {
+                    "policy": "dec007_both_arms_retained",
+                    "reject_stamps_dropped": 0,
+                    "n": 4,
+                    "runner_n": 2,
+                    "reject_n": 2
+                  },
+                  "label_rates": {
+                    "share_kind": "count_fraction_not_a_return",
+                    "rows": [
+                      {
+                        "label": "runner",
+                        "n": 2,
+                        "share": {
+                          "numerator": 2,
+                          "denominator": 4
+                        }
+                      },
+                      {
+                        "label": "reject",
+                        "n": 2,
+                        "share": {
+                          "numerator": 2,
+                          "denominator": 4
+                        }
+                      }
+                    ]
+                  },
+                  "fill_sim_status_counts": [
+                    {
+                      "status": "documented_model_only",
+                      "n": 2,
+                      "share": {
+                        "numerator": 2,
+                        "denominator": 4
+                      }
+                    },
+                    {
+                      "status": "reject_arm_no_pretend_buy",
+                      "n": 2,
+                      "share": {
+                        "numerator": 2,
+                        "denominator": 4
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "required": [
+              "digest"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "fixture_path": {
+                "not": {
+                  "$ref": "#/$defs/layaSurroundKnownFixturePath"
+                }
+              }
+            },
+            "required": [
+              "fixture_path"
+            ]
+          },
+          "then": {
+            "not": {}
+          }
+        }
+      ]
+    },
+    "lockReceiptCitationDigestFromFixturePath": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "fixture_path": {
+                "const": "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_non_fill_sim_surround.json"
+              }
+            },
+            "required": [
+              "fixture_path"
+            ]
+          },
+          "then": {
+            "properties": {
+              "digest": {
+                "const": {
+                  "receipt_kind": "lock",
+                  "counts_are_stamp_counts_not_returns": true,
+                  "risk_gate": {
+                    "decision": "locked",
+                    "unlock": false,
+                    "reason": "paper_registration_fixture_receipt_only_not_risk_gate_unlock"
+                  },
+                  "surround_fixture_paths": [
+                    "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+                  ],
+                  "surround_citation_count": 1
+                }
+              }
+            },
+            "required": [
+              "digest"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "fixture_path": {
+                "const": "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+              }
+            },
+            "required": [
+              "fixture_path"
+            ]
+          },
+          "then": {
+            "properties": {
+              "digest": {
+                "const": {
+                  "receipt_kind": "lock",
+                  "counts_are_stamp_counts_not_returns": true,
+                  "risk_gate": {
+                    "decision": "locked",
+                    "unlock": false,
+                    "reason": "paper_registration_fixture_receipt_only_not_risk_gate_unlock"
+                  },
+                  "surround_fixture_paths": [
+                    "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+                  ],
+                  "surround_citation_count": 1
+                }
+              }
+            },
+            "required": [
+              "digest"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "fixture_path": {
+                "not": {
+                  "$ref": "#/$defs/layaLockReceiptKnownFixturePath"
+                }
+              }
+            },
+            "required": [
+              "fixture_path"
+            ]
+          },
+          "then": {
+            "not": {}
+          }
+        }
+      ]
+    },
+    "decisionPacketShapeNonFillSingle": {
+      "type": "object",
+      "required": [
+        "input",
+        "surround_citations",
+        "lock_receipt_citations"
+      ],
+      "properties": {
+        "input": {
+          "type": "object",
+          "required": [
+            "assembly"
+          ],
+          "properties": {
+            "assembly": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "surround_paths",
+                "lock_receipt_paths"
+              ],
+              "properties": {
+                "surround_paths": {
+                  "const": [
+                    "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+                  ]
+                },
+                "lock_receipt_paths": {
+                  "const": [
+                    "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_non_fill_sim_surround.json"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "surround_citations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "registration",
+                "fixture_path",
+                "validated_by_parent_cli",
+                "surround_body_embedded",
+                "digest"
+              ],
+              "properties": {
+                "registration": {
+                  "const": {
+                    "id": "paper-laya-precompute-surround-packet-v0",
+                    "schema_version": "paper_laya_precompute_surround_packet_v0",
+                    "pull_request": 64,
+                    "commit": "277a142",
+                    "rewritten_by_this_stamp": false
+                  }
+                },
+                "fixture_path": {
+                  "const": "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+                },
+                "validated_by_parent_cli": {
+                  "const": true
+                },
+                "surround_body_embedded": {
+                  "const": false
+                },
+                "digest": {
+                  "const": {
+                    "counts_are_stamp_counts_not_returns": true,
+                    "full_book": {
+                      "policy": "dec007_both_arms_retained",
+                      "reject_stamps_dropped": 0,
+                      "n": 5,
+                      "runner_n": 4,
+                      "reject_n": 1
+                    },
+                    "label_rates": {
+                      "share_kind": "count_fraction_not_a_return",
+                      "rows": [
+                        {
+                          "label": "runner",
+                          "n": 4,
+                          "share": {
+                            "numerator": 4,
+                            "denominator": 5
+                          }
+                        },
+                        {
+                          "label": "reject",
+                          "n": 1,
+                          "share": {
+                            "numerator": 1,
+                            "denominator": 5
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        "lock_receipt_citations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "registration",
+                "fixture_path",
+                "validated_by_parent_cli",
+                "lock_receipt_body_embedded",
+                "digest"
+              ],
+              "properties": {
+                "registration": {
+                  "const": {
+                    "id": "paper-laya-risk-gate-lock-receipt-v0",
+                    "schema_version": "paper_laya_risk_gate_lock_receipt_v0",
+                    "pull_request": 65,
+                    "commit": "7979988",
+                    "rewritten_by_this_stamp": false
+                  }
+                },
+                "fixture_path": {
+                  "const": "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_non_fill_sim_surround.json"
+                },
+                "validated_by_parent_cli": {
+                  "const": true
+                },
+                "lock_receipt_body_embedded": {
+                  "const": false
+                },
+                "digest": {
+                  "const": {
+                    "receipt_kind": "lock",
+                    "counts_are_stamp_counts_not_returns": true,
+                    "risk_gate": {
+                      "decision": "locked",
+                      "unlock": false,
+                      "reason": "paper_registration_fixture_receipt_only_not_risk_gate_unlock"
+                    },
+                    "surround_fixture_paths": [
+                      "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+                    ],
+                    "surround_citation_count": 1
+                  }
+                }
+              }
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "decisionPacketShapeFillSimSingle": {
+      "type": "object",
+      "required": [
+        "input",
+        "surround_citations",
+        "lock_receipt_citations"
+      ],
+      "properties": {
+        "input": {
+          "type": "object",
+          "required": [
+            "assembly"
+          ],
+          "properties": {
+            "assembly": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "surround_paths",
+                "lock_receipt_paths"
+              ],
+              "properties": {
+                "surround_paths": {
+                  "const": [
+                    "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+                  ]
+                },
+                "lock_receipt_paths": {
+                  "const": [
+                    "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "surround_citations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "registration",
+                "fixture_path",
+                "validated_by_parent_cli",
+                "surround_body_embedded",
+                "digest"
+              ],
+              "properties": {
+                "registration": {
+                  "const": {
+                    "id": "paper-laya-precompute-fill-sim-surround-packet-v0",
+                    "schema_version": "paper_laya_precompute_fill_sim_surround_packet_v0",
+                    "pull_request": 63,
+                    "commit": "171cd61",
+                    "rewritten_by_this_stamp": false
+                  }
+                },
+                "fixture_path": {
+                  "const": "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+                },
+                "validated_by_parent_cli": {
+                  "const": true
+                },
+                "surround_body_embedded": {
+                  "const": false
+                },
+                "digest": {
+                  "const": {
+                    "counts_are_stamp_counts_not_returns": true,
+                    "full_book": {
+                      "policy": "dec007_both_arms_retained",
+                      "reject_stamps_dropped": 0,
+                      "n": 5,
+                      "runner_n": 4,
+                      "reject_n": 1
+                    },
+                    "label_rates": {
+                      "share_kind": "count_fraction_not_a_return",
+                      "rows": [
+                        {
+                          "label": "runner",
+                          "n": 4,
+                          "share": {
+                            "numerator": 4,
+                            "denominator": 5
+                          }
+                        },
+                        {
+                          "label": "reject",
+                          "n": 1,
+                          "share": {
+                            "numerator": 1,
+                            "denominator": 5
+                          }
+                        }
+                      ]
+                    },
+                    "fill_sim_status_counts": [
+                      {
+                        "status": "documented_model_only",
+                        "n": 4,
+                        "share": {
+                          "numerator": 4,
+                          "denominator": 5
+                        }
+                      },
+                      {
+                        "status": "reject_arm_no_pretend_buy",
+                        "n": 1,
+                        "share": {
+                          "numerator": 1,
+                          "denominator": 5
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        "lock_receipt_citations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "registration",
+                "fixture_path",
+                "validated_by_parent_cli",
+                "lock_receipt_body_embedded",
+                "digest"
+              ],
+              "properties": {
+                "registration": {
+                  "const": {
+                    "id": "paper-laya-risk-gate-lock-receipt-v0",
+                    "schema_version": "paper_laya_risk_gate_lock_receipt_v0",
+                    "pull_request": 65,
+                    "commit": "7979988",
+                    "rewritten_by_this_stamp": false
+                  }
+                },
+                "fixture_path": {
+                  "const": "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+                },
+                "validated_by_parent_cli": {
+                  "const": true
+                },
+                "lock_receipt_body_embedded": {
+                  "const": false
+                },
+                "digest": {
+                  "const": {
+                    "receipt_kind": "lock",
+                    "counts_are_stamp_counts_not_returns": true,
+                    "risk_gate": {
+                      "decision": "locked",
+                      "unlock": false,
+                      "reason": "paper_registration_fixture_receipt_only_not_risk_gate_unlock"
+                    },
+                    "surround_fixture_paths": [
+                      "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+                    ],
+                    "surround_citation_count": 1
+                  }
+                }
+              }
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "decisionPacketShapeMixedDual": {
+      "type": "object",
+      "required": [
+        "input",
+        "surround_citations",
+        "lock_receipt_citations"
+      ],
+      "properties": {
+        "input": {
+          "type": "object",
+          "required": [
+            "assembly"
+          ],
+          "properties": {
+            "assembly": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "surround_paths",
+                "lock_receipt_paths"
+              ],
+              "properties": {
+                "surround_paths": {
+                  "const": [
+                    "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json",
+                    "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+                  ]
+                },
+                "lock_receipt_paths": {
+                  "const": [
+                    "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_non_fill_sim_surround.json",
+                    "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "surround_citations": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "registration",
+                "fixture_path",
+                "validated_by_parent_cli",
+                "surround_body_embedded",
+                "digest"
+              ],
+              "properties": {
+                "registration": {
+                  "const": {
+                    "id": "paper-laya-precompute-surround-packet-v0",
+                    "schema_version": "paper_laya_precompute_surround_packet_v0",
+                    "pull_request": 64,
+                    "commit": "277a142",
+                    "rewritten_by_this_stamp": false
+                  }
+                },
+                "fixture_path": {
+                  "const": "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+                },
+                "validated_by_parent_cli": {
+                  "const": true
+                },
+                "surround_body_embedded": {
+                  "const": false
+                },
+                "digest": {
+                  "const": {
+                    "counts_are_stamp_counts_not_returns": true,
+                    "full_book": {
+                      "policy": "dec007_both_arms_retained",
+                      "reject_stamps_dropped": 0,
+                      "n": 5,
+                      "runner_n": 4,
+                      "reject_n": 1
+                    },
+                    "label_rates": {
+                      "share_kind": "count_fraction_not_a_return",
+                      "rows": [
+                        {
+                          "label": "runner",
+                          "n": 4,
+                          "share": {
+                            "numerator": 4,
+                            "denominator": 5
+                          }
+                        },
+                        {
+                          "label": "reject",
+                          "n": 1,
+                          "share": {
+                            "numerator": 1,
+                            "denominator": 5
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "registration",
+                "fixture_path",
+                "validated_by_parent_cli",
+                "surround_body_embedded",
+                "digest"
+              ],
+              "properties": {
+                "registration": {
+                  "const": {
+                    "id": "paper-laya-precompute-fill-sim-surround-packet-v0",
+                    "schema_version": "paper_laya_precompute_fill_sim_surround_packet_v0",
+                    "pull_request": 63,
+                    "commit": "171cd61",
+                    "rewritten_by_this_stamp": false
+                  }
+                },
+                "fixture_path": {
+                  "const": "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+                },
+                "validated_by_parent_cli": {
+                  "const": true
+                },
+                "surround_body_embedded": {
+                  "const": false
+                },
+                "digest": {
+                  "const": {
+                    "counts_are_stamp_counts_not_returns": true,
+                    "full_book": {
+                      "policy": "dec007_both_arms_retained",
+                      "reject_stamps_dropped": 0,
+                      "n": 5,
+                      "runner_n": 4,
+                      "reject_n": 1
+                    },
+                    "label_rates": {
+                      "share_kind": "count_fraction_not_a_return",
+                      "rows": [
+                        {
+                          "label": "runner",
+                          "n": 4,
+                          "share": {
+                            "numerator": 4,
+                            "denominator": 5
+                          }
+                        },
+                        {
+                          "label": "reject",
+                          "n": 1,
+                          "share": {
+                            "numerator": 1,
+                            "denominator": 5
+                          }
+                        }
+                      ]
+                    },
+                    "fill_sim_status_counts": [
+                      {
+                        "status": "documented_model_only",
+                        "n": 4,
+                        "share": {
+                          "numerator": 4,
+                          "denominator": 5
+                        }
+                      },
+                      {
+                        "status": "reject_arm_no_pretend_buy",
+                        "n": 1,
+                        "share": {
+                          "numerator": 1,
+                          "denominator": 5
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "items": false
+        },
+        "lock_receipt_citations": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "registration",
+                "fixture_path",
+                "validated_by_parent_cli",
+                "lock_receipt_body_embedded",
+                "digest"
+              ],
+              "properties": {
+                "registration": {
+                  "const": {
+                    "id": "paper-laya-risk-gate-lock-receipt-v0",
+                    "schema_version": "paper_laya_risk_gate_lock_receipt_v0",
+                    "pull_request": 65,
+                    "commit": "7979988",
+                    "rewritten_by_this_stamp": false
+                  }
+                },
+                "fixture_path": {
+                  "const": "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_non_fill_sim_surround.json"
+                },
+                "validated_by_parent_cli": {
+                  "const": true
+                },
+                "lock_receipt_body_embedded": {
+                  "const": false
+                },
+                "digest": {
+                  "const": {
+                    "receipt_kind": "lock",
+                    "counts_are_stamp_counts_not_returns": true,
+                    "risk_gate": {
+                      "decision": "locked",
+                      "unlock": false,
+                      "reason": "paper_registration_fixture_receipt_only_not_risk_gate_unlock"
+                    },
+                    "surround_fixture_paths": [
+                      "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+                    ],
+                    "surround_citation_count": 1
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "registration",
+                "fixture_path",
+                "validated_by_parent_cli",
+                "lock_receipt_body_embedded",
+                "digest"
+              ],
+              "properties": {
+                "registration": {
+                  "const": {
+                    "id": "paper-laya-risk-gate-lock-receipt-v0",
+                    "schema_version": "paper_laya_risk_gate_lock_receipt_v0",
+                    "pull_request": 65,
+                    "commit": "7979988",
+                    "rewritten_by_this_stamp": false
+                  }
+                },
+                "fixture_path": {
+                  "const": "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+                },
+                "validated_by_parent_cli": {
+                  "const": true
+                },
+                "lock_receipt_body_embedded": {
+                  "const": false
+                },
+                "digest": {
+                  "const": {
+                    "receipt_kind": "lock",
+                    "counts_are_stamp_counts_not_returns": true,
+                    "risk_gate": {
+                      "decision": "locked",
+                      "unlock": false,
+                      "reason": "paper_registration_fixture_receipt_only_not_risk_gate_unlock"
+                    },
+                    "surround_fixture_paths": [
+                      "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+                    ],
+                    "surround_citation_count": 1
+                  }
+                }
+              }
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "decisionPacketAssemblyShape": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/decisionPacketShapeNonFillSingle"
+        },
+        {
+          "$ref": "#/$defs/decisionPacketShapeFillSimSingle"
+        },
+        {
+          "$ref": "#/$defs/decisionPacketShapeMixedDual"
+        }
+      ]
     }
-  }
+  },
+  "allOf": [
+    {
+      "$ref": "#/$defs/decisionPacketAssemblyShape"
+    }
+  ]
 }

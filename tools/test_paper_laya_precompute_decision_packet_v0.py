@@ -14,11 +14,15 @@ from jsonschema import Draft202012Validator
 
 from tools.paper_laya_precompute_decision_packet_v0 import (
     HOST_ROOT,
+    INHERITED_FROM,
     LOCK_RECEIPT_COMMIT,
     LOCK_RECEIPT_ID,
     PACKET_ID,
+    PREFIX_FILL_SIM,
     PREFIX_LOCK_RECEIPT,
+    PREFIX_NON_FILL,
     SOFT_WATCH_ITEMS,
+    SOFT_WATCH_SOURCE,
     example_fill_sim_surround,
     example_mixed_spines,
     example_non_fill_surround,
@@ -104,10 +108,12 @@ class PaperLayaPrecomputeDecisionPacketV0Tests(unittest.TestCase):
         self.assertIs(schema["properties"]["graph_lift"]["const"], None)
         self.assertEqual(schema["properties"]["graph_policy"]["const"], "cold")
         self.assertEqual(schema["properties"]["packet_kind"]["const"], "decision")
-        self.assertEqual(
-            schema["$defs"]["softWatches"]["properties"]["items"]["items"]["enum"],
-            list(SOFT_WATCH_ITEMS),
-        )
+        soft = schema["$defs"]["softWatches"]["properties"]
+        self.assertEqual(soft["source"]["const"], SOFT_WATCH_SOURCE)
+        self.assertEqual(soft["inherited_from"]["const"], list(INHERITED_FROM))
+        prefix = soft["items"]["prefixItems"]
+        self.assertEqual(len(prefix), len(SOFT_WATCH_ITEMS))
+        self.assertEqual([item["const"] for item in prefix], list(SOFT_WATCH_ITEMS))
 
     def test_citations_name_parent_registrations(self) -> None:
         non_fill = _load(FIXTURES / "decision_non_fill_sim_surround.json")
@@ -256,6 +262,89 @@ class PaperLayaPrecomputeDecisionPacketV0Tests(unittest.TestCase):
     def test_packet_id_const(self) -> None:
         doc = example_non_fill_surround()
         self.assertEqual(doc["id"], PACKET_ID)
+
+    def test_union_mismatch_fails_schema_and_cli(self) -> None:
+        doc = copy.deepcopy(example_non_fill_surround())
+        doc["lock_receipt_citations"][0]["digest"]["surround_fixture_paths"][0] = (
+            f"{PREFIX_FILL_SIM}mixed_scoreboard.json"
+        )
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+
+    def test_extra_assembly_surround_path_fails_schema_and_cli(self) -> None:
+        doc = copy.deepcopy(example_non_fill_surround())
+        doc["input"]["assembly"]["surround_paths"].append(
+            f"{PREFIX_FILL_SIM}mixed_scoreboard.json"
+        )
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+
+    def test_mixed_spines_missing_citation_fails_schema_and_cli(self) -> None:
+        for field in ("surround_citations", "lock_receipt_citations"):
+            doc = copy.deepcopy(example_mixed_spines())
+            doc[field] = doc[field][:1]
+            self.assertTrue(_schema_errors(doc))
+            self.assertTrue(validate_packet(doc))
+
+    def test_mutated_surround_digest_counts_fail_schema_and_cli(self) -> None:
+        doc = copy.deepcopy(example_non_fill_surround())
+        doc["surround_citations"][0]["digest"]["full_book"]["n"] = 999
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+        doc = copy.deepcopy(example_non_fill_surround())
+        doc["surround_citations"][0]["digest"]["label_rates"]["rows"] = doc[
+            "surround_citations"
+        ][0]["digest"]["label_rates"]["rows"][:1]
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+        doc = copy.deepcopy(example_fill_sim_surround())
+        doc["surround_citations"][0]["digest"]["fill_sim_status_counts"][0]["n"] = 0
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+        doc = copy.deepcopy(example_non_fill_surround())
+        doc["lock_receipt_citations"][0]["digest"]["surround_citation_count"] = 99
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+
+    def test_unknown_or_mismatched_fixture_paths_fail_schema_and_cli(self) -> None:
+        doc = copy.deepcopy(example_non_fill_surround())
+        doc["input"]["assembly"]["surround_paths"][0] = (
+            f"{PREFIX_NON_FILL}mixed_scoreboard.JSON"
+        )
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+        doc = copy.deepcopy(example_non_fill_surround())
+        doc["input"]["assembly"]["surround_paths"][0] = (
+            f"{PREFIX_NON_FILL}not_real.json"
+        )
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+        doc = copy.deepcopy(example_non_fill_surround())
+        path = doc["input"]["assembly"]["surround_paths"][0]
+        doc["input"]["assembly"]["surround_paths"] = [path, path]
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+        doc = copy.deepcopy(example_non_fill_surround())
+        doc["surround_citations"][0]["fixture_path"] = (
+            f"{PREFIX_NON_FILL}batch_two_day_with_digest.json"
+        )
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+
+    def test_soft_watches_identity_fails_schema_and_cli(self) -> None:
+        doc = copy.deepcopy(example_non_fill_surround())
+        doc["soft_watches"]["source"] = "nope"
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+        doc = copy.deepcopy(example_non_fill_surround())
+        doc["soft_watches"]["inherited_from"] = ["nope"]
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
+        doc = copy.deepcopy(example_non_fill_surround())
+        items = doc["soft_watches"]["items"]
+        doc["soft_watches"]["items"] = [items[1], items[0]] + items[2:]
+        self.assertTrue(_schema_errors(doc))
+        self.assertTrue(validate_packet(doc))
 
 
 if __name__ == "__main__":
