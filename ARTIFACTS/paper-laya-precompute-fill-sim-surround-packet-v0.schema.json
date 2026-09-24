@@ -983,7 +983,8 @@
         },
         "items": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 29,
+          "maxItems": 29,
           "uniqueItems": true,
           "items": {
             "enum": [

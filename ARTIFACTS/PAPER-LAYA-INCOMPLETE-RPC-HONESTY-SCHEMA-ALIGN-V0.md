@@ -32,8 +32,9 @@ JSON Schema on the LAYA paper stack (#63–#65) is the citeable shape. Before th
 | `stamp_bodies_embedded=true` on surround digests | `const: false` on digests (#63–#64). |
 | Return / EV / lift keys anywhere in the surround or lock object tree | Root and nested `additionalProperties: false` plus CLI `FORBIDDEN_KEYS` walk (already refused by both; tests cite). |
 | Graph revive claims: `graph_lane_revived=true`, `graph_policy` warm, scored `graph_lift`, dishonest `graph_lift_aggregate_status` | **New on this stamp:** `graph_lift_aggregate_status` enum on surround digests (`not_scored_mixed`, `not_used_graph_cold`, `not_used_slots_not_scored`). Other Graph caps were already `const`. |
-| Unregistered or substituted `soft_watches.items` on surround packets | **New on this stamp:** `items` enum matches each registration’s `SOFT_WATCH_ITEMS` (#63–#64). Lock receipt (#65) already enum-locked. |
-| Fill-sim digest omitting a DEC-007 fill-sim arm on lock receipt | **New on this stamp:** `fill_sim_status_counts` `prefixItems` with `documented_model_only` then `reject_arm_no_pretend_buy` on #65 citation digests. |
+| Unregistered or substituted `soft_watches.items` on surround packets | **New on this stamp:** `items` enum matches each registration’s `SOFT_WATCH_ITEMS` (#63–#65). `minItems` / `maxItems` lock full CLI cardinality (17 / 29 / 34); partial one-id subsets fail schema. |
+| Fill-sim digest omitting a DEC-007 fill-sim arm on lock receipt | **New on this stamp:** `fill_sim_status_counts` `prefixItems` with `documented_model_only` then `reject_arm_no_pretend_buy` on #65 citation digests when the key is present. |
+| Fill-sim lock-receipt citation digest omitting `fill_sim_status_counts` entirely | **Soft GATE FAIL hole closed:** `if` / `then` on `registration.id == paper-laya-precompute-fill-sim-surround-packet-v0` requires `digest.fill_sim_status_counts` (non-fill citations still omit the key). |
 
 Parent LAYA CLIs are unchanged. They still rebuild the object and still exit `1` on these shapes.
 
@@ -43,9 +44,9 @@ Parent LAYA CLIs are unchanged. They still rebuild the object and still exit `1`
 
 | Schema | Diff |
 | --- | --- |
-| [paper-laya-precompute-surround-packet-v0.schema.json](paper-laya-precompute-surround-packet-v0.schema.json) | `soft_watches.items` enum; `graph_lift_aggregate_status` enum on scoreboard digests. Other honesty bits were already `const` on #64. |
-| [paper-laya-precompute-fill-sim-surround-packet-v0.schema.json](paper-laya-precompute-fill-sim-surround-packet-v0.schema.json) | `soft_watches.items` enum; `graph_lift_aggregate_status` enum on scoreboard digests. Top-level `fill_sim_status_counts` DEC-007 `prefixItems` were already on #63. |
-| [paper-laya-risk-gate-lock-receipt-v0.schema.json](paper-laya-risk-gate-lock-receipt-v0.schema.json) | `fill_sim_status_counts` DEC-007 `prefixItems` on surround citation digests. Lock caps and `soft_watches.items` enum were already on #65. |
+| [paper-laya-precompute-surround-packet-v0.schema.json](paper-laya-precompute-surround-packet-v0.schema.json) | `soft_watches.items` enum plus `minItems` / `maxItems` 17; `graph_lift_aggregate_status` enum on scoreboard digests. Other honesty bits were already `const` on #64. |
+| [paper-laya-precompute-fill-sim-surround-packet-v0.schema.json](paper-laya-precompute-fill-sim-surround-packet-v0.schema.json) | `soft_watches.items` enum plus `minItems` / `maxItems` 29; `graph_lift_aggregate_status` enum on scoreboard digests. Top-level `fill_sim_status_counts` DEC-007 `prefixItems` were already on #63. |
+| [paper-laya-risk-gate-lock-receipt-v0.schema.json](paper-laya-risk-gate-lock-receipt-v0.schema.json) | `fill_sim_status_counts` DEC-007 `prefixItems` on citation digests; `if` / `then` requires the key on fill-sim surround citations; `soft_watches.items` enum plus `minItems` / `maxItems` 34. Lock caps were already on #65. |
 
 There is no `paper-laya-incomplete-rpc-honesty-schema-align-v0.schema.json`. Operators do not need a new runtime object. The citeable align-pass object is this file.
 
@@ -57,7 +58,7 @@ There is no `paper-laya-incomplete-rpc-honesty-schema-align-v0.schema.json`. Ope
 
 | Watch id | Status |
 | --- | --- |
-| `schema_looser_than_cli` | **CLOSED** for the dishonest shapes in [What aligned](#what-aligned), including unregistered soft-watch ids, dishonest graph aggregate status strings, and single-arm fill-sim status digests on the lock receipt. Schema validation refuses them. The CLIs still refuse them. Do not widen a CLI down to an older schema. |
+| `schema_looser_than_cli` | **CLOSED** for the dishonest shapes in [What aligned](#what-aligned), including unregistered or partial `soft_watches.items`, dishonest graph aggregate status strings, omitted or single-arm `fill_sim_status_counts` on fill-sim lock-receipt citation digests. Schema validation refuses them. The CLIs still refuse them. Do not widen a CLI down to an older schema. |
 
 Parent stamps #63–#65 still emit `schema_looser_than_cli` inside `soft_watches.items`. That list is the historical registration of those stamps. It is not a claim that the honesty shapes above still pass schema only after this align pass closes the last gaps.
 

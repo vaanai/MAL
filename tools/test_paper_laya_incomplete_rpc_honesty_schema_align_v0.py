@@ -286,6 +286,36 @@ class LayaSchemaAlignV0Tests(unittest.TestCase):
         self.assertTrue(_schema_errors(ref, doc, self.registry))
         self.assertTrue(_cli_errors("lock_receipt", doc))
 
+    def test_fill_sim_status_counts_omitted_on_lock_receipt_digest_fail_schema_and_cli(self) -> None:
+        ref = "paper-laya-risk-gate-lock-receipt-v0.schema.json"
+        path = ROOT / "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+        doc = _load(path)
+        del doc["surround_citations"][0]["digest"]["fill_sim_status_counts"]
+        self.assertTrue(_schema_errors(ref, doc, self.registry))
+        self.assertTrue(_cli_errors("lock_receipt", doc))
+
+    def test_partial_soft_watches_fail_schema_and_cli(self) -> None:
+        ref = "paper-laya-precompute-surround-packet-v0.schema.json"
+        path = ROOT / "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+        doc = _load(path)
+        doc["soft_watches"]["items"] = doc["soft_watches"]["items"][:1]
+        self.assertTrue(_schema_errors(ref, doc, self.registry))
+        self.assertTrue(_cli_errors("non_fill_surround", doc))
+
+        fs_ref = "paper-laya-precompute-fill-sim-surround-packet-v0.schema.json"
+        fs_path = ROOT / "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+        fs_doc = _load(fs_path)
+        fs_doc["soft_watches"]["items"] = fs_doc["soft_watches"]["items"][:1]
+        self.assertTrue(_schema_errors(fs_ref, fs_doc, self.registry))
+        self.assertTrue(_cli_errors("fill_sim_surround", fs_doc))
+
+        lr_ref = "paper-laya-risk-gate-lock-receipt-v0.schema.json"
+        lr_path = ROOT / "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_non_fill_sim_surround.json"
+        lr_doc = _load(lr_path)
+        lr_doc["soft_watches"]["items"] = lr_doc["soft_watches"]["items"][:1]
+        self.assertTrue(_schema_errors(lr_ref, lr_doc, self.registry))
+        self.assertTrue(_cli_errors("lock_receipt", lr_doc))
+
     def test_stamp_bodies_not_embedded_on_surround_digest(self) -> None:
         ref = "paper-laya-precompute-surround-packet-v0.schema.json"
         path = ROOT / "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"

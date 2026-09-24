@@ -880,7 +880,8 @@
         },
         "items": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 17,
+          "maxItems": 17,
           "uniqueItems": true,
           "items": {
             "enum": [
