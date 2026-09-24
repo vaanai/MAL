@@ -1,0 +1,1774 @@
+{
+  "schema_version": "paper_fill_sim_scoreboard_sealed_fixture_v0",
+  "type": "paper_fill_sim_scoreboard",
+  "id": "paper-fill-sim-scoreboard-sealed-fixture-v0",
+  "paper_only": true,
+  "input": {
+    "contract": "paper_fill_sim_hot_packet_evaluate_v0",
+    "local_json_only": true,
+    "rpc": false,
+    "observe_jsonl_tail": false,
+    "host_extract_required": false,
+    "marks_joined": false,
+    "fixture_side": "sealed_day_checked_in",
+    "stamps": [
+      {
+        "schema_version": "paper_fill_sim_hot_packet_evaluate_v0",
+        "type": "paper_fill_sim_stamp",
+        "id": "paper-fill-sim-hot-packet-evaluate-v0",
+        "paper_only": true,
+        "input": {
+          "contract": "paper_evaluate_hot_packet_v0",
+          "local_json_only": true,
+          "rpc": false,
+          "observe_jsonl_tail": false,
+          "host_extract_required": false,
+          "marks_joined": false,
+          "stamp": {
+            "schema_version": "paper_evaluate_hot_packet_v0",
+            "type": "paper_evaluate_stamp",
+            "id": "paper-evaluate-hot-packet-v0",
+            "paper_only": true,
+            "input": {
+              "contract": "hot_packet_v0",
+              "only_decode_input": true,
+              "raw_ws_replay": false,
+              "post_hoc_enrich_on_evaluate": false,
+              "packet": {
+                "schema_version": "hot_packet_v0",
+                "type": "hot_packet",
+                "paper_only": true,
+                "byte_cap": 8192,
+                "l1_spine": {
+                  "signature": "SigExampleEnrichedFee",
+                  "mint": "MintExampleEnrichedFee",
+                  "txType": "create",
+                  "stream": "subscribeNewToken",
+                  "source": "pumpportal_ws",
+                  "commitment": "processed",
+                  "stage": "bonding",
+                  "traderPublicKey": "TraderExampleWeakWs",
+                  "name": "Example",
+                  "symbol": "EX",
+                  "uri": "https://example.invalid/meta.json",
+                  "bondingCurveKey": "CurveExample",
+                  "initialBuy": 1000.0,
+                  "solAmount": 0.1,
+                  "vTokensInBondingCurve": 1000000.0,
+                  "vSolInBondingCurve": 30.0,
+                  "marketCapSol": 30.0,
+                  "pool": null
+                },
+                "regime": {
+                  "regime_id": "env=mainnet|source=pumpportal_ws|stream=subscribeNewToken|stage=bonding|quote=wsol|commitment=processed|venue=pump_program|instr=create_v2|fee=global_95bps|market=bonding_curve",
+                  "components": {
+                    "env": "mainnet",
+                    "source": "pumpportal_ws",
+                    "stream": "subscribeNewToken",
+                    "stage": "bonding",
+                    "quote": "wsol",
+                    "commitment": "processed",
+                    "venue": "pump_program",
+                    "instr": "create_v2",
+                    "fee": "global_95bps",
+                    "market": "bonding_curve"
+                  },
+                  "component_lock": {
+                    "env": "production",
+                    "source": "production",
+                    "stream": "production",
+                    "stage": "production",
+                    "quote": "production",
+                    "commitment": "production",
+                    "venue": "production",
+                    "instr": "production",
+                    "fee": "proposed",
+                    "market": "production"
+                  }
+                },
+                "knowable_at_t": {
+                  "quote": "wsol",
+                  "quote_verified": true,
+                  "instr": "create_v2",
+                  "fee": "global_95bps",
+                  "venue": "pump_program",
+                  "venue_verified": true,
+                  "creator_verified": false,
+                  "reserves_source": "ws"
+                },
+                "graph": {
+                  "cold": true,
+                  "max_slots": 5,
+                  "lane_policy": "exp004_capped_scalars_only",
+                  "slots": null
+                },
+                "clocks": {
+                  "t_ws": "2026-09-20T12:00:00.000+00:00",
+                  "t_event": null,
+                  "T_decision": "2026-09-20T12:00:00.000+00:00",
+                  "t_precompute_as_of": "2026-09-20T12:00:00.000+00:00",
+                  "precompute_features_merged": false,
+                  "clock_source": "dec005_draft_pr8_unmerged"
+                },
+                "delta_exec": {
+                  "defined_in": "dec005_draft_pr8_unmerged",
+                  "value": null,
+                  "reason": "paper_packet_has_no_fill"
+                },
+                "provenance": {
+                  "spine": "sealed_jsonl",
+                  "source_day": "2026-09-20",
+                  "parent_type": "ingest_hot",
+                  "parent_schema": "observe_hot_v0",
+                  "parent_signature": "SigExampleEnrichedFee",
+                  "mint": "MintExampleEnrichedFee",
+                  "fixture_origin": "synthetic",
+                  "supersedes": null,
+                  "day_aligned": true
+                },
+                "dual_read": {
+                  "overlay": "enriched",
+                  "sealed_book_rpc_slice": "incomplete",
+                  "enrich_type": "regime_enrich"
+                },
+                "honesty": {
+                  "registration": "proposed",
+                  "continuous_observe_wiring": false,
+                  "encoder_promoted": false,
+                  "enum_production_lock": false,
+                  "discovery_promoted": false,
+                  "graph_lane_revived": false,
+                  "invented_lift": false
+                }
+              }
+            },
+            "evaluate_label": "runner",
+            "reasons": [],
+            "ruleset": "paper_evaluate_hot_packet_v0_rules",
+            "knowable_at_t_only": true,
+            "graph_lift": null,
+            "graph_lift_status": "not_used_graph_cold",
+            "runner_stamp": {
+              "kind": "paper_promotion",
+              "pretend_buy": true,
+              "live_capital": false,
+              "T": "2026-09-20T12:00:00.000+00:00",
+              "clock_source": "dec005_draft_pr8_unmerged",
+              "horizons": {
+                "1s": null,
+                "5s": null,
+                "15s": null,
+                "30s": null,
+                "60s": null,
+                "+2s": null,
+                "+10s": null,
+                "+5m": null,
+                "peak": null,
+                "drawdown": null
+              },
+              "horizon_status": "null_ok_no_marks_on_this_stamp",
+              "delta_exec": {
+                "field": "delta_exec",
+                "also_called": "Δ_exec",
+                "value": null,
+                "status": "null_ok",
+                "reason": "paper_stamp_has_no_fill"
+              }
+            },
+            "full_book": {
+              "policy": "dec007_both_arms_retained",
+              "arm_retained": true,
+              "deletes_detect_history": false
+            },
+            "soft_watches": {
+              "blocking": false,
+              "source": "hot_packet_v0_soft_gate_pr49",
+              "items": [
+                "schema_looser_than_cli",
+                "synthetic_launchlab_shape",
+                "graph_slot_shape_not_a_score",
+                "dec005_draft_unmerged",
+                "sealed_book_rpc_slice_incomplete"
+              ]
+            },
+            "honesty": {
+              "registration": "proposed",
+              "scored_oracle_measure": false,
+              "continuous_observe_wiring": false,
+              "encoder_promoted": false,
+              "enum_production_lock": false,
+              "discovery_promoted": false,
+              "graph_lane_revived": false,
+              "invented_lift": false,
+              "exp002c_retuned": false,
+              "live_capital": false,
+              "trading_keys": false,
+              "pumpportal_trade_api": false
+            }
+          }
+        },
+        "parent_evaluate": {
+          "id": "paper-evaluate-hot-packet-v0",
+          "schema_version": "paper_evaluate_hot_packet_v0",
+          "pull_request": 50,
+          "commit": "224166c",
+          "cli": "python -m tools.paper_evaluate_hot_packet_v0",
+          "rewritten_by_this_stamp": false
+        },
+        "exp006_vocabulary": {
+          "exp_id": "EXP-006-paper-would-have-happened-harness-v0",
+          "cli": "python -m tools.exp006_paper_fill_sim",
+          "harness_rewritten": false,
+          "oracle_run": false,
+          "promoted": false,
+          "vocabulary_only": true
+        },
+        "evaluate_label": "runner",
+        "reasons": [],
+        "fill_model": {
+          "latency_ms": 500,
+          "paper_size_sol": 0.1,
+          "fee_model_id": "pump_assumed_bps_v0",
+          "total_fee_bps": 125.0,
+          "max_slippage_bps": 500.0,
+          "sim_reject_on_slip": true,
+          "source": "documented_constants_exp006_p0",
+          "fitted_to_lift": false,
+          "vocabulary_from": "EXP-006-paper-would-have-happened-harness-v0"
+        },
+        "fill_sim": {
+          "status": "documented_model_only",
+          "pretend_buy": true,
+          "fill_status": null,
+          "t_fill": null,
+          "fill_price_proxy": null,
+          "fee_sol": null,
+          "slippage_bps": null,
+          "notes": "Documented EXP-006 P0 constants only. No marks joined. No scored fill on this registration."
+        },
+        "graph_lift": null,
+        "graph_lift_status": "not_used_graph_cold",
+        "graph_policy": "cold",
+        "horizons": {
+          "status": "fill_sim_registration_null_explicit",
+          "null_is_not_zero_return": true,
+          "source": "parent_evaluate_runner_stamp_and_fill_sim_registration",
+          "values": {
+            "1s": null,
+            "5s": null,
+            "15s": null,
+            "30s": null,
+            "60s": null,
+            "+2s": null,
+            "+10s": null,
+            "+5m": null,
+            "peak": null,
+            "drawdown": null
+          }
+        },
+        "delta_exec": {
+          "field": "delta_exec",
+          "also_called": "Δ_exec",
+          "value": null,
+          "status": "fill_sim_registration_null_explicit",
+          "reason": "fill_sim_stamp_has_no_scored_delta",
+          "null_is_not_zero_cost": true
+        },
+        "dual_read": {
+          "sealed_book_rpc_slice": "incomplete",
+          "closed_book_claim": false,
+          "incomplete_reason": "fill_sim_bind_does_not_close_the_sealed_book"
+        },
+        "full_book": {
+          "policy": "dec007_both_arms_retained",
+          "arm_retained": true,
+          "deletes_detect_history": false,
+          "reject_stamps_dropped": 0
+        },
+        "measure": {
+          "kind": "none",
+          "claims_alpha": false,
+          "invented_ev": false,
+          "invented_lift": false,
+          "pass_fail_no_lift": false
+        },
+        "soft_watches": {
+          "blocking": false,
+          "source": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_batch_pr52_dry_run_pr53_schema_align_pr54_dry_run_capture_pr55_fill_sim_hot_packet_evaluate_v0",
+          "inherited_from": [
+            "hot_packet_v0_soft_gate_pr49",
+            "paper_evaluate_hot_packet_v0_pr50",
+            "paper_scoreboard_sealed_fixture_v0_pr51",
+            "paper_batch_oracle_sealed_day_incomplete_rpc_v0_pr52",
+            "paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0_pr53",
+            "paper_incomplete_rpc_honesty_schema_align_v0_pr54",
+            "paper_host_local_dry_run_receipt_capture_v0_pr55"
+          ],
+          "items": [
+            "schema_looser_than_cli",
+            "synthetic_launchlab_shape",
+            "graph_slot_shape_not_a_score",
+            "dec005_draft_unmerged",
+            "sealed_book_rpc_slice_incomplete",
+            "label_share_is_not_a_return",
+            "synthetic_sealed_day_not_a_host_extract",
+            "local_subset_is_not_dropped_history",
+            "host_jsonl_not_readable_from_ci",
+            "counts_are_not_returns",
+            "graph_stays_cold_on_this_stamp",
+            "host_jsonl_read_is_not_a_closed_book",
+            "operator_path_string_is_not_a_host_extract",
+            "dry_run_does_not_ssh_or_open_var_lib_mal",
+            "parent_stamp_not_rewritten",
+            "capture_records_refusal_not_a_measure",
+            "cited_receipt_is_not_a_host_extract",
+            "path_string_on_a_refuse_is_not_file_bytes",
+            "fill_sim_vocabulary_not_exp006_promote",
+            "documented_constants_not_a_scored_fill",
+            "parent_evaluate_cli_not_rewritten",
+            "exp006_harness_not_rewritten"
+          ]
+        },
+        "honesty": {
+          "registration": "proposed",
+          "scored_oracle_measure": false,
+          "executed_host_sealed_book": false,
+          "ci_claimed_sealed_book_close": false,
+          "continuous_observe_wiring": false,
+          "encoder_promoted": false,
+          "enum_production_lock": false,
+          "discovery_promoted": false,
+          "graph_lane_revived": false,
+          "invented_lift": false,
+          "invented_ev": false,
+          "claims_alpha": false,
+          "exp002c_retuned": false,
+          "exp006_promoted": false,
+          "exp006_harness_rewritten": false,
+          "marks_joined_on_this_stamp": false,
+          "live_capital": false,
+          "trading_keys": false,
+          "pumpportal_trade_api": false,
+          "ssh_to_host": false,
+          "host_extract_checked_into_git": false,
+          "var_lib_mal_read": false
+        }
+      },
+      {
+        "schema_version": "paper_fill_sim_hot_packet_evaluate_v0",
+        "type": "paper_fill_sim_stamp",
+        "id": "paper-fill-sim-hot-packet-evaluate-v0",
+        "paper_only": true,
+        "input": {
+          "contract": "paper_evaluate_hot_packet_v0",
+          "local_json_only": true,
+          "rpc": false,
+          "observe_jsonl_tail": false,
+          "host_extract_required": false,
+          "marks_joined": false,
+          "stamp": {
+            "schema_version": "paper_evaluate_hot_packet_v0",
+            "type": "paper_evaluate_stamp",
+            "id": "paper-evaluate-hot-packet-v0",
+            "paper_only": true,
+            "input": {
+              "contract": "hot_packet_v0",
+              "only_decode_input": true,
+              "raw_ws_replay": false,
+              "post_hoc_enrich_on_evaluate": false,
+              "packet": {
+                "schema_version": "hot_packet_v0",
+                "type": "hot_packet",
+                "paper_only": true,
+                "byte_cap": 8192,
+                "l1_spine": {
+                  "signature": "SigExampleGraphSlots",
+                  "mint": "MintExampleGraphSlots",
+                  "txType": "create",
+                  "stream": "subscribeNewToken",
+                  "source": "pumpportal_ws",
+                  "commitment": "processed",
+                  "stage": "bonding",
+                  "traderPublicKey": "TraderExampleWeakWs",
+                  "name": "Example",
+                  "symbol": "EX",
+                  "uri": "https://example.invalid/meta.json",
+                  "bondingCurveKey": "CurveExample",
+                  "initialBuy": 1000.0,
+                  "solAmount": 0.1,
+                  "vTokensInBondingCurve": 1000000.0,
+                  "vSolInBondingCurve": 30.0,
+                  "marketCapSol": 30.0,
+                  "pool": null
+                },
+                "regime": {
+                  "regime_id": "env=mainnet|source=pumpportal_ws|stream=subscribeNewToken|stage=bonding|quote=wsol_assumed|commitment=processed|venue=pump_program|instr=pending_rpc|fee=unverified|market=bonding_curve",
+                  "components": {
+                    "env": "mainnet",
+                    "source": "pumpportal_ws",
+                    "stream": "subscribeNewToken",
+                    "stage": "bonding",
+                    "quote": "wsol_assumed",
+                    "commitment": "processed",
+                    "venue": "pump_program",
+                    "instr": "pending_rpc",
+                    "fee": "unverified",
+                    "market": "bonding_curve"
+                  },
+                  "component_lock": {
+                    "env": "production",
+                    "source": "production",
+                    "stream": "production",
+                    "stage": "production",
+                    "quote": "production",
+                    "commitment": "production",
+                    "venue": "production",
+                    "instr": "production",
+                    "fee": "production",
+                    "market": "production"
+                  }
+                },
+                "knowable_at_t": {
+                  "quote": "wsol_assumed",
+                  "quote_verified": false,
+                  "instr": "pending_rpc",
+                  "fee": "unverified",
+                  "venue": "pump_program",
+                  "venue_verified": false,
+                  "creator_verified": false,
+                  "reserves_source": "ws"
+                },
+                "graph": {
+                  "cold": false,
+                  "max_slots": 5,
+                  "lane_policy": "exp004_capped_scalars_only",
+                  "slots": [
+                    {
+                      "slot_id": "prior_mint_count",
+                      "value": 2,
+                      "evidence_tier": "weak_ws",
+                      "hypothesis_status": "directional_watch_not_promoted",
+                      "t_precompute_as_of": "2026-09-20T12:00:00.000+00:00"
+                    },
+                    {
+                      "slot_id": "early_wallet_dt_min_seconds",
+                      "value": null,
+                      "evidence_tier": "weak_ws",
+                      "hypothesis_status": "incomplete_do_not_densify",
+                      "t_precompute_as_of": "2026-09-20T12:00:00.000+00:00"
+                    },
+                    null,
+                    null,
+                    null
+                  ]
+                },
+                "clocks": {
+                  "t_ws": "2026-09-20T12:00:00.000+00:00",
+                  "t_event": null,
+                  "T_decision": "2026-09-20T12:00:00.000+00:00",
+                  "t_precompute_as_of": "2026-09-20T12:00:00.000+00:00",
+                  "precompute_features_merged": true,
+                  "clock_source": "dec005_draft_pr8_unmerged"
+                },
+                "delta_exec": {
+                  "defined_in": "dec005_draft_pr8_unmerged",
+                  "value": null,
+                  "reason": "paper_packet_has_no_fill"
+                },
+                "provenance": {
+                  "spine": "sealed_jsonl",
+                  "source_day": "2026-09-20",
+                  "parent_type": "ingest_hot",
+                  "parent_schema": "observe_hot_v0",
+                  "parent_signature": "SigExampleGraphSlots",
+                  "mint": "MintExampleGraphSlots",
+                  "fixture_origin": "synthetic",
+                  "supersedes": null,
+                  "day_aligned": true
+                },
+                "dual_read": {
+                  "overlay": "sealed",
+                  "sealed_book_rpc_slice": "incomplete",
+                  "enrich_type": null
+                },
+                "honesty": {
+                  "registration": "proposed",
+                  "continuous_observe_wiring": false,
+                  "encoder_promoted": false,
+                  "enum_production_lock": false,
+                  "discovery_promoted": false,
+                  "graph_lane_revived": false,
+                  "invented_lift": false
+                }
+              }
+            },
+            "evaluate_label": "runner",
+            "reasons": [],
+            "ruleset": "paper_evaluate_hot_packet_v0_rules",
+            "knowable_at_t_only": true,
+            "graph_lift": null,
+            "graph_lift_status": "not_used_slots_not_scored",
+            "runner_stamp": {
+              "kind": "paper_promotion",
+              "pretend_buy": true,
+              "live_capital": false,
+              "T": "2026-09-20T12:00:00.000+00:00",
+              "clock_source": "dec005_draft_pr8_unmerged",
+              "horizons": {
+                "1s": null,
+                "5s": null,
+                "15s": null,
+                "30s": null,
+                "60s": null,
+                "+2s": null,
+                "+10s": null,
+                "+5m": null,
+                "peak": null,
+                "drawdown": null
+              },
+              "horizon_status": "null_ok_no_marks_on_this_stamp",
+              "delta_exec": {
+                "field": "delta_exec",
+                "also_called": "Δ_exec",
+                "value": null,
+                "status": "null_ok",
+                "reason": "paper_stamp_has_no_fill"
+              }
+            },
+            "full_book": {
+              "policy": "dec007_both_arms_retained",
+              "arm_retained": true,
+              "deletes_detect_history": false
+            },
+            "soft_watches": {
+              "blocking": false,
+              "source": "hot_packet_v0_soft_gate_pr49",
+              "items": [
+                "schema_looser_than_cli",
+                "synthetic_launchlab_shape",
+                "graph_slot_shape_not_a_score",
+                "dec005_draft_unmerged",
+                "sealed_book_rpc_slice_incomplete"
+              ]
+            },
+            "honesty": {
+              "registration": "proposed",
+              "scored_oracle_measure": false,
+              "continuous_observe_wiring": false,
+              "encoder_promoted": false,
+              "enum_production_lock": false,
+              "discovery_promoted": false,
+              "graph_lane_revived": false,
+              "invented_lift": false,
+              "exp002c_retuned": false,
+              "live_capital": false,
+              "trading_keys": false,
+              "pumpportal_trade_api": false
+            }
+          }
+        },
+        "parent_evaluate": {
+          "id": "paper-evaluate-hot-packet-v0",
+          "schema_version": "paper_evaluate_hot_packet_v0",
+          "pull_request": 50,
+          "commit": "224166c",
+          "cli": "python -m tools.paper_evaluate_hot_packet_v0",
+          "rewritten_by_this_stamp": false
+        },
+        "exp006_vocabulary": {
+          "exp_id": "EXP-006-paper-would-have-happened-harness-v0",
+          "cli": "python -m tools.exp006_paper_fill_sim",
+          "harness_rewritten": false,
+          "oracle_run": false,
+          "promoted": false,
+          "vocabulary_only": true
+        },
+        "evaluate_label": "runner",
+        "reasons": [],
+        "fill_model": {
+          "latency_ms": 500,
+          "paper_size_sol": 0.1,
+          "fee_model_id": "pump_assumed_bps_v0",
+          "total_fee_bps": 125.0,
+          "max_slippage_bps": 500.0,
+          "sim_reject_on_slip": true,
+          "source": "documented_constants_exp006_p0",
+          "fitted_to_lift": false,
+          "vocabulary_from": "EXP-006-paper-would-have-happened-harness-v0"
+        },
+        "fill_sim": {
+          "status": "documented_model_only",
+          "pretend_buy": true,
+          "fill_status": null,
+          "t_fill": null,
+          "fill_price_proxy": null,
+          "fee_sol": null,
+          "slippage_bps": null,
+          "notes": "Documented EXP-006 P0 constants only. No marks joined. No scored fill on this registration."
+        },
+        "graph_lift": null,
+        "graph_lift_status": "not_used_slots_not_scored",
+        "graph_policy": "cold",
+        "horizons": {
+          "status": "fill_sim_registration_null_explicit",
+          "null_is_not_zero_return": true,
+          "source": "parent_evaluate_runner_stamp_and_fill_sim_registration",
+          "values": {
+            "1s": null,
+            "5s": null,
+            "15s": null,
+            "30s": null,
+            "60s": null,
+            "+2s": null,
+            "+10s": null,
+            "+5m": null,
+            "peak": null,
+            "drawdown": null
+          }
+        },
+        "delta_exec": {
+          "field": "delta_exec",
+          "also_called": "Δ_exec",
+          "value": null,
+          "status": "fill_sim_registration_null_explicit",
+          "reason": "fill_sim_stamp_has_no_scored_delta",
+          "null_is_not_zero_cost": true
+        },
+        "dual_read": {
+          "sealed_book_rpc_slice": "incomplete",
+          "closed_book_claim": false,
+          "incomplete_reason": "fill_sim_bind_does_not_close_the_sealed_book"
+        },
+        "full_book": {
+          "policy": "dec007_both_arms_retained",
+          "arm_retained": true,
+          "deletes_detect_history": false,
+          "reject_stamps_dropped": 0
+        },
+        "measure": {
+          "kind": "none",
+          "claims_alpha": false,
+          "invented_ev": false,
+          "invented_lift": false,
+          "pass_fail_no_lift": false
+        },
+        "soft_watches": {
+          "blocking": false,
+          "source": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_batch_pr52_dry_run_pr53_schema_align_pr54_dry_run_capture_pr55_fill_sim_hot_packet_evaluate_v0",
+          "inherited_from": [
+            "hot_packet_v0_soft_gate_pr49",
+            "paper_evaluate_hot_packet_v0_pr50",
+            "paper_scoreboard_sealed_fixture_v0_pr51",
+            "paper_batch_oracle_sealed_day_incomplete_rpc_v0_pr52",
+            "paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0_pr53",
+            "paper_incomplete_rpc_honesty_schema_align_v0_pr54",
+            "paper_host_local_dry_run_receipt_capture_v0_pr55"
+          ],
+          "items": [
+            "schema_looser_than_cli",
+            "synthetic_launchlab_shape",
+            "graph_slot_shape_not_a_score",
+            "dec005_draft_unmerged",
+            "sealed_book_rpc_slice_incomplete",
+            "label_share_is_not_a_return",
+            "synthetic_sealed_day_not_a_host_extract",
+            "local_subset_is_not_dropped_history",
+            "host_jsonl_not_readable_from_ci",
+            "counts_are_not_returns",
+            "graph_stays_cold_on_this_stamp",
+            "host_jsonl_read_is_not_a_closed_book",
+            "operator_path_string_is_not_a_host_extract",
+            "dry_run_does_not_ssh_or_open_var_lib_mal",
+            "parent_stamp_not_rewritten",
+            "capture_records_refusal_not_a_measure",
+            "cited_receipt_is_not_a_host_extract",
+            "path_string_on_a_refuse_is_not_file_bytes",
+            "fill_sim_vocabulary_not_exp006_promote",
+            "documented_constants_not_a_scored_fill",
+            "parent_evaluate_cli_not_rewritten",
+            "exp006_harness_not_rewritten"
+          ]
+        },
+        "honesty": {
+          "registration": "proposed",
+          "scored_oracle_measure": false,
+          "executed_host_sealed_book": false,
+          "ci_claimed_sealed_book_close": false,
+          "continuous_observe_wiring": false,
+          "encoder_promoted": false,
+          "enum_production_lock": false,
+          "discovery_promoted": false,
+          "graph_lane_revived": false,
+          "invented_lift": false,
+          "invented_ev": false,
+          "claims_alpha": false,
+          "exp002c_retuned": false,
+          "exp006_promoted": false,
+          "exp006_harness_rewritten": false,
+          "marks_joined_on_this_stamp": false,
+          "live_capital": false,
+          "trading_keys": false,
+          "pumpportal_trade_api": false,
+          "ssh_to_host": false,
+          "host_extract_checked_into_git": false,
+          "var_lib_mal_read": false
+        }
+      },
+      {
+        "schema_version": "paper_fill_sim_hot_packet_evaluate_v0",
+        "type": "paper_fill_sim_stamp",
+        "id": "paper-fill-sim-hot-packet-evaluate-v0",
+        "paper_only": true,
+        "input": {
+          "contract": "paper_evaluate_hot_packet_v0",
+          "local_json_only": true,
+          "rpc": false,
+          "observe_jsonl_tail": false,
+          "host_extract_required": false,
+          "marks_joined": false,
+          "stamp": {
+            "schema_version": "paper_evaluate_hot_packet_v0",
+            "type": "paper_evaluate_stamp",
+            "id": "paper-evaluate-hot-packet-v0",
+            "paper_only": true,
+            "input": {
+              "contract": "hot_packet_v0",
+              "only_decode_input": true,
+              "raw_ws_replay": false,
+              "post_hoc_enrich_on_evaluate": false,
+              "packet": {
+                "schema_version": "hot_packet_v0",
+                "type": "hot_packet",
+                "paper_only": true,
+                "byte_cap": 8192,
+                "l1_spine": {
+                  "signature": "SigExampleLaunchlab",
+                  "mint": "MintExampleLaunchlab",
+                  "txType": "create",
+                  "stream": "subscribeNewToken",
+                  "source": "pumpportal_ws",
+                  "commitment": "processed",
+                  "stage": "bonding",
+                  "traderPublicKey": "TraderExampleWeakWs",
+                  "name": "Example",
+                  "symbol": "EX",
+                  "uri": "https://example.invalid/meta.json",
+                  "bondingCurveKey": "CurveExample",
+                  "initialBuy": 1000.0,
+                  "solAmount": 0.1,
+                  "vTokensInBondingCurve": 1000000.0,
+                  "vSolInBondingCurve": 30.0,
+                  "marketCapSol": 30.0,
+                  "pool": null
+                },
+                "regime": {
+                  "regime_id": "env=mainnet|source=pumpportal_ws|stream=subscribeNewToken|stage=bonding|quote=wsol|commitment=processed|venue=launchlab|instr=launchlab_init|fee=unverified|market=launchlab_pool",
+                  "components": {
+                    "env": "mainnet",
+                    "source": "pumpportal_ws",
+                    "stream": "subscribeNewToken",
+                    "stage": "bonding",
+                    "quote": "wsol",
+                    "commitment": "processed",
+                    "venue": "launchlab",
+                    "instr": "launchlab_init",
+                    "fee": "unverified",
+                    "market": "launchlab_pool"
+                  },
+                  "component_lock": {
+                    "env": "production",
+                    "source": "production",
+                    "stream": "production",
+                    "stage": "production",
+                    "quote": "production",
+                    "commitment": "production",
+                    "venue": "proposed",
+                    "instr": "proposed",
+                    "fee": "production",
+                    "market": "proposed"
+                  }
+                },
+                "knowable_at_t": {
+                  "quote": "wsol",
+                  "quote_verified": true,
+                  "instr": "launchlab_init",
+                  "fee": "unverified",
+                  "venue": "launchlab",
+                  "venue_verified": true,
+                  "creator_verified": false,
+                  "reserves_source": "ws"
+                },
+                "graph": {
+                  "cold": true,
+                  "max_slots": 5,
+                  "lane_policy": "exp004_capped_scalars_only",
+                  "slots": null
+                },
+                "clocks": {
+                  "t_ws": "2026-09-20T12:00:00.000+00:00",
+                  "t_event": null,
+                  "T_decision": "2026-09-20T12:00:00.000+00:00",
+                  "t_precompute_as_of": "2026-09-20T12:00:00.000+00:00",
+                  "precompute_features_merged": false,
+                  "clock_source": "dec005_draft_pr8_unmerged"
+                },
+                "delta_exec": {
+                  "defined_in": "dec005_draft_pr8_unmerged",
+                  "value": null,
+                  "reason": "paper_packet_has_no_fill"
+                },
+                "provenance": {
+                  "spine": "sealed_jsonl",
+                  "source_day": "2026-09-20",
+                  "parent_type": "ingest_hot",
+                  "parent_schema": "observe_hot_v0",
+                  "parent_signature": "SigExampleLaunchlab",
+                  "mint": "MintExampleLaunchlab",
+                  "fixture_origin": "synthetic",
+                  "supersedes": null,
+                  "day_aligned": true
+                },
+                "dual_read": {
+                  "overlay": "enriched",
+                  "sealed_book_rpc_slice": "incomplete",
+                  "enrich_type": "regime_enrich"
+                },
+                "honesty": {
+                  "registration": "proposed",
+                  "continuous_observe_wiring": false,
+                  "encoder_promoted": false,
+                  "enum_production_lock": false,
+                  "discovery_promoted": false,
+                  "graph_lane_revived": false,
+                  "invented_lift": false
+                }
+              }
+            },
+            "evaluate_label": "runner",
+            "reasons": [],
+            "ruleset": "paper_evaluate_hot_packet_v0_rules",
+            "knowable_at_t_only": true,
+            "graph_lift": null,
+            "graph_lift_status": "not_used_graph_cold",
+            "runner_stamp": {
+              "kind": "paper_promotion",
+              "pretend_buy": true,
+              "live_capital": false,
+              "T": "2026-09-20T12:00:00.000+00:00",
+              "clock_source": "dec005_draft_pr8_unmerged",
+              "horizons": {
+                "1s": null,
+                "5s": null,
+                "15s": null,
+                "30s": null,
+                "60s": null,
+                "+2s": null,
+                "+10s": null,
+                "+5m": null,
+                "peak": null,
+                "drawdown": null
+              },
+              "horizon_status": "null_ok_no_marks_on_this_stamp",
+              "delta_exec": {
+                "field": "delta_exec",
+                "also_called": "Δ_exec",
+                "value": null,
+                "status": "null_ok",
+                "reason": "paper_stamp_has_no_fill"
+              }
+            },
+            "full_book": {
+              "policy": "dec007_both_arms_retained",
+              "arm_retained": true,
+              "deletes_detect_history": false
+            },
+            "soft_watches": {
+              "blocking": false,
+              "source": "hot_packet_v0_soft_gate_pr49",
+              "items": [
+                "schema_looser_than_cli",
+                "synthetic_launchlab_shape",
+                "graph_slot_shape_not_a_score",
+                "dec005_draft_unmerged",
+                "sealed_book_rpc_slice_incomplete"
+              ]
+            },
+            "honesty": {
+              "registration": "proposed",
+              "scored_oracle_measure": false,
+              "continuous_observe_wiring": false,
+              "encoder_promoted": false,
+              "enum_production_lock": false,
+              "discovery_promoted": false,
+              "graph_lane_revived": false,
+              "invented_lift": false,
+              "exp002c_retuned": false,
+              "live_capital": false,
+              "trading_keys": false,
+              "pumpportal_trade_api": false
+            }
+          }
+        },
+        "parent_evaluate": {
+          "id": "paper-evaluate-hot-packet-v0",
+          "schema_version": "paper_evaluate_hot_packet_v0",
+          "pull_request": 50,
+          "commit": "224166c",
+          "cli": "python -m tools.paper_evaluate_hot_packet_v0",
+          "rewritten_by_this_stamp": false
+        },
+        "exp006_vocabulary": {
+          "exp_id": "EXP-006-paper-would-have-happened-harness-v0",
+          "cli": "python -m tools.exp006_paper_fill_sim",
+          "harness_rewritten": false,
+          "oracle_run": false,
+          "promoted": false,
+          "vocabulary_only": true
+        },
+        "evaluate_label": "runner",
+        "reasons": [],
+        "fill_model": {
+          "latency_ms": 500,
+          "paper_size_sol": 0.1,
+          "fee_model_id": "pump_assumed_bps_v0",
+          "total_fee_bps": 125.0,
+          "max_slippage_bps": 500.0,
+          "sim_reject_on_slip": true,
+          "source": "documented_constants_exp006_p0",
+          "fitted_to_lift": false,
+          "vocabulary_from": "EXP-006-paper-would-have-happened-harness-v0"
+        },
+        "fill_sim": {
+          "status": "documented_model_only",
+          "pretend_buy": true,
+          "fill_status": null,
+          "t_fill": null,
+          "fill_price_proxy": null,
+          "fee_sol": null,
+          "slippage_bps": null,
+          "notes": "Documented EXP-006 P0 constants only. No marks joined. No scored fill on this registration."
+        },
+        "graph_lift": null,
+        "graph_lift_status": "not_used_graph_cold",
+        "graph_policy": "cold",
+        "horizons": {
+          "status": "fill_sim_registration_null_explicit",
+          "null_is_not_zero_return": true,
+          "source": "parent_evaluate_runner_stamp_and_fill_sim_registration",
+          "values": {
+            "1s": null,
+            "5s": null,
+            "15s": null,
+            "30s": null,
+            "60s": null,
+            "+2s": null,
+            "+10s": null,
+            "+5m": null,
+            "peak": null,
+            "drawdown": null
+          }
+        },
+        "delta_exec": {
+          "field": "delta_exec",
+          "also_called": "Δ_exec",
+          "value": null,
+          "status": "fill_sim_registration_null_explicit",
+          "reason": "fill_sim_stamp_has_no_scored_delta",
+          "null_is_not_zero_cost": true
+        },
+        "dual_read": {
+          "sealed_book_rpc_slice": "incomplete",
+          "closed_book_claim": false,
+          "incomplete_reason": "fill_sim_bind_does_not_close_the_sealed_book"
+        },
+        "full_book": {
+          "policy": "dec007_both_arms_retained",
+          "arm_retained": true,
+          "deletes_detect_history": false,
+          "reject_stamps_dropped": 0
+        },
+        "measure": {
+          "kind": "none",
+          "claims_alpha": false,
+          "invented_ev": false,
+          "invented_lift": false,
+          "pass_fail_no_lift": false
+        },
+        "soft_watches": {
+          "blocking": false,
+          "source": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_batch_pr52_dry_run_pr53_schema_align_pr54_dry_run_capture_pr55_fill_sim_hot_packet_evaluate_v0",
+          "inherited_from": [
+            "hot_packet_v0_soft_gate_pr49",
+            "paper_evaluate_hot_packet_v0_pr50",
+            "paper_scoreboard_sealed_fixture_v0_pr51",
+            "paper_batch_oracle_sealed_day_incomplete_rpc_v0_pr52",
+            "paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0_pr53",
+            "paper_incomplete_rpc_honesty_schema_align_v0_pr54",
+            "paper_host_local_dry_run_receipt_capture_v0_pr55"
+          ],
+          "items": [
+            "schema_looser_than_cli",
+            "synthetic_launchlab_shape",
+            "graph_slot_shape_not_a_score",
+            "dec005_draft_unmerged",
+            "sealed_book_rpc_slice_incomplete",
+            "label_share_is_not_a_return",
+            "synthetic_sealed_day_not_a_host_extract",
+            "local_subset_is_not_dropped_history",
+            "host_jsonl_not_readable_from_ci",
+            "counts_are_not_returns",
+            "graph_stays_cold_on_this_stamp",
+            "host_jsonl_read_is_not_a_closed_book",
+            "operator_path_string_is_not_a_host_extract",
+            "dry_run_does_not_ssh_or_open_var_lib_mal",
+            "parent_stamp_not_rewritten",
+            "capture_records_refusal_not_a_measure",
+            "cited_receipt_is_not_a_host_extract",
+            "path_string_on_a_refuse_is_not_file_bytes",
+            "fill_sim_vocabulary_not_exp006_promote",
+            "documented_constants_not_a_scored_fill",
+            "parent_evaluate_cli_not_rewritten",
+            "exp006_harness_not_rewritten"
+          ]
+        },
+        "honesty": {
+          "registration": "proposed",
+          "scored_oracle_measure": false,
+          "executed_host_sealed_book": false,
+          "ci_claimed_sealed_book_close": false,
+          "continuous_observe_wiring": false,
+          "encoder_promoted": false,
+          "enum_production_lock": false,
+          "discovery_promoted": false,
+          "graph_lane_revived": false,
+          "invented_lift": false,
+          "invented_ev": false,
+          "claims_alpha": false,
+          "exp002c_retuned": false,
+          "exp006_promoted": false,
+          "exp006_harness_rewritten": false,
+          "marks_joined_on_this_stamp": false,
+          "live_capital": false,
+          "trading_keys": false,
+          "pumpportal_trade_api": false,
+          "ssh_to_host": false,
+          "host_extract_checked_into_git": false,
+          "var_lib_mal_read": false
+        }
+      },
+      {
+        "schema_version": "paper_fill_sim_hot_packet_evaluate_v0",
+        "type": "paper_fill_sim_stamp",
+        "id": "paper-fill-sim-hot-packet-evaluate-v0",
+        "paper_only": true,
+        "input": {
+          "contract": "paper_evaluate_hot_packet_v0",
+          "local_json_only": true,
+          "rpc": false,
+          "observe_jsonl_tail": false,
+          "host_extract_required": false,
+          "marks_joined": false,
+          "stamp": {
+            "schema_version": "paper_evaluate_hot_packet_v0",
+            "type": "paper_evaluate_stamp",
+            "id": "paper-evaluate-hot-packet-v0",
+            "paper_only": true,
+            "input": {
+              "contract": "hot_packet_v0",
+              "only_decode_input": true,
+              "raw_ws_replay": false,
+              "post_hoc_enrich_on_evaluate": false,
+              "packet": {
+                "schema_version": "hot_packet_v0",
+                "type": "hot_packet",
+                "paper_only": true,
+                "byte_cap": 8192,
+                "l1_spine": {
+                  "signature": "SigExampleSealed",
+                  "mint": "MintExampleSealed",
+                  "txType": "create",
+                  "stream": "subscribeNewToken",
+                  "source": "pumpportal_ws",
+                  "commitment": "processed",
+                  "stage": "bonding",
+                  "traderPublicKey": "TraderExampleWeakWs",
+                  "name": "Example",
+                  "symbol": "EX",
+                  "uri": "https://example.invalid/meta.json",
+                  "bondingCurveKey": "CurveExample",
+                  "initialBuy": 1000.0,
+                  "solAmount": 0.1,
+                  "vTokensInBondingCurve": 1000000.0,
+                  "vSolInBondingCurve": 30.0,
+                  "marketCapSol": 30.0,
+                  "pool": null
+                },
+                "regime": {
+                  "regime_id": "env=mainnet|source=pumpportal_ws|stream=subscribeNewToken|stage=bonding|quote=wsol_assumed|commitment=processed|venue=pump_program|instr=pending_rpc|fee=unverified|market=bonding_curve",
+                  "components": {
+                    "env": "mainnet",
+                    "source": "pumpportal_ws",
+                    "stream": "subscribeNewToken",
+                    "stage": "bonding",
+                    "quote": "wsol_assumed",
+                    "commitment": "processed",
+                    "venue": "pump_program",
+                    "instr": "pending_rpc",
+                    "fee": "unverified",
+                    "market": "bonding_curve"
+                  },
+                  "component_lock": {
+                    "env": "production",
+                    "source": "production",
+                    "stream": "production",
+                    "stage": "production",
+                    "quote": "production",
+                    "commitment": "production",
+                    "venue": "production",
+                    "instr": "production",
+                    "fee": "production",
+                    "market": "production"
+                  }
+                },
+                "knowable_at_t": {
+                  "quote": "wsol_assumed",
+                  "quote_verified": false,
+                  "instr": "pending_rpc",
+                  "fee": "unverified",
+                  "venue": "pump_program",
+                  "venue_verified": false,
+                  "creator_verified": false,
+                  "reserves_source": "ws"
+                },
+                "graph": {
+                  "cold": true,
+                  "max_slots": 5,
+                  "lane_policy": "exp004_capped_scalars_only",
+                  "slots": null
+                },
+                "clocks": {
+                  "t_ws": "2026-09-20T12:00:00.000+00:00",
+                  "t_event": null,
+                  "T_decision": "2026-09-20T12:00:00.000+00:00",
+                  "t_precompute_as_of": "2026-09-20T12:00:00.000+00:00",
+                  "precompute_features_merged": false,
+                  "clock_source": "dec005_draft_pr8_unmerged"
+                },
+                "delta_exec": {
+                  "defined_in": "dec005_draft_pr8_unmerged",
+                  "value": null,
+                  "reason": "paper_packet_has_no_fill"
+                },
+                "provenance": {
+                  "spine": "sealed_jsonl",
+                  "source_day": "2026-09-20",
+                  "parent_type": "ingest_hot",
+                  "parent_schema": "observe_hot_v0",
+                  "parent_signature": "SigExampleSealed",
+                  "mint": "MintExampleSealed",
+                  "fixture_origin": "synthetic",
+                  "supersedes": null,
+                  "day_aligned": true
+                },
+                "dual_read": {
+                  "overlay": "sealed",
+                  "sealed_book_rpc_slice": "incomplete",
+                  "enrich_type": null
+                },
+                "honesty": {
+                  "registration": "proposed",
+                  "continuous_observe_wiring": false,
+                  "encoder_promoted": false,
+                  "enum_production_lock": false,
+                  "discovery_promoted": false,
+                  "graph_lane_revived": false,
+                  "invented_lift": false
+                }
+              }
+            },
+            "evaluate_label": "runner",
+            "reasons": [],
+            "ruleset": "paper_evaluate_hot_packet_v0_rules",
+            "knowable_at_t_only": true,
+            "graph_lift": null,
+            "graph_lift_status": "not_used_graph_cold",
+            "runner_stamp": {
+              "kind": "paper_promotion",
+              "pretend_buy": true,
+              "live_capital": false,
+              "T": "2026-09-20T12:00:00.000+00:00",
+              "clock_source": "dec005_draft_pr8_unmerged",
+              "horizons": {
+                "1s": null,
+                "5s": null,
+                "15s": null,
+                "30s": null,
+                "60s": null,
+                "+2s": null,
+                "+10s": null,
+                "+5m": null,
+                "peak": null,
+                "drawdown": null
+              },
+              "horizon_status": "null_ok_no_marks_on_this_stamp",
+              "delta_exec": {
+                "field": "delta_exec",
+                "also_called": "Δ_exec",
+                "value": null,
+                "status": "null_ok",
+                "reason": "paper_stamp_has_no_fill"
+              }
+            },
+            "full_book": {
+              "policy": "dec007_both_arms_retained",
+              "arm_retained": true,
+              "deletes_detect_history": false
+            },
+            "soft_watches": {
+              "blocking": false,
+              "source": "hot_packet_v0_soft_gate_pr49",
+              "items": [
+                "schema_looser_than_cli",
+                "synthetic_launchlab_shape",
+                "graph_slot_shape_not_a_score",
+                "dec005_draft_unmerged",
+                "sealed_book_rpc_slice_incomplete"
+              ]
+            },
+            "honesty": {
+              "registration": "proposed",
+              "scored_oracle_measure": false,
+              "continuous_observe_wiring": false,
+              "encoder_promoted": false,
+              "enum_production_lock": false,
+              "discovery_promoted": false,
+              "graph_lane_revived": false,
+              "invented_lift": false,
+              "exp002c_retuned": false,
+              "live_capital": false,
+              "trading_keys": false,
+              "pumpportal_trade_api": false
+            }
+          }
+        },
+        "parent_evaluate": {
+          "id": "paper-evaluate-hot-packet-v0",
+          "schema_version": "paper_evaluate_hot_packet_v0",
+          "pull_request": 50,
+          "commit": "224166c",
+          "cli": "python -m tools.paper_evaluate_hot_packet_v0",
+          "rewritten_by_this_stamp": false
+        },
+        "exp006_vocabulary": {
+          "exp_id": "EXP-006-paper-would-have-happened-harness-v0",
+          "cli": "python -m tools.exp006_paper_fill_sim",
+          "harness_rewritten": false,
+          "oracle_run": false,
+          "promoted": false,
+          "vocabulary_only": true
+        },
+        "evaluate_label": "runner",
+        "reasons": [],
+        "fill_model": {
+          "latency_ms": 500,
+          "paper_size_sol": 0.1,
+          "fee_model_id": "pump_assumed_bps_v0",
+          "total_fee_bps": 125.0,
+          "max_slippage_bps": 500.0,
+          "sim_reject_on_slip": true,
+          "source": "documented_constants_exp006_p0",
+          "fitted_to_lift": false,
+          "vocabulary_from": "EXP-006-paper-would-have-happened-harness-v0"
+        },
+        "fill_sim": {
+          "status": "documented_model_only",
+          "pretend_buy": true,
+          "fill_status": null,
+          "t_fill": null,
+          "fill_price_proxy": null,
+          "fee_sol": null,
+          "slippage_bps": null,
+          "notes": "Documented EXP-006 P0 constants only. No marks joined. No scored fill on this registration."
+        },
+        "graph_lift": null,
+        "graph_lift_status": "not_used_graph_cold",
+        "graph_policy": "cold",
+        "horizons": {
+          "status": "fill_sim_registration_null_explicit",
+          "null_is_not_zero_return": true,
+          "source": "parent_evaluate_runner_stamp_and_fill_sim_registration",
+          "values": {
+            "1s": null,
+            "5s": null,
+            "15s": null,
+            "30s": null,
+            "60s": null,
+            "+2s": null,
+            "+10s": null,
+            "+5m": null,
+            "peak": null,
+            "drawdown": null
+          }
+        },
+        "delta_exec": {
+          "field": "delta_exec",
+          "also_called": "Δ_exec",
+          "value": null,
+          "status": "fill_sim_registration_null_explicit",
+          "reason": "fill_sim_stamp_has_no_scored_delta",
+          "null_is_not_zero_cost": true
+        },
+        "dual_read": {
+          "sealed_book_rpc_slice": "incomplete",
+          "closed_book_claim": false,
+          "incomplete_reason": "fill_sim_bind_does_not_close_the_sealed_book"
+        },
+        "full_book": {
+          "policy": "dec007_both_arms_retained",
+          "arm_retained": true,
+          "deletes_detect_history": false,
+          "reject_stamps_dropped": 0
+        },
+        "measure": {
+          "kind": "none",
+          "claims_alpha": false,
+          "invented_ev": false,
+          "invented_lift": false,
+          "pass_fail_no_lift": false
+        },
+        "soft_watches": {
+          "blocking": false,
+          "source": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_batch_pr52_dry_run_pr53_schema_align_pr54_dry_run_capture_pr55_fill_sim_hot_packet_evaluate_v0",
+          "inherited_from": [
+            "hot_packet_v0_soft_gate_pr49",
+            "paper_evaluate_hot_packet_v0_pr50",
+            "paper_scoreboard_sealed_fixture_v0_pr51",
+            "paper_batch_oracle_sealed_day_incomplete_rpc_v0_pr52",
+            "paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0_pr53",
+            "paper_incomplete_rpc_honesty_schema_align_v0_pr54",
+            "paper_host_local_dry_run_receipt_capture_v0_pr55"
+          ],
+          "items": [
+            "schema_looser_than_cli",
+            "synthetic_launchlab_shape",
+            "graph_slot_shape_not_a_score",
+            "dec005_draft_unmerged",
+            "sealed_book_rpc_slice_incomplete",
+            "label_share_is_not_a_return",
+            "synthetic_sealed_day_not_a_host_extract",
+            "local_subset_is_not_dropped_history",
+            "host_jsonl_not_readable_from_ci",
+            "counts_are_not_returns",
+            "graph_stays_cold_on_this_stamp",
+            "host_jsonl_read_is_not_a_closed_book",
+            "operator_path_string_is_not_a_host_extract",
+            "dry_run_does_not_ssh_or_open_var_lib_mal",
+            "parent_stamp_not_rewritten",
+            "capture_records_refusal_not_a_measure",
+            "cited_receipt_is_not_a_host_extract",
+            "path_string_on_a_refuse_is_not_file_bytes",
+            "fill_sim_vocabulary_not_exp006_promote",
+            "documented_constants_not_a_scored_fill",
+            "parent_evaluate_cli_not_rewritten",
+            "exp006_harness_not_rewritten"
+          ]
+        },
+        "honesty": {
+          "registration": "proposed",
+          "scored_oracle_measure": false,
+          "executed_host_sealed_book": false,
+          "ci_claimed_sealed_book_close": false,
+          "continuous_observe_wiring": false,
+          "encoder_promoted": false,
+          "enum_production_lock": false,
+          "discovery_promoted": false,
+          "graph_lane_revived": false,
+          "invented_lift": false,
+          "invented_ev": false,
+          "claims_alpha": false,
+          "exp002c_retuned": false,
+          "exp006_promoted": false,
+          "exp006_harness_rewritten": false,
+          "marks_joined_on_this_stamp": false,
+          "live_capital": false,
+          "trading_keys": false,
+          "pumpportal_trade_api": false,
+          "ssh_to_host": false,
+          "host_extract_checked_into_git": false,
+          "var_lib_mal_read": false
+        }
+      }
+    ],
+    "expectation": {
+      "schema_version": "paper_fill_sim_scoreboard_sealed_fixture_v0",
+      "fixture_kind": "sealed_day_expectation",
+      "origin": "synthetic",
+      "day": "2026-09-20",
+      "sealed_book_rpc_slice": "incomplete",
+      "closed_book_claim": false,
+      "horizon_join": {
+        "status": "fixture_joined_null_explicit",
+        "values_supplied": false,
+        "null_is_not_zero_return": true
+      },
+      "delta_exec_join": {
+        "field": "delta_exec",
+        "also_called": "Δ_exec",
+        "value": null,
+        "status": "fixture_joined_null_explicit",
+        "reason": "fill_sim_sealed_day_fixture_has_no_scored_fill",
+        "null_is_not_zero_cost": true
+      },
+      "rows": [
+        {
+          "source_day": "2026-09-20",
+          "signature": "SigExampleEnrichedFee",
+          "mint": "MintExampleEnrichedFee",
+          "evaluate_label": "runner",
+          "fill_sim_status": "documented_model_only",
+          "reasons": []
+        },
+        {
+          "source_day": "2026-09-20",
+          "signature": "SigExampleGraphSlots",
+          "mint": "MintExampleGraphSlots",
+          "evaluate_label": "runner",
+          "fill_sim_status": "documented_model_only",
+          "reasons": []
+        },
+        {
+          "source_day": "2026-09-20",
+          "signature": "SigExampleLaunchlab",
+          "mint": "MintExampleLaunchlab",
+          "evaluate_label": "runner",
+          "fill_sim_status": "documented_model_only",
+          "reasons": []
+        },
+        {
+          "source_day": "2026-09-20",
+          "signature": "SigExampleRejectIdentity",
+          "mint": "UNK",
+          "evaluate_label": "reject",
+          "fill_sim_status": "reject_arm_no_pretend_buy",
+          "reasons": [
+            "missing_mint"
+          ]
+        },
+        {
+          "source_day": "2026-09-20",
+          "signature": "SigExampleSealed",
+          "mint": "MintExampleSealed",
+          "evaluate_label": "runner",
+          "fill_sim_status": "documented_model_only",
+          "reasons": []
+        }
+      ]
+    }
+  },
+  "full_book": {
+    "policy": "dec007_both_arms_retained",
+    "arm_retained": true,
+    "deletes_detect_history": false,
+    "reject_stamps_dropped": 0,
+    "local_set_is_not_the_sealed_book": true,
+    "n": 4,
+    "runner_n": 4,
+    "reject_n": 0
+  },
+  "label_rates": {
+    "n_meaning": "stamp_count_not_a_return",
+    "share_kind": "count_fraction_not_a_return",
+    "n": 4,
+    "runner_n": 4,
+    "reject_n": 0,
+    "rows": [
+      {
+        "label": "runner",
+        "n": 4,
+        "share": {
+          "numerator": 4,
+          "denominator": 4
+        }
+      },
+      {
+        "label": "reject",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 4
+        }
+      }
+    ]
+  },
+  "fill_sim_status_counts": [
+    {
+      "status": "documented_model_only",
+      "n": 4,
+      "share": {
+        "numerator": 4,
+        "denominator": 4
+      }
+    },
+    {
+      "status": "reject_arm_no_pretend_buy",
+      "n": 0,
+      "share": {
+        "numerator": 0,
+        "denominator": 4
+      }
+    }
+  ],
+  "reason_histogram": {
+    "n_meaning": "stamp_occurrences_not_a_return",
+    "share_kind": "count_fraction_not_a_return",
+    "closed_list": [
+      "missing_signature",
+      "missing_mint",
+      "stage_not_bonding",
+      "honesty_reject",
+      "overlay_discipline"
+    ],
+    "rows": [
+      {
+        "reason": "missing_signature",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 4
+        }
+      },
+      {
+        "reason": "missing_mint",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 4
+        }
+      },
+      {
+        "reason": "stage_not_bonding",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 4
+        }
+      },
+      {
+        "reason": "honesty_reject",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 4
+        }
+      },
+      {
+        "reason": "overlay_discipline",
+        "n": 0,
+        "share": {
+          "numerator": 0,
+          "denominator": 4
+        }
+      }
+    ]
+  },
+  "graph_lift": null,
+  "graph_lift_aggregate_status": "not_scored_mixed",
+  "graph_status_counts": [
+    {
+      "status": "not_used_graph_cold",
+      "n": 3
+    },
+    {
+      "status": "not_used_slots_not_scored",
+      "n": 1
+    }
+  ],
+  "horizons": {
+    "status": "fixture_joined_null_explicit",
+    "null_is_not_zero_return": true,
+    "source": "sealed_day_expectation_and_fill_sim_stamp",
+    "values": {
+      "1s": null,
+      "5s": null,
+      "15s": null,
+      "30s": null,
+      "60s": null,
+      "+2s": null,
+      "+10s": null,
+      "+5m": null,
+      "peak": null,
+      "drawdown": null
+    }
+  },
+  "delta_exec": {
+    "field": "delta_exec",
+    "also_called": "Δ_exec",
+    "value": null,
+    "status": "fixture_joined_null_explicit",
+    "reason": "fill_sim_sealed_day_fixture_has_no_scored_fill",
+    "null_is_not_zero_cost": true
+  },
+  "dual_read": {
+    "sealed_book_rpc_slice": "incomplete",
+    "closed_book_claim": false,
+    "incomplete_reason": "fill_sim_fixture_join_does_not_close_the_sealed_book"
+  },
+  "fixture_join": {
+    "mode": "sealed_day_checked_in",
+    "origin": "synthetic",
+    "day": "2026-09-20",
+    "matched_n": 4,
+    "label_disagree_n": 0,
+    "fill_sim_disagree_n": 0,
+    "reason_disagree_n": 0,
+    "unmatched_stamp_n": 0,
+    "expectation_rows_not_in_local_set": 1,
+    "duplicate_identity_n": 0,
+    "closed_book": false
+  },
+  "measure": {
+    "kind": "none",
+    "claims_alpha": false,
+    "invented_ev": false,
+    "invented_lift": false,
+    "pass_fail_no_lift": false
+  },
+  "sealed_days": [
+    {
+      "day": "2026-09-20",
+      "n": 4,
+      "fixture_origin": "synthetic",
+      "sealed_book_rpc_slice": "incomplete"
+    }
+  ],
+  "stamp_rows": [
+    {
+      "ordinal": 0,
+      "source_day": "2026-09-20",
+      "signature": "SigExampleEnrichedFee",
+      "mint": "MintExampleEnrichedFee",
+      "evaluate_label": "runner",
+      "fill_sim_status": "documented_model_only",
+      "reasons": [],
+      "graph_lift": null,
+      "graph_lift_status": "not_used_graph_cold",
+      "horizon_status": "fill_sim_registration_null_explicit",
+      "delta_exec_value": null,
+      "delta_exec_status": "fill_sim_registration_null_explicit",
+      "sealed_book_rpc_slice": "incomplete",
+      "fixture_join": "matched"
+    },
+    {
+      "ordinal": 1,
+      "source_day": "2026-09-20",
+      "signature": "SigExampleGraphSlots",
+      "mint": "MintExampleGraphSlots",
+      "evaluate_label": "runner",
+      "fill_sim_status": "documented_model_only",
+      "reasons": [],
+      "graph_lift": null,
+      "graph_lift_status": "not_used_slots_not_scored",
+      "horizon_status": "fill_sim_registration_null_explicit",
+      "delta_exec_value": null,
+      "delta_exec_status": "fill_sim_registration_null_explicit",
+      "sealed_book_rpc_slice": "incomplete",
+      "fixture_join": "matched"
+    },
+    {
+      "ordinal": 2,
+      "source_day": "2026-09-20",
+      "signature": "SigExampleLaunchlab",
+      "mint": "MintExampleLaunchlab",
+      "evaluate_label": "runner",
+      "fill_sim_status": "documented_model_only",
+      "reasons": [],
+      "graph_lift": null,
+      "graph_lift_status": "not_used_graph_cold",
+      "horizon_status": "fill_sim_registration_null_explicit",
+      "delta_exec_value": null,
+      "delta_exec_status": "fill_sim_registration_null_explicit",
+      "sealed_book_rpc_slice": "incomplete",
+      "fixture_join": "matched"
+    },
+    {
+      "ordinal": 3,
+      "source_day": "2026-09-20",
+      "signature": "SigExampleSealed",
+      "mint": "MintExampleSealed",
+      "evaluate_label": "runner",
+      "fill_sim_status": "documented_model_only",
+      "reasons": [],
+      "graph_lift": null,
+      "graph_lift_status": "not_used_graph_cold",
+      "horizon_status": "fill_sim_registration_null_explicit",
+      "delta_exec_value": null,
+      "delta_exec_status": "fill_sim_registration_null_explicit",
+      "sealed_book_rpc_slice": "incomplete",
+      "fixture_join": "matched"
+    }
+  ],
+  "soft_watches": {
+    "blocking": false,
+    "source": "hot_packet_v0_soft_gate_pr49_paper_evaluate_pr50_scoreboard_pr51_fill_sim_hot_packet_evaluate_v0_pr57_fill_sim_scoreboard_sealed_fixture_v0",
+    "inherited_from": [
+      "hot_packet_v0_soft_gate_pr49",
+      "paper_evaluate_hot_packet_v0_pr50",
+      "paper_scoreboard_sealed_fixture_v0_pr51",
+      "paper_fill_sim_hot_packet_evaluate_v0_pr57"
+    ],
+    "items": [
+      "schema_looser_than_cli",
+      "synthetic_launchlab_shape",
+      "graph_slot_shape_not_a_score",
+      "dec005_draft_unmerged",
+      "sealed_book_rpc_slice_incomplete",
+      "label_share_is_not_a_return",
+      "synthetic_sealed_day_not_a_host_extract",
+      "local_subset_is_not_dropped_history",
+      "host_jsonl_not_readable_from_ci",
+      "counts_are_not_returns",
+      "graph_stays_cold_on_this_stamp",
+      "host_jsonl_read_is_not_a_closed_book",
+      "operator_path_string_is_not_a_host_extract",
+      "dry_run_does_not_ssh_or_open_var_lib_mal",
+      "parent_stamp_not_rewritten",
+      "capture_records_refusal_not_a_measure",
+      "cited_receipt_is_not_a_host_extract",
+      "path_string_on_a_refuse_is_not_file_bytes",
+      "fill_sim_vocabulary_not_exp006_promote",
+      "documented_constants_not_a_scored_fill",
+      "parent_evaluate_cli_not_rewritten",
+      "exp006_harness_not_rewritten",
+      "label_share_is_not_a_return",
+      "fill_sim_status_share_is_not_a_return",
+      "synthetic_sealed_day_not_a_host_extract",
+      "local_subset_is_not_dropped_history",
+      "fill_sim_vocabulary_not_exp006_promote",
+      "documented_constants_not_a_scored_fill"
+    ]
+  },
+  "honesty": {
+    "registration": "proposed",
+    "scored_oracle_measure": false,
+    "executed_host_sealed_book": false,
+    "ci_claimed_sealed_book_close": false,
+    "continuous_observe_wiring": false,
+    "encoder_promoted": false,
+    "enum_production_lock": false,
+    "discovery_promoted": false,
+    "graph_lane_revived": false,
+    "invented_lift": false,
+    "invented_ev": false,
+    "claims_alpha": false,
+    "exp002c_retuned": false,
+    "exp006_promoted": false,
+    "exp006_harness_rewritten": false,
+    "marks_joined_on_this_stamp": false,
+    "live_capital": false,
+    "trading_keys": false,
+    "pumpportal_trade_api": false,
+    "ssh_to_host": false,
+    "host_extract_checked_into_git": false,
+    "var_lib_mal_read": false
+  }
+}
