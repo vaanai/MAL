@@ -477,6 +477,58 @@ class PaperLayaDecisionPacketBatchOracleSealedDayIncompleteRpcV0Tests(unittest.T
         _, _, errors = project_day(manifest, day="2026-09-20", fixture_origin="synthetic")
         self.assertTrue(errors)
 
+    def _assert_soft_gate_fail3(self, mutate: object, *, label: str) -> None:
+        batch = copy.deepcopy(example_two_day())
+        mutate(batch)
+        with self.subTest(label=label):
+            self.assertTrue(_schema_errors(batch), label)
+            self.assertTrue(validate_batch(batch), label)
+
+    def test_soft_gate_fail3_neither_manifest_mode_fail_schema_and_cli(self) -> None:
+        def _drop_paths(batch: dict) -> None:
+            del batch["input"]["days"][0]["manifest"]["decision_packet_paths"]
+
+        self._assert_soft_gate_fail3(_drop_paths, label="neither assemblies nor decision_packet_paths")
+
+    def test_soft_gate_fail3_assemblies_only_leftover_board_fail_schema_and_cli(self) -> None:
+        def _assemblies_leftover(batch: dict) -> None:
+            manifest = batch["input"]["days"][0]["manifest"]
+            manifest.pop("decision_packet_paths")
+            manifest["assemblies"] = [
+                {
+                    "surround_paths": [
+                        "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+                    ],
+                    "lock_receipt_paths": [
+                        "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_fill_sim_surround.json"
+                    ],
+                }
+            ]
+            batch["rollup"]["n"] = 99
+            batch["days"][0]["packet_census"]["listed_n"] = 99
+            batch["days"][0]["scoreboard"]["packet_rows"][0]["digest_n"] = 99
+
+        self._assert_soft_gate_fail3(_assemblies_leftover, label="assemblies-only with unbound counts")
+
+    def test_soft_gate_fail3_split_day_identity_fail_schema_and_cli(self) -> None:
+        split_day = "2026-09-22"
+
+        def _split_identity(batch: dict) -> None:
+            batch["input"]["days"][0]["day"] = split_day
+            batch["input"]["days"][0]["manifest_name"] = f"decision-day-{split_day}.json"
+            batch["input"]["days"][0]["expectation"]["day"] = split_day
+            batch["days"][0]["day"] = split_day
+            batch["days"][0]["manifest_name"] = f"decision-day-{split_day}.json"
+            batch["rollup"]["days"] = [split_day, batch["rollup"]["days"][1]]
+            batch["input"]["days"][0]["manifest"]["decision_packet_paths"].pop()
+
+        self._assert_soft_gate_fail3(_split_identity, label="split calendar day vs manifest.day")
+
+        manifest = manifest_for_day("2026-09-20")
+        manifest["decision_packet_paths"] = list(manifest["decision_packet_paths"][:-1])
+        _, _, errors = project_day(manifest, day=split_day, fixture_origin="synthetic")
+        self.assertTrue(errors)
+
     def test_soft_gate_fail1_cli_refuses_lexical_manifest_paths_before_fs(self) -> None:
         bad_paths = [
             "fixtures\\paper_laya_precompute_decision_packet_v0\\decision_non_fill_sim_surround.json",

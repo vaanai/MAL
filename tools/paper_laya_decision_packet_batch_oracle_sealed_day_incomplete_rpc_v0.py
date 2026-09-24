@@ -384,38 +384,12 @@ def validate_manifest(manifest: Any) -> list[str]:
                     f"must be a repo path under {ALLOWED_DECISION_PREFIXES}",
                 )
     if has_assemblies:
-        assert isinstance(assemblies, list)
-        for index, item in enumerate(assemblies):
-            path = f"manifest.assemblies[{index}]"
-            if not isinstance(item, Mapping):
-                _err(errors, path, "must be an object")
-                continue
-            surround = item.get("surround_paths")
-            locks = item.get("lock_receipt_paths")
-            if not isinstance(surround, list) or not surround:
-                _err(errors, f"{path}.surround_paths", "must be a non-empty list")
-            if not isinstance(locks, list) or not locks:
-                _err(errors, f"{path}.lock_receipt_paths", "must be a non-empty list")
-            if isinstance(surround, list):
-                for s_index, sp in enumerate(surround):
-                    if not isinstance(sp, str):
-                        _err(errors, f"{path}.surround_paths[{s_index}]", "must be a string")
-                    elif not (
-                        sp.startswith(PREFIX_NON_FILL) or sp.startswith(PREFIX_FILL_SIM)
-                    ):
-                        _err(
-                            errors,
-                            f"{path}.surround_paths[{s_index}]",
-                            "must cite #63 or #64 surround fixtures",
-                        )
-            if isinstance(locks, list):
-                for l_index, lp in enumerate(locks):
-                    if not isinstance(lp, str) or not lp.startswith(PREFIX_LOCK_RECEIPT):
-                        _err(
-                            errors,
-                            f"{path}.lock_receipt_paths[{l_index}]",
-                            "must cite #65 lock receipt fixtures",
-                        )
+        _err(
+            errors,
+            "manifest",
+            "assemblies mode is fail-closed on this stamp; use decision_packet_paths",
+        )
+        return errors
     return errors
 
 

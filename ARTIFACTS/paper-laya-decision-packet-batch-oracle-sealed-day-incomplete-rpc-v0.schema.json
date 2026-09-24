@@ -190,7 +190,25 @@
             "type": "object"
           }
         }
-      }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "decision_packet_paths"
+          ],
+          "properties": {
+            "assemblies": false
+          }
+        },
+        {
+          "required": [
+            "assemblies"
+          ],
+          "properties": {
+            "decision_packet_paths": false
+          }
+        }
+      ]
     },
     "dayInput": {
       "type": "object",
@@ -216,7 +234,107 @@
         "expectation": {
           "$ref": "paper-laya-decision-packet-scoreboard-sealed-fixture-v0.schema.json#/$defs/expectation"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "day": {
+                "const": "2026-09-20"
+              }
+            },
+            "required": [
+              "day"
+            ]
+          },
+          "then": {
+            "properties": {
+              "manifest_name": {
+                "const": "decision-day-2026-09-20.json"
+              },
+              "manifest": {
+                "properties": {
+                  "day": {
+                    "const": "2026-09-20"
+                  }
+                },
+                "required": [
+                  "day"
+                ]
+              },
+              "expectation": {
+                "properties": {
+                  "day": {
+                    "const": "2026-09-20"
+                  }
+                },
+                "required": [
+                  "day"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "day": {
+                "const": "2026-09-21"
+              }
+            },
+            "required": [
+              "day"
+            ]
+          },
+          "then": {
+            "properties": {
+              "manifest_name": {
+                "const": "decision-day-2026-09-21.json"
+              },
+              "manifest": {
+                "properties": {
+                  "day": {
+                    "const": "2026-09-21"
+                  }
+                },
+                "required": [
+                  "day"
+                ]
+              },
+              "expectation": {
+                "properties": {
+                  "day": {
+                    "const": "2026-09-21"
+                  }
+                },
+                "required": [
+                  "day"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "day": {
+                "not": {
+                  "enum": [
+                    "2026-09-20",
+                    "2026-09-21"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "day"
+            ]
+          },
+          "then": {
+            "not": {}
+          }
+        }
+      ]
     },
     "packetCensus": {
       "type": "object",
@@ -3255,28 +3373,6 @@
           "properties": {
             "days": {
               "items": {
-                "properties": {
-                  "manifest": {
-                    "not": {
-                      "required": [
-                        "decision_packet_paths",
-                        "assemblies"
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "properties": {
-        "input": {
-          "properties": {
-            "days": {
-              "items": {
                 "if": {
                   "properties": {
                     "day": {
@@ -3484,6 +3580,122 @@
               }
             ],
             "items": false
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "input": {
+          "properties": {
+            "days": {
+              "items": {
+                "properties": {
+                  "manifest": {
+                    "required": [
+                      "decision_packet_paths"
+                    ],
+                    "properties": {
+                      "assemblies": false
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "input": {
+            "type": "object",
+            "required": [
+              "days"
+            ],
+            "properties": {
+              "days": {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "day"
+                  ],
+                  "properties": {
+                    "day": {
+                      "const": "2026-09-20"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "input"
+        ]
+      },
+      "then": {
+        "properties": {
+          "days": {
+            "contains": {
+              "type": "object",
+              "required": [
+                "day"
+              ],
+              "properties": {
+                "day": {
+                  "const": "2026-09-20"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "input": {
+            "type": "object",
+            "required": [
+              "days"
+            ],
+            "properties": {
+              "days": {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "day"
+                  ],
+                  "properties": {
+                    "day": {
+                      "const": "2026-09-21"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "input"
+        ]
+      },
+      "then": {
+        "properties": {
+          "days": {
+            "contains": {
+              "type": "object",
+              "required": [
+                "day"
+              ],
+              "properties": {
+                "day": {
+                  "const": "2026-09-21"
+                }
+              }
+            }
           }
         }
       }
