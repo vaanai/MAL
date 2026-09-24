@@ -33,10 +33,10 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 | **What changed** | Registered **Proposed** `paper-fill-sim-incomplete-rpc-honesty-schema-align-v0`: [PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md). Tightened [paper-fill-sim-hot-packet-evaluate-v0.schema.json](paper-fill-sim-hot-packet-evaluate-v0.schema.json) so `graph_lift_status` follows embedded `input.stamp.input.packet.graph.cold`. Scoreboard, batch, and host-local fill-sim schemas already const-refused the same honesty bits as their CLIs; tests cite them. No new runtime schema. No CLI rewrite. |
 | **Why** | Mirror parent #54 on the fill-sim citeable chain (#57–#60). Schema must refuse dishonest shapes those CLIs already refuse before Soft GATE merge. |
 | **What was tested** | `python3 -m unittest tools.test_paper_fill_sim_incomplete_rpc_honesty_schema_align_v0` plus existing #57–#60 unit tests. Honest fixtures pass schema and CLI. Dishonest copies fail both. No RPC. No host read. `observe/client.py` untouched. |
-| **Verification** | Soft GATE **PASS** Formal-stamped Lyra (kill `bc-ad05f533-0b48-562c-815f-b6fbbe9de646`; implement `bc-49b65bee-fd81-5d5d-a4f1-7bdfb45a0c2a`; [PR #61](https://github.com/vaanai/MAL/pull/61) tip `b5ccb1f`; 97 unittest OK on branch). |
-| **Current state** | Proposed registration; `schema_looser_than_cli` **CLOSED** for watched fill-sim shapes; squash-merge to `main` pending. |
+| **Verification** | Soft GATE **PASS** Formal-stamped Lyra (kill `bc-ad05f533-0b48-562c-815f-b6fbbe9de646`; implement `bc-49b65bee-fd81-5d5d-a4f1-7bdfb45a0c2a`; [PR #61](https://github.com/vaanai/MAL/pull/61) squash `677e88b` on `main`; 97 unittest OK). |
+| **Current state** | **Proposed** registration **on `main`**; `schema_looser_than_cli` **CLOSED** for watched fill-sim shapes. |
 | **Rollback** | Revert schema `allOf` on fill-sim hot-packet evaluate and drop align contract/tests. |
-| **Unresolved** | Squash-merge [PR #61](https://github.com/vaanai/MAL/pull/61) to `main`. |
+| **Unresolved** | None for this registration. |
 | **Implications** | Fill-sim JSON Schema matches CLI honesty caps; no change to runtime CLIs or EXP-006 harness. |
 | **Pointers** | [PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md), [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) |
 
