@@ -144,6 +144,9 @@ DAY_21_PACKET_PATHS: tuple[str, ...] = (
     "fixtures/paper_laya_precompute_decision_packet_v0/decision_non_fill_sim_surround.json",
     "fixtures/paper_laya_precompute_decision_packet_v0/decision_fill_sim_surround.json",
 )
+KNOWN_DECISION_PACKET_PATHS: frozenset[str] = frozenset(
+    {*DAY_20_PACKET_PATHS, *DAY_21_PACKET_PATHS}
+)
 
 
 def _err(errors: list[str], path: str, message: str) -> None:
@@ -309,7 +312,17 @@ def _repo_relative_allowed(text: str, prefixes: Sequence[str]) -> bool:
 
 
 def _decision_path_allowed(text: str) -> bool:
+    if text not in KNOWN_DECISION_PACKET_PATHS:
+        return False
     return _repo_relative_allowed(text, ALLOWED_DECISION_PREFIXES)
+
+
+def _expected_paths_for_day(day: str) -> tuple[str, ...] | None:
+    if day == "2026-09-20":
+        return DAY_20_PACKET_PATHS
+    if day == "2026-09-21":
+        return DAY_21_PACKET_PATHS
+    return None
 
 
 def _manifest_path_allowed(text: str) -> bool:
@@ -342,8 +355,29 @@ def validate_manifest(manifest: Any) -> list[str]:
         return errors
     if has_paths:
         assert isinstance(paths, list)
+        expected_paths = _expected_paths_for_day(str(day)) if isinstance(day, str) else None
+        if expected_paths is not None and tuple(paths) != expected_paths:
+            _err(
+                errors,
+                "manifest.decision_packet_paths",
+                "must match the checked-in fixture path list for this calendar day",
+            )
         for index, item in enumerate(paths):
-            if not isinstance(item, str) or not _decision_path_allowed(item):
+            if not isinstance(item, str):
+                _err(errors, f"manifest.decision_packet_paths[{index}]", "must be a string")
+                continue
+            refusal = _decision_repo_path_refusal(item)
+            if refusal:
+                _err(errors, f"manifest.decision_packet_paths[{index}]", refusal)
+                continue
+            if item not in KNOWN_DECISION_PACKET_PATHS:
+                _err(
+                    errors,
+                    f"manifest.decision_packet_paths[{index}]",
+                    "must cite a known checked-in decision-packet fixture path",
+                )
+                continue
+            if not _decision_path_allowed(item):
                 _err(
                     errors,
                     f"manifest.decision_packet_paths[{index}]",

@@ -941,7 +941,11 @@
       "allOf": [
         {
           "type": "string",
-          "pattern": "^fixtures/paper_laya_precompute_decision_packet_v0/[a-z0-9_\\-]+\\.json$"
+          "enum": [
+            "fixtures/paper_laya_precompute_decision_packet_v0/decision_non_fill_sim_surround.json",
+            "fixtures/paper_laya_precompute_decision_packet_v0/decision_fill_sim_surround.json",
+            "fixtures/paper_laya_precompute_decision_packet_v0/decision_mixed_spines.json"
+          ]
         },
         {
           "$ref": "#/$defs/repoFixturePathHonesty"
@@ -3241,6 +3245,245 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "input": {
+          "properties": {
+            "days": {
+              "items": {
+                "properties": {
+                  "manifest": {
+                    "not": {
+                      "required": [
+                        "decision_packet_paths",
+                        "assemblies"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "input": {
+          "properties": {
+            "days": {
+              "items": {
+                "if": {
+                  "properties": {
+                    "day": {
+                      "const": "2026-09-20"
+                    },
+                    "manifest": {
+                      "required": [
+                        "decision_packet_paths"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "manifest"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "manifest": {
+                      "properties": {
+                        "decision_packet_paths": {
+                          "$ref": "#/$defs/manifestDay20Paths"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "input": {
+          "properties": {
+            "days": {
+              "items": {
+                "if": {
+                  "properties": {
+                    "day": {
+                      "const": "2026-09-21"
+                    },
+                    "manifest": {
+                      "required": [
+                        "decision_packet_paths"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "manifest"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "manifest": {
+                      "properties": {
+                        "decision_packet_paths": {
+                          "$ref": "#/$defs/manifestDay21Paths"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "input": {
+            "type": "object",
+            "required": [
+              "days"
+            ],
+            "properties": {
+              "days": {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "manifest"
+                  ],
+                  "properties": {
+                    "manifest": {
+                      "required": [
+                        "decision_packet_paths"
+                      ],
+                      "properties": {
+                        "decision_packet_paths": {
+                          "type": "array"
+                        },
+                        "day": {
+                          "not": {
+                            "enum": [
+                              "2026-09-20",
+                              "2026-09-21"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "input"
+        ]
+      },
+      "then": {
+        "not": {}
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "rollup": {
+            "type": "object",
+            "required": [
+              "days"
+            ],
+            "properties": {
+              "days": {
+                "const": [
+                  "2026-09-20",
+                  "2026-09-21"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "rollup"
+        ]
+      },
+      "then": {
+        "properties": {
+          "input": {
+            "properties": {
+              "days": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "day"
+                    ],
+                    "properties": {
+                      "day": {
+                        "const": "2026-09-20"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "day"
+                    ],
+                    "properties": {
+                      "day": {
+                        "const": "2026-09-21"
+                      }
+                    }
+                  }
+                ],
+                "items": false
+              }
+            }
+          },
+          "days": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "prefixItems": [
+              {
+                "type": "object",
+                "required": [
+                  "day"
+                ],
+                "properties": {
+                  "day": {
+                    "const": "2026-09-20"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "day"
+                ],
+                "properties": {
+                  "day": {
+                    "const": "2026-09-21"
+                  }
+                }
+              }
+            ],
+            "items": false
           }
         }
       }

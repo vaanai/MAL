@@ -408,6 +408,75 @@ class PaperLayaDecisionPacketBatchOracleSealedDayIncompleteRpcV0Tests(unittest.T
             label="dropped spine_profile_counts row",
         )
 
+    def _assert_soft_gate_fail2(self, mutate: object, *, label: str) -> None:
+        batch = copy.deepcopy(example_two_day())
+        mutate(batch)
+        with self.subTest(label=label):
+            self.assertTrue(_schema_errors(batch), label)
+            self.assertTrue(validate_batch(batch), label)
+
+    def test_soft_gate_fail2_shortened_manifest_paths_fail_schema_and_cli(self) -> None:
+        self._assert_soft_gate_fail2(
+            lambda b: b["input"]["days"][0]["manifest"]["decision_packet_paths"].pop(),
+            label="shortened day-20 manifest paths",
+        )
+        self._assert_soft_gate_fail2(
+            lambda b: b["input"]["days"][1]["manifest"]["decision_packet_paths"].pop(),
+            label="shortened day-21 manifest paths",
+        )
+
+    def test_soft_gate_fail2_day_order_fail_schema_and_cli(self) -> None:
+        self._assert_soft_gate_fail2(
+            lambda b: b.__setitem__("days", list(reversed(b["days"]))),
+            label="reversed output days",
+        )
+        self._assert_soft_gate_fail2(
+            lambda b: b["input"].__setitem__("days", list(reversed(b["input"]["days"]))),
+            label="reversed input days",
+        )
+
+    def test_soft_gate_fail2_manifest_assemblies_with_paths_fail_schema_and_cli(self) -> None:
+        self._assert_soft_gate_fail2(
+            lambda b: b["input"]["days"][0]["manifest"].update(
+                {
+                    "assemblies": [
+                        {
+                            "surround_paths": [
+                                "fixtures/paper_laya_precompute_surround_packet_v0/mixed_scoreboard.json"
+                            ],
+                            "lock_receipt_paths": [
+                                "fixtures/paper_laya_risk_gate_lock_receipt_v0/receipt_non_fill_sim_surround.json"
+                            ],
+                        }
+                    ]
+                }
+            ),
+            label="assemblies beside decision_packet_paths",
+        )
+
+    def test_soft_gate_fail2_duplicate_day_block_fail_schema_and_cli(self) -> None:
+        def _dup_day(batch: dict) -> None:
+            extra = copy.deepcopy(batch["days"][0])
+            extra["scoreboard"]["packet_rows"][0]["digest_n"] = 99
+            batch["days"].append(extra)
+
+        self._assert_soft_gate_fail2(_dup_day, label="duplicate day-20 output block")
+
+    def test_soft_gate_fail2_phantom_fixture_filename_fail_schema_and_cli(self) -> None:
+        phantom = (
+            "fixtures/paper_laya_precompute_decision_packet_v0/decision_phantom.json"
+        )
+        self._assert_soft_gate_fail2(
+            lambda b: b["input"]["days"][0]["manifest"]["decision_packet_paths"].__setitem__(
+                0, phantom
+            ),
+            label="phantom decision-packet filename",
+        )
+        manifest = manifest_for_day("2026-09-20")
+        manifest["decision_packet_paths"] = [phantom]
+        _, _, errors = project_day(manifest, day="2026-09-20", fixture_origin="synthetic")
+        self.assertTrue(errors)
+
     def test_soft_gate_fail1_cli_refuses_lexical_manifest_paths_before_fs(self) -> None:
         bad_paths = [
             "fixtures\\paper_laya_precompute_decision_packet_v0\\decision_non_fill_sim_surround.json",

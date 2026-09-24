@@ -9,7 +9,7 @@
 | **Schema** | [paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json](paper-laya-decision-packet-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json) (JSON Schema 2020-12) |
 | **Fixtures** | [fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/](../fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/) — synthetic calendar labels `2026-09-20` / `2026-09-21`; not host extracts |
 | **CLI** | `python -m tools.paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0` — `example` / `validate` / `batch` on local JSON only |
-| **Soft GATE** | **Formal pending.** FAIL #1 `schema_looser_than_cli` holes (numeric horizons/Δ_exec, unbound rollup/census/spine/label/packet-row counts, soft_watches order/uniqueness, manifest path honesty, embedded scoreboard shape, invented keys) closed in schema + batch CLI on this branch. Watches stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **Formal still pending** (no PASS claim). FAIL #1 `schema_looser_than_cli` holes closed on branch. FAIL #2 holes closed (shortened manifest path lists, day order, `assemblies` beside `decision_packet_paths`, duplicate day block, phantom fixture filenames) in schema + batch CLI. Watches stay **non-blocking** (`blocking=false`). |
 
 This file registers a **fixtures-only** day-aligned batch: `decision-day-YYYY-MM-DD.json` manifest → cite/assemble validated #67 decision packets (themselves citing #63/#64 surround + #65 lock) → count with the #68 scoreboard path → one scoreboard per day + rollup.
 
