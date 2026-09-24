@@ -1,6 +1,6 @@
 # Manager summary (≤20 lines)
 
-**As-of:** 2026-09-24 early UTC (**2026-09-24T04:56Z**). `main` @ `6217773` (squash #57).
+**As-of:** 2026-09-24 early UTC (**2026-09-24T04:56Z**). `main` @ `2138fce` (#57 squash `6217773`).
 
 - **Paper chain:** Citeable stack **on `main` through #57** (squash `6217773`): #49–#55 as prior; #56 night close `3529b47`; #57 fill-sim hot-packet evaluate (tip `fe37597`; Soft GATE PASS kill `bc-b3ba78ee-601f-596b-b59e-eaf7e19d62de`; implement `bc-e10783d6-26d8-54b5-b072-87959ee86e58`; Lyra Formal). Soft locks held; Graph cold; `measure.kind=none`; sealed book incomplete; `observe/client.py` untouched. Soft GATE PASS ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live.
 - **Product:** 3 layers (new-coin / entity-graph / filtered smart-wallet) + **LAYA** → risk gate → exec (deferred). **X = layer 4 later**. Paper first; free-first. Plans = directions; profit is the goal.
