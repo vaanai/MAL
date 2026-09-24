@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-decision-packet-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0` |
-| **Status** | **Proposed** paper registration (2026-09-24). Soft GATE **pending**. Not a measure. Not an executed host dry-run. |
+| **Status** | **Proposed** paper registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Lyra; kill `bc-6e0d511c-983b-59c3-8ca8-c388292ea5ed`; implement `bc-287de2e1-0979-5997-bc22-8e6288d630b6`; head `e0090890a1de5e3d8a5fd7d3aaab72a9cf3de1e5`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/70#issuecomment-5813072359); FAIL #1 [closed](https://github.com/vaanai/MAL/pull/70#issuecomment-5812727576) (`bc-b8e638fa-8495-556e-a536-06a0ccfc4a20`); FAIL #2 [closed](https://github.com/vaanai/MAL/pull/70#issuecomment-5812927365) (`bc-2755445b-b73e-5f3f-8964-c616a34373d0`); merged [PR #70](https://github.com/vaanai/MAL/pull/70) squash pending on `main`). Not a measure. Not an executed host dry-run. |
 | **Owner seat** | Proof (receipt + Soft GATE); Scout (host-local path shape); Helm (AUTH) |
 | **Commission** | Receipt around the merged LAYA decision-packet parent batch ([PR #69](https://github.com/vaanai/MAL/pull/69) squash `adadaa8` on `main`). Parent #49–#69 CLIs and EXP-006 harness are **not** rewritten. |
 | **Schema** | [paper-laya-decision-packet-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json](paper-laya-decision-packet-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json) (JSON Schema 2020-12) |
@@ -11,7 +11,7 @@
 | **CLI** | `python -m tools.paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0` — example / validate / receipt on local files only |
 | **Operator shape** | [paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run.md](../tools/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run.md) — paths and flags only. No executed host stdout |
 | **Parent** | [PAPER-LAYA-DECISION-PACKET-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-LAYA-DECISION-PACKET-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md). Not rewritten. |
-| **Soft GATE** | **Pending** — watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
+| **Soft GATE** | **PASS** — Formal stamp Lyra (kill `bc-6e0d511c-983b-59c3-8ca8-c388292ea5ed`; implement `bc-287de2e1-0979-5997-bc22-8e6288d630b6`; head `e0090890a1de5e3d8a5fd7d3aaab72a9cf3de1e5`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/70#issuecomment-5813072359); FAIL #1–#2 **closed**). Watches in [Soft watches](#soft-watches-non-blocking) stay **non-blocking** (`blocking=false`). |
 
 This file registers the **operator-local dry-run shape** for running the merged LAYA decision-packet parent batch CLI against host-local day-aligned sealed JSONL calendar labels `2026-09-20` and `2026-09-21` on `mal-core-vnic`, with documented paths under `/var/lib/mal`.
 
@@ -19,7 +19,7 @@ It is the same receipt class as [PR #53](https://github.com/vaanai/MAL/pull/53) 
 
 Merge ≠ executed host dry-run ≠ Oracle measure ≠ LAYA authorize-run ≠ risk-gate unlock ≠ live trading ≠ EXP-006 promote.
 
-Soft GATE pending. Soft GATE PASS (when it comes) ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
+**Soft GATE PASS** (Formal stamp Lyra). Soft GATE PASS ≠ Discovery promote ≠ continuous observe-wiring ≠ production enum lock ≠ densify ≠ EXP-002c retune ≠ Graph revive ≠ X keys on host ≠ live trading ≠ EXP-006 promote ≠ LAYA authorize-run ≠ **risk-gate unlock**.
 
 ---
 
@@ -95,14 +95,14 @@ Graph stays cold. Horizons and `Δ_exec` are not on this receipt (`carries.horiz
 | --- | --- |
 | Merge of this registration | Docs + receipt schema + synthetic receipts + receipt CLI. **Does not** run the host dry-run |
 | `observe/client.py` | **Untouched** |
-| Soft GATE at merge | **Pending** — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 promote / LAYA authorize-run / **risk-gate unlock** |
+| Soft GATE at merge | **PASS** (Formal stamp Lyra; kill `bc-6e0d511c-983b-59c3-8ca8-c388292ea5ed`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 promote / LAYA authorize-run / **risk-gate unlock** |
 | Host access from this CLI | No RPC. No SSH. Refuses `/var/lib/mal`, `//var/lib/mal`, `///var/lib/mal`, relative/`./` forms, lexical `..` under that root, and collapse forms **lexically before any filesystem touch** |
 
 ---
 
 ## Soft watches (non-blocking)
 
-Soft GATE **pending**. `soft_watches.blocking=false`. Inherited #67–#69 watches plus dry-run watches on this stamp. They do not fail merge of this registration.
+**Soft GATE PASS** (Formal stamp Lyra). `soft_watches.blocking=false`. Inherited #67–#69 watches plus dry-run watches on this stamp. They do not fail merge of this registration.
 
 Named on this registration:
 
@@ -152,7 +152,7 @@ python3 -m unittest tools.test_paper_laya_decision_packet_batch_host_local_seale
 | Rewrite #49–#69 parent CLIs or EXP-006 harness | Out |
 | Host extract in git, SSH, RPC, `/var/lib/mal` read from CI | Out |
 | `PASS` / `FAIL_NO_LIFT` exit | Out |
-| Soft GATE PASS at merge | **Pending** — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / **risk-gate unlock** |
+| Soft GATE PASS at merge | **PASS** (Formal stamp Lyra; kill `bc-6e0d511c-983b-59c3-8ca8-c388292ea5ed`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / **risk-gate unlock** |
 
 ---
 
