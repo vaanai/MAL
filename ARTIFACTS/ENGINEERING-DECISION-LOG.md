@@ -28,6 +28,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-021 — LAYA decision-packet host-local dry-run receipt capture (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-021 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-laya-decision-packet-host-local-dry-run-receipt-capture-v0`: [PAPER-LAYA-DECISION-PACKET-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-LAYA-DECISION-PACKET-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md), [paper-laya-decision-packet-host-local-dry-run-receipt-capture-v0.schema.json](paper-laya-decision-packet-host-local-dry-run-receipt-capture-v0.schema.json), five capture fixtures, `python -m tools.paper_laya_decision_packet_host_local_dry_run_receipt_capture_v0` (example / validate). The #70 dry-run CLI is called, not rewritten. [LAB_STATE.md](../LAB_STATE.md) §11v. |
+| **Why** | Mirror #55 / #62 capture on parent #70: citeable record of refuse and receipt outcomes without embedding receipt bodies, host bytes, horizons, or returns; risk gate stays locked; LAYA authorize-run stays false. |
+| **What was tested** | `python3 -m unittest tools.test_paper_laya_decision_packet_host_local_dry_run_receipt_capture_v0` (**17 OK** per Soft GATE). Parent `tools.test_paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0` — **21 OK**. Honest captures pass schema and CLI. Dishonest copies fail both. FAIL #1–#2 holes **closed**. Host-path and collapse refuses before `read_text`. No RPC. `observe/client.py` untouched. |
+| **Verification** | Soft GATE **PASS** Formal-stamped Lyra (kill `bc-583eb833-6443-55f7-a685-b1ad3e166b6b`; head `cecdf6767c71d34da3927ba32646b674787eab45`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/71#issuecomment-5813702684); Formal docs `ee88cd2` on `cursor/paper-laya-decision-packet-host-local-dry-run-receipt-capture-v0-d617`; FAIL #1 [closed](https://github.com/vaanai/MAL/pull/71#issuecomment-5813349728); FAIL #2 [closed](https://github.com/vaanai/MAL/pull/71#issuecomment-5813497572); [PR #71](https://github.com/vaanai/MAL/pull/71) squash pending on `main`). |
+| **Current state** | **Proposed** registration on **open PR** (#71; squash pending). `measure.kind=none`; sealed book **incomplete**; Graph **cold**; `risk_gate.decision=locked`; `risk_gate.unlock=false`; `laya.authorize_run=false`; `laya.risk_gate_unlock=false`; `laya.live_trading=false`. |
+| **Rollback** | Close PR; remove §11v from Lab memory. |
+| **Unresolved** | — |
+| **Implications** | Citeable capture layer after #70 dry-run without rewriting parent CLIs. |
+| **Pointers** | [#70 dry-run](PAPER-LAYA-DECISION-PACKET-BATCH-HOST-LOCAL-SEALED-JSONL-DRY-RUN-INCOMPLETE-RPC-V0.md), [#62 fill-sim capture](PAPER-FILL-SIM-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md), [#55 capture](PAPER-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md). |
+
+---
+
 ## EDL-020 — LAYA decision-packet batch host-local sealed JSONL dry-run (Proposed)
 
 | Field | Value |
