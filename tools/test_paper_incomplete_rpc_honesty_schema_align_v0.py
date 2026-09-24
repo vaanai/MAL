@@ -12,18 +12,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator, ValidationError
-from jsonschema.validators import extend
+from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
-
-# Draft 2020-12's integer type accepts 1.0 / 2.0. $ref into hot-packet switches
-# to that stock validator (the $schema evaluate and scoreboard declare), which
-# drops malStrictJsonInteger. Tighten the declared integer check so a
-# whole-number float fails on the nested packet too.
-Draft202012Validator.TYPE_CHECKER = Draft202012Validator.TYPE_CHECKER.redefine(
-    "integer",
-    lambda checker, instance: isinstance(instance, int) and not isinstance(instance, bool),
-)
 
 from tools.hot_packet_v0 import validate_packet
 from tools.paper_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0 import (
@@ -77,22 +67,6 @@ def _load(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _mal_strict_json_integer(validator, enabled, instance, schema):
-    """Draft 2020-12 type integer accepts 1.0. The CLI does not."""
-    if not enabled:
-        return
-    if isinstance(instance, bool) or not isinstance(instance, int):
-        yield ValidationError(
-            "integer slot rejects a whole-number float; JSON integer only"
-        )
-
-
-PaperValidator = extend(
-    Draft202012Validator,
-    {"malStrictJsonInteger": _mal_strict_json_integer},
-)
-
-
 def _registry() -> Registry:
     resources = []
     for name in SCHEMA_FILES:
@@ -108,7 +82,7 @@ def _validator(ref: str, registry: Registry) -> Draft202012Validator:
     else:
         name = ref
         schema = _load(ART / name)
-    return PaperValidator(schema, registry=registry)
+    return Draft202012Validator(schema, registry=registry)
 
 
 def _schema_errors(ref: str, doc: Any, registry: Registry) -> list[str]:

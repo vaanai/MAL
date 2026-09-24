@@ -465,16 +465,12 @@
       ]
     },
     "jsonIntegerOrNull": {
+      "$schema": "http://json-schema.org/draft-04/schema#",
       "anyOf": [
-        { "const": null },
-        {
-          "allOf": [
-            { "type": "integer", "minimum": 0 },
-            { "malStrictJsonInteger": true }
-          ]
-        }
+        { "type": "null" },
+        { "type": "integer", "minimum": 0 }
       ],
-      "description": "JSON integer only. Draft 2020-12 type integer accepts 1.0 and 2.0; malStrictJsonInteger refuses those whole-number floats so the slot matches the CLI."
+      "description": "Dialect the prior_mint_count $ref selects. Draft-04 integer rejects whole-number floats 1.0 and 2.0. Draft 2020-12 integer accepts them. A JSON integer such as 2 still passes."
     },
     "clocks": {
       "type": "object",
