@@ -134,6 +134,9 @@
           },
           "invocation": {
             "properties": {
+              "executed_by_this_process": {
+                "const": true
+              },
               "argv_shape": {
                 "$ref": "#/$defs/syntheticReplayArgvShape"
               }
@@ -189,6 +192,9 @@
           },
           "invocation": {
             "properties": {
+              "executed_by_this_process": {
+                "const": true
+              },
               "argv_shape": {
                 "$ref": "#/$defs/projectionOnSyntheticArgvShape"
               }
@@ -241,6 +247,9 @@
           },
           "invocation": {
             "properties": {
+              "executed_by_this_process": {
+                "const": false
+              },
               "jsonl": {
                 "$ref": "#/$defs/operatorDeclaredInvocationJsonl"
               },
@@ -276,31 +285,13 @@
           "invocation": {
             "properties": {
               "jsonl": {
-                "items": {
-                  "allOf": [
-                    {
-                      "$ref": "#/$defs/repoFixturePathHonesty"
-                    }
-                  ]
-                }
+                "$ref": "#/$defs/syntheticCheckedInInvocationJsonl"
               },
               "manifest": {
-                "items": {
-                  "allOf": [
-                    {
-                      "$ref": "#/$defs/repoFixturePathHonesty"
-                    }
-                  ]
-                }
+                "$ref": "#/$defs/syntheticCheckedInInvocationManifest"
               },
               "expectation": {
-                "items": {
-                  "allOf": [
-                    {
-                      "$ref": "#/$defs/repoFixturePathHonesty"
-                    }
-                  ]
-                }
+                "$ref": "#/$defs/syntheticCheckedInInvocationExpectation"
               }
             }
           }
@@ -1033,6 +1024,48 @@
           "const": false
         }
       }
+    },
+    "syntheticCheckedInInvocationJsonl": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-20.jsonl"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/observe-2026-09-21.jsonl"
+        }
+      ],
+      "items": false
+    },
+    "syntheticCheckedInInvocationManifest": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-20.json"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/decision-day-2026-09-21.json"
+        }
+      ],
+      "items": false
+    },
+    "syntheticCheckedInInvocationExpectation": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-20_expectation.json"
+        },
+        {
+          "const": "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/sealed_day_2026-09-21_expectation.json"
+        }
+      ],
+      "items": false
     },
     "operatorDeclaredInvocationJsonl": {
       "type": "array",

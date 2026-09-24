@@ -314,6 +314,52 @@ class LayaDecisionPacketSchemaAlignV0Tests(unittest.TestCase):
         self.assertTrue(_schema_errors(ref, doc, self.registry))
         self.assertTrue(_cli_errors("scoreboard", doc))
 
+    def test_dry_run_non_operator_invocation_paths_and_executed_flag_fail_schema_and_cli(
+        self,
+    ) -> None:
+        ref = (
+            "paper-laya-decision-packet-batch-host-local-sealed-jsonl-dry-run-incomplete-rpc-v0.schema.json"
+        )
+        base_path = (
+            ROOT
+            / "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/synthetic_replay.json"
+        )
+        exact_jsonl = (
+            "fixtures/paper_laya_decision_packet_batch_oracle_sealed_day_incomplete_rpc_v0/"
+            "observe-2026-09-20.jsonl"
+        )
+        mutations: tuple[tuple[tuple[Any, ...], Any], ...] = (
+            (("invocation", "jsonl", 0), "fixtures/unmatched.json"),
+            (
+                ("invocation", "jsonl", 0),
+                "fixtures/paper_laya_precompute_decision_packet_v0/observe-2026-09-20.jsonl",
+            ),
+            (
+                ("invocation", "jsonl", 0),
+                exact_jsonl.replace(".jsonl", ".JSONL"),
+            ),
+            (("invocation", "jsonl", 0), f" {exact_jsonl}"),
+            (("invocation", "manifest", 0), "fixtures/unmatched.json"),
+            (("invocation", "expectation", 0), "fixtures/unmatched.json"),
+            (("invocation", "executed_by_this_process"), False),
+        )
+        for path, value in mutations:
+            with self.subTest(path=path, value=value):
+                doc = copy.deepcopy(_load(base_path))
+                _set_path(doc, path, value)
+                self.assertTrue(_schema_errors(ref, doc, self.registry))
+                self.assertTrue(_cli_errors("dry_run_receipt", doc))
+
+        projection_path = (
+            ROOT
+            / "fixtures/paper_laya_decision_packet_batch_host_local_sealed_jsonl_dry_run_incomplete_rpc_v0/projection_on_synthetic.json"
+        )
+        if projection_path.is_file():
+            proj = copy.deepcopy(_load(projection_path))
+            proj["invocation"]["jsonl"][0] = "fixtures/unmatched.json"
+            self.assertTrue(_schema_errors(ref, proj, self.registry))
+            self.assertTrue(_cli_errors("dry_run_receipt", proj))
+
     def test_registration_has_no_runtime_cli(self) -> None:
         self.assertFalse(
             (ROOT / "tools/paper_laya_decision_packet_incomplete_rpc_honesty_schema_align_v0.py").exists()
