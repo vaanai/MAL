@@ -141,8 +141,9 @@ python3 -m unittest tools.test_paper_laya_precompute_surround_packet_v0
 
 ## Cross-links
 
-- Scoreboards cited: [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md)
-- Optional batch rollup: [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md)
-- Fill-sim mirror (merged): [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md)
+- Scoreboards cited (#51): [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md), [paper-scoreboard-sealed-fixture-v0.schema.json](paper-scoreboard-sealed-fixture-v0.schema.json), fixtures `fixtures/paper_scoreboard_sealed_fixture_v0/`, CLI `python -m tools.paper_scoreboard_sealed_fixture_v0`
+- Optional batch rollup (#52): [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [paper-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json](paper-batch-oracle-sealed-day-incomplete-rpc-v0.schema.json), fixtures `fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/`, CLI `python -m tools.paper_batch_oracle_sealed_day_incomplete_rpc_v0`
+- Fill-sim mirror (merged #63): [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md), [paper-laya-precompute-fill-sim-surround-packet-v0.schema.json](paper-laya-precompute-fill-sim-surround-packet-v0.schema.json), fixtures `fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/`, CLI `python -m tools.paper_laya_precompute_fill_sim_surround_packet_v0`, tests `tools/test_paper_laya_precompute_fill_sim_surround_packet_v0.py`
+- Lab memory: [LAB_STATE.md](../LAB_STATE.md) (§11o); EDL: [ENGINEERING-DECISION-LOG.md](ENGINEERING-DECISION-LOG.md) (EDL-014)
 - LAYA stack brief: [STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md](STACK-OPTIONS-LAYA-VS-VPS-BRIEF.md)
 - Pipeline: [DEC-006](../DEC/DEC-006-detect-decode-evaluate-runners.md), [DEC-007](../DEC/DEC-007-full-detect-book-anti-selection-bias.md)

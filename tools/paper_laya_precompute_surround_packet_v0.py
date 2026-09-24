@@ -24,10 +24,6 @@ from tools.paper_batch_oracle_sealed_day_incomplete_rpc_v0 import (
     SOFT_WATCH_ITEMS as BATCH_SOFT_WATCH_ITEMS,
     validate_batch,
 )
-from tools.paper_fill_sim_scoreboard_sealed_fixture_v0 import (
-    HOST_ROOT,
-    _host_open_refusal,
-)
 from tools.paper_scoreboard_sealed_fixture_v0 import (
     SCHEMA_VERSION as SCOREBOARD_SCHEMA,
     SCOREBOARD_ID,
@@ -129,6 +125,7 @@ FORBIDDEN_KEYS: frozenset[str] = frozenset(
 )
 
 REPO = Path(__file__).resolve().parents[1]
+HOST_ROOT = "/var/lib/mal"
 ALLOWED_SCOREBOARD_PREFIX = "fixtures/paper_scoreboard_sealed_fixture_v0/"
 ALLOWED_BATCH_PREFIX = "fixtures/paper_batch_oracle_sealed_day_incomplete_rpc_v0/"
 FIXTURE_DIR = REPO / "fixtures" / "paper_laya_precompute_surround_packet_v0"
@@ -153,6 +150,13 @@ def _collapse_leading_slashes(posix_path: str) -> str:
     if posix_path.startswith("//"):
         return "/" + posix_path.lstrip("/")
     return posix_path
+
+
+def _host_open_refusal(text: str) -> str | None:
+    normalized = _collapse_leading_slashes(posixpath.normpath(text.replace("\\", "/").strip()))
+    if normalized == HOST_ROOT or normalized.startswith(HOST_ROOT + "/"):
+        return f"{text}: does not open {HOST_ROOT}"
+    return None
 
 
 def _normpath_string_only(text: str) -> str:

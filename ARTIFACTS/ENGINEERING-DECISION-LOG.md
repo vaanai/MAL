@@ -32,7 +32,7 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 | --- | --- |
 | **ID** | EDL-014 |
 | **Date** | 2026-09-24 |
-| **What changed** | Registered **Proposed** `paper-laya-precompute-surround-packet-v0`: [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md), [paper-laya-precompute-surround-packet-v0.schema.json](paper-laya-precompute-surround-packet-v0.schema.json), two surround fixtures, `python -m tools.paper_laya_precompute_surround_packet_v0` (example / validate / assemble). Consumes #51 scoreboard digests ± optional #52 batch `rollup`. Parent #49–#63 CLIs not rewritten. |
+| **What changed** | Registered **Proposed** `paper-laya-precompute-surround-packet-v0`: [PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-SURROUND-PACKET-V0.md), [paper-laya-precompute-surround-packet-v0.schema.json](paper-laya-precompute-surround-packet-v0.schema.json), fixtures `fixtures/paper_laya_precompute_surround_packet_v0/`, `python -m tools.paper_laya_precompute_surround_packet_v0` (example / validate / assemble), `tools/test_paper_laya_precompute_surround_packet_v0.py`. Consumes #51 [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md) digests ± optional #52 [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md) `rollup`. [LAB_STATE.md](../LAB_STATE.md) §11o. Parent #49–#63 CLIs not rewritten. |
 | **Why** | Mirror merged #63 fill-sim surround on the non-fill-sim paper spine for LAYA precompute shape without authorize-run, risk-gate unlock, or live claims. |
 | **What was tested** | `python3 -m unittest tools.test_paper_laya_precompute_surround_packet_v0`. Honest fixtures pass schema and CLI. Dishonest copies fail both. Host-path refuses before `read_text` / `stat`. No RPC. `observe/client.py` untouched. |
 | **Verification** | Soft GATE **pending** Formal stamp (draft PR). |
@@ -40,7 +40,7 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 | **Rollback** | Revert surround contract, schema, fixtures, CLI, and tests. |
 | **Unresolved** | Soft GATE Formal stamp before merge. |
 | **Implications** | Fixtures-only surround beside #51/#52 paper chain; fill-sim surround (#63) remains separate. |
-| **Pointers** | [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md), [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md), [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md) |
+| **Pointers** | [PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md](PAPER-SCOREBOARD-SEALED-FIXTURE-V0.md) (`tools.paper_scoreboard_sealed_fixture_v0`), [PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md](PAPER-BATCH-ORACLE-SEALED-DAY-INCOMPLETE-RPC-V0.md) (`tools.paper_batch_oracle_sealed_day_incomplete_rpc_v0`), [PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-FILL-SIM-SURROUND-PACKET-V0.md) (mirror #63), [LAB_STATE.md](../LAB_STATE.md) |
 
 ---
 
