@@ -1,0 +1,213 @@
+{
+  "schema_version": "paper_laya_risk_gate_lock_receipt_v0",
+  "type": "paper_laya_risk_gate_lock_receipt",
+  "id": "paper-laya-risk-gate-lock-receipt-v0",
+  "paper_only": true,
+  "receipt_kind": "lock",
+  "laya": {
+    "authorize_run": false,
+    "risk_gate_unlock": false,
+    "live_trading": false,
+    "consumption": "fixtures_only_lock_receipt_v0"
+  },
+  "risk_gate": {
+    "decision": "locked",
+    "unlock": false,
+    "reason": "paper_registration_fixture_receipt_only_not_risk_gate_unlock"
+  },
+  "input": {
+    "local_json_only": true,
+    "rpc": false,
+    "observe_jsonl_tail": false,
+    "host_extract_required": false,
+    "host_jsonl_read": false,
+    "marks_joined": false,
+    "fixture_origin": "synthetic",
+    "graph_policy": "cold",
+    "assembly": {
+      "surround_paths": [
+        "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json"
+      ]
+    }
+  },
+  "surround_citations": [
+    {
+      "registration": {
+        "id": "paper-laya-precompute-fill-sim-surround-packet-v0",
+        "schema_version": "paper_laya_precompute_fill_sim_surround_packet_v0",
+        "pull_request": 63,
+        "commit": "171cd61",
+        "rewritten_by_this_stamp": false
+      },
+      "fixture_path": "fixtures/paper_laya_precompute_fill_sim_surround_packet_v0/mixed_scoreboard.json",
+      "validated_by_parent_cli": true,
+      "surround_body_embedded": false,
+      "digest": {
+        "counts_are_stamp_counts_not_returns": true,
+        "full_book": {
+          "policy": "dec007_both_arms_retained",
+          "reject_stamps_dropped": 0,
+          "n": 5,
+          "runner_n": 4,
+          "reject_n": 1
+        },
+        "label_rates": {
+          "share_kind": "count_fraction_not_a_return",
+          "rows": [
+            {
+              "label": "runner",
+              "n": 4,
+              "share": {
+                "numerator": 4,
+                "denominator": 5
+              }
+            },
+            {
+              "label": "reject",
+              "n": 1,
+              "share": {
+                "numerator": 1,
+                "denominator": 5
+              }
+            }
+          ]
+        },
+        "fill_sim_status_counts": [
+          {
+            "status": "documented_model_only",
+            "n": 4,
+            "share": {
+              "numerator": 4,
+              "denominator": 5
+            }
+          },
+          {
+            "status": "reject_arm_no_pretend_buy",
+            "n": 1,
+            "share": {
+              "numerator": 1,
+              "denominator": 5
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "carries": {
+    "surround_body": false,
+    "host_bytes": false,
+    "horizons": false,
+    "delta_exec": false
+  },
+  "full_book": {
+    "policy": "dec007_both_arms_retained",
+    "reject_stamps_dropped": 0,
+    "local_set_is_not_the_sealed_book": true
+  },
+  "horizons": {
+    "status": "lock_receipt_null_explicit",
+    "values_supplied": false,
+    "null_is_not_zero_return": true,
+    "values": {
+      "1s": null,
+      "5s": null,
+      "15s": null,
+      "30s": null,
+      "60s": null
+    }
+  },
+  "delta_exec": {
+    "field": "delta_exec",
+    "also_called": "Δ_exec",
+    "value": null,
+    "status": "lock_receipt_null_explicit",
+    "reason": "laya_risk_gate_lock_receipt_has_no_scored_fill",
+    "null_is_not_zero_cost": true
+  },
+  "graph_lift": null,
+  "graph_policy": "cold",
+  "dual_read": {
+    "sealed_book_rpc_slice": "incomplete",
+    "closed_book_claim": false,
+    "incomplete_reason": "laya_risk_gate_lock_receipt_does_not_close_the_sealed_book"
+  },
+  "measure": {
+    "kind": "none",
+    "claims_alpha": false,
+    "invented_ev": false,
+    "invented_lift": false,
+    "pass_fail_no_lift": false
+  },
+  "soft_watches": {
+    "blocking": false,
+    "source": "hot_packet_v0_soft_gate_pr49_through_paper_laya_precompute_surround_pr64_laya_risk_gate_lock_receipt_v0",
+    "inherited_from": [
+      "paper_laya_precompute_fill_sim_surround_packet_v0_pr63",
+      "paper_laya_precompute_surround_packet_v0_pr64"
+    ],
+    "items": [
+      "schema_looser_than_cli",
+      "synthetic_launchlab_shape",
+      "graph_slot_shape_not_a_score",
+      "dec005_draft_unmerged",
+      "sealed_book_rpc_slice_incomplete",
+      "label_share_is_not_a_return",
+      "synthetic_sealed_day_not_a_host_extract",
+      "local_subset_is_not_dropped_history",
+      "host_jsonl_not_readable_from_ci",
+      "counts_are_not_returns",
+      "graph_stays_cold_on_this_stamp",
+      "surround_counts_are_not_returns",
+      "surround_not_laya_authorize_run",
+      "surround_not_risk_gate_unlock",
+      "surround_not_live_trading",
+      "synthetic_scoreboard_not_a_host_extract",
+      "batch_digest_optional_not_a_measure",
+      "host_jsonl_read_is_not_a_closed_book",
+      "operator_path_string_is_not_a_host_extract",
+      "dry_run_does_not_ssh_or_open_var_lib_mal",
+      "parent_stamp_not_rewritten",
+      "capture_records_refusal_not_a_measure",
+      "cited_receipt_is_not_a_host_extract",
+      "path_string_on_a_refuse_is_not_file_bytes",
+      "fill_sim_vocabulary_not_exp006_promote",
+      "documented_constants_not_a_scored_fill",
+      "parent_evaluate_cli_not_rewritten",
+      "exp006_harness_not_rewritten",
+      "fill_sim_status_share_is_not_a_return",
+      "receipt_not_risk_gate_unlock",
+      "receipt_not_laya_authorize_run",
+      "receipt_not_live",
+      "synthetic_surround_not_host_extract",
+      "lock_counts_are_stamp_counts_not_returns"
+    ]
+  },
+  "honesty": {
+    "registration": "proposed",
+    "scored_oracle_measure": false,
+    "executed_host_sealed_book": false,
+    "ci_claimed_sealed_book_close": false,
+    "continuous_observe_wiring": false,
+    "encoder_promoted": false,
+    "enum_production_lock": false,
+    "discovery_promoted": false,
+    "graph_lane_revived": false,
+    "invented_lift": false,
+    "invented_ev": false,
+    "claims_alpha": false,
+    "exp002c_retuned": false,
+    "exp006_promoted": false,
+    "exp006_harness_rewritten": false,
+    "marks_joined_on_this_stamp": false,
+    "live_capital": false,
+    "trading_keys": false,
+    "pumpportal_trade_api": false,
+    "ssh_to_host": false,
+    "host_extract_checked_into_git": false,
+    "var_lib_mal_read": false,
+    "laya_authorize_run": false,
+    "risk_gate_unlock": false,
+    "live_trading_enabled": false,
+    "surround_body_embedded_as_scored": false
+  }
+}

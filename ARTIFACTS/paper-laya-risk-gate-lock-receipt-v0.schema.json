@@ -1,0 +1,770 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-laya-risk-gate-lock-receipt-v0.schema.json",
+  "title": "MAL paper-laya-risk-gate-lock-receipt v0 (Proposed lock receipt)",
+  "description": "Proposed fixtures-only LAYA risk-gate lock receipt citing validated surround packets (#63/#64). Risk gate stays locked. Not authorize-run. Not live. See ARTIFACTS/PAPER-LAYA-RISK-GATE-LOCK-RECEIPT-V0.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "type",
+    "id",
+    "paper_only",
+    "receipt_kind",
+    "laya",
+    "risk_gate",
+    "input",
+    "surround_citations",
+    "carries",
+    "full_book",
+    "horizons",
+    "delta_exec",
+    "graph_lift",
+    "graph_policy",
+    "dual_read",
+    "measure",
+    "soft_watches",
+    "honesty"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "paper_laya_risk_gate_lock_receipt_v0"
+    },
+    "type": {
+      "const": "paper_laya_risk_gate_lock_receipt"
+    },
+    "id": {
+      "const": "paper-laya-risk-gate-lock-receipt-v0"
+    },
+    "paper_only": {
+      "const": true
+    },
+    "receipt_kind": {
+      "const": "lock"
+    },
+    "laya": {
+      "$ref": "#/$defs/layaCaps"
+    },
+    "risk_gate": {
+      "$ref": "#/$defs/riskGate"
+    },
+    "input": {
+      "$ref": "#/$defs/input"
+    },
+    "surround_citations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/surroundCitation"
+      }
+    },
+    "carries": {
+      "$ref": "#/$defs/carries"
+    },
+    "full_book": {
+      "$ref": "#/$defs/fullBookSummary"
+    },
+    "horizons": {
+      "$ref": "#/$defs/horizons"
+    },
+    "delta_exec": {
+      "$ref": "#/$defs/deltaExec"
+    },
+    "graph_lift": {
+      "const": null
+    },
+    "graph_policy": {
+      "const": "cold"
+    },
+    "dual_read": {
+      "$ref": "#/$defs/dualRead"
+    },
+    "measure": {
+      "$ref": "#/$defs/measure"
+    },
+    "soft_watches": {
+      "$ref": "#/$defs/softWatches"
+    },
+    "honesty": {
+      "$ref": "#/$defs/honesty"
+    }
+  },
+  "$defs": {
+    "layaCaps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorize_run",
+        "risk_gate_unlock",
+        "live_trading",
+        "consumption"
+      ],
+      "properties": {
+        "authorize_run": {
+          "const": false
+        },
+        "risk_gate_unlock": {
+          "const": false
+        },
+        "live_trading": {
+          "const": false
+        },
+        "consumption": {
+          "const": "fixtures_only_lock_receipt_v0"
+        }
+      }
+    },
+    "riskGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "unlock",
+        "reason"
+      ],
+      "properties": {
+        "decision": {
+          "const": "locked"
+        },
+        "unlock": {
+          "const": false
+        },
+        "reason": {
+          "const": "paper_registration_fixture_receipt_only_not_risk_gate_unlock"
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_json_only",
+        "rpc",
+        "observe_jsonl_tail",
+        "host_extract_required",
+        "host_jsonl_read",
+        "marks_joined",
+        "fixture_origin",
+        "graph_policy",
+        "assembly"
+      ],
+      "properties": {
+        "local_json_only": {
+          "const": true
+        },
+        "rpc": {
+          "const": false
+        },
+        "observe_jsonl_tail": {
+          "const": false
+        },
+        "host_extract_required": {
+          "const": false
+        },
+        "host_jsonl_read": {
+          "const": false
+        },
+        "marks_joined": {
+          "const": false
+        },
+        "fixture_origin": {
+          "const": "synthetic"
+        },
+        "graph_policy": {
+          "const": "cold"
+        },
+        "assembly": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "surround_paths"
+          ],
+          "properties": {
+            "surround_paths": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "surroundCitation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration",
+        "fixture_path",
+        "validated_by_parent_cli",
+        "surround_body_embedded",
+        "digest"
+      ],
+      "properties": {
+        "registration": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "schema_version",
+                "pull_request",
+                "commit",
+                "rewritten_by_this_stamp"
+              ],
+              "properties": {
+                "id": {
+                  "const": "paper-laya-precompute-surround-packet-v0"
+                },
+                "schema_version": {
+                  "const": "paper_laya_precompute_surround_packet_v0"
+                },
+                "pull_request": {
+                  "const": 64
+                },
+                "commit": {
+                  "const": "277a142"
+                },
+                "rewritten_by_this_stamp": {
+                  "const": false
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "schema_version",
+                "pull_request",
+                "commit",
+                "rewritten_by_this_stamp"
+              ],
+              "properties": {
+                "id": {
+                  "const": "paper-laya-precompute-fill-sim-surround-packet-v0"
+                },
+                "schema_version": {
+                  "const": "paper_laya_precompute_fill_sim_surround_packet_v0"
+                },
+                "pull_request": {
+                  "const": 63
+                },
+                "commit": {
+                  "const": "171cd61"
+                },
+                "rewritten_by_this_stamp": {
+                  "const": false
+                }
+              }
+            }
+          ]
+        },
+        "fixture_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "validated_by_parent_cli": {
+          "const": true
+        },
+        "surround_body_embedded": {
+          "const": false
+        },
+        "digest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "counts_are_stamp_counts_not_returns",
+            "full_book",
+            "label_rates"
+          ],
+          "properties": {
+            "counts_are_stamp_counts_not_returns": {
+              "const": true
+            },
+            "full_book": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "policy",
+                "reject_stamps_dropped",
+                "n",
+                "runner_n",
+                "reject_n"
+              ],
+              "properties": {
+                "policy": {
+                  "const": "dec007_both_arms_retained"
+                },
+                "reject_stamps_dropped": {
+                  "const": 0
+                },
+                "n": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "runner_n": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "reject_n": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "label_rates": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "share_kind",
+                "rows"
+              ],
+              "properties": {
+                "share_kind": {
+                  "const": "count_fraction_not_a_return"
+                },
+                "rows": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "label",
+                      "n",
+                      "share"
+                    ],
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "n": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "share": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "numerator",
+                          "denominator"
+                        ],
+                        "properties": {
+                          "numerator": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "denominator": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "fill_sim_status_counts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "status",
+                  "n",
+                  "share"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  },
+                  "n": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "share": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "numerator",
+                      "denominator"
+                    ],
+                    "properties": {
+                      "numerator": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "denominator": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "carries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surround_body",
+        "host_bytes",
+        "horizons",
+        "delta_exec"
+      ],
+      "properties": {
+        "surround_body": {
+          "const": false
+        },
+        "host_bytes": {
+          "const": false
+        },
+        "horizons": {
+          "const": false
+        },
+        "delta_exec": {
+          "const": false
+        }
+      }
+    },
+    "fullBookSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "reject_stamps_dropped",
+        "local_set_is_not_the_sealed_book"
+      ],
+      "properties": {
+        "policy": {
+          "const": "dec007_both_arms_retained"
+        },
+        "reject_stamps_dropped": {
+          "const": 0
+        },
+        "local_set_is_not_the_sealed_book": {
+          "const": true
+        }
+      }
+    },
+    "horizons": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "values_supplied",
+        "null_is_not_zero_return",
+        "values"
+      ],
+      "properties": {
+        "status": {
+          "const": "lock_receipt_null_explicit"
+        },
+        "values_supplied": {
+          "const": false
+        },
+        "null_is_not_zero_return": {
+          "const": true
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "1s",
+            "5s",
+            "15s",
+            "30s",
+            "60s"
+          ],
+          "properties": {
+            "1s": {
+              "type": "null"
+            },
+            "5s": {
+              "type": "null"
+            },
+            "15s": {
+              "type": "null"
+            },
+            "30s": {
+              "type": "null"
+            },
+            "60s": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    },
+    "deltaExec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "also_called",
+        "value",
+        "status",
+        "reason",
+        "null_is_not_zero_cost"
+      ],
+      "properties": {
+        "field": {
+          "const": "delta_exec"
+        },
+        "also_called": {
+          "const": "Δ_exec"
+        },
+        "value": {
+          "type": "null"
+        },
+        "status": {
+          "const": "lock_receipt_null_explicit"
+        },
+        "reason": {
+          "const": "laya_risk_gate_lock_receipt_has_no_scored_fill"
+        },
+        "null_is_not_zero_cost": {
+          "const": true
+        }
+      }
+    },
+    "dualRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sealed_book_rpc_slice",
+        "closed_book_claim",
+        "incomplete_reason"
+      ],
+      "properties": {
+        "sealed_book_rpc_slice": {
+          "const": "incomplete"
+        },
+        "closed_book_claim": {
+          "const": false
+        },
+        "incomplete_reason": {
+          "const": "laya_risk_gate_lock_receipt_does_not_close_the_sealed_book"
+        }
+      }
+    },
+    "measure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "claims_alpha",
+        "invented_ev",
+        "invented_lift",
+        "pass_fail_no_lift"
+      ],
+      "properties": {
+        "kind": {
+          "const": "none"
+        },
+        "claims_alpha": {
+          "const": false
+        },
+        "invented_ev": {
+          "const": false
+        },
+        "invented_lift": {
+          "const": false
+        },
+        "pass_fail_no_lift": {
+          "const": false
+        }
+      }
+    },
+    "softWatches": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blocking",
+        "source",
+        "inherited_from",
+        "items"
+      ],
+      "properties": {
+        "blocking": {
+          "const": false
+        },
+        "source": {
+          "type": "string"
+        },
+        "inherited_from": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "schema_looser_than_cli",
+              "synthetic_launchlab_shape",
+              "graph_slot_shape_not_a_score",
+              "dec005_draft_unmerged",
+              "sealed_book_rpc_slice_incomplete",
+              "label_share_is_not_a_return",
+              "synthetic_sealed_day_not_a_host_extract",
+              "local_subset_is_not_dropped_history",
+              "host_jsonl_not_readable_from_ci",
+              "counts_are_not_returns",
+              "graph_stays_cold_on_this_stamp",
+              "surround_counts_are_not_returns",
+              "surround_not_laya_authorize_run",
+              "surround_not_risk_gate_unlock",
+              "surround_not_live_trading",
+              "synthetic_scoreboard_not_a_host_extract",
+              "batch_digest_optional_not_a_measure",
+              "host_jsonl_read_is_not_a_closed_book",
+              "operator_path_string_is_not_a_host_extract",
+              "dry_run_does_not_ssh_or_open_var_lib_mal",
+              "parent_stamp_not_rewritten",
+              "capture_records_refusal_not_a_measure",
+              "cited_receipt_is_not_a_host_extract",
+              "path_string_on_a_refuse_is_not_file_bytes",
+              "fill_sim_vocabulary_not_exp006_promote",
+              "documented_constants_not_a_scored_fill",
+              "parent_evaluate_cli_not_rewritten",
+              "exp006_harness_not_rewritten",
+              "fill_sim_status_share_is_not_a_return",
+              "receipt_not_risk_gate_unlock",
+              "receipt_not_laya_authorize_run",
+              "receipt_not_live",
+              "synthetic_surround_not_host_extract",
+              "lock_counts_are_stamp_counts_not_returns"
+            ]
+          }
+        }
+      }
+    },
+    "honesty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registration",
+        "scored_oracle_measure",
+        "executed_host_sealed_book",
+        "ci_claimed_sealed_book_close",
+        "continuous_observe_wiring",
+        "encoder_promoted",
+        "enum_production_lock",
+        "discovery_promoted",
+        "graph_lane_revived",
+        "invented_lift",
+        "invented_ev",
+        "claims_alpha",
+        "exp002c_retuned",
+        "exp006_promoted",
+        "exp006_harness_rewritten",
+        "marks_joined_on_this_stamp",
+        "live_capital",
+        "trading_keys",
+        "pumpportal_trade_api",
+        "ssh_to_host",
+        "host_extract_checked_into_git",
+        "var_lib_mal_read",
+        "laya_authorize_run",
+        "risk_gate_unlock",
+        "live_trading_enabled",
+        "surround_body_embedded_as_scored"
+      ],
+      "properties": {
+        "registration": {
+          "const": "proposed"
+        },
+        "scored_oracle_measure": {
+          "const": false
+        },
+        "executed_host_sealed_book": {
+          "const": false
+        },
+        "ci_claimed_sealed_book_close": {
+          "const": false
+        },
+        "continuous_observe_wiring": {
+          "const": false
+        },
+        "encoder_promoted": {
+          "const": false
+        },
+        "enum_production_lock": {
+          "const": false
+        },
+        "discovery_promoted": {
+          "const": false
+        },
+        "graph_lane_revived": {
+          "const": false
+        },
+        "invented_lift": {
+          "const": false
+        },
+        "invented_ev": {
+          "const": false
+        },
+        "claims_alpha": {
+          "const": false
+        },
+        "exp002c_retuned": {
+          "const": false
+        },
+        "exp006_promoted": {
+          "const": false
+        },
+        "exp006_harness_rewritten": {
+          "const": false
+        },
+        "marks_joined_on_this_stamp": {
+          "const": false
+        },
+        "live_capital": {
+          "const": false
+        },
+        "trading_keys": {
+          "const": false
+        },
+        "pumpportal_trade_api": {
+          "const": false
+        },
+        "ssh_to_host": {
+          "const": false
+        },
+        "host_extract_checked_into_git": {
+          "const": false
+        },
+        "var_lib_mal_read": {
+          "const": false
+        },
+        "laya_authorize_run": {
+          "const": false
+        },
+        "risk_gate_unlock": {
+          "const": false
+        },
+        "live_trading_enabled": {
+          "const": false
+        },
+        "surround_body_embedded_as_scored": {
+          "const": false
+        }
+      }
+    }
+  }
+}
