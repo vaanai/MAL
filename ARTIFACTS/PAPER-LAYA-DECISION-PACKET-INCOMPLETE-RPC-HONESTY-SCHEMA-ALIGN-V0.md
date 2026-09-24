@@ -3,16 +3,16 @@
 | | |
 | --- | --- |
 | **ID** | `paper-laya-decision-packet-incomplete-rpc-honesty-schema-align-v0` |
-| **Status** | **Proposed** registration (2026-09-24). **Soft GATE pending.** Not a measure. Not an EXP. Not a sealed-book close. |
+| **Status** | **Proposed** registration (2026-09-24). **Soft GATE PASS Formal-stamped** (Composer; kill `bc-bc2ab492-9f94-57be-bcd2-90e93bb105b3`; head `28ee8e3deb7779e67e564566ad3509594909ad45`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/72#issuecomment-5814534435); FAIL #1 [closed](https://github.com/vaanai/MAL/pull/72#issuecomment-5814090373); FAIL #2 [closed](https://github.com/vaanai/MAL/pull/72#issuecomment-5814297367); merged [PR #72](https://github.com/vaanai/MAL/pull/72) on `main`). Not a measure. Not an EXP. Not a sealed-book close. |
 | **Owner seat** | Scout commission. Helm AUTH 2026-09-23. |
 | **Parent** | LAYA decision-packet chain PRs [#67](https://github.com/vaanai/MAL/pull/67)–[#71](https://github.com/vaanai/MAL/pull/71), main tip `dc691db` after Formal #71 |
 | **Mirror** | [PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) (#54), [PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-FILL-SIM-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) (#61), [PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-LAYA-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md) (#66) — same honesty caps on the #67–#71 citeable schemas; **no** rewrite of parent #49–#71 CLIs |
 | **Runtime object** | **None.** This stamp does not add a receipt schema or a CLI. Cite the tightened decision-packet parent schemas. |
-| **Soft GATE** | **Pending.** Watches that stay true stay **non-blocking**. |
+| **Soft GATE** | **PASS** — Formal stamp Composer (kill `bc-bc2ab492-9f94-57be-bcd2-90e93bb105b3`; head `28ee8e3deb7779e67e564566ad3509594909ad45`; [comment](https://github.com/vaanai/MAL/pull/72#issuecomment-5814534435)). Watches that stay true stay **non-blocking** (`blocking=false`). |
 
 JSON Schema on the LAYA decision-packet stack (#67–#71) is the citeable shape. Parent registrations #67–#69 already `const`-lock closed book, `measure.kind=none`, null horizons / `Δ_exec`, LAYA caps (`authorize_run` / `risk_gate_unlock` / `live_trading` false), `risk_gate.decision=locked`, digest-only citations, `repoFixturePathHonesty` on fixture paths, and ordered `soft_watches.items` via `prefixItems` from Soft GATE on those stamps. On #70 and #71, `soft_watches.items` was still an unordered enum bag with correct cardinality — dishonest permutations and duplicate-id lists passed schema while the CLIs already refused them. This registration closes that gap and documents the align pass.
 
-**Soft GATE pending.** Soft watch `schema_looser_than_cli` is **CLOSED** for watched decision-packet shapes once this stamp merges after Soft GATE. Soft GATE PASS (later) ≠ Discovery promote / continuous observe-wiring / production enum lock / densify / EXP-002c retune / Graph revive / X on host / live trading / EXP-006 promote / LAYA authorize-run / **risk-gate unlock**. No new runtime object. No CLI rewrite. `risk_gate.unlock=false`; Graph **cold**; paper-only.
+**Soft GATE PASS** (Formal stamp Composer; 2026-09-24; head `28ee8e3deb7779e67e564566ad3509594909ad45`; kill `bc-bc2ab492-9f94-57be-bcd2-90e93bb105b3`; [Soft GATE comment](https://github.com/vaanai/MAL/pull/72#issuecomment-5814534435); FAIL #1 [closed](https://github.com/vaanai/MAL/pull/72#issuecomment-5814090373); FAIL #2 [closed](https://github.com/vaanai/MAL/pull/72#issuecomment-5814297367); `python3 -m unittest tools.test_paper_laya_decision_packet_incomplete_rpc_honesty_schema_align_v0` — **16 OK**; parent #67–#71 unit tests **29 / 29 / 38 / 21 / 17 OK** per Soft GATE). Soft watch `schema_looser_than_cli` is **CLOSED** for watched decision-packet shapes. Soft GATE PASS ≠ Discovery promote / continuous observe-wiring / production enum lock / densify / EXP-002c retune / Graph revive / X on host / live trading / EXP-006 promote / LAYA authorize-run / **risk-gate unlock**. No new runtime object. No CLI rewrite. `risk_gate.unlock=false`; `laya.authorize_run=false`; Graph **cold**; paper-only.
 
 `measure.kind` stays `none` on these stamps. `dual_read.sealed_book_rpc_slice` stays `incomplete`. `closed_book_claim` stays `false`. Graph stays cold. `global_95bps` and `launchlab_init` stay Proposed.
 
@@ -64,7 +64,7 @@ There is no `paper-laya-decision-packet-incomplete-rpc-honesty-schema-align-v0.s
 
 Parent stamps #67–#71 still emit `schema_looser_than_cli` inside `soft_watches.items`. That list is the historical registration of those stamps. It is not a claim that the honesty shapes above still pass schema only after this align pass closes the last gaps.
 
-**Still true, non-blocking** (`blocking=false` on the parent stamps). **Soft GATE pending.** This stamp does not close them.
+**Still true, non-blocking** (`blocking=false` on the parent stamps). Soft GATE **PASS** (Formal stamp Composer). This stamp does not close them.
 
 | Watch id | What stays true |
 | --- | --- |
@@ -111,7 +111,7 @@ The align test loads the decision-packet schemas with JSON Schema 2020-12 and a 
 | Closing `sealed_book_rpc_slice` | Out. Stays `incomplete`. `closed_book_claim=false` |
 | Rewriting parent #49–#71 CLIs | Out |
 | New runtime align-pass object | Out |
-| Soft GATE PASS at merge | **Pending** — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / **risk-gate unlock** |
+| Soft GATE PASS at merge | **PASS** (Formal stamp Composer; kill `bc-bc2ab492-9f94-57be-bcd2-90e93bb105b3`; head `28ee8e3`) — ≠ Discovery / wiring / enum / densify / EXP-002c / Graph / X / live / EXP-006 / LAYA authorize-run / **risk-gate unlock** |
 
 ---
 
