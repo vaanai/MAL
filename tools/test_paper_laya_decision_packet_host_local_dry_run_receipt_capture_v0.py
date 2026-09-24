@@ -92,10 +92,9 @@ class PaperLayaDecisionPacketHostLocalDryRunReceiptCaptureV0Tests(unittest.TestC
         self.assertIs(schema["properties"]["graph_lift"]["const"], None)
         self.assertEqual(schema["properties"]["graph_policy"]["const"], "cold")
         self.assertIs(schema["$defs"]["softWatches"]["properties"]["blocking"]["const"], False)
-        self.assertEqual(
-            schema["$defs"]["softWatches"]["properties"]["items"]["items"]["enum"],
-            list(SOFT_WATCH_ITEMS),
-        )
+        prefix = schema["$defs"]["softWatches"]["properties"]["items"]["prefixItems"]
+        self.assertEqual(len(prefix), len(SOFT_WATCH_ITEMS))
+        self.assertEqual([item["const"] for item in prefix], list(SOFT_WATCH_ITEMS))
         arms = schema["$defs"]["fullBook"]["properties"]["digest_label_arms"]["prefixItems"]
         self.assertEqual(arms[0]["const"], "runner")
         self.assertEqual(arms[1]["const"], "reject")

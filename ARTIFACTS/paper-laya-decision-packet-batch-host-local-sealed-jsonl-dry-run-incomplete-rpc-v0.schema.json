@@ -778,57 +778,151 @@
           "type": "array",
           "minItems": 47,
           "maxItems": 47,
-          "items": {
-            "enum": [
-              "schema_looser_than_cli",
-              "synthetic_launchlab_shape",
-              "graph_slot_shape_not_a_score",
-              "dec005_draft_unmerged",
-              "sealed_book_rpc_slice_incomplete",
-              "label_share_is_not_a_return",
-              "synthetic_sealed_day_not_a_host_extract",
-              "local_subset_is_not_dropped_history",
-              "host_jsonl_not_readable_from_ci",
-              "counts_are_not_returns",
-              "graph_stays_cold_on_this_stamp",
-              "surround_counts_are_not_returns",
-              "surround_not_laya_authorize_run",
-              "surround_not_risk_gate_unlock",
-              "surround_not_live_trading",
-              "synthetic_scoreboard_not_a_host_extract",
-              "batch_digest_optional_not_a_measure",
-              "host_jsonl_read_is_not_a_closed_book",
-              "operator_path_string_is_not_a_host_extract",
-              "dry_run_does_not_ssh_or_open_var_lib_mal",
-              "parent_stamp_not_rewritten",
-              "capture_records_refusal_not_a_measure",
-              "cited_receipt_is_not_a_host_extract",
-              "path_string_on_a_refuse_is_not_file_bytes",
-              "fill_sim_vocabulary_not_exp006_promote",
-              "documented_constants_not_a_scored_fill",
-              "parent_evaluate_cli_not_rewritten",
-              "exp006_harness_not_rewritten",
-              "fill_sim_status_share_is_not_a_return",
-              "receipt_not_risk_gate_unlock",
-              "receipt_not_laya_authorize_run",
-              "receipt_not_live",
-              "synthetic_surround_not_host_extract",
-              "lock_counts_are_stamp_counts_not_returns",
-              "decision_packet_not_risk_gate_unlock",
-              "decision_packet_not_laya_authorize_run",
-              "decision_packet_not_live",
-              "decision_packet_cites_lock_receipt_not_unlock",
-              "decision_counts_are_stamp_counts_not_returns",
-              "digest_label_share_is_not_a_return",
-              "spine_profile_share_is_not_a_return",
-              "fill_sim_digest_share_is_not_a_return",
-              "decision_packet_batch_not_a_host_extract",
-              "decision_packet_batch_counts_are_not_returns",
-              "decision_packet_batch_not_risk_gate_unlock",
-              "decision_packet_batch_not_laya_authorize_run",
-              "decision_packet_batch_host_local_not_a_host_extract"
-            ]
-          }
+          "uniqueItems": true,
+          "prefixItems": [
+            {
+              "const": "schema_looser_than_cli"
+            },
+            {
+              "const": "synthetic_launchlab_shape"
+            },
+            {
+              "const": "graph_slot_shape_not_a_score"
+            },
+            {
+              "const": "dec005_draft_unmerged"
+            },
+            {
+              "const": "sealed_book_rpc_slice_incomplete"
+            },
+            {
+              "const": "label_share_is_not_a_return"
+            },
+            {
+              "const": "synthetic_sealed_day_not_a_host_extract"
+            },
+            {
+              "const": "local_subset_is_not_dropped_history"
+            },
+            {
+              "const": "host_jsonl_not_readable_from_ci"
+            },
+            {
+              "const": "counts_are_not_returns"
+            },
+            {
+              "const": "graph_stays_cold_on_this_stamp"
+            },
+            {
+              "const": "surround_counts_are_not_returns"
+            },
+            {
+              "const": "surround_not_laya_authorize_run"
+            },
+            {
+              "const": "surround_not_risk_gate_unlock"
+            },
+            {
+              "const": "surround_not_live_trading"
+            },
+            {
+              "const": "synthetic_scoreboard_not_a_host_extract"
+            },
+            {
+              "const": "batch_digest_optional_not_a_measure"
+            },
+            {
+              "const": "host_jsonl_read_is_not_a_closed_book"
+            },
+            {
+              "const": "operator_path_string_is_not_a_host_extract"
+            },
+            {
+              "const": "dry_run_does_not_ssh_or_open_var_lib_mal"
+            },
+            {
+              "const": "parent_stamp_not_rewritten"
+            },
+            {
+              "const": "capture_records_refusal_not_a_measure"
+            },
+            {
+              "const": "cited_receipt_is_not_a_host_extract"
+            },
+            {
+              "const": "path_string_on_a_refuse_is_not_file_bytes"
+            },
+            {
+              "const": "fill_sim_vocabulary_not_exp006_promote"
+            },
+            {
+              "const": "documented_constants_not_a_scored_fill"
+            },
+            {
+              "const": "parent_evaluate_cli_not_rewritten"
+            },
+            {
+              "const": "exp006_harness_not_rewritten"
+            },
+            {
+              "const": "fill_sim_status_share_is_not_a_return"
+            },
+            {
+              "const": "receipt_not_risk_gate_unlock"
+            },
+            {
+              "const": "receipt_not_laya_authorize_run"
+            },
+            {
+              "const": "receipt_not_live"
+            },
+            {
+              "const": "synthetic_surround_not_host_extract"
+            },
+            {
+              "const": "lock_counts_are_stamp_counts_not_returns"
+            },
+            {
+              "const": "decision_packet_not_risk_gate_unlock"
+            },
+            {
+              "const": "decision_packet_not_laya_authorize_run"
+            },
+            {
+              "const": "decision_packet_not_live"
+            },
+            {
+              "const": "decision_packet_cites_lock_receipt_not_unlock"
+            },
+            {
+              "const": "decision_counts_are_stamp_counts_not_returns"
+            },
+            {
+              "const": "digest_label_share_is_not_a_return"
+            },
+            {
+              "const": "spine_profile_share_is_not_a_return"
+            },
+            {
+              "const": "fill_sim_digest_share_is_not_a_return"
+            },
+            {
+              "const": "decision_packet_batch_not_a_host_extract"
+            },
+            {
+              "const": "decision_packet_batch_counts_are_not_returns"
+            },
+            {
+              "const": "decision_packet_batch_not_risk_gate_unlock"
+            },
+            {
+              "const": "decision_packet_batch_not_laya_authorize_run"
+            },
+            {
+              "const": "decision_packet_batch_host_local_not_a_host_extract"
+            }
+          ],
+          "items": false
         }
       }
     },

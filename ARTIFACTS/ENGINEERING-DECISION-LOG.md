@@ -118,6 +118,24 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
+## EDL-017 — LAYA decision-packet incomplete-RPC honesty schema align (Proposed)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-017 |
+| **Date** | 2026-09-24 |
+| **What changed** | Registered **Proposed** `paper-laya-decision-packet-incomplete-rpc-honesty-schema-align-v0`: [PAPER-LAYA-DECISION-PACKET-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md](PAPER-LAYA-DECISION-PACKET-INCOMPLETE-RPC-HONESTY-SCHEMA-ALIGN-V0.md). Tightened #70–#71 `soft_watches.items` from enum bags to ordered `prefixItems` with full cardinality (47 / 50). #67–#69 citeable schemas already matched CLI on watched shapes from Soft GATE; tests cite them. No new runtime schema. No CLI rewrite. |
+| **Why** | Mirror parent #54, fill-sim #61, and LAYA #66 on the decision-packet citeable chain (#67–#71). Schema must refuse dishonest shapes those CLIs already refuse before Soft GATE merge. |
+| **What was tested** | `python3 -m unittest tools.test_paper_laya_decision_packet_incomplete_rpc_honesty_schema_align_v0` plus existing #67–#71 unit tests. Honest fixtures pass schema and CLI. Dishonest copies fail both. No RPC. No host read. `observe/client.py` untouched. |
+| **Verification** | Soft GATE **pending** (draft PR on branch `cursor/paper-laya-decision-packet-incomplete-rpc-honesty-schema-align-57e4`; base `main` @ `dc691db`). |
+| **Current state** | **Proposed** registration **not on `main` yet**. Not a measure. Not risk-gate unlock. Not LAYA authorize-run. Graph cold. Sealed book incomplete. `risk_gate.unlock=false`. |
+| **Rollback** | Revert schema `prefixItems` edits and drop align contract/tests. |
+| **Unresolved** | Soft GATE Formal stamp after merge. |
+| **Implications** | Decision-packet JSON Schema matches CLI honesty caps on watched shapes; no change to runtime CLIs or EXP-006 harness. |
+| **Pointers** | [PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md](PAPER-LAYA-PRECOMPUTE-DECISION-PACKET-V0.md), [PAPER-LAYA-DECISION-PACKET-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md](PAPER-LAYA-DECISION-PACKET-HOST-LOCAL-DRY-RUN-RECEIPT-CAPTURE-V0.md) |
+
+---
+
 ## EDL-016 — LAYA incomplete-RPC honesty schema align (Proposed)
 
 | Field | Value |
