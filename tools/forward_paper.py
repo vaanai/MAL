@@ -383,6 +383,7 @@ class ForwardEngine:
         slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
         tape_end_ms: int | None = None,
         record_packets: bool = False,
+        retain_rows: bool = False,
         logs: dict[str, JsonlLog] | None = None,
     ) -> None:
         self.books = [_BookRun(spec) for spec in books]
@@ -392,7 +393,9 @@ class ForwardEngine:
         self.offsets_ms = tuple(offsets_ms)
         self.slippage_cap = slippage_cap
         self.tape_end_ms = tape_end_ms
-        self.record_packets = record_packets or any(b.spec.kind == "laya" for b in self.books)
+        # Packets are scored on the fly. Only a replay keeps the rows in RAM.
+        self.record_packets = record_packets
+        self.retain_rows = retain_rows
         self.logs = logs or {}
         self.wallets = WalletState()
         self.by_creator: dict[str, list[MintBook]] = defaultdict(list)
@@ -622,10 +625,12 @@ class ForwardEngine:
         book = self.library.get(mint)
         if book is None:
             return
+        want_score = any(run.spec.kind == "laya" for run in self.books)
         feats = None
-        if self.record_packets:
+        if want_score or self.record_packets:
             feats = packet_at(book, t_ms, trigger, self.by_creator, self.wallets)
-            self.packets.append((mint, t_ms, trigger, dict(feats)))
+            if self.record_packets and self.retain_rows:
+                self.packets.append((mint, t_ms, trigger, dict(feats)))
         for run in self.books:
             if run.spec.kind == "laya":
                 self._enter_or_skip(run, book, t_ms, trigger, feats)
@@ -647,7 +652,7 @@ class ForwardEngine:
         if spec.kind == "laya":
             if feats is None:
                 feats = packet_at(book, t_ms, trigger, self.by_creator, self.wallets)
-                if self.record_packets:
+                if self.record_packets and self.retain_rows:
                     self.packets.append((mint, t_ms, trigger, dict(feats)))
             self.model.maybe_reload()
             if self.model.booster is None:
@@ -752,7 +757,8 @@ class ForwardEngine:
             "entry_status": entry_status,
             "latency": hops,
         }
-        self.decisions.append(row)
+        if self.retain_rows:
+            self.decisions.append(row)
         log = self.logs.get("decisions")
         if log is not None:
             log.write(row)
@@ -900,7 +906,8 @@ class ForwardEngine:
         )
 
     def _position(self, row: dict[str, Any]) -> None:
-        self.positions.append(row)
+        if self.retain_rows:
+            self.positions.append(row)
         log = self.logs.get("positions")
         if log is not None:
             log.write(row)
@@ -976,6 +983,7 @@ def replay_rows(
     offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
     record_packets: bool = False,
+    retain_rows: bool = True,
     logs: dict[str, JsonlLog] | None = None,
 ) -> ForwardEngine:
     engine = ForwardEngine(
@@ -987,6 +995,7 @@ def replay_rows(
         slippage_cap=slippage_cap,
         tape_end_ms=tape_end_ms,
         record_packets=record_packets,
+        retain_rows=retain_rows,
         logs=logs,
     )
     if model is not None:

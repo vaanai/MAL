@@ -318,6 +318,19 @@ class ModelAndLogTests(unittest.TestCase):
         )
         self.assertTrue(engine.decisions)
         self.assertEqual(engine.decisions[0]["schema"], SCHEMA_DECISION)
+        live = replay_rows(
+            [creates["MintA"]],
+            rows,
+            _books(),
+            tape_end_ms=TAPE_END,
+            kill_file=Path("/tmp/forward-paper-no-retain"),
+            offsets_ms=OFFSETS,
+            retain_rows=False,
+        )
+        self.assertEqual(live.packets, [])
+        self.assertEqual(live.decisions, [])
+        self.assertEqual(live.positions, [])
+        self.assertGreater(live.books[0].closed_n + len(live.books[0].open) + len(live.books[0].pending), 0)
         hops = engine.latency.report()
         self.assertGreater(hops["chain_to_recv"]["n"], 0)
         self.assertIsNotNone(hops["chain_to_recv"]["p99_ms"])
