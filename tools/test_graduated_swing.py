@@ -188,7 +188,7 @@ class ClockTests(unittest.TestCase):
 
 class BackfillRecvTests(unittest.TestCase):
     def test_rotated_jsonl_resolves_to_zst_sibling(self) -> None:
-        from tools.graduated_swing import _resolve_trade_file
+        from tools.graduated_swing import _refresh_trade_paths, _resolve_trade_file
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -197,6 +197,9 @@ class BackfillRecvTests(unittest.TestCase):
             sibling.write_bytes(b"x")
             self.assertEqual(_resolve_trade_file(gone), sibling)
             self.assertIsNone(_resolve_trade_file(root / "trades-missing.jsonl"))
+            # A pass that listed the jsonl still sees the zst after rotation.
+            refreshed = _refresh_trade_paths([gone])
+            self.assertEqual(refreshed, [sibling])
     def test_synthetic_receive_is_block_time_plus_lag_not_block_time(self) -> None:
         block = 1_790_320_000
         self.assertEqual(synthetic_recv_ms(block, 1_400), block * 1000 + 1_400)
@@ -284,6 +287,62 @@ class RoundTripSizeTests(unittest.TestCase):
             )
             assert impacted is not None
             self.assertGreater(impacted["loss_frac_fees_and_impact"], 0.02)
+
+
+class DeployModelTests(unittest.TestCase):
+    def test_training_rows_are_mig15_tp50_only(self) -> None:
+        from tools.laya_v0 import DecisionRow
+
+        from tools.graduated_swing import DEPLOY_MODEL_NAME, SWING_FEATURES, deploy_training_xy
+
+        def row(trigger: str, pnl: int | None) -> DecisionRow:
+            return DecisionRow(
+                mint="M",
+                creator="C",
+                create_t_ms=1,
+                decision_t_ms=2,
+                trigger=trigger,
+                features={name: 0.0 for name in SWING_FEATURES},
+                pnl_by_rule={"tp50_sl30": pnl, "hold_60m": 1},
+            )
+
+        xs, ys = deploy_training_xy(
+            [
+                row("mig_1", 1),
+                row("mig_15", None),
+                row("mig_15", 10),
+                row("mig_15", -5),
+                row("attn:dex_boosts_latest", 10),
+            ]
+        )
+        self.assertEqual(ys, [1, 0])
+        self.assertEqual(len(xs), 2)
+        self.assertEqual(len(xs[0]), len(SWING_FEATURES))
+        self.assertEqual(DEPLOY_MODEL_NAME, "mig15_model.txt")
+
+    def test_write_replaces_a_staged_lightgbm_file(self) -> None:
+        from tools.graduated_swing import DEPLOY_MODEL_NAME, write_deploy_model
+
+        class _Fake:
+            backend = "lightgbm"
+
+            def save(self, path: Path) -> str:
+                dest = path.with_suffix(".txt")
+                dest.write_text("booster\n", encoding="utf-8")
+                return dest.name
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            previous = root / DEPLOY_MODEL_NAME
+            previous.write_text("old\n", encoding="utf-8")
+            written = write_deploy_model(_Fake(), root, {"labeled": 3, "positives": 1})
+            self.assertEqual(written, previous)
+            self.assertEqual(previous.read_text(encoding="utf-8"), "booster\n")
+            meta = json.loads((root / "mig15_model.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["labeled"], 3)
+            self.assertEqual(meta["rule_id"], "tp50_sl30")
+            self.assertEqual(meta["point"], "mig_15")
+            self.assertFalse((root / ".mig15_model.txt").exists())
 
 
 if __name__ == "__main__":
