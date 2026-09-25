@@ -21,7 +21,7 @@ from tools.forward_paper import (
     window_creates,
 )
 from tools.laya_v0 import FEATURE_NAMES
-from tools.paper_price_path import CreateSignal
+from tools.paper_price_path import CreateSignal, _ZstdText
 
 T0 = 1_700_000_000_250
 Q0 = 35_000_000_000
@@ -347,6 +347,19 @@ class ModelAndLogTests(unittest.TestCase):
         summary = meter.report()["chain_to_recv"]
         self.assertEqual(summary["n"], 3)
         self.assertEqual(summary["p50_ms"], 500)
+
+    def test_early_zstd_close_is_not_a_failure(self) -> None:
+        class _Proc:
+            def wait(self, timeout: int = 0) -> int:
+                return -13
+
+            def kill(self) -> None:
+                raise AssertionError("sigpipe should not be killed")
+
+        stream = _ZstdText.__new__(_ZstdText)
+        stream._proc = _Proc()
+        stream._text = tempfile.TemporaryFile()
+        stream.close()
 
 
 if __name__ == "__main__":

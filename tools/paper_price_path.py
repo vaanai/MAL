@@ -223,7 +223,8 @@ class _ZstdText:
             self._proc.kill()
             self._proc.wait(timeout=10)
             return
-        if code not in (0, None):
+        # -13 / 141: the reader closed the pipe early (span cut). zstd then dies on SIGPIPE.
+        if code not in (0, None, -13, 141):
             raise RuntimeError(f"zstd exited {code}")
 
 
