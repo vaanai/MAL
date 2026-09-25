@@ -532,6 +532,19 @@ class LabelTests(unittest.TestCase):
             self.assertLess(max(times[i] for i in train), min(times[i] for i in test))
             self.assertTrue(set(train).isdisjoint(test))
 
+    def test_missing_hourly_jsonl_falls_back_to_the_zst(self) -> None:
+        from tools.laya_v0 import _resolve_tape_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gone = root / "trades-2026-09-25T16.jsonl"
+            zst = root / "trades-2026-09-25T16.jsonl.zst"
+            zst.write_bytes(b"")
+            self.assertEqual(_resolve_tape_path(gone), zst)
+            live = root / "trades-2026-09-25T17.jsonl"
+            live.write_text("x\n", encoding="utf-8")
+            self.assertEqual(_resolve_tape_path(live), live)
+
     def test_chain_sample_adds_recv_to_decision_hop(self) -> None:
         from tools.laya_v0 import (
             RECV_TO_DECISION_FLOOR_MS,

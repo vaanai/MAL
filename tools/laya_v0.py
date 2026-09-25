@@ -412,6 +412,17 @@ def chain_lag_ms(row: dict[str, Any]) -> int | None:
     return lag
 
 
+def _resolve_tape_path(path: Path) -> Path:
+    """Hourly rotate replaces trades-*.jsonl with trades-*.jsonl.zst while a scan is open."""
+    if path.is_file():
+        return path
+    rotated = path.with_name(path.name + ".zst")
+    if rotated.is_file():
+        print(f"tape_rotated={path.name}", file=sys.stderr)
+        return rotated
+    return path
+
+
 def load_books(
     creates: dict[str, CreateSignal],
     tape_paths: Iterable[Path],
@@ -420,7 +431,7 @@ def load_books(
     stats = ScanStats()
     lags: list[int] = []
     for path in tape_paths:
-        with open_text(path) as fh:
+        with open_text(_resolve_tape_path(path)) as fh:
             for line in fh:
                 stats.lines += 1
                 if stats.lines % 250_000 == 0:
