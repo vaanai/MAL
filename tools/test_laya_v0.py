@@ -17,8 +17,13 @@ from tools.laya_v0 import (
     BookTrade,
     DecisionRow,
     FlowPrint,
+    LADDER_RULES,
     MintBook,
     Scored,
+    _ladder_legs,
+    barrier_outcome,
+    causal_buyer_triggers,
+    decision_times,
     _migrate_predeclared,
     _selection_table,
     book_stats,
@@ -690,6 +695,97 @@ class RobustBookTests(unittest.TestCase):
         text = format_markdown(board)
         self.assertIn(PROMOTION_RULE, text)
         self.assertIn(QUOTE_WSOL_LIVE_AT, text)
+
+
+class EventAndBarrierTests(unittest.TestCase):
+    def test_curve_level_uses_the_crossing_print_only(self) -> None:
+        from tools.paper_curve_math import INITIAL_REAL_TOKEN_UI, TOKEN_RAW_OFFSET, TOKEN_SCALE
+
+        initial = INITIAL_REAL_TOKEN_UI * TOKEN_SCALE
+        base_20 = initial * 75 // 100 + TOKEN_RAW_OFFSET
+        base_50 = initial * 50 // 100 + TOKEN_RAW_OFFSET
+        cross = _flow(T0 + 3_000, trader="Cross", base=base_20, event_index=1)
+        later = _flow(T0 + 9_000, trader="Later", base=base_50, sol=9_000_000_000, event_index=2)
+        book = _book([cross, later])
+        marks = {trigger: t_ms for t_ms, trigger in decision_times(book, tape_end_ms=T0 + 180_000, offsets_ms=(5_000,))}
+        self.assertEqual(marks["curve_20"], T0 + 3_000)
+        self.assertEqual(marks["curve_40"], T0 + 9_000)
+        self.assertNotIn("curve_60", marks)
+        rows, _ = build_feature_rows(_books(book), tape_end_ms=T0 + 180_000, offsets_ms=(5_000,))
+        row = next(r for r in rows if r.trigger == "curve_20")
+        self.assertEqual(row.features["f_n_buy"], 1.0)
+        self.assertEqual(row.features["f_unique_buyers"], 1.0)
+        moved = _book(
+            [
+                cross,
+                _flow(T0 + 9_000, trader="Other", base=base_50 // 2, sol=1, event_index=2),
+            ]
+        )
+        rows2, _ = build_feature_rows(_books(moved), tape_end_ms=T0 + 180_000, offsets_ms=(5_000,))
+        row2 = next(r for r in rows2 if r.trigger == "curve_20")
+        self.assertEqual(row.features["f_n_buy"], row2.features["f_n_buy"])
+        self.assertEqual(row.features["f_curve_progress"], row2.features["f_curve_progress"])
+
+    def test_clean_buyer_count_skips_the_creator(self) -> None:
+        flow = [_flow(T0 + 1_000, trader="CreatorA", event_index=1)]
+        flow.extend(
+            _flow(T0 + 1_000 + i, trader=f"B{i}", event_index=2 + i) for i in range(5)
+        )
+        book = _book(flow, creator="CreatorA")
+        marks = causal_buyer_triggers(_books(book), tape_end_ms=T0 + 180_000, ns=(5, 10))
+        got = {trigger: t_ms for t_ms, trigger in marks["MintA"]}
+        self.assertEqual(got["buyers_nv5"], T0 + 1_000 + 4)
+        self.assertNotIn("buyers_nv10", got)
+        # The creator print alone is not a trigger.
+        only = _book([_flow(T0 + 1_000, trader="CreatorA")], creator="CreatorA")
+        self.assertEqual(causal_buyer_triggers(_books(only), tape_end_ms=T0 + 180_000, ns=(1,)), {})
+
+    def test_barrier_is_up_before_down_inside_the_horizon(self) -> None:
+        from tools.laya_v0 import BARRIER_HORIZON_MS as horizon
+        from tools.paper_price_path import TapePrint
+
+        entry_t = T0 + 1_000
+        spot = 1.0
+        up = TapePrint(entry_t + 5_000, 1, 1, "pump_bonding", "buy", 1, Q0, B0, 2.0, 2.0)
+        down_first = TapePrint(entry_t + 4_000, 1, 1, "pump_bonding", "sell", 1, Q0, B0, 0.6, 0.6)
+        late = TapePrint(entry_t + horizon + 1_000, 1, 1, "pump_bonding", "buy", 1, Q0, B0, 3.0, 3.0)
+
+        self.assertEqual(
+            barrier_outcome([up], entry_t_ms=entry_t, entry_spot=spot, tp=1.0, sl=0.30, horizon_ms=horizon, tape_end_ms=entry_t + horizon),
+            1,
+        )
+        self.assertEqual(
+            barrier_outcome(
+                [down_first, up],
+                entry_t_ms=entry_t,
+                entry_spot=spot,
+                tp=1.0,
+                sl=0.30,
+                horizon_ms=horizon,
+                tape_end_ms=entry_t + horizon,
+            ),
+            0,
+        )
+        self.assertEqual(
+            barrier_outcome([late], entry_t_ms=entry_t, entry_spot=spot, tp=1.0, sl=0.30, horizon_ms=horizon, tape_end_ms=entry_t + horizon),
+            0,
+        )
+        self.assertIsNone(
+            barrier_outcome([late], entry_t_ms=entry_t, entry_spot=spot, tp=1.0, sl=0.30, horizon_ms=horizon, tape_end_ms=entry_t + 10_000)
+        )
+
+    def test_ladder_scales_out_then_trails_the_rest(self) -> None:
+        from tools.paper_price_path import TapePrint as TP
+
+        entry_t = 1_000
+        rule = next(r for r in LADDER_RULES if r.rule_id == "ladder_2x_t30")
+        up = TP(entry_t + 2_000, 1, 1, "pump_bonding", "buy", 1, Q0, B0, 2.0, 2.0)
+        trail = TP(entry_t + 3_000, 1, 2, "pump_bonding", "sell", 1, Q0, B0, 1.3, 1.3)
+        legs = _ladder_legs([up, trail], entry_t_ms=entry_t, entry_spot=1.0, tokens=1000, rule=rule)
+        self.assertEqual(legs, [(entry_t + 2_000, 500), (entry_t + 3_000, 500)])
+        stop = TP(entry_t + 2_000, 1, 1, "pump_bonding", "sell", 1, Q0, B0, 0.7, 0.7)
+        stopped = _ladder_legs([stop], entry_t_ms=entry_t, entry_spot=1.0, tokens=1000, rule=rule)
+        self.assertEqual(stopped, [(entry_t + 2_000, 1000)])
 
 
 class FileTests(unittest.TestCase):

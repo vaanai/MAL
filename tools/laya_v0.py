@@ -30,8 +30,12 @@ from tools.paper_curve_math import (
     DEFAULT_SLIPPAGE_CAP,
     INITIAL_REAL_TOKEN_UI,
     LAMPORTS_PER_SOL,
+    PRIORITY_FEE_LAMPORTS,
+    TOKEN_ACCOUNT_RENT_LAMPORTS,
     TOKEN_SCALE,
     bonding_real_tokens,
+    market_cap_sol,
+    quote_sell,
 )
 from tools.paper_price_path import (
     CreateSignal,
@@ -41,6 +45,7 @@ from tools.paper_price_path import (
     load_creates,
     open_text,
     print_from_trade_row,
+    state_as_of,
 )
 from tools.paper_tape_scoreboard import (
     EXIT_RULES,
@@ -56,6 +61,14 @@ DECISION_OFFSETS_MS = (5_000, 15_000, 30_000, 60_000, 120_000)
 ENTRY_LATENCY_MS = 1_000
 TRADE_TRIGGER_BUYERS = 8
 TRADE_TRIGGER_NEAR_MS = 2_000
+CURVE_LEVELS = (0.20, 0.40, 0.60, 0.80)
+BUYER_TRIGGER_NS = (5, 10, 20)
+BARRIER_HORIZON_MS = 1_800_000
+# Upside before downside, within 30 minutes of the fill. Label only.
+BARRIERS = (
+    ("hit_100_30", 1.00, 0.30, "ladder_2x_t30"),
+    ("hit_50_25", 0.50, 0.25, "ladder_1_5x_t25"),
+)
 VELOCITY_MS = 5_000
 SNIPER_SLOT_DELTA = 2
 CREATOR_HORIZON_MS = 30_000
@@ -218,11 +231,30 @@ class DecisionRow:
     exit_t_by_rule: dict[str, int | None] = field(default_factory=dict)
     entry_status: str = ""
     entry_t_ms: int = 0
+    barrier: dict[str, int | None] = field(default_factory=dict)
 
     def point_id(self) -> str:
         if self.trigger == "grid":
             return str(int(round((self.decision_t_ms - self.create_t_ms) / 1000)))
         return self.trigger
+
+
+@dataclass(frozen=True)
+class LadderRule:
+    """Scale out at a spot multiple, then trail the rest. Hard stop and a 30-minute cap."""
+
+    rule_id: str
+    scale_ret: float
+    scale_frac: float
+    trail: float
+    hard_sl: float
+    max_hold_ms: int = BARRIER_HORIZON_MS
+
+
+LADDER_RULES: tuple[LadderRule, ...] = (
+    LadderRule("ladder_2x_t30", scale_ret=1.00, scale_frac=0.5, trail=0.30, hard_sl=0.30),
+    LadderRule("ladder_1_5x_t25", scale_ret=0.50, scale_frac=0.5, trail=0.25, hard_sl=0.25),
+)
 
 
 @dataclass
@@ -407,6 +439,106 @@ def decision_times(book: MintBook, *, tape_end_ms: int, offsets_ms: Sequence[int
         if pr.venue == "pumpswap" and pr.t_recv_ms >= t0:
             out.append((pr.t_recv_ms, "migrate"))
             break
+    out.extend(_curve_decision_times(book, tape_end_ms=tape_end_ms))
+    out.sort(key=lambda item: (item[0], item[1]))
+    return out
+
+
+def _curve_decision_times(book: MintBook, *, tape_end_ms: int) -> list[tuple[int, str]]:
+    """First receive time at which curve progress is at or above each level."""
+    t0 = book.create.t_signal_ms
+    crossed: set[int] = set()
+    out: list[tuple[int, str]] = []
+    points: list[tuple[int, str, int]] = []
+    anchor = book.path.anchor()
+    if anchor is not None and anchor.t_recv_ms <= t0:
+        points.append((t0, anchor.venue, anchor.base_reserve))
+    for pr in book.flow:
+        if pr.t_recv_ms > tape_end_ms:
+            break
+        if pr.t_recv_ms < t0:
+            continue
+        points.append((pr.t_recv_ms, pr.venue, pr.base_reserve))
+    for t_ms, venue, base in points:
+        progress = _curve_progress(venue, base)
+        if progress != progress:
+            continue
+        for level in CURVE_LEVELS:
+            mark = int(round(level * 100))
+            if mark in crossed or progress < level:
+                continue
+            crossed.add(mark)
+            out.append((t_ms, f"curve_{mark}"))
+    return out
+
+
+def causal_buyer_triggers(
+    books: dict[str, MintBook],
+    *,
+    tape_end_ms: int,
+    ns: Sequence[int] = BUYER_TRIGGER_NS,
+) -> dict[str, list[tuple[int, str]]]:
+    """First time unique buyers who are not vetoed as of that print reach each N.
+
+    Veto matches the feature: bot, sniper wallet, or creator, updated only by
+    prints at or before this one.
+    """
+    events: list[tuple[int, int, str, Any]] = []
+    for mint, book in books.items():
+        for pr in book.flow:
+            if pr.t_recv_ms > tape_end_ms:
+                continue
+            events.append((pr.t_recv_ms, 0, mint, pr))
+        if book.create.creator:
+            events.append((book.create.t_signal_ms, -1, mint, book.create.creator))
+    events.sort(key=lambda item: (item[0], item[1], item[2]))
+    wallets: dict[str, _Wallet] = {}
+    bots: set[str] = set()
+    snipers: set[str] = set()
+    creators: set[str] = set()
+    first_print_slot: dict[str, int] = {}
+    seen: dict[str, set[str]] = defaultdict(set)
+    fired: dict[str, set[int]] = defaultdict(set)
+    out: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    levels = tuple(sorted(ns))
+    for t_ms, kind, mint, payload in events:
+        if kind == -1:
+            creators.add(payload)
+            continue
+        pr: FlowPrint = payload
+        if mint not in first_print_slot:
+            first_print_slot[mint] = pr.slot
+        if not pr.trader:
+            continue
+        wallet = wallets.get(pr.trader)
+        if wallet is None:
+            wallet = _Wallet()
+            wallets[pr.trader] = wallet
+        was_bot, was_sniper = wallet.is_bot, wallet.is_sniper
+        wallet.observe(
+            mint=mint,
+            side=pr.side,
+            sol=pr.sol_lamports,
+            token_raw=pr.token_raw,
+            t_ms=t_ms,
+            slot=pr.slot,
+            first_slot=first_print_slot[mint],
+        )
+        _move(bots, pr.trader, was_bot, wallet.is_bot)
+        _move(snipers, pr.trader, was_sniper, wallet.is_sniper)
+        if pr.side != "buy":
+            continue
+        if pr.trader in bots or pr.trader in snipers or pr.trader in creators:
+            continue
+        if pr.trader in seen[mint]:
+            continue
+        seen[mint].add(pr.trader)
+        n_clean = len(seen[mint])
+        for level in levels:
+            if level in fired[mint] or n_clean < level:
+                continue
+            fired[mint].add(level)
+            out[mint].append((t_ms, f"buyers_nv{level}"))
     return out
 
 
@@ -891,9 +1023,16 @@ def build_feature_rows(
     offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
 ) -> tuple[list[DecisionRow], dict[str, int]]:
     by_creator = index_creators(books)
+    buyer_marks = causal_buyer_triggers(books, tape_end_ms=tape_end_ms)
     rows: list[DecisionRow] = []
     for book in books.values():
-        for t_ms, trigger in decision_times(book, tape_end_ms=tape_end_ms, offsets_ms=offsets_ms):
+        marks = list(decision_times(book, tape_end_ms=tape_end_ms, offsets_ms=offsets_ms))
+        marks.extend(buyer_marks.get(book.create.mint, []))
+        seen_marks: set[tuple[int, str]] = set()
+        for t_ms, trigger in sorted(marks):
+            if (t_ms, trigger) in seen_marks:
+                continue
+            seen_marks.add((t_ms, trigger))
             feats = local_features(book, t_ms, trigger)
             feats.update(creator_features(book, t_ms, by_creator))
             rows.append(
@@ -915,6 +1054,164 @@ def _ref_feats(row: DecisionRow) -> dict[str, Any]:
     if price is None or _is_nan(float(price)) or price <= 0:
         return {"f_tape_last_price_sol": None}
     return {"f_tape_last_price_sol": float(price)}
+
+
+def barrier_outcome(
+    prints: Sequence[TapePrint],
+    *,
+    entry_t_ms: int,
+    entry_spot: float,
+    tp: float,
+    sl: float,
+    horizon_ms: int,
+    tape_end_ms: int,
+) -> int | None:
+    """1 if spot hits +tp before −sl within the horizon. None if the tape ends first."""
+    if entry_spot <= 0:
+        return None
+    deadline = entry_t_ms + horizon_ms
+    for pr in prints:
+        if pr.t_recv_ms <= entry_t_ms:
+            continue
+        if pr.t_recv_ms > deadline or pr.t_recv_ms > tape_end_ms:
+            break
+        if pr.price_sol <= 0:
+            continue
+        ret = pr.price_sol / entry_spot - 1.0
+        if ret >= tp:
+            return 1
+        if ret <= -sl:
+            return 0
+    if tape_end_ms < deadline:
+        return None
+    return 0
+
+
+def _ladder_legs(
+    prints: Sequence[TapePrint],
+    *,
+    entry_t_ms: int,
+    entry_spot: float,
+    tokens: int,
+    rule: LadderRule,
+) -> list[tuple[int, int]]:
+    """(fill_time, tokens) for each paper sell. The position is fully scheduled."""
+    remaining = tokens
+    peak = entry_spot
+    scaled = False
+    scale_tokens = int(tokens * rule.scale_frac)
+    if 0 < scale_tokens < tokens:
+        pass
+    else:
+        scale_tokens = tokens // 2 if tokens >= 2 else tokens
+    deadline = entry_t_ms + rule.max_hold_ms
+    legs: list[tuple[int, int]] = []
+    for pr in prints:
+        if pr.t_recv_ms <= entry_t_ms:
+            continue
+        if pr.t_recv_ms > deadline:
+            break
+        spot = pr.price_sol
+        if spot <= 0:
+            continue
+        if spot > peak:
+            peak = spot
+        ret = spot / entry_spot - 1.0
+        if not scaled and ret >= rule.scale_ret and remaining > scale_tokens:
+            legs.append((pr.t_recv_ms, scale_tokens))
+            remaining -= scale_tokens
+            scaled = True
+        if remaining <= 0:
+            break
+        if ret <= -rule.hard_sl or (scaled and spot <= peak * (1.0 - rule.trail)):
+            legs.append((pr.t_recv_ms, remaining))
+            remaining = 0
+            break
+    if remaining > 0:
+        legs.append((deadline, remaining))
+    return legs
+
+
+def _sell_tokens(path: MintPath, entry: Any, t_fill: int, tokens: int) -> int | None:
+    state = state_as_of(path, t_fill, allow_anchor=True)
+    if state is None or entry.venue is None or tokens <= 0:
+        return None
+    same = (
+        state.t_recv_ms == entry.state_t_ms
+        and state.venue == entry.venue
+        and state.quote_reserve == entry.quote_reserve
+        and state.base_reserve == entry.base_reserve
+    )
+    if same:
+        quote, base_raw, venue = entry.quote_after, entry.base_after, entry.venue
+    else:
+        quote, base_raw, venue = state.quote_reserve, state.base_reserve, state.venue
+    return quote_sell(
+        venue=venue,
+        tokens_raw=tokens,
+        quote_lamports=quote,
+        base_raw=base_raw,
+        market_cap=market_cap_sol(quote, base_raw),
+    )
+
+
+def simulate_ladder(
+    path: MintPath,
+    entry: Any,
+    rule: LadderRule,
+    *,
+    latency_ms: int,
+    tape_end_ms: int,
+    size_lamports: int,
+) -> dict[str, Any]:
+    """Paper PnL for a scale-out. Legs use the tape reserves at each fill; our trade is not in the tape."""
+    empty = {
+        "exit_status": "not_entered",
+        "trigger": None,
+        "exit_t_ms": None,
+        "pnl_lamports": None,
+        "legs": 0,
+    }
+    if entry.status != "filled" or not entry.spot_sol or entry.spot_sol <= 0 or entry.tokens_raw <= 0:
+        return empty
+    planned = _ladder_legs(
+        path.prints,
+        entry_t_ms=entry.t_entry_ms,
+        entry_spot=float(entry.spot_sol),
+        tokens=int(entry.tokens_raw),
+        rule=rule,
+    )
+    fills = [(t_ms + latency_ms, tokens) for t_ms, tokens in planned]
+    if any(t_fill > tape_end_ms for t_fill, _tokens in fills):
+        return {
+            "exit_status": "censored",
+            "trigger": "censored",
+            "exit_t_ms": fills[-1][0] if fills else None,
+            "pnl_lamports": None,
+            "legs": len(fills),
+        }
+    sol_out = 0
+    failed = False
+    for t_fill, tokens in fills:
+        got = _sell_tokens(path, entry, t_fill, tokens)
+        if got is None:
+            failed = True
+            continue
+        sol_out += got
+    attempts = len(fills)
+    pnl = sol_out - size_lamports - PRIORITY_FEE_LAMPORTS * (1 + attempts)
+    if failed:
+        pnl -= TOKEN_ACCOUNT_RENT_LAMPORTS
+        status = "no_exit_liquidity" if sol_out == 0 else "realized"
+    else:
+        status = "realized"
+    return {
+        "exit_status": status,
+        "trigger": rule.rule_id,
+        "exit_t_ms": fills[-1][0] if fills else None,
+        "pnl_lamports": pnl,
+        "legs": attempts,
+    }
 
 
 def attach_labels(
@@ -958,6 +1255,37 @@ def attach_labels(
                 row.pnl_by_rule[rule.rule_id] = pnl
             else:
                 row.pnl_by_rule[rule.rule_id] = None
+        spot = float(entry.spot_sol or 0.0)
+        for name, tp, sl, _ladder_id in BARRIERS:
+            if entry.status != "filled":
+                row.barrier[name] = None
+                continue
+            row.barrier[name] = barrier_outcome(
+                book.path.prints,
+                entry_t_ms=t_entry,
+                entry_spot=spot,
+                tp=tp,
+                sl=sl,
+                horizon_ms=BARRIER_HORIZON_MS,
+                tape_end_ms=tape_end_ms,
+            )
+        for ladder in LADDER_RULES:
+            part = simulate_ladder(
+                book.path,
+                entry,
+                ladder,
+                latency_ms=latency_ms,
+                tape_end_ms=tape_end_ms,
+                size_lamports=size_lamports,
+            )
+            status = str(part["exit_status"])
+            pnl = part.get("pnl_lamports")
+            row.exit_status_by_rule[ladder.rule_id] = status
+            row.exit_t_by_rule[ladder.rule_id] = part.get("exit_t_ms")
+            if status in ("realized", "no_exit_liquidity") and isinstance(pnl, int):
+                row.pnl_by_rule[ladder.rule_id] = pnl
+            else:
+                row.pnl_by_rule[ladder.rule_id] = None
         if entry.status == "filled":
             ticks.extend(
                 _exit_ticks(
@@ -1520,6 +1848,83 @@ def evaluate_entry(
     }
 
 
+def evaluate_barrier(
+    rows: list[DecisionRow],
+    *,
+    target: str,
+    pnl_rule: str,
+    n_folds: int = 4,
+    backend: str | None = None,
+) -> dict[str, Any]:
+    """Classifier trained on the barrier hit. The book is that model's top-k under the ladder PnL."""
+    folds = walk_forward([row.decision_t_ms for row in rows], n_folds=n_folds)
+    scored: list[Scored] = []
+    fold_meta: list[dict[str, Any]] = []
+    importances: list[list[dict[str, Any]]] = []
+    for fold_i, (train_idx, test_idx) in enumerate(folds):
+        train_rows = [rows[i] for i in train_idx if rows[i].barrier.get(target) is not None]
+        xs: list[list[float]] = []
+        ys: list[int] = []
+        for row in train_rows:
+            label = row.barrier.get(target)
+            if label is None:
+                continue
+            xs.append(vector(row.features, FEATURE_NAMES))
+            ys.append(int(label))
+        model = fit_booster(xs, ys, FEATURE_NAMES, backend=backend)
+        meta: dict[str, Any] = {
+            "fold": fold_i,
+            "target": target,
+            "pnl_rule": pnl_rule,
+            "train_labeled": len(ys),
+            "train_hits": int(sum(ys)),
+            "model": None if model is None else model.backend,
+        }
+        if model is None:
+            meta["skipped"] = "one_class_or_too_small"
+            fold_meta.append(meta)
+            continue
+        importances.append(model.importance(xs, ys))
+        test_x = []
+        test_keep: list[DecisionRow] = []
+        for index in test_idx:
+            row = rows[index]
+            if row.barrier.get(target) is None:
+                continue
+            pnl = row.pnl_by_rule.get(pnl_rule)
+            if pnl is None:
+                continue
+            test_x.append(vector(row.features, FEATURE_NAMES))
+            test_keep.append(row)
+        probs = model.predict(test_x) if test_x else []
+        for row, prob in zip(test_keep, probs):
+            pnl = row.pnl_by_rule[pnl_rule]
+            assert pnl is not None
+            scored.append(
+                Scored(
+                    fold=fold_i,
+                    point=row.point_id(),
+                    score=prob,
+                    pnl=pnl,
+                    rule_id=pnl_rule,
+                    mint=row.mint,
+                    decision_t_ms=row.decision_t_ms,
+                    win=int(row.barrier.get(target) or 0),
+                )
+            )
+        meta["test_n"] = len(test_keep)
+        fold_meta.append(meta)
+    return {
+        "target": target,
+        "pnl_rule": pnl_rule,
+        "folds": fold_meta,
+        "importance": _average_importance(importances),
+        "by_point": _selection_table(scored),
+        "thresholds": _threshold_table(scored),
+        "oos_n": len(scored),
+    }
+
+
 def _migrate_predeclared(rows: Sequence[DecisionRow], *, n_folds: int) -> dict[str, Any]:
     """Signal-scan lead: enter at the first PumpSwap print, exit tp50_sl30.
 
@@ -1772,6 +2177,10 @@ def run_models(
         "in_sample_only": True,
     }
     entry["exit"] = exit_eval
+    entry["barriers"] = [
+        evaluate_barrier(rows, target=name, pnl_rule=ladder_id, n_folds=n_folds, backend=backend)
+        for name, _tp, _sl, ladder_id in BARRIERS
+    ]
     entry["oos_scores"] = [
         {
             "fold": s.fold,
@@ -1898,7 +2307,35 @@ def format_markdown(board: dict[str, Any]) -> str:
     lines.extend(["", "| threshold | take | day | n | total SOL |", "| --- | --- | --- | ---: | ---: |"])
     for row in board["entry"]["thresholds"]:
         _md_days(lines, f"{row['threshold']:.1f}", "score", row)
+    lines.extend(["", "## Barrier targets and ladder exits", ""])
+    lines.append(
+        "Hit +100% before −30%, and +50% before −25%, within 30 minutes of the fill. "
+        "The classifier is trained on that bit. The book is the matching ladder: "
+        "sell half at the upside, trail the rest, hard stop at the downside, 30-minute cap."
+    )
+    lines.append("Event clocks (curve 20/40/60/80, clean-buyer counts, migration) are included in the points above and here.")
+    lines.append(f"Promotion is the same rule: {PROMOTION_RULE}.")
+    for block in board["entry"].get("barriers") or []:
+        lines.extend(["", f"### {block['target']} → {block['pnl_rule']}", ""])
+        hits = sum(int(fold.get("train_hits") or 0) for fold in block.get("folds") or [])
+        labeled = sum(int(fold.get("train_labeled") or 0) for fold in block.get("folds") or [])
+        lines.append(f"OOS labeled {block.get('oos_n')}. Train hits {hits} / {labeled} (folds summed, so rows repeat).")
+        lines.append("")
+        lines.append("| point | take | n | mean | mean 90% CI | total | winsor mean | ex best | days+ | max DD | promote |")
+        lines.append("| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |")
+        for point in block.get("by_point") or []:
+            lines.append(_md_robust_short(point["point"], "all", point["baseline"]))
+            for take in point["top"]:
+                if take["fraction"] not in (0.01, 0.10):
+                    continue
+                lines.append(_md_robust_short(point["point"], f"top {take['fraction']:.0%}", take))
+        lines.append("")
+        lines.append("Top gain on this target:")
+        for row in (block.get("importance") or [])[:8]:
+            lines.append(f"- {row['name']} {row['share'] * 100:.1f}%")
     lines.extend(["", "## Feature importance (mean gain across OOS folds)", ""])
+    lines.append("This list is the pnl>0 model (train-chosen grid rule), not the barrier classifiers.")
+    lines.append("")
     lines.append("| feature | mean gain | share |")
     lines.append("| --- | ---: | ---: |")
     for row in board["entry"]["importance"][:15]:
@@ -1967,6 +2404,20 @@ def _md_robust(point: str, take: str, summary: dict[str, Any]) -> str:
         f"{_fmt_ci(summary.get('total_ci90_sol'))} | {_fmt_sol4(summary.get('winsorized_mean_sol'))} | "
         f"{_fmt_sol4(summary.get('total_ex_best_sol'))} | {days} | "
         f"{_fmt_sol4(summary.get('max_drawdown_sol'))} | {flag} |"
+    )
+
+
+def _md_robust_short(point: str, take: str, summary: dict[str, Any]) -> str:
+    days_pos = summary.get("days_positive")
+    n_days = summary.get("n_days")
+    days = "" if days_pos is None or n_days is None else f"{days_pos}/{n_days}"
+    promote = summary.get("promote")
+    flag = "" if promote is None else ("yes" if promote else "no")
+    return (
+        f"| {point} | {take} | {summary.get('n')} | {_fmt_sol4(summary.get('mean_sol'))} | "
+        f"{_fmt_ci(summary.get('mean_ci90_sol'))} | {_fmt_sol4(summary.get('total_sol'))} | "
+        f"{_fmt_sol4(summary.get('winsorized_mean_sol'))} | {_fmt_sol4(summary.get('total_ex_best_sol'))} | "
+        f"{days} | {_fmt_sol4(summary.get('max_drawdown_sol'))} | {flag} |"
     )
 
 
@@ -2083,6 +2534,16 @@ def run_files(
             "quote_is_wsol": (
                 "PumpSwap prints without quote_is_wsol are dropped. The tape fix has been live since "
                 f"{QUOTE_WSOL_LIVE_AT}, so migration decision points populate from later prints."
+            ),
+            "event_clocks": (
+                "Decision points also fire the first time curve progress crosses 20/40/60/80%, "
+                "the first time unique non-vetoed buyers reach 5/10/20, and at the first PumpSwap print. "
+                "Features use only prints with t_recv_ms <= that decision."
+            ),
+            "barrier": (
+                "A second classifier is trained on reaching +100% before -30% within 30 minutes, "
+                "and on +50% before -25%. Its book is the ladder PnL: sell half at the upside, "
+                "trail the rest, hard stop at the downside, 30-minute cap. Promotion is unchanged."
             ),
         },
     }
