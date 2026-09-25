@@ -207,12 +207,12 @@ def _credit_cap() -> int:
 
 
 def choose_rps(url: str, explicit: float | None) -> float:
-    """Operator --rps / MAL_FUNDING_RPS wins. Otherwise 1/s public, 5/s Helius."""
+    """Public RPC stays at 1/s. MAL_FUNDING_RPS applies only after the Helius switch."""
+    if describe_rpc(url) != "helius":
+        return PUBLIC_RPS
     if explicit is not None:
         return float(explicit)
-    if describe_rpc(url) == "helius":
-        return HELIUS_RPS
-    return PUBLIC_RPS
+    return HELIUS_RPS
 
 
 def maybe_switch_rpc(

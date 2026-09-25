@@ -444,6 +444,8 @@ class FundingGraphTests(unittest.TestCase):
             self.assertNotIn("unit-test-key", describe_rpc(url))
             self.assertEqual(choose_rps(url, None), 5.0)
             self.assertEqual(choose_rps(url, 1.0), 1.0)
+            self.assertEqual(choose_rps(url, 2.0), 2.0)
+            self.assertEqual(choose_rps(public, 2.0), 1.0)
             client = RpcClient(PUBLIC_RPC, rps=1)
             self.assertIs(maybe_switch_rpc(client, None, {}, missing), client)
             nxt = maybe_switch_rpc(client, None, {}, path)
