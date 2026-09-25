@@ -1,0 +1,458 @@
+"""Price paths for new pump.fun creates, built only from tape trades.
+
+A path is the ordered bonding-curve prints for a mint, then PumpSwap prints
+after migration. Create-payload reserves are an anchor for the fill when the
+tape has not yet printed; they are not invented trades on the path.
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable, Iterator, TextIO
+
+VENUE_BONDING = "pump_bonding"
+VENUE_PUMPSWAP = "pumpswap"
+
+
+@dataclass(frozen=True, slots=True)
+class TapePrint:
+    t_recv_ms: int
+    slot: int
+    event_index: int
+    venue: str
+    side: str
+    sol_lamports: int
+    quote_reserve: int
+    base_reserve: int
+    price_sol: float
+    market_cap_sol: float
+
+
+@dataclass(frozen=True, slots=True)
+class CreateSignal:
+    mint: str
+    t_signal_ms: int
+    creator: str | None
+    signature: str | None
+    v_sol: float | None
+    v_token_ui: float | None
+    mcap_sol: float | None
+    initial_buy_ui: float | None
+    sol_amount: float | None
+
+
+@dataclass
+class MintPath:
+    create: CreateSignal
+    prints: list[TapePrint] = field(default_factory=list)
+
+    def anchor(self) -> TapePrint | None:
+        """Reserves on the create message. Knowable at T. Not a tape trade."""
+        c = self.create
+        if c.v_sol is None or c.v_token_ui is None:
+            return None
+        if c.v_sol <= 0 or c.v_token_ui <= 0:
+            return None
+        quote = int(round(c.v_sol * 1_000_000_000))
+        base = int(round(c.v_token_ui * 1_000_000))
+        if quote <= 0 or base <= 0:
+            return None
+        price = c.v_sol / c.v_token_ui
+        mcap = c.mcap_sol if c.mcap_sol is not None and c.mcap_sol > 0 else price * 1_000_000_000
+        return TapePrint(
+            t_recv_ms=c.t_signal_ms,
+            slot=0,
+            event_index=-1,
+            venue=VENUE_BONDING,
+            side="create",
+            sol_lamports=0,
+            quote_reserve=quote,
+            base_reserve=base,
+            price_sol=price,
+            market_cap_sol=mcap,
+        )
+
+
+@dataclass
+class ScanStats:
+    lines: int = 0
+    bad_json: int = 0
+    kept: int = 0
+    unresolved: int = 0
+    non_wsol: int = 0
+    other_mint: int = 0
+    skipped_kept_mint: int = 0
+    t_min_ms: int | None = None
+    t_max_ms: int | None = None
+
+    def observe_t(self, t_ms: int) -> None:
+        if self.t_min_ms is None or t_ms < self.t_min_ms:
+            self.t_min_ms = t_ms
+        if self.t_max_ms is None or t_ms > self.t_max_ms:
+            self.t_max_ms = t_ms
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "lines": self.lines,
+            "bad_json": self.bad_json,
+            "kept": self.kept,
+            "unresolved": self.unresolved,
+            "non_wsol": self.non_wsol,
+            "other_mint": self.other_mint,
+            "skipped_kept_mint": self.skipped_kept_mint,
+            "t_min_ms": self.t_min_ms,
+            "t_max_ms": self.t_max_ms,
+        }
+
+
+def parse_time_ms(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        v = float(value)
+        if v > 1e12:
+            return int(v)
+        if v > 1e9:
+            return int(v * 1000)
+        return None
+    if not isinstance(value, str) or not value or value == "UNK":
+        return None
+    text = value.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None or value == "UNK" or isinstance(value, bool):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if out != out:  # NaN
+        return None
+    return out
+
+
+def _tx_kind(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    key = value.strip().lower()
+    if key == "create":
+        return "create"
+    if key in ("migration", "migrate"):
+        return "migration"
+    return None
+
+
+def create_from_observe_row(row: dict[str, Any]) -> CreateSignal | None:
+    """subscribeNewToken creates only. Migrations are not entry signals."""
+    stream = row.get("stream")
+    tx = _tx_kind(row.get("txType"))
+    if stream is not None and stream != "subscribeNewToken":
+        return None
+    if tx is not None and tx != "create":
+        return None
+    if stream != "subscribeNewToken" and tx != "create":
+        return None
+    mint = row.get("mint")
+    if not isinstance(mint, str) or not mint or mint == "UNK":
+        return None
+    t_ms = parse_time_ms(row.get("t_ws"))
+    if t_ms is None:
+        return None
+    payload = row.get("ws_payload") if isinstance(row.get("ws_payload"), dict) else {}
+    creator = row.get("traderPublicKey") or payload.get("traderPublicKey")
+    if not isinstance(creator, str) or creator == "UNK":
+        creator = None
+    signature = row.get("signature")
+    if not isinstance(signature, str) or signature == "UNK":
+        signature = None
+    return CreateSignal(
+        mint=mint,
+        t_signal_ms=t_ms,
+        creator=creator,
+        signature=signature,
+        v_sol=_float_or_none(row.get("vSolInBondingCurve", payload.get("vSolInBondingCurve"))),
+        v_token_ui=_float_or_none(row.get("vTokensInBondingCurve", payload.get("vTokensInBondingCurve"))),
+        mcap_sol=_float_or_none(row.get("marketCapSol", payload.get("marketCapSol"))),
+        initial_buy_ui=_float_or_none(row.get("initialBuy", payload.get("initialBuy"))),
+        sol_amount=_float_or_none(row.get("solAmount", payload.get("solAmount"))),
+    )
+
+
+def open_text(path: Path) -> TextIO:
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8")
+    return path.open("r", encoding="utf-8")
+
+
+def load_creates(
+    paths: Iterable[Path],
+    *,
+    t_min_ms: int | None = None,
+    t_max_ms: int | None = None,
+    pad_before_ms: int = 2_000,
+) -> dict[str, CreateSignal]:
+    """Earliest subscribeNewToken create per mint, optionally inside a window."""
+    found: dict[str, CreateSignal] = {}
+    lo = None if t_min_ms is None else t_min_ms - pad_before_ms
+    for path in paths:
+        with open_text(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                create = create_from_observe_row(row)
+                if create is None:
+                    continue
+                if lo is not None and create.t_signal_ms < lo:
+                    continue
+                if t_max_ms is not None and create.t_signal_ms > t_max_ms:
+                    continue
+                prev = found.get(create.mint)
+                if prev is None or create.t_signal_ms < prev.t_signal_ms:
+                    found[create.mint] = create
+    return found
+
+
+def print_from_trade_row(row: dict[str, Any]) -> tuple[str, TapePrint] | None:
+    """Return (mint, print) or None if this row cannot price a SOL path."""
+    if row.get("type") not in (None, "trade"):
+        return None
+    mint = row.get("mint")
+    if not isinstance(mint, str) or not mint or mint == "UNK":
+        return None
+    venue = row.get("venue")
+    if venue not in (VENUE_BONDING, VENUE_PUMPSWAP):
+        return None
+    # PumpSwap reserves are SOL only when the quote mint resolved to wSOL.
+    # A missing flag is not assumed to be SOL.
+    if venue == VENUE_PUMPSWAP and row.get("quote_is_wsol") is not True:
+        return None
+    if row.get("quote_is_wsol") is False:
+        return None
+    try:
+        t_ms = int(row["t_recv_ms"])
+        quote = int(row["quote_reserve"])
+        base = int(row["base_reserve"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if t_ms < 0 or quote <= 0 or base <= 0:
+        return None
+    price = _float_or_none(row.get("price_sol"))
+    if price is None or price <= 0:
+        price = quote / (base * 1000)
+    mcap = _float_or_none(row.get("market_cap_sol"))
+    if mcap is None or mcap <= 0:
+        mcap = price * 1_000_000_000
+    try:
+        sol_lamports = int(row.get("sol_lamports") or 0)
+    except (TypeError, ValueError):
+        sol_lamports = 0
+    try:
+        slot = int(row.get("slot") or 0)
+    except (TypeError, ValueError):
+        slot = 0
+    try:
+        event_index = int(row.get("event_index") or 0)
+    except (TypeError, ValueError):
+        event_index = 0
+    side = row.get("side") if row.get("side") in ("buy", "sell") else "buy"
+    return mint, TapePrint(
+        t_recv_ms=t_ms,
+        slot=slot,
+        event_index=event_index,
+        venue=venue,
+        side=side,
+        sol_lamports=max(0, sol_lamports),
+        quote_reserve=quote,
+        base_reserve=base,
+        price_sol=price,
+        market_cap_sol=mcap,
+    )
+
+
+def _sort_key(p: TapePrint) -> tuple[int, int, int]:
+    return (p.t_recv_ms, p.slot, p.event_index)
+
+
+def build_paths(
+    creates: dict[str, CreateSignal],
+    trade_rows: Iterable[dict[str, Any]],
+) -> dict[str, MintPath]:
+    """In-memory builder. Prints for mints that are not creates are ignored."""
+    buckets: dict[str, list[TapePrint]] = {mint: [] for mint in creates}
+    for row in trade_rows:
+        parsed = print_from_trade_row(row)
+        if parsed is None:
+            continue
+        mint, pr = parsed
+        bucket = buckets.get(mint)
+        if bucket is not None:
+            bucket.append(pr)
+    paths: dict[str, MintPath] = {}
+    for mint, create in creates.items():
+        prints = buckets[mint]
+        prints.sort(key=_sort_key)
+        paths[mint] = MintPath(create=create, prints=prints)
+    return paths
+
+
+def stream_paths(creates: dict[str, CreateSignal], tape_paths: Iterable[Path]) -> tuple[dict[str, MintPath], ScanStats]:
+    """One pass over tape files. Keeps prints only for `creates`."""
+    buckets: dict[str, list[TapePrint]] = {mint: [] for mint in creates}
+    stats = ScanStats()
+    wanted = buckets
+    for path in tape_paths:
+        with open_text(path) as fh:
+            for line in fh:
+                stats.lines += 1
+                if stats.lines % 250_000 == 0:
+                    print(f"tape_lines={stats.lines} kept={stats.kept}", file=sys.stderr)
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    stats.bad_json += 1
+                    continue
+                if not isinstance(row, dict):
+                    stats.bad_json += 1
+                    continue
+                t_raw = row.get("t_recv_ms")
+                if isinstance(t_raw, int):
+                    stats.observe_t(t_raw)
+                if row.get("quote_is_wsol") is False:
+                    stats.non_wsol += 1
+                    continue
+                mint = row.get("mint")
+                if mint not in wanted:
+                    if row.get("quote_is_wsol") is False:
+                        stats.non_wsol += 1
+                    elif not mint or row.get("mint_source") == "unresolved":
+                        stats.unresolved += 1
+                    else:
+                        stats.other_mint += 1
+                    continue
+                parsed = print_from_trade_row(row)
+                if parsed is None:
+                    stats.skipped_kept_mint += 1
+                    continue
+                _, pr = parsed
+                wanted[mint].append(pr)
+                stats.kept += 1
+    paths: dict[str, MintPath] = {}
+    for mint, create in creates.items():
+        prints = wanted[mint]
+        prints.sort(key=_sort_key)
+        paths[mint] = MintPath(create=create, prints=prints)
+    return paths, stats
+
+
+def peek_trade_bounds(path: Path) -> tuple[int | None, int | None]:
+    """First and last t_recv_ms without reading the whole file. Plain JSONL only."""
+    if path.suffix == ".gz":
+        return None, None
+    with path.open("rb") as fh:
+        first = fh.readline()
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(max(0, size - 1_000_000))
+        tail = fh.read().splitlines()
+    return _t_from_raw(first), _last_t(tail)
+
+
+def _t_from_raw(raw: bytes) -> int | None:
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        row = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    t_ms = row.get("t_recv_ms") if isinstance(row, dict) else None
+    return t_ms if isinstance(t_ms, int) else None
+
+
+def _last_t(lines: list[bytes]) -> int | None:
+    for raw in reversed(lines):
+        t_ms = _t_from_raw(raw)
+        if t_ms is not None:
+            return t_ms
+    return None
+
+
+def state_as_of(path: MintPath, t_ms: int, *, allow_anchor: bool) -> TapePrint | None:
+    """Reserves after the last print at or before t.
+
+    Once a PumpSwap print exists, the bonding curve is closed and later
+    bonding prints are not a sell venue. The create anchor is used only
+    when the tape has no print yet and the caller is still at the signal.
+    """
+    last_bond: TapePrint | None = None
+    last_swap: TapePrint | None = None
+    for pr in path.prints:
+        if pr.t_recv_ms > t_ms:
+            break
+        if pr.venue == VENUE_PUMPSWAP:
+            last_swap = pr
+        elif pr.venue == VENUE_BONDING:
+            last_bond = pr
+    if last_swap is not None:
+        return last_swap
+    if last_bond is not None:
+        return last_bond
+    if allow_anchor:
+        anchor = path.anchor()
+        if anchor is not None and anchor.t_recv_ms <= t_ms:
+            return anchor
+    return None
+
+
+def price_path_records(path: MintPath) -> list[dict[str, Any]]:
+    """Columnar path rows. Tape trades only, in time order. No future fields."""
+    rows: list[dict[str, Any]] = []
+    for i, pr in enumerate(path.prints):
+        rows.append(
+            {
+                "schema": "paper_price_path_v1",
+                "mint": path.create.mint,
+                "t_signal_ms": path.create.t_signal_ms,
+                "i": i,
+                "t_recv_ms": pr.t_recv_ms,
+                "venue": pr.venue,
+                "side": pr.side,
+                "sol_lamports": pr.sol_lamports,
+                "quote_reserve": pr.quote_reserve,
+                "base_reserve": pr.base_reserve,
+                "price_sol": pr.price_sol,
+                "market_cap_sol": pr.market_cap_sol,
+                "slot": pr.slot,
+                "event_index": pr.event_index,
+            }
+        )
+    return rows
+
+
+def iter_price_path_jsonl(paths: Iterable[MintPath]) -> Iterator[str]:
+    for path in paths:
+        for row in price_path_records(path):
+            yield json.dumps(row, separators=(",", ":"), ensure_ascii=False)

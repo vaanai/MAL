@@ -18,6 +18,7 @@ data/observe/_exp007b_*
 data/observe/_wallet_leaderboard_*
 data/observe/_wallet_leaderboard/
 data/observe/paper-*.jsonl
+data/observe/paper-tape/
 data/observe/sealed/
 
 # Python
