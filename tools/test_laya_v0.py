@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import json
 import random
 import tempfile
@@ -11,12 +12,17 @@ from pathlib import Path
 from tools.laya_v0 import (
     FEATURE_NAMES,
     ENTRY_LATENCY_MS,
+    PROMOTION_RULE,
+    QUOTE_WSOL_LIVE_AT,
+    BookTrade,
     DecisionRow,
     FlowPrint,
     MintBook,
     Scored,
     _migrate_predeclared,
     _selection_table,
+    book_stats,
+    format_markdown,
     attach_labels,
     available_backend,
     build_feature_rows,
@@ -583,6 +589,107 @@ class ModelTests(unittest.TestCase):
         scored = evaluate_entry(self._rows(40), n_folds=2, min_rule_n=4, backend="sklearn")
         self.assertGreater(scored["oos_n"], 0)
         self.assertTrue(any(fold.get("model") == "sklearn" for fold in scored["folds"]))
+
+
+SOL = 1_000_000_000
+DAY = calendar.timegm((2026, 9, 25, 12, 0, 0, 0, 0, 0)) * 1000
+
+
+def _bt(mint: str, pnl_sol: float, t_ms: int = DAY) -> BookTrade:
+    return BookTrade(mint, t_ms, int(round(pnl_sol * SOL)))
+
+
+class RobustBookTests(unittest.TestCase):
+    def test_token_bootstrap_cannot_split_a_mint(self) -> None:
+        # Mint A is +1 and -1. Mint B is +0.5. Resampling whole tokens, the total cannot exceed 1.
+        stats = book_stats([_bt("A", 1.0, DAY), _bt("A", -1.0, DAY + 1), _bt("B", 0.5, DAY + 2)])
+        self.assertIsNotNone(stats["total_ci90_sol"])
+        self.assertLessEqual(stats["total_ci90_sol"][1], 1.0 + 1e-9)
+        self.assertGreaterEqual(stats["total_ci90_sol"][0], -1e-9)
+        again = book_stats([_bt("A", 1.0, DAY), _bt("A", -1.0, DAY + 1), _bt("B", 0.5, DAY + 2)])
+        self.assertEqual(stats["total_ci90_sol"], again["total_ci90_sol"])
+        self.assertEqual(stats["mean_ci90_sol"], again["mean_ci90_sol"])
+
+    def test_winsorized_mean_caps_a_single_outlier(self) -> None:
+        trades = [_bt(f"m{i}", 0.0, DAY + i) for i in range(99)]
+        trades.append(_bt("out", 1000.0, DAY + 99))
+        stats = book_stats(trades)
+        self.assertAlmostEqual(stats["mean_sol"], 10.0, places=6)
+        self.assertAlmostEqual(stats["winsorized_mean_sol"], 0.1, places=6)
+        self.assertLess(stats["winsorized_mean_sol"], stats["mean_sol"])
+
+    def test_ex_best_drops_one_copy_of_the_max(self) -> None:
+        stats = book_stats([_bt("a", 1.0), _bt("b", 1.0, DAY + 1), _bt("c", -3.0, DAY + 2)])
+        self.assertAlmostEqual(stats["total_ex_best_sol"], -2.0, places=6)
+        self.assertIsNone(book_stats([_bt("only", 1.0)])["total_ex_best_sol"])
+
+    def test_max_drawdown_from_a_zero_peak(self) -> None:
+        stats = book_stats([_bt("a", 1.0, DAY), _bt("b", -3.0, DAY + 1), _bt("c", 2.0, DAY + 2)])
+        self.assertAlmostEqual(stats["max_drawdown_sol"], 3.0, places=6)
+
+    def test_promotion_needs_all_three_clauses(self) -> None:
+        steady = [_bt(f"m{i}", 0.001, DAY) for i in range(40)]
+        good = book_stats(steady)
+        self.assertGreater(good["mean_ci90_sol"][0], 0)
+        self.assertGreater(good["total_ex_best_sol"], 0)
+        self.assertTrue(good["majority_days_positive"])
+        self.assertTrue(good["promote"])
+
+        # Every token mean is positive, so the mean CI stays above 0, but the book
+        # without its best trade is negative.
+        carried = [_bt("A", 1.0, DAY), _bt("A", -0.4, DAY + 1)]
+        carried.extend(_bt(f"s{i}", 0.01, DAY + 2 + i) for i in range(10))
+        bad = book_stats(carried)
+        self.assertGreater(bad["mean_ci90_sol"][0], 0)
+        self.assertLess(bad["total_ex_best_sol"], 0)
+        self.assertTrue(bad["majority_days_positive"])
+        self.assertFalse(bad["promote"])
+
+        day2 = DAY + 86_400_000
+        split = [_bt(f"p{i}", 0.1, DAY) for i in range(3)]
+        split.extend(_bt(f"n{i}", -0.2, day2) for i in range(3))
+        days = book_stats(split)
+        self.assertEqual(days["days_positive"], 1)
+        self.assertEqual(days["n_days"], 2)
+        self.assertFalse(days["majority_days_positive"])
+        self.assertFalse(days["promote"])
+        self.assertEqual([row["day"] for row in days["days"]], ["2026-09-25", "2026-09-26"])
+
+    def test_scoreboard_states_the_rule_and_the_quote_fix(self) -> None:
+        board = {
+            "schema": "laya_v0",
+            "entry_latency_ms": 1000,
+            "data_needed": "note",
+            "creates": 0,
+            "decisions": 0,
+            "scan": {"lines": 0, "kept": 0},
+            "entry": {
+                "oos_n": 0,
+                "deploy": {"backend": None, "predict_latency": None},
+                "folds": [],
+                "by_point": [],
+                "thresholds": [],
+                "importance": [],
+                "migrate_predeclared": {},
+                "exit": {
+                    "positions": 0,
+                    "early_exits": 0,
+                    "backend": None,
+                    "policy": {"n": 0, "total_sol": 0.0},
+                    "rule_hold": {"n": 0, "total_sol": 0.0},
+                },
+            },
+            "wallet": {
+                "wallets": 0,
+                "bots_end": 0,
+                "sniper_wallets_end": 0,
+                "leaders_end": 0,
+                "leaders_peak": 0,
+            },
+        }
+        text = format_markdown(board)
+        self.assertIn(PROMOTION_RULE, text)
+        self.assertIn(QUOTE_WSOL_LIVE_AT, text)
 
 
 class FileTests(unittest.TestCase):

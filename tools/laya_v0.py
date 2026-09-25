@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import statistics
 import sys
 import time
@@ -66,6 +67,15 @@ MIN_RULE_N = 30
 SCORE_THRESHOLDS = (0.5, 0.6, 0.7, 0.8, 0.9)
 TOP_FRACTIONS = (0.01, 0.05, 0.10, 0.20, 1.0)
 EXIT_TAKE_P = 0.5
+BOOTSTRAP_DRAWS = 1000
+BOOTSTRAP_SEED = 1
+WINSOR_P = 0.01
+QUOTE_WSOL_LIVE_AT = "2026-09-25T08:37:00Z"
+PROMOTION_RULE = (
+    "lower 90% CI bound of mean SOL per trade > 0, "
+    "total SOL still positive after removing the single best trade, "
+    "and a majority of UTC days positive"
+)
 
 BOT_MIN_BUYS = 25
 BOT_MIN_MINTS = 8
@@ -1278,7 +1288,7 @@ def _pnl_summary(values: Sequence[int]) -> dict[str, Any]:
     }
 
 
-def _pct(ordered: Sequence[int], p: float) -> float:
+def _pct(ordered: Sequence[float], p: float) -> float:
     if len(ordered) == 1:
         return float(ordered[0])
     k = (len(ordered) - 1) * p
@@ -1286,6 +1296,131 @@ def _pct(ordered: Sequence[int], p: float) -> float:
     hi = min(lo + 1, len(ordered) - 1)
     w = k - lo
     return ordered[lo] * (1.0 - w) + ordered[hi] * w
+
+
+@dataclass(frozen=True)
+class BookTrade:
+    mint: str
+    t_ms: int
+    pnl: int
+
+
+def _utc_day(t_ms: int) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(t_ms / 1000.0))
+
+
+def _winsorized_mean_lamports(values: Sequence[int], p: float = WINSOR_P) -> float | None:
+    """Mean after capping each value at the p and 1-p percentiles of this book."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    lo = _pct(ordered, p)
+    hi = _pct(ordered, 1.0 - p)
+    capped = [min(hi, max(lo, float(v))) for v in ordered]
+    return sum(capped) / len(capped)
+
+
+def _cluster_bootstrap(trades: Sequence[BookTrade]) -> tuple[list[float] | None, list[float] | None]:
+    """90% CI of mean and total SOL. Resample whole tokens with replacement."""
+    if not trades:
+        return None, None
+    clusters: dict[str, list[int]] = defaultdict(list)
+    for trade in trades:
+        clusters[trade.mint].append(trade.pnl)
+    groups = [clusters[mint] for mint in sorted(clusters)]
+    n_mints = len(groups)
+    rng = random.Random(BOOTSTRAP_SEED)
+    means: list[float] = []
+    totals: list[float] = []
+    for _ in range(BOOTSTRAP_DRAWS):
+        drawn = [groups[rng.randrange(n_mints)] for _ in range(n_mints)]
+        n = 0
+        total = 0
+        for group in drawn:
+            n += len(group)
+            total += sum(group)
+        means.append(total / n)
+        totals.append(float(total))
+    means.sort()
+    totals.sort()
+    mean_ci = [_pct(means, 0.05) / LAMPORTS_PER_SOL, _pct(means, 0.95) / LAMPORTS_PER_SOL]
+    total_ci = [_pct(totals, 0.05) / LAMPORTS_PER_SOL, _pct(totals, 0.95) / LAMPORTS_PER_SOL]
+    return mean_ci, total_ci
+
+
+def _max_drawdown_lamports(trades: Sequence[BookTrade]) -> int | None:
+    """Peak-to-trough of cumulative PnL. Peak starts at 0. Independent fills, not a bankroll."""
+    if not trades:
+        return None
+    cum = 0
+    peak = 0
+    worst = 0
+    for trade in sorted(trades, key=lambda item: (item.t_ms, item.mint)):
+        cum += trade.pnl
+        if cum > peak:
+            peak = cum
+        drop = peak - cum
+        if drop > worst:
+            worst = drop
+    return worst
+
+
+def book_stats(trades: Sequence[BookTrade]) -> dict[str, Any]:
+    """Simple PnL summary plus heavy-tail yardsticks and the promotion flag."""
+    summary = _pnl_summary([trade.pnl for trade in trades])
+    pnls = [trade.pnl for trade in trades]
+    mean_ci, total_ci = _cluster_bootstrap(trades)
+    if len(pnls) < 2:
+        total_ex_best = None
+    else:
+        total_ex_best = (sum(pnls) - max(pnls)) / LAMPORTS_PER_SOL
+    winsor = _winsorized_mean_lamports(pnls)
+    by_day: dict[str, list[int]] = defaultdict(list)
+    for trade in trades:
+        by_day[_utc_day(trade.t_ms)].append(trade.pnl)
+    days = []
+    for day in sorted(by_day):
+        values = by_day[day]
+        days.append(
+            {
+                "day": day,
+                "n": len(values),
+                "total_sol": sum(values) / LAMPORTS_PER_SOL,
+                "mean_sol": (sum(values) / len(values)) / LAMPORTS_PER_SOL,
+            }
+        )
+    days_positive = sum(1 for row in days if row["total_sol"] > 0)
+    n_days = len(days)
+    majority = n_days > 0 and days_positive * 2 > n_days
+    drawdown = _max_drawdown_lamports(trades)
+    promote = bool(
+        mean_ci is not None
+        and mean_ci[0] > 0
+        and total_ex_best is not None
+        and total_ex_best > 0
+        and majority
+    )
+    summary.update(
+        {
+            "mean_ci90_sol": mean_ci,
+            "total_ci90_sol": total_ci,
+            "winsorized_mean_sol": None if winsor is None else winsor / LAMPORTS_PER_SOL,
+            "total_ex_best_sol": total_ex_best,
+            "days": days,
+            "days_positive": days_positive,
+            "n_days": n_days,
+            "majority_days_positive": majority,
+            "max_drawdown_sol": None if drawdown is None else drawdown / LAMPORTS_PER_SOL,
+            "promote": promote,
+        }
+    )
+    return summary
+
+
+def _trades_from_scored(rows: Sequence[Scored]) -> list[BookTrade]:
+    return [BookTrade(row.mint, row.decision_t_ms, row.pnl) for row in rows]
 
 
 def _topk(indexed: list[tuple[float, int]], frac: float) -> list[int]:
@@ -1392,8 +1527,8 @@ def _migrate_predeclared(rows: Sequence[DecisionRow], *, n_folds: int) -> dict[s
     on these test rows. hold_30s is the same clock for comparison.
     """
     folds = walk_forward([row.decision_t_ms for row in rows], n_folds=n_folds)
-    oos_tp: list[int] = []
-    oos_hold: list[int] = []
+    oos_tp: list[BookTrade] = []
+    oos_hold: list[BookTrade] = []
     for _train, test in folds:
         for index in test:
             row = rows[index]
@@ -1402,14 +1537,14 @@ def _migrate_predeclared(rows: Sequence[DecisionRow], *, n_folds: int) -> dict[s
             tp = row.pnl_by_rule.get("tp50_sl30")
             hold = row.pnl_by_rule.get("hold_30s")
             if tp is not None:
-                oos_tp.append(tp)
+                oos_tp.append(BookTrade(row.mint, row.decision_t_ms, tp))
             if hold is not None:
-                oos_hold.append(hold)
+                oos_hold.append(BookTrade(row.mint, row.decision_t_ms, hold))
     return {
         "rule": "tp50_sl30",
         "source": "signal-scan train pick, not re-chosen on this test",
-        "oos_tp50_sl30": _pnl_summary(oos_tp),
-        "oos_hold_30s": _pnl_summary(oos_hold),
+        "oos_tp50_sl30": book_stats(oos_tp),
+        "oos_hold_30s": book_stats(oos_hold),
     }
 
 
@@ -1429,26 +1564,26 @@ def _selection_table(scored: Sequence[Scored]) -> list[dict[str, Any]]:
     groups: dict[tuple[int, str], list[Scored]] = defaultdict(list)
     for row in scored:
         groups[(row.fold, row.point)].append(row)
-    pooled: dict[tuple[str, float], list[int]] = defaultdict(list)
+    pooled: dict[tuple[str, float], list[BookTrade]] = defaultdict(list)
     points = sorted({row.point for row in scored}, key=_point_sort)
     for point in points:
         for frac in TOP_FRACTIONS:
-            bag: list[int] = []
-            for (fold, grp_point), rows in groups.items():
+            bag: list[BookTrade] = []
+            for (_fold, grp_point), rows in groups.items():
                 if grp_point != point:
                     continue
                 chosen = _topk([(r.score, i) for i, r in enumerate(rows)], frac)
-                bag.extend(rows[i].pnl for i in chosen)
+                bag.extend(BookTrade(rows[i].mint, rows[i].decision_t_ms, rows[i].pnl) for i in chosen)
             pooled[(point, frac)] = bag
     table = []
     for point in points:
         base = pooled.get((point, 1.0), [])
-        row: dict[str, Any] = {"point": point, "baseline": _pnl_summary(base)}
+        row: dict[str, Any] = {"point": point, "baseline": book_stats(base)}
         takes = []
         for frac in TOP_FRACTIONS:
             if frac >= 1:
                 continue
-            takes.append({"fraction": frac, **_pnl_summary(pooled.get((point, frac), []))})
+            takes.append({"fraction": frac, **book_stats(pooled.get((point, frac), []))})
         row["top"] = takes
         table.append(row)
     return table
@@ -1457,8 +1592,8 @@ def _selection_table(scored: Sequence[Scored]) -> list[dict[str, Any]]:
 def _threshold_table(scored: Sequence[Scored]) -> list[dict[str, Any]]:
     out = []
     for threshold in SCORE_THRESHOLDS:
-        kept = [row for row in scored if row.score >= threshold]
-        summary = _pnl_summary([row.pnl for row in kept])
+        kept = _trades_from_scored([row for row in scored if row.score >= threshold])
+        summary = book_stats(kept)
         summary["threshold"] = threshold
         summary["precision"] = summary["win_rate"]
         out.append(summary)
@@ -1690,6 +1825,30 @@ def format_markdown(board: dict[str, Any]) -> str:
         lines.append(_md_pnl(point["point"], "all", base))
         for take in point["top"]:
             lines.append(_md_pnl(point["point"], f"top {take['fraction']:.0%}", take))
+    lines.extend(
+        [
+            "",
+            "## Heavy-tail yardsticks",
+            "",
+            "Median often sits on the round-trip fee, so it is not the promotion yardstick. Raw totals move with one trade.",
+            f"Mean and total 90% CIs resample tokens ({BOOTSTRAP_DRAWS} draws, seed {BOOTSTRAP_SEED}). "
+            f"Winsorized mean caps each trade at the {WINSOR_P:.0%} and {1 - WINSOR_P:.0%} percentiles of that book.",
+            "Max drawdown is the peak-to-trough of cumulative SOL on independent fills ordered by decision time. Peak starts at 0.",
+            f"Promotion requires all three: {PROMOTION_RULE}.",
+            "",
+            "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex best | days+ | max DD | promote |",
+            "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for point in board["entry"]["by_point"]:
+        lines.append(_md_robust(point["point"], "all", point["baseline"]))
+        for take in point["top"]:
+            lines.append(_md_robust(point["point"], f"top {take['fraction']:.0%}", take))
+    lines.extend(["", "Per-day totals (UTC), same books.", "", "| point | take | day | n | total SOL |", "| --- | --- | --- | ---: | ---: |"])
+    for point in board["entry"]["by_point"]:
+        _md_days(lines, point["point"], "all", point["baseline"])
+        for take in point["top"]:
+            _md_days(lines, point["point"], f"top {take['fraction']:.0%}", take)
     mig = board["entry"].get("migrate_predeclared") or {}
     lines.extend(
         [
@@ -1698,6 +1857,7 @@ def format_markdown(board: dict[str, Any]) -> str:
             "",
             "First PumpSwap print, fill +1s. Exit is the signal-scan training pick, not re-chosen here.",
             "Follow and crowd columns are on the packet; those scans lost out of sample as rules.",
+            f"Hourly PumpSwap rows without `quote_is_wsol` are dropped. The fix has been live on the tape since {QUOTE_WSOL_LIVE_AT}, so migration decision points populate from prints after that.",
             "",
             "| exit | n | median SOL | total SOL | win |",
             "| --- | ---: | ---: | ---: | ---: |",
@@ -1705,6 +1865,18 @@ def format_markdown(board: dict[str, Any]) -> str:
             _md_pnl("migrate", "hold_30s", mig.get("oos_hold_30s") or {"n": 0, "total_sol": 0}),
         ]
     )
+    tp = mig.get("oos_tp50_sl30") or {}
+    hold = mig.get("oos_hold_30s") or {}
+    if tp.get("mean_ci90_sol") is not None or hold.get("mean_ci90_sol") is not None:
+        lines.extend(
+            [
+                "",
+                "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex best | days+ | max DD | promote |",
+                "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |",
+                _md_robust("migrate", "tp50_sl30", tp),
+                _md_robust("migrate", "hold_30s", hold),
+            ]
+        )
     lines.extend(["", "## Precision at score thresholds (pooled OOS)", ""])
     lines.append("| threshold | n | precision | median SOL | total SOL |")
     lines.append("| --- | ---: | ---: | ---: | ---: |")
@@ -1712,6 +1884,20 @@ def format_markdown(board: dict[str, Any]) -> str:
         prec = "" if row["precision"] is None else f"{row['precision'] * 100:.1f}%"
         med = "" if row["median_sol"] is None else f"{row['median_sol']:.6f}"
         lines.append(f"| {row['threshold']:.1f} | {row['n']} | {prec} | {med} | {row['total_sol']:.6f} |")
+    lines.extend(
+        [
+            "",
+            "Same promotion rule on the score cuts.",
+            "",
+            "| threshold | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex best | days+ | max DD | promote |",
+            "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for row in board["entry"]["thresholds"]:
+        lines.append(_md_robust(f"{row['threshold']:.1f}", "score", row))
+    lines.extend(["", "| threshold | take | day | n | total SOL |", "| --- | --- | --- | ---: | ---: |"])
+    for row in board["entry"]["thresholds"]:
+        _md_days(lines, f"{row['threshold']:.1f}", "score", row)
     lines.extend(["", "## Feature importance (mean gain across OOS folds)", ""])
     lines.append("| feature | mean gain | share |")
     lines.append("| --- | ---: | ---: |")
@@ -1755,6 +1941,38 @@ def _md_pnl(point: str, take: str, summary: dict[str, Any]) -> str:
     med = "" if summary.get("median_sol") is None else f"{summary['median_sol']:.6f}"
     win = "" if summary.get("win_rate") is None else f"{summary['win_rate'] * 100:.1f}%"
     return f"| {point} | {take} | {summary.get('n')} | {med} | {summary.get('total_sol', 0):.6f} | {win} |"
+
+
+def _fmt_sol4(value: Any) -> str:
+    if value is None:
+        return ""
+    return f"{float(value):.4f}"
+
+
+def _fmt_ci(pair: Any) -> str:
+    if not pair:
+        return ""
+    return f"{float(pair[0]):.4f} .. {float(pair[1]):.4f}"
+
+
+def _md_robust(point: str, take: str, summary: dict[str, Any]) -> str:
+    days_pos = summary.get("days_positive")
+    n_days = summary.get("n_days")
+    days = "" if days_pos is None or n_days is None else f"{days_pos}/{n_days}"
+    promote = summary.get("promote")
+    flag = "" if promote is None else ("yes" if promote else "no")
+    return (
+        f"| {point} | {take} | {summary.get('n')} | {_fmt_sol4(summary.get('mean_sol'))} | "
+        f"{_fmt_ci(summary.get('mean_ci90_sol'))} | {_fmt_sol4(summary.get('total_sol'))} | "
+        f"{_fmt_ci(summary.get('total_ci90_sol'))} | {_fmt_sol4(summary.get('winsorized_mean_sol'))} | "
+        f"{_fmt_sol4(summary.get('total_ex_best_sol'))} | {days} | "
+        f"{_fmt_sol4(summary.get('max_drawdown_sol'))} | {flag} |"
+    )
+
+
+def _md_days(lines: list[str], point: str, take: str, summary: dict[str, Any]) -> None:
+    for day in summary.get("days") or []:
+        lines.append(f"| {point} | {take} | {day['day']} | {day['n']} | {day['total_sol']:.4f} |")
 
 
 def _discover(directory: Path, patterns: Sequence[str]) -> list[Path]:
@@ -1855,6 +2073,17 @@ def run_files(
             "notional": "Totals sum independent 0.05 SOL trades. Not a bankroll.",
             "leaderboard": "Causal noisy_v0-shaped flags. The PR #75 end-of-tape board is not joined.",
             "threads": "num_threads=1. Daily job is nice/ionice, off the recorder process.",
+            "heavy_tail": (
+                "Median is not the promotion yardstick. Mean and total use a token bootstrap "
+                f"({BOOTSTRAP_DRAWS} draws, seed {BOOTSTRAP_SEED}). Winsorized mean caps the "
+                f"{WINSOR_P:.0%}/{1 - WINSOR_P:.0%} percentiles. Also reported: total without the "
+                "best trade, UTC day totals, and max drawdown of the cumulative fill path."
+            ),
+            "promotion": PROMOTION_RULE,
+            "quote_is_wsol": (
+                "PumpSwap prints without quote_is_wsol are dropped. The tape fix has been live since "
+                f"{QUOTE_WSOL_LIVE_AT}, so migration decision points populate from later prints."
+            ),
         },
     }
     (output_dir / "scoreboard.json").write_text(json.dumps(_json_safe(board), indent=2) + "\n", encoding="utf-8")
