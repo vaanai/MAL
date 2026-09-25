@@ -1,0 +1,11 @@
+[Unit]
+Description=MAL LAYA v0 paper retrain (does not touch the trade-tape recorder)
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=oneshot
+Nice=19
+WorkingDirectory=/var/lib/mal/paper/laya-v0/src
+Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=1
+ExecStart=/var/lib/mal/paper/laya-v0/laya-v0.sh
