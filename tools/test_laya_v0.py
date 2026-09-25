@@ -18,6 +18,7 @@ from tools.laya_v0 import (
     PROMOTION_MIN_N,
     PROMOTION_RULE,
     QUOTE_WSOL_LIVE_AT,
+    Booster,
     BookTrade,
     DecisionRow,
     FlowPrint,
@@ -40,9 +41,11 @@ from tools.laya_v0 import (
     flow_as_of,
     load_books,
     local_features,
+    run_models,
     run_files,
     score_frozen_candidates,
     tape_day_tokens,
+    vector,
     walk_forward,
 )
 from tools.paper_curve_math import (
@@ -593,6 +596,23 @@ class ModelTests(unittest.TestCase):
         self.assertGreater(top["median_sol"], point["baseline"]["median_sol"])
         self.assertTrue(scored["importance"])
         self.assertEqual(scored["importance"][0]["name"], "f_unique_buyers")
+
+    def test_deploy_writes_the_barrier_model_file(self) -> None:
+        rows = self._rows(80)
+        for row in rows:
+            row.barrier["hit_100_30"] = 1 if row.features["f_unique_buyers"] > 0 else 0
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            entry = run_models(rows, [], n_folds=2, min_rule_n=5, backend="lightgbm", output_dir=out)
+            self.assertEqual(entry["barrier_deploy"]["model_file"], "barrier_hit_100_30.txt")
+            self.assertEqual(entry["barrier_deploy"]["labeled"], 80)
+            path = out / "barrier_hit_100_30.txt"
+            self.assertTrue(path.is_file())
+            loaded = Booster.load(path)
+            self.assertEqual(loaded.names, list(FEATURE_NAMES))
+            score = loaded.predict_one(vector(rows[0].features, FEATURE_NAMES))
+            self.assertGreaterEqual(score, 0.0)
+            self.assertLessEqual(score, 1.0)
 
     def test_sklearn_backend_fits_when_asked(self) -> None:
         self.assertIn(available_backend("sklearn"), ("sklearn",))

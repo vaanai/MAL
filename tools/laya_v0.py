@@ -1507,6 +1507,23 @@ class Booster:
             pickle.dump({"backend": self.backend, "names": self.names, "model": self.model}, fh)
         return bin_path.name
 
+    @classmethod
+    def load(cls, path: Path) -> Booster:
+        """Hot-reload a deploy model. LightGBM text or the sklearn pickle."""
+        if path.suffix == ".txt":
+            import lightgbm as lgb
+
+            model = lgb.Booster(model_file=str(path))
+            names = [str(name) for name in model.feature_name()]
+            return cls("lightgbm", model, names)
+        import pickle
+
+        with path.open("rb") as fh:
+            blob = pickle.load(fh)
+        if not isinstance(blob, dict) or "model" not in blob or "names" not in blob:
+            raise ValueError("model file is not a LAYA booster")
+        return cls(str(blob.get("backend") or "sklearn"), blob["model"], list(blob["names"]))
+
 
 def available_backend(prefer: str | None = None) -> str:
     if prefer == "sklearn":
@@ -2292,6 +2309,23 @@ def run_models(
         evaluate_barrier(rows, target=name, pnl_rule=ladder_id, n_folds=n_folds, backend=backend)
         for name, _tp, _sl, ladder_id in BARRIERS
     ]
+    # Deploy fit for the pre-registered buyers_8 ladder book. Not the OOS table.
+    barrier_file = None
+    barrier_labeled = [row for row in rows if row.barrier.get("hit_100_30") is not None]
+    barrier_x = [vector(row.features, FEATURE_NAMES) for row in barrier_labeled]
+    barrier_y = [int(row.barrier["hit_100_30"]) for row in barrier_labeled]
+    barrier_model = fit_booster(barrier_x, barrier_y, FEATURE_NAMES, backend=backend)
+    if barrier_model is not None and output_dir is not None:
+        barrier_file = barrier_model.save(output_dir / "barrier_hit_100_30")
+    entry["barrier_deploy"] = {
+        "target": "hit_100_30",
+        "pnl_rule": "ladder_2x_t30",
+        "labeled": len(barrier_y),
+        "hits": int(sum(barrier_y)) if barrier_y else 0,
+        "backend": None if barrier_model is None else barrier_model.backend,
+        "model_file": barrier_file,
+        "in_sample_only": True,
+    }
     entry["frozen_candidates"] = score_frozen_candidates(rows, backend=backend)
     entry["oos_scores"] = [
         {
@@ -2452,6 +2486,13 @@ def format_markdown(board: dict[str, Any]) -> str:
     )
     lines.append("Event clocks (curve 20/40/60/80, clean-buyer counts, migration) are included in the points above and here.")
     lines.append(f"Promotion is the same rule: {PROMOTION_RULE}.")
+    barrier_deploy = board["entry"].get("barrier_deploy") or {}
+    if barrier_deploy:
+        lines.append(
+            f"Deploy file `{barrier_deploy.get('model_file')}` is a fit on every labeled row "
+            f"({barrier_deploy.get('hits')} hits / {barrier_deploy.get('labeled')}). "
+            "The forward paper ladder book reloads that file. It is not the out-of-sample table."
+        )
     for block in board["entry"].get("barriers") or []:
         lines.extend(["", f"### {block['target']} → {block['pnl_rule']}", ""])
         hits = sum(int(fold.get("train_hits") or 0) for fold in block.get("folds") or [])
