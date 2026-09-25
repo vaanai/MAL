@@ -84,10 +84,22 @@ BOOTSTRAP_DRAWS = 1000
 BOOTSTRAP_SEED = 1
 WINSOR_P = 0.01
 QUOTE_WSOL_LIVE_AT = "2026-09-25T08:37:00Z"
+PROMOTION_MIN_N = 100
+# Exploratory search through the 15:18Z scoreboard is not a holdout.
+# Ranked candidates are fit only on decisions at or before this instant.
+CANDIDATE_FREEZE_AT = "2026-09-25T15:30:00Z"
+CANDIDATE_FREEZE_MS = 1_790_350_200_000
 PROMOTION_RULE = (
+    f"at least {PROMOTION_MIN_N} out-of-sample trades, "
     "lower 90% CI bound of mean SOL per trade > 0, "
     "total SOL still positive after removing the single best trade, "
     "and a majority of UTC days positive"
+)
+# Pre-registered after the 8.3h search. fraction 1 is the whole point, not a top slice.
+FROZEN_CANDIDATES = (
+    {"id": "buyers_8_top5_ladder_2x", "point": "buyers_8", "fraction": 0.05, "label": "hit_100_30", "pnl_rule": "ladder_2x_t30"},
+    {"id": "t30_top1_hold_30s", "point": "30", "fraction": 0.01, "label": "pnl", "pnl_rule": "hold_30s"},
+    {"id": "migrate_hold_30s", "point": "migrate", "fraction": 1.0, "label": "none", "pnl_rule": "hold_30s"},
 )
 
 BOT_MIN_BUYS = 25
@@ -1724,7 +1736,8 @@ def book_stats(trades: Sequence[BookTrade]) -> dict[str, Any]:
     majority = n_days > 0 and days_positive * 2 > n_days
     drawdown = _max_drawdown_lamports(trades)
     promote = bool(
-        mean_ci is not None
+        summary["n"] >= PROMOTION_MIN_N
+        and mean_ci is not None
         and mean_ci[0] > 0
         and total_ex_best is not None
         and total_ex_best > 0
@@ -2122,6 +2135,104 @@ def data_needed_note(*, hours: float, creates: int, oos_n: int) -> str:
     )
 
 
+def _label_matrix(
+    rows: Sequence[DecisionRow], label: str, pnl_rule: str
+) -> tuple[list[list[float]], list[int]]:
+    """Rows that actually have the candidate's label. Holdout rows must not be passed in."""
+    xs: list[list[float]] = []
+    ys: list[int] = []
+    for row in rows:
+        if label == "pnl":
+            pnl = row.pnl_by_rule.get(pnl_rule)
+            if pnl is None:
+                continue
+            bit = 1 if pnl > 0 else 0
+        else:
+            raw = row.barrier.get(label)
+            if raw is None:
+                continue
+            bit = int(raw)
+        xs.append(vector(row.features, FEATURE_NAMES))
+        ys.append(bit)
+    return xs, ys
+
+
+def score_frozen_candidates(
+    rows: Sequence[DecisionRow],
+    *,
+    backend: str | None = None,
+    freeze_ms: int = CANDIDATE_FREEZE_MS,
+) -> dict[str, Any]:
+    """Fit the pre-registered list on decisions at or before the freeze.
+
+    Score only decisions strictly after it. Exploratory walk-forward is a
+    different table and may still use the whole tape.
+    """
+    train = [row for row in rows if row.decision_t_ms <= freeze_ms]
+    hold = [row for row in rows if row.decision_t_ms > freeze_ms]
+    fitted: dict[tuple[str, str], tuple[Booster | None, int]] = {}
+    candidates: list[dict[str, Any]] = []
+    for spec in FROZEN_CANDIDATES:
+        label = str(spec["label"])
+        pnl_rule = str(spec["pnl_rule"])
+        point = str(spec["point"])
+        fraction = float(spec["fraction"])
+        pool = [
+            row
+            for row in hold
+            if row.point_id() == point and row.pnl_by_rule.get(pnl_rule) is not None
+        ]
+        model: Booster | None = None
+        train_labeled = 0
+        ranked = label != "none" and fraction < 1
+        if ranked:
+            key = (label, pnl_rule)
+            if key not in fitted:
+                xs, ys = _label_matrix(train, label, pnl_rule)
+                fitted[key] = (fit_booster(xs, ys, FEATURE_NAMES, backend=backend), len(ys))
+            model, train_labeled = fitted[key]
+        if not ranked:
+            chosen = pool
+        elif model is None or not pool:
+            chosen = []
+        else:
+            probs = model.predict([vector(row.features, FEATURE_NAMES) for row in pool])
+            chosen = [pool[i] for i in _topk(list(zip(probs, range(len(pool)))), fraction)]
+        trades = [
+            BookTrade(row.mint, row.decision_t_ms, int(row.pnl_by_rule[pnl_rule]))
+            for row in chosen
+            if row.pnl_by_rule.get(pnl_rule) is not None
+        ]
+        stats = book_stats(trades)
+        stats.update(
+            {
+                "id": spec["id"],
+                "point": point,
+                "fraction": fraction,
+                "label": label,
+                "pnl_rule": pnl_rule,
+                "n_pool": len(pool),
+                "train_labeled": train_labeled,
+                "model": None if model is None else model.backend,
+                "selected_mints": [row.mint for row in chosen],
+                "selected_t_ms": [row.decision_t_ms for row in chosen],
+            }
+        )
+        candidates.append(stats)
+    return {
+        "freeze_at": CANDIDATE_FREEZE_AT,
+        "freeze_ms": freeze_ms,
+        "train_n": len(train),
+        "holdout_n": len(hold),
+        "separate_from_exploratory_search": True,
+        "note": (
+            "Fit only on decisions at or before the freeze. "
+            "Scored only on decisions strictly after it. Not the exploratory search."
+        ),
+        "candidates": candidates,
+    }
+
+
 def build_dataset(
     books: dict[str, MintBook],
     *,
@@ -2181,6 +2292,7 @@ def run_models(
         evaluate_barrier(rows, target=name, pnl_rule=ladder_id, n_folds=n_folds, backend=backend)
         for name, _tp, _sl, ladder_id in BARRIERS
     ]
+    entry["frozen_candidates"] = score_frozen_candidates(rows, backend=backend)
     entry["oos_scores"] = [
         {
             "fold": s.fold,
@@ -2215,11 +2327,36 @@ def format_markdown(board: dict[str, Any]) -> str:
         f"- Tape lines: {board['scan']['lines']}, kept prints: {board['scan']['kept']}",
         f"- Backend (deploy): {board['entry']['deploy']['backend']}",
         "",
+    ]
+    frozen = board["entry"].get("frozen_candidates")
+    if frozen:
+        lines.extend(
+            [
+                "## Pre-registered forward holdout",
+                "",
+                f"Frozen at {frozen.get('freeze_at')}. "
+                "These three candidates were named before this slice of tape existed.",
+                "Models are fit only on decisions at or before the freeze "
+                f"({frozen.get('train_n')} decisions) and scored only on decisions strictly after it "
+                f"({frozen.get('holdout_n')} decisions).",
+                "This table is the forward holdout. The folds and point tables below are the exploratory search on the whole tape.",
+                f"Promotion is the same rule: {PROMOTION_RULE}.",
+                "",
+                "| candidate | point | take | n | pool | mean | mean 90% CI | total | ex best | days+ | promote |",
+                "| --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for cand in frozen.get("candidates") or []:
+            lines.append(_md_frozen(cand))
+        lines.append("")
+    lines.extend(
+        [
         "## Folds",
         "",
         "| fold | rule | train labeled | train wins | test n |",
         "| --- | --- | ---: | ---: | ---: |",
-    ]
+        ]
+    )
     for fold in board["entry"]["folds"]:
         lines.append(
             f"| {fold['fold']} | {fold.get('rule_id')} | {fold.get('train_labeled')} | {fold.get('train_wins')} | {fold.get('test_n')} |"
@@ -2243,7 +2380,7 @@ def format_markdown(board: dict[str, Any]) -> str:
             f"Mean and total 90% CIs resample tokens ({BOOTSTRAP_DRAWS} draws, seed {BOOTSTRAP_SEED}). "
             f"Winsorized mean caps each trade at the {WINSOR_P:.0%} and {1 - WINSOR_P:.0%} percentiles of that book.",
             "Max drawdown is the peak-to-trough of cumulative SOL on independent fills ordered by decision time. Peak starts at 0.",
-            f"Promotion requires all three: {PROMOTION_RULE}.",
+            f"Promotion requires all of: {PROMOTION_RULE}.",
             "",
             "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex best | days+ | max DD | promote |",
             "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |",
@@ -2421,6 +2558,21 @@ def _md_robust_short(point: str, take: str, summary: dict[str, Any]) -> str:
     )
 
 
+def _md_frozen(cand: dict[str, Any]) -> str:
+    fraction = float(cand.get("fraction") or 0)
+    take = "all" if fraction >= 1 else f"top {fraction:.0%}"
+    days_pos = cand.get("days_positive")
+    n_days = cand.get("n_days")
+    days = "" if days_pos is None or n_days is None else f"{days_pos}/{n_days}"
+    promote = cand.get("promote")
+    flag = "" if promote is None else ("yes" if promote else "no")
+    return (
+        f"| {cand.get('id')} | {cand.get('point')} | {take} | {cand.get('n')} | {cand.get('n_pool')} | "
+        f"{_fmt_sol4(cand.get('mean_sol'))} | {_fmt_ci(cand.get('mean_ci90_sol'))} | "
+        f"{_fmt_sol4(cand.get('total_sol'))} | {_fmt_sol4(cand.get('total_ex_best_sol'))} | {days} | {flag} |"
+    )
+
+
 def _md_days(lines: list[str], point: str, take: str, summary: dict[str, Any]) -> None:
     for day in summary.get("days") or []:
         lines.append(f"| {point} | {take} | {day['day']} | {day['n']} | {day['total_sol']:.4f} |")
@@ -2544,6 +2696,15 @@ def run_files(
                 "A second classifier is trained on reaching +100% before -30% within 30 minutes, "
                 "and on +50% before -25%. Its book is the ladder PnL: sell half at the upside, "
                 "trail the rest, hard stop at the downside, 30-minute cap. Promotion is unchanged."
+            ),
+            "frozen_holdout": (
+                f"Three candidates were frozen at {CANDIDATE_FREEZE_AT}. "
+                "buyers_8 top 5% uses the +100%/-30% model and the 2x ladder. "
+                "T+30s top 1% uses the pnl>0 model and hold_30s. "
+                "Migration is every post-freeze migrate fill under hold_30s, with no model. "
+                "Fits use only decisions at or before the freeze. "
+                "Scores use only decisions strictly after it. "
+                "The exploratory walk-forward still uses the whole tape and is reported separately."
             ),
         },
     }

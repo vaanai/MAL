@@ -11,7 +11,11 @@ from pathlib import Path
 
 from tools.laya_v0 import (
     FEATURE_NAMES,
+    CANDIDATE_FREEZE_AT,
+    CANDIDATE_FREEZE_MS,
     ENTRY_LATENCY_MS,
+    FROZEN_CANDIDATES,
+    PROMOTION_MIN_N,
     PROMOTION_RULE,
     QUOTE_WSOL_LIVE_AT,
     BookTrade,
@@ -37,6 +41,7 @@ from tools.laya_v0 import (
     load_books,
     local_features,
     run_files,
+    score_frozen_candidates,
     tape_day_tokens,
     walk_forward,
 )
@@ -632,13 +637,21 @@ class RobustBookTests(unittest.TestCase):
         stats = book_stats([_bt("a", 1.0, DAY), _bt("b", -3.0, DAY + 1), _bt("c", 2.0, DAY + 2)])
         self.assertAlmostEqual(stats["max_drawdown_sol"], 3.0, places=6)
 
-    def test_promotion_needs_all_three_clauses(self) -> None:
-        steady = [_bt(f"m{i}", 0.001, DAY) for i in range(40)]
-        good = book_stats(steady)
+    def test_promotion_needs_n_and_the_tail_clauses(self) -> None:
+        short = book_stats([_bt(f"m{i}", 0.001, DAY) for i in range(40)])
+        self.assertGreater(short["mean_ci90_sol"][0], 0)
+        self.assertGreater(short["total_ex_best_sol"], 0)
+        self.assertTrue(short["majority_days_positive"])
+        self.assertLess(short["n"], PROMOTION_MIN_N)
+        self.assertFalse(short["promote"])
+
+        good = book_stats([_bt(f"m{i}", 0.001, DAY) for i in range(PROMOTION_MIN_N)])
+        self.assertGreaterEqual(good["n"], PROMOTION_MIN_N)
         self.assertGreater(good["mean_ci90_sol"][0], 0)
         self.assertGreater(good["total_ex_best_sol"], 0)
         self.assertTrue(good["majority_days_positive"])
         self.assertTrue(good["promote"])
+        self.assertIn(str(PROMOTION_MIN_N), PROMOTION_RULE)
 
         # Every token mean is positive, so the mean CI stays above 0, but the book
         # without its best trade is negative.
@@ -695,6 +708,33 @@ class RobustBookTests(unittest.TestCase):
         text = format_markdown(board)
         self.assertIn(PROMOTION_RULE, text)
         self.assertIn(QUOTE_WSOL_LIVE_AT, text)
+        self.assertNotIn("Pre-registered forward holdout", text)
+        board["entry"]["frozen_candidates"] = {
+            "freeze_at": CANDIDATE_FREEZE_AT,
+            "train_n": 3,
+            "holdout_n": 1,
+            "candidates": [
+                {
+                    "id": "migrate_hold_30s",
+                    "point": "migrate",
+                    "fraction": 1.0,
+                    "n": 1,
+                    "n_pool": 1,
+                    "mean_sol": 0.0,
+                    "mean_ci90_sol": None,
+                    "total_sol": 0.0,
+                    "total_ex_best_sol": None,
+                    "days_positive": 0,
+                    "n_days": 1,
+                    "promote": False,
+                }
+            ],
+        }
+        held = format_markdown(board)
+        self.assertIn("Pre-registered forward holdout", held)
+        self.assertIn(CANDIDATE_FREEZE_AT, held)
+        self.assertIn("exploratory search", held)
+        self.assertIn("migrate_hold_30s", held)
 
 
 class EventAndBarrierTests(unittest.TestCase):
@@ -863,6 +903,96 @@ class FileTests(unittest.TestCase):
                     size_lamports=SIZE,
                     slippage_cap=0.15,
                 )
+
+
+class FrozenCandidateTests(unittest.TestCase):
+    def test_freeze_instant_is_the_registered_clock(self) -> None:
+        ms = calendar.timegm((2026, 9, 25, 15, 30, 0, 0, 0, 0)) * 1000
+        self.assertEqual(CANDIDATE_FREEZE_MS, ms)
+        self.assertEqual(CANDIDATE_FREEZE_AT, "2026-09-25T15:30:00Z")
+        self.assertEqual(
+            [row["id"] for row in FROZEN_CANDIDATES],
+            ["buyers_8_top5_ladder_2x", "t30_top1_hold_30s", "migrate_hold_30s"],
+        )
+
+    def test_holdout_is_strictly_after_the_freeze_and_ignores_its_labels(self) -> None:
+        freeze = CANDIDATE_FREEZE_MS
+        rows: list[DecisionRow] = []
+
+        def add(mint: str, t_ms: int, trigger: str, *, high: bool) -> None:
+            feats = {name: 0.0 for name in FEATURE_NAMES}
+            feats["f_unique_buyers"] = 10.0 if high else 0.0
+            create_t = t_ms - 30_000 if trigger == "grid" else t_ms - 1_000
+            pnl = 2_000_000 if high else -1_000_000
+            rows.append(
+                DecisionRow(
+                    mint=mint,
+                    creator=None,
+                    create_t_ms=create_t,
+                    decision_t_ms=t_ms,
+                    trigger=trigger,
+                    features=feats,
+                    pnl_by_rule={"hold_30s": pnl, "ladder_2x_t30": pnl},
+                    barrier={"hit_100_30": 1 if high else 0},
+                )
+            )
+
+        for i in range(24):
+            add(f"tr-b{i}", freeze - 10_000 - i, "buyers_8", high=i % 2 == 0)
+            add(f"tr-g{i}", freeze - 20_000 - i, "grid", high=i % 2 == 0)
+        add("at-buyers", freeze, "buyers_8", high=True)
+        add("at-migrate", freeze, "migrate", high=True)
+        add("at-grid", freeze, "grid", high=True)
+        for i in range(20):
+            add(f"ho-b{i}", freeze + 1_000 + i, "buyers_8", high=i < 2)
+            add(f"ho-g{i}", freeze + 1_000 + i, "grid", high=i < 2)
+        for i in range(3):
+            add(f"ho-m{i}", freeze + 5_000 + i, "migrate", high=True)
+
+        pre = [row for row in rows if row.decision_t_ms <= freeze]
+        post = [row for row in rows if row.decision_t_ms > freeze]
+        first = score_frozen_candidates(rows, backend="sklearn")
+        self.assertEqual(first["train_n"], len(pre))
+        self.assertEqual(first["holdout_n"], len(post))
+        self.assertTrue(first["separate_from_exploratory_search"])
+        by_id = {row["id"]: row for row in first["candidates"]}
+
+        buyers = by_id["buyers_8_top5_ladder_2x"]
+        self.assertEqual(buyers["n_pool"], 20)
+        self.assertEqual(buyers["n"], 1)
+        self.assertEqual(buyers["train_labeled"], len(pre))
+        self.assertTrue(all(t > freeze for t in buyers["selected_t_ms"]))
+        self.assertNotIn("at-buyers", buyers["selected_mints"])
+
+        clock = by_id["t30_top1_hold_30s"]
+        self.assertEqual(clock["n_pool"], 20)
+        self.assertEqual(clock["n"], 1)
+        self.assertEqual(clock["train_labeled"], len(pre))
+        self.assertNotIn("at-grid", clock["selected_mints"])
+
+        migrate = by_id["migrate_hold_30s"]
+        self.assertEqual(migrate["n_pool"], 3)
+        self.assertEqual(migrate["n"], 3)
+        self.assertEqual(migrate["train_labeled"], 0)
+        self.assertEqual(migrate["model"], None)
+        self.assertEqual(sorted(migrate["selected_mints"]), ["ho-m0", "ho-m1", "ho-m2"])
+        self.assertFalse(migrate["promote"])
+
+        for row in rows:
+            if row.decision_t_ms <= freeze:
+                continue
+            bit = row.barrier.get("hit_100_30")
+            if bit is not None:
+                row.barrier["hit_100_30"] = 1 - int(bit)
+            for rule, pnl in list(row.pnl_by_rule.items()):
+                if pnl is not None:
+                    row.pnl_by_rule[rule] = -int(pnl)
+        second = score_frozen_candidates(rows, backend="sklearn")
+        again = {row["id"]: row for row in second["candidates"]}
+        for cid in by_id:
+            self.assertEqual(by_id[cid]["selected_mints"], again[cid]["selected_mints"])
+            self.assertEqual(by_id[cid]["train_labeled"], again[cid]["train_labeled"])
+        self.assertEqual(again["buyers_8_top5_ladder_2x"]["train_labeled"], len(pre))
 
 
 if __name__ == "__main__":
