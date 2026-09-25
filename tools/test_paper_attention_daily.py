@@ -208,6 +208,13 @@ class PromoteTests(unittest.TestCase):
         self.assertEqual(stats["n_days"], 5)
         self.assertEqual(stats["promote_blockers"], [])
         self.assertTrue(stats["promote"])
+        losing = [BookTrade(mint=f"x{i}", t_ms=base + (i % 5) * 86_400_000, pnl=-100_000) for i in range(100)]
+        gated = book_stats(trades, pressure_scale_1=losing, pressure_scale_2=trades)
+        self.assertTrue(gated["promote_flat_15"])
+        self.assertFalse(gated["promote_pressure_1"])
+        self.assertFalse(gated["promote"])
+        self.assertIn("pressure_scale_1", gated["promote_blockers"])
+        self.assertTrue(gated["pressure_scale_2"]["promote"])
 
     def test_bootstrap_is_deterministic(self) -> None:
         trades = [BookTrade(mint=f"m{i}", t_ms=1, pnl=1000 + i) for i in range(30)]

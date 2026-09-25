@@ -785,6 +785,22 @@ class RobustBookTests(unittest.TestCase):
         self.assertIn(str(PROMOTION_MIN_N), PROMOTION_RULE)
         self.assertIn(str(PROMOTION_MIN_DAYS), PROMOTION_RULE)
         self.assertIn(str(PROMOTION_DROP_N), PROMOTION_RULE)
+        self.assertIn("15%", PROMOTION_RULE)
+        self.assertIn("scale 1", PROMOTION_RULE)
+        self.assertIn("Scale 2", PROMOTION_RULE)
+        from tools.laya_v0 import combine_fail_models
+
+        flat = {"promote": True, "n": 100, "mean_sol": 0.001, "total_sol": 0.1, "mean_ci90_sol": [0.0001, 0.002], "total_ex_top3_sol": 0.05, "n_days": 5, "days_positive": 5}
+        blocked = {**flat, "promote": False, "total_sol": -1.0}
+        refused = combine_fail_models(flat, blocked, blocked, applied=True)
+        self.assertTrue(refused["promote_flat_15"])
+        self.assertFalse(refused["promote_pressure_1"])
+        self.assertFalse(refused["promote"])
+        both = combine_fail_models(flat, flat, blocked, applied=True)
+        self.assertTrue(both["promote"])
+        self.assertFalse(both["pressure_scale_2"]["promote"])
+        untouched = combine_fail_models(flat, None, None, applied=False)
+        self.assertTrue(untouched["promote"])
 
         # Every token mean is positive, so the mean CI stays above 0, but the book
         # without its best trade is negative.

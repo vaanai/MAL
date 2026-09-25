@@ -26,7 +26,9 @@ PROMOTION_RULE = (
     f"n >= {MIN_N} out-of-sample trades, at least {MIN_DAYS} distinct UTC days "
     "with a majority of those days positive, lower 90% CI bound of mean SOL per trade > 0 "
     f"({BOOTSTRAP_DRAWS} token draws, seed {BOOTSTRAP_SEED}), "
-    f"and total SOL still positive after removing the top {DROP_N} trades"
+    f"and total SOL still positive after removing the top {DROP_N} trades. "
+    "The book must clear that bar under both the flat 15% fail rate and the pressure-fail "
+    "model at slope scale 1. Scale 2 is reported and is not a gate"
 )
 
 
@@ -99,7 +101,12 @@ def _winsorized_mean_lamports(values: Sequence[int], p: float = WINSOR_P) -> flo
 
 
 def book_stats(
-    trades: Sequence[BookTrade], *, min_n: int = MIN_N, watch_n: int = WATCH_N
+    trades: Sequence[BookTrade],
+    *,
+    min_n: int = MIN_N,
+    watch_n: int = WATCH_N,
+    pressure_scale_1: Sequence[BookTrade] | None = None,
+    pressure_scale_2: Sequence[BookTrade] | None = None,
 ) -> dict[str, Any]:
     pnls = [trade.pnl for trade in trades]
     n = len(pnls)
@@ -161,7 +168,7 @@ def book_stats(
         blockers.append("drop_top3")
     if not majority:
         blockers.append("majority_days")
-    return {
+    result = {
         "n": n,
         "median_sol": statistics.median(ordered) / LAMPORTS_PER_SOL,
         "mean_sol": (sum(pnls) / n) / LAMPORTS_PER_SOL,
@@ -184,3 +191,26 @@ def book_stats(
         "promote": not blockers,
         "promote_blockers": blockers,
     }
+    if pressure_scale_1 is not None:
+        scale_1 = book_stats(pressure_scale_1, min_n=min_n, watch_n=watch_n)
+        result["promote_flat_15"] = result["promote"]
+        result["promote_pressure_1"] = scale_1["promote"]
+        result["pressure_scale_1"] = {
+            "n": scale_1["n"],
+            "mean_sol": scale_1["mean_sol"],
+            "total_sol": scale_1["total_sol"],
+            "total_ex_top3_sol": scale_1["total_ex_top3_sol"],
+            "promote": scale_1["promote"],
+        }
+        if not scale_1["promote"]:
+            result["promote_blockers"] = [*result["promote_blockers"], "pressure_scale_1"]
+        result["promote"] = bool(result["promote"] and scale_1["promote"])
+    if pressure_scale_2 is not None:
+        scale_2 = book_stats(pressure_scale_2, min_n=min_n, watch_n=watch_n)
+        result["pressure_scale_2"] = {
+            "n": scale_2["n"],
+            "mean_sol": scale_2["mean_sol"],
+            "total_sol": scale_2["total_sol"],
+            "promote": scale_2["promote"],
+        }
+    return result
