@@ -24,6 +24,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TextIO
 
+from observe.attention import is_genuine_arrival, load_poller_start_ms, load_snapshot_keys
+from tools.funding_graph import fill_funding_features
+from tools.graduated_swing import (
+    SWING_EXITS,
+    SWING_LADDERS,
+    AttentionEvent,
+    _migration_price,
+    features_at,
+)
 from tools.laya_v0 import (
     BUYER_TRIGGER_NS,
     CURVE_LEVELS,
@@ -83,6 +92,13 @@ CEILING_MAX_CONCURRENT = 3
 CEILING_DAILY_LOSS_LAMPORTS = 200_000_000  # 0.2 SOL
 DEFAULT_DAILY_LOSS_LAMPORTS = CEILING_DAILY_LOSS_LAMPORTS
 DEFAULT_MAX_CONCURRENT = CEILING_MAX_CONCURRENT
+# Graduated-swing selection sample ends here. Swing books score strictly after it.
+# Config may move this later. It cannot move it earlier.
+SWING_FREEZE_AT = "2026-09-25T18:25:57Z"
+SWING_FREEZE_MS = 1_790_360_757_000
+MIG15_OFFSET_MS = 900_000
+SWING_RULES: dict[str, ExitRule] = {rule.rule_id: rule for rule in SWING_EXITS}
+SWING_LADDER_BY_ID: dict[str, LadderRule] = {rule.rule_id: rule for rule in SWING_LADDERS}
 
 
 class RiskConfigError(Exception):
@@ -166,17 +182,14 @@ class LatencyMeter:
         self._median_n = n
         return self._median
 
-    def measure(self, decision_t_ms: int) -> dict[str, Any]:
+    def quote(self, decision_t_ms: int) -> dict[str, Any]:
+        """Same delay the execution path would apply. Does not record a send."""
         chain = self.chain_median_ms()
         post = self.extra_ms
         if self.now_ms is not None:
             post += max(0, self.now_ms() - decision_t_ms)
         send = 0
         applied = max(0, (chain or 0) + post + send)
-        if post:
-            self.recv_to_decision.append(post)
-        self.decision_to_send.append(send)
-        self.applied.append(applied)
         return {
             "chain_to_recv_ms": chain,
             "recv_to_decision_ms": post,
@@ -184,6 +197,15 @@ class LatencyMeter:
             "applied_latency_ms": applied,
             "e2e_on_chain_to_send_ms": None if chain is None else chain + post + send,
         }
+
+    def measure(self, decision_t_ms: int) -> dict[str, Any]:
+        hops = self.quote(decision_t_ms)
+        post = int(hops["recv_to_decision_ms"])
+        if post:
+            self.recv_to_decision.append(post)
+        self.decision_to_send.append(int(hops["decision_to_send_ms"]))
+        self.applied.append(int(hops["applied_latency_ms"]))
+        return hops
 
     def report(self) -> dict[str, Any]:
         return {
@@ -214,9 +236,17 @@ class BookSpec:
     creator_cooldown_ms: int = 60_000
     token_cooldown_ms: int = 300_000
     size_lamports: int = DEFAULT_SIZE_LAMPORTS
+    freeze_ms: int | None = None
 
     def resolved_exit(self, deploy_rule: str) -> ExitRule | LadderRule:
         rule_id = deploy_rule if self.exit_rule == "deploy" else self.exit_rule
+        if self.kind == "swing":
+            swing = SWING_RULES.get(rule_id)
+            if swing is not None:
+                return swing
+            ladder = SWING_LADDER_BY_ID.get(rule_id)
+            if ladder is not None:
+                return ladder
         rule = RULES.get(rule_id)
         if rule is not None:
             return rule
@@ -254,14 +284,43 @@ def _optional_cap(item: dict[str, Any], key: str, book_id: str) -> Any:
     return item[key]
 
 
+def _parse_iso_ms(text: str) -> int:
+    import calendar
+
+    return int(calendar.timegm(time.strptime(text, "%Y-%m-%dT%H:%M:%SZ")) * 1000)
+
+
+def resolve_swing_freeze(raw: dict[str, Any]) -> int:
+    """Registered sample end. A missing key uses it. An earlier value is refused."""
+    if "swing_freeze_ms" in raw and raw.get("swing_freeze_ms") is None:
+        _reject_risk("swing freeze cannot be cleared")
+    if "swing_freeze_at" in raw and raw.get("swing_freeze_at") is None:
+        _reject_risk("swing freeze cannot be cleared")
+    has_ms = isinstance(raw.get("swing_freeze_ms"), (int, float)) and not isinstance(raw.get("swing_freeze_ms"), bool)
+    has_at = isinstance(raw.get("swing_freeze_at"), str) and bool(raw.get("swing_freeze_at"))
+    if not has_ms and not has_at:
+        return SWING_FREEZE_MS
+    ms = int(raw["swing_freeze_ms"]) if has_ms else None
+    if has_at:
+        parsed = _parse_iso_ms(str(raw["swing_freeze_at"]))
+        if ms is not None and ms != parsed:
+            _reject_risk("swing_freeze_at does not match swing_freeze_ms")
+        if ms is None:
+            ms = parsed
+    if ms is None or ms < SWING_FREEZE_MS:
+        _reject_risk(f"swing freeze is before the registered {SWING_FREEZE_AT}")
+    return ms
+
+
 def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
     guard_kill_switch(raw)
+    freeze_ms = resolve_swing_freeze(raw)
     found: list[BookSpec] = []
     for item in raw.get("books") or []:
         if not isinstance(item, dict):
             raise SystemExit("book entries must be objects")
         kind = str(item.get("kind") or "")
-        if kind not in ("baseline", "laya", "migrate"):
+        if kind not in ("baseline", "laya", "migrate", "swing"):
             raise SystemExit(f"unknown book kind {kind}")
         book_id = str(item.get("id") or "")
         size_sol = float(item.get("size_sol", raw.get("size_sol", 0.05)))
@@ -296,8 +355,17 @@ def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
         top_frac = None if top is None else float(top)
         if top_frac is not None and not 0 < top_frac < 1:
             raise SystemExit(f"book {item.get('id')} top_frac must be between 0 and 1")
-        model_key = str(item.get("model") or "entry")
-        if model_key not in ("entry", "barrier"):
+        if kind == "swing":
+            default_model = "swing" if top_frac is not None else "none"
+        else:
+            default_model = "entry"
+        model_key = str(item.get("model") or default_model)
+        if kind == "swing":
+            if model_key not in ("swing", "none"):
+                raise SystemExit(f"book {item.get('id')} swing model must be swing or none")
+            if not item.get("point"):
+                raise SystemExit(f"book {item.get('id')} swing book needs a point")
+        elif model_key not in ("entry", "barrier"):
             raise SystemExit(f"book {item.get('id')} model must be entry or barrier")
         found.append(
             BookSpec(
@@ -313,6 +381,7 @@ def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
                 creator_cooldown_ms=int(float(item.get("creator_cooldown_s", 0 if kind == "baseline" else 60)) * 1000),
                 token_cooldown_ms=int(float(item.get("token_cooldown_s", 0 if kind == "baseline" else 300)) * 1000),
                 size_lamports=size,
+                freeze_ms=freeze_ms if kind == "swing" else None,
             )
         )
     if not found:
@@ -326,6 +395,8 @@ def _point_matches(spec: BookSpec, book: MintBook, t_ms: int, trigger: str) -> b
     if not point:
         return True
     if point == trigger:
+        return True
+    if point == "attn" and trigger.startswith("attn:"):
         return True
     if trigger == "grid" and point.isdigit():
         return t_ms - book.create.t_signal_ms == int(point) * 1000
@@ -341,6 +412,8 @@ class _Track:
     clean_buyers: set[str] = field(default_factory=set)
     nv_fired: set[int] = field(default_factory=set)
     curve_crossed: set[int] = field(default_factory=set)
+    migration_t_ms: int | None = None
+    attn_fired: set[str] = field(default_factory=set)
 
 
 # Same object the offline scoreboard walks. Do not keep a second copy.
@@ -361,6 +434,7 @@ class _Pending:
     score: float | None
     ref_price: float | None
     hops: dict[str, Any]
+    ledger: str = "ceiling"
 
 
 @dataclass
@@ -380,8 +454,9 @@ class _Open:
 
 
 @dataclass
-class _BookRun:
-    spec: BookSpec
+class _Ledger:
+    """One paper book. `ceiling` is the execution path. `shadow` is uncapped scoring."""
+
     pending: dict[str, _Pending] = field(default_factory=dict)
     open: dict[str, _Open] = field(default_factory=dict)
     day: str = ""
@@ -391,7 +466,76 @@ class _BookRun:
     creator_ready: dict[str, int] = field(default_factory=dict)
     closed_n: int = 0
     skip_reasons: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class _BookRun:
+    spec: BookSpec
+    ceiling: _Ledger = field(default_factory=_Ledger)
+    shadow: _Ledger = field(default_factory=_Ledger)
     rank: _RankWindow | None = None
+
+    # The names below are the ceilinged execution ledger. Tests and the risk
+    # gate read them. Shadow never writes through these.
+    @property
+    def pending(self) -> dict[str, _Pending]:
+        return self.ceiling.pending
+
+    @pending.setter
+    def pending(self, value: dict[str, _Pending]) -> None:
+        self.ceiling.pending = value
+
+    @property
+    def open(self) -> dict[str, _Open]:
+        return self.ceiling.open
+
+    @open.setter
+    def open(self, value: dict[str, _Open]) -> None:
+        self.ceiling.open = value
+
+    @property
+    def day(self) -> str:
+        return self.ceiling.day
+
+    @day.setter
+    def day(self, value: str) -> None:
+        self.ceiling.day = value
+
+    @property
+    def day_pnl(self) -> int:
+        return self.ceiling.day_pnl
+
+    @day_pnl.setter
+    def day_pnl(self, value: int) -> None:
+        self.ceiling.day_pnl = value
+
+    @property
+    def realized(self) -> list[int]:
+        return self.ceiling.realized
+
+    @realized.setter
+    def realized(self, value: list[int]) -> None:
+        self.ceiling.realized = value
+
+    @property
+    def token_ready(self) -> dict[str, int]:
+        return self.ceiling.token_ready
+
+    @property
+    def creator_ready(self) -> dict[str, int]:
+        return self.ceiling.creator_ready
+
+    @property
+    def closed_n(self) -> int:
+        return self.ceiling.closed_n
+
+    @closed_n.setter
+    def closed_n(self, value: int) -> None:
+        self.ceiling.closed_n = value
+
+    @property
+    def skip_reasons(self) -> dict[str, int]:
+        return self.ceiling.skip_reasons
 
 
 class ModelSlot:
@@ -474,6 +618,7 @@ class ForwardEngine:
         latency: LatencyMeter | None = None,
         model: ModelSlot | None = None,
         barrier: ModelSlot | None = None,
+        swing: ModelSlot | None = None,
         offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
         slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
         tape_end_ms: int | None = None,
@@ -491,6 +636,7 @@ class ForwardEngine:
         self.latency = latency or LatencyMeter()
         self.model = model or ModelSlot(None, None)
         self.barrier = barrier or ModelSlot(None, None)
+        self.swing = swing or ModelSlot(None, None)
         self.offsets_ms = tuple(offsets_ms)
         self.slippage_cap = slippage_cap
         self.tape_end_ms = tape_end_ms
@@ -511,6 +657,12 @@ class ForwardEngine:
         self.grids: list[tuple[int, int, str]] = []
         self.grid_seq = 0
         self.emitted_grids: set[tuple[str, int]] = set()
+        self.mig15: list[tuple[int, int, str]] = []
+        self.mig15_seq = 0
+        self.mig15_waiting: set[str] = set()
+        self.attention: dict[str, list[AttentionEvent]] = defaultdict(list)
+        self.attn_t_start_ms = 0
+        self.attn_snapshot: set[tuple[str, str]] = set()
         self.early: dict[str, list[tuple[FlowPrint, int | None]]] = defaultdict(list)
         self.inbox: list[tuple[int, int, int, Any]] = []
         self.inbox_seq = 0
@@ -558,6 +710,27 @@ class ForwardEngine:
     def push_print(self, mint: str, pr: FlowPrint, event_ts: int | None = None) -> None:
         self._push(pr.t_recv_ms, 0, ("print", mint, pr, event_ts))
 
+    def push_attention(self, row: dict[str, Any]) -> None:
+        """Genuine first-seen only. Pre-migration rows stay buffered until graduation."""
+        ev = self._attention_event(row)
+        if ev is None:
+            return
+        if self.tape_end_ms is not None and ev.t_ms > self.tape_end_ms:
+            return
+        self._push(ev.t_ms, 1, ("attn", ev))
+
+    def _attention_event(self, row: dict[str, Any]) -> AttentionEvent | None:
+        mint = row.get("mint")
+        kind = row.get("kind")
+        t_ms = row.get("t_first_ms")
+        if not isinstance(mint, str) or not isinstance(kind, str) or not isinstance(t_ms, int):
+            return None
+        if not is_genuine_arrival(row, t_start_ms=self.attn_t_start_ms, snapshot_keys=self.attn_snapshot):
+            return None
+        rank = row.get("rank")
+        rank_i = int(rank) if isinstance(rank, int) and not isinstance(rank, bool) else None
+        return AttentionEvent(mint=mint, kind=kind, t_ms=t_ms, rank=rank_i, genuine=True)
+
     def _push(self, t_ms: int, kind: int, payload: Any) -> None:
         heapq.heappush(self.inbox, (t_ms, kind, self.inbox_seq, payload))
         self.inbox_seq += 1
@@ -595,12 +768,14 @@ class ForwardEngine:
 
     def _before_time(self, t_ms: int) -> None:
         self._emit_grids_through(t_ms - 1)
+        self._emit_mig15_through(t_ms - 1)
         self._fill_through(t_ms - 1)
         self._exits_through(t_ms - 1)
 
     def _at_time(self, t_ms: int) -> None:
         self._clock_ms = t_ms
         self._emit_grids_through(t_ms)
+        self._emit_mig15_through(t_ms)
         queued = self._triggers
         self._triggers = []
         for mint, when, trigger in queued:
@@ -614,6 +789,7 @@ class ForwardEngine:
     def _apply_batch(self, t_ms: int, batch: list[tuple[int, int, int, Any]]) -> None:
         creators = [item for item in batch if item[3][0] == "creator"]
         prints = [item for item in batch if item[3][0] == "print"]
+        attentions = [item for item in batch if item[3][0] == "attn"]
         for item in creators:
             create = item[3][1]
             self._flush_early(create.mint)
@@ -629,6 +805,8 @@ class ForwardEngine:
             _tag, mint, pr, event_ts = item[3]
             if self._add_print(mint, pr, event_ts):
                 self._consider_triggers(mint, pr)
+        for item in attentions:
+            self._note_attention(item[3][1])
         for item in creators:
             create = item[3][1]
             if create.mint in self.library and create.t_signal_ms == t_ms:
@@ -693,7 +871,10 @@ class ForwardEngine:
             self._note_curve(mint, pr.t_recv_ms, pr.venue, pr.base_reserve)
         if not track.migrate_done and pr.venue == "pumpswap" and pr.t_recv_ms >= t0:
             track.migrate_done = True
+            track.migration_t_ms = pr.t_recv_ms
             self._triggers.append((mint, pr.t_recv_ms, "migrate"))
+            self._schedule_mig15(mint, pr.t_recv_ms)
+            self._flush_attention(mint)
         self._note_clean_buyer(mint, pr)
         self._note_buyers_8(book, track, pr, t0)
 
@@ -758,6 +939,64 @@ class ForwardEngine:
             self.emitted_grids.add((mint, when))
             self._on_signal(mint, when, "grid")
 
+    def _schedule_mig15(self, mint: str, migration_t_ms: int) -> None:
+        if not any(run.spec.kind == "swing" and run.spec.point == "mig_15" for run in self.books):
+            return
+        when = migration_t_ms + MIG15_OFFSET_MS
+        if self.tape_end_ms is not None and when > self.tape_end_ms:
+            return
+        heapq.heappush(self.mig15, (when, self.mig15_seq, mint))
+        self.mig15_seq += 1
+        self.mig15_waiting.add(mint)
+
+    def _emit_mig15_through(self, t_ms: int) -> None:
+        while self.mig15 and self.mig15[0][0] <= t_ms:
+            when, _seq, mint = heapq.heappop(self.mig15)
+            self.mig15_waiting.discard(mint)
+            self._on_signal(mint, when, "mig_15")
+
+    def _note_attention(self, ev: AttentionEvent) -> None:
+        prior = self.attention[ev.mint]
+        if any(old.kind == ev.kind for old in prior):
+            return
+        prior.append(ev)
+        track = self.tracks.get(ev.mint)
+        if track is None or track.migration_t_ms is None:
+            return
+        self._fire_attention(ev.mint, ev, track)
+
+    def _flush_attention(self, mint: str) -> None:
+        track = self.tracks.get(mint)
+        if track is None or track.migration_t_ms is None:
+            return
+        for ev in self.attention.get(mint, ()):
+            self._fire_attention(mint, ev, track)
+
+    def _fire_attention(self, mint: str, ev: AttentionEvent, track: _Track) -> None:
+        if track.migration_t_ms is None or ev.t_ms < track.migration_t_ms:
+            return
+        if ev.kind in track.attn_fired:
+            return
+        track.attn_fired.add(ev.kind)
+        self._triggers.append((mint, ev.t_ms, f"attn:{ev.kind}"))
+
+    def _swing_features(self, book: MintBook, t_ms: int, trigger: str) -> dict[str, float]:
+        track = self.tracks.get(book.create.mint)
+        migration_t = track.migration_t_ms if track and track.migration_t_ms is not None else t_ms
+        price, _quote = _migration_price(book, migration_t)
+        events = self.attention.get(book.create.mint, ())
+        feats = features_at(
+            book,
+            decision_t_ms=t_ms,
+            migration_t_ms=migration_t,
+            migration_price=price,
+            attention=events,
+            is_attention=trigger.startswith("attn:"),
+        )
+        self._maybe_reload_graph()
+        fill_funding_features(book, t_ms, feats, self.wallets, self.graph, self.library)
+        return feats
+
     def _baseline(self, mint: str, t_ms: int) -> None:
         track = self.tracks.get(mint)
         book = self.library.get(mint)
@@ -816,6 +1055,8 @@ class ForwardEngine:
                 self._enter_or_skip(run, book, t_ms, trigger, feats)
             elif run.spec.kind == "migrate" and trigger == "migrate":
                 self._enter_or_skip(run, book, t_ms, trigger, feats)
+            elif run.spec.kind == "swing":
+                self._enter_or_skip(run, book, t_ms, trigger, feats)
 
     def _enter_or_skip(
         self,
@@ -829,7 +1070,31 @@ class ForwardEngine:
         mint = book.create.mint
         creator = book.create.creator
         score = None
-        if spec.kind == "laya":
+        if spec.kind == "swing":
+            freeze = spec.freeze_ms if spec.freeze_ms is not None else SWING_FREEZE_MS
+            if t_ms <= freeze:
+                self._decision(run, book, t_ms, trigger, "skip", "before_freeze", None, None)
+                return
+            if spec.model_key == "swing":
+                feats = self._swing_features(book, t_ms, trigger)
+                self.swing.maybe_reload()
+                if self.swing.booster is None:
+                    self._decision(run, book, t_ms, trigger, "skip", "no_model", None, None)
+                    return
+                score = self.swing.score(feats)
+                if score is None:
+                    self._decision(run, book, t_ms, trigger, "skip", "no_score", None, None)
+                    return
+                if spec.top_frac is not None and run.rank is not None:
+                    verdict = run.rank.consider(score)
+                    if verdict != "take":
+                        reason = "topk_warmup" if verdict == "warmup" else "below_top"
+                        self._decision(run, book, t_ms, trigger, "skip", reason, score, None)
+                        return
+                elif spec.threshold is not None and score < spec.threshold:
+                    self._decision(run, book, t_ms, trigger, "skip", "below_threshold", score, None)
+                    return
+        elif spec.kind == "laya":
             if feats is None:
                 self._maybe_reload_graph()
                 feats = packet_at(
@@ -855,31 +1120,58 @@ class ForwardEngine:
             elif spec.threshold is None or score < spec.threshold:
                 self._decision(run, book, t_ms, trigger, "skip", "below_threshold", score, None)
                 return
-        reason = self._risk_reason(run, mint, creator, t_ms, spec.size_lamports)
-        if reason:
-            self._decision(run, book, t_ms, trigger, "skip", reason, score, None)
-            return
-        hops = self.latency.measure(t_ms)
+        # Strategy said take. Ceiling still enforces the hard caps. Shadow fills
+        # every such signal with no concurrent cap and no daily-loss halt.
+        ceiling_reason = self._risk_reason(run, mint, creator, t_ms, spec.size_lamports, ledger=run.ceiling, capped=True)
+        shadow_reason = self._risk_reason(run, mint, creator, t_ms, spec.size_lamports, ledger=run.shadow, capped=False)
+        hops = None
+        if ceiling_reason is None:
+            hops = self.latency.measure(t_ms)
+        elif shadow_reason is None:
+            hops = self.latency.quote(t_ms)
+        if ceiling_reason:
+            self._decision(run, book, t_ms, trigger, "skip", ceiling_reason, score, None, ledger="ceiling")
+        else:
+            assert hops is not None
+            self._queue(run, run.ceiling, book, t_ms, trigger, score, feats, hops)
+        if shadow_reason:
+            self._decision(run, book, t_ms, trigger, "skip", shadow_reason, score, None, ledger="shadow")
+        else:
+            assert hops is not None
+            self._queue(run, run.shadow, book, t_ms, trigger, score, feats, hops)
+
+    def _queue(
+        self,
+        run: _BookRun,
+        ledger: _Ledger,
+        book: MintBook,
+        t_ms: int,
+        trigger: str,
+        score: float | None,
+        feats: dict[str, float] | None,
+        hops: dict[str, Any],
+    ) -> None:
+        spec = run.spec
+        name = "shadow" if ledger is run.shadow else "ceiling"
         latency_ms = int(hops["applied_latency_ms"])
-        ref = self._ref_price(book, t_ms, feats)
-        rule = spec.resolved_exit(self.model.rule_id)
         pending = _Pending(
             book_id=spec.book_id,
-            mint=mint,
-            creator=creator,
+            mint=book.create.mint,
+            creator=book.create.creator,
             t_entry_ms=t_ms + latency_ms,
             decision_t_ms=t_ms,
             trigger=trigger,
-            rule=rule,
+            rule=spec.resolved_exit(self.model.rule_id),
             size_lamports=spec.size_lamports,
             latency_ms=latency_ms,
             score=score,
-            ref_price=ref,
+            ref_price=self._ref_price(book, t_ms, feats),
             hops=hops,
+            ledger=name,
         )
-        run.pending[mint] = pending
+        ledger.pending[pending.mint] = pending
         if pending.t_entry_ms <= self._clock_ms:
-            self._fill_one(run, pending)
+            self._fill_one(run, ledger, pending)
 
     def _ref_price(self, book: MintBook, t_ms: int, feats: dict[str, float] | None) -> float | None:
         if feats is not None:
@@ -896,34 +1188,48 @@ class ForwardEngine:
             return price
         return None
 
-    def _risk_reason(self, run: _BookRun, mint: str, creator: str | None, t_ms: int, size: int) -> str | None:
+    def _risk_reason(
+        self,
+        run: _BookRun,
+        mint: str,
+        creator: str | None,
+        t_ms: int,
+        size: int,
+        *,
+        ledger: _Ledger | None = None,
+        capped: bool = True,
+    ) -> str | None:
         # Kill switch is not configurable. A loosened BookSpec still cannot trade past the ceilings.
+        # `capped=False` is the shadow ledger: no concurrent cap and no daily-loss halt.
+        # It does not raise position size, and it does not turn the kill switch off.
+        book = run.ceiling if ledger is None else ledger
         if self.kill_file.is_file():
             return "kill_switch"
         spec = run.spec
         if size > HARD_MAX_POSITION_LAMPORTS:
             return "max_position_size"
-        if mint in run.open or mint in run.pending:
+        if mint in book.open or mint in book.pending:
             return "already_open"
-        concurrent = CEILING_MAX_CONCURRENT if spec.max_concurrent is None else min(spec.max_concurrent, CEILING_MAX_CONCURRENT)
-        if len(run.open) + len(run.pending) >= concurrent:
-            return "max_concurrent"
-        self._roll_day(run, t_ms)
-        loss_cap = CEILING_DAILY_LOSS_LAMPORTS if spec.daily_loss_lamports is None else min(spec.daily_loss_lamports, CEILING_DAILY_LOSS_LAMPORTS)
-        if run.day_pnl <= -loss_cap:
-            return "daily_loss_cap"
-        if t_ms < run.token_ready.get(mint, 0):
+        self._roll_day(book, t_ms)
+        if capped:
+            concurrent = CEILING_MAX_CONCURRENT if spec.max_concurrent is None else min(spec.max_concurrent, CEILING_MAX_CONCURRENT)
+            if len(book.open) + len(book.pending) >= concurrent:
+                return "max_concurrent"
+            loss_cap = CEILING_DAILY_LOSS_LAMPORTS if spec.daily_loss_lamports is None else min(spec.daily_loss_lamports, CEILING_DAILY_LOSS_LAMPORTS)
+            if book.day_pnl <= -loss_cap:
+                return "daily_loss_cap"
+        if t_ms < book.token_ready.get(mint, 0):
             return "token_cooldown"
-        if creator and t_ms < run.creator_ready.get(creator, 0):
+        if creator and t_ms < book.creator_ready.get(creator, 0):
             return "creator_cooldown"
         return None
 
-    def _roll_day(self, run: _BookRun, t_ms: int) -> None:
+    def _roll_day(self, ledger: _Ledger, t_ms: int) -> None:
         day = time.strftime("%Y-%m-%d", time.gmtime(t_ms / 1000))
-        if run.day != day:
-            run.day = day
-            run.day_pnl = 0
-            run.realized = []
+        if ledger.day != day:
+            ledger.day = day
+            ledger.day_pnl = 0
+            ledger.realized = []
 
     def _decision(
         self,
@@ -937,12 +1243,16 @@ class ForwardEngine:
         hops: dict[str, Any] | None,
         *,
         entry_status: str | None = None,
+        ledger: str | None = None,
     ) -> None:
         if reason:
-            run.skip_reasons[reason] = run.skip_reasons.get(reason, 0) + 1
+            targets = (run.ceiling, run.shadow) if ledger is None else ((run.shadow if ledger == "shadow" else run.ceiling),)
+            for target in targets:
+                target.skip_reasons[reason] = target.skip_reasons.get(reason, 0) + 1
         row = {
             "schema": SCHEMA_DECISION,
             "book": run.spec.book_id,
+            "ledger": ledger,
             "mint": book.create.mint,
             "creator": book.create.creator,
             "decision_t_ms": t_ms,
@@ -953,6 +1263,10 @@ class ForwardEngine:
             "entry_status": entry_status,
             "latency": hops,
         }
+        if run.spec.kind == "swing":
+            freeze = run.spec.freeze_ms if run.spec.freeze_ms is not None else SWING_FREEZE_MS
+            row["freeze_ms"] = freeze
+            row["freeze_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(freeze / 1000.0))
         if self.retain_rows:
             self.decisions.append(row)
         log = self.logs.get("decisions")
@@ -961,20 +1275,23 @@ class ForwardEngine:
 
     def _fill_through(self, t_ms: int) -> None:
         for run in self.books:
-            due = [p for p in run.pending.values() if p.t_entry_ms <= t_ms]
-            for pending in due:
-                self._fill_one(run, pending)
+            for ledger in (run.ceiling, run.shadow):
+                due = [p for p in ledger.pending.values() if p.t_entry_ms <= t_ms]
+                for pending in due:
+                    self._fill_one(run, ledger, pending)
 
-    def _fill_one(self, run: _BookRun, pending: _Pending) -> None:
-        if run.pending.get(pending.mint) is not pending:
+    def _fill_one(self, run: _BookRun, ledger: _Ledger, pending: _Pending) -> None:
+        if ledger.pending.get(pending.mint) is not pending:
             return
         book = self.library.get(pending.mint)
         if book is None:
-            run.pending.pop(pending.mint, None)
+            ledger.pending.pop(pending.mint, None)
             return
         if self.kill_file.is_file():
-            run.pending.pop(pending.mint, None)
-            self._decision(run, book, pending.decision_t_ms, pending.trigger, "skip", "kill_switch", pending.score, pending.hops)
+            ledger.pending.pop(pending.mint, None)
+            self._decision(
+                run, book, pending.decision_t_ms, pending.trigger, "skip", "kill_switch", pending.score, pending.hops, ledger=pending.ledger
+            )
             return
         feats = {"f_tape_last_price_sol": pending.ref_price}
         entry = try_entry(
@@ -984,14 +1301,14 @@ class ForwardEngine:
             slippage_cap=self.slippage_cap,
             feats=feats,
         )
-        run.pending.pop(pending.mint, None)
+        ledger.pending.pop(pending.mint, None)
         if entry.status != "filled":
             # Same cost the scoreboard keeps inside n: an attempt that does not fill burns priority.
             cost = -PRIORITY_FEE_LAMPORTS
-            self._roll_day(run, pending.t_entry_ms)
-            run.day_pnl += cost
-            run.realized.append(cost)
-            run.closed_n += 1
+            self._roll_day(ledger, pending.t_entry_ms)
+            ledger.day_pnl += cost
+            ledger.realized.append(cost)
+            ledger.closed_n += 1
             self._decision(
                 run,
                 book,
@@ -1002,10 +1319,12 @@ class ForwardEngine:
                 pending.score,
                 pending.hops,
                 entry_status=entry.status,
+                ledger=pending.ledger,
             )
             self._position(
                 {
                     "schema": SCHEMA_POSITION,
+                    "ledger": pending.ledger,
                     "event": "miss",
                     "book": pending.book_id,
                     "mint": pending.mint,
@@ -1034,7 +1353,7 @@ class ForwardEngine:
             score=pending.score,
             hops=pending.hops,
         )
-        run.open[pending.mint] = opened
+        ledger.open[pending.mint] = opened
         self._decision(
             run,
             book,
@@ -1045,10 +1364,12 @@ class ForwardEngine:
             pending.score,
             pending.hops,
             entry_status="filled",
+            ledger=pending.ledger,
         )
         self._position(
             {
                 "schema": SCHEMA_POSITION,
+                "ledger": pending.ledger,
                 "event": "open",
                 "book": pending.book_id,
                 "mint": pending.mint,
@@ -1070,11 +1391,12 @@ class ForwardEngine:
 
     def _exits_through(self, t_ms: int) -> None:
         for run in self.books:
-            for mint in list(run.open):
-                self._try_exit(run, mint, t_ms)
+            for ledger in (run.ceiling, run.shadow):
+                for mint in list(ledger.open):
+                    self._try_exit(run, ledger, mint, t_ms)
 
-    def _try_exit(self, run: _BookRun, mint: str, t_ms: int) -> None:
-        opened = run.open.get(mint)
+    def _try_exit(self, run: _BookRun, ledger: _Ledger, mint: str, t_ms: int) -> None:
+        opened = ledger.open.get(mint)
         book = self.library.get(mint)
         if opened is None or book is None:
             return
@@ -1100,20 +1422,22 @@ class ForwardEngine:
             return
         if part["exit_status"] not in ("realized", "no_exit_liquidity"):
             return
-        run.open.pop(mint, None)
+        ledger.open.pop(mint, None)
         pnl = part.get("pnl_lamports")
-        self._roll_day(run, t_ms)
+        self._roll_day(ledger, t_ms)
         if isinstance(pnl, int):
-            run.day_pnl += pnl
-            run.realized.append(pnl)
-        run.closed_n += 1
+            ledger.day_pnl += pnl
+            ledger.realized.append(pnl)
+        ledger.closed_n += 1
         ready = t_ms
-        run.token_ready[mint] = ready + run.spec.token_cooldown_ms
+        ledger.token_ready[mint] = ready + run.spec.token_cooldown_ms
         if opened.creator:
-            run.creator_ready[opened.creator] = ready + run.spec.creator_cooldown_ms
+            ledger.creator_ready[opened.creator] = ready + run.spec.creator_cooldown_ms
+        name = "shadow" if ledger is run.shadow else "ceiling"
         self._position(
             {
                 "schema": SCHEMA_POSITION,
+                "ledger": name,
                 "event": "close",
                 "book": opened.book_id,
                 "mint": mint,
@@ -1143,10 +1467,11 @@ class ForwardEngine:
     def _prune(self, now_ms: int) -> None:
         busy: set[str] = set()
         for run in self.books:
-            busy.update(run.open)
-            busy.update(run.pending)
+            for ledger in (run.ceiling, run.shadow):
+                busy.update(ledger.open)
+                busy.update(ledger.pending)
         for mint, book in list(self.library.items()):
-            if mint in busy:
+            if mint in busy or mint in self.mig15_waiting:
                 continue
             last = book.flow[-1].t_recv_ms if book.flow else book.create.t_signal_ms
             if now_ms - last < PRUNE_AFTER_MS:
@@ -1161,7 +1486,8 @@ class ForwardEngine:
                     last_t0 = pr
                 if pr.t_recv_ms <= horizon:
                     last_h = pr
-            for pr in (last_t0, last_h):
+            last_any = book.flow[-1] if book.flow else None
+            for pr in (last_t0, last_h, last_any):
                 if pr is not None and pr not in keep:
                     keep.append(pr)
             book.flow = keep
@@ -1173,18 +1499,43 @@ class ForwardEngine:
         day = time.strftime("%Y-%m-%d", time.gmtime(when / 1000)) if when else ""
         books = {}
         for run in self.books:
-            stats = _stats_from_lamports(run.realized)
+            ceiling = _ledger_view(run.ceiling, day)
+            shadow = _ledger_view(run.shadow, day)
             books[run.spec.book_id] = {
                 "kind": run.spec.kind,
-                "open": len(run.open),
-                "pending": len(run.pending),
-                "closed": run.closed_n,
-                "day": run.day or day,
-                "day_pnl_sol": run.day_pnl / LAMPORTS_PER_SOL,
-                "realized": stats,
-                "skips": dict(run.skip_reasons),
+                **ceiling,
+                "shadow": shadow,
+                "promote_ledger": "shadow",
+                "capacity_ledger": "ceiling",
             }
-        return {"schema": SCHEMA_PNL, "day": day, "t_ms": when, "books": books, "latency": self.latency.report()}
+        freeze = SWING_FREEZE_MS
+        for run in self.books:
+            if run.spec.kind == "swing" and run.spec.freeze_ms is not None:
+                freeze = run.spec.freeze_ms
+                break
+        return {
+            "schema": SCHEMA_PNL,
+            "day": day,
+            "t_ms": when,
+            "swing_freeze_ms": freeze,
+            "swing_freeze_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(freeze / 1000.0)),
+            "promotion": "shadow",
+            "capacity": "ceiling",
+            "books": books,
+            "latency": self.latency.report(),
+        }
+
+
+def _ledger_view(ledger: _Ledger, day: str) -> dict[str, Any]:
+    return {
+        "open": len(ledger.open),
+        "pending": len(ledger.pending),
+        "closed": ledger.closed_n,
+        "day": ledger.day or day,
+        "day_pnl_sol": ledger.day_pnl / LAMPORTS_PER_SOL,
+        "realized": _stats_from_lamports(ledger.realized),
+        "skips": dict(ledger.skip_reasons),
+    }
 
 
 def window_creates(
@@ -1208,6 +1559,8 @@ def replay_rows(
     kill_file: Path,
     model: ModelSlot | None = None,
     barrier: ModelSlot | None = None,
+    swing: ModelSlot | None = None,
+    attention_rows: Iterable[dict[str, Any]] | None = None,
     extra_ms: int = 0,
     offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
@@ -1221,6 +1574,7 @@ def replay_rows(
         latency=LatencyMeter(extra_ms=extra_ms),
         model=model,
         barrier=barrier,
+        swing=swing,
         offsets_ms=offsets_ms,
         slippage_cap=slippage_cap,
         tape_end_ms=tape_end_ms,
@@ -1232,6 +1586,8 @@ def replay_rows(
         model.maybe_reload(force=True)
     if barrier is not None:
         barrier.maybe_reload(force=True)
+    if swing is not None:
+        swing.maybe_reload(force=True)
     for create in creates:
         if create.t_signal_ms <= tape_end_ms:
             engine.push_create(create)
@@ -1243,6 +1599,8 @@ def replay_rows(
         if pr.t_recv_ms > tape_end_ms:
             continue
         engine.push_print(mint, pr, _event_ts(row))
+    for row in attention_rows or ():
+        engine.push_attention(row)
     engine.drain_until(tape_end_ms, final=True)
     return engine
 
@@ -1287,7 +1645,11 @@ def reconcile_baseline(
 ) -> dict[str, Any]:
     """Compare the baseline book with the offline fill at the same latency and at 1s."""
     paths = _paths_from_rows(creates, trade_rows, tape_end_ms)
-    online = [row for row in engine.positions if row.get("book") == book_id and row.get("event") == "close"]
+    online = [
+        row
+        for row in engine.positions
+        if row.get("book") == book_id and row.get("event") == "close" and row.get("ledger", "ceiling") == "ceiling"
+    ]
     online_pnl = [int(row["pnl_lamports"]) for row in online if isinstance(row.get("pnl_lamports"), int)]
     resim: list[int] = []
     gaps = 0
@@ -1450,11 +1812,18 @@ class _Follower:
 
 
 class DirectoryTail:
-    """Follow the open trade hour and the observe day file. No writes to those dirs."""
+    """Follow the open trade hour, the observe day file, and attention hours. No writes to those dirs."""
 
-    def __init__(self, tape_dir: Path, creates_dir: Path, offsets: dict[str, int]) -> None:
+    def __init__(
+        self,
+        tape_dir: Path,
+        creates_dir: Path,
+        offsets: dict[str, int],
+        attention_dir: Path | None = None,
+    ) -> None:
         self.tape_dir = tape_dir
         self.creates_dir = creates_dir
+        self.attention_dir = attention_dir
         self.offsets = offsets
         self._open: dict[str, _Follower] = {}
 
@@ -1467,7 +1836,12 @@ class DirectoryTail:
             except OSError:
                 continue
             self.offsets[key] = follower.offset
-            kind = "create" if key.startswith("create:") else "trade"
+            if key.startswith("create:"):
+                kind = "create"
+            elif key.startswith("attention:"):
+                kind = "attention"
+            else:
+                kind = "trade"
             for line in lines:
                 try:
                     row = json.loads(line)
@@ -1483,7 +1857,10 @@ class DirectoryTail:
         day = time.strftime("%Y-%m-%d", now)
         trade = self.tape_dir / f"trades-{hour}.jsonl"
         create = self.creates_dir / f"observe-{day}.jsonl"
-        for kind, path in (("trade", trade), ("create", create)):
+        watched = [("trade", trade), ("create", create)]
+        if self.attention_dir is not None:
+            watched.append(("attention", self.attention_dir / f"attention-{hour}.jsonl"))
+        for kind, path in watched:
             key = f"{kind}:{path}"
             if key in self._open or not path.is_file():
                 continue
@@ -1505,6 +1882,7 @@ def run_replay_files(
     model_path: Path | None,
     meta_path: Path | None,
     barrier_path: Path | None = None,
+    swing_path: Path | None = None,
     tape_end_ms: int | None,
     slippage_cap: float,
     span_ms: int | None = None,
@@ -1523,6 +1901,7 @@ def run_replay_files(
     }
     model = ModelSlot(model_path, meta_path)
     barrier = ModelSlot(barrier_path, meta_path)
+    swing_slot = ModelSlot(swing_path, None)
     engine = replay_rows(
         loaded.values(),
         rows,
@@ -1531,6 +1910,7 @@ def run_replay_files(
         kill_file=kill_file,
         model=model,
         barrier=barrier,
+        swing=swing_slot,
         slippage_cap=slippage_cap,
         logs=logs,
         record_packets=True,
@@ -1579,6 +1959,15 @@ def adopt_book_limits(engine: ForwardEngine, books: Sequence[BookSpec]) -> None:
             run.spec = spec
 
 
+def bind_attention(engine: ForwardEngine, directory: Path | None) -> None:
+    """Startup snapshot and poller start. Rows in that set are not genuine arrivals."""
+    if directory is None or not directory.is_dir():
+        return
+    start = load_poller_start_ms(directory)
+    engine.attn_t_start_ms = start or 0
+    engine.attn_snapshot = load_snapshot_keys(directory)
+
+
 def serve(config_path: Path) -> int:
     try:
         raw = load_config(config_path)
@@ -1593,6 +1982,8 @@ def serve(config_path: Path) -> int:
     model_path = Path(raw["model_path"]) if raw.get("model_path") else None
     meta_path = Path(raw["model_meta"]) if raw.get("model_meta") else None
     barrier_path = Path(raw["barrier_model"]) if raw.get("barrier_model") else None
+    swing_path = Path(raw["swing_model"]) if raw.get("swing_model") else None
+    attention_dir = Path(raw["attention_dir"]) if raw.get("attention_dir") else None
     holdback_ms = int(raw.get("holdback_ms", 300))
     slippage = float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1615,19 +2006,23 @@ def serve(config_path: Path) -> int:
     model.maybe_reload(force=True)
     barrier = ModelSlot(barrier_path, meta_path)
     barrier.maybe_reload(force=True)
+    swing = ModelSlot(swing_path, None)
+    swing.maybe_reload(force=True)
     engine = ForwardEngine(
         books,
         kill_file=kill_file,
         latency=LatencyMeter(now_ms=lambda: int(time.time() * 1000)),
         model=model,
         barrier=barrier,
+        swing=swing,
         slippage_cap=slippage,
         logs={"decisions": logs["decisions"], "positions": logs["positions"]},
     )
+    bind_attention(engine, attention_dir)
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
     if graph_dir.is_dir():
         engine.graph_dir = graph_dir
-    tail = DirectoryTail(tape_dir, creates_dir, offsets)
+    tail = DirectoryTail(tape_dir, creates_dir, offsets, attention_dir)
     stop = {"flag": False}
 
     def _stop(_signum: int, _frame: Any) -> None:
@@ -1641,8 +2036,10 @@ def serve(config_path: Path) -> int:
         config_mtime = config_path.stat().st_mtime
     except OSError:
         config_mtime = 0.0
+    freeze_ms = next((b.freeze_ms for b in books if b.kind == "swing" and b.freeze_ms is not None), SWING_FREEZE_MS)
+    freeze_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(freeze_ms / 1000.0))
     print(
-        f"forward_paper books={','.join(b.book_id for b in books)} kill={kill_file}",
+        f"forward_paper books={','.join(b.book_id for b in books)} kill={kill_file} swing_freeze={freeze_at}",
         file=sys.stderr,
     )
     while not stop["flag"]:
@@ -1655,6 +2052,11 @@ def serve(config_path: Path) -> int:
                     continue
                 engine.push_create(create)
                 watermark = max(watermark, create.t_signal_ms)
+            elif kind == "attention":
+                engine.push_attention(row)
+                raw_t = row.get("t_first_ms")
+                if isinstance(raw_t, int):
+                    watermark = max(watermark, raw_t)
             else:
                 parsed = flow_from_tape_row(row)
                 if parsed is None:
@@ -1670,6 +2072,8 @@ def serve(config_path: Path) -> int:
         if now - last_model > 30:
             model.maybe_reload()
             barrier.maybe_reload()
+            swing.maybe_reload()
+            bind_attention(engine, attention_dir)
             try:
                 mtime = config_path.stat().st_mtime
             except OSError:
@@ -1738,6 +2142,7 @@ def main(argv: list[str] | None = None) -> int:
     model = Path(raw["model_path"]) if raw.get("model_path") else None
     meta = Path(raw["model_meta"]) if raw.get("model_meta") else None
     barrier = Path(raw["barrier_model"]) if raw.get("barrier_model") else None
+    swing_model = Path(raw["swing_model"]) if raw.get("swing_model") else None
     kill = Path(raw.get("kill_file") or (args.output_dir / "KILL"))
     result = run_replay_files(
         tape=sorted({p.resolve() for p in tape}),
@@ -1748,6 +2153,7 @@ def main(argv: list[str] | None = None) -> int:
         model_path=model if model and model.is_file() else None,
         meta_path=meta if meta and meta.is_file() else None,
         barrier_path=barrier if barrier and barrier.is_file() else None,
+        swing_path=swing_model if swing_model and swing_model.is_file() else None,
         tape_end_ms=args.tape_end_ms,
         slippage_cap=float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP)),
         span_ms=None if args.span_min <= 0 else int(args.span_min * 60_000),
