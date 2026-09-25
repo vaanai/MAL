@@ -64,7 +64,7 @@ from tools.laya_v0 import (
 from tools.paper_curve_math import LAMPORTS_PER_SOL
 from tools.paper_fail_pressure import Attempt, fit_curve, headline_pnl
 from tools.paper_price_path import CreateSignal, load_creates, open_text
-from tools.paper_tape_scoreboard import DEFAULT_SLIPPAGE_CAP
+from tools.paper_tape_scoreboard import DEFAULT_SLIPPAGE_CAP, filter_window
 from tools.funding_graph import FundingGraph
 
 SCHEMA = "laya_backward_holdout_v1"
@@ -408,6 +408,13 @@ def fit_mig15(
     return model, curve_1, curve_2, len(ys)
 
 
+def _release_books(books: dict[str, MintBook]) -> None:
+    """Drop print lists after the fit so the backfill scan does not sit on top of them."""
+    for book in books.values():
+        book.flow.clear()
+        book.path.prints.clear()
+
+
 def _fit_frozen(train_rows: Sequence[DecisionRow], backend: str | None) -> dict[tuple[str, str], Any]:
     fitted: dict[tuple[str, str], Any] = {}
     for spec in FROZEN_CANDIDATES:
@@ -564,6 +571,7 @@ def score_backward_holdout(
             slippage_cap=slippage_cap,
             create_t_max_ms=freeze_ms,
         )
+    _release_books(live_books)
     trade_draw = LagDraw(live_lags, hop_ms, LATENCY_DRAW_SEED)
     create_draw = LagDraw(live_lags, hop_ms, CREATE_DRAW_SEED)
     creates = load_backfill_creates([hour["create"] for hour in hours], create_draw)
@@ -813,8 +821,11 @@ def run_backward_only(
     if not tape:
         raise SystemExit("no live tape files for the pre-freeze fit")
     books, stats = load_books(creates, tape)
-    if stats.t_max_ms is None:
+    if stats.t_min_ms is None or stats.t_max_ms is None:
         raise SystemExit("live tape has no t_recv_ms")
+    kept = filter_window({mint: book.path for mint, book in books.items()}, stats.t_min_ms, stats.t_max_ms)
+    books = {mint: books[mint] for mint in kept}
+    print(f"live_creates_in_window={len(books)}", file=sys.stderr)
     lags = list(getattr(stats, "chain_lags_ms", []))
     graph = FundingGraph.load(graph_dir) if graph_dir is not None and graph_dir.is_dir() else None
     attention = load_attention(attention_dir) if attention_dir is not None and attention_dir.is_dir() else []
