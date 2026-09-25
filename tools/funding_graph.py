@@ -1111,9 +1111,10 @@ def tight_promotion(trades: Sequence[Any]) -> dict[str, Any]:
         and ex_top is not None
         and ex_top > 0
     )
+    laya_promote = bool(stats.get("promote"))
     stats["total_ex_top3_sol"] = ex_top
-    stats["promote_coded_in_laya"] = bool(stats.get("promote"))
     stats["promote"] = promote
+    stats["promote_coded_in_laya"] = laya_promote == promote
     return stats
 
 
