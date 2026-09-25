@@ -25,6 +25,7 @@ from tools.laya_v0 import (
     load_books,
     local_features,
     run_files,
+    tape_day_tokens,
     walk_forward,
 )
 from tools.paper_curve_math import (
@@ -559,6 +560,14 @@ class FileTests(unittest.TestCase):
             books, stats = load_books(load_creates([create_path]), [tape_path])
             self.assertEqual(stats.kept, 1)
             self.assertEqual(books["MintA"].flow[0].trader, "WalletA")
+            days = tape_day_tokens(
+                [
+                    Path("trades-2026-09-25.jsonl.zst"),
+                    Path("trades-2026-09-25T08.jsonl"),
+                    Path("pool-mints-2026-09-25.jsonl"),
+                ]
+            )
+            self.assertEqual(days, {"2026-09-25"})
             sealed = root / "sealed" / "trades"
             sealed.mkdir(parents=True)
             with self.assertRaises(SystemExit):

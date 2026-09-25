@@ -1656,6 +1656,19 @@ def _discover(directory: Path, patterns: Sequence[str]) -> list[Path]:
     return sorted({path.resolve() for path in found if path.is_file()})
 
 
+def tape_day_tokens(paths: Sequence[Path]) -> set[str]:
+    """Calendar days named in trades-YYYY-MM-DD files. Used to skip older observe logs."""
+    out: set[str] = set()
+    for path in paths:
+        name = path.name
+        if not name.startswith("trades-"):
+            continue
+        token = name[len("trades-") : len("trades-") + 10]
+        if len(token) == 10 and token[4] == "-" and token[7] == "-":
+            out.add(token)
+    return out
+
+
 def run_files(
     *,
     tape: Sequence[Path],
@@ -1771,10 +1784,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.tape_dir:
         tape.extend(_discover(args.tape_dir, ("trades-*.jsonl", "trades-*.jsonl.zst", "trades-*.jsonl.gz")))
     if args.creates_dir:
-        creates.extend(_discover(args.creates_dir, ("observe-*.jsonl", "observe-*.jsonl.zst")))
+        discovered = _discover(args.creates_dir, ("observe-*.jsonl", "observe-*.jsonl.zst"))
+        days = tape_day_tokens(tape)
+        if days:
+            matched = [path for path in discovered if any(day in path.name for day in days)]
+            discovered = matched or discovered
+        creates.extend(discovered)
     # Stable, unique.
     tape = sorted({path.resolve() for path in tape})
     creates = sorted({path.resolve() for path in creates})
+    print(f"tape_files={len(tape)} create_files={len(creates)}", file=sys.stderr)
     if args.size_sol <= 0:
         raise SystemExit("size-sol must be positive")
     board = run_files(
