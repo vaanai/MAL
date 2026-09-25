@@ -532,6 +532,55 @@ class LabelTests(unittest.TestCase):
             self.assertLess(max(times[i] for i in train), min(times[i] for i in test))
             self.assertTrue(set(train).isdisjoint(test))
 
+    def test_missing_hourly_jsonl_falls_back_to_the_zst(self) -> None:
+        from tools.laya_v0 import _resolve_tape_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gone = root / "trades-2026-09-25T16.jsonl"
+            zst = root / "trades-2026-09-25T16.jsonl.zst"
+            zst.write_bytes(b"")
+            self.assertEqual(_resolve_tape_path(gone), zst)
+            live = root / "trades-2026-09-25T17.jsonl"
+            live.write_text("x\n", encoding="utf-8")
+            self.assertEqual(_resolve_tape_path(live), live)
+
+    def test_chain_sample_adds_recv_to_decision_hop(self) -> None:
+        from tools.laya_v0 import (
+            RECV_TO_DECISION_FLOOR_MS,
+            entry_delay_ms,
+            latency_percentiles,
+            recv_to_decision_hop_ms,
+            sample_entry_latencies,
+        )
+
+        self.assertEqual(RECV_TO_DECISION_FLOOR_MS, 26)
+        self.assertEqual(sample_entry_latencies(3, [5_000]), [5_026, 5_026, 5_026])
+        self.assertEqual(entry_delay_ms(-4_000, 26), 26)
+        self.assertEqual(sample_entry_latencies(2, []), [ENTRY_LATENCY_MS, ENTRY_LATENCY_MS])
+        self.assertEqual(recv_to_decision_hop_ms(None), 26)
+        self.assertEqual(recv_to_decision_hop_ms({"recv_to_decision": {"p50_ms": 10}}), 26)
+        self.assertEqual(recv_to_decision_hop_ms({"recv_to_decision": {"p50_ms": 40.4}}), 40)
+        measured = latency_percentiles([1_000, 2_000, 3_000], hop_ms=26)
+        self.assertEqual(measured["p50_ms"], measured["chain_p50_ms"] + 26)
+        self.assertEqual(measured["p90_ms"], entry_delay_ms(measured["chain_p90_ms"], 26))
+        empty = latency_percentiles([])
+        self.assertEqual(empty["p50_ms"], ENTRY_LATENCY_MS)
+        self.assertNotIn("recv→decision p50", empty["source"])
+
+    def test_miss_stays_in_n_and_landed_tries_pay_the_fifteen_percent_fee(self) -> None:
+        from tools.laya_v0 import _attempt_pnl
+
+        self.assertEqual(
+            _attempt_pnl("missed_slippage", "not_entered", -PRIORITY_FEE_LAMPORTS, SIZE),
+            -PRIORITY_FEE_LAMPORTS,
+        )
+        self.assertEqual(_attempt_pnl("missed_no_liquidity", "not_entered", None, SIZE), -PRIORITY_FEE_LAMPORTS)
+        landed = 1_000_000
+        mixed = int(round(0.85 * landed + 0.15 * (-PRIORITY_FEE_LAMPORTS)))
+        self.assertEqual(_attempt_pnl("filled", "realized", landed, SIZE), mixed)
+        self.assertIsNone(_attempt_pnl("filled", "censored", None, SIZE))
+
     def test_sampled_latency_is_not_the_flat_one_second_seed(self) -> None:
         flat = _book([_flow(T0 + 1_000, trader="W", sol=1_000_000_000)])
         books = _books(flat)
@@ -578,11 +627,10 @@ class LabelTests(unittest.TestCase):
         self.assertEqual(flat_row.entry_status, "filled")
         self.assertLess(flat_row.pnl_by_rule["hold_30s"], -2 * PRIORITY_FEE_LAMPORTS)
         self.assertEqual(rug_row.exit_status_by_rule["hold_30s"], "no_exit_liquidity")
-        self.assertEqual(rug_row.pnl_by_rule["hold_30s"], _stuck_loss(SIZE))
-        self.assertEqual(
-            rug_row.pnl_by_rule["hold_30s"],
-            -(SIZE + 2 * PRIORITY_FEE_LAMPORTS + TOKEN_ACCOUNT_RENT_LAMPORTS),
-        )
+        stuck = _stuck_loss(SIZE)
+        mixed = int(round(0.85 * stuck + 0.15 * (-PRIORITY_FEE_LAMPORTS)))
+        self.assertEqual(rug_row.pnl_by_rule["hold_30s"], mixed)
+        self.assertEqual(stuck, -(SIZE + 2 * PRIORITY_FEE_LAMPORTS + TOKEN_ACCOUNT_RENT_LAMPORTS))
         # The rug print is after the decision, so the packet still shows the calm book.
         self.assertEqual(rug_row.features["f_n_sell"], 0.0)
 
@@ -737,6 +785,22 @@ class RobustBookTests(unittest.TestCase):
         self.assertIn(str(PROMOTION_MIN_N), PROMOTION_RULE)
         self.assertIn(str(PROMOTION_MIN_DAYS), PROMOTION_RULE)
         self.assertIn(str(PROMOTION_DROP_N), PROMOTION_RULE)
+        self.assertIn("15%", PROMOTION_RULE)
+        self.assertIn("scale 1", PROMOTION_RULE)
+        self.assertIn("Scale 2", PROMOTION_RULE)
+        from tools.laya_v0 import combine_fail_models
+
+        flat = {"promote": True, "n": 100, "mean_sol": 0.001, "total_sol": 0.1, "mean_ci90_sol": [0.0001, 0.002], "total_ex_top3_sol": 0.05, "n_days": 5, "days_positive": 5}
+        blocked = {**flat, "promote": False, "total_sol": -1.0}
+        refused = combine_fail_models(flat, blocked, blocked, applied=True)
+        self.assertTrue(refused["promote_flat_15"])
+        self.assertFalse(refused["promote_pressure_1"])
+        self.assertFalse(refused["promote"])
+        both = combine_fail_models(flat, flat, blocked, applied=True)
+        self.assertTrue(both["promote"])
+        self.assertFalse(both["pressure_scale_2"]["promote"])
+        untouched = combine_fail_models(flat, None, None, applied=False)
+        self.assertTrue(untouched["promote"])
 
         # Every token mean is positive, so the mean CI stays above 0, but the book
         # without its best trade is negative.

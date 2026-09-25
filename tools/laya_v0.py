@@ -4,8 +4,9 @@
 LightGBM (sklearn HistGradientBoosting if the wheel is missing) scores a
 numeric packet at fixed times after create. Features read only tape rows
 with t_recv_ms <= the decision time, plus the create payload. Labels are
-the PR #76 paper fill at decision time + 1s under the exit grid. The
-primary exit rule is chosen on each training fold only.
+the paper fill at decision time plus a chain→receive draw and the measured
+recv→decision hop (1s seed when the tape has no event_ts). The primary
+exit rule is chosen on each training fold only.
 
 Walk-forward splits are time-ordered. The daily job retrains on the tape
 it can see and writes a scoreboard. It does not touch the recorder.
@@ -50,8 +51,11 @@ from tools.paper_price_path import (
 )
 from tools.funding_graph import FundingGraph, fill_funding_features
 from tools.paper_tape_scoreboard import (
+    DEFAULT_FAIL_RATE,
     EXIT_RULES,
     ExitRule,
+    MISS_STATUSES,
+    _headline_pnl,
     _plan_exit,
     filter_window,
     simulate_exit,
@@ -97,9 +101,14 @@ PROMOTION_RULE = (
     f"at least {PROMOTION_MIN_N} out-of-sample trades, "
     f"at least {PROMOTION_MIN_DAYS} distinct UTC days with a majority of those days positive, "
     "lower 90% CI bound of mean SOL per trade > 0, "
-    f"and total SOL still positive after removing the top {PROMOTION_DROP_N} trades"
+    f"and total SOL still positive after removing the top {PROMOTION_DROP_N} trades. "
+    "The book must clear that bar under both the flat 15% fail rate and the pressure-fail "
+    "model at slope scale 1. Scale 2 is reported and is not a gate"
 )
 LATENCY_DRAW_SEED = 1
+# forward_paper_latency_v1 host report, 2026-09-25: recv_to_decision n=349, p50 26 ms.
+# The p99 (~1s) is a tail, not the hop. A later report can only raise this floor.
+RECV_TO_DECISION_FLOOR_MS = 26
 CHAIN_LAG_MIN_MS = -5_000
 CHAIN_LAG_MAX_MS = 120_000
 # Pre-registered after the 8.3h search. fraction 1 is the whole point, not a top slice.
@@ -262,6 +271,12 @@ class DecisionRow:
     entry_status: str = ""
     entry_t_ms: int = 0
     barrier: dict[str, int | None] = field(default_factory=dict)
+    raw_pnl_by_rule: dict[str, int | None] = field(default_factory=dict)
+    pressure_slot_buys: int = 0
+    pressure_nearby_lamports: int = 0
+    pnl_pressure_1: dict[str, int | None] = field(default_factory=dict)
+    pnl_pressure_2: dict[str, int | None] = field(default_factory=dict)
+    pressure_stamped: bool = False
 
     def point_id(self) -> str:
         if self.trigger == "grid":
@@ -405,6 +420,17 @@ def chain_lag_ms(row: dict[str, Any]) -> int | None:
     return lag
 
 
+def _resolve_tape_path(path: Path) -> Path:
+    """Hourly rotate replaces trades-*.jsonl with trades-*.jsonl.zst while a scan is open."""
+    if path.is_file():
+        return path
+    rotated = path.with_name(path.name + ".zst")
+    if rotated.is_file():
+        print(f"tape_rotated={path.name}", file=sys.stderr)
+        return rotated
+    return path
+
+
 def load_books(
     creates: dict[str, CreateSignal],
     tape_paths: Iterable[Path],
@@ -413,7 +439,7 @@ def load_books(
     stats = ScanStats()
     lags: list[int] = []
     for path in tape_paths:
-        with open_text(path) as fh:
+        with open_text(_resolve_tape_path(path)) as fh:
             for line in fh:
                 stats.lines += 1
                 if stats.lines % 250_000 == 0:
@@ -1342,30 +1368,283 @@ def simulate_ladder(
     }
 
 
-def sample_entry_latencies(n: int, lags_ms: Sequence[int], *, seed: int = LATENCY_DRAW_SEED) -> list[int]:
-    """One chain→receive draw per decision. Falls back to the 1s seed when the tape has no event_ts."""
+def recv_to_decision_hop_ms(report: dict[str, Any] | None) -> int:
+    """Recv→decision p50 added to every chain draw. Never below the recorded 26 ms."""
+    hop = RECV_TO_DECISION_FLOOR_MS
+    if not report:
+        return hop
+    block = report.get("recv_to_decision")
+    if not isinstance(block, dict):
+        return hop
+    p50 = block.get("p50_ms")
+    if isinstance(p50, bool) or not isinstance(p50, (int, float)):
+        return hop
+    return max(hop, int(round(float(p50))))
+
+
+def load_latency_report(path: Path | None) -> dict[str, Any] | None:
+    """Read a forward_paper_latency_v1 file. Missing path keeps the 26 ms floor."""
+    if path is None or not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise SystemExit(f"latency report {path} is not an object")
+    return data
+
+
+def entry_delay_ms(chain_ms: int, hop_ms: int) -> int:
+    """Chain lag plus the decision hop. A negative chain sample cannot cancel the hop."""
+    hop = max(0, int(hop_ms))
+    return max(0, int(chain_ms)) + hop
+
+
+def _raw_attempt_pnl(entry_status: str, pnl: Any) -> int | None:
+    """Unmixed fill. Misses keep the priority fee. Censored holds stay None."""
+    if isinstance(pnl, int):
+        return int(pnl)
+    if entry_status in MISS_STATUSES:
+        return -PRIORITY_FEE_LAMPORTS
+    return None
+
+
+def _entry_pressure(path: MintPath, t_entry_ms: int) -> Any:
+    from tools.paper_fail_pressure import Pressure, pressure_from_prints
+
+    state = state_as_of(path, t_entry_ms, allow_anchor=True)
+    slot = None if state is None or state.event_index < 0 else state.slot
+    return pressure_from_prints(path.prints, t_entry_ms=t_entry_ms, entry_slot=slot)
+
+
+def fit_headline_curves(
+    books: dict[str, MintBook],
+    *,
+    tape_end_ms: int,
+    size_lamports: int,
+    slippage_cap: float,
+) -> dict[str, Any]:
+    """Scale 1 and 2 pressure curves. Intercept is fit on buy-all hold_30s sends at create+1s.
+
+    Same calibration as the offline pressure table: mean fail probability on those
+    sends is 0.289. Scale 2 is reported later and is not a promotion gate.
+    """
+    from tools.paper_fail_pressure import Attempt, fit_curve, is_send
+    from tools.paper_tape_scoreboard import features_at_t
+
+    rule = next(item for item in EXIT_RULES if item.rule_id == "hold_30s")
+    pressures = []
+    for mint in sorted(books):
+        book = books[mint]
+        t_entry = book.create.t_signal_ms + ENTRY_LATENCY_MS
+        entry = try_entry(
+            book.path,
+            t_entry_ms=t_entry,
+            size_lamports=size_lamports,
+            slippage_cap=slippage_cap,
+            feats=features_at_t(book.path),
+        )
+        part = simulate_exit(
+            book.path,
+            entry,
+            rule,
+            latency_ms=ENTRY_LATENCY_MS,
+            tape_end_ms=tape_end_ms,
+            size_lamports=size_lamports,
+        )
+        pnl = part.get("pnl_lamports")
+        attempt = Attempt(
+            entry_status=entry.status,
+            exit_status=str(part["exit_status"]),
+            pnl_lamports=int(pnl) if isinstance(pnl, int) else None,
+            pressure=_entry_pressure(book.path, t_entry),
+        )
+        if is_send(attempt):
+            pressures.append(attempt.pressure)
+    if not pressures:
+        return {}
+    return {
+        "scale_1": fit_curve(pressures, scale=1.0),
+        "scale_2": fit_curve(pressures, scale=2.0),
+        "calibration_sends": len(pressures),
+    }
+
+
+def stamp_pressure_pnls(rows: Sequence[DecisionRow], curves: dict[str, Any]) -> None:
+    """Rewrite nothing in the flat 15% label. Store scale-1 and scale-2 mixes beside it."""
+    from tools.paper_fail_pressure import Attempt, Pressure, headline_pnl
+
+    curve_1 = curves.get("scale_1")
+    curve_2 = curves.get("scale_2")
+    if curve_1 is None or curve_2 is None:
+        return
+    for row in rows:
+        pressure = Pressure(row.pressure_slot_buys, row.pressure_nearby_lamports)
+        row.pressure_stamped = True
+        for rule_id, raw in row.raw_pnl_by_rule.items():
+            attempt = Attempt(
+                entry_status=row.entry_status,
+                exit_status=row.exit_status_by_rule.get(rule_id, ""),
+                pnl_lamports=raw if isinstance(raw, int) else None,
+                pressure=pressure,
+            )
+            row.pnl_pressure_1[rule_id] = headline_pnl(attempt, curve_1)
+            row.pnl_pressure_2[rule_id] = headline_pnl(attempt, curve_2)
+
+
+def _pair_pressure(row: DecisionRow, rule_id: str) -> tuple[int | None, int | None]:
+    a = row.pnl_pressure_1.get(rule_id)
+    b = row.pnl_pressure_2.get(rule_id)
+    return (a if isinstance(a, int) else None, b if isinstance(b, int) else None)
+
+
+def _fail_model_report(curves: dict[str, Any]) -> dict[str, Any]:
+    from tools.paper_fail_pressure import TARGET_FAIL_RATE
+    from tools.paper_tape_scoreboard import DEFAULT_FAIL_RATE
+
+    def _curve(key: str) -> dict[str, Any] | None:
+        curve = curves.get(key)
+        if curve is None:
+            return None
+        return curve.as_dict()
+
+    return {
+        "flat_fail_rate": DEFAULT_FAIL_RATE,
+        "pressure_target": TARGET_FAIL_RATE,
+        "calibration": "buy-all hold_30s sends at create plus 1s; intercept refit per scale",
+        "calibration_sends": curves.get("calibration_sends", 0),
+        "scale_1": _curve("scale_1"),
+        "scale_2": _curve("scale_2"),
+        "gate": "promote requires the structural bar on the flat 15% book and on pressure scale 1. Scale 2 is not a gate.",
+    }
+
+
+def _fail_view(stats: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "n": stats.get("n"),
+        "mean_sol": stats.get("mean_sol"),
+        "total_sol": stats.get("total_sol"),
+        "mean_ci90_sol": stats.get("mean_ci90_sol"),
+        "total_ex_top3_sol": stats.get("total_ex_top3_sol"),
+        "n_days": stats.get("n_days"),
+        "days_positive": stats.get("days_positive"),
+        "promote": bool(stats.get("promote")),
+    }
+
+
+def combine_fail_models(
+    flat: dict[str, Any],
+    scale_1: dict[str, Any] | None,
+    scale_2: dict[str, Any] | None,
+    *,
+    applied: bool,
+) -> dict[str, Any]:
+    """Promote only when flat 15% and pressure scale 1 both pass. Scale 2 is info."""
+    out = dict(flat)
+    out["promote_flat_15"] = bool(flat.get("promote"))
+    if not applied or scale_1 is None:
+        out["promote_pressure_1"] = None
+        out["pressure_scale_1"] = None
+        out["pressure_scale_2"] = None
+        return out
+    out["promote_pressure_1"] = bool(scale_1.get("promote"))
+    out["pressure_scale_1"] = _fail_view(scale_1)
+    out["pressure_scale_2"] = None if scale_2 is None else _fail_view(scale_2)
+    out["promote"] = bool(out["promote_flat_15"] and out["promote_pressure_1"])
+    return out
+
+
+def _gated_stats(rows: Sequence[Scored]) -> dict[str, Any]:
+    flat = [BookTrade(row.mint, row.decision_t_ms, row.pnl) for row in rows]
+    applied = any(row.pressure_stamped for row in rows)
+    if not applied:
+        return combine_fail_models(book_stats(flat), None, None, applied=False)
+    p1 = [BookTrade(row.mint, row.decision_t_ms, row.pnl_p1) for row in rows if isinstance(row.pnl_p1, int)]
+    p2 = [BookTrade(row.mint, row.decision_t_ms, row.pnl_p2) for row in rows if isinstance(row.pnl_p2, int)]
+    return combine_fail_models(book_stats(flat), book_stats(p1), book_stats(p2), applied=True)
+
+
+def _gated_from_rows(rows: Sequence[DecisionRow], rule_id: str) -> dict[str, Any]:
+    flat: list[BookTrade] = []
+    p1: list[BookTrade] = []
+    p2: list[BookTrade] = []
+    applied = False
+    for row in rows:
+        pnl = row.pnl_by_rule.get(rule_id)
+        if not isinstance(pnl, int):
+            continue
+        flat.append(BookTrade(row.mint, row.decision_t_ms, pnl))
+        if row.pressure_stamped:
+            applied = True
+        a = row.pnl_pressure_1.get(rule_id)
+        b = row.pnl_pressure_2.get(rule_id)
+        if isinstance(a, int):
+            p1.append(BookTrade(row.mint, row.decision_t_ms, a))
+        if isinstance(b, int):
+            p2.append(BookTrade(row.mint, row.decision_t_ms, b))
+    if not applied:
+        return combine_fail_models(book_stats(flat), None, None, applied=False)
+    return combine_fail_models(book_stats(flat), book_stats(p1), book_stats(p2), applied=True)
+
+
+def _attempt_pnl(entry_status: str, exit_status: str, pnl: Any, size_lamports: int) -> int | None:
+    """Headline fill: misses stay in n at the priority fee, and 15% of landed tries pay only that fee.
+
+    Same mix as the tape scoreboard. Censored holds stay out. A miss the ladder helper
+    left blank still costs the priority fee.
+    """
+    if entry_status in MISS_STATUSES and not isinstance(pnl, int):
+        pnl = -PRIORITY_FEE_LAMPORTS
+    return _headline_pnl(
+        {"entry_status": entry_status, "exit_status": exit_status, "pnl_lamports": pnl},
+        DEFAULT_FAIL_RATE,
+        size_lamports,
+    )
+
+
+def sample_entry_latencies(
+    n: int,
+    lags_ms: Sequence[int],
+    *,
+    seed: int = LATENCY_DRAW_SEED,
+    hop_ms: int = RECV_TO_DECISION_FLOOR_MS,
+) -> list[int]:
+    """One chain→receive draw plus recv→decision. No event_ts: the 1s seed, hop not added."""
     if n <= 0:
         return []
     if not lags_ms:
         return [ENTRY_LATENCY_MS] * n
     rng = random.Random(seed)
-    return [int(lags_ms[rng.randrange(len(lags_ms))]) for _ in range(n)]
+    hop = max(0, int(hop_ms))
+    return [entry_delay_ms(int(lags_ms[rng.randrange(len(lags_ms))]), hop) for _ in range(n)]
 
 
-def latency_percentiles(lags_ms: Sequence[int]) -> dict[str, Any]:
+def latency_percentiles(lags_ms: Sequence[int], *, hop_ms: int = RECV_TO_DECISION_FLOOR_MS) -> dict[str, Any]:
+    hop = max(0, int(hop_ms))
     if not lags_ms:
         return {
             "n": 0,
             "p50_ms": ENTRY_LATENCY_MS,
             "p90_ms": ENTRY_LATENCY_MS,
-            "source": "no event_ts on the tape; labels use the 1s seed",
+            "chain_p50_ms": None,
+            "chain_p90_ms": None,
+            "recv_to_decision_ms": hop,
+            "source": "no event_ts on the tape; labels use the 1s seed and do not add recv→decision",
         }
     ordered = sorted(int(v) for v in lags_ms)
+    chain_p50 = int(round(_pct([float(v) for v in ordered], 0.50)))
+    chain_p90 = int(round(_pct([float(v) for v in ordered], 0.90)))
     return {
         "n": len(ordered),
-        "p50_ms": int(round(_pct([float(v) for v in ordered], 0.50))),
-        "p90_ms": int(round(_pct([float(v) for v in ordered], 0.90))),
-        "source": "tape chain→receive (t_recv_ms - event_ts*1000). recv→decision is not on the sealed tape.",
+        "chain_p50_ms": chain_p50,
+        "chain_p90_ms": chain_p90,
+        "recv_to_decision_ms": hop,
+        "p50_ms": entry_delay_ms(chain_p50, hop),
+        "p90_ms": entry_delay_ms(chain_p90, hop),
+        "source": (
+            "tape chain→receive (t_recv_ms - event_ts*1000) plus recv→decision p50 "
+            f"from forward_paper_latency_v1 (floor {RECV_TO_DECISION_FLOOR_MS} ms; "
+            "2026-09-25 host report n=349, p50 26 ms). "
+            "A negative chain draw is floored at 0 before the hop is added, so the fill is not earlier than live."
+        ),
     }
 
 
@@ -1395,6 +1674,9 @@ def attach_labels(
             feats=_ref_feats(row),
         )
         row.entry_status = entry.status
+        pressure = _entry_pressure(book.path, t_entry)
+        row.pressure_slot_buys = pressure.same_slot_buys
+        row.pressure_nearby_lamports = pressure.nearby_buy_lamports
         for rule in rules:
             part = simulate_exit(
                 book.path,
@@ -1408,10 +1690,8 @@ def attach_labels(
             pnl = part.get("pnl_lamports")
             row.exit_status_by_rule[rule.rule_id] = status
             row.exit_t_by_rule[rule.rule_id] = part.get("exit_t_ms")
-            if status in ("realized", "no_exit_liquidity") and isinstance(pnl, int):
-                row.pnl_by_rule[rule.rule_id] = pnl
-            else:
-                row.pnl_by_rule[rule.rule_id] = None
+            row.raw_pnl_by_rule[rule.rule_id] = _raw_attempt_pnl(entry.status, pnl)
+            row.pnl_by_rule[rule.rule_id] = _attempt_pnl(entry.status, status, pnl, size_lamports)
         spot = float(entry.spot_sol or 0.0)
         for name, tp, sl, _ladder_id in BARRIERS:
             if entry.status != "filled":
@@ -1439,10 +1719,8 @@ def attach_labels(
             pnl = part.get("pnl_lamports")
             row.exit_status_by_rule[ladder.rule_id] = status
             row.exit_t_by_rule[ladder.rule_id] = part.get("exit_t_ms")
-            if status in ("realized", "no_exit_liquidity") and isinstance(pnl, int):
-                row.pnl_by_rule[ladder.rule_id] = pnl
-            else:
-                row.pnl_by_rule[ladder.rule_id] = None
+            row.raw_pnl_by_rule[ladder.rule_id] = _raw_attempt_pnl(entry.status, pnl)
+            row.pnl_by_rule[ladder.rule_id] = _attempt_pnl(entry.status, status, pnl, size_lamports)
         if entry.status == "filled":
             ticks.extend(
                 _exit_ticks(
@@ -1995,6 +2273,9 @@ class Scored:
     mint: str
     decision_t_ms: int
     win: int
+    pnl_p1: int | None = None
+    pnl_p2: int | None = None
+    pressure_stamped: bool = False
 
 
 def evaluate_entry(
@@ -2046,6 +2327,7 @@ def evaluate_entry(
         for row, prob in zip(test_keep, probs):
             pnl = row.pnl_by_rule[rule_id]
             assert pnl is not None
+            p1, p2 = _pair_pressure(row, rule_id)
             scored.append(
                 Scored(
                     fold=fold_i,
@@ -2056,6 +2338,9 @@ def evaluate_entry(
                     mint=row.mint,
                     decision_t_ms=row.decision_t_ms,
                     win=1 if pnl > 0 else 0,
+                    pnl_p1=p1,
+                    pnl_p2=p2,
+                    pressure_stamped=row.pressure_stamped,
                 )
             )
         fold_meta.append(meta)
@@ -2122,6 +2407,7 @@ def evaluate_barrier(
         for row, prob in zip(test_keep, probs):
             pnl = row.pnl_by_rule[pnl_rule]
             assert pnl is not None
+            p1, p2 = _pair_pressure(row, pnl_rule)
             scored.append(
                 Scored(
                     fold=fold_i,
@@ -2132,6 +2418,9 @@ def evaluate_barrier(
                     mint=row.mint,
                     decision_t_ms=row.decision_t_ms,
                     win=int(row.barrier.get(target) or 0),
+                    pnl_p1=p1,
+                    pnl_p2=p2,
+                    pressure_stamped=row.pressure_stamped,
                 )
             )
         meta["test_n"] = len(test_keep)
@@ -2154,24 +2443,22 @@ def _migrate_predeclared(rows: Sequence[DecisionRow], *, n_folds: int) -> dict[s
     on these test rows. hold_30s is the same clock for comparison.
     """
     folds = walk_forward([row.decision_t_ms for row in rows], n_folds=n_folds)
-    oos_tp: list[BookTrade] = []
-    oos_hold: list[BookTrade] = []
+    oos_tp: list[DecisionRow] = []
+    oos_hold: list[DecisionRow] = []
     for _train, test in folds:
         for index in test:
             row = rows[index]
             if row.trigger != "migrate":
                 continue
-            tp = row.pnl_by_rule.get("tp50_sl30")
-            hold = row.pnl_by_rule.get("hold_30s")
-            if tp is not None:
-                oos_tp.append(BookTrade(row.mint, row.decision_t_ms, tp))
-            if hold is not None:
-                oos_hold.append(BookTrade(row.mint, row.decision_t_ms, hold))
+            if row.pnl_by_rule.get("tp50_sl30") is not None:
+                oos_tp.append(row)
+            if row.pnl_by_rule.get("hold_30s") is not None:
+                oos_hold.append(row)
     return {
         "rule": "tp50_sl30",
         "source": "signal-scan train pick, not re-chosen on this test",
-        "oos_tp50_sl30": book_stats(oos_tp),
-        "oos_hold_30s": book_stats(oos_hold),
+        "oos_tp50_sl30": _gated_from_rows(oos_tp, "tp50_sl30"),
+        "oos_hold_30s": _gated_from_rows(oos_hold, "hold_30s"),
     }
 
 
@@ -2191,27 +2478,27 @@ def _selection_table(scored: Sequence[Scored]) -> list[dict[str, Any]]:
     groups: dict[tuple[int, str], list[Scored]] = defaultdict(list)
     for row in scored:
         groups[(row.fold, row.point)].append(row)
-    pooled: dict[tuple[str, float], list[BookTrade]] = defaultdict(list)
+    pooled: dict[tuple[str, float], list[Scored]] = defaultdict(list)
     points = sorted({row.point for row in scored}, key=_point_sort)
     for point in points:
         for frac in TOP_FRACTIONS:
-            bag: list[BookTrade] = []
+            bag: list[Scored] = []
             for (_fold, grp_point), rows in groups.items():
                 if grp_point != point:
                     continue
                 ordered = sorted(rows, key=lambda r: (r.decision_t_ms, r.mint))
                 chosen = causal_take_indices([r.score for r in ordered], frac)
-                bag.extend(BookTrade(ordered[i].mint, ordered[i].decision_t_ms, ordered[i].pnl) for i in chosen)
+                bag.extend(ordered[i] for i in chosen)
             pooled[(point, frac)] = bag
     table = []
     for point in points:
         base = pooled.get((point, 1.0), [])
-        row: dict[str, Any] = {"point": point, "baseline": book_stats(base)}
+        row: dict[str, Any] = {"point": point, "baseline": _gated_stats(base)}
         takes = []
         for frac in TOP_FRACTIONS:
             if frac >= 1:
                 continue
-            takes.append({"fraction": frac, **book_stats(pooled.get((point, frac), []))})
+            takes.append({"fraction": frac, **_gated_stats(pooled.get((point, frac), []))})
         row["top"] = takes
         table.append(row)
     return table
@@ -2220,8 +2507,8 @@ def _selection_table(scored: Sequence[Scored]) -> list[dict[str, Any]]:
 def _threshold_table(scored: Sequence[Scored]) -> list[dict[str, Any]]:
     out = []
     for threshold in SCORE_THRESHOLDS:
-        kept = _trades_from_scored([row for row in scored if row.score >= threshold])
-        summary = book_stats(kept)
+        kept = [row for row in scored if row.score >= threshold]
+        summary = _gated_stats(kept)
         summary["threshold"] = threshold
         summary["precision"] = summary["win_rate"]
         out.append(summary)
@@ -2411,12 +2698,8 @@ def score_frozen_candidates(
             ordered = sorted(pool, key=lambda row: (row.decision_t_ms, row.mint))
             probs = model.predict([vector(row.features, FEATURE_NAMES) for row in ordered])
             chosen = [ordered[i] for i in causal_take_indices(probs, fraction)]
-        trades = [
-            BookTrade(row.mint, row.decision_t_ms, int(row.pnl_by_rule[pnl_rule]))
-            for row in chosen
-            if row.pnl_by_rule.get(pnl_rule) is not None
-        ]
-        stats = book_stats(trades)
+        chosen_labeled = [row for row in chosen if isinstance(row.pnl_by_rule.get(pnl_rule), int)]
+        stats = _gated_from_rows(chosen_labeled, pnl_rule)
         stats.update(
             {
                 "id": spec["id"],
@@ -2498,8 +2781,9 @@ def entry_latency_report(
     tape_end_ms: int,
     size_lamports: int,
     slippage_cap: float,
+    hop_ms: int = RECV_TO_DECISION_FLOOR_MS,
 ) -> dict[str, Any]:
-    measured = latency_percentiles(lags_ms)
+    measured = latency_percentiles(lags_ms, hop_ms=hop_ms)
     sampled = _pnl_summary(
         [int(row.pnl_by_rule["hold_30s"]) for row in rows if isinstance(row.pnl_by_rule.get("hold_30s"), int)]
     )
@@ -2535,12 +2819,13 @@ def build_dataset(
     size_lamports: int = DEFAULT_SIZE_LAMPORTS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
     graph: FundingGraph | None = None,
+    hop_ms: int = RECV_TO_DECISION_FLOOR_MS,
 ) -> tuple[list[DecisionRow], list[ExitTick], dict[str, int]]:
     rows, wallet_diag = build_feature_rows(books, tape_end_ms=tape_end_ms, offsets_ms=offsets_ms, graph=graph)
     print(f"decisions={len(rows)}", file=sys.stderr)
     draws = None
     if chain_lags_ms is not None:
-        draws = sample_entry_latencies(len(rows), chain_lags_ms)
+        draws = sample_entry_latencies(len(rows), chain_lags_ms, hop_ms=hop_ms)
     ticks = attach_labels(
         books,
         rows,
@@ -2628,7 +2913,7 @@ def format_markdown(board: dict[str, Any]) -> str:
     lines = [
         "# LAYA v0 scoreboard",
         "",
-        f"Schema `{board['schema']}`. Paper only. Entry delay is a draw from the tape's chain→receive lags when event_ts is present, otherwise {board['entry_latency_ms']} ms.",
+        f"Schema `{board['schema']}`. Paper only. Entry delay is a chain→receive draw plus the measured recv→decision hop when event_ts is present, otherwise {board['entry_latency_ms']} ms.",
         "Primary exit rule is chosen on each training fold (highest median realized SOL, rugs included).",
         "Scores in the tables are out of sample. The deploy model is fit on every row and is not those numbers.",
         "",
@@ -2650,9 +2935,14 @@ def format_markdown(board: dict[str, Any]) -> str:
             [
                 "## Entry latency",
                 "",
-                f"Measured chain→receive n={measured.get('n')}, p50 {measured.get('p50_ms')} ms, p90 {measured.get('p90_ms')} ms.",
+                (
+                    f"Chain→receive n={measured.get('n')}, "
+                    f"p50 {measured.get('chain_p50_ms')} ms, p90 {measured.get('chain_p90_ms')} ms. "
+                    f"Recv→decision hop {measured.get('recv_to_decision_ms')} ms "
+                    f"(applied p50 {measured.get('p50_ms')} ms, p90 {measured.get('p90_ms')} ms)."
+                ),
                 str(measured.get("source") or ""),
-                "Training labels sample that distribution (seed 1). The rows below are hold_30s buy-all at the sample, and again at a flat p50 and p90, so the delay can be read without refitting.",
+                "Training labels sample chain→receive and add that hop (seed 1). The rows below are hold_30s buy-all at the sample, and again at a flat applied p50 and p90, so the delay can be read without refitting.",
                 "",
                 "| book | n | median SOL | mean SOL | total SOL |",
                 "| --- | ---: | ---: | ---: | ---: |",
@@ -2676,8 +2966,8 @@ def format_markdown(board: dict[str, Any]) -> str:
                 "This table is the forward holdout. The folds and point tables below are the exploratory search on the whole tape.",
                 f"Promotion is the same rule: {PROMOTION_RULE}.",
                 "",
-                "| candidate | point | take | n | pool | mean | mean 90% CI | total | ex top 3 | days+ | promote |",
-                "| --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |",
+                "| candidate | point | take | n | pool | mean | mean 90% CI | total | ex top 3 | days+ | promote | p1 | p2 total |",
+                "| --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- | --- | ---: |",
             ]
         )
         for cand in frozen.get("candidates") or []:
@@ -2716,8 +3006,8 @@ def format_markdown(board: dict[str, Any]) -> str:
             "Max drawdown is the peak-to-trough of cumulative SOL on independent fills ordered by decision time. Peak starts at 0.",
             f"Promotion requires all of: {PROMOTION_RULE}.",
             "",
-            "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex top 3 | days+ | max DD | promote |",
-            "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |",
+            "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex top 3 | days+ | max DD | promote | p1 | p2 total |",
+            "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | ---: |",
         ]
     )
     for point in board["entry"]["by_point"]:
@@ -2751,8 +3041,8 @@ def format_markdown(board: dict[str, Any]) -> str:
         lines.extend(
             [
                 "",
-                "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex top 3 | days+ | max DD | promote |",
-                "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |",
+                "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex top 3 | days+ | max DD | promote | p1 | p2 total |",
+                "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | ---: |",
                 _md_robust("migrate", "tp50_sl30", tp),
                 _md_robust("migrate", "hold_30s", hold),
             ]
@@ -2769,8 +3059,8 @@ def format_markdown(board: dict[str, Any]) -> str:
             "",
             "Same promotion rule on the score cuts.",
             "",
-            "| threshold | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex top 3 | days+ | max DD | promote |",
-            "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |",
+            "| threshold | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex top 3 | days+ | max DD | promote | p1 | p2 total |",
+            "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | ---: |",
         ]
     )
     for row in board["entry"]["thresholds"]:
@@ -2799,8 +3089,8 @@ def format_markdown(board: dict[str, Any]) -> str:
         labeled = sum(int(fold.get("train_labeled") or 0) for fold in block.get("folds") or [])
         lines.append(f"OOS labeled {block.get('oos_n')}. Train hits {hits} / {labeled} (folds summed, so rows repeat).")
         lines.append("")
-        lines.append("| point | take | n | mean | mean 90% CI | total | winsor mean | ex top 3 | days+ | max DD | promote |")
-        lines.append("| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |")
+        lines.append("| point | take | n | mean | mean 90% CI | total | winsor mean | ex top 3 | days+ | max DD | promote | p1 | p2 total |")
+        lines.append("| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: |")
         for point in block.get("by_point") or []:
             lines.append(_md_robust_short(point["point"], "all", point["baseline"]))
             for take in point["top"]:
@@ -2876,6 +3166,20 @@ def _fmt_ci(pair: Any) -> str:
     return f"{float(pair[0]):.4f} .. {float(pair[1]):.4f}"
 
 
+def _md_p1(summary: dict[str, Any]) -> str:
+    flag = summary.get("promote_pressure_1")
+    if flag is None:
+        return ""
+    return "yes" if flag else "no"
+
+
+def _md_p2_total(summary: dict[str, Any]) -> str:
+    block = summary.get("pressure_scale_2")
+    if not isinstance(block, dict):
+        return ""
+    return _fmt_sol4(block.get("total_sol"))
+
+
 def _md_robust(point: str, take: str, summary: dict[str, Any]) -> str:
     days_pos = summary.get("days_positive")
     n_days = summary.get("n_days")
@@ -2887,7 +3191,7 @@ def _md_robust(point: str, take: str, summary: dict[str, Any]) -> str:
         f"{_fmt_ci(summary.get('mean_ci90_sol'))} | {_fmt_sol4(summary.get('total_sol'))} | "
         f"{_fmt_ci(summary.get('total_ci90_sol'))} | {_fmt_sol4(summary.get('winsorized_mean_sol'))} | "
         f"{_fmt_sol4(summary.get('total_ex_top3_sol'))} | {days} | "
-        f"{_fmt_sol4(summary.get('max_drawdown_sol'))} | {flag} |"
+        f"{_fmt_sol4(summary.get('max_drawdown_sol'))} | {flag} | {_md_p1(summary)} | {_md_p2_total(summary)} |"
     )
 
 
@@ -2901,7 +3205,7 @@ def _md_robust_short(point: str, take: str, summary: dict[str, Any]) -> str:
         f"| {point} | {take} | {summary.get('n')} | {_fmt_sol4(summary.get('mean_sol'))} | "
         f"{_fmt_ci(summary.get('mean_ci90_sol'))} | {_fmt_sol4(summary.get('total_sol'))} | "
         f"{_fmt_sol4(summary.get('winsorized_mean_sol'))} | {_fmt_sol4(summary.get('total_ex_top3_sol'))} | "
-        f"{days} | {_fmt_sol4(summary.get('max_drawdown_sol'))} | {flag} |"
+        f"{days} | {_fmt_sol4(summary.get('max_drawdown_sol'))} | {flag} | {_md_p1(summary)} | {_md_p2_total(summary)} |"
     )
 
 
@@ -2916,7 +3220,8 @@ def _md_frozen(cand: dict[str, Any]) -> str:
     return (
         f"| {cand.get('id')} | {cand.get('point')} | {take} | {cand.get('n')} | {cand.get('n_pool')} | "
         f"{_fmt_sol4(cand.get('mean_sol'))} | {_fmt_ci(cand.get('mean_ci90_sol'))} | "
-        f"{_fmt_sol4(cand.get('total_sol'))} | {_fmt_sol4(cand.get('total_ex_top3_sol'))} | {days} | {flag} |"
+        f"{_fmt_sol4(cand.get('total_sol'))} | {_fmt_sol4(cand.get('total_ex_top3_sol'))} | {days} | {flag} | "
+        f"{_md_p1(cand)} | {_md_p2_total(cand)} |"
     )
 
 
@@ -2957,6 +3262,7 @@ def run_files(
     size_lamports: int,
     slippage_cap: float,
     graph_dir: Path | None = None,
+    latency_report: Path | None = None,
 ) -> dict[str, Any]:
     if not tape:
         raise SystemExit("no tape files")
@@ -2987,6 +3293,19 @@ def run_files(
     graph = FundingGraph.load(graph_dir) if graph_dir is not None else None
     if graph is not None:
         print(f"funding_wallets={len(graph)}", file=sys.stderr)
+    hop_ms = recv_to_decision_hop_ms(load_latency_report(latency_report))
+    print(f"recv_to_decision_ms={hop_ms}", file=sys.stderr)
+    fail_curves = fit_headline_curves(
+        books,
+        tape_end_ms=stats.t_max_ms,
+        size_lamports=size_lamports,
+        slippage_cap=slippage_cap,
+    )
+    print(
+        f"fail_curves sends={fail_curves.get('calibration_sends', 0)} "
+        f"scale1={None if fail_curves.get('scale_1') is None else round(fail_curves['scale_1'].intercept, 4)}",
+        file=sys.stderr,
+    )
     rows, ticks, wallet_diag = build_dataset(
         books,
         tape_end_ms=stats.t_max_ms,
@@ -2995,16 +3314,18 @@ def run_files(
         size_lamports=size_lamports,
         slippage_cap=slippage_cap,
         graph=graph,
+        hop_ms=hop_ms,
     )
+    stamp_pressure_pnls(rows, fail_curves)
     print("latency_sensitivity", file=sys.stderr)
-    latency_report = entry_latency_report(
+    latency_report_body = entry_latency_report(
         books,
         rows,
         chain_lags,
         tape_end_ms=stats.t_max_ms,
         size_lamports=size_lamports,
         slippage_cap=slippage_cap,
-        graph=graph,
+        hop_ms=hop_ms,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     modeled = run_models(
@@ -3023,7 +3344,8 @@ def run_files(
         "decisions": len(rows),
         "exit_ticks": len(ticks),
         "entry_latency_ms": ENTRY_LATENCY_MS,
-        "entry_latency": latency_report,
+        "entry_latency": latency_report_body,
+        "fail_models": _fail_model_report(fail_curves),
         "offsets_ms": list(offsets_ms),
         "size_lamports": size_lamports,
         "slippage_cap": slippage_cap,
@@ -3103,6 +3425,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--size-sol", type=float, default=0.05)
     parser.add_argument("--slippage-cap", type=float, default=DEFAULT_SLIPPAGE_CAP)
     parser.add_argument("--graph-dir", type=Path, default=None, help="Append-only funding JSONL. Joined only at first_seen_ms <= decision.")
+    parser.add_argument(
+        "--latency-report",
+        type=Path,
+        default=None,
+        help="forward_paper_latency_v1 JSON. Recv→decision p50 is added to each chain draw, never below 26 ms.",
+    )
     args = parser.parse_args(argv)
     tape = list(args.tape)
     creates = list(args.creates)
@@ -3132,6 +3460,7 @@ def main(argv: list[str] | None = None) -> int:
         size_lamports=int(round(args.size_sol * LAMPORTS_PER_SOL)),
         slippage_cap=args.slippage_cap,
         graph_dir=args.graph_dir,
+        latency_report=args.latency_report,
     )
     deploy = board["entry"]["deploy"]
     sys.stdout.write(
