@@ -70,6 +70,14 @@ python -m observe
 | `MAL_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `SOLANA_RPC_URL` | `https://api.mainnet-beta.solana.com` | EXP-003 RPC historical marks producer (public cluster; no secrets in repo) |
 
+### Trade tape (paper, $0 public RPC)
+
+```bash
+python -m observe.trade_tape
+```
+
+Append-only `trades-YYYY-MM-DD.jsonl` (gitignored under `data/observe/`). Each row is one bonding-curve or PumpSwap trade: mint, trader, side, SOL and token amounts, price, market cap, slot, signature, `t_recv_ms`. Default source is public `logsSubscribe` (`--source public_rpc_logs`). `--source helius_tx` uses the same decoder on Helius `transactionSubscribe` and exits unless `HELIUS_API_KEY` is already set. Host unit: `scripts/mal-core/mal-trade-tape.service`.
+
 Schema: [ARTIFACTS/OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md). Proposed hot-packet v0 (paper contract, not observe-wiring): [ARTIFACTS/HOT-PACKET-V0.md](ARTIFACTS/HOT-PACKET-V0.md). Proposed paper evaluate→runners stamp on that packet only: [ARTIFACTS/PAPER-EVALUATE-HOT-PACKET-V0.md](ARTIFACTS/PAPER-EVALUATE-HOT-PACKET-V0.md). Capture is local `python -m observe` (population). Locked Proof sample: [EXP/EXP-001-regime-stage-mislabel.md](EXP/EXP-001-regime-stage-mislabel.md) (`python -m tools.exp001_mislabel`). Paper book: [EXP/EXP-002-evaluate-runner-v0.md](EXP/EXP-002-evaluate-runner-v0.md). Marks: [EXP/EXP-003-post-create-marks.md](EXP/EXP-003-post-create-marks.md) — RPC backfill `python -m tools.exp003_rpc_backfill`, coverage `python -m tools.exp003_marks`, then EXP-002 `--marks` (PowerShell runbook in EXP-003 §10).
 
 ### EXP-002b paper runner (rules v1, offline)
