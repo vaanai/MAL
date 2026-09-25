@@ -1150,7 +1150,9 @@ def _paths_from_rows(
     return paths
 
 
-def _iter_jsonl(paths: Iterable[Path]) -> Iterable[dict[str, Any]]:
+def _iter_jsonl(paths: Iterable[Path], *, span_ms: int | None = None) -> Iterable[dict[str, Any]]:
+    """Read tape rows. `span_ms` stops after the first receive time plus that span."""
+    t0: int | None = None
     for path in paths:
         with open_text(path) as fh:
             for line in fh:
@@ -1161,8 +1163,15 @@ def _iter_jsonl(paths: Iterable[Path]) -> Iterable[dict[str, Any]]:
                     row = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(row, dict):
-                    yield row
+                if not isinstance(row, dict):
+                    continue
+                raw = row.get("t_recv_ms")
+                if span_ms is not None and isinstance(raw, int):
+                    if t0 is None:
+                        t0 = raw
+                    elif raw > t0 + span_ms:
+                        return
+                yield row
 
 
 def _discover(directory: Path, patterns: Sequence[str]) -> list[Path]:
@@ -1256,9 +1265,10 @@ def run_replay_files(
     meta_path: Path | None,
     tape_end_ms: int | None,
     slippage_cap: float,
+    span_ms: int | None = None,
 ) -> dict[str, Any]:
     loaded = load_creates(creates)
-    rows = list(_iter_jsonl(tape))
+    rows = list(_iter_jsonl(tape, span_ms=span_ms))
     observed = [row["t_recv_ms"] for row in rows if isinstance(row.get("t_recv_ms"), int)]
     if tape_end_ms is None:
         tape_end_ms = max(observed) if observed else 0
@@ -1416,6 +1426,7 @@ def main(argv: list[str] | None = None) -> int:
     replay_p.add_argument("--creates-dir", type=Path)
     replay_p.add_argument("--output-dir", required=True, type=Path)
     replay_p.add_argument("--tape-end-ms", type=int)
+    replay_p.add_argument("--span-min", type=float, default=0, help="stop this many minutes after the first tape row; 0 reads the file")
 
     args = parser.parse_args(argv)
     if args.cmd == "serve":
@@ -1441,6 +1452,7 @@ def main(argv: list[str] | None = None) -> int:
         meta_path=meta if meta and meta.is_file() else None,
         tape_end_ms=args.tape_end_ms,
         slippage_cap=float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP)),
+        span_ms=None if args.span_min <= 0 else int(args.span_min * 60_000),
     )
     recon = result.get("reconcile") or {}
     gap = (recon.get("online_vs_same_latency") or {}).get("pnl_mismatches")
