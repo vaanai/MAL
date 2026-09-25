@@ -17,6 +17,7 @@ data/observe/_exp007_*
 data/observe/_exp007b_*
 data/observe/_wallet_leaderboard_*
 data/observe/_wallet_leaderboard/
+data/observe/_signal_scan/
 data/observe/paper-*.jsonl
 data/observe/paper-tape/
 data/observe/sealed/

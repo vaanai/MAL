@@ -118,6 +118,23 @@ def bonding_real_sol(quote_lamports: int) -> int:
     return max(0, quote_lamports - INITIAL_VIRTUAL_SOL_LAMPORTS)
 
 
+def bonding_progress(base_raw: int) -> float:
+    """Fraction of real tokens bought. 0 at the 30 SOL virtual start, 1 at graduation."""
+    initial = INITIAL_REAL_TOKEN_UI * TOKEN_SCALE
+    if initial <= 0:
+        return 0.0
+    return max(0.0, min(1.0, 1.0 - bonding_real_tokens(base_raw) / initial))
+
+
+def curve_progress(venue: str, base_raw: int) -> float:
+    """0–1 along the bonding curve. Migrated PumpSwap prints are 1.0."""
+    if venue == "pumpswap":
+        return 1.0
+    if venue == "pump_bonding":
+        return bonding_progress(base_raw)
+    return 0.0
+
+
 @dataclass(frozen=True)
 class BuyFill:
     tokens_raw: int
