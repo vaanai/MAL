@@ -15,6 +15,7 @@ from tools.laya_v0 import (
     FlowPrint,
     MintBook,
     Scored,
+    _migrate_predeclared,
     _selection_table,
     attach_labels,
     available_backend,
@@ -355,6 +356,10 @@ class NoLookaheadTests(unittest.TestCase):
         rows, diag = build_feature_rows(_books(*closed, live), tape_end_ms=T0 + 30_000, offsets_ms=(5_000,))
         row = next(r for r in rows if r.mint == "MintA")
         self.assertEqual(row.features["f_leader_present"], 1.0)
+        self.assertEqual(row.features["f_sig_copyable"], 0.0)
+        self.assertEqual(row.features["f_sig_delta_slot_from_create"], 0.0)
+        self.assertAlmostEqual(row.features["f_sig_wallet_win_rate"], 2.0 / 3.0)
+        self.assertEqual(row.features["f_sig_wallet_median_hold_ms"], 20_000.0)
         self.assertGreaterEqual(diag["leaders_peak"], 1)
         # Same trips, but they close after the decision. Not a leader yet.
         late = [
@@ -392,6 +397,56 @@ class NoLookaheadTests(unittest.TestCase):
         for left, right in zip(early, early2):
             self.assertTrue(_same_features(left.features, right.features))
 
+    def test_migration_decision_ignores_later_pool_prints(self) -> None:
+        bond = _flow(T0 + 1_000, trader="W", venue="pump_bonding", slot=1)
+        first_pool = _flow(
+            T0 + 12_000,
+            trader="Pool",
+            venue="pumpswap",
+            slot=20,
+            quote=80_000_000_000,
+            base=B0 // 2,
+            sol=2_000_000_000,
+        )
+        later_pool = _flow(
+            T0 + 40_000,
+            trader="Later",
+            venue="pumpswap",
+            slot=30,
+            quote=10_000_000_000,
+            base=B0,
+            sol=50_000_000_000,
+            event_index=4,
+        )
+        books = _books(_book([bond, first_pool, later_pool]))
+        rows, _diag = build_feature_rows(books, tape_end_ms=T0 + 180_000, offsets_ms=(5_000,))
+        grid = next(row for row in rows if row.trigger == "grid" and row.decision_t_ms == T0 + 5_000)
+        self.assertEqual(grid.features["f_migrated"], 0.0)
+        self.assertLess(grid.features["f_curve_progress"], 1.0)
+        mig = next(row for row in rows if row.trigger == "migrate")
+        self.assertEqual(mig.decision_t_ms, T0 + 12_000)
+        self.assertEqual(mig.features["f_migrated"], 1.0)
+        self.assertEqual(mig.features["f_curve_progress"], 1.0)
+        self.assertEqual(mig.features["f_ms_from_create"], 12_000.0)
+        distorted = _flow(
+            T0 + 40_000,
+            trader="Other",
+            venue="pumpswap",
+            slot=90,
+            quote=200_000_000_000,
+            base=B0 // 5,
+            sol=1,
+            token=1,
+            event_index=9,
+        )
+        rows2, _ = build_feature_rows(
+            _books(_book([bond, first_pool, distorted])),
+            tape_end_ms=T0 + 180_000,
+            offsets_ms=(5_000,),
+        )
+        mig2 = next(row for row in rows2 if row.trigger == "migrate")
+        self.assertTrue(_same_features(mig.features, mig2.features))
+
 
 class LabelTests(unittest.TestCase):
     def test_rule_is_chosen_on_the_training_rows_only(self) -> None:
@@ -419,6 +474,29 @@ class LabelTests(unittest.TestCase):
         self.assertTrue(fold0)
         self.assertTrue(all(s.rule_id == "hold_30s" for s in fold0))
         self.assertTrue(all(s.pnl == -100 for s in fold0))
+
+    def test_migrate_exit_stays_the_predeclared_stop(self) -> None:
+        rows: list[DecisionRow] = []
+        for i in range(16):
+            trigger = "migrate" if i >= 12 else "grid"
+            pnl = {rule.rule_id: -100 for rule in EXIT_RULES}
+            pnl["tp50_sl30"] = 5_000 if trigger == "migrate" else -100
+            pnl["hold_30s"] = -100
+            rows.append(
+                DecisionRow(
+                    mint=f"M{i}",
+                    creator=None,
+                    create_t_ms=i * 1_000,
+                    decision_t_ms=i * 1_000,
+                    trigger=trigger,
+                    features={},
+                    pnl_by_rule=pnl,
+                )
+            )
+        book = _migrate_predeclared(rows, n_folds=4)
+        self.assertGreater(book["oos_tp50_sl30"]["n"], 0)
+        self.assertGreater(book["oos_tp50_sl30"]["median_sol"], 0)
+        self.assertLess(book["oos_hold_30s"]["median_sol"], 0)
 
     def test_walk_forward_test_is_strictly_later(self) -> None:
         times = [1_000 * i for i in range(50)]

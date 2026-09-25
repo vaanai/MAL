@@ -101,6 +101,17 @@ FEATURE_NAMES: tuple[str, ...] = (
     "f_buy_sol_prev_5s",
     "f_buy_sol_accel_5s",
     "f_curve_progress",
+    "f_migrated",
+    "f_ms_from_create",
+    "f_sig_n",
+    "f_sig_window_ms",
+    "f_sig_unique_wallets",
+    "f_sig_sniper_share",
+    "f_sig_creator_prior_rugs",
+    "f_sig_delta_slot_from_create",
+    "f_sig_wallet_win_rate",
+    "f_sig_wallet_median_hold_ms",
+    "f_sig_copyable",
     "f_quote_sol",
     "f_base_ui",
     "f_price_sol",
@@ -380,6 +391,12 @@ def decision_times(book: MintBook, *, tape_end_ms: int, offsets_ms: Sequence[int
         if all(abs(t_ms - g) > TRADE_TRIGGER_NEAR_MS for g in grid):
             out.append((t_ms, "buyers_8"))
         break
+    for pr in book.flow:
+        if pr.t_recv_ms > tape_end_ms:
+            break
+        if pr.venue == "pumpswap" and pr.t_recv_ms >= t0:
+            out.append((pr.t_recv_ms, "migrate"))
+            break
     return out
 
 
@@ -432,6 +449,11 @@ def local_features(book: MintBook, t_ms: int, trigger: str) -> dict[str, float]:
     slot_buy_sol: dict[int, int] = defaultdict(int)
     first_slot: int | None = None
     first_price: float | None = None
+    creator = book.create.creator
+    nc_buy_sol = 0
+    nc_sniper_sol = 0
+    organic_n = 0
+    organic_wallets: set[str] = set()
     for pr in seen:
         if first_slot is None:
             first_slot = pr.slot
@@ -448,6 +470,16 @@ def local_features(book: MintBook, t_ms: int, trigger: str) -> dict[str, float]:
         else:
             n_buy += 1
             buy_sol += pr.sol_lamports
+            sniper = first_slot is not None and pr.slot <= first_slot + SNIPER_SLOT_DELTA
+            own = bool(creator) and pr.trader == creator
+            if not own:
+                nc_buy_sol += pr.sol_lamports
+                if sniper:
+                    nc_sniper_sol += pr.sol_lamports
+            if pr.t_recv_ms > t_ms - VELOCITY_MS and not sniper and not own:
+                organic_n += 1
+                if pr.trader:
+                    organic_wallets.add(pr.trader)
             if pr.trader:
                 buyers.add(pr.trader)
                 bal[pr.trader] += pr.token_raw
@@ -456,11 +488,13 @@ def local_features(book: MintBook, t_ms: int, trigger: str) -> dict[str, float]:
     buy_n_5, buy_sol_5 = _window_buys(seen, t_ms - VELOCITY_MS, t_ms)
     buy_n_prev, buy_sol_prev = _window_buys(seen, t_ms - 2 * VELOCITY_MS, t_ms - VELOCITY_MS)
     state = _state_at(book, t_ms)
+    migrated = 0.0
     if state is None:
         price = quote_sol = base_ui = mcap = curve = NAN
         price_chg = NAN
     else:
         price, quote, base, venue, mcap = state
+        migrated = 1.0 if venue == "pumpswap" else 0.0
         quote_sol = _sol(quote)
         base_ui = base / TOKEN_SCALE
         curve = _curve_progress(venue, base)
@@ -508,6 +542,16 @@ def local_features(book: MintBook, t_ms: int, trigger: str) -> dict[str, float]:
         "f_buy_sol_prev_5s": _sol(buy_sol_prev),
         "f_buy_sol_accel_5s": _sol(buy_sol_5 - buy_sol_prev),
         "f_curve_progress": curve,
+        "f_migrated": migrated,
+        "f_ms_from_create": float(t_ms - create.t_signal_ms),
+        "f_sig_n": float(organic_n),
+        "f_sig_window_ms": float(VELOCITY_MS),
+        "f_sig_unique_wallets": float(len(organic_wallets)),
+        "f_sig_sniper_share": NAN if nc_buy_sol <= 0 else nc_sniper_sol / nc_buy_sol,
+        "f_sig_delta_slot_from_create": NAN,
+        "f_sig_wallet_win_rate": NAN,
+        "f_sig_wallet_median_hold_ms": NAN,
+        "f_sig_copyable": 0.0,
         "f_quote_sol": quote_sol,
         "f_base_ui": base_ui,
         "f_price_sol": price,
@@ -545,6 +589,7 @@ def creator_features(
         "f_creator_prior_scored": 0.0,
         "f_creator_prior_rug_frac": NAN,
         "f_creator_prior_median_ret": NAN,
+        "f_sig_creator_prior_rugs": 0.0,
     }
     if not creator:
         return empty
@@ -576,6 +621,7 @@ def creator_features(
         "f_creator_prior_scored": float(scored),
         "f_creator_prior_rug_frac": NAN if scored == 0 else rugs / scored,
         "f_creator_prior_median_ret": NAN if scored == 0 else float(statistics.median(rets)),
+        "f_sig_creator_prior_rugs": float(rugs),
     }
 
 
@@ -759,6 +805,7 @@ def apply_wallet_features(books: dict[str, MintBook], rows: list[DecisionRow]) -
         seen = flow_as_of(books[row.mint].flow, row.decision_t_ms)
         buy_sol = bot_sol = veto_sol = leader_sol = 0
         leader_buyers: set[str] = set()
+        first_leader: tuple[int, int, str] | None = None
         for pr in seen:
             if pr.side != "buy":
                 continue
@@ -773,6 +820,23 @@ def apply_wallet_features(books: dict[str, MintBook], rows: list[DecisionRow]) -
             if pr.trader in leaders:
                 leader_sol += pr.sol_lamports
                 leader_buyers.add(pr.trader)
+                slot0 = first_print_slot.get(row.mint, pr.slot)
+                if first_leader is None or (pr.t_recv_ms, pr.slot) < (first_leader[0], first_leader[1]):
+                    first_leader = (pr.t_recv_ms, pr.slot, pr.trader)
+                    first_leader_slot0 = slot0
+        if first_leader is None:
+            row.features["f_sig_delta_slot_from_create"] = NAN
+            row.features["f_sig_wallet_win_rate"] = NAN
+            row.features["f_sig_wallet_median_hold_ms"] = NAN
+            row.features["f_sig_copyable"] = 0.0
+        else:
+            _t_buy, slot, trader = first_leader
+            delta = slot - first_leader_slot0
+            wallet = wallets[trader]
+            row.features["f_sig_delta_slot_from_create"] = float(delta)
+            row.features["f_sig_wallet_win_rate"] = NAN if wallet.closed == 0 else wallet.wins / wallet.closed
+            row.features["f_sig_wallet_median_hold_ms"] = NAN if not wallet.holds else float(statistics.median(wallet.holds))
+            row.features["f_sig_copyable"] = 1.0 if delta > SNIPER_SLOT_DELTA else 0.0
         if buy_sol > 0:
             row.features["f_bot_buy_sol_share"] = bot_sol / buy_sol
             row.features["f_veto_buy_sol_share"] = veto_sol / buy_sol
@@ -1317,6 +1381,35 @@ def evaluate_entry(
         "thresholds": _threshold_table(scored),
         "oos_n": len(scored),
         "scored": scored,
+        "migrate_predeclared": _migrate_predeclared(rows, n_folds=n_folds),
+    }
+
+
+def _migrate_predeclared(rows: Sequence[DecisionRow], *, n_folds: int) -> dict[str, Any]:
+    """Signal-scan lead: enter at the first PumpSwap print, exit tp50_sl30.
+
+    The exit is predeclared from that scan's training half. It is not re-picked
+    on these test rows. hold_30s is the same clock for comparison.
+    """
+    folds = walk_forward([row.decision_t_ms for row in rows], n_folds=n_folds)
+    oos_tp: list[int] = []
+    oos_hold: list[int] = []
+    for _train, test in folds:
+        for index in test:
+            row = rows[index]
+            if row.trigger != "migrate":
+                continue
+            tp = row.pnl_by_rule.get("tp50_sl30")
+            hold = row.pnl_by_rule.get("hold_30s")
+            if tp is not None:
+                oos_tp.append(tp)
+            if hold is not None:
+                oos_hold.append(hold)
+    return {
+        "rule": "tp50_sl30",
+        "source": "signal-scan train pick, not re-chosen on this test",
+        "oos_tp50_sl30": _pnl_summary(oos_tp),
+        "oos_hold_30s": _pnl_summary(oos_hold),
     }
 
 
@@ -1483,7 +1576,7 @@ def data_needed_note(*, hours: float, creates: int, oos_n: int) -> str:
         "The buy-every book wins about 18% and the left tail is a stuck rug near -0.052 SOL, so a "
         "top-10% median is noise until the selected out-of-sample book has on the order of 1,000 trades "
         "(several thousand before it can be told apart from the buy-every median). "
-        f"At this create rate that is about {hours_txt} more tape for 1,000 selected OOS trades at a 10% take, "
+        f"At this create rate, about {hours_txt} of tape yields 1,000 selected out-of-sample trades at a 10% take, "
         "and a few days before walk-forward still has a later test slice big enough to trust. "
         "Treat this run as a pipeline measurement."
     )
@@ -1597,6 +1690,21 @@ def format_markdown(board: dict[str, Any]) -> str:
         lines.append(_md_pnl(point["point"], "all", base))
         for take in point["top"]:
             lines.append(_md_pnl(point["point"], f"top {take['fraction']:.0%}", take))
+    mig = board["entry"].get("migrate_predeclared") or {}
+    lines.extend(
+        [
+            "",
+            "## Migration entry, predeclared tp50/sl30",
+            "",
+            "First PumpSwap print, fill +1s. Exit is the signal-scan training pick, not re-chosen here.",
+            "Follow and crowd columns are on the packet; those scans lost out of sample as rules.",
+            "",
+            "| exit | n | median SOL | total SOL | win |",
+            "| --- | ---: | ---: | ---: | ---: |",
+            _md_pnl("migrate", "tp50_sl30", mig.get("oos_tp50_sl30") or {"n": 0, "total_sol": 0}),
+            _md_pnl("migrate", "hold_30s", mig.get("oos_hold_30s") or {"n": 0, "total_sol": 0}),
+        ]
+    )
     lines.extend(["", "## Precision at score thresholds (pooled OOS)", ""])
     lines.append("| threshold | n | precision | median SOL | total SOL |")
     lines.append("| --- | ---: | ---: | ---: | ---: |")
