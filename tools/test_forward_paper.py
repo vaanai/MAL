@@ -599,7 +599,10 @@ class SwingBookTests(unittest.TestCase):
         self.assertFalse(any(row["mint"] == "MintEarly" and row["trigger"] == "attn:dex_boost" for row in attn))
         self.assertFalse(any(row["trigger"] == "attn:pump_live" for row in attn))
         live = [row for row in attn if row["mint"] == "MintLive"]
-        self.assertEqual([(row["action"], row["reason"]) for row in live], [("enter", None)])
+        ceiling_live = [row for row in live if row.get("ledger") == "ceiling"]
+        shadow_live = [row for row in live if row.get("ledger") == "shadow"]
+        self.assertEqual([(row["action"], row["reason"]) for row in ceiling_live], [("enter", None)])
+        self.assertEqual([(row["action"], row["reason"]) for row in shadow_live], [("enter", None)])
         mig = [row for row in engine.decisions if row["book"] == "mig15_top20_tp50_sl30"]
         self.assertTrue(mig)
         self.assertTrue(all(row["trigger"] == "mig_15" for row in mig))
@@ -651,9 +654,65 @@ class SwingBookTests(unittest.TestCase):
         self.assertIn("MintA", run.open)
         engine.drain_until(base + 70 * 60_000, final=True)
         self.assertNotIn("MintA", run.open)
-        closed = [row for row in engine.positions if row["mint"] == "MintA" and row["event"] == "close"]
+        closed = [row for row in engine.positions if row["mint"] == "MintA" and row["event"] == "close" and row.get("ledger") == "ceiling"]
         self.assertTrue(closed)
         self.assertEqual(closed[0]["exit_rule"], "hold_60m")
+        shadow_closed = [row for row in engine.positions if row["mint"] == "MintA" and row["event"] == "close" and row.get("ledger") == "shadow"]
+        self.assertTrue(shadow_closed)
+
+    def test_shadow_fills_past_the_concurrent_and_daily_loss_caps(self) -> None:
+        spec = BookSpec(
+            "gated",
+            "baseline",
+            "hold_30s",
+            max_concurrent=1,
+            daily_loss_lamports=CEILING_DAILY_LOSS_LAMPORTS,
+            creator_cooldown_ms=0,
+            token_cooldown_ms=0,
+        )
+        engine = ForwardEngine([spec], kill_file=Path("/tmp/forward-paper-shadow"), tape_end_ms=T0 + 10_000, retain_rows=True)
+        run = engine.books[0]
+        run.open = {f"m{i}": None for i in range(CEILING_MAX_CONCURRENT)}  # type: ignore[assignment]
+        self.assertEqual(
+            engine._risk_reason(run, "new", None, T0, HARD_MAX_POSITION_LAMPORTS, ledger=run.ceiling, capped=True),
+            "max_concurrent",
+        )
+        self.assertIsNone(
+            engine._risk_reason(run, "new", None, T0, HARD_MAX_POSITION_LAMPORTS, ledger=run.shadow, capped=False)
+        )
+        self.assertEqual(
+            engine._risk_reason(run, "new", None, T0, HARD_MAX_POSITION_LAMPORTS + 1, ledger=run.shadow, capped=False),
+            "max_position_size",
+        )
+        run.open.clear()
+        engine.push_create(_create("MintA", T0, creator="CreatorA"))
+        engine.push_create(_create("MintB", T0 + 1_000, creator="CreatorB"))
+        engine.push_print(*_parsed("MintA", T0 - 1_000))
+        engine.drain_until(T0 + 10_000, final=True)
+        ceiling = [row for row in engine.decisions if row.get("ledger") == "ceiling" and row["book"] == "gated"]
+        shadow = [row for row in engine.decisions if row.get("ledger") == "shadow" and row["book"] == "gated"]
+        self.assertTrue(any(row["mint"] == "MintB" and row["reason"] == "max_concurrent" for row in ceiling))
+        self.assertTrue(any(row["mint"] == "MintB" and row["action"] == "enter" for row in shadow))
+        self.assertEqual(len(run.open), 1)
+        self.assertEqual(len(run.shadow.open), 2)
+        fresh = ForwardEngine([spec], kill_file=Path("/tmp/forward-paper-shadow-loss"), tape_end_ms=T0 + 10_000, retain_rows=True)
+        blocked = fresh.books[0]
+        blocked.day = __import__("time").strftime("%Y-%m-%d", __import__("time").gmtime(T0 / 1000))
+        blocked.day_pnl = -CEILING_DAILY_LOSS_LAMPORTS
+        fresh.push_create(_create("MintC", T0, creator="CreatorC"))
+        fresh.push_print(*_parsed("MintC", T0 - 1_000))
+        fresh.drain_until(T0 + 5_000, final=True)
+        self.assertTrue(any(row.get("ledger") == "ceiling" and row["reason"] == "daily_loss_cap" for row in fresh.decisions))
+        self.assertTrue(any(row.get("ledger") == "shadow" and row["action"] == "enter" for row in fresh.decisions))
+        snap = fresh.summary(T0)
+        book = snap["books"]["gated"]
+        self.assertEqual(snap["promotion"], "shadow")
+        self.assertEqual(snap["capacity"], "ceiling")
+        self.assertEqual(book["promote_ledger"], "shadow")
+        self.assertEqual(book["capacity_ledger"], "ceiling")
+        self.assertGreater(book["shadow"]["open"] + book["shadow"]["closed"], book["open"] + book["closed"])
+        with self.assertRaises(RiskConfigError):
+            books_from_config({"books": [{"id": "wide", "kind": "baseline", "exit": "hold_30s", "max_concurrent": 9}]})
 
     def test_attention_tail_starts_at_eof_and_reads_new_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
