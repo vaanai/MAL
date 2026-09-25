@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Creator and early-buyer funding graph for paper rug vetoes.
 
-Public Solana JSON-RPC by default. If HELIUS_API_KEY is set, calls go to
-Helius instead. The live trade tape is not this process: stay under a low
-request rate and stop cold on HTTP 429.
+Public Solana JSON-RPC at 1 request/s by default. If HELIUS_API_KEY is set,
+or appears in the backfill env file, calls move to Helius at 5 requests/s.
+The live trade tape is not this process: stay under that cap and stop cold
+on HTTP 429.
 
 Each wallet is resolved once. Rows are append-only JSONL. A later feature
 join may use a row only when its first_seen_ms is at or before the decision.
@@ -42,7 +43,14 @@ OLDEST_TX_INSPECT = 5
 CREATOR_PRIORITY = 0
 BUYER_PRIORITY = 1
 BACKFILL_PRIORITY = 2
-DEFAULT_RPS = 1.0
+# Public RPC is shared with the trade tape, so stay at 1/s.
+# Helius free tier is 10/s. 5/s clears creator lookups inside 30s at the
+# observed ~40 creates/min and leaves room if the history backfill shares the key.
+PUBLIC_RPS = 1.0
+HELIUS_RPS = 5.0
+DEFAULT_RPS = PUBLIC_RPS
+HELIUS_ENV_FILE = Path("/var/lib/mal/backfill/helius.env")
+KEY_CHECK_S = 30.0
 BACKOFF_START_S = 5.0
 BACKOFF_CAP_S = 120.0
 PUBLIC_RPC = "https://api.mainnet-beta.solana.com"
@@ -68,19 +76,7 @@ VETO_RULE = (
     f"or a funder-creator-buyer loop is already on the graph"
 )
 
-# Tightened after the 2026-09-25 red-team audit. Not pool-wide top-k.
-# LAYA book_stats still encodes the older one-day / drop-1 predicate until that
-# parallel fix lands. This scorer does not read that flag.
-PROMOTION_MIN_N = 100
-PROMOTION_MIN_DAYS = 5
-PROMOTION_DROP_TOP = 3
-TIGHT_PROMOTION_RULE = (
-    f"at least {PROMOTION_MIN_N} out-of-sample trades, "
-    f"at least {PROMOTION_MIN_DAYS} distinct UTC days with a majority of those days positive, "
-    "lower 90% CI of mean SOL > 0, "
-    f"and total SOL still positive after dropping the top {PROMOTION_DROP_TOP} trades. "
-    "Ranked books must use the forward-paper rolling window, not a pool percentile."
-)
+# Promotion is tools.laya_v0.book_stats (n, days, CI, drop top 3). One definition.
 PRELIMINARY_REASON = (
     "Preliminary. The simulator and LAYA eval are being fixed in parallel for fill optimism "
     "and entry latency. Re-run this veto after those land before treating promote as final."
@@ -142,14 +138,72 @@ def describe_rpc(url: str) -> str:
     return "public"
 
 
-def resolve_rpc_url(env: dict[str, str] | None = None) -> str:
-    """Public RPC unless HELIUS_API_KEY is set."""
+def _key_is_safe(key: str) -> bool:
+    return bool(key) and not any(ch in key for ch in "\r\n& #")
+
+
+def helius_key_from_file(path: Path) -> str:
+    """Read HELIUS_API_KEY= from an env file. Empty if missing or unsafe. Never log the value."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        if name.strip() != "HELIUS_API_KEY":
+            continue
+        value = value.strip().strip('"').strip("'")
+        return value if _key_is_safe(value) else ""
+    return ""
+
+
+def helius_api_key(env: dict[str, str] | None = None, env_file: Path | None = None) -> str:
+    """Process environment first, then the env file. Unsafe env values raise."""
     src = os.environ if env is None else env
     key = (src.get("HELIUS_API_KEY") or "").strip()
     if key:
+        if not _key_is_safe(key):
+            raise ValueError("HELIUS_API_KEY is empty or unsafe")
+        return key
+    if env_file is None:
+        raw = (src.get("MAL_HELIUS_ENV_FILE") or "").strip()
+        env_file = Path(raw) if raw else HELIUS_ENV_FILE
+    return helius_key_from_file(env_file)
+
+
+def resolve_rpc_url(env: dict[str, str] | None = None, env_file: Path | None = None) -> str:
+    """Public RPC unless a Helius key is in the environment or the env file."""
+    key = helius_api_key(env, env_file)
+    if key:
         return f"https://mainnet.helius-rpc.com/?api-key={key}"
+    src = os.environ if env is None else env
     explicit = (src.get("MAL_SOLANA_HTTP_URL") or "").strip()
     return explicit or PUBLIC_RPC
+
+
+def choose_rps(url: str, explicit: float | None) -> float:
+    """Operator --rps / MAL_FUNDING_RPS wins. Otherwise 1/s public, 5/s Helius."""
+    if explicit is not None:
+        return float(explicit)
+    if describe_rpc(url) == "helius":
+        return HELIUS_RPS
+    return PUBLIC_RPS
+
+
+def maybe_switch_rpc(
+    client: "RpcClient",
+    explicit_rps: float | None,
+    env: dict[str, str] | None = None,
+    env_file: Path | None = None,
+) -> "RpcClient":
+    """Move a public client onto Helius once a key exists. Do not switch back."""
+    url = resolve_rpc_url(env, env_file)
+    if describe_rpc(url) != "helius" or describe_rpc(client.url) == "helius":
+        return client
+    return RpcClient(url, rps=choose_rps(url, explicit_rps))
 
 
 class RpcError(Exception):
@@ -1081,45 +1135,9 @@ class Enricher:
         return n
 
 
-def total_ex_top(pnls: Sequence[int], k: int = PROMOTION_DROP_TOP) -> float | None:
-    """SOL left after removing the k largest pnls. None when there are not enough trades."""
-    from tools.paper_curve_math import LAMPORTS_PER_SOL
-
-    if len(pnls) <= k:
-        return None
-    dropped = sorted(pnls, reverse=True)[:k]
-    return (sum(pnls) - sum(dropped)) / LAMPORTS_PER_SOL
-
-
-def tight_promotion(trades: Sequence[Any]) -> dict[str, Any]:
-    """Audit bar. Ignores the older one-day promote flag on book_stats."""
-    from tools.laya_v0 import book_stats
-
-    stats = book_stats(trades)
-    pnls = [int(trade.pnl) for trade in trades]
-    ex_top = total_ex_top(pnls)
-    ci = stats.get("mean_ci90_sol")
-    n_days = int(stats.get("n_days") or 0)
-    majority = bool(stats.get("majority_days_positive"))
-    promote = bool(
-        int(stats.get("n") or 0) >= PROMOTION_MIN_N
-        and n_days >= PROMOTION_MIN_DAYS
-        and majority
-        and isinstance(ci, list)
-        and len(ci) == 2
-        and ci[0] > 0
-        and ex_top is not None
-        and ex_top > 0
-    )
-    stats["total_ex_top3_sol"] = ex_top
-    stats["promote_coded_in_laya"] = bool(stats.get("promote"))
-    stats["promote"] = promote
-    return stats
-
-
 def score_rows(rows: Sequence[Any]) -> dict[str, Any]:
     """Walk-forward the frozen veto. Not a pool-wide top-k."""
-    from tools.laya_v0 import BookTrade, walk_forward
+    from tools.laya_v0 import PROMOTION_RULE, BookTrade, book_stats, walk_forward
 
     ordered = [row for row in rows if getattr(row, "pnl", None) is not None]
     folds = walk_forward([int(row.decision_t_ms) for row in ordered]) if ordered else []
@@ -1139,11 +1157,11 @@ def score_rows(rows: Sequence[Any]) -> dict[str, Any]:
                 vetoed.append(trade)
             else:
                 kept.append(trade)
-    kept_stats = tight_promotion(kept)
-    base_stats = tight_promotion(base)
+    kept_stats = book_stats(kept)
+    base_stats = book_stats(base)
     return {
         "rule": VETO_RULE,
-        "promotion_rule": TIGHT_PROMOTION_RULE,
+        "promotion_rule": PROMOTION_RULE,
         "selection": "veto filter, not top-k; ranked books use forward_paper._RankWindow",
         "join": "first_seen_ms <= decision_t_ms",
         "preliminary": True,
@@ -1153,7 +1171,7 @@ def score_rows(rows: Sequence[Any]) -> dict[str, Any]:
         "oos_vetoed": len(vetoed),
         "baseline": base_stats,
         "kept": kept_stats,
-        "vetoed": tight_promotion(vetoed),
+        "vetoed": book_stats(vetoed),
         "lift_mean_sol": _lift(kept_stats, base_stats),
         "promote": bool(kept_stats.get("promote")),
         "feature_slices": _slices(ordered, folds),
@@ -1203,26 +1221,37 @@ def run_serve(
     graph_dir: Path,
     trades_dir: Path,
     creates_dir: Path,
-    rps: float,
+    rps: float | None,
     seed_limit: int,
     once: bool = False,
 ) -> int:
     url = resolve_rpc_url()
-    client = RpcClient(url, rps=rps)
+    rate = choose_rps(url, rps)
     enricher = Enricher(
         graph_dir=graph_dir,
         trades_dir=trades_dir,
         creates_dir=creates_dir,
-        client=client,
+        client=RpcClient(url, rps=rate),
     )
     seeded = enricher.seed_backfill(seed_limit)
     print(
-        f"funding_graph rpc={describe_rpc(url)} rps={rps} cached={len(enricher.graph)} seeded={seeded}",
+        f"funding_graph rpc={describe_rpc(url)} rps={rate} cached={len(enricher.graph)} seeded={seeded}",
         file=sys.stderr,
     )
     next_log = time.monotonic() + 60.0
+    next_key = time.monotonic() + KEY_CHECK_S
     while True:
+        if time.monotonic() >= next_key:
+            nxt = maybe_switch_rpc(enricher.client, rps)
+            if nxt is not enricher.client:
+                enricher.client = nxt
+                print(
+                    f"funding_graph rpc=helius rps={choose_rps(nxt.url, rps)}",
+                    file=sys.stderr,
+                )
+            next_key = time.monotonic() + KEY_CHECK_S
         enricher.poll_files()
+        client = enricher.client
         if enricher.queue:
             try:
                 enricher.drain_one()
@@ -1318,7 +1347,7 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--graph-dir", type=Path, default=Path(os.environ.get("MAL_FUNDING_GRAPH_DIR", "/var/lib/mal/graph")))
     serve.add_argument("--trades-dir", type=Path, default=Path(os.environ.get("MAL_TRADE_TAPE_OUTPUT_DIR", "/var/lib/mal/sealed/trades")))
     serve.add_argument("--creates-dir", type=Path, default=Path(os.environ.get("MAL_OBSERVE_JSONL_DIR", "/var/lib/mal/sealed/jsonl")))
-    serve.add_argument("--rps", type=float, default=float(os.environ.get("MAL_FUNDING_RPS", DEFAULT_RPS)))
+    serve.add_argument("--rps", type=float, default=None, help="Override. Default is 1/s public, 5/s when a Helius key is present")
     serve.add_argument("--seed-creators", type=int, default=int(os.environ.get("MAL_FUNDING_SEED", "40")))
     serve.add_argument("--once", action="store_true")
 
@@ -1335,11 +1364,15 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.cmd == "serve":
+        explicit = args.rps
+        if explicit is None:
+            raw = (os.environ.get("MAL_FUNDING_RPS") or "").strip()
+            explicit = float(raw) if raw else None
         return run_serve(
             graph_dir=args.graph_dir,
             trades_dir=args.trades_dir,
             creates_dir=args.creates_dir,
-            rps=args.rps,
+            rps=explicit,
             seed_limit=args.seed_creators,
             once=args.once,
         )
