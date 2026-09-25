@@ -454,6 +454,8 @@ def load_books(
     stats = ScanStats()
     lags: list[int] = []
     for path in tape_paths:
+        if prepare_row is not None and hasattr(prepare_row, "begin_file"):
+            prepare_row.begin_file(path)
         with open_text(_resolve_tape_path(path)) as fh:
             for line in fh:
                 stats.lines += 1

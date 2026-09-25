@@ -181,7 +181,9 @@ def day_status(hours: Sequence[dict[str, Any]], end_s: int | None = None) -> lis
 class LagDraw:
     """Draws live chain→receive lags. One draw per signature, not per inner event.
 
-    Does not treat an empty pool as zero. A missing signature draws per row.
+    The map lasts for the current file. Slot changes do not clear it, so
+    out-of-order rows still share a stamp. A missing signature draws per row.
+    Does not treat an empty pool as zero.
     """
 
     def __init__(self, lags_ms: Sequence[int], hop_ms: int, seed: int) -> None:
@@ -191,6 +193,9 @@ class LagDraw:
         self._by_sig = SignatureLag()
         self.stamped = 0
         self.dropped = 0
+
+    def begin_file(self, file_key: Any) -> None:
+        self._by_sig.begin_file(file_key)
 
     def lag(self) -> int:
         if not self.lags:

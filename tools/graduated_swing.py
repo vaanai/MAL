@@ -453,25 +453,27 @@ def _trade_paths(directory: Path) -> list[Path]:
 
 
 class SignatureLag:
-    """One chain→receive draw per signature, shared by every inner event.
+    """One chain→receive draw per signature for the current file.
 
-    The map is cleared when the slot changes. Backfill files are in block
-    order, so a signature is not split across slots. A missing signature
-    draws on its own and is not reused.
+    The map is keyed by signature and is not cleared when the slot changes,
+    so rows that arrive out of block order still share one stamp. Call
+    ``begin_file`` when the input file changes. A missing signature draws
+    on its own and is not reused.
     """
 
     def __init__(self) -> None:
-        self._slot: Any = object()
+        self._file: Any = object()
         self._lags: dict[str, int] = {}
+
+    def begin_file(self, file_key: Any) -> None:
+        if file_key != self._file:
+            self._file = file_key
+            self._lags = {}
 
     def get(self, row: dict[str, Any], draw: Callable[[], int]) -> int:
         sig = row.get("signature")
         if not isinstance(sig, str) or not sig or sig == "UNK":
             return int(draw())
-        slot = row.get("slot")
-        if slot != self._slot:
-            self._slot = slot
-            self._lags = {}
         hit = self._lags.get(sig)
         if hit is None:
             hit = int(draw())
@@ -580,7 +582,11 @@ def load_graduated_books(
 
     def _scan_lags_and_migrations(paths: Sequence[Path], *, backfill: bool, rng: random.Random) -> None:
         lags = SignatureLag() if backfill else None
-        for _path, row in _iter_jsonl(_refresh_trade_paths(paths)):
+        seen_file: Any = object()
+        for path, row in _iter_jsonl(_refresh_trade_paths(paths)):
+            if lags is not None and path != seen_file:
+                lags.begin_file(path)
+                seen_file = path
             stats.lines += 1
             if stats.lines % 500_000 == 0:
                 print(
@@ -642,8 +648,12 @@ def load_graduated_books(
 
     def _scan_keep(paths: Sequence[Path], *, backfill: bool) -> None:
         lags = SignatureLag() if backfill else None
+        seen_file: Any = object()
         n = 0
-        for _path, row in _iter_jsonl(_refresh_trade_paths(paths)):
+        for path, row in _iter_jsonl(_refresh_trade_paths(paths)):
+            if lags is not None and path != seen_file:
+                lags.begin_file(path)
+                seen_file = path
             n += 1
             if n % 500_000 == 0:
                 print(f"pass2 lines={n} kept={stats.kept}", file=sys.stderr)

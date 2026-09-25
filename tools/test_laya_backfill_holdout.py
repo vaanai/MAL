@@ -138,6 +138,28 @@ class ReceiveClockTests(unittest.TestCase):
         self.assertNotEqual(first_buy["t_recv_ms"], other["t_recv_ms"])
         self.assertEqual(draw.stamped, 3)
 
+    def test_out_of_order_rows_share_one_draw_across_slots(self) -> None:
+        lags = list(range(1000))
+        draw = LagDraw(lags, HOP, seed=2)
+        probe = random.Random(2)
+        first = lags[probe.randrange(len(lags))]
+        second = lags[probe.randrange(len(lags))]
+        third = lags[probe.randrange(len(lags))]
+        # Later inner event is seen first, then another slot, then the earlier event.
+        late = draw(_trade(signature="sigA", event_index=1, slot=11))
+        other = draw(_trade(signature="sigB", event_index=0, slot=4))
+        early = draw(_trade(signature="sigA", event_index=0, slot=11))
+        assert late is not None and other is not None and early is not None
+        self.assertEqual(late["t_recv_ms"], BLOCK * 1000 + first + HOP)
+        self.assertEqual(early["t_recv_ms"], late["t_recv_ms"])
+        self.assertEqual(other["t_recv_ms"], BLOCK * 1000 + second + HOP)
+        self.assertNotEqual(other["t_recv_ms"], late["t_recv_ms"])
+        draw.begin_file("hour-2")
+        again = draw(_trade(signature="sigA", event_index=0, slot=11))
+        assert again is not None
+        self.assertEqual(again["t_recv_ms"], BLOCK * 1000 + third + HOP)
+        self.assertNotEqual(again["t_recv_ms"], late["t_recv_ms"])
+
     def test_missing_signature_draws_per_row(self) -> None:
         lags = list(range(1000))
         draw = LagDraw(lags, HOP, seed=1)
