@@ -426,11 +426,25 @@ def rpc_call(
             if exc.code == 429 and attempt < 5:
                 time.sleep(0.4 * (2**attempt))
                 continue
+            if attempt < 5 and exc.code >= 500:
+                time.sleep(0.6 * (2**attempt))
+                continue
             raise
+        except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError) as exc:
+            if attempt < 5:
+                time.sleep(0.6 * (2**attempt))
+                continue
+            raise RuntimeError(f"{method} transport {type(exc).__name__}") from exc
         wire = len(raw)
-        if raw[:2] == b"\x1f\x8b":
-            raw = gzip.decompress(raw)
-        payload = json.loads(raw)
+        try:
+            if raw[:2] == b"\x1f\x8b":
+                raw = gzip.decompress(raw)
+            payload = json.loads(raw)
+        except (gzip.BadGzipFile, json.JSONDecodeError, EOFError, TimeoutError) as exc:
+            if attempt < 5:
+                time.sleep(0.6 * (2**attempt))
+                continue
+            raise RuntimeError(f"{method} decode {type(exc).__name__}") from exc
         if "error" in payload:
             err = payload["error"] or {}
             code = err.get("code")
@@ -485,21 +499,26 @@ def fetch_pool_mints(url: str, pools: list[str]) -> dict[str, tuple[str, str]]:
 
 
 def fetch_block(url: str, slot: int, limiter: RateLimiter) -> tuple[dict[str, Any] | None, int, int | None]:
-    result, wire, code = rpc_call(
-        url,
-        "getBlock",
-        [
-            slot,
-            {
-                "encoding": "json",
-                "transactionDetails": "full",
-                "rewards": False,
-                "commitment": "confirmed",
-                "maxSupportedTransactionVersion": 1,
-            },
-        ],
-        limiter,
-    )
+    try:
+        result, wire, code = rpc_call(
+            url,
+            "getBlock",
+            [
+                slot,
+                {
+                    "encoding": "json",
+                    "transactionDetails": "full",
+                    "rewards": False,
+                    "commitment": "confirmed",
+                    "maxSupportedTransactionVersion": 1,
+                },
+            ],
+            limiter,
+            timeout=90.0,
+        )
+    except (RuntimeError, TimeoutError, urllib.error.URLError, json.JSONDecodeError, gzip.BadGzipFile) as exc:
+        print(f"getBlock slot={slot} failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        return None, 0, -1
     if not isinstance(result, dict):
         return None, wire, code
     result["slot"] = slot
@@ -689,8 +708,16 @@ def run_hour(
 
     def _lookup(pools: list[str]) -> dict[str, tuple[str, str]]:
         # Different RPC method from getBlock, so it has its own 40-per-10s budget.
-        lookup_limiter.acquire()
-        return fetch_pool_mints(url, pools)
+        for attempt in range(4):
+            lookup_limiter.acquire()
+            try:
+                return fetch_pool_mints(url, pools)
+            except (TimeoutError, urllib.error.URLError, json.JSONDecodeError, RuntimeError) as exc:
+                if attempt == 3:
+                    print(f"pool lookup failed {type(exc).__name__}", file=sys.stderr, flush=True)
+                    return {}
+                time.sleep(0.5 * (2**attempt))
+        return {}
 
     def _emit_trade(row: Mapping[str, Any]) -> None:
         trades.write(row)
