@@ -1,8 +1,9 @@
 """LAYA v0 promotion-rule stats for attention books. No tape, no model.
 
-Matches tools/laya_v0.py: 1000-draw token bootstrap seed 1, 90% CI of mean SOL,
-total still positive after dropping the best trade, majority of UTC days
-positive. Also requires n >= MIN_N (LAYA's min-rule-n = 30).
+Matches the project-wide promotion rule: n >= 100 out-of-sample trades,
+1000-draw token bootstrap seed 1, 90% CI of mean SOL > 0, total still
+positive after dropping the best trade, majority of UTC days positive.
+Books with n >= WATCH_N (30) are reported as watch, not promote.
 """
 
 from __future__ import annotations
@@ -18,9 +19,10 @@ LAMPORTS_PER_SOL = 1_000_000_000
 BOOTSTRAP_DRAWS = 1000
 BOOTSTRAP_SEED = 1
 WINSOR_P = 0.01
-MIN_N = 30
+WATCH_N = 30
+MIN_N = 100
 PROMOTION_RULE = (
-    f"n >= {MIN_N}, lower 90% CI bound of mean SOL per trade > 0 "
+    f"n >= {MIN_N} out-of-sample trades, lower 90% CI bound of mean SOL per trade > 0 "
     f"({BOOTSTRAP_DRAWS} token draws, seed {BOOTSTRAP_SEED}), "
     "total SOL still positive after removing the single best trade, "
     "and a majority of UTC days positive"
@@ -88,7 +90,9 @@ def _winsorized_mean_lamports(values: Sequence[int], p: float = WINSOR_P) -> flo
     return sum(capped) / len(capped)
 
 
-def book_stats(trades: Sequence[BookTrade], *, min_n: int = MIN_N) -> dict[str, Any]:
+def book_stats(
+    trades: Sequence[BookTrade], *, min_n: int = MIN_N, watch_n: int = WATCH_N
+) -> dict[str, Any]:
     pnls = [trade.pnl for trade in trades]
     n = len(pnls)
     if n == 0:
@@ -109,6 +113,8 @@ def book_stats(trades: Sequence[BookTrade], *, min_n: int = MIN_N) -> dict[str, 
             "n_days": 0,
             "majority_days_positive": False,
             "min_n": min_n,
+            "watch_n": watch_n,
+            "watch": False,
             "promote": False,
             "promote_blockers": ["min_n"],
         }
@@ -160,6 +166,8 @@ def book_stats(trades: Sequence[BookTrade], *, min_n: int = MIN_N) -> dict[str, 
         "n_days": n_days,
         "majority_days_positive": majority,
         "min_n": min_n,
+        "watch_n": watch_n,
+        "watch": n >= watch_n,
         "promote": not blockers,
         "promote_blockers": blockers,
     }
