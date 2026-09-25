@@ -1,0 +1,24 @@
+[Unit]
+Description=MAL paper attention tape (DexScreener / pump.fun / GeckoTerminal, $0)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mal
+Nice=10
+IOSchedulingClass=idle
+Environment=MAL_ATTENTION_OUTPUT_DIR=/var/lib/mal/attention
+Environment=MAL_LOG_LEVEL=INFO
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+ExecStart=%h/mal/.venv/bin/python -m observe.attention --output-dir /var/lib/mal/attention
+Restart=always
+RestartSec=15
+StandardOutput=append:/var/lib/mal/logs/attention.log
+StandardError=append:/var/lib/mal/logs/attention.log
+
+[Install]
+WantedBy=default.target

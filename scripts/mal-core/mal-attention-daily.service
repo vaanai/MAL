@@ -1,0 +1,21 @@
+[Unit]
+Description=MAL paper attention genuine-arrival daily rescore (after LAYA 04:15 UTC)
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+WorkingDirectory=%h/mal
+Environment=MAL_ATTENTION_OUTPUT_DIR=/var/lib/mal/attention
+Environment=MAL_TAPE_DIR=/var/lib/mal/sealed/trades
+Environment=MAL_CREATES_DIR=/var/lib/mal/sealed/jsonl
+Environment=MAL_ATTENTION_DAILY_DIR=/var/lib/mal/paper/attention/daily
+Environment=MAL_ATTENTION_JOIN=/var/lib/mal/paper/attention/laya_join.jsonl
+Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+ExecStart=/var/lib/mal/eng/attention-daily.sh
+StandardOutput=append:/var/lib/mal/logs/attention-daily.log
+StandardError=append:/var/lib/mal/logs/attention-daily.log
