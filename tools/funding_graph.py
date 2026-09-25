@@ -2,9 +2,9 @@
 """Creator and early-buyer funding graph for paper rug vetoes.
 
 Public Solana JSON-RPC at 1 request/s by default. If HELIUS_API_KEY is set,
-or appears in the backfill env file, calls move to Helius at 5 requests/s.
-The live trade tape is not this process: stay under that cap and stop cold
-on HTTP 429.
+or appears in the backfill env file, calls move to Helius at 5 requests/s
+unless MAL_FUNDING_RPC=public. The live trade tape is not this process:
+stay under that cap and stop cold on HTTP 429.
 
 Each wallet is resolved once. Rows are append-only JSONL. A later feature
 join may use a row only when its first_seen_ms is at or before the decision.
@@ -185,12 +185,27 @@ def helius_api_key(env: dict[str, str] | None = None, env_file: Path | None = No
     return helius_key_from_file(env_file)
 
 
+def funding_rpc_mode(env: dict[str, str] | None = None) -> str:
+    """MAL_FUNDING_RPC=public keeps the public endpoint. Anything else is automatic."""
+    src = os.environ if env is None else env
+    mode = (src.get("MAL_FUNDING_RPC") or "").strip().lower()
+    return "public" if mode == "public" else ""
+
+
 def resolve_rpc_url(env: dict[str, str] | None = None, env_file: Path | None = None) -> str:
-    """Public RPC unless a Helius key is in the environment or the env file."""
+    """Public RPC unless a Helius key is in the environment or the env file.
+
+    MAL_FUNDING_RPC=public skips the key even when the backfill env file is present.
+    """
+    src = os.environ if env is None else env
+    if funding_rpc_mode(src) == "public":
+        explicit = (src.get("MAL_SOLANA_HTTP_URL") or "").strip()
+        if explicit and describe_rpc(explicit) != "helius":
+            return explicit
+        return PUBLIC_RPC
     key = helius_api_key(env, env_file)
     if key:
         return f"https://mainnet.helius-rpc.com/?api-key={key}"
-    src = os.environ if env is None else env
     explicit = (src.get("MAL_SOLANA_HTTP_URL") or "").strip()
     return explicit or PUBLIC_RPC
 
@@ -222,7 +237,15 @@ def maybe_switch_rpc(
     env_file: Path | None = None,
     budget: "CreditLedger | None" = None,
 ) -> "RpcClient":
-    """Move onto Helius when a key exists and the credit cap has room. At the cap, use public RPC at 1/s."""
+    """Move onto Helius when a key exists and the credit cap has room. At the cap, use public RPC at 1/s.
+
+    MAL_FUNDING_RPC=public never opens Helius, including on the 30s key poll.
+    """
+    src = os.environ if env is None else env
+    if funding_rpc_mode(src) == "public":
+        if describe_rpc(client.url) != "public":
+            return RpcClient(PUBLIC_RPC, rps=PUBLIC_RPS)
+        return client
     if budget is not None and not budget.can_afford():
         if describe_rpc(client.url) != "public":
             return RpcClient(PUBLIC_RPC, rps=PUBLIC_RPS)

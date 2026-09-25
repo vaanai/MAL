@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Paper funding-graph enricher. Public RPC at 1/s unless a Helius key is present.
 # HELIUS_API_KEY, or /var/lib/mal/backfill/helius.env, switches the process to
-# Helius at 5/s without a restart. MAL_FUNDING_RPS overrides that rate.
+# Helius at 5/s without a restart. MAL_FUNDING_RPS overrides that Helius rate.
+# MAL_FUNDING_RPC=public stays on public RPC at 1/s even when the key file exists.
 # Does not restart or edit mal-trade-tape.service / mal-forward-paper.service.
 set -euo pipefail
 

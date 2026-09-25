@@ -455,6 +455,15 @@ class FundingGraphTests(unittest.TestCase):
             self.assertIs(maybe_switch_rpc(nxt, None, {}, path), nxt)
             held = maybe_switch_rpc(client, 1.0, {}, path)
             self.assertAlmostEqual(held.min_interval, 1.0)
+            pinned = {"MAL_FUNDING_RPC": "public", "HELIUS_API_KEY": "unit-test-key"}
+            forced = resolve_rpc_url(pinned, path)
+            self.assertEqual(forced, PUBLIC_RPC)
+            self.assertNotIn("unit-test-key", forced)
+            helius_client = RpcClient(url, rps=2)
+            back = maybe_switch_rpc(helius_client, 2.0, pinned, path)
+            self.assertEqual(describe_rpc(back.url), "public")
+            self.assertAlmostEqual(back.min_interval, 1.0)
+            self.assertIs(maybe_switch_rpc(client, 2.0, pinned, path), client)
 
     def test_helius_credit_cap_persists_and_falls_back_to_public(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

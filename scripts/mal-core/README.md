@@ -24,6 +24,6 @@ Host bootstrap helpers. **No secrets in this tree.**
 | [mal-forward-paper.service](mal-forward-paper.service) | host (systemd --user) | Long-running forward paper service |
 | [forward-paper.json](forward-paper.json) | host | Books: buy-all, LAYA 0.6 / 0.7, migrate tp50/sl30 |
 | [funding-graph.sh](funding-graph.sh) | host | Resolve creator and early-buyer funders into `/var/lib/mal/graph`. Does **not** touch the recorder or forward-paper |
-| [mal-funding-graph.service](mal-funding-graph.service) | host (systemd --user) | Nice'd enricher. 1/s on public RPC. Helius when `HELIUS_API_KEY` or the backfill env file appears (`MAL_FUNDING_RPS` overrides the rate). Stops Helius at 150k credits and falls back to public 1/s |
+| [mal-funding-graph.service](mal-funding-graph.service) | host (systemd --user) | Nice'd enricher. 1/s on public RPC. Helius when `HELIUS_API_KEY` or the backfill env file appears (`MAL_FUNDING_RPS` overrides the Helius rate) unless `MAL_FUNDING_RPC=public`. Stops Helius at 150k credits and falls back to public 1/s |
 
 Runbook: [tools/oracle_ssh_smoke.md](../../tools/oracle_ssh_smoke.md). On-host note: `/var/lib/mal/eng/BOOTSTRAP.md`.
