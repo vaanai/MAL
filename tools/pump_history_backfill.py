@@ -320,10 +320,14 @@ def rows_from_block(
 def resolve_unresolved(
     pending: list[dict[str, Any]],
     pool_mints: dict[str, tuple[str, str]],
-    block_time: int,
+    block_time: int | None,
     lookup: Callable[[list[str]], dict[str, tuple[str, str]]],
 ) -> tuple[list[dict[str, Any]], int]:
-    """Fill PumpSwap mints from the cache or batched account lookups."""
+    """Fill PumpSwap mints from the cache or batched account lookups.
+
+    When block_time is None, return the mutated trade records. Callers that
+    batch several blocks stamp block_time themselves.
+    """
     need: list[str] = []
     seen: set[str] = set()
     for rec in pending:
@@ -343,7 +347,10 @@ def resolve_unresolved(
             dropped += 1
             continue
         apply_pool_mints(rec, known[0], known[1], mint_source="pool_account")
-        ready.append(backfill_trade_row(rec, block_time))
+        if block_time is None:
+            ready.append(rec)
+        else:
+            ready.append(backfill_trade_row(rec, block_time))
     return ready, dropped
 
 
@@ -675,10 +682,31 @@ def run_hour(
         "errors": 0,
     }
 
+    held: list[dict[str, Any]] = []
+
     def _lookup(pools: list[str]) -> dict[str, tuple[str, str]]:
         # Different RPC method from getBlock, so it has its own 40-per-10s budget.
         lookup_limiter.acquire()
         return fetch_pool_mints(url, pools)
+
+    def _emit_trade(row: Mapping[str, Any]) -> None:
+        trades.write(row)
+        counts["trades"] += 1
+        if row.get("venue") == "pumpswap":
+            counts["pumpswap"] += 1
+        else:
+            counts["bonding"] += 1
+
+    def _flush_held() -> None:
+        if not held:
+            return
+        ready, dropped = resolve_unresolved(held, pool_mints, None, _lookup)
+        counts["unresolved_dropped"] += dropped
+        for rec in ready:
+            bt = int(rec.pop("_block_time"))
+            if start_ts <= bt < end_ts:
+                _emit_trade(backfill_trade_row(rec, bt))
+        held.clear()
 
     def _consume(block: dict[str, Any] | None, wire: int, code: int | None) -> None:
         counts["wire_bytes"] += wire
@@ -689,19 +717,15 @@ def run_hour(
             return
         decoded = rows_from_block(block, pool_mints)
         bt = int(block.get("blockTime") or 0)
-        if decoded["unresolved"]:
-            ready, dropped = resolve_unresolved(decoded["unresolved"], pool_mints, bt, _lookup)
-            counts["unresolved_dropped"] += dropped
-            decoded["trades"].extend(ready)
+        for rec in decoded["unresolved"]:
+            rec["_block_time"] = bt
+            held.append(rec)
+        if len(held) >= 250:
+            _flush_held()
         if not start_ts <= bt < end_ts:
             return
         for row in decoded["trades"]:
-            trades.write(row)
-            counts["trades"] += 1
-            if row.get("venue") == "pumpswap":
-                counts["pumpswap"] += 1
-            else:
-                counts["bonding"] += 1
+            _emit_trade(row)
         for row in decoded["creates"]:
             creates.write(row)
             counts["creates"] += 1
@@ -714,6 +738,7 @@ def run_hour(
 
     try:
         _run_slots(url, slots, workers, limiter, _consume, counts, t0, key, max_bytes, out_dir)
+        _flush_held()
     finally:
         sealed = {
             "trades": trades.close(),
