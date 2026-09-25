@@ -282,6 +282,34 @@ def load_creates(
     return found
 
 
+def pumpswap_post_trade_reserves(
+    *,
+    side: str,
+    quote_reserve: int,
+    base_reserve: int,
+    sol_lamports: int,
+    token_raw: int,
+) -> tuple[int, int] | None:
+    """PumpSwap event reserves are the pool before that trade.
+
+    The next print's base moves by exactly this print's token_raw, so a fill
+    at this print's timestamp has to walk the post-trade book. Bonding-curve
+    reserves are already post-trade; do not call this for them. None means
+    the trade does not fit the printed reserves (leave them unchanged).
+    """
+    if token_raw <= 0 or sol_lamports <= 0 or quote_reserve <= 0 or base_reserve <= 0:
+        return None
+    if side == "buy":
+        if token_raw >= base_reserve:
+            return None
+        return quote_reserve + sol_lamports, base_reserve - token_raw
+    if side == "sell":
+        if sol_lamports >= quote_reserve:
+            return None
+        return quote_reserve - sol_lamports, base_reserve + token_raw
+    return None
+
+
 def print_from_trade_row(row: dict[str, Any]) -> tuple[str, TapePrint] | None:
     """Return (mint, print) or None if this row cannot price a SOL path."""
     if row.get("type") not in (None, "trade"):
@@ -325,6 +353,24 @@ def print_from_trade_row(row: dict[str, Any]) -> tuple[str, TapePrint] | None:
     except (TypeError, ValueError):
         event_index = 0
     side = row.get("side") if row.get("side") in ("buy", "sell") else "buy"
+    try:
+        token_raw = int(row.get("token_raw") or 0)
+    except (TypeError, ValueError):
+        token_raw = 0
+    # PumpSwap rows store the pool from before this trade. Apply it before
+    # anyone can fill, using only fields on this row (no later print).
+    if venue == VENUE_PUMPSWAP:
+        posted = pumpswap_post_trade_reserves(
+            side=side,
+            quote_reserve=quote,
+            base_reserve=base,
+            sol_lamports=sol_lamports,
+            token_raw=token_raw,
+        )
+        if posted is not None:
+            quote, base = posted
+            price = quote / (base * 1000)
+            mcap = price * 1_000_000_000
     return mint, TapePrint(
         t_recv_ms=t_ms,
         slot=slot,

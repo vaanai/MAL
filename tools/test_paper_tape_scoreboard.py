@@ -32,6 +32,7 @@ from tools.paper_price_path import (
     load_creates,
     price_path_records,
     print_from_trade_row,
+    pumpswap_post_trade_reserves,
     stream_paths,
 )
 from tools.paper_tape_scoreboard import (
@@ -224,6 +225,91 @@ class RecordedFixtureTests(unittest.TestCase):
         self.assertEqual(records[0]["t_recv_ms"], pr.t_recv_ms)
         self.assertEqual(records[0]["venue"], "pump_bonding")
         self.assertNotIn("pnl_sol", records[0])
+
+    def test_pumpswap_print_is_advanced_to_post_trade_reserves(self) -> None:
+        # Live BuyEvent reserves still contain this trade's tokens. The next
+        # print's base drop equals token_raw. A fill at this timestamp has to
+        # use the post-trade book, or a 0.5s entry between the two prints buys
+        # the pre-sniper pool and sells the drained one.
+        quote = 68_393_705_619
+        base = 204_523_279_829_579
+        token_raw = 202_564_065_831_586
+        sol = 8_889_328_063_240
+        row = {
+            "type": "trade",
+            "mint": "MintA",
+            "venue": "pumpswap",
+            "quote_is_wsol": True,
+            "t_recv_ms": T0 + 266,
+            "quote_reserve": quote,
+            "base_reserve": base,
+            "side": "buy",
+            "sol_lamports": sol,
+            "token_raw": token_raw,
+            "price_sol": quote / (base * 1000),
+            "market_cap_sol": 334.0,
+            "slot": 1,
+            "event_index": 1,
+        }
+        parsed = print_from_trade_row(row)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        _, pr = parsed
+        self.assertEqual(pr.base_reserve, base - token_raw)
+        self.assertEqual(pr.quote_reserve, quote + sol)
+        self.assertGreater(pr.price_sol, 1e-4)
+        path = _path(
+            [pr],
+            t_ms=T0,
+            v_sol=115.005359056806,
+            v_token_ui=279_900_000.0,
+            mcap_sol=410.8801681200643,
+        )
+        got = simulate_book([path], latencies=(0.5,), tape_end_ms=T0 + 120_000, rules=EXIT_RULES[:1])[0]
+        self.assertEqual(got["entry_status"], "missed_slippage")
+        self.assertIsNone(got["pnl_lamports"])
+        self.assertNotEqual(got.get("entry_tokens_raw"), 146_806_388_736)
+
+    def test_bonding_reserves_are_not_advanced_again(self) -> None:
+        quote = 35_000_000_000
+        base = B0
+        row = {
+            "type": "trade",
+            "mint": "MintA",
+            "venue": "pump_bonding",
+            "quote_is_wsol": True,
+            "t_recv_ms": T0,
+            "quote_reserve": quote,
+            "base_reserve": base,
+            "side": "buy",
+            "sol_lamports": 1_000_000_000,
+            "token_raw": 10_000_000_000_000,
+            "slot": 1,
+            "event_index": 0,
+        }
+        parsed = print_from_trade_row(row)
+        assert parsed is not None
+        self.assertEqual(parsed[1].quote_reserve, quote)
+        self.assertEqual(parsed[1].base_reserve, base)
+
+    def test_pumpswap_sell_reserves_move_quote_out_and_base_in(self) -> None:
+        posted = pumpswap_post_trade_reserves(
+            side="sell",
+            quote_reserve=10_000_000_000,
+            base_reserve=1_000_000_000_000,
+            sol_lamports=50_000_000,
+            token_raw=20_000_000_000,
+        )
+        self.assertEqual(posted, (9_950_000_000, 1_020_000_000_000))
+        self.assertIsNone(
+            pumpswap_post_trade_reserves(
+                side="buy",
+                quote_reserve=10_000_000_000,
+                base_reserve=100,
+                sol_lamports=1,
+                token_raw=100,
+            )
+        )
 
     def test_recorded_pumpswap_without_a_mint_is_not_a_path_point(self) -> None:
         ev = decode_program_data(base64.b64decode(_b64("pumpswap_sell_event.b64")))

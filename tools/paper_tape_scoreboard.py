@@ -54,6 +54,11 @@ MAX_HOLD_MS = 30 * 60 * 1000
 ASSUMPTIONS: dict[str, Any] = {
     "clock": "create signal is observe t_ws; tape state uses t_recv_ms. event_ts is not a decision clock.",
     "entry": "reserves after the last print with t<=T+L. Create-payload reserves only if the tape has no print yet.",
+    "pumpswap_reserves": (
+        "PumpSwap reserves on the tape are the pool before that trade. The path adds "
+        "sol_lamports to quote and moves base by token_raw before a fill can use the print. "
+        "Bonding-curve reserves are already post-trade. A PumpSwap row with no token_raw is left as recorded."
+    ),
     "own_impact": (
         "If no later print has replaced the entry quote, the sell walks the curve "
         "after our own buy. Later prints are the observed book (our 0.05 SOL is not injected)."
