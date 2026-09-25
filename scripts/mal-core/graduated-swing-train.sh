@@ -12,10 +12,15 @@ BACKFILL="${MAL_BACKFILL_DIR:-/var/lib/mal/backfill}"
 ATTENTION="${MAL_ATTENTION_DIR:-/var/lib/mal/attention}"
 GRAPH="${MAL_GRAPH_DIR:-/var/lib/mal/graph}"
 
-if [[ -x "${ROOT}/py/bin/python" ]]; then
+if [[ -n "${MAL_SWING_PYTHON:-}" && -x "${MAL_SWING_PYTHON}" ]]; then
+  PY="${MAL_SWING_PYTHON}"
+elif [[ -x "${ROOT}/py/bin/python" ]]; then
   PY="${ROOT}/py/bin/python"
 elif [[ -x "${ROOT}/venv/bin/python" ]]; then
   PY="${ROOT}/venv/bin/python"
+elif [[ -x /var/lib/mal/paper/laya-v0/venv/bin/python ]]; then
+  # The swing tree ships wheels, not a venv. LAYA's venv has LightGBM.
+  PY=/var/lib/mal/paper/laya-v0/venv/bin/python
 else
   echo "graduated-swing: missing python under ${ROOT}" >&2
   exit 1
