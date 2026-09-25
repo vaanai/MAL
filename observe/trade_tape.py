@@ -19,7 +19,9 @@ import binascii
 import json
 import logging
 import os
+import shutil
 import signal
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -68,12 +70,15 @@ class PoolMintCache:
         self.mints: dict[str, tuple[str, str]] = {}
         self._pending: dict[str, list[dict[str, Any]]] = {}
         self._since: dict[str, float] = {}
+        self._next_fetch: dict[str, float] = {}
         self.unresolved_written = 0
+        self.unresolved_dropped = 0
 
     def remember(self, pool: str, base_mint: str, quote_mint: str) -> list[dict[str, Any]]:
         self.mints[pool] = (base_mint, quote_mint)
         rows = self._pending.pop(pool, [])
         self._since.pop(pool, None)
+        self._next_fetch.pop(pool, None)
         for rec in rows:
             apply_pool_mints(rec, base_mint, quote_mint, mint_source="pool_account")
         return rows
@@ -94,21 +99,42 @@ class PoolMintCache:
             self._since.setdefault(pool, now)
         return ready
 
-    def unknown_pools(self, limit: int = 100) -> list[str]:
-        return list(self._pending.keys())[:limit]
+    def pending_rows(self) -> int:
+        return sum(len(rows) for rows in self._pending.values())
 
-    def flush_timeouts(self, now: float, timeout_s: float = POOL_WAIT_S) -> list[dict[str, Any]]:
-        ready: list[dict[str, Any]] = []
+    def unknown_pools(self, limit: int = 100, now: float | None = None) -> list[str]:
+        due: list[str] = []
+        for pool in self._pending:
+            if now is not None and now < self._next_fetch.get(pool, 0):
+                continue
+            due.append(pool)
+            if len(due) >= limit:
+                break
+        return due
+
+    def backoff(self, pools: list[str], now: float, delay_s: float = POOL_WAIT_S) -> None:
+        for pool in pools:
+            if pool in self._pending:
+                self._next_fetch[pool] = now + delay_s
+
+    def flush_timeouts(self, now: float, timeout_s: float = 30.0) -> list[dict[str, Any]]:
+        """Drop rows still missing a quote mint after timeout_s. Do not write them.
+
+        A PumpSwap row without quote_is_wsol is invisible to post-migration price
+        paths. Holding briefly and retrying is safer than sealing a blind row.
+        """
+        dropped: list[dict[str, Any]] = []
         for pool, started in list(self._since.items()):
             if now - started < timeout_s:
                 continue
             rows = self._pending.pop(pool, [])
             self._since.pop(pool, None)
-            for rec in rows:
-                rec["mint_source"] = "unresolved"
-                ready.append(rec)
-                self.unresolved_written += 1
-        return ready
+            self._next_fetch.pop(pool, None)
+            dropped.extend(rows)
+            self.unresolved_dropped += len(rows)
+        if dropped:
+            log.warning("pool_quote_unresolved_dropped n=%s", len(dropped))
+        return dropped
 
 
 def fetch_pool_mints(http_url: str, pools: list[str]) -> dict[str, tuple[str, str]]:
@@ -183,9 +209,68 @@ def accept_trade(guard: DiskGuard, monitor: CompletenessMonitor, writer: HourlyJ
     if guard.holding:
         guard.dropped += 1
         return False
+    if rec.get("venue") == "pumpswap" and rec.get("quote_is_wsol") not in (True, False):
+        return False
+    if rec.get("venue") == "pumpswap" and not isinstance(rec.get("quote_mint"), str):
+        return False
     monitor.note(rec)
     writer.write(stored_trade(rec))
     return True
+
+
+def seed_pool_cache(output_dir: Path, cache: PoolMintCache, limit_files: int = 48) -> int:
+    """Reload recent pool -> (base, quote) rows so a restart does not re-resolve them."""
+    if not output_dir.is_dir():
+        return 0
+    files = [
+        path
+        for path in output_dir.iterdir()
+        if path.is_file()
+        and not path.is_symlink()
+        and path.name.startswith("pool-mints-")
+        and (path.name.endswith(".jsonl") or path.name.endswith(".jsonl.zst"))
+    ]
+    files.sort(key=lambda path: path.name)
+    loaded = 0
+    for path in files[-limit_files:]:
+        try:
+            lines = _pool_mint_lines(path)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            log.warning("pool_cache_seed_failed path=%s", path.name)
+            continue
+        for line in lines:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            pool = obj.get("pool")
+            base_mint = obj.get("mint")
+            quote_mint = obj.get("quote_mint")
+            if isinstance(pool, str) and isinstance(base_mint, str) and isinstance(quote_mint, str):
+                cache.mints[pool] = (base_mint, quote_mint)
+                loaded += 1
+    if loaded:
+        log.info("pool_cache_seeded pools=%s", len(cache.mints))
+    return loaded
+
+
+def _pool_mint_lines(path: Path) -> list[str]:
+    if path.name.endswith(".jsonl.zst"):
+        zstd = shutil.which("zstd")
+        if zstd is None:
+            return []
+        proc = subprocess.run(
+            [zstd, "-d", "-c", "-q", str(path)],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        text = proc.stdout.decode("utf-8", errors="replace")
+    else:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    return text.splitlines()
 
 
 def build_source(name: str, ws_url: str, commitment: str, helius_key: str, programs: tuple[str, ...]):
@@ -218,6 +303,7 @@ async def run_tape(
     )
     cache = PoolMintCache()
     trades_written = 0
+    seed_pool_cache(output_dir, cache)
     compressor.sweep_startup(output_dir, hour_stamp(monitor._clock()))
     loop = asyncio.get_running_loop()
     monitor.start(loop.time())
@@ -239,7 +325,8 @@ async def run_tape(
 
     async def resolve() -> None:
         while not stop.is_set():
-            batch = cache.unknown_pools(100)
+            now = loop.time()
+            batch = cache.unknown_pools(100, now=now)
             if batch and not guard.holding:
                 try:
                     found = await asyncio.to_thread(fetch_pool_mints, http_url, batch)
@@ -260,8 +347,8 @@ async def run_tape(
                         )
                     for rec in cache.remember(pool, base_mint, quote_mint):
                         emit(rec)
-            for rec in cache.flush_timeouts(loop.time()):
-                emit(rec)
+                cache.backoff([pool for pool in batch if pool not in found], now)
+            cache.flush_timeouts(now, timeout_s=30.0)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=0.4)
             except asyncio.TimeoutError:
@@ -288,7 +375,8 @@ async def run_tape(
                 log.info(
                     "heartbeat source=%s commitment=%s trades=%s notes=%s failed_notes=%s "
                     "reconnects=%s slot_jumps=%s last_slot=%s unresolved=%s pool_cache=%s "
-                    "bytes=%s hold=%s dropped=%s keep_days=%s free_ratio=%.3f stats=%s",
+                    "bytes=%s hold=%s dropped=%s keep_days=%s free_ratio=%.3f stats=%s "
+                    "pending_pools=%s quote_dropped=%s",
                     type(source).__name__,
                     source.commitment,
                     trades_written,
@@ -305,6 +393,8 @@ async def run_tape(
                     guard.keep_days,
                     guard.free_ratio,
                     row is not None,
+                    len(cache._pending),
+                    cache.unresolved_dropped,
                 )
 
     log.info(

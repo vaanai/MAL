@@ -74,8 +74,13 @@ def stored_trade(record: Mapping[str, Any]) -> dict[str, Any]:
     if record.get("zero_sol"):
         slim["zero_sol"] = True
     quote_mint = record.get("quote_mint")
-    if isinstance(quote_mint, str) and quote_mint and quote_mint != WSOL_MINT:
+    quote_is_wsol = record.get("quote_is_wsol")
+    if quote_is_wsol is None and isinstance(quote_mint, str) and quote_mint:
+        quote_is_wsol = quote_mint == WSOL_MINT
+    if isinstance(quote_mint, str) and quote_mint:
         slim["quote_mint"] = quote_mint
+    if quote_is_wsol is True or quote_is_wsol is False:
+        slim["quote_is_wsol"] = quote_is_wsol
     return slim
 
 

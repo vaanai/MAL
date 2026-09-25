@@ -294,8 +294,9 @@ class SourceSwapTests(unittest.TestCase):
         cold = PoolMintCache()
         self.assertEqual(cold.accept(trades_from_notice(note, {}), now=20.0), [])
         flushed = cold.flush_timeouts(now=22.0, timeout_s=1.5)
-        self.assertEqual(flushed[0]["mint_source"], "unresolved")
+        self.assertEqual(flushed[0].get("quote_is_wsol"), None)
         self.assertEqual(flushed[0]["t_recv_ms"], T_RECV_MS)
+        self.assertEqual(cold.unknown_pools(), [])
 
     def test_pool_account_layout(self) -> None:
         from observe.trade_decode import _POOL_ACCOUNT_DISC, b58encode

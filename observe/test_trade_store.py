@@ -22,7 +22,7 @@ from observe.trade_store import (
     keep_days_for,
     stored_trade,
 )
-from observe.trade_tape import accept_trade
+from observe.trade_tape import PoolMintCache, accept_trade, seed_pool_cache
 from observe.test_trade_decode import SIG, SLOT, T_RECV_MS, _line
 from observe.trade_decode import records_from_logs
 
@@ -93,20 +93,78 @@ class StoreTests(unittest.TestCase):
             "token",
             "market_cap_sol",
             "market_cap_supply_ui",
-            "quote_is_wsol",
             "t_recv",
             "commitment",
-            "quote_mint",
         ):
             self.assertNotIn(dropped, slim)
-        other = stored_trade({**rich, "quote_mint": "NotWsolMint111111111111111111111111111"})
+        wsol = stored_trade({**rich, "quote_mint": WSOL_MINT, "quote_is_wsol": True})
+        self.assertEqual(wsol["quote_mint"], WSOL_MINT)
+        self.assertTrue(wsol["quote_is_wsol"])
+        other = stored_trade({**rich, "quote_mint": "NotWsolMint111111111111111111111111111", "quote_is_wsol": False})
         self.assertEqual(other["quote_mint"], "NotWsolMint111111111111111111111111111")
-        flagged = stored_trade({**rich, "zero_sol": True, "quote_mint": WSOL_MINT})
+        self.assertFalse(other["quote_is_wsol"])
+        flagged = stored_trade({**rich, "zero_sol": True, "quote_mint": WSOL_MINT, "quote_is_wsol": True})
         self.assertTrue(flagged["zero_sol"])
-        self.assertNotIn("quote_mint", flagged)
+        self.assertEqual(flagged["quote_mint"], WSOL_MINT)
+        self.assertTrue(flagged["quote_is_wsol"])
         bonding = stored_trade({**rich, "venue": "pump_bonding"})
         self.assertEqual(bonding["v"], 1)
         self.assertEqual(bonding["type"], "trade")
+        self.assertNotIn("quote_is_wsol", slim)
+
+    def test_seeded_pool_cache_stamps_quote_on_the_next_trade(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pool-mints-2026-09-25T08.jsonl").write_text(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "type": "pool_mint",
+                        "pool": "HwK2JkkHc5Ekt6umApmj5RerhugNSiMULioThvKvkGB9",
+                        "mint": "Mint111111111111111111111111111111111111111",
+                        "quote_mint": WSOL_MINT,
+                        "quote_is_wsol": True,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cache = PoolMintCache()
+            self.assertEqual(seed_pool_cache(root, cache), 1)
+            from observe.trade_source import RawNotice
+
+            note = RawNotice(
+                slot=SLOT,
+                signature=SIG,
+                failed=False,
+                logs=(_line("pumpswap_buy_event.b64"),),
+                t_recv_ms=T_RECV_MS,
+                commitment="confirmed",
+                feed=SOURCE_PUBLIC_RPC_LOGS,
+            )
+            from observe.trade_tape import trades_from_notice
+
+            ready = cache.accept(trades_from_notice(note, cache.mints), now=1.0)
+            self.assertEqual(len(ready), 1)
+            self.assertTrue(ready[0]["quote_is_wsol"])
+            self.assertEqual(ready[0]["quote_mint"], WSOL_MINT)
+            stored = stored_trade(ready[0])
+            self.assertTrue(stored["quote_is_wsol"])
+            self.assertEqual(stored["quote_mint"], WSOL_MINT)
+            bare = {**_rich_swap()}
+            guard = DiskGuard(root, fs_bytes=lambda _p: (1000, 10, 900))
+            stats = _Stats()
+            monitor = CompletenessMonitor(root, root / "missing", stats, start_at_end=False)
+            writer = HourlyJsonlWriter(
+                root, "trades", _Comp(), clock=_Clock(datetime(2026, 9, 25, 8, tzinfo=timezone.utc))
+            )
+            self.assertFalse(accept_trade(guard, monitor, writer, bare))
+            self.assertEqual(writer.rows, 0)
+            self.assertTrue(accept_trade(guard, monitor, writer, ready[0]))
+            line = json.loads(writer.path.read_text(encoding="utf-8"))
+            self.assertTrue(line["quote_is_wsol"])
+            self.assertEqual(line["quote_mint"], WSOL_MINT)
+            writer.close()
 
     def test_hourly_roll_seals_the_previous_hour(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -209,7 +267,7 @@ class StoreTests(unittest.TestCase):
             stats = _Stats()
             monitor = CompletenessMonitor(root, root / "missing", stats, start_at_end=False)
             writer = HourlyJsonlWriter(root, "trades", _Comp(), clock=_Clock(datetime(2026, 9, 25, 1, tzinfo=timezone.utc)))
-            rich = _rich_swap()
+            rich = {**_rich_swap(), "quote_mint": WSOL_MINT, "quote_is_wsol": True}
             self.assertFalse(accept_trade(guard, monitor, writer, rich))
             self.assertEqual(guard.dropped, 1)
             self.assertEqual(writer.rows, 0)
