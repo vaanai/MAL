@@ -252,7 +252,7 @@ def format_daily_md(board: dict[str, Any]) -> str:
                 ex=_fmt(promo.get("total_ex_best_sol")),
                 days=f"{promo.get('days_positive', '')}/{promo.get('n_days', '')}",
                 minn=promo.get("min_n", ""),
-                prom="yes" if promo.get("promote") else "no",
+                prom="yes" if promo.get("promote") else ("watch" if promo.get("watch") else "no"),
                 block=",".join(promo.get("promote_blockers") or []),
             )
         )
@@ -333,7 +333,7 @@ def run_daily(
             "Buy clock is our first-seen + 1s, not the event's native timestamp (that would look ahead).",
             "Lag is first-seen minus Dex paymentTimestamp / stream start / KOTH stamp / pool_created_at.",
             "LAYA join uses t_ms = t_first_ms; feature builder must keep t_ms <= decision_t_ms.",
-            "Promotion copies LAYA v0 (bootstrap CI, drop-best, majority days) plus min n=30.",
+            "Promotion copies the project-wide rule (bootstrap CI, drop-best, majority days, min n=100). n>=30 books are watch, not promote.",
             "Hourly tapes only (daily leftover zst skipped). Rugs kept. Real fees. Same sim as PR #76.",
         ],
     }

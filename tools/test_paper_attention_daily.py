@@ -16,7 +16,7 @@ from observe.attention import (
     reconstruct_snapshot_keys,
 )
 from tools.paper_attention_daily import emit_laya_join, genuine_rows, lag_vs_event, list_hourly_tapes
-from tools.paper_attention_promote import MIN_N, BookTrade, book_stats
+from tools.paper_attention_promote import MIN_N, WATCH_N, BookTrade, book_stats
 
 
 class SnapshotTests(unittest.TestCase):
@@ -165,7 +165,17 @@ class PromoteTests(unittest.TestCase):
         self.assertGreater(stats["total_ex_best_sol"], 0)
         self.assertIn("min_n", stats["promote_blockers"])
         self.assertFalse(stats["promote"])
+        self.assertFalse(stats["watch"])
         self.assertEqual(stats["min_n"], MIN_N)
+        self.assertEqual(stats["watch_n"], WATCH_N)
+
+    def test_n30_is_watch_not_promote(self) -> None:
+        trades = [BookTrade(mint=f"m{i}", t_ms=1_758_758_400_000, pnl=100_000) for i in range(WATCH_N)]
+        stats = book_stats(trades)
+        self.assertEqual(stats["n"], 30)
+        self.assertTrue(stats["watch"])
+        self.assertIn("min_n", stats["promote_blockers"])
+        self.assertFalse(stats["promote"])
 
     def test_drop_best_blocks_promote(self) -> None:
         trades = [BookTrade(mint=f"m{i}", t_ms=1_000 + i, pnl=-1_000) for i in range(29)]
@@ -175,9 +185,10 @@ class PromoteTests(unittest.TestCase):
         self.assertFalse(stats["promote"])
 
     def test_min_n_positive_book_promotes(self) -> None:
-        trades = [BookTrade(mint=f"m{i}", t_ms=1_758_758_400_000, pnl=100_000) for i in range(30)]
+        trades = [BookTrade(mint=f"m{i}", t_ms=1_758_758_400_000, pnl=100_000) for i in range(MIN_N)]
         stats = book_stats(trades)
-        self.assertEqual(stats["n"], 30)
+        self.assertEqual(stats["n"], 100)
+        self.assertTrue(stats["watch"])
         self.assertGreater(stats["mean_ci90_sol"][0], 0)
         self.assertGreater(stats["total_ex_best_sol"], 0)
         self.assertTrue(stats["majority_days_positive"])
