@@ -628,6 +628,7 @@ def run_hour(
     end_ts: int,
     out_dir: Path,
     limiter: RateLimiter,
+    lookup_limiter: RateLimiter,
     pool_mints: dict[str, tuple[str, str]],
     workers: int,
     max_bytes: int,
@@ -675,7 +676,8 @@ def run_hour(
     }
 
     def _lookup(pools: list[str]) -> dict[str, tuple[str, str]]:
-        limiter.acquire()
+        # Different RPC method from getBlock, so it has its own 40-per-10s budget.
+        lookup_limiter.acquire()
         return fetch_pool_mints(url, pools)
 
     def _consume(block: dict[str, Any] | None, wire: int, code: int | None) -> None:
@@ -901,7 +903,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--hours", type=int, default=1)
     parser.add_argument("--out", type=Path, default=Path("/tmp/mal-backfill"))
     parser.add_argument("--rpc", default=DEFAULT_RPC)
-    parser.add_argument("--rps", type=float, default=2.8)
+    parser.add_argument("--rps", type=float, default=3.2, help="getBlock requests per second")
+    parser.add_argument("--lookup-rps", type=float, default=3.2, help="getMultipleAccounts requests per second")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     parser.add_argument("--anchor-slot", type=int, default=450278777)
@@ -911,6 +914,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--hours must be >= 1")
     until = parse_utc(args.until)
     limiter = RateLimiter(args.rps)
+    lookup_limiter = RateLimiter(args.lookup_rps)
     cache_path = args.out / "pools" / "pool-mints.jsonl.zst"
     pool_mints = load_pool_cache(cache_path)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -930,6 +934,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             end_ts=end_ts,
             out_dir=args.out,
             limiter=limiter,
+            lookup_limiter=lookup_limiter,
             pool_mints=pool_mints,
             workers=args.workers,
             max_bytes=args.max_bytes,
