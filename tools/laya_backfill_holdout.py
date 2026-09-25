@@ -33,6 +33,7 @@ from tools.graduated_swing import (
     create_from_backfill_row,
     flat_mix,
     label_rows,
+    SignatureLag,
     load_attention,
     synthetic_recv_ms,
 )
@@ -178,12 +179,16 @@ def day_status(hours: Sequence[dict[str, Any]], end_s: int | None = None) -> lis
 
 
 class LagDraw:
-    """Draws live chain→receive lags. Does not treat an empty pool as zero."""
+    """Draws live chain→receive lags. One draw per signature, not per inner event.
+
+    Does not treat an empty pool as zero. A missing signature draws per row.
+    """
 
     def __init__(self, lags_ms: Sequence[int], hop_ms: int, seed: int) -> None:
         self.lags = [int(v) for v in lags_ms]
         self.hop_ms = max(0, int(hop_ms))
         self.rng = random.Random(seed)
+        self._by_sig = SignatureLag()
         self.stamped = 0
         self.dropped = 0
 
@@ -200,7 +205,7 @@ class LagDraw:
             self.dropped += 1
             return None
         stamped = dict(row)
-        stamped["t_recv_ms"] = synthetic_recv_ms(block, self.lag(), self.hop_ms)
+        stamped["t_recv_ms"] = synthetic_recv_ms(block, self._by_sig.get(row, self.lag), self.hop_ms)
         stamped["recv_synthetic"] = True
         self.stamped += 1
         return stamped

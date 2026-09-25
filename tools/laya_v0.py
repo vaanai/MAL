@@ -44,6 +44,8 @@ from tools.paper_price_path import (
     MintPath,
     ScanStats,
     TapePrint,
+    TxOrder,
+    collapse_fillable,
     load_creates,
     open_text,
     print_from_trade_row,
@@ -231,6 +233,8 @@ class FlowPrint:
     base_reserve: int
     price_sol: float
     market_cap_sol: float
+    signature: str | None = None
+    tx_index: int = -1
 
     def to_tape(self) -> TapePrint:
         return TapePrint(
@@ -244,6 +248,8 @@ class FlowPrint:
             base_reserve=self.base_reserve,
             price_sol=self.price_sol,
             market_cap_sol=self.market_cap_sol,
+            signature=self.signature,
+            tx_index=self.tx_index,
         )
 
 
@@ -372,6 +378,8 @@ def flow_from_row(row: dict[str, Any]) -> tuple[str, FlowPrint] | None:
         base_reserve=tape.base_reserve,
         price_sol=tape.price_sol,
         market_cap_sol=tape.market_cap_sol,
+        signature=tape.signature,
+        tx_index=tape.tx_index,
     )
 
 
@@ -379,7 +387,9 @@ def _dedupe_key(pr: FlowPrint) -> tuple[Any, ...]:
     return (
         pr.t_recv_ms,
         pr.slot,
+        pr.tx_index,
         pr.event_index,
+        pr.signature,
         pr.venue,
         pr.trader,
         pr.side,
@@ -391,7 +401,10 @@ def _dedupe_key(pr: FlowPrint) -> tuple[Any, ...]:
 
 
 def _dedupe_sorted(prints: list[FlowPrint]) -> list[FlowPrint]:
-    prints.sort(key=lambda p: (p.t_recv_ms, p.slot, p.event_index, p.trader or "", p.side))
+    """Stamp tx position from read order, then sort by it ahead of event_index."""
+    order = TxOrder()
+    prints = [order.stamp(pr) for pr in prints]  # type: ignore[misc]
+    prints.sort(key=lambda p: (p.t_recv_ms, p.slot, p.tx_index, p.event_index, p.trader or "", p.side))
     out: list[FlowPrint] = []
     prev: tuple[Any, ...] | None = None
     for pr in prints:
@@ -1209,7 +1222,7 @@ def barrier_outcome(
     if entry_spot <= 0:
         return None
     deadline = entry_t_ms + horizon_ms
-    for pr in prints:
+    for pr in collapse_fillable(prints):
         if pr.t_recv_ms <= entry_t_ms:
             continue
         if pr.t_recv_ms > deadline or pr.t_recv_ms > tape_end_ms:
@@ -1238,6 +1251,7 @@ def _ladder_legs(
     remaining = tokens
     peak = entry_spot
     scaled = False
+    prints = collapse_fillable(prints)
     scale_tokens = int(tokens * rule.scale_frac)
     if 0 < scale_tokens < tokens:
         pass

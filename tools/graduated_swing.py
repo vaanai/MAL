@@ -7,9 +7,10 @@ simulator (own impact, misses kept, flat 15% and pressure fail models).
 Promotion is tools.laya_v0.book_stats.
 
 Backfill rows (source=backfill, null t_recv_ms) get a synthetic receive
-time: block_time plus a draw from the live tape's chain→receive lags.
-Block time alone is not a receive time. Callers may add the recv→decision
-hop on that same clock; the default draw does not.
+time: block_time plus one draw from the live tape's chain→receive lags,
+shared by every inner event of that signature. Block time alone is not a
+receive time. Callers may add the recv→decision hop on that same clock;
+the default draw does not.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from observe.attention import is_genuine_arrival, load_poller_start_ms, load_snapshot_keys
 from tools.funding_graph import FundingGraph, empty_funding_features, fill_funding_features
@@ -74,7 +75,7 @@ from tools.paper_fail_pressure import (
     headline_pnl,
     pressure_from_prints,
 )
-from tools.paper_price_path import CreateSignal, open_text
+from tools.paper_price_path import CreateSignal, TxOrder, open_text
 from tools.paper_tape_scoreboard import (
     DEFAULT_FAIL_RATE,
     DEFAULT_SLIPPAGE_CAP,
@@ -451,23 +452,56 @@ def _trade_paths(directory: Path) -> list[Path]:
     return sorted(found)
 
 
+class SignatureLag:
+    """One chain→receive draw per signature, shared by every inner event.
+
+    The map is cleared when the slot changes. Backfill files are in block
+    order, so a signature is not split across slots. A missing signature
+    draws on its own and is not reused.
+    """
+
+    def __init__(self) -> None:
+        self._slot: Any = object()
+        self._lags: dict[str, int] = {}
+
+    def get(self, row: dict[str, Any], draw: Callable[[], int]) -> int:
+        sig = row.get("signature")
+        if not isinstance(sig, str) or not sig or sig == "UNK":
+            return int(draw())
+        slot = row.get("slot")
+        if slot != self._slot:
+            self._slot = slot
+            self._lags = {}
+        hit = self._lags.get(sig)
+        if hit is None:
+            hit = int(draw())
+            self._lags[sig] = hit
+        return hit
+
+
 def _stamp_backfill_recv(
     row: dict[str, Any],
     reservoir: _LagReservoir,
     rng: random.Random,
     hop_ms: int = 0,
+    lags: SignatureLag | None = None,
 ) -> dict[str, Any] | None:
-    """Copy with t_recv_ms = block_time + sampled live lag + optional hop.
+    """Copy with t_recv_ms = block_time + one live lag per signature + optional hop.
 
     None if the row cannot be placed. Block time is not written into t_recv_ms.
+    Without ``lags``, each call draws on its own (tests of a single row).
     """
     if not _is_backfill(row):
         return row
     block = _block_time_s(row)
     if block is None:
         return None
+    if lags is None:
+        lag = reservoir.draw(rng)
+    else:
+        lag = lags.get(row, lambda: reservoir.draw(rng))
     stamped = dict(row)
-    stamped["t_recv_ms"] = synthetic_recv_ms(block, reservoir.draw(rng), hop_ms)
+    stamped["t_recv_ms"] = synthetic_recv_ms(block, lag, hop_ms)
     stamped["recv_synthetic"] = True
     return stamped
 
@@ -545,6 +579,7 @@ def load_graduated_books(
             first_swap[mint] = t_raw
 
     def _scan_lags_and_migrations(paths: Sequence[Path], *, backfill: bool, rng: random.Random) -> None:
+        lags = SignatureLag() if backfill else None
         for _path, row in _iter_jsonl(_refresh_trade_paths(paths)):
             stats.lines += 1
             if stats.lines % 500_000 == 0:
@@ -554,7 +589,7 @@ def load_graduated_books(
                 )
             if backfill:
                 stats.backfill_lines += 1
-                stamped = _stamp_backfill_recv(row, reservoir, rng, hop_ms)
+                stamped = _stamp_backfill_recv(row, reservoir, rng, hop_ms, lags)
                 if stamped is None:
                     stats.bad_backfill_clock += 1
                     continue
@@ -606,13 +641,14 @@ def load_graduated_books(
         stats.kept += 1
 
     def _scan_keep(paths: Sequence[Path], *, backfill: bool) -> None:
+        lags = SignatureLag() if backfill else None
         n = 0
         for _path, row in _iter_jsonl(_refresh_trade_paths(paths)):
             n += 1
             if n % 500_000 == 0:
                 print(f"pass2 lines={n} kept={stats.kept}", file=sys.stderr)
             if backfill:
-                stamped = _stamp_backfill_recv(row, reservoir, draw, hop_ms)
+                stamped = _stamp_backfill_recv(row, reservoir, draw, hop_ms, lags)
                 if stamped is None:
                     continue
                 _keep(stamped)
@@ -637,12 +673,24 @@ def load_graduated_books(
                 initial_buy_ui=None,
                 sol_amount=None,
             )
-        flow = buckets[mint]
-        flow.sort(key=lambda p: (p.t_recv_ms, p.slot, p.event_index, p.trader or "", p.side))
+        order = TxOrder()
+        flow = [order.stamp(pr) for pr in buckets[mint]]
+        flow.sort(key=lambda p: (p.t_recv_ms, p.slot, p.tx_index, p.event_index, p.trader or "", p.side))
         deduped = []
         prev = None
         for pr in flow:
-            key = (pr.t_recv_ms, pr.slot, pr.event_index, pr.venue, pr.trader, pr.side, pr.sol_lamports, pr.token_raw)
+            key = (
+                pr.t_recv_ms,
+                pr.slot,
+                pr.tx_index,
+                pr.event_index,
+                pr.signature,
+                pr.venue,
+                pr.trader,
+                pr.side,
+                pr.sol_lamports,
+                pr.token_raw,
+            )
             if key == prev:
                 continue
             prev = key

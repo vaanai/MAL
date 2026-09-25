@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import tempfile
 import unittest
 from pathlib import Path
@@ -120,6 +121,35 @@ class ReceiveClockTests(unittest.TestCase):
         self.assertEqual(books["MintA"].flow[0].t_recv_ms, BLOCK * 1000 + 1_400 + HOP)
         self.assertEqual(list(getattr(stats, "chain_lags_ms", [])), [])
         self.assertEqual(draw.stamped, 1)
+
+    def test_one_draw_per_signature(self) -> None:
+        lags = list(range(1000))
+        draw = LagDraw(lags, HOP, seed=0)
+        probe = random.Random(0)
+        first = lags[probe.randrange(len(lags))]
+        second = lags[probe.randrange(len(lags))]
+        first_buy = draw(_trade(signature="sigA", event_index=0))
+        second_buy = draw(_trade(signature="sigA", event_index=1))
+        other = draw(_trade(signature="sigB", event_index=0))
+        assert first_buy is not None and second_buy is not None and other is not None
+        self.assertEqual(first_buy["t_recv_ms"], BLOCK * 1000 + first + HOP)
+        self.assertEqual(second_buy["t_recv_ms"], first_buy["t_recv_ms"])
+        self.assertEqual(other["t_recv_ms"], BLOCK * 1000 + second + HOP)
+        self.assertNotEqual(first_buy["t_recv_ms"], other["t_recv_ms"])
+        self.assertEqual(draw.stamped, 3)
+
+    def test_missing_signature_draws_per_row(self) -> None:
+        lags = list(range(1000))
+        draw = LagDraw(lags, HOP, seed=1)
+        probe = random.Random(1)
+        first = lags[probe.randrange(len(lags))]
+        second = lags[probe.randrange(len(lags))]
+        a = draw(_trade(signature=None, event_index=0))
+        b = draw(_trade(signature="UNK", event_index=1))
+        assert a is not None and b is not None
+        self.assertEqual(a["t_recv_ms"], BLOCK * 1000 + first + HOP)
+        self.assertEqual(b["t_recv_ms"], BLOCK * 1000 + second + HOP)
+        self.assertNotEqual(a["t_recv_ms"], b["t_recv_ms"])
 
 
 class SealedDayTests(unittest.TestCase):

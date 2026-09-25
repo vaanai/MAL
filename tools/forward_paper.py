@@ -66,6 +66,7 @@ from tools.paper_curve_math import (
 from tools.paper_price_path import (
     CreateSignal,
     MintPath,
+    TxOrder,
     create_from_observe_row,
     load_creates,
     open_text,
@@ -644,6 +645,7 @@ class ForwardEngine:
         self.record_packets = record_packets
         self.retain_rows = retain_rows
         self.logs = logs or {}
+        self._tx_order = TxOrder()
         self.wallets = WalletState()
         self.graph = None
         self.graph_dir: Path | None = None
@@ -708,6 +710,7 @@ class ForwardEngine:
         self._flush_early(create.mint)
 
     def push_print(self, mint: str, pr: FlowPrint, event_ts: int | None = None) -> None:
+        pr = self._tx_order.stamp(pr)
         self._push(pr.t_recv_ms, 0, ("print", mint, pr, event_ts))
 
     def push_attention(self, row: dict[str, Any]) -> None:
@@ -813,7 +816,7 @@ class ForwardEngine:
                 self._baseline(create.mint, t_ms)
 
     def _print_sort_key(self, mint: str, pr: FlowPrint) -> tuple[Any, ...]:
-        return (self.mint_order.get(mint, 10**9), pr.slot, pr.event_index, pr.trader or "", pr.side)
+        return (self.mint_order.get(mint, 10**9), pr.slot, pr.tx_index, pr.event_index, pr.trader or "", pr.side)
 
     def _flush_early(self, mint: str) -> None:
         buffered = self.early.pop(mint, [])
@@ -840,13 +843,13 @@ class ForwardEngine:
 
     def _insert_print(self, book: MintBook, pr: FlowPrint) -> None:
         flow = book.flow
-        key = (pr.t_recv_ms, pr.slot, pr.event_index, pr.trader or "", pr.side)
+        key = (pr.t_recv_ms, pr.slot, pr.tx_index, pr.event_index, pr.trader or "", pr.side)
         if not flow:
             book.flow.append(pr)
             book.path.prints.append(pr.to_tape())
             return
         last = flow[-1]
-        last_key = (last.t_recv_ms, last.slot, last.event_index, last.trader or "", last.side)
+        last_key = (last.t_recv_ms, last.slot, last.tx_index, last.event_index, last.trader or "", last.side)
         if key >= last_key:
             book.flow.append(pr)
             book.path.prints.append(pr.to_tape())
@@ -855,7 +858,7 @@ class ForwardEngine:
         while lo < hi:
             mid = (lo + hi) // 2
             cur = flow[mid]
-            cur_key = (cur.t_recv_ms, cur.slot, cur.event_index, cur.trader or "", cur.side)
+            cur_key = (cur.t_recv_ms, cur.slot, cur.tx_index, cur.event_index, cur.trader or "", cur.side)
             if cur_key < key:
                 lo = mid + 1
             else:

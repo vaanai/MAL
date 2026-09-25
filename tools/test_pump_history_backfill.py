@@ -222,6 +222,7 @@ class TapeSchemaTests(unittest.TestCase):
         out = rows_from_block(block, {})
         self.assertEqual(len(out["trades"]), 1)
         self.assertEqual(out["trades"][0]["signature"], SIG)
+        self.assertEqual(out["trades"][0]["tx_index"], 0)
         self.assertIsNone(out["trades"][0]["t_recv_ms"])
         pending = records_from_logs(
             [_line("pumpswap_sell_event.b64")],
