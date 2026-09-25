@@ -15,6 +15,8 @@ data/observe/_exp005_*
 data/observe/_exp006_*
 data/observe/_exp007_*
 data/observe/_exp007b_*
+data/observe/_wallet_leaderboard_*
+data/observe/_wallet_leaderboard/
 data/observe/paper-*.jsonl
 data/observe/sealed/
 
