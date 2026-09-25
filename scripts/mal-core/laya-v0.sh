@@ -36,16 +36,25 @@ fi
 
 cd "${SRC}"
 if command -v ionice >/dev/null 2>&1; then
-  exec nice -n 19 ionice -c 3 "${PY}" -m tools.laya_v0 \
+  nice -n 19 ionice -c 3 "${PY}" -m tools.laya_v0 \
+    --tape-dir "${TAPE}" \
+    --creates-dir "${CREATES}" \
+    --output-dir "${OUT}" \
+    "${GRAPH_ARGS[@]}" \
+    "${LAT_ARGS[@]}"
+else
+  nice -n 19 "${PY}" -m tools.laya_v0 \
     --tape-dir "${TAPE}" \
     --creates-dir "${CREATES}" \
     --output-dir "${OUT}" \
     "${GRAPH_ARGS[@]}" \
     "${LAT_ARGS[@]}"
 fi
-exec nice -n 19 "${PY}" -m tools.laya_v0 \
-  --tape-dir "${TAPE}" \
-  --creates-dir "${CREATES}" \
-  --output-dir "${OUT}" \
-  "${GRAPH_ARGS[@]}" \
-  "${LAT_ARGS[@]}"
+
+# After the 04:15 LAYA fit. Writes the mig+15 booster the forward book scores.
+SWING_SH="${MAL_GRADUATED_SWING_SH:-/var/lib/mal/eng/graduated-swing-train.sh}"
+if [[ -x "${SWING_SH}" ]]; then
+  "${SWING_SH}"
+else
+  echo "laya-v0: skip mig15 train, missing ${SWING_SH}" >&2
+fi

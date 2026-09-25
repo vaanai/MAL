@@ -40,6 +40,7 @@ from tools.laya_v0 import (
     DecisionRow,
     LadderRule,
     MintBook,
+    available_backend,
     book_stats,
     causal_take_indices,
     chain_lag_ms,
@@ -133,6 +134,11 @@ SWING_LADDERS: tuple[LadderRule, ...] = (
 ALL_RULE_IDS: tuple[str, ...] = tuple(rule.rule_id for rule in SWING_EXITS) + tuple(
     rule.rule_id for rule in SWING_LADDERS
 )
+
+# Frozen forward book mig15_top20_tp50_sl30. The service loads this file by name.
+DEPLOY_POINT = "mig_15"
+DEPLOY_RULE_ID = "tp50_sl30"
+DEPLOY_MODEL_NAME = "mig15_model.txt"
 
 SWING_FEATURES: tuple[str, ...] = (
     "f_pm_n_buy",
@@ -524,7 +530,7 @@ def load_graduated_books(
             first_swap[mint] = t_raw
 
     def _scan_lags_and_migrations(paths: Sequence[Path], *, backfill: bool, rng: random.Random) -> None:
-        for _path, row in _iter_jsonl(paths):
+        for _path, row in _iter_jsonl(_refresh_trade_paths(paths)):
             stats.lines += 1
             if stats.lines % 500_000 == 0:
                 print(
@@ -586,7 +592,7 @@ def load_graduated_books(
 
     def _scan_keep(paths: Sequence[Path], *, backfill: bool) -> None:
         n = 0
-        for _path, row in _iter_jsonl(paths):
+        for _path, row in _iter_jsonl(_refresh_trade_paths(paths)):
             n += 1
             if n % 500_000 == 0:
                 print(f"pass2 lines={n} kept={stats.kept}", file=sys.stderr)
@@ -973,8 +979,12 @@ def label_rows(
     size_lamports: int,
     slippage_cap: float,
     latency_ms: int = ENTRY_LATENCY_MS,
+    rules: Sequence[ExitRule] | None = None,
+    ladders: Sequence[LadderRule] | None = None,
 ) -> None:
     """Honest fills. A non-PumpSwap book is a miss: this lane does not buy the curve."""
+    exit_rules = SWING_EXITS if rules is None else tuple(rules)
+    ladder_rules = SWING_LADDERS if ladders is None else tuple(ladders)
     for index, row in enumerate(rows):
         if index and index % 2000 == 0:
             print(f"labeled={index}/{len(rows)}", file=sys.stderr)
@@ -998,7 +1008,7 @@ def label_rows(
             t_entry_ms=t_entry,
             entry_slot=slot,
         )
-        for rule in SWING_EXITS:
+        for rule in exit_rules:
             part = simulate_exit(
                 book.path,
                 entry,
@@ -1015,7 +1025,7 @@ def label_rows(
                 row.pnl_by_rule[rule.rule_id] = pnl
             else:
                 row.pnl_by_rule[rule.rule_id] = None
-        for ladder in SWING_LADDERS:
+        for ladder in ladder_rules:
             part = simulate_ladder(
                 book.path,
                 entry,
@@ -1625,6 +1635,128 @@ def _discover_creates(directory: Path | None) -> list[Path]:
     )
 
 
+def _deploy_exit_rule() -> ExitRule:
+    for rule in SWING_EXITS:
+        if rule.rule_id == DEPLOY_RULE_ID:
+            return rule
+    raise RuntimeError(f"missing deploy rule {DEPLOY_RULE_ID}")
+
+
+def deploy_training_xy(rows: Sequence[DecisionRow]) -> tuple[list[list[float]], list[int]]:
+    """mig+15 rows whose tp50/sl30 fill has a pnl. Label is pnl > 0, same as the study."""
+    xs: list[list[float]] = []
+    ys: list[int] = []
+    for row in rows:
+        if row.trigger != DEPLOY_POINT:
+            continue
+        pnl = row.pnl_by_rule.get(DEPLOY_RULE_ID)
+        if not isinstance(pnl, int):
+            continue
+        xs.append(vector(row.features, SWING_FEATURES))
+        ys.append(1 if pnl > 0 else 0)
+    return xs, ys
+
+
+def write_deploy_model(model: Any, output_dir: Path, meta: dict[str, Any]) -> Path:
+    """Write the LightGBM text the forward service reloads, then the sidecar.
+
+    The booster is staged and renamed so a reader never opens a partial file.
+    """
+    if getattr(model, "backend", None) != "lightgbm":
+        raise SystemExit("mig15 deploy model must be a lightgbm text booster")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    staging = output_dir / ".mig15_model.staging"
+    written = model.save(staging)
+    src = output_dir / written
+    dest = output_dir / DEPLOY_MODEL_NAME
+    src.replace(dest)
+    blob = dict(meta)
+    blob["model_file"] = DEPLOY_MODEL_NAME
+    blob["point"] = DEPLOY_POINT
+    blob["rule_id"] = DEPLOY_RULE_ID
+    blob["features"] = list(SWING_FEATURES)
+    tmp_meta = output_dir / ".mig15_model.json.tmp"
+    tmp_meta.write_text(json.dumps(_json_safe(blob), indent=2) + "\n", encoding="utf-8")
+    tmp_meta.replace(output_dir / "mig15_model.json")
+    return dest
+
+
+def train_deploy(
+    *,
+    live_tape: Sequence[Path],
+    backfill_tape: Sequence[Path],
+    observe_creates: Sequence[Path],
+    backfill_creates: Sequence[Path],
+    attention_dir: Path | None,
+    graph_dir: Path | None,
+    output_dir: Path,
+    backend: str | None,
+    window_start_ms: int,
+) -> dict[str, Any]:
+    """Fit the frozen mig+15 / tp50_sl30 booster and write mig15_model.txt."""
+    out_text = str(output_dir)
+    if "/sealed/trades" in out_text:
+        raise SystemExit("refusing to write into the trade tape directory")
+    which = available_backend(backend or "lightgbm")
+    if which != "lightgbm":
+        raise SystemExit("mig15 deploy model requires lightgbm")
+    creates = load_create_map(observe_creates, backfill_creates, lag_ms=ENTRY_LATENCY_MS)
+    print(f"creates={len(creates)}", file=sys.stderr)
+    books, migration, _stats, _reservoir = load_graduated_books(
+        live_tape,
+        backfill_tape,
+        creates,
+        window_start_ms=window_start_ms,
+    )
+    tape_end = 0
+    for book in books.values():
+        if book.flow:
+            tape_end = max(tape_end, book.flow[-1].t_recv_ms)
+    attention = load_attention(attention_dir) if attention_dir is not None else []
+    graph = FundingGraph.load(graph_dir) if graph_dir is not None else None
+    rows, _quotes = build_rows(books, migration, attention, tape_end_ms=tape_end, graph=graph)
+    mig_rows = [row for row in rows if row.trigger == DEPLOY_POINT]
+    print(
+        f"mig15_decisions={len(mig_rows)} tape_end={_iso(tape_end) if tape_end else None}",
+        file=sys.stderr,
+    )
+    label_rows(
+        books,
+        mig_rows,
+        tape_end_ms=tape_end,
+        size_lamports=SIZE_LAMPORTS,
+        slippage_cap=DEFAULT_SLIPPAGE_CAP,
+        rules=(_deploy_exit_rule(),),
+        ladders=(),
+    )
+    xs, ys = deploy_training_xy(mig_rows)
+    print(f"mig15_labeled={len(ys)} positives={sum(ys)}", file=sys.stderr)
+    model = fit_booster(xs, ys, SWING_FEATURES, backend="lightgbm")
+    dest = output_dir / DEPLOY_MODEL_NAME
+    meta: dict[str, Any] = {
+        "schema": "mig15_model_v1",
+        "point": DEPLOY_POINT,
+        "rule_id": DEPLOY_RULE_ID,
+        "size_lamports": SIZE_LAMPORTS,
+        "max_hold_ms": MAX_HOLD_MS,
+        "labeled": len(ys),
+        "positives": int(sum(ys)),
+        "tape_end": _iso(tape_end) if tape_end else None,
+        "trained_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    if model is None:
+        meta["status"] = "kept_previous" if dest.is_file() else "no_model"
+        print(f"deploy_status={meta['status']} labeled={len(ys)}", file=sys.stderr)
+        if dest.is_file():
+            return meta
+        raise SystemExit("mig15 model did not fit and no previous booster exists")
+    path = write_deploy_model(model, output_dir, meta)
+    meta["status"] = "wrote"
+    meta["path"] = str(path)
+    print(f"wrote {path} labeled={len(ys)} positives={sum(ys)}", file=sys.stderr)
+    return meta
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Paper PumpSwap swing book after migration")
     parser.add_argument("--tape-dir", type=Path, required=True)
@@ -1636,6 +1768,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--folds", type=int, default=4)
     parser.add_argument("--backend", choices=("lightgbm", "sklearn"))
     parser.add_argument("--window-start-ms", type=int, default=WINDOW_START_MS)
+    parser.add_argument(
+        "--deploy",
+        action="store_true",
+        help="Train the mig+15 tp50/sl30 booster and write mig15_model.txt",
+    )
     args = parser.parse_args(argv)
     live = _trade_paths(args.tape_dir)
     backfill = _trade_paths(args.backfill_dir / "trades") if (args.backfill_dir / "trades").is_dir() else _trade_paths(args.backfill_dir)
@@ -1643,6 +1780,19 @@ def main(argv: list[str] | None = None) -> int:
     bf_creates = _discover_creates(args.backfill_dir / "creates")
     if not live and not backfill:
         raise SystemExit("no trade files")
+    if args.deploy:
+        train_deploy(
+            live_tape=live,
+            backfill_tape=backfill,
+            observe_creates=creates,
+            backfill_creates=bf_creates,
+            attention_dir=args.attention_dir,
+            graph_dir=args.graph_dir,
+            output_dir=args.output_dir,
+            backend=args.backend,
+            window_start_ms=args.window_start_ms,
+        )
+        return 0
     run(
         live_tape=live,
         backfill_tape=backfill,
