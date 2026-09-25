@@ -78,6 +78,14 @@ python -m observe.trade_tape
 
 Hourly `trades-YYYY-MM-DDTHH.jsonl`, zstd-sealed to `.jsonl.zst` when the hour closes (gitignored under `data/observe/`). Bonding rows keep the v1 fields. PumpSwap rows are v2: mint, trader, side, lamports, token raw, reserves, price, pool, slot, signature, `t_recv_ms`, `event_ts`, `quote_mint`, and `quote_is_wsol`. A CreateV2 trade with zero SOL is kept with `zero_sol: true` and a null price. The process holds new writes if the filesystem drops under 20% free, and only deletes `trades-*` / `pool-mints-*` in its own output directory. Default source is public `logsSubscribe` (`--source public_rpc_logs`). `--source helius_tx` uses the same decoder on Helius `transactionSubscribe` and exits unless `HELIUS_API_KEY` is already set. Host unit: `scripts/mal-core/mal-trade-tape.service` (`Restart=always`).
 
+### Attention tape (paper, $0, what humans see)
+
+```bash
+python -m observe.attention
+```
+
+Hourly `attention-YYYY-MM-DDTHH.jsonl` under `--output-dir` (host: `/var/lib/mal/attention`). One row per `(kind, mint)` first-seen: DexScreener paid profiles / boosts / ads (plus `orders/v1` paid-at when present), pump.fun currently-live livestreams, the graduating-board rank-0 stand-in for the retired king-of-the-hill endpoint, featured/great-coins, and GeckoTerminal Solana trending pools. No API keys. Polite intervals (15–60s) with 429 backoff. Does not write to the trade tape. Host unit: `scripts/mal-core/mal-attention.service`. The first poll of each source is the startup snapshot (`poller_start.json`, `startup_snapshot.jsonl`); later first-seens are genuine arrivals. Daily job `mal-attention-daily.timer` (04:45 UTC, Nice=19) re-scores genuine arrivals through the PR #76 simulator with LAYA promotion stats and writes `/var/lib/mal/paper/attention/laya_join.jsonl` (join by `mint` where `t_ms` ≤ decision time).
+
 Schema: [ARTIFACTS/OBSERVE-JSONL-SCHEMA.md](ARTIFACTS/OBSERVE-JSONL-SCHEMA.md). Proposed hot-packet v0 (paper contract, not observe-wiring): [ARTIFACTS/HOT-PACKET-V0.md](ARTIFACTS/HOT-PACKET-V0.md). Proposed paper evaluate→runners stamp on that packet only: [ARTIFACTS/PAPER-EVALUATE-HOT-PACKET-V0.md](ARTIFACTS/PAPER-EVALUATE-HOT-PACKET-V0.md). Capture is local `python -m observe` (population). Locked Proof sample: [EXP/EXP-001-regime-stage-mislabel.md](EXP/EXP-001-regime-stage-mislabel.md) (`python -m tools.exp001_mislabel`). Paper book: [EXP/EXP-002-evaluate-runner-v0.md](EXP/EXP-002-evaluate-runner-v0.md). Marks: [EXP/EXP-003-post-create-marks.md](EXP/EXP-003-post-create-marks.md) — RPC backfill `python -m tools.exp003_rpc_backfill`, coverage `python -m tools.exp003_marks`, then EXP-002 `--marks` (PowerShell runbook in EXP-003 §10).
 
 ### EXP-002b paper runner (rules v1, offline)
