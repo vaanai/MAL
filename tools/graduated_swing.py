@@ -8,7 +8,8 @@ Promotion is tools.laya_v0.book_stats.
 
 Backfill rows (source=backfill, null t_recv_ms) get a synthetic receive
 time: block_time plus a draw from the live tape's chain→receive lags.
-Block time alone is not a receive time.
+Block time alone is not a receive time. Callers may add the recv→decision
+hop on that same clock; the default draw does not.
 """
 
 from __future__ import annotations
@@ -311,9 +312,14 @@ def planning_fee_table() -> dict[str, Any]:
     return {"config": fee_schedule_config(), "round_trips": rows}
 
 
-def synthetic_recv_ms(block_time_s: int, lag_ms: int) -> int:
-    """block_time is unix seconds. The lag is a live chain→receive draw, in ms."""
-    return int(block_time_s) * 1000 + int(lag_ms)
+def synthetic_recv_ms(block_time_s: int, lag_ms: int, hop_ms: int = 0) -> int:
+    """block_time is unix seconds. Lag is a live chain→receive draw, in ms.
+
+    A negative lag is floored at 0 before the optional recv→decision hop is
+    added, so the stamp is not earlier than block time. hop_ms 0 is the
+    chain draw alone.
+    """
+    return int(block_time_s) * 1000 + max(0, int(lag_ms)) + max(0, int(hop_ms))
 
 
 class _LagReservoir:
@@ -445,15 +451,23 @@ def _trade_paths(directory: Path) -> list[Path]:
     return sorted(found)
 
 
-def _stamp_backfill_recv(row: dict[str, Any], reservoir: _LagReservoir, rng: random.Random) -> dict[str, Any] | None:
-    """Copy with t_recv_ms = block_time + sampled live lag. None if the row cannot be placed."""
+def _stamp_backfill_recv(
+    row: dict[str, Any],
+    reservoir: _LagReservoir,
+    rng: random.Random,
+    hop_ms: int = 0,
+) -> dict[str, Any] | None:
+    """Copy with t_recv_ms = block_time + sampled live lag + optional hop.
+
+    None if the row cannot be placed. Block time is not written into t_recv_ms.
+    """
     if not _is_backfill(row):
         return row
     block = _block_time_s(row)
     if block is None:
         return None
     stamped = dict(row)
-    stamped["t_recv_ms"] = synthetic_recv_ms(block, reservoir.draw(rng))
+    stamped["t_recv_ms"] = synthetic_recv_ms(block, reservoir.draw(rng), hop_ms)
     stamped["recv_synthetic"] = True
     return stamped
 
@@ -492,6 +506,7 @@ def load_graduated_books(
     creates: dict[str, CreateSignal],
     *,
     window_start_ms: int,
+    hop_ms: int = 0,
 ) -> tuple[dict[str, MintBook], dict[str, int], ScanStats, _LagReservoir]:
     """Two passes. Live receive times win on a duplicate signature.
 
@@ -539,7 +554,7 @@ def load_graduated_books(
                 )
             if backfill:
                 stats.backfill_lines += 1
-                stamped = _stamp_backfill_recv(row, reservoir, rng)
+                stamped = _stamp_backfill_recv(row, reservoir, rng, hop_ms)
                 if stamped is None:
                     stats.bad_backfill_clock += 1
                     continue
@@ -597,7 +612,7 @@ def load_graduated_books(
             if n % 500_000 == 0:
                 print(f"pass2 lines={n} kept={stats.kept}", file=sys.stderr)
             if backfill:
-                stamped = _stamp_backfill_recv(row, reservoir, draw)
+                stamped = _stamp_backfill_recv(row, reservoir, draw, hop_ms)
                 if stamped is None:
                     continue
                 _keep(stamped)
@@ -646,7 +661,7 @@ def load_graduated_books(
     return books, kept_migration, stats, reservoir
 
 
-def create_from_backfill_row(row: dict[str, Any], *, lag_ms: int) -> CreateSignal | None:
+def create_from_backfill_row(row: dict[str, Any], *, lag_ms: int, hop_ms: int = 0) -> CreateSignal | None:
     if row.get("type") != "create":
         return None
     mint = row.get("mint")
@@ -672,7 +687,7 @@ def create_from_backfill_row(row: dict[str, Any], *, lag_ms: int) -> CreateSigna
         v_token = None
     return CreateSignal(
         mint=mint,
-        t_signal_ms=synthetic_recv_ms(block, lag_ms),
+        t_signal_ms=synthetic_recv_ms(block, lag_ms, hop_ms),
         creator=creator,
         signature=row.get("signature") if isinstance(row.get("signature"), str) else None,
         v_sol=v_sol,
