@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily LAYA v0 paper retrain
+
+[Timer]
+OnCalendar=*-*-* 04:15:00 UTC
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target

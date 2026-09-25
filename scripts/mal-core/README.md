@@ -14,6 +14,8 @@ Host bootstrap helpers. **No secrets in this tree.**
 | [mal-trade-tape.service](mal-trade-tape.service) | host (systemd --user) | Public RPC logsSubscribe tape (pump.fun + PumpSwap) |
 | [wallet-leaderboard.sh](wallet-leaderboard.sh) | host (one-shot, `nice -n 19`) | Tape L2 FIFO wallet board + follow-signal JSONL. Does **not** touch the recorder. |
 | [paper-signal-scan.sh](paper-signal-scan.sh) | host (one-shot, `nice -n 19`) | Follow / crowd / curve / clean-launch fill scan on the PR #76 book. Does **not** touch the recorder. |
+| [laya-v0.sh](laya-v0.sh) | host | Daily LAYA v0 retrain into `/var/lib/mal/paper/laya-v0` (nice/ionice, not the recorder) |
+| [mal-laya-v0.timer](mal-laya-v0.timer) | host (systemd --user) | 04:15 UTC paper retrain |
 | [attention.sh](attention.sh) | host | `python -m observe.attention` → `/var/lib/mal/attention` |
 | [mal-attention.service](mal-attention.service) | host (systemd --user) | DexScreener / pump.fun / GeckoTerminal attention first-seen |
 | [attention-daily.sh](attention-daily.sh) | host | genuine-arrival rescore + LAYA join JSONL (Nice=19) |
