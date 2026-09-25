@@ -35,7 +35,7 @@ from tools.paper_attention_promote import (
 )
 from tools.paper_attention_score import (
     _IMPORT_ERROR,
-    bind_signal,
+    bind_attention_signal,
     earliest_by_kind,
     lag_rows,
     load_attention_rows,
@@ -234,7 +234,7 @@ def format_daily_md(board: dict[str, Any]) -> str:
         "",
         f"Promotion: {board.get('promotion_rule')}",
         "",
-        "| book | signals | n | median | mean | mean 90% CI | total | ex best | days+ | min n | promote | blockers |",
+        "| book | signals | n | median | mean | mean 90% CI | total | ex top 3 | days+ | min n | promote | blockers |",
         "| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for name, book in (board.get("books") or {}).items():
@@ -249,7 +249,7 @@ def format_daily_md(board: dict[str, Any]) -> str:
                 mean=_fmt(promo.get("mean_sol", stats.get("mean_sol"))),
                 ci=_fmt_ci(promo.get("mean_ci90_sol")),
                 total=_fmt(promo.get("total_sol", stats.get("total_sol"))),
-                ex=_fmt(promo.get("total_ex_best_sol")),
+                ex=_fmt(promo.get("total_ex_top3_sol")),
                 days=f"{promo.get('days_positive', '')}/{promo.get('n_days', '')}",
                 minn=promo.get("min_n", ""),
                 prom="yes" if promo.get("promote") else ("watch" if promo.get("watch") else "no"),
@@ -330,9 +330,9 @@ def run_daily(
         "min_n": min_n,
         "caveats": [
             "Genuine = t_first_ms after poller start and (kind, mint) not in the startup snapshot.",
-            "Buy clock is our first-seen + 1s, not the event's native timestamp (that would look ahead).",
-            "Lag is first-seen minus Dex paymentTimestamp / stream start / KOTH stamp / pool_created_at.",
-            "LAYA join uses t_ms = t_first_ms; feature builder must keep t_ms <= decision_t_ms.",
+            "Buy clock is max(our first-seen, first tape print) + 1s, never the event's native timestamp.",
+            "Lag is first-seen minus Dex paymentTimestamp / stream start / KOTH stamp / pool_created_at (feature only).",
+            "LAYA join uses t_ms = t_first_ms only; feature builder must keep t_ms <= decision_t_ms. event_t_ms is not a join key.",
             "Promotion copies the project-wide rule (bootstrap CI, drop-best, majority days, min n=100). n>=30 books are watch, not promote.",
             "Hourly tapes only (daily leftover zst skipped). Rugs kept. Real fees. Same sim as PR #76.",
         ],
@@ -388,7 +388,7 @@ def run_daily(
             path = paths.get(mint)
             if path is None:
                 continue
-            bound.append(bind_signal(path, int(row["t_first_ms"])))
+            bound.append(bind_attention_signal(path, int(row["t_first_ms"])))
             used += 1
         labels = simulate_book(
             bound,

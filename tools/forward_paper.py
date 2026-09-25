@@ -43,6 +43,7 @@ from tools.laya_v0 import (
     _price_at,
     build_feature_rows,
     flow_from_row,
+    RankWindow,
     packet_at,
     simulate_ladder,
     vector,
@@ -342,30 +343,8 @@ class _Track:
     curve_crossed: set[int] = field(default_factory=set)
 
 
-class _RankWindow:
-    """Causal top-k. A score is taken when it sits in the top fraction of recent scores at this point.
-
-    The window includes the score just observed. Until it holds at least 1/fraction
-    scores, nothing is taken: a top 1% book needs 100 prior decisions at that clock.
-    """
-
-    def __init__(self, frac: float, cap: int = 500) -> None:
-        self.frac = frac
-        self.cap = cap
-        self.scores: list[float] = []
-
-    def consider(self, score: float) -> str:
-        self.scores.append(score)
-        if len(self.scores) > self.cap:
-            del self.scores[0]
-        need = max(1, math.ceil(1.0 / self.frac))
-        if len(self.scores) < need:
-            return "warmup"
-        k = int(round(self.frac * len(self.scores)))
-        if k < 1:
-            k = 1
-        higher = sum(1 for prior in self.scores if prior > score)
-        return "take" if higher < k else "below"
+# Same object the offline scoreboard walks. Do not keep a second copy.
+_RankWindow = RankWindow
 
 
 @dataclass
@@ -520,6 +499,10 @@ class ForwardEngine:
         self.retain_rows = retain_rows
         self.logs = logs or {}
         self.wallets = WalletState()
+        self.graph = None
+        self.graph_dir: Path | None = None
+        self._graph_checked_s = 0.0
+        self._graph_stamp: tuple[int, int] | None = None
         self.by_creator: dict[str, list[MintBook]] = defaultdict(list)
         self.library: dict[str, MintBook] = {}
         self.tracks: dict[str, _Track] = {}
@@ -787,6 +770,30 @@ class ForwardEngine:
             if run.spec.kind == "baseline":
                 self._enter_or_skip(run, book, t_ms, "create", feats=None)
 
+    def _maybe_reload_graph(self) -> None:
+        """Reload append-only funding rows at most every few seconds."""
+        if self.graph_dir is None:
+            return
+        now = time.monotonic()
+        if self.graph is not None and now - self._graph_checked_s < 5.0:
+            return
+        self._graph_checked_s = now
+        files = sorted(self.graph_dir.glob("funding-*.jsonl"))
+        if not files:
+            stamp = (0, 0)
+        else:
+            try:
+                st = files[-1].stat()
+                stamp = (int(st.st_mtime_ns), int(st.st_size))
+            except OSError:
+                stamp = (0, 0)
+        if stamp == self._graph_stamp:
+            return
+        from tools.funding_graph import FundingGraph
+
+        self.graph = FundingGraph.load(self.graph_dir)
+        self._graph_stamp = stamp
+
     def _on_signal(self, mint: str, t_ms: int, trigger: str) -> None:
         book = self.library.get(mint)
         if book is None:
@@ -796,7 +803,10 @@ class ForwardEngine:
         )
         feats = None
         if want_score or self.record_packets:
-            feats = packet_at(book, t_ms, trigger, self.by_creator, self.wallets)
+            self._maybe_reload_graph()
+            feats = packet_at(
+                book, t_ms, trigger, self.by_creator, self.wallets, graph=self.graph, library=self.library
+            )
             if self.record_packets and self.retain_rows:
                 self.packets.append((mint, t_ms, trigger, dict(feats)))
         for run in self.books:
@@ -821,7 +831,10 @@ class ForwardEngine:
         score = None
         if spec.kind == "laya":
             if feats is None:
-                feats = packet_at(book, t_ms, trigger, self.by_creator, self.wallets)
+                self._maybe_reload_graph()
+                feats = packet_at(
+                    book, t_ms, trigger, self.by_creator, self.wallets, graph=self.graph, library=self.library
+                )
                 if self.record_packets and self.retain_rows:
                     self.packets.append((mint, t_ms, trigger, dict(feats)))
             slot = self.barrier if spec.model_key == "barrier" else self.model
@@ -1611,6 +1624,9 @@ def serve(config_path: Path) -> int:
         slippage_cap=slippage,
         logs={"decisions": logs["decisions"], "positions": logs["positions"]},
     )
+    graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
+    if graph_dir.is_dir():
+        engine.graph_dir = graph_dir
     tail = DirectoryTail(tape_dir, creates_dir, offsets)
     stop = {"flag": False}
 

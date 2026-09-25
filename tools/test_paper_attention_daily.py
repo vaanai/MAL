@@ -90,10 +90,13 @@ class EventTimeTests(unittest.TestCase):
         self.assertIsNotNone(rec)
         assert rec is not None
         self.assertEqual(rec["t_ms"], 1_758_800_000_080)
+        self.assertNotEqual(rec["t_ms"], rec["event_t_ms"])
+        self.assertNotEqual(rec["t_ms"], rec["paid_at_ms"])
         self.assertEqual(rec["event_t_ms"], 1_758_800_000_040)
+        self.assertEqual(rec["paid_at_ms"], 1_758_800_000_040)
         self.assertEqual(rec["lag_ms"], 40)
         self.assertTrue(rec["genuine"])
-        self.assertLessEqual(rec["t_ms"], rec["t_ms"])
+        self.assertGreater(rec["t_ms"], rec["paid_at_ms"])
 
 
 class JoinAndHourlyTests(unittest.TestCase):
@@ -181,17 +184,28 @@ class PromoteTests(unittest.TestCase):
         trades = [BookTrade(mint=f"m{i}", t_ms=1_000 + i, pnl=-1_000) for i in range(29)]
         trades.append(BookTrade(mint="best", t_ms=2_000, pnl=1_000_000))
         stats = book_stats(trades)
-        self.assertIn("drop_best", stats["promote_blockers"])
+        self.assertIn("drop_top3", stats["promote_blockers"])
         self.assertFalse(stats["promote"])
 
-    def test_min_n_positive_book_promotes(self) -> None:
+    def test_min_n_positive_book_on_one_day_does_not_promote(self) -> None:
         trades = [BookTrade(mint=f"m{i}", t_ms=1_758_758_400_000, pnl=100_000) for i in range(MIN_N)]
         stats = book_stats(trades)
         self.assertEqual(stats["n"], 100)
         self.assertTrue(stats["watch"])
         self.assertGreater(stats["mean_ci90_sol"][0], 0)
-        self.assertGreater(stats["total_ex_best_sol"], 0)
+        self.assertGreater(stats["total_ex_top3_sol"], 0)
         self.assertTrue(stats["majority_days_positive"])
+        self.assertIn("min_days", stats["promote_blockers"])
+        self.assertFalse(stats["promote"])
+
+    def test_five_positive_days_can_promote(self) -> None:
+        base = 1_758_758_400_000
+        trades = []
+        for day in range(5):
+            for i in range(20):
+                trades.append(BookTrade(mint=f"d{day}m{i}", t_ms=base + day * 86_400_000 + i, pnl=100_000))
+        stats = book_stats(trades)
+        self.assertEqual(stats["n_days"], 5)
         self.assertEqual(stats["promote_blockers"], [])
         self.assertTrue(stats["promote"])
 

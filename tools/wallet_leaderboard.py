@@ -272,6 +272,10 @@ def parse_trade(row: Mapping[str, Any]) -> Trade | None:
         return None
     if row.get("mint_source") == "unresolved":
         return None
+    venue = row.get("venue") or ""
+    # Same quote rule as the fill simulator: PumpSwap counts only when the flag is true.
+    if str(venue) == "pumpswap" and row.get("quote_is_wsol") is not True:
+        return None
     if row.get("quote_is_wsol") is False:
         return None
     try:

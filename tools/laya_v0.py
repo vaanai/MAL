@@ -48,6 +48,7 @@ from tools.paper_price_path import (
     print_from_trade_row,
     state_as_of,
 )
+from tools.funding_graph import FundingGraph, fill_funding_features
 from tools.paper_tape_scoreboard import (
     EXIT_RULES,
     ExitRule,
@@ -86,16 +87,21 @@ BOOTSTRAP_SEED = 1
 WINSOR_P = 0.01
 QUOTE_WSOL_LIVE_AT = "2026-09-25T08:37:00Z"
 PROMOTION_MIN_N = 100
+PROMOTION_MIN_DAYS = 5
+PROMOTION_DROP_N = 3
 # Exploratory search through the 15:18Z scoreboard is not a holdout.
 # Ranked candidates are fit only on decisions at or before this instant.
 CANDIDATE_FREEZE_AT = "2026-09-25T15:30:00Z"
 CANDIDATE_FREEZE_MS = 1_790_350_200_000
 PROMOTION_RULE = (
     f"at least {PROMOTION_MIN_N} out-of-sample trades, "
+    f"at least {PROMOTION_MIN_DAYS} distinct UTC days with a majority of those days positive, "
     "lower 90% CI bound of mean SOL per trade > 0, "
-    "total SOL still positive after removing the single best trade, "
-    "and a majority of UTC days positive"
+    f"and total SOL still positive after removing the top {PROMOTION_DROP_N} trades"
 )
+LATENCY_DRAW_SEED = 1
+CHAIN_LAG_MIN_MS = -5_000
+CHAIN_LAG_MAX_MS = 120_000
 # Pre-registered after the 8.3h search. fraction 1 is the whole point, not a top slice.
 FROZEN_CANDIDATES = (
     {"id": "buyers_8_top5_ladder_2x", "point": "buyers_8", "fraction": 0.05, "label": "hit_100_30", "pnl_rule": "ladder_2x_t30"},
@@ -172,6 +178,17 @@ FEATURE_NAMES: tuple[str, ...] = (
     "f_trigger_grid",
     "f_create_sol",
     "f_create_mcap_sol",
+    "f_funder_known",
+    "f_funder_cluster_hash",
+    "f_funder_prior_creates",
+    "f_funder_prior_scored",
+    "f_funder_prior_rug_frac",
+    "f_funder_prior_median_peak",
+    "f_creator_funded_by_exchange",
+    "f_creator_fresh_wallet",
+    "f_creator_wallet_age_s",
+    "f_same_funder_early_n",
+    "f_funder_creator_buyer_loop",
 )
 
 EXIT_FEATURE_NAMES: tuple[str, ...] = (
@@ -371,12 +388,30 @@ def _dedupe_sorted(prints: list[FlowPrint]) -> list[FlowPrint]:
     return out
 
 
+def chain_lag_ms(row: dict[str, Any]) -> int | None:
+    """chain→receive, same bounds as the forward paper meter. None if event_ts is missing."""
+    t_raw = row.get("t_recv_ms")
+    raw = row.get("event_ts")
+    if isinstance(t_raw, bool) or not isinstance(t_raw, (int, float)):
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    whole = int(raw)
+    if whole < 1_000_000_000:
+        return None
+    lag = int(t_raw) - whole * 1000
+    if lag < CHAIN_LAG_MIN_MS or lag > CHAIN_LAG_MAX_MS:
+        return None
+    return lag
+
+
 def load_books(
     creates: dict[str, CreateSignal],
     tape_paths: Iterable[Path],
 ) -> tuple[dict[str, MintBook], ScanStats]:
     buckets: dict[str, list[FlowPrint]] = {mint: [] for mint in creates}
     stats = ScanStats()
+    lags: list[int] = []
     for path in tape_paths:
         with open_text(path) as fh:
             for line in fh:
@@ -397,6 +432,9 @@ def load_books(
                 t_raw = row.get("t_recv_ms")
                 if isinstance(t_raw, int):
                     stats.observe_t(t_raw)
+                lag = chain_lag_ms(row)
+                if lag is not None:
+                    lags.append(lag)
                 if row.get("quote_is_wsol") is False:
                     stats.non_wsol += 1
                     continue
@@ -417,6 +455,7 @@ def load_books(
     books: dict[str, MintBook] = {}
     for mint, create in creates.items():
         books[mint] = MintBook(create=create, flow=_dedupe_sorted(buckets[mint]))
+    stats.chain_lags_ms = lags  # type: ignore[attr-defined]
     return books, stats
 
 
@@ -898,7 +937,8 @@ class _Wallet:
             return False
         if self.invested_closed < LEADER_MIN_INVESTED:
             return False
-        positive = [v for v in self.mint_pnl.values() if v > 0]
+        # Open lots are not round-trips. Only mints already closed (no remaining tokens) count.
+        positive = [v for mint, v in self.mint_pnl.items() if v > 0 and mint not in self.pos_tokens]
         if not positive:
             return False
         if max(positive) / sum(positive) > LEADER_MAX_MINT_SHARE:
@@ -1017,15 +1057,26 @@ def packet_at(
     trigger: str,
     by_creator: dict[str, list[MintBook]],
     wallets: WalletState,
+    *,
+    graph: FundingGraph | None = None,
+    library: dict[str, MintBook] | None = None,
 ) -> dict[str, float]:
-    """Full LAYA v0 packet at one decision. Same columns as the offline builder."""
+    """Full LAYA v0 packet at one decision. Same columns as the offline builder.
+
+    Funding columns read the graph only where first_seen_ms <= t_ms.
+    """
     feats = local_features(book, t_ms, trigger)
     feats.update(creator_features(book, t_ms, by_creator))
     wallets.fill_features(book, t_ms, feats)
+    fill_funding_features(book, t_ms, feats, wallets, graph, library)
     return feats
 
 
-def apply_wallet_features(books: dict[str, MintBook], rows: list[DecisionRow]) -> dict[str, int]:
+def apply_wallet_features(
+    books: dict[str, MintBook],
+    rows: list[DecisionRow],
+    graph: FundingGraph | None = None,
+) -> dict[str, int]:
     """Fill bot / veto / leader shares from trades at or before each decision."""
     events: list[tuple[int, int, Any]] = []
     for mint, book in books.items():
@@ -1049,6 +1100,7 @@ def apply_wallet_features(books: dict[str, MintBook], rows: list[DecisionRow]) -
             continue
         row = rows[payload]
         state.fill_features(books[row.mint], row.decision_t_ms, row.features)
+        fill_funding_features(books[row.mint], row.decision_t_ms, row.features, state, graph, books)
     return state.diag()
 
 
@@ -1074,6 +1126,7 @@ def build_feature_rows(
     *,
     tape_end_ms: int,
     offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
+    graph: FundingGraph | None = None,
 ) -> tuple[list[DecisionRow], dict[str, int]]:
     by_creator = index_creators(books)
     buyer_marks = causal_buyer_triggers(books, tape_end_ms=tape_end_ms)
@@ -1098,7 +1151,7 @@ def build_feature_rows(
                     features=feats,
                 )
             )
-    wallet_diag = apply_wallet_features(books, rows)
+    wallet_diag = apply_wallet_features(books, rows, graph)
     return rows, wallet_diag
 
 
@@ -1289,21 +1342,50 @@ def simulate_ladder(
     }
 
 
+def sample_entry_latencies(n: int, lags_ms: Sequence[int], *, seed: int = LATENCY_DRAW_SEED) -> list[int]:
+    """One chain→receive draw per decision. Falls back to the 1s seed when the tape has no event_ts."""
+    if n <= 0:
+        return []
+    if not lags_ms:
+        return [ENTRY_LATENCY_MS] * n
+    rng = random.Random(seed)
+    return [int(lags_ms[rng.randrange(len(lags_ms))]) for _ in range(n)]
+
+
+def latency_percentiles(lags_ms: Sequence[int]) -> dict[str, Any]:
+    if not lags_ms:
+        return {
+            "n": 0,
+            "p50_ms": ENTRY_LATENCY_MS,
+            "p90_ms": ENTRY_LATENCY_MS,
+            "source": "no event_ts on the tape; labels use the 1s seed",
+        }
+    ordered = sorted(int(v) for v in lags_ms)
+    return {
+        "n": len(ordered),
+        "p50_ms": int(round(_pct([float(v) for v in ordered], 0.50))),
+        "p90_ms": int(round(_pct([float(v) for v in ordered], 0.90))),
+        "source": "tape chain→receive (t_recv_ms - event_ts*1000). recv→decision is not on the sealed tape.",
+    }
+
+
 def attach_labels(
     books: dict[str, MintBook],
     rows: list[DecisionRow],
     *,
     tape_end_ms: int,
     latency_ms: int = ENTRY_LATENCY_MS,
+    latency_draws: Sequence[int] | None = None,
     size_lamports: int = DEFAULT_SIZE_LAMPORTS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
     rules: Sequence[ExitRule] = EXIT_RULES,
 ) -> list[ExitTick]:
     """Paper PnL for an entry at decision+latency. Exit ticks carry their own features."""
     ticks: list[ExitTick] = []
-    for row in rows:
+    for index, row in enumerate(rows):
         book = books[row.mint]
-        t_entry = row.decision_t_ms + latency_ms
+        lag = int(latency_draws[index]) if latency_draws is not None else latency_ms
+        t_entry = row.decision_t_ms + lag
         row.entry_t_ms = t_entry
         entry = try_entry(
             book.path,
@@ -1318,7 +1400,7 @@ def attach_labels(
                 book.path,
                 entry,
                 rule,
-                latency_ms=latency_ms,
+                latency_ms=lag,
                 tape_end_ms=tape_end_ms,
                 size_lamports=size_lamports,
             )
@@ -1349,7 +1431,7 @@ def attach_labels(
                 book.path,
                 entry,
                 ladder,
-                latency_ms=latency_ms,
+                latency_ms=lag,
                 tape_end_ms=tape_end_ms,
                 size_lamports=size_lamports,
             )
@@ -1367,7 +1449,7 @@ def attach_labels(
                     book,
                     row,
                     entry=entry,
-                    latency_ms=latency_ms,
+                    latency_ms=lag,
                     tape_end_ms=tape_end_ms,
                     size_lamports=size_lamports,
                 )
@@ -1770,6 +1852,14 @@ def _cluster_bootstrap(trades: Sequence[BookTrade]) -> tuple[list[float] | None,
     return mean_ci, total_ci
 
 
+def _total_ex_top_sol(pnls: Sequence[int], k: int) -> float | None:
+    """Sum after removing the k largest trades. None when there is nothing left."""
+    if len(pnls) <= k:
+        return None
+    dropped = sum(sorted(pnls, reverse=True)[:k])
+    return (sum(pnls) - dropped) / LAMPORTS_PER_SOL
+
+
 def _max_drawdown_lamports(trades: Sequence[BookTrade]) -> int | None:
     """Peak-to-trough of cumulative PnL. Peak starts at 0. Independent fills, not a bankroll."""
     if not trades:
@@ -1796,6 +1886,7 @@ def book_stats(trades: Sequence[BookTrade]) -> dict[str, Any]:
         total_ex_best = None
     else:
         total_ex_best = (sum(pnls) - max(pnls)) / LAMPORTS_PER_SOL
+    total_ex_top = _total_ex_top_sol(pnls, PROMOTION_DROP_N)
     winsor = _winsorized_mean_lamports(pnls)
     by_day: dict[str, list[int]] = defaultdict(list)
     for trade in trades:
@@ -1817,11 +1908,12 @@ def book_stats(trades: Sequence[BookTrade]) -> dict[str, Any]:
     drawdown = _max_drawdown_lamports(trades)
     promote = bool(
         summary["n"] >= PROMOTION_MIN_N
+        and n_days >= PROMOTION_MIN_DAYS
+        and majority
         and mean_ci is not None
         and mean_ci[0] > 0
-        and total_ex_best is not None
-        and total_ex_best > 0
-        and majority
+        and total_ex_top is not None
+        and total_ex_top > 0
     )
     summary.update(
         {
@@ -1829,6 +1921,7 @@ def book_stats(trades: Sequence[BookTrade]) -> dict[str, Any]:
             "total_ci90_sol": total_ci,
             "winsorized_mean_sol": None if winsor is None else winsor / LAMPORTS_PER_SOL,
             "total_ex_best_sol": total_ex_best,
+            "total_ex_top3_sol": total_ex_top,
             "days": days,
             "days_positive": days_positive,
             "n_days": n_days,
@@ -1845,6 +1938,7 @@ def _trades_from_scored(rows: Sequence[Scored]) -> list[BookTrade]:
 
 
 def _topk(indexed: list[tuple[float, int]], frac: float) -> list[int]:
+    """Pool-wide percentile. Not a tradable book: it ranks against later scores."""
     if not indexed or frac <= 0:
         return []
     if frac >= 1:
@@ -1854,6 +1948,41 @@ def _topk(indexed: list[tuple[float, int]], frac: float) -> list[int]:
         k = 1
     ordered = sorted(indexed, key=lambda item: (-item[0], item[1]))
     return [i for _s, i in ordered[:k]]
+
+
+class RankWindow:
+    """Causal top-k. The forward paper service uses this same window.
+
+    A score is taken when it sits in the top fraction of recent scores at this
+    point. The window includes the score just observed. Until it holds at least
+    1/fraction scores, nothing is taken.
+    """
+
+    def __init__(self, frac: float, cap: int = 500) -> None:
+        self.frac = frac
+        self.cap = cap
+        self.scores: list[float] = []
+
+    def consider(self, score: float) -> str:
+        self.scores.append(score)
+        if len(self.scores) > self.cap:
+            del self.scores[0]
+        need = max(1, math.ceil(1.0 / self.frac))
+        if len(self.scores) < need:
+            return "warmup"
+        k = int(round(self.frac * len(self.scores)))
+        if k < 1:
+            k = 1
+        higher = sum(1 for prior in self.scores if prior > score)
+        return "take" if higher < k else "below"
+
+
+def causal_take_indices(scores: Sequence[float], frac: float) -> list[int]:
+    """Indices taken by a fresh RankWindow walked in the given order."""
+    if frac >= 1:
+        return list(range(len(scores)))
+    window = RankWindow(frac)
+    return [i for i, score in enumerate(scores) if window.consider(score) == "take"]
 
 
 @dataclass
@@ -2070,8 +2199,9 @@ def _selection_table(scored: Sequence[Scored]) -> list[dict[str, Any]]:
             for (_fold, grp_point), rows in groups.items():
                 if grp_point != point:
                     continue
-                chosen = _topk([(r.score, i) for i, r in enumerate(rows)], frac)
-                bag.extend(BookTrade(rows[i].mint, rows[i].decision_t_ms, rows[i].pnl) for i in chosen)
+                ordered = sorted(rows, key=lambda r: (r.decision_t_ms, r.mint))
+                chosen = causal_take_indices([r.score for r in ordered], frac)
+                bag.extend(BookTrade(ordered[i].mint, ordered[i].decision_t_ms, ordered[i].pnl) for i in chosen)
             pooled[(point, frac)] = bag
     table = []
     for point in points:
@@ -2137,8 +2267,9 @@ def evaluate_exit(
             exit_t = row.exit_t_by_rule.get(rule_id)
             if pnl_rule is None or exit_t is None:
                 continue
+            row_lag = _decision_latency_ms(row)
             for tick in tick_groups.get((row.mint, row.decision_t_ms), ()):
-                if tick.tick_t_ms + ENTRY_LATENCY_MS >= exit_t or tick.pnl_now is None:
+                if tick.tick_t_ms + row_lag >= exit_t or tick.pnl_now is None:
                     continue
                 xs.append(vector(tick.features, EXIT_FEATURE_NAMES))
                 ys.append(1 if tick.pnl_now > pnl_rule else 0)
@@ -2153,10 +2284,11 @@ def evaluate_exit(
             exit_t = row.exit_t_by_rule.get(rule_id)
             if pnl_rule is None or exit_t is None:
                 continue
+            row_lag = _decision_latency_ms(row)
             usable = [
                 tick
                 for tick in tick_groups.get((row.mint, row.decision_t_ms), ())
-                if tick.tick_t_ms + ENTRY_LATENCY_MS < exit_t and tick.pnl_now is not None
+                if tick.tick_t_ms + row_lag < exit_t and tick.pnl_now is not None
             ]
             if not usable:
                 continue
@@ -2276,8 +2408,9 @@ def score_frozen_candidates(
         elif model is None or not pool:
             chosen = []
         else:
-            probs = model.predict([vector(row.features, FEATURE_NAMES) for row in pool])
-            chosen = [pool[i] for i in _topk(list(zip(probs, range(len(pool)))), fraction)]
+            ordered = sorted(pool, key=lambda row: (row.decision_t_ms, row.mint))
+            probs = model.predict([vector(row.features, FEATURE_NAMES) for row in ordered])
+            chosen = [ordered[i] for i in causal_take_indices(probs, fraction)]
         trades = [
             BookTrade(row.mint, row.decision_t_ms, int(row.pnl_by_rule[pnl_rule]))
             for row in chosen
@@ -2313,22 +2446,107 @@ def score_frozen_candidates(
     }
 
 
+def _decision_latency_ms(row: DecisionRow) -> int:
+    if row.entry_t_ms > row.decision_t_ms:
+        return row.entry_t_ms - row.decision_t_ms
+    return ENTRY_LATENCY_MS
+
+
+def hold_book_at_latency(
+    books: dict[str, MintBook],
+    rows: Sequence[DecisionRow],
+    *,
+    tape_end_ms: int,
+    latency_ms: int,
+    size_lamports: int,
+    slippage_cap: float,
+) -> dict[str, Any]:
+    """hold_30s totals at one fixed entry delay. Does not rewrite the sampled labels."""
+    rule = next(item for item in EXIT_RULES if item.rule_id == "hold_30s")
+    values: list[int] = []
+    for row in rows:
+        book = books[row.mint]
+        entry = try_entry(
+            book.path,
+            t_entry_ms=row.decision_t_ms + latency_ms,
+            size_lamports=size_lamports,
+            slippage_cap=slippage_cap,
+            feats=_ref_feats(row),
+        )
+        part = simulate_exit(
+            book.path,
+            entry,
+            rule,
+            latency_ms=latency_ms,
+            tape_end_ms=tape_end_ms,
+            size_lamports=size_lamports,
+        )
+        pnl = part.get("pnl_lamports")
+        status = str(part["exit_status"])
+        if status in ("realized", "no_exit_liquidity") and isinstance(pnl, int):
+            values.append(pnl)
+    summary = _pnl_summary(values)
+    summary["latency_ms"] = latency_ms
+    return summary
+
+
+def entry_latency_report(
+    books: dict[str, MintBook],
+    rows: Sequence[DecisionRow],
+    lags_ms: Sequence[int],
+    *,
+    tape_end_ms: int,
+    size_lamports: int,
+    slippage_cap: float,
+) -> dict[str, Any]:
+    measured = latency_percentiles(lags_ms)
+    sampled = _pnl_summary(
+        [int(row.pnl_by_rule["hold_30s"]) for row in rows if isinstance(row.pnl_by_rule.get("hold_30s"), int)]
+    )
+    return {
+        "measured": measured,
+        "sampled_hold_30s": sampled,
+        "p50_hold_30s": hold_book_at_latency(
+            books,
+            rows,
+            tape_end_ms=tape_end_ms,
+            latency_ms=int(measured["p50_ms"]),
+            size_lamports=size_lamports,
+            slippage_cap=slippage_cap,
+        ),
+        "p90_hold_30s": hold_book_at_latency(
+            books,
+            rows,
+            tape_end_ms=tape_end_ms,
+            latency_ms=int(measured["p90_ms"]),
+            size_lamports=size_lamports,
+            slippage_cap=slippage_cap,
+        ),
+    }
+
+
 def build_dataset(
     books: dict[str, MintBook],
     *,
     tape_end_ms: int,
     offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
     latency_ms: int = ENTRY_LATENCY_MS,
+    chain_lags_ms: Sequence[int] | None = None,
     size_lamports: int = DEFAULT_SIZE_LAMPORTS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
+    graph: FundingGraph | None = None,
 ) -> tuple[list[DecisionRow], list[ExitTick], dict[str, int]]:
-    rows, wallet_diag = build_feature_rows(books, tape_end_ms=tape_end_ms, offsets_ms=offsets_ms)
+    rows, wallet_diag = build_feature_rows(books, tape_end_ms=tape_end_ms, offsets_ms=offsets_ms, graph=graph)
     print(f"decisions={len(rows)}", file=sys.stderr)
+    draws = None
+    if chain_lags_ms is not None:
+        draws = sample_entry_latencies(len(rows), chain_lags_ms)
     ticks = attach_labels(
         books,
         rows,
         tape_end_ms=tape_end_ms,
         latency_ms=latency_ms,
+        latency_draws=draws,
         size_lamports=size_lamports,
         slippage_cap=slippage_cap,
     )
@@ -2410,7 +2628,7 @@ def format_markdown(board: dict[str, Any]) -> str:
     lines = [
         "# LAYA v0 scoreboard",
         "",
-        f"Schema `{board['schema']}`. Paper only. Entry at decision time + {board['entry_latency_ms']} ms.",
+        f"Schema `{board['schema']}`. Paper only. Entry delay is a draw from the tape's chain→receive lags when event_ts is present, otherwise {board['entry_latency_ms']} ms.",
         "Primary exit rule is chosen on each training fold (highest median realized SOL, rugs included).",
         "Scores in the tables are out of sample. The deploy model is fit on every row and is not those numbers.",
         "",
@@ -2425,6 +2643,25 @@ def format_markdown(board: dict[str, Any]) -> str:
         f"- Backend (deploy): {board['entry']['deploy']['backend']}",
         "",
     ]
+    latency = board.get("entry_latency") or {}
+    measured = latency.get("measured") or {}
+    if measured:
+        lines.extend(
+            [
+                "## Entry latency",
+                "",
+                f"Measured chain→receive n={measured.get('n')}, p50 {measured.get('p50_ms')} ms, p90 {measured.get('p90_ms')} ms.",
+                str(measured.get("source") or ""),
+                "Training labels sample that distribution (seed 1). The rows below are hold_30s buy-all at the sample, and again at a flat p50 and p90, so the delay can be read without refitting.",
+                "",
+                "| book | n | median SOL | mean SOL | total SOL |",
+                "| --- | ---: | ---: | ---: | ---: |",
+                _md_latency_row("sampled", latency.get("sampled_hold_30s") or {}),
+                _md_latency_row("p50", latency.get("p50_hold_30s") or {}),
+                _md_latency_row("p90", latency.get("p90_hold_30s") or {}),
+                "",
+            ]
+        )
     frozen = board["entry"].get("frozen_candidates")
     if frozen:
         lines.extend(
@@ -2439,7 +2676,7 @@ def format_markdown(board: dict[str, Any]) -> str:
                 "This table is the forward holdout. The folds and point tables below are the exploratory search on the whole tape.",
                 f"Promotion is the same rule: {PROMOTION_RULE}.",
                 "",
-                "| candidate | point | take | n | pool | mean | mean 90% CI | total | ex best | days+ | promote |",
+                "| candidate | point | take | n | pool | mean | mean 90% CI | total | ex top 3 | days+ | promote |",
                 "| --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |",
             ]
         )
@@ -2479,7 +2716,7 @@ def format_markdown(board: dict[str, Any]) -> str:
             "Max drawdown is the peak-to-trough of cumulative SOL on independent fills ordered by decision time. Peak starts at 0.",
             f"Promotion requires all of: {PROMOTION_RULE}.",
             "",
-            "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex best | days+ | max DD | promote |",
+            "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex top 3 | days+ | max DD | promote |",
             "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |",
         ]
     )
@@ -2514,7 +2751,7 @@ def format_markdown(board: dict[str, Any]) -> str:
         lines.extend(
             [
                 "",
-                "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex best | days+ | max DD | promote |",
+                "| point | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex top 3 | days+ | max DD | promote |",
                 "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |",
                 _md_robust("migrate", "tp50_sl30", tp),
                 _md_robust("migrate", "hold_30s", hold),
@@ -2532,7 +2769,7 @@ def format_markdown(board: dict[str, Any]) -> str:
             "",
             "Same promotion rule on the score cuts.",
             "",
-            "| threshold | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex best | days+ | max DD | promote |",
+            "| threshold | take | n | mean | mean 90% CI | total | total 90% CI | winsor mean | ex top 3 | days+ | max DD | promote |",
             "| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |",
         ]
     )
@@ -2562,7 +2799,7 @@ def format_markdown(board: dict[str, Any]) -> str:
         labeled = sum(int(fold.get("train_labeled") or 0) for fold in block.get("folds") or [])
         lines.append(f"OOS labeled {block.get('oos_n')}. Train hits {hits} / {labeled} (folds summed, so rows repeat).")
         lines.append("")
-        lines.append("| point | take | n | mean | mean 90% CI | total | winsor mean | ex best | days+ | max DD | promote |")
+        lines.append("| point | take | n | mean | mean 90% CI | total | winsor mean | ex top 3 | days+ | max DD | promote |")
         lines.append("| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |")
         for point in block.get("by_point") or []:
             lines.append(_md_robust_short(point["point"], "all", point["baseline"]))
@@ -2615,6 +2852,12 @@ def format_markdown(board: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _md_latency_row(name: str, summary: dict[str, Any]) -> str:
+    med = "" if summary.get("median_sol") is None else f"{summary['median_sol']:.6f}"
+    mean = "" if summary.get("mean_sol") is None else f"{summary['mean_sol']:.6f}"
+    return f"| {name} | {summary.get('n', 0)} | {med} | {mean} | {summary.get('total_sol', 0):.6f} |"
+
+
 def _md_pnl(point: str, take: str, summary: dict[str, Any]) -> str:
     med = "" if summary.get("median_sol") is None else f"{summary['median_sol']:.6f}"
     win = "" if summary.get("win_rate") is None else f"{summary['win_rate'] * 100:.1f}%"
@@ -2643,7 +2886,7 @@ def _md_robust(point: str, take: str, summary: dict[str, Any]) -> str:
         f"| {point} | {take} | {summary.get('n')} | {_fmt_sol4(summary.get('mean_sol'))} | "
         f"{_fmt_ci(summary.get('mean_ci90_sol'))} | {_fmt_sol4(summary.get('total_sol'))} | "
         f"{_fmt_ci(summary.get('total_ci90_sol'))} | {_fmt_sol4(summary.get('winsorized_mean_sol'))} | "
-        f"{_fmt_sol4(summary.get('total_ex_best_sol'))} | {days} | "
+        f"{_fmt_sol4(summary.get('total_ex_top3_sol'))} | {days} | "
         f"{_fmt_sol4(summary.get('max_drawdown_sol'))} | {flag} |"
     )
 
@@ -2657,7 +2900,7 @@ def _md_robust_short(point: str, take: str, summary: dict[str, Any]) -> str:
     return (
         f"| {point} | {take} | {summary.get('n')} | {_fmt_sol4(summary.get('mean_sol'))} | "
         f"{_fmt_ci(summary.get('mean_ci90_sol'))} | {_fmt_sol4(summary.get('total_sol'))} | "
-        f"{_fmt_sol4(summary.get('winsorized_mean_sol'))} | {_fmt_sol4(summary.get('total_ex_best_sol'))} | "
+        f"{_fmt_sol4(summary.get('winsorized_mean_sol'))} | {_fmt_sol4(summary.get('total_ex_top3_sol'))} | "
         f"{days} | {_fmt_sol4(summary.get('max_drawdown_sol'))} | {flag} |"
     )
 
@@ -2673,7 +2916,7 @@ def _md_frozen(cand: dict[str, Any]) -> str:
     return (
         f"| {cand.get('id')} | {cand.get('point')} | {take} | {cand.get('n')} | {cand.get('n_pool')} | "
         f"{_fmt_sol4(cand.get('mean_sol'))} | {_fmt_ci(cand.get('mean_ci90_sol'))} | "
-        f"{_fmt_sol4(cand.get('total_sol'))} | {_fmt_sol4(cand.get('total_ex_best_sol'))} | {days} | {flag} |"
+        f"{_fmt_sol4(cand.get('total_sol'))} | {_fmt_sol4(cand.get('total_ex_top3_sol'))} | {days} | {flag} |"
     )
 
 
@@ -2713,6 +2956,7 @@ def run_files(
     offsets_ms: Sequence[int],
     size_lamports: int,
     slippage_cap: float,
+    graph_dir: Path | None = None,
 ) -> dict[str, Any]:
     if not tape:
         raise SystemExit("no tape files")
@@ -2739,12 +2983,28 @@ def run_files(
     kept = filter_window({mint: book.path for mint, book in books.items()}, stats.t_min_ms, stats.t_max_ms)
     books = {mint: books[mint] for mint in kept}
     print(f"creates_in_window={len(books)} kept_prints={stats.kept}", file=sys.stderr)
+    chain_lags = list(getattr(stats, "chain_lags_ms", []))
+    graph = FundingGraph.load(graph_dir) if graph_dir is not None else None
+    if graph is not None:
+        print(f"funding_wallets={len(graph)}", file=sys.stderr)
     rows, ticks, wallet_diag = build_dataset(
         books,
         tape_end_ms=stats.t_max_ms,
         offsets_ms=offsets_ms,
+        chain_lags_ms=chain_lags,
         size_lamports=size_lamports,
         slippage_cap=slippage_cap,
+        graph=graph,
+    )
+    print("latency_sensitivity", file=sys.stderr)
+    latency_report = entry_latency_report(
+        books,
+        rows,
+        chain_lags,
+        tape_end_ms=stats.t_max_ms,
+        size_lamports=size_lamports,
+        slippage_cap=slippage_cap,
+        graph=graph,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     modeled = run_models(
@@ -2763,6 +3023,7 @@ def run_files(
         "decisions": len(rows),
         "exit_ticks": len(ticks),
         "entry_latency_ms": ENTRY_LATENCY_MS,
+        "entry_latency": latency_report,
         "offsets_ms": list(offsets_ms),
         "size_lamports": size_lamports,
         "slippage_cap": slippage_cap,
@@ -2841,6 +3102,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backend", choices=("lightgbm", "sklearn"))
     parser.add_argument("--size-sol", type=float, default=0.05)
     parser.add_argument("--slippage-cap", type=float, default=DEFAULT_SLIPPAGE_CAP)
+    parser.add_argument("--graph-dir", type=Path, default=None, help="Append-only funding JSONL. Joined only at first_seen_ms <= decision.")
     args = parser.parse_args(argv)
     tape = list(args.tape)
     creates = list(args.creates)
@@ -2869,6 +3131,7 @@ def main(argv: list[str] | None = None) -> int:
         offsets_ms=_parse_offsets(args.offsets),
         size_lamports=int(round(args.size_sol * LAMPORTS_PER_SOL)),
         slippage_cap=args.slippage_cap,
+        graph_dir=args.graph_dir,
     )
     deploy = board["entry"]["deploy"]
     sys.stdout.write(
