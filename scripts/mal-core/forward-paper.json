@@ -1,0 +1,51 @@
+{
+  "tape_dir": "/var/lib/mal/sealed/trades",
+  "creates_dir": "/var/lib/mal/sealed/jsonl",
+  "output_dir": "/var/lib/mal/paper/forward-paper",
+  "kill_file": "/var/lib/mal/paper/forward-paper/KILL",
+  "model_path": "/var/lib/mal/paper/laya-v0/out/entry_model.txt",
+  "model_meta": "/var/lib/mal/paper/laya-v0/out/scoreboard.json",
+  "size_sol": 0.05,
+  "slippage_cap": 0.15,
+  "holdback_ms": 300,
+  "books": [
+    {
+      "id": "buy_all",
+      "kind": "baseline",
+      "exit": "hold_30s",
+      "max_concurrent": null,
+      "daily_loss_sol": null,
+      "creator_cooldown_s": 0,
+      "token_cooldown_s": 0
+    },
+    {
+      "id": "laya_0.6",
+      "kind": "laya",
+      "threshold": 0.6,
+      "exit": "deploy",
+      "max_concurrent": 3,
+      "daily_loss_sol": 0.2,
+      "creator_cooldown_s": 60,
+      "token_cooldown_s": 300
+    },
+    {
+      "id": "laya_0.7",
+      "kind": "laya",
+      "threshold": 0.7,
+      "exit": "deploy",
+      "max_concurrent": 3,
+      "daily_loss_sol": 0.2,
+      "creator_cooldown_s": 60,
+      "token_cooldown_s": 300
+    },
+    {
+      "id": "migrate_tp50_sl30",
+      "kind": "migrate",
+      "exit": "tp50_sl30",
+      "max_concurrent": 3,
+      "daily_loss_sol": 0.2,
+      "creator_cooldown_s": 60,
+      "token_cooldown_s": 300
+    }
+  ]
+}

@@ -905,10 +905,128 @@ class _Wallet:
         return True
 
 
+class WalletState:
+    """Causal wallet flags. The batch scorer and the forward service share this.
+
+    Prints are applied in time order. A decision reads the sets as they stand
+    after every print at or before that decision and after no later print.
+    """
+
+    def __init__(self) -> None:
+        self.wallets: dict[str, _Wallet] = {}
+        self.bots: set[str] = set()
+        self.snipers: set[str] = set()
+        self.leaders: set[str] = set()
+        self.creators: set[str] = set()
+        self.first_print_slot: dict[str, int] = {}
+        self.leaders_peak = 0
+
+    def note_creator(self, creator: str | None) -> None:
+        if creator:
+            self.creators.add(creator)
+
+    def observe_print(self, mint: str, pr: FlowPrint) -> None:
+        if mint not in self.first_print_slot:
+            self.first_print_slot[mint] = pr.slot
+        if not pr.trader:
+            return
+        wallet = self.wallets.get(pr.trader)
+        if wallet is None:
+            wallet = _Wallet()
+            self.wallets[pr.trader] = wallet
+        was_bot, was_sniper, was_leader = wallet.is_bot, wallet.is_sniper, wallet.is_leader
+        wallet.observe(
+            mint=mint,
+            side=pr.side,
+            sol=pr.sol_lamports,
+            token_raw=pr.token_raw,
+            t_ms=pr.t_recv_ms,
+            slot=pr.slot,
+            first_slot=self.first_print_slot[mint],
+        )
+        _move(self.bots, pr.trader, was_bot, wallet.is_bot)
+        _move(self.snipers, pr.trader, was_sniper, wallet.is_sniper)
+        _move(self.leaders, pr.trader, was_leader, wallet.is_leader)
+        if len(self.leaders) > self.leaders_peak:
+            self.leaders_peak = len(self.leaders)
+
+    def fill_features(self, book: MintBook, t_ms: int, feats: dict[str, float]) -> None:
+        """Write the wallet columns. `book.flow` must already include prints at t_ms."""
+        seen = flow_as_of(book.flow, t_ms)
+        buy_sol = bot_sol = veto_sol = leader_sol = 0
+        leader_buyers: set[str] = set()
+        first_leader: tuple[int, int, str] | None = None
+        first_leader_slot0 = 0
+        for pr in seen:
+            if pr.side != "buy":
+                continue
+            buy_sol += pr.sol_lamports
+            if not pr.trader:
+                continue
+            veto = pr.trader in self.bots or pr.trader in self.snipers or pr.trader in self.creators
+            if pr.trader in self.bots:
+                bot_sol += pr.sol_lamports
+            if veto:
+                veto_sol += pr.sol_lamports
+            if pr.trader in self.leaders:
+                leader_sol += pr.sol_lamports
+                leader_buyers.add(pr.trader)
+                slot0 = self.first_print_slot.get(book.create.mint, pr.slot)
+                if first_leader is None or (pr.t_recv_ms, pr.slot) < (first_leader[0], first_leader[1]):
+                    first_leader = (pr.t_recv_ms, pr.slot, pr.trader)
+                    first_leader_slot0 = slot0
+        if first_leader is None:
+            feats["f_sig_delta_slot_from_create"] = NAN
+            feats["f_sig_wallet_win_rate"] = NAN
+            feats["f_sig_wallet_median_hold_ms"] = NAN
+            feats["f_sig_copyable"] = 0.0
+        else:
+            _t_buy, slot, trader = first_leader
+            delta = slot - first_leader_slot0
+            wallet = self.wallets[trader]
+            feats["f_sig_delta_slot_from_create"] = float(delta)
+            feats["f_sig_wallet_win_rate"] = NAN if wallet.closed == 0 else wallet.wins / wallet.closed
+            feats["f_sig_wallet_median_hold_ms"] = NAN if not wallet.holds else float(statistics.median(wallet.holds))
+            feats["f_sig_copyable"] = 1.0 if delta > SNIPER_SLOT_DELTA else 0.0
+        if buy_sol > 0:
+            feats["f_bot_buy_sol_share"] = bot_sol / buy_sol
+            feats["f_veto_buy_sol_share"] = veto_sol / buy_sol
+            feats["f_leader_buy_sol_share"] = leader_sol / buy_sol
+        else:
+            feats["f_bot_buy_sol_share"] = NAN
+            feats["f_veto_buy_sol_share"] = NAN
+            feats["f_leader_buy_sol_share"] = NAN
+        feats["f_leader_buyers"] = float(len(leader_buyers))
+        feats["f_leader_present"] = 1.0 if leader_buyers else 0.0
+
+    def diag(self) -> dict[str, int]:
+        return {
+            "wallets": len(self.wallets),
+            "bots_end": len(self.bots),
+            "sniper_wallets_end": len(self.snipers),
+            "leaders_end": len(self.leaders),
+            "leaders_peak": self.leaders_peak,
+            "creators_end": len(self.creators),
+        }
+
+
+def packet_at(
+    book: MintBook,
+    t_ms: int,
+    trigger: str,
+    by_creator: dict[str, list[MintBook]],
+    wallets: WalletState,
+) -> dict[str, float]:
+    """Full LAYA v0 packet at one decision. Same columns as the offline builder."""
+    feats = local_features(book, t_ms, trigger)
+    feats.update(creator_features(book, t_ms, by_creator))
+    wallets.fill_features(book, t_ms, feats)
+    return feats
+
+
 def apply_wallet_features(books: dict[str, MintBook], rows: list[DecisionRow]) -> dict[str, int]:
     """Fill bot / veto / leader shares from trades at or before each decision."""
     events: list[tuple[int, int, Any]] = []
-    first_print_slot: dict[str, int] = {}
     for mint, book in books.items():
         for pr in book.flow:
             events.append((pr.t_recv_ms, 0, (mint, pr)))
@@ -919,96 +1037,18 @@ def apply_wallet_features(books: dict[str, MintBook], rows: list[DecisionRow]) -
         events.append((row.decision_t_ms, 1, index))
     events.sort(key=lambda item: (item[0], item[1]))
 
-    wallets: dict[str, _Wallet] = {}
-    bots: set[str] = set()
-    snipers: set[str] = set()
-    leaders: set[str] = set()
-    creators: set[str] = set()
-    peak_leaders = 0
-    for t_ms, kind, payload in events:
+    state = WalletState()
+    for _t_ms, kind, payload in events:
         if kind == -1:
-            creators.add(payload)
+            state.note_creator(payload)
             continue
         if kind == 0:
             mint, pr = payload
-            if mint not in first_print_slot:
-                first_print_slot[mint] = pr.slot
-            if not pr.trader:
-                continue
-            wallet = wallets.get(pr.trader)
-            if wallet is None:
-                wallet = _Wallet()
-                wallets[pr.trader] = wallet
-            was_bot, was_sniper, was_leader = wallet.is_bot, wallet.is_sniper, wallet.is_leader
-            wallet.observe(
-                mint=mint,
-                side=pr.side,
-                sol=pr.sol_lamports,
-                token_raw=pr.token_raw,
-                t_ms=t_ms,
-                slot=pr.slot,
-                first_slot=first_print_slot[mint],
-            )
-            _move(bots, pr.trader, was_bot, wallet.is_bot)
-            _move(snipers, pr.trader, was_sniper, wallet.is_sniper)
-            _move(leaders, pr.trader, was_leader, wallet.is_leader)
-            if len(leaders) > peak_leaders:
-                peak_leaders = len(leaders)
+            state.observe_print(mint, pr)
             continue
         row = rows[payload]
-        seen = flow_as_of(books[row.mint].flow, row.decision_t_ms)
-        buy_sol = bot_sol = veto_sol = leader_sol = 0
-        leader_buyers: set[str] = set()
-        first_leader: tuple[int, int, str] | None = None
-        for pr in seen:
-            if pr.side != "buy":
-                continue
-            buy_sol += pr.sol_lamports
-            if not pr.trader:
-                continue
-            veto = pr.trader in bots or pr.trader in snipers or pr.trader in creators
-            if pr.trader in bots:
-                bot_sol += pr.sol_lamports
-            if veto:
-                veto_sol += pr.sol_lamports
-            if pr.trader in leaders:
-                leader_sol += pr.sol_lamports
-                leader_buyers.add(pr.trader)
-                slot0 = first_print_slot.get(row.mint, pr.slot)
-                if first_leader is None or (pr.t_recv_ms, pr.slot) < (first_leader[0], first_leader[1]):
-                    first_leader = (pr.t_recv_ms, pr.slot, pr.trader)
-                    first_leader_slot0 = slot0
-        if first_leader is None:
-            row.features["f_sig_delta_slot_from_create"] = NAN
-            row.features["f_sig_wallet_win_rate"] = NAN
-            row.features["f_sig_wallet_median_hold_ms"] = NAN
-            row.features["f_sig_copyable"] = 0.0
-        else:
-            _t_buy, slot, trader = first_leader
-            delta = slot - first_leader_slot0
-            wallet = wallets[trader]
-            row.features["f_sig_delta_slot_from_create"] = float(delta)
-            row.features["f_sig_wallet_win_rate"] = NAN if wallet.closed == 0 else wallet.wins / wallet.closed
-            row.features["f_sig_wallet_median_hold_ms"] = NAN if not wallet.holds else float(statistics.median(wallet.holds))
-            row.features["f_sig_copyable"] = 1.0 if delta > SNIPER_SLOT_DELTA else 0.0
-        if buy_sol > 0:
-            row.features["f_bot_buy_sol_share"] = bot_sol / buy_sol
-            row.features["f_veto_buy_sol_share"] = veto_sol / buy_sol
-            row.features["f_leader_buy_sol_share"] = leader_sol / buy_sol
-        else:
-            row.features["f_bot_buy_sol_share"] = NAN
-            row.features["f_veto_buy_sol_share"] = NAN
-            row.features["f_leader_buy_sol_share"] = NAN
-        row.features["f_leader_buyers"] = float(len(leader_buyers))
-        row.features["f_leader_present"] = 1.0 if leader_buyers else 0.0
-    return {
-        "wallets": len(wallets),
-        "bots_end": len(bots),
-        "sniper_wallets_end": len(snipers),
-        "leaders_end": len(leaders),
-        "leaders_peak": peak_leaders,
-        "creators_end": len(creators),
-    }
+        state.fill_features(books[row.mint], row.decision_t_ms, row.features)
+    return state.diag()
 
 
 def _move(bucket: set[str], wallet: str, before: bool, after: bool) -> None:
