@@ -180,6 +180,35 @@ class FundingGraphTests(unittest.TestCase):
         self.assertEqual(rec.status, "resolved")
         self.assertFalse(rec.exchange)
 
+    def test_oversized_transaction_does_not_guess_a_later_funder(self) -> None:
+        def transport(_url: str, body: dict) -> dict:
+            method = body["method"]
+            if method == "getSignaturesForAddress":
+                return {"result": [{"signature": "later", "blockTime": 11}, {"signature": "big", "blockTime": 10}]}
+            if body["params"][0] == "big":
+                raise RpcError("http 413")
+            return {"result": _tx("transfer", "LaterFunder", "Wallet", 7)}
+
+        client = RpcClient("http://rpc.example", rps=1000, transport=transport, clock=lambda: 0.0, sleep=lambda _s: None)
+        rec = resolve_wallet(client, "Wallet", now_ms=5_000, exchanges={})
+        self.assertIsNone(rec.funder)
+        self.assertEqual(rec.status, "tx_unavailable")
+        self.assertIsNone(rec.wallet_first_tx_ms)
+        self.assertTrue(rec.history_capped)
+
+    def test_oversized_signature_page_is_written_once(self) -> None:
+        def transport(_url: str, body: dict) -> dict:
+            limit = body["params"][1]["limit"]
+            if limit > 200:
+                raise RpcError("http 413")
+            raise RpcError("http 413")
+
+        client = RpcClient("http://rpc.example", rps=1000, transport=transport, clock=lambda: 0.0, sleep=lambda _s: None)
+        rec = resolve_wallet(client, "Wallet", now_ms=5_000, exchanges={})
+        self.assertEqual(rec.status, "rpc_rejected")
+        self.assertIsNone(rec.funder)
+        self.assertEqual(client.calls, 2)
+
     def test_rate_limit_backs_off_without_wall_sleep(self) -> None:
         clock = _Clock()
         n = {"calls": 0}

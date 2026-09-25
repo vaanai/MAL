@@ -400,6 +400,12 @@ def _is_limited(err: Any) -> bool:
     return "429" in text or "too many" in text or "rate limit" in text
 
 
+def _is_oversized(exc: BaseException) -> bool:
+    """Public RPC returns HTTP 413 when a parsed transaction is too large to send back."""
+    text = str(exc).lower()
+    return "413" in text or "payload too large" in text or "response too large" in text
+
+
 def _urllib_transport(url: str, body: dict[str, Any]) -> Any:
     data = json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
@@ -462,6 +468,32 @@ def _block_ms(sig: dict[str, Any]) -> int | None:
     return None
 
 
+def _blank_wallet(
+    wallet: str,
+    *,
+    now_ms: int,
+    role_hint: str,
+    status: str,
+    history_capped: bool,
+    rpc_pages: int,
+) -> WalletRecord:
+    """Fail-open row. No funder, so the veto cannot arm, and the wallet is not retried."""
+    return WalletRecord(
+        wallet=wallet,
+        funder=None,
+        amount_lamports=None,
+        wallet_first_tx_ms=None,
+        funded_at_ms=None,
+        exchange=False,
+        exchange_name=None,
+        history_capped=history_capped,
+        status=status,
+        first_seen_ms=now_ms,
+        role_hint=role_hint,
+        rpc_pages=rpc_pages,
+    )
+
+
 def resolve_wallet(
     client: RpcClient,
     wallet: str,
@@ -477,17 +509,33 @@ def resolve_wallet(
     last_page: list[dict[str, Any]] = []
     pages = 0
     reached = False
+    page_limit = SIGNATURE_PAGE
     while pages < max_pages:
-        cfg: dict[str, Any] = {"limit": SIGNATURE_PAGE, "commitment": "confirmed"}
+        cfg: dict[str, Any] = {"limit": page_limit, "commitment": "confirmed"}
         if before:
             cfg["before"] = before
-        result = client.call("getSignaturesForAddress", [wallet, cfg])
+        try:
+            result = client.call("getSignaturesForAddress", [wallet, cfg])
+        except RpcError as exc:
+            if not _is_oversized(exc) or page_limit <= 200:
+                if _is_oversized(exc):
+                    return _blank_wallet(
+                        wallet,
+                        now_ms=now_ms,
+                        role_hint=role_hint,
+                        status="rpc_rejected",
+                        history_capped=True,
+                        rpc_pages=pages,
+                    )
+                raise
+            page_limit = 200
+            continue
         pages += 1
         if not isinstance(result, list) or not result:
             reached = True
             break
         last_page = [row for row in result if isinstance(row, dict) and isinstance(row.get("signature"), str)]
-        if len(result) < SIGNATURE_PAGE:
+        if len(result) < page_limit:
             reached = True
             break
         before = str(last_page[-1]["signature"]) if last_page else None
@@ -528,14 +576,22 @@ def resolve_wallet(
     funder: str | None = None
     amount: int | None = None
     funded_ms: int | None = None
+    oversized = False
     for sig in oldest_first:
-        tx = client.call(
-            "getTransaction",
-            [
-                sig["signature"],
-                {"encoding": "jsonParsed", "commitment": "confirmed", "maxSupportedTransactionVersion": 0},
-            ],
-        )
+        try:
+            tx = client.call(
+                "getTransaction",
+                [
+                    sig["signature"],
+                    {"encoding": "jsonParsed", "commitment": "confirmed", "maxSupportedTransactionVersion": 0},
+                ],
+            )
+        except RpcError as exc:
+            if not _is_oversized(exc):
+                raise
+            # An unread older transaction may be the real funder. Do not guess from a newer one.
+            oversized = True
+            break
         if not isinstance(tx, dict):
             continue
         found = inbound_sol(tx, wallet)
@@ -544,6 +600,15 @@ def resolve_wallet(
         funder, amount = found
         funded_ms = _block_ms(sig)
         break
+    if oversized and funder is None:
+        return _blank_wallet(
+            wallet,
+            now_ms=now_ms,
+            role_hint=role_hint,
+            status="tx_unavailable",
+            history_capped=True,
+            rpc_pages=pages,
+        )
     name = book.get(funder) if funder else None
     status = "resolved" if funder else "no_inbound"
     return WalletRecord(
@@ -922,6 +987,7 @@ class Enricher:
         self.bots: dict[str, _BotWallet] = {}
         self.resolved = 0
         self.skipped = 0
+        self.unavailable = 0
 
     def note_create(self, mint: str, creator: str | None) -> None:
         if not creator or mint in self.creators:
@@ -1003,6 +1069,8 @@ class Enricher:
         self.appender.append(rec)
         self.graph.by_wallet.setdefault(rec.wallet, rec)
         self.resolved += 1
+        if rec.status in ("tx_unavailable", "rpc_rejected"):
+            self.unavailable += 1
         return rec
 
     def seed_backfill(self, limit: int) -> int:
@@ -1178,7 +1246,8 @@ def run_serve(
         if now >= next_log:
             print(
                 f"funding_graph resolved={enricher.resolved} queue={len(enricher.queue)} "
-                f"calls={client.calls} limited={client.limited} cached={len(enricher.graph)}",
+                f"calls={client.calls} limited={client.limited} unavailable={enricher.unavailable} "
+                f"cached={len(enricher.graph)}",
                 file=sys.stderr,
             )
             enricher.cursor.save()
