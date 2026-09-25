@@ -1,5 +1,7 @@
 # Observe JSONL captures (local-first; do not commit live data)
 data/observe/*.jsonl
+data/observe/*.jsonl.zst
+data/observe/*.zst.partial
 # EXP-001 local audit outputs (judgments CSV/JSONL + summary JSON)
 data/observe/_exp001_*
 # EXP-002 local paper book outputs

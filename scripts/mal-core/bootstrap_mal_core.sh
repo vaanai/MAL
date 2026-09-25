@@ -25,6 +25,7 @@ sudo -n apt-get install -y -qq git python3-venv python3-pip python3-full >/dev/n
 log "layout under ${MAL_ROOT} (postgresql/ left postgres-owned)"
 sudo -n mkdir -p \
   "${MAL_ROOT}/sealed/jsonl" \
+  "${MAL_ROOT}/sealed/trades" \
   "${MAL_ROOT}/paper" \
   "${MAL_ROOT}/logs" \
   "${MAL_ROOT}/run" \
@@ -33,6 +34,7 @@ sudo -n mkdir -p \
 sudo -n chown ubuntu:ubuntu \
   "${MAL_ROOT}/sealed" \
   "${MAL_ROOT}/sealed/jsonl" \
+  "${MAL_ROOT}/sealed/trades" \
   "${MAL_ROOT}/paper" \
   "${MAL_ROOT}/logs" \
   "${MAL_ROOT}/run" \
@@ -41,6 +43,7 @@ sudo -n chown ubuntu:ubuntu \
 sudo -n chmod 755 \
   "${MAL_ROOT}/sealed" \
   "${MAL_ROOT}/sealed/jsonl" \
+  "${MAL_ROOT}/sealed/trades" \
   "${MAL_ROOT}/paper" \
   "${MAL_ROOT}/logs" \
   "${MAL_ROOT}/run" \
@@ -49,6 +52,7 @@ sudo -n chmod 755 \
 
 install -m 0755 "${SELF_DIR}/healthcheck.sh" "${MAL_ROOT}/eng/healthcheck.sh"
 install -m 0755 "${SELF_DIR}/observe-jsonl.sh" "${MAL_ROOT}/eng/observe-jsonl.sh"
+install -m 0755 "${SELF_DIR}/trade-tape.sh" "${MAL_ROOT}/eng/trade-tape.sh"
 install -m 0755 "${SELF_DIR}/apply-schema.sh" "${MAL_ROOT}/eng/apply-schema.sh"
 if [[ -f "${ROOT}/ARTIFACTS/ORACLE-HOST-BOOTSTRAP.md" ]]; then
   install -m 0644 "${ROOT}/ARTIFACTS/ORACLE-HOST-BOOTSTRAP.md" "${MAL_ROOT}/eng/BOOTSTRAP.md"
@@ -81,6 +85,7 @@ fi
 log "systemd user unit mal-observe (linger so it survives SSH logout)"
 mkdir -p "${UNIT_DIR}"
 install -m 0644 "${SELF_DIR}/mal-observe.service" "${UNIT_DIR}/mal-observe.service"
+install -m 0644 "${SELF_DIR}/mal-trade-tape.service" "${UNIT_DIR}/mal-trade-tape.service"
 sudo -n loginctl enable-linger ubuntu || log "linger: enable failed (non-fatal)"
 # User systemd over SSH needs XDG_RUNTIME_DIR after linger.
 if [[ ! -d "${XDG_RUNTIME_DIR}" ]]; then
@@ -88,9 +93,11 @@ if [[ ! -d "${XDG_RUNTIME_DIR}" ]]; then
 fi
 systemctl --user daemon-reload || true
 systemctl --user enable mal-observe.service || true
+systemctl --user enable mal-trade-tape.service || true
 if [[ -x "${REPO}/.venv/bin/python" ]]; then
   # Legitimate paper ingest (PumpPortal free WS). Not fake keep-alive.
   systemctl --user restart mal-observe.service || log "observe: start failed (use ${MAL_ROOT}/eng/observe-jsonl.sh)"
+  systemctl --user restart mal-trade-tape.service || log "trade-tape: start failed (use ${MAL_ROOT}/eng/trade-tape.sh)"
 else
   log "observe: unit enabled but not started (venv missing)"
 fi

@@ -1,0 +1,27 @@
+[Unit]
+Description=MAL paper trade tape (public RPC logsSubscribe, pump.fun + PumpSwap)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mal
+Environment=MAL_TRADE_TAPE_SOURCE=public_rpc_logs
+Environment=MAL_TRADE_TAPE_WS_URL=wss://api.mainnet-beta.solana.com
+Environment=MAL_SOLANA_HTTP_URL=https://api.mainnet-beta.solana.com
+Environment=MAL_TRADE_TAPE_COMMITMENT=confirmed
+Environment=MAL_TRADE_TAPE_OUTPUT_DIR=/var/lib/mal/sealed/trades
+Environment=MAL_OBSERVE_JSONL_DIR=/var/lib/mal/sealed/jsonl
+Environment=MAL_LOG_LEVEL=INFO
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+ExecStart=%h/mal/.venv/bin/python -m observe.trade_tape --output-dir /var/lib/mal/sealed/trades
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/lib/mal/logs/trade-tape.log
+StandardError=append:/var/lib/mal/logs/trade-tape.log
+
+[Install]
+WantedBy=default.target

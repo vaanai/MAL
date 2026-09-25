@@ -10,5 +10,7 @@ Host bootstrap helpers. **No secrets in this tree.**
 | [healthcheck.sh](healthcheck.sh) | host | hostname / disk / pg_isready / JSONL writable |
 | [observe-jsonl.sh](observe-jsonl.sh) | host | `python -m observe` → `/var/lib/mal/sealed/jsonl` |
 | [mal-observe.service](mal-observe.service) | host (systemd --user) | Same observe path, linger-enabled |
+| [trade-tape.sh](trade-tape.sh) | host | `python -m observe.trade_tape` → `/var/lib/mal/sealed/trades` |
+| [mal-trade-tape.service](mal-trade-tape.service) | host (systemd --user) | Public RPC logsSubscribe tape (pump.fun + PumpSwap) |
 
 Runbook: [tools/oracle_ssh_smoke.md](../../tools/oracle_ssh_smoke.md). On-host note: `/var/lib/mal/eng/BOOTSTRAP.md`.
