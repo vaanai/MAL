@@ -239,7 +239,9 @@ class BackfillRecvTests(unittest.TestCase):
             root = Path(tmp)
             live_path = root / "live.jsonl"
             bf_path = root / "bf.jsonl"
-            live_path.write_text(json.dumps(live) + "\n", encoding="utf-8")
+            old = dict(live)
+            old.update({"mint": "OldPool", "signature": "sig-old", "trader": "Z"})
+            live_path.write_text(json.dumps(live) + "\n" + json.dumps(old) + "\n", encoding="utf-8")
             bf_path.write_text(json.dumps(backfill_dupe) + "\n" + json.dumps(earlier) + "\n", encoding="utf-8")
             books, migration, stats, reservoir = load_graduated_books(
                 [live_path],
@@ -248,6 +250,7 @@ class BackfillRecvTests(unittest.TestCase):
                 window_start_ms=WINDOW_START_MS,
             )
         self.assertEqual(migration["MintA"], mig)
+        self.assertNotIn("OldPool", books)
         self.assertGreater(stats.lags_seen, 0)
         self.assertGreater(len(reservoir.data), 0)
         times = [pr.t_recv_ms for pr in books["MintA"].flow]

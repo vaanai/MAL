@@ -462,25 +462,40 @@ def load_graduated_books(
     """
     stats = ScanStats()
     reservoir = _LagReservoir(LAG_RESERVOIR, LATENCY_DRAW_SEED)
-    migration: dict[str, int] = {}
+    first_bond: dict[str, int] = {}
+    first_swap: dict[str, int] = {}
 
     def _note_migration(row: dict[str, Any]) -> None:
+        """Remember the earliest curve print and the earliest PumpSwap print.
+
+        A later PumpSwap trade on a pool that was already migrated before this
+        tape is not a migration. The clock is the first PumpSwap print, and
+        only when a bonding print is strictly earlier.
+        """
+        mint = row.get("mint")
+        t_raw = row.get("t_recv_ms")
+        if not isinstance(mint, str) or not mint or not isinstance(t_raw, int):
+            return
+        if row.get("quote_is_wsol") is False:
+            return
+        venue = row.get("venue")
+        if venue == "pump_bonding":
+            prev = first_bond.get(mint)
+            if prev is None or t_raw < prev:
+                first_bond[mint] = t_raw
+            return
         if not _pumpswap_wsol(row):
             return
-        t_raw = row.get("t_recv_ms")
-        if not isinstance(t_raw, int) or t_raw < window_start_ms:
-            return
-        mint = str(row["mint"])
-        prev = migration.get(mint)
+        prev = first_swap.get(mint)
         if prev is None or t_raw < prev:
-            migration[mint] = t_raw
+            first_swap[mint] = t_raw
 
     def _scan_lags_and_migrations(paths: Sequence[Path], *, backfill: bool, rng: random.Random) -> None:
         for _path, row in _iter_jsonl(paths):
             stats.lines += 1
             if stats.lines % 500_000 == 0:
                 print(
-                    f"pass1 lines={stats.lines} migrations={len(migration)} lags={reservoir.n}",
+                    f"pass1 lines={stats.lines} swaps={len(first_swap)} bonds={len(first_bond)} lags={reservoir.n}",
                     file=sys.stderr,
                 )
             if backfill:
@@ -502,8 +517,18 @@ def load_graduated_books(
     # of pass 1 so the reservoir already holds live draws.
     _scan_lags_and_migrations(live_paths, backfill=False, rng=random.Random(0))
     _scan_lags_and_migrations(backfill_paths, backfill=True, rng=random.Random(LATENCY_DRAW_SEED))
+    migration: dict[str, int] = {}
+    for mint, swap_t in first_swap.items():
+        bond_t = first_bond.get(mint)
+        if bond_t is None or bond_t >= swap_t or swap_t < window_start_ms:
+            continue
+        migration[mint] = swap_t
     stats.graduated = len(migration)
-    print(f"graduated_mints={stats.graduated} lag_reservoir={len(reservoir.data)}", file=sys.stderr)
+    print(
+        f"graduated_mints={stats.graduated} swap_mints={len(first_swap)} "
+        f"lag_reservoir={len(reservoir.data)}",
+        file=sys.stderr,
+    )
 
     buckets: dict[str, list[Any]] = {mint: [] for mint in migration}
     seen: set[int] = set()
