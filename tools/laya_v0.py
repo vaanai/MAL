@@ -47,6 +47,7 @@ from tools.paper_price_path import (
     print_from_trade_row,
     state_as_of,
 )
+from tools.funding_graph import FundingGraph, fill_funding_features
 from tools.paper_tape_scoreboard import (
     EXIT_RULES,
     ExitRule,
@@ -171,6 +172,17 @@ FEATURE_NAMES: tuple[str, ...] = (
     "f_trigger_grid",
     "f_create_sol",
     "f_create_mcap_sol",
+    "f_funder_known",
+    "f_funder_cluster_hash",
+    "f_funder_prior_creates",
+    "f_funder_prior_scored",
+    "f_funder_prior_rug_frac",
+    "f_funder_prior_median_peak",
+    "f_creator_funded_by_exchange",
+    "f_creator_fresh_wallet",
+    "f_creator_wallet_age_s",
+    "f_same_funder_early_n",
+    "f_funder_creator_buyer_loop",
 )
 
 EXIT_FEATURE_NAMES: tuple[str, ...] = (
@@ -1016,15 +1028,26 @@ def packet_at(
     trigger: str,
     by_creator: dict[str, list[MintBook]],
     wallets: WalletState,
+    *,
+    graph: FundingGraph | None = None,
+    library: dict[str, MintBook] | None = None,
 ) -> dict[str, float]:
-    """Full LAYA v0 packet at one decision. Same columns as the offline builder."""
+    """Full LAYA v0 packet at one decision. Same columns as the offline builder.
+
+    Funding columns read the graph only where first_seen_ms <= t_ms.
+    """
     feats = local_features(book, t_ms, trigger)
     feats.update(creator_features(book, t_ms, by_creator))
     wallets.fill_features(book, t_ms, feats)
+    fill_funding_features(book, t_ms, feats, wallets, graph, library)
     return feats
 
 
-def apply_wallet_features(books: dict[str, MintBook], rows: list[DecisionRow]) -> dict[str, int]:
+def apply_wallet_features(
+    books: dict[str, MintBook],
+    rows: list[DecisionRow],
+    graph: FundingGraph | None = None,
+) -> dict[str, int]:
     """Fill bot / veto / leader shares from trades at or before each decision."""
     events: list[tuple[int, int, Any]] = []
     for mint, book in books.items():
@@ -1048,6 +1071,7 @@ def apply_wallet_features(books: dict[str, MintBook], rows: list[DecisionRow]) -
             continue
         row = rows[payload]
         state.fill_features(books[row.mint], row.decision_t_ms, row.features)
+        fill_funding_features(books[row.mint], row.decision_t_ms, row.features, state, graph, books)
     return state.diag()
 
 
@@ -1073,6 +1097,7 @@ def build_feature_rows(
     *,
     tape_end_ms: int,
     offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
+    graph: FundingGraph | None = None,
 ) -> tuple[list[DecisionRow], dict[str, int]]:
     by_creator = index_creators(books)
     buyer_marks = causal_buyer_triggers(books, tape_end_ms=tape_end_ms)
@@ -1097,7 +1122,7 @@ def build_feature_rows(
                     features=feats,
                 )
             )
-    wallet_diag = apply_wallet_features(books, rows)
+    wallet_diag = apply_wallet_features(books, rows, graph)
     return rows, wallet_diag
 
 
@@ -2298,8 +2323,9 @@ def build_dataset(
     latency_ms: int = ENTRY_LATENCY_MS,
     size_lamports: int = DEFAULT_SIZE_LAMPORTS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
+    graph: FundingGraph | None = None,
 ) -> tuple[list[DecisionRow], list[ExitTick], dict[str, int]]:
-    rows, wallet_diag = build_feature_rows(books, tape_end_ms=tape_end_ms, offsets_ms=offsets_ms)
+    rows, wallet_diag = build_feature_rows(books, tape_end_ms=tape_end_ms, offsets_ms=offsets_ms, graph=graph)
     print(f"decisions={len(rows)}", file=sys.stderr)
     ticks = attach_labels(
         books,
@@ -2690,6 +2716,7 @@ def run_files(
     offsets_ms: Sequence[int],
     size_lamports: int,
     slippage_cap: float,
+    graph_dir: Path | None = None,
 ) -> dict[str, Any]:
     if not tape:
         raise SystemExit("no tape files")
@@ -2716,12 +2743,16 @@ def run_files(
     kept = filter_window({mint: book.path for mint, book in books.items()}, stats.t_min_ms, stats.t_max_ms)
     books = {mint: books[mint] for mint in kept}
     print(f"creates_in_window={len(books)} kept_prints={stats.kept}", file=sys.stderr)
+    graph = FundingGraph.load(graph_dir) if graph_dir is not None else None
+    if graph is not None:
+        print(f"funding_wallets={len(graph)}", file=sys.stderr)
     rows, ticks, wallet_diag = build_dataset(
         books,
         tape_end_ms=stats.t_max_ms,
         offsets_ms=offsets_ms,
         size_lamports=size_lamports,
         slippage_cap=slippage_cap,
+        graph=graph,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     modeled = run_models(
@@ -2818,6 +2849,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backend", choices=("lightgbm", "sklearn"))
     parser.add_argument("--size-sol", type=float, default=0.05)
     parser.add_argument("--slippage-cap", type=float, default=DEFAULT_SLIPPAGE_CAP)
+    parser.add_argument("--graph-dir", type=Path, default=None, help="Append-only funding JSONL. Joined only at first_seen_ms <= decision.")
     args = parser.parse_args(argv)
     tape = list(args.tape)
     creates = list(args.creates)
@@ -2846,6 +2878,7 @@ def main(argv: list[str] | None = None) -> int:
         offsets_ms=_parse_offsets(args.offsets),
         size_lamports=int(round(args.size_sol * LAMPORTS_PER_SOL)),
         slippage_cap=args.slippage_cap,
+        graph_dir=args.graph_dir,
     )
     deploy = board["entry"]["deploy"]
     sys.stdout.write(

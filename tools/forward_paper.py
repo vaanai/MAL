@@ -519,6 +519,10 @@ class ForwardEngine:
         self.retain_rows = retain_rows
         self.logs = logs or {}
         self.wallets = WalletState()
+        self.graph = None
+        self.graph_dir: Path | None = None
+        self._graph_checked_s = 0.0
+        self._graph_stamp: tuple[int, int] | None = None
         self.by_creator: dict[str, list[MintBook]] = defaultdict(list)
         self.library: dict[str, MintBook] = {}
         self.tracks: dict[str, _Track] = {}
@@ -786,6 +790,30 @@ class ForwardEngine:
             if run.spec.kind == "baseline":
                 self._enter_or_skip(run, book, t_ms, "create", feats=None)
 
+    def _maybe_reload_graph(self) -> None:
+        """Reload append-only funding rows at most every few seconds."""
+        if self.graph_dir is None:
+            return
+        now = time.monotonic()
+        if self.graph is not None and now - self._graph_checked_s < 5.0:
+            return
+        self._graph_checked_s = now
+        files = sorted(self.graph_dir.glob("funding-*.jsonl"))
+        if not files:
+            stamp = (0, 0)
+        else:
+            try:
+                st = files[-1].stat()
+                stamp = (int(st.st_mtime_ns), int(st.st_size))
+            except OSError:
+                stamp = (0, 0)
+        if stamp == self._graph_stamp:
+            return
+        from tools.funding_graph import FundingGraph
+
+        self.graph = FundingGraph.load(self.graph_dir)
+        self._graph_stamp = stamp
+
     def _on_signal(self, mint: str, t_ms: int, trigger: str) -> None:
         book = self.library.get(mint)
         if book is None:
@@ -795,7 +823,10 @@ class ForwardEngine:
         )
         feats = None
         if want_score or self.record_packets:
-            feats = packet_at(book, t_ms, trigger, self.by_creator, self.wallets)
+            self._maybe_reload_graph()
+            feats = packet_at(
+                book, t_ms, trigger, self.by_creator, self.wallets, graph=self.graph, library=self.library
+            )
             if self.record_packets and self.retain_rows:
                 self.packets.append((mint, t_ms, trigger, dict(feats)))
         for run in self.books:
@@ -820,7 +851,10 @@ class ForwardEngine:
         score = None
         if spec.kind == "laya":
             if feats is None:
-                feats = packet_at(book, t_ms, trigger, self.by_creator, self.wallets)
+                self._maybe_reload_graph()
+                feats = packet_at(
+                    book, t_ms, trigger, self.by_creator, self.wallets, graph=self.graph, library=self.library
+                )
                 if self.record_packets and self.retain_rows:
                     self.packets.append((mint, t_ms, trigger, dict(feats)))
             slot = self.barrier if spec.model_key == "barrier" else self.model
@@ -1588,6 +1622,9 @@ def serve(config_path: Path) -> int:
         slippage_cap=slippage,
         logs={"decisions": logs["decisions"], "positions": logs["positions"]},
     )
+    graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
+    if graph_dir.is_dir():
+        engine.graph_dir = graph_dir
     tail = DirectoryTail(tape_dir, creates_dir, offsets)
     stop = {"flag": False}
 
