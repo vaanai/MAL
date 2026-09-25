@@ -14,9 +14,7 @@ from tools.funding_graph import (
     BOT_MIN_MINTS,
     EARLY_BUYERS,
     EXCHANGE_WALLETS,
-    PROMOTION_DROP_TOP,
-    PROMOTION_MIN_DAYS,
-    PROMOTION_MIN_N,
+    PUBLIC_RPC,
     BUYER_PRIORITY,
     CREATOR_PRIORITY,
     Enricher,
@@ -27,23 +25,30 @@ from tools.funding_graph import (
     RpcClient,
     RpcError,
     WalletRecord,
+    choose_rps,
     cluster_hash,
+    describe_rpc,
     empty_funding_features,
     fill_funding_features,
     inbound_sol,
+    maybe_switch_rpc,
+    resolve_rpc_url,
     resolve_wallet,
     rug_veto,
     score_rows,
-    tight_promotion,
-    total_ex_top,
 )
 from tools.laya_v0 import (
     BOT_MIN_BUYS as LAYA_BOT_MIN_BUYS,
     BOT_MIN_GAPS as LAYA_BOT_MIN_GAPS,
     BOT_MIN_MINTS as LAYA_BOT_MIN_MINTS,
+    PROMOTION_DROP_N,
+    PROMOTION_MIN_DAYS,
+    PROMOTION_MIN_N,
+    PROMOTION_RULE,
     BookTrade,
     FlowPrint,
     MintBook,
+    book_stats,
     build_feature_rows,
 )
 from tools.paper_curve_math import LAMPORTS_PER_SOL
@@ -359,8 +364,7 @@ class FundingGraphTests(unittest.TestCase):
     def test_one_utc_day_does_not_clear_the_tight_bar(self) -> None:
         lamports = int(0.001 * LAMPORTS_PER_SOL)
         one_day = [BookTrade(f"m{i}", DAY, lamports) for i in range(PROMOTION_MIN_N)]
-        stats = tight_promotion(one_day)
-        self.assertTrue(stats["promote_coded_in_laya"])
+        stats = book_stats(one_day)
         self.assertEqual(stats["n_days"], 1)
         self.assertFalse(stats["promote"])
         self.assertGreater(stats["total_ex_top3_sol"], 0)
@@ -371,7 +375,7 @@ class FundingGraphTests(unittest.TestCase):
         for day in range(PROMOTION_MIN_DAYS):
             for i in range(20):
                 spread.append(BookTrade(f"d{day}-{i}", DAY + day * DAY_MS, lamports))
-        good = tight_promotion(spread)
+        good = book_stats(spread)
         self.assertGreaterEqual(good["n"], PROMOTION_MIN_N)
         self.assertGreaterEqual(good["n_days"], PROMOTION_MIN_DAYS)
         self.assertTrue(good["majority_days_positive"])
@@ -381,14 +385,39 @@ class FundingGraphTests(unittest.TestCase):
 
         heavy = int(10 * LAMPORTS_PER_SOL)
         tiny = int(-0.02 * LAMPORTS_PER_SOL)
-        tailed = [BookTrade(f"w{i}", DAY + (i % PROMOTION_MIN_DAYS) * DAY_MS, heavy) for i in range(PROMOTION_DROP_TOP)]
+        tailed = [BookTrade(f"w{i}", DAY + (i % PROMOTION_MIN_DAYS) * DAY_MS, heavy) for i in range(PROMOTION_DROP_N)]
         tailed.extend(
-            BookTrade(f"s{i}", DAY + (i % PROMOTION_MIN_DAYS) * DAY_MS, tiny) for i in range(PROMOTION_MIN_N - PROMOTION_DROP_TOP)
+            BookTrade(f"s{i}", DAY + (i % PROMOTION_MIN_DAYS) * DAY_MS, tiny) for i in range(PROMOTION_MIN_N - PROMOTION_DROP_N)
         )
-        bad = tight_promotion(tailed)
+        bad = book_stats(tailed)
         self.assertLess(bad["total_ex_top3_sol"], 0)
         self.assertFalse(bad["promote"])
-        self.assertEqual(total_ex_top([1, 5, 4, 3, 2], 3), (1 + 2) / LAMPORTS_PER_SOL)
+
+    def test_helius_key_switches_rate_without_logging_the_key(self) -> None:
+        missing = Path("/tmp/does-not-exist-helius.env")
+        public = resolve_rpc_url({}, missing)
+        self.assertEqual(public, PUBLIC_RPC)
+        self.assertEqual(describe_rpc(public), "public")
+        self.assertEqual(choose_rps(public, None), 1.0)
+        with self.assertRaises(ValueError):
+            resolve_rpc_url({"HELIUS_API_KEY": "bad key"}, missing)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "helius.env"
+            path.write_text("# note\nHELIUS_API_KEY=unit-test-key\n", encoding="utf-8")
+            url = resolve_rpc_url({}, path)
+            self.assertEqual(describe_rpc(url), "helius")
+            self.assertNotIn("unit-test-key", describe_rpc(url))
+            self.assertEqual(choose_rps(url, None), 5.0)
+            self.assertEqual(choose_rps(url, 1.0), 1.0)
+            client = RpcClient(PUBLIC_RPC, rps=1)
+            self.assertIs(maybe_switch_rpc(client, None, {}, missing), client)
+            nxt = maybe_switch_rpc(client, None, {}, path)
+            self.assertIsNot(nxt, client)
+            self.assertEqual(describe_rpc(nxt.url), "helius")
+            self.assertAlmostEqual(nxt.min_interval, 0.2)
+            self.assertIs(maybe_switch_rpc(nxt, None, {}, path), nxt)
+            held = maybe_switch_rpc(client, 1.0, {}, path)
+            self.assertAlmostEqual(held.min_interval, 1.0)
 
     def test_score_is_preliminary_and_not_a_promote(self) -> None:
         rows = [
@@ -399,7 +428,8 @@ class FundingGraphTests(unittest.TestCase):
         self.assertTrue(report["preliminary"])
         self.assertIn("Re-run", report["preliminary_reason"])
         self.assertFalse(report["promote"])
-        self.assertIn("rolling window", report["promotion_rule"])
+        self.assertEqual(report["promotion_rule"], PROMOTION_RULE)
+        self.assertIn("_RankWindow", report["selection"])
         self.assertGreater(report["oos_n"], 0)
 
     def test_enricher_skips_bots_and_retries_empty_history(self) -> None:

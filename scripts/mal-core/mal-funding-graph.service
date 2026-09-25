@@ -1,5 +1,5 @@
 [Unit]
-Description=MAL paper funding graph (public RPC, does not touch the trade tape or forward paper)
+Description=MAL paper funding graph (1/s public RPC, 5/s Helius when the key appears; does not touch the trade tape or forward paper)
 Documentation=https://github.com/vaanai/MAL
 
 [Service]
