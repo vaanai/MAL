@@ -14,8 +14,8 @@
       "id": "buy_all",
       "kind": "baseline",
       "exit": "hold_30s",
-      "max_concurrent": null,
-      "daily_loss_sol": null,
+      "max_concurrent": 3,
+      "daily_loss_sol": 0.2,
       "creator_cooldown_s": 0,
       "token_cooldown_s": 0
     },
