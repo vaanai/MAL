@@ -30,9 +30,11 @@ TOKEN_RAW_OFFSET = TOKEN_UI_OFFSET * TOKEN_SCALE  # 279_900_000_000_000
 BONDING_FEE_PPM = 12_500  # 1.25%
 PORTAL_FEE_PPM = 5_000  # 0.5% PumpPortal Local, each side
 
-# High end of the PumpPortal example priority band. Two of these are
-# ~0.2% of a 0.05 SOL trade. Not fitted.
-PRIORITY_FEE_LAMPORTS = 50_000
+# PumpPortal's tutorial band is 0.00001–0.00005 SOL (execution-stack-options.md).
+# That is not a contested launch: the public tape's failed-log share is 28.9%,
+# and an included failure still burns this fee. 0.001 SOL is 20× the tutorial
+# ceiling and the default until a signer landing log exists.
+PRIORITY_FEE_LAMPORTS = 1_000_000
 # SPL token account, 165 bytes, rent-exempt: (128 + 165) * 3480 * 2.
 # Token-2022 extensions are not on the tape; a larger ATA would cost more.
 TOKEN_ACCOUNT_RENT_LAMPORTS = 2_039_280
@@ -88,6 +90,76 @@ def venue_fee_ppm(venue: str, market_cap_sol: float) -> int:
     if venue == "pumpswap":
         return pumpswap_sol_fee_ppm(market_cap_sol)
     raise ValueError(f"unknown venue {venue}")
+
+
+def pumpswap_pool_quote_delta(
+    *,
+    side: str,
+    user_quote_lamports: int,
+    pool_quote_amount: int | None = None,
+    lp_fee: int | None = None,
+    protocol_fee: int | None = None,
+    creator_fee: int | None = None,
+    fee_ppm: int | None = None,
+) -> int | None:
+    """Lamports the pool quote reserve gains on a buy, or loses on a sell.
+
+    Decoded BuyEvent (pumpswap_buy_event.b64): 
+    user_quote_in = quote_amount_in + lp_fee + protocol_fee + coin_creator_fee,
+    and the pool receives quote_amount_in + lp_fee. Protocol and creator fees
+    never enter the pool. Decoded SellEvent: the constant-product gross
+    (quote_amount_out) leaves the pool; the user receives gross minus fees.
+
+    Tape rows only store user_quote_amount_in/out. Then the whole canonical
+    venue fee is treated as leaving the pool, which is slightly less quote
+    than an LP-stays buy and is not the gross user amount.
+    """
+    if side == "buy":
+        if pool_quote_amount is not None and lp_fee is not None and pool_quote_amount > 0 and lp_fee >= 0:
+            return pool_quote_amount + lp_fee
+        if fee_ppm is None:
+            return None
+        net = after_fee(user_quote_lamports, fee_ppm)
+        return net if net > 0 else None
+    if side == "sell":
+        if pool_quote_amount is not None and pool_quote_amount > 0:
+            # Present only when the event was decoded: this is the CP gross.
+            if lp_fee is None and protocol_fee is None and creator_fee is None:
+                return pool_quote_amount
+            gross = pool_quote_amount
+            return gross if gross > 0 else None
+        if fee_ppm is None or user_quote_lamports <= 0 or fee_ppm >= PPM:
+            return None
+        # user_out = gross * (PPM - fee) / PPM, rounded down on the way out.
+        gross = (user_quote_lamports * PPM + (PPM - fee_ppm) - 1) // (PPM - fee_ppm)
+        return gross if gross > 0 else None
+    return None
+
+
+def reserves_with_our_buy(
+    *,
+    quote_lamports: int,
+    base_raw: int,
+    net_in_lamports: int,
+    tokens_raw: int,
+    same_venue: bool,
+) -> tuple[int, int] | None:
+    """Observed reserves plus our virtual buy, when it is still in this pool.
+
+    A later tape print does not contain our paper buy. Same-venue exits add
+    the net quote back and remove the tokens we still hold. A migrated pool
+    is a different book: our curve tokens are sold into it, not subtracted
+    from it.
+    """
+    if quote_lamports <= 0 or base_raw <= 0:
+        return None
+    if not same_venue:
+        return quote_lamports, base_raw
+    quote = quote_lamports + max(0, net_in_lamports)
+    base = base_raw - max(0, tokens_raw)
+    if quote <= 0 or base <= 0:
+        return None
+    return quote, base
 
 
 def after_fee(amount: int, fee_ppm: int) -> int:
@@ -192,6 +264,7 @@ def quote_sell(
     quote_lamports: int,
     base_raw: int,
     market_cap: float,
+    payable_quote_lamports: int | None = None,
 ) -> int | None:
     """Lamports of SOL back to the wallet after venue and portal fees.
 
@@ -213,10 +286,14 @@ def quote_sell(
         # The live tape also shows virtual quote below that floor while sells
         # are still paying SOL, so a reserve already under 30 SOL is the cap
         # itself. A reserve at or above 30 SOL can only pay the excess.
-        if quote_lamports >= INITIAL_VIRTUAL_SOL_LAMPORTS:
-            real_sol = quote_lamports - INITIAL_VIRTUAL_SOL_LAMPORTS
+        # payable_quote_lamports is the tape's reserve when the constant-product
+        # quote has our paper buy re-injected. That buy moves the price. It does
+        # not create real SOL the observed curve does not hold.
+        pay = quote_lamports if payable_quote_lamports is None else payable_quote_lamports
+        if pay >= INITIAL_VIRTUAL_SOL_LAMPORTS:
+            real_sol = pay - INITIAL_VIRTUAL_SOL_LAMPORTS
         else:
-            real_sol = quote_lamports
+            real_sol = pay
         if real_sol <= 0 or gross > real_sol:
             return None
     elif venue == "pumpswap":

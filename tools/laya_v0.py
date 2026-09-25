@@ -36,6 +36,7 @@ from tools.paper_curve_math import (
     bonding_real_tokens,
     market_cap_sol,
     quote_sell,
+    reserves_with_our_buy,
 )
 from tools.paper_price_path import (
     CreateSignal,
@@ -1237,26 +1238,44 @@ def _ladder_legs(
     return legs
 
 
-def _sell_tokens(path: MintPath, entry: Any, t_fill: int, tokens: int) -> int | None:
+def _sell_tokens(
+    path: MintPath,
+    entry: Any,
+    t_fill: int,
+    tokens: int,
+    *,
+    held_tokens: int | None = None,
+    extra_quote: int | None = None,
+) -> int | None:
+    """Sell `tokens` against the tape plus our still-open virtual buy.
+
+    Same helper as the scoreboard: a later print does not erase the position.
+    `held_tokens` is the unsold bag (including this leg). `extra_quote` is the
+    net SOL from our buy still sitting in this pool.
+    """
     state = state_as_of(path, t_fill, allow_anchor=True)
     if state is None or entry.venue is None or tokens <= 0:
         return None
-    same = (
-        state.t_recv_ms == entry.state_t_ms
-        and state.venue == entry.venue
-        and state.quote_reserve == entry.quote_reserve
-        and state.base_reserve == entry.base_reserve
+    held = int(entry.tokens_raw if held_tokens is None else held_tokens)
+    extra = int(entry.net_in_lamports if extra_quote is None else extra_quote)
+    book = reserves_with_our_buy(
+        quote_lamports=state.quote_reserve,
+        base_raw=state.base_reserve,
+        net_in_lamports=extra,
+        tokens_raw=held,
+        same_venue=state.venue == entry.venue,
     )
-    if same:
-        quote, base_raw, venue = entry.quote_after, entry.base_after, entry.venue
-    else:
-        quote, base_raw, venue = state.quote_reserve, state.base_reserve, state.venue
+    if book is None:
+        return None
+    quote, base_raw = book
+    venue = state.venue
     return quote_sell(
         venue=venue,
         tokens_raw=tokens,
         quote_lamports=quote,
         base_raw=base_raw,
         market_cap=market_cap_sol(quote, base_raw),
+        payable_quote_lamports=state.quote_reserve if venue == "pump_bonding" else None,
     )
 
 
@@ -1269,7 +1288,7 @@ def simulate_ladder(
     tape_end_ms: int,
     size_lamports: int,
 ) -> dict[str, Any]:
-    """Paper PnL for a scale-out. Legs use the tape reserves at each fill; our trade is not in the tape."""
+    """Paper PnL for a scale-out. Each leg sells into reserves that still hold our open buy."""
     empty = {
         "exit_status": "not_entered",
         "trigger": None,
@@ -1297,12 +1316,16 @@ def simulate_ladder(
         }
     sol_out = 0
     failed = False
+    held = int(entry.tokens_raw)
+    extra_quote = int(entry.net_in_lamports)
     for t_fill, tokens in fills:
-        got = _sell_tokens(path, entry, t_fill, tokens)
+        got = _sell_tokens(path, entry, t_fill, tokens, held_tokens=held, extra_quote=extra_quote)
         if got is None:
             failed = True
             continue
         sol_out += got
+        held -= tokens
+        extra_quote = max(0, extra_quote - got)
     attempts = len(fills)
     pnl = sol_out - size_lamports - PRIORITY_FEE_LAMPORTS * (1 + attempts)
     if failed:

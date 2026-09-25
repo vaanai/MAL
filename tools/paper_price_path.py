@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, TextIO
 
+from tools.paper_curve_math import pumpswap_pool_quote_delta, venue_fee_ppm
+
 VENUE_BONDING = "pump_bonding"
 VENUE_PUMPSWAP = "pumpswap"
 
@@ -106,6 +108,7 @@ class ScanStats:
             "kept": self.kept,
             "unresolved": self.unresolved,
             "non_wsol": self.non_wsol,
+            "non_wsol_reason": "quote_is_wsol is not true; excluded from SOL PnL",
             "other_mint": self.other_mint,
             "skipped_kept_mint": self.skipped_kept_mint,
             "t_min_ms": self.t_min_ms,
@@ -283,6 +286,15 @@ def load_creates(
     return found
 
 
+def _optional_int(row: dict[str, Any], key: str) -> int | None:
+    if key not in row or row.get(key) is None:
+        return None
+    try:
+        return int(row[key])
+    except (TypeError, ValueError):
+        return None
+
+
 def pumpswap_post_trade_reserves(
     *,
     side: str,
@@ -290,24 +302,39 @@ def pumpswap_post_trade_reserves(
     base_reserve: int,
     sol_lamports: int,
     token_raw: int,
+    fee_ppm: int | None = None,
+    pool_quote_amount: int | None = None,
+    lp_fee: int | None = None,
+    protocol_fee: int | None = None,
+    creator_fee: int | None = None,
 ) -> tuple[int, int] | None:
     """PumpSwap event reserves are the pool before that trade.
 
-    The next print's base moves by exactly this print's token_raw, so a fill
-    at this print's timestamp has to walk the post-trade book. Bonding-curve
-    reserves are already post-trade; do not call this for them. None means
-    the trade does not fit the printed reserves (leave them unchanged).
+    The next print's base moves by exactly this print's token_raw. Quote
+    moves by the pool-net amount, not by gross user_quote_amount_in/out.
+    Bonding-curve reserves are already post-trade; do not call this for them.
     """
     if token_raw <= 0 or sol_lamports <= 0 or quote_reserve <= 0 or base_reserve <= 0:
+        return None
+    delta = pumpswap_pool_quote_delta(
+        side=side,
+        user_quote_lamports=sol_lamports,
+        pool_quote_amount=pool_quote_amount,
+        lp_fee=lp_fee,
+        protocol_fee=protocol_fee,
+        creator_fee=creator_fee,
+        fee_ppm=fee_ppm,
+    )
+    if delta is None or delta <= 0:
         return None
     if side == "buy":
         if token_raw >= base_reserve:
             return None
-        return quote_reserve + sol_lamports, base_reserve - token_raw
+        return quote_reserve + delta, base_reserve - token_raw
     if side == "sell":
-        if sol_lamports >= quote_reserve:
+        if delta >= quote_reserve:
             return None
-        return quote_reserve - sol_lamports, base_reserve + token_raw
+        return quote_reserve - delta, base_reserve + token_raw
     return None
 
 
@@ -367,6 +394,11 @@ def print_from_trade_row(row: dict[str, Any]) -> tuple[str, TapePrint] | None:
             base_reserve=base,
             sol_lamports=sol_lamports,
             token_raw=token_raw,
+            fee_ppm=venue_fee_ppm(VENUE_PUMPSWAP, mcap),
+            pool_quote_amount=_optional_int(row, "pool_quote_amount"),
+            lp_fee=_optional_int(row, "lp_fee"),
+            protocol_fee=_optional_int(row, "protocol_fee"),
+            creator_fee=_optional_int(row, "creator_fee"),
         )
         if posted is not None:
             quote, base = posted
@@ -451,14 +483,15 @@ def stream_paths(creates: dict[str, CreateSignal], tape_paths: Iterable[Path]) -
                 t_raw = row.get("t_recv_ms")
                 if isinstance(t_raw, int):
                     stats.observe_t(t_raw)
-                if row.get("quote_is_wsol") is False:
+                # False, or a PumpSwap row with the flag missing (hourly files
+                # after rotation). Neither is priced as SOL.
+                flag = row.get("quote_is_wsol")
+                if flag is False or (row.get("venue") == "pumpswap" and flag is not True):
                     stats.non_wsol += 1
                     continue
                 mint = row.get("mint")
                 if mint not in wanted:
-                    if row.get("quote_is_wsol") is False:
-                        stats.non_wsol += 1
-                    elif not mint or row.get("mint_source") == "unresolved":
+                    if not mint or row.get("mint_source") == "unresolved":
                         stats.unresolved += 1
                     else:
                         stats.other_mint += 1
