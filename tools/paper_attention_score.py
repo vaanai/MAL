@@ -115,7 +115,7 @@ def merge_kinds(by_kind: dict[str, dict[str, dict[str, Any]]], kinds: Sequence[s
 
 
 def snapshot_now(*, check_orders: bool = True, order_limit: int = 40) -> list[dict[str, Any]]:
-    """One-shot lists. t_first_ms is now (late vs a live poller). paid_at_ms kept when the API has it."""
+    """One-shot lists. t_first_ms is now (late vs a live poller). paid_at_ms is a feature only."""
     http = HttpJson()
     t_seen = int(datetime.now(timezone.utc).timestamp() * 1000)
     rows: list[dict[str, Any]] = []
@@ -153,10 +153,10 @@ def snapshot_now(*, check_orders: bool = True, order_limit: int = 40) -> list[di
                 if key in seen:
                     continue
                 seen.add(key)
-                clock = cand.paid_at_ms if cand.paid_at_ms is not None else t_seen
-                rec = stored_attention(cand, clock, t_seen)
+                rec = stored_attention(cand, t_seen, t_seen)
                 rec["snapshot"] = True
-                rec["clock"] = "paid_at" if cand.paid_at_ms is not None else "now"
+                if cand.paid_at_ms is not None:
+                    rec["paid_at_feature"] = True
                 rows.append(rec)
     return rows
 
@@ -177,6 +177,29 @@ def _stub_create(mint: str, t_ms: int) -> CreateSignal:
 
 def bind_signal(path: MintPath, t_signal_ms: int) -> MintPath:
     return MintPath(create=replace(path.create, t_signal_ms=t_signal_ms), prints=path.prints)
+
+
+def causal_entry_ms(t_first_ms: int, first_print_ms: int | None) -> int:
+    """Buy signal before +latency: our first-seen, never before the first tape print.
+
+    Vendor stamps (Dex paymentTimestamp, stream start, pool_created_at) are lag
+    features only. They are not an entry clock.
+    """
+    if first_print_ms is None:
+        return int(t_first_ms)
+    return max(int(t_first_ms), int(first_print_ms))
+
+
+def first_print_ms(path: Any) -> int | None:
+    prints = getattr(path, "prints", None) or ()
+    if not prints:
+        return None
+    t_ms = getattr(prints[0], "t_recv_ms", None)
+    return int(t_ms) if isinstance(t_ms, int) else None
+
+
+def bind_attention_signal(path: MintPath, t_first_ms: int) -> MintPath:
+    return bind_signal(path, causal_entry_ms(t_first_ms, first_print_ms(path)))
 
 
 def _fmt(value: Any) -> str:
@@ -331,7 +354,7 @@ def run_score(
             path = paths.get(mint)
             if path is None:
                 continue
-            bound.append(bind_signal(path, int(row["t_first_ms"])))
+            bound.append(bind_attention_signal(path, int(row["t_first_ms"])))
             used += 1
         labels = simulate_book(
             bound,
@@ -345,30 +368,6 @@ def run_score(
         summary["paths"] = used
         result_books[name] = summary
         lags[name] = lag_rows(mint_map, paths)
-
-    # paid_at clock: Dex paid profile using paymentTimestamp when present
-    paid_clock: dict[str, dict[str, Any]] = {}
-    for mint, row in merge_kinds(by_kind, ("dex_paid_profile", "dex_profile")).items():
-        t_ms = row.get("paid_at_ms") or row.get("t_first_ms")
-        paid_clock[mint] = {**row, "t_first_ms": int(t_ms)}
-    bound_paid: list[MintPath] = []
-    for mint, row in paid_clock.items():
-        path = paths.get(mint)
-        if path is None:
-            continue
-        bound_paid.append(bind_signal(path, int(row["t_first_ms"])))
-    paid_labels = simulate_book(
-        bound_paid,
-        latencies=(HEADLINE_LATENCY,),
-        tape_end_ms=stats.t_max_ms,
-        size_lamports=size_lamports,
-        slippage_cap=slippage_cap,
-    )
-    paid_summary = summarize_book("dex_paid_at_clock", paid_labels, size_lamports)
-    paid_summary["signals"] = len(paid_clock)
-    paid_summary["paths"] = len(bound_paid)
-    result_books["dex_paid_at_clock"] = paid_summary
-    lags["dex_paid_at_clock"] = lag_rows(paid_clock, paths)
 
     board = {
         "schema": "paper_attention_score_v1",
@@ -392,7 +391,7 @@ def run_score(
         "timing": lags,
         "caveats": [
             "Poller first-seen is when this process observed the list, not when Dex/pump first showed it.",
-            "Snapshot rows have t_first_ms=now unless orders.paymentTimestamp is present.",
+            "Entry is max(t_first_ms, first tape print) + 1s. Never Dex paymentTimestamp or other vendor stamps.",
             "pump.fun GET /coins/king-of-the-hill is 404; pump_koth is hot-coin plus graduating rank 0.",
             "n is one 0.05 SOL fill per mint. Totals are not a bankroll.",
             "One UTC day of tape. Rugs kept. Real fees. Same simulator as PR #76.",
@@ -461,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tape", nargs="+", type=Path, required=True)
     parser.add_argument("--creates", nargs="+", type=Path, required=True)
     parser.add_argument("--attention", nargs="*", type=Path, default=[])
-    parser.add_argument("--snapshot", action="store_true", help="also poll live lists once (t_first=now except paid_at)")
+    parser.add_argument("--snapshot", action="store_true", help="also poll live lists once (t_first=now; paid_at is a feature)")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--size-sol", type=float, default=0.05)
     args = parser.parse_args(argv)
