@@ -125,6 +125,11 @@ class ParseAndFifoTests(unittest.TestCase):
         self.assertIsNone(parse_trade(bad))
         nowsol = dict(base, quote_is_wsol=False)
         self.assertIsNone(parse_trade(nowsol))
+        missing = dict(base, venue="pumpswap")
+        missing.pop("quote_is_wsol", None)
+        self.assertIsNone(parse_trade(missing))
+        explicit = dict(base, venue="pumpswap", quote_is_wsol=True)
+        self.assertIsNotNone(parse_trade(explicit))
         zero = dict(base, sol_lamports=0)
         self.assertIsNone(parse_trade(zero))
 

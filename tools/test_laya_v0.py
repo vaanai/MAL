@@ -15,8 +15,12 @@ from tools.laya_v0 import (
     CANDIDATE_FREEZE_MS,
     ENTRY_LATENCY_MS,
     FROZEN_CANDIDATES,
+    PROMOTION_DROP_N,
+    PROMOTION_MIN_DAYS,
     PROMOTION_MIN_N,
     PROMOTION_RULE,
+    RankWindow,
+    causal_take_indices,
     QUOTE_WSOL_LIVE_AT,
     Booster,
     BookTrade,
@@ -26,6 +30,7 @@ from tools.laya_v0 import (
     MintBook,
     Scored,
     _ladder_legs,
+    _topk,
     barrier_outcome,
     causal_buyer_triggers,
     decision_times,
@@ -39,6 +44,7 @@ from tools.laya_v0 import (
     choose_rule,
     evaluate_entry,
     flow_as_of,
+    flow_from_row,
     load_books,
     local_features,
     run_models,
@@ -526,6 +532,34 @@ class LabelTests(unittest.TestCase):
             self.assertLess(max(times[i] for i in train), min(times[i] for i in test))
             self.assertTrue(set(train).isdisjoint(test))
 
+    def test_sampled_latency_is_not_the_flat_one_second_seed(self) -> None:
+        flat = _book([_flow(T0 + 1_000, trader="W", sol=1_000_000_000)])
+        books = _books(flat)
+        rows, _ = build_feature_rows(books, tape_end_ms=T0 + 180_000, offsets_ms=(5_000,))
+        attach_labels(books, rows, tape_end_ms=T0 + 180_000, latency_draws=[5_000] * len(rows))
+        row = rows[0]
+        self.assertEqual(row.entry_t_ms, row.decision_t_ms + 5_000)
+        self.assertNotEqual(row.entry_t_ms, row.decision_t_ms + ENTRY_LATENCY_MS)
+
+    def test_pumpswap_without_wsol_never_becomes_a_print(self) -> None:
+        base = {
+            "type": "trade",
+            "mint": "MintA",
+            "venue": "pumpswap",
+            "t_recv_ms": T0,
+            "quote_reserve": Q0,
+            "base_reserve": B0,
+            "side": "buy",
+            "sol_lamports": 1_000_000_000,
+            "slot": 1,
+            "event_index": 1,
+            "price_sol": 1.0,
+            "market_cap_sol": 1.0,
+        }
+        self.assertIsNone(flow_from_row(base))
+        self.assertIsNone(flow_from_row(dict(base, quote_is_wsol=False)))
+        self.assertIsNotNone(flow_from_row(dict(base, quote_is_wsol=True)))
+
     def test_flat_book_loses_and_a_rug_stays_in_the_label(self) -> None:
         flat = _book([_flow(T0 + 1_000, trader="W", sol=1_000_000_000)])
         rug = _book(
@@ -553,12 +587,14 @@ class LabelTests(unittest.TestCase):
         self.assertEqual(rug_row.features["f_n_sell"], 0.0)
 
     def test_topk_keeps_rug_losses(self) -> None:
+        # The causal window warms up on the early scores, then takes the rug because it is the top of the window.
         scored = [
-            Scored(0, "5", 0.99, _stuck_loss(SIZE), "hold_30s", "a", 1, 0),
-            Scored(0, "5", 0.10, 1_000, "hold_30s", "b", 2, 1),
+            Scored(0, "5", 0.10, 1_000, "hold_30s", f"m{i}", i, 1) for i in range(99)
         ]
+        scored.append(Scored(0, "5", 0.99, _stuck_loss(SIZE), "hold_30s", "rug", 1_000, 0))
         table = _selection_table(scored)
         top = table[0]["top"][0]
+        self.assertEqual(top["fraction"], 0.01)
         self.assertEqual(top["n"], 1)
         self.assertLess(top["total_sol"], 0)
         self.assertAlmostEqual(top["total_sol"], _stuck_loss(SIZE) / 1_000_000_000)
@@ -665,13 +701,42 @@ class RobustBookTests(unittest.TestCase):
         self.assertLess(short["n"], PROMOTION_MIN_N)
         self.assertFalse(short["promote"])
 
-        good = book_stats([_bt(f"m{i}", 0.001, DAY) for i in range(PROMOTION_MIN_N)])
-        self.assertGreaterEqual(good["n"], PROMOTION_MIN_N)
-        self.assertGreater(good["mean_ci90_sol"][0], 0)
-        self.assertGreater(good["total_ex_best_sol"], 0)
+        # Audit fixture: 100 identical winners on one UTC day. CI and the tail
+        # are positive, and one day is a "majority". That is not a promote.
+        one_day = book_stats([_bt(f"m{i}", 0.001, DAY) for i in range(PROMOTION_MIN_N)])
+        self.assertGreaterEqual(one_day["n"], PROMOTION_MIN_N)
+        self.assertGreater(one_day["mean_ci90_sol"][0], 0)
+        self.assertGreater(one_day["total_ex_top3_sol"], 0)
+        self.assertTrue(one_day["majority_days_positive"])
+        self.assertEqual(one_day["n_days"], 1)
+        self.assertLess(one_day["n_days"], PROMOTION_MIN_DAYS)
+        self.assertFalse(one_day["promote"])
+
+        # Audit fixture: a second +5 SOL tail survives dropping only the best trade.
+        # One day still cannot promote.
+        second_tail = [_bt(f"s{i}", 0.0002, DAY) for i in range(98)]
+        second_tail.append(_bt("tail1", 5.0, DAY))
+        second_tail.append(_bt("tail2", 5.0, DAY))
+        tails = book_stats(second_tail)
+        self.assertEqual(tails["n"], 100)
+        self.assertEqual(tails["n_days"], 1)
+        self.assertGreater(tails["mean_ci90_sol"][0], 0)
+        self.assertGreater(tails["total_ex_best_sol"], 0)
+        self.assertFalse(tails["promote"])
+
+        spread = []
+        for day_i in range(PROMOTION_MIN_DAYS):
+            when = DAY + day_i * 86_400_000
+            spread.extend(_bt(f"d{day_i}m{i}", 0.001, when) for i in range(20))
+        good = book_stats(spread)
+        self.assertEqual(good["n"], PROMOTION_MIN_N)
+        self.assertGreaterEqual(good["n_days"], PROMOTION_MIN_DAYS)
         self.assertTrue(good["majority_days_positive"])
+        self.assertGreater(good["total_ex_top3_sol"], 0)
         self.assertTrue(good["promote"])
         self.assertIn(str(PROMOTION_MIN_N), PROMOTION_RULE)
+        self.assertIn(str(PROMOTION_MIN_DAYS), PROMOTION_RULE)
+        self.assertIn(str(PROMOTION_DROP_N), PROMOTION_RULE)
 
         # Every token mean is positive, so the mean CI stays above 0, but the book
         # without its best trade is negative.
@@ -979,14 +1044,16 @@ class FrozenCandidateTests(unittest.TestCase):
 
         buyers = by_id["buyers_8_top5_ladder_2x"]
         self.assertEqual(buyers["n_pool"], 20)
-        self.assertEqual(buyers["n"], 1)
+        # Top 5% waits for 20 scores. The early highs are warmup, and the 20th is not a take.
+        self.assertEqual(buyers["n"], 0)
         self.assertEqual(buyers["train_labeled"], len(pre))
         self.assertTrue(all(t > freeze for t in buyers["selected_t_ms"]))
         self.assertNotIn("at-buyers", buyers["selected_mints"])
 
         clock = by_id["t30_top1_hold_30s"]
         self.assertEqual(clock["n_pool"], 20)
-        self.assertEqual(clock["n"], 1)
+        # Top 1% needs 100 scores at this clock. Twenty holdout rows never leave warmup.
+        self.assertEqual(clock["n"], 0)
         self.assertEqual(clock["train_labeled"], len(pre))
         self.assertNotIn("at-grid", clock["selected_mints"])
 
@@ -1013,6 +1080,20 @@ class FrozenCandidateTests(unittest.TestCase):
             self.assertEqual(by_id[cid]["selected_mints"], again[cid]["selected_mints"])
             self.assertEqual(by_id[cid]["train_labeled"], again[cid]["train_labeled"])
         self.assertEqual(again["buyers_8_top5_ladder_2x"]["train_labeled"], len(pre))
+
+    def test_holdout_rank_matches_the_live_window(self) -> None:
+        from tools.forward_paper import _RankWindow
+
+        self.assertIs(RankWindow, _RankWindow)
+        scores = [0.1] * 273
+        for index in (50, 51, 52):
+            scores[index] = 0.99
+        live = _RankWindow(0.01)
+        live_takes = [i for i, score in enumerate(scores) if live.consider(score) == "take"]
+        self.assertEqual(causal_take_indices(scores, 0.01), live_takes)
+        self.assertEqual(live_takes, [])
+        pooled = _topk([(score, i) for i, score in enumerate(scores)], 0.01)
+        self.assertEqual(pooled, [50, 51, 52])
 
 
 if __name__ == "__main__":
