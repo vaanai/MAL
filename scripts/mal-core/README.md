@@ -23,5 +23,7 @@ Host bootstrap helpers. **No secrets in this tree.**
 | [forward-paper.sh](forward-paper.sh) | host | Tail the tape into paper books (`/var/lib/mal/paper/forward-paper`). No keys. Does not edit the recorder |
 | [mal-forward-paper.service](mal-forward-paper.service) | host (systemd --user) | Long-running forward paper service |
 | [forward-paper.json](forward-paper.json) | host | Books: buy-all, LAYA 0.6 / 0.7, migrate tp50/sl30 |
+| [funding-graph.sh](funding-graph.sh) | host | Resolve creator and early-buyer funders into `/var/lib/mal/graph`. Does **not** touch the recorder or forward-paper |
+| [mal-funding-graph.service](mal-funding-graph.service) | host (systemd --user) | Nice'd public-RPC enricher. Helius only if `HELIUS_API_KEY` is set |
 
 Runbook: [tools/oracle_ssh_smoke.md](../../tools/oracle_ssh_smoke.md). On-host note: `/var/lib/mal/eng/BOOTSTRAP.md`.

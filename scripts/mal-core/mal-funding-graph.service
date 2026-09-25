@@ -1,0 +1,20 @@
+[Unit]
+Description=MAL paper funding graph (public RPC, does not touch the trade tape or forward paper)
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=simple
+Nice=19
+IOSchedulingClass=idle
+WorkingDirectory=/var/lib/mal/paper/funding-graph/src
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+ExecStart=/var/lib/mal/paper/funding-graph/funding-graph.sh
+Restart=on-failure
+RestartSec=15
+StandardOutput=append:/var/lib/mal/logs/funding-graph.log
+StandardError=append:/var/lib/mal/logs/funding-graph.log
+
+[Install]
+WantedBy=default.target

@@ -22,14 +22,22 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
+GRAPH="${MAL_GRAPH_DIR:-/var/lib/mal/graph}"
+GRAPH_ARGS=()
+if [[ -d "${GRAPH}" ]]; then
+  GRAPH_ARGS+=(--graph-dir "${GRAPH}")
+fi
+
 cd "${SRC}"
 if command -v ionice >/dev/null 2>&1; then
   exec nice -n 19 ionice -c 3 "${PY}" -m tools.laya_v0 \
     --tape-dir "${TAPE}" \
     --creates-dir "${CREATES}" \
-    --output-dir "${OUT}"
+    --output-dir "${OUT}" \
+    "${GRAPH_ARGS[@]}"
 fi
 exec nice -n 19 "${PY}" -m tools.laya_v0 \
   --tape-dir "${TAPE}" \
   --creates-dir "${CREATES}" \
-  --output-dir "${OUT}"
+  --output-dir "${OUT}" \
+  "${GRAPH_ARGS[@]}"
