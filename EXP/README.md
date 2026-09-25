@@ -50,6 +50,7 @@ Maintain a table in this README when experiments exist:
 | [EXP-002](EXP-002-evaluate-runner-v0.md) | Evaluate→runner v0 (rules-only paper) | **INCOMPLETE closed** (vacuous v0 filter; tooling OK) | Tooling only; see EXP-002b |
 | [EXP-002b](EXP-002b-evaluate-rules-v1.md) | Evaluate→runner rules v1 (stricter) | **FAIL closed** (~81% reject; adverse lift) | **FAIL_NO_LIFT_VS_RANDOM**; see EXP-002c |
 | [EXP-002c](EXP-002c-rules-v2-adverse-selection.md) | Evaluate rules v2 (anti-adverse-selection) | **INCOMPLETE closed** (~63% reject; lift FAIL) | Proof stamp **INCOMPLETE** (reject_rate_band); DISCOVERY then 002d or pause |
+| [EXP-002c addendum](EXP-002c-addendum-honest-return-distributions.md) | Honest median/p10/p90/SOL rescore (125 + 350 bps) | **Scored** (Oracle 2026-09-20/21); 09-24 public-RPC backfill 429-limited | **All listed filters KILL** vs spine @60s after 350 bps; means were outlier-dominated; **no retune** |
 | [EXP-003](EXP-003-post-create-marks.md) | Post-create marks onto sealed observe | Schema + coverage CLI landed (#14) | Pending RPC producer + READY coverage |
 | [EXP-004](EXP-004-graph-creator-recurrence-v0.md) | Graph creator-recurrence Discovery (H-G1…H-G4) | **DIRECTIONAL_WATCH** (Oracle 2026-09-20/21 courier); H-G2 **kill** @60s | No promote; see EXP-004b |
 | [EXP-004b](EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) | NH-G1a ordinal prior-mint depth (Graph child) | **Scored** (Oracle 2026-09-20/21 sealed) | **KILL** cross-day — ordinal lane **parked**; NH-G3a **not next** (new council pick) |
