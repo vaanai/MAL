@@ -18,6 +18,7 @@ from tools.paper_curve_math import (
     TOKEN_ACCOUNT_RENT_LAMPORTS,
     TOKEN_RAW_OFFSET,
     after_fee,
+    pumpswap_pool_quote_delta,
     pumpswap_sol_fee_ppm,
     quote_buy,
     quote_sell,
@@ -195,6 +196,20 @@ class CurveMathTests(unittest.TestCase):
         self.assertGreater(out, 0)
         self.assertLess(out, 5_800_000_000)
 
+    def test_paper_buy_does_not_make_an_empty_curve_payable(self) -> None:
+        # Re-injecting our net quote above the 30 SOL floor must not create
+        # real SOL the tape reserve does not hold.
+        self.assertIsNone(
+            quote_sell(
+                venue="pump_bonding",
+                tokens_raw=1_500_000_000_000,
+                quote_lamports=30_000_000_000 + 49_128_125,
+                base_raw=B0 - 1_500_000_000_000,
+                market_cap=28.0,
+                payable_quote_lamports=30_000_000_000,
+            )
+        )
+
 
 class RecordedFixtureTests(unittest.TestCase):
     def test_recorded_bonding_trade_is_a_path_point(self) -> None:
@@ -256,7 +271,9 @@ class RecordedFixtureTests(unittest.TestCase):
         assert parsed is not None
         _, pr = parsed
         self.assertEqual(pr.base_reserve, base - token_raw)
-        self.assertEqual(pr.quote_reserve, quote + sol)
+        # Tape row has no fee split, so quote rises by the canonical net, not the gross user amount.
+        self.assertGreater(pr.quote_reserve, quote)
+        self.assertLess(pr.quote_reserve - quote, sol)
         self.assertGreater(pr.price_sol, 1e-4)
         path = _path(
             [pr],
@@ -267,7 +284,7 @@ class RecordedFixtureTests(unittest.TestCase):
         )
         got = simulate_book([path], latencies=(0.5,), tape_end_ms=T0 + 120_000, rules=EXIT_RULES[:1])[0]
         self.assertEqual(got["entry_status"], "missed_slippage")
-        self.assertIsNone(got["pnl_lamports"])
+        self.assertEqual(got["pnl_lamports"], -PRIORITY_FEE_LAMPORTS)
         self.assertNotEqual(got.get("entry_tokens_raw"), 146_806_388_736)
 
     def test_bonding_reserves_are_not_advanced_again(self) -> None:
@@ -299,8 +316,19 @@ class RecordedFixtureTests(unittest.TestCase):
             base_reserve=1_000_000_000_000,
             sol_lamports=50_000_000,
             token_raw=20_000_000_000,
+            fee_ppm=0,
         )
         self.assertEqual(posted, (9_950_000_000, 1_020_000_000_000))
+        net = pumpswap_post_trade_reserves(
+            side="sell",
+            quote_reserve=10_000_000_000,
+            base_reserve=1_000_000_000_000,
+            sol_lamports=50_000_000,
+            token_raw=20_000_000_000,
+            fee_ppm=12_500,
+        )
+        assert net is not None
+        self.assertLess(net[0], 9_950_000_000)
         self.assertIsNone(
             pumpswap_post_trade_reserves(
                 side="buy",
@@ -310,6 +338,122 @@ class RecordedFixtureTests(unittest.TestCase):
                 token_raw=100,
             )
         )
+
+    def test_decoded_pumpswap_buy_uses_pool_net_not_user_quote(self) -> None:
+        ev = decode_program_data(base64.b64decode(_b64("pumpswap_buy_event.b64")))
+        assert ev is not None
+        user = ev["sol_lamports"]
+        quote_in = ev["pool_quote_amount"]
+        lp = ev["lp_fee"]
+        proto = ev["protocol_fee"]
+        creator = ev["creator_fee"]
+        self.assertEqual(user, quote_in + lp + proto + creator)
+        delta = pumpswap_pool_quote_delta(
+            side="buy",
+            user_quote_lamports=user,
+            pool_quote_amount=quote_in,
+            lp_fee=lp,
+            protocol_fee=proto,
+            creator_fee=creator,
+        )
+        self.assertEqual(delta, quote_in + lp)
+        self.assertLess(delta, user)
+        posted = pumpswap_post_trade_reserves(
+            side="buy",
+            quote_reserve=ev["quote_reserve"],
+            base_reserve=ev["base_reserve"],
+            sol_lamports=user,
+            token_raw=ev["token_raw"],
+            pool_quote_amount=quote_in,
+            lp_fee=lp,
+            protocol_fee=proto,
+            creator_fee=creator,
+        )
+        assert posted is not None
+        self.assertEqual(posted[0], ev["quote_reserve"] + quote_in + lp)
+        self.assertLess(posted[0], ev["quote_reserve"] + user)
+        sell = decode_program_data(base64.b64decode(_b64("pumpswap_sell_event.b64")))
+        assert sell is not None
+        gross = sell["pool_quote_amount"]
+        self.assertEqual(
+            gross,
+            sell["sol_lamports"] + sell["lp_fee"] + sell["protocol_fee"] + sell["creator_fee"],
+        )
+        # Constant product on the pre-trade pool matches the event gross.
+        pred = sell["token_raw"] * sell["quote_reserve"] // (sell["base_reserve"] + sell["token_raw"])
+        self.assertEqual(pred, gross)
+
+    def test_later_print_does_not_erase_our_buy(self) -> None:
+        entry_px = _print(T0)
+        buy = quote_buy(
+            venue="pump_bonding",
+            size_lamports=SIZE,
+            quote_lamports=Q0,
+            base_raw=B0,
+            market_cap=entry_px.market_cap_sol,
+        )
+        assert buy is not None
+        # Same reserves, later timestamp. The old check only kept our buy when
+        # the exit print was the entry print, so this reprint sold into the pre-buy curve.
+        reprint = _print(T0 + 5_000)
+        solo = simulate_book([_path([entry_px])], latencies=(1.0,), tape_end_ms=T0 + 120_000, rules=EXIT_RULES[:1])[0]
+        again = simulate_book(
+            [_path([entry_px, reprint])],
+            latencies=(1.0,),
+            tape_end_ms=T0 + 120_000,
+            rules=EXIT_RULES[:1],
+        )[0]
+        self.assertEqual(solo["exit_status"], "realized")
+        self.assertEqual(again["exit_status"], "realized")
+        self.assertLess(solo["pnl_lamports"], 0)
+        self.assertEqual(again["pnl_lamports"], solo["pnl_lamports"])
+        self.assertEqual(again["exit_sol_lamports"], 
+            quote_sell(
+                venue="pump_bonding",
+                tokens_raw=buy.tokens_raw,
+                quote_lamports=buy.quote_after,
+                base_raw=buy.base_after,
+                market_cap=entry_px.market_cap_sol,
+                payable_quote_lamports=Q0,
+            ))
+        erased = quote_sell(
+            venue="pump_bonding",
+            tokens_raw=buy.tokens_raw,
+            quote_lamports=Q0,
+            base_raw=B0,
+            market_cap=entry_px.market_cap_sol,
+        )
+        self.assertNotEqual(again["exit_sol_lamports"], erased)
+
+        # A 1 SOL buy after us. The exit book still contains our net quote and
+        # not our tokens. It is not the raw tape print.
+        later_quote = Q0 + 1_000_000_000
+        later_base = Q0 * B0 // later_quote
+        later = _print(T0 + 5_000, quote=later_quote, base=later_base)
+        with_later = simulate_book(
+            [_path([entry_px, later])],
+            latencies=(1.0,),
+            tape_end_ms=T0 + 120_000,
+            rules=EXIT_RULES[:1],
+        )[0]
+        kept = quote_sell(
+            venue="pump_bonding",
+            tokens_raw=buy.tokens_raw,
+            quote_lamports=later_quote + buy.net_in_lamports,
+            base_raw=later_base - buy.tokens_raw,
+            market_cap=later.market_cap_sol,
+            payable_quote_lamports=later_quote,
+        )
+        raw = quote_sell(
+            venue="pump_bonding",
+            tokens_raw=buy.tokens_raw,
+            quote_lamports=later_quote,
+            base_raw=later_base,
+            market_cap=later.market_cap_sol,
+        )
+        self.assertEqual(with_later["exit_status"], "realized")
+        self.assertEqual(with_later["exit_sol_lamports"], kept)
+        self.assertNotEqual(with_later["exit_sol_lamports"], raw)
 
     def test_recorded_pumpswap_without_a_mint_is_not_a_path_point(self) -> None:
         ev = decode_program_data(base64.b64decode(_b64("pumpswap_sell_event.b64")))
@@ -377,7 +521,11 @@ class FillAndExitTests(unittest.TestCase):
         stats = board["books"]["buy_every_create"]["by_exit"]["hold_30s"]
         self.assertEqual(stats["n"], 1)
         self.assertEqual(stats["no_exit_n"], 1)
-        self.assertAlmostEqual(stats["total_sol"], row["pnl_sol"])
+        # Headline mixes the 15% fail rate. The 0% column is the stuck loss itself.
+        sens = stats["fail_sensitivity"]
+        self.assertAlmostEqual(sens["0"]["symmetric_total_sol"], row["pnl_sol"])
+        mixed = round((1.0 - 0.15) * row["pnl_lamports"] + 0.15 * (-PRIORITY_FEE_LAMPORTS))
+        self.assertEqual(stats["total_lamports"], mixed)
         self.assertEqual(stats["win_rate"], 0.0)
 
     def test_slippage_miss_is_not_counted_as_a_loss(self) -> None:
@@ -386,7 +534,7 @@ class FillAndExitTests(unittest.TestCase):
         path = _path([calm, hot])
         rows = simulate_book([path], latencies=(1.0,), tape_end_ms=T0 + 120_000, rules=EXIT_RULES[:1])
         self.assertEqual(rows[0]["entry_status"], "missed_slippage")
-        self.assertIsNone(rows[0]["pnl_lamports"])
+        self.assertEqual(rows[0]["pnl_lamports"], -PRIORITY_FEE_LAMPORTS)
         board = build_scoreboard(
             rows,
             creates_n=1,
@@ -397,9 +545,9 @@ class FillAndExitTests(unittest.TestCase):
             latencies=(1.0,),
         )
         stats = board["books"]["buy_every_create"]["by_exit"]["hold_30s"]
-        self.assertEqual(stats["n"], 0)
+        self.assertEqual(stats["n"], 1)
         self.assertEqual(stats["miss_n"], 1)
-        self.assertEqual(stats["total_sol"], 0.0)
+        self.assertAlmostEqual(stats["total_sol"], -PRIORITY_FEE_LAMPORTS / 1_000_000_000)
 
     def test_censored_hold_is_outside_realized_n(self) -> None:
         path = _path([_print(T0)])
@@ -521,10 +669,10 @@ class FillAndExitTests(unittest.TestCase):
         self.assertGreater(win["pnl_lamports"], 0)
         self.assertEqual(rug["exit_status"], "no_exit_liquidity")
         self.assertEqual(_symmetric_ev(win, 0.0, SIZE), float(win["pnl_lamports"]))
-        self.assertLess(_symmetric_ev(win, 0.30, SIZE), win["pnl_lamports"])
-        self.assertGreater(_symmetric_ev(rug, 0.30, SIZE), rug["pnl_lamports"])
-        self.assertEqual(_exit_fail_only_ev(rug, 0.30, SIZE), float(rug["pnl_lamports"]))
-        self.assertLess(_exit_fail_only_ev(win, 0.30, SIZE), win["pnl_lamports"])
+        self.assertLess(_symmetric_ev(win, 0.25, SIZE), win["pnl_lamports"])
+        self.assertGreater(_symmetric_ev(rug, 0.25, SIZE), rug["pnl_lamports"])
+        self.assertEqual(_exit_fail_only_ev(rug, 0.25, SIZE), float(rug["pnl_lamports"]))
+        self.assertLess(_exit_fail_only_ev(win, 0.25, SIZE), win["pnl_lamports"])
         board = build_scoreboard(
             rows,
             creates_n=2,
@@ -537,11 +685,15 @@ class FillAndExitTests(unittest.TestCase):
         stats = board["books"]["buy_every_create"]["by_exit"]["hold_30s"]
         self.assertEqual(stats["n"], 2)
         self.assertEqual(stats["no_exit_n"], 1)
-        self.assertAlmostEqual(stats["total_lamports"], win["pnl_lamports"] + rug["pnl_lamports"])
         sens = stats["fail_sensitivity"]
-        self.assertAlmostEqual(sens["0"]["symmetric_total_sol"], stats["total_sol"])
-        self.assertGreater(sens["0.3"]["symmetric_total_sol"], stats["total_sol"])
-        self.assertLess(sens["0.3"]["exit_fail_only_total_sol"], stats["total_sol"])
+        raw = (win["pnl_lamports"] + rug["pnl_lamports"]) / 1_000_000_000
+        self.assertAlmostEqual(sens["0"]["symmetric_total_sol"], raw)
+        self.assertIn("0.1", sens)
+        self.assertIn("0.25", sens)
+        self.assertNotIn("0.3", sens)
+        # 25% failed entries only burn priority, so a rug-heavy book looks better than the landed tape.
+        self.assertGreater(sens["0.25"]["symmetric_total_sol"], sens["0"]["symmetric_total_sol"])
+        self.assertLess(sens["0.25"]["exit_fail_only_total_sol"], sens["0"]["symmetric_total_sol"])
 
     def test_random_subsample_is_seeded(self) -> None:
         first = random_mints([f"m{i}" for i in range(10)], fraction=0.2, seed=1)
@@ -612,6 +764,8 @@ class CreateAndTapeLoaderTests(unittest.TestCase):
         trade_early = dict(trade_late, t_recv_ms=t_ms + 10, slot=1, side="buy", sol_lamports=20)
         other = dict(trade_late, mint="Other")
         non_sol = dict(trade_late, mint="MintA", quote_is_wsol=False, venue="pumpswap")
+        missing_flag = dict(trade_late, mint="MintA", venue="pumpswap", t_recv_ms=t_ms + 30)
+        del missing_flag["quote_is_wsol"]
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -626,6 +780,7 @@ class CreateAndTapeLoaderTests(unittest.TestCase):
                         json.dumps(trade_late),
                         json.dumps(other),
                         json.dumps(non_sol),
+                        json.dumps(missing_flag),
                         json.dumps(trade_early),
                     ]
                 )
@@ -637,7 +792,8 @@ class CreateAndTapeLoaderTests(unittest.TestCase):
             paths, stats = stream_paths(loaded, [tape])
             self.assertEqual(stats.bad_json, 1)
             self.assertEqual(stats.other_mint, 1)
-            self.assertEqual(stats.non_wsol, 1)
+            self.assertEqual(stats.non_wsol, 2)
+            self.assertIn("excluded from SOL PnL", stats.as_dict()["non_wsol_reason"])
             self.assertEqual(stats.kept, 2)
             prints = paths["MintA"].prints
             self.assertEqual([p.t_recv_ms for p in prints], [t_ms + 10, t_ms + 20])

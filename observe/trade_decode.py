@@ -180,6 +180,11 @@ def _decode_buy(raw: bytes) -> dict[str, Any] | None:
         "base_reserve": _u64(raw, 48),
         "quote_mint": None,
         "quote_is_wsol": None,
+        # CP input. Pool quote gains this plus lp_fee; protocol and creator stay out.
+        "pool_quote_amount": _u64(raw, 64),
+        "lp_fee": _u64(raw, 80),
+        "protocol_fee": _u64(raw, 96),
+        "creator_fee": _u64(raw, 352) if len(raw) >= 360 else 0,
     }
 
 
@@ -207,6 +212,11 @@ def _decode_sell(raw: bytes) -> dict[str, Any] | None:
         "quote_mint": None,
         "quote_is_wsol": None,
         "supply_raw": supply_raw,
+        # CP gross that leaves the pool. User receives this minus fees.
+        "pool_quote_amount": _u64(raw, 64),
+        "lp_fee": _u64(raw, 80),
+        "protocol_fee": _u64(raw, 96),
+        "creator_fee": _u64(raw, 352) if len(raw) >= 360 else 0,
     }
 
 
@@ -292,6 +302,10 @@ def seal_trade(
         "base_reserve": base,
         "quote_mint": decoded.get("quote_mint"),
         "quote_is_wsol": quote_is_wsol,
+        "pool_quote_amount": decoded.get("pool_quote_amount"),
+        "lp_fee": decoded.get("lp_fee"),
+        "protocol_fee": decoded.get("protocol_fee"),
+        "creator_fee": decoded.get("creator_fee"),
         "pool": decoded.get("pool"),
         "slot": int(slot),
         "signature": signature,
