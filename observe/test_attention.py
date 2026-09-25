@@ -179,6 +179,14 @@ class FirstSeenTests(unittest.TestCase):
         c = attention_record_from_candidate(other, idx, 3000)
         self.assertIsNotNone(c)
         self.assertEqual(c["kind"], "pump_live")
+        self.assertFalse(c["snapshot"])
+        snap = attention_record_from_candidate(
+            Candidate(mint="Snap1111111111111111111111111111111111pump", kind="dex_ad", source="z"),
+            FirstSeenIndex(),
+            4000,
+            snapshot=True,
+        )
+        self.assertTrue(snap["snapshot"])
 
     def test_reload_keeps_earlier_stamp(self) -> None:
         idx = FirstSeenIndex()

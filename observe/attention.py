@@ -49,6 +49,12 @@ HTTP_TIMEOUT_S = 20.0
 SEEN_RELOAD_FILES = 72
 ATTENTION_RAW_RE = re.compile(r"^attention-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl$")
 ATTENTION_FILE_RE = re.compile(r"^attention-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl(\.zst)?$")
+POLLER_START_NAME = "poller_start.json"
+STARTUP_SNAPSHOT_NAME = "startup_snapshot.jsonl"
+# First-poll stagger is ~2s × N sources; Dex orders drain a few minutes after.
+# Used only to reconstruct the startup set from files that predate snapshot flags.
+SNAPSHOT_GRACE_MS = 5 * 60 * 1000
+LAYA_JOIN_SCHEMA = "attention_laya_join_v1"
 
 DEX_PROFILES = "https://api.dexscreener.com/token-profiles/latest/v1"
 DEX_BOOSTS_LATEST = "https://api.dexscreener.com/token-boosts/latest/v1"
@@ -187,6 +193,10 @@ def _coin_extra(coin: dict[str, Any]) -> dict[str, Any]:
         "is_currently_live",
         "num_participants",
         "livestream_title",
+        "playlist_updated_at",
+        "thumbnail_updated_at",
+        "livestream_started_at",
+        "start_time",
         "complete",
         "boost_mode",
         "last_trade_timestamp",
@@ -385,6 +395,7 @@ def parse_gecko_trending(payload: object) -> list[Candidate]:
                 kind="gecko_trending",
                 source="gecko_trending_pools",
                 rank=i,
+                paid_at_ms=parse_time_ms(attrs.get("pool_created_at")),
                 extra=extra,
             )
         )
@@ -583,6 +594,246 @@ def stored_attention(cand: Candidate, t_first_ms: int, t_seen_ms: int) -> dict[s
         rec["paid_at_ms"] = cand.paid_at_ms
     for key, val in cand.extra.items():
         rec[key] = val
+    event_t = event_time_ms(rec)
+    if event_t is not None:
+        rec["event_t_ms"] = event_t
+    return rec
+
+
+def event_time_keys(kind: str) -> tuple[str, ...]:
+    """Native clocks on the event itself, not our first-seen."""
+    if kind.startswith("dex_"):
+        return ("event_t_ms", "paid_at_ms")
+    if kind == "pump_live":
+        return (
+            "event_t_ms",
+            "playlist_updated_at",
+            "thumbnail_updated_at",
+            "livestream_started_at",
+            "start_time",
+        )
+    if kind == "pump_koth":
+        return ("event_t_ms", "king_of_the_hill_timestamp", "paid_at_ms")
+    if kind == "gecko_trending":
+        return ("event_t_ms", "pool_created_at", "paid_at_ms")
+    return (
+        "event_t_ms",
+        "paid_at_ms",
+        "king_of_the_hill_timestamp",
+        "pool_created_at",
+        "playlist_updated_at",
+        "thumbnail_updated_at",
+        "created_timestamp",
+    )
+
+
+def event_time_ms(row: dict[str, Any]) -> int | None:
+    kind = row.get("kind") if isinstance(row.get("kind"), str) else ""
+    for key in event_time_keys(kind):
+        parsed = parse_time_ms(row.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def poller_start_path(output_dir: Path) -> Path:
+    return output_dir / POLLER_START_NAME
+
+
+def snapshot_path(output_dir: Path) -> Path:
+    return output_dir / STARTUP_SNAPSHOT_NAME
+
+
+def load_poller_start_ms(output_dir: Path) -> int | None:
+    path = poller_start_path(output_dir)
+    if not path.is_file():
+        return None
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    t_ms = obj.get("t_start_ms")
+    return int(t_ms) if isinstance(t_ms, int) else None
+
+
+def write_poller_start(output_dir: Path, t_start_ms: int) -> None:
+    path = poller_start_path(output_dir)
+    if path.exists():
+        return
+    rec = {
+        "v": 1,
+        "type": "poller_start",
+        "t_start_ms": t_start_ms,
+        "t_start": iso_from_ms(t_start_ms),
+    }
+    path.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+
+def load_snapshot_keys(output_dir: Path) -> set[tuple[str, str]]:
+    path = snapshot_path(output_dir)
+    keys: set[tuple[str, str]] = set()
+    if not path.is_file():
+        return keys
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return keys
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        kind = obj.get("kind")
+        mint = obj.get("mint")
+        if isinstance(kind, str) and isinstance(mint, str):
+            keys.add((kind, mint))
+    return keys
+
+
+def append_snapshot_keys(
+    output_dir: Path, keys: Iterable[tuple[str, str]], t_ms: int
+) -> set[tuple[str, str]]:
+    existing = load_snapshot_keys(output_dir)
+    new_keys = [(kind, mint) for kind, mint in keys if (kind, mint) not in existing]
+    if not new_keys:
+        return existing
+    path = snapshot_path(output_dir)
+    with path.open("a", encoding="utf-8") as fh:
+        for kind, mint in new_keys:
+            existing.add((kind, mint))
+            fh.write(
+                json.dumps(
+                    {"kind": kind, "mint": mint, "t_first_ms": t_ms},
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    return existing
+
+
+def reconstruct_snapshot_keys(
+    seen: dict[tuple[str, str], int],
+    t_start_ms: int,
+    grace_ms: int = SNAPSHOT_GRACE_MS,
+) -> set[tuple[str, str]]:
+    cutoff = t_start_ms + grace_ms
+    return {key for key, t_ms in seen.items() if t_ms <= cutoff}
+
+
+def ensure_startup(
+    output_dir: Path, index: FirstSeenIndex
+) -> tuple[int, set[tuple[str, str]], bool]:
+    """Return (t_start_ms, snapshot_keys, mark_first_polls).
+
+    First polls are snapshot only on a brand-new output dir. Existing tapes keep
+    the reconstructed startup set so a restart does not re-stamp the live lists.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    t_start = load_poller_start_ms(output_dir)
+    if t_start is None:
+        t_start = min(index.seen.values()) if index.seen else now_ms()
+        write_poller_start(output_dir, t_start)
+    snapshot_keys = load_snapshot_keys(output_dir)
+    brand_new = not index.seen and not snapshot_keys
+    if not snapshot_keys and index.seen:
+        snapshot_keys = reconstruct_snapshot_keys(index.seen, t_start)
+        snapshot_keys = append_snapshot_keys(output_dir, snapshot_keys, t_start)
+    return t_start, snapshot_keys, brand_new
+
+
+def startup_context(
+    output_dir: Path, rows: Iterable[dict[str, Any]] | None = None
+) -> tuple[int, set[tuple[str, str]]]:
+    """Poller start + snapshot keys, reconstructing from rows when marker files are missing."""
+    t_start = load_poller_start_ms(output_dir)
+    snap = load_snapshot_keys(output_dir)
+    if t_start is not None and snap:
+        return t_start, snap
+    seen: dict[tuple[str, str], int] = {}
+    if rows is not None:
+        for row in rows:
+            kind = row.get("kind")
+            mint = row.get("mint")
+            t_ms = row.get("t_first_ms")
+            if not isinstance(kind, str) or not isinstance(mint, str) or not isinstance(t_ms, int):
+                continue
+            prev = seen.get((kind, mint))
+            if prev is None or t_ms < prev:
+                seen[(kind, mint)] = t_ms
+    elif output_dir.is_dir():
+        index = FirstSeenIndex()
+        load_seen(output_dir, index)
+        seen = dict(index.seen)
+    if t_start is None:
+        t_start = min(seen.values()) if seen else 0
+    if not snap and seen:
+        snap = reconstruct_snapshot_keys(seen, t_start)
+    return t_start, snap
+
+
+def is_genuine_arrival(
+    row: dict[str, Any],
+    *,
+    t_start_ms: int,
+    snapshot_keys: set[tuple[str, str]],
+) -> bool:
+    """True iff first-seen is after poller start and not in the startup snapshot."""
+    kind = row.get("kind")
+    mint = row.get("mint")
+    t_first = row.get("t_first_ms")
+    if not isinstance(kind, str) or not isinstance(mint, str) or not isinstance(t_first, int):
+        return False
+    if row.get("snapshot") is True:
+        return False
+    if (kind, mint) in snapshot_keys:
+        return False
+    if t_first <= t_start_ms:
+        return False
+    return True
+
+
+def laya_join_record(
+    row: dict[str, Any],
+    *,
+    genuine: bool | None = None,
+) -> dict[str, Any] | None:
+    """One feature row. Join by mint where t_ms <= decision_t_ms (no lookahead)."""
+    mint = row.get("mint")
+    t_ms = row.get("t_first_ms")
+    kind = row.get("kind")
+    if not isinstance(mint, str) or not isinstance(t_ms, int) or not isinstance(kind, str):
+        return None
+    event_t = event_time_ms(row)
+    rec: dict[str, Any] = {
+        "v": 1,
+        "schema": LAYA_JOIN_SCHEMA,
+        "mint": mint,
+        "t_ms": t_ms,
+        "kind": kind,
+        "source": row.get("source") if isinstance(row.get("source"), str) else None,
+        "snapshot": bool(row.get("snapshot")),
+    }
+    if genuine is not None:
+        rec["genuine"] = genuine
+    if event_t is not None:
+        rec["event_t_ms"] = event_t
+        rec["lag_ms"] = t_ms - event_t
+    rank = row.get("rank")
+    if isinstance(rank, int):
+        rec["rank"] = rank
+    paid = parse_time_ms(row.get("paid_at_ms"))
+    if paid is not None:
+        rec["paid_at_ms"] = paid
+    reply = row.get("reply_count")
+    if isinstance(reply, (int, float)) and not isinstance(reply, bool):
+        rec["reply_count"] = int(reply)
     return rec
 
 
@@ -745,12 +996,18 @@ def backoff_s(errors: int, retry_after: float | None = None) -> float:
 
 
 def attention_record_from_candidate(
-    cand: Candidate, index: FirstSeenIndex, t_seen_ms: int
+    cand: Candidate,
+    index: FirstSeenIndex,
+    t_seen_ms: int,
+    *,
+    snapshot: bool = False,
 ) -> dict[str, Any] | None:
     first = index.note(cand.kind, cand.mint, t_seen_ms)
     if first is None:
         return None
-    return stored_attention(cand, first, t_seen_ms)
+    rec = stored_attention(cand, first, t_seen_ms)
+    rec["snapshot"] = snapshot
+    return rec
 
 
 async def run_attention(
@@ -770,6 +1027,15 @@ async def run_attention(
     current = hour_stamp(datetime.now(timezone.utc))
     reap_attention_partials(output_dir)
     sweep_raw_hours(output_dir, compressor, current)
+    t_start_ms, snapshot_keys, mark_first_polls = ensure_startup(output_dir, index)
+    snapshot_mints = {mint for _kind, mint in snapshot_keys}
+    first_poll_pending = {s.name for s in (sources or default_sources())} if mark_first_polls else set()
+    log.info(
+        "attention_startup t_start_ms=%s snapshot_keys=%s mark_first_polls=%s",
+        t_start_ms,
+        len(snapshot_keys),
+        int(mark_first_polls),
+    )
     http = http or HttpJson()
     sources = sources or default_sources()
     clock = clock_ms or now_ms
@@ -781,6 +1047,8 @@ async def run_attention(
         "written": 0,
         "dupes": 0,
         "http_429": 0,
+        "snapshot": 0,
+        "genuine": 0,
     }
     errors_by: dict[str, int] = {s.name: 0 for s in sources}
     next_due: dict[str, float] = {}
@@ -797,14 +1065,24 @@ async def run_attention(
         queued_orders.add(mint)
         order_q.put_nowait(mint)
 
-    def emit(cand: Candidate, t_seen_ms: int) -> None:
+    def note_snapshot(cand: Candidate, t_seen_ms: int) -> None:
+        nonlocal snapshot_keys
+        snapshot_keys = append_snapshot_keys(output_dir, ((cand.kind, cand.mint),), t_seen_ms)
+        snapshot_mints.add(cand.mint)
+
+    def emit(cand: Candidate, t_seen_ms: int, *, snapshot: bool) -> None:
         if guard.holding:
             guard.dropped += 1
             return
-        rec = attention_record_from_candidate(cand, index, t_seen_ms)
+        rec = attention_record_from_candidate(cand, index, t_seen_ms, snapshot=snapshot)
         if rec is None:
             stats["dupes"] += 1
             return
+        if snapshot:
+            note_snapshot(cand, t_seen_ms)
+            stats["snapshot"] += 1
+        else:
+            stats["genuine"] += 1
         writer.write(rec)
         stats["written"] += 1
         if cand.kind in ("dex_profile", "dex_boost", "dex_ad"):
@@ -837,8 +1115,11 @@ async def run_attention(
         except Exception as exc:
             log.warning("parse_failed source=%s err=%s", spec.name, exc)
             return
+        is_snapshot_poll = spec.name in first_poll_pending
         for cand in cands:
-            emit(cand, t_seen)
+            emit(cand, t_seen, snapshot=is_snapshot_poll)
+        if is_snapshot_poll:
+            first_poll_pending.discard(spec.name)
 
     async def poll_loop() -> None:
         while not stop.is_set():
@@ -887,7 +1168,11 @@ async def run_attention(
                 log.warning("orders_parse_failed mint=%s err=%s", mint[:8], exc)
                 cands = []
             for cand in cands:
-                emit(cand, t_seen)
+                emit(
+                    cand,
+                    t_seen,
+                    snapshot=mint in snapshot_mints or bool(first_poll_pending),
+                )
             try:
                 await asyncio.wait_for(stop.wait(), timeout=ORDER_GAP_S)
             except asyncio.TimeoutError:
@@ -901,9 +1186,11 @@ async def run_attention(
                 writer.rotate()
                 guard.tick()
                 log.info(
-                    "heartbeat written=%s dupes=%s polls=%s errors=%s http_429=%s "
+                    "heartbeat written=%s genuine=%s snapshot=%s dupes=%s polls=%s errors=%s http_429=%s "
                     "seen=%s bytes=%s hold=%s dropped=%s free_ratio=%.3f q_orders=%s",
                     stats["written"],
+                    stats["genuine"],
+                    stats["snapshot"],
                     stats["dupes"],
                     stats["polls"],
                     stats["errors"],

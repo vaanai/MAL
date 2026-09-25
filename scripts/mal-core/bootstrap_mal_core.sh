@@ -57,6 +57,7 @@ install -m 0755 "${SELF_DIR}/healthcheck.sh" "${MAL_ROOT}/eng/healthcheck.sh"
 install -m 0755 "${SELF_DIR}/observe-jsonl.sh" "${MAL_ROOT}/eng/observe-jsonl.sh"
 install -m 0755 "${SELF_DIR}/trade-tape.sh" "${MAL_ROOT}/eng/trade-tape.sh"
 install -m 0755 "${SELF_DIR}/attention.sh" "${MAL_ROOT}/eng/attention.sh"
+install -m 0755 "${SELF_DIR}/attention-daily.sh" "${MAL_ROOT}/eng/attention-daily.sh"
 install -m 0755 "${SELF_DIR}/apply-schema.sh" "${MAL_ROOT}/eng/apply-schema.sh"
 if [[ -f "${ROOT}/ARTIFACTS/ORACLE-HOST-BOOTSTRAP.md" ]]; then
   install -m 0644 "${ROOT}/ARTIFACTS/ORACLE-HOST-BOOTSTRAP.md" "${MAL_ROOT}/eng/BOOTSTRAP.md"
@@ -91,6 +92,8 @@ mkdir -p "${UNIT_DIR}"
 install -m 0644 "${SELF_DIR}/mal-observe.service" "${UNIT_DIR}/mal-observe.service"
 install -m 0644 "${SELF_DIR}/mal-trade-tape.service" "${UNIT_DIR}/mal-trade-tape.service"
 install -m 0644 "${SELF_DIR}/mal-attention.service" "${UNIT_DIR}/mal-attention.service"
+install -m 0644 "${SELF_DIR}/mal-attention-daily.service" "${UNIT_DIR}/mal-attention-daily.service"
+install -m 0644 "${SELF_DIR}/mal-attention-daily.timer" "${UNIT_DIR}/mal-attention-daily.timer"
 sudo -n loginctl enable-linger ubuntu || log "linger: enable failed (non-fatal)"
 # User systemd over SSH needs XDG_RUNTIME_DIR after linger.
 if [[ ! -d "${XDG_RUNTIME_DIR}" ]]; then
@@ -100,6 +103,7 @@ systemctl --user daemon-reload || true
 systemctl --user enable mal-observe.service || true
 systemctl --user enable mal-trade-tape.service || true
 systemctl --user enable mal-attention.service || true
+systemctl --user enable mal-attention-daily.timer || true
 if [[ -x "${REPO}/.venv/bin/python" ]]; then
   # Legitimate paper ingest (PumpPortal free WS). Not fake keep-alive.
   systemctl --user restart mal-observe.service || log "observe: start failed (use ${MAL_ROOT}/eng/observe-jsonl.sh)"
