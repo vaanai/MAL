@@ -236,8 +236,8 @@ class FundingGraphTests(unittest.TestCase):
         queue = JobQueue()
         queue.push(BUYER_PRIORITY, "buyer", "early_buyer")
         queue.push(CREATOR_PRIORITY, "creator", "creator")
-        self.assertEqual(queue.pop(), ("creator", "creator"))
-        self.assertEqual(queue.pop(), ("buyer", "early_buyer"))
+        self.assertEqual(queue.pop()[:2], ("creator", "creator"))
+        self.assertEqual(queue.pop()[:2], ("buyer", "early_buyer"))
 
     def test_append_only_first_row_wins(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -392,6 +392,34 @@ class FundingGraphTests(unittest.TestCase):
         bad = book_stats(tailed)
         self.assertLess(bad["total_ex_top3_sol"], 0)
         self.assertFalse(bad["promote"])
+
+    def test_stale_buyers_drop_and_unresolved_creators_stay(self) -> None:
+        now = 1_000_000_000
+        queue = JobQueue()
+        queue.push(BUYER_PRIORITY, "old_buyer", "early_buyer", now - 6 * 60_000)
+        queue.push(CREATOR_PRIORITY, "old_creator", "creator", now - 6 * 60_000)
+        queue.push(BUYER_PRIORITY, "fresh_buyer", "early_buyer", now - 1000)
+        dropped = queue.drop_stale(now, 5 * 60_000)
+        self.assertEqual(dropped, 1)
+        left = {queue.pop()[0] for _ in range(len(queue))}
+        self.assertEqual(left, {"old_creator", "fresh_buyer"})
+
+    def test_queue_cap_drops_buyers_before_creators(self) -> None:
+        queue = JobQueue()
+        for i in range(5):
+            queue.push(BUYER_PRIORITY, f"b{i}", "early_buyer", 1000 + i)
+        for i in range(3):
+            queue.push(CREATOR_PRIORITY, f"c{i}", "creator", 2000 + i)
+        dropped = queue.drop_to_cap(4)
+        self.assertEqual(dropped, 4)
+        self.assertEqual(len(queue), 4)
+        left = {queue.pop()[0] for _ in range(len(queue))}
+        self.assertEqual(left, {"b4", "c0", "c1", "c2"})
+        again = JobQueue()
+        for i in range(3):
+            again.push(CREATOR_PRIORITY, f"c{i}", "creator", 1000 + i)
+        self.assertEqual(again.drop_to_cap(2), 1)
+        self.assertEqual({again.pop()[0] for _ in range(2)}, {"c1", "c2"})
 
     def test_helius_key_switches_rate_without_logging_the_key(self) -> None:
         missing = Path("/tmp/does-not-exist-helius.env")

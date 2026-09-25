@@ -53,6 +53,10 @@ HELIUS_ENV_FILE = Path("/var/lib/mal/backfill/helius.env")
 KEY_CHECK_S = 30.0
 BACKOFF_START_S = 5.0
 BACKOFF_CAP_S = 120.0
+# Latest LAYA decision is T+120s. After 5 minutes a buyer lookup cannot join it.
+LOOKUP_MAX_AGE_MS = 5 * 60_000
+# Hard ceiling. Age drops do not apply to unresolved creators, so this does.
+QUEUE_CAP = 256
 PUBLIC_RPC = "https://api.mainnet-beta.solana.com"
 
 # Public hot wallets only. Unlisted funders are not called exchanges.
@@ -882,32 +886,85 @@ class _BotWallet:
 
 
 class JobQueue:
+    """(priority, seq, wallet, role, create_ms). One entry per wallet."""
+
     def __init__(self) -> None:
-        self._heap: list[tuple[int, int, str, str]] = []
+        self._heap: list[tuple[int, int, str, str, int]] = []
         self._seq = 0
         self.queued: set[str] = set()
 
     def __len__(self) -> int:
         return len(self._heap)
 
-    def push(self, priority: int, wallet: str, role: str) -> bool:
-        if not wallet or wallet in self.queued:
+    def push(self, priority: int, wallet: str, role: str, create_ms: int = 0) -> bool:
+        if not wallet:
             return False
         import heapq
 
-        heapq.heappush(self._heap, (priority, self._seq, wallet, role))
+        if wallet in self.queued:
+            if role == "creator":
+                self._mark_creator(wallet, create_ms)
+            return False
+        heapq.heappush(self._heap, (priority, self._seq, wallet, role, create_ms))
         self._seq += 1
         self.queued.add(wallet)
         return True
 
-    def pop(self) -> tuple[str, str] | None:
+    def _mark_creator(self, wallet: str, create_ms: int) -> None:
+        """A wallet already queued as a buyer is an unresolved creator. Keep it."""
+        import heapq
+
+        for index, item in enumerate(self._heap):
+            if item[2] != wallet or item[3] == "creator":
+                continue
+            priority, seq, found, _role, old_ms = item
+            self._heap[index] = (CREATOR_PRIORITY, seq, found, "creator", create_ms or old_ms)
+            heapq.heapify(self._heap)
+            return
+
+    def pop(self) -> tuple[str, str, int] | None:
+        """(wallet, role, create_ms)."""
         import heapq
 
         while self._heap:
-            _pri, _seq, wallet, role = heapq.heappop(self._heap)
+            _pri, _seq, wallet, role, create_ms = heapq.heappop(self._heap)
             self.queued.discard(wallet)
-            return wallet, role
+            return wallet, role, create_ms
         return None
+
+    def drop_stale(self, now_ms: int, max_age_ms: int) -> int:
+        """Drop non-creators whose mint is older than max_age_ms. Creators stay."""
+        import heapq
+
+        kept: list[tuple[int, int, str, str, int]] = []
+        dropped = 0
+        for item in self._heap:
+            _pri, _seq, wallet, role, create_ms = item
+            if role != "creator" and now_ms - create_ms > max_age_ms:
+                self.queued.discard(wallet)
+                dropped += 1
+            else:
+                kept.append(item)
+        if dropped:
+            heapq.heapify(kept)
+            self._heap = kept
+        return dropped
+
+    def drop_to_cap(self, cap: int) -> int:
+        """Drop oldest non-creators first, then oldest creators, until len <= cap."""
+        import heapq
+
+        if cap < 0 or len(self._heap) <= cap:
+            return 0
+        victims = sorted(self._heap, key=lambda item: (item[3] == "creator", item[4], item[1]))
+        drop_n = len(self._heap) - cap
+        drop_wallets = {item[2] for item in victims[:drop_n]}
+        kept = [item for item in self._heap if item[2] not in drop_wallets]
+        for wallet in drop_wallets:
+            self.queued.discard(wallet)
+        heapq.heapify(kept)
+        self._heap = kept
+        return len(drop_wallets)
 
 
 def seed_recent_creators(creates_dir: Path, limit: int) -> list[str]:
@@ -1042,12 +1099,16 @@ class Enricher:
         self.resolved = 0
         self.skipped = 0
         self.unavailable = 0
+        self.dropped_stale = 0
+        self.dropped_cap = 0
+        self.mint_t: dict[str, int] = {}
 
-    def note_create(self, mint: str, creator: str | None) -> None:
+    def note_create(self, mint: str, creator: str | None, t_ms: int | None = None) -> None:
         if not creator or mint in self.creators:
             return
         self.creators[mint] = creator
-        self._enqueue(creator, "creator", CREATOR_PRIORITY)
+        self.mint_t[mint] = t_ms if isinstance(t_ms, int) and t_ms > 0 else self.now_ms()
+        self._enqueue(creator, "creator", CREATOR_PRIORITY, self.mint_t[mint])
 
     def note_trade(self, row: dict[str, Any]) -> None:
         mint = row.get("mint")
@@ -1074,13 +1135,19 @@ class Enricher:
         if trader in chosen or len(chosen) >= self.early_n:
             return
         chosen.append(trader)
-        self._enqueue(trader, "early_buyer", BUYER_PRIORITY)
+        self._enqueue(trader, "early_buyer", BUYER_PRIORITY, self.mint_t.get(mint, t_i))
 
-    def _enqueue(self, wallet: str, role: str, priority: int) -> bool:
+    def _enqueue(self, wallet: str, role: str, priority: int, create_ms: int = 0) -> bool:
         if wallet in self.graph.by_wallet:
             self.skipped += 1
             return False
-        return self.queue.push(priority, wallet, role)
+        if create_ms <= 0:
+            create_ms = self.now_ms()
+        return self.queue.push(priority, wallet, role, create_ms)
+
+    def prune_queue(self) -> None:
+        self.dropped_stale += self.queue.drop_stale(self.now_ms(), LOOKUP_MAX_AGE_MS)
+        self.dropped_cap += self.queue.drop_to_cap(QUEUE_CAP)
 
     def poll_files(self) -> None:
         from tools.paper_price_path import create_from_observe_row
@@ -1091,25 +1158,27 @@ class Enricher:
                 for row in self.cursor.read_new(path, start_at_end=start_at_end):
                     create = create_from_observe_row(row)
                     if create is not None:
-                        self.note_create(create.mint, create.creator)
+                        self.note_create(create.mint, create.creator, create.t_signal_ms)
         if self.trades_dir.is_dir():
             for path in sorted(self.trades_dir.glob("trades-*.jsonl")):
                 for row in self.cursor.read_new(path, start_at_end=start_at_end):
                     self.note_trade(row)
         self._fresh_tail = False
+        self.prune_queue()
 
     def drain_one(self) -> WalletRecord | None:
+        self.prune_queue()
         item = self.queue.pop()
         if item is None:
             return None
-        wallet, role = item
+        wallet, role, create_ms = item
         if wallet in self.graph.by_wallet:
             return None
         priority = CREATOR_PRIORITY if role == "creator" else BUYER_PRIORITY
         try:
             rec = resolve_wallet(self.client, wallet, now_ms=self.now_ms(), role_hint=role)
         except RpcError:
-            self.queue.push(priority, wallet, role)
+            self.queue.push(priority, wallet, role, create_ms)
             raise
         if rec.status == "no_history":
             # A just-landed creator can be invisible for a moment. Retry twice.
@@ -1118,7 +1187,7 @@ class Enricher:
             tries[wallet] = n
             self._empty_tries = tries
             if n < 3:
-                self.queue.push(CREATOR_PRIORITY if role == "creator" else BUYER_PRIORITY, wallet, role)
+                self.queue.push(CREATOR_PRIORITY if role == "creator" else BUYER_PRIORITY, wallet, role, create_ms)
                 return None
         self.appender.append(rec)
         self.graph.by_wallet.setdefault(rec.wallet, rec)
@@ -1130,7 +1199,7 @@ class Enricher:
     def seed_backfill(self, limit: int) -> int:
         n = 0
         for wallet in seed_recent_creators(self.creates_dir, limit):
-            if self._enqueue(wallet, "creator", BACKFILL_PRIORITY):
+            if self._enqueue(wallet, "creator", BACKFILL_PRIORITY, 1):
                 n += 1
         return n
 
@@ -1276,6 +1345,7 @@ def run_serve(
             print(
                 f"funding_graph resolved={enricher.resolved} queue={len(enricher.queue)} "
                 f"calls={client.calls} limited={client.limited} unavailable={enricher.unavailable} "
+                f"dropped_stale={enricher.dropped_stale} dropped_cap={enricher.dropped_cap} "
                 f"cached={len(enricher.graph)}",
                 file=sys.stderr,
             )
