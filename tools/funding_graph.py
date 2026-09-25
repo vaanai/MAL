@@ -61,7 +61,7 @@ LOOKUP_MAX_AGE_MS = 5 * 60_000
 QUEUE_CAP = 256
 # Free plan is 1M credits. This enricher stops at 150k so the backfill keeps the rest.
 # getSignaturesForAddress and getTransaction are 1 credit each (Helius credits table).
-CREDIT_CAP_DEFAULT = 150_000
+CREDIT_CAP_DEFAULT = 2_000_000
 CREDITS_PER_HELIUS_CALL = 1
 CREDIT_FILE_NAME = "helius-credits.json"
 PUBLIC_RPC = "https://api.mainnet-beta.solana.com"
