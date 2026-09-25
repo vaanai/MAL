@@ -38,7 +38,7 @@ from tools.paper_signal_crowd import (
     veto_sniper_bot_wallets,
 )
 from tools.paper_signal_curve import curve_books
-from tools.paper_signal_follow import follow_books, load_follow_jsonl
+from tools.paper_signal_follow import follow_books, follow_books_from_trades, load_board_wallets, load_follow_jsonl
 
 
 def _fmt(value: Any) -> str:
@@ -130,6 +130,7 @@ def run_scan(
     creates: Sequence[Path],
     output_dir: Path,
     follow_signals: Path | None,
+    follow_board: Path | None,
     size_lamports: int,
     slippage_cap: float,
 ) -> dict[str, Any]:
@@ -171,14 +172,6 @@ def run_scan(
     buy_every = _run("baseline", "buy_every_create", 1.0, baseline_signals(paths))
     rand = _run("baseline", "random_subsample", 1.0, random_baseline_signals(paths))
 
-    if follow_signals is not None and follow_signals.is_file():
-        follow_rows = load_follow_jsonl(follow_signals)
-        print(f"follow_jsonl={len(follow_rows)} from {follow_signals}", file=sys.stderr, flush=True)
-        for variant, latency_s, sigs in follow_books(follow_rows, allowed_mints=allowed):
-            _run("follow", variant, latency_s, sigs)
-    else:
-        print("follow_jsonl missing; skipping follow family", file=sys.stderr, flush=True)
-
     slots = create_slot_by_mint(trades)
     overlay_creators = {
         mint: path.create.creator
@@ -188,6 +181,28 @@ def run_scan(
     creators = creator_by_mint(trades, overlay_creators)
     vetoed = veto_sniper_bot_wallets(trades, slots)
     print(f"vetoed_sniper_bot={len(vetoed)}", file=sys.stderr, flush=True)
+
+    follow_source = None
+    if follow_board is not None and follow_board.is_file():
+        leaders = load_board_wallets(follow_board)
+        print(f"follow_board={len(leaders)} wallets from {follow_board}", file=sys.stderr, flush=True)
+        for variant, latency_s, sigs in follow_books_from_trades(
+            trades,
+            leaders,
+            create_slots=slots,
+            allowed_mints=allowed,
+        ):
+            _run("follow", variant, latency_s, sigs)
+        follow_source = str(follow_board)
+    elif follow_signals is not None and follow_signals.is_file():
+        follow_rows = load_follow_jsonl(follow_signals)
+        print(f"follow_jsonl={len(follow_rows)} from {follow_signals}", file=sys.stderr, flush=True)
+        for variant, latency_s, sigs in follow_books(follow_rows, allowed_mints=allowed):
+            _run("follow", variant, latency_s, sigs)
+        follow_source = str(follow_signals)
+    else:
+        print("follow board/jsonl missing; skipping follow family", file=sys.stderr, flush=True)
+
     for variant, latency_s, sigs in crowd_books(
         trades,
         excluded_wallets=vetoed,
@@ -232,7 +247,7 @@ def run_scan(
             "split": "first half of unique mints by signal_t_ms is train (pick exit); second half is oos",
         },
         "scan": stats.as_dict(),
-        "follow_signals_path": str(follow_signals) if follow_signals is not None else None,
+        "follow_signals_path": follow_source,
         "vetoed_sniper_bot_n": len(vetoed),
         "baseline": {
             "buy_every_create": strip_labels(buy_every),
@@ -275,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--creates", nargs="+", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--follow-signals", type=Path, default=None, help="noisy_v0 follow-signals JSONL")
+    parser.add_argument("--follow-board", type=Path, default=None, help="noisy_v0 leaderboard JSONL; replay buys on this tape")
     parser.add_argument("--size-sol", type=float, default=0.05)
     parser.add_argument("--slippage-cap", type=float, default=DEFAULT_SLIPPAGE_CAP)
     args = parser.parse_args(argv)
@@ -286,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         creates=args.creates,
         output_dir=args.output_dir,
         follow_signals=args.follow_signals,
+        follow_board=args.follow_board,
         size_lamports=size_lamports,
         slippage_cap=args.slippage_cap,
     )

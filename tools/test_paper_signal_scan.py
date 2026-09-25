@@ -156,6 +156,31 @@ class FollowTests(unittest.TestCase):
         self.assertEqual([s.mint for s in copyable], ["M2", "M1"])
         self.assertEqual(copyable[1].signal_t_ms, T0 + 400)
 
+    def test_replay_board_wallets_on_tape(self) -> None:
+        from tools.paper_signal_follow import emit_follow_from_trades, load_board_wallets
+
+        trades = [
+            _trade(mint="M1", trader="L1", side="buy", t_ms=T0 + 100, slot=2),
+            _trade(mint="M1", trader="L1", side="buy", t_ms=T0 + 900, slot=8),
+            _trade(mint="M1", trader="L2", side="buy", t_ms=T0 + 400, slot=9),
+            _trade(mint="M2", trader="X", side="buy", t_ms=T0, slot=1),
+        ]
+        sigs = first_per_mint(
+            emit_follow_from_trades(
+                trades,
+                {"L1", "L2"},
+                variant="noisy_v0_copyable",
+                copyable_only=True,
+                create_slots={"M1": 1, "M2": 1},
+            )
+        )
+        self.assertEqual([s.mint for s in sigs], ["M1"])
+        self.assertEqual(sigs[0].signal_t_ms, T0 + 400)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "board.jsonl"
+            path.write_text(json.dumps({"wallet": "L1"}) + "\n" + json.dumps({"wallet": "L2"}) + "\n", encoding="utf-8")
+            self.assertEqual(load_board_wallets(path), {"L1", "L2"})
+
     def test_load_jsonl_skips_bad_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "follow.jsonl"

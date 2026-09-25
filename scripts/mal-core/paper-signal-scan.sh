@@ -8,6 +8,7 @@ REPO="${MAL_REPO:-${HOME}/mal}"
 IN_DIR="${MAL_TRADE_TAPE_OUTPUT_DIR:-/var/lib/mal/sealed/trades}"
 CREATE_DIR="${MAL_OBSERVE_OUTPUT_DIR:-/var/lib/mal/sealed/jsonl}"
 FOLLOW="${MAL_FOLLOW_SIGNALS:-/var/lib/mal/paper/wallet-leaderboard/follow-signals-noisy_v0.jsonl}"
+BOARD="${MAL_FOLLOW_BOARD:-/var/lib/mal/paper/wallet-leaderboard/leaderboard-noisy_v0.jsonl}"
 OUT_DIR="${MAL_SIGNAL_SCAN_OUT:-/var/lib/mal/paper/signal-scan}"
 PYTHON="${MAL_PYTHON:-${REPO}/.venv/bin/python}"
 DAY="${MAL_SIGNAL_SCAN_DAY:-$(date -u +%Y-%m-%d)}"
@@ -58,10 +59,12 @@ cmd=(
   --creates "${creates[@]}"
   --output-dir "${OUT_DIR}"
 )
-if [[ -f "${FOLLOW}" ]]; then
+if [[ -f "${BOARD}" ]]; then
+  cmd+=(--follow-board "${BOARD}")
+elif [[ -f "${FOLLOW}" ]]; then
   cmd+=(--follow-signals "${FOLLOW}")
 else
-  echo "paper-signal-scan: follow JSONL missing at ${FOLLOW}; follow family will skip" >&2
+  echo "paper-signal-scan: follow board/JSONL missing; follow family will skip" >&2
 fi
 cmd+=("$@")
 
