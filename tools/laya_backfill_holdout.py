@@ -386,7 +386,8 @@ def fit_mig15(
 ) -> tuple[Any, Any, Any, int]:
     """mig+15 top-20% booster. Fit only on live decisions at or before the freeze."""
     migration = migration_times(books, window_start_ms=WINDOW_START_MS)
-    rows, _quotes = build_rows(books, migration, attention, tape_end_ms=tape_end_ms, graph=graph)
+    graduated = {mint: books[mint] for mint in migration}
+    rows, _quotes = build_rows(graduated, migration, attention, tape_end_ms=tape_end_ms, graph=graph)
     keep = [row for row in rows if row.trigger in ("mig_1", DEPLOY_POINT) and row.decision_t_ms <= freeze_ms]
     print(f"mig15_train_rows={len(keep)} migrations={len(migration)}", file=sys.stderr)
     if keep:
@@ -658,7 +659,8 @@ def _score_mig15(
     if tape_end_ms <= 0 or model is None:
         return []
     migration = migration_times(books, window_start_ms=0)
-    rows, _quotes = build_rows(books, migration, attention, tape_end_ms=tape_end_ms, graph=graph)
+    graduated = {mint: books[mint] for mint in migration}
+    rows, _quotes = build_rows(graduated, migration, attention, tape_end_ms=tape_end_ms, graph=graph)
     mig = [row for row in rows if row.trigger == DEPLOY_POINT]
     print(f"backfill_mig15_decisions={len(mig)}", file=sys.stderr)
     if not mig:
