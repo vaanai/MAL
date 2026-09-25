@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -529,6 +532,65 @@ class CreateAndTapeLoaderTests(unittest.TestCase):
             prints = paths["MintA"].prints
             self.assertEqual([p.t_recv_ms for p in prints], [t_ms + 10, t_ms + 20])
             self.assertEqual(prints[0].side, "buy")
+
+    def test_duplicate_print_across_files_is_kept_once(self) -> None:
+        row = {
+            "type": "trade",
+            "mint": "MintA",
+            "venue": "pump_bonding",
+            "quote_is_wsol": True,
+            "t_recv_ms": T0,
+            "quote_reserve": Q0,
+            "base_reserve": B0,
+            "price_sol": Q0 / (B0 * 1000),
+            "market_cap_sol": 40.0,
+            "side": "buy",
+            "sol_lamports": 10,
+            "slot": 1,
+            "event_index": 0,
+        }
+        paths = build_paths({"MintA": _create()}, [row, dict(row)])
+        self.assertEqual(len(paths["MintA"].prints), 1)
+
+    def test_zst_tape_round_trip(self) -> None:
+        if shutil.which("zstd") is None:
+            self.skipTest("zstd CLI not installed")
+        t_ms = T0 + 10
+        create_row = {
+            "stream": "subscribeNewToken",
+            "txType": "create",
+            "mint": "MintA",
+            "t_ws": "2026-09-25T06:58:37.000+00:00",
+            "vSolInBondingCurve": 35.0,
+            "vTokensInBondingCurve": 1_073_000_000.0,
+        }
+        trade = {
+            "type": "trade",
+            "mint": "MintA",
+            "venue": "pump_bonding",
+            "quote_is_wsol": True,
+            "t_recv_ms": t_ms,
+            "quote_reserve": Q0,
+            "base_reserve": B0,
+            "price_sol": Q0 / (B0 * 1000),
+            "market_cap_sol": 40.0,
+            "side": "buy",
+            "sol_lamports": 10,
+            "slot": 1,
+            "event_index": 0,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plain = root / "trades.jsonl"
+            plain.write_text(json.dumps(trade) + "\n", encoding="utf-8")
+            zst = root / "trades.jsonl.zst"
+            subprocess.run(["zstd", "-q", "-f", "-o", str(zst), str(plain)], check=True)
+            creates = root / "observe.jsonl"
+            creates.write_text(json.dumps(create_row) + "\n", encoding="utf-8")
+            loaded = load_creates([creates])
+            paths, stats = stream_paths(loaded, [zst])
+            self.assertEqual(stats.kept, 1)
+            self.assertEqual(paths["MintA"].prints[0].t_recv_ms, t_ms)
 
 
 if __name__ == "__main__":

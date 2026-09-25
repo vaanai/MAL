@@ -8,8 +8,11 @@ tape has not yet printed; they are not invented trades on the path.
 from __future__ import annotations
 
 import gzip
+import io
 import json
+import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -191,10 +194,57 @@ def create_from_observe_row(row: dict[str, Any]) -> CreateSignal | None:
     )
 
 
-def open_text(path: Path) -> TextIO:
+def _is_zst(path: Path) -> bool:
+    name = path.name
+    return name.endswith(".jsonl.zst") or path.suffix == ".zst"
+
+
+class _ZstdText:
+    """Line iterator over `zstd -dc`. The CLI is already on the tape host."""
+
+    def __init__(self, path: Path) -> None:
+        self._proc = subprocess.Popen(
+            ["zstd", "-dc", "--quiet", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if self._proc.stdout is None:
+            raise RuntimeError("zstd produced no stdout")
+        self._text = io.TextIOWrapper(self._proc.stdout, encoding="utf-8")
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._text)
+
+    def close(self) -> None:
+        self._text.close()
+        try:
+            code = self._proc.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait(timeout=10)
+            return
+        if code not in (0, None):
+            raise RuntimeError(f"zstd exited {code}")
+
+
+@contextmanager
+def open_text(path: Path) -> Iterator[TextIO | _ZstdText]:
+    if _is_zst(path):
+        stream = _ZstdText(path)
+        try:
+            yield stream
+        finally:
+            stream.close()
+        return
+    fh: TextIO
     if path.suffix == ".gz":
-        return gzip.open(path, "rt", encoding="utf-8")
-    return path.open("r", encoding="utf-8")
+        fh = gzip.open(path, "rt", encoding="utf-8")
+    else:
+        fh = path.open("r", encoding="utf-8")
+    try:
+        yield fh
+    finally:
+        fh.close()
 
 
 def load_creates(
@@ -293,6 +343,21 @@ def _sort_key(p: TapePrint) -> tuple[int, int, int]:
     return (p.t_recv_ms, p.slot, p.event_index)
 
 
+def _dedupe_sorted(prints: list[TapePrint]) -> list[TapePrint]:
+    """Drop a trade written twice across a rotation boundary."""
+    if len(prints) < 2:
+        return prints
+    out: list[TapePrint] = []
+    prev: tuple[int, int, int, str, int, int] | None = None
+    for pr in prints:
+        key = (pr.t_recv_ms, pr.slot, pr.event_index, pr.venue, pr.quote_reserve, pr.base_reserve)
+        if key == prev:
+            continue
+        prev = key
+        out.append(pr)
+    return out
+
+
 def build_paths(
     creates: dict[str, CreateSignal],
     trade_rows: Iterable[dict[str, Any]],
@@ -309,8 +374,7 @@ def build_paths(
             bucket.append(pr)
     paths: dict[str, MintPath] = {}
     for mint, create in creates.items():
-        prints = buckets[mint]
-        prints.sort(key=_sort_key)
+        prints = _dedupe_sorted(sorted(buckets[mint], key=_sort_key))
         paths[mint] = MintPath(create=create, prints=prints)
     return paths
 
@@ -361,8 +425,7 @@ def stream_paths(creates: dict[str, CreateSignal], tape_paths: Iterable[Path]) -
                 stats.kept += 1
     paths: dict[str, MintPath] = {}
     for mint, create in creates.items():
-        prints = wanted[mint]
-        prints.sort(key=_sort_key)
+        prints = _dedupe_sorted(sorted(wanted[mint], key=_sort_key))
         paths[mint] = MintPath(create=create, prints=prints)
     return paths, stats
 

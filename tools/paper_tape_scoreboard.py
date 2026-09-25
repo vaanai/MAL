@@ -732,7 +732,18 @@ def run_files(
     out_text = str(output_dir)
     if "/sealed/trades" in out_text or out_text.rstrip("/").endswith("/sealed/trades"):
         raise SystemExit("refusing to write into the trade tape directory")
-    t_min, t_max = peek_trade_bounds(tape[0])
+    compressed = any(path.name.endswith(".zst") or path.suffix == ".gz" for path in tape)
+    if compressed:
+        # Bounds come from the scan. A peek cannot see inside zstd without a full read.
+        t_min, t_max = None, None
+    else:
+        t_min, t_max = peek_trade_bounds(tape[0])
+        for extra in tape[1:]:
+            lo, hi = peek_trade_bounds(extra)
+            if lo is not None and (t_min is None or lo < t_min):
+                t_min = lo
+            if hi is not None and (t_max is None or hi > t_max):
+                t_max = hi
     # File may still be appending. Keep creates a few minutes past the peek.
     create_hi = None if t_max is None else t_max + 180_000
     create_map = load_creates(creates, t_min_ms=t_min, t_max_ms=create_hi)
