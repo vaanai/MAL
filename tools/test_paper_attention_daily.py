@@ -90,10 +90,13 @@ class EventTimeTests(unittest.TestCase):
         self.assertIsNotNone(rec)
         assert rec is not None
         self.assertEqual(rec["t_ms"], 1_758_800_000_080)
+        self.assertNotEqual(rec["t_ms"], rec["event_t_ms"])
+        self.assertNotEqual(rec["t_ms"], rec["paid_at_ms"])
         self.assertEqual(rec["event_t_ms"], 1_758_800_000_040)
+        self.assertEqual(rec["paid_at_ms"], 1_758_800_000_040)
         self.assertEqual(rec["lag_ms"], 40)
         self.assertTrue(rec["genuine"])
-        self.assertLessEqual(rec["t_ms"], rec["t_ms"])
+        self.assertGreater(rec["t_ms"], rec["paid_at_ms"])
 
 
 class JoinAndHourlyTests(unittest.TestCase):

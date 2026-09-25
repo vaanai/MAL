@@ -804,7 +804,11 @@ def laya_join_record(
     *,
     genuine: bool | None = None,
 ) -> dict[str, Any] | None:
-    """One feature row. Join by mint where t_ms <= decision_t_ms (no lookahead)."""
+    """One feature row. Join by mint where t_ms <= decision_t_ms (no lookahead).
+
+    t_ms is our first-seen only. Vendor stamps (paid_at / stream start) are
+    feature values, never the join clock.
+    """
     mint = row.get("mint")
     t_ms = row.get("t_first_ms")
     kind = row.get("kind")
