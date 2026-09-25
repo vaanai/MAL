@@ -42,8 +42,11 @@ TOKEN_ACCOUNT_RENT_LAMPORTS = 2_039_280
 DEFAULT_SIZE_LAMPORTS = 50_000_000  # 0.05 SOL
 DEFAULT_SLIPPAGE_CAP = 0.15
 
-# Canonical PumpSwap SOL tiers (pump.fun/docs/fees, 20 May 2026).
+# Canonical PumpSwap SOL tiers (pump.fun/docs/fees, last updated 20 May 2026, re-read 2026-09-25).
 # Threshold is the inclusive lower bound of the tier, in SOL of market cap.
+# Total ppm is creator + protocol + LP. LP stays in the pool; protocol and creator do not.
+# Migrated pump.fun coins use this canonical schedule. Non-canonical pools are a flat
+# 0.30% (creator 0, protocol 5 bps, LP 25 bps) and are not this table.
 PUMPSWAP_SOL_FEE_TIERS: tuple[tuple[float, int], ...] = (
     (0, 12_500),
     (420, 12_000),
@@ -72,6 +75,35 @@ PUMPSWAP_SOL_FEE_TIERS: tuple[tuple[float, int], ...] = (
     (98240, 3_000),
 )
 
+# (mcap_sol_inclusive, creator_ppm, protocol_ppm, lp_ppm). Sums match PUMPSWAP_SOL_FEE_TIERS.
+PUMPSWAP_SOL_FEE_SPLIT: tuple[tuple[float, int, int, int], ...] = (
+    (0, 3_000, 9_300, 200),
+    (420, 9_500, 500, 2_000),
+    (1470, 9_000, 500, 2_000),
+    (2460, 8_500, 500, 2_000),
+    (3440, 8_000, 500, 2_000),
+    (4420, 7_500, 500, 2_000),
+    (9820, 7_000, 500, 2_000),
+    (14740, 6_500, 500, 2_000),
+    (19650, 6_000, 500, 2_000),
+    (24560, 5_500, 500, 2_000),
+    (29470, 5_000, 500, 2_000),
+    (34380, 4_500, 500, 2_000),
+    (39300, 4_000, 500, 2_000),
+    (44210, 3_500, 500, 2_000),
+    (49120, 3_000, 500, 2_000),
+    (54030, 2_750, 500, 2_000),
+    (58940, 2_500, 500, 2_000),
+    (63860, 2_250, 500, 2_000),
+    (68770, 2_000, 500, 2_000),
+    (73681, 1_750, 500, 2_000),
+    (78590, 1_500, 500, 2_000),
+    (83500, 1_250, 500, 2_000),
+    (88400, 1_000, 500, 2_000),
+    (93330, 750, 500, 2_000),
+    (98240, 500, 500, 2_000),
+)
+
 
 def pumpswap_sol_fee_ppm(market_cap_sol: float) -> int:
     """Total canonical PumpSwap fee (creator + protocol + LP) in ppm."""
@@ -82,6 +114,17 @@ def pumpswap_sol_fee_ppm(market_cap_sol: float) -> int:
         else:
             break
     return ppm
+
+
+def pumpswap_sol_fee_split(market_cap_sol: float) -> tuple[int, int, int]:
+    """(creator_ppm, protocol_ppm, lp_ppm) for a canonical SOL pool."""
+    creator, protocol, lp = PUMPSWAP_SOL_FEE_SPLIT[0][1:]
+    for threshold, c_ppm, p_ppm, l_ppm in PUMPSWAP_SOL_FEE_SPLIT:
+        if market_cap_sol + 1e-9 >= threshold:
+            creator, protocol, lp = c_ppm, p_ppm, l_ppm
+        else:
+            break
+    return creator, protocol, lp
 
 
 def venue_fee_ppm(venue: str, market_cap_sol: float) -> int:
@@ -223,6 +266,7 @@ def quote_buy(
     quote_lamports: int,
     base_raw: int,
     market_cap: float,
+    portal_fee_ppm: int = PORTAL_FEE_PPM,
 ) -> BuyFill | None:
     """Spend `size_lamports` of wallet SOL. None if the whole size cannot fill.
 
@@ -242,7 +286,7 @@ def quote_buy(
     if real_tokens <= 0:
         return None
     fee_ppm = venue_fee_ppm(venue, market_cap)
-    net = after_fee(after_fee(size_lamports, PORTAL_FEE_PPM), fee_ppm)
+    net = after_fee(after_fee(size_lamports, portal_fee_ppm), fee_ppm)
     if net <= 0:
         return None
     tokens = net * base_raw // (quote_lamports + net)
@@ -265,6 +309,7 @@ def quote_sell(
     base_raw: int,
     market_cap: float,
     payable_quote_lamports: int | None = None,
+    portal_fee_ppm: int = PORTAL_FEE_PPM,
 ) -> int | None:
     """Lamports of SOL back to the wallet after venue and portal fees.
 
@@ -302,7 +347,7 @@ def quote_sell(
     else:
         return None
     fee_ppm = venue_fee_ppm(venue, market_cap)
-    out = after_fee(after_fee(gross, fee_ppm), PORTAL_FEE_PPM)
+    out = after_fee(after_fee(gross, fee_ppm), portal_fee_ppm)
     if out <= 0:
         return None
     return out

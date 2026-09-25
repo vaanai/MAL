@@ -550,17 +550,22 @@ def state_as_of(path: MintPath, t_ms: int, *, allow_anchor: bool) -> TapePrint |
     bonding prints are not a sell venue. The create anchor is used only
     when the tape has no print yet and the caller is still at the signal.
     """
+    # Prints are sorted by t_recv_ms. The latest PumpSwap print at or before t
+    # wins, even if a later bonding print is still in the prefix.
+    lo, hi = 0, len(path.prints)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if path.prints[mid].t_recv_ms <= t_ms:
+            lo = mid + 1
+        else:
+            hi = mid
     last_bond: TapePrint | None = None
-    last_swap: TapePrint | None = None
-    for pr in path.prints:
-        if pr.t_recv_ms > t_ms:
-            break
+    for i in range(lo - 1, -1, -1):
+        pr = path.prints[i]
         if pr.venue == VENUE_PUMPSWAP:
-            last_swap = pr
-        elif pr.venue == VENUE_BONDING:
+            return pr
+        if last_bond is None and pr.venue == VENUE_BONDING:
             last_bond = pr
-    if last_swap is not None:
-        return last_swap
     if last_bond is not None:
         return last_bond
     if allow_anchor:
