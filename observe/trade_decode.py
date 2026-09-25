@@ -133,9 +133,11 @@ def _decode_trade(raw: bytes) -> dict[str, Any] | None:
     base = _u64(raw, 105)
     if not _sane_ts(ts) or sol_lamports > _MAX_BONDING_SOL_LAMPORTS:
         return None
-    if quote <= 0 or base <= 0 or quote > _MAX_BONDING_SOL_LAMPORTS * 20:
+    # CreateV2 emits a real TradeEvent with sol_amount=0 and virtual_sol=0.
+    # Keep it. Only reject reserves that cannot be a pump curve.
+    if quote > _MAX_BONDING_SOL_LAMPORTS * 20:
         return None
-    return {
+    row: dict[str, Any] = {
         "kind": "trade",
         "venue": VENUE_BONDING,
         "mint": _pubkey(raw, 8),
@@ -151,6 +153,9 @@ def _decode_trade(raw: bytes) -> dict[str, Any] | None:
         "quote_mint": WSOL_MINT,
         "quote_is_wsol": True,
     }
+    if sol_lamports == 0 or quote <= 0:
+        row["zero_sol"] = True
+    return row
 
 
 def _decode_buy(raw: bytes) -> dict[str, Any] | None:
@@ -259,14 +264,15 @@ def seal_trade(
     base = int(decoded["base_reserve"])
     supply_raw = int(decoded.get("supply_raw") or 0) or PUMP_SUPPLY_RAW
     quote_is_wsol = decoded.get("quote_is_wsol")
-    price = price_sol_per_token(quote, base)
-    mcap = market_cap_sol(quote, base, supply_raw)
-    if quote_is_wsol is False:
-        price = None
-        mcap = None
     sol_lamports = int(decoded["sol_lamports"])
     token_raw = int(decoded["token_raw"])
-    return {
+    zero_sol = bool(decoded.get("zero_sol")) or sol_lamports == 0 or quote <= 0
+    price = price_sol_per_token(quote, base)
+    mcap = market_cap_sol(quote, base, supply_raw)
+    if quote_is_wsol is False or quote <= 0 or base <= 0:
+        price = None
+        mcap = None
+    row: dict[str, Any] = {
         "v": 1,
         "type": "trade",
         "feed": feed,
@@ -295,6 +301,9 @@ def seal_trade(
         "event_ts": int(decoded["event_ts"]),
         "commitment": commitment,
     }
+    if zero_sol:
+        row["zero_sol"] = True
+    return row
 
 
 def records_from_logs(

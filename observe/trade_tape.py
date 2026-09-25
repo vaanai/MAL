@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Paper trade tape for pump.fun bonding-curve and PumpSwap trades.
 
-Append-only sealed JSONL. No keys, no sends. Default feed is public RPC
-logsSubscribe ($0). Helius transactionSubscribe is the same decoder behind
---source helius_tx and is not contacted unless HELIUS_API_KEY is set.
+Hourly append-only JSONL, zstd-sealed when the hour rolls. No keys, no sends.
+Default feed is public RPC logsSubscribe ($0). Helius transactionSubscribe is
+the same decoder behind --source helius_tx and is not contacted unless
+HELIUS_API_KEY is set.
 
 Receive time is stamped when the websocket frame arrives, before JSON parse,
 as t_recv_ms (unix milliseconds) and t_recv (UTC ...sssZ).
@@ -22,7 +23,6 @@ import signal
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,44 +42,23 @@ from observe.trade_source import (
     LogsSubscribeSource,
     RawNotice,
 )
+from observe.trade_store import (
+    CompletenessMonitor,
+    DiskGuard,
+    HourlyJsonlWriter,
+    ZstdCompressor,
+    filesystem_bytes,
+    hour_stamp,
+    stored_trade,
+)
 
 DEFAULT_OUTPUT_DIR = Path("data/observe")
 DEFAULT_HTTP = "https://api.mainnet-beta.solana.com"
+DEFAULT_OBSERVE_DIR = Path("/var/lib/mal/sealed/jsonl")
 POOL_WAIT_S = 1.5
+STATS_INTERVAL_S = 600
 
 log = logging.getLogger("mal.trade_tape")
-
-
-class JsonlWriter:
-    def __init__(self, output_dir: Path, prefix: str) -> None:
-        self.output_dir = output_dir
-        self.prefix = prefix
-        self.rows = 0
-        self.bytes = 0
-        self._fh = None
-        self._day: str | None = None
-        self.path: Path | None = None
-
-    def write(self, record: dict[str, Any]) -> None:
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if day != self._day or self._fh is None:
-            if self._fh is not None:
-                self._fh.close()
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            self.path = self.output_dir / f"{self.prefix}-{day}.jsonl"
-            self._fh = self.path.open("a", encoding="utf-8")
-            self._day = day
-        line = json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n"
-        assert self._fh is not None
-        self._fh.write(line)
-        self._fh.flush()
-        self.rows += 1
-        self.bytes += len(line.encode("utf-8"))
-
-    def close(self) -> None:
-        if self._fh is not None:
-            self._fh.close()
-            self._fh = None
 
 
 class PoolMintCache:
@@ -199,6 +178,16 @@ def programs_for_venues(spec: str) -> tuple[str, ...]:
     return tuple(mapping[name] for name in names)
 
 
+def accept_trade(guard: DiskGuard, monitor: CompletenessMonitor, writer: HourlyJsonlWriter, rec: dict[str, Any]) -> bool:
+    """Write one trade, or count it as dropped while the disk guard is holding."""
+    if guard.holding:
+        guard.dropped += 1
+        return False
+    monitor.note(rec)
+    writer.write(stored_trade(rec))
+    return True
+
+
 def build_source(name: str, ws_url: str, commitment: str, helius_key: str, programs: tuple[str, ...]):
     if name == SOURCE_PUBLIC_RPC_LOGS:
         return LogsSubscribeSource(ws_url=ws_url, programs=programs, commitment=commitment)
@@ -212,50 +201,67 @@ async def run_tape(
     output_dir: Path,
     http_url: str,
     stop: asyncio.Event,
+    observe_dir: Path | None = None,
 ) -> None:
-    writer = JsonlWriter(output_dir, "trades")
-    pools_writer = JsonlWriter(output_dir, "pool-mints")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    compressor = ZstdCompressor()
+    guard = DiskGuard(output_dir)
+    writer = HourlyJsonlWriter(output_dir, "trades", compressor, on_seal=guard.note_hour)
+    pools_writer = HourlyJsonlWriter(output_dir, "pool-mints", compressor, on_seal=guard.note_hour)
+    monitor = CompletenessMonitor(
+        output_dir,
+        observe_dir if observe_dir is not None else Path(
+            os.environ.get("MAL_OBSERVE_JSONL_DIR", DEFAULT_OBSERVE_DIR)
+        ),
+        source.stats,
+        interval_s=float(os.environ.get("MAL_TRADE_TAPE_STATS_INTERVAL_S", STATS_INTERVAL_S)),
+    )
     cache = PoolMintCache()
     trades_written = 0
+    compressor.sweep_startup(output_dir, hour_stamp(monitor._clock()))
+    loop = asyncio.get_running_loop()
+    monitor.start(loop.time())
+
+    def emit(rec: dict[str, Any]) -> None:
+        nonlocal trades_written
+        if accept_trade(guard, monitor, writer, rec):
+            trades_written += 1
+
+    def open_paths() -> set[Path]:
+        return {path for path in (writer.path, pools_writer.path) if path is not None}
 
     async def consume() -> None:
-        nonlocal trades_written
         async for notice in source.notices(stop):
             records = trades_from_notice(notice, cache.mints)
-            ready = cache.accept(records, asyncio.get_running_loop().time())
+            ready = cache.accept(records, loop.time())
             for rec in ready:
-                writer.write(rec)
-                trades_written += 1
+                emit(rec)
 
     async def resolve() -> None:
-        nonlocal trades_written
-        loop = asyncio.get_running_loop()
         while not stop.is_set():
             batch = cache.unknown_pools(100)
-            if batch:
+            if batch and not guard.holding:
                 try:
                     found = await asyncio.to_thread(fetch_pool_mints, http_url, batch)
                 except (urllib.error.URLError, TimeoutError, RuntimeError, OSError) as exc:
                     log.warning("pool_lookup_failed n=%s err=%s", len(batch), exc)
                     found = {}
                 for pool, (base_mint, quote_mint) in found.items():
-                    pools_writer.write(
-                        {
-                            "v": 1,
-                            "type": "pool_mint",
-                            "pool": pool,
-                            "mint": base_mint,
-                            "quote_mint": quote_mint,
-                            "quote_is_wsol": quote_mint == WSOL_MINT,
-                        }
-                    )
+                    if not guard.holding:
+                        pools_writer.write(
+                            {
+                                "v": 1,
+                                "type": "pool_mint",
+                                "pool": pool,
+                                "mint": base_mint,
+                                "quote_mint": quote_mint,
+                                "quote_is_wsol": quote_mint == WSOL_MINT,
+                            }
+                        )
                     for rec in cache.remember(pool, base_mint, quote_mint):
-                        writer.write(rec)
-                        trades_written += 1
-            now = loop.time()
-            for rec in cache.flush_timeouts(now):
-                writer.write(rec)
-                trades_written += 1
+                        emit(rec)
+            for rec in cache.flush_timeouts(loop.time()):
+                emit(rec)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=0.4)
             except asyncio.TimeoutError:
@@ -266,10 +272,23 @@ async def run_tape(
             try:
                 await asyncio.wait_for(stop.wait(), timeout=60)
             except asyncio.TimeoutError:
+                writer.rotate()
+                pools_writer.rotate()
+                guard.tick(
+                    open_paths=open_paths(),
+                    inflight=compressor.inflight(),
+                    current_hour=hour_stamp(monitor._clock()),
+                )
+                total, _used, avail = filesystem_bytes(output_dir)
+                row = monitor.maybe_flush(
+                    loop.time(),
+                    {"free_bytes": avail, "total_bytes": total, "hold": guard.holding},
+                )
                 stats = source.stats
                 log.info(
                     "heartbeat source=%s commitment=%s trades=%s notes=%s failed_notes=%s "
-                    "reconnects=%s slot_jumps=%s last_slot=%s unresolved=%s pool_cache=%s bytes=%s",
+                    "reconnects=%s slot_jumps=%s last_slot=%s unresolved=%s pool_cache=%s "
+                    "bytes=%s hold=%s dropped=%s keep_days=%s free_ratio=%.3f stats=%s",
                     type(source).__name__,
                     source.commitment,
                     trades_written,
@@ -281,6 +300,11 @@ async def run_tape(
                     cache.unresolved_written,
                     len(cache.mints),
                     writer.bytes,
+                    int(guard.holding),
+                    guard.dropped,
+                    guard.keep_days,
+                    guard.free_ratio,
+                    row is not None,
                 )
 
     log.info(
@@ -290,12 +314,25 @@ async def run_tape(
         ",".join(source.programs),
         output_dir,
     )
+    guard.tick(
+        open_paths=open_paths(),
+        inflight=compressor.inflight(),
+        current_hour=hour_stamp(monitor._clock()),
+    )
     try:
         await asyncio.gather(consume(), resolve(), heartbeat())
     finally:
         writer.close()
         pools_writer.close()
-        log.info("trade_tape_stopped trades=%s bytes=%s", trades_written, writer.bytes)
+        compressor.close()
+        log.info(
+            "trade_tape_stopped trades=%s bytes=%s dropped=%s zstd_files=%s zstd_errors=%s",
+            trades_written,
+            writer.bytes,
+            guard.dropped,
+            compressor.compressed,
+            compressor.errors,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

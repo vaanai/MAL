@@ -122,6 +122,46 @@ class RecordedTradeTests(unittest.TestCase):
         self.assertEqual(sealed["t_recv_ms"], T_RECV_MS)
         self.assertAlmostEqual(sealed["price_sol"], 0.229425, places=4)
 
+    def test_create_v2_zero_sol_trade_is_kept_flagged(self) -> None:
+        raw = bytearray(base64.b64decode(_b64("pump_trade_event.b64")))
+        raw[40:48] = b"\x00" * 8
+        raw[97:105] = b"\x00" * 8
+        line = "Program data: " + base64.b64encode(raw).decode("ascii")
+        rows = records_from_logs(
+            [line],
+            slot=SLOT,
+            signature=SIG,
+            t_recv_ms=T_RECV_MS,
+            commitment="confirmed",
+            feed=SOURCE_PUBLIC_RPC_LOGS,
+        )
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["mint"], "5oqFhj53FQHJipb24tRB4GzAobW5VBwonh7qC5V5pump")
+        self.assertEqual(row["trader"], "s7epdqiFrL3jiPKx8eM6JEzJ2JbUpJA6kgCqDF1FfvQ")
+        self.assertEqual(row["sol_lamports"], 0)
+        self.assertEqual(row["token_raw"], 12728720)
+        self.assertTrue(row["zero_sol"])
+        self.assertIsNone(row["price_sol"])
+        self.assertIsNone(row["market_cap_sol"])
+        self.assertEqual(row["t_recv_ms"], T_RECV_MS)
+
+    def test_zero_size_trade_with_reserves_keeps_curve_price(self) -> None:
+        raw = bytearray(base64.b64decode(_b64("pump_trade_event.b64")))
+        raw[40:48] = b"\x00" * 8
+        line = "Program data: " + base64.b64encode(raw).decode("ascii")
+        row = records_from_logs(
+            [line],
+            slot=SLOT,
+            signature=SIG,
+            t_recv_ms=T_RECV_MS,
+            commitment="confirmed",
+            feed=SOURCE_PUBLIC_RPC_LOGS,
+        )[0]
+        self.assertTrue(row["zero_sol"])
+        self.assertGreater(row["price_sol"], 0)
+        self.assertAlmostEqual(row["market_cap_sol"], 78.562, places=2)
+
     def test_trade_event_with_non_bool_flag_is_dropped(self) -> None:
         raw = bytearray(base64.b64decode(_b64("pump_trade_event.b64")))
         raw[56] = 35
