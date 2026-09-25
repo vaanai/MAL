@@ -108,10 +108,13 @@ def decode_create_event(raw: bytes) -> dict[str, Any] | None:
     quote_mint = WSOL_MINT
     is_mayhem = False
     # token_program, is_mayhem, is_cashback, quote_mint — present on current events.
+    # Native SOL is the zero pubkey in this event; the tape uses the WSOL mint.
     tail, off2 = _take(raw, off, 32 + 1 + 1 + 32)
     if tail is not None:
         is_mayhem = tail[32] == 1
-        quote_mint = b58encode(tail[34:66])
+        parsed = b58encode(tail[34:66])
+        if parsed != "11111111111111111111111111111111":
+            quote_mint = parsed
     return {
         "type": "create",
         "mint": b58encode(mint_b),

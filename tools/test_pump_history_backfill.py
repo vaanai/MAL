@@ -80,6 +80,17 @@ class CreateAndMigrationTests(unittest.TestCase):
         self.assertEqual(ev["quote_reserve"], 30_000_000_000)
         self.assertEqual(ev["quote_mint"], WSOL_MINT)
         self.assertFalse(ev["is_mayhem_mode"])
+        # Native SOL is the zero pubkey on current CreateEvent tails.
+        usdc = bytes([4]) * 32
+        with_tail = raw + bytes(32) + bytes([1, 0]) + bytes(32)
+        ev2 = decode_create_event(with_tail)
+        assert ev2 is not None
+        self.assertTrue(ev2["is_mayhem_mode"])
+        self.assertEqual(ev2["quote_mint"], WSOL_MINT)
+        quoted = raw + bytes(32) + bytes([0, 0]) + usdc
+        ev3 = decode_create_event(quoted)
+        assert ev3 is not None
+        self.assertEqual(ev3["quote_mint"], b58encode(usdc))
 
     def test_migration_and_complete_layouts(self) -> None:
         def pk(n: int) -> bytes:
