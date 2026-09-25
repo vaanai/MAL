@@ -40,9 +40,11 @@ FRESH_MAX_S = 3600
 MAX_SIGNATURE_PAGES = 3
 SIGNATURE_PAGE = 1000
 OLDEST_TX_INSPECT = 5
+# Live creators, then older unresolved creators, then buyers. Helius credits
+# are scarce; a buyer must not spend one while a creator is still queued.
 CREATOR_PRIORITY = 0
-BUYER_PRIORITY = 1
-BACKFILL_PRIORITY = 2
+BACKFILL_PRIORITY = 1
+BUYER_PRIORITY = 2
 # Public RPC is shared with the trade tape, so stay at 1/s.
 # Helius free tier is 10/s. 5/s clears creator lookups inside 30s at the
 # observed ~40 creates/min and leaves room if the history backfill shares the key.
@@ -57,6 +59,11 @@ BACKOFF_CAP_S = 120.0
 LOOKUP_MAX_AGE_MS = 5 * 60_000
 # Hard ceiling. Age drops do not apply to unresolved creators, so this does.
 QUEUE_CAP = 256
+# Free plan is 1M credits. This enricher stops at 150k so the backfill keeps the rest.
+# getSignaturesForAddress and getTransaction are 1 credit each (Helius credits table).
+CREDIT_CAP_DEFAULT = 150_000
+CREDITS_PER_HELIUS_CALL = 1
+CREDIT_FILE_NAME = "helius-credits.json"
 PUBLIC_RPC = "https://api.mainnet-beta.solana.com"
 
 # Public hot wallets only. Unlisted funders are not called exchanges.
@@ -188,6 +195,17 @@ def resolve_rpc_url(env: dict[str, str] | None = None, env_file: Path | None = N
     return explicit or PUBLIC_RPC
 
 
+def _credit_cap() -> int:
+    raw = (os.environ.get("MAL_FUNDING_CREDIT_CAP") or "").strip()
+    if not raw:
+        return CREDIT_CAP_DEFAULT
+    try:
+        cap = int(raw)
+    except ValueError:
+        return CREDIT_CAP_DEFAULT
+    return cap if cap >= 0 else CREDIT_CAP_DEFAULT
+
+
 def choose_rps(url: str, explicit: float | None) -> float:
     """Operator --rps / MAL_FUNDING_RPS wins. Otherwise 1/s public, 5/s Helius."""
     if explicit is not None:
@@ -202,18 +220,68 @@ def maybe_switch_rpc(
     explicit_rps: float | None,
     env: dict[str, str] | None = None,
     env_file: Path | None = None,
+    budget: "CreditLedger | None" = None,
 ) -> "RpcClient":
-    """Move a public client onto Helius once a key exists. Do not switch back."""
+    """Move onto Helius when a key exists and the credit cap has room. At the cap, use public RPC at 1/s."""
+    if budget is not None and not budget.can_afford():
+        if describe_rpc(client.url) != "public":
+            return RpcClient(PUBLIC_RPC, rps=PUBLIC_RPS)
+        return client
     url = resolve_rpc_url(env, env_file)
     if describe_rpc(url) != "helius" or describe_rpc(client.url) == "helius":
         return client
-    return RpcClient(url, rps=choose_rps(url, explicit_rps))
+    return RpcClient(url, rps=choose_rps(url, explicit_rps), budget=budget)
 
 
 class RpcError(Exception):
     def __init__(self, message: str, *, limited: bool = False) -> None:
         super().__init__(message)
         self.limited = limited
+
+
+class CreditCap(Exception):
+    """Helius credit cap is spent. The caller falls back to public RPC."""
+
+
+class CreditLedger:
+    """Persisted Helius credit counter. Public RPC does not charge it."""
+
+    def __init__(self, path: Path, cap: int) -> None:
+        if cap < 0:
+            raise ValueError("credit cap must be >= 0")
+        self.path = path
+        self.cap = int(cap)
+        self.used = 0
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.is_file():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        used = raw.get("credits_used") if isinstance(raw, dict) else None
+        if isinstance(used, int) and used >= 0:
+            self.used = used
+
+    def can_afford(self, cost: int = CREDITS_PER_HELIUS_CALL) -> bool:
+        return self.used + cost <= self.cap
+
+    def charge(self, cost: int = CREDITS_PER_HELIUS_CALL) -> bool:
+        """Reserve credits before the request is sent. False at the cap."""
+        if cost < 0 or not self.can_afford(cost):
+            return False
+        self.used += cost
+        self.save()
+        return True
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"v": 1, "credits_used": self.used, "credit_cap": self.cap}
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(self.path)
 
 
 @dataclass
@@ -394,11 +462,13 @@ class RpcClient:
         transport: Callable[[str, dict[str, Any]], Any] | None = None,
         clock: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
+        budget: CreditLedger | None = None,
     ) -> None:
         if rps <= 0:
             raise ValueError("rps must be positive")
         self.url = url
         self.min_interval = 1.0 / rps
+        self.budget = budget
         self._transport = transport or _urllib_transport
         self._clock = clock or time.monotonic
         self._sleep = sleep or time.sleep
@@ -411,6 +481,9 @@ class RpcClient:
         self._id = 1
 
     def call(self, method: str, params: list[Any]) -> Any:
+        if describe_rpc(self.url) == "helius" and self.budget is not None:
+            if not self.budget.charge():
+                raise CreditCap()
         self._wait()
         body = {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params}
         self._id += 1
@@ -1177,6 +1250,9 @@ class Enricher:
         priority = CREATOR_PRIORITY if role == "creator" else BUYER_PRIORITY
         try:
             rec = resolve_wallet(self.client, wallet, now_ms=self.now_ms(), role_hint=role)
+        except CreditCap:
+            self.queue.push(priority, wallet, role, create_ms)
+            raise
         except RpcError:
             self.queue.push(priority, wallet, role, create_ms)
             raise
@@ -1294,28 +1370,35 @@ def run_serve(
     seed_limit: int,
     once: bool = False,
 ) -> int:
+    budget = CreditLedger(graph_dir / CREDIT_FILE_NAME, _credit_cap())
     url = resolve_rpc_url()
-    rate = choose_rps(url, rps)
+    if describe_rpc(url) == "helius" and not budget.can_afford():
+        url = PUBLIC_RPC
+        rate = PUBLIC_RPS
+    else:
+        rate = choose_rps(url, rps)
     enricher = Enricher(
         graph_dir=graph_dir,
         trades_dir=trades_dir,
         creates_dir=creates_dir,
-        client=RpcClient(url, rps=rate),
+        client=RpcClient(url, rps=rate, budget=budget),
     )
     seeded = enricher.seed_backfill(seed_limit)
     print(
-        f"funding_graph rpc={describe_rpc(url)} rps={rate} cached={len(enricher.graph)} seeded={seeded}",
+        f"funding_graph rpc={describe_rpc(url)} rps={rate} cached={len(enricher.graph)} seeded={seeded} "
+        f"credits={budget.used}/{budget.cap}",
         file=sys.stderr,
     )
     next_log = time.monotonic() + 60.0
     next_key = time.monotonic() + KEY_CHECK_S
     while True:
         if time.monotonic() >= next_key:
-            nxt = maybe_switch_rpc(enricher.client, rps)
+            nxt = maybe_switch_rpc(enricher.client, rps, budget=budget)
             if nxt is not enricher.client:
                 enricher.client = nxt
                 print(
-                    f"funding_graph rpc=helius rps={choose_rps(nxt.url, rps)}",
+                    f"funding_graph rpc={describe_rpc(nxt.url)} rps={1.0 / nxt.min_interval:.0f} "
+                    f"credits={budget.used}/{budget.cap}",
                     file=sys.stderr,
                 )
             next_key = time.monotonic() + KEY_CHECK_S
@@ -1324,6 +1407,13 @@ def run_serve(
         if enricher.queue:
             try:
                 enricher.drain_one()
+            except CreditCap:
+                enricher.client = RpcClient(PUBLIC_RPC, rps=PUBLIC_RPS, budget=budget)
+                print(
+                    f"funding_graph rpc=public rps=1 reason=credit_cap credits={budget.used}/{budget.cap}",
+                    file=sys.stderr,
+                )
+                continue
             except RpcError as exc:
                 if exc.limited:
                     print(
@@ -1346,7 +1436,7 @@ def run_serve(
                 f"funding_graph resolved={enricher.resolved} queue={len(enricher.queue)} "
                 f"calls={client.calls} limited={client.limited} unavailable={enricher.unavailable} "
                 f"dropped_stale={enricher.dropped_stale} dropped_cap={enricher.dropped_cap} "
-                f"cached={len(enricher.graph)}",
+                f"credits={budget.used}/{budget.cap} cached={len(enricher.graph)}",
                 file=sys.stderr,
             )
             enricher.cursor.save()

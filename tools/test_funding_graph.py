@@ -15,8 +15,11 @@ from tools.funding_graph import (
     EARLY_BUYERS,
     EXCHANGE_WALLETS,
     PUBLIC_RPC,
+    BACKFILL_PRIORITY,
     BUYER_PRIORITY,
     CREATOR_PRIORITY,
+    CreditCap,
+    CreditLedger,
     Enricher,
     FundingGraph,
     JobQueue,
@@ -238,6 +241,10 @@ class FundingGraphTests(unittest.TestCase):
         queue.push(CREATOR_PRIORITY, "creator", "creator")
         self.assertEqual(queue.pop()[:2], ("creator", "creator"))
         self.assertEqual(queue.pop()[:2], ("buyer", "early_buyer"))
+        queued = JobQueue()
+        queued.push(BUYER_PRIORITY, "buyer", "early_buyer", 1)
+        queued.push(BACKFILL_PRIORITY, "seed_creator", "creator", 1)
+        self.assertEqual(queued.pop()[0], "seed_creator")
 
     def test_append_only_first_row_wins(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -446,6 +453,55 @@ class FundingGraphTests(unittest.TestCase):
             self.assertIs(maybe_switch_rpc(nxt, None, {}, path), nxt)
             held = maybe_switch_rpc(client, 1.0, {}, path)
             self.assertAlmostEqual(held.min_interval, 1.0)
+
+    def test_helius_credit_cap_persists_and_falls_back_to_public(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "helius-credits.json"
+            ledger = CreditLedger(path, 2)
+            self.assertTrue(ledger.charge())
+            self.assertTrue(ledger.charge())
+            self.assertFalse(ledger.charge())
+            again = CreditLedger(path, 2)
+            self.assertEqual(again.used, 2)
+            self.assertNotIn("api-key", path.read_text(encoding="utf-8"))
+            sent = {"n": 0}
+
+            def transport(_url: str, _body: dict) -> dict:
+                sent["n"] += 1
+                return {"result": []}
+
+            helius = RpcClient(
+                "https://mainnet.helius-rpc.com/?api-key=unit-test-key",
+                rps=1000,
+                transport=transport,
+                clock=lambda: 0.0,
+                sleep=lambda _s: None,
+                budget=again,
+            )
+            with self.assertRaises(CreditCap):
+                helius.call("getTransaction", ["sig"])
+            self.assertEqual(sent["n"], 0)
+            public = RpcClient(
+                PUBLIC_RPC,
+                rps=1000,
+                transport=transport,
+                clock=lambda: 0.0,
+                sleep=lambda _s: None,
+                budget=again,
+            )
+            public.call("getSignaturesForAddress", ["W", {}])
+            self.assertEqual(sent["n"], 1)
+            self.assertEqual(again.used, 2)
+            missing = Path(tmp) / "missing.env"
+            fallen = maybe_switch_rpc(
+                helius,
+                2.0,
+                {"HELIUS_API_KEY": "unit-test-key"},
+                missing,
+                again,
+            )
+            self.assertEqual(describe_rpc(fallen.url), "public")
+            self.assertAlmostEqual(fallen.min_interval, 1.0)
 
     def test_score_is_preliminary_and_not_a_promote(self) -> None:
         rows = [
