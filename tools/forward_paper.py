@@ -51,6 +51,7 @@ from tools.paper_curve_math import (
     DEFAULT_SIZE_LAMPORTS,
     DEFAULT_SLIPPAGE_CAP,
     LAMPORTS_PER_SOL,
+    PRIORITY_FEE_LAMPORTS,
 )
 from tools.paper_price_path import (
     CreateSignal,
@@ -972,6 +973,12 @@ class ForwardEngine:
         )
         run.pending.pop(pending.mint, None)
         if entry.status != "filled":
+            # Same cost the scoreboard keeps inside n: an attempt that does not fill burns priority.
+            cost = -PRIORITY_FEE_LAMPORTS
+            self._roll_day(run, pending.t_entry_ms)
+            run.day_pnl += cost
+            run.realized.append(cost)
+            run.closed_n += 1
             self._decision(
                 run,
                 book,
@@ -982,6 +989,22 @@ class ForwardEngine:
                 pending.score,
                 pending.hops,
                 entry_status=entry.status,
+            )
+            self._position(
+                {
+                    "schema": SCHEMA_POSITION,
+                    "event": "miss",
+                    "book": pending.book_id,
+                    "mint": pending.mint,
+                    "creator": pending.creator,
+                    "trigger": pending.trigger,
+                    "decision_t_ms": pending.decision_t_ms,
+                    "t_entry_ms": pending.t_entry_ms,
+                    "entry_status": entry.status,
+                    "pnl_lamports": cost,
+                    "attempt_cost_lamports": cost,
+                    "reason": "priority_fee_on_unfilled_attempt",
+                }
             )
             return
         opened = _Open(

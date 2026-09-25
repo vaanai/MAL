@@ -30,6 +30,7 @@ from tools.paper_curve_math import (
     market_cap_sol,
     quote_buy,
     quote_sell,
+    reserves_with_our_buy,
     spot_sol_per_ui,
 )
 from tools.paper_price_path import (
@@ -46,7 +47,20 @@ SCHEMA_LABEL = "paper_exit_label_v1"
 SCHEMA_BOARD = "paper_tape_scoreboard_v1"
 DEFAULT_LATENCIES = (0.5, 1.0, 2.0, 5.0)
 HEADLINE_LATENCY = 1.0
-FAIL_RATES = (0.0, 0.10, 0.30)
+# 15% is inside the 10–20% band. The public tape's 28.9% err!=null share is an
+# upper bound (other people's reverted swaps, not our sends). execution-stack
+# says score 0/10/30 until measured and not to pick the rate that flatters;
+# the headline is the middle of the requested band, and 0/10/25% are always
+# reported beside it. 0% is the unflattered tape. 25% flatters a negative book
+# more than 15% because a failed entry only burns the priority fee.
+DEFAULT_FAIL_RATE = 0.15
+FAIL_RATES = (0.0, 0.10, 0.25)
+MISS_STATUSES = (
+    "missed_slippage",
+    "missed_curve_complete",
+    "missed_no_liquidity",
+    "missed_no_state",
+)
 RANDOM_FRACTION = 0.20
 RANDOM_SEED = 1
 MAX_HOLD_MS = 30 * 60 * 1000
@@ -55,18 +69,20 @@ ASSUMPTIONS: dict[str, Any] = {
     "clock": "create signal is observe t_ws; tape state uses t_recv_ms. event_ts is not a decision clock.",
     "entry": "reserves after the last print with t<=T+L. Create-payload reserves only if the tape has no print yet.",
     "pumpswap_reserves": (
-        "PumpSwap reserves on the tape are the pool before that trade. The path adds "
-        "sol_lamports to quote and moves base by token_raw before a fill can use the print. "
-        "Bonding-curve reserves are already post-trade. A PumpSwap row with no token_raw is left as recorded."
+        "PumpSwap reserves on the tape are the pool before that trade. Base moves by token_raw. "
+        "Quote moves by the pool-net amount: decoded events add quote_in+lp_fee on a buy and "
+        "remove the CP gross on a sell. Tape rows that only have user_quote use the canonical "
+        "venue fee, not the gross user amount. Bonding-curve reserves are already post-trade."
     ),
     "own_impact": (
-        "If no later print has replaced the entry quote, the sell walks the curve "
-        "after our own buy. Later prints are the observed book (our 0.05 SOL is not injected)."
+        "Our virtual buy stays in the same-venue reserves used for later prints and the exit. "
+        "A later tape print does not erase it. A migrated pool is a different book."
     ),
     "real_sol_cap": (
         "When bonding virtual quote is at least 30 SOL, a sell that asks for more than "
         "virtual-30 reverts. When the tape's virtual quote is already below 30 SOL, that "
-        "reserve is the cap: those curves are still paying sells."
+        "reserve is the cap: those curves are still paying sells. The cap is the tape "
+        "reserve, not the reserve after our paper buy is added back."
     ),
     "fees": "PumpPortal 0.5% then venue fee, sequential. Buys: fees out of input. Sells: fees out of SOL output.",
     "bonding_fee": "1.25% flat (pump.fun fees page, 20 May 2026), not the 95 bps protocol slice alone.",
@@ -75,12 +91,24 @@ ASSUMPTIONS: dict[str, Any] = {
     "rent_lamports": TOKEN_ACCOUNT_RENT_LAMPORTS,
     "rent_policy": "Recovered when the sell lands. Stuck when the sell cannot be sent.",
     "no_partial_fills": True,
-    "slippage": "Miss if marginal spot or pre-fee executable price is more than the cap above the T quote. A miss is not a loss.",
+    "slippage": (
+        "Miss if marginal spot or pre-fee executable price is more than the cap above the T quote. "
+        "The miss stays in n and costs the priority fee. It is not dropped and it is not a filled loss of the size."
+    ),
     "rugs": "no_exit_liquidity is a realized loss (size + both priority fees + rent) and is inside n, median, mean, and total.",
     "censored": "Exit time after the last tape timestamp has null pnl and is outside the realized n.",
     "fail_rates": (
-        "0, 0.10, 0.30. Symmetric EV lets a failed entry skip the trade for a priority-fee loss. "
-        "That flatters a negative book. exit_fail_only does not skip losers. Headline is fail_rate 0."
+        f"Headline fail rate is {DEFAULT_FAIL_RATE:.0%}. A failed entry stays in n and costs the "
+        "priority fee only, which flatters a negative book versus the landed trade. "
+        "Sensitivity is always reported at 0, 10, and 25 percent. 0 percent is the unflattered tape."
+    ),
+    "priority_fee_why": (
+        "0.001 SOL per side. PumpPortal examples are 0.00001–0.00005 SOL. "
+        "50k lamports is that tutorial ceiling, not a launch where 28.9% of public-RPC trade logs already failed."
+    ),
+    "non_wsol": (
+        "Prints with quote_is_wsol not true (false, or a PumpSwap row with the flag missing) "
+        "are excluded from SOL PnL and counted as non_wsol."
     ),
     "random_baseline": f"fraction {RANDOM_FRACTION} of in-window creates, Random seed {RANDOM_SEED}, mints sorted before sample.",
     "notional": "Sum of per-trade pnl. Not a 1 SOL float and not a concurrency cap.",
@@ -245,15 +273,16 @@ def _plan_exit(path: MintPath, entry: EntryFill, rule: ExitRule, latency_ms: int
         assert rule.hold_ms is not None
         return "hold", entry.t_entry_ms + rule.hold_ms
     assert entry.spot_sol is not None and entry.spot_sol > 0
-    peak = entry.spot_sol
+    mark = _entry_mark(entry)
+    peak = mark
     deadline = entry.t_entry_ms + rule.max_hold_ms
     for pr in path.prints:
         if pr.t_recv_ms <= entry.t_entry_ms:
             continue
         if pr.t_recv_ms > deadline:
             break
-        spot = pr.price_sol
-        if spot <= 0:
+        spot = _spot_with_our_buy(entry, pr)
+        if spot is None or spot <= 0:
             continue
         if rule.kind == "trail":
             assert rule.trail is not None
@@ -264,7 +293,7 @@ def _plan_exit(path: MintPath, entry: EntryFill, rule: ExitRule, latency_ms: int
                 return "trail", pr.t_recv_ms + latency_ms
         elif rule.kind == "tpsl":
             assert rule.tp is not None and rule.sl is not None
-            ret = spot / entry.spot_sol - 1.0
+            ret = spot / mark - 1.0
             if ret >= rule.tp:
                 return "tp", pr.t_recv_ms + latency_ms
             if ret <= -rule.sl:
@@ -272,13 +301,40 @@ def _plan_exit(path: MintPath, entry: EntryFill, rule: ExitRule, latency_ms: int
     return "time_stop", deadline
 
 
-def _same_quote(entry: EntryFill, state: TapePrint) -> bool:
-    return (
-        state.t_recv_ms == entry.state_t_ms
-        and state.venue == entry.venue
-        and state.quote_reserve == entry.quote_reserve
-        and state.base_reserve == entry.base_reserve
+def _entry_mark(entry: EntryFill) -> float:
+    """Spot of the book after our buy. Stops are measured from that, not the pre-buy tape."""
+    if entry.quote_after > 0 and entry.base_after > 0:
+        spot = spot_sol_per_ui(entry.quote_after, entry.base_after)
+        if spot > 0:
+            return spot
+    return float(entry.spot_sol or 0.0)
+
+
+def _spot_with_our_buy(entry: EntryFill, pr: TapePrint) -> float | None:
+    book = reserves_with_our_buy(
+        quote_lamports=pr.quote_reserve,
+        base_raw=pr.base_reserve,
+        net_in_lamports=entry.net_in_lamports,
+        tokens_raw=entry.tokens_raw,
+        same_venue=pr.venue == entry.venue,
     )
+    if book is None:
+        return None
+    spot = spot_sol_per_ui(book[0], book[1])
+    return spot if spot > 0 else None
+
+
+def _book_for_exit(entry: EntryFill, state: TapePrint) -> tuple[int, int, str] | None:
+    book = reserves_with_our_buy(
+        quote_lamports=state.quote_reserve,
+        base_raw=state.base_reserve,
+        net_in_lamports=entry.net_in_lamports,
+        tokens_raw=entry.tokens_raw,
+        same_venue=state.venue == entry.venue,
+    )
+    if book is None:
+        return None
+    return book[0], book[1], state.venue
 
 
 def simulate_exit(
@@ -291,6 +347,9 @@ def simulate_exit(
     size_lamports: int,
 ) -> dict[str, Any]:
     if entry.status != "filled":
+        # A send that does not fill still burns the priority fee when it is included.
+        # Count it. Do not drop it from n.
+        cost = -PRIORITY_FEE_LAMPORTS if entry.status in MISS_STATUSES else None
         return {
             "exit_status": "not_entered",
             "trigger": None,
@@ -298,7 +357,8 @@ def simulate_exit(
             "exit_venue": None,
             "exit_spot_sol": None,
             "exit_sol_lamports": None,
-            "pnl_lamports": None,
+            "pnl_lamports": cost,
+            "attempt_cost_lamports": cost,
         }
     trigger, t_fill = _plan_exit(path, entry, rule, latency_ms)
     base = {
@@ -313,12 +373,10 @@ def simulate_exit(
     state = state_as_of(path, t_fill, allow_anchor=True)
     if state is None or entry.venue is None:
         return {**base, "exit_status": "no_exit_liquidity", "pnl_lamports": _stuck_loss(size_lamports)}
-    if _same_quote(entry, state):
-        quote, base_raw = entry.quote_after, entry.base_after
-        venue = entry.venue
-    else:
-        quote, base_raw = state.quote_reserve, state.base_reserve
-        venue = state.venue
+    booked = _book_for_exit(entry, state)
+    if booked is None:
+        return {**base, "exit_status": "no_exit_liquidity", "pnl_lamports": _stuck_loss(size_lamports)}
+    quote, base_raw, venue = booked
     mcap = market_cap_sol(quote, base_raw)
     spot = spot_sol_per_ui(quote, base_raw)
     sol_out = quote_sell(
@@ -327,6 +385,7 @@ def simulate_exit(
         quote_lamports=quote,
         base_raw=base_raw,
         market_cap=mcap,
+        payable_quote_lamports=state.quote_reserve if venue == "pump_bonding" else None,
     )
     base.update({"exit_venue": venue, "exit_spot_sol": spot})
     if sol_out is None:
@@ -489,6 +548,28 @@ def _stats_from_lamports(values: Sequence[int]) -> dict[str, Any]:
     }
 
 
+def _headline_pnl(row: dict[str, Any], fail_rate: float, size_lamports: int) -> int | None:
+    """One attempt, in lamports. Misses and failed entries stay in the sum.
+
+    A slippage or no-fill attempt costs the priority fee. A failed entry
+    (the fail rate) replaces the landed pnl with that same priority-fee cost
+    for that fraction of attempts. Censored holds stay out.
+    """
+    del size_lamports  # stuck loss is already on the row
+    entry = row.get("entry_status")
+    pnl = row.get("pnl_lamports")
+    if entry in MISS_STATUSES:
+        return int(pnl) if isinstance(pnl, int) else None
+    if entry != "filled" or not isinstance(pnl, int):
+        return None
+    if row.get("exit_status") not in ("realized", "no_exit_liquidity"):
+        return None
+    if fail_rate <= 0:
+        return int(pnl)
+    mixed = (1.0 - fail_rate) * float(pnl) + fail_rate * float(-PRIORITY_FEE_LAMPORTS)
+    return int(round(mixed))
+
+
 def _symmetric_ev(row: dict[str, Any], fail_rate: float, size_lamports: int) -> float | None:
     """Expected lamports. Failed entry pays priority only (can skip a loser)."""
     if row.get("entry_status") != "filled":
@@ -521,23 +602,39 @@ def _exit_fail_only_ev(row: dict[str, Any], fail_rate: float, size_lamports: int
     return (1.0 - p) * float(pnl) + p * float(_stuck_loss(size_lamports))
 
 
-def aggregate_rule(rows: Sequence[dict[str, Any]], *, size_lamports: int, fail_rates: Sequence[float]) -> dict[str, Any]:
+def aggregate_rule(
+    rows: Sequence[dict[str, Any]],
+    *,
+    size_lamports: int,
+    fail_rates: Sequence[float],
+    count_attempts: bool = False,
+    headline_fail_rate: float = 0.0,
+) -> dict[str, Any]:
     realized: list[int] = []
     censored_n = no_exit_n = miss_n = filled_n = 0
+    rate_for_row = headline_fail_rate if count_attempts else 0.0
     for row in rows:
         entry = row.get("entry_status")
         status = row.get("exit_status")
         if entry != "filled":
             miss_n += 1
+            if count_attempts:
+                missed = _headline_pnl(row, 0.0, size_lamports)
+                if missed is not None:
+                    realized.append(missed)
             continue
         filled_n += 1
         if status == "censored":
             censored_n += 1
         elif status == "no_exit_liquidity":
             no_exit_n += 1
-            realized.append(int(row["pnl_lamports"]))
+            landed = _headline_pnl(row, rate_for_row, size_lamports)
+            if landed is not None:
+                realized.append(landed)
         elif status == "realized":
-            realized.append(int(row["pnl_lamports"]))
+            landed = _headline_pnl(row, rate_for_row, size_lamports)
+            if landed is not None:
+                realized.append(landed)
     stats = _stats_from_lamports(realized)
     stats["filled_n"] = filled_n
     stats["miss_n"] = miss_n
@@ -551,7 +648,11 @@ def aggregate_rule(rows: Sequence[dict[str, Any]], *, size_lamports: int, fail_r
     sensitivity: dict[str, Any] = {}
     for rate in fail_rates:
         key = f"{rate:g}"
-        sym = [v for row in rows if (v := _symmetric_ev(row, rate, size_lamports)) is not None]
+        if count_attempts:
+            sym_i = [v for row in rows if (v := _headline_pnl(row, rate, size_lamports)) is not None]
+            sym = [float(v) for v in sym_i]
+        else:
+            sym = [v for row in rows if (v := _symmetric_ev(row, rate, size_lamports)) is not None]
         exo = [v for row in rows if (v := _exit_fail_only_ev(row, rate, size_lamports)) is not None]
         sensitivity[key] = {
             "n": len(sym),
@@ -573,6 +674,8 @@ def score_labels(
     size_lamports: int,
     fail_rates: Sequence[float] = FAIL_RATES,
     rules: Sequence[ExitRule] = EXIT_RULES,
+    count_attempts: bool = False,
+    headline_fail_rate: float = 0.0,
 ) -> dict[str, Any]:
     by_rule: dict[str, Any] = {}
     for rule in rules:
@@ -583,7 +686,13 @@ def score_labels(
             and row.get("latency_s") == latency_s
             and (mints is None or row.get("mint") in mints)
         ]
-        by_rule[rule.rule_id] = aggregate_rule(rows, size_lamports=size_lamports, fail_rates=fail_rates)
+        by_rule[rule.rule_id] = aggregate_rule(
+            rows,
+            size_lamports=size_lamports,
+            fail_rates=fail_rates,
+            count_attempts=count_attempts,
+            headline_fail_rate=headline_fail_rate,
+        )
     return {"book": book, "latency_s": latency_s, "by_exit": by_rule}
 
 
@@ -618,7 +727,13 @@ def build_scoreboard(
     sample = random_mints(mints, fraction=random_fraction, seed=random_seed)
     books = {
         "buy_every_create": score_labels(
-            labels, book="buy_every_create", latency_s=HEADLINE_LATENCY, mints=None, size_lamports=size_lamports
+            labels,
+            book="buy_every_create",
+            latency_s=HEADLINE_LATENCY,
+            mints=None,
+            size_lamports=size_lamports,
+            count_attempts=True,
+            headline_fail_rate=DEFAULT_FAIL_RATE,
         ),
         "random_subsample": score_labels(
             labels,
@@ -626,12 +741,20 @@ def build_scoreboard(
             latency_s=HEADLINE_LATENCY,
             mints=set(sample),
             size_lamports=size_lamports,
+            count_attempts=True,
+            headline_fail_rate=DEFAULT_FAIL_RATE,
         ),
     }
     latency_tables: dict[str, Any] = {}
     for latency in latencies:
         latency_tables[f"{latency:g}"] = score_labels(
-            labels, book="buy_every_create", latency_s=latency, mints=None, size_lamports=size_lamports
+            labels,
+            book="buy_every_create",
+            latency_s=latency,
+            mints=None,
+            size_lamports=size_lamports,
+            count_attempts=True,
+            headline_fail_rate=DEFAULT_FAIL_RATE,
         )["by_exit"]
     return {
         "schema": SCHEMA_BOARD,
@@ -641,6 +764,8 @@ def build_scoreboard(
             "tape_end_ms": tape_end_ms,
             "creates_in_window": creates_n,
             "headline_latency_s": HEADLINE_LATENCY,
+            "headline_fail_rate": DEFAULT_FAIL_RATE,
+            "priority_lamports": PRIORITY_FEE_LAMPORTS,
             "size_lamports": size_lamports,
             "slippage_cap": slippage_cap,
             "random_fraction": random_fraction,
@@ -658,8 +783,16 @@ def format_markdown(board: dict[str, Any]) -> str:
     window = board.get("window") or {}
     lines.append(
         f"Baseline buy-every-create at T+{window.get('headline_latency_s')}s, "
-        f"size {window.get('size_lamports', 0) / LAMPORTS_PER_SOL:.2f} SOL, fail rate 0."
+        f"size {window.get('size_lamports', 0) / LAMPORTS_PER_SOL:.2f} SOL, "
+        f"fail rate {window.get('headline_fail_rate')}, "
+        f"priority {window.get('priority_lamports')} lamports. "
+        f"Misses are inside n. Sensitivity at 0/10/25% is below."
     )
+    scan = board.get("scan") or {}
+    if scan.get("non_wsol"):
+        lines.append(
+            f"Excluded from SOL PnL: {scan.get('non_wsol')} prints ({scan.get('non_wsol_reason')})."
+        )
     lines.append("")
     lines.append("| book | exit | n | median | mean | p10 | p90 | win | total SOL | no-exit | censored | miss |")
     lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
