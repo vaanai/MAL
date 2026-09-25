@@ -46,6 +46,10 @@ then
   exit 0
 fi
 
+LIVE_TAPE="${MAL_LIVE_TAPE_DIR:-/var/lib/mal/sealed/trades}"
+PROOF_HOUR="${MAL_LIVE_TAPE_PROOF_HOUR:-2026-09-25T07}"
+GAP_END="${MAL_LIVE_TAPE_GAP_END:-2026-09-25T06:58:00Z}"
+
 exec "${PY}" -m tools.pump_history_backfill \
   --until "${MAL_BACKFILL_UNTIL:-2026-09-25T07:00:00Z}" \
   --hours "${MAL_BACKFILL_HOURS:-336}" \
@@ -55,4 +59,7 @@ exec "${PY}" -m tools.pump_history_backfill \
   --max-bytes "${MAL_BACKFILL_MAX_BYTES:-42949672960}" \
   --rps "${MAL_BACKFILL_RPS:-8}" \
   --lookup-rps "${MAL_BACKFILL_LOOKUP_RPS:-4}" \
-  --workers "${MAL_BACKFILL_WORKERS:-4}"
+  --workers "${MAL_BACKFILL_WORKERS:-8}" \
+  --live-tape-dir "${LIVE_TAPE}" \
+  --live-tape-proof-hour "${PROOF_HOUR}" \
+  --live-tape-gap-end "${GAP_END}"

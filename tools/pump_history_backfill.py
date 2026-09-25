@@ -828,6 +828,42 @@ def hour_key(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H")
 
 
+def live_tape_hour_sealed(tape_dir: Path, key: str) -> bool:
+    """True when the live recorder has a sealed hourly trades file for this hour."""
+    for name in (
+        f"trades-{key}.jsonl.zst",
+        f"trades-{key}.jsonl",
+        f"trades-{key}.jsonl.gz",
+    ):
+        if (tape_dir / name).is_file():
+            return True
+    return False
+
+
+def hour_end_with_gap(start_ts: int, end_ts: int, gap_end_ts: int | None) -> int:
+    """When live tape starts mid-hour, backfill only [start_ts, gap_end_ts)."""
+    if gap_end_ts is not None and start_ts < gap_end_ts < end_ts:
+        return gap_end_ts
+    return end_ts
+
+
+def skip_hour_for_live_tape(
+    tape_dir: Path | None,
+    start_ts: int,
+    end_ts: int,
+    proof_hours: set[str],
+    gap_end_ts: int | None = None,
+) -> bool:
+    if tape_dir is None or not tape_dir.is_dir():
+        return False
+    key = hour_key(start_ts)
+    if key in proof_hours:
+        return False
+    if gap_end_ts is not None and start_ts < gap_end_ts < end_ts:
+        return False
+    return live_tape_hour_sealed(tape_dir, key)
+
+
 def load_pool_cache(path: Path) -> dict[str, tuple[str, str]]:
     cache: dict[str, tuple[str, str]] = {}
     if not path.is_file():
@@ -1398,7 +1434,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--rpc", default=None, help="Override RPC URL. Default: Helius if HELIUS_API_KEY is set, else public")
     parser.add_argument("--rps", type=float, default=3.2, help="getBlock requests per second")
     parser.add_argument("--lookup-rps", type=float, default=3.2, help="getMultipleAccounts requests per second")
-    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=8, help="Concurrent getBlock fetches in flight")
+    parser.add_argument(
+        "--live-tape-dir",
+        type=Path,
+        default=None,
+        help="Skip hours already sealed on the live trade tape (hourly trades-*.jsonl*)",
+    )
+    parser.add_argument(
+        "--live-tape-proof-hour",
+        action="append",
+        default=[],
+        metavar="YYYY-MM-DDTHH",
+        help="Backfill hour keys to keep even when live tape has them (repeatable)",
+    )
+    parser.add_argument(
+        "--live-tape-gap-end",
+        default=None,
+        help="Exclusive UTC end for the hour where live tape starts mid-hour (ISO-8601)",
+    )
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     parser.add_argument("--credit-cap", type=int, default=DEFAULT_CREDIT_CAP)
     parser.add_argument("--credits-per-getblock", type=int, default=None)
@@ -1455,12 +1509,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     cache_path = args.out / "pools" / "pool-mints.jsonl.zst"
     pool_mints = load_pool_cache(cache_path)
     args.out.mkdir(parents=True, exist_ok=True)
-    for index, (start_ts, end_ts) in enumerate(plan_hours(until, args.hours)):
+    proof_hours = set(args.live_tape_proof_hour or ["2026-09-25T07"])
+    gap_end_ts = parse_utc(args.live_tape_gap_end) if args.live_tape_gap_end else None
+    for index, (start_ts, plan_end_ts) in enumerate(plan_hours(until, args.hours)):
+        end_ts = hour_end_with_gap(start_ts, plan_end_ts, gap_end_ts)
+        key = hour_key(start_ts)
+        if skip_hour_for_live_tape(args.live_tape_dir, start_ts, plan_end_ts, proof_hours, gap_end_ts):
+            summary = {
+                "hour": key,
+                "skipped": True,
+                "skip_reason": "live_tape",
+                "credits_used": budget.used,
+            }
+            print(
+                f"skip {key}: live tape already sealed (proof hours kept: {sorted(proof_hours)})",
+                file=sys.stderr,
+                flush=True,
+            )
+            print(json.dumps(summary), flush=True)
+            continue
         if filesystem_room(args.out, args.max_bytes) <= 0:
-            print(f"disk cap reached before {hour_key(start_ts)}", file=sys.stderr)
+            print(f"disk cap reached before {key}", file=sys.stderr)
             break
         if kind == "helius" and not budget.can_afford():
-            print(f"credit cap reached before {hour_key(start_ts)}: used={budget.used}", file=sys.stderr)
+            print(f"credit cap reached before {key}: used={budget.used}", file=sys.stderr)
             break
         print(
             f"hour {hour_key(start_ts)} {datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()} "

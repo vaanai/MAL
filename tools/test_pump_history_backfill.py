@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import tempfile
+from datetime import datetime
 import threading
 import time
 import unittest
@@ -26,7 +27,9 @@ from tools.pump_history_backfill import (
     decode_create_event,
     decode_migration_event,
     helius_http_url,
+    hour_key,
     lifecycle_from_logs,
+    live_tape_hour_sealed,
     main,
     parse_credit_headers,
     plan_hours,
@@ -35,6 +38,8 @@ from tools.pump_history_backfill import (
     resolve_rpc_url,
     resolve_unresolved,
     rows_from_block,
+    hour_end_with_gap,
+    skip_hour_for_live_tape,
 )
 
 FIXTURES = Path(__file__).resolve().parent.parent / "observe" / "fixtures"
@@ -370,6 +375,38 @@ class HeliusPrepTests(unittest.TestCase):
         self.assertEqual(reason, "credit")
         self.assertLess(count, 4)
         self.assertEqual(got, [10, 11])
+
+
+class LiveTapeSkipTests(unittest.TestCase):
+    def test_sealed_hourly_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tape = Path(tmp)
+            key = "2026-09-25T16"
+            (tape / f"trades-{key}.jsonl.zst").write_text("x", encoding="utf-8")
+            self.assertTrue(live_tape_hour_sealed(tape, key))
+            start = int(datetime.fromisoformat("2026-09-25T16:00:00+00:00").timestamp())
+            end = start + 3600
+            self.assertTrue(skip_hour_for_live_tape(tape, start, end, set()))
+
+    def test_proof_hour_not_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tape = Path(tmp)
+            key = "2026-09-25T07"
+            (tape / f"trades-{key}.jsonl.zst").write_text("x", encoding="utf-8")
+            start = int(datetime.fromisoformat("2026-09-25T07:00:00+00:00").timestamp())
+            end = start + 3600
+            self.assertFalse(skip_hour_for_live_tape(tape, start, end, {key}))
+
+    def test_gap_hour_not_skipped_when_live_sealed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tape = Path(tmp)
+            key = "2026-09-25T06"
+            (tape / f"trades-{key}.jsonl.zst").write_text("x", encoding="utf-8")
+            start = int(datetime.fromisoformat("2026-09-25T06:00:00+00:00").timestamp())
+            end = start + 3600
+            gap = int(datetime.fromisoformat("2026-09-25T06:58:00+00:00").timestamp())
+            self.assertEqual(hour_end_with_gap(start, end, gap), gap)
+            self.assertFalse(skip_hour_for_live_tape(tape, start, end, set(), gap))
 
 
 if __name__ == "__main__":
