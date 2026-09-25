@@ -1,21 +1,38 @@
-"""Schema and decode tests for the public-RPC history loader. No network."""
+"""Schema and decode tests for the history loader. No network."""
 
 from __future__ import annotations
 
 import base64
+import json
+import os
+import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from observe.trade_decode import WSOL_MINT, b58encode, records_from_logs
 from tools.pump_history_backfill import (
+    BUDGET_CODE,
     SOURCE,
+    CreditBudget,
+    JsonlSink,
     backfill_trade_row,
     budget_bytes,
     compare_trades,
+    consume_slots,
     decode_complete_event,
     decode_create_event,
     decode_migration_event,
+    helius_http_url,
     lifecycle_from_logs,
+    main,
+    parse_credit_headers,
+    plan_hours,
+    projected_backfill_days,
+    redact_rpc_url,
+    resolve_rpc_url,
     resolve_unresolved,
     rows_from_block,
 )
@@ -246,6 +263,113 @@ class TapeSchemaTests(unittest.TestCase):
         self.assertEqual(report["only_backfill"], 1)
         self.assertEqual(report["only_backfill_zero_sol"], 1)
         self.assertEqual(report["only_live"], 0)
+
+
+class HeliusPrepTests(unittest.TestCase):
+    def test_url_from_key_is_redacted(self) -> None:
+        url = helius_http_url("unit-test-key")
+        self.assertTrue(url.startswith("https://mainnet.helius-rpc.com/?api-key="))
+        self.assertIn("unit-test-key", url)
+        self.assertNotIn("unit-test-key", redact_rpc_url(url))
+        self.assertNotIn("unit-test-key", redact_rpc_url(f"failed {url}"))
+        with self.assertRaises(ValueError):
+            helius_http_url("bad key")
+        public, kind = resolve_rpc_url(None, {})
+        self.assertEqual(kind, "public")
+        self.assertNotIn("api-key", public)
+        helius, kind = resolve_rpc_url(None, {"HELIUS_API_KEY": "unit-test-key"})
+        self.assertEqual(kind, "helius")
+        overridden, kind = resolve_rpc_url("https://api.mainnet-beta.solana.com", {"HELIUS_API_KEY": "unit-test-key"})
+        self.assertEqual(kind, "public")
+        self.assertNotIn("unit-test-key", overridden)
+
+    def test_bulk_helius_stops_before_any_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"HELIUS_API_KEY": "unit-test-key"}, clear=False):
+                code = main(["--until", "2026-09-25T07:00:00Z", "--hours", "1", "--out", tmp])
+        self.assertEqual(code, 2)
+
+    def test_credit_cap_and_projection(self) -> None:
+        budget = CreditBudget(3, 1)
+        self.assertTrue(budget.reserve())
+        self.assertTrue(budget.reserve())
+        self.assertTrue(budget.reserve())
+        self.assertFalse(budget.reserve())
+        self.assertEqual(budget.used, 3)
+        public = CreditBudget(7_000_000, 0, used=10)
+        self.assertTrue(public.can_afford())
+        self.assertTrue(public.reserve())
+        self.assertEqual(public.used, 10)
+        proj = projected_backfill_days(7_000_000, 1, 13_527 * 24, 143_478_622 * 24, 40 * 1024**3)
+        self.assertEqual(proj["binding"], "disk")
+        self.assertGreater(proj["days_by_credits"], proj["days_by_disk"])
+        costly = projected_backfill_days(7_000_000, 10, 13_527 * 24, 143_478_622 * 24, 40 * 1024**3)
+        self.assertEqual(costly["binding"], "credits")
+        self.assertLess(costly["days"], 3)
+        self.assertEqual(parse_credit_headers([{"name": "x-credits", "value": "1"}, {"name": "x-credits", "value": "1"}]), 1)
+        self.assertIsNone(parse_credit_headers([{"name": "x-credits", "value": "1"}, {"name": "x-credits", "value": "10"}]))
+
+    def test_hours_are_newest_first(self) -> None:
+        hours = plan_hours(1_790_323_200, 3)
+        self.assertEqual(len(hours), 3)
+        self.assertEqual(hours[0][1] - hours[0][0], 3600)
+        self.assertGreater(hours[0][0], hours[1][0])
+        self.assertGreater(hours[1][0], hours[2][0])
+
+    def test_resume_truncates_partial_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trades.jsonl"
+            sink = JsonlSink(path)
+            sink.write({"a": 1})
+            sink.write({"a": 2})
+            offset = sink.offset()
+            sink.write({"a": 3})
+            sink.close(seal=False)
+            resumed = JsonlSink(path, resume_bytes=offset)
+            resumed.write({"a": 4})
+            resumed.close(seal=False)
+            rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(rows, [{"a": 1}, {"a": 2}, {"a": 4}])
+
+    def test_concurrent_fetch_stays_ordered_and_stops_on_budget(self) -> None:
+        current = 0
+        max_inflight = 0
+        lock = threading.Lock()
+
+        def fetch(slot: int) -> tuple[dict, int, None]:
+            nonlocal current, max_inflight
+            with lock:
+                current += 1
+                max_inflight = max(max_inflight, current)
+            time.sleep(0.05)
+            with lock:
+                current -= 1
+            return {"slot": slot, "blockTime": 1, "transactions": []}, 1, None
+
+        consumed: list[int] = []
+        count, reason = consume_slots([1, 2, 3, 4], 3, fetch, lambda block, _w, _c: consumed.append(block["slot"]))
+        self.assertEqual(consumed, [1, 2, 3, 4])
+        self.assertIsNone(reason)
+        self.assertGreater(max_inflight, 1)
+
+        budget = CreditBudget(2, 1)
+
+        def limited(slot: int) -> tuple[dict | None, int, int | None]:
+            if not budget.reserve():
+                return None, 0, BUDGET_CODE
+            return {"slot": slot}, 1, None
+
+        got: list[int] = []
+        count, reason = consume_slots(
+            [10, 11, 12, 13],
+            2,
+            limited,
+            lambda block, _w, _c: got.append(block["slot"]),
+            stop_before=lambda: None if budget.can_afford() else "credit",
+        )
+        self.assertEqual(reason, "credit")
+        self.assertLess(count, 4)
+        self.assertEqual(got, [10, 11])
 
 
 if __name__ == "__main__":

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Backfill pump.fun trades, creates, and migrations from public RPC getBlock.
+"""Backfill pump.fun trades, creates, and migrations from getBlock.
 
 Paper only. Does not start or edit the live tape recorder. Rows match the
 sealed tape schema (bonding v1, PumpSwap v2 via stored_trade) with
 source=backfill, null receive time, and block_time set from the block.
 
-Public mainnet-beta getBlock is archival and returns program logs, so the
-same Program data decoder as the live tape can rebuild the rows. No API key.
+Public mainnet-beta getBlock is archival and returns program logs. When
+HELIUS_API_KEY is set, the RPC URL is built from that key and is never
+printed. A Helius bulk run refuses to start until --credits-per-getblock
+is set from a probe (or credit-probe.json confirms it).
 """
 
 from __future__ import annotations
@@ -16,6 +18,9 @@ import base64
 import binascii
 import gzip
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -38,8 +43,16 @@ from observe.trade_decode import (
 from observe.trade_store import stored_trade
 
 DEFAULT_RPC = "https://api.mainnet-beta.solana.com"
+HELIUS_HTTP = "https://mainnet.helius-rpc.com"
 FEED = "public_rpc_getblock"
+FEED_HELIUS = "helius_getblock"
 SOURCE = "backfill"
+# Published historical getBlock price. Confirm with --probe-credits before a bulk run.
+PUBLISHED_GETBLOCK_CREDITS = 1
+DEFAULT_CREDIT_CAP = 7_000_000
+BUDGET_CODE = -2
+CHECKPOINT_EVERY = 25
+_API_KEY_RE = re.compile(r"(api-key=)[^&\s\"']+", re.IGNORECASE)
 # Same window the live decoder accepts. See observe.trade_decode.
 _TS_MIN = 1_700_000_000
 _TS_MAX = 1_900_000_000
@@ -60,6 +73,106 @@ def budget_bytes(volume_total: int, volume_avail: int, cap_bytes: int = DEFAULT_
     if by_headroom < 0:
         by_headroom = 0
     return min(int(cap_bytes), by_headroom)
+
+
+def helius_http_url(api_key: str, base: str = HELIUS_HTTP) -> str:
+    """RPC URL for a Helius key. Caller must not log the return value."""
+    key = api_key.strip()
+    if not key or any(ch in key for ch in "\r\n& #"):
+        raise ValueError("HELIUS_API_KEY is empty or unsafe")
+    return f"{base.rstrip('/')}/?api-key={key}"
+
+
+def redact_rpc_url(text: str) -> str:
+    return _API_KEY_RE.sub(r"\1REDACTED", text)
+
+
+def resolve_rpc_url(explicit: str | None, environ: Mapping[str, str]) -> tuple[str, str]:
+    """Return (url, kind). An explicit --rpc wins. Otherwise use HELIUS_API_KEY."""
+    if explicit:
+        kind = "helius" if "helius-rpc.com" in explicit else "public"
+        return explicit, kind
+    key = (environ.get("HELIUS_API_KEY") or "").strip()
+    if key:
+        return helius_http_url(key), "helius"
+    return DEFAULT_RPC, "public"
+
+
+def plan_hours(until_ts: int, hours: int) -> list[tuple[int, int]]:
+    """Newest hour first. Each pair is [start, end) in unix seconds."""
+    if hours < 1:
+        raise ValueError("hours must be >= 1")
+    out: list[tuple[int, int]] = []
+    for i in range(hours):
+        end = until_ts - i * 3600
+        out.append((end - 3600, end))
+    return out
+
+
+class CreditBudgetExceeded(RuntimeError):
+    def __init__(self, used: int, cap: int) -> None:
+        super().__init__(f"credit cap reached: used={used} cap={cap}")
+        self.used = used
+        self.cap = cap
+
+
+class CreditBudget:
+    """Hard cap on RPC credits. per_call=0 (public RPC) never trips the cap."""
+
+    def __init__(self, cap: int, per_call: int, used: int = 0) -> None:
+        if cap < 0 or per_call < 0 or used < 0:
+            raise ValueError("credit budget must be >= 0")
+        self.cap = int(cap)
+        self.per_call = int(per_call)
+        self.used = int(used)
+        self._lock = threading.Lock()
+
+    def can_afford(self) -> bool:
+        with self._lock:
+            return self.used + self.per_call <= self.cap
+
+    def reserve(self) -> bool:
+        """Count one RPC attempt. False means the call must not be sent."""
+        with self._lock:
+            if self.used + self.per_call > self.cap:
+                return False
+            self.used += self.per_call
+            return True
+
+
+def empty_checkpoint() -> dict[str, Any]:
+    return {"version": 1, "credits_used": 0, "credits_per_getblock": None, "hours": {}}
+
+
+def load_checkpoint(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return empty_checkpoint()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return empty_checkpoint()
+    data.setdefault("version", 1)
+    data.setdefault("credits_used", 0)
+    data.setdefault("credits_per_getblock", None)
+    data.setdefault("hours", {})
+    return data
+
+
+def save_checkpoint(path: Path, data: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def filesystem_room(out_dir: Path, cap_bytes: int) -> int:
+    """Bytes still allowed under the directory cap and the 20% free reserve."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    usage = shutil.disk_usage(out_dir)
+    headroom = budget_bytes(usage.total, usage.free, cap_bytes)
+    by_cap = cap_bytes - dir_size(out_dir)
+    if by_cap < 0:
+        by_cap = 0
+    return min(headroom, by_cap)
 
 
 def _read_string(buf: bytes, off: int, limit: int = 512) -> tuple[str | None, int]:
@@ -240,11 +353,12 @@ def _stamp_lifecycle(
     signature: str,
     event_index: int,
     block_time: int,
+    feed: str = FEED,
 ) -> dict[str, Any]:
     row = dict(ev)
     row["v"] = 1
     row["source"] = SOURCE
-    row["feed"] = FEED
+    row["feed"] = feed
     row["venue"] = "pump_bonding"
     row["slot"] = int(slot)
     row["signature"] = signature
@@ -269,6 +383,7 @@ def tx_signature(tx: Mapping[str, Any]) -> str | None:
 def rows_from_block(
     block: Mapping[str, Any],
     pool_mints: dict[str, tuple[str, str]],
+    feed: str = FEED,
 ) -> dict[str, list[dict[str, Any]]]:
     """Decode one getBlock result. Mutates pool_mints with CreatePool events."""
     block_time = block.get("blockTime")
@@ -298,11 +413,15 @@ def rows_from_block(
         made, moved = lifecycle_from_logs(logs)
         for index, ev in enumerate(made):
             creates.append(
-                _stamp_lifecycle(ev, slot=slot, signature=sig, event_index=index, block_time=block_time)
+                _stamp_lifecycle(
+                    ev, slot=slot, signature=sig, event_index=index, block_time=block_time, feed=feed
+                )
             )
         for index, ev in enumerate(moved):
             migrations.append(
-                _stamp_lifecycle(ev, slot=slot, signature=sig, event_index=index, block_time=block_time)
+                _stamp_lifecycle(
+                    ev, slot=slot, signature=sig, event_index=index, block_time=block_time, feed=feed
+                )
             )
         decoded = records_from_logs(
             logs,
@@ -310,7 +429,7 @@ def rows_from_block(
             signature=sig,
             t_recv_ms=0,
             commitment="confirmed",
-            feed=FEED,
+            feed=feed,
             pool_mints=pool_mints,
         )
         for rec in decoded:
@@ -364,12 +483,27 @@ def resolve_unresolved(
 
 
 class JsonlSink:
-    """Append compact JSONL and zstd-seal it on close. Empty files are removed."""
+    """Append compact JSONL and zstd-seal it on close. Empty files are removed.
 
-    def __init__(self, path: Path) -> None:
+    resume_bytes truncates to a checkpoint offset and appends. A partial hour
+    stays plain JSONL until the hour is fully consumed.
+    """
+
+    def __init__(self, path: Path, resume_bytes: int | None = None) -> None:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = path.open("w", encoding="utf-8")
+        self._base = 0
+        if resume_bytes is None:
+            self._fh = path.open("w", encoding="utf-8")
+        else:
+            keep = max(0, int(resume_bytes))
+            if path.is_file():
+                with path.open("r+b") as raw:
+                    raw.truncate(keep)
+            else:
+                path.touch()
+            self._fh = path.open("a", encoding="utf-8")
+            self._base = keep
         self.rows = 0
         self.bytes = 0
 
@@ -379,9 +513,21 @@ class JsonlSink:
         self.rows += 1
         self.bytes += len(line.encode("utf-8"))
 
-    def close(self) -> Path | None:
+    def offset(self) -> int:
+        self._fh.flush()
+        return self._fh.tell()
+
+    def close(self, *, seal: bool = True) -> Path | None:
         self._fh.close()
-        if self.rows == 0:
+        if not seal:
+            if self.rows == 0 and self._base == 0:
+                self.path.unlink(missing_ok=True)
+                return None
+            return self.path if self.path.is_file() else None
+        if self.rows == 0 and self._base == 0:
+            self.path.unlink(missing_ok=True)
+            return None
+        if not self.path.is_file() or self.path.stat().st_size == 0:
             self.path.unlink(missing_ok=True)
             return None
         return seal_jsonl(self.path)
@@ -406,17 +552,35 @@ class RateLimiter:
             time.sleep(wait)
 
 
+def _note_credit_headers(resp: Any, header_out: dict[str, Any] | None) -> None:
+    if header_out is None:
+        return
+    found = header_out.setdefault("credits", [])
+    for key, value in resp.headers.items():
+        if "credit" not in key.lower():
+            continue
+        found.append({"name": key.lower(), "value": str(value)[:40]})
+
+
 def rpc_call(
     url: str,
     method: str,
     params: list[Any],
     limiter: RateLimiter | None,
     timeout: float = 60.0,
+    budget: CreditBudget | None = None,
+    header_out: dict[str, Any] | None = None,
 ) -> tuple[Any, int, int | None]:
-    """Return (result, wire_bytes, error_code). Retries HTTP 429."""
+    """Return (result, wire_bytes, error_code). Retries HTTP 429.
+
+    Each attempt reserves one credit before the request is sent. The URL is
+    never included in raised errors.
+    """
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     last_code: int | None = None
     for attempt in range(6):
+        if budget is not None and not budget.reserve():
+            raise CreditBudgetExceeded(budget.used, budget.cap)
         if limiter is not None:
             limiter.acquire()
         req = urllib.request.Request(
@@ -426,6 +590,7 @@ def rpc_call(
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
+                _note_credit_headers(resp, header_out)
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
             last_code = exc.code
@@ -435,12 +600,12 @@ def rpc_call(
             if attempt < 5 and exc.code >= 500:
                 time.sleep(0.6 * (2**attempt))
                 continue
-            raise
+            raise RuntimeError(f"{method} http {exc.code}") from None
         except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError) as exc:
             if attempt < 5:
                 time.sleep(0.6 * (2**attempt))
                 continue
-            raise RuntimeError(f"{method} transport {type(exc).__name__}") from exc
+            raise RuntimeError(redact_rpc_url(f"{method} transport {type(exc).__name__}")) from None
         wire = len(raw)
         try:
             if raw[:2] == b"\x1f\x8b":
@@ -504,26 +669,46 @@ def fetch_pool_mints(url: str, pools: list[str]) -> dict[str, tuple[str, str]]:
     return found
 
 
-def fetch_block(url: str, slot: int, limiter: RateLimiter) -> tuple[dict[str, Any] | None, int, int | None]:
+def _getblock_params(slot: int, *, full: bool) -> list[Any]:
+    return [
+        slot,
+        {
+            "encoding": "json",
+            "transactionDetails": "full" if full else "none",
+            "rewards": False,
+            "commitment": "confirmed",
+            "maxSupportedTransactionVersion": 1,
+        },
+    ]
+
+
+def fetch_block(
+    url: str,
+    slot: int,
+    limiter: RateLimiter,
+    budget: CreditBudget | None = None,
+    header_out: dict[str, Any] | None = None,
+    *,
+    full: bool = True,
+) -> tuple[dict[str, Any] | None, int, int | None]:
     try:
         result, wire, code = rpc_call(
             url,
             "getBlock",
-            [
-                slot,
-                {
-                    "encoding": "json",
-                    "transactionDetails": "full",
-                    "rewards": False,
-                    "commitment": "confirmed",
-                    "maxSupportedTransactionVersion": 1,
-                },
-            ],
+            _getblock_params(slot, full=full),
             limiter,
             timeout=90.0,
+            budget=budget,
+            header_out=header_out,
         )
+    except CreditBudgetExceeded:
+        return None, 0, BUDGET_CODE
     except (RuntimeError, TimeoutError, urllib.error.URLError, json.JSONDecodeError, gzip.BadGzipFile) as exc:
-        print(f"getBlock slot={slot} failed {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        print(
+            redact_rpc_url(f"getBlock slot={slot} failed {type(exc).__name__}: {exc}"),
+            file=sys.stderr,
+            flush=True,
+        )
         return None, 0, -1
     if not isinstance(result, dict):
         return None, wire, code
@@ -531,22 +716,19 @@ def fetch_block(url: str, slot: int, limiter: RateLimiter) -> tuple[dict[str, An
     return result, wire, code
 
 
-def block_time_of(url: str, slot: int, limiter: RateLimiter) -> int | None:
+def block_time_of(
+    url: str,
+    slot: int,
+    limiter: RateLimiter,
+    budget: CreditBudget | None = None,
+) -> int | None:
     result, _wire, _code = rpc_call(
         url,
         "getBlock",
-        [
-            slot,
-            {
-                "encoding": "json",
-                "transactionDetails": "none",
-                "rewards": False,
-                "commitment": "confirmed",
-                "maxSupportedTransactionVersion": 1,
-            },
-        ],
+        _getblock_params(slot, full=False),
         limiter,
         timeout=30.0,
+        budget=budget,
     )
     if not isinstance(result, dict):
         return None
@@ -554,7 +736,14 @@ def block_time_of(url: str, slot: int, limiter: RateLimiter) -> int | None:
     return bt if isinstance(bt, int) else None
 
 
-def slot_for_time(url: str, target: int, anchor_slot: int, anchor_time: int, limiter: RateLimiter) -> int:
+def slot_for_time(
+    url: str,
+    target: int,
+    anchor_slot: int,
+    anchor_time: int,
+    limiter: RateLimiter,
+    budget: CreditBudget | None = None,
+) -> int:
     """First slot whose blockTime is >= target. Public RPC has a block per recent slot."""
     span = max(target - anchor_time, 0)
     guess = anchor_slot + int(span / 0.27)
@@ -562,8 +751,8 @@ def slot_for_time(url: str, target: int, anchor_slot: int, anchor_time: int, lim
     hi = guess + 5000
     # Expand until the target is inside (lo_time, hi_time).
     for _ in range(8):
-        lo_t = block_time_of(url, lo, limiter)
-        hi_t = block_time_of(url, hi, limiter)
+        lo_t = block_time_of(url, lo, limiter, budget)
+        hi_t = block_time_of(url, hi, limiter, budget)
         if lo_t is None or hi_t is None:
             lo = max(0, lo - 2000)
             hi += 2000
@@ -580,7 +769,7 @@ def slot_for_time(url: str, target: int, anchor_slot: int, anchor_time: int, lim
     best = hi
     while lo <= hi:
         mid = (lo + hi) // 2
-        bt = block_time_of(url, mid, limiter)
+        bt = block_time_of(url, mid, limiter, budget)
         if bt is None or bt < target:
             lo = mid + 1
         else:
@@ -589,14 +778,22 @@ def slot_for_time(url: str, target: int, anchor_slot: int, anchor_time: int, lim
     return best
 
 
-def slots_between(url: str, start: int, end: int, limiter: RateLimiter) -> list[int]:
+def slots_between(
+    url: str,
+    start: int,
+    end: int,
+    limiter: RateLimiter,
+    budget: CreditBudget | None = None,
+) -> list[int]:
     if end < start:
         return []
     out: list[int] = []
     cursor = start
     while cursor <= end:
         chunk_end = min(end, cursor + 4999)
-        result, _wire, _code = rpc_call(url, "getBlocks", [cursor, chunk_end], limiter, timeout=60.0)
+        result, _wire, _code = rpc_call(
+            url, "getBlocks", [cursor, chunk_end], limiter, timeout=60.0, budget=budget
+        )
         if not isinstance(result, list):
             raise RuntimeError(f"getBlocks {cursor}-{chunk_end} returned {type(result).__name__}")
         out.extend(int(s) for s in result)
@@ -656,6 +853,134 @@ def load_pool_cache(path: Path) -> dict[str, tuple[str, str]]:
     return cache
 
 
+def consume_slots(
+    slots: Sequence[int],
+    workers: int,
+    fetch: Callable[[int], tuple[dict[str, Any] | None, int, int | None]],
+    consume: Callable[[dict[str, Any] | None, int, int | None], None],
+    stop_before: Callable[[], str | None] | None = None,
+    max_slots: int | None = None,
+) -> tuple[int, str | None]:
+    """Fetch slots concurrently and consume them in order.
+
+    Returns (number consumed, stop_reason). A budget miss does not consume
+    that slot, so a resume retries it.
+    """
+    if not slots:
+        return 0, None
+    inflight: dict[int, Any] = {}
+    next_submit = 0
+    next_consume = 0
+    reason: str | None = None
+    executor = ThreadPoolExecutor(max_workers=max(1, workers))
+    try:
+        while next_consume < len(slots):
+            while reason is None and len(inflight) < max(1, workers) and next_submit < len(slots):
+                if max_slots is not None and next_submit >= max_slots:
+                    reason = "max_slots"
+                    break
+                if stop_before is not None:
+                    why = stop_before()
+                    if why:
+                        reason = why
+                        break
+                inflight[next_submit] = executor.submit(fetch, slots[next_submit])
+                next_submit += 1
+            if next_consume not in inflight:
+                break
+            block, wire, code = inflight.pop(next_consume).result()
+            if code == BUDGET_CODE:
+                reason = "credit"
+                break
+            consume(block, wire, code)
+            next_consume += 1
+        while reason != "credit" and next_consume in inflight:
+            block, wire, code = inflight.pop(next_consume).result()
+            if code == BUDGET_CODE:
+                reason = "credit"
+                break
+            consume(block, wire, code)
+            next_consume += 1
+    finally:
+        for fut in inflight.values():
+            fut.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+    return next_consume, reason
+
+
+def projected_backfill_days(
+    credit_cap: int,
+    credits_per_getblock: int,
+    blocks_per_day: int,
+    bytes_per_day: int,
+    byte_cap: int,
+) -> dict[str, Any]:
+    """How many recent days fit the credit cap and the byte cap."""
+    if credits_per_getblock < 1 or blocks_per_day < 1 or bytes_per_day < 1:
+        raise ValueError("projection inputs must be positive")
+    by_credits = (credit_cap / credits_per_getblock) / blocks_per_day
+    by_disk = byte_cap / bytes_per_day
+    binding = "disk" if by_disk <= by_credits else "credits"
+    return {
+        "days_by_credits": round(by_credits, 2),
+        "days_by_disk": round(by_disk, 2),
+        "days": round(min(by_credits, by_disk), 2),
+        "binding": binding,
+    }
+
+
+def parse_credit_headers(headers: Sequence[Mapping[str, str]]) -> int | None:
+    """Return a single positive integer if every credit header agrees."""
+    values: list[int] = []
+    for item in headers:
+        raw = str(item.get("value") or "").strip()
+        if not raw:
+            continue
+        try:
+            values.append(int(float(raw)))
+        except ValueError:
+            continue
+    if not values:
+        return None
+    if any(v != values[0] for v in values):
+        return None
+    if values[0] < 1:
+        return None
+    return values[0]
+
+
+def _locate_slots(
+    url: str,
+    start_ts: int,
+    end_ts: int,
+    limiter: RateLimiter,
+    budget: CreditBudget,
+    anchor_slot: int,
+    anchor_time: int,
+    slot_start: int | None,
+    slot_end: int | None,
+    checkpoint: dict[str, Any] | None,
+    key: str,
+) -> tuple[int, int, list[int], bool, dict[str, Any] | None] | None:
+    hours = checkpoint.setdefault("hours", {}) if checkpoint is not None else {}
+    partial = hours.get(key) if isinstance(hours.get(key), dict) else None
+    resume = bool(partial and partial.get("status") == "partial")
+    if resume and isinstance(partial.get("start_slot"), int) and isinstance(partial.get("end_slot"), int):
+        start_slot = int(partial["start_slot"])
+        end_slot = int(partial["end_slot"])
+    elif slot_start is not None and slot_end is not None:
+        start_slot = slot_start
+        end_slot = slot_end
+    else:
+        start_slot = slot_for_time(url, start_ts, anchor_slot, anchor_time, limiter, budget)
+        end_slot = slot_for_time(url, end_ts, anchor_slot, anchor_time, limiter, budget)
+    slots = slots_between(url, start_slot, max(start_slot, end_slot - 1), limiter, budget)
+    if resume and isinstance(partial.get("next_slot"), int):
+        next_slot = int(partial["next_slot"])
+        slots = [slot for slot in slots if slot >= next_slot]
+    return start_slot, end_slot, slots, resume, partial if isinstance(partial, dict) else None
+
+
 def run_hour(
     *,
     url: str,
@@ -669,58 +994,110 @@ def run_hour(
     max_bytes: int,
     anchor_slot: int,
     anchor_time: int,
+    budget: CreditBudget | None = None,
+    feed: str = FEED,
+    checkpoint: dict[str, Any] | None = None,
+    checkpoint_path: Path | None = None,
+    max_slots: int | None = None,
+    slot_start: int | None = None,
+    slot_end: int | None = None,
 ) -> dict[str, Any]:
-    """Fetch [start_ts, end_ts) and write sealed hour files. Idempotent if stats exist."""
+    """Fetch [start_ts, end_ts), newest hours first at the caller. Resume from checkpoint."""
+    if budget is None:
+        budget = CreditBudget(DEFAULT_CREDIT_CAP, 0)
     key = hour_key(start_ts)
     stats_path = out_dir / f"stats-{key}.json"
     if stats_path.is_file():
         return json.loads(stats_path.read_text(encoding="utf-8"))
-    if dir_size(out_dir) >= max_bytes:
-        raise RuntimeError(f"backfill dir already {dir_size(out_dir)} bytes, cap {max_bytes}")
+    if filesystem_room(out_dir, max_bytes) <= 0:
+        return {"hour": key, "skipped": True, "stop_reason": "disk", "credits_used": budget.used}
+    try:
+        located = _locate_slots(
+            url, start_ts, end_ts, limiter, budget, anchor_slot, anchor_time, slot_start, slot_end, checkpoint, key
+        )
+    except CreditBudgetExceeded:
+        return {"hour": key, "skipped": True, "stop_reason": "credit", "credits_used": budget.used}
+    if located is None:
+        return {"hour": key, "skipped": True, "stop_reason": "credit", "credits_used": budget.used}
+    start_slot, end_slot, slots, resume, partial = located
 
     t0 = time.time()
-    start_slot = slot_for_time(url, start_ts, anchor_slot, anchor_time, limiter)
-    end_slot = slot_for_time(url, end_ts, anchor_slot, anchor_time, limiter)
-    slots = slots_between(url, start_slot, max(start_slot, end_slot - 1), limiter)
+
     for sub, prefix in (("trades", "trades"), ("creates", "creates"), ("migrations", "migrations")):
         folder = out_dir / sub
-        if folder.is_dir():
+        if folder.is_dir() and not resume:
             for stale in folder.glob(f"{prefix}-{key}.jsonl*"):
                 stale.unlink()
-    trades = JsonlSink(out_dir / "trades" / f"trades-{key}.jsonl")
-    creates = JsonlSink(out_dir / "creates" / f"creates-{key}.jsonl")
-    migrations = JsonlSink(out_dir / "migrations" / f"migrations-{key}.jsonl")
+    offsets = partial.get("offsets") if resume and isinstance(partial.get("offsets"), dict) else {}
 
-    counts = {
+    def _sink(sub: str, prefix: str) -> JsonlSink:
+        path = out_dir / sub / f"{prefix}-{key}.jsonl"
+        if resume:
+            raw = offsets.get(sub, 0)
+            return JsonlSink(path, resume_bytes=int(raw) if isinstance(raw, int) else 0)
+        return JsonlSink(path)
+
+    trades = _sink("trades", "trades")
+    creates = _sink("creates", "creates")
+    migrations = _sink("migrations", "migrations")
+    prior = partial.get("counts") if resume and isinstance(partial.get("counts"), dict) else {}
+    counts: dict[str, Any] = {
         "hour": key,
         "block_time_start": start_ts,
         "block_time_end": end_ts,
         "start_slot": start_slot,
         "end_slot": end_slot,
-        "slots": len(slots),
-        "empty": 0,
-        "trades": 0,
-        "bonding": 0,
-        "pumpswap": 0,
-        "creates": 0,
-        "migrations": 0,
-        "completes": 0,
-        "unresolved_dropped": 0,
-        "wire_bytes": 0,
-        "errors": 0,
+        "slots": len(slots) + (int(prior.get("slots_done") or 0) if resume else 0),
+        "empty": int(prior.get("empty") or 0),
+        "trades": int(prior.get("trades") or 0),
+        "bonding": int(prior.get("bonding") or 0),
+        "pumpswap": int(prior.get("pumpswap") or 0),
+        "creates": int(prior.get("creates") or 0),
+        "migrations": int(prior.get("migrations") or 0),
+        "completes": int(prior.get("completes") or 0),
+        "unresolved_dropped": int(prior.get("unresolved_dropped") or 0),
+        "wire_bytes": int(prior.get("wire_bytes") or 0),
+        "errors": int(prior.get("errors") or 0),
+        "slots_done": int(prior.get("slots_done") or 0),
     }
-
     held: list[dict[str, Any]] = []
+    credit_hit = False
+    seen = {"n": 0}
+    room = filesystem_room(out_dir, max_bytes)
+
+    def _persist(status: str, next_slot: int | None, stop_reason: str | None) -> None:
+        if checkpoint is None or checkpoint_path is None:
+            return
+        entry: dict[str, Any] = {
+            "status": status,
+            "start_slot": start_slot,
+            "end_slot": end_slot,
+            "next_slot": next_slot,
+            "stop_reason": stop_reason,
+            "counts": {name: counts[name] for name in counts if name != "files"},
+        }
+        if status != "sealed":
+            entry["offsets"] = {
+                "trades": trades.offset(),
+                "creates": creates.offset(),
+                "migrations": migrations.offset(),
+            }
+        checkpoint.setdefault("hours", {})[key] = entry
+        checkpoint["credits_used"] = budget.used
+        save_checkpoint(checkpoint_path, checkpoint)
 
     def _lookup(pools: list[str]) -> dict[str, tuple[str, str]]:
-        # Different RPC method from getBlock, so it has its own 40-per-10s budget.
+        nonlocal credit_hit
         for attempt in range(4):
+            if not budget.reserve():
+                credit_hit = True
+                return {}
             lookup_limiter.acquire()
             try:
                 return fetch_pool_mints(url, pools)
             except (TimeoutError, urllib.error.URLError, json.JSONDecodeError, RuntimeError) as exc:
                 if attempt == 3:
-                    print(f"pool lookup failed {type(exc).__name__}", file=sys.stderr, flush=True)
+                    print(redact_rpc_url(f"pool lookup failed {type(exc).__name__}"), file=sys.stderr, flush=True)
                     return {}
                 time.sleep(0.5 * (2**attempt))
         return {}
@@ -744,99 +1121,154 @@ def run_hour(
                 _emit_trade(backfill_trade_row(rec, bt))
         held.clear()
 
+    last_log = {"t": time.time()}
+
     def _consume(block: dict[str, Any] | None, wire: int, code: int | None) -> None:
         counts["wire_bytes"] += wire
+        counts["slots_done"] += 1
         if block is None:
             counts["empty"] += 1
             if code not in _SKIP_CODES and code is not None:
                 counts["errors"] += 1
-            return
-        decoded = rows_from_block(block, pool_mints)
-        bt = int(block.get("blockTime") or 0)
-        for rec in decoded["unresolved"]:
-            rec["_block_time"] = bt
-            held.append(rec)
-        if len(held) >= 250:
-            _flush_held()
-        if not start_ts <= bt < end_ts:
-            return
-        for row in decoded["trades"]:
-            _emit_trade(row)
-        for row in decoded["creates"]:
-            creates.write(row)
-            counts["creates"] += 1
-        for row in decoded["migrations"]:
-            migrations.write(row)
-            if row.get("type") == "complete":
-                counts["completes"] += 1
-            else:
-                counts["migrations"] += 1
-
-    try:
-        _run_slots(url, slots, workers, limiter, _consume, counts, t0, key, max_bytes, out_dir)
-        _flush_held()
-    finally:
-        sealed = {
-            "trades": trades.close(),
-            "creates": creates.close(),
-            "migrations": migrations.close(),
-        }
-    counts["elapsed_s"] = round(time.time() - t0, 1)
-    counts["files"] = {name: (str(path) if path else None) for name, path in sealed.items()}
-    counts["bytes"] = dir_size(out_dir)
-    stats_path.write_text(json.dumps(counts, indent=2) + "\n", encoding="utf-8")
-    return counts
-
-
-def _run_slots(
-    url: str,
-    slots: list[int],
-    workers: int,
-    limiter: RateLimiter,
-    consume: Callable[[dict[str, Any] | None, int, int | None], None],
-    counts: dict[str, Any],
-    t0: float,
-    key: str,
-    max_bytes: int,
-    out_dir: Path,
-) -> None:
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        inflight: dict[int, Any] = {}
-        slot_iter = iter(slots)
-
-        def submit() -> bool:
-            try:
-                slot = next(slot_iter)
-            except StopIteration:
-                return False
-            inflight[slot] = pool.submit(fetch_block, url, slot, limiter)
-            return True
-
-        for _ in range(max(1, workers)):
-            if not submit():
-                break
-        done_slots = 0
-        last_log = time.time()
-        for slot in slots:
-            fut = inflight.pop(slot)
-            block, wire, code = fut.result()
-            submit()
-            consume(block, wire, code)
-            done_slots += 1
-            now = time.time()
-            if now - last_log >= 20 or done_slots == len(slots):
-                last_log = now
-                elapsed = now - t0
+        else:
+            decoded = rows_from_block(block, pool_mints, feed)
+            bt = int(block.get("blockTime") or 0)
+            for rec in decoded["unresolved"]:
+                rec["_block_time"] = bt
+                held.append(rec)
+            if len(held) >= 250:
+                _flush_held()
+            if start_ts <= bt < end_ts:
+                for row in decoded["trades"]:
+                    _emit_trade(row)
+                for row in decoded["creates"]:
+                    creates.write(row)
+                    counts["creates"] += 1
+                for row in decoded["migrations"]:
+                    migrations.write(row)
+                    if row.get("type") == "complete":
+                        counts["completes"] += 1
+                    else:
+                        counts["migrations"] += 1
+        seen["n"] += 1
+        now = time.time()
+        if seen["n"] % CHECKPOINT_EVERY == 0 or now - last_log["t"] >= 20:
+            nxt = slots[seen["n"]] if seen["n"] < len(slots) else None
+            if seen["n"] % CHECKPOINT_EVERY == 0:
+                _persist("partial", nxt, None)
+            if now - last_log["t"] >= 20 or seen["n"] == len(slots):
+                last_log["t"] = now
                 print(
-                    f"backfill {key} slots={done_slots}/{len(slots)} trades={counts['trades']} "
+                    f"backfill {key} slots={counts['slots_done']} trades={counts['trades']} "
                     f"creates={counts['creates']} migrations={counts['migrations']} "
-                    f"wire_mb={counts['wire_bytes']/1e6:.0f} elapsed_s={elapsed:.0f}",
+                    f"credits={budget.used} wire_mb={counts['wire_bytes']/1e6:.0f}",
                     file=sys.stderr,
                     flush=True,
                 )
-            if done_slots % 400 == 0 and dir_size(out_dir) >= max_bytes:
-                raise RuntimeError(f"hit backfill cap {max_bytes} during {key}")
 
+    def _stop_before() -> str | None:
+        if credit_hit or not budget.can_afford():
+            return "credit"
+        if trades.bytes + creates.bytes + migrations.bytes >= room:
+            return "disk"
+        return None
+
+    consumed = 0
+    stop_reason: str | None = None
+    try:
+        consumed, stop_reason = consume_slots(
+            slots,
+            workers,
+            lambda slot: fetch_block(url, slot, limiter, budget),
+            _consume,
+            stop_before=_stop_before,
+            max_slots=max_slots,
+        )
+        _flush_held()
+    finally:
+        finished = consumed == len(slots)
+        if finished:
+            _flush_held()
+        next_slot = slots[consumed] if consumed < len(slots) else None
+        if not finished:
+            _persist("partial", next_slot, stop_reason)
+        sealed = {
+            "trades": trades.close(seal=finished),
+            "creates": creates.close(seal=finished),
+            "migrations": migrations.close(seal=finished),
+        }
+    counts["elapsed_s"] = round(time.time() - t0, 1)
+    counts["credits_used"] = budget.used
+    counts["stop_reason"] = stop_reason
+    counts["feed"] = feed
+    if finished:
+        counts["files"] = {name: (str(path) if path else None) for name, path in sealed.items()}
+        counts["bytes"] = dir_size(out_dir)
+        stats_path.write_text(json.dumps(counts, indent=2) + "\n", encoding="utf-8")
+        if checkpoint is not None and checkpoint_path is not None:
+            checkpoint.setdefault("hours", {})[key] = {"status": "sealed", "stop_reason": None}
+            checkpoint["credits_used"] = budget.used
+            save_checkpoint(checkpoint_path, checkpoint)
+        return counts
+    counts["resumed"] = resume
+    counts["consumed_slots"] = consumed
+    return counts
+
+
+def read_confirmed_credits(path: Path) -> int | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    value = data.get("confirmed_credits_per_getblock") if isinstance(data, dict) else None
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    return None
+
+
+def probe_getblock_credits(
+    *,
+    url: str,
+    slots: Sequence[int],
+    limiter: RateLimiter,
+    out_dir: Path,
+    credit_cap: int,
+) -> dict[str, Any]:
+    """A handful of full getBlock calls. Records credit headers. Does not confirm a price."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # The probe itself is capped at the published price times the handful, so it cannot
+    # spend the backfill budget. The observed header is what a bulk run must confirm.
+    budget = CreditBudget(PUBLISHED_GETBLOCK_CREDITS * max(1, len(slots)), PUBLISHED_GETBLOCK_CREDITS)
+    header_out: dict[str, Any] = {}
+    ok = 0
+    for slot in slots:
+        block, _wire, code = fetch_block(url, slot, limiter, budget, header_out, full=True)
+        if isinstance(block, dict):
+            ok += 1
+        elif code == BUDGET_CODE:
+            break
+    observed = parse_credit_headers(header_out.get("credits") or [])
+    assumption = observed if observed is not None else PUBLISHED_GETBLOCK_CREDITS
+    report = {
+        "calls_ok": ok,
+        "calls": len(slots),
+        "observed_credits_per_getblock": observed,
+        "published_getblock_credits": PUBLISHED_GETBLOCK_CREDITS,
+        "confirmed_credits_per_getblock": None,
+        "credit_headers": header_out.get("credits") or [],
+        "projection_if_cost_is_assumption": projected_backfill_days(
+            credit_cap,
+            assumption,
+            13_527 * 24,
+            143_478_622 * 24,
+            DEFAULT_MAX_BYTES,
+        ),
+        "assumption_source": "response_header" if observed is not None else "published_table",
+    }
+    (out_dir / "credit-probe.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return report
 
 def save_pool_cache(path: Path, cache: Mapping[str, tuple[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -959,38 +1391,86 @@ def parse_utc(text: str) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Backfill pump.fun history from public RPC getBlock")
-    parser.add_argument("--until", required=True, help="Exclusive UTC end, ISO-8601 (newest edge)")
+    parser = argparse.ArgumentParser(description="Backfill pump.fun history from getBlock")
+    parser.add_argument("--until", help="Exclusive UTC end, ISO-8601 (newest edge)")
     parser.add_argument("--hours", type=int, default=1)
     parser.add_argument("--out", type=Path, default=Path("/tmp/mal-backfill"))
-    parser.add_argument("--rpc", default=DEFAULT_RPC)
+    parser.add_argument("--rpc", default=None, help="Override RPC URL. Default: Helius if HELIUS_API_KEY is set, else public")
     parser.add_argument("--rps", type=float, default=3.2, help="getBlock requests per second")
     parser.add_argument("--lookup-rps", type=float, default=3.2, help="getMultipleAccounts requests per second")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    parser.add_argument("--credit-cap", type=int, default=DEFAULT_CREDIT_CAP)
+    parser.add_argument("--credits-per-getblock", type=int, default=None)
+    parser.add_argument("--credits-file", type=Path, default=None, help="credit-probe.json with confirmed_credits_per_getblock")
+    parser.add_argument("--probe-credits", type=int, default=0, help="Full getBlock calls, then exit. Does not confirm a price.")
+    parser.add_argument("--max-slots", type=int, default=None, help="Stop the hour after this many slots (checkpoint, do not seal)")
+    parser.add_argument("--slot-start", type=int, default=None)
+    parser.add_argument("--slot-end", type=int, default=None, help="Exclusive slot end when paired with --slot-start")
     parser.add_argument("--anchor-slot", type=int, default=450278777)
     parser.add_argument("--anchor-time", type=int, default=1790319576)
     args = parser.parse_args(argv)
     if args.hours < 1:
         raise SystemExit("--hours must be >= 1")
-    until = parse_utc(args.until)
+    url, kind = resolve_rpc_url(args.rpc, os.environ)
+    feed = FEED_HELIUS if kind == "helius" else FEED
     limiter = RateLimiter(args.rps)
+    if args.probe_credits:
+        n = args.probe_credits
+        slots = [args.anchor_slot + i for i in range(n)]
+        report = probe_getblock_credits(
+            url=url,
+            slots=slots,
+            limiter=limiter,
+            out_dir=args.out,
+            credit_cap=args.credit_cap,
+        )
+        print(json.dumps(report), flush=True)
+        return 0
+    if args.until is None:
+        print("--until is required for a backfill", file=sys.stderr)
+        return 2
+    per_call = 0
+    if kind == "helius":
+        per_call = args.credits_per_getblock
+        if per_call is None and args.credits_file is not None:
+            per_call = read_confirmed_credits(args.credits_file)
+        if per_call is None:
+            print(
+                "Helius bulk backfill needs a confirmed getBlock credit cost. "
+                "Run --probe-credits 5, check the dashboard delta, then pass "
+                "--credits-per-getblock N or set confirmed_credits_per_getblock "
+                "in credit-probe.json. Not starting.",
+                file=sys.stderr,
+            )
+            return 2
+    until = parse_utc(args.until)
+    checkpoint_path = args.out / "checkpoint.json"
+    checkpoint = load_checkpoint(checkpoint_path)
+    budget = CreditBudget(args.credit_cap, per_call, used=int(checkpoint.get("credits_used") or 0))
+    if kind == "helius" and not budget.can_afford():
+        print(f"credit cap already reached: used={budget.used} cap={budget.cap}", file=sys.stderr)
+        return 0
     lookup_limiter = RateLimiter(args.lookup_rps)
     cache_path = args.out / "pools" / "pool-mints.jsonl.zst"
     pool_mints = load_pool_cache(cache_path)
     args.out.mkdir(parents=True, exist_ok=True)
-    summaries = []
-    for i in range(args.hours):
-        end_ts = until - i * 3600
-        start_ts = end_ts - 3600
+    for index, (start_ts, end_ts) in enumerate(plan_hours(until, args.hours)):
+        if filesystem_room(args.out, args.max_bytes) <= 0:
+            print(f"disk cap reached before {hour_key(start_ts)}", file=sys.stderr)
+            break
+        if kind == "helius" and not budget.can_afford():
+            print(f"credit cap reached before {hour_key(start_ts)}: used={budget.used}", file=sys.stderr)
+            break
         print(
             f"hour {hour_key(start_ts)} {datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()} "
-            f".. {datetime.fromtimestamp(end_ts, tz=timezone.utc).isoformat()}",
+            f".. {datetime.fromtimestamp(end_ts, tz=timezone.utc).isoformat()} "
+            f"feed={feed} credits_used={budget.used}",
             file=sys.stderr,
             flush=True,
         )
         summary = run_hour(
-            url=args.rpc,
+            url=url,
             start_ts=start_ts,
             end_ts=end_ts,
             out_dir=args.out,
@@ -1001,10 +1481,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_bytes=args.max_bytes,
             anchor_slot=args.anchor_slot,
             anchor_time=args.anchor_time,
+            budget=budget,
+            feed=feed,
+            checkpoint=checkpoint,
+            checkpoint_path=checkpoint_path,
+            max_slots=args.max_slots if index == 0 else None,
+            slot_start=args.slot_start if index == 0 else None,
+            slot_end=args.slot_end if index == 0 else None,
         )
-        summaries.append(summary)
         save_pool_cache(cache_path, pool_mints)
-        print(json.dumps(summary), flush=True)
+        safe = {k: v for k, v in summary.items() if k != "files"}
+        print(json.dumps(safe), flush=True)
+        if summary.get("stop_reason") in {"credit", "disk"} or summary.get("skipped"):
+            break
+        if args.max_slots is not None and summary.get("stop_reason") == "max_slots":
+            break
+    checkpoint["credits_used"] = budget.used
+    save_checkpoint(checkpoint_path, checkpoint)
     return 0
 
 

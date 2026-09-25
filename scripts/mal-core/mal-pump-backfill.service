@@ -1,0 +1,21 @@
+[Unit]
+Description=MAL paper pump.fun history backfill (Helius getBlock)
+Documentation=https://github.com/vaanai/MAL
+# HELIUS_API_KEY in the env file is a data key, not a trading key.
+# This unit is not the live tape recorder.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mal
+EnvironmentFile=/var/lib/mal/backfill/helius.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+ExecStart=%h/mal/scripts/mal-core/pump-backfill.sh run
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:/var/lib/mal/logs/pump-backfill.log
+StandardError=append:/var/lib/mal/logs/pump-backfill.log
+
+[Install]
+WantedBy=default.target

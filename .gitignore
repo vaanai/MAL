@@ -22,6 +22,9 @@ data/observe/paper-*.jsonl
 data/observe/paper-tape/
 data/observe/sealed/
 
+# Helius data key. Never commit. Mode 600 on the host, backfill unit only.
+helius.env
+
 # Python
 __pycache__/
 *.py[cod]
