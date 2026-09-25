@@ -816,7 +816,10 @@ def format_markdown(board: dict[str, Any]) -> str:
                 )
             )
     lines.append("")
-    lines.append("Fail-rate sensitivity is on the buy-every-create book at T+1s. Headline remains 0.")
+    lines.append(
+        "Fail-rate sensitivity is on the buy-every-create book at T+1s. "
+        f"Headline is {DEFAULT_FAIL_RATE:.0%}. The 0% row is the unflattered tape."
+    )
     lines.append("")
     lines.append("| exit | rate | symmetric total | exit-fail-only total |")
     lines.append("| --- | ---: | ---: | ---: |")
