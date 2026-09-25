@@ -28,16 +28,24 @@ if [[ -d "${GRAPH}" ]]; then
   GRAPH_ARGS+=(--graph-dir "${GRAPH}")
 fi
 
+LAT="${MAL_LATENCY_REPORT:-/var/lib/mal/paper/forward-paper/latency.json}"
+LAT_ARGS=()
+if [[ -f "${LAT}" ]]; then
+  LAT_ARGS+=(--latency-report "${LAT}")
+fi
+
 cd "${SRC}"
 if command -v ionice >/dev/null 2>&1; then
   exec nice -n 19 ionice -c 3 "${PY}" -m tools.laya_v0 \
     --tape-dir "${TAPE}" \
     --creates-dir "${CREATES}" \
     --output-dir "${OUT}" \
-    "${GRAPH_ARGS[@]}"
+    "${GRAPH_ARGS[@]}" \
+    "${LAT_ARGS[@]}"
 fi
 exec nice -n 19 "${PY}" -m tools.laya_v0 \
   --tape-dir "${TAPE}" \
   --creates-dir "${CREATES}" \
   --output-dir "${OUT}" \
-  "${GRAPH_ARGS[@]}"
+  "${GRAPH_ARGS[@]}" \
+  "${LAT_ARGS[@]}"

@@ -4,8 +4,9 @@
 LightGBM (sklearn HistGradientBoosting if the wheel is missing) scores a
 numeric packet at fixed times after create. Features read only tape rows
 with t_recv_ms <= the decision time, plus the create payload. Labels are
-the PR #76 paper fill at decision time + 1s under the exit grid. The
-primary exit rule is chosen on each training fold only.
+the paper fill at decision time plus a chain→receive draw and the measured
+recv→decision hop (1s seed when the tape has no event_ts). The primary
+exit rule is chosen on each training fold only.
 
 Walk-forward splits are time-ordered. The daily job retrains on the tape
 it can see and writes a scoreboard. It does not touch the recorder.
@@ -50,8 +51,11 @@ from tools.paper_price_path import (
 )
 from tools.funding_graph import FundingGraph, fill_funding_features
 from tools.paper_tape_scoreboard import (
+    DEFAULT_FAIL_RATE,
     EXIT_RULES,
     ExitRule,
+    MISS_STATUSES,
+    _headline_pnl,
     _plan_exit,
     filter_window,
     simulate_exit,
@@ -100,6 +104,9 @@ PROMOTION_RULE = (
     f"and total SOL still positive after removing the top {PROMOTION_DROP_N} trades"
 )
 LATENCY_DRAW_SEED = 1
+# forward_paper_latency_v1 host report, 2026-09-25: recv_to_decision n=349, p50 26 ms.
+# The p99 (~1s) is a tail, not the hop. A later report can only raise this floor.
+RECV_TO_DECISION_FLOOR_MS = 26
 CHAIN_LAG_MIN_MS = -5_000
 CHAIN_LAG_MAX_MS = 120_000
 # Pre-registered after the 8.3h search. fraction 1 is the whole point, not a top slice.
@@ -1342,30 +1349,96 @@ def simulate_ladder(
     }
 
 
-def sample_entry_latencies(n: int, lags_ms: Sequence[int], *, seed: int = LATENCY_DRAW_SEED) -> list[int]:
-    """One chain→receive draw per decision. Falls back to the 1s seed when the tape has no event_ts."""
+def recv_to_decision_hop_ms(report: dict[str, Any] | None) -> int:
+    """Recv→decision p50 added to every chain draw. Never below the recorded 26 ms."""
+    hop = RECV_TO_DECISION_FLOOR_MS
+    if not report:
+        return hop
+    block = report.get("recv_to_decision")
+    if not isinstance(block, dict):
+        return hop
+    p50 = block.get("p50_ms")
+    if isinstance(p50, bool) or not isinstance(p50, (int, float)):
+        return hop
+    return max(hop, int(round(float(p50))))
+
+
+def load_latency_report(path: Path | None) -> dict[str, Any] | None:
+    """Read a forward_paper_latency_v1 file. Missing path keeps the 26 ms floor."""
+    if path is None or not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise SystemExit(f"latency report {path} is not an object")
+    return data
+
+
+def entry_delay_ms(chain_ms: int, hop_ms: int) -> int:
+    """Chain lag plus the decision hop. A negative chain sample cannot cancel the hop."""
+    hop = max(0, int(hop_ms))
+    return max(0, int(chain_ms)) + hop
+
+
+def _attempt_pnl(entry_status: str, exit_status: str, pnl: Any, size_lamports: int) -> int | None:
+    """Headline fill: misses stay in n at the priority fee, and 15% of landed tries pay only that fee.
+
+    Same mix as the tape scoreboard. Censored holds stay out. A miss the ladder helper
+    left blank still costs the priority fee.
+    """
+    if entry_status in MISS_STATUSES and not isinstance(pnl, int):
+        pnl = -PRIORITY_FEE_LAMPORTS
+    return _headline_pnl(
+        {"entry_status": entry_status, "exit_status": exit_status, "pnl_lamports": pnl},
+        DEFAULT_FAIL_RATE,
+        size_lamports,
+    )
+
+
+def sample_entry_latencies(
+    n: int,
+    lags_ms: Sequence[int],
+    *,
+    seed: int = LATENCY_DRAW_SEED,
+    hop_ms: int = RECV_TO_DECISION_FLOOR_MS,
+) -> list[int]:
+    """One chain→receive draw plus recv→decision. No event_ts: the 1s seed, hop not added."""
     if n <= 0:
         return []
     if not lags_ms:
         return [ENTRY_LATENCY_MS] * n
     rng = random.Random(seed)
-    return [int(lags_ms[rng.randrange(len(lags_ms))]) for _ in range(n)]
+    hop = max(0, int(hop_ms))
+    return [entry_delay_ms(int(lags_ms[rng.randrange(len(lags_ms))]), hop) for _ in range(n)]
 
 
-def latency_percentiles(lags_ms: Sequence[int]) -> dict[str, Any]:
+def latency_percentiles(lags_ms: Sequence[int], *, hop_ms: int = RECV_TO_DECISION_FLOOR_MS) -> dict[str, Any]:
+    hop = max(0, int(hop_ms))
     if not lags_ms:
         return {
             "n": 0,
             "p50_ms": ENTRY_LATENCY_MS,
             "p90_ms": ENTRY_LATENCY_MS,
-            "source": "no event_ts on the tape; labels use the 1s seed",
+            "chain_p50_ms": None,
+            "chain_p90_ms": None,
+            "recv_to_decision_ms": hop,
+            "source": "no event_ts on the tape; labels use the 1s seed and do not add recv→decision",
         }
     ordered = sorted(int(v) for v in lags_ms)
+    chain_p50 = int(round(_pct([float(v) for v in ordered], 0.50)))
+    chain_p90 = int(round(_pct([float(v) for v in ordered], 0.90)))
     return {
         "n": len(ordered),
-        "p50_ms": int(round(_pct([float(v) for v in ordered], 0.50))),
-        "p90_ms": int(round(_pct([float(v) for v in ordered], 0.90))),
-        "source": "tape chain→receive (t_recv_ms - event_ts*1000). recv→decision is not on the sealed tape.",
+        "chain_p50_ms": chain_p50,
+        "chain_p90_ms": chain_p90,
+        "recv_to_decision_ms": hop,
+        "p50_ms": entry_delay_ms(chain_p50, hop),
+        "p90_ms": entry_delay_ms(chain_p90, hop),
+        "source": (
+            "tape chain→receive (t_recv_ms - event_ts*1000) plus recv→decision p50 "
+            f"from forward_paper_latency_v1 (floor {RECV_TO_DECISION_FLOOR_MS} ms; "
+            "2026-09-25 host report n=349, p50 26 ms). "
+            "A negative chain draw is floored at 0 before the hop is added, so the fill is not earlier than live."
+        ),
     }
 
 
@@ -1408,10 +1481,7 @@ def attach_labels(
             pnl = part.get("pnl_lamports")
             row.exit_status_by_rule[rule.rule_id] = status
             row.exit_t_by_rule[rule.rule_id] = part.get("exit_t_ms")
-            if status in ("realized", "no_exit_liquidity") and isinstance(pnl, int):
-                row.pnl_by_rule[rule.rule_id] = pnl
-            else:
-                row.pnl_by_rule[rule.rule_id] = None
+            row.pnl_by_rule[rule.rule_id] = _attempt_pnl(entry.status, status, pnl, size_lamports)
         spot = float(entry.spot_sol or 0.0)
         for name, tp, sl, _ladder_id in BARRIERS:
             if entry.status != "filled":
@@ -1439,10 +1509,7 @@ def attach_labels(
             pnl = part.get("pnl_lamports")
             row.exit_status_by_rule[ladder.rule_id] = status
             row.exit_t_by_rule[ladder.rule_id] = part.get("exit_t_ms")
-            if status in ("realized", "no_exit_liquidity") and isinstance(pnl, int):
-                row.pnl_by_rule[ladder.rule_id] = pnl
-            else:
-                row.pnl_by_rule[ladder.rule_id] = None
+            row.pnl_by_rule[ladder.rule_id] = _attempt_pnl(entry.status, status, pnl, size_lamports)
         if entry.status == "filled":
             ticks.extend(
                 _exit_ticks(
@@ -2498,8 +2565,9 @@ def entry_latency_report(
     tape_end_ms: int,
     size_lamports: int,
     slippage_cap: float,
+    hop_ms: int = RECV_TO_DECISION_FLOOR_MS,
 ) -> dict[str, Any]:
-    measured = latency_percentiles(lags_ms)
+    measured = latency_percentiles(lags_ms, hop_ms=hop_ms)
     sampled = _pnl_summary(
         [int(row.pnl_by_rule["hold_30s"]) for row in rows if isinstance(row.pnl_by_rule.get("hold_30s"), int)]
     )
@@ -2535,12 +2603,13 @@ def build_dataset(
     size_lamports: int = DEFAULT_SIZE_LAMPORTS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
     graph: FundingGraph | None = None,
+    hop_ms: int = RECV_TO_DECISION_FLOOR_MS,
 ) -> tuple[list[DecisionRow], list[ExitTick], dict[str, int]]:
     rows, wallet_diag = build_feature_rows(books, tape_end_ms=tape_end_ms, offsets_ms=offsets_ms, graph=graph)
     print(f"decisions={len(rows)}", file=sys.stderr)
     draws = None
     if chain_lags_ms is not None:
-        draws = sample_entry_latencies(len(rows), chain_lags_ms)
+        draws = sample_entry_latencies(len(rows), chain_lags_ms, hop_ms=hop_ms)
     ticks = attach_labels(
         books,
         rows,
@@ -2628,7 +2697,7 @@ def format_markdown(board: dict[str, Any]) -> str:
     lines = [
         "# LAYA v0 scoreboard",
         "",
-        f"Schema `{board['schema']}`. Paper only. Entry delay is a draw from the tape's chain→receive lags when event_ts is present, otherwise {board['entry_latency_ms']} ms.",
+        f"Schema `{board['schema']}`. Paper only. Entry delay is a chain→receive draw plus the measured recv→decision hop when event_ts is present, otherwise {board['entry_latency_ms']} ms.",
         "Primary exit rule is chosen on each training fold (highest median realized SOL, rugs included).",
         "Scores in the tables are out of sample. The deploy model is fit on every row and is not those numbers.",
         "",
@@ -2650,9 +2719,14 @@ def format_markdown(board: dict[str, Any]) -> str:
             [
                 "## Entry latency",
                 "",
-                f"Measured chain→receive n={measured.get('n')}, p50 {measured.get('p50_ms')} ms, p90 {measured.get('p90_ms')} ms.",
+                (
+                    f"Chain→receive n={measured.get('n')}, "
+                    f"p50 {measured.get('chain_p50_ms')} ms, p90 {measured.get('chain_p90_ms')} ms. "
+                    f"Recv→decision hop {measured.get('recv_to_decision_ms')} ms "
+                    f"(applied p50 {measured.get('p50_ms')} ms, p90 {measured.get('p90_ms')} ms)."
+                ),
                 str(measured.get("source") or ""),
-                "Training labels sample that distribution (seed 1). The rows below are hold_30s buy-all at the sample, and again at a flat p50 and p90, so the delay can be read without refitting.",
+                "Training labels sample chain→receive and add that hop (seed 1). The rows below are hold_30s buy-all at the sample, and again at a flat applied p50 and p90, so the delay can be read without refitting.",
                 "",
                 "| book | n | median SOL | mean SOL | total SOL |",
                 "| --- | ---: | ---: | ---: | ---: |",
@@ -2957,6 +3031,7 @@ def run_files(
     size_lamports: int,
     slippage_cap: float,
     graph_dir: Path | None = None,
+    latency_report: Path | None = None,
 ) -> dict[str, Any]:
     if not tape:
         raise SystemExit("no tape files")
@@ -2987,6 +3062,8 @@ def run_files(
     graph = FundingGraph.load(graph_dir) if graph_dir is not None else None
     if graph is not None:
         print(f"funding_wallets={len(graph)}", file=sys.stderr)
+    hop_ms = recv_to_decision_hop_ms(load_latency_report(latency_report))
+    print(f"recv_to_decision_ms={hop_ms}", file=sys.stderr)
     rows, ticks, wallet_diag = build_dataset(
         books,
         tape_end_ms=stats.t_max_ms,
@@ -2995,16 +3072,17 @@ def run_files(
         size_lamports=size_lamports,
         slippage_cap=slippage_cap,
         graph=graph,
+        hop_ms=hop_ms,
     )
     print("latency_sensitivity", file=sys.stderr)
-    latency_report = entry_latency_report(
+    latency_report_body = entry_latency_report(
         books,
         rows,
         chain_lags,
         tape_end_ms=stats.t_max_ms,
         size_lamports=size_lamports,
         slippage_cap=slippage_cap,
-        graph=graph,
+        hop_ms=hop_ms,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     modeled = run_models(
@@ -3023,7 +3101,7 @@ def run_files(
         "decisions": len(rows),
         "exit_ticks": len(ticks),
         "entry_latency_ms": ENTRY_LATENCY_MS,
-        "entry_latency": latency_report,
+        "entry_latency": latency_report_body,
         "offsets_ms": list(offsets_ms),
         "size_lamports": size_lamports,
         "slippage_cap": slippage_cap,
@@ -3103,6 +3181,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--size-sol", type=float, default=0.05)
     parser.add_argument("--slippage-cap", type=float, default=DEFAULT_SLIPPAGE_CAP)
     parser.add_argument("--graph-dir", type=Path, default=None, help="Append-only funding JSONL. Joined only at first_seen_ms <= decision.")
+    parser.add_argument(
+        "--latency-report",
+        type=Path,
+        default=None,
+        help="forward_paper_latency_v1 JSON. Recv→decision p50 is added to each chain draw, never below 26 ms.",
+    )
     args = parser.parse_args(argv)
     tape = list(args.tape)
     creates = list(args.creates)
@@ -3132,6 +3216,7 @@ def main(argv: list[str] | None = None) -> int:
         size_lamports=int(round(args.size_sol * LAMPORTS_PER_SOL)),
         slippage_cap=args.slippage_cap,
         graph_dir=args.graph_dir,
+        latency_report=args.latency_report,
     )
     deploy = board["entry"]["deploy"]
     sys.stdout.write(
