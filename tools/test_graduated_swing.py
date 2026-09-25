@@ -187,6 +187,16 @@ class ClockTests(unittest.TestCase):
 
 
 class BackfillRecvTests(unittest.TestCase):
+    def test_rotated_jsonl_resolves_to_zst_sibling(self) -> None:
+        from tools.graduated_swing import _resolve_trade_file
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gone = root / "trades-2026-09-25T06.jsonl"
+            sibling = root / "trades-2026-09-25T06.jsonl.zst"
+            sibling.write_bytes(b"x")
+            self.assertEqual(_resolve_trade_file(gone), sibling)
+            self.assertIsNone(_resolve_trade_file(root / "trades-missing.jsonl"))
     def test_synthetic_receive_is_block_time_plus_lag_not_block_time(self) -> None:
         block = 1_790_320_000
         self.assertEqual(synthetic_recv_ms(block, 1_400), block * 1000 + 1_400)

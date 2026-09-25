@@ -376,19 +376,52 @@ def _dedupe_key(row: dict[str, Any]) -> int | None:
     return int.from_bytes(hashlib.blake2s(raw, digest_size=8).digest(), "little")
 
 
+def _refresh_trade_paths(paths: Sequence[Path]) -> list[Path]:
+    """Re-list trade files. The backfill rotator may replace a jsonl with zst between passes."""
+    parents = sorted({path.parent for path in paths})
+    found: list[Path] = []
+    for parent in parents:
+        found.extend(_trade_paths(parent))
+    return found or list(paths)
+
+
+def _resolve_trade_file(path: Path) -> Path | None:
+    """Open the path, or the jsonl/zst sibling if a rotation renamed it."""
+    if path.is_file():
+        return path
+    name = path.name
+    if name.endswith(".jsonl.zst"):
+        sibling = path.with_name(name[: -len(".zst")])
+    elif name.endswith(".jsonl"):
+        sibling = path.with_name(name + ".zst")
+    else:
+        return None
+    if sibling.is_file():
+        return sibling
+    return None
+
+
 def _iter_jsonl(paths: Iterable[Path]) -> Iterable[tuple[Path, dict[str, Any]]]:
     for path in paths:
-        with open_text(path) as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(row, dict):
-                    yield path, row
+        opened = _resolve_trade_file(path)
+        if opened is None:
+            print(f"missing_trade_file={path}", file=sys.stderr)
+            continue
+        try:
+            with open_text(opened) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(row, dict):
+                        yield opened, row
+        except FileNotFoundError:
+            print(f"missing_trade_file={opened}", file=sys.stderr)
+            continue
 
 
 def _trade_paths(directory: Path) -> list[Path]:
