@@ -14,12 +14,14 @@ from tools.forward_paper import (
     ForwardEngine,
     LatencyMeter,
     ModelSlot,
+    _RankWindow,
     books_from_config,
     offline_packets,
     reconcile_baseline,
     replay_rows,
     window_creates,
 )
+from tools.laya_v0 import LADDER_RULES
 from tools.laya_v0 import FEATURE_NAMES
 from tools.paper_price_path import CreateSignal, _ZstdText
 
@@ -347,6 +349,42 @@ class ModelAndLogTests(unittest.TestCase):
         summary = meter.report()["chain_to_recv"]
         self.assertEqual(summary["n"], 3)
         self.assertEqual(summary["p50_ms"], 500)
+
+    def test_candidate_books_parse_and_rank_causally(self) -> None:
+        raw = {
+            "size_sol": 0.05,
+            "books": [
+                {"id": "buy_all", "kind": "baseline", "exit": "hold_30s", "max_concurrent": None, "daily_loss_sol": None, "creator_cooldown_s": 0, "token_cooldown_s": 0},
+                {"id": "buyers8_top5_ladder2x", "kind": "laya", "point": "buyers_8", "top_frac": 0.05, "model": "barrier", "exit": "ladder_2x_t30"},
+                {"id": "t30_top1_hold30", "kind": "laya", "point": "30", "top_frac": 0.01, "model": "entry", "exit": "hold_30s"},
+                {"id": "migrate_hold_30s", "kind": "migrate", "exit": "hold_30s"},
+            ],
+        }
+        books = books_from_config(raw)
+        by_id = {book.book_id: book for book in books}
+        self.assertEqual(by_id["buyers8_top5_ladder2x"].resolved_exit("hold_30s").rule_id, "ladder_2x_t30")
+        self.assertIs(by_id["buyers8_top5_ladder2x"].resolved_exit("hold_30s"), LADDER_RULES[0])
+        self.assertEqual(by_id["t30_top1_hold30"].point, "30")
+        self.assertEqual(by_id["migrate_hold_30s"].exit_rule, "hold_30s")
+        window = _RankWindow(0.05, cap=100)
+        self.assertTrue(all(window.consider(0.1) == "warmup" for _ in range(19)))
+        self.assertEqual(window.consider(0.9), "take")
+        self.assertEqual(window.consider(0.05), "below")
+        narrow = _RankWindow(0.01, cap=200)
+        self.assertTrue(all(narrow.consider(0.2) == "warmup" for _ in range(99)))
+        self.assertEqual(narrow.consider(0.99), "take")
+        creates, rows = _fixture()
+        engine = replay_rows(
+            [creates["MintA"]],
+            rows,
+            [by_id["t30_top1_hold30"]],
+            tape_end_ms=TAPE_END,
+            kill_file=Path("/tmp/forward-paper-point"),
+            offsets_ms=(30_000,),
+        )
+        clocks = {row["decision_t_ms"] - T0 for row in engine.decisions}
+        self.assertEqual(clocks, {30_000})
+        self.assertTrue(all(row["reason"] == "no_model" for row in engine.decisions))
 
     def test_early_zstd_close_is_not_a_failure(self) -> None:
         class _Proc:

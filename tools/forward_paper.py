@@ -25,20 +25,26 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TextIO
 
 from tools.laya_v0 import (
+    BUYER_TRIGGER_NS,
+    CURVE_LEVELS,
     DECISION_OFFSETS_MS,
     FEATURE_NAMES,
+    LADDER_RULES,
     TRADE_TRIGGER_BUYERS,
     TRADE_TRIGGER_NEAR_MS,
     Booster,
     FlowPrint,
+    LadderRule,
     MintBook,
     WalletState,
+    _curve_progress,
     _dedupe_key,
     _json_safe,
     _price_at,
     build_feature_rows,
     flow_from_row,
     packet_at,
+    simulate_ladder,
     vector,
 )
 from tools.paper_curve_math import (
@@ -191,18 +197,24 @@ class BookSpec:
     kind: str
     exit_rule: str
     threshold: float | None = None
+    top_frac: float | None = None
+    point: str | None = None
+    model_key: str = "entry"
     max_concurrent: int | None = DEFAULT_MAX_CONCURRENT
     daily_loss_lamports: int | None = DEFAULT_DAILY_LOSS_LAMPORTS
     creator_cooldown_ms: int = 60_000
     token_cooldown_ms: int = 300_000
     size_lamports: int = DEFAULT_SIZE_LAMPORTS
 
-    def resolved_exit(self, deploy_rule: str) -> ExitRule:
+    def resolved_exit(self, deploy_rule: str) -> ExitRule | LadderRule:
         rule_id = deploy_rule if self.exit_rule == "deploy" else self.exit_rule
         rule = RULES.get(rule_id)
-        if rule is None:
-            raise ValueError(f"unknown exit rule {rule_id}")
-        return rule
+        if rule is not None:
+            return rule
+        for ladder in LADDER_RULES:
+            if ladder.rule_id == rule_id:
+                return ladder
+        raise ValueError(f"unknown exit rule {rule_id}")
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -228,12 +240,22 @@ def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
             )
         loss = item.get("daily_loss_sol", 0.2 if kind != "baseline" else None)
         concurrent = item.get("max_concurrent", None if kind == "baseline" else DEFAULT_MAX_CONCURRENT)
+        top = item.get("top_frac")
+        top_frac = None if top is None else float(top)
+        if top_frac is not None and not 0 < top_frac < 1:
+            raise SystemExit(f"book {item.get('id')} top_frac must be between 0 and 1")
+        model_key = str(item.get("model") or "entry")
+        if model_key not in ("entry", "barrier"):
+            raise SystemExit(f"book {item.get('id')} model must be entry or barrier")
         found.append(
             BookSpec(
                 book_id=str(item["id"]),
                 kind=kind,
                 exit_rule=str(item.get("exit") or ("hold_30s" if kind == "baseline" else "tp50_sl30" if kind == "migrate" else "deploy")),
                 threshold=_finite(item.get("threshold")),
+                top_frac=top_frac,
+                point=None if item.get("point") is None else str(item.get("point")),
+                model_key=model_key,
                 max_concurrent=None if concurrent is None else int(concurrent),
                 daily_loss_lamports=None if loss is None else int(round(float(loss) * LAMPORTS_PER_SOL)),
                 creator_cooldown_ms=int(float(item.get("creator_cooldown_s", 0 if kind == "baseline" else 60)) * 1000),
@@ -246,12 +268,53 @@ def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
     return found
 
 
+def _point_matches(spec: BookSpec, book: MintBook, t_ms: int, trigger: str) -> bool:
+    """A blank point listens to every clock. "30" is the T+30s grid. Other values are trigger names."""
+    point = spec.point
+    if not point:
+        return True
+    if point == trigger:
+        return True
+    if trigger == "grid" and point.isdigit():
+        return t_ms - book.create.t_signal_ms == int(point) * 1000
+    return False
+
+
 @dataclass
 class _Track:
     buyers: set[str] = field(default_factory=set)
     buyers_done: bool = False
     migrate_done: bool = False
     baseline_done: bool = False
+    clean_buyers: set[str] = field(default_factory=set)
+    nv_fired: set[int] = field(default_factory=set)
+    curve_crossed: set[int] = field(default_factory=set)
+
+
+class _RankWindow:
+    """Causal top-k. A score is taken when it sits in the top fraction of recent scores at this point.
+
+    The window includes the score just observed. Until it holds at least 1/fraction
+    scores, nothing is taken: a top 1% book needs 100 prior decisions at that clock.
+    """
+
+    def __init__(self, frac: float, cap: int = 500) -> None:
+        self.frac = frac
+        self.cap = cap
+        self.scores: list[float] = []
+
+    def consider(self, score: float) -> str:
+        self.scores.append(score)
+        if len(self.scores) > self.cap:
+            del self.scores[0]
+        need = max(1, math.ceil(1.0 / self.frac))
+        if len(self.scores) < need:
+            return "warmup"
+        k = int(round(self.frac * len(self.scores)))
+        if k < 1:
+            k = 1
+        higher = sum(1 for prior in self.scores if prior > score)
+        return "take" if higher < k else "below"
 
 
 @dataclass
@@ -262,7 +325,7 @@ class _Pending:
     t_entry_ms: int
     decision_t_ms: int
     trigger: str
-    rule: ExitRule
+    rule: ExitRule | LadderRule
     size_lamports: int
     latency_ms: int
     score: float | None
@@ -275,7 +338,7 @@ class _Open:
     book_id: str
     mint: str
     creator: str | None
-    rule: ExitRule
+    rule: ExitRule | LadderRule
     entry_status: str
     entry: Any
     size_lamports: int
@@ -298,6 +361,7 @@ class _BookRun:
     creator_ready: dict[str, int] = field(default_factory=dict)
     closed_n: int = 0
     skip_reasons: dict[str, int] = field(default_factory=dict)
+    rank: _RankWindow | None = None
 
 
 class ModelSlot:
@@ -379,6 +443,7 @@ class ForwardEngine:
         kill_file: Path,
         latency: LatencyMeter | None = None,
         model: ModelSlot | None = None,
+        barrier: ModelSlot | None = None,
         offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
         slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
         tape_end_ms: int | None = None,
@@ -386,10 +451,16 @@ class ForwardEngine:
         retain_rows: bool = False,
         logs: dict[str, JsonlLog] | None = None,
     ) -> None:
-        self.books = [_BookRun(spec) for spec in books]
+        self.books = []
+        for spec in books:
+            run = _BookRun(spec)
+            if spec.top_frac is not None:
+                run.rank = _RankWindow(spec.top_frac)
+            self.books.append(run)
         self.kill_file = kill_file
         self.latency = latency or LatencyMeter()
         self.model = model or ModelSlot(None, None)
+        self.barrier = barrier or ModelSlot(None, None)
         self.offsets_ms = tuple(offsets_ms)
         self.slippage_cap = slippage_cap
         self.tape_end_ms = tape_end_ms
@@ -513,6 +584,12 @@ class ForwardEngine:
             create = item[3][1]
             self._flush_early(create.mint)
             self.wallets.note_creator(create.creator)
+            book = self.library.get(create.mint)
+            if book is None:
+                continue
+            anchor = book.path.anchor()
+            if anchor is not None and anchor.t_recv_ms <= create.t_signal_ms:
+                self._note_curve(create.mint, create.t_signal_ms, anchor.venue, anchor.base_reserve)
         prints.sort(key=lambda item: self._print_sort_key(item[3][1], item[3][2]))
         for item in prints:
             _tag, mint, pr, event_ts = item[3]
@@ -578,9 +655,47 @@ class ForwardEngine:
         book = self.library[mint]
         track = self.tracks[mint]
         t0 = book.create.t_signal_ms
+        if pr.t_recv_ms >= t0:
+            self._note_curve(mint, pr.t_recv_ms, pr.venue, pr.base_reserve)
         if not track.migrate_done and pr.venue == "pumpswap" and pr.t_recv_ms >= t0:
             track.migrate_done = True
             self._triggers.append((mint, pr.t_recv_ms, "migrate"))
+        self._note_clean_buyer(mint, pr)
+        self._note_buyers_8(book, track, pr, t0)
+
+    def _note_curve(self, mint: str, t_ms: int, venue: str, base: int) -> None:
+        track = self.tracks.get(mint)
+        if track is None:
+            return
+        progress = _curve_progress(venue, base)
+        if progress != progress:
+            return
+        for level in CURVE_LEVELS:
+            mark = int(round(level * 100))
+            if mark in track.curve_crossed or progress < level:
+                continue
+            track.curve_crossed.add(mark)
+            self._triggers.append((mint, t_ms, f"curve_{mark}"))
+
+    def _note_clean_buyer(self, mint: str, pr: FlowPrint) -> None:
+        """Same veto as causal_buyer_triggers, read from the shared wallet state after this print."""
+        if pr.side != "buy" or not pr.trader:
+            return
+        track = self.tracks[mint]
+        wallets = self.wallets
+        if pr.trader in wallets.bots or pr.trader in wallets.snipers or pr.trader in wallets.creators:
+            return
+        if pr.trader in track.clean_buyers:
+            return
+        track.clean_buyers.add(pr.trader)
+        n_clean = len(track.clean_buyers)
+        for level in BUYER_TRIGGER_NS:
+            if level in track.nv_fired or n_clean < level:
+                continue
+            track.nv_fired.add(level)
+            self._triggers.append((mint, pr.t_recv_ms, f"buyers_nv{level}"))
+
+    def _note_buyers_8(self, book: MintBook, track: _Track, pr: FlowPrint, t0: int) -> None:
         if track.buyers_done or pr.side != "buy" or not pr.trader:
             return
         track.buyers.add(pr.trader)
@@ -599,7 +714,7 @@ class ForwardEngine:
                 grid.append(g)
         track.buyers_done = True
         if all(abs(t_ms - g) > TRADE_TRIGGER_NEAR_MS for g in grid):
-            self._triggers.append((mint, t_ms, "buyers_8"))
+            self._triggers.append((book.create.mint, t_ms, "buyers_8"))
 
     def _emit_grids_through(self, t_ms: int) -> None:
         while self.grids and self.grids[0][0] <= t_ms:
@@ -625,13 +740,17 @@ class ForwardEngine:
         book = self.library.get(mint)
         if book is None:
             return
-        want_score = any(run.spec.kind == "laya" for run in self.books)
+        want_score = self.record_packets or any(
+            run.spec.kind == "laya" and _point_matches(run.spec, book, t_ms, trigger) for run in self.books
+        )
         feats = None
         if want_score or self.record_packets:
             feats = packet_at(book, t_ms, trigger, self.by_creator, self.wallets)
             if self.record_packets and self.retain_rows:
                 self.packets.append((mint, t_ms, trigger, dict(feats)))
         for run in self.books:
+            if not _point_matches(run.spec, book, t_ms, trigger):
+                continue
             if run.spec.kind == "laya":
                 self._enter_or_skip(run, book, t_ms, trigger, feats)
             elif run.spec.kind == "migrate" and trigger == "migrate":
@@ -654,12 +773,22 @@ class ForwardEngine:
                 feats = packet_at(book, t_ms, trigger, self.by_creator, self.wallets)
                 if self.record_packets and self.retain_rows:
                     self.packets.append((mint, t_ms, trigger, dict(feats)))
-            self.model.maybe_reload()
-            if self.model.booster is None:
+            slot = self.barrier if spec.model_key == "barrier" else self.model
+            slot.maybe_reload()
+            if slot.booster is None:
                 self._decision(run, book, t_ms, trigger, "skip", "no_model", None, None)
                 return
-            score = self.model.score(feats)
-            if score is None or spec.threshold is None or score < spec.threshold:
+            score = slot.score(feats)
+            if score is None:
+                self._decision(run, book, t_ms, trigger, "skip", "no_score", None, None)
+                return
+            if spec.top_frac is not None and run.rank is not None:
+                verdict = run.rank.consider(score)
+                if verdict != "take":
+                    reason = "topk_warmup" if verdict == "warmup" else "below_top"
+                    self._decision(run, book, t_ms, trigger, "skip", reason, score, None)
+                    return
+            elif spec.threshold is None or score < spec.threshold:
                 self._decision(run, book, t_ms, trigger, "skip", "below_threshold", score, None)
                 return
         reason = self._risk_reason(run, mint, creator, t_ms, spec.size_lamports)
@@ -860,14 +989,24 @@ class ForwardEngine:
         book = self.library.get(mint)
         if opened is None or book is None:
             return
-        part = simulate_exit(
-            book.path,
-            opened.entry,
-            opened.rule,
-            latency_ms=opened.latency_ms,
-            tape_end_ms=t_ms,
-            size_lamports=opened.size_lamports,
-        )
+        if isinstance(opened.rule, LadderRule):
+            part = simulate_ladder(
+                book.path,
+                opened.entry,
+                opened.rule,
+                latency_ms=opened.latency_ms,
+                tape_end_ms=t_ms,
+                size_lamports=opened.size_lamports,
+            )
+        else:
+            part = simulate_exit(
+                book.path,
+                opened.entry,
+                opened.rule,
+                latency_ms=opened.latency_ms,
+                tape_end_ms=t_ms,
+                size_lamports=opened.size_lamports,
+            )
         if part["exit_status"] == "censored":
             return
         if part["exit_status"] not in ("realized", "no_exit_liquidity"):
@@ -979,6 +1118,7 @@ def replay_rows(
     tape_end_ms: int,
     kill_file: Path,
     model: ModelSlot | None = None,
+    barrier: ModelSlot | None = None,
     extra_ms: int = 0,
     offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
@@ -991,6 +1131,7 @@ def replay_rows(
         kill_file=kill_file,
         latency=LatencyMeter(extra_ms=extra_ms),
         model=model,
+        barrier=barrier,
         offsets_ms=offsets_ms,
         slippage_cap=slippage_cap,
         tape_end_ms=tape_end_ms,
@@ -1000,6 +1141,8 @@ def replay_rows(
     )
     if model is not None:
         model.maybe_reload(force=True)
+    if barrier is not None:
+        barrier.maybe_reload(force=True)
     for create in creates:
         if create.t_signal_ms <= tape_end_ms:
             engine.push_create(create)
@@ -1272,6 +1415,7 @@ def run_replay_files(
     kill_file: Path,
     model_path: Path | None,
     meta_path: Path | None,
+    barrier_path: Path | None = None,
     tape_end_ms: int | None,
     slippage_cap: float,
     span_ms: int | None = None,
@@ -1289,6 +1433,7 @@ def run_replay_files(
         "positions": JsonlLog(output_dir / "positions.jsonl"),
     }
     model = ModelSlot(model_path, meta_path)
+    barrier = ModelSlot(barrier_path, meta_path)
     engine = replay_rows(
         loaded.values(),
         rows,
@@ -1296,6 +1441,7 @@ def run_replay_files(
         tape_end_ms=tape_end_ms,
         kill_file=kill_file,
         model=model,
+        barrier=barrier,
         slippage_cap=slippage_cap,
         logs=logs,
         record_packets=True,
@@ -1333,6 +1479,7 @@ def serve(config_path: Path) -> int:
     kill_file = Path(raw.get("kill_file") or (output_dir / "KILL"))
     model_path = Path(raw["model_path"]) if raw.get("model_path") else None
     meta_path = Path(raw["model_meta"]) if raw.get("model_meta") else None
+    barrier_path = Path(raw["barrier_model"]) if raw.get("barrier_model") else None
     holdback_ms = int(raw.get("holdback_ms", 300))
     slippage = float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1353,11 +1500,14 @@ def serve(config_path: Path) -> int:
     }
     model = ModelSlot(model_path, meta_path)
     model.maybe_reload(force=True)
+    barrier = ModelSlot(barrier_path, meta_path)
+    barrier.maybe_reload(force=True)
     engine = ForwardEngine(
         books,
         kill_file=kill_file,
         latency=LatencyMeter(now_ms=lambda: int(time.time() * 1000)),
         model=model,
+        barrier=barrier,
         slippage_cap=slippage,
         logs={"decisions": logs["decisions"], "positions": logs["positions"]},
     )
@@ -1399,6 +1549,7 @@ def serve(config_path: Path) -> int:
         now = time.monotonic()
         if now - last_model > 30:
             model.maybe_reload()
+            barrier.maybe_reload()
             last_model = now
         if now - last_summary > 60 and engine._clock_ms:
             snap = engine.summary()
@@ -1450,6 +1601,7 @@ def main(argv: list[str] | None = None) -> int:
         creates.extend(_discover(args.creates_dir, ("observe-*.jsonl", "observe-*.jsonl.zst")))
     model = Path(raw["model_path"]) if raw.get("model_path") else None
     meta = Path(raw["model_meta"]) if raw.get("model_meta") else None
+    barrier = Path(raw["barrier_model"]) if raw.get("barrier_model") else None
     kill = Path(raw.get("kill_file") or (args.output_dir / "KILL"))
     result = run_replay_files(
         tape=sorted({p.resolve() for p in tape}),
@@ -1459,6 +1611,7 @@ def main(argv: list[str] | None = None) -> int:
         kill_file=kill,
         model_path=model if model and model.is_file() else None,
         meta_path=meta if meta and meta.is_file() else None,
+        barrier_path=barrier if barrier and barrier.is_file() else None,
         tape_end_ms=args.tape_end_ms,
         slippage_cap=float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP)),
         span_ms=None if args.span_min <= 0 else int(args.span_min * 60_000),
