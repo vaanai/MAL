@@ -234,7 +234,7 @@ def format_daily_md(board: dict[str, Any]) -> str:
         "",
         f"Promotion: {board.get('promotion_rule')}",
         "",
-        "| book | signals | n | median | mean | mean 90% CI | total | ex best | days+ | min n | promote | blockers |",
+        "| book | signals | n | median | mean | mean 90% CI | total | ex top 3 | days+ | min n | promote | blockers |",
         "| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for name, book in (board.get("books") or {}).items():
@@ -249,7 +249,7 @@ def format_daily_md(board: dict[str, Any]) -> str:
                 mean=_fmt(promo.get("mean_sol", stats.get("mean_sol"))),
                 ci=_fmt_ci(promo.get("mean_ci90_sol")),
                 total=_fmt(promo.get("total_sol", stats.get("total_sol"))),
-                ex=_fmt(promo.get("total_ex_best_sol")),
+                ex=_fmt(promo.get("total_ex_top3_sol")),
                 days=f"{promo.get('days_positive', '')}/{promo.get('n_days', '')}",
                 minn=promo.get("min_n", ""),
                 prom="yes" if promo.get("promote") else ("watch" if promo.get("watch") else "no"),

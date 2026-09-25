@@ -1,9 +1,8 @@
 """LAYA v0 promotion-rule stats for attention books. No tape, no model.
 
-Matches the project-wide promotion rule: n >= 100 out-of-sample trades,
-1000-draw token bootstrap seed 1, 90% CI of mean SOL > 0, total still
-positive after dropping the best trade, majority of UTC days positive.
-Books with n >= WATCH_N (30) are reported as watch, not promote.
+Matches the project-wide promotion rule: n >= 100, at least 5 UTC days
+with a majority positive, 90% CI of mean SOL > 0, total still positive
+after dropping the top 3 trades. Books with n >= WATCH_N (30) are watch.
 """
 
 from __future__ import annotations
@@ -21,11 +20,13 @@ BOOTSTRAP_SEED = 1
 WINSOR_P = 0.01
 WATCH_N = 30
 MIN_N = 100
+MIN_DAYS = 5
+DROP_N = 3
 PROMOTION_RULE = (
-    f"n >= {MIN_N} out-of-sample trades, lower 90% CI bound of mean SOL per trade > 0 "
+    f"n >= {MIN_N} out-of-sample trades, at least {MIN_DAYS} distinct UTC days "
+    "with a majority of those days positive, lower 90% CI bound of mean SOL per trade > 0 "
     f"({BOOTSTRAP_DRAWS} token draws, seed {BOOTSTRAP_SEED}), "
-    "total SOL still positive after removing the single best trade, "
-    "and a majority of UTC days positive"
+    f"and total SOL still positive after removing the top {DROP_N} trades"
 )
 
 
@@ -78,6 +79,13 @@ def _cluster_bootstrap(trades: Sequence[BookTrade]) -> tuple[list[float] | None,
     return mean_ci, total_ci
 
 
+def _total_ex_top_sol(pnls: Sequence[int], k: int) -> float | None:
+    if len(pnls) <= k:
+        return None
+    dropped = sum(sorted(pnls, reverse=True)[:k])
+    return (sum(pnls) - dropped) / LAMPORTS_PER_SOL
+
+
 def _winsorized_mean_lamports(values: Sequence[int], p: float = WINSOR_P) -> float | None:
     if not values:
         return None
@@ -108,6 +116,7 @@ def book_stats(
             "total_ci90_sol": None,
             "winsorized_mean_sol": None,
             "total_ex_best_sol": None,
+            "total_ex_top3_sol": None,
             "days": [],
             "days_positive": 0,
             "n_days": 0,
@@ -122,6 +131,7 @@ def book_stats(
     ordered = sorted(pnls)
     mean_ci, total_ci = _cluster_bootstrap(trades)
     total_ex_best = None if n < 2 else (sum(pnls) - max(pnls)) / LAMPORTS_PER_SOL
+    total_ex_top = _total_ex_top_sol(pnls, DROP_N)
     winsor = _winsorized_mean_lamports(pnls)
     by_day: dict[str, list[int]] = defaultdict(list)
     for trade in trades:
@@ -143,10 +153,12 @@ def book_stats(
     blockers: list[str] = []
     if n < min_n:
         blockers.append("min_n")
+    if n_days < MIN_DAYS:
+        blockers.append("min_days")
     if mean_ci is None or mean_ci[0] <= 0:
         blockers.append("mean_ci90")
-    if total_ex_best is None or total_ex_best <= 0:
-        blockers.append("drop_best")
+    if total_ex_top is None or total_ex_top <= 0:
+        blockers.append("drop_top3")
     if not majority:
         blockers.append("majority_days")
     return {
@@ -161,6 +173,7 @@ def book_stats(
         "total_ci90_sol": total_ci,
         "winsorized_mean_sol": None if winsor is None else winsor / LAMPORTS_PER_SOL,
         "total_ex_best_sol": total_ex_best,
+        "total_ex_top3_sol": total_ex_top,
         "days": days,
         "days_positive": days_positive,
         "n_days": n_days,

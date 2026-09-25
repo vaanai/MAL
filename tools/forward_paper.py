@@ -43,6 +43,7 @@ from tools.laya_v0 import (
     _price_at,
     build_feature_rows,
     flow_from_row,
+    RankWindow,
     packet_at,
     simulate_ladder,
     vector,
@@ -341,30 +342,8 @@ class _Track:
     curve_crossed: set[int] = field(default_factory=set)
 
 
-class _RankWindow:
-    """Causal top-k. A score is taken when it sits in the top fraction of recent scores at this point.
-
-    The window includes the score just observed. Until it holds at least 1/fraction
-    scores, nothing is taken: a top 1% book needs 100 prior decisions at that clock.
-    """
-
-    def __init__(self, frac: float, cap: int = 500) -> None:
-        self.frac = frac
-        self.cap = cap
-        self.scores: list[float] = []
-
-    def consider(self, score: float) -> str:
-        self.scores.append(score)
-        if len(self.scores) > self.cap:
-            del self.scores[0]
-        need = max(1, math.ceil(1.0 / self.frac))
-        if len(self.scores) < need:
-            return "warmup"
-        k = int(round(self.frac * len(self.scores)))
-        if k < 1:
-            k = 1
-        higher = sum(1 for prior in self.scores if prior > score)
-        return "take" if higher < k else "below"
+# Same object the offline scoreboard walks. Do not keep a second copy.
+_RankWindow = RankWindow
 
 
 @dataclass
