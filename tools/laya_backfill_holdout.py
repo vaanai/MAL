@@ -634,7 +634,8 @@ def score_backward_holdout(
             f"{CANDIDATE_FREEZE_AT}. Backfill rows are not in the fit."
         ),
         "receive_clock": (
-            "t_recv_ms = block_time*1000 + a live chain→receive draw + the recv→decision hop. "
+            "t_recv_ms = block_time*1000 + one live chain→receive draw per signature + the recv→decision hop. "
+            "Every inner event of that signature shares the draw. "
             "A negative draw is floored at 0 before the hop. Block time is not the receive time. "
             "Backfill entry labels add another chain draw and do not add the hop a second time."
         ),
