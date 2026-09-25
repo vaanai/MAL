@@ -75,9 +75,16 @@ SCHEMA_PNL = "forward_paper_pnl_v1"
 SCHEMA_LATENCY = "forward_paper_latency_v1"
 SCHEMA_RECONCILE = "forward_paper_reconcile_v1"
 
-HARD_MAX_POSITION_LAMPORTS = DEFAULT_SIZE_LAMPORTS
-DEFAULT_DAILY_LOSS_LAMPORTS = 200_000_000  # 0.2 SOL
-DEFAULT_MAX_CONCURRENT = 3
+# Hard ceilings. Config may set a tighter limit. It cannot raise or disable these.
+HARD_MAX_POSITION_LAMPORTS = DEFAULT_SIZE_LAMPORTS  # 0.05 SOL
+CEILING_MAX_CONCURRENT = 3
+CEILING_DAILY_LOSS_LAMPORTS = 200_000_000  # 0.2 SOL
+DEFAULT_DAILY_LOSS_LAMPORTS = CEILING_DAILY_LOSS_LAMPORTS
+DEFAULT_MAX_CONCURRENT = CEILING_MAX_CONCURRENT
+
+
+class RiskConfigError(Exception):
+    """Host JSON asked for a looser risk limit than the hard ceiling."""
 PRUNE_AFTER_MS = 45 * 60 * 1000
 CHAIN_LAG_MIN_MS = -5_000
 CHAIN_LAG_MAX_MS = 120_000
@@ -224,7 +231,29 @@ def load_config(path: Path) -> dict[str, Any]:
     return raw
 
 
+def _reject_risk(message: str) -> None:
+    raise RiskConfigError(message)
+
+
+def guard_kill_switch(raw: dict[str, Any]) -> None:
+    """The kill switch is always on. Config cannot turn it off or clear its path."""
+    if raw.get("kill_switch") is False or raw.get("honor_kill_switch") is False:
+        _reject_risk("kill switch cannot be disabled")
+    if "kill_file" in raw and not raw.get("kill_file"):
+        _reject_risk("kill_file cannot be cleared")
+
+
+def _optional_cap(item: dict[str, Any], key: str, book_id: str) -> Any:
+    """Missing key means 'use the ceiling'. An explicit null is a refused disable."""
+    if key not in item:
+        return None
+    if item[key] is None:
+        _reject_risk(f"book {book_id} {key} null would disable the cap")
+    return item[key]
+
+
 def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
+    guard_kill_switch(raw)
     found: list[BookSpec] = []
     for item in raw.get("books") or []:
         if not isinstance(item, dict):
@@ -232,14 +261,35 @@ def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
         kind = str(item.get("kind") or "")
         if kind not in ("baseline", "laya", "migrate"):
             raise SystemExit(f"unknown book kind {kind}")
+        book_id = str(item.get("id") or "")
         size_sol = float(item.get("size_sol", raw.get("size_sol", 0.05)))
         size = int(round(size_sol * LAMPORTS_PER_SOL))
         if size <= 0 or size > HARD_MAX_POSITION_LAMPORTS:
-            raise SystemExit(
-                f"book {item.get('id')} size {size_sol} SOL exceeds the {HARD_MAX_POSITION_LAMPORTS / LAMPORTS_PER_SOL} SOL cap"
+            _reject_risk(
+                f"book {book_id} size {size_sol} SOL exceeds the {HARD_MAX_POSITION_LAMPORTS / LAMPORTS_PER_SOL} SOL cap"
             )
-        loss = item.get("daily_loss_sol", 0.2 if kind != "baseline" else None)
-        concurrent = item.get("max_concurrent", None if kind == "baseline" else DEFAULT_MAX_CONCURRENT)
+        loss_raw = _optional_cap(item, "daily_loss_sol", book_id)
+        if loss_raw is None:
+            loss_lamports = CEILING_DAILY_LOSS_LAMPORTS
+        else:
+            loss_sol = float(loss_raw)
+            loss_lamports = int(round(loss_sol * LAMPORTS_PER_SOL))
+            if loss_lamports < 0 or loss_lamports > CEILING_DAILY_LOSS_LAMPORTS:
+                _reject_risk(
+                    f"book {book_id} daily_loss_sol {loss_sol} exceeds the {CEILING_DAILY_LOSS_LAMPORTS / LAMPORTS_PER_SOL} SOL cap"
+                )
+        concurrent_raw = _optional_cap(item, "max_concurrent", book_id)
+        if concurrent_raw is None:
+            concurrent = CEILING_MAX_CONCURRENT
+        elif isinstance(concurrent_raw, bool) or not isinstance(concurrent_raw, (int, float)):
+            _reject_risk(f"book {book_id} max_concurrent is not a number")
+            concurrent = CEILING_MAX_CONCURRENT
+        else:
+            concurrent = int(concurrent_raw)
+            if concurrent < 0 or concurrent > CEILING_MAX_CONCURRENT:
+                _reject_risk(
+                    f"book {book_id} max_concurrent {concurrent_raw} exceeds ceiling {CEILING_MAX_CONCURRENT}"
+                )
         top = item.get("top_frac")
         top_frac = None if top is None else float(top)
         if top_frac is not None and not 0 < top_frac < 1:
@@ -256,8 +306,8 @@ def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
                 top_frac=top_frac,
                 point=None if item.get("point") is None else str(item.get("point")),
                 model_key=model_key,
-                max_concurrent=None if concurrent is None else int(concurrent),
-                daily_loss_lamports=None if loss is None else int(round(float(loss) * LAMPORTS_PER_SOL)),
+                max_concurrent=concurrent,
+                daily_loss_lamports=loss_lamports,
                 creator_cooldown_ms=int(float(item.get("creator_cooldown_s", 0 if kind == "baseline" else 60)) * 1000),
                 token_cooldown_ms=int(float(item.get("token_cooldown_s", 0 if kind == "baseline" else 300)) * 1000),
                 size_lamports=size,
@@ -833,6 +883,7 @@ class ForwardEngine:
         return None
 
     def _risk_reason(self, run: _BookRun, mint: str, creator: str | None, t_ms: int, size: int) -> str | None:
+        # Kill switch is not configurable. A loosened BookSpec still cannot trade past the ceilings.
         if self.kill_file.is_file():
             return "kill_switch"
         spec = run.spec
@@ -840,10 +891,12 @@ class ForwardEngine:
             return "max_position_size"
         if mint in run.open or mint in run.pending:
             return "already_open"
-        if spec.max_concurrent is not None and len(run.open) + len(run.pending) >= spec.max_concurrent:
+        concurrent = CEILING_MAX_CONCURRENT if spec.max_concurrent is None else min(spec.max_concurrent, CEILING_MAX_CONCURRENT)
+        if len(run.open) + len(run.pending) >= concurrent:
             return "max_concurrent"
         self._roll_day(run, t_ms)
-        if spec.daily_loss_lamports is not None and run.day_pnl <= -spec.daily_loss_lamports:
+        loss_cap = CEILING_DAILY_LOSS_LAMPORTS if spec.daily_loss_lamports is None else min(spec.daily_loss_lamports, CEILING_DAILY_LOSS_LAMPORTS)
+        if run.day_pnl <= -loss_cap:
             return "daily_loss_cap"
         if t_ms < run.token_ready.get(mint, 0):
             return "token_cooldown"
@@ -1470,9 +1523,33 @@ def run_replay_files(
     return {"summary": summary, "reconcile": reconcile, "latency": latency}
 
 
+def reload_risk_config(path: Path, current: list[BookSpec]) -> tuple[list[BookSpec], Path | None]:
+    """Re-read host JSON. A file above a ceiling is logged and not applied."""
+    try:
+        raw = load_config(path)
+        books = books_from_config(raw)
+    except (RiskConfigError, OSError, json.JSONDecodeError, SystemExit, KeyError, TypeError, ValueError) as exc:
+        print(f"forward_paper risk refused: {exc}", file=sys.stderr)
+        return current, None
+    kill = raw.get("kill_file")
+    return books, Path(kill) if isinstance(kill, str) and kill else None
+
+
+def adopt_book_limits(engine: ForwardEngine, books: Sequence[BookSpec]) -> None:
+    incoming = {spec.book_id: spec for spec in books}
+    for run in engine.books:
+        spec = incoming.get(run.spec.book_id)
+        if spec is not None:
+            run.spec = spec
+
+
 def serve(config_path: Path) -> int:
-    raw = load_config(config_path)
-    books = books_from_config(raw)
+    try:
+        raw = load_config(config_path)
+        books = books_from_config(raw)
+    except RiskConfigError as exc:
+        print(f"forward_paper risk refused: {exc}", file=sys.stderr)
+        return 1
     tape_dir = Path(raw.get("tape_dir") or "/var/lib/mal/sealed/trades")
     creates_dir = Path(raw.get("creates_dir") or "/var/lib/mal/sealed/jsonl")
     output_dir = Path(raw.get("output_dir") or "/var/lib/mal/paper/forward-paper")
@@ -1521,6 +1598,10 @@ def serve(config_path: Path) -> int:
     signal.signal(signal.SIGINT, _stop)
     last_summary = 0.0
     last_model = 0.0
+    try:
+        config_mtime = config_path.stat().st_mtime
+    except OSError:
+        config_mtime = 0.0
     print(
         f"forward_paper books={','.join(b.book_id for b in books)} kill={kill_file}",
         file=sys.stderr,
@@ -1550,6 +1631,18 @@ def serve(config_path: Path) -> int:
         if now - last_model > 30:
             model.maybe_reload()
             barrier.maybe_reload()
+            try:
+                mtime = config_path.stat().st_mtime
+            except OSError:
+                mtime = config_mtime
+            if mtime != config_mtime:
+                fresh, kill = reload_risk_config(config_path, books)
+                if fresh is not books:
+                    books = fresh
+                    adopt_book_limits(engine, books)
+                    if kill is not None:
+                        engine.kill_file = kill
+                config_mtime = mtime
             last_model = now
         if now - last_summary > 60 and engine._clock_ms:
             snap = engine.summary()
@@ -1591,8 +1684,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "serve":
         return serve(args.config)
-    raw = load_config(args.config)
-    books = books_from_config(raw)
+    try:
+        raw = load_config(args.config)
+        books = books_from_config(raw)
+    except RiskConfigError as exc:
+        print(f"forward_paper risk refused: {exc}", file=sys.stderr)
+        return 1
     tape = list(args.tape)
     creates = list(args.creates)
     if args.tape_dir:

@@ -15,8 +15,12 @@ from tools.forward_paper import (
     LatencyMeter,
     ModelSlot,
     _RankWindow,
+    CEILING_DAILY_LOSS_LAMPORTS,
+    CEILING_MAX_CONCURRENT,
+    RiskConfigError,
     books_from_config,
     offline_packets,
+    reload_risk_config,
     reconcile_baseline,
     replay_rows,
     window_creates,
@@ -279,9 +283,110 @@ class RiskTests(unittest.TestCase):
         self.assertEqual(reason, "daily_loss_cap")
         self.assertLessEqual(spec.size_lamports, HARD_MAX_POSITION_LAMPORTS)
 
+    def test_shipped_config_stays_inside_the_ceilings(self) -> None:
+        import json
+
+        raw = json.loads(Path("scripts/mal-core/forward-paper.json").read_text(encoding="utf-8"))
+        books = books_from_config(raw)
+        self.assertGreaterEqual(len(books), 1)
+        for book in books:
+            assert book.max_concurrent is not None
+            assert book.daily_loss_lamports is not None
+            self.assertLessEqual(book.max_concurrent, CEILING_MAX_CONCURRENT)
+            self.assertLessEqual(book.daily_loss_lamports, CEILING_DAILY_LOSS_LAMPORTS)
+            self.assertLessEqual(book.size_lamports, HARD_MAX_POSITION_LAMPORTS)
+
     def test_config_refuses_a_size_above_the_cap(self) -> None:
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(RiskConfigError):
             books_from_config({"books": [{"id": "big", "kind": "baseline", "exit": "hold_30s", "size_sol": 1.0}]})
+
+    def test_config_can_only_tighten_risk_ceilings(self) -> None:
+        tight = books_from_config(
+            {
+                "books": [
+                    {
+                        "id": "tight",
+                        "kind": "baseline",
+                        "exit": "hold_30s",
+                        "size_sol": 0.01,
+                        "max_concurrent": 1,
+                        "daily_loss_sol": 0.05,
+                    }
+                ]
+            }
+        )
+        self.assertEqual(tight[0].size_lamports, 10_000_000)
+        self.assertEqual(tight[0].max_concurrent, 1)
+        self.assertEqual(tight[0].daily_loss_lamports, 50_000_000)
+        omitted = books_from_config({"books": [{"id": "b", "kind": "baseline", "exit": "hold_30s"}]})
+        self.assertEqual(omitted[0].max_concurrent, CEILING_MAX_CONCURRENT)
+        self.assertEqual(omitted[0].daily_loss_lamports, CEILING_DAILY_LOSS_LAMPORTS)
+        wider = [
+            {"max_concurrent": 4},
+            {"max_concurrent": None},
+            {"daily_loss_sol": 1.0},
+            {"daily_loss_sol": None},
+            {"size_sol": 0.06},
+        ]
+        for extra in wider:
+            with self.subTest(extra=extra):
+                with self.assertRaises(RiskConfigError):
+                    books_from_config({"books": [{"id": "b", "kind": "baseline", "exit": "hold_30s", **extra}]})
+        with self.assertRaises(RiskConfigError):
+            books_from_config({"kill_switch": False, "books": [{"id": "b", "kind": "baseline", "exit": "hold_30s"}]})
+        with self.assertRaises(RiskConfigError):
+            books_from_config({"kill_file": "", "books": [{"id": "b", "kind": "baseline", "exit": "hold_30s"}]})
+
+    def test_runtime_ceiling_holds_when_the_spec_was_loosened(self) -> None:
+        spec = BookSpec(
+            "loose",
+            "baseline",
+            "hold_30s",
+            max_concurrent=50,
+            daily_loss_lamports=10**15,
+            size_lamports=10**15,
+        )
+        engine = ForwardEngine([spec], kill_file=Path("/tmp/forward-paper-ceilings"))
+        run = engine.books[0]
+        run.open = {f"m{i}": None for i in range(CEILING_MAX_CONCURRENT)}  # type: ignore[assignment]
+        reason = engine._risk_reason(run, "new", None, T0, HARD_MAX_POSITION_LAMPORTS)
+        self.assertEqual(reason, "max_concurrent")
+        run.open.clear()
+        run.day = __import__("time").strftime("%Y-%m-%d", __import__("time").gmtime(T0 / 1000))
+        run.day_pnl = -CEILING_DAILY_LOSS_LAMPORTS
+        reason = engine._risk_reason(run, "new", None, T0, HARD_MAX_POSITION_LAMPORTS)
+        self.assertEqual(reason, "daily_loss_cap")
+        run.day_pnl = 0
+        reason = engine._risk_reason(run, "new", None, T0, HARD_MAX_POSITION_LAMPORTS + 1)
+        self.assertEqual(reason, "max_position_size")
+
+    def test_hot_reload_refuses_a_wider_config(self) -> None:
+        current = books_from_config(
+            {"books": [{"id": "b", "kind": "baseline", "exit": "hold_30s", "max_concurrent": 1}]}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "forward-paper.json"
+            path.write_text(
+                '{"books":[{"id":"b","kind":"baseline","exit":"hold_30s","max_concurrent":9}]}',
+                encoding="utf-8",
+            )
+            kept, kill = reload_risk_config(path, current)
+            self.assertIs(kept, current)
+            self.assertIsNone(kill)
+            self.assertEqual(current[0].max_concurrent, 1)
+            path.write_text(
+                '{"kill_switch": false, "books":[{"id":"b","kind":"baseline","exit":"hold_30s","max_concurrent":1}]}',
+                encoding="utf-8",
+            )
+            kept, _kill = reload_risk_config(path, current)
+            self.assertIs(kept, current)
+            path.write_text(
+                '{"books":[{"id":"b","kind":"baseline","exit":"hold_30s","max_concurrent":1,"daily_loss_sol":0.05}]}',
+                encoding="utf-8",
+            )
+            fresh, _kill = reload_risk_config(path, current)
+            self.assertEqual(fresh[0].max_concurrent, 1)
+            self.assertEqual(fresh[0].daily_loss_lamports, 50_000_000)
 
 
 class ModelAndLogTests(unittest.TestCase):
@@ -354,7 +459,7 @@ class ModelAndLogTests(unittest.TestCase):
         raw = {
             "size_sol": 0.05,
             "books": [
-                {"id": "buy_all", "kind": "baseline", "exit": "hold_30s", "max_concurrent": None, "daily_loss_sol": None, "creator_cooldown_s": 0, "token_cooldown_s": 0},
+                {"id": "buy_all", "kind": "baseline", "exit": "hold_30s", "max_concurrent": 3, "daily_loss_sol": 0.2, "creator_cooldown_s": 0, "token_cooldown_s": 0},
                 {"id": "buyers8_top5_ladder2x", "kind": "laya", "point": "buyers_8", "top_frac": 0.05, "model": "barrier", "exit": "ladder_2x_t30"},
                 {"id": "t30_top1_hold30", "kind": "laya", "point": "30", "top_frac": 0.01, "model": "entry", "exit": "hold_30s"},
                 {"id": "migrate_hold_30s", "kind": "migrate", "exit": "hold_30s"},
