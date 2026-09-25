@@ -24,6 +24,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TextIO
 
+from observe.attention import is_genuine_arrival, load_poller_start_ms, load_snapshot_keys
+from tools.funding_graph import fill_funding_features
+from tools.graduated_swing import (
+    SWING_EXITS,
+    SWING_LADDERS,
+    AttentionEvent,
+    _migration_price,
+    features_at,
+)
 from tools.laya_v0 import (
     BUYER_TRIGGER_NS,
     CURVE_LEVELS,
@@ -83,6 +92,13 @@ CEILING_MAX_CONCURRENT = 3
 CEILING_DAILY_LOSS_LAMPORTS = 200_000_000  # 0.2 SOL
 DEFAULT_DAILY_LOSS_LAMPORTS = CEILING_DAILY_LOSS_LAMPORTS
 DEFAULT_MAX_CONCURRENT = CEILING_MAX_CONCURRENT
+# Graduated-swing selection sample ends here. Swing books score strictly after it.
+# Config may move this later. It cannot move it earlier.
+SWING_FREEZE_AT = "2026-09-25T18:25:57Z"
+SWING_FREEZE_MS = 1_790_360_757_000
+MIG15_OFFSET_MS = 900_000
+SWING_RULES: dict[str, ExitRule] = {rule.rule_id: rule for rule in SWING_EXITS}
+SWING_LADDER_BY_ID: dict[str, LadderRule] = {rule.rule_id: rule for rule in SWING_LADDERS}
 
 
 class RiskConfigError(Exception):
@@ -214,9 +230,17 @@ class BookSpec:
     creator_cooldown_ms: int = 60_000
     token_cooldown_ms: int = 300_000
     size_lamports: int = DEFAULT_SIZE_LAMPORTS
+    freeze_ms: int | None = None
 
     def resolved_exit(self, deploy_rule: str) -> ExitRule | LadderRule:
         rule_id = deploy_rule if self.exit_rule == "deploy" else self.exit_rule
+        if self.kind == "swing":
+            swing = SWING_RULES.get(rule_id)
+            if swing is not None:
+                return swing
+            ladder = SWING_LADDER_BY_ID.get(rule_id)
+            if ladder is not None:
+                return ladder
         rule = RULES.get(rule_id)
         if rule is not None:
             return rule
@@ -254,14 +278,43 @@ def _optional_cap(item: dict[str, Any], key: str, book_id: str) -> Any:
     return item[key]
 
 
+def _parse_iso_ms(text: str) -> int:
+    import calendar
+
+    return int(calendar.timegm(time.strptime(text, "%Y-%m-%dT%H:%M:%SZ")) * 1000)
+
+
+def resolve_swing_freeze(raw: dict[str, Any]) -> int:
+    """Registered sample end. A missing key uses it. An earlier value is refused."""
+    if "swing_freeze_ms" in raw and raw.get("swing_freeze_ms") is None:
+        _reject_risk("swing freeze cannot be cleared")
+    if "swing_freeze_at" in raw and raw.get("swing_freeze_at") is None:
+        _reject_risk("swing freeze cannot be cleared")
+    has_ms = isinstance(raw.get("swing_freeze_ms"), (int, float)) and not isinstance(raw.get("swing_freeze_ms"), bool)
+    has_at = isinstance(raw.get("swing_freeze_at"), str) and bool(raw.get("swing_freeze_at"))
+    if not has_ms and not has_at:
+        return SWING_FREEZE_MS
+    ms = int(raw["swing_freeze_ms"]) if has_ms else None
+    if has_at:
+        parsed = _parse_iso_ms(str(raw["swing_freeze_at"]))
+        if ms is not None and ms != parsed:
+            _reject_risk("swing_freeze_at does not match swing_freeze_ms")
+        if ms is None:
+            ms = parsed
+    if ms is None or ms < SWING_FREEZE_MS:
+        _reject_risk(f"swing freeze is before the registered {SWING_FREEZE_AT}")
+    return ms
+
+
 def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
     guard_kill_switch(raw)
+    freeze_ms = resolve_swing_freeze(raw)
     found: list[BookSpec] = []
     for item in raw.get("books") or []:
         if not isinstance(item, dict):
             raise SystemExit("book entries must be objects")
         kind = str(item.get("kind") or "")
-        if kind not in ("baseline", "laya", "migrate"):
+        if kind not in ("baseline", "laya", "migrate", "swing"):
             raise SystemExit(f"unknown book kind {kind}")
         book_id = str(item.get("id") or "")
         size_sol = float(item.get("size_sol", raw.get("size_sol", 0.05)))
@@ -296,8 +349,17 @@ def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
         top_frac = None if top is None else float(top)
         if top_frac is not None and not 0 < top_frac < 1:
             raise SystemExit(f"book {item.get('id')} top_frac must be between 0 and 1")
-        model_key = str(item.get("model") or "entry")
-        if model_key not in ("entry", "barrier"):
+        if kind == "swing":
+            default_model = "swing" if top_frac is not None else "none"
+        else:
+            default_model = "entry"
+        model_key = str(item.get("model") or default_model)
+        if kind == "swing":
+            if model_key not in ("swing", "none"):
+                raise SystemExit(f"book {item.get('id')} swing model must be swing or none")
+            if not item.get("point"):
+                raise SystemExit(f"book {item.get('id')} swing book needs a point")
+        elif model_key not in ("entry", "barrier"):
             raise SystemExit(f"book {item.get('id')} model must be entry or barrier")
         found.append(
             BookSpec(
@@ -313,6 +375,7 @@ def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
                 creator_cooldown_ms=int(float(item.get("creator_cooldown_s", 0 if kind == "baseline" else 60)) * 1000),
                 token_cooldown_ms=int(float(item.get("token_cooldown_s", 0 if kind == "baseline" else 300)) * 1000),
                 size_lamports=size,
+                freeze_ms=freeze_ms if kind == "swing" else None,
             )
         )
     if not found:
@@ -326,6 +389,8 @@ def _point_matches(spec: BookSpec, book: MintBook, t_ms: int, trigger: str) -> b
     if not point:
         return True
     if point == trigger:
+        return True
+    if point == "attn" and trigger.startswith("attn:"):
         return True
     if trigger == "grid" and point.isdigit():
         return t_ms - book.create.t_signal_ms == int(point) * 1000
@@ -341,6 +406,8 @@ class _Track:
     clean_buyers: set[str] = field(default_factory=set)
     nv_fired: set[int] = field(default_factory=set)
     curve_crossed: set[int] = field(default_factory=set)
+    migration_t_ms: int | None = None
+    attn_fired: set[str] = field(default_factory=set)
 
 
 # Same object the offline scoreboard walks. Do not keep a second copy.
@@ -474,6 +541,7 @@ class ForwardEngine:
         latency: LatencyMeter | None = None,
         model: ModelSlot | None = None,
         barrier: ModelSlot | None = None,
+        swing: ModelSlot | None = None,
         offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
         slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
         tape_end_ms: int | None = None,
@@ -491,6 +559,7 @@ class ForwardEngine:
         self.latency = latency or LatencyMeter()
         self.model = model or ModelSlot(None, None)
         self.barrier = barrier or ModelSlot(None, None)
+        self.swing = swing or ModelSlot(None, None)
         self.offsets_ms = tuple(offsets_ms)
         self.slippage_cap = slippage_cap
         self.tape_end_ms = tape_end_ms
@@ -511,6 +580,12 @@ class ForwardEngine:
         self.grids: list[tuple[int, int, str]] = []
         self.grid_seq = 0
         self.emitted_grids: set[tuple[str, int]] = set()
+        self.mig15: list[tuple[int, int, str]] = []
+        self.mig15_seq = 0
+        self.mig15_waiting: set[str] = set()
+        self.attention: dict[str, list[AttentionEvent]] = defaultdict(list)
+        self.attn_t_start_ms = 0
+        self.attn_snapshot: set[tuple[str, str]] = set()
         self.early: dict[str, list[tuple[FlowPrint, int | None]]] = defaultdict(list)
         self.inbox: list[tuple[int, int, int, Any]] = []
         self.inbox_seq = 0
@@ -558,6 +633,27 @@ class ForwardEngine:
     def push_print(self, mint: str, pr: FlowPrint, event_ts: int | None = None) -> None:
         self._push(pr.t_recv_ms, 0, ("print", mint, pr, event_ts))
 
+    def push_attention(self, row: dict[str, Any]) -> None:
+        """Genuine first-seen only. Pre-migration rows stay buffered until graduation."""
+        ev = self._attention_event(row)
+        if ev is None:
+            return
+        if self.tape_end_ms is not None and ev.t_ms > self.tape_end_ms:
+            return
+        self._push(ev.t_ms, 1, ("attn", ev))
+
+    def _attention_event(self, row: dict[str, Any]) -> AttentionEvent | None:
+        mint = row.get("mint")
+        kind = row.get("kind")
+        t_ms = row.get("t_first_ms")
+        if not isinstance(mint, str) or not isinstance(kind, str) or not isinstance(t_ms, int):
+            return None
+        if not is_genuine_arrival(row, t_start_ms=self.attn_t_start_ms, snapshot_keys=self.attn_snapshot):
+            return None
+        rank = row.get("rank")
+        rank_i = int(rank) if isinstance(rank, int) and not isinstance(rank, bool) else None
+        return AttentionEvent(mint=mint, kind=kind, t_ms=t_ms, rank=rank_i, genuine=True)
+
     def _push(self, t_ms: int, kind: int, payload: Any) -> None:
         heapq.heappush(self.inbox, (t_ms, kind, self.inbox_seq, payload))
         self.inbox_seq += 1
@@ -595,12 +691,14 @@ class ForwardEngine:
 
     def _before_time(self, t_ms: int) -> None:
         self._emit_grids_through(t_ms - 1)
+        self._emit_mig15_through(t_ms - 1)
         self._fill_through(t_ms - 1)
         self._exits_through(t_ms - 1)
 
     def _at_time(self, t_ms: int) -> None:
         self._clock_ms = t_ms
         self._emit_grids_through(t_ms)
+        self._emit_mig15_through(t_ms)
         queued = self._triggers
         self._triggers = []
         for mint, when, trigger in queued:
@@ -614,6 +712,7 @@ class ForwardEngine:
     def _apply_batch(self, t_ms: int, batch: list[tuple[int, int, int, Any]]) -> None:
         creators = [item for item in batch if item[3][0] == "creator"]
         prints = [item for item in batch if item[3][0] == "print"]
+        attentions = [item for item in batch if item[3][0] == "attn"]
         for item in creators:
             create = item[3][1]
             self._flush_early(create.mint)
@@ -629,6 +728,8 @@ class ForwardEngine:
             _tag, mint, pr, event_ts = item[3]
             if self._add_print(mint, pr, event_ts):
                 self._consider_triggers(mint, pr)
+        for item in attentions:
+            self._note_attention(item[3][1])
         for item in creators:
             create = item[3][1]
             if create.mint in self.library and create.t_signal_ms == t_ms:
@@ -693,7 +794,10 @@ class ForwardEngine:
             self._note_curve(mint, pr.t_recv_ms, pr.venue, pr.base_reserve)
         if not track.migrate_done and pr.venue == "pumpswap" and pr.t_recv_ms >= t0:
             track.migrate_done = True
+            track.migration_t_ms = pr.t_recv_ms
             self._triggers.append((mint, pr.t_recv_ms, "migrate"))
+            self._schedule_mig15(mint, pr.t_recv_ms)
+            self._flush_attention(mint)
         self._note_clean_buyer(mint, pr)
         self._note_buyers_8(book, track, pr, t0)
 
@@ -758,6 +862,64 @@ class ForwardEngine:
             self.emitted_grids.add((mint, when))
             self._on_signal(mint, when, "grid")
 
+    def _schedule_mig15(self, mint: str, migration_t_ms: int) -> None:
+        if not any(run.spec.kind == "swing" and run.spec.point == "mig_15" for run in self.books):
+            return
+        when = migration_t_ms + MIG15_OFFSET_MS
+        if self.tape_end_ms is not None and when > self.tape_end_ms:
+            return
+        heapq.heappush(self.mig15, (when, self.mig15_seq, mint))
+        self.mig15_seq += 1
+        self.mig15_waiting.add(mint)
+
+    def _emit_mig15_through(self, t_ms: int) -> None:
+        while self.mig15 and self.mig15[0][0] <= t_ms:
+            when, _seq, mint = heapq.heappop(self.mig15)
+            self.mig15_waiting.discard(mint)
+            self._on_signal(mint, when, "mig_15")
+
+    def _note_attention(self, ev: AttentionEvent) -> None:
+        prior = self.attention[ev.mint]
+        if any(old.kind == ev.kind for old in prior):
+            return
+        prior.append(ev)
+        track = self.tracks.get(ev.mint)
+        if track is None or track.migration_t_ms is None:
+            return
+        self._fire_attention(ev.mint, ev, track)
+
+    def _flush_attention(self, mint: str) -> None:
+        track = self.tracks.get(mint)
+        if track is None or track.migration_t_ms is None:
+            return
+        for ev in self.attention.get(mint, ()):
+            self._fire_attention(mint, ev, track)
+
+    def _fire_attention(self, mint: str, ev: AttentionEvent, track: _Track) -> None:
+        if track.migration_t_ms is None or ev.t_ms < track.migration_t_ms:
+            return
+        if ev.kind in track.attn_fired:
+            return
+        track.attn_fired.add(ev.kind)
+        self._triggers.append((mint, ev.t_ms, f"attn:{ev.kind}"))
+
+    def _swing_features(self, book: MintBook, t_ms: int, trigger: str) -> dict[str, float]:
+        track = self.tracks.get(book.create.mint)
+        migration_t = track.migration_t_ms if track and track.migration_t_ms is not None else t_ms
+        price, _quote = _migration_price(book, migration_t)
+        events = self.attention.get(book.create.mint, ())
+        feats = features_at(
+            book,
+            decision_t_ms=t_ms,
+            migration_t_ms=migration_t,
+            migration_price=price,
+            attention=events,
+            is_attention=trigger.startswith("attn:"),
+        )
+        self._maybe_reload_graph()
+        fill_funding_features(book, t_ms, feats, self.wallets, self.graph, self.library)
+        return feats
+
     def _baseline(self, mint: str, t_ms: int) -> None:
         track = self.tracks.get(mint)
         book = self.library.get(mint)
@@ -816,6 +978,8 @@ class ForwardEngine:
                 self._enter_or_skip(run, book, t_ms, trigger, feats)
             elif run.spec.kind == "migrate" and trigger == "migrate":
                 self._enter_or_skip(run, book, t_ms, trigger, feats)
+            elif run.spec.kind == "swing":
+                self._enter_or_skip(run, book, t_ms, trigger, feats)
 
     def _enter_or_skip(
         self,
@@ -829,7 +993,31 @@ class ForwardEngine:
         mint = book.create.mint
         creator = book.create.creator
         score = None
-        if spec.kind == "laya":
+        if spec.kind == "swing":
+            freeze = spec.freeze_ms if spec.freeze_ms is not None else SWING_FREEZE_MS
+            if t_ms <= freeze:
+                self._decision(run, book, t_ms, trigger, "skip", "before_freeze", None, None)
+                return
+            if spec.model_key == "swing":
+                feats = self._swing_features(book, t_ms, trigger)
+                self.swing.maybe_reload()
+                if self.swing.booster is None:
+                    self._decision(run, book, t_ms, trigger, "skip", "no_model", None, None)
+                    return
+                score = self.swing.score(feats)
+                if score is None:
+                    self._decision(run, book, t_ms, trigger, "skip", "no_score", None, None)
+                    return
+                if spec.top_frac is not None and run.rank is not None:
+                    verdict = run.rank.consider(score)
+                    if verdict != "take":
+                        reason = "topk_warmup" if verdict == "warmup" else "below_top"
+                        self._decision(run, book, t_ms, trigger, "skip", reason, score, None)
+                        return
+                elif spec.threshold is not None and score < spec.threshold:
+                    self._decision(run, book, t_ms, trigger, "skip", "below_threshold", score, None)
+                    return
+        elif spec.kind == "laya":
             if feats is None:
                 self._maybe_reload_graph()
                 feats = packet_at(
@@ -953,6 +1141,10 @@ class ForwardEngine:
             "entry_status": entry_status,
             "latency": hops,
         }
+        if run.spec.kind == "swing":
+            freeze = run.spec.freeze_ms if run.spec.freeze_ms is not None else SWING_FREEZE_MS
+            row["freeze_ms"] = freeze
+            row["freeze_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(freeze / 1000.0))
         if self.retain_rows:
             self.decisions.append(row)
         log = self.logs.get("decisions")
@@ -1146,7 +1338,7 @@ class ForwardEngine:
             busy.update(run.open)
             busy.update(run.pending)
         for mint, book in list(self.library.items()):
-            if mint in busy:
+            if mint in busy or mint in self.mig15_waiting:
                 continue
             last = book.flow[-1].t_recv_ms if book.flow else book.create.t_signal_ms
             if now_ms - last < PRUNE_AFTER_MS:
@@ -1161,7 +1353,8 @@ class ForwardEngine:
                     last_t0 = pr
                 if pr.t_recv_ms <= horizon:
                     last_h = pr
-            for pr in (last_t0, last_h):
+            last_any = book.flow[-1] if book.flow else None
+            for pr in (last_t0, last_h, last_any):
                 if pr is not None and pr not in keep:
                     keep.append(pr)
             book.flow = keep
@@ -1184,7 +1377,20 @@ class ForwardEngine:
                 "realized": stats,
                 "skips": dict(run.skip_reasons),
             }
-        return {"schema": SCHEMA_PNL, "day": day, "t_ms": when, "books": books, "latency": self.latency.report()}
+        freeze = SWING_FREEZE_MS
+        for run in self.books:
+            if run.spec.kind == "swing" and run.spec.freeze_ms is not None:
+                freeze = run.spec.freeze_ms
+                break
+        return {
+            "schema": SCHEMA_PNL,
+            "day": day,
+            "t_ms": when,
+            "swing_freeze_ms": freeze,
+            "swing_freeze_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(freeze / 1000.0)),
+            "books": books,
+            "latency": self.latency.report(),
+        }
 
 
 def window_creates(
@@ -1208,6 +1414,8 @@ def replay_rows(
     kill_file: Path,
     model: ModelSlot | None = None,
     barrier: ModelSlot | None = None,
+    swing: ModelSlot | None = None,
+    attention_rows: Iterable[dict[str, Any]] | None = None,
     extra_ms: int = 0,
     offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
@@ -1221,6 +1429,7 @@ def replay_rows(
         latency=LatencyMeter(extra_ms=extra_ms),
         model=model,
         barrier=barrier,
+        swing=swing,
         offsets_ms=offsets_ms,
         slippage_cap=slippage_cap,
         tape_end_ms=tape_end_ms,
@@ -1232,6 +1441,8 @@ def replay_rows(
         model.maybe_reload(force=True)
     if barrier is not None:
         barrier.maybe_reload(force=True)
+    if swing is not None:
+        swing.maybe_reload(force=True)
     for create in creates:
         if create.t_signal_ms <= tape_end_ms:
             engine.push_create(create)
@@ -1243,6 +1454,8 @@ def replay_rows(
         if pr.t_recv_ms > tape_end_ms:
             continue
         engine.push_print(mint, pr, _event_ts(row))
+    for row in attention_rows or ():
+        engine.push_attention(row)
     engine.drain_until(tape_end_ms, final=True)
     return engine
 
@@ -1450,11 +1663,18 @@ class _Follower:
 
 
 class DirectoryTail:
-    """Follow the open trade hour and the observe day file. No writes to those dirs."""
+    """Follow the open trade hour, the observe day file, and attention hours. No writes to those dirs."""
 
-    def __init__(self, tape_dir: Path, creates_dir: Path, offsets: dict[str, int]) -> None:
+    def __init__(
+        self,
+        tape_dir: Path,
+        creates_dir: Path,
+        offsets: dict[str, int],
+        attention_dir: Path | None = None,
+    ) -> None:
         self.tape_dir = tape_dir
         self.creates_dir = creates_dir
+        self.attention_dir = attention_dir
         self.offsets = offsets
         self._open: dict[str, _Follower] = {}
 
@@ -1467,7 +1687,12 @@ class DirectoryTail:
             except OSError:
                 continue
             self.offsets[key] = follower.offset
-            kind = "create" if key.startswith("create:") else "trade"
+            if key.startswith("create:"):
+                kind = "create"
+            elif key.startswith("attention:"):
+                kind = "attention"
+            else:
+                kind = "trade"
             for line in lines:
                 try:
                     row = json.loads(line)
@@ -1483,7 +1708,10 @@ class DirectoryTail:
         day = time.strftime("%Y-%m-%d", now)
         trade = self.tape_dir / f"trades-{hour}.jsonl"
         create = self.creates_dir / f"observe-{day}.jsonl"
-        for kind, path in (("trade", trade), ("create", create)):
+        watched = [("trade", trade), ("create", create)]
+        if self.attention_dir is not None:
+            watched.append(("attention", self.attention_dir / f"attention-{hour}.jsonl"))
+        for kind, path in watched:
             key = f"{kind}:{path}"
             if key in self._open or not path.is_file():
                 continue
@@ -1505,6 +1733,7 @@ def run_replay_files(
     model_path: Path | None,
     meta_path: Path | None,
     barrier_path: Path | None = None,
+    swing_path: Path | None = None,
     tape_end_ms: int | None,
     slippage_cap: float,
     span_ms: int | None = None,
@@ -1523,6 +1752,7 @@ def run_replay_files(
     }
     model = ModelSlot(model_path, meta_path)
     barrier = ModelSlot(barrier_path, meta_path)
+    swing_slot = ModelSlot(swing_path, None)
     engine = replay_rows(
         loaded.values(),
         rows,
@@ -1531,6 +1761,7 @@ def run_replay_files(
         kill_file=kill_file,
         model=model,
         barrier=barrier,
+        swing=swing_slot,
         slippage_cap=slippage_cap,
         logs=logs,
         record_packets=True,
@@ -1579,6 +1810,15 @@ def adopt_book_limits(engine: ForwardEngine, books: Sequence[BookSpec]) -> None:
             run.spec = spec
 
 
+def bind_attention(engine: ForwardEngine, directory: Path | None) -> None:
+    """Startup snapshot and poller start. Rows in that set are not genuine arrivals."""
+    if directory is None or not directory.is_dir():
+        return
+    start = load_poller_start_ms(directory)
+    engine.attn_t_start_ms = start or 0
+    engine.attn_snapshot = load_snapshot_keys(directory)
+
+
 def serve(config_path: Path) -> int:
     try:
         raw = load_config(config_path)
@@ -1593,6 +1833,8 @@ def serve(config_path: Path) -> int:
     model_path = Path(raw["model_path"]) if raw.get("model_path") else None
     meta_path = Path(raw["model_meta"]) if raw.get("model_meta") else None
     barrier_path = Path(raw["barrier_model"]) if raw.get("barrier_model") else None
+    swing_path = Path(raw["swing_model"]) if raw.get("swing_model") else None
+    attention_dir = Path(raw["attention_dir"]) if raw.get("attention_dir") else None
     holdback_ms = int(raw.get("holdback_ms", 300))
     slippage = float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1615,19 +1857,23 @@ def serve(config_path: Path) -> int:
     model.maybe_reload(force=True)
     barrier = ModelSlot(barrier_path, meta_path)
     barrier.maybe_reload(force=True)
+    swing = ModelSlot(swing_path, None)
+    swing.maybe_reload(force=True)
     engine = ForwardEngine(
         books,
         kill_file=kill_file,
         latency=LatencyMeter(now_ms=lambda: int(time.time() * 1000)),
         model=model,
         barrier=barrier,
+        swing=swing,
         slippage_cap=slippage,
         logs={"decisions": logs["decisions"], "positions": logs["positions"]},
     )
+    bind_attention(engine, attention_dir)
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
     if graph_dir.is_dir():
         engine.graph_dir = graph_dir
-    tail = DirectoryTail(tape_dir, creates_dir, offsets)
+    tail = DirectoryTail(tape_dir, creates_dir, offsets, attention_dir)
     stop = {"flag": False}
 
     def _stop(_signum: int, _frame: Any) -> None:
@@ -1641,8 +1887,10 @@ def serve(config_path: Path) -> int:
         config_mtime = config_path.stat().st_mtime
     except OSError:
         config_mtime = 0.0
+    freeze_ms = next((b.freeze_ms for b in books if b.kind == "swing" and b.freeze_ms is not None), SWING_FREEZE_MS)
+    freeze_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(freeze_ms / 1000.0))
     print(
-        f"forward_paper books={','.join(b.book_id for b in books)} kill={kill_file}",
+        f"forward_paper books={','.join(b.book_id for b in books)} kill={kill_file} swing_freeze={freeze_at}",
         file=sys.stderr,
     )
     while not stop["flag"]:
@@ -1655,6 +1903,11 @@ def serve(config_path: Path) -> int:
                     continue
                 engine.push_create(create)
                 watermark = max(watermark, create.t_signal_ms)
+            elif kind == "attention":
+                engine.push_attention(row)
+                raw_t = row.get("t_first_ms")
+                if isinstance(raw_t, int):
+                    watermark = max(watermark, raw_t)
             else:
                 parsed = flow_from_tape_row(row)
                 if parsed is None:
@@ -1670,6 +1923,8 @@ def serve(config_path: Path) -> int:
         if now - last_model > 30:
             model.maybe_reload()
             barrier.maybe_reload()
+            swing.maybe_reload()
+            bind_attention(engine, attention_dir)
             try:
                 mtime = config_path.stat().st_mtime
             except OSError:
@@ -1738,6 +1993,7 @@ def main(argv: list[str] | None = None) -> int:
     model = Path(raw["model_path"]) if raw.get("model_path") else None
     meta = Path(raw["model_meta"]) if raw.get("model_meta") else None
     barrier = Path(raw["barrier_model"]) if raw.get("barrier_model") else None
+    swing_model = Path(raw["swing_model"]) if raw.get("swing_model") else None
     kill = Path(raw.get("kill_file") or (args.output_dir / "KILL"))
     result = run_replay_files(
         tape=sorted({p.resolve() for p in tape}),
@@ -1748,6 +2004,7 @@ def main(argv: list[str] | None = None) -> int:
         model_path=model if model and model.is_file() else None,
         meta_path=meta if meta and meta.is_file() else None,
         barrier_path=barrier if barrier and barrier.is_file() else None,
+        swing_path=swing_model if swing_model and swing_model.is_file() else None,
         tape_end_ms=args.tape_end_ms,
         slippage_cap=float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP)),
         span_ms=None if args.span_min <= 0 else int(args.span_min * 60_000),

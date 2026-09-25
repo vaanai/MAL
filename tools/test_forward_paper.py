@@ -10,7 +10,10 @@ from pathlib import Path
 from tools.forward_paper import (
     HARD_MAX_POSITION_LAMPORTS,
     SCHEMA_DECISION,
+    SWING_FREEZE_AT,
+    SWING_FREEZE_MS,
     BookSpec,
+    DirectoryTail,
     ForwardEngine,
     LatencyMeter,
     ModelSlot,
@@ -19,6 +22,7 @@ from tools.forward_paper import (
     CEILING_MAX_CONCURRENT,
     RiskConfigError,
     books_from_config,
+    flow_from_tape_row,
     offline_packets,
     reload_risk_config,
     reconcile_baseline,
@@ -503,6 +507,182 @@ class ModelAndLogTests(unittest.TestCase):
         stream._proc = _Proc()
         stream._text = tempfile.TemporaryFile()
         stream.close()
+
+
+def _attn(mint: str, t_ms: int, kind: str = "dex_boost", *, snapshot: bool = False) -> dict[str, object]:
+    return {"type": "attention", "mint": mint, "kind": kind, "t_first_ms": t_ms, "rank": 4, "snapshot": snapshot}
+
+
+class SwingBookTests(unittest.TestCase):
+    def test_freeze_is_the_sample_end_and_config_cannot_move_it_earlier(self) -> None:
+        import time
+
+        self.assertEqual(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(SWING_FREEZE_MS / 1000)), SWING_FREEZE_AT)
+        raw = {
+            "books": [
+                {"id": "attn_first_hold_60m", "kind": "swing", "point": "attn", "model": "none", "exit": "hold_60m"},
+                {
+                    "id": "mig15_top20_tp50_sl30",
+                    "kind": "swing",
+                    "point": "mig_15",
+                    "top_frac": 0.2,
+                    "model": "swing",
+                    "exit": "tp50_sl30",
+                },
+            ]
+        }
+        books = books_from_config(raw)
+        by_id = {book.book_id: book for book in books}
+        self.assertEqual(by_id["attn_first_hold_60m"].freeze_ms, SWING_FREEZE_MS)
+        self.assertEqual(by_id["attn_first_hold_60m"].resolved_exit("hold_30s").hold_ms, 3_600_000)
+        swing_tp = by_id["mig15_top20_tp50_sl30"].resolved_exit("hold_30s")
+        curve_tp = BookSpec("migrate_tp50_sl30", "migrate", "tp50_sl30").resolved_exit("hold_30s")
+        self.assertEqual(swing_tp.rule_id, "tp50_sl30")
+        self.assertEqual(swing_tp.max_hold_ms, 4 * 60 * 60 * 1000)
+        self.assertEqual(curve_tp.max_hold_ms, 30 * 60 * 1000)
+        self.assertIsNot(swing_tp, curve_tp)
+        later = books_from_config({**raw, "swing_freeze_ms": SWING_FREEZE_MS + 1000, "swing_freeze_at": "2026-09-25T18:25:58Z"})
+        self.assertEqual(later[0].freeze_ms, SWING_FREEZE_MS + 1000)
+        with self.assertRaises(RiskConfigError):
+            books_from_config({**raw, "swing_freeze_ms": SWING_FREEZE_MS - 1})
+        with self.assertRaises(RiskConfigError):
+            books_from_config({**raw, "swing_freeze_ms": None})
+        shipped = books_from_config(
+            __import__("json").loads(Path("scripts/mal-core/forward-paper.json").read_text(encoding="utf-8"))
+        )
+        ids = {book.book_id for book in shipped}
+        self.assertIn("attn_first_hold_60m", ids)
+        self.assertIn("mig15_top20_tp50_sl30", ids)
+        window = _RankWindow(0.20)
+        self.assertTrue(all(window.consider(0.1) == "warmup" for _ in range(4)))
+        self.assertEqual(window.consider(0.9), "take")
+
+    def test_attention_is_after_migration_and_after_the_freeze(self) -> None:
+        specs = books_from_config(
+            {
+                "books": [
+                    {"id": "attn_first_hold_60m", "kind": "swing", "point": "attn", "model": "none", "exit": "hold_60m", "max_concurrent": 3, "daily_loss_sol": 0.2},
+                    {"id": "mig15_top20_tp50_sl30", "kind": "swing", "point": "mig_15", "top_frac": 0.2, "model": "swing", "exit": "tp50_sl30", "max_concurrent": 3, "daily_loss_sol": 0.2},
+                ]
+            }
+        )
+        base = SWING_FREEZE_MS + 60_000
+        creates = [
+            _create("MintFreeze", SWING_FREEZE_MS - 120_000, creator="CreatorF"),
+            _create("MintEarly", base, creator="CreatorE"),
+            _create("MintLive", base + 20_000, creator="CreatorL"),
+        ]
+        rows = [
+            _trade("MintFreeze", SWING_FREEZE_MS - 60_000, venue="pumpswap", trader="MigF", quote=70_000_000_000, base=B0 // 2, slot=2),
+            _trade("MintEarly", base + 8_000, venue="pumpswap", trader="MigE", quote=70_000_000_000, base=B0 // 2, slot=3),
+            _trade("MintLive", base + 21_000, venue="pumpswap", trader="MigL", quote=70_000_000_000, base=B0 // 2, slot=4),
+        ]
+        attention = [
+            _attn("MintFreeze", SWING_FREEZE_MS),
+            _attn("MintEarly", base + 1_000),
+            _attn("MintEarly", base + 1_000, "pump_live", snapshot=True),
+            _attn("MintLive", base + 25_000),
+        ]
+        engine = replay_rows(
+            creates,
+            rows,
+            specs,
+            tape_end_ms=base + 20 * 60_000,
+            kill_file=Path("/tmp/forward-paper-swing-freeze"),
+            attention_rows=attention,
+            offsets_ms=(5_000,),
+        )
+        attn = [row for row in engine.decisions if row["book"] == "attn_first_hold_60m"]
+        reasons = {(row["mint"], row["reason"], row["trigger"]) for row in attn}
+        self.assertIn(("MintFreeze", "before_freeze", "attn:dex_boost"), reasons)
+        self.assertTrue(all(row["freeze_ms"] == SWING_FREEZE_MS and row["freeze_at"] == SWING_FREEZE_AT for row in attn))
+        self.assertFalse(any(row["mint"] == "MintEarly" and row["trigger"] == "attn:dex_boost" for row in attn))
+        self.assertFalse(any(row["trigger"] == "attn:pump_live" for row in attn))
+        live = [row for row in attn if row["mint"] == "MintLive"]
+        self.assertEqual([(row["action"], row["reason"]) for row in live], [("enter", None)])
+        mig = [row for row in engine.decisions if row["book"] == "mig15_top20_tp50_sl30"]
+        self.assertTrue(mig)
+        self.assertTrue(all(row["trigger"] == "mig_15" for row in mig))
+        self.assertTrue(all(row["reason"] == "no_model" for row in mig))
+        self.assertNotIn("mig_15", {row["trigger"] for row in attn})
+        self.assertGreater(mig[0]["decision_t_ms"], SWING_FREEZE_MS)
+
+    def test_hold_60m_keeps_the_slot_and_logs_max_concurrent(self) -> None:
+        spec = books_from_config(
+            {
+                "books": [
+                    {
+                        "id": "attn_first_hold_60m",
+                        "kind": "swing",
+                        "point": "attn",
+                        "model": "none",
+                        "exit": "hold_60m",
+                        "max_concurrent": 1,
+                        "daily_loss_sol": 0.2,
+                        "creator_cooldown_s": 0,
+                        "token_cooldown_s": 0,
+                    }
+                ]
+            }
+        )[0]
+        base = SWING_FREEZE_MS + 120_000
+        engine = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-swing-hold"),
+            tape_end_ms=base + 80 * 60_000,
+            retain_rows=True,
+        )
+        engine.push_create(_create("MintA", base, creator="CreatorA"))
+        engine.push_print(*_parsed("MintA", base + 1_000))
+        engine.push_attention(_attn("MintA", base + 5_000))
+        engine.drain_until(base + 50 * 60_000)
+        run = engine.books[0]
+        self.assertIn("MintA", run.open)
+        self.assertEqual(run.open["MintA"].rule.hold_ms, 3_600_000)
+        self.assertEqual(run.open["MintA"].rule.rule_id, "hold_60m")
+        engine.push_create(_create("MintB", base + 50 * 60_000, creator="CreatorB"))
+        engine.push_print(*_parsed("MintB", base + 50 * 60_000 + 1_000))
+        engine.push_attention(_attn("MintB", base + 50 * 60_000 + 2_000))
+        engine.drain_until(base + 51 * 60_000)
+        skipped = [row for row in engine.decisions if row["mint"] == "MintB"]
+        self.assertTrue(skipped)
+        self.assertEqual(skipped[0]["reason"], "max_concurrent")
+        self.assertEqual(skipped[0]["action"], "skip")
+        self.assertIn("MintA", run.open)
+        engine.drain_until(base + 70 * 60_000, final=True)
+        self.assertNotIn("MintA", run.open)
+        closed = [row for row in engine.positions if row["mint"] == "MintA" and row["event"] == "close"]
+        self.assertTrue(closed)
+        self.assertEqual(closed[0]["exit_rule"], "hold_60m")
+
+    def test_attention_tail_starts_at_eof_and_reads_new_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tape = root / "trades"
+            creates = root / "jsonl"
+            attn = root / "attention"
+            tape.mkdir()
+            creates.mkdir()
+            attn.mkdir()
+            hour = __import__("time").strftime("%Y-%m-%dT%H", __import__("time").gmtime())
+            path = attn / f"attention-{hour}.jsonl"
+            path.write_text('{"mint":"Old","kind":"dex_boost","t_first_ms":1}\n', encoding="utf-8")
+            tail = DirectoryTail(tape, creates, {}, attn)
+            self.assertEqual(tail.poll(), [])
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write('{"mint":"New","kind":"dex_boost","t_first_ms":2}\n')
+            got = tail.poll()
+            self.assertEqual(len(got), 1)
+            self.assertEqual(got[0][0], "attention")
+            self.assertEqual(got[0][1]["mint"], "New")
+
+
+def _parsed(mint: str, t_ms: int):
+    row = _trade(mint, t_ms, venue="pumpswap", trader="Pool", quote=70_000_000_000, base=B0 // 2, slot=20, sol=2_000_000_000, token=5_000_000)
+    parsed = flow_from_tape_row(row)
+    assert parsed is not None
+    pr_mint, pr = parsed
+    return pr_mint, pr, t_ms // 1000
 
 
 if __name__ == "__main__":
