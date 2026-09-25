@@ -161,6 +161,8 @@ def emit_laya_join(
         rec = laya_join_record(row, genuine=genuine)
         if rec is None:
             continue
+        if not genuine:
+            rec["snapshot"] = True
         out_rows.append(rec)
     out_rows.sort(key=lambda r: (int(r["t_ms"]), str(r["mint"]), str(r["kind"])))
     with dest.open("w", encoding="utf-8") as fh:

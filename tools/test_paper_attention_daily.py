@@ -121,7 +121,9 @@ class JoinAndHourlyTests(unittest.TestCase):
             self.assertEqual(out[0]["t_ms"], 100)
             self.assertEqual(out[1]["t_ms"], 300)
             self.assertFalse(out[0]["genuine"])
+            self.assertTrue(out[0]["snapshot"])
             self.assertTrue(out[1]["genuine"])
+            self.assertFalse(out[1]["snapshot"])
             self.assertTrue(out[0]["t_ms"] <= 100)
 
     def test_hourly_tapes_skip_daily_zst(self) -> None:
