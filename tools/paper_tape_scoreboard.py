@@ -58,6 +58,11 @@ ASSUMPTIONS: dict[str, Any] = {
         "If no later print has replaced the entry quote, the sell walks the curve "
         "after our own buy. Later prints are the observed book (our 0.05 SOL is not injected)."
     ),
+    "real_sol_cap": (
+        "When bonding virtual quote is at least 30 SOL, a sell that asks for more than "
+        "virtual-30 reverts. When the tape's virtual quote is already below 30 SOL, that "
+        "reserve is the cap: those curves are still paying sells."
+    ),
     "fees": "PumpPortal 0.5% then venue fee, sequential. Buys: fees out of input. Sells: fees out of SOL output.",
     "bonding_fee": "1.25% flat (pump.fun fees page, 20 May 2026), not the 95 bps protocol slice alone.",
     "pumpswap_fee": "Canonical SOL market-cap tiers from that page. Migrated creates are treated as canonical.",

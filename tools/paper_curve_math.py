@@ -192,7 +192,14 @@ def quote_sell(
     if gross <= 0:
         return None
     if venue == "pump_bonding":
-        real_sol = bonding_real_sol(quote_lamports)
+        # Classic curves keep ~30 SOL of virtual quote that cannot be withdrawn.
+        # The live tape also shows virtual quote below that floor while sells
+        # are still paying SOL, so a reserve already under 30 SOL is the cap
+        # itself. A reserve at or above 30 SOL can only pay the excess.
+        if quote_lamports >= INITIAL_VIRTUAL_SOL_LAMPORTS:
+            real_sol = quote_lamports - INITIAL_VIRTUAL_SOL_LAMPORTS
+        else:
+            real_sol = quote_lamports
         if real_sol <= 0 or gross > real_sol:
             return None
     elif venue == "pumpswap":

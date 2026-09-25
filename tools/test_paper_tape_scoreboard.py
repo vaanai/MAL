@@ -169,6 +169,30 @@ class CurveMathTests(unittest.TestCase):
                 market_cap=28.0,
             )
         )
+        # 35 virtual SOL, only 5 real. A bag that wants more than 5 SOL reverts.
+        huge = quote_sell(
+            venue="pump_bonding",
+            tokens_raw=B0 // 2,
+            quote_lamports=35_000_000_000,
+            base_raw=B0,
+            market_cap=35.0,
+        )
+        self.assertIsNone(huge)
+
+    def test_sell_still_pays_when_tape_quote_is_under_30_sol(self) -> None:
+        # Live tapes show virtual quote below the classic 30 SOL floor while
+        # sells are landing. That reserve is tradable; it is not an empty curve.
+        out = quote_sell(
+            venue="pump_bonding",
+            tokens_raw=2_000_000_000_000,
+            quote_lamports=5_800_000_000,
+            base_raw=B0,
+            market_cap=5.4,
+        )
+        self.assertIsNotNone(out)
+        assert out is not None
+        self.assertGreater(out, 0)
+        self.assertLess(out, 5_800_000_000)
 
 
 class RecordedFixtureTests(unittest.TestCase):
