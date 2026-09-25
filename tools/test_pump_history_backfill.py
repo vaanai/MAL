@@ -136,6 +136,19 @@ class CreateAndMigrationTests(unittest.TestCase):
         assert done is not None
         self.assertEqual(done["type"], "complete")
         self.assertEqual(done["mint"], b58encode(pk(2)))
+        native = b"".join(
+            [
+                bytes.fromhex("5f72619cd42e9808"),
+                pk(1),
+                pk(2),
+                pk(3),
+                (1790319001).to_bytes(8, "little", signed=True),
+                bytes(32),
+            ]
+        )
+        native_ev = decode_complete_event(native)
+        assert native_ev is not None
+        self.assertEqual(native_ev["quote_mint"], WSOL_MINT)
         found_c, found_m = lifecycle_from_logs(
             [
                 "Program data: " + base64.b64encode(mig).decode(),

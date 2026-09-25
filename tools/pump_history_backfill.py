@@ -47,6 +47,8 @@ _CREATE_DISC = bytes.fromhex("1b72a94ddeeb6376")
 _COMPLETE_DISC = bytes.fromhex("5f72619cd42e9808")
 _MIGRATE_DISC = bytes.fromhex("bde95db95c94ea94")
 _SKIP_CODES = frozenset({-32007, -32009, -32004})
+# Create/complete/migration events store native SOL as the zero pubkey.
+_NATIVE_SOL = "11111111111111111111111111111111"
 DEFAULT_MAX_BYTES = 40 * 1024**3
 HEADROOM_RATIO = 0.20
 
@@ -113,7 +115,7 @@ def decode_create_event(raw: bytes) -> dict[str, Any] | None:
     if tail is not None:
         is_mayhem = tail[32] == 1
         parsed = b58encode(tail[34:66])
-        if parsed != "11111111111111111111111111111111":
+        if parsed != _NATIVE_SOL:
             quote_mint = parsed
     return {
         "type": "create",
@@ -144,7 +146,7 @@ def decode_complete_event(raw: bytes) -> dict[str, Any] | None:
         "mint": b58encode(raw[40:72]),
         "bonding_curve": b58encode(raw[72:104]),
         "event_ts": ts,
-        "quote_mint": b58encode(raw[112:144]),
+        "quote_mint": _quote_or_wsol(b58encode(raw[112:144])),
     }
 
 
@@ -165,8 +167,12 @@ def decode_migration_event(raw: bytes) -> dict[str, Any] | None:
         "bonding_curve": b58encode(raw[96:128]),
         "event_ts": ts,
         "pool": b58encode(raw[136:168]),
-        "quote_mint": b58encode(raw[168:200]),
+        "quote_mint": _quote_or_wsol(b58encode(raw[168:200])),
     }
+
+
+def _quote_or_wsol(mint: str) -> str:
+    return WSOL_MINT if mint == _NATIVE_SOL else mint
 
 
 def _program_data(line: str) -> bytes | None:
