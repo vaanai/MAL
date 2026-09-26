@@ -1,0 +1,10 @@
+[Unit]
+Description=Start pump backfill after LAYA training
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=oneshot
+# Started by mal-laya-v0 OnSuccess=/OnFailure=, after that unit is inactive.
+# Conflicts= on the training unit cannot cancel this start.
+# --no-block: a synchronous systemctl --user call from this user manager deadlocks.
+ExecStart=-/usr/bin/systemctl --user start --no-block mal-pump-backfill.service
