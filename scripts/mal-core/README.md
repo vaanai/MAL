@@ -26,5 +26,6 @@ Host bootstrap helpers. **No secrets in this tree.**
 | [funding-graph.sh](funding-graph.sh) | host | Resolve creator and early-buyer funders into `/var/lib/mal/graph`. Does **not** touch the recorder or forward-paper |
 | [mal-funding-graph.service](mal-funding-graph.service) | host (systemd --user) | Nice'd enricher. 1/s on public RPC. Switches to Helius at 5/s when `HELIUS_API_KEY` or `/var/lib/mal/backfill/helius.env` appears |
 | [install-host-limits.sh](install-host-limits.sh) | host as `ubuntu` | Memory/CPU drop-ins, batch slice, OOM scores, 4G swap, swappiness 10. Does not restart cloudflared or change Tunnel/Access |
+| [mal-pump-backfill-resume.service](mal-pump-backfill-resume.service) | host (systemd --user) | Starts backfill after LAYA exits, including when the fit fails |
 
 Runbook: [tools/oracle_ssh_smoke.md](../../tools/oracle_ssh_smoke.md). On-host note: `/var/lib/mal/eng/BOOTSTRAP.md`.

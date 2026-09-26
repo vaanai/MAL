@@ -15,6 +15,8 @@ fi
 
 install -d -m 0755 "${USER_UNIT_DIR}"
 install -m 0644 "${LIMITS}/mal-batch.slice" "${USER_UNIT_DIR}/mal-batch.slice"
+install -m 0644 "${ROOT}/mal-pump-backfill-resume.service" \
+  "${USER_UNIT_DIR}/mal-pump-backfill-resume.service"
 
 for unit in \
   mal-pump-backfill.service \
