@@ -13,10 +13,10 @@ import json
 import subprocess
 import sys
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, TextIO
+from typing import Any, Iterable, Iterator, Sequence, TextIO
 
 from tools.paper_curve_math import pumpswap_pool_quote_delta, venue_fee_ppm
 
@@ -36,6 +36,8 @@ class TapePrint:
     base_reserve: int
     price_sol: float
     market_cap_sol: float
+    signature: str | None = None
+    tx_index: int = -1
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +288,58 @@ def load_creates(
     return found
 
 
+def row_signature(row: dict[str, Any]) -> str | None:
+    sig = row.get("signature")
+    if not isinstance(sig, str) or not sig or sig == "UNK":
+        return None
+    return sig
+
+
+def row_tx_index(row: dict[str, Any]) -> int:
+    raw = row.get("tx_index")
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        return -1
+    return raw
+
+
+class TxOrder:
+    """Position of a signature inside a slot.
+
+    An explicit ``tx_index`` on the first event of a signature wins. Otherwise
+    the position is the order that signature was first read in that slot.
+    Later events of the same signature share it. ``event_index`` is only the
+    order inside one transaction.
+    """
+
+    def __init__(self) -> None:
+        self._seen: dict[tuple[int, str], int] = {}
+        self._next: dict[int, int] = {}
+
+    def position(self, slot: int, signature: str | None, explicit: int | None) -> int:
+        if signature:
+            found = self._seen.get((slot, signature))
+            if found is not None:
+                return found
+        if explicit is not None and explicit >= 0:
+            pos = int(explicit)
+            self._next[slot] = max(self._next.get(slot, 0), pos + 1)
+        elif signature:
+            pos = self._next.get(slot, 0)
+            self._next[slot] = pos + 1
+        else:
+            return -1
+        if signature:
+            self._seen[(slot, signature)] = pos
+        return pos
+
+    def stamp(self, pr: TapePrint) -> TapePrint:
+        explicit = pr.tx_index if pr.tx_index >= 0 else None
+        pos = self.position(int(pr.slot), pr.signature, explicit)
+        if pos == pr.tx_index:
+            return pr
+        return replace(pr, tx_index=pos)
+
+
 def _optional_int(row: dict[str, Any], key: str) -> int | None:
     if key not in row or row.get(key) is None:
         return None
@@ -415,11 +469,13 @@ def print_from_trade_row(row: dict[str, Any]) -> tuple[str, TapePrint] | None:
         base_reserve=base,
         price_sol=price,
         market_cap_sol=mcap,
+        signature=row_signature(row),
+        tx_index=row_tx_index(row),
     )
 
 
-def _sort_key(p: TapePrint) -> tuple[int, int, int]:
-    return (p.t_recv_ms, p.slot, p.event_index)
+def _sort_key(p: TapePrint) -> tuple[int, int, int, int]:
+    return (p.t_recv_ms, p.slot, p.tx_index, p.event_index)
 
 
 def _dedupe_sorted(prints: list[TapePrint]) -> list[TapePrint]:
@@ -427,14 +483,77 @@ def _dedupe_sorted(prints: list[TapePrint]) -> list[TapePrint]:
     if len(prints) < 2:
         return prints
     out: list[TapePrint] = []
-    prev: tuple[int, int, int, str, int, int] | None = None
+    prev: tuple[Any, ...] | None = None
     for pr in prints:
-        key = (pr.t_recv_ms, pr.slot, pr.event_index, pr.venue, pr.quote_reserve, pr.base_reserve)
+        key = (
+            pr.t_recv_ms,
+            pr.slot,
+            pr.tx_index,
+            pr.event_index,
+            pr.signature,
+            pr.venue,
+            pr.quote_reserve,
+            pr.base_reserve,
+        )
         if key == prev:
             continue
         prev = key
         out.append(pr)
     return out
+
+
+def finalize_prints(prints: list[TapePrint]) -> list[TapePrint]:
+    """Read order in. Fill order is (time, slot, tx position, event index)."""
+    order = TxOrder()
+    stamped = [order.stamp(p) for p in prints]
+    return _dedupe_sorted(sorted(stamped, key=_sort_key))
+
+
+def collapse_fillable(prints: Sequence[TapePrint]) -> list[TapePrint]:
+    """One fillable print per signature: reserves after the last inner event.
+
+    The pool is visible only at the latest receive time of that signature, so
+    a paper fill cannot land between two instructions of the same transaction.
+    Prints with no signature stay as their own states.
+    """
+    if not prints or all(pr.signature is None for pr in prints):
+        return list(prints) if not isinstance(prints, list) else prints
+    groups: dict[tuple[int, str], list[TapePrint]] = {}
+    order_keys: list[tuple[int, str]] = []
+    solo: list[TapePrint] = []
+    for pr in prints:
+        sig = pr.signature
+        if not sig:
+            solo.append(pr)
+            continue
+        key = (pr.slot, sig)
+        bucket = groups.get(key)
+        if bucket is None:
+            groups[key] = [pr]
+            order_keys.append(key)
+        else:
+            bucket.append(pr)
+    out: list[TapePrint] = list(solo)
+    for key in order_keys:
+        events = groups[key]
+        last = max(events, key=lambda pr: (pr.tx_index, pr.event_index))
+        visible = max(pr.t_recv_ms for pr in events)
+        if last.t_recv_ms != visible:
+            last = replace(last, t_recv_ms=visible)
+        out.append(last)
+    out.sort(key=_sort_key)
+    return out
+
+
+def fillable_prints(path: MintPath) -> list[TapePrint]:
+    """Cached fillable view. Invalid when the print list object or length changes."""
+    prints = path.prints
+    cached = path.__dict__.get("_fillable")
+    if isinstance(cached, tuple) and len(cached) == 3 and cached[0] is prints and cached[1] == len(prints):
+        return cached[2]
+    built = collapse_fillable(prints)
+    path.__dict__["_fillable"] = (prints, len(prints), built)
+    return built
 
 
 def build_paths(
@@ -453,8 +572,7 @@ def build_paths(
             bucket.append(pr)
     paths: dict[str, MintPath] = {}
     for mint, create in creates.items():
-        prints = _dedupe_sorted(sorted(buckets[mint], key=_sort_key))
-        paths[mint] = MintPath(create=create, prints=prints)
+        paths[mint] = MintPath(create=create, prints=finalize_prints(buckets[mint]))
     return paths
 
 
@@ -505,8 +623,7 @@ def stream_paths(creates: dict[str, CreateSignal], tape_paths: Iterable[Path]) -
                 stats.kept += 1
     paths: dict[str, MintPath] = {}
     for mint, create in creates.items():
-        prints = _dedupe_sorted(sorted(wanted[mint], key=_sort_key))
-        paths[mint] = MintPath(create=create, prints=prints)
+        paths[mint] = MintPath(create=create, prints=finalize_prints(wanted[mint]))
     return paths, stats
 
 
@@ -544,24 +661,25 @@ def _last_t(lines: list[bytes]) -> int | None:
 
 
 def state_as_of(path: MintPath, t_ms: int, *, allow_anchor: bool) -> TapePrint | None:
-    """Reserves after the last print at or before t.
+    """Reserves after the last fillable print at or before t.
 
-    Once a PumpSwap print exists, the bonding curve is closed and later
-    bonding prints are not a sell venue. The create anchor is used only
-    when the tape has no print yet and the caller is still at the signal.
+    A signature contributes one state: the pool after its last inner event,
+    and only once every inner event has been applied. Once a PumpSwap print
+    exists, the bonding curve is closed and later bonding prints are not a
+    sell venue. The create anchor is used only when the tape has no print
+    yet and the caller is still at the signal.
     """
-    # Prints are sorted by t_recv_ms. The latest PumpSwap print at or before t
-    # wins, even if a later bonding print is still in the prefix.
-    lo, hi = 0, len(path.prints)
+    prints = fillable_prints(path)
+    lo, hi = 0, len(prints)
     while lo < hi:
         mid = (lo + hi) // 2
-        if path.prints[mid].t_recv_ms <= t_ms:
+        if prints[mid].t_recv_ms <= t_ms:
             lo = mid + 1
         else:
             hi = mid
     last_bond: TapePrint | None = None
     for i in range(lo - 1, -1, -1):
-        pr = path.prints[i]
+        pr = prints[i]
         if pr.venue == VENUE_PUMPSWAP:
             return pr
         if last_bond is None and pr.venue == VENUE_BONDING:
@@ -595,6 +713,8 @@ def price_path_records(path: MintPath) -> list[dict[str, Any]]:
                 "market_cap_sol": pr.market_cap_sol,
                 "slot": pr.slot,
                 "event_index": pr.event_index,
+                "signature": pr.signature,
+                "tx_index": pr.tx_index,
             }
         )
     return rows

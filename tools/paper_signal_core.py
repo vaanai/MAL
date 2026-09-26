@@ -26,8 +26,7 @@ from tools.paper_price_path import (
     MintPath,
     ScanStats,
     TapePrint,
-    _dedupe_sorted,
-    _sort_key,
+    finalize_prints,
     open_text,
     print_from_trade_row,
 )
@@ -173,8 +172,7 @@ def stream_paths_and_trades(
                 stats.kept += 1
     paths: dict[str, MintPath] = {}
     for mint, create in creates.items():
-        prints = _dedupe_sorted(sorted(wanted[mint], key=_sort_key))
-        paths[mint] = MintPath(create=create, prints=prints)
+        paths[mint] = MintPath(create=create, prints=finalize_prints(wanted[mint]))
     trades.sort(key=lambda t: (t.t_ms, t.slot, t.signature, t.event_index))
     return paths, trades, stats
 

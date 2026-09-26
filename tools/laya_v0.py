@@ -44,6 +44,8 @@ from tools.paper_price_path import (
     MintPath,
     ScanStats,
     TapePrint,
+    TxOrder,
+    collapse_fillable,
     load_creates,
     open_text,
     print_from_trade_row,
@@ -231,6 +233,8 @@ class FlowPrint:
     base_reserve: int
     price_sol: float
     market_cap_sol: float
+    signature: str | None = None
+    tx_index: int = -1
 
     def to_tape(self) -> TapePrint:
         return TapePrint(
@@ -244,6 +248,8 @@ class FlowPrint:
             base_reserve=self.base_reserve,
             price_sol=self.price_sol,
             market_cap_sol=self.market_cap_sol,
+            signature=self.signature,
+            tx_index=self.tx_index,
         )
 
 
@@ -372,6 +378,8 @@ def flow_from_row(row: dict[str, Any]) -> tuple[str, FlowPrint] | None:
         base_reserve=tape.base_reserve,
         price_sol=tape.price_sol,
         market_cap_sol=tape.market_cap_sol,
+        signature=tape.signature,
+        tx_index=tape.tx_index,
     )
 
 
@@ -379,7 +387,9 @@ def _dedupe_key(pr: FlowPrint) -> tuple[Any, ...]:
     return (
         pr.t_recv_ms,
         pr.slot,
+        pr.tx_index,
         pr.event_index,
+        pr.signature,
         pr.venue,
         pr.trader,
         pr.side,
@@ -391,7 +401,10 @@ def _dedupe_key(pr: FlowPrint) -> tuple[Any, ...]:
 
 
 def _dedupe_sorted(prints: list[FlowPrint]) -> list[FlowPrint]:
-    prints.sort(key=lambda p: (p.t_recv_ms, p.slot, p.event_index, p.trader or "", p.side))
+    """Stamp tx position from read order, then sort by it ahead of event_index."""
+    order = TxOrder()
+    prints = [order.stamp(pr) for pr in prints]  # type: ignore[misc]
+    prints.sort(key=lambda p: (p.t_recv_ms, p.slot, p.tx_index, p.event_index, p.trader or "", p.side))
     out: list[FlowPrint] = []
     prev: tuple[Any, ...] | None = None
     for pr in prints:
@@ -434,11 +447,15 @@ def _resolve_tape_path(path: Path) -> Path:
 def load_books(
     creates: dict[str, CreateSignal],
     tape_paths: Iterable[Path],
+    *,
+    prepare_row: Any = None,
 ) -> tuple[dict[str, MintBook], ScanStats]:
     buckets: dict[str, list[FlowPrint]] = {mint: [] for mint in creates}
     stats = ScanStats()
     lags: list[int] = []
     for path in tape_paths:
+        if prepare_row is not None and hasattr(prepare_row, "begin_file"):
+            prepare_row.begin_file(path)
         with open_text(_resolve_tape_path(path)) as fh:
             for line in fh:
                 stats.lines += 1
@@ -455,10 +472,15 @@ def load_books(
                 if not isinstance(row, dict):
                     stats.bad_json += 1
                     continue
+                if prepare_row is not None:
+                    row = prepare_row(row)
+                    if row is None:
+                        continue
                 t_raw = row.get("t_recv_ms")
                 if isinstance(t_raw, int):
                     stats.observe_t(t_raw)
-                lag = chain_lag_ms(row)
+                # A synthetic backfill clock is not a live chain→receive sample.
+                lag = None if row.get("recv_synthetic") else chain_lag_ms(row)
                 if lag is not None:
                     lags.append(lag)
                 if row.get("quote_is_wsol") is False:
@@ -1202,7 +1224,7 @@ def barrier_outcome(
     if entry_spot <= 0:
         return None
     deadline = entry_t_ms + horizon_ms
-    for pr in prints:
+    for pr in collapse_fillable(prints):
         if pr.t_recv_ms <= entry_t_ms:
             continue
         if pr.t_recv_ms > deadline or pr.t_recv_ms > tape_end_ms:
@@ -1231,6 +1253,7 @@ def _ladder_legs(
     remaining = tokens
     peak = entry_spot
     scaled = False
+    prints = collapse_fillable(prints)
     scale_tokens = int(tokens * rule.scale_frac)
     if 0 < scale_tokens < tokens:
         pass
@@ -1421,6 +1444,7 @@ def fit_headline_curves(
     tape_end_ms: int,
     size_lamports: int,
     slippage_cap: float,
+    create_t_max_ms: int | None = None,
 ) -> dict[str, Any]:
     """Scale 1 and 2 pressure curves. Intercept is fit on buy-all hold_30s sends at create+1s.
 
@@ -1434,6 +1458,8 @@ def fit_headline_curves(
     pressures = []
     for mint in sorted(books):
         book = books[mint]
+        if create_t_max_ms is not None and book.create.t_signal_ms > create_t_max_ms:
+            continue
         t_entry = book.create.t_signal_ms + ENTRY_LATENCY_MS
         entry = try_entry(
             book.path,
@@ -2973,6 +2999,11 @@ def format_markdown(board: dict[str, Any]) -> str:
         for cand in frozen.get("candidates") or []:
             lines.append(_md_frozen(cand))
         lines.append("")
+    backward = board.get("backward_holdout")
+    if isinstance(backward, dict) and backward.get("schema") == "laya_backward_holdout_v1":
+        from tools.laya_backfill_holdout import format_backward_markdown
+
+        lines.extend(format_backward_markdown(backward))
     lines.extend(
         [
         "## Folds",
@@ -3263,6 +3294,8 @@ def run_files(
     slippage_cap: float,
     graph_dir: Path | None = None,
     latency_report: Path | None = None,
+    backfill_dir: Path | None = None,
+    attention_dir: Path | None = None,
 ) -> dict[str, Any]:
     if not tape:
         raise SystemExit("no tape files")
@@ -3393,8 +3426,31 @@ def run_files(
                 "Scores use only decisions strictly after it. "
                 "The exploratory walk-forward still uses the whole tape and is reported separately."
             ),
+            "backward_holdout": (
+                "Sealed backfill days at or before 2026-09-25T06:58Z are scored with those same "
+                "pre-freeze fits, plus the mig+15 top 20% tp50/sl30 book. Backfill is not in the fit. "
+                "That table is not the forward holdout."
+            ),
         },
     }
+    if backfill_dir is not None and backfill_dir.is_dir():
+        from tools.laya_backfill_holdout import load_attention, score_backward_holdout, write_backward_report
+
+        attention = load_attention(attention_dir) if attention_dir is not None else []
+
+        board["backward_holdout"] = score_backward_holdout(
+            live_books=books,
+            live_rows=rows,
+            live_lags=chain_lags,
+            backfill_dir=backfill_dir,
+            hop_ms=hop_ms,
+            graph=graph,
+            attention=attention,
+            backend=backend,
+            size_lamports=size_lamports,
+            slippage_cap=slippage_cap,
+        )
+        write_backward_report(board["backward_holdout"], output_dir)
     (output_dir / "scoreboard.json").write_text(json.dumps(_json_safe(board), indent=2) + "\n", encoding="utf-8")
     (output_dir / "scoreboard.md").write_text(format_markdown(board), encoding="utf-8")
     with (output_dir / "oos.jsonl").open("w", encoding="utf-8") as fh:
@@ -3431,6 +3487,13 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="forward_paper_latency_v1 JSON. Recv→decision p50 is added to each chain draw, never below 26 ms.",
     )
+    parser.add_argument(
+        "--backfill-dir",
+        type=Path,
+        default=None,
+        help="Helius backfill root. Sealed hours at or before 2026-09-25T06:58Z are the backward holdout.",
+    )
+    parser.add_argument("--attention-dir", type=Path, default=None)
     args = parser.parse_args(argv)
     tape = list(args.tape)
     creates = list(args.creates)
@@ -3461,6 +3524,8 @@ def main(argv: list[str] | None = None) -> int:
         slippage_cap=args.slippage_cap,
         graph_dir=args.graph_dir,
         latency_report=args.latency_report,
+        backfill_dir=args.backfill_dir,
+        attention_dir=args.attention_dir,
     )
     deploy = board["entry"]["deploy"]
     sys.stdout.write(

@@ -37,6 +37,7 @@ from tools.paper_price_path import (
     MintPath,
     TapePrint,
     iter_price_path_jsonl,
+    fillable_prints,
     load_creates,
     peek_trade_bounds,
     state_as_of,
@@ -276,7 +277,7 @@ def _plan_exit(path: MintPath, entry: EntryFill, rule: ExitRule, latency_ms: int
     mark = _entry_mark(entry)
     peak = mark
     deadline = entry.t_entry_ms + rule.max_hold_ms
-    for pr in path.prints:
+    for pr in fillable_prints(path):
         if pr.t_recv_ms <= entry.t_entry_ms:
             continue
         if pr.t_recv_ms > deadline:

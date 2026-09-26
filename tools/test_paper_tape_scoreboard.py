@@ -34,6 +34,7 @@ from tools.paper_price_path import (
     price_path_records,
     print_from_trade_row,
     pumpswap_post_trade_reserves,
+    state_as_of,
     stream_paths,
 )
 from tools.paper_tape_scoreboard import (
@@ -45,6 +46,7 @@ from tools.paper_tape_scoreboard import (
     features_at_t,
     random_mints,
     simulate_book,
+    try_entry,
 )
 
 FIXTURES = Path(__file__).resolve().parent.parent / "observe" / "fixtures"
@@ -857,6 +859,156 @@ class CreateAndTapeLoaderTests(unittest.TestCase):
             paths, stats = stream_paths(loaded, [zst])
             self.assertEqual(stats.kept, 1)
             self.assertEqual(paths["MintA"].prints[0].t_recv_ms, t_ms)
+
+
+# 3eJ5FY… : one signature, 1 SOL buy then 10,997 SOL buy. Post-trade pools.
+_SIG_3EJ5 = "3eJ5FYtdzW318BYD"
+_SLOT_3EJ5 = 450235843
+_FIRST_QUOTE = 68_390_000_000
+_FIRST_BASE = 204_500_000_000_000
+_DRAIN_QUOTE = 11_065_840_000_000
+_DRAIN_BASE = 1_200_000_000_000
+
+
+def _signed(
+    t_ms: int,
+    quote: int,
+    base: int,
+    *,
+    signature: str,
+    event_index: int,
+    tx_index: int = -1,
+    sol_lamports: int,
+    slot: int = _SLOT_3EJ5,
+    venue: str = "pumpswap",
+) -> TapePrint:
+    price = quote / (base * 1000)
+    return TapePrint(
+        t_recv_ms=t_ms,
+        slot=slot,
+        event_index=event_index,
+        venue=venue,
+        side="buy",
+        sol_lamports=sol_lamports,
+        quote_reserve=quote,
+        base_reserve=base,
+        price_sol=price,
+        market_cap_sol=price * 1_000_000_000,
+        signature=signature,
+        tx_index=tx_index,
+    )
+
+
+class SameSignatureFillTests(unittest.TestCase):
+    def test_3eJ5FY_buy_then_drain_is_not_fillable_between(self) -> None:
+        bond = _print(T0, quote=30_000_000_000, base=B0, venue="pump_bonding", slot=_SLOT_3EJ5)
+        first = _signed(
+            T0 + 5_000,
+            _FIRST_QUOTE,
+            _FIRST_BASE,
+            signature=_SIG_3EJ5,
+            event_index=0,
+            tx_index=4,
+            sol_lamports=1_000_000_000,
+        )
+        second = _signed(
+            T0 + 8_000,
+            _DRAIN_QUOTE,
+            _DRAIN_BASE,
+            signature=_SIG_3EJ5,
+            event_index=1,
+            tx_index=4,
+            sol_lamports=10_997_450_000_000,
+        )
+        path = _path([bond, second, first])
+        for t_ms in (T0 + 5_000, T0 + 6_000, T0 + 7_999):
+            state = state_as_of(path, t_ms, allow_anchor=False)
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertNotEqual(state.quote_reserve, _FIRST_QUOTE)
+            self.assertEqual(state.venue, "pump_bonding")
+            entry = try_entry(
+                path,
+                t_entry_ms=t_ms,
+                size_lamports=SIZE,
+                slippage_cap=0.15,
+                feats={"f_tape_last_price_sol": bond.price_sol},
+            )
+            self.assertNotEqual(entry.quote_reserve, _FIRST_QUOTE)
+        landed = state_as_of(path, T0 + 8_000, allow_anchor=False)
+        self.assertIsNotNone(landed)
+        assert landed is not None
+        self.assertEqual(landed.signature, _SIG_3EJ5)
+        self.assertEqual(landed.quote_reserve, _DRAIN_QUOTE)
+        self.assertEqual(landed.sol_lamports, 10_997_450_000_000)
+        filled = try_entry(
+            path,
+            t_entry_ms=T0 + 8_000,
+            size_lamports=SIZE,
+            slippage_cap=0.15,
+            feats={"f_tape_last_price_sol": landed.price_sol},
+        )
+        self.assertEqual(filled.status, "filled")
+        self.assertEqual(filled.quote_reserve, _DRAIN_QUOTE)
+        self.assertNotEqual(filled.quote_reserve, _FIRST_QUOTE)
+
+    def test_same_slot_orders_by_tx_position_not_event_index(self) -> None:
+        early = _signed(
+            T0,
+            111_000_000_000,
+            B0,
+            signature="earlyTx",
+            event_index=5,
+            tx_index=0,
+            sol_lamports=1_000_000_000,
+            venue="pump_bonding",
+        )
+        late = _signed(
+            T0,
+            222_000_000_000,
+            B0,
+            signature="lateTx",
+            event_index=0,
+            tx_index=1,
+            sol_lamports=1_000_000_000,
+            venue="pump_bonding",
+        )
+        path = _path([late, early])
+        state = state_as_of(path, T0, allow_anchor=False)
+        self.assertIsNotNone(state)
+        assert state is not None
+        self.assertEqual(state.signature, "lateTx")
+        self.assertEqual(state.quote_reserve, 222_000_000_000)
+
+    def test_read_order_is_tx_position_when_the_row_omits_it(self) -> None:
+        def row(sig: str, event_index: int, quote: int) -> dict[str, object]:
+            return {
+                "type": "trade",
+                "mint": "MintA",
+                "venue": "pump_bonding",
+                "quote_is_wsol": True,
+                "t_recv_ms": T0,
+                "quote_reserve": quote,
+                "base_reserve": B0,
+                "side": "buy",
+                "sol_lamports": 1_000_000_000,
+                "token_raw": 1_000_000,
+                "slot": 9,
+                "event_index": event_index,
+                "signature": sig,
+            }
+
+        paths = build_paths(
+            {"MintA": _create()},
+            [row("earlyTx", 5, 111_000_000_000), row("lateTx", 0, 222_000_000_000)],
+        )
+        state = state_as_of(paths["MintA"], T0, allow_anchor=False)
+        self.assertIsNotNone(state)
+        assert state is not None
+        self.assertEqual(state.signature, "lateTx")
+        self.assertEqual(paths["MintA"].prints[0].tx_index, 0)
+        self.assertEqual(paths["MintA"].prints[1].tx_index, 1)
+        self.assertLess(paths["MintA"].prints[0].tx_index, paths["MintA"].prints[1].tx_index)
 
 
 if __name__ == "__main__":
