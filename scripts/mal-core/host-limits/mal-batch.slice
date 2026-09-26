@@ -1,0 +1,6 @@
+[Slice]
+# Training, backfill stopped: laya 11G + forward 1G + funding 1G = 13G.
+# Outside the slice: tape 1G + observe 1G + attention 1G + attention-daily 1G.
+# 13+4 = 17G. Usable RAM is 23974 MiB, so >=6G remains for Postgres and the OS.
+MemoryHigh=12G
+MemoryMax=13G
