@@ -206,6 +206,64 @@ class BackfillRecvTests(unittest.TestCase):
         self.assertNotEqual(synthetic_recv_ms(block, 1_400), block * 1000)
         self.assertNotEqual(synthetic_recv_ms(block, 1_400), block)
 
+    def test_backfill_stamp_is_shared_across_inner_events(self) -> None:
+        from tools.graduated_swing import SignatureLag, _LagReservoir, _stamp_backfill_recv
+
+        block = 1_790_320_000
+        reservoir = _LagReservoir(cap=16, seed=0)
+        reservoir.data = list(range(100, 110))
+        reservoir.n = len(reservoir.data)
+        rng = __import__("random").Random(0)
+        probe = __import__("random").Random(0)
+        lags = SignatureLag()
+        first = reservoir.data[probe.randrange(len(reservoir.data))]
+        second = reservoir.data[probe.randrange(len(reservoir.data))]
+
+        def row(sig: str, event_index: int) -> dict:
+            return {
+                "source": "backfill",
+                "signature": sig,
+                "slot": 9,
+                "event_index": event_index,
+                "block_time": block,
+            }
+
+        a0 = _stamp_backfill_recv(row("sigA", 0), reservoir, rng, 0, lags)
+        a1 = _stamp_backfill_recv(row("sigA", 1), reservoir, rng, 0, lags)
+        b = _stamp_backfill_recv(row("sigB", 0), reservoir, rng, 0, lags)
+        assert a0 is not None and a1 is not None and b is not None
+        self.assertEqual(a0["t_recv_ms"], block * 1000 + first)
+        self.assertEqual(a1["t_recv_ms"], a0["t_recv_ms"])
+        self.assertEqual(b["t_recv_ms"], block * 1000 + second)
+
+    def test_backfill_stamp_survives_out_of_order_slots(self) -> None:
+        from tools.graduated_swing import SignatureLag, _LagReservoir, _stamp_backfill_recv
+
+        block = 1_790_320_000
+        reservoir = _LagReservoir(cap=16, seed=0)
+        reservoir.data = list(range(100, 110))
+        reservoir.n = len(reservoir.data)
+        rng = __import__("random").Random(3)
+        probe = __import__("random").Random(3)
+        lags = SignatureLag()
+        first = reservoir.data[probe.randrange(len(reservoir.data))]
+
+        def row(sig: str, event_index: int, slot: int) -> dict:
+            return {
+                "source": "backfill",
+                "signature": sig,
+                "slot": slot,
+                "event_index": event_index,
+                "block_time": block,
+            }
+
+        late = _stamp_backfill_recv(row("sigA", 1, 20), reservoir, rng, 0, lags)
+        _stamp_backfill_recv(row("sigB", 0, 4), reservoir, rng, 0, lags)
+        early = _stamp_backfill_recv(row("sigA", 0, 20), reservoir, rng, 0, lags)
+        assert late is not None and early is not None
+        self.assertEqual(late["t_recv_ms"], block * 1000 + first)
+        self.assertEqual(early["t_recv_ms"], late["t_recv_ms"])
+
     def test_loader_prefers_live_receive_time_and_stamps_backfill(self) -> None:
         mig = WINDOW_START_MS + 30_000
         quote, base = 80_000_000_000, 200_000_000_000_000

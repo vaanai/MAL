@@ -34,6 +34,16 @@ if [[ -f "${LAT}" ]]; then
   LAT_ARGS+=(--latency-report "${LAT}")
 fi
 
+BACKFILL="${MAL_BACKFILL_DIR:-/var/lib/mal/backfill}"
+BF_ARGS=()
+if [[ -d "${BACKFILL}/trades" ]]; then
+  BF_ARGS+=(--backfill-dir "${BACKFILL}")
+fi
+ATTENTION="${MAL_ATTENTION_DIR:-/var/lib/mal/attention}"
+if [[ -d "${ATTENTION}" ]]; then
+  BF_ARGS+=(--attention-dir "${ATTENTION}")
+fi
+
 cd "${SRC}"
 if command -v ionice >/dev/null 2>&1; then
   nice -n 19 ionice -c 3 "${PY}" -m tools.laya_v0 \
@@ -41,14 +51,16 @@ if command -v ionice >/dev/null 2>&1; then
     --creates-dir "${CREATES}" \
     --output-dir "${OUT}" \
     "${GRAPH_ARGS[@]}" \
-    "${LAT_ARGS[@]}"
+    "${LAT_ARGS[@]}" \
+    "${BF_ARGS[@]}"
 else
   nice -n 19 "${PY}" -m tools.laya_v0 \
     --tape-dir "${TAPE}" \
     --creates-dir "${CREATES}" \
     --output-dir "${OUT}" \
     "${GRAPH_ARGS[@]}" \
-    "${LAT_ARGS[@]}"
+    "${LAT_ARGS[@]}" \
+    "${BF_ARGS[@]}"
 fi
 
 # After the 04:15 LAYA fit. Writes the mig+15 booster the forward book scores.

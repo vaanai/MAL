@@ -399,7 +399,7 @@ def rows_from_block(
     migrations: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
     txs = block.get("transactions") or []
-    for tx in txs:
+    for tx_index, tx in enumerate(txs):
         if not isinstance(tx, dict):
             continue
         meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
@@ -412,17 +412,17 @@ def rows_from_block(
         prime_pool_cache(logs, pool_mints)
         made, moved = lifecycle_from_logs(logs)
         for index, ev in enumerate(made):
-            creates.append(
-                _stamp_lifecycle(
-                    ev, slot=slot, signature=sig, event_index=index, block_time=block_time, feed=feed
-                )
+            row = _stamp_lifecycle(
+                ev, slot=slot, signature=sig, event_index=index, block_time=block_time, feed=feed
             )
+            row["tx_index"] = tx_index
+            creates.append(row)
         for index, ev in enumerate(moved):
-            migrations.append(
-                _stamp_lifecycle(
-                    ev, slot=slot, signature=sig, event_index=index, block_time=block_time, feed=feed
-                )
+            row = _stamp_lifecycle(
+                ev, slot=slot, signature=sig, event_index=index, block_time=block_time, feed=feed
             )
+            row["tx_index"] = tx_index
+            migrations.append(row)
         decoded = records_from_logs(
             logs,
             slot=slot,
@@ -436,7 +436,9 @@ def rows_from_block(
             if rec.get("venue") == "pumpswap" and not rec.get("quote_mint"):
                 unresolved.append(rec)
                 continue
-            trades.append(backfill_trade_row(rec, block_time))
+            row = backfill_trade_row(rec, block_time)
+            row["tx_index"] = tx_index
+            trades.append(row)
     return {
         "trades": trades,
         "creates": creates,

@@ -7,8 +7,10 @@ simulator (own impact, misses kept, flat 15% and pressure fail models).
 Promotion is tools.laya_v0.book_stats.
 
 Backfill rows (source=backfill, null t_recv_ms) get a synthetic receive
-time: block_time plus a draw from the live tape's chain→receive lags.
-Block time alone is not a receive time.
+time: block_time plus one draw from the live tape's chain→receive lags,
+shared by every inner event of that signature. Block time alone is not a
+receive time. Callers may add the recv→decision hop on that same clock;
+the default draw does not.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from observe.attention import is_genuine_arrival, load_poller_start_ms, load_snapshot_keys
 from tools.funding_graph import FundingGraph, empty_funding_features, fill_funding_features
@@ -73,7 +75,7 @@ from tools.paper_fail_pressure import (
     headline_pnl,
     pressure_from_prints,
 )
-from tools.paper_price_path import CreateSignal, open_text
+from tools.paper_price_path import CreateSignal, TxOrder, open_text
 from tools.paper_tape_scoreboard import (
     DEFAULT_FAIL_RATE,
     DEFAULT_SLIPPAGE_CAP,
@@ -311,9 +313,14 @@ def planning_fee_table() -> dict[str, Any]:
     return {"config": fee_schedule_config(), "round_trips": rows}
 
 
-def synthetic_recv_ms(block_time_s: int, lag_ms: int) -> int:
-    """block_time is unix seconds. The lag is a live chain→receive draw, in ms."""
-    return int(block_time_s) * 1000 + int(lag_ms)
+def synthetic_recv_ms(block_time_s: int, lag_ms: int, hop_ms: int = 0) -> int:
+    """block_time is unix seconds. Lag is a live chain→receive draw, in ms.
+
+    A negative lag is floored at 0 before the optional recv→decision hop is
+    added, so the stamp is not earlier than block time. hop_ms 0 is the
+    chain draw alone.
+    """
+    return int(block_time_s) * 1000 + max(0, int(lag_ms)) + max(0, int(hop_ms))
 
 
 class _LagReservoir:
@@ -445,15 +452,58 @@ def _trade_paths(directory: Path) -> list[Path]:
     return sorted(found)
 
 
-def _stamp_backfill_recv(row: dict[str, Any], reservoir: _LagReservoir, rng: random.Random) -> dict[str, Any] | None:
-    """Copy with t_recv_ms = block_time + sampled live lag. None if the row cannot be placed."""
+class SignatureLag:
+    """One chain→receive draw per signature for the current file.
+
+    The map is keyed by signature and is not cleared when the slot changes,
+    so rows that arrive out of block order still share one stamp. Call
+    ``begin_file`` when the input file changes. A missing signature draws
+    on its own and is not reused.
+    """
+
+    def __init__(self) -> None:
+        self._file: Any = object()
+        self._lags: dict[str, int] = {}
+
+    def begin_file(self, file_key: Any) -> None:
+        if file_key != self._file:
+            self._file = file_key
+            self._lags = {}
+
+    def get(self, row: dict[str, Any], draw: Callable[[], int]) -> int:
+        sig = row.get("signature")
+        if not isinstance(sig, str) or not sig or sig == "UNK":
+            return int(draw())
+        hit = self._lags.get(sig)
+        if hit is None:
+            hit = int(draw())
+            self._lags[sig] = hit
+        return hit
+
+
+def _stamp_backfill_recv(
+    row: dict[str, Any],
+    reservoir: _LagReservoir,
+    rng: random.Random,
+    hop_ms: int = 0,
+    lags: SignatureLag | None = None,
+) -> dict[str, Any] | None:
+    """Copy with t_recv_ms = block_time + one live lag per signature + optional hop.
+
+    None if the row cannot be placed. Block time is not written into t_recv_ms.
+    Without ``lags``, each call draws on its own (tests of a single row).
+    """
     if not _is_backfill(row):
         return row
     block = _block_time_s(row)
     if block is None:
         return None
+    if lags is None:
+        lag = reservoir.draw(rng)
+    else:
+        lag = lags.get(row, lambda: reservoir.draw(rng))
     stamped = dict(row)
-    stamped["t_recv_ms"] = synthetic_recv_ms(block, reservoir.draw(rng))
+    stamped["t_recv_ms"] = synthetic_recv_ms(block, lag, hop_ms)
     stamped["recv_synthetic"] = True
     return stamped
 
@@ -492,6 +542,7 @@ def load_graduated_books(
     creates: dict[str, CreateSignal],
     *,
     window_start_ms: int,
+    hop_ms: int = 0,
 ) -> tuple[dict[str, MintBook], dict[str, int], ScanStats, _LagReservoir]:
     """Two passes. Live receive times win on a duplicate signature.
 
@@ -530,7 +581,12 @@ def load_graduated_books(
             first_swap[mint] = t_raw
 
     def _scan_lags_and_migrations(paths: Sequence[Path], *, backfill: bool, rng: random.Random) -> None:
-        for _path, row in _iter_jsonl(_refresh_trade_paths(paths)):
+        lags = SignatureLag() if backfill else None
+        seen_file: Any = object()
+        for path, row in _iter_jsonl(_refresh_trade_paths(paths)):
+            if lags is not None and path != seen_file:
+                lags.begin_file(path)
+                seen_file = path
             stats.lines += 1
             if stats.lines % 500_000 == 0:
                 print(
@@ -539,7 +595,7 @@ def load_graduated_books(
                 )
             if backfill:
                 stats.backfill_lines += 1
-                stamped = _stamp_backfill_recv(row, reservoir, rng)
+                stamped = _stamp_backfill_recv(row, reservoir, rng, hop_ms, lags)
                 if stamped is None:
                     stats.bad_backfill_clock += 1
                     continue
@@ -591,13 +647,18 @@ def load_graduated_books(
         stats.kept += 1
 
     def _scan_keep(paths: Sequence[Path], *, backfill: bool) -> None:
+        lags = SignatureLag() if backfill else None
+        seen_file: Any = object()
         n = 0
-        for _path, row in _iter_jsonl(_refresh_trade_paths(paths)):
+        for path, row in _iter_jsonl(_refresh_trade_paths(paths)):
+            if lags is not None and path != seen_file:
+                lags.begin_file(path)
+                seen_file = path
             n += 1
             if n % 500_000 == 0:
                 print(f"pass2 lines={n} kept={stats.kept}", file=sys.stderr)
             if backfill:
-                stamped = _stamp_backfill_recv(row, reservoir, draw)
+                stamped = _stamp_backfill_recv(row, reservoir, draw, hop_ms, lags)
                 if stamped is None:
                     continue
                 _keep(stamped)
@@ -622,12 +683,24 @@ def load_graduated_books(
                 initial_buy_ui=None,
                 sol_amount=None,
             )
-        flow = buckets[mint]
-        flow.sort(key=lambda p: (p.t_recv_ms, p.slot, p.event_index, p.trader or "", p.side))
+        order = TxOrder()
+        flow = [order.stamp(pr) for pr in buckets[mint]]
+        flow.sort(key=lambda p: (p.t_recv_ms, p.slot, p.tx_index, p.event_index, p.trader or "", p.side))
         deduped = []
         prev = None
         for pr in flow:
-            key = (pr.t_recv_ms, pr.slot, pr.event_index, pr.venue, pr.trader, pr.side, pr.sol_lamports, pr.token_raw)
+            key = (
+                pr.t_recv_ms,
+                pr.slot,
+                pr.tx_index,
+                pr.event_index,
+                pr.signature,
+                pr.venue,
+                pr.trader,
+                pr.side,
+                pr.sol_lamports,
+                pr.token_raw,
+            )
             if key == prev:
                 continue
             prev = key
@@ -646,7 +719,7 @@ def load_graduated_books(
     return books, kept_migration, stats, reservoir
 
 
-def create_from_backfill_row(row: dict[str, Any], *, lag_ms: int) -> CreateSignal | None:
+def create_from_backfill_row(row: dict[str, Any], *, lag_ms: int, hop_ms: int = 0) -> CreateSignal | None:
     if row.get("type") != "create":
         return None
     mint = row.get("mint")
@@ -672,7 +745,7 @@ def create_from_backfill_row(row: dict[str, Any], *, lag_ms: int) -> CreateSigna
         v_token = None
     return CreateSignal(
         mint=mint,
-        t_signal_ms=synthetic_recv_ms(block, lag_ms),
+        t_signal_ms=synthetic_recv_ms(block, lag_ms, hop_ms),
         creator=creator,
         signature=row.get("signature") if isinstance(row.get("signature"), str) else None,
         v_sol=v_sol,
