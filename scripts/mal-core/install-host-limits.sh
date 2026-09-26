@@ -23,7 +23,8 @@ for unit in \
   mal-funding-graph.service \
   mal-trade-tape.service \
   mal-observe.service \
-  mal-attention.service
+  mal-attention.service \
+  mal-attention-daily.service
 do
   install -d -m 0755 "${USER_UNIT_DIR}/${unit}.d"
   install -m 0644 "${LIMITS}/${unit}.d/10-memory.conf" "${USER_UNIT_DIR}/${unit}.d/10-memory.conf"
