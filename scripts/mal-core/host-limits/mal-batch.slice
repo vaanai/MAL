@@ -1,0 +1,5 @@
+[Slice]
+# Batch cap so Postgres + OS keep >=6G on a 24G host.
+# Collectors stay outside this slice (their own 1–2G caps).
+MemoryHigh=10G
+MemoryMax=12G
