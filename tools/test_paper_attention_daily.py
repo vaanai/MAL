@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -17,6 +20,8 @@ from observe.attention import (
 )
 from tools.paper_attention_daily import emit_laya_join, genuine_rows, lag_vs_event, list_hourly_tapes
 from tools.paper_attention_promote import MIN_N, WATCH_N, BookTrade, book_stats
+from tools.paper_attention_score import iter_jsonl, list_attention_files
+from tools.paper_price_path import resolve_sealed_path, stream_paths
 
 
 class SnapshotTests(unittest.TestCase):
@@ -129,13 +134,59 @@ class JoinAndHourlyTests(unittest.TestCase):
             self.assertFalse(out[1]["snapshot"])
             self.assertTrue(out[0]["t_ms"] <= 100)
 
-    def test_hourly_tapes_skip_daily_zst(self) -> None:
+    def test_hourly_tapes_sealed_only_skips_open_hour(self) -> None:
+        now = datetime(2026, 9, 26, 4, 30, tzinfo=timezone.utc)
         with TemporaryDirectory() as tmp:
             d = Path(tmp)
-            (d / "trades-2026-09-25T15.jsonl").write_text("{}\n", encoding="utf-8")
-            (d / "trades-2026-09-25.jsonl.zst").write_text("nope", encoding="utf-8")
-            files = list_hourly_tapes(d)
-            self.assertEqual([p.name for p in files], ["trades-2026-09-25T15.jsonl"])
+            (d / "trades-2026-09-25T23.jsonl.zst").write_text("ok", encoding="utf-8")
+            (d / "trades-2026-09-26T03.jsonl").write_text("unsealed", encoding="utf-8")
+            (d / "trades-2026-09-26T03.jsonl.zst").write_text("sealed", encoding="utf-8")
+            (d / "trades-2026-09-26T04.jsonl").write_text("open", encoding="utf-8")
+            (d / "trades-2026-09-26T04.jsonl.zst").write_text("too-soon", encoding="utf-8")
+            (d / "trades-2026-09-26.jsonl.zst").write_text("daily leftover", encoding="utf-8")
+            files = list_hourly_tapes(d, now=now)
+            self.assertEqual(
+                [p.name for p in files],
+                ["trades-2026-09-25T23.jsonl.zst", "trades-2026-09-26T03.jsonl.zst"],
+            )
+
+    def test_attention_files_sealed_only_skips_open_hour(self) -> None:
+        now = datetime(2026, 9, 26, 4, 30, tzinfo=timezone.utc)
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "attention-2026-09-26T03.jsonl").write_text("{}\n", encoding="utf-8")
+            (d / "attention-2026-09-26T03.jsonl.zst").write_text("sealed", encoding="utf-8")
+            (d / "attention-2026-09-26T04.jsonl").write_text("open", encoding="utf-8")
+            (d / "poller_start.json").write_text("{}", encoding="utf-8")
+            files = list_attention_files(d, now=now)
+            self.assertEqual([p.name for p in files], ["attention-2026-09-26T03.jsonl.zst"])
+
+    def test_resolve_sealed_follows_raw_unlink(self) -> None:
+        with TemporaryDirectory() as tmp:
+            raw = Path(tmp) / "trades-2026-09-26T03.jsonl"
+            zst = Path(tmp) / "trades-2026-09-26T03.jsonl.zst"
+            zst.write_bytes(b"x")
+            self.assertEqual(resolve_sealed_path(raw), zst)
+            self.assertIsNone(resolve_sealed_path(Path(tmp) / "trades-2026-09-26T04.jsonl"))
+
+    def test_iter_jsonl_retries_zst_after_raw_unlinked(self) -> None:
+        if shutil.which("zstd") is None:
+            self.skipTest("zstd not installed")
+        with TemporaryDirectory() as tmp:
+            raw = Path(tmp) / "attention-2026-09-26T03.jsonl"
+            row = {"kind": "pump_live", "mint": "A", "t_first_ms": 1}
+            raw.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            subprocess.run(["zstd", "-q", "-f", str(raw)], check=True)
+            raw.unlink()
+            rows = list(iter_jsonl(raw))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["mint"], "A")
+
+    def test_stream_paths_skips_hour_that_vanished(self) -> None:
+        with TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "trades-2026-09-26T04.jsonl"
+            _paths, stats = stream_paths({}, [missing])
+            self.assertEqual(stats.lines, 0)
 
     def test_genuine_rows_drops_snapshot_set(self) -> None:
         rows = [
