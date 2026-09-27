@@ -50,10 +50,10 @@ Detail, units, logs, and what is safe to restart: [docs/HOSTS.md](docs/HOSTS.md)
 | System | Where | Status |
 | --- | --- | --- |
 | Observe, trade tape, attention, funding graph, forward paper | Oracle user units | Live collectors and the paper runner. See HOSTS. |
-| LAYA timer | Oracle `mal-laya-v0.timer` 04:15 UTC | 2026-09-27 fit OOM-killed at the 11G cap. [#106](https://github.com/vaanai/MAL/pull/106) (open) skips the exploratory retrain until the 2026-10-05 review. |
-| Attention daily | Oracle 04:45 UTC | Contended with the fit on 2026-09-27. |
+| LAYA timer | Oracle `mal-laya-v0.timer` 04:15 UTC | **Disabled until 2026-10-05.** The frozen job still spiked runner lag to about 12.5 s. [#106](https://github.com/vaanai/MAL/pull/106) (merged) is what it runs if re-enabled: `tools.laya_frozen_nightly` (cached pre-freeze fit, forward holdout append, backward holdout append, scoreboard). Exploratory retrain and `mig15 --deploy` stay skipped. CPUQuota 25%, MemoryMax 11G, MemorySwapMax 0, 256 MiB chunks. The scan pauses when `lag_ms` is over 3000 and resumes under 2000. |
+| Attention daily | Oracle `mal-attention-daily.timer` 04:45 UTC | **Disabled until 2026-10-05.** `attention-daily.sh` exits before that date. The `mal-attention` poller keeps running. |
 | Pump backfill | Oracle, CPU cap 50% ([#104](https://github.com/vaanai/MAL/pull/104)) | Covers **2026-09-22T00Z–2026-09-25T07Z**. Does not walk into the fast-box range. |
-| Frozen migrate-direct score | Oracle `mal-migrate-direct-oos.timer` **01:20 UTC** | Scores the frozen cell only. Does not change live size ceilings. |
+| Frozen migrate-direct score | Oracle `mal-migrate-direct-oos.timer` **01:20 UTC** | **Under test; may move to mal-fast-0.** Scores the frozen cell only. Does not change live size ceilings. |
 | Healthcheck | Oracle `mal-healthcheck.timer` every 5 min | `/var/lib/mal/eng/healthcheck.sh` |
 | Fast listeners | `mal-fast-0` | `mal-fast-create`, `mal-fast-public-logs`, `mal-fast-pre-create` left up. Early-trade and the full fast tape unit are installed and **not** left running. |
 | Fast backfill + OOS score | `mal-fast-0` | Walks **back from 2026-09-21T23Z**. Hard cap **+2,000,000** credits ([#111](https://github.com/vaanai/MAL/pull/111), [#112](https://github.com/vaanai/MAL/pull/112)). |
@@ -110,9 +110,9 @@ Read 2026-09-27 with `gh`. **Recommendation only. Do not close them from a worke
 | [#15](https://github.com/vaanai/MAL/pull/15) | close | `tools/exp003_rpc_backfill.py` is already on main. |
 | [#22](https://github.com/vaanai/MAL/pull/22) | close | DEC-011 is already merged and the tunnel is live. This draft still says the path is pending. |
 | [#90](https://github.com/vaanai/MAL/pull/90) | keep | `JobQueue` on main is still unbounded. The stale-drop and credit cap in this draft are not in the tree. |
-| [#106](https://github.com/vaanai/MAL/pull/106) | keep | Stops the exploratory 04:15 LAYA retrain that OOM-killed on 2026-09-27. Review date is 2026-10-05. |
+| [#106](https://github.com/vaanai/MAL/pull/106) | merged | Merged 2026-09-27. Skips the exploratory 04:15 LAYA retrain until 2026-10-05. Both that timer and `mal-attention-daily.timer` are disabled until then because runner lag still spiked to about 12.5 s. |
 
-These eight were the open PRs at the handoff. #73–#112 in the notes are merged.
+These were the open PRs at the handoff. #106 has since merged. #73–#112 in the notes are merged.
 
 ## Frozen
 
@@ -122,7 +122,7 @@ These eight were the open PRs at the handoff. #73–#112 in the notes are merged
 
 1. Let the fast box finish the backward OOS hours inside the +2M credit cap. Do not refit the frozen cell.
 2. Score forward paper only from the **2026-09-28T00:00:00Z** clean clock. Kill review **2026-10-05T05:00:00Z**.
-3. Land or drop [#106](https://github.com/vaanai/MAL/pull/106) and [#90](https://github.com/vaanai/MAL/pull/90) after review. Helm merges.
+3. Keep [#90](https://github.com/vaanai/MAL/pull/90) until review. [#106](https://github.com/vaanai/MAL/pull/106) is merged; leave `mal-laya-v0.timer` and `mal-attention-daily.timer` disabled until 2026-10-05. Helm merges.
 4. Move fast. Hold the promotion gate. Report Helius credits when autoscaling is used.
 
 ## Pointers
