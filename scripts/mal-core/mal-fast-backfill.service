@@ -9,6 +9,7 @@ EnvironmentFile=/var/lib/mal/fast-listener/helius.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/home/ubuntu/mal-oos
 Environment=MAL_BACKFILL_OUT=/var/lib/mal/backfill-fast
+Environment=MAL_FAST_BACKFILL_WORKERS=16
 Nice=10
 CPUQuota=400%
 MemoryMax=6G
