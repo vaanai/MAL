@@ -15,6 +15,8 @@ Host bootstrap helpers. **No secrets in this tree.**
 | [install-fast-helius-listener.sh](install-fast-helius-listener.sh) | x86 fast host | Copy the preprocessed listeners and start the mint-authority unit. Reuses the local venv. Leaves PumpPortal and public logs alone. Early-trade unit stays disabled. |
 | [mal-fast-pre-create.service](mal-fast-pre-create.service) | fast host (systemd --user) | Helius `preprocessedSubscribe` on the mint authority. Daily cap 10,000. `Restart=on-failure`. Key via mode-600 `EnvironmentFile`. |
 | [mal-fast-early-trade.service](mal-fast-early-trade.service) | fast host (systemd --user) | Bonding-curve `preprocessedSubscribe` for 120s, plus the migration account. Daily cap 100,000. `Restart=on-failure`. |
+| [install-fast-trade-tape.sh](install-fast-trade-tape.sh) | x86 fast host | Copy the public trade-tape modules and leave `mal-fast-trade-tape` disabled. Reuses the local venv. Does not restart other units. Refuses Oracle hosts. |
+| [mal-fast-trade-tape.service](mal-fast-trade-tape.service) | fast host (systemd --user) | Public `logsSubscribe` tape (pump.fun + PumpSwap), same decoder as Oracle. `MemoryMax=1G`, `Nice=0`, `Restart=always`, 7-day age cap. Output `/var/lib/mal/sealed/fast-trades`. Not enabled. |
 | [trade-tape.sh](trade-tape.sh) | host | `python -m observe.trade_tape` → `/var/lib/mal/sealed/trades` |
 | [mal-trade-tape.service](mal-trade-tape.service) | host (systemd --user) | Public RPC logsSubscribe tape (pump.fun + PumpSwap) |
 | [wallet-leaderboard.sh](wallet-leaderboard.sh) | host (one-shot, `nice -n 19`) | Tape L2 FIFO wallet board + follow-signal JSONL. Does **not** touch the recorder. |

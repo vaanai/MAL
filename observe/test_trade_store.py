@@ -224,6 +224,30 @@ class StoreTests(unittest.TestCase):
             self.assertTrue(link.is_symlink())
             self.assertGreaterEqual(guard.keep_days or 0, 1)
 
+    def test_max_keep_days_caps_age_even_when_disk_is_empty(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            aged = root / "trades-2026-09-01T00.jsonl.zst"
+            kept = root / "trades-2026-09-24T03.jsonl.zst"
+            live = root / "trades-2026-09-25T12.jsonl"
+            note = root / "readme.txt"
+            aged.write_bytes(b"a" * 50)
+            kept.write_bytes(b"b" * 50)
+            live.write_text("{}\n", encoding="utf-8")
+            note.write_text("keep", encoding="utf-8")
+            guard = DiskGuard(root, fs_bytes=lambda _p: (10**12, 1000, 10**12 - 1000), max_keep_days=7)
+            guard.tick(
+                now=datetime(2026, 9, 25, 12, tzinfo=timezone.utc),
+                open_paths={live.resolve()},
+                inflight=set(),
+                current_hour="2026-09-25T12",
+            )
+            self.assertEqual(guard.keep_days, 7)
+            self.assertFalse(aged.exists())
+            self.assertTrue(kept.exists())
+            self.assertTrue(live.exists())
+            self.assertTrue(note.exists())
+
     def test_headroom_hold_does_not_touch_open_or_foreign_files(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
