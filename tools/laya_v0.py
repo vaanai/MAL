@@ -1748,6 +1748,8 @@ def attach_labels(
     """Paper PnL for an entry at decision+latency. Exit ticks carry their own features."""
     ticks: list[ExitTick] = []
     for index, row in enumerate(rows):
+        if index and index % 500 == 0:
+            yield_for_runner()
         book = books[row.mint]
         lag = int(latency_draws[index]) if latency_draws is not None else latency_ms
         t_entry = row.decision_t_ms + lag
