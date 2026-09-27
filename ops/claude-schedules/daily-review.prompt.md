@@ -59,7 +59,24 @@ second-guess file permissions; just read and report.
        disk, postgres, forward-paper lag vs. `stale_cap_ms`.
      - `/var/lib/mal/paper/forward-paper/runner-status.json`: `lag_ms` vs.
        `stale_cap_ms`, and `fail_rate` if present.
-     - Disk free.
+     - **`mal-forward-paper.service` cgroup memory** (cgroup v2 files read
+       directly, no sudo — a leak in this runner was actually found and
+       caught with exactly these numbers, so read them carefully):
+       `memory.current` vs `memory.high` (report the ratio), `memory.max`
+       (the hard cap), `memory.swap.current`, and the `memory.events`
+       counters (`low`, `high`, `max`, `oom`, `oom_kill`, `oom_group_kill`).
+       Set `STATUS: ATTENTION` if **any** of: `memory.current` is more than
+       90% of `memory.high`; `memory.swap.current` is more than 1 GiB
+       (1,073,741,824 bytes); the `max` or `oom_kill` counters in
+       `memory.events` are non-zero. Report the actual numbers (bytes and a
+       human-readable GiB figure), not just pass/fail.
+     - **Forward-paper lag breaches**: the FACTS block gives
+       `lag_breach_count` — the number of the last up-to-288
+       `health.jsonl` lines (roughly the last 24h at the healthcheck's
+       5-minute interval; report `lines_available` too since the log may
+       hold fewer than 288 lines) where `status` was `"fail"` with
+       `note":"runner_lag"`. Set `STATUS: ATTENTION` if this count is more
+       than 3.
      - Any unit outside the expected LAYA/attention-daily pair that is
        `failed`, or any root/system-level failed unit (e.g. `cloudflared`,
        `postgresql`, `sshd`) — either is `STATUS: ATTENTION`.
@@ -99,9 +116,12 @@ down/failed that is not the expected `mal-laya-v0.service` /
 `mal-attention-daily.service` pair, disk is critically low, sealed data has
 gone stale, the backfill looks stuck, forward-paper lag exceeds its
 `stale_cap_ms`, the pooled OOS book already looks like it would clear the
-promotion gate under both fail models, or any other anomaly that needs a
-person to look. `OK` otherwise — routine days should say `OK` even when
-there is nothing interesting to report.
+promotion gate under both fail models, **the forward-paper runner's
+`memory.current` is over 90% of `memory.high`, its `memory.swap.current` is
+over 1 GiB, its `memory.events` `max` or `oom_kill` counters are non-zero,
+or it had more than 3 lag breaches in the lookback window**, or any other
+anomaly that needs a person to look. `OK` otherwise — routine days should
+say `OK` even when there is nothing interesting to report.
 
 After the status line, include sections: `## Summary`, `## mal-fast-0`,
 `## migrate-direct-oos-fast (informational)`, `## mal-core-0 (Oracle)`,

@@ -117,7 +117,7 @@ UBUNTU_UID="$(id -u ubuntu 2>/dev/null || echo 1000)"
     echo "interpretation: Oracle answered. Gathering read-only facts below."
     echo
     echo "### Oracle facts (single ssh session, read-only, sudo-restricted to status/list-timers/list-units/show/cat)"
-    timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=10 mal-core-0 bash -s </dev/null <<'REMOTE' 2>&1
+    timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 mal-core-0 bash -s </dev/null <<'REMOTE' 2>&1
 set +e
 echo "-- ubuntu systemd --user overall (Failed count) --"
 sudo -n systemctl --user -M ubuntu@ status
@@ -145,6 +145,19 @@ cat /var/lib/mal/logs/health-latest.json 2>&1
 echo
 echo "-- /var/lib/mal/paper/forward-paper/runner-status.json (forward-paper lag) --"
 cat /var/lib/mal/paper/forward-paper/runner-status.json 2>&1
+echo
+echo "-- mal-forward-paper.service cgroup memory (readable directly, no sudo) --"
+CGROUP="/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/mal.slice/mal-batch.slice/mal-forward-paper.service"
+for f in memory.current memory.high memory.max memory.swap.current memory.events memory.pressure; do
+  echo "${f}:"
+  cat "${CGROUP}/${f}" 2>&1
+done
+echo
+echo "-- forward-paper lag breaches in the last 288 health.jsonl lines (~24h at 5-min interval) --"
+echo -n "lines_available: "
+wc -l < /var/lib/mal/logs/health.jsonl 2>&1
+echo -n "lag_breach_count (status=fail AND note=runner_lag): "
+tail -n 288 /var/lib/mal/logs/health.jsonl 2>/dev/null | grep -c '"status":"fail".*"note":"runner_lag"'
 echo
 echo "-- disk --"
 df -h /var/lib/mal / 2>&1
