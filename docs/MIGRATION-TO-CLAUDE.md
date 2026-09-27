@@ -57,16 +57,42 @@ The fast backfill unit and the mint-authority listener load the fast path. Oracl
 
 Autoscaling is about 20M extra credits (owner setting, see [CLAUDE.md](../CLAUDE.md)). Report credits when a job uses that headroom.
 
-## Recreate these schedules
+## Cursor timers to recreate on mal-fast-0
 
-They were Cursor timers, not cron on the hosts. They are not in git as running jobs.
+Source note: [ARTIFACTS/lab/cursor-timers.md](../ARTIFACTS/lab/cursor-timers.md). Both timers live in the Cursor coordinator, not on either host. The owner cancels the Cursor timers only after these Claude jobs are verified.
 
-| Job | When | What |
-| --- | --- | --- |
-| Daily review | **05:00 UTC** every day | Reload LAB_STATE, check both hosts, say whether anything promotes. The 2026-09-27 review promoted nothing. |
-| One-shot OOS check | about **2026-09-28 21:00Z** | Read the fast-box migrate-direct report after the backward hours that were projected to land near 2026-09-28 20:00Z. Do not refit the cell. |
+Host timers are separate. `mal-laya-v0.timer` (04:15 UTC) and `mal-attention-daily.timer` (04:45 UTC) are **disabled until 2026-10-05**. The `mal-attention` poller stays up. The 01:20 `mal-migrate-direct-oos.timer` is **under test; may move to mal-fast-0**. Healthcheck stays every 5 minutes. Do not re-enable the disabled timers from this checklist, and do not start a second copy of a host timer.
 
-Put both on cron (or the Claude scheduler) wherever Claude actually runs. The in-host timers stay as they are: Oracle LAYA 04:15 UTC, attention-daily 04:45 UTC, migrate-direct OOS 01:20 UTC, healthcheck every 5 minutes. Do not duplicate those by restarting them from here.
+### mal-daily-scoreboard-review
+
+- Type: recurring cron. Schedule: `0 5 * * *` (05:00 UTC daily).
+- Opened 2026-09-25T08:41:20Z. Expires 2026-10-02T08:41:20Z.
+- Writes: `ARTIFACTS/daily/<date>.md`, then `docs/ops/notes.md`.
+- Exact prompt:
+
+> Daily MAL check: the LAYA v0 retrain/scoreboard timer runs at 04:15 UTC on mal-core. Delegate a short read-only worker (composer-2.5, fast off) to pull the latest daily scoreboard, tape health stats (trades/min, % creates covered, lag, disk), and wallet leaderboard summary into /cursor/stores/bc-82916b18-bbea-44a9-abce-601cba99bd97/internal/daily/<date>.md, then decide next steps and update notes.md. Message the user only if a signal meets the promotion criterion, something breaks, or a decision is needed.
+
+- Claude equivalent on `mal-fast-0` (same prompt; write `ARTIFACTS/daily/<date>.md` and `docs/ops/notes.md`; also cover mal-fast-0 health). Subagent: `host-ops`, read-only.
+
+```cron
+0 5 * * * cd "$HOME/mal" && claude --agent host-ops -p 'Daily MAL check: the LAYA v0 retrain/scoreboard timer runs at 04:15 UTC on mal-core. Delegate a short read-only worker to pull the latest daily scoreboard, tape health stats (trades/min, % creates covered, lag, disk), and wallet leaderboard summary into ARTIFACTS/daily/<date>.md, then decide next steps and update docs/ops/notes.md. Also check mal-fast-0. Message the user only if a signal meets the promotion criterion, something breaks, or a decision is needed.'
+```
+
+### migrate-direct-oos-5day
+
+- Type: one-shot. Opened 2026-09-27T13:50:06Z. Delay 112000 s, so it fires about **2026-09-28T20:57Z**.
+- Reads `ARTIFACTS/lab/migrate-direct-oos.md`. Writes the keep-or-kill call into `docs/ops/notes.md` and messages the owner. No parameter changes.
+- Exact prompt:
+
+> Five out-of-sample days for the frozen migrate-direct cell (spec internal/migrate-direct-prereg.md, frozen 2026-09-27T13:06:36Z) were expected around 2026-09-28 20:00Z (Oracle covers 22 Sep, the fast box walks 21 Sep backward). Delegate one short composer-2.5 worker to read /cursor/stores/bc-82916b18-bbea-44a9-abce-601cba99bd97/internal/migrate-direct-oos.md, confirm with the host that the table is current, and report per fail model: n, distinct days, days positive, net mean, bootstrap 90% CI lower bound, ex-top-3, fill rate. No parameter changes. Then decide: if it passes the promotion rule under both fail models on out-of-sample days, message the owner proposing a tiny live calibration (capped hot wallet on the owner's machine, never on a server) and wait for approval. If it clearly fails, kill the cell in notes and message the owner briefly. If it is still under-sampled, let the backfill continue and set another check.
+
+- Claude equivalent: one shot at 2026-09-28 20:57 UTC. Subagent: `quant-proof`. Read `ARTIFACTS/lab/migrate-direct-oos.md` and `ARTIFACTS/lab/migrate-direct-prereg.md`. Confirm the table on the host. Do not refit.
+
+```cron
+57 20 28 9 * cd "$HOME/mal" && claude --agent quant-proof -p 'Five out-of-sample days for the frozen migrate-direct cell (spec ARTIFACTS/lab/migrate-direct-prereg.md, frozen 2026-09-27T13:06:36Z) were expected around 2026-09-28 20:00Z. Read ARTIFACTS/lab/migrate-direct-oos.md, confirm with the host that the table is current, and report per fail model: n, distinct days, days positive, net mean, bootstrap 90% CI lower bound, ex-top-3, fill rate. No parameter changes. If it passes the promotion rule under both fail models, message the owner proposing a tiny live calibration (capped hot wallet on the owner machine, never on a server) and wait for approval. If it clearly fails, kill the cell in docs/ops/notes.md and message the owner briefly. If it is still under-sampled, let the backfill continue and set another check.'
+```
+
+Remove that cron line after it has run once. The 01:20 host oneshot is still under a lag test and may move to `mal-fast-0`; do not add a second scorer beside it.
 
 ## What this repo now holds
 
@@ -80,7 +106,7 @@ Put both on cron (or the Claude scheduler) wherever Claude actually runs. The in
 
 - **Running Cursor agents.** They are not in the repo. Close or ignore them after Helm has the PR.
 - **Cursor Runtime Secret values.** Names are documented. Values were not in the store and must be re-entered under the neutral names.
-- **The Cursor daily 05:00 UTC review** and the **one-shot OOS check around 2026-09-28 21:00Z**. Recreate them as cron, as above.
+- **The Cursor daily 05:00 UTC review** and the **one-shot OOS check around 2026-09-28 20:57Z**. Recreate them on `mal-fast-0` as in the section above. The owner cancels the Cursor timers only after those Claude jobs are verified.
 - **Inbox event logs** under the project store (`inbox/github_pull_request_pr/**/*.jsonl`). Agent transcripts, not lab evidence. Left out on purpose.
 - **Live host state newer than the 2026-09-27 notes.** This checklist does not SSH. `runner-status.json`, credit counters, and sealed hours move after the notes. Read them on the host when you need a newer number.
 - **`/opt/miscusi` on `mal-fast-0`.** Unrelated app. Not part of MAL. Do not migrate it and do not touch it.

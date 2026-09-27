@@ -34,14 +34,14 @@ Expect `mal-core-vnic`, user `ubuntu`, `uname -m` = `aarch64`.
 | --- | --- |
 | `mal-observe.service` | PumpPortal creates + migrations → `/var/lib/mal/sealed/jsonl`. Log `/var/lib/mal/logs/observe.log`. |
 | `mal-trade-tape.service` | Public RPC `logsSubscribe` → `/var/lib/mal/sealed/trades`. Log `.../logs/trade-tape.log`. |
-| `mal-attention.service` | Attention poller → `/var/lib/mal/attention`. Log `.../logs/attention.log`. |
-| `mal-attention-daily.timer` | 04:45 UTC. Output `/var/lib/mal/paper/attention/`. Log `.../logs/attention-daily.log`. |
+| `mal-attention.service` | Attention poller → `/var/lib/mal/attention`. Log `.../logs/attention.log`. **Stays up.** |
+| `mal-attention-daily.timer` | 04:45 UTC. **Disabled until 2026-10-05.** Output `/var/lib/mal/paper/attention/`. Log `.../logs/attention-daily.log`. |
 | `mal-funding-graph.service` | Funder enricher → `/var/lib/mal/graph`. Log `.../logs/funding-graph.log`. Reads `/var/lib/mal/backfill/helius.env` when present. |
 | `mal-forward-paper.service` | Paper books. Code `/var/lib/mal/paper/forward-paper`. Status `.../forward-paper/runner-status.json`. |
 | `mal-pump-backfill.service` | Helius `getBlock` for **2026-09-22T00Z–2026-09-25T07Z**. Env `/var/lib/mal/backfill/helius.env`. CPU cap 50% of one core. Log `.../logs/pump-backfill.log`. |
 | `mal-pump-backfill-resume.service` | Starts backfill again after LAYA exits. |
-| `mal-laya-v0.timer` | 04:15 UTC retrain under `/var/lib/mal/paper/laya-v0`. |
-| `mal-migrate-direct-oos.timer` | **01:20 UTC** oneshot. Frozen cell only. Output `/var/lib/mal/paper/migrate-direct-oos` and `.../migrate-direct-forward`. MemoryMax 8G, CPUQuota 150%, Nice 19. |
+| `mal-laya-v0.timer` | 04:15 UTC. **Disabled until 2026-10-05** (runner lag still spiked to about 12.5 s). If re-enabled, [#106](https://github.com/vaanai/MAL/pull/106) runs `tools.laya_frozen_nightly` under `/var/lib/mal/paper/laya-v0`: cached pre-freeze fit, forward and backward holdout append, scoreboard. Exploratory retrain and mig15 deploy stay skipped. |
+| `mal-migrate-direct-oos.timer` | **01:20 UTC** oneshot. **Under test; may move to mal-fast-0.** Frozen cell only. Output `/var/lib/mal/paper/migrate-direct-oos` and `.../migrate-direct-forward`. MemoryMax 8G, CPUQuota 150%, Nice 19. |
 | `mal-healthcheck.timer` | Every 5 minutes. Runs `/var/lib/mal/eng/healthcheck.sh`. |
 
 ### Health, logs, paper books
@@ -55,7 +55,7 @@ Expect `mal-core-vnic`, user `ubuntu`, `uname -m` = `aarch64`.
 
 Safe, one at a time, when a manager has asked: `mal-observe`, `mal-trade-tape`, `mal-attention`, `mal-forward-paper`. They are `Restart=on-failure` or `Restart=always` and do not hold the Helius credit budget by themselves.
 
-Do **not** restart without a manager: `cloudflared`, `sshd`, `postgresql`, `mal-pump-backfill` (spends credits), `mal-laya-v0` (the 11G fit OOM-killed on 2026-09-27). Do not edit `ufw`, `sshd_config`, or the cloudflared config.
+Do **not** restart without a manager: `cloudflared`, `sshd`, `postgresql`, `mal-pump-backfill` (spends credits), `mal-laya-v0` (disabled until 2026-10-05; the frozen job still spiked runner lag to about 12.5 s). Do not enable `mal-laya-v0.timer` or `mal-attention-daily.timer` before 2026-10-05. Do not edit `ufw`, `sshd_config`, or the cloudflared config.
 
 ## mal-fast-0 (OVH Frankfurt)
 
