@@ -1688,6 +1688,7 @@ def attach_labels(
     size_lamports: int = DEFAULT_SIZE_LAMPORTS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
     rules: Sequence[ExitRule] = EXIT_RULES,
+    emit_ticks: bool = True,
 ) -> list[ExitTick]:
     """Paper PnL for an entry at decision+latency. Exit ticks carry their own features."""
     ticks: list[ExitTick] = []
@@ -1752,7 +1753,7 @@ def attach_labels(
             row.exit_t_by_rule[ladder.rule_id] = part.get("exit_t_ms")
             row.raw_pnl_by_rule[ladder.rule_id] = _raw_attempt_pnl(entry.status, pnl)
             row.pnl_by_rule[ladder.rule_id] = _attempt_pnl(entry.status, status, pnl, size_lamports)
-        if entry.status == "filled":
+        if emit_ticks and entry.status == "filled":
             ticks.extend(
                 _exit_ticks(
                     book,
@@ -2901,6 +2902,7 @@ def build_dataset(
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
     graph: FundingGraph | None = None,
     hop_ms: int = RECV_TO_DECISION_FLOOR_MS,
+    emit_ticks: bool = True,
 ) -> tuple[list[DecisionRow], list[ExitTick], dict[str, int]]:
     rows, wallet_diag = build_feature_rows(books, tape_end_ms=tape_end_ms, offsets_ms=offsets_ms, graph=graph)
     print(f"decisions={len(rows)}", file=sys.stderr)
@@ -2915,6 +2917,7 @@ def build_dataset(
         latency_draws=draws,
         size_lamports=size_lamports,
         slippage_cap=slippage_cap,
+        emit_ticks=emit_ticks,
     )
     print(f"exit_ticks={len(ticks)}", file=sys.stderr)
     return rows, ticks, wallet_diag

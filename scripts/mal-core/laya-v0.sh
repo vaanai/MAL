@@ -45,8 +45,16 @@ if [[ -d "${ATTENTION}" ]]; then
 fi
 
 cd "${SRC}"
+# Exploratory walk-forward refits entry_model.txt on post-freeze tape and
+# was the 11G OOM. Until the review, score frozen books only.
+MODE="$("${PY}" -c 'from tools.laya_frozen_nightly import nightly_mode; print(nightly_mode())')"
+if [[ "${MODE}" == "frozen" ]]; then
+  MODULE=tools.laya_frozen_nightly
+else
+  MODULE=tools.laya_v0
+fi
 if command -v ionice >/dev/null 2>&1; then
-  nice -n 19 ionice -c 3 "${PY}" -m tools.laya_v0 \
+  nice -n 19 ionice -c 3 "${PY}" -m "${MODULE}" \
     --tape-dir "${TAPE}" \
     --creates-dir "${CREATES}" \
     --output-dir "${OUT}" \
@@ -54,7 +62,7 @@ if command -v ionice >/dev/null 2>&1; then
     "${LAT_ARGS[@]}" \
     "${BF_ARGS[@]}"
 else
-  nice -n 19 "${PY}" -m tools.laya_v0 \
+  nice -n 19 "${PY}" -m "${MODULE}" \
     --tape-dir "${TAPE}" \
     --creates-dir "${CREATES}" \
     --output-dir "${OUT}" \
@@ -63,9 +71,13 @@ else
     "${BF_ARGS[@]}"
 fi
 
-# After the 04:15 LAYA fit. Writes the mig+15 booster the forward book scores.
+# mig15_model.txt is the frozen book's deploy file. Do not refit it on
+# post-freeze tape before the review. The backward table fits its own
+# in-memory booster on pre-freeze rows.
 SWING_SH="${MAL_GRADUATED_SWING_SH:-/var/lib/mal/eng/graduated-swing-train.sh}"
-if [[ -x "${SWING_SH}" ]]; then
+if [[ "${MODE}" == "frozen" ]]; then
+  echo "laya-v0: skip mig15 deploy until 2026-10-05; frozen book keeps mig15_model.txt" >&2
+elif [[ -x "${SWING_SH}" ]]; then
   "${SWING_SH}"
 else
   echo "laya-v0: skip mig15 train, missing ${SWING_SH}" >&2
