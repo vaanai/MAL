@@ -737,6 +737,16 @@ class RobustBookTests(unittest.TestCase):
         self.assertAlmostEqual(stats["total_ex_best_sol"], -2.0, places=6)
         self.assertIsNone(book_stats([_bt("only", 1.0)])["total_ex_best_sol"])
 
+    def test_gross_metrics_when_gross_pnl_present(self) -> None:
+        net = -int(0.05 * 0.0746 * SOL)
+        gross = 0
+        stats = book_stats([BookTrade("m0", DAY, net, gross_pnl=gross)])
+        self.assertEqual(stats["gross_n"], 1)
+        self.assertAlmostEqual(stats["mean_gross_sol"], 0.0, places=9)
+        self.assertAlmostEqual(stats["mean_sol"], net / SOL, places=9)
+        missing = book_stats([BookTrade("m0", DAY, net)])
+        self.assertIsNone(missing["mean_gross_sol"])
+
     def test_max_drawdown_from_a_zero_peak(self) -> None:
         stats = book_stats([_bt("a", 1.0, DAY), _bt("b", -3.0, DAY + 1), _bt("c", 2.0, DAY + 2)])
         self.assertAlmostEqual(stats["max_drawdown_sol"], 3.0, places=6)

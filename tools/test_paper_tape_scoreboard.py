@@ -14,6 +14,7 @@ from observe.trade_decode import decode_program_data, records_from_logs
 from tools.paper_curve_math import (
     BONDING_FEE_PPM,
     DEFAULT_SIZE_LAMPORTS,
+    LAMPORTS_PER_SOL,
     PRIORITY_FEE_LAMPORTS,
     TOKEN_ACCOUNT_RENT_LAMPORTS,
     TOKEN_RAW_OFFSET,
@@ -22,6 +23,7 @@ from tools.paper_curve_math import (
     pumpswap_sol_fee_ppm,
     quote_buy,
     quote_sell,
+    round_trip_fee_identity,
     venue_fee_ppm,
 )
 from tools.paper_price_path import (
@@ -498,6 +500,9 @@ class FillAndExitTests(unittest.TestCase):
         self.assertLess(pnl, -2 * PRIORITY_FEE_LAMPORTS)
         self.assertGreater(pnl, -5_000_000)
         self.assertEqual(row["pnl_sol"], pnl / 1_000_000_000)
+        fees = row["fee_stack_lamports"]
+        self.assertIsInstance(fees, int)
+        self.assertAlmostEqual(pnl + fees, 0, delta=2)
 
     def test_rug_is_a_realized_loss_and_stays_in_the_book(self) -> None:
         calm = _print(T0)
@@ -1009,6 +1014,21 @@ class SameSignatureFillTests(unittest.TestCase):
         self.assertEqual(paths["MintA"].prints[0].tx_index, 0)
         self.assertEqual(paths["MintA"].prints[1].tx_index, 1)
         self.assertLess(paths["MintA"].prints[0].tx_index, paths["MintA"].prints[1].tx_index)
+
+
+class RoundTripFeeIdentityTests(unittest.TestCase):
+    def test_005_sol_matches_746_pct(self) -> None:
+        row = round_trip_fee_identity(50_000_000)
+        self.assertAlmostEqual(row["per_side_frac_portal_then_venue"], 0.0174375, places=7)
+        self.assertAlmostEqual(row["round_trip_frac_portal_and_venue"], 0.03457093359375, places=8)
+        self.assertAlmostEqual(row["round_trip_frac_priority"], 0.04, places=9)
+        self.assertAlmostEqual(row["round_trip_frac_total"], 0.07457093359375, places=8)
+
+    def test_priority_share_shrinks_with_size(self) -> None:
+        small = round_trip_fee_identity(50_000_000)
+        large = round_trip_fee_identity(500_000_000)
+        self.assertAlmostEqual(small["round_trip_frac_portal_and_venue"], large["round_trip_frac_portal_and_venue"], places=6)
+        self.assertGreater(small["round_trip_frac_priority"], large["round_trip_frac_priority"])
 
 
 if __name__ == "__main__":

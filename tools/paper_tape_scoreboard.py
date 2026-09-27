@@ -338,6 +338,38 @@ def _book_for_exit(entry: EntryFill, state: TapePrint) -> tuple[int, int, str] |
     return book[0], book[1], state.venue
 
 
+def fee_stack_lamports(
+    *,
+    size_lamports: int,
+    entry: EntryFill,
+    exit_status: str,
+    pnl_lamports: int | None,
+    exit_sol_lamports: int | None,
+    sell_gross_lamports: int | None = None,
+) -> int | None:
+    """Non-price costs (portal, venue, priority, rent on stuck exits). Pair with raw net PnL.
+
+    Gross price edge before those costs is ``pnl_lamports + fee_stack_lamports``.
+    """
+    if entry.status in MISS_STATUSES:
+        return PRIORITY_FEE_LAMPORTS
+    if entry.status != "filled" or pnl_lamports is None:
+        return None
+    if exit_status == "censored":
+        return None
+    buy_fees = size_lamports - entry.net_in_lamports
+    if exit_status == "no_exit_liquidity":
+        return buy_fees + 2 * PRIORITY_FEE_LAMPORTS + TOKEN_ACCOUNT_RENT_LAMPORTS
+    if exit_status != "realized" or exit_sol_lamports is None:
+        return None
+    if sell_gross_lamports is None or sell_gross_lamports <= 0:
+        return None
+    sell_fees = sell_gross_lamports - exit_sol_lamports
+    if sell_fees < 0:
+        return None
+    return buy_fees + sell_fees + 2 * PRIORITY_FEE_LAMPORTS
+
+
 def simulate_exit(
     path: MintPath,
     entry: EntryFill,
@@ -351,6 +383,7 @@ def simulate_exit(
         # A send that does not fill still burns the priority fee when it is included.
         # Count it. Do not drop it from n.
         cost = -PRIORITY_FEE_LAMPORTS if entry.status in MISS_STATUSES else None
+        fees = PRIORITY_FEE_LAMPORTS if entry.status in MISS_STATUSES else None
         return {
             "exit_status": "not_entered",
             "trigger": None,
@@ -360,6 +393,7 @@ def simulate_exit(
             "exit_sol_lamports": None,
             "pnl_lamports": cost,
             "attempt_cost_lamports": cost,
+            "fee_stack_lamports": fees,
         }
     trigger, t_fill = _plan_exit(path, entry, rule, latency_ms)
     base = {
@@ -370,16 +404,33 @@ def simulate_exit(
         "exit_sol_lamports": None,
     }
     if t_fill > tape_end_ms:
-        return {**base, "exit_status": "censored", "pnl_lamports": None}
+        return {**base, "exit_status": "censored", "pnl_lamports": None, "fee_stack_lamports": None}
     state = state_as_of(path, t_fill, allow_anchor=True)
     if state is None or entry.venue is None:
-        return {**base, "exit_status": "no_exit_liquidity", "pnl_lamports": _stuck_loss(size_lamports)}
+        stuck = _stuck_loss(size_lamports)
+        fees = fee_stack_lamports(
+            size_lamports=size_lamports,
+            entry=entry,
+            exit_status="no_exit_liquidity",
+            pnl_lamports=stuck,
+            exit_sol_lamports=None,
+        )
+        return {**base, "exit_status": "no_exit_liquidity", "pnl_lamports": stuck, "fee_stack_lamports": fees}
     booked = _book_for_exit(entry, state)
     if booked is None:
-        return {**base, "exit_status": "no_exit_liquidity", "pnl_lamports": _stuck_loss(size_lamports)}
+        stuck = _stuck_loss(size_lamports)
+        fees = fee_stack_lamports(
+            size_lamports=size_lamports,
+            entry=entry,
+            exit_status="no_exit_liquidity",
+            pnl_lamports=stuck,
+            exit_sol_lamports=None,
+        )
+        return {**base, "exit_status": "no_exit_liquidity", "pnl_lamports": stuck, "fee_stack_lamports": fees}
     quote, base_raw, venue = booked
     mcap = market_cap_sol(quote, base_raw)
     spot = spot_sol_per_ui(quote, base_raw)
+    sell_gross = entry.tokens_raw * quote // (base_raw + entry.tokens_raw) if base_raw + entry.tokens_raw > 0 else None
     sol_out = quote_sell(
         venue=venue,
         tokens_raw=entry.tokens_raw,
@@ -390,10 +441,32 @@ def simulate_exit(
     )
     base.update({"exit_venue": venue, "exit_spot_sol": spot})
     if sol_out is None:
-        return {**base, "exit_status": "no_exit_liquidity", "pnl_lamports": _stuck_loss(size_lamports)}
+        stuck = _stuck_loss(size_lamports)
+        fees = fee_stack_lamports(
+            size_lamports=size_lamports,
+            entry=entry,
+            exit_status="no_exit_liquidity",
+            pnl_lamports=stuck,
+            exit_sol_lamports=None,
+        )
+        return {**base, "exit_status": "no_exit_liquidity", "pnl_lamports": stuck, "fee_stack_lamports": fees}
     # Rent paid at entry comes back when the sell lands. Priority paid both sides.
     pnl = sol_out - size_lamports - 2 * PRIORITY_FEE_LAMPORTS
-    return {**base, "exit_status": "realized", "exit_sol_lamports": sol_out, "pnl_lamports": pnl}
+    fees = fee_stack_lamports(
+        size_lamports=size_lamports,
+        entry=entry,
+        exit_status="realized",
+        pnl_lamports=pnl,
+        exit_sol_lamports=sol_out,
+        sell_gross_lamports=sell_gross,
+    )
+    return {
+        **base,
+        "exit_status": "realized",
+        "exit_sol_lamports": sol_out,
+        "pnl_lamports": pnl,
+        "fee_stack_lamports": fees,
+    }
 
 
 def _stuck_loss(size_lamports: int) -> int:

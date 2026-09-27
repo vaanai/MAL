@@ -14,6 +14,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from tools.laya_v0 import _gross_summary
+
 LAMPORTS_PER_SOL = 1_000_000_000
 BOOTSTRAP_DRAWS = 1000
 BOOTSTRAP_SEED = 1
@@ -37,6 +39,7 @@ class BookTrade:
     mint: str
     t_ms: int
     pnl: int
+    gross_pnl: int | None = None
 
 
 def _pct(ordered: Sequence[float], p: float) -> float:
@@ -213,4 +216,5 @@ def book_stats(
             "total_sol": scale_2["total_sol"],
             "promote": scale_2["promote"],
         }
+    result.update(_gross_summary(trades))
     return result
