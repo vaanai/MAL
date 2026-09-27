@@ -278,6 +278,7 @@ class DecisionRow:
     entry_t_ms: int = 0
     barrier: dict[str, int | None] = field(default_factory=dict)
     raw_pnl_by_rule: dict[str, int | None] = field(default_factory=dict)
+    fees_by_rule: dict[str, int | None] = field(default_factory=dict)
     pressure_slot_buys: int = 0
     pressure_nearby_lamports: int = 0
     pnl_pressure_1: dict[str, int | None] = field(default_factory=dict)
@@ -1579,7 +1580,10 @@ def combine_fail_models(
 
 
 def _gated_stats(rows: Sequence[Scored]) -> dict[str, Any]:
-    flat = [BookTrade(row.mint, row.decision_t_ms, row.pnl) for row in rows]
+    flat = [
+        BookTrade(row.mint, row.decision_t_ms, row.pnl, gross_pnl=_gross_pnl(row.raw_pnl, row.fee_stack))
+        for row in rows
+    ]
     applied = any(row.pressure_stamped for row in rows)
     if not applied:
         return combine_fail_models(book_stats(flat), None, None, applied=False)
@@ -1597,7 +1601,7 @@ def _gated_from_rows(rows: Sequence[DecisionRow], rule_id: str) -> dict[str, Any
         pnl = row.pnl_by_rule.get(rule_id)
         if not isinstance(pnl, int):
             continue
-        flat.append(BookTrade(row.mint, row.decision_t_ms, pnl))
+        flat.append(_book_trade(row, rule_id, pnl))
         if row.pressure_stamped:
             applied = True
         a = row.pnl_pressure_1.get(rule_id)
@@ -1717,6 +1721,7 @@ def attach_labels(
             row.exit_status_by_rule[rule.rule_id] = status
             row.exit_t_by_rule[rule.rule_id] = part.get("exit_t_ms")
             row.raw_pnl_by_rule[rule.rule_id] = _raw_attempt_pnl(entry.status, pnl)
+            row.fees_by_rule[rule.rule_id] = part.get("fee_stack_lamports")
             row.pnl_by_rule[rule.rule_id] = _attempt_pnl(entry.status, status, pnl, size_lamports)
         spot = float(entry.spot_sol or 0.0)
         for name, tp, sl, _ladder_id in BARRIERS:
@@ -2109,6 +2114,41 @@ class BookTrade:
     mint: str
     t_ms: int
     pnl: int
+    gross_pnl: int | None = None
+
+
+def _gross_pnl(raw_pnl: int | None, fee_stack: int | None) -> int | None:
+    if not isinstance(raw_pnl, int) or not isinstance(fee_stack, int):
+        return None
+    return raw_pnl + fee_stack
+
+
+def _gross_summary(trades: Sequence[BookTrade]) -> dict[str, Any]:
+    grosses = [trade.gross_pnl for trade in trades if isinstance(trade.gross_pnl, int)]
+    if not grosses or len(grosses) != len(trades):
+        return {
+            "gross_n": len(grosses),
+            "mean_gross_sol": None,
+            "median_gross_sol": None,
+            "total_gross_sol": None,
+            "mean_gross_return_on_size": None,
+        }
+    ordered = sorted(grosses)
+    n = len(grosses)
+    mean = sum(grosses) / n
+    return {
+        "gross_n": n,
+        "mean_gross_sol": mean / LAMPORTS_PER_SOL,
+        "median_gross_sol": statistics.median(ordered) / LAMPORTS_PER_SOL,
+        "total_gross_sol": sum(grosses) / LAMPORTS_PER_SOL,
+        "mean_gross_return_on_size": None,
+    }
+
+
+def _book_trade(row: DecisionRow, rule_id: str, pnl: int) -> BookTrade:
+    raw = row.raw_pnl_by_rule.get(rule_id)
+    fees = row.fees_by_rule.get(rule_id)
+    return BookTrade(row.mint, row.decision_t_ms, pnl, gross_pnl=_gross_pnl(raw if isinstance(raw, int) else None, fees))
 
 
 def _utc_day(t_ms: int) -> str:
@@ -2234,11 +2274,16 @@ def book_stats(trades: Sequence[BookTrade]) -> dict[str, Any]:
             "promote": promote,
         }
     )
+    summary.update(_gross_summary(trades))
     return summary
 
 
 def _trades_from_scored(rows: Sequence[Scored]) -> list[BookTrade]:
-    return [BookTrade(row.mint, row.decision_t_ms, row.pnl) for row in rows]
+    out: list[BookTrade] = []
+    for row in rows:
+        gross = _gross_pnl(row.raw_pnl, row.fee_stack)
+        out.append(BookTrade(row.mint, row.decision_t_ms, row.pnl, gross_pnl=gross))
+    return out
 
 
 def _topk(indexed: list[tuple[float, int]], frac: float) -> list[int]:
@@ -2302,6 +2347,8 @@ class Scored:
     pnl_p1: int | None = None
     pnl_p2: int | None = None
     pressure_stamped: bool = False
+    raw_pnl: int | None = None
+    fee_stack: int | None = None
 
 
 def evaluate_entry(
@@ -2354,6 +2401,8 @@ def evaluate_entry(
             pnl = row.pnl_by_rule[rule_id]
             assert pnl is not None
             p1, p2 = _pair_pressure(row, rule_id)
+            raw = row.raw_pnl_by_rule.get(rule_id)
+            fees = row.fees_by_rule.get(rule_id)
             scored.append(
                 Scored(
                     fold=fold_i,
@@ -2367,6 +2416,8 @@ def evaluate_entry(
                     pnl_p1=p1,
                     pnl_p2=p2,
                     pressure_stamped=row.pressure_stamped,
+                    raw_pnl=raw if isinstance(raw, int) else None,
+                    fee_stack=fees if isinstance(fees, int) else None,
                 )
             )
         fold_meta.append(meta)
@@ -2434,6 +2485,8 @@ def evaluate_barrier(
             pnl = row.pnl_by_rule[pnl_rule]
             assert pnl is not None
             p1, p2 = _pair_pressure(row, pnl_rule)
+            raw = row.raw_pnl_by_rule.get(pnl_rule)
+            fees = row.fees_by_rule.get(pnl_rule)
             scored.append(
                 Scored(
                     fold=fold_i,
@@ -2447,6 +2500,8 @@ def evaluate_barrier(
                     pnl_p1=p1,
                     pnl_p2=p2,
                     pressure_stamped=row.pressure_stamped,
+                    raw_pnl=raw if isinstance(raw, int) else None,
+                    fee_stack=fees if isinstance(fees, int) else None,
                 )
             )
         meta["test_n"] = len(test_keep)

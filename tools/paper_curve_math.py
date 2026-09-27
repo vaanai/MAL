@@ -351,3 +351,44 @@ def quote_sell(
     if out <= 0:
         return None
     return out
+
+
+def per_side_portal_venue_frac(portal_fee_ppm: int = PORTAL_FEE_PPM, venue_fee_ppm: int = BONDING_FEE_PPM) -> float:
+    """Fraction of input lost to portal then venue on one side (sequential)."""
+    side = 1.0 - (1.0 - portal_fee_ppm / PPM) * (1.0 - venue_fee_ppm / PPM)
+    return side
+
+
+def round_trip_fee_identity(
+    size_lamports: int,
+    *,
+    portal_fee_ppm: int = PORTAL_FEE_PPM,
+    venue_fee_ppm: int = BONDING_FEE_PPM,
+    priority_lamports_per_side: int = PRIORITY_FEE_LAMPORTS,
+) -> dict[str, float | int]:
+    """Fee-only round trip at unchanged price (impact dust). Reviewer can recompute from constants.
+
+    Wallet pays ``size_lamports`` on entry. Portal (0.5%) then venue (1.25% bonding default)
+    apply sequentially on each side. Priority is fixed lamports per side, not a fraction of size.
+    Rent is omitted here (recovered on a successful sell).
+    """
+    side_frac = per_side_portal_venue_frac(portal_fee_ppm, venue_fee_ppm)
+    venue_portal_round_frac = 1.0 - (1.0 - side_frac) ** 2
+    venue_portal_lamports = int(round(size_lamports * venue_portal_round_frac))
+    priority_round_lamports = 2 * priority_lamports_per_side
+    total_lamports = venue_portal_lamports + priority_round_lamports
+    size = size_lamports / LAMPORTS_PER_SOL
+    return {
+        "size_lamports": size_lamports,
+        "size_sol": size,
+        "portal_fee_ppm_per_side": portal_fee_ppm,
+        "venue_fee_ppm_per_side": venue_fee_ppm,
+        "per_side_frac_portal_then_venue": side_frac,
+        "round_trip_frac_portal_and_venue": venue_portal_round_frac,
+        "round_trip_lamports_portal_and_venue": venue_portal_lamports,
+        "round_trip_frac_priority": priority_round_lamports / size_lamports,
+        "round_trip_lamports_priority": priority_round_lamports,
+        "round_trip_frac_total": total_lamports / size_lamports,
+        "round_trip_lamports_total": total_lamports,
+        "priority_lamports_per_side": priority_lamports_per_side,
+    }
