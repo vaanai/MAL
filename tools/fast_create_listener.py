@@ -190,7 +190,7 @@ def _ssl_context() -> Any:
 
 async def run_client(ws_url: str, output_dir: Path, stop: asyncio.Event) -> None:
     import websockets
-    from websockets.exceptions import ConnectionClosed
+    from websockets.exceptions import ConnectionClosed, WebSocketException
 
     decision = phase1_helius_decision()
     if decision["open_socket"]:
@@ -246,6 +246,14 @@ async def run_client(ws_url: str, output_dir: Path, stop: asyncio.Event) -> None
                         )
         except ConnectionClosed as exc:
             log.warning("ws_closed code=%s", getattr(exc, "code", None))
+        except asyncio.TimeoutError as exc:
+            log.warning("ws_connect_failed err=%s", type(exc).__name__)
+        except WebSocketException as exc:
+            # Covers InvalidStatusCode/InvalidHandshake (e.g. a 502 from the
+            # vendor's edge during their own reconnect) that ConnectionClosed
+            # does not catch. Falls into the same backoff/retry path below
+            # instead of propagating and killing the process.
+            log.warning("ws_connect_failed err=%s", exc)
         except OSError as exc:
             log.warning("ws_error err=%s", type(exc).__name__)
         if stop.is_set():
