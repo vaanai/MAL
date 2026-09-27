@@ -9,8 +9,11 @@ import unittest
 from pathlib import Path
 
 from tools.forward_paper import (
+    CHAIN_SAMPLE_CAP,
     DEFAULT_FAIL_RATE,
     HARD_MAX_POSITION_LAMPORTS,
+    LATENCY_SAMPLE_CAP,
+    PRUNE_AFTER_MS,
     READ_CHUNK_BYTES,
     SCHEMA_DECISION,
     STALE_ACTION_MS,
@@ -403,6 +406,119 @@ class RiskTests(unittest.TestCase):
             fresh, _kill = reload_risk_config(path, current)
             self.assertEqual(fresh[0].max_concurrent, 1)
             self.assertEqual(fresh[0].daily_loss_lamports, 50_000_000)
+
+
+class MemoryBoundTests(unittest.TestCase):
+    """Cooldown-map pruning and orphan-print eviction change no decision."""
+
+    def test_cooldown_pruning_matches_an_engine_that_never_prunes(self) -> None:
+        spec = BookSpec(
+            "buy_all",
+            "baseline",
+            "hold_30s",
+            max_concurrent=None,
+            daily_loss_lamports=None,
+            creator_cooldown_ms=2_000,
+            token_cooldown_ms=2_000,
+        )
+
+        def _build() -> ForwardEngine:
+            engine = ForwardEngine(
+                [spec],
+                kill_file=Path("/tmp/forward-paper-cooldown-prune"),
+                tape_end_ms=T0 + 120_000,
+                retain_rows=True,
+            )
+            engine.push_create(_create("MintA", T0, creator="CreatorA"))
+            engine.push_print(*_parsed("MintA", T0 + 1_000))
+            # Unrelated filler print: advances the clock past MintA's hold_30s
+            # exit the same way, at the same instant, in both engines below --
+            # not a forced/early finalize, just the tape moving forward.
+            engine.push_print(*_parsed("Filler", T0 + 40_000))
+            engine.push_create(_create("MintB", T0 + 60_000, creator="CreatorA"))
+            engine.push_print(*_parsed("MintB", T0 + 60_500))
+            return engine
+
+        # Both engines see the exact same events at the exact same watermarks.
+        # The only difference is that `pruned` also calls `_prune` in between.
+        checkpoints = (T0 + 10_000, T0 + 25_000, T0 + 41_000, T0 + 55_000)
+        pruned = _build()
+        for cp in checkpoints:
+            pruned.drain_until(cp)
+            pruned._prune(cp)
+        pruned.drain_until(T0 + 120_000, final=True)
+
+        baseline = _build()
+        for cp in checkpoints:
+            baseline.drain_until(cp)
+        baseline.drain_until(T0 + 120_000, final=True)
+
+        self.assertEqual(pruned.decisions, baseline.decisions)
+        self.assertEqual(pruned.positions, baseline.positions)
+        mintb_ceiling = [row for row in pruned.decisions if row["mint"] == "MintB" and row.get("ledger") == "ceiling"]
+        self.assertTrue(any(row["action"] == "enter" for row in mintb_ceiling))
+        # And confirm pruning actually removed something along the way.
+        ledger = baseline.books[0].ceiling
+        self.assertIn("MintA", ledger.token_ready)
+        self.assertIn("CreatorA", ledger.creator_ready)
+
+    def test_prune_drops_stale_cooldowns_under_a_long_stream(self) -> None:
+        spec = BookSpec(
+            "buy_all",
+            "baseline",
+            "hold_30s",
+            max_concurrent=None,
+            daily_loss_lamports=None,
+            creator_cooldown_ms=1_000,
+            token_cooldown_ms=1_000,
+        )
+        n = 30
+        engine = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-cooldown-bound"),
+            tape_end_ms=T0 + n * 60_000 + 60_000,
+            retain_rows=False,
+        )
+        for i in range(n):
+            base = T0 + i * 60_000
+            mint = f"Mint{i}"
+            creator = f"Creator{i}"
+            engine.push_create(_create(mint, base, creator=creator))
+            engine.push_print(*_parsed(mint, base + 1_000))
+            engine.drain_until(base + 35_000, final=True)
+            engine._prune(base + 35_000)
+        ledger = engine.books[0].ceiling
+        self.assertLess(len(ledger.token_ready), 3)
+        self.assertLess(len(ledger.creator_ready), 3)
+        self.assertEqual(ledger.closed_n, n)
+
+    def test_prune_drops_orphan_early_prints_with_no_decision_either_way(self) -> None:
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine([spec], kill_file=Path("/tmp/forward-paper-early-prune"), retain_rows=True)
+        engine.push_print(*_parsed("GhostMint", T0 + 100))
+        engine.flush()
+        self.assertIn("GhostMint", engine.early)
+        engine._prune(T0 + 100 + PRUNE_AFTER_MS - 1)
+        self.assertIn("GhostMint", engine.early)
+        engine._prune(T0 + 100 + PRUNE_AFTER_MS)
+        self.assertNotIn("GhostMint", engine.early)
+        self.assertEqual(engine.decisions, [])
+        self.assertEqual(engine.positions, [])
+
+    def test_latency_meter_ring_buffers_stay_bounded(self) -> None:
+        meter = LatencyMeter(extra_ms=1)
+        base = 1_700_000_000
+        for i in range(CHAIN_SAMPLE_CAP + 5_000):
+            meter.note_print(base * 1000 + i, base + i // 1000)
+        self.assertEqual(len(meter.chain_to_recv), CHAIN_SAMPLE_CAP)
+        self.assertIsNotNone(meter.chain_median_ms())
+        for i in range(LATENCY_SAMPLE_CAP + 1_000):
+            meter.measure(i * 10)
+        self.assertEqual(len(meter.recv_to_decision), LATENCY_SAMPLE_CAP)
+        self.assertEqual(len(meter.decision_to_send), LATENCY_SAMPLE_CAP)
+        self.assertEqual(len(meter.applied), LATENCY_SAMPLE_CAP)
+        report = meter.report()
+        self.assertEqual(report["chain_to_recv"]["n"], CHAIN_SAMPLE_CAP)
 
 
 class ModelAndLogTests(unittest.TestCase):
