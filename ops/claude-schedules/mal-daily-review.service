@@ -1,0 +1,10 @@
+[Unit]
+Description=MAL daily review (headless Claude Code, read-only)
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/MAL
+ExecStart=%h/MAL/ops/claude-schedules/daily-review.sh
+TimeoutStartSec=1300
+Nice=10

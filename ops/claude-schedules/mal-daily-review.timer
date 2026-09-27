@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily MAL review at 05:00 UTC (Claude, read-only)
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+Persistent=false
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
