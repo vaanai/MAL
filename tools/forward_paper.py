@@ -155,6 +155,49 @@ def decision_counts_for_promotion(decision_t_ms: int | None, live_at_ms: int | N
     return decision_t_ms >= live_at_ms
 
 
+def position_row_counts_for_promotion(row: dict[str, Any], live_at_ms: int | None) -> bool:
+    """Promotion ledger only: shadow, plus rows from before that split existed.
+
+    Ceiling is the capacity book. It is not scored here. The JSONL is left on disk.
+    """
+    if row.get("event") not in ("close", "miss"):
+        return False
+    if row.get("ledger") not in (None, "shadow"):
+        return False
+    return decision_counts_for_promotion(row.get("decision_t_ms"), live_at_ms)
+
+
+def iter_position_rows(path: Path) -> Iterable[dict[str, Any]]:
+    """Read positions.jsonl. Does not truncate or delete it."""
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                row = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def promotion_pnls_by_book(rows: Iterable[dict[str, Any]], live_at_ms: int | None) -> dict[str, list[int]]:
+    """PnL the promotion read keeps. Void-window decision times are left out."""
+    out: dict[str, list[int]] = {}
+    for row in rows:
+        if not position_row_counts_for_promotion(row, live_at_ms):
+            continue
+        pnl = row.get("pnl_lamports")
+        if isinstance(pnl, bool) or not isinstance(pnl, int):
+            continue
+        book = row.get("book")
+        if not isinstance(book, str) or not book:
+            continue
+        out.setdefault(book, []).append(pnl)
+    return out
+
+
 def row_clock_ms(kind: str, row: dict[str, Any]) -> int | None:
     if kind == "create":
         return parse_time_ms(row.get("t_ws"))
@@ -583,6 +626,7 @@ class _Ledger:
     day: str = ""
     day_pnl: int = 0
     realized: list[int] = field(default_factory=list)
+    realized_decision_t_ms: list[int] = field(default_factory=list)
     token_ready: dict[str, int] = field(default_factory=dict)
     creator_ready: dict[str, int] = field(default_factory=dict)
     closed_n: int = 0
@@ -748,6 +792,7 @@ class ForwardEngine:
         logs: dict[str, JsonlLog] | None = None,
         fail_rate: float = 0.0,
         promotion_live_ms: int | None = None,
+        positions_path: Path | None = None,
     ) -> None:
         self.books = []
         for spec in books:
@@ -772,6 +817,8 @@ class ForwardEngine:
         self.fail_rate = float(fail_rate)
         self.fail_rng = random.Random()
         self.promotion_live_ms = promotion_live_ms
+        # Durable ledger. summary() scores this file for promotion and does not rewrite it.
+        self.positions_path = positions_path
         self.stale_dropped = 0
         self.newest_recv_ms: int | None = None
         self._tx_order = TxOrder()
@@ -1385,6 +1432,7 @@ class ForwardEngine:
             ledger.day = day
             ledger.day_pnl = 0
             ledger.realized = []
+            ledger.realized_decision_t_ms = []
 
     def _decision(
         self,
@@ -1465,7 +1513,7 @@ class ForwardEngine:
             cost = -PRIORITY_FEE_LAMPORTS
             self._roll_day(ledger, pending.t_entry_ms)
             ledger.day_pnl += cost
-            ledger.realized.append(cost)
+            self._book_realized(ledger, pending.decision_t_ms, cost)
             ledger.closed_n += 1
             self._decision(
                 run,
@@ -1587,7 +1635,7 @@ class ForwardEngine:
         self._roll_day(ledger, t_ms)
         if isinstance(pnl, int):
             ledger.day_pnl += pnl
-            ledger.realized.append(pnl)
+            self._book_realized(ledger, opened.decision_t_ms, pnl)
         ledger.closed_n += 1
         ready = t_ms
         ledger.token_ready[mint] = ready + run.spec.token_cooldown_ms
@@ -1617,6 +1665,10 @@ class ForwardEngine:
                 "promotion_valid": self._promotion_valid(opened.decision_t_ms),
             }
         )
+
+    def _book_realized(self, ledger: _Ledger, decision_t_ms: int, pnl: int) -> None:
+        ledger.realized.append(pnl)
+        ledger.realized_decision_t_ms.append(decision_t_ms)
 
     def _position(self, row: dict[str, Any]) -> None:
         if self.retain_rows:
@@ -1668,10 +1720,23 @@ class ForwardEngine:
     def summary(self, t_ms: int | None = None) -> dict[str, Any]:
         when = self._clock_ms if t_ms is None else t_ms
         day = time.strftime("%Y-%m-%d", time.gmtime(when / 1000)) if when else ""
+        from_file: dict[str, list[int]] | None = None
+        path = self.positions_path
+        if path is not None and path.is_file():
+            from_file = promotion_pnls_by_book(iter_position_rows(path), self.promotion_live_ms)
         books = {}
         for run in self.books:
             ceiling = _ledger_view(run.ceiling, day)
-            shadow = _ledger_view(run.shadow, day)
+            if from_file is not None:
+                shadow = _ledger_view(run.shadow, day)
+                shadow["realized"] = _stats_from_lamports(from_file.get(run.spec.book_id, []))
+            else:
+                shadow = _ledger_view(
+                    run.shadow,
+                    day,
+                    promotion_live_ms=self.promotion_live_ms,
+                    for_promotion=True,
+                )
             books[run.spec.book_id] = {
                 "kind": run.spec.kind,
                 **ceiling,
@@ -1702,14 +1767,28 @@ class ForwardEngine:
         }
 
 
-def _ledger_view(ledger: _Ledger, day: str) -> dict[str, Any]:
+def _ledger_view(
+    ledger: _Ledger,
+    day: str,
+    *,
+    promotion_live_ms: int | None = None,
+    for_promotion: bool = False,
+) -> dict[str, Any]:
+    pnls = ledger.realized
+    if for_promotion:
+        pnls = []
+        times = ledger.realized_decision_t_ms
+        for index, pnl in enumerate(ledger.realized):
+            decision_t = times[index] if index < len(times) else None
+            if decision_counts_for_promotion(decision_t, promotion_live_ms):
+                pnls.append(pnl)
     return {
         "open": len(ledger.open),
         "pending": len(ledger.pending),
         "closed": ledger.closed_n,
         "day": ledger.day or day,
         "day_pnl_sol": ledger.day_pnl / LAMPORTS_PER_SOL,
-        "realized": _stats_from_lamports(ledger.realized),
+        "realized": _stats_from_lamports(pnls),
         "skips": dict(ledger.skip_reasons),
     }
 
@@ -2195,6 +2274,7 @@ def serve(config_path: Path) -> int:
         slippage_cap=slippage,
         logs={"decisions": logs["decisions"], "positions": logs["positions"]},
         fail_rate=DEFAULT_FAIL_RATE,
+        positions_path=output_dir / "positions.jsonl",
     )
     bind_attention(engine, attention_dir)
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
