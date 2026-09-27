@@ -1,0 +1,23 @@
+[Unit]
+Description=MAL mint-authority preprocessedSubscribe (daily cap 10000)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/mal/eng
+Nice=0
+MemoryMax=1G
+EnvironmentFile=/var/lib/mal/fast-listener/helius.env
+ExecStart=/var/lib/mal/fast-listener/.venv/bin/python /var/lib/mal/eng/fast_pre_create.py --output-dir /var/lib/mal/sealed/fast-pre-create --state /var/lib/mal/fast-listener/pre-create-credits.json --daily-cap 10000
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+StandardOutput=append:/var/lib/mal/logs/fast-pre-create.log
+StandardError=append:/var/lib/mal/logs/fast-pre-create.log
+
+[Install]
+WantedBy=default.target
