@@ -451,7 +451,7 @@ def yield_for_runner(
     status_path: Path | None = None,
     sleep: Any = time.sleep,
     clock: Any = time.monotonic,
-    pause_above: int = 3000,
+    pause_above: int = 2000,
     resume_below: int = 1500,
     max_wait_s: float = 600,
 ) -> int:
@@ -507,9 +507,10 @@ def load_books(
         with open_text(_resolve_tape_path(path)) as fh:
             for line in fh:
                 stats.lines += 1
+                if stats.lines % 50_000 == 0:
+                    yield_for_runner()
                 if stats.lines % 250_000 == 0:
                     print(f"tape_lines={stats.lines} kept={stats.kept}", file=sys.stderr)
-                    yield_for_runner()
                 line = line.strip()
                 if not line:
                     continue
