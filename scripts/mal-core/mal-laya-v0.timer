@@ -2,6 +2,10 @@
 Description=Daily LAYA v0 paper retrain
 
 [Timer]
+# Host unit is disabled until the 2026-10-05 review. The live runner
+# scores the frozen books, and a nightly holdout spike is not worth
+# the clean-clock risk. Re-enable with:
+#   systemctl --user enable --now mal-laya-v0.timer
 OnCalendar=*-*-* 04:15:00 UTC
 Persistent=true
 RandomizedDelaySec=30min
