@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly frozen migrate-direct score
+
+[Timer]
+OnCalendar=*-*-* 01:20:00 UTC
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target
