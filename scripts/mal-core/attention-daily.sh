@@ -4,6 +4,12 @@
 set -euo pipefail
 export LC_ALL=C.UTF-8 LANG=C.UTF-8
 
+# The live runner scores attn_first_hold_60m. Skip the rescore until the review.
+if [[ "$(date -u +%Y-%m-%d)" < "2026-10-05" ]]; then
+  echo "attention-daily: held until 2026-10-05" >&2
+  exit 0
+fi
+
 REPO="${MAL_REPO:-${HOME}/mal}"
 ATTENTION_DIR="${MAL_ATTENTION_OUTPUT_DIR:-/var/lib/mal/attention}"
 TAPE_DIR="${MAL_TAPE_DIR:-/var/lib/mal/sealed/trades}"

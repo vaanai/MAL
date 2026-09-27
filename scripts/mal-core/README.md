@@ -19,7 +19,7 @@ Host bootstrap helpers. **No secrets in this tree.**
 | [attention.sh](attention.sh) | host | `python -m observe.attention` → `/var/lib/mal/attention` |
 | [mal-attention.service](mal-attention.service) | host (systemd --user) | DexScreener / pump.fun / GeckoTerminal attention first-seen |
 | [attention-daily.sh](attention-daily.sh) | host | genuine-arrival rescore + LAYA join JSONL (Nice=19) |
-| [mal-attention-daily.timer](mal-attention-daily.timer) | host (systemd --user) | 04:45 UTC daily, after LAYA 04:15 |
+| [mal-attention-daily.timer](mal-attention-daily.timer) | host (systemd --user) | held until 2026-10-05; the live runner scores attn_first_hold_60m |
 | [forward-paper.sh](forward-paper.sh) | host | Tail the tape into paper books (`/var/lib/mal/paper/forward-paper`). No keys. Does not edit the recorder |
 | [mal-forward-paper.service](mal-forward-paper.service) | host (systemd --user) | Long-running forward paper service |
 | [forward-paper.json](forward-paper.json) | host | Books: buy-all, LAYA 0.6 / 0.7, migrate tp50/sl30 |
