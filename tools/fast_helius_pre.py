@@ -161,10 +161,76 @@ def read_compact_u16(buf: bytes, off: int) -> tuple[int, int]:
     raise ValueError("compact-u16 too long")
 
 
+def _v1_config_len(mask: int) -> int:
+    """Bytes of config values. Bits 0 and 1 together are one u64; later bits are u32."""
+    if mask & 0x3 and (mask & 0x3) != 0x3:
+        raise ValueError("bad v1 priority mask")
+    size = 8 if mask & 0x3 else 0
+    bits = mask >> 2
+    while bits:
+        if bits & 1:
+            size += 4
+        bits >>= 1
+    return size
+
+
+def _parse_v1_transaction(raw: bytes) -> dict[str, Any]:
+    """SIMD-0385 transaction. Version byte 0x81, signatures at the tail."""
+    if len(raw) < 1 + 3 + 4 + 32 + 2 or raw[0] != 0x81:
+        raise ValueError("not a v1 transaction")
+    off = 1
+    nreq = raw[off]
+    off += 3
+    mask = int.from_bytes(raw[off : off + 4], "little")
+    off += 4
+    off += 32
+    nins = raw[off]
+    naddr = raw[off + 1]
+    off += 2
+    if nreq < 1 or nreq > 16 or naddr < 1 or naddr > 64 or nins > 64:
+        raise ValueError("bad v1 counts")
+    if off + 32 * naddr > len(raw):
+        raise ValueError("truncated v1 keys")
+    keys = []
+    for _ in range(naddr):
+        keys.append(b58encode(raw[off : off + 32]))
+        off += 32
+    off += _v1_config_len(mask)
+    if off + 4 * nins > len(raw):
+        raise ValueError("truncated v1 headers")
+    headers: list[tuple[int, int, int]] = []
+    for _ in range(nins):
+        headers.append((raw[off], raw[off + 1], int.from_bytes(raw[off + 2 : off + 4], "little")))
+        off += 4
+    instructions: list[dict[str, Any]] = []
+    for program_index, nacc, ndata in headers:
+        if off + nacc + ndata > len(raw):
+            raise ValueError("truncated v1 payload")
+        accounts = list(raw[off : off + nacc])
+        off += nacc
+        data = raw[off : off + ndata]
+        off += ndata
+        instructions.append(
+            {"program_index": program_index, "accounts": accounts, "data": data}
+        )
+    if off + 64 * nreq != len(raw):
+        raise ValueError("bad v1 signatures")
+    signatures = [b58encode(raw[off + 64 * i : off + 64 * (i + 1)]) for i in range(nreq)]
+    return {
+        "signatures": signatures,
+        "version": 1,
+        "keys": keys,
+        "instructions": instructions,
+        "lookups": [],
+    }
+
+
 def parse_wire_transaction(raw: bytes) -> dict[str, Any]:
-    """Signed transaction bytes (legacy or versioned)."""
+    """Signed transaction bytes (legacy, v0, or v1)."""
     if not raw:
         raise ValueError("empty transaction")
+    if raw[0] == 0x81:
+        return _parse_v1_transaction(raw)
     nsig, off = read_compact_u16(raw, 0)
     if nsig < 1 or nsig > 16 or off + 64 * nsig > len(raw):
         raise ValueError("bad signature section")

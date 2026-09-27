@@ -117,6 +117,25 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed["signature"], b58encode(sig))
         self.assertEqual(parse_wire_transaction(parsed["wire"])["signatures"][0], b58encode(sig))
 
+    def test_v1_create_accounts(self) -> None:
+        user, mint, curve, pump = _key(2), _key(3), _key(4), b58decode(PUMP_PROGRAM)
+        keys = [user, mint, curve, pump]
+        ix_accounts = [1, 0, 2]
+        data = _CREATE_V2 + b"\x00"
+        body = bytes([0x81, 1, 0, 3])
+        body += (0).to_bytes(4, "little")
+        body += bytes(32)
+        body += bytes([1, len(keys)])
+        for key in keys:
+            body += key
+        body += bytes([3, len(ix_accounts)]) + len(data).to_bytes(2, "little")
+        body += bytes(ix_accounts) + data
+        body += bytes([9]) * 64
+        actions = pump_actions(parse_wire_transaction(body), [])
+        self.assertEqual(actions[0]["instr"], "create_v2")
+        self.assertEqual(actions[0]["mint"], b58encode(mint))
+        self.assertEqual(actions[0]["bonding_curve"], b58encode(curve))
+
     def test_migrate_v2_accounts(self) -> None:
         mint, curve, pump = _key(3), _key(4), b58decode(PUMP_PROGRAM)
         keys = [_key(1), _key(6), mint, _key(7), curve, pump]
