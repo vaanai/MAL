@@ -20,7 +20,7 @@ import signal
 import statistics
 import sys
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TextIO
@@ -123,6 +123,11 @@ STALE_ACTION_MS = 5_000
 # Live process only. Replay keeps the full path. Covers the 120 s decision grid.
 LIVE_IDLE_RETAIN_MS = 180_000
 READ_CHUNK_BYTES = 2 * 1024 * 1024
+# LatencyMeter is diagnostics only (report()/latency.jsonl). A decision's own
+# applied_latency_ms comes from chain_median_ms(), which only ever reads the
+# newest 8192 samples, so a ring buffer this much bigger changes no decision.
+CHAIN_SAMPLE_CAP = 20_000
+LATENCY_SAMPLE_CAP = 50_000
 # Post-#95 forward book is void from this instant until the guarded runner is live.
 VOID_FROM = "2026-09-25T19:00:00Z"
 VOID_FROM_MS = 1_790_362_800_000
@@ -385,12 +390,17 @@ class LatencyMeter:
     def __init__(self, *, now_ms: Callable[[], int] | None = None, extra_ms: int = 0) -> None:
         self.now_ms = now_ms
         self.extra_ms = extra_ms
-        self.chain_to_recv: list[int] = []
-        self.recv_to_decision: list[int] = []
-        self.decision_to_send: list[int] = []
-        self.applied: list[int] = []
+        # Ring buffers: diagnostics only. A decision's own applied_latency_ms
+        # is computed live in quote()/measure() and never re-reads history
+        # beyond chain_median_ms()'s newest-8192 window, so capping the
+        # buffers changes no decision, only the long-run percentile report.
+        self.chain_to_recv: deque[int] = deque(maxlen=CHAIN_SAMPLE_CAP)
+        self.recv_to_decision: deque[int] = deque(maxlen=LATENCY_SAMPLE_CAP)
+        self.decision_to_send: deque[int] = deque(maxlen=LATENCY_SAMPLE_CAP)
+        self.applied: deque[int] = deque(maxlen=LATENCY_SAMPLE_CAP)
         self._median: int | None = None
         self._median_n = 0
+        self._chain_n = 0
 
     def note_print(self, t_recv_ms: int, event_ts: int | None) -> None:
         if event_ts is None:
@@ -399,15 +409,16 @@ class LatencyMeter:
         if lag < CHAIN_LAG_MIN_MS or lag > CHAIN_LAG_MAX_MS:
             return
         self.chain_to_recv.append(lag)
+        self._chain_n += 1
 
     def chain_median_ms(self) -> int | None:
-        n = len(self.chain_to_recv)
+        n = self._chain_n
         if n == 0:
             return None
         if self._median is not None and n - self._median_n < 2000:
             return self._median
-        sample = self.chain_to_recv[-8192:]
-        self._median = int(round(statistics.median(sample)))
+        tail = list(self.chain_to_recv)[-8192:]
+        self._median = int(round(statistics.median(tail)))
         self._median_n = n
         return self._median
 
@@ -904,6 +915,11 @@ class ForwardEngine:
         self.tracks: dict[str, _Track] = {}
         self.mint_order: dict[str, int] = {}
         self.seen: dict[str, set[tuple[Any, ...]]] = defaultdict(set)
+        # Mints past the config-derived horizon in _prune: no book can still
+        # open, hold, or exit a position on them. Kept (as bare strings) so a
+        # duplicate create/print replay after a restart is a no-op, same as
+        # the pre-eviction dedupe on `mint in self.library` used to be.
+        self.retired: set[str] = set()
         self.grids: list[tuple[int, int, str]] = []
         self.grid_seq = 0
         self.emitted_grids: set[tuple[str, int]] = set()
@@ -932,7 +948,10 @@ class ForwardEngine:
         self._register_create(create)
 
     def _register_create(self, create: CreateSignal) -> None:
-        if create.mint in self.library:
+        # A retired mint is a mint _prune already proved no book can act on
+        # again. A duplicate create replay for it is a no-op, exactly like a
+        # duplicate create for a still-tracked mint always was.
+        if create.mint in self.library or create.mint in self.retired:
             return
         if self.tape_end_ms is not None and create.t_signal_ms > self.tape_end_ms:
             return
@@ -965,6 +984,11 @@ class ForwardEngine:
         """Genuine first-seen only. Pre-migration rows stay buffered until graduation."""
         ev = self._attention_event(row)
         if ev is None:
+            return
+        if ev.mint in self.retired:
+            # Same outcome as today: _note_attention/_flush_attention already
+            # no-op once `self.tracks.get(mint)` is None. Dropping it here
+            # only skips re-creating an empty self.attention[mint] entry.
             return
         if self.tape_end_ms is not None and ev.t_ms > self.tape_end_ms:
             return
@@ -1076,6 +1100,10 @@ class ForwardEngine:
     def _add_print(self, mint: str, pr: FlowPrint, event_ts: int | None = None) -> bool:
         book = self.library.get(mint)
         if book is None:
+            if mint in self.retired:
+                # No book can still act on this mint (see _prune). A late
+                # print for it is dropped, not buffered forever in `early`.
+                return False
             self.early[mint].append((pr, event_ts))
             return False
         if self.tape_end_ms is not None and pr.t_recv_ms > self.tape_end_ms:
@@ -1860,13 +1888,94 @@ class ForwardEngine:
         if log is not None:
             log.write(row)
 
+    def _identity_horizon_ms(self) -> int:
+        """Longest window any configured book could still act in.
+
+        A mint's full identity (library/tracks/mint_order/seen/attention) is
+        only dropped once it has been idle at least this long, on top of
+        already being non-busy and not mig15-waiting. Every term here comes
+        from the live book configs and the shared trigger constants, not a
+        guess, so a book with a longer cooldown or hold than today's default
+        automatically pushes the horizon out instead of racing it.
+        """
+        horizon = PRUNE_AFTER_MS
+        if self.offsets_ms:
+            horizon = max(horizon, self.offsets_ms[-1])
+        horizon = max(horizon, MIG15_OFFSET_MS)
+        for run in self.books:
+            spec = run.spec
+            horizon = max(horizon, spec.token_cooldown_ms, spec.creator_cooldown_ms)
+            try:
+                rule = spec.resolved_exit(self.model.rule_id)
+            except ValueError:
+                rule = None
+            max_hold = getattr(rule, "max_hold_ms", None)
+            if isinstance(max_hold, int):
+                horizon = max(horizon, max_hold)
+        return horizon
+
+    def _prune_cooldowns(self, now_ms: int) -> None:
+        """Drop cooldown timestamps once they can never gate another entry.
+
+        `_risk_reason` only ever reads these as `t_ms < ready`, with `t_ms`
+        the current decision clock. Event time is non-decreasing across the
+        run, so once `ready <= now_ms` the comparison is False for every
+        future call too -- removing the entry is exactly as if it were still
+        there. This does not depend on the mint or creator being retired.
+        """
+        for run in self.books:
+            for ledger in (run.ceiling, run.shadow):
+                if ledger.token_ready:
+                    for mint in [m for m, ready in ledger.token_ready.items() if ready <= now_ms]:
+                        del ledger.token_ready[mint]
+                if ledger.creator_ready:
+                    for creator in [c for c, ready in ledger.creator_ready.items() if ready <= now_ms]:
+                        del ledger.creator_ready[creator]
+
+    def _evict_mint(self, mint: str) -> None:
+        """Drop everything keyed only by this mint. Never called while busy.
+
+        `busy` (open or pending in any book/ledger) and `mig15_waiting` are
+        checked by the caller before this runs, so no pending fill, open
+        position, or scheduled mig_15 trigger is ever affected. Grid, curve,
+        buyer, and migrate triggers are all print-driven; a mint idle past
+        `_identity_horizon_ms()` will not produce another print-driven
+        trigger from tape data it has not already fully accounted for.
+        """
+        book = self.library.pop(mint, None)
+        self.tracks.pop(mint, None)
+        self.mint_order.pop(mint, None)
+        self.seen.pop(mint, None)
+        self.attention.pop(mint, None)
+        self.early.pop(mint, None)
+        self.wallets.first_print_slot.pop(mint, None)
+        self.retired.add(mint)
+        if book is None:
+            return
+        if self.offsets_ms:
+            t0 = book.create.t_signal_ms
+            for off in self.offsets_ms:
+                self.emitted_grids.discard((mint, t0 + off))
+        creator = book.create.creator
+        if creator:
+            lst = self.by_creator.get(creator)
+            if lst is not None:
+                for idx, entry in enumerate(lst):
+                    if entry.create.mint == mint:
+                        lst.pop(idx)
+                        break
+                if not lst:
+                    self.by_creator.pop(creator, None)
+
     def _prune(self, now_ms: int) -> None:
         busy: set[str] = set()
         for run in self.books:
             for ledger in (run.ceiling, run.shadow):
                 busy.update(ledger.open)
                 busy.update(ledger.pending)
+        self._prune_cooldowns(now_ms)
         live_now = self.latency.now_ms() if self.latency.now_ms is not None else now_ms
+        identity_idle_ms = self._identity_horizon_ms()
         for mint, book in list(self.library.items()):
             if mint in busy or mint in self.mig15_waiting:
                 continue
@@ -1899,6 +2008,8 @@ class ForwardEngine:
             book.flow = keep
             book.path.prints = [pr.to_tape() for pr in keep]
             self.seen[mint] = {_dedupe_key(pr) for pr in keep}
+            if live_now - last >= identity_idle_ms:
+                self._evict_mint(mint)
 
     def summary(self, t_ms: int | None = None) -> dict[str, Any]:
         when = self._clock_ms if t_ms is None else t_ms
