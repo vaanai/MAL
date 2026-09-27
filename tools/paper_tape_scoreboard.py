@@ -24,6 +24,7 @@ from tools.paper_curve_math import (
     DEFAULT_SIZE_LAMPORTS,
     DEFAULT_SLIPPAGE_CAP,
     LAMPORTS_PER_SOL,
+    PORTAL_FEE_PPM,
     PRIORITY_FEE_LAMPORTS,
     TOKEN_ACCOUNT_RENT_LAMPORTS,
     TOKEN_RAW_OFFSET,
@@ -48,6 +49,12 @@ SCHEMA_LABEL = "paper_exit_label_v1"
 SCHEMA_BOARD = "paper_tape_scoreboard_v1"
 DEFAULT_LATENCIES = (0.5, 1.0, 2.0, 5.0)
 HEADLINE_LATENCY = 1.0
+# Reporting grid only. The booked PnL stays on PRIORITY_FEE_LAMPORTS.
+FEE_SENSITIVITY_PRIORITIES: tuple[tuple[str, int], ...] = (
+    ("0.0001", 100_000),
+    ("0.0003", 300_000),
+    ("0.001", 1_000_000),
+)
 # 15% is inside the 10–20% band. The public tape's 28.9% err!=null share is an
 # upper bound (other people's reverted swaps, not our sends). execution-stack
 # says score 0/10/30 until measured and not to pick the rate that flatters;
@@ -213,6 +220,23 @@ def reference_spot(path: MintPath, feats: dict[str, Any]) -> float | None:
     return None
 
 
+def priority_sides_for_event(event: str, exit_status: str | None) -> int | None:
+    """How many priority fees the booked row already charged. Misses pay one."""
+    if event == "miss":
+        return 1
+    if event == "close" and exit_status in ("realized", "no_exit_liquidity"):
+        return 2
+    return None
+
+
+def priority_grid(pnl_lamports: int, sides: int) -> dict[str, int]:
+    """Same trade at each priority. `pnl_lamports` already paid PRIORITY_FEE_LAMPORTS per side."""
+    return {
+        label: pnl_lamports + sides * (PRIORITY_FEE_LAMPORTS - priority)
+        for label, priority in FEE_SENSITIVITY_PRIORITIES
+    }
+
+
 def try_entry(
     path: MintPath,
     *,
@@ -220,6 +244,7 @@ def try_entry(
     size_lamports: int,
     slippage_cap: float,
     feats: dict[str, Any],
+    portal_fee_ppm: int = PORTAL_FEE_PPM,
 ) -> EntryFill:
     state = state_as_of(path, t_entry_ms, allow_anchor=True)
     if state is None:
@@ -235,6 +260,7 @@ def try_entry(
         quote_lamports=state.quote_reserve,
         base_raw=state.base_reserve,
         market_cap=mcap,
+        portal_fee_ppm=portal_fee_ppm,
     )
     if buy is None:
         real_closed = state.venue == "pump_bonding" and state.base_reserve <= TOKEN_RAW_OFFSET
@@ -551,6 +577,7 @@ def simulate_exit(
     latency_ms: int,
     tape_end_ms: int,
     size_lamports: int,
+    portal_fee_ppm: int = PORTAL_FEE_PPM,
 ) -> dict[str, Any]:
     if entry.status != "filled":
         # A send that does not fill still burns the priority fee when it is included.
@@ -611,6 +638,7 @@ def simulate_exit(
         base_raw=base_raw,
         market_cap=mcap,
         payable_quote_lamports=state.quote_reserve if venue == "pump_bonding" else None,
+        portal_fee_ppm=portal_fee_ppm,
     )
     base.update({"exit_venue": venue, "exit_spot_sol": spot})
     if sol_out is None:

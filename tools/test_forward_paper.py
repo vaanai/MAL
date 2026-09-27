@@ -31,12 +31,16 @@ from tools.forward_paper import (
     clean_clock,
     decision_counts_for_promotion,
     flow_from_tape_row,
+    migrate_fee_sensitivity_summary,
     offline_packets,
+    promotion_pnls_by_book,
     reload_risk_config,
     reconcile_baseline,
     replay_rows,
     window_creates,
 )
+from tools.paper_curve_math import PORTAL_FEE_PPM, PRIORITY_FEE_LAMPORTS
+from tools.paper_tape_scoreboard import priority_grid, priority_sides_for_event
 from tools.laya_v0 import LADDER_RULES
 from tools.laya_v0 import FEATURE_NAMES
 from tools.paper_price_path import CreateSignal, _ZstdText
@@ -856,6 +860,103 @@ class SwingBookTests(unittest.TestCase):
             self.assertEqual(len(got), 1)
             self.assertEqual(got[0][0], "attention")
             self.assertEqual(got[0][1]["mint"], "New")
+
+
+class FeeSensitivityTests(unittest.TestCase):
+    def test_priority_grid_keeps_the_booked_priority(self) -> None:
+        self.assertEqual(priority_sides_for_event("miss", None), 1)
+        self.assertEqual(priority_sides_for_event("close", "realized"), 2)
+        self.assertEqual(priority_sides_for_event("close", "no_exit_liquidity"), 2)
+        self.assertIsNone(priority_sides_for_event("open", None))
+        miss = priority_grid(-PRIORITY_FEE_LAMPORTS, 1)
+        close = priority_grid(-2 * PRIORITY_FEE_LAMPORTS, 2)
+        self.assertEqual(miss["0.001"], -PRIORITY_FEE_LAMPORTS)
+        self.assertEqual(miss["0.0001"], -100_000)
+        self.assertEqual(miss["0.0003"], -300_000)
+        self.assertEqual(close["0.001"], -2 * PRIORITY_FEE_LAMPORTS)
+        self.assertEqual(close["0.0001"], -200_000)
+
+    def test_promotion_ignores_the_sensitivity_field(self) -> None:
+        rows = [
+            {
+                "event": "close",
+                "ledger": "shadow",
+                "book": "migrate_hold_30s",
+                "decision_t_ms": VOID_FROM_MS - 1,
+                "pnl_lamports": -50_000,
+                "exit_status": "realized",
+                "fee_sensitivity": {"direct": {"0.0001": 9_000_000_000}, "portal": {"0.001": 9_000_000_000}},
+            }
+        ]
+        scored = promotion_pnls_by_book(rows, None)
+        self.assertEqual(scored["migrate_hold_30s"], [-50_000])
+
+    def test_migrate_scoreboard_columns_do_not_change_fills_or_ceilings(self) -> None:
+        self.assertEqual(HARD_MAX_POSITION_LAMPORTS, 50_000_000)
+        self.assertEqual(CEILING_DAILY_LOSS_LAMPORTS, 200_000_000)
+        self.assertEqual(CEILING_MAX_CONCURRENT, 3)
+        self.assertEqual(PORTAL_FEE_PPM, 5_000)
+        creates, rows = _fixture()
+        books = [
+            BookSpec("buy_all", "baseline", "hold_30s", max_concurrent=None, daily_loss_lamports=None, creator_cooldown_ms=0, token_cooldown_ms=0),
+            BookSpec("migrate_hold_30s", "migrate", "hold_30s", creator_cooldown_ms=0, token_cooldown_ms=0),
+            BookSpec("migrate_tp50_sl30", "migrate", "tp50_sl30", creator_cooldown_ms=0, token_cooldown_ms=0),
+        ]
+        engine = replay_rows(
+            creates.values(),
+            rows,
+            books,
+            tape_end_ms=TAPE_END,
+            kill_file=Path("/tmp/forward-paper-fee-sens"),
+            offsets_ms=OFFSETS,
+        )
+        buy_rows = [row for row in engine.positions if row["book"] == "buy_all" and row["event"] in ("close", "miss")]
+        self.assertTrue(buy_rows)
+        self.assertTrue(all("fee_sensitivity" not in row for row in buy_rows))
+        migrate = [
+            row
+            for row in engine.positions
+            if row["book"] in ("migrate_hold_30s", "migrate_tp50_sl30") and row["event"] in ("close", "miss") and row["ledger"] == "shadow"
+        ]
+        self.assertTrue(migrate)
+        for row in migrate:
+            pnl = row["pnl_lamports"]
+            sens = row["fee_sensitivity"]
+            self.assertTrue(sens["reporting_only"])
+            self.assertEqual(sens["portal"]["0.001"], pnl)
+            self.assertIn("0.0001", sens["portal"])
+            self.assertIn("0.0003", sens["portal"])
+            if row["event"] == "miss":
+                self.assertEqual(sens["direct"], sens["portal"])
+            elif row["event"] == "close":
+                self.assertIsInstance(sens["direct"], dict)
+                self.assertIn("0.001", sens["direct"])
+        summary = engine.summary(TAPE_END)
+        self.assertNotIn("fee_sensitivity", summary["books"]["buy_all"])
+        held = summary["books"]["migrate_hold_30s"]["fee_sensitivity"]
+        self.assertEqual(held["promotion_pnl"], "pnl_lamports")
+        self.assertEqual(held["portal_fee_ppm"], {"direct": 0, "portal": PORTAL_FEE_PPM})
+        portal_001 = held["routes"]["portal"]["0.001"]
+        shadow = summary["books"]["migrate_hold_30s"]["shadow"]["realized"]
+        self.assertEqual(portal_001["n"], shadow["n"])
+        self.assertAlmostEqual(portal_001["mean_sol"], shadow["mean_sol"])
+        self.assertEqual(summary["books"]["migrate_hold_30s"]["realized"]["total_lamports"], sum(engine.books[1].realized))
+        historical = [
+            {"event": "miss", "ledger": "shadow", "book": "migrate_hold_30s", "decision_t_ms": VOID_FROM_MS - 1, "pnl_lamports": -1_000_000},
+            {
+                "event": "close",
+                "ledger": "shadow",
+                "book": "migrate_hold_30s",
+                "decision_t_ms": VOID_FROM_MS - 2,
+                "exit_status": "realized",
+                "pnl_lamports": -2_000_000,
+            },
+        ]
+        report = migrate_fee_sensitivity_summary(historical, None, ["migrate_hold_30s"])
+        route = report["migrate_hold_30s"]["routes"]
+        self.assertEqual(route["portal"]["0.001"]["n"], 2)
+        self.assertEqual(route["portal"]["0.0001"]["mean_sol"], (-100_000 + -200_000) / 2 / 1_000_000_000)
+        self.assertEqual(route["direct"]["0.001"]["n"], 0)
 
 
 def _parsed(mint: str, t_ms: int):

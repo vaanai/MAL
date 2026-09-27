@@ -63,6 +63,7 @@ from tools.paper_curve_math import (
     DEFAULT_SIZE_LAMPORTS,
     DEFAULT_SLIPPAGE_CAP,
     LAMPORTS_PER_SOL,
+    PORTAL_FEE_PPM,
     PRIORITY_FEE_LAMPORTS,
 )
 from tools.paper_price_path import (
@@ -77,11 +78,14 @@ from tools.paper_price_path import (
 from tools.paper_tape_scoreboard import (
     DEFAULT_FAIL_RATE,
     EXIT_RULES,
+    FEE_SENSITIVITY_PRIORITIES,
     ExitRule,
     _pct,
     _stats_from_lamports,
     _plan_exit_resume,
     features_at_t,
+    priority_grid,
+    priority_sides_for_event,
     simulate_exit,
     try_entry,
 )
@@ -182,6 +186,65 @@ def iter_position_rows(path: Path) -> Iterable[dict[str, Any]]:
                 continue
             if isinstance(row, dict):
                 yield row
+
+
+def migrate_fee_sensitivity_summary(
+    rows: Iterable[dict[str, Any]],
+    live_at_ms: int | None,
+    book_ids: Iterable[str],
+) -> dict[str, Any]:
+    """Mean SOL at other routes and priorities. Not a promotion input.
+
+    Portal columns are a shift of the booked `pnl_lamports` (already charged
+    at 0.001 SOL per side). Direct columns come from the counterfactual stamp
+    on the row. Rows written before that stamp still fill the portal columns.
+    """
+    labels = [label for label, _priority in FEE_SENSITIVITY_PRIORITIES]
+    buckets: dict[str, dict[str, dict[str, list[int]]]] = {
+        book_id: {"portal": {label: [] for label in labels}, "direct": {label: [] for label in labels}}
+        for book_id in book_ids
+    }
+    for row in rows:
+        book = row.get("book")
+        if not isinstance(book, str) or book not in buckets:
+            continue
+        if not position_row_counts_for_promotion(row, live_at_ms):
+            continue
+        pnl = row.get("pnl_lamports")
+        exit_status = row.get("exit_status")
+        sides = priority_sides_for_event(
+            str(row.get("event") or ""),
+            exit_status if isinstance(exit_status, str) else None,
+        )
+        if isinstance(pnl, int) and not isinstance(pnl, bool) and sides is not None:
+            for label, value in priority_grid(pnl, sides).items():
+                buckets[book]["portal"][label].append(value)
+        sens = row.get("fee_sensitivity")
+        direct = sens.get("direct") if isinstance(sens, dict) else None
+        if isinstance(direct, dict):
+            for label in labels:
+                value = direct.get(label)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    buckets[book]["direct"][label].append(value)
+    out: dict[str, Any] = {}
+    for book_id, routes in buckets.items():
+        packed: dict[str, Any] = {}
+        for route, grids in routes.items():
+            packed[route] = {}
+            for label, values in grids.items():
+                n = len(values)
+                packed[route][label] = {
+                    "n": n,
+                    "mean_sol": None if n == 0 else (sum(values) / n) / LAMPORTS_PER_SOL,
+                }
+        out[book_id] = {
+            "reporting_only": True,
+            "promotion_pnl": "pnl_lamports",
+            "portal_fee_ppm": {"direct": 0, "portal": PORTAL_FEE_PPM},
+            "priority_sol": labels,
+            "routes": packed,
+        }
+    return out
 
 
 def promotion_pnls_by_book(rows: Iterable[dict[str, Any]], live_at_ms: int | None) -> dict[str, list[int]]:
@@ -617,6 +680,9 @@ class _Open:
     trigger: str
     score: float | None
     hops: dict[str, Any]
+    # Slippage reference from the decision. The direct-route column re-quotes
+    # with it. The booked fill does not read it again.
+    ref_price: float | None = None
     # Exit-plan cursor. Not a fill input. Lets a repeat check skip the print walk.
     exit_scan: Any = None
     ladder_key: tuple[int, int] | None = None
@@ -1533,24 +1599,24 @@ class ForwardEngine:
                 entry_status=status,
                 ledger=pending.ledger,
             )
-            self._position(
-                {
-                    "schema": SCHEMA_POSITION,
-                    "ledger": pending.ledger,
-                    "event": "miss",
-                    "book": pending.book_id,
-                    "mint": pending.mint,
-                    "creator": pending.creator,
-                    "trigger": pending.trigger,
-                    "decision_t_ms": pending.decision_t_ms,
-                    "t_entry_ms": pending.t_entry_ms,
-                    "entry_status": status,
-                    "promotion_valid": self._promotion_valid(pending.decision_t_ms),
-                    "pnl_lamports": cost,
-                    "attempt_cost_lamports": cost,
-                    "reason": "flat_15pct_landing" if landing_fail else "priority_fee_on_unfilled_attempt",
-                }
-            )
+            miss_row = {
+                "schema": SCHEMA_POSITION,
+                "ledger": pending.ledger,
+                "event": "miss",
+                "book": pending.book_id,
+                "mint": pending.mint,
+                "creator": pending.creator,
+                "trigger": pending.trigger,
+                "decision_t_ms": pending.decision_t_ms,
+                "t_entry_ms": pending.t_entry_ms,
+                "entry_status": status,
+                "promotion_valid": self._promotion_valid(pending.decision_t_ms),
+                "pnl_lamports": cost,
+                "attempt_cost_lamports": cost,
+                "reason": "flat_15pct_landing" if landing_fail else "priority_fee_on_unfilled_attempt",
+            }
+            self._stamp_migrate_sensitivity(run, miss_row)
+            self._position(miss_row)
             return
         opened = _Open(
             book_id=pending.book_id,
@@ -1565,6 +1631,7 @@ class ForwardEngine:
             trigger=pending.trigger,
             score=pending.score,
             hops=pending.hops,
+            ref_price=pending.ref_price,
         )
         ledger.open[pending.mint] = opened
         self._decision(
@@ -1695,29 +1762,92 @@ class ForwardEngine:
         if opened.creator:
             ledger.creator_ready[opened.creator] = ready + run.spec.creator_cooldown_ms
         name = "shadow" if ledger is run.shadow else "ceiling"
-        self._position(
-            {
-                "schema": SCHEMA_POSITION,
-                "ledger": name,
-                "event": "close",
-                "book": opened.book_id,
-                "mint": mint,
-                "creator": opened.creator,
-                "trigger": opened.trigger,
-                "score": opened.score,
-                "decision_t_ms": opened.decision_t_ms,
-                "t_entry_ms": opened.entry.t_entry_ms,
-                "applied_latency_ms": opened.latency_ms,
-                "size_lamports": opened.size_lamports,
-                "exit_rule": opened.rule.rule_id,
-                "exit_status": part["exit_status"],
-                "exit_t_ms": part.get("exit_t_ms"),
-                "trigger_exit": part.get("trigger"),
-                "pnl_lamports": pnl,
-                "pnl_sol": None if pnl is None else pnl / LAMPORTS_PER_SOL,
-                "promotion_valid": self._promotion_valid(opened.decision_t_ms),
-            }
+        close_row = {
+            "schema": SCHEMA_POSITION,
+            "ledger": name,
+            "event": "close",
+            "book": opened.book_id,
+            "mint": mint,
+            "creator": opened.creator,
+            "trigger": opened.trigger,
+            "score": opened.score,
+            "decision_t_ms": opened.decision_t_ms,
+            "t_entry_ms": opened.entry.t_entry_ms,
+            "applied_latency_ms": opened.latency_ms,
+            "size_lamports": opened.size_lamports,
+            "exit_rule": opened.rule.rule_id,
+            "exit_status": part["exit_status"],
+            "exit_t_ms": part.get("exit_t_ms"),
+            "trigger_exit": part.get("trigger"),
+            "pnl_lamports": pnl,
+            "pnl_sol": None if pnl is None else pnl / LAMPORTS_PER_SOL,
+            "promotion_valid": self._promotion_valid(opened.decision_t_ms),
+        }
+        self._stamp_migrate_sensitivity(run, close_row, opened=opened, book=book, t_ms=t_ms)
+        self._position(close_row)
+
+    def _stamp_migrate_sensitivity(
+        self,
+        run: _BookRun,
+        row: dict[str, Any],
+        *,
+        opened: _Open | None = None,
+        book: MintBook | None = None,
+        t_ms: int | None = None,
+    ) -> None:
+        """Reporting columns. Does not change pnl_lamports, day_pnl, or the fill."""
+        if run.spec.kind != "migrate":
+            return
+        pnl = row.get("pnl_lamports")
+        if isinstance(pnl, bool) or not isinstance(pnl, int):
+            return
+        exit_status = row.get("exit_status")
+        sides = priority_sides_for_event(
+            str(row.get("event") or ""),
+            exit_status if isinstance(exit_status, str) else None,
         )
+        if sides is None:
+            return
+        portal = priority_grid(pnl, sides)
+        direct: dict[str, int] | None = portal if row.get("event") == "miss" else None
+        if row.get("event") == "close" and opened is not None and book is not None and t_ms is not None:
+            direct = self._direct_priority_grid(opened, book, t_ms)
+        row["fee_sensitivity"] = {"reporting_only": True, "portal": portal, "direct": direct}
+
+    def _direct_priority_grid(self, opened: _Open, book: MintBook, t_ms: int) -> dict[str, int] | None:
+        """Same decision, portal fee 0. Does not replace `opened.entry`."""
+        if not isinstance(opened.rule, ExitRule):
+            return None
+        entry = try_entry(
+            book.path,
+            t_entry_ms=opened.entry.t_entry_ms,
+            size_lamports=opened.size_lamports,
+            slippage_cap=self.slippage_cap,
+            feats={"f_tape_last_price_sol": opened.ref_price},
+            portal_fee_ppm=0,
+        )
+        if entry.status != "filled":
+            return priority_grid(-PRIORITY_FEE_LAMPORTS, 1)
+        part = simulate_exit(
+            book.path,
+            entry,
+            opened.rule,
+            latency_ms=opened.latency_ms,
+            tape_end_ms=t_ms,
+            size_lamports=opened.size_lamports,
+            portal_fee_ppm=0,
+        )
+        direct_pnl = part.get("pnl_lamports")
+        status = part.get("exit_status")
+        if status == "not_entered":
+            sides = 1
+        elif status in ("realized", "no_exit_liquidity"):
+            sides = 2
+        else:
+            return None
+        if isinstance(direct_pnl, bool) or not isinstance(direct_pnl, int):
+            return None
+        return priority_grid(direct_pnl, sides)
 
     def _book_realized(self, ledger: _Ledger, decision_t_ms: int, pnl: int) -> None:
         ledger.realized.append(pnl)
@@ -1777,6 +1907,14 @@ class ForwardEngine:
         path = self.positions_path
         if path is not None and path.is_file():
             from_file = promotion_pnls_by_book(iter_position_rows(path), self.promotion_live_ms)
+        migrate_ids = [run.spec.book_id for run in self.books if run.spec.kind == "migrate"]
+        if path is not None and path.is_file():
+            sens_rows: Iterable[dict[str, Any]] = iter_position_rows(path)
+        elif self.retain_rows:
+            sens_rows = self.positions
+        else:
+            sens_rows = ()
+        sens_by_book = migrate_fee_sensitivity_summary(sens_rows, self.promotion_live_ms, migrate_ids)
         books = {}
         for run in self.books:
             ceiling = _ledger_view(run.ceiling, day)
@@ -1790,13 +1928,16 @@ class ForwardEngine:
                     promotion_live_ms=self.promotion_live_ms,
                     for_promotion=True,
                 )
-            books[run.spec.book_id] = {
+            block = {
                 "kind": run.spec.kind,
                 **ceiling,
                 "shadow": shadow,
                 "promote_ledger": "shadow",
                 "capacity_ledger": "ceiling",
             }
+            if run.spec.kind == "migrate":
+                block["fee_sensitivity"] = sens_by_book.get(run.spec.book_id)
+            books[run.spec.book_id] = block
         freeze = SWING_FREEZE_MS
         for run in self.books:
             if run.spec.kind == "swing" and run.spec.freeze_ms is not None:
