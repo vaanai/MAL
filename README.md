@@ -7,7 +7,10 @@ Meme coin alpha lab — **Pump.fun / Solana first**, observe-before-act, memory-
 1. [LAB_STATE.md](LAB_STATE.md) — objective, spine, hypotheses, next work  
 2. [CONSTITUTION.md](CONSTITUTION.md) — non-negotiables  
 3. [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md) — latest research digest  
-4. Active decisions in [DEC/](DEC/)
+4. Active decisions in [DEC/](DEC/)  
+5. [docs/HOSTS.md](docs/HOSTS.md) — both machines  
+
+Day-to-day agent instructions: [CLAUDE.md](CLAUDE.md).
 
 ## Repository layout
 
@@ -29,7 +32,7 @@ Meme coin alpha lab — **Pump.fun / Solana first**, observe-before-act, memory-
 - **Observe-only** — no trading bot in this repo yet  
 - **Lab memory** — GitHub SoT for DEC/EXP/LAB_STATE; sealed JSONL is provenance/EXP spine; on-box Postgres = ops/state ([DEC-002](DEC/DEC-002-memory-first-no-db-local.md) amended by [DEC-009](DEC/DEC-009-oracle-always-free-phase0-host.md) / [DEC-010](DEC/DEC-010-oracle-phase0-handoff-autonomy.md))  
 - **Phase-0 host** — Oracle Always Free `mal-core-0` (**2 OCPU / 12 GB A1**, **provisioned and verified**); Cursor access **LIVE** ([DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md)) via CF Access Service Auth + Runtime Secrets (smoke 2026-09-23; hostname `mal-core-vnic`; paper-only); laptop = operator + data courier (not a permanent networking hop)  
-- **Persistent agents:** Grok managers (Helm / Scout / Graph / Proof); Cursor workers ship artifacts via PR; **trading keys isolated from agents**  
+- **Persistent seats:** Helm / Scout / Graph / Proof. Workers ship artifacts via PR. Helm merges after review ([DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md)). **Trading keys isolated from agents.**  
 
 ## Research
 

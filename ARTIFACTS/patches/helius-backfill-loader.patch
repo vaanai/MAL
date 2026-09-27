@@ -1,0 +1,219 @@
+From ff144916325b389f2023268bb9a4113028fb8c28 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Fri, 25 Sep 2026 17:24:16 +0000
+Subject: [PATCH] Helius backfill: skip live tape hours, gap end, concurrency
+
+Skip sealed live-tape hours (keep proof hour), backfill only until
+live-tape-gap-end for the mid-hour gap, default until T07 with 8 workers.
+
+Co-authored-by: vaanai <vaanai@users.noreply.github.com>
+---
+ scripts/mal-core/pump-backfill.sh   |  9 +++-
+ tools/pump_history_backfill.py      | 80 +++++++++++++++++++++++++++--
+ tools/test_pump_history_backfill.py | 37 +++++++++++++
+ 3 files changed, 121 insertions(+), 5 deletions(-)
+
+diff --git a/scripts/mal-core/pump-backfill.sh b/scripts/mal-core/pump-backfill.sh
+index 7ff1748..2c35715 100755
+--- a/scripts/mal-core/pump-backfill.sh
++++ b/scripts/mal-core/pump-backfill.sh
+@@ -46,6 +46,10 @@ then
+   exit 0
+ fi
+ 
++LIVE_TAPE="${MAL_LIVE_TAPE_DIR:-/var/lib/mal/sealed/trades}"
++PROOF_HOUR="${MAL_LIVE_TAPE_PROOF_HOUR:-2026-09-25T07}"
++GAP_END="${MAL_LIVE_TAPE_GAP_END:-2026-09-25T06:58:00Z}"
++
+ exec "${PY}" -m tools.pump_history_backfill \
+   --until "${MAL_BACKFILL_UNTIL:-2026-09-25T07:00:00Z}" \
+   --hours "${MAL_BACKFILL_HOURS:-336}" \
+@@ -55,4 +59,7 @@ exec "${PY}" -m tools.pump_history_backfill \
+   --max-bytes "${MAL_BACKFILL_MAX_BYTES:-42949672960}" \
+   --rps "${MAL_BACKFILL_RPS:-8}" \
+   --lookup-rps "${MAL_BACKFILL_LOOKUP_RPS:-4}" \
+-  --workers "${MAL_BACKFILL_WORKERS:-4}"
++  --workers "${MAL_BACKFILL_WORKERS:-8}" \
++  --live-tape-dir "${LIVE_TAPE}" \
++  --live-tape-proof-hour "${PROOF_HOUR}" \
++  --live-tape-gap-end "${GAP_END}"
+diff --git a/tools/pump_history_backfill.py b/tools/pump_history_backfill.py
+index 2b5ad00..070262c 100644
+--- a/tools/pump_history_backfill.py
++++ b/tools/pump_history_backfill.py
+@@ -828,6 +828,42 @@ def hour_key(ts: int) -> str:
+     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H")
+ 
+ 
++def live_tape_hour_sealed(tape_dir: Path, key: str) -> bool:
++    """True when the live recorder has a sealed hourly trades file for this hour."""
++    for name in (
++        f"trades-{key}.jsonl.zst",
++        f"trades-{key}.jsonl",
++        f"trades-{key}.jsonl.gz",
++    ):
++        if (tape_dir / name).is_file():
++            return True
++    return False
++
++
++def hour_end_with_gap(start_ts: int, end_ts: int, gap_end_ts: int | None) -> int:
++    """When live tape starts mid-hour, backfill only [start_ts, gap_end_ts)."""
++    if gap_end_ts is not None and start_ts < gap_end_ts < end_ts:
++        return gap_end_ts
++    return end_ts
++
++
++def skip_hour_for_live_tape(
++    tape_dir: Path | None,
++    start_ts: int,
++    end_ts: int,
++    proof_hours: set[str],
++    gap_end_ts: int | None = None,
++) -> bool:
++    if tape_dir is None or not tape_dir.is_dir():
++        return False
++    key = hour_key(start_ts)
++    if key in proof_hours:
++        return False
++    if gap_end_ts is not None and start_ts < gap_end_ts < end_ts:
++        return False
++    return live_tape_hour_sealed(tape_dir, key)
++
++
+ def load_pool_cache(path: Path) -> dict[str, tuple[str, str]]:
+     cache: dict[str, tuple[str, str]] = {}
+     if not path.is_file():
+@@ -1398,7 +1434,25 @@ def main(argv: Sequence[str] | None = None) -> int:
+     parser.add_argument("--rpc", default=None, help="Override RPC URL. Default: Helius if HELIUS_API_KEY is set, else public")
+     parser.add_argument("--rps", type=float, default=3.2, help="getBlock requests per second")
+     parser.add_argument("--lookup-rps", type=float, default=3.2, help="getMultipleAccounts requests per second")
+-    parser.add_argument("--workers", type=int, default=4)
++    parser.add_argument("--workers", type=int, default=8, help="Concurrent getBlock fetches in flight")
++    parser.add_argument(
++        "--live-tape-dir",
++        type=Path,
++        default=None,
++        help="Skip hours already sealed on the live trade tape (hourly trades-*.jsonl*)",
++    )
++    parser.add_argument(
++        "--live-tape-proof-hour",
++        action="append",
++        default=[],
++        metavar="YYYY-MM-DDTHH",
++        help="Backfill hour keys to keep even when live tape has them (repeatable)",
++    )
++    parser.add_argument(
++        "--live-tape-gap-end",
++        default=None,
++        help="Exclusive UTC end for the hour where live tape starts mid-hour (ISO-8601)",
++    )
+     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+     parser.add_argument("--credit-cap", type=int, default=DEFAULT_CREDIT_CAP)
+     parser.add_argument("--credits-per-getblock", type=int, default=None)
+@@ -1455,12 +1509,30 @@ def main(argv: Sequence[str] | None = None) -> int:
+     cache_path = args.out / "pools" / "pool-mints.jsonl.zst"
+     pool_mints = load_pool_cache(cache_path)
+     args.out.mkdir(parents=True, exist_ok=True)
+-    for index, (start_ts, end_ts) in enumerate(plan_hours(until, args.hours)):
++    proof_hours = set(args.live_tape_proof_hour or ["2026-09-25T07"])
++    gap_end_ts = parse_utc(args.live_tape_gap_end) if args.live_tape_gap_end else None
++    for index, (start_ts, plan_end_ts) in enumerate(plan_hours(until, args.hours)):
++        end_ts = hour_end_with_gap(start_ts, plan_end_ts, gap_end_ts)
++        key = hour_key(start_ts)
++        if skip_hour_for_live_tape(args.live_tape_dir, start_ts, plan_end_ts, proof_hours, gap_end_ts):
++            summary = {
++                "hour": key,
++                "skipped": True,
++                "skip_reason": "live_tape",
++                "credits_used": budget.used,
++            }
++            print(
++                f"skip {key}: live tape already sealed (proof hours kept: {sorted(proof_hours)})",
++                file=sys.stderr,
++                flush=True,
++            )
++            print(json.dumps(summary), flush=True)
++            continue
+         if filesystem_room(args.out, args.max_bytes) <= 0:
+-            print(f"disk cap reached before {hour_key(start_ts)}", file=sys.stderr)
++            print(f"disk cap reached before {key}", file=sys.stderr)
+             break
+         if kind == "helius" and not budget.can_afford():
+-            print(f"credit cap reached before {hour_key(start_ts)}: used={budget.used}", file=sys.stderr)
++            print(f"credit cap reached before {key}: used={budget.used}", file=sys.stderr)
+             break
+         print(
+             f"hour {hour_key(start_ts)} {datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()} "
+diff --git a/tools/test_pump_history_backfill.py b/tools/test_pump_history_backfill.py
+index 9f81550..3abe28e 100644
+--- a/tools/test_pump_history_backfill.py
++++ b/tools/test_pump_history_backfill.py
+@@ -6,6 +6,7 @@ import base64
+ import json
+ import os
+ import tempfile
++from datetime import datetime
+ import threading
+ import time
+ import unittest
+@@ -26,7 +27,9 @@ from tools.pump_history_backfill import (
+     decode_create_event,
+     decode_migration_event,
+     helius_http_url,
++    hour_key,
+     lifecycle_from_logs,
++    live_tape_hour_sealed,
+     main,
+     parse_credit_headers,
+     plan_hours,
+@@ -35,6 +38,8 @@ from tools.pump_history_backfill import (
+     resolve_rpc_url,
+     resolve_unresolved,
+     rows_from_block,
++    hour_end_with_gap,
++    skip_hour_for_live_tape,
+ )
+ 
+ FIXTURES = Path(__file__).resolve().parent.parent / "observe" / "fixtures"
+@@ -372,5 +377,37 @@ class HeliusPrepTests(unittest.TestCase):
+         self.assertEqual(got, [10, 11])
+ 
+ 
++class LiveTapeSkipTests(unittest.TestCase):
++    def test_sealed_hourly_file(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            tape = Path(tmp)
++            key = "2026-09-25T16"
++            (tape / f"trades-{key}.jsonl.zst").write_text("x", encoding="utf-8")
++            self.assertTrue(live_tape_hour_sealed(tape, key))
++            start = int(datetime.fromisoformat("2026-09-25T16:00:00+00:00").timestamp())
++            end = start + 3600
++            self.assertTrue(skip_hour_for_live_tape(tape, start, end, set()))
++
++    def test_proof_hour_not_skipped(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            tape = Path(tmp)
++            key = "2026-09-25T07"
++            (tape / f"trades-{key}.jsonl.zst").write_text("x", encoding="utf-8")
++            start = int(datetime.fromisoformat("2026-09-25T07:00:00+00:00").timestamp())
++            end = start + 3600
++            self.assertFalse(skip_hour_for_live_tape(tape, start, end, {key}))
++
++    def test_gap_hour_not_skipped_when_live_sealed(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            tape = Path(tmp)
++            key = "2026-09-25T06"
++            (tape / f"trades-{key}.jsonl.zst").write_text("x", encoding="utf-8")
++            start = int(datetime.fromisoformat("2026-09-25T06:00:00+00:00").timestamp())
++            end = start + 3600
++            gap = int(datetime.fromisoformat("2026-09-25T06:58:00+00:00").timestamp())
++            self.assertEqual(hour_end_with_gap(start, end, gap), gap)
++            self.assertFalse(skip_hour_for_live_tape(tape, start, end, set(), gap))
++
++
+ if __name__ == "__main__":
+     unittest.main()
+-- 
+2.43.0
+

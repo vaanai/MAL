@@ -1,0 +1,21 @@
+- [x] [Stale-fill guard](https://github.com/vaanai/MAL/pull/102) — merged; 5s drop, flat 15% miss, void window out of the promotion score
+- [x] [Merge queue](https://cursor.com/agents/bc-584e2e74-9ed1-5a88-913c-0f52eeb0e2ec) — 73–96 merged; sensitive PRs gated on my review
+- [x] [Gross edge metric](https://github.com/vaanai/MAL/pull/101) — merged; −7.46% fee floor confirmed, best gross about +0.2%, promotion still net-only
+- [x] [Red-team audit](https://cursor.com/agents/bc-2a759be3-8276-582f-b362-63147814bb02) — P0/P1 holes found and fixed via [LAYA eval](https://github.com/vaanai/MAL/pull/87), [fills](https://github.com/vaanai/MAL/pull/88), [attention timing](https://github.com/vaanai/MAL/pull/85)
+- [x] Helius Developer — owner upgraded; credits split backfill 4M, funding 2M, live ≤3M, reserve 1M
+- [x] Helius key — added by owner on the free plan, later upgraded
+- [x] [Simulator](https://cursor.com/agents/bc-e7ff36ef-56ee-5890-95cd-3cf9cae6093c) — honest fills and [pressure fail model](https://github.com/vaanai/MAL/pull/92) merged
+- [x] [Signal scan](https://github.com/vaanai/MAL/pull/77) — merged; follow and momentum lose, migration frozen as candidate
+- [x] [LAB_STATE refresh](https://github.com/vaanai/MAL/pull/79) — merged; repo memory reflects tape-first direction
+- [x] [Paper simulator](https://github.com/vaanai/MAL/pull/76) — merged; buy-every-create baseline loses ~14%/trade
+- [x] [Wallet leaderboard](https://github.com/vaanai/MAL/pull/75) — merged; strict board fills as tape days accrue
+- [x] Data spend decision — $0 public RPC tape works, Helius $49 is the fallback
+- [x] [Execution stack options](../research/execution-stack-options.md) — PumpPortal Local, wallet off-host, ~3.5% round-trip cost floor
+- [x] [LAYA engine options](../research/laya-engine-options.md) — Convai LAYA unfit; build LAYA on LightGBM
+- [x] [Honest re-score addendum](https://github.com/vaanai/MAL/pull/74) — all old filters killed at 3.5% cost
+- [x] [Data budget options](../research/data-budget-options.md) — PumpPortal firehose ruled out; Helius $49 is the best paid fallback
+- [x] Owner decisions — hold time and live bar set, modest spend OK, no seed wallets ([project context](../project-context.md))
+- [x] [Smart-wallet research](https://cursor.com/agents/bc-bb521b3b-b9d9-5fad-aee6-15508fa225ba) — naive copying loses to 1s bots; build our own filtered list from the tape
+- [x] [MAL plan](../plan.md) — phased plan written, trade tape first
+- [x] State audit and host check — only new-token capture is live, no edge evidence yet
+- [x] [Project context](../project-context.md) — goals, fences, and working rules saved
