@@ -39,7 +39,7 @@ Expect `mal-core-vnic`, user `ubuntu`, `uname -m` = `aarch64`. `ssh mal-core-0` 
 | `mal-attention.service` | Attention poller → `/var/lib/mal/attention`. Log `.../logs/attention.log`. **Stays up.** |
 | `mal-attention-daily.timer` | 04:45 UTC. **Disabled until 2026-10-05.** Output `/var/lib/mal/paper/attention/`. Log `.../logs/attention-daily.log`. |
 | `mal-funding-graph.service` | Funder enricher → `/var/lib/mal/graph`. Log `.../logs/funding-graph.log`. Reads `/var/lib/mal/backfill/helius.env` when present. |
-| `mal-forward-paper.service` | Paper books. Code `/var/lib/mal/paper/forward-paper`. Status `.../forward-paper/runner-status.json`. |
+| `mal-forward-paper.service` | Paper books. Code `/var/lib/mal/paper/forward-paper`. Status `.../forward-paper/runner-status.json`. Hit a cgroup memory leak 2026-09-27 (grew to ~5.3 GB RSS / ~2 GB swap by ~21:50Z, pinned at `memory.high` 5G); Helm restarted it 22:44Z and updated the runner checkout at `.../forward-paper/src` to `bc7a0c6` (22:48Z, includes [#120](https://github.com/vaanai/MAL/pull/120)). A dominant-growth fix is still pending; see [ARTIFACTS/daily/2026-09-27-claude-handoff.md](../ARTIFACTS/daily/2026-09-27-claude-handoff.md). |
 | `mal-pump-backfill.service` | Helius `getBlock` for **2026-09-22T00Z–2026-09-25T07Z**. Env `/var/lib/mal/backfill/helius.env`. CPU cap 50% of one core. Log `.../logs/pump-backfill.log`. |
 | `mal-pump-backfill-resume.service` | Starts backfill again after LAYA exits. |
 | `mal-laya-v0.timer` | 04:15 UTC. **Disabled until 2026-10-05** (runner lag still spiked to about 12.5 s). If re-enabled, [#106](https://github.com/vaanai/MAL/pull/106) runs `tools.laya_frozen_nightly` under `/var/lib/mal/paper/laya-v0`: cached pre-freeze fit, forward and backward holdout append, scoreboard. Exploratory retrain and mig15 deploy stay skipped. |
@@ -88,13 +88,17 @@ Expect `mal-fast-0`, user `ubuntu`, `uname -m` = `x86_64`.
 
 | Unit | State to expect | Paths |
 | --- | --- | --- |
-| `mal-fast-create.service` | **up** | PumpPortal `subscribeNewToken`. Out `/var/lib/mal/sealed/fast-create`. Log `.../logs/fast-create.log`. |
+| `mal-fast-create.service` | **up** | PumpPortal `subscribeNewToken`. Out `/var/lib/mal/sealed/fast-create`. Log `.../logs/fast-create.log`. Was crashing about every 4h (2026-09-27, uncaught `websockets` `InvalidStatusCode` HTTP 502 on reconnect, 9–12 s create gaps); [#117](https://github.com/vaanai/MAL/pull/117) fixed `/var/lib/mal/eng/fast_create_listener.py` (backup `.bak-20260927-pre117`), unit restarted 22:55Z. |
 | `mal-fast-public-logs.service` | **up** (installed on the host 2026-09-27; the unit template is not a separate file under `scripts/mal-core/`) | Public create logs. Out `/var/lib/mal/sealed/fast-public/`. |
 | `mal-fast-pre-create.service` | **up** | Helius preprocessed mint-authority. Daily cap 10,000. Env `/var/lib/mal/fast-listener/helius.env`. Out `/var/lib/mal/sealed/fast-pre-create`. State `.../fast-listener/pre-create-credits.json`. |
 | `mal-fast-early-trade.service` | **installed, disabled** | Paid curve subscribe. Too expensive. Do not enable. |
 | `mal-fast-trade-tape.service` | **installed, disabled** | Full public tape. Median lead was under 150 ms. Out would be `/var/lib/mal/sealed/fast-trades`. |
 | `mal-fast-backfill.service` | **the backward walk** | From 2026-09-21T23Z downward. `CPUQuota=400%`, Nice 10, MemoryMax 6G, +2,000,000 credit cap. Out `/var/lib/mal/backfill-fast`. Working dir `/home/ubuntu/mal-oos`. |
 | `mal-fast-oos-score.service` | **scores sealed fast hours** | Rewrites `/var/lib/mal/paper/migrate-direct-oos-fast/report.json`. Nice 19, MemoryMax 4G. |
+
+### Claude schedules (user `claude`, separate from user `ubuntu` above)
+
+[#119](https://github.com/vaanai/MAL/pull/119), `ops/claude-schedules/`: `mal-daily-review.timer` (05:00 UTC) and `mal-oos-check.timer` (one-shot 2026-09-28 21:00Z), systemd `--user` timers for the `claude` account, installed 2026-09-27 (loaded, not yet enabled). Headless `claude -p`, no shell tools, read-only fact gathering in the wrapper script; reports under `/home/claude/reports/`. Plan: enable after Cursor's 2026-09-28 05:00Z run, then the owner cancels the Cursor timers. Detail: `ops/claude-schedules/README.md`.
 
 ### Health, logs, paper books
 
