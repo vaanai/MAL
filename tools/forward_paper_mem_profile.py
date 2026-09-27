@@ -60,6 +60,7 @@ from tools.forward_paper import (
     books_from_config,
     flow_from_tape_row,
     load_config,
+    window_creates,
 )
 from tools.laya_v0 import _Wallet
 from tools.paper_price_path import load_creates, open_text
@@ -73,6 +74,38 @@ MINT_SCALE_CONTAINERS = ("library", "tracks", "by_creator", "seen", "attention",
 
 def _rss_kb() -> int:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+
+def _tape_time_bounds(tape: list[Path]) -> tuple[int | None, int | None]:
+    """Scan the tape once for min/max `t_recv_ms`, the same field
+    `run_replay_files` uses to build `observed` before calling
+    `window_creates()`. Deliberately cheap: just a `row.get("t_recv_ms")`
+    per line, not the full `flow_from_tape_row` parse, and nothing is held
+    in memory beyond two ints -- this is a second pass over the tape purely
+    so creates can be windowed *before* any are pushed into the engine,
+    instead of loading the whole day's creates unwindowed (see the harness
+    bug recorded in ARTIFACTS/lab/forward-paper-memory-2026-09-27.md).
+    """
+    t_min: int | None = None
+    t_max: int | None = None
+    for path in tape:
+        with open_text(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                t = row.get("t_recv_ms")
+                if not isinstance(t, int):
+                    continue
+                if t_min is None or t < t_min:
+                    t_min = t
+                if t_max is None or t > t_max:
+                    t_max = t
+    return t_min, t_max
 
 
 def _wallet_substats(wallets: dict[str, Any]) -> dict[str, int]:
@@ -287,7 +320,19 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
 
+    print("scanning tape for time bounds (to window creates)...", file=sys.stderr)
+    tape_t_min, tape_t_max = _tape_time_bounds(tape)
+    print(f"tape spans [{tape_t_min}, {tape_t_max}]", file=sys.stderr)
+
     creates = load_creates(creates_paths)
+    n_creates_loaded = len(creates)
+    if tape_t_min is not None and tape_t_max is not None:
+        creates = window_creates(creates, tape_t_min, tape_t_max)
+    print(
+        f"windowed creates {n_creates_loaded} -> {len(creates)} to the tape's own "
+        f"[{tape_t_min}, {tape_t_max}] range (same window_creates() run_replay_files uses)",
+        file=sys.stderr,
+    )
     for create in creates.values():
         engine.push_create(create)
     print(f"pushed {len(creates)} creates", file=sys.stderr)
