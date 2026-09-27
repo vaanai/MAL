@@ -175,6 +175,22 @@ class FilterTests(unittest.TestCase):
 
 
 class CreditTests(unittest.TestCase):
+    def test_rate_max_zero_does_not_trip(self) -> None:
+        meter = CreditMeter(trip=0, rate_max=0)
+        for i in range(500):
+            self.assertFalse(meter.note(float(i)))
+        self.assertFalse(meter.tripped)
+
+    def test_pump_program_logs_are_decoder_only(self) -> None:
+        from tools.fast_helius_pre import logs_subscribe_request
+
+        with self.assertRaises(ValueError):
+            logs_subscribe_request(PUMP_PROGRAM, 1)
+        with self.assertRaises(ValueError):
+            preprocessed_subscribe_request([PUMP_PROGRAM], 1)
+        req = logs_subscribe_request(PUMP_PROGRAM, 1, decoder_program=True)
+        self.assertEqual(req["params"][0]["mentions"], [PUMP_PROGRAM])
+
     def test_probe_trip_near_20000(self) -> None:
         meter = CreditMeter(trip=20_000, rate_max=10_000_000)
         tripped = False

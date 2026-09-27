@@ -59,6 +59,7 @@ _DISC = {
     bytes.fromhex("66063d1201daebea"): "buy",
     bytes.fromhex("b817ee6167c5d33d"): "buy_v2",
     bytes.fromhex("38fc74089edfcd5f"): "buy_exact_sol_in",
+    bytes.fromhex("c2ab1c46684d5b2f"): "buy_exact_quote_in_v2",
     bytes.fromhex("33e685a4017f83ad"): "sell",
     bytes.fromhex("5df6823ce7e940b2"): "sell_v2",
     bytes.fromhex("9beae792ec9ea21e"): "migrate",
@@ -72,6 +73,7 @@ _LAYOUT: dict[str, tuple[str, int, int]] = {
     "buy": ("buy", 2, 3),
     "buy_v2": ("buy", 1, 10),
     "buy_exact_sol_in": ("buy", 2, 3),
+    "buy_exact_quote_in_v2": ("buy", 1, 10),
     "sell": ("sell", 2, 3),
     "sell_v2": ("sell", 1, 10),
     "migrate": ("migrate", 2, 3),
@@ -428,10 +430,18 @@ def preprocessed_unsubscribe_request(sub_id: int, req_id: int) -> dict[str, Any]
     }
 
 
-def logs_subscribe_request(account: str, req_id: int, commitment: str = "processed") -> dict[str, Any]:
-    ok, reason = account_filter_decision([account])
-    if not ok:
-        raise ValueError(reason)
+def logs_subscribe_request(
+    account: str,
+    req_id: int,
+    commitment: str = "processed",
+    *,
+    decoder_program: bool = False,
+) -> dict[str, Any]:
+    # The public log decoder may mention the pump program. Preprocessed filters may not.
+    if not (decoder_program and account == PUMP_PROGRAM):
+        ok, reason = account_filter_decision([account])
+        if not ok:
+            raise ValueError(reason)
     return {
         "jsonrpc": "2.0",
         "id": req_id,
@@ -479,7 +489,7 @@ class CreditMeter:
         if self.trip > 0 and self.credits >= self.trip - 1e-6:
             self.tripped = True
             self.reason = "credit_trip"
-        elif len(self._recent) > self.rate_max:
+        elif self.rate_max > 0 and len(self._recent) > self.rate_max:
             self.tripped = True
             self.reason = "rate_trip"
         return self.tripped

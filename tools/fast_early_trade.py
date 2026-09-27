@@ -199,7 +199,11 @@ class Session:
                 pre.append_jsonl(gpath, row)
                 self.graduations += 1
 
-    def on_logs(self, notice: dict[str, Any], t_logs_ms: int) -> None:
+    def remember_logs(self, notice: dict[str, Any], t_logs_ms: int) -> None:
+        if notice["signature"] in self.seen:
+            self._seal(notice, t_logs_ms)
+
+    def _seal(self, notice: dict[str, Any], t_logs_ms: int) -> None:
         slot = notice["slot"] if isinstance(notice["slot"], int) else 0
         try:
             rows = pre.sealed_trades_from_logs(
@@ -447,15 +451,8 @@ async def _pre_loop(session: Session, stop: asyncio.Event) -> None:
     await _close_task(current, current_stop)
 
 
-async def _seal_when_seen(session: Session, notice: dict[str, Any], t_logs_ms: int) -> None:
-    for _ in range(5):
-        if notice["signature"] in session.seen or session.stop_streams.is_set():
-            break
-        await asyncio.sleep(0.05)
-    session.on_logs(notice, t_logs_ms)
-
-
 async def _logs_loop(session: Session, public_ws: str, stop: asyncio.Event) -> None:
+    """One public logsSubscribe on the pump program. $0. Used only to seal rows."""
     import websockets
     from websockets.exceptions import ConnectionClosed
 
@@ -472,28 +469,15 @@ async def _logs_loop(session: Session, public_ws: str, stop: asyncio.Event) -> N
                 ssl=_ssl(),
             ) as ws:
                 backoff = 1.0
-                sub_for: dict[str, int] = {}
-                id_for: dict[int, str] = {}
-                next_id = 1
+                req = pre.logs_subscribe_request(pre.PUMP_PROGRAM, 1, decoder_program=True)
+                await ws.send(json.dumps(req))
+                log.info("logs_subscribed program=pump")
                 while not stop.is_set() and not session.stop_streams.is_set():
-                    wanted = session.book.accounts()
-                    for account in wanted:
-                        if account in sub_for:
-                            continue
-                        req_id = next_id
-                        next_id += 1
-                        id_for[req_id] = account
-                        await ws.send(json.dumps(pre.logs_subscribe_request(account, req_id)))
-                    for account, sub_id in list(sub_for.items()):
-                        if account in wanted:
-                            continue
-                        await ws.send(json.dumps(pre.logs_unsubscribe_request(sub_id, next_id)))
-                        next_id += 1
-                        del sub_for[account]
                     try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                        raw = await asyncio.wait_for(ws.recv(), timeout=30)
                     except asyncio.TimeoutError:
-                        continue
+                        log.warning("logs_idle")
+                        break
                     t_recv_ms = time.time_ns() // 1_000_000
                     if isinstance(raw, bytes):
                         raw = raw.decode("utf-8", errors="replace")
@@ -503,18 +487,16 @@ async def _logs_loop(session: Session, public_ws: str, stop: asyncio.Event) -> N
                         continue
                     if not isinstance(msg, dict):
                         continue
-                    if "id" in msg and msg["id"] in id_for and "result" in msg:
-                        account = id_for.pop(msg["id"])
-                        if isinstance(msg["result"], int):
-                            sub_for[account] = msg["result"]
+                    if msg.get("id") == 1 and "result" in msg:
+                        log.info("logs_ack")
                         continue
                     if "error" in msg and msg.get("method") is None:
                         log.warning("logs_rpc_error error=%s", pre.redact(json.dumps(msg.get("error"))))
-                        continue
+                        break
                     notice = pre.parse_logs_notice(msg)
                     if notice is None:
                         continue
-                    asyncio.create_task(_seal_when_seen(session, notice, t_recv_ms))
+                    session.remember_logs(notice, t_recv_ms)
         except ConnectionClosed as exc:
             log.warning("logs_closed code=%s", getattr(exc, "code", None))
         except Exception as exc:
@@ -555,7 +537,7 @@ async def run(args: argparse.Namespace, stop: asyncio.Event) -> dict[str, Any]:
             while not stop.is_set() and gate.tripped and gate._today() == gate.utc_date:
                 await asyncio.sleep(min(30.0, pre.seconds_until_next_utc_day()))
                 gate.load()
-    meter = pre.CreditMeter(trip=args.credit_trip, rate_max=pre.TRADE_RATE_MAX)
+    meter = pre.CreditMeter(trip=args.credit_trip, rate_max=args.rate_max)
     session = Session(book, args.output_dir, meter, gate)
     started_ms = time.time_ns() // 1_000_000
     if args.seconds > 0:
@@ -592,6 +574,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--status", type=Path, default=Path("/var/lib/mal/sealed/fast-early/early-status.json"))
     parser.add_argument("--daily-cap", type=float, default=0)
     parser.add_argument("--credit-trip", type=float, default=pre.PROBE_CREDIT_TRIP)
+    parser.add_argument("--rate-max", type=int, default=0)
     parser.add_argument("--seconds", type=float, default=1800)
     parser.add_argument("--ttl-s", type=float, default=pre.CURVE_TTL_S)
     parser.add_argument("--public-ws", default=pre.PUBLIC_WS)
