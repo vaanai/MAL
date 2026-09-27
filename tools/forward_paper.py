@@ -20,7 +20,7 @@ import signal
 import statistics
 import sys
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TextIO
@@ -123,6 +123,11 @@ STALE_ACTION_MS = 5_000
 # Live process only. Replay keeps the full path. Covers the 120 s decision grid.
 LIVE_IDLE_RETAIN_MS = 180_000
 READ_CHUNK_BYTES = 2 * 1024 * 1024
+# LatencyMeter is diagnostics only (report()/latency.jsonl). A decision's own
+# applied_latency_ms comes from chain_median_ms(), which only ever reads the
+# newest 8192 samples, so a ring buffer this much bigger changes no decision.
+CHAIN_SAMPLE_CAP = 20_000
+LATENCY_SAMPLE_CAP = 50_000
 # Post-#95 forward book is void from this instant until the guarded runner is live.
 VOID_FROM = "2026-09-25T19:00:00Z"
 VOID_FROM_MS = 1_790_362_800_000
@@ -385,12 +390,17 @@ class LatencyMeter:
     def __init__(self, *, now_ms: Callable[[], int] | None = None, extra_ms: int = 0) -> None:
         self.now_ms = now_ms
         self.extra_ms = extra_ms
-        self.chain_to_recv: list[int] = []
-        self.recv_to_decision: list[int] = []
-        self.decision_to_send: list[int] = []
-        self.applied: list[int] = []
+        # Ring buffers: diagnostics only. A decision's own applied_latency_ms
+        # is computed live in quote()/measure() and never re-reads history
+        # beyond chain_median_ms()'s newest-8192 window, so capping the
+        # buffers changes no decision, only the long-run percentile report.
+        self.chain_to_recv: deque[int] = deque(maxlen=CHAIN_SAMPLE_CAP)
+        self.recv_to_decision: deque[int] = deque(maxlen=LATENCY_SAMPLE_CAP)
+        self.decision_to_send: deque[int] = deque(maxlen=LATENCY_SAMPLE_CAP)
+        self.applied: deque[int] = deque(maxlen=LATENCY_SAMPLE_CAP)
         self._median: int | None = None
         self._median_n = 0
+        self._chain_n = 0
 
     def note_print(self, t_recv_ms: int, event_ts: int | None) -> None:
         if event_ts is None:
@@ -399,15 +409,16 @@ class LatencyMeter:
         if lag < CHAIN_LAG_MIN_MS or lag > CHAIN_LAG_MAX_MS:
             return
         self.chain_to_recv.append(lag)
+        self._chain_n += 1
 
     def chain_median_ms(self) -> int | None:
-        n = len(self.chain_to_recv)
+        n = self._chain_n
         if n == 0:
             return None
         if self._median is not None and n - self._median_n < 2000:
             return self._median
-        sample = self.chain_to_recv[-8192:]
-        self._median = int(round(statistics.median(sample)))
+        tail = list(self.chain_to_recv)[-8192:]
+        self._median = int(round(statistics.median(tail)))
         self._median_n = n
         return self._median
 
@@ -932,6 +943,9 @@ class ForwardEngine:
         self._register_create(create)
 
     def _register_create(self, create: CreateSignal) -> None:
+        # `self.library` is never evicted (funding_graph.fill_funding_features
+        # and laya_v0.creator_features walk it cross-mint), so this dedupe
+        # check alone still catches a duplicate create replay after a restart.
         if create.mint in self.library:
             return
         if self.tape_end_ms is not None and create.t_signal_ms > self.tape_end_ms:
@@ -1860,13 +1874,50 @@ class ForwardEngine:
         if log is not None:
             log.write(row)
 
+    def _prune_cooldowns(self, now_ms: int) -> None:
+        """Drop cooldown timestamps once they can never gate another entry.
+
+        `_risk_reason` only ever reads these as `t_ms < ready`, with `t_ms`
+        the current decision clock. Event time is non-decreasing across the
+        run, so once `ready <= now_ms` the comparison is False for every
+        future call too -- removing the entry is exactly as if it were still
+        there.
+        """
+        for run in self.books:
+            for ledger in (run.ceiling, run.shadow):
+                if ledger.token_ready:
+                    for mint in [m for m, ready in ledger.token_ready.items() if ready <= now_ms]:
+                        del ledger.token_ready[mint]
+                if ledger.creator_ready:
+                    for creator in [c for c, ready in ledger.creator_ready.items() if ready <= now_ms]:
+                        del ledger.creator_ready[creator]
+
+    def _prune_early(self, live_now: int) -> None:
+        """Drop print buffers for a create that never arrived.
+
+        These prints can never reach a book: `_flush_early` only ever runs
+        from `_register_create`, and a mint with no create has no MintBook to
+        score, hold, or exit. There is no decision to preserve here, only
+        memory that a missing create row would otherwise hold forever.
+        """
+        if not self.early:
+            return
+        for mint in [
+            m
+            for m, buffered in self.early.items()
+            if buffered and live_now - max(pr.t_recv_ms for pr, _ in buffered) >= PRUNE_AFTER_MS
+        ]:
+            del self.early[mint]
+
     def _prune(self, now_ms: int) -> None:
         busy: set[str] = set()
         for run in self.books:
             for ledger in (run.ceiling, run.shadow):
                 busy.update(ledger.open)
                 busy.update(ledger.pending)
+        self._prune_cooldowns(now_ms)
         live_now = self.latency.now_ms() if self.latency.now_ms is not None else now_ms
+        self._prune_early(live_now)
         for mint, book in list(self.library.items()):
             if mint in busy or mint in self.mig15_waiting:
                 continue
