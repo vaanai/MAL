@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +18,33 @@ from tools.laya_frozen_nightly import (
     prefer_sealed,
     sealed_live_hours,
 )
-from tools.laya_v0 import FEATURE_NAMES, DecisionRow, RankWindow
+from tools.laya_v0 import FEATURE_NAMES, DecisionRow, RankWindow, yield_for_runner
+
+
+class YieldTests(unittest.TestCase):
+    def test_yield_pauses_only_when_the_runner_is_behind(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "runner-status.json"
+            path.write_text(json.dumps({"lag_ms": 4000}), encoding="utf-8")
+            sleeps: list[float] = []
+
+            def _sleep(seconds: float) -> None:
+                sleeps.append(seconds)
+                path.write_text(json.dumps({"lag_ms": 100}), encoding="utf-8")
+
+            old = os.environ.get("MAL_YIELD_FOR_RUNNER")
+            os.environ["MAL_YIELD_FOR_RUNNER"] = "1"
+            try:
+                slept = yield_for_runner(status_path=path, sleep=_sleep, clock=lambda: 0.0)
+            finally:
+                if old is None:
+                    os.environ.pop("MAL_YIELD_FOR_RUNNER", None)
+                else:
+                    os.environ["MAL_YIELD_FOR_RUNNER"] = old
+            self.assertEqual(sleeps, [5])
+            self.assertEqual(slept, 5)
+            os.environ.pop("MAL_YIELD_FOR_RUNNER", None)
+            self.assertEqual(yield_for_runner(status_path=path, sleep=_sleep), 0)
 
 
 class ModeTests(unittest.TestCase):

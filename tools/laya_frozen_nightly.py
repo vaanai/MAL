@@ -67,6 +67,7 @@ from tools.laya_v0 import (
     combine_fail_models,
     fit_headline_curves,
     load_books,
+    yield_for_runner,
     load_latency_report,
     recv_to_decision_hop_ms,
     stamp_pressure_pnls,
@@ -703,6 +704,7 @@ def _score_forward_chunks(
     sealed = sealed_live_hours(tape_dir, after_ms=after_ms)
     pending = [path for path in sealed if not ledger.has(_hour_token(path.name) or "")]
     for group in chunk_by_bytes(pending, chunk_bytes()):
+        yield_for_runner()
         paths = _overlap_paths(sealed, group)
         allow = {_hour_token(path.name) for path in group}
         allow.discard(None)
@@ -794,6 +796,7 @@ def _score_backward_chunks(
     groups = chunk_by_bytes([hour["trade"] for hour in pending], chunk_bytes())
     trade_to_hour = {hour["trade"]: hour for hour in pending}
     for group in groups:
+        yield_for_runner()
         primary = [trade_to_hour[path] for path in group if path in trade_to_hour]
         if not primary:
             continue

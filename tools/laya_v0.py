@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import statistics
 import sys
@@ -445,6 +446,52 @@ def _resolve_tape_path(path: Path) -> Path:
     return path
 
 
+def yield_for_runner(
+    *,
+    status_path: Path | None = None,
+    sleep: Any = time.sleep,
+    clock: Any = time.monotonic,
+    pause_above: int = 3000,
+    resume_below: int = 1500,
+    max_wait_s: float = 600,
+) -> int:
+    """Pause the tape scan while the paper runner is behind.
+
+    No-op unless MAL_YIELD_FOR_RUNNER=1. Does not change fills. Returns seconds slept.
+    """
+    if os.environ.get("MAL_YIELD_FOR_RUNNER") != "1":
+        return 0
+    path = status_path or Path(
+        os.environ.get(
+            "MAL_RUNNER_STATUS",
+            "/var/lib/mal/paper/forward-paper/runner-status.json",
+        )
+    )
+    lag = _runner_lag_ms(path)
+    if lag is None or lag < pause_above:
+        return 0
+    print(f"yield_runner lag_ms={lag}", file=sys.stderr)
+    start = clock()
+    slept = 0
+    while lag is not None and lag >= resume_below and (clock() - start) < max_wait_s:
+        sleep(5)
+        slept += 5
+        lag = _runner_lag_ms(path)
+    print(f"yield_runner lag_ms={lag} slept_s={slept}", file=sys.stderr)
+    return slept
+
+
+def _runner_lag_ms(path: Path) -> int | None:
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    lag = rec.get("lag_ms") if isinstance(rec, dict) else None
+    if isinstance(lag, bool) or not isinstance(lag, int):
+        return None
+    return lag
+
+
 def load_books(
     creates: dict[str, CreateSignal],
     tape_paths: Iterable[Path],
@@ -462,6 +509,7 @@ def load_books(
                 stats.lines += 1
                 if stats.lines % 250_000 == 0:
                     print(f"tape_lines={stats.lines} kept={stats.kept}", file=sys.stderr)
+                    yield_for_runner()
                 line = line.strip()
                 if not line:
                     continue
