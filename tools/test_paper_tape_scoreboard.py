@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from observe.trade_decode import decode_program_data, records_from_logs
@@ -42,6 +43,8 @@ from tools.paper_price_path import (
 from tools.paper_tape_scoreboard import (
     EXIT_RULES,
     _exit_fail_only_ev,
+    _plan_exit,
+    _plan_exit_resume,
     _stuck_loss,
     _symmetric_ev,
     build_scoreboard,
@@ -1029,6 +1032,111 @@ class RoundTripFeeIdentityTests(unittest.TestCase):
         large = round_trip_fee_identity(500_000_000)
         self.assertAlmostEqual(small["round_trip_frac_portal_and_venue"], large["round_trip_frac_portal_and_venue"], places=6)
         self.assertGreater(small["round_trip_frac_priority"], large["round_trip_frac_priority"])
+
+
+class ExitScanResumeTests(unittest.TestCase):
+    def _entry(self):
+        path = _path([_print(T0)])
+        entry = try_entry(
+            path,
+            t_entry_ms=T0,
+            size_lamports=SIZE,
+            slippage_cap=0.15,
+            feats=features_at_t(path),
+        )
+        self.assertEqual(entry.status, "filled")
+        return path, entry
+
+    def test_resume_matches_full_plan_as_prints_append(self) -> None:
+        path, entry = self._entry()
+        rule = next(rule for rule in EXIT_RULES if rule.rule_id == "tp50_sl30")
+        scan = None
+        fresh = None
+        for i in range(1, 81):
+            path.prints.append(_print(T0 + i * 1_000, quote=Q0 + i * 10_000_000))
+            fresh = _plan_exit(path, entry, rule, 250)
+            got, scan = _plan_exit_resume(path, entry, rule, 250, scan)
+            self.assertEqual(got, fresh)
+        import tools.paper_tape_scoreboard as board
+
+        calls = {"n": 0}
+        real = board._spot_with_our_buy
+
+        def counted(entry_fill, pr):
+            calls["n"] += 1
+            return real(entry_fill, pr)
+
+        board._spot_with_our_buy = counted
+        try:
+            for _ in range(40):
+                again, scan = _plan_exit_resume(path, entry, rule, 250, scan)
+                self.assertEqual(again, fresh)
+            self.assertEqual(calls["n"], 0)
+        finally:
+            board._spot_with_our_buy = real
+
+    def test_resume_walks_each_new_print_once(self) -> None:
+        path, entry = self._entry()
+        rule = next(rule for rule in EXIT_RULES if rule.rule_id == "tp50_sl30")
+        import tools.paper_tape_scoreboard as board
+
+        calls = {"n": 0}
+        real = board._spot_with_our_buy
+
+        def counted(entry_fill, pr):
+            calls["n"] += 1
+            return real(entry_fill, pr)
+
+        board._spot_with_our_buy = counted
+        try:
+            scan = None
+            for i in range(1, 81):
+                path.prints.append(_print(T0 + i * 1_000, quote=Q0 + i * 10_000_000))
+                _got, scan = _plan_exit_resume(path, entry, rule, 250, scan)
+            # A full rewalk on every append would be thousands of spot calls.
+            self.assertLessEqual(calls["n"], 80)
+            self.assertGreater(calls["n"], 0)
+        finally:
+            board._spot_with_our_buy = real
+
+    def test_insert_and_same_signature_still_match_full_plan(self) -> None:
+        path, entry = self._entry()
+        rule = next(rule for rule in EXIT_RULES if rule.rule_id == "trail30")
+        scan = None
+        for i in range(1, 8):
+            path.prints.append(_print(T0 + i * 1_000, quote=Q0 + i * 500_000_000, slot=i + 1))
+            _fresh, scan = _plan_exit_resume(path, entry, rule, 0, scan)
+        path.prints.insert(1, _print(T0 + 400, quote=int(Q0 * 0.5), slot=1))
+        got, scan = _plan_exit_resume(path, entry, rule, 0, scan)
+        self.assertEqual(got, _plan_exit(path, entry, rule, 0))
+        path.prints.append(replace(_print(T0 + 9_000, quote=int(Q0 * 1.8), slot=4, event_index=1), signature="same-tx"))
+        path.prints.append(replace(_print(T0 + 9_500, quote=int(Q0 * 1.2), slot=4, event_index=2), signature="same-tx"))
+        got, scan = _plan_exit_resume(path, entry, rule, 0, scan)
+        self.assertEqual(got, _plan_exit(path, entry, rule, 0))
+
+    def test_hold_plan_does_not_walk_prints(self) -> None:
+        path, entry = self._entry()
+        rule = next(rule for rule in EXIT_RULES if rule.rule_id == "hold_30s")
+        for i in range(1, 6):
+            path.prints.append(_print(T0 + i * 1_000))
+        import tools.paper_tape_scoreboard as board
+
+        calls = {"n": 0}
+        real = board._spot_with_our_buy
+
+        def counted(entry_fill, pr):
+            calls["n"] += 1
+            return real(entry_fill, pr)
+
+        board._spot_with_our_buy = counted
+        try:
+            scan = None
+            for _ in range(5):
+                plan, scan = _plan_exit_resume(path, entry, rule, 0, scan)
+                self.assertEqual(plan, ("hold", T0 + 30_000))
+            self.assertEqual(calls["n"], 0)
+        finally:
+            board._spot_with_our_buy = real
 
 
 if __name__ == "__main__":

@@ -55,6 +55,7 @@ from tools.laya_v0 import (
     flow_from_row,
     RankWindow,
     packet_at,
+    _ladder_legs,
     simulate_ladder,
     vector,
 )
@@ -79,6 +80,7 @@ from tools.paper_tape_scoreboard import (
     ExitRule,
     _pct,
     _stats_from_lamports,
+    _plan_exit_resume,
     features_at_t,
     simulate_exit,
     try_entry,
@@ -615,6 +617,10 @@ class _Open:
     trigger: str
     score: float | None
     hops: dict[str, Any]
+    # Exit-plan cursor. Not a fill input. Lets a repeat check skip the print walk.
+    exit_scan: Any = None
+    ladder_key: tuple[int, int] | None = None
+    ladder_plan: list[tuple[int, int]] | None = None
 
 
 @dataclass
@@ -1603,29 +1609,76 @@ class ForwardEngine:
                 for mint in list(ledger.open):
                     self._try_exit(run, ledger, mint, t_ms)
 
+    def _rule_part(self, opened: _Open, book: MintBook, t_ms: int) -> dict[str, Any]:
+        """Censored checks reuse the exit plan. The close still uses `simulate_exit`."""
+        entry = opened.entry
+        rule = opened.rule
+        if not isinstance(rule, ExitRule) or entry.status != "filled":
+            return simulate_exit(
+                book.path,
+                entry,
+                rule,
+                latency_ms=opened.latency_ms,
+                tape_end_ms=t_ms,
+                size_lamports=opened.size_lamports,
+            )
+        plan, scan = _plan_exit_resume(book.path, entry, rule, opened.latency_ms, opened.exit_scan)
+        opened.exit_scan = scan
+        if plan[1] > t_ms:
+            return {"exit_status": "censored"}
+        return simulate_exit(
+            book.path,
+            entry,
+            rule,
+            latency_ms=opened.latency_ms,
+            tape_end_ms=t_ms,
+            size_lamports=opened.size_lamports,
+        )
+
+    def _ladder_part(self, opened: _Open, book: MintBook, t_ms: int) -> dict[str, Any]:
+        entry = opened.entry
+        rule = opened.rule
+        assert isinstance(rule, LadderRule)
+        if entry.status != "filled" or not entry.spot_sol or entry.spot_sol <= 0 or entry.tokens_raw <= 0:
+            return simulate_ladder(
+                book.path,
+                entry,
+                rule,
+                latency_ms=opened.latency_ms,
+                tape_end_ms=t_ms,
+                size_lamports=opened.size_lamports,
+            )
+        prints = book.path.prints
+        key = (id(prints), len(prints))
+        if opened.ladder_key != key or opened.ladder_plan is None:
+            opened.ladder_key = key
+            opened.ladder_plan = _ladder_legs(
+                prints,
+                entry_t_ms=entry.t_entry_ms,
+                entry_spot=float(entry.spot_sol),
+                tokens=int(entry.tokens_raw),
+                rule=rule,
+            )
+        if any(leg_t + opened.latency_ms > t_ms for leg_t, _tokens in opened.ladder_plan):
+            return {"exit_status": "censored"}
+        return simulate_ladder(
+            book.path,
+            entry,
+            rule,
+            latency_ms=opened.latency_ms,
+            tape_end_ms=t_ms,
+            size_lamports=opened.size_lamports,
+        )
+
     def _try_exit(self, run: _BookRun, ledger: _Ledger, mint: str, t_ms: int) -> None:
         opened = ledger.open.get(mint)
         book = self.library.get(mint)
         if opened is None or book is None:
             return
         if isinstance(opened.rule, LadderRule):
-            part = simulate_ladder(
-                book.path,
-                opened.entry,
-                opened.rule,
-                latency_ms=opened.latency_ms,
-                tape_end_ms=t_ms,
-                size_lamports=opened.size_lamports,
-            )
+            part = self._ladder_part(opened, book, t_ms)
         else:
-            part = simulate_exit(
-                book.path,
-                opened.entry,
-                opened.rule,
-                latency_ms=opened.latency_ms,
-                tape_end_ms=t_ms,
-                size_lamports=opened.size_lamports,
-            )
+            part = self._rule_part(opened, book, t_ms)
         if part["exit_status"] == "censored":
             return
         if part["exit_status"] not in ("realized", "no_exit_liquidity"):
