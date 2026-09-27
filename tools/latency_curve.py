@@ -798,6 +798,7 @@ def run_holdout(
                         score_create(mint, through)
                     if mint.mig_slot is None:
                         mint.prints.clear()
+                        mint.order = TxOrder()
                         watch[mint_id] = mint
                         hot.pop(mint_id, None)
                     elif final or now_ms >= (mint.mig_ms or 0) + WINDOW_MS:
