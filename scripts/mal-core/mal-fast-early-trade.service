@@ -1,0 +1,23 @@
+[Unit]
+Description=MAL early-trade preprocessedSubscribe (daily cap 100000)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/mal/eng
+Nice=0
+MemoryMax=1G
+EnvironmentFile=/var/lib/mal/fast-listener/helius.env
+ExecStart=/var/lib/mal/fast-listener/.venv/bin/python /var/lib/mal/eng/fast_early_trade.py --create-dir /var/lib/mal/sealed/fast-pre-create --output-dir /var/lib/mal/sealed/fast-early --state /var/lib/mal/fast-listener/early-trade-credits.json --status /var/lib/mal/sealed/fast-early/early-status.json --daily-cap 100000 --credit-trip 0 --seconds 0
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+StandardOutput=append:/var/lib/mal/logs/fast-early-trade.log
+StandardError=append:/var/lib/mal/logs/fast-early-trade.log
+
+[Install]
+WantedBy=default.target
