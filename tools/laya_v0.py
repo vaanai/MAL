@@ -461,6 +461,12 @@ def yield_for_runner(
     """
     if os.environ.get("MAL_YIELD_FOR_RUNNER") != "1":
         return 0
+    raw_pause = os.environ.get("MAL_YIELD_PAUSE_ABOVE", "").strip()
+    raw_resume = os.environ.get("MAL_YIELD_RESUME_BELOW", "").strip()
+    if raw_pause.isdigit():
+        pause_above = int(raw_pause)
+    if raw_resume.isdigit():
+        resume_below = int(raw_resume)
     path = status_path or Path(
         os.environ.get(
             "MAL_RUNNER_STATUS",
