@@ -16,7 +16,7 @@ import argparse
 import json
 import random
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -268,20 +268,157 @@ def try_entry(
     )
 
 
+@dataclass
+class ExitScan:
+    """Resume point for one open position's exit plan.
+
+    The live runner asks for this plan on every tape timestamp. Repeating the
+    walk from the entry on an unchanged print list pinned one core and pushed
+    recv lag past the stale cap. `final` means a later in-order print cannot
+    change `plan`.
+    """
+
+    plan: tuple[str, int]
+    final: bool
+    raw_id: int = 0
+    raw_len: int = 0
+    last_raw: TapePrint | None = None
+    groups: set[tuple[int, str]] = field(default_factory=set)
+    next_index: int = 0
+    peak: float = 0.0
+    last_fill: TapePrint | None = None
+    first_fill: TapePrint | None = None
+    end_cap: TapePrint | None = None
+
+
 def _plan_exit(path: MintPath, entry: EntryFill, rule: ExitRule, latency_ms: int) -> tuple[str, int]:
+    plan, _scan = _plan_exit_resume(path, entry, rule, latency_ms, None)
+    return plan
+
+
+def _sig_groups(prints: Sequence[TapePrint]) -> set[tuple[int, str]]:
+    return {(pr.slot, pr.signature) for pr in prints if pr.signature}
+
+
+def _raw_suffix_ok(prints: Sequence[TapePrint], scan: ExitScan) -> bool:
+    """True when `prints` is the same list with only a suffix added."""
+    if scan.raw_id != id(prints) or len(prints) < scan.raw_len:
+        return False
+    if len(prints) == scan.raw_len:
+        return True
+    if scan.raw_len == 0:
+        return False
+    return prints[scan.raw_len - 1] is scan.last_raw
+
+
+def _plan_exit_resume(
+    path: MintPath,
+    entry: EntryFill,
+    rule: ExitRule,
+    latency_ms: int,
+    scan: ExitScan | None,
+) -> tuple[tuple[str, int], ExitScan]:
+    """Same answer as `_plan_exit`. Reuses `scan` when the print list allows it."""
     assert rule.kind == "hold" or (entry.spot_sol is not None and entry.spot_sol > 0)
     if rule.kind == "hold":
         assert rule.hold_ms is not None
-        return "hold", entry.t_entry_ms + rule.hold_ms
+        plan = ("hold", entry.t_entry_ms + rule.hold_ms)
+        if scan is not None and scan.final and scan.plan == plan:
+            return plan, scan
+        return plan, ExitScan(plan=plan, final=True)
     assert entry.spot_sol is not None and entry.spot_sol > 0
+    prints = path.prints
+    if scan is not None and scan.raw_id == id(prints) and scan.raw_len == len(prints):
+        return scan.plan, scan
+    if scan is not None and scan.final and _raw_suffix_ok(prints, scan):
+        # An in-order suffix cannot move a hit that already won, or a deadline
+        # that already passed. A same-signature print can rewrite an earlier
+        # collapsed row, so that case falls through to a full walk.
+        suffix = prints[scan.raw_len :]
+        if not any(pr.signature and (pr.slot, pr.signature) in scan.groups for pr in suffix):
+            if suffix:
+                scan.groups.update(_sig_groups(suffix))
+                scan.raw_len = len(prints)
+                scan.last_raw = prints[-1]
+            return scan.plan, scan
     mark = _entry_mark(entry)
-    peak = mark
     deadline = entry.t_entry_ms + rule.max_hold_ms
-    for pr in fillable_prints(path):
+    start = 0
+    peak = mark
+    groups = _sig_groups(prints)
+    resume = (
+        scan is not None
+        and not scan.final
+        and _raw_suffix_ok(prints, scan)
+        and not any(pr.signature and (pr.slot, pr.signature) in scan.groups for pr in prints[scan.raw_len :])
+    )
+    fills = fillable_prints(path)
+    if resume and scan is not None and _fill_prefix_ok(fills, scan):
+        start = scan.next_index
+        peak = scan.peak
+        groups = set(scan.groups)
+        groups.update(_sig_groups(prints[scan.raw_len :]))
+    plan, built = _walk_exit(
+        fills,
+        entry,
+        rule,
+        latency_ms,
+        start=start,
+        peak=peak,
+        mark=mark,
+        deadline=deadline,
+    )
+    built.plan = plan
+    built.raw_id = id(prints)
+    built.raw_len = len(prints)
+    built.last_raw = prints[-1] if prints else None
+    built.groups = groups
+    return plan, built
+
+
+def _fill_prefix_ok(fills: Sequence[TapePrint], scan: ExitScan) -> bool:
+    if scan.next_index > len(fills):
+        return False
+    if scan.first_fill is None:
+        if fills and scan.next_index == 0 and scan.end_cap is None:
+            return False
+    elif not fills or fills[0] is not scan.first_fill:
+        return False
+    if scan.next_index > 0 and fills[scan.next_index - 1] is not scan.last_fill:
+        return False
+    if scan.end_cap is not None:
+        if scan.next_index >= len(fills) or fills[scan.next_index] is not scan.end_cap:
+            return False
+    return True
+
+
+def _walk_exit(
+    fills: Sequence[TapePrint],
+    entry: EntryFill,
+    rule: ExitRule,
+    latency_ms: int,
+    *,
+    start: int,
+    peak: float,
+    mark: float,
+    deadline: int,
+) -> tuple[tuple[str, int], ExitScan]:
+    first = fills[0] if fills else None
+    for i in range(start, len(fills)):
+        pr = fills[i]
         if pr.t_recv_ms <= entry.t_entry_ms:
             continue
         if pr.t_recv_ms > deadline:
-            break
+            plan = ("time_stop", deadline)
+            return plan, ExitScan(
+                plan=plan,
+                final=True,
+                next_index=i,
+                peak=peak,
+                last_fill=fills[i - 1] if i else None,
+                first_fill=first,
+                end_cap=pr,
+            )
         spot = _spot_with_our_buy(entry, pr)
         if spot is None or spot <= 0:
             continue
@@ -291,15 +428,51 @@ def _plan_exit(path: MintPath, entry: EntryFill, rule: ExitRule, latency_ms: int
                 peak = spot
                 continue
             if spot <= peak * (1.0 - rule.trail):
-                return "trail", pr.t_recv_ms + latency_ms
+                plan = ("trail", pr.t_recv_ms + latency_ms)
+                return plan, ExitScan(
+                    plan=plan,
+                    final=True,
+                    next_index=i + 1,
+                    peak=peak,
+                    last_fill=pr,
+                    first_fill=first,
+                    end_cap=None,
+                )
         elif rule.kind == "tpsl":
             assert rule.tp is not None and rule.sl is not None
             ret = spot / mark - 1.0
             if ret >= rule.tp:
-                return "tp", pr.t_recv_ms + latency_ms
+                plan = ("tp", pr.t_recv_ms + latency_ms)
+                return plan, ExitScan(
+                    plan=plan,
+                    final=True,
+                    next_index=i + 1,
+                    peak=peak,
+                    last_fill=pr,
+                    first_fill=first,
+                    end_cap=None,
+                )
             if ret <= -rule.sl:
-                return "sl", pr.t_recv_ms + latency_ms
-    return "time_stop", deadline
+                plan = ("sl", pr.t_recv_ms + latency_ms)
+                return plan, ExitScan(
+                    plan=plan,
+                    final=True,
+                    next_index=i + 1,
+                    peak=peak,
+                    last_fill=pr,
+                    first_fill=first,
+                    end_cap=None,
+                )
+    plan = ("time_stop", deadline)
+    return plan, ExitScan(
+        plan=plan,
+        final=False,
+        next_index=len(fills),
+        peak=peak,
+        last_fill=fills[-1] if fills else None,
+        first_fill=first,
+        end_cap=None,
+    )
 
 
 def _entry_mark(entry: EntryFill) -> float:
