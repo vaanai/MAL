@@ -15,6 +15,7 @@ import argparse
 import heapq
 import json
 import math
+import random
 import signal
 import statistics
 import sys
@@ -70,8 +71,10 @@ from tools.paper_price_path import (
     create_from_observe_row,
     load_creates,
     open_text,
+    parse_time_ms,
 )
 from tools.paper_tape_scoreboard import (
+    DEFAULT_FAIL_RATE,
     EXIT_RULES,
     ExitRule,
     _pct,
@@ -107,7 +110,167 @@ class RiskConfigError(Exception):
 PRUNE_AFTER_MS = 45 * 60 * 1000
 CHAIN_LAG_MIN_MS = -5_000
 CHAIN_LAG_MAX_MS = 120_000
+# Healthy recv→decision on this runner is the 26 ms floor (pre-#95 hourly
+# p50 was 16–131 ms). The honest-fill cut already used for this book is 5 s.
+# A decision older than that cannot be acted on. 5 s rejects the 2.3 h fills.
+STALE_ACTION_MS = 5_000
+# Live process only. Replay keeps the full path. Covers the 120 s decision grid.
+LIVE_IDLE_RETAIN_MS = 180_000
+READ_CHUNK_BYTES = 2 * 1024 * 1024
+# Post-#95 forward book is void from this instant until the guarded runner is live.
+VOID_FROM = "2026-09-25T19:00:00Z"
+VOID_FROM_MS = 1_790_362_800_000
+VOID_REASON = "post-#95 forward book void: recv to decision lag past the live cap"
+GUARD_LIVE_NAME = "guard-live.json"
+RUNNER_STATUS_NAME = "runner-status.json"
+PROMOTION_VOID_NAME = "invalid-for-promotion.json"
 RULES: dict[str, ExitRule] = {rule.rule_id: rule for rule in EXIT_RULES}
+
+
+def _utc(ms: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ms / 1000.0))
+
+
+def _next_utc_midnight_ms(now_ms: int) -> int:
+    """First UTC midnight strictly after now_ms."""
+    day = 86_400_000
+    return now_ms - (now_ms % day) + day
+
+
+def clean_clock(live_at_ms: int) -> dict[str, str]:
+    """7 full UTC days from the first midnight after go-live. Review at 05:00 the next morning."""
+    start = _next_utc_midnight_ms(live_at_ms)
+    review = start + 7 * 86_400_000 + 5 * 3_600_000
+    return {"clean_start": _utc(start), "kill_review_at": _utc(review)}
+
+
+def decision_counts_for_promotion(decision_t_ms: int | None, live_at_ms: int | None) -> bool:
+    """Rows in [VOID_FROM, guard-live) do not count. Earlier rows stay eligible."""
+    if isinstance(decision_t_ms, bool) or not isinstance(decision_t_ms, int):
+        return False
+    if decision_t_ms < VOID_FROM_MS:
+        return True
+    if live_at_ms is None:
+        return False
+    return decision_t_ms >= live_at_ms
+
+
+def position_row_counts_for_promotion(row: dict[str, Any], live_at_ms: int | None) -> bool:
+    """Promotion ledger only: shadow, plus rows from before that split existed.
+
+    Ceiling is the capacity book. It is not scored here. The JSONL is left on disk.
+    """
+    if row.get("event") not in ("close", "miss"):
+        return False
+    if row.get("ledger") not in (None, "shadow"):
+        return False
+    return decision_counts_for_promotion(row.get("decision_t_ms"), live_at_ms)
+
+
+def iter_position_rows(path: Path) -> Iterable[dict[str, Any]]:
+    """Read positions.jsonl. Does not truncate or delete it."""
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                row = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def promotion_pnls_by_book(rows: Iterable[dict[str, Any]], live_at_ms: int | None) -> dict[str, list[int]]:
+    """PnL the promotion read keeps. Void-window decision times are left out."""
+    out: dict[str, list[int]] = {}
+    for row in rows:
+        if not position_row_counts_for_promotion(row, live_at_ms):
+            continue
+        pnl = row.get("pnl_lamports")
+        if isinstance(pnl, bool) or not isinstance(pnl, int):
+            continue
+        book = row.get("book")
+        if not isinstance(book, str) or not book:
+            continue
+        out.setdefault(book, []).append(pnl)
+    return out
+
+
+def row_clock_ms(kind: str, row: dict[str, Any]) -> int | None:
+    if kind == "create":
+        return parse_time_ms(row.get("t_ws"))
+    key = "t_first_ms" if kind == "attention" else "t_recv_ms"
+    raw = row.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw
+
+
+def load_guard_live_ms(path: Path) -> int | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw = data.get("live_at_ms") if isinstance(data, dict) else None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw
+
+
+def ensure_guard_live(directory: Path, now_ms: int) -> int:
+    """Stamp the first moment the guarded runner is actually at the live edge."""
+    path = directory / GUARD_LIVE_NAME
+    existing = load_guard_live_ms(path)
+    if existing is not None:
+        return existing
+    clock = clean_clock(now_ms)
+    rec = {
+        "schema": "forward_paper_guard_live_v1",
+        "live_at_ms": now_ms,
+        "live_at": _utc(now_ms),
+        "stale_cap_ms": STALE_ACTION_MS,
+        "fail_rate": DEFAULT_FAIL_RATE,
+        "void_from": VOID_FROM,
+        "void_from_ms": VOID_FROM_MS,
+        "reason": VOID_REASON,
+        **clock,
+    }
+    path.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
+    void = {
+        "schema": "forward_paper_promotion_void_v1",
+        "from": VOID_FROM,
+        "from_ms": VOID_FROM_MS,
+        "until": rec["live_at"],
+        "until_ms": now_ms,
+        "reason": VOID_REASON,
+        "do_not_delete_tape": True,
+        "clean_start": clock["clean_start"],
+        "kill_review_at": clock["kill_review_at"],
+    }
+    (directory / PROMOTION_VOID_NAME).write_text(json.dumps(void, indent=2) + "\n", encoding="utf-8")
+    return now_ms
+
+
+def write_runner_status(path: Path, engine: "ForwardEngine", *, live_at_ms: int | None) -> None:
+    now_ms = int(time.time() * 1000)
+    newest = engine.newest_recv_ms
+    lag = None if newest is None else max(0, now_ms - newest)
+    rec = {
+        "schema": "forward_paper_runner_status_v1",
+        "ts": _utc(now_ms),
+        "ts_ms": now_ms,
+        "stale_cap_ms": STALE_ACTION_MS,
+        "lag_ms": lag,
+        "stale_dropped": engine.stale_dropped,
+        "fail_rate": engine.fail_rate,
+        "promotion_live_ms": live_at_ms,
+        "newest_recv_ms": newest,
+    }
+    path.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
 
 
 def _finite(value: Any) -> float | None:
@@ -463,6 +626,7 @@ class _Ledger:
     day: str = ""
     day_pnl: int = 0
     realized: list[int] = field(default_factory=list)
+    realized_decision_t_ms: list[int] = field(default_factory=list)
     token_ready: dict[str, int] = field(default_factory=dict)
     creator_ready: dict[str, int] = field(default_factory=dict)
     closed_n: int = 0
@@ -626,6 +790,9 @@ class ForwardEngine:
         record_packets: bool = False,
         retain_rows: bool = False,
         logs: dict[str, JsonlLog] | None = None,
+        fail_rate: float = 0.0,
+        promotion_live_ms: int | None = None,
+        positions_path: Path | None = None,
     ) -> None:
         self.books = []
         for spec in books:
@@ -645,6 +812,15 @@ class ForwardEngine:
         self.record_packets = record_packets
         self.retain_rows = retain_rows
         self.logs = logs or {}
+        # Live serve passes the flat 15% promotion rate. Replay stays at 0 so
+        # packet parity is not a coin flip. Config cannot lower the live rate.
+        self.fail_rate = float(fail_rate)
+        self.fail_rng = random.Random()
+        self.promotion_live_ms = promotion_live_ms
+        # Durable ledger. summary() scores this file for promotion and does not rewrite it.
+        self.positions_path = positions_path
+        self.stale_dropped = 0
+        self.newest_recv_ms: int | None = None
         self._tx_order = TxOrder()
         self.wallets = WalletState()
         self.graph = None
@@ -786,7 +962,8 @@ class ForwardEngine:
                 self._on_signal(mint, when, trigger)
         self._fill_through(t_ms)
         self._exits_through(t_ms)
-        if self._prints and self._prints % 50_000 == 0:
+        every = 5_000 if self.latency.now_ms is not None else 50_000
+        if self._prints and self._prints % every == 0:
             self._prune(t_ms)
 
     def _apply_batch(self, t_ms: int, batch: list[tuple[int, int, int, Any]]) -> None:
@@ -1123,6 +1300,13 @@ class ForwardEngine:
             elif spec.threshold is None or score < spec.threshold:
                 self._decision(run, book, t_ms, trigger, "skip", "below_threshold", score, None)
                 return
+        # A decision that is already too old to act on is not a fill.
+        lag = self._action_lag_ms(t_ms)
+        if lag is not None and lag > STALE_ACTION_MS:
+            self.stale_dropped += 1
+            self._decision(run, book, t_ms, trigger, "skip", "stale_recv", score, None, ledger="ceiling")
+            self._decision(run, book, t_ms, trigger, "skip", "stale_recv", score, None, ledger="shadow")
+            return
         # Strategy said take. Ceiling still enforces the hard caps. Shadow fills
         # every such signal with no concurrent cap and no daily-loss halt.
         ceiling_reason = self._risk_reason(run, mint, creator, t_ms, spec.size_lamports, ledger=run.ceiling, capped=True)
@@ -1227,12 +1411,28 @@ class ForwardEngine:
             return "creator_cooldown"
         return None
 
+    def _action_lag_ms(self, t_ms: int) -> int | None:
+        """Wall clock minus tape receive. Replay has no wall clock and is not stale."""
+        if self.latency.now_ms is None:
+            return None
+        return self.latency.now_ms() - t_ms
+
+    def _landing_failed(self) -> bool:
+        """Flat landing failure. Misses that already failed are not rolled again."""
+        if self.fail_rate <= 0:
+            return False
+        return self.fail_rng.random() < self.fail_rate
+
+    def _promotion_valid(self, decision_t_ms: int) -> bool:
+        return decision_counts_for_promotion(decision_t_ms, self.promotion_live_ms)
+
     def _roll_day(self, ledger: _Ledger, t_ms: int) -> None:
         day = time.strftime("%Y-%m-%d", time.gmtime(t_ms / 1000))
         if ledger.day != day:
             ledger.day = day
             ledger.day_pnl = 0
             ledger.realized = []
+            ledger.realized_decision_t_ms = []
 
     def _decision(
         self,
@@ -1305,12 +1505,15 @@ class ForwardEngine:
             feats=feats,
         )
         ledger.pending.pop(pending.mint, None)
-        if entry.status != "filled":
+        landing_fail = entry.status == "filled" and self._landing_failed()
+        if entry.status != "filled" or landing_fail:
             # Same cost the scoreboard keeps inside n: an attempt that does not fill burns priority.
+            # A curve fill still fails the flat 15% landing rate. That miss is not mixed twice.
+            status = "missed_landing" if landing_fail else entry.status
             cost = -PRIORITY_FEE_LAMPORTS
             self._roll_day(ledger, pending.t_entry_ms)
             ledger.day_pnl += cost
-            ledger.realized.append(cost)
+            self._book_realized(ledger, pending.decision_t_ms, cost)
             ledger.closed_n += 1
             self._decision(
                 run,
@@ -1318,10 +1521,10 @@ class ForwardEngine:
                 pending.decision_t_ms,
                 pending.trigger,
                 "skip",
-                entry.status,
+                status,
                 pending.score,
                 pending.hops,
-                entry_status=entry.status,
+                entry_status=status,
                 ledger=pending.ledger,
             )
             self._position(
@@ -1335,10 +1538,11 @@ class ForwardEngine:
                     "trigger": pending.trigger,
                     "decision_t_ms": pending.decision_t_ms,
                     "t_entry_ms": pending.t_entry_ms,
-                    "entry_status": entry.status,
+                    "entry_status": status,
+                    "promotion_valid": self._promotion_valid(pending.decision_t_ms),
                     "pnl_lamports": cost,
                     "attempt_cost_lamports": cost,
-                    "reason": "priority_fee_on_unfilled_attempt",
+                    "reason": "flat_15pct_landing" if landing_fail else "priority_fee_on_unfilled_attempt",
                 }
             )
             return
@@ -1389,6 +1593,7 @@ class ForwardEngine:
                 "entry_venue": entry.venue,
                 "entry_spot_sol": entry.spot_sol,
                 "entry_tokens_raw": entry.tokens_raw,
+                "promotion_valid": self._promotion_valid(pending.decision_t_ms),
             }
         )
 
@@ -1430,7 +1635,7 @@ class ForwardEngine:
         self._roll_day(ledger, t_ms)
         if isinstance(pnl, int):
             ledger.day_pnl += pnl
-            ledger.realized.append(pnl)
+            self._book_realized(ledger, opened.decision_t_ms, pnl)
         ledger.closed_n += 1
         ready = t_ms
         ledger.token_ready[mint] = ready + run.spec.token_cooldown_ms
@@ -1457,8 +1662,13 @@ class ForwardEngine:
                 "trigger_exit": part.get("trigger"),
                 "pnl_lamports": pnl,
                 "pnl_sol": None if pnl is None else pnl / LAMPORTS_PER_SOL,
+                "promotion_valid": self._promotion_valid(opened.decision_t_ms),
             }
         )
+
+    def _book_realized(self, ledger: _Ledger, decision_t_ms: int, pnl: int) -> None:
+        ledger.realized.append(pnl)
+        ledger.realized_decision_t_ms.append(decision_t_ms)
 
     def _position(self, row: dict[str, Any]) -> None:
         if self.retain_rows:
@@ -1473,11 +1683,21 @@ class ForwardEngine:
             for ledger in (run.ceiling, run.shadow):
                 busy.update(ledger.open)
                 busy.update(ledger.pending)
+        live_now = self.latency.now_ms() if self.latency.now_ms is not None else now_ms
         for mint, book in list(self.library.items()):
             if mint in busy or mint in self.mig15_waiting:
                 continue
+            if self.latency.now_ms is not None and book.flow:
+                cutoff = live_now - LIVE_IDLE_RETAIN_MS
+                if book.flow[0].t_recv_ms < cutoff:
+                    kept = [pr for pr in book.flow if pr.t_recv_ms >= cutoff]
+                    if not kept:
+                        kept = [book.flow[-1]]
+                    book.flow = kept
+                    book.path.prints = [pr.to_tape() for pr in kept]
+                    self.seen[mint] = {_dedupe_key(pr) for pr in kept}
             last = book.flow[-1].t_recv_ms if book.flow else book.create.t_signal_ms
-            if now_ms - last < PRUNE_AFTER_MS:
+            if live_now - last < PRUNE_AFTER_MS:
                 continue
             t0 = book.create.t_signal_ms
             horizon = t0 + 30_000
@@ -1500,10 +1720,23 @@ class ForwardEngine:
     def summary(self, t_ms: int | None = None) -> dict[str, Any]:
         when = self._clock_ms if t_ms is None else t_ms
         day = time.strftime("%Y-%m-%d", time.gmtime(when / 1000)) if when else ""
+        from_file: dict[str, list[int]] | None = None
+        path = self.positions_path
+        if path is not None and path.is_file():
+            from_file = promotion_pnls_by_book(iter_position_rows(path), self.promotion_live_ms)
         books = {}
         for run in self.books:
             ceiling = _ledger_view(run.ceiling, day)
-            shadow = _ledger_view(run.shadow, day)
+            if from_file is not None:
+                shadow = _ledger_view(run.shadow, day)
+                shadow["realized"] = _stats_from_lamports(from_file.get(run.spec.book_id, []))
+            else:
+                shadow = _ledger_view(
+                    run.shadow,
+                    day,
+                    promotion_live_ms=self.promotion_live_ms,
+                    for_promotion=True,
+                )
             books[run.spec.book_id] = {
                 "kind": run.spec.kind,
                 **ceiling,
@@ -1524,19 +1757,38 @@ class ForwardEngine:
             "swing_freeze_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(freeze / 1000.0)),
             "promotion": "shadow",
             "capacity": "ceiling",
+            "fail_rate": self.fail_rate,
+            "stale_dropped": self.stale_dropped,
+            "stale_cap_ms": STALE_ACTION_MS,
+            "promotion_void_from": VOID_FROM,
+            "promotion_live_ms": self.promotion_live_ms,
             "books": books,
             "latency": self.latency.report(),
         }
 
 
-def _ledger_view(ledger: _Ledger, day: str) -> dict[str, Any]:
+def _ledger_view(
+    ledger: _Ledger,
+    day: str,
+    *,
+    promotion_live_ms: int | None = None,
+    for_promotion: bool = False,
+) -> dict[str, Any]:
+    pnls = ledger.realized
+    if for_promotion:
+        pnls = []
+        times = ledger.realized_decision_t_ms
+        for index, pnl in enumerate(ledger.realized):
+            decision_t = times[index] if index < len(times) else None
+            if decision_counts_for_promotion(decision_t, promotion_live_ms):
+                pnls.append(pnl)
     return {
         "open": len(ledger.open),
         "pending": len(ledger.pending),
         "closed": ledger.closed_n,
         "day": ledger.day or day,
         "day_pnl_sol": ledger.day_pnl / LAMPORTS_PER_SOL,
-        "realized": _stats_from_lamports(ledger.realized),
+        "realized": _stats_from_lamports(pnls),
         "skips": dict(ledger.skip_reasons),
     }
 
@@ -1802,7 +2054,8 @@ class _Follower:
             self.offset = 0
         with self.path.open("rb") as fh:
             fh.seek(self.offset)
-            data = fh.read(size - self.offset)
+            # One poll must not pull a whole hour into the 1G cgroup.
+            data = fh.read(min(READ_CHUNK_BYTES, size - self.offset))
         if not data:
             return []
         cut = data.rfind(b"\n")
@@ -2020,6 +2273,8 @@ def serve(config_path: Path) -> int:
         swing=swing,
         slippage_cap=slippage,
         logs={"decisions": logs["decisions"], "positions": logs["positions"]},
+        fail_rate=DEFAULT_FAIL_RATE,
+        positions_path=output_dir / "positions.jsonl",
     )
     bind_attention(engine, attention_dir)
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
@@ -2042,13 +2297,41 @@ def serve(config_path: Path) -> int:
     freeze_ms = next((b.freeze_ms for b in books if b.kind == "swing" and b.freeze_ms is not None), SWING_FREEZE_MS)
     freeze_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(freeze_ms / 1000.0))
     print(
-        f"forward_paper books={','.join(b.book_id for b in books)} kill={kill_file} swing_freeze={freeze_at}",
+        f"forward_paper books={','.join(b.book_id for b in books)} kill={kill_file} "
+        f"swing_freeze={freeze_at} stale_cap_ms={STALE_ACTION_MS} fail_rate={DEFAULT_FAIL_RATE}",
         file=sys.stderr,
     )
+    # Replace a polluted recv→decision report before the next label build reads it.
+    (output_dir / "latency.json").write_text(
+        json.dumps(_json_safe(engine.latency.report()), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    status_path = output_dir / RUNNER_STATUS_NAME
+    live_at_ms = load_guard_live_ms(output_dir / GUARD_LIVE_NAME)
+    engine.promotion_live_ms = live_at_ms
+    last_status = 0.0
+    last_prune = 0.0
     while not stop["flag"]:
         batch = tail.poll()
-        watermark = 0
+        now_ms = int(time.time() * 1000)
+        fresh: list[tuple[str, dict[str, Any]]] = []
         for kind, row in batch:
+            clock = row_clock_ms(kind, row)
+            if clock is not None:
+                engine.newest_recv_ms = clock if engine.newest_recv_ms is None else max(engine.newest_recv_ms, clock)
+                if now_ms - clock > STALE_ACTION_MS:
+                    engine.stale_dropped += 1
+                    continue
+            fresh.append((kind, row))
+        if live_at_ms is None:
+            newest = engine.newest_recv_ms
+            caught_up = (not batch) or (newest is not None and now_ms - newest <= STALE_ACTION_MS)
+            if caught_up:
+                live_at_ms = ensure_guard_live(output_dir, now_ms)
+                engine.promotion_live_ms = live_at_ms
+                print(f"forward_paper guard_live={_utc(live_at_ms)}", file=sys.stderr)
+        watermark = 0
+        for kind, row in fresh:
             if kind == "create":
                 create = create_from_observe_row(row)
                 if create is None:
@@ -2082,14 +2365,17 @@ def serve(config_path: Path) -> int:
             except OSError:
                 mtime = config_mtime
             if mtime != config_mtime:
-                fresh, kill = reload_risk_config(config_path, books)
-                if fresh is not books:
-                    books = fresh
+                reloaded, kill = reload_risk_config(config_path, books)
+                if reloaded is not books:
+                    books = reloaded
                     adopt_book_limits(engine, books)
                     if kill is not None:
                         engine.kill_file = kill
                 config_mtime = mtime
             last_model = now
+        if now - last_prune > 5 and engine.latency.now_ms is not None:
+            engine._prune(engine._clock_ms or now_ms)
+            last_prune = now
         if now - last_summary > 60 and engine._clock_ms:
             snap = engine.summary()
             logs["pnl"].write(snap)
@@ -2100,6 +2386,9 @@ def serve(config_path: Path) -> int:
             )
             offset_path.write_text(json.dumps(tail.offsets) + "\n", encoding="utf-8")
             last_summary = now
+        if now - last_status > 15:
+            write_runner_status(status_path, engine, live_at_ms=live_at_ms)
+            last_status = now
         if not batch:
             time.sleep(0.025)
     if engine._clock_ms:

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run MAL healthcheck every 5 minutes
+Documentation=https://github.com/vaanai/MAL
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

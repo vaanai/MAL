@@ -174,6 +174,8 @@ class FundingGraphTests(unittest.TestCase):
                     return {"result": rows}
                 return {"result": [{"signature": "oldest", "blockTime": 10}]}
             self.assertEqual(body["params"][0], "oldest")
+            cfg = body["params"][1]
+            self.assertEqual(cfg.get("maxSupportedTransactionVersion"), 1)
             return {"result": _tx("transfer", "FunderA", "Wallet", 42)}
 
         clock = _Clock()

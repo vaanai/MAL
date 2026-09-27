@@ -1199,6 +1199,7 @@ def run_hour(
                 print(
                     f"backfill {key} slots={counts['slots_done']} trades={counts['trades']} "
                     f"creates={counts['creates']} migrations={counts['migrations']} "
+                    f"completes={counts['completes']} "
                     f"credits={budget.used} wire_mb={counts['wire_bytes']/1e6:.0f}",
                     file=sys.stderr,
                     flush=True,

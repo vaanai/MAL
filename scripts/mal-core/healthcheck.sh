@@ -59,11 +59,60 @@ else
   ok=false
 fi
 
+# Forward-paper runner. Alert when the unit is down, the heartbeat is stale,
+# or recv lag is past the cap the runner writes (do not hardcode a looser one).
+FORWARD_STATUS="${MAL_FORWARD_STATUS:-/var/lib/mal/paper/forward-paper/runner-status.json}"
+runner_state="down"
+runner_lag="null"
+runner_cap="null"
+runner_age="null"
+runner_note="status_missing"
+if systemctl --user is-active --quiet mal-forward-paper.service; then
+  runner_state="active"
+else
+  runner_state="down"
+  runner_note="runner_down"
+  ok=false
+fi
+if [[ ! -f "${FORWARD_STATUS}" ]]; then
+  ok=false
+elif [[ -f "${FORWARD_STATUS}" ]]; then
+  runner_age="$(( $(date +%s) - $(stat -c %Y "${FORWARD_STATUS}") ))"
+  eval "$(python3 - "${FORWARD_STATUS}" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    print("runner_lag=null")
+    print("runner_cap=null")
+    print("runner_note_file=unreadable")
+    raise SystemExit(0)
+lag = data.get("lag_ms")
+cap = data.get("stale_cap_ms")
+print(f"runner_lag={lag if isinstance(lag, int) and not isinstance(lag, bool) else 'null'}")
+print(f"runner_cap={cap if isinstance(cap, int) and not isinstance(cap, bool) else 'null'}")
+print("runner_note_file=")
+PY
+)"
+  if [[ "${runner_age}" -gt 180 ]]; then
+    runner_note="runner_silent"
+    ok=false
+  elif [[ "${runner_lag}" != "null" && "${runner_cap}" != "null" && "${runner_lag}" -gt "${runner_cap}" ]]; then
+    runner_note="runner_lag"
+    ok=false
+  elif [[ "${runner_state}" == "active" ]]; then
+    runner_note="ok"
+  fi
+fi
+
 if [[ "${ok}" == true ]]; then status="ok"; else status="fail"; fi
 
-python3 - "${LOG_DIR}" "${ts}" "${host}" "${status}" "${disk_json}" "${pg_host}" "${pg_peer}" "${jsonl_writable}" "${JSONL_DIR}" <<'PY'
+python3 - "${LOG_DIR}" "${ts}" "${host}" "${status}" "${disk_json}" "${pg_host}" "${pg_peer}" "${jsonl_writable}" "${JSONL_DIR}" "${runner_state}" "${runner_lag}" "${runner_cap}" "${runner_age}" "${runner_note}" <<'PY'
 import json, os, sys
-log_dir, ts, host, status, disk_raw, pg_host, pg_peer, jsonl_w, jsonl_dir = sys.argv[1:]
+(
+    log_dir, ts, host, status, disk_raw, pg_host, pg_peer, jsonl_w, jsonl_dir,
+    runner_state, runner_lag, runner_cap, runner_age, runner_note,
+) = sys.argv[1:]
 try:
     disk = json.loads(disk_raw)
 except json.JSONDecodeError:
@@ -78,6 +127,13 @@ rec = {
     "disk": disk,
     "postgres": {"localhost_5432": pg_host, "peer_select": pg_peer},
     "jsonl": {"dir": jsonl_dir, "writable": jsonl_w == "true"},
+    "forward_paper": {
+        "state": runner_state,
+        "lag_ms": None if runner_lag == "null" else int(runner_lag),
+        "stale_cap_ms": None if runner_cap == "null" else int(runner_cap),
+        "status_age_s": None if runner_age == "null" else int(runner_age),
+        "note": runner_note,
+    },
 }
 line = json.dumps(rec, separators=(",", ":"), ensure_ascii=False)
 path = os.path.join(log_dir, "health.jsonl")
