@@ -8,12 +8,13 @@
 | **Amends** | [CONSTITUTION.md](../CONSTITUTION.md) rules 11–14; [DEC-010](DEC-010-oracle-phase0-handoff-autonomy.md) §3 and §4 |
 | **Does not amend** | Promotion gate, paper-only fence, JSONL vs Postgres, Cloudflare Access path ([DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md)), host-key pins |
 | **Handoff** | [CLAUDE.md](../CLAUDE.md), [docs/MIGRATION-TO-CLAUDE.md](../docs/MIGRATION-TO-CLAUDE.md), [docs/HOSTS.md](../docs/HOSTS.md) |
+| **Superseded in part by** | [DEC-013](DEC-013-claude-manager-merges.md) (2026-09-27): §2's "Helm merges after review" clause is replaced by the Claude manager merging after review. The rest of this DEC stands. |
 
 ## Decision
 
 1. **The repo is the source of truth.** Lab notes, daily briefs, and research options that lived in the project store are in git (`docs/`, `ARTIFACTS/lab/`, `ARTIFACTS/daily/`). Agents reload git, not a side store.
 
-2. **Workflow is tool-neutral.** The manager plans. Workers implement via pull requests. **Helm merges after review.** Workers do not merge. One topic per PR. Branch names from Claude are `claude/<topic>`.
+2. **Workflow is tool-neutral.** The manager plans. Workers implement via pull requests. **Helm merges after review.** Workers do not merge. One topic per PR. Branch names from Claude are `claude/<topic>`. (Superseded 2026-09-27: the Claude manager merges instead of Helm — [DEC-013](DEC-013-claude-manager-merges.md).)
 
 3. **Model-vendor rules are dropped.** Constitution rule 11 no longer names Composer 2.5 or Cursor Grok, and no longer has a Fast-mode switch. Seat roles (Helm, Scout, Graph, Proof) stay.
 

@@ -38,7 +38,7 @@ Phase-0 experiments are **files in this directory**, not a database. One experim
 
 - **Kill-attempt before promote** — No promotion to “active decision” without a documented failed kill-attempt or passed kill criteria.
 - **Immutable snapshots** — Export decision packets to `ARTIFACTS/` when an experiment closes; do not rewrite past results.
-- **One topic per PR.** Workers do not merge. Helm merges after review ([DEC-012](../DEC/DEC-012-tool-neutral-manager-workers.md)).
+- **One topic per PR.** Workers do not merge. The Claude manager merges after review ([DEC-012](../DEC/DEC-012-tool-neutral-manager-workers.md), [DEC-013](../DEC/DEC-013-claude-manager-merges.md)).
 
 ## Index
 

@@ -2,9 +2,11 @@
 
 Repo and docs only. This checklist is what the owner or Helm must do **outside** the repository. Nothing here changes a host, a systemd unit, Cloudflare, or a secret.
 
-The pull request that adds this file does not merge itself. Helm merges after review.
+The pull request that adds this file does not merge itself. At the time it was opened, Helm merged after review; since 2026-09-27 the Claude manager session on `mal-fast-0` merges instead ([DEC-013](../DEC/DEC-013-claude-manager-merges.md)).
 
 ## Secrets to create
+
+Done 2026-09-27. Claude has full sudo on `mal-fast-0` and a read-only account on `mal-core-0` over `ssh mal-core-0` (Cloudflare Access, its own key and service token).
 
 Use these names. The SSH helper still accepts the old Cursor names if they are already set. When both are set, the neutral name wins.
 
@@ -22,7 +24,7 @@ Host-key pins are already in [docs/HOSTS.md](HOSTS.md). They are public fingerpr
 
 ## Where Claude runs
 
-Pick one place and install the secrets there:
+Done 2026-09-27, for the `mal-fast-0`-hosted manager session. Pick one place and install the secrets there:
 
 - The owner's machine, with `~/.ssh/config` as in [tools/oracle_ssh_smoke.md](../tools/oracle_ssh_smoke.md) (`ProxyCommand cloudflared access ssh --hostname %h`), or
 - A Claude Code session that has the three neutral env vars and `scripts/mal-core/agent-ssh.sh`.
@@ -40,7 +42,7 @@ Do not change tunnel ingress, Access policies, or `cloudflared` config on the ho
 
 ## GitHub
 
-Claude needs permission to push branches and open pull requests on `vaanai/MAL`. It does not need permission to merge. Helm merges after review.
+Done 2026-09-27. Claude has permission to push branches and open pull requests on `vaanai/MAL`. Workers do not need permission to merge; the Claude manager session on `mal-fast-0` opens, reviews, and merges ([DEC-013](../DEC/DEC-013-claude-manager-merges.md)). Helm no longer merges MAL PRs.
 
 Branch names from Claude: `claude/<topic>`. One topic each.
 
@@ -109,4 +111,4 @@ Remove that cron line after it has run once. The 01:20 host oneshot is still und
 - **The Cursor daily 05:00 UTC review** and the **one-shot OOS check around 2026-09-28 20:57Z**. Recreate them on `mal-fast-0` as in the section above. The owner cancels the Cursor timers only after those Claude jobs are verified.
 - **Inbox event logs** under the project store (`inbox/github_pull_request_pr/**/*.jsonl`). Agent transcripts, not lab evidence. Left out on purpose.
 - **Live host state newer than the 2026-09-27 notes.** This checklist does not SSH. `runner-status.json`, credit counters, and sealed hours move after the notes. Read them on the host when you need a newer number.
-- **`/opt/miscusi` on `mal-fast-0`.** Unrelated app. Not part of MAL. Do not migrate it and do not touch it.
+- **`/opt/miscusi` on `mal-fast-0`.** Separate project, `vaanai/MiScusi`, led by the same Claude manager. Not part of MAL. Do not migrate it into this repo and do not modify it from MAL work; changes to it follow the MiScusi repo's own deploy docs.

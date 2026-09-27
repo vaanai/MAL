@@ -6,7 +6,7 @@
 | **Decider** | Vaan (lab policy; host **provisioned and verified**) |
 | **Date** | 2026-09-23 (recorded) |
 | **Amends** | [DEC-009](DEC-009-oracle-always-free-phase0-host.md) (pending → **provisioned**; ops/autonomy/access laws) |
-| **Amended by** | [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) (§5 access ask → **chosen path LIVE** 2026-09-23); [DEC-012](DEC-012-tool-neutral-manager-workers.md) (§3–§4 workflow, 2026-09-27) |
+| **Amended by** | [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) (§5 access ask → **chosen path LIVE** 2026-09-23); [DEC-012](DEC-012-tool-neutral-manager-workers.md) (§3–§4 workflow, 2026-09-27); [DEC-013](DEC-013-claude-manager-merges.md) (§3 merge clause, 2026-09-27) |
 | **Does not amend** | Cheap-first / measure-before-pay ([DEC-008](DEC-008-stack-phase-gates.md)); paper path ([DEC-006](DEC-006-detect-decode-evaluate-runners.md)); full detect book ([DEC-007](DEC-007-full-detect-book-anti-selection-bias.md)); EXP-002c closed facts; Always Free **2 OCPU / 12 GB** envelope (DEC-009) |
 | **Handoff** | [ORACLE-PHASE0-HANDOFF.md](../ARTIFACTS/ORACLE-PHASE0-HANDOFF.md) |
 | **Access** | [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) (**LIVE** 2026-09-23) |
@@ -19,7 +19,7 @@
 
 2. **Postgres operational, not provenance SoT.** PostgreSQL **16.15**, DB **`meme_core`**, role **`mal_app`** (non-superuser), **localhost only**, data dir **`/var/lib/mal/postgresql/16/main`**. Password held by owner — **never** in repo, docs, or chat. **Sealed JSONL** remains the append-only **provenance / event spine**. Postgres is the **operational / state** layer (token, wallet, relationship, derived, paper, ops). **Do not** treat Postgres as a mandatory replacement for provenance.
 
-3. **Manager / worker workflow.** The manager **plans**. Workers **implement and test** via pull requests (code, schema, ingest, graph, paper, monitoring). **Helm merges after review.** Workers do not merge. Workers stay ephemeral; the manager seats stay persistent ([DEC-001](DEC-001-lean-four-override.md), [DEC-002](DEC-002-memory-first-no-db-local.md)). Tool-neutral as of [DEC-012](DEC-012-tool-neutral-manager-workers.md) (2026-09-27). The earlier wording named Grok and Cursor; that sentence is history in DEC-012.
+3. **Manager / worker workflow.** The manager **plans**. Workers **implement and test** via pull requests (code, schema, ingest, graph, paper, monitoring). **The Claude manager merges after review**, per [DEC-013](DEC-013-claude-manager-merges.md) (2026-09-27); Helm no longer merges. Workers do not merge. Workers stay ephemeral; the manager seats stay persistent ([DEC-001](DEC-001-lean-four-override.md), [DEC-002](DEC-002-memory-first-no-db-local.md)). Tool-neutral as of [DEC-012](DEC-012-tool-neutral-manager-workers.md) (2026-09-27). The earlier wording named Grok and Cursor; that sentence is history in DEC-012.
 
 4. **No status-card rule.** The 2026-09-23 requirement to DM a Cursor-agent status card on every launch is **withdrawn** ([DEC-012](DEC-012-tool-neutral-manager-workers.md)). The pull request is the record. The old sentence is quoted in DEC-012 and is not an instruction.
 

@@ -14,8 +14,9 @@ Archive and training. Not the place to add new listeners.
 | --- | --- |
 | Name | `mal-core-0` (remote hostname `mal-core-vnic`) |
 | Where | Oracle, aarch64. Provisioned as Always Free 2 OCPU / 12 GB; resized to **4 OCPU / ~24 GB** (2026-09-26). |
-| SSH | `ssh.tradervaan.com` via Access. User `ubuntu`. |
+| SSH | `ssh.tradervaan.com` via Access. User `ubuntu`. Also reachable as `ssh mal-core-0` with Claude's own key and service token. |
 | Host key | ED25519 `SHA256:Hy68mL6wisJ2t+z/JDcSNATPlyA8sudv4Za7A2Y8Ejs` |
+| Claude access | Read-only account. Restarts and other changes go through the owner or Helm. |
 | Data root | `/var/lib/mal` |
 | Checkout | `~/mal` for collectors. Paper jobs also run from `/var/lib/mal/paper/.../src`. |
 
@@ -24,9 +25,10 @@ Archive and training. Not the place to add new listeners.
 ```bash
 scripts/mal-core/agent-ssh.sh --host core --dry-run
 scripts/mal-core/agent-ssh.sh --host core hostname
+ssh mal-core-0
 ```
 
-Expect `mal-core-vnic`, user `ubuntu`, `uname -m` = `aarch64`.
+Expect `mal-core-vnic`, user `ubuntu`, `uname -m` = `aarch64`. `ssh mal-core-0` is Claude's own read-only account, over Cloudflare Access with its own key and service token.
 
 ### Units and timers (systemd --user)
 
@@ -67,6 +69,7 @@ Fast listeners and the backward backfill. **This is the main focus.**
 | Where | OVH Frankfurt, x86_64, Ubuntu 24.04. About 8 cores, ~23 GiB RAM, ~193 GiB disk. |
 | SSH | `ssh-fast.tradervaan.com` via Access. User `ubuntu`. |
 | Host key | ED25519 `SHA256:q5o6Bf1Vo83LtQhwdSQfIL5D4mkRMjELjaL//Y8XXzQ` |
+| Claude access | Full sudo. Never touching `ufw`/iptables/nft, `sshd`, `cloudflared`, or Cloudflare — those and the Oracle server's admin are Helm's, via the owner. |
 | Repo checkout used by backfill | `/home/ubuntu/mal-oos` |
 | Listener venv | `/var/lib/mal/fast-listener/.venv` |
 

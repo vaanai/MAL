@@ -1,9 +1,9 @@
 # Manager summary
 
-**As-of:** 2026-09-27 UTC. `main` through [#106](https://github.com/vaanai/MAL/pull/106). **Paper only.** Full page: [LAB_STATE.md](../LAB_STATE.md).
+**As-of:** 2026-09-27 UTC. `main` through [#116](https://github.com/vaanai/MAL/pull/116) (`07a7192`). **Paper only.** Full page: [LAB_STATE.md](../LAB_STATE.md).
 
 - **North star:** profit via tape → honest simulator → signals → forward paper → gated live. Nothing is live.
-- **Hosts:** Oracle `mal-core-0` (archive + training) and OVH `mal-fast-0` (fast listeners, the focus). [HOSTS.md](../docs/HOSTS.md). `/opt/miscusi` on the fast box is unrelated.
+- **Hosts:** Oracle `mal-core-0` (archive + training) and OVH `mal-fast-0` (fast listeners, the focus). [HOSTS.md](../docs/HOSTS.md). `/opt/miscusi` on the fast box is the separate `vaanai/MiScusi` project; MAL work does not modify it.
 - **Backfill split:** Oracle covers **2026-09-22T00Z–2026-09-25T07Z**. The fast box walks back from **2026-09-21T23Z**, hard-capped at **+2M** credits ([#111](https://github.com/vaanai/MAL/pull/111), [#112](https://github.com/vaanai/MAL/pull/112)).
 - **Latency curve ([#107](https://github.com/vaanai/MAL/pull/107)):** flat, about **+0.19 pp gross per slot** (−20.3% at slot+4 to −19.7% at slot+1 on buy-all hold 30s). Fee audit: graduated round trip matches the chain, **0.00 points**. [#110](https://github.com/vaanai/MAL/pull/110) fee-sensitivity columns are reporting-only.
 - **First positive run:** in-sample `migrate` × `tp50_sl30` × slot+1 start, direct, 0.05 SOL, n=2,947, best of 972 cells (winner's curse). Both fail models are positive only at measured slot-+1 **p50** priority 0.000058 SOL (flat **+0.583%**, CI lo **−0.245%**; pressure **+0.087%**, CI lo **−0.424%**). At **p75** 0.0005 SOL that cell is negative (flat **−0.604%**). OOS at 2026-09-27T13:48Z is 0.5 SOL n=60, flat **+0.51%**, CI lo **−3.22%**. **Does not clear the promotion gate.**
@@ -11,5 +11,5 @@
 - **Gate:** ≥100 OOS trades, ≥5 UTC days with a majority positive, 90% CI lower bound of mean SOL/trade > 0, still positive after dropping the top 3, under both flat 15% and pressure scale 1. Then owner approval.
 - **Nightly ([#106](https://github.com/vaanai/MAL/pull/106), merged):** `mal-laya-v0.timer` (04:15) is disabled until 2026-10-05; the frozen job still spiked runner lag to about 12.5 s. If re-enabled it runs `tools.laya_frozen_nightly` (no exploratory retrain, no mig15 deploy). `mal-attention-daily.timer` is disabled until 2026-10-05; the attention poller stays up. The 01:20 migrate-direct oneshot is under test and may move to mal-fast-0.
 - **Open PRs:** keep #90. Close #4, #5, #8, #10, #15, #22. #106 is merged. Reasons in LAB_STATE. Do not close them here.
-- **Workflow:** manager plans, workers implement via PRs, Helm merges after review ([DEC-012](../DEC/DEC-012-tool-neutral-manager-workers.md)).
+- **Workflow:** manager plans, workers implement via PRs, the Claude manager merges after review ([DEC-012](../DEC/DEC-012-tool-neutral-manager-workers.md), [DEC-013](../DEC/DEC-013-claude-manager-merges.md)).
 - **Frozen:** #49–#72 fixture chain stays on main and is not the return path. Store notes now live under `ARTIFACTS/lab/`, `ARTIFACTS/daily/`, and `docs/`.

@@ -23,7 +23,7 @@ Violations require an explicit DEC override with kill-attempt evidence.
 ## Infra and tooling
 
 10. **Cheap infra / free RPC until measured need** — Do not buy dedicated nodes, colocation, or premium social API until metrics justify (see API brief).
-11. **Manager plans, workers implement via pull requests, Helm merges after review** — One topic per PR. Workers do not merge ([DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md)).
+11. **Manager plans, workers implement via pull requests, the manager merges after review** — One topic per PR. Workers do not merge. Amended 2026-09-27: the Claude manager, not Helm, merges ([DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md), [DEC-013](DEC/DEC-013-claude-manager-merges.md)).
 12. **Soft ~$60/mo team LLM API budget** — Separate from RPC/indexing/social; Helm tracks burn.
 
 ## Agents
