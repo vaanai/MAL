@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import patch
+
+from websockets.exceptions import InvalidStatusCode
 
 from tools.fast_create_listener import (
     ACCOUNT_CAP,
@@ -17,6 +22,7 @@ from tools.fast_create_listener import (
     create_record,
     helius_filter_decision,
     phase1_helius_decision,
+    run_client,
     subscribe_payload,
 )
 
@@ -100,6 +106,48 @@ class HeliusGuardTests(unittest.TestCase):
     def test_counter_rejects_negative(self) -> None:
         with self.assertRaises(ValueError):
             CreditCounter().add(-1)
+
+
+class ReconnectLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_status_code_retries_instead_of_raising(self) -> None:
+        """A PumpPortal 502 during reconnect (InvalidStatusCode) must not
+        propagate out of run_client. It should log and fall into the
+        existing backoff/retry path, same as ConnectionClosed/OSError.
+        """
+        stop = asyncio.Event()
+        attempts: list[int] = []
+
+        class FakeWS:
+            async def send(self, _payload: str) -> None:
+                return None
+
+            async def recv(self) -> str:
+                stop.set()
+                return json.dumps({"txType": "create", "mint": "MintZ"})
+
+        @asynccontextmanager
+        async def mock_connect(*_args, **_kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise InvalidStatusCode(502, {})
+            yield FakeWS()
+
+        sleep_calls: list[float] = []
+
+        async def mock_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        # fast_create_listener imports websockets lazily inside run_client
+        # (rather than at module scope), so the patch target is the real
+        # websockets module, not tools.fast_create_listener.websockets.
+        with tempfile.TemporaryDirectory() as tmp, (
+            patch("websockets.connect", side_effect=mock_connect)
+        ), patch("tools.fast_create_listener.asyncio.sleep", side_effect=mock_sleep):
+            await run_client("wss://example.test/ws", Path(tmp), stop)
+
+        self.assertGreaterEqual(len(attempts), 2, "expected a retry after the 502")
+        self.assertTrue(sleep_calls, "expected a backoff sleep after the handshake failure")
+        self.assertEqual(sleep_calls[0], 1.0)
 
 
 class UnitFileTests(unittest.TestCase):
