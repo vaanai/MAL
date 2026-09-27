@@ -44,6 +44,18 @@ Claude needs permission to push branches and open pull requests on `vaanai/MAL`.
 
 Branch names from Claude: `claude/<topic>`. One topic each.
 
+## Claude Code permissions
+
+Shared rules are in [`.claude/settings.json`](../.claude/settings.json). They are meant for unattended paper-only sessions on `mal-fast-0` as user `claude` (no sudo, no docker, no secrets). Evaluation is deny, then ask, then allow.
+
+- **Allow:** repo reads/edits, `python3 -m unittest`, `git push` of `claude/<topic>` branches, and read/PR-create `gh` (`pr create/view/list/diff/checks`, `run view/list`).
+- **Ask:** `scripts/mal-core/agent-ssh.sh` (any remote command) and `python3 -c`. Other Python is not allowlisted, so it prompts in the default permission mode.
+- **Deny:** `gh pr merge`, `gh pr close`, `gh repo *`, `gh api`, `gh release`, force/`+refspec`/main/master pushes, `git reset --hard`, edits to `.claude/settings.json` / `.claude/settings.local.json`, `*.env` / `helius.env`, `ufw`, `sshd_config`, and cloudflared config.
+
+Do not put `Bash(python3 *)` or `Bash(gh *)` back in allow. A broad `python3 *` ask rule would also catch unittest (ask beats allow). Pytest is not used in this repo.
+
+Paper only. No trading/wallet/X keys. Never open port 22. Postgres stays on localhost.
+
 ## Helius key
 
 Already on the hosts. Never commit it.

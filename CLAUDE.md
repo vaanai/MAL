@@ -49,8 +49,9 @@ Forward-paper rows from 2026-09-25T19:00:00Z through 2026-09-27T06:58:12Z are vo
 ## How to work
 
 - Branch: `claude/<topic>`. One topic per branch. Small pull requests.
-- Open the PR and stop. Helm reviews and merges.
-- Commit and push often, at a green unit test, not at the end of a long uncommitted pile.
+- Open the PR and stop. Helm reviews and merges. Do not `gh pr merge` or `gh pr close`.
+- Commit and push often, at a green unit test, not at the end of a long uncommitted pile. Push `claude/<topic>` only; never `--force` and never to `main`.
+- Run tests with `python3 -m unittest`. Other Python and `scripts/mal-core/agent-ssh.sh` prompt. Permissions: [`.claude/settings.json`](.claude/settings.json).
 - Workers implement. The manager plans. See [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md).
 - Subagents in [.claude/agents/](.claude/agents/): `builder`, `host-ops`, `quant-proof`, `reviewer`.
 - Commands: `/status`, `/new-experiment`.
