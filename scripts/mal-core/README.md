@@ -35,5 +35,8 @@ Host bootstrap helpers. **No secrets in this tree.**
 | [mal-funding-graph.service](mal-funding-graph.service) | host (systemd --user) | Nice'd enricher. 1/s on public RPC. Switches to Helius at 5/s when `HELIUS_API_KEY` or `/var/lib/mal/backfill/helius.env` appears |
 | [install-host-limits.sh](install-host-limits.sh) | host as `ubuntu` | Memory/CPU drop-ins, batch slice, OOM scores, 4G swap, swappiness 10. Does not restart cloudflared or change Tunnel/Access |
 | [mal-pump-backfill-resume.service](mal-pump-backfill-resume.service) | host (systemd --user) | Starts backfill after LAYA exits, including when the fit fails |
+| [zz-oos-boundary.conf](host-limits/mal-pump-backfill.service.d/zz-oos-boundary.conf) | Oracle host | Stops Oracle at 2026-09-22T00:00Z so it does not meet the fast-box range |
+| [mal-fast-backfill.service](mal-fast-backfill.service) | fast host (systemd --user) | Helius backfill before 2026-09-22T00:00Z. `CPUQuota=400%`, `Nice=10`, `MemoryMax=6G`, 22+3 rps, +2,000,000 credit cap |
+| [mal-fast-oos-score.service](mal-fast-oos-score.service) | fast host (systemd --user) | Frozen migrate-direct score of those hours. `CPUQuota=100%`, `Nice=19`, `MemoryMax=4G` |
 
 Runbook: [tools/oracle_ssh_smoke.md](../../tools/oracle_ssh_smoke.md). On-host note: `/var/lib/mal/eng/BOOTSTRAP.md`.

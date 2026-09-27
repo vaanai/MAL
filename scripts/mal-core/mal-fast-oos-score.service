@@ -1,0 +1,20 @@
+[Unit]
+Description=MAL frozen migrate-direct score of fast-box backfill hours
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/mal-oos
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/ubuntu/mal-oos
+Environment=MAL_BACKFILL_OUT=/var/lib/mal/backfill-fast
+Environment=MAL_FAST_OOS_OUT=/var/lib/mal/paper/migrate-direct-oos-fast
+Nice=19
+CPUQuota=100%
+MemoryMax=4G
+ExecStart=/home/ubuntu/mal-oos/scripts/mal-core/fast-oos-score.sh
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
