@@ -204,6 +204,28 @@ def _is_zst(path: Path) -> bool:
     return name.endswith(".jsonl.zst") or path.suffix == ".zst"
 
 
+def resolve_sealed_path(path: Path) -> Path | None:
+    """If `path` was unlinked by a mid-read zstd seal, follow the `.zst` sibling.
+
+    Returns None when neither the original nor the sealed sibling is readable.
+    """
+    try:
+        if path.is_file() and not path.is_symlink():
+            return path
+    except OSError:
+        pass
+    name = path.name
+    if name.endswith(".jsonl.zst") or not name.endswith(".jsonl"):
+        return None
+    sibling = Path(str(path) + ".zst")
+    try:
+        if sibling.is_file() and not sibling.is_symlink():
+            return sibling
+    except OSError:
+        return None
+    return None
+
+
 class _ZstdText:
     """Line iterator over `zstd -dc`. The CLI is already on the tape host."""
 
@@ -576,51 +598,72 @@ def build_paths(
     return paths
 
 
+def _scan_tape_handle(
+    fh: TextIO | _ZstdText,
+    wanted: dict[str, list[TapePrint]],
+    stats: ScanStats,
+) -> None:
+    for line in fh:
+        stats.lines += 1
+        if stats.lines % 250_000 == 0:
+            print(f"tape_lines={stats.lines} kept={stats.kept}", file=sys.stderr)
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            stats.bad_json += 1
+            continue
+        if not isinstance(row, dict):
+            stats.bad_json += 1
+            continue
+        t_raw = row.get("t_recv_ms")
+        if isinstance(t_raw, int):
+            stats.observe_t(t_raw)
+        # False, or a PumpSwap row with the flag missing (hourly files
+        # after rotation). Neither is priced as SOL.
+        flag = row.get("quote_is_wsol")
+        if flag is False or (row.get("venue") == "pumpswap" and flag is not True):
+            stats.non_wsol += 1
+            continue
+        mint = row.get("mint")
+        if mint not in wanted:
+            if not mint or row.get("mint_source") == "unresolved":
+                stats.unresolved += 1
+            else:
+                stats.other_mint += 1
+            continue
+        parsed = print_from_trade_row(row)
+        if parsed is None:
+            stats.skipped_kept_mint += 1
+            continue
+        _, pr = parsed
+        wanted[mint].append(pr)
+        stats.kept += 1
+
+
 def stream_paths(creates: dict[str, CreateSignal], tape_paths: Iterable[Path]) -> tuple[dict[str, MintPath], ScanStats]:
     """One pass over tape files. Keeps prints only for `creates`."""
     buckets: dict[str, list[TapePrint]] = {mint: [] for mint in creates}
     stats = ScanStats()
     wanted = buckets
     for path in tape_paths:
-        with open_text(path) as fh:
-            for line in fh:
-                stats.lines += 1
-                if stats.lines % 250_000 == 0:
-                    print(f"tape_lines={stats.lines} kept={stats.kept}", file=sys.stderr)
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    stats.bad_json += 1
-                    continue
-                if not isinstance(row, dict):
-                    stats.bad_json += 1
-                    continue
-                t_raw = row.get("t_recv_ms")
-                if isinstance(t_raw, int):
-                    stats.observe_t(t_raw)
-                # False, or a PumpSwap row with the flag missing (hourly files
-                # after rotation). Neither is priced as SOL.
-                flag = row.get("quote_is_wsol")
-                if flag is False or (row.get("venue") == "pumpswap" and flag is not True):
-                    stats.non_wsol += 1
-                    continue
-                mint = row.get("mint")
-                if mint not in wanted:
-                    if not mint or row.get("mint_source") == "unresolved":
-                        stats.unresolved += 1
-                    else:
-                        stats.other_mint += 1
-                    continue
-                parsed = print_from_trade_row(row)
-                if parsed is None:
-                    stats.skipped_kept_mint += 1
-                    continue
-                _, pr = parsed
-                wanted[mint].append(pr)
-                stats.kept += 1
+        opened = resolve_sealed_path(path)
+        if opened is None:
+            continue
+        try:
+            with open_text(opened) as fh:
+                _scan_tape_handle(fh, wanted, stats)
+        except FileNotFoundError:
+            retry = resolve_sealed_path(path)
+            if retry is None:
+                continue
+            try:
+                with open_text(retry) as fh:
+                    _scan_tape_handle(fh, wanted, stats)
+            except FileNotFoundError:
+                continue
     paths: dict[str, MintPath] = {}
     for mint, create in creates.items():
         paths[mint] = MintPath(create=create, prints=finalize_prints(wanted[mint]))

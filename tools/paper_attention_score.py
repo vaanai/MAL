@@ -23,10 +23,11 @@ from observe.attention import (
     parse_dex_orders,
     stored_attention,
 )
+from observe.trade_store import hour_stamp
 
 try:
     from tools.paper_curve_math import DEFAULT_SIZE_LAMPORTS, DEFAULT_SLIPPAGE_CAP, LAMPORTS_PER_SOL
-    from tools.paper_price_path import CreateSignal, MintPath, load_creates, stream_paths
+    from tools.paper_price_path import CreateSignal, MintPath, load_creates, resolve_sealed_path, stream_paths
     from tools.paper_tape_scoreboard import (
         EXIT_RULES,
         HEADLINE_LATENCY,
@@ -36,6 +37,23 @@ try:
 except ImportError as exc:  # pragma: no cover - host run uses PR #76 on PYTHONPATH
     EXIT_RULES = ()  # type: ignore[assignment]
     _IMPORT_ERROR = exc
+
+    def resolve_sealed_path(path: Path) -> Path | None:
+        try:
+            if path.is_file() and not path.is_symlink():
+                return path
+        except OSError:
+            pass
+        name = path.name
+        if name.endswith(".jsonl.zst") or not name.endswith(".jsonl"):
+            return None
+        sibling = Path(str(path) + ".zst")
+        try:
+            if sibling.is_file() and not sibling.is_symlink():
+                return sibling
+        except OSError:
+            return None
+        return None
 else:
     _IMPORT_ERROR = None
 
@@ -50,7 +68,7 @@ def _require_sim() -> None:
         )
 
 
-def iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
+def _jsonl_text(path: Path) -> str:
     if path.name.endswith(".jsonl.zst"):
         proc = subprocess.run(
             ["zstd", "-d", "-c", "-q", str(path)],
@@ -58,9 +76,24 @@ def iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
             capture_output=True,
             timeout=120,
         )
-        text = proc.stdout.decode("utf-8", errors="replace")
-    else:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        return proc.stdout.decode("utf-8", errors="replace")
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
+    target = resolve_sealed_path(path)
+    if target is None:
+        return
+    try:
+        text = _jsonl_text(target)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        target = resolve_sealed_path(path)
+        if target is None:
+            return
+        try:
+            text = _jsonl_text(target)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return
     for line in text.splitlines():
         if not line.strip():
             continue
@@ -72,16 +105,31 @@ def iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
             yield obj
 
 
-def load_attention_rows(paths: Sequence[Path]) -> list[dict[str, Any]]:
+def list_attention_files(path: Path, *, now: datetime | None = None) -> list[Path]:
+    """Sealed hourly attention-YYYY-MM-DDTHH.jsonl.zst only. Skip the open hour."""
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        return []
+    open_stamp = hour_stamp(now or datetime.now(timezone.utc))
+    out: list[Path] = []
+    for p in path.iterdir():
+        if not p.is_file() or p.is_symlink():
+            continue
+        if not ATTENTION_FILE_RE.fullmatch(p.name) or not p.name.endswith(".zst"):
+            continue
+        stamp = p.name[len("attention-") : -len(".jsonl.zst")]
+        if stamp == open_stamp:
+            continue
+        out.append(p)
+    return sorted(out)
+
+
+def load_attention_rows(paths: Sequence[Path], *, now: datetime | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in paths:
         if path.is_dir():
-            files = sorted(
-                p
-                for p in path.iterdir()
-                if p.is_file() and not p.is_symlink() and ATTENTION_FILE_RE.fullmatch(p.name)
-            )
-            for f in files:
+            for f in list_attention_files(path, now=now):
                 rows.extend(iter_jsonl(f))
         elif path.is_file():
             rows.extend(iter_jsonl(path))

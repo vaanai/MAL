@@ -25,6 +25,7 @@ from observe.attention import (
     laya_join_record,
     startup_context,
 )
+from observe.trade_store import hour_stamp
 from tools.paper_attention_promote import (
     BOOTSTRAP_DRAWS,
     BOOTSTRAP_SEED,
@@ -57,7 +58,7 @@ except ImportError:  # pragma: no cover - host run uses PR #76 on PYTHONPATH
     stream_paths = None  # type: ignore[assignment]
     simulate_book = None  # type: ignore[assignment]
 
-HOURLY_TRADES_RE = re.compile(r"^trades-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl(\.zst)?$")
+HOURLY_SEALED_TRADES_RE = re.compile(r"^trades-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl\.zst$")
 CREATES_RE = re.compile(r"^observe-\d{4}-\d{2}-\d{2}\.jsonl(\.zst)?$")
 LAYA_JOIN_NAME = "laya_join.jsonl"
 
@@ -70,17 +71,28 @@ def _require_sim() -> None:
         )
 
 
-def list_hourly_tapes(tape_dir: Path) -> list[Path]:
-    """Hourly files only. Skip leftover daily trades-YYYY-MM-DD.jsonl.zst."""
+def list_hourly_tapes(tape_dir: Path, *, now: datetime | None = None) -> list[Path]:
+    """Sealed hourly trades-YYYY-MM-DDTHH.jsonl.zst only.
+
+    Skips leftover daily trades-YYYY-MM-DD.jsonl.zst, the currently-open hour,
+    and unsealed raw .jsonl (those are still being written or compressed).
+    """
     if tape_dir.is_file():
         return [tape_dir]
     if not tape_dir.is_dir():
         return []
-    return sorted(
-        p
-        for p in tape_dir.iterdir()
-        if p.is_file() and not p.is_symlink() and HOURLY_TRADES_RE.fullmatch(p.name)
-    )
+    open_stamp = hour_stamp(now or datetime.now(timezone.utc))
+    out: list[Path] = []
+    for p in tape_dir.iterdir():
+        if not p.is_file() or p.is_symlink():
+            continue
+        if not HOURLY_SEALED_TRADES_RE.fullmatch(p.name):
+            continue
+        stamp = p.name[len("trades-") : -len(".jsonl.zst")]
+        if stamp == open_stamp:
+            continue
+        out.append(p)
+    return sorted(out)
 
 
 def list_creates(creates_dir: Path) -> list[Path]:
@@ -334,7 +346,7 @@ def run_daily(
             "Lag is first-seen minus Dex paymentTimestamp / stream start / KOTH stamp / pool_created_at (feature only).",
             "LAYA join uses t_ms = t_first_ms only; feature builder must keep t_ms <= decision_t_ms. event_t_ms is not a join key.",
             "Promotion copies the project-wide rule (bootstrap CI, drop-best, majority days, min n=100). n>=30 books are watch, not promote.",
-            "Hourly tapes only (daily leftover zst skipped). Rugs kept. Real fees. Same sim as PR #76.",
+            "Sealed hourly .jsonl.zst only (open hour, raw jsonl, and leftover daily zst skipped). Mid-read seal retries the .zst sibling or skips. Rugs kept. Real fees. Same sim as PR #76.",
         ],
     }
     if join_only:
