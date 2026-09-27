@@ -10,6 +10,8 @@ Host bootstrap helpers. **No secrets in this tree.**
 | [healthcheck.sh](healthcheck.sh) | host | hostname / disk / pg_isready / JSONL writable |
 | [observe-jsonl.sh](observe-jsonl.sh) | host | `python -m observe` → `/var/lib/mal/sealed/jsonl` |
 | [mal-observe.service](mal-observe.service) | host (systemd --user) | Same observe path, linger-enabled |
+| [install-fast-create-listener.sh](install-fast-create-listener.sh) | x86 fast host (`mal-fast-0`) | Rebuild a local venv and start the create alarm. Refuses Oracle / aarch64. No Helius key. |
+| [mal-fast-create.service](mal-fast-create.service) | fast host (systemd --user) | PumpPortal `subscribeNewToken` only. `MemoryMax=1G`, `Nice=0`, `Restart=always`. |
 | [trade-tape.sh](trade-tape.sh) | host | `python -m observe.trade_tape` → `/var/lib/mal/sealed/trades` |
 | [mal-trade-tape.service](mal-trade-tape.service) | host (systemd --user) | Public RPC logsSubscribe tape (pump.fun + PumpSwap) |
 | [wallet-leaderboard.sh](wallet-leaderboard.sh) | host (one-shot, `nice -n 19`) | Tape L2 FIFO wallet board + follow-signal JSONL. Does **not** touch the recorder. |
