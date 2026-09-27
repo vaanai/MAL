@@ -1,0 +1,8 @@
+[Unit]
+Description=MAL host healthcheck (disk, postgres, forward-paper lag)
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=oneshot
+ExecStart=/var/lib/mal/eng/healthcheck.sh
+Nice=19

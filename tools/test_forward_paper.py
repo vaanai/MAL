@@ -8,20 +8,27 @@ import unittest
 from pathlib import Path
 
 from tools.forward_paper import (
+    DEFAULT_FAIL_RATE,
     HARD_MAX_POSITION_LAMPORTS,
+    READ_CHUNK_BYTES,
     SCHEMA_DECISION,
+    STALE_ACTION_MS,
     SWING_FREEZE_AT,
     SWING_FREEZE_MS,
+    VOID_FROM_MS,
     BookSpec,
     DirectoryTail,
     ForwardEngine,
     LatencyMeter,
     ModelSlot,
+    _Follower,
     _RankWindow,
     CEILING_DAILY_LOSS_LAMPORTS,
     CEILING_MAX_CONCURRENT,
     RiskConfigError,
     books_from_config,
+    clean_clock,
+    decision_counts_for_promotion,
     flow_from_tape_row,
     offline_packets,
     reload_risk_config,
@@ -713,6 +720,79 @@ class SwingBookTests(unittest.TestCase):
         self.assertGreater(book["shadow"]["open"] + book["shadow"]["closed"], book["open"] + book["closed"])
         with self.assertRaises(RiskConfigError):
             books_from_config({"books": [{"id": "wide", "kind": "baseline", "exit": "hold_30s", "max_concurrent": 9}]})
+
+    def test_stale_decision_is_dropped_and_a_fresh_one_can_fill(self) -> None:
+        spec = BookSpec("buy_all", "baseline", "hold_30s", creator_cooldown_ms=0, token_cooldown_ms=0)
+        late = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-stale"),
+            latency=LatencyMeter(now_ms=lambda: T0 + 60_000),
+            retain_rows=True,
+            tape_end_ms=T0 + 120_000,
+        )
+        late.push_create(_create("MintA", T0))
+        late.push_print(*_parsed("MintA", T0))
+        late.drain_until(T0 + 5_000, final=True)
+        self.assertGreater(late.stale_dropped, 0)
+        self.assertTrue(any(row["reason"] == "stale_recv" for row in late.decisions))
+        self.assertFalse([row for row in late.positions if row["event"] == "open"])
+        self.assertEqual(STALE_ACTION_MS, 5_000)
+
+        fresh = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-fresh"),
+            latency=LatencyMeter(now_ms=lambda: T0 + 100),
+            retain_rows=True,
+            tape_end_ms=T0 + 120_000,
+            promotion_live_ms=T0,
+        )
+        fresh.push_create(_create("MintA", T0))
+        fresh.push_print(*_parsed("MintA", T0 - 1_000))
+        fresh.drain_until(T0 + 5_000, final=True)
+        self.assertEqual(fresh.stale_dropped, 0)
+        self.assertTrue(any(row["action"] == "enter" for row in fresh.decisions))
+
+    def test_flat_fail_rate_books_a_miss_instead_of_a_fill(self) -> None:
+        self.assertEqual(DEFAULT_FAIL_RATE, 0.15)
+        spec = BookSpec("buy_all", "baseline", "hold_30s", creator_cooldown_ms=0, token_cooldown_ms=0)
+        engine = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-fail"),
+            retain_rows=True,
+            tape_end_ms=T0 + 120_000,
+            fail_rate=1.0,
+        )
+        engine.push_create(_create("MintA", T0))
+        engine.push_print(*_parsed("MintA", T0 - 1_000))
+        engine.drain_until(T0 + 5_000, final=True)
+        self.assertFalse([row for row in engine.positions if row["event"] == "open"])
+        misses = [row for row in engine.positions if row["event"] == "miss"]
+        self.assertTrue(misses)
+        self.assertEqual(misses[0]["entry_status"], "missed_landing")
+        source = Path("tools/forward_paper.py").read_text(encoding="utf-8")
+        self.assertIn("fail_rate=DEFAULT_FAIL_RATE", source)
+        self.assertNotIn("paper_fail_pressure", source)
+
+    def test_void_window_excludes_post_95_until_guard_live(self) -> None:
+        live = VOID_FROM_MS + 86_400_000
+        self.assertTrue(decision_counts_for_promotion(VOID_FROM_MS - 1, live))
+        self.assertFalse(decision_counts_for_promotion(VOID_FROM_MS, live))
+        self.assertFalse(decision_counts_for_promotion(live - 1, None))
+        self.assertTrue(decision_counts_for_promotion(live, live))
+        clock = clean_clock(VOID_FROM_MS)
+        self.assertTrue(clock["clean_start"].endswith("T00:00:00Z"))
+        self.assertTrue(clock["kill_review_at"].endswith("T05:00:00Z"))
+
+    def test_follower_does_not_read_a_whole_hour_at_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trades.jsonl"
+            line = b'{"t_recv_ms":1}\n'
+            path.write_bytes(line * (READ_CHUNK_BYTES // len(line) + 10))
+            follower = _Follower(path, 0)
+            first = follower.read_exact()
+            self.assertTrue(first)
+            self.assertLess(follower.offset, path.stat().st_size)
+            self.assertLessEqual(follower.offset, READ_CHUNK_BYTES)
 
     def test_attention_tail_starts_at_eof_and_reads_new_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

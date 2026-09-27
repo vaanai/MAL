@@ -637,7 +637,7 @@ def resolve_wallet(
                 "getTransaction",
                 [
                     sig["signature"],
-                    {"encoding": "jsonParsed", "commitment": "confirmed", "maxSupportedTransactionVersion": 0},
+                    {"encoding": "jsonParsed", "commitment": "confirmed", "maxSupportedTransactionVersion": 1},
                 ],
             )
         except RpcError as exc:
