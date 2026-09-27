@@ -4,7 +4,7 @@ Host bootstrap helpers. **No secrets in this tree.**
 
 | Script | Where it runs | Purpose |
 | --- | --- | --- |
-| [agent-ssh.sh](agent-ssh.sh) | Cursor Cloud Agent | Access TCP + SSH; cleanup key/`cloudflared` |
+| [agent-ssh.sh](agent-ssh.sh) | any agent | `--host core\|fast`. Access TCP + SSH. Neutral or legacy secret names. Dry-run does not connect. |
 | [bootstrap_mal_core.sh](bootstrap_mal_core.sh) | `mal-core-0` as `ubuntu` | Dirs, schema, venv, user unit, health |
 | [apply-schema.sh](apply-schema.sh) | host | `001_ops_state_stubs.sql` via postgres peer |
 | [healthcheck.sh](healthcheck.sh) | host | hostname / disk / pg_isready / JSONL writable |

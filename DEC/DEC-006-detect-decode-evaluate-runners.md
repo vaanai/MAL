@@ -6,7 +6,7 @@
 | **Decider** | Council alignment (Helm / Scout / Graph / Proof) |
 | **Date** | 2026-09-20 (recorded) |
 | **Context** | Names the phase-0 promotion path before any live-capital DEC; complements [DEC-003](DEC-003-regime-at-ingest-v0.md), [DEC-004](DEC-004-regime-id-encoding.md) |
-| **Related** | `Δ_exec` and sealed decision clock → [DEC-005](DEC-005-hot-packet-clocks-and-provenance.md) (merge via draft PR when landed) |
+| **Related** | `Δ_exec` and sealed decision clock → [DEC-005 draft PR #8](https://github.com/vaanai/MAL/pull/8) (unmerged; no file in `DEC/`; not working law) |
 
 ## Decision
 
@@ -17,7 +17,7 @@
 | **Detect** | Sealed creates (and defined observe events) — immutable ingest rows; no gate on what gets recorded. |
 | **Decode** | Knowable-at-T **packet**: regime + capped as-of-T graph when evidence exists; **X attach when present** ([CONSTITUTION.md](../CONSTITUTION.md) reassess-only). |
 | **Evaluate** | Filter on **that packet only** — not raw WebSocket replay or post-hoc enrich on the same row. |
-| **Runners** | **Paper promotion** only: pretend-buy at runner time; mark outcome horizons **1s / 5s / 15s / 30s / 60s** plus **+2s / +10s / +5m / peak / drawdown**; include fees, slippage, and latency in **`Δ_exec`** (align with [DEC-005](DEC-005-hot-packet-clocks-and-provenance.md) intent when present). |
+| **Runners** | **Paper promotion** only: pretend-buy at runner time; mark outcome horizons **1s / 5s / 15s / 30s / 60s** plus **+2s / +10s / +5m / peak / drawdown**; include fees, slippage, and latency in **`Δ_exec`** (the unmerged [DEC-005 draft](https://github.com/vaanai/MAL/pull/8) is not working law). |
 
 ### Promotion and spend discipline
 

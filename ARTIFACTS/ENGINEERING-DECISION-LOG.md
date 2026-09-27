@@ -24,7 +24,21 @@ Handoff source: Oracle Phase-0 §19 — for each meaningful change record **what
 
 ---
 
----
+## EDL-022 — Tool-neutral handoff (manager / workers / Helm)
+
+| Field | Value |
+| --- | --- |
+| **ID** | EDL-022 |
+| **Date** | 2026-09-27 |
+| **What changed** | Constitution rules 11–14 and DEC-010 §3–§4 no longer name Composer, Cursor Grok, or the Cursor status-card DM. Replacement: the manager plans, workers implement via PRs, Helm merges after review. Recorded as [DEC-012](../DEC/DEC-012-tool-neutral-manager-workers.md). SSH helper takes `--host core\|fast` and the neutral secret names. `CLAUDE.md`, `docs/HOSTS.md`, and `docs/MIGRATION-TO-CLAUDE.md` added. Store notes copied into `docs/` and `ARTIFACTS/`. |
+| **Why** | Day-to-day management is moving to Claude Code. The repo has to be readable without the project store or a Cursor-only rule. |
+| **What was tested** | `python3 -m unittest tools.test_agent_ssh` (dry-run, no connection). `python3 -m unittest discover -s tools -p 'test_*.py'` — 896 tests, 2 skipped, 2 failures that already fail on `main` in `tools/test_paper_tape_scoreboard.py` (untouched). Secret scan of copied notes before commit. |
+| **Verification** | Docs-only plus the SSH helper. No host, systemd, Cloudflare, or secret change. |
+| **Current state** | Working law is DEC-012. Historical Cursor/Grok sentences are quoted in that DEC, not deleted from the log. |
+| **Rollback** | Revert the handoff PR. Do not revive the status-card rule without a new DEC. |
+| **Unresolved** | Owner or Helm must recreate the 05:00 UTC review and the 2026-09-28 ~21:00Z OOS check as cron. See [MIGRATION-TO-CLAUDE.md](../docs/MIGRATION-TO-CLAUDE.md). |
+| **Implications** | Workers still do not merge. Promotion gate unchanged. |
+| **Pointers** | [DEC-012](../DEC/DEC-012-tool-neutral-manager-workers.md), [CLAUDE.md](../CLAUDE.md), [HOSTS.md](../docs/HOSTS.md). |
 
 ---
 

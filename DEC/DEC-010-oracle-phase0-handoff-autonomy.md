@@ -6,7 +6,7 @@
 | **Decider** | Vaan (lab policy; host **provisioned and verified**) |
 | **Date** | 2026-09-23 (recorded) |
 | **Amends** | [DEC-009](DEC-009-oracle-always-free-phase0-host.md) (pending → **provisioned**; ops/autonomy/access laws) |
-| **Amended by** | [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) (§5 access ask → **chosen path LIVE** 2026-09-23) |
+| **Amended by** | [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) (§5 access ask → **chosen path LIVE** 2026-09-23); [DEC-012](DEC-012-tool-neutral-manager-workers.md) (§3–§4 workflow, 2026-09-27) |
 | **Does not amend** | Cheap-first / measure-before-pay ([DEC-008](DEC-008-stack-phase-gates.md)); paper path ([DEC-006](DEC-006-detect-decode-evaluate-runners.md)); full detect book ([DEC-007](DEC-007-full-detect-book-anti-selection-bias.md)); EXP-002c closed facts; Always Free **2 OCPU / 12 GB** envelope (DEC-009) |
 | **Handoff** | [ORACLE-PHASE0-HANDOFF.md](../ARTIFACTS/ORACLE-PHASE0-HANDOFF.md) |
 | **Access** | [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md) (**LIVE** 2026-09-23) |
@@ -19,9 +19,9 @@
 
 2. **Postgres operational, not provenance SoT.** PostgreSQL **16.15**, DB **`meme_core`**, role **`mal_app`** (non-superuser), **localhost only**, data dir **`/var/lib/mal/postgresql/16/main`**. Password held by owner — **never** in repo, docs, or chat. **Sealed JSONL** remains the append-only **provenance / event spine**. Postgres is the **operational / state** layer (token, wallet, relationship, derived, paper, ops). **Do not** treat Postgres as a mandatory replacement for provenance.
 
-3. **Manager / Cursor workflow.** Grok managers **plan and review**. Cursor **implements and tests** (code, schema, ingest, graph, paper, monitoring — aggressively). Grok **integrates**. Cursor workers remain ephemeral; Grok seats remain the persistent managers ([DEC-001](DEC-001-lean-four-override.md), [DEC-002](DEC-002-memory-first-no-db-local.md)).
+3. **Manager / worker workflow.** The manager **plans**. Workers **implement and test** via pull requests (code, schema, ingest, graph, paper, monitoring). **Helm merges after review.** Workers do not merge. Workers stay ephemeral; the manager seats stay persistent ([DEC-001](DEC-001-lean-four-override.md), [DEC-002](DEC-002-memory-first-no-db-local.md)). Tool-neutral as of [DEC-012](DEC-012-tool-neutral-manager-workers.md) (2026-09-27). The earlier wording named Grok and Cursor; that sentence is history in DEC-012.
 
-4. **Cursor DM status-card rule.** Whenever **any** manager launches a Cursor agent — **even after group-chat collab** — **DM Vaan a Cursor-agent status card** so he can see running/done and open the run. Transparency, not required supervision of every run.
+4. **No status-card rule.** The 2026-09-23 requirement to DM a Cursor-agent status card on every launch is **withdrawn** ([DEC-012](DEC-012-tool-neutral-manager-workers.md)). The pull request is the record. The old sentence is quoted in DEC-012 and is not an instruction.
 
 5. **No permanent PC networking dependency.** Desired path: Human → Grok → Cursor Cloud → `mal-core-0` → Postgres/JSONL/runtime. **Access LIVE in [DEC-011](DEC-011-cursor-oracle-access-cf-tunnel.md):** Cloudflare Tunnel (`cloudflared`) on `mal-core-0` + Cloudflare Access Service Auth gating SSH + dedicated **`mal-cursor`** deploy key in Cursor Runtime Secrets (not the owner personal key). Backup: Tailscale **on the Oracle VM** + ephemeral agent auth keys. **Do not** expose Postgres publicly. **Do not** hand agents the owner’s personal SSH private key. **Do not** make the human PC a required always-on hop. **Do not** open SSH `:22` to the world. Cursor My Machines on-box is **parked** as phase-0 default.
 
@@ -32,6 +32,8 @@
 8. **Memory rule.** Seat agents retain **overall project direction**. GitHub Lab memory holds **actionable / ops detail**. Plans are **directions, not rigid locks**; profit is the goal — change a stupid lock rather than workaround it. Persistent engineering changes use [ENGINEERING-DECISION-LOG.md](../ARTIFACTS/ENGINEERING-DECISION-LOG.md) (what/why/tested/result/state/rollback/unresolved/implications).
 
 ## Rationale
+
+Workflow sentences below that name Grok, Cursor, or a status-card DM are the 2026-09-23 reasoning. [DEC-012](DEC-012-tool-neutral-manager-workers.md) replaces them. The host facts stay.
 
 - Pre-create DEC-009 sized and fenced the Always Free experiment. Vaan has now **created and verified** that inventory; Lab memory must stop saying “pending / nothing created.”
 - Provenance vs ops split keeps EXP knowable-at-T audit (JSONL) while unblocking Layer-2 / paper / indexes on the already-installed `meme_core`.
