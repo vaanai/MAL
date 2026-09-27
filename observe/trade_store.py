@@ -386,11 +386,20 @@ def keep_days_for(total: int, used: int, tape_bytes: int, bytes_per_day: float) 
 
 
 class DiskGuard:
-    def __init__(self, output_dir: Path, *, fs_bytes: FsBytes = filesystem_bytes) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        fs_bytes: FsBytes = filesystem_bytes,
+        max_keep_days: int | None = None,
+    ) -> None:
+        if max_keep_days is not None and max_keep_days < 1:
+            raise ValueError("max_keep_days must be >= 1")
         self.output_dir = output_dir
         self.holding = False
         self.dropped = 0
         self.keep_days: int | None = None
+        self.max_keep_days = max_keep_days
         self.bytes_per_day: float | None = None
         self.free_ratio = 1.0
         self.hour_spans: dict[str, float] = {}
@@ -414,13 +423,18 @@ class DiskGuard:
         self.bytes_per_day = estimate_bytes_per_day(self.output_dir, self.hour_spans, skip)
         total, used, avail = self._fs(self.output_dir)
         tape = _tape_bytes(self.output_dir)
+        days: int | None = None
         if self.bytes_per_day is not None and total > 0:
             days = keep_days_for(total, used, tape, self.bytes_per_day)
+        if self.max_keep_days is not None:
+            days = self.max_keep_days if days is None else min(days, self.max_keep_days)
+        if days is not None:
             if days != self.keep_days:
                 log.info(
-                    "retention keep_days=%s bytes_per_day=%.0f",
+                    "retention keep_days=%s bytes_per_day=%s max_keep_days=%s",
                     days,
-                    self.bytes_per_day,
+                    None if self.bytes_per_day is None else f"{self.bytes_per_day:.0f}",
+                    self.max_keep_days,
                 )
             self.keep_days = days
             cutoff = now - timedelta(days=days)

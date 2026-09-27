@@ -1,0 +1,29 @@
+[Unit]
+Description=MAL fast-host public trade tape (logsSubscribe, pump.fun + PumpSwap)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/mal/eng
+Nice=0
+MemoryMax=1G
+Environment=PYTHONPATH=/var/lib/mal/eng
+Environment=MAL_TRADE_TAPE_SOURCE=public_rpc_logs
+Environment=MAL_TRADE_TAPE_WS_URL=wss://api.mainnet-beta.solana.com
+Environment=MAL_SOLANA_HTTP_URL=https://api.mainnet-beta.solana.com
+Environment=MAL_TRADE_TAPE_COMMITMENT=confirmed
+Environment=MAL_TRADE_TAPE_OUTPUT_DIR=/var/lib/mal/sealed/fast-trades
+Environment=MAL_LOG_LEVEL=INFO
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+ExecStart=/var/lib/mal/fast-listener/.venv/bin/python -m observe.trade_tape --output-dir /var/lib/mal/sealed/fast-trades --source public_rpc_logs --ws-url wss://api.mainnet-beta.solana.com --http-url https://api.mainnet-beta.solana.com --venues bonding,pumpswap --commitment confirmed --max-keep-days 7
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/lib/mal/logs/fast-trade-tape.log
+StandardError=append:/var/lib/mal/logs/fast-trade-tape.log
+
+[Install]
+WantedBy=default.target

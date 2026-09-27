@@ -287,10 +287,11 @@ async def run_tape(
     http_url: str,
     stop: asyncio.Event,
     observe_dir: Path | None = None,
+    max_keep_days: int | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     compressor = ZstdCompressor()
-    guard = DiskGuard(output_dir)
+    guard = DiskGuard(output_dir, max_keep_days=max_keep_days)
     writer = HourlyJsonlWriter(output_dir, "trades", compressor, on_seal=guard.note_hour)
     pools_writer = HourlyJsonlWriter(output_dir, "pool-mints", compressor, on_seal=guard.note_hour)
     monitor = CompletenessMonitor(
@@ -459,6 +460,13 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(os.environ.get("MAL_TRADE_TAPE_OUTPUT_DIR", DEFAULT_OUTPUT_DIR)),
     )
     parser.add_argument(
+        "--max-keep-days",
+        type=int,
+        default=None,
+        help="Cap age retention at this many days. Headroom deletion still applies. "
+        "Unset keeps the disk-headroom schedule.",
+    )
+    parser.add_argument(
         "--log-level",
         default=os.environ.get("MAL_LOG_LEVEL", "INFO"),
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
@@ -469,6 +477,17 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         stream=sys.stderr,
     )
+    if args.max_keep_days is None:
+        raw_keep = os.environ.get("MAL_TRADE_TAPE_MAX_KEEP_DAYS", "").strip()
+        if raw_keep:
+            try:
+                args.max_keep_days = int(raw_keep)
+            except ValueError:
+                log.error("MAL_TRADE_TAPE_MAX_KEEP_DAYS is not an integer")
+                return 2
+    if args.max_keep_days is not None and args.max_keep_days < 1:
+        log.error("max-keep-days must be >= 1")
+        return 2
     helius_key = os.environ.get("HELIUS_API_KEY", "")
     if args.source == SOURCE_HELIUS_TX and not helius_key.strip():
         log.error("HELIUS_API_KEY is not set; not starting helius_tx")
@@ -489,7 +508,15 @@ def main(argv: list[str] | None = None) -> int:
         except NotImplementedError:
             signal.signal(sig, lambda *_a: _request_stop())
     try:
-        loop.run_until_complete(run_tape(source, args.output_dir, args.http_url, stop))
+        loop.run_until_complete(
+            run_tape(
+                source,
+                args.output_dir,
+                args.http_url,
+                stop,
+                max_keep_days=args.max_keep_days,
+            )
+        )
     finally:
         loop.close()
     return 0
