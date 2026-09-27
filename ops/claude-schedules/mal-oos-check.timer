@@ -1,0 +1,10 @@
+[Unit]
+Description=One-shot migrate-direct OOS check, 2026-09-28 21:00 UTC (Claude, read-only)
+
+[Timer]
+OnCalendar=2026-09-28 21:00:00 UTC
+Persistent=false
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
