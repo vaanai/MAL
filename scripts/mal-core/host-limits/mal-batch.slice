@@ -1,8 +1,8 @@
 [Slice]
 # Training, backfill stopped, attention-daily waits until the fit exits:
-# laya 11G + forward 1G + funding 512M = 12.5G, slice max 13G.
+# laya 11G + forward 6G + funding 512M = 17.5G, slice max 20G.
 # Outside: tape 1G + observe 256M + attention 256M = 1.5G.
-# 12.5+1.5 = 14G. Usable RAM is 23974 MiB, so ~9.4G remains for Postgres and the OS.
+# 20+1.5 = 21.5G. Usable RAM is 23974 MiB. Postgres on this host is under 100M.
 # attention-daily is 5G and runs after the fit, with backfill, not on top of the 11G cap.
-MemoryHigh=12G
-MemoryMax=13G
+MemoryHigh=18G
+MemoryMax=20G

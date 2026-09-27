@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import statistics
 import sys
@@ -445,6 +446,58 @@ def _resolve_tape_path(path: Path) -> Path:
     return path
 
 
+def yield_for_runner(
+    *,
+    status_path: Path | None = None,
+    sleep: Any = time.sleep,
+    clock: Any = time.monotonic,
+    pause_above: int = 2000,
+    resume_below: int = 1500,
+    max_wait_s: float = 600,
+) -> int:
+    """Pause the tape scan while the paper runner is behind.
+
+    No-op unless MAL_YIELD_FOR_RUNNER=1. Does not change fills. Returns seconds slept.
+    """
+    if os.environ.get("MAL_YIELD_FOR_RUNNER") != "1":
+        return 0
+    raw_pause = os.environ.get("MAL_YIELD_PAUSE_ABOVE", "").strip()
+    raw_resume = os.environ.get("MAL_YIELD_RESUME_BELOW", "").strip()
+    if raw_pause.isdigit():
+        pause_above = int(raw_pause)
+    if raw_resume.isdigit():
+        resume_below = int(raw_resume)
+    path = status_path or Path(
+        os.environ.get(
+            "MAL_RUNNER_STATUS",
+            "/var/lib/mal/paper/forward-paper/runner-status.json",
+        )
+    )
+    lag = _runner_lag_ms(path)
+    if lag is None or lag < pause_above:
+        return 0
+    print(f"yield_runner lag_ms={lag}", file=sys.stderr)
+    start = clock()
+    slept = 0
+    while lag is not None and lag >= resume_below and (clock() - start) < max_wait_s:
+        sleep(5)
+        slept += 5
+        lag = _runner_lag_ms(path)
+    print(f"yield_runner lag_ms={lag} slept_s={slept}", file=sys.stderr)
+    return slept
+
+
+def _runner_lag_ms(path: Path) -> int | None:
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    lag = rec.get("lag_ms") if isinstance(rec, dict) else None
+    if isinstance(lag, bool) or not isinstance(lag, int):
+        return None
+    return lag
+
+
 def load_books(
     creates: dict[str, CreateSignal],
     tape_paths: Iterable[Path],
@@ -460,6 +513,8 @@ def load_books(
         with open_text(_resolve_tape_path(path)) as fh:
             for line in fh:
                 stats.lines += 1
+                if stats.lines % 50_000 == 0:
+                    yield_for_runner()
                 if stats.lines % 250_000 == 0:
                     print(f"tape_lines={stats.lines} kept={stats.kept}", file=sys.stderr)
                 line = line.strip()
@@ -1688,10 +1743,13 @@ def attach_labels(
     size_lamports: int = DEFAULT_SIZE_LAMPORTS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
     rules: Sequence[ExitRule] = EXIT_RULES,
+    emit_ticks: bool = True,
 ) -> list[ExitTick]:
     """Paper PnL for an entry at decision+latency. Exit ticks carry their own features."""
     ticks: list[ExitTick] = []
     for index, row in enumerate(rows):
+        if index and index % 100 == 0:
+            yield_for_runner()
         book = books[row.mint]
         lag = int(latency_draws[index]) if latency_draws is not None else latency_ms
         t_entry = row.decision_t_ms + lag
@@ -1752,7 +1810,7 @@ def attach_labels(
             row.exit_t_by_rule[ladder.rule_id] = part.get("exit_t_ms")
             row.raw_pnl_by_rule[ladder.rule_id] = _raw_attempt_pnl(entry.status, pnl)
             row.pnl_by_rule[ladder.rule_id] = _attempt_pnl(entry.status, status, pnl, size_lamports)
-        if entry.status == "filled":
+        if emit_ticks and entry.status == "filled":
             ticks.extend(
                 _exit_ticks(
                     book,
@@ -2901,6 +2959,7 @@ def build_dataset(
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
     graph: FundingGraph | None = None,
     hop_ms: int = RECV_TO_DECISION_FLOOR_MS,
+    emit_ticks: bool = True,
 ) -> tuple[list[DecisionRow], list[ExitTick], dict[str, int]]:
     rows, wallet_diag = build_feature_rows(books, tape_end_ms=tape_end_ms, offsets_ms=offsets_ms, graph=graph)
     print(f"decisions={len(rows)}", file=sys.stderr)
@@ -2915,6 +2974,7 @@ def build_dataset(
         latency_draws=draws,
         size_lamports=size_lamports,
         slippage_cap=slippage_cap,
+        emit_ticks=emit_ticks,
     )
     print(f"exit_ticks={len(ticks)}", file=sys.stderr)
     return rows, ticks, wallet_diag

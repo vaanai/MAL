@@ -47,6 +47,7 @@ from tools.laya_v0 import (
     BookTrade,
     DecisionRow,
     MintBook,
+    RankWindow,
     _gated_from_rows,
     _label_matrix,
     available_backend,
@@ -307,6 +308,34 @@ def _take(
     ordered = sorted(pool, key=lambda row: (row.decision_t_ms, row.mint))
     probs = model.predict([vector(row.features, features) for row in ordered])
     return [ordered[i] for i in causal_take_indices(list(probs), fraction)]
+
+
+def decision_hour_key(ms: int) -> str:
+    return time.strftime("%Y-%m-%dT%H", time.gmtime(ms / 1000.0))
+
+
+def continue_take(
+    rows: Sequence[DecisionRow],
+    point: str,
+    fraction: float,
+    pnl_rule: str,
+    model: Any,
+    features: Sequence[str],
+    window: RankWindow,
+) -> list[DecisionRow]:
+    """Same causal top-k as `_take`, continuing a rank window across chunks."""
+    pool = [row for row in rows if row.point_id() == point and isinstance(row.pnl_by_rule.get(pnl_rule), int)]
+    if fraction >= 1:
+        return list(pool)
+    if model is None or not pool:
+        return []
+    ordered = sorted(pool, key=lambda row: (row.decision_t_ms, row.mint))
+    probs = model.predict([vector(row.features, features) for row in ordered])
+    chosen: list[DecisionRow] = []
+    for row, prob in zip(ordered, probs):
+        if window.consider(float(prob)) == "take":
+            chosen.append(row)
+    return chosen
 
 
 def _day_slices(chosen: Sequence[DecisionRow], days: Sequence[str]) -> dict[str, list[DecisionRow]]:
@@ -666,6 +695,9 @@ def _score_mig15(
     graph: FundingGraph | None,
     attention: Sequence[Any],
     model: Any,
+    *,
+    window: RankWindow | None = None,
+    hour_allow: set[str] | None = None,
 ) -> list[DecisionRow]:
     if tape_end_ms <= 0 or model is None:
         return []
@@ -673,6 +705,8 @@ def _score_mig15(
     graduated = {mint: books[mint] for mint in migration}
     rows, _quotes = build_rows(graduated, migration, attention, tape_end_ms=tape_end_ms, graph=graph)
     mig = [row for row in rows if row.trigger == DEPLOY_POINT]
+    if hour_allow is not None:
+        mig = [row for row in mig if decision_hour_key(row.decision_t_ms) in hour_allow]
     print(f"backfill_mig15_decisions={len(mig)}", file=sys.stderr)
     if not mig:
         return []
@@ -685,7 +719,9 @@ def _score_mig15(
         rules=(_rule(DEPLOY_RULE_ID),),
         ladders=(),
     )
-    return _take(mig, DEPLOY_POINT, MIG15_FRACTION, DEPLOY_RULE_ID, model, SWING_FEATURES)
+    if window is None:
+        return _take(mig, DEPLOY_POINT, MIG15_FRACTION, DEPLOY_RULE_ID, model, SWING_FEATURES)
+    return continue_take(mig, DEPLOY_POINT, MIG15_FRACTION, DEPLOY_RULE_ID, model, SWING_FEATURES, window)
 
 
 def format_backward_markdown(report: dict[str, Any]) -> list[str]:
