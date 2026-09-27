@@ -32,6 +32,8 @@ class FastPublicTapeTests(unittest.TestCase):
     def test_install_does_not_touch_other_units(self) -> None:
         text = INSTALL.read_text(encoding="utf-8")
         self.assertIn("mal-fast-trade-tape.service", text)
+        self.assertIn("disable --now", text)
+        self.assertNotIn("enable --now", text)
         self.assertIn("zstd", text)
         self.assertNotIn("mal-trade-tape", text)
         self.assertNotIn("mal-observe", text)

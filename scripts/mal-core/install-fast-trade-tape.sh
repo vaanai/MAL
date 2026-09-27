@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Install the free public trade tape on the x86 fast host.
+# Install the free public trade tape unit on the x86 fast host.
 # Same programs, decoder, and schema as the Oracle tape. Output is
 # /var/lib/mal/sealed/fast-trades with a 7-day age cap plus the disk headroom
-# hold. Does not start a paid socket and does not restart other units.
-# Refuses Oracle hosts.
+# hold. Does not start the unit: the 2026-09-27 probe covered the Oracle tape
+# but the median lead was under 150 ms. Does not start a paid socket and does
+# not restart other units. Refuses Oracle hosts.
 set -euo pipefail
 export LC_ALL=C.UTF-8 LANG=C.UTF-8
 
@@ -52,6 +53,5 @@ install -d -m 0700 "${UNIT_DIR}"
 install -m 0644 "${SELF_DIR}/mal-fast-trade-tape.service" "${UNIT_DIR}/mal-fast-trade-tape.service"
 
 systemctl --user daemon-reload
-systemctl --user enable --now mal-fast-trade-tape.service
-systemctl --user --no-pager --full status mal-fast-trade-tape.service
-log "public trade tape installed"
+systemctl --user disable --now mal-fast-trade-tape.service || true
+log "public trade tape unit installed and left disabled"
