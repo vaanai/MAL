@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers. **As-of:** 2026-09-27 UTC. `main` through [#112](https://github.com/vaanai/MAL/pull/112) (`ede0fa3`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md).
+Compact reload for managers. **As-of:** 2026-09-27 UTC. `main` through [#116](https://github.com/vaanai/MAL/pull/116) (`07a7192`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md).
 
 ## Objective
 
@@ -15,11 +15,11 @@ Edge is information plus modest latency versus humans and copy-traders, not MEV 
 - Paper only. **No trading keys, wallet keys, or X keys** on either host. Signing stays off-host until live is authorized.
 - Postgres **localhost-only**. Never guess or commit the DB password.
 - **Port 22 is never public.** SSH for agents is Cloudflare Access. **Stop on a host-key mismatch.**
-- Do not touch `/opt/miscusi` on `mal-fast-0`. It is an unrelated app.
+- `/opt/miscusi` on `mal-fast-0` is a separate project, `vaanai/MiScusi`, led by the same Claude manager. Do not modify it from MAL work.
 - Sealed **JSONL** is the provenance spine. Postgres is ops/state only ([DEC-002](DEC/DEC-002-memory-first-no-db-local.md)).
 - GitHub is the source of truth. Lab notes that used to live only in the project store are in this repo (`docs/`, `ARTIFACTS/lab/`, `ARTIFACTS/daily/`).
 
-Non-negotiables: [CONSTITUTION.md](CONSTITUTION.md). Workflow: [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md).
+Non-negotiables: [CONSTITUTION.md](CONSTITUTION.md). Workflow: [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md), [DEC-013](DEC/DEC-013-claude-manager-merges.md).
 
 ## Hosts (2026-09-27)
 
@@ -43,7 +43,8 @@ Detail, units, logs, and what is safe to restart: [docs/HOSTS.md](docs/HOSTS.md)
 | [DEC-008](DEC/DEC-008-stack-phase-gates.md) | Stack phase gates |
 | [DEC-009](DEC/DEC-009-oracle-always-free-phase0-host.md) / [DEC-010](DEC/DEC-010-oracle-phase0-handoff-autonomy.md) | Oracle host and autonomy |
 | [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) | Cloudflare Tunnel + Access (**LIVE**) |
-| [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md) | Manager plans, workers open PRs, Helm merges |
+| [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md) | Manager plans, workers open PRs, tool-neutral workflow |
+| [DEC-013](DEC/DEC-013-claude-manager-merges.md) | Claude manager merges (not Helm); Helm keeps ufw/sshd/tunnel/Access/Oracle admin |
 
 ## What is running
 
@@ -122,7 +123,7 @@ These were the open PRs at the handoff. #106 has since merged. #73–#112 in the
 
 1. Let the fast box finish the backward OOS hours inside the +2M credit cap. Do not refit the frozen cell.
 2. Score forward paper only from the **2026-09-28T00:00:00Z** clean clock. Kill review **2026-10-05T05:00:00Z**.
-3. Keep [#90](https://github.com/vaanai/MAL/pull/90) until review. [#106](https://github.com/vaanai/MAL/pull/106) is merged; leave `mal-laya-v0.timer` and `mal-attention-daily.timer` disabled until 2026-10-05. Helm merges.
+3. Keep [#90](https://github.com/vaanai/MAL/pull/90) until review. [#106](https://github.com/vaanai/MAL/pull/106) is merged; leave `mal-laya-v0.timer` and `mal-attention-daily.timer` disabled until 2026-10-05. The manager merges ([DEC-013](DEC/DEC-013-claude-manager-merges.md)).
 4. Move fast. Hold the promotion gate. Report Helius credits when autoscaling is used.
 
 ## Pointers

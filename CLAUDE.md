@@ -28,10 +28,10 @@ Then the one experiment or host you are touching. Daily briefs are in [ARTIFACTS
 - Postgres stays on localhost. Never print or commit the DB password.
 - Port 22 is never opened to the world. SSH is Cloudflare Access.
 - Stop on a host-key mismatch. Pins are in [docs/HOSTS.md](docs/HOSTS.md).
-- Do not touch `/opt/miscusi` on `mal-fast-0`.
+- `/opt/miscusi` on `mal-fast-0` is a separate project, `vaanai/MiScusi`, led by the same Claude manager. Do not modify it from MAL work. Changes to it follow that repo's own deploy docs.
 - Do not commit `.env` files, API keys, or private keys. The Helius key on the hosts is `/var/lib/mal/backfill/helius.env` (Oracle) and `/var/lib/mal/fast-listener/helius.env` (fast). It stays there.
-- Do not edit `ufw`, `sshd_config`, or cloudflared config.
-- Do not merge. Helm merges after review.
+- Do not edit `ufw`/firewall, `sshd_config`, cloudflared config, or Cloudflare Access. Those, plus the Oracle server's admin, are Helm's. Requests go to the owner, who relays to Helm.
+- Workers do not merge. The manager merges after review ([DEC-013](DEC/DEC-013-claude-manager-merges.md)).
 
 ## Promotion gate
 
@@ -49,9 +49,9 @@ Forward-paper rows from 2026-09-25T19:00:00Z through 2026-09-27T06:58:12Z are vo
 ## How to work
 
 - Branch: `claude/<topic>`. One topic per branch. Small pull requests.
-- Open the PR and stop. Helm reviews and merges.
+- Workers open the PR and stop. The manager (the Claude session on `mal-fast-0`) reviews and merges, with a `reviewer` pass and a `quant-proof` pass where the PR touches an edge claim.
 - Commit and push often, at a green unit test, not at the end of a long uncommitted pile.
-- Workers implement. The manager plans. See [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md).
+- Workers implement. The manager plans. See [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md) and [DEC-013](DEC/DEC-013-claude-manager-merges.md).
 - Subagents in [.claude/agents/](.claude/agents/): `builder`, `host-ops`, `quant-proof`, `reviewer`.
 - Commands: `/status`, `/new-experiment`.
 
@@ -64,7 +64,7 @@ Forward-paper rows from 2026-09-25T19:00:00Z through 2026-09-27T06:58:12Z are vo
 | `mal-core-0` | Oracle, aarch64. Archive, tape, training, forward paper. |
 | `mal-fast-0` | OVH Frankfurt, x86_64. Fast listeners and the backward backfill. Main focus. |
 
-Connect with `scripts/mal-core/agent-ssh.sh --host core|fast`. Dry-run first. Read-only unless a manager has approved a restart. Details: [docs/HOSTS.md](docs/HOSTS.md). Migration steps that are **not** in git: [docs/MIGRATION-TO-CLAUDE.md](docs/MIGRATION-TO-CLAUDE.md).
+Connect with `scripts/mal-core/agent-ssh.sh --host core|fast`, or directly with `ssh mal-core-0` (Cloudflare Access, Claude's own key and service token; read-only account). Dry-run first. Claude has full sudo on `mal-fast-0` — still never touching `ufw`/firewall, `sshd`, `cloudflared`, or Cloudflare. `mal-core-0` access is read-only; restarts and other changes on Oracle go through the owner or Helm. Details: [docs/HOSTS.md](docs/HOSTS.md). Migration steps that are **not** in git: [docs/MIGRATION-TO-CLAUDE.md](docs/MIGRATION-TO-CLAUDE.md).
 
 ## Owner notes
 

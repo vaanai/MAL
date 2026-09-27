@@ -8,7 +8,7 @@ Both live in the Cursor coordinator conversation, not on either host. Each one w
 - Schedule: `0 5 * * *` (05:00 UTC daily)
 - Opened 2026-09-25T08:41:20Z. Expires 2026-10-02T08:41:20Z (Cursor subscriptions expire after about 7 days).
 - Writes: `ARTIFACTS/daily/<date>.md`, then the coordinator updates `docs/ops/notes.md`.
-- Exact prompt:
+- Prompt (repo-path form):
 
 > Daily MAL check: the LAYA v0 retrain/scoreboard timer runs at 04:15 UTC on mal-core. Delegate a short read-only worker (composer-2.5, fast off) to pull the latest daily scoreboard, tape health stats (trades/min, % creates covered, lag, disk), and wallet leaderboard summary into ARTIFACTS/daily/<date>.md, then decide next steps and update docs/ops/notes.md. Message the user only if a signal meets the promotion criterion, something breaks, or a decision is needed.
 
@@ -26,7 +26,7 @@ Both live in the Cursor coordinator conversation, not on either host. Each one w
 - Type: one-shot
 - Opened 2026-09-27T13:50:06Z. Delay 112,000 s, so it fires about 2026-09-28T20:57Z.
 - Writes: reads `ARTIFACTS/lab/migrate-direct-oos.md`. Kills or keeps the cell in `docs/ops/notes.md` and messages the owner.
-- Exact prompt:
+- Prompt (repo-path form):
 
 > Five out-of-sample days for the frozen migrate-direct cell (spec ARTIFACTS/lab/migrate-direct-prereg.md, frozen 2026-09-27T13:06:36Z) were expected around 2026-09-28 20:00Z (Oracle covers 22 Sep, the fast box walks 21 Sep backward). Delegate one short composer-2.5 worker to read ARTIFACTS/lab/migrate-direct-oos.md, confirm with the host that the table is current, and report per fail model: n, distinct days, days positive, net mean, bootstrap 90% CI lower bound, ex-top-3, fill rate. No parameter changes. Then decide: if it passes the promotion rule under both fail models on out-of-sample days, message the owner proposing a tiny live calibration (capped hot wallet on the owner's machine, never on a server) and wait for approval. If it clearly fails, kill the cell in docs/ops/notes.md and message the owner briefly. If it is still under-sampled, let the backfill continue and set another check.
 
