@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import struct
 import subprocess
 import sys
@@ -28,8 +29,66 @@ from tools.paper_curve_math import (
     reserves_with_our_buy,
     spot_sol_per_ui,
 )
-from tools.paper_fail_pressure import FailCurve, Pressure, fit_curve
 from tools.paper_price_path import TapePrint, TxOrder, collapse_fillable, print_from_trade_row
+
+# Same declared curve as tools/paper_fail_pressure.py. Inlined so a host tree
+# without that module still scores the pre-registered scale-1 gate.
+B_SLOT = 0.8
+B_SOL = 0.35
+TARGET_FAIL_RATE = 0.289
+
+
+class Pressure:
+    __slots__ = ("same_slot_buys", "nearby_buy_lamports")
+
+    def __init__(self, same_slot_buys: int, nearby_buy_lamports: int) -> None:
+        self.same_slot_buys = int(same_slot_buys)
+        self.nearby_buy_lamports = int(nearby_buy_lamports)
+
+
+class FailCurve:
+    __slots__ = ("intercept", "b_slot", "b_sol", "scale")
+
+    def __init__(self, intercept: float, b_slot: float, b_sol: float, scale: float) -> None:
+        self.intercept = float(intercept)
+        self.b_slot = float(b_slot)
+        self.b_sol = float(b_sol)
+        self.scale = float(scale)
+
+    def p(self, pressure: Pressure) -> float:
+        z = (
+            self.intercept
+            + self.b_slot * math.log1p(pressure.same_slot_buys)
+            + self.b_sol * math.log1p(pressure.nearby_buy_lamports / LAMPORTS_PER_SOL)
+        )
+        return _sigmoid(z)
+
+
+def _sigmoid(z: float) -> float:
+    if z >= 0.0:
+        return 1.0 / (1.0 + math.exp(-z))
+    ez = math.exp(z)
+    return ez / (1.0 + ez)
+
+
+def _fit_intercept(pressures: Sequence[Pressure], b_slot: float, b_sol: float) -> float:
+    lo, hi = -40.0, 40.0
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        curve = FailCurve(mid, b_slot, b_sol, 0.0)
+        mean = sum(curve.p(pr) for pr in pressures) / len(pressures)
+        if mean > TARGET_FAIL_RATE:
+            hi = mid
+        else:
+            lo = mid
+    return (lo + hi) / 2.0
+
+
+def fit_curve(pressures: Sequence[Pressure]) -> FailCurve:
+    """Scale-1 slopes, intercept set so mean p on these sends is 0.289."""
+    b_slot = B_SLOT * 1.0
+    b_sol = B_SOL * 1.0
+    return FailCurve(_fit_intercept(pressures, b_slot, b_sol), b_slot, b_sol, 1.0)
 
 # Locked in internal/latency-curve-prereg.md before the holdout run.
 MEASURED_MS = 1_387
@@ -1047,7 +1106,7 @@ def _fit_pressure(path: Path) -> FailCurve:
                 pressures.append(Pressure(int(buys), int(nearby)))
     if not pressures:
         raise SystemExit("no measured hold_30s sends to calibrate the pressure curve")
-    return fit_curve(pressures, scale=1.0)
+    return fit_curve(pressures)
 
 
 def _cell_id(strategy: int, land: int, exit_i: int, route: int, size_i: int, priority: int) -> str:
