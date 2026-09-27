@@ -8,6 +8,8 @@ fit a threshold and does not import the forward runner or promotion gate.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import gc
 import json
 import math
 import struct
@@ -15,6 +17,7 @@ import subprocess
 import sys
 import time
 from array import array
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -628,29 +631,181 @@ def _anchor(row: dict[str, Any], slot: int, block_ms: int, signature: str | None
     )
 
 
+# One fillable print, signature dropped. 58 bytes. market cap is recomputed.
+_PACK = struct.Struct("<qqiiBBqqqd")
+_VENUE_CODE = {"pump_bonding": 0, "pumpswap": 1}
+_CODE_VENUE = ("pump_bonding", "pumpswap")
+_SIDE_CODE = {"buy": 0, "sell": 1, "create": 2}
+_CODE_SIDE = ("buy", "sell", "create")
+
+
+def _pack_print(pr: TapePrint) -> bytes:
+    return _PACK.pack(
+        int(pr.t_recv_ms),
+        int(pr.slot),
+        int(pr.tx_index),
+        int(pr.event_index),
+        _VENUE_CODE.get(pr.venue, 0),
+        _SIDE_CODE.get(pr.side, 0),
+        int(pr.sol_lamports),
+        int(pr.quote_reserve),
+        int(pr.base_reserve),
+        float(pr.price_sol),
+    )
+
+
+def _unpack_print(raw: bytes) -> TapePrint:
+    t_ms, slot, tx_index, event_index, venue, side, sol, quote, base, price = _PACK.unpack(raw)
+    return TapePrint(
+        t_recv_ms=int(t_ms),
+        slot=int(slot),
+        event_index=int(event_index),
+        venue=_CODE_VENUE[venue] if venue < len(_CODE_VENUE) else "pump_bonding",
+        side=_CODE_SIDE[side] if side < len(_CODE_SIDE) else "buy",
+        sol_lamports=int(sol),
+        quote_reserve=int(quote),
+        base_reserve=int(base),
+        price_sol=float(price),
+        market_cap_sol=float(price) * 1_000_000_000,
+        signature=None,
+        tx_index=int(tx_index),
+    )
+
+
+def _later_event(a: TapePrint, b: TapePrint) -> TapePrint:
+    """Last inner event, visible at the later receive time. Same rule as collapse_fillable."""
+    winner = a if (a.tx_index, a.event_index) >= (b.tx_index, b.event_index) else b
+    visible = a.t_recv_ms if a.t_recv_ms >= b.t_recv_ms else b.t_recv_ms
+    if winner.t_recv_ms == visible:
+        return winner
+    return replace(winner, t_recv_ms=visible)
+
+
 class _Mint:
-    __slots__ = ("slot", "block_ms", "day", "anchor", "prints", "order", "had_bond", "mig_slot", "mig_ms", "create_done", "mig_done")
+    """Hot path keeps one slot of signatures, then a packed fillable tape.
+
+    Collapse matches tools.paper_price_path.collapse_fillable. The create
+    anchor joins its signature's group when that slot closes, then the
+    signature string is dropped.
+    """
+
+    __slots__ = (
+        "slot",
+        "block_ms",
+        "day",
+        "anchor",
+        "packed",
+        "order",
+        "had_bond",
+        "mig_slot",
+        "mig_ms",
+        "create_done",
+        "mig_done",
+        "_open_slot",
+        "_groups",
+        "_solos",
+        "_anchor_merged",
+    )
 
     def __init__(self, slot: int, block_ms: int, day: int, anchor: TapePrint | None) -> None:
         self.slot = slot
         self.block_ms = block_ms
         self.day = day
         self.anchor = anchor
-        self.prints: list[TapePrint] = []
+        self.packed = bytearray()
         self.order = TxOrder()
         self.had_bond = False
         self.mig_slot: int | None = None
         self.mig_ms: int | None = None
         self.create_done = False
         self.mig_done = False
+        self._open_slot: int | None = None
+        self._groups: dict[str, TapePrint] = {}
+        self._solos: list[TapePrint] = []
+        self._anchor_merged = False
 
     def add(self, pr: TapePrint) -> None:
-        self.prints.append(self.order.stamp(pr))
-        if pr.venue == "pump_bonding":
+        self._open(pr.slot)
+        stamped = self.order.stamp(pr)
+        if stamped.venue == "pump_bonding":
             self.had_bond = True
-        elif pr.venue == "pumpswap" and self.had_bond and self.mig_slot is None:
-            self.mig_slot = pr.slot
-            self.mig_ms = pr.t_recv_ms
+        elif stamped.venue == "pumpswap" and self.had_bond and self.mig_slot is None:
+            self.mig_slot = stamped.slot
+            self.mig_ms = stamped.t_recv_ms
+        sig = stamped.signature
+        if not sig:
+            self._solos.append(stamped)
+            return
+        prev = self._groups.get(sig)
+        self._groups[sig] = stamped if prev is None else _later_event(prev, stamped)
+
+    def _open(self, slot: int) -> None:
+        if self._open_slot is None:
+            self._open_slot = slot
+            return
+        if slot == self._open_slot:
+            return
+        self._close_slot()
+        self._open_slot = slot
+
+    def _close_slot(self) -> None:
+        slot = self._open_slot
+        groups = self._groups
+        if (
+            not self._anchor_merged
+            and self.anchor is not None
+            and self.anchor.signature
+            and slot is not None
+            and self.anchor.slot == slot
+            and self.anchor.signature in groups
+        ):
+            groups[self.anchor.signature] = _later_event(groups[self.anchor.signature], self.anchor)
+            self._anchor_merged = True
+        events = list(groups.values())
+        events.extend(self._solos)
+        events.sort(key=lambda pr: (pr.t_recv_ms, pr.slot, pr.tx_index, pr.event_index))
+        for pr in events:
+            self.packed += _pack_print(pr)
+        if slot is not None:
+            seen = self.order._seen
+            for sig in groups:
+                seen.pop((slot, sig), None)
+        groups.clear()
+        self._solos.clear()
+
+    def finish(self) -> None:
+        if self._open_slot is not None or self._groups or self._solos:
+            self._close_slot()
+            self._open_slot = None
+
+    def release(self) -> None:
+        """Drop the tape after the create is scored and no migration is open."""
+        self.finish()
+        self.packed = bytearray()
+        self._groups.clear()
+        self._solos.clear()
+        self.order = TxOrder()
+
+    def drop_before(self, slot: int) -> None:
+        """Keep fillable prints at or after `slot` (migration trigger onward)."""
+        self.finish()
+        kept = bytearray()
+        step = _PACK.size
+        raw = self.packed
+        for i in range(0, len(raw), step):
+            if _PACK.unpack_from(raw, i)[1] >= slot:
+                kept += raw[i : i + step]
+        self.packed = kept
+
+    def fillable(self, *, migrate: bool) -> list[TapePrint]:
+        self.finish()
+        step = _PACK.size
+        raw = self.packed
+        fills = [_unpack_print(raw[i : i + step]) for i in range(0, len(raw), step)]
+        if not migrate and self.anchor is not None and not self._anchor_merged:
+            fills.append(self.anchor)
+        fills.sort(key=lambda pr: (pr.t_recv_ms, pr.slot, pr.tx_index, pr.event_index))
+        return fills
 
 
 def _ref_from_anchor(anchor: TapePrint | None) -> float | None:
@@ -660,10 +815,7 @@ def _ref_from_anchor(anchor: TapePrint | None) -> float | None:
 
 
 def _fills_for(mint: _Mint, *, migrate: bool) -> tuple[list[TapePrint], int, int, float | None]:
-    raw = list(mint.prints)
-    if not migrate and mint.anchor is not None:
-        raw.append(mint.anchor)
-    fills = collapse_fillable(raw)
+    fills = mint.fillable(migrate=migrate)
     if migrate:
         assert mint.mig_slot is not None and mint.mig_ms is not None
         ref = None
@@ -684,6 +836,25 @@ def _fills_for(mint: _Mint, *, migrate: bool) -> tuple[list[TapePrint], int, int
 def _write_rows(fh: Any, strategy: int, day: int, rows: Sequence[tuple[int, ...]]) -> None:
     for land, exit_i, route, size_i, status, sides, net0, gross, buys, nearby in rows:
         fh.write(REC.pack(strategy, land, exit_i, route, size_i, status, sides, day, net0, gross, buys, nearby))
+
+
+def _rss_mb() -> int:
+    try:
+        with open("/proc/self/status", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        return 0
+    return 0
+
+
+def _trim_heap() -> None:
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except OSError:
+        return
 
 
 def _lag(path: Path) -> int | None:
@@ -856,16 +1027,14 @@ def run_holdout(
                     else:
                         score_create(mint, through)
                     if mint.mig_slot is None:
-                        mint.prints.clear()
-                        mint.order = TxOrder()
+                        mint.release()
                         watch[mint_id] = mint
                         hot.pop(mint_id, None)
                     elif final or now_ms >= (mint.mig_ms or 0) + WINDOW_MS:
                         score_mig(mint, through if not final or now_ms >= (mint.mig_ms or 0) + WINDOW_MS else mint.mig_ms or 0)
                         hot.pop(mint_id, None)
                     else:
-                        mig_slot = mint.mig_slot
-                        mint.prints = [pr for pr in mint.prints if pr.slot >= mig_slot]
+                        mint.drop_before(mint.mig_slot)
                 elif mint.create_done and mint.mig_slot is not None and not mint.mig_done:
                     if final or now_ms >= (mint.mig_ms or 0) + WINDOW_MS:
                         through = now_ms if now_ms >= (mint.mig_ms or 0) + WINDOW_MS else (mint.mig_ms or 0)
@@ -883,7 +1052,12 @@ def run_holdout(
                 lag = wait_for_lag(lag_path)
                 last_lag = time.time()
                 print(f"lag_ms={lag} hour={hour['hour']}", file=sys.stderr, flush=True)
-            print(f"hour={hour['hour']} hot={len(hot)} watch={len(watch)} creates_scored={create_rows}", file=sys.stderr, flush=True)
+            rss_mb = _rss_mb()
+            print(
+                f"hour={hour['hour']} hot={len(hot)} watch={len(watch)} creates_scored={create_rows} rss_mb={rss_mb}",
+                file=sys.stderr,
+                flush=True,
+            )
             for row in _iter_trades(hour["trade"]):
                 lines += 1
                 if lines % 2_000_000 == 0:
@@ -923,6 +1097,7 @@ def run_holdout(
                 if lines % 200_000 == 0:
                     flush(now_ms, False)
             flush(max(now_ms, int(hour["end"]) * 1000), False)
+            _trim_heap()
         flush(now_ms, True)
     print(f"done lines={lines} create_rows={create_rows} mig_rows={mig_rows}", file=sys.stderr, flush=True)
     summary = aggregate(attempts_path, graph_visible=graph_visible)

@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from tools.latency_curve import (
+    _Mint,
     evaluate_path,
     prepare_fills,
     skip_decision,
@@ -65,6 +66,36 @@ class OrderTests(unittest.TestCase):
         self.assertEqual(len(fills), 1)
         self.assertEqual(fills[0].quote_reserve, 80_000_000_000)
         self.assertEqual(fills[0].event_index, 1)
+
+    def test_packed_slot_buffer_matches_collapse(self) -> None:
+        first = _print(11, 40_000_000_000, t_ms=T0, signature="same", event_index=0, tx_index=3)
+        second = _print(11, 80_000_000_000, t_ms=T0 + 5, signature="same", event_index=1, tx_index=3)
+        nxt = _print(12, 90_000_000_000, t_ms=T0 + 400, signature="next", event_index=0, tx_index=-1)
+        mint = _Mint(11, T0, 0, None)
+        for pr in (second, first, nxt):
+            mint.add(pr)
+        got = mint.fillable(migrate=False)
+        exp = prepare_fills([second, first, nxt])
+        self.assertEqual(len(got), len(exp))
+        for left, right in zip(got, exp):
+            self.assertEqual(left.quote_reserve, right.quote_reserve)
+            self.assertEqual(left.slot, right.slot)
+            self.assertEqual(left.tx_index, right.tx_index)
+            self.assertEqual(left.event_index, right.event_index)
+            self.assertEqual(left.t_recv_ms, right.t_recv_ms)
+
+    def test_anchor_merges_into_its_create_signature(self) -> None:
+        anchor = _print(10, Q0, t_ms=T0, signature="create", event_index=-1, tx_index=-1)
+        buy = _print(10, 31_000_000_000, t_ms=T0, signature="create", event_index=1, tx_index=-1)
+        later = _print(11, 32_000_000_000, t_ms=T0 + 400, signature="snipe", tx_index=-1)
+        mint = _Mint(10, T0, 0, anchor)
+        mint.add(buy)
+        mint.add(later)
+        got = mint.fillable(migrate=False)
+        exp = prepare_fills([buy, later, anchor])
+        self.assertEqual([pr.quote_reserve for pr in got], [pr.quote_reserve for pr in exp])
+        self.assertEqual([pr.slot for pr in got], [pr.slot for pr in exp])
+        self.assertEqual(len(got), 2)
 
     def test_read_order_is_tx_position_when_omitted(self) -> None:
         early = _print(5, 11_000_000_000, t_ms=T0, signature="early", event_index=5, tx_index=-1)
