@@ -1,0 +1,22 @@
+[Unit]
+Description=MAL phase-1 create alarm (PumpPortal subscribeNewToken only)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/mal/eng
+Nice=0
+MemoryMax=1G
+ExecStart=/var/lib/mal/fast-listener/.venv/bin/python /var/lib/mal/eng/fast_create_listener.py --output-dir /var/lib/mal/sealed/fast-create
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+StandardOutput=append:/var/lib/mal/logs/fast-create.log
+StandardError=append:/var/lib/mal/logs/fast-create.log
+
+[Install]
+WantedBy=default.target
