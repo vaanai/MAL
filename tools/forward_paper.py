@@ -2521,6 +2521,213 @@ def replay_rows(
     return engine
 
 
+# Cross-mint containers a restart would otherwise reset to empty. Mutated (directly
+# or via an object they hold, e.g. `library`'s MintBooks) by exactly the functions
+# `build_shadow_state`/`splice_state`'s docstrings point at: `_register_create`,
+# `_add_print`, `_consider_triggers`, `_note_clean_buyer`, `_note_curve`,
+# `_note_buyers_8`, `_note_attention`/`_fire_attention`, `push_attention`, and
+# `push_print`'s own `TxOrder.stamp` call. Everything here was reached by tracing
+# every `self.<attr> = `/`self.<attr>.<mutator>()` inside those functions and their
+# callees; see `splice_state`'s body for what each entry is and why a restart needs
+# it back. Deliberately NOT here: `self.books` (ledgers/positions, a fill replay is
+# not a state splice), `self.graph` (disk-reloaded on its own 5s clock, not
+# tape-derived), and the three `LatencyMeter` diagnostics-only deques
+# (`recv_to_decision`/`decision_to_send`/`applied` -- never re-read by
+# `quote()`/`measure()`, per that class's own docstring).
+_SHADOW_SPLICE_ATTRS: tuple[str, ...] = (
+    "wallets",
+    "by_creator",
+    "library",
+    "tracks",
+    "mint_order",
+    "seen",
+    "early",
+    "dead_mints",
+    "dead_prints_dropped",
+    "early_timeout_mints_dropped",
+    "attention",
+    "attn_snapshot",
+    "attn_t_start_ms",
+    "grids",
+    "grid_seq",
+    "emitted_grids",
+    "mig15",
+    "mig15_seq",
+    "mig15_waiting",
+    "_triggers",
+    "_tx_order",
+    "_prints",
+    "stale_dropped",
+)
+
+
+def build_shadow_state(
+    creates: Iterable[CreateSignal],
+    trade_rows: Iterable[dict[str, Any]],
+    books: Sequence[BookSpec],
+    *,
+    until_ms: int,
+    attention_rows: Iterable[dict[str, Any]] | None = None,
+    offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
+    slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
+    model: ModelSlot | None = None,
+    barrier: ModelSlot | None = None,
+    swing: ModelSlot | None = None,
+    dead_mints: frozenset[str] | None = None,
+    early_timeout_ms: int | None = None,
+    attn_t_start_ms: int = 0,
+    attn_snapshot: set[tuple[str, str]] | None = None,
+) -> ForwardEngine:
+    """Throwaway engine that replays sealed input up to `until_ms` for its
+    cross-mint state only. `splice_state` moves that state onto a freshly
+    booted real engine so a restart's post-boot decisions match what an
+    uninterrupted run would have made, instead of starting from empty
+    `library`/`wallets`/pending-trigger state every time the process bounces.
+
+    Zero decision/position/log side effects: `record_packets=False`,
+    `retain_rows=False`, no `logs`, no `positions_path`, so `_on_signal`
+    never appends to `self.packets`/`self.decisions`/`self.positions` and
+    never touches disk (verified against the ~1698 `want_score` gate and the
+    `if self.retain_rows` / `log is not None` guards in `_decision`/`_position`).
+    `splice_state` never reads `self.books`, so nothing this function's own
+    `_BookRun.ceiling`/`.shadow` ledgers accumulate (real opens, closes,
+    skip reasons) ever reaches the real engine.
+
+    `books` is the caller's *full* real book list, unmodified -- an earlier
+    version of this function ran only a `swing`/`mig_15` subset (enough to
+    keep `_schedule_mig15`'s ~1601 `self.books` gate correct without paying
+    for real entry attempts), but that broke `_prune()` (~2328): its `busy`
+    set (~2330) is `for run in self.books: busy.update(ledger.open);
+    busy.update(ledger.pending)`, i.e. it is only as complete as the books
+    actually run inside *this* engine. With the subset, a mint holding a
+    real, still-open baseline/laya/migrate position was invisible to
+    `busy`, so once it looked idle (~2340's `LIVE_IDLE_RETAIN_MS` window, or
+    ~2350's `PRUNE_AFTER_MS` one) `_prune` truncated its `book.flow`/
+    `self.seen` entry anyway -- silently, on a mint an uninterrupted engine
+    (where that position really is open, really is busy, and is therefore
+    never touched by `_prune` at all) would have kept in full. That
+    truncated `library`/`seen` is exactly what `splice_state` hands to the
+    real engine, so a multi-hour rebuild could restart with a stale-length
+    history for any mint whose real position was open across the boundary
+    but not represented in a book subset. Running the full book list
+    (`_enter_or_skip` and all) is what actually makes `busy` -- and
+    therefore what `_prune` keeps or drops -- match an uninterrupted engine.
+    `tools/test_forward_paper.py::WarmStartTests
+    .test_prune_keeps_a_mint_busy_across_a_restart_the_same_as_no_restart`
+    fails against the old subset-only version and passes against this one.
+
+    Model scoring during the shadow build is therefore a real cost, not
+    optional: a `laya`/`swing` book with a real `model`/`barrier`/`swing`
+    path scores every trigger it would have scored live, for the whole
+    sealed window. Callers that don't pass a `model`/`barrier`/`swing`
+    `ModelSlot` get the harmless default (`ModelSlot(None, None)`, always a
+    same-line "no_model" skip, no scoring cost) -- but that is a caller
+    choice now, not something this function forces to keep the state splice
+    correct. See the PR body for a boot-time estimate on real model paths
+    across a full week of tape.
+
+    `_prune()`'s live-window truncation of `book.flow`/`book.path.prints`
+    (~1440's `if self.latency.now_ms is not None`) is wall-clock gated, and
+    a bare `LatencyMeter()` (as `replay_rows`/ParityTests/promotion backtests
+    use) leaves `now_ms` unset, i.e. full offline history, never the
+    live-sized window `serve()` actually keeps. This function instead seeds
+    `LatencyMeter(now_ms=...)` off the tape's own clock -- one `_clock_box`
+    bumped to each print's own `t_recv_ms` right before it is pushed -- the
+    same substitution `tools/forward_paper_mem_profile.py` already uses (see
+    its comment above its own `_clock_box`) to make `_prune()` reproduce
+    what a live `serve()` retains instead of an offline re-score's full
+    history. A restart's warm start wants exactly that: state as it would
+    sit in a live process's memory at `until_ms`, not a from-scratch replay.
+
+    `tape_end_ms` is left `None` on purpose -- the same as `serve()`'s own
+    unbounded live tape, and unlike `replay_rows`'s finite offline
+    `tape_end_ms`. `_register_create` (~1354) uses `self.tape_end_ms` to
+    decide whether a future grid offset can ever fire; setting it to
+    `until_ms` here would make every grid beyond the restart point
+    (correctly still pending for a live process, which keeps receiving
+    tape after it reboots) silently never get scheduled at all -- caught by
+    this function's own test, which pushes a create before `until_ms` with
+    a grid offset landing after it. `until_ms` only bounds what this
+    function itself reads from `creates`/`trade_rows`/`attention_rows`
+    (below) and where `drain_until` stops; it is not told to the engine.
+    """
+    clock_box: dict[str, int] = {"ms": 0}
+    engine = ForwardEngine(
+        books,
+        kill_file=Path("/nonexistent/forward-paper-shadow-kill-never"),
+        latency=LatencyMeter(now_ms=lambda: clock_box["ms"]),
+        model=model,
+        barrier=barrier,
+        swing=swing,
+        offsets_ms=offsets_ms,
+        slippage_cap=slippage_cap,
+        tape_end_ms=None,
+        record_packets=False,
+        retain_rows=False,
+        logs=None,
+        dead_mints=dead_mints,
+        early_timeout_ms=early_timeout_ms,
+    )
+    if model is not None:
+        model.maybe_reload(force=True)
+    if barrier is not None:
+        barrier.maybe_reload(force=True)
+    if swing is not None:
+        swing.maybe_reload(force=True)
+    engine.attn_t_start_ms = attn_t_start_ms
+    engine.attn_snapshot = attn_snapshot if attn_snapshot is not None else set()
+    for create in creates:
+        if create.t_signal_ms <= until_ms:
+            engine.push_create(create)
+    for row in trade_rows:
+        parsed = flow_from_tape_row(row)
+        if parsed is None:
+            continue
+        mint, pr = parsed
+        if pr.t_recv_ms > until_ms:
+            continue
+        clock_box["ms"] = pr.t_recv_ms
+        engine.push_print(mint, pr, _event_ts(row))
+    for row in attention_rows or ():
+        engine.push_attention(row)
+    engine.drain_until(until_ms, final=True)
+    return engine
+
+
+def splice_state(src: ForwardEngine, dst: ForwardEngine) -> None:
+    """Move `src`'s tape-built cross-mint state onto `dst`, in place.
+
+    `src` is meant to be a `build_shadow_state()` throwaway; `dst` is a
+    freshly booted real engine (its own `books`/kill file/model slots/logs
+    already set up by the caller). Every attribute in `_SHADOW_SPLICE_ATTRS`
+    is reassigned by reference (not deep-copied) -- `dst` then owns the same
+    `library`/`wallets`/etc. objects `src` built, and `src` should be
+    discarded right after this call.
+
+    `dst.latency` keeps its own object (its `now_ms`/`extra_ms` are the
+    live engine's real config, not the shadow's tape-clock stand-in) --
+    only the chain-latency measurement is copied onto it, because that is
+    the one piece of `LatencyMeter` a future decision actually reads:
+    `chain_median_ms()` (fed by `chain_to_recv`/`_chain_n`, cached in
+    `_median`/`_median_n`) is called from `quote()`/`measure()`, which sets
+    `applied_latency_ms` and therefore `t_entry_ms` for every future fill.
+    Losing that history at every restart would make the first entries after
+    a restart price latency off zero prior chain samples instead of the
+    engine's real running median. The other three `LatencyMeter` deques
+    (`recv_to_decision`, `decision_to_send`, `applied`) are diagnostics the
+    class's own docstring says are never re-read by a decision, so `dst`
+    keeps its own (empty-since-boot is the correct state for them, same as
+    an uninterrupted process's `report()` would show right after any of its
+    periodic housekeeping -- they are rolling windows, not all-time totals).
+    """
+    for attr in _SHADOW_SPLICE_ATTRS:
+        setattr(dst, attr, getattr(src, attr))
+    dst.latency.chain_to_recv = src.latency.chain_to_recv
+    dst.latency._chain_n = src.latency._chain_n
+    dst.latency._median = src.latency._median
+    dst.latency._median_n = src.latency._median_n
+
+
 def offline_packets(
     creates: dict[str, CreateSignal],
     trade_rows: Iterable[dict[str, Any]],

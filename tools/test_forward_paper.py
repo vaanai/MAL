@@ -29,14 +29,17 @@ from tools.forward_paper import (
     ForwardEngine,
     GcStats,
     LatencyMeter,
+    LIVE_IDLE_RETAIN_MS,
     MemCensus,
     ModelSlot,
     _Follower,
     _RankWindow,
+    _event_ts,
     CEILING_DAILY_LOSS_LAMPORTS,
     CEILING_MAX_CONCURRENT,
     RiskConfigError,
     books_from_config,
+    build_shadow_state,
     clean_clock,
     decision_counts_for_promotion,
     flow_from_tape_row,
@@ -50,6 +53,7 @@ from tools.forward_paper import (
     reload_risk_config,
     reconcile_baseline,
     replay_rows,
+    splice_state,
     window_creates,
     write_mem_census,
 )
@@ -57,6 +61,7 @@ from tools.paper_curve_math import PORTAL_FEE_PPM, PRIORITY_FEE_LAMPORTS
 from tools.paper_tape_scoreboard import priority_grid, priority_sides_for_event
 from tools.laya_v0 import LADDER_RULES
 from tools.laya_v0 import FEATURE_NAMES
+from tools.laya_v0 import _dedupe_key
 from tools.paper_price_path import CreateSignal, _ZstdText
 
 T0 = 1_700_000_000_250
@@ -244,6 +249,193 @@ class ParityTests(unittest.TestCase):
         kept = window_creates(creates, T0, TAPE_END)
         self.assertIn("MintA", kept)
         self.assertNotIn("MintOld", kept)
+
+
+class WarmStartTests(unittest.TestCase):
+    """build_shadow_state()/splice_state(): a restart's warm start should not
+    change what the engine decides after it, versus one uninterrupted run.
+    """
+
+    def _feed_second_half(self, engine, creates, rows, mid_ms: int) -> None:
+        for create in creates.values():
+            if mid_ms < create.t_signal_ms <= TAPE_END:
+                engine.push_create(create)
+        for row in rows:
+            parsed = flow_from_tape_row(row)
+            if parsed is None:
+                continue
+            mint, pr = parsed
+            if pr.t_recv_ms <= mid_ms or pr.t_recv_ms > TAPE_END:
+                continue
+            engine.push_print(mint, pr, _event_ts(row))
+        engine.drain_until(TAPE_END, final=True)
+
+    def test_shadow_emits_no_decisions_or_positions(self) -> None:
+        creates, rows = _fixture()
+        mid_ms = T0 + 6_000
+        shadow = build_shadow_state(creates.values(), rows, _books(), until_ms=mid_ms, offsets_ms=OFFSETS)
+        self.assertEqual(shadow.decisions, [])
+        self.assertEqual(shadow.positions, [])
+        self.assertEqual(shadow.logs, {})
+
+    def test_splice_reproduces_the_second_half_of_an_uninterrupted_replay(self) -> None:
+        creates, rows = _fixture()
+        books = _books()
+        mid_ms = T0 + 6_000
+        kill_file = Path("/tmp/forward-paper-warm-start-kill-absent")
+
+        # A: one continuous replay across the whole fixture, no restart.
+        engine_a = replay_rows(
+            creates.values(),
+            rows,
+            books,
+            tape_end_ms=TAPE_END,
+            kill_file=kill_file,
+            offsets_ms=OFFSETS,
+        )
+        a_decisions = [row for row in engine_a.decisions if row["decision_t_ms"] > mid_ms]
+        a_positions = [row for row in engine_a.positions if row["decision_t_ms"] > mid_ms]
+        # decision_t_ms is always the *open* decision's time, including on a
+        # "close" row (see `_fill_one`/`_try_exit`), so this filter also
+        # correctly drops any position opened before mid_ms even if it
+        # closes after it -- engine B has no ledger memory of that open
+        # (books/ledgers/positions are not spliced; see splice_state's
+        # docstring), so it could never reproduce that close either.
+        self.assertTrue(a_decisions, "fixture should produce at least one post-split decision")
+
+        # B: shadow-replay the first half only, splice its cross-mint state
+        # onto a fresh engine, then feed the second half.
+        shadow = build_shadow_state(creates.values(), rows, books, until_ms=mid_ms, offsets_ms=OFFSETS)
+        engine_b = ForwardEngine(
+            books,
+            kill_file=kill_file,
+            latency=LatencyMeter(),
+            offsets_ms=OFFSETS,
+            tape_end_ms=TAPE_END,
+            retain_rows=True,
+        )
+        splice_state(shadow, engine_b)
+        # Sanity: the spliced containers hold the mints registered before the
+        # split (MintOld's create is before T0 - 60_000 < mid_ms; MintA's is
+        # at T0 < mid_ms), so B did not need to re-see them post-splice.
+        self.assertIn("MintA", engine_b.library)
+        self.assertIn("MintOld", engine_b.library)
+        self.assertTrue(engine_b.grids, "second grid (T0+15_000) should still be pending post-splice")
+
+        self._feed_second_half(engine_b, creates, rows, mid_ms)
+
+        b_decisions = [row for row in engine_b.decisions if row["decision_t_ms"] > mid_ms]
+        b_positions = [row for row in engine_b.positions if row["decision_t_ms"] > mid_ms]
+        self.assertEqual(a_decisions, b_decisions)
+        self.assertEqual(a_positions, b_positions)
+
+    def test_prune_keeps_a_still_open_mint_busy_inside_the_shadow(self) -> None:
+        """Regression for a real bug: an earlier `build_shadow_state` ran only
+        the `swing`/`mig_15` subset of `books` inside the shadow (enough to
+        keep `_schedule_mig15`'s gate correct), which meant a mint with a
+        real, still-open baseline/laya/migrate position never showed up in
+        `_prune`'s `busy` set (~2330: `for run in self.books: ...`) -- so
+        once it looked idle, `_prune` truncated its `book.flow`/`self.seen`
+        entry, and that truncated history is exactly what got spliced onto
+        the real engine. This fails against that subset-only version and
+        passes against the current one, which runs the caller's full book
+        list inside the shadow so `busy` is complete.
+        """
+        creates, rows = _fixture()
+        tb0 = T0 - 5_000
+        creates = dict(creates)
+        creates["MintBusy"] = _create("MintBusy", tb0, creator="CreatorBusy")
+        rows = list(rows) + [
+            _trade(
+                "MintBusy",
+                tb0 + 400,
+                trader="BusyProbe",
+                sol=5_000_000_000,
+                token=1_000_000,
+                quote=80_000_000_000,
+                slot=50,
+                event_index=1,
+                event_ts=False,
+            ),
+            _trade(
+                "MintBusy",
+                tb0 + 1_500,
+                trader="BusyW1",
+                sol=1_000_000_000,
+                token=1_000_000,
+                quote=36_000_000_000,
+                slot=51,
+                event_index=1,
+            ),
+        ]
+        books = _books()
+        mid_ms = T0 + 6_000
+        kill_file = Path("/tmp/forward-paper-warm-start-busy-kill-absent")
+
+        # A: one continuous replay, no restart. MintBusy never trades again
+        # after tb0 + 1_500, but its baseline position stays open (exit_rule
+        # "hold_30s" only fires ~30s after fill, well past TAPE_END here), so
+        # an uninterrupted engine never prunes it -- it is always busy.
+        engine_a = replay_rows(
+            creates.values(),
+            rows,
+            books,
+            tape_end_ms=TAPE_END,
+            kill_file=kill_file,
+            offsets_ms=OFFSETS,
+        )
+        busy_opens = [
+            row
+            for row in engine_a.positions
+            if row["mint"] == "MintBusy" and row["event"] == "open" and row["book"] == "buy_all"
+        ]
+        self.assertTrue(busy_opens, "fixture should open a baseline position on MintBusy")
+        expected_flow = [pr for pr in engine_a.library["MintBusy"].flow if pr.t_recv_ms <= mid_ms]
+        self.assertEqual(len(expected_flow), 2, "both MintBusy prints are before mid_ms")
+
+        # B: shadow-replay the first half. Confirm the shadow's own baseline
+        # book actually opened MintBusy (so `busy` has something real to see).
+        shadow = build_shadow_state(creates.values(), rows, books, until_ms=mid_ms, offsets_ms=OFFSETS)
+        busy_run = next(run for run in shadow.books if run.spec.book_id == "buy_all")
+        self.assertIn(
+            "MintBusy",
+            busy_run.ceiling.open,
+            "shadow must run the real baseline book for _prune's busy set to see this open position",
+        )
+
+        # Force `_prune` to see every mint as long idle. `_prune` reads
+        # `live_now` off `self.latency.now_ms()` whenever that callable is
+        # set (always true for the shadow's tape-clock LatencyMeter) and
+        # ignores the `now_ms` argument entirely in that case, so the only
+        # way to push `live_now` forward here is to replace the callable --
+        # this is `_prune` actually running inside the shadow's own window,
+        # not a different code path.
+        far_future = shadow._clock_ms + LIVE_IDLE_RETAIN_MS + PRUNE_AFTER_MS + 10_000
+        shadow.latency.now_ms = lambda: far_future
+        shadow._prune(far_future)
+
+        self.assertEqual(shadow.library["MintBusy"].flow, expected_flow)
+        self.assertEqual(shadow.seen["MintBusy"], {_dedupe_key(pr) for pr in expected_flow})
+
+        engine_b = ForwardEngine(
+            books,
+            kill_file=kill_file,
+            latency=LatencyMeter(),
+            offsets_ms=OFFSETS,
+            tape_end_ms=TAPE_END,
+            retain_rows=True,
+        )
+        splice_state(shadow, engine_b)
+        self.assertEqual(engine_b.library["MintBusy"].flow, expected_flow)
+
+        self._feed_second_half(engine_b, creates, rows, mid_ms)
+
+        a_decisions = [row for row in engine_a.decisions if row["decision_t_ms"] > mid_ms]
+        a_positions = [row for row in engine_a.positions if row["decision_t_ms"] > mid_ms]
+        b_decisions = [row for row in engine_b.decisions if row["decision_t_ms"] > mid_ms]
+        b_positions = [row for row in engine_b.positions if row["decision_t_ms"] > mid_ms]
+        self.assertEqual(a_decisions, b_decisions)
+        self.assertEqual(a_positions, b_positions)
 
 
 class RiskTests(unittest.TestCase):
