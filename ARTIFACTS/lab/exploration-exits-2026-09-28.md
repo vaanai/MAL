@@ -103,3 +103,16 @@ n=3010, fill rate=32.36%, gross mean=+2.40%, flat net=+1.22% (CI lo -0.69%), pre
 
 Wall time: 586s. Full grid: `exploration-exits-2026-09-28.json`.
 
+
+## Addendum (2026-09-28T20:15Z, manager): concentration check kills the trailing-exit candidate
+
+A `quant-proof` audit found the trailing simulation mechanically sound: it uses the same exit fill, latency, fees, slippage and fail models as the frozen tp/sl code, with no look-ahead in the running high, and this tool's tp50_sl30 (−0.19% pressure) agrees with the frozen scorer's (−0.24%) on nearly the same hours. The audit did not finish the concentration check, so the manager reran it with this tool's unmodified `run_all` (3 workers, `nice 19`, 656 s wall), keeping per-trade rows for two cells. Bootstrap: 1,000 draws, seed 1, 5th percentile. Size 0.5 SOL, n = 3,029 attempts each, 978 fills, 0 censored.
+
+| Cell | Leg | Mean/attempt | Total SOL | Ex-top-3 SOL | Ex-top-10 SOL | 90% CI lo | Top 3 trades (SOL) | Per day 09-19 / 09-20 / 09-21 |
+|---|---|---|---|---|---|---|---|---|
+| trail_30_act20 | flat | +1.535% | +23.245 | **−7.492** | −26.632 | −0.803% | 16.58, 9.68, 4.47 | +3.002% / +1.159% / +0.545% |
+| trail_30_act20 | pressure | +0.477% | +7.217 | **−8.048** | −19.634 | −0.817% | 9.41, 3.10, 2.75 | +1.367% / +0.233% / −0.110% |
+| tpsl_tp50_sl30 | flat | −0.183% | −2.767 | −4.457 | −7.479 | −0.887% | 0.63, 0.54, 0.52 | +0.187% / −0.333% / −0.376% |
+| tpsl_tp50_sl30 | pressure | −0.209% | −3.164 | −4.426 | −6.654 | −0.675% | 0.48, 0.42, 0.35 | −0.053% / −0.444% / −0.119% |
+
+The trailing cell's pooled positive comes from a handful of moonshot trades; one 0.5 SOL position returned +16.58 SOL (flat). Without the top 3 it is **more** negative than tp50_sl30, and the per-day means fall steadily. It fails the gate's ex-top-3 condition by about 8 SOL on the exploration pool. **Decision:** trail_30_act20 is not pre-registered as EXP-010, the fresh-block backfill for it is not bought, and the EXP-010 ledger reservation is released. The lesson: on migrate entries the typical trade loses; exits can only harvest rare tails, so the lever is entry selection (see `exploration-entry-model-2026-09-28.md`: pre-migration buy pressure and momentum were the stable features).
