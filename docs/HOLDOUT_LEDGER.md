@@ -19,7 +19,7 @@ UTC hours, inclusive start, exclusive end.
 | Fast pre-cut | 2026-09-19T01 → 2026-09-22T00 | fast | exploration pool | Was the frozen migrate-direct OOS book, now closed. |
 | Fast EXP-009 block | `[oldest sealed at cap, 2026-09-19T01)` | fast | **EXP-009** | Owned, except the two hours below. |
 | Fast EXP-009 exclusion | 2026-09-18T23, 2026-09-19T00 | fast | exploration pool | Read by the migrate-direct fast scorer (`mal-fast-oos-score`), disclosed in [EXP-009 Amendment 3](../EXP/EXP-009-migrate-creator-gate-prereg.md). Excluded from EXP-009 scoring. |
-| Forward paper, kill review | 2026-09-28T00:00Z → 2026-10-05T05:00Z (9 forward books) | Oracle (forward-paper runner) | kill review | Single read, at the kill-review instant. No interim peeking used for a promote decision. |
+| Forward paper, kill review | 2026-09-28T00:00Z → 2026-10-05T05:00Z (9 forward books) | Oracle (forward-paper runner) | kill review | Single read, at the kill-review instant. No interim peeking used for a promote decision. Must join `settlements.jsonl` with `positions.jsonl` for restart-orphaned positions per [DEC-014 Amendment 1](../DEC/DEC-014-holdout-ledger-and-multiplicity.md#amendment-1-2026-09-28--kill-review-must-join-the-offline-settled-orphans). |
 | Future fast backfill | Beyond the current +2M credit cap | fast | unassigned | To be allocated in ≥6-day blocks, one confirmation test each, as the backfill extends. |
 
 ## How to add a block

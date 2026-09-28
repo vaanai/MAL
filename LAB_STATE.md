@@ -94,6 +94,8 @@ The frozen migrate-direct cell is **declared futile on historical data**. Fast O
 
 The same fast scorer, run with no hour floor, kept scoring newly sealed backward hours past EXP-009's declared 2026-09-19T01:00:00Z cut and read hours **2026-09-18T23** and **2026-09-19T00** — inside EXP-009's holdout window. This is disclosed in [EXP-009 Amendment 3](EXP/EXP-009-migrate-creator-gate-prereg.md), which also corrects that file's earlier "no separate exclusion step is required" non-overlap claim: it was wrong, because the frozen scorer's own window had no floor. The scorer was stopped at **2026-09-28T19:00:50Z** by the manager. Both hours are excluded from EXP-009 scoring and moved to the exploration pool. New ledger: [docs/HOLDOUT_LEDGER.md](docs/HOLDOUT_LEDGER.md), adopted by [DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md) (also adds the Holm–Bonferroni multiplicity correction for the 9-book kill review — see "Promotion gate" above).
 
+Restarts drop in-memory open positions (655 of 86,464 opens across all books since the start of the forward-paper log, per #138's read-only count); these are settled offline by `tools/forward_paper_settle_orphans.py` (#138 plus the ladder-branch/per-orphan-isolation fix in this PR); this does **not** fix in-process forgetting — the live runner's own warm start on restart is a separate, still-open problem; and the daily 00:00Z restart timer (#137) starts **2026-09-29**.
+
 ## Backfill split
 
 No hour is on both lists ([ARTIFACTS/lab/migrate-direct-oos.md](ARTIFACTS/lab/migrate-direct-oos.md), snapshot 2026-09-27T13:48Z).

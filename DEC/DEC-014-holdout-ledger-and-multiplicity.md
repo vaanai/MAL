@@ -48,3 +48,15 @@ The kill-review books are read once, at 2026-10-05T05:00:00Z, per the ledger's f
 ## Overturn path
 
 New DEC. Default remains: one owner per historical block, Holm–Bonferroni step-down at family α = 0.05 (10,000 seed-1 bootstrap draws) on any read of k ≥ 2 books or cells together, both fail models, single read at the kill-review instant.
+
+## Amendment 1 (2026-09-28) — kill review must join the offline-settled orphans
+
+A runner restart drops any position still open in `_Ledger.open` at that moment: `positions.jsonl` gets an "open" row and never a matching "close" row, silently, for every book (#138, `tools/forward_paper_settle_orphans.py`). `tools/forward_paper_settle_orphans.py` replays the sealed tape offline and writes the missing close as a row in `settlements.jsonl`, flagged `settled_offline: true` (or `settled_offline: false` with a `settle_error`, if that one orphan's replay itself fails — one bad orphan no longer aborts settlement for the rest, see the same PR).
+
+The 2026-10-05T05:00:00Z kill review, and any promotion read under this DEC, **must**:
+
+1. join `settlements.jsonl` with `positions.jsonl` on `(ledger, book, mint, decision_t_ms)`, so a restart-orphaned position's real close (offline-settled) is counted instead of being silently dropped from the book;
+2. deduplicate on that same key — a position closes exactly once, whichever source (live `close` row or offline settlement) provides it;
+3. report, per book, the settled-offline count and the settle-failed count (rows with `settled_offline: false`) alongside the gate numbers, so a reviewer can see how much of a book's read was reconstructed offline versus closed live, and how many orphans could not be settled at all.
+
+This does not change the four base gate thresholds or the Holm step-down in (b). It closes a gap in what "the book" means when a runner restarted mid-window: without this join, a restart-heavy window undercounts trades and is biased toward shorter holds (a position still open at a restart is disproportionately likely to have been a longer hold).
