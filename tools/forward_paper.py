@@ -384,6 +384,9 @@ class MemCensus:
             "attention": len(engine.attention),
             "early_mints": len(engine.early),
             "early_prints_buffered": sum(len(v) for v in engine.early.values()),
+            "dead_mints": len(engine.dead_mints),
+            "dead_prints_dropped": engine.dead_prints_dropped,
+            "early_timeout_mints_dropped": engine.early_timeout_mints_dropped,
         }
         row["wallets"] = self._walk_wallets(engine.wallets.wallets)
         t0 = time.perf_counter()
@@ -431,6 +434,59 @@ def write_mem_census(
 
 
 PRUNE_AFTER_MS = 45 * 60 * 1000
+# A restart's fresh `ForwardEngine` starts with an empty `self.library`, and
+# `DirectoryTail` never rewinds before its saved/EOF-default offset (see
+# `DirectoryTail._ensure`) -- so a create at or before that offset is
+# structurally unobservable for the rest of this process's life: no future
+# `poll()` can ever return it. Without this, `_add_print` buffers every print
+# for such a mint in `self.early` forever (only a full 45-minute silence
+# evicts it via `_prune_early`), which is unbounded for as long as the mint
+# keeps trading -- the single largest identified leak on Oracle (measured
+# ~115 MB/h, see ARTIFACTS/lab/forward-paper-memory-2026-09-27.md).
+#
+# `_preboot_dead_mints` identifies that doomed set at startup by re-reading
+# (read-only) the observe creates file(s) `serve()` is about to tail, and
+# excludes any create less than `PREBOOT_DEAD_MARGIN_MS` before boot -- the
+# offsets file is flushed every 60s (`serve()`'s `last_summary` cadence) and
+# at clean shutdown, so a genuine restart can only replay up to about that
+# much trailing history; anything closer to boot than the margin is left on
+# the normal `self.early` path (unchanged, existing behavior) in case its
+# create is simply still in flight rather than truly unreachable. Erring
+# toward "leave it buffered" here is the safe direction: at worst it costs
+# the memory this fix targets for a handful of edge-of-boot mints, never a
+# dropped decision.
+PREBOOT_DEAD_MARGIN_MS = 10 * 60 * 1000
+# Rule A (`PREBOOT_DEAD_MARGIN_MS`/`_preboot_dead_mints`) only catches a mint
+# whose create predates *this boot*. Measured on the staged 3.8h Oracle slice
+# (2026-09-27T14-18Z, creates windowed from the real 06:58:12Z boot), that
+# only explained a small share of `self.early`'s growth: of 19,069 distinct
+# mints touched, 11,132 have NO create record at all across two full days
+# of Oracle's retained `observe-*.jsonl` (not just before this boot) -- e.g.
+# `124Yn3UCD4YBb8JcyW6A2g9jjgG4Ykp8VBp7XQNQpump`, sampled directly off that
+# slice, trades only on `pumpswap` (post-migration) and has no create on
+# Oracle going back to 2026-09-20: an old, already-migrated token, not a
+# restart artifact. No feasible amount of extra day-file lookback fixes
+# this -- some of these mints are simply older than any retained history.
+#
+# Rule B is the general catch-all: once a still-createless mint's OLDEST
+# buffered `self.early` print is older than this many ms, give up on ever
+# getting its create and mark it dead (added to `dead_mints`, buffer
+# dropped) instead of waiting for `PRUNE_AFTER_MS`'s full 45-minute-silence
+# eviction, which never fires for a mint that keeps trading. Sizing this
+# value: on that same slice, of 7,937 mints with both a create anywhere in
+# two days and a print in the slice, the print-after-create gap was 1.2s at
+# the median and >1 minute for well under 1% (the >1h tail there is a
+# different, unrelated population -- an old token's create long preceding
+# ANOTHER, later, unrelated trade, not a genuinely-delayed create ingest).
+# The direct, decisive evidence is the neutrality proof itself: applying
+# this same ~10-minute cutoff to rule A produced byte-identical
+# decisions.jsonl/positions.jsonl on the full slice (2,885,548 prints,
+# 217,266 decisions, 72 positions) -- nothing in that real data ever needed
+# a buffered print older than 10 minutes for a later, legitimate flush.
+# Like `dead_mints`, this is opt-in (`None` by default) so replay_rows()/
+# ParityTests/promotion backtests, which want full history, are unaffected;
+# only `serve()` passes it.
+EARLY_BUFFER_DEAD_MS = 10 * 60 * 1000
 CHAIN_LAG_MIN_MS = -5_000
 CHAIN_LAG_MAX_MS = 120_000
 # Healthy recv→decision on this runner is the 26 ms floor (pre-#95 hourly
@@ -1193,6 +1249,8 @@ class ForwardEngine:
         fail_rate: float = 0.0,
         promotion_live_ms: int | None = None,
         positions_path: Path | None = None,
+        dead_mints: frozenset[str] | None = None,
+        early_timeout_ms: int | None = None,
     ) -> None:
         self.books = []
         for spec in books:
@@ -1242,6 +1300,20 @@ class ForwardEngine:
         self.attn_t_start_ms = 0
         self.attn_snapshot: set[tuple[str, str]] = set()
         self.early: dict[str, list[tuple[FlowPrint, int | None]]] = defaultdict(list)
+        # Mints a create can structurally never arrive for this run: the
+        # pre-boot set `_preboot_dead_mints` computes at startup (rule A),
+        # plus anything `_prune_early` later gives up on via `early_timeout_ms`
+        # (rule B). A mutable set, not a frozenset: rule B adds to it live.
+        # Empty for every caller except `serve()` -- `replay_rows()`/offline
+        # tools never pass `dead_mints`/`early_timeout_ms`, so their
+        # full-history semantics are unchanged. A hit here means `_add_print`
+        # drops the print instead of buffering it in `self.early`.
+        self.dead_mints: set[str] = set(dead_mints or ())
+        self.dead_prints_dropped = 0
+        # Rule B's threshold (see EARLY_BUFFER_DEAD_MS's comment). None
+        # disables it entirely (every non-serve() caller).
+        self.early_timeout_ms = early_timeout_ms
+        self.early_timeout_mints_dropped = 0
         self.inbox: list[tuple[int, int, int, Any]] = []
         self.inbox_seq = 0
         self.packets: list[tuple[str, int, str, dict[str, float]]] = []
@@ -1407,6 +1479,9 @@ class ForwardEngine:
     def _add_print(self, mint: str, pr: FlowPrint, event_ts: int | None = None) -> bool:
         book = self.library.get(mint)
         if book is None:
+            if mint in self.dead_mints:
+                self.dead_prints_dropped += 1
+                return False
             self.early[mint].append((pr, event_ts))
             return False
         if self.tape_end_ms is not None and pr.t_recv_ms > self.tape_end_ms:
@@ -2216,6 +2291,19 @@ class ForwardEngine:
         from `_register_create`, and a mint with no create has no MintBook to
         score, hold, or exit. There is no decision to preserve here, only
         memory that a missing create row would otherwise hold forever.
+
+        Two independent rules:
+
+        - Idle eviction (always on, unchanged): a mint gone fully silent for
+          `PRUNE_AFTER_MS` is evicted -- safe for any createless mint, but
+          never fires for one that keeps trading.
+        - Early-buffer timeout (`self.early_timeout_ms`, opt-in, `serve()`
+          only -- see `EARLY_BUFFER_DEAD_MS`'s comment): once a mint's OLDEST
+          buffered print is older than the timeout with still no create, give
+          up outright -- added to `dead_mints` (so its future prints are
+          dropped too, not just this buffer) instead of waiting for a full
+          idle window that an actively-trading createless mint will never
+          reach.
         """
         if not self.early:
             return
@@ -2225,6 +2313,17 @@ class ForwardEngine:
             if buffered and live_now - max(pr.t_recv_ms for pr, _ in buffered) >= PRUNE_AFTER_MS
         ]:
             del self.early[mint]
+        if self.early_timeout_ms is None or not self.early:
+            return
+        for mint in [
+            m
+            for m, buffered in self.early.items()
+            if buffered and live_now - min(pr.t_recv_ms for pr, _ in buffered) >= self.early_timeout_ms
+        ]:
+            buffered = self.early.pop(mint)
+            self.dead_mints.add(mint)
+            self.dead_prints_dropped += len(buffered)
+            self.early_timeout_mints_dropped += 1
 
     def _prune(self, now_ms: int) -> None:
         busy: set[str] = set()
@@ -2601,6 +2700,68 @@ def _discover(directory: Path, patterns: Sequence[str]) -> list[Path]:
     return sorted({path.resolve() for path in found if path.is_file()})
 
 
+def _preboot_dead_mints(
+    creates_dir: Path,
+    boot_ms: int,
+    *,
+    margin_ms: int = PREBOOT_DEAD_MARGIN_MS,
+) -> frozenset[str]:
+    """Mints whose create this boot's `DirectoryTail` can never deliver.
+
+    `DirectoryTail` only ever watches the *current* UTC day's
+    `observe-{day}.jsonl` (`_ensure()` recomputes `day` from wall time, it
+    never re-opens a prior day's file even if its key still sits in a loaded
+    `offsets.json`), and on that file it resumes from the last persisted
+    offset or, absent one, today's current EOF -- never rewinding. So any
+    create dated more than `margin_ms` before boot, in today's file or
+    (fully closed, guaranteed never re-opened by a fresh boot) yesterday's,
+    is read once here -- purely to build a drop-set, never registered as a
+    `MintBook` -- and its mint's future prints are then dropped by
+    `ForwardEngine._add_print` instead of buffered in `self.early` forever.
+
+    Read-only: opens these files for reading only, and does not touch
+    `DirectoryTail`'s own followers or `offsets.json`.
+    """
+    cutoff_ms = boot_ms - margin_ms
+    boot_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000))
+    prior_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000 - 86_400))
+    paths: list[Path] = []
+    for day in (prior_day, boot_day):
+        for suffix in (".jsonl", ".jsonl.zst"):
+            candidate = creates_dir / f"observe-{day}{suffix}"
+            if candidate.is_file():
+                paths.append(candidate)
+    if not paths:
+        return frozenset()
+    dead = load_creates(paths, t_max_ms=cutoff_ms, pad_before_ms=0)
+    return frozenset(dead.keys())
+
+
+def _safe_preboot_dead_mints(
+    creates_dir: Path,
+    boot_ms: int,
+    *,
+    margin_ms: int = PREBOOT_DEAD_MARGIN_MS,
+) -> frozenset[str]:
+    """`_preboot_dead_mints`, but never able to stop `serve()` from starting.
+
+    This runs once at boot, before the main loop, before the kill switch or
+    any risk gate is live -- a corrupt/truncated observe line, a `zstd`
+    failure on a sealed `.jsonl.zst`, or a permissions error inside
+    `load_creates` must not crash `serve()` and restart-loop the live
+    runner. An empty result here is always safe: it just means rule A finds
+    nothing this boot, and rule B (`EARLY_BUFFER_DEAD_MS`, unaffected by
+    this) still catches the same mints within its own timeout -- the
+    pre-existing `self.early`/`_prune_early` path is the fallback either
+    way, exactly today's shipped behavior before this PR.
+    """
+    try:
+        return _preboot_dead_mints(creates_dir, boot_ms, margin_ms=margin_ms)
+    except Exception as exc:  # noqa: BLE001 - startup safety net, must never propagate
+        print(f"forward_paper preboot_dead_mints_error err={exc!r}", file=sys.stderr)
+        return frozenset()
+
+
 class _Follower:
     """Tail plain JSONL. A sealed `.zst` hour is left to the recorder."""
 
@@ -2804,6 +2965,14 @@ def serve(config_path: Path) -> int:
     attention_dir = Path(raw["attention_dir"]) if raw.get("attention_dir") else None
     holdback_ms = int(raw.get("holdback_ms", 300))
     slippage = float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
+    boot_ms = int(time.time() * 1000)
+    _preboot_t0 = time.monotonic()
+    dead_mints = _safe_preboot_dead_mints(creates_dir, boot_ms)
+    preboot_scan_ms = (time.monotonic() - _preboot_t0) * 1000.0
+    print(
+        f"forward_paper preboot_dead_mints={len(dead_mints)} boot={_utc(boot_ms)} scan_ms={preboot_scan_ms:.1f}",
+        file=sys.stderr,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     offset_path = output_dir / "offsets.json"
     offsets: dict[str, int] = {}
@@ -2838,6 +3007,8 @@ def serve(config_path: Path) -> int:
         logs={"decisions": logs["decisions"], "positions": logs["positions"]},
         fail_rate=DEFAULT_FAIL_RATE,
         positions_path=output_dir / "positions.jsonl",
+        dead_mints=dead_mints,
+        early_timeout_ms=EARLY_BUFFER_DEAD_MS,
     )
     bind_attention(engine, attention_dir)
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
