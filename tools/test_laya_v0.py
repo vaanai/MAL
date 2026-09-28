@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from tools.laya_v0 import (
+    BOT_MIN_MINTS,
     FEATURE_NAMES,
     WalletState,
     _Wallet,
@@ -1190,10 +1191,34 @@ class WalletCompactionTests(unittest.TestCase):
         # for every mint ever touched, not just the most recent one.
         self.assertEqual(wallet.pos, {})
         self.assertEqual(wallet.closed, 500)
-        # Not bounded by this change and not claimed to be: `mint_pnl` and
-        # `mints` persist by design (read by `_leader_ok` / `is_bot`).
+        # `mint_pnl` still holds every distinct mint's realized pnl. Not
+        # bounded by this change and not claimed to be: a `library` mint can
+        # always receive another print (pump.fun tokens keep trading on the
+        # AMM after migrating), so there is no point at which a per-mint
+        # `mint_pnl` entry is provably done changing -- see the `_Wallet`
+        # class docstring.
         self.assertEqual(len(wallet.mint_pnl), 500)
-        self.assertEqual(len(wallet.mints), 500)
+        # `mints` is capped once the distinct count reaches BOT_MIN_MINTS --
+        # see test_mints_set_caps_once_bot_threshold_is_reached below.
+        self.assertTrue(wallet.mints_capped)
+        self.assertEqual(wallet.mints, set())
+
+    def test_mints_set_caps_once_bot_threshold_is_reached(self) -> None:
+        wallet = _Wallet()
+        for i in range(BOT_MIN_MINTS - 1):
+            mint = f"Mint{i:06d}"
+            wallet.observe(mint=mint, side="buy", sol=1, token_raw=1, t_ms=1_000 + i, slot=1, first_slot=1)
+            self.assertFalse(wallet.mints_capped)
+            self.assertEqual(len(wallet.mints), i + 1)
+        # The BOT_MIN_MINTS-th distinct mint trips the cap and empties the set.
+        wallet.observe(mint="MintLast", side="buy", sol=1, token_raw=1, t_ms=9_999, slot=1, first_slot=1)
+        self.assertTrue(wallet.mints_capped)
+        self.assertEqual(wallet.mints, set())
+        # A further distinct mint does not reopen the set or change is_bot's
+        # already-permanent "enough mints" answer.
+        wallet.observe(mint="MintMore", side="buy", sol=1, token_raw=1, t_ms=10_000, slot=1, first_slot=1)
+        self.assertEqual(wallet.mints, set())
+        self.assertTrue(wallet.mints_capped)
 
     def test_partial_sell_keeps_the_position_open_with_correct_fields(self) -> None:
         wallet = _Wallet()
