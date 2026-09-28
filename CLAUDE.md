@@ -14,6 +14,7 @@ Live trading does not start until a book clears the promotion gate and the owner
 
 Read these at the start of a session, in this order:
 
+0. [docs/HANDOFF.md](docs/HANDOFF.md) — current manager handoff, while it exists. Remove this line and the file once it goes stale.
 1. [LAB_STATE.md](LAB_STATE.md)
 2. [CONSTITUTION.md](CONSTITUTION.md)
 3. [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md)
@@ -106,6 +107,15 @@ The fast backfill walks back from 2026-09-21T23Z and stops at +2M credits. Oracl
 - No request for the reviewer to merge it for you.
 
 Push when the tests you ran are green. Do not sit on a day of uncommitted edits.
+
+## Operating notes
+
+- Builder agents stop at ~40 turns. Give them tight scopes and ask for WIP pushes rather than one long uncommitted run.
+- Use worktree isolation for parallel agents.
+- Oneshot systemd services show `ActiveState=activating` while running — don't wait on `is-active`.
+- PR merge/close and `mal-*` restarts are pre-approved in the permissions file.
+- Every runner change must carry an md5 decision-equivalence replay proof before deploy.
+- Record every mid-week runner restart in LAB_STATE.
 
 ## Evidence for the current cell
 
