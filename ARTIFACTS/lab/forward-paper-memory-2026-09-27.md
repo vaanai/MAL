@@ -1,158 +1,254 @@
-# Forward-paper memory growth: measurement status, 2026-09-27
+# Forward-paper memory growth: measurement, 2026-09-27 → 2026-09-28
 
-Status: **in progress, not complete**. This note records what was measured,
-what was only calibrated, and what is still a static-analysis hypothesis, so
-the next session does not have to redo the setup.
+Status: **measurement done, one proven fix shipped separately, one bound
+explicitly not attempted**. This note records the harness fixes, the
+measured container table, the restart-semantics answer, and what is left.
+The fix itself (GC-pause mitigation + `_Wallet` compaction + a live
+mem-census) is in **PR #123** (`claude/forward-paper-gc-and-wallet-fix`,
+based on `origin/main`), kept separate from this PR (#122, harness + this
+note) per the manager's routing call.
 
 ## What this was for
 
-The live runner on Oracle (`mal-core-0`, PID 37795, `python -m tools.forward_paper
-serve --config /var/lib/mal/paper/forward-paper/forward-paper.json`, 9 books)
-has grown to ~5.1 GB RSS + 2 GB swap after ~15.3 h (started 06:58Z, checked at
-22:19Z the same day). Static analysis pointed at cross-mint containers that
-PR #120 did not touch: `self.library`, `self.tracks`, `self.wallets.wallets`
-(and its per-mint sub-dicts), `self.by_creator`. PR #120 already bounds
-`book.flow` / `book.path.prints` (the per-mint print history) down to at most
-3 anchor prints once a mint has been idle 45 minutes, so those two containers
-are *not* the leak PR #120 left behind.
+The live runner on Oracle (`mal-core-0`, 9 books) leaked after PR #120
+(which only bounded `book.flow`/cooldowns/orphan-early-prints): ~0.45 GB/h,
+5 GB RSS + 2 GB swap after 15h, restarted 22:48Z 2026-09-27. Post-restart,
+on bc7a0c6 (includes #120), the leak continued unchanged: **139 MB at
+22:49Z → 2,118 MB at 03:13Z, ~460 MB/h**. Separately, 10 of the last 40
+healthchecks (~3.3h, inside the clean week) showed `runner_lag` with
+**zero** swap use -- a processing stall, not a memory-pressure symptom,
+which turned out to have a separate, more urgent cause (see below).
 
-Confirmed live, read-only, via `ssh mal-core-0`:
+## Two more harness bugs found beyond the known one
 
-```
-ubuntu   37795  56.2 20.7 6154492 5103012 ?  DNs  06:58 519:08 .../python -m tools.forward_paper serve --config ...
-```
+The session inherited one known bug (creates loaded unwindowed) and a
+harness that had never produced a real measurement. Fixing it took three
+rounds:
 
-## Data pulled for an offline replay (read-only, done)
+1. **Creates unwindowed** (the known bug). `load_creates()` pushed the
+   entire day's ~29,643 creates before replaying a 1-hour slice, giving
+   `pympler.asizeof` ~28,000 irrelevant `MintBook`/`_Track` objects to walk
+   at every checkpoint. Fixed with a cheap tape-time-bounds prescan
+   (`_tape_time_bounds`) plus the existing `window_creates()`, the same way
+   `run_replay_files` already does it.
 
-Oracle's tape and creates are sealed JSONL, tailed by `serve()` from
-`tape_dir`/`creates_dir` in the config. Copied to this box (never written back,
-`mal-core-0` untouched):
+2. **`LatencyMeter()` with no `now_ms` also disables `serve()`'s live
+   `book.flow` cap.** `_prune()`'s rolling `LIVE_IDLE_RETAIN_MS` (3-minute)
+   truncation of `book.flow` is gated on `self.latency.now_ms is not None`.
+   `replay_rows()` (ParityTests, promotion backtests) correctly passes no
+   `now_ms` -- those tools want full history for offline re-scoring. This
+   harness copied that, which is right for decision parity but wrong for a
+   *memory* measurement: `serve()`'s wall clock gives it the 3-minute cap
+   for free, and the harness had nothing. Measured effect: a 1-hour replay
+   with `LatencyMeter()` (no `now_ms`) showed `library`/`by_creator`/`seen`
+   ballooning to ~200 MB with the **mint count unchanged** (1,341 the whole
+   hour) -- `book.flow` growing unbounded for any mint still receiving
+   occasional prints. Fixed by giving the harness a synthetic `now_ms`
+   pinned to the tape's own simulated clock (a mutable box updated on every
+   print), which is the same value already being passed to `_prune()`
+   explicitly, so it changes nothing about *when* prune runs, only whether
+   its live-window branch is reachable.
 
-- `/home/claude/profile-data/trades/trades-2026-09-27T{14,15,16,17}.jsonl.zst`
-  (~1.0-1.2M print rows/hour, ~700 MB compressed total)
-- `/home/claude/profile-data/jsonl/observe-2026-09-27.jsonl` (today's creates,
-  29,643 distinct mints by 22:20Z -- roughly 1,300-1,400 new mints/hour)
-- `/home/claude/profile-data/attention/attention-2026-09-27T{14..17}.jsonl.zst`
-- LAYA/graduated-swing model artifacts (`entry_model.txt`, `scoreboard.json`,
-  `barrier_hit_100_30.txt`, `mig15_model.txt`)
-- A local copy of the config with paths rewritten to the above
-  (`/home/claude/profile-data/forward-paper-local.json`)
+3. **A 1-hour-only creates window simulates a restart, not the continuous
+   process.** Oracle's runner booted at 06:58:12Z; the staged tape starts at
+   14:00Z. Windowing creates to only the tape slice's own range (fix #1)
+   correctly matches "restart exactly at 14:00Z," but the real process had
+   ~7 hours of prior creates already sitting in `library` by 14:00Z. Any
+   mint created in that gap that was still trading at 14:00-18:00Z had no
+   matching create in the narrow window, so all its prints buffered in
+   `self.early` instead of a normal, prunable `MintBook` -- inflating
+   `self.early` to ~154 MB in one simulated hour, on its own, before this
+   fix. Added `--creates-since-ms` so a mid-run replay can window creates
+   from the runner's actual boot instant instead. Used `1790492292000`
+   (2026-09-27T06:58:12Z) for every measurement below.
 
-Total under 1 GB, well inside the 20 GB budget. A Python 3.12 venv at
-`/home/claude/profile-data/venv` has `requirements-laya.txt` (lightgbm,
-scikit-learn, numpy) plus `pympler` installed; the tape's `.zst` files are read
-via the `zstd` CLI exactly as `tools.paper_price_path.open_text` does in
-production, no extra Python zstd binding needed.
+All three are harness-only changes (`tools/forward_paper_mem_profile.py`).
+No production code changed in #122.
 
-## Harness (committed)
+## Measured table (4-hour slice, 14:00-18:00Z, creates windowed from boot)
 
-`tools/forward_paper_mem_profile.py` drives the *exact* `ForwardEngine` class
-`serve()` uses -- `push_create` / `push_print` / `push_attention` /
-`drain_until` / `_prune`, same holdback -- over a fixed file slice instead of
-a live tail. No sockets, no writes outside `--output-dir`. At each checkpoint
-(every N print rows) it takes:
+13,081 creates loaded (boot → tape end), 4,593,157 tape rows read,
+2,885,548 prints applied. Container sizes are real `pympler.asizeof()` for
+everything except `wallets` (a calibrated estimate at every checkpoint,
+cross-checked against a real deep `asizeof(engine.wallets)` at the first
+and last checkpoint only, since a full wallets walk is the expensive part).
 
-- RSS (`ru_maxrss`)
-- `len()` of every long-lived container the static analysis named
-- a real `pympler.asizeof` of the containers that scale with **distinct
-  mints** (`library`, `tracks`, `by_creator`, `seen`, `attention`, `early`,
-  `mint_order`) -- cheap, since mint count is ~1,300/hour, not print volume
-- an *estimated* size for `wallets` (which scales with **print volume**,
-  ~1.1M rows/hour), using constants measured once via `pympler.asizeof` on
-  real `_Wallet` objects, then multiplied by cheap `len()` counts at each
-  checkpoint. The first and last checkpoint also take a real, full
-  `asizeof(engine.wallets)` so the estimate's accuracy is checked against
-  ground truth rather than assumed.
-- a `tracemalloc` snapshot (`nframe=1`, to keep its own overhead down)
+| Container | Δ entries (0→4h) | Δ bytes (0→4h) | MB/h | @15h (from 0) | @7d (from 0) |
+| --- | --- | --- | --- | --- | --- |
+| `library` | 0 (13,081 the whole run) | +57.2 MB | 14.3 | 214 MB | 2.4 GB |
+| `tracks` | 0 (13,081) | +53.4 MB | 13.4 | 200 MB | 2.2 GB |
+| `by_creator`\* | 0 (5,116) | +57.2 MB | 14.3 | 214 MB | 2.4 GB |
+| `seen` | +12,955 | +47.6 MB | 11.9 | 179 MB | 2.0 GB |
+| **`early`** | +3,599 mints | **+459.7 MB** | **114.9** | **1,724 MB** | **19.3 GB** |
+| `attention` | +560 | +0.35 MB | 0.09 | 1 MB | 15 MB |
+| `wallets` (estimated, cheap per-checkpoint) | +140,489 | +176.9 MB | 44.2 | 663 MB | 7.4 GB |
+| `wallets` (real `asizeof`, final checkpoint only) | — | +327.2 MB | 81.8 | 1,227 MB | 13.7 GB |
+| `grids_housekeeping` | ~flat | **-0.26 MB** (shrank) | ~0 | flat | flat |
 
-Measured (real pympler, not guessed) calibration constants for `_Wallet`
-(`tools/laya_v0.py`, `__slots__`-based, one instance per unique trader):
+\* `by_creator` holds references to the *same* `MintBook` objects `library`
+does, so its bytes overlap with `library`'s almost entirely -- don't sum
+both when totaling.
 
-| Quantity | Measured bytes |
-| --- | --- |
-| Empty `_Wallet` | 856 |
-| Marginal cost of one more `(wallet, mint)` pair (adds to `mints`, `pos_cost`, `pos_open_t`, `pos_invested`, `mint_pnl` together) | ~202 |
-| Marginal cost of one more closed-position `holds` entry | ~40 |
+**De-duplicated total** (library + tracks + seen + early + wallets-real +
+attention, `by_creator` excluded as a `library` duplicate, `grids` excluded
+as flat): **≈ 236 MB/h** → ≈ 3.5 GB @15h, ≈ 39.7 GB @7d.
 
-For comparison, also measured directly (not the leak, since PR #120 already
-bounds these, but useful as a per-mint floor): a `MintBook` pruned down to 3
-anchor prints (both `flow` and `path.prints`) is ~2.3 KB including its
-`CreateSignal`; an empty `_Track` (six per-mint sets from
-`@dataclass` defaults) is ~2.0 KB. At ~1,300-1,400 new mints/hour that is only
-~6 MB/hour from `library` + `tracks` combined -- nowhere near the observed
-~450 MB/hour, which is why `self.wallets` (scales with the ~1.1M
-prints/hour, not the ~1,300 mints/hour) is the leading hypothesis, not yet
-the measured conclusion.
+**Raw process RSS** in this same replay grew 177 MB → 9,639 MB over the 4
+simulated hours: **≈ 2,365 MB/h** -- about 10x the de-duplicated container
+total above, and about 5x the real Oracle rate.
 
-## What is NOT done yet -- the actual gap
+## Verdict: does this reproduce the observed ~450-460 MB/h?
 
-**The engine replay itself looked far slower than tape real-time on this
-box, and the cause was found (measured, not guessed) but not yet fixed.**
-A `tools.forward_paper replay` smoke test on a 5-minute *span* of tape
-completed in 12s wall, which wrongly suggested ~150s/hour -- misleading,
-since `--span-min` cuts the file by a time window, not a fixed fraction of
-rows. Reading a full hour (~1.1-1.2M rows) through all 9 books took over
-25 minutes of wall time and had *not reached the first 200,000-row
-checkpoint*.
+**No, not cleanly, in either direction, and the manager's instruction was
+to stop chasing an exact match and record the discrepancy rather than keep
+spending session time on it. Recorded here:**
 
-A `cProfile -s cumulative` run on a 5,000-row sample (`sample5k.jsonl`,
-`/home/claude/profile-data/out/prof5k.txt`) found the actual cause, and it
-is **a harness bug, not an engine or LightGBM problem**: `_sizer`
-(`pympler/asizeof.py:1837`) alone accounts for 39.5s of tottime and is
-called **2,841,390 times** for just 16 `asizeof()` calls -- i.e. the deep
-`pympler.asizeof` walk, not the engine, dominates wall time. The reason:
-this harness's `load_creates(creates_paths)` loaded the **entire day's**
-`observe-2026-09-27.jsonl` (29,643 distinct mints, 00:00Z-22:20Z) and
-pushed all of them into the engine before processing a single print row
-from the 1-hour tape slice, instead of windowing creates to the slice's own
-time range the way `run_replay_files` does with `window_creates()`. That
-put ~29,643 `MintBook`/`_Track` objects into `library`/`tracks`/`by_creator`
-at checkpoint 0 (vs. the ~1,300-1,400/hour that would actually be relevant
-to a 1-hour slice), and every subsequent `asizeof()` call on those
-containers had to walk all of them -- an unrepresentative, and needlessly
-slow, baseline. This is a fixable one-line bug in the harness
-(`load_creates(...)` needs `window_creates()` applied against the tape's
-own `[first_t_ms, last_t_ms]`, as `run_replay_files` already does), not a
-finding about the runner. It was found but not yet fixed or re-run before
-this session's budget ran out.
+- The **container-level sum (~236 MB/h) is about half** the real ~460 MB/h.
+  `self.early` alone (~115 MB/h) is the single largest identified
+  container -- bigger than `wallets` by either estimate -- and its count
+  was *still climbing* at the final checkpoint (not leveling off), so 4
+  simulated hours likely understates its steady-state rate. This points at
+  `self.early` as a real, previously-unidentified (not in the original
+  static-analysis suspect list) contributor at least as large as `wallets`,
+  possibly larger over longer horizons.
+- The **harness's own raw RSS growth (~2,365 MB/h) is about 5x the real
+  rate**, and doesn't match its own container-byte sum either. Likely
+  causes, not yet isolated: repeated `pympler.asizeof()` walks at every
+  checkpoint are themselves allocation-heavy and can leave the allocator
+  more fragmented than steady per-print allocation would; the harness
+  processes 4 tape files through separate `zstd` subprocess pipes that
+  production's continuous tailing wouldn't all hold open at once; and
+  `asizeof()` measures retained object-graph size, not malloc's actual
+  chunk/arena overhead, which is a different (and typically smaller)
+  number than RSS for a workload doing this much small-object churn.
+- Net: **`self.early` is flagged as the leading candidate for a real,
+  under-addressed contributor**, `self.wallets` is a confirmed, real,
+  now-partially-fixed contributor (see PR #123), and the harness's absolute
+  RSS number should not be read as a literal prediction of Oracle's RSS --
+  only the relative container ranking and per-hour orders of magnitude are
+  trustworthy from this measurement.
 
-**No checkpoint table, no bytes/hour table, and no confirmation that the
-sum reproduces the observed 0.45 GB/h growth exist yet.** The `wallets`
-dominance above is architecture-plus-calibration reasoning (print volume vs.
-mint-creation volume, with measured per-entry costs), not yet a measured
-per-hour byte curve from a real replay.
+## Restart semantics: does a `serve` restart change subsequent decisions?
 
-## Recommended next step
+**Yes.** Confirmed by reading `serve()`/`DirectoryTail`/`WalletState`, not
+by a live A/B (no restart was performed on Oracle for this).
 
-1. Fix `tools/forward_paper_mem_profile.py`: window `load_creates(...)`'s
-   result to the tape slice's own `[first_t_ms - pad, last_t_ms]` (reuse
-   `tools.forward_paper.window_creates`), the same way `run_replay_files`
-   already does for the `replay` subcommand. This alone should make both the
-   checkpoints and the wall time representative of what serve() actually
-   holds after N hours, since it removes the ~28,000 out-of-window `MintBook`
-   objects that were inflating both.
-2. Rerun over a 30-60 minute slice first (fast feedback), confirm the
-   checkpoint table looks sane (`wallets_estimated` vs.
-   `wallets_asizeof_true` at checkpoint 0 and final should be close), then
-   extend to the full 4-hour slice already staged in `/home/claude/profile-data/`.
-3. Build the container -> entries -> bytes -> bytes/hour -> @15h -> @7d table
-   from the checkpoints, and check it against the ~0.45 GB/h observed on
-   Oracle.
-4. Only then design the safe bound (candidate: once a mint's `book.flow` has
-   been collapsed to its 3 anchor prints for 45+ minutes and it is not
-   `busy`/`mig15_waiting`, drop it from `self.wallets`'s per-mint sub-dicts
-   for wallets that only ever touched that mint and have no open position in
-   it -- `fill_funding_features`/`creator_features` read `book.flow`,
-   `by_creator`, and `graph.funder_index(library)` for cross-mint outcomes,
-   not `wallets.wallets[trader].pos_cost[mint]` directly, so this looks
-   decision-neutral, but that has to be checked against every read site, not
-   assumed) and prove it with `ParityTests` plus a before/after decision diff
-   on the staged slice.
+- `serve()` builds a brand-new `ForwardEngine()` on every process start:
+  `library`, `by_creator`, `wallets` (`WalletState()`), `tracks` all start
+  empty. Nothing is replayed from history at boot.
+- `offsets.json` only stores `DirectoryTail`'s byte offsets into the
+  *currently open* `trades-{hour}.jsonl` / `observe-{day}.jsonl` /
+  `attention-{hour}.jsonl` files. On a brand-new key it defaults to
+  `path.stat().st_size` (skip straight to EOF), not 0
+  (`DirectoryTail._ensure`). A restart therefore resumes tailing from
+  wherever it left off -- it does **not** re-read the day's earlier
+  creates or prints.
+- Consequence: `WalletState.bots`/`snipers`/`leaders`/`creators` (the sets
+  `fill_features`'s clean-buyer veto and `f_leader_*` features read) and
+  `by_creator`'s serial-creator/rug history reset to empty and only rebuild
+  from prints/creates observed *after* the restart. A wallet or creator
+  flagged bad before the restart gets a clean slate until re-observed
+  misbehaving. `laya_v0.packet_at`'s `creator_features(book, t_ms,
+  by_creator)` and `wallets.fill_features(...)` both read exactly this
+  reset-to-empty state.
+- One exception: `self.graph` (the funding graph) is reloaded from
+  `graph_dir`'s `funding-*.jsonl` files (`FundingGraph.load`, an externally
+  persisted artifact, not built purely from this process's own observed
+  prints), so `fill_funding_features`'s funder/rug-veto columns are **not**
+  affected by a restart.
+- `forward_paper.py`'s own comment at `_register_create` ("this dedupe
+  check alone still catches a duplicate create replay after a restart")
+  confirms a restart's effect on in-memory state is a known, previously
+  accepted property of this design, not a new finding.
+
+**Therefore: periodic restarts are not a free or decision-neutral
+stopgap.** Each restart temporarily degrades exactly the cross-mint safety
+features (clean-buyer veto, serial-creator/rug detection) the system
+depends on, for as long as it takes those sets to rebuild from fresh
+observations. This is a real cost to weigh, not a reason to avoid restarts
+outright -- see below.
+
+## A separate, more urgent finding: GC-pause stalls (fixed in PR #123)
+
+While chasing the ~460 MB/h number, a standalone probe (grow `WalletState`
+to realistic sizes, time `gc.collect(2)`) found that a single full garbage
+collection over the kind of heap this runner reaches after several hours
+(~2 GB, ~4.5M tracked objects) takes **~1.6 seconds of wall time**, scaling
+close to linearly with live object count:
+
+| wallets | tracked objects | RSS | `gc.collect(2)` |
+| --- | --- | --- | --- |
+| 20,000 | 318,585 | 45 MB | 30.5 ms |
+| 100,000 | 318,581 | 133 MB | 110.0 ms |
+| 700,000 | 2,118,581 | 794 MB | 707.8 ms |
+| 1,600,000 | 4,818,581 | 1,772 MB | 1,617.8 ms |
+
+A multi-hundred-ms to multi-second stop-the-world pause is a strong,
+directly-measured match for `runner_lag` with zero swap use (swap pressure
+would show as a memory symptom; a GC pause shows only as a processing
+stall). None of `_Wallet`/`WalletState`/`MintBook`/`_Track` has a
+`__del__`, a `weakref`, or a back-reference that could form a reference
+cycle -- ordinary refcounting already frees every entry the instant it is
+popped, cyclic collector or not -- so running the cyclic collector far less
+often is safe. **PR #123** raises `gc`'s thresholds (`(50_000, 40, 40)` vs.
+the default `(700, 10, 10)`, ~280x fewer stop-the-world scans), freezes the
+static startup heap (`gc.freeze()`, cannot cause a leak since refcounting
+still frees a frozen object immediately if it becomes garbage), and logs a
+`gc_stats`/`mem-census` line every 5 minutes so this is verifiable live
+after the planned restart.
+
+## What's fixed, what isn't (PR #123, not this PR)
+
+- **Fixed, proven decision-neutral** (92→93 unit tests green across two
+  commits; a `tools.forward_paper replay` on the staged 60k-row slice
+  before/after produced byte-identical `decisions.jsonl`
+  (`acf2a855dcae7ce5ed97eea023fa9659`) and `positions.jsonl`
+  (`aa405a182a58609cd1bcbb8d37618f85`) both times):
+  - GC-pause mitigation (`install_gc_mitigation()`), the likely
+    `runner_lag` fix.
+  - `_Wallet` compaction: `pos_tokens`/`pos_cost`/`pos_open_t`/
+    `pos_invested` (four dicts, always created/popped together) merged
+    into one `pos: dict[str, list[int]]` -- one hash-table slot and one
+    copy of the mint string per open (wallet, mint) pair instead of four.
+    Only external read site was `_leader_ok`'s `mint not in
+    self.pos_tokens`, updated to `self.pos`. Does **not** bound `mint_pnl`
+    or `mints`, which persist by design (read by `_leader_ok`/`is_bot`) --
+    per the table above, this alone does not fully explain the observed
+    rate.
+  - A live `mem-census.json`/`.jsonl` (every 5 min): per-container `len()`s
+    plus a wallets sub-container breakdown, since this offline harness
+    could not cleanly reproduce the live number -- so Oracle can now report
+    its own, real container breakdown after the restart.
+- **Not attempted: a bound on `self.early`.** It has no live-window cap
+  (unlike `book.flow`'s `LIVE_IDLE_RETAIN_MS`) and only fully evicts a mint
+  after 45 minutes of *total* silence (`_prune_early`). A size/time cap on
+  an *active* createless mint's buffer cannot be proven decision-neutral
+  the way the two fixes above can: `_flush_early` replays the **entire**
+  buffered history into the book the instant a late create finally
+  arrives, and `_prune`'s anchor-keeping logic wants the print at-or-before
+  the create's `t_signal_ms` and at-or-before `t_signal_ms + 30s` -- both
+  unknowable at buffering time, since the create (and therefore t0) hasn't
+  arrived yet. Trimming the buffer early risks silently discarding exactly
+  the print a late create's anchor logic would need, for mints where a
+  create genuinely is just delayed rather than absent forever. Given the
+  table above shows this as the single largest identified container,
+  **this is the most valuable next fix**, but it needs either (a) a
+  product/quant decision that createless-mint history beyond some window is
+  acceptable to lose (an explicit, acknowledged risk, not a
+  "decision-neutral" claim), or (b) a design that doesn't require choosing
+  between the two -- e.g. capping only mints old enough that no plausible
+  create could still be in flight, if such a bound exists in the creates
+  pipeline's own latency characteristics (not investigated this session).
 
 ## Files
 
-- Harness: `tools/forward_paper_mem_profile.py`
+- Harness: `tools/forward_paper_mem_profile.py` (this PR)
+- Fix PR: `claude/forward-paper-gc-and-wallet-fix` (#123, based on
+  `origin/main`) -- GC mitigation, `_Wallet` compaction, live mem-census.
 - Local config: `/home/claude/profile-data/forward-paper-local.json` (not
   committed -- points at this box's local paths, not Oracle's)
 - Staged data: `/home/claude/profile-data/` (trades, creates, attention,
   model files -- not committed, ~1 GB)
+- Checkpoint JSON behind the table above:
+  `/home/claude/profile-data/out/slice4h/mem-profile.json` (not committed,
+  local to this box)
