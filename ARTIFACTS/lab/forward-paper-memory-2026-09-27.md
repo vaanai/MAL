@@ -1,12 +1,73 @@
 # Forward-paper memory growth: measurement, 2026-09-27 → 2026-09-28
 
-Status: **measurement done, one proven fix shipped separately, one bound
-explicitly not attempted**. This note records the harness fixes, the
-measured container table, the restart-semantics answer, and what is left.
-The fix itself (GC-pause mitigation + `_Wallet` compaction + a live
-mem-census) is in **PR #123** (`claude/forward-paper-gc-and-wallet-fix`,
-based on `origin/main`), kept separate from this PR (#122, harness + this
-note) per the manager's routing call.
+Status: **measured, three fixes merged, two live restarts observed**. This
+note records the harness fixes, the measured container table, the
+restart-semantics answer, and what is left. The fixes themselves (GC-pause
+mitigation + `_Wallet` compaction + a live mem-census in **#123**; periodic
+`gc.freeze()` in **#124**; early-buffer bounding in **#125**) are in
+separate PRs, kept apart from this PR (#122, harness + this note) per the
+manager's routing call. See "Outcome" below for what each did and what the
+live runner showed after each restart.
+
+## Outcome: #123, #124, #125, and two live restarts
+
+- **#123** (`claude/forward-paper-gc-and-wallet-fix`, merged): GC-pause
+  mitigation (`install_gc_mitigation()`, raised thresholds + a startup
+  `gc.freeze()`), `_Wallet` compaction (`pos_tokens`/`pos_cost`/
+  `pos_open_t`/`pos_invested` merged into one `pos` dict), and a live
+  `mem-census.json`/`.jsonl` (per-container `len()`s every 5 min) so Oracle
+  could report its own real breakdown instead of relying on this harness's
+  approximation.
+- **#124** (`claude/forward-paper-periodic-freeze`, merged): `#123`'s
+  `gc.freeze()` only ran once at startup, so objects allocated afterward
+  stayed in the cyclic-collector's scan set and the thresholds fix's benefit
+  decayed over an uptime of hours. `maybe_gc_freeze()` now re-freezes the
+  live heap every 10 minutes from inside `serve()`'s main loop, not just at
+  boot.
+- **#125** (`claude/forward-paper-early-bound`, merged): bounded `self.early`
+  (the ~115 MB/h leading contributor identified in the table below), the one
+  container this note originally left unfixed as needing a product/quant
+  call. Two rules, both logged: rule A scans each observe file at boot and
+  marks any mint with a create dated before a safety margin before boot
+  time as dead, so restart-cold prints for genuinely createless mints are
+  dropped, not buffered, from the first print; rule B is a fallback 10-minute
+  createless timeout, catching mints rule A's pre-boot scan misses. A 3.8h
+  replay proof showed both rules are decision-neutral: `decisions.jsonl` md5
+  `6b2f7786f8372c84a87ae13b6e273756` (217,266 rows) and `positions.jsonl` md5
+  `9b1ce744ef42222fe3a8cc352d35e3a0` (72 rows) identical with the rules on vs.
+  off. Measured early-buffer growth dropped from 83.69 MB/h to 1.46 MB/h.
+  Root cause found while validating: **~58% of tape mints have no create in
+  retained history at all**, mostly old pumpswap-traded tokens whose
+  original `subscribeNewToken` create predates every retained observe file
+  -- not a create-pipeline latency problem, a retention-window problem, so
+  rule A's dead-mint declaration is the correct fix, not a race with a
+  late-arriving create.
+
+**Live, two restarts on Oracle since:**
+
+- **Restart #1**, on `d3015ba` (#123 only): RSS grew 145 MB → 4.4 GB over
+  10.5h (~405 MB/h) -- better than the pre-#123 ~460 MB/h but still a clear
+  leak, consistent with `self.early` (not yet bounded at this point) being
+  the dominant remaining contributor. `early_prints_buffered` reached ~426k
+  within the first 2h alone. GC max pause dropped to ~2.0 s (still present,
+  since `install_gc_mitigation()` raises thresholds but does not eliminate
+  a full `gc.collect(2)` cost when one does run) with 3 `runner_lag`
+  breaches in the first 2h.
+- **Restart #2**, at 2026-09-28T14:25:02Z, on `f687fad` (#124 + #125): the
+  boot-time pre-boot dead-mint scan found 50,747 dead mints in 1.1 s;
+  `runner_lag` was 1 ms at 14:26:50Z. No `runner_lag` breach observed in the
+  immediate post-boot window this note tracked.
+- **Remaining known growth**: `wallets` (per-wallet per-mint entries --
+  `mint_pnl`/`mints` persist by design, per the table below and #123's
+  `_Wallet` compaction notes) is now the largest container this note has not
+  bounded. Not yet fixed; a candidate for the next PR if live growth after
+  restart #2 stays material.
+- **Harness-vs-live discrepancy**: unresolved, kept below as originally
+  written -- the offline harness's own container-byte sum and raw RSS
+  growth still do not cleanly match the live runner's measured rate, before
+  or after #123/#124/#125. The live `mem-census` #123 added is now the
+  source of truth for Oracle's real per-container numbers, not this
+  harness.
 
 ## What this was for
 
@@ -219,32 +280,33 @@ after the planned restart.
     plus a wallets sub-container breakdown, since this offline harness
     could not cleanly reproduce the live number -- so Oracle can now report
     its own, real container breakdown after the restart.
-- **Not attempted: a bound on `self.early`.** It has no live-window cap
-  (unlike `book.flow`'s `LIVE_IDLE_RETAIN_MS`) and only fully evicts a mint
-  after 45 minutes of *total* silence (`_prune_early`). A size/time cap on
-  an *active* createless mint's buffer cannot be proven decision-neutral
-  the way the two fixes above can: `_flush_early` replays the **entire**
-  buffered history into the book the instant a late create finally
-  arrives, and `_prune`'s anchor-keeping logic wants the print at-or-before
-  the create's `t_signal_ms` and at-or-before `t_signal_ms + 30s` -- both
-  unknowable at buffering time, since the create (and therefore t0) hasn't
-  arrived yet. Trimming the buffer early risks silently discarding exactly
-  the print a late create's anchor logic would need, for mints where a
-  create genuinely is just delayed rather than absent forever. Given the
-  table above shows this as the single largest identified container,
-  **this is the most valuable next fix**, but it needs either (a) a
-  product/quant decision that createless-mint history beyond some window is
-  acceptable to lose (an explicit, acknowledged risk, not a
-  "decision-neutral" claim), or (b) a design that doesn't require choosing
-  between the two -- e.g. capping only mints old enough that no plausible
-  create could still be in flight, if such a bound exists in the creates
-  pipeline's own latency characteristics (not investigated this session).
+- **Now fixed, in #125** (was: "not attempted" -- see "Outcome" above for
+  the full account): a bound on `self.early`. The concern raised here still
+  stands as the reason this needed care rather than a blind size/time cap --
+  `_flush_early` replays the **entire** buffered history into the book the
+  instant a late create finally arrives, and `_prune`'s anchor-keeping logic
+  wants the print at-or-before the create's `t_signal_ms` and at-or-before
+  `t_signal_ms + 30s`, both unknowable at buffering time. #125's rule A
+  (pre-boot dead-mint scan) sidesteps this by only declaring a mint dead
+  when a create *already exists* in retained history dated safely before
+  boot -- never guessing about a create that might still be in flight. Rule
+  B (a 10-minute createless timeout) is the deliberately-accepted risk for
+  the mints rule A cannot see: an in-flight create delayed past 10 minutes
+  would now be misclassified dead. The 3.8h replay proof (identical
+  `decisions.jsonl`/`positions.jsonl` md5s, see "Outcome") found this risk
+  did not materialize in the tested window, and the root-cause finding
+  (~58% of tape mints have no create in *any* retained history) means rule A
+  alone, not rule B's timeout, handles the large majority of cases.
 
 ## Files
 
 - Harness: `tools/forward_paper_mem_profile.py` (this PR)
-- Fix PR: `claude/forward-paper-gc-and-wallet-fix` (#123, based on
-  `origin/main`) -- GC mitigation, `_Wallet` compaction, live mem-census.
+- Fix PRs (all merged): `claude/forward-paper-gc-and-wallet-fix` (#123) --
+  GC mitigation, `_Wallet` compaction, live mem-census;
+  `claude/forward-paper-periodic-freeze` (#124) -- periodic `gc.freeze()`
+  every 10 min; `claude/forward-paper-early-bound` (#125) -- pre-boot
+  dead-mint scan (rule A) + createless timeout (rule B) bounding
+  `self.early`.
 - Local config: `/home/claude/profile-data/forward-paper-local.json` (not
   committed -- points at this box's local paths, not Oracle's)
 - Staged data: `/home/claude/profile-data/` (trades, creates, attention,
