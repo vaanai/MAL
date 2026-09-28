@@ -2056,6 +2056,24 @@ class ForwardEngine:
                 "attempt_cost_lamports": cost,
                 "reason": "flat_15pct_landing" if landing_fail else "priority_fee_on_unfilled_attempt",
             }
+            if landing_fail:
+                # Reporting only: the curve fill the flat coin flip discarded,
+                # with the same field names as an `open` row, so an offline tool
+                # (tools/forward_paper_pressure_stamp.py) can simulate the exit
+                # this attempt would have had and price it under the pressure
+                # fail model. Nothing here feeds a decision or the RNG.
+                miss_row.update(
+                    {
+                        "counterfactual_fill": True,
+                        "applied_latency_ms": pending.latency_ms,
+                        "size_lamports": pending.size_lamports,
+                        "exit_rule": pending.rule.rule_id,
+                        "entry_venue": entry.venue,
+                        "entry_spot_sol": entry.spot_sol,
+                        "entry_tokens_raw": entry.tokens_raw,
+                        "entry_t_ms": entry.t_entry_ms,
+                    }
+                )
             self._stamp_migrate_sensitivity(run, miss_row)
             self._position(miss_row)
             return
