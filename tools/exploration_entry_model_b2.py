@@ -65,6 +65,7 @@ from tools.exploration_entry_model import (
     importance_setting,
     predict_setting,
     run_all_features as run_all_features_a,
+    run_worker_features,
     _vector,
 )
 from tools.latency_curve import _Mint, _rss_mb
@@ -103,6 +104,34 @@ def build_creator_history_b() -> dict[str, list[int]]:
     for times in hist.values():
         times.sort()
     return hist
+
+
+def diagnose_row_order(sample_hours: Sequence[str]) -> dict[str, Any]:
+    """Say so, don't assume: for each sampled hour, count how many rows in
+    the on-disk file were already out of (slot, t_recv_ms, event_index)
+    order before iter_trade_rows_sorted's defensive re-sort. A count of 0
+    across every sampled hour means the live listener's append-only file
+    order already matched the causal ordering entry/exit scoring assumes;
+    a nonzero count means the re-sort actually changed something, and this
+    is where that gets reported instead of silently assumed away.
+    """
+    from tools.latency_curve import _iter_trades
+    from tools.oracle_live_adapter import _row_sort_key
+
+    rows_sampled = 0
+    out_of_order = 0
+    for key in sample_hours:
+        info = _hour_info_b(key)
+        prev = None
+        n = 0
+        for row in _iter_trades(info["trade"]):
+            key_now = _row_sort_key(row)
+            if prev is not None and key_now < prev:
+                out_of_order += 1
+            prev = key_now
+            n += 1
+        rows_sampled += n
+    return {"hours_sampled": len(sample_hours), "hours": list(sample_hours), "rows_sampled": rows_sampled, "out_of_order": out_of_order}
 
 
 def _chunk(keys: list[str], n: int) -> list[list[str]]:
@@ -145,8 +174,6 @@ def run_worker_b(
     uses (tools.exploration_entry_model.run_worker_features), pointed at
     Oracle's hour resolver and the defensive sorted row iterator.
     """
-    from tools.exploration_entry_model import run_worker_features
-
     home_start_ms, home_end_ms = _worker_home_window_ms(home_keys)
     home_creates = {mid: (m, f) for mid, (m, f) in all_creates.items() if home_start_ms <= m.block_ms < home_end_ms}
     print(
@@ -462,6 +489,11 @@ def main() -> None:
     args = parser.parse_args()
     t0 = time.time()
 
+    print("=== pool B row-order diagnostic (say so, don't assume) ===", file=sys.stderr, flush=True)
+    sample_hours = [POOL_B_HOURS[0], POOL_B_HOURS[len(POOL_B_HOURS) // 2], POOL_B_HOURS[-1]]
+    pool_b_diag = diagnose_row_order(sample_hours)
+    print(f"pool_b_diagnostics={pool_b_diag}", file=sys.stderr, flush=True)
+
     print("=== pool A ===", file=sys.stderr, flush=True)
     rows_a = run_all_features_a(max_workers=args.max_workers, buffer_hours=args.buffer_hours)
     print("=== pool B ===", file=sys.stderr, flush=True)
@@ -494,7 +526,7 @@ def main() -> None:
 
     wall_s = time.time() - t0
     args.out_md.parent.mkdir(parents=True, exist_ok=True)
-    write_report(args.out_md, args.out_json, combined, n_rows, wall_s, {})
+    write_report(args.out_md, args.out_json, combined, n_rows, wall_s, pool_b_diag)
     print(f"wrote {args.out_md} and {args.out_json} in {wall_s:.0f}s", file=sys.stderr, flush=True)
 
 
