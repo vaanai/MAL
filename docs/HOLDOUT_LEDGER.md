@@ -20,6 +20,7 @@ UTC hours, inclusive start, exclusive end.
 | Fast EXP-009 block | `[oldest sealed at cap, 2026-09-19T01)` | fast | **EXP-009** | Owned, except the two hours below. |
 | Fast EXP-009 exclusion | 2026-09-18T23, 2026-09-19T00 | fast | exploration pool | Read by the migrate-direct fast scorer (`mal-fast-oos-score`), disclosed in [EXP-009 Amendment 3](../EXP/EXP-009-migrate-creator-gate-prereg.md). Excluded from EXP-009 scoring. |
 | Forward paper, kill review | 2026-09-28T00:00Z → 2026-10-05T05:00Z (9 forward books) | Oracle (forward-paper runner) | kill review | Single read, at the kill-review instant. No interim peeking used for a promote decision. Must join `settlements.jsonl` with `positions.jsonl` for restart-orphaned positions per [DEC-014 Amendment 1](../DEC/DEC-014-holdout-ledger-and-multiplicity.md#amendment-1-2026-09-28--kill-review-must-join-the-offline-settled-orphans). |
+| Oracle live tape, pre-clean-clock | 2026-09-25T07 → 2026-09-28T00 (Oracle `sealed/trades`, real `t_recv_ms`) | Oracle | **reserved: EXP-010** (trailing-exit confirmation, pre-registration pending) | Reserved 2026-09-28T20:05Z, before any trailing-exit read. Already seen: the forward-paper runner traded these hours with the existing 9 books (tp/sl, hold, ladder, swing exits), and their flat-model aggregates appeared in the daily scoreboards (2026-09-25T19:00Z–2026-09-27T06:58:12Z is the stale-fill void). No trailing exit has been evaluated on this block. If EXP-010 is not pre-registered by 2026-09-30T00:00Z, the reservation lapses to unassigned. |
 | Future fast backfill | Beyond the current +2M credit cap | fast | unassigned | To be allocated in ≥6-day blocks, one confirmation test each, as the backfill extends. |
 
 ## How to add a block
@@ -32,4 +33,5 @@ UTC hours, inclusive start, exclusive end.
 
 ## Changelog
 
+- 2026-09-28T20:05Z: reserved the Oracle live-tape block 2026-09-25T07 → 2026-09-28T00 for EXP-010 (trailing-exit confirmation) before any trailing-exit read; prior exposure disclosed in its row.
 - 2026-09-28: initial ledger. Oracle in-sample and fast pre-cut blocks assigned to the exploration pool; fast EXP-009 block assigned to EXP-009 with the 2026-09-18T23/2026-09-19T00 exclusion disclosed; forward-paper kill-review block reserved for the single 2026-10-05T05:00Z read; future fast backfill marked unassigned. See [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md).
