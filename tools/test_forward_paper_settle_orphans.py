@@ -520,3 +520,35 @@ class MixedFailureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SoftSkipTests(unittest.TestCase):
+    def test_soft_skip_writes_a_failed_row(self) -> None:
+        """A soft skip (here: no tape for the orphan's mint) must still leave a
+        `settled_offline: false` row, so kill_review counts it as settle_failed
+        instead of the orphan vanishing from both files."""
+        orphan = {
+            "ledger": "shadow",
+            "event": "open",
+            "book": "b",
+            "mint": "NoTapeMint",
+            "decision_t_ms": 1,
+            "t_entry_ms": 2,
+            "size_lamports": 50_000_000,
+            "exit_rule": "hold_30s",
+        }
+        rows, skips = settle_orphans(
+            [orphan],
+            tape_paths=[],
+            create_paths=[],
+            slippage_cap=DEFAULT_SLIPPAGE_CAP,
+            tape_end_ms=10,
+        )
+        self.assertEqual(skips, {"no_tape_for_mint": 1})
+        self.assertEqual(len(rows), 1)
+        self.assertIs(rows[0]["settled_offline"], False)
+        self.assertEqual(rows[0]["settle_error"], "skip: no_tape_for_mint")
+        self.assertEqual(
+            (rows[0]["ledger"], rows[0]["book"], rows[0]["mint"], rows[0]["decision_t_ms"]),
+            ("shadow", "b", "NoTapeMint", 1),
+        )
