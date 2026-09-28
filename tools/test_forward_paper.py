@@ -601,6 +601,66 @@ class MemoryBoundTests(unittest.TestCase):
         self.assertEqual(engine.early, {})
         self.assertEqual(engine.dead_prints_dropped, n)
 
+    def test_early_timeout_marks_a_stuck_createless_mint_dead(self) -> None:
+        """Rule B (`EARLY_BUFFER_DEAD_MS`): a mint that has been sitting in
+        `self.early` (no create, however briefly or long it has traded) for
+        longer than `early_timeout_ms`, measured from its OLDEST buffered
+        print, is declared dead outright -- added to `dead_mints` so future
+        prints are dropped too, not just this buffer -- rather than waiting
+        for `PRUNE_AFTER_MS`'s full-idle eviction, which an actively-trading
+        createless mint (rule A misses, e.g. an old already-migrated token
+        with no create in any retained observe file) would never reach.
+        """
+        timeout_ms = 600_000
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-early-timeout"),
+            early_timeout_ms=timeout_ms,
+        )
+        engine.push_print(*_parsed("StuckMint", T0 + 100))
+        engine.flush()
+        self.assertIn("StuckMint", engine.early)
+        self.assertNotIn("StuckMint", engine.dead_mints)
+
+        # Not yet past the threshold: still buffered, not yet declared dead.
+        engine._prune(T0 + 100 + timeout_ms - 1)
+        self.assertIn("StuckMint", engine.early)
+        self.assertNotIn("StuckMint", engine.dead_mints)
+        self.assertEqual(engine.early_timeout_mints_dropped, 0)
+
+        # Past the threshold: buffer dropped, mint marked dead.
+        engine._prune(T0 + 100 + timeout_ms)
+        self.assertNotIn("StuckMint", engine.early)
+        self.assertIn("StuckMint", engine.dead_mints)
+        self.assertEqual(engine.early_timeout_mints_dropped, 1)
+        self.assertEqual(engine.dead_prints_dropped, 1)
+
+        # A later print for the now-dead mint is dropped, not re-buffered.
+        engine.push_print(*_parsed("StuckMint", T0 + 100 + timeout_ms + 5_000))
+        engine.flush()
+        self.assertNotIn("StuckMint", engine.early)
+        self.assertEqual(engine.dead_prints_dropped, 2)
+        self.assertEqual(engine.decisions, [])
+        self.assertEqual(engine.positions, [])
+
+    def test_early_timeout_is_off_by_default(self) -> None:
+        """`early_timeout_ms` defaults to `None` (rule B disabled) so every
+        caller except `serve()` -- `replay_rows()`, ParityTests, promotion
+        backtests -- keeps today's unchanged full-history behavior. A mint
+        stuck well past what a real timeout would use, but short of
+        `PRUNE_AFTER_MS`'s full idle window, must stay buffered.
+        """
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine([spec], kill_file=Path("/tmp/forward-paper-early-timeout-off"))
+        self.assertIsNone(engine.early_timeout_ms)
+        engine.push_print(*_parsed("StuckMint", T0 + 100))
+        engine.flush()
+        engine._prune(T0 + 100 + 1_000_000)  # well under PRUNE_AFTER_MS (45 min)
+        self.assertIn("StuckMint", engine.early)
+        self.assertEqual(engine.dead_mints, set())
+        self.assertEqual(engine.early_timeout_mints_dropped, 0)
+
     def test_wallet_pos_dict_does_not_grow_with_closed_round_trips(self) -> None:
         """`_Wallet.pos` (tools/laya_v0.py) holds one entry per mint with a
         currently open position, popped on full close. A single busy trader
