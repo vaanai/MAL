@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from tools.forward_paper import (
     GC_THRESHOLD,
     HARD_MAX_POSITION_LAMPORTS,
     LATENCY_SAMPLE_CAP,
+    PREBOOT_DEAD_MARGIN_MS,
     PRUNE_AFTER_MS,
     READ_CHUNK_BYTES,
     SCHEMA_DECISION,
@@ -40,6 +42,7 @@ from tools.forward_paper import (
     install_gc_mitigation,
     migrate_fee_sensitivity_summary,
     offline_packets,
+    _preboot_dead_mints,
     promotion_pnls_by_book,
     reload_risk_config,
     reconcile_baseline,
@@ -509,6 +512,94 @@ class MemoryBoundTests(unittest.TestCase):
         self.assertNotIn("GhostMint", engine.early)
         self.assertEqual(engine.decisions, [])
         self.assertEqual(engine.positions, [])
+
+    def test_preboot_dead_mints_excludes_creates_inside_the_safety_margin(self) -> None:
+        """`_preboot_dead_mints` (the fix for the ~115 MB/h `self.early` leak:
+        see PREBOOT_DEAD_MARGIN_MS's comment) must find a create dated well
+        before boot in either today's or yesterday's observe file, but must
+        leave alone a create inside the margin -- that one could still be a
+        normal, in-flight create a real restart's offset replay would
+        legitimately deliver moments later, so treating it as dead would be
+        the unsafe (decision-changing) direction.
+        """
+        boot_ms = 1_700_100_000_000
+        boot_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000))
+        prior_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000 - 86_400))
+
+        def _row(mint: str, t_ms: int, creator: str) -> str:
+            return json.dumps({"stream": "subscribeNewToken", "mint": mint, "t_ws": t_ms, "traderPublicKey": creator})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            creates_dir = Path(tmp)
+            old_ms = boot_ms - PREBOOT_DEAD_MARGIN_MS - 60_000
+            recent_ms = boot_ms - 5_000
+            yesterday_ms = boot_ms - 86_400_000 - 1_000
+            (creates_dir / f"observe-{boot_day}.jsonl").write_text(
+                _row("OldMint", old_ms, "C1") + "\n" + _row("RecentMint", recent_ms, "C2") + "\n",
+                encoding="utf-8",
+            )
+            (creates_dir / f"observe-{prior_day}.jsonl").write_text(
+                _row("YesterdayMint", yesterday_ms, "C3") + "\n",
+                encoding="utf-8",
+            )
+            dead = _preboot_dead_mints(creates_dir, boot_ms)
+        self.assertIn("OldMint", dead)
+        self.assertIn("YesterdayMint", dead)
+        self.assertNotIn("RecentMint", dead)
+
+    def test_preboot_dead_mints_empty_when_creates_dir_has_no_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dead = _preboot_dead_mints(Path(tmp), 1_700_100_000_000)
+        self.assertEqual(dead, frozenset())
+
+    def test_dead_mint_prints_are_dropped_not_buffered(self) -> None:
+        """A mint `serve()` knows can never get a create this run (see
+        `_preboot_dead_mints`) must have its prints dropped outright, not
+        buffered in `self.early` -- that buffer growing without bound for a
+        createless mint that keeps trading is the leak this fix targets. A
+        mint NOT flagged dead keeps the existing, unchanged behavior.
+        """
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-dead-mint-drop"),
+            dead_mints=frozenset({"DeadMint"}),
+        )
+        engine.push_print(*_parsed("DeadMint", T0 + 100))
+        engine.flush()
+        self.assertNotIn("DeadMint", engine.early)
+        self.assertEqual(engine.dead_prints_dropped, 1)
+        self.assertEqual(engine.decisions, [])
+        self.assertEqual(engine.positions, [])
+        # A mint not on the dead list is unaffected: existing orphan-print
+        # buffering behavior stays exactly as it was.
+        engine.push_print(*_parsed("GhostMint", T0 + 100))
+        engine.flush()
+        self.assertIn("GhostMint", engine.early)
+
+    def test_dead_mint_buffer_never_grows_even_while_continuously_trading(self) -> None:
+        """Before this fix, a createless mint that never idles a full 45
+        minutes (`PRUNE_AFTER_MS`) grows `self.early` without bound -- the
+        ~115 MB/h leak the lab note measured. A mint correctly identified as
+        dead at boot must cost O(1) memory no matter how long or how often
+        it keeps trading.
+        """
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-dead-mint-bounded"),
+            dead_mints=frozenset({"DeadMint"}),
+        )
+        n = 2_000
+        for i in range(n):
+            # A print every 5s for hours straight: never a 45-minute idle
+            # gap, so the pre-fix code path would never evict this either.
+            mint, pr, ts = _parsed("DeadMint", T0 + i * 5_000)
+            engine.push_print(mint, pr, ts)
+            engine.drain_until(T0 + i * 5_000)
+        engine.flush()
+        self.assertEqual(engine.early, {})
+        self.assertEqual(engine.dead_prints_dropped, n)
 
     def test_wallet_pos_dict_does_not_grow_with_closed_round_trips(self) -> None:
         """`_Wallet.pos` (tools/laya_v0.py) holds one entry per mint with a

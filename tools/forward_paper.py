@@ -290,6 +290,8 @@ class MemCensus:
             "attention": len(engine.attention),
             "early_mints": len(engine.early),
             "early_prints_buffered": sum(len(v) for v in engine.early.values()),
+            "dead_mints": len(engine.dead_mints),
+            "dead_prints_dropped": engine.dead_prints_dropped,
         }
         row["wallets"] = self._walk_wallets(engine.wallets.wallets)
         t0 = time.perf_counter()
@@ -337,6 +339,28 @@ def write_mem_census(
 
 
 PRUNE_AFTER_MS = 45 * 60 * 1000
+# A restart's fresh `ForwardEngine` starts with an empty `self.library`, and
+# `DirectoryTail` never rewinds before its saved/EOF-default offset (see
+# `DirectoryTail._ensure`) -- so a create at or before that offset is
+# structurally unobservable for the rest of this process's life: no future
+# `poll()` can ever return it. Without this, `_add_print` buffers every print
+# for such a mint in `self.early` forever (only a full 45-minute silence
+# evicts it via `_prune_early`), which is unbounded for as long as the mint
+# keeps trading -- the single largest identified leak on Oracle (measured
+# ~115 MB/h, see ARTIFACTS/lab/forward-paper-memory-2026-09-27.md).
+#
+# `_preboot_dead_mints` identifies that doomed set at startup by re-reading
+# (read-only) the observe creates file(s) `serve()` is about to tail, and
+# excludes any create less than `PREBOOT_DEAD_MARGIN_MS` before boot -- the
+# offsets file is flushed every 60s (`serve()`'s `last_summary` cadence) and
+# at clean shutdown, so a genuine restart can only replay up to about that
+# much trailing history; anything closer to boot than the margin is left on
+# the normal `self.early` path (unchanged, existing behavior) in case its
+# create is simply still in flight rather than truly unreachable. Erring
+# toward "leave it buffered" here is the safe direction: at worst it costs
+# the memory this fix targets for a handful of edge-of-boot mints, never a
+# dropped decision.
+PREBOOT_DEAD_MARGIN_MS = 10 * 60 * 1000
 CHAIN_LAG_MIN_MS = -5_000
 CHAIN_LAG_MAX_MS = 120_000
 # Healthy recv→decision on this runner is the 26 ms floor (pre-#95 hourly
@@ -1099,6 +1123,7 @@ class ForwardEngine:
         fail_rate: float = 0.0,
         promotion_live_ms: int | None = None,
         positions_path: Path | None = None,
+        dead_mints: frozenset[str] | None = None,
     ) -> None:
         self.books = []
         for spec in books:
@@ -1148,6 +1173,13 @@ class ForwardEngine:
         self.attn_t_start_ms = 0
         self.attn_snapshot: set[tuple[str, str]] = set()
         self.early: dict[str, list[tuple[FlowPrint, int | None]]] = defaultdict(list)
+        # Mints a create can structurally never arrive for this run (see
+        # `_preboot_dead_mints`). Empty for every caller except `serve()` --
+        # `replay_rows()`/offline tools never pass this, so their full-history
+        # semantics are unchanged. A hit here means `_add_print` drops the
+        # print instead of buffering it in `self.early`.
+        self.dead_mints: frozenset[str] = dead_mints or frozenset()
+        self.dead_prints_dropped = 0
         self.inbox: list[tuple[int, int, int, Any]] = []
         self.inbox_seq = 0
         self.packets: list[tuple[str, int, str, dict[str, float]]] = []
@@ -1313,6 +1345,9 @@ class ForwardEngine:
     def _add_print(self, mint: str, pr: FlowPrint, event_ts: int | None = None) -> bool:
         book = self.library.get(mint)
         if book is None:
+            if mint in self.dead_mints:
+                self.dead_prints_dropped += 1
+                return False
             self.early[mint].append((pr, event_ts))
             return False
         if self.tape_end_ms is not None and pr.t_recv_ms > self.tape_end_ms:
@@ -2507,6 +2542,43 @@ def _discover(directory: Path, patterns: Sequence[str]) -> list[Path]:
     return sorted({path.resolve() for path in found if path.is_file()})
 
 
+def _preboot_dead_mints(
+    creates_dir: Path,
+    boot_ms: int,
+    *,
+    margin_ms: int = PREBOOT_DEAD_MARGIN_MS,
+) -> frozenset[str]:
+    """Mints whose create this boot's `DirectoryTail` can never deliver.
+
+    `DirectoryTail` only ever watches the *current* UTC day's
+    `observe-{day}.jsonl` (`_ensure()` recomputes `day` from wall time, it
+    never re-opens a prior day's file even if its key still sits in a loaded
+    `offsets.json`), and on that file it resumes from the last persisted
+    offset or, absent one, today's current EOF -- never rewinding. So any
+    create dated more than `margin_ms` before boot, in today's file or
+    (fully closed, guaranteed never re-opened by a fresh boot) yesterday's,
+    is read once here -- purely to build a drop-set, never registered as a
+    `MintBook` -- and its mint's future prints are then dropped by
+    `ForwardEngine._add_print` instead of buffered in `self.early` forever.
+
+    Read-only: opens these files for reading only, and does not touch
+    `DirectoryTail`'s own followers or `offsets.json`.
+    """
+    cutoff_ms = boot_ms - margin_ms
+    boot_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000))
+    prior_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000 - 86_400))
+    paths: list[Path] = []
+    for day in (prior_day, boot_day):
+        for suffix in (".jsonl", ".jsonl.zst"):
+            candidate = creates_dir / f"observe-{day}{suffix}"
+            if candidate.is_file():
+                paths.append(candidate)
+    if not paths:
+        return frozenset()
+    dead = load_creates(paths, t_max_ms=cutoff_ms, pad_before_ms=0)
+    return frozenset(dead.keys())
+
+
 class _Follower:
     """Tail plain JSONL. A sealed `.zst` hour is left to the recorder."""
 
@@ -2710,6 +2782,9 @@ def serve(config_path: Path) -> int:
     attention_dir = Path(raw["attention_dir"]) if raw.get("attention_dir") else None
     holdback_ms = int(raw.get("holdback_ms", 300))
     slippage = float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
+    boot_ms = int(time.time() * 1000)
+    dead_mints = _preboot_dead_mints(creates_dir, boot_ms)
+    print(f"forward_paper preboot_dead_mints={len(dead_mints)} boot={_utc(boot_ms)}", file=sys.stderr)
     output_dir.mkdir(parents=True, exist_ok=True)
     offset_path = output_dir / "offsets.json"
     offsets: dict[str, int] = {}
@@ -2744,6 +2819,7 @@ def serve(config_path: Path) -> int:
         logs={"decisions": logs["decisions"], "positions": logs["positions"]},
         fail_rate=DEFAULT_FAIL_RATE,
         positions_path=output_dir / "positions.jsonl",
+        dead_mints=dead_mints,
     )
     bind_attention(engine, attention_dir)
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
