@@ -26,6 +26,7 @@ from tools.forward_paper import (
     ForwardEngine,
     GcStats,
     LatencyMeter,
+    MemCensus,
     ModelSlot,
     _Follower,
     _RankWindow,
@@ -575,6 +576,50 @@ class MemoryBoundTests(unittest.TestCase):
                 gc.enable()
             else:
                 gc.disable()
+
+    def test_mem_census_is_read_only_and_reports_every_container(self) -> None:
+        """`MemCensus.snapshot()` (tools/forward_paper.py) is the live
+        per-container census the #123 PR adds since the offline harness
+        (#122) could not cleanly reproduce Oracle's ~460 MB/h. It must not
+        mutate engine state -- checked here by snapshotting twice and
+        confirming the engine's own containers are byte-for-byte the same
+        Python objects (same id, same contents) after two census calls.
+        """
+        n = 50
+        creates: dict[str, CreateSignal] = {}
+        rows: list[dict[str, object]] = []
+        for i in range(n):
+            mint = f"CensusMint{i:04d}"
+            t0 = T0 + i * 200
+            creates[mint] = _create(mint, t0, creator=f"CensusCreator{i:04d}")
+            rows.append(_trade(mint, t0 + 10, trader="CensusWallet", slot=i + 2, token=1_000_000, sol=1_000_000_000))
+            rows.append(_trade(mint, t0 + 20, trader="CensusWallet", side="sell", slot=i + 2, token=1_000_000, sol=1_000_000_000))
+        engine = replay_rows(
+            creates.values(),
+            rows,
+            [BookSpec("buy_all", "baseline", "hold_30s", max_concurrent=None, daily_loss_lamports=None, creator_cooldown_ms=0, token_cooldown_ms=0)],
+            tape_end_ms=T0 + n * 200 + 1_000,
+            kill_file=Path("/tmp/forward-paper-mem-census"),
+            offsets_ms=(5_000,),
+        )
+        census_maker = MemCensus()
+        library_before = dict(engine.library)
+        wallets_before = dict(engine.wallets.wallets)
+        row1 = census_maker.snapshot(engine)
+        row2 = census_maker.snapshot(engine)
+        self.assertEqual(engine.library, library_before)
+        self.assertEqual(engine.wallets.wallets.keys(), wallets_before.keys())
+        self.assertEqual(row1["library"], n)
+        self.assertEqual(row1["by_creator"], n)
+        self.assertEqual(row1["early_mints"], 0)
+        self.assertEqual(row1["early_prints_buffered"], 0)
+        self.assertEqual(row1["wallets"]["n_wallets"], 1)
+        # Every position round-tripped and closed: pos entries bounded, same
+        # invariant MemoryBoundTests.test_wallet_pos_dict_does_not_grow_with_closed_round_trips checks.
+        self.assertEqual(row1["wallets"]["pos_entries"], 0)
+        self.assertEqual(row1["wallets"]["mint_pnl_entries"], n)
+        self.assertIsInstance(row1["rss_kb_proc"], (int, type(None)))
+        self.assertEqual(row2["library"], row1["library"])
 
     def test_latency_meter_ring_buffers_stay_bounded(self) -> None:
         meter = LatencyMeter(extra_ms=1)

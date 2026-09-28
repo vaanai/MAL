@@ -206,6 +206,104 @@ def install_gc_mitigation() -> GcStats:
     return stats
 
 
+def _rss_kb_proc() -> int | None:
+    """Current RSS from /proc/self/status (VmRSS), not `resource.ru_maxrss`
+    (which only ever grows). Cheap: one small file read."""
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1])
+    except OSError:
+        return None
+    return None
+
+
+MEM_CENSUS_WALK_BUDGET_MS = 50.0
+
+
+class MemCensus:
+    """Read-only periodic snapshot of every engine container's size, so
+    Oracle's live process can report the container-by-container breakdown
+    the offline harness (tools/forward_paper_mem_profile.py, #122) could not
+    cleanly reproduce at ~460 MB/h. Never mutates `engine` state -- every
+    field read here is a `len()` or a value already stored on the object;
+    see the md5-identical replay proof in this PR's description (this class
+    is only ever called from `serve()`, never from `replay_rows()`/the
+    `replay` CLI, so it cannot affect a decision either way).
+
+    Walking every wallet's `pos`/`mints`/`holds`/`mint_pnl` sizes is the one
+    part that can get expensive as `wallets` grows (it is exactly the
+    container size we are trying to observe). Adaptive stride: start at a
+    full walk, time it, and if it is over `MEM_CENSUS_WALK_BUDGET_MS` double
+    the stride for the next call (extrapolating the summed counts by that
+    stride) instead of skipping the walk outright -- a coarser count is
+    still useful, an absent one is not.
+    """
+
+    def __init__(self) -> None:
+        self._stride = 1
+        self._skip_gc_objects = False
+
+    def _walk_wallets(self, wallets: dict[str, Any]) -> dict[str, Any]:
+        n = len(wallets)
+        stride = max(1, self._stride)
+        t0 = time.perf_counter()
+        sampled = 0
+        pos = mints = holds = mint_pnl = 0
+        it = iter(wallets.values())
+        idx = 0
+        for w in it:
+            if idx % stride == 0:
+                sampled += 1
+                pos += len(w.pos)
+                mints += len(w.mints)
+                holds += len(w.holds)
+                mint_pnl += len(w.mint_pnl)
+            idx += 1
+        walk_ms = (time.perf_counter() - t0) * 1000.0
+        scale = (n / sampled) if sampled else 1.0
+        if walk_ms > MEM_CENSUS_WALK_BUDGET_MS:
+            self._stride = stride * 2
+        elif walk_ms < MEM_CENSUS_WALK_BUDGET_MS / 4 and stride > 1:
+            self._stride = max(1, stride // 2)
+        return {
+            "n_wallets": n,
+            "pos_entries": round(pos * scale),
+            "mints_entries": round(mints * scale),
+            "holds_entries": round(holds * scale),
+            "mint_pnl_entries": round(mint_pnl * scale),
+            "walk_stride": stride,
+            "walk_sampled": sampled,
+            "walk_ms": round(walk_ms, 2),
+        }
+
+    def snapshot(self, engine: "ForwardEngine") -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "rss_kb_proc": _rss_kb_proc(),
+            "library": len(engine.library),
+            "tracks": len(engine.tracks),
+            "by_creator": len(engine.by_creator),
+            "seen": len(engine.seen),
+            "attention": len(engine.attention),
+            "early_mints": len(engine.early),
+            "early_prints_buffered": sum(len(v) for v in engine.early.values()),
+        }
+        row["wallets"] = self._walk_wallets(engine.wallets.wallets)
+        t0 = time.perf_counter()
+        counts = gc.get_count()
+        row["gc_count"] = {"gen0": counts[0], "gen1": counts[1], "gen2": counts[2]}
+        if not self._skip_gc_objects:
+            n_objs = len(gc.get_objects())
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            if dt_ms > MEM_CENSUS_WALK_BUDGET_MS:
+                self._skip_gc_objects = True
+            row["gc_tracked_objects"] = n_objs
+        return row
+
+
 PRUNE_AFTER_MS = 45 * 60 * 1000
 CHAIN_LAG_MIN_MS = -5_000
 CHAIN_LAG_MAX_MS = 120_000
@@ -2595,6 +2693,7 @@ def serve(config_path: Path) -> int:
         "positions": JsonlLog(output_dir / "positions.jsonl"),
         "pnl": JsonlLog(output_dir / "pnl-daily.jsonl"),
         "latency": JsonlLog(output_dir / "latency.jsonl"),
+        "mem_census": JsonlLog(output_dir / "mem-census.jsonl"),
     }
     model = ModelSlot(model_path, meta_path)
     model.maybe_reload(force=True)
@@ -2621,6 +2720,7 @@ def serve(config_path: Path) -> int:
     # Startup is done (models loaded, engine built): raise the cyclic-GC
     # thresholds and freeze the static baseline. See GC_THRESHOLD's comment.
     gc_stats = install_gc_mitigation()
+    mem_census = MemCensus()
     tail = DirectoryTail(tape_dir, creates_dir, offsets, attention_dir)
     stop = {"flag": False}
 
@@ -2652,7 +2752,7 @@ def serve(config_path: Path) -> int:
     engine.promotion_live_ms = live_at_ms
     last_status = 0.0
     last_prune = 0.0
-    last_gc_log = 0.0
+    last_mem_census = 0.0
     while not stop["flag"]:
         batch = tail.poll()
         now_ms = int(time.time() * 1000)
@@ -2731,11 +2831,14 @@ def serve(config_path: Path) -> int:
         if now - last_status > 15:
             write_runner_status(status_path, engine, live_at_ms=live_at_ms)
             last_status = now
-        if now - last_gc_log > 60:
-            report = gc_stats.report()
-            (output_dir / "gc-stats.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-            print(f"forward_paper gc_stats={json.dumps(report)}", file=sys.stderr)
-            last_gc_log = now
+        if now - last_mem_census > 300:
+            census = mem_census.snapshot(engine)
+            census["gc"] = gc_stats.report()
+            census["t_ms"] = now_ms
+            (output_dir / "mem-census.json").write_text(json.dumps(census, indent=2) + "\n", encoding="utf-8")
+            logs["mem_census"].write(census)
+            print(f"forward_paper mem_census={json.dumps(census)}", file=sys.stderr)
+            last_mem_census = now
         if not batch:
             time.sleep(0.025)
     if engine._clock_ms:
