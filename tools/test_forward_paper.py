@@ -11,6 +11,7 @@ from pathlib import Path
 from tools.forward_paper import (
     CHAIN_SAMPLE_CAP,
     DEFAULT_FAIL_RATE,
+    GC_FREEZE_INTERVAL_S,
     GC_THRESHOLD,
     HARD_MAX_POSITION_LAMPORTS,
     LATENCY_SAMPLE_CAP,
@@ -38,6 +39,7 @@ from tools.forward_paper import (
     decision_counts_for_promotion,
     flow_from_tape_row,
     install_gc_mitigation,
+    maybe_gc_freeze,
     migrate_fee_sensitivity_summary,
     offline_packets,
     promotion_pnls_by_book,
@@ -577,6 +579,133 @@ class MemoryBoundTests(unittest.TestCase):
                 gc.enable()
             else:
                 gc.disable()
+
+    def test_maybe_gc_freeze_seeds_then_waits_then_fires(self) -> None:
+        """`maybe_gc_freeze()` (tools/forward_paper.py) is `serve()`'s
+        periodic follow-up to `install_gc_mitigation()`'s one startup
+        `gc.freeze()` -- it must seed its clock on the first call instead of
+        firing immediately, then fire at most once per `interval_s`,
+        recording the freeze in `GcStats` (see `GC_THRESHOLD`'s comment for
+        why a periodic freeze is needed at all).
+        """
+        import gc
+
+        old_freeze_count = gc.get_freeze_count()
+        try:
+            stats = GcStats()
+            self.assertIsNone(stats.last_freeze_at)
+            fired = maybe_gc_freeze(stats, 0.0, interval_s=10.0)
+            self.assertFalse(fired, "the first call only seeds the clock")
+            self.assertEqual(stats.freeze_count, 0)
+            self.assertEqual(gc.get_freeze_count(), old_freeze_count)
+
+            fired = maybe_gc_freeze(stats, 5.0, interval_s=10.0)
+            self.assertFalse(fired, "interval has not elapsed yet")
+            self.assertEqual(stats.freeze_count, 0)
+
+            fired = maybe_gc_freeze(stats, 10.0, interval_s=10.0)
+            self.assertTrue(fired)
+            self.assertEqual(stats.freeze_count, 1)
+            self.assertGreater(gc.get_freeze_count(), old_freeze_count)
+            self.assertGreaterEqual(stats.last_freeze_ms, 0.0)
+            self.assertGreaterEqual(stats.total_freeze_ms, stats.last_freeze_ms)
+            report = stats.report()
+            self.assertEqual(report["freeze_count"], 1)
+            self.assertEqual(report["gc_freeze_count"], gc.get_freeze_count())
+
+            fired = maybe_gc_freeze(stats, 11.0, interval_s=10.0)
+            self.assertFalse(fired, "clock was reset by the freeze that just ran")
+            self.assertEqual(stats.freeze_count, 1)
+        finally:
+            gc.unfreeze()
+
+    def test_maybe_gc_freeze_failure_does_not_propagate(self) -> None:
+        """Same invariant `write_mem_census` is held to: a `gc.freeze()`
+        surprise, or any error updating `GcStats`'s fields, must never be
+        able to kill `serve()`'s main loop.
+        """
+        import gc
+        from unittest import mock
+
+        stats = GcStats()
+        stats.last_freeze_at = 0.0  # already seeded; the next call should try to freeze.
+        with mock.patch.object(gc, "freeze", side_effect=RuntimeError("boom: freeze failed")):
+            fired = maybe_gc_freeze(stats, 1_000.0, interval_s=1.0)
+        self.assertFalse(fired)
+        self.assertEqual(stats.freeze_count, 0)
+
+        class _BoomOnSet:
+            def __init__(self) -> None:
+                object.__setattr__(self, "last_freeze_at", 0.0)
+                object.__setattr__(self, "freeze_count", 0)
+
+            def __setattr__(self, name: str, value: object) -> None:
+                raise RuntimeError("boom: stats field assignment failed")
+
+        try:
+            fired = maybe_gc_freeze(_BoomOnSet(), 2_000.0, interval_s=1.0)
+            self.assertFalse(fired)
+        finally:
+            gc.unfreeze()
+
+    def test_periodic_gc_freeze_does_not_change_decisions_or_positions(self) -> None:
+        """`maybe_gc_freeze()` only moves objects between GC generations; it
+        must never change what a book decides. Same event stream, same
+        checkpoints as `test_cooldown_pruning_matches_an_engine_that_never_prunes`
+        above -- the only difference is that `freezing` also calls
+        `maybe_gc_freeze` at each checkpoint with `interval_s=0` so a real
+        `gc.freeze()` actually fires mid-stream, more aggressively than
+        `serve()`'s 10-minute default.
+        """
+        import gc
+
+        spec = BookSpec(
+            "buy_all",
+            "baseline",
+            "hold_30s",
+            max_concurrent=None,
+            daily_loss_lamports=None,
+            creator_cooldown_ms=0,
+            token_cooldown_ms=0,
+        )
+
+        def _build() -> ForwardEngine:
+            engine = ForwardEngine(
+                [spec],
+                kill_file=Path("/tmp/forward-paper-gc-freeze-neutral"),
+                tape_end_ms=T0 + 120_000,
+                retain_rows=True,
+            )
+            engine.push_create(_create("MintA", T0, creator="CreatorA"))
+            engine.push_print(*_parsed("MintA", T0 + 1_000))
+            engine.push_print(*_parsed("Filler", T0 + 40_000))
+            engine.push_create(_create("MintB", T0 + 60_000, creator="CreatorB"))
+            engine.push_print(*_parsed("MintB", T0 + 60_500))
+            return engine
+
+        checkpoints = (T0 + 10_000, T0 + 25_000, T0 + 41_000, T0 + 55_000)
+        old_freeze_count = gc.get_freeze_count()
+        try:
+            freezing = _build()
+            gc_stats = GcStats()
+            t = 0.0
+            for cp in checkpoints:
+                freezing.drain_until(cp)
+                maybe_gc_freeze(gc_stats, t, interval_s=0.0)
+                t += 1.0
+            freezing.drain_until(T0 + 120_000, final=True)
+            self.assertGreater(gc_stats.freeze_count, 0, "the test should actually exercise a mid-stream freeze")
+            self.assertGreater(gc.get_freeze_count(), old_freeze_count)
+
+            baseline = _build()
+            for cp in checkpoints:
+                baseline.drain_until(cp)
+            baseline.drain_until(T0 + 120_000, final=True)
+
+            self.assertEqual(freezing.decisions, baseline.decisions)
+            self.assertEqual(freezing.positions, baseline.positions)
+        finally:
+            gc.unfreeze()
 
     def test_mem_census_is_read_only_and_reports_every_container(self) -> None:
         """`MemCensus.snapshot()` (tools/forward_paper.py) is the live
