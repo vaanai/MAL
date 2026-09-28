@@ -45,6 +45,7 @@ from tools.forward_paper import (
     migrate_fee_sensitivity_summary,
     offline_packets,
     _preboot_dead_mints,
+    _safe_preboot_dead_mints,
     promotion_pnls_by_book,
     reload_risk_config,
     reconcile_baseline,
@@ -552,6 +553,31 @@ class MemoryBoundTests(unittest.TestCase):
     def test_preboot_dead_mints_empty_when_creates_dir_has_no_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             dead = _preboot_dead_mints(Path(tmp), 1_700_100_000_000)
+        self.assertEqual(dead, frozenset())
+
+    def test_safe_preboot_dead_mints_survives_a_raising_load_creates(self) -> None:
+        """`_safe_preboot_dead_mints` runs once at `serve()`'s boot, before
+        the main loop or the kill switch is live -- a corrupt observe line,
+        a `zstd` failure, or a permissions error inside `load_creates` must
+        not crash `serve()` and restart-loop the live runner. An empty
+        result is always safe: rule B (`EARLY_BUFFER_DEAD_MS`) still catches
+        the same mints within its own timeout, same as before this PR.
+        """
+        from unittest import mock
+
+        boot_ms = 1_700_100_000_000
+        boot_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000))
+        with tempfile.TemporaryDirectory() as tmp:
+            creates_dir = Path(tmp)
+            # A file must exist so `_preboot_dead_mints` actually calls
+            # `load_creates` (an empty dir already short-circuits to
+            # frozenset() without exercising the try/except at all).
+            (creates_dir / f"observe-{boot_day}.jsonl").write_text("{}\n", encoding="utf-8")
+            with mock.patch(
+                "tools.forward_paper.load_creates",
+                side_effect=RuntimeError("boom: corrupt observe line"),
+            ):
+                dead = _safe_preboot_dead_mints(creates_dir, boot_ms)
         self.assertEqual(dead, frozenset())
 
     def test_dead_mint_prints_are_dropped_not_buffered(self) -> None:

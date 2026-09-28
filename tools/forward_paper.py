@@ -2737,6 +2737,31 @@ def _preboot_dead_mints(
     return frozenset(dead.keys())
 
 
+def _safe_preboot_dead_mints(
+    creates_dir: Path,
+    boot_ms: int,
+    *,
+    margin_ms: int = PREBOOT_DEAD_MARGIN_MS,
+) -> frozenset[str]:
+    """`_preboot_dead_mints`, but never able to stop `serve()` from starting.
+
+    This runs once at boot, before the main loop, before the kill switch or
+    any risk gate is live -- a corrupt/truncated observe line, a `zstd`
+    failure on a sealed `.jsonl.zst`, or a permissions error inside
+    `load_creates` must not crash `serve()` and restart-loop the live
+    runner. An empty result here is always safe: it just means rule A finds
+    nothing this boot, and rule B (`EARLY_BUFFER_DEAD_MS`, unaffected by
+    this) still catches the same mints within its own timeout -- the
+    pre-existing `self.early`/`_prune_early` path is the fallback either
+    way, exactly today's shipped behavior before this PR.
+    """
+    try:
+        return _preboot_dead_mints(creates_dir, boot_ms, margin_ms=margin_ms)
+    except Exception as exc:  # noqa: BLE001 - startup safety net, must never propagate
+        print(f"forward_paper preboot_dead_mints_error err={exc!r}", file=sys.stderr)
+        return frozenset()
+
+
 class _Follower:
     """Tail plain JSONL. A sealed `.zst` hour is left to the recorder."""
 
@@ -2941,8 +2966,13 @@ def serve(config_path: Path) -> int:
     holdback_ms = int(raw.get("holdback_ms", 300))
     slippage = float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
     boot_ms = int(time.time() * 1000)
-    dead_mints = _preboot_dead_mints(creates_dir, boot_ms)
-    print(f"forward_paper preboot_dead_mints={len(dead_mints)} boot={_utc(boot_ms)}", file=sys.stderr)
+    _preboot_t0 = time.monotonic()
+    dead_mints = _safe_preboot_dead_mints(creates_dir, boot_ms)
+    preboot_scan_ms = (time.monotonic() - _preboot_t0) * 1000.0
+    print(
+        f"forward_paper preboot_dead_mints={len(dead_mints)} boot={_utc(boot_ms)} scan_ms={preboot_scan_ms:.1f}",
+        file=sys.stderr,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     offset_path = output_dir / "offsets.json"
     offsets: dict[str, int] = {}
