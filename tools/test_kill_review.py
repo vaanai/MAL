@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools import kill_review
 from tools.paper_attention_promote import BookTrade, _cluster_bootstrap
@@ -215,7 +216,7 @@ class SettlementDedupTests(unittest.TestCase):
                 ],
             )
 
-            rows, n_settled, n_dupes, settle_failed = kill_review.load_window_rows(
+            rows, n_settled, n_dupes, settle_failed, open_orphans = kill_review.load_window_rows(
                 positions,
                 settlements,
                 window_start_ms=WINDOW_START_MS,
@@ -248,7 +249,7 @@ class SettlementDedupTests(unittest.TestCase):
                     }
                 ],
             )
-            rows, n_settled, n_dupes, settle_failed = kill_review.load_window_rows(
+            rows, n_settled, n_dupes, settle_failed, open_orphans = kill_review.load_window_rows(
                 positions,
                 settlements,
                 window_start_ms=WINDOW_START_MS,
@@ -321,8 +322,48 @@ class BothFailModelsRequiredTests(unittest.TestCase):
             self.assertIsNone(block["bootstrap_p_le_zero"]["pressure_scale_1"])
             self.assertFalse(block["holm_pressure_scale_1"]["pass"])
             self.assertFalse(block["promote"])
+            # Missing pressure coverage entirely -- this book was never
+            # measured on the pressure leg, so it must read NOT_DECIDABLE,
+            # never a plain KILL (which would read as "measured, found
+            # wanting") and never PROMOTE.
+            self.assertFalse(block["pressure_coverage_complete"])
+            self.assertEqual(block["status"], "NOT_DECIDABLE")
             self.assertEqual(result["verdict"]["passing"], [])
-            self.assertEqual(kill_review.verdict_line(result), "VERDICT: NONE")
+            self.assertEqual(result["verdict"]["not_decidable"], ["book_a"])
+            self.assertEqual(result["verdict"]["kill"], [])
+            self.assertEqual(
+                kill_review.verdict_line(result),
+                "VERDICT: PROMOTE=NONE; NOT_DECIDABLE=book_a; KILL=NONE",
+            )
+
+    def test_partial_pressure_coverage_is_not_decidable_not_kill(self) -> None:
+        """A book where SOME rows have pressure_scale_1_pnl_lamports and
+        others don't (e.g. the stamp tool covered some mints but not others)
+        must still read NOT_DECIDABLE -- partial coverage is not measured
+        coverage, even if the rows that do have it would otherwise clear the
+        gate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            rows = _gate_passing_rows("book_a")
+            # Strip the pressure field from exactly one row.
+            rows[0].pop("pressure_scale_1_pnl_lamports", None)
+            _write_jsonl(positions, rows)
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+
+            result = kill_review.run_kill_review(
+                config_path=config,
+                positions_path=positions,
+                settlements_path=None,
+                restarts_log_path=None,
+                manual_restarts=[],
+            )
+            block = result["books"]["book_a"]
+            self.assertEqual(block["n_trades"], 100)
+            self.assertFalse(block["pressure_coverage_complete"])
+            self.assertEqual(block["status"], "NOT_DECIDABLE")
+            self.assertFalse(block["promote"])
 
 
 class SettleFailedTests(unittest.TestCase):
@@ -374,7 +415,11 @@ class SettleFailedTests(unittest.TestCase):
             # data, not a zero.
             self.assertTrue(block["gate_clears_both_models"])
             self.assertFalse(block["promote"])
+            # Incomplete (a settle_failed row) reads NOT_DECIDABLE, not KILL:
+            # this book was never actually fully measured, gate math aside.
+            self.assertEqual(block["status"], "NOT_DECIDABLE")
             self.assertEqual(result["verdict"]["passing"], [])
+            self.assertEqual(result["verdict"]["not_decidable"], ["book_a"])
 
     def test_settle_failed_row_does_not_double_count_when_a_live_close_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -410,7 +455,7 @@ class SettleFailedTests(unittest.TestCase):
                     }
                 ],
             )
-            rows, n_settled, n_dupes, settle_failed = kill_review.load_window_rows(
+            rows, n_settled, n_dupes, settle_failed, open_orphans = kill_review.load_window_rows(
                 positions,
                 settlements,
                 window_start_ms=WINDOW_START_MS,
@@ -441,6 +486,254 @@ class BootstrapEquivalenceTests(unittest.TestCase):
 
         self.assertAlmostEqual(lower, expected_mean_ci[0], places=12)
         self.assertAlmostEqual(upper, expected_mean_ci[1], places=12)
+
+
+class HolmDrawsThreadingTests(unittest.TestCase):
+    """`--holm-draws` must actually reach the bootstrap p-value, not just be
+    echoed in the report's `holm.draws` field."""
+
+    def test_holm_draws_reaches_bootstrap_p_le_zero(self) -> None:
+        calls: list[dict] = []
+        real = kill_review.bootstrap_p_le_zero
+
+        def spy(trades, *, draws=kill_review.HOLM_DRAWS, seed=kill_review.HOLM_SEED):
+            calls.append({"draws": draws, "seed": seed})
+            return real(trades, draws=draws, seed=seed)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            _write_jsonl(positions, _gate_passing_rows("book_a"))
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+
+            with mock.patch.object(kill_review, "bootstrap_p_le_zero", spy):
+                kill_review.run_kill_review(
+                    config_path=config,
+                    positions_path=positions,
+                    settlements_path=None,
+                    restarts_log_path=None,
+                    manual_restarts=[],
+                    holm_draws=777,
+                )
+
+        self.assertTrue(calls, "bootstrap_p_le_zero was never called")
+        self.assertTrue(all(call["draws"] == 777 for call in calls), calls)
+
+    def test_default_holm_draws_is_the_module_constant(self) -> None:
+        calls: list[int] = []
+        real = kill_review.bootstrap_p_le_zero
+
+        def spy(trades, *, draws=kill_review.HOLM_DRAWS, seed=kill_review.HOLM_SEED):
+            calls.append(draws)
+            return real(trades, draws=draws, seed=seed)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            _write_jsonl(positions, _gate_passing_rows("book_a"))
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+
+            with mock.patch.object(kill_review, "bootstrap_p_le_zero", spy):
+                kill_review.run_kill_review(
+                    config_path=config,
+                    positions_path=positions,
+                    settlements_path=None,
+                    restarts_log_path=None,
+                    manual_restarts=[],
+                )
+
+        self.assertTrue(calls)
+        self.assertTrue(all(draws == kill_review.HOLM_DRAWS for draws in calls), calls)
+
+
+class UnmatchedOpenOrphanTests(unittest.TestCase):
+    """An `open` row with no matching `close` and no settlement row of
+    either outcome is missing data, not a zero -- the book reads
+    NOT_DECIDABLE, never PROMOTE, per DEC-014's dated amendment."""
+
+    def test_unmatched_open_orphan_marks_book_not_decidable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            rows = _gate_passing_rows("book_a")
+            rows.append(
+                {
+                    "schema": "forward_paper_position_v1",
+                    "ledger": "shadow",
+                    "event": "open",
+                    "book": "book_a",
+                    "mint": "mint-still-open",
+                    "decision_t_ms": _day_ms(0, 999),
+                    "t_entry_ms": _day_ms(0, 999),
+                }
+            )
+            _write_jsonl(positions, rows)
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+
+            result = kill_review.run_kill_review(
+                config_path=config,
+                positions_path=positions,
+                settlements_path=None,
+                restarts_log_path=None,
+                manual_restarts=[],
+            )
+            block = result["books"]["book_a"]
+            # The 100 gate-passing trades are untouched -- still n=100.
+            self.assertEqual(block["n_trades"], 100)
+            self.assertEqual(block["n_open_orphans"], 1)
+            self.assertTrue(block["incomplete"])
+            self.assertEqual(block["status"], "NOT_DECIDABLE")
+            self.assertFalse(block["promote"])
+            self.assertEqual(result["n_open_orphans_total"], 1)
+            self.assertIn("book_a", result["incomplete_books"])
+            self.assertEqual(result["verdict"]["not_decidable"], ["book_a"])
+
+    def test_an_open_row_settled_either_way_is_not_an_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            settlements = tmp_path / "settlements.jsonl"
+            config = tmp_path / "config.json"
+            key_t_ms = _day_ms(0, 999)
+            rows = _gate_passing_rows("book_a")
+            rows.append(
+                {
+                    "schema": "forward_paper_position_v1",
+                    "ledger": "shadow",
+                    "event": "open",
+                    "book": "book_a",
+                    "mint": "mint-settled-failed",
+                    "decision_t_ms": key_t_ms,
+                    "t_entry_ms": key_t_ms,
+                }
+            )
+            _write_jsonl(positions, rows)
+            # #143: a soft-skip settlement still writes a settled_offline:
+            # false row with the same match key -- that is a *resolved*
+            # orphan (failed to settle, counted via settle_failed), not an
+            # *unmatched* one.
+            _write_jsonl(
+                settlements,
+                [
+                    {
+                        "schema": "forward_paper_settlement_v1",
+                        "settled_offline": False,
+                        "settle_error": "skip: censored_tape_too_short",
+                        "ledger": "shadow",
+                        "book": "book_a",
+                        "mint": "mint-settled-failed",
+                        "decision_t_ms": key_t_ms,
+                    }
+                ],
+            )
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+
+            result = kill_review.run_kill_review(
+                config_path=config,
+                positions_path=positions,
+                settlements_path=settlements,
+                restarts_log_path=None,
+                manual_restarts=[],
+            )
+            block = result["books"]["book_a"]
+            self.assertEqual(block["n_open_orphans"], 0)
+            self.assertEqual(block["n_settle_failed"], 1)
+            # Still incomplete/NOT_DECIDABLE -- via settle_failed, not orphan.
+            self.assertEqual(block["status"], "NOT_DECIDABLE")
+
+
+class PressureJoinTests(unittest.TestCase):
+    """`--pressure` joins pressure.jsonl onto positions/settlement rows by
+    the (ledger, book, mint, decision_t_ms) key, giving full coverage when
+    every row has a match."""
+
+    def test_pressure_file_join_gives_full_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            pressure = tmp_path / "pressure.jsonl"
+
+            rows = _gate_passing_rows("book_a", include_pressure=False)
+            _write_jsonl(positions, rows)
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+            pressure_rows = [
+                {
+                    "schema": "forward_paper_pressure_stamp_v1",
+                    "ledger": row["ledger"],
+                    "book": row["book"],
+                    "mint": row["mint"],
+                    "decision_t_ms": row["decision_t_ms"],
+                    "pressure_scale_1_pnl_lamports": 800_000,
+                    "pressure_scale_2_pnl_lamports": 600_000,
+                }
+                for row in rows
+            ]
+            _write_jsonl(pressure, pressure_rows)
+
+            result = kill_review.run_kill_review(
+                config_path=config,
+                positions_path=positions,
+                settlements_path=None,
+                restarts_log_path=None,
+                manual_restarts=[],
+                pressure_path=pressure,
+            )
+            block = result["books"]["book_a"]
+            self.assertTrue(block["pressure_coverage_complete"])
+            self.assertEqual(block["gate_pressure_scale_1"]["n"], 100)
+            self.assertAlmostEqual(block["gate_pressure_scale_1"]["mean_sol"], 0.0008, places=12)
+            self.assertEqual(block["status"], "PROMOTE")
+
+    def test_a_pressure_error_row_breaks_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            pressure = tmp_path / "pressure.jsonl"
+
+            rows = _gate_passing_rows("book_a", include_pressure=False)
+            _write_jsonl(positions, rows)
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+            pressure_rows = [
+                {
+                    "schema": "forward_paper_pressure_stamp_v1",
+                    "ledger": row["ledger"],
+                    "book": row["book"],
+                    "mint": row["mint"],
+                    "decision_t_ms": row["decision_t_ms"],
+                    "pressure_scale_1_pnl_lamports": 800_000,
+                }
+                for row in rows[1:]
+            ]
+            # First row's mint has no tape -- the stamp tool reported an error.
+            pressure_rows.append(
+                {
+                    "schema": "forward_paper_pressure_stamp_v1",
+                    "ledger": rows[0]["ledger"],
+                    "book": rows[0]["book"],
+                    "mint": rows[0]["mint"],
+                    "decision_t_ms": rows[0]["decision_t_ms"],
+                    "pressure_error": "no_tape_for_mint",
+                }
+            )
+            _write_jsonl(pressure, pressure_rows)
+
+            result = kill_review.run_kill_review(
+                config_path=config,
+                positions_path=positions,
+                settlements_path=None,
+                restarts_log_path=None,
+                manual_restarts=[],
+                pressure_path=pressure,
+            )
+            block = result["books"]["book_a"]
+            self.assertEqual(block["n_pressure_error"], 1)
+            self.assertFalse(block["pressure_coverage_complete"])
+            self.assertEqual(block["status"], "NOT_DECIDABLE")
 
 
 if __name__ == "__main__":
