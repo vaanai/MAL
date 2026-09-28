@@ -11,6 +11,8 @@ from pathlib import Path
 
 from tools.laya_v0 import (
     FEATURE_NAMES,
+    WalletState,
+    _Wallet,
     CANDIDATE_FREEZE_AT,
     CANDIDATE_FREEZE_MS,
     ENTRY_LATENCY_MS,
@@ -1168,6 +1170,61 @@ class FrozenCandidateTests(unittest.TestCase):
         self.assertEqual(live_takes, [])
         pooled = _topk([(score, i) for i, score in enumerate(scores)], 0.01)
         self.assertEqual(pooled, [50, 51, 52])
+
+
+class WalletCompactionTests(unittest.TestCase):
+    """`_Wallet.pos` replaces the four separate `pos_tokens`/`pos_cost`/
+    `pos_open_t`/`pos_invested` dicts with one dict of 4-entry lists (see the
+    forward-paper memory-growth investigation, ARTIFACTS/lab/
+    forward-paper-memory-2026-09-27.md). These pin the externally-visible
+    behavior so the compaction is a representation change only.
+    """
+
+    def test_pos_entry_does_not_survive_a_full_close(self) -> None:
+        wallet = _Wallet()
+        for i in range(500):
+            mint = f"Mint{i:06d}"
+            wallet.observe(mint=mint, side="buy", sol=1_000_000, token_raw=1_000, t_ms=1_000 + i, slot=1, first_slot=1)
+            wallet.observe(mint=mint, side="sell", sol=1_000_000, token_raw=1_000, t_ms=2_000 + i, slot=2, first_slot=1)
+        # Bounded: an open position's slot in `pos` is popped on full close,
+        # for every mint ever touched, not just the most recent one.
+        self.assertEqual(wallet.pos, {})
+        self.assertEqual(wallet.closed, 500)
+        # Not bounded by this change and not claimed to be: `mint_pnl` and
+        # `mints` persist by design (read by `_leader_ok` / `is_bot`).
+        self.assertEqual(len(wallet.mint_pnl), 500)
+        self.assertEqual(len(wallet.mints), 500)
+
+    def test_partial_sell_keeps_the_position_open_with_correct_fields(self) -> None:
+        wallet = _Wallet()
+        wallet.observe(mint="M1", side="buy", sol=10, token_raw=100, t_ms=1_000, slot=1, first_slot=1)
+        wallet.observe(mint="M1", side="buy", sol=5, token_raw=50, t_ms=1_500, slot=1, first_slot=1)
+        entry = wallet.pos["M1"]
+        # [tokens_held, cost_lamports, open_t_ms (first touch only), invested_lamports]
+        self.assertEqual(entry, [150, 15, 1_000, 15])
+        wallet.observe(mint="M1", side="sell", sol=9, token_raw=75, t_ms=1_800, slot=2, first_slot=1)
+        self.assertIn("M1", wallet.pos)
+        self.assertEqual(wallet.pos["M1"][0], 75)
+        self.assertEqual(wallet.closed, 0)
+        wallet.observe(mint="M1", side="sell", sol=9, token_raw=75, t_ms=2_000, slot=3, first_slot=1)
+        self.assertNotIn("M1", wallet.pos)
+        self.assertEqual(wallet.closed, 1)
+        self.assertEqual(wallet.holds, [1_000])
+        self.assertEqual(wallet.invested_closed, 15)
+
+    def test_leader_flag_and_wallet_state_unaffected_by_the_compaction(self) -> None:
+        """Same scenario NoLookaheadTests.test_leader_flag_uses_only_round_trips_already_closed
+        exercises through WalletState, checked directly against the compacted
+        `_Wallet` fields `fill_features` reads (`closed`, `wins`, `holds`)."""
+        state = WalletState()
+        trips = [("L1", 1_000, 40), ("L2", 2_000, 40), ("L3", 3_000, 10)]
+        for mint, t_buy, sell_sol in trips:
+            state.observe_print(mint, _flow(t_buy, trader="Leader", sol=20, token=1_000_000, slot=5))
+            state.observe_print(mint, _flow(t_buy + 20_000, trader="Leader", side="sell", sol=sell_sol, token=1_000_000, slot=8))
+        wallet = state.wallets["Leader"]
+        self.assertEqual(wallet.closed, 3)
+        self.assertEqual(wallet.pos, {})
+        self.assertEqual(len(wallet.mint_pnl), 3)
 
 
 if __name__ == "__main__":

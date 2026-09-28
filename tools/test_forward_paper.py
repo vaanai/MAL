@@ -11,6 +11,7 @@ from pathlib import Path
 from tools.forward_paper import (
     CHAIN_SAMPLE_CAP,
     DEFAULT_FAIL_RATE,
+    GC_THRESHOLD,
     HARD_MAX_POSITION_LAMPORTS,
     LATENCY_SAMPLE_CAP,
     PRUNE_AFTER_MS,
@@ -23,7 +24,9 @@ from tools.forward_paper import (
     BookSpec,
     DirectoryTail,
     ForwardEngine,
+    GcStats,
     LatencyMeter,
+    MemCensus,
     ModelSlot,
     _Follower,
     _RankWindow,
@@ -34,6 +37,7 @@ from tools.forward_paper import (
     clean_clock,
     decision_counts_for_promotion,
     flow_from_tape_row,
+    install_gc_mitigation,
     migrate_fee_sensitivity_summary,
     offline_packets,
     promotion_pnls_by_book,
@@ -41,6 +45,7 @@ from tools.forward_paper import (
     reconcile_baseline,
     replay_rows,
     window_creates,
+    write_mem_census,
 )
 from tools.paper_curve_math import PORTAL_FEE_PPM, PRIORITY_FEE_LAMPORTS
 from tools.paper_tape_scoreboard import priority_grid, priority_sides_for_event
@@ -504,6 +509,186 @@ class MemoryBoundTests(unittest.TestCase):
         self.assertNotIn("GhostMint", engine.early)
         self.assertEqual(engine.decisions, [])
         self.assertEqual(engine.positions, [])
+
+    def test_wallet_pos_dict_does_not_grow_with_closed_round_trips(self) -> None:
+        """`_Wallet.pos` (tools/laya_v0.py) holds one entry per mint with a
+        currently open position, popped on full close. A single busy trader
+        that round-trips 200 distinct mints should leave `pos` empty at the
+        end, not accumulate one stale entry per mint -- the growth this PR's
+        `_Wallet` compaction (merging pos_tokens/pos_cost/pos_open_t/
+        pos_invested into `pos`) does not change, only makes each entry
+        cheaper. `mint_pnl` and `mints` are expected to keep every mint by
+        design (read by `_leader_ok` / `is_bot`); this test only bounds `pos`.
+        """
+        n = 200
+        creates: dict[str, CreateSignal] = {}
+        rows: list[dict[str, object]] = []
+        for i in range(n):
+            mint = f"BusyMint{i:04d}"
+            t0 = T0 + i * 200
+            creates[mint] = _create(mint, t0, creator=f"Creator{i:04d}")
+            rows.append(_trade(mint, t0 + 10, trader="Busy", slot=i + 2, token=1_000_000, sol=1_000_000_000))
+            rows.append(_trade(mint, t0 + 20, trader="Busy", side="sell", slot=i + 2, token=1_000_000, sol=1_000_000_000))
+        engine = replay_rows(
+            creates.values(),
+            rows,
+            [BookSpec("buy_all", "baseline", "hold_30s", max_concurrent=None, daily_loss_lamports=None, creator_cooldown_ms=0, token_cooldown_ms=0)],
+            tape_end_ms=T0 + n * 200 + 1_000,
+            kill_file=Path("/tmp/forward-paper-wallet-pos-bound"),
+            offsets_ms=(5_000,),
+        )
+        wallet = engine.wallets.wallets["Busy"]
+        self.assertEqual(wallet.pos, {})
+        self.assertEqual(wallet.closed, n)
+        self.assertEqual(len(wallet.mint_pnl), n)
+
+    def test_gc_mitigation_raises_thresholds_freezes_and_times_collections(self) -> None:
+        """`install_gc_mitigation()` (tools/forward_paper.py) is the fix for the
+        multi-hundred-ms to multi-second `gc.collect(2)` stop-the-world pauses
+        measured on a large `WalletState` (see the lab note) -- it must not
+        touch any application value, only GC scheduling, which this pins by
+        restoring gc's real state around the test.
+        """
+        import gc
+
+        old_threshold = gc.get_threshold()
+        old_enabled = gc.isenabled()
+        old_callbacks = list(gc.callbacks)
+        try:
+            stats = install_gc_mitigation()
+            self.assertIsInstance(stats, GcStats)
+            self.assertEqual(gc.get_threshold(), GC_THRESHOLD)
+            self.assertTrue(gc.isenabled(), "raising thresholds keeps automatic collection as a safety net")
+            self.assertGreater(gc.get_freeze_count(), 0, "freeze() should have moved the current heap to the permanent generation")
+            # A manual collection after install is still timed by the callback.
+            before = stats.collections
+            gc.collect()
+            self.assertGreater(stats.collections, before)
+            report = stats.report()
+            self.assertEqual(report["collections"], stats.collections)
+            self.assertGreaterEqual(report["max_pause_ms"], 0.0)
+            self.assertEqual(report["thresholds"]["gen0"], GC_THRESHOLD[0])
+            self.assertTrue(report["enabled"])
+        finally:
+            gc.callbacks[:] = old_callbacks
+            gc.set_threshold(*old_threshold)
+            gc.unfreeze()
+            if old_enabled:
+                gc.enable()
+            else:
+                gc.disable()
+
+    def test_mem_census_is_read_only_and_reports_every_container(self) -> None:
+        """`MemCensus.snapshot()` (tools/forward_paper.py) is the live
+        per-container census the #123 PR adds since the offline harness
+        (#122) could not cleanly reproduce Oracle's ~460 MB/h. It must not
+        mutate engine state -- checked here by snapshotting twice and
+        confirming the engine's own containers are byte-for-byte the same
+        Python objects (same id, same contents) after two census calls.
+        """
+        n = 50
+        creates: dict[str, CreateSignal] = {}
+        rows: list[dict[str, object]] = []
+        for i in range(n):
+            mint = f"CensusMint{i:04d}"
+            t0 = T0 + i * 200
+            creates[mint] = _create(mint, t0, creator=f"CensusCreator{i:04d}")
+            rows.append(_trade(mint, t0 + 10, trader="CensusWallet", slot=i + 2, token=1_000_000, sol=1_000_000_000))
+            rows.append(_trade(mint, t0 + 20, trader="CensusWallet", side="sell", slot=i + 2, token=1_000_000, sol=1_000_000_000))
+        engine = replay_rows(
+            creates.values(),
+            rows,
+            [BookSpec("buy_all", "baseline", "hold_30s", max_concurrent=None, daily_loss_lamports=None, creator_cooldown_ms=0, token_cooldown_ms=0)],
+            tape_end_ms=T0 + n * 200 + 1_000,
+            kill_file=Path("/tmp/forward-paper-mem-census"),
+            offsets_ms=(5_000,),
+        )
+        census_maker = MemCensus()
+        library_before = dict(engine.library)
+        wallets_before = dict(engine.wallets.wallets)
+        row1 = census_maker.snapshot(engine)
+        row2 = census_maker.snapshot(engine)
+        self.assertEqual(engine.library, library_before)
+        self.assertEqual(engine.wallets.wallets.keys(), wallets_before.keys())
+        self.assertEqual(row1["library"], n)
+        self.assertEqual(row1["by_creator"], n)
+        self.assertEqual(row1["early_mints"], 0)
+        self.assertEqual(row1["early_prints_buffered"], 0)
+        self.assertEqual(row1["wallets"]["n_wallets"], 1)
+        # Every position round-tripped and closed: pos entries bounded, same
+        # invariant MemoryBoundTests.test_wallet_pos_dict_does_not_grow_with_closed_round_trips checks.
+        self.assertEqual(row1["wallets"]["pos_entries"], 0)
+        self.assertEqual(row1["wallets"]["mint_pnl_entries"], n)
+        self.assertIsInstance(row1["rss_kb_proc"], (int, type(None)))
+        self.assertEqual(row2["library"], row1["library"])
+
+    def test_write_mem_census_never_propagates_a_failure(self) -> None:
+        """`write_mem_census()` is called from `serve()`'s main loop every 5
+        minutes; this diagnostics-only helper must never be able to kill the
+        process. Exercise every failure point a raising `mem_census`,
+        `gc_stats`, or `logs["mem_census"]` could hit -- the call must return
+        an incremented failure count, not raise.
+        """
+
+        class _RaisingCensus:
+            def snapshot(self, engine: object) -> dict[str, object]:
+                raise RuntimeError("boom: census walk failed")
+
+        class _RaisingGcStats:
+            def report(self) -> dict[str, object]:
+                raise RuntimeError("boom: gc report failed")
+
+        class _RaisingLog:
+            def write(self, row: dict[str, object]) -> None:
+                raise OSError("boom: disk full")
+
+        class _QuietLog:
+            def write(self, row: dict[str, object]) -> None:
+                pass
+
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine([spec], kill_file=Path("/tmp/forward-paper-census-fail"))
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            good_census = MemCensus()
+            good_stats = GcStats()
+
+            # 1. The snapshot itself raises.
+            failures = write_mem_census(
+                engine, _RaisingCensus(), good_stats, output_dir, {"mem_census": _RaisingLog()}, 0, 0
+            )
+            self.assertEqual(failures, 1)
+
+            # 2. The snapshot succeeds but gc_stats.report() raises.
+            failures = write_mem_census(
+                engine, good_census, _RaisingGcStats(), output_dir, {"mem_census": _RaisingLog()}, 0, 0
+            )
+            self.assertEqual(failures, 1)
+
+            # 3. Both succeed but the jsonl write raises (e.g. disk full).
+            failures = write_mem_census(
+                engine, good_census, good_stats, output_dir, {"mem_census": _RaisingLog()}, 0, 0
+            )
+            self.assertEqual(failures, 1)
+
+            # 4. A bad output_dir (file write fails) also does not propagate.
+            bogus_dir = output_dir / "does" / "not" / "exist-and-is-not-created"
+            failures = write_mem_census(engine, good_census, good_stats, bogus_dir, {"mem_census": _RaisingLog()}, 0, 0)
+            self.assertEqual(failures, 1)
+
+            # 5. Repeated failures accumulate the counter across calls.
+            failures = 0
+            for _ in range(5):
+                failures = write_mem_census(
+                    engine, _RaisingCensus(), good_stats, output_dir, {"mem_census": _RaisingLog()}, 0, failures
+                )
+            self.assertEqual(failures, 5)
+
+            # 6. A healthy call after prior failures succeeds and leaves the
+            # failure count unchanged (the counter only increments on failure).
+            failures = write_mem_census(engine, good_census, good_stats, output_dir, {"mem_census": _QuietLog()}, 0, failures)
+            self.assertEqual(failures, 5)
+            self.assertTrue((output_dir / "mem-census.json").is_file())
 
     def test_latency_meter_ring_buffers_stay_bounded(self) -> None:
         meter = LatencyMeter(extra_ms=1)
