@@ -109,20 +109,19 @@ def _tape_time_bounds(tape: list[Path]) -> tuple[int | None, int | None]:
 
 
 def _wallet_substats(wallets: dict[str, Any]) -> dict[str, int]:
-    """Aggregate the per-mint sub-dicts every `_Wallet` carries.
+    """Aggregate the per-mint sub-containers every `_Wallet` carries.
 
-    `_on_sell` in laya_v0.WalletState pops `pos_tokens` once a position fully
-    closes, but `pos_cost`, `pos_open_t`, `pos_invested`, `mint_pnl` and the
-    `mints` set are never popped -- they grow with every distinct mint a
-    wallet has ever touched, for as long as the wallet is remembered at all.
+    `_on_sell` in laya_v0.WalletState pops `pos[mint]` once a position fully
+    closes, but `mint_pnl` and the `mints` set are never popped -- they grow
+    with every distinct mint a wallet has ever touched, for as long as the
+    wallet is remembered at all. `pos` (the compacted `pos_tokens`/`pos_cost`/
+    `pos_open_t`/`pos_invested`) is transient: it only holds entries for
+    mints with a currently-open (not fully sold) position.
     """
-    sub = dict(mints=0, pos_tokens=0, pos_cost=0, pos_open_t=0, pos_invested=0, mint_pnl=0, holds=0)
+    sub = dict(mints=0, pos=0, mint_pnl=0, holds=0)
     for w in wallets.values():
         sub["mints"] += len(w.mints)
-        sub["pos_tokens"] += len(w.pos_tokens)
-        sub["pos_cost"] += len(w.pos_cost)
-        sub["pos_open_t"] += len(w.pos_open_t)
-        sub["pos_invested"] += len(w.pos_invested)
+        sub["pos"] += len(w.pos)
         sub["mint_pnl"] += len(w.mint_pnl)
         sub["holds"] += len(w.holds)
     return sub
@@ -131,39 +130,55 @@ def _wallet_substats(wallets: dict[str, Any]) -> dict[str, int]:
 def calibrate_wallet_bytes() -> dict[str, float]:
     """Measure (not guess) the marginal pympler bytes of `_Wallet` growth.
 
-    Returns bytes-per-empty-wallet and bytes-per-(wallet,mint)-pair, derived
-    from real asizeof() calls on real `_Wallet` instances -- the same class
-    the engine uses -- so the fast per-checkpoint estimate is anchored to a
-    measurement, not a guess.
+    Returns bytes-per-empty-wallet and the marginal bytes of one more entry
+    in each of `_Wallet`'s per-mint containers, derived from real asizeof()
+    calls on real `_Wallet` instances -- the same class the engine uses --
+    so the fast per-checkpoint estimate is anchored to a measurement, not a
+    guess. Each container is calibrated in isolation (a fresh `_Wallet` per
+    container) so one estimate cannot mask another's true marginal cost.
     """
     empty = _Wallet()
     base = asizeof.asizeof(empty)
-    w = _Wallet()
     n = 300
+
+    w_mints = _Wallet()
     for i in range(n):
-        mint = f"CalibMint{i:012d}" + "x" * 20
-        w.mints.add(mint)
-        w.pos_cost[mint] = 1
-        w.pos_open_t[mint] = 1
-        w.pos_invested[mint] = 1
-        w.mint_pnl[mint] = 1
-    with_pairs = asizeof.asizeof(w)
-    per_pair = (with_pairs - base) / n
-    w2 = _Wallet()
+        w_mints.mints.add(f"CalibMint{i:012d}" + "x" * 20)
+    per_mints_entry = (asizeof.asizeof(w_mints) - base) / n
+
+    w_pnl = _Wallet()
     for i in range(n):
-        w2.holds.append(i)
-    per_hold = (asizeof.asizeof(w2) - base) / n
-    return {"empty_wallet_bytes": float(base), "per_pair_bytes": float(per_pair), "per_hold_bytes": float(per_hold)}
+        w_pnl.mint_pnl[f"CalibMint{i:012d}" + "x" * 20] = 1
+    per_mint_pnl_entry = (asizeof.asizeof(w_pnl) - base) / n
+
+    w_pos = _Wallet()
+    for i in range(n):
+        w_pos.pos[f"CalibMint{i:012d}" + "x" * 20] = [1, 1, 1, 1]
+    per_pos_entry = (asizeof.asizeof(w_pos) - base) / n
+
+    w_holds = _Wallet()
+    for i in range(n):
+        w_holds.holds.append(i)
+    per_hold = (asizeof.asizeof(w_holds) - base) / n
+
+    return {
+        "empty_wallet_bytes": float(base),
+        "per_mints_entry_bytes": float(per_mints_entry),
+        "per_mint_pnl_entry_bytes": float(per_mint_pnl_entry),
+        "per_pos_entry_bytes": float(per_pos_entry),
+        "per_hold_bytes": float(per_hold),
+    }
 
 
 def estimate_wallets_bytes(wallets: dict[str, Any], sub: dict[str, int], calib: dict[str, float]) -> float:
     n_wallets = len(wallets)
-    # Each pair touches up to 4 dicts (pos_cost/pos_open_t/pos_invested/mint_pnl)
-    # plus the `mints` set entry; calibration already amortizes all of that
-    # per added mint (since the calibration loop adds to all of them together).
-    pairs = sub["pos_cost"] + sub["pos_open_t"] + sub["pos_invested"] + sub["mint_pnl"] + sub["mints"]
-    pairs_equiv = pairs / 5.0
-    return n_wallets * calib["empty_wallet_bytes"] + pairs_equiv * calib["per_pair_bytes"] + sub["holds"] * calib["per_hold_bytes"]
+    return (
+        n_wallets * calib["empty_wallet_bytes"]
+        + sub["mints"] * calib["per_mints_entry_bytes"]
+        + sub["mint_pnl"] * calib["per_mint_pnl_entry_bytes"]
+        + sub["pos"] * calib["per_pos_entry_bytes"]
+        + sub["holds"] * calib["per_hold_bytes"]
+    )
 
 
 def take_snapshot(
@@ -238,6 +253,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tracemalloc-frames", type=int, default=1)
     ap.add_argument("--tracemalloc-top", type=int, default=20)
     ap.add_argument("--write-logs", action="store_true", help="also write decisions/positions jsonl (slower, more disk)")
+    ap.add_argument(
+        "--creates-since-ms",
+        type=int,
+        default=None,
+        help=(
+            "Lower bound for windowed creates, in epoch ms, instead of the tape "
+            "slice's own start. Use the runner's actual boot instant when "
+            "replaying a slice that starts mid-run (e.g. Oracle's serve() cold "
+            "start), so a mint created between that boot and the tape slice's "
+            "own start -- which the continuously-running process would already "
+            "have in `library` -- is not wrongly treated as createless (which "
+            "buffers its prints in `self.early` forever instead of pruning them "
+            "as a normal library entry; see the lab note for how much this can "
+            "inflate `early`). Omit this to window strictly to the tape slice "
+            "itself, i.e. simulate a cold start exactly at the slice's start."
+        ),
+    )
     ap.add_argument("--out", type=Path, help="JSON report path (default: <output-dir>/mem-profile.json)")
     args = ap.parse_args(argv)
 
@@ -288,14 +320,38 @@ def main(argv: list[str] | None = None) -> int:
             "positions": JsonlLog(args.output_dir / "positions.jsonl"),
         }
 
-    # No `now_ms` callable: matches replay_rows(), so `_prune`'s "live_now"
-    # comes from the tape's own simulated clock, not wall time. This is the
-    # same class and the same code path `serve()` drives -- only the event
-    # source (a fixed file slice instead of a live tail) differs.
+    # A `now_ms` callable IS supplied here, on purpose, pointed at the tape's
+    # own simulated clock rather than wall time -- unlike `replay_rows()`
+    # (ParityTests, promotion backtests), which passes `LatencyMeter()` with
+    # no `now_ms` at all. That is correct for THOSE tools: offline re-scoring
+    # wants the full historical `book.flow`, not a live-sized window, because
+    # `local_features`/promotion re-derive decisions after the fact. But
+    # `_prune()` reuses that exact same `self.latency.now_ms is not None`
+    # flag to gate its rolling `LIVE_IDLE_RETAIN_MS` (3-minute) truncation of
+    # `book.flow`/`book.path.prints` for a mint that is not yet 45-minutes
+    # idle (`forward_paper.py`'s `_prune`, guarded at
+    # `if self.latency.now_ms is not None and book.flow:`) -- the one
+    # production `serve()` gets for free from its real wall clock
+    # (`now_ms=lambda: int(time.time() * 1000)`). Measured directly: without
+    # this, a 1-hour replay showed `library`/`by_creator`/`seen` bytes
+    # growing to ~200 MB with the *mint count unchanged* (1341 the whole
+    # hour) -- i.e. `book.flow` growing unbounded for any mint still getting
+    # occasional prints, because the live-window cap never engaged and only
+    # the 45-minute-fully-idle -> 3-anchor reduction remained. That is not
+    # what `serve()` retains; it is an artifact of reusing the offline
+    # (`replay_rows`) code path for a *memory* measurement instead of a
+    # *decision* one. Since this script does not compare decisions against
+    # any other replay (no `--write-logs` by default; nothing diffs its
+    # positions/decisions), giving it a synthetic tape-clock `now_ms` here
+    # does not compromise anything this script itself claims -- it makes the
+    # measured `library`/`tracks`/`by_creator`/`seen`/`early` bytes represent
+    # what `serve()` actually keeps, not what a from-scratch offline re-score
+    # would.
+    _clock_box: dict[str, int] = {"ms": 0}
     engine = ForwardEngine(
         books,
         kill_file=args.output_dir / "KILL",
-        latency=LatencyMeter(),
+        latency=LatencyMeter(now_ms=lambda: _clock_box["ms"]),
         model=model,
         barrier=barrier,
         swing=swing,
@@ -327,12 +383,22 @@ def main(argv: list[str] | None = None) -> int:
     creates = load_creates(creates_paths)
     n_creates_loaded = len(creates)
     if tape_t_min is not None and tape_t_max is not None:
-        creates = window_creates(creates, tape_t_min, tape_t_max)
-    print(
-        f"windowed creates {n_creates_loaded} -> {len(creates)} to the tape's own "
-        f"[{tape_t_min}, {tape_t_max}] range (same window_creates() run_replay_files uses)",
-        file=sys.stderr,
-    )
+        if args.creates_since_ms is not None:
+            lo = min(args.creates_since_ms, tape_t_min)
+            creates = window_creates(creates, lo, tape_t_max, pad_ms=0)
+            print(
+                f"windowed creates {n_creates_loaded} -> {len(creates)} to "
+                f"[--creates-since-ms={args.creates_since_ms}, {tape_t_max}] "
+                "(mid-run replay: includes creates from the runner's own boot, not just this slice)",
+                file=sys.stderr,
+            )
+        else:
+            creates = window_creates(creates, tape_t_min, tape_t_max)
+            print(
+                f"windowed creates {n_creates_loaded} -> {len(creates)} to the tape's own "
+                f"[{tape_t_min}, {tape_t_max}] range (same window_creates() run_replay_files uses)",
+                file=sys.stderr,
+            )
     for create in creates.values():
         engine.push_create(create)
     print(f"pushed {len(creates)} creates", file=sys.stderr)
@@ -383,6 +449,7 @@ def main(argv: list[str] | None = None) -> int:
                 if parsed is None:
                     continue
                 mint, pr = parsed
+                _clock_box["ms"] = pr.t_recv_ms
                 engine.push_print(mint, pr, _event_ts(row))
                 n_prints += 1
                 if first_t_ms is None:

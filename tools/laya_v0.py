@@ -924,6 +924,19 @@ def creator_features(
 
 
 class _Wallet:
+    """Per-mint position fields (`pos_tokens`/`pos_cost`/`pos_open_t`/`pos_invested`)
+    are always created together (in `observe`'s buy branch) and popped
+    together (in `_on_sell`, once a position fully closes) -- they never
+    diverge in key set. They are kept in one `pos` dict of 4-tuples
+    (`[tokens, cost, open_t, invested]`) instead of four separate dicts so a
+    given (wallet, mint) pair costs one hash-table slot and one copy of the
+    mint string instead of four. This changes only the representation, not
+    the values or when they are read/written -- see the parity test in
+    tools/test_laya_v0.py that checks a wallet's externally-visible fields
+    (`closed`, `wins`, `holds`, `is_bot/is_sniper/is_leader`) against a
+    matched pre-compaction fixture.
+    """
+
     __slots__ = (
         "n_buys",
         "n_sells",
@@ -932,10 +945,7 @@ class _Wallet:
         "gap_sum_ms",
         "gap_n",
         "last_t",
-        "pos_tokens",
-        "pos_cost",
-        "pos_open_t",
-        "pos_invested",
+        "pos",
         "mint_pnl",
         "closed",
         "wins",
@@ -954,10 +964,10 @@ class _Wallet:
         self.gap_sum_ms = 0
         self.gap_n = 0
         self.last_t: int | None = None
-        self.pos_tokens: dict[str, int] = {}
-        self.pos_cost: dict[str, int] = {}
-        self.pos_open_t: dict[str, int] = {}
-        self.pos_invested: dict[str, int] = {}
+        # mint -> [tokens_held, cost_lamports, open_t_ms, invested_lamports];
+        # present only while the wallet has an open (not fully sold) position
+        # in that mint. See the class docstring.
+        self.pos: dict[str, list[int]] = {}
         self.mint_pnl: dict[str, int] = {}
         self.closed = 0
         self.wins = 0
@@ -988,38 +998,38 @@ class _Wallet:
             if slot <= first_slot + SNIPER_SLOT_DELTA:
                 self.sniper_buys += 1
             if token_raw > 0:
-                self.pos_tokens[mint] = self.pos_tokens.get(mint, 0) + token_raw
-                self.pos_cost[mint] = self.pos_cost.get(mint, 0) + sol
-                self.pos_invested[mint] = self.pos_invested.get(mint, 0) + sol
-                if mint not in self.pos_open_t:
-                    self.pos_open_t[mint] = t_ms
+                entry = self.pos.get(mint)
+                if entry is None:
+                    entry = [0, 0, t_ms, 0]
+                    self.pos[mint] = entry
+                entry[0] += token_raw
+                entry[1] += sol
+                entry[3] += sol
         else:
             self.n_sells += 1
             self._on_sell(mint, sol, token_raw, t_ms)
         self._refresh_flags()
 
     def _on_sell(self, mint: str, sol: int, token_raw: int, t_ms: int) -> None:
-        held = self.pos_tokens.get(mint, 0)
+        entry = self.pos.get(mint)
+        held = entry[0] if entry is not None else 0
         if held <= DUST_TOKEN_RAW or token_raw <= 0:
             return
         sold = min(token_raw, held)
-        cost = self.pos_cost.get(mint, 0)
+        cost = entry[1]
         cost_out = cost * sold // held
         proceeds = sol * sold // token_raw
         pnl = proceeds - cost_out
-        self.pos_tokens[mint] = held - sold
-        self.pos_cost[mint] = cost - cost_out
+        entry[0] = held - sold
+        entry[1] = cost - cost_out
         self.mint_pnl[mint] = self.mint_pnl.get(mint, 0) + pnl
-        if self.pos_tokens[mint] <= DUST_TOKEN_RAW:
+        if entry[0] <= DUST_TOKEN_RAW:
             self.closed += 1
             if self.mint_pnl[mint] > 0:
                 self.wins += 1
-            self.holds.append(max(0, t_ms - self.pos_open_t.get(mint, t_ms)))
-            self.invested_closed += self.pos_invested.get(mint, 0)
-            self.pos_tokens.pop(mint, None)
-            self.pos_cost.pop(mint, None)
-            self.pos_open_t.pop(mint, None)
-            self.pos_invested.pop(mint, None)
+            self.holds.append(max(0, t_ms - entry[2]))
+            self.invested_closed += entry[3]
+            self.pos.pop(mint, None)
 
     def _refresh_flags(self) -> None:
         sniper_share = (self.sniper_buys / self.n_buys) if self.n_buys else 0.0
@@ -1042,7 +1052,7 @@ class _Wallet:
         if self.invested_closed < LEADER_MIN_INVESTED:
             return False
         # Open lots are not round-trips. Only mints already closed (no remaining tokens) count.
-        positive = [v for mint, v in self.mint_pnl.items() if v > 0 and mint not in self.pos_tokens]
+        positive = [v for mint, v in self.mint_pnl.items() if v > 0 and mint not in self.pos]
         if not positive:
             return False
         if max(positive) / sum(positive) > LEADER_MAX_MINT_SHARE:
