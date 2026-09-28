@@ -402,12 +402,23 @@ def run_worker_features(
     home_keys: list[str],
     buffer_keys: list[str],
     creator_hist: dict[str, list[int]],
+    *,
+    hour_info_fn: Any = _hour_info,
+    row_iter_fn: Any = _iter_trades,
+    creates_override: dict[str, tuple[_Mint, _Feat]] | None = None,
 ) -> list[dict[str, Any]]:
+    """`hour_info_fn`/`row_iter_fn`/`creates_override` let a second pool with a
+    different on-disk layout (e.g. the Oracle live tape in
+    tools.oracle_live_adapter / tools.exploration_entry_model_b2) reuse this
+    exact streaming worker and score_one unchanged. Every default reproduces
+    the original fast-box-only behavior exactly, so the existing pool-A
+    tests and reports are untouched.
+    """
     os.nice(19)
-    home_hours = [_hour_info(k) for k in home_keys]
-    buffer_hours = [_hour_info(k) for k in buffer_keys]
+    home_hours = [hour_info_fn(k) for k in home_keys]
+    buffer_hours = [hour_info_fn(k) for k in buffer_keys]
     hours = home_hours + buffer_hours
-    creates = _load_creates_full(home_hours)
+    creates = creates_override if creates_override is not None else _load_creates_full(home_hours)
     hot: dict[str, _Mint] = {mid: m for mid, (m, _f) in creates.items()}
     feat: dict[str, _Feat] = {mid: f for mid, (_m, f) in creates.items()}
     watch: dict[str, _Mint] = {}
@@ -450,7 +461,7 @@ def run_worker_features(
             file=sys.stderr,
             flush=True,
         )
-        for row in _iter_trades(hour["trade"]):
+        for row in row_iter_fn(hour["trade"]):
             lines += 1
             mint_id = row.get("mint")
             if not isinstance(mint_id, str):
