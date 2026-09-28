@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily 00:00 UTC forward-paper runner restart on mal-core-0 (Oracle)
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 UTC
+Persistent=false
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

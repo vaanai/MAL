@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily 00:00 UTC forward-paper runner restart on mal-core-0 (Oracle)
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/MAL
+ExecStart=%h/MAL/ops/claude-schedules/mal-runner-daily-restart.sh
+TimeoutStartSec=300
+Nice=10
