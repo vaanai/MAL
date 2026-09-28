@@ -37,25 +37,24 @@ Adds on top of that (DEC-014):
   they fall in (restarts reset cross-mint state, so a day that had a restart
   reads differently from one that didn't).
 
-Known gap (read this before trusting the pressure-fail numbers): as of this
-PR, `tools/forward_paper.py` does not stamp any pressure-fail counterfactual
-onto `positions.jsonl` rows. The row field it *does* stamp,
-`fee_sensitivity`, is a different axis entirely -- priority-fee routing
-(direct vs portal, at a few priority-fee levels) -- not the same-slot-buys /
-nearby-buy-SOL fail-pressure curve in `tools.paper_fail_pressure`. That
-curve needs the sealed trade tape to evaluate (same-slot buy count, nearby
-buy SOL at the send), which is not one of this tool's declared inputs and is
-not on `positions.jsonl` rows today. This module therefore reads an
-optional, not-yet-populated field, `pressure_scale_1_pnl_lamports` (and
-`pressure_scale_2_pnl_lamports`, reporting-only, not a gate), on `close`/
-`miss` rows. If a book's rows never carry that field, its pressure-scale-1
-trade list is empty, n is 0, and it fails the gate's min-n blocker on that
-leg -- fails closed, not silently treated as passing. See the PR body for
-what should happen before 2026-10-05: either `forward_paper.py` (or an
-offline companion in the shape of `forward_paper_settle_orphans.py`) needs
-to stamp this field, or the kill review needs to explicitly declare the
-pressure-fail leg not-yet-measurable and say so in the verdict, rather than
-promote on the flat leg alone.
+Pressure-fail coverage (`--pressure`): `tools/forward_paper.py` still only
+ever bakes the flat 15% model into `pnl_lamports` -- `fee_sensitivity` is a
+different axis (priority-fee routing), not the pressure curve. The
+pressure-fail counterfactual is computed offline by
+`tools/forward_paper_pressure_stamp.py`, the same read-only, snapshot-only
+pattern as `tools/forward_paper_settle_orphans.py`, and joined in here on
+`--pressure pressure.jsonl` by the same `(ledger, book, mint, decision_t_ms)`
+key everything else in this module already joins on. This module never
+relaxes the pressure leg to make a verdict: a book whose pressure coverage
+is incomplete (any close/miss/settled row in its trade list lacking
+`pressure_scale_1_pnl_lamports`, or carrying a `pressure_error` from the
+stamp tool) gets the status **NOT_DECIDABLE**, never PROMOTE and never a
+plain KILL that could be mistaken for "measured and found wanting". The
+same status applies to a book with any unmatched `open` orphan in the window
+(no `close`, no settlement row of either outcome for that decision) or any
+`settle_failed` settlement -- missing data, not a zero. See
+`docs/HOLDOUT_LEDGER.md` / DEC-014's dated amendment and LAB_STATE.md for
+the 2026-10-05 read procedure this module is the designated scorer for.
 """
 
 from __future__ import annotations
@@ -72,6 +71,7 @@ from tools.forward_paper import (
     VOID_FROM_MS,
     _parse_iso_ms,
     books_from_config,
+    decision_counts_for_promotion,
     iter_position_rows,
     load_config,
     position_row_counts_for_promotion,
@@ -158,23 +158,50 @@ def _settlement_in_window(row: dict[str, Any], window_start_ms: int, window_end_
     return window_start_ms <= decision_t_ms < window_end_ms
 
 
+def _open_in_window(row: dict[str, Any], window_start_ms: int, window_end_ms: int) -> bool:
+    """Same window rule as `_in_window`, for `event: "open"` rows -- which
+    `position_row_counts_for_promotion` always rejects (it only counts
+    `close`/`miss`), so this is a separate, narrower check used only to find
+    orphans: an `open` row inside the window with no matching `close` and no
+    matching settlement row of either outcome for its
+    `(ledger, book, mint, decision_t_ms)` key.
+    """
+    if row.get("event") != "open":
+        return False
+    decision_t_ms = row.get("decision_t_ms")
+    if isinstance(decision_t_ms, bool) or not isinstance(decision_t_ms, int):
+        return False
+    if not decision_counts_for_promotion(decision_t_ms, window_start_ms):
+        return False
+    return window_start_ms <= decision_t_ms < window_end_ms
+
+
 def load_window_rows(
     positions_path: Path,
     settlements_path: Path | None,
     *,
     window_start_ms: int,
     window_end_ms: int,
-) -> tuple[list[dict[str, Any]], int, int, list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], int, int, list[dict[str, Any]], list[dict[str, Any]]]:
     """Positions + settlements in the window, deduped on the match key.
 
     Returns (rows, n_settled_offline_kept, n_settlement_dupes_dropped,
-    settle_failed_rows). A settlement whose key already has a live
-    close/miss row loses -- the live row is authoritative and the
+    settle_failed_rows, open_orphan_rows). A settlement whose key already has
+    a live close/miss row loses -- the live row is authoritative and the
     settlement is dropped, counted separately. A settlement row flagged
     `settled_offline: false` (with a `settle_error`) never becomes a trade;
     it is returned separately in `settle_failed_rows` so the caller can
     report it, per book, next to `n_settled_offline` -- an orphan that
     failed to settle is missing data, not a zero.
+
+    `open_orphan_rows`: `open` rows in the window with no matching `close`
+    row AND no matching settlement row of *either* outcome
+    (`settled_offline: true` or `false`) -- i.e. a position `tools.
+    forward_paper_settle_orphans` either never ran against or could not
+    resolve either way. #143 makes that tool write a `settled_offline: false`
+    row for every soft skip too, so with a complete settlement run this list
+    should be empty; a non-empty list here means the settlement step is
+    itself incomplete, not just individually-failed orphans.
     """
     live_by_key: dict[tuple[Any, Any, Any, Any], dict[str, Any]] = {}
     for row in iter_position_rows(positions_path):
@@ -208,8 +235,21 @@ def load_window_rows(
             # malformed settlement row -- neither a trade nor a reportable
             # failure, so it is skipped rather than guessed at.
 
+    open_orphans: list[dict[str, Any]] = []
+    open_orphan_keys: set[tuple[Any, Any, Any, Any]] = set()
+    for row in iter_position_rows(positions_path):
+        if not _open_in_window(row, window_start_ms, window_end_ms):
+            continue
+        key = _row_key(row)
+        if key in live_by_key or key in settled_keys or key in settle_failed_keys:
+            continue
+        if key in open_orphan_keys:
+            continue
+        open_orphan_keys.add(key)
+        open_orphans.append(row)
+
     rows = list(live_by_key.values()) + settled
-    return rows, len(settled), dupes, settle_failed
+    return rows, len(settled), dupes, settle_failed, open_orphans
 
 
 def _book_trades(rows: Iterable[dict[str, Any]], book_id: str, pnl_key: str) -> list[BookTrade]:
@@ -228,6 +268,39 @@ def _book_trades(rows: Iterable[dict[str, Any]], book_id: str, pnl_key: str) -> 
             continue
         trades.append(BookTrade(mint=mint, t_ms=t_ms, pnl=pnl))
     return trades
+
+
+def load_pressure_map(pressure_path: Path | None) -> dict[tuple[Any, Any, Any, Any], dict[str, Any]]:
+    """`tools.forward_paper_pressure_stamp` output, keyed the same as every
+    other join in this module. Last row for a key wins (the stamp tool does
+    not expect duplicate keys; this is a defined tie-break, not a guess)."""
+    out: dict[tuple[Any, Any, Any, Any], dict[str, Any]] = {}
+    if pressure_path is None or not pressure_path.is_file():
+        return out
+    for row in iter_settlement_rows(pressure_path):  # schema-agnostic jsonl reader
+        out[_row_key(row)] = row
+    return out
+
+
+def join_pressure(rows: Iterable[dict[str, Any]], pressure_map: dict[tuple[Any, Any, Any, Any], dict[str, Any]]) -> None:
+    """Mutates each row in place: `pressure_scale_1_pnl_lamports`,
+    `pressure_scale_2_pnl_lamports`, `pressure_error` from the stamp tool's
+    output at the row's match key, when present. A row with no matching
+    pressure.jsonl entry is left untouched -- `_book_trades` already treats a
+    missing/non-int `pressure_scale_1_pnl_lamports` as "not counted", which
+    is exactly the fail-closed behavior this join needs.
+    """
+    for row in rows:
+        stamped = pressure_map.get(_row_key(row))
+        if stamped is None:
+            continue
+        for field in ("pressure_scale_1_pnl_lamports", "pressure_scale_2_pnl_lamports"):
+            value = stamped.get(field)
+            if isinstance(value, int) and not isinstance(value, bool):
+                row[field] = value
+        error = stamped.get("pressure_error")
+        if error:
+            row["pressure_error"] = error
 
 
 def _pct(ordered: Sequence[float], p: float) -> float:
@@ -367,19 +440,33 @@ def score_book(
     book_id: str,
     rows: Sequence[dict[str, Any]],
     settle_failed_rows: Sequence[dict[str, Any]],
+    open_orphan_rows: Sequence[dict[str, Any]],
     *,
     restarts: Sequence[str],
+    holm_draws: int = HOLM_DRAWS,
 ) -> dict[str, Any]:
     flat_trades = _book_trades(rows, book_id, "pnl_lamports")
     pressure_trades = _book_trades(rows, book_id, "pressure_scale_1_pnl_lamports")
     pressure2_trades = _book_trades(rows, book_id, "pressure_scale_2_pnl_lamports")
 
-    n_live = sum(1 for r in rows if r.get("book") == book_id and not r.get("settled_offline"))
-    n_settled_offline = sum(1 for r in rows if r.get("book") == book_id and r.get("settled_offline"))
+    book_rows = [r for r in rows if r.get("book") == book_id]
+    n_live = sum(1 for r in book_rows if not r.get("settled_offline"))
+    n_settled_offline = sum(1 for r in book_rows if r.get("settled_offline"))
     book_settle_failed = [r for r in settle_failed_rows if r.get("book") == book_id]
     n_settle_failed = len(book_settle_failed)
     settle_errors = sorted({str(r.get("settle_error")) for r in book_settle_failed if r.get("settle_error")})
-    incomplete = n_settle_failed > 0
+    n_open_orphans = sum(1 for r in open_orphan_rows if r.get("book") == book_id)
+    # Missing data, not a zero: neither an unresolved restart-orphan
+    # (`open` row with no close and no settlement of either outcome) nor a
+    # settle_failed row is a trade this book actually had -- both mean the
+    # settlement step itself is incomplete for this book.
+    incomplete = n_settle_failed > 0 or n_open_orphans > 0
+
+    # DEC-014's pressure leg is never relaxed: every row counted as a flat
+    # trade must also carry a pressure_scale_1_pnl_lamports value, and none
+    # of this book's rows may carry a pressure_error from the stamp tool.
+    n_pressure_error = sum(1 for r in book_rows if r.get("pressure_error"))
+    pressure_coverage_complete = len(pressure_trades) == len(flat_trades) and n_pressure_error == 0
 
     flat_only = book_stats(flat_trades)
     pressure_only = book_stats(pressure_trades) if pressure_trades else book_stats([])
@@ -392,8 +479,8 @@ def score_book(
     day_restarts = restarts_by_day(restarts)
     days = [dict(day, restarts_utc=day_restarts.get(day["day"], [])) for day in flat_only["days"]]
 
-    p_flat = bootstrap_p_le_zero(flat_trades)
-    p_pressure = bootstrap_p_le_zero(pressure_trades)
+    p_flat = bootstrap_p_le_zero(flat_trades, draws=holm_draws)
+    p_pressure = bootstrap_p_le_zero(pressure_trades, draws=holm_draws)
 
     return {
         "book": book_id,
@@ -402,8 +489,11 @@ def score_book(
         "n_settled_offline": n_settled_offline,
         "n_settle_failed": n_settle_failed,
         "settle_errors": settle_errors,
+        "n_open_orphans": n_open_orphans,
         "incomplete": incomplete,
         "pressure_data_available": bool(pressure_trades),
+        "n_pressure_error": n_pressure_error,
+        "pressure_coverage_complete": pressure_coverage_complete,
         "gate_flat": flat_only,
         "gate_pressure_scale_1": pressure_only,
         "gate_clears_both_models": bool(combined["promote"]),
@@ -421,6 +511,7 @@ def run_kill_review(
     settlements_path: Path | None,
     restarts_log_path: Path | None,
     manual_restarts: Sequence[str],
+    pressure_path: Path | None = None,
     window_start_ms: int = WINDOW_START_MS,
     window_end_ms: int = WINDOW_END_MS,
     holm_draws: int = HOLM_DRAWS,
@@ -433,12 +524,14 @@ def run_kill_review(
     candidates = [spec.book_id for spec in specs if spec.kind != "baseline"]
     reference = [spec.book_id for spec in specs if spec.kind == "baseline"]
 
-    rows, n_settled_offline, n_settlement_dupes, settle_failed_rows = load_window_rows(
+    rows, n_settled_offline, n_settlement_dupes, settle_failed_rows, open_orphan_rows = load_window_rows(
         positions_path,
         settlements_path,
         window_start_ms=window_start_ms,
         window_end_ms=window_end_ms,
     )
+
+    join_pressure(rows, load_pressure_map(pressure_path))
 
     restarts = load_restarts(
         restarts_log_path,
@@ -449,7 +542,9 @@ def run_kill_review(
 
     books: dict[str, dict[str, Any]] = {}
     for book_id in candidates:
-        books[book_id] = score_book(book_id, rows, settle_failed_rows, restarts=restarts)
+        books[book_id] = score_book(
+            book_id, rows, settle_failed_rows, open_orphan_rows, restarts=restarts, holm_draws=holm_draws
+        )
 
     p_flat_by_book = {book_id: books[book_id]["bootstrap_p_le_zero"]["flat"] for book_id in candidates}
     p_pressure_by_book = {book_id: books[book_id]["bootstrap_p_le_zero"]["pressure_scale_1"] for book_id in candidates}
@@ -463,29 +558,44 @@ def run_kill_review(
     }
 
     passing: list[str] = []
+    not_decidable: list[str] = []
+    killed: list[str] = []
     incomplete_books: list[str] = []
     for book_id in candidates:
         block = books[book_id]
         block["holm_flat"] = holm_flat[book_id]
         block["holm_pressure_scale_1"] = holm_pressure[book_id]
-        # An incomplete book (an orphan that failed to settle offline) is
-        # missing data, not a zero -- it never promotes on what is on hand,
-        # even if the rows it does have already clear the gate and Holm.
-        promote = bool(
+        gate_pass = bool(
             block["gate_clears_both_models"]
             and holm_flat[book_id]["pass"]
             and holm_pressure[book_id]["pass"]
-            and not block["incomplete"]
         )
-        block["promote"] = promote
+        # DEC-014, dated amendment: the pressure leg is never relaxed. A book
+        # missing pressure coverage on any counted trade, or carrying an
+        # unresolved restart-orphan or settle_failed row, is NOT_DECIDABLE --
+        # never PROMOTE, and never a plain KILL that reads as "measured and
+        # found wanting" when it was never actually measured on both legs.
+        if not block["pressure_coverage_complete"] or block["incomplete"]:
+            status = "NOT_DECIDABLE"
+        elif gate_pass:
+            status = "PROMOTE"
+        else:
+            status = "KILL"
+        block["status"] = status
+        block["promote"] = status == "PROMOTE"
         del block["_flat_trades"]
         del block["_pressure_trades"]
-        if promote:
+        if status == "PROMOTE":
             passing.append(book_id)
+        elif status == "NOT_DECIDABLE":
+            not_decidable.append(book_id)
+        else:
+            killed.append(book_id)
         if block["incomplete"]:
             incomplete_books.append(book_id)
 
     n_settle_failed_total = sum(books[book_id]["n_settle_failed"] for book_id in candidates)
+    n_open_orphans_total = sum(books[book_id]["n_open_orphans"] for book_id in candidates)
 
     return {
         "schema": SCHEMA_KILL_REVIEW,
@@ -502,16 +612,31 @@ def run_kill_review(
         "n_settled_offline_total": n_settled_offline,
         "n_settlement_dupes_dropped": n_settlement_dupes,
         "n_settle_failed_total": n_settle_failed_total,
+        "n_open_orphans_total": n_open_orphans_total,
         "incomplete_books": incomplete_books,
         "restarts": restarts,
         "books": books,
-        "verdict": {"passing": passing, "none": not passing},
+        "verdict": {
+            "passing": passing,
+            "promote": passing,
+            "not_decidable": not_decidable,
+            "kill": killed,
+            "none": not passing,
+        },
     }
 
 
 def verdict_line(result: dict[str, Any]) -> str:
-    passing = result["verdict"]["passing"]
-    return "VERDICT: " + (", ".join(passing) if passing else "NONE")
+    verdict = result["verdict"]
+
+    def _fmt(books: list[str]) -> str:
+        return ", ".join(books) if books else "NONE"
+
+    return (
+        f"VERDICT: PROMOTE={_fmt(verdict['promote'])}; "
+        f"NOT_DECIDABLE={_fmt(verdict['not_decidable'])}; "
+        f"KILL={_fmt(verdict['kill'])}"
+    )
 
 
 def render_markdown(result: dict[str, Any]) -> str:
@@ -527,11 +652,12 @@ def render_markdown(result: dict[str, Any]) -> str:
     lines.append(
         f"Settlements: {result['n_settled_offline_total']} kept, "
         f"{result['n_settlement_dupes_dropped']} dropped as duplicates of a live close, "
-        f"{result['n_settle_failed_total']} failed to settle offline"
+        f"{result['n_settle_failed_total']} failed to settle offline, "
+        f"{result['n_open_orphans_total']} open with no matching close or settlement"
     )
     if result["incomplete_books"]:
         lines.append(
-            f"INCOMPLETE (settle_failed > 0, never promotes on what is on hand): "
+            f"INCOMPLETE (settle_failed > 0 or an unmatched open orphan > 0 -> NOT_DECIDABLE): "
             f"{', '.join(result['incomplete_books'])}"
         )
     if result["restarts"]:
@@ -542,11 +668,15 @@ def render_markdown(result: dict[str, Any]) -> str:
         lines.append(f"## {book_id}")
         lines.append(
             f"- n={block['n_trades']} (live={block['n_live']}, settled_offline={block['n_settled_offline']}, "
-            f"settle_failed={block['n_settle_failed']})"
+            f"settle_failed={block['n_settle_failed']}, open_orphans={block['n_open_orphans']})"
         )
         if block["incomplete"]:
-            lines.append(f"- INCOMPLETE: settle_errors={block['settle_errors']}")
-        lines.append(f"- pressure_data_available: {block['pressure_data_available']}")
+            lines.append(f"- INCOMPLETE: settle_errors={block['settle_errors']} n_open_orphans={block['n_open_orphans']}")
+        lines.append(
+            f"- pressure_data_available: {block['pressure_data_available']} "
+            f"pressure_coverage_complete: {block['pressure_coverage_complete']} "
+            f"n_pressure_error: {block['n_pressure_error']}"
+        )
         gf = block["gate_flat"]
         lines.append(
             f"- flat: n={gf['n']} mean_sol={gf['mean_sol']} mean_ci90={gf['mean_ci90_sol']} "
@@ -567,7 +697,7 @@ def render_markdown(result: dict[str, Any]) -> str:
         lines.append(
             f"- holm pressure_scale_1: rank={hp['rank']} p={hp['p_value']} threshold={hp['threshold']:.6f} pass={hp['pass']}"
         )
-        lines.append(f"- PROMOTE: {block['promote']}")
+        lines.append(f"- STATUS: {block['status']} (PROMOTE: {block['promote']})")
         lines.append("")
         lines.append("| day | n | total_sol | mean_sol | restarts |")
         lines.append("| --- | --- | --- | --- | --- |")
@@ -585,6 +715,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--positions", required=True, type=Path)
     parser.add_argument("--settlements", type=Path)
+    parser.add_argument("--pressure", type=Path, help="tools.forward_paper_pressure_stamp output (pressure.jsonl)")
     parser.add_argument("--restarts-log", type=Path, default=Path("/home/claude/reports/runner-restarts.jsonl"))
     parser.add_argument("--manual-restart", action="append", default=[], dest="manual_restarts")
     parser.add_argument("--window-start", default=WINDOW_START)
@@ -599,6 +730,7 @@ def main(argv: list[str] | None = None) -> int:
         config_path=args.config,
         positions_path=args.positions,
         settlements_path=args.settlements,
+        pressure_path=args.pressure,
         restarts_log_path=args.restarts_log,
         manual_restarts=args.manual_restarts,
         window_start_ms=_parse_iso_ms(args.window_start),

@@ -60,3 +60,15 @@ The 2026-10-05T05:00:00Z kill review, and any promotion read under this DEC, **m
 3. report, per book, the settled-offline count and the settle-failed count (rows with `settled_offline: false`) alongside the gate numbers, so a reviewer can see how much of a book's read was reconstructed offline versus closed live, and how many orphans could not be settled at all.
 
 This does not change the four base gate thresholds or the Holm step-down in (b). It closes a gap in what "the book" means when a runner restarted mid-window: without this join, a restart-heavy window undercounts trades and is biased toward shorter holds (a position still open at a restart is disproportionately likely to have been a longer hold).
+
+## Amendment 2 (2026-09-28) — the pressure leg is never relaxed; NOT_DECIDABLE
+
+`tools/forward_paper.py` bakes only the flat 15% fail model into `pnl_lamports` (`_landing_failed`, a per-attempt coin flip). Nothing on `positions.jsonl` carried a pressure-fail counterfactual until `tools/forward_paper_pressure_stamp.py` (offline, read-only, snapshot-only — same pattern as `tools/forward_paper_settle_orphans.py`), which computes `pressure_scale_1_pnl_lamports` (gate) and `pressure_scale_2_pnl_lamports` (reporting only) per close/miss/settled row and writes `pressure.jsonl`, keyed the same as everything else in this DEC: `(ledger, book, mint, decision_t_ms)`.
+
+`tools/kill_review.py` (#140), the designated 2026-10-05T05:00:00Z scorer, joins `--pressure pressure.jsonl` onto its already-deduplicated `positions.jsonl` + `settlements.jsonl` (#141) rows on that key. This does **not** loosen the promotion gate's requirement to clear both the flat and pressure-fail models — it can only make that requirement checkable. A book's pressure leg is never relaxed to reach a verdict:
+
+- A book gets the status **NOT_DECIDABLE** — never PROMOTE, and never a plain KILL that could be misread as "measured on both legs and found wanting" — if any row counted as a flat trade lacks `pressure_scale_1_pnl_lamports`, or carries a `pressure_error` from the stamp tool (e.g. a `flat_15pct_landing` miss row, which cannot be reconstructed offline: the counterfactual "if it had landed" exit needs `size_lamports`/`exit_rule`/`applied_latency_ms`, none of which are logged on that row shape — see the stamp tool's module docstring).
+- The same NOT_DECIDABLE status applies to a book with an unresolved restart-orphan (an `open` row with no matching `close` and no settlement row of *either* outcome for its key) or any `settle_failed` settlement row — missing data, not a zero, same rule as Amendment 1.
+- A book only reads PROMOTE or KILL once its pressure coverage is complete and it has no unresolved orphan or settle_failed row. `tools/kill_review.py`'s verdict line reports all three buckets: `VERDICT: PROMOTE=<books or NONE>; NOT_DECIDABLE=<books>; KILL=<books>`.
+
+If the pressure stamp cannot cover a book by 2026-10-05T05:00:00Z, that book is NOT_DECIDABLE at the kill review — it does not promote on the flat leg alone, and it is not scored as a failure it was never actually measured against.
