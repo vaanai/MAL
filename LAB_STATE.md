@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers. **As-of:** 2026-09-27 UTC. `main` through [#120](https://github.com/vaanai/MAL/pull/120) (`bc7a0c6`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md).
+Compact reload for managers. **As-of:** 2026-09-28 UTC. `main` through [#125](https://github.com/vaanai/MAL/pull/125) (`f687fad`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md).
 
 ## Objective
 
