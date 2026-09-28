@@ -276,7 +276,7 @@ def settle_orphan(
     return SettleResult(row, None)
 
 
-def _failed_row(orphan: dict[str, Any], error: BaseException) -> dict[str, Any]:
+def _failed_row(orphan: dict[str, Any], error: BaseException | str) -> dict[str, Any]:
     """One orphan's settlement blew up. Record it and move on -- the bug this
     guards against (#settle-orphans-ladder-fix) is exactly a single orphan's
     exception aborting settlement for every other orphan, including other
@@ -284,7 +284,7 @@ def _failed_row(orphan: dict[str, Any], error: BaseException) -> dict[str, Any]:
     return {
         "schema": SCHEMA_SETTLEMENT,
         "settled_offline": False,
-        "settle_error": f"{type(error).__name__}: {error}",
+        "settle_error": error if isinstance(error, str) else f"{type(error).__name__}: {error}",
         "ledger": orphan.get("ledger"),
         "event": "close",
         "book": orphan.get("book"),
@@ -318,8 +318,14 @@ def settle_orphans(
         if result.row is not None:
             rows.append(result.row)
         else:
+            # A soft skip (venue/token mismatch, censored tape, unclosed exit
+            # status, ...) is still an orphan that did not settle. Write a
+            # failed row for it too, so kill_review counts settle_failed and
+            # marks the book incomplete instead of the orphan silently
+            # vanishing from both files.
             reason = result.skip_reason or "unknown"
             skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            rows.append(_failed_row(orphan, f"skip: {reason}"))
     return rows, skip_reasons
 
 
