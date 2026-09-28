@@ -11,7 +11,8 @@ from pathlib import Path
 from tools import forward_paper_pressure_stamp as pstamp
 from tools import latency_curve as lc
 from tools import migrate_direct_oos as mdo
-from tools.paper_curve_math import PRIORITY_FEE_LAMPORTS
+from tools.forward_paper import BookSpec, ForwardEngine, _event_ts, flow_from_tape_row
+from tools.paper_curve_math import DEFAULT_SLIPPAGE_CAP, PRIORITY_FEE_LAMPORTS
 from tools.paper_price_path import CreateSignal
 
 T0 = 1_700_000_000_000
@@ -236,6 +237,12 @@ class MissRowTests(unittest.TestCase):
         self.assertNotIn("pressure_error", out[0])
 
     def test_flat_fail_miss_is_not_reconstructable(self) -> None:
+        """(c) A flat-fail miss row from a runner build before #145
+        (`counterfactual_fill` absent -- it never logged the discarded fill)
+        still gets `pressure_error`, never a guessed number. `entry_status`
+        is `"missed_landing"` here, the real value `tools/forward_paper.py`
+        writes for this row shape (tools/forward_paper.py:2025) -- not
+        `"filled"`."""
         row = {
             "schema": "forward_paper_position_v1",
             "ledger": "shadow",
@@ -243,7 +250,7 @@ class MissRowTests(unittest.TestCase):
             "book": "book_a",
             "mint": "MintX",
             "decision_t_ms": T0,
-            "entry_status": "filled",
+            "entry_status": "missed_landing",
             "reason": "flat_15pct_landing",
             "pnl_lamports": -PRIORITY_FEE_LAMPORTS,
         }
@@ -289,6 +296,158 @@ class SnapshotGuardTests(unittest.TestCase):
             )
             self.assertEqual(rc, 0)
             self.assertTrue(out.is_file())
+
+
+def _hold_book() -> BookSpec:
+    return BookSpec(
+        "buy_all",
+        "baseline",
+        "hold_30s",
+        max_concurrent=None,
+        daily_loss_lamports=None,
+        creator_cooldown_ms=0,
+        token_cooldown_ms=0,
+    )
+
+
+def _hold_tape() -> tuple[dict[str, CreateSignal], list[dict[str, object]]]:
+    creates = {"MintF": _create("MintF", T0)}
+    rows = [
+        _trade("MintF", T0 - 1_000, slot=19, event_index=0, sol=1_000_000_000, quote=40_000_000_000, base=1_050_000_000_000_000, venue="pump_bonding"),
+        # A second same-slot buy right before entry: same_slot_buys/nearby
+        # SOL are nonzero on both legs of the equivalence.
+        _trade("MintF", T0 - 800, slot=19, event_index=1, sol=2_000_000_000, quote=41_000_000_000, base=1_049_000_000_000_000, venue="pump_bonding"),
+        # Exit-time (T0 + hold_30s) pool state: a different price than entry.
+        _trade("MintF", T0 + 30_000, slot=25, event_index=2, sol=1_000_000_000, quote=48_000_000_000, base=1_010_000_000_000_000, venue="pump_bonding"),
+        _trade("MintF", T0 + 60_000, slot=26, event_index=3, sol=1_000_000_000, quote=49_000_000_000, base=1_005_000_000_000_000, venue="pump_bonding"),
+    ]
+    return creates, rows
+
+
+def _ladder_book() -> BookSpec:
+    return BookSpec(
+        "ladder_all",
+        "baseline",
+        "ladder_1_5x_t25",
+        max_concurrent=None,
+        daily_loss_lamports=None,
+        creator_cooldown_ms=0,
+        token_cooldown_ms=0,
+    )
+
+
+def _ladder_tape() -> tuple[dict[str, CreateSignal], list[dict[str, object]]]:
+    creates = {"MintL": _create("MintL", T0)}
+    rows = [
+        _trade("MintL", T0 - 1_000, slot=19, event_index=0, sol=1_000_000_000, quote=40_000_000_000, base=1_050_000_000_000_000, venue="pump_bonding"),
+        _trade("MintL", T0 + 5_000, slot=2, event_index=1, quote=42_000_000_000, base=1_040_000_000_000_000, venue="pump_bonding"),
+        # +100% off the first print: past ladder_1_5x_t25's scale_ret=0.50, scales out half.
+        _trade("MintL", T0 + 30_000, slot=3, event_index=2, quote=84_000_000_000, base=1_040_000_000_000_000, venue="pump_bonding"),
+        # Drops back under peak*(1-trail=0.25): trails the remainder out.
+        _trade("MintL", T0 + 60_000, slot=4, event_index=3, quote=60_000_000_000, base=1_040_000_000_000_000, venue="pump_bonding"),
+    ]
+    return creates, rows
+
+
+def _run_engine_positions(
+    book: BookSpec,
+    creates: dict[str, CreateSignal],
+    rows: list[dict[str, object]],
+    *,
+    fail_rate: float,
+    tape_end_ms: int,
+) -> list[dict[str, object]]:
+    """Same push loop `tools.forward_paper.replay_rows` uses, with a
+    `fail_rate` knob `replay_rows` does not expose (tests only)."""
+    engine = ForwardEngine(
+        [book],
+        kill_file=Path("/tmp/forward-paper-pressure-stamp-cf-fail-absent"),
+        retain_rows=True,
+        tape_end_ms=tape_end_ms,
+        slippage_cap=DEFAULT_SLIPPAGE_CAP,
+        fail_rate=fail_rate,
+    )
+    for create in creates.values():
+        engine.push_create(create)
+    for row in rows:
+        parsed = flow_from_tape_row(row)
+        if parsed is None:
+            continue
+        mint, pr = parsed
+        engine.push_print(mint, pr, _event_ts(row))
+    engine.drain_until(tape_end_ms, final=True)
+    return engine.positions
+
+
+class CounterfactualEquivalenceTests(unittest.TestCase):
+    """(a)/(b): a fail_rate=1.0 run's counterfactual miss, priced by the
+    stamp tool through `reconstruct_fill`, equals the pressure pnl the same
+    attempt gets when fail_rate=0.0 lets it open and close for real -- same
+    tape, same book, same entry. Proves the reconstruction, not just that it
+    runs without raising."""
+
+    def _equivalence(
+        self, book: BookSpec, creates: dict[str, CreateSignal], rows: list[dict[str, object]]
+    ) -> tuple[dict, dict, dict, dict]:
+        tape_end_ms = T0 + 200_000
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tape_path, create_path = _write_tape(tmp_path, creates, rows)
+
+            zero = _run_engine_positions(book, creates, rows, fail_rate=0.0, tape_end_ms=tape_end_ms)
+            one = _run_engine_positions(book, creates, rows, fail_rate=1.0, tape_end_ms=tape_end_ms)
+
+            close_rows = [r for r in zero if r["event"] == "close" and r["ledger"] == "shadow"]
+            miss_rows = [r for r in one if r["event"] == "miss" and r["ledger"] == "shadow"]
+            self.assertEqual(len(close_rows), 1, close_rows)
+            self.assertEqual(len(miss_rows), 1, miss_rows)
+            close_row, miss_row = close_rows[0], miss_rows[0]
+            self.assertIs(miss_row.get("counterfactual_fill"), True)
+
+            stamp_tape_end = tape_end_ms + 1_000_000
+            out_close, counts_close = pstamp.stamp_rows(
+                [close_row],
+                tape_paths=[tape_path],
+                create_paths=[create_path],
+                tape_end_ms=stamp_tape_end,
+                slippage_cap=DEFAULT_SLIPPAGE_CAP,
+            )
+            out_miss, counts_miss = pstamp.stamp_rows(
+                [miss_row],
+                tape_paths=[tape_path],
+                create_paths=[create_path],
+                tape_end_ms=stamp_tape_end,
+                slippage_cap=DEFAULT_SLIPPAGE_CAP,
+            )
+            self.assertEqual(counts_close, {"send": 1})
+            self.assertEqual(counts_miss, {"miss_counterfactual": 1})
+            stamped_close, stamped_miss = out_close[0], out_miss[0]
+            self.assertNotIn("pressure_error", stamped_close)
+            self.assertNotIn("pressure_error", stamped_miss)
+            return close_row, miss_row, stamped_close, stamped_miss
+
+    def test_hold_book_counterfactual_matches_a_real_send(self) -> None:
+        """(a) The equivalence proof, on a non-ladder (`hold_30s`) exit."""
+        creates, rows = _hold_tape()
+        close_row, miss_row, stamped_close, stamped_miss = self._equivalence(_hold_book(), creates, rows)
+        self.assertEqual(stamped_miss["counterfactual_exit_status"], close_row["exit_status"])
+        self.assertEqual(stamped_miss["counterfactual_would_pnl_lamports"], close_row["pnl_lamports"])
+        self.assertEqual(stamped_miss["same_slot_buys"], stamped_close["same_slot_buys"])
+        self.assertEqual(stamped_miss["nearby_buy_lamports"], stamped_close["nearby_buy_lamports"])
+        self.assertGreater(stamped_miss["same_slot_buys"], 0, "pressure inputs should be nonzero on this fixture")
+        self.assertEqual(stamped_miss["pressure_scale_1_pnl_lamports"], stamped_close["pressure_scale_1_pnl_lamports"])
+        self.assertEqual(stamped_miss["pressure_scale_2_pnl_lamports"], stamped_close["pressure_scale_2_pnl_lamports"])
+
+    def test_ladder_book_counterfactual_matches_a_real_send(self) -> None:
+        """(b) The same equivalence proof, on a `LadderRule` exit -- proves
+        `reconstruct_fill`'s `simulate_ladder` branch, not just `simulate_exit`."""
+        creates, rows = _ladder_tape()
+        close_row, miss_row, stamped_close, stamped_miss = self._equivalence(_ladder_book(), creates, rows)
+        self.assertEqual(close_row["exit_status"], "realized")
+        self.assertEqual(stamped_miss["counterfactual_exit_status"], close_row["exit_status"])
+        self.assertEqual(stamped_miss["counterfactual_would_pnl_lamports"], close_row["pnl_lamports"])
+        self.assertEqual(stamped_miss["pressure_scale_1_pnl_lamports"], stamped_close["pressure_scale_1_pnl_lamports"])
+        self.assertEqual(stamped_miss["pressure_scale_2_pnl_lamports"], stamped_close["pressure_scale_2_pnl_lamports"])
 
 
 if __name__ == "__main__":
