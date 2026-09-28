@@ -105,8 +105,9 @@ class GateMathTests(unittest.TestCase):
             self.assertTrue(block["holm_flat"]["pass"])
             self.assertTrue(block["holm_pressure_scale_1"]["pass"])
             self.assertTrue(block["promote"])
+            self.assertEqual(block["status"], "PROMOTE")
             self.assertEqual(result["verdict"]["passing"], ["book_a"])
-            self.assertIn("VERDICT: book_a", kill_review.verdict_line(result))
+            self.assertIn("VERDICT: PROMOTE=book_a", kill_review.verdict_line(result))
 
     def test_below_min_n_fails_on_min_n_blocker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -127,8 +128,12 @@ class GateMathTests(unittest.TestCase):
             self.assertEqual(block["gate_flat"]["n"], 50)
             self.assertIn("min_n", block["gate_flat"]["promote_blockers"])
             self.assertFalse(block["promote"])
+            # Pressure coverage is complete (every one of the 50 rows carries
+            # a pressure_scale_1_pnl_lamports) -- this book was measured on
+            # both legs and found wanting, not left undecided.
+            self.assertEqual(block["status"], "KILL")
             self.assertEqual(result["verdict"]["passing"], [])
-            self.assertEqual(kill_review.verdict_line(result), "VERDICT: NONE")
+            self.assertEqual(kill_review.verdict_line(result), "VERDICT: PROMOTE=NONE; NOT_DECIDABLE=NONE; KILL=book_a")
 
 
 class HolmStepDownTests(unittest.TestCase):
