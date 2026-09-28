@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the two Claude-scheduled jobs as systemd --user units for the
+# Install the Claude-scheduled jobs as systemd --user units for the
 # `claude` user on mal-fast-0. Symlinks the unit files into
 # ~/.config/systemd/user/ and reloads the user manager.
 #
@@ -22,7 +22,9 @@ for unit in \
   mal-daily-review.service \
   mal-daily-review.timer \
   mal-oos-check.service \
-  mal-oos-check.timer
+  mal-oos-check.timer \
+  mal-runner-daily-restart.service \
+  mal-runner-daily-restart.timer
 do
   ln -sf "${ROOT}/${unit}" "${USER_UNIT_DIR}/${unit}"
   echo "linked ${USER_UNIT_DIR}/${unit} -> ${ROOT}/${unit}"
@@ -37,6 +39,7 @@ them (a manager's decision, not this script's):
 
   systemctl --user enable --now mal-daily-review.timer
   systemctl --user enable --now mal-oos-check.timer
+  systemctl --user enable --now mal-runner-daily-restart.timer
 
 To check what is loaded without starting anything:
 

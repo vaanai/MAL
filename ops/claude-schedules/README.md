@@ -21,7 +21,10 @@ script (never via the LLM's own tool calls), then run a headless
 | [oos-check.sh](oos-check.sh) | Wrapper: reads the frozen cell's report/manifest, renders the prompt, runs headless claude, writes the report |
 | [mal-oos-check.service](mal-oos-check.service) | oneshot unit |
 | [mal-oos-check.timer](mal-oos-check.timer) | `OnCalendar=2026-09-28 21:00:00 UTC`, `Persistent=false` |
-| [install.sh](install.sh) | Symlinks the four unit files into `~/.config/systemd/user/` and runs `daemon-reload`. Does **not** enable or start the timers. |
+| [mal-runner-daily-restart.sh](mal-runner-daily-restart.sh) | Plain shell (no headless claude): reads the Oracle forward-paper runner's pre-restart state, restarts it, reads its post-restart state, appends a JSON line to a report file |
+| [mal-runner-daily-restart.service](mal-runner-daily-restart.service) | oneshot unit |
+| [mal-runner-daily-restart.timer](mal-runner-daily-restart.timer) | `OnCalendar=*-*-* 00:00:00 UTC`, `Persistent=false`, `AccuracySec=1s` |
+| [install.sh](install.sh) | Symlinks the unit files into `~/.config/systemd/user/` and runs `daemon-reload`. Does **not** enable or start the timers. |
 
 ## Reports
 
@@ -34,6 +37,10 @@ Each run writes:
 - One appended line each to `/home/claude/reports/INDEX.md`.
 - A `.log` (wrapper + claude session log) and a `.facts.txt` (the exact
   facts block handed to claude) next to each report, same stamp.
+- `mal-runner-daily-restart.sh` appends one JSON line per run to
+  `/home/claude/reports/runner-restarts.jsonl` instead — see
+  [Daily forward-paper runner restart](#daily-forward-paper-runner-restart)
+  below.
 
 ## Install (already done once on this box; safe to re-run)
 
@@ -47,6 +54,7 @@ timers are loaded but **inactive** until a manager runs:
 ```bash
 systemctl --user enable --now mal-daily-review.timer
 systemctl --user enable --now mal-oos-check.timer
+systemctl --user enable --now mal-runner-daily-restart.timer
 ```
 
 ## Manual test (timers still disabled)
@@ -57,7 +65,71 @@ ops/claude-schedules/oos-check.sh --test
 ```
 
 Each should exit 0 and leave a sensible `TEST-<date>.md` report under its
-report directory.
+report directory. `mal-runner-daily-restart.sh` has no `--test` mode — its
+one write action (`systemctl --user -M ubuntu@ restart mal-forward-paper`
+on `mal-core-0`) is not something to fire outside its own 00:00 UTC slot,
+so it is not meant to be run by hand at all. To check the read-only halves
+of it work, run the same `ssh -o BatchMode=yes mal-core-0 '...'` commands
+from `mal-runner-daily-restart.sh` directly from a shell — see
+[Daily forward-paper runner restart](#daily-forward-paper-runner-restart).
+
+## Daily forward-paper runner restart
+
+`mal-runner-daily-restart.sh` restarts the Oracle forward-paper runner
+(`mal-forward-paper`, a systemd `--user` service in the `ubuntu` account on
+`mal-core-0`) once a day at exactly **00:00:00 UTC**. This is the only unit
+here that writes anything — one `systemctl --user -M ubuntu@ restart
+mal-forward-paper` call — everything else it does is a read.
+
+**Why**: the runner's in-memory state (wallet tracking, by-creator
+aggregates, the trade tape it holds) grows for as long as the process
+lives and was heading toward its 10G memory ceiling. Restarting once a day
+resets that growth on a predictable clock and, as a side effect, makes each
+UTC day its own process lifetime — useful for per-day scoring, since a
+day's forward-paper numbers no longer straddle an unplanned OOM restart
+partway through.
+
+**What it reads and writes, in order** (see the script for the exact
+commands):
+
+1. Pre-restart, read-only: the newest `mem-census.jsonl` row,
+   `runner-status.json`, and the deployed git SHA (`git rev-parse HEAD` on
+   the runner's checkout, via a per-invocation `-c safe.directory=` since
+   `claude` is a separate read-only account from the `ubuntu` account that
+   owns the checkout — this does not write anything to Oracle).
+2. The restart itself — the only write.
+3. A 90-second wait, then post-restart, read-only: the newest
+   `runner-status.json` row and a `ps -o pid,lstart,etime,rss` line for the
+   restarted process (found via `pgrep -f 'tools.forward_paper serve'`,
+   since a bare `ps -C python` also matches unrelated observe/tape/graph
+   daemons on the same box).
+
+**Where the log goes**: stdout/stderr of the oneshot service go to the
+`claude` user's systemd journal —
+`journalctl --user -u mal-runner-daily-restart.service`. The structured
+result of each run is appended as one JSON line to
+`/home/claude/reports/runner-restarts.jsonl`
+(`restart_utc`, `pre.{rss_kb,head_sha,lag_ms}`,
+`post.{pid,start,rss_kb,lag_ms}`, `ok`, and `error` when `ok` is `false`).
+A line is written even on failure, and the script exits non-zero in that
+case so a failed restart is visible without reading the journal.
+
+**How to disable it**:
+
+```bash
+systemctl --user disable --now mal-runner-daily-restart.timer
+```
+
+This does not touch `mal-forward-paper` itself — it only stops future
+00:00 UTC restarts from firing.
+
+**Known gap**: every restart drops the runner's in-memory `WalletState` /
+`by_creator` tracking and any open paper positions it was holding at
+restart time — there is no persistence for those today, so a position open
+at 23:59:xx UTC is simply gone from memory after the restart, not settled.
+This is a known, accepted cost of the daily cadence, and is being addressed
+by an offline settlement job in a separate PR — this PR does not attempt to
+fix it.
 
 ## Why the wrapper gathers facts instead of the LLM
 
