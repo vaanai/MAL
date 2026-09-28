@@ -272,6 +272,26 @@ def settle_orphan(
     return SettleResult(row, None)
 
 
+def _failed_row(orphan: dict[str, Any], error: BaseException) -> dict[str, Any]:
+    """One orphan's settlement blew up. Record it and move on -- the bug this
+    guards against (#settle-orphans-ladder-fix) is exactly a single orphan's
+    exception aborting settlement for every other orphan, including other
+    books entirely."""
+    return {
+        "schema": SCHEMA_SETTLEMENT,
+        "settled_offline": False,
+        "settle_error": f"{type(error).__name__}: {error}",
+        "ledger": orphan.get("ledger"),
+        "event": "close",
+        "book": orphan.get("book"),
+        "mint": orphan.get("mint"),
+        "decision_t_ms": orphan.get("decision_t_ms"),
+        "t_entry_ms": orphan.get("t_entry_ms"),
+        "size_lamports": orphan.get("size_lamports"),
+        "exit_rule": orphan.get("exit_rule"),
+    }
+
+
 def settle_orphans(
     orphans: Sequence[dict[str, Any]],
     *,
@@ -286,7 +306,11 @@ def settle_orphans(
     skip_reasons: dict[str, int] = {}
     for orphan in orphans:
         mint = orphan.get("mint")
-        result = settle_orphan(orphan, paths.get(mint), slippage_cap=slippage_cap, tape_end_ms=tape_end_ms)
+        try:
+            result = settle_orphan(orphan, paths.get(mint), slippage_cap=slippage_cap, tape_end_ms=tape_end_ms)
+        except Exception as exc:  # noqa: BLE001 - one bad orphan must not sink the rest
+            rows.append(_failed_row(orphan, exc))
+            continue
         if result.row is not None:
             rows.append(result.row)
         else:
@@ -305,7 +329,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--creates-dir", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--tape-end-ms", type=int, help="default: now")
+    parser.add_argument(
+        "--i-know-its-a-snapshot",
+        action="store_true",
+        help=(
+            "Required to run against a --positions file modified in the last "
+            f"{SNAPSHOT_FRESH_MS // 1000}s. Without it, this tool refuses to run "
+            "against what looks like a live, growing positions.jsonl -- see the "
+            "module docstring's DANGER paragraph. Stop the runner, or point "
+            "--positions at a cp'd snapshot, then pass this flag."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if not args.i_know_its_a_snapshot:
+        try:
+            mtime_s = args.positions.stat().st_mtime
+        except FileNotFoundError:
+            mtime_s = None
+        if mtime_s is not None:
+            age_ms = int(time.time() * 1000) - int(mtime_s * 1000)
+            if age_ms < SNAPSHOT_FRESH_MS:
+                raise SystemExit(
+                    f"{args.positions} was modified {age_ms}ms ago, inside the "
+                    f"{SNAPSHOT_FRESH_MS}ms freshness window. This looks like a live, "
+                    "growing positions.jsonl, not a stopped-runner or point-in-time "
+                    "snapshot. Stop the runner or cp a snapshot, or pass "
+                    "--i-know-its-a-snapshot if you are certain this file is frozen."
+                )
 
     raw = load_config(args.config)
     slippage_cap = float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
@@ -334,12 +385,15 @@ def main(argv: list[str] | None = None) -> int:
         for row in rows:
             fh.write(json.dumps(row) + "\n")
 
-    by_book: dict[str, int] = {}
+    by_book: dict[str, dict[str, int]] = {}
     for row in rows:
         book = str(row.get("book"))
-        by_book[book] = by_book.get(book, 0) + 1
+        stats = by_book.setdefault(book, {"settled": 0, "failed": 0})
+        stats["settled" if row.get("settled_offline") else "failed"] += 1
+    settled_n = sum(stats["settled"] for stats in by_book.values())
+    failed_n = sum(stats["failed"] for stats in by_book.values())
     print(
-        f"forward_paper_settle_orphans orphans={len(orphans)} settled={len(rows)} "
+        f"forward_paper_settle_orphans orphans={len(orphans)} settled={settled_n} failed={failed_n} "
         f"by_book={by_book} skip_reasons={skip_reasons}",
         file=sys.stderr,
     )
