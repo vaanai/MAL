@@ -245,6 +245,10 @@ def settle_orphan(
     exit_status = part.get("exit_status")
     if exit_status == "censored":
         return SettleResult(None, "censored_tape_too_short")
+    # Same close filter as the live `_try_exit` (tools/forward_paper.py ~2191):
+    # only these two statuses ever produce a close row there.
+    if exit_status not in ("realized", "no_exit_liquidity"):
+        return SettleResult(None, f"unclosed_exit_status={exit_status}")
     pnl = part.get("pnl_lamports")
     row = {
         "schema": SCHEMA_SETTLEMENT,
