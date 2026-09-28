@@ -100,6 +100,22 @@ The same fast scorer, run with no hour floor, kept scoring newly sealed backward
 
 Restarts drop in-memory open positions (655 of 86,464 opens across all books since the start of the forward-paper log, per #138's read-only count); these are settled offline by `tools/forward_paper_settle_orphans.py` (#138 plus the ladder-branch/per-orphan-isolation fix in this PR); this does **not** fix in-process forgetting — the live runner's own warm start on restart is a separate, still-open problem; and the daily 00:00Z restart timer (#137) starts **2026-09-29**.
 
+## Manager update (2026-09-28 night)
+
+- **Frozen migrate-direct cell: formal verdict FAIL.** From the 21:00Z one-shot read (`/home/claude/reports/oos-check/2026-09-28.md`, re-derived from raw per-host data), pooled 0.5 SOL, n = 3,622 over 5 UTC days: flat net −0.0906% (3/5 days positive), pressure net −0.1682% (2/5). Every per-host 90% CI lower bound is < 0. Fast ex-top-3 is −4.298 SOL (flat) and −4.354 SOL (pressure). The 0.05 SOL size is worse. The cell is killed. It is not refit.
+- **Backfill credits.** Nothing more for migrate-direct. Walker 1 (`mal-fast-backfill`) is floored at **2026-09-15T12** (the lower bound of the EXP-009 block) through the drop-in `range.conf`: `MAL_FAST_BACKFILL_HOURS=156`, cap raised **2.0M → 2.3M** credits to finish that block. It was restarted 2026-09-28T20:11Z at 1,060,800 credits used. There was no 240-hour extension. A second walker was designed but **not started** (see the next bullet).
+- **Exploration results** (exploration pool only; none is a promote):
+  - Exits (#139): trailing stops led pooled. The concentration check (#151) killed them: `trail_30_act20` pressure total was +7.2 SOL but ex-top-3 was **−8.0 SOL**, with one +16.6 SOL moonshot and falling per-day means. EXP-010 was not pre-registered, and its reserved block `[2026-09-09T12, 2026-09-15T12)` was released unread.
+  - Fee tiers (#142): at the migrate trigger, 98.6% of fills pay the top tier. Waiting for cheaper tiers costs more gross than it saves.
+  - Entry model (#146, #152): over 6 held-out days (fast 09-19..21 plus Oracle live tape 09-25..27), the top decile beat all trades on 8 of 12 day×exit folds. It was positive with ex-top-3 > 0 on only **3 of 12**. The top-5 features were identical on every held-out day: pre-migration price return, nearby buy SOL, mcap at T, time to migrate, same-slot buys. This is signal, but not an edge yet.
+  - **Lesson:** the typical migrate entry loses, and exits only harvest rare tails. The lever is entry selection. Always check ex-top-3 before calling an exploration cell a candidate.
+- **Holdout ledger corrections.** #147 reserved the already-seen Oracle live tape (2026-09-25T07→09-28T00) for EXP-010. That broke rule 4, and #148 reverted it: the block is exploration pool. #150 fixed EXP-009's block at `[2026-09-15T12, 2026-09-19T01)`. That leaves about 2.5 eligible days, so EXP-009 is a **screen**: a pass earns a forward trial, never a promote.
+- **Runner.** Restart #3 is scheduled for **2026-09-29T00:00:00Z** by the daily timer (#137). It deploys whatever is in Oracle's `src` at that moment. The owner/Helm was asked to fast-forward `src` to `d7485d2` (#145, which logs the discarded fill on flat-fail misses; the only runner-code change since `28dfa6a`, with decisions md5 identical). Every daily restart resets in-memory `WalletState`/`by_creator` and drops open positions. Those positions are settled offline for the kill review (#141/#143).
+- **Open asks to Helm (via the owner):**
+  1. Fast-forward Oracle `src` to `d7485d2`.
+  2. Export the Oracle in-sample backfill hours 2026-09-22T00→09-25T07 (sealed hour files only, never `helius.env`) to a path the `claude` account can read. EXP-009's `k` and the entry-model lane need them.
+  3. Disable `mal-migrate-direct-oos.timer` on Oracle. It keeps scoring the dead cell at 01:20Z and competes for CPU with the runner. Claude's account can restart units but not disable them.
+
 ## Backfill split
 
 No hour is on both lists ([ARTIFACTS/lab/migrate-direct-oos.md](ARTIFACTS/lab/migrate-direct-oos.md), snapshot 2026-09-27T13:48Z).
@@ -166,14 +182,12 @@ These were the open PRs at the 2026-09-27 handoff. #106 has since merged, and #1
 
 ## Next work
 
-1. **21:00Z one-shot OOS read** (`mal-oos-check`).
-2. **Backfill credit-extension decision** before the +2M cap binds, ~2026-09-29 18:00–19:00Z (~148 of 240 hours; the full 240 h needs ~1.25M more credits).
-3. **Watch runner growth post-restart #2** (`f687fad`, #124+#125); bound `wallets` (per-wallet per-mint entries) next if growth is still material.
-4. **Restart-neutral warm start**: rebuild in-memory state from the tape since the clean-clock start on process boot, so a future restart no longer perturbs cross-mint veto/creator decisions (see "Manager update (2026-09-28)" above).
-5. **Deploy provenance on `mal-fast-0`** — `/home/ubuntu/mal-oos` is not a git checkout.
-6. Score forward paper only from the **2026-09-28T00:00:00Z** clean clock (runner code `bc7a0c6`, then `d3015ba`, then `f687fad` — see restarts above). Kill review **2026-10-05T05:00:00Z**.
-7. Keep [#90](https://github.com/vaanai/MAL/pull/90) and [#122](https://github.com/vaanai/MAL/pull/122) until review. Leave `mal-laya-v0.timer` and `mal-attention-daily.timer` disabled until 2026-10-05. The manager merges ([DEC-013](DEC/DEC-013-claude-manager-merges.md)).
-8. Move fast. Hold the promotion gate. Report Helius credits when autoscaling is used.
+1. **00:00Z 2026-09-29 restart #3** (timer). Verify `src` HEAD, lag, and the `tx_order_entries` mem-census field. Log it here.
+2. **Entry selection** is the main research lane. Get more exploration days (Oracle in-sample export), then a small pre-registered entry-filter candidate, scored with ex-top-3, on a fresh unowned block bought in ≥6-day chunks.
+3. **EXP-009 screen:** compute `k` in-sample (needs the Oracle export), then score the screen once walker 1 finishes its block.
+4. **2026-10-05T05:00:00Z kill review:** a single read with `tools/kill_review.py` on a snapshot: positions + settlements + pressure stamp, both legs, and Holm across the 9 books.
+5. Restart-neutral warm start (PR 2), deferred until live readiness. Deploy provenance on `mal-fast-0` (`/home/ubuntu/mal-oos` is not a git checkout).
+6. Keep [#90](https://github.com/vaanai/MAL/pull/90). Leave `mal-laya-v0.timer` and `mal-attention-daily.timer` disabled until 2026-10-05. Add no forward books during the kill-review week.
 
 ## Pointers
 
