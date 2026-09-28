@@ -149,10 +149,59 @@ class RiskConfigError(Exception):
 # freezing only removes it from the cyclic scanner's work list.
 GC_THRESHOLD = (50_000, 40, 40)
 
+# Live evidence on Oracle, 2h after a restart on the #123 code (raised
+# thresholds + one startup freeze): RSS 1.14 GB, 9,713 collections, max pause
+# 1,949 ms, avg 21.9 ms, and 3 runner_lag breaches (>5s recv->decision) in
+# that window. #123 only froze the *startup* baseline (interpreter, imports,
+# loaded models); every `_Wallet`/`MintBook`/`_Track`/`WalletState` entry
+# created after that -- the entire live tracked-object set an hours-old
+# runner accumulates -- still sits in the generation gen2 walks on every
+# collection. That is why gen2 pauses keep growing with uptime instead of
+# staying flat after the one startup freeze.
+#
+# Fix: call `gc.freeze()` again periodically from `serve()`'s main loop (see
+# `maybe_gc_freeze`), not just once at startup, so long-lived objects created
+# during the run also move to the permanent generation and gen2 only ever
+# walks objects created in roughly the last interval.
+#
+# Two ways to trigger the periodic freeze: (a) a wall-clock timer, checked
+# alongside the other `now - last_x > N` blocks `serve()` already runs
+# (model reload, prune, summary, status, mem-census), or (b) inside
+# `GcStats._callback` itself, freezing right after any collection whose
+# `info["generation"] == 2` finishes. Chosen: (a), the wall-clock timer.
+# `_callback` fires on *every* collection -- automatic gen0/gen1 included,
+# and any manual `gc.collect()` a test calls -- so gating it correctly still
+# needs its own rate limit, and running a `gc.freeze()` walk of the live heap
+# immediately after a gen2 pause risks stacking two stop-the-world passes
+# back to back right when the process was already paused the longest. A
+# simple timer keeps periodic-task logic in the one place `serve()` already
+# puts it and freezes on a predictable cadence (`GC_FREEZE_INTERVAL_S`)
+# independent of how often gen2 happens to fire.
+#
+# Trade-off, and why it does not change a decision: a frozen object is never
+# again collected by the cyclic GC, even if it becomes part of an unreachable
+# reference cycle later. That is acceptable because the #123 audit found no
+# `__del__`, `weakref`, or cyclic field anywhere in this codebase's engine
+# state (`_Wallet`, `MintBook`, `_Track`, `WalletState`) -- there is no cycle
+# for the cyclic collector to ever need to catch here. Freezing does not
+# touch reference counting: CPython's `gc.freeze()` (Modules/gcmodule.c,
+# `gc_freeze_impl`, unchanged through 3.12, the interpreter this runner
+# uses -- confirmed via `python3 --version` on this box and the CPython 3.12
+# `gc` docs, "gc.freeze: ... objects ... will no longer be included in
+# future collections") only moves an object's `PyGC_Head` into the permanent
+# generation so the *cyclic* scan skips it; it never touches `ob_refcnt`.
+# An object's refcount hitting zero still calls its deallocator immediately,
+# frozen or not. So every plain dict/list/set entry this codebase pops or
+# drops out of scope -- which is how `_Wallet`/`MintBook`/`_Track` state is
+# actually freed -- is freed exactly as before; only a genuine, uncollected
+# reference cycle would be missed, and this codebase does not create one.
+GC_FREEZE_INTERVAL_S = 600.0  # 10 minutes of wall time between periodic freezes.
+
 
 class GcStats:
-    """Times every collection (automatic or manual) via `gc.callbacks`, so
-    `serve()` can log a periodic `gc_stats` line the team can verify live.
+    """Times every collection (automatic or manual) via `gc.callbacks`, and
+    tracks periodic `gc.freeze()` calls (see `maybe_gc_freeze`), so `serve()`
+    can log a periodic `gc_stats` line the team can verify live.
     """
 
     def __init__(self) -> None:
@@ -161,6 +210,14 @@ class GcStats:
         self.max_pause_ms = 0.0
         self.total_pause_ms = 0.0
         self._t0: float | None = None
+        # Periodic-freeze bookkeeping (see `maybe_gc_freeze`). `last_freeze_at`
+        # is a `time.monotonic()`-style clock reading, seeded lazily on the
+        # first `maybe_gc_freeze` call so the first real freeze happens one
+        # full interval after `serve()` starts polling it, not at t=0.
+        self.freeze_count = 0
+        self.last_freeze_ms = 0.0
+        self.total_freeze_ms = 0.0
+        self.last_freeze_at: float | None = None
 
     def _callback(self, phase: str, info: dict[str, Any]) -> None:
         if phase == "start":
@@ -190,6 +247,10 @@ class GcStats:
             "gen_counts": {"gen0": counts[0], "gen1": counts[1], "gen2": counts[2]},
             "thresholds": {"gen0": thresholds[0], "gen1": thresholds[1], "gen2": thresholds[2]},
             "enabled": gc.isenabled(),
+            "freeze_count": self.freeze_count,
+            "gc_freeze_count": gc.get_freeze_count(),
+            "last_freeze_ms": round(self.last_freeze_ms, 2),
+            "total_freeze_ms": round(self.total_freeze_ms, 2),
         }
 
 
@@ -204,6 +265,39 @@ def install_gc_mitigation() -> GcStats:
     gc.collect()
     gc.freeze()
     return stats
+
+
+def maybe_gc_freeze(gc_stats: GcStats, now: float, interval_s: float = GC_FREEZE_INTERVAL_S) -> bool:
+    """Best-effort periodic `gc.freeze()`, called every loop tick from
+    `serve()` with its own `time.monotonic()` reading (the same clock its
+    other periodic-task timers use). Freezes at most once per `interval_s`;
+    the first call after startup only seeds the clock (no freeze), matching
+    the other `last_x`-style timers in `serve()`. See `GC_THRESHOLD`'s
+    comment above for why this is safe and why the wall-clock timer was
+    chosen over hooking `GcStats._callback`.
+
+    Diagnostics-and-mitigation only, exactly like `write_mem_census`: never
+    allowed to kill `serve()`'s main loop. Any failure -- `gc.freeze()`
+    itself raising, a bad clock reading, anything -- is caught here so the
+    worst case is one missed freeze, never a crashed run. Returns whether a
+    freeze actually ran (tests use this; `serve()` does not need to).
+    """
+    try:
+        if gc_stats.last_freeze_at is None:
+            gc_stats.last_freeze_at = now
+            return False
+        if now - gc_stats.last_freeze_at < interval_s:
+            return False
+        t0 = time.perf_counter()
+        gc.freeze()
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+        gc_stats.freeze_count += 1
+        gc_stats.last_freeze_ms = dt_ms
+        gc_stats.total_freeze_ms += dt_ms
+        gc_stats.last_freeze_at = now
+        return True
+    except Exception:  # noqa: BLE001 - periodic freeze is a mitigation only, must never propagate
+        return False
 
 
 def _rss_kb_proc() -> int | None:
@@ -3010,6 +3104,7 @@ def serve(config_path: Path) -> int:
                 engine, mem_census, gc_stats, output_dir, logs, now_ms, mem_census_failures
             )
             last_mem_census = now
+        maybe_gc_freeze(gc_stats, now)
         if not batch:
             time.sleep(0.025)
     if engine._clock_ms:
