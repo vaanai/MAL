@@ -690,11 +690,13 @@ def _fmt_pct(v: float | None) -> str:
     return f"{v:+.2f}%"
 
 
-def write_report(all_lodo: dict[str, Any], out_md: Path, out_json: Path, wall_s: float, n_rows_by_spec: dict[str, int]) -> None:
-    combined: dict[str, dict[str, dict[str, dict[str, Any]]]] = {
-        spec_id: leave_one_day_out(rows) for spec_id, rows in ((sid, all_lodo["rows"][sid]) for sid in TARGET_SPEC_IDS)
-    }
-    best_id, best_lift = choose_best_setting(combined)
+def write_report(combined: dict[str, Any], out_md: Path, out_json: Path, wall_s: float, n_rows_by_spec: dict[str, int]) -> None:
+    """combined: {spec_id: {setting_id: {day: fold}}}, already computed by
+    leave_one_day_out per exit (see main()). choose_best_setting wants the
+    transpose, {setting_id: {spec_id: {day: fold}}}.
+    """
+    by_setting = {s["id"]: {spec_id: combined[spec_id][s["id"]] for spec_id in TARGET_SPEC_IDS} for s in SETTINGS}
+    best_id, best_lift = choose_best_setting(by_setting)
     out_json.write_text(
         json.dumps(
             {
@@ -857,9 +859,10 @@ def main() -> None:
     for r in rows:
         by_spec.setdefault(r["spec"], []).append(r)
     n_rows_by_spec = {sid: len(by_spec.get(sid, [])) for sid in TARGET_SPEC_IDS}
+    combined = {sid: leave_one_day_out(by_spec.get(sid, [])) for sid in TARGET_SPEC_IDS}
     wall_s = time.time() - t0
     args.out_md.parent.mkdir(parents=True, exist_ok=True)
-    write_report({"rows": by_spec}, args.out_md, args.out_json, wall_s, n_rows_by_spec)
+    write_report(combined, args.out_md, args.out_json, wall_s, n_rows_by_spec)
     print(f"wrote {args.out_md} and {args.out_json} in {wall_s:.0f}s", file=sys.stderr, flush=True)
 
 
