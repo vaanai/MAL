@@ -45,6 +45,7 @@ Detail, units, logs, and what is safe to restart: [docs/HOSTS.md](docs/HOSTS.md)
 | [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) | Cloudflare Tunnel + Access (**LIVE**) |
 | [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md) | Manager plans, workers open PRs, tool-neutral workflow |
 | [DEC-013](DEC/DEC-013-claude-manager-merges.md) | Claude manager merges (not Helm); Helm keeps ufw/sshd/tunnel/Access/Oracle admin |
+| [DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md) | Holdout ledger (one owner per historical block); Holm–Bonferroni multiplicity correction on multi-book/multi-cell reads; single read at kill review |
 
 ## What is running
 
@@ -87,6 +88,12 @@ Fast backfill at 05:28Z: 42 hours sealed (2026-09-21T23 back to 2026-09-20T06), 
 
 Merged since the 2026-09-27 handoff: [#121](https://github.com/vaanai/MAL/pull/121)–[#125](https://github.com/vaanai/MAL/pull/125). [#122](https://github.com/vaanai/MAL/pull/122) (offline mem-profile harness + lab note) is still open.
 
+## Manager update (2026-09-28 evening)
+
+The frozen migrate-direct cell is **declared futile on historical data**. Fast OOS 0.5 SOL, snapshot 17:18Z: n = 3,005, flat net mean −0.27%, pressure net mean −0.24%, both 90% CI lower bounds < 0. Per the owner's reviewer, the remaining trades would need about **+1.17%** average to pass. No more Helius credits go to this cell. The fast OOS scorer (`mal-fast-oos-score`) is stopped. Forward-paper migrate books continue only as part of the 2026-10-05 kill review.
+
+The same fast scorer, run with no hour floor, kept scoring newly sealed backward hours past EXP-009's declared 2026-09-19T01:00:00Z cut and read hours **2026-09-18T23** and **2026-09-19T00** — inside EXP-009's holdout window. This is disclosed in [EXP-009 Amendment 3](EXP/EXP-009-migrate-creator-gate-prereg.md), which also corrects that file's earlier "no separate exclusion step is required" non-overlap claim: it was wrong, because the frozen scorer's own window had no floor. The scorer was stopped at **2026-09-28T19:00:50Z** by the manager. Both hours are excluded from EXP-009 scoring and moved to the exploration pool. New ledger: [docs/HOLDOUT_LEDGER.md](docs/HOLDOUT_LEDGER.md), adopted by [DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md) (also adds the Holm–Bonferroni multiplicity correction for the 9-book kill review — see "Promotion gate" above).
+
 ## Backfill split
 
 No hour is on both lists ([ARTIFACTS/lab/migrate-direct-oos.md](ARTIFACTS/lab/migrate-direct-oos.md), snapshot 2026-09-27T13:48Z).
@@ -121,6 +128,8 @@ The first positive paper result is the in-sample cell `migrate` × `tp50_sl30` �
 Unchanged, from the frozen cell spec:
 
 At least **100** out-of-sample trades, at least **5** distinct UTC days with a majority of those days positive, lower **90%** CI bound of mean SOL per trade **> 0**, and total SOL still positive after removing the top 3 trades. The book must clear that bar under **both** the flat 15% fail rate and the pressure-fail model at slope scale 1. Bootstrap: 1,000 draws, seed 1. The lower bound is the 5th percentile of those means.
+
+**Multiplicity ([DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md)):** when k ≥ 2 books or cells are read together at one review (the 9-book 2026-10-05 kill review; EXP-009's up-to-4 cells), a book promotes only if it also passes a Holm–Bonferroni step-down at family α = 0.05 on the one-sided bootstrap test, under both fail models — recommended at 10,000 seed-1 bootstrap draws for resolution at k = 9's α/9 ≈ 0.0056 threshold. The kill-review books are read once, at 2026-10-05T05:00:00Z; no interim read decides a promote. Historical hours used for any confirmation test are tracked in [docs/HOLDOUT_LEDGER.md](docs/HOLDOUT_LEDGER.md): one owner per block, non-owner reads disclosed in the owner's `EXP-###` file.
 
 Live bar, still required after the gate: about 7 days of forward paper, then tiny size, and an explicit owner yes. The owner's dollar target is not evidence. See [CLAUDE.md](CLAUDE.md).
 
