@@ -612,6 +612,57 @@ class LabelTests(unittest.TestCase):
         self.assertIsNone(flow_from_row(dict(base, quote_is_wsol=False)))
         self.assertIsNotNone(flow_from_row(dict(base, quote_is_wsol=True)))
 
+    def test_flow_from_row_interns_mint_and_trader(self) -> None:
+        """`mint`/`trader` come out of json.loads fresh on every print, even
+        for a mint/wallet seen thousands of times before. Interning them in
+        `flow_from_row` collapses every later dict/set slot keyed on the same
+        value (WalletState.wallets, and every wallet's own
+        `pos`/`mint_pnl`/`mints`) onto one shared string object. Built via
+        `"".join(...)` on each call so the two calls' `row["mint"]`/
+        `row["trader"]` are never the same object to start with (defeats
+        CPython's literal-sharing, which would otherwise mask a bug here)."""
+
+        def row(tag: str) -> dict[str, Any]:
+            mint = "".join(["MintDup", tag, "X" * 30])
+            trader = "".join(["TraderDup", tag, "Y" * 30])
+            return {
+                "type": "trade",
+                "mint": mint,
+                "trader": trader,
+                "venue": "pump_bonding",
+                "t_recv_ms": T0,
+                "quote_reserve": Q0,
+                "base_reserve": B0,
+                "side": "buy",
+                "sol_lamports": 1_000_000_000,
+                "slot": 1,
+                "event_index": 1,
+                "price_sol": 1.0,
+                "market_cap_sol": 1.0,
+            }
+
+        first = row("A")
+        second = row("A")  # same *value*, freshly built, not the same object
+        self.assertIsNot(first["mint"], second["mint"])
+        self.assertIsNot(first["trader"], second["trader"])
+
+        r1 = flow_from_row(first)
+        r2 = flow_from_row(second)
+        self.assertIsNotNone(r1)
+        self.assertIsNotNone(r2)
+        mint1, pr1 = r1
+        mint2, pr2 = r2
+        self.assertEqual(mint1, mint2)
+        self.assertIs(mint1, mint2)
+        self.assertEqual(pr1.trader, pr2.trader)
+        self.assertIs(pr1.trader, pr2.trader)
+        # A genuinely different mint/trader still interns to its own object,
+        # distinct from the first.
+        r3 = flow_from_row(row("B"))
+        mint3, pr3 = r3
+        self.assertIsNot(mint1, mint3)
+        self.assertIsNot(pr1.trader, pr3.trader)
+
     def test_flat_book_loses_and_a_rug_stays_in_the_label(self) -> None:
         flat = _book([_flow(T0 + 1_000, trader="W", sol=1_000_000_000)])
         rug = _book(
@@ -1219,6 +1270,42 @@ class WalletCompactionTests(unittest.TestCase):
         wallet.observe(mint="MintMore", side="buy", sol=1, token_raw=1, t_ms=10_000, slot=1, first_slot=1)
         self.assertEqual(wallet.mints, set())
         self.assertTrue(wallet.mints_capped)
+
+    def test_flags_and_scalars_match_uncapped_ground_truth_across_bot_min_mints(self) -> None:
+        """`is_bot`'s mints-count clause is the only thing the cap touches.
+        Replay the same stream against an independent, uncapped distinct-mint
+        set (the pre-change formula) and check every externally-visible field
+        -- `is_bot`/`is_sniper`/`is_leader`/`closed`/`wins`/`holds` -- matches
+        at every step, through and past the point the wallet crosses
+        BOT_MIN_MINTS and the real `mints` set gets cleared. 30 buys, fast
+        cadence (500ms apart, well under BOT_MEAN_GAP_MS), spread over 10
+        distinct mints: n_buys and mints both clear their thresholds, so
+        is_bot actually flips True partway through (not just theoretically)."""
+        wallet = _Wallet()
+        ground_truth_mints: set[str] = set()
+        n_mints = 10
+        saw_is_bot_true = False
+        for step in range(30):
+            mint = f"Mint{step % n_mints:03d}"
+            t_ms = 1_000 + step * 500
+            wallet.observe(mint=mint, side="buy", sol=10, token_raw=10, t_ms=t_ms, slot=step, first_slot=0)
+            ground_truth_mints.add(mint)
+            enough_mints_uncapped = len(ground_truth_mints) >= BOT_MIN_MINTS
+            enough_mints_actual = wallet.mints_capped or len(wallet.mints) >= BOT_MIN_MINTS
+            self.assertEqual(enough_mints_actual, enough_mints_uncapped, f"step={step}")
+            expected_is_bot = wallet.n_buys >= 25 and enough_mints_uncapped and wallet.gap_n >= 20
+            self.assertEqual(wallet.is_bot, expected_is_bot, f"step={step}")
+            saw_is_bot_true = saw_is_bot_true or wallet.is_bot
+        self.assertTrue(wallet.mints_capped, "stream did not cross BOT_MIN_MINTS as designed")
+        self.assertTrue(saw_is_bot_true, "stream never actually flipped is_bot True")
+        # closed/wins/holds/is_sniper/is_leader are untouched by the mints
+        # cap (no buys here ever sell, so these all stay at their no-op
+        # baseline -- this is the change's whole point: nothing but the
+        # mints-count clause moves).
+        self.assertEqual(wallet.closed, 0)
+        self.assertEqual(wallet.wins, 0)
+        self.assertEqual(wallet.holds, [])
+        self.assertFalse(wallet.is_leader)
 
     def test_partial_sell_keeps_the_position_open_with_correct_fields(self) -> None:
         wallet = _Wallet()

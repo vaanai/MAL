@@ -360,9 +360,24 @@ def flow_from_row(row: dict[str, Any]) -> tuple[str, FlowPrint] | None:
     if parsed is None:
         return None
     mint, tape = parsed
+    # `mint`/`trader` come straight out of json.loads on this row -- a fresh
+    # str object every single print, even for a mint/wallet seen thousands
+    # of times before. Interning collapses every later dict/set slot keyed
+    # on the same value (WalletState.wallets, and every wallet's own
+    # `pos`/`mint_pnl`/`mints`, plus `library`/`tracks`/`seen`) onto one
+    # shared string object -- a pure representation change: str equality,
+    # hashing, and every comparison this codebase does are by value, so
+    # nothing that reads a mint or trader can observe the difference.
+    # `sys.intern` keeps the interned copy alive for the life of the
+    # process, which is bounded by the number of *distinct* mints/wallets
+    # ever seen -- far smaller than the (wallet, mint) entry count this is
+    # meant to shrink.
+    mint = sys.intern(mint)
     trader = row.get("trader")
     if not isinstance(trader, str) or not trader or trader == "UNK":
         trader = None
+    else:
+        trader = sys.intern(trader)
     try:
         token_raw = int(row.get("token_raw") or 0)
     except (TypeError, ValueError):
