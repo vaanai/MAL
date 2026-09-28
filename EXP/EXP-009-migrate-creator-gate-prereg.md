@@ -4,6 +4,8 @@
 
 **Amendment (2026-09-28, manager review of PR #130):** redefines G1 with a fixed 24h trailing window instead of unbounded lookback (§3), adds a burn-in eligibility check and an unknown-creator exclusion applied to every cell including `gate_off` (§4), and extends the k threshold procedure to use the same eligible population (§4c, §5). No data was read to make this amendment; it only tightens the causality rule already declared.
 
+**Amendment 2 (2026-09-28T19:20:00Z, manager review, direction lock, owner review of PR #130):** the original hypothesis text (below) described repeat/linked creators as lower-quality and the gate as skipping them, while every cell defined in §5 does the opposite — each one *enters* on recurrence (`G1_only`: `prior_mint_count_24h >= k`; `G3_only`/`G1_and_G3`: recurrence true) and skips the rest. That was a self-contradiction, not a design choice. This amendment locks the direction to match the cells already defined: serial/linked creators are the positive arm this experiment tests, on the only prior evidence available (EXP-004 H-G1/H-G3 `DIRECTIONAL_NON_KILL`, §"Prior evidence strength" below). The hypothesis and this amendment replace the earlier "skip low-quality repeat creators" framing everywhere it appeared in this file. No cell definition in §5 changed — only the prose explaining them. No k had been computed and no holdout hour had been read at the time of this amendment.
+
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-009-migrate-creator-gate-prereg` |
@@ -11,8 +13,8 @@
 | **Owner seat** | Graph (measurement). `quant-proof` reviews before any sentence claims the gated book made money. |
 | **Started** | 2026-09-28 |
 | **Parent context** | Frozen migrate-direct cell ([ARTIFACTS/lab/migrate-direct-prereg.md](../ARTIFACTS/lab/migrate-direct-prereg.md), locked 2026-09-27T13:06:36Z) is failing out of sample under both fail models. Venue fees on a filled round trip run ~2.435–2.511% ([ARTIFACTS/lab/fee-audit-2026-09-27.md](../ARTIFACTS/lab/fee-audit-2026-09-27.md) §1, §"Rescore at the slot-+1 priority"). 59.65% of attempts miss (same fee audit, §1 table). EXP-004 ([EXP-004-graph-creator-recurrence-v0.md](EXP-004-graph-creator-recurrence-v0.md)) found H-G1 (creator prior-mint count) and H-G3 (weak creator↔buyer recurrence) `DIRECTIONAL_NON_KILL` at 60s, both days scored, and explicitly not scored lift proof. |
-| **Hypothesis** | Repeat or linked creators mark lower-quality `migrate` graduations. A gate that skips migrates from those creators raises gross per *filled* trade enough to clear the venue-fee drag the ungated frozen cell is currently failing under, on both the flat-15% and pressure-scale-1 fail models. |
-| **Kill condition** | The primary cell (G1_only, §5) does not clear the unchanged promotion gate (§7) on the declared, burn-in-eligible holdout (§6) under **both** fail models, **or** it clears only one of the two models, **or** it is the single best of the 4 cells and the multiple-comparison guard in §7 is not honored. Any of those kills the creator-recurrence gate for `migrate`. A single positive cell is not sufficient by itself — see the winner's-curse note already on record for the frozen cell (`LAB_STATE.md` §"First positive run"). |
+| **Hypothesis** | Serial or linked creators — repeat mints within a fixed trailing window, or a creator whose own buy pattern recurs across their mints — are the **positive** arm, not the arm to avoid. **Mechanism:** this direction comes from EXP-004's H-G1 and H-G3 positive arms (`prior_mint_count > 0`, and weak creator↔buyer recurrence), both `DIRECTIONAL_NON_KILL` at the 60s priced floor on 2026-09-20 and 2026-09-21 — the only prior evidence available for this feature family (see "Prior evidence strength" in §1). A gate that enters **only** on migrates from those recurring creators (G1: `prior_mint_count_24h(creator, T) >= k`; G3: `creator_buyer_recurrence_weak`) is expected to raise gross per *filled* trade above the unfiltered `gate_off` population enough to clear the venue-fee drag the ungated frozen cell is currently failing under, on both the flat-15% and pressure-scale-1 fail models. This is not a claim that repeat or linked creators are lower quality, and no cell in §5 tests the direction of skipping them — see the direction-lock note under §5. |
+| **Kill condition** | The primary cell (G1_only, §5) does not clear the unchanged promotion gate (§7) on the declared, burn-in-eligible holdout (§6) under **both** fail models, **or** it clears only one of the two models, **or** its gross per filled trade is not above `gate_off`'s on the same §4-eligible population, **or** it is the single best of the 4 cells and the multiple-comparison guard in §7 is not honored. Any of those kills the creator-recurrence gate for `migrate`. A single positive cell is not sufficient by itself — see the winner's-curse note already on record for the frozen cell (`LAB_STATE.md` §"First positive run"). Given the prior evidence is weak (§1), a null or negative holdout result is the expected base case, not a surprise. |
 | **Method** | Offline replay of the frozen migrate-direct execution (§2) with an added entry filter (§3–§5) on sealed backfill rows, restricted to the burn-in-eligible population (§4). No RPC calls beyond what the backward backfill has already made. No evaluate/runner code change. No new Helius credits (§9). |
 | **As-of-T** | Constitution rule 3 (knowable-at-T). T is the migrate decision time — the same receive-clock substitution the frozen cell uses when `t_recv_ms` is missing ([migrate-direct-prereg.md](../ARTIFACTS/lab/migrate-direct-prereg.md) §Windows). The creator gate feature must be computable from data sealed strictly before that T, over a bounded and fully-covered trailing window (§3–§4); see the feasibility finding in §8. |
 | **Regime labels** | Unchanged from the base cell — the gate does not stratify by `regime_id`; every row still carries its regime tag at ingest (Constitution rule 4). |
@@ -27,6 +29,17 @@
 ## 1. Scope
 
 One new degree of freedom versus the frozen cell: **whether the migrate is taken at all**, decided by a creator-history gate evaluated at the migrate decision time over a fixed trailing window (§3), restricted to rows where that window is fully known (§4). Nothing else about execution changes (§2). At most 4 cells (§5). No evaluate/runner code changes. No live/forward-paper wiring in this PR.
+
+### Prior evidence strength (weak)
+
+The direction locked in §5's cells rests on EXP-004 alone, and that evidence is **weak**, not lift proof:
+
+- EXP-004's own stamp for H-G1/H-G3 is `DIRECTIONAL_NON_KILL` — soft watch, explicitly recorded as "not scored lift proof or Discovery promotion" ([EXP-004-graph-creator-recurrence-v0.md](EXP-004-graph-creator-recurrence-v0.md) line 25). It cleared `separable_vs_spine` and `no_lift_vs_random`, two kill-avoidance gates, not a promotion gate.
+- The priced population behind that stamp is thin: `priced_60s_n` = 102 on 2026-09-20 and 122 on 2026-09-21, out of population_n in the thousands ([EXP-004-graph-creator-recurrence-v0.md](EXP-004-graph-creator-recurrence-v0.md) lines 93–94).
+- It is a **different trigger and horizon** than this experiment: EXP-004 marks off the `create` broadcast at a 60-second horizon, not the `migrate` trigger at `tp50_sl30` this file uses (§2, §Windows above).
+- The one attempt to sharpen the same prior-mint feature into an ordinal signal, **EXP-004b**, was **killed cross-day**: `bucket_3plus` (the closest ordinal analog to a high-recurrence G1 gate) was soft on 2026-09-20 only and failed the spine comparison on 2026-09-21, so the NH-G1a falsifier fired and the ordinal lane was killed, not promoted ([EXP-004b-nh-g1a-ordinal-prior-mint-v0.md](EXP-004b-nh-g1a-ordinal-prior-mint-v0.md) lines 98–115). The novel-creator arm, `bucket_0`, also failed on both days.
+
+Net: G1 is not proven lift on any prior test, cross-day replication of the closest ordinal version already failed, and the trigger/horizon here differ from every prior test of the feature. A null or negative result on this holdout is the expected base case, not evidence against the pipeline — see the kill condition above.
 
 ## 2. Base trade — unchanged frozen-cell execution
 
@@ -76,6 +89,8 @@ A migrate row is **eligible** for scoring in **every** cell — including `gate_
 | `G1_only` | Enter iff `prior_mint_count_24h(creator, T) >= k`, else skip the migrate. Only evaluated on §4-eligible rows. | **Primary** (the only cell provably causal on this holdout at declaration time — see §8). |
 | `G3_only` | Enter iff `creator_buyer_recurrence_weak` is true, else skip. Only evaluated on §4-eligible rows. | Secondary, **contingent** on §8 — see §7. |
 | `G1_and_G3` | Enter iff both `G1_only` and `G3_only` conditions hold. Only evaluated on §4-eligible rows. | Secondary, **contingent** on §8 — see §7. |
+
+**Direction locked 2026-09-28 (manager, after owner review): gated cells ENTER on serial/linked creators; no cell in this experiment tests the skip direction. Flipping direction after k is computed or after any holdout row is read is forbidden.**
 
 ### Threshold procedure for k (fixed here; the value is not chosen in this file)
 
