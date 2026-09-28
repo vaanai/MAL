@@ -12,6 +12,7 @@ Paper only. This process has no key, does not sign, and does not send.
 from __future__ import annotations
 
 import argparse
+import gc
 import heapq
 import json
 import math
@@ -113,6 +114,98 @@ SWING_LADDER_BY_ID: dict[str, LadderRule] = {rule.rule_id: rule for rule in SWIN
 
 class RiskConfigError(Exception):
     """Host JSON asked for a looser risk limit than the hard ceiling."""
+
+
+# Cyclic-GC mitigation for the long-lived `serve()` process. Measured directly
+# (tools/forward_paper_mem_profile.py's replay plus a standalone probe growing
+# just `WalletState`): a single `gc.collect(2)` over a ~2 GB heap of the kind
+# this runner reaches after several hours takes ~1.6 SECONDS wall time, and
+# scales close to linearly with the live tracked-object count (roughly 0.35 ms
+# per 1,000 objects, from 30 ms at 20k wallets to 1.6 s at 1.6M wallets in the
+# probe). That single stop-the-world pause is a plausible cause of the
+# `runner_lag` health-check breaches seen with zero swap use (a GC pause is a
+# processing stall, not a memory-pressure symptom). None of `_Wallet`,
+# `MintBook`, `_Track`, or `WalletState` hold a back-reference that could form
+# a reference cycle (checked: no `__del__`, no `weakref`, no cyclic field
+# anywhere in tools/forward_paper.py, tools/laya_v0.py, tools/funding_graph.py)
+# -- ordinary refcounting already frees every dict/list/set entry the moment
+# it is popped or goes out of scope, with or without the cyclic collector.
+# The cyclic collector exists only to catch reference cycles, which this
+# codebase does not appear to create; letting collections run far less often
+# is safe and changes no decision (GC never touches a live object's value,
+# only reclaims unreachable ones -- see the md5-identical replay proof in the
+# PR that raises these thresholds).
+#
+# Chosen mitigation: raise the collection thresholds (not `gc.disable()`) so
+# automatic collection keeps running as a safety net for any cycle this audit
+# missed, just far less often -- default is (700, 10, 10); this cuts
+# generation-0 collections by ~70x and, since generation-1/2 trigger on a
+# *count* of lower-generation collections, generation-2 runs roughly another
+# 4x less often on top of that (~280x fewer stop-the-world scans overall).
+# `gc.freeze()` is called once after startup (model files loaded, engine
+# built) so the static baseline (interpreter, imports, loaded models) is
+# permanently excluded from every future scan -- it cannot go uncollected
+# because refcounting still frees it immediately if it ever becomes garbage;
+# freezing only removes it from the cyclic scanner's work list.
+GC_THRESHOLD = (50_000, 40, 40)
+
+
+class GcStats:
+    """Times every collection (automatic or manual) via `gc.callbacks`, so
+    `serve()` can log a periodic `gc_stats` line the team can verify live.
+    """
+
+    def __init__(self) -> None:
+        self.collections = 0
+        self.last_pause_ms = 0.0
+        self.max_pause_ms = 0.0
+        self.total_pause_ms = 0.0
+        self._t0: float | None = None
+
+    def _callback(self, phase: str, info: dict[str, Any]) -> None:
+        if phase == "start":
+            self._t0 = time.perf_counter()
+            return
+        if self._t0 is None:
+            return
+        dt_ms = (time.perf_counter() - self._t0) * 1000.0
+        self._t0 = None
+        self.collections += 1
+        self.last_pause_ms = dt_ms
+        self.max_pause_ms = max(self.max_pause_ms, dt_ms)
+        self.total_pause_ms += dt_ms
+
+    def install(self) -> None:
+        gc.callbacks.append(self._callback)
+
+    def report(self) -> dict[str, Any]:
+        counts = gc.get_count()
+        thresholds = gc.get_threshold()
+        return {
+            "collections": self.collections,
+            "last_pause_ms": round(self.last_pause_ms, 2),
+            "max_pause_ms": round(self.max_pause_ms, 2),
+            "avg_pause_ms": round(self.total_pause_ms / self.collections, 2) if self.collections else 0.0,
+            "total_pause_ms": round(self.total_pause_ms, 2),
+            "gen_counts": {"gen0": counts[0], "gen1": counts[1], "gen2": counts[2]},
+            "thresholds": {"gen0": thresholds[0], "gen1": thresholds[1], "gen2": thresholds[2]},
+            "enabled": gc.isenabled(),
+        }
+
+
+def install_gc_mitigation() -> GcStats:
+    """Raise GC thresholds, freeze the current (static) heap, and start timing
+    every collection. Call once, after startup (models loaded, engine built),
+    right before the live tail loop. See `GC_THRESHOLD`'s comment above.
+    """
+    stats = GcStats()
+    stats.install()
+    gc.set_threshold(*GC_THRESHOLD)
+    gc.collect()
+    gc.freeze()
+    return stats
+
+
 PRUNE_AFTER_MS = 45 * 60 * 1000
 CHAIN_LAG_MIN_MS = -5_000
 CHAIN_LAG_MAX_MS = 120_000
@@ -2525,6 +2618,9 @@ def serve(config_path: Path) -> int:
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
     if graph_dir.is_dir():
         engine.graph_dir = graph_dir
+    # Startup is done (models loaded, engine built): raise the cyclic-GC
+    # thresholds and freeze the static baseline. See GC_THRESHOLD's comment.
+    gc_stats = install_gc_mitigation()
     tail = DirectoryTail(tape_dir, creates_dir, offsets, attention_dir)
     stop = {"flag": False}
 
@@ -2556,6 +2652,7 @@ def serve(config_path: Path) -> int:
     engine.promotion_live_ms = live_at_ms
     last_status = 0.0
     last_prune = 0.0
+    last_gc_log = 0.0
     while not stop["flag"]:
         batch = tail.poll()
         now_ms = int(time.time() * 1000)
@@ -2634,6 +2731,11 @@ def serve(config_path: Path) -> int:
         if now - last_status > 15:
             write_runner_status(status_path, engine, live_at_ms=live_at_ms)
             last_status = now
+        if now - last_gc_log > 60:
+            report = gc_stats.report()
+            (output_dir / "gc-stats.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            print(f"forward_paper gc_stats={json.dumps(report)}", file=sys.stderr)
+            last_gc_log = now
         if not batch:
             time.sleep(0.025)
     if engine._clock_ms:

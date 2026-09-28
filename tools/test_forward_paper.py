@@ -11,6 +11,7 @@ from pathlib import Path
 from tools.forward_paper import (
     CHAIN_SAMPLE_CAP,
     DEFAULT_FAIL_RATE,
+    GC_THRESHOLD,
     HARD_MAX_POSITION_LAMPORTS,
     LATENCY_SAMPLE_CAP,
     PRUNE_AFTER_MS,
@@ -23,6 +24,7 @@ from tools.forward_paper import (
     BookSpec,
     DirectoryTail,
     ForwardEngine,
+    GcStats,
     LatencyMeter,
     ModelSlot,
     _Follower,
@@ -34,6 +36,7 @@ from tools.forward_paper import (
     clean_clock,
     decision_counts_for_promotion,
     flow_from_tape_row,
+    install_gc_mitigation,
     migrate_fee_sensitivity_summary,
     offline_packets,
     promotion_pnls_by_book,
@@ -504,6 +507,74 @@ class MemoryBoundTests(unittest.TestCase):
         self.assertNotIn("GhostMint", engine.early)
         self.assertEqual(engine.decisions, [])
         self.assertEqual(engine.positions, [])
+
+    def test_wallet_pos_dict_does_not_grow_with_closed_round_trips(self) -> None:
+        """`_Wallet.pos` (tools/laya_v0.py) holds one entry per mint with a
+        currently open position, popped on full close. A single busy trader
+        that round-trips 200 distinct mints should leave `pos` empty at the
+        end, not accumulate one stale entry per mint -- the growth this PR's
+        `_Wallet` compaction (merging pos_tokens/pos_cost/pos_open_t/
+        pos_invested into `pos`) does not change, only makes each entry
+        cheaper. `mint_pnl` and `mints` are expected to keep every mint by
+        design (read by `_leader_ok` / `is_bot`); this test only bounds `pos`.
+        """
+        n = 200
+        creates: dict[str, CreateSignal] = {}
+        rows: list[dict[str, object]] = []
+        for i in range(n):
+            mint = f"BusyMint{i:04d}"
+            t0 = T0 + i * 200
+            creates[mint] = _create(mint, t0, creator=f"Creator{i:04d}")
+            rows.append(_trade(mint, t0 + 10, trader="Busy", slot=i + 2, token=1_000_000, sol=1_000_000_000))
+            rows.append(_trade(mint, t0 + 20, trader="Busy", side="sell", slot=i + 2, token=1_000_000, sol=1_000_000_000))
+        engine = replay_rows(
+            creates.values(),
+            rows,
+            [BookSpec("buy_all", "baseline", "hold_30s", max_concurrent=None, daily_loss_lamports=None, creator_cooldown_ms=0, token_cooldown_ms=0)],
+            tape_end_ms=T0 + n * 200 + 1_000,
+            kill_file=Path("/tmp/forward-paper-wallet-pos-bound"),
+            offsets_ms=(5_000,),
+        )
+        wallet = engine.wallets.wallets["Busy"]
+        self.assertEqual(wallet.pos, {})
+        self.assertEqual(wallet.closed, n)
+        self.assertEqual(len(wallet.mint_pnl), n)
+
+    def test_gc_mitigation_raises_thresholds_freezes_and_times_collections(self) -> None:
+        """`install_gc_mitigation()` (tools/forward_paper.py) is the fix for the
+        multi-hundred-ms to multi-second `gc.collect(2)` stop-the-world pauses
+        measured on a large `WalletState` (see the lab note) -- it must not
+        touch any application value, only GC scheduling, which this pins by
+        restoring gc's real state around the test.
+        """
+        import gc
+
+        old_threshold = gc.get_threshold()
+        old_enabled = gc.isenabled()
+        old_callbacks = list(gc.callbacks)
+        try:
+            stats = install_gc_mitigation()
+            self.assertIsInstance(stats, GcStats)
+            self.assertEqual(gc.get_threshold(), GC_THRESHOLD)
+            self.assertTrue(gc.isenabled(), "raising thresholds keeps automatic collection as a safety net")
+            self.assertGreater(gc.get_freeze_count(), 0, "freeze() should have moved the current heap to the permanent generation")
+            # A manual collection after install is still timed by the callback.
+            before = stats.collections
+            gc.collect()
+            self.assertGreater(stats.collections, before)
+            report = stats.report()
+            self.assertEqual(report["collections"], stats.collections)
+            self.assertGreaterEqual(report["max_pause_ms"], 0.0)
+            self.assertEqual(report["thresholds"]["gen0"], GC_THRESHOLD[0])
+            self.assertTrue(report["enabled"])
+        finally:
+            gc.callbacks[:] = old_callbacks
+            gc.set_threshold(*old_threshold)
+            gc.unfreeze()
+            if old_enabled:
+                gc.enable()
+            else:
+                gc.disable()
 
     def test_latency_meter_ring_buffers_stay_bounded(self) -> None:
         meter = LatencyMeter(extra_ms=1)
