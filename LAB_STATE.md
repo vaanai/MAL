@@ -75,6 +75,18 @@ Fast backfill progress: at about 22 sealed hours, about 306k of the +2,000,000 c
 
 Newer OOS read (~2026-09-27T21:40Z), in addition to the 2026-09-27T13:48Z pooled snapshot below: both books are still one UTC day each, **under-sampled, no verdict**. Fast box 0.5 SOL n ≈ 868–920, all on 2026-09-21, 0/1 days positive. Oracle 0.5 SOL n = 142 (hours 2026-09-22T06–09), flat net −0.476%, flat CI lower −3.149%, 0/1 days positive. Neither clears the promotion gate.
 
+## Manager update (2026-09-28)
+
+Clean week started **2026-09-28T00:00:00Z** on runner `bc7a0c6`. Two mid-week restarts since, both memory-leak fix deploys with a replay md5 decision-neutrality proof, **no decision-logic change**: restart #1 **2026-09-28T03:56:52Z** → `d3015ba` ([#123](https://github.com/vaanai/MAL/pull/123): GC thresholds + freeze-at-start + `_Wallet` compaction + live mem-census); restart #2 **2026-09-28T14:25:02Z** → `f687fad` ([#124](https://github.com/vaanai/MAL/pull/124) periodic `gc.freeze()`, [#125](https://github.com/vaanai/MAL/pull/125) pre-boot dead-mint scan + createless timeout bounding `self.early`). **Every restart resets in-memory `WalletState` `bots`/`snipers`/`leaders`/`creators` and `by_creator` history to empty** — cross-mint veto/creator features run cold until re-observed; the funding graph is unaffected. The **2026-10-05T05:00:00Z kill review must account for this** at both restart boundaries. Detail: [ARTIFACTS/lab/forward-paper-memory-2026-09-27.md](ARTIFACTS/lab/forward-paper-memory-2026-09-27.md), [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
+
+Oracle runner cgroup raised by Helm to `MemoryHigh` 10G / `MemoryMax` 12G (`set-property` override + drop-in), live ~03:37Z 2026-09-28 without a restart. Claude's Oracle account may now `sudo -n systemctl --user -M ubuntu@ restart` ubuntu's `mal-*` user units directly; still cannot write files there (code updates fast-forward `/var/lib/mal/paper/forward-paper/src` via the owner or Helm). See [docs/HANDOFF.md](docs/HANDOFF.md) for the verified how-to.
+
+Claude schedules ([#119](https://github.com/vaanai/MAL/pull/119)) enabled **2026-09-28 05:28Z**: `mal-daily-review` (05:00 UTC) and `mal-oos-check` (one-shot 2026-09-28 21:00Z); first live daily review ran OK. Owner asked to cancel the Cursor timers. `mal-fast-create`: no reconnect crashes since the [#117](https://github.com/vaanai/MAL/pull/117) deploy (22:55Z 2026-09-27).
+
+Fast backfill at 05:28Z: 42 hours sealed (2026-09-21T23 back to 2026-09-20T06), 576,240 of 2,000,000 credits.
+
+Merged since the 2026-09-27 handoff: [#121](https://github.com/vaanai/MAL/pull/121)–[#125](https://github.com/vaanai/MAL/pull/125). [#122](https://github.com/vaanai/MAL/pull/122) (offline mem-profile harness + lab note) is still open.
+
 ## Backfill split
 
 No hour is on both lists ([ARTIFACTS/lab/migrate-direct-oos.md](ARTIFACTS/lab/migrate-direct-oos.md), snapshot 2026-09-27T13:48Z).
@@ -128,8 +140,10 @@ Read 2026-09-27 with `gh`. **Recommendation only. Do not close them from a worke
 | [#106](https://github.com/vaanai/MAL/pull/106) | merged | Merged 2026-09-27. Skips the exploratory 04:15 LAYA retrain until 2026-10-05. Both that timer and `mal-attention-daily.timer` are disabled until then because runner lag still spiked to about 12.5 s. |
 | [#114](https://github.com/vaanai/MAL/pull/114) | closed | Cancelled 2026-09-27 (narrowed Claude Code permissions for unattended use). |
 | [#115](https://github.com/vaanai/MAL/pull/115)–[#120](https://github.com/vaanai/MAL/pull/120) | merged | Cursor handoff / LAYA timer hold, fast-create reconnect fix, DEC-013, Claude schedules, forward-paper memory bound. See the manager handoff section above. |
+| [#121](https://github.com/vaanai/MAL/pull/121)–[#125](https://github.com/vaanai/MAL/pull/125) | merged | GC thresholds + freeze + `_Wallet` compaction + live mem-census, periodic `gc.freeze()`, early-buffer dead-mint bounding. See "Manager update (2026-09-28)" above. |
+| [#122](https://github.com/vaanai/MAL/pull/122) | open | Offline forward-paper mem-profile harness + lab note (fixes landed separately in #123–#125). Pending manager review. |
 
-These were the open PRs at the handoff. #106 has since merged. #73–#112 in the notes are merged. Only [#90](https://github.com/vaanai/MAL/pull/90) remains open as of 2026-09-27.
+These were the open PRs at the 2026-09-27 handoff. #106 has since merged, and #121–#125 landed 2026-09-28. Only [#90](https://github.com/vaanai/MAL/pull/90) and [#122](https://github.com/vaanai/MAL/pull/122) remain open as of 2026-09-28.
 
 ## Frozen
 
@@ -137,17 +151,19 @@ These were the open PRs at the handoff. #106 has since merged. #73–#112 in the
 
 ## Next work
 
-1. One-shot OOS read, **2026-09-28 21:00Z**.
-2. Decide the fast-backfill credit extension (2M cap binds ~148 hours, ~2026-09-29 18:00–19:00Z; 240 h would cost ~1.25M more credits).
-3. Forward-paper dominant-memory fix on Oracle, with a replay equivalence proof (see manager handoff section above).
-4. Score forward paper only from the **2026-09-28T00:00:00Z** clean clock (runner code `bc7a0c6`). Kill review **2026-10-05T05:00:00Z**.
-5. Deploy provenance on `mal-fast-0` — `/home/ubuntu/mal-oos` is not a git checkout.
-6. Keep [#90](https://github.com/vaanai/MAL/pull/90) until review. Leave `mal-laya-v0.timer` and `mal-attention-daily.timer` disabled until 2026-10-05. The manager merges ([DEC-013](DEC/DEC-013-claude-manager-merges.md)).
-7. Move fast. Hold the promotion gate. Report Helius credits when autoscaling is used.
+1. **21:00Z one-shot OOS read** (`mal-oos-check`).
+2. **Backfill credit-extension decision** before the +2M cap binds, ~2026-09-29 18:00–19:00Z (~148 of 240 hours; the full 240 h needs ~1.25M more credits).
+3. **Watch runner growth post-restart #2** (`f687fad`, #124+#125); bound `wallets` (per-wallet per-mint entries) next if growth is still material.
+4. **Restart-neutral warm start**: rebuild in-memory state from the tape since the clean-clock start on process boot, so a future restart no longer perturbs cross-mint veto/creator decisions (see "Manager update (2026-09-28)" above).
+5. **Deploy provenance on `mal-fast-0`** — `/home/ubuntu/mal-oos` is not a git checkout.
+6. Score forward paper only from the **2026-09-28T00:00:00Z** clean clock (runner code `bc7a0c6`, then `d3015ba`, then `f687fad` — see restarts above). Kill review **2026-10-05T05:00:00Z**.
+7. Keep [#90](https://github.com/vaanai/MAL/pull/90) and [#122](https://github.com/vaanai/MAL/pull/122) until review. Leave `mal-laya-v0.timer` and `mal-attention-daily.timer` disabled until 2026-10-05. The manager merges ([DEC-013](DEC/DEC-013-claude-manager-merges.md)).
+8. Move fast. Hold the promotion gate. Report Helius credits when autoscaling is used.
 
 ## Pointers
 
 - Hosts: [docs/HOSTS.md](docs/HOSTS.md)
+- Manager handoff (current): [docs/HANDOFF.md](docs/HANDOFF.md)
 - Claude handoff: [CLAUDE.md](CLAUDE.md), [docs/MIGRATION-TO-CLAUDE.md](docs/MIGRATION-TO-CLAUDE.md)
 - Research options: [docs/research/](docs/research/)
 - Daily briefs: [ARTIFACTS/daily/](ARTIFACTS/daily/)
