@@ -360,9 +360,24 @@ def flow_from_row(row: dict[str, Any]) -> tuple[str, FlowPrint] | None:
     if parsed is None:
         return None
     mint, tape = parsed
+    # `mint`/`trader` come straight out of json.loads on this row -- a fresh
+    # str object every single print, even for a mint/wallet seen thousands
+    # of times before. Interning collapses every later dict/set slot keyed
+    # on the same value (WalletState.wallets, and every wallet's own
+    # `pos`/`mint_pnl`/`mints`, plus `library`/`tracks`/`seen`) onto one
+    # shared string object -- a pure representation change: str equality,
+    # hashing, and every comparison this codebase does are by value, so
+    # nothing that reads a mint or trader can observe the difference.
+    # `sys.intern` keeps the interned copy alive for the life of the
+    # process, which is bounded by the number of *distinct* mints/wallets
+    # ever seen -- far smaller than the (wallet, mint) entry count this is
+    # meant to shrink.
+    mint = sys.intern(mint)
     trader = row.get("trader")
     if not isinstance(trader, str) or not trader or trader == "UNK":
         trader = None
+    else:
+        trader = sys.intern(trader)
     try:
         token_raw = int(row.get("token_raw") or 0)
     except (TypeError, ValueError):
@@ -935,12 +950,35 @@ class _Wallet:
     tools/test_laya_v0.py that checks a wallet's externally-visible fields
     (`closed`, `wins`, `holds`, `is_bot/is_sniper/is_leader`) against a
     matched pre-compaction fixture.
+
+    One more bound on top of that (forward-paper's `wallets` container leak,
+    ARTIFACTS/lab/forward-paper-memory-2026-09-27.md, one of the two fields
+    a prior comment here used to call out as "persist by design"):
+
+    - `mints`: only its *cardinality* is ever read (`is_bot`'s
+      `len(self.mints) >= BOT_MIN_MINTS` check). That comparison is
+      monotonic -- once true it stays true forever, since `mints` only ever
+      grows -- so once the count reaches `BOT_MIN_MINTS` the set is cleared
+      and `mints_capped` latches on; `_refresh_flags` then treats the count
+      as permanently satisfied instead of re-reading `len(self.mints)`. This
+      is exact, not an approximation: no future read can ever see a
+      different answer than the uncapped set would have given.
+
+    `mint_pnl` is NOT compacted here. `ForwardEngine.dead_mints` only ever
+    holds mints that never got a create (their prints are dropped before
+    they reach `WalletState.observe_print` at all -- see `_add_print`), so
+    it never actually identifies a mint this wallet has `mint_pnl` for. A
+    mint that DID get a create stays in `library` forever and can receive a
+    print again at any time (pump.fun tokens keep trading on the AMM after
+    migrating), so there is no point at which a per-mint `mint_pnl` entry is
+    provably done changing. Folding/dropping it would not be exact.
     """
 
     __slots__ = (
         "n_buys",
         "n_sells",
         "mints",
+        "mints_capped",
         "sniper_buys",
         "gap_sum_ms",
         "gap_n",
@@ -960,6 +998,7 @@ class _Wallet:
         self.n_buys = 0
         self.n_sells = 0
         self.mints: set[str] = set()
+        self.mints_capped = False
         self.sniper_buys = 0
         self.gap_sum_ms = 0
         self.gap_n = 0
@@ -992,7 +1031,15 @@ class _Wallet:
             self.gap_sum_ms += t_ms - self.last_t
             self.gap_n += 1
         self.last_t = t_ms
-        self.mints.add(mint)
+        if not self.mints_capped:
+            self.mints.add(mint)
+            if len(self.mints) >= BOT_MIN_MINTS:
+                # The set has done its job (distinct-mint count is now
+                # permanently >= BOT_MIN_MINTS -- see the class docstring).
+                # Drop it instead of letting it keep growing with every new
+                # mint a prolific wallet ever touches.
+                self.mints_capped = True
+                self.mints = set()
         if side == "buy":
             self.n_buys += 1
             if slot <= first_slot + SNIPER_SLOT_DELTA:
@@ -1037,7 +1084,8 @@ class _Wallet:
         self.is_sniper = self.n_buys >= SNIPER_WALLET_MIN_BUYS and sniper_share >= SNIPER_WALLET_SHARE
         fast = self.gap_n >= BOT_MIN_GAPS and mean_gap <= BOT_MEAN_GAP_MS
         snipy = sniper_share >= BOT_SNIPER_SHARE
-        self.is_bot = self.n_buys >= BOT_MIN_BUYS and len(self.mints) >= BOT_MIN_MINTS and (fast or snipy)
+        enough_mints = self.mints_capped or len(self.mints) >= BOT_MIN_MINTS
+        self.is_bot = self.n_buys >= BOT_MIN_BUYS and enough_mints and (fast or snipy)
         self.is_leader = self._leader_ok()
 
     def _leader_ok(self) -> bool:
