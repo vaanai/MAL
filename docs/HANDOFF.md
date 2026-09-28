@@ -20,6 +20,20 @@ Count `runner_lag` healthcheck failures in `/var/lib/mal/logs/health.jsonl` sinc
 
 **(d) 05:00Z daily review — already automatic.** Runs unattended → `/home/claude/reports/daily-review/<date>.md` and `INDEX.md`.
 
+## Update 2026-09-28 18:37Z — (a) done, action needed
+
+Measured since restart #2 (14:25:02Z → 18:37Z, 4.17 h, 51 census rows):
+
+- `early_prints_buffered` 107 → 4,159 (was ~426k in 2 h before #125). **#125 works.** `dead_mints` 50,747 → 61,025; `dead_prints_dropped` 1,471,344.
+- GC `max_pause_ms` 205 (was 2,035 before #124), 24 freezes. `runner_lag` healthcheck fails since 14:25Z: 2 (was ~3 per 2 h).
+- **RSS still grows ~441 MB/h** (154 MB → 1,993 MB, linear: 1,118 MB at 2.08 h). The early buffer was not the dominant live cost. Leading suspect: `wallets` — 142,732 wallets, 452,659 per-mint entries, 308,951 `holds` entries in 4.2 h, all unbounded.
+- Projection: RSS reaches `MemoryHigh` 10G around **2026-09-29 12:00–13:00Z**. It will not last to the kill review.
+
+Next manager, in order:
+1. **Stopgap before ~2026-09-29 10:00Z:** restart `mal-forward-paper` (`sudo -n systemctl --user -M ubuntu@ restart mal-forward-paper.service`) if no fix is deployed by then. Record it as restart #3 in LAB_STATE (resets cross-mint veto memory).
+2. **Real fix:** a decision-neutral `wallets` bound (per-(wallet, mint) entries and `holds` for mints no book can act on and no feature reads), with the md5 replay proof on the staged 3.8 h slice (`/home/claude/profile-data/`; baseline decisions md5 `6b2f7786f8372c84a87ae13b6e273756`, positions `9b1ce744ef42222fe3a8cc352d35e3a0`). Check every read site of `_Wallet` fields (`_leader_ok`, `is_bot`/`is_sniper`, creator features). Measure with the live census after deploy.
+3. Alternatively or additionally, the restart-neutral warm start (Open threads) makes periodic restarts a safe fallback.
+
 ## Open threads
 
 - [#90](https://github.com/vaanai/MAL/pull/90): keep. `JobQueue` on `main` is still unbounded.
