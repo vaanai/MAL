@@ -20,8 +20,10 @@ from tools.oracle_live_adapter import (
     _hour_info_b,
     _row_sort_key,
     adapt_create_row,
+    adapt_trade_row,
     pool_b_hours,
 )
+from tools.paper_price_path import print_from_trade_row
 
 
 class WhitelistFenceTests(unittest.TestCase):
@@ -181,6 +183,125 @@ class RowSortKeyTests(unittest.TestCase):
 
     def test_missing_fields_do_not_crash(self) -> None:
         self.assertEqual(_row_sort_key({}), (0, 0, 0))
+
+
+class AdaptTradeRowTests(unittest.TestCase):
+    """The real bug this lane's first live run hit: Oracle's live PumpSwap
+    rows carry no `quote_is_wsol` flag at all (a sampled hour had 163,339
+    `pumpswap` rows, 0 with the key set), so print_from_trade_row silently
+    dropped every one of them; and no Oracle trade row of either venue
+    carries `block_time` at all, which tools.exploration_entry_model.
+    run_worker_features's shared per-row loop requires unconditionally,
+    before a row ever reaches print_from_trade_row. Both together meant
+    two consecutive full runs scored 0 migrations before both were found.
+    See adapt_trade_row's docstring for why each fix is safe."""
+
+    def _pumpswap_row(self, **overrides) -> dict:
+        row = {
+            "v": 2,
+            "type": "trade",
+            "venue": "pumpswap",
+            "mint": "MintPump",
+            "trader": "Trader1",
+            "side": "buy",
+            "sol_lamports": 494_315_372,
+            "token_raw": 308_121_700_741,
+            "quote_reserve": 164_225_939_216,
+            "base_reserve": 113_636_063_051_442,
+            "price_sol": 1.445e-06,
+            "slot": 450_289_874,
+            "signature": "Sig1",
+            "event_index": 0,
+            "t_recv_ms": 1_790_322_530_014,
+        }
+        row.update(overrides)
+        return row
+
+    def test_pumpswap_row_without_quote_is_wsol_is_dropped_before_the_fix(self) -> None:
+        # Documents one of the two bugs this adapter fixes: the raw row,
+        # unadapted, fails print_from_trade_row exactly as it did in the
+        # first real run (0 rows scored on every pool-B worker).
+        raw = self._pumpswap_row()
+        self.assertNotIn("quote_is_wsol", raw)
+        self.assertIsNone(print_from_trade_row(raw))
+
+    def test_adapted_pumpswap_row_parses(self) -> None:
+        adapted = adapt_trade_row(self._pumpswap_row())
+        self.assertIs(adapted["quote_is_wsol"], True)
+        parsed = print_from_trade_row(adapted)
+        self.assertIsNotNone(parsed)
+        mint, pr = parsed
+        self.assertEqual(mint, "MintPump")
+        self.assertEqual(pr.venue, "pumpswap")
+
+    def test_does_not_override_an_explicit_flag(self) -> None:
+        # Defensive: if Oracle ever does stamp this field, this adapter
+        # must not silently flip a real False to True.
+        row = self._pumpswap_row(quote_is_wsol=False)
+        adapted = adapt_trade_row(row)
+        self.assertIs(adapted["quote_is_wsol"], False)
+
+    def test_bonding_rows_get_no_wsol_stamp(self) -> None:
+        row = {
+            "venue": "pump_bonding",
+            "type": "trade",
+            "mint": "MintBond",
+            "side": "buy",
+            "t_recv_ms": 1,
+            "block_time": 1,  # already present: isolates this test from the block_time fix
+            "quote_reserve": 100,
+            "base_reserve": 100,
+            "slot": 1,
+        }
+        adapted = adapt_trade_row(row)
+        self.assertNotIn("quote_is_wsol", adapted)
+        self.assertIs(adapted, row)  # no copy made when nothing needs changing
+
+    def test_does_not_mutate_the_caller_s_row(self) -> None:
+        raw = self._pumpswap_row()
+        adapt_trade_row(raw)
+        self.assertNotIn("quote_is_wsol", raw)
+        self.assertNotIn("block_time", raw)
+
+
+class AdaptTradeRowBlockTimeTests(unittest.TestCase):
+    """The bigger of the two bugs: no Oracle trade row (bonding or pumpswap)
+    carries `block_time`, and the shared streaming loop drops every row
+    without it, before print_from_trade_row is ever called -- this is why
+    the first full run scored 0 migrations on every pool-B worker, not just
+    the pumpswap-only ones."""
+
+    def test_block_time_is_derived_from_t_recv_ms_when_missing(self) -> None:
+        row = {"venue": "pump_bonding", "mint": "M", "t_recv_ms": 1_790_322_530_014}
+        adapted = adapt_trade_row(row)
+        self.assertEqual(adapted["block_time"], 1_790_322_530)
+        self.assertEqual(adapted["t_recv_ms"], 1_790_322_530_014)  # untouched, real value kept
+
+    def test_pumpswap_row_gets_both_fixes_in_one_pass(self) -> None:
+        row = {"venue": "pumpswap", "mint": "M", "t_recv_ms": 1_790_322_530_014}
+        adapted = adapt_trade_row(row)
+        self.assertEqual(adapted["block_time"], 1_790_322_530)
+        self.assertIs(adapted["quote_is_wsol"], True)
+
+    def test_existing_int_block_time_is_not_overwritten(self) -> None:
+        row = {"venue": "pump_bonding", "mint": "M", "t_recv_ms": 999, "block_time": 42}
+        adapted = adapt_trade_row(row)
+        self.assertEqual(adapted["block_time"], 42)
+
+    def test_no_t_recv_ms_leaves_block_time_unset_not_fake_zero(self) -> None:
+        row = {"venue": "pump_bonding", "mint": "M"}
+        adapted = adapt_trade_row(row)
+        self.assertNotIn("block_time", adapted)
+
+    def test_row_without_block_time_is_dropped_by_the_shared_loops_own_gate(self) -> None:
+        # Documents the actual bug: run_worker_features's per-row loop, not
+        # print_from_trade_row, is what silently drops an Oracle row -- so
+        # this asserts the gate condition directly rather than print_from_
+        # trade_row (which doesn't read block_time at all).
+        raw = {"venue": "pump_bonding", "mint": "M", "t_recv_ms": 1}
+        self.assertNotIn("block_time", raw)
+        block = raw.get("block_time")
+        self.assertFalse(isinstance(block, int))  # would `continue` in run_worker_features
 
 
 if __name__ == "__main__":

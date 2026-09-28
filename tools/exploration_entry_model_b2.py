@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exploration lane B2: the learned migrate entry filter (tools/
-exploration_entry_model.py, #142 / ARTIFACTS/lab/exploration-entry-model-
+exploration_entry_model.py, #146 / ARTIFACTS/lab/exploration-entry-model-
 2026-09-28.md) evaluated over 5.7 UTC days instead of 3, by adding the
 Oracle live tape (pool B) alongside the fast-box backfill pool (pool A).
 

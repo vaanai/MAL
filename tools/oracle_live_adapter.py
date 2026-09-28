@@ -20,23 +20,45 @@ the cutoff no matter which file it came from.
 Schema differences from the fast-box backfill pool (see the inventory in
 the lane B2 brief):
 
-- Trade rows. Oracle's `sealed/trades/trades-*.jsonl.zst` are already in the
+- Trade rows. Oracle's `sealed/trades/trades-*.jsonl.zst` mostly match the
   shape `tools.paper_price_path.print_from_trade_row` expects: `t_recv_ms`
   (real receive time), `slot`, `signature`, `event_index`, `venue`, `side`,
   `sol_lamports`, `token_raw`, `base_reserve`, `quote_reserve`, `price_sol`
-  are present with the same names and units as the fast-box tape (verified
-  against a live sample, 2026-09-28T19). No field-level adaptation is
-  needed there. The one real difference: no `tx_index`.
-  `tools.paper_price_path.row_tx_index` already returns -1 for a missing
-  key, and `TxOrder.stamp` already falls back to "first position seen for
-  this (slot, signature) pair" in that case -- the same fallback the live
-  `ForwardEngine` itself relies on for exactly this gap. That fallback only
-  reproduces (slot, t_recv_ms, event_index) order if rows are fed to it in
-  that order; `iter_trade_rows_sorted` below makes that true by
-  construction (an explicit re-sort per hour) instead of assuming the file
-  already is, even though a single-writer, append-only, real-time listener
-  ought to produce it. Not faking `tx_index`: none is assigned. The order
-  handed to `TxOrder` is what changes.
+  are present with the same names and units as the fast-box tape. No
+  `tx_index`: `tools.paper_price_path.row_tx_index` already returns -1 for
+  a missing key, and `TxOrder.stamp` already falls back to "first position
+  seen for this (slot, signature) pair" in that case -- the same fallback
+  the live `ForwardEngine` itself relies on for exactly this gap. That
+  fallback only reproduces (slot, t_recv_ms, event_index) order if rows are
+  fed to it in that order; `iter_trade_rows_sorted` below makes that true
+  by construction (an explicit re-sort per hour) instead of assuming the
+  file already is. Not faking `tx_index`: none is assigned.
+
+  Two real gaps, both found by running the actual pipeline against real
+  data (not predicted from the schema inventory), and both fixed in
+  `adapt_trade_row` -- see its own docstring for the full reasoning:
+
+  1. No `block_time` at all, on any Oracle trade row. `run_worker_features`
+     -- shared with pool A -- reads it unconditionally, before a row ever
+     reaches `print_from_trade_row`, as a fallback source for a fast-pool
+     row's occasionally-missing `t_recv_ms`. Oracle rows already have a
+     real `t_recv_ms`, but the gate doesn't check that first: it drops the
+     row outright without `block_time`, regardless. Unfixed, this drops
+     *every* Oracle trade row -- the first real run scored 0 rows on every
+     pool-B worker.
+  2. `pumpswap` rows carry no `quote_is_wsol` flag (a sampled hour: 163,339
+     `pumpswap` rows, 0 with the key set) -- Oracle's live PumpSwap tap
+     watches the whole AMM program, not just pump.fun migrations, and never
+     resolves the quote side. `print_from_trade_row` treats a missing flag
+     as "not confirmed SOL" and drops the row. Unfixed (even with #1 also
+     fixed), no post-bonding print is ever seen for a migrated mint and no
+     migration is ever detected -- confirmed by a second real run that
+     still scored 0 after only #2 was known.
+
+  Both were found the same way: by running the real pipeline against real
+  data and getting an implausible zero, not by reasoning about the schema
+  in advance -- the inventory in the lane B2 brief undersold how different
+  Oracle's live trade schema is from the fast pool's normalized one.
 
 - Create rows. Oracle has no per-hour, pre-normalized `creates-*.jsonl` the
   way the fast-box backfill does. It has PumpPortal `subscribeNewToken`
@@ -212,6 +234,82 @@ def load_creates_b() -> dict[str, tuple[_Mint, _Feat]]:
     return found
 
 
+# --- PumpSwap quote-side gap: Oracle's live tap never resolves it ----------
+
+
+def adapt_trade_row(row: dict[str, Any]) -> dict[str, Any]:
+    """One raw Oracle trade row -> the shape tools.exploration_entry_model.
+    run_worker_features's shared per-row loop and print_from_trade_row both
+    expect. Two real gaps, both found by running the actual pipeline against
+    real data, not predicted from the schema inventory:
+
+    1. No `block_time`. Oracle trade rows carry `t_recv_ms` (real, ms) and
+       `event_ts` but never a `block_time` field -- the fast-box loader's
+       own field name for an on-chain block second. run_worker_features's
+       shared per-row loop reads `block_time` unconditionally, before it
+       ever reaches print_from_trade_row: `block = row.get("block_time");
+       if not isinstance(block, int): continue` (it exists there as a
+       fallback source for a *missing* t_recv_ms on the fast pool, whose
+       rows can have `t_recv_ms: null`). Oracle rows already have a real
+       t_recv_ms, but the gate itself doesn't check that first -- it drops
+       every row without `block_time` regardless. Left unfixed, this drops
+       every single Oracle trade row before print_from_trade_row is ever
+       called: the first real run scored 0 rows on every pool-B worker,
+       and even after the quote_is_wsol fix below was written, a second
+       full run still scored 0 until this was found. This adapter derives
+       `block_time = t_recv_ms // 1000` -- the same real receive time
+       already on the row, just truncated to whole seconds to satisfy an
+       `isinstance(..., int)` check upstream. Not invented timing data:
+       the row's own t_recv_ms is retained untouched (the loop only backs
+       t_recv_ms off of block_time when t_recv_ms is None, which it never
+       is here), so this field has zero effect on any downstream ordering
+       or pricing -- it exists only to pass a gate designed around the
+       fast pool's own (opposite) gap.
+
+    2. `pumpswap` rows have no `quote_is_wsol`. Oracle's live PumpSwap
+       listener taps the whole PumpSwap AMM program's trade log, not just
+       pump.fun migrations, and never resolves the quote side -- a sampled
+       hour had 163,339 `pumpswap` rows and 0 with `quote_is_wsol` set.
+       `print_from_trade_row` treats a missing flag as "not confirmed SOL"
+       and drops the row, so left alone, no post-bonding print is ever
+       seen and no migration is ever detected, even with (1) fixed.
+
+       Naively stamping every `pumpswap` row `quote_is_wsol=True` would
+       misprice the many unrelated (non-SOL, non-pump.fun) pools on that
+       same tap. But the only rows that ever reach print_from_trade_row are
+       already filtered to a `mint` this run is tracking (run_worker_
+       features's `hot`/`watch` lookup drops an untracked mint first) --
+       and every tracked mint reached PumpSwap only by migrating there from
+       *our own observed* `pump_bonding` history, which by pump.fun's
+       protocol always creates a WSOL-quoted pool. So for a `pumpswap` row
+       on a mint this run tracks, WSOL is not an assumption smuggled in; it
+       is a consequence of the mint being migrate-tracked at all -- the
+       same "wsol_assumed" convention Oracle's own creates feed already
+       documents on itself (`regime_id`'s `quote=wsol_assumed`), applied to
+       the one field Oracle's live PumpSwap tap never resolved. Stamping it
+       on every `pumpswap` row here, unconditionally, changes nothing for a
+       row that would have been dropped anyway at the mint lookup, and
+       fixes the ones that matter.
+
+    `pump_bonding` rows never need the quote_is_wsol stamp: WSOL is the
+    only quote pump.fun's bonding curve ever uses, and Oracle's own bonding
+    rows already carry an explicit `quote_is_wsol: true` / `quote_mint`
+    pair confirming it.
+    """
+    needs_block_time = not isinstance(row.get("block_time"), int)
+    needs_wsol_stamp = row.get("venue") == "pumpswap" and "quote_is_wsol" not in row
+    if not needs_block_time and not needs_wsol_stamp:
+        return row
+    row = dict(row)
+    if needs_block_time:
+        t_ms = row.get("t_recv_ms")
+        if isinstance(t_ms, int):
+            row["block_time"] = t_ms // 1000
+    if needs_wsol_stamp:
+        row["quote_is_wsol"] = True
+    return row
+
+
 # --- Trade row ordering: defensive re-sort, not a trust assumption ----------
 
 
@@ -227,7 +325,8 @@ def _row_sort_key(row: dict[str, Any]) -> tuple[int, int, int]:
 
 
 def iter_trade_rows_sorted(path: Path) -> list[dict[str, Any]]:
-    """One Oracle trade hour, sorted by (slot, t_recv_ms, event_index).
+    """One Oracle trade hour: adapt_trade_row applied, then sorted by
+    (slot, t_recv_ms, event_index).
 
     Oracle rows carry no `tx_index` (see module docstring); this is the
     explicit stand-in ordering, computed instead of assumed. Buffers one
@@ -235,6 +334,6 @@ def iter_trade_rows_sorted(path: Path) -> list[dict[str, Any]]:
     caller's per-hour loop lets each hour's list be freed before the next
     is read.
     """
-    rows = list(_iter_trades(path))
+    rows = [adapt_trade_row(r) for r in _iter_trades(path)]
     rows.sort(key=_row_sort_key)
     return rows
