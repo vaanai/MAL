@@ -45,6 +45,7 @@ from tools.forward_paper import (
     reconcile_baseline,
     replay_rows,
     window_creates,
+    write_mem_census,
 )
 from tools.paper_curve_math import PORTAL_FEE_PPM, PRIORITY_FEE_LAMPORTS
 from tools.paper_tape_scoreboard import priority_grid, priority_sides_for_event
@@ -620,6 +621,74 @@ class MemoryBoundTests(unittest.TestCase):
         self.assertEqual(row1["wallets"]["mint_pnl_entries"], n)
         self.assertIsInstance(row1["rss_kb_proc"], (int, type(None)))
         self.assertEqual(row2["library"], row1["library"])
+
+    def test_write_mem_census_never_propagates_a_failure(self) -> None:
+        """`write_mem_census()` is called from `serve()`'s main loop every 5
+        minutes; this diagnostics-only helper must never be able to kill the
+        process. Exercise every failure point a raising `mem_census`,
+        `gc_stats`, or `logs["mem_census"]` could hit -- the call must return
+        an incremented failure count, not raise.
+        """
+
+        class _RaisingCensus:
+            def snapshot(self, engine: object) -> dict[str, object]:
+                raise RuntimeError("boom: census walk failed")
+
+        class _RaisingGcStats:
+            def report(self) -> dict[str, object]:
+                raise RuntimeError("boom: gc report failed")
+
+        class _RaisingLog:
+            def write(self, row: dict[str, object]) -> None:
+                raise OSError("boom: disk full")
+
+        class _QuietLog:
+            def write(self, row: dict[str, object]) -> None:
+                pass
+
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine([spec], kill_file=Path("/tmp/forward-paper-census-fail"))
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            good_census = MemCensus()
+            good_stats = GcStats()
+
+            # 1. The snapshot itself raises.
+            failures = write_mem_census(
+                engine, _RaisingCensus(), good_stats, output_dir, {"mem_census": _RaisingLog()}, 0, 0
+            )
+            self.assertEqual(failures, 1)
+
+            # 2. The snapshot succeeds but gc_stats.report() raises.
+            failures = write_mem_census(
+                engine, good_census, _RaisingGcStats(), output_dir, {"mem_census": _RaisingLog()}, 0, 0
+            )
+            self.assertEqual(failures, 1)
+
+            # 3. Both succeed but the jsonl write raises (e.g. disk full).
+            failures = write_mem_census(
+                engine, good_census, good_stats, output_dir, {"mem_census": _RaisingLog()}, 0, 0
+            )
+            self.assertEqual(failures, 1)
+
+            # 4. A bad output_dir (file write fails) also does not propagate.
+            bogus_dir = output_dir / "does" / "not" / "exist-and-is-not-created"
+            failures = write_mem_census(engine, good_census, good_stats, bogus_dir, {"mem_census": _RaisingLog()}, 0, 0)
+            self.assertEqual(failures, 1)
+
+            # 5. Repeated failures accumulate the counter across calls.
+            failures = 0
+            for _ in range(5):
+                failures = write_mem_census(
+                    engine, _RaisingCensus(), good_stats, output_dir, {"mem_census": _RaisingLog()}, 0, failures
+                )
+            self.assertEqual(failures, 5)
+
+            # 6. A healthy call after prior failures succeeds and leaves the
+            # failure count unchanged (the counter only increments on failure).
+            failures = write_mem_census(engine, good_census, good_stats, output_dir, {"mem_census": _QuietLog()}, 0, failures)
+            self.assertEqual(failures, 5)
+            self.assertTrue((output_dir / "mem-census.json").is_file())
 
     def test_latency_meter_ring_buffers_stay_bounded(self) -> None:
         meter = LatencyMeter(extra_ms=1)

@@ -304,6 +304,38 @@ class MemCensus:
         return row
 
 
+def write_mem_census(
+    engine: "ForwardEngine",
+    mem_census: MemCensus,
+    gc_stats: GcStats,
+    output_dir: Path,
+    logs: dict[str, "JsonlLog"],
+    now_ms: int,
+    failures: int,
+) -> int:
+    """Best-effort diagnostics only -- must never be able to kill `serve()`'s
+    main loop. Every step (the wallet walk, the two file writes) is wrapped
+    in one `try`, matched to a single `except Exception` so any failure here
+    -- a permissions error on `output_dir`, a transient issue inside the
+    adaptive wallet walk, anything -- is caught, counted, and logged at a
+    rate-limited cadence (every one of the first 3 failures, then every
+    50th) instead of ending the process. Returns the updated failure count.
+    """
+    try:
+        census = mem_census.snapshot(engine)
+        census["gc"] = gc_stats.report()
+        census["t_ms"] = now_ms
+        (output_dir / "mem-census.json").write_text(json.dumps(census, indent=2) + "\n", encoding="utf-8")
+        logs["mem_census"].write(census)
+        print(f"forward_paper mem_census={json.dumps(census)}", file=sys.stderr)
+        return failures
+    except Exception as exc:  # noqa: BLE001 - diagnostics only, must never propagate
+        failures += 1
+        if failures <= 3 or failures % 50 == 0:
+            print(f"forward_paper mem_census_error count={failures} err={exc!r}", file=sys.stderr)
+        return failures
+
+
 PRUNE_AFTER_MS = 45 * 60 * 1000
 CHAIN_LAG_MIN_MS = -5_000
 CHAIN_LAG_MAX_MS = 120_000
@@ -2753,6 +2785,7 @@ def serve(config_path: Path) -> int:
     last_status = 0.0
     last_prune = 0.0
     last_mem_census = 0.0
+    mem_census_failures = 0
     while not stop["flag"]:
         batch = tail.poll()
         now_ms = int(time.time() * 1000)
@@ -2832,12 +2865,9 @@ def serve(config_path: Path) -> int:
             write_runner_status(status_path, engine, live_at_ms=live_at_ms)
             last_status = now
         if now - last_mem_census > 300:
-            census = mem_census.snapshot(engine)
-            census["gc"] = gc_stats.report()
-            census["t_ms"] = now_ms
-            (output_dir / "mem-census.json").write_text(json.dumps(census, indent=2) + "\n", encoding="utf-8")
-            logs["mem_census"].write(census)
-            print(f"forward_paper mem_census={json.dumps(census)}", file=sys.stderr)
+            mem_census_failures = write_mem_census(
+                engine, mem_census, gc_stats, output_dir, logs, now_ms, mem_census_failures
+            )
             last_mem_census = now
         if not batch:
             time.sleep(0.025)
