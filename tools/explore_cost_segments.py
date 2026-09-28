@@ -40,11 +40,9 @@ from tools.latency_curve import (
     MISS,
     SEND,
     SIZES,
-    WSOL,
     FailCurve,
     Pressure,
     _Mint,
-    _anchor,
     _delayed,
     _iter_trades,
     _one_sell_close,
@@ -55,7 +53,7 @@ from tools.latency_curve import (
     _try_buy,
     mixed_net,
 )
-from tools.migrate_direct_oos import PRESSURE_INTERCEPT, _load_creates, _ref_migrate, _utc_day
+from tools.migrate_direct_oos import PRESSURE_INTERCEPT, _ref_migrate, _utc_day
 from tools.paper_curve_math import (
     LAMPORTS_PER_SOL,
     market_cap_sol,
@@ -390,14 +388,132 @@ def run(backfill: Path, out_path: Path, workers: int) -> dict[str, Any]:
     return {"schema": SCHEMA, "n_rows": len(rows), "hours": [h["hour"] for h in hours], "elapsed_s": elapsed}
 
 
+def _read_rows(path: Path) -> list[dict[str, Any]]:
+    rows = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def _pct(sorted_vals: Sequence[float], p: float) -> float:
+    if not sorted_vals:
+        return 0.0
+    idx = int(round(p * (len(sorted_vals) - 1)))
+    return sorted_vals[idx]
+
+
+def _ci_lo(values: Sequence[float], seed: int = 1, draws: int = 1000) -> float:
+    if not values:
+        return 0.0
+    import random
+
+    rng = random.Random(seed)
+    n = len(values)
+    means = []
+    for _ in range(draws):
+        total = 0.0
+        for _i in range(n):
+            total += values[rng.randrange(n)]
+        means.append(total / n)
+    means.sort()
+    return _pct(means, 0.05)
+
+
+def _ex_top3(values: Sequence[float]) -> float | None:
+    if len(values) <= 3:
+        return None
+    ordered = sorted(values, reverse=True)
+    return sum(values) - sum(ordered[:3])
+
+
+def aggregate(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Fee-by-segment table. Filled trades only (status == SEND). Segment key is the
+    fee tier known at decision time T: (offset_min, entry_fee_ppm). Reuses the exact
+    frozen fail-mix (`mixed_net`, `FailCurve`/`Pressure`, `FLAT_FAIL`, `PRESSURE_INTERCEPT`)
+    — not re-derived."""
+    curve = FailCurve(PRESSURE_INTERCEPT, B_SLOT * 1.0, B_SOL * 1.0, 1.0)
+    size = SIZE_LAMPORTS
+    groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for row in rows:
+        if int(row["status"]) != SEND:
+            continue
+        if row.get("entry_fee_ppm") is None:
+            continue
+        key = (int(row["offset_min"]), int(row["entry_fee_ppm"]))
+        groups.setdefault(key, []).append(row)
+    out: dict[str, Any] = {}
+    for (offset_min, fee_ppm), grp in sorted(groups.items()):
+        gross_vals = [r["gross"] / size * 100.0 for r in grp]
+        fee_vals = [(r["gross"] - r["net0"]) / size * 100.0 for r in grp]
+        flat_vals: list[float] = []
+        press_vals: list[float] = []
+        days: dict[str, float] = {}
+        press_days: dict[str, float] = {}
+        exit_ppm_counts: dict[str, int] = {}
+        for r in grp:
+            sides = int(r["sides"])
+            net0 = int(r["net0"])
+            p_press = curve.p(Pressure(int(r["buys"]), int(r["nearby"])))
+            flat = mixed_net(net0, sides, SEND, PRIORITY_LAMPORTS, FLAT_FAIL)
+            pressed = mixed_net(net0, sides, SEND, PRIORITY_LAMPORTS, p_press)
+            flat_vals.append(flat)
+            press_vals.append(pressed)
+            day = str(r["day"])
+            days[day] = days.get(day, 0.0) + flat
+            press_days[day] = press_days.get(day, 0.0) + pressed
+            exit_ppm_counts[str(r.get("exit_fee_ppm"))] = exit_ppm_counts.get(str(r.get("exit_fee_ppm")), 0) + 1
+        n = len(grp)
+        flat_pct = [v / size * 100.0 for v in flat_vals]
+        press_pct = [v / size * 100.0 for v in press_vals]
+        n_days = len(days)
+        days_positive = sum(1 for t in days.values() if t > 0)
+        press_days_positive = sum(1 for t in press_days.values() if t > 0)
+        out[f"offset{offset_min}min_fee{fee_ppm}ppm"] = {
+            "offset_min": offset_min,
+            "entry_fee_ppm": fee_ppm,
+            "entry_fee_pct": fee_ppm / 10_000.0,
+            "n_filled": n,
+            "exit_fee_ppm_counts": exit_ppm_counts,
+            "mean_gross_pct": sum(gross_vals) / n,
+            "mean_fee_pct": sum(fee_vals) / n,
+            "mean_net_flat_pct": sum(flat_pct) / n,
+            "ci_lo_flat_pct": _ci_lo(flat_pct) if n > 0 else None,
+            "ex_top3_flat_sol": (lambda e: None if e is None else e / LAMPORTS_PER_SOL)(_ex_top3(flat_vals)),
+            "mean_net_pressure_pct": sum(press_pct) / n,
+            "ci_lo_pressure_pct": _ci_lo(press_pct) if n > 0 else None,
+            "ex_top3_pressure_sol": (lambda e: None if e is None else e / LAMPORTS_PER_SOL)(_ex_top3(press_vals)),
+            "n_days": n_days,
+            "days_positive_flat": days_positive,
+            "days_positive_pressure": press_days_positive,
+            "day_totals_flat_sol": {d: t / LAMPORTS_PER_SOL for d, t in sorted(days.items())},
+        }
+    return out
+
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Exploration-only: fee tier / cost-aware selection")
-    p.add_argument("--backfill", type=Path, default=Path("/var/lib/mal/backfill-fast"))
-    p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--workers", type=int, default=3)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    run_p = sub.add_parser("run", help="Stream the fenced hours and write rows.jsonl")
+    run_p.add_argument("--backfill", type=Path, default=Path("/var/lib/mal/backfill-fast"))
+    run_p.add_argument("--out", type=Path, required=True)
+    run_p.add_argument("--workers", type=int, default=3)
+    rep_p = sub.add_parser("report", help="Aggregate rows.jsonl into the fee-by-segment table")
+    rep_p.add_argument("--rows", type=Path, required=True)
+    rep_p.add_argument("--out", type=Path, required=True)
     args = p.parse_args(argv)
-    report = run(args.backfill, args.out, args.workers)
-    sys.stdout.write(json.dumps(report) + "\n")
+    if args.cmd == "run":
+        report = run(args.backfill, args.out, args.workers)
+        sys.stdout.write(json.dumps(report) + "\n")
+        return 0
+    rows = _read_rows(args.rows)
+    segments = aggregate(rows)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps({"schema": "explore_cost_segments_report_v1", "n_rows": len(rows), "segments": segments}, indent=2) + "\n", encoding="utf-8")
+    sys.stdout.write(json.dumps({"n_rows": len(rows), "n_segments": len(segments)}) + "\n")
     return 0
 
 

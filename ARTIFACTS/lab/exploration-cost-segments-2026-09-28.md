@@ -84,19 +84,66 @@ Per the fee audit's live on-chain read (slot 450,986,715, 2026-09-27T11:42:45Z, 
 
 ## 3. Run
 
-(hours read, row counts, elapsed time — filled in from the actual run log)
+71 sealed hours, `2026-09-19T01` through `2026-09-21T23` inclusive, 3 UTC days (`2026-09-19`, `2026-09-20`, `2026-09-21`). 3 worker processes under `nice -n 19`, wall time 516.8s. **12,727 rows** written (5 entry variants x up to ~3,246 migrations). At the frozen trigger (offset 0), miss rate is **69.2%** (2,245 of 3,246) — higher than the fee audit's 59.65% because this run uses the 0.5 SOL primary size (bigger fills hit the slippage cap more often) on a different 3-day window, not the same cell.
 
 ## 4. Fee-by-segment table
 
-(filled in from `explore-cost-segments-2026-09-28.json`)
+### 4a. At the frozen trigger itself (offset 0, slot+1, direct): almost no tier to select on
+
+| Entry fee tier | n filled | mean gross % | mean fee % | mean net flat % | CI-lo flat % | mean net pressure % | CI-lo pressure % | days+ (flat/pressure) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| 12,500 ppm (1.25%, mcap < 420 SOL) | 987 (98.6%) | +2.373 | 2.482 | −0.277 | −2.480 | −0.477 | −1.688 | 1/3, 1/3 |
+| 12,000 ppm (1.20%, mcap 420–1,470 SOL) | 14 (1.4%) | −4.288 | 2.339 | −5.818 | −25.988 | −2.315 | −10.044 | 2/3, 2/3 |
+
+At the trigger, 98.6% of fills land in the single top fee tier — the same ≈1.25% the fee audit already measured. **There is essentially no fee-tier lever available at the frozen decision point itself**; the trigger fires within ~1 slot of graduation, before the pool has had time to move mcap into a cheaper tier. The 14-row 12,000ppm bucket is too small to read (CI-lo −25.99%) and is reported for completeness only, not as a finding.
+
+### 4b. Waiting for a cheaper tier (migrate+N minutes): the tier mix opens up fast
+
+| Offset | n filled | top tier (12,000–12,500ppm) | mid (9,000–11,500ppm) | cheap (< 9,000ppm) | cheap tier share |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 min (frozen trigger) | 1,001 | 1,001 (100.0%) | 0 | 0 | 0.0% |
+| 1 min | 3,171 | 2,111 (66.6%) | 806 (25.4%) | 254 (8.0%) | 8.0% |
+| 5 min | 3,139 | 2,159 (68.8%) | 741 (23.6%) | 239 (7.6%) | 7.6% |
+| 15 min | 2,798 | 2,119 (75.7%) | 490 (17.5%) | 189 (6.8%) | 6.8% |
+| 60 min | 373 | 326 (87.4%) | 32 (8.6%) | 15 (4.0%) | 4.0% |
+
+By 1 minute after migration, **8% of fills are already paying under 0.90%** venue fee instead of 1.25% — some as low as 0.30% (111 of 3,171 fills at exactly 3,000ppm). The mechanism is real and mechanical: `pumpswap_sol_fee_ppm` steps down every time mcap crosses a threshold (SS1), and mcap moves fast in the first minutes after a migration.
+
+### 4c. Fee saved vs. gross paid, by band and offset
+
+| Offset | Band | n | mean gross % | mean fee % | mean net flat % | CI-lo flat % | mean net pressure % | CI-lo pressure % | days+ (flat/press) |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| 0 | top | 1,001 | +2.280 | 2.480 | −0.355 | −2.541 | −0.502 | −1.709 | 1/3, 1/3 |
+| 1 | top | 2,111 | −9.073 | 2.355 | −9.899 | −11.236 | −8.381 | −9.420 | 0/3, 0/3 |
+| 1 | mid | 806 | −5.633 | 1.997 | −6.670 | −10.914 | −5.573 | −8.765 | 1/3, 1/3 |
+| 1 | cheap | 254 | −7.575 | 0.909 | −7.396 | −11.214 | −6.075 | −9.426 | 0/3, 0/3 |
+| 5 | top | 2,159 | −12.254 | 2.315 | −12.568 | −13.865 | −11.070 | −12.127 | 0/3, 0/3 |
+| 5 | mid | 741 | −16.086 | 1.876 | −15.453 | −19.710 | −11.315 | −14.722 | 0/3, 0/3 |
+| 5 | cheap | 239 | −7.414 | 0.922 | −7.270 | −11.125 | −5.684 | −8.736 | 0/3, 0/3 |
+| 15 | top | 2,119 | +4.897 | 2.532 | +1.825 | −5.034 | +2.092 | −4.487 | 2/3, 2/3 |
+| 15 | mid | 490 | −9.796 | 1.967 | −10.183 | −13.920 | −7.503 | −10.419 | 0/3, 0/3 |
+| 15 | cheap | 189 | −3.669 | 0.927 | −4.091 | −8.904 | −3.432 | −7.376 | 1/3, 1/3 |
+| 60 | top | 326 | −7.151 | 2.388 | −8.293 | −10.786 | −7.562 | −9.834 | 0/3, 0/3 |
+| 60 | mid | 32 | −33.303 | 1.711 | −29.946 | −44.791 | −21.606 | −32.483 | 0/3, 0/3 |
+| 60 | cheap | 15 | −67.883 | 0.848 | −58.607 | −71.945 | −46.883 | −58.235 | 1/3, 1/3 |
+
+`fee %` is the true round-trip venue cost (`gross − net0`, size-relative — includes rent on a failed close), not a doubled entry-tier estimate. Bands: top = 12,000–12,500ppm (1.20–1.25%), mid = 9,000–11,500ppm (0.90–1.15%), cheap = below 9,000ppm (< 0.90%). All numbers use the frozen fail-mix code (`mixed_net`, `FailCurve` at `PRESSURE_INTERCEPT`, `FLAT_FAIL = 0.15`), not a re-derivation. `n_days = 3` throughout (this window has only 3 UTC days — well short of the promotion gate's 5-day minimum, consistent with SS7: this is exploration, not a gate-eligible book).
 
 ## 5. Does gross hold up in the cheaper segments?
 
-(filled in)
+**Mostly no.** The cheap and mid bands save 1.4–1.7 percentage points of fee versus the top band (fee % ≈ 0.85–0.93% vs ≈ 2.32–2.53%) at every offset — the mechanism in SS1/SS4b is confirmed. But gross collapses far harder than that at 1 and 5 minutes: every band at offset 1 and 5 has negative mean gross, and the cheap/mid bands are not better than top — at offset 5, mid is *worse* (gross −16.086%) than top (−12.254%). The fee saving (≈1.9pp) is swamped by an adverse-selection cost that is an order of magnitude larger. Offset 60 is worse again across all bands, worst in the cheap band (gross −67.883%, n=15 — noisy, but directionally consistent with staleness, not with a discount).
+
+The one exception is **offset 15, top band**: gross +4.897%, net flat +1.825% (CI-lo −5.034%, still crosses zero), net pressure +2.092% (CI-lo −4.487%), 2 of 3 days positive under both fail models. This is the only band/offset combination in this table with positive mean net under both fail models. It does not clear the promotion gate (n=2,119 trades but only 3 UTC days, not the required 5; CI lower bound is negative on both fail models) and is not being claimed as an edge — it is a single cell out of 15 read here, the same winner's-curse shape already on record for the frozen cell (`LAB_STATE.md` SS"First positive run"). It is flagged only as worth a dedicated, larger, pre-registered test.
+
+**Reading:** the frozen cell's edge is concentrated at the migrate instant, not in the fee it pays there. Waiting to reach a cheaper PumpSwap tier means buying into a pool that has already run — on this window, that costs far more in adverse price selection than the tier saves in fee, except possibly in a narrow window around 15 minutes that needs its own test before being trusted.
 
 ## 6. Candidate selection rules for a future pre-registered test
 
-(filled in)
+Each rule below is knowable at decision time T from state already read at T (no future information), per the task's requirement. None has cleared, or been tested against, the promotion gate.
+
+1. **Entry-tier filter at the frozen trigger.** At slot+1/direct, the (rare, 1.4% of fills here) trades that land in the 12,000ppm tier instead of 12,500ppm — meaning mcap already crossed 420 SOL before the buy landed — read worse in this sample (mean net flat −5.818% vs −0.277%, n=14 vs 987). Too small to act on from this window alone, but cheap to log (it's just `buy.venue_fee_ppm`, already computed by the existing frozen scorer) and worth carrying as a covariate into a much larger pre-registered read before deciding whether "already ran before you landed" is informative or noise.
+2. **Migrate+15-minute entry, top fee tier only.** The single cell in SS5 with positive mean net under both fail models. Explicitly weak (CI lower bound negative both ways, only 3 UTC days, single best-of-15 cell) — proposed only as a pre-registration candidate with a materially larger holdout (more days, ideally a different window than the one that surfaced it), not as a result.
+3. **Tier-conditioned position sizing instead of tier-conditioned timing.** Since blind time delay pays the fee saving but loses more to adverse selection, a sizing rule — full size only in the top tier (mcap < 420 SOL, i.e., still at the un-run price), reduced size in mid/cheap tiers reached at the same decision time — could in principle capture the rare cheap-tier fill without taking on the systematic adverse-selection cost of *waiting* for one. Untested here; the frozen trigger essentially never reaches a cheap tier (SS4a), so this rule only bites on a decision point that itself waits, which is exactly the mechanism SS5 shows losing money — it would need to be paired with a signal that predicts *which* delayed entries avoid the adverse-selection cost, not adopted on tier alone.
 
 ## 7. What this is not
 
