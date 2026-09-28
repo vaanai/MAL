@@ -12,6 +12,7 @@ Paper only. This process has no key, does not sign, and does not send.
 from __future__ import annotations
 
 import argparse
+import gc
 import heapq
 import json
 import math
@@ -113,7 +114,379 @@ SWING_LADDER_BY_ID: dict[str, LadderRule] = {rule.rule_id: rule for rule in SWIN
 
 class RiskConfigError(Exception):
     """Host JSON asked for a looser risk limit than the hard ceiling."""
+
+
+# Cyclic-GC mitigation for the long-lived `serve()` process. Measured directly
+# (tools/forward_paper_mem_profile.py's replay plus a standalone probe growing
+# just `WalletState`): a single `gc.collect(2)` over a ~2 GB heap of the kind
+# this runner reaches after several hours takes ~1.6 SECONDS wall time, and
+# scales close to linearly with the live tracked-object count (roughly 0.35 ms
+# per 1,000 objects, from 30 ms at 20k wallets to 1.6 s at 1.6M wallets in the
+# probe). That single stop-the-world pause is a plausible cause of the
+# `runner_lag` health-check breaches seen with zero swap use (a GC pause is a
+# processing stall, not a memory-pressure symptom). None of `_Wallet`,
+# `MintBook`, `_Track`, or `WalletState` hold a back-reference that could form
+# a reference cycle (checked: no `__del__`, no `weakref`, no cyclic field
+# anywhere in tools/forward_paper.py, tools/laya_v0.py, tools/funding_graph.py)
+# -- ordinary refcounting already frees every dict/list/set entry the moment
+# it is popped or goes out of scope, with or without the cyclic collector.
+# The cyclic collector exists only to catch reference cycles, which this
+# codebase does not appear to create; letting collections run far less often
+# is safe and changes no decision (GC never touches a live object's value,
+# only reclaims unreachable ones -- see the md5-identical replay proof in the
+# PR that raises these thresholds).
+#
+# Chosen mitigation: raise the collection thresholds (not `gc.disable()`) so
+# automatic collection keeps running as a safety net for any cycle this audit
+# missed, just far less often -- default is (700, 10, 10); this cuts
+# generation-0 collections by ~70x and, since generation-1/2 trigger on a
+# *count* of lower-generation collections, generation-2 runs roughly another
+# 4x less often on top of that (~280x fewer stop-the-world scans overall).
+# `gc.freeze()` is called once after startup (model files loaded, engine
+# built) so the static baseline (interpreter, imports, loaded models) is
+# permanently excluded from every future scan -- it cannot go uncollected
+# because refcounting still frees it immediately if it ever becomes garbage;
+# freezing only removes it from the cyclic scanner's work list.
+GC_THRESHOLD = (50_000, 40, 40)
+
+# Live evidence on Oracle, 2h after a restart on the #123 code (raised
+# thresholds + one startup freeze): RSS 1.14 GB, 9,713 collections, max pause
+# 1,949 ms, avg 21.9 ms, and 3 runner_lag breaches (>5s recv->decision) in
+# that window. #123 only froze the *startup* baseline (interpreter, imports,
+# loaded models); every `_Wallet`/`MintBook`/`_Track`/`WalletState` entry
+# created after that -- the entire live tracked-object set an hours-old
+# runner accumulates -- still sits in the generation gen2 walks on every
+# collection. That is why gen2 pauses keep growing with uptime instead of
+# staying flat after the one startup freeze.
+#
+# Fix: call `gc.freeze()` again periodically from `serve()`'s main loop (see
+# `maybe_gc_freeze`), not just once at startup, so long-lived objects created
+# during the run also move to the permanent generation and gen2 only ever
+# walks objects created in roughly the last interval.
+#
+# Two ways to trigger the periodic freeze: (a) a wall-clock timer, checked
+# alongside the other `now - last_x > N` blocks `serve()` already runs
+# (model reload, prune, summary, status, mem-census), or (b) inside
+# `GcStats._callback` itself, freezing right after any collection whose
+# `info["generation"] == 2` finishes. Chosen: (a), the wall-clock timer.
+# `_callback` fires on *every* collection -- automatic gen0/gen1 included,
+# and any manual `gc.collect()` a test calls -- so gating it correctly still
+# needs its own rate limit, and running a `gc.freeze()` walk of the live heap
+# immediately after a gen2 pause risks stacking two stop-the-world passes
+# back to back right when the process was already paused the longest. A
+# simple timer keeps periodic-task logic in the one place `serve()` already
+# puts it and freezes on a predictable cadence (`GC_FREEZE_INTERVAL_S`)
+# independent of how often gen2 happens to fire.
+#
+# Trade-off, and why it does not change a decision: a frozen object is never
+# again collected by the cyclic GC, even if it becomes part of an unreachable
+# reference cycle later. That is acceptable because the #123 audit found no
+# `__del__`, `weakref`, or cyclic field anywhere in this codebase's engine
+# state (`_Wallet`, `MintBook`, `_Track`, `WalletState`) -- there is no cycle
+# for the cyclic collector to ever need to catch here. Freezing does not
+# touch reference counting: CPython's `gc.freeze()` (Modules/gcmodule.c,
+# `gc_freeze_impl`, unchanged through 3.12, the interpreter this runner
+# uses -- confirmed via `python3 --version` on this box and the CPython 3.12
+# `gc` docs, "gc.freeze: ... objects ... will no longer be included in
+# future collections") only moves an object's `PyGC_Head` into the permanent
+# generation so the *cyclic* scan skips it; it never touches `ob_refcnt`.
+# An object's refcount hitting zero still calls its deallocator immediately,
+# frozen or not. So every plain dict/list/set entry this codebase pops or
+# drops out of scope -- which is how `_Wallet`/`MintBook`/`_Track` state is
+# actually freed -- is freed exactly as before; only a genuine, uncollected
+# reference cycle would be missed, and this codebase does not create one.
+GC_FREEZE_INTERVAL_S = 600.0  # 10 minutes of wall time between periodic freezes.
+
+
+class GcStats:
+    """Times every collection (automatic or manual) via `gc.callbacks`, and
+    tracks periodic `gc.freeze()` calls (see `maybe_gc_freeze`), so `serve()`
+    can log a periodic `gc_stats` line the team can verify live.
+    """
+
+    def __init__(self) -> None:
+        self.collections = 0
+        self.last_pause_ms = 0.0
+        self.max_pause_ms = 0.0
+        self.total_pause_ms = 0.0
+        self._t0: float | None = None
+        # Periodic-freeze bookkeeping (see `maybe_gc_freeze`). `last_freeze_at`
+        # is a `time.monotonic()`-style clock reading, seeded lazily on the
+        # first `maybe_gc_freeze` call so the first real freeze happens one
+        # full interval after `serve()` starts polling it, not at t=0.
+        self.freeze_count = 0
+        self.last_freeze_ms = 0.0
+        self.total_freeze_ms = 0.0
+        self.last_freeze_at: float | None = None
+
+    def _callback(self, phase: str, info: dict[str, Any]) -> None:
+        if phase == "start":
+            self._t0 = time.perf_counter()
+            return
+        if self._t0 is None:
+            return
+        dt_ms = (time.perf_counter() - self._t0) * 1000.0
+        self._t0 = None
+        self.collections += 1
+        self.last_pause_ms = dt_ms
+        self.max_pause_ms = max(self.max_pause_ms, dt_ms)
+        self.total_pause_ms += dt_ms
+
+    def install(self) -> None:
+        gc.callbacks.append(self._callback)
+
+    def report(self) -> dict[str, Any]:
+        counts = gc.get_count()
+        thresholds = gc.get_threshold()
+        return {
+            "collections": self.collections,
+            "last_pause_ms": round(self.last_pause_ms, 2),
+            "max_pause_ms": round(self.max_pause_ms, 2),
+            "avg_pause_ms": round(self.total_pause_ms / self.collections, 2) if self.collections else 0.0,
+            "total_pause_ms": round(self.total_pause_ms, 2),
+            "gen_counts": {"gen0": counts[0], "gen1": counts[1], "gen2": counts[2]},
+            "thresholds": {"gen0": thresholds[0], "gen1": thresholds[1], "gen2": thresholds[2]},
+            "enabled": gc.isenabled(),
+            "freeze_count": self.freeze_count,
+            "gc_freeze_count": gc.get_freeze_count(),
+            "last_freeze_ms": round(self.last_freeze_ms, 2),
+            "total_freeze_ms": round(self.total_freeze_ms, 2),
+        }
+
+
+def install_gc_mitigation() -> GcStats:
+    """Raise GC thresholds, freeze the current (static) heap, and start timing
+    every collection. Call once, after startup (models loaded, engine built),
+    right before the live tail loop. See `GC_THRESHOLD`'s comment above.
+    """
+    stats = GcStats()
+    stats.install()
+    gc.set_threshold(*GC_THRESHOLD)
+    gc.collect()
+    gc.freeze()
+    return stats
+
+
+def maybe_gc_freeze(gc_stats: GcStats, now: float, interval_s: float = GC_FREEZE_INTERVAL_S) -> bool:
+    """Best-effort periodic `gc.freeze()`, called every loop tick from
+    `serve()` with its own `time.monotonic()` reading (the same clock its
+    other periodic-task timers use). Freezes at most once per `interval_s`;
+    the first call after startup only seeds the clock (no freeze), matching
+    the other `last_x`-style timers in `serve()`. See `GC_THRESHOLD`'s
+    comment above for why this is safe and why the wall-clock timer was
+    chosen over hooking `GcStats._callback`.
+
+    Diagnostics-and-mitigation only, exactly like `write_mem_census`: never
+    allowed to kill `serve()`'s main loop. Any failure -- `gc.freeze()`
+    itself raising, a bad clock reading, anything -- is caught here so the
+    worst case is one missed freeze, never a crashed run. Returns whether a
+    freeze actually ran (tests use this; `serve()` does not need to).
+    """
+    try:
+        if gc_stats.last_freeze_at is None:
+            gc_stats.last_freeze_at = now
+            return False
+        if now - gc_stats.last_freeze_at < interval_s:
+            return False
+        t0 = time.perf_counter()
+        gc.freeze()
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+        gc_stats.freeze_count += 1
+        gc_stats.last_freeze_ms = dt_ms
+        gc_stats.total_freeze_ms += dt_ms
+        gc_stats.last_freeze_at = now
+        return True
+    except Exception:  # noqa: BLE001 - periodic freeze is a mitigation only, must never propagate
+        return False
+
+
+def _rss_kb_proc() -> int | None:
+    """Current RSS from /proc/self/status (VmRSS), not `resource.ru_maxrss`
+    (which only ever grows). Cheap: one small file read."""
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1])
+    except OSError:
+        return None
+    return None
+
+
+MEM_CENSUS_WALK_BUDGET_MS = 50.0
+
+
+class MemCensus:
+    """Read-only periodic snapshot of every engine container's size, so
+    Oracle's live process can report the container-by-container breakdown
+    the offline harness (tools/forward_paper_mem_profile.py, #122) could not
+    cleanly reproduce at ~460 MB/h. Never mutates `engine` state -- every
+    field read here is a `len()` or a value already stored on the object;
+    see the md5-identical replay proof in this PR's description (this class
+    is only ever called from `serve()`, never from `replay_rows()`/the
+    `replay` CLI, so it cannot affect a decision either way).
+
+    Walking every wallet's `pos`/`mints`/`holds`/`mint_pnl` sizes is the one
+    part that can get expensive as `wallets` grows (it is exactly the
+    container size we are trying to observe). Adaptive stride: start at a
+    full walk, time it, and if it is over `MEM_CENSUS_WALK_BUDGET_MS` double
+    the stride for the next call (extrapolating the summed counts by that
+    stride) instead of skipping the walk outright -- a coarser count is
+    still useful, an absent one is not.
+    """
+
+    def __init__(self) -> None:
+        self._stride = 1
+        self._skip_gc_objects = False
+
+    def _walk_wallets(self, wallets: dict[str, Any]) -> dict[str, Any]:
+        n = len(wallets)
+        stride = max(1, self._stride)
+        t0 = time.perf_counter()
+        sampled = 0
+        pos = mints = holds = mint_pnl = 0
+        it = iter(wallets.values())
+        idx = 0
+        for w in it:
+            if idx % stride == 0:
+                sampled += 1
+                pos += len(w.pos)
+                mints += len(w.mints)
+                holds += len(w.holds)
+                mint_pnl += len(w.mint_pnl)
+            idx += 1
+        walk_ms = (time.perf_counter() - t0) * 1000.0
+        scale = (n / sampled) if sampled else 1.0
+        if walk_ms > MEM_CENSUS_WALK_BUDGET_MS:
+            self._stride = stride * 2
+        elif walk_ms < MEM_CENSUS_WALK_BUDGET_MS / 4 and stride > 1:
+            self._stride = max(1, stride // 2)
+        return {
+            "n_wallets": n,
+            "pos_entries": round(pos * scale),
+            "mints_entries": round(mints * scale),
+            "holds_entries": round(holds * scale),
+            "mint_pnl_entries": round(mint_pnl * scale),
+            "walk_stride": stride,
+            "walk_sampled": sampled,
+            "walk_ms": round(walk_ms, 2),
+        }
+
+    def snapshot(self, engine: "ForwardEngine") -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "rss_kb_proc": _rss_kb_proc(),
+            "library": len(engine.library),
+            "tracks": len(engine.tracks),
+            "by_creator": len(engine.by_creator),
+            "seen": len(engine.seen),
+            "attention": len(engine.attention),
+            "early_mints": len(engine.early),
+            "early_prints_buffered": sum(len(v) for v in engine.early.values()),
+            "dead_mints": len(engine.dead_mints),
+            "dead_prints_dropped": engine.dead_prints_dropped,
+            "early_timeout_mints_dropped": engine.early_timeout_mints_dropped,
+        }
+        row["wallets"] = self._walk_wallets(engine.wallets.wallets)
+        t0 = time.perf_counter()
+        counts = gc.get_count()
+        row["gc_count"] = {"gen0": counts[0], "gen1": counts[1], "gen2": counts[2]}
+        if not self._skip_gc_objects:
+            n_objs = len(gc.get_objects())
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            if dt_ms > MEM_CENSUS_WALK_BUDGET_MS:
+                self._skip_gc_objects = True
+            row["gc_tracked_objects"] = n_objs
+        return row
+
+
+def write_mem_census(
+    engine: "ForwardEngine",
+    mem_census: MemCensus,
+    gc_stats: GcStats,
+    output_dir: Path,
+    logs: dict[str, "JsonlLog"],
+    now_ms: int,
+    failures: int,
+) -> int:
+    """Best-effort diagnostics only -- must never be able to kill `serve()`'s
+    main loop. Every step (the wallet walk, the two file writes) is wrapped
+    in one `try`, matched to a single `except Exception` so any failure here
+    -- a permissions error on `output_dir`, a transient issue inside the
+    adaptive wallet walk, anything -- is caught, counted, and logged at a
+    rate-limited cadence (every one of the first 3 failures, then every
+    50th) instead of ending the process. Returns the updated failure count.
+    """
+    try:
+        census = mem_census.snapshot(engine)
+        census["gc"] = gc_stats.report()
+        census["t_ms"] = now_ms
+        (output_dir / "mem-census.json").write_text(json.dumps(census, indent=2) + "\n", encoding="utf-8")
+        logs["mem_census"].write(census)
+        print(f"forward_paper mem_census={json.dumps(census)}", file=sys.stderr)
+        return failures
+    except Exception as exc:  # noqa: BLE001 - diagnostics only, must never propagate
+        failures += 1
+        if failures <= 3 or failures % 50 == 0:
+            print(f"forward_paper mem_census_error count={failures} err={exc!r}", file=sys.stderr)
+        return failures
+
+
 PRUNE_AFTER_MS = 45 * 60 * 1000
+# A restart's fresh `ForwardEngine` starts with an empty `self.library`, and
+# `DirectoryTail` never rewinds before its saved/EOF-default offset (see
+# `DirectoryTail._ensure`) -- so a create at or before that offset is
+# structurally unobservable for the rest of this process's life: no future
+# `poll()` can ever return it. Without this, `_add_print` buffers every print
+# for such a mint in `self.early` forever (only a full 45-minute silence
+# evicts it via `_prune_early`), which is unbounded for as long as the mint
+# keeps trading -- the single largest identified leak on Oracle (measured
+# ~115 MB/h, see ARTIFACTS/lab/forward-paper-memory-2026-09-27.md).
+#
+# `_preboot_dead_mints` identifies that doomed set at startup by re-reading
+# (read-only) the observe creates file(s) `serve()` is about to tail, and
+# excludes any create less than `PREBOOT_DEAD_MARGIN_MS` before boot -- the
+# offsets file is flushed every 60s (`serve()`'s `last_summary` cadence) and
+# at clean shutdown, so a genuine restart can only replay up to about that
+# much trailing history; anything closer to boot than the margin is left on
+# the normal `self.early` path (unchanged, existing behavior) in case its
+# create is simply still in flight rather than truly unreachable. Erring
+# toward "leave it buffered" here is the safe direction: at worst it costs
+# the memory this fix targets for a handful of edge-of-boot mints, never a
+# dropped decision.
+PREBOOT_DEAD_MARGIN_MS = 10 * 60 * 1000
+# Rule A (`PREBOOT_DEAD_MARGIN_MS`/`_preboot_dead_mints`) only catches a mint
+# whose create predates *this boot*. Measured on the staged 3.8h Oracle slice
+# (2026-09-27T14-18Z, creates windowed from the real 06:58:12Z boot), that
+# only explained a small share of `self.early`'s growth: of 19,069 distinct
+# mints touched, 11,132 have NO create record at all across two full days
+# of Oracle's retained `observe-*.jsonl` (not just before this boot) -- e.g.
+# `124Yn3UCD4YBb8JcyW6A2g9jjgG4Ykp8VBp7XQNQpump`, sampled directly off that
+# slice, trades only on `pumpswap` (post-migration) and has no create on
+# Oracle going back to 2026-09-20: an old, already-migrated token, not a
+# restart artifact. No feasible amount of extra day-file lookback fixes
+# this -- some of these mints are simply older than any retained history.
+#
+# Rule B is the general catch-all: once a still-createless mint's OLDEST
+# buffered `self.early` print is older than this many ms, give up on ever
+# getting its create and mark it dead (added to `dead_mints`, buffer
+# dropped) instead of waiting for `PRUNE_AFTER_MS`'s full 45-minute-silence
+# eviction, which never fires for a mint that keeps trading. Sizing this
+# value: on that same slice, of 7,937 mints with both a create anywhere in
+# two days and a print in the slice, the print-after-create gap was 1.2s at
+# the median and >1 minute for well under 1% (the >1h tail there is a
+# different, unrelated population -- an old token's create long preceding
+# ANOTHER, later, unrelated trade, not a genuinely-delayed create ingest).
+# The direct, decisive evidence is the neutrality proof itself: applying
+# this same ~10-minute cutoff to rule A produced byte-identical
+# decisions.jsonl/positions.jsonl on the full slice (2,885,548 prints,
+# 217,266 decisions, 72 positions) -- nothing in that real data ever needed
+# a buffered print older than 10 minutes for a later, legitimate flush.
+# Like `dead_mints`, this is opt-in (`None` by default) so replay_rows()/
+# ParityTests/promotion backtests, which want full history, are unaffected;
+# only `serve()` passes it.
+EARLY_BUFFER_DEAD_MS = 10 * 60 * 1000
 CHAIN_LAG_MIN_MS = -5_000
 CHAIN_LAG_MAX_MS = 120_000
 # Healthy recv→decision on this runner is the 26 ms floor (pre-#95 hourly
@@ -876,6 +1249,8 @@ class ForwardEngine:
         fail_rate: float = 0.0,
         promotion_live_ms: int | None = None,
         positions_path: Path | None = None,
+        dead_mints: frozenset[str] | None = None,
+        early_timeout_ms: int | None = None,
     ) -> None:
         self.books = []
         for spec in books:
@@ -925,6 +1300,20 @@ class ForwardEngine:
         self.attn_t_start_ms = 0
         self.attn_snapshot: set[tuple[str, str]] = set()
         self.early: dict[str, list[tuple[FlowPrint, int | None]]] = defaultdict(list)
+        # Mints a create can structurally never arrive for this run: the
+        # pre-boot set `_preboot_dead_mints` computes at startup (rule A),
+        # plus anything `_prune_early` later gives up on via `early_timeout_ms`
+        # (rule B). A mutable set, not a frozenset: rule B adds to it live.
+        # Empty for every caller except `serve()` -- `replay_rows()`/offline
+        # tools never pass `dead_mints`/`early_timeout_ms`, so their
+        # full-history semantics are unchanged. A hit here means `_add_print`
+        # drops the print instead of buffering it in `self.early`.
+        self.dead_mints: set[str] = set(dead_mints or ())
+        self.dead_prints_dropped = 0
+        # Rule B's threshold (see EARLY_BUFFER_DEAD_MS's comment). None
+        # disables it entirely (every non-serve() caller).
+        self.early_timeout_ms = early_timeout_ms
+        self.early_timeout_mints_dropped = 0
         self.inbox: list[tuple[int, int, int, Any]] = []
         self.inbox_seq = 0
         self.packets: list[tuple[str, int, str, dict[str, float]]] = []
@@ -1090,6 +1479,9 @@ class ForwardEngine:
     def _add_print(self, mint: str, pr: FlowPrint, event_ts: int | None = None) -> bool:
         book = self.library.get(mint)
         if book is None:
+            if mint in self.dead_mints:
+                self.dead_prints_dropped += 1
+                return False
             self.early[mint].append((pr, event_ts))
             return False
         if self.tape_end_ms is not None and pr.t_recv_ms > self.tape_end_ms:
@@ -1899,6 +2291,19 @@ class ForwardEngine:
         from `_register_create`, and a mint with no create has no MintBook to
         score, hold, or exit. There is no decision to preserve here, only
         memory that a missing create row would otherwise hold forever.
+
+        Two independent rules:
+
+        - Idle eviction (always on, unchanged): a mint gone fully silent for
+          `PRUNE_AFTER_MS` is evicted -- safe for any createless mint, but
+          never fires for one that keeps trading.
+        - Early-buffer timeout (`self.early_timeout_ms`, opt-in, `serve()`
+          only -- see `EARLY_BUFFER_DEAD_MS`'s comment): once a mint's OLDEST
+          buffered print is older than the timeout with still no create, give
+          up outright -- added to `dead_mints` (so its future prints are
+          dropped too, not just this buffer) instead of waiting for a full
+          idle window that an actively-trading createless mint will never
+          reach.
         """
         if not self.early:
             return
@@ -1908,6 +2313,17 @@ class ForwardEngine:
             if buffered and live_now - max(pr.t_recv_ms for pr, _ in buffered) >= PRUNE_AFTER_MS
         ]:
             del self.early[mint]
+        if self.early_timeout_ms is None or not self.early:
+            return
+        for mint in [
+            m
+            for m, buffered in self.early.items()
+            if buffered and live_now - min(pr.t_recv_ms for pr, _ in buffered) >= self.early_timeout_ms
+        ]:
+            buffered = self.early.pop(mint)
+            self.dead_mints.add(mint)
+            self.dead_prints_dropped += len(buffered)
+            self.early_timeout_mints_dropped += 1
 
     def _prune(self, now_ms: int) -> None:
         busy: set[str] = set()
@@ -2284,6 +2700,68 @@ def _discover(directory: Path, patterns: Sequence[str]) -> list[Path]:
     return sorted({path.resolve() for path in found if path.is_file()})
 
 
+def _preboot_dead_mints(
+    creates_dir: Path,
+    boot_ms: int,
+    *,
+    margin_ms: int = PREBOOT_DEAD_MARGIN_MS,
+) -> frozenset[str]:
+    """Mints whose create this boot's `DirectoryTail` can never deliver.
+
+    `DirectoryTail` only ever watches the *current* UTC day's
+    `observe-{day}.jsonl` (`_ensure()` recomputes `day` from wall time, it
+    never re-opens a prior day's file even if its key still sits in a loaded
+    `offsets.json`), and on that file it resumes from the last persisted
+    offset or, absent one, today's current EOF -- never rewinding. So any
+    create dated more than `margin_ms` before boot, in today's file or
+    (fully closed, guaranteed never re-opened by a fresh boot) yesterday's,
+    is read once here -- purely to build a drop-set, never registered as a
+    `MintBook` -- and its mint's future prints are then dropped by
+    `ForwardEngine._add_print` instead of buffered in `self.early` forever.
+
+    Read-only: opens these files for reading only, and does not touch
+    `DirectoryTail`'s own followers or `offsets.json`.
+    """
+    cutoff_ms = boot_ms - margin_ms
+    boot_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000))
+    prior_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000 - 86_400))
+    paths: list[Path] = []
+    for day in (prior_day, boot_day):
+        for suffix in (".jsonl", ".jsonl.zst"):
+            candidate = creates_dir / f"observe-{day}{suffix}"
+            if candidate.is_file():
+                paths.append(candidate)
+    if not paths:
+        return frozenset()
+    dead = load_creates(paths, t_max_ms=cutoff_ms, pad_before_ms=0)
+    return frozenset(dead.keys())
+
+
+def _safe_preboot_dead_mints(
+    creates_dir: Path,
+    boot_ms: int,
+    *,
+    margin_ms: int = PREBOOT_DEAD_MARGIN_MS,
+) -> frozenset[str]:
+    """`_preboot_dead_mints`, but never able to stop `serve()` from starting.
+
+    This runs once at boot, before the main loop, before the kill switch or
+    any risk gate is live -- a corrupt/truncated observe line, a `zstd`
+    failure on a sealed `.jsonl.zst`, or a permissions error inside
+    `load_creates` must not crash `serve()` and restart-loop the live
+    runner. An empty result here is always safe: it just means rule A finds
+    nothing this boot, and rule B (`EARLY_BUFFER_DEAD_MS`, unaffected by
+    this) still catches the same mints within its own timeout -- the
+    pre-existing `self.early`/`_prune_early` path is the fallback either
+    way, exactly today's shipped behavior before this PR.
+    """
+    try:
+        return _preboot_dead_mints(creates_dir, boot_ms, margin_ms=margin_ms)
+    except Exception as exc:  # noqa: BLE001 - startup safety net, must never propagate
+        print(f"forward_paper preboot_dead_mints_error err={exc!r}", file=sys.stderr)
+        return frozenset()
+
+
 class _Follower:
     """Tail plain JSONL. A sealed `.zst` hour is left to the recorder."""
 
@@ -2487,6 +2965,14 @@ def serve(config_path: Path) -> int:
     attention_dir = Path(raw["attention_dir"]) if raw.get("attention_dir") else None
     holdback_ms = int(raw.get("holdback_ms", 300))
     slippage = float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
+    boot_ms = int(time.time() * 1000)
+    _preboot_t0 = time.monotonic()
+    dead_mints = _safe_preboot_dead_mints(creates_dir, boot_ms)
+    preboot_scan_ms = (time.monotonic() - _preboot_t0) * 1000.0
+    print(
+        f"forward_paper preboot_dead_mints={len(dead_mints)} boot={_utc(boot_ms)} scan_ms={preboot_scan_ms:.1f}",
+        file=sys.stderr,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     offset_path = output_dir / "offsets.json"
     offsets: dict[str, int] = {}
@@ -2502,6 +2988,7 @@ def serve(config_path: Path) -> int:
         "positions": JsonlLog(output_dir / "positions.jsonl"),
         "pnl": JsonlLog(output_dir / "pnl-daily.jsonl"),
         "latency": JsonlLog(output_dir / "latency.jsonl"),
+        "mem_census": JsonlLog(output_dir / "mem-census.jsonl"),
     }
     model = ModelSlot(model_path, meta_path)
     model.maybe_reload(force=True)
@@ -2520,11 +3007,17 @@ def serve(config_path: Path) -> int:
         logs={"decisions": logs["decisions"], "positions": logs["positions"]},
         fail_rate=DEFAULT_FAIL_RATE,
         positions_path=output_dir / "positions.jsonl",
+        dead_mints=dead_mints,
+        early_timeout_ms=EARLY_BUFFER_DEAD_MS,
     )
     bind_attention(engine, attention_dir)
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
     if graph_dir.is_dir():
         engine.graph_dir = graph_dir
+    # Startup is done (models loaded, engine built): raise the cyclic-GC
+    # thresholds and freeze the static baseline. See GC_THRESHOLD's comment.
+    gc_stats = install_gc_mitigation()
+    mem_census = MemCensus()
     tail = DirectoryTail(tape_dir, creates_dir, offsets, attention_dir)
     stop = {"flag": False}
 
@@ -2556,6 +3049,8 @@ def serve(config_path: Path) -> int:
     engine.promotion_live_ms = live_at_ms
     last_status = 0.0
     last_prune = 0.0
+    last_mem_census = 0.0
+    mem_census_failures = 0
     while not stop["flag"]:
         batch = tail.poll()
         now_ms = int(time.time() * 1000)
@@ -2634,6 +3129,12 @@ def serve(config_path: Path) -> int:
         if now - last_status > 15:
             write_runner_status(status_path, engine, live_at_ms=live_at_ms)
             last_status = now
+        if now - last_mem_census > 300:
+            mem_census_failures = write_mem_census(
+                engine, mem_census, gc_stats, output_dir, logs, now_ms, mem_census_failures
+            )
+            last_mem_census = now
+        maybe_gc_freeze(gc_stats, now)
         if not batch:
             time.sleep(0.025)
     if engine._clock_ms:

@@ -5,14 +5,18 @@ from __future__ import annotations
 import json
 import math
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from tools.forward_paper import (
     CHAIN_SAMPLE_CAP,
     DEFAULT_FAIL_RATE,
+    GC_FREEZE_INTERVAL_S,
+    GC_THRESHOLD,
     HARD_MAX_POSITION_LAMPORTS,
     LATENCY_SAMPLE_CAP,
+    PREBOOT_DEAD_MARGIN_MS,
     PRUNE_AFTER_MS,
     READ_CHUNK_BYTES,
     SCHEMA_DECISION,
@@ -23,7 +27,9 @@ from tools.forward_paper import (
     BookSpec,
     DirectoryTail,
     ForwardEngine,
+    GcStats,
     LatencyMeter,
+    MemCensus,
     ModelSlot,
     _Follower,
     _RankWindow,
@@ -34,13 +40,18 @@ from tools.forward_paper import (
     clean_clock,
     decision_counts_for_promotion,
     flow_from_tape_row,
+    install_gc_mitigation,
+    maybe_gc_freeze,
     migrate_fee_sensitivity_summary,
     offline_packets,
+    _preboot_dead_mints,
+    _safe_preboot_dead_mints,
     promotion_pnls_by_book,
     reload_risk_config,
     reconcile_baseline,
     replay_rows,
     window_creates,
+    write_mem_census,
 )
 from tools.paper_curve_math import PORTAL_FEE_PPM, PRIORITY_FEE_LAMPORTS
 from tools.paper_tape_scoreboard import priority_grid, priority_sides_for_event
@@ -505,6 +516,179 @@ class MemoryBoundTests(unittest.TestCase):
         self.assertEqual(engine.decisions, [])
         self.assertEqual(engine.positions, [])
 
+    def test_preboot_dead_mints_excludes_creates_inside_the_safety_margin(self) -> None:
+        """`_preboot_dead_mints` (the fix for the ~115 MB/h `self.early` leak:
+        see PREBOOT_DEAD_MARGIN_MS's comment) must find a create dated well
+        before boot in either today's or yesterday's observe file, but must
+        leave alone a create inside the margin -- that one could still be a
+        normal, in-flight create a real restart's offset replay would
+        legitimately deliver moments later, so treating it as dead would be
+        the unsafe (decision-changing) direction.
+        """
+        boot_ms = 1_700_100_000_000
+        boot_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000))
+        prior_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000 - 86_400))
+
+        def _row(mint: str, t_ms: int, creator: str) -> str:
+            return json.dumps({"stream": "subscribeNewToken", "mint": mint, "t_ws": t_ms, "traderPublicKey": creator})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            creates_dir = Path(tmp)
+            old_ms = boot_ms - PREBOOT_DEAD_MARGIN_MS - 60_000
+            recent_ms = boot_ms - 5_000
+            yesterday_ms = boot_ms - 86_400_000 - 1_000
+            (creates_dir / f"observe-{boot_day}.jsonl").write_text(
+                _row("OldMint", old_ms, "C1") + "\n" + _row("RecentMint", recent_ms, "C2") + "\n",
+                encoding="utf-8",
+            )
+            (creates_dir / f"observe-{prior_day}.jsonl").write_text(
+                _row("YesterdayMint", yesterday_ms, "C3") + "\n",
+                encoding="utf-8",
+            )
+            dead = _preboot_dead_mints(creates_dir, boot_ms)
+        self.assertIn("OldMint", dead)
+        self.assertIn("YesterdayMint", dead)
+        self.assertNotIn("RecentMint", dead)
+
+    def test_preboot_dead_mints_empty_when_creates_dir_has_no_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dead = _preboot_dead_mints(Path(tmp), 1_700_100_000_000)
+        self.assertEqual(dead, frozenset())
+
+    def test_safe_preboot_dead_mints_survives_a_raising_load_creates(self) -> None:
+        """`_safe_preboot_dead_mints` runs once at `serve()`'s boot, before
+        the main loop or the kill switch is live -- a corrupt observe line,
+        a `zstd` failure, or a permissions error inside `load_creates` must
+        not crash `serve()` and restart-loop the live runner. An empty
+        result is always safe: rule B (`EARLY_BUFFER_DEAD_MS`) still catches
+        the same mints within its own timeout, same as before this PR.
+        """
+        from unittest import mock
+
+        boot_ms = 1_700_100_000_000
+        boot_day = time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000))
+        with tempfile.TemporaryDirectory() as tmp:
+            creates_dir = Path(tmp)
+            # A file must exist so `_preboot_dead_mints` actually calls
+            # `load_creates` (an empty dir already short-circuits to
+            # frozenset() without exercising the try/except at all).
+            (creates_dir / f"observe-{boot_day}.jsonl").write_text("{}\n", encoding="utf-8")
+            with mock.patch(
+                "tools.forward_paper.load_creates",
+                side_effect=RuntimeError("boom: corrupt observe line"),
+            ):
+                dead = _safe_preboot_dead_mints(creates_dir, boot_ms)
+        self.assertEqual(dead, frozenset())
+
+    def test_dead_mint_prints_are_dropped_not_buffered(self) -> None:
+        """A mint `serve()` knows can never get a create this run (see
+        `_preboot_dead_mints`) must have its prints dropped outright, not
+        buffered in `self.early` -- that buffer growing without bound for a
+        createless mint that keeps trading is the leak this fix targets. A
+        mint NOT flagged dead keeps the existing, unchanged behavior.
+        """
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-dead-mint-drop"),
+            dead_mints=frozenset({"DeadMint"}),
+        )
+        engine.push_print(*_parsed("DeadMint", T0 + 100))
+        engine.flush()
+        self.assertNotIn("DeadMint", engine.early)
+        self.assertEqual(engine.dead_prints_dropped, 1)
+        self.assertEqual(engine.decisions, [])
+        self.assertEqual(engine.positions, [])
+        # A mint not on the dead list is unaffected: existing orphan-print
+        # buffering behavior stays exactly as it was.
+        engine.push_print(*_parsed("GhostMint", T0 + 100))
+        engine.flush()
+        self.assertIn("GhostMint", engine.early)
+
+    def test_dead_mint_buffer_never_grows_even_while_continuously_trading(self) -> None:
+        """Before this fix, a createless mint that never idles a full 45
+        minutes (`PRUNE_AFTER_MS`) grows `self.early` without bound -- the
+        ~115 MB/h leak the lab note measured. A mint correctly identified as
+        dead at boot must cost O(1) memory no matter how long or how often
+        it keeps trading.
+        """
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-dead-mint-bounded"),
+            dead_mints=frozenset({"DeadMint"}),
+        )
+        n = 2_000
+        for i in range(n):
+            # A print every 5s for hours straight: never a 45-minute idle
+            # gap, so the pre-fix code path would never evict this either.
+            mint, pr, ts = _parsed("DeadMint", T0 + i * 5_000)
+            engine.push_print(mint, pr, ts)
+            engine.drain_until(T0 + i * 5_000)
+        engine.flush()
+        self.assertEqual(engine.early, {})
+        self.assertEqual(engine.dead_prints_dropped, n)
+
+    def test_early_timeout_marks_a_stuck_createless_mint_dead(self) -> None:
+        """Rule B (`EARLY_BUFFER_DEAD_MS`): a mint that has been sitting in
+        `self.early` (no create, however briefly or long it has traded) for
+        longer than `early_timeout_ms`, measured from its OLDEST buffered
+        print, is declared dead outright -- added to `dead_mints` so future
+        prints are dropped too, not just this buffer -- rather than waiting
+        for `PRUNE_AFTER_MS`'s full-idle eviction, which an actively-trading
+        createless mint (rule A misses, e.g. an old already-migrated token
+        with no create in any retained observe file) would never reach.
+        """
+        timeout_ms = 600_000
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine(
+            [spec],
+            kill_file=Path("/tmp/forward-paper-early-timeout"),
+            early_timeout_ms=timeout_ms,
+        )
+        engine.push_print(*_parsed("StuckMint", T0 + 100))
+        engine.flush()
+        self.assertIn("StuckMint", engine.early)
+        self.assertNotIn("StuckMint", engine.dead_mints)
+
+        # Not yet past the threshold: still buffered, not yet declared dead.
+        engine._prune(T0 + 100 + timeout_ms - 1)
+        self.assertIn("StuckMint", engine.early)
+        self.assertNotIn("StuckMint", engine.dead_mints)
+        self.assertEqual(engine.early_timeout_mints_dropped, 0)
+
+        # Past the threshold: buffer dropped, mint marked dead.
+        engine._prune(T0 + 100 + timeout_ms)
+        self.assertNotIn("StuckMint", engine.early)
+        self.assertIn("StuckMint", engine.dead_mints)
+        self.assertEqual(engine.early_timeout_mints_dropped, 1)
+        self.assertEqual(engine.dead_prints_dropped, 1)
+
+        # A later print for the now-dead mint is dropped, not re-buffered.
+        engine.push_print(*_parsed("StuckMint", T0 + 100 + timeout_ms + 5_000))
+        engine.flush()
+        self.assertNotIn("StuckMint", engine.early)
+        self.assertEqual(engine.dead_prints_dropped, 2)
+        self.assertEqual(engine.decisions, [])
+        self.assertEqual(engine.positions, [])
+
+    def test_early_timeout_is_off_by_default(self) -> None:
+        """`early_timeout_ms` defaults to `None` (rule B disabled) so every
+        caller except `serve()` -- `replay_rows()`, ParityTests, promotion
+        backtests -- keeps today's unchanged full-history behavior. A mint
+        stuck well past what a real timeout would use, but short of
+        `PRUNE_AFTER_MS`'s full idle window, must stay buffered.
+        """
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine([spec], kill_file=Path("/tmp/forward-paper-early-timeout-off"))
+        self.assertIsNone(engine.early_timeout_ms)
+        engine.push_print(*_parsed("StuckMint", T0 + 100))
+        engine.flush()
+        engine._prune(T0 + 100 + 1_000_000)  # well under PRUNE_AFTER_MS (45 min)
+        self.assertIn("StuckMint", engine.early)
+        self.assertEqual(engine.dead_mints, set())
+        self.assertEqual(engine.early_timeout_mints_dropped, 0)
+
     def test_wallet_pos_dict_does_not_grow_with_closed_round_trips(self) -> None:
         """`_Wallet.pos` (tools/laya_v0.py) holds one entry per mint with a
         currently open position, popped on full close. A single busy trader
@@ -536,6 +720,281 @@ class MemoryBoundTests(unittest.TestCase):
         self.assertEqual(wallet.pos, {})
         self.assertEqual(wallet.closed, n)
         self.assertEqual(len(wallet.mint_pnl), n)
+
+    def test_gc_mitigation_raises_thresholds_freezes_and_times_collections(self) -> None:
+        """`install_gc_mitigation()` (tools/forward_paper.py) is the fix for the
+        multi-hundred-ms to multi-second `gc.collect(2)` stop-the-world pauses
+        measured on a large `WalletState` (see the lab note) -- it must not
+        touch any application value, only GC scheduling, which this pins by
+        restoring gc's real state around the test.
+        """
+        import gc
+
+        old_threshold = gc.get_threshold()
+        old_enabled = gc.isenabled()
+        old_callbacks = list(gc.callbacks)
+        try:
+            stats = install_gc_mitigation()
+            self.assertIsInstance(stats, GcStats)
+            self.assertEqual(gc.get_threshold(), GC_THRESHOLD)
+            self.assertTrue(gc.isenabled(), "raising thresholds keeps automatic collection as a safety net")
+            self.assertGreater(gc.get_freeze_count(), 0, "freeze() should have moved the current heap to the permanent generation")
+            # A manual collection after install is still timed by the callback.
+            before = stats.collections
+            gc.collect()
+            self.assertGreater(stats.collections, before)
+            report = stats.report()
+            self.assertEqual(report["collections"], stats.collections)
+            self.assertGreaterEqual(report["max_pause_ms"], 0.0)
+            self.assertEqual(report["thresholds"]["gen0"], GC_THRESHOLD[0])
+            self.assertTrue(report["enabled"])
+        finally:
+            gc.callbacks[:] = old_callbacks
+            gc.set_threshold(*old_threshold)
+            gc.unfreeze()
+            if old_enabled:
+                gc.enable()
+            else:
+                gc.disable()
+
+    def test_maybe_gc_freeze_seeds_then_waits_then_fires(self) -> None:
+        """`maybe_gc_freeze()` (tools/forward_paper.py) is `serve()`'s
+        periodic follow-up to `install_gc_mitigation()`'s one startup
+        `gc.freeze()` -- it must seed its clock on the first call instead of
+        firing immediately, then fire at most once per `interval_s`,
+        recording the freeze in `GcStats` (see `GC_THRESHOLD`'s comment for
+        why a periodic freeze is needed at all).
+        """
+        import gc
+
+        old_freeze_count = gc.get_freeze_count()
+        try:
+            stats = GcStats()
+            self.assertIsNone(stats.last_freeze_at)
+            fired = maybe_gc_freeze(stats, 0.0, interval_s=10.0)
+            self.assertFalse(fired, "the first call only seeds the clock")
+            self.assertEqual(stats.freeze_count, 0)
+            self.assertEqual(gc.get_freeze_count(), old_freeze_count)
+
+            fired = maybe_gc_freeze(stats, 5.0, interval_s=10.0)
+            self.assertFalse(fired, "interval has not elapsed yet")
+            self.assertEqual(stats.freeze_count, 0)
+
+            fired = maybe_gc_freeze(stats, 10.0, interval_s=10.0)
+            self.assertTrue(fired)
+            self.assertEqual(stats.freeze_count, 1)
+            self.assertGreater(gc.get_freeze_count(), old_freeze_count)
+            self.assertGreaterEqual(stats.last_freeze_ms, 0.0)
+            self.assertGreaterEqual(stats.total_freeze_ms, stats.last_freeze_ms)
+            report = stats.report()
+            self.assertEqual(report["freeze_count"], 1)
+            self.assertEqual(report["gc_freeze_count"], gc.get_freeze_count())
+
+            fired = maybe_gc_freeze(stats, 11.0, interval_s=10.0)
+            self.assertFalse(fired, "clock was reset by the freeze that just ran")
+            self.assertEqual(stats.freeze_count, 1)
+        finally:
+            gc.unfreeze()
+
+    def test_maybe_gc_freeze_failure_does_not_propagate(self) -> None:
+        """Same invariant `write_mem_census` is held to: a `gc.freeze()`
+        surprise, or any error updating `GcStats`'s fields, must never be
+        able to kill `serve()`'s main loop.
+        """
+        import gc
+        from unittest import mock
+
+        stats = GcStats()
+        stats.last_freeze_at = 0.0  # already seeded; the next call should try to freeze.
+        with mock.patch.object(gc, "freeze", side_effect=RuntimeError("boom: freeze failed")):
+            fired = maybe_gc_freeze(stats, 1_000.0, interval_s=1.0)
+        self.assertFalse(fired)
+        self.assertEqual(stats.freeze_count, 0)
+
+        class _BoomOnSet:
+            def __init__(self) -> None:
+                object.__setattr__(self, "last_freeze_at", 0.0)
+                object.__setattr__(self, "freeze_count", 0)
+
+            def __setattr__(self, name: str, value: object) -> None:
+                raise RuntimeError("boom: stats field assignment failed")
+
+        try:
+            fired = maybe_gc_freeze(_BoomOnSet(), 2_000.0, interval_s=1.0)
+            self.assertFalse(fired)
+        finally:
+            gc.unfreeze()
+
+    def test_periodic_gc_freeze_does_not_change_decisions_or_positions(self) -> None:
+        """`maybe_gc_freeze()` only moves objects between GC generations; it
+        must never change what a book decides. Same event stream, same
+        checkpoints as `test_cooldown_pruning_matches_an_engine_that_never_prunes`
+        above -- the only difference is that `freezing` also calls
+        `maybe_gc_freeze` at each checkpoint with `interval_s=0` so a real
+        `gc.freeze()` actually fires mid-stream, more aggressively than
+        `serve()`'s 10-minute default.
+        """
+        import gc
+
+        spec = BookSpec(
+            "buy_all",
+            "baseline",
+            "hold_30s",
+            max_concurrent=None,
+            daily_loss_lamports=None,
+            creator_cooldown_ms=0,
+            token_cooldown_ms=0,
+        )
+
+        def _build() -> ForwardEngine:
+            engine = ForwardEngine(
+                [spec],
+                kill_file=Path("/tmp/forward-paper-gc-freeze-neutral"),
+                tape_end_ms=T0 + 120_000,
+                retain_rows=True,
+            )
+            engine.push_create(_create("MintA", T0, creator="CreatorA"))
+            engine.push_print(*_parsed("MintA", T0 + 1_000))
+            engine.push_print(*_parsed("Filler", T0 + 40_000))
+            engine.push_create(_create("MintB", T0 + 60_000, creator="CreatorB"))
+            engine.push_print(*_parsed("MintB", T0 + 60_500))
+            return engine
+
+        checkpoints = (T0 + 10_000, T0 + 25_000, T0 + 41_000, T0 + 55_000)
+        old_freeze_count = gc.get_freeze_count()
+        try:
+            freezing = _build()
+            gc_stats = GcStats()
+            t = 0.0
+            for cp in checkpoints:
+                freezing.drain_until(cp)
+                maybe_gc_freeze(gc_stats, t, interval_s=0.0)
+                t += 1.0
+            freezing.drain_until(T0 + 120_000, final=True)
+            self.assertGreater(gc_stats.freeze_count, 0, "the test should actually exercise a mid-stream freeze")
+            self.assertGreater(gc.get_freeze_count(), old_freeze_count)
+
+            baseline = _build()
+            for cp in checkpoints:
+                baseline.drain_until(cp)
+            baseline.drain_until(T0 + 120_000, final=True)
+
+            self.assertEqual(freezing.decisions, baseline.decisions)
+            self.assertEqual(freezing.positions, baseline.positions)
+        finally:
+            gc.unfreeze()
+
+    def test_mem_census_is_read_only_and_reports_every_container(self) -> None:
+        """`MemCensus.snapshot()` (tools/forward_paper.py) is the live
+        per-container census the #123 PR adds since the offline harness
+        (#122) could not cleanly reproduce Oracle's ~460 MB/h. It must not
+        mutate engine state -- checked here by snapshotting twice and
+        confirming the engine's own containers are byte-for-byte the same
+        Python objects (same id, same contents) after two census calls.
+        """
+        n = 50
+        creates: dict[str, CreateSignal] = {}
+        rows: list[dict[str, object]] = []
+        for i in range(n):
+            mint = f"CensusMint{i:04d}"
+            t0 = T0 + i * 200
+            creates[mint] = _create(mint, t0, creator=f"CensusCreator{i:04d}")
+            rows.append(_trade(mint, t0 + 10, trader="CensusWallet", slot=i + 2, token=1_000_000, sol=1_000_000_000))
+            rows.append(_trade(mint, t0 + 20, trader="CensusWallet", side="sell", slot=i + 2, token=1_000_000, sol=1_000_000_000))
+        engine = replay_rows(
+            creates.values(),
+            rows,
+            [BookSpec("buy_all", "baseline", "hold_30s", max_concurrent=None, daily_loss_lamports=None, creator_cooldown_ms=0, token_cooldown_ms=0)],
+            tape_end_ms=T0 + n * 200 + 1_000,
+            kill_file=Path("/tmp/forward-paper-mem-census"),
+            offsets_ms=(5_000,),
+        )
+        census_maker = MemCensus()
+        library_before = dict(engine.library)
+        wallets_before = dict(engine.wallets.wallets)
+        row1 = census_maker.snapshot(engine)
+        row2 = census_maker.snapshot(engine)
+        self.assertEqual(engine.library, library_before)
+        self.assertEqual(engine.wallets.wallets.keys(), wallets_before.keys())
+        self.assertEqual(row1["library"], n)
+        self.assertEqual(row1["by_creator"], n)
+        self.assertEqual(row1["early_mints"], 0)
+        self.assertEqual(row1["early_prints_buffered"], 0)
+        self.assertEqual(row1["wallets"]["n_wallets"], 1)
+        # Every position round-tripped and closed: pos entries bounded, same
+        # invariant MemoryBoundTests.test_wallet_pos_dict_does_not_grow_with_closed_round_trips checks.
+        self.assertEqual(row1["wallets"]["pos_entries"], 0)
+        self.assertEqual(row1["wallets"]["mint_pnl_entries"], n)
+        self.assertIsInstance(row1["rss_kb_proc"], (int, type(None)))
+        self.assertEqual(row2["library"], row1["library"])
+
+    def test_write_mem_census_never_propagates_a_failure(self) -> None:
+        """`write_mem_census()` is called from `serve()`'s main loop every 5
+        minutes; this diagnostics-only helper must never be able to kill the
+        process. Exercise every failure point a raising `mem_census`,
+        `gc_stats`, or `logs["mem_census"]` could hit -- the call must return
+        an incremented failure count, not raise.
+        """
+
+        class _RaisingCensus:
+            def snapshot(self, engine: object) -> dict[str, object]:
+                raise RuntimeError("boom: census walk failed")
+
+        class _RaisingGcStats:
+            def report(self) -> dict[str, object]:
+                raise RuntimeError("boom: gc report failed")
+
+        class _RaisingLog:
+            def write(self, row: dict[str, object]) -> None:
+                raise OSError("boom: disk full")
+
+        class _QuietLog:
+            def write(self, row: dict[str, object]) -> None:
+                pass
+
+        spec = BookSpec("buy_all", "baseline", "hold_30s")
+        engine = ForwardEngine([spec], kill_file=Path("/tmp/forward-paper-census-fail"))
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            good_census = MemCensus()
+            good_stats = GcStats()
+
+            # 1. The snapshot itself raises.
+            failures = write_mem_census(
+                engine, _RaisingCensus(), good_stats, output_dir, {"mem_census": _RaisingLog()}, 0, 0
+            )
+            self.assertEqual(failures, 1)
+
+            # 2. The snapshot succeeds but gc_stats.report() raises.
+            failures = write_mem_census(
+                engine, good_census, _RaisingGcStats(), output_dir, {"mem_census": _RaisingLog()}, 0, 0
+            )
+            self.assertEqual(failures, 1)
+
+            # 3. Both succeed but the jsonl write raises (e.g. disk full).
+            failures = write_mem_census(
+                engine, good_census, good_stats, output_dir, {"mem_census": _RaisingLog()}, 0, 0
+            )
+            self.assertEqual(failures, 1)
+
+            # 4. A bad output_dir (file write fails) also does not propagate.
+            bogus_dir = output_dir / "does" / "not" / "exist-and-is-not-created"
+            failures = write_mem_census(engine, good_census, good_stats, bogus_dir, {"mem_census": _RaisingLog()}, 0, 0)
+            self.assertEqual(failures, 1)
+
+            # 5. Repeated failures accumulate the counter across calls.
+            failures = 0
+            for _ in range(5):
+                failures = write_mem_census(
+                    engine, _RaisingCensus(), good_stats, output_dir, {"mem_census": _RaisingLog()}, 0, failures
+                )
+            self.assertEqual(failures, 5)
+
+            # 6. A healthy call after prior failures succeeds and leaves the
+            # failure count unchanged (the counter only increments on failure).
+            failures = write_mem_census(engine, good_census, good_stats, output_dir, {"mem_census": _QuietLog()}, 0, failures)
+            self.assertEqual(failures, 5)
+            self.assertTrue((output_dir / "mem-census.json").is_file())
 
     def test_latency_meter_ring_buffers_stay_bounded(self) -> None:
         meter = LatencyMeter(extra_ms=1)
