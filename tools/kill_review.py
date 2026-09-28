@@ -63,7 +63,6 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sys
 import time
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -79,7 +78,6 @@ from tools.forward_paper import (
 )
 from tools.forward_paper_settle_orphans import iter_jsonl as iter_settlement_rows
 from tools.paper_attention_promote import (
-    BOOTSTRAP_SEED,
     LAMPORTS_PER_SOL,
     BookTrade,
     book_stats,
@@ -368,6 +366,7 @@ def restarts_by_day(restarts: Sequence[str]) -> dict[str, list[str]]:
 def score_book(
     book_id: str,
     rows: Sequence[dict[str, Any]],
+    settle_failed_rows: Sequence[dict[str, Any]],
     *,
     restarts: Sequence[str],
 ) -> dict[str, Any]:
@@ -377,6 +376,10 @@ def score_book(
 
     n_live = sum(1 for r in rows if r.get("book") == book_id and not r.get("settled_offline"))
     n_settled_offline = sum(1 for r in rows if r.get("book") == book_id and r.get("settled_offline"))
+    book_settle_failed = [r for r in settle_failed_rows if r.get("book") == book_id]
+    n_settle_failed = len(book_settle_failed)
+    settle_errors = sorted({str(r.get("settle_error")) for r in book_settle_failed if r.get("settle_error")})
+    incomplete = n_settle_failed > 0
 
     flat_only = book_stats(flat_trades)
     pressure_only = book_stats(pressure_trades) if pressure_trades else book_stats([])
@@ -397,6 +400,9 @@ def score_book(
         "n_trades": len(flat_trades),
         "n_live": n_live,
         "n_settled_offline": n_settled_offline,
+        "n_settle_failed": n_settle_failed,
+        "settle_errors": settle_errors,
+        "incomplete": incomplete,
         "pressure_data_available": bool(pressure_trades),
         "gate_flat": flat_only,
         "gate_pressure_scale_1": pressure_only,
@@ -427,7 +433,7 @@ def run_kill_review(
     candidates = [spec.book_id for spec in specs if spec.kind != "baseline"]
     reference = [spec.book_id for spec in specs if spec.kind == "baseline"]
 
-    rows, n_settled_offline, n_settlement_dupes = load_window_rows(
+    rows, n_settled_offline, n_settlement_dupes, settle_failed_rows = load_window_rows(
         positions_path,
         settlements_path,
         window_start_ms=window_start_ms,
@@ -443,7 +449,7 @@ def run_kill_review(
 
     books: dict[str, dict[str, Any]] = {}
     for book_id in candidates:
-        books[book_id] = score_book(book_id, rows, restarts=restarts)
+        books[book_id] = score_book(book_id, rows, settle_failed_rows, restarts=restarts)
 
     p_flat_by_book = {book_id: books[book_id]["bootstrap_p_le_zero"]["flat"] for book_id in candidates}
     p_pressure_by_book = {book_id: books[book_id]["bootstrap_p_le_zero"]["pressure_scale_1"] for book_id in candidates}
@@ -457,20 +463,29 @@ def run_kill_review(
     }
 
     passing: list[str] = []
+    incomplete_books: list[str] = []
     for book_id in candidates:
         block = books[book_id]
         block["holm_flat"] = holm_flat[book_id]
         block["holm_pressure_scale_1"] = holm_pressure[book_id]
+        # An incomplete book (an orphan that failed to settle offline) is
+        # missing data, not a zero -- it never promotes on what is on hand,
+        # even if the rows it does have already clear the gate and Holm.
         promote = bool(
             block["gate_clears_both_models"]
             and holm_flat[book_id]["pass"]
             and holm_pressure[book_id]["pass"]
+            and not block["incomplete"]
         )
         block["promote"] = promote
         del block["_flat_trades"]
         del block["_pressure_trades"]
         if promote:
             passing.append(book_id)
+        if block["incomplete"]:
+            incomplete_books.append(book_id)
+
+    n_settle_failed_total = sum(books[book_id]["n_settle_failed"] for book_id in candidates)
 
     return {
         "schema": SCHEMA_KILL_REVIEW,
@@ -486,6 +501,8 @@ def run_kill_review(
         "reference_books": reference,
         "n_settled_offline_total": n_settled_offline,
         "n_settlement_dupes_dropped": n_settlement_dupes,
+        "n_settle_failed_total": n_settle_failed_total,
+        "incomplete_books": incomplete_books,
         "restarts": restarts,
         "books": books,
         "verdict": {"passing": passing, "none": not passing},
@@ -509,8 +526,14 @@ def render_markdown(result: dict[str, Any]) -> str:
     )
     lines.append(
         f"Settlements: {result['n_settled_offline_total']} kept, "
-        f"{result['n_settlement_dupes_dropped']} dropped as duplicates of a live close"
+        f"{result['n_settlement_dupes_dropped']} dropped as duplicates of a live close, "
+        f"{result['n_settle_failed_total']} failed to settle offline"
     )
+    if result["incomplete_books"]:
+        lines.append(
+            f"INCOMPLETE (settle_failed > 0, never promotes on what is on hand): "
+            f"{', '.join(result['incomplete_books'])}"
+        )
     if result["restarts"]:
         lines.append(f"Restarts in window: {', '.join(result['restarts'])}")
     lines.append("")
@@ -518,8 +541,11 @@ def render_markdown(result: dict[str, Any]) -> str:
         block = result["books"][book_id]
         lines.append(f"## {book_id}")
         lines.append(
-            f"- n={block['n_trades']} (live={block['n_live']}, settled_offline={block['n_settled_offline']})"
+            f"- n={block['n_trades']} (live={block['n_live']}, settled_offline={block['n_settled_offline']}, "
+            f"settle_failed={block['n_settle_failed']})"
         )
+        if block["incomplete"]:
+            lines.append(f"- INCOMPLETE: settle_errors={block['settle_errors']}")
         lines.append(f"- pressure_data_available: {block['pressure_data_available']}")
         gf = block["gate_flat"]
         lines.append(
