@@ -512,7 +512,16 @@ STALE_ACTION_MS = 5_000
 # delivery gap exists yet (unlike `EARLY_BUFFER_DEAD_MS`'s measured print-
 # after-create gap): this is a documented, generous assumption, not a
 # measured one, and the replay-equivalence proof is the actual safety check.
+# The stronger guarantee is upstream: serve() drops any row whose t_recv_ms is
+# more than STALE_ACTION_MS behind wall clock before it reaches push_print,
+# and DirectoryTail resumes from persisted byte offsets, so every stamp()
+# happens within seconds of real time and an old slot cannot be re-delivered.
 TX_ORDER_PRUNE_MS = 2 * max(PRUNE_AFTER_MS, EARLY_BUFFER_DEAD_MS, STALE_ACTION_MS)
+# prune_before_ms scans all of `_seen` (~1.2M keys at the 90 min plateau), so it
+# runs at most this often instead of on every `_prune()` (~every 5,000 prints).
+# Pruning less often only keeps more entries, never fewer, so it cannot change
+# a stamp. Capped at the prune margin so short test margins still prune.
+TX_ORDER_PRUNE_EVERY_MS = 600_000
 # Live process only. Replay keeps the full path. Covers the 120 s decision grid.
 LIVE_IDLE_RETAIN_MS = 180_000
 READ_CHUNK_BYTES = 2 * 1024 * 1024
@@ -1305,6 +1314,7 @@ class ForwardEngine:
         # for every other caller -- `replay_rows()`/ParityTests/promotion
         # backtests keep today's unbounded, full-history `TxOrder` behavior.
         self.tx_order_prune_ms = tx_order_prune_ms
+        self._tx_order_pruned_at_ms: int | None = None
         self.wallets = WalletState()
         self.graph = None
         self.graph_dir: Path | None = None
@@ -2360,7 +2370,11 @@ class ForwardEngine:
         live_now = self.latency.now_ms() if self.latency.now_ms is not None else now_ms
         self._prune_early(live_now)
         if self.tx_order_prune_ms is not None:
-            self._tx_order.prune_before_ms(live_now - self.tx_order_prune_ms)
+            every = min(TX_ORDER_PRUNE_EVERY_MS, self.tx_order_prune_ms)
+            last = self._tx_order_pruned_at_ms
+            if last is None or live_now - last >= every:
+                self._tx_order.prune_before_ms(live_now - self.tx_order_prune_ms)
+                self._tx_order_pruned_at_ms = live_now
         for mint, book in list(self.library.items()):
             if mint in busy or mint in self.mig15_waiting:
                 continue
