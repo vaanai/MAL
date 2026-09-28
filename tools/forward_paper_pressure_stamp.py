@@ -88,24 +88,34 @@ of kind; the branch is entirely a function of `event`/`exit_status`/
   priority fee regardless of landing pressure -- so `headline_pnl` returns
   `pnl_lamports` unchanged, no tape lookup needed.
 - `event == "miss"`, `reason == "flat_15pct_landing"` (`entry_status ==
-  "filled"`, but `tools.forward_paper._landing_failed()`'s flat-model coin
-  flip rolled a miss before an `open`/`close` row was ever written --
-  tools/forward_paper.py:2021-2026): **not reconcilable, `pressure_error`
-  set, no guessing.** The pressure model needs the trade's counterfactual
-  "if it had landed" net (the same quantity a `close` row's `pnl_lamports`
-  carries), which requires replaying the exit -- `size_lamports`,
-  `exit_rule`, and `applied_latency_ms`. `applied_latency_ms` is real
-  wall-clock processing latency captured only on `open`/`close` rows
-  (tools/forward_paper.py:2101-2103, 2217); a `flat_15pct_landing` miss row
-  never got an `open` row and does not log it
-  (tools/forward_paper.py:2043-2058), and it is not a deterministic function
-  of the tape the way entry/exit reconstruction is for a genuine restart
-  orphan (`tools/forward_paper_settle_orphans.py`) -- there it is impossible
-  to reconstruct honestly from `positions.jsonl` + config + tape alone. This
-  is the row type this module cannot reconcile; every such row gets
-  `pressure_error: "flat_fail_miss_unreconstructable"` instead of a guessed
-  number, and `tools/kill_review.py` counts and reports these per book
-  rather than silently promoting or failing on them.
+  "missed_landing"`: `tools.forward_paper._landing_failed()`'s flat-model
+  coin flip rolled a miss after the curve fill itself succeeded --
+  tools/forward_paper.py:2021-2026, 2043-2058):
+  - `counterfactual_fill: true` (#145, `d7485d2`): the live runner now logs
+    the discarded fill on this row shape -- `applied_latency_ms`,
+    `size_lamports`, `exit_rule`, `entry_venue`, `entry_spot_sol`,
+    `entry_tokens_raw`, `entry_t_ms` -- the same field names an `open` row
+    carries. This module rebuilds the mint's price path from the sealed
+    tape and reconstructs the entry+exit through
+    `tools.forward_paper_settle_orphans.reconstruct_fill` -- the exact
+    function `tools/forward_paper_settle_orphans.py` uses to settle a
+    restart orphan: `try_entry` at `entry_t_ms` with `ref_price` from the
+    tape state at `decision_t_ms`, cross-checked against the logged
+    `entry_venue`/`entry_tokens_raw`, then the SAME exit branch the live
+    `_try_exit` uses (`LadderRule` -> `simulate_ladder`, else
+    `simulate_exit`). Only a `realized`/`no_exit_liquidity` reconstructed
+    exit counts, same as live; anything else (a venue/token mismatch, a
+    censored tape, an entry that no longer fills) gets `pressure_error`, no
+    guessing. A successful reconstruction gives the trade's counterfactual
+    "if it had landed" net, mixed with the pressure `p_fail` the same way a
+    real send is (`headline_pnl`).
+  - no `counterfactual_fill` field (a row written before #145 deployed):
+    **not reconcilable, `pressure_error` set, no guessing.** The
+    counterfactual exit needs `size_lamports`/`exit_rule`/
+    `applied_latency_ms`, none of which that row shape logs. Every such row
+    gets `pressure_error: "flat_fail_miss_unreconstructable"`, and
+    `tools/kill_review.py` counts and reports these per book rather than
+    silently promoting or failing on them.
 - anything else (missing `t_entry_ms`/`decision_t_ms`/`mint`, unknown
   `event`, a `close` row with no tape for its mint): `pressure_error` with a
   specific reason, never a guess.
@@ -124,9 +134,9 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from tools.forward_paper import _discover, _paths_from_rows, load_config
-from tools.forward_paper_settle_orphans import iter_jsonl
+from tools.forward_paper_settle_orphans import _rule_by_id, iter_jsonl, reconstruct_fill
 from tools.migrate_direct_oos import PRESSURE_INTERCEPT
-from tools.paper_curve_math import PRIORITY_FEE_LAMPORTS
+from tools.paper_curve_math import DEFAULT_SLIPPAGE_CAP, PRIORITY_FEE_LAMPORTS
 from tools.paper_fail_pressure import (
     MISS_STATUSES,
     SEND_EXITS,
@@ -155,6 +165,7 @@ ERROR_UNRECONSTRUCTABLE = "flat_fail_miss_unreconstructable"
 ERROR_NO_TAPE = "no_tape_for_mint"
 ERROR_MALFORMED = "malformed_row"
 ERROR_UNKNOWN_EVENT = "unhandled_event_shape"
+ERROR_COUNTERFACTUAL_PREFIX = "counterfactual_reconstruction_failed"
 
 
 def scale_1_curve() -> FailCurve:
@@ -227,7 +238,16 @@ def collect_rows(
 
 
 def _classify(row: dict[str, Any]) -> tuple[str, str | None]:
-    """('send', None) | ('miss_unfilled', None) | ('miss_unreconstructable', reason) | ('error', reason)."""
+    """('send', None) | ('miss_unfilled', None) | ('miss_counterfactual', None)
+    | ('miss_unreconstructable', reason) | ('error', reason).
+
+    A flat-fail miss row's `entry_status` is `"missed_landing"`
+    (tools/forward_paper.py:2025: `status = "missed_landing" if landing_fail
+    else entry.status`), not `"filled"` -- the curve fill itself succeeded,
+    but the flat coin flip failed the landing. `counterfactual_fill: true`
+    marks a row written by a runner build >= #145 (`d7485d2`), which logs
+    the discarded fill for offline reconstruction (see module docstring).
+    """
     event = row.get("event")
     if event == "close":
         exit_status = row.get("exit_status")
@@ -243,7 +263,9 @@ def _classify(row: dict[str, Any]) -> tuple[str, str | None]:
             if not isinstance(row.get("pnl_lamports"), int) or isinstance(row.get("pnl_lamports"), bool):
                 return "error", ERROR_MALFORMED
             return "miss_unfilled", None
-        if entry_status == "filled" and row.get("reason") == REASON_FLAT_FAIL_MISS:
+        if entry_status == "missed_landing" and row.get("reason") == REASON_FLAT_FAIL_MISS:
+            if row.get("counterfactual_fill") is True:
+                return "miss_counterfactual", None
             return "miss_unreconstructable", ERROR_UNRECONSTRUCTABLE
         return "error", ERROR_UNKNOWN_EVENT
     return "error", ERROR_UNKNOWN_EVENT
@@ -316,6 +338,78 @@ def stamp_send_row(
     }
 
 
+def stamp_counterfactual_miss_row(
+    row: dict[str, Any],
+    path: MintPath | None,
+    *,
+    curve_1: FailCurve,
+    curve_2: FailCurve,
+    slippage_cap: float,
+    tape_end_ms: int,
+    priority_lamports: int = PRIORITY_FEE_LAMPORTS,
+) -> dict[str, Any]:
+    """Price a `counterfactual_fill: true` flat-fail miss row: rebuild the
+    would-be exit through `reconstruct_fill` (imported from
+    `tools.forward_paper_settle_orphans`, the same function that settles a
+    restart orphan) and mix the resulting would-be net with the pressure
+    `p_fail`, exactly like a real send (`stamp_send_row`)."""
+    if path is None:
+        return {"pressure_error": ERROR_NO_TAPE}
+    entry_t_ms = row.get("entry_t_ms")
+    decision_t_ms = row.get("decision_t_ms")
+    size_lamports = row.get("size_lamports")
+    rule_id = row.get("exit_rule")
+    latency_ms = row.get("applied_latency_ms")
+    for value in (entry_t_ms, decision_t_ms, size_lamports, latency_ms):
+        if not isinstance(value, int) or isinstance(value, bool):
+            return {"pressure_error": ERROR_MALFORMED}
+    if not isinstance(rule_id, str):
+        return {"pressure_error": ERROR_MALFORMED}
+    try:
+        rule = _rule_by_id(rule_id)
+    except KeyError:
+        return {"pressure_error": f"{ERROR_MALFORMED}:unknown_exit_rule"}
+    result, err = reconstruct_fill(
+        path,
+        t_entry_ms=entry_t_ms,
+        decision_t_ms=decision_t_ms,
+        size_lamports=size_lamports,
+        rule=rule,
+        latency_ms=latency_ms,
+        slippage_cap=slippage_cap,
+        tape_end_ms=tape_end_ms,
+        logged_venue=row.get("entry_venue"),
+        logged_tokens=row.get("entry_tokens_raw"),
+    )
+    if result is None:
+        return {"pressure_error": f"{ERROR_COUNTERFACTUAL_PREFIX}:{err}"}
+    would_pnl = result.part.get("pnl_lamports")
+    exit_status = result.part.get("exit_status")
+    if not isinstance(would_pnl, int) or isinstance(would_pnl, bool):
+        return {"pressure_error": f"{ERROR_COUNTERFACTUAL_PREFIX}:missing_pnl"}
+    pressure = entry_pressure(path, entry_t_ms)
+    attempt = Attempt(
+        entry_status="filled",
+        exit_status=str(exit_status),
+        pnl_lamports=int(would_pnl),
+        pressure=pressure,
+    )
+    if not is_send(attempt):
+        return {"pressure_error": f"{ERROR_COUNTERFACTUAL_PREFIX}:not_a_send"}
+    mixed_1 = headline_pnl(attempt, curve_1, priority_lamports=priority_lamports)
+    mixed_2 = headline_pnl(attempt, curve_2, priority_lamports=priority_lamports)
+    return {
+        "pressure_scale_1_pnl_lamports": mixed_1,
+        "pressure_scale_2_pnl_lamports": mixed_2,
+        "p_fail_scale_1": curve_1.p(pressure),
+        "p_fail_scale_2": curve_2.p(pressure),
+        "same_slot_buys": pressure.same_slot_buys,
+        "nearby_buy_lamports": pressure.nearby_buy_lamports,
+        "counterfactual_would_pnl_lamports": would_pnl,
+        "counterfactual_exit_status": exit_status,
+    }
+
+
 def stamp_rows(
     rows: Sequence[dict[str, Any]],
     *,
@@ -323,13 +417,21 @@ def stamp_rows(
     create_paths: Sequence[Path],
     tape_end_ms: int,
     priority_lamports: int = PRIORITY_FEE_LAMPORTS,
+    slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     curve_1 = scale_1_curve()
     curve_2 = scale_2_curve()
 
     classified = [(row, *_classify(row)) for row in rows]
-    send_mints = {row["mint"] for row, kind, _reason in classified if kind == "send" and isinstance(row.get("mint"), str)}
-    paths = rebuild_mint_paths(send_mints, tape_paths=tape_paths, create_paths=create_paths, tape_end_ms=tape_end_ms)
+    # Both a real send and a counterfactual miss need the mint's price path:
+    # a send to price its already-realized pnl, a counterfactual miss to
+    # replay the exit it never got (`reconstruct_fill`).
+    tape_mints = {
+        row["mint"]
+        for row, kind, _reason in classified
+        if kind in ("send", "miss_counterfactual") and isinstance(row.get("mint"), str)
+    }
+    paths = rebuild_mint_paths(tape_mints, tape_paths=tape_paths, create_paths=create_paths, tape_end_ms=tape_end_ms)
 
     out: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
@@ -359,6 +461,19 @@ def stamp_rows(
             base["pressure_scale_1_pnl_lamports"] = pnl
             base["pressure_scale_2_pnl_lamports"] = pnl
             bump("miss_unfilled")
+        elif kind == "miss_counterfactual":
+            base.update(
+                stamp_counterfactual_miss_row(
+                    row,
+                    paths.get(mint),
+                    curve_1=curve_1,
+                    curve_2=curve_2,
+                    slippage_cap=slippage_cap,
+                    tape_end_ms=tape_end_ms,
+                    priority_lamports=priority_lamports,
+                )
+            )
+            bump("pressure_error" if "pressure_error" in base else "miss_counterfactual")
         else:
             base["pressure_error"] = reason or ERROR_UNKNOWN_EVENT
             bump("pressure_error")
@@ -368,7 +483,7 @@ def stamp_rows(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True, type=Path, help="forward-paper config (unused for math, kept for parity with the other offline tools and future book-kind checks)")
+    parser.add_argument("--config", required=True, type=Path, help="forward-paper config (slippage_cap, for counterfactual reconstruction; book kind still never enters the row-type decision)")
     parser.add_argument("--positions", required=True, type=Path)
     parser.add_argument("--settlements", type=Path)
     parser.add_argument("--tape", nargs="*", type=Path, default=[])
@@ -407,10 +522,13 @@ def main(argv: list[str] | None = None) -> int:
                     "snapshot, or pass --i-know-its-a-snapshot if you are certain it is frozen."
                 )
 
-    # Loaded for parity with the settle tool and to fail loudly on a bad
-    # config path; the pressure math itself does not depend on it (see
-    # module docstring: book `kind` never enters the row-type decision).
-    load_config(args.config)
+    # `slippage_cap` feeds `reconstruct_fill`'s `try_entry` call for a
+    # counterfactual miss row, the same config field
+    # `tools/forward_paper_settle_orphans.py` reads for the same reason.
+    # Book `kind` still never enters the row-type decision (module
+    # docstring): only `slippage_cap` is read from the config.
+    raw_config = load_config(args.config)
+    slippage_cap = float(raw_config.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
 
     rows = collect_rows(
         args.positions,
@@ -434,6 +552,7 @@ def main(argv: list[str] | None = None) -> int:
         tape_paths=tape_paths,
         create_paths=create_paths,
         tape_end_ms=tape_end_ms,
+        slippage_cap=slippage_cap,
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

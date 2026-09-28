@@ -55,6 +55,19 @@ same status applies to a book with any unmatched `open` orphan in the window
 `settle_failed` settlement -- missing data, not a zero. See
 `docs/HOLDOUT_LEDGER.md` / DEC-014's dated amendment and LAB_STATE.md for
 the 2026-10-05 read procedure this module is the designated scorer for.
+
+`--pressure-from-ms` (DEC-014 Amendment 3): the flat leg is scored from
+`--window-start` as always. The pressure leg only counts trades whose
+`decision_t_ms` is at or after `--pressure-from-ms` -- the first
+00:00:00Z runner restart running code >= d7485d2 (#145), the deploy that
+made a flat-fail miss row's counterfactual fill reconstructable
+(`tools/forward_paper_pressure_stamp.py`). A trade before that instant has
+no honest pressure-leg counterfactual (a pre-#145 flat-fail miss row cannot
+be reconstructed, see that module's docstring), so excluding it from the
+pressure leg is not a relaxation -- it is what "measured" means for that
+leg. If the pressure leg (after that exclusion) has fewer than
+`MIN_DAYS` (5) distinct UTC days, the book is NOT_DECIDABLE, same status as
+incomplete pressure coverage. The flat leg's day count is unaffected.
 """
 
 from __future__ import annotations
@@ -79,6 +92,7 @@ from tools.forward_paper import (
 from tools.forward_paper_settle_orphans import iter_jsonl as iter_settlement_rows
 from tools.paper_attention_promote import (
     LAMPORTS_PER_SOL,
+    MIN_DAYS,
     BookTrade,
     book_stats,
 )
@@ -436,6 +450,17 @@ def restarts_by_day(restarts: Sequence[str]) -> dict[str, list[str]]:
     return by_day
 
 
+def _pressure_eligible(row: dict[str, Any], pressure_from_ms: int | None) -> bool:
+    """True unless `pressure_from_ms` excludes this row from the pressure
+    leg (DEC-014 Amendment 3). The flat leg never calls this."""
+    if pressure_from_ms is None:
+        return True
+    decision_t_ms = row.get("decision_t_ms")
+    if isinstance(decision_t_ms, bool) or not isinstance(decision_t_ms, int):
+        return False
+    return decision_t_ms >= pressure_from_ms
+
+
 def score_book(
     book_id: str,
     rows: Sequence[dict[str, Any]],
@@ -444,10 +469,19 @@ def score_book(
     *,
     restarts: Sequence[str],
     holm_draws: int = HOLM_DRAWS,
+    pressure_from_ms: int | None = None,
 ) -> dict[str, Any]:
     flat_trades = _book_trades(rows, book_id, "pnl_lamports")
-    pressure_trades = _book_trades(rows, book_id, "pressure_scale_1_pnl_lamports")
-    pressure2_trades = _book_trades(rows, book_id, "pressure_scale_2_pnl_lamports")
+
+    # DEC-014 Amendment 3: the pressure leg only ever counts trades at or
+    # after `pressure_from_ms` (the flat leg above is untouched). A row
+    # before that instant is excluded from the pressure leg entirely --
+    # from its trades, its coverage-completeness check, and its day count --
+    # not scored as a zero and not scored as missing coverage.
+    pressure_rows = [r for r in rows if _pressure_eligible(r, pressure_from_ms)]
+    pressure_trades = _book_trades(pressure_rows, book_id, "pressure_scale_1_pnl_lamports")
+    pressure2_trades = _book_trades(pressure_rows, book_id, "pressure_scale_2_pnl_lamports")
+    pressure_eligible_flat_trades = _book_trades(pressure_rows, book_id, "pnl_lamports")
 
     book_rows = [r for r in rows if r.get("book") == book_id]
     n_live = sum(1 for r in book_rows if not r.get("settled_offline"))
@@ -463,10 +497,14 @@ def score_book(
     incomplete = n_settle_failed > 0 or n_open_orphans > 0
 
     # DEC-014's pressure leg is never relaxed: every row counted as a flat
-    # trade must also carry a pressure_scale_1_pnl_lamports value, and none
-    # of this book's rows may carry a pressure_error from the stamp tool.
-    n_pressure_error = sum(1 for r in book_rows if r.get("pressure_error"))
-    pressure_coverage_complete = len(pressure_trades) == len(flat_trades) and n_pressure_error == 0
+    # trade *inside the pressure leg's own eligible window* must also carry
+    # a pressure_scale_1_pnl_lamports value, and none of those rows may
+    # carry a pressure_error from the stamp tool. A row excluded by
+    # `pressure_from_ms` cannot break coverage -- it was never part of the
+    # pressure leg's window.
+    book_pressure_rows = [r for r in pressure_rows if r.get("book") == book_id]
+    n_pressure_error = sum(1 for r in book_pressure_rows if r.get("pressure_error"))
+    pressure_coverage_complete = len(pressure_trades) == len(pressure_eligible_flat_trades) and n_pressure_error == 0
 
     flat_only = book_stats(flat_trades)
     pressure_only = book_stats(pressure_trades) if pressure_trades else book_stats([])
@@ -475,6 +513,12 @@ def score_book(
         pressure_scale_1=pressure_trades,
         pressure_scale_2=pressure2_trades or None,
     )
+
+    # DEC-014 Amendment 3: <5 eligible UTC days on the pressure leg alone
+    # (independent of the flat leg's own day count) is NOT_DECIDABLE, not a
+    # KILL -- the book was excluded from measurement on that leg, not
+    # measured and found wanting.
+    pressure_leg_short_days = pressure_from_ms is not None and pressure_only["n_days"] < MIN_DAYS
 
     day_restarts = restarts_by_day(restarts)
     days = [dict(day, restarts_utc=day_restarts.get(day["day"], [])) for day in flat_only["days"]]
@@ -494,6 +538,8 @@ def score_book(
         "pressure_data_available": bool(pressure_trades),
         "n_pressure_error": n_pressure_error,
         "pressure_coverage_complete": pressure_coverage_complete,
+        "pressure_from_ms": pressure_from_ms,
+        "pressure_leg_short_days": pressure_leg_short_days,
         "gate_flat": flat_only,
         "gate_pressure_scale_1": pressure_only,
         "gate_clears_both_models": bool(combined["promote"]),
@@ -516,6 +562,7 @@ def run_kill_review(
     window_end_ms: int = WINDOW_END_MS,
     holm_draws: int = HOLM_DRAWS,
     holm_alpha: float = HOLM_ALPHA,
+    pressure_from_ms: int | None = None,
 ) -> dict[str, Any]:
     assert_window_clear_of_void(window_start_ms)
 
@@ -543,7 +590,13 @@ def run_kill_review(
     books: dict[str, dict[str, Any]] = {}
     for book_id in candidates:
         books[book_id] = score_book(
-            book_id, rows, settle_failed_rows, open_orphan_rows, restarts=restarts, holm_draws=holm_draws
+            book_id,
+            rows,
+            settle_failed_rows,
+            open_orphan_rows,
+            restarts=restarts,
+            holm_draws=holm_draws,
+            pressure_from_ms=pressure_from_ms,
         )
 
     p_flat_by_book = {book_id: books[book_id]["bootstrap_p_le_zero"]["flat"] for book_id in candidates}
@@ -571,11 +624,13 @@ def run_kill_review(
             and holm_pressure[book_id]["pass"]
         )
         # DEC-014, dated amendment: the pressure leg is never relaxed. A book
-        # missing pressure coverage on any counted trade, or carrying an
-        # unresolved restart-orphan or settle_failed row, is NOT_DECIDABLE --
+        # missing pressure coverage on any counted trade, carrying an
+        # unresolved restart-orphan or settle_failed row, or (Amendment 3)
+        # having fewer than MIN_DAYS eligible pressure-leg days once
+        # `pressure_from_ms` excludes pre-restart trades, is NOT_DECIDABLE --
         # never PROMOTE, and never a plain KILL that reads as "measured and
         # found wanting" when it was never actually measured on both legs.
-        if not block["pressure_coverage_complete"] or block["incomplete"]:
+        if not block["pressure_coverage_complete"] or block["incomplete"] or block["pressure_leg_short_days"]:
             status = "NOT_DECIDABLE"
         elif gate_pass:
             status = "PROMOTE"
@@ -606,6 +661,7 @@ def run_kill_review(
             "end_ms": window_end_ms,
         },
         "void_window": {"from": VOID_FROM, "from_ms": VOID_FROM_MS, "until": VOID_UNTIL, "until_ms": VOID_UNTIL_MS},
+        "pressure_from_ms": pressure_from_ms,
         "holm": {"alpha": holm_alpha, "draws": holm_draws, "seed": HOLM_SEED, "family_k": len(candidates)},
         "candidates": candidates,
         "reference_books": reference,
@@ -675,7 +731,9 @@ def render_markdown(result: dict[str, Any]) -> str:
         lines.append(
             f"- pressure_data_available: {block['pressure_data_available']} "
             f"pressure_coverage_complete: {block['pressure_coverage_complete']} "
-            f"n_pressure_error: {block['n_pressure_error']}"
+            f"n_pressure_error: {block['n_pressure_error']} "
+            f"pressure_from_ms: {block['pressure_from_ms']} "
+            f"pressure_leg_short_days: {block['pressure_leg_short_days']}"
         )
         gf = block["gate_flat"]
         lines.append(
@@ -716,6 +774,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--positions", required=True, type=Path)
     parser.add_argument("--settlements", type=Path)
     parser.add_argument("--pressure", type=Path, help="tools.forward_paper_pressure_stamp output (pressure.jsonl)")
+    parser.add_argument(
+        "--pressure-from-ms",
+        type=int,
+        help=(
+            "DEC-014 Amendment 3: the pressure leg only counts trades whose decision_t_ms "
+            "is at or after this instant (the flat leg is unchanged). Intended value: the "
+            "first 00:00:00Z runner restart running code >= d7485d2 (#145). <5 eligible "
+            "days on the pressure leg is NOT_DECIDABLE."
+        ),
+    )
     parser.add_argument("--restarts-log", type=Path, default=Path("/home/claude/reports/runner-restarts.jsonl"))
     parser.add_argument("--manual-restart", action="append", default=[], dest="manual_restarts")
     parser.add_argument("--window-start", default=WINDOW_START)
@@ -737,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
         window_end_ms=_parse_iso_ms(args.window_end),
         holm_draws=args.holm_draws,
         holm_alpha=args.holm_alpha,
+        pressure_from_ms=args.pressure_from_ms,
     )
 
     md = render_markdown(result)

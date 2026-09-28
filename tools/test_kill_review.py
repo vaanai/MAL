@@ -736,5 +736,139 @@ class PressureJoinTests(unittest.TestCase):
             self.assertEqual(block["status"], "NOT_DECIDABLE")
 
 
+class PressureFromMsTests(unittest.TestCase):
+    """`--pressure-from-ms` (DEC-014 Amendment 3): the pressure leg only
+    counts trades at or after that instant; the flat leg is unchanged. <5
+    eligible pressure-leg UTC days is NOT_DECIDABLE."""
+
+    def test_pressure_leg_short_days_is_not_decidable_flat_leg_unaffected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            rows = _gate_passing_rows("book_a", n_days=7, per_day=20)
+            _write_jsonl(positions, rows)
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+
+            pressure_from_ms = _day_ms(5)  # only days 5, 6 remain -- 2 < MIN_DAYS
+            result = kill_review.run_kill_review(
+                config_path=config,
+                positions_path=positions,
+                settlements_path=None,
+                restarts_log_path=None,
+                manual_restarts=[],
+                pressure_from_ms=pressure_from_ms,
+            )
+            block = result["books"]["book_a"]
+            self.assertEqual(block["pressure_from_ms"], pressure_from_ms)
+            self.assertTrue(block["pressure_leg_short_days"])
+            self.assertEqual(block["gate_pressure_scale_1"]["n_days"], 2)
+            self.assertEqual(block["gate_pressure_scale_1"]["n"], 40)
+            # The flat leg is untouched: still all 7 days, 140 trades.
+            self.assertEqual(block["n_trades"], 140)
+            self.assertEqual(block["gate_flat"]["n_days"], 7)
+            self.assertTrue(block["gate_flat"]["promote"])
+            self.assertEqual(block["status"], "NOT_DECIDABLE")
+            self.assertFalse(block["promote"])
+
+    def test_exactly_min_days_eligible_still_promotes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            rows = _gate_passing_rows("book_a", n_days=7, per_day=20)
+            _write_jsonl(positions, rows)
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+
+            pressure_from_ms = _day_ms(2)  # days 2..6 remain -- exactly 5
+            result = kill_review.run_kill_review(
+                config_path=config,
+                positions_path=positions,
+                settlements_path=None,
+                restarts_log_path=None,
+                manual_restarts=[],
+                pressure_from_ms=pressure_from_ms,
+            )
+            block = result["books"]["book_a"]
+            self.assertFalse(block["pressure_leg_short_days"])
+            self.assertEqual(block["gate_pressure_scale_1"]["n_days"], 5)
+            self.assertEqual(block["gate_pressure_scale_1"]["n"], 100)
+            self.assertTrue(block["pressure_coverage_complete"])
+            self.assertEqual(block["status"], "PROMOTE")
+
+    def test_pressure_from_ms_none_matches_prior_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            rows = _gate_passing_rows("book_a")
+            _write_jsonl(positions, rows)
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+
+            result = kill_review.run_kill_review(
+                config_path=config,
+                positions_path=positions,
+                settlements_path=None,
+                restarts_log_path=None,
+                manual_restarts=[],
+            )
+            block = result["books"]["book_a"]
+            self.assertIsNone(block["pressure_from_ms"])
+            self.assertFalse(block["pressure_leg_short_days"])
+            self.assertEqual(block["status"], "PROMOTE")
+
+    def test_coverage_gap_before_pressure_from_ms_does_not_block_decidability(self) -> None:
+        """A missing pressure field on a row the pressure leg excludes must
+        not break `pressure_coverage_complete` -- it was never in that leg's
+        window."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            rows = _gate_passing_rows("book_a", n_days=7, per_day=20)
+            # Strip pressure from a row on day 0 -- before pressure_from_ms.
+            rows[0].pop("pressure_scale_1_pnl_lamports", None)
+            _write_jsonl(positions, rows)
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+
+            pressure_from_ms = _day_ms(2)
+            result = kill_review.run_kill_review(
+                config_path=config,
+                positions_path=positions,
+                settlements_path=None,
+                restarts_log_path=None,
+                manual_restarts=[],
+                pressure_from_ms=pressure_from_ms,
+            )
+            block = result["books"]["book_a"]
+            self.assertTrue(block["pressure_coverage_complete"])
+            self.assertEqual(block["status"], "PROMOTE")
+
+    def test_coverage_gap_after_pressure_from_ms_still_not_decidable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            positions = tmp_path / "positions.jsonl"
+            config = tmp_path / "config.json"
+            rows = _gate_passing_rows("book_a", n_days=7, per_day=20)
+            # Strip pressure from a row on day 3 -- inside the eligible window.
+            pressure_from_ms = _day_ms(2)
+            eligible_row = next(r for r in rows if r["decision_t_ms"] >= pressure_from_ms)
+            eligible_row.pop("pressure_scale_1_pnl_lamports", None)
+            _write_jsonl(positions, rows)
+            config.write_text(json.dumps(_config([{"id": "book_a", "kind": "migrate"}])), encoding="utf-8")
+
+            result = kill_review.run_kill_review(
+                config_path=config,
+                positions_path=positions,
+                settlements_path=None,
+                restarts_log_path=None,
+                manual_restarts=[],
+                pressure_from_ms=pressure_from_ms,
+            )
+            block = result["books"]["book_a"]
+            self.assertFalse(block["pressure_coverage_complete"])
+            self.assertEqual(block["status"], "NOT_DECIDABLE")
+
+
 if __name__ == "__main__":
     unittest.main()
