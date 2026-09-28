@@ -331,11 +331,24 @@ class TxOrder:
     the position is the order that signature was first read in that slot.
     Later events of the same signature share it. ``event_index`` is only the
     order inside one transaction.
+
+    ``_seen``/``_next`` never evict on their own: about one ``_seen`` entry
+    per distinct (slot, signature) pair ever stamped, unbounded for the life
+    of a long-running process (the live `ForwardEngine`). `prune_before_ms`
+    is an opt-in, time-based eviction for that caller -- see its docstring
+    for the invariant it relies on. Every other caller (`_dedupe_sorted`,
+    the offline scorers under `tools/`) builds a fresh `TxOrder` per batch
+    and never calls it, so they are unaffected either way.
     """
 
     def __init__(self) -> None:
         self._seen: dict[tuple[int, str], int] = {}
         self._next: dict[int, int] = {}
+        # Wall/tape-clock (`t_recv_ms`) of the most recent `stamp()` that
+        # touched this slot, live or cache-hit -- the watermark
+        # `prune_before_ms` reads. Kept in lockstep with `_seen`/`_next`:
+        # every write to either always also updates this for the same slot.
+        self._slot_touched_ms: dict[int, int] = {}
 
     def position(self, slot: int, signature: str | None, explicit: int | None) -> int:
         if signature:
@@ -356,10 +369,51 @@ class TxOrder:
 
     def stamp(self, pr: TapePrint) -> TapePrint:
         explicit = pr.tx_index if pr.tx_index >= 0 else None
-        pos = self.position(int(pr.slot), pr.signature, explicit)
+        slot = int(pr.slot)
+        pos = self.position(slot, pr.signature, explicit)
+        if pos != -1:
+            prev = self._slot_touched_ms.get(slot)
+            if prev is None or pr.t_recv_ms > prev:
+                self._slot_touched_ms[slot] = pr.t_recv_ms
         if pos == pr.tx_index:
             return pr
         return replace(pr, tx_index=pos)
+
+    def entry_count(self) -> int:
+        """`_seen` size -- the dict this class's memory cost is dominated by."""
+        return len(self._seen)
+
+    def prune_before_ms(self, cutoff_ms: int) -> int:
+        """Drop bookkeeping for any slot untouched since before `cutoff_ms`.
+
+        Invariant this relies on: once a slot has gone `cutoff_ms` without a
+        `stamp()` call touching it (live-clock `t_recv_ms`, not tape-relative
+        time), no later call can legitimately need this slot's `_seen`/
+        `_next` state -- a "re-seen" signature for that slot will never
+        arrive again. The caller (`ForwardEngine._prune`, `serve()` only)
+        picks `cutoff_ms` with a margin generous enough that this holds for
+        every known source of late/duplicate/out-of-order delivery:
+        `serve()`'s own stale-drop (`STALE_ACTION_MS`) only ever admits a row
+        within seconds of "now", and the engine's own longest legitimate
+        retention window for anything tape-derived is `PRUNE_AFTER_MS` (idle
+        mints) / `EARLY_BUFFER_DEAD_MS` (createless buffer) -- both far
+        shorter than the margin used here. Never called by `_dedupe_sorted`,
+        `replay_rows()`, or any offline scorer, which build/consume a
+        `TxOrder` within one batch and want the unbounded, full-history
+        behavior -- pruning is opt-in per instance, not a global change.
+        """
+        stale_slots = [slot for slot, t in self._slot_touched_ms.items() if t < cutoff_ms]
+        if not stale_slots:
+            return 0
+        stale_set = set(stale_slots)
+        for slot in stale_slots:
+            del self._slot_touched_ms[slot]
+            self._next.pop(slot, None)
+        removed = 0
+        for key in [k for k in self._seen if k[0] in stale_set]:
+            del self._seen[key]
+            removed += 1
+        return removed
 
 
 def _optional_int(row: dict[str, Any], key: str) -> int | None:

@@ -23,6 +23,7 @@ from tools.forward_paper import (
     STALE_ACTION_MS,
     SWING_FREEZE_AT,
     SWING_FREEZE_MS,
+    TX_ORDER_PRUNE_MS,
     VOID_FROM_MS,
     BookSpec,
     DirectoryTail,
