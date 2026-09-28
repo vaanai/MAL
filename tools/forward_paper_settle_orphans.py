@@ -146,6 +146,94 @@ class SettleResult:
     skip_reason: str | None = None
 
 
+@dataclass
+class ReconstructedFill:
+    """Result of `reconstruct_fill`: the rebuilt entry plus the exit
+    simulation result (`part`: `exit_status`, `exit_t_ms`, `trigger`,
+    `pnl_lamports`, ...)."""
+
+    entry: Any
+    part: dict[str, Any]
+
+
+def reconstruct_fill(
+    path: MintPath,
+    *,
+    t_entry_ms: int,
+    decision_t_ms: int,
+    size_lamports: int,
+    rule: Any,
+    latency_ms: int,
+    slippage_cap: float,
+    tape_end_ms: int,
+    logged_venue: Any = None,
+    logged_tokens: Any = None,
+) -> tuple[ReconstructedFill | None, str | None]:
+    """Replay the SAME entry+exit the live runner would have taken for this
+    attempt: `try_entry` at `t_entry_ms` with `ref_price` read from the tape
+    state at `decision_t_ms` (see module docstring "Entry reconstruction"),
+    then branch on rule type exactly like `_try_exit`
+    (tools/forward_paper.py:2186-2189): `simulate_ladder` for a `LadderRule`
+    book, `simulate_exit` otherwise. Cross-checks the rebuilt entry's
+    venue/tokens against the logged values when given (never guesses past a
+    mismatch). Returns `(None, reason)` on any failure to reconstruct or
+    close, `(ReconstructedFill, None)` on success -- only a `realized` or
+    `no_exit_liquidity` exit counts, same as the live `_try_exit` close
+    filter.
+
+    Shared by `settle_orphan` (a restart-orphaned `open` row with no
+    matching `close`) and `tools.forward_paper_pressure_stamp` (a
+    `counterfactual_fill` flat-fail `miss` row, #145) -- same
+    reconstruction, two different row shapes calling it. Do not duplicate
+    this logic; import it.
+    """
+    state = state_as_of(path, decision_t_ms, allow_anchor=True)
+    ref_price = state.price_sol if state is not None else None
+    entry = try_entry(
+        path,
+        t_entry_ms=t_entry_ms,
+        size_lamports=size_lamports,
+        slippage_cap=slippage_cap,
+        feats={"f_tape_last_price_sol": ref_price},
+    )
+    if entry.status != "filled":
+        return None, f"reconstructed_entry_not_filled:{entry.status}"
+    if logged_venue is not None and entry.venue != logged_venue:
+        return None, f"venue_mismatch live={logged_venue} rebuilt={entry.venue}"
+    if isinstance(logged_tokens, int) and entry.tokens_raw != logged_tokens:
+        return None, f"tokens_mismatch live={logged_tokens} rebuilt={entry.tokens_raw}"
+    # Same branch the live runner takes in `_try_exit`
+    # (tools/forward_paper.py:2186-2189): a `LadderRule` book scales out
+    # through `simulate_ladder`, everything else closes through
+    # `simulate_exit`.
+    if isinstance(rule, LadderRule):
+        part = simulate_ladder(
+            path,
+            entry,
+            rule,
+            latency_ms=latency_ms,
+            tape_end_ms=tape_end_ms,
+            size_lamports=size_lamports,
+        )
+    else:
+        part = simulate_exit(
+            path,
+            entry,
+            rule,
+            latency_ms=latency_ms,
+            tape_end_ms=tape_end_ms,
+            size_lamports=size_lamports,
+        )
+    exit_status = part.get("exit_status")
+    if exit_status == "censored":
+        return None, "censored_tape_too_short"
+    # Same close filter as the live `_try_exit` (tools/forward_paper.py ~2191):
+    # only these two statuses ever produce a close row there.
+    if exit_status not in ("realized", "no_exit_liquidity"):
+        return None, f"unclosed_exit_status={exit_status}"
+    return ReconstructedFill(entry=entry, part=part), None
+
+
 def rebuild_mint_paths(
     mints: set[str],
     *,
@@ -201,54 +289,26 @@ def settle_orphan(
         rule = _rule_by_id(rule_id)
     except KeyError as exc:
         return SettleResult(None, str(exc))
-    state = state_as_of(path, decision_t_ms, allow_anchor=True)
-    ref_price = state.price_sol if state is not None else None
-    entry = try_entry(
+    # Calling `simulate_exit` unconditionally here used to raise on a ladder
+    # book's exit rule, and that exception used to abort the whole run
+    # before any book got a settlement written -- `reconstruct_fill` branches
+    # on rule type the same way `_try_exit` does.
+    result, err = reconstruct_fill(
         path,
         t_entry_ms=t_entry_ms,
+        decision_t_ms=decision_t_ms,
         size_lamports=size_lamports,
+        rule=rule,
+        latency_ms=latency_ms,
         slippage_cap=slippage_cap,
-        feats={"f_tape_last_price_sol": ref_price},
+        tape_end_ms=tape_end_ms,
+        logged_venue=orphan.get("entry_venue"),
+        logged_tokens=orphan.get("entry_tokens_raw"),
     )
-    if entry.status != "filled":
-        return SettleResult(None, f"reconstructed_entry_not_filled:{entry.status}")
-    logged_venue = orphan.get("entry_venue")
-    logged_tokens = orphan.get("entry_tokens_raw")
-    if logged_venue is not None and entry.venue != logged_venue:
-        return SettleResult(None, f"venue_mismatch live={logged_venue} rebuilt={entry.venue}")
-    if isinstance(logged_tokens, int) and entry.tokens_raw != logged_tokens:
-        return SettleResult(None, f"tokens_mismatch live={logged_tokens} rebuilt={entry.tokens_raw}")
-    # Same branch the live runner takes in `_try_exit`
-    # (tools/forward_paper.py:2186-2189): a `LadderRule` book scales out
-    # through `simulate_ladder`, everything else closes through
-    # `simulate_exit`. Calling `simulate_exit` unconditionally here used to
-    # raise on a ladder book's exit rule, and that exception used to abort
-    # the whole run before any book got a settlement written.
-    if isinstance(rule, LadderRule):
-        part = simulate_ladder(
-            path,
-            entry,
-            rule,
-            latency_ms=latency_ms,
-            tape_end_ms=tape_end_ms,
-            size_lamports=size_lamports,
-        )
-    else:
-        part = simulate_exit(
-            path,
-            entry,
-            rule,
-            latency_ms=latency_ms,
-            tape_end_ms=tape_end_ms,
-            size_lamports=size_lamports,
-        )
+    if result is None:
+        return SettleResult(None, err)
+    entry, part = result.entry, result.part
     exit_status = part.get("exit_status")
-    if exit_status == "censored":
-        return SettleResult(None, "censored_tape_too_short")
-    # Same close filter as the live `_try_exit` (tools/forward_paper.py ~2191):
-    # only these two statuses ever produce a close row there.
-    if exit_status not in ("realized", "no_exit_liquidity"):
-        return SettleResult(None, f"unclosed_exit_status={exit_status}")
     pnl = part.get("pnl_lamports")
     row = {
         "schema": SCHEMA_SETTLEMENT,
