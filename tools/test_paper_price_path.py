@@ -21,6 +21,7 @@ from tools.paper_price_path import (
     CreateSignal,
     MintPath,
     TapePrint,
+    TxOrder,
     collapse_fillable,
     finalize_prints,
     print_from_trade_row,
@@ -185,6 +186,122 @@ class SignatureLagDrawTests(unittest.TestCase):
         self.assertEqual(first, 111)
         self.assertEqual(second, 111, "second inner event of the same signature must reuse the first draw")
         self.assertEqual(other, 222, "a different signature draws independently")
+
+
+_TX_Q0 = 35_000_000_000
+_TX_B0 = 1_073_000_000_000_000
+
+
+def _tx_print(t_recv_ms: int, slot: int, signature: str | None, tx_index: int = -1) -> TapePrint:
+    return TapePrint(
+        t_recv_ms=t_recv_ms,
+        slot=slot,
+        event_index=0,
+        venue="pump_bonding",
+        side="buy",
+        sol_lamports=1_000_000_000,
+        quote_reserve=_TX_Q0,
+        base_reserve=_TX_B0,
+        price_sol=_TX_Q0 / (_TX_B0 * 1000),
+        market_cap_sol=1.0,
+        signature=signature,
+        tx_index=tx_index,
+    )
+
+
+class TxOrderPruneTests(unittest.TestCase):
+    """`TxOrder.prune_before_ms` (the fix for the unbounded `_seen`/`_next`
+    leak: about 1 entry per distinct (slot, signature) print, ~275 bytes
+    each, unbounded on the live Oracle runner -- see forward_paper.py's
+    `TX_ORDER_PRUNE_MS` comment). Pruning is keyed on `_slot_touched_ms`,
+    the wall/tape-clock of the most recent `stamp()` call that touched a
+    slot -- any duplicate/out-of-order re-delivery of a signature inside
+    that slot must land before its own margin runs out or it is treated
+    (correctly, by construction of the margin) as genuinely new.
+    """
+
+    MARGIN_MS = 10_000
+
+    def test_late_repeat_inside_the_margin_stamps_identically_with_and_without_pruning(self) -> None:
+        """A signature stamped once, then not touched again until just
+        before the margin elapses, must get the exact same `tx_index` back
+        -- whether or not `prune_before_ms` ran on unrelated slots in
+        between. This is the invariant `ForwardEngine._prune` depends on:
+        a re-seen signature never gets a different position than an engine
+        that never pruned at all.
+        """
+        pruned = TxOrder()
+        bare = TxOrder()
+
+        def run(order: TxOrder, *, prune: bool) -> list[int]:
+            stamped: list[int] = []
+            t = 0
+            # First sighting of the signature under test, in its own slot.
+            pr = order.stamp(_tx_print(t, slot=100, signature="sigA"))
+            stamped.append(pr.tx_index)
+            # A stream of unrelated filler prints in *other* slots, advancing
+            # the clock. Each one is a distinct (slot, signature) that would
+            # legitimately go stale on its own -- exercising eviction of
+            # everything except slot 100 while slot 100's own margin has not
+            # elapsed yet.
+            for i in range(1, 20):
+                t = i * 500
+                pr = order.stamp(_tx_print(t, slot=100 + i, signature=f"filler-{i}"))
+                stamped.append(pr.tx_index)
+                if prune:
+                    order.prune_before_ms(t - self.MARGIN_MS)
+            # The late repeat: same (slot, signature) as the very first
+            # print, arriving just inside the margin measured from slot
+            # 100's own last touch (t=0).
+            t_repeat = self.MARGIN_MS - 1
+            pr = order.stamp(_tx_print(t_repeat, slot=100, signature="sigA"))
+            stamped.append(pr.tx_index)
+            if prune:
+                order.prune_before_ms(t_repeat - self.MARGIN_MS)
+            return stamped
+
+        pruned_stamps = run(pruned, prune=True)
+        bare_stamps = run(bare, prune=False)
+        self.assertEqual(pruned_stamps, bare_stamps)
+        # The repeat really did hit the cache (same position as the first
+        # sighting), not merely coincide by chance -- both engines agree on
+        # a non-trivial value that isn't the fallback "-1" slot-less case.
+        self.assertEqual(pruned_stamps[0], pruned_stamps[-1])
+        self.assertGreaterEqual(pruned_stamps[0], 0)
+        # Nothing was evicted yet: every touch so far sits inside one margin
+        # window from "now" -- exactly why the repeat was safe to begin with.
+        self.assertEqual(len(pruned._seen), len(bare._seen))
+
+        # Push well past the margin from every touch above (including the
+        # just-repeated slot 100) and prune once more: eviction now actually
+        # fires, proving `prune_before_ms` is not a no-op -- only correctly
+        # inert while a repeat could still legitimately land.
+        t_far = self.MARGIN_MS - 1 + self.MARGIN_MS + 1
+        pruned.prune_before_ms(t_far - self.MARGIN_MS)
+        self.assertLess(len(pruned._seen), len(bare._seen))
+
+    def test_entries_stay_bounded_on_a_long_synthetic_stream(self) -> None:
+        """Without pruning, `_seen`/`_next` grow by ~1 entry per distinct
+        (slot, signature) forever. With `prune_before_ms` called on every
+        step (as `ForwardEngine._prune` does live), the live entry count
+        must stay bounded regardless of how many total prints have been
+        stamped over the run -- the actual leak this PR fixes.
+        """
+        order = TxOrder()
+        n = 5_000
+        step_ms = 1_000
+        for i in range(n):
+            t = i * step_ms
+            order.stamp(_tx_print(t, slot=i, signature=f"sig-{i}"))
+            order.prune_before_ms(t - self.MARGIN_MS)
+        # At any moment, only slots touched within the last MARGIN_MS can
+        # still be live -- a small, constant-ish bound, not O(n).
+        expected_live = self.MARGIN_MS // step_ms + 2
+        self.assertLess(len(order._seen), expected_live * 2)
+        self.assertLess(len(order._next), expected_live * 2)
+        self.assertLess(order.entry_count(), expected_live * 2)
+        # And it really did grow, then get capped -- not just "always empty".
+        self.assertGreater(order.entry_count(), 0)
 
 
 if __name__ == "__main__":

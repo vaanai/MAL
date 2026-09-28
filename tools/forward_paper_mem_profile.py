@@ -214,6 +214,8 @@ def take_snapshot(
     row["bytes"]["grids_housekeeping"] = (
         asizeof.asizeof(engine.grids) + asizeof.asizeof(engine.mig15) + asizeof.asizeof(engine.emitted_grids) + asizeof.asizeof(engine.mig15_waiting)
     )
+    row["counts"]["tx_order_entries"] = engine._tx_order.entry_count()
+    row["bytes"]["tx_order"] = asizeof.asizeof(engine._tx_order)
     row["counts"]["positions_rows"] = len(engine.positions)
     row["counts"]["decisions_rows"] = len(engine.decisions)
     row["counts"]["packets"] = len(engine.packets)
@@ -271,6 +273,18 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument("--out", type=Path, help="JSON report path (default: <output-dir>/mem-profile.json)")
+    ap.add_argument(
+        "--tx-order-prune-ms",
+        type=int,
+        default=None,
+        help=(
+            "Passed straight through as ForwardEngine's tx_order_prune_ms. "
+            "None (default) matches every caller except serve() -- TxOrder's "
+            "_seen/_next never evict. Set this to exercise serve()'s pruning "
+            "path (e.g. TX_ORDER_PRUNE_MS, or a short margin to force many "
+            "prunes within a short replay) for a decision-equivalence proof."
+        ),
+    )
     args = ap.parse_args(argv)
 
     raw = load_config(args.config)
@@ -359,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         logs=logs,
         fail_rate=0.0,
         positions_path=args.output_dir / "positions.jsonl",
+        tx_order_prune_ms=args.tx_order_prune_ms,
     )
 
     attention_dir = Path(raw["attention_dir"]) if raw.get("attention_dir") else args.attention_dir

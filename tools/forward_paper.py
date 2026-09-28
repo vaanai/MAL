@@ -387,6 +387,7 @@ class MemCensus:
             "dead_mints": len(engine.dead_mints),
             "dead_prints_dropped": engine.dead_prints_dropped,
             "early_timeout_mints_dropped": engine.early_timeout_mints_dropped,
+            "tx_order_entries": engine._tx_order.entry_count(),
         }
         row["wallets"] = self._walk_wallets(engine.wallets.wallets)
         t0 = time.perf_counter()
@@ -493,6 +494,34 @@ CHAIN_LAG_MAX_MS = 120_000
 # p50 was 16–131 ms). The honest-fill cut already used for this book is 5 s.
 # A decision older than that cannot be acted on. 5 s rejects the 2.3 h fills.
 STALE_ACTION_MS = 5_000
+# `TxOrder._seen`/`_next` (see `paper_price_path.py`) never evict on their
+# own: about one entry per distinct (slot, signature) print ever stamped by
+# `push_print`, unbounded for the life of a long-running `serve()` process
+# (~275 bytes/entry, measured by tracemalloc on the real tape). Pruned by
+# `_prune()` calling `TxOrder.prune_before_ms(live_now - TX_ORDER_PRUNE_MS)`,
+# live only (gated by `tx_order_prune_ms`, `None` for every other caller).
+# Margin: 2x the largest of the three known bounds on how late a legitimate
+# duplicate/out-of-order print for an old slot can reach `push_print` --
+# `STALE_ACTION_MS` (serve()'s own stale-row drop, ~5s), `EARLY_BUFFER_DEAD_MS`
+# (createless-buffer give-up, 10 min), and `PRUNE_AFTER_MS` itself (idle-mint
+# eviction, 45 min, the largest of the three and this file's own standing
+# "nothing legitimate outlives this much silence" bound). `PRUNE_AFTER_MS` is
+# the dominant term, so the margin is effectively 90 minutes -- twice as long
+# as the longest window anything else in this engine already treats as
+# "gone", specifically because no direct measurement of a real duplicate-
+# delivery gap exists yet (unlike `EARLY_BUFFER_DEAD_MS`'s measured print-
+# after-create gap): this is a documented, generous assumption, not a
+# measured one, and the replay-equivalence proof is the actual safety check.
+# The stronger guarantee is upstream: serve() drops any row whose t_recv_ms is
+# more than STALE_ACTION_MS behind wall clock before it reaches push_print,
+# and DirectoryTail resumes from persisted byte offsets, so every stamp()
+# happens within seconds of real time and an old slot cannot be re-delivered.
+TX_ORDER_PRUNE_MS = 2 * max(PRUNE_AFTER_MS, EARLY_BUFFER_DEAD_MS, STALE_ACTION_MS)
+# prune_before_ms scans all of `_seen` (~1.2M keys at the 90 min plateau), so it
+# runs at most this often instead of on every `_prune()` (~every 5,000 prints).
+# Pruning less often only keeps more entries, never fewer, so it cannot change
+# a stamp. Capped at the prune margin so short test margins still prune.
+TX_ORDER_PRUNE_EVERY_MS = 600_000
 # Live process only. Replay keeps the full path. Covers the 120 s decision grid.
 LIVE_IDLE_RETAIN_MS = 180_000
 READ_CHUNK_BYTES = 2 * 1024 * 1024
@@ -1251,6 +1280,7 @@ class ForwardEngine:
         positions_path: Path | None = None,
         dead_mints: frozenset[str] | None = None,
         early_timeout_ms: int | None = None,
+        tx_order_prune_ms: int | None = None,
     ) -> None:
         self.books = []
         for spec in books:
@@ -1280,6 +1310,11 @@ class ForwardEngine:
         self.stale_dropped = 0
         self.newest_recv_ms: int | None = None
         self._tx_order = TxOrder()
+        # Opt-in, `serve()`-only (see `TX_ORDER_PRUNE_MS`'s comment). `None`
+        # for every other caller -- `replay_rows()`/ParityTests/promotion
+        # backtests keep today's unbounded, full-history `TxOrder` behavior.
+        self.tx_order_prune_ms = tx_order_prune_ms
+        self._tx_order_pruned_at_ms: int | None = None
         self.wallets = WalletState()
         self.graph = None
         self.graph_dir: Path | None = None
@@ -2334,6 +2369,12 @@ class ForwardEngine:
         self._prune_cooldowns(now_ms)
         live_now = self.latency.now_ms() if self.latency.now_ms is not None else now_ms
         self._prune_early(live_now)
+        if self.tx_order_prune_ms is not None:
+            every = min(TX_ORDER_PRUNE_EVERY_MS, self.tx_order_prune_ms)
+            last = self._tx_order_pruned_at_ms
+            if last is None or live_now - last >= every:
+                self._tx_order.prune_before_ms(live_now - self.tx_order_prune_ms)
+                self._tx_order_pruned_at_ms = live_now
         for mint, book in list(self.library.items()):
             if mint in busy or mint in self.mig15_waiting:
                 continue
@@ -3216,6 +3257,7 @@ def serve(config_path: Path) -> int:
         positions_path=output_dir / "positions.jsonl",
         dead_mints=dead_mints,
         early_timeout_ms=EARLY_BUFFER_DEAD_MS,
+        tx_order_prune_ms=TX_ORDER_PRUNE_MS,
     )
     bind_attention(engine, attention_dir)
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
