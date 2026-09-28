@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """Offline settlement for forward-paper positions orphaned by a runner restart.
 
+DANGER -- run only against a stopped runner or a point-in-time snapshot copy
+of `positions.jsonl`, never a live, growing file. An "open" row with no
+matching "close" row yet is ambiguous: it may be a true restart orphan, or it
+may be a position the live runner is about to close for real, a few
+milliseconds after this tool reads the file. Settling that second kind
+offline books a number the live runner will also book, double-counting the
+trade. Stop the runner first, or `cp` a snapshot of `positions.jsonl` and
+point `--positions` at the copy. See the `--i-know-its-a-snapshot` guard
+below.
+
 Problem: `_Ledger.open` (tools/forward_paper.py:1110) lives only in the
 running process's memory. `serve()` builds a fresh `ForwardEngine` on every
 boot (tools/forward_paper.py:3247) and nothing reads `positions.jsonl` back
@@ -18,12 +28,19 @@ those two files plus the sealed trade tape, it:
 
 1. finds "open" event rows with no matching "close" row (an orphan),
 2. rebuilds that mint's price path from the sealed tape,
-3. re-plays the SAME exit the live runner would have used --
-   `try_entry`/`simulate_exit` from `tools.paper_tape_scoreboard`, the same
-   `ExitRule`/`LadderRule` objects the config resolves for that book -- and
+3. re-plays the SAME exit the live runner would have used -- `try_entry`
+   from `tools.paper_tape_scoreboard` to reconstruct the fill, then branches
+   on the rule type exactly like `_try_exit` does
+   (tools/forward_paper.py:2186-2189): `simulate_ladder` from
+   `tools.laya_v0` for a `LadderRule` book, `simulate_exit` from
+   `tools.paper_tape_scoreboard` for everything else -- and
 4. writes one row per settled orphan to `settlements.jsonl`, each flagged
    `settled_offline: true`, with the same PnL fields `positions.jsonl` rows
    carry, so a scorer can add them into a book without reading two schemas.
+   Each orphan is settled in isolation: one orphan raising does not stop the
+   others from settling. A failed orphan still gets a row, flagged
+   `settled_offline: false` with a `settle_error` message, so nothing is
+   silently dropped from the count.
 
 Match key for "open" <-> "close": `(ledger, book, mint, decision_t_ms)`.
 `_try_exit` carries `decision_t_ms` through unchanged from the `open` row a
@@ -67,10 +84,12 @@ from tools.forward_paper import (
     _paths_from_rows,
     load_config,
 )
-from tools.laya_v0 import LADDER_RULES
+from tools.laya_v0 import LADDER_RULES, LadderRule, simulate_ladder
 from tools.paper_curve_math import DEFAULT_SLIPPAGE_CAP, LAMPORTS_PER_SOL
 from tools.paper_price_path import MintPath, load_creates, open_text, state_as_of
 from tools.paper_tape_scoreboard import simulate_exit, try_entry
+
+SNAPSHOT_FRESH_MS = 60_000
 
 SCHEMA_SETTLEMENT = "forward_paper_settlement_v1"
 
@@ -199,17 +218,37 @@ def settle_orphan(
         return SettleResult(None, f"venue_mismatch live={logged_venue} rebuilt={entry.venue}")
     if isinstance(logged_tokens, int) and entry.tokens_raw != logged_tokens:
         return SettleResult(None, f"tokens_mismatch live={logged_tokens} rebuilt={entry.tokens_raw}")
-    part = simulate_exit(
-        path,
-        entry,
-        rule,
-        latency_ms=latency_ms,
-        tape_end_ms=tape_end_ms,
-        size_lamports=size_lamports,
-    )
+    # Same branch the live runner takes in `_try_exit`
+    # (tools/forward_paper.py:2186-2189): a `LadderRule` book scales out
+    # through `simulate_ladder`, everything else closes through
+    # `simulate_exit`. Calling `simulate_exit` unconditionally here used to
+    # raise on a ladder book's exit rule, and that exception used to abort
+    # the whole run before any book got a settlement written.
+    if isinstance(rule, LadderRule):
+        part = simulate_ladder(
+            path,
+            entry,
+            rule,
+            latency_ms=latency_ms,
+            tape_end_ms=tape_end_ms,
+            size_lamports=size_lamports,
+        )
+    else:
+        part = simulate_exit(
+            path,
+            entry,
+            rule,
+            latency_ms=latency_ms,
+            tape_end_ms=tape_end_ms,
+            size_lamports=size_lamports,
+        )
     exit_status = part.get("exit_status")
     if exit_status == "censored":
         return SettleResult(None, "censored_tape_too_short")
+    # Same close filter as the live `_try_exit` (tools/forward_paper.py ~2191):
+    # only these two statuses ever produce a close row there.
+    if exit_status not in ("realized", "no_exit_liquidity"):
+        return SettleResult(None, f"unclosed_exit_status={exit_status}")
     pnl = part.get("pnl_lamports")
     row = {
         "schema": SCHEMA_SETTLEMENT,
@@ -237,6 +276,26 @@ def settle_orphan(
     return SettleResult(row, None)
 
 
+def _failed_row(orphan: dict[str, Any], error: BaseException) -> dict[str, Any]:
+    """One orphan's settlement blew up. Record it and move on -- the bug this
+    guards against (#settle-orphans-ladder-fix) is exactly a single orphan's
+    exception aborting settlement for every other orphan, including other
+    books entirely."""
+    return {
+        "schema": SCHEMA_SETTLEMENT,
+        "settled_offline": False,
+        "settle_error": f"{type(error).__name__}: {error}",
+        "ledger": orphan.get("ledger"),
+        "event": "close",
+        "book": orphan.get("book"),
+        "mint": orphan.get("mint"),
+        "decision_t_ms": orphan.get("decision_t_ms"),
+        "t_entry_ms": orphan.get("t_entry_ms"),
+        "size_lamports": orphan.get("size_lamports"),
+        "exit_rule": orphan.get("exit_rule"),
+    }
+
+
 def settle_orphans(
     orphans: Sequence[dict[str, Any]],
     *,
@@ -251,7 +310,11 @@ def settle_orphans(
     skip_reasons: dict[str, int] = {}
     for orphan in orphans:
         mint = orphan.get("mint")
-        result = settle_orphan(orphan, paths.get(mint), slippage_cap=slippage_cap, tape_end_ms=tape_end_ms)
+        try:
+            result = settle_orphan(orphan, paths.get(mint), slippage_cap=slippage_cap, tape_end_ms=tape_end_ms)
+        except Exception as exc:  # noqa: BLE001 - one bad orphan must not sink the rest
+            rows.append(_failed_row(orphan, exc))
+            continue
         if result.row is not None:
             rows.append(result.row)
         else:
@@ -270,7 +333,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--creates-dir", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--tape-end-ms", type=int, help="default: now")
+    parser.add_argument(
+        "--i-know-its-a-snapshot",
+        action="store_true",
+        help=(
+            "Required to run against a --positions file modified in the last "
+            f"{SNAPSHOT_FRESH_MS // 1000}s. Without it, this tool refuses to run "
+            "against what looks like a live, growing positions.jsonl -- see the "
+            "module docstring's DANGER paragraph. Stop the runner, or point "
+            "--positions at a cp'd snapshot, then pass this flag."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if not args.i_know_its_a_snapshot:
+        try:
+            mtime_s = args.positions.stat().st_mtime
+        except FileNotFoundError:
+            mtime_s = None
+        if mtime_s is not None:
+            age_ms = int(time.time() * 1000) - int(mtime_s * 1000)
+            if age_ms < SNAPSHOT_FRESH_MS:
+                raise SystemExit(
+                    f"{args.positions} was modified {age_ms}ms ago, inside the "
+                    f"{SNAPSHOT_FRESH_MS}ms freshness window. This looks like a live, "
+                    "growing positions.jsonl, not a stopped-runner or point-in-time "
+                    "snapshot. Stop the runner or cp a snapshot, or pass "
+                    "--i-know-its-a-snapshot if you are certain this file is frozen."
+                )
 
     raw = load_config(args.config)
     slippage_cap = float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
@@ -299,12 +389,15 @@ def main(argv: list[str] | None = None) -> int:
         for row in rows:
             fh.write(json.dumps(row) + "\n")
 
-    by_book: dict[str, int] = {}
+    by_book: dict[str, dict[str, int]] = {}
     for row in rows:
         book = str(row.get("book"))
-        by_book[book] = by_book.get(book, 0) + 1
+        stats = by_book.setdefault(book, {"settled": 0, "failed": 0})
+        stats["settled" if row.get("settled_offline") else "failed"] += 1
+    settled_n = sum(stats["settled"] for stats in by_book.values())
+    failed_n = sum(stats["failed"] for stats in by_book.values())
     print(
-        f"forward_paper_settle_orphans orphans={len(orphans)} settled={len(rows)} "
+        f"forward_paper_settle_orphans orphans={len(orphans)} settled={settled_n} failed={failed_n} "
         f"by_book={by_book} skip_reasons={skip_reasons}",
         file=sys.stderr,
     )

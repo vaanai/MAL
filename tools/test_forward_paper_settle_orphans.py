@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.forward_paper import BookSpec, JsonlLog, replay_rows
 from tools.forward_paper_settle_orphans import find_orphans, settle_orphans
@@ -85,6 +86,74 @@ def _tape() -> tuple[dict[str, CreateSignal], list[dict[str, object]]]:
         # Exit-time (T0 + hold_30s) pool state: a different price than entry.
         _trade("MintA", T0 + 30_000, quote=48_000_000_000, base=1_010_000_000_000_000, slot=3, event_index=2),
         _trade("MintA", T0 + 60_000, quote=49_000_000_000, base=1_005_000_000_000_000, slot=4, event_index=3),
+    ]
+    return creates, rows
+
+
+def _observe_rows(creates: dict[str, CreateSignal]) -> list[dict[str, object]]:
+    return [
+        {
+            "stream": "subscribeNewToken",
+            "mint": c.mint,
+            "t_ws": c.t_signal_ms,
+            "traderPublicKey": c.creator,
+            "signature": c.signature,
+            "vSolInBondingCurve": c.v_sol,
+            "vTokensInBondingCurve": c.v_token_ui,
+            "marketCapSol": c.mcap_sol,
+            "initialBuy": c.initial_buy_ui,
+            "solAmount": c.sol_amount,
+        }
+        for c in creates.values()
+    ]
+
+
+def _ladder_book() -> BookSpec:
+    # kind=baseline enters on every create, same as _book(); exit=ladder_1_5x_t25
+    # is a LadderRule, the branch settle_orphan used to crash on.
+    return BookSpec(
+        "ladder_all",
+        "baseline",
+        "ladder_1_5x_t25",
+        max_concurrent=None,
+        daily_loss_lamports=None,
+        creator_cooldown_ms=0,
+        token_cooldown_ms=0,
+    )
+
+
+def _ladder_tape() -> tuple[dict[str, CreateSignal], list[dict[str, object]]]:
+    creates = {"MintL": _create("MintL", T0)}
+    rows = [
+        _trade("MintL", T0 + 5_000, quote=42_000_000_000, base=1_040_000_000_000_000, slot=2, event_index=1),
+        # +100% off the first print: past ladder_1_5x_t25's scale_ret=0.50, scales out half.
+        _trade("MintL", T0 + 30_000, quote=84_000_000_000, base=1_040_000_000_000_000, slot=3, event_index=2),
+        # Drops back under peak*(1-trail=0.25): trails the remainder out.
+        _trade("MintL", T0 + 60_000, quote=60_000_000_000, base=1_040_000_000_000_000, slot=4, event_index=3),
+    ]
+    return creates, rows
+
+
+def _migrate_book() -> BookSpec:
+    return BookSpec(
+        "migrate_tp50_sl30",
+        "migrate",
+        "tp50_sl30",
+        max_concurrent=None,
+        daily_loss_lamports=None,
+        creator_cooldown_ms=0,
+        token_cooldown_ms=0,
+    )
+
+
+def _migrate_tape() -> tuple[dict[str, CreateSignal], list[dict[str, object]]]:
+    creates = {"MintM": _create("MintM", T0)}
+    rows = [
+        # First pumpswap print after create: the migrate trigger itself, and
+        # also the entry reference price.
+        _trade("MintM", T0 + 3_000, venue="pumpswap", quote=70_000_000_000, base=536_500_000_000_000, slot=20, event_index=1),
+        # +200%: comfortably past tp50_sl30's 50% take-profit.
+        _trade("MintM", T0 + 40_000, venue="pumpswap", quote=210_000_000_000, base=536_500_000_000_000, slot=21, event_index=2),
     ]
     return creates, rows
 
@@ -233,6 +302,220 @@ class SettleEquivalenceTests(unittest.TestCase):
             # The key proof: same pnl the uninterrupted run booked.
             self.assertEqual(settled["pnl_lamports"], ref_pnl)
             self.assertEqual(settled["exit_t_ms"], ref_closes[0]["exit_t_ms"])
+
+    def test_ladder_settlement_matches_uninterrupted_replay(self) -> None:
+        """Same proof as above, for a LadderRule book. Before this fix,
+        settle_orphan always called simulate_exit and raised on a LadderRule
+        (settle_orphan asserted an ExitRule shape it never had), which
+        aborted the whole settlement run -- not just this book's orphans."""
+        creates, rows = _ladder_tape()
+        book = _ladder_book()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tape_path = tmp_path / "trades-0.jsonl"
+            tape_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+            create_path = tmp_path / "observe-0.jsonl"
+            create_path.write_text("\n".join(json.dumps(r) for r in _observe_rows(creates)) + "\n", encoding="utf-8")
+
+            ref_positions = tmp_path / "positions_ref.jsonl"
+            replay_rows(
+                creates.values(),
+                rows,
+                [book],
+                tape_end_ms=T0 + 90_000,
+                kill_file=tmp_path / "KILL",
+                logs={"decisions": JsonlLog(tmp_path / "decisions_ref.jsonl"), "positions": JsonlLog(ref_positions)},
+            )
+            ref_closes = [
+                json.loads(line)
+                for line in ref_positions.read_text(encoding="utf-8").splitlines()
+                if json.loads(line).get("event") == "close" and json.loads(line).get("ledger") == "ceiling"
+            ]
+            self.assertEqual(len(ref_closes), 1)
+            ref_pnl = ref_closes[0]["pnl_lamports"]
+            self.assertIsInstance(ref_pnl, int)
+            self.assertEqual(ref_closes[0]["exit_status"], "realized")
+
+            orphan_positions = tmp_path / "positions_orphan.jsonl"
+            replay_rows(
+                creates.values(),
+                rows,
+                [book],
+                tape_end_ms=T0 + 1_000,
+                kill_file=tmp_path / "KILL",
+                logs={
+                    "decisions": JsonlLog(tmp_path / "decisions_orphan.jsonl"),
+                    "positions": JsonlLog(orphan_positions),
+                },
+            )
+            orphans = find_orphans(orphan_positions)
+            self.assertEqual({o["ledger"] for o in orphans}, {"ceiling", "shadow"})
+            for orphan in orphans:
+                self.assertEqual(orphan["mint"], "MintL")
+                self.assertEqual(orphan["entry_status"], "filled")
+
+            config_path = tmp_path / "config.json"
+            config_path.write_text(json.dumps({"slippage_cap": DEFAULT_SLIPPAGE_CAP, "books": []}), encoding="utf-8")
+            settled_rows, skip_reasons = settle_orphans(
+                orphans,
+                tape_paths=[tape_path],
+                create_paths=[create_path],
+                slippage_cap=DEFAULT_SLIPPAGE_CAP,
+                tape_end_ms=T0 + 90_000,
+            )
+            self.assertEqual(skip_reasons, {})
+            self.assertEqual(len(settled_rows), 2)
+            settled = next(r for r in settled_rows if r["ledger"] == "ceiling")
+            self.assertTrue(settled["settled_offline"])
+            self.assertEqual(settled["exit_status"], "realized")
+            self.assertEqual(settled["mint"], "MintL")
+            self.assertEqual(settled["pnl_lamports"], ref_pnl)
+            self.assertEqual(settled["exit_t_ms"], ref_closes[0]["exit_t_ms"])
+
+    def test_migrate_tp50_sl30_settlement_matches_uninterrupted_replay(self) -> None:
+        """Same proof again, for a migrate-kind book on the exit_rule=tp50_sl30
+        in-sample cell (LAB_STATE / migrate-direct-prereg.md), not just
+        hold_30s."""
+        creates, rows = _migrate_tape()
+        book = _migrate_book()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tape_path = tmp_path / "trades-0.jsonl"
+            tape_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+            create_path = tmp_path / "observe-0.jsonl"
+            create_path.write_text("\n".join(json.dumps(r) for r in _observe_rows(creates)) + "\n", encoding="utf-8")
+
+            ref_positions = tmp_path / "positions_ref.jsonl"
+            replay_rows(
+                creates.values(),
+                rows,
+                [book],
+                tape_end_ms=T0 + 90_000,
+                kill_file=tmp_path / "KILL",
+                logs={"decisions": JsonlLog(tmp_path / "decisions_ref.jsonl"), "positions": JsonlLog(ref_positions)},
+            )
+            ref_closes = [
+                json.loads(line)
+                for line in ref_positions.read_text(encoding="utf-8").splitlines()
+                if json.loads(line).get("event") == "close" and json.loads(line).get("ledger") == "ceiling"
+            ]
+            self.assertEqual(len(ref_closes), 1)
+            ref_pnl = ref_closes[0]["pnl_lamports"]
+            self.assertIsInstance(ref_pnl, int)
+            self.assertEqual(ref_closes[0]["exit_status"], "realized")
+
+            orphan_positions = tmp_path / "positions_orphan.jsonl"
+            replay_rows(
+                creates.values(),
+                rows,
+                [book],
+                tape_end_ms=T0 + 4_000,
+                kill_file=tmp_path / "KILL",
+                logs={
+                    "decisions": JsonlLog(tmp_path / "decisions_orphan.jsonl"),
+                    "positions": JsonlLog(orphan_positions),
+                },
+            )
+            orphans = find_orphans(orphan_positions)
+            self.assertEqual({o["ledger"] for o in orphans}, {"ceiling", "shadow"})
+            for orphan in orphans:
+                self.assertEqual(orphan["mint"], "MintM")
+                self.assertEqual(orphan["entry_status"], "filled")
+
+            config_path = tmp_path / "config.json"
+            config_path.write_text(json.dumps({"slippage_cap": DEFAULT_SLIPPAGE_CAP, "books": []}), encoding="utf-8")
+            settled_rows, skip_reasons = settle_orphans(
+                orphans,
+                tape_paths=[tape_path],
+                create_paths=[create_path],
+                slippage_cap=DEFAULT_SLIPPAGE_CAP,
+                tape_end_ms=T0 + 90_000,
+            )
+            self.assertEqual(skip_reasons, {})
+            self.assertEqual(len(settled_rows), 2)
+            settled = next(r for r in settled_rows if r["ledger"] == "ceiling")
+            self.assertTrue(settled["settled_offline"])
+            self.assertEqual(settled["exit_status"], "realized")
+            self.assertEqual(settled["mint"], "MintM")
+            self.assertEqual(settled["pnl_lamports"], ref_pnl)
+            self.assertEqual(settled["exit_t_ms"], ref_closes[0]["exit_t_ms"])
+
+
+class MixedFailureTests(unittest.TestCase):
+    def test_one_forced_failure_does_not_stop_the_others(self) -> None:
+        """The regression this PR fixes: one orphan raising inside settlement
+        (a LadderRule going through the ExitRule-only path was the real
+        instance) used to abort the whole run, so NO book got settlements --
+        including books with nothing wrong with them. Force a raise for one
+        orphan's book and confirm the rest still settle, and the failed one
+        gets a `settled_offline: false` row with a `settle_error`, not a
+        crash."""
+        hold_creates, hold_rows = _tape()
+        hold_book = _book()
+        ladder_creates, ladder_rows = _ladder_tape()
+        ladder_book = _ladder_book()
+        creates = {**hold_creates, **ladder_creates}
+        rows = hold_rows + ladder_rows
+        books = [hold_book, ladder_book]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tape_path = tmp_path / "trades-0.jsonl"
+            tape_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+            create_path = tmp_path / "observe-0.jsonl"
+            create_path.write_text("\n".join(json.dumps(r) for r in _observe_rows(creates)) + "\n", encoding="utf-8")
+
+            orphan_positions = tmp_path / "positions_orphan.jsonl"
+            replay_rows(
+                creates.values(),
+                rows,
+                books,
+                tape_end_ms=T0 + 1_000,
+                kill_file=tmp_path / "KILL",
+                logs={
+                    "decisions": JsonlLog(tmp_path / "decisions_orphan.jsonl"),
+                    "positions": JsonlLog(orphan_positions),
+                },
+            )
+            # Both books enter both mints (baseline enters on every create);
+            # narrow to the one pairing each mint's tape was designed for
+            # (MintA's tape is a hold_30s fixture, MintL's is a ladder fixture
+            # -- the ladder rule on MintA's tape would never hit its scale_ret
+            # and would run out to its 30-minute deadline, censored on this
+            # short tape, unrelated to what this test is proving).
+            wanted = {("buy_all", "MintA"), ("ladder_all", "MintL")}
+            orphans = [
+                o
+                for o in find_orphans(orphan_positions)
+                if o["ledger"] == "ceiling" and (o["book"], o["mint"]) in wanted
+            ]
+            self.assertEqual({o["book"] for o in orphans}, {"buy_all", "ladder_all"})
+
+            def _boom(*_args: object, **_kwargs: object) -> dict[str, object]:
+                raise RuntimeError("forced failure for test")
+
+            # Force only the hold_30s (ExitRule) path to blow up; the ladder
+            # book's simulate_ladder call is untouched and should still settle.
+            with mock.patch("tools.forward_paper_settle_orphans.simulate_exit", side_effect=_boom):
+                settled_rows, skip_reasons = settle_orphans(
+                    orphans,
+                    tape_paths=[tape_path],
+                    create_paths=[create_path],
+                    slippage_cap=DEFAULT_SLIPPAGE_CAP,
+                    tape_end_ms=T0 + 90_000,
+                )
+
+            self.assertEqual(skip_reasons, {})
+            self.assertEqual(len(settled_rows), 2)
+            by_book = {row["book"]: row for row in settled_rows}
+            failed = by_book["buy_all"]
+            self.assertFalse(failed["settled_offline"])
+            self.assertIn("forced failure for test", failed["settle_error"])
+            self.assertEqual(failed["mint"], "MintA")
+            settled = by_book["ladder_all"]
+            self.assertTrue(settled["settled_offline"])
+            self.assertEqual(settled["exit_status"], "realized")
+            self.assertEqual(settled["mint"], "MintL")
 
 
 if __name__ == "__main__":
