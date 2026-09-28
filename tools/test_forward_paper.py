@@ -33,10 +33,12 @@ from tools.forward_paper import (
     ModelSlot,
     _Follower,
     _RankWindow,
+    _event_ts,
     CEILING_DAILY_LOSS_LAMPORTS,
     CEILING_MAX_CONCURRENT,
     RiskConfigError,
     books_from_config,
+    build_shadow_state,
     clean_clock,
     decision_counts_for_promotion,
     flow_from_tape_row,
@@ -50,6 +52,7 @@ from tools.forward_paper import (
     reload_risk_config,
     reconcile_baseline,
     replay_rows,
+    splice_state,
     window_creates,
     write_mem_census,
 )
@@ -244,6 +247,85 @@ class ParityTests(unittest.TestCase):
         kept = window_creates(creates, T0, TAPE_END)
         self.assertIn("MintA", kept)
         self.assertNotIn("MintOld", kept)
+
+
+class WarmStartTests(unittest.TestCase):
+    """build_shadow_state()/splice_state(): a restart's warm start should not
+    change what the engine decides after it, versus one uninterrupted run.
+    """
+
+    def _feed_second_half(self, engine, creates, rows, mid_ms: int) -> None:
+        for create in creates.values():
+            if mid_ms < create.t_signal_ms <= TAPE_END:
+                engine.push_create(create)
+        for row in rows:
+            parsed = flow_from_tape_row(row)
+            if parsed is None:
+                continue
+            mint, pr = parsed
+            if pr.t_recv_ms <= mid_ms or pr.t_recv_ms > TAPE_END:
+                continue
+            engine.push_print(mint, pr, _event_ts(row))
+        engine.drain_until(TAPE_END, final=True)
+
+    def test_shadow_emits_no_decisions_or_positions(self) -> None:
+        creates, rows = _fixture()
+        mid_ms = T0 + 6_000
+        shadow = build_shadow_state(creates.values(), rows, _books(), until_ms=mid_ms, offsets_ms=OFFSETS)
+        self.assertEqual(shadow.decisions, [])
+        self.assertEqual(shadow.positions, [])
+        self.assertEqual(shadow.logs, {})
+
+    def test_splice_reproduces_the_second_half_of_an_uninterrupted_replay(self) -> None:
+        creates, rows = _fixture()
+        books = _books()
+        mid_ms = T0 + 6_000
+        kill_file = Path("/tmp/forward-paper-warm-start-kill-absent")
+
+        # A: one continuous replay across the whole fixture, no restart.
+        engine_a = replay_rows(
+            creates.values(),
+            rows,
+            books,
+            tape_end_ms=TAPE_END,
+            kill_file=kill_file,
+            offsets_ms=OFFSETS,
+        )
+        a_decisions = [row for row in engine_a.decisions if row["decision_t_ms"] > mid_ms]
+        a_positions = [row for row in engine_a.positions if row["decision_t_ms"] > mid_ms]
+        # decision_t_ms is always the *open* decision's time, including on a
+        # "close" row (see `_fill_one`/`_try_exit`), so this filter also
+        # correctly drops any position opened before mid_ms even if it
+        # closes after it -- engine B has no ledger memory of that open
+        # (books/ledgers/positions are not spliced; see splice_state's
+        # docstring), so it could never reproduce that close either.
+        self.assertTrue(a_decisions, "fixture should produce at least one post-split decision")
+
+        # B: shadow-replay the first half only, splice its cross-mint state
+        # onto a fresh engine, then feed the second half.
+        shadow = build_shadow_state(creates.values(), rows, books, until_ms=mid_ms, offsets_ms=OFFSETS)
+        engine_b = ForwardEngine(
+            books,
+            kill_file=kill_file,
+            latency=LatencyMeter(),
+            offsets_ms=OFFSETS,
+            tape_end_ms=TAPE_END,
+            retain_rows=True,
+        )
+        splice_state(shadow, engine_b)
+        # Sanity: the spliced containers hold the mints registered before the
+        # split (MintOld's create is before T0 - 60_000 < mid_ms; MintA's is
+        # at T0 < mid_ms), so B did not need to re-see them post-splice.
+        self.assertIn("MintA", engine_b.library)
+        self.assertIn("MintOld", engine_b.library)
+        self.assertTrue(engine_b.grids, "second grid (T0+15_000) should still be pending post-splice")
+
+        self._feed_second_half(engine_b, creates, rows, mid_ms)
+
+        b_decisions = [row for row in engine_b.decisions if row["decision_t_ms"] > mid_ms]
+        b_positions = [row for row in engine_b.positions if row["decision_t_ms"] > mid_ms]
+        self.assertEqual(a_decisions, b_decisions)
+        self.assertEqual(a_positions, b_positions)
 
 
 class RiskTests(unittest.TestCase):
