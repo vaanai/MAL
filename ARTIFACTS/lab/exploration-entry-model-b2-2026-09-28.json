@@ -1,0 +1,3225 @@
+{
+  "schema": "exploration_entry_model_b2_v1",
+  "pool_a": {
+    "start": "2026-09-19T01",
+    "end": "2026-09-21T23",
+    "hours": 71
+  },
+  "pool_b": {
+    "trade_start": "2026-09-25T07",
+    "trade_end": "2026-09-27T23",
+    "trade_hours": 65,
+    "create_days": [
+      "2026-09-25",
+      "2026-09-26",
+      "2026-09-27",
+      "2026-09-28"
+    ],
+    "cutoff_iso": "2026-09-28T00:00:00Z"
+  },
+  "days_a": [
+    "2026-09-19",
+    "2026-09-20",
+    "2026-09-21"
+  ],
+  "days_b": [
+    "2026-09-25",
+    "2026-09-26",
+    "2026-09-27"
+  ],
+  "settings": [
+    {
+      "id": "lgb_medium",
+      "kind": "lightgbm",
+      "num_leaves": 15,
+      "min_data_in_leaf": 20,
+      "learning_rate": 0.05,
+      "rounds": 100
+    },
+    {
+      "id": "logreg_l2",
+      "kind": "logreg",
+      "C": 0.5
+    }
+  ],
+  "primary_setting": "lgb_medium",
+  "n_rows": {
+    "A": {
+      "tpsl_tp50_sl30": 3029,
+      "trail_30_act20": 3029
+    },
+    "B": {
+      "tpsl_tp50_sl30": 2300,
+      "trail_30_act20": 2296
+    }
+  },
+  "results": {
+    "tpsl_tp50_sl30": {
+      "lgb_medium": {
+        "A only (3 days)": {
+          "2026-09-19": {
+            "trained": true,
+            "n_train": 2067,
+            "n_test": 962,
+            "cohorts": {
+              "all": {
+                "n": 962,
+                "gross_mean_pct": 1.1575045338877339,
+                "flat_net_mean_pct": 0.18666719761954265,
+                "press_net_mean_pct": -0.05278643512015944,
+                "press_net_total_sol": -0.2539027529279669,
+                "ex_top3_press_net_sol": -1.4246276683554395
+              },
+              "top10": {
+                "n": 96,
+                "gross_mean_pct": 7.483279266666668,
+                "flat_net_mean_pct": 4.066331792395834,
+                "press_net_mean_pct": 2.9176779793004406,
+                "press_net_total_sol": 1.4004854300642113,
+                "ex_top3_press_net_sol": 0.3654087201730484
+              },
+              "top20": {
+                "n": 192,
+                "gross_mean_pct": 5.676544325,
+                "flat_net_mean_pct": 2.5350488059375,
+                "press_net_mean_pct": 1.4656603254561373,
+                "press_net_total_sol": 1.4070339124378917,
+                "ex_top3_press_net_sol": 0.2363089970104191
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                10858.583178043365
+              ],
+              [
+                "price_return_pre",
+                9455.170226097107
+              ],
+              [
+                "net_flow_sol",
+                4106.360038757324
+              ],
+              [
+                "time_to_migrate_s",
+                1499.3652544021606
+              ],
+              [
+                "top_holder_share",
+                906.2027630805969
+              ],
+              [
+                "n_buyers",
+                575.2457683086395
+              ],
+              [
+                "sniper_buy_share",
+                529.5401086807251
+              ],
+              [
+                "buy_sol",
+                471.22514367103577
+              ]
+            ]
+          },
+          "2026-09-20": {
+            "trained": true,
+            "n_train": 1995,
+            "n_test": 1034,
+            "cohorts": {
+              "all": {
+                "n": 1034,
+                "gross_mean_pct": 0.5590967926499033,
+                "flat_net_mean_pct": -0.33324256660541585,
+                "press_net_mean_pct": -0.44407657366695846,
+                "press_net_total_sol": -2.2958758858581754,
+                "ex_top3_press_net_sol": -3.0124143503191156
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": 5.694226990291263,
+                "flat_net_mean_pct": 2.5594015656310676,
+                "press_net_mean_pct": 1.0347209365896348,
+                "press_net_total_sol": 0.532881282343662,
+                "ex_top3_press_net_sol": -0.10592886904359596
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": 2.370063583574879,
+                "flat_net_mean_pct": -0.24490758444444433,
+                "press_net_mean_pct": -0.7079263611409854,
+                "press_net_total_sol": -0.7327037837809199,
+                "ex_top3_press_net_sol": -1.3743286526966971
+              }
+            },
+            "importance": [
+              [
+                "net_flow_sol",
+                9038.076256632805
+              ],
+              [
+                "nearby_buy_sol",
+                8607.311366319656
+              ],
+              [
+                "mcap_at_t_sol",
+                2981.084988117218
+              ],
+              [
+                "time_to_migrate_s",
+                1889.4018757343292
+              ],
+              [
+                "price_return_pre",
+                1201.6934719085693
+              ],
+              [
+                "n_buys",
+                1038.4768242835999
+              ],
+              [
+                "same_slot_buys",
+                1019.482617855072
+              ],
+              [
+                "top_holder_share",
+                949.7826020717621
+              ]
+            ]
+          },
+          "2026-09-21": {
+            "trained": true,
+            "n_train": 1996,
+            "n_test": 1033,
+            "cohorts": {
+              "all": {
+                "n": 1033,
+                "gross_mean_pct": 0.5190612261374636,
+                "flat_net_mean_pct": -0.375918169215876,
+                "press_net_mean_pct": -0.11901146538121467,
+                "press_net_total_sol": -0.6146942186939738,
+                "ex_top3_press_net_sol": -1.7054009245945057
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": 0.27817732621359226,
+                "flat_net_mean_pct": -2.032261958640776,
+                "press_net_mean_pct": -1.242895452651706,
+                "press_net_total_sol": -0.6400911581156286,
+                "ex_top3_press_net_sol": -1.5212411437186921
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": -1.0756302724637683,
+                "flat_net_mean_pct": -3.1607192470048306,
+                "press_net_mean_pct": -1.7568177397760898,
+                "press_net_total_sol": -1.818306360668253,
+                "ex_top3_press_net_sol": -2.7458836509955264
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                8906.27662730217
+              ],
+              [
+                "price_return_pre",
+                5990.166071772575
+              ],
+              [
+                "net_flow_sol",
+                5145.3168404102325
+              ],
+              [
+                "mcap_at_t_sol",
+                4424.55398440361
+              ],
+              [
+                "same_slot_buys",
+                990.7131156921387
+              ],
+              [
+                "sniper_buy_share",
+                927.6408021450043
+              ],
+              [
+                "top_holder_share",
+                816.361359834671
+              ],
+              [
+                "time_to_migrate_s",
+                657.5338077545166
+              ]
+            ]
+          }
+        },
+        "B only (3 days)": {
+          "2026-09-25": {
+            "trained": true,
+            "n_train": 1741,
+            "n_test": 559,
+            "cohorts": {
+              "all": {
+                "n": 559,
+                "gross_mean_pct": -0.48180928622540253,
+                "flat_net_mean_pct": -1.2515461900715563,
+                "press_net_mean_pct": -0.44354446702492245,
+                "press_net_total_sol": -1.2397067853346584,
+                "ex_top3_press_net_sol": -2.289628356649607
+              },
+              "top10": {
+                "n": 56,
+                "gross_mean_pct": 9.362664010714285,
+                "flat_net_mean_pct": 5.955777208749999,
+                "press_net_mean_pct": 3.239157972426828,
+                "press_net_total_sol": 0.906964232279512,
+                "ex_top3_press_net_sol": 0.298738977609356
+              },
+              "top20": {
+                "n": 112,
+                "gross_mean_pct": 11.079751610714284,
+                "flat_net_mean_pct": 7.217290437857142,
+                "press_net_mean_pct": 4.729660200069623,
+                "press_net_total_sol": 2.6486097120389887,
+                "ex_top3_press_net_sol": 1.949028607057562
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                6007.495035648346
+              ],
+              [
+                "price_return_pre",
+                4456.59281373024
+              ],
+              [
+                "buy_sol",
+                2564.431069612503
+              ],
+              [
+                "mcap_at_t_sol",
+                1585.9667301177979
+              ],
+              [
+                "same_slot_buys",
+                1524.4795048236847
+              ],
+              [
+                "time_to_migrate_s",
+                1085.4857003688812
+              ],
+              [
+                "hour_sin",
+                817.9941997528076
+              ],
+              [
+                "top_holder_share",
+                797.0200004577637
+              ]
+            ]
+          },
+          "2026-09-26": {
+            "trained": true,
+            "n_train": 1399,
+            "n_test": 901,
+            "cohorts": {
+              "all": {
+                "n": 901,
+                "gross_mean_pct": 2.224475597780244,
+                "flat_net_mean_pct": 0.8600320635849057,
+                "press_net_mean_pct": 0.4427824560405474,
+                "press_net_total_sol": 1.9947349644626662,
+                "ex_top3_press_net_sol": 0.9372132898853826
+              },
+              "top10": {
+                "n": 90,
+                "gross_mean_pct": 17.994736428888892,
+                "flat_net_mean_pct": 12.982381971333332,
+                "press_net_mean_pct": 8.797531634269244,
+                "press_net_total_sol": 3.9588892354211596,
+                "ex_top3_press_net_sol": 3.2117606201999833
+              },
+              "top20": {
+                "n": 180,
+                "gross_mean_pct": 11.969030466666668,
+                "flat_net_mean_pct": 7.871150712611111,
+                "press_net_mean_pct": 4.636286295685524,
+                "press_net_total_sol": 4.172657666116971,
+                "ex_top3_press_net_sol": 3.324857767002289
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                4957.873175382614
+              ],
+              [
+                "buy_sol",
+                4401.959784030914
+              ],
+              [
+                "mcap_at_t_sol",
+                2082.4449846744537
+              ],
+              [
+                "time_to_migrate_s",
+                1597.6710023880005
+              ],
+              [
+                "price_return_pre",
+                1437.0064191818237
+              ],
+              [
+                "same_slot_buys",
+                993.0620486736298
+              ],
+              [
+                "top_holder_share",
+                735.352356672287
+              ],
+              [
+                "net_flow_sol",
+                724.362092256546
+              ]
+            ]
+          },
+          "2026-09-27": {
+            "trained": true,
+            "n_train": 1460,
+            "n_test": 840,
+            "cohorts": {
+              "all": {
+                "n": 840,
+                "gross_mean_pct": 1.4965584564285714,
+                "flat_net_mean_pct": 0.38983641009523806,
+                "press_net_mean_pct": 0.5554769251323824,
+                "press_net_total_sol": 2.3330030855560064,
+                "ex_top3_press_net_sol": 1.0979953985600939
+              },
+              "top10": {
+                "n": 84,
+                "gross_mean_pct": 10.203754716666667,
+                "flat_net_mean_pct": 6.375066148809524,
+                "press_net_mean_pct": 4.4552783865090175,
+                "press_net_total_sol": 1.871216922333787,
+                "ex_top3_press_net_sol": 0.7680712715946139
+              },
+              "top20": {
+                "n": 168,
+                "gross_mean_pct": 7.84971734047619,
+                "flat_net_mean_pct": 4.439225257083334,
+                "press_net_mean_pct": 3.5055417543741454,
+                "press_net_total_sol": 2.9446550736742823,
+                "ex_top3_press_net_sol": 1.8415094229351092
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                5698.679020404816
+              ],
+              [
+                "price_return_pre",
+                4224.019328117371
+              ],
+              [
+                "buy_sol",
+                2025.6689217090607
+              ],
+              [
+                "time_to_migrate_s",
+                1527.9112420082092
+              ],
+              [
+                "same_slot_buys",
+                1332.1591997146606
+              ],
+              [
+                "mcap_at_t_sol",
+                900.6312947273254
+              ],
+              [
+                "top_holder_share",
+                679.7301497459412
+              ],
+              [
+                "n_sells",
+                527.2148110866547
+              ]
+            ]
+          }
+        },
+        "A + B together (6 days)": {
+          "2026-09-19": {
+            "trained": true,
+            "n_train": 4367,
+            "n_test": 962,
+            "cohorts": {
+              "all": {
+                "n": 962,
+                "gross_mean_pct": 1.1575045338877339,
+                "flat_net_mean_pct": 0.18666719761954265,
+                "press_net_mean_pct": -0.05278643512015944,
+                "press_net_total_sol": -0.2539027529279669,
+                "ex_top3_press_net_sol": -1.4246276683554395
+              },
+              "top10": {
+                "n": 96,
+                "gross_mean_pct": 4.029434827083334,
+                "flat_net_mean_pct": 1.1427124826041666,
+                "press_net_mean_pct": 0.553419496580409,
+                "press_net_total_sol": 0.2656413583585963,
+                "ex_top3_press_net_sol": -0.5520798601304716
+              },
+              "top20": {
+                "n": 192,
+                "gross_mean_pct": 5.734314275,
+                "flat_net_mean_pct": 2.5731648388541672,
+                "press_net_mean_pct": 1.4841339142708487,
+                "press_net_total_sol": 1.4247685577000149,
+                "ex_top3_press_net_sol": 0.3373118062557576
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                14819.730954647064
+              ],
+              [
+                "price_return_pre",
+                14183.924634695053
+              ],
+              [
+                "mcap_at_t_sol",
+                10779.157208919525
+              ],
+              [
+                "time_to_migrate_s",
+                3171.617464542389
+              ],
+              [
+                "same_slot_buys",
+                2458.1156980991364
+              ],
+              [
+                "net_flow_sol",
+                1511.1858344078064
+              ],
+              [
+                "top_holder_share",
+                1043.5004136562347
+              ],
+              [
+                "buy_sol",
+                747.6313400268555
+              ]
+            ]
+          },
+          "2026-09-20": {
+            "trained": true,
+            "n_train": 4295,
+            "n_test": 1034,
+            "cohorts": {
+              "all": {
+                "n": 1034,
+                "gross_mean_pct": 0.5590967926499033,
+                "flat_net_mean_pct": -0.33324256660541585,
+                "press_net_mean_pct": -0.44407657366695846,
+                "press_net_total_sol": -2.2958758858581754,
+                "ex_top3_press_net_sol": -3.0124143503191156
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": 1.3550207650485437,
+                "flat_net_mean_pct": -1.1270495946601944,
+                "press_net_mean_pct": -1.2208278131042927,
+                "press_net_total_sol": -0.6287263237487106,
+                "ex_top3_press_net_sol": -1.2382550409769029
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": 0.6239130801932368,
+                "flat_net_mean_pct": -1.7327406390821258,
+                "press_net_mean_pct": -1.8337037904646802,
+                "press_net_total_sol": -1.897883423130944,
+                "ex_top3_press_net_sol": -2.5338289370533262
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                16150.825309515
+              ],
+              [
+                "price_return_pre",
+                14403.856150865555
+              ],
+              [
+                "mcap_at_t_sol",
+                8272.495690345764
+              ],
+              [
+                "same_slot_buys",
+                3090.4369645118713
+              ],
+              [
+                "time_to_migrate_s",
+                2970.3684306144714
+              ],
+              [
+                "net_flow_sol",
+                1803.0336360931396
+              ],
+              [
+                "top_holder_share",
+                874.8958873748779
+              ],
+              [
+                "hour_sin",
+                715.1070084571838
+              ]
+            ]
+          },
+          "2026-09-21": {
+            "trained": true,
+            "n_train": 4296,
+            "n_test": 1033,
+            "cohorts": {
+              "all": {
+                "n": 1033,
+                "gross_mean_pct": 0.5190612261374636,
+                "flat_net_mean_pct": -0.375918169215876,
+                "press_net_mean_pct": -0.11901146538121467,
+                "press_net_total_sol": -0.6146942186939738,
+                "ex_top3_press_net_sol": -1.7054009245945057
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": 4.119653631067961,
+                "flat_net_mean_pct": 1.1940872930097086,
+                "press_net_mean_pct": 1.528867613162903,
+                "press_net_total_sol": 0.7873668207788952,
+                "ex_top3_press_net_sol": -0.06846637342595503
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": 1.7239051439613524,
+                "flat_net_mean_pct": -0.788382443768116,
+                "press_net_mean_pct": -0.31752579326816677,
+                "press_net_total_sol": -0.3286391960325526,
+                "ex_top3_press_net_sol": -1.2845631289434714
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                16090.835817575455
+              ],
+              [
+                "price_return_pre",
+                14137.25639796257
+              ],
+              [
+                "mcap_at_t_sol",
+                8894.374200820923
+              ],
+              [
+                "same_slot_buys",
+                2930.564890384674
+              ],
+              [
+                "time_to_migrate_s",
+                2606.77627658844
+              ],
+              [
+                "net_flow_sol",
+                1401.5798392295837
+              ],
+              [
+                "top_holder_share",
+                1244.0869235992432
+              ],
+              [
+                "buy_sell_ratio",
+                899.5574932098389
+              ]
+            ]
+          },
+          "2026-09-25": {
+            "trained": true,
+            "n_train": 4770,
+            "n_test": 559,
+            "cohorts": {
+              "all": {
+                "n": 559,
+                "gross_mean_pct": -0.48180928622540253,
+                "flat_net_mean_pct": -1.2515461900715563,
+                "press_net_mean_pct": -0.44354446702492245,
+                "press_net_total_sol": -1.2397067853346584,
+                "ex_top3_press_net_sol": -2.289628356649607
+              },
+              "top10": {
+                "n": 56,
+                "gross_mean_pct": 12.522249810714284,
+                "flat_net_mean_pct": 8.493452673214286,
+                "press_net_mean_pct": 5.182835773703403,
+                "press_net_total_sol": 1.451194016636953,
+                "ex_top3_press_net_sol": 0.8161436694511963
+              },
+              "top20": {
+                "n": 112,
+                "gross_mean_pct": 3.4775255785714285,
+                "flat_net_mean_pct": 0.7955863879464287,
+                "press_net_mean_pct": 0.9947982199813377,
+                "press_net_total_sol": 0.5570870031895491,
+                "ex_top3_press_net_sol": -0.16752577062099439
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                17768.212699890137
+              ],
+              [
+                "price_return_pre",
+                14098.034715890884
+              ],
+              [
+                "nearby_buy_sol",
+                13521.961837053299
+              ],
+              [
+                "same_slot_buys",
+                2890.9494252204895
+              ],
+              [
+                "time_to_migrate_s",
+                2868.4757771492004
+              ],
+              [
+                "net_flow_sol",
+                2264.7363109588623
+              ],
+              [
+                "hour_sin",
+                1010.9922122955322
+              ],
+              [
+                "top_holder_share",
+                946.2880892753601
+              ]
+            ]
+          },
+          "2026-09-26": {
+            "trained": true,
+            "n_train": 4428,
+            "n_test": 901,
+            "cohorts": {
+              "all": {
+                "n": 901,
+                "gross_mean_pct": 2.224475597780244,
+                "flat_net_mean_pct": 0.8600320635849057,
+                "press_net_mean_pct": 0.4427824560405474,
+                "press_net_total_sol": 1.9947349644626662,
+                "ex_top3_press_net_sol": 0.9372132898853826
+              },
+              "top10": {
+                "n": 90,
+                "gross_mean_pct": 15.624899746666667,
+                "flat_net_mean_pct": 10.99324196311111,
+                "press_net_mean_pct": 7.142885590446582,
+                "press_net_total_sol": 3.2142985157009623,
+                "ex_top3_press_net_sol": 2.4685643424814723
+              },
+              "top20": {
+                "n": 180,
+                "gross_mean_pct": 12.460136002222221,
+                "flat_net_mean_pct": 8.306934558722222,
+                "press_net_mean_pct": 5.00092230712166,
+                "press_net_total_sol": 4.5008300764094935,
+                "ex_top3_press_net_sol": 3.646670026758462
+              }
+            },
+            "importance": [
+              [
+                "price_return_pre",
+                19155.561020374298
+              ],
+              [
+                "nearby_buy_sol",
+                14757.626294374466
+              ],
+              [
+                "mcap_at_t_sol",
+                10710.815172195435
+              ],
+              [
+                "time_to_migrate_s",
+                2856.958428621292
+              ],
+              [
+                "same_slot_buys",
+                2402.8879187107086
+              ],
+              [
+                "top_holder_share",
+                1149.7421045303345
+              ],
+              [
+                "net_flow_sol",
+                1081.3546752929688
+              ],
+              [
+                "sniper_buy_share",
+                814.1722345352173
+              ]
+            ]
+          },
+          "2026-09-27": {
+            "trained": true,
+            "n_train": 4489,
+            "n_test": 840,
+            "cohorts": {
+              "all": {
+                "n": 840,
+                "gross_mean_pct": 1.4965584564285714,
+                "flat_net_mean_pct": 0.38983641009523806,
+                "press_net_mean_pct": 0.5554769251323824,
+                "press_net_total_sol": 2.3330030855560064,
+                "ex_top3_press_net_sol": 1.0979953985600939
+              },
+              "top10": {
+                "n": 84,
+                "gross_mean_pct": 6.979867521428572,
+                "flat_net_mean_pct": 3.727596877500001,
+                "press_net_mean_pct": 2.608395975387197,
+                "press_net_total_sol": 1.0955263096626227,
+                "ex_top3_press_net_sol": 0.06036704533872398
+              },
+              "top20": {
+                "n": 168,
+                "gross_mean_pct": 4.419848907142857,
+                "flat_net_mean_pct": 1.5293171773809524,
+                "press_net_mean_pct": 1.7031119917870992,
+                "press_net_total_sol": 1.4306140731011632,
+                "ex_top3_press_net_sol": 0.35419788528683943
+              }
+            },
+            "importance": [
+              [
+                "price_return_pre",
+                16842.7703166008
+              ],
+              [
+                "nearby_buy_sol",
+                14579.614882707596
+              ],
+              [
+                "mcap_at_t_sol",
+                13303.916617393494
+              ],
+              [
+                "same_slot_buys",
+                2833.960883617401
+              ],
+              [
+                "time_to_migrate_s",
+                2537.5796768665314
+              ],
+              [
+                "net_flow_sol",
+                1158.5608067512512
+              ],
+              [
+                "top_holder_share",
+                1080.4929535388947
+              ],
+              [
+                "hour_cos",
+                711.6290230751038
+              ]
+            ]
+          }
+        }
+      },
+      "logreg_l2": {
+        "A only (3 days)": {
+          "2026-09-19": {
+            "trained": true,
+            "n_train": 2067,
+            "n_test": 962,
+            "cohorts": {
+              "all": {
+                "n": 962,
+                "gross_mean_pct": 1.1575045338877339,
+                "flat_net_mean_pct": 0.18666719761954265,
+                "press_net_mean_pct": -0.05278643512015944,
+                "press_net_total_sol": -0.2539027529279669,
+                "ex_top3_press_net_sol": -1.4246276683554395
+              },
+              "top10": {
+                "n": 96,
+                "gross_mean_pct": 9.902242952083332,
+                "flat_net_mean_pct": 6.050341376875001,
+                "press_net_mean_pct": 3.780516791434712,
+                "press_net_total_sol": 1.8146480598886616,
+                "ex_top3_press_net_sol": 1.1097887497846115
+              },
+              "top20": {
+                "n": 192,
+                "gross_mean_pct": 4.223543121875,
+                "flat_net_mean_pct": 1.2797976687500001,
+                "press_net_mean_pct": 1.149593667627712,
+                "press_net_total_sol": 1.1036099209226036,
+                "ex_top3_press_net_sol": -0.014683188100835338
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                6.260836567303991
+              ],
+              [
+                "n_sells",
+                1.37793609227833
+              ],
+              [
+                "sell_sol",
+                0.5785852428295146
+              ],
+              [
+                "creator_prior_mints_24h",
+                0.5119753388038684
+              ],
+              [
+                "buy_sol",
+                0.5059823645259748
+              ],
+              [
+                "n_sellers",
+                0.4997053600861837
+              ],
+              [
+                "n_bonding_trades",
+                0.37081837145863034
+              ],
+              [
+                "n_buys",
+                0.3399038378993147
+              ]
+            ]
+          },
+          "2026-09-20": {
+            "trained": true,
+            "n_train": 1995,
+            "n_test": 1034,
+            "cohorts": {
+              "all": {
+                "n": 1034,
+                "gross_mean_pct": 0.5590967926499033,
+                "flat_net_mean_pct": -0.33324256660541585,
+                "press_net_mean_pct": -0.44407657366695846,
+                "press_net_total_sol": -2.2958758858581754,
+                "ex_top3_press_net_sol": -3.0124143503191156
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": -6.837113867961166,
+                "flat_net_mean_pct": -8.011213536310677,
+                "press_net_mean_pct": -5.752571120783192,
+                "press_net_total_sol": -2.962574127203344,
+                "ex_top3_press_net_sol": -3.588899419085586
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": 1.213213702415459,
+                "flat_net_mean_pct": -1.2497894179227051,
+                "press_net_mean_pct": -1.3795624922265546,
+                "press_net_total_sol": -1.427847179454484,
+                "ex_top3_press_net_sol": -2.0598518263301213
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                6.3108381750686835
+              ],
+              [
+                "n_sells",
+                1.2411494719253933
+              ],
+              [
+                "sell_sol",
+                0.5416615105799891
+              ],
+              [
+                "sniper_buy_share",
+                0.5097874963064688
+              ],
+              [
+                "top_holder_share",
+                0.4815910839465057
+              ],
+              [
+                "buy_sol",
+                0.461777799426558
+              ],
+              [
+                "n_sellers",
+                0.4498752170176676
+              ],
+              [
+                "n_bonding_trades",
+                0.39747072310031417
+              ]
+            ]
+          },
+          "2026-09-21": {
+            "trained": true,
+            "n_train": 1996,
+            "n_test": 1033,
+            "cohorts": {
+              "all": {
+                "n": 1033,
+                "gross_mean_pct": 0.5190612261374636,
+                "flat_net_mean_pct": -0.375918169215876,
+                "press_net_mean_pct": -0.11901146538121467,
+                "press_net_total_sol": -0.6146942186939738,
+                "ex_top3_press_net_sol": -1.7054009245945057
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": 3.6967490718446605,
+                "flat_net_mean_pct": 0.8359571165048544,
+                "press_net_mean_pct": 0.9235506687112781,
+                "press_net_total_sol": 0.47562859438630817,
+                "ex_top3_press_net_sol": -0.26953585422678755
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": -1.7243904830917878,
+                "flat_net_mean_pct": -3.718005949323671,
+                "press_net_mean_pct": -1.809845858508024,
+                "press_net_total_sol": -1.8731904635558048,
+                "ex_top3_press_net_sol": -2.9097030015071508
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                6.0549563236695345
+              ],
+              [
+                "n_buyers",
+                0.5520488034712944
+              ],
+              [
+                "n_sells",
+                0.5375834140219274
+              ],
+              [
+                "n_bonding_trades",
+                0.5362347018827132
+              ],
+              [
+                "n_buys",
+                0.5175912765155756
+              ],
+              [
+                "sell_sol",
+                0.4947471121735733
+              ],
+              [
+                "buy_sol",
+                0.427914309839469
+              ],
+              [
+                "mcap_at_t_sol",
+                0.3125384757764614
+              ]
+            ]
+          }
+        },
+        "B only (3 days)": {
+          "2026-09-25": {
+            "trained": true,
+            "n_train": 1741,
+            "n_test": 559,
+            "cohorts": {
+              "all": {
+                "n": 559,
+                "gross_mean_pct": -0.48180928622540253,
+                "flat_net_mean_pct": -1.2515461900715563,
+                "press_net_mean_pct": -0.44354446702492245,
+                "press_net_total_sol": -1.2397067853346584,
+                "ex_top3_press_net_sol": -2.289628356649607
+              },
+              "top10": {
+                "n": 56,
+                "gross_mean_pct": -0.7699554892857142,
+                "flat_net_mean_pct": -2.9189119105357144,
+                "press_net_mean_pct": -3.6286196768230075,
+                "press_net_total_sol": -1.0160135095104421,
+                "ex_top3_press_net_sol": -1.6103268380816893
+              },
+              "top20": {
+                "n": 112,
+                "gross_mean_pct": 6.027320382142857,
+                "flat_net_mean_pct": 2.7915958537499996,
+                "press_net_mean_pct": 1.8823476063395552,
+                "press_net_total_sol": 1.054114659550151,
+                "ex_top3_press_net_sol": 0.12363176177002246
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.0540739982795058
+              ],
+              [
+                "buy_sell_ratio",
+                0.6361707774620805
+              ],
+              [
+                "n_buyers",
+                0.5221116413740843
+              ],
+              [
+                "n_sellers",
+                0.4761514356402868
+              ],
+              [
+                "creator_prior_mints_24h",
+                0.40414447945920384
+              ],
+              [
+                "price_return_pre",
+                0.24492060385274592
+              ],
+              [
+                "time_to_migrate_s",
+                0.19213591910618988
+              ],
+              [
+                "buy_sol",
+                0.15290166587305862
+              ]
+            ]
+          },
+          "2026-09-26": {
+            "trained": true,
+            "n_train": 1399,
+            "n_test": 901,
+            "cohorts": {
+              "all": {
+                "n": 901,
+                "gross_mean_pct": 2.224475597780244,
+                "flat_net_mean_pct": 0.8600320635849057,
+                "press_net_mean_pct": 0.4427824560405474,
+                "press_net_total_sol": 1.9947349644626662,
+                "ex_top3_press_net_sol": 0.9372132898853826
+              },
+              "top10": {
+                "n": 90,
+                "gross_mean_pct": 7.249816920000001,
+                "flat_net_mean_pct": 3.8438491873333334,
+                "press_net_mean_pct": 2.2851367480209017,
+                "press_net_total_sol": 1.0283115366094056,
+                "ex_top3_press_net_sol": 0.17415148695837396
+              },
+              "top20": {
+                "n": 180,
+                "gross_mean_pct": 9.002397106666667,
+                "flat_net_mean_pct": 5.315731259,
+                "press_net_mean_pct": 3.5169908904208307,
+                "press_net_total_sol": 3.1652918013787477,
+                "ex_top3_press_net_sol": 2.232492241647073
+              }
+            },
+            "importance": [
+              [
+                "buy_sell_ratio",
+                0.8650467302704744
+              ],
+              [
+                "mcap_at_t_sol",
+                0.8255588209109341
+              ],
+              [
+                "n_buyers",
+                0.6411620764660824
+              ],
+              [
+                "n_sellers",
+                0.6191601862587343
+              ],
+              [
+                "n_buys",
+                0.538590447075876
+              ],
+              [
+                "nearby_buy_sol",
+                0.5194238463950748
+              ],
+              [
+                "buy_sol",
+                0.3020491883202234
+              ],
+              [
+                "n_sells",
+                0.2935200125895913
+              ]
+            ]
+          },
+          "2026-09-27": {
+            "trained": true,
+            "n_train": 1460,
+            "n_test": 840,
+            "cohorts": {
+              "all": {
+                "n": 840,
+                "gross_mean_pct": 1.4965584564285714,
+                "flat_net_mean_pct": 0.38983641009523806,
+                "press_net_mean_pct": 0.5554769251323824,
+                "press_net_total_sol": 2.3330030855560064,
+                "ex_top3_press_net_sol": 1.0979953985600939
+              },
+              "top10": {
+                "n": 84,
+                "gross_mean_pct": 11.909116528571428,
+                "flat_net_mean_pct": 7.8116886135714285,
+                "press_net_mean_pct": 5.4210319809544085,
+                "press_net_total_sol": 2.2768334320008514,
+                "ex_top3_press_net_sol": 1.233173778240303
+              },
+              "top20": {
+                "n": 168,
+                "gross_mean_pct": 8.381167125,
+                "flat_net_mean_pct": 4.847886062261905,
+                "press_net_mean_pct": 3.5505335624041927,
+                "press_net_total_sol": 2.982448192419522,
+                "ex_top3_press_net_sol": 1.7474405054236093
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.259065794864548
+              ],
+              [
+                "n_sellers",
+                0.7038292767401455
+              ],
+              [
+                "n_buyers",
+                0.6733975960292821
+              ],
+              [
+                "buy_sell_ratio",
+                0.6415562904176002
+              ],
+              [
+                "price_return_pre",
+                0.26347798602464434
+              ],
+              [
+                "creator_prior_mints_24h",
+                0.22061424292197018
+              ],
+              [
+                "same_slot_buys",
+                0.1894632794908588
+              ],
+              [
+                "time_to_migrate_s",
+                0.18196937548374914
+              ]
+            ]
+          }
+        },
+        "A + B together (6 days)": {
+          "2026-09-19": {
+            "trained": true,
+            "n_train": 4367,
+            "n_test": 962,
+            "cohorts": {
+              "all": {
+                "n": 962,
+                "gross_mean_pct": 1.1575045338877339,
+                "flat_net_mean_pct": 0.18666719761954265,
+                "press_net_mean_pct": -0.05278643512015944,
+                "press_net_total_sol": -0.2539027529279669,
+                "ex_top3_press_net_sol": -1.4246276683554395
+              },
+              "top10": {
+                "n": 96,
+                "gross_mean_pct": 1.9905410166666668,
+                "flat_net_mean_pct": -0.5973473604166663,
+                "press_net_mean_pct": 0.5800878882470489,
+                "press_net_total_sol": 0.2784421863585835,
+                "ex_top3_press_net_sol": -0.7763952147327866
+              },
+              "top20": {
+                "n": 192,
+                "gross_mean_pct": 5.2290528739583335,
+                "flat_net_mean_pct": 2.122541336510417,
+                "press_net_mean_pct": 1.4913340435416125,
+                "press_net_total_sol": 1.431680681799948,
+                "ex_top3_press_net_sol": 0.37684328070857787
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.082355439864292
+              ],
+              [
+                "n_buyers",
+                0.612069749926424
+              ],
+              [
+                "n_sellers",
+                0.5332116762889902
+              ],
+              [
+                "buy_sell_ratio",
+                0.4845749031246841
+              ],
+              [
+                "nearby_buy_sol",
+                0.37095984507056917
+              ],
+              [
+                "creator_prior_mints_24h",
+                0.32095184534293175
+              ],
+              [
+                "price_return_pre",
+                0.3027268669014639
+              ],
+              [
+                "hour_sin",
+                0.1809765947774105
+              ]
+            ]
+          },
+          "2026-09-20": {
+            "trained": true,
+            "n_train": 4295,
+            "n_test": 1034,
+            "cohorts": {
+              "all": {
+                "n": 1034,
+                "gross_mean_pct": 0.5590967926499033,
+                "flat_net_mean_pct": -0.33324256660541585,
+                "press_net_mean_pct": -0.44407657366695846,
+                "press_net_total_sol": -2.2958758858581754,
+                "ex_top3_press_net_sol": -3.0124143503191156
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": -3.6281682349514566,
+                "flat_net_mean_pct": -5.318628528543689,
+                "press_net_mean_pct": -4.494681188777952,
+                "press_net_total_sol": -2.3147608122206456,
+                "ex_top3_press_net_sol": -2.927309073368034
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": 1.8707664173913043,
+                "flat_net_mean_pct": -0.6990250144444442,
+                "press_net_mean_pct": -0.8694460667182132,
+                "press_net_total_sol": -0.8998766790533508,
+                "ex_top3_press_net_sol": -1.5124249402007395
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.1066964610481589
+              ],
+              [
+                "n_buyers",
+                0.6090033657198851
+              ],
+              [
+                "n_sellers",
+                0.5569104272164213
+              ],
+              [
+                "buy_sell_ratio",
+                0.5214827917027749
+              ],
+              [
+                "nearby_buy_sol",
+                0.41395780035761887
+              ],
+              [
+                "price_return_pre",
+                0.2794866769795424
+              ],
+              [
+                "creator_prior_mints_24h",
+                0.24795057832307593
+              ],
+              [
+                "sell_sol",
+                0.1802518542163518
+              ]
+            ]
+          },
+          "2026-09-21": {
+            "trained": true,
+            "n_train": 4296,
+            "n_test": 1033,
+            "cohorts": {
+              "all": {
+                "n": 1033,
+                "gross_mean_pct": 0.5190612261374636,
+                "flat_net_mean_pct": -0.375918169215876,
+                "press_net_mean_pct": -0.11901146538121467,
+                "press_net_total_sol": -0.6146942186939738,
+                "ex_top3_press_net_sol": -1.7054009245945057
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": -2.373712759223301,
+                "flat_net_mean_pct": -4.264859510679612,
+                "press_net_mean_pct": -2.1211978000615157,
+                "press_net_total_sol": -1.0924168670316805,
+                "ex_top3_press_net_sol": -2.107793008046562
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": 2.5538349285024156,
+                "flat_net_mean_pct": -0.09426308309178744,
+                "press_net_mean_pct": 0.5756586123283727,
+                "press_net_total_sol": 0.5958066637598658,
+                "ex_top3_press_net_sol": -0.46885574056440377
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.1262996896100772
+              ],
+              [
+                "buy_sell_ratio",
+                0.47854415327796623
+              ],
+              [
+                "nearby_buy_sol",
+                0.4274701192504247
+              ],
+              [
+                "n_buyers",
+                0.38819976445868115
+              ],
+              [
+                "n_sellers",
+                0.3879845194629306
+              ],
+              [
+                "price_return_pre",
+                0.33969623122118187
+              ],
+              [
+                "n_buys",
+                0.27688808564512535
+              ],
+              [
+                "creator_prior_mints_24h",
+                0.25695338323244277
+              ]
+            ]
+          },
+          "2026-09-25": {
+            "trained": true,
+            "n_train": 4770,
+            "n_test": 559,
+            "cohorts": {
+              "all": {
+                "n": 559,
+                "gross_mean_pct": -0.48180928622540253,
+                "flat_net_mean_pct": -1.2515461900715563,
+                "press_net_mean_pct": -0.44354446702492245,
+                "press_net_total_sol": -1.2397067853346584,
+                "ex_top3_press_net_sol": -2.289628356649607
+              },
+              "top10": {
+                "n": 56,
+                "gross_mean_pct": 0.768673225,
+                "flat_net_mean_pct": -1.625975784285714,
+                "press_net_mean_pct": -3.292413824463109,
+                "press_net_total_sol": -0.9218758708496705,
+                "ex_top3_press_net_sol": -1.5730460625689016
+              },
+              "top20": {
+                "n": 112,
+                "gross_mean_pct": 4.793099792857142,
+                "flat_net_mean_pct": 1.7773336542857145,
+                "press_net_mean_pct": 0.7711170369118217,
+                "press_net_total_sol": 0.4318255406706201,
+                "ex_top3_press_net_sol": -0.4986573571095085
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.0626735207829177
+              ],
+              [
+                "nearby_buy_sol",
+                0.5206204561009184
+              ],
+              [
+                "buy_sell_ratio",
+                0.3533039393211571
+              ],
+              [
+                "price_return_pre",
+                0.33132386355158133
+              ],
+              [
+                "n_buyers",
+                0.32132323639957694
+              ],
+              [
+                "n_sellers",
+                0.3051159273958517
+              ],
+              [
+                "creator_prior_mints_24h",
+                0.292013650754782
+              ],
+              [
+                "sell_sol",
+                0.1899300877317725
+              ]
+            ]
+          },
+          "2026-09-26": {
+            "trained": true,
+            "n_train": 4428,
+            "n_test": 901,
+            "cohorts": {
+              "all": {
+                "n": 901,
+                "gross_mean_pct": 2.224475597780244,
+                "flat_net_mean_pct": 0.8600320635849057,
+                "press_net_mean_pct": 0.4427824560405474,
+                "press_net_total_sol": 1.9947349644626662,
+                "ex_top3_press_net_sol": 0.9372132898853826
+              },
+              "top10": {
+                "n": 90,
+                "gross_mean_pct": 7.743463671111112,
+                "flat_net_mean_pct": 4.234167279555556,
+                "press_net_mean_pct": 2.459327997805978,
+                "press_net_total_sol": 1.1066975990126902,
+                "ex_top3_press_net_sol": 0.35627698738227614
+              },
+              "top20": {
+                "n": 180,
+                "gross_mean_pct": 9.064407617777778,
+                "flat_net_mean_pct": 5.3551464163333335,
+                "press_net_mean_pct": 3.940675169659988,
+                "press_net_total_sol": 3.5466076526939894,
+                "ex_top3_press_net_sol": 2.5490187727284552
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                2.7659490788640313
+              ],
+              [
+                "mcap_at_t_sol",
+                1.0916540045266105
+              ],
+              [
+                "n_buyers",
+                0.42572009586224663
+              ],
+              [
+                "buy_sell_ratio",
+                0.40234430082977785
+              ],
+              [
+                "n_sellers",
+                0.3584389440628987
+              ],
+              [
+                "top_holder_share",
+                0.3384343745350072
+              ],
+              [
+                "sniper_buy_share",
+                0.31284714960788473
+              ],
+              [
+                "creator_prior_mints_24h",
+                0.2683642580113867
+              ]
+            ]
+          },
+          "2026-09-27": {
+            "trained": true,
+            "n_train": 4489,
+            "n_test": 840,
+            "cohorts": {
+              "all": {
+                "n": 840,
+                "gross_mean_pct": 1.4965584564285714,
+                "flat_net_mean_pct": 0.38983641009523806,
+                "press_net_mean_pct": 0.5554769251323824,
+                "press_net_total_sol": 2.3330030855560064,
+                "ex_top3_press_net_sol": 1.0979953985600939
+              },
+              "top10": {
+                "n": 84,
+                "gross_mean_pct": 13.419181697619049,
+                "flat_net_mean_pct": 9.054160255000001,
+                "press_net_mean_pct": 6.631227915675797,
+                "press_net_total_sol": 2.7851157245838345,
+                "ex_top3_press_net_sol": 1.5501080375879221
+              },
+              "top20": {
+                "n": 168,
+                "gross_mean_pct": 7.611222466666668,
+                "flat_net_mean_pct": 4.175431258273809,
+                "press_net_mean_pct": 3.451074079586643,
+                "press_net_total_sol": 2.8989022268527798,
+                "ex_top3_press_net_sol": 1.663894539856867
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.0935898168810587
+              ],
+              [
+                "nearby_buy_sol",
+                0.7347279787094497
+              ],
+              [
+                "n_sellers",
+                0.6001470816569485
+              ],
+              [
+                "n_sells",
+                0.510365884414268
+              ],
+              [
+                "n_buyers",
+                0.36584401534860245
+              ],
+              [
+                "sell_sol",
+                0.35975607790738395
+              ],
+              [
+                "price_return_pre",
+                0.339465462145045
+              ],
+              [
+                "buy_sell_ratio",
+                0.31853158639602874
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "trail_30_act20": {
+      "lgb_medium": {
+        "A only (3 days)": {
+          "2026-09-19": {
+            "trained": true,
+            "n_train": 2067,
+            "n_test": 962,
+            "cohorts": {
+              "all": {
+                "n": 962,
+                "gross_mean_pct": 4.506529507068607,
+                "flat_net_mean_pct": 3.001550127297297,
+                "press_net_mean_pct": 1.3672304025573856,
+                "press_net_total_sol": 6.576378236301025,
+                "ex_top3_press_net_sol": 0.1854914715367531
+              },
+              "top10": {
+                "n": 96,
+                "gross_mean_pct": 14.535980025,
+                "flat_net_mean_pct": 9.988777716041666,
+                "press_net_mean_pct": 4.383208494470221,
+                "press_net_total_sol": 2.1039400773457064,
+                "ex_top3_press_net_sol": -1.989222266377591
+              },
+              "top20": {
+                "n": 192,
+                "gross_mean_pct": 10.075060890625,
+                "flat_net_mean_pct": 6.224689458020833,
+                "press_net_mean_pct": 3.334746663330572,
+                "press_net_total_sol": 3.201356796797349,
+                "ex_top3_press_net_sol": -1.598906565296035
+              }
+            },
+            "importance": [
+              [
+                "price_return_pre",
+                9545.436572790146
+              ],
+              [
+                "nearby_buy_sol",
+                6941.376819372177
+              ],
+              [
+                "net_flow_sol",
+                5918.034426212311
+              ],
+              [
+                "top_holder_share",
+                1982.5511376857758
+              ],
+              [
+                "time_to_migrate_s",
+                1969.9610073566437
+              ],
+              [
+                "n_sells",
+                811.0595667362213
+              ],
+              [
+                "buy_sol",
+                640.016966342926
+              ],
+              [
+                "sniper_buy_share",
+                596.1067023277283
+              ]
+            ]
+          },
+          "2026-09-20": {
+            "trained": true,
+            "n_train": 1995,
+            "n_test": 1034,
+            "cohorts": {
+              "all": {
+                "n": 1034,
+                "gross_mean_pct": 2.3282585160541585,
+                "flat_net_mean_pct": 1.1594976002030948,
+                "press_net_mean_pct": 0.2333508309788022,
+                "press_net_total_sol": 1.2064237961604074,
+                "ex_top3_press_net_sol": -11.322128938013593
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": 0.25276999417475726,
+                "flat_net_mean_pct": -2.044533905436893,
+                "press_net_mean_pct": -2.3611973140704583,
+                "press_net_total_sol": -1.2160166167462858,
+                "ex_top3_press_net_sol": -2.961409707285846
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": -9.648793024154589,
+                "flat_net_mean_pct": -10.37059711463768,
+                "press_net_mean_pct": -7.485734430004739,
+                "press_net_total_sol": -7.747735135054905,
+                "ex_top3_press_net_sol": -9.952333936078139
+              }
+            },
+            "importance": [
+              [
+                "net_flow_sol",
+                10764.12865805626
+              ],
+              [
+                "nearby_buy_sol",
+                6736.312923669815
+              ],
+              [
+                "price_return_pre",
+                4085.440151453018
+              ],
+              [
+                "mcap_at_t_sol",
+                2139.9965488910675
+              ],
+              [
+                "same_slot_buys",
+                1295.6070683002472
+              ],
+              [
+                "time_to_migrate_s",
+                779.7131204605103
+              ],
+              [
+                "top_holder_share",
+                776.7861170768738
+              ],
+              [
+                "buy_sell_ratio",
+                657.6948595046997
+              ]
+            ]
+          },
+          "2026-09-21": {
+            "trained": true,
+            "n_train": 1996,
+            "n_test": 1033,
+            "cohorts": {
+              "all": {
+                "n": 1033,
+                "gross_mean_pct": 1.6116325113262342,
+                "flat_net_mean_pct": 0.5445785129912875,
+                "press_net_mean_pct": -0.10960246597968375,
+                "press_net_total_sol": -0.5660967367850666,
+                "ex_top3_press_net_sol": -6.647421403599423
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": 7.2636316038834945,
+                "flat_net_mean_pct": 3.835078253106796,
+                "press_net_mean_pct": 3.040259623221562,
+                "press_net_total_sol": 1.5657337059591045,
+                "ex_top3_press_net_sol": -2.3838297046079115
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": 0.06487652173913043,
+                "flat_net_mean_pct": -2.1937045447826087,
+                "press_net_mean_pct": -0.8920087180087615,
+                "press_net_total_sol": -0.9232290231390681,
+                "ex_top3_press_net_sol": -4.872792433706084
+              }
+            },
+            "importance": [
+              [
+                "price_return_pre",
+                14554.691520690918
+              ],
+              [
+                "nearby_buy_sol",
+                6018.100513458252
+              ],
+              [
+                "time_to_migrate_s",
+                3426.0612604618073
+              ],
+              [
+                "same_slot_buys",
+                1122.0615799427032
+              ],
+              [
+                "n_buyers",
+                832.998259305954
+              ],
+              [
+                "sniper_buy_share",
+                738.5582001209259
+              ],
+              [
+                "top_holder_share",
+                603.4319925308228
+              ],
+              [
+                "hour_cos",
+                590.53742146492
+              ]
+            ]
+          }
+        },
+        "B only (3 days)": {
+          "2026-09-25": {
+            "trained": true,
+            "n_train": 1737,
+            "n_test": 559,
+            "cohorts": {
+              "all": {
+                "n": 559,
+                "gross_mean_pct": -2.271112740966011,
+                "flat_net_mean_pct": -2.7545691315384615,
+                "press_net_mean_pct": -1.3760212141432204,
+                "press_net_total_sol": -3.845979293530301,
+                "ex_top3_press_net_sol": -7.111554281101716
+              },
+              "top10": {
+                "n": 56,
+                "gross_mean_pct": 5.908092560714286,
+                "flat_net_mean_pct": 3.0171592821428574,
+                "press_net_mean_pct": 2.40458981692011,
+                "press_net_total_sol": 0.6732851487376308,
+                "ex_top3_press_net_sol": -1.876046901003349
+              },
+              "top20": {
+                "n": 112,
+                "gross_mean_pct": 3.2824067875000003,
+                "flat_net_mean_pct": 0.6688921014285718,
+                "press_net_mean_pct": 0.3385536031056089,
+                "press_net_total_sol": 0.189590017739141,
+                "ex_top3_press_net_sol": -3.0759849698322745
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                5156.52595448494
+              ],
+              [
+                "buy_sol",
+                4572.919408321381
+              ],
+              [
+                "mcap_at_t_sol",
+                3562.2498292922974
+              ],
+              [
+                "price_return_pre",
+                2658.7717871665955
+              ],
+              [
+                "same_slot_buys",
+                1381.969895362854
+              ],
+              [
+                "time_to_migrate_s",
+                1203.3142354488373
+              ],
+              [
+                "top_holder_share",
+                840.6388342380524
+              ],
+              [
+                "net_flow_sol",
+                806.2129900455475
+              ]
+            ]
+          },
+          "2026-09-26": {
+            "trained": true,
+            "n_train": 1395,
+            "n_test": 901,
+            "cohorts": {
+              "all": {
+                "n": 901,
+                "gross_mean_pct": 2.500250653718091,
+                "flat_net_mean_pct": 1.0988290547169814,
+                "press_net_mean_pct": 1.4416088504616646,
+                "press_net_total_sol": 6.494447871329799,
+                "ex_top3_press_net_sol": -9.264318774453043
+              },
+              "top10": {
+                "n": 90,
+                "gross_mean_pct": 8.721750928888888,
+                "flat_net_mean_pct": 5.199398064111111,
+                "press_net_mean_pct": 3.776240376300454,
+                "press_net_total_sol": 1.6993081693352043,
+                "ex_top3_press_net_sol": -0.047613199988779005
+              },
+              "top20": {
+                "n": 180,
+                "gross_mean_pct": 13.395040297777777,
+                "flat_net_mean_pct": 9.079382142555556,
+                "press_net_mean_pct": 6.693897096640948,
+                "press_net_total_sol": 6.024507386976853,
+                "ex_top3_press_net_sol": 0.25899846018120753
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                5044.123642206192
+              ],
+              [
+                "buy_sol",
+                4824.204072713852
+              ],
+              [
+                "mcap_at_t_sol",
+                2108.7215201854706
+              ],
+              [
+                "price_return_pre",
+                1686.9500532150269
+              ],
+              [
+                "time_to_migrate_s",
+                1575.4065551757812
+              ],
+              [
+                "same_slot_buys",
+                1002.3823237419128
+              ],
+              [
+                "net_flow_sol",
+                850.1676888465881
+              ],
+              [
+                "hour_sin",
+                803.027943611145
+              ]
+            ]
+          },
+          "2026-09-27": {
+            "trained": true,
+            "n_train": 1460,
+            "n_test": 836,
+            "cohorts": {
+              "all": {
+                "n": 836,
+                "gross_mean_pct": -0.3710081550239234,
+                "flat_net_mean_pct": -1.1726155968301435,
+                "press_net_mean_pct": -1.0698825931663611,
+                "press_net_total_sol": -4.472109239435389,
+                "ex_top3_press_net_sol": -7.205326625939837
+              },
+              "top10": {
+                "n": 84,
+                "gross_mean_pct": 1.749138630952381,
+                "flat_net_mean_pct": -0.781819959285714,
+                "press_net_mean_pct": -0.9765939105499755,
+                "press_net_total_sol": -0.4101694424309897,
+                "ex_top3_press_net_sol": -1.92051012548059
+              },
+              "top20": {
+                "n": 167,
+                "gross_mean_pct": -0.1963737892215569,
+                "flat_net_mean_pct": -2.371621247784431,
+                "press_net_mean_pct": -1.4652714266285618,
+                "press_net_total_sol": -1.223501641234849,
+                "ex_top3_press_net_sol": -3.3701342225800786
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                4899.0591859817505
+              ],
+              [
+                "buy_sol",
+                4439.743785858154
+              ],
+              [
+                "price_return_pre",
+                3719.572245836258
+              ],
+              [
+                "time_to_migrate_s",
+                1640.4476025104523
+              ],
+              [
+                "same_slot_buys",
+                987.1601939201355
+              ],
+              [
+                "top_holder_share",
+                731.0424330234528
+              ],
+              [
+                "hour_of_day",
+                539.2703032493591
+              ],
+              [
+                "mcap_at_t_sol",
+                537.475076675415
+              ]
+            ]
+          }
+        },
+        "A + B together (6 days)": {
+          "2026-09-19": {
+            "trained": true,
+            "n_train": 4363,
+            "n_test": 962,
+            "cohorts": {
+              "all": {
+                "n": 962,
+                "gross_mean_pct": 4.506529507068607,
+                "flat_net_mean_pct": 3.001550127297297,
+                "press_net_mean_pct": 1.3672304025573856,
+                "press_net_total_sol": 6.576378236301025,
+                "ex_top3_press_net_sol": 0.1854914715367531
+              },
+              "top10": {
+                "n": 96,
+                "gross_mean_pct": 2.9691872125,
+                "flat_net_mean_pct": 0.21141822937499988,
+                "press_net_mean_pct": -0.022460989875788574,
+                "press_net_total_sol": -0.010781275140378516,
+                "ex_top3_press_net_sol": -1.0775567238720622
+              },
+              "top20": {
+                "n": 192,
+                "gross_mean_pct": 7.796008293749999,
+                "flat_net_mean_pct": 4.304935224218749,
+                "press_net_mean_pct": 1.4663788715412653,
+                "press_net_total_sol": 1.4077237166796148,
+                "ex_top3_press_net_sol": -3.799252750879308
+              }
+            },
+            "importance": [
+              [
+                "price_return_pre",
+                15863.836971759796
+              ],
+              [
+                "nearby_buy_sol",
+                15524.516791582108
+              ],
+              [
+                "mcap_at_t_sol",
+                10139.546391963959
+              ],
+              [
+                "time_to_migrate_s",
+                2105.913765192032
+              ],
+              [
+                "same_slot_buys",
+                2049.62845993042
+              ],
+              [
+                "net_flow_sol",
+                1669.7743563652039
+              ],
+              [
+                "hour_cos",
+                1036.1979022026062
+              ],
+              [
+                "top_holder_share",
+                1019.9664015769958
+              ]
+            ]
+          },
+          "2026-09-20": {
+            "trained": true,
+            "n_train": 4291,
+            "n_test": 1034,
+            "cohorts": {
+              "all": {
+                "n": 1034,
+                "gross_mean_pct": 2.3282585160541585,
+                "flat_net_mean_pct": 1.1594976002030948,
+                "press_net_mean_pct": 0.2333508309788022,
+                "press_net_total_sol": 1.2064237961604074,
+                "ex_top3_press_net_sol": -11.322128938013593
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": -2.652233434951456,
+                "flat_net_mean_pct": -4.482324428349514,
+                "press_net_mean_pct": -2.9955742808609367,
+                "press_net_total_sol": -1.5427207546433823,
+                "ex_top3_press_net_sol": -3.288113845182943
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": -9.661821985507245,
+                "flat_net_mean_pct": -10.381821346570048,
+                "press_net_mean_pct": -7.167079408227506,
+                "press_net_total_sol": -7.4179271875154695,
+                "ex_top3_press_net_sol": -9.450378772977418
+              }
+            },
+            "importance": [
+              [
+                "price_return_pre",
+                17751.584609031677
+              ],
+              [
+                "nearby_buy_sol",
+                14919.63056921959
+              ],
+              [
+                "mcap_at_t_sol",
+                7655.933121204376
+              ],
+              [
+                "same_slot_buys",
+                2695.926800251007
+              ],
+              [
+                "time_to_migrate_s",
+                2448.6836500167847
+              ],
+              [
+                "buy_sol",
+                1169.830813407898
+              ],
+              [
+                "net_flow_sol",
+                1149.4288716316223
+              ],
+              [
+                "hour_sin",
+                1003.2061553001404
+              ]
+            ]
+          },
+          "2026-09-21": {
+            "trained": true,
+            "n_train": 4292,
+            "n_test": 1033,
+            "cohorts": {
+              "all": {
+                "n": 1033,
+                "gross_mean_pct": 1.6116325113262342,
+                "flat_net_mean_pct": 0.5445785129912875,
+                "press_net_mean_pct": -0.10960246597968375,
+                "press_net_total_sol": -0.5660967367850666,
+                "ex_top3_press_net_sol": -6.647421403599423
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": 0.13231833980582525,
+                "flat_net_mean_pct": -2.140085846699029,
+                "press_net_mean_pct": -0.984502306907617,
+                "press_net_total_sol": -0.5070186880574227,
+                "ex_top3_press_net_sol": -2.7769072241030712
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": 2.2048001555555556,
+                "flat_net_mean_pct": -0.38630308304347827,
+                "press_net_mean_pct": 0.07498109278213709,
+                "press_net_total_sol": 0.07760543102951188,
+                "ex_top3_press_net_sol": -3.871957979537504
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                15713.517530918121
+              ],
+              [
+                "mcap_at_t_sol",
+                13661.64908695221
+              ],
+              [
+                "price_return_pre",
+                11409.86411857605
+              ],
+              [
+                "same_slot_buys",
+                2532.232581615448
+              ],
+              [
+                "time_to_migrate_s",
+                2195.1304976940155
+              ],
+              [
+                "net_flow_sol",
+                1436.1119649410248
+              ],
+              [
+                "top_holder_share",
+                1029.6111016273499
+              ],
+              [
+                "n_bonding_trades",
+                980.5956935882568
+              ]
+            ]
+          },
+          "2026-09-25": {
+            "trained": true,
+            "n_train": 4766,
+            "n_test": 559,
+            "cohorts": {
+              "all": {
+                "n": 559,
+                "gross_mean_pct": -2.271112740966011,
+                "flat_net_mean_pct": -2.7545691315384615,
+                "press_net_mean_pct": -1.3760212141432204,
+                "press_net_total_sol": -3.845979293530301,
+                "ex_top3_press_net_sol": -7.111554281101716
+              },
+              "top10": {
+                "n": 56,
+                "gross_mean_pct": 10.971562007142857,
+                "flat_net_mean_pct": 7.1852276576785705,
+                "press_net_mean_pct": 5.841030818122345,
+                "press_net_total_sol": 1.6354886290742565,
+                "ex_top3_press_net_sol": -0.9138434206667231
+              },
+              "top20": {
+                "n": 112,
+                "gross_mean_pct": 6.890433592857144,
+                "flat_net_mean_pct": 3.6759732658928574,
+                "press_net_mean_pct": 3.045142860976878,
+                "press_net_total_sol": 1.7052800021470516,
+                "ex_top3_press_net_sol": -1.5602949854243635
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                20527.866873025894
+              ],
+              [
+                "price_return_pre",
+                14598.61180639267
+              ],
+              [
+                "nearby_buy_sol",
+                12351.662026405334
+              ],
+              [
+                "same_slot_buys",
+                2712.8631176948547
+              ],
+              [
+                "time_to_migrate_s",
+                1800.575900554657
+              ],
+              [
+                "net_flow_sol",
+                1353.5851457118988
+              ],
+              [
+                "top_holder_share",
+                927.3180360794067
+              ],
+              [
+                "hour_cos",
+                839.6973161697388
+              ]
+            ]
+          },
+          "2026-09-26": {
+            "trained": true,
+            "n_train": 4424,
+            "n_test": 901,
+            "cohorts": {
+              "all": {
+                "n": 901,
+                "gross_mean_pct": 2.500250653718091,
+                "flat_net_mean_pct": 1.0988290547169814,
+                "press_net_mean_pct": 1.4416088504616646,
+                "press_net_total_sol": 6.494447871329799,
+                "ex_top3_press_net_sol": -9.264318774453043
+              },
+              "top10": {
+                "n": 90,
+                "gross_mean_pct": 16.619220784444448,
+                "flat_net_mean_pct": 11.817565306666665,
+                "press_net_mean_pct": 9.450156473833498,
+                "press_net_total_sol": 4.252570413225074,
+                "ex_top3_press_net_sol": -1.321633138924539
+              },
+              "top20": {
+                "n": 180,
+                "gross_mean_pct": 8.135520983333333,
+                "flat_net_mean_pct": 4.628523566888889,
+                "press_net_mean_pct": 3.4442342804939887,
+                "press_net_total_sol": 3.09981085244459,
+                "ex_top3_press_net_sol": -4.189329305104536
+              }
+            },
+            "importance": [
+              [
+                "price_return_pre",
+                19031.75212264061
+              ],
+              [
+                "nearby_buy_sol",
+                13682.878579616547
+              ],
+              [
+                "mcap_at_t_sol",
+                10953.836807727814
+              ],
+              [
+                "time_to_migrate_s",
+                2394.680682182312
+              ],
+              [
+                "same_slot_buys",
+                2295.7384190559387
+              ],
+              [
+                "net_flow_sol",
+                2103.548854112625
+              ],
+              [
+                "top_holder_share",
+                898.2975194454193
+              ],
+              [
+                "buy_sol",
+                818.4624519348145
+              ]
+            ]
+          },
+          "2026-09-27": {
+            "trained": true,
+            "n_train": 4489,
+            "n_test": 836,
+            "cohorts": {
+              "all": {
+                "n": 836,
+                "gross_mean_pct": -0.3710081550239234,
+                "flat_net_mean_pct": -1.1726155968301435,
+                "press_net_mean_pct": -1.0698825931663611,
+                "press_net_total_sol": -4.472109239435389,
+                "ex_top3_press_net_sol": -7.205326625939837
+              },
+              "top10": {
+                "n": 84,
+                "gross_mean_pct": 0.6497162714285715,
+                "flat_net_mean_pct": -1.6248008636904767,
+                "press_net_mean_pct": -0.8151390478819175,
+                "press_net_total_sol": -0.3423584001104053,
+                "ex_top3_press_net_sol": -2.158323214869438
+              },
+              "top20": {
+                "n": 167,
+                "gross_mean_pct": -2.2828941508982035,
+                "flat_net_mean_pct": -4.110133527245509,
+                "press_net_mean_pct": -2.963642647762139,
+                "press_net_total_sol": -2.4746416108813865,
+                "ex_top3_press_net_sol": -4.621274192226616
+              }
+            },
+            "importance": [
+              [
+                "price_return_pre",
+                22308.841159582138
+              ],
+              [
+                "nearby_buy_sol",
+                12393.452635526657
+              ],
+              [
+                "mcap_at_t_sol",
+                10479.588115692139
+              ],
+              [
+                "same_slot_buys",
+                2415.3032422065735
+              ],
+              [
+                "time_to_migrate_s",
+                2040.8135070800781
+              ],
+              [
+                "buy_sol",
+                1465.3567657470703
+              ],
+              [
+                "n_bonding_trades",
+                1055.700020313263
+              ],
+              [
+                "top_holder_share",
+                875.3919215202332
+              ]
+            ]
+          }
+        }
+      },
+      "logreg_l2": {
+        "A only (3 days)": {
+          "2026-09-19": {
+            "trained": true,
+            "n_train": 2067,
+            "n_test": 962,
+            "cohorts": {
+              "all": {
+                "n": 962,
+                "gross_mean_pct": 4.506529507068607,
+                "flat_net_mean_pct": 3.001550127297297,
+                "press_net_mean_pct": 1.3672304025573856,
+                "press_net_total_sol": 6.576378236301025,
+                "ex_top3_press_net_sol": 0.1854914715367531
+              },
+              "top10": {
+                "n": 96,
+                "gross_mean_pct": -5.6960065916666665,
+                "flat_net_mean_pct": -7.064617530833332,
+                "press_net_mean_pct": -4.729417271211431,
+                "press_net_total_sol": -2.2701202901814868,
+                "ex_top3_press_net_sol": -3.6887317881075887
+              },
+              "top20": {
+                "n": 192,
+                "gross_mean_pct": 5.765579605208333,
+                "flat_net_mean_pct": 2.5696778564062503,
+                "press_net_mean_pct": 1.0138066720504555,
+                "press_net_total_sol": 0.9732544051684372,
+                "ex_top3_press_net_sol": -2.819689588692193
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                5.637938692925418
+              ],
+              [
+                "n_sells",
+                1.3084516950787894
+              ],
+              [
+                "n_sellers",
+                0.8257610170983019
+              ],
+              [
+                "sell_sol",
+                0.3989770430452451
+              ],
+              [
+                "n_bonding_trades",
+                0.3469522696009854
+              ],
+              [
+                "buy_sol",
+                0.3433860213773869
+              ],
+              [
+                "mcap_at_t_sol",
+                0.3385346618300519
+              ],
+              [
+                "price_return_pre",
+                0.33853466183005027
+              ]
+            ]
+          },
+          "2026-09-20": {
+            "trained": true,
+            "n_train": 1995,
+            "n_test": 1034,
+            "cohorts": {
+              "all": {
+                "n": 1034,
+                "gross_mean_pct": 2.3282585160541585,
+                "flat_net_mean_pct": 1.1594976002030948,
+                "press_net_mean_pct": 0.2333508309788022,
+                "press_net_total_sol": 1.2064237961604074,
+                "ex_top3_press_net_sol": -11.322128938013593
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": -1.7321447048543686,
+                "flat_net_mean_pct": -3.73343882407767,
+                "press_net_mean_pct": -3.309438576416948,
+                "press_net_total_sol": -1.7043608668547285,
+                "ex_top3_press_net_sol": -3.4610311479243125
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": -7.197529631884057,
+                "flat_net_mean_pct": -8.32478482942029,
+                "press_net_mean_pct": -6.676639913009247,
+                "press_net_total_sol": -6.91032230996457,
+                "ex_top3_press_net_sol": -9.043330216094635
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                5.761475362092442
+              ],
+              [
+                "n_sells",
+                1.3904228470045348
+              ],
+              [
+                "net_flow_sol",
+                1.069974987591787
+              ],
+              [
+                "n_sellers",
+                0.9708123980383736
+              ],
+              [
+                "n_bonding_trades",
+                0.587278929898938
+              ],
+              [
+                "buy_sol",
+                0.3574418480419462
+              ],
+              [
+                "n_buyers",
+                0.32310730165880697
+              ],
+              [
+                "top_holder_share",
+                0.31710066822117744
+              ]
+            ]
+          },
+          "2026-09-21": {
+            "trained": true,
+            "n_train": 1996,
+            "n_test": 1033,
+            "cohorts": {
+              "all": {
+                "n": 1033,
+                "gross_mean_pct": 1.6116325113262342,
+                "flat_net_mean_pct": 0.5445785129912875,
+                "press_net_mean_pct": -0.10960246597968375,
+                "press_net_total_sol": -0.5660967367850666,
+                "ex_top3_press_net_sol": -6.647421403599423
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": -3.3339183203883493,
+                "flat_net_mean_pct": -5.0758070661165045,
+                "press_net_mean_pct": -2.527928164328035,
+                "press_net_total_sol": -1.301883004628938,
+                "ex_top3_press_net_sol": -3.3916805532391723
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": 0.18316736038647344,
+                "flat_net_mean_pct": -2.1185450079227053,
+                "press_net_mean_pct": -0.5321962163273439,
+                "press_net_total_sol": -0.550823083898801,
+                "ex_top3_press_net_sol": -4.236406641651975
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                5.2107576030814
+              ],
+              [
+                "n_sells",
+                1.0436133641969796
+              ],
+              [
+                "net_flow_sol",
+                0.6493058023161575
+              ],
+              [
+                "n_sellers",
+                0.5485815705987922
+              ],
+              [
+                "n_bonding_trades",
+                0.4285676632583792
+              ],
+              [
+                "n_buyers",
+                0.3558652687212028
+              ],
+              [
+                "buy_sol",
+                0.3439404844841218
+              ],
+              [
+                "sell_sol",
+                0.2233793730514336
+              ]
+            ]
+          }
+        },
+        "B only (3 days)": {
+          "2026-09-25": {
+            "trained": true,
+            "n_train": 1737,
+            "n_test": 559,
+            "cohorts": {
+              "all": {
+                "n": 559,
+                "gross_mean_pct": -2.271112740966011,
+                "flat_net_mean_pct": -2.7545691315384615,
+                "press_net_mean_pct": -1.3760212141432204,
+                "press_net_total_sol": -3.845979293530301,
+                "ex_top3_press_net_sol": -7.111554281101716
+              },
+              "top10": {
+                "n": 56,
+                "gross_mean_pct": -9.12612075,
+                "flat_net_mean_pct": -9.859193673214284,
+                "press_net_mean_pct": -9.219420827866635,
+                "press_net_total_sol": -2.5814378318026576,
+                "ex_top3_press_net_sol": -3.3838994544718908
+              },
+              "top20": {
+                "n": 112,
+                "gross_mean_pct": -0.39129595714285714,
+                "flat_net_mean_pct": -2.5223699621428572,
+                "press_net_mean_pct": -2.016685693863652,
+                "press_net_total_sol": -1.1293439885636452,
+                "ex_top3_press_net_sol": -3.2619557306045888
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.203762520021243
+              ],
+              [
+                "n_sellers",
+                0.6418448812293335
+              ],
+              [
+                "buy_sell_ratio",
+                0.5915522610879668
+              ],
+              [
+                "n_buys",
+                0.5876699280849265
+              ],
+              [
+                "n_buyers",
+                0.5453744457785872
+              ],
+              [
+                "n_sells",
+                0.3503156992426203
+              ],
+              [
+                "top_holder_share",
+                0.2924625613695144
+              ],
+              [
+                "creator_prior_mints_24h",
+                0.2770750518858523
+              ]
+            ]
+          },
+          "2026-09-26": {
+            "trained": true,
+            "n_train": 1395,
+            "n_test": 901,
+            "cohorts": {
+              "all": {
+                "n": 901,
+                "gross_mean_pct": 2.500250653718091,
+                "flat_net_mean_pct": 1.0988290547169814,
+                "press_net_mean_pct": 1.4416088504616646,
+                "press_net_total_sol": 6.494447871329799,
+                "ex_top3_press_net_sol": -9.264318774453043
+              },
+              "top10": {
+                "n": 90,
+                "gross_mean_pct": 4.914730037777778,
+                "flat_net_mean_pct": 1.876678228111111,
+                "press_net_mean_pct": 1.161061877413197,
+                "press_net_total_sol": 0.5224778448359387,
+                "ex_top3_press_net_sol": -1.8304187312802804
+              },
+              "top20": {
+                "n": 180,
+                "gross_mean_pct": 18.752573950000002,
+                "flat_net_mean_pct": 13.545367271,
+                "press_net_mean_pct": 10.46343015751069,
+                "press_net_total_sol": 9.417087141759621,
+                "ex_top3_press_net_sol": -3.483593823816257
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.0026160426377506
+              ],
+              [
+                "buy_sell_ratio",
+                0.9282521368288399
+              ],
+              [
+                "n_buyers",
+                0.7241806901761403
+              ],
+              [
+                "n_sellers",
+                0.6635752507412472
+              ],
+              [
+                "n_buys",
+                0.5719082279853371
+              ],
+              [
+                "nearby_buy_sol",
+                0.3811002437432378
+              ],
+              [
+                "n_sells",
+                0.3344250724669451
+              ],
+              [
+                "buy_sol",
+                0.293068359900983
+              ]
+            ]
+          },
+          "2026-09-27": {
+            "trained": true,
+            "n_train": 1460,
+            "n_test": 836,
+            "cohorts": {
+              "all": {
+                "n": 836,
+                "gross_mean_pct": -0.3710081550239234,
+                "flat_net_mean_pct": -1.1726155968301435,
+                "press_net_mean_pct": -1.0698825931663611,
+                "press_net_total_sol": -4.472109239435389,
+                "ex_top3_press_net_sol": -7.205326625939837
+              },
+              "top10": {
+                "n": 84,
+                "gross_mean_pct": 2.110295719047619,
+                "flat_net_mean_pct": -0.4111809908333336,
+                "press_net_mean_pct": -1.2203340489806884,
+                "press_net_total_sol": -0.5125403005718892,
+                "ex_top3_press_net_sol": -2.142863383173021
+              },
+              "top20": {
+                "n": 167,
+                "gross_mean_pct": -4.010296476646706,
+                "flat_net_mean_pct": -5.532179476766467,
+                "press_net_mean_pct": -4.18620810043377,
+                "press_net_total_sol": -3.495483763862198,
+                "ex_top3_press_net_sol": -5.549654005450058
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.1730650350830572
+              ],
+              [
+                "n_sellers",
+                0.9045521356647979
+              ],
+              [
+                "n_buys",
+                0.7945912456691806
+              ],
+              [
+                "top_holder_share",
+                0.49778730260917375
+              ],
+              [
+                "n_buyers",
+                0.4440461104251458
+              ],
+              [
+                "buy_sell_ratio",
+                0.3948188320873635
+              ],
+              [
+                "n_bonding_trades",
+                0.361452181328206
+              ],
+              [
+                "n_sells",
+                0.2628652601738615
+              ]
+            ]
+          }
+        },
+        "A + B together (6 days)": {
+          "2026-09-19": {
+            "trained": true,
+            "n_train": 4363,
+            "n_test": 962,
+            "cohorts": {
+              "all": {
+                "n": 962,
+                "gross_mean_pct": 4.506529507068607,
+                "flat_net_mean_pct": 3.001550127297297,
+                "press_net_mean_pct": 1.3672304025573856,
+                "press_net_total_sol": 6.576378236301025,
+                "ex_top3_press_net_sol": 0.1854914715367531
+              },
+              "top10": {
+                "n": 96,
+                "gross_mean_pct": -9.693914664583334,
+                "flat_net_mean_pct": -10.417299311145834,
+                "press_net_mean_pct": -6.809271954868561,
+                "press_net_total_sol": -3.2684505383369094,
+                "ex_top3_press_net_sol": -4.908758905737436
+              },
+              "top20": {
+                "n": 192,
+                "gross_mean_pct": 13.016474010416667,
+                "flat_net_mean_pct": 8.668496207916666,
+                "press_net_mean_pct": 4.470389223924687,
+                "press_net_total_sol": 4.291573654967699,
+                "ex_top3_press_net_sol": -1.3254568426805928
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.2537191705103903
+              ],
+              [
+                "n_sellers",
+                0.6043111236434071
+              ],
+              [
+                "buy_sell_ratio",
+                0.5338232500105117
+              ],
+              [
+                "n_buyers",
+                0.531809705308227
+              ],
+              [
+                "n_buys",
+                0.39701265628446647
+              ],
+              [
+                "price_return_pre",
+                0.34225743453006635
+              ],
+              [
+                "sell_sol",
+                0.2306249752630794
+              ],
+              [
+                "creator_prior_mints_24h",
+                0.20760588728551405
+              ]
+            ]
+          },
+          "2026-09-20": {
+            "trained": true,
+            "n_train": 4291,
+            "n_test": 1034,
+            "cohorts": {
+              "all": {
+                "n": 1034,
+                "gross_mean_pct": 2.3282585160541585,
+                "flat_net_mean_pct": 1.1594976002030948,
+                "press_net_mean_pct": 0.2333508309788022,
+                "press_net_total_sol": 1.2064237961604074,
+                "ex_top3_press_net_sol": -11.322128938013593
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": -12.031270759223302,
+                "flat_net_mean_pct": -12.378287749902912,
+                "press_net_mean_pct": -8.977177655213117,
+                "press_net_total_sol": -4.623246492434755,
+                "ex_top3_press_net_sol": -7.701756289452071
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": -4.6558393980676325,
+                "flat_net_mean_pct": -6.187976227826086,
+                "press_net_mean_pct": -4.587239861825347,
+                "press_net_total_sol": -4.747793256989235,
+                "ex_top3_press_net_sol": -7.915582184144644
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.1214612784324902
+              ],
+              [
+                "n_sellers",
+                0.6436530832505514
+              ],
+              [
+                "n_buys",
+                0.563691683596238
+              ],
+              [
+                "buy_sell_ratio",
+                0.5528535969488461
+              ],
+              [
+                "n_buyers",
+                0.34684803758684485
+              ],
+              [
+                "price_return_pre",
+                0.3346777092333813
+              ],
+              [
+                "n_sells",
+                0.2516331677664875
+              ],
+              [
+                "nearby_buy_sol",
+                0.23715013181078673
+              ]
+            ]
+          },
+          "2026-09-21": {
+            "trained": true,
+            "n_train": 4292,
+            "n_test": 1033,
+            "cohorts": {
+              "all": {
+                "n": 1033,
+                "gross_mean_pct": 1.6116325113262342,
+                "flat_net_mean_pct": 0.5445785129912875,
+                "press_net_mean_pct": -0.10960246597968375,
+                "press_net_total_sol": -0.5660967367850666,
+                "ex_top3_press_net_sol": -6.647421403599423
+              },
+              "top10": {
+                "n": 103,
+                "gross_mean_pct": -2.4477222854368934,
+                "flat_net_mean_pct": -4.311591101165048,
+                "press_net_mean_pct": -2.90437938845633,
+                "press_net_total_sol": -1.49575538505501,
+                "ex_top3_press_net_sol": -3.5692867101486057
+              },
+              "top20": {
+                "n": 207,
+                "gross_mean_pct": -2.2788257729468597,
+                "flat_net_mean_pct": -4.112136806473429,
+                "press_net_mean_pct": -2.4819488349734473,
+                "press_net_total_sol": -2.5688170441975178,
+                "ex_top3_press_net_sol": -6.303085374730471
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.2549046842623115
+              ],
+              [
+                "n_buys",
+                0.5257893004742259
+              ],
+              [
+                "buy_sell_ratio",
+                0.5048263963967291
+              ],
+              [
+                "n_sellers",
+                0.4623188840398489
+              ],
+              [
+                "price_return_pre",
+                0.31299370613148453
+              ],
+              [
+                "n_sells",
+                0.2477965116912707
+              ],
+              [
+                "n_buyers",
+                0.24160064035028728
+              ],
+              [
+                "nearby_buy_sol",
+                0.20961376835269754
+              ]
+            ]
+          },
+          "2026-09-25": {
+            "trained": true,
+            "n_train": 4766,
+            "n_test": 559,
+            "cohorts": {
+              "all": {
+                "n": 559,
+                "gross_mean_pct": -2.271112740966011,
+                "flat_net_mean_pct": -2.7545691315384615,
+                "press_net_mean_pct": -1.3760212141432204,
+                "press_net_total_sol": -3.845979293530301,
+                "ex_top3_press_net_sol": -7.111554281101716
+              },
+              "top10": {
+                "n": 56,
+                "gross_mean_pct": -3.104636089285714,
+                "flat_net_mean_pct": -4.88225809392857,
+                "press_net_mean_pct": -4.85689779710074,
+                "press_net_total_sol": -1.3599313831882072,
+                "ex_top3_press_net_sol": -2.591454002409165
+              },
+              "top20": {
+                "n": 112,
+                "gross_mean_pct": -1.9238912089285711,
+                "flat_net_mean_pct": -3.889519140625,
+                "press_net_mean_pct": -3.2002945526614734,
+                "press_net_total_sol": -1.7921649494904253,
+                "ex_top3_press_net_sol": -3.770067249301657
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.1061069065602944
+              ],
+              [
+                "buy_sell_ratio",
+                0.4067490761266142
+              ],
+              [
+                "n_sellers",
+                0.40323217857375754
+              ],
+              [
+                "n_buys",
+                0.3835610911472038
+              ],
+              [
+                "price_return_pre",
+                0.3606207922250474
+              ],
+              [
+                "nearby_buy_sol",
+                0.25525998840423236
+              ],
+              [
+                "n_buyers",
+                0.17592352036687212
+              ],
+              [
+                "time_to_migrate_s",
+                0.17068613627365734
+              ]
+            ]
+          },
+          "2026-09-26": {
+            "trained": true,
+            "n_train": 4424,
+            "n_test": 901,
+            "cohorts": {
+              "all": {
+                "n": 901,
+                "gross_mean_pct": 2.500250653718091,
+                "flat_net_mean_pct": 1.0988290547169814,
+                "press_net_mean_pct": 1.4416088504616646,
+                "press_net_total_sol": 6.494447871329799,
+                "ex_top3_press_net_sol": -9.264318774453043
+              },
+              "top10": {
+                "n": 90,
+                "gross_mean_pct": 5.29080224,
+                "flat_net_mean_pct": 2.1659193561111114,
+                "press_net_mean_pct": 1.0980057741355342,
+                "press_net_total_sol": 0.49410259836099035,
+                "ex_top3_press_net_sol": -0.8507812419287616
+              },
+              "top20": {
+                "n": 180,
+                "gross_mean_pct": 19.758991047777776,
+                "flat_net_mean_pct": 14.390868990722222,
+                "press_net_mean_pct": 11.023955698610665,
+                "press_net_total_sol": 9.921560128749599,
+                "ex_top3_press_net_sol": -2.9791208368262785
+              }
+            },
+            "importance": [
+              [
+                "nearby_buy_sol",
+                2.04400468796136
+              ],
+              [
+                "mcap_at_t_sol",
+                1.086362730378715
+              ],
+              [
+                "buy_sell_ratio",
+                0.43972209215631775
+              ],
+              [
+                "n_sellers",
+                0.4324552160079286
+              ],
+              [
+                "n_buys",
+                0.40344418655619474
+              ],
+              [
+                "n_buyers",
+                0.2607849718503941
+              ],
+              [
+                "top_holder_share",
+                0.23758443104993607
+              ],
+              [
+                "sniper_buy_share",
+                0.21289564348234888
+              ]
+            ]
+          },
+          "2026-09-27": {
+            "trained": true,
+            "n_train": 4489,
+            "n_test": 836,
+            "cohorts": {
+              "all": {
+                "n": 836,
+                "gross_mean_pct": -0.3710081550239234,
+                "flat_net_mean_pct": -1.1726155968301435,
+                "press_net_mean_pct": -1.0698825931663611,
+                "press_net_total_sol": -4.472109239435389,
+                "ex_top3_press_net_sol": -7.205326625939837
+              },
+              "top10": {
+                "n": 84,
+                "gross_mean_pct": -0.035738959523809524,
+                "flat_net_mean_pct": -2.254498711666667,
+                "press_net_mean_pct": -1.679314283983168,
+                "press_net_total_sol": -0.7053119992729305,
+                "ex_top3_press_net_sol": -2.335635081874062
+              },
+              "top20": {
+                "n": 167,
+                "gross_mean_pct": -4.534545995209581,
+                "flat_net_mean_pct": -6.032773906107785,
+                "press_net_mean_pct": -4.366182628564543,
+                "press_net_total_sol": -3.6457624948513936,
+                "ex_top3_press_net_sol": -5.699932736439254
+              }
+            },
+            "importance": [
+              [
+                "mcap_at_t_sol",
+                1.1119993032587028
+              ],
+              [
+                "n_sellers",
+                0.7108615112812928
+              ],
+              [
+                "price_return_pre",
+                0.405022048048656
+              ],
+              [
+                "n_buys",
+                0.39544144107943086
+              ],
+              [
+                "nearby_buy_sol",
+                0.37557063015519876
+              ],
+              [
+                "buy_sell_ratio",
+                0.3301805644083071
+              ],
+              [
+                "n_bonding_trades",
+                0.3247975183859715
+              ],
+              [
+                "sell_sol",
+                0.26480053494378936
+              ]
+            ]
+          }
+        }
+      }
+    }
+  },
+  "pool_b_diagnostics": {
+    "hours_sampled": 3,
+    "hours": [
+      "2026-09-25T07",
+      "2026-09-26T15",
+      "2026-09-27T23"
+    ],
+    "rows_sampled": 2241318,
+    "out_of_order": 45567
+  },
+  "wall_s": 1310.0276651382446
+}
