@@ -388,7 +388,11 @@ def round_trip_fee_identity(
         "round_trip_lamports_portal_and_venue": venue_portal_lamports,
         "round_trip_frac_priority": priority_round_lamports / size_lamports,
         "round_trip_lamports_priority": priority_round_lamports,
-        "round_trip_frac_total": total_lamports / size_lamports,
+        # Exact sum of the two frac fields above, not total_lamports / size_lamports:
+        # total_lamports is quantized to whole lamports (see venue_portal_lamports), and
+        # dividing back by size_lamports would reintroduce that lamport-rounding noise into
+        # a field that is otherwise reported at full float precision.
+        "round_trip_frac_total": venue_portal_round_frac + priority_round_lamports / size_lamports,
         "round_trip_lamports_total": total_lamports,
         "priority_lamports_per_side": priority_lamports_per_side,
     }

@@ -700,6 +700,9 @@ def label_row(
         "trigger": exit_part.get("trigger"),
         "pnl_lamports": pnl,
         "pnl_sol": _sol(pnl),
+        # Non-price costs, computed in simulate_exit; forward it so labels.jsonl carries
+        # gross-vs-net the same way laya_v0's live runner already does per BookTrade.
+        "fee_stack_lamports": exit_part.get("fee_stack_lamports"),
         "entry_t_ms": entry.t_entry_ms,
         "entry_venue": entry.venue,
         "entry_spot_sol": entry.spot_sol,
