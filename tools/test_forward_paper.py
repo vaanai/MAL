@@ -1578,6 +1578,35 @@ class SwingBookTests(unittest.TestCase):
         self.assertIn("fail_rate=DEFAULT_FAIL_RATE", source)
         self.assertNotIn("paper_fail_pressure", source)
 
+    def test_flat_fail_miss_logs_the_discarded_fill_like_an_open_row(self) -> None:
+        """The coin-flipped miss carries the fill it discarded, with the same
+        values an `open` row gets when the flip lands, so the pressure stamp
+        can price it offline. Reporting only: pnl stays the priority cost."""
+        spec = BookSpec("buy_all", "baseline", "hold_30s", creator_cooldown_ms=0, token_cooldown_ms=0)
+
+        def run(fail_rate: float) -> list[dict]:
+            engine = ForwardEngine(
+                [spec],
+                kill_file=Path("/tmp/forward-paper-fail"),
+                retain_rows=True,
+                tape_end_ms=T0 + 120_000,
+                fail_rate=fail_rate,
+            )
+            engine.push_create(_create("MintA", T0))
+            engine.push_print(*_parsed("MintA", T0 - 1_000))
+            engine.drain_until(T0 + 5_000, final=True)
+            return engine.positions
+
+        opens = [r for r in run(0.0) if r["event"] == "open"]
+        misses = [r for r in run(1.0) if r["event"] == "miss"]
+        self.assertTrue(opens and misses)
+        opened, miss = opens[0], misses[0]
+        self.assertIs(miss["counterfactual_fill"], True)
+        for key in ("applied_latency_ms", "size_lamports", "exit_rule", "entry_venue", "entry_spot_sol", "entry_tokens_raw"):
+            self.assertEqual(miss[key], opened[key], key)
+        self.assertEqual(miss["entry_t_ms"], opened["t_entry_ms"])
+        self.assertEqual(miss["pnl_lamports"], miss["attempt_cost_lamports"])
+
     def test_void_window_excludes_post_95_until_guard_live(self) -> None:
         live = VOID_FROM_MS + 86_400_000
         self.assertTrue(decision_counts_for_promotion(VOID_FROM_MS - 1, live))
