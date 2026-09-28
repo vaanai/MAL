@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """Offline settlement for forward-paper positions orphaned by a runner restart.
 
+DANGER -- run only against a stopped runner or a point-in-time snapshot copy
+of `positions.jsonl`, never a live, growing file. An "open" row with no
+matching "close" row yet is ambiguous: it may be a true restart orphan, or it
+may be a position the live runner is about to close for real, a few
+milliseconds after this tool reads the file. Settling that second kind
+offline books a number the live runner will also book, double-counting the
+trade. Stop the runner first, or `cp` a snapshot of `positions.jsonl` and
+point `--positions` at the copy. See the `--i-know-its-a-snapshot` guard
+below.
+
 Problem: `_Ledger.open` (tools/forward_paper.py:1110) lives only in the
 running process's memory. `serve()` builds a fresh `ForwardEngine` on every
 boot (tools/forward_paper.py:3247) and nothing reads `positions.jsonl` back
@@ -18,12 +28,19 @@ those two files plus the sealed trade tape, it:
 
 1. finds "open" event rows with no matching "close" row (an orphan),
 2. rebuilds that mint's price path from the sealed tape,
-3. re-plays the SAME exit the live runner would have used --
-   `try_entry`/`simulate_exit` from `tools.paper_tape_scoreboard`, the same
-   `ExitRule`/`LadderRule` objects the config resolves for that book -- and
+3. re-plays the SAME exit the live runner would have used -- `try_entry`
+   from `tools.paper_tape_scoreboard` to reconstruct the fill, then branches
+   on the rule type exactly like `_try_exit` does
+   (tools/forward_paper.py:2186-2189): `simulate_ladder` from
+   `tools.laya_v0` for a `LadderRule` book, `simulate_exit` from
+   `tools.paper_tape_scoreboard` for everything else -- and
 4. writes one row per settled orphan to `settlements.jsonl`, each flagged
    `settled_offline: true`, with the same PnL fields `positions.jsonl` rows
    carry, so a scorer can add them into a book without reading two schemas.
+   Each orphan is settled in isolation: one orphan raising does not stop the
+   others from settling. A failed orphan still gets a row, flagged
+   `settled_offline: false` with a `settle_error` message, so nothing is
+   silently dropped from the count.
 
 Match key for "open" <-> "close": `(ledger, book, mint, decision_t_ms)`.
 `_try_exit` carries `decision_t_ms` through unchanged from the `open` row a
@@ -67,10 +84,12 @@ from tools.forward_paper import (
     _paths_from_rows,
     load_config,
 )
-from tools.laya_v0 import LADDER_RULES
+from tools.laya_v0 import LADDER_RULES, LadderRule, simulate_ladder
 from tools.paper_curve_math import DEFAULT_SLIPPAGE_CAP, LAMPORTS_PER_SOL
 from tools.paper_price_path import MintPath, load_creates, open_text, state_as_of
 from tools.paper_tape_scoreboard import simulate_exit, try_entry
+
+SNAPSHOT_FRESH_MS = 60_000
 
 SCHEMA_SETTLEMENT = "forward_paper_settlement_v1"
 
@@ -199,14 +218,30 @@ def settle_orphan(
         return SettleResult(None, f"venue_mismatch live={logged_venue} rebuilt={entry.venue}")
     if isinstance(logged_tokens, int) and entry.tokens_raw != logged_tokens:
         return SettleResult(None, f"tokens_mismatch live={logged_tokens} rebuilt={entry.tokens_raw}")
-    part = simulate_exit(
-        path,
-        entry,
-        rule,
-        latency_ms=latency_ms,
-        tape_end_ms=tape_end_ms,
-        size_lamports=size_lamports,
-    )
+    # Same branch the live runner takes in `_try_exit`
+    # (tools/forward_paper.py:2186-2189): a `LadderRule` book scales out
+    # through `simulate_ladder`, everything else closes through
+    # `simulate_exit`. Calling `simulate_exit` unconditionally here used to
+    # raise on a ladder book's exit rule, and that exception used to abort
+    # the whole run before any book got a settlement written.
+    if isinstance(rule, LadderRule):
+        part = simulate_ladder(
+            path,
+            entry,
+            rule,
+            latency_ms=latency_ms,
+            tape_end_ms=tape_end_ms,
+            size_lamports=size_lamports,
+        )
+    else:
+        part = simulate_exit(
+            path,
+            entry,
+            rule,
+            latency_ms=latency_ms,
+            tape_end_ms=tape_end_ms,
+            size_lamports=size_lamports,
+        )
     exit_status = part.get("exit_status")
     if exit_status == "censored":
         return SettleResult(None, "censored_tape_too_short")
