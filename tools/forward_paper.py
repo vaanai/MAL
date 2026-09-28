@@ -2569,6 +2569,10 @@ def build_shadow_state(
     until_ms: int,
     attention_rows: Iterable[dict[str, Any]] | None = None,
     offsets_ms: Sequence[int] = DECISION_OFFSETS_MS,
+    slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
+    model: ModelSlot | None = None,
+    barrier: ModelSlot | None = None,
+    swing: ModelSlot | None = None,
     dead_mints: frozenset[str] | None = None,
     early_timeout_ms: int | None = None,
     attn_t_start_ms: int = 0,
@@ -2580,35 +2584,47 @@ def build_shadow_state(
     uninterrupted run would have made, instead of starting from empty
     `library`/`wallets`/pending-trigger state every time the process bounces.
 
-    Zero decision/position side effects: `record_packets=False`,
+    Zero decision/position/log side effects: `record_packets=False`,
     `retain_rows=False`, no `logs`, no `positions_path`, so `_on_signal`
     never appends to `self.packets`/`self.decisions`/`self.positions` and
     never touches disk (verified against the ~1698 `want_score` gate and the
     `if self.retain_rows` / `log is not None` guards in `_decision`/`_position`).
+    `splice_state` never reads `self.books`, so nothing this function's own
+    `_BookRun.ceiling`/`.shadow` ledgers accumulate (real opens, closes,
+    skip reasons) ever reaches the real engine.
 
-    `books` is still the caller's real book list, not `()`, and that is a
-    deliberate deviation from "shadow gets no books": `_schedule_mig15`
-    (~1601) gates whether a migrate print ever pushes a `mig_15` entry onto
-    `self.mig15` on `any(run.spec.kind == "swing" and run.spec.point ==
-    "mig_15" for run in self.books)`. Build the shadow with `books=()` and
-    that heap silently stays empty regardless of the real config, so a
-    spliced restart would never fire a `mig_15` swing trigger the
-    uninterrupted run would have. (Grid scheduling does not have this
-    problem -- `_register_create` pushes `self.grids` off `self.offsets_ms`
-    alone, not `self.books`, so it is already restart-safe with an empty
-    book list; checked by reading `_register_create`, the only place that
-    writes `self.grids`.) So the shadow keeps only the `swing`/`mig_15`
-    subset of `books` -- enough for `_schedule_mig15`'s check to agree with
-    the real engine's, without giving every baseline/laya/migrate book (or
-    another swing point) a live entry attempt. Those surviving swing/mig_15
-    books DO run `_enter_or_skip` for real when a `mig_15` trigger fires
-    (freeze check, then `self.swing.score(...)`), but `swing` is never
-    given a model path here, so `booster is None` and every one of those
-    attempts is a same-line "no_model" skip -- no XGBoost call, and the
-    `open`/`pending` it could touch live only on this throwaway engine's own
-    `_BookRun.ceiling`/`.shadow`, which `splice_state` never copies. If a
-    later change adds another `self.books`-gated *state* mutation (as
-    opposed to a ledger-only one), this filter needs to grow with it.
+    `books` is the caller's *full* real book list, unmodified -- an earlier
+    version of this function ran only a `swing`/`mig_15` subset (enough to
+    keep `_schedule_mig15`'s ~1601 `self.books` gate correct without paying
+    for real entry attempts), but that broke `_prune()` (~2328): its `busy`
+    set (~2330) is `for run in self.books: busy.update(ledger.open);
+    busy.update(ledger.pending)`, i.e. it is only as complete as the books
+    actually run inside *this* engine. With the subset, a mint holding a
+    real, still-open baseline/laya/migrate position was invisible to
+    `busy`, so once it looked idle (~2340's `LIVE_IDLE_RETAIN_MS` window, or
+    ~2350's `PRUNE_AFTER_MS` one) `_prune` truncated its `book.flow`/
+    `self.seen` entry anyway -- silently, on a mint an uninterrupted engine
+    (where that position really is open, really is busy, and is therefore
+    never touched by `_prune` at all) would have kept in full. That
+    truncated `library`/`seen` is exactly what `splice_state` hands to the
+    real engine, so a multi-hour rebuild could restart with a stale-length
+    history for any mint whose real position was open across the boundary
+    but not represented in a book subset. Running the full book list
+    (`_enter_or_skip` and all) is what actually makes `busy` -- and
+    therefore what `_prune` keeps or drops -- match an uninterrupted engine.
+    `tools/test_forward_paper.py::WarmStartTests
+    .test_prune_keeps_a_mint_busy_across_a_restart_the_same_as_no_restart`
+    fails against the old subset-only version and passes against this one.
+
+    Model scoring during the shadow build is therefore a real cost, not
+    optional: a `laya`/`swing` book with a real `model`/`barrier`/`swing`
+    path scores every trigger it would have scored live, for the whole
+    sealed window. Callers that don't pass a `model`/`barrier`/`swing`
+    `ModelSlot` get the harmless default (`ModelSlot(None, None)`, always a
+    same-line "no_model" skip, no scoring cost) -- but that is a caller
+    choice now, not something this function forces to keep the state splice
+    correct. See the PR body for a boot-time estimate on real model paths
+    across a full week of tape.
 
     `_prune()`'s live-window truncation of `book.flow`/`book.path.prints`
     (~1440's `if self.latency.now_ms is not None`) is wall-clock gated, and
@@ -2635,14 +2651,16 @@ def build_shadow_state(
     function itself reads from `creates`/`trade_rows`/`attention_rows`
     (below) and where `drain_until` stops; it is not told to the engine.
     """
-    swing_mig15_books = [b for b in books if b.kind == "swing" and b.point == "mig_15"]
     clock_box: dict[str, int] = {"ms": 0}
     engine = ForwardEngine(
-        swing_mig15_books,
+        books,
         kill_file=Path("/nonexistent/forward-paper-shadow-kill-never"),
         latency=LatencyMeter(now_ms=lambda: clock_box["ms"]),
-        swing=ModelSlot(None, None),
+        model=model,
+        barrier=barrier,
+        swing=swing,
         offsets_ms=offsets_ms,
+        slippage_cap=slippage_cap,
         tape_end_ms=None,
         record_packets=False,
         retain_rows=False,
@@ -2650,6 +2668,12 @@ def build_shadow_state(
         dead_mints=dead_mints,
         early_timeout_ms=early_timeout_ms,
     )
+    if model is not None:
+        model.maybe_reload(force=True)
+    if barrier is not None:
+        barrier.maybe_reload(force=True)
+    if swing is not None:
+        swing.maybe_reload(force=True)
     engine.attn_t_start_ms = attn_t_start_ms
     engine.attn_snapshot = attn_snapshot if attn_snapshot is not None else set()
     for create in creates:
