@@ -136,27 +136,43 @@ def plan_workers_c(max_workers: int = 3, buffer_hours: int = 2) -> list[tuple[in
     return plan
 
 
-def run_worker_c(worker_id: int, home_keys: list[str], buffer_keys: list[str], creator_hist: dict[str, list[int]]) -> list[dict[str, Any]]:
-    return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=_hour_info_c)
+def run_worker_c(
+    worker_id: int,
+    home_keys: list[str],
+    buffer_keys: list[str],
+    creator_hist: dict[str, list[int]],
+    rows_out_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """`rows_out_path`: same streaming-to-disk fix ported to pool A (see
+    run_worker_features's docstring); a fixed-positional trailing arg so it
+    survives `Pool.starmap`."""
+    return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=_hour_info_c, rows_out_path=rows_out_path)
 
 
-def run_all_features_c(max_workers: int = 3, buffer_hours: int = 2) -> list[dict[str, Any]]:
+def run_all_features_c(max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None) -> list[dict[str, Any]]:
+    """out_dir set: each worker streams to `out_dir/poolC-w<i>.jsonl` instead
+    of holding rows in memory (see run_all_features's docstring in
+    tools.exploration_entry_model)."""
     print(f"pool C trade hours: {POOL_C_START} .. {POOL_C_END} ({len(POOL_C_HOURS)})", file=sys.stderr, flush=True)
     print(f"pool C root: {BACKFILL_C}", file=sys.stderr, flush=True)
     creator_hist = build_creator_history_c()
     print(f"pool C creator_history creators={len(creator_hist)}", file=sys.stderr, flush=True)
     plan = plan_workers_c(max_workers, buffer_hours)
     print(f"pool C worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
+    paths = [_rows_out_path(out_dir, "C", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
     if max_workers <= 1 or len(plan) <= 1:
-        for worker_id, home, buf in plan:
-            rows.extend(run_worker_c(worker_id, home, buf, creator_hist))
-        return rows
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=len(plan)) as pool:
-        results = pool.starmap(run_worker_c, [(i, h, b, creator_hist) for i, h, b in plan])
-    for part in results:
-        rows.extend(part)
+        for (worker_id, home, buf), path in zip(plan, paths):
+            rows.extend(run_worker_c(worker_id, home, buf, creator_hist, path))
+    else:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=len(plan)) as pool:
+            results = pool.starmap(run_worker_c, [(i, h, b, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
+        for part in results:
+            rows.extend(part)
+    if out_dir is not None:
+        for path in paths:
+            rows.extend(iter_rows_jsonl(path))
     return rows
 
 

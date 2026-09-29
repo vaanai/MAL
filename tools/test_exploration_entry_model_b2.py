@@ -7,8 +7,12 @@ Exploration only. See ARTIFACTS/lab/exploration-entry-model-b2-2026-09-28.md.
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
+from tools.exploration_entry_model import _Feat, iter_rows_jsonl
 from tools.exploration_entry_model_b2 import (
     DAYS_A,
     DAYS_ALL,
@@ -20,9 +24,30 @@ from tools.exploration_entry_model_b2 import (
     consistency_counts,
     leave_one_day_out_days,
     plan_workers_b,
+    run_worker_b,
 )
+from tools.latency_curve import _Mint
 from tools.oracle_live_adapter import POOL_B_HOURS
 from tools.paper_curve_math import LAMPORTS_PER_SOL
+from tools.paper_price_path import TapePrint
+
+
+def _print(t_ms: int, slot: int, quote: int, base: int, venue: str = "pumpswap", side: str = "buy") -> TapePrint:
+    price = quote / (base * 1000)
+    return TapePrint(
+        t_recv_ms=t_ms,
+        slot=slot,
+        event_index=1,
+        venue=venue,
+        side=side,
+        sol_lamports=1_000_000_000,
+        quote_reserve=quote,
+        base_reserve=base,
+        price_sol=price,
+        market_cap_sol=price * 1_000_000_000,
+        signature=f"sig-{slot}-{t_ms}",
+        tx_index=0,
+    )
 
 
 class ExTop3Tests(unittest.TestCase):
@@ -140,6 +165,74 @@ class PlanWorkersBTests(unittest.TestCase):
         _worker_id, home, buf = plan[-1]
         self.assertEqual(home[-1], POOL_B_HOURS[-1])
         self.assertEqual(buf, [])
+
+
+class RunWorkerBStreamToDiskTests(unittest.TestCase):
+    """run_worker_b(rows_out_path=...) must produce the exact same rows a
+    fully in-memory run would (same fix as pool A's
+    test_exploration_entry_model.StreamToDiskTests, ported to pool B's
+    wrapper). Fakes out `_hour_info_b`/`iter_trade_rows_sorted` with a tiny
+    synthetic tape -- no Oracle live tape read."""
+
+    def _hour_info(self, t0_ms: int) -> dict:
+        return {
+            "hour": "test-hour",
+            "day": "2026-09-25",
+            "end": t0_ms // 1000 + 40 * 60,
+            "trade": Path("unused"),
+            "create": None,
+        }
+
+    def _rows(self, t0_ms: int) -> list[dict]:
+        bonding = {
+            "type": "trade",
+            "venue": "pump_bonding",
+            "side": "buy",
+            "quote_reserve": 80_000_000_000,
+            "base_reserve": 400_000_000_000_000,
+            "slot": 100,
+            "event_index": 1,
+            "sol_lamports": 1_000_000_000,
+            "trader": "walletA",
+            "token_raw": 500_000,
+            "mint": "mintZ",
+            "t_recv_ms": t0_ms + 500,
+            "block_time": t0_ms // 1000,
+        }
+        migrate = {**bonding, "venue": "pumpswap", "slot": 105, "t_recv_ms": t0_ms + 20_000, "trader": "walletB", "quote_is_wsol": True}
+        later = {**migrate, "slot": 110, "t_recv_ms": t0_ms + 20_000 + 1_900_000}
+        return [bonding, migrate, later]
+
+    def _all_creates(self, t0_ms: int) -> dict:
+        entry = _print(t0_ms, 100, 80_000_000_000, 400_000_000_000_000)
+        mint = _Mint(100, t0_ms, 0, entry)
+        mint.had_bond = True
+        return {"mintZ": (mint, _Feat("creatorZ", t0_ms, entry.price_sol))}
+
+    def test_rows_written_to_disk_match_the_in_memory_rows(self) -> None:
+        t0 = 1_790_294_700_000  # 2026-09-25T00:05:00Z -- inside home_keys[0]'s window
+
+        def hour_info_fn(_key: str) -> dict:
+            return self._hour_info(t0)
+
+        def row_iter_fn(_path) -> list[dict]:
+            return self._rows(t0)
+
+        with mock.patch("tools.exploration_entry_model_b2._hour_info_b", side_effect=hour_info_fn), mock.patch(
+            "tools.exploration_entry_model_b2.iter_trade_rows_sorted", side_effect=row_iter_fn
+        ):
+            in_memory = run_worker_b(0, ["2026-09-25T00"], [], self._all_creates(t0), {})
+            self.assertTrue(in_memory)
+
+            with tempfile.TemporaryDirectory() as tmp:
+                out_path = Path(tmp) / "rows.jsonl"
+                returned = run_worker_b(0, ["2026-09-25T00"], [], self._all_creates(t0), {}, out_path)
+                self.assertEqual(returned, [])
+                from_disk = list(iter_rows_jsonl(out_path))
+
+        self.assertEqual(len(from_disk), len(in_memory))
+        key = lambda r: (r["spec"], r["status"], r["flat"], r["press"], r["mint"])
+        self.assertEqual(sorted(map(key, from_disk)), sorted(map(key, in_memory)))
 
 
 if __name__ == "__main__":

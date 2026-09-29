@@ -9,9 +9,14 @@ Exploration only. See ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md.
 
 from __future__ import annotations
 
+import json
 import random
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
+from tools.exploration_entry_model import iter_rows_jsonl
 from tools.exploration_entry_model_b3 import (
     DAYS_ALL,
     SETTINGS_B3,
@@ -22,6 +27,7 @@ from tools.exploration_entry_model_b3 import (
     leave_one_day_out_b3,
     pooled_cohort_report,
     pooled_split_by_source,
+    run_worker_c,
     screen_candidate,
     winsorize_train_labels,
 )
@@ -295,6 +301,79 @@ def _feature_names() -> list[str]:
     from tools.exploration_entry_model import FEATURE_NAMES
 
     return list(FEATURE_NAMES)
+
+
+class RunWorkerCStreamToDiskTests(unittest.TestCase):
+    """run_worker_c(rows_out_path=...) must produce the exact same rows a
+    fully in-memory run would (same fix as pool A's
+    test_exploration_entry_model.StreamToDiskTests, ported to pool C's
+    wrapper). run_worker_c has no creates_override seam, so this writes a
+    tiny real create/trade file pair to a temp dir and points a mocked
+    `_hour_info_c` at them -- no oracle_insample_adapter backfill root
+    read."""
+
+    def _write_tape(self, tmp: Path, t0_ms: int) -> tuple[Path, Path]:
+        create_row = {
+            "type": "create",
+            "mint": "mintZ",
+            "slot": 100,
+            "block_time": t0_ms // 1000,
+            "creator": "creatorZ",
+            "signature": "sig-create",
+            "quote_reserve": 80_000_000_000,
+            "base_reserve": 400_000_000_000_000,
+        }
+        bonding = {
+            "type": "trade",
+            "venue": "pump_bonding",
+            "side": "buy",
+            "quote_reserve": 80_000_000_000,
+            "base_reserve": 400_000_000_000_000,
+            "slot": 100,
+            "event_index": 1,
+            "sol_lamports": 1_000_000_000,
+            "trader": "walletA",
+            "token_raw": 500_000,
+            "mint": "mintZ",
+            "t_recv_ms": t0_ms + 500,
+            "block_time": t0_ms // 1000,
+        }
+        migrate = {**bonding, "venue": "pumpswap", "slot": 105, "t_recv_ms": t0_ms + 20_000, "trader": "walletB", "quote_is_wsol": True}
+        later = {**migrate, "slot": 110, "t_recv_ms": t0_ms + 20_000 + 1_900_000}
+        create_path = tmp / "create.jsonl"
+        trade_path = tmp / "trade.jsonl"
+        create_path.write_text(json.dumps(create_row) + "\n", encoding="utf-8")
+        trade_path.write_text("\n".join(json.dumps(r) for r in (bonding, migrate, later)) + "\n", encoding="utf-8")
+        return create_path, trade_path
+
+    def test_rows_written_to_disk_match_the_in_memory_rows(self) -> None:
+        t0 = 1_700_000_000_000
+
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            create_path, trade_path = self._write_tape(tmp, t0)
+
+            def hour_info_fn(_key: str) -> dict:
+                return {
+                    "hour": "test-hour",
+                    "day": "2026-09-22",
+                    "end": t0 // 1000 + 40 * 60,
+                    "trade": trade_path,
+                    "create": create_path,
+                }
+
+            with mock.patch("tools.exploration_entry_model_b3._hour_info_c", side_effect=hour_info_fn):
+                in_memory = run_worker_c(0, ["h"], [], {})
+                self.assertTrue(in_memory)
+
+                out_path = tmp / "rows.jsonl"
+                returned = run_worker_c(0, ["h"], [], {}, out_path)
+                self.assertEqual(returned, [])
+                from_disk = list(iter_rows_jsonl(out_path))
+
+        self.assertEqual(len(from_disk), len(in_memory))
+        key = lambda r: (r["spec"], r["status"], r["flat"], r["press"], r["mint"])
+        self.assertEqual(sorted(map(key, from_disk)), sorted(map(key, in_memory)))
 
 
 if __name__ == "__main__":
