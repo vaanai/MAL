@@ -128,7 +128,7 @@ if [[ "${#ERRORS[@]}" -gt 0 ]]; then
   ERROR_STR="$(IFS='; '; echo "${ERRORS[*]}")"
 fi
 
-jq -n \
+jq -c -n \
   --arg restart_utc "${RESTART_UTC}" \
   --arg pre_rss "${PRE_RSS}" \
   --arg pre_head_sha "${PRE_HEAD_SHA}" \
