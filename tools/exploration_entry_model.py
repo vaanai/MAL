@@ -406,6 +406,7 @@ def run_worker_features(
     hour_info_fn: Any = _hour_info,
     row_iter_fn: Any = _iter_trades,
     creates_override: dict[str, tuple[_Mint, _Feat]] | None = None,
+    rows_out_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """`hour_info_fn`/`row_iter_fn`/`creates_override` let a second pool with a
     different on-disk layout (e.g. the Oracle live tape in
@@ -413,6 +414,20 @@ def run_worker_features(
     exact streaming worker and score_one unchanged. Every default reproduces
     the original fast-box-only behavior exactly, so the existing pool-A
     tests and reports are untouched.
+
+    `rows_out_path` (ported from lane D's fix for the 02:15Z host OOM,
+    commit 9e9b08e on branch claude/explore-early-entry-model): by default
+    (None) every scored row is held in an in-memory list `out` and
+    returned -- fine for tests and small slices, but across a whole
+    ~24h+buffer worker range this list is the dominant driver of peak RSS
+    (it only grows, and gets pickled whole back to the parent through
+    `multiprocessing.Pool.starmap` right as every worker's own peak
+    overlaps the others'). With `rows_out_path` set, each mint's rows are
+    written to that path as newline-delimited JSON as soon as they are
+    scored (never held past that), and this function returns `[]`. A
+    worker's resident set then stays bounded by its `hot`/`watch` dicts
+    (already window-bounded by WINDOW_MS) instead of climbing with the
+    whole run's output. See `iter_rows_jsonl` to read the file back.
     """
     os.nice(19)
     home_hours = [hour_info_fn(k) for k in home_keys]
@@ -424,6 +439,7 @@ def run_worker_features(
     watch: dict[str, _Mint] = {}
     curve = _curve()
     out: list[dict[str, Any]] = []
+    out_fh = rows_out_path.open("w", encoding="utf-8") if rows_out_path is not None else None
     now_ms = 0
     scored = 0
 
@@ -431,7 +447,12 @@ def run_worker_features(
         nonlocal scored
         if mint.mig_slot is None or mint.mig_done:
             return
-        out.extend(score_one(mint_id, mint, feat.get(mint_id), curve, through_ms, creator_hist))
+        rows = score_one(mint_id, mint, feat.get(mint_id), curve, through_ms, creator_hist)
+        if out_fh is not None:
+            for r in rows:
+                out_fh.write(json.dumps(r) + "\n")
+        else:
+            out.extend(rows)
         mint.mig_done = True
         scored += 1
 
@@ -507,27 +528,68 @@ def run_worker_features(
         flush(max(now_ms, int(hour["end"]) * 1000), False)
         _trim_heap()
     flush(now_ms, True)
+    if out_fh is not None:
+        out_fh.close()
+        print(f"[w{worker_id}] done lines={lines} scored={scored} rows_written_to={rows_out_path}", file=sys.stderr, flush=True)
+        return []
     print(f"[w{worker_id}] done lines={lines} scored={scored} rows={len(out)}", file=sys.stderr, flush=True)
     return out
 
 
-def run_all_features(max_workers: int = 3, buffer_hours: int = 2) -> list[dict[str, Any]]:
+def iter_rows_jsonl(path: Path) -> Any:
+    """Stream rows back from a file `run_worker_features` wrote via
+    rows_out_path -- one dict per line, in write order."""
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+
+def _rows_out_path(out_dir: Path | None, pool_tag: str, worker_id: int) -> Path | None:
+    if out_dir is None:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"pool{pool_tag}-w{worker_id}.jsonl"
+
+
+def run_worker_a(
+    worker_id: int, home_keys: list[str], buffer_keys: list[str], creator_hist: dict[str, list[int]], rows_out_path: Path | None = None
+) -> list[dict[str, Any]]:
+    """A fixed-positional-signature wrapper so `rows_out_path` (keyword-only
+    on run_worker_features) can be passed through `Pool.starmap`, which only
+    unpacks tuples positionally."""
+    return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, rows_out_path=rows_out_path)
+
+
+def run_all_features(max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None) -> list[dict[str, Any]]:
+    """out_dir=None (default): every worker returns its rows in memory, as
+    before -- fine for tests and small slices. out_dir set: each worker
+    streams its rows straight to `out_dir/poolA-w<i>.jsonl` instead of
+    holding them (see run_worker_features's rows_out_path), and this
+    function reads them back off disk once the pool has finished, one file
+    at a time, instead of receiving several large pickled lists from
+    `Pool.starmap` at once."""
     print("building creator prior-mint history over the whole pool...", file=sys.stderr, flush=True)
     creator_hist = build_creator_history()
     print(f"creator_history creators={len(creator_hist)}", file=sys.stderr, flush=True)
     plan = plan_workers(max_workers, buffer_hours)
     print(f"hours_read={POOL_HOURS}", file=sys.stderr, flush=True)
     print(f"worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
+    paths = [_rows_out_path(out_dir, "A", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
     if max_workers <= 1 or len(plan) <= 1:
-        for worker_id, home, buf in plan:
-            rows.extend(run_worker_features(worker_id, home, buf, creator_hist))
-        return rows
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=len(plan)) as pool:
-        results = pool.starmap(run_worker_features, [(i, h, b, creator_hist) for i, h, b in plan])
-    for part in results:
-        rows.extend(part)
+        for (worker_id, home, buf), path in zip(plan, paths):
+            rows.extend(run_worker_a(worker_id, home, buf, creator_hist, path))
+    else:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=len(plan)) as pool:
+            results = pool.starmap(run_worker_a, [(i, h, b, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
+        for part in results:
+            rows.extend(part)
+    if out_dir is not None:
+        for path in paths:
+            rows.extend(iter_rows_jsonl(path))
     return rows
 
 
