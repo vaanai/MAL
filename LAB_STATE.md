@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers. **As-of:** 2026-09-28 UTC. `main` through [#125](https://github.com/vaanai/MAL/pull/125) (`f687fad`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md).
+Compact reload for managers. **As-of:** 2026-09-29 ~05:00Z. `main` through [#157](https://github.com/vaanai/MAL/pull/157) (`22e7a7b`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
 
 ## Objective
 
@@ -8,7 +8,7 @@ Compact reload for managers. **As-of:** 2026-09-28 UTC. `main` through [#125](ht
 
 Path: full trade tape → honest simulator → signals → forward paper → gated live. Live starts only after a book clears the promotion gate **and** the owner approves.
 
-Edge is information plus modest latency versus humans and copy-traders, not MEV / Jito / colocated snipers. **LAYA** in this repo is our LightGBM entry and exit models behind a rules risk gate ([docs/research/laya-engine-options.md](docs/research/laya-engine-options.md)).
+Edge is information plus modest latency versus humans and copy-traders, not MEV / Jito / colocated snipers.
 
 ## Hard fences
 
@@ -17,18 +17,18 @@ Edge is information plus modest latency versus humans and copy-traders, not MEV 
 - **Port 22 is never public.** SSH for agents is Cloudflare Access. **Stop on a host-key mismatch.**
 - `/opt/miscusi` on `mal-fast-0` is a separate project, `vaanai/MiScusi`, led by the same Claude manager. Do not modify it from MAL work.
 - Sealed **JSONL** is the provenance spine. Postgres is ops/state only ([DEC-002](DEC/DEC-002-memory-first-no-db-local.md)).
-- GitHub is the source of truth. Lab notes that used to live only in the project store are in this repo (`docs/`, `ARTIFACTS/lab/`, `ARTIFACTS/daily/`).
+- GitHub is the source of truth for lab notes (`docs/`, `ARTIFACTS/lab/`, `ARTIFACTS/daily/`).
 
 Non-negotiables: [CONSTITUTION.md](CONSTITUTION.md). Workflow: [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md), [DEC-013](DEC/DEC-013-claude-manager-merges.md).
 
-## Hosts (2026-09-27)
+## Hosts
 
-| Host | Role | SSH |
-| --- | --- | --- |
-| `mal-core-0` | Oracle, aarch64, archive + training. Resized to 4 OCPU / ~24 GB (was the 2/12 Always Free envelope). | `ssh.tradervaan.com` |
-| `mal-fast-0` | OVH Frankfurt, x86_64. Fast listeners. **Main focus now.** | `ssh-fast.tradervaan.com` |
+| Host | Role |
+| --- | --- |
+| `mal-core-0` | Oracle, aarch64, archive + training + forward paper. |
+| `mal-fast-0` | OVH Frankfurt, x86_64. Fast listeners + the backward backfill. **Main focus.** |
 
-Detail, units, logs, and what is safe to restart: [docs/HOSTS.md](docs/HOSTS.md).
+Detail, units, logs, memory limits, and what is safe to restart: [docs/HOSTS.md](docs/HOSTS.md).
 
 ## Decisions index
 
@@ -37,7 +37,6 @@ Detail, units, logs, and what is safe to restart: [docs/HOSTS.md](docs/HOSTS.md)
 | [DEC-001](DEC/DEC-001-lean-four-override.md) | Lean four seats |
 | [DEC-002](DEC/DEC-002-memory-first-no-db-local.md) | Memory-first; JSONL spine |
 | [DEC-003](DEC/DEC-003-regime-at-ingest-v0.md) / [DEC-004](DEC/DEC-004-regime-id-encoding.md) | Regime-at-ingest v0 |
-| [DEC-005](https://github.com/vaanai/MAL/pull/8) | Hot-packet clocks / `Δ_exec`. **Unmerged draft.** No file in `DEC/`. Do not treat it as law. Recommendation: close #8. |
 | [DEC-006](DEC/DEC-006-detect-decode-evaluate-runners.md) | detect → decode → evaluate → runners |
 | [DEC-007](DEC/DEC-007-full-detect-book-anti-selection-bias.md) | Full detect book |
 | [DEC-008](DEC/DEC-008-stack-phase-gates.md) | Stack phase gates |
@@ -45,149 +44,70 @@ Detail, units, logs, and what is safe to restart: [docs/HOSTS.md](docs/HOSTS.md)
 | [DEC-011](DEC/DEC-011-cursor-oracle-access-cf-tunnel.md) | Cloudflare Tunnel + Access (**LIVE**) |
 | [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md) | Manager plans, workers open PRs, tool-neutral workflow |
 | [DEC-013](DEC/DEC-013-claude-manager-merges.md) | Claude manager merges (not Helm); Helm keeps ufw/sshd/tunnel/Access/Oracle admin |
-| [DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md) | Holdout ledger (one owner per historical block); Holm–Bonferroni multiplicity correction on multi-book/multi-cell reads; single read at kill review |
+| [DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md) | Holdout ledger (one owner per historical block); Holm–Bonferroni multiplicity correction; single read at kill review; pressure-leg start instant (Amendment 3) |
 
 ## What is running
 
 | System | Where | Status |
 | --- | --- | --- |
-| Observe, trade tape, attention, funding graph, forward paper | Oracle user units | Live collectors and the paper runner. See HOSTS. |
-| LAYA timer | Oracle `mal-laya-v0.timer` 04:15 UTC | **Disabled until 2026-10-05.** The frozen job still spiked runner lag to about 12.5 s. [#106](https://github.com/vaanai/MAL/pull/106) (merged) is what it runs if re-enabled: `tools.laya_frozen_nightly` (cached pre-freeze fit, forward holdout append, backward holdout append, scoreboard). Exploratory retrain and `mig15 --deploy` stay skipped. CPUQuota 25%, MemoryMax 11G, MemorySwapMax 0, 256 MiB chunks. The scan pauses when `lag_ms` is over 3000 and resumes under 2000. |
-| Attention daily | Oracle `mal-attention-daily.timer` 04:45 UTC | **Disabled until 2026-10-05.** `attention-daily.sh` exits before that date. The `mal-attention` poller keeps running. |
-| Pump backfill | Oracle, CPU cap 50% ([#104](https://github.com/vaanai/MAL/pull/104)) | Covers **2026-09-22T00Z–2026-09-25T07Z**. Does not walk into the fast-box range. |
-| Frozen migrate-direct score | Oracle `mal-migrate-direct-oos.timer` **01:20 UTC** | **Under test; may move to mal-fast-0.** Scores the frozen cell only. Does not change live size ceilings. |
+| Oracle forward-paper runner | Oracle `mal-forward-paper.service` | Code `d7485d2` since restart #3, **2026-09-29T00:00:20Z**. Restarts **daily at 00:00:00Z** via the claude timer `mal-runner-daily-restart` on `mal-fast-0` ([#137](https://github.com/vaanai/MAL/pull/137), [#155](https://github.com/vaanai/MAL/pull/155)), logged to `/home/claude/reports/runner-restarts.jsonl`. Every restart resets in-memory `WalletState`/`by_creator`; open positions settle offline. Memory growth ~300 MB/h post-#134, `tx_order_entries` plateaus ~800k. Oracle cgroup `MemoryHigh` 10G / `MemoryMax` 12G. |
+| Backward backfill, 3 walkers | `mal-fast-0` | `mal-fast-backfill` (walker 1): floored at 2026-09-15T12, cap 2.3M, 1,307,207 credits used, 93 hours sealed. `mal-fast-backfill-b`: `[2026-09-12T12, 2026-09-15T12)`, cap 1.1M. `mal-fast-backfill-c`: `[2026-09-09T12, 2026-09-12T12)`, cap 1.1M. Combined 1,505,168 of a planned ~4.5M credits at 05:03Z. |
+| Fast listeners | `mal-fast-0` | `mal-fast-create`, `mal-fast-public-logs`, `mal-fast-pre-create` up. Early-trade and full fast tape installed, not running. |
+| Claude schedules | `mal-fast-0`, user `claude` | `mal-daily-review` 05:00 UTC, `mal-runner-daily-restart` 00:00 UTC. `mal-oos-check` was a one-shot for the 2026-09-28 21:00Z read; it already ran and is not recurring. |
+| Frozen migrate-direct scorers | Oracle + `mal-fast-0` | **Stopped.** `mal-migrate-direct-oos.timer` disabled by Helm on Oracle; `mal-fast-oos-score` stopped on `mal-fast-0`. The cell is dead — no more credits go to it. |
+| LAYA / attention-daily timers | Oracle | **Disabled until 2026-10-05.** |
 | Healthcheck | Oracle `mal-healthcheck.timer` every 5 min | `/var/lib/mal/eng/healthcheck.sh` |
-| Fast listeners | `mal-fast-0` | `mal-fast-create`, `mal-fast-public-logs`, `mal-fast-pre-create` left up. Early-trade and the full fast tape unit are installed and **not** left running. |
-| Fast backfill + OOS score | `mal-fast-0` | Walks **back from 2026-09-21T23Z**. Hard cap **+2,000,000** credits ([#111](https://github.com/vaanai/MAL/pull/111), [#112](https://github.com/vaanai/MAL/pull/112)). |
 
-**Helius.** Developer plan is in use. Backfill ledger when the fast OOS run opened: 957,741 used of 4,000,000. The fast run has its own +2M cap. Autoscaling headroom is an owner setting, recorded in [CLAUDE.md](CLAUDE.md), not a measured edge.
+## Current research state
 
-## Manager handoff (2026-09-27, DEC-013)
+- **Frozen migrate-direct cell is dead.** Formal FAIL from the 2026-09-28T21:00Z one-shot: pooled 0.5 SOL n=3,622 over 5 days, flat net −0.0906% (3/5 days positive), pressure net −0.1682% (2/5), every CI lower bound < 0. It is not refit. Detail: [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md), [ARTIFACTS/lab/migrate-direct-oos.md](ARTIFACTS/lab/migrate-direct-oos.md).
+- **EXP-011 (candidate confirmation, pre-registration in progress):** the frozen, leakage-ablated S2 entry model at a fixed threshold, read once on the holdout block `[2026-09-09T12, 2026-09-15T12)` walked by walkers B + C, due about **2026-09-30T03Z**. A pass earns a forward book after 2026-10-05, not live.
+- **EXP-009 (creator gate) is a SCREEN**, not a confirmation test: k = 1 ([#154](https://github.com/vaanai/MAL/pull/154)), block `[2026-09-15T12, 2026-09-19T01)` via walker 1, about 2.5 eligible days. A pass earns a forward trial, never a promote.
+- **Exploration entry-model B3** (9 held-out days, [#156](https://github.com/vaanai/MAL/pull/156)): the S2 classifier, tp50_sl30, top 10%, passed the pre-stated screen; after the leakage ablation (dropping `same_slot_buys`/`nearby_buy_sol`) it gives flat +6.22% (CI lo +3.85%), pressure +3.59% (CI lo +2.06%), 9/9 days positive, ex-top-3 +24.97/+14.17 SOL. Fast-box slice alone is weakest, +1.24% pressure after ablation. **This is exploration, not a promote** — EXP-011 is the confirmation test.
+- **Exits are dead:** the trailing stop was killed by concentration ([#151](https://github.com/vaanai/MAL/pull/151)) — ex-top-3 −8.0 SOL despite a positive pooled total.
+- **Fee tiers are a dead end** ([#142](https://github.com/vaanai/MAL/pull/142)) at the migrate trigger: 98.6% of fills already pay the top tier.
+- **Lesson:** the typical migrate entry loses; exits only harvest rare tails. Entry selection is the lever. Always check ex-top-3 before calling a cell a candidate.
 
-The Claude session on `mal-fast-0` took over as manager ([DEC-013](DEC/DEC-013-claude-manager-merges.md), [#118](https://github.com/vaanai/MAL/pull/118)). Merged since: [#115](https://github.com/vaanai/MAL/pull/115), [#116](https://github.com/vaanai/MAL/pull/116), [#117](https://github.com/vaanai/MAL/pull/117), [#118](https://github.com/vaanai/MAL/pull/118), [#119](https://github.com/vaanai/MAL/pull/119), [#120](https://github.com/vaanai/MAL/pull/120). Closed without merge, stale: [#114](https://github.com/vaanai/MAL/pull/114) (cancelled), [#5](https://github.com/vaanai/MAL/pull/5), [#8](https://github.com/vaanai/MAL/pull/8), [#10](https://github.com/vaanai/MAL/pull/10), [#15](https://github.com/vaanai/MAL/pull/15), [#22](https://github.com/vaanai/MAL/pull/22).
+## Kill review — 2026-10-05T05:00:00Z
 
-[#117](https://github.com/vaanai/MAL/pull/117): `mal-fast-create` was crashing about every 4h (11:45, 15:35, 19:35 UTC) on an uncaught `websockets` `InvalidStatusCode` (HTTP 502) during the PumpPortal reconnect, each a 9–12 s create gap. Fix deployed to `/var/lib/mal/eng/fast_create_listener.py` (backup `.bak-20260927-pre117`), unit restarted 22:55Z.
+Single read, once, at or after that instant, on a snapshot — never on a live, growing `positions.jsonl`. Scorer: `tools/kill_review.py`, with `tools/forward_paper_settle_orphans.py` for restart-dropped opens and `tools/forward_paper_pressure_stamp.py` for the pressure leg.
 
-Oracle forward-paper memory leak: the runner grew from the 06:58Z start to about 5.3 GB RSS plus about 2 GB swap by ~21:50Z, pinned at the cgroup `memory.high` 5G ceiling, 57,889 high events, stuck in D state, and producing about 85 `runner_lag`/`runner_silent` healthcheck failures in ~24h (peaks ~50 s). Helm restarted it 22:44Z (4.9 GB → 218 MB RSS, 2 GB → 200 MB swap). The runner's own checkout at `/var/lib/mal/paper/forward-paper/src` was then updated `264d1b9` → `bc7a0c6` (includes [#120](https://github.com/vaanai/MAL/pull/120), plus reviewed decision-neutral commits: `fee_sensitivity` reporting, LAYA yield-on-lag) and restarted 22:48Z, 139 MB at 22:49Z. A reviewer pass found no change to decisions, fills, fees, or booked PnL, and no resume/schema break. [#120](https://github.com/vaanai/MAL/pull/120) bounds latency lists, cooldown maps, and orphan early prints; it probably does not remove the dominant growth — suspected per-mint history retained forever, some read cross-mint by `funding_graph`/LAYA features. A replay-profiling investigation to measure the dominant container is in progress. Memory is now tracked from the 139 MB baseline. Consequence for the clean clock: the clean week (from 2026-09-28T00:00:00Z) starts on runner code `bc7a0c6`; the pre-restart lag breaches above were before the clean clock. Detail: [ARTIFACTS/daily/2026-09-27-claude-handoff.md](ARTIFACTS/daily/2026-09-27-claude-handoff.md).
+- Flat leg counts full UTC days from the 2026-09-28T00:00:00Z clean clock.
+- Pressure leg counts full UTC days from **2026-09-29T00:00:00Z** (first daily restart on code ≥ `d7485d2`, DEC-014 Amendment 3).
+- Each leg must clear the gate on its own; fewer than 5 eligible days on a leg is NOT_DECIDABLE, not a pass.
+- If the pressure stamp can't cover a book (missing pnl field, a `pressure_error`, an unresolved restart-orphan, or `settle_failed`), that book is NOT_DECIDABLE (DEC-014 Amendment 2).
+- Holm–Bonferroni across the 9 books (DEC-014). No new forward books during the kill-review week.
 
-Claude schedules ([#119](https://github.com/vaanai/MAL/pull/119), `ops/claude-schedules/`): `mal-daily-review` (05:00 UTC) and `mal-oos-check` (one-shot 2026-09-28 21:00Z), systemd `--user` timers for user `claude` on `mal-fast-0`, headless claude with no shell tools, reports in `/home/claude/reports/`. Enable after Cursor's 05:00Z 2026-09-28 run, then the owner cancels the Cursor timers.
-
-Fast backfill progress: at about 22 sealed hours, about 306k of the +2,000,000 credit cap used, about 13.5k credits per backfilled hour, about 21–22 minutes wall per hour. The 2M cap binds at about 148 hours, around 2026-09-29 18:00–19:00Z — before the 240-hour target. Extending to 240 h would cost about 1.25M more credits; that extension is a decision pending tomorrow's OOS read.
-
-Newer OOS read (~2026-09-27T21:40Z), in addition to the 2026-09-27T13:48Z pooled snapshot below: both books are still one UTC day each, **under-sampled, no verdict**. Fast box 0.5 SOL n ≈ 868–920, all on 2026-09-21, 0/1 days positive. Oracle 0.5 SOL n = 142 (hours 2026-09-22T06–09), flat net −0.476%, flat CI lower −3.149%, 0/1 days positive. Neither clears the promotion gate.
-
-## Manager update (2026-09-28)
-
-Clean week started **2026-09-28T00:00:00Z** on runner `bc7a0c6`. Two mid-week restarts since, both memory-leak fix deploys with a replay md5 decision-neutrality proof, **no decision-logic change**: restart #1 **2026-09-28T03:56:52Z** → `d3015ba` ([#123](https://github.com/vaanai/MAL/pull/123): GC thresholds + freeze-at-start + `_Wallet` compaction + live mem-census); restart #2 **2026-09-28T14:25:02Z** → `f687fad` ([#124](https://github.com/vaanai/MAL/pull/124) periodic `gc.freeze()`, [#125](https://github.com/vaanai/MAL/pull/125) pre-boot dead-mint scan + createless timeout bounding `self.early`). **Every restart resets in-memory `WalletState` `bots`/`snipers`/`leaders`/`creators` and `by_creator` history to empty** — cross-mint veto/creator features run cold until re-observed; the funding graph is unaffected. The **2026-10-05T05:00:00Z kill review must account for this** at both restart boundaries. Detail: [ARTIFACTS/lab/forward-paper-memory-2026-09-27.md](ARTIFACTS/lab/forward-paper-memory-2026-09-27.md), [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
-
-Oracle runner cgroup raised by Helm to `MemoryHigh` 10G / `MemoryMax` 12G (`set-property` override + drop-in), live ~03:37Z 2026-09-28 without a restart. Claude's Oracle account may now `sudo -n systemctl --user -M ubuntu@ restart` ubuntu's `mal-*` user units directly; still cannot write files there (code updates fast-forward `/var/lib/mal/paper/forward-paper/src` via the owner or Helm). See [docs/HANDOFF.md](docs/HANDOFF.md) for the verified how-to.
-
-Claude schedules ([#119](https://github.com/vaanai/MAL/pull/119)) enabled **2026-09-28 05:28Z**: `mal-daily-review` (05:00 UTC) and `mal-oos-check` (one-shot 2026-09-28 21:00Z); first live daily review ran OK. Owner asked to cancel the Cursor timers. `mal-fast-create`: no reconnect crashes since the [#117](https://github.com/vaanai/MAL/pull/117) deploy (22:55Z 2026-09-27).
-
-Fast backfill at 05:28Z: 42 hours sealed (2026-09-21T23 back to 2026-09-20T06), 576,240 of 2,000,000 credits.
-
-Merged since the 2026-09-27 handoff: [#121](https://github.com/vaanai/MAL/pull/121)–[#125](https://github.com/vaanai/MAL/pull/125). [#122](https://github.com/vaanai/MAL/pull/122) (offline mem-profile harness + lab note) is still open.
-
-## Manager update (2026-09-28 evening)
-
-- **Kill-review pressure leg (DEC-014 Amendment 3):** scored over full UTC days beginning at or after the first 00:00:00Z runner restart running code ≥ `d7485d2` (#145, which logs the fill a flat-fail miss discarded). The flat leg is still scored from the 2026-09-28T00:00:00Z clean clock. Each leg must meet the gate on its own (≥5 UTC days etc.). Days before that restart don't count toward the pressure leg, and that is not a pass; a pressure leg with fewer than 5 eligible days means NOT_DECIDABLE. Tooling: `tools/forward_paper_pressure_stamp.py` (prices counterfactual fills) and `tools/kill_review.py --pressure-from-ms`.
-
-The frozen migrate-direct cell is **declared futile on historical data**. Fast OOS 0.5 SOL, snapshot 17:18Z: n = 3,005, flat net mean −0.27%, pressure net mean −0.24%, both 90% CI lower bounds < 0. Per the owner's reviewer, the remaining trades would need about **+1.17%** average to pass. No more Helius credits go to this cell. The fast OOS scorer (`mal-fast-oos-score`) is stopped. Forward-paper migrate books continue only as part of the 2026-10-05 kill review.
-
-The same fast scorer, run with no hour floor, kept scoring newly sealed backward hours past EXP-009's declared 2026-09-19T01:00:00Z cut and read hours **2026-09-18T23** and **2026-09-19T00** — inside EXP-009's holdout window. This is disclosed in [EXP-009 Amendment 3](EXP/EXP-009-migrate-creator-gate-prereg.md), which also corrects that file's earlier "no separate exclusion step is required" non-overlap claim: it was wrong, because the frozen scorer's own window had no floor. The scorer was stopped at **2026-09-28T19:00:50Z** by the manager. Both hours are excluded from EXP-009 scoring and moved to the exploration pool. New ledger: [docs/HOLDOUT_LEDGER.md](docs/HOLDOUT_LEDGER.md), adopted by [DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md) (also adds the Holm–Bonferroni multiplicity correction for the 9-book kill review — see "Promotion gate" above).
-
-`tools/kill_review.py` (#140) is the designated 2026-10-05T05:00:00Z kill-review scorer, with inputs positions + settlements (#141) + pressure stamp (`tools/forward_paper_pressure_stamp.py`, this PR). It runs once, at or after 2026-10-05T05:00:00Z, on a snapshot, never on a live, growing `positions.jsonl` before then. The pressure leg of DEC-014 is not relaxed: if the pressure stamp can't cover a book (missing `pressure_scale_1_pnl_lamports` on any counted row, a `pressure_error`, an unresolved restart-orphan, or a `settle_failed` row), that book is NOT_DECIDABLE — see [DEC-014 Amendment 2](DEC/DEC-014-holdout-ledger-and-multiplicity.md#amendment-2-2026-09-28--the-pressure-leg-is-never-relaxed-not_decidable).
-
-Restarts drop in-memory open positions (655 of 86,464 opens across all books since the start of the forward-paper log, per #138's read-only count); these are settled offline by `tools/forward_paper_settle_orphans.py` (#138 plus the ladder-branch/per-orphan-isolation fix in this PR); this does **not** fix in-process forgetting — the live runner's own warm start on restart is a separate, still-open problem; and the daily 00:00Z restart timer (#137) starts **2026-09-29**.
-
-## Manager update (2026-09-28 night)
-
-- **Frozen migrate-direct cell: formal verdict FAIL.** From the 21:00Z one-shot read (`/home/claude/reports/oos-check/2026-09-28.md`, re-derived from raw per-host data), pooled 0.5 SOL, n = 3,622 over 5 UTC days: flat net −0.0906% (3/5 days positive), pressure net −0.1682% (2/5). Every per-host 90% CI lower bound is < 0. Fast ex-top-3 is −4.298 SOL (flat) and −4.354 SOL (pressure). The 0.05 SOL size is worse. The cell is killed. It is not refit.
-- **Backfill credits.** Nothing more for migrate-direct. Walker 1 (`mal-fast-backfill`) is floored at **2026-09-15T12** (the lower bound of the EXP-009 block) through the drop-in `range.conf`: `MAL_FAST_BACKFILL_HOURS=156`, cap raised **2.0M → 2.3M** credits to finish that block. It was restarted 2026-09-28T20:11Z at 1,060,800 credits used. There was no 240-hour extension. A second walker was designed but **not started** (see the next bullet).
-- **Exploration results** (exploration pool only; none is a promote):
-  - Exits (#139): trailing stops led pooled. The concentration check (#151) killed them: `trail_30_act20` pressure total was +7.2 SOL but ex-top-3 was **−8.0 SOL**, with one +16.6 SOL moonshot and falling per-day means. EXP-010 was not pre-registered, and its reserved block `[2026-09-09T12, 2026-09-15T12)` was released unread.
-  - Fee tiers (#142): at the migrate trigger, 98.6% of fills pay the top tier. Waiting for cheaper tiers costs more gross than it saves.
-  - Entry model (#146, #152): over 6 held-out days (fast 09-19..21 plus Oracle live tape 09-25..27), the top decile beat all trades on 8 of 12 day×exit folds. It was positive with ex-top-3 > 0 on only **3 of 12**. The top-5 features were identical on every held-out day: pre-migration price return, nearby buy SOL, mcap at T, time to migrate, same-slot buys. This is signal, but not an edge yet.
-  - **Lesson:** the typical migrate entry loses, and exits only harvest rare tails. The lever is entry selection. Always check ex-top-3 before calling an exploration cell a candidate.
-- **Holdout ledger corrections.** #147 reserved the already-seen Oracle live tape (2026-09-25T07→09-28T00) for EXP-010. That broke rule 4, and #148 reverted it: the block is exploration pool. #150 fixed EXP-009's block at `[2026-09-15T12, 2026-09-19T01)`. That leaves about 2.5 eligible days, so EXP-009 is a **screen**: a pass earns a forward trial, never a promote.
-- **Runner restart #3 (mid-week, logged per CLAUDE.md):** **2026-09-29T00:00:20Z** by the daily timer (#137). Code `d7485d2` (the Oracle `src` was fast-forwarded by Helm from `28dfa6a` at about 2026-09-28T20:08Z; rollback `28dfa6a`). Pre: RSS 4,216,524 KB, lag 180 ms. Post: PID 109728, RSS 217,748 KB, lag 9 ms, and the mem-census now carries `tx_order_entries`. Decision-neutral per the md5 proofs in #134/#145. It resets in-memory `WalletState`/`by_creator` and drops open positions, which are settled offline for the kill review (#141/#143). **The pressure-fail leg of the kill review counts from 2026-09-29T00:00:00Z** (DEC-014 Amendment 3). From now on the runner restarts every day at 00:00:00Z. Each run appends one line to `/home/claude/reports/runner-restarts.jsonl` on mal-fast-0.
-- **Open asks to Helm (via the owner):**
-  1. Fast-forward Oracle `src` to `d7485d2`.
-  2. Export the Oracle in-sample backfill hours 2026-09-22T00→09-25T07 (sealed hour files only, never `helius.env`) to a path the `claude` account can read. EXP-009's `k` and the entry-model lane need them.
-  3. Disable `mal-migrate-direct-oos.timer` on Oracle. It keeps scoring the dead cell at 01:20Z and competes for CPU with the runner. Claude's account can restart units but not disable them.
-
-## Backfill split
-
-No hour is on both lists ([ARTIFACTS/lab/migrate-direct-oos.md](ARTIFACTS/lab/migrate-direct-oos.md), snapshot 2026-09-27T13:48Z).
-
-| Host | Covers | Stop |
-| --- | --- | --- |
-| Oracle | 2026-09-22T00:00Z through 2026-09-25T07:00Z | After hour 2026-09-22T00. At the snapshot, inside partial 2026-09-22T08. |
-| `mal-fast-0` | 2026-09-21T23 backward | +2,000,000 credits, 240 hours, 40 GiB, or disk free under 30%. At the snapshot, 2026-09-21T23 was sealed and 2026-09-21T22 was in progress. |
-
-After the worker restart the fast box sealed about **11.7 slots/s**, about **3.1 history hours per wall hour**.
-
-## Forward-paper stale-fill void
-
-Rows with a decision time in **2026-09-25T19:00:00Z → 2026-09-27T06:58:12Z** do not count for promotion. The runner was behind the tape (recv→decision past the 5s cap). [#102](https://github.com/vaanai/MAL/pull/102) drops those stale fills and charges a flat 15% miss. [#103](https://github.com/vaanai/MAL/pull/103) fixed the exit-scan walk that held a full core and kept the lag from clearing.
-
-Clean clock (first UTC midnight after that guard-live instant): **2026-09-28T00:00:00Z**. Kill review: **2026-10-05T05:00:00Z**.
-
-With the [#104](https://github.com/vaanai/MAL/pull/104) backfill cap (50% of one core), forward-paper lag was **197 ms** about 2 minutes after the capped start and **39 ms** about 10 minutes after (07:38Z). Both under the 5s cap.
-
-## Latency curve ([#107](https://github.com/vaanai/MAL/pull/107), merged)
-
-The curve is **flat**. On buy-every-create, hold 30s, end-of-slot, direct, 0.05 SOL, gross moves from **−20.3% at slot+4 to −19.7% at slot+1** (+0.56 pp, about **+0.19 pp gross per slot**). That is under the fee floor. Speed alone does not clear fees.
-
-Fee audit ([ARTIFACTS/lab/fee-audit-2026-09-27.md](ARTIFACTS/lab/fee-audit-2026-09-27.md)): the scorer fee math matches the chain. A graduated round trip at 410.88 SOL buy / 616.32 SOL sell is **0.00 points** off `paper_curve_math.py`. [#110](https://github.com/vaanai/MAL/pull/110) adds reporting-only `fee_sensitivity` columns (direct vs portal, priority 0.0001 / 0.0003 / 0.001). Promotion still reads `pnl_lamports`.
-
-## First positive run
-
-The first positive paper result is the in-sample cell `migrate` × `tp50_sl30` × slot+1 start (optimistic), route direct (`portal_fee_ppm = 0`), size 0.05 SOL, on sealed backfill hours 2026-09-22T10 through 2026-09-25T06 (`block_time_end` ≤ 2026-09-25T06:58:00Z). It was the best of 972 in-sample cells, so it carries winner's-curse risk. At the grid priority of 0.001 SOL/side it is not positive: n = 2,947 (of 2,950 migrations; 3 censored), 4 day buckets of which 0 are positive, gross mean +1.882231% (the curve note rounds the same figure to +1.88%), flat-15% net mean −1.947283% (curve note −1.95%), pressure-scale-1 net mean −2.16%, flat 90% CI lower bound −2.78% (−0.00139 SOL/trade). At priority 0.0001 SOL/side the same cell is flat net +0.470013% and pressure net −0.013%, still not both models. The in-sample holdout at the measured slot-+1 landed-buy priorities (same attempts file, n = 2,947, fill 40.35%) is positive at the median priority and not at the 75th percentile, and every 90% CI lower bound is below 0. At priority 0.000058 SOL (slot-+1 p50): flat net +0.583%, flat CI lower −0.245%, pressure net +0.087%, pressure CI lower −0.424%, ex-top-3 +0.387 SOL, days positive 3/4. At priority 0.0005 SOL (slot-+1 p75): flat net −0.604%, flat CI lower −1.431%, pressure net −0.969%, pressure CI lower −1.481%, ex-top-3 −1.360 SOL, days positive 1/4. The frozen out-of-sample test (locked 2026-09-27T13:06:36Z) uses that p75 priority, 0.0005 SOL/side, with 0.5 SOL primary. The 2026-09-27T13:48Z snapshot pools Oracle hour 2026-09-22T09 and fast hour 2026-09-21T23: 0.5 SOL n = 60, days 2, days positive 1, fill 16.7%, flat net +0.51%, flat CI lower −3.22%, flat ex-top-3 −0.606 SOL, pressure net +0.56%, pressure CI lower −1.62%, pressure ex-top-3 −0.333 SOL. The OOS book is small. It does not clear the promotion gate. Evidence: `ARTIFACTS/lab/latency-curve-2026-09-27.md`, `ARTIFACTS/lab/latency-curve-2026-09-27.json`, `ARTIFACTS/lab/fee-audit-2026-09-27.md`, `ARTIFACTS/lab/migrate-direct-prereg.md`, `ARTIFACTS/lab/migrate-direct-oos.md`.
-
-### Promotion gate
-
-Unchanged, from the frozen cell spec:
+## Promotion gate
 
 At least **100** out-of-sample trades, at least **5** distinct UTC days with a majority of those days positive, lower **90%** CI bound of mean SOL per trade **> 0**, and total SOL still positive after removing the top 3 trades. The book must clear that bar under **both** the flat 15% fail rate and the pressure-fail model at slope scale 1. Bootstrap: 1,000 draws, seed 1. The lower bound is the 5th percentile of those means.
 
-**Multiplicity ([DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md)):** when k ≥ 2 books or cells are read together at one review (the 9-book 2026-10-05 kill review; EXP-009's up-to-4 cells), a book promotes only if it also passes a Holm–Bonferroni step-down at family α = 0.05 on the one-sided bootstrap test, under both fail models — recommended at 10,000 seed-1 bootstrap draws for resolution at k = 9's α/9 ≈ 0.0056 threshold. The kill-review books are read once, at 2026-10-05T05:00:00Z; no interim read decides a promote. Historical hours used for any confirmation test are tracked in [docs/HOLDOUT_LEDGER.md](docs/HOLDOUT_LEDGER.md): one owner per block, non-owner reads disclosed in the owner's `EXP-###` file.
+**Multiplicity ([DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md)):** when k ≥ 2 books or cells are read together at one review, a book promotes only if it also passes a Holm–Bonferroni step-down at family α = 0.05 on the one-sided bootstrap test, under both fail models.
 
 Live bar, still required after the gate: about 7 days of forward paper, then tiny size, and an explicit owner yes. The owner's dollar target is not evidence. See [CLAUDE.md](CLAUDE.md).
 
-## Open PRs: keep / close
+## Holdout ledger
 
-Read 2026-09-27 with `gh`. **Recommendation only. Do not close them from a worker.**
+[docs/HOLDOUT_LEDGER.md](docs/HOLDOUT_LEDGER.md), adopted by [DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md): one owner per historical block, non-owner reads disclosed in the owner's `EXP-###` file, rows written before hours are sealed or read.
 
-| PR | Call | Reason |
-| --- | --- | --- |
-| [#4](https://github.com/vaanai/MAL/pull/4) | close | EXP-001 is already PASS-closed on main. This draft locks the same experiment. |
-| [#5](https://github.com/vaanai/MAL/pull/5) | closed | The certifi TLS context is already in `observe/client.py` on main. Closed without merge 2026-09-27. |
-| [#8](https://github.com/vaanai/MAL/pull/8) | closed | DEC-005 never landed. The hot-packet chain it served is frozen. Closed without merge 2026-09-27. |
-| [#10](https://github.com/vaanai/MAL/pull/10) | closed | The sealed-row stamp CLI is not on main, and EXP-001 is already closed. Closed without merge 2026-09-27. |
-| [#15](https://github.com/vaanai/MAL/pull/15) | closed | `tools/exp003_rpc_backfill.py` is already on main. Closed without merge 2026-09-27. |
-| [#22](https://github.com/vaanai/MAL/pull/22) | closed | DEC-011 is already merged and the tunnel is live. Closed without merge 2026-09-27. |
-| [#90](https://github.com/vaanai/MAL/pull/90) | keep | `JobQueue` on main is still unbounded. The stale-drop and credit cap in this draft are not in the tree. |
-| [#106](https://github.com/vaanai/MAL/pull/106) | merged | Merged 2026-09-27. Skips the exploratory 04:15 LAYA retrain until 2026-10-05. Both that timer and `mal-attention-daily.timer` are disabled until then because runner lag still spiked to about 12.5 s. |
-| [#114](https://github.com/vaanai/MAL/pull/114) | closed | Cancelled 2026-09-27 (narrowed Claude Code permissions for unattended use). |
-| [#115](https://github.com/vaanai/MAL/pull/115)–[#120](https://github.com/vaanai/MAL/pull/120) | merged | Cursor handoff / LAYA timer hold, fast-create reconnect fix, DEC-013, Claude schedules, forward-paper memory bound. See the manager handoff section above. |
-| [#121](https://github.com/vaanai/MAL/pull/121)–[#125](https://github.com/vaanai/MAL/pull/125) | merged | GC thresholds + freeze + `_Wallet` compaction + live mem-census, periodic `gc.freeze()`, early-buffer dead-mint bounding. See "Manager update (2026-09-28)" above. |
-| [#122](https://github.com/vaanai/MAL/pull/122) | open | Offline forward-paper mem-profile harness + lab note (fixes landed separately in #123–#125). Pending manager review. |
+## Forward-paper stale-fill void and clean clock
 
-These were the open PRs at the 2026-09-27 handoff. #106 has since merged, and #121–#125 landed 2026-09-28. Only [#90](https://github.com/vaanai/MAL/pull/90) and [#122](https://github.com/vaanai/MAL/pull/122) remain open as of 2026-09-28.
+Rows with a decision time in **2026-09-25T19:00:00Z → 2026-09-27T06:58:12Z** do not count for promotion (the runner was behind the tape; [#102](https://github.com/vaanai/MAL/pull/102) drops those fills and charges a flat 15% miss).
 
-## Frozen
+Clean clock: **2026-09-28T00:00:00Z**. Kill review: **2026-10-05T05:00:00Z**.
 
-**PRs #49–#72** (hot-packet fixture / receipt / schema-lock chain) are on `main` and **frozen** for return work. New measurements use the tape, the curve scorer, and forward paper.
+## Open PRs
+
+[#90](https://github.com/vaanai/MAL/pull/90): keep. `JobQueue` on `main` is still unbounded; the stale-drop and credit cap in this draft are not in the tree.
 
 ## Next work
 
-1. **Daily 00:00Z restarts** run automatically. Check `runner-restarts.jsonl` and the growth of mem-census `tx_order_entries` (the #134 plateau should be ~1.2M).
-2. **Entry selection** is the main research lane. Get more exploration days (Oracle in-sample export), then a small pre-registered entry-filter candidate, scored with ex-top-3, on a fresh unowned block bought in ≥6-day chunks.
-3. **EXP-009 screen:** compute `k` in-sample (needs the Oracle export), then score the screen once walker 1 finishes its block.
-4. **2026-10-05T05:00:00Z kill review:** a single read with `tools/kill_review.py` on a snapshot: positions + settlements + pressure stamp, both legs, and Holm across the 9 books.
-5. Restart-neutral warm start (PR 2), deferred until live readiness. Deploy provenance on `mal-fast-0` (`/home/ubuntu/mal-oos` is not a git checkout).
-6. Keep [#90](https://github.com/vaanai/MAL/pull/90). Leave `mal-laya-v0.timer` and `mal-attention-daily.timer` disabled until 2026-10-05. Add no forward books during the kill-review week.
+1. When walkers B + C finish (~2026-09-30T03Z), run the EXP-011 one-shot scorer (`tools/exp011_score.py`, still to be built if not already merged) on the reserved block, once.
+2. Score the EXP-009 screen once walker 1 finishes (~2026-09-30T01Z).
+3. The 2026-10-05T05:00Z kill review with `tools/kill_review.py`, on a snapshot, once.
+4. Lane D (a learned filter on early bonding-curve entries, branch `claude/explore-early-entry-model`, streaming fix in place, not yet run to completion) — run alone, ≤2 workers.
+5. After 2026-10-05: fold the 09-28 forward-paper data into the exploration pool; if EXP-011 passes, add an EXP-011 forward book; start the warm-start / live-readiness track.
+6. Buy further fresh ≥6-day holdout blocks (~2M credits each) as candidates need them.
 
 ## Pointers
 
@@ -197,5 +117,4 @@ These were the open PRs at the 2026-09-27 handoff. #106 has since merged, and #1
 - Research options: [docs/research/](docs/research/)
 - Daily briefs: [ARTIFACTS/daily/](ARTIFACTS/daily/)
 - Lab notes: [ARTIFACTS/lab/](ARTIFACTS/lab/)
-- Checklist that used to be the store notes: [docs/ops/notes.md](docs/ops/notes.md), [docs/ops/archived.md](docs/ops/archived.md)
 - SSH: [scripts/mal-core/agent-ssh.sh](scripts/mal-core/agent-ssh.sh), [tools/oracle_ssh_smoke.md](tools/oracle_ssh_smoke.md)
