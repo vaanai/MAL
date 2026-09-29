@@ -83,11 +83,12 @@ Do not score the void as if it were live.
 | --- | --- |
 | Stale-fill void | 2026-09-25T19:00:00Z → 2026-09-27T06:58:12Z |
 | Clean forward paper | 2026-09-28T00:00:00Z |
+| Pressure-leg start (DEC-014 Amendment 3) | 2026-09-29T00:00:00Z |
+| Daily runner restart | every day, 00:00:00Z |
+| EXP-011 holdout ready | about 2026-09-30T03:00Z |
 | Kill review | 2026-10-05T05:00:00Z |
-| Oracle OOS timer | 01:20 UTC, frozen cell only |
-| One-shot OOS read | about 2026-09-28 21:00Z, after the fast box's backward hours |
 
-The fast backfill walks back from 2026-09-21T23Z and stops at +2M credits. Oracle's backfill stays inside 2026-09-22T00Z–2026-09-25T07Z. Do not let the two ranges meet.
+Three backward walkers run on `mal-fast-0`, splitting `[2026-09-09T12, 2026-09-19T01)` into non-overlapping blocks: `mal-fast-backfill` (walker 1) floored at 2026-09-15T12, `mal-fast-backfill-b` covering `[2026-09-12T12, 2026-09-15T12)`, and `mal-fast-backfill-c` covering `[2026-09-09T12, 2026-09-12T12)`. Each has its own credit cap. No hour is claimed by two walkers.
 
 ## When you use a subagent
 
@@ -116,17 +117,20 @@ Push when the tests you ran are green. Do not sit on a day of uncommitted edits.
 - PR merge/close and `mal-*` restarts are pre-approved in the permissions file.
 - Every runner change must carry an md5 decision-equivalence replay proof before deploy.
 - Record every mid-week runner restart in LAB_STATE.
+- `mal-fast-0` memory: one heavy replay job at a time, at most 2 workers, stream rows to disk, and check `systemctl show user-1002.slice -p MemoryCurrent` before starting a new one. Two concurrent multi-worker replay jobs caused an OOM and a reboot on 2026-09-29.
+- Never add forward books during a kill-review week.
 
-## Evidence for the current cell
+## Current candidate
 
-Read these before changing the frozen migrate-direct test. The cell was locked at 2026-09-27T13:06:36Z. Do not retune it on the out-of-sample hours.
+The frozen migrate-direct cell (`migrate` × `tp50_sl30` × slot+1 start, direct) is **dead**: formal FAIL from the 2026-09-28T21:00Z one-shot, both fail models, every CI lower bound below 0. It is not refit. No more Helius credits go to it. See [LAB_STATE.md](LAB_STATE.md) for the numbers.
 
-- [ARTIFACTS/lab/latency-curve-2026-09-27.md](ARTIFACTS/lab/latency-curve-2026-09-27.md) and the JSON grid beside it
-- [ARTIFACTS/lab/fee-audit-2026-09-27.md](ARTIFACTS/lab/fee-audit-2026-09-27.md)
-- [ARTIFACTS/lab/migrate-direct-prereg.md](ARTIFACTS/lab/migrate-direct-prereg.md)
-- [ARTIFACTS/lab/migrate-direct-oos.md](ARTIFACTS/lab/migrate-direct-oos.md)
+The live candidate is **EXP-011**: a frozen, leakage-ablated S2 entry-selection model at a fixed threshold, pre-registered against a reserved holdout block, read once. Evidence:
 
-The in-sample cell is `migrate` × `tp50_sl30` × slot+1 start, direct, 0.05 SOL. The frozen OOS priority is the slot-+1 p75, 0.0005 SOL/side, with 0.5 SOL as the primary size. Numbers belong in LAB_STATE. Copy them from the files. Do not round them up.
+- [EXP/EXP-011-migrate-entry-model-prereg.md](EXP/EXP-011-migrate-entry-model-prereg.md) (pre-registration; name given here even if not yet on `main`)
+- [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md) (the exploration-pool B3 result the pre-registration follows)
+- The [#156](https://github.com/vaanai/MAL/pull/156) PR audit comment
+
+The B3 exploration result is not a promote by itself — it is exploration-pool evidence on data EXP-011 does not reuse. Numbers belong in LAB_STATE. Copy them from the files. Do not round them up.
 
 ## Credits
 
