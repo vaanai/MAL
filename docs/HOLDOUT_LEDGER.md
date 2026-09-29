@@ -15,7 +15,7 @@ UTC hours, inclusive start, exclusive end.
 
 | Block | Hours | Host | Owner | Status |
 | --- | --- | --- | --- | --- |
-| Oracle in-sample | 2026-09-22T00 → 2026-09-25T07 | Oracle | exploration pool | Seen: 972-cell grid in-sample, plus migrate-direct Oracle OOS 2026-09-22T00–10. |
+| Oracle in-sample | 2026-09-22T00 → 2026-09-25T07 | Oracle | exploration pool | Seen: 972-cell grid in-sample, plus migrate-direct Oracle OOS 2026-09-22T00–10, plus the entry-model B3 lane (`tools/oracle_insample_adapter.py`, `ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md`), which reads only 2026-09-22T00 through 2026-09-25T06 -- hour 07 stays exclusive to the "Oracle live tape" row below, so no hour in this ledger is read from two pool tags at once. |
 | Fast pre-cut | 2026-09-19T01 → 2026-09-22T00 | fast | exploration pool | Was the frozen migrate-direct OOS book, now closed. |
 | Fast EXP-009 block | `[2026-09-15T12, 2026-09-19T01)` | fast | **EXP-009** | Owned, except the two hours below. The lower bound was fixed at 2026-09-28T20:15Z, replacing "oldest sealed at cap"; the oldest sealed fast hour at that time was 2026-09-18T20, so no hour in the new range below it had been sealed. |
 | Fast EXP-009 exclusion | 2026-09-18T23, 2026-09-19T00 | fast | exploration pool | Read by the migrate-direct fast scorer (`mal-fast-oos-score`), disclosed in [EXP-009 Amendment 3](../EXP/EXP-009-migrate-creator-gate-prereg.md). Excluded from EXP-009 scoring. |
@@ -34,6 +34,7 @@ UTC hours, inclusive start, exclusive end.
 
 ## Changelog
 
+- 2026-09-28 (lane B3): the entry-model exploration lane read the Oracle in-sample block's hours 2026-09-22T00 through 2026-09-25T06 (not T07, which stays exclusive to the Oracle live tape row) alongside the existing fast-box and Oracle live tape exploration pools, for a combined 9-UTC-day leave-one-day-out run. Exploration pool only; disclosed in the Oracle in-sample row's Status above. See `ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md`.
 - 2026-09-28T20:30Z: released the EXP-010 reservation of `[2026-09-09T12, 2026-09-15T12)` (the candidate failed its concentration check). The block is unassigned, unsealed and unread.
 - 2026-09-28T20:25Z: fixed the EXP-009 block's lower bound at 2026-09-15T12 and reserved `[2026-09-09T12, 2026-09-15T12)` for EXP-010. Both were recorded while the oldest sealed fast hour was 2026-09-18T20, per rule 4.
 - 2026-09-28T20:20Z: withdrew the EXP-010 reservation of the Oracle live-tape block (owner review of #147: rule 4 violated, hours already sealed and partly seen, void-heavy). The block goes to the exploration pool. EXP-010's confirmation holdout must be a block registered before it is sealed or read.
