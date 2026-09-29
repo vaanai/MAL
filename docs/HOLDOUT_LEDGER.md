@@ -34,6 +34,7 @@ UTC hours, inclusive start, exclusive end.
 
 ## Changelog
 
+- 2026-09-29 (lane D): the early bonding-curve entry-model exploration lane (`tools/exploration_early_entry_model.py`) read the same three exploration-pool blocks lane B3 used -- fast pre-cut, Oracle in-sample hours 2026-09-22T00 through 2026-09-25T06, and the Oracle live-tape block -- for a 9-UTC-day leave-one-day-out run on a different trigger (create + Delta seconds, not migrate). Exploration pool only, no new hours. See `ARTIFACTS/lab/exploration-early-entry-model-2026-09-29.md`.
 - 2026-09-29T00:32Z: `[2026-09-09T12, 2026-09-15T12)` reserved for the next confirmation test (EXP-011 first, if it survives) before walker B seals any hour of it. It stays unread until a pre-registration names it.
 - 2026-09-28 (lane B3): the entry-model exploration lane read the Oracle in-sample block's hours 2026-09-22T00 through 2026-09-25T06 (not T07, which stays exclusive to the Oracle live tape row) alongside the existing fast-box and Oracle live tape exploration pools, for a combined 9-UTC-day leave-one-day-out run. Exploration pool only; disclosed in the Oracle in-sample row's Status above. See `ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md`.
 - 2026-09-28T20:30Z: released the EXP-010 reservation of `[2026-09-09T12, 2026-09-15T12)` (the candidate failed its concentration check). The block is unassigned, unsealed and unread.

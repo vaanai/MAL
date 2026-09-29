@@ -101,9 +101,6 @@ from tools.exploration_entry_model import (
     causal_events,
     compute_features,
     count_prior_creates,
-    fit_setting,
-    importance_setting,
-    predict_setting,
 )
 from tools.exploration_entry_model_b3 import _ci_lo as _ci_lo_b3
 from tools.exploration_entry_model_b2 import _ex_top3_sol
@@ -188,6 +185,59 @@ assert "same_slot_buys" not in FEATURE_NAMES and "nearby_buy_sol" not in FEATURE
 # S2 spec only (fixed by the manager -- no setting search here).
 S2_SETTING = next(s for s in SETTINGS if s["id"] == "lgb_medium")
 assert S2_SETTING["kind"] == "lightgbm"
+
+
+def _fit_s2(x_train: Sequence[Sequence[float]], y_train: Sequence[int]) -> Any:
+    """S2 (lgb_medium classifier), fit against THIS module's own 18-name
+    FEATURE_NAMES. Deliberately not `tools.exploration_entry_model.fit_setting`:
+    that function's `_train_lightgbm` hardcodes the MIGRATE model's own
+    20-name FEATURE_NAMES for `lgb.Dataset`'s `feature_name=`, regardless of
+    the width of the `x` it is actually given -- calling it here (18-wide
+    vectors, two lookahead features dropped) raises a feature-count
+    mismatch. Same hyperparameters and scale_pos_weight balancing as the
+    migrate model's own `_train_lightgbm`, just re-pointed at this module's
+    feature list.
+    """
+    import lightgbm as lgb
+    import numpy as np
+
+    xa = np.asarray(x_train, dtype=np.float64)
+    ya = np.asarray(y_train, dtype=np.int32)
+    pos = int(ya.sum())
+    neg = len(ya) - pos
+    scale = (neg / pos) if pos else 1.0
+    train = lgb.Dataset(xa, label=ya, feature_name=list(FEATURE_NAMES))
+    params = {
+        "objective": "binary",
+        "metric": "binary_logloss",
+        "num_threads": 1,
+        "verbosity": -1,
+        "learning_rate": S2_SETTING["learning_rate"],
+        "num_leaves": S2_SETTING["num_leaves"],
+        "min_data_in_leaf": S2_SETTING["min_data_in_leaf"],
+        "feature_fraction": 0.9,
+        "bagging_fraction": 0.9,
+        "bagging_freq": 1,
+        "scale_pos_weight": scale,
+        "seed": SEED,
+        "deterministic": True,
+        "force_row_wise": True,
+    }
+    return lgb.train(params, train, num_boost_round=S2_SETTING["rounds"])
+
+
+def _predict_s2(model: Any, x_test: Sequence[Sequence[float]]) -> list[float]:
+    import numpy as np
+
+    xa = np.asarray(x_test, dtype=np.float64)
+    return [float(v) for v in model.predict(xa)]
+
+
+def _importance_s2(model: Any) -> list[tuple[str, float]]:
+    gain = model.feature_importance(importance_type="gain")
+    pairs = list(zip(FEATURE_NAMES, (float(v) for v in gain)))
+    pairs.sort(key=lambda kv: kv[1], reverse=True)
+    return pairs
 
 # Exits: hold_30s (custom, tools.latency_curve._hold) plus the two named
 # tp/sl cells, both present in tools.exploration_exits.build_specs()'s grid.
@@ -634,18 +684,21 @@ def _ci_lo(values: Sequence[float]) -> float:
     return _ci_lo_b3(values)
 
 
-def fit_and_score(rows_train: Sequence[dict[str, Any]], rows_test: Sequence[dict[str, Any]]) -> list[float] | None:
-    """Fit S2 on rows_train, return scores for rows_test, or None if the
-    fold cannot train (too few rows or a single class)."""
+def fit_and_score(
+    rows_train: Sequence[dict[str, Any]], rows_test: Sequence[dict[str, Any]]
+) -> tuple[list[float], Any] | None:
+    """Fit S2 on rows_train, return (scores for rows_test, the fitted
+    model), or None if the fold cannot train (too few rows or a single
+    class)."""
     if len(rows_train) < 20:
         return None
     y_train = [1 if r["press"] > 0 else 0 for r in rows_train]
     if len(set(y_train)) < 2:
         return None
     x_train = [_vector(r["features"]) for r in rows_train]
-    fit = fit_setting(x_train, y_train, S2_SETTING)
+    model = _fit_s2(x_train, y_train)
     x_test = [_vector(r["features"]) for r in rows_test]
-    return predict_setting(fit, x_test)
+    return _predict_s2(model, x_test), model
 
 
 def evaluate_cell(rows: Sequence[dict[str, Any]], days: Sequence[str]) -> dict[str, Any]:
@@ -662,10 +715,11 @@ def evaluate_cell(rows: Sequence[dict[str, Any]], days: Sequence[str]) -> dict[s
     for held_out in days:
         outer_train = [r for d in days if d != held_out for r in by_day.get(d, [])]
         outer_test = by_day.get(held_out, [])
-        outer_scores = fit_and_score(outer_train, outer_test)
-        if outer_scores is None:
+        outer_fit = fit_and_score(outer_train, outer_test)
+        if outer_fit is None:
             out[held_out] = {"trained": False, "n_train": len(outer_train), "n_test": len(outer_test)}
             continue
+        outer_scores, outer_model = outer_fit
 
         order = sorted(range(len(outer_test)), key=lambda i: outer_scores[i], reverse=True)
         ranked = [outer_test[i] for i in order]
@@ -678,9 +732,10 @@ def evaluate_cell(rows: Sequence[dict[str, Any]], days: Sequence[str]) -> dict[s
         for inner_day in other_days:
             inner_train = [r for d in other_days if d != inner_day for r in by_day.get(d, [])]
             inner_test = by_day.get(inner_day, [])
-            inner_scores = fit_and_score(inner_train, inner_test)
-            if inner_scores is None:
+            inner_fit = fit_and_score(inner_train, inner_test)
+            if inner_fit is None:
                 continue
+            inner_scores, _inner_model = inner_fit
             inner_scores_pooled.extend(inner_scores)
             inner_folds_trained += 1
         threshold = _pct(sorted(inner_scores_pooled), NESTED_THRESHOLD_PCT) if inner_scores_pooled else None
@@ -701,7 +756,7 @@ def evaluate_cell(rows: Sequence[dict[str, Any]], days: Sequence[str]) -> dict[s
             "inner_folds_trained": inner_folds_trained,
             "nested_top10_rows": naive_top10,
             "nested_selected_rows": nested_selected,
-            "importance": importance_setting(fit_setting([_vector(r["features"]) for r in outer_train], [1 if r["press"] > 0 else 0 for r in outer_train], S2_SETTING))[:8],
+            "importance": _importance_s2(outer_model)[:8],
         }
     return out
 

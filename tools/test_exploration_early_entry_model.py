@@ -27,10 +27,12 @@ from tools.exploration_early_entry_model import (
     _ci_lo,
     _cohort_stats,
     _pct,
+    _vector,
     cell_id,
     decision_landing,
     eval_exit_early,
     evaluate_cell,
+    fit_and_score,
     pooled_cohort_report,
     score_one_early,
     screen_candidate,
@@ -345,6 +347,29 @@ class NestedThresholdPureFunctionTests(unittest.TestCase):
         no_ex3 = dict(good)
         no_ex3["flat_ex_top3_sol"] = -0.1
         self.assertFalse(screen_candidate(no_ex3)["candidate"])
+
+    def test_fit_and_score_trains_lightgbm_on_this_modules_own_18_wide_feature_vector(self) -> None:
+        """Regression test: `tools.exploration_entry_model._train_lightgbm`
+        hardcodes ITS OWN 20-name FEATURE_NAMES for `lgb.Dataset`'s
+        `feature_name=`, no matter what `x` it is actually given. Calling it
+        directly with this module's 18-wide vectors (two lookahead features
+        dropped) raises a feature-count mismatch at fit time. `_vector`
+        below builds real 18-wide rows the same way `evaluate_cell` does;
+        this must fit and score without error.
+        """
+        random.seed(3)
+        rows_train = []
+        for i in range(200):
+            feats = {name: random.random() for name in FEATURE_NAMES}
+            press = 1_000_000 if random.random() > 0.6 else -1_000_000
+            rows_train.append({"day": "2026-09-19", "flat": press, "press": press, "features": feats})
+        rows_test = [{"day": "2026-09-20", "flat": 0, "press": 0, "features": {name: random.random() for name in FEATURE_NAMES}} for _ in range(10)]
+        self.assertEqual(len(_vector(rows_train[0]["features"])), len(FEATURE_NAMES))
+        result = fit_and_score(rows_train, rows_test)
+        self.assertIsNotNone(result)
+        scores, model = result
+        self.assertEqual(len(scores), len(rows_test))
+        self.assertTrue(all(0.0 <= s <= 1.0 for s in scores))
 
     def test_pooled_cohort_report_pools_only_trained_folds(self) -> None:
         rows_19 = self._rows("2026-09-19", [1_000_000, 2_000_000])
