@@ -26,10 +26,14 @@ from tools.exp011_freeze import (
     HOLDOUT_START,
     _DROPPED_LOOKAHEAD_FEATURES,
     _assert_never_holdout,
+    _ci_lo_pct,
     _label,
+    _mean_pct,
     _percentile,
     _vector,
     compute_threshold,
+    nested_fixed_threshold_lodo,
+    nested_lodo_report,
     leave_one_day_out_oof,
 )
 
@@ -303,6 +307,98 @@ class SyntheticLodoOofTests(unittest.TestCase):
         top_mean = sum(by_mint[r["mint"]]["press"] for r in top) / len(top)
         bottom_mean = sum(by_mint[r["mint"]]["press"] for r in bottom) / len(bottom)
         self.assertGreater(top_mean, bottom_mean)
+
+    def test_compute_threshold_states_its_role_is_the_frozen_holdout_threshold(self) -> None:
+        oof = [{"score": float(i), "label": 1, "mint": f"m{i}", "day": "2026-09-19", "filled": True} for i in range(50)]
+        info = compute_threshold(oof)
+        self.assertIn("role", info)
+        self.assertIn("frozen holdout threshold", info["role"])
+
+
+class NestedFixedThresholdLodoTests(unittest.TestCase):
+    """Owner scope addition (2026-09-29): a fixed-threshold nested LODO,
+    REPORT ONLY -- never gating, never fed back into the frozen threshold/
+    features/params. Small synthetic dataset, real lightgbm, no I/O."""
+
+    DAYS = ("2026-09-19", "2026-09-20", "2026-09-21", "2026-09-22")
+
+    def _rows(self, day: str, n: int, seed: int, pool: str = "A") -> list[dict]:
+        rng = random.Random(seed)
+        out = []
+        for i in range(n):
+            x = rng.uniform(-1, 1)
+            noise = rng.uniform(-0.2, 0.2)
+            press_pct = x * 10 + noise
+            feats = {name: 0.0 for name in FROZEN_FEATURE_NAMES}
+            feats[FROZEN_FEATURE_NAMES[0]] = x
+            out.append(
+                {
+                    "mint": f"m{day}-{i}",
+                    "spec": "tpsl_tp50_sl30",
+                    "day": day,
+                    "filled": i % 3 != 0,
+                    "flat": press_pct * 5_000_000 / 100.0,
+                    "press": press_pct * 5_000_000 / 100.0,
+                    "pool": pool,
+                    "features": feats,
+                }
+            )
+        return out
+
+    def _all_rows(self) -> list[dict]:
+        rows = []
+        pools = ("A", "A", "C", "B")
+        for i, (d, p) in enumerate(zip(self.DAYS, pools)):
+            rows.extend(self._rows(d, 60, seed=i, pool=p))
+        return rows
+
+    def test_every_outer_day_gets_a_fold_and_entries_all_meet_their_own_threshold(self) -> None:
+        rows = self._all_rows()
+        entries, fold_info = nested_fixed_threshold_lodo(rows, days=self.DAYS)
+        self.assertEqual(len(fold_info), len(self.DAYS))
+        self.assertEqual({f["outer_day"] for f in fold_info}, set(self.DAYS))
+        for e in entries:
+            self.assertGreaterEqual(e["score"], e["threshold"])
+
+    def test_entries_never_leak_the_outer_days_own_rows_into_its_threshold(self) -> None:
+        # Each fold's threshold comes from an 8(here 3)-day inner LODO over
+        # the days that exclude the outer day -- i.e. the inner OOF count
+        # feeding the threshold must never exceed the inner pool's own size.
+        rows = self._all_rows()
+        _entries, fold_info = nested_fixed_threshold_lodo(rows, days=self.DAYS)
+        n_per_day = {d: sum(1 for r in rows if r["day"] == d) for d in self.DAYS}
+        for f in fold_info:
+            if not f["trained"]:
+                continue
+            inner_days = [d for d in self.DAYS if d != f["outer_day"]]
+            self.assertEqual(f["n_inner_oof"], sum(n_per_day[d] for d in inner_days))
+
+    def test_report_is_marked_report_only_and_covers_both_fail_models(self) -> None:
+        rows = self._all_rows()
+        entries, fold_info = nested_fixed_threshold_lodo(rows, days=self.DAYS)
+        report = nested_lodo_report(entries, fold_info, days=self.DAYS)
+        self.assertIn("REPORT ONLY", report["note"])
+        self.assertIn("flat", report)
+        self.assertIn("press", report)
+        self.assertEqual(len(report["per_day"]), len(self.DAYS))
+        self.assertIn("fill_conditional", report)
+        self.assertIn("source_split", report)
+        self.assertEqual(set(report["source_split"].keys()), {"A", "C", "B"})
+
+    def test_fill_conditional_splits_filled_from_all_entered(self) -> None:
+        rows = self._all_rows()
+        entries, fold_info = nested_fixed_threshold_lodo(rows, days=self.DAYS)
+        report = nested_lodo_report(entries, fold_info, days=self.DAYS)
+        self.assertLessEqual(report["fill_conditional"]["filled_only"]["n"], report["fill_conditional"]["all_entered"]["n"])
+
+    def test_mean_pct_and_ci_lo_pct_pure_helpers(self) -> None:
+        self.assertIsNone(_mean_pct([]))
+        self.assertIsNone(_ci_lo_pct([]))
+        from tools.exploration_exits import ENTRY_SIZE
+
+        vals = [ENTRY_SIZE * 0.1] * 20  # +10% every trade
+        self.assertAlmostEqual(_mean_pct(vals), 10.0)
+        self.assertAlmostEqual(_ci_lo_pct(vals), 10.0)  # zero variance -> CI collapses to the mean
 
 
 if __name__ == "__main__":

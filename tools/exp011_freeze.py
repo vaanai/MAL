@@ -67,12 +67,13 @@ from typing import Any, Sequence
 
 from tools.exploration_entry_model import FEATURE_NAMES, SEED
 from tools.exploration_entry_model import run_all_features as run_all_features_a
-from tools.exploration_entry_model_b2 import run_all_features_b
-from tools.exploration_entry_model_b3 import DAYS_ALL, run_all_features_c
+from tools.exploration_entry_model_b2 import _ex_top3_sol, run_all_features_b
+from tools.exploration_entry_model_b3 import DAYS_ALL, _ci_lo, run_all_features_c
 from tools.exploration_entry_model import compute_features
-from tools.exploration_exits import POOL_HOURS as POOL_A_HOURS
+from tools.exploration_exits import ENTRY_SIZE, POOL_HOURS as POOL_A_HOURS
 from tools.oracle_insample_adapter import POOL_C_HOURS
 from tools.oracle_live_adapter import POOL_B_HOURS
+from tools.paper_curve_math import LAMPORTS_PER_SOL
 
 TARGET_SPEC_ID = "tpsl_tp50_sl30"
 
@@ -179,16 +180,22 @@ def load_tp50_rows(max_workers: int = 3, buffer_hours: int = 2) -> tuple[list[di
     manifest: dict[str, Any] = {"pools": {}}
     print("EXP-011 freeze: loading pool A (fast-box backfill)...", file=sys.stderr, flush=True)
     rows_a = [r for r in run_all_features_a(max_workers=max_workers, buffer_hours=buffer_hours) if r["spec"] == TARGET_SPEC_ID]
+    for r in rows_a:
+        r["pool"] = "A"
     manifest["pools"]["A"] = {"start": POOL_A_HOURS[0], "end": POOL_A_HOURS[-1], "n_hours": len(POOL_A_HOURS), "n_rows": len(rows_a)}
     print(f"pool A: {len(rows_a)} {TARGET_SPEC_ID} rows", file=sys.stderr, flush=True)
 
     print("EXP-011 freeze: loading pool C (Oracle in-sample backfill)...", file=sys.stderr, flush=True)
     rows_c = [r for r in run_all_features_c(max_workers=max_workers, buffer_hours=buffer_hours) if r["spec"] == TARGET_SPEC_ID]
+    for r in rows_c:
+        r["pool"] = "C"
     manifest["pools"]["C"] = {"start": POOL_C_HOURS[0], "end": POOL_C_HOURS[-1], "n_hours": len(POOL_C_HOURS), "n_rows": len(rows_c)}
     print(f"pool C: {len(rows_c)} {TARGET_SPEC_ID} rows", file=sys.stderr, flush=True)
 
     print("EXP-011 freeze: loading pool B (Oracle live tape)...", file=sys.stderr, flush=True)
     rows_b = [r for r in run_all_features_b(max_workers=max_workers, buffer_hours=buffer_hours) if r["spec"] == TARGET_SPEC_ID]
+    for r in rows_b:
+        r["pool"] = "B"
     manifest["pools"]["B"] = {"start": POOL_B_HOURS[0], "end": POOL_B_HOURS[-1], "n_hours": len(POOL_B_HOURS), "n_rows": len(rows_b)}
     print(f"pool B: {len(rows_b)} {TARGET_SPEC_ID} rows", file=sys.stderr, flush=True)
 
@@ -248,17 +255,196 @@ def _percentile(sorted_vals: Sequence[float], p: float) -> float:
 
 
 def compute_threshold(oof: Sequence[dict[str, Any]], pct: float = 0.90) -> dict[str, Any]:
+    """THE frozen threshold used by tools/exp011_score.py against the
+    holdout (§3/§B of the pre-registration): the 90th percentile of the
+    OUTER 9-fold LODO out-of-fold scores -- each day's rows scored by the
+    single model trained on the other 8 days (leave_one_day_out_oof
+    above), pooled across all 9 days, before any threshold is chosen. This
+    is NOT the nested/fixed-threshold report in tools.exp011_freeze's
+    nested_fixed_threshold_lodo (report-only, a different, per-fold
+    threshold, never used for the frozen holdout entry rule)."""
     scores = sorted(r["score"] for r in oof)
     threshold = _percentile(scores, pct)
     n = len(scores)
     n_selected = sum(1 for s in scores if s >= threshold)
     return {
+        "role": "frozen holdout threshold -- the single number tools/exp011_score.py uses for 'enter iff score(T) >= threshold' on the reserved fast-box holdout",
         "threshold": threshold,
-        "percentile_definition": "pooled out-of-fold scores, 9-fold LODO, non-interpolating index=round(p*(n-1)) into the sorted array (same convention as tools.exploration_entry_model_b3._pct)",
+        "percentile_definition": "pooled OUTER out-of-fold scores (9-fold LODO -- each day scored by the model trained on the other 8 days), non-interpolating index=round(p*(n-1)) into the sorted array (same convention as tools.exploration_entry_model_b3._pct)",
         "percentile": pct,
         "n_oof": n,
         "n_selected_at_or_above_threshold": n_selected,
         "selected_fraction": (n_selected / n) if n else None,
+    }
+
+
+# --- Part A (owner scope addition, 2026-09-29): fixed-threshold nested ----
+# --- LODO, REPORT ONLY. Never gating; never used to change the threshold, --
+# --- features, or params of the frozen model above. ------------------------
+
+
+def _mean_pct(vals: Sequence[float]) -> float | None:
+    return (sum(vals) / len(vals) / ENTRY_SIZE * 100.0) if vals else None
+
+
+def _ci_lo_pct(vals: Sequence[float]) -> float | None:
+    return (_ci_lo(list(vals)) / ENTRY_SIZE * 100.0) if vals else None
+
+
+def nested_fixed_threshold_lodo(rows: Sequence[dict[str, Any]], days: Sequence[str] = DAYS_ALL) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """For each outer held-out day d (of 9): train the outer fold model on
+    the other 8 days (frozen spec: ablated features, S2 params,
+    deterministic). Choose that fold's threshold using ONLY those 8 days,
+    via an INNER 8-fold LODO over them (8 inner models, never touching day
+    d): the 90th percentile of the pooled inner out-of-fold scores. Apply
+    that one fixed threshold to day d's rows, scored by the outer fold
+    model -- enter iff score >= threshold. This never sees the reserved
+    holdout, and it never feeds back into the frozen threshold/features/
+    params in compute_threshold/FROZEN_FEATURE_NAMES/LGB_PARAMS above --
+    report only (nested_lodo_report). Returns (entries, fold_info):
+    entries are the rows that would have entered under this scheme
+    (original row dict, plus 'score' and 'threshold'); fold_info is one
+    dict per outer day with its threshold and selection counts.
+    """
+    by_day: dict[str, list[dict[str, Any]]] = {d: [] for d in days}
+    for r in rows:
+        if r["day"] in by_day:
+            by_day[r["day"]].append(r)
+
+    entries: list[dict[str, Any]] = []
+    fold_info: list[dict[str, Any]] = []
+    for outer_day in days:
+        inner_days = [d for d in days if d != outer_day]
+        inner_oof_scores: list[float] = []
+        for inner_held_out in inner_days:
+            inner_train_days = [d for d in inner_days if d != inner_held_out]
+            inner_train = [r for d in inner_train_days for r in by_day.get(d, [])]
+            inner_test = by_day.get(inner_held_out, [])
+            if len(inner_train) < 20 or not inner_test:
+                continue
+            y_inner = _label(inner_train)
+            if len(set(y_inner)) < 2:
+                continue
+            inner_model = _fit([_vector(r["features"]) for r in inner_train], y_inner)
+            inner_oof_scores.extend(_predict(inner_model, [_vector(r["features"]) for r in inner_test]))
+
+        outer_train = [r for d in inner_days for r in by_day.get(d, [])]
+        outer_test = by_day.get(outer_day, [])
+        threshold = _percentile(sorted(inner_oof_scores), 0.90) if inner_oof_scores else None
+        trained = False
+        n_entered = 0
+        if threshold is not None and len(outer_train) >= 20 and outer_test:
+            y_outer = _label(outer_train)
+            if len(set(y_outer)) >= 2:
+                outer_model = _fit([_vector(r["features"]) for r in outer_train], y_outer)
+                outer_scores = _predict(outer_model, [_vector(r["features"]) for r in outer_test])
+                trained = True
+                for r, score in zip(outer_test, outer_scores):
+                    if score >= threshold:
+                        n_entered += 1
+                        entry = dict(r)
+                        entry["score"] = score
+                        entry["threshold"] = threshold
+                        entries.append(entry)
+        fold_info.append(
+            {
+                "outer_day": outer_day,
+                "trained": trained,
+                "threshold": threshold,
+                "n_inner_oof": len(inner_oof_scores),
+                "n_test": len(outer_test),
+                "n_entered": n_entered,
+                "selected_fraction": (n_entered / len(outer_test)) if outer_test else None,
+            }
+        )
+    return entries, fold_info
+
+
+def nested_lodo_report(entries: Sequence[dict[str, Any]], fold_info: Sequence[dict[str, Any]], days: Sequence[str] = DAYS_ALL) -> dict[str, Any]:
+    """Report-only summary of nested_fixed_threshold_lodo's pooled entered
+    trades: n, mean %, CI lo, total SOL, ex-top-3 SOL under both fail
+    models; per-day selected fraction and mean; fill-conditional net
+    (entered-and-filled vs all entered); and the source-pool split. NOT
+    gating -- see the promotion gate in EXP-011's pre-registration, scored
+    only on the reserved holdout by tools/exp011_score.py."""
+    by_day_entries: dict[str, list[dict[str, Any]]] = {d: [] for d in days}
+    for e in entries:
+        if e["day"] in by_day_entries:
+            by_day_entries[e["day"]].append(e)
+
+    def _fail_cohort(vals: Sequence[float]) -> dict[str, Any]:
+        return {
+            "n": len(vals),
+            "mean_pct": _mean_pct(vals),
+            "ci_lo_pct": _ci_lo_pct(vals),
+            "total_sol": (sum(vals) / LAMPORTS_PER_SOL) if vals else None,
+            "ex_top3_sol": _ex_top3_sol(vals),
+        }
+
+    flat_vals_all = [e["flat"] for e in entries]
+    press_vals_all = [e["press"] for e in entries]
+    flat_stats = _fail_cohort(flat_vals_all)
+    press_stats = _fail_cohort(press_vals_all)
+
+    per_day: list[dict[str, Any]] = []
+    n_days_total = 0
+    n_days_flat_pos = 0
+    n_days_press_pos = 0
+    fold_by_day = {f["outer_day"]: f for f in fold_info}
+    for d in days:
+        day_entries = by_day_entries.get(d, [])
+        fold = fold_by_day.get(d, {})
+        row: dict[str, Any] = {
+            "day": d,
+            "threshold": fold.get("threshold"),
+            "n_test": fold.get("n_test", 0),
+            "n_entered": len(day_entries),
+            "selected_fraction": fold.get("selected_fraction"),
+            "flat_mean_pct": None,
+            "press_mean_pct": None,
+        }
+        if day_entries:
+            n_days_total += 1
+            flat_mean = _mean_pct([e["flat"] for e in day_entries])
+            press_mean = _mean_pct([e["press"] for e in day_entries])
+            row["flat_mean_pct"] = flat_mean
+            row["press_mean_pct"] = press_mean
+            if flat_mean is not None and flat_mean > 0:
+                n_days_flat_pos += 1
+            if press_mean is not None and press_mean > 0:
+                n_days_press_pos += 1
+        per_day.append(row)
+
+    filled_entries = [e for e in entries if e.get("filled")]
+    fill_conditional = {
+        "all_entered": {"n": len(entries), "flat_mean_pct": _mean_pct(flat_vals_all), "press_mean_pct": _mean_pct(press_vals_all)},
+        "filled_only": {
+            "n": len(filled_entries),
+            "flat_mean_pct": _mean_pct([e["flat"] for e in filled_entries]),
+            "press_mean_pct": _mean_pct([e["press"] for e in filled_entries]),
+        },
+    }
+
+    by_pool: dict[str, list[dict[str, Any]]] = {"A": [], "C": [], "B": []}
+    for e in entries:
+        by_pool.setdefault(e.get("pool", "?"), []).append(e)
+    source_split = {
+        name: {"n": len(rs), "flat_mean_pct": _mean_pct([r["flat"] for r in rs]), "press_mean_pct": _mean_pct([r["press"] for r in rs])}
+        for name, rs in by_pool.items()
+    }
+
+    return {
+        "schema": "exp011_nested_fixed_threshold_lodo_v1",
+        "note": "REPORT ONLY. Not gating. Must not be used to change the frozen threshold, features, or params.",
+        "n_days_total": n_days_total,
+        "n_days_flat_positive": n_days_flat_pos,
+        "n_days_press_positive": n_days_press_pos,
+        "flat": flat_stats,
+        "press": press_stats,
+        "per_day": per_day,
+        "fill_conditional": fill_conditional,
+        "source_split": source_split,
+        "fold_info": list(fold_info),
     }
 
 
@@ -284,7 +470,15 @@ def _md5_of_file(path: Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()
 
 
-def write_outputs(out_dir: Path, model: Any, threshold_info: dict[str, Any], oof: Sequence[dict[str, Any]], manifest: dict[str, Any], wall_s: float) -> dict[str, str]:
+def write_outputs(
+    out_dir: Path,
+    model: Any,
+    threshold_info: dict[str, Any],
+    oof: Sequence[dict[str, Any]],
+    manifest: dict[str, Any],
+    wall_s: float,
+    nested_report: dict[str, Any] | None = None,
+) -> dict[str, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     model_path = out_dir / "model.txt"
     model.save_model(str(model_path))
@@ -329,20 +523,37 @@ def write_outputs(out_dir: Path, model: Any, threshold_info: dict[str, Any], oof
     }
     (out_dir / "oof_scores.json").write_text(json.dumps(oof_doc, indent=2) + "\n", encoding="utf-8")
 
+    if nested_report is not None:
+        (out_dir / "nested_fixed_threshold_lodo.json").write_text(json.dumps(nested_report, indent=2, default=str) + "\n", encoding="utf-8")
+
     return {"model_md5": model_md5}
 
 
-def freeze(max_workers: int = 3, buffer_hours: int = 2) -> tuple[Any, dict[str, Any], list[dict[str, Any]], dict[str, Any], float]:
+def freeze(
+    max_workers: int = 3, buffer_hours: int = 2, run_nested_lodo: bool = True
+) -> tuple[Any, dict[str, Any], list[dict[str, Any]], dict[str, Any], float, dict[str, Any] | None]:
     t0 = time.time()
     rows, manifest = load_tp50_rows(max_workers=max_workers, buffer_hours=buffer_hours)
     print(f"EXP-011 freeze: {len(rows)} {TARGET_SPEC_ID} rows over {len(manifest['days'])} days; computing ablated S2 LODO...", file=sys.stderr, flush=True)
     oof = leave_one_day_out_oof(rows)
     threshold_info = compute_threshold(oof)
     print(f"EXP-011 freeze: threshold={threshold_info['threshold']:.6f} n_oof={threshold_info['n_oof']} selected_fraction={threshold_info['selected_fraction']:.4f}", file=sys.stderr, flush=True)
+
+    nested_report: dict[str, Any] | None = None
+    if run_nested_lodo:
+        print("EXP-011 freeze: running the nested fixed-threshold LODO (report only, 9 outer x 8 inner fits)...", file=sys.stderr, flush=True)
+        entries, fold_info = nested_fixed_threshold_lodo(rows)
+        nested_report = nested_lodo_report(entries, fold_info)
+        print(
+            f"EXP-011 freeze: nested LODO n={nested_report['flat']['n']} flat_mean={nested_report['flat']['mean_pct']} press_mean={nested_report['press']['mean_pct']}",
+            file=sys.stderr,
+            flush=True,
+        )
+
     print("EXP-011 freeze: fitting the frozen model on all 9 days...", file=sys.stderr, flush=True)
     model = fit_frozen_model(rows)
     wall_s = time.time() - t0
-    return model, threshold_info, oof, manifest, wall_s
+    return model, threshold_info, oof, manifest, wall_s, nested_report
 
 
 def main() -> None:
@@ -350,11 +561,14 @@ def main() -> None:
     ap.add_argument("--out-dir", default="ARTIFACTS/exp011")
     ap.add_argument("--max-workers", type=int, default=3)
     ap.add_argument("--buffer-hours", type=int, default=2)
+    ap.add_argument("--skip-nested-lodo", action="store_true", help="skip the report-only nested fixed-threshold LODO (Part A)")
     args = ap.parse_args()
     assert args.max_workers <= 3, "keep max-workers <= 3 -- two backfill walkers share this box"
 
-    model, threshold_info, oof, manifest, wall_s = freeze(max_workers=args.max_workers, buffer_hours=args.buffer_hours)
-    out = write_outputs(Path(args.out_dir), model, threshold_info, oof, manifest, wall_s)
+    model, threshold_info, oof, manifest, wall_s, nested_report = freeze(
+        max_workers=args.max_workers, buffer_hours=args.buffer_hours, run_nested_lodo=not args.skip_nested_lodo
+    )
+    out = write_outputs(Path(args.out_dir), model, threshold_info, oof, manifest, wall_s, nested_report=nested_report)
     print(f"EXP-011 freeze: wrote {args.out_dir} model_md5={out['model_md5']} wall_s={wall_s:.1f}", file=sys.stderr, flush=True)
 
 
