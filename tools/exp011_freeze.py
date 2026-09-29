@@ -180,24 +180,43 @@ def _label(rows: Sequence[dict[str, Any]]) -> list[int]:
 # --- Data loading: pools A + C + B, tp50_sl30 rows only, sorted -----------
 
 
-def load_tp50_rows(max_workers: int = 3, buffer_hours: int = 2) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def load_tp50_rows(
+    max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """`out_dir` (added for tools/exp011_build_table.py's Phase A): forwarded
+    to each pool's run_all_features_* as its own streaming scratch dir
+    (out_dir/poolA, out_dir/poolC, out_dir/poolB) so no pool's workers hold
+    their whole row set in memory at once -- see run_worker_features's
+    rows_out_path docstring. None (default): unchanged in-memory behavior."""
     manifest: dict[str, Any] = {"pools": {}}
     print("EXP-011 freeze: loading pool A (fast-box backfill)...", file=sys.stderr, flush=True)
-    rows_a = [r for r in run_all_features_a(max_workers=max_workers, buffer_hours=buffer_hours) if r["spec"] == TARGET_SPEC_ID]
+    rows_a = [
+        r
+        for r in run_all_features_a(max_workers=max_workers, buffer_hours=buffer_hours, out_dir=(out_dir / "poolA" if out_dir else None))
+        if r["spec"] == TARGET_SPEC_ID
+    ]
     for r in rows_a:
         r["pool"] = "A"
     manifest["pools"]["A"] = {"start": POOL_A_HOURS[0], "end": POOL_A_HOURS[-1], "n_hours": len(POOL_A_HOURS), "n_rows": len(rows_a)}
     print(f"pool A: {len(rows_a)} {TARGET_SPEC_ID} rows", file=sys.stderr, flush=True)
 
     print("EXP-011 freeze: loading pool C (Oracle in-sample backfill)...", file=sys.stderr, flush=True)
-    rows_c = [r for r in run_all_features_c(max_workers=max_workers, buffer_hours=buffer_hours) if r["spec"] == TARGET_SPEC_ID]
+    rows_c = [
+        r
+        for r in run_all_features_c(max_workers=max_workers, buffer_hours=buffer_hours, out_dir=(out_dir / "poolC" if out_dir else None))
+        if r["spec"] == TARGET_SPEC_ID
+    ]
     for r in rows_c:
         r["pool"] = "C"
     manifest["pools"]["C"] = {"start": POOL_C_HOURS[0], "end": POOL_C_HOURS[-1], "n_hours": len(POOL_C_HOURS), "n_rows": len(rows_c)}
     print(f"pool C: {len(rows_c)} {TARGET_SPEC_ID} rows", file=sys.stderr, flush=True)
 
     print("EXP-011 freeze: loading pool B (Oracle live tape)...", file=sys.stderr, flush=True)
-    rows_b = [r for r in run_all_features_b(max_workers=max_workers, buffer_hours=buffer_hours) if r["spec"] == TARGET_SPEC_ID]
+    rows_b = [
+        r
+        for r in run_all_features_b(max_workers=max_workers, buffer_hours=buffer_hours, out_dir=(out_dir / "poolB" if out_dir else None))
+        if r["spec"] == TARGET_SPEC_ID
+    ]
     for r in rows_b:
         r["pool"] = "B"
     manifest["pools"]["B"] = {"start": POOL_B_HOURS[0], "end": POOL_B_HOURS[-1], "n_hours": len(POOL_B_HOURS), "n_rows": len(rows_b)}
