@@ -1,62 +1,71 @@
-# Manager handoff 2026-09-28
+# Manager handoff 2026-09-29
 
-The owner is moving to a new manager session. This page plus [LAB_STATE.md](../LAB_STATE.md), [CONSTITUTION.md](../CONSTITUTION.md), [ARTIFACTS/SUMMARY.md](../ARTIFACTS/SUMMARY.md), [DEC/](../DEC/), and [docs/HOSTS.md](HOSTS.md) should be sufficient for a clean pickup. This file is meant to be short-lived — remove the [CLAUDE.md](../CLAUDE.md) reload-order link to it once it is stale.
+The owner is starting a new manager session. Read this page first, then [LAB_STATE.md](../LAB_STATE.md), [CLAUDE.md](../CLAUDE.md), [CONSTITUTION.md](../CONSTITUTION.md), [docs/HOSTS.md](HOSTS.md), and [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md). The narrative of the previous session is in [ARTIFACTS/daily/2026-09-28-manager-session.md](../ARTIFACTS/daily/2026-09-28-manager-session.md). This page is meant to be short-lived. Replace it at the next handoff; don't append to it.
+
+As of **2026-09-29 ~05:45Z**, `main` at `568be90` (#159). Paper only.
+
+## Where we are, in one paragraph
+
+The frozen migrate-direct cell is **dead** (formal FAIL, 2026-09-28 21:00Z). Exits and fee tiers were explored and are dead ends. The lever is **entry selection**. The exploration-pool entry model **B3** (#156) is the first result that survives costs on held-out days: S2 classifier, tp50_sl30, top 10%, 9/9 held-out days positive, and after a leakage ablation flat +6.22% (CI lo +3.85%) and pressure +3.59% (CI lo +2.06%). It is **exploration, not a promote**. Its confirmation test, **EXP-011**, is built but **not yet pre-registered on `main`**. Its fresh holdout block `[2026-09-09T12, 2026-09-15T12)` is being downloaded and must not be read until the pre-registration and its one-shot scorer are merged. The forward-paper kill review is 2026-10-05T05:00Z, and its scoring chain is complete.
 
 ## Pending, time-boxed (UTC)
 
-**(a) ~18:30Z — Oracle mem-census read.** Read `/var/lib/mal/paper/forward-paper/mem-census.jsonl` since restart #2 (2026-09-28T14:25:02Z, `f687fad`, #124+#125):
+**(a) EXP-011, the priority.** Branch `claude/exp011-prereg` (worktree `/home/claude/MAL/.claude/worktrees/agent-ae78cfb34ba409bdd`), **not a PR yet**. It holds:
+- `tools/exp011_freeze.py`, the pre-registration `EXP/EXP-011-migrate-entry-model-prereg.md` (md5 and threshold still to be filled), and the ledger owner change;
+- rows-to-disk streaming for all three pools;
+- `tools/exp011_build_table.py` (Phase A) and `tools/exp011_rss_monitor.sh`;
+- at `12e248b` (branch head), an **unfinished** `chunk_plan(..., max_home_hours=...)` in `tools/exploration_exits.py`, used by pools A/B/C. It splits a pool into more, smaller home windows that run ≤`max_workers` at a time. 89 tests pass.
 
-- RSS growth rate (MB/h).
-- `early_prints_buffered` (should now be flat — #125's fix).
-- `dead_mints` / `dead_prints_dropped` (should be climbing steadily, not flat).
-- `wallets` entry counts (the largest remaining unbounded container — see [ARTIFACTS/lab/forward-paper-memory-2026-09-27.md](../ARTIFACTS/lab/forward-paper-memory-2026-09-27.md)).
-- `gc` `max_pause_ms` and `freeze_count` (the #123/#124 fix).
+Phase A has **not** produced a table yet. Its last attempt was killed at the 5 GB/worker guard, because the pool-B (Oracle live tape) `watch` dict grows over a ~32 h worker window. Steps:
+1. Finish the chunking:
+   - Wire `--max-home-hours` into `tools/exp011_build_table.py`.
+   - **Fix the open risk:** each chunk reads only `buffer_hours` (default 2) past its home window, so a mint created near a chunk's end that migrates more than 2 h later is dropped. The old ~32 h windows rarely dropped these. Set a buffer that covers the create→migrate lag (e.g. 24 h), and prove the chunked and unchunked outputs give identical rows on a few-hour sample before the full run.
+   - Fix the monitor so it kills the whole process tree, including spawn workers reparented to `systemd --user`. Match them by an env or cmdline tag, and use `setsid`.
+   - Unit-test all of it on tiny slices only.
+2. **Run Phase A attended**, alone, with ≤2 workers, under the monitor, after `systemctl show user-1002.slice -p MemoryCurrent` < 3 GB. Output: `/home/claude/data/exp011/table.jsonl`.
+3. Phase B, from the table only: train the final model twice (md5 must match), set threshold = the 90th percentile of the outer OOF scores, and run the **nested fixed-threshold LODO** as a report-only preview. Write `ARTIFACTS/exp011/*` and fill the md5, threshold and nested table into the pre-reg.
+4. Open and merge the EXP-011 PR (the ledger owner becomes EXP-011). Only then change the docs from "pending pre-registration" to "pre-registered".
+5. Build `tools/exp011_score.py`: it loads the frozen model, checks the md5, **refuses to run unless both walker B and walker C checkpoints show all 72 of their hours sealed**, reads exactly `[2026-09-09T12, 2026-09-15T12)` from `/var/lib/mal/backfill-fast-b` + `-c`, streams with bounded windows, and applies the unchanged gate under both fail models (n ≥ 100, ≥5 UTC days with a majority positive, CI lo > 0 at 1,000 draws seed 1, ex-top-3 > 0). It also reports fill-conditional net and the selected fraction. Merge it before the read.
+6. **Read once** after walkers B + C finish (~2026-09-30T02–03Z). Have `quant-proof` review before any sentence says it made money. A pass earns a forward-paper book **after** 2026-10-05, never live directly. A fail kills EXP-011, and there's no second read.
 
-Count `runner_lag` healthcheck failures in `/var/lib/mal/logs/health.jsonl` since 14:25Z. Project when RSS reaches the `MemoryHigh` 10G cgroup ceiling. **If the projection does not last to the 2026-10-05T05:00:00Z kill review**, build a decision-neutral `wallets` bound with an md5 replay-equivalence proof, the same pattern as [#123](https://github.com/vaanai/MAL/pull/123)/[#125](https://github.com/vaanai/MAL/pull/125).
+**(b) EXP-009 screen.** Walker 1 reaches its floor (2026-09-15T12) at ~2026-09-30T02Z. EXP-009 is a **screen** (k = 1, #154; ~2.5 eligible days), and a pass earns only a forward trial. A scorer still needs building. Follow `EXP/EXP-009-migrate-creator-gate-prereg.md` and all its amendments literally: G1 24 h lookback, burn-in, unknown-creator exclusion, the trades-based migrate trigger. Report how many rows differ from the migrations-sink trigger used to compute k. Read once.
 
-**(b) 21:00Z — one-shot OOS read.** The systemd one-shot `mal-oos-check` (user `claude` on `mal-fast-0`) writes `/home/claude/reports/oos-check/2026-09-28.md`, first line `VERDICT`.
+**(c) Every day at 00:00:00Z:** the Oracle runner restarts automatically (claude timer `mal-runner-daily-restart`). Check the new line in `/home/claude/reports/runner-restarts.jsonl` (`ok: true`, lag under 5 s, `head_sha`). The daily review runs at 05:00Z into `/home/claude/reports/daily-review/`.
 
-**(c) After reading (b) — fast-backfill credit-extension decision.** The +2M cap binds around 2026-09-29 18:00–19:00Z (~148 of a 240-hour target; the full 240 h needs ~1.25M more credits, out of the owner's ~20M autoscale headroom). Extend only if the book is under-sampled but not clearly dead. If it clearly fails under **both** fail models (flat 15% and pressure scale 1), recommend killing the frozen migrate cell instead of extending. **Never refit the frozen cell.** `quant-proof` reviews any edge claim before it goes in a PR or note.
-
-**(d) 05:00Z daily review — already automatic.** Runs unattended → `/home/claude/reports/daily-review/<date>.md` and `INDEX.md`.
-
-## Update 2026-09-28 18:37Z — (a) done, action needed
-
-Measured since restart #2 (14:25:02Z → 18:37Z, 4.17 h, 51 census rows):
-
-- `early_prints_buffered` 107 → 4,159 (was ~426k in 2 h before #125). **#125 works.** `dead_mints` 50,747 → 61,025; `dead_prints_dropped` 1,471,344.
-- GC `max_pause_ms` 205 (was 2,035 before #124), 24 freezes. `runner_lag` healthcheck fails since 14:25Z: 2 (was ~3 per 2 h).
-- **RSS still grows ~441 MB/h** (154 MB → 1,993 MB, linear: 1,118 MB at 2.08 h). The early buffer was not the dominant live cost. Leading suspect: `wallets` — 142,732 wallets, 452,659 per-mint entries, 308,951 `holds` entries in 4.2 h, all unbounded.
-- Projection: RSS reaches `MemoryHigh` 10G around **2026-09-29 12:00–13:00Z**. It will not last to the kill review.
-
-Next manager, in order:
-1. **Stopgap before ~2026-09-29 10:00Z:** restart `mal-forward-paper` (`sudo -n systemctl --user -M ubuntu@ restart mal-forward-paper.service`) if no fix is deployed by then. Record it as restart #3 in LAB_STATE (resets cross-mint veto memory).
-2. **Real fix:** a decision-neutral `wallets` bound (per-(wallet, mint) entries and `holds` for mints no book can act on and no feature reads), with the md5 replay proof on the staged 3.8 h slice (`/home/claude/profile-data/`; baseline decisions md5 `6b2f7786f8372c84a87ae13b6e273756`, positions `9b1ce744ef42222fe3a8cc352d35e3a0`). Check every read site of `_Wallet` fields (`_leader_ok`, `is_bot`/`is_sniper`, creator features). Measure with the live census after deploy.
-3. Alternatively or additionally, the restart-neutral warm start (Open threads) makes periodic restarts a safe fallback.
+**(d) 2026-10-05T05:00:00Z kill review.** A single read, on a **snapshot** of Oracle's `positions.jsonl` (copy it with `ssh mal-core-0 'cat …' > local`). Order:
+1. `tools/forward_paper_settle_orphans.py` (restart-dropped opens).
+2. `tools/forward_paper_pressure_stamp.py` (the pressure leg).
+3. `tools/kill_review.py --pressure-from-ms <2026-09-29T00:00:00Z in ms> --holm-draws 10000`.
+The flat leg counts from 2026-09-28T00:00:00Z. Holm runs across the 9 books. An incomplete book is NOT_DECIDABLE. `quant-proof` reviews before anything is written as a result. Record it in LAB_STATE. No new forward books before then.
 
 ## Open threads
 
-- [#90](https://github.com/vaanai/MAL/pull/90): keep. `JobQueue` on `main` is still unbounded.
-- Restart-neutral warm start: rebuild in-memory state from the tape since the clean-clock start on process boot, so a future restart no longer resets `WalletState`/`by_creator` cross-mint history.
-- `wallets` growth: the largest remaining unbounded container (see (a) above).
-- Deploy provenance on `mal-fast-0`: `/home/ubuntu/mal-oos` is not a git checkout. `mal-fast-create` is deployed by copying a file into `/var/lib/mal/eng` with a `.bak` backup, not a checkout either.
-- Cursor timers cancellation: asked of the owner, not yet confirmed done.
+- **Lane D** (a learned filter on early bonding-curve entries): branch `claude/explore-early-entry-model` at `9e9b08e`, with streaming in place and **not yet run to completion**. It needs the same bounded-window chunking as EXP-011. Run it alone, after EXP-011's heavy steps, with its pre-stated screen (the nested fixed-threshold version).
+- **More data:** after 2026-10-05, the forward-paper data from 2026-09-28 joins the exploration pool. Buy further fresh holdout blocks in ≥6-day chunks (~2M Helius credits each; a walker covers ~3 history hours per wall hour, and walkers scale in parallel) as candidates need them. Record the owner in the ledger **before** the walker starts.
+- **Helius credits** (owner's ~20M autoscale headroom): 1,554,720 used across the three walkers at 05:40Z, against caps of 2.3M (walker 1), 1.1M (B) and 1.1M (C). Report credits per job in the daily note.
+- **Live readiness** (after a confirmation): restart-neutral warm start (PR 1 is merged as #127; PR 2, the `serve()` wiring, isn't done), a forward book for the candidate, and then the live bar (~7 days forward, tiny size, the owner's explicit yes).
+- [#90](https://github.com/vaanai/MAL/pull/90): keep.
+- Deploy provenance: `/home/ubuntu/mal-oos` on mal-fast-0 is not a git checkout (its backfill module matched git main byte for byte on 2026-09-28). The walker unit files live in `/home/ubuntu/.config/systemd/user/` (`mal-fast-backfill-b/-c.service`, and walker 1's drop-in `mal-fast-backfill.service.d/range.conf`) and are not in git.
+
+## Rules this session learned the hard way
+
+1. **Memory on mal-fast-0.** 22 GB, no swap. The claude account is capped at 15G hard (no soft throttle). Exploration replays use ~3–5 GB per worker. **One heavy job at a time, ≤2 workers, bounded home windows, rows streamed to disk, check `MemoryCurrent` first, and use a whole-tree kill guard.** Two concurrent 3-worker jobs caused an OOM and a reboot (2026-09-29 02:15Z). Never run heavy jobs unattended overnight.
+2. **Docs describe only what is merged.** Don't call something pre-registered, ready or live until its PR is on `main`. The owner's reviewers (Lyra, Grokbot) read every merge and caught this three times. Fix the data and the wording, never the rule.
+3. **Holdout ledger.** Write the owner row before a walker seals any hour. Take timestamps from `date -u`, never estimates (two future timestamps had to be corrected). A block that was already seen can't become a confirmation holdout.
+4. **Check ex-top-3 before calling anything a candidate.** The trailing stop looked positive pooled and was three moonshots.
+5. **Offline replicas of live logic** (settlement, pressure stamp) must mirror every live branch (e.g. `LadderRule`) for every book kind. See the memory notes.
+6. **Builders stop at ~40 turns.** Commit their WIP yourself (`git add/commit/push` in their worktree), then resume them with a tight numbered list. Prefer a fresh builder over resuming one whose context is huge.
+7. **Run merges as separate commands.** A chained `set -e` command merged a PR after an earlier step had failed.
 
 ## Host how-to (verified this session)
 
-**Oracle (`mal-core-0`):**
-
-- `ssh mal-core-0` — Claude's own read-only account (user `claude`, not `ubuntu`).
-- Restart a unit: `sudo -n systemctl --user -M ubuntu@ restart <mal-unit>` (same pattern for `reload`/`try-restart`/`status`/`show`).
-- Journal: `journalctl _UID=1001` (ubuntu's systemd `--user` units log under ubuntu's uid).
-- Cgroup memory: `/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/mal.slice/mal-batch.slice/mal-forward-paper.service/`.
-- Runner code update: Claude cannot write files as `ubuntu`. The owner or Helm fast-forwards `/var/lib/mal/paper/forward-paper/src` to a `main` SHA, then Claude restarts the service.
-
-**`mal-fast-0`:** the five `mal-fast-*` units run as `ubuntu`: `sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/$(id -u ubuntu) systemctl --user ...`. Claude's own timers (`mal-daily-review.timer`, `mal-oos-check.timer`) run as `claude`: plain `systemctl --user ...`, no `sudo -u` needed.
+- **Oracle `mal-core-0`:** `ssh mal-core-0` (read-only claude account). Restart units with `sudo -n systemctl --user -M ubuntu@ restart <mal-unit>`; `show`/`status`/`enable`/`disable` are NOT permitted. To read the runner's git SHA: `git -c safe.directory=/var/lib/mal/paper/forward-paper/src -C /var/lib/mal/paper/forward-paper/src rev-parse HEAD`. Code updates: ask the owner to have Helm fast-forward `/var/lib/mal/paper/forward-paper/src`. Helm exported the in-sample backfill to `/var/lib/mal/export/insample-backfill-20260922T00Z-20260925T07Z` (readable).
+- **`mal-fast-0`:** control ubuntu units with `sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/$(id -u ubuntu) systemctl --user …` (walkers: `mal-fast-backfill`, `-b`, `-c`, all enabled). Claude's own timers use plain `systemctl --user`. Walker progress: `/var/lib/mal/backfill-fast{,-b,-c}/checkpoint.json` (`credits_used`, `hours[*].status`). Exploration data copies: `/home/claude/data/oracle-insample-2026-09-22_25` (sha256-verified) and `/home/claude/data/oracle-live-2026-09-25_27`. The OOM outage history is in the daily note.
+- **Helm** owns ufw, sshd, cloudflared, Cloudflare Access, Oracle admin, and the cgroup/memory limits on both boxes. Ask through the owner.
 
 ## Pointers
 
-- Full state: [LAB_STATE.md](../LAB_STATE.md)
-- Hosts detail: [docs/HOSTS.md](HOSTS.md)
-- 2026-09-28 facts: [ARTIFACTS/daily/2026-09-28.md](../ARTIFACTS/daily/2026-09-28.md)
-- Memory investigation: [ARTIFACTS/lab/forward-paper-memory-2026-09-27.md](../ARTIFACTS/lab/forward-paper-memory-2026-09-27.md)
+- State: [LAB_STATE.md](../LAB_STATE.md) · Summary: [ARTIFACTS/SUMMARY.md](../ARTIFACTS/SUMMARY.md)
+- Ledger: [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md) · DEC-014: [DEC/DEC-014-holdout-ledger-and-multiplicity.md](../DEC/DEC-014-holdout-ledger-and-multiplicity.md)
+- Entry-model evidence: [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](../ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md) and the audit comment on [#156](https://github.com/vaanai/MAL/pull/156)
+- Session narrative: [ARTIFACTS/daily/2026-09-28-manager-session.md](../ARTIFACTS/daily/2026-09-28-manager-session.md)
