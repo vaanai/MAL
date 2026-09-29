@@ -14,7 +14,9 @@ Exploration only. No live runner, no network, no promotion claim.
 from __future__ import annotations
 
 import random
+import tempfile
 import unittest
+from pathlib import Path
 
 from tools.exploration_early_entry_model import (
     DAYS_ALL,
@@ -33,7 +35,9 @@ from tools.exploration_early_entry_model import (
     eval_exit_early,
     evaluate_cell,
     fit_and_score,
+    iter_rows_jsonl,
     pooled_cohort_report,
+    run_worker_early,
     score_one_early,
     screen_candidate,
 )
@@ -287,6 +291,81 @@ class MissRowTests(unittest.TestCase):
         mint.add(entry)
         curve = _curve()
         self.assertEqual(score_one_early("mintZ", mint, None, curve, t0 + 60_000, {}), [])
+
+
+class StreamToDiskTests(unittest.TestCase):
+    """run_worker_early(rows_out_path=...) must produce the exact same rows
+    a fully in-memory run would, just via a file instead of a held list --
+    the fix for the OOM the manager reported (a worker's `out` list growing
+    for its whole ~24h+buffer run was the dominant driver of peak RSS)."""
+
+    def _hour_info(self, t0_ms: int) -> dict:
+        return {
+            "hour": "test-hour",
+            "day": "2026-09-19",
+            "end": t0_ms // 1000 + 40 * 60,  # 40 min later -> past WINDOW_MS (32 min)
+            "trade": Path("unused"),
+            "create": None,
+        }
+
+    def _rows(self, t0_ms: int) -> list[dict]:
+        base_row = {
+            "type": "trade",
+            "venue": "pump_bonding",
+            "side": "buy",
+            "quote_reserve": 80_000_000_000,
+            "base_reserve": 400_000_000_000_000,
+            "slot": 100,
+            "event_index": 1,
+            "sol_lamports": 1_000_000_000,
+            "trader": "walletA",
+            "token_raw": 500_000,
+        }
+        return [
+            {**base_row, "mint": "mintZ", "t_recv_ms": t0_ms + 500, "block_time": t0_ms // 1000},
+            {**base_row, "mint": "mintZ", "t_recv_ms": t0_ms + 20_000, "block_time": t0_ms // 1000, "slot": 105},
+        ]
+
+    def test_rows_written_to_disk_match_the_in_memory_rows(self) -> None:
+        t0 = 1_700_000_000_000
+        entry = _print(t0, 100, 80_000_000_000, 400_000_000_000_000)
+        creates_override = {"mintZ": (_Mint(100, t0, 0, entry), _Feat("creatorZ", t0, entry.price_sol))}
+        creates_override["mintZ"][0].had_bond = True
+
+        def hour_info_fn(_key: str) -> dict:
+            return self._hour_info(t0)
+
+        def row_iter_fn(_path) -> list[dict]:
+            return self._rows(t0)
+
+        in_memory = run_worker_early(
+            0, ["h"], [], {}, hour_info_fn=hour_info_fn, row_iter_fn=row_iter_fn, creates_override=dict(creates_override)
+        )
+        self.assertTrue(in_memory)
+
+        # Rebuild a fresh creates_override -- the first call already mutated
+        # (and released) its _Mint/_Feat objects.
+        entry2 = _print(t0, 100, 80_000_000_000, 400_000_000_000_000)
+        creates_override2 = {"mintZ": (_Mint(100, t0, 0, entry2), _Feat("creatorZ", t0, entry2.price_sol))}
+        creates_override2["mintZ"][0].had_bond = True
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "rows.jsonl"
+            returned = run_worker_early(
+                0,
+                ["h"],
+                [],
+                {},
+                hour_info_fn=hour_info_fn,
+                row_iter_fn=row_iter_fn,
+                creates_override=creates_override2,
+                rows_out_path=out_path,
+            )
+            self.assertEqual(returned, [])  # streamed to disk, not held
+            from_disk = list(iter_rows_jsonl(out_path))
+        self.assertEqual(len(from_disk), len(in_memory))
+        # Compare by (delta_s, spec, status, flat, press) -- ignore ordering.
+        key = lambda r: (r["delta_s"], r["spec"], r["status"], r["flat"], r["press"])
+        self.assertEqual(sorted(map(key, from_disk)), sorted(map(key, in_memory)))
 
 
 class NestedThresholdPureFunctionTests(unittest.TestCase):

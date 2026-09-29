@@ -405,7 +405,23 @@ def run_worker_early(
     hour_info_fn: Any = _hour_info,
     row_iter_fn: Any = _iter_trades,
     creates_override: dict[str, tuple[_Mint, _Feat]] | None = None,
+    rows_out_path: Path | None = None,
 ) -> list[dict[str, Any]]:
+    """Score every create in home_keys. By default (rows_out_path=None)
+    every scored row is held in an in-memory list and returned -- fine for
+    tests and small slices, but for a full multi-day pool with 3 worker
+    processes this list is the dominant driver of peak RSS (it only grows,
+    for the whole worker's ~24h+buffer range, and gets pickled whole back
+    to the parent through `multiprocessing.Pool.starmap` right as every
+    worker's own peak overlaps the others').
+
+    With rows_out_path set, each mint's rows are written to that path as
+    newline-delimited JSON as soon as they are scored (`_flush_rows`) and
+    never held past that -- this function then returns `[]`. A worker's
+    resident set stays bounded by its `hot` dict (already window-bounded to
+    WINDOW_MS) instead of climbing with the whole run's output. See
+    `iter_rows_jsonl` to read the file back.
+    """
     os.nice(19)
     home_hours = [hour_info_fn(k) for k in home_keys]
     buffer_hours = [hour_info_fn(k) for k in buffer_keys]
@@ -414,12 +430,18 @@ def run_worker_early(
     hot: dict[str, tuple[_Mint, _Feat]] = dict(creates)
     curve = _curve()
     out: list[dict[str, Any]] = []
+    out_fh = rows_out_path.open("w", encoding="utf-8") if rows_out_path is not None else None
     now_ms = 0
     scored = 0
 
     def score_and_collect(mint_id: str, mint: _Mint, feat: _Feat, through_ms: int) -> None:
         nonlocal scored
-        out.extend(score_one_early(mint_id, mint, feat, curve, through_ms, creator_hist))
+        rows = score_one_early(mint_id, mint, feat, curve, through_ms, creator_hist)
+        if out_fh is not None:
+            for r in rows:
+                out_fh.write(json.dumps(r) + "\n")
+        else:
+            out.extend(rows)
         scored += 1
 
     def flush(now_ms_local: int, final: bool) -> None:
@@ -466,8 +488,22 @@ def run_worker_early(
         flush(max(now_ms, int(hour["end"]) * 1000), False)
         _trim_heap()
     flush(now_ms, True)
+    if out_fh is not None:
+        out_fh.close()
+        print(f"[w{worker_id}] done lines={lines} scored={scored} rows_written_to={rows_out_path}", file=sys.stderr, flush=True)
+        return []
     print(f"[w{worker_id}] done lines={lines} scored={scored} rows={len(out)}", file=sys.stderr, flush=True)
     return out
+
+
+def iter_rows_jsonl(path: Path) -> Any:
+    """Stream rows back from a file `run_worker_early` wrote via
+    rows_out_path -- one dict per line, in write order."""
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
 
 
 # --- Pool A (fast-box) --------------------------------------------------
@@ -483,21 +519,46 @@ def plan_workers_a(max_workers: int = 3, buffer_hours: int = 2) -> list[tuple[in
     return plan
 
 
-def run_all_features_a(max_workers: int = 3, buffer_hours: int = 2) -> list[dict[str, Any]]:
+def _rows_out_path(out_dir: Path | None, pool_tag: str, worker_id: int) -> Path | None:
+    if out_dir is None:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"pool{pool_tag}-w{worker_id}.jsonl"
+
+
+def run_worker_a(worker_id: int, home_keys: list[str], buffer_keys: list[str], creator_hist: dict[str, list[int]], rows_out_path: Path | None) -> list[dict[str, Any]]:
+    """A fixed-positional-signature wrapper so `rows_out_path` (keyword-only
+    on run_worker_early) can be passed through `Pool.starmap`, which only
+    unpacks tuples positionally -- the same pattern run_worker_c/run_worker_b
+    already use for their own keyword-only hour_info_fn/row_iter_fn."""
+    return run_worker_early(worker_id, home_keys, buffer_keys, creator_hist, rows_out_path=rows_out_path)
+
+
+def run_all_features_a(max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None) -> list[dict[str, Any]]:
+    """out_dir=None (default): every worker returns its rows in memory, as
+    before -- fine for tests and small slices. out_dir set: each worker
+    streams its rows straight to `out_dir/poolA-w<i>.jsonl` instead of
+    holding them (see run_worker_early), and this function reads them back
+    off disk once the pool has finished, one file at a time, instead of
+    receiving 3 large pickled lists from `Pool.starmap` at once."""
     print(f"pool A trade hours: {POOL_A_START} .. {POOL_A_END} ({len(POOL_A_HOURS)})", file=sys.stderr, flush=True)
     creator_hist = build_creator_history()
     plan = plan_workers_a(max_workers, buffer_hours)
     print(f"pool A worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
+    paths = [_rows_out_path(out_dir, "A", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
     if max_workers <= 1 or len(plan) <= 1:
-        for worker_id, home, buf in plan:
-            rows.extend(run_worker_early(worker_id, home, buf, creator_hist))
-        return rows
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=len(plan)) as pool:
-        results = pool.starmap(run_worker_early, [(i, h, b, creator_hist) for i, h, b in plan])
-    for part in results:
-        rows.extend(part)
+        for (worker_id, home, buf), path in zip(plan, paths):
+            rows.extend(run_worker_a(worker_id, home, buf, creator_hist, path))
+    else:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=len(plan)) as pool:
+            results = pool.starmap(run_worker_a, [(i, h, b, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
+        for part in results:
+            rows.extend(part)
+    if out_dir is not None:
+        for path in paths:
+            rows.extend(iter_rows_jsonl(path))
     return rows
 
 
@@ -534,26 +595,30 @@ def plan_workers_c(max_workers: int = 3, buffer_hours: int = 2) -> list[tuple[in
     return plan
 
 
-def run_worker_c(worker_id: int, home_keys: list[str], buffer_keys: list[str], creator_hist: dict[str, list[int]]) -> list[dict[str, Any]]:
-    return run_worker_early(worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=_hour_info_c)
+def run_worker_c(worker_id: int, home_keys: list[str], buffer_keys: list[str], creator_hist: dict[str, list[int]], rows_out_path: Path | None = None) -> list[dict[str, Any]]:
+    return run_worker_early(worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=_hour_info_c, rows_out_path=rows_out_path)
 
 
-def run_all_features_c(max_workers: int = 3, buffer_hours: int = 2) -> list[dict[str, Any]]:
+def run_all_features_c(max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None) -> list[dict[str, Any]]:
     print(f"pool C trade hours: {POOL_C_START} .. {POOL_C_END} ({len(POOL_C_HOURS)})", file=sys.stderr, flush=True)
     print(f"pool C root: {BACKFILL_C}", file=sys.stderr, flush=True)
     creator_hist = build_creator_history_c()
     plan = plan_workers_c(max_workers, buffer_hours)
     print(f"pool C worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
+    paths = [_rows_out_path(out_dir, "C", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
     if max_workers <= 1 or len(plan) <= 1:
-        for worker_id, home, buf in plan:
-            rows.extend(run_worker_c(worker_id, home, buf, creator_hist))
-        return rows
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=len(plan)) as pool:
-        results = pool.starmap(run_worker_c, [(i, h, b, creator_hist) for i, h, b in plan])
-    for part in results:
-        rows.extend(part)
+        for (worker_id, home, buf), path in zip(plan, paths):
+            rows.extend(run_worker_c(worker_id, home, buf, creator_hist, path))
+    else:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=len(plan)) as pool:
+            results = pool.starmap(run_worker_c, [(i, h, b, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
+        for part in results:
+            rows.extend(part)
+    if out_dir is not None:
+        for path in paths:
+            rows.extend(iter_rows_jsonl(path))
     return rows
 
 
@@ -597,6 +662,7 @@ def run_worker_b(
     buffer_keys: list[str],
     all_creates: dict[str, tuple[_Mint, _Feat]],
     creator_hist: dict[str, list[int]],
+    rows_out_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     home_start_ms, home_end_ms = _worker_home_window_ms(home_keys)
     home_creates = {mid: (m, f) for mid, (m, f) in all_creates.items() if home_start_ms <= m.block_ms < home_end_ms}
@@ -613,26 +679,31 @@ def run_worker_b(
         hour_info_fn=_hour_info_b,
         row_iter_fn=iter_trade_rows_sorted,
         creates_override=home_creates,
+        rows_out_path=rows_out_path,
     )
 
 
-def run_all_features_b(max_workers: int = 3, buffer_hours: int = 2) -> list[dict[str, Any]]:
+def run_all_features_b(max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None) -> list[dict[str, Any]]:
     print(f"pool B trade hours: {POOL_B_START} .. {POOL_B_END} ({len(POOL_B_HOURS)})", file=sys.stderr, flush=True)
     all_creates = load_creates_b()
     print(f"pool B creates: {len(all_creates)}", file=sys.stderr, flush=True)
     creator_hist = build_creator_history_b()
     plan = plan_workers_b(max_workers, buffer_hours)
     print(f"pool B worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
+    paths = [_rows_out_path(out_dir, "B", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
     if max_workers <= 1 or len(plan) <= 1:
-        for worker_id, home, buf in plan:
-            rows.extend(run_worker_b(worker_id, home, buf, all_creates, creator_hist))
-        return rows
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=len(plan)) as pool:
-        results = pool.starmap(run_worker_b, [(i, h, b, all_creates, creator_hist) for i, h, b in plan])
-    for part in results:
-        rows.extend(part)
+        for (worker_id, home, buf), path in zip(plan, paths):
+            rows.extend(run_worker_b(worker_id, home, buf, all_creates, creator_hist, path))
+    else:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=len(plan)) as pool:
+            results = pool.starmap(run_worker_b, [(i, h, b, all_creates, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
+        for part in results:
+            rows.extend(part)
+    if out_dir is not None:
+        for path in paths:
+            rows.extend(iter_rows_jsonl(path))
     return rows
 
 
@@ -1086,17 +1157,33 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Exploration lane D: learned filter on early bonding-curve entries")
     parser.add_argument("--out-md", type=Path, default=Path("ARTIFACTS/lab/exploration-early-entry-model-2026-09-29.md"))
     parser.add_argument("--out-json", type=Path, default=Path("ARTIFACTS/lab/exploration-early-entry-model-2026-09-29.json"))
-    parser.add_argument("--max-workers", type=int, default=3)
+    parser.add_argument("--max-workers", type=int, default=2)
     parser.add_argument("--buffer-hours", type=int, default=2)
+    parser.add_argument(
+        "--work-dir",
+        type=Path,
+        default=None,
+        help=(
+            "If set, each worker streams its scored rows to "
+            "<work-dir>/pool<A|C|B>-w<i>.jsonl as it goes (run_worker_early's "
+            "rows_out_path) instead of holding them in memory for its whole "
+            "run -- keeps a worker's own RSS bounded by its window-limited "
+            "hot set rather than the full output, and avoids handing back 3 "
+            "large pickled lists through Pool.starmap at once. Left unset "
+            "(default), rows are held in memory as before -- fine for a "
+            "small slice, not for the full pool with several concurrent "
+            "workers."
+        ),
+    )
     args = parser.parse_args()
     t0 = time.time()
 
     print("=== pool A (fast-box) ===", file=sys.stderr, flush=True)
-    rows_a = run_all_features_a(max_workers=args.max_workers, buffer_hours=args.buffer_hours)
+    rows_a = run_all_features_a(max_workers=args.max_workers, buffer_hours=args.buffer_hours, out_dir=args.work_dir)
     print("=== pool C (Oracle in-sample) ===", file=sys.stderr, flush=True)
-    rows_c = run_all_features_c(max_workers=args.max_workers, buffer_hours=args.buffer_hours)
+    rows_c = run_all_features_c(max_workers=args.max_workers, buffer_hours=args.buffer_hours, out_dir=args.work_dir)
     print("=== pool B (Oracle live) ===", file=sys.stderr, flush=True)
-    rows_b = run_all_features_b(max_workers=args.max_workers, buffer_hours=args.buffer_hours)
+    rows_b = run_all_features_b(max_workers=args.max_workers, buffer_hours=args.buffer_hours, out_dir=args.work_dir)
     for r in rows_a:
         r["pool"] = "A"
     for r in rows_c:
