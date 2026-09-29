@@ -110,7 +110,7 @@ Restarts drop in-memory open positions (655 of 86,464 opens across all books sin
   - Entry model (#146, #152): over 6 held-out days (fast 09-19..21 plus Oracle live tape 09-25..27), the top decile beat all trades on 8 of 12 day×exit folds. It was positive with ex-top-3 > 0 on only **3 of 12**. The top-5 features were identical on every held-out day: pre-migration price return, nearby buy SOL, mcap at T, time to migrate, same-slot buys. This is signal, but not an edge yet.
   - **Lesson:** the typical migrate entry loses, and exits only harvest rare tails. The lever is entry selection. Always check ex-top-3 before calling an exploration cell a candidate.
 - **Holdout ledger corrections.** #147 reserved the already-seen Oracle live tape (2026-09-25T07→09-28T00) for EXP-010. That broke rule 4, and #148 reverted it: the block is exploration pool. #150 fixed EXP-009's block at `[2026-09-15T12, 2026-09-19T01)`. That leaves about 2.5 eligible days, so EXP-009 is a **screen**: a pass earns a forward trial, never a promote.
-- **Runner.** Restart #3 is scheduled for **2026-09-29T00:00:00Z** by the daily timer (#137). It deploys whatever is in Oracle's `src` at that moment. The owner/Helm was asked to fast-forward `src` to `d7485d2` (#145, which logs the discarded fill on flat-fail misses; the only runner-code change since `28dfa6a`, with decisions md5 identical). Every daily restart resets in-memory `WalletState`/`by_creator` and drops open positions. Those positions are settled offline for the kill review (#141/#143).
+- **Runner restart #3 (mid-week, logged per CLAUDE.md):** **2026-09-29T00:00:20Z** by the daily timer (#137). Code `d7485d2` (the Oracle `src` was fast-forwarded by Helm from `28dfa6a` at about 2026-09-28T20:08Z; rollback `28dfa6a`). Pre: RSS 4,216,524 KB, lag 180 ms. Post: PID 109728, RSS 217,748 KB, lag 9 ms, and the mem-census now carries `tx_order_entries`. Decision-neutral per the md5 proofs in #134/#145. It resets in-memory `WalletState`/`by_creator` and drops open positions, which are settled offline for the kill review (#141/#143). **The pressure-fail leg of the kill review counts from 2026-09-29T00:00:00Z** (DEC-014 Amendment 3). From now on the runner restarts every day at 00:00:00Z. Each run appends one line to `/home/claude/reports/runner-restarts.jsonl` on mal-fast-0.
 - **Open asks to Helm (via the owner):**
   1. Fast-forward Oracle `src` to `d7485d2`.
   2. Export the Oracle in-sample backfill hours 2026-09-22T00→09-25T07 (sealed hour files only, never `helius.env`) to a path the `claude` account can read. EXP-009's `k` and the entry-model lane need them.
@@ -182,7 +182,7 @@ These were the open PRs at the 2026-09-27 handoff. #106 has since merged, and #1
 
 ## Next work
 
-1. **00:00Z 2026-09-29 restart #3** (timer). Verify `src` HEAD, lag, and the `tx_order_entries` mem-census field. Log it here.
+1. **Daily 00:00Z restarts** run automatically. Check `runner-restarts.jsonl` and the growth of mem-census `tx_order_entries` (the #134 plateau should be ~1.2M).
 2. **Entry selection** is the main research lane. Get more exploration days (Oracle in-sample export), then a small pre-registered entry-filter candidate, scored with ex-top-3, on a fresh unowned block bought in ≥6-day chunks.
 3. **EXP-009 screen:** compute `k` in-sample (needs the Oracle export), then score the screen once walker 1 finishes its block.
 4. **2026-10-05T05:00:00Z kill review:** a single read with `tools/kill_review.py` on a snapshot: positions + settlements + pressure stamp, both legs, and Holm across the 9 books.
