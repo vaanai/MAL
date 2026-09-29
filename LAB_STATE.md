@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers. **As-of:** 2026-09-29 ~05:00Z. `main` through [#157](https://github.com/vaanai/MAL/pull/157) (`22e7a7b`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
+Compact reload for managers. **As-of:** 2026-09-29 ~05:00Z. `main` through [#158](https://github.com/vaanai/MAL/pull/158) (`dfb6d05`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
 
 ## Objective
 
@@ -61,7 +61,7 @@ Detail, units, logs, memory limits, and what is safe to restart: [docs/HOSTS.md]
 ## Current research state
 
 - **Frozen migrate-direct cell is dead.** Formal FAIL from the 2026-09-28T21:00Z one-shot: pooled 0.5 SOL n=3,622 over 5 days, flat net −0.0906% (3/5 days positive), pressure net −0.1682% (2/5), every CI lower bound < 0. It is not refit. Detail: [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md), [ARTIFACTS/lab/migrate-direct-oos.md](ARTIFACTS/lab/migrate-direct-oos.md).
-- **EXP-011 (candidate confirmation, pre-registration in progress):** the frozen, leakage-ablated S2 entry model at a fixed threshold, read once on the holdout block `[2026-09-09T12, 2026-09-15T12)` walked by walkers B + C, due about **2026-09-30T03Z**. A pass earns a forward book after 2026-10-05, not live.
+- **EXP-011 — candidate PENDING pre-registration (not yet merged).** Planned: the frozen, leakage-ablated S2 entry model at a fixed threshold, read once on `[2026-09-09T12, 2026-09-15T12)` (walkers B + C, data sealed ~2026-09-30T03Z). **Ledger rule: nobody reads that block until `EXP/EXP-011-migrate-entry-model-prereg.md` is merged on `main` and names it as its holdout, and `tools/exp011_score.py` is merged.** Walkers finishing does NOT make the block readable. A pass earns a forward book after 2026-10-05, not live.
 - **EXP-009 (creator gate) is a SCREEN**, not a confirmation test: k = 1 ([#154](https://github.com/vaanai/MAL/pull/154)), block `[2026-09-15T12, 2026-09-19T01)` via walker 1, about 2.5 eligible days. A pass earns a forward trial, never a promote.
 - **Exploration entry-model B3** (9 held-out days, [#156](https://github.com/vaanai/MAL/pull/156)): the S2 classifier, tp50_sl30, top 10%, passed the pre-stated screen; after the leakage ablation (dropping `same_slot_buys`/`nearby_buy_sol`) it gives flat +6.22% (CI lo +3.85%), pressure +3.59% (CI lo +2.06%), 9/9 days positive, ex-top-3 +24.97/+14.17 SOL. Fast-box slice alone is weakest, +1.24% pressure after ablation. **This is exploration, not a promote** — EXP-011 is the confirmation test.
 - **Exits are dead:** the trailing stop was killed by concentration ([#151](https://github.com/vaanai/MAL/pull/151)) — ex-top-3 −8.0 SOL despite a positive pooled total.
@@ -82,7 +82,7 @@ Single read, once, at or after that instant, on a snapshot — never on a live, 
 
 At least **100** out-of-sample trades, at least **5** distinct UTC days with a majority of those days positive, lower **90%** CI bound of mean SOL per trade **> 0**, and total SOL still positive after removing the top 3 trades. The book must clear that bar under **both** the flat 15% fail rate and the pressure-fail model at slope scale 1. Bootstrap: 1,000 draws, seed 1. The lower bound is the 5th percentile of those means.
 
-**Multiplicity ([DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md)):** when k ≥ 2 books or cells are read together at one review, a book promotes only if it also passes a Holm–Bonferroni step-down at family α = 0.05 on the one-sided bootstrap test, under both fail models.
+**Multiplicity ([DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md)):** when k ≥ 2 candidate books or cells are read together at one review (e.g. the 9 forward books on 2026-10-05), a book promotes only if it also passes a Holm–Bonferroni step-down at family α = 0.05 on the one-sided bootstrap p-value (share of bootstrap means ≤ 0), under both fail models: the smallest p is compared to α/k (0.05/9 ≈ 0.0056 for k = 9), the next to α/(k−1), and so on. Multiplicity-tested reads use **10,000** bootstrap draws, seed 1. Reference cells are not in k, and a single pre-registered primary cell is k = 1.
 
 Live bar, still required after the gate: about 7 days of forward paper, then tiny size, and an explicit owner yes. The owner's dollar target is not evidence. See [CLAUDE.md](CLAUDE.md).
 
@@ -102,7 +102,7 @@ Clean clock: **2026-09-28T00:00:00Z**. Kill review: **2026-10-05T05:00:00Z**.
 
 ## Next work
 
-1. When walkers B + C finish (~2026-09-30T03Z), run the EXP-011 one-shot scorer (`tools/exp011_score.py`, still to be built if not already merged) on the reserved block, once.
+1. **Gate first:** merge the EXP-011 pre-registration (branch `claude/exp011-prereg`) and a one-shot scorer `tools/exp011_score.py` (refuses to run unless both walker checkpoints are complete and the frozen model md5 matches). Only THEN, and only after walkers B + C have sealed all 144 hours, run it once on `[2026-09-09T12, 2026-09-15T12)`.
 2. Score the EXP-009 screen once walker 1 finishes (~2026-09-30T01Z).
 3. The 2026-10-05T05:00Z kill review with `tools/kill_review.py`, on a snapshot, once.
 4. Lane D (a learned filter on early bonding-curve entries, branch `claude/explore-early-entry-model`, streaming fix in place, not yet run to completion) — run alone, ≤2 workers.
