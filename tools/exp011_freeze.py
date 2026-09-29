@@ -41,12 +41,16 @@ the promotion gate, or any live book. The frozen artifacts it writes
 follow-up PR) against the reserved fresh holdout block -- see
 EXP/EXP-011-migrate-entry-model-prereg.md.
 
-Holdout fence (hard): this script never reads fast-box walker B
-(/var/lib/mal/backfill-fast-b) or any hour in
-[2026-09-09T12, 2026-09-15T12) -- EXP-011's own reserved, unread holdout
-(docs/HOLDOUT_LEDGER.md). It only ever touches the three pool-A/C/B hour
-lists below, all of which are asserted (at import time, before any file is
-opened) to fall entirely outside that range.
+Holdout fence (hard): this script never reads either fast-box holdout
+walker -- walker B (/var/lib/mal/backfill-fast-b, now covering
+[2026-09-12T12, 2026-09-15T12)) or walker C (/var/lib/mal/backfill-fast-c,
+covering [2026-09-09T12, 2026-09-12T12)) -- or any hour in
+[2026-09-09T12, 2026-09-15T12) -- EXP-011's own reserved, unread holdout,
+split across those two walkers to halve the wall-clock wait but otherwise
+unchanged (docs/HOLDOUT_LEDGER.md). It only ever touches the three
+pool-A/C/B hour lists below (exploration pools, not to be confused with
+the holdout walkers B/C above), all of which are asserted (at import time,
+before any file is opened) to fall entirely outside that range.
 
 Run: nice -n 19 python3 -m tools.exp011_freeze [--out-dir ARTIFACTS/exp011]
 [--max-workers 3] [--buffer-hours 2]. Keep max-workers <= 3 -- two backfill
