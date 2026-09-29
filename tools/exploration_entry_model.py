@@ -562,18 +562,27 @@ def run_worker_a(
     return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, rows_out_path=rows_out_path)
 
 
-def run_all_features(max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None) -> list[dict[str, Any]]:
+def run_all_features(
+    max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None, max_home_hours: int | None = None
+) -> list[dict[str, Any]]:
     """out_dir=None (default): every worker returns its rows in memory, as
     before -- fine for tests and small slices. out_dir set: each worker
     streams its rows straight to `out_dir/poolA-w<i>.jsonl` instead of
     holding them (see run_worker_features's rows_out_path), and this
     function reads them back off disk once the pool has finished, one file
     at a time, instead of receiving several large pickled lists from
-    `Pool.starmap` at once."""
+    `Pool.starmap` at once.
+
+    `max_home_hours` (EXP-011 Phase A memory fix): forwarded to
+    plan_workers -- more, smaller chunks instead of exactly `max_workers`
+    big ones, each with a bounded `hot`/`watch` dict. The Pool is sized to
+    `max_workers` regardless of chunk count, so at most `max_workers`
+    chunks ever run at once (`Pool.starmap` queues the rest) -- see
+    tools/exploration_exits.chunk_plan's docstring."""
     print("building creator prior-mint history over the whole pool...", file=sys.stderr, flush=True)
     creator_hist = build_creator_history()
     print(f"creator_history creators={len(creator_hist)}", file=sys.stderr, flush=True)
-    plan = plan_workers(max_workers, buffer_hours)
+    plan = plan_workers(max_workers, buffer_hours, max_home_hours)
     print(f"hours_read={POOL_HOURS}", file=sys.stderr, flush=True)
     print(f"worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
     paths = [_rows_out_path(out_dir, "A", i) for i, _h, _b in plan]
@@ -583,7 +592,7 @@ def run_all_features(max_workers: int = 3, buffer_hours: int = 2, out_dir: Path 
             rows.extend(run_worker_a(worker_id, home, buf, creator_hist, path))
     else:
         ctx = mp.get_context("spawn")
-        with ctx.Pool(processes=len(plan)) as pool:
+        with ctx.Pool(processes=min(max_workers, len(plan))) as pool:
             results = pool.starmap(run_worker_a, [(i, h, b, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
         for part in results:
             rows.extend(part)

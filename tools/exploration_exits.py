@@ -613,15 +613,49 @@ def _chunk(keys: list[str], n: int) -> list[list[str]]:
     return [c for c in chunks if c]
 
 
-def plan_workers(max_workers: int = 4, buffer_hours: int = 2) -> list[tuple[int, list[str], list[str]]]:
-    chunks = _chunk(POOL_HOURS, max_workers)
+def chunk_plan(
+    pool_hours: list[str], max_workers: int = 4, buffer_hours: int = 2, max_home_hours: int | None = None
+) -> list[tuple[int, list[str], list[str]]]:
+    """Shared plan_workers* body (pool A/B/C all call this, unchanged
+    behavior when `max_home_hours` is None). Each chunk's `home` list is
+    the hours it owns exclusively (its creates come only from here, so a
+    given mint_id is ever registered in exactly one chunk -- never scored
+    twice); `buf` is the SAME trailing buffer_hours extension every worker
+    has always used to keep reading a little past its own home end, so a
+    mint created near a chunk's tail that migrates shortly after is still
+    caught (mirrored at every chunk boundary now, not just the outer lane
+    boundary -- see tools/test_exploration_exits.py's chunk_plan tests and
+    tools/test_exp011_chunking.py's row-equivalence test for the case
+    where a mint's migrate print lands in the NEXT chunk's own home hours,
+    inside this chunk's buffer read).
+
+    `max_home_hours` (EXP-011 Phase A memory fix, 2026-09-29): when set,
+    the chunk count grows from exactly `max_workers` to
+    `ceil(len(pool_hours) / max_home_hours)` -- more, smaller chunks, each
+    owning at most `max_home_hours` of home hours (and so a smaller
+    `hot`/`watch` dict; the growth driver at the 5 GB/worker guard, see
+    tools/exp011_build_table.py's docstring). Concurrency is controlled
+    separately, by the caller sizing its Pool to `max_workers` (fewer than
+    the chunk count) -- `Pool.starmap` already runs at most that many
+    chunks at once, queuing the rest. `max_home_hours=None` (default):
+    identical to the original `max_workers`-chunk behavior.
+    """
+    if max_home_hours is None or max_home_hours <= 0:
+        n_chunks = max(1, max_workers)
+    else:
+        n_chunks = max(1, -(-len(pool_hours) // max_home_hours))  # ceil division
+    chunks = _chunk(pool_hours, n_chunks)
     plan = []
     for i, home in enumerate(chunks):
         last = home[-1]
-        idx = POOL_HOURS.index(last)
-        buf = POOL_HOURS[idx + 1 : idx + 1 + buffer_hours]
+        idx = pool_hours.index(last)
+        buf = pool_hours[idx + 1 : idx + 1 + buffer_hours]
         plan.append((i, home, buf))
     return plan
+
+
+def plan_workers(max_workers: int = 4, buffer_hours: int = 2, max_home_hours: int | None = None) -> list[tuple[int, list[str], list[str]]]:
+    return chunk_plan(POOL_HOURS, max_workers, buffer_hours, max_home_hours)
 
 
 def run_all(max_workers: int = 4, buffer_hours: int = 2) -> list[dict[str, Any]]:

@@ -126,14 +126,12 @@ def build_creator_history_c() -> dict[str, list[int]]:
     return hist
 
 
-def plan_workers_c(max_workers: int = 3, buffer_hours: int = 2) -> list[tuple[int, list[str], list[str]]]:
-    chunks = _chunk(POOL_C_HOURS, max_workers)
-    plan = []
-    for i, home in enumerate(chunks):
-        idx = POOL_C_HOURS.index(home[-1])
-        buf = POOL_C_HOURS[idx + 1 : idx + 1 + buffer_hours]
-        plan.append((i, home, buf))
-    return plan
+def plan_workers_c(
+    max_workers: int = 3, buffer_hours: int = 2, max_home_hours: int | None = None
+) -> list[tuple[int, list[str], list[str]]]:
+    """`max_home_hours`: see tools.exploration_exits.chunk_plan -- more,
+    smaller chunks instead of exactly `max_workers` big ones, when set."""
+    return chunk_plan(POOL_C_HOURS, max_workers, buffer_hours, max_home_hours)
 
 
 def run_worker_c(
@@ -149,15 +147,19 @@ def run_worker_c(
     return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=_hour_info_c, rows_out_path=rows_out_path)
 
 
-def run_all_features_c(max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None) -> list[dict[str, Any]]:
+def run_all_features_c(
+    max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None, max_home_hours: int | None = None
+) -> list[dict[str, Any]]:
     """out_dir set: each worker streams to `out_dir/poolC-w<i>.jsonl` instead
     of holding rows in memory (see run_all_features's docstring in
-    tools.exploration_entry_model)."""
+    tools.exploration_entry_model). `max_home_hours`: see
+    tools.exploration_exits.chunk_plan -- more, smaller chunks; the Pool is
+    still sized to `max_workers` regardless of chunk count."""
     print(f"pool C trade hours: {POOL_C_START} .. {POOL_C_END} ({len(POOL_C_HOURS)})", file=sys.stderr, flush=True)
     print(f"pool C root: {BACKFILL_C}", file=sys.stderr, flush=True)
     creator_hist = build_creator_history_c()
     print(f"pool C creator_history creators={len(creator_hist)}", file=sys.stderr, flush=True)
-    plan = plan_workers_c(max_workers, buffer_hours)
+    plan = plan_workers_c(max_workers, buffer_hours, max_home_hours)
     print(f"pool C worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
     paths = [_rows_out_path(out_dir, "C", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
@@ -166,7 +168,7 @@ def run_all_features_c(max_workers: int = 3, buffer_hours: int = 2, out_dir: Pat
             rows.extend(run_worker_c(worker_id, home, buf, creator_hist, path))
     else:
         ctx = mp.get_context("spawn")
-        with ctx.Pool(processes=len(plan)) as pool:
+        with ctx.Pool(processes=min(max_workers, len(plan))) as pool:
             results = pool.starmap(run_worker_c, [(i, h, b, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
         for part in results:
             rows.extend(part)
