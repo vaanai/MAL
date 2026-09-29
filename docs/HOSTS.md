@@ -39,11 +39,11 @@ Expect `mal-core-vnic`, user `ubuntu`, `uname -m` = `aarch64`. `ssh mal-core-0` 
 | `mal-attention.service` | Attention poller → `/var/lib/mal/attention`. Log `.../logs/attention.log`. **Stays up.** |
 | `mal-attention-daily.timer` | 04:45 UTC. **Disabled until 2026-10-05.** Output `/var/lib/mal/paper/attention/`. Log `.../logs/attention-daily.log`. |
 | `mal-funding-graph.service` | Funder enricher → `/var/lib/mal/graph`. Log `.../logs/funding-graph.log`. Reads `/var/lib/mal/backfill/helius.env` when present. |
-| `mal-forward-paper.service` | Paper books. Code `/var/lib/mal/paper/forward-paper`. Status `.../forward-paper/runner-status.json`. Hit a cgroup memory leak 2026-09-27 (grew to ~5.3 GB RSS / ~2 GB swap by ~21:50Z, pinned at `memory.high` 5G); Helm restarted it 22:44Z and updated the runner checkout at `.../forward-paper/src` to `bc7a0c6` (22:48Z, includes [#120](https://github.com/vaanai/MAL/pull/120)). The clean week starts 2026-09-28T00:00:00Z on `bc7a0c6`. Two mid-week memory-leak fix deploys since, each with a replay md5 decision-neutrality proof (no logic change): restart #1 2026-09-28T03:56:52Z → `d3015ba` ([#123](https://github.com/vaanai/MAL/pull/123), GC thresholds + freeze-at-start + `_Wallet` compaction + live mem-census); restart #2 2026-09-28T14:25:02Z → `f687fad` ([#124](https://github.com/vaanai/MAL/pull/124) periodic `gc.freeze()`, [#125](https://github.com/vaanai/MAL/pull/125) pre-boot dead-mint scan + createless timeout bounding `self.early`). Every restart resets in-memory `WalletState` `bots`/`snipers`/`leaders`/`creators` and `by_creator` history to empty — cross-mint veto/creator features run cold until re-observed after a restart; the funding graph (external `funding-*.jsonl`) is unaffected. See [ARTIFACTS/lab/forward-paper-memory-2026-09-27.md](../ARTIFACTS/lab/forward-paper-memory-2026-09-27.md). Cgroup raised by Helm to `MemoryHigh` 10G / `MemoryMax` 12G (`set-property` override + drop-in), live ~03:37Z 2026-09-28 without a restart. Claude's Oracle read-only account may now `sudo -n systemctl --user -M ubuntu@ restart mal-forward-paper` (and the other `mal-*` user units) directly, but still cannot write files as `ubuntu` — code updates still fast-forward `.../forward-paper/src` via the owner or Helm. |
+| `mal-forward-paper.service` | Paper books. Code `/var/lib/mal/paper/forward-paper`. Status `.../forward-paper/runner-status.json`. **Current code `d7485d2`**, live since restart #3, **2026-09-29T00:00:20Z**. Restarts **daily at 00:00:00Z** via the claude timer `mal-runner-daily-restart` on `mal-fast-0` ([#137](https://github.com/vaanai/MAL/pull/137), [#155](https://github.com/vaanai/MAL/pull/155)), logged to `/home/claude/reports/runner-restarts.jsonl`. Every restart resets in-memory `WalletState` `bots`/`snipers`/`leaders`/`creators` and `by_creator` history to empty — cross-mint veto/creator features run cold until re-observed; the funding graph (external `funding-*.jsonl`) is unaffected; dropped open positions settle offline (`tools/forward_paper_settle_orphans.py`). Memory-leak fix chain (wallets container [#129](https://github.com/vaanai/MAL/pull/129), `TxOrder` prune [#134](https://github.com/vaanai/MAL/pull/134)) cut RSS growth to about **300 MB/h**; `tx_order_entries` plateaus around 800k. History: [ARTIFACTS/daily/2026-09-28-manager-session.md](../ARTIFACTS/daily/2026-09-28-manager-session.md), [ARTIFACTS/lab/forward-paper-memory-2026-09-27.md](../ARTIFACTS/lab/forward-paper-memory-2026-09-27.md). Cgroup `MemoryHigh` 10G / `MemoryMax` 12G. Claude's Oracle read-only account may `sudo -n systemctl --user -M ubuntu@ restart mal-forward-paper` (and the other `mal-*` user units) directly, but still cannot write files as `ubuntu` — code updates still fast-forward `.../forward-paper/src` via the owner or Helm. |
 | `mal-pump-backfill.service` | Helius `getBlock` for **2026-09-22T00Z–2026-09-25T07Z**. Env `/var/lib/mal/backfill/helius.env`. CPU cap 50% of one core. Log `.../logs/pump-backfill.log`. |
 | `mal-pump-backfill-resume.service` | Starts backfill again after LAYA exits. |
 | `mal-laya-v0.timer` | 04:15 UTC. **Disabled until 2026-10-05** (runner lag still spiked to about 12.5 s). If re-enabled, [#106](https://github.com/vaanai/MAL/pull/106) runs `tools.laya_frozen_nightly` under `/var/lib/mal/paper/laya-v0`: cached pre-freeze fit, forward and backward holdout append, scoreboard. Exploratory retrain and mig15 deploy stay skipped. |
-| `mal-migrate-direct-oos.timer` | **01:20 UTC** oneshot. **Under test; may move to mal-fast-0.** Frozen cell only. Output `/var/lib/mal/paper/migrate-direct-oos` and `.../migrate-direct-forward`. MemoryMax 8G, CPUQuota 150%, Nice 19. |
+| `mal-migrate-direct-oos.timer` | **01:20 UTC** oneshot. **Disabled by Helm, 2026-09-28.** The frozen migrate-direct cell is dead (formal FAIL); the timer kept scoring it and competing with the runner for CPU. Output was `/var/lib/mal/paper/migrate-direct-oos` and `.../migrate-direct-forward`. |
 | `mal-healthcheck.timer` | Every 5 minutes. Runs `/var/lib/mal/eng/healthcheck.sh`. |
 
 ### Health, logs, paper books
@@ -93,28 +93,32 @@ Expect `mal-fast-0`, user `ubuntu`, `uname -m` = `x86_64`.
 | `mal-fast-pre-create.service` | **up** | Helius preprocessed mint-authority. Daily cap 10,000. Env `/var/lib/mal/fast-listener/helius.env`. Out `/var/lib/mal/sealed/fast-pre-create`. State `.../fast-listener/pre-create-credits.json`. |
 | `mal-fast-early-trade.service` | **installed, disabled** | Paid curve subscribe. Too expensive. Do not enable. |
 | `mal-fast-trade-tape.service` | **installed, disabled** | Full public tape. Median lead was under 150 ms. Out would be `/var/lib/mal/sealed/fast-trades`. |
-| `mal-fast-backfill.service` | **the backward walk** | From 2026-09-21T23Z downward. `CPUQuota=400%`, Nice 10, MemoryMax 6G, +2,000,000 credit cap. Out `/var/lib/mal/backfill-fast`. Working dir `/home/ubuntu/mal-oos`. |
-| `mal-fast-oos-score.service` | **scores sealed fast hours** | Rewrites `/var/lib/mal/paper/migrate-direct-oos-fast/report.json`. Nice 19, MemoryMax 4G. |
+| `mal-fast-backfill.service` (walker 1) | **enabled, the backward walk** | Re-floored at **2026-09-15T12** (the lower bound of the EXP-009 block) via a drop-in `range.conf` (`MAL_FAST_BACKFILL_HOURS=156`, cap raised 2.0M → 2.3M). `CPUQuota=400%`, Nice 10, MemoryMax 6G. Out `/var/lib/mal/backfill-fast`. Working dir `/home/ubuntu/mal-oos`. 1,307,207 credits used, 93 hours sealed, oldest 2026-09-18T03 at 05:03Z 2026-09-29. |
+| `mal-fast-backfill-b.service` (walker B) | **enabled** | Covers `[2026-09-12T12, 2026-09-15T12)`. Cap 1.1M credits. Out `/var/lib/mal/backfill-fast-b`. |
+| `mal-fast-backfill-c.service` (walker C) | **enabled** | Covers `[2026-09-09T12, 2026-09-12T12)`. Cap 1.1M credits. Out `/var/lib/mal/backfill-fast-c`. |
+| `mal-fast-oos-score.service` | **stopped, 2026-09-28T19:00:50Z** | Scored the now-dead frozen migrate-direct cell into `/var/lib/mal/paper/migrate-direct-oos-fast/report.json`. Stopped after the formal FAIL verdict; it had also read two hours (2026-09-18T23, 2026-09-19T00) inside EXP-009's holdout window before the floor was added — see EXP-009 Amendment 3. |
 
 ### Claude schedules (user `claude`, separate from user `ubuntu` above)
 
-[#119](https://github.com/vaanai/MAL/pull/119), `ops/claude-schedules/`: `mal-daily-review.timer` (05:00 UTC) and `mal-oos-check.timer` (one-shot 2026-09-28 21:00Z), systemd `--user` timers for the `claude` account, installed 2026-09-27 (loaded, not yet enabled). Headless `claude -p`, no shell tools, read-only fact gathering in the wrapper script; reports under `/home/claude/reports/`. Plan: enable after Cursor's 2026-09-28 05:00Z run, then the owner cancels the Cursor timers. Detail: `ops/claude-schedules/README.md`.
+[#119](https://github.com/vaanai/MAL/pull/119), `ops/claude-schedules/`: `mal-daily-review.timer` (05:00 UTC), systemd `--user` timer for the `claude` account. Headless `claude -p`, no shell tools, read-only fact gathering in the wrapper script; reports under `/home/claude/reports/daily-review/`. `mal-oos-check.timer` was a **one-shot** for the 2026-09-28 21:00Z frozen-cell OOS read; it ran once (`/home/claude/reports/oos-check/2026-09-28.md`) and is not recurring. `mal-runner-daily-restart.timer` ([#137](https://github.com/vaanai/MAL/pull/137), [#155](https://github.com/vaanai/MAL/pull/155)) restarts `mal-forward-paper` on Oracle daily at 00:00:00Z and logs to `/home/claude/reports/runner-restarts.jsonl`. Detail: `ops/claude-schedules/README.md`.
+
+Claude's own memory limits on this box: `user-1002.slice` (claude) `MemoryMax` 15G, no `MemoryHigh`; `claude-remote` `MemoryMin` 1G; heavy claude jobs do not auto-restart. One heavy replay job at a time, at most 2 workers — see [CLAUDE.md](../CLAUDE.md) Operating notes.
 
 ### Health, logs, paper books
 
 There is no `mal-healthcheck.timer` on this box. Check:
 
-- `systemctl --user is-active` on `mal-fast-create`, `mal-fast-public-logs`, `mal-fast-pre-create`, `mal-fast-backfill`, `mal-fast-oos-score`.
+- `systemctl --user is-active` on `mal-fast-create`, `mal-fast-public-logs`, `mal-fast-pre-create`, `mal-fast-backfill`, `mal-fast-backfill-b`, `mal-fast-backfill-c`. (`mal-fast-oos-score` is stopped — the frozen cell is dead.)
 - Disk free stays at or above 30% or the fast backfill refuses to start. Directory cap 40 GiB.
 - Credit counter for the mint-authority listener: `/var/lib/mal/fast-listener/pre-create-credits.json`.
-- OOS book: `/var/lib/mal/paper/migrate-direct-oos-fast/report.json`.
 - Logs under `/var/lib/mal/logs/fast-*.log`.
+- `user-1000.slice` (ubuntu/backfills) `MemoryMax` 8G.
 
 ### Safe to restart
 
 Safe when a manager has asked, and only if you are not in the middle of a sealed hour you still need: `mal-fast-create`, `mal-fast-public-logs`.
 
-`mal-fast-pre-create` spends Helius credits (cap 10,000/day). `mal-fast-backfill` spends the +2M cap. Restart those only with a manager's yes, and report credits used.
+`mal-fast-pre-create` spends Helius credits (cap 10,000/day). `mal-fast-backfill`, `mal-fast-backfill-b`, and `mal-fast-backfill-c` each spend their own credit cap. Restart those only with a manager's yes, and report credits used.
 
 Do **not** restart `cloudflared`, `sshd`, or anything under `/opt/miscusi`. Do not enable `mal-fast-early-trade` or `mal-fast-trade-tape` without a new measurement that clears the credit and latency bars already recorded in [ARTIFACTS/lab/fast-listener-2026-09-27.md](../ARTIFACTS/lab/fast-listener-2026-09-27.md).
 
