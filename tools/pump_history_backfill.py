@@ -64,6 +64,10 @@ _SKIP_CODES = frozenset({-32007, -32009, -32004})
 _NATIVE_SOL = "11111111111111111111111111111111"
 DEFAULT_MAX_BYTES = 40 * 1024**3
 HEADROOM_RATIO = 0.20
+# Observed pump.fun-era mainnet slots/hour cluster around 13.5k. Anything far
+# outside this is a slot_for_time resolution bug, not a quiet hour.
+DEFAULT_MIN_SLOTS_PER_HOUR = 9_000
+DEFAULT_MAX_SLOTS_PER_HOUR = 14_000
 
 
 def budget_bytes(volume_total: int, volume_avail: int, cap_bytes: int = DEFAULT_MAX_BYTES) -> int:
@@ -738,6 +742,30 @@ def block_time_of(
     return bt if isinstance(bt, int) else None
 
 
+def _nearest_live_time(
+    url: str,
+    slot: int,
+    limiter: RateLimiter,
+    budget: CreditBudget | None,
+    max_probe: int = 64,
+) -> tuple[int | None, int | None]:
+    """blockTime of the first non-skipped slot at or after `slot`.
+
+    getBlock on a skipped slot returns no blockTime. Earlier code treated
+    that missing value as "before the target", which silently biased the
+    search and could return a slot for a *later* wall-clock target that is
+    lower than the slot for an *earlier* one in the same hour -- the root
+    cause of the backwards start_slot > end_slot ranges. Probing forward to
+    a real block keeps the comparison grounded in an actual timestamp.
+    """
+    for offset in range(max_probe):
+        candidate = slot + offset
+        bt = block_time_of(url, candidate, limiter, budget)
+        if bt is not None:
+            return candidate, bt
+    return None, None
+
+
 def slot_for_time(
     url: str,
     target: int,
@@ -746,36 +774,55 @@ def slot_for_time(
     limiter: RateLimiter,
     budget: CreditBudget | None = None,
 ) -> int:
-    """First slot whose blockTime is >= target. Public RPC has a block per recent slot."""
-    span = max(target - anchor_time, 0)
+    """First slot whose blockTime is >= target. Public RPC has a block per recent slot.
+
+    `target` may be before or after `anchor_time` -- backward walkers always
+    ask for hours before the anchor. Clamping the signed gap to zero (the
+    old behaviour) threw away the initial guess for every such call and
+    left the result to an expand loop that could fail to bracket the
+    target within its iteration budget, producing a non-monotonic result
+    for two nearby targets (e.g. an hour's own start and end).
+    """
+    span = target - anchor_time
     guess = anchor_slot + int(span / 0.27)
     lo = max(0, guess - 5000)
     hi = guess + 5000
     # Expand until the target is inside (lo_time, hi_time).
-    for _ in range(8):
-        lo_t = block_time_of(url, lo, limiter, budget)
-        hi_t = block_time_of(url, hi, limiter, budget)
+    bracketed = False
+    for _ in range(16):
+        lo_slot, lo_t = _nearest_live_time(url, lo, limiter, budget)
+        hi_slot, hi_t = _nearest_live_time(url, hi, limiter, budget)
         if lo_t is None or hi_t is None:
-            lo = max(0, lo - 2000)
-            hi += 2000
+            lo = max(0, lo - 20000)
+            hi = hi + 20000
             continue
         if lo_t > target:
             hi = lo
-            lo = max(0, lo - max(2000, (lo_t - target) * 4))
+            lo = max(0, lo - max(5000, int((lo_t - target) * 4)))
             continue
         if hi_t < target:
             lo = hi
-            hi = hi + max(2000, (target - hi_t) * 4)
+            hi = hi + max(5000, int((target - hi_t) * 4))
             continue
+        bracketed = True
         break
+    if not bracketed:
+        raise RuntimeError(
+            f"slot_for_time: could not bracket target={target} near anchor_slot={anchor_slot}"
+        )
     best = hi
     while lo <= hi:
         mid = (lo + hi) // 2
-        bt = block_time_of(url, mid, limiter, budget)
-        if bt is None or bt < target:
+        mid_slot, bt = _nearest_live_time(url, mid, limiter, budget)
+        if bt is None or mid_slot is None:
+            # A long skip run starting at mid: treat it like the probed
+            # slot itself so the search still makes progress.
             lo = mid + 1
+            continue
+        if bt < target:
+            lo = mid_slot + 1
         else:
-            best = mid
+            best = mid_slot
             hi = mid - 1
     return best
 
@@ -1039,6 +1086,8 @@ def run_hour(
     max_slots: int | None = None,
     slot_start: int | None = None,
     slot_end: int | None = None,
+    min_slots_per_hour: int = DEFAULT_MIN_SLOTS_PER_HOUR,
+    max_slots_per_hour: int = DEFAULT_MAX_SLOTS_PER_HOUR,
 ) -> dict[str, Any]:
     """Fetch [start_ts, end_ts), newest hours first at the caller. Resume from checkpoint."""
     if budget is None:
@@ -1058,6 +1107,66 @@ def run_hour(
     if located is None:
         return {"hour": key, "skipped": True, "stop_reason": "credit", "credits_used": budget.used}
     start_slot, end_slot, slots, resume, partial = located
+
+    # A backwards or wildly-sized range means slot_for_time resolved this
+    # hour's boundary wrong (see the docstring on slot_for_time). Refuse to
+    # touch any file for it rather than seal a near-empty or bogus hour.
+    span = end_slot - start_slot
+    if start_slot >= end_slot or not slots:
+        msg = (
+            f"backfill {key}: refusing to process -- start_slot={start_slot} "
+            f"end_slot={end_slot} span={span} slots_located={len(slots)}"
+        )
+        print(msg, file=sys.stderr, flush=True)
+        return {
+            "hour": key,
+            "skipped": True,
+            "stop_reason": "bad_slot_range",
+            "start_slot": start_slot,
+            "end_slot": end_slot,
+            "credits_used": budget.used,
+        }
+    if not (min_slots_per_hour <= span <= max_slots_per_hour):
+        msg = (
+            f"backfill {key}: refusing to seal -- slot span {span} outside expected "
+            f"[{min_slots_per_hour}, {max_slots_per_hour}] (start_slot={start_slot} "
+            f"end_slot={end_slot})"
+        )
+        print(msg, file=sys.stderr, flush=True)
+        return {
+            "hour": key,
+            "skipped": True,
+            "stop_reason": "bad_slot_span",
+            "start_slot": start_slot,
+            "end_slot": end_slot,
+            "slot_span": span,
+            "credits_used": budget.used,
+        }
+
+    # A crash can land after files are sealed to .zst but before the
+    # checkpoint is updated to "sealed" -- the checkpoint then still says
+    # "partial" with a stale next_slot/offsets pair, and blindly resuming
+    # would reprocess the whole (already-complete) hour on top of the
+    # sealed file, duplicating every row in it. Heal instead of reprocess.
+    sealed_trades = out_dir / "trades" / f"trades-{key}.jsonl.zst"
+    if resume and sealed_trades.is_file():
+        print(
+            f"backfill {key}: sealed trades file already exists but checkpoint says "
+            f"partial -- healing the checkpoint without reprocessing",
+            file=sys.stderr,
+            flush=True,
+        )
+        if checkpoint is not None and checkpoint_path is not None:
+            checkpoint.setdefault("hours", {})[key] = {"status": "sealed", "stop_reason": None}
+            checkpoint["credits_used"] = budget.used
+            save_checkpoint(checkpoint_path, checkpoint)
+        return {
+            "hour": key,
+            "healed": True,
+            "skipped": True,
+            "stop_reason": "healed_sealed",
+            "credits_used": budget.used,
+        }
 
     t0 = time.time()
 
@@ -1098,7 +1207,16 @@ def run_hour(
         "errors": int(prior.get("errors") or 0),
         "slots_done": int(prior.get("slots_done") or 0),
     }
-    held: list[dict[str, Any]] = []
+    # Records pending a pool-account lookup (PumpSwap venue resolution) live
+    # only in this list until they hit the 250-item flush threshold or the
+    # hour ends. A checkpoint that does not carry them is a checkpoint that
+    # can lose them: on a hard crash between two periodic saves, `held`
+    # evaporates with the process and its origin slot is never refetched on
+    # resume (it is before next_slot). Restoring it here, and persisting it
+    # below, closes that window.
+    held: list[dict[str, Any]] = (
+        list(partial.get("held") or []) if resume and isinstance(partial, dict) else []
+    )
     credit_hit = False
     seen = {"n": 0}
     room = filesystem_room(out_dir, max_bytes)
@@ -1120,6 +1238,7 @@ def run_hour(
                 "creates": creates.offset(),
                 "migrations": migrations.offset(),
             }
+            entry["held"] = list(held)
         checkpoint.setdefault("hours", {})[key] = entry
         checkpoint["credits_used"] = budget.used
         save_checkpoint(checkpoint_path, checkpoint)
@@ -1133,7 +1252,7 @@ def run_hour(
             lookup_limiter.acquire()
             try:
                 return fetch_pool_mints(url, pools)
-            except (TimeoutError, urllib.error.URLError, json.JSONDecodeError, RuntimeError) as exc:
+            except (TimeoutError, urllib.error.URLError, json.JSONDecodeError, RuntimeError, OSError) as exc:
                 if attempt == 3:
                     print(redact_rpc_url(f"pool lookup failed {type(exc).__name__}"), file=sys.stderr, flush=True)
                     return {}
@@ -1163,7 +1282,6 @@ def run_hour(
 
     def _consume(block: dict[str, Any] | None, wire: int, code: int | None) -> None:
         counts["wire_bytes"] += wire
-        counts["slots_done"] += 1
         if block is None:
             counts["empty"] += 1
             if code not in _SKIP_CODES and code is not None:
@@ -1188,6 +1306,12 @@ def run_hour(
                         counts["completes"] += 1
                     else:
                         counts["migrations"] += 1
+        # Count a slot as done only once it is fully handled. Incrementing
+        # this earlier (before decoding could raise) let a slot that failed
+        # partway through still be counted "done" in the persisted
+        # checkpoint, so a resume both replayed that slot AND double-
+        # counted it in slots_done.
+        counts["slots_done"] += 1
         seen["n"] += 1
         now = time.time()
         if seen["n"] % CHECKPOINT_EVERY == 0 or now - last_log["t"] >= 20:
@@ -1225,6 +1349,18 @@ def run_hour(
         )
         _flush_held()
     finally:
+        # seen["n"] is updated inside _consume on every slot, in order, so
+        # it is the ground truth for how many slots were actually written
+        # even when consume_slots (or _consume itself) raised before it
+        # could return its own (consumed, stop_reason) tuple -- which used
+        # to leave `consumed` at its pre-try value of 0. That made this
+        # block think the hour hadn't started, persist next_slot back to
+        # the beginning while the JsonlSink offsets already reflected the
+        # real progress, and turned the next resume into a full replay of
+        # already-written rows on top of a file that was never truncated
+        # (its offset looked like "current size"). This was the duplicate-
+        # row bug: offsets ahead of next_slot on the very same checkpoint.
+        consumed = max(consumed, seen["n"])
         finished = consumed == len(slots)
         if finished:
             _flush_held()
@@ -1466,6 +1602,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--slot-end", type=int, default=None, help="Exclusive slot end when paired with --slot-start")
     parser.add_argument("--anchor-slot", type=int, default=450278777)
     parser.add_argument("--anchor-time", type=int, default=1790319576)
+    parser.add_argument(
+        "--min-slots-per-hour",
+        type=int,
+        default=DEFAULT_MIN_SLOTS_PER_HOUR,
+        help="Refuse to seal an hour whose resolved slot span is below this",
+    )
+    parser.add_argument(
+        "--max-slots-per-hour",
+        type=int,
+        default=DEFAULT_MAX_SLOTS_PER_HOUR,
+        help="Refuse to seal an hour whose resolved slot span is above this",
+    )
     args = parser.parse_args(argv)
     if args.hours < 1:
         raise SystemExit("--hours must be >= 1")
@@ -1563,6 +1711,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_slots=args.max_slots if index == 0 else None,
             slot_start=args.slot_start if index == 0 else None,
             slot_end=args.slot_end if index == 0 else None,
+            min_slots_per_hour=args.min_slots_per_hour,
+            max_slots_per_hour=args.max_slots_per_hour,
         )
         save_pool_cache(cache_path, pool_mints)
         safe = {k: v for k, v in summary.items() if k != "files"}

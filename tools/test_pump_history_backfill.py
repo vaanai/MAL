@@ -5,20 +5,23 @@ from __future__ import annotations
 import base64
 import json
 import os
+import random
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 import threading
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import tools.pump_history_backfill as backfill_mod
 from observe.trade_decode import WSOL_MINT, b58encode, records_from_logs
 from tools.pump_history_backfill import (
     BUDGET_CODE,
     SOURCE,
     CreditBudget,
     JsonlSink,
+    RateLimiter,
     backfill_trade_row,
     budget_bytes,
     compare_trades,
@@ -26,8 +29,10 @@ from tools.pump_history_backfill import (
     decode_complete_event,
     decode_create_event,
     decode_migration_event,
+    empty_checkpoint,
     helius_http_url,
     hour_key,
+    iter_jsonl,
     lifecycle_from_logs,
     live_tape_hour_sealed,
     main,
@@ -38,6 +43,8 @@ from tools.pump_history_backfill import (
     resolve_rpc_url,
     resolve_unresolved,
     rows_from_block,
+    run_hour,
+    slot_for_time,
     hour_end_with_gap,
     skip_hour_for_live_tape,
 )
@@ -408,6 +415,353 @@ class LiveTapeSkipTests(unittest.TestCase):
             gap = int(datetime.fromisoformat("2026-09-25T06:58:00+00:00").timestamp())
             self.assertEqual(hour_end_with_gap(start, end, gap), gap)
             self.assertFalse(skip_hour_for_live_tape(tape, start, end, set(), gap))
+
+
+class SlotForTimeSkipRobustnessTests(unittest.TestCase):
+    """Reproduces the backwards start_slot > end_slot bug (2026-09-11T03)."""
+
+    ANCHOR_SLOT = 450278777
+    ANCHOR_TIME = 1790319576
+    SLOT_SEC = 0.4
+
+    def _install_fake_clock(self, skip_set: set[int]) -> None:
+        def fake(url: str, slot: int, limiter: RateLimiter, budget=None):
+            if slot in skip_set:
+                return None
+            return int(self.ANCHOR_TIME + (slot - self.ANCHOR_SLOT) * self.SLOT_SEC)
+
+        self.addCleanup(setattr, backfill_mod, "block_time_of", backfill_mod.block_time_of)
+        backfill_mod.block_time_of = fake
+
+    def test_monotonic_across_an_hour_with_skipped_slots(self) -> None:
+        random.seed(3)
+        lo_range = self.ANCHOR_SLOT - 6_000_000
+        hi_range = self.ANCHOR_SLOT + 100
+        skip_set = {s for s in range(lo_range, hi_range) if random.random() < 0.15}
+        self._install_fake_clock(skip_set)
+        limiter = RateLimiter(1000)
+        start_ts = int(datetime(2026, 9, 11, 3, 0, tzinfo=timezone.utc).timestamp())
+        end_ts = int(datetime(2026, 9, 11, 4, 0, tzinfo=timezone.utc).timestamp())
+        start_slot = slot_for_time(
+            "http://x", start_ts, self.ANCHOR_SLOT, self.ANCHOR_TIME, limiter
+        )
+        end_slot = slot_for_time("http://x", end_ts, self.ANCHOR_SLOT, self.ANCHOR_TIME, limiter)
+        self.assertLess(
+            start_slot,
+            end_slot,
+            "an hour's end must resolve to a later slot than its start",
+        )
+        span = end_slot - start_slot
+        # ~0.4s/slot -> ~9000 slots/hour on this synthetic clock.
+        self.assertGreater(span, 5000)
+        self.assertLess(span, 20000)
+
+    def test_backward_target_is_not_clamped_to_anchor(self) -> None:
+        # Before the fix, span = max(target - anchor_time, 0) forced every
+        # backward-walker target to guess = anchor_slot regardless of how
+        # far in the past it was.
+        self._install_fake_clock(set())
+        limiter = RateLimiter(1000)
+        target = self.ANCHOR_TIME - 10 * 86400
+        got = slot_for_time("http://x", target, self.ANCHOR_SLOT, self.ANCHOR_TIME, limiter)
+        # Exact answer on this linear synthetic clock (SLOT_SEC per slot).
+        expected = self.ANCHOR_SLOT + int((target - self.ANCHOR_TIME) / self.SLOT_SEC)
+        self.assertLess(abs(got - expected), 5)
+
+
+def _hour_bounds(key: str) -> tuple[int, int]:
+    start = int(datetime.fromisoformat(f"{key}:00:00+00:00").timestamp())
+    return start, start + 3600
+
+
+class RunHourGuardTests(unittest.TestCase):
+    """The three "refuse to seal" invariants tools/pump_history_backfill.py must hold."""
+
+    def setUp(self) -> None:
+        self._orig_slots_between = backfill_mod.slots_between
+        self.addCleanup(setattr, backfill_mod, "slots_between", self._orig_slots_between)
+
+    def _common_kwargs(self, tmp: str) -> dict:
+        limiter = RateLimiter(1000)
+        return dict(
+            url="http://x",
+            out_dir=Path(tmp),
+            limiter=limiter,
+            lookup_limiter=limiter,
+            pool_mints={},
+            workers=1,
+            max_bytes=10**9,
+            anchor_slot=450278777,
+            anchor_time=1790319576,
+            budget=CreditBudget(10**9, 0),
+        )
+
+    def test_backwards_range_refused(self) -> None:
+        backfill_mod.slots_between = lambda *a, **k: []
+        start_ts, end_ts = _hour_bounds("2026-09-11T03")
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = run_hour(
+                start_ts=start_ts,
+                end_ts=end_ts,
+                slot_start=446300168,
+                slot_end=446060631,
+                **self._common_kwargs(tmp),
+            )
+            self.assertTrue(summary["skipped"])
+            self.assertEqual(summary["stop_reason"], "bad_slot_range")
+            self.assertFalse((Path(tmp) / "trades").exists())
+            self.assertFalse((Path(tmp) / f"stats-2026-09-11T03.json").exists())
+
+    def test_no_located_slots_refused(self) -> None:
+        backfill_mod.slots_between = lambda *a, **k: []
+        start_ts, end_ts = _hour_bounds("2026-09-11T05")
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = run_hour(
+                start_ts=start_ts,
+                end_ts=end_ts,
+                slot_start=100,
+                slot_end=9500,
+                **self._common_kwargs(tmp),
+            )
+            self.assertTrue(summary["skipped"])
+            self.assertEqual(summary["stop_reason"], "bad_slot_range")
+
+    def test_wild_span_refused(self) -> None:
+        backfill_mod.slots_between = lambda *a, **k: list(range(0, 50))
+        start_ts, end_ts = _hour_bounds("2026-09-11T06")
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = run_hour(
+                start_ts=start_ts,
+                end_ts=end_ts,
+                slot_start=0,
+                slot_end=50,
+                **self._common_kwargs(tmp),
+            )
+            self.assertTrue(summary["skipped"])
+            self.assertEqual(summary["stop_reason"], "bad_slot_span")
+            self.assertFalse((Path(tmp) / "trades").exists())
+
+    def test_min_max_slots_per_hour_are_configurable(self) -> None:
+        backfill_mod.slots_between = lambda *a, **k: list(range(0, 50))
+
+        def fake_fetch_block(url, slot, limiter, budget=None, header_out=None, *, full=True):
+            return {"slot": slot, "blockTime": 0, "transactions": []}, 1, None
+
+        orig_fetch = backfill_mod.fetch_block
+        backfill_mod.fetch_block = fake_fetch_block
+        self.addCleanup(setattr, backfill_mod, "fetch_block", orig_fetch)
+        start_ts, end_ts = _hour_bounds("2026-09-11T07")
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = run_hour(
+                start_ts=start_ts,
+                end_ts=end_ts,
+                slot_start=0,
+                slot_end=50,
+                min_slots_per_hour=1,
+                max_slots_per_hour=100,
+                **self._common_kwargs(tmp),
+            )
+            self.assertNotEqual(summary.get("stop_reason"), "bad_slot_span")
+
+
+class RunHourCrashResumeTests(unittest.TestCase):
+    """Exactly-once resume: crash mid-hour (with held rows pending) must equal a clean run."""
+
+    N_SLOTS = 40
+    START_KEY = "2026-09-11T08"
+
+    def setUp(self) -> None:
+        self._orig_slots_between = backfill_mod.slots_between
+        self._orig_fetch_block = backfill_mod.fetch_block
+        self._orig_rows_from_block = backfill_mod.rows_from_block
+        self._orig_fetch_pool_mints = backfill_mod.fetch_pool_mints
+        self.addCleanup(setattr, backfill_mod, "slots_between", self._orig_slots_between)
+        self.addCleanup(setattr, backfill_mod, "fetch_block", self._orig_fetch_block)
+        self.addCleanup(setattr, backfill_mod, "rows_from_block", self._orig_rows_from_block)
+        self.addCleanup(setattr, backfill_mod, "fetch_pool_mints", self._orig_fetch_pool_mints)
+        backfill_mod.slots_between = lambda *a, **k: list(range(self.N_SLOTS))
+        backfill_mod.fetch_pool_mints = lambda url, pools: {p: ("BaseMint", WSOL_MINT) for p in pools}
+
+        def fake_fetch_block(url, slot, limiter, budget=None, header_out=None, *, full=True):
+            return {"slot": slot, "blockTime": self.start_ts, "transactions": []}, 1, None
+
+        backfill_mod.fetch_block = fake_fetch_block
+        self.start_ts, self.end_ts = _hour_bounds(self.START_KEY)
+
+    def _fake_rows_from_block(self, raise_at: int | None):
+        calls = {"n": 0}
+
+        def fake(block, pool_mints, feed=backfill_mod.FEED):
+            slot = block["slot"]
+            calls["n"] += 1
+            if raise_at is not None and calls["n"] == raise_at:
+                raise RuntimeError("simulated hard failure mid-hour")
+            empty = {"trades": [], "creates": [], "migrations": [], "unresolved": []}
+            if slot % 2 == 0:
+                empty["trades"] = [
+                    {
+                        "venue": "pump_bonding",
+                        "signature": f"sig{slot}",
+                        "event_index": 0,
+                        "sol_lamports": 1,
+                        "token_raw": 1,
+                        "slot": slot,
+                    }
+                ]
+            else:
+                empty["unresolved"] = [
+                    {
+                        "venue": "pumpswap",
+                        "signature": f"sig{slot}",
+                        "event_index": 0,
+                        "pool": "poolX",
+                        "sol_lamports": 1,
+                        "token_raw": 1,
+                        "slot": slot,
+                    }
+                ]
+            return empty
+
+        return fake
+
+    def _kwargs(self, tmp: Path) -> dict:
+        limiter = RateLimiter(1000)
+        return dict(
+            url="http://x",
+            start_ts=self.start_ts,
+            end_ts=self.end_ts,
+            out_dir=tmp,
+            limiter=limiter,
+            lookup_limiter=limiter,
+            pool_mints={},
+            workers=1,
+            max_bytes=10**9,
+            anchor_slot=450278777,
+            anchor_time=1790319576,
+            slot_start=0,
+            slot_end=self.N_SLOTS,
+            min_slots_per_hour=1,
+            max_slots_per_hour=1000,
+        )
+
+    def _signatures(self, out_dir: Path) -> list[str]:
+        path = out_dir / "trades" / f"trades-{self.START_KEY}.jsonl.zst"
+        self.assertTrue(path.is_file(), f"expected sealed trades file at {path}")
+        return [row["signature"] for row in iter_jsonl(path)]
+
+    def test_clean_run_has_every_slot_once(self) -> None:
+        backfill_mod.rows_from_block = self._fake_rows_from_block(raise_at=None)
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            budget = CreditBudget(10**9, 0)
+            summary = run_hour(budget=budget, checkpoint=None, checkpoint_path=None, **self._kwargs(out_dir))
+            self.assertEqual(summary["stop_reason"], None)
+            sigs = self._signatures(out_dir)
+            self.assertEqual(sorted(sigs), sorted(f"sig{i}" for i in range(self.N_SLOTS)))
+            self.assertEqual(len(sigs), len(set(sigs)))
+
+    def _crash_then_resume(self, raise_at: int) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            checkpoint_path = out_dir / "checkpoint.json"
+            checkpoint = empty_checkpoint()
+            budget = CreditBudget(10**9, 0)
+            backfill_mod.rows_from_block = self._fake_rows_from_block(raise_at=raise_at)
+            with self.assertRaises(RuntimeError):
+                run_hour(
+                    budget=budget,
+                    checkpoint=checkpoint,
+                    checkpoint_path=checkpoint_path,
+                    **self._kwargs(out_dir),
+                )
+            entry = checkpoint["hours"][self.START_KEY]
+            self.assertEqual(entry["status"], "partial")
+            # The bug under test: next_slot must not regress behind what the
+            # persisted file offsets already contain, or a resume replays
+            # (duplicates) everything already written.
+            self.assertIsNotNone(entry["next_slot"])
+            self.assertGreater(entry["next_slot"], 0)
+
+            # Resume: no more induced failures.
+            backfill_mod.rows_from_block = self._fake_rows_from_block(raise_at=None)
+            budget2 = CreditBudget(10**9, 0, used=budget.used)
+            summary = run_hour(
+                budget=budget2,
+                checkpoint=checkpoint,
+                checkpoint_path=checkpoint_path,
+                **self._kwargs(out_dir),
+            )
+            self.assertIsNone(summary.get("stop_reason"))
+            self.assertEqual(summary["slots"], self.N_SLOTS)
+            return self._signatures(out_dir)
+
+    def test_crash_mid_hour_no_duplicates_no_losses(self) -> None:
+        for raise_at in (5, 12, 26, 39):
+            with self.subTest(raise_at=raise_at):
+                sigs = self._crash_then_resume(raise_at)
+                self.assertEqual(
+                    sorted(sigs),
+                    sorted(f"sig{i}" for i in range(self.N_SLOTS)),
+                    f"crash at call {raise_at} lost or duplicated rows",
+                )
+                self.assertEqual(len(sigs), len(set(sigs)), f"crash at call {raise_at} duplicated rows")
+
+    def test_crash_with_held_rows_pending_is_recovered(self) -> None:
+        # Odd slots go through the held (unresolved pool lookup) path. Crash
+        # right after several have accumulated but before the 250-item or
+        # hour-end flush would have written them out.
+        sigs = self._crash_then_resume(raise_at=15)
+        held_origin_sigs = {f"sig{i}" for i in range(15) if i % 2 == 1}
+        self.assertTrue(held_origin_sigs.issubset(set(sigs)))
+
+
+class SealedButPartialCheckpointHealsTests(unittest.TestCase):
+    """A crash between sealing files and writing checkpoint status="sealed"."""
+
+    def test_resume_heals_instead_of_reprocessing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            key = "2026-09-11T09"
+            trades_dir = out_dir / "trades"
+            trades_dir.mkdir(parents=True)
+            sealed_path = trades_dir / f"trades-{key}.jsonl.zst"
+            sealed_path.write_bytes(b"not-really-zstd-but-present")
+            start_ts, end_ts = _hour_bounds(key)
+            checkpoint = empty_checkpoint()
+            checkpoint["hours"][key] = {
+                "status": "partial",
+                "start_slot": 100,
+                "end_slot": 9600,
+                "next_slot": 5000,
+                "stop_reason": None,
+                "counts": {"slots_done": 4900},
+                "offsets": {"trades": 123, "creates": 0, "migrations": 0},
+            }
+            checkpoint_path = out_dir / "checkpoint.json"
+            limiter = RateLimiter(1000)
+            with patch.object(backfill_mod, "slots_between", lambda *a, **k: list(range(100, 9600))):
+                summary = run_hour(
+                    url="http://x",
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    out_dir=out_dir,
+                    limiter=limiter,
+                    lookup_limiter=limiter,
+                    pool_mints={},
+                    workers=1,
+                    max_bytes=10**9,
+                    anchor_slot=450278777,
+                    anchor_time=1790319576,
+                    budget=CreditBudget(10**9, 0),
+                    checkpoint=checkpoint,
+                    checkpoint_path=checkpoint_path,
+                    slot_start=100,
+                    slot_end=9600,
+                )
+            self.assertEqual(summary.get("stop_reason"), "healed_sealed")
+            self.assertEqual(checkpoint["hours"][key]["status"], "sealed")
+            # The pre-existing sealed bytes were never touched or duplicated.
+            self.assertEqual(sealed_path.read_bytes(), b"not-really-zstd-but-present")
 
 
 if __name__ == "__main__":
