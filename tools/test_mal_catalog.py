@@ -135,6 +135,11 @@ def test_allowed_matrix() -> None:
     assert allowed("confirmation-oneshot", "EXP-011", exp_id="EXP-009") is False
     assert allowed("confirmation-oneshot", "EXP-011", exp_id=None) is False
     assert allowed("confirmation-oneshot", "exploration-pool", exp_id="EXP-011") is False
+    # A non-EXP owner tag passed as exp_id must never unlock its block.
+    assert allowed("confirmation-oneshot", "kill-review", exp_id="kill-review") is False
+    assert allowed("confirmation-oneshot", "exploration-pool", exp_id="exploration-pool") is False
+    assert allowed("confirmation-oneshot", "unassigned", exp_id="unassigned") is False
+    assert allowed("confirmation-oneshot", "EXP-011", exp_id="EXP-011 ") is False
 
     assert allowed("ops", "exploration-pool") is False
     assert allowed("ops", "EXP-011") is False

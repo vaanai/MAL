@@ -243,6 +243,8 @@ def parse_ledger(md_text: str) -> list[Block]:
 
 # --- Access policy (pure) -------------------------------------------------
 
+_EXP_ID_RE = re.compile(r"EXP-\d{3,}")
+
 
 def allowed(role: str, owner: str, exp_id: str | None = None) -> bool:
     """The read-guard policy. Deny by default -- an unrecognized role or
@@ -250,7 +252,13 @@ def allowed(role: str, owner: str, exp_id: str | None = None) -> bool:
     if role == "exploration":
         return owner == "exploration-pool"
     if role == "confirmation-oneshot":
-        return exp_id is not None and owner == exp_id
+        # Only a real EXP-### owner can be unlocked, and only by that exact id.
+        # Pool, kill-review and unassigned tags are never valid exp_ids.
+        return (
+            exp_id is not None
+            and _EXP_ID_RE.fullmatch(exp_id) is not None
+            and owner == exp_id
+        )
     if role == "ops":
         return False
     return False
