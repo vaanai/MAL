@@ -1,0 +1,106 @@
+{
+  "schema_version": "console.v1",
+  "updated_utc": "2026-09-30T16:30:00Z",
+  "review_windows": [
+    {
+      "id": "kill-review-2026-10-05",
+      "label": "Kill review · 9 forward books",
+      "startUtc": "2026-09-28T00:00:00Z",
+      "endUtc": "2026-10-05T05:00:00Z",
+      "rule": "DEC-014 single read"
+    }
+  ],
+  "events": [
+    {
+      "id": "exp011-read",
+      "kind": "read",
+      "title": "EXP-011 one-shot read",
+      "detail": "Runs once walker C seals all 72 hours of the holdout block.",
+      "atUtc": "2026-09-30T20:00:00Z",
+      "approx": true,
+      "urgent": true,
+      "progress_from": "walker_c"
+    }
+  ],
+  "ladder": [
+    {
+      "id": "lane-d",
+      "title": "Early-curve entry filter",
+      "stage": "exploring",
+      "note": "Lane D · waits for research-0",
+      "paused": true,
+      "tag": {
+        "text": "paused",
+        "tone": "muted"
+      }
+    },
+    {
+      "id": "EXP-009",
+      "title": "EXP-009 creator gate",
+      "stage": "pre-registered",
+      "note": "Screen · block 09-15T12 → 09-19T01 sealed",
+      "paused": true,
+      "tag": {
+        "text": "scorer paused",
+        "tone": "muted"
+      },
+      "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-009-migrate-creator-gate-prereg.md"
+    },
+    {
+      "id": "EXP-011",
+      "title": "EXP-011 entry model",
+      "stage": "confirming",
+      "note": "One read on a fresh 6-day block",
+      "tag": {
+        "text": "reads tonight",
+        "tone": "warn"
+      },
+      "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-011-migrate-entry-model-prereg.md"
+    },
+    {
+      "id": "forward-books",
+      "title": "9 forward books",
+      "stage": "forward-paper",
+      "note": "Clean clock 09-28 · review 10-05",
+      "tag": {
+        "text": "P&L hidden",
+        "tone": "muted"
+      }
+    },
+    {
+      "id": "migrate-direct",
+      "title": "Migrate-direct cell",
+      "stage": "failed",
+      "note": "FAIL 2026-09-28, both fail models"
+    },
+    {
+      "id": "trailing-stop",
+      "title": "Trailing stop exit",
+      "stage": "failed",
+      "note": "Ex-top-3 −8.0 SOL"
+    },
+    {
+      "id": "fee-tiers",
+      "title": "Fee tiers",
+      "stage": "failed",
+      "note": "98.6% of fills already pay the top tier"
+    }
+  ],
+  "for_you": [],
+  "stream": [
+    {
+      "id": "s-20260930-1604",
+      "from": "claude",
+      "kind": "status",
+      "text": "Took over as manager. Walker C at 63/72; EXP-011 read expected about 20Z.",
+      "atUtc": "2026-09-30T16:04:00Z"
+    },
+    {
+      "id": "s-20260930-1630",
+      "from": "claude",
+      "kind": "status",
+      "text": "Console contracts merged: result record, data catalog with read guard, status files. Console build started.",
+      "atUtc": "2026-09-30T16:30:00Z"
+    }
+  ]
+}
