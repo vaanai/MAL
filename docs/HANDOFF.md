@@ -16,7 +16,9 @@ The owner started you from MiScusi (Agents → Start a Claude session, Manager +
 The one-shot read ran once at 20:25:56Z, wrote its lock, and aborted on a missing sealed hour. No outcome was observed. The holdout is spent, and **it is never re-run** (the lock exists). The causes are walker data-integrity bugs: a backwards slot range seals empty hours, resumed hours get exact duplicate rows, and resumes probably lose held rows. Details are in [EXP-011's Result section](../EXP/EXP-011-migrate-entry-model-prereg.md) and the ledger.
 
 What's next:
-1. Review and merge the walker-fix PR (`claude/backfill-integrity`, adding `tools/backfill_verify.py`).
+1. **Done: walker fix merged ([#179](https://github.com/vaanai/MAL/pull/179)).** It makes resume exactly-once, persists and restores held rows, fixes the `slot_for_time` bracket (backwards ranges), refuses to seal empty hours or hours with an implausible span ([10.5k, 14k] slots), and heals a crash between seals. It also adds `tools/backfill_verify.py` (metadata / `--content` / `--dedupe-out` with a sha256 manifest).
+   - **Before any walker runs again,** update the walkers' own checkout, `/home/ubuntu/mal-oos` (not `~/MAL`), to main ≥ `a47dbdb`. Any new walker on research-0 must use that code too.
+   - A known test gap: `main()`'s stop-on-bad-hour is only tested at `run_hour` level.
 2. The exploration-pool duplicate census is done (`/home/claude/data/dup-census/census.{out,json}`, 522 files):
    - **Oracle in-sample export:** 0 duplicates.
    - **Oracle live tape:** 5–326 duplicate trade rows per ~1M-row hour (~0.01%, a different mechanism).
