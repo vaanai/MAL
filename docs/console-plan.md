@@ -113,7 +113,7 @@ After reading them, the owner is quizzed (by the agent or by DeepSeek) until he'
 - **Runs:** all exploration and scoring jobs, feature builds, training and sweeps, plus the **backfill walkers** (4–6 in parallel if Helius limits allow, which turns a 6-day block into less than a day; Helm places the Helius key there). It also runs parallel Claude sessions (MiScusi slots) and hosts the **Console** (behind Cloudflare Access, owner's email only; Helm).
 - **mal-fast-0 keeps:** the live listeners, the manager session and its timers, and MiScusi's brain. Later, the live bot.
 - **Oracle keeps:** the forward-paper runner, the trade tape, and the collectors.
-- **Disks:** 2×1 TB NVMe **mirrored (RAID1)** is recommended. Losing a drive mustn't lose sealed data or the only copy of a test block. Helm or the provider sets this up at install.
+- **Disks:** 2×1 TB NVMe, already mirrored (RAID1) by the provider.
 - **Data sync:** nightly and on-demand `rsync` of the sealed hour files listed in the catalog, with sha256 manifests. Confirmation blocks are **locked**: only the one-shot scorer role can read them.
 - **Resources:** declared-resource jobs with a fixed ~16 GB reserve. The 2026-09-29 lessons stay: bounded windows, rows streamed to disk, whole-tree kill.
 - **Failure isolation:**
