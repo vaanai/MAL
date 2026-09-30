@@ -1,6 +1,6 @@
 # EXP-011 — Migrate entry model (frozen, ablated), pre-registration
 
-**This file is written before any holdout data exists on disk.** It is a pre-registration only: no holdout hour has been read, no threshold was tuned on holdout data, no result is reported. Declared (UTC): **2026-09-29T01:24:00Z** (the freeze training run against pools A/C/B — none of which touch the holdout — was already in progress at declaration time; see §3 and the commit history for `tools/exp011_freeze.py`).
+**This file is written before any holdout hour is read.** It is a pre-registration only: no holdout hour has been read, no threshold was tuned on holdout data, no result is reported. (Correction: an earlier draft said "before any holdout data exists on disk". In fact walker B began sealing the block's top hours at 2026-09-29T00:34Z, and at finalization, **2026-09-30T07:00:17Z**, 114 of the 144 holdout hours were sealed on disk. **None has been read**: `tools/exp011_freeze.py` asserts it never touches the block, and `tools/exp011_score.py` has only been run on synthetic fixtures.) Declared (UTC): **2026-09-29T01:24:00Z**; frozen values filled in and finalized **2026-09-30T07:00:17Z** (the freeze training run against pools A/C/B — none of which touch the holdout — was already in progress at declaration time; see §3 and the commit history for `tools/exp011_freeze.py`).
 
 | Field | Value |
 | --- | --- |
@@ -37,7 +37,38 @@
 
 Owner-requested scope addition (2026-09-29), run before any holdout data is read. For each of the 9 outer held-out days: an outer fold model is trained on the other 8 days (the exact frozen spec — ablated features, S2 hyperparameters, deterministic, §3); its entry threshold is chosen using **only** those 8 days, via an inner 8-fold LODO over them (8 inner models, each trained on 7 of the 8 and scored on the 8th) — the 90th percentile of the pooled inner out-of-fold scores. That one fixed threshold is then applied to the outer day's own rows, scored by the outer fold model: enter iff `score >= threshold`. The entered trades are pooled across all 9 outer days and reported below under both fail models. **This is report-only — it is not a gate, and per the owner's instruction it must not be used to change the frozen threshold, feature set, or hyperparameters in §3 (it was not).** Full detail: `ARTIFACTS/exp011/nested_fixed_threshold_lodo.json`; implementation: `tools/exp011_freeze.py::nested_fixed_threshold_lodo` / `nested_lodo_report`, tested in `tools/test_exp011_freeze.py::NestedFixedThresholdLodoTests`.
 
-[Results table filled in after the freeze run — see the PR body and `ARTIFACTS/exp011/nested_fixed_threshold_lodo.json` for the numbers, copied verbatim, not re-typed.]
+**Result (copied from `ARTIFACTS/exp011/nested_fixed_threshold_lodo.json`; in-sample exploration pool, report-only, NOT gating):**
+
+| Fail model | n entered | Mean net % | 90% CI lo % | Total SOL | Ex-top-3 SOL | Days positive |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| flat 15% | 883 | +7.9934% | +5.6368% | +35.2909 | +33.3200 | 9/9 |
+| pressure scale 1 | 883 | +4.9233% | +3.3641% | +21.7363 | +20.3786 | 9/9 |
+
+Per held-out day (fold threshold chosen on the other 8 days only):
+
+| Day | n entered | Selected fraction | Flat mean | Pressure mean |
+| --- | ---: | ---: | ---: | ---: |
+| 2026-09-19 | 96 | 0.0998 | +6.7464% | +5.7140% |
+| 2026-09-20 | 101 | 0.0954 | +4.2571% | +2.1586% |
+| 2026-09-21 | 105 | 0.0980 | +6.4758% | +4.8314% |
+| 2026-09-22 | 113 | 0.1110 | +9.8066% | +6.1217% |
+| 2026-09-23 | 126 | 0.1198 | +4.0257% | +1.1620% |
+| 2026-09-24 | 109 | 0.1072 | +8.0761% | +4.4494% |
+| 2026-09-25 | 84 | 0.0995 | +9.1642% | +5.1001% |
+| 2026-09-26 | 81 | 0.0885 | +13.3959% | +8.3816% |
+| 2026-09-27 | 68 | 0.0788 | +13.9716% | +9.4549% |
+
+By source (A = fast box, C = Oracle in-sample, B = Oracle live tape):
+
+| Source | n | Flat mean | Pressure mean |
+| --- | ---: | ---: | ---: |
+| A | 302 | +5.8198% | +4.2181% |
+| C | 379 | +7.0479% | +3.6785% |
+| B | 202 | +13.0170% | +8.3132% |
+
+Fill-conditional: all entered n=883 (flat +7.9934%, pressure +4.9233%); filled only n=864 (flat +8.1714%, pressure +5.0338%).
+
+This preview uses the same 9-day exploration pool that was read across #146, #152 and #156, so fit to that week is likely. **The holdout (§4) is the only evidence that counts.**
 
 ## 2. Base trade — unchanged frozen-cell execution
 
@@ -76,7 +107,10 @@ Everything below is produced by `tools/exp011_freeze.py` and committed under `AR
   - `oof_scores.json` — the pooled out-of-fold score table (day, mint, score, label, filled) used to set the threshold
   - `nested_fixed_threshold_lodo.json` — §1a's report-only nested LODO result (pooled entered-trade stats under both fail models, per-day table, fill-conditional net, source split, per-fold thresholds). Not part of the frozen spec; never read by `tools/exp011_score.py`.
 
-  **Model md5, threshold value, and the OOF selected-fraction check are recorded in the PR body and in `LAB_STATE.md`, copied verbatim from these files — not re-typed by hand, not rounded.**
+  **Frozen values (copied from the files, 2026-09-30):**
+  - `model.md5` = `eb2189343fe08640345d75eb17363e32` (reproduced identically by two independent freeze runs from the same table)
+  - `threshold` = `0.8012473581008048` (the 90th percentile of 8801 pooled outer OOF scores; OOF selected fraction 0.1001, 881 of 8801)
+  - Training table: 8801 `tpsl_tp50_sl30` rows (pool A 3092, C 3372, B 2337), md5 `03a85170c3f209609323dedac25508fd`, built by `tools/exp011_build_table.py` with `max_home_hours=12`, `buffer_hours=24`, `max_workers=2`. The 24 h buffer covers 98.7% of create→migrate lags (pool A: p50 0.0 h, p95 5.3 h, p99 27.7 h). Every pool has ≥ the row count of #156's run (3029/3342/2300).
 
 ## 4. Holdout
 
@@ -87,9 +121,9 @@ Everything below is produced by `tools/exp011_freeze.py` and committed under `AR
 
 This file's own freeze script (`tools/exp011_freeze.py`) asserts, at import time, that none of its three training pools (A, C, B — the exploration pools; not to be confused with holdout walkers B/C above) ever reaches into `[2026-09-09T12, 2026-09-15T12)` — see `_assert_never_holdout` and the module-level assertions immediately after the pool hour imports. Neither `/var/lib/mal/backfill-fast-b` nor `/var/lib/mal/backfill-fast-c` is ever opened by the freeze script.
 
-- Six UTC days, 144 hours total (72 + 72), walking backward from `2026-09-15T12:00:00Z` (exclusive) to `2026-09-09T12:00:00Z` (inclusive) across the two walkers, each capped at +1,100,000 credits (+2,200,000 combined).
-- **Read exactly once, after all 144 hours across BOTH walkers are sealed.** `tools/exp011_score.py` (§7, a follow-up PR — not built in this PR) must check that **both** `/var/lib/mal/backfill-fast-b`'s checkpoint (its 72 hours) and `/var/lib/mal/backfill-fast-c`'s checkpoint (its 72 hours) show `status == "sealed"` (not `"partial"`, not missing) for every one of their hours before it scores anything, refuse to run otherwise, and read exactly those 144 hours — no more, no fewer. There is no partial or incremental read of this block for EXP-011 — no interim peek from either walker is used to inform any decision about this experiment before both checks pass.
-- No burn-in / trailing-window causality question applies here the way it did for EXP-009's creator-recurrence gate: this model's features are all computed from the same causal per-mint accumulation (`causal_events`, gated strictly before each mint's own T) that pools A/B/C already use, with no cross-mint or trailing-window state. A sealed hour is immediately usable once its own mint-level create→migrate data is on disk, regardless of which of the two walkers sealed it.
+- Six UTC days, 144 hours total (72 + 72), walking backward from `2026-09-15T12:00:00Z` (exclusive) to `2026-09-09T12:00:00Z` (inclusive) across the two walkers, credit caps: walker B +1,100,000 (finished 2026-09-30 at 848,039, all 72 hours sealed); walker C +1,500,000 (raised from 1,100,000 on 2026-09-30T05:05Z because its hours cost ~18.6k credits each and it would otherwise have stopped ~13 hours short; no hour of the block had been read).
+- **Read exactly once, after all 144 hours across BOTH walkers are sealed.** `tools/exp011_score.py` (built and tested in this PR; synthetic tests only, and it has never opened either holdout directory) checks that **both** `/var/lib/mal/backfill-fast-b`'s checkpoint (its 72 hours) and `/var/lib/mal/backfill-fast-c`'s checkpoint (its 72 hours) show `status == "sealed"` (not `"partial"`, not missing) for every one of their hours before it scores anything, refuse to run otherwise, and read exactly those 144 hours — no more, no fewer. There is no partial or incremental read of this block for EXP-011 — no interim peek from either walker is used to inform any decision about this experiment before both checks pass.
+- **One cross-mint, trailing-window feature exists: `creator_prior_mints_24h`** (the creator's prior creates in the 24 h before this mint's create, strictly earlier). Its history is built **per data block from that block's own create hours only**, in training (pools A, C and B separately) and in the holdout (the 144 whitelisted hours only, `tools/exp011_score.py::_build_creator_history_holdout`). So the first ~24 h of every block undercount it, identically in training and holdout. No burn-in exclusion is applied, matching training. No hour outside the holdout block (e.g. EXP-009's adjacent `[2026-09-15T12, 2026-09-19T01)`) is read to fill it in. (This corrects an earlier line here that said no trailing-window state existed.) All other features are per-mint and causal (`causal_events`, strictly before T).
 
 ## 5. Cell (one, primary — no Holm needed)
 
@@ -112,12 +146,12 @@ Failing any one of those, under either fail model, kills EXP-011's primary cell 
 
 ## 7. Also reported, not gating
 
-The scoring PR (`tools/exp011_score.py`, a follow-up, not this one) must report all of the following alongside the gate result, but none of them changes the pass/fail call in §6:
+`tools/exp011_score.py` (built in this PR) reports all of the following alongside the gate result, but none of them changes the pass/fail call in §6:
 
 - **Fill-conditional net** for the selected (`score >= threshold`) trades, and separately for all filled trades in the holdout population — the §1 fill-selection caveat applies until this is checked on holdout data.
 - **Selected fraction** — the share of holdout `migrate` attempts with `score >= threshold`. If it falls outside 5–20%, report it plainly but do **not** re-tune the threshold, the feature set, or the model in response. The threshold was fixed in §3, before any holdout hour existed.
 - **Per-day table** — trade count, flat net %, pressure net % for every one of the (up to 6) UTC days the holdout covers.
-- **Per-source note** — the holdout is a single fast-box block from one walker; state plainly that no cross-source split (unlike §1's exploration read) is possible here, only within-block day variation.
+- **Per-source note** — the holdout is a single contiguous fast-box block (same source, walked by two walker processes B and C); state plainly that no cross-source split (unlike §1's exploration read) is possible here, only within-block day variation.
 
 ## 8. Kill
 

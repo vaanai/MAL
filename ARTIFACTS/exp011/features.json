@@ -1,0 +1,50 @@
+{
+  "schema": "exp011_features_v1",
+  "frozen_feature_names": [
+    "time_to_migrate_s",
+    "n_bonding_trades",
+    "n_buys",
+    "n_sells",
+    "n_buyers",
+    "n_sellers",
+    "buy_sol",
+    "sell_sol",
+    "net_flow_sol",
+    "buy_sell_ratio",
+    "sniper_buy_share",
+    "top_holder_share",
+    "price_return_pre",
+    "mcap_at_t_sol",
+    "hour_of_day",
+    "hour_sin",
+    "hour_cos",
+    "creator_prior_mints_24h"
+  ],
+  "dropped_lookahead_features": [
+    "same_slot_buys",
+    "nearby_buy_sol"
+  ],
+  "source_feature_names": [
+    "time_to_migrate_s",
+    "n_bonding_trades",
+    "n_buys",
+    "n_sells",
+    "n_buyers",
+    "n_sellers",
+    "buy_sol",
+    "sell_sol",
+    "net_flow_sol",
+    "buy_sell_ratio",
+    "sniper_buy_share",
+    "top_holder_share",
+    "price_return_pre",
+    "mcap_at_t_sol",
+    "same_slot_buys",
+    "nearby_buy_sol",
+    "hour_of_day",
+    "hour_sin",
+    "hour_cos",
+    "creator_prior_mints_24h"
+  ],
+  "source": "tools.exploration_entry_model.FEATURE_NAMES minus the two slot+1-landing pressure features (see PR #156 audit comment)"
+}
