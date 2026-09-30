@@ -170,7 +170,7 @@ def _predict(model: Any, x: Sequence[Sequence[float]]) -> list[float]:
     import numpy as np
 
     xa = np.asarray(x, dtype=np.float64)
-    return [float(v) for v in model.predict(xa)]
+    return [float(v) for v in model.predict(xa, num_threads=1)]
 
 
 def _label(rows: Sequence[dict[str, Any]]) -> list[int]:
