@@ -8,7 +8,9 @@ Exploration only. No live runner, no network, no promotion claim.
 from __future__ import annotations
 
 import random
+import tempfile
 import unittest
+from pathlib import Path
 
 from tools.exploration_entry_model import (
     CREATOR_LOOKBACK_MS,
@@ -16,12 +18,17 @@ from tools.exploration_entry_model import (
     FEATURE_NAMES,
     SETTINGS,
     TARGET_SPEC_IDS,
+    _Feat,
     _cohort_stats,
     causal_events,
     choose_best_setting,
     compute_features,
     count_prior_creates,
+    iter_rows_jsonl,
+    run_worker_features,
 )
+from tools.latency_curve import _Mint
+from tools.paper_price_path import TapePrint
 
 
 def _event(t_ms: int, side: str, trader: str, sol_lamports: int, token_raw: int, price: float | None) -> tuple:
@@ -179,6 +186,121 @@ class ModuleShapeTests(unittest.TestCase):
         for s in SETTINGS:
             self.assertIn("id", s)
             self.assertIn(s["kind"], ("lightgbm", "logreg"))
+
+
+def _print(t_ms: int, slot: int, quote: int, base: int, venue: str = "pumpswap", side: str = "buy") -> TapePrint:
+    price = quote / (base * 1000)
+    return TapePrint(
+        t_recv_ms=t_ms,
+        slot=slot,
+        event_index=1,
+        venue=venue,
+        side=side,
+        sol_lamports=1_000_000_000,
+        quote_reserve=quote,
+        base_reserve=base,
+        price_sol=price,
+        market_cap_sol=price * 1_000_000_000,
+        signature=f"sig-{slot}-{t_ms}",
+        tx_index=0,
+    )
+
+
+class StreamToDiskTests(unittest.TestCase):
+    """run_worker_features(rows_out_path=...) must produce the exact same
+    rows a fully in-memory run would, just via a file instead of a held
+    list -- the fix (ported from lane D's commit 9e9b08e on branch
+    claude/explore-early-entry-model) for the 02:15Z host OOM (each
+    worker's `out` list growing for its whole ~24h+buffer run was the
+    dominant driver of peak RSS)."""
+
+    def _hour_info(self, t0_ms: int) -> dict:
+        return {
+            "hour": "test-hour",
+            "day": "2026-09-19",
+            "end": t0_ms // 1000 + 40 * 60,  # 40 min later -> past WINDOW_MS
+            "trade": Path("unused"),
+            "create": None,
+        }
+
+    def _rows(self, t0_ms: int) -> list[dict]:
+        bonding = {
+            "type": "trade",
+            "venue": "pump_bonding",
+            "side": "buy",
+            "quote_reserve": 80_000_000_000,
+            "base_reserve": 400_000_000_000_000,
+            "slot": 100,
+            "event_index": 1,
+            "sol_lamports": 1_000_000_000,
+            "trader": "walletA",
+            "token_raw": 500_000,
+            "mint": "mintZ",
+            "t_recv_ms": t0_ms + 500,
+            "block_time": t0_ms // 1000,
+        }
+        migrate = {
+            **bonding,
+            "venue": "pumpswap",
+            "slot": 105,
+            "t_recv_ms": t0_ms + 20_000,
+            "trader": "walletB",
+            "quote_is_wsol": True,
+        }
+        # A third print well past the 30-minute exit cap: without it,
+        # run_worker_features's final flush scores at `now_ms` == the
+        # migrate print's own timestamp (zero window), every exit spec is
+        # censored (tools.exploration_exits' own
+        # test_censored_exit_is_omitted_not_zeroed covers that case), and
+        # score_one legitimately returns [] -- not a streaming bug, just
+        # this synthetic tape being too short to resolve an exit. Real
+        # backfill hours always have far more trailing data.
+        later = {
+            **migrate,
+            "slot": 110,
+            "t_recv_ms": t0_ms + 20_000 + 1_900_000,
+        }
+        return [bonding, migrate, later]
+
+    def test_rows_written_to_disk_match_the_in_memory_rows(self) -> None:
+        t0 = 1_700_000_000_000
+        entry = _print(t0, 100, 80_000_000_000, 400_000_000_000_000)
+        creates_override = {"mintZ": (_Mint(100, t0, 0, entry), _Feat("creatorZ", t0, entry.price_sol))}
+        creates_override["mintZ"][0].had_bond = True
+
+        def hour_info_fn(_key: str) -> dict:
+            return self._hour_info(t0)
+
+        def row_iter_fn(_path) -> list[dict]:
+            return self._rows(t0)
+
+        in_memory = run_worker_features(
+            0, ["h"], [], {}, hour_info_fn=hour_info_fn, row_iter_fn=row_iter_fn, creates_override=dict(creates_override)
+        )
+        self.assertTrue(in_memory)
+
+        # Rebuild a fresh creates_override -- the first call already mutated
+        # (and released) its _Mint/_Feat objects.
+        entry2 = _print(t0, 100, 80_000_000_000, 400_000_000_000_000)
+        creates_override2 = {"mintZ": (_Mint(100, t0, 0, entry2), _Feat("creatorZ", t0, entry2.price_sol))}
+        creates_override2["mintZ"][0].had_bond = True
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "rows.jsonl"
+            returned = run_worker_features(
+                0,
+                ["h"],
+                [],
+                {},
+                hour_info_fn=hour_info_fn,
+                row_iter_fn=row_iter_fn,
+                creates_override=creates_override2,
+                rows_out_path=out_path,
+            )
+            self.assertEqual(returned, [])  # streamed to disk, not held
+            from_disk = list(iter_rows_jsonl(out_path))
+        self.assertEqual(len(from_disk), len(in_memory))
+        key = lambda r: (r["spec"], r["status"], r["flat"], r["press"], r["mint"])
+        self.assertEqual(sorted(map(key, from_disk)), sorted(map(key, in_memory)))
 
 
 if __name__ == "__main__":

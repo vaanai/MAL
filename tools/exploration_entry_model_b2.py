@@ -61,13 +61,16 @@ from tools.exploration_entry_model import (
     _Feat,
     _cohort_stats,
     _fmt_pct,
+    _rows_out_path,
     fit_setting,
     importance_setting,
+    iter_rows_jsonl,
     predict_setting,
     run_all_features as run_all_features_a,
     run_worker_features,
     _vector,
 )
+from tools.exploration_exits import _chunk, chunk_plan
 from tools.latency_curve import _Mint, _rss_mb
 from tools.oracle_live_adapter import (
     POOL_B_CREATE_DAYS,
@@ -134,25 +137,12 @@ def diagnose_row_order(sample_hours: Sequence[str]) -> dict[str, Any]:
     return {"hours_sampled": len(sample_hours), "hours": list(sample_hours), "rows_sampled": rows_sampled, "out_of_order": out_of_order}
 
 
-def _chunk(keys: list[str], n: int) -> list[list[str]]:
-    k, m = divmod(len(keys), n)
-    chunks = []
-    start = 0
-    for i in range(n):
-        size = k + (1 if i < m else 0)
-        chunks.append(keys[start : start + size])
-        start += size
-    return [c for c in chunks if c]
-
-
-def plan_workers_b(max_workers: int = 3, buffer_hours: int = 2) -> list[tuple[int, list[str], list[str]]]:
-    chunks = _chunk(POOL_B_HOURS, max_workers)
-    plan = []
-    for i, home in enumerate(chunks):
-        idx = POOL_B_HOURS.index(home[-1])
-        buf = POOL_B_HOURS[idx + 1 : idx + 1 + buffer_hours]
-        plan.append((i, home, buf))
-    return plan
+def plan_workers_b(
+    max_workers: int = 3, buffer_hours: int = 2, max_home_hours: int | None = None
+) -> list[tuple[int, list[str], list[str]]]:
+    """`max_home_hours`: see tools.exploration_exits.chunk_plan -- more,
+    smaller chunks instead of exactly `max_workers` big ones, when set."""
+    return chunk_plan(POOL_B_HOURS, max_workers, buffer_hours, max_home_hours)
 
 
 def _worker_home_window_ms(home_keys: list[str]) -> tuple[int, int]:
@@ -167,12 +157,17 @@ def run_worker_b(
     buffer_keys: list[str],
     all_creates: dict[str, tuple[_Mint, _Feat]],
     creator_hist: dict[str, list[int]],
+    rows_out_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Partition the pre-loaded pool-B creates by this worker's home-hour
     window (Oracle creates are day-granular, loaded once in the parent, not
     per-hour like pool A), then run the exact same streaming worker pool A
     uses (tools.exploration_entry_model.run_worker_features), pointed at
     Oracle's hour resolver and the defensive sorted row iterator.
+
+    `rows_out_path`: same streaming-to-disk fix ported to pool A (see
+    run_worker_features's docstring); a fixed-positional trailing arg so
+    it survives `Pool.starmap`.
     """
     home_start_ms, home_end_ms = _worker_home_window_ms(home_keys)
     home_creates = {mid: (m, f) for mid, (m, f) in all_creates.items() if home_start_ms <= m.block_ms < home_end_ms}
@@ -189,28 +184,41 @@ def run_worker_b(
         hour_info_fn=_hour_info_b,
         row_iter_fn=iter_trade_rows_sorted,
         creates_override=home_creates,
+        rows_out_path=rows_out_path,
     )
 
 
-def run_all_features_b(max_workers: int = 3, buffer_hours: int = 2) -> list[dict[str, Any]]:
+def run_all_features_b(
+    max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None, max_home_hours: int | None = None
+) -> list[dict[str, Any]]:
+    """out_dir set: each worker streams to `out_dir/poolB-w<i>.jsonl` instead
+    of holding rows in memory (see run_all_features's docstring in
+    tools.exploration_entry_model). `max_home_hours`: see
+    tools.exploration_exits.chunk_plan -- more, smaller chunks (a bounded
+    `hot`/`watch` dict per chunk); the Pool is still sized to `max_workers`
+    regardless of chunk count."""
     print(f"pool B trade hours: {POOL_B_START} .. {POOL_B_END} ({len(POOL_B_HOURS)})", file=sys.stderr, flush=True)
     print("loading pool B creates (Oracle observe day files)...", file=sys.stderr, flush=True)
     all_creates = load_creates_b()
     print(f"pool B creates: {len(all_creates)}", file=sys.stderr, flush=True)
     creator_hist = build_creator_history_b()
     print(f"pool B creator_history creators={len(creator_hist)}", file=sys.stderr, flush=True)
-    plan = plan_workers_b(max_workers, buffer_hours)
+    plan = plan_workers_b(max_workers, buffer_hours, max_home_hours)
     print(f"pool B worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
+    paths = [_rows_out_path(out_dir, "B", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
     if max_workers <= 1 or len(plan) <= 1:
-        for worker_id, home, buf in plan:
-            rows.extend(run_worker_b(worker_id, home, buf, all_creates, creator_hist))
-        return rows
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=len(plan)) as pool:
-        results = pool.starmap(run_worker_b, [(i, h, b, all_creates, creator_hist) for i, h, b in plan])
-    for part in results:
-        rows.extend(part)
+        for (worker_id, home, buf), path in zip(plan, paths):
+            rows.extend(run_worker_b(worker_id, home, buf, all_creates, creator_hist, path))
+    else:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=min(max_workers, len(plan))) as pool:
+            results = pool.starmap(run_worker_b, [(i, h, b, all_creates, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
+        for part in results:
+            rows.extend(part)
+    if out_dir is not None:
+        for path in paths:
+            rows.extend(iter_rows_jsonl(path))
     return rows
 
 
