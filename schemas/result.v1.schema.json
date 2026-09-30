@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vaanai/MAL/schemas/result.v1.schema.json",
+  "title": "MAL result.v1",
+  "description": "Standard result record every exploration/scoring tool emits. See docs/contracts/result-json.md and docs/console-plan.md §5/§9.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "tool",
+    "git_sha",
+    "command",
+    "config",
+    "role",
+    "data_blocks",
+    "stage",
+    "metrics",
+    "gate",
+    "tries",
+    "runtime_s",
+    "peak_rss_mb",
+    "created_utc"
+  ],
+  "properties": {
+    "schema_version": { "const": "result.v1" },
+    "tool": { "type": "string", "minLength": 1 },
+    "git_sha": { "type": "string" },
+    "command": { "type": "string" },
+    "config": { "type": "object" },
+    "role": {
+      "type": "string",
+      "enum": ["exploration", "confirmation-oneshot", "ops"]
+    },
+    "data_blocks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dataBlock" }
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "idea",
+        "exploring",
+        "candidate",
+        "pre-registered",
+        "confirming",
+        "passed",
+        "failed",
+        "forward-paper",
+        "live-approved",
+        "retired"
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["flat", "pressure_s1"],
+      "properties": {
+        "flat": { "$ref": "#/$defs/metricsLeg" },
+        "pressure_s1": { "$ref": "#/$defs/metricsLeg" }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "required": ["flat", "pressure_s1", "pass_both"],
+      "properties": {
+        "flat": { "$ref": "#/$defs/gateLeg" },
+        "pressure_s1": { "$ref": "#/$defs/gateLeg" },
+        "pass_both": { "type": "boolean" }
+      }
+    },
+    "tries": {
+      "type": "object",
+      "required": ["data_key", "variant_n", "of_m"],
+      "properties": {
+        "data_key": { "type": "string" },
+        "variant_n": { "type": "integer", "minimum": 1 },
+        "of_m": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "runtime_s": { "type": ["number", "null"] },
+    "peak_rss_mb": { "type": ["number", "null"] },
+    "created_utc": { "type": "string" },
+    "notes": { "type": "string" }
+  },
+  "$defs": {
+    "dataBlock": {
+      "type": "object",
+      "required": ["start_hour", "end_hour_exclusive", "host", "ledger_owner"],
+      "properties": {
+        "start_hour": { "type": "string" },
+        "end_hour_exclusive": { "type": "string" },
+        "host": { "type": "string" },
+        "ledger_owner": { "type": "string" }
+      }
+    },
+    "segmentStats": {
+      "type": "object",
+      "required": ["n_trades", "mean_pct", "total_sol"],
+      "properties": {
+        "n_trades": { "type": "integer", "minimum": 0 },
+        "mean_pct": { "type": ["number", "null"] },
+        "total_sol": { "type": ["number", "null"] }
+      }
+    },
+    "metricsLeg": {
+      "type": "object",
+      "required": [
+        "n_trades",
+        "selected_fraction",
+        "trades_per_day",
+        "sol_per_day",
+        "mean_pct",
+        "median_pct",
+        "mean_sol",
+        "median_sol",
+        "ci90_lo_sol",
+        "total_sol",
+        "ex_top3_sol",
+        "days",
+        "days_positive",
+        "fill_rate",
+        "fill_cond_mean_pct",
+        "top5_profit_share",
+        "by_segment"
+      ],
+      "properties": {
+        "n_trades": { "type": "integer", "minimum": 0 },
+        "selected_fraction": { "type": ["number", "null"] },
+        "trades_per_day": { "type": ["number", "null"] },
+        "sol_per_day": { "type": ["number", "null"] },
+        "mean_pct": { "type": ["number", "null"] },
+        "median_pct": { "type": ["number", "null"] },
+        "mean_sol": { "type": ["number", "null"] },
+        "median_sol": { "type": ["number", "null"] },
+        "ci90_lo_sol": { "type": ["number", "null"] },
+        "total_sol": { "type": ["number", "null"] },
+        "ex_top3_sol": { "type": ["number", "null"] },
+        "days": { "type": "integer", "minimum": 0 },
+        "days_positive": { "type": "integer", "minimum": 0 },
+        "fill_rate": { "type": ["number", "null"] },
+        "fill_cond_mean_pct": { "type": ["number", "null"] },
+        "top5_profit_share": { "type": ["number", "null"] },
+        "by_segment": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/segmentStats" }
+        }
+      }
+    },
+    "gateLeg": {
+      "type": "object",
+      "required": [
+        "n_ge_100",
+        "days_ge_5",
+        "majority_days_positive",
+        "ci90_lo_gt_0",
+        "ex_top3_gt_0",
+        "pass"
+      ],
+      "properties": {
+        "n_ge_100": { "type": "boolean" },
+        "days_ge_5": { "type": "boolean" },
+        "majority_days_positive": { "type": "boolean" },
+        "ci90_lo_gt_0": { "type": "boolean" },
+        "ex_top3_gt_0": { "type": "boolean" },
+        "pass": { "type": "boolean" }
+      }
+    }
+  }
+}
