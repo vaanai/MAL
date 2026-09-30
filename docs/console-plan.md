@@ -130,4 +130,6 @@ After reading them, the owner is quizzed (by the agent or by DeepSeek) until he'
 5. v1.5: Ask the lab, search, sweeps UI, the glossary tap-for-meaning.
 6. Live mode, after a candidate passes forward paper and the owner approves live.
 
+**Hosting (2026-09-30, owner + Helm):** v1 runs on **mal-fast-0** for now, as the `claude` user service `mal-console`. It binds 127.0.0.1:8787 only, with MemoryMax 512M and CPUQuota 50%. `console.tradervaan.com` routes to it through the host's Cloudflare Tunnel, behind Access with the owner's email only. The keys sit in mode-600 files under `~/.config/mal-console/`. This is light, so it doesn't break rule 7: the tests it submits still run on research-0. **It moves to mal-research-0 when MAL's data moves there, or before any live wallet key lands on mal-fast-0, whichever comes first.**
+
 **Stack:** a separate repo `vaanai/mal-console`, in the same language and framework as MiScusi (TypeScript/Node), so the same agents maintain both. It reads MAL through the contracts in §9.

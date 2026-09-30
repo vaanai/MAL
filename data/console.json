@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-09-30T16:30:00Z",
+  "updated_utc": "2026-09-30T18:30:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -16,10 +16,11 @@
       "kind": "read",
       "title": "EXP-011 one-shot read",
       "detail": "Runs once walker C seals all 72 hours of the holdout block.",
-      "atUtc": "2026-09-30T20:00:00Z",
+      "atUtc": "2026-09-30T21:10:00Z",
       "approx": true,
       "urgent": true,
-      "progress_from": "walker_c"
+      "progress_from": "walker_c",
+      "progress_total": 72
     }
   ],
   "ladder": [
@@ -101,6 +102,13 @@
       "kind": "status",
       "text": "Console contracts merged: result record, data catalog with read guard, status files. Console build started.",
       "atUtc": "2026-09-30T16:30:00Z"
+    },
+    {
+      "id": "s-20260930-1830",
+      "from": "claude",
+      "kind": "status",
+      "text": "Console is live at console.tradervaan.com (on mal-fast-0 for now, capped at 512 MB, localhost behind Cloudflare Access). MiScusi key pending.",
+      "atUtc": "2026-09-30T18:30:00Z"
     }
   ]
 }
