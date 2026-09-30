@@ -78,7 +78,7 @@ from tools.exploration_entry_model import (
     run_worker_features,
 )
 from tools.exploration_entry_model_b2 import _ex_top3_sol, run_all_features_b
-from tools.exploration_exits import ENTRY_SIZE, POOL_END as POOL_A_END, POOL_HOURS as POOL_A_HOURS, POOL_START as POOL_A_START, _chunk
+from tools.exploration_exits import ENTRY_SIZE, POOL_END as POOL_A_END, POOL_HOURS as POOL_A_HOURS, POOL_START as POOL_A_START, _chunk, chunk_plan
 from tools.latency_curve import _iter_trades, _rss_mb
 from tools.oracle_insample_adapter import BACKFILL_C, POOL_C_END, POOL_C_HOURS, POOL_C_START, _hour_info_c
 from tools.oracle_live_adapter import (

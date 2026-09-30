@@ -425,3 +425,21 @@ class LoadTableTests(unittest.TestCase):
             t.write_text(t.read_text(encoding="utf-8") + "{}\n", encoding="utf-8")
             with self.assertRaises(AssertionError):
                 load_table(t)
+
+
+class ChunkPlanWiringTests(unittest.TestCase):
+    """Guards the 2026-09-30 Phase A crash (chunk_plan not imported in the
+    pool C module): every pool's planner must accept max_home_hours and
+    produce bounded home windows. Pure planning, reads no data."""
+
+    def test_every_pool_planner_bounds_home_windows(self) -> None:
+        from tools.exploration_entry_model_b2 import plan_workers_b
+        from tools.exploration_entry_model_b3 import plan_workers_c
+        from tools.exploration_exits import plan_workers as plan_workers_a
+
+        for planner in (plan_workers_a, plan_workers_b, plan_workers_c):
+            plan = planner(2, 24, 12)
+            self.assertGreater(len(plan), 2, planner.__name__)
+            homes = [h for _i, home, _buf in plan for h in home]
+            self.assertEqual(len(homes), len(set(homes)), planner.__name__)
+            self.assertTrue(all(len(home) <= 12 for _i, home, _buf in plan), planner.__name__)
