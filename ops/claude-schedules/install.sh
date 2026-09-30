@@ -24,7 +24,11 @@ for unit in \
   mal-oos-check.service \
   mal-oos-check.timer \
   mal-runner-daily-restart.service \
-  mal-runner-daily-restart.timer
+  mal-runner-daily-restart.timer \
+  mal-status.service \
+  mal-status.timer \
+  mal-status-core.service \
+  mal-status-core.timer
 do
   ln -sf "${ROOT}/${unit}" "${USER_UNIT_DIR}/${unit}"
   echo "linked ${USER_UNIT_DIR}/${unit} -> ${ROOT}/${unit}"
@@ -40,6 +44,8 @@ them (a manager's decision, not this script's):
   systemctl --user enable --now mal-daily-review.timer
   systemctl --user enable --now mal-oos-check.timer
   systemctl --user enable --now mal-runner-daily-restart.timer
+  systemctl --user enable --now mal-status.timer
+  systemctl --user enable --now mal-status-core.timer
 
 To check what is loaded without starting anything:
 
