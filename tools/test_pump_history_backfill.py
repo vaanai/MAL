@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import random
+import signal
 import tempfile
 from datetime import datetime, timezone
 import threading
@@ -474,10 +475,43 @@ def _hour_bounds(key: str) -> tuple[int, int]:
     return start, start + 3600
 
 
-class RunHourGuardTests(unittest.TestCase):
+class _TimeBoundedTestCase(unittest.TestCase):
+    """Fails fast instead of hanging when a regression falls back to real retries.
+
+    A buggy resume/self-heal path can end up calling the real, retrying
+    fetch_block against a fake URL, which sleeps through several minutes of
+    backoff per slot. SIGALRM turns that hang into a prompt, readable
+    failure instead of a CI timeout.
+    """
+
+    TIME_LIMIT_S = 10
+
+    def setUp(self) -> None:
+        super().setUp()
+        if hasattr(signal, "SIGALRM"):
+            self._prev_handler = signal.signal(signal.SIGALRM, self._on_alarm)
+            signal.alarm(self.TIME_LIMIT_S)
+        else:
+            self._prev_handler = None
+
+    def tearDown(self) -> None:
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, self._prev_handler)
+        super().tearDown()
+
+    def _on_alarm(self, signum, frame) -> None:
+        raise AssertionError(
+            f"test exceeded {self.TIME_LIMIT_S}s -- likely a hang from an "
+            f"unguarded resume path retrying real network calls"
+        )
+
+
+class RunHourGuardTests(_TimeBoundedTestCase):
     """The three "refuse to seal" invariants tools/pump_history_backfill.py must hold."""
 
     def setUp(self) -> None:
+        super().setUp()
         self._orig_slots_between = backfill_mod.slots_between
         self.addCleanup(setattr, backfill_mod, "slots_between", self._orig_slots_between)
 
@@ -564,13 +598,14 @@ class RunHourGuardTests(unittest.TestCase):
             self.assertNotEqual(summary.get("stop_reason"), "bad_slot_span")
 
 
-class RunHourCrashResumeTests(unittest.TestCase):
+class RunHourCrashResumeTests(_TimeBoundedTestCase):
     """Exactly-once resume: crash mid-hour (with held rows pending) must equal a clean run."""
 
     N_SLOTS = 40
     START_KEY = "2026-09-11T08"
 
     def setUp(self) -> None:
+        super().setUp()
         self._orig_slots_between = backfill_mod.slots_between
         self._orig_fetch_block = backfill_mod.fetch_block
         self._orig_rows_from_block = backfill_mod.rows_from_block
@@ -715,7 +750,7 @@ class RunHourCrashResumeTests(unittest.TestCase):
         self.assertTrue(held_origin_sigs.issubset(set(sigs)))
 
 
-class SealedButPartialCheckpointHealsTests(unittest.TestCase):
+class SealedButPartialCheckpointHealsTests(_TimeBoundedTestCase):
     """A crash between sealing files and writing checkpoint status="sealed"."""
 
     def test_resume_heals_instead_of_reprocessing(self) -> None:
