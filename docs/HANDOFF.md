@@ -46,7 +46,7 @@ Walker C had sealed 66/72 at 17:46Z, at about 30–35 min per hour (the earlier 
    - join research-0 to the MAL space;
    - define the two templates in MiScusi from `docs/contracts/job-templates.md`.
    - The MiScusi checklist is mostly built already. Gaps to raise with the owner's developer: fixed server-cost entry, explicit brain-down behaviour, and a real-box test of systemd job limits + the headless install.
-3. **research-0 online:**
+3. **research-0 online.** The link from mal-fast-0 is live (Helm, 2026-09-30T18:55Z): `ssh mal-research-0`, `/data/mal`, details in [HOSTS.md](HOSTS.md). The next steps are:
    - data sync (rsync + sha256 manifests);
    - status files for research-0, and get fast/core status to research-0 (sync every minute, or run the collectors there);
    - deploy the Console there;
