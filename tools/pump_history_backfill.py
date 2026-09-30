@@ -64,9 +64,10 @@ _SKIP_CODES = frozenset({-32007, -32009, -32004})
 _NATIVE_SOL = "11111111111111111111111111111111"
 DEFAULT_MAX_BYTES = 40 * 1024**3
 HEADROOM_RATIO = 0.20
-# Observed pump.fun-era mainnet slots/hour cluster around 13.5k. Anything far
-# outside this is a slot_for_time resolution bug, not a quiet hour.
-DEFAULT_MIN_SLOTS_PER_HOUR = 9_000
+# Observed slot spans are ~11.2k-13.6k per hour (2026-09 stats; the 20-30k "slots"
+# values seen there were resume-inflated counters, not spans). Anything outside
+# [10.5k, 14k] is treated as a slot_for_time resolution bug, not a quiet hour.
+DEFAULT_MIN_SLOTS_PER_HOUR = 10_500
 DEFAULT_MAX_SLOTS_PER_HOUR = 14_000
 
 
@@ -1148,11 +1149,27 @@ def run_hour(
     # "partial" with a stale next_slot/offsets pair, and blindly resuming
     # would reprocess the whole (already-complete) hour on top of the
     # sealed file, duplicating every row in it. Heal instead of reprocess.
+    # Sealing only starts after every slot is consumed and `held` is flushed, and the
+    # three files are sealed in turn (trades, creates, migrations). So once the trades
+    # file is sealed, any plain .jsonl still on disk is complete: a crash landed between
+    # (or during) seals. seal_jsonl removes the plain file only after zstd succeeds, so
+    # a plain file next to a .zst means that .zst may be truncated: drop it and re-seal.
     sealed_trades = out_dir / "trades" / f"trades-{key}.jsonl.zst"
+    # A trades .zst (complete, or truncated mid-zstd) only exists once sealing began,
+    # i.e. after the whole hour was consumed.
+    if resume and sealed_trades.is_file():
+        for sub, prefix in (("trades", "trades"), ("creates", "creates"), ("migrations", "migrations")):
+            plain = out_dir / sub / f"{prefix}-{key}.jsonl"
+            if plain.is_file():
+                (out_dir / sub / f"{prefix}-{key}.jsonl.zst").unlink(missing_ok=True)
+                if plain.stat().st_size > 0:
+                    seal_jsonl(plain)
+                else:
+                    plain.unlink()
     if resume and sealed_trades.is_file():
         print(
             f"backfill {key}: sealed trades file already exists but checkpoint says "
-            f"partial -- healing the checkpoint without reprocessing",
+            f"partial -- sealed any leftover plain files and healed the checkpoint without reprocessing",
             file=sys.stderr,
             flush=True,
         )

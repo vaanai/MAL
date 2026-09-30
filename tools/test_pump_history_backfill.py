@@ -766,7 +766,7 @@ class SealedButPartialCheckpointHealsTests(_TimeBoundedTestCase):
             checkpoint["hours"][key] = {
                 "status": "partial",
                 "start_slot": 100,
-                "end_slot": 9600,
+                "end_slot": 12100,
                 "next_slot": 5000,
                 "stop_reason": None,
                 "counts": {"slots_done": 4900},
@@ -774,7 +774,7 @@ class SealedButPartialCheckpointHealsTests(_TimeBoundedTestCase):
             }
             checkpoint_path = out_dir / "checkpoint.json"
             limiter = RateLimiter(1000)
-            with patch.object(backfill_mod, "slots_between", lambda *a, **k: list(range(100, 9600))):
+            with patch.object(backfill_mod, "slots_between", lambda *a, **k: list(range(100, 12100))):
                 summary = run_hour(
                     url="http://x",
                     start_ts=start_ts,
@@ -791,12 +791,56 @@ class SealedButPartialCheckpointHealsTests(_TimeBoundedTestCase):
                     checkpoint=checkpoint,
                     checkpoint_path=checkpoint_path,
                     slot_start=100,
-                    slot_end=9600,
+                    slot_end=12100,
                 )
             self.assertEqual(summary.get("stop_reason"), "healed_sealed")
             self.assertEqual(checkpoint["hours"][key]["status"], "sealed")
             # The pre-existing sealed bytes were never touched or duplicated.
             self.assertEqual(sealed_path.read_bytes(), b"not-really-zstd-but-present")
+
+    def test_resume_after_crash_between_seals_seals_the_rest(self) -> None:
+        """Crash after trades sealed, while creates/migrations are still plain (and a
+        truncated creates .zst exists): resume re-seals from the complete plain files,
+        keeps the sealed trades file, and heals without re-fetching."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            key = "2026-09-11T09"
+            for sub in ("trades", "creates", "migrations"):
+                (out_dir / sub).mkdir(parents=True)
+            sealed_trades = out_dir / "trades" / f"trades-{key}.jsonl.zst"
+            sealed_trades.write_bytes(b"sealed-trades-bytes")
+            plain_creates = out_dir / "creates" / f"creates-{key}.jsonl"
+            plain_creates.write_text('{"a":1}\n{"a":2}\n', encoding="utf-8")
+            (out_dir / "creates" / f"creates-{key}.jsonl.zst").write_bytes(b"truncated")
+            plain_migr = out_dir / "migrations" / f"migrations-{key}.jsonl"
+            plain_migr.write_text("", encoding="utf-8")
+            start_ts, end_ts = _hour_bounds(key)
+            checkpoint = empty_checkpoint()
+            checkpoint["hours"][key] = {
+                "status": "partial", "start_slot": 100, "end_slot": 12100, "next_slot": None,
+                "stop_reason": None, "counts": {"slots_done": 12000},
+                "offsets": {"trades": 0, "creates": 0, "migrations": 0},
+            }
+            limiter = RateLimiter(1000)
+            fetched = []
+            with patch.object(backfill_mod, "slots_between", lambda *a, **k: list(range(100, 12100))), \
+                 patch.object(backfill_mod, "fetch_block", lambda *a, **k: fetched.append(a) or None, create=True):
+                summary = run_hour(
+                    url="http://x", start_ts=start_ts, end_ts=end_ts, out_dir=out_dir,
+                    limiter=limiter, lookup_limiter=limiter, pool_mints={}, workers=1,
+                    max_bytes=10**9, anchor_slot=450278777, anchor_time=1790319576,
+                    budget=CreditBudget(10**9, 0), checkpoint=checkpoint,
+                    checkpoint_path=out_dir / "checkpoint.json", slot_start=100, slot_end=12100,
+                )
+            self.assertEqual(summary.get("stop_reason"), "healed_sealed")
+            self.assertEqual(checkpoint["hours"][key]["status"], "sealed")
+            self.assertEqual(sealed_trades.read_bytes(), b"sealed-trades-bytes")
+            self.assertFalse(plain_creates.exists())
+            resealed = out_dir / "creates" / f"creates-{key}.jsonl.zst"
+            self.assertTrue(resealed.is_file())
+            self.assertNotEqual(resealed.read_bytes(), b"truncated")
+            self.assertFalse(plain_migr.exists())
+            self.assertEqual(fetched, [])
 
 
 if __name__ == "__main__":
