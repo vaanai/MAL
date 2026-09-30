@@ -1,71 +1,81 @@
-# Manager handoff 2026-09-29
+# Manager handoff 2026-09-30
 
-The owner is starting a new manager session. Read this page first, then [LAB_STATE.md](../LAB_STATE.md), [CLAUDE.md](../CLAUDE.md), [CONSTITUTION.md](../CONSTITUTION.md), [docs/HOSTS.md](HOSTS.md), and [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md). The narrative of the previous session is in [ARTIFACTS/daily/2026-09-28-manager-session.md](../ARTIFACTS/daily/2026-09-28-manager-session.md). This page is meant to be short-lived. Replace it at the next handoff; don't append to it.
+The owner is starting a new manager session. **Your main job is to build the MAL Console with the owner.** First, run one time-boxed research read (item A). Read this page first, then [docs/console-plan.md](console-plan.md), [docs/console-miscusi-requirements.md](console-miscusi-requirements.md), [LAB_STATE.md](../LAB_STATE.md), [CLAUDE.md](../CLAUDE.md), [CONSTITUTION.md](../CONSTITUTION.md), [docs/HOSTS.md](HOSTS.md) and [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md). The previous sessions' narrative is in [ARTIFACTS/daily/2026-09-28-manager-session.md](../ARTIFACTS/daily/2026-09-28-manager-session.md). Replace this page at the next handoff; don't append to it.
 
-As of **2026-09-29 ~05:45Z**, `main` at `568be90` (#159). Paper only.
+As of **2026-09-30 ~07:30Z**, `main` at `b9ddb3c` (#164) plus this handoff PR. Paper only.
 
-## Where we are, in one paragraph
+## Where we are
 
-The frozen migrate-direct cell is **dead** (formal FAIL, 2026-09-28 21:00Z). Exits and fee tiers were explored and are dead ends. The lever is **entry selection**. The exploration-pool entry model **B3** (#156) is the first result that survives costs on held-out days: S2 classifier, tp50_sl30, top 10%, 9/9 held-out days positive, and after a leakage ablation flat +6.22% (CI lo +3.85%) and pressure +3.59% (CI lo +2.06%). It is **exploration, not a promote**. Its confirmation test, **EXP-011**, is built but **not yet pre-registered on `main`**. Its fresh holdout block `[2026-09-09T12, 2026-09-15T12)` is being downloaded and must not be read until the pre-registration and its one-shot scorer are merged. The forward-paper kill review is 2026-10-05T05:00Z, and its scoring chain is complete.
+- **Research.** The frozen migrate-direct cell is dead. Exits and fee tiers are dead ends. **Entry selection is the lever.** The learned entry model (B3, #156) survived a leakage audit. Its one confirmation test, **EXP-011**, is **pre-registered and frozen** (#164):
+  - model md5 `eb2189343fe08640345d75eb17363e32`;
+  - threshold `0.8012473581008048`;
+  - an in-sample fixed-threshold preview of pressure +4.92% (CI lo +3.36%), 9/9 days. This is **not evidence**; the holdout is.
+- **The owner's new priority (2026-09-30):** a **MAL Console**, a private website where he sees everything, tinkers with tests on exploration data, and talks to Claude without interrupting it. It runs on MiScusi (his agent platform) and a new heavy-compute server, **mal-research-0** (Ryzen 5950X, 16 cores, 128 GB, 2×1 TB NVMe in RAID1). Grokbot is doing the base server setup, and the owner will connect it to MiScusi with you. The design is **agreed**: [docs/console-plan.md](console-plan.md).
 
-## Pending, time-boxed (UTC)
+## A. Time-boxed first: the EXP-011 one-shot read (~2026-09-30T19–20Z)
 
-**(a) EXP-011, the priority.** Branch `claude/exp011-prereg` (worktree `/home/claude/MAL/.claude/worktrees/agent-ae78cfb34ba409bdd`), **not a PR yet**. It holds:
-- `tools/exp011_freeze.py`, the pre-registration `EXP/EXP-011-migrate-entry-model-prereg.md` (md5 and threshold still to be filled), and the ledger owner change;
-- rows-to-disk streaming for all three pools;
-- `tools/exp011_build_table.py` (Phase A) and `tools/exp011_rss_monitor.sh`;
-- at `12e248b` (branch head), an **unfinished** `chunk_plan(..., max_home_hours=...)` in `tools/exploration_exits.py`, used by pools A/B/C. It splits a pool into more, smaller home windows that run ≤`max_workers` at a time. 89 tests pass.
+Walker C (`mal-fast-backfill-c`) finishes the holdout block around then. Walker B is already complete.
 
-Phase A has **not** produced a table yet. Its last attempt was killed at the 5 GB/worker guard, because the pool-B (Oracle live tape) `watch` dict grows over a ~32 h worker window. Steps:
-1. Finish the chunking:
-   - Wire `--max-home-hours` into `tools/exp011_build_table.py`.
-   - **Fix the open risk:** each chunk reads only `buffer_hours` (default 2) past its home window, so a mint created near a chunk's end that migrates more than 2 h later is dropped. The old ~32 h windows rarely dropped these. Set a buffer that covers the create→migrate lag (e.g. 24 h), and prove the chunked and unchunked outputs give identical rows on a few-hour sample before the full run.
-   - Fix the monitor so it kills the whole process tree, including spawn workers reparented to `systemd --user`. Match them by an env or cmdline tag, and use `setsid`.
-   - Unit-test all of it on tiny slices only.
-2. **Run Phase A attended**, alone, with ≤2 workers, under the monitor, after `systemctl show user-1002.slice -p MemoryCurrent` < 3 GB. Output: `/home/claude/data/exp011/table.jsonl`.
-3. Phase B, from the table only: train the final model twice (md5 must match), set threshold = the 90th percentile of the outer OOF scores, and run the **nested fixed-threshold LODO** as a report-only preview. Write `ARTIFACTS/exp011/*` and fill the md5, threshold and nested table into the pre-reg.
-4. Open and merge the EXP-011 PR (the ledger owner becomes EXP-011). Only then change the docs from "pending pre-registration" to "pre-registered".
-5. Build `tools/exp011_score.py`: it loads the frozen model, checks the md5, **refuses to run unless both walker B and walker C checkpoints show all 72 of their hours sealed**, reads exactly `[2026-09-09T12, 2026-09-15T12)` from `/var/lib/mal/backfill-fast-b` + `-c`, streams with bounded windows, and applies the unchanged gate under both fail models (n ≥ 100, ≥5 UTC days with a majority positive, CI lo > 0 at 1,000 draws seed 1, ex-top-3 > 0). It also reports fill-conditional net and the selected fraction. Merge it before the read.
-6. **Read once** after walkers B + C finish (~2026-09-30T02–03Z). Have `quant-proof` review before any sentence says it made money. A pass earns a forward-paper book **after** 2026-10-05, never live directly. A fail kills EXP-011, and there's no second read.
+1. Check: `python3 -c "import json;c=json.load(open('/var/lib/mal/backfill-fast-c/checkpoint.json'));print(sum(v.get('status')=='sealed' for v in c['hours'].values()),'/72')"`. It needs 72/72.
+2. `cd ~/MAL && git pull --ff-only && python3 -m tools.exp011_score --dry-run-preconditions`. It must print OK. Otherwise it refuses, reading nothing and writing no lock.
+3. Check memory before the heavy step: `grep ^anon /sys/fs/cgroup/user.slice/user-1002.slice/memory.stat` (< 3 GB). **Nothing else heavy may run.** The scorer uses 2 workers with bounded windows (peak ~9 GB total for a job of this size).
+4. `python3 -m tools.exp011_score` **once**. It writes the lock `/home/claude/data/exp011/HOLDOUT_READ.lock` and the report `/home/claude/data/exp011/holdout_report.{md,json}`. The first line is `VERDICT: PASS|FAIL`.
+5. `quant-proof` reviews the report before any sentence says it made money. Record the verdict in `EXP/EXP-011-migrate-entry-model-prereg.md` (a results section), LAB_STATE and the ledger (block status: "read once"). Tell the owner in plain English.
+6. **PASS** earns a forward-paper book **after** the 2026-10-05 kill review, never live directly. **FAIL** kills EXP-011, with no second read. Either way, the Console work continues.
 
-**(b) EXP-009 screen.** Walker 1 reaches its floor (2026-09-15T12) at ~2026-09-30T02Z. EXP-009 is a **screen** (k = 1, #154; ~2.5 eligible days), and a pass earns only a forward trial. A scorer still needs building. Follow `EXP/EXP-009-migrate-creator-gate-prereg.md` and all its amendments literally: G1 24 h lookback, burn-in, unknown-creator exclusion, the trades-based migrate trigger. Report how many rows differ from the migrations-sink trigger used to compute k. Read once.
+## B. The main job: build the MAL Console
 
-**(c) Every day at 00:00:00Z:** the Oracle runner restarts automatically (claude timer `mal-runner-daily-restart`). Check the new line in `/home/claude/reports/runner-restarts.jsonl` (`ok: true`, lag under 5 s, `head_sha`). The daily review runs at 05:00Z into `/home/claude/reports/daily-review/`.
+Read [console-plan.md](console-plan.md) end to end. The decisions in it are the owner's, so don't reopen them. Key ones:
+- The Console is **view-first**, and Claude stays autonomous. Claude doesn't delegate tasks to the owner.
+- Two **hard rules** that are not settings: the owner's and DeepSeek's tests read **exploration data only** (enforced at the job layer), and **paper P&L is blinded during review windows**.
+- **DeepSeek via OpenRouter** is the owner's assistant: ≤20 jobs a day, ≤3 at once, $10/month cap, templates only, and it's also his tutor and quizmaster.
+- A **separate repo** `vaanai/mal-console`, in MiScusi's language (TypeScript/Node).
 
-**(d) 2026-10-05T05:00:00Z kill review.** A single read, on a **snapshot** of Oracle's `positions.jsonl` (copy it with `ssh mal-core-0 'cat …' > local`). Order:
-1. `tools/forward_paper_settle_orphans.py` (restart-dropped opens).
-2. `tools/forward_paper_pressure_stamp.py` (the pressure leg).
-3. `tools/kill_review.py --pressure-from-ms <2026-09-29T00:00:00Z in ms> --holm-draws 10000`.
-The flat leg counts from 2026-09-28T00:00:00Z. Holm runs across the 9 books. An incomplete book is NOT_DECIDABLE. `quant-proof` reviews before anything is written as a result. Record it in LAB_STATE. No new forward books before then.
+Order (§11 of the plan):
+1. **MAL-side contracts first, in this repo** (§9 of the plan): the standard `result.json`, the first two job templates (`explore_entry_filter`, `explore_exit`), the data catalog built from the ledger, per-box status files, the tries log, and the credit log. These are small PRs and are useful even without the Console.
+2. **Give the owner the MiScusi checklist.** [docs/console-miscusi-requirements.md](console-miscusi-requirements.md) is already written. Go through it with him and adjust anything that turned out different, so he can pass it to his MiScusi developer. §1 (separation: MAL as a private project) and P0 come before research-0 goes live.
+3. **Bring mal-research-0 online with the owner:** the MiScusi install, health, slots and jobs; data sync (rsync with sha256 manifests); move the backfill walkers there (Helm places the Helius key); move all heavy jobs there. **mal-fast-0 keeps only its listeners, the manager and its timers.**
+4. **Console v1:** Home, Machines, Paper (ops + blinded P&L), Edge ladder/Experiments, Run a test (templates + DeepSeek), Jobs, the Claude stream, Data, Spend, and basic notifications.
+5. **Guidebook + quiz:** three documents (how MAL finds an edge, how we avoid fooling ourselves, using the Console) written against the real screens. Then quiz the owner, or have DeepSeek do it, until he's confident.
 
-## Open threads
+## C. Other dated items
 
-- **Lane D** (a learned filter on early bonding-curve entries): branch `claude/explore-early-entry-model` at `9e9b08e`, with streaming in place and **not yet run to completion**. It needs the same bounded-window chunking as EXP-011. Run it alone, after EXP-011's heavy steps, with its pre-stated screen (the nested fixed-threshold version).
-- **More data:** after 2026-10-05, the forward-paper data from 2026-09-28 joins the exploration pool. Buy further fresh holdout blocks in ≥6-day chunks (~2M Helius credits each; a walker covers ~3 history hours per wall hour, and walkers scale in parallel) as candidates need them. Record the owner in the ledger **before** the walker starts.
-- **Helius credits** (owner's ~20M autoscale headroom): 1,554,720 used across the three walkers at 05:40Z, against caps of 2.3M (walker 1), 1.1M (B) and 1.1M (C). Report credits per job in the daily note.
-- **Live readiness** (after a confirmation): restart-neutral warm start (PR 1 is merged as #127; PR 2, the `serve()` wiring, isn't done), a forward book for the candidate, and then the live bar (~7 days forward, tiny size, the owner's explicit yes).
+- **Every day, 00:00:00Z:** the Oracle runner restarts on its own. Check the new line in `/home/claude/reports/runner-restarts.jsonl` (`ok: true`, `head_sha d7485d2`). The daily review runs at 05:00Z into `/home/claude/reports/daily-review/`.
+- **2026-10-05T05:00:00Z kill review:** a single read on a **snapshot** of Oracle's `positions.jsonl`, in this order:
+  1. `tools/forward_paper_settle_orphans.py`
+  2. `tools/forward_paper_pressure_stamp.py`
+  3. `tools/kill_review.py --pressure-from-ms <2026-09-29T00:00:00Z in ms> --holm-draws 10000`
+  Then `quant-proof` reviews it, and you record it in LAB_STATE. No new forward books before then.
+
+## D. Paused (owner decision, 2026-09-30), not forgotten
+
+- **The EXP-009 screen:** walker 1 is floored at 2026-09-15T12. A scorer still needs to be built per its pre-reg.
+- **Lane D** (early bonding-curve entry filter, branch `claude/explore-early-entry-model`): it needs `chunk_plan` bounded windows. Run it on research-0.
+- **Oracle runner lag spikes** of 5–7.5 s (~14 per day, a falling trend). The cause is unknown. Don't change the runner before 2026-10-05.
+- **The backfill has no retry on Helius `IncompleteRead`.** The process exits and systemd restarts it from its checkpoint, so no data is lost. It's a small fix in `tools/pump_history_backfill.py`, to be deployed when the walkers next restart.
+- Restart-neutral warm start (PR 2) and the live-readiness track follow a confirmed candidate.
 - [#90](https://github.com/vaanai/MAL/pull/90): keep.
-- Deploy provenance: `/home/ubuntu/mal-oos` on mal-fast-0 is not a git checkout (its backfill module matched git main byte for byte on 2026-09-28). The walker unit files live in `/home/ubuntu/.config/systemd/user/` (`mal-fast-backfill-b/-c.service`, and walker 1's drop-in `mal-fast-backfill.service.d/range.conf`) and are not in git.
 
-## Rules this session learned the hard way
+## E. Resources, as of 2026-09-30 ~07:00Z
 
-1. **Memory on mal-fast-0.** 22 GB, no swap. The claude account is capped at 15G hard (no soft throttle). Exploration replays use ~3–5 GB per worker. **One heavy job at a time, ≤2 workers, bounded home windows, rows streamed to disk, check `MemoryCurrent` first, and use a whole-tree kill guard.** Two concurrent 3-worker jobs caused an OOM and a reboot (2026-09-29 02:15Z). Never run heavy jobs unattended overnight.
-2. **Docs describe only what is merged.** Don't call something pre-registered, ready or live until its PR is on `main`. The owner's reviewers (Lyra, Grokbot) read every merge and caught this three times. Fix the data and the wording, never the rule.
-3. **Holdout ledger.** Write the owner row before a walker seals any hour. Take timestamps from `date -u`, never estimates (two future timestamps had to be corrected). A block that was already seen can't become a confirmation holdout.
-4. **Check ex-top-3 before calling anything a candidate.** The trailing stop looked positive pooled and was three moonshots.
-5. **Offline replicas of live logic** (settlement, pressure stamp) must mirror every live branch (e.g. `LadderRule`) for every book kind. See the memory notes.
-6. **Builders stop at ~40 turns.** Commit their WIP yourself (`git add/commit/push` in their worktree), then resume them with a tight numbered list. Prefer a fresh builder over resuming one whose context is huge.
-7. **Run merges as separate commands.** A chained `set -e` command merged a PR after an earlier step had failed.
+- **Helius:** 3,565,824 credits used across the walkers at 07:04Z. Walker 1: 1,962,678 of its 2.3M cap (149/156 hours). Walker B: 848,039, done (72/72). Walker C: 755,107 of its 1.5M cap (42/72) (raised from 1.1M, because its hours cost ~18.6k each). This is within the owner's ~20M headroom. Report credits per job.
+- **Exploration data on mal-fast-0:** `/home/claude/data/oracle-insample-2026-09-22_25` (sha256-verified), `/home/claude/data/oracle-live-2026-09-25_27`, and the EXP-011 training table `/home/claude/data/exp011/run-20260930b/table.jsonl` (md5 `03a85170…`). Move them to research-0 when it's up.
 
-## Host how-to (verified this session)
+## Rules this project learned the hard way
 
-- **Oracle `mal-core-0`:** `ssh mal-core-0` (read-only claude account). Restart units with `sudo -n systemctl --user -M ubuntu@ restart <mal-unit>`; `show`/`status`/`enable`/`disable` are NOT permitted. To read the runner's git SHA: `git -c safe.directory=/var/lib/mal/paper/forward-paper/src -C /var/lib/mal/paper/forward-paper/src rev-parse HEAD`. Code updates: ask the owner to have Helm fast-forward `/var/lib/mal/paper/forward-paper/src`. Helm exported the in-sample backfill to `/var/lib/mal/export/insample-backfill-20260922T00Z-20260925T07Z` (readable).
-- **`mal-fast-0`:** control ubuntu units with `sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/$(id -u ubuntu) systemctl --user …` (walkers: `mal-fast-backfill`, `-b`, `-c`, all enabled). Claude's own timers use plain `systemctl --user`. Walker progress: `/var/lib/mal/backfill-fast{,-b,-c}/checkpoint.json` (`credits_used`, `hours[*].status`). Exploration data copies: `/home/claude/data/oracle-insample-2026-09-22_25` (sha256-verified) and `/home/claude/data/oracle-live-2026-09-25_27`. The OOM outage history is in the daily note.
-- **Helm** owns ufw, sshd, cloudflared, Cloudflare Access, Oracle admin, and the cgroup/memory limits on both boxes. Ask through the owner.
+1. **Memory on mal-fast-0** (22 GB, no swap; claude slice hard cap 15G). Replay workers use 3–5 GB each. Run **one heavy job at a time, ≤2 workers, bounded windows** (`chunk_plan`, 12 h home + 24 h buffer), stream rows to disk, and run it under `tools/exp011_rss_monitor.sh`-style **tagged whole-tree kill**. Check real use through `anon`, not `MemoryCurrent`. Never run heavy jobs unattended overnight. Better still, run them on research-0.
+2. **Docs describe only what is merged.** The owner's reviewers (Lyra, Grokbot) audit every merge. Fix the data and the wording, never a rule.
+3. **Holdout ledger:** the owner row is written before a walker seals any hour. Timestamps come from `date -u`. A block that has already been seen can't become a confirmation holdout. Only the manager assigns blocks.
+4. **Check ex-top-3 before calling anything a candidate.** Also check every "feature" claim against the frozen feature list (EXP-011's pre-reg initially said it used no trailing-window features, and it did).
+5. **Offline replicas of live logic** mirror every live branch, for every book kind.
+6. **Builders stop at ~40 turns.** Commit their WIP yourself, and resume them with tight numbered steps, or start a fresh builder.
+7. **Run merges as separate commands.** Don't chain them with `set -e`.
+8. **A one-shot test gets a `quant-proof` review of train/score equivalence before its read** (EXP-011's review caught an unpinned `num_threads`; re-freezing proved it byte-identical).
 
-## Pointers
+## Host how-to
 
-- State: [LAB_STATE.md](../LAB_STATE.md) · Summary: [ARTIFACTS/SUMMARY.md](../ARTIFACTS/SUMMARY.md)
-- Ledger: [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md) · DEC-014: [DEC/DEC-014-holdout-ledger-and-multiplicity.md](../DEC/DEC-014-holdout-ledger-and-multiplicity.md)
-- Entry-model evidence: [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](../ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md) and the audit comment on [#156](https://github.com/vaanai/MAL/pull/156)
-- Session narrative: [ARTIFACTS/daily/2026-09-28-manager-session.md](../ARTIFACTS/daily/2026-09-28-manager-session.md)
+See the "Host how-to" in [HOSTS.md](HOSTS.md) and the memory notes. The verified commands:
+- **Oracle:** `ssh mal-core-0`, which is read-only. `sudo -n systemctl --user -M ubuntu@ restart <mal-unit>` works; `show`, `status`, `enable` and `disable` are not permitted.
+- **Reading the runner's SHA:** `git -c safe.directory=/var/lib/mal/paper/forward-paper/src -C /var/lib/mal/paper/forward-paper/src rev-parse HEAD`.
+- **Fast-box ubuntu units:** `sudo -u ubuntu XDG_RUNTIME_DIR=/run/user/$(id -u ubuntu) systemctl --user …`. That covers the walkers `mal-fast-backfill`, `-b` and `-c`, all enabled, with unit files in `/home/ubuntu/.config/systemd/user/`, which are **not in git**.
+- **Helm** owns ufw, sshd, cloudflared, Access, Oracle admin and the memory limits. Ask through the owner.
