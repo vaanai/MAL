@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vaanai/MAL/templates/explore_exit.schema.json",
+  "title": "explore_exit",
+  "description": "Score one exit family and its parameters on the frozen migrate entry, exploration-pool fast-box data only (tools/exploration_exits.py). See docs/contracts/job-templates.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-role": "exploration",
+  "x-allowed-roles": ["exploration"],
+  "x-resources": { "mem_gb": 6, "cores": 2, "max_minutes": 45 },
+  "properties": {
+    "trigger": {
+      "type": "string",
+      "enum": ["migrate"],
+      "default": "migrate",
+      "description": "Entry trigger event. Only the pump.fun bonding-curve migration trigger is supported."
+    },
+    "family": {
+      "type": "string",
+      "enum": ["tp_sl_grid", "trailing_stop", "time_cap", "partial_ladder"],
+      "description": "Exit family (tools/exploration_exits.py build_specs()): a fixed take-profit/stop-loss pair, a trailing stop off the running high, a time cap on the tp50/sl30 pair, or a partial take followed by a trailing stop on the remainder."
+    },
+    "tp_pct": {
+      "type": "number",
+      "minimum": 5,
+      "maximum": 300,
+      "description": "Take-profit target, percent gain from entry. Used by tp_sl_grid and time_cap (time_cap is fixed at 50 in the existing tool, but the knob is exposed here for a future runner)."
+    },
+    "sl_pct": {
+      "type": "number",
+      "minimum": 5,
+      "maximum": 100,
+      "description": "Stop-loss, percent loss from entry. Used by tp_sl_grid and time_cap (time_cap is fixed at 30 in the existing tool, but the knob is exposed here for a future runner)."
+    },
+    "trail_pct": {
+      "type": "number",
+      "minimum": 5,
+      "maximum": 100,
+      "description": "Trailing-stop distance off the running high, percent. Used by trailing_stop."
+    },
+    "activation_pct": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 300,
+      "default": null,
+      "description": "Arm the trailing stop only after this much gain from entry; null arms it immediately. Used by trailing_stop."
+    },
+    "take_pct": {
+      "type": "number",
+      "minimum": 10,
+      "maximum": 300,
+      "description": "Gain, percent, at which half the position is sold. Used by partial_ladder."
+    },
+    "trail_rem_pct": {
+      "type": "number",
+      "minimum": 5,
+      "maximum": 100,
+      "description": "Trailing-stop distance, percent, applied to the remaining half after the partial take. Used by partial_ladder."
+    },
+    "cap_minutes": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 120,
+      "default": 30,
+      "description": "Time cap on the whole exit: force a close at this many minutes after entry if nothing else fired. All families use this; time_cap sweeps it (2/5/10/30/60 in the existing tool)."
+    },
+    "size_sol": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 1.0,
+      "default": 0.5,
+      "description": "Position size in SOL per entry. The frozen migrate-direct execution this template scores today is 0.5 SOL."
+    },
+    "priority_fee_tier": {
+      "type": "string",
+      "enum": ["p50", "p75", "p90"],
+      "default": "p75",
+      "description": "Priority-fee tier for slot+1 landing. The frozen execution uses the p75 tier (0.0005 SOL/side, ARTIFACTS/lab/fee-audit-2026-09-27.md); p50/p90 are declared for future runners, not wired yet."
+    },
+    "mcap_band": {
+      "type": ["object", "null"],
+      "default": null,
+      "description": "Optional market-cap band filter in USD. Omit or set null for no band filter.",
+      "additionalProperties": false,
+      "properties": {
+        "min": { "type": "number", "minimum": 0, "description": "Minimum market cap in USD, inclusive." },
+        "max": { "type": "number", "minimum": 0, "description": "Maximum market cap in USD, exclusive." }
+      }
+    },
+    "days": {
+      "description": "Exploration-pool UTC days to read (docs/HOLDOUT_LEDGER.md), or \"all\" for the full 3-day fast-box exploration pool tools/exploration_exits.py already reads (2026-09-19 through 2026-09-21).",
+      "default": "all",
+      "oneOf": [
+        { "type": "string", "enum": ["all"] },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "enum": ["2026-09-19", "2026-09-20", "2026-09-21"] }
+        }
+      ]
+    }
+  },
+  "required": ["trigger", "family", "size_sol", "days"],
+  "allOf": [
+    {
+      "if": { "properties": { "family": { "const": "tp_sl_grid" } } },
+      "then": { "required": ["tp_pct", "sl_pct"] }
+    },
+    {
+      "if": { "properties": { "family": { "const": "trailing_stop" } } },
+      "then": { "required": ["trail_pct"] }
+    },
+    {
+      "if": { "properties": { "family": { "const": "time_cap" } } },
+      "then": { "required": ["tp_pct", "sl_pct", "cap_minutes"] }
+    },
+    {
+      "if": { "properties": { "family": { "const": "partial_ladder" } } },
+      "then": { "required": ["take_pct", "trail_rem_pct"] }
+    }
+  ]
+}

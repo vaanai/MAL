@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vaanai/MAL/templates/explore_entry_filter.schema.json",
+  "title": "explore_entry_filter",
+  "description": "Score a learned migrate entry filter (tools/exploration_entry_model_b3.py) over one of the three frozen settings, one exit (tools/exploration_exits.py), on exploration-pool data only. See docs/contracts/job-templates.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-role": "exploration",
+  "x-allowed-roles": ["exploration"],
+  "x-resources": { "mem_gb": 8, "cores": 2, "max_minutes": 60 },
+  "properties": {
+    "trigger": {
+      "type": "string",
+      "enum": ["migrate"],
+      "default": "migrate",
+      "description": "Entry trigger event. Only the pump.fun bonding-curve migration trigger is supported."
+    },
+    "model": {
+      "type": "string",
+      "enum": ["s1_reg", "s2_clf", "s3_reg_winsor"],
+      "default": "s2_clf",
+      "description": "Learned entry-filter setting (tools/exploration_entry_model_b3.py SETTINGS_B3): s1_reg is LightGBM regression on per-trade pressure-model net %; s2_clf is a LightGBM classifier on P(pressure net > 0), the EXP-011 pre-registered setting; s3_reg_winsor is regression with labels winsorized at the training fold's own 1st/99th percentile."
+    },
+    "select_top_pct": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 50,
+      "description": "Take the top N percent of migrations by model score. Mutually exclusive with threshold -- set exactly one."
+    },
+    "threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Take migrations whose model score clears this absolute cut (0..1). Mutually exclusive with select_top_pct -- set exactly one."
+    },
+    "exit": {
+      "type": "string",
+      "enum": [
+        "tpsl_tp20_sl15", "tpsl_tp20_sl20", "tpsl_tp20_sl30", "tpsl_tp20_sl40",
+        "tpsl_tp35_sl15", "tpsl_tp35_sl20", "tpsl_tp35_sl30", "tpsl_tp35_sl40",
+        "tpsl_tp50_sl15", "tpsl_tp50_sl20", "tpsl_tp50_sl30", "tpsl_tp50_sl40",
+        "tpsl_tp75_sl15", "tpsl_tp75_sl20", "tpsl_tp75_sl30", "tpsl_tp75_sl40",
+        "tpsl_tp100_sl15", "tpsl_tp100_sl20", "tpsl_tp100_sl30", "tpsl_tp100_sl40",
+        "tpsl_tp200_sl15", "tpsl_tp200_sl20", "tpsl_tp200_sl30", "tpsl_tp200_sl40",
+        "trail_10", "trail_10_act20", "trail_15", "trail_15_act20",
+        "trail_20", "trail_20_act20", "trail_30", "trail_30_act20",
+        "timecap_2m_tp50_sl30", "timecap_5m_tp50_sl30", "timecap_10m_tp50_sl30",
+        "timecap_30m_tp50_sl30", "timecap_60m_tp50_sl30",
+        "ladder_take50_trail20", "ladder_take100_trail20", "ladder_take150_trail20", "ladder_take200_trail20"
+      ],
+      "default": "tpsl_tp50_sl30",
+      "description": "Exit rule id, one of the 41 cells tools/exploration_exits.py's build_specs() produces (tp/sl grid, trailing stop, time cap on tp50/sl30, partial-take ladder)."
+    },
+    "size_sol": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 1.0,
+      "default": 0.5,
+      "description": "Position size in SOL per entry. The frozen migrate-direct execution this template scores today is 0.5 SOL."
+    },
+    "priority_fee_tier": {
+      "type": "string",
+      "enum": ["p50", "p75", "p90"],
+      "default": "p75",
+      "description": "Priority-fee tier for slot+1 landing. The frozen execution uses the p75 tier (0.0005 SOL/side, ARTIFACTS/lab/fee-audit-2026-09-27.md); p50/p90 are declared for future runners, not wired yet."
+    },
+    "mcap_band": {
+      "type": ["object", "null"],
+      "default": null,
+      "description": "Optional market-cap band filter in USD. Omit or set null for no band filter.",
+      "additionalProperties": false,
+      "properties": {
+        "min": { "type": "number", "minimum": 0, "description": "Minimum market cap in USD, inclusive." },
+        "max": { "type": "number", "minimum": 0, "description": "Maximum market cap in USD, exclusive." }
+      }
+    },
+    "days": {
+      "description": "Exploration-pool UTC days to read (docs/HOLDOUT_LEDGER.md), or \"all\" for the full 9-day exploration pool tools/exploration_entry_model_b3.py already uses (2026-09-19 through 2026-09-27).",
+      "default": "all",
+      "oneOf": [
+        { "type": "string", "enum": ["all"] },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "2026-09-19", "2026-09-20", "2026-09-21",
+              "2026-09-22", "2026-09-23", "2026-09-24",
+              "2026-09-25", "2026-09-26", "2026-09-27"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "required": ["trigger", "model", "exit", "size_sol", "days"],
+  "oneOf": [
+    { "required": ["select_top_pct"], "not": { "required": ["threshold"] } },
+    { "required": ["threshold"], "not": { "required": ["select_top_pct"] } }
+  ]
+}
