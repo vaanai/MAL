@@ -552,11 +552,28 @@ def write_outputs(
     return {"model_md5": model_md5}
 
 
+def load_table(table_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Phase B input: the rows `tools/exp011_build_table.py` wrote (one JSON
+    object per line, same order), plus the manifest from its sibling
+    `row_counts.json`. Also checks the table against its `.md5`."""
+    rows = [json.loads(line) for line in table_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    md5_path = table_path.with_suffix(".md5")
+    if md5_path.exists():
+        want = md5_path.read_text(encoding="utf-8").strip()
+        got = _md5_of_file(table_path)
+        assert got == want, f"table md5 mismatch: {got} != {want}"
+    counts = json.loads((table_path.parent / "row_counts.json").read_text(encoding="utf-8"))
+    return rows, counts["manifest"]
+
+
 def freeze(
-    max_workers: int = 3, buffer_hours: int = 2, run_nested_lodo: bool = True
+    max_workers: int = 3, buffer_hours: int = 2, run_nested_lodo: bool = True, table_path: Path | None = None
 ) -> tuple[Any, dict[str, Any], list[dict[str, Any]], dict[str, Any], float, dict[str, Any] | None]:
     t0 = time.time()
-    rows, manifest = load_tp50_rows(max_workers=max_workers, buffer_hours=buffer_hours)
+    if table_path is not None:
+        rows, manifest = load_table(table_path)
+    else:
+        rows, manifest = load_tp50_rows(max_workers=max_workers, buffer_hours=buffer_hours)
     print(f"EXP-011 freeze: {len(rows)} {TARGET_SPEC_ID} rows over {len(manifest['days'])} days; computing ablated S2 LODO...", file=sys.stderr, flush=True)
     oof = leave_one_day_out_oof(rows)
     threshold_info = compute_threshold(oof)
@@ -585,11 +602,15 @@ def main() -> None:
     ap.add_argument("--max-workers", type=int, default=3)
     ap.add_argument("--buffer-hours", type=int, default=2)
     ap.add_argument("--skip-nested-lodo", action="store_true", help="skip the report-only nested fixed-threshold LODO (Part A)")
+    ap.add_argument("--table", default=None, help="Phase B: train from a tools/exp011_build_table.py table.jsonl instead of replaying the pools")
     args = ap.parse_args()
     assert args.max_workers <= 3, "keep max-workers <= 3 -- two backfill walkers share this box"
 
     model, threshold_info, oof, manifest, wall_s, nested_report = freeze(
-        max_workers=args.max_workers, buffer_hours=args.buffer_hours, run_nested_lodo=not args.skip_nested_lodo
+        max_workers=args.max_workers,
+        buffer_hours=args.buffer_hours,
+        run_nested_lodo=not args.skip_nested_lodo,
+        table_path=(Path(args.table) if args.table else None),
     )
     out = write_outputs(Path(args.out_dir), model, threshold_info, oof, manifest, wall_s, nested_report=nested_report)
     print(f"EXP-011 freeze: wrote {args.out_dir} model_md5={out['model_md5']} wall_s={wall_s:.1f}", file=sys.stderr, flush=True)

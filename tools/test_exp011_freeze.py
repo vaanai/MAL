@@ -403,3 +403,25 @@ class NestedFixedThresholdLodoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoadTableTests(unittest.TestCase):
+    def test_load_table_round_trips_rows_and_checks_md5(self) -> None:
+        import json as _json
+        import tempfile
+        from pathlib import Path as _Path
+
+        from tools.exp011_freeze import _md5_of_file, load_table
+
+        rows = [{"pool": "A", "day": "2026-09-19", "x": 1}, {"pool": "C", "day": "2026-09-22", "x": 2}]
+        with tempfile.TemporaryDirectory() as tmp:
+            t = _Path(tmp) / "table.jsonl"
+            t.write_text("".join(_json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            t.with_suffix(".md5").write_text(_md5_of_file(t) + "\n", encoding="utf-8")
+            (_Path(tmp) / "row_counts.json").write_text(_json.dumps({"manifest": {"days": ["2026-09-19"]}}), encoding="utf-8")
+            got_rows, manifest = load_table(t)
+            self.assertEqual(got_rows, rows)
+            self.assertEqual(manifest, {"days": ["2026-09-19"]})
+            t.write_text(t.read_text(encoding="utf-8") + "{}\n", encoding="utf-8")
+            with self.assertRaises(AssertionError):
+                load_table(t)
