@@ -4,6 +4,13 @@ The owner is moving the manager session into **MiScusi**. Read this page first. 
 
 As of **2026-09-30T17:46Z**, `main` is at `2b51e70` (#172). Paper only. **Once the new session confirms it has taken over, the old session stands down:** no merges, no restarts, nothing scheduled.
 
+## You are running inside MiScusi
+
+The owner started you from MiScusi (Agents → Start a Claude session, Manager + Read the inbox) on mal-fast-0.
+- **MiScusi tools:** use them for the inbox (the Console's "Send to Claude" notes arrive there, tagged `mal-manager`, and you pick them up at natural breaks), for jobs on mal-research-0, and for hand-offs.
+- **Stand-down:** confirm to the owner when you've taken over. The previous session (started before MiScusi pairing, so it has no MiScusi tools) then stands down when the owner tells it to.
+- **Tone:** talk to the owner in plain English, with how each thing moves MAL toward profit.
+
 ## A. Time-boxed first: the EXP-011 one-shot read (~2026-09-30T21:10Z)
 
 Walker C had sealed 66/72 at 17:46Z, at about 30–35 min per hour (the earlier "19–20Z" estimate was too early). Walker B is complete, and walker 1 is complete at 156/156.
@@ -33,7 +40,11 @@ Walker C had sealed 66/72 at 17:46Z, at about 30–35 min per hour (the earlier 
   - A React/Vite web app with 9 screens, including Run a test (DeepSeek drafts, 20/day, 3 running, $10/month, fail-closed limits) and Jobs.
   - It uses MiScusi's tokens and live updates over SSE.
   - A clickable sample-data preview: https://claude.ai/artifact/9Qgh1aBQxFZcKyBmU6ThLs. Screenshot QA: `~/venvs/shots/bin/python ~/venvs/shots/shoot.py <url> <prefix> <routes…>`.
-- **Domain:** `console.tradervaan.com`, behind Cloudflare Access with the owner's email only. Helm sets up the hostname and policy.
+- **LIVE since 2026-09-30 ~18:30Z at `console.tradervaan.com`**, on **mal-fast-0** for now (decided with the owner and Helm):
+  - It runs as the claude user service `mal-console` on 127.0.0.1:8787, from the pinned worktree `~/apps/mal-console`, capped at 512M and 50% CPU.
+  - Helm routed the hostname through the host tunnel, behind Access with the owner's email only.
+  - Deploy steps are in `vaanai/mal-console` `deploy/README.md`. It **moves to research-0 when the data does, or before any live key lands on mal-fast-0.**
+  - The OpenRouter key is in place at `~/.config/mal-console/openrouter.key`. **The MiScusi `mck_` key is still pending.** When the owner gives it, put it at `~/.config/mal-console/miscusi.key` (mode 600), then run `systemctl --user restart mal-console`. Jobs, the Claude stream, spend and Send-to-Claude then come alive.
 
 ## C. Next, in order
 
