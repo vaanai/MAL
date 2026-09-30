@@ -11,20 +11,17 @@ The owner started you from MiScusi (Agents → Start a Claude session, Manager +
 - **Stand-down:** confirm to the owner when you've taken over. The previous session (started before MiScusi pairing, so it has no MiScusi tools) then stands down when the owner tells it to.
 - **Tone:** talk to the owner in plain English, with how each thing moves MAL toward profit.
 
-## A. Time-boxed first: the EXP-011 one-shot read (~2026-09-30T21:10Z)
+## A. EXP-011 is closed: NOT_DECIDABLE (2026-09-30T20:45Z)
 
-Walker C had sealed 66/72 at 17:46Z, at about 30–35 min per hour (the earlier "19–20Z" estimate was too early). Walker B is complete, and walker 1 is complete at 156/156.
+The one-shot read ran once at 20:25:56Z, wrote its lock, and aborted on a missing sealed hour. No outcome was observed. The holdout is spent, and **it is never re-run** (the lock exists). The causes are walker data-integrity bugs: a backwards slot range seals empty hours, resumed hours get exact duplicate rows, and resumes probably lose held rows. Details are in [EXP-011's Result section](../EXP/EXP-011-migrate-entry-model-prereg.md) and the ledger.
 
-1. Check `python3 -c "import json;c=json.load(open('/var/lib/mal/backfill-fast-c/checkpoint.json'));print(sum(v.get('status')=='sealed' for v in c['hours'].values()),'/72')"` → it needs 72/72.
-2. Run `cd ~/MAL && git pull --ff-only && python3 -m tools.exp011_score --dry-run-preconditions`. It must print OK.
-3. Check memory: `grep ^anon /sys/fs/cgroup/user.slice/user-1002.slice/memory.stat` must be < 3 GB. Nothing else heavy may run (2 workers, peak ~9 GB).
-4. Run `python3 -m tools.exp011_score` **once**. It writes the lock `/home/claude/data/exp011/HOLDOUT_READ.lock` and the report `/home/claude/data/exp011/holdout_report.{md,json}`. The first line is `VERDICT: PASS|FAIL`. **If the lock already exists, the read has happened: don't run it again. Read the report.**
-5. `quant-proof` reviews the report before any sentence says it made money. Then record the verdict:
-   - a results section in `EXP/EXP-011-migrate-entry-model-prereg.md`;
-   - LAB_STATE;
-   - the ledger block status "read once";
-   - the EXP-011 ladder item + events in `data/console.json` (the Console reads it).
-   Tell the owner in plain English. **PASS** earns a forward-paper book **after** the 2026-10-05 kill review, never live directly. **FAIL** kills EXP-011, with no second read.
+What's next:
+1. Review and merge the walker-fix PR (`claude/backfill-integrity`, adding `tools/backfill_verify.py`).
+2. Read the exploration-pool duplicate census at `/home/claude/data/dup-census/census.{out,json}`.
+3. Deduplicate the exploration pool into clean copies, preferably on research-0 under `/data/mal`, with sha256 manifests.
+4. Re-run B3 exploration on clean data.
+5. If it still clears its pre-stated screen, pre-register a new experiment on a fresh ≥6-day block. Walk that block with the fixed walker, preferably on research-0 (Helm places the Helius key), and run `backfill_verify` before any read.
+6. EXP-009's block also has resumed hours. Its screen scorer must deduplicate first, via a pre-registered amendment.
 
 ## B. Console: where it stands
 

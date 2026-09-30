@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-09-30T18:30:00Z",
+  "updated_utc": "2026-09-30T20:50:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -12,18 +12,24 @@
   ],
   "events": [
     {
-      "id": "exp011-read",
-      "kind": "read",
-      "title": "EXP-011 one-shot read",
-      "detail": "Runs once walker C seals all 72 hours of the holdout block.",
-      "atUtc": "2026-09-30T21:10:00Z",
-      "approx": true,
-      "urgent": true,
-      "progress_from": "walker_c",
-      "progress_total": 72
+      "id": "walker-fix",
+      "kind": "other",
+      "title": "Walker data-integrity fix",
+      "detail": "Fix duplicate rows and empty sealed hours, then deduplicate the exploration pool and re-check the entry model on clean data.",
+      "urgent": true
     }
   ],
   "ladder": [
+    {
+      "id": "b3-clean",
+      "title": "Entry model, clean-data re-check",
+      "stage": "exploring",
+      "note": "B3 idea re-run on the deduplicated exploration pool, on research-0",
+      "tag": {
+        "text": "next",
+        "tone": "accent"
+      }
+    },
     {
       "id": "lane-d",
       "title": "Early-curve entry filter",
@@ -50,11 +56,11 @@
     {
       "id": "EXP-011",
       "title": "EXP-011 entry model",
-      "stage": "confirming",
-      "note": "One read on a fresh 6-day block",
+      "stage": "retired",
+      "note": "NOT_DECIDABLE: the read aborted on bad data, no outcome seen",
       "tag": {
-        "text": "reads tonight",
-        "tone": "warn"
+        "text": "holdout spent",
+        "tone": "muted"
       },
       "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-011-migrate-entry-model-prereg.md"
     },
@@ -87,7 +93,14 @@
       "note": "98.6% of fills already pay the top tier"
     }
   ],
-  "for_you": [],
+  "for_you": [
+    {
+      "id": "fy-exp011",
+      "from": "claude",
+      "text": "EXP-011 closed NOT_DECIDABLE: the walkers wrote duplicate rows and one empty hour. No result was seen. Next: fix the data, re-check the entry model on clean data, then a new test on a fresh block.",
+      "atUtc": "2026-09-30T20:50:00Z"
+    }
+  ],
   "stream": [
     {
       "id": "s-20260930-1604",
@@ -109,6 +122,13 @@
       "kind": "status",
       "text": "Console is live at console.tradervaan.com (on mal-fast-0 for now, capped at 512 MB, localhost behind Cloudflare Access). MiScusi key pending.",
       "atUtc": "2026-09-30T18:30:00Z"
+    },
+    {
+      "id": "s-20260930-2050",
+      "from": "claude",
+      "kind": "decision",
+      "text": "EXP-011 closed NOT_DECIDABLE. The read aborted on a sealed-but-empty hour, and resumed walker hours hold exact duplicate rows. No outcome was observed. The holdout is spent, and the walker fix and dedupe come first.",
+      "atUtc": "2026-09-30T20:50:00Z"
     }
   ]
 }
