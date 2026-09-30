@@ -1,6 +1,6 @@
 # Hosts
 
-Paper only. Two machines. Agents reach them through Cloudflare Access, not a public port 22. **Stop on a host-key mismatch.** Do not continue, do not accept a new key, do not set `StrictHostKeyChecking=no`.
+Paper only. Three machines. Agents reach them through Cloudflare Access, not a public port 22. **Stop on a host-key mismatch.** Do not continue, do not accept a new key, do not set `StrictHostKeyChecking=no`.
 
 Postgres stays on localhost. No trading keys, wallet keys, or X keys on either host. The Helius data key lives only in a mode-600 env file on the host and is never committed.
 
@@ -121,6 +121,24 @@ Safe when a manager has asked, and only if you are not in the middle of a sealed
 `mal-fast-pre-create` spends Helius credits (cap 10,000/day). `mal-fast-backfill`, `mal-fast-backfill-b`, and `mal-fast-backfill-c` each spend their own credit cap. Restart those only with a manager's yes, and report credits used.
 
 Do **not** restart `cloudflared`, `sshd`, or anything under `/opt/miscusi`. Do not enable `mal-fast-early-trade` or `mal-fast-trade-tape` without a new measurement that clears the credit and latency bars already recorded in [ARTIFACTS/lab/fast-listener-2026-09-27.md](../ARTIFACTS/lab/fast-listener-2026-09-27.md).
+
+## mal-research-0 (heavy research)
+
+All heavy research runs here: exploration and scoring jobs, training, sweeps, and later the backfill walkers. It's paired into the MAL space in MiScusi. Paper only.
+
+| | |
+| --- | --- |
+| Name | `mal-research-0` |
+| Hardware | Ryzen 5950X (32 threads), 125 GB RAM, 2×1 TB NVMe in RAID1 (`/dev/md1`). No swap, on purpose. |
+| SSH | `ssh mal-research-0` as `claude` from mal-fast-0, via Cloudflare Access at `ssh-research.tradervaan.com` (`~/.local/bin/cf-research-proxy.sh`, service token in `~/.config/cf-access/research.env`, mode 600). No public port. Root SSH is disabled. |
+| Host key | ED25519 `SHA256:X6kDkiRNXSWQ0X8iLV9+MnkPhPDF3+NRIN2Tw1r+xtk`, pinned in `~/.ssh/known_hosts_research` with strict checking. |
+| Claude's key | `~/.ssh/id_ed25519_research` (`SHA256:T+Qwl3erW/cKnsL8CCfGKA27gtoQ/6YS8DrXpGq6GEM`) |
+| Data | `/data/mal`, owned by claude, 868 GB free (2026-09-30). rsync 3.2.7 on both ends: `rsync -a --checksum … mal-research-0:/data/mal/…`, with sha256 manifests. |
+| Memory | MiScusi jobs run in claude's user slice (MemoryMax 112 GiB). `research-jobs.slice` (104 GB) is for manual `systemd-run` jobs. |
+| Backups | A nightly encrypted backup runs at 03:17 UTC. Put re-downloadable bulk data in a folder containing a `.nobackup` file. `mal-archive <path>` moves cold data to the 1 TB backup space. |
+| Owner of admin | Helm (firewall, SSH, Access, the Helius key placement when the walkers move). |
+
+**Sync rule:** confirmation and holdout blocks are copied only after their one-shot read, or into a location that only the one-shot scorer role reads, per the data catalog. Never sync an unread confirmation block into the exploration area.
 
 ## Both hosts
 
