@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers. **As-of:** 2026-09-30 ~07:30Z. `main` through [#164](https://github.com/vaanai/MAL/pull/164) (`b9ddb3c`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
+Compact reload for managers. **As-of:** 2026-09-30 ~20:50Z. `main` through [#164](https://github.com/vaanai/MAL/pull/164) (`b9ddb3c`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
 
 ## Objective
 
@@ -61,7 +61,11 @@ Detail, units, logs, memory limits, and what is safe to restart: [docs/HOSTS.md]
 ## Current research state
 
 - **Frozen migrate-direct cell is dead.** Formal FAIL from the 2026-09-28T21:00Z one-shot: pooled 0.5 SOL n=3,622 over 5 days, flat net −0.0906% (3/5 days positive), pressure net −0.1682% (2/5), every CI lower bound < 0. It is not refit. Detail: [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md), [ARTIFACTS/lab/migrate-direct-oos.md](ARTIFACTS/lab/migrate-direct-oos.md).
-- **EXP-011 — PRE-REGISTERED ([#164](https://github.com/vaanai/MAL/pull/164)), awaiting its one read.** A frozen, leakage-ablated S2 entry model (model md5 `eb2189343fe08640345d75eb17363e32`, threshold `0.8012473581008048`, 18 causal features, migrate × tp50_sl30 × the frozen execution). Holdout `[2026-09-09T12, 2026-09-15T12)`: walker B complete; walker C 66/72 at 17:46Z, finishing ~2026-09-30T21Z. Read **once** with `python3 -m tools.exp011_score` from an up-to-date `~/MAL` (run `--dry-run-preconditions` first; it refuses until both walkers are complete and writes a read-once lock). In-sample preview (report-only, not evidence): nested fixed-threshold LODO pressure +4.92% (CI lo +3.36%), 9/9 days. A pass earns a forward book after 2026-10-05, not live.
+- **EXP-011: closed NOT_DECIDABLE (2026-09-30).**
+  - What happened: the one-shot read started at 20:25:56Z and aborted before computing anything, on a sealed-but-empty hour (2026-09-11T03). No outcome was observed. The holdout `[2026-09-09T12, 2026-09-15T12)` is spent and not re-read (`quant-proof` review). The frozen model and threshold are retired, per the pre-registration's §8.
+  - Root cause: data-integrity bugs in `tools/pump_history_backfill.py`. There is a backwards slot range that seals an empty hour; resumed hours get **exact duplicate rows** (one exploration hour had 2,239,050 rows, 1,265,054 unique); and resumes probably lose held rows.
+  - These affect resumed hours in all three fast walkers, including some exploration-pool hours B3 and EXP-011 trained on.
+  - The B3 entry-selection idea goes back to exploration on deduplicated data. Any new confirmation needs a fresh block, sealed by the fixed walker and verified by `tools/backfill_verify.py`. Detail: [EXP-011 Result](EXP/EXP-011-migrate-entry-model-prereg.md).
 - **EXP-009 (creator gate) is a SCREEN**, not a confirmation test: k = 1 ([#154](https://github.com/vaanai/MAL/pull/154)), block `[2026-09-15T12, 2026-09-19T01)` via walker 1, about 2.5 eligible days. A pass earns a forward trial, never a promote.
 - **Exploration entry-model B3** (9 held-out days, [#156](https://github.com/vaanai/MAL/pull/156)): the S2 classifier, tp50_sl30, top 10%, passed the pre-stated screen; after the leakage ablation (dropping `same_slot_buys`/`nearby_buy_sol`) it gives flat +6.22% (CI lo +3.85%), pressure +3.59% (CI lo +2.06%), 9/9 days positive, ex-top-3 +24.97/+14.17 SOL. Fast-box slice alone is weakest, +1.24% pressure after ablation. **This is exploration, not a promote** — EXP-011 is the confirmation test.
 - **Exits are dead:** the trailing stop was killed by concentration ([#151](https://github.com/vaanai/MAL/pull/151)) — ex-top-3 −8.0 SOL despite a positive pooled total.
@@ -102,7 +106,11 @@ Clean clock: **2026-09-28T00:00:00Z**. Kill review: **2026-10-05T05:00:00Z**.
 
 ## Next work
 
-1. **EXP-011 one-shot read** when walker C completes (~2026-09-30T19–20Z): `cd ~/MAL && git pull && python3 -m tools.exp011_score --dry-run-preconditions`, then `python3 -m tools.exp011_score` once. `quant-proof` reviews the report before any claim. Record the verdict in LAB_STATE and the EXP file.
+1. **Data integrity first.**
+   - Fix the backfill walker (PR `claude/backfill-integrity`).
+   - Deduplicate the exploration pool with `tools/backfill_verify.py`, and check the Oracle exports too.
+   - Re-fetch the bad hours.
+   - Re-run the B3 entry-model exploration on clean data (on mal-research-0). If it still clears its screen, pre-register a new experiment on a fresh ≥6-day block walked by the fixed walker (~2M credits).
 1b. **MAL Console** (owner priority from 2026-09-30; plan [docs/console-plan.md](docs/console-plan.md)). The MAL-side contracts are merged (#166–#169, #171), and so are guidebook docs 1–3 (#170, #172). Console v1 is built in `vaanai/mal-console` (#1–#5). The template runners are not wired yet. The next steps are MiScusi setup (owner + Grokbot), then research-0 online, then deploy at `console.tradervaan.com`. See [docs/HANDOFF.md](docs/HANDOFF.md) §B–C.
 2. *(Paused by the owner while the Console is built.)* The EXP-009 screen scorer (walker 1 floored at 2026-09-15T12; it needs a scorer built per its pre-reg).
 3. The 2026-10-05T05:00Z kill review with `tools/kill_review.py`, on a snapshot, once.

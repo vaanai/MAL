@@ -1,7 +1,7 @@
 {
   "schema_version": "catalog.v1",
-  "generated_utc": "2026-09-30T16:11:41Z",
-  "ledger_sha256": "b1666b8a6f8c454e5c44ae25769d57e23296c16bfde6d34a2994cec60168f8f9",
+  "generated_utc": "2026-09-30T20:33:53Z",
+  "ledger_sha256": "ee435de99e0d367bd6f79482bba36d7cea495c381906b551c7f56e877c1ea3d8",
   "blocks": [
     {
       "name": "Oracle in-sample",
@@ -97,7 +97,7 @@
         "start": "2026-09-09T12",
         "end_exclusive": "2026-09-15T12"
       },
-      "status": "Owner fixed 2026-09-29T00:32Z, before either walker sealed any hour of it. It was briefly reserved for EXP-010 and released (#151). EXP-011 (the ablated B3 `s2_clf` entry-model candidate, [EXP-011-migrate-entry-model-prereg.md](../EXP/EXP-011-migrate-entry-model-prereg.md)) claimed it, pre-registered, before any hour of it was read. The block's bounds are unchanged; it was split into two 72h halves across walker B and a new walker C on 2026-09-29 to halve the wall-clock wait, with no change to scope or the read-once rule. Unread. Reads once, after all 144 hours across **both** walkers are sealed, via `tools/exp011_score.py` (follow-up PR), which must check both checkpoints.",
+      "status": "**Spent as a confirmation holdout (2026-09-30).** The one-shot scorer ran once at 20:25:56Z, wrote its lock, loaded part of walker C's create files, and aborted on a missing hour (2026-09-11T03, a walker bug) before computing any metric. Resumed hours in both walkers also contain exact duplicate rows. No outcome was observed. It is not re-read: see [EXP-011 Result](../EXP/EXP-011-migrate-entry-model-prereg.md). The block can move to the exploration pool only by a later ledger edit, after it has been deduplicated and the missing hour re-fetched with the fixed walker.",
       "access": {
         "exploration": false,
         "confirmation_oneshot_exp": "EXP-011"

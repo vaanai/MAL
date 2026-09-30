@@ -175,6 +175,32 @@ A pass earns the ablated model a **forward-paper book**, added after the 2026-10
 
 ---
 
+## Result (2026-09-30): NOT_DECIDABLE — holdout spent, no outcome observed
+
+**Verdict: NOT_DECIDABLE.** EXP-011 is closed. There is no pass, no fail, and no second read.
+
+**What happened.**
+- At 2026-09-30T20:25:56Z, both walkers' checkpoints showed 72/72 sealed and `--dry-run-preconditions` printed OK, so the manager ran `python3 -m tools.exp011_score` once.
+- It wrote the read-once lock (`/home/claude/data/exp011/HOLDOUT_READ.lock`, 20:25:57Z, git `2a5c3b5`, model md5 `eb2189343fe08640345d75eb17363e32`).
+- It began building creator history over the holdout's create files, then exited 1: `missing holdout trade file for whitelisted hour 2026-09-11T03 under /var/lib/mal/backfill-fast-c`.
+- It computed or printed **no metric, row count or outcome** (`/home/claude/data/exp011/score.log`).
+
+**Why.** `tools/pump_history_backfill.py` has data-integrity bugs, found while diagnosing the failure:
+1. **A backwards slot range.** Hour 2026-09-11T03 resolved to start_slot 446300168 > end_slot 446060631. It scanned 1 slot, found 0 trades, and was marked sealed with no files. The hour before it (T02) scanned 262,280 slots.
+2. **Exact duplicate rows on resume.** In exploration-pool hour 2026-09-19T16, trades have 2,239,050 rows but only 1,265,054 unique. Rows carry signature, slot and event_index, so these are exact duplicates. Normal hours have 0.
+   - The stats signature (`slots_done` > slot span) marks resumed hours: holdout hours 2026-09-14T04 and 2026-09-15T10 (walker B), and 2026-09-09T20, 2026-09-11T07, 2026-09-11T15 and 2026-09-11T18 (walker C).
+   - It also marks hours in the exploration pool the frozen model was trained on.
+3. **Probable row loss on resume.** Trades held for pool lookup may be dropped at a partial checkpoint. This is under investigation in the fix PR.
+
+**Why this is not re-run.** A `quant-proof` adversarial review (2026-09-30) recommended treating the holdout as spent. Its reasons:
+- The frozen features are mostly trade-count and flow ratios. The training table is partly duplicated, so a deduplicated holdout would test the model under conditions it was never fitted on. Scoring with the duplicates pads `n` and narrows the CI, which is worse.
+- The aborted run had already loaded part of the block's create files into memory.
+- Any fix-and-rerun would be shaped by metadata found inside the sealed block.
+
+That matches §8's "no second read of this holdout, for any reason." **The frozen model, threshold and feature set are retired for entry filtering, as §8 requires.** The B3 idea itself is not retired: it goes back to exploration on deduplicated data. Any future confirmation is a new pre-registration under a new experiment ID, on a fresh block, with the fixed walker.
+
+**Block status.** `[2026-09-09T12, 2026-09-15T12)` is spent as a confirmation holdout. See [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md).
+
 ## Sources
 
 - [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](../ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md) — the 9-day, 6-cell screen this file freezes the winner of
