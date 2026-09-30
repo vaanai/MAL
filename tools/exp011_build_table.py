@@ -44,9 +44,13 @@ def _md5_of_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def build_table(out_path: Path, scratch_dir: Path, max_workers: int = 2, buffer_hours: int = 2) -> dict[str, Any]:
+def build_table(
+    out_path: Path, scratch_dir: Path, max_workers: int = 2, buffer_hours: int = 24, max_home_hours: int | None = 12
+) -> dict[str, Any]:
     t0 = time.time()
-    rows, manifest = load_tp50_rows(max_workers=max_workers, buffer_hours=buffer_hours, out_dir=scratch_dir)
+    rows, manifest = load_tp50_rows(
+        max_workers=max_workers, buffer_hours=buffer_hours, out_dir=scratch_dir, max_home_hours=max_home_hours
+    )
     wall_s = time.time() - t0
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as fh:
@@ -73,6 +77,7 @@ def build_table(out_path: Path, scratch_dir: Path, max_workers: int = 2, buffer_
         "wall_s": wall_s,
         "max_workers": max_workers,
         "buffer_hours": buffer_hours,
+        "max_home_hours": max_home_hours,
     }
     (out_path.parent / "row_counts.json").write_text(json.dumps(counts_doc, indent=2) + "\n", encoding="utf-8")
     print(f"exp011_build_table: wrote {out_path} n_rows={len(rows)} md5={table_md5} wall_s={wall_s:.1f}", file=sys.stderr, flush=True)
@@ -84,10 +89,22 @@ def main() -> None:
     ap.add_argument("--out", default="/home/claude/data/exp011/table.jsonl")
     ap.add_argument("--scratch-dir", default="/home/claude/data/exp011/scratch")
     ap.add_argument("--max-workers", type=int, default=2)
-    ap.add_argument("--buffer-hours", type=int, default=2)
+    ap.add_argument(
+        "--buffer-hours",
+        type=int,
+        default=24,
+        help="hours each chunk keeps reading past its home window; 24 h covers 98.7%% of create->migrate lags (pool A, 2026-09-30)",
+    )
+    ap.add_argument("--max-home-hours", type=int, default=12, help="max home hours per chunk (bounds watch/hot memory); 0 = old per-worker windows")
     args = ap.parse_args()
     assert args.max_workers <= 2, "keep max-workers <= 2 for this Phase A run -- see tools/exp011_build_table.py's docstring"
-    build_table(Path(args.out), Path(args.scratch_dir), max_workers=args.max_workers, buffer_hours=args.buffer_hours)
+    build_table(
+        Path(args.out),
+        Path(args.scratch_dir),
+        max_workers=args.max_workers,
+        buffer_hours=args.buffer_hours,
+        max_home_hours=(args.max_home_hours or None),
+    )
 
 
 if __name__ == "__main__":

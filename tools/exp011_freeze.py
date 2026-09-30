@@ -181,7 +181,7 @@ def _label(rows: Sequence[dict[str, Any]]) -> list[int]:
 
 
 def load_tp50_rows(
-    max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None
+    max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None, max_home_hours: int | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """`out_dir` (added for tools/exp011_build_table.py's Phase A): forwarded
     to each pool's run_all_features_* as its own streaming scratch dir
@@ -192,7 +192,7 @@ def load_tp50_rows(
     print("EXP-011 freeze: loading pool A (fast-box backfill)...", file=sys.stderr, flush=True)
     rows_a = [
         r
-        for r in run_all_features_a(max_workers=max_workers, buffer_hours=buffer_hours, out_dir=(out_dir / "poolA" if out_dir else None))
+        for r in run_all_features_a(max_workers=max_workers, buffer_hours=buffer_hours, max_home_hours=max_home_hours, out_dir=(out_dir / "poolA" if out_dir else None))
         if r["spec"] == TARGET_SPEC_ID
     ]
     for r in rows_a:
@@ -203,7 +203,7 @@ def load_tp50_rows(
     print("EXP-011 freeze: loading pool C (Oracle in-sample backfill)...", file=sys.stderr, flush=True)
     rows_c = [
         r
-        for r in run_all_features_c(max_workers=max_workers, buffer_hours=buffer_hours, out_dir=(out_dir / "poolC" if out_dir else None))
+        for r in run_all_features_c(max_workers=max_workers, buffer_hours=buffer_hours, max_home_hours=max_home_hours, out_dir=(out_dir / "poolC" if out_dir else None))
         if r["spec"] == TARGET_SPEC_ID
     ]
     for r in rows_c:
@@ -214,7 +214,7 @@ def load_tp50_rows(
     print("EXP-011 freeze: loading pool B (Oracle live tape)...", file=sys.stderr, flush=True)
     rows_b = [
         r
-        for r in run_all_features_b(max_workers=max_workers, buffer_hours=buffer_hours, out_dir=(out_dir / "poolB" if out_dir else None))
+        for r in run_all_features_b(max_workers=max_workers, buffer_hours=buffer_hours, max_home_hours=max_home_hours, out_dir=(out_dir / "poolB" if out_dir else None))
         if r["spec"] == TARGET_SPEC_ID
     ]
     for r in rows_b:
