@@ -1,0 +1,122 @@
+{
+  "schema_version": "catalog.v1",
+  "generated_utc": "2026-09-30T16:11:41Z",
+  "ledger_sha256": "b1666b8a6f8c454e5c44ae25769d57e23296c16bfde6d34a2994cec60168f8f9",
+  "blocks": [
+    {
+      "name": "Oracle in-sample",
+      "host": "oracle",
+      "owner": "exploration-pool",
+      "hours": {
+        "start": "2026-09-22T00",
+        "end_exclusive": "2026-09-25T07"
+      },
+      "status": "Seen: 972-cell grid in-sample, plus migrate-direct Oracle OOS 2026-09-22T00\u201310, plus the entry-model B3 lane (`tools/oracle_insample_adapter.py`, `ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md`), which reads only 2026-09-22T00 through 2026-09-25T06 -- hour 07 stays exclusive to the \"Oracle live tape\" row below, so no hour in this ledger is read from two pool tags at once.",
+      "access": {
+        "exploration": true,
+        "confirmation_oneshot_exp": null
+      }
+    },
+    {
+      "name": "Fast pre-cut",
+      "host": "fast",
+      "owner": "exploration-pool",
+      "hours": {
+        "start": "2026-09-19T01",
+        "end_exclusive": "2026-09-22T00"
+      },
+      "status": "Was the frozen migrate-direct OOS book, now closed.",
+      "access": {
+        "exploration": true,
+        "confirmation_oneshot_exp": null
+      }
+    },
+    {
+      "name": "Fast EXP-009 block",
+      "host": "fast",
+      "owner": "EXP-009",
+      "hours": {
+        "start": "2026-09-15T12",
+        "end_exclusive": "2026-09-19T01"
+      },
+      "status": "Owned, except the two hours below. The lower bound was fixed at 2026-09-28T20:15Z, replacing \"oldest sealed at cap\"; the oldest sealed fast hour at that time was 2026-09-18T20, so no hour in the new range below it had been sealed.",
+      "access": {
+        "exploration": false,
+        "confirmation_oneshot_exp": "EXP-009"
+      }
+    },
+    {
+      "name": "Fast EXP-009 exclusion",
+      "host": "fast",
+      "owner": "exploration-pool",
+      "hours": {
+        "explicit": [
+          "2026-09-18T23",
+          "2026-09-19T00"
+        ]
+      },
+      "status": "Read by the migrate-direct fast scorer (`mal-fast-oos-score`), disclosed in [EXP-009 Amendment 3](../EXP/EXP-009-migrate-creator-gate-prereg.md). Excluded from EXP-009 scoring.",
+      "access": {
+        "exploration": true,
+        "confirmation_oneshot_exp": null
+      }
+    },
+    {
+      "name": "Forward paper, kill review",
+      "host": "oracle-forward",
+      "owner": "kill-review",
+      "hours": {
+        "start": "2026-09-28T00",
+        "end_exclusive": "2026-10-05T05"
+      },
+      "status": "Single read, at the kill-review instant. No interim peeking used for a promote decision. Must join `settlements.jsonl` with `positions.jsonl` for restart-orphaned positions per [DEC-014 Amendment 1](../DEC/DEC-014-holdout-ledger-and-multiplicity.md#amendment-1-2026-09-28--kill-review-must-join-the-offline-settled-orphans).",
+      "access": {
+        "exploration": false,
+        "confirmation_oneshot_exp": null
+      }
+    },
+    {
+      "name": "Oracle live tape, pre-clean-clock",
+      "host": "oracle",
+      "owner": "exploration-pool",
+      "hours": {
+        "start": "2026-09-25T07",
+        "end_exclusive": "2026-09-28T00"
+      },
+      "status": "**Not a confirmation holdout.** Briefly reserved for EXP-010 by #147. That reservation was withdrawn by #148 because it broke rule 4: the hours were already sealed, and the existing 9 forward books had already traded them with their flat-model aggregates in the daily scoreboards, including sibling exits on the same migrate entry family. About 36 of the 65 hours also fall in the stale-fill void (2026-09-25T19:00Z\u20132026-09-27T06:58:12Z). Any trailing-exit study on this block is exploration only and is never evidence for promotion.",
+      "access": {
+        "exploration": true,
+        "confirmation_oneshot_exp": null
+      }
+    },
+    {
+      "name": "Fast `[2026-09-09T12, 2026-09-15T12)`",
+      "host": "fast",
+      "owner": "EXP-011",
+      "hours": {
+        "start": "2026-09-09T12",
+        "end_exclusive": "2026-09-15T12"
+      },
+      "status": "Owner fixed 2026-09-29T00:32Z, before either walker sealed any hour of it. It was briefly reserved for EXP-010 and released (#151). EXP-011 (the ablated B3 `s2_clf` entry-model candidate, [EXP-011-migrate-entry-model-prereg.md](../EXP/EXP-011-migrate-entry-model-prereg.md)) claimed it, pre-registered, before any hour of it was read. The block's bounds are unchanged; it was split into two 72h halves across walker B and a new walker C on 2026-09-29 to halve the wall-clock wait, with no change to scope or the read-once rule. Unread. Reads once, after all 144 hours across **both** walkers are sealed, via `tools/exp011_score.py` (follow-up PR), which must check both checkpoints.",
+      "access": {
+        "exploration": false,
+        "confirmation_oneshot_exp": "EXP-011"
+      }
+    },
+    {
+      "name": "Future fast backfill",
+      "host": "fast",
+      "owner": "unassigned",
+      "hours": {
+        "start": null,
+        "end_exclusive": "2026-09-09T12"
+      },
+      "status": "To be allocated in \u22656-day blocks, one confirmation test each, as the backfill extends.",
+      "access": {
+        "exploration": false,
+        "confirmation_oneshot_exp": null
+      }
+    }
+  ],
+  "walkers": []
+}
