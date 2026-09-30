@@ -1,0 +1,10 @@
+[Unit]
+Description=MAL mal-core-0 (Oracle) status file, every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00 UTC
+Persistent=false
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

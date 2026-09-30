@@ -1,0 +1,10 @@
+[Unit]
+Description=MAL status file for mal-core-0 (Oracle), one read-only SSH round trip
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/MAL
+ExecStart=/usr/bin/python3 -m tools.mal_status --out-dir %h/data/status --remote core
+TimeoutStartSec=60
+Nice=10

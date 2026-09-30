@@ -1,0 +1,10 @@
+[Unit]
+Description=MAL local status file, every 1 minute (mal-fast-0)
+
+[Timer]
+OnCalendar=*-*-* *:*:00 UTC
+Persistent=false
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
