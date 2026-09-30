@@ -53,3 +53,7 @@ hour ranges and walker progress. It is a snapshot, rebuilt on demand; it is
 never the thing a job runner asks permission from live -- that's
 `check_read` against a freshly parsed ledger, so a ledger edit takes effect
 immediately without a rebuild step in between.
+
+## data/console.json
+
+`data/console.json` (`console.v1`) is the other file the Console reads from this repo. It's maintained by the manager session only. It holds the review windows (which drive server-side P&L blinding), the upcoming events, the Edge ladder, and the Claude stream. It records decisions that are already in GitHub, and it never grants data access.
