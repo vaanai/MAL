@@ -35,14 +35,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from tools.paper_attention_promote import LAMPORTS_PER_SOL, BookTrade, book_stats
+from tools.paper_attention_promote import LAMPORTS_PER_SOL, MIN_DAYS, MIN_N, BookTrade, book_stats
 
 SCHEMA_VERSION = "result.v1"
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "result.v1.schema.json"
 DEFAULT_TRIES_LOG = Path("data/tries.jsonl")
 
-MIN_N = 100
-MIN_DAYS = 5
 TOP_K_CONCENTRATION = 5
 
 
