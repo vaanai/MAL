@@ -85,7 +85,7 @@ Do not score the void as if it were live.
 | Clean forward paper | 2026-09-28T00:00:00Z |
 | Pressure-leg start (DEC-014 Amendment 3) | 2026-09-29T00:00:00Z |
 | Daily runner restart | every day, 00:00:00Z |
-| EXP-011 holdout data sealed (NOT readable until the EXP-011 pre-reg + scorer are merged) | about 2026-09-30T03:00Z |
+| EXP-011 one-shot read (pre-reg + scorer merged in #164; read once when walker C completes) | about 2026-09-30T19–20Z |
 | Kill review | 2026-10-05T05:00:00Z |
 
 Three backward walkers run on `mal-fast-0`, splitting `[2026-09-09T12, 2026-09-19T01)` into non-overlapping blocks: `mal-fast-backfill` (walker 1) floored at 2026-09-15T12, `mal-fast-backfill-b` covering `[2026-09-12T12, 2026-09-15T12)`, and `mal-fast-backfill-c` covering `[2026-09-09T12, 2026-09-12T12)`. Each has its own credit cap. No hour is claimed by two walkers.
@@ -124,9 +124,9 @@ Push when the tests you ran are green. Do not sit on a day of uncommitted edits.
 
 The frozen migrate-direct cell (`migrate` × `tp50_sl30` × slot+1 start, direct) is **dead**: formal FAIL from the 2026-09-28T21:00Z one-shot, both fail models, every CI lower bound below 0. It is not refit. No more Helius credits go to it. See [LAB_STATE.md](LAB_STATE.md) for the numbers.
 
-The candidate is **EXP-011**, **pending pre-registration**: a frozen, leakage-ablated S2 entry-selection model at a fixed threshold. Its planned holdout `[2026-09-09T12, 2026-09-15T12)` is reserved in `docs/HOLDOUT_LEDGER.md` and **may not be read until the EXP-011 pre-registration and its one-shot scorer are merged on `main`**. Walkers finishing is not enough. Evidence:
+The candidate is **EXP-011**, **pre-registered** in [#164](https://github.com/vaanai/MAL/pull/164): a frozen, leakage-ablated S2 entry-selection model at a fixed threshold. Its holdout `[2026-09-09T12, 2026-09-15T12)` is read **exactly once**, by `tools/exp011_score.py`, after both walkers finish. Evidence:
 
-- [EXP/EXP-011-migrate-entry-model-prereg.md](EXP/EXP-011-migrate-entry-model-prereg.md) (pre-registration; **not on `main` until its PR merges**, and nothing reads the holdout before then)
+- [EXP/EXP-011-migrate-entry-model-prereg.md](EXP/EXP-011-migrate-entry-model-prereg.md) (pre-registration, merged; frozen artifacts in `ARTIFACTS/exp011/`)
 - [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md) (the exploration-pool B3 result the pre-registration follows)
 - The [#156](https://github.com/vaanai/MAL/pull/156) PR audit comment
 
