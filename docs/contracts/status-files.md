@@ -55,11 +55,7 @@ two collectors racing each other never interleave or double-append.
 ## Install (manager step, not run by this PR)
 
 ```bash
-ln -sf ~/MAL/ops/claude-schedules/mal-status.service ~/.config/systemd/user/
-ln -sf ~/MAL/ops/claude-schedules/mal-status.timer ~/.config/systemd/user/
-ln -sf ~/MAL/ops/claude-schedules/mal-status-core.service ~/.config/systemd/user/
-ln -sf ~/MAL/ops/claude-schedules/mal-status-core.timer ~/.config/systemd/user/
-systemctl --user daemon-reload
+~/MAL/ops/claude-schedules/install.sh   # links all claude units, including these four
 systemctl --user enable --now mal-status.timer
 systemctl --user enable --now mal-status-core.timer
 ```
