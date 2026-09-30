@@ -17,7 +17,10 @@ The one-shot read ran once at 20:25:56Z, wrote its lock, and aborted on a missin
 
 What's next:
 1. Review and merge the walker-fix PR (`claude/backfill-integrity`, adding `tools/backfill_verify.py`).
-2. Read the exploration-pool duplicate census at `/home/claude/data/dup-census/census.{out,json}`.
+2. The exploration-pool duplicate census is done (`/home/claude/data/dup-census/census.{out,json}`, 522 files):
+   - **Oracle in-sample export:** 0 duplicates.
+   - **Oracle live tape:** 5–326 duplicate trade rows per ~1M-row hour (~0.01%, a different mechanism).
+   - **Fast pre-cut:** 3 of 71 hours are heavily duplicated: 2026-09-19T16, T17 and T20. Trades are 974k/476k/1.02M duplicates; creates are 1,128/622/1,350; migrations are 37/15/45. The duplicated migrations mean duplicated migrate candidates in B3's pool.
 3. Deduplicate the exploration pool into clean copies, preferably on research-0 under `/data/mal`, with sha256 manifests.
 4. Re-run B3 exploration on clean data.
 5. If it still clears its pre-stated screen, pre-register a new experiment on a fresh ≥6-day block. Walk that block with the fixed walker, preferably on research-0 (Helm places the Helius key), and run `backfill_verify` before any read.
