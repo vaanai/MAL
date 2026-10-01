@@ -135,7 +135,8 @@ is written. Steps, in order:
      glued to a prefix of up to 40 letters, digits, `_` or `-` (`PGPASSWORD`,
      `db-password`, `1password`, `x_api_key`, `secretKey`); the prefix is
      redacted with the value. So `monkey: 5` is redacted too;
-   - `mck_…` and `sk-…` keys;
+   - `mck_…` and `sk-…` keys, also when glued to other text (`xmck_…`);
+   - seed phrases: after `mnemonic`, `seed phrase`, `seed_phrase` or `seed words`, the rest of the line is redacted; `seed`, `pw` and `pwd` are also key names;
    - any run of 32+ characters from `[A-Za-z0-9+/_-]` plus up to two `=`
      (base64, base64url, base58 mints/signatures, hex).
 4. Truncate to 200 characters plus `…`. Redaction comes first so a secret

@@ -1110,3 +1110,38 @@ def test_scrub_is_fast_just_under_the_cap(unit):
     started = _time.perf_counter()
     mal_status.scrub_log_line(payload)
     assert _time.perf_counter() - started < 0.05
+
+
+
+# --- scrub: glued mck_/sk- keys and wallet-style names ------------------------
+
+
+@pytest.mark.parametrize("line", ["xmck_ABCDEF123456", "console_mck_ABCDEF123456", "keyxsk-abcdefgh12345678"])
+def test_scrub_glued_mck_and_sk_redacted(line):
+    out = mal_status.scrub_log_line(line)
+    assert "ABCDEF123456" not in out
+    assert "abcdefgh12345678" not in out
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "pw=hunter2hunter2",
+        'pwd: "hunter2hunter2"',
+        "mnemonic=abandon ability able",
+        "seed_phrase: abandon",
+        "WALLET_SEED=abandonability",
+    ],
+)
+def test_scrub_wallet_style_names_redacted(line):
+    out = mal_status.scrub_log_line(line)
+    assert "hunter2" not in out
+    assert "abandon" not in out
+    assert "ability" not in out
+
+
+def test_scrub_seed_phrase_redacts_rest_of_line():
+    out = mal_status.scrub_log_line("restored wallet, seed phrase: abandon ability able about above absent")
+    assert out.startswith("restored wallet, ")
+    for word in ("abandon", "ability", "able", "about", "above", "absent"):
+        assert word not in out
