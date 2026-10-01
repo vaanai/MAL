@@ -137,9 +137,10 @@ assert len(POOL_B_HOURS) == 65, len(POOL_B_HOURS)
 assert all(h < "2026-09-28T00" for h in POOL_B_HOURS), "B2 trade pool crosses the clean clock"
 
 
-def _hour_info_b(key: str) -> dict[str, Any]:
+def _hour_info_b(key: str, root: Path | None = None) -> dict[str, Any]:
+    """`root`: data-root override (default: module BACKFILL_B, read at call time)."""
     assert key in POOL_B_HOURS_SET, f"hour {key} is outside the B2 exploration pool fence"
-    trade = _hour_file(BACKFILL_B / "trades", "trades", key)
+    trade = _hour_file((BACKFILL_B if root is None else root) / "trades", "trades", key)
     if trade is None:
         raise SystemExit(f"missing Oracle live trade file for whitelisted hour {key}")
     start_s = int(datetime.strptime(key, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp())
@@ -161,9 +162,9 @@ POOL_B_CUTOFF_MS = int(
 )
 
 
-def _create_day_file(day: str) -> Path:
+def _create_day_file(day: str, root: Path | None = None) -> Path:
     assert day in POOL_B_CREATE_DAYS, f"day {day} is outside the B2 creates whitelist"
-    path = BACKFILL_B / "creates" / f"observe-{day}.jsonl"
+    path = (BACKFILL_B if root is None else root) / "creates" / f"observe-{day}.jsonl"
     if not path.is_file():
         raise SystemExit(f"missing Oracle observe file for whitelisted day {day}")
     return path
@@ -195,12 +196,14 @@ def adapt_create_row(row: dict[str, Any], *, cutoff_ms: int = POOL_B_CUTOFF_MS) 
     return out
 
 
-def iter_adapted_creates(days: tuple[str, ...] = POOL_B_CREATE_DAYS, *, cutoff_ms: int = POOL_B_CUTOFF_MS):
+def iter_adapted_creates(
+    days: tuple[str, ...] = POOL_B_CREATE_DAYS, *, cutoff_ms: int = POOL_B_CUTOFF_MS, root: Path | None = None
+):
     """Yield adapted create dicts across the whitelisted day files, in file
     order. Each day file is read exactly once (creates are day-granular on
     Oracle, unlike the fast pool's per-hour creates)."""
     for day in days:
-        path = _create_day_file(day)
+        path = _create_day_file(day, root)
         n = 0
         for row in _iter_trades(path):
             adapted = adapt_create_row(row, cutoff_ms=cutoff_ms)
@@ -210,13 +213,13 @@ def iter_adapted_creates(days: tuple[str, ...] = POOL_B_CREATE_DAYS, *, cutoff_m
         print(f"[creates] {day}: {n} adapted creates (rss_mb={_rss_mb()})", file=sys.stderr, flush=True)
 
 
-def load_creates_b() -> dict[str, tuple[_Mint, _Feat]]:
+def load_creates_b(root: Path | None = None) -> dict[str, tuple[_Mint, _Feat]]:
     """All B2 pool creates, once, as {mint: (_Mint, _Feat)} -- the exact pair
     shape tools.exploration_entry_model.run_worker_features expects via its
     `creates_override` parameter, so score_one/compute_features/
     causal_events run completely unchanged on pool B."""
     found: dict[str, tuple[_Mint, _Feat]] = {}
-    for row in iter_adapted_creates():
+    for row in iter_adapted_creates(root=root):
         mint_id = row["mint"]
         slot = row["slot"]
         block = row["block_time"]

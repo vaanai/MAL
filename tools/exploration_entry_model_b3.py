@@ -59,6 +59,7 @@ import json
 import multiprocessing as mp
 import sys
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -78,10 +79,12 @@ from tools.exploration_entry_model import (
     run_worker_features,
 )
 from tools.exploration_entry_model_b2 import _ex_top3_sol, run_all_features_b
-from tools.exploration_exits import ENTRY_SIZE, POOL_END as POOL_A_END, POOL_HOURS as POOL_A_HOURS, POOL_START as POOL_A_START, _chunk, chunk_plan
+from tools.exploration_exits import BACKFILL as FAST_DIR_DEFAULT, ENTRY_SIZE, POOL_END as POOL_A_END, POOL_HOURS as POOL_A_HOURS, POOL_START as POOL_A_START, _chunk, chunk_plan
 from tools.latency_curve import _iter_trades, _rss_mb
-from tools.oracle_insample_adapter import BACKFILL_C, POOL_C_END, POOL_C_HOURS, POOL_C_START, _hour_info_c
+from tools.oracle_insample_adapter import BACKFILL_C as INSAMPLE_DIR_DEFAULT, BACKFILL_C, POOL_C_END, POOL_C_HOURS, POOL_C_START, _hour_info_c
 from tools.oracle_live_adapter import (
+    BACKFILL_B as LIVE_DIR_DEFAULT,
+    POOL_B_CREATE_DAYS,
     POOL_B_CUTOFF_ISO,
     POOL_B_END,
     POOL_B_HOURS,
@@ -101,15 +104,56 @@ assert DAYS_ALL == DAYS_A + DAYS_C_ONLY + ("2026-09-25",) + DAYS_B_ONLY
 BOOTSTRAP_DRAWS = 1000
 BOOTSTRAP_SEED = 1
 
+# --- Data roots: CLI overrides + strict (no-checkpoint) completeness check ---
+
+
+def verify_pool_files(fast_dir: Path, insample_dir: Path, live_dir: Path) -> None:
+    """For checkpoint-less (deduplicated) copies: no checkpoint.json/stats
+    file says which hours are sealed, so require every whitelisted hour's
+    files to exist, as `.jsonl.zst`, and exit loudly listing ALL missing ones.
+
+    Pools A (fast) and C (Oracle in-sample): `<dir>/{trades,creates,migrations}/
+    <sub>-<hour>.jsonl.zst` for every whitelisted hour. Pool B (Oracle live):
+    `<dir>/trades/trades-<hour>.jsonl.zst` per hour, plus the day-granular
+    `<dir>/creates/observe-<day>.jsonl` files its loader already requires
+    (live creates are not hour-granular and there is no migrations dir).
+    The hour whitelists themselves are untouched.
+    """
+    missing: list[str] = []
+    for label, root, hours in (("A", fast_dir, POOL_A_HOURS), ("C", insample_dir, POOL_C_HOURS)):
+        for hour in hours:
+            for sub in ("trades", "creates", "migrations"):
+                path = root / sub / f"{sub}-{hour}.jsonl.zst"
+                if not path.is_file():
+                    missing.append(f"pool {label}: {path}")
+    for hour in POOL_B_HOURS:
+        path = live_dir / "trades" / f"trades-{hour}.jsonl.zst"
+        if not path.is_file():
+            missing.append(f"pool B: {path}")
+    for day in POOL_B_CREATE_DAYS:
+        path = live_dir / "creates" / f"observe-{day}.jsonl"
+        if not path.is_file():
+            missing.append(f"pool B: {path}")
+    if missing:
+        shown = "\n  ".join(missing[:50])
+        more = f"\n  ... and {len(missing) - 50} more" if len(missing) > 50 else ""
+        raise SystemExit(f"--no-checkpoint: {len(missing)} required file(s) missing:\n  {shown}{more}")
+
+
+def _root_or_none(value: Path, default: Path) -> Path | None:
+    """None keeps every downstream call on its original default path."""
+    return None if value == default else value
+
+
 # --- Pool C: streaming worker orchestration (mirrors pool A exactly; the ---
 # --- schema is identical, so this reuses run_worker_features unchanged, ---
 # --- just pointed at a different root via hour_info_fn.) -------------------
 
 
-def build_creator_history_c() -> dict[str, list[int]]:
+def build_creator_history_c(root: Path | None = None) -> dict[str, list[int]]:
     hist: dict[str, list[int]] = {}
     for key in POOL_C_HOURS:
-        hour = _hour_info_c(key)
+        hour = _hour_info_c(key) if root is None else _hour_info_c(key, root)
         path = hour.get("create")
         if path is None:
             continue
@@ -140,15 +184,22 @@ def run_worker_c(
     buffer_keys: list[str],
     creator_hist: dict[str, list[int]],
     rows_out_path: Path | None = None,
+    root: Path | None = None,
 ) -> list[dict[str, Any]]:
     """`rows_out_path`: same streaming-to-disk fix ported to pool A (see
     run_worker_features's docstring); a fixed-positional trailing arg so it
-    survives `Pool.starmap`."""
-    return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=_hour_info_c, rows_out_path=rows_out_path)
+    survives `Pool.starmap`. `root`: pool-C data root override (a partial of
+    the module-level resolver, so it pickles into spawn workers)."""
+    fn = _hour_info_c if root is None else partial(_hour_info_c, root=root)
+    return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=fn, rows_out_path=rows_out_path)
 
 
 def run_all_features_c(
-    max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None, max_home_hours: int | None = None
+    max_workers: int = 3,
+    buffer_hours: int = 2,
+    out_dir: Path | None = None,
+    max_home_hours: int | None = None,
+    root: Path | None = None,
 ) -> list[dict[str, Any]]:
     """out_dir set: each worker streams to `out_dir/poolC-w<i>.jsonl` instead
     of holding rows in memory (see run_all_features's docstring in
@@ -156,20 +207,21 @@ def run_all_features_c(
     tools.exploration_exits.chunk_plan -- more, smaller chunks; the Pool is
     still sized to `max_workers` regardless of chunk count."""
     print(f"pool C trade hours: {POOL_C_START} .. {POOL_C_END} ({len(POOL_C_HOURS)})", file=sys.stderr, flush=True)
-    print(f"pool C root: {BACKFILL_C}", file=sys.stderr, flush=True)
-    creator_hist = build_creator_history_c()
+    print(f"pool C root: {BACKFILL_C if root is None else root}", file=sys.stderr, flush=True)
+    creator_hist = build_creator_history_c() if root is None else build_creator_history_c(root)
     print(f"pool C creator_history creators={len(creator_hist)}", file=sys.stderr, flush=True)
     plan = plan_workers_c(max_workers, buffer_hours, max_home_hours)
     print(f"pool C worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
     paths = [_rows_out_path(out_dir, "C", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
+    extra = () if root is None else (root,)
     if max_workers <= 1 or len(plan) <= 1:
         for (worker_id, home, buf), path in zip(plan, paths):
-            rows.extend(run_worker_c(worker_id, home, buf, creator_hist, path))
+            rows.extend(run_worker_c(worker_id, home, buf, creator_hist, path, *extra))
     else:
         ctx = mp.get_context("spawn")
         with ctx.Pool(processes=min(max_workers, len(plan))) as pool:
-            results = pool.starmap(run_worker_c, [(i, h, b, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
+            results = pool.starmap(run_worker_c, [(i, h, b, creator_hist, p, *extra) for (i, h, b), p in zip(plan, paths)])
         for part in results:
             rows.extend(part)
     if out_dir is not None:
@@ -701,7 +753,20 @@ def main() -> None:
     parser.add_argument("--out-json", type=Path, default=Path("ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.json"))
     parser.add_argument("--max-workers", type=int, default=3)
     parser.add_argument("--buffer-hours", type=int, default=2)
+    parser.add_argument("--fast-dir", type=Path, default=FAST_DIR_DEFAULT, help="pool A root (fast pre-cut hours)")
+    parser.add_argument("--oracle-insample-dir", type=Path, default=INSAMPLE_DIR_DEFAULT, help="pool C root")
+    parser.add_argument("--oracle-live-dir", type=Path, default=LIVE_DIR_DEFAULT, help="pool B root")
+    parser.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        help="roots have no checkpoint.json/stats files: require every whitelisted hour's .zst files and fail loudly if any is missing",
+    )
     args = parser.parse_args()
+    if args.no_checkpoint:
+        verify_pool_files(args.fast_dir, args.oracle_insample_dir, args.oracle_live_dir)
+    fast_root = _root_or_none(args.fast_dir, FAST_DIR_DEFAULT)
+    insample_root = _root_or_none(args.oracle_insample_dir, INSAMPLE_DIR_DEFAULT)
+    live_root = _root_or_none(args.oracle_live_dir, LIVE_DIR_DEFAULT)
     t0 = time.time()
 
     print(f"hours_read_pool_A={POOL_A_HOURS}", file=sys.stderr, flush=True)
@@ -709,11 +774,11 @@ def main() -> None:
     print(f"hours_read_pool_B={POOL_B_HOURS}", file=sys.stderr, flush=True)
 
     print("=== pool A (fast-box) ===", file=sys.stderr, flush=True)
-    rows_a = run_all_features_a(max_workers=args.max_workers, buffer_hours=args.buffer_hours)
+    rows_a = run_all_features_a(max_workers=args.max_workers, buffer_hours=args.buffer_hours, backfill=fast_root)
     print("=== pool C (Oracle in-sample) ===", file=sys.stderr, flush=True)
-    rows_c = run_all_features_c(max_workers=args.max_workers, buffer_hours=args.buffer_hours)
+    rows_c = run_all_features_c(max_workers=args.max_workers, buffer_hours=args.buffer_hours, root=insample_root)
     print("=== pool B (Oracle live) ===", file=sys.stderr, flush=True)
-    rows_b = run_all_features_b(max_workers=args.max_workers, buffer_hours=args.buffer_hours)
+    rows_b = run_all_features_b(max_workers=args.max_workers, buffer_hours=args.buffer_hours, root=live_root)
     for r in rows_a:
         r["pool"] = "A"
     for r in rows_c:
