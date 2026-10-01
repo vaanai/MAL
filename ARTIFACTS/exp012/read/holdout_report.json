@@ -1,0 +1,268 @@
+{
+  "schema": "exp012_holdout_report_v1",
+  "verdict": "PASS",
+  "threshold": 0.8030766588450794,
+  "n_holdout_rows": 5547,
+  "n_entered": 451,
+  "selected_fraction_overall": 0.08130521002343609,
+  "gate": {
+    "n": 451,
+    "median_sol": 0.19031654,
+    "mean_sol": 0.03486573251662971,
+    "p10_sol": -0.320452742,
+    "p90_sol": 0.220342349,
+    "win_rate": 0.5920177383592018,
+    "total_sol": 15.724445365,
+    "mean_ci90_sol": [
+      0.018745725541463414,
+      0.05132849610155211
+    ],
+    "total_ci90_sol": [
+      8.454322219200002,
+      23.1491517418
+    ],
+    "winsorized_mean_sol": 0.03300511042017738,
+    "total_ex_best_sol": 14.814631399,
+    "total_ex_top3_sol": 14.039689244,
+    "days": [
+      {
+        "day": "2026-09-03",
+        "n": 32,
+        "total_sol": 2.298489744,
+        "mean_sol": 0.0718278045
+      },
+      {
+        "day": "2026-09-04",
+        "n": 90,
+        "total_sol": 5.680282283,
+        "mean_sol": 0.0631142475888889
+      },
+      {
+        "day": "2026-09-05",
+        "n": 70,
+        "total_sol": 0.929306602,
+        "mean_sol": 0.0132758086
+      },
+      {
+        "day": "2026-09-06",
+        "n": 77,
+        "total_sol": 2.807205326,
+        "mean_sol": 0.03645721202597403
+      },
+      {
+        "day": "2026-09-07",
+        "n": 89,
+        "total_sol": 3.359410125,
+        "mean_sol": 0.03774618117977528
+      },
+      {
+        "day": "2026-09-08",
+        "n": 68,
+        "total_sol": 1.104606013,
+        "mean_sol": 0.016244206073529412
+      },
+      {
+        "day": "2026-09-09",
+        "n": 25,
+        "total_sol": -0.454854728,
+        "mean_sol": -0.018194189120000002
+      }
+    ],
+    "days_positive": 6,
+    "n_days": 7,
+    "majority_days_positive": true,
+    "min_n": 100,
+    "watch_n": 30,
+    "watch": true,
+    "promote": true,
+    "promote_blockers": [],
+    "promote_flat_15": true,
+    "promote_pressure_1": true,
+    "pressure_scale_1": {
+      "n": 451,
+      "mean_sol": 0.020540998002217297,
+      "total_sol": 9.263990099,
+      "total_ex_top3_sol": 8.216918514,
+      "promote": true
+    },
+    "gross_n": 0,
+    "mean_gross_sol": null,
+    "median_gross_sol": null,
+    "total_gross_sol": null,
+    "mean_gross_return_on_size": null
+  },
+  "per_day": [
+    {
+      "day": "2026-09-03",
+      "n_test": 463,
+      "n_entered": 32,
+      "selected_fraction": 0.06911447084233262,
+      "flat_mean_pct": 14.3655608915625,
+      "press_mean_pct": 8.510359764942597
+    },
+    {
+      "day": "2026-09-04",
+      "n_test": 941,
+      "n_entered": 90,
+      "selected_fraction": 0.09564293304994687,
+      "flat_mean_pct": 12.622849517222223,
+      "press_mean_pct": 7.657262850948587
+    },
+    {
+      "day": "2026-09-05",
+      "n_test": 887,
+      "n_entered": 70,
+      "selected_fraction": 0.07891770011273957,
+      "flat_mean_pct": 2.6551617290000005,
+      "press_mean_pct": 1.7706783254519365
+    },
+    {
+      "day": "2026-09-06",
+      "n_test": 860,
+      "n_entered": 77,
+      "selected_fraction": 0.08953488372093023,
+      "flat_mean_pct": 7.291442405584416,
+      "press_mean_pct": 3.1982407030396973
+    },
+    {
+      "day": "2026-09-07",
+      "n_test": 991,
+      "n_entered": 89,
+      "selected_fraction": 0.08980827447023208,
+      "flat_mean_pct": 7.54923623775281,
+      "press_mean_pct": 4.272681797221064
+    },
+    {
+      "day": "2026-09-08",
+      "n_test": 929,
+      "n_entered": 68,
+      "selected_fraction": 0.07319698600645856,
+      "flat_mean_pct": 3.2488412224999994,
+      "press_mean_pct": 2.3079518281574627
+    },
+    {
+      "day": "2026-09-09",
+      "n_test": 476,
+      "n_entered": 25,
+      "selected_fraction": 0.052521008403361345,
+      "flat_mean_pct": -3.6388378304,
+      "press_mean_pct": -0.6443428033483387
+    }
+  ],
+  "fill_conditional": {
+    "entered_all": {
+      "n": 451,
+      "flat_mean_pct": 6.973146505254989,
+      "flat_ci_lo_pct": 3.622858656873615,
+      "flat_total_sol": 15.72444536935,
+      "flat_ex_top3_sol": 14.039689248,
+      "press_mean_pct": 4.108199601248119,
+      "press_ci_lo_pct": 2.204847528313695,
+      "press_total_sol": 9.263990100814508,
+      "press_ex_top3_sol": 8.216918516191809
+    },
+    "entered_filled_only": {
+      "n": 446,
+      "flat_mean_pct": 7.052441869663677,
+      "flat_ci_lo_pct": 3.526022436165916,
+      "flat_total_sol": 15.72694536935,
+      "flat_ex_top3_sol": 14.042189248,
+      "press_mean_pct": 4.15537672682265,
+      "press_ci_lo_pct": 2.1455736207589697,
+      "press_total_sol": 9.266490100814508,
+      "press_ex_top3_sol": 8.21941851619181
+    },
+    "all_filled_baseline": {
+      "n": 1555,
+      "flat_mean_pct": 5.436210969446945,
+      "flat_ci_lo_pct": 1.8843260488617346,
+      "flat_total_sol": 42.26654028745,
+      "flat_ex_top3_sol": 21.883756813799998,
+      "press_mean_pct": 2.443506369037635,
+      "press_ci_lo_pct": 0.9189975069350603,
+      "press_total_sol": 18.998262019267614,
+      "press_ex_top3_sol": 11.793427288069537
+    },
+    "all_attempts_baseline_no_filter": {
+      "n": 5547,
+      "flat_mean_pct": 1.4519754926068142,
+      "flat_ci_lo_pct": 0.4240547538615474,
+      "flat_total_sol": 40.27054028745,
+      "flat_ex_top3_sol": 19.8877568138,
+      "press_mean_pct": 0.613025491951239,
+      "press_ci_lo_pct": 0.1812813250627758,
+      "press_total_sol": 17.002262019267615,
+      "press_ex_top3_sol": 9.797427288069539
+    }
+  },
+  "source_note": "holdout is a single fast-box block walked by three walkers (w1/w2/w3) and read from their deduplicated copies; no cross-source split is possible, only within-block day variation",
+  "generated_at_utc": "2026-10-01T16:13:58Z",
+  "code_commit": "fd9b26fac82e228d8fa2802da58cfe6b77f54af0",
+  "holdout_hours": {
+    "start": "2026-09-03T12",
+    "end": "2026-09-09T12",
+    "n_hours": 144
+  },
+  "dedupe_counts": {
+    "w1": {
+      "trades": {
+        "rows_in": 69144507,
+        "rows_out": 69144507,
+        "duplicates_removed": 0,
+        "hours_with_duplicates": 0
+      },
+      "creates": {
+        "rows_in": 57498,
+        "rows_out": 57498,
+        "duplicates_removed": 0,
+        "hours_with_duplicates": 0
+      },
+      "migrations": {
+        "rows_in": 2407,
+        "rows_out": 2407,
+        "duplicates_removed": 0,
+        "hours_with_duplicates": 0
+      }
+    },
+    "w2": {
+      "trades": {
+        "rows_in": 50710531,
+        "rows_out": 50710531,
+        "duplicates_removed": 0,
+        "hours_with_duplicates": 0
+      },
+      "creates": {
+        "rows_in": 45354,
+        "rows_out": 45354,
+        "duplicates_removed": 0,
+        "hours_with_duplicates": 0
+      },
+      "migrations": {
+        "rows_in": 2082,
+        "rows_out": 2082,
+        "duplicates_removed": 0,
+        "hours_with_duplicates": 0
+      }
+    },
+    "w3": {
+      "trades": {
+        "rows_in": 49207277,
+        "rows_out": 49207277,
+        "duplicates_removed": 0,
+        "hours_with_duplicates": 0
+      },
+      "creates": {
+        "rows_in": 57862,
+        "rows_out": 57862,
+        "duplicates_removed": 0,
+        "hours_with_duplicates": 0
+      },
+      "migrations": {
+        "rows_in": 2295,
+        "rows_out": 2295,
+        "duplicates_removed": 0,
+        "hours_with_duplicates": 0
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+ "pressure_leg_book_stats": {
+  "n": 451,
+  "mean_sol": 0.020540998002217297,
+  "mean_ci90_sol": [
+   0.011026153361862526,
+   0.02986688542084257
+  ],
+  "total_sol": 9.263990099,
+  "total_ex_top3_sol": 8.216918514,
+  "days_positive": 6,
+  "n_days": 7,
+  "majority_days_positive": true
+ },
+ "flat_leg_book_stats": {
+  "n": 451,
+  "mean_sol": 0.03486573251662971,
+  "mean_ci90_sol": [
+   0.018745725541463414,
+   0.05132849610155211
+  ],
+  "total_sol": 15.724445365,
+  "total_ex_top3_sol": 14.039689244,
+  "days_positive": 6,
+  "n_days": 7,
+  "majority_days_positive": true
+ }
+}

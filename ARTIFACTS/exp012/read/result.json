@@ -1,0 +1,162 @@
+{
+  "command": "/home/claude/.miscusi/jobtrees/vaanai__MAL@fd9b26fac82e/tools/exp012_score.py --w1-dir /data/mal/blocks/fresh-0903/w1 --w1-clean-dir /data/mal/blocks-clean/fresh-0903/w1 --w2-dir /data/mal/blocks/fresh-0903/w2 --w2-clean-dir /data/mal/blocks-clean/fresh-0903/w2 --w3-dir /data/mal/blocks/fresh-0903/w3 --w3-clean-dir /data/mal/blocks-clean/fresh-0903/w3 --artifact-dir ARTIFACTS/exp012 --dedupe-pin ARTIFACTS/exp012/dedupe_pin.sha256 --frozen-manifest-md5 a01f05dfb1e622f78b2bba55d174be09 --freeze-commit ea5ec374010378b14a5c19e81bf045679bde73b9 --out-dir /data/mal/exp012/read --result-out /data/mal/exp012/read/result.json",
+  "config": {
+    "experiment": "EXP-012",
+    "primary_cell": "s2_ablated_top",
+    "threshold": 0.8030766588450794,
+    "verdict": "PASS"
+  },
+  "created_utc": "2026-10-01T16:13:58Z",
+  "data_blocks": [
+    {
+      "end_hour_exclusive": "2026-09-09T12",
+      "host": "mal-research-0",
+      "ledger_owner": "EXP-012",
+      "start_hour": "2026-09-03T12"
+    }
+  ],
+  "gate": {
+    "flat": {
+      "ci90_lo_gt_0": true,
+      "days_ge_5": true,
+      "ex_top3_gt_0": true,
+      "majority_days_positive": true,
+      "n_ge_100": true,
+      "pass": true
+    },
+    "pass_both": true,
+    "pressure_s1": {
+      "ci90_lo_gt_0": true,
+      "days_ge_5": true,
+      "ex_top3_gt_0": true,
+      "majority_days_positive": true,
+      "n_ge_100": true,
+      "pass": true
+    }
+  },
+  "git_sha": "fd9b26fac82e228d8fa2802da58cfe6b77f54af0",
+  "metrics": {
+    "flat": {
+      "by_segment": {
+        "2026-09-03": {
+          "mean_pct": 14.3655608915625,
+          "n_trades": 32,
+          "total_sol": 2.29848974265
+        },
+        "2026-09-04": {
+          "mean_pct": 12.622849517222221,
+          "n_trades": 90,
+          "total_sol": 5.68028228275
+        },
+        "2026-09-05": {
+          "mean_pct": 2.6551617290000005,
+          "n_trades": 70,
+          "total_sol": 0.9293066051500001
+        },
+        "2026-09-06": {
+          "mean_pct": 7.291442405584416,
+          "n_trades": 77,
+          "total_sol": 2.80720532615
+        },
+        "2026-09-07": {
+          "mean_pct": 7.549236237752809,
+          "n_trades": 89,
+          "total_sol": 3.3594101257999998
+        },
+        "2026-09-08": {
+          "mean_pct": 3.2488412225,
+          "n_trades": 68,
+          "total_sol": 1.10460601565
+        },
+        "2026-09-09": {
+          "mean_pct": -3.6388378303999995,
+          "n_trades": 25,
+          "total_sol": -0.45485472879999994
+        }
+      },
+      "ci90_lo_sol": 0.017038354868736144,
+      "days": 7,
+      "days_positive": 6,
+      "ex_top3_sol": 14.039689244,
+      "fill_cond_mean_pct": 7.052441869663678,
+      "fill_rate": 0.9889135254988913,
+      "mean_pct": 6.97314650525499,
+      "mean_sol": 0.034865732526274944,
+      "median_pct": 38.06330799,
+      "median_sol": 0.19031653994999997,
+      "n_trades": 451,
+      "selected_fraction": 0.08130521002343609,
+      "sol_per_day": 2.6207408941666666,
+      "top5_profit_share": 0.04191377509865101,
+      "total_sol": 15.724445365,
+      "trades_per_day": 75.16666666666667
+    },
+    "pressure_s1": {
+      "by_segment": {
+        "2026-09-03": {
+          "mean_pct": 8.510359764942596,
+          "n_trades": 32,
+          "total_sol": 1.3616575623908154
+        },
+        "2026-09-04": {
+          "mean_pct": 7.6572628509485865,
+          "n_trades": 90,
+          "total_sol": 3.4457682829268643
+        },
+        "2026-09-05": {
+          "mean_pct": 1.7706783254519367,
+          "n_trades": 70,
+          "total_sol": 0.6197374139081778
+        },
+        "2026-09-06": {
+          "mean_pct": 3.1982407030396973,
+          "n_trades": 77,
+          "total_sol": 1.2313226706702836
+        },
+        "2026-09-07": {
+          "mean_pct": 4.272681797221064,
+          "n_trades": 89,
+          "total_sol": 1.9013433997633735
+        },
+        "2026-09-08": {
+          "mean_pct": 2.3079518281574622,
+          "n_trades": 68,
+          "total_sol": 0.7847036215735372
+        },
+        "2026-09-09": {
+          "mean_pct": -0.6443428033483387,
+          "n_trades": 25,
+          "total_sol": -0.08054285041854235
+        }
+      },
+      "ci90_lo_sol": 0.010361548876274945,
+      "days": 7,
+      "days_positive": 6,
+      "ex_top3_sol": 8.216918514,
+      "fill_cond_mean_pct": 4.15537672682265,
+      "fill_rate": 0.9889135254988913,
+      "mean_pct": 4.10819960124812,
+      "mean_sol": 0.020540998006240596,
+      "median_pct": 14.61259125678343,
+      "median_sol": 0.07306295628391715,
+      "n_trades": 451,
+      "selected_fraction": 0.08130521002343609,
+      "sol_per_day": 1.5439983498333334,
+      "top5_profit_share": 0.04958669343606061,
+      "total_sol": 9.263990099,
+      "trades_per_day": 75.16666666666667
+    }
+  },
+  "notes": "EXP-012 one-shot read of the deduplicated fresh block. The verdict is the report's (tools.exp011_score.compute_gate); this record is a copy for the Console.",
+  "peak_rss_mb": 2625.21484375,
+  "role": "confirmation-oneshot",
+  "runtime_s": 1973.6957235336304,
+  "schema_version": "result.v1",
+  "stage": "passed",
+  "tool": "tools.exp012_score",
+  "tries": {
+    "data_key": "b1c437cfefb622c4",
+    "of_m": 1,
+    "variant_n": 1
+  }
+}

@@ -47,6 +47,19 @@ Detail, units, logs, memory limits, and what is safe to restart: [docs/HOSTS.md]
 | [DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md) | Holdout ledger (one owner per historical block); Holm–Bonferroni multiplicity correction; single read at kill review; pressure-leg start instant (Amendment 3) |
 | [DEC-015](DEC/DEC-015-forward-paper-on-fast.md) | New forward-paper books (after the 10-05 kill review) run on `mal-fast-0`; preconditions: all four runner inputs, trade-tape coverage, equivalence replay, own memory slice, lag probation; runner-as-service exception owner-confirmed |
 
+## Latest confirmation result
+
+**EXP-012 one-shot read: gate PASS (2026-10-01), backward simulated holdout only.**
+- n = 451 over 7 UTC days (two half-days), 6/7 positive under both fail models.
+- Flat mean 0.0349 SOL/trade (CI90 lower bound 0.0187); pressure 0.0205 SOL/trade (CI90 lower bound 0.0110).
+- Ex-top-3: +14.04 SOL flat, +8.22 SOL pressure.
+- **Not money made, not live-eligible.**
+- Caveats:
+  - The block is favourable to the unfiltered base trade (flat +1.45%, CI lo +0.42%, against −0.09% in the migrate-direct OOS fail).
+  - Most of the lift is predicted fills (98.9% vs 28.0%), and the lift among fills is not significant.
+  - Returns fall toward the present day.
+- Next: an EXP-012 forward-paper book on `mal-fast-0` after the 2026-10-05T05:00:00Z kill review ([DEC-015](DEC/DEC-015-forward-paper-on-fast.md)). It must clear the gate on its own forward data, and then get owner approval, before live. Details: [EXP-012](EXP/EXP-012-migrate-entry-model-refreeze-prereg.md) Result.
+
 ## What is running
 
 | System | Where | Status |
