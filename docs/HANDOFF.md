@@ -1,106 +1,100 @@
-# Manager handoff 2026-09-30 (evening)
+# Manager handoff 2026-10-01 (early UTC)
 
-The owner is moving the manager session into **MiScusi**. Read this page first. Then read [docs/console-plan.md](console-plan.md), [docs/console-miscusi-requirements.md](console-miscusi-requirements.md), [LAB_STATE.md](../LAB_STATE.md), [CLAUDE.md](../CLAUDE.md), [CONSTITUTION.md](../CONSTITUTION.md), [docs/HOSTS.md](HOSTS.md) and [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md). Replace this page at the next handoff; don't append to it.
+Replace this page at the next handoff; don't append to it. Read it first, then [LAB_STATE.md](../LAB_STATE.md), [CONSTITUTION.md](../CONSTITUTION.md), [docs/HOSTS.md](HOSTS.md), [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md) and the B3 lab note [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](../ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md).
 
-As of **2026-09-30T17:46Z**, `main` is at `2b51e70` (#172). Paper only. **Once the new session confirms it has taken over, the old session stands down:** no merges, no restarts, nothing scheduled.
+`main` includes #181 and #182 (both merged 2026-10-01). Paper only. Once the new session confirms it has taken over, the old session (Manager1, 2026-10-01) stands down.
 
-## You are running inside MiScusi
+## The goal, and why it is reachable
 
-The owner started you from MiScusi (Agents → Start a Claude session, Manager + Read the inbox) on mal-fast-0.
-- **MiScusi tools:** use them for the inbox (the Console's "Send to Claude" notes arrive there, tagged `mal-manager`, and you pick them up at natural breaks), for jobs on mal-research-0, and for hand-offs.
-- **Stand-down:** confirm to the owner when you've taken over. The previous session (started before MiScusi pairing, so it has no MiScusi tools) then stands down when the owner tells it to.
-- **Tone:** talk to the owner in plain English, with how each thing moves MAL toward profit.
+**The owner's goal: real money in, and profitable, by the end of October 2026.** The owner wants the project to earn back what has been put into it, which means thousands of dollars of revenue. That is the owner's target, not evidence. The path to it is fixed and does not bend: clean tape → honest simulator → signals → one-shot test on unseen data → forward paper → promotion gate → owner approval → live.
 
-## A. EXP-011 is closed: NOT_DECIDABLE (2026-09-30T20:45Z)
+What changed: we now have **mal-research-0** (32 cores, 125 GB RAM, ~868 GB disk), and it is idle. Compute is no longer the bottleneck. The things that cost us weeks were **waiting** and **mistakes**: a walker bug that duplicated rows and dropped an hour spent the whole EXP-011 holdout and we learned nothing from it. The way to go 5x faster is:
 
-The one-shot read ran once at 20:25:56Z, wrote its lock, and aborted on a missing sealed hour. No outcome was observed. The holdout is spent, and **it is never re-run** (the lock exists). The causes are walker data-integrity bugs: a backwards slot range seals empty hours, resumed hours get exact duplicate rows, and resumes probably lose held rows. Details are in [EXP-011's Result section](../EXP/EXP-011-migrate-entry-model-prereg.md) and the ledger.
+1. **Never lose a test to bad data again.** Every block gets fetched with the fixed walker, checked with `tools/backfill_verify.py`, deduplicated, and fingerprinted (sha256) before anyone reads it.
+2. **Run many ideas in parallel on research-0**, on exploration data only, with every try logged. One dead candidate must not reset the clock: always have the next candidate already queued with its own fresh block.
+3. **Cut waiting time.** Walkers on research-0, several at once. Merge reviewed PRs promptly. Keep mal-fast-0 for live listeners, not heavy jobs.
 
-What's next:
-1. **Done: walker fix merged ([#179](https://github.com/vaanai/MAL/pull/179)).** It makes resume exactly-once, persists and restores held rows, fixes the `slot_for_time` bracket (backwards ranges), refuses to seal empty hours or hours with an implausible span ([10.5k, 14k] slots), and heals a crash between seals. It also adds `tools/backfill_verify.py` (metadata / `--content` / `--dedupe-out` with a sha256 manifest).
-   - **Before any walker runs again,** update the walkers' own checkout, `/home/ubuntu/mal-oos` (not `~/MAL`), to main ≥ `a47dbdb`. Any new walker on research-0 must use that code too.
-   - A known test gap: `main()`'s stop-on-bad-hour is only tested at `run_hour` level.
-2. The exploration-pool duplicate census is done (`/home/claude/data/dup-census/census.{out,json}`, 522 files):
-   - **Oracle in-sample export:** 0 duplicates.
-   - **Oracle live tape:** 5–326 duplicate trade rows per ~1M-row hour (~0.01%, a different mechanism).
-   - **Fast pre-cut:** 3 of 71 hours are heavily duplicated: 2026-09-19T16, T17 and T20. Trades are 974k/476k/1.02M duplicates; creates are 1,128/622/1,350; migrations are 37/15/45. The duplicated migrations mean duplicated migrate candidates in B3's pool.
-3. Deduplicate the exploration pool into clean copies, preferably on research-0 under `/data/mal`, with sha256 manifests.
-4. Re-run B3 exploration on clean data.
-5. If it still clears its pre-stated screen, pre-register a new experiment on a fresh ≥6-day block. Walk that block with the fixed walker, preferably on research-0 (Helm places the Helius key), and run `backfill_verify` before any read.
-6. EXP-009's block also has resumed hours. Its screen scorer must deduplicate first, via a pre-registered amendment.
+The bar does not drop. Winner's curse is real (B3 was the best of many cells). The gate in CLAUDE.md is what turns "looked good" into money. Hold it, and move fast everywhere else.
 
-## B. Console: where it stands
+### Timeline to end of October (plan, not promise)
 
-- **MAL-side contracts, all merged:**
-  - #166 `result.v1` + tries log.
-  - #167 data catalog + read guard (`tools/mal_catalog.py`; confirmation-oneshot needs a real `EXP-###`).
-  - #168 status files + credit log. The claude timers `mal-status` (1 min) and `mal-status-core` (5 min) are **enabled on mal-fast-0** and write `~/data/status/*.json` and `~/data/credits/helius-credits.jsonl`.
-  - #169 `data/console.json`, which the manager maintains: ladder, events, review windows. Blinding **fails closed** if it's unreadable. After the 10-05 review, set `review_windows: []` deliberately.
-  - #171 job templates `explore_entry_filter` / `explore_exit` via `tools/mal_job.py`. The refusal path is complete. **The runners raise NotImplementedError.**
-  - #170 / #172: guidebook docs 1–3.
-- **Console repo `vaanai/mal-console` (private, clone at `~/mal-console`):** v1 is complete in code (PRs #1–#5).
-  - A Fastify server with server-side blinding.
-  - A React/Vite web app with 9 screens, including Run a test (DeepSeek drafts, 20/day, 3 running, $10/month, fail-closed limits) and Jobs.
-  - It uses MiScusi's tokens and live updates over SSE.
-  - A clickable sample-data preview: https://claude.ai/artifact/9Qgh1aBQxFZcKyBmU6ThLs. Screenshot QA: `~/venvs/shots/bin/python ~/venvs/shots/shoot.py <url> <prefix> <routes…>`.
-- **LIVE since 2026-09-30 ~18:30Z at `console.tradervaan.com`**, on **mal-fast-0** for now (decided with the owner and Helm):
-  - It runs as the claude user service `mal-console` on 127.0.0.1:8787, from the pinned worktree `~/apps/mal-console`, capped at 512M and 50% CPU.
-  - Helm routed the hostname through the host tunnel, behind Access with the owner's email only.
-  - Deploy steps are in `vaanai/mal-console` `deploy/README.md`. It **moves to research-0 when the data does, or before any live key lands on mal-fast-0.**
-  - The OpenRouter key is in place at `~/.config/mal-console/openrouter.key`. **The MiScusi `mck_` key is still pending.** When the owner gives it, put it at `~/.config/mal-console/miscusi.key` (mode 600), then run `systemctl --user restart mal-console`. Jobs, the Claude stream, spend and Send-to-Claude then come alive.
-
-## C. Next, in order
-
-1. **After the EXP-011 read:** wire the two template runners.
-   - They need `tools/exploration_entry_model_b3.py` / `tools/exploration_exits.py` to accept `size_sol`, `priority_fee_tier`, and a single-cell/day-subset entry point.
-   - **Every lookback or buffer hour a runner reads must also pass `check_read`** (review note on #171).
-   - Don't change behaviour for existing callers.
-2. **MiScusi (the owner + Grokbot are setting it up now).** When the owner messages from MiScusi:
-   - get the MAL space **Console key** (`mck_`, operate);
-   - join research-0 to the MAL space;
-   - define the two templates in MiScusi from `docs/contracts/job-templates.md`.
-   - The MiScusi checklist is mostly built already. Gaps to raise with the owner's developer: fixed server-cost entry, explicit brain-down behaviour, and a real-box test of systemd job limits + the headless install.
-3. **research-0 online.** The link from mal-fast-0 is live (Helm, 2026-09-30T18:55Z): `ssh mal-research-0`, `/data/mal`, details in [HOSTS.md](HOSTS.md). The next steps are:
-   - data sync (rsync + sha256 manifests);
-   - status files for research-0, and get fast/core status to research-0 (sync every minute, or run the collectors there);
-   - deploy the Console there;
-   - the OpenRouter key (Helm places it);
-   - move the walkers (Helm places the Helius key) and all heavy jobs.
-4. **After 2026-10-05:** a per-book paper P&L feed for the Paper screen. Build it only after the review instant, so nobody can peek (DEC-014).
-5. **Owner quiz** on guidebook 1–3 once he has read them.
-
-## D. Other dated items
-
-- **Every day at 00:00:00Z:** the Oracle runner restarts. Check `/home/claude/reports/runner-restarts.jsonl` for `ok: true`, `head_sha d7485d2`. The daily review runs at 05:00Z.
-- **2026-10-05T05:00:00Z kill review:** on a snapshot, run settle orphans → pressure stamp → `tools/kill_review.py --pressure-from-ms <2026-09-29T00:00:00Z ms> --holm-draws 10000`. Then `quant-proof`, then LAB_STATE. No new forward books before then.
-
-## E. Paused (owner decision), not forgotten
-
-- The EXP-009 screen scorer (walker 1 is complete at 156/156).
-- Lane D (run it on research-0 with `chunk_plan`).
-- Oracle lag spikes.
-- The backfill has no retry on `IncompleteRead` (walker C restarted once, 15:58Z; the checkpoint resumed).
-- The warm start / live-readiness track.
-- #90: keep.
-
-## F. Resources
-
-**Helius, at 17:46Z:**
-
-| Walker | Credits used |
+| When | What |
 | --- | --- |
-| Walker 1 | 2,039,888 |
-| Walker B | 848,039 |
-| Walker C | 1,032,940 of its 1.5M cap |
+| 10-01 | Clean exploration pool on research-0 (job #1 running). Re-run B3 on clean data on research-0. |
+| 10-01 → 10-02 | If B3 still clears its pre-stated screen: register the fresh block in the ledger **before** any hour is sealed, pre-register EXP-012, start walkers on research-0. In parallel, queue backup exploration lanes (exits, other entry families). |
+| 10-05 05:00Z | Kill review of the 9 forward books (procedure below). No new forward books before it. |
+| ~10-06 → 10-08 | Fresh block sealed, `backfill_verify` clean, one-shot read. |
+| ~10-08 → 10-20 | If it passes: forward paper until ≥100 trades over ≥5 UTC days, majority positive, CI and ex-top-3 checks under both fail models. |
+| late October | Gate cleared + owner approves → small live size. |
 
-That's about 3.92M in total, within the owner's ~20M headroom.
+There is little slack. Every day of waiting on a key, a merge or a re-fetch comes straight out of it.
+
+## What the 2026-10-01 session did
+
+- **Took over in MiScusi** as worker "Manager1" (inbox reader), session MALsession1 `s_y1y4vFh5TCjy8A`. GitHub auth OK (`vaanai`), push OK, `ssh mal-research-0` OK.
+- **EXP-011 lock** `/home/claude/data/exp011/HOLDOUT_READ.lock` set read-only. EXP-011 is closed NOT_DECIDABLE and is never re-run.
+- **Exploration pool copied to research-0**, sha256-verified file by file against the source, each dir has `SOURCE.sha256`:
+  - `/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00` (73 hours: fast pre-cut + the two EXP-009 exclusion hours; B3's Pool A whitelist uses 71 of them)
+  - `/data/mal/raw/oracle-insample-2026-09-22_25`
+  - `/data/mal/raw/oracle-live-2026-09-25_27` (no migrations dir; creates are **daily** `creates/observe-<day>.jsonl`)
+  - The EXP-009 and EXP-011 blocks were deliberately **not** copied.
+- **research-0 Python venv** `/data/mal/venv`, pinned to mal-fast-0's versions: numpy 2.5.3, lightgbm 4.7.0, scikit-learn 1.9.1, scipy 1.18.1 (`/data/mal/venv/FREEZE.txt`). System `python3` there has no numpy: always use the venv for B3.
+- **#181 merged**: B3 takes `--fast-dir`, `--oracle-insample-dir`, `--oracle-live-dir`, `--no-checkpoint`. Defaults unchanged; reviewer approved (158 tests, spawn smoke test confirmed roots reach workers). `exploration_exits.ALL_HOURS` is now lazy.
+- **#182** (owner/Grokbot request): repo `.claude/settings.json` deny rules use `//etc/...` (absolute) and drop `Write(...)` rules covered by `Edit(...)`. Merged after a reviewer pass. Its open caveat: no fresh session has yet been observed refusing a Write to a denied path; check once. Note that Read/Edit denies never stop Bash (e.g. `sudo tee`), before or after this PR.
+
+## In flight
+
+**MiScusi job #1 `j_1JgjH_GG0uL02A` "dedupe exploration pool"** on research-0. It runs `backfill_verify --content --dedupe-out` on the three raw dirs into `/data/mal/clean/<same names>`, dedupes the daily `observe-*.jsonl` with `awk '!seen[$0]++'`, and writes `MANIFEST.sha256` in each clean dir. Check with `miscusi_job_status`. When it ends:
+- Oracle dirs have no `checkpoint.json`, so `rc=1` / `hours_flagged` there is **expected**. Read the per-hour rows/unique counts instead.
+- Sanity: the fast hours 2026-09-19T16, T17, T20 should lose ~974k / 476k / 1.02M trade rows (census, `/home/claude/data/dup-census/census.json`). Oracle in-sample should lose 0. Oracle live ~5–326 per hour.
+- Record the totals in a lab note.
+
+## Next, in order
+
+1. **B3 re-run on clean data, on research-0** (MiScusi job, `role: exploration`, run from `main` ≥ `ab80ca4`):
+   ```
+   /data/mal/venv/bin/python tools/exploration_entry_model_b3.py \
+     --fast-dir /data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00 \
+     --oracle-insample-dir /data/mal/clean/oracle-insample-2026-09-22_25 \
+     --oracle-live-dir /data/mal/clean/oracle-live-2026-09-25_27 \
+     --no-checkpoint --max-workers 24 \
+     --out-md $MISCUSI_OUTPUT_DIR/b3-clean.md --out-json $MISCUSI_OUTPUT_DIR/b3-clean.json
+   ```
+   Check the exact `--max-workers` semantics and memory per worker first (it was 3 on mal-fast-0). Then commit the outputs as a new lab note (`ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.*`) with the duplicate-removal disclosure, and compare against the screen pre-stated in the 09-28 B3 note. Do **not** move the screen. Check ex-top-3 and the frozen post-ablation feature list before calling anything a candidate. `quant-proof` before any sentence says it made money.
+2. **Fresh confirmation block.** Next unassigned range is older than 2026-09-09T12, e.g. `[2026-09-03T12, 2026-09-09T12)`. Add the ledger row **before** any hour is sealed. Walk it on research-0 with the fixed walker (`pump_history_backfill.py` from main ≥ `a47dbdb`; split across 3+ walkers by non-overlapping sub-ranges). **Blocked on Helm placing the Helius key on research-0**: the owner was asked to request it. Credits: walkers B + C used ~1.9M for 144h, so a 6-day block is ~2–3M of the ~20M headroom. Report credits per unit. Run `backfill_verify` (metadata + `--content`) before the one-shot read; any duplicate or missing hour stops the read.
+3. **Parallel lanes on research-0** so one failure doesn't stall us: wire the two template runners (`explore_entry_filter`, `explore_exit`, #171 — they raise NotImplementedError; every lookback/buffer hour must pass `check_read`), then run sweeps on the clean pool. Every try goes in the tries log (`result.v1`, #166) for multiplicity. Then ask the owner to define the templates in MiScusi from `docs/contracts/job-templates.md` (the space has **no templates** yet).
+4. **Move the rest to research-0**: Console (`vaanai/mal-console` `deploy/README.md`), status collectors, walkers. The Console moves before any live key lands on mal-fast-0.
+5. EXP-009's block has resumed (duplicated) hours: its screen scorer must dedupe first, via a pre-registered amendment. Paused by owner decision.
+
+## Dated items
+
+- **Daily 00:00:00Z:** Oracle runner restarts. Check `/home/claude/reports/runner-restarts.jsonl` for `ok: true`, `head_sha d7485d2`. Daily review 05:00Z.
+- **2026-10-05T05:00:00Z kill review:** on a snapshot, settle orphans → pressure stamp → `tools/kill_review.py --pressure-from-ms <2026-09-29T00:00:00Z ms> --holm-draws 10000` → `quant-proof` → LAB_STATE. After it, set `review_windows: []` in `data/console.json` deliberately. Build the per-book paper P&L feed only after the review instant.
+
+## Console (unchanged since 09-30)
+
+Live at `console.tradervaan.com` on mal-fast-0 (user service `mal-console`, 127.0.0.1:8787, from `~/apps/mal-console`, 512M / 50% CPU). The MiScusi `mck_` key is still pending: put it at `~/.config/mal-console/miscusi.key` (mode 600), then `systemctl --user restart mal-console`.
+
+## Paused (owner decision), not forgotten
+
+EXP-009 screen scorer; Lane D (run on research-0 with `chunk_plan`); Oracle lag spikes; backfill retry on `IncompleteRead`; warm start / live-readiness track; #90 keep.
+
+## Gotchas found this session
+
+- New Claude sessions on both servers start in **bypass permissions** (Grokbot, 2026-10-01). Server deny rules and MiScusi's protected-path guard still apply.
+- MiScusi's protected-path guard rejects any Bash command whose **text** names `.env`, even in a commit message or PR body. Put messages in files (`git commit -F`, `gh pr create --body-file`).
+- The clone at `~/.miscusi/repos/vaanai/MAL` had no git identity; it is now set repo-local to `Claude Code <reallybadaireviews@gmail.com>`, matching `/home/claude/MAL`.
+- `/home/ubuntu/mal-oos` (the old walkers' code) is a plain file copy, not a git repo. No walker was running at 2026-10-01T00:30Z.
+- MiScusi jobs run on a clean checkout of what's **pushed**; outputs go to `$MISCUSI_OUTPUT_DIR`, and you commit them yourself.
 
 ## Rules this project learned the hard way
 
-1. **Memory on mal-fast-0:** one heavy job, ≤2 workers, bounded windows, whole-tree kill. Check `anon`, not `MemoryCurrent`.
+1. **Memory on mal-fast-0:** one heavy job, ≤2 workers, bounded windows, whole-tree kill. Check `anon`, not `MemoryCurrent`. Better: run heavy work on research-0.
 2. **Docs describe merged state only.** Fix the data and the wording, never a rule.
-3. **Holdout ledger:** only the manager assigns blocks. A block that's been seen can't become a confirmation holdout.
-4. **Check ex-top-3 and the frozen feature list before calling anything a candidate.** The guidebook review caught B3's pre-ablation numbers quoted as post-ablation.
+3. **Holdout ledger:** only the manager assigns blocks, before sealing. A block that's been seen can't become a confirmation holdout.
+4. **Check ex-top-3 and the frozen feature list before calling anything a candidate.**
 5. **Offline replicas mirror every live branch.**
-6. **Builders stop at ~40 turns.** Commit their WIP yourself, then resume them with tight numbered steps.
+6. **Builders stop at ~40 turns.** Tight numbered scopes; commit their WIP yourself.
 7. **Run merges as separate commands.**
-8. **Security review before merge for anything that gates data or limits.** Reviews on 2026-09-30 caught a spoofable exp_id, fail-open blinding and fail-open running limits.
+8. **Security review before merge for anything that gates data or limits.**
+9. **Verify data before reading it.** `backfill_verify` + sha256 manifest, every block, every time. This is the rule that would have saved EXP-011.
