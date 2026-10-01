@@ -1,0 +1,10 @@
+{
+  "schema": "exp012_holdout_read_lock_v1",
+  "utc_time": "2026-10-01T15:41:04Z",
+  "git_sha": "fd9b26fac82e228d8fa2802da58cfe6b77f54af0",
+  "model_md5": "a1810d219ed61db64a396f40dc302ce5",
+  "frozen_manifest_md5": "a01f05dfb1e622f78b2bba55d174be09",
+  "dedupe_pin_sha256": "c792e171a010fdefb6b6d07c14276a6eebb41752e8cc0bcb099a224d9966a28c",
+  "freeze_commit": "ea5ec374010378b14a5c19e81bf045679bde73b9",
+  "command_line": "~/.miscusi/jobtrees/vaanai__MAL@fd9b26fac82e/tools/exp012_score.py --w1-dir /data/mal/blocks/fresh-0903/w1 --w1-clean-dir /data/mal/blocks-clean/fresh-0903/w1 --w2-dir /data/mal/blocks/fresh-0903/w2 --w2-clean-dir /data/mal/blocks-clean/fresh-0903/w2 --w3-dir /data/mal/blocks/fresh-0903/w3 --w3-clean-dir /data/mal/blocks-clean/fresh-0903/w3 --artifact-dir ARTIFACTS/exp012 --dedupe-pin ARTIFACTS/exp012/dedupe_pin.sha256 --frozen-manifest-md5 a01f05dfb1e622f78b2bba55d174be09 --freeze-commit ea5ec374010378b14a5c19e81bf045679bde73b9 --out-dir /data/mal/exp012/read --result-out /data/mal/exp012/read/result.json"
+}
