@@ -182,8 +182,13 @@ def _normalize_host(cell: str, *, row_name: str) -> str:
     lowered = text.lower()
     if "forward-paper runner" in lowered:
         return "oracle-forward"
-    if lowered.startswith("mal-research-0"):
-        return "research"
+    m_host = re.match(r"^mal-([a-z]+)-(\d+)\b", lowered)
+    if m_host:
+        known = {"research-0": "research", "fast-0": "fast", "core-0": "oracle"}
+        key = f"{m_host.group(1)}-{m_host.group(2)}"
+        if key not in known:
+            raise ValueError(f"row {row_name!r}: unknown mal-* host in Host cell {cell!r}")
+        return known[key]
     m = re.match(r"^([A-Za-z][A-Za-z0-9_]*)", text)
     if not m:
         raise ValueError(f"row {row_name!r}: could not determine a host from Host cell {cell!r}")

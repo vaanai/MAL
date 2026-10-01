@@ -283,3 +283,19 @@ def test_research_exploration_expansion_allowed_and_exp012_block_needs_its_id(bl
     assert ok, reasons
     ok, _ = _check(blocks, "exploration", "research", "2026-09-05T00", "2026-09-05T01")
     assert not ok
+
+
+def test_normalize_owner_and_host_synthetic_cells() -> None:
+    from tools.mal_catalog import _normalize_host, _normalize_owner
+
+    assert _normalize_owner("**reserved: the confirmation test after EXP-012**", row_name="x") == "reserved"
+    assert _normalize_owner("**EXP-013** (reserved until sealed)", row_name="x") == "EXP-013"
+    assert _normalize_owner("exploration pool", row_name="x") == "exploration-pool"
+    assert _normalize_host("mal-research-0, three walkers", row_name="x") == "research"
+    assert _normalize_host("mal-fast-0 (OVH)", row_name="x") == "fast"
+    assert _normalize_host("mal-core-0", row_name="x") == "oracle"
+    assert _normalize_host("fast", row_name="x") == "fast"
+    with pytest.raises(ValueError):
+        _normalize_host("mal-research-01 new box", row_name="x")
+    with pytest.raises(ValueError):
+        _normalize_host("mal-gpu-0", row_name="x")
