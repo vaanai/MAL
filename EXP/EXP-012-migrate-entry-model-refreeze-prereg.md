@@ -21,9 +21,14 @@
 - EXP-011's threshold `0.8012473581008048` was the 90th percentile of out-of-fold scores on a pool that **contained duplicate rows** (fast hours 2026-09-19T16, T17, T20: 2,467,409 duplicate trade rows, 3,100 creates, 97 migrations; see the dedupe note). The frozen features are mostly trade counts and flows, so duplicates shift their distribution and therefore the score distribution the threshold was cut from.
 - The new holdout (§4) will be deduplicated before it is read. Scoring a deduplicated block with a threshold cut on a duplicated pool would test the model under conditions it was not fitted on. So the model and threshold are re-derived on the deduplicated pool, by the same mechanical recipe.
 
-## 2. Not a new idea
+## 2. This is a refit of a §10-frozen candidate, and why that is allowed
 
-Nothing about the recipe is chosen after looking at results. EXP-012 is EXP-011 §3 run again on cleaner input. §10 of EXP-011 (no further tuning pass on the exploration pool) still holds: no setting, exit, feature, or threshold rule is tried against pools A/C/B.
+Stated plainly: EXP-011 §10 forbids "any refit of the model, threshold, or feature set after this file merges" and "a fourth" tuning pass on pools A/C/B for this candidate. EXP-012 refits the same candidate. It is allowed only by EXP-011's own closing text, not by §10:
+
+- EXP-011 Result: "The frozen model, threshold and feature set are retired for entry filtering, as §8 requires. The B3 idea itself is not retired: it goes back to exploration on deduplicated data. Any future confirmation is a new pre-registration under a new experiment ID, on a fresh block, with the fixed walker."
+- EXP-011 §8: "...they are not retuned and rerun against a new block without a new pre-registration under a new experiment ID."
+
+This file is that new pre-registration under a new ID, on a fresh block, with the fixed walker. Nothing about the recipe is chosen after looking at results: it is EXP-011 §3 verbatim, and the only change is the input. No setting, exit, feature or threshold rule is tried against pools A/C/B (the §10 spirit holds); the retraining itself is the refit that the Result carve-out permits.
 
 ## 3. The recipe (fixed now, fully mechanical)
 
@@ -49,7 +54,17 @@ Pool roots are the deduplicated clean-view directories on `mal-research-0` (hard
 | C (Oracle in-sample) | `/data/mal/clean-view/oracle-insample-2026-09-22_25` |
 | B (Oracle live tape) | `/data/mal/clean-view/oracle-live-2026-09-25_27` |
 
-The hour whitelists are unchanged (the same 9 UTC days, 2026-09-19 … 2026-09-27). `VIEW.sha256` under each root is verified before the run (`--verify-view`); the run also refuses unless every whitelisted hour's files exist. The code change is only the plumbing of these three roots (`tools/exp011_freeze.py`, `tools/exp011_build_table.py`); `tools/test_exp012_freeze_roots.py` proves decision-equivalence: the freeze outputs from a fixed table, and the pool rows from a fixed synthetic tape, hash to the same md5s as on `main` a920437 before the change, with default paths and with explicit roots.
+The hour whitelists are unchanged (the same 9 UTC days, 2026-09-19 … 2026-09-27).
+
+**The training input is pinned by content.** The sha256 of each root's own `VIEW.sha256` file is:
+
+| Root | sha256 of `VIEW.sha256` |
+| --- | --- |
+| `fast-pool-2026-09-18T23_2026-09-22T00` | `05486f70f53c7ef848b151f40d310ecc16e3ef517ff98ed7d4348250a32effe8` |
+| `oracle-insample-2026-09-22_25` | `ab4fa8b058a1a3b35c7b090b89840b6d9135aede3cd08cc64516a9446d05b2c3` |
+| `oracle-live-2026-09-25_27` | `a765603e535cb6757e7fe9227355f315f82fb603239f99fa200d8d9abae09251` |
+
+The table build refuses on any mismatch (`--verify-view`: every file listed in `VIEW.sha256` is re-hashed, `VIEW.sha256` itself must hash to the value above, paths escaping the root are refused, and all three roots must be given or none), and records the three values in `table_row_counts.json`, which the scorer re-checks. Each `VIEW.sha256` entry equals the corresponding entry of the deduplicated `/data/mal/clean/<block>/MANIFEST.sha256` (same bytes, hardlinked; the file is renamed from `.deduped.jsonl.zst` to `.jsonl.zst`); the `MANIFEST.sha256` hashes are in the [dedupe note](../ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md). The run also refuses unless every whitelisted hour's files exist. The code change is only the plumbing of these roots (`tools/exp011_freeze.py`, `tools/exp011_build_table.py`); `tools/test_exp012_freeze_roots.py` proves decision-equivalence: the freeze outputs from a fixed table, and the pool rows from a fixed synthetic tape, hash to the same md5s as on `main` a920437 before the change, with default paths and with explicit roots. That fixture is small, and `build_table` itself (chunking, streaming to disk) is not md5-covered.
 
 The freeze command (run by the manager as a MiScusi job after this PR merges) is in §11.
 
@@ -61,7 +76,17 @@ The freeze also runs the report-only **nested fixed-threshold LODO** (EXP-011 §
 - pooled ex-top-3 SOL **> 0**, and
 - **more than 4 of the 9** outer days positive (that fail model's own count).
 
-If it fails, **EXP-012 is withdrawn before any holdout read** and the block `[2026-09-03T12, 2026-09-09T12)` is released (ledger edit; it stays unread). Nothing — features, hyperparameters, seed, threshold rule, exit, size, the roots — may change in response to the freeze output, in either direction. In particular a pass does not license picking among variants and a fail does not license a second freeze with different settings under this ID. The screen is computed mechanically (`tools.exp012_support.proceed_screen`, which calls B3's own `screen_candidate`) and written by the freeze to `ARTIFACTS/exp012/proceed_screen.json`. The freeze output is recorded in Part 2 (the artifacts PR) with md5s (`ARTIFACTS/exp012/FROZEN.md5`).
+If it fails, **EXP-012 is withdrawn before any holdout read** and the block `[2026-09-03T12, 2026-09-09T12)` is released (ledger edit; it stays unread). Nothing — features, hyperparameters, seed, threshold rule, exit, size, the roots — may change in response to the freeze output, in either direction.
+
+The first completed freeze run is binding. A re-run is allowed only if it reproduces the same table md5, model md5 and proceed_screen.json byte for byte. Any change to code or input after the screen output exists withdraws EXP-012.
+
+This is enforced in code, not left to discipline:
+
+- The freeze runs only at the pre-registration PR's merge commit (`--expect-commit`, tracked files unmodified), records `code_commit` and `code_dirty` in `train_manifest.json`, refuses `--frozen-manifest` together with `--skip-nested-lodo`, and refuses to write into a directory that already holds `FROZEN.md5` (a re-run goes to a different directory and is compared byte for byte).
+- The screen is computed mechanically (`tools.exp012_support.proceed_screen`, which calls B3's own `screen_candidate`) and written to `ARTIFACTS/exp012/proceed_screen.json`.
+- Before taking the lock, `tools/exp012_score.py` refuses unless `proceed_screen.json` is listed in `FROZEN.md5` together with `nested_fixed_threshold_lodo.json`, `train_manifest.json` and `table_row_counts.json`; `proceed == true`; the file equals `proceed_screen()` recomputed by the scorer from `nested_fixed_threshold_lodo.json`; `train_manifest.json` records `code_commit == --freeze-commit` and `code_dirty == false`; `tools/` and `schemas/` are unchanged between `--freeze-commit` and HEAD; the pin, `FROZEN.md5` and the scorer/freeze code are tracked and unmodified; and `--frozen-manifest-md5` (required) equals the md5 of `FROZEN.md5`.
+
+The freeze output is recorded in Part 2 (the artifacts PR) with md5s (`ARTIFACTS/exp012/FROZEN.md5`) and the freeze commit.
 
 ## 4. Holdout
 
@@ -75,15 +100,19 @@ If it fails, **EXP-012 is withdrawn before any holdout read** and the block `[20
 
 Read once, by `tools/exp012_score.py`. The scorer takes its own freeze fence: nothing in the freeze path (`tools/exp011_freeze.py`, `tools/exp011_build_table.py`) can be pointed at a root under `/data/mal/blocks` or at the EXP-011 walker directories, and no exploration-pool hour can fall in this block (asserted at import).
 
+**Fixed read settings (no CLI override; the scorer has them as constants):** holdout feature table built with `buffer_hours=24`, `max_home_hours=12`, `max_workers=2` (the same as the training table, EXP-011 §3); the read-once lock at `/data/mal/exp012/HOLDOUT_READ.lock`.
+
 ### 4.1 Pre-read procedure (outcome-blind; none of it parses a trade row)
 
-1. **All 144 hours sealed**: every hour of each walker's range has `status == "sealed"` in that walker's `checkpoint.json`. Any missing or unsealed hour: **NOT_DECIDABLE, no read.**
-2. `python3 -m tools.backfill_verify --dir <walker dir> --from <start> --to <end>` (metadata) and again with `--content` on each of the three directories. Any hour with a slot issue (`backwards_slot_range`, `implausible_slot_span`), a missing trades file (`sealed_with_no_trades_file`), a sealed file next to a partial checkpoint, or any file not sealed to `.zst`: **NOT_DECIDABLE, no read.** (A `resumed: duplicate risk` hour is allowed: step 3 removes its exact duplicates; it is disclosed.)
-3. **Exact duplicates removed deterministically** with `backfill_verify --content --dedupe-out <clean dir>/<wN>` (first occurrence wins, input order preserved). This step looks at line equality only and is outcome-blind. Per-walker row counts in, out and removed are disclosed in the result.
-4. **sha256 manifest**: `python3 -m tools.exp012_score --write-dedupe-pin PATH …` writes `PATH` (sha256sum format: each walker's `manifest.json` and every deduplicated file). The pin is committed and merged **before** the read.
-5. **The read is on the deduplicated copy.** The scorer refuses unless the pin matches the manifests, re-hashes every deduplicated trades and creates file after taking the lock (an integrity failure there is NOT_DECIDABLE and spends the lock), and never opens the raw walker data files.
+1. **All 144 hours sealed**: every hour of each walker's range has `status == "sealed"` in that walker's `checkpoint.json`.
+2. `python3 -m tools.backfill_verify --dir <walker dir> --from <start> --to <end>` (metadata) and again with `--content` on each of the three directories. Any hour with a slot issue (`backwards_slot_range`, `implausible_slot_span`), a missing trades file (`sealed_with_no_trades_file`), a sealed file next to a partial checkpoint, or any file not sealed to `.zst` is a refusal. (A `resumed: duplicate risk` hour is allowed: step 3 removes its exact duplicates; it is disclosed.) `backfill_verify --content` detects duplicate rows, not missing rows.
+3. **Exact duplicates removed deterministically** with `backfill_verify --content --dedupe-out <clean dir>/<wN>` (first occurrence wins, input order preserved). This looks at line equality only and is outcome-blind. Per-walker row counts in, out and removed are disclosed in the result.
+4. **sha256 pin**: `python3 -m tools.exp012_score --write-dedupe-pin PATH …` stream-hashes every deduplicated trades and creates file against its manifest and writes `PATH` (sha256sum format: each walker's `manifest.json` and every deduplicated file). The pin is committed and merged **before** the read.
+5. **The read is on the deduplicated copy.** The scorer re-hashes every deduplicated trades and creates file against the manifest **before the lock** (hashing bytes reveals no outcome, so a mismatch is a refusal that does not spend the block). It never opens the raw walker data files. After the lock only the read and scoring happen (plus a defense-in-depth re-hash).
 
-The scorer's own refusals (each tested, `tools/test_exp012_score.py`), all before the lock and without opening any trade/create data file: a walker range not tiling exactly the 144-hour block; any hour not sealed; any metadata slot issue; no dedupe manifest, a manifest that does not cover every hour's trades file, or a pin that does not match; frozen artifacts whose md5s differ from `ARTIFACTS/exp012/FROZEN.md5` (or whose features differ from `FROZEN_FEATURE_NAMES`); a lock that already exists. The **O_EXCL read-once lock is written before the first holdout data file is opened.**
+**Refusals before the lock.** If verification finds an unsealed, missing or slot-flagged hour (or any other pre-lock refusal below) BEFORE the lock is taken, that hour may be re-walked once with the same pinned walker code (`2317b95`). This is outcome-blind: no holdout row is scored. Then the full verification runs again. If the block is still not clean within 24 hours of the last walker finishing, EXP-012 closes NOT_DECIDABLE and the block is released unread. **Any refusal or failure AFTER the lock spends the block.**
+
+The scorer's own refusals (each tested, `tools/test_exp012_score.py`), all before the lock and before any row is read: a walker range not tiling exactly the 144-hour block; any hour not sealed; any metadata slot issue; raw creates presence differing from the manifest's for any hour; no dedupe manifest, a manifest that does not cover every hour's trades file, or a pin that does not match; any deduplicated trades/creates file whose bytes differ from the manifest; frozen artifacts whose md5s differ from `ARTIFACTS/exp012/FROZEN.md5` or fail the proceed/provenance checks of §3.3; code or pin untracked or modified; `out-dir` not writable or already holding a report or `NOT_DECIDABLE.json`; `zstdcat` missing; the frozen model failing a smoke predict; a lock that already exists. The **O_EXCL read-once lock is written before the first row is read.** The verdict and report JSON are printed to stderr before any file is written.
 
 ### 4.2 Creator history
 
@@ -120,16 +149,16 @@ A pass earns a forward-paper book, added only after the 2026-10-05T05:00:00Z kil
 ## 10. Disclosures (read before trusting any number)
 
 1. **The clean B3 re-run does not test this model.** [exploration-entry-model-b3-clean-2026-10-01.md](../ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md) (#190) used B3's **unablated** 20-feature set (it includes `same_slot_buys`, `nearby_buy_sol`). It says the 09-28 screen was not a duplicate-row artifact; it says nothing about the 18-feature ablated model frozen here. The ablated model's only clean-pool evidence will be the freeze's own proceed screen (§3.3).
-2. **Row-count mismatch, EXP-011.** EXP-011's table had pool A = 3092 rows against B3's 3029 (C 3372 vs 3342, B 2337 vs 2300). That is a **code difference** (the table is built with `max_home_hours=12, buffer_hours=24`; B3 with the default chunking and `buffer_hours=2`, so more create→migrate lags are resolved), **not duplicate inflation**: for 2026-09-19 the counts are equal (962). EXP-012 builds its table with the EXP-011 table parameters.
-3. **The pool has been read in at least four passes** (#146, #152, #156, the 2026-10-01 clean re-run), plus the EXP-011 freeze and nested LODO. Fit to that week is likely. The best-of-6 winner's curse (EXP-011 §1) still applies; the clean re-run weakened the lead cell slightly (flat +6.73% to +6.05%, 9/9 to 8/9 days).
+2. **Row-count mismatch, EXP-011.** EXP-011's table had pool A = 3092 rows against B3's 3029 (C 3372 vs 3342, B 2337 vs 2300). That is a **code difference** (the table is built with `max_home_hours=12, buffer_hours=24`; B3 with the default chunking and `buffer_hours=2`, so more create→migrate lags are resolved), **not duplicate inflation**. Evidence: all three duplicated fast hours (2026-09-19T16, T17, T20) fall on 2026-09-19, and the 2026-09-19 count is equal in both: `ARTIFACTS/exp011/table_row_counts.json` has `"2026-09-19": 962`, and the nested LODO's 2026-09-19 `n_test` (`ARTIFACTS/exp011/nested_fixed_threshold_lodo.json`, `fold_info`) is 962, the same as B3's. Had duplicates inflated the count, 2026-09-19 would be the day that differed. EXP-012 builds its table with the EXP-011 table parameters.
+3. **The pool has been read in at least four passes** (#146, #152, #156, the 2026-10-01 clean re-run), plus the EXP-011 freeze and nested LODO. Fit to that week is likely. The best-of-6 winner's curse (EXP-011 §1) still applies. On the clean pool the **unablated 20-feature** lead cell (`tpsl_tp50_sl30` / `s2_clf`, not the model frozen here) moved from flat +6.73% to +6.05% and from 9/9 to 8/9 days. Its one negative day is 2026-09-20, a fast day: top-10% flat −0.13%, pressure −0.41% (clean re-run raw output, `s2_clf` per-day table). The note's own caution applies: "With about 100 trades per day, '8/9 days' is not a strength." The 9/9 and 8/9 counts, here and in EXP-011 §1a, are not strong evidence either way.
 4. **The holdout is fast/backfill only.** The pool the model learned from is one-third fast; fast was the weakest source. 2026-09-20, a fast day, was the lead cell's one negative day in the clean re-run.
 5. **EXP-011's hours were spent.** The EXP-011 block `[2026-09-09T12, 2026-09-15T12)` is not used here in any form.
-6. **Walker provenance.** The fresh block is walked by the fixed walker (`2317b95`). Resumed hours may still contain exact duplicates (removed in §4.1) and the duplicate-free guarantee is only as good as `backfill_verify --content`.
+6. **Walker provenance.** The fresh block is walked by the fixed walker (`2317b95`). Row loss on resume was fixed by `042e534` ("exactly-once resume, no-files-no-seal, refuse backwards/implausible slot ranges"), an ancestor of `2317b95`. Resumed hours may still contain exact duplicates (removed in §4.1). `backfill_verify --content` detects duplicates, not missing rows, so the guarantee against row loss rests on the walker fix, not on that check.
 7. **Result records.** The scorer and the freeze can also write a `result.v1` record (`--result-out`, roles `confirmation-oneshot` and `exploration`); it does not change the verdict.
 
 ## 11. Commands
 
-Freeze (manager, MiScusi job, after this PR merges; `mal-research-0`; one heavy job at a time):
+Freeze (manager, MiScusi job, after this PR merges; `mal-research-0`; one heavy job at a time; run from a checkout at the merge commit, with no tracked file modified):
 
 ```
 nice -n 19 python3 -m tools.exp011_build_table --max-workers 2 --verify-view \
@@ -138,10 +167,11 @@ nice -n 19 python3 -m tools.exp011_build_table --max-workers 2 --verify-view \
   --oracle-insample-dir /data/mal/clean-view/oracle-insample-2026-09-22_25 \
   --oracle-live-dir /data/mal/clean-view/oracle-live-2026-09-25_27
 python3 -m tools.exp011_freeze --table /data/mal/exp012/table.jsonl --out-dir ARTIFACTS/exp012 --frozen-manifest \
+  --expect-commit <the merge commit of the pre-registration PR> \
   --result-out /data/mal/exp012/freeze-result.json
 ```
 
-The read command and its flags are in `tools/exp012_score.py --help`; Part 2 records the exact line with the frozen manifest md5 and the dedupe pin.
+The read command is `python3 -m tools.exp012_score` with `--w1-dir/--w2-dir/--w3-dir`, `--w1-clean-dir/...`, `--artifact-dir ARTIFACTS/exp012`, `--dedupe-pin`, `--frozen-manifest-md5` and `--freeze-commit` (all required); Part 2 records the exact line.
 
 ## Sources
 
