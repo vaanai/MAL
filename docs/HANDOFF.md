@@ -1,4 +1,4 @@
-# Manager handoff 2026-10-01 (early UTC)
+# Manager handoff 2026-10-01 (Manager2)
 
 Replace this page at the next handoff; don't append to it. Read it first, then [LAB_STATE.md](../LAB_STATE.md), [CONSTITUTION.md](../CONSTITUTION.md), [docs/HOSTS.md](HOSTS.md), [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md) and the B3 lab note [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](../ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md).
 
@@ -29,42 +29,28 @@ The bar does not drop. Winner's curse is real (B3 was the best of many cells). T
 
 There is little slack. Every day of waiting on a key, a merge or a re-fetch comes straight out of it.
 
-## What the 2026-10-01 session did
+## State at 2026-10-01 ~01:30Z (Manager2)
 
-- **Took over in MiScusi** as worker "Manager1" (inbox reader), session MALsession1 `s_y1y4vFh5TCjy8A`. GitHub auth OK (`vaanai`), push OK, `ssh mal-research-0` OK.
-- **EXP-011 lock** `/home/claude/data/exp011/HOLDOUT_READ.lock` set read-only. EXP-011 is closed NOT_DECIDABLE and is never re-run.
-- **Exploration pool copied to research-0**, sha256-verified file by file against the source, each dir has `SOURCE.sha256`:
-  - `/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00` (73 hours: fast pre-cut + the two EXP-009 exclusion hours; B3's Pool A whitelist uses 71 of them)
-  - `/data/mal/raw/oracle-insample-2026-09-22_25`
-  - `/data/mal/raw/oracle-live-2026-09-25_27` (no migrations dir; creates are **daily** `creates/observe-<day>.jsonl`)
-  - The EXP-009 and EXP-011 blocks were deliberately **not** copied.
-- **research-0 Python venv** `/data/mal/venv`, pinned to mal-fast-0's versions: numpy 2.5.3, lightgbm 4.7.0, scikit-learn 1.9.1, scipy 1.18.1 (`/data/mal/venv/FREEZE.txt`). System `python3` there has no numpy: always use the venv for B3.
-- **#181 merged**: B3 takes `--fast-dir`, `--oracle-insample-dir`, `--oracle-live-dir`, `--no-checkpoint`. Defaults unchanged; reviewer approved (158 tests, spawn smoke test confirmed roots reach workers). `exploration_exits.ALL_HOURS` is now lazy.
-- **#182** (owner/Grokbot request): repo `.claude/settings.json` deny rules use `//etc/...` (absolute) and drop `Write(...)` rules covered by `Edit(...)`. Merged after a reviewer pass. Its open caveat: no fresh session has yet been observed refusing a Write to a denied path; check once. Note that Read/Edit denies never stop Bash (e.g. `sudo tee`), before or after this PR.
+Manager2 took over from Manager1 at ~00:45Z (MiScusi worker "Manager2", inbox reader). Manager1's setup notes (research-0 venv, raw pool copies, EXP-011 lock, #181/#182) still hold; see the memory note and `git log`.
 
-## In flight
+**Done**
+- **Ledger:** `[2026-09-03T12, 2026-09-09T12)` reserved for the next confirmation test (#184), walkers recorded (#185). Owner unnamed until a pre-registration names it. If clean B3 fails its screen, release it with a changelog line.
+- **Walkers on research-0** since 00:54Z. Key placed by Helm at `/var/lib/mal/backfill/helius.env` (claude-only). User units `mal-walker-w1/w2/w3`, 48h each, 1.2M credit cap each, code pinned `2317b95` at `/data/mal/code/walker`, out `/data/mal/blocks/fresh-0903/w{1,2,3}`. ~16 min per hour → all 144h about 14:00Z. Check with `journalctl --user -u mal-walker-wN -n1 -o cat` and each `checkpoint.json`. Then: `backfill_verify` (metadata + `--content`), dedupe, sha256 manifest; report credits per walker.
+- **Dedupe (job #1):** done, matches the census; totals and manifest hashes in `ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md` (#187). 97 fast migrations were duplicated, so pool-A results before today were on dirty data.
+- **`/data/mal/clean-view/<block>`:** hardlinked mirror of `/data/mal/clean` under the raw file names (the dedupe wrote `*.deduped.jsonl.zst`, which the loaders don't find). Each has `VIEW.sha256`, sha-checked against the clean manifest. **Point every exploration job at clean-view.**
 
-**MiScusi job #1 `j_1JgjH_GG0uL02A` "dedupe exploration pool"** on research-0. It runs `backfill_verify --content --dedupe-out` on the three raw dirs into `/data/mal/clean/<same names>`, dedupes the daily `observe-*.jsonl` with `awk '!seen[$0]++'`, and writes `MANIFEST.sha256` in each clean dir. Check with `miscusi_job_status`. When it ends:
-- Oracle dirs have no `checkpoint.json`, so `rc=1` / `hours_flagged` there is **expected**. Read the per-hour rows/unique counts instead.
-- Sanity: the fast hours 2026-09-19T16, T17, T20 should lose ~974k / 476k / 1.02M trade rows (census, `/home/claude/data/dup-census/census.json`). Oracle in-sample should lose 0. Oracle live ~5–326 per hour.
-- Record the totals in a lab note.
+**In flight**
+- **B3 clean re-run**: MiScusi job #4 `j_YqPs2Ks67RYcFg`, `--max-workers 3` on purpose (`--max-workers` sets the chunk count, so 3 keeps chunk boundaries identical to 09-28 and isolates the dedupe). Outputs in the job's out dir on research-0 (`~/.miscusi/jobs/<id>/out/b3-clean.{md,json}`). Next: lab note `ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.*` against the 09-28 pre-stated screen (both fail models: pooled top-10% mean > 0, ex-top-3 SOL > 0, > half of 9 days positive). Do not move the screen. Then `quant-proof`.
+- **#186** (`explore_exit` runner wired, root allowlist, strict block_time on the new path): in re-review.
+- **MiScusi #12** (guard checks only touched paths; owner/Grokbot request): open, in adversarial security review. Grokbot deploys; never deploy from MAL.
 
 ## Next, in order
 
-1. **B3 re-run on clean data, on research-0** (MiScusi job, `role: exploration`, run from `main` ≥ `ab80ca4`):
-   ```
-   /data/mal/venv/bin/python tools/exploration_entry_model_b3.py \
-     --fast-dir /data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00 \
-     --oracle-insample-dir /data/mal/clean/oracle-insample-2026-09-22_25 \
-     --oracle-live-dir /data/mal/clean/oracle-live-2026-09-25_27 \
-     --no-checkpoint --max-workers 24 \
-     --out-md $MISCUSI_OUTPUT_DIR/b3-clean.md --out-json $MISCUSI_OUTPUT_DIR/b3-clean.json
-   ```
-   Check the exact `--max-workers` semantics and memory per worker first (it was 3 on mal-fast-0). Then commit the outputs as a new lab note (`ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.*`) with the duplicate-removal disclosure, and compare against the screen pre-stated in the 09-28 B3 note. Do **not** move the screen. Check ex-top-3 and the frozen post-ablation feature list before calling anything a candidate. `quant-proof` before any sentence says it made money.
-2. **Fresh confirmation block.** Next unassigned range is older than 2026-09-09T12, e.g. `[2026-09-03T12, 2026-09-09T12)`. Add the ledger row **before** any hour is sealed. Walk it on research-0 with the fixed walker (`pump_history_backfill.py` from main ≥ `a47dbdb`; split across 3+ walkers by non-overlapping sub-ranges). **Blocked on Helm placing the Helius key on research-0**: the owner was asked to request it. Credits: walkers B + C used ~1.9M for 144h, so a 6-day block is ~2–3M of the ~20M headroom. Report credits per unit. Run `backfill_verify` (metadata + `--content`) before the one-shot read; any duplicate or missing hour stops the read.
-3. **Parallel lanes on research-0** so one failure doesn't stall us: wire the two template runners (`explore_entry_filter`, `explore_exit`, #171 — they raise NotImplementedError; every lookback/buffer hour must pass `check_read`), then run sweeps on the clean pool. Every try goes in the tries log (`result.v1`, #166) for multiplicity. Then ask the owner to define the templates in MiScusi from `docs/contracts/job-templates.md` (the space has **no templates** yet).
-4. **Move the rest to research-0**: Console (`vaanai/mal-console` `deploy/README.md`), status collectors, walkers. The Console moves before any live key lands on mal-fast-0.
-5. EXP-009's block has resumed (duplicated) hours: its screen scorer must dedupe first, via a pre-registered amendment. Paused by owner decision.
+1. Clean B3 result → lab note → if a cell passes: pre-register EXP-012 on the reserved block (frozen model + threshold, as EXP-011 did), before the walkers finish.
+2. Walkers done → verify/dedupe/manifest → one-shot read only per the pre-registration.
+3. Merge #186 after APPROVE; then wire `explore_entry_filter` the same way (allowlist + strict hours). Run exploration sweeps on clean-view; log every try (`result.v1`).
+4. Move Console/status collectors to research-0 before any live key lands on mal-fast-0.
+5. EXP-009 dedupe amendment: paused by owner decision.
 
 ## Dated items
 
