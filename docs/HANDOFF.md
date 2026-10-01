@@ -29,28 +29,27 @@ The bar does not drop. Winner's curse is real (B3 was the best of many cells). T
 
 There is little slack. Every day of waiting on a key, a merge or a re-fetch comes straight out of it.
 
-## State at 2026-10-01 ~01:30Z (Manager2)
+## State at 2026-10-01 ~02:30Z (Manager2)
 
-Manager2 took over from Manager1 at ~00:45Z (MiScusi worker "Manager2", inbox reader). Manager1's setup notes (research-0 venv, raw pool copies, EXP-011 lock, #181/#182) still hold; see the memory note and `git log`.
+**Done today:**
+- **Data and the B3 re-check:** the exploration pool is deduplicated (#187), and the B3 clean re-run passed the same screen (#190, unablated model, exploration only).
+- **EXP-012 Part 1 merged** (#194, `ea5ec37`). It re-freezes EXP-011's recipe on the clean pool, with the proceed screen enforced in code, input pinned by VIEW.sha256 hashes, and a read-once scorer `tools/exp012_score.py`. `quant-proof` and the reviewer both passed it.
+- **"Running now" panel live:** the status collector (#193, #197) and the Console panel (mal-console #8) are deployed. Every log line is scrubbed, including keys and seed phrases.
+- **Helius:** Developer plan, **50 rps**, about **1 credit per getBlock** (dashboard 5.6M vs walker self-reports about 4.2M). All walkers share **about 40 rps**. See the memory note `helius-plan-limits`.
+- **MiScusi:** 8 jobs per session. Delegated tasks to devices stall on Bash permission prompts (reported to the owner), so use in-session agents for now.
 
-**Done**
-- **Ledger:** `[2026-09-03T12, 2026-09-09T12)` reserved for the next confirmation test (#184), walkers recorded (#185). Owner unnamed until a pre-registration names it. If clean B3 fails its screen, release it with a changelog line.
-- **Walkers on research-0** since 00:54Z. Key placed by Helm at `/var/lib/mal/backfill/helius.env` (claude-only). User units `mal-walker-w1/w2/w3`, 48h each, 1.2M credit cap each, code pinned `2317b95` at `/data/mal/code/walker`, out `/data/mal/blocks/fresh-0903/w{1,2,3}`. ~16 min per hour → all 144h about 14:00Z. Check with `journalctl --user -u mal-walker-wN -n1 -o cat` and each `checkpoint.json`. Then: `backfill_verify` (metadata + `--content`), dedupe, sha256 manifest; report credits per walker.
-- **Dedupe (job #1):** done, matches the census; totals and manifest hashes in `ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md` (#187). 97 fast migrations were duplicated, so pool-A results before today were on dirty data.
-- **`/data/mal/clean-view/<block>`:** hardlinked mirror of `/data/mal/clean` under the raw file names (the dedupe wrote `*.deduped.jsonl.zst`, which the loaders don't find). Each has `VIEW.sha256`, sha-checked against the clean manifest. **Point every exploration job at clean-view.**
+**In flight:**
+- **EXP-012 freeze:** MiScusi job #23 at `ea5ec37`, writing to `ARTIFACTS/exp012` in the job checkout and `/data/mal/exp012`. The job copies its artifacts to `$MISCUSI_OUTPUT_DIR`.
+  - Next is **Part 2:** commit `ARTIFACTS/exp012` (FROZEN.md5, proceed_screen.json and the rest).
+  - `quant-proof` checks the proceed numbers.
+  - If `proceed` is false, EXP-012 is withdrawn and the block released.
+- **EXP-012 block walkers:** user units `mal-walker-w1/w2/w3`, about 42 rps, done around 12:30Z. Then follow EXP-012 §4.1: `backfill_verify` (metadata + `--content`), dedupe, `exp012_score --write-dedupe-pin`, commit the pin, `--dry-run-preconditions`, then the read from a worktree at the freeze commit plus only the Part 2 commit.
+- **Gated walkers #24–#29:** the backup block and expansion w1–w3. They start when the EXP-012 walkers finish, at most 4 at once, at 10 rps each. Queue expansion w4–w7 (`[08-14T12, 08-22T12)`) the same way once slots free.
+- **Exploration expansion:** once sealed and verified, run sweeps on research-0. The owner will raise the slot count for CPU-only sweeps when asked.
 
-**In flight**
-- **B3 clean re-run**: MiScusi job #4 `j_YqPs2Ks67RYcFg`, `--max-workers 3` on purpose (`--max-workers` sets the chunk count, so 3 keeps chunk boundaries identical to 09-28 and isolates the dedupe). Outputs in the job's out dir on research-0 (`~/.miscusi/jobs/<id>/out/b3-clean.{md,json}`). Next: lab note `ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.*` against the 09-28 pre-stated screen (both fail models: pooled top-10% mean > 0, ex-top-3 SOL > 0, > half of 9 days positive). Do not move the screen. Then `quant-proof`.
-- **#186** (`explore_exit` runner wired, root allowlist, strict block_time on the new path): in re-review.
-- **MiScusi #12** (guard checks only touched paths; owner/Grokbot request): open, in adversarial security review. Grokbot deploys; never deploy from MAL.
-
-## Next, in order
-
-1. Clean B3 result → lab note → if a cell passes: pre-register EXP-012 on the reserved block (frozen model + threshold, as EXP-011 did), before the walkers finish.
-2. Walkers done → verify/dedupe/manifest → one-shot read only per the pre-registration.
-3. Merge #186 after APPROVE; then wire `explore_entry_filter` the same way (allowlist + strict hours). Run exploration sweeps on clean-view; log every try (`result.v1`).
-4. Move Console/status collectors to research-0 before any live key lands on mal-fast-0.
-5. EXP-009 dedupe amendment: paused by owner decision.
+**Known gaps:**
+- `backfill_verify`'s slot-span sanity check needs per-period bounds before August blocks are verified.
+- `deepseek.ts` errors in mal-console are not scrubbed.
 
 ## Dated items
 
