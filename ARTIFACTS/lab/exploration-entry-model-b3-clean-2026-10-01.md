@@ -23,7 +23,7 @@ A cell is a CANDIDATE only if, under BOTH fail models: pooled top-10% mean net %
 | `trail_30_act20` / s2_clf | 866 | +3.44% (−0.18%) → +3.82% (−0.02%) | +5.5562 → +6.7981 | 6/9 → 6/9 | +2.06% (−0.46%) → +2.77% (−0.01%) | +1.4829 → +3.7395 | 6/9 → 6/9 | CANDIDATE → CANDIDATE |
 | `trail_30_act20` / s3_reg_winsor | 866 | −0.36% (−3.04%) → −0.78% (−3.42%) | −7.0867 → −8.9136 | 2/9 → 5/9 | −0.62% (−2.31%) → −0.83% (−2.51%) | −6.1749 → −7.0951 | 2/9 → 5/9 | no → no |
 
-**Same four cells pass on clean data.** The lead cell `tpsl_tp50_sl30`/`s2_clf` still passes the screen, but it weakened on every measure:
+**Same four cells pass on clean data.** The lead cell `tpsl_tp50_sl30`/`s2_clf` still passes the screen, but it weakened on every top-10% screen measure (at top-20% its positive days rose from 8/9 to 9/9):
 - flat mean −0.68 pp (+6.73% → +6.05%)
 - flat CI lower bound −0.83 pp (+4.35% → +3.52%)
 - flat ex-top-3 SOL −2.98 (+27.1253 → +24.1427)
@@ -38,4 +38,4 @@ A cell is a CANDIDATE only if, under BOTH fail models: pooled top-10% mean net %
 
 - The 09-28 screen result was **not** a duplicate-row artifact.
 - This is still the exploration pool. It is not evidence for the promotion gate. The CI lower bounds above are in-pool leave-one-day-out numbers, not out-of-sample.
-- Next step (EXP-012, separate PR): re-run EXP-011's freeze recipe unchanged (the ablated 18 features, the same parameters and threshold rule) on the deduplicated pool. Pre-state that its nested leave-one-day-out result must pass this same screen before the reserved block `[2026-09-03T12, 2026-09-09T12)` is read. EXP-011's frozen model is retired (its §8) and is not reused. `quant-proof` reviewed this note (2026-10-01).
+- Next step (EXP-012, separate PR): re-run EXP-011's freeze recipe unchanged (the ablated 18 features, the same parameters and threshold rule) on the deduplicated pool. Pre-state that its nested leave-one-day-out result must pass this same screen before the reserved block `[2026-09-03T12, 2026-09-09T12)` is read. EXP-011's frozen model is retired (its §8) and is not reused. `quant-proof` reviewed this note for accuracy (2026-10-01); no edge is claimed.
