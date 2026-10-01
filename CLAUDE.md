@@ -114,6 +114,10 @@ Push when the tests you ran are green. Do not sit on a day of uncommitted edits.
 - Builder agents stop at ~40 turns. Give them tight scopes and ask for WIP pushes rather than one long uncommitted run.
 - Use worktree isolation for parallel agents.
 - **Every long-running job is a MiScusi job** (`miscusi_job_submit`; `resumable: true` when it checkpoints): walkers, backfills, replays and heavy builds. No standalone `systemd --user` units, nohup or tmux for new work: the owner and the Console see only MiScusi jobs (state, log, memory). Delegate code tasks the owner should follow with `miscusi_delegate`. Owner instruction, 2026-10-01. Exception: the research-0 walkers `mal-walker-w1/w2/w3` for `[2026-09-03T12, 2026-09-09T12)` finish as user units.
+- **Owner visibility, every result or decision:**
+  - add a MiScusi notebook entry (`miscusi_notebook_add`, kind result/decision/finding, refs to the job);
+  - update `data/console.json` (stream, ladder, for_you, events; copy numbers from the lab note, never rounded up), merge it, and `git -C ~/MAL pull --ff-only` so the Console shows it;
+  - copy any `result.v1` record to `~/data/results/` for the Console's Results page.
 - Oneshot systemd services show `ActiveState=activating` while running — don't wait on `is-active`.
 - PR merge/close and `mal-*` restarts are pre-approved in the permissions file.
 - Every runner change must carry an md5 decision-equivalence replay proof before deploy.
