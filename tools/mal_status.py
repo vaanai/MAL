@@ -42,6 +42,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 SCHEMA_VERSION = "status.v1"
 
@@ -444,20 +445,42 @@ def collect_local_status(
 # --- log-line scrubbing ---------------------------------------------------------
 
 LOG_LINE_MAX = 200
+LOG_INPUT_MAX = 4096  # cap BEFORE any regex runs, so scrub time is bounded
 REDACTED = "[redacted]"
 
-# Order matters: the broad "Authorization: …" / helius-URL rules run before the
-# narrower key=value rules so a partially redacted span is not left behind.
-_SCRUB_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"(?i)\bauthorization\s*:.*"), REDACTED),
-    (re.compile(r"(?i)\bbearer\s+[^\s\"',;]+"), REDACTED),
-    (re.compile(r"(?i)\b(?:https?|wss?)://[^\s?\"']*helius[^\s?\"']*\?[^\s\"']*"), REDACTED),
-    (re.compile(r"(?i)[\w-]*api[-_]?key\s*[=:]\s*[^\s&,;\"']+"), REDACTED),
-    (re.compile(r"(?i)[\w-]*token\s*=\s*[^\s&,;\"']+"), REDACTED),
-    (re.compile(r"\bmck_[A-Za-z0-9_-]+"), REDACTED),
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), REDACTED),
-    (re.compile(r"(?<![A-Za-z0-9])(?:0x)?[0-9a-fA-F]{32,}(?![A-Za-z0-9])"), REDACTED),
-    (re.compile(r"(?<![A-Za-z0-9])[1-9A-HJ-NP-Za-km-z]{32,}(?![A-Za-z0-9])"), REDACTED),
+# Every quantifier below is bounded or applies to a single character class
+# that is not preceded by an open-ended prefix, so no rule backtracks
+# quadratically; the 4096-char input cap bounds the rest.
+_KEY_NAMES = (
+    r"(?:api[-_]?key|apikey|client[-_]?secret|secret|passw(?:or)?d|passwd"
+    r"|access[-_]?token|token|auth|key)"
+)
+_KV_VALUE = r"(?:\"[^\"]{0,512}\"|'[^']{0,512}'|[^\s\"'&,;}]{1,512})"
+
+# Order matters: whole-header / whole-URL rules run before the narrower ones.
+_SCRUB_PATTERNS: list[re.Pattern[str]] = [
+    # bare dashed UUIDs (Helius keys are UUIDs)
+    re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
+    # headers: Authorization, Cookie / Set-Cookie, X-...-Key
+    re.compile(r"(?i)\bauthorization\s*:.*"),
+    re.compile(r"(?i)\b(?:set-)?cookie\s*:.*"),
+    re.compile(r"(?i)\bx-(?:[a-z]{1,20}-){0,3}key\s*:\s*\S{1,512}"),
+    re.compile(r"(?i)\bbearer\s+[^\s\"',;]{1,512}"),
+    # scheme://user:pass@host
+    re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,15}://[^\s/@:\"']{1,64}:[^\s/@\"']{1,128}@"),
+    # a helius URL: host, path (keys can live in the path) and query, all of it
+    re.compile(r"(?i)\b(?:https?|wss?)://[^\s/?\"']{0,100}helius[^\s/?\"']{0,100}[^\s\"']{0,500}"),
+    # any URL query value of 20+ chars
+    re.compile(r"[?&][^\s=&#\"']{1,64}=[^\s&\"']{20,}"),
+    # HELIUS_API_KEY <value> (space-separated)
+    re.compile(r"(?i)helius[-_]?(?:api[-_]?)?key\s+\S{1,512}"),
+    # key=value / key: value / JSON "key":"value", optional quotes around both
+    re.compile(r"(?i)[\"']?(?<![A-Za-z0-9])" + _KEY_NAMES + r"[\"']?\s*[:=]\s*" + _KV_VALUE),
+    # vendor key prefixes
+    re.compile(r"\bmck_[A-Za-z0-9_-]{1,200}"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{8,200}"),
+    # any 32+ run of base64 / base64url / base58 / hex characters (mints, signatures, keys)
+    re.compile(r"[A-Za-z0-9+/_-]{32,}={0,2}"),
 ]
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
@@ -465,15 +488,28 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 def scrub_log_line(line: str | None) -> str | None:
     """Make one log line safe to put in a status file. Pure, idempotent.
 
-    Redacts key/token/URL-query/long-id patterns first, then truncates to
-    ``LOG_LINE_MAX`` characters plus an ellipsis (redact-then-truncate, so a
-    secret cut in half by the truncation can never survive).
+    Order: cap the input to ``LOG_INPUT_MAX`` chars, percent-decode (so
+    ``Bearer%20key`` or ``hex%2Fhex`` cannot hide a secret), strip control
+    characters, redact, then truncate to ``LOG_LINE_MAX`` characters plus an
+    ellipsis. Redaction runs before truncation so a secret cut in half by the
+    truncation cannot leave a prefix.
     """
     if line is None:
         return None
-    text = _CONTROL_CHARS.sub(" ", str(line)[:100_000]).strip()
-    for pattern, repl in _SCRUB_PATTERNS:
-        text = pattern.sub(repl, text)
+    text = str(line)
+    if len(text) > LOG_INPUT_MAX:
+        text = text[:LOG_INPUT_MAX]
+        parts = text.rsplit(None, 1)  # drop a token the cap may have cut in half
+        if len(parts) == 2:
+            text = parts[0]
+    for _ in range(2):  # twice: %2520 style double encoding
+        decoded = unquote(text)
+        if decoded == text:
+            break
+        text = decoded
+    text = _CONTROL_CHARS.sub(" ", text).strip()
+    for pattern in _SCRUB_PATTERNS:
+        text = pattern.sub(REDACTED, text)
     if len(text) > LOG_LINE_MAX:
         text = text[:LOG_LINE_MAX] + "…"
     return text
@@ -482,6 +518,7 @@ def scrub_log_line(line: str | None) -> str | None:
 # --- per-unit "running now" view ------------------------------------------------
 
 CGROUP_ROOT = "/sys/fs/cgroup"
+UNITS_DEADLINE_S = 30.0
 UNIT_PROPS = "Id,ActiveState,SubState,ActiveEnterTimestamp,ControlGroup"
 MEM_SOURCE_CGROUP = "cgroup memory.current (includes page cache)"
 MEM_SOURCE_RSS = "process RSS (VmRSS, sum of matched pids)"
@@ -515,15 +552,25 @@ def empty_unit(name: str, scope: str | None, kind: str | None, owner_user: str |
     }
 
 
-def normalise_unit(raw: Any) -> dict[str, Any]:
-    """Force the full key set (null when absent) and scrub the log line."""
-    raw = raw if isinstance(raw, dict) else {}
-    unit = empty_unit(str(raw.get("name")), raw.get("scope"), raw.get("kind"), raw.get("owner_user"))
+def normalise_unit(raw: Any) -> dict[str, Any] | None:
+    """Force the full key set (null when absent) and scrub the log line.
+
+    Returns None for anything without a usable name (never writes "None").
+    """
+    if not isinstance(raw, dict) or not isinstance(raw.get("name"), str) or not raw["name"].strip():
+        return None
+    unit = empty_unit(raw["name"], raw.get("scope"), raw.get("kind"), raw.get("owner_user"))
     for key in UNIT_KEYS:
         if key in raw and key != "name":
             unit[key] = raw[key]
     unit["last_log"] = scrub_log_line(unit["last_log"])
     return unit
+
+
+def normalise_units(raw_units: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_units, list):
+        return []
+    return [u for u in (normalise_unit(r) for r in raw_units) if u is not None]
 
 
 def parse_list_units(text: str) -> list[str]:
@@ -624,21 +671,33 @@ def collect_units(
     list_timeout: float = 5.0,
     show_timeout: float = 5.0,
     log_timeout: float = 3.0,
+    deadline_s: float = UNITS_DEADLINE_S,
+    clock: Any = time.monotonic,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
     """Per-unit view for this host. Returns (units, errors, meta).
 
     Subprocess budget: per source one ``list-units`` + one batched ``show``,
     plus one ``journalctl -n 1`` per unit found. Every failure degrades to
-    null fields; nothing here can raise.
+    null fields; nothing here can raise. After ``deadline_s`` seconds the
+    remaining ``journalctl`` calls (and any unqueried source) are skipped
+    (``last_log`` null) and one error is recorded, so the status file is
+    always written inside the systemd ``TimeoutStartSec``.
     """
     sources = FAST_UNIT_SOURCES if sources is None else sources
     now = now or datetime.now(timezone.utc)
     run = _CountingRunner()
-    started = time.monotonic()
+    started = clock()
     units: list[dict[str, Any]] = []
     errors: list[str] = []
+    skipped = {"logs": 0, "sources": 0}
+
+    def expired() -> bool:
+        return clock() - started >= deadline_s
 
     for src in sources:
+        if expired():
+            skipped["sources"] += 1
+            continue
         scope = src["scope"]
         prefix = list(src.get("prefix") or [])
         owner = src.get("owner_user")
@@ -664,17 +723,23 @@ def collect_units(
             else:
                 props_by_id = parse_systemctl_show(proc.stdout)
             for name in sorted(names):
-                units.append(_build_unit(name, scope, owner, props_by_id.get(name), prefix, flag, run, now, cgroup_root, log_timeout))
+                units.append(_build_unit(name, scope, owner, props_by_id.get(name), prefix, flag, run, now, cgroup_root, log_timeout, expired, skipped))
         except Exception as exc:  # noqa: BLE001
             errors.append(f"units {label}: {exc}")
 
-    meta = {"wall_ms": round((time.monotonic() - started) * 1000), "subprocesses": run.count}
+    if skipped["logs"] or skipped["sources"]:
+        errors.append(
+            f"units: {deadline_s:g}s deadline reached; skipped {skipped['logs']} journalctl call(s)"
+            f" and {skipped['sources']} source(s)"
+        )
+    meta = {"wall_ms": round((clock() - started) * 1000), "subprocesses": run.count}
     return units, errors, meta
 
 
 def _build_unit(
     name: str, scope: str, owner: str | None, props: dict[str, str] | None, prefix: list[str], flag: list[str],
     run: _CountingRunner, now: datetime, cgroup_root: str, log_timeout: float,
+    expired: Any = lambda: False, skipped: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     unit = empty_unit(name, scope, "timer" if name.endswith(".timer") else "service", owner)
     if props:
@@ -686,6 +751,10 @@ def _build_unit(
             if unit["active_state"] == "active":
                 unit["uptime_s"] = max(0, int((now - since).total_seconds()))
         unit["memory"] = read_unit_cgroup_memory(props.get("ControlGroup"), cgroup_root)
+    if expired():
+        if skipped is not None:
+            skipped["logs"] += 1
+        return unit
     proc = run(prefix + ["journalctl"] + flag + ["-u", name, "-n", "1", "-o", "short-iso", "--no-pager"], log_timeout)
     if proc is not None and proc.returncode == 0:
         out_lines = (proc.stdout or "").strip().splitlines()
@@ -798,12 +867,20 @@ def iso_utc(ts):
 
 def tail_last_line(path, nbytes=4096):
     # (last non-empty line, mtime) from the last nbytes of a file; read-only.
+    # If the read started mid-file, the first chunk line is a fragment: drop it,
+    # and if no newline is left at all return nothing rather than a fragment.
     try:
         with open(path, "rb") as f:
             st = os.fstat(f.fileno())
-            f.seek(max(0, st.st_size - nbytes))
+            offset = max(0, st.st_size - nbytes)
+            f.seek(offset)
             data = f.read()
-        lines = [l for l in data.decode("utf-8", "replace").splitlines() if l.strip()]
+        text = data.decode("utf-8", "replace")
+        if offset > 0:
+            if "\n" not in text:
+                return None, None
+            text = text.split("\n", 1)[1]
+        lines = [l for l in text.splitlines() if l.strip()]
         return (lines[-1] if lines else None), st.st_mtime
     except Exception:
         return None, None
@@ -890,6 +967,28 @@ print(json.dumps(out))
 _REMOTE_SNIPPET = _REMOTE_LIB + _REMOTE_MAIN
 
 
+def scrub_errors(errors: Any) -> list[str]:
+    """Remote-supplied error strings go through the same scrubber as log lines."""
+    if not isinstance(errors, list):
+        return []
+    return [scrub_log_line(str(e)) or "" for e in errors]
+
+
+def unreachable_status(host: str, generated_utc: str, message: str) -> dict[str, Any]:
+    """Payload for a failed SSH collection. The text is scrubbed (ssh stderr is
+    attacker-/environment-controlled) and ``units`` is an empty list, not absent."""
+    safe = scrub_log_line(message) or "unreachable"
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "host": host,
+        "generated_utc": generated_utc,
+        "reachable": False,
+        "error": safe,
+        "errors": [safe],
+        "units": [],
+    }
+
+
 def collect_remote_core_status(*, host: str = "mal-core-0", timeout: float = 20.0) -> dict[str, Any]:
     generated_utc = utc_now_iso()
     try:
@@ -902,36 +1001,15 @@ def collect_remote_core_status(*, host: str = "mal-core-0", timeout: float = 20.
             check=False,
         )
     except Exception as exc:  # noqa: BLE001
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "host": host,
-            "generated_utc": generated_utc,
-            "reachable": False,
-            "error": str(exc),
-            "errors": [str(exc)],
-        }
+        return unreachable_status(host, generated_utc, str(exc))
 
     if proc.returncode != 0:
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "host": host,
-            "generated_utc": generated_utc,
-            "reachable": False,
-            "error": (proc.stderr or "").strip() or f"ssh exit {proc.returncode}",
-            "errors": [(proc.stderr or "").strip() or f"ssh exit {proc.returncode}"],
-        }
+        return unreachable_status(host, generated_utc, (proc.stderr or "").strip() or f"ssh exit {proc.returncode}")
 
     try:
         remote = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "host": host,
-            "generated_utc": generated_utc,
-            "reachable": False,
-            "error": f"bad JSON from remote: {exc}",
-            "errors": [f"bad JSON from remote: {exc}"],
-        }
+        return unreachable_status(host, generated_utc, f"bad JSON from remote: {exc}")
 
     load = remote.get("load") or [None, None, None]
     runner_status = remote.get("runner_status") or {}
@@ -955,8 +1033,8 @@ def collect_remote_core_status(*, host: str = "mal-core-0", timeout: float = 20.
         else None,
         "health_latest": remote.get("health_latest"),
         "processes": remote.get("processes"),
-        "units": [normalise_unit(u) for u in (remote.get("units") or [])],
-        "errors": [],
+        "units": normalise_units(remote.get("units")),
+        "errors": scrub_errors(remote.get("errors")),
     }
 
 
@@ -970,10 +1048,7 @@ def collect_remote_research_status(*, host: str = "mal-research-0", timeout: flo
     generated_utc = utc_now_iso()
 
     def unreachable(message: str) -> dict[str, Any]:
-        return {
-            "schema_version": SCHEMA_VERSION, "host": host, "generated_utc": generated_utc,
-            "reachable": False, "error": message, "errors": [message],
-        }
+        return unreachable_status(host, generated_utc, message)
 
     try:
         source = Path(__file__).read_text(encoding="utf-8")
@@ -1001,9 +1076,9 @@ def collect_remote_research_status(*, host: str = "mal-research-0", timeout: flo
         "load5": load[1] if len(load) > 1 else None,
         "load15": load[2] if len(load) > 2 else None,
         "memory": remote.get("memory"),
-        "units": [normalise_unit(u) for u in (remote.get("units") or [])],
+        "units": normalise_units(remote.get("units")),
         "units_meta": remote.get("units_meta"),
-        "errors": [str(e) for e in (remote.get("errors") or [])],
+        "errors": scrub_errors(remote.get("errors")),
     }
 
 
