@@ -61,7 +61,15 @@ returns every hour `run` opens, including the trailing 2-hour buffer past each
 chunk end (clipped at 2026-09-21T23); contiguous hours merge into one block.
 Data root: optional `data_root` param, else env `MAL_FAST_POOL_ROOT`, else
 `/var/lib/mal/backfill-fast` (on mal-research-0:
-`/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00`). Refused, not
+`/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00`). **Two separate
+gates:** `check_read` gates the hour labels only; the root is gated by
+`tools.exploration_exits.POOL_ROOT_ALLOWLIST` (`/var/lib/mal/backfill-fast`
+and the research-0 clean pool). `Path(root).resolve()` (symlinks and `..`
+followed) must equal a resolved allowlist entry, for the param and for the
+env value, or `score_one_spec` raises `ValueError` before any file is
+opened (so `backfill-fast-b`/`-c` and `/data/mal/blocks/...` are refused).
+`score_one_spec` also drops rows whose `block_time` is outside the hour file
+being read (the default grid path does not). Refused, not
 ignored: non-null `mcap_band`, `priority_fee_tier` p90 (no audited value).
 Verified on a fixture root only; not yet run on real data.
 

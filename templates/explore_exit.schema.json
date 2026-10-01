@@ -75,12 +75,12 @@
       "type": "string",
       "enum": ["p50", "p75", "p90"],
       "default": "p75",
-      "description": "Priority-fee tier for slot+1 landing. The frozen execution uses the p75 tier (0.0005 SOL/side, ARTIFACTS/lab/fee-audit-2026-09-27.md); p50/p90 are declared for future runners, not wired yet."
+      "description": "Priority-fee tier for slot+1 landing. The frozen execution uses the p75 tier (0.0005 SOL/side, ARTIFACTS/lab/fee-audit-2026-09-27.md); p50 (0.000058 SOL/side, same audit) is wired; p90 has no audited value and is refused by the runner."
     },
     "data_root": {
       "type": ["string", "null"],
       "default": null,
-      "description": "Root of the sealed fast-pool hours (trades/ and creates/ subdirectories). Null uses env MAL_FAST_POOL_ROOT, else the tool's default /var/lib/mal/backfill-fast. On mal-research-0: /data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00."
+      "description": "Root of the sealed fast-pool hours (trades/ and creates/ subdirectories). Must resolve (symlinks and .. followed) to an allowlisted exploration-pool root or the run is refused before any file is opened. Null uses env MAL_FAST_POOL_ROOT, else /var/lib/mal/backfill-fast. On mal-research-0: /data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00."
     },
     "mcap_band": {
       "type": ["object", "null"],

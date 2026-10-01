@@ -506,7 +506,7 @@ def score_migration(
 # --- Streaming worker (one contiguous hour range, home hours + trailing buffer)
 
 
-def _load_creates_for(hours: Sequence[dict[str, Any]]) -> dict[str, _Mint]:
+def _load_creates_for(hours: Sequence[dict[str, Any]], strict_hours: bool = False) -> dict[str, _Mint]:
     found: dict[str, _Mint] = {}
     for hour in hours:
         path = hour.get("create")
@@ -519,6 +519,8 @@ def _load_creates_for(hours: Sequence[dict[str, Any]]) -> dict[str, _Mint]:
             slot = row.get("slot")
             block = row.get("block_time")
             if not isinstance(mint, str) or not isinstance(slot, int) or not isinstance(block, int):
+                continue
+            if strict_hours and not (hour["end"] - 3600 <= block < hour["end"]):
                 continue
             quote_mint = row.get("quote_mint")
             if isinstance(quote_mint, str) and quote_mint and quote_mint != WSOL:
@@ -540,13 +542,15 @@ def run_worker(
     specs: Sequence[dict[str, Any]] | None = None,
     size: int | None = None,
     priority: int | None = None,
+    strict_hours: bool = False,
 ) -> list[dict[str, Any]]:
     """Score every migration whose create landed in home_keys. buffer_keys give
     the exit walk enough forward tape (up to the 60 min longest exit cap)
     without letting a neighbor worker double-count the create.
 
     `root`/`specs`/`size`/`priority` default to the module constants (the frozen
-    grid run); score_one_spec passes them explicitly.
+    grid run); score_one_spec passes them explicitly. `strict_hours` (score_one_spec
+    only) drops rows whose block_time is outside the hour file being read.
     """
     os.nice(19)
     home_hours = [_hour_info(k, root) for k in home_keys]
@@ -554,7 +558,7 @@ def run_worker(
     for k in home_keys + buffer_keys:
         assert k in POOL_HOURS_SET, f"worker {worker_id} touched hour outside the fence: {k}"
     hours = home_hours + buffer_hours
-    creates = _load_creates_for(home_hours)
+    creates = _load_creates_for(home_hours, strict_hours)
     hot: dict[str, _Mint] = dict(creates)
     watch: dict[str, _Mint] = {}
     curve = _curve()
@@ -610,6 +614,8 @@ def run_worker(
                 continue
             block = row.get("block_time")
             if not isinstance(block, int):
+                continue
+            if strict_hours and not (hour["end"] - 3600 <= block < hour["end"]):
                 continue
             if row.get("t_recv_ms") is None:
                 row["t_recv_ms"] = block * 1000
@@ -714,6 +720,25 @@ POOL_ROOT_ENV = "MAL_FAST_POOL_ROOT"
 DEFAULT_BUFFER_HOURS = 2
 
 
+# Exploration-pool fast roots score_one_spec may read. Gates the ROOT; the
+# ledger check (tools.mal_catalog.check_read) only gates hour labels.
+POOL_ROOT_ALLOWLIST: tuple[Path, ...] = (
+    Path("/var/lib/mal/backfill-fast"),
+    Path("/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00"),
+)
+
+
+def _check_pool_root(root: Path) -> Path:
+    """Refuse (ValueError) unless root.resolve() equals a resolved allowlist entry."""
+    resolved = Path(root).resolve()
+    if resolved not in {p.resolve() for p in POOL_ROOT_ALLOWLIST}:
+        raise ValueError(
+            f"data root {str(root)!r} (resolves to {str(resolved)!r}) is not an allowlisted "
+            f"exploration-pool root: {[str(p) for p in POOL_ROOT_ALLOWLIST]}"
+        )
+    return resolved
+
+
 def _resolve_pool_root(root: Path | str | None = None) -> Path:
     """Explicit `root`, else env MAL_FAST_POOL_ROOT, else the module BACKFILL."""
     if root is not None:
@@ -789,7 +814,7 @@ def score_one_spec(
     size = int(round(entry_size_sol * LAMPORTS_PER_SOL))
     if size <= 0 or priority_lamports < 0:
         raise ValueError("entry size must be > 0 and priority >= 0")
-    root_path = _resolve_pool_root(root)
+    root_path = _check_pool_root(_resolve_pool_root(root))  # before any file is opened
     plan = _plan_days(days, max_workers, buffer_hours)
     hours_read = sorted({h for _i, home, buf in plan for h in home + buf})
     print(f"hours_read={hours_read}", file=sys.stderr, flush=True)
@@ -797,12 +822,12 @@ def score_one_spec(
     rows: list[dict[str, Any]] = []
     if max_workers <= 1 or len(plan) <= 1:
         for worker_id, home, buf in plan:
-            rows.extend(run_worker(worker_id, home, buf, root_path, specs, size, priority_lamports))
+            rows.extend(run_worker(worker_id, home, buf, root_path, specs, size, priority_lamports, True))
     else:
         ctx = mp.get_context("spawn")
         with ctx.Pool(processes=min(max_workers, len(plan))) as pool:
             results = pool.starmap(
-                run_worker, [(i, h, b, root_path, specs, size, priority_lamports) for i, h, b in plan]
+                run_worker, [(i, h, b, root_path, specs, size, priority_lamports, True) for i, h, b in plan]
             )
         for part in results:
             rows.extend(part)

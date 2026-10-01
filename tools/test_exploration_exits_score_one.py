@@ -277,3 +277,129 @@ def test_run_uses_env_root_and_refuses_unsupported(pool_root, monkeypatch):
         exit_tpl.run(dict(base, mcap_band={"min": 1}))
     with pytest.raises(ValueError):
         exit_tpl.run(dict(base, priority_fee_tier="p90"))
+
+
+# ---------------------------------------------------------------------------
+# Root allowlist and strict block_time (review round 1)
+# ---------------------------------------------------------------------------
+
+REAL_ALLOWLIST = ex.POOL_ROOT_ALLOWLIST
+
+
+@pytest.fixture(autouse=True)
+def _allow_fixture_root(pool_root, monkeypatch):
+    """Positive cases: the allowlist is monkeypatched to the tmp fixture root."""
+    monkeypatch.setattr(ex, "POOL_ROOT_ALLOWLIST", (pool_root,))
+
+
+def test_real_allowlist_contents():
+    assert [str(p) for p in REAL_ALLOWLIST] == [
+        "/var/lib/mal/backfill-fast",
+        "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00",
+    ]
+
+
+def _spy_everything(monkeypatch):
+    calls: list[str] = []
+    for name in ("_iter_trades", "_hour_info", "run_worker"):
+        real = getattr(ex, name)
+
+        def spy(*a, _real=real, _name=name, **k):
+            calls.append(_name)
+            return _real(*a, **k)
+
+        monkeypatch.setattr(ex, name, spy)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "/var/lib/mal/backfill-fast-b",
+        "/var/lib/mal/backfill-fast-c",
+        "/data/mal/blocks/fresh-0903/w1",
+        "/var/lib/mal/backfill-fast/../backfill-fast-b",
+    ],
+)
+def test_non_allowlisted_roots_refused_before_any_open(monkeypatch, bad):
+    monkeypatch.setattr(ex, "POOL_ROOT_ALLOWLIST", REAL_ALLOWLIST)
+    calls = _spy_everything(monkeypatch)
+    with pytest.raises(ValueError, match="allowlisted"):
+        ex.score_one_spec(ex.SPECS[0], days=["2026-09-19"], root=bad, max_workers=1)
+    monkeypatch.setenv("MAL_FAST_POOL_ROOT", bad)
+    with pytest.raises(ValueError, match="allowlisted"):
+        ex.score_one_spec(ex.SPECS[0], days=["2026-09-19"], max_workers=1)
+    assert calls == []
+
+
+def test_tmp_dir_not_on_allowlist_refused(tmp_path, monkeypatch):
+    other = tmp_path / "other"
+    build_fixture(other)
+    calls = _spy_everything(monkeypatch)
+    with pytest.raises(ValueError, match="allowlisted"):
+        ex.score_one_spec(ex.SPECS[0], days=["2026-09-19"], root=other, max_workers=1)
+    assert calls == []
+
+
+def test_symlink_from_allowed_path_into_other_dir_refused(tmp_path, monkeypatch):
+    allowed = tmp_path / "allowed-pool"
+    target = tmp_path / "elsewhere"
+    build_fixture(target)
+    allowed.symlink_to(target)
+    real_allowed = tmp_path / "real-allowed"
+    real_allowed.mkdir()
+    monkeypatch.setattr(ex, "POOL_ROOT_ALLOWLIST", (real_allowed,))
+    calls = _spy_everything(monkeypatch)
+    with pytest.raises(ValueError, match="allowlisted"):
+        ex.score_one_spec(ex.SPECS[0], days=["2026-09-19"], root=allowed, max_workers=1)
+    monkeypatch.setenv("MAL_FAST_POOL_ROOT", str(allowed))
+    with pytest.raises(ValueError, match="allowlisted"):
+        ex.score_one_spec(ex.SPECS[0], days=["2026-09-19"], max_workers=1)
+    assert calls == []
+    # a symlink that resolves INTO the allowlisted dir is accepted
+    link = tmp_path / "link-to-allowed"
+    link.symlink_to(real_allowed)
+    assert ex._check_pool_root(link) == real_allowed.resolve()
+
+
+def test_exit_run_refuses_non_allowlisted_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(ex, "POOL_ROOT_ALLOWLIST", REAL_ALLOWLIST)
+    calls = _spy_everything(monkeypatch)
+    params = {"family": "tp_sl_grid", "tp_pct": 20, "sl_pct": 15, "size_sol": 0.5, "days": ["2026-09-19"],
+              "data_root": str(tmp_path)}
+    with pytest.raises(ValueError, match="allowlisted"):
+        exit_tpl.run(params)
+    assert calls == []
+
+
+def test_coverage_spy_on_hour_info_matches_blocks(pool_root, monkeypatch):
+    """_hour_info is called for home AND buffer hours (trades + creates files)."""
+    seen: list[str] = []
+    real = ex._hour_info
+    monkeypatch.setattr(ex, "_hour_info", lambda key, backfill=None: (seen.append(key), real(key, backfill))[1])
+    spec = exit_tpl.build_spec({"family": "tp_sl_grid", "tp_pct": 20, "sl_pct": 15})
+    ex.score_one_spec(spec, days=["2026-09-20"], root=pool_root, max_workers=1)
+    assert set(seen) == _hours_in_blocks(exit_tpl.resolve_data_blocks({"days": ["2026-09-20"]}))
+
+
+def test_score_one_drops_rows_with_block_time_outside_their_hour(tmp_path, monkeypatch):
+    root = tmp_path / "pool"
+    build_fixture(root)
+    monkeypatch.setattr(ex, "POOL_ROOT_ALLOWLIST", (root,))
+    # A stray mint whose create/trades live in the 06 files but are stamped in hour 05.
+    create, trades = _mint_rows("MX", "2026-09-19T05", 20_000, True)
+    with (root / "creates" / "creates-2026-09-19T06.jsonl").open("a") as fh:
+        fh.write(json.dumps(create) + "\n")
+    with (root / "trades" / "trades-2026-09-19T06.jsonl").open("a") as fh:
+        fh.write("".join(json.dumps(t) + "\n" for t in trades))
+    spec = next(s for s in ex.SPECS if s["id"] == "tpsl_tp20_sl15")
+    strict = ex.score_one_spec(spec, days=["2026-09-19"], root=root, max_workers=1)["rows"]
+    assert len(strict) == 1  # only MA; MX is out-of-hour and dropped
+    # Control: the same mint stamped inside the hour of the file that holds it IS scored.
+    create2, trades2 = _mint_rows("MY", "2026-09-19T06", 30_000, True)
+    with (root / "creates" / "creates-2026-09-19T06.jsonl").open("a") as fh:
+        fh.write(json.dumps(create2) + "\n")
+    with (root / "trades" / "trades-2026-09-19T06.jsonl").open("a") as fh:
+        fh.write("".join(json.dumps(t) + "\n" for t in trades2))
+    again = ex.score_one_spec(spec, days=["2026-09-19"], root=root, max_workers=1)["rows"]
+    assert len(again) == 2
