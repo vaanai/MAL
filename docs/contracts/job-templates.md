@@ -24,9 +24,15 @@ touched) → call the runner → write `result.v1` + `$MISCUSI_RESULT`.
 ```
 
 Schema: [`templates/explore_entry_filter.schema.json`](../../templates/explore_entry_filter.schema.json).
-`select_top_pct`/`threshold` are mutually exclusive — set exactly one. May
-read the 9-day exploration pool (`tools.mal_templates.entry_filter.ALL_DAYS`,
-2026-09-19..27, fast+Oracle — mirrors `tools/exploration_entry_model_b3.py`).
+`select_top_pct`/`threshold` are mutually exclusive — set exactly one.
+`select_top_pct` takes the top N percent of each held-out day by model score
+(`k = max(1, round(n*N/100))`); `threshold` takes `score >= threshold` (the
+EXP-011 enter rule) and is valid for `s2_clf` only (a probability — the two
+regression settings score in net-percent and are refused). Leave-one-day-out
+runs over exactly the requested `days`. May read the 9-day exploration pool
+(`tools.mal_templates.entry_filter.ALL_DAYS`, 2026-09-19..27, fast+Oracle —
+mirrors `tools/exploration_entry_model_b3.py`). Optional root params
+`fast_pool_root`, `insample_pool_root`, `live_pool_root`.
 
 ## `explore_exit`
 
@@ -73,8 +79,50 @@ being read (the default grid path does not). Refused, not
 ignored: non-null `mcap_band`, `priority_fee_tier` p90 (no audited value).
 Verified on a fixture root only; not yet run on real data.
 
-**`entry_filter`:** `resolve_data_blocks` is fully wired and tested against the
-real `docs/HOLDOUT_LEDGER.md`; `run` still raises `NotImplementedError`
-naming the change an existing file would need (configurable `size_sol`/
-`priority_fee_tier`, a single-cell entry point) — a follow-up PR. Refusal
-logic (schema, role, catalog) is complete.
+**`explore_entry_filter`: fully wired** (`resolve_data_blocks` and `run`).
+`run` calls `tools.exploration_entry_model_b3.score_one_cell` — one model
+setting, one exit, `size_sol`, priority tier p50 = 58,000 / p75 = 500,000
+lamports per side (`ARTIFACTS/lab/fee-audit-2026-09-27.md`), a UTC-day subset,
+leave-one-day-out over those days, one `select_top_pct`-or-`threshold` cut. It
+reuses `run_worker_features`/`score_one`/`fit_setting_b3` (which gained optional
+`specs`/`size`/`priority`/`strict_hours` arguments whose defaults reproduce the
+frozen grid). The default B3 grid path (`main()`) is unchanged: md5
+decision-equivalence test on a three-pool fixture in
+`tools/test_exploration_entry_filter_cell.py` (golden captured on `a788cc1`
+before any edit: feature rows, the `--out-json` bytes and the `--out-md` bytes).
+Results: `trades_flat`/`trades_pressure_s1` are the *selected* migrations only
+(a selected migration that does not fill is a trade with `filled=false`);
+`n_candidates` is every migration scored in the requested days before
+selection; `n_days` is the number of requested days; a fold with fewer than 20
+training rows or a single-class label is untrained and selects nothing (the
+notes list the trained folds).
+
+`resolve_data_blocks` returns every hour `run` opens, per host (`fast` =
+pool A, `oracle` = pools C and B), contiguous hours merged: the home hours of
+the requested days in each pool, the trailing 2-hour buffer past each chunk end
+(clipped at each pool's end), the 24 creator-history lookback hours before each
+home hour (pools A/C, clipped at the pool start — creator history is built from
+those hours only, not the whole pool), and pool B's PumpPortal
+`observe-<day>.jsonl` day files (the requested days and the day before each,
+within 2026-09-25..27; `observe-2026-09-28` is never opened). A spy test on the
+three hour-info functions and the day-file opener asserts blocks == hours opened
+for nine day subsets, and `check_read` is asserted ALLOW on the real ledger.
+
+Data roots, three slots (A fast, C Oracle in-sample, B Oracle live): param
+(`fast_pool_root`/`insample_pool_root`/`live_pool_root`), else env
+(`MAL_FAST_POOL_ROOT`/`MAL_INSAMPLE_POOL_ROOT`/`MAL_LIVE_POOL_ROOT`), else the
+old default path. **Two separate gates:** `check_read` gates hour labels only;
+each root is gated by a per-slot allowlist — A: `/var/lib/mal/backfill-fast`
+and `/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00`; C:
+`/home/claude/data/oracle-insample-2026-09-22_25` and
+`/data/mal/clean-view/oracle-insample-2026-09-22_25`; B:
+`/home/claude/data/oracle-live-2026-09-25_27` and
+`/data/mal/clean-view/oracle-live-2026-09-25_27`. `Path(root).resolve()`
+(symlinks and `..` followed) must equal a resolved entry of that slot's list,
+for the param and for the env value, or `score_one_cell` raises `ValueError`
+before any file is opened (so `/data/mal/blocks/*` holdouts, a right-kind root
+in the wrong slot, and `backfill-fast-b`/`-c` are refused). The new path drops
+rows and creates whose `block_time` is outside the hour file being read (the
+grid path does not). Refused, not ignored: non-null `mcap_band`,
+`priority_fee_tier` p90 (no audited value), `threshold` with a regression model.
+Verified on a fixture root only; not yet run on real data.

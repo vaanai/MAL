@@ -7,8 +7,9 @@ against a tiny synthetic ledger fragment (never the real
 docs/HOLDOUT_LEDGER.md) so this file never depends on -- or accidentally
 exercises -- the real exploration-pool fence. The happy path monkeypatches
 the runner with a synthetic trades fixture; it never calls
-tools.mal_templates.entry_filter.run / exit.run, which are intentionally
-NotImplementedError.
+tools.mal_templates.entry_filter.run / exit.run (both wired; their fixture runs
+live in tools/test_exploration_entry_filter_cell.py and
+tools/test_exploration_exits_score_one.py).
 """
 
 from __future__ import annotations
@@ -201,8 +202,9 @@ def test_entry_filter_resolve_data_blocks_is_allowed_on_real_ledger():
     from tools import mal_catalog
 
     blocks = mal_catalog.parse_ledger((REPO_ROOT / "docs" / "HOLDOUT_LEDGER.md").read_text(encoding="utf-8"))
-    for day in entry_filter_tpl.ALL_DAYS:
-        data_blocks = entry_filter_tpl.resolve_data_blocks({"days": [day]})
+    for days in [[d] for d in entry_filter_tpl.ALL_DAYS] + ["all"]:
+        day = days
+        data_blocks = entry_filter_tpl.resolve_data_blocks({"days": days})
         for b in data_blocks:
             ok, reasons = mal_catalog.check_read(blocks, "exploration", b["host"], b["start_hour"], b["end_hour_exclusive"])
             assert ok, f"{day}: {reasons}"
@@ -288,12 +290,18 @@ def test_happy_path_second_run_same_data_increments_variant(monkeypatch, tmp_pat
     assert r2["tries"]["of_m"] == 2
 
 
-# --- real (not-yet-wired) runners stay refused correctly, not silently skipped ----
+# --- real runners refuse what they cannot score, not silently skipped ----
 
 
-def test_real_entry_filter_runner_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        entry_filter_tpl.run(_entry_filter_params())
+def test_real_entry_filter_runner_is_wired_and_refuses_unsupported_params():
+    # Wired (fixture runs: tools/test_exploration_entry_filter_cell.py); here only that
+    # it no longer raises NotImplementedError and refuses what it cannot score.
+    with pytest.raises(ValueError, match="p90"):
+        entry_filter_tpl.run(_entry_filter_params(priority_fee_tier="p90"))
+    with pytest.raises(ValueError, match="mcap_band"):
+        entry_filter_tpl.run(_entry_filter_params(mcap_band={"min": 1}))
+    with pytest.raises(ValueError, match="not an allowlisted"):
+        entry_filter_tpl.run(_entry_filter_params(days=["2026-09-19"], fast_pool_root="/data/mal/blocks/x"))
 
 
 def test_real_exit_runner_is_wired_and_refuses_unsupported_params():
