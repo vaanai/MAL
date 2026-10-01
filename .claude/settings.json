@@ -49,24 +49,16 @@
       "Edit(.env.*)",
       "Edit(**/.env)",
       "Edit(**/.env.*)",
-      "Write(.env)",
-      "Write(.env.*)",
-      "Write(**/.env)",
-      "Write(**/.env.*)",
       "Read(**/helius.env)",
       "Edit(**/helius.env)",
-      "Write(**/helius.env)",
       "Bash(ufw *)",
       "Bash(sudo ufw *)",
-      "Read(/etc/ssh/sshd_config)",
-      "Read(/etc/ssh/sshd_config.d/**)",
-      "Edit(/etc/ssh/**)",
-      "Write(/etc/ssh/**)",
-      "Read(/etc/cloudflared/**)",
-      "Edit(/etc/cloudflared/**)",
-      "Write(/etc/cloudflared/**)",
-      "Edit(**/cloudflared/config.yml)",
-      "Write(**/cloudflared/config.yml)"
+      "Read(//etc/ssh/sshd_config)",
+      "Read(//etc/ssh/sshd_config.d/**)",
+      "Edit(//etc/ssh/**)",
+      "Read(//etc/cloudflared/**)",
+      "Edit(//etc/cloudflared/**)",
+      "Edit(**/cloudflared/config.yml)"
     ]
   }
 }
