@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-01T02:15:00Z",
+  "updated_utc": "2026-10-01T03:20:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -21,10 +21,12 @@
     },
     {
       "id": "exp012-freeze",
-      "kind": "other",
-      "title": "EXP-012: re-freeze the entry model on clean data",
-      "detail": "Pre-registration in progress. EXP-011's recipe unchanged (ablated features, same threshold rule), trained on the deduplicated pool. Its own leave-one-day-out check must pass the B3 screen before the fresh block is read.",
-      "urgent": true
+      "kind": "read",
+      "title": "EXP-012 one-shot read",
+      "detail": "Frozen model passed its pre-stated screen. After the walkers finish: verify, dedupe, pin, dry run, then one read of the never-seen block.",
+      "urgent": true,
+      "atUtc": "2026-10-01T14:00:00Z",
+      "approx": true
     },
     {
       "id": "explore-0814",
@@ -47,12 +49,13 @@
     {
       "id": "EXP-012",
       "title": "EXP-012 entry model (re-freeze)",
-      "stage": "exploring",
-      "note": "Pre-registering. Fresh block [09-03T12, 09-09T12) sealing on research-0; read once after verify + dedupe.",
+      "stage": "pre-registered",
+      "note": "Frozen; proceed screen passed in-sample (fast-box only: flat +4.19%, pressure +3.25%). One read of [09-03T12, 09-09T12) after the walkers finish about 12:30Z.",
       "tag": {
-        "text": "next",
+        "text": "read today",
         "tone": "accent"
-      }
+      },
+      "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-012-migrate-entry-model-refreeze-prereg.md"
     },
     {
       "id": "b3-clean",
@@ -129,6 +132,12 @@
     }
   ],
   "for_you": [
+    {
+      "id": "fy-20261001-0320",
+      "from": "claude",
+      "text": "EXP-012 is frozen and passed its pre-stated screen on the clean training data: 9 of 9 days positive under both fail models. On the fast-box data the test block comes from, the in-sample result is weaker (+4.19% flat, +3.25% pressure), so expect the read to be weaker still. The one-shot read of the fresh block happens today after the walkers finish (about 12:30Z plus verification). A pass there starts forward paper; it does not mean live yet.",
+      "atUtc": "2026-10-01T03:20:00Z"
+    },
     {
       "id": "fy-20261001",
       "from": "claude",
@@ -233,6 +242,13 @@
       "kind": "status",
       "text": "'Running now' panel is live: MiScusi jobs plus every mal-* service and timer on all three servers, with state, uptime, memory and a scrubbed last log line.",
       "atUtc": "2026-10-01T02:12:00Z"
+    },
+    {
+      "id": "s-20261001-0320",
+      "from": "claude",
+      "kind": "finding",
+      "text": "EXP-012 freeze (job #23): proceed screen PASS. Flat +7.43% / pressure +4.67% pooled, 9/9 days; fast-box only +4.19% / +3.25%. In-sample, not gate evidence. Threshold 0.80308. Frozen artifacts in #200.",
+      "atUtc": "2026-10-01T03:20:00Z"
     }
   ]
 }
