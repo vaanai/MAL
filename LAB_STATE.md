@@ -116,7 +116,7 @@ Clean clock: **2026-09-28T00:00:00Z**. Kill review: **2026-10-05T05:00:00Z**.
 2. *(Paused by the owner while the Console is built.)* The EXP-009 screen scorer (walker 1 floored at 2026-09-15T12; it needs a scorer built per its pre-reg).
 3. The 2026-10-05T05:00Z kill review with `tools/kill_review.py`, on a snapshot, once.
 4. *(Paused.)* Lane D (early bonding-curve entry filter, branch `claude/explore-early-entry-model`): needs bounded windows (`chunk_plan`) before it runs, on mal-research-0 once that's up.
-5. After 2026-10-05: fold the 09-28 forward-paper data into the exploration pool; if EXP-011 passes, add an EXP-011 forward book; start the warm-start / live-readiness track.
+5. After 2026-10-05: fold the 09-28 forward-paper data into the exploration pool; if EXP-012's one-shot read passes (EXP-011 closed NOT_DECIDABLE), add an EXP-012 forward book on `mal-fast-0` per [DEC-015](DEC/DEC-015-forward-paper-on-fast.md); start the warm-start / live-readiness track.
 6. Buy further fresh ≥6-day holdout blocks (~2M credits each) as candidates need them.
 
 ## Pointers
