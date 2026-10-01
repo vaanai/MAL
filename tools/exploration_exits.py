@@ -401,11 +401,13 @@ def eval_spec(
     venue: str,
     landing_ms: int,
     tape_through_ms: int,
+    size: int | None = None,
 ) -> tuple[int, int, int, int] | None:
+    size = ENTRY_SIZE if size is None else size
     kind = spec["type"]
     if kind == "tpsl":
         return _eval_tpsl(
-            fills, entry_idx, buy, venue, ENTRY_SIZE, landing_ms, tape_through_ms, spec["tp"], spec["sl"], spec["cap_ms"]
+            fills, entry_idx, buy, venue, size, landing_ms, tape_through_ms, spec["tp"], spec["sl"], spec["cap_ms"]
         )
     if kind == "trail":
         return _eval_trail(
@@ -413,7 +415,7 @@ def eval_spec(
             entry_idx,
             buy,
             venue,
-            ENTRY_SIZE,
+            size,
             landing_ms,
             tape_through_ms,
             spec["trail"],
@@ -427,7 +429,7 @@ def eval_spec(
             entry_spot,
             buy,
             venue,
-            ENTRY_SIZE,
+            size,
             landing_ms,
             tape_through_ms,
             spec["take"],
@@ -444,12 +446,24 @@ def _utc_day(ms: int) -> str:
     return time.strftime("%Y-%m-%d", time.gmtime(ms / 1000.0))
 
 
-def score_migration(mint: _Mint, curve: FailCurve, tape_through_ms: int) -> list[dict[str, Any]]:
+def score_migration(
+    mint: _Mint,
+    curve: FailCurve,
+    tape_through_ms: int,
+    *,
+    specs: Sequence[dict[str, Any]] | None = None,
+    size: int | None = None,
+    priority: int | None = None,
+) -> list[dict[str, Any]]:
     """One migration trigger. One row per spec, plus a shared miss row when the
     entry itself does not fill (state missing or slippage cap). Rows whose exit
     deadline runs past tape_through_ms are omitted (censored), matching
     tools.latency_curve's rule.
     """
+    # Defaults are resolved here, at call time, so the frozen grid path is unchanged.
+    specs = SPECS if specs is None else specs
+    size = ENTRY_SIZE if size is None else size
+    priority = ENTRY_PRIORITY_LAMPORTS if priority is None else priority
     if mint.mig_slot is None or mint.mig_ms is None:
         return []
     fills, trigger_slot, trigger_block_ms, ref = _fills_for(mint, migrate=True)
@@ -463,26 +477,26 @@ def score_migration(mint: _Mint, curve: FailCurve, tape_through_ms: int) -> list
     state = fills[idx] if idx >= 0 else None
     out: list[dict[str, Any]] = []
     if state is None:
-        flat = mixed_net(0, 1, MISS, ENTRY_PRIORITY_LAMPORTS, 0.0)
-        for spec in SPECS:
+        flat = mixed_net(0, 1, MISS, priority, 0.0)
+        for spec in specs:
             out.append({"spec": spec["id"], "day": day, "status": MISS, "filled": False, "gross": 0, "flat": flat, "press": flat})
         return out
-    buy = _try_buy(state, ENTRY_SIZE, ENTRY_PORTAL_PPM, ref)
+    buy = _try_buy(state, size, ENTRY_PORTAL_PPM, ref)
     if buy is None:
-        flat = mixed_net(0, 1, MISS, ENTRY_PRIORITY_LAMPORTS, 0.0)
-        for spec in SPECS:
+        flat = mixed_net(0, 1, MISS, priority, 0.0)
+        for spec in specs:
             out.append({"spec": spec["id"], "day": day, "status": MISS, "filled": False, "gross": 0, "flat": flat, "press": flat})
         return out
     venue = state.venue
     buys, nearby = _pressure(fills, idx, state.slot, landing_ms)
     p_press = curve.p(Pressure(buys, nearby))
-    for spec in SPECS:
-        result = eval_spec(spec, fills, idx, state.price_sol, buy, venue, landing_ms, tape_through_ms)
+    for spec in specs:
+        result = eval_spec(spec, fills, idx, state.price_sol, buy, venue, landing_ms, tape_through_ms, size)
         if result is None:
             continue
         net0, gross, sides, status = result
-        flat = mixed_net(net0, sides, status, ENTRY_PRIORITY_LAMPORTS, FLAT_FAIL)
-        press = mixed_net(net0, sides, status, ENTRY_PRIORITY_LAMPORTS, p_press)
+        flat = mixed_net(net0, sides, status, priority, FLAT_FAIL)
+        press = mixed_net(net0, sides, status, priority, p_press)
         out.append(
             {"spec": spec["id"], "day": day, "status": status, "filled": True, "gross": gross, "flat": flat, "press": press}
         )
@@ -518,14 +532,25 @@ def _load_creates_for(hours: Sequence[dict[str, Any]]) -> dict[str, _Mint]:
     return found
 
 
-def run_worker(worker_id: int, home_keys: list[str], buffer_keys: list[str]) -> list[dict[str, Any]]:
+def run_worker(
+    worker_id: int,
+    home_keys: list[str],
+    buffer_keys: list[str],
+    root: Path | None = None,
+    specs: Sequence[dict[str, Any]] | None = None,
+    size: int | None = None,
+    priority: int | None = None,
+) -> list[dict[str, Any]]:
     """Score every migration whose create landed in home_keys. buffer_keys give
     the exit walk enough forward tape (up to the 60 min longest exit cap)
     without letting a neighbor worker double-count the create.
+
+    `root`/`specs`/`size`/`priority` default to the module constants (the frozen
+    grid run); score_one_spec passes them explicitly.
     """
     os.nice(19)
-    home_hours = [_hour_info(k) for k in home_keys]
-    buffer_hours = [_hour_info(k) for k in buffer_keys]
+    home_hours = [_hour_info(k, root) for k in home_keys]
+    buffer_hours = [_hour_info(k, root) for k in buffer_keys]
     for k in home_keys + buffer_keys:
         assert k in POOL_HOURS_SET, f"worker {worker_id} touched hour outside the fence: {k}"
     hours = home_hours + buffer_hours
@@ -541,7 +566,7 @@ def run_worker(worker_id: int, home_keys: list[str], buffer_keys: list[str]) -> 
         nonlocal scored
         if mint.mig_slot is None or mint.mig_done:
             return
-        out.extend(score_migration(mint, curve, through_ms))
+        out.extend(score_migration(mint, curve, through_ms, specs=specs, size=size, priority=priority))
         mint.mig_done = True
         scored += 1
 
@@ -681,6 +706,122 @@ def run_all(max_workers: int = 4, buffer_hours: int = 2) -> list[dict[str, Any]]
     for part in results:
         rows.extend(part)
     return rows
+
+
+# --- Single caller-built spec over a day subset (explore_exit template) -------
+
+POOL_ROOT_ENV = "MAL_FAST_POOL_ROOT"
+DEFAULT_BUFFER_HOURS = 2
+
+
+def _resolve_pool_root(root: Path | str | None = None) -> Path:
+    """Explicit `root`, else env MAL_FAST_POOL_ROOT, else the module BACKFILL."""
+    if root is not None:
+        return Path(root)
+    env = os.environ.get(POOL_ROOT_ENV)
+    return Path(env) if env else BACKFILL
+
+
+def _plan_days(
+    days: Sequence[str], max_workers: int = 4, buffer_hours: int = DEFAULT_BUFFER_HOURS
+) -> list[tuple[int, list[str], list[str]]]:
+    """(worker_id, home_keys, buffer_keys) for a UTC-day subset of the pool.
+
+    Home hours are the pool hours of the requested days; each contiguous run is
+    split into at most `max_workers` chunks exactly as chunk_plan does, and each
+    chunk reads the same trailing `buffer_hours` past its own end (clipped at
+    POOL_END, never outside the fence). For every pool day this equals
+    chunk_plan(POOL_HOURS, max_workers, buffer_hours).
+    """
+    day_set = set(days)
+    pool_days = {h[:10] for h in POOL_HOURS}
+    unknown = sorted(day_set - pool_days)
+    if unknown:
+        raise ValueError(f"days outside the exploration pool: {unknown}")
+    if not day_set:
+        raise ValueError("days must not be empty")
+    runs: list[list[str]] = []
+    for hour in POOL_HOURS:
+        if hour[:10] not in day_set:
+            continue
+        if runs and POOL_HOURS.index(runs[-1][-1]) + 1 == POOL_HOURS.index(hour):
+            runs[-1].append(hour)
+        else:
+            runs.append([hour])
+    plan: list[tuple[int, list[str], list[str]]] = []
+    for run in runs:
+        for home in _chunk(run, max(1, min(max_workers, len(run)))):
+            idx = POOL_HOURS.index(home[-1])
+            plan.append((len(plan), home, POOL_HOURS[idx + 1 : idx + 1 + buffer_hours]))
+    return plan
+
+
+def _hours_for_days(days: Sequence[str], buffer_hours: int = DEFAULT_BUFFER_HOURS) -> list[str]:
+    """Every pool hour score_one_spec will open for `days` (home + buffer), sorted.
+    Pure: opens no file. Independent of max_workers."""
+    out: set[str] = set()
+    for _i, home, buf in _plan_days(days, 1_000_000, buffer_hours):
+        out.update(home)
+        out.update(buf)
+    return sorted(out)
+
+
+def score_one_spec(
+    spec: dict[str, Any],
+    *,
+    days: Sequence[str],
+    entry_size_sol: float = ENTRY_SIZE / LAMPORTS_PER_SOL,
+    priority_lamports: int = ENTRY_PRIORITY_LAMPORTS,
+    root: Path | str | None = None,
+    max_workers: int = 4,
+    buffer_hours: int = DEFAULT_BUFFER_HOURS,
+) -> dict[str, Any]:
+    """Score ONE caller-built exit spec (same dict shape as build_specs()) over
+    the migrations whose create landed in `days`, at the given entry size and
+    per-side priority. Reuses run_worker/score_migration/eval_spec; the frozen
+    41-spec grid path (run_all) is untouched.
+
+    Rows are keyed by migration day (a create near a day edge can migrate in the
+    next day, as in the full run). Returns {"rows", "hours_read", "n_days",
+    "peak_rss_mb"}; each row is {spec, day, status, filled, gross, flat, press}
+    in lamports.
+    """
+    size = int(round(entry_size_sol * LAMPORTS_PER_SOL))
+    if size <= 0 or priority_lamports < 0:
+        raise ValueError("entry size must be > 0 and priority >= 0")
+    root_path = _resolve_pool_root(root)
+    plan = _plan_days(days, max_workers, buffer_hours)
+    hours_read = sorted({h for _i, home, buf in plan for h in home + buf})
+    print(f"hours_read={hours_read}", file=sys.stderr, flush=True)
+    specs = [spec]
+    rows: list[dict[str, Any]] = []
+    if max_workers <= 1 or len(plan) <= 1:
+        for worker_id, home, buf in plan:
+            rows.extend(run_worker(worker_id, home, buf, root_path, specs, size, priority_lamports))
+    else:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=min(max_workers, len(plan))) as pool:
+            results = pool.starmap(
+                run_worker, [(i, h, b, root_path, specs, size, priority_lamports) for i, h, b in plan]
+            )
+        for part in results:
+            rows.extend(part)
+    try:
+        import resource
+
+        peak_kb = max(
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+            resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+        )
+        peak_mb = float(peak_kb) / 1024.0
+    except (ImportError, OSError):
+        peak_mb = float(_rss_mb())
+    return {
+        "rows": rows,
+        "hours_read": hours_read,
+        "n_days": len({h[:10] for h in hours_read} & set(days)),
+        "peak_rss_mb": peak_mb,
+    }
 
 
 # --- Aggregation and report --------------------------------------------------

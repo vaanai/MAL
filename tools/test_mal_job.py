@@ -296,11 +296,14 @@ def test_real_entry_filter_runner_raises_not_implemented():
         entry_filter_tpl.run(_entry_filter_params())
 
 
-def test_real_exit_runner_raises_not_implemented():
+def test_real_exit_runner_is_wired_and_refuses_unsupported_params():
     from tools.mal_templates import exit as exit_tpl
 
-    with pytest.raises(NotImplementedError):
-        exit_tpl.run({"trigger": "migrate", "family": "tp_sl_grid", "tp_pct": 50, "sl_pct": 30, "size_sol": 0.5, "days": "all"})
+    # Wired (see tools/test_exploration_exits_score_one.py for the fixture runs);
+    # here only that it no longer raises NotImplementedError and refuses what it cannot score.
+    base = {"trigger": "migrate", "family": "tp_sl_grid", "tp_pct": 50, "sl_pct": 30, "size_sol": 0.5, "days": "all"}
+    with pytest.raises(ValueError):
+        exit_tpl.run(dict(base, mcap_band={"min": 1}))
 
 
 def test_exit_resolve_data_blocks_is_allowed_on_real_ledger():
@@ -309,7 +312,8 @@ def test_exit_resolve_data_blocks_is_allowed_on_real_ledger():
 
     blocks = mal_catalog.parse_ledger((REPO_ROOT / "docs" / "HOLDOUT_LEDGER.md").read_text(encoding="utf-8"))
     data_blocks = exit_tpl.resolve_data_blocks({"days": "all"})
-    assert len(data_blocks) == 3
+    # Contiguous pool hours (incl. buffer, clipped at the pool end) merge into one block.
+    assert [(b["start_hour"], b["end_hour_exclusive"]) for b in data_blocks] == [("2026-09-19T01", "2026-09-22T00")]
     for b in data_blocks:
         ok, reasons = mal_catalog.check_read(blocks, "exploration", b["host"], b["start_hour"], b["end_hour_exclusive"])
         assert ok, reasons
