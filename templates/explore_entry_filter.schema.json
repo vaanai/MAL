@@ -25,13 +25,13 @@
       "type": "number",
       "minimum": 1,
       "maximum": 50,
-      "description": "Take the top N percent of migrations by model score. Mutually exclusive with threshold -- set exactly one."
+      "description": "Take the top N percent of each held-out day's migrations by model score (k = max(1, round(n*N/100))). Mutually exclusive with threshold -- set exactly one."
     },
     "threshold": {
       "type": "number",
       "minimum": 0,
       "maximum": 1,
-      "description": "Take migrations whose model score clears this absolute cut (0..1). Mutually exclusive with select_top_pct -- set exactly one."
+      "description": "Take migrations whose model score is >= this absolute cut (0..1) -- the EXP-011 enter rule. Only valid with model s2_clf (a probability); the regression settings score in net-percent and are refused. Mutually exclusive with select_top_pct -- set exactly one."
     },
     "exit": {
       "type": "string",
@@ -62,20 +62,35 @@
       "type": "string",
       "enum": ["p50", "p75", "p90"],
       "default": "p75",
-      "description": "Priority-fee tier for slot+1 landing. The frozen execution uses the p75 tier (0.0005 SOL/side, ARTIFACTS/lab/fee-audit-2026-09-27.md); p50/p90 are declared for future runners, not wired yet."
+      "description": "Priority-fee tier for slot+1 landing. The frozen execution uses the p75 tier (0.0005 SOL/side = 500,000 lamports, ARTIFACTS/lab/fee-audit-2026-09-27.md); p50 (0.000058 SOL/side = 58,000 lamports, same audit) is wired; p90 has no audited value and is refused by the runner."
     },
     "mcap_band": {
       "type": ["object", "null"],
       "default": null,
-      "description": "Optional market-cap band filter in USD. Omit or set null for no band filter.",
+      "description": "Optional market-cap band filter in USD. Not supported by the scorer (no band filter): anything but null/omitted is refused by the runner.",
       "additionalProperties": false,
       "properties": {
         "min": { "type": "number", "minimum": 0, "description": "Minimum market cap in USD, inclusive." },
         "max": { "type": "number", "minimum": 0, "description": "Maximum market cap in USD, exclusive." }
       }
     },
+    "fast_pool_root": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Root of pool A (fast-box sealed hours: trades/ and creates/). Must resolve (symlinks and .. followed) to an allowlisted exploration root or the run is refused before any file is opened. Null uses env MAL_FAST_POOL_ROOT, else /var/lib/mal/backfill-fast. On mal-research-0: /data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00."
+    },
+    "insample_pool_root": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Root of pool C (Oracle in-sample backfill, 2026-09-22T00..2026-09-25T06). Same allowlist rule. Null uses env MAL_INSAMPLE_POOL_ROOT, else /home/claude/data/oracle-insample-2026-09-22_25. On mal-research-0: /data/mal/clean-view/oracle-insample-2026-09-22_25."
+    },
+    "live_pool_root": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Root of pool B (Oracle live tape, 2026-09-25T07..2026-09-27T23, plus observe-<day>.jsonl creates). Same allowlist rule. Null uses env MAL_LIVE_POOL_ROOT, else /home/claude/data/oracle-live-2026-09-25_27. On mal-research-0: /data/mal/clean-view/oracle-live-2026-09-25_27."
+    },
     "days": {
-      "description": "Exploration-pool UTC days to read (docs/HOLDOUT_LEDGER.md), or \"all\" for the full 9-day exploration pool tools/exploration_entry_model_b3.py already uses (2026-09-19 through 2026-09-27).",
+      "description": "Exploration-pool UTC days to score, leave-one-day-out over exactly these days (docs/HOLDOUT_LEDGER.md), or \"all\" for the full 9-day exploration pool tools/exploration_entry_model_b3.py already uses (2026-09-19 through 2026-09-27).",
       "default": "all",
       "oneOf": [
         { "type": "string", "enum": ["all"] },

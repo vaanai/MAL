@@ -57,14 +57,19 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing as mp
+import os
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 from typing import Any, Sequence
 
+from tools import exploration_exits as _ex
 from tools.exploration_entry_model import (
     FEATURE_NAMES,
+    CREATOR_LOOKBACK_MS,
+    _Feat,
     SEED,
     SETTINGS,
     TARGET_SPEC_IDS,
@@ -79,8 +84,8 @@ from tools.exploration_entry_model import (
     run_worker_features,
 )
 from tools.exploration_entry_model_b2 import _ex_top3_sol, run_all_features_b
-from tools.exploration_exits import BACKFILL as FAST_DIR_DEFAULT, ENTRY_SIZE, POOL_END as POOL_A_END, POOL_HOURS as POOL_A_HOURS, POOL_START as POOL_A_START, _chunk, chunk_plan
-from tools.latency_curve import _iter_trades, _rss_mb
+from tools.exploration_exits import BACKFILL as FAST_DIR_DEFAULT, ENTRY_SIZE, _hour_info as _hour_info_a, build_specs as _build_exit_specs, POOL_END as POOL_A_END, POOL_HOURS as POOL_A_HOURS, POOL_START as POOL_A_START, _chunk, chunk_plan
+from tools.latency_curve import _Mint, _anchor, _iter_trades, _rss_mb
 from tools.oracle_insample_adapter import BACKFILL_C as INSAMPLE_DIR_DEFAULT, BACKFILL_C, POOL_C_END, POOL_C_HOURS, POOL_C_START, _hour_info_c
 from tools.oracle_live_adapter import (
     BACKFILL_B as LIVE_DIR_DEFAULT,
@@ -89,6 +94,9 @@ from tools.oracle_live_adapter import (
     POOL_B_END,
     POOL_B_HOURS,
     POOL_B_START,
+    _hour_info_b,
+    iter_adapted_creates,
+    iter_trade_rows_sorted,
 )
 from tools.paper_curve_math import LAMPORTS_PER_SOL
 
@@ -308,18 +316,22 @@ def winsorize_train_labels(y_raw: Sequence[float]) -> tuple[list[float], float, 
     return [float(v) for v in clipped], float(p1), float(p99)
 
 
-def _press_pct_labels(rows: Sequence[dict[str, Any]]) -> list[float]:
-    return [r["press"] / ENTRY_SIZE * 100.0 for r in rows]
+def _press_pct_labels(rows: Sequence[dict[str, Any]], size: int | None = None) -> list[float]:
+    """`size` (lamports; single-cell path only) defaults to the frozen ENTRY_SIZE."""
+    denom = ENTRY_SIZE if size is None else size
+    return [r["press"] / denom * 100.0 for r in rows]
 
 
-def fit_setting_b3(x_train: Sequence[Sequence[float]], rows_train: Sequence[dict[str, Any]], setting: dict[str, Any]) -> dict[str, Any] | None:
+def fit_setting_b3(
+    x_train: Sequence[Sequence[float]], rows_train: Sequence[dict[str, Any]], setting: dict[str, Any], size: int | None = None
+) -> dict[str, Any] | None:
     kind = setting["kind"]
     if kind == "lightgbm":
         y = [1 if r["press"] > 0 else 0 for r in rows_train]
         if len(set(y)) < 2:
             return None
         return {"kind": "lightgbm", "fit": fit_setting(x_train, y, setting)}
-    y_raw = _press_pct_labels(rows_train)
+    y_raw = _press_pct_labels(rows_train, size)
     if kind == "lightgbm_reg":
         model = _train_lightgbm_reg(x_train, y_raw, setting)
         return {"kind": "lightgbm_reg", "model": model}
@@ -745,6 +757,357 @@ def write_report(
     lines.append(f"Wall time: {wall_s:.0f}s. Full grid: `exploration-entry-model-b3-2026-09-28.json`.")
     lines.append("")
     out_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# --- Single-cell entry point (explore_entry_filter template) -----------------
+#
+# One (model setting, exit, size_sol, priority lamports, day subset,
+# select_top_pct-or-threshold) cell with leave-one-day-out over the requested
+# days. The frozen grid path above/main() is untouched; this is a separate,
+# additive path. Differences from the grid path, all on THIS path only:
+#   * data roots are checked against a per-pool allowlist of exploration roots
+#     (resolved paths) before any file is opened;
+#   * only the hours the requested days need are opened (home + trailing buffer
+#     + creator-history lookback), never the whole pool;
+#   * rows / creates whose block_time is outside the hour file being read are
+#     dropped (strict_hours);
+#   * the observe-2026-09-28 day file (clean forward-paper day) is never opened.
+
+DEFAULT_BUFFER_HOURS = 2
+CELL_LOOKBACK_HOURS = CREATOR_LOOKBACK_MS // 3_600_000
+assert CELL_LOOKBACK_HOURS == 24
+CELL_MODEL_IDS = tuple(s["id"] for s in SETTINGS_B3)
+CELL_ROOT_ENV = {"A": _ex.POOL_ROOT_ENV, "C": "MAL_INSAMPLE_POOL_ROOT", "B": "MAL_LIVE_POOL_ROOT"}
+CELL_POOL_HOURS = {"A": POOL_A_HOURS, "C": POOL_C_HOURS, "B": POOL_B_HOURS}
+CELL_POOL_HOST = {"A": "fast", "C": "oracle", "B": "oracle"}
+# Pool B creates are day files; 2026-09-28 (clean clock) is never read here.
+CELL_B_CREATE_DAYS = tuple(d for d in POOL_B_CREATE_DAYS if d < "2026-09-28")
+# Exploration roots, per pool slot. Pool A's list is tools.exploration_exits.
+# POOL_ROOT_ALLOWLIST (read at call time). The default Oracle/fast paths plus the
+# research-0 clean-view hardlink mirrors (EXP-012 section 3.2); nothing else --
+# not /data/mal/blocks/* (holdouts), not backfill-fast-b/-c.
+CELL_ROOT_ALLOWLIST: dict[str, tuple[Path, ...]] = {
+    "C": (INSAMPLE_DIR_DEFAULT, Path("/data/mal/clean-view/oracle-insample-2026-09-22_25")),
+    "B": (LIVE_DIR_DEFAULT, Path("/data/mal/clean-view/oracle-live-2026-09-25_27")),
+}
+CELL_ROOT_DEFAULT = {"A": FAST_DIR_DEFAULT, "C": INSAMPLE_DIR_DEFAULT, "B": LIVE_DIR_DEFAULT}
+_HOUR_FMT = "%Y-%m-%dT%H"
+
+
+def _cell_allowlist(pool: str) -> tuple[Path, ...]:
+    return tuple(_ex.POOL_ROOT_ALLOWLIST) if pool == "A" else CELL_ROOT_ALLOWLIST[pool]
+
+
+def check_cell_root(pool: str, root: Path | str) -> Path:
+    """Refuse (ValueError) unless root.resolve() -- symlinks and `..` followed --
+    equals a resolved allowlist entry for this pool slot. Opens no file."""
+    resolved = Path(root).resolve()
+    allowed = _cell_allowlist(pool)
+    if resolved not in {p.resolve() for p in allowed}:
+        raise ValueError(
+            f"pool {pool} data root {str(root)!r} (resolves to {str(resolved)!r}) is not an allowlisted "
+            f"exploration-pool root: {[str(p) for p in allowed]}"
+        )
+    return resolved
+
+
+def resolve_cell_root(pool: str, root: Path | str | None = None) -> Path:
+    """Explicit `root`, else the pool's env var, else the old default path."""
+    if root:
+        return Path(root)
+    env = os.environ.get(CELL_ROOT_ENV[pool])
+    return Path(env) if env else CELL_ROOT_DEFAULT[pool]
+
+
+def _plan_pool_days(
+    pool_hours: Sequence[str], days: Sequence[str], max_workers: int, buffer_hours: int
+) -> list[tuple[int, list[str], list[str]]]:
+    """(worker_id, home_keys, buffer_keys) for a UTC-day subset of one pool: the
+    pool hours of the requested days, each contiguous run split into at most
+    `max_workers` chunks (as chunk_plan does), each chunk reading the same trailing
+    `buffer_hours` past its own end, clipped at the pool end."""
+    day_set = set(days)
+    idx = {h: i for i, h in enumerate(pool_hours)}
+    runs: list[list[str]] = []
+    for h in pool_hours:
+        if h[:10] not in day_set:
+            continue
+        if runs and idx[runs[-1][-1]] + 1 == idx[h]:
+            runs[-1].append(h)
+        else:
+            runs.append([h])
+    plan: list[tuple[int, list[str], list[str]]] = []
+    for run in runs:
+        for home in _chunk(run, max(1, min(max_workers, len(run)))):
+            i = idx[home[-1]]
+            plan.append((len(plan), home, list(pool_hours[i + 1 : i + 1 + buffer_hours])))
+    return plan
+
+
+def plan_cell(days: Sequence[str], max_workers: int = 2, buffer_hours: int = DEFAULT_BUFFER_HOURS) -> dict[str, dict[str, Any]]:
+    """Everything score_one_cell will open, per pool. Pure: opens no file.
+    `chunks`: (worker_id, home, buffer); `history_hours` (pools A/C): the
+    creates-only lookback hours (24h before each home hour, clipped at the pool
+    start); `create_days` (pool B): the observe day files (the home days and the
+    day before each, within 2026-09-25..27); `hours`: every hour label touched."""
+    unknown = sorted(set(days) - set(DAYS_ALL))
+    if unknown or not days:
+        raise ValueError(f"days must be a non-empty subset of the exploration pool, got unknown {unknown}")
+    out: dict[str, dict[str, Any]] = {}
+    for pool, pool_hours in CELL_POOL_HOURS.items():
+        chunks = _plan_pool_days(pool_hours, days, max_workers, buffer_hours)
+        if not chunks:
+            continue
+        idx = {h: i for i, h in enumerate(pool_hours)}
+        home = [h for _i, hm, _b in chunks for h in hm]
+        hours = set(home) | {h for _i, _hm, b in chunks for h in b}
+        entry: dict[str, Any] = {"chunks": chunks}
+        if pool == "B":
+            create_days = set()
+            for h in home:
+                day = h[:10]
+                create_days.add(day)
+                create_days.add((datetime.strptime(day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d"))
+            entry["create_days"] = sorted(create_days & set(CELL_B_CREATE_DAYS))
+            for d in entry["create_days"]:
+                hours.update(f"{d}T{k:02d}" for k in range(24))
+        else:
+            hist = {pool_hours[j] for h in home for j in range(max(0, idx[h] - CELL_LOOKBACK_HOURS), idx[h] + 1)}
+            entry["history_hours"] = sorted(hist)
+            hours |= hist
+        entry["hours"] = sorted(hours)
+        out[pool] = entry
+    return out
+
+
+def cell_hours_by_host(days: Sequence[str], buffer_hours: int = DEFAULT_BUFFER_HOURS) -> dict[str, list[str]]:
+    """{host: sorted hour labels} for every hour score_one_cell opens (pure)."""
+    by_host: dict[str, set[str]] = {}
+    for pool, entry in plan_cell(days, 1_000_000, buffer_hours).items():
+        by_host.setdefault(CELL_POOL_HOST[pool], set()).update(entry["hours"])
+    return {h: sorted(v) for h, v in by_host.items()}
+
+
+def _in_hour(block: int, hour: dict[str, Any]) -> bool:
+    return hour["end"] - 3600 <= block < hour["end"]
+
+
+def _history_ac(hour_info_fn: Any, keys: Sequence[str]) -> dict[str, list[int]]:
+    """Creator -> sorted create times (ms) from the per-hour creates files of
+    `keys`; strict: a create whose block_time is outside its hour file is dropped."""
+    hist: dict[str, list[int]] = {}
+    for key in keys:
+        hour = hour_info_fn(key)
+        path = hour.get("create")
+        if path is None:
+            continue
+        for row in _iter_trades(path):
+            if row.get("type") != "create":
+                continue
+            creator, block = row.get("creator"), row.get("block_time")
+            if not isinstance(creator, str) or not isinstance(block, int) or not _in_hour(block, hour):
+                continue
+            hist.setdefault(creator, []).append(block * 1000)
+    for times in hist.values():
+        times.sort()
+    return hist
+
+
+def _load_creates_b_days(days: Sequence[str], root: Path) -> tuple[dict[str, tuple[_Mint, _Feat]], dict[str, list[int]]]:
+    """Pool B creates (PumpPortal observe day files) for `days` only, as the
+    {mint: (_Mint, _Feat)} pairs run_worker_features takes plus the creator
+    history. Strict: a create whose block_time falls outside its own file's UTC
+    day is dropped. Mirrors oracle_live_adapter.load_creates_b."""
+    found: dict[str, tuple[_Mint, _Feat]] = {}
+    hist: dict[str, list[int]] = {}
+    for day in days:
+        for row in iter_adapted_creates(days=(day,), root=root):
+            block = row["block_time"]
+            if datetime.fromtimestamp(block, tz=timezone.utc).strftime("%Y-%m-%d") != day:
+                continue
+            creator = row.get("creator")
+            if isinstance(creator, str) and creator:
+                hist.setdefault(creator, []).append(block * 1000)
+            mint_id, block_ms = row["mint"], block * 1000
+            prev = found.get(mint_id)
+            if prev is not None and prev[0].block_ms <= block_ms:
+                continue
+            sig = row.get("signature") if isinstance(row.get("signature"), str) else None
+            anchor = _anchor(row, row["slot"], block_ms, sig)
+            first_price = anchor.price_sol if anchor is not None else None
+            found[mint_id] = (_Mint(row["slot"], block_ms, 0, anchor), _Feat(creator if isinstance(creator, str) else "", block_ms, first_price))
+    for times in hist.values():
+        times.sort()
+    return found, hist
+
+
+def _cell_worker(
+    pool: str,
+    worker_id: int,
+    home: list[str],
+    buf: list[str],
+    root: Path,
+    creator_hist: dict[str, list[int]],
+    all_creates: dict[str, tuple[_Mint, _Feat]] | None,
+    spec: dict[str, Any],
+    size: int,
+    priority: int,
+) -> list[dict[str, Any]]:
+    """Top-level (picklable) worker: run_worker_features on one chunk, strict hours."""
+    common: dict[str, Any] = {"specs": [spec], "size": size, "priority": priority, "strict_hours": True}
+    if pool == "A":
+        return run_worker_features(worker_id, home, buf, creator_hist, hour_info_fn=partial(_hour_info_a, backfill=root), **common)
+    if pool == "C":
+        return run_worker_features(worker_id, home, buf, creator_hist, hour_info_fn=partial(_hour_info_c, root=root), **common)
+    assert all_creates is not None
+    start_ms = int(datetime.strptime(home[0], _HOUR_FMT).replace(tzinfo=timezone.utc).timestamp()) * 1000
+    end_ms = _hour_info_b(home[-1], root)["end"] * 1000
+    home_creates = {mid: (m, f) for mid, (m, f) in all_creates.items() if start_ms <= m.block_ms < end_ms}
+    return run_worker_features(
+        worker_id, home, buf, creator_hist, hour_info_fn=partial(_hour_info_b, root=root),
+        row_iter_fn=iter_trade_rows_sorted, creates_override=home_creates, **common,
+    )
+
+
+def _peak_rss_mb() -> float:
+    try:
+        import resource
+
+        return float(max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)) / 1024.0
+    except (ImportError, OSError):
+        return float(_rss_mb())
+
+
+def evaluate_fold_cell(
+    rows_train: Sequence[dict[str, Any]],
+    rows_test: Sequence[dict[str, Any]],
+    setting: dict[str, Any],
+    size: int,
+    select_top_pct: float | None,
+    threshold: float | None,
+) -> dict[str, Any]:
+    """Train on rows_train, score rows_test, select by top-pct (k = max(1,
+    round(n*pct/100)) of the score ranking) or by `score >= threshold` (the
+    EXP-011 enter rule). Returns the selected rows (features dropped)."""
+    if len(rows_train) < 20:
+        return {"trained": False, "n_train": len(rows_train), "n_test": len(rows_test), "selected": []}
+    x_train = [_vector(r["features"]) for r in rows_train]
+    fit = fit_setting_b3(x_train, rows_train, setting, size)
+    if fit is None:
+        return {"trained": False, "n_train": len(rows_train), "n_test": len(rows_test), "selected": []}
+    scores = predict_setting_b3(fit, [_vector(r["features"]) for r in rows_test])
+    order = sorted(range(len(rows_test)), key=lambda i: scores[i], reverse=True)
+    if select_top_pct is not None:
+        k = max(1, round(len(order) * select_top_pct / 100.0)) if order else 0
+        chosen = order[:k]
+    else:
+        assert threshold is not None
+        chosen = [i for i in order if scores[i] >= threshold]
+    selected = [
+        {"day": rows_test[i]["day"], "pool": rows_test[i].get("pool"), "filled": rows_test[i]["filled"],
+         "gross": rows_test[i]["gross"], "flat": rows_test[i]["flat"], "press": rows_test[i]["press"], "score": scores[i]}
+        for i in chosen
+    ]
+    return {"trained": True, "n_train": len(rows_train), "n_test": len(rows_test), "n_selected": len(selected), "selected": selected}
+
+
+def score_one_cell(
+    *,
+    model: str,
+    exit_id: str,
+    size_sol: float,
+    priority_lamports: int,
+    days: Sequence[str],
+    select_top_pct: float | None = None,
+    threshold: float | None = None,
+    fast_root: Path | str | None = None,
+    insample_root: Path | str | None = None,
+    live_root: Path | str | None = None,
+    max_workers: int = 2,
+    buffer_hours: int = DEFAULT_BUFFER_HOURS,
+) -> dict[str, Any]:
+    """Score ONE learned-entry-filter cell: model setting `model` (SETTINGS_B3 id),
+    exit `exit_id` (a tools.exploration_exits.build_specs() id), `size_sol` and
+    per-side `priority_lamports`, leave-one-day-out over `days`, selecting the
+    top `select_top_pct` percent of each held-out day by model score, or every
+    migration with score >= `threshold` (s2_clf only: its score is a probability;
+    the regression settings score in net-percent). Exactly one of the two.
+
+    Reuses run_worker_features / score_one / fit_setting_b3; the frozen grid path
+    (main) is untouched. Rows are keyed by migration day; days outside `days`
+    are dropped, as in the grid. Returns {"rows" (selected trades, lamports),
+    "n_candidates", "n_days", "hours_read", "peak_rss_mb", "folds", "roots"}.
+    """
+    if (select_top_pct is None) == (threshold is None):
+        raise ValueError("set exactly one of select_top_pct / threshold")
+    if select_top_pct is not None and not (0 < select_top_pct <= 100):
+        raise ValueError("select_top_pct must be in (0, 100]")
+    if threshold is not None and not (0.0 <= threshold <= 1.0):
+        raise ValueError("threshold must be in [0, 1]")
+    setting = next((s for s in SETTINGS_B3 if s["id"] == model), None)
+    if setting is None:
+        raise ValueError(f"unknown model {model!r}; one of {list(CELL_MODEL_IDS)}")
+    if threshold is not None and setting["kind"] != "lightgbm":
+        raise ValueError(f"threshold needs a probability score; {model!r} scores in net-percent, use select_top_pct")
+    spec = next((s for s in _build_exit_specs() if s["id"] == exit_id), None)
+    if spec is None:
+        raise ValueError(f"unknown exit {exit_id!r}")
+    size = int(round(size_sol * LAMPORTS_PER_SOL))
+    if size <= 0 or priority_lamports < 0:
+        raise ValueError("entry size must be > 0 and priority >= 0")
+    days = sorted(set(days))
+    plan = plan_cell(days, max_workers, buffer_hours)  # validates days; pure
+    # Roots: resolve and allowlist-check every pool in use (and any explicit
+    # param) BEFORE any file is opened.
+    explicit = {"A": fast_root, "C": insample_root, "B": live_root}
+    roots: dict[str, Path] = {}
+    for pool in ("A", "C", "B"):
+        if pool in plan or explicit[pool]:
+            roots[pool] = check_cell_root(pool, resolve_cell_root(pool, explicit[pool]))
+    hours_read = sorted({h for entry in plan.values() for h in entry["hours"]})
+    print(f"cell hours_read={hours_read}", file=sys.stderr, flush=True)
+
+    rows: list[dict[str, Any]] = []
+    for pool, entry in plan.items():
+        root = roots[pool]
+        all_creates = None
+        if pool == "A":
+            hist = _history_ac(partial(_hour_info_a, backfill=root), entry["history_hours"])
+        elif pool == "C":
+            hist = _history_ac(partial(_hour_info_c, root=root), entry["history_hours"])
+        else:
+            all_creates, hist = _load_creates_b_days(entry["create_days"], root)
+        jobs = [(pool, i, h, b, root, hist, all_creates, spec, size, priority_lamports) for i, h, b in entry["chunks"]]
+        if max_workers <= 1 or len(jobs) <= 1:
+            parts = [_cell_worker(*j) for j in jobs]
+        else:
+            with mp.get_context("spawn").Pool(processes=min(max_workers, len(jobs))) as p:
+                parts = p.starmap(_cell_worker, jobs)
+        for part in parts:
+            for r in part:
+                r["pool"] = pool
+            rows.extend(part)
+
+    by_day: dict[str, list[dict[str, Any]]] = {d: [] for d in days}
+    for r in rows:
+        if r["day"] in by_day:
+            by_day[r["day"]].append(r)
+    selected: list[dict[str, Any]] = []
+    folds: dict[str, Any] = {}
+    for held_out in days:
+        train = [r for d in days if d != held_out for r in by_day[d]]
+        fold = evaluate_fold_cell(train, by_day[held_out], setting, size, select_top_pct, threshold)
+        selected.extend(fold.pop("selected"))
+        folds[held_out] = fold
+    return {
+        "rows": selected,
+        "n_candidates": sum(len(v) for v in by_day.values()),
+        "n_days": len(days),
+        "hours_read": hours_read,
+        "peak_rss_mb": _peak_rss_mb(),
+        "folds": folds,
+        "roots": {k: str(v) for k, v in roots.items()},
+    }
 
 
 def main() -> None:
