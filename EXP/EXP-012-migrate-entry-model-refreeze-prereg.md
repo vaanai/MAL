@@ -177,7 +177,7 @@ The read command is `python3 -m tools.exp012_score` with `--w1-dir/--w2-dir/--w3
 
 ## 12. Freeze record (Part 2, 2026-10-01)
 
-The binding freeze ran once, as MiScusi job #23 (`j_eFNPWZPCx0PEQg`) on `mal-research-0`, from a clean checkout at the pre-registration merge commit `ea5ec374010378b14a5c19e81bf045679bde73b9` (`train_manifest.json`: `code_commit` as given, `code_dirty: false`, seed 1). It used the §11 commands verbatim. The input VIEW pins were verified by the build (219 + 237 + 69 files). No earlier freeze output exists: a pre-merge table build (job #5, code `ed6f756`) was cancelled before it finished, its partial scratch output was moved aside unread, and no model or screen was produced from it.
+The binding freeze ran once, as MiScusi job #23 (`j_eFNPWZPCx0PEQg`) on `mal-research-0`, from a clean checkout at the pre-registration merge commit `ea5ec374010378b14a5c19e81bf045679bde73b9` (`train_manifest.json`: `code_commit` as given, `code_dirty: false`, seed 1). It used the §11 commands verbatim. The input VIEW pins were verified by the build (219 + 237 + 69 files). The deduplicated `MANIFEST.sha256` files list 220 / 238 / 70. The one extra file per block is that block's own `manifest.json` (the dedupe report), which is not data and is not read by the loaders. **The rows did not change:** the clean table has exactly EXP-011's row counts, 8,801 total, A/C/B = 3092/3372/2337, with every per-day count identical. Dedupe changed feature values and outcomes on existing rows, not which migrate rows exist. No earlier freeze output exists. A table build (step 1 only) ran before the pre-registration merged: MiScusi job #5 `j_Jd0Ka1vgs2fbIw`, code `ed6f756` (the PR head at the time), started 2026-10-01T01:48:19Z and cancelled at 02:04:19Z. The manager started it early to save wall time while the reviews ran. That went against §11's "after this PR merges". It was cancelled once the code changed under review. It never completed, never trained a model, and never produced a threshold or a screen. Its partial scratch output was moved to `/data/mal/exp012-precommit-discard-0204` and nobody inspected its rows. Any model built at `ed6f756` would also have failed the `--expect-commit` and `--freeze-commit` checks. The data involved is exploration-pool data, not holdout.
 
 - Table: `/data/mal/exp012/table.jsonl` sha256 `7ebdd2aec002a85d9065794f7ebcfc4f9069bfd6484382ff2e7ce09efb3e9205` (`table.md5` = `14ada9ea6694f00cf7d351600b4e2193`); settings 2 / 24 / 12, `verify_view: true`.
 - Frozen manifest: `ARTIFACTS/exp012/FROZEN.md5`, whose own md5 is **`a01f05dfb1e622f78b2bba55d174be09`**. `model.txt` md5 `a1810d219ed61db64a396f40dc302ce5`, `features.json` `5dec821ed0f4098b71b1c544de23a0ab` (identical to EXP-011's ablated 18-feature list), `threshold.json` `c6dfa593bfa38450d7f3b29344308315`.
@@ -189,6 +189,16 @@ The binding freeze ran once, as MiScusi job #23 (`j_eFNPWZPCx0PEQg`) on `mal-res
 | --- | ---: | ---: | ---: |
 | flat 15% | +7.43247570684624 | +31.140748286599997 | 9 |
 | pressure scale 1 | +4.672464066442589 | +19.458084402126982 | 9 |
+
+**Split by source (same nested LODO; the holdout is fast-only):**
+
+| Source | n | Flat mean net % | Pressure mean net % |
+| --- | ---: | ---: | ---: |
+| A, fast box (the holdout's source) | 302 | +4.194131571622516 | +3.245824010529341 |
+| C, Oracle in-sample | 391 | +7.647979839565218 | +3.8910183090046893 |
+| B, Oracle live | 198 | +11.946202034848485 | +8.391608450503291 |
+
+The pooled +7.43% is lifted by the Oracle sources. The only all-fast day, 2026-09-19, is flat +2.669265323655914%, the lowest flat day of the nine. If anything from this file is read as a guide to the fast-box holdout, it is the source-A row, not the pooled one.
 
 Report-only context from `nested_fixed_threshold_lodo.json`: n = 891 entered. Flat CI lower bound +5.188668409001117%, pressure +3.1683341591043632%. These are in-sample exploration-pool numbers (each fold's threshold is chosen without its own test day, but the pool has been read many times; see §1 and §10). They are **not** gate evidence and do not predict the holdout. The comparable EXP-011 dirty-pool preview was flat +7.9934%, pressure +4.9233%, 9/9 days.
 
