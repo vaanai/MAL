@@ -19,25 +19,33 @@ sizes) and the DEDUPLICATED copy (--wN-clean-dir; `tools.backfill_verify
 --dedupe-out` output: manifest.json plus <sub>/<sub>-<hour>.deduped.jsonl.zst).
 Trade and create rows are read only from the deduplicated copy.
 
-Refusals, all BEFORE the lock and without opening any trade/create data file
-(exit 2, each listed on stderr; `--dry-run-preconditions` stops here):
+Refusals, all BEFORE the lock (exit 2, each listed on stderr; `--dry-run-preconditions`
+runs exactly this and stops). Byte hashing reveals no outcome, so it is a
+pre-lock refusal and a mismatch does not spend the block:
   - the three ranges do not tile the 144 hour block;
-  - any of the 144 hours is not `sealed` in its walker's checkpoint, or has a
-    metadata slot issue (backwards or implausible range), a sealed/partial
-    mismatch, a missing trades file, or a data file not sealed to .zst;
-  - a deduplicated copy lacks manifest.json, a manifest entry for an hour's
-    trades file, or that file on disk; or the dedupe pin (--dedupe-pin) does
-    not match the manifests exactly;
-  - the frozen artifacts' md5s differ from FROZEN.md5, FROZEN.md5 lacks a
-    required file, the features differ from FROZEN_FEATURE_NAMES, or
-    --frozen-manifest-md5 (if given) differs from FROZEN.md5's md5;
+  - the frozen artifacts: FROZEN.md5 must list features.json, model.txt,
+    threshold.json, proceed_screen.json, nested_fixed_threshold_lodo.json,
+    train_manifest.json and table_row_counts.json, each matching its md5;
+    --frozen-manifest-md5 must equal FROZEN.md5's md5; proceed_screen.json
+    must say proceed == true AND equal proceed_screen() recomputed here from
+    nested_fixed_threshold_lodo.json; train_manifest.json must record
+    code_commit == --freeze-commit and code_dirty == false; the table build
+    must record the pinned VIEW.sha256 hashes; features == FROZEN_FEATURE_NAMES;
+  - tracked-and-clean state (vs HEAD) of the pin, FROZEN.md5 and the scorer/freeze
+    code, and no change under tools/ or schemas/ between --freeze-commit and HEAD;
+  - any hour not `sealed`, a metadata slot issue, a missing or unsealed file, or
+    raw creates presence differing from the manifest's;
+  - a missing dedupe manifest, entry, file or pin, or a pin that differs;
+  - any deduplicated trades/creates file whose bytes differ from the manifest;
+  - out-dir not writable, zstdcat missing, the model failing a smoke predict,
+    or a report / NOT_DECIDABLE.json already in out-dir;
   - the read-once lock already exists.
 
-Then the O_EXCL lock is written (so a concurrent second run cannot also read).
-Only after that does any trade/create data file get opened: first the
-integrity re-hash of every deduplicated trades/creates file against the
-manifest (a mismatch is NOT_DECIDABLE, exit 3, lock stays), then the read.
-Any failure after the lock writes NOT_DECIDABLE.json (no metric) and exits 3.
+Then the O_EXCL lock is written. After the lock only the read and scoring
+happen (a defense-in-depth re-hash first; a mismatch there is NOT_DECIDABLE,
+exit 3). Any failure after the lock writes NOT_DECIDABLE.json and exits 3.
+The verdict and report JSON go to stderr BEFORE any file is written.
+Settings are fixed (table settings 24/12/2, lock path), with no CLI override.
 """
 
 from __future__ import annotations
@@ -48,6 +56,8 @@ import json
 import multiprocessing as mp
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -56,11 +66,13 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import tools.exp011_score as e11
+from tools.exp012_support import proceed_screen
 from tools.backfill_verify import verify_metadata
 from tools.exp011_freeze import (
     FROZEN_FEATURE_NAMES,
     FROZEN_MANIFEST_NAME,
     FROZEN_MANIFEST_REQUIRED,
+    VIEW_PIN_BY_POOL,
     _git_commit,
     _md5_of_file,
     parse_md5_manifest,
@@ -83,12 +95,15 @@ DEFAULT_RANGES: dict[str, tuple[str, str]] = {
     "w2": ("2026-09-05T12", "2026-09-07T12"),
     "w3": ("2026-09-03T12", "2026-09-05T12"),
 }
-DEFAULT_RAW = {"w1": "/data/mal/blocks/fresh-0903/w1", "w2": "/data/mal/blocks/fresh-0903/w2", "w3": "/data/mal/blocks/fresh-0903/w3"}
-DEFAULT_CLEAN = {"w1": "/data/mal/blocks-clean/fresh-0903/w1", "w2": "/data/mal/blocks-clean/fresh-0903/w2", "w3": "/data/mal/blocks-clean/fresh-0903/w3"}
-DEFAULT_ARTIFACT_DIR = Path("ARTIFACTS/exp012")
-DEFAULT_LOCK_PATH = Path("/data/mal/exp012/HOLDOUT_READ.lock")
+# Fixed settings: no CLI override (tests patch these module constants).
+LOCK_PATH = Path("/data/mal/exp012/HOLDOUT_READ.lock")
+BUFFER_HOURS = 24
+MAX_HOME_HOURS = 12
+MAX_WORKERS = 2
 DEFAULT_OUT_DIR = Path("/data/mal/exp012/read")
-DEFAULT_PIN = Path("ARTIFACTS/exp012/dedupe_pin.sha256")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+GUARDED_CODE = ("tools/exp012_score.py", "tools/exp012_support.py", "tools/exp011_score.py", "tools/exp011_freeze.py")
+SCREEN_REQUIRED = ("proceed_screen.json", "nested_fixed_threshold_lodo.json", "train_manifest.json", "table_row_counts.json")
 
 # `resumed: duplicate risk` is NOT a refusal: the dedupe step removes the exact
 # duplicates and the counts are disclosed. These are.
@@ -144,7 +159,7 @@ def check_tiling(walkers: Sequence[Walker]) -> list[str]:
 # --- frozen artifacts ---------------------------------------------------------
 
 
-def check_frozen(artifact_dir: Path, manifest_md5: str | None) -> list[str]:
+def check_frozen(artifact_dir: Path, manifest_md5: str | None, freeze_commit: str | None = None) -> list[str]:
     errors: list[str] = []
     mpath = artifact_dir / FROZEN_MANIFEST_NAME
     if not mpath.is_file():
@@ -155,7 +170,7 @@ def check_frozen(artifact_dir: Path, manifest_md5: str | None) -> list[str]:
         return [f"{mpath} unreadable: {exc}"]
     if manifest_md5 is not None and _md5_of_file(mpath) != manifest_md5.strip().lower():
         errors.append(f"{mpath} md5 {_md5_of_file(mpath)} differs from --frozen-manifest-md5 {manifest_md5}")
-    for name in FROZEN_MANIFEST_REQUIRED:
+    for name in FROZEN_MANIFEST_REQUIRED + SCREEN_REQUIRED:
         if name not in listed:
             errors.append(f"{mpath} does not list required artifact {name}")
     for name, want in sorted(listed.items()):
@@ -164,6 +179,8 @@ def check_frozen(artifact_dir: Path, manifest_md5: str | None) -> list[str]:
             errors.append(f"frozen artifact missing: {path}")
         elif _md5_of_file(path) != want:
             errors.append(f"frozen artifact md5 mismatch: {path} hashes to {_md5_of_file(path)}, {FROZEN_MANIFEST_NAME} says {want}")
+    if not errors:
+        errors.extend(_check_screen_and_provenance(artifact_dir, freeze_commit))
     model, md5file = artifact_dir / "model.txt", artifact_dir / "model.md5"
     if model.is_file():
         if not md5file.is_file():
@@ -179,6 +196,61 @@ def check_frozen(artifact_dir: Path, manifest_md5: str | None) -> list[str]:
         else:
             if names != FROZEN_FEATURE_NAMES:
                 errors.append(f"{features}'s frozen_feature_names does not match tools.exp011_freeze.FROZEN_FEATURE_NAMES")
+    return errors
+
+
+def _check_screen_and_provenance(artifact_dir: Path, freeze_commit: str | None) -> list[str]:
+    errors: list[str] = []
+    try:
+        nested = json.loads((artifact_dir / "nested_fixed_threshold_lodo.json").read_text(encoding="utf-8"))
+        screen = json.loads((artifact_dir / "proceed_screen.json").read_text(encoding="utf-8"))
+        train = json.loads((artifact_dir / "train_manifest.json").read_text(encoding="utf-8"))
+        counts = json.loads((artifact_dir / "table_row_counts.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"frozen artifact unreadable: {exc}"]
+    try:
+        recomputed = proceed_screen(nested)
+    except Exception as exc:  # noqa: BLE001
+        return [f"proceed screen cannot be recomputed from nested_fixed_threshold_lodo.json: {type(exc).__name__}: {exc}"]
+    if screen != recomputed:
+        errors.append("proceed_screen.json differs from proceed_screen() recomputed from nested_fixed_threshold_lodo.json")
+    if screen.get("proceed") is not True or recomputed.get("proceed") is not True:
+        errors.append("EXP-012 proceed condition not met (proceed_screen.json proceed != true): EXP-012 is withdrawn, the block is released unread")
+    if not freeze_commit or not re.match(r"^[0-9a-f]{40}$", freeze_commit):
+        errors.append("--freeze-commit must be the 40-hex commit the freeze ran at")
+    elif train.get("code_commit") != freeze_commit or train.get("code_dirty") is not False:
+        errors.append(f"train_manifest.json code_commit/code_dirty ({train.get('code_commit')!r}, {train.get('code_dirty')!r}) != --freeze-commit {freeze_commit} clean")
+    views = (counts.get("manifest") or {}).get("view_sha256_file_sha256")
+    if views != VIEW_PIN_BY_POOL:
+        errors.append("table_row_counts.json does not record the pinned VIEW.sha256 hashes for pools A/C/B (EXP-012 section 3.2)")
+    return errors
+
+
+def _git(repo: Path, *args: str) -> tuple[int, str]:
+    r = subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True)
+    return r.returncode, r.stdout.strip()
+
+
+def check_repo_state(paths: Sequence[Path], freeze_commit: str | None, repo_root: Path = REPO_ROOT) -> list[str]:
+    """Each path tracked and unmodified vs HEAD; tools/ and schemas/ identical
+    between the freeze commit and HEAD. Metadata only."""
+    errors: list[str] = []
+    for p in paths:
+        try:
+            rel = os.path.relpath(Path(p).resolve(), repo_root.resolve())
+        except ValueError:
+            rel = ".."
+        if rel.startswith(".."):
+            errors.append(f"{p} is outside the repository {repo_root}")
+            continue
+        if _git(repo_root, "ls-files", "--error-unmatch", "--", rel)[0] != 0:
+            errors.append(f"{rel} is not tracked by the repository")
+        elif _git(repo_root, "diff", "--quiet", "HEAD", "--", rel)[0] != 0:
+            errors.append(f"{rel} differs from HEAD (uncommitted change)")
+    if freeze_commit:
+        rc, _ = _git(repo_root, "diff", "--quiet", freeze_commit, "HEAD", "--", "tools", "schemas")
+        if rc != 0:
+            errors.append(f"tools/ or schemas/ changed between the freeze commit {freeze_commit} and HEAD (or the commit is unknown)")
     return errors
 
 
@@ -255,8 +327,71 @@ def expected_pin(walkers: Sequence[Walker]) -> tuple[dict[str, str], list[str]]:
     return pin, errors
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 22), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def check_dedupe_bytes(walkers: Sequence[Walker]) -> list[str]:
+    """Stream-hash every deduplicated trades and creates file against its manifest
+    sha256. Bytes only, no row is parsed, so it reveals no outcome: a mismatch
+    refuses before the lock and does not spend the block."""
+    problems: list[str] = []
+    for w in walkers:
+        entries, _ = load_dedupe_manifest(w)
+        for e in entries or []:
+            if e.get("sub") not in READ_SUBS:
+                continue
+            path = w.clean_file(str(e["sub"]), str(e["hour"]))
+            if _sha256_file(path) != e["sha256"]:
+                problems.append(f"sha256 mismatch: {path} differs from the dedupe manifest")
+    return problems
+
+
+def check_creates_presence(walkers: Sequence[Walker]) -> list[str]:
+    """Raw creates-file presence must equal the manifest's creates presence, per hour."""
+    errors: list[str] = []
+    for w in walkers:
+        entries, _ = load_dedupe_manifest(w)
+        in_manifest = {e.get("hour") for e in entries or [] if e.get("sub") == "creates"}
+        report = verify_metadata(w.raw_dir, w.hours, min_slots_per_hour=9_000, max_slots_per_hour=14_000)
+        for h in report["hours"]:
+            if (h["files"].get("creates") is not None) != (h["hour"] in in_manifest):
+                errors.append(f"walker {w.label} hour {h['hour']}: raw creates presence differs from the dedupe manifest")
+    return errors
+
+
+def check_environment(artifact_dir: Path, out_dir: Path) -> list[str]:
+    errors: list[str] = []
+    if shutil.which("zstdcat") is None:
+        errors.append("zstdcat is not on PATH")
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        probe = out_dir / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        errors.append(f"out-dir {out_dir} is not writable: {exc}")
+    for name in ("holdout_report.json", "NOT_DECIDABLE.json"):
+        if (out_dir / name).exists():
+            errors.append(f"{out_dir / name} already exists: this block has already been read or spent")
+    try:
+        import numpy as np
+
+        model, _thr, names = e11.load_frozen_spec(artifact_dir)
+        model.predict(np.zeros((1, len(names))), num_threads=1)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"frozen model smoke predict failed: {type(exc).__name__}: {exc}")
+    return errors
+
+
 def write_dedupe_pin(walkers: Sequence[Walker], path: Path) -> int:
     pin, errors = expected_pin(walkers)
+    if not errors:
+        errors = check_dedupe_bytes(walkers)
     if errors:
         raise SystemExit("cannot write the dedupe pin:\n  " + "\n  ".join(errors[:50]))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -318,23 +453,30 @@ def check_preconditions(
     walkers: Sequence[Walker],
     pin_path: Path,
     lock_path: Path,
-    frozen_manifest_md5: str | None = None,
+    frozen_manifest_md5: str | None,
+    freeze_commit: str | None,
+    out_dir: Path,
 ) -> list[str]:
-    """Every refusal reason, before the lock. Opens only control/metadata files
-    (checkpoint, stats, manifest.json, pin, the frozen artifacts) and stats file
-    names; never a trade/create/migration data file."""
+    """Every refusal reason, before the lock. Opens no data file until all the
+    cheap checks pass; then stream-hashes the deduplicated files (bytes only)."""
     errors = check_tiling(walkers)
-    errors.extend(check_frozen(artifact_dir, frozen_manifest_md5))
+    errors.extend(check_frozen(artifact_dir, frozen_manifest_md5, freeze_commit))
     if not any(e.startswith("walker ranges") or "bad range" in e for e in errors):
         for w in walkers:
             errors.extend(check_walker_raw(w))
     errors.extend(check_dedupe(walkers, pin_path))
+    if not errors:
+        errors.extend(check_creates_presence(walkers))
+    errors.extend(check_repo_state([artifact_dir / FROZEN_MANIFEST_NAME, pin_path] + [REPO_ROOT / g for g in GUARDED_CODE], freeze_commit))
+    errors.extend(check_environment(artifact_dir, out_dir))
     if lock_path.exists():
         errors.append(f"holdout read lock already exists at {lock_path} -- this block has already been read (or is being read); refusing a second read")
+    if not errors:
+        errors.extend(check_dedupe_bytes(walkers))
     return errors
 
 
-def write_lock(lock_path: Path, *, model_md5: str, frozen_manifest_md5: str, pin_sha256: str, command_line: str) -> None:
+def write_lock(lock_path: Path, *, model_md5: str, frozen_manifest_md5: str, pin_sha256: str, command_line: str, freeze_commit: str = "") -> None:
     """O_CREAT | O_EXCL: a concurrent second caller gets FileExistsError."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     doc = {
@@ -344,6 +486,7 @@ def write_lock(lock_path: Path, *, model_md5: str, frozen_manifest_md5: str, pin
         "model_md5": model_md5,
         "frozen_manifest_md5": frozen_manifest_md5,
         "dedupe_pin_sha256": pin_sha256,
+        "freeze_commit": freeze_commit,
         "command_line": command_line,
     }
     fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -355,22 +498,9 @@ def write_lock(lock_path: Path, *, model_md5: str, frozen_manifest_md5: str, pin
 
 
 def rehash_read_files(walkers: Sequence[Walker]) -> list[str]:
-    """First act after the lock: stream-hash every deduplicated trades/creates
-    file against its manifest sha256. Bytes only; no row is parsed."""
-    problems: list[str] = []
-    for w in walkers:
-        entries, _ = load_dedupe_manifest(w)
-        for e in entries or []:
-            if e.get("sub") not in READ_SUBS:
-                continue
-            path = w.clean_file(str(e["sub"]), str(e["hour"]))
-            h = hashlib.sha256()
-            with path.open("rb") as fh:
-                for chunk in iter(lambda: fh.read(1 << 22), b""):
-                    h.update(chunk)
-            if h.hexdigest() != e["sha256"]:
-                problems.append(f"sha256 mismatch after lock: {path}")
-    return problems
+    """Defense in depth, first act after the lock: the same byte check as the
+    pre-lock one, in case a file changed between the hash and the read."""
+    return [p.replace("sha256 mismatch:", "sha256 mismatch after lock:") for p in check_dedupe_bytes(walkers)]
 
 
 @dataclass(frozen=True)
@@ -486,48 +616,52 @@ def write_not_decidable(out_dir: Path, reason: str) -> None:
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     for k in sorted(DEFAULT_RANGES):
-        ap.add_argument(f"--{k}-dir", default=DEFAULT_RAW[k], help=f"raw walker dir for {k} (control files only)")
-        ap.add_argument(f"--{k}-clean-dir", default=DEFAULT_CLEAN[k], help=f"deduplicated copy for {k} (backfill_verify --dedupe-out)")
+        ap.add_argument(f"--{k}-dir", required=True, help=f"raw walker dir for {k} (control files only)")
+        ap.add_argument(f"--{k}-clean-dir", required=True, help=f"deduplicated copy for {k} (backfill_verify --dedupe-out)")
         ap.add_argument(f"--{k}-range", nargs=2, metavar=("START", "END"), default=list(DEFAULT_RANGES[k]), help=f"{k} hours [START, END), YYYY-MM-DDTHH")
-    ap.add_argument("--artifact-dir", default=str(DEFAULT_ARTIFACT_DIR))
-    ap.add_argument("--frozen-manifest-md5", default=None, help="md5 of FROZEN.md5 as recorded in the EXP-012 Part 2 amendment (strongly recommended)")
-    ap.add_argument("--dedupe-pin", default=str(DEFAULT_PIN))
-    ap.add_argument("--write-dedupe-pin", default=None, metavar="PATH", help="write the pin from the manifests and exit (no data file opened, no lock)")
-    ap.add_argument("--lock-path", default=str(DEFAULT_LOCK_PATH))
+    ap.add_argument("--artifact-dir", required=True)
+    ap.add_argument("--frozen-manifest-md5", default=None, help="md5 of FROZEN.md5 as recorded in the EXP-012 Part 2 amendment (required for a read)")
+    ap.add_argument("--freeze-commit", default=None, help="40-hex commit the freeze ran at, from Part 2 (required for a read)")
+    ap.add_argument("--dedupe-pin", required=True)
+    ap.add_argument("--write-dedupe-pin", default=None, metavar="PATH", help="hash the bytes, check them against the manifests, write the pin and exit (no lock)")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
-    ap.add_argument("--max-workers", type=int, default=2)
-    ap.add_argument("--buffer-hours", type=int, default=24)
-    ap.add_argument("--max-home-hours", type=int, default=12)
-    ap.add_argument("--dry-run-preconditions", action="store_true", help="check preconditions and exit; never writes the lock or opens a data file")
+    ap.add_argument("--dry-run-preconditions", action="store_true", help="run every pre-lock check (including the byte hashing) and exit; never writes the lock")
     ap.add_argument("--result-out", default=None, help="also write a result.v1 record here (role confirmation-oneshot)")
     ap.add_argument("--tries-log", default=None, help="tries log for the result.v1 record (default: MAL_TRIES_LOG / data/tries.jsonl)")
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    ap = _parser()
+    args = ap.parse_args(argv)
+    if not args.write_dedupe_pin and (not args.frozen_manifest_md5 or not args.freeze_commit):
+        ap.error("--frozen-manifest-md5 and --freeze-commit are required")
     raw = {k: getattr(args, f"{k}_dir") for k in DEFAULT_RANGES}
     clean = {k: getattr(args, f"{k}_clean_dir") for k in DEFAULT_RANGES}
     ranges = {k: tuple(getattr(args, f"{k}_range")) for k in DEFAULT_RANGES}
     walkers = build_walkers(raw, clean, ranges)  # type: ignore[arg-type]
-    artifact_dir, lock_path, out_dir, pin_path = Path(args.artifact_dir), Path(args.lock_path), Path(args.out_dir), Path(args.dedupe_pin)
+    artifact_dir, out_dir, pin_path, lock_path = Path(args.artifact_dir), Path(args.out_dir), Path(args.dedupe_pin), LOCK_PATH
 
     if args.write_dedupe_pin:
         errs = check_tiling(walkers)
         if errs:
             print("\n".join(f"REFUSED: {e}" for e in errs), file=sys.stderr)
             return 2
-        n = write_dedupe_pin(walkers, Path(args.write_dedupe_pin))
+        try:
+            n = write_dedupe_pin(walkers, Path(args.write_dedupe_pin))
+        except SystemExit as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 2
         print(f"wrote {n} pin lines to {args.write_dedupe_pin}", file=sys.stderr)
         return 0
 
-    errors = check_preconditions(artifact_dir, walkers, pin_path, lock_path, args.frozen_manifest_md5)
+    errors = check_preconditions(artifact_dir, walkers, pin_path, lock_path, args.frozen_manifest_md5, args.freeze_commit, out_dir)
     for e in errors:
         print(f"REFUSED: {e}", file=sys.stderr)
     if errors:
         return 2
     if args.dry_run_preconditions:
-        print("preconditions OK (dry run -- no lock written, no data file opened)", file=sys.stderr)
+        print("preconditions OK (dry run -- no lock written)", file=sys.stderr)
         return 0
 
     t0 = time.time()
@@ -540,19 +674,20 @@ def main(argv: list[str] | None = None) -> int:
             frozen_manifest_md5=_md5_of_file(artifact_dir / FROZEN_MANIFEST_NAME),
             pin_sha256=hashlib.sha256(pin_path.read_bytes()).hexdigest(),
             command_line=" ".join(sys.argv),
+            freeze_commit=args.freeze_commit,
         )
     except FileExistsError:
         print(f"REFUSED: lock appeared at {lock_path} (concurrent run); refusing a second read", file=sys.stderr)
         return 2
 
-    # --- from here on a data file may be opened; every failure is NOT_DECIDABLE ---
+    # --- after the lock: only the read and scoring; every failure is NOT_DECIDABLE ---
     try:
         problems = rehash_read_files(walkers)
         if problems:
             write_not_decidable(out_dir, "; ".join(problems[:20]))
             print("NOT_DECIDABLE: " + problems[0], file=sys.stderr)
             return 3
-        rows = load_rows(make_hours(walkers), args.max_workers, args.buffer_hours, (args.max_home_hours or None), out_dir / "scratch")
+        rows = load_rows(make_hours(walkers), MAX_WORKERS, BUFFER_HOURS, MAX_HOME_HOURS, out_dir / "scratch")
         e11.score_rows(model, rows, feature_names)
         entered = [r for r in rows if r["score"] >= threshold]
         report = build_report(rows, entered, threshold, walkers)
@@ -560,8 +695,10 @@ def main(argv: list[str] | None = None) -> int:
         write_not_decidable(out_dir, f"{type(exc).__name__}: {exc}")
         print(f"NOT_DECIDABLE: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 3
-    write_report(out_dir, report)
+    # The verdict and the report go to stderr FIRST: if a file write fails, the result is not lost.
     print(f"VERDICT: {report['verdict']}", file=sys.stderr, flush=True)
+    print(json.dumps(report, indent=2, default=str), file=sys.stderr, flush=True)
+    write_report(out_dir, report)
     print(f"EXP-012 score: wrote {out_dir}/holdout_report.{{md,json}}", file=sys.stderr, flush=True)
     if args.result_out:
         from tools.exp012_support import write_scorer_result

@@ -243,7 +243,11 @@ def verify_view_sha256(root: Path) -> int:
             problems.append(f"{view}:{lineno}: unparsable line")
             continue
         want, rel = m.group(1).lower(), m.group(2)
-        path = root / rel
+        norm = os.path.normpath(rel)  # accepts a leading "./"
+        if os.path.isabs(norm) or norm == ".." or norm.startswith("../"):
+            problems.append(f"{view}:{lineno}: path escapes the root: {rel!r}")
+            continue
+        path = root / norm
         if not path.is_file():
             problems.append(f"missing file listed in VIEW.sha256: {path}")
             continue
@@ -263,6 +267,31 @@ def verify_view_sha256(root: Path) -> int:
     return n
 
 
+# EXP-012 section 3.2: sha256 of each clean-view root's own VIEW.sha256 file
+# (pinned in the pre-registration). Keyed by the root directory's name.
+VIEW_SHA256_PINS: dict[str, str] = {
+    "fast-pool-2026-09-18T23_2026-09-22T00": "05486f70f53c7ef848b151f40d310ecc16e3ef517ff98ed7d4348250a32effe8",
+    "oracle-insample-2026-09-22_25": "ab4fa8b058a1a3b35c7b090b89840b6d9135aede3cd08cc64516a9446d05b2c3",
+    "oracle-live-2026-09-25_27": "a765603e535cb6757e7fe9227355f315f82fb603239f99fa200d8d9abae09251",
+}
+VIEW_PIN_BY_POOL = {
+    "A": VIEW_SHA256_PINS["fast-pool-2026-09-18T23_2026-09-22T00"],
+    "C": VIEW_SHA256_PINS["oracle-insample-2026-09-22_25"],
+    "B": VIEW_SHA256_PINS["oracle-live-2026-09-25_27"],
+}
+
+
+def check_view_pin(root: Path) -> str:
+    """Refuse unless sha256(root/VIEW.sha256) equals the pinned value for this root's name."""
+    want = VIEW_SHA256_PINS.get(root.name)
+    if want is None:
+        raise SystemExit(f"--verify-view: {root.name!r} is not one of the pinned clean-view roots {sorted(VIEW_SHA256_PINS)}")
+    got = hashlib.sha256((root / "VIEW.sha256").read_bytes()).hexdigest()
+    if got != want:
+        raise SystemExit(f"--verify-view: sha256 of {root / 'VIEW.sha256'} is {got}, the pre-registration pins {want}")
+    return got
+
+
 def add_root_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--fast-dir", type=Path, default=None, help="pool A root (default: the module's own fast-box path, unchanged)")
     ap.add_argument("--oracle-insample-dir", type=Path, default=None, help="pool C root (default: unchanged)")
@@ -277,6 +306,9 @@ def resolve_roots(args: argparse.Namespace) -> dict[str, Path | None]:
     for label, root in roots.items():
         if root is not None:
             roots[label] = assert_root_allowed(root, label)
+    n_given = sum(r is not None for r in roots.values())
+    if 0 < n_given < 3:
+        raise SystemExit("give all three pool roots (--fast-dir, --oracle-insample-dir, --oracle-live-dir) or none: a partial override mixes dirty and clean pools")
     if all(r is not None for r in roots.values()):
         # Checkpoint-less (deduplicated) copies: every whitelisted hour's files must exist.
         verify_pool_files(roots["fast"], roots["insample"], roots["live"])
@@ -286,6 +318,7 @@ def resolve_roots(args: argparse.Namespace) -> dict[str, Path | None]:
             raise SystemExit("--verify-view needs at least one explicit root")
         for label, root in given.items():
             n = verify_view_sha256(root)
+            check_view_pin(root)
             print(f"EXP-011 freeze: VIEW.sha256 OK for {label} root {root} ({n} files)", file=sys.stderr, flush=True)
     return roots
 
@@ -618,6 +651,17 @@ def _git_commit() -> str:
         return "unknown"
 
 
+def _git_state() -> tuple[str, bool]:
+    """(HEAD sha, tracked files modified?). ("unknown", True) if the repo cannot say."""
+    repo = str(Path(__file__).resolve().parents[1])
+    try:
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, stderr=subprocess.DEVNULL).decode().strip()
+        dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo, stderr=subprocess.DEVNULL).decode().strip())
+        return sha, dirty
+    except Exception:
+        return "unknown", True
+
+
 def _md5_of_file(path: Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()
 
@@ -659,6 +703,7 @@ def write_outputs(
             "deterministic": True,
             "num_threads": 1,
             "code_commit": _git_commit(),
+            "code_dirty": _git_state()[1],
             "trained_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "wall_s": wall_s,
             "model_md5": model_md5,
@@ -804,12 +849,22 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="EXP-012: also write FROZEN.md5 (md5 of every frozen artifact) and, with --table, copy table.md5 / table_row_counts.json next to them",
     )
+    ap.add_argument("--expect-commit", default=None, help="EXP-012: with --frozen-manifest, the freeze must run at exactly this commit (the pre-registration PR's merge commit) with tracked files unmodified")
     ap.add_argument("--result-out", default=None, help="also write a result.v1 record (role exploration) of the nested LODO here")
     ap.add_argument("--tries-log", default=None, help="tries log for the result.v1 record (default: MAL_TRIES_LOG / data/tries.jsonl)")
     add_root_args(ap)
     args = ap.parse_args(argv)
     if args.result_out and args.skip_nested_lodo:
         raise SystemExit("--result-out needs the nested LODO (drop --skip-nested-lodo)")
+    if args.frozen_manifest:
+        # EXP-012 section 3.3: the first completed freeze is binding.
+        if args.skip_nested_lodo:
+            raise SystemExit("--frozen-manifest needs the nested LODO (the proceed screen is computed from it); drop --skip-nested-lodo")
+        sha, dirty = _git_state()
+        if not args.expect_commit or sha != args.expect_commit or dirty:
+            raise SystemExit(f"--frozen-manifest needs --expect-commit == HEAD with tracked files unmodified (HEAD={sha}, dirty={dirty}, expected={args.expect_commit})")
+        if (Path(args.out_dir) / FROZEN_MANIFEST_NAME).exists():
+            raise SystemExit(f"{Path(args.out_dir) / FROZEN_MANIFEST_NAME} already exists: the first completed freeze is binding; a re-run goes to a different --out-dir and must reproduce it byte for byte")
     assert args.max_workers <= 3, "keep max-workers <= 3 -- two backfill walkers share this box"
     if args.table and any(r is not None for r in (args.fast_dir, args.oracle_insample_dir, args.oracle_live_dir)):
         raise SystemExit("pool roots belong to the table build (tools.exp011_build_table); --table reads no pool")

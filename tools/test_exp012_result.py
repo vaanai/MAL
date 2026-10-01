@@ -76,7 +76,9 @@ class FreezeResultTests(unittest.TestCase):
         log = self.tmp / "tries.jsonl"
         for expected_variant in (1, 2):
             with mock.patch("sys.stderr", new_callable=io.StringIO):
-                fz.main(["--table", str(self.table), "--out-dir", str(out), "--frozen-manifest", "--result-out", str(res), "--tries-log", str(log)])
+                with mock.patch.object(fz, "_git_state", return_value=("c" * 40, False)):
+                    (out / fz.FROZEN_MANIFEST_NAME).unlink(missing_ok=True)  # a same-dir re-run is otherwise refused (binding first run)
+                    fz.main(["--table", str(self.table), "--out-dir", str(out), "--frozen-manifest", "--expect-commit", "c" * 40, "--result-out", str(res), "--tries-log", str(log)])
             doc = json.loads(res.read_text())
             self.assertEqual(mal_result.validate_result(doc), [])
             self.assertEqual(doc["schema_version"], "result.v1")
@@ -104,7 +106,7 @@ class ScorerResultTests(Base):
     def test_scorer_writes_a_valid_confirmation_oneshot_record(self) -> None:
         root = self.fresh()
         res = root / "res" / "result.json"
-        rc, _ = self.run_main(root, "--result-out", str(res), "--tries-log", str(root / "tries.jsonl"))
+        rc, _, _ = self.run_main(root, "--result-out", str(res), "--tries-log", str(root / "tries.jsonl"))
         self.assertEqual(rc, 0)
         doc = json.loads(res.read_text())
         self.assertEqual(mal_result.validate_result(doc), [])
@@ -126,7 +128,7 @@ class ScorerResultTests(Base):
     def test_a_result_failure_leaves_the_verdict_in_place(self) -> None:
         root = self.fresh()
         with mock.patch("tools.exp012_support.write_scorer_result", side_effect=ValueError("schema")):
-            rc, _ = self.run_main(root, "--result-out", str(root / "res.json"))
+            rc, _, _ = self.run_main(root, "--result-out", str(root / "res.json"))
         self.assertEqual(rc, 4)
         self.assertTrue((root / "out" / "holdout_report.json").exists())
 

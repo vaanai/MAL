@@ -19,6 +19,7 @@ Fixtures only: no real data root is ever opened.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import tempfile
 import unittest
@@ -80,7 +81,8 @@ class FreezeOutputsUnchangedTests(unittest.TestCase):
 
     def test_main_with_frozen_manifest_writes_the_same_artifacts_plus_manifest(self) -> None:
         out2 = self.tmp / "out2"
-        fz.main(["--table", str(self.table), "--out-dir", str(out2), "--frozen-manifest"])
+        with mock.patch.object(fz, "_git_state", return_value=("c" * 40, False)), mock.patch("sys.stderr", new_callable=io.StringIO):
+            fz.main(["--table", str(self.table), "--out-dir", str(out2), "--frozen-manifest", "--expect-commit", "c" * 40])
         for name, want in GOLDEN_ARTIFACT_MD5.items():
             with self.subTest(name):
                 self.assertEqual(_md5(out2 / name), want)
@@ -94,6 +96,29 @@ class FreezeOutputsUnchangedTests(unittest.TestCase):
         # every listed file matches
         for name, md5 in listed.items():
             self.assertEqual(_md5(out2 / name), md5)
+
+    def test_frozen_manifest_refusals(self) -> None:
+        base = ["--table", str(self.table), "--out-dir", str(self.tmp / "o4"), "--frozen-manifest"]
+        ok_state = ("c" * 40, False)
+        cases = {
+            "skip nested": (base + ["--expect-commit", "c" * 40, "--skip-nested-lodo"], ok_state),
+            "no expect-commit": (base, ok_state),
+            "wrong commit": (base + ["--expect-commit", "d" * 40], ok_state),
+            "dirty tree": (base + ["--expect-commit", "c" * 40], ("c" * 40, True)),
+            "repo state unknown": (base + ["--expect-commit", "unknown"], ("unknown", True)),
+        }
+        for name, (argv, state) in cases.items():
+            with self.subTest(name), mock.patch.object(fz, "_git_state", return_value=state), self.assertRaises(SystemExit):
+                fz.main(argv)
+        self.assertFalse((self.tmp / "o4").exists())
+
+    def test_the_first_completed_freeze_is_binding(self) -> None:
+        out = self.tmp / "o5"
+        out.mkdir()
+        (out / fz.FROZEN_MANIFEST_NAME).write_text("x\n")
+        with mock.patch.object(fz, "_git_state", return_value=("c" * 40, False)), self.assertRaises(SystemExit) as cm:
+            fz.main(["--table", str(self.table), "--out-dir", str(out), "--frozen-manifest", "--expect-commit", "c" * 40])
+        self.assertIn("binding", str(cm.exception))
 
     def test_main_without_the_flag_writes_no_manifest(self) -> None:
         out3 = self.tmp / "out3"
@@ -230,6 +255,64 @@ class RootFenceTests(unittest.TestCase):
 
 
 class ViewShaTests(unittest.TestCase):
+    def test_dot_slash_lines_verify_and_escaping_paths_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "root"
+            (root / "t").mkdir(parents=True)
+            (root / "t" / "a.zst").write_bytes(b"alpha")
+            (Path(td) / "outside").write_bytes(b"alpha")
+            h = hashlib.sha256(b"alpha").hexdigest()
+            (root / "VIEW.sha256").write_text(f"{h}  ./t/a.zst\n")
+            self.assertEqual(fz.verify_view_sha256(root), 1)
+            for bad in ("../outside", "t/../../outside", "/etc/hostname", ".."):
+                (root / "VIEW.sha256").write_text(f"{h}  {bad}\n")
+                with self.subTest(bad), self.assertRaises(SystemExit) as cm:
+                    fz.verify_view_sha256(root)
+                self.assertIn("escapes the root", str(cm.exception))
+
+    def test_view_pins_are_the_preregistered_hashes(self) -> None:
+        self.assertEqual(
+            fz.VIEW_SHA256_PINS,
+            {
+                "fast-pool-2026-09-18T23_2026-09-22T00": "05486f70f53c7ef848b151f40d310ecc16e3ef517ff98ed7d4348250a32effe8",
+                "oracle-insample-2026-09-22_25": "ab4fa8b058a1a3b35c7b090b89840b6d9135aede3cd08cc64516a9446d05b2c3",
+                "oracle-live-2026-09-25_27": "a765603e535cb6757e7fe9227355f315f82fb603239f99fa200d8d9abae09251",
+            },
+        )
+
+    def test_check_view_pin_refuses_a_mismatch_and_an_unknown_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "oracle-live-2026-09-25_27"
+            root.mkdir()
+            (root / "VIEW.sha256").write_text("not the pinned file\n")
+            with self.assertRaises(SystemExit) as cm:
+                fz.check_view_pin(root)
+            self.assertIn("pins", str(cm.exception))
+            other = Path(td) / "some-other-root"
+            other.mkdir()
+            (other / "VIEW.sha256").write_text("x\n")
+            with self.assertRaises(SystemExit) as cm:
+                fz.check_view_pin(other)
+            self.assertIn("not one of the pinned", str(cm.exception))
+
+    def test_check_view_pin_accepts_the_pinned_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "oracle-insample-2026-09-22_25"
+            root.mkdir()
+            (root / "VIEW.sha256").write_bytes(b"x")
+            with mock.patch.dict(fz.VIEW_SHA256_PINS, {"oracle-insample-2026-09-22_25": hashlib.sha256(b"x").hexdigest()}):
+                self.assertEqual(fz.check_view_pin(root), hashlib.sha256(b"x").hexdigest())
+
+    def test_partial_roots_are_refused(self) -> None:
+        import argparse
+
+        ap = argparse.ArgumentParser()
+        fz.add_root_args(ap)
+        for argv in (["--fast-dir", "/x/f"], ["--oracle-insample-dir", "/x/i", "--oracle-live-dir", "/x/l"]):
+            with self.subTest(argv), self.assertRaises(SystemExit) as cm:
+                fz.resolve_roots(ap.parse_args(argv))
+            self.assertIn("all three", str(cm.exception))
+
     def _make(self, root: Path) -> None:
         (root / "trades").mkdir(parents=True)
         (root / "trades" / "a.zst").write_bytes(b"alpha")
