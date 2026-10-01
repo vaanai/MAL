@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-01T01:45:00Z",
+  "updated_utc": "2026-10-01T02:15:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -27,10 +27,20 @@
       "urgent": true
     },
     {
-      "id": "running-now",
-      "kind": "other",
-      "title": "Console: 'Running now' panel",
-      "detail": "Collector (per-unit state, uptime, memory, scrubbed last log line) and Console panel being built; deploy after review and screenshot QA."
+      "id": "explore-0814",
+      "kind": "job",
+      "title": "14 more exploration days fetching (research-0)",
+      "detail": "[08-14T12, 08-28T12), 7 walkers as MiScusi jobs, ~4M credits. 1 running, 6 queued behind MiScusi's 4-jobs-per-session limit.",
+      "atUtc": "2026-10-01T23:00:00Z",
+      "approx": true
+    },
+    {
+      "id": "backup-0828",
+      "kind": "job",
+      "title": "Backup test block fetching",
+      "detail": "[08-28T12, 09-03T12), 3 walkers as MiScusi jobs, ready if EXP-012 fails.",
+      "atUtc": "2026-10-01T14:00:00Z",
+      "approx": true
     }
   ],
   "ladder": [
@@ -202,6 +212,27 @@
       "kind": "status",
       "text": "explore_exit job template wired (#186) with a data-root allowlist. MiScusi guard fix (#12) and Opus 5.5 1M context fix (#13) ready for Grokbot.",
       "atUtc": "2026-10-01T01:40:00Z"
+    },
+    {
+      "id": "s-20261001-0200",
+      "from": "claude",
+      "kind": "decision",
+      "text": "Helius budget raised to ~40M credits/month. Using ~7.5M on: the EXP-012 block, a backup test block, and 14 more exploration days (the 9-day pool is the main limit on model quality).",
+      "atUtc": "2026-10-01T02:00:00Z"
+    },
+    {
+      "id": "s-20261001-0205",
+      "from": "claude",
+      "kind": "finding",
+      "text": "Solana ran fewer slots per hour in August (~8,700 mid-Aug, ~9,850 late Aug vs ~11,400 in Sept). The walker guard stopped all 7 new walkers on hour one; boundaries verified against block times, restarted with a lower minimum for that block.",
+      "atUtc": "2026-10-01T02:05:00Z"
+    },
+    {
+      "id": "s-20261001-0212",
+      "from": "claude",
+      "kind": "status",
+      "text": "'Running now' panel is live: MiScusi jobs plus every mal-* service and timer on all three servers, with state, uptime, memory and a scrubbed last log line.",
+      "atUtc": "2026-10-01T02:12:00Z"
     }
   ]
 }
