@@ -490,7 +490,12 @@ def _redact_key_values(text: str) -> str:
 # Order matters: whole-header / whole-URL rules run before the narrower ones.
 _SCRUB_BEFORE_KV: list[re.Pattern[str]] = [
     # A seed phrase is many words: everything after the name goes, to end of line.
-    re.compile(r"(?i)(?:mnemonic|seed[-_ ]?phrase|seed[-_]?words)[^\n]{0,4096}"),
+    re.compile(
+        r"(?i)(?:mnemonic|(?:seed|recovery|backup)[-_\s]{0,3}(?:phrase|words?)|pass[-_\s]?phrase|bip-?39"
+        r"|seed[\"']?\s{0,3}[:=])[^\n]{0,4096}"
+    ),
+    # Solana keypair JSON byte arrays (64 numbers); the closing bracket may be cut off.
+    re.compile(r"\[\s{0,3}(?:\d{1,3}\s{0,3},\s{0,3}){15,}\d{0,3}\s{0,3}\]?"),
     # bare dashed UUIDs (Helius keys are UUIDs)
     re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
     # headers: Authorization, Cookie / Set-Cookie, X-...-Key
@@ -516,6 +521,8 @@ _SCRUB_AFTER_KV: list[re.Pattern[str]] = [
 ]
 _CUT_RUN_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_=%.:-"
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+# Zero-width and BOM characters can hide a label ("mne\u200bmonic"); dropped before scrubbing.
+_ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff]")
 
 
 def scrub_log_line(line: str | None) -> str | None:
@@ -543,6 +550,7 @@ def scrub_log_line(line: str | None) -> str | None:
         if decoded == text:
             break
         text = decoded
+    text = _ZERO_WIDTH.sub("", text)
     text = _CONTROL_CHARS.sub(" ", text).strip()
     for pattern in _SCRUB_BEFORE_KV:
         text = pattern.sub(REDACTED, text)

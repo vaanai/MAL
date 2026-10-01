@@ -136,7 +136,10 @@ is written. Steps, in order:
      `db-password`, `1password`, `x_api_key`, `secretKey`); the prefix is
      redacted with the value. So `monkey: 5` is redacted too;
    - `mck_…` and `sk-…` keys, also when glued to other text (`xmck_…`);
-   - seed phrases: after `mnemonic`, `seed phrase`, `seed_phrase` or `seed words`, the rest of the line is redacted; `seed`, `pw` and `pwd` are also key names;
+   - seed phrases: after `mnemonic`, `seed phrase` / `seed words` / `recovery phrase` / `backup words` (any `-`, `_` or up to 3 spaces), `passphrase`, `bip39`, or `seed:` / `seed=` (also glued, `WALLET_SEED=`), the rest of the line is redacted; `pw` and `pwd` are key names too;
+   - Solana keypair byte arrays (`[12,34,…]`, 16+ numbers, closing bracket optional);
+   - zero-width characters are dropped first, so they cannot split a label.
+   - **Limit:** a phrase wrapped onto a following log line with no label is not detected (no word-list matching). Hosts are paper-only and hold no wallet material.
    - any run of 32+ characters from `[A-Za-z0-9+/_-]` plus up to two `=`
      (base64, base64url, base58 mints/signatures, hex).
 4. Truncate to 200 characters plus `…`. Redaction comes first so a secret
