@@ -51,9 +51,30 @@ fast-box pool (`tools.mal_templates.exit.DAYS`, 2026-09-19..21 — mirrors
 
 ## Wiring status
 
-Both `resolve_data_blocks` are fully wired and tested against the real
-`docs/HOLDOUT_LEDGER.md`. Both `run` raise `NotImplementedError` naming the
-change an existing file would need (configurable `size_sol`/
-`priority_fee_tier` instead of frozen module constants, a single-cell entry
-point instead of the existing full-grid scripts) — a follow-up PR; this one
-creates new files only. Refusal logic (schema, role, catalog) is complete.
+**`explore_exit`: fully wired** (`resolve_data_blocks` and `run`).
+`run` builds one exit spec from the params and calls
+`tools.exploration_exits.score_one_spec` (one caller-built spec, `size_sol`,
+priority tier p50 = 58,000 / p75 = 500,000 lamports per side, a UTC-day
+subset). The frozen 41-spec grid run is unchanged (md5 decision-equivalence
+test in `tools/test_exploration_exits_score_one.py`). `resolve_data_blocks`
+returns every hour `run` opens, including the trailing 2-hour buffer past each
+chunk end (clipped at 2026-09-21T23); contiguous hours merge into one block.
+Data root: optional `data_root` param, else env `MAL_FAST_POOL_ROOT`, else
+`/var/lib/mal/backfill-fast` (on mal-research-0:
+`/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00`). **Two separate
+gates:** `check_read` gates the hour labels only; the root is gated by
+`tools.exploration_exits.POOL_ROOT_ALLOWLIST` (`/var/lib/mal/backfill-fast`
+and the research-0 clean pool). `Path(root).resolve()` (symlinks and `..`
+followed) must equal a resolved allowlist entry, for the param and for the
+env value, or `score_one_spec` raises `ValueError` before any file is
+opened (so `backfill-fast-b`/`-c` and `/data/mal/blocks/...` are refused).
+`score_one_spec` also drops rows whose `block_time` is outside the hour file
+being read (the default grid path does not). Refused, not
+ignored: non-null `mcap_band`, `priority_fee_tier` p90 (no audited value).
+Verified on a fixture root only; not yet run on real data.
+
+**`entry_filter`:** `resolve_data_blocks` is fully wired and tested against the
+real `docs/HOLDOUT_LEDGER.md`; `run` still raises `NotImplementedError`
+naming the change an existing file would need (configurable `size_sol`/
+`priority_fee_tier`, a single-cell entry point) — a follow-up PR. Refusal
+logic (schema, role, catalog) is complete.
