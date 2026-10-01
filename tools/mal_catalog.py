@@ -160,6 +160,11 @@ def _parse_hours_cell(cell: str, *, row_name: str) -> tuple[str | None, str | No
 def _normalize_owner(cell: str, *, row_name: str) -> str:
     text = cell.replace("**", "").replace("`", "").strip()
     lowered = text.lower()
+    # A reserved block has no owner yet. Its text may mention an EXP id ("the
+    # test after EXP-012"); that must never be read as the owner. Reserved is
+    # denied for every role by allowed().
+    if lowered.startswith("reserved"):
+        return "reserved"
     m = _EXP_OWNER_RE.search(text)
     if m:
         return f"EXP-{m.group(1)}"
@@ -177,6 +182,13 @@ def _normalize_host(cell: str, *, row_name: str) -> str:
     lowered = text.lower()
     if "forward-paper runner" in lowered:
         return "oracle-forward"
+    m_host = re.match(r"^mal-([a-z]+)-(\d+)\b", lowered)
+    if m_host:
+        known = {"research-0": "research", "fast-0": "fast", "core-0": "oracle"}
+        key = f"{m_host.group(1)}-{m_host.group(2)}"
+        if key not in known:
+            raise ValueError(f"row {row_name!r}: unknown mal-* host in Host cell {cell!r}")
+        return known[key]
     m = re.match(r"^([A-Za-z][A-Za-z0-9_]*)", text)
     if not m:
         raise ValueError(f"row {row_name!r}: could not determine a host from Host cell {cell!r}")
