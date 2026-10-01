@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-01T03:20:00Z",
+  "updated_utc": "2026-10-01T16:40:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -12,21 +12,11 @@
   ],
   "events": [
     {
-      "id": "walkers-0903",
-      "kind": "job",
-      "title": "Fresh test block fetching (research-0)",
-      "detail": "3 walkers sealing [09-03T12, 09-09T12), 144h, never read. About 13 min per hour each; all done about 12:00Z. Then: verify, dedupe, sha256 manifest. ~1.65M Helius credits expected (3.6M cap).",
-      "atUtc": "2026-10-01T12:00:00Z",
-      "approx": true
-    },
-    {
-      "id": "exp012-freeze",
-      "kind": "read",
-      "title": "EXP-012 one-shot read",
-      "detail": "Frozen model passed its pre-stated screen. After the walkers finish: verify, dedupe, pin, dry run, then one read of the never-seen block.",
-      "urgent": true,
-      "atUtc": "2026-10-01T14:00:00Z",
-      "approx": true
+      "id": "exp012-forward",
+      "kind": "other",
+      "title": "EXP-012 forward-paper book on mal-fast-0",
+      "detail": "Starts after the 10-05 kill review once the DEC-015 preconditions are met: fast trade tape, observe unit, equivalence replay, memory slice, lag probation. It must clear the gate on its own forward trades; then owner approval for live.",
+      "atUtc": "2026-10-05T05:00:00Z"
     },
     {
       "id": "explore-0814",
@@ -49,10 +39,10 @@
     {
       "id": "EXP-012",
       "title": "EXP-012 entry model (re-freeze)",
-      "stage": "pre-registered",
-      "note": "Frozen; proceed screen passed in-sample (fast-box only: flat +4.19%, pressure +3.25%). One read of [09-03T12, 09-09T12) after the walkers finish about 12:30Z.",
+      "stage": "passed",
+      "note": "One-shot read PASSED the gate (replay): 451 trades, flat +0.035 / pressure +0.021 SOL per trade, 6/7 days. Favourable block; edge mostly fill prediction. Forward paper on mal-fast-0 after 10-05.",
       "tag": {
-        "text": "read today",
+        "text": "gate passed (replay)",
         "tone": "accent"
       },
       "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-012-migrate-entry-model-refreeze-prereg.md"
@@ -132,6 +122,12 @@
     }
   ],
   "for_you": [
+    {
+      "id": "fy-20261001-1640",
+      "from": "claude",
+      "text": "EXP-012 passed its one-shot test on 6 never-seen days, under both fail models: 451 trades, about +0.035 SOL per trade (flat) and +0.021 (pressure), still positive without the top 3 trades. It is a replay, not money made, and the week was favourable (even unfiltered entries made money), with most of the edge coming from predicting which entries fill. Next is a forward-paper book on the fast server after the 10-05 kill review. Live needs that book to pass on its own trades, and then your approval.",
+      "atUtc": "2026-10-01T16:40:00Z"
+    },
     {
       "id": "fy-20261001-0320",
       "from": "claude",
@@ -249,6 +245,13 @@
       "kind": "finding",
       "text": "EXP-012 freeze (job #23): proceed screen PASS. Flat +7.43% / pressure +4.67% pooled, 9/9 days; fast-box only +4.19% / +3.25%. In-sample, not gate evidence. Threshold 0.80308. Frozen artifacts in #200.",
       "atUtc": "2026-10-01T03:20:00Z"
+    },
+    {
+      "id": "s-20261001-1640",
+      "from": "claude",
+      "kind": "finding",
+      "text": "EXP-012 one-shot read: promotion gate PASS under both fail models (replay). n=451; flat 0.0349 SOL/trade CI90 [0.0187, 0.0513]; pressure 0.0205 [0.0110, 0.0299]; 6/7 days; ex-top-3 +14.04 / +8.22 SOL. quant-proof confirmed. Caveats in the EXP-012 Result.",
+      "atUtc": "2026-10-01T16:40:00Z"
     }
   ]
 }
