@@ -9,6 +9,7 @@ screens. Collector: `tools/mal_status.py`. Credit log: `tools/mal_credit_log.py`
 | --- | --- | --- |
 | `<out-dir>/mal-fast-0.json` | `mal_status.py` (local mode) | every 1 min |
 | `<out-dir>/mal-core-0.json` | `mal_status.py --remote core` | every 5 min |
+| `<out-dir>/mal-research-0.json` | `mal_status.py --remote research` | every 5 min (unit not installed by the PR that added it) |
 | `<log-path>` (default `/home/claude/data/credits/helius-credits.jsonl`) | `mal_credit_log.py` | every 1 min, only on change or ≥1h since last line per job |
 
 `<out-dir>` default is `/var/lib/mal/status`; `claude` cannot write there
@@ -23,7 +24,8 @@ anon_mb, current_mb, max_mb}]}, disk:[{mount, total_gb, used_gb, free_gb,
 pct}], services:[{name, owner_user, state}], walkers:[{name, sealed,
 total_hours_in_checkpoint, oldest_sealed, newest_sealed, credits_used,
 stop_reason?}], pre_create_credits, last_runner_restart{restart_utc, ok,
-head_sha, post_lag_ms}, errors:[...]`.
+head_sha, post_lag_ms}, units:[...], units_meta{wall_ms, subprocesses},
+errors:[...]`. `units` is described under "`units`" below.
 
 `anon_mb` is `memory.stat`'s `anon` line — real use, never page cache
 (`current_mb`/`memory.current` includes cache and is reported separately;
@@ -36,11 +38,77 @@ do not use it as "memory in real use"). `max_mb` is `null` when
 memory, disk:[{mount:"/var/lib/mal", ...}], runner_status{lag_ms,
 stale_cap_ms, fail_rate, ts}, health_latest (verbatim
 health-latest.json), processes{mal-forward-paper, mal-observe,
-mal-trade-tape, mal-attention, mal-funding-graph: bool}, errors:[...]`.
+mal-trade-tape, mal-attention, mal-funding-graph: bool}, units:[...],
+errors:[...]`.
 On SSH failure: `reachable: false` plus `error`, never a crash. One SSH
 round trip per run: `ssh -o BatchMode=yes mal-core-0 python3 -` with a
 small embedded read-only snippet on stdin (no systemctl call — presence is
 a `/proc/*/cmdline` scan, since Claude's Oracle account is read-only).
+The same scan feeds `units` (see below).
+
+## Schema `status.v1` (mal-research-0, `--remote research`)
+
+`schema_version, host, generated_utc, reachable, uptime_s, load1, load5,
+load15, memory{mem_total_mb, mem_available_mb}, units:[...], units_meta,
+errors:[...]`. One SSH round trip: `ssh -o BatchMode=yes mal-research-0
+python3 - --units-json --unit-sources research`, with `tools/mal_status.py`
+itself piped on stdin, so the unit collector is the same code as the local
+one. `systemctl` is allowed there (system scope, plus the `claude` user
+manager that runs `mal-walker-w1/w2/w3`). On SSH failure: `reachable: false`
+plus `error`, never a crash. Slices are skipped; only `mal-*.service` and
+`mal-*.timer` are listed.
+
+## `units` (every status file)
+
+One entry per `mal-*` service and timer, for the Console's "running now"
+panel. Every key is always present; a value that cannot be read is `null`.
+
+```json
+{
+  "name": "mal-fast-create.service",
+  "owner_user": "ubuntu",
+  "scope": "user",
+  "kind": "service",
+  "active_state": "active",
+  "sub_state": "running",
+  "since": "2026-09-29T04:27:17Z",
+  "uptime_s": 162179,
+  "memory": {"bytes": 55304192, "source": "cgroup memory.current (includes page cache)"},
+  "last_log": "Started mal-fast-create.service - MAL phase-1 create alarm ...",
+  "last_log_ts": "2026-09-29T04:27:17Z",
+  "last_log_age_s": 162179
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `name` | systemd unit name, `mal-*.service` or `mal-*.timer`. |
+| `owner_user` | Extra key beyond the panel's list. Manager that owns the unit: `root` (system scope), `claude`, or `ubuntu` (read via `sudo -n -u ubuntu`). On Oracle it is `ubuntu` by convention (HOSTS.md), not read from the process. |
+| `scope` | `"system"` or `"user"`. |
+| `kind` | `"service"` or `"timer"`. |
+| `active_state`, `sub_state` | systemd's `ActiveState`/`SubState`. On Oracle they are **inferred from `/proc`**: `active`/`running` if a process matches, else `inactive`/`dead`. Oracle timers are not visible (no systemctl) and are not listed. |
+| `since` | ISO-UTC of `ActiveEnterTimestamp`: the last time the unit entered `active`. For an inactive unit it is the previous run's start, not a current uptime; `null` if systemd reports none or a non-UTC zone. On Oracle: the earliest `/proc/<pid>/stat` start time of the matched pids (`btime` + starttime / `CLK_TCK`). |
+| `uptime_s` | Seconds since `since`, only while `active_state` is `active`; else `null`. |
+| `memory` | `{bytes, source}` or `null`. `source` is one of two literal labels: `"cgroup memory.current (includes page cache)"` (read from `/sys/fs/cgroup<ControlGroup>/memory.current`; not "real" use, it counts page cache) or `"process RSS (VmRSS, sum of matched pids)"` (Oracle; shared pages are counted once per process, so a multi-process unit can over-count). Timers and inactive services have no cgroup, so `null`. |
+| `last_log` | Last log line, **always passed through `scrub_log_line`**. Local and research: `journalctl [--user] -u <unit> -n 1 -o short-iso` (message only, host/ident prefix dropped). Oracle: last non-empty line of the last ~4 KB of the unit's log file (`observe.log`, `trade-tape.log`, `attention.log`, `funding-graph.log` under `/var/lib/mal/logs/`). `mal-forward-paper` has no log file (journal only), so it is `null` there. |
+| `last_log_ts` | ISO-UTC of that line (journal timestamp; on Oracle the log file's mtime, i.e. the last write, not a parsed timestamp). |
+| `last_log_age_s` | Seconds between collection time and `last_log_ts`. |
+
+`units_meta` (`{wall_ms, subprocesses}`) is the cost of the last unit
+collection on that host (not present for Oracle, which is one SSH round trip).
+Local budget: per manager one `systemctl list-units 'mal-*' --all
+--no-legend --plain` and one batched `systemctl show <units…> -p
+Id,ActiveState,SubState,ActiveEnterTimestamp,ControlGroup`, plus one
+`journalctl -n 1` per unit. mal-fast-0 queries three managers (system,
+`claude` user, `ubuntu` user via sudo); mal-research-0 two.
+
+`scrub_log_line` (pure, `tools/mal_status.py`): redacts `api-key`/`api_key`/
+`apikey=…`, `token=…`, `Bearer <x>`, `Authorization: …`, helius URL query
+strings, base58 strings of 32+ chars (mints, signatures, keys), hex strings
+of 32+ chars, and `mck_…`/`sk-…` keys to `[redacted]`, then truncates to 200
+characters plus `…`. Redaction runs first so a secret cut by the truncation
+cannot leak a prefix. It is a pattern filter, not a guarantee: a secret in
+an unlisted shape would pass. The collector never opens an env file.
 
 Every section is independently try/excepted; failures land in `errors`,
 never abort the write.
@@ -55,12 +123,13 @@ two collectors racing each other never interleave or double-append.
 ## Install (manager step, not run by this PR)
 
 ```bash
-~/MAL/ops/claude-schedules/install.sh   # links all claude units, including these four
+~/MAL/ops/claude-schedules/install.sh   # links all claude units, including the status ones
 systemctl --user enable --now mal-status.timer
 systemctl --user enable --now mal-status-core.timer
+systemctl --user enable --now mal-status-research.timer   # new; needs the ssh mal-research-0 path
 ```
 
 `mal-status.service` also runs `mal_credit_log.py` (second `ExecStart=` in
 the same oneshot) so the Spend screen's log stays current on the same
-1-minute cadence. Neither timer restarts anything, writes under
+1-minute cadence. None of the timers restarts anything, writes under
 `/var/lib/mal`, or reads a secret/env file.

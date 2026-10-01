@@ -28,7 +28,9 @@ for unit in \
   mal-status.service \
   mal-status.timer \
   mal-status-core.service \
-  mal-status-core.timer
+  mal-status-core.timer \
+  mal-status-research.service \
+  mal-status-research.timer
 do
   ln -sf "${ROOT}/${unit}" "${USER_UNIT_DIR}/${unit}"
   echo "linked ${USER_UNIT_DIR}/${unit} -> ${ROOT}/${unit}"
@@ -46,6 +48,7 @@ them (a manager's decision, not this script's):
   systemctl --user enable --now mal-runner-daily-restart.timer
   systemctl --user enable --now mal-status.timer
   systemctl --user enable --now mal-status-core.timer
+  systemctl --user enable --now mal-status-research.timer
 
 To check what is loaded without starting anything:
 
