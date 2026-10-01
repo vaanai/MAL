@@ -73,11 +73,13 @@ assert all(h >= POOL_C_START for h in POOL_C_HOURS), "pool C reaches before its 
 assert all(h < "2026-09-28T00" for h in POOL_C_HOURS), "pool C crosses the clean forward-paper clock"
 
 
-def _hour_info_c(key: str) -> dict[str, Any]:
+def _hour_info_c(key: str, root: Path | None = None) -> dict[str, Any]:
+    """`root`: data-root override (default: module BACKFILL_C, read at call time)."""
     assert key in POOL_C_HOURS_SET, f"hour {key} is outside the B3 pool-C fence"
-    trade = _hour_file(BACKFILL_C / "trades", "trades", key)
+    base = BACKFILL_C if root is None else root
+    trade = _hour_file(base / "trades", "trades", key)
     if trade is None:
         raise SystemExit(f"missing Oracle in-sample trade file for whitelisted hour {key}")
-    create = _hour_file(BACKFILL_C / "creates", "creates", key)
+    create = _hour_file(base / "creates", "creates", key)
     start_s = int(datetime.strptime(key, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp())
     return {"hour": key, "day": key[:10], "end": start_s + 3600, "trade": trade, "create": create}

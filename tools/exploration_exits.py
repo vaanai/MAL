@@ -91,19 +91,27 @@ assert POOL_HOURS[0] == POOL_START and POOL_HOURS[-1] == POOL_END
 assert len(POOL_HOURS) == 71, len(POOL_HOURS)
 
 
-def _hour_info(key: str) -> dict[str, Any]:
+def _hour_info(key: str, backfill: Path | None = None) -> dict[str, Any]:
+    """`backfill`: root override (default: module BACKFILL, read at call time)."""
     assert key in POOL_HOURS_SET, f"hour {key} is outside the exploration pool fence"
-    trade = _hour_file(BACKFILL / "trades", "trades", key)
+    root = BACKFILL if backfill is None else backfill
+    trade = _hour_file(root / "trades", "trades", key)
     if trade is None:
         raise SystemExit(f"missing sealed trade file for whitelisted hour {key}")
-    create = _hour_file(BACKFILL / "creates", "creates", key)
+    create = _hour_file(root / "creates", "creates", key)
     start_s = int(datetime.strptime(key, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp())
     return {"hour": key, "day": key[:10], "end": start_s + 3600, "trade": trade, "create": create}
 
 
-ALL_HOURS = [_hour_info(key) for key in POOL_HOURS]
-for _h in ALL_HOURS:
-    assert POOL_START <= _h["hour"] <= POOL_END, "data fence violated: " + _h["hour"]
+assert all(POOL_START <= _k <= POOL_END for _k in POOL_HOURS), "data fence violated"
+
+
+def __getattr__(name: str) -> Any:
+    # ALL_HOURS used to be resolved against disk at import time, which made
+    # merely importing this module fail wherever BACKFILL is absent. Lazy now.
+    if name == "ALL_HOURS":
+        return [_hour_info(key) for key in POOL_HOURS]
+    raise AttributeError(name)
 
 # --- Frozen entry (migrate-direct-prereg.md, 2026-09-27T13:06:36Z) ---------
 

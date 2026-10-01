@@ -52,6 +52,7 @@ import multiprocessing as mp
 import sys
 import time
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -96,9 +97,9 @@ DAYS_ALL = DAYS_A + DAYS_B
 # --- Pool B: streaming worker orchestration (reuses run_worker_features) ---
 
 
-def build_creator_history_b() -> dict[str, list[int]]:
+def build_creator_history_b(root: Path | None = None) -> dict[str, list[int]]:
     hist: dict[str, list[int]] = {}
-    for row in iter_adapted_creates():
+    for row in iter_adapted_creates(root=root):
         creator = row.get("creator")
         block = row.get("block_time")
         if not isinstance(creator, str) or not creator or not isinstance(block, int):
@@ -145,9 +146,9 @@ def plan_workers_b(
     return chunk_plan(POOL_B_HOURS, max_workers, buffer_hours, max_home_hours)
 
 
-def _worker_home_window_ms(home_keys: list[str]) -> tuple[int, int]:
+def _worker_home_window_ms(home_keys: list[str], root: Path | None = None) -> tuple[int, int]:
     start = int(datetime.strptime(home_keys[0], "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp()) * 1000
-    end = _hour_info_b(home_keys[-1])["end"] * 1000
+    end = (_hour_info_b(home_keys[-1]) if root is None else _hour_info_b(home_keys[-1], root))["end"] * 1000
     return start, end
 
 
@@ -158,6 +159,7 @@ def run_worker_b(
     all_creates: dict[str, tuple[_Mint, _Feat]],
     creator_hist: dict[str, list[int]],
     rows_out_path: Path | None = None,
+    root: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Partition the pre-loaded pool-B creates by this worker's home-hour
     window (Oracle creates are day-granular, loaded once in the parent, not
@@ -169,7 +171,7 @@ def run_worker_b(
     run_worker_features's docstring); a fixed-positional trailing arg so
     it survives `Pool.starmap`.
     """
-    home_start_ms, home_end_ms = _worker_home_window_ms(home_keys)
+    home_start_ms, home_end_ms = _worker_home_window_ms(home_keys) if root is None else _worker_home_window_ms(home_keys, root)
     home_creates = {mid: (m, f) for mid, (m, f) in all_creates.items() if home_start_ms <= m.block_ms < home_end_ms}
     print(
         f"[w{worker_id}] pool=B home={home_keys[0]}..{home_keys[-1]} creates={len(home_creates)} rss_mb={_rss_mb()}",
@@ -181,7 +183,7 @@ def run_worker_b(
         home_keys,
         buffer_keys,
         creator_hist,
-        hour_info_fn=_hour_info_b,
+        hour_info_fn=_hour_info_b if root is None else partial(_hour_info_b, root=root),
         row_iter_fn=iter_trade_rows_sorted,
         creates_override=home_creates,
         rows_out_path=rows_out_path,
@@ -189,7 +191,11 @@ def run_worker_b(
 
 
 def run_all_features_b(
-    max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None, max_home_hours: int | None = None
+    max_workers: int = 3,
+    buffer_hours: int = 2,
+    out_dir: Path | None = None,
+    max_home_hours: int | None = None,
+    root: Path | None = None,
 ) -> list[dict[str, Any]]:
     """out_dir set: each worker streams to `out_dir/poolB-w<i>.jsonl` instead
     of holding rows in memory (see run_all_features's docstring in
@@ -199,21 +205,22 @@ def run_all_features_b(
     regardless of chunk count."""
     print(f"pool B trade hours: {POOL_B_START} .. {POOL_B_END} ({len(POOL_B_HOURS)})", file=sys.stderr, flush=True)
     print("loading pool B creates (Oracle observe day files)...", file=sys.stderr, flush=True)
-    all_creates = load_creates_b()
+    all_creates = load_creates_b() if root is None else load_creates_b(root)
     print(f"pool B creates: {len(all_creates)}", file=sys.stderr, flush=True)
-    creator_hist = build_creator_history_b()
+    creator_hist = build_creator_history_b() if root is None else build_creator_history_b(root)
     print(f"pool B creator_history creators={len(creator_hist)}", file=sys.stderr, flush=True)
     plan = plan_workers_b(max_workers, buffer_hours, max_home_hours)
     print(f"pool B worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
     paths = [_rows_out_path(out_dir, "B", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
+    extra = () if root is None else (root,)
     if max_workers <= 1 or len(plan) <= 1:
         for (worker_id, home, buf), path in zip(plan, paths):
-            rows.extend(run_worker_b(worker_id, home, buf, all_creates, creator_hist, path))
+            rows.extend(run_worker_b(worker_id, home, buf, all_creates, creator_hist, path, *extra))
     else:
         ctx = mp.get_context("spawn")
         with ctx.Pool(processes=min(max_workers, len(plan))) as pool:
-            results = pool.starmap(run_worker_b, [(i, h, b, all_creates, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
+            results = pool.starmap(run_worker_b, [(i, h, b, all_creates, creator_hist, p, *extra) for (i, h, b), p in zip(plan, paths)])
         for part in results:
             rows.extend(part)
     if out_dir is not None:

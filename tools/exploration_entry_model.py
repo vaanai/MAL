@@ -48,6 +48,7 @@ import multiprocessing as mp
 import os
 import sys
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -261,10 +262,10 @@ class _Feat:
 # --- Creator prior-mint history, whole pool, precomputed once --------------
 
 
-def build_creator_history() -> dict[str, list[int]]:
+def build_creator_history(backfill: Path | None = None) -> dict[str, list[int]]:
     hist: dict[str, list[int]] = {}
     for key in POOL_HOURS:
-        hour = _hour_info(key)
+        hour = _hour_info(key) if backfill is None else _hour_info(key, backfill)
         path = hour.get("create")
         if path is None:
             continue
@@ -554,16 +555,29 @@ def _rows_out_path(out_dir: Path | None, pool_tag: str, worker_id: int) -> Path 
 
 
 def run_worker_a(
-    worker_id: int, home_keys: list[str], buffer_keys: list[str], creator_hist: dict[str, list[int]], rows_out_path: Path | None = None
+    worker_id: int,
+    home_keys: list[str],
+    buffer_keys: list[str],
+    creator_hist: dict[str, list[int]],
+    rows_out_path: Path | None = None,
+    backfill: Path | None = None,
 ) -> list[dict[str, Any]]:
     """A fixed-positional-signature wrapper so `rows_out_path` (keyword-only
     on run_worker_features) can be passed through `Pool.starmap`, which only
     unpacks tuples positionally."""
-    return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, rows_out_path=rows_out_path)
+    if backfill is None:
+        return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, rows_out_path=rows_out_path)
+    return run_worker_features(
+        worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=partial(_hour_info, backfill=backfill), rows_out_path=rows_out_path
+    )
 
 
 def run_all_features(
-    max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None, max_home_hours: int | None = None
+    max_workers: int = 3,
+    buffer_hours: int = 2,
+    out_dir: Path | None = None,
+    max_home_hours: int | None = None,
+    backfill: Path | None = None,
 ) -> list[dict[str, Any]]:
     """out_dir=None (default): every worker returns its rows in memory, as
     before -- fine for tests and small slices. out_dir set: each worker
@@ -580,20 +594,21 @@ def run_all_features(
     chunks ever run at once (`Pool.starmap` queues the rest) -- see
     tools/exploration_exits.chunk_plan's docstring."""
     print("building creator prior-mint history over the whole pool...", file=sys.stderr, flush=True)
-    creator_hist = build_creator_history()
+    creator_hist = build_creator_history() if backfill is None else build_creator_history(backfill)
     print(f"creator_history creators={len(creator_hist)}", file=sys.stderr, flush=True)
     plan = plan_workers(max_workers, buffer_hours, max_home_hours)
     print(f"hours_read={POOL_HOURS}", file=sys.stderr, flush=True)
     print(f"worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
     paths = [_rows_out_path(out_dir, "A", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
+    extra = () if backfill is None else (backfill,)
     if max_workers <= 1 or len(plan) <= 1:
         for (worker_id, home, buf), path in zip(plan, paths):
-            rows.extend(run_worker_a(worker_id, home, buf, creator_hist, path))
+            rows.extend(run_worker_a(worker_id, home, buf, creator_hist, path, *extra))
     else:
         ctx = mp.get_context("spawn")
         with ctx.Pool(processes=min(max_workers, len(plan))) as pool:
-            results = pool.starmap(run_worker_a, [(i, h, b, creator_hist, p) for (i, h, b), p in zip(plan, paths)])
+            results = pool.starmap(run_worker_a, [(i, h, b, creator_hist, p, *extra) for (i, h, b), p in zip(plan, paths)])
         for part in results:
             rows.extend(part)
     if out_dir is not None:
