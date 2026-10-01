@@ -491,7 +491,7 @@ def _redact_key_values(text: str) -> str:
 _SCRUB_BEFORE_KV: list[re.Pattern[str]] = [
     # A seed phrase is many words: everything after the name goes, to end of line.
     re.compile(
-        r"(?i)(?:mnemonic|(?:seed|recovery|backup)[-_\s]{0,3}(?:phrase|words?)|pass[-_\s]?phrase|bip-?39"
+        r"(?i)(?:mnemonic|(?:seed|recovery|backup|wallet)[-_\s]{0,3}(?:phrase|words?)|pass[-_\s]?phrase|bip-?39"
         r"|seed[\"']?\s{0,3}[:=])[^\n]{0,4096}"
     ),
     # Solana keypair JSON byte arrays (64 numbers); the closing bracket may be cut off.

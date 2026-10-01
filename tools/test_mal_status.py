@@ -1160,6 +1160,7 @@ def test_scrub_seed_phrase_redacts_rest_of_line():
         "secret recovery phrase: abandon ability able about above absent",
         "recovery_phrase=abandon ability able about above absent",
         "backup words: abandon ability able about above absent",
+        "wallet words: abandon ability able about above absent",
         "passphrase: abandon ability able about above absent",
         "BIP39: abandon ability able about above absent",
         "mne​monic: abandon ability able about above absent",
