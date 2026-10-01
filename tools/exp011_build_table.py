@@ -21,6 +21,13 @@ any worker's RSS exceeds 5 GB (see tools/exp011_rss_monitor.sh).
 
 Run: nice -n 19 python3 -m tools.exp011_build_table --max-workers 2
 [--out /home/claude/data/exp011/table.jsonl] [--scratch-dir /home/claude/data/exp011/scratch]
+
+EXP-012 (re-freeze of the same recipe on the deduplicated pool): the three
+pool roots are CLI arguments (--fast-dir / --oracle-insample-dir /
+--oracle-live-dir; default None = the loaders' own paths, unchanged),
+--verify-view checks VIEW.sha256 under each given root first, and --out-dir
+DIR writes DIR/table.jsonl, DIR/table.md5, DIR/row_counts.json with scratch
+under DIR/scratch (instead of --out / --scratch-dir). No other change.
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from tools.exp011_freeze import TARGET_SPEC_ID, load_tp50_rows
+from tools.exp011_freeze import TARGET_SPEC_ID, add_root_args, load_tp50_rows, resolve_roots
 
 
 def _md5_of_file(path: Path) -> str:
@@ -44,13 +51,40 @@ def _md5_of_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _sha256_of_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def build_table(
-    out_path: Path, scratch_dir: Path, max_workers: int = 2, buffer_hours: int = 24, max_home_hours: int | None = 12
+    out_path: Path,
+    scratch_dir: Path,
+    max_workers: int = 2,
+    buffer_hours: int = 24,
+    max_home_hours: int | None = 12,
+    fast_dir: Path | None = None,
+    insample_dir: Path | None = None,
+    live_dir: Path | None = None,
 ) -> dict[str, Any]:
     t0 = time.time()
     rows, manifest = load_tp50_rows(
-        max_workers=max_workers, buffer_hours=buffer_hours, out_dir=scratch_dir, max_home_hours=max_home_hours
+        max_workers=max_workers,
+        buffer_hours=buffer_hours,
+        out_dir=scratch_dir,
+        max_home_hours=max_home_hours,
+        fast_dir=fast_dir,
+        insample_dir=insample_dir,
+        live_dir=live_dir,
     )
+    if "roots" in manifest:
+        # Provenance of a clean-view input: the sha256 of each root's own VIEW.sha256.
+        manifest["view_sha256_file_sha256"] = {
+            label: (_sha256_of_file(root / "VIEW.sha256") if root is not None and (root / "VIEW.sha256").is_file() else None)
+            for label, root in (("A", fast_dir), ("C", insample_dir), ("B", live_dir))
+        }
     wall_s = time.time() - t0
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as fh:
@@ -84,10 +118,12 @@ def build_table(
     return counts_doc
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="/home/claude/data/exp011/table.jsonl")
     ap.add_argument("--scratch-dir", default="/home/claude/data/exp011/scratch")
+    ap.add_argument("--out-dir", default=None, help="write DIR/table.jsonl (+ .md5, row_counts.json) with scratch under DIR/scratch; overrides --out/--scratch-dir")
+    add_root_args(ap)
     ap.add_argument("--max-workers", type=int, default=2)
     ap.add_argument(
         "--buffer-hours",
@@ -96,14 +132,21 @@ def main() -> None:
         help="hours each chunk keeps reading past its home window; 24 h covers 98.7%% of create->migrate lags (pool A, 2026-09-30)",
     )
     ap.add_argument("--max-home-hours", type=int, default=12, help="max home hours per chunk (bounds watch/hot memory); 0 = old per-worker windows")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     assert args.max_workers <= 2, "keep max-workers <= 2 for this Phase A run -- see tools/exp011_build_table.py's docstring"
+    out, scratch = Path(args.out), Path(args.scratch_dir)
+    if args.out_dir:
+        out, scratch = Path(args.out_dir) / "table.jsonl", Path(args.out_dir) / "scratch"
+    roots = resolve_roots(args)
     build_table(
-        Path(args.out),
-        Path(args.scratch_dir),
+        out,
+        scratch,
         max_workers=args.max_workers,
         buffer_hours=args.buffer_hours,
         max_home_hours=(args.max_home_hours or None),
+        fast_dir=roots["fast"],
+        insample_dir=roots["insample"],
+        live_dir=roots["live"],
     )
 
 
