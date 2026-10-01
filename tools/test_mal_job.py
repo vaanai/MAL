@@ -38,7 +38,7 @@ def synthetic_ledger(tmp_path) -> Path:
 
 | Block | Hours | Host | Owner | Status |
 | --- | --- | --- | --- | --- |
-| Fixture exploration day | [2026-09-19T00, 2026-09-20T00) | fast | exploration pool | fixture |
+| Fixture exploration day | [2026-09-19T00, 2026-09-21T00) | fast | exploration pool | fixture |
 | Fixture EXP-011 day | [2026-01-01T00, 2026-01-02T00) | fast | EXP-011 | fixture |
 """
     path = tmp_path / "ledger.md"

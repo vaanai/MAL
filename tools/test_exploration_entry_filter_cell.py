@@ -288,26 +288,35 @@ def test_root_resolution_param_then_env_then_default(monkeypatch, tmp_path):
 
 def test_tmp_dir_and_symlink_escape_refused(pools, tmp_path, monkeypatch):
     fast, insample, live = pools
-    monkeypatch.setattr(b3._ex, "POOL_ROOT_ALLOWLIST", (tmp_path / "allowed-fast",))
-    monkeypatch.setattr(b3, "CELL_ROOT_ALLOWLIST", {"C": (tmp_path / "allowed-c",), "B": (tmp_path / "allowed-b",)})
+    allowed_a, allowed_c = tmp_path / "allowed-fast", tmp_path / "allowed-c"
+    allowed_a.mkdir()
+    allowed_c.mkdir()
+    monkeypatch.setattr(b3._ex, "POOL_ROOT_ALLOWLIST", (allowed_a,))
+    monkeypatch.setattr(b3, "CELL_ROOT_ALLOWLIST", {"C": (allowed_c,), "B": (tmp_path / "allowed-b",)})
     with pytest.raises(ValueError, match="not an allowlisted"):  # a real fixture dir that is simply not on the list
         b3.check_cell_root("A", fast)
-    # a link AT an allowlisted path that points elsewhere: resolve() follows it -> refused
-    (tmp_path / "allowed-fast").symlink_to(fast)
+    # a symlink that points OUT of the allowlisted tree (here: at the fixture pool) is refused
+    (tmp_path / "escape").symlink_to(fast)
     with pytest.raises(ValueError, match="not an allowlisted"):
-        b3.check_cell_root("A", tmp_path / "allowed-fast")
-    # a link under another name that points AT the allowlisted (real) dir is that dir: accepted
-    real = tmp_path / "allowed-c"
-    real.mkdir()
-    (tmp_path / "alias-c").symlink_to(real)
-    assert b3.check_cell_root("C", tmp_path / "alias-c") == real.resolve()
+        b3.check_cell_root("A", tmp_path / "escape")
+    # ...also when it sits inside an allowlisted dir and is used as a sub-path
+    (allowed_a / "link-out").symlink_to(fast)
+    with pytest.raises(ValueError, match="not an allowlisted"):
+        b3.check_cell_root("A", allowed_a / "link-out")
+    # a link under another name that points AT the allowlisted dir is that dir: accepted
+    (tmp_path / "alias-c").symlink_to(allowed_c)
+    assert b3.check_cell_root("C", tmp_path / "alias-c") == allowed_c.resolve()
     with pytest.raises(ValueError, match="not an allowlisted"):  # `..` out of the allowlisted dir
-        b3.check_cell_root("C", real / ".." / "elsewhere")
+        b3.check_cell_root("C", allowed_c / ".." / "elsewhere")
     with pytest.raises(ValueError, match="not an allowlisted"):  # a sub-directory is not the root
-        b3.check_cell_root("C", real / "trades")
-    # and through the entry point, with real data behind the escaping link
+        b3.check_cell_root("C", allowed_c / "trades")
+    assert b3.check_cell_root("C", allowed_c / "trades" / "..") == allowed_c.resolve()
+    # and through the entry point, with real data behind the escaping link: nothing is opened
+    opened: list = []
+    monkeypatch.setattr(b3, "_hour_info_a", lambda *a, **k: opened.append(a))
     with pytest.raises(ValueError, match="not an allowlisted"):
-        b3.score_one_cell(**CELL, days=["2026-09-19"], select_top_pct=10, max_workers=1, fast_root=tmp_path / "allowed-fast")
+        b3.score_one_cell(**CELL, days=["2026-09-19"], select_top_pct=10, max_workers=1, fast_root=tmp_path / "escape")
+    assert not opened
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +372,7 @@ def test_buffer_and_lookback_hours_are_in_the_blocks():
     assert "2026-09-22T00" in hours and "2026-09-21T23" not in hours  # lookback clipped at the pool C start
     p25 = _hours_in_blocks(tpl.resolve_data_blocks({"days": ["2026-09-25"]}))
     assert "2026-09-24T00" in p25  # pool C lookback of 25T00
-    assert "2026-09-25T23" in p25 and "2026-09-26T00" not in p25
+    assert "2026-09-25T23" in p25 and "2026-09-26T01" in p25 and "2026-09-26T02" not in p25  # pool B buffer
     assert all(h < "2026-09-28" for h in _hours_in_blocks(tpl.resolve_data_blocks({"days": "all"})))
     last = tpl.resolve_data_blocks({"days": ["2026-09-27"]})
     assert max(b["end_hour_exclusive"] for b in last) == "2026-09-28T00"  # clipped at the pool end, never past it
@@ -393,16 +402,18 @@ def _spill_pools(tmp_path: Path):
     fast, insample, live = build_pools(tmp_path)
     spec = {"mint": "SPILL", "day": "2026-09-19", "hour": "2026-09-19T08", "j": 0, "creator": "crX", "n_bond": 3, "up": True, "slot0": 9_000_000}
     create, trades, _t0 = mint_rows(spec)
-    create["block_time"] = epoch("2026-09-19T07") + 100  # in the 07 hour, written into the 08 file
+    create["block_time"] = epoch("2026-09-19T08") - 10  # 10s before the hour: in the 07 hour, written into the 08 file
     cpath = fast / "creates" / "creates-2026-09-19T08.jsonl"
     tpath = fast / "trades" / "trades-2026-09-19T08.jsonl"
     old_c = [json.loads(x) for x in cpath.read_text().splitlines() if x]
     old_t = [json.loads(x) for x in tpath.read_text().splitlines() if x]
     victim_row = next(r for r in old_t if r["venue"] == "pump_bonding")
     extra = dict(victim_row)  # block_time in hour 09 while sitting in the 08 file
-    extra.update(block_time=epoch("2026-09-19T09") + 5, signature="out-of-hour", side="buy", sol_lamports=9_000_000_000)
+    extra.update(block_time=epoch("2026-09-19T09") + 5, signature="out-of-hour", side="buy", sol_lamports=9_000_000_000,
+                 slot=victim_row["slot"] + 50, t_recv_ms=victim_row["t_recv_ms"] + 250, event_index=7)
     write_jsonl(cpath, old_c + [create])
-    write_jsonl(tpath, old_t + trades + [extra])
+    i = old_t.index(victim_row) + 1  # right after the victim's first print: before its migration in stream order
+    write_jsonl(tpath, old_t[:i] + [extra] + old_t[i:] + trades)
     return (fast, insample, live), victim_row["mint"]
 
 
