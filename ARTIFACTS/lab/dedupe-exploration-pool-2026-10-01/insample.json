@@ -1,0 +1,5228 @@
+{
+  "dir": "/data/mal/raw/oracle-insample-2026-09-22_25",
+  "from": "2026-09-22T00",
+  "to_exclusive": "2026-09-25T07",
+  "hours_checked": 79,
+  "hours_flagged": 0,
+  "hours": [
+    {
+      "hour": "2026-09-22T00",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T00.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T00.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T00.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1055205,
+          "unique": 1055205,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1476,
+          "unique": 1476,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 72,
+          "unique": 72,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T01",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T01.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T01.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T01.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1085619,
+          "unique": 1085619,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1170,
+          "unique": 1170,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 41,
+          "unique": 41,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T02",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T02.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T02.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T02.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1092834,
+          "unique": 1092834,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1206,
+          "unique": 1206,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 55,
+          "unique": 55,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T03",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T03.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T03.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T03.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1167559,
+          "unique": 1167559,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1262,
+          "unique": 1262,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 49,
+          "unique": 49,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T04",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T04.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T04.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T04.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1092752,
+          "unique": 1092752,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 986,
+          "unique": 986,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 42,
+          "unique": 42,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T05",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T05.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T05.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T05.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1044125,
+          "unique": 1044125,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 921,
+          "unique": 921,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T06",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T06.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T06.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T06.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1005333,
+          "unique": 1005333,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 761,
+          "unique": 761,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 40,
+          "unique": 40,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T07",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T07.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T07.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T07.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 948991,
+          "unique": 948991,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 947,
+          "unique": 947,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 30,
+          "unique": 30,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T08",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T08.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T08.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T08.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 943159,
+          "unique": 943159,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1084,
+          "unique": 1084,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 44,
+          "unique": 44,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T09",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T09.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T09.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T09.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 893042,
+          "unique": 893042,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1029,
+          "unique": 1029,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 42,
+          "unique": 42,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T10",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T10.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T10.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T10.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 906788,
+          "unique": 906788,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1091,
+          "unique": 1091,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 38,
+          "unique": 38,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T11",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T11.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T11.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T11.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 978220,
+          "unique": 978220,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 976,
+          "unique": 976,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 43,
+          "unique": 43,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T12",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T12.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T12.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T12.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 963218,
+          "unique": 963218,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1051,
+          "unique": 1051,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 36,
+          "unique": 36,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T13",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T13.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T13.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T13.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1167076,
+          "unique": 1167076,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1338,
+          "unique": 1338,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 44,
+          "unique": 44,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T14",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T14.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T14.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T14.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1210017,
+          "unique": 1210017,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1429,
+          "unique": 1429,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 39,
+          "unique": 39,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T15",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T15.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T15.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T15.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1137655,
+          "unique": 1137655,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1665,
+          "unique": 1665,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 40,
+          "unique": 40,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T16",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T16.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T16.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T16.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1135576,
+          "unique": 1135576,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1733,
+          "unique": 1733,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 51,
+          "unique": 51,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T17",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T17.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T17.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T17.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 915355,
+          "unique": 915355,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2016,
+          "unique": 2016,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 45,
+          "unique": 45,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T18",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T18.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T18.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T18.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1073356,
+          "unique": 1073356,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1732,
+          "unique": 1732,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 77,
+          "unique": 77,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T19",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T19.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T19.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T19.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1324123,
+          "unique": 1324123,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2025,
+          "unique": 2025,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 59,
+          "unique": 59,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T20",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T20.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T20.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T20.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1298221,
+          "unique": 1298221,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1951,
+          "unique": 1951,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 52,
+          "unique": 52,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T21",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T21.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T21.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T21.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1331650,
+          "unique": 1331650,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1998,
+          "unique": 1998,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 67,
+          "unique": 67,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T22",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T22.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T22.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T22.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1282186,
+          "unique": 1282186,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1643,
+          "unique": 1643,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 51,
+          "unique": 51,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-22T23",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T23.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T23.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T23.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1241825,
+          "unique": 1241825,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1521,
+          "unique": 1521,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 49,
+          "unique": 49,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T00",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T00.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T00.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T00.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1182992,
+          "unique": 1182992,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1590,
+          "unique": 1590,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 51,
+          "unique": 51,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T01",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T01.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T01.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T01.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1173551,
+          "unique": 1173551,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1402,
+          "unique": 1402,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 52,
+          "unique": 52,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T02",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T02.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T02.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T02.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1207736,
+          "unique": 1207736,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1372,
+          "unique": 1372,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 53,
+          "unique": 53,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T03",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T03.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T03.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T03.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1118000,
+          "unique": 1118000,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1258,
+          "unique": 1258,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 49,
+          "unique": 49,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T04",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T04.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T04.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T04.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 991854,
+          "unique": 991854,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1024,
+          "unique": 1024,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T05",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T05.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T05.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T05.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1041488,
+          "unique": 1041488,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1006,
+          "unique": 1006,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 41,
+          "unique": 41,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T06",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T06.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T06.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T06.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1096872,
+          "unique": 1096872,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 869,
+          "unique": 869,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 29,
+          "unique": 29,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T07",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T07.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T07.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T07.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1095048,
+          "unique": 1095048,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 895,
+          "unique": 895,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 52,
+          "unique": 52,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T08",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T08.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T08.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T08.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1036285,
+          "unique": 1036285,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1043,
+          "unique": 1043,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 49,
+          "unique": 49,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T09",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T09.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T09.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T09.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1060604,
+          "unique": 1060604,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1036,
+          "unique": 1036,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 37,
+          "unique": 37,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T10",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T10.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T10.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T10.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 971043,
+          "unique": 971043,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 924,
+          "unique": 924,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 42,
+          "unique": 42,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T11",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T11.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T11.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T11.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 973055,
+          "unique": 973055,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 989,
+          "unique": 989,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 35,
+          "unique": 35,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T12",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T12.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T12.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T12.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 996386,
+          "unique": 996386,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1165,
+          "unique": 1165,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 41,
+          "unique": 41,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T13",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T13.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T13.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T13.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1233877,
+          "unique": 1233877,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1171,
+          "unique": 1171,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 44,
+          "unique": 44,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T14",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T14.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T14.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T14.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 955352,
+          "unique": 955352,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1238,
+          "unique": 1238,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 32,
+          "unique": 32,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T15",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T15.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T15.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T15.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1112335,
+          "unique": 1112335,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1727,
+          "unique": 1727,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 31,
+          "unique": 31,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T16",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T16.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T16.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T16.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1144232,
+          "unique": 1144232,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1715,
+          "unique": 1715,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 49,
+          "unique": 49,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T17",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T17.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T17.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T17.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1003184,
+          "unique": 1003184,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1694,
+          "unique": 1694,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T18",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T18.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T18.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T18.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1076971,
+          "unique": 1076971,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1792,
+          "unique": 1792,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 45,
+          "unique": 45,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T19",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T19.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T19.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T19.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1038231,
+          "unique": 1038231,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1850,
+          "unique": 1850,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 44,
+          "unique": 44,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T20",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T20.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T20.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T20.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1122764,
+          "unique": 1122764,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2416,
+          "unique": 2416,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 50,
+          "unique": 50,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T21",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T21.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T21.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T21.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1251977,
+          "unique": 1251977,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2633,
+          "unique": 2633,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 60,
+          "unique": 60,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T22",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T22.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T22.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T22.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1161593,
+          "unique": 1161593,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1957,
+          "unique": 1957,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 54,
+          "unique": 54,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-23T23",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T23.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T23.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T23.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1074313,
+          "unique": 1074313,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1906,
+          "unique": 1906,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 53,
+          "unique": 53,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T00",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T00.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T00.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T00.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 988527,
+          "unique": 988527,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2151,
+          "unique": 2151,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 39,
+          "unique": 39,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T01",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T01.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T01.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T01.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1098428,
+          "unique": 1098428,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1670,
+          "unique": 1670,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 48,
+          "unique": 48,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T02",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T02.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T02.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T02.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1130887,
+          "unique": 1130887,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1200,
+          "unique": 1200,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T03",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T03.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T03.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T03.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1039217,
+          "unique": 1039217,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1019,
+          "unique": 1019,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 34,
+          "unique": 34,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T04",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T04.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T04.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T04.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 988543,
+          "unique": 988543,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1220,
+          "unique": 1220,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 48,
+          "unique": 48,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T05",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T05.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T05.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T05.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 972178,
+          "unique": 972178,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 998,
+          "unique": 998,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 37,
+          "unique": 37,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T06",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T06.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T06.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T06.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 934787,
+          "unique": 934787,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 768,
+          "unique": 768,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T07",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T07.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T07.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T07.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 920998,
+          "unique": 920998,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1011,
+          "unique": 1011,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 31,
+          "unique": 31,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T08",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T08.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T08.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T08.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 965590,
+          "unique": 965590,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1091,
+          "unique": 1091,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 36,
+          "unique": 36,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T09",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T09.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T09.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T09.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 977990,
+          "unique": 977990,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1097,
+          "unique": 1097,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 36,
+          "unique": 36,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T10",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T10.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T10.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T10.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 954250,
+          "unique": 954250,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1069,
+          "unique": 1069,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 36,
+          "unique": 36,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T11",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T11.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T11.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T11.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 925617,
+          "unique": 925617,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 976,
+          "unique": 976,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 43,
+          "unique": 43,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T12",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T12.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T12.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T12.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 956345,
+          "unique": 956345,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1331,
+          "unique": 1331,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 54,
+          "unique": 54,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T13",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T13.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T13.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T13.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1217227,
+          "unique": 1217227,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1608,
+          "unique": 1608,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 54,
+          "unique": 54,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T14",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T14.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T14.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T14.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1110310,
+          "unique": 1110310,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1512,
+          "unique": 1512,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 37,
+          "unique": 37,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T15",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T15.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T15.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T15.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1144920,
+          "unique": 1144920,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1519,
+          "unique": 1519,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 53,
+          "unique": 53,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T16",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T16.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T16.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T16.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1296836,
+          "unique": 1296836,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1629,
+          "unique": 1629,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 43,
+          "unique": 43,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T17",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T17.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T17.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T17.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1200699,
+          "unique": 1200699,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1804,
+          "unique": 1804,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T18",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T18.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T18.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T18.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1079082,
+          "unique": 1079082,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1668,
+          "unique": 1668,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T19",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T19.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T19.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T19.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1171264,
+          "unique": 1171264,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2206,
+          "unique": 2206,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 53,
+          "unique": 53,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T20",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T20.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T20.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T20.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1100057,
+          "unique": 1100057,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2001,
+          "unique": 2001,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 52,
+          "unique": 52,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T21",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T21.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T21.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T21.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1033865,
+          "unique": 1033865,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1767,
+          "unique": 1767,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 50,
+          "unique": 50,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T22",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T22.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T22.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T22.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 998260,
+          "unique": 998260,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1902,
+          "unique": 1902,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 50,
+          "unique": 50,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-24T23",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T23.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T23.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T23.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 920856,
+          "unique": 920856,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1491,
+          "unique": 1491,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 55,
+          "unique": 55,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T00",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T00.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T00.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T00.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 862341,
+          "unique": 862341,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1597,
+          "unique": 1597,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 40,
+          "unique": 40,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T01",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T01.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T01.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T01.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 905156,
+          "unique": 905156,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1446,
+          "unique": 1446,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 49,
+          "unique": 49,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T02",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T02.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T02.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T02.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 850943,
+          "unique": 850943,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1251,
+          "unique": 1251,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 52,
+          "unique": 52,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T03",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T03.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T03.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T03.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 931919,
+          "unique": 931919,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1274,
+          "unique": 1274,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T04",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T04.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T04.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T04.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 798886,
+          "unique": 798886,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1145,
+          "unique": 1145,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 40,
+          "unique": 40,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T05",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T05.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T05.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T05.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 868928,
+          "unique": 868928,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 950,
+          "unique": 950,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 43,
+          "unique": 43,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T06",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T06.jsonl.zst",
+        "creates": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T06.jsonl.zst",
+        "migrations": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T06.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 846014,
+          "unique": 846014,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 888,
+          "unique": 888,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 37,
+          "unique": 37,
+          "duplicates": 0
+        }
+      }
+    }
+  ],
+  "dedupe": {
+    "manifest": "/data/mal/clean/oracle-insample-2026-09-22_25/manifest.json",
+    "entries": [
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T00.deduped.jsonl.zst",
+        "rows_in": 1055205,
+        "rows_out": 1055205,
+        "duplicates_removed": 0,
+        "sha256": "44f8d2f8137fe07c46b3b0c22c9692f1b532fc49731a458c008ee3b12938e18e",
+        "hour": "2026-09-22T00",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T00.deduped.jsonl.zst",
+        "rows_in": 1476,
+        "rows_out": 1476,
+        "duplicates_removed": 0,
+        "sha256": "89e96658915e5918bc991a171c3ff72b7f9e46ef5585c2fa1a55229199c54f0c",
+        "hour": "2026-09-22T00",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T00.deduped.jsonl.zst",
+        "rows_in": 72,
+        "rows_out": 72,
+        "duplicates_removed": 0,
+        "sha256": "5d60023f97e5867f9c5748492d3a304c06a5b3e255a8dd291c29b2c3d4a192ca",
+        "hour": "2026-09-22T00",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T01.deduped.jsonl.zst",
+        "rows_in": 1085619,
+        "rows_out": 1085619,
+        "duplicates_removed": 0,
+        "sha256": "cc469f9276c2131b8f7be00b6e9f082e9f12e2a5c64d3b7bdea84a5ec3f03607",
+        "hour": "2026-09-22T01",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T01.deduped.jsonl.zst",
+        "rows_in": 1170,
+        "rows_out": 1170,
+        "duplicates_removed": 0,
+        "sha256": "fe8b8b13e0c7937fe6773e4c24b73a767ad0001d2ec8ead6c488dc9754e7fb2a",
+        "hour": "2026-09-22T01",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T01.deduped.jsonl.zst",
+        "rows_in": 41,
+        "rows_out": 41,
+        "duplicates_removed": 0,
+        "sha256": "918861d45ac278af1c0b011b542365b74c327887d8933ea80f12d4a1bfc7e50e",
+        "hour": "2026-09-22T01",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T02.deduped.jsonl.zst",
+        "rows_in": 1092834,
+        "rows_out": 1092834,
+        "duplicates_removed": 0,
+        "sha256": "305ea2c1f7095f73836f9d5a82fef09c506c765552203c9b8666d9c50ff272de",
+        "hour": "2026-09-22T02",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T02.deduped.jsonl.zst",
+        "rows_in": 1206,
+        "rows_out": 1206,
+        "duplicates_removed": 0,
+        "sha256": "f00d6b10fd9fb2e7266ebc394b9fbc27a554097eb299968cfccf6fbc8c8c1c15",
+        "hour": "2026-09-22T02",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T02.deduped.jsonl.zst",
+        "rows_in": 55,
+        "rows_out": 55,
+        "duplicates_removed": 0,
+        "sha256": "8a297e3dcf7200671e9d08db928b98ee701db0c13c6b88e5c90742759a4b7ca1",
+        "hour": "2026-09-22T02",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T03.deduped.jsonl.zst",
+        "rows_in": 1167559,
+        "rows_out": 1167559,
+        "duplicates_removed": 0,
+        "sha256": "141e3c0fd2d2a8e3a6689d7138a874e8a2f35831362a0633859223a171439aab",
+        "hour": "2026-09-22T03",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T03.deduped.jsonl.zst",
+        "rows_in": 1262,
+        "rows_out": 1262,
+        "duplicates_removed": 0,
+        "sha256": "b383bc4adb080b234bdd5487fe6b028f5571e836c61533afe5567c67a63c16bc",
+        "hour": "2026-09-22T03",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T03.deduped.jsonl.zst",
+        "rows_in": 49,
+        "rows_out": 49,
+        "duplicates_removed": 0,
+        "sha256": "184693a167a47ac3ad37c5ace5142e1d57015d438a162351d002272feb5842b1",
+        "hour": "2026-09-22T03",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T04.deduped.jsonl.zst",
+        "rows_in": 1092752,
+        "rows_out": 1092752,
+        "duplicates_removed": 0,
+        "sha256": "298ea2dae47b2552e45237712716f56129db78a575e5d124f40c946991a69e48",
+        "hour": "2026-09-22T04",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T04.deduped.jsonl.zst",
+        "rows_in": 986,
+        "rows_out": 986,
+        "duplicates_removed": 0,
+        "sha256": "c4ce9e9f74aedad9820b157b90d2b0013cb083bb18525877c916db8777d021e0",
+        "hour": "2026-09-22T04",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T04.deduped.jsonl.zst",
+        "rows_in": 42,
+        "rows_out": 42,
+        "duplicates_removed": 0,
+        "sha256": "185b650de23a0cab51a88c7c64d8354cfaf8e6ff6c09ed66125f64d47a8404a9",
+        "hour": "2026-09-22T04",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T05.deduped.jsonl.zst",
+        "rows_in": 1044125,
+        "rows_out": 1044125,
+        "duplicates_removed": 0,
+        "sha256": "2a88332597d862ab27c892b27cfb7f639cbec14d9eae1fd821a81c904b94aa20",
+        "hour": "2026-09-22T05",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T05.deduped.jsonl.zst",
+        "rows_in": 921,
+        "rows_out": 921,
+        "duplicates_removed": 0,
+        "sha256": "ed64be913cc37aaf90c12ce1be65362a97d3d57a71d3a79cf590db9b92ccc675",
+        "hour": "2026-09-22T05",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T05.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "7bf1b6aae80d702d2a777d13140b745ccd59332cbd10f14062ce1d0e1ebb80b1",
+        "hour": "2026-09-22T05",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T06.deduped.jsonl.zst",
+        "rows_in": 1005333,
+        "rows_out": 1005333,
+        "duplicates_removed": 0,
+        "sha256": "301d572ebbdca3892fbdcbc40f5a3736c3a199ae228500a1ead84119bd4d42d2",
+        "hour": "2026-09-22T06",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T06.deduped.jsonl.zst",
+        "rows_in": 761,
+        "rows_out": 761,
+        "duplicates_removed": 0,
+        "sha256": "851bc690092476b628b94aab9eae11e3bd78b3952197fe3c9a2170ba05c69c90",
+        "hour": "2026-09-22T06",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T06.deduped.jsonl.zst",
+        "rows_in": 40,
+        "rows_out": 40,
+        "duplicates_removed": 0,
+        "sha256": "628c75961e9371accdcd59c50c9d6c2d2f41f504650d297af838d88dd010495c",
+        "hour": "2026-09-22T06",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T07.deduped.jsonl.zst",
+        "rows_in": 948991,
+        "rows_out": 948991,
+        "duplicates_removed": 0,
+        "sha256": "df177c9fd2f0f7a8c183be423b7e9f939330673306b3e466096338c030840044",
+        "hour": "2026-09-22T07",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T07.deduped.jsonl.zst",
+        "rows_in": 947,
+        "rows_out": 947,
+        "duplicates_removed": 0,
+        "sha256": "44716deb6ef428bf3fd443568b96b52c7d82ea2ab5e5726bcdfbfd76c10e1ba5",
+        "hour": "2026-09-22T07",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T07.deduped.jsonl.zst",
+        "rows_in": 30,
+        "rows_out": 30,
+        "duplicates_removed": 0,
+        "sha256": "b7a0edfaf17b4a3ea5ee778fddcceafc8a8b829219327955966d279ef91b125b",
+        "hour": "2026-09-22T07",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T08.deduped.jsonl.zst",
+        "rows_in": 943159,
+        "rows_out": 943159,
+        "duplicates_removed": 0,
+        "sha256": "f1aab7c59f4e94ae24b4840146e4b5dd9ef0119665d42596ddc1f0e0d90849ac",
+        "hour": "2026-09-22T08",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T08.deduped.jsonl.zst",
+        "rows_in": 1084,
+        "rows_out": 1084,
+        "duplicates_removed": 0,
+        "sha256": "d8a1627eac5df330e6d2382ebef8bd31848b792bec209555f8650ea605590f52",
+        "hour": "2026-09-22T08",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T08.deduped.jsonl.zst",
+        "rows_in": 44,
+        "rows_out": 44,
+        "duplicates_removed": 0,
+        "sha256": "be59a16241543316b2ae8485a1b0dc659d5abeb9110a6ce85c7e1af8a3c1598d",
+        "hour": "2026-09-22T08",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T09.deduped.jsonl.zst",
+        "rows_in": 893042,
+        "rows_out": 893042,
+        "duplicates_removed": 0,
+        "sha256": "608f68092f927324afec3e4d7156b861e1ff552e68b5ffc5fd40798ae0e801d2",
+        "hour": "2026-09-22T09",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T09.deduped.jsonl.zst",
+        "rows_in": 1029,
+        "rows_out": 1029,
+        "duplicates_removed": 0,
+        "sha256": "479987777e4af5b3eb331bda21a209e7d542fc84dd492774c4040a62a19be2a9",
+        "hour": "2026-09-22T09",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T09.deduped.jsonl.zst",
+        "rows_in": 42,
+        "rows_out": 42,
+        "duplicates_removed": 0,
+        "sha256": "b2c0de7387ac0c2bb90470253f69bdd4031376abcbb7aaa62cf458491b99d8de",
+        "hour": "2026-09-22T09",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T10.deduped.jsonl.zst",
+        "rows_in": 906788,
+        "rows_out": 906788,
+        "duplicates_removed": 0,
+        "sha256": "4d277b6f0158c03ac5686e5f63c7b76a9d5d5b9b4b41423d724f7e8bbc3f9a42",
+        "hour": "2026-09-22T10",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T10.deduped.jsonl.zst",
+        "rows_in": 1091,
+        "rows_out": 1091,
+        "duplicates_removed": 0,
+        "sha256": "10462b30b262c810328e352a6e618fe3326c3e1ec726b8bae5643f689d16ad24",
+        "hour": "2026-09-22T10",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T10.deduped.jsonl.zst",
+        "rows_in": 38,
+        "rows_out": 38,
+        "duplicates_removed": 0,
+        "sha256": "c946da9c26fa80a2518eab417422ed91c6000f5ffdcc48c4beac3668de9f438c",
+        "hour": "2026-09-22T10",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T11.deduped.jsonl.zst",
+        "rows_in": 978220,
+        "rows_out": 978220,
+        "duplicates_removed": 0,
+        "sha256": "930022ddbd0732aeb51dcf49e79609cf4dc8e4f5da0b4c9b7776eb89829e2e4b",
+        "hour": "2026-09-22T11",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T11.deduped.jsonl.zst",
+        "rows_in": 976,
+        "rows_out": 976,
+        "duplicates_removed": 0,
+        "sha256": "1571caafe30561708a3c9c738a192067b89c0e61a74f592dce587d9e7157ef2f",
+        "hour": "2026-09-22T11",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T11.deduped.jsonl.zst",
+        "rows_in": 43,
+        "rows_out": 43,
+        "duplicates_removed": 0,
+        "sha256": "f3c320a233ebc70941c15afc272dfed7b1bfd7779453a8fc2673ee873c3fabf1",
+        "hour": "2026-09-22T11",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T12.deduped.jsonl.zst",
+        "rows_in": 963218,
+        "rows_out": 963218,
+        "duplicates_removed": 0,
+        "sha256": "3517958a35dfac72dd6acdbce24e5e162358ce5a035b0518d7774d0ac876b252",
+        "hour": "2026-09-22T12",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T12.deduped.jsonl.zst",
+        "rows_in": 1051,
+        "rows_out": 1051,
+        "duplicates_removed": 0,
+        "sha256": "6e248b41c2213f95dcdc3bf26bbde1d2b520b6eec4beb238d3976c7e974462f9",
+        "hour": "2026-09-22T12",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T12.deduped.jsonl.zst",
+        "rows_in": 36,
+        "rows_out": 36,
+        "duplicates_removed": 0,
+        "sha256": "8b1c88cb6b62fd285041fb778922b05b7e4171ca3a15594bb8719d96089653df",
+        "hour": "2026-09-22T12",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T13.deduped.jsonl.zst",
+        "rows_in": 1167076,
+        "rows_out": 1167076,
+        "duplicates_removed": 0,
+        "sha256": "72ac3fd33ca87241506c5a884b0b1a8f96cba452a24150f2a388431c39268200",
+        "hour": "2026-09-22T13",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T13.deduped.jsonl.zst",
+        "rows_in": 1338,
+        "rows_out": 1338,
+        "duplicates_removed": 0,
+        "sha256": "e03d076c5bd0d860074c6bd1f24e6ab10c80e8f1cb79be0379824b4924240648",
+        "hour": "2026-09-22T13",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T13.deduped.jsonl.zst",
+        "rows_in": 44,
+        "rows_out": 44,
+        "duplicates_removed": 0,
+        "sha256": "4c8bc43497d4fcee56ee7a3277ca57cae83e1b20c750f47d252dda34b4dca890",
+        "hour": "2026-09-22T13",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T14.deduped.jsonl.zst",
+        "rows_in": 1210017,
+        "rows_out": 1210017,
+        "duplicates_removed": 0,
+        "sha256": "453bfc50058c131f1f86aa474df9a51f11508b6e3ea9c065156edc1f39f1f645",
+        "hour": "2026-09-22T14",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T14.deduped.jsonl.zst",
+        "rows_in": 1429,
+        "rows_out": 1429,
+        "duplicates_removed": 0,
+        "sha256": "7ea02c4e4232c14e22427114f29c2b8937b0ef03a2737734ddf04c9bc5dc6f88",
+        "hour": "2026-09-22T14",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T14.deduped.jsonl.zst",
+        "rows_in": 39,
+        "rows_out": 39,
+        "duplicates_removed": 0,
+        "sha256": "3e8cc00a9d7f5fd09e71435aeb69fef4b96b8d1fcfd10a01d11f68c026f1fe6f",
+        "hour": "2026-09-22T14",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T15.deduped.jsonl.zst",
+        "rows_in": 1137655,
+        "rows_out": 1137655,
+        "duplicates_removed": 0,
+        "sha256": "6fbe013ab8d7c72fc8aa0ab7b22024b0eac8bb8c16f4b7cf217c0c6e53825d30",
+        "hour": "2026-09-22T15",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T15.deduped.jsonl.zst",
+        "rows_in": 1665,
+        "rows_out": 1665,
+        "duplicates_removed": 0,
+        "sha256": "5032c19ed4d32675da578c1701de69cdb493f731b821a617778ec8a885d5c76f",
+        "hour": "2026-09-22T15",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T15.deduped.jsonl.zst",
+        "rows_in": 40,
+        "rows_out": 40,
+        "duplicates_removed": 0,
+        "sha256": "894de4d685ed799af519be483eac79f422849835245637536bb4a8e81057ce33",
+        "hour": "2026-09-22T15",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T16.deduped.jsonl.zst",
+        "rows_in": 1135576,
+        "rows_out": 1135576,
+        "duplicates_removed": 0,
+        "sha256": "7ca6f947628c565c49968983c92a9bd59d6c67069dbe6348d11f4a0875b73a53",
+        "hour": "2026-09-22T16",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T16.deduped.jsonl.zst",
+        "rows_in": 1733,
+        "rows_out": 1733,
+        "duplicates_removed": 0,
+        "sha256": "9123bf388e2da4091683cd504603468deeb5fd47d7e36a3ae800eaccd87d3319",
+        "hour": "2026-09-22T16",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T16.deduped.jsonl.zst",
+        "rows_in": 51,
+        "rows_out": 51,
+        "duplicates_removed": 0,
+        "sha256": "d36435b4759b6fae54826fa82b1afaa2d2f4ee677e7960e04662d336767b2e49",
+        "hour": "2026-09-22T16",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T17.deduped.jsonl.zst",
+        "rows_in": 915355,
+        "rows_out": 915355,
+        "duplicates_removed": 0,
+        "sha256": "4d4a508ec0008d0a3cc51e8fba1d955d82299d3e323cd686a59128975ccf4b7e",
+        "hour": "2026-09-22T17",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T17.deduped.jsonl.zst",
+        "rows_in": 2016,
+        "rows_out": 2016,
+        "duplicates_removed": 0,
+        "sha256": "694ebf7971c0815bf0260cbbff0591a2a4125937b93083fcd75d5ec5446a904f",
+        "hour": "2026-09-22T17",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T17.deduped.jsonl.zst",
+        "rows_in": 45,
+        "rows_out": 45,
+        "duplicates_removed": 0,
+        "sha256": "6b984bec920df8a857cec041adb9f6e6dd881edfc4214a1557eee3ebcff658d4",
+        "hour": "2026-09-22T17",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T18.deduped.jsonl.zst",
+        "rows_in": 1073356,
+        "rows_out": 1073356,
+        "duplicates_removed": 0,
+        "sha256": "91e2499326720a648c41b5e88a4e970cd5e382c27af6648ad9e11bbe4c170501",
+        "hour": "2026-09-22T18",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T18.deduped.jsonl.zst",
+        "rows_in": 1732,
+        "rows_out": 1732,
+        "duplicates_removed": 0,
+        "sha256": "3a3e9b0629ec94595cac096ec61b4c37052fdbb2a01f3ea205f77f6923ab74e9",
+        "hour": "2026-09-22T18",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T18.deduped.jsonl.zst",
+        "rows_in": 77,
+        "rows_out": 77,
+        "duplicates_removed": 0,
+        "sha256": "1b49a434f3fda29694dee717c51c5390fab4d96eefe0fc769e614f939fab2876",
+        "hour": "2026-09-22T18",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T19.deduped.jsonl.zst",
+        "rows_in": 1324123,
+        "rows_out": 1324123,
+        "duplicates_removed": 0,
+        "sha256": "7776c5fbae7c14fd9d8fbdaf26d0aec7fa75434b1c772024a82d2b847c309cc3",
+        "hour": "2026-09-22T19",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T19.deduped.jsonl.zst",
+        "rows_in": 2025,
+        "rows_out": 2025,
+        "duplicates_removed": 0,
+        "sha256": "5b71fa75d4e754730709a6c266318ea175aa4bc58104d8d708e78f919c131be6",
+        "hour": "2026-09-22T19",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T19.deduped.jsonl.zst",
+        "rows_in": 59,
+        "rows_out": 59,
+        "duplicates_removed": 0,
+        "sha256": "b66a120fcac304f903926465823c2814bc3534678d9fdd86028b505d318c8c65",
+        "hour": "2026-09-22T19",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T20.deduped.jsonl.zst",
+        "rows_in": 1298221,
+        "rows_out": 1298221,
+        "duplicates_removed": 0,
+        "sha256": "c524bea7ef68f221a0742dd3d3446b986c64b12a20b76303d122dec33f6c2be6",
+        "hour": "2026-09-22T20",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T20.deduped.jsonl.zst",
+        "rows_in": 1951,
+        "rows_out": 1951,
+        "duplicates_removed": 0,
+        "sha256": "231e5eb33710301059380f17d66d82fc49fec58197aadd2219389ef99b63fd2c",
+        "hour": "2026-09-22T20",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T20.deduped.jsonl.zst",
+        "rows_in": 52,
+        "rows_out": 52,
+        "duplicates_removed": 0,
+        "sha256": "3b0ff4cfc8397d56327fb0de23f4385d8cca3aff43ed4fa04727ba03b858de45",
+        "hour": "2026-09-22T20",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T21.deduped.jsonl.zst",
+        "rows_in": 1331650,
+        "rows_out": 1331650,
+        "duplicates_removed": 0,
+        "sha256": "ffb54ca04b57743fadfa31adbdc8337f60af5415e4b5c635c8a820f48a51b521",
+        "hour": "2026-09-22T21",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T21.deduped.jsonl.zst",
+        "rows_in": 1998,
+        "rows_out": 1998,
+        "duplicates_removed": 0,
+        "sha256": "45c2124ff382c68ea8f7ebb7351a0a9f9437e723bc68aec3e6c3664027567721",
+        "hour": "2026-09-22T21",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T21.deduped.jsonl.zst",
+        "rows_in": 67,
+        "rows_out": 67,
+        "duplicates_removed": 0,
+        "sha256": "3d82faba5b8dc00aa4cc7820031a66236134483b6426bc151ed81bc64f58947c",
+        "hour": "2026-09-22T21",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T22.deduped.jsonl.zst",
+        "rows_in": 1282186,
+        "rows_out": 1282186,
+        "duplicates_removed": 0,
+        "sha256": "8bff9ca9fb088212795040143ff73fc28e4f3ef94ed8d6ce90d7c67990e59111",
+        "hour": "2026-09-22T22",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T22.deduped.jsonl.zst",
+        "rows_in": 1643,
+        "rows_out": 1643,
+        "duplicates_removed": 0,
+        "sha256": "87d06eab6d1546cae00fb7cd149b4d200ce21803cc083caa9d631dacea6294a4",
+        "hour": "2026-09-22T22",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T22.deduped.jsonl.zst",
+        "rows_in": 51,
+        "rows_out": 51,
+        "duplicates_removed": 0,
+        "sha256": "84cd661513891475124bf264ea8ab1315edfb1645c0073f8a7bd794d3d160c32",
+        "hour": "2026-09-22T22",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-22T23.deduped.jsonl.zst",
+        "rows_in": 1241825,
+        "rows_out": 1241825,
+        "duplicates_removed": 0,
+        "sha256": "b641ad152750175027b76eaf568f50501a8c64eaec9b8e764aa037737b7ee5c6",
+        "hour": "2026-09-22T23",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-22T23.deduped.jsonl.zst",
+        "rows_in": 1521,
+        "rows_out": 1521,
+        "duplicates_removed": 0,
+        "sha256": "36bba91a3ebc2d8d7065c2ec32092e13c9982cecb59de47ccb64e049458f7eb4",
+        "hour": "2026-09-22T23",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-22T23.deduped.jsonl.zst",
+        "rows_in": 49,
+        "rows_out": 49,
+        "duplicates_removed": 0,
+        "sha256": "fdc3de0625e939956b7e33dbc144019c8229909ad361bffdd6b75d8e4990165f",
+        "hour": "2026-09-22T23",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T00.deduped.jsonl.zst",
+        "rows_in": 1182992,
+        "rows_out": 1182992,
+        "duplicates_removed": 0,
+        "sha256": "fa5c3d61b6db24a56d48870f11dc278b7aa7b4ae5705fe86fc30f162fabc6daa",
+        "hour": "2026-09-23T00",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T00.deduped.jsonl.zst",
+        "rows_in": 1590,
+        "rows_out": 1590,
+        "duplicates_removed": 0,
+        "sha256": "d781d0d901ee0b3cbe69abc70c7c8d1865ec5140a9c44760c29c55a1a8dc9c64",
+        "hour": "2026-09-23T00",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T00.deduped.jsonl.zst",
+        "rows_in": 51,
+        "rows_out": 51,
+        "duplicates_removed": 0,
+        "sha256": "6d7ef389db768d6325c09124ee00e38ccbd05be8c9a7bf5a1ce132876707d5ef",
+        "hour": "2026-09-23T00",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T01.deduped.jsonl.zst",
+        "rows_in": 1173551,
+        "rows_out": 1173551,
+        "duplicates_removed": 0,
+        "sha256": "9e77692cf72e3e957e252690755b1919096809d938bf69a6cc6e9a9b58e869b6",
+        "hour": "2026-09-23T01",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T01.deduped.jsonl.zst",
+        "rows_in": 1402,
+        "rows_out": 1402,
+        "duplicates_removed": 0,
+        "sha256": "10904039c2fd6b4bd32bfc379f6cd167a7fb196f8f6bd4fd29d8cf769cf1dc86",
+        "hour": "2026-09-23T01",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T01.deduped.jsonl.zst",
+        "rows_in": 52,
+        "rows_out": 52,
+        "duplicates_removed": 0,
+        "sha256": "ba3d95643f09a5cc6c494803244d577696db3c54ebb0805990035380f1a611eb",
+        "hour": "2026-09-23T01",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T02.deduped.jsonl.zst",
+        "rows_in": 1207736,
+        "rows_out": 1207736,
+        "duplicates_removed": 0,
+        "sha256": "b41d2f13baeb0110caec01d0f4a5a245891856c68346dcd9193f6785cb27cd9a",
+        "hour": "2026-09-23T02",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T02.deduped.jsonl.zst",
+        "rows_in": 1372,
+        "rows_out": 1372,
+        "duplicates_removed": 0,
+        "sha256": "a7b60b9d30a5ec5f3239f736943fa8682c89c1af12f12d74116fa91e917377c0",
+        "hour": "2026-09-23T02",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T02.deduped.jsonl.zst",
+        "rows_in": 53,
+        "rows_out": 53,
+        "duplicates_removed": 0,
+        "sha256": "36aa8fbc19820331fbaa1fb49f3b50b039a39dda0a97c33b1989990f58103473",
+        "hour": "2026-09-23T02",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T03.deduped.jsonl.zst",
+        "rows_in": 1118000,
+        "rows_out": 1118000,
+        "duplicates_removed": 0,
+        "sha256": "321e5006357fcf0d0d053094dd40d1a040d081146d797daa48d2ae669609aaff",
+        "hour": "2026-09-23T03",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T03.deduped.jsonl.zst",
+        "rows_in": 1258,
+        "rows_out": 1258,
+        "duplicates_removed": 0,
+        "sha256": "bfe68adba7c7000eac0a0e9707b4facc7dc19a4f4f5ec0836fe643bfed03e653",
+        "hour": "2026-09-23T03",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T03.deduped.jsonl.zst",
+        "rows_in": 49,
+        "rows_out": 49,
+        "duplicates_removed": 0,
+        "sha256": "547de2a84aab475579c3e14a5e8fc40e06d786fef2712664f76e241b755e46a7",
+        "hour": "2026-09-23T03",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T04.deduped.jsonl.zst",
+        "rows_in": 991854,
+        "rows_out": 991854,
+        "duplicates_removed": 0,
+        "sha256": "9aa723df7806953c12f5b18e79f2f626bd9467ca537d83ba7efd329a37b2813a",
+        "hour": "2026-09-23T04",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T04.deduped.jsonl.zst",
+        "rows_in": 1024,
+        "rows_out": 1024,
+        "duplicates_removed": 0,
+        "sha256": "9272dc7604f574f6e0b9af30b49c777d2d546b3928959a3ac2c9d0f602a166db",
+        "hour": "2026-09-23T04",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T04.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "95f07a3dc8a7d272e3e352397bed89d3d7acea88441c93df1721c30d6e088021",
+        "hour": "2026-09-23T04",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T05.deduped.jsonl.zst",
+        "rows_in": 1041488,
+        "rows_out": 1041488,
+        "duplicates_removed": 0,
+        "sha256": "4722b2f6e2bffcd92c8370164792f98532163c9952d0a5633311fb46c5cfa919",
+        "hour": "2026-09-23T05",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T05.deduped.jsonl.zst",
+        "rows_in": 1006,
+        "rows_out": 1006,
+        "duplicates_removed": 0,
+        "sha256": "d26d0cbc031f1b037d347d4480c6c575a57b751ea88fa729702b177c123d4113",
+        "hour": "2026-09-23T05",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T05.deduped.jsonl.zst",
+        "rows_in": 41,
+        "rows_out": 41,
+        "duplicates_removed": 0,
+        "sha256": "8336424e54689cd67b25c1d58e6962b25ece6b291578edc522897c908908592e",
+        "hour": "2026-09-23T05",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T06.deduped.jsonl.zst",
+        "rows_in": 1096872,
+        "rows_out": 1096872,
+        "duplicates_removed": 0,
+        "sha256": "dff61ab71cfbf54a13a5335f306f5f79946ce01cc623c587686eee057dece4e6",
+        "hour": "2026-09-23T06",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T06.deduped.jsonl.zst",
+        "rows_in": 869,
+        "rows_out": 869,
+        "duplicates_removed": 0,
+        "sha256": "759e8983b569849253ed95f2be29bf3e028c82cbab258562c332c0534b7850d4",
+        "hour": "2026-09-23T06",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T06.deduped.jsonl.zst",
+        "rows_in": 29,
+        "rows_out": 29,
+        "duplicates_removed": 0,
+        "sha256": "0c2a7f4e8a374830720218cc545d88a40d5672059525c0ff12e4ce6dd627b6de",
+        "hour": "2026-09-23T06",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T07.deduped.jsonl.zst",
+        "rows_in": 1095048,
+        "rows_out": 1095048,
+        "duplicates_removed": 0,
+        "sha256": "031aee6f2a3e6cfd2029928d4490d676006b790466fe6a8ab41eab00b052373c",
+        "hour": "2026-09-23T07",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T07.deduped.jsonl.zst",
+        "rows_in": 895,
+        "rows_out": 895,
+        "duplicates_removed": 0,
+        "sha256": "6d137e0d7d25391ee1729859117f1ea4ca98b7382aad74e1b5efdbd1b893f972",
+        "hour": "2026-09-23T07",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T07.deduped.jsonl.zst",
+        "rows_in": 52,
+        "rows_out": 52,
+        "duplicates_removed": 0,
+        "sha256": "addc7017412a610258226172547238b403b7fff94a41416e058f648510143080",
+        "hour": "2026-09-23T07",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T08.deduped.jsonl.zst",
+        "rows_in": 1036285,
+        "rows_out": 1036285,
+        "duplicates_removed": 0,
+        "sha256": "e4b0024ca62bea928323051ca8b717d5e70210d7cf58249b2341412e1b33852b",
+        "hour": "2026-09-23T08",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T08.deduped.jsonl.zst",
+        "rows_in": 1043,
+        "rows_out": 1043,
+        "duplicates_removed": 0,
+        "sha256": "b83f6dc9f60ab7b0f68bc085fcc4c48f1bee53a1540398f326667c8fb0abba1c",
+        "hour": "2026-09-23T08",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T08.deduped.jsonl.zst",
+        "rows_in": 49,
+        "rows_out": 49,
+        "duplicates_removed": 0,
+        "sha256": "a922ddc4e6991215ada163e56c36af2c85d9613c266bad7001be071868016405",
+        "hour": "2026-09-23T08",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T09.deduped.jsonl.zst",
+        "rows_in": 1060604,
+        "rows_out": 1060604,
+        "duplicates_removed": 0,
+        "sha256": "05a6631e86702e5086afc600cfb9dfbd407383a865cad03acb02d4c4c84f5c0d",
+        "hour": "2026-09-23T09",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T09.deduped.jsonl.zst",
+        "rows_in": 1036,
+        "rows_out": 1036,
+        "duplicates_removed": 0,
+        "sha256": "84b4e8833ade77f5708a2ceccdf881d305c6970c728aad5915fbd3ee0d4fa241",
+        "hour": "2026-09-23T09",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T09.deduped.jsonl.zst",
+        "rows_in": 37,
+        "rows_out": 37,
+        "duplicates_removed": 0,
+        "sha256": "091325365470144ed527e541b12e8c963a0e592359935e4704f64d1af137d976",
+        "hour": "2026-09-23T09",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T10.deduped.jsonl.zst",
+        "rows_in": 971043,
+        "rows_out": 971043,
+        "duplicates_removed": 0,
+        "sha256": "bb09b895e44fcbb91853555d530df7b6190887885a9acce4669b0cfe93815e56",
+        "hour": "2026-09-23T10",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T10.deduped.jsonl.zst",
+        "rows_in": 924,
+        "rows_out": 924,
+        "duplicates_removed": 0,
+        "sha256": "a525fe226d3927d2f3aa45105bdfc2aaf42a1631a2b9d285d752284c88763903",
+        "hour": "2026-09-23T10",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T10.deduped.jsonl.zst",
+        "rows_in": 42,
+        "rows_out": 42,
+        "duplicates_removed": 0,
+        "sha256": "55ff90984c7e85c297862853259c46d9c375f43e9386cd7678607b86ce4ae881",
+        "hour": "2026-09-23T10",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T11.deduped.jsonl.zst",
+        "rows_in": 973055,
+        "rows_out": 973055,
+        "duplicates_removed": 0,
+        "sha256": "12e3fac5a3d4ae6bebd9de637a67424ca79e3ed3e953f6af283361b987eb1d62",
+        "hour": "2026-09-23T11",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T11.deduped.jsonl.zst",
+        "rows_in": 989,
+        "rows_out": 989,
+        "duplicates_removed": 0,
+        "sha256": "efd959b3e5ea7cd69883766b7d70b9adb931be54299bf156e76cb7ed0f1cad67",
+        "hour": "2026-09-23T11",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T11.deduped.jsonl.zst",
+        "rows_in": 35,
+        "rows_out": 35,
+        "duplicates_removed": 0,
+        "sha256": "9ae6b743dcbe12ee06428085195ba3630bcce1a523d3c4f213e95082a2d1e40a",
+        "hour": "2026-09-23T11",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T12.deduped.jsonl.zst",
+        "rows_in": 996386,
+        "rows_out": 996386,
+        "duplicates_removed": 0,
+        "sha256": "4599258f50483ec924ef4432b4bffcf32381ac2f5b78641ccc6d040c76a0c2d5",
+        "hour": "2026-09-23T12",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T12.deduped.jsonl.zst",
+        "rows_in": 1165,
+        "rows_out": 1165,
+        "duplicates_removed": 0,
+        "sha256": "e1ff5185b8c137bdface0c35ba712fd00b0ad1982ed8f81eafbf19b50772a759",
+        "hour": "2026-09-23T12",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T12.deduped.jsonl.zst",
+        "rows_in": 41,
+        "rows_out": 41,
+        "duplicates_removed": 0,
+        "sha256": "46e9f40a565dfdad0d8a2566e3968cba4216e6eb027f2a0e959a02a5a0c73735",
+        "hour": "2026-09-23T12",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T13.deduped.jsonl.zst",
+        "rows_in": 1233877,
+        "rows_out": 1233877,
+        "duplicates_removed": 0,
+        "sha256": "6707202973f90550570bdb4da2d2664db5dfefd2928b29af99d8670161616d14",
+        "hour": "2026-09-23T13",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T13.deduped.jsonl.zst",
+        "rows_in": 1171,
+        "rows_out": 1171,
+        "duplicates_removed": 0,
+        "sha256": "f4bace704d872eeeebaeab4a8cb827c79839c8b46e1f68b6e894ca9be6e9c577",
+        "hour": "2026-09-23T13",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T13.deduped.jsonl.zst",
+        "rows_in": 44,
+        "rows_out": 44,
+        "duplicates_removed": 0,
+        "sha256": "afc5042df5d9f33bc20c7a7df96ade526534e82955b1be0bfcc95dcc617f4208",
+        "hour": "2026-09-23T13",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T14.deduped.jsonl.zst",
+        "rows_in": 955352,
+        "rows_out": 955352,
+        "duplicates_removed": 0,
+        "sha256": "31fcda61677ac33009ff77bc5ad012168657f74b5282979403827ddec47d3f8e",
+        "hour": "2026-09-23T14",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T14.deduped.jsonl.zst",
+        "rows_in": 1238,
+        "rows_out": 1238,
+        "duplicates_removed": 0,
+        "sha256": "b9975a2ab9da8e7af0fb4c5ceb6c17b8fa36cea850e87ae44262def2de3ef735",
+        "hour": "2026-09-23T14",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T14.deduped.jsonl.zst",
+        "rows_in": 32,
+        "rows_out": 32,
+        "duplicates_removed": 0,
+        "sha256": "5e8dd674d3e79644ee8f7788ad617f8413d54e1f0901a9b3dea85c2186c45e8b",
+        "hour": "2026-09-23T14",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T15.deduped.jsonl.zst",
+        "rows_in": 1112335,
+        "rows_out": 1112335,
+        "duplicates_removed": 0,
+        "sha256": "2e51f21104ad6d2d83ce9fef739e52c1808d4b3171d7edefadbbb500c87291c1",
+        "hour": "2026-09-23T15",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T15.deduped.jsonl.zst",
+        "rows_in": 1727,
+        "rows_out": 1727,
+        "duplicates_removed": 0,
+        "sha256": "679ce27aab8506cc8a566ebdcec99abeffd16eb892ed16dab02e4b265e035894",
+        "hour": "2026-09-23T15",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T15.deduped.jsonl.zst",
+        "rows_in": 31,
+        "rows_out": 31,
+        "duplicates_removed": 0,
+        "sha256": "e06c67c687b3f7617d46a49dd760cc66fe5ee54cd142156331b2192b5b0f3e54",
+        "hour": "2026-09-23T15",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T16.deduped.jsonl.zst",
+        "rows_in": 1144232,
+        "rows_out": 1144232,
+        "duplicates_removed": 0,
+        "sha256": "3277875d325f77faffc82c3388f1fdfa47589cfc8e30e028e9d79cd52a88e28e",
+        "hour": "2026-09-23T16",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T16.deduped.jsonl.zst",
+        "rows_in": 1715,
+        "rows_out": 1715,
+        "duplicates_removed": 0,
+        "sha256": "bd7c36d33ff696bb6c574950a2a64fb43155160817a58472e1d7f7c1796d5814",
+        "hour": "2026-09-23T16",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T16.deduped.jsonl.zst",
+        "rows_in": 49,
+        "rows_out": 49,
+        "duplicates_removed": 0,
+        "sha256": "b56fcad8cc89eee1e44d207cb321ab9dde6c83c5bb578a7b65bf0dc96d616c6f",
+        "hour": "2026-09-23T16",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T17.deduped.jsonl.zst",
+        "rows_in": 1003184,
+        "rows_out": 1003184,
+        "duplicates_removed": 0,
+        "sha256": "ad90f87d46e7de4da53903cf3bcadc4ea7d15f07644b2703b0a96081fbc82f9b",
+        "hour": "2026-09-23T17",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T17.deduped.jsonl.zst",
+        "rows_in": 1694,
+        "rows_out": 1694,
+        "duplicates_removed": 0,
+        "sha256": "b8db980ae75180602bd8dd287514c6e6f6f398489d96cb1527a9be8eecaddddf",
+        "hour": "2026-09-23T17",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T17.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "061e1e4ed4790f8d8fb9bc193c1872938063d7a3d16abe82d65a59a4eeef4c6c",
+        "hour": "2026-09-23T17",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T18.deduped.jsonl.zst",
+        "rows_in": 1076971,
+        "rows_out": 1076971,
+        "duplicates_removed": 0,
+        "sha256": "70ee19b3d57ee1a2a5e0550a947661b11af2ba18bc7403229da7e963a238644f",
+        "hour": "2026-09-23T18",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T18.deduped.jsonl.zst",
+        "rows_in": 1792,
+        "rows_out": 1792,
+        "duplicates_removed": 0,
+        "sha256": "e2be7c7094011ea60f2b7c4df6b7bc41af9e2ed0753516b235fdf1047172af5f",
+        "hour": "2026-09-23T18",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T18.deduped.jsonl.zst",
+        "rows_in": 45,
+        "rows_out": 45,
+        "duplicates_removed": 0,
+        "sha256": "7b010bbe73cf257bafc38f897dcc46ef4eb10908349928d1bdb12844766af524",
+        "hour": "2026-09-23T18",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T19.deduped.jsonl.zst",
+        "rows_in": 1038231,
+        "rows_out": 1038231,
+        "duplicates_removed": 0,
+        "sha256": "9eb99faa4246efdc83b2856c3529ec470b22f1ac99542ddcc7583e1ba04a386c",
+        "hour": "2026-09-23T19",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T19.deduped.jsonl.zst",
+        "rows_in": 1850,
+        "rows_out": 1850,
+        "duplicates_removed": 0,
+        "sha256": "e4eb4e100843e4918964c5c1a5b596c7b8669395e0550167312d806e63be3819",
+        "hour": "2026-09-23T19",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T19.deduped.jsonl.zst",
+        "rows_in": 44,
+        "rows_out": 44,
+        "duplicates_removed": 0,
+        "sha256": "6371e61395f7094420dbe3a1565c294c79e3aaccd165eb16649d598490b5460a",
+        "hour": "2026-09-23T19",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T20.deduped.jsonl.zst",
+        "rows_in": 1122764,
+        "rows_out": 1122764,
+        "duplicates_removed": 0,
+        "sha256": "38ac1d6d49a9403a6c4095e8362592099f6693f2682b86e4b16ef2ccaa9f4879",
+        "hour": "2026-09-23T20",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T20.deduped.jsonl.zst",
+        "rows_in": 2416,
+        "rows_out": 2416,
+        "duplicates_removed": 0,
+        "sha256": "2359beb4b70e2742cbc57b2df41a4ae5d46fe89fbd4ff848f110181c675f282e",
+        "hour": "2026-09-23T20",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T20.deduped.jsonl.zst",
+        "rows_in": 50,
+        "rows_out": 50,
+        "duplicates_removed": 0,
+        "sha256": "c55266ce9d5421ef93eb61569fcec2f0a58dd0ddd17343ab73d25040e241a5f8",
+        "hour": "2026-09-23T20",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T21.deduped.jsonl.zst",
+        "rows_in": 1251977,
+        "rows_out": 1251977,
+        "duplicates_removed": 0,
+        "sha256": "d063db3b7859db1b501753a129a156f798f395162c4fa91567a2f5f78d9e9694",
+        "hour": "2026-09-23T21",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T21.deduped.jsonl.zst",
+        "rows_in": 2633,
+        "rows_out": 2633,
+        "duplicates_removed": 0,
+        "sha256": "3a0689a92533094ea182017f0409a967bc85ee23052d8eb35b4cd129739b9568",
+        "hour": "2026-09-23T21",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T21.deduped.jsonl.zst",
+        "rows_in": 60,
+        "rows_out": 60,
+        "duplicates_removed": 0,
+        "sha256": "1d85d2b1ba46d9e61a19846b261f82d931653a51a4e58e82bd5dced9c6022374",
+        "hour": "2026-09-23T21",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T22.deduped.jsonl.zst",
+        "rows_in": 1161593,
+        "rows_out": 1161593,
+        "duplicates_removed": 0,
+        "sha256": "0e3a53e50cca352073c7652cceb3018d945444e96f8fa90f3120be8b7f718bdd",
+        "hour": "2026-09-23T22",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T22.deduped.jsonl.zst",
+        "rows_in": 1957,
+        "rows_out": 1957,
+        "duplicates_removed": 0,
+        "sha256": "e5ecd0073541ef98c39a4d121af11c92f07e3974b7f29f2a50686b823f977dc2",
+        "hour": "2026-09-23T22",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T22.deduped.jsonl.zst",
+        "rows_in": 54,
+        "rows_out": 54,
+        "duplicates_removed": 0,
+        "sha256": "06a14000f09e1fe31366db6d1616ff6c2d3b7685de2e5aa2acae9678307108c4",
+        "hour": "2026-09-23T22",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-23T23.deduped.jsonl.zst",
+        "rows_in": 1074313,
+        "rows_out": 1074313,
+        "duplicates_removed": 0,
+        "sha256": "5e243d0ca712c3a165f00c964a4a34011fd494c9adf9b17dd518d7ffd3790703",
+        "hour": "2026-09-23T23",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-23T23.deduped.jsonl.zst",
+        "rows_in": 1906,
+        "rows_out": 1906,
+        "duplicates_removed": 0,
+        "sha256": "b7888a73505352a125545306fba758bd985765d5669a849e1ae78fac710da72b",
+        "hour": "2026-09-23T23",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-23T23.deduped.jsonl.zst",
+        "rows_in": 53,
+        "rows_out": 53,
+        "duplicates_removed": 0,
+        "sha256": "dfda7d5e66b63d9d1233fabf87a574a506c10aecc76dabb002875a80c6652c74",
+        "hour": "2026-09-23T23",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T00.deduped.jsonl.zst",
+        "rows_in": 988527,
+        "rows_out": 988527,
+        "duplicates_removed": 0,
+        "sha256": "ad8880da24a72604d1ccc38b2bef28a0a6a6e38820042233eaa5c20078241df8",
+        "hour": "2026-09-24T00",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T00.deduped.jsonl.zst",
+        "rows_in": 2151,
+        "rows_out": 2151,
+        "duplicates_removed": 0,
+        "sha256": "e4be6a80eb3f026742bcbcbf96f602b871cd1b78043e3a3e9db6989ab24aac1e",
+        "hour": "2026-09-24T00",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T00.deduped.jsonl.zst",
+        "rows_in": 39,
+        "rows_out": 39,
+        "duplicates_removed": 0,
+        "sha256": "51150ff1d28825018fc7d8a1f106f1dac3810f1b20495280747e3bef236c6580",
+        "hour": "2026-09-24T00",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T01.deduped.jsonl.zst",
+        "rows_in": 1098428,
+        "rows_out": 1098428,
+        "duplicates_removed": 0,
+        "sha256": "c6a8c51eb29b3aa8a8f7fbe525967f5bc5355fe3f2419d0efdb05c89423f629c",
+        "hour": "2026-09-24T01",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T01.deduped.jsonl.zst",
+        "rows_in": 1670,
+        "rows_out": 1670,
+        "duplicates_removed": 0,
+        "sha256": "58c9ad8ac5f241b8c70d0095c2844a834d80a31fcda6673e5699f65df5e749c4",
+        "hour": "2026-09-24T01",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T01.deduped.jsonl.zst",
+        "rows_in": 48,
+        "rows_out": 48,
+        "duplicates_removed": 0,
+        "sha256": "014166e0cd2ad3eab037b4cf3d7e1b6fed982b46ade53445050c45e85e7dfa94",
+        "hour": "2026-09-24T01",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T02.deduped.jsonl.zst",
+        "rows_in": 1130887,
+        "rows_out": 1130887,
+        "duplicates_removed": 0,
+        "sha256": "c5da8ce4fbf967c837fe92c4ee0835a45085d4ede8be2406484d3f5501148bed",
+        "hour": "2026-09-24T02",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T02.deduped.jsonl.zst",
+        "rows_in": 1200,
+        "rows_out": 1200,
+        "duplicates_removed": 0,
+        "sha256": "e5006463a878448d61812bc98218e401ab675b108311174aed1c141e83870be9",
+        "hour": "2026-09-24T02",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T02.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "a2cb9de4133654fa6caf61c39124f80b8c6c5de6855e213db1546c0905fa3920",
+        "hour": "2026-09-24T02",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T03.deduped.jsonl.zst",
+        "rows_in": 1039217,
+        "rows_out": 1039217,
+        "duplicates_removed": 0,
+        "sha256": "b4146129f160f2165087b97f64265e4e82657676800ac8cc561ac32739657a80",
+        "hour": "2026-09-24T03",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T03.deduped.jsonl.zst",
+        "rows_in": 1019,
+        "rows_out": 1019,
+        "duplicates_removed": 0,
+        "sha256": "e74346992e23886fe3c7cc464b08a89cfbdbef18ce3c07f568c3693c85a0a16c",
+        "hour": "2026-09-24T03",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T03.deduped.jsonl.zst",
+        "rows_in": 34,
+        "rows_out": 34,
+        "duplicates_removed": 0,
+        "sha256": "7c63d371c374f363c3449cce9f64f2f270469dbfc84f7976775776ade4a3eb80",
+        "hour": "2026-09-24T03",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T04.deduped.jsonl.zst",
+        "rows_in": 988543,
+        "rows_out": 988543,
+        "duplicates_removed": 0,
+        "sha256": "aba39f4bfe86dc6db89f3eeb250f5f227a1aa7293c442c6ac5d2eabb4198ac2b",
+        "hour": "2026-09-24T04",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T04.deduped.jsonl.zst",
+        "rows_in": 1220,
+        "rows_out": 1220,
+        "duplicates_removed": 0,
+        "sha256": "c206b6155201687bf6802edb8628f77973a1d1ecda9d5d93a0f9d35a34c0f2ea",
+        "hour": "2026-09-24T04",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T04.deduped.jsonl.zst",
+        "rows_in": 48,
+        "rows_out": 48,
+        "duplicates_removed": 0,
+        "sha256": "86360e29fd96222a80e128dc49b9c39ef77a44b5ff0563c43f2b0eecf9700eee",
+        "hour": "2026-09-24T04",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T05.deduped.jsonl.zst",
+        "rows_in": 972178,
+        "rows_out": 972178,
+        "duplicates_removed": 0,
+        "sha256": "9d0463b3778c0316fcaef207d72fb7cdda05cb827c3c0b2770dae19e13caf45b",
+        "hour": "2026-09-24T05",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T05.deduped.jsonl.zst",
+        "rows_in": 998,
+        "rows_out": 998,
+        "duplicates_removed": 0,
+        "sha256": "aa541575dc16c299bfab5e13030737a6e68fde5d54c83ef6a9d1e4e40283944c",
+        "hour": "2026-09-24T05",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T05.deduped.jsonl.zst",
+        "rows_in": 37,
+        "rows_out": 37,
+        "duplicates_removed": 0,
+        "sha256": "4eb82c887a2dc5d4700f5946d195aa0f0ea7e087503986e97c0a7ee83acd9c4d",
+        "hour": "2026-09-24T05",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T06.deduped.jsonl.zst",
+        "rows_in": 934787,
+        "rows_out": 934787,
+        "duplicates_removed": 0,
+        "sha256": "befd37ec0ab57ec7c61ac5eee11032443ceeee0588dd132cc8bd4c258f40b255",
+        "hour": "2026-09-24T06",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T06.deduped.jsonl.zst",
+        "rows_in": 768,
+        "rows_out": 768,
+        "duplicates_removed": 0,
+        "sha256": "ab832e3383184e1345f176489fbd77c862e972243613d266e8b118cdecf59f48",
+        "hour": "2026-09-24T06",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T06.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "a0fd02b6c57db3cc26f8c24a6f1a0ef48360722f4752dfc7b08d9d3faa8e98a2",
+        "hour": "2026-09-24T06",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T07.deduped.jsonl.zst",
+        "rows_in": 920998,
+        "rows_out": 920998,
+        "duplicates_removed": 0,
+        "sha256": "1c8b4b65ea06f0714359ccd8579c19d0d7f84c21f5fbbeb5318c9ecd8c30e063",
+        "hour": "2026-09-24T07",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T07.deduped.jsonl.zst",
+        "rows_in": 1011,
+        "rows_out": 1011,
+        "duplicates_removed": 0,
+        "sha256": "65d0af960d9a98e6aeff305d3bb82fd731c4f3c406158cd24273cd62a6b0153b",
+        "hour": "2026-09-24T07",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T07.deduped.jsonl.zst",
+        "rows_in": 31,
+        "rows_out": 31,
+        "duplicates_removed": 0,
+        "sha256": "655e0585aade1c55096ae60c9a7033482e1fe3d036f706bff1a0b57618e493fd",
+        "hour": "2026-09-24T07",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T08.deduped.jsonl.zst",
+        "rows_in": 965590,
+        "rows_out": 965590,
+        "duplicates_removed": 0,
+        "sha256": "a78cb93ebc8f23ade243701a1337b9de165f9c5c0ff29e38e63940a9e4a13c77",
+        "hour": "2026-09-24T08",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T08.deduped.jsonl.zst",
+        "rows_in": 1091,
+        "rows_out": 1091,
+        "duplicates_removed": 0,
+        "sha256": "a21a75d46888b10af7f3302b11d41fd31067d69aa785e3cdf16b060d1ee9e405",
+        "hour": "2026-09-24T08",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T08.deduped.jsonl.zst",
+        "rows_in": 36,
+        "rows_out": 36,
+        "duplicates_removed": 0,
+        "sha256": "fb80c590a537651f01296fbfeeb5f27da8c9f10cf086a66e0cca399d80e20d10",
+        "hour": "2026-09-24T08",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T09.deduped.jsonl.zst",
+        "rows_in": 977990,
+        "rows_out": 977990,
+        "duplicates_removed": 0,
+        "sha256": "d455e9bb7186013e765ea037f1d0a60b2ce49b9549b42e3bb32832b5cae39d85",
+        "hour": "2026-09-24T09",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T09.deduped.jsonl.zst",
+        "rows_in": 1097,
+        "rows_out": 1097,
+        "duplicates_removed": 0,
+        "sha256": "d1a3aaa1cfabd3e8a539558ccd4308f05117b20d1b41db2cc10c2bb5b366a742",
+        "hour": "2026-09-24T09",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T09.deduped.jsonl.zst",
+        "rows_in": 36,
+        "rows_out": 36,
+        "duplicates_removed": 0,
+        "sha256": "666eadad729387d0614867b212cbf6a89f2f0ad19e54891392c62183500e8178",
+        "hour": "2026-09-24T09",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T10.deduped.jsonl.zst",
+        "rows_in": 954250,
+        "rows_out": 954250,
+        "duplicates_removed": 0,
+        "sha256": "1b5b70ebcba298d214bfe8eb10c3880bdd1263e4244f6b20271791f5220f77aa",
+        "hour": "2026-09-24T10",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T10.deduped.jsonl.zst",
+        "rows_in": 1069,
+        "rows_out": 1069,
+        "duplicates_removed": 0,
+        "sha256": "a18ea165421653b47ce21e4481ca1fd05a9a69cd818c58f15952977d32606d68",
+        "hour": "2026-09-24T10",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T10.deduped.jsonl.zst",
+        "rows_in": 36,
+        "rows_out": 36,
+        "duplicates_removed": 0,
+        "sha256": "eecb5c5386348a0529c4cd097f20206f4c6c4b089692d36f72cbbe8f2167a90c",
+        "hour": "2026-09-24T10",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T11.deduped.jsonl.zst",
+        "rows_in": 925617,
+        "rows_out": 925617,
+        "duplicates_removed": 0,
+        "sha256": "a4b8622154c436456cf0c8e779bc7b3760cba99f447f064889abb2493356d416",
+        "hour": "2026-09-24T11",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T11.deduped.jsonl.zst",
+        "rows_in": 976,
+        "rows_out": 976,
+        "duplicates_removed": 0,
+        "sha256": "ff025e6fccc278db6acf2f6470979f7252bbe0d7b6a7b6e8ba644d75a060cd7f",
+        "hour": "2026-09-24T11",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T11.deduped.jsonl.zst",
+        "rows_in": 43,
+        "rows_out": 43,
+        "duplicates_removed": 0,
+        "sha256": "b5d9aedb6536d65f51766e7bd2c7bc61f722b535a0c324ab50cb2f9735ede24f",
+        "hour": "2026-09-24T11",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T12.deduped.jsonl.zst",
+        "rows_in": 956345,
+        "rows_out": 956345,
+        "duplicates_removed": 0,
+        "sha256": "98cca5523a6ad1e29d8827d32af2d9d0fb0abb81a422fef037581890b7dd7d6f",
+        "hour": "2026-09-24T12",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T12.deduped.jsonl.zst",
+        "rows_in": 1331,
+        "rows_out": 1331,
+        "duplicates_removed": 0,
+        "sha256": "caea582e9b8a193f1e8d10d457b6eb6071bdcf6cfe441fdd16c70bdf7f41a8a4",
+        "hour": "2026-09-24T12",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T12.deduped.jsonl.zst",
+        "rows_in": 54,
+        "rows_out": 54,
+        "duplicates_removed": 0,
+        "sha256": "fd62a0ea91796ebe6bd2a7d4e65e77be92d44712099ad5b30df7e37fddf9e2b4",
+        "hour": "2026-09-24T12",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T13.deduped.jsonl.zst",
+        "rows_in": 1217227,
+        "rows_out": 1217227,
+        "duplicates_removed": 0,
+        "sha256": "52dbf55c0a20c92721c68e17a5e038e921c333b2fa4f9a48746cea2c7a7bfc5c",
+        "hour": "2026-09-24T13",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T13.deduped.jsonl.zst",
+        "rows_in": 1608,
+        "rows_out": 1608,
+        "duplicates_removed": 0,
+        "sha256": "a1230db3f0b543ea7de2f14e8717eaefc818a0a8f3dc4903e38903a3519cb6f9",
+        "hour": "2026-09-24T13",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T13.deduped.jsonl.zst",
+        "rows_in": 54,
+        "rows_out": 54,
+        "duplicates_removed": 0,
+        "sha256": "ef2d309d7477dd70d4a21675313227585070cbd1ee59c08d1b99f61123fcd33a",
+        "hour": "2026-09-24T13",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T14.deduped.jsonl.zst",
+        "rows_in": 1110310,
+        "rows_out": 1110310,
+        "duplicates_removed": 0,
+        "sha256": "419b2550a084bb5c83357e1bf593775dc1011164088e74c9b58cdd33892f835a",
+        "hour": "2026-09-24T14",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T14.deduped.jsonl.zst",
+        "rows_in": 1512,
+        "rows_out": 1512,
+        "duplicates_removed": 0,
+        "sha256": "2f5c83235eda787f5fdb2ebb1b43dbbeb5a0bd675682980a569776b1d95c8c04",
+        "hour": "2026-09-24T14",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T14.deduped.jsonl.zst",
+        "rows_in": 37,
+        "rows_out": 37,
+        "duplicates_removed": 0,
+        "sha256": "cd7a9fce12c5be4ca7b2f7c83c7f0aec47137106f7f524ade4a00304df4ccc5a",
+        "hour": "2026-09-24T14",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T15.deduped.jsonl.zst",
+        "rows_in": 1144920,
+        "rows_out": 1144920,
+        "duplicates_removed": 0,
+        "sha256": "83d2a0e4f8d71f9bcbbcff14e18ddccd928d27502af279f21e5405a57b9fc81c",
+        "hour": "2026-09-24T15",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T15.deduped.jsonl.zst",
+        "rows_in": 1519,
+        "rows_out": 1519,
+        "duplicates_removed": 0,
+        "sha256": "c05643205a21734c2927f4dafdbfbcbd324de64a0d1b7a55bb11f7957165d1b7",
+        "hour": "2026-09-24T15",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T15.deduped.jsonl.zst",
+        "rows_in": 53,
+        "rows_out": 53,
+        "duplicates_removed": 0,
+        "sha256": "cedc3a352fed5f51fe3d72dd3874b292cef3de3137397b249a3e8883be5fb3cd",
+        "hour": "2026-09-24T15",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T16.deduped.jsonl.zst",
+        "rows_in": 1296836,
+        "rows_out": 1296836,
+        "duplicates_removed": 0,
+        "sha256": "f7c312fd84dde41d575af56e36102dad57335d5e0a343d88afa3a2ed7d4000e6",
+        "hour": "2026-09-24T16",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T16.deduped.jsonl.zst",
+        "rows_in": 1629,
+        "rows_out": 1629,
+        "duplicates_removed": 0,
+        "sha256": "c5ebdf14a68573b7203a189aff3d4675443db21242f051d74b76f406581cf84d",
+        "hour": "2026-09-24T16",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T16.deduped.jsonl.zst",
+        "rows_in": 43,
+        "rows_out": 43,
+        "duplicates_removed": 0,
+        "sha256": "3d7db5bfea05c28248ff5a631c7ce15005eed87106a29dcf6675e69419ca2d06",
+        "hour": "2026-09-24T16",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T17.deduped.jsonl.zst",
+        "rows_in": 1200699,
+        "rows_out": 1200699,
+        "duplicates_removed": 0,
+        "sha256": "31f89e93406b73f768b5e131191f4f57969f9265c7b66c2e09cd936c15da2daa",
+        "hour": "2026-09-24T17",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T17.deduped.jsonl.zst",
+        "rows_in": 1804,
+        "rows_out": 1804,
+        "duplicates_removed": 0,
+        "sha256": "d3519eeb2f412e3d595a12f7f886ec17e0e4a6ae67b68ed15cfed0250e368e13",
+        "hour": "2026-09-24T17",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T17.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "8b2267ceb9a4d6e609aa0f940ac07cc4069309153b8bc65e6f2d14834b626da0",
+        "hour": "2026-09-24T17",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T18.deduped.jsonl.zst",
+        "rows_in": 1079082,
+        "rows_out": 1079082,
+        "duplicates_removed": 0,
+        "sha256": "940c255fa45215c5b730ace7f2ca5b0c277f55f3750c41ab2e3378728741c085",
+        "hour": "2026-09-24T18",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T18.deduped.jsonl.zst",
+        "rows_in": 1668,
+        "rows_out": 1668,
+        "duplicates_removed": 0,
+        "sha256": "a30f9562affd1a0a46fc02b45d05dbf53dbd75a2d7fbb8127d77be817892e041",
+        "hour": "2026-09-24T18",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T18.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "c2ef91bba71b2cdd59b1053b2a3c6234b8d8230c4458714059f82cd0e6cfc79b",
+        "hour": "2026-09-24T18",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T19.deduped.jsonl.zst",
+        "rows_in": 1171264,
+        "rows_out": 1171264,
+        "duplicates_removed": 0,
+        "sha256": "6d2050b074b4361fd18926264381549c607effa3436a2de2a3a93a7546e2a0db",
+        "hour": "2026-09-24T19",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T19.deduped.jsonl.zst",
+        "rows_in": 2206,
+        "rows_out": 2206,
+        "duplicates_removed": 0,
+        "sha256": "b0d58fd354fb37a43e231088b5f814bc2c84ad4f1b6679056b685c69aae215ca",
+        "hour": "2026-09-24T19",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T19.deduped.jsonl.zst",
+        "rows_in": 53,
+        "rows_out": 53,
+        "duplicates_removed": 0,
+        "sha256": "66c7942bbbddef3bfdf37abf2d7dc4db6a86e37d746c4085d8c728f26070443b",
+        "hour": "2026-09-24T19",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T20.deduped.jsonl.zst",
+        "rows_in": 1100057,
+        "rows_out": 1100057,
+        "duplicates_removed": 0,
+        "sha256": "0b4ee0c9a0fbb9d6fa94c13ba6b6c19cb815e47a5e915158acec11c3625777d1",
+        "hour": "2026-09-24T20",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T20.deduped.jsonl.zst",
+        "rows_in": 2001,
+        "rows_out": 2001,
+        "duplicates_removed": 0,
+        "sha256": "2d68931b627cc064000ae29d0af7bceb909edcedd4aef9af84d1234e42de003a",
+        "hour": "2026-09-24T20",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T20.deduped.jsonl.zst",
+        "rows_in": 52,
+        "rows_out": 52,
+        "duplicates_removed": 0,
+        "sha256": "77a6b8e17297833dffa3d000d7b1f8f5c947c17eda335a73288bad059edee52f",
+        "hour": "2026-09-24T20",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T21.deduped.jsonl.zst",
+        "rows_in": 1033865,
+        "rows_out": 1033865,
+        "duplicates_removed": 0,
+        "sha256": "ea37a852ff1cace3ac56bde9b504788800cb823feb49bd481fbc13d3efbe73a6",
+        "hour": "2026-09-24T21",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T21.deduped.jsonl.zst",
+        "rows_in": 1767,
+        "rows_out": 1767,
+        "duplicates_removed": 0,
+        "sha256": "5174572942c776dd87cbd1fb2b7e63442642c0dd8d379951ed0235ab400bf0da",
+        "hour": "2026-09-24T21",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T21.deduped.jsonl.zst",
+        "rows_in": 50,
+        "rows_out": 50,
+        "duplicates_removed": 0,
+        "sha256": "c11ce1924fe2edbe8e5de578d18aadc1d7aad3a0e091e24f2c590df34cd595e8",
+        "hour": "2026-09-24T21",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T22.deduped.jsonl.zst",
+        "rows_in": 998260,
+        "rows_out": 998260,
+        "duplicates_removed": 0,
+        "sha256": "0b58c607ad819fa3a325a134493bd5ff2add543f3919403967adced9a7f7094c",
+        "hour": "2026-09-24T22",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T22.deduped.jsonl.zst",
+        "rows_in": 1902,
+        "rows_out": 1902,
+        "duplicates_removed": 0,
+        "sha256": "c53d6ca0cfc2855403e3081a1ea17725eb47fff1c50e08f06cd5c18a7fe5282a",
+        "hour": "2026-09-24T22",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T22.deduped.jsonl.zst",
+        "rows_in": 50,
+        "rows_out": 50,
+        "duplicates_removed": 0,
+        "sha256": "825b167365e56411c5111a429858ffbf44bce1106540031765938bcdc7ac758b",
+        "hour": "2026-09-24T22",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-24T23.deduped.jsonl.zst",
+        "rows_in": 920856,
+        "rows_out": 920856,
+        "duplicates_removed": 0,
+        "sha256": "6c96b7c4130c9cb12f847dfc644c4353ffb07623206d4382707aba6061d03aa1",
+        "hour": "2026-09-24T23",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-24T23.deduped.jsonl.zst",
+        "rows_in": 1491,
+        "rows_out": 1491,
+        "duplicates_removed": 0,
+        "sha256": "8dee1811ac1d0040797478c99ce5707113ddd17d9330fdf6ab8ed5dd8aa299fe",
+        "hour": "2026-09-24T23",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-24T23.deduped.jsonl.zst",
+        "rows_in": 55,
+        "rows_out": 55,
+        "duplicates_removed": 0,
+        "sha256": "abc16bba7b7ad7b46bddcc89404e67d1e351a6898b5c38baa487cd6d7648904e",
+        "hour": "2026-09-24T23",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T00.deduped.jsonl.zst",
+        "rows_in": 862341,
+        "rows_out": 862341,
+        "duplicates_removed": 0,
+        "sha256": "5080047119fa8c0d49668e6104e9131457597619b1b1eab5578ef47e7501aa78",
+        "hour": "2026-09-25T00",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T00.deduped.jsonl.zst",
+        "rows_in": 1597,
+        "rows_out": 1597,
+        "duplicates_removed": 0,
+        "sha256": "c184760386802ad7db88853e9b6e8d56cbf130ed103584364cd0c7c74d1ac1e6",
+        "hour": "2026-09-25T00",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T00.deduped.jsonl.zst",
+        "rows_in": 40,
+        "rows_out": 40,
+        "duplicates_removed": 0,
+        "sha256": "0102b8cba7c8a5819a0ce132b8508870071b2e3e01b946f4c462ff4f12ced5b7",
+        "hour": "2026-09-25T00",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T01.deduped.jsonl.zst",
+        "rows_in": 905156,
+        "rows_out": 905156,
+        "duplicates_removed": 0,
+        "sha256": "95b46821f4c72d11f52135bac677cde553b4c226ed4246f9202d8895019660f3",
+        "hour": "2026-09-25T01",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T01.deduped.jsonl.zst",
+        "rows_in": 1446,
+        "rows_out": 1446,
+        "duplicates_removed": 0,
+        "sha256": "50ea17e3ab93b2e63fdecaf05d1f9577bdaeed801aacb1e70ccc9145ce8f2068",
+        "hour": "2026-09-25T01",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T01.deduped.jsonl.zst",
+        "rows_in": 49,
+        "rows_out": 49,
+        "duplicates_removed": 0,
+        "sha256": "97f7f418a9a8a053d3ed842502c11810f7f5314c6f3cf2bf977e0e8fc4469384",
+        "hour": "2026-09-25T01",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T02.deduped.jsonl.zst",
+        "rows_in": 850943,
+        "rows_out": 850943,
+        "duplicates_removed": 0,
+        "sha256": "85e9cdad79bdd07b60e453f673c098b48c53607e6cad67dc272a7f0b8ac22d05",
+        "hour": "2026-09-25T02",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T02.deduped.jsonl.zst",
+        "rows_in": 1251,
+        "rows_out": 1251,
+        "duplicates_removed": 0,
+        "sha256": "95958b937e0d3de5abe886234bc6b75055f6eff53ef3c0815f27513f4d8c4569",
+        "hour": "2026-09-25T02",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T02.deduped.jsonl.zst",
+        "rows_in": 52,
+        "rows_out": 52,
+        "duplicates_removed": 0,
+        "sha256": "e052ab5bd93b299465c1a413a6c9064ab3940da915dec02f8d43eff536241823",
+        "hour": "2026-09-25T02",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T03.deduped.jsonl.zst",
+        "rows_in": 931919,
+        "rows_out": 931919,
+        "duplicates_removed": 0,
+        "sha256": "44a3f1791c658b08d7a554c38cb24969b3ee0e5ef91c4feaa88221b5808ec396",
+        "hour": "2026-09-25T03",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T03.deduped.jsonl.zst",
+        "rows_in": 1274,
+        "rows_out": 1274,
+        "duplicates_removed": 0,
+        "sha256": "65db6b5e75316357788dc9bfd35c995809bc9319bf1e1f082461cc63a53999bc",
+        "hour": "2026-09-25T03",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T03.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "25e7d58d0c5adc5c74430f5351f3f9d91613fe2304c7a3b42053b58a17b080d5",
+        "hour": "2026-09-25T03",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T04.deduped.jsonl.zst",
+        "rows_in": 798886,
+        "rows_out": 798886,
+        "duplicates_removed": 0,
+        "sha256": "a5d6449b1713a5f0e59444659706406d6a6e494801d27fbcc90a07828be55995",
+        "hour": "2026-09-25T04",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T04.deduped.jsonl.zst",
+        "rows_in": 1145,
+        "rows_out": 1145,
+        "duplicates_removed": 0,
+        "sha256": "9ad7b9ea4d4792284861dc6403f901f3b74ab264079c2f242a7792b2f316877d",
+        "hour": "2026-09-25T04",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T04.deduped.jsonl.zst",
+        "rows_in": 40,
+        "rows_out": 40,
+        "duplicates_removed": 0,
+        "sha256": "0c8f021a6ea15cc6fad4adf97889014f5233f7871d57d668e434080f930e68bf",
+        "hour": "2026-09-25T04",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T05.deduped.jsonl.zst",
+        "rows_in": 868928,
+        "rows_out": 868928,
+        "duplicates_removed": 0,
+        "sha256": "483251b19e8d8cc374c67f5b8408de5a0d9bc0e570d8fba9f786a08714f7afdf",
+        "hour": "2026-09-25T05",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T05.deduped.jsonl.zst",
+        "rows_in": 950,
+        "rows_out": 950,
+        "duplicates_removed": 0,
+        "sha256": "5fee7a1b1e2e042ce3dae2f6221acef37cef57a484b095e98750cf8129f4a1d0",
+        "hour": "2026-09-25T05",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T05.deduped.jsonl.zst",
+        "rows_in": 43,
+        "rows_out": 43,
+        "duplicates_removed": 0,
+        "sha256": "bc1cfb338940fd2de8716b0bbd6678dc95a45bb004f7e584f52c547a4a2eb2ae",
+        "hour": "2026-09-25T05",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/trades/trades-2026-09-25T06.deduped.jsonl.zst",
+        "rows_in": 846014,
+        "rows_out": 846014,
+        "duplicates_removed": 0,
+        "sha256": "a7d174982f032bfcff7ce7a202317035660c5708c65405bbccf7eaa325584777",
+        "hour": "2026-09-25T06",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/creates/creates-2026-09-25T06.deduped.jsonl.zst",
+        "rows_in": 888,
+        "rows_out": 888,
+        "duplicates_removed": 0,
+        "sha256": "a96c692500fa6c69175ff2110e41a80cbd18a43665600360c8b1fd685002f02b",
+        "hour": "2026-09-25T06",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-insample-2026-09-22_25/migrations/migrations-2026-09-25T06.deduped.jsonl.zst",
+        "rows_in": 37,
+        "rows_out": 37,
+        "duplicates_removed": 0,
+        "sha256": "9f9fea9f2a131521f5b312dedba11d8e2659c803cfcf803d1fcc6d6ba688a4cb",
+        "hour": "2026-09-25T06",
+        "sub": "migrations"
+      }
+    ]
+  }
+}

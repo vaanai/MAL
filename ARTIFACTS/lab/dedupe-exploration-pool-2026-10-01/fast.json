@@ -1,0 +1,4844 @@
+{
+  "dir": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00",
+  "from": "2026-09-18T23",
+  "to_exclusive": "2026-09-22T00",
+  "hours_checked": 73,
+  "hours_flagged": 3,
+  "hours": [
+    {
+      "hour": "2026-09-18T23",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-18T23.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-18T23.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-18T23.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1057132,
+          "unique": 1057132,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1601,
+          "unique": 1601,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 54,
+          "unique": 54,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T00",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T00.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T00.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T00.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1015408,
+          "unique": 1015408,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1587,
+          "unique": 1587,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 61,
+          "unique": 61,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T01",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T01.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T01.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T01.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1044115,
+          "unique": 1044115,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1329,
+          "unique": 1329,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 62,
+          "unique": 62,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T02",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T02.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T02.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T02.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1130911,
+          "unique": 1130911,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1389,
+          "unique": 1389,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 61,
+          "unique": 61,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T03",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T03.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T03.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T03.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1084278,
+          "unique": 1084278,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1319,
+          "unique": 1319,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 44,
+          "unique": 44,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T04",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T04.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T04.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T04.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 960793,
+          "unique": 960793,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1125,
+          "unique": 1125,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 41,
+          "unique": 41,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T05",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T05.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T05.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T05.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 986927,
+          "unique": 986927,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1127,
+          "unique": 1127,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T06",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T06.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T06.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T06.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1000252,
+          "unique": 1000252,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 902,
+          "unique": 902,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 46,
+          "unique": 46,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T07",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T07.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T07.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T07.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 825335,
+          "unique": 825335,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 801,
+          "unique": 801,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 40,
+          "unique": 40,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T08",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T08.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T08.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T08.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 856630,
+          "unique": 856630,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1028,
+          "unique": 1028,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 38,
+          "unique": 38,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T09",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T09.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T09.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T09.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 916222,
+          "unique": 916222,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1058,
+          "unique": 1058,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 41,
+          "unique": 41,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T10",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T10.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T10.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T10.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 891512,
+          "unique": 891512,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 969,
+          "unique": 969,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 41,
+          "unique": 41,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T11",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T11.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T11.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T11.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 908618,
+          "unique": 908618,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 895,
+          "unique": 895,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 36,
+          "unique": 36,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T12",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T12.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T12.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T12.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1103185,
+          "unique": 1103185,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1150,
+          "unique": 1150,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 35,
+          "unique": 35,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T13",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T13.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T13.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T13.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1094645,
+          "unique": 1094645,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1488,
+          "unique": 1488,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 51,
+          "unique": 51,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T14",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T14.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T14.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T14.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1271032,
+          "unique": 1271032,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1526,
+          "unique": 1526,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T15",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T15.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T15.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T15.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1326257,
+          "unique": 1326257,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1393,
+          "unique": 1393,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 46,
+          "unique": 46,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T16",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T16.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T16.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T16.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [
+        "trades: 973996 duplicate rows",
+        "creates: 1128 duplicate rows",
+        "migrations: 37 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 2239050,
+          "unique": 1265054,
+          "duplicates": 973996
+        },
+        "creates": {
+          "rows": 2579,
+          "unique": 1451,
+          "duplicates": 1128
+        },
+        "migrations": {
+          "rows": 84,
+          "unique": 47,
+          "duplicates": 37
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T17",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T17.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T17.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T17.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [
+        "trades: 475686 duplicate rows",
+        "creates: 622 duplicate rows",
+        "migrations: 15 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1812648,
+          "unique": 1336962,
+          "duplicates": 475686
+        },
+        "creates": {
+          "rows": 2438,
+          "unique": 1816,
+          "duplicates": 622
+        },
+        "migrations": {
+          "rows": 67,
+          "unique": 52,
+          "duplicates": 15
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T18",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T18.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T18.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T18.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1370844,
+          "unique": 1370844,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1773,
+          "unique": 1773,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 66,
+          "unique": 66,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T19",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T19.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T19.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T19.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1342096,
+          "unique": 1342096,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1617,
+          "unique": 1617,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 73,
+          "unique": 73,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T20",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T20.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T20.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T20.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [
+        "trades: 1017727 duplicate rows",
+        "creates: 1350 duplicate rows",
+        "migrations: 45 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 2249408,
+          "unique": 1231681,
+          "duplicates": 1017727
+        },
+        "creates": {
+          "rows": 3025,
+          "unique": 1675,
+          "duplicates": 1350
+        },
+        "migrations": {
+          "rows": 103,
+          "unique": 58,
+          "duplicates": 45
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T21",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T21.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T21.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T21.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1210562,
+          "unique": 1210562,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1557,
+          "unique": 1557,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T22",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T22.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T22.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T22.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1155821,
+          "unique": 1155821,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1670,
+          "unique": 1670,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 54,
+          "unique": 54,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-19T23",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T23.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T23.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T23.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1045107,
+          "unique": 1045107,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1357,
+          "unique": 1357,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 44,
+          "unique": 44,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T00",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T00.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T00.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T00.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1045439,
+          "unique": 1045439,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1755,
+          "unique": 1755,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 45,
+          "unique": 45,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T01",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T01.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T01.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T01.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 964898,
+          "unique": 964898,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1243,
+          "unique": 1243,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 52,
+          "unique": 52,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T02",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T02.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T02.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T02.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1066216,
+          "unique": 1066216,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1015,
+          "unique": 1015,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 63,
+          "unique": 63,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T03",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T03.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T03.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T03.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1075673,
+          "unique": 1075673,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1016,
+          "unique": 1016,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 53,
+          "unique": 53,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T04",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T04.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T04.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T04.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 930452,
+          "unique": 930452,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 941,
+          "unique": 941,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 51,
+          "unique": 51,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T05",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T05.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T05.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T05.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 966916,
+          "unique": 966916,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 900,
+          "unique": 900,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T06",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T06.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T06.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T06.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 936485,
+          "unique": 936485,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 801,
+          "unique": 801,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 46,
+          "unique": 46,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T07",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T07.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T07.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T07.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 993231,
+          "unique": 993231,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 823,
+          "unique": 823,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 37,
+          "unique": 37,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T08",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T08.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T08.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T08.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1025319,
+          "unique": 1025319,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 794,
+          "unique": 794,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 42,
+          "unique": 42,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T09",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T09.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T09.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T09.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 882226,
+          "unique": 882226,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 827,
+          "unique": 827,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 50,
+          "unique": 50,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T10",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T10.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T10.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T10.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 913729,
+          "unique": 913729,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 811,
+          "unique": 811,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 38,
+          "unique": 38,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T11",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T11.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T11.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T11.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 888577,
+          "unique": 888577,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1011,
+          "unique": 1011,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 52,
+          "unique": 52,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T12",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T12.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T12.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T12.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 989163,
+          "unique": 989163,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 815,
+          "unique": 815,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 41,
+          "unique": 41,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T13",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T13.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T13.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T13.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1123233,
+          "unique": 1123233,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1158,
+          "unique": 1158,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T14",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T14.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T14.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T14.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1218166,
+          "unique": 1218166,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1410,
+          "unique": 1410,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 44,
+          "unique": 44,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T15",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T15.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T15.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T15.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1163706,
+          "unique": 1163706,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1497,
+          "unique": 1497,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T16",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T16.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T16.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T16.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1257572,
+          "unique": 1257572,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1468,
+          "unique": 1468,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 48,
+          "unique": 48,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T17",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T17.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T17.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T17.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1359903,
+          "unique": 1359903,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1682,
+          "unique": 1682,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 58,
+          "unique": 58,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T18",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T18.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T18.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T18.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1317228,
+          "unique": 1317228,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1478,
+          "unique": 1478,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 62,
+          "unique": 62,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T19",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T19.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T19.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T19.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1319432,
+          "unique": 1319432,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1538,
+          "unique": 1538,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 52,
+          "unique": 52,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T20",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T20.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T20.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T20.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1264388,
+          "unique": 1264388,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1952,
+          "unique": 1952,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 63,
+          "unique": 63,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T21",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T21.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T21.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T21.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1335273,
+          "unique": 1335273,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2159,
+          "unique": 2159,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 56,
+          "unique": 56,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T22",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T22.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T22.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T22.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1275979,
+          "unique": 1275979,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1879,
+          "unique": 1879,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 49,
+          "unique": 49,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-20T23",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T23.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T23.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T23.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1185847,
+          "unique": 1185847,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1798,
+          "unique": 1798,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 46,
+          "unique": 46,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T00",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T00.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T00.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T00.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1169201,
+          "unique": 1169201,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1863,
+          "unique": 1863,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 48,
+          "unique": 48,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T01",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T01.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T01.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T01.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 963990,
+          "unique": 963990,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1269,
+          "unique": 1269,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 49,
+          "unique": 49,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T02",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T02.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T02.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T02.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1118159,
+          "unique": 1118159,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1060,
+          "unique": 1060,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 58,
+          "unique": 58,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T03",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T03.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T03.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T03.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1027052,
+          "unique": 1027052,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1050,
+          "unique": 1050,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 62,
+          "unique": 62,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T04",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T04.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T04.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T04.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1009191,
+          "unique": 1009191,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1028,
+          "unique": 1028,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 44,
+          "unique": 44,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T05",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T05.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T05.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T05.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1070563,
+          "unique": 1070563,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 998,
+          "unique": 998,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 44,
+          "unique": 44,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T06",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T06.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T06.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T06.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1017060,
+          "unique": 1017060,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 848,
+          "unique": 848,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 36,
+          "unique": 36,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T07",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T07.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T07.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T07.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1006460,
+          "unique": 1006460,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 907,
+          "unique": 907,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 31,
+          "unique": 31,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T08",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T08.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T08.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T08.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 989475,
+          "unique": 989475,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 884,
+          "unique": 884,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 36,
+          "unique": 36,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T09",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T09.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T09.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T09.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 998050,
+          "unique": 998050,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 943,
+          "unique": 943,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 35,
+          "unique": 35,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T10",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T10.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T10.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T10.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 942444,
+          "unique": 942444,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1195,
+          "unique": 1195,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 31,
+          "unique": 31,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T11",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T11.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T11.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T11.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 960061,
+          "unique": 960061,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1175,
+          "unique": 1175,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 36,
+          "unique": 36,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T12",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T12.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T12.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T12.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1076779,
+          "unique": 1076779,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1456,
+          "unique": 1456,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 37,
+          "unique": 37,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T13",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T13.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T13.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T13.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1172624,
+          "unique": 1172624,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1524,
+          "unique": 1524,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 71,
+          "unique": 71,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T14",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T14.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T14.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T14.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1069330,
+          "unique": 1069330,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1931,
+          "unique": 1931,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 46,
+          "unique": 46,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T15",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T15.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T15.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T15.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1058104,
+          "unique": 1058104,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1889,
+          "unique": 1889,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 52,
+          "unique": 52,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T16",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T16.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T16.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T16.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1225825,
+          "unique": 1225825,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1784,
+          "unique": 1784,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 51,
+          "unique": 51,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T17",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T17.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T17.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T17.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1215672,
+          "unique": 1215672,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1749,
+          "unique": 1749,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 47,
+          "unique": 47,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T18",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T18.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T18.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T18.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1265932,
+          "unique": 1265932,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2197,
+          "unique": 2197,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 56,
+          "unique": 56,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T19",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T19.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T19.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T19.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1254073,
+          "unique": 1254073,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2024,
+          "unique": 2024,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 99,
+          "unique": 99,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T20",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T20.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T20.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T20.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1123889,
+          "unique": 1123889,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1750,
+          "unique": 1750,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 41,
+          "unique": 41,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T21",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T21.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T21.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T21.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1209546,
+          "unique": 1209546,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 2038,
+          "unique": 2038,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 52,
+          "unique": 52,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T22",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T22.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T22.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T22.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1207169,
+          "unique": 1207169,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1759,
+          "unique": 1759,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 45,
+          "unique": 45,
+          "duplicates": 0
+        }
+      }
+    },
+    {
+      "hour": "2026-09-21T23",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T23.jsonl.zst",
+        "creates": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T23.jsonl.zst",
+        "migrations": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T23.jsonl.zst"
+      },
+      "sealed": {
+        "trades": true,
+        "creates": true,
+        "migrations": true
+      },
+      "issues": [],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1059728,
+          "unique": 1059728,
+          "duplicates": 0
+        },
+        "creates": {
+          "rows": 1432,
+          "unique": 1432,
+          "duplicates": 0
+        },
+        "migrations": {
+          "rows": 74,
+          "unique": 74,
+          "duplicates": 0
+        }
+      }
+    }
+  ],
+  "dedupe": {
+    "manifest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/manifest.json",
+    "entries": [
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-18T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-18T23.deduped.jsonl.zst",
+        "rows_in": 1057132,
+        "rows_out": 1057132,
+        "duplicates_removed": 0,
+        "sha256": "446338ad1f077745125610d4c1aa2c275b61e5f2f6a018efe756635da9bea21d",
+        "hour": "2026-09-18T23",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-18T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-18T23.deduped.jsonl.zst",
+        "rows_in": 1601,
+        "rows_out": 1601,
+        "duplicates_removed": 0,
+        "sha256": "2dc40fa25caf988312621719702d7b91280e920004b8035abddb8c034ce49dc6",
+        "hour": "2026-09-18T23",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-18T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-18T23.deduped.jsonl.zst",
+        "rows_in": 54,
+        "rows_out": 54,
+        "duplicates_removed": 0,
+        "sha256": "d8eb7797a8ebfb2a514b714940684a07c141d66ba3f115e65d6e22ed41dc64af",
+        "hour": "2026-09-18T23",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T00.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T00.deduped.jsonl.zst",
+        "rows_in": 1015408,
+        "rows_out": 1015408,
+        "duplicates_removed": 0,
+        "sha256": "6ef7823db38cf595adde1dd1e74a0fb87e93d70d7266dee05c7aa523cfc5d0f7",
+        "hour": "2026-09-19T00",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T00.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T00.deduped.jsonl.zst",
+        "rows_in": 1587,
+        "rows_out": 1587,
+        "duplicates_removed": 0,
+        "sha256": "c308ed5d9429553089fdeb62eea2e50ac707c88f8090b42cdfffd0b11030d70c",
+        "hour": "2026-09-19T00",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T00.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T00.deduped.jsonl.zst",
+        "rows_in": 61,
+        "rows_out": 61,
+        "duplicates_removed": 0,
+        "sha256": "b66266d907d32c4d35117686e12d6d10151845766fef84761d863034061f66f2",
+        "hour": "2026-09-19T00",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T01.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T01.deduped.jsonl.zst",
+        "rows_in": 1044115,
+        "rows_out": 1044115,
+        "duplicates_removed": 0,
+        "sha256": "c4f3df774926d522f3bdbfb1700ba62bf33df0ebd8607b7a25dbd6824fcd41bb",
+        "hour": "2026-09-19T01",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T01.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T01.deduped.jsonl.zst",
+        "rows_in": 1329,
+        "rows_out": 1329,
+        "duplicates_removed": 0,
+        "sha256": "d7ad26f309d367c30fbc95f86d54b778f39bbf8158c0fdbc664e26d4e73ecb4c",
+        "hour": "2026-09-19T01",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T01.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T01.deduped.jsonl.zst",
+        "rows_in": 62,
+        "rows_out": 62,
+        "duplicates_removed": 0,
+        "sha256": "3b28eb2bd4de4bda024208d711ac7a32a2480a4d5aa9b44236b9ac70063a3de4",
+        "hour": "2026-09-19T01",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T02.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T02.deduped.jsonl.zst",
+        "rows_in": 1130911,
+        "rows_out": 1130911,
+        "duplicates_removed": 0,
+        "sha256": "b6c7621ca350fb5a99af5a15f23ed480f8039eaef1f4ac8f82200fe96670193b",
+        "hour": "2026-09-19T02",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T02.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T02.deduped.jsonl.zst",
+        "rows_in": 1389,
+        "rows_out": 1389,
+        "duplicates_removed": 0,
+        "sha256": "9eac4d740b5c431f025483f39146a526618c215b55f24c64d93e86487235352e",
+        "hour": "2026-09-19T02",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T02.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T02.deduped.jsonl.zst",
+        "rows_in": 61,
+        "rows_out": 61,
+        "duplicates_removed": 0,
+        "sha256": "c9cbbfedd881c1ced64a6937fafca945704945420be0aa4110d80df759fca820",
+        "hour": "2026-09-19T02",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T03.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T03.deduped.jsonl.zst",
+        "rows_in": 1084278,
+        "rows_out": 1084278,
+        "duplicates_removed": 0,
+        "sha256": "9eb42ff9f0c92d41cbe61abfc81f77d4cc2ee9851703464b5f98610189ba7327",
+        "hour": "2026-09-19T03",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T03.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T03.deduped.jsonl.zst",
+        "rows_in": 1319,
+        "rows_out": 1319,
+        "duplicates_removed": 0,
+        "sha256": "724f301eed03086cb37175cb7aca2a434e780e6e3621151c353c15b2acb85ee0",
+        "hour": "2026-09-19T03",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T03.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T03.deduped.jsonl.zst",
+        "rows_in": 44,
+        "rows_out": 44,
+        "duplicates_removed": 0,
+        "sha256": "93d0336b0f65f00ca6f9dc9ccef59a9abe8dcf6280b0c6783d874c830bd77a92",
+        "hour": "2026-09-19T03",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T04.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T04.deduped.jsonl.zst",
+        "rows_in": 960793,
+        "rows_out": 960793,
+        "duplicates_removed": 0,
+        "sha256": "39903fcddd91b5fe63df36d62a86a789250b42a163add99dbc03d8cd9c8da975",
+        "hour": "2026-09-19T04",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T04.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T04.deduped.jsonl.zst",
+        "rows_in": 1125,
+        "rows_out": 1125,
+        "duplicates_removed": 0,
+        "sha256": "06dff209910d36e3d7c1a8c7ed247598f4986370c310c333187a7044dbc43a19",
+        "hour": "2026-09-19T04",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T04.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T04.deduped.jsonl.zst",
+        "rows_in": 41,
+        "rows_out": 41,
+        "duplicates_removed": 0,
+        "sha256": "f3e85b604316e1b3659ed2abc9bff2e450804ada6998896efc4cf6c76f4aff88",
+        "hour": "2026-09-19T04",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T05.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T05.deduped.jsonl.zst",
+        "rows_in": 986927,
+        "rows_out": 986927,
+        "duplicates_removed": 0,
+        "sha256": "dc59e759d1fbf7c254e72e009fcf1751f1994beb033fed6bd23f74cc601ef5f4",
+        "hour": "2026-09-19T05",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T05.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T05.deduped.jsonl.zst",
+        "rows_in": 1127,
+        "rows_out": 1127,
+        "duplicates_removed": 0,
+        "sha256": "4679472563fcf9e079e2ca21ff8345c6d1a87951fcd4fcd1c5c1891102eea937",
+        "hour": "2026-09-19T05",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T05.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T05.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "33367133e289805ae9655a5195559b0dfc7de6bc909455ecec6afc82145ca4ee",
+        "hour": "2026-09-19T05",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T06.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T06.deduped.jsonl.zst",
+        "rows_in": 1000252,
+        "rows_out": 1000252,
+        "duplicates_removed": 0,
+        "sha256": "87c5af339888e7760e492d52caf90d9c2c000cc1e5b32c5e83ed755c15b8c37f",
+        "hour": "2026-09-19T06",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T06.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T06.deduped.jsonl.zst",
+        "rows_in": 902,
+        "rows_out": 902,
+        "duplicates_removed": 0,
+        "sha256": "e68452e8f91b12bf06683dde582b36ba8a7fa180fa08d2acd20dea879e6f06c3",
+        "hour": "2026-09-19T06",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T06.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T06.deduped.jsonl.zst",
+        "rows_in": 46,
+        "rows_out": 46,
+        "duplicates_removed": 0,
+        "sha256": "31c98f3c41281e18e7c949e0eee5ded8b6d33677466d1851f97a7d856de1ad00",
+        "hour": "2026-09-19T06",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T07.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T07.deduped.jsonl.zst",
+        "rows_in": 825335,
+        "rows_out": 825335,
+        "duplicates_removed": 0,
+        "sha256": "4d0440860cea6fea76a6296279f1f408b3a201273856db26205e2bfd0485c432",
+        "hour": "2026-09-19T07",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T07.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T07.deduped.jsonl.zst",
+        "rows_in": 801,
+        "rows_out": 801,
+        "duplicates_removed": 0,
+        "sha256": "2044a9cee132fca88d9c89ed45aeb2e638259930131b6e767bd7d6373a9d62f2",
+        "hour": "2026-09-19T07",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T07.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T07.deduped.jsonl.zst",
+        "rows_in": 40,
+        "rows_out": 40,
+        "duplicates_removed": 0,
+        "sha256": "51c578ce42c59f3935651ca6d650c9fa58cd5da53ae776d60e54068003e1414c",
+        "hour": "2026-09-19T07",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T08.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T08.deduped.jsonl.zst",
+        "rows_in": 856630,
+        "rows_out": 856630,
+        "duplicates_removed": 0,
+        "sha256": "1164427f03560efb19dbc89635a6675147f3fe27051128bee8306a997d25754b",
+        "hour": "2026-09-19T08",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T08.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T08.deduped.jsonl.zst",
+        "rows_in": 1028,
+        "rows_out": 1028,
+        "duplicates_removed": 0,
+        "sha256": "aec2c7a88fb4b961be776e1b08de5b3f0de99e5ae41b51dfb6c81175608dc162",
+        "hour": "2026-09-19T08",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T08.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T08.deduped.jsonl.zst",
+        "rows_in": 38,
+        "rows_out": 38,
+        "duplicates_removed": 0,
+        "sha256": "b894a73e50716301cf569e7ddc76b2222a5e6122e760b20fe451e5c2391b3610",
+        "hour": "2026-09-19T08",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T09.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T09.deduped.jsonl.zst",
+        "rows_in": 916222,
+        "rows_out": 916222,
+        "duplicates_removed": 0,
+        "sha256": "8e52e05ba16ef39641dd336caa297a1d8c231e2912dc97e679b6b2bb54f23d25",
+        "hour": "2026-09-19T09",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T09.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T09.deduped.jsonl.zst",
+        "rows_in": 1058,
+        "rows_out": 1058,
+        "duplicates_removed": 0,
+        "sha256": "2d3444e076ba12443197e84b176332b358330cc586995c199bc21d070fb00241",
+        "hour": "2026-09-19T09",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T09.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T09.deduped.jsonl.zst",
+        "rows_in": 41,
+        "rows_out": 41,
+        "duplicates_removed": 0,
+        "sha256": "05a53e73436e82b4ea8cf7ce1261c7e31c25042d77339fe019364406ae780a69",
+        "hour": "2026-09-19T09",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T10.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T10.deduped.jsonl.zst",
+        "rows_in": 891512,
+        "rows_out": 891512,
+        "duplicates_removed": 0,
+        "sha256": "56abdea05ae47dbc275033bb21deae9572a168215c759cc508fa23e1ea79177d",
+        "hour": "2026-09-19T10",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T10.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T10.deduped.jsonl.zst",
+        "rows_in": 969,
+        "rows_out": 969,
+        "duplicates_removed": 0,
+        "sha256": "7bd8a55d22dce60f813e3136cc302a3a82b09058274121673efd2d42008cdf0e",
+        "hour": "2026-09-19T10",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T10.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T10.deduped.jsonl.zst",
+        "rows_in": 41,
+        "rows_out": 41,
+        "duplicates_removed": 0,
+        "sha256": "a30b5107c5e0cbbdab29f693ad8c982f48aaf8b8ec1aa0284a9e39b41845a042",
+        "hour": "2026-09-19T10",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T11.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T11.deduped.jsonl.zst",
+        "rows_in": 908618,
+        "rows_out": 908618,
+        "duplicates_removed": 0,
+        "sha256": "383d19bbaa9fab0b7ea9e5cc9d5d21399613f39a371e06e27a9f67fbc6071f66",
+        "hour": "2026-09-19T11",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T11.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T11.deduped.jsonl.zst",
+        "rows_in": 895,
+        "rows_out": 895,
+        "duplicates_removed": 0,
+        "sha256": "2099efd71a580bf223f2cddc415d4bfafc247fc4bf2450e75dac267179ff10e1",
+        "hour": "2026-09-19T11",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T11.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T11.deduped.jsonl.zst",
+        "rows_in": 36,
+        "rows_out": 36,
+        "duplicates_removed": 0,
+        "sha256": "2bcc9bd842ea011df817a02853fb7061cb1882d760f57483a9374b256663df35",
+        "hour": "2026-09-19T11",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T12.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T12.deduped.jsonl.zst",
+        "rows_in": 1103185,
+        "rows_out": 1103185,
+        "duplicates_removed": 0,
+        "sha256": "3fa199ffb9147d394329b2ef54e90e243621f79abe6c1ad3d4f19459d3394cf3",
+        "hour": "2026-09-19T12",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T12.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T12.deduped.jsonl.zst",
+        "rows_in": 1150,
+        "rows_out": 1150,
+        "duplicates_removed": 0,
+        "sha256": "a1246e328313e2e48cbf98710ba4e2fc95ed0b7bb26e52249547cd8a0985376b",
+        "hour": "2026-09-19T12",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T12.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T12.deduped.jsonl.zst",
+        "rows_in": 35,
+        "rows_out": 35,
+        "duplicates_removed": 0,
+        "sha256": "16a2eeca2c4d3a1fad1cede8fc4dcf19261869aba3292e050b9387370e00ef2a",
+        "hour": "2026-09-19T12",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T13.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T13.deduped.jsonl.zst",
+        "rows_in": 1094645,
+        "rows_out": 1094645,
+        "duplicates_removed": 0,
+        "sha256": "a63735b30308d202fcada48afa09ec3f3bf929d79ee16310ebdad9b05abe9b4f",
+        "hour": "2026-09-19T13",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T13.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T13.deduped.jsonl.zst",
+        "rows_in": 1488,
+        "rows_out": 1488,
+        "duplicates_removed": 0,
+        "sha256": "f3874e978b8d6f76e2f5d734b201f91c6ab99ad33a1e1b9d837cb09b9208600a",
+        "hour": "2026-09-19T13",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T13.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T13.deduped.jsonl.zst",
+        "rows_in": 51,
+        "rows_out": 51,
+        "duplicates_removed": 0,
+        "sha256": "fd2f21066691df1e9f1c545f368b74c458399ec37521f43e8a9d97ffc92b668c",
+        "hour": "2026-09-19T13",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T14.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T14.deduped.jsonl.zst",
+        "rows_in": 1271032,
+        "rows_out": 1271032,
+        "duplicates_removed": 0,
+        "sha256": "4d326d596b13e01a90633ca120927f5a1228a0e0f0c7a45c01b84765ef42d467",
+        "hour": "2026-09-19T14",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T14.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T14.deduped.jsonl.zst",
+        "rows_in": 1526,
+        "rows_out": 1526,
+        "duplicates_removed": 0,
+        "sha256": "1e72efb93439d31abaaaf8f79c65400ed6777765577baba7a2f57d1ec758e2f7",
+        "hour": "2026-09-19T14",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T14.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T14.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "9c8d9f9b0c3affcdb031c63fca1ff1981f997efadcec8ef5ea09b83108d582d0",
+        "hour": "2026-09-19T14",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T15.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T15.deduped.jsonl.zst",
+        "rows_in": 1326257,
+        "rows_out": 1326257,
+        "duplicates_removed": 0,
+        "sha256": "26185fbcf7175db3d6e7869aa2117bb04443946413a3ad81da8a3159f6e3dfb1",
+        "hour": "2026-09-19T15",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T15.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T15.deduped.jsonl.zst",
+        "rows_in": 1393,
+        "rows_out": 1393,
+        "duplicates_removed": 0,
+        "sha256": "184b4575d819be0db73b180d08bda6361a41e84a24f1405017f15a7cebbed0e0",
+        "hour": "2026-09-19T15",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T15.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T15.deduped.jsonl.zst",
+        "rows_in": 46,
+        "rows_out": 46,
+        "duplicates_removed": 0,
+        "sha256": "d94489833c72d61479171ef726e86fe9e99b7a47b3128c802172e6def9804682",
+        "hour": "2026-09-19T15",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T16.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T16.deduped.jsonl.zst",
+        "rows_in": 2239050,
+        "rows_out": 1265054,
+        "duplicates_removed": 973996,
+        "sha256": "b2c3ebf0cf0a127eb83ee02ae22ba46cdcb8efe647ceb6e179efb1405030f531",
+        "hour": "2026-09-19T16",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T16.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T16.deduped.jsonl.zst",
+        "rows_in": 2579,
+        "rows_out": 1451,
+        "duplicates_removed": 1128,
+        "sha256": "de42e8d0aa2ba3eaff27f7d80cf24560f04402248253bbf72e439b05c47acb0c",
+        "hour": "2026-09-19T16",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T16.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T16.deduped.jsonl.zst",
+        "rows_in": 84,
+        "rows_out": 47,
+        "duplicates_removed": 37,
+        "sha256": "a292ba354239ea9a06e98a8fdc0341daf9fa6e0811fa4f449a24ae66891b3e68",
+        "hour": "2026-09-19T16",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T17.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T17.deduped.jsonl.zst",
+        "rows_in": 1812648,
+        "rows_out": 1336962,
+        "duplicates_removed": 475686,
+        "sha256": "ffc5955a48bf6ae72c158c6a678256f83bfc8b2b790c318940f59b04b7aff7ad",
+        "hour": "2026-09-19T17",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T17.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T17.deduped.jsonl.zst",
+        "rows_in": 2438,
+        "rows_out": 1816,
+        "duplicates_removed": 622,
+        "sha256": "03bd6d1cfa275415936f96323d5784763847a226153c3c3520b3b65762b9a858",
+        "hour": "2026-09-19T17",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T17.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T17.deduped.jsonl.zst",
+        "rows_in": 67,
+        "rows_out": 52,
+        "duplicates_removed": 15,
+        "sha256": "98c6e395064374c87c37bc026b3f77121812f951559eb30cd988740fdcc4d26d",
+        "hour": "2026-09-19T17",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T18.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T18.deduped.jsonl.zst",
+        "rows_in": 1370844,
+        "rows_out": 1370844,
+        "duplicates_removed": 0,
+        "sha256": "c0996d6200cd19ee9648a39faa334a1f33e60dffdb9e859dbc21c9eace47b3c7",
+        "hour": "2026-09-19T18",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T18.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T18.deduped.jsonl.zst",
+        "rows_in": 1773,
+        "rows_out": 1773,
+        "duplicates_removed": 0,
+        "sha256": "460ba1b4dc867a5bc9402e591ffb9e3d7537124644b8f17cfcaa5bc15b4a7078",
+        "hour": "2026-09-19T18",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T18.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T18.deduped.jsonl.zst",
+        "rows_in": 66,
+        "rows_out": 66,
+        "duplicates_removed": 0,
+        "sha256": "bb1505517ab2a3f0c6e79beccd5635faa487c26b5b083d2242cac5dc2ab934d2",
+        "hour": "2026-09-19T18",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T19.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T19.deduped.jsonl.zst",
+        "rows_in": 1342096,
+        "rows_out": 1342096,
+        "duplicates_removed": 0,
+        "sha256": "a33bdcd5ebe00fa129d22e7c11bb55314a89f1d1317b7716f76e23d4aa5aa607",
+        "hour": "2026-09-19T19",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T19.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T19.deduped.jsonl.zst",
+        "rows_in": 1617,
+        "rows_out": 1617,
+        "duplicates_removed": 0,
+        "sha256": "d2a538d55579f078d69faa8b096c9ec88805d0a46379c6ad14aa348b0bbf3cb4",
+        "hour": "2026-09-19T19",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T19.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T19.deduped.jsonl.zst",
+        "rows_in": 73,
+        "rows_out": 73,
+        "duplicates_removed": 0,
+        "sha256": "bb791f2ae652f517a02797e29d13f92b03f04c97ea37460dc775c9ad7bca1a11",
+        "hour": "2026-09-19T19",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T20.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T20.deduped.jsonl.zst",
+        "rows_in": 2249408,
+        "rows_out": 1231681,
+        "duplicates_removed": 1017727,
+        "sha256": "6e56cbede08b9ca316a45e1aaa513381bba0c3eebdf67ffc631d5ab1e080e7d1",
+        "hour": "2026-09-19T20",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T20.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T20.deduped.jsonl.zst",
+        "rows_in": 3025,
+        "rows_out": 1675,
+        "duplicates_removed": 1350,
+        "sha256": "55ebc1cdaf8a7e49be47a9e423ec144c57f8d451fe245863a6f961e22bf56028",
+        "hour": "2026-09-19T20",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T20.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T20.deduped.jsonl.zst",
+        "rows_in": 103,
+        "rows_out": 58,
+        "duplicates_removed": 45,
+        "sha256": "c415208d5d769975bbe301f3c9d6dfed007c40e6a5c9f9d5b04e4cf089bf853d",
+        "hour": "2026-09-19T20",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T21.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T21.deduped.jsonl.zst",
+        "rows_in": 1210562,
+        "rows_out": 1210562,
+        "duplicates_removed": 0,
+        "sha256": "98c281db44fcaadab93611730a7b06cc43848dbf5504d416607ee18eeb6b90ec",
+        "hour": "2026-09-19T21",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T21.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T21.deduped.jsonl.zst",
+        "rows_in": 1557,
+        "rows_out": 1557,
+        "duplicates_removed": 0,
+        "sha256": "e72d78783c5a02fec6a4b68f492fa52361565dc92c759f4060a8aa30ca9261a7",
+        "hour": "2026-09-19T21",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T21.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T21.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "0bcb1122722d195231473852e88d610355e702932eb2428467197be26c4f1285",
+        "hour": "2026-09-19T21",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T22.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T22.deduped.jsonl.zst",
+        "rows_in": 1155821,
+        "rows_out": 1155821,
+        "duplicates_removed": 0,
+        "sha256": "95067af57efe86ff0bd2e7f05dc897629ac7e973d50239ce3cfffdd539224f58",
+        "hour": "2026-09-19T22",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T22.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T22.deduped.jsonl.zst",
+        "rows_in": 1670,
+        "rows_out": 1670,
+        "duplicates_removed": 0,
+        "sha256": "02500f240a4d21307a128769f35f3c0948b208a646cecd12e9fe0fa519494ad5",
+        "hour": "2026-09-19T22",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T22.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T22.deduped.jsonl.zst",
+        "rows_in": 54,
+        "rows_out": 54,
+        "duplicates_removed": 0,
+        "sha256": "d5e39243e14b4565da2647cb244d372dbbfa413f54f41611384e13ece68dfaa4",
+        "hour": "2026-09-19T22",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-19T23.deduped.jsonl.zst",
+        "rows_in": 1045107,
+        "rows_out": 1045107,
+        "duplicates_removed": 0,
+        "sha256": "ea6c3ca3c7f133390984c18c1e06a5bc23e66e2545d6a463b954f452ec57e8d3",
+        "hour": "2026-09-19T23",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-19T23.deduped.jsonl.zst",
+        "rows_in": 1357,
+        "rows_out": 1357,
+        "duplicates_removed": 0,
+        "sha256": "31fad049160ce49e84844f4f86cb530fa45b9c13a057ea75c1c15de23de6dc90",
+        "hour": "2026-09-19T23",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-19T23.deduped.jsonl.zst",
+        "rows_in": 44,
+        "rows_out": 44,
+        "duplicates_removed": 0,
+        "sha256": "35a39a5764951eebd57adc092c99f20e159bb7214775a82d5b7a15e8a6116fd9",
+        "hour": "2026-09-19T23",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T00.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T00.deduped.jsonl.zst",
+        "rows_in": 1045439,
+        "rows_out": 1045439,
+        "duplicates_removed": 0,
+        "sha256": "32b1066f77168e1226c5d446e40c63b7415e9aa67801c5d77be73a3e4a9eecb2",
+        "hour": "2026-09-20T00",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T00.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T00.deduped.jsonl.zst",
+        "rows_in": 1755,
+        "rows_out": 1755,
+        "duplicates_removed": 0,
+        "sha256": "b7dfe667978edbe7724d48d37915b03e8014234abd8d41bf33207564d73ce696",
+        "hour": "2026-09-20T00",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T00.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T00.deduped.jsonl.zst",
+        "rows_in": 45,
+        "rows_out": 45,
+        "duplicates_removed": 0,
+        "sha256": "80ee50896c62042864374ebeea688dcef57eed11be116287ddf89ce5d67abbdd",
+        "hour": "2026-09-20T00",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T01.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T01.deduped.jsonl.zst",
+        "rows_in": 964898,
+        "rows_out": 964898,
+        "duplicates_removed": 0,
+        "sha256": "db4833ef13533d10621e60011fdabfda60507e1c95af1cc10368170e042cd82d",
+        "hour": "2026-09-20T01",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T01.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T01.deduped.jsonl.zst",
+        "rows_in": 1243,
+        "rows_out": 1243,
+        "duplicates_removed": 0,
+        "sha256": "faae1307919b4391b48972b5f6bbfad2066a19c24f40596b9ec585b3eb4a1385",
+        "hour": "2026-09-20T01",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T01.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T01.deduped.jsonl.zst",
+        "rows_in": 52,
+        "rows_out": 52,
+        "duplicates_removed": 0,
+        "sha256": "1deb87f20ec25f789e83a1f7ec2560a00bed40d8df61b675464690d58b0f82c4",
+        "hour": "2026-09-20T01",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T02.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T02.deduped.jsonl.zst",
+        "rows_in": 1066216,
+        "rows_out": 1066216,
+        "duplicates_removed": 0,
+        "sha256": "545cb588465068dbdc3653470ba3f94e7238515a1c68b3a1fc86de18058a4be4",
+        "hour": "2026-09-20T02",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T02.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T02.deduped.jsonl.zst",
+        "rows_in": 1015,
+        "rows_out": 1015,
+        "duplicates_removed": 0,
+        "sha256": "9f3c318a6c358def277968e1008fc5163cf4d6f7cf21ae954f1cd0e5637ab73a",
+        "hour": "2026-09-20T02",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T02.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T02.deduped.jsonl.zst",
+        "rows_in": 63,
+        "rows_out": 63,
+        "duplicates_removed": 0,
+        "sha256": "c91159950399f545f09981f2b0d2ce3cdacf79de3c2d12826c3580280cf92728",
+        "hour": "2026-09-20T02",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T03.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T03.deduped.jsonl.zst",
+        "rows_in": 1075673,
+        "rows_out": 1075673,
+        "duplicates_removed": 0,
+        "sha256": "dd28bd9dde3ef466e11d324c7ac94294899d1b5f84310b5ea974f07ea015f06c",
+        "hour": "2026-09-20T03",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T03.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T03.deduped.jsonl.zst",
+        "rows_in": 1016,
+        "rows_out": 1016,
+        "duplicates_removed": 0,
+        "sha256": "293c1952f0519a70dc3edebcee24ef2619b42d2d8b62c3812d3d49fda9af6aee",
+        "hour": "2026-09-20T03",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T03.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T03.deduped.jsonl.zst",
+        "rows_in": 53,
+        "rows_out": 53,
+        "duplicates_removed": 0,
+        "sha256": "ab8d14c491b562107c77d06f9f40136003c6e65c6de7e871d7462a8941e8770c",
+        "hour": "2026-09-20T03",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T04.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T04.deduped.jsonl.zst",
+        "rows_in": 930452,
+        "rows_out": 930452,
+        "duplicates_removed": 0,
+        "sha256": "de3fd121c78ffda951ee7cd11a693b0686225fa70c803af70b959d4ed036e46c",
+        "hour": "2026-09-20T04",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T04.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T04.deduped.jsonl.zst",
+        "rows_in": 941,
+        "rows_out": 941,
+        "duplicates_removed": 0,
+        "sha256": "bf54dc918e99a94b035f8665b815dc1dbcd17532d5e85de16a0d5a635a427bd5",
+        "hour": "2026-09-20T04",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T04.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T04.deduped.jsonl.zst",
+        "rows_in": 51,
+        "rows_out": 51,
+        "duplicates_removed": 0,
+        "sha256": "8da634b6e464386f9db0ed17a741eca8e546dc326752e0445a10b99ab2dc4eae",
+        "hour": "2026-09-20T04",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T05.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T05.deduped.jsonl.zst",
+        "rows_in": 966916,
+        "rows_out": 966916,
+        "duplicates_removed": 0,
+        "sha256": "c5508f27c559fb79d33adc27bca4dd2c3d23bf2d701a5dedc64ba0babc01174e",
+        "hour": "2026-09-20T05",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T05.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T05.deduped.jsonl.zst",
+        "rows_in": 900,
+        "rows_out": 900,
+        "duplicates_removed": 0,
+        "sha256": "b2f2b3a4503a2307aec309f198e5d2828539be5474e8f8f7f50b7b25bfa52546",
+        "hour": "2026-09-20T05",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T05.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T05.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "ab9ba23547a61c944e30c7eb36e3f538acb190bb9f436e406a0bc1a712f2dba5",
+        "hour": "2026-09-20T05",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T06.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T06.deduped.jsonl.zst",
+        "rows_in": 936485,
+        "rows_out": 936485,
+        "duplicates_removed": 0,
+        "sha256": "3b6bf733919be1655b2557ff059c593d888b0388c710810cfa11a09152e6e779",
+        "hour": "2026-09-20T06",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T06.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T06.deduped.jsonl.zst",
+        "rows_in": 801,
+        "rows_out": 801,
+        "duplicates_removed": 0,
+        "sha256": "1313ac2f722acf4395f38d40a90a35a0aacef6be1beccccb1bf91e3f40a63af6",
+        "hour": "2026-09-20T06",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T06.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T06.deduped.jsonl.zst",
+        "rows_in": 46,
+        "rows_out": 46,
+        "duplicates_removed": 0,
+        "sha256": "f9e14867d6a8fdb3303319c09a0c65dabf9874b69183e1872a2fce4a40bd5d96",
+        "hour": "2026-09-20T06",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T07.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T07.deduped.jsonl.zst",
+        "rows_in": 993231,
+        "rows_out": 993231,
+        "duplicates_removed": 0,
+        "sha256": "06e3e693a4d9a9b2cdcf9e2b388a86f8b651121d31e7aaf63feac25d96ed8f99",
+        "hour": "2026-09-20T07",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T07.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T07.deduped.jsonl.zst",
+        "rows_in": 823,
+        "rows_out": 823,
+        "duplicates_removed": 0,
+        "sha256": "ed443ae6130c3ae87fe028d4d472c4242859719c2a2ae0195fee31300916e234",
+        "hour": "2026-09-20T07",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T07.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T07.deduped.jsonl.zst",
+        "rows_in": 37,
+        "rows_out": 37,
+        "duplicates_removed": 0,
+        "sha256": "d9d7ff43f803277c929035c577608b350228f09916bacd287e6a96310ac34475",
+        "hour": "2026-09-20T07",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T08.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T08.deduped.jsonl.zst",
+        "rows_in": 1025319,
+        "rows_out": 1025319,
+        "duplicates_removed": 0,
+        "sha256": "7cd140929350d30ee6a024d75d873bf6bfc1006e328b0f0318235ba6f1a43b6b",
+        "hour": "2026-09-20T08",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T08.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T08.deduped.jsonl.zst",
+        "rows_in": 794,
+        "rows_out": 794,
+        "duplicates_removed": 0,
+        "sha256": "5283951acccc03664d3ee7f7697e604611099c0598d47d287599302d8a5f04ba",
+        "hour": "2026-09-20T08",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T08.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T08.deduped.jsonl.zst",
+        "rows_in": 42,
+        "rows_out": 42,
+        "duplicates_removed": 0,
+        "sha256": "3b9270bd26d6517c2ba819cd0e41204d863a769bfc359c35e485a81ed97d6e82",
+        "hour": "2026-09-20T08",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T09.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T09.deduped.jsonl.zst",
+        "rows_in": 882226,
+        "rows_out": 882226,
+        "duplicates_removed": 0,
+        "sha256": "28d9949b903ef37b5ca0d084aa3cd117120b91b61f441573345a46e6861e66c0",
+        "hour": "2026-09-20T09",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T09.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T09.deduped.jsonl.zst",
+        "rows_in": 827,
+        "rows_out": 827,
+        "duplicates_removed": 0,
+        "sha256": "fdd491886f253d4d2b31641778ec4a95b6dbd054293be7a24643593c81d79b5a",
+        "hour": "2026-09-20T09",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T09.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T09.deduped.jsonl.zst",
+        "rows_in": 50,
+        "rows_out": 50,
+        "duplicates_removed": 0,
+        "sha256": "b03136d0ee6d620ca9a53f7df3316b2cddce909531cddf75c720ab9d46912f9a",
+        "hour": "2026-09-20T09",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T10.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T10.deduped.jsonl.zst",
+        "rows_in": 913729,
+        "rows_out": 913729,
+        "duplicates_removed": 0,
+        "sha256": "d597b441b2fca0380da4470108453c9fead109ce92aabeab43ea506b1506f0e0",
+        "hour": "2026-09-20T10",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T10.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T10.deduped.jsonl.zst",
+        "rows_in": 811,
+        "rows_out": 811,
+        "duplicates_removed": 0,
+        "sha256": "e50d029e45b20c68ec5c9fa26728a2fda6d2a8551df1a34269373af1fc68ac40",
+        "hour": "2026-09-20T10",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T10.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T10.deduped.jsonl.zst",
+        "rows_in": 38,
+        "rows_out": 38,
+        "duplicates_removed": 0,
+        "sha256": "fb1a1fb3fdb20fd813be06130248e0a77f36af8abf0cd4438270c566891586eb",
+        "hour": "2026-09-20T10",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T11.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T11.deduped.jsonl.zst",
+        "rows_in": 888577,
+        "rows_out": 888577,
+        "duplicates_removed": 0,
+        "sha256": "1fe14f47bba3c480e01303e8cb2dcdcd35e9ec3f87ca3b948da4b7c780081594",
+        "hour": "2026-09-20T11",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T11.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T11.deduped.jsonl.zst",
+        "rows_in": 1011,
+        "rows_out": 1011,
+        "duplicates_removed": 0,
+        "sha256": "0253af46194ab8373bbb2f5fad75ba84b7f5603d0e1487b1f3a1f50f8e98584c",
+        "hour": "2026-09-20T11",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T11.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T11.deduped.jsonl.zst",
+        "rows_in": 52,
+        "rows_out": 52,
+        "duplicates_removed": 0,
+        "sha256": "3d6b7885ce5baf458cfcd25760938bff02c0b1b9e0e838186fdfeb41edc738be",
+        "hour": "2026-09-20T11",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T12.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T12.deduped.jsonl.zst",
+        "rows_in": 989163,
+        "rows_out": 989163,
+        "duplicates_removed": 0,
+        "sha256": "3f3acd2610b47de51765900223125c138406b05439c3587687d3647900030c10",
+        "hour": "2026-09-20T12",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T12.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T12.deduped.jsonl.zst",
+        "rows_in": 815,
+        "rows_out": 815,
+        "duplicates_removed": 0,
+        "sha256": "56e2b0c799986d4c4937df20e54ea09dce629b961e50414634499356087a1cbe",
+        "hour": "2026-09-20T12",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T12.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T12.deduped.jsonl.zst",
+        "rows_in": 41,
+        "rows_out": 41,
+        "duplicates_removed": 0,
+        "sha256": "ea93b71ed30452328446518974bef277252963014b46a203ef6874e2da196328",
+        "hour": "2026-09-20T12",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T13.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T13.deduped.jsonl.zst",
+        "rows_in": 1123233,
+        "rows_out": 1123233,
+        "duplicates_removed": 0,
+        "sha256": "21d61c7ac2d5c1bc158119a64771a0eef4c3dd355367fe1a641b10bb52028054",
+        "hour": "2026-09-20T13",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T13.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T13.deduped.jsonl.zst",
+        "rows_in": 1158,
+        "rows_out": 1158,
+        "duplicates_removed": 0,
+        "sha256": "7dc4b6173efca1fde902c0e4c9bae412844980a9485e36ea917d9bf15337c9ae",
+        "hour": "2026-09-20T13",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T13.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T13.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "ebc1cbc126d730fe27e30f5f9f344f7b26b2352c85cb45471756c9511fb1e0aa",
+        "hour": "2026-09-20T13",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T14.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T14.deduped.jsonl.zst",
+        "rows_in": 1218166,
+        "rows_out": 1218166,
+        "duplicates_removed": 0,
+        "sha256": "0cc28f5228eda4f4192b8da3d4dadc94b02f1e29ce0779dc3b59f69e0b4018f5",
+        "hour": "2026-09-20T14",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T14.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T14.deduped.jsonl.zst",
+        "rows_in": 1410,
+        "rows_out": 1410,
+        "duplicates_removed": 0,
+        "sha256": "b2daa6f31edba03efcaee844c280c08f9c6b54dba24e50914c1f3dd0f35db665",
+        "hour": "2026-09-20T14",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T14.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T14.deduped.jsonl.zst",
+        "rows_in": 44,
+        "rows_out": 44,
+        "duplicates_removed": 0,
+        "sha256": "0f58d6ae4cba13a72f4a3b6629ad7205fca0a5fee2db7f5d7eb4ee1d189a1f76",
+        "hour": "2026-09-20T14",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T15.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T15.deduped.jsonl.zst",
+        "rows_in": 1163706,
+        "rows_out": 1163706,
+        "duplicates_removed": 0,
+        "sha256": "e11914a8b6dc6ff49d63ea88758e3cfec1a9796a2376e6059fffb432e77f468d",
+        "hour": "2026-09-20T15",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T15.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T15.deduped.jsonl.zst",
+        "rows_in": 1497,
+        "rows_out": 1497,
+        "duplicates_removed": 0,
+        "sha256": "dc67a2dc2028ced8dc7fda846db12a5a0905545fa0c7bd552320030af78f5397",
+        "hour": "2026-09-20T15",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T15.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T15.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "8fdf4ccdbef2b2e7a6d538cbe7c503d40e85c436a815afaabf27e01428b94860",
+        "hour": "2026-09-20T15",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T16.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T16.deduped.jsonl.zst",
+        "rows_in": 1257572,
+        "rows_out": 1257572,
+        "duplicates_removed": 0,
+        "sha256": "34522343577df5f17714f6392704897a7b58b265c71664e1662897cbf8b67f47",
+        "hour": "2026-09-20T16",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T16.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T16.deduped.jsonl.zst",
+        "rows_in": 1468,
+        "rows_out": 1468,
+        "duplicates_removed": 0,
+        "sha256": "84c8b26fa69672a1144ac769fb25ea1662a0b3f353685cc6a4da05ec88b76581",
+        "hour": "2026-09-20T16",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T16.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T16.deduped.jsonl.zst",
+        "rows_in": 48,
+        "rows_out": 48,
+        "duplicates_removed": 0,
+        "sha256": "02b77c43eec7820116b1a8551602b30bdb7f1e4a529aecc5c796f59ce0bd76f5",
+        "hour": "2026-09-20T16",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T17.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T17.deduped.jsonl.zst",
+        "rows_in": 1359903,
+        "rows_out": 1359903,
+        "duplicates_removed": 0,
+        "sha256": "693bde11836ea6596c0183f589c32d549472884741cf0cbe13d06cf59be36c1b",
+        "hour": "2026-09-20T17",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T17.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T17.deduped.jsonl.zst",
+        "rows_in": 1682,
+        "rows_out": 1682,
+        "duplicates_removed": 0,
+        "sha256": "3ab77bf31a817feda5c7ac03ee7e499f0c538adc900a8077f7c56ccf92b593a1",
+        "hour": "2026-09-20T17",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T17.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T17.deduped.jsonl.zst",
+        "rows_in": 58,
+        "rows_out": 58,
+        "duplicates_removed": 0,
+        "sha256": "cb82cc654b88929eaeb50a3a2db9ef2ed03ef76894db19af500749eb70cb02f2",
+        "hour": "2026-09-20T17",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T18.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T18.deduped.jsonl.zst",
+        "rows_in": 1317228,
+        "rows_out": 1317228,
+        "duplicates_removed": 0,
+        "sha256": "b2e1666e206360e6fe56f9718569f9fc78d6a0cd70fbc877f630b190c3c2ab74",
+        "hour": "2026-09-20T18",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T18.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T18.deduped.jsonl.zst",
+        "rows_in": 1478,
+        "rows_out": 1478,
+        "duplicates_removed": 0,
+        "sha256": "3251fcd294a7efdc57366cd39ec77c8ee9a1186d17659002e12f2820bdd30ad0",
+        "hour": "2026-09-20T18",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T18.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T18.deduped.jsonl.zst",
+        "rows_in": 62,
+        "rows_out": 62,
+        "duplicates_removed": 0,
+        "sha256": "596b2f54242217ee96dc37fa87a6eef745421655a22ff6cb38470ca133246178",
+        "hour": "2026-09-20T18",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T19.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T19.deduped.jsonl.zst",
+        "rows_in": 1319432,
+        "rows_out": 1319432,
+        "duplicates_removed": 0,
+        "sha256": "2156a354f9837e638805a8316de623a8bd80915689518d6194b4ae02665469cd",
+        "hour": "2026-09-20T19",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T19.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T19.deduped.jsonl.zst",
+        "rows_in": 1538,
+        "rows_out": 1538,
+        "duplicates_removed": 0,
+        "sha256": "e62b7d497be9af246f8358addf56bd8d8905957ad055be11a7dcdd285e2f30f2",
+        "hour": "2026-09-20T19",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T19.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T19.deduped.jsonl.zst",
+        "rows_in": 52,
+        "rows_out": 52,
+        "duplicates_removed": 0,
+        "sha256": "23f1da83ab6dd1c6b28fb5cbb84ed234e6b3822babc9b42ab532037ec11146e9",
+        "hour": "2026-09-20T19",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T20.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T20.deduped.jsonl.zst",
+        "rows_in": 1264388,
+        "rows_out": 1264388,
+        "duplicates_removed": 0,
+        "sha256": "368ce1418b90638f84418cf7877da57d1ab4229421c004d9797ede75cadac707",
+        "hour": "2026-09-20T20",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T20.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T20.deduped.jsonl.zst",
+        "rows_in": 1952,
+        "rows_out": 1952,
+        "duplicates_removed": 0,
+        "sha256": "afcebf1b4ada0f45a94436f8315214956294ac2c133946a4dd1f382e9885475f",
+        "hour": "2026-09-20T20",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T20.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T20.deduped.jsonl.zst",
+        "rows_in": 63,
+        "rows_out": 63,
+        "duplicates_removed": 0,
+        "sha256": "fab1da374cca807d47d62c241d1122bed44845fed3cede56c1f6fa592e386e5b",
+        "hour": "2026-09-20T20",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T21.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T21.deduped.jsonl.zst",
+        "rows_in": 1335273,
+        "rows_out": 1335273,
+        "duplicates_removed": 0,
+        "sha256": "0230d1b9752c69d430516fe177b31452dcb4b5fb348a1abc9d48158a4930656b",
+        "hour": "2026-09-20T21",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T21.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T21.deduped.jsonl.zst",
+        "rows_in": 2159,
+        "rows_out": 2159,
+        "duplicates_removed": 0,
+        "sha256": "5cac382e0e743752c1c378019b01f3b15da6043885404d59aeea0a28ce6676a3",
+        "hour": "2026-09-20T21",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T21.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T21.deduped.jsonl.zst",
+        "rows_in": 56,
+        "rows_out": 56,
+        "duplicates_removed": 0,
+        "sha256": "6aaef1d4def20dd6f9f456e98f12c51fa24dc47b0d1bfc97360a03846adcbef2",
+        "hour": "2026-09-20T21",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T22.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T22.deduped.jsonl.zst",
+        "rows_in": 1275979,
+        "rows_out": 1275979,
+        "duplicates_removed": 0,
+        "sha256": "4e56eb8245dec69b11eadf0df8e3cb3b778af8e8b79809551e3756a9ba54ecb7",
+        "hour": "2026-09-20T22",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T22.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T22.deduped.jsonl.zst",
+        "rows_in": 1879,
+        "rows_out": 1879,
+        "duplicates_removed": 0,
+        "sha256": "c0023fcc2813054ade5e6a5358c29e4e81884de98e967f668541c909fbe4a557",
+        "hour": "2026-09-20T22",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T22.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T22.deduped.jsonl.zst",
+        "rows_in": 49,
+        "rows_out": 49,
+        "duplicates_removed": 0,
+        "sha256": "db984ff7760470de2198bb6cb1925428f9b6cb7709ae2626309f057a90dd9386",
+        "hour": "2026-09-20T22",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-20T23.deduped.jsonl.zst",
+        "rows_in": 1185847,
+        "rows_out": 1185847,
+        "duplicates_removed": 0,
+        "sha256": "dec4610f3d74e64ae1570d4f8ab71bb453d73144447a31e9d6e9aefa71c98dc2",
+        "hour": "2026-09-20T23",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-20T23.deduped.jsonl.zst",
+        "rows_in": 1798,
+        "rows_out": 1798,
+        "duplicates_removed": 0,
+        "sha256": "70f99b5990dea69970c3dc820bc57d26762866741800fdc2abb0d9709940fa37",
+        "hour": "2026-09-20T23",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-20T23.deduped.jsonl.zst",
+        "rows_in": 46,
+        "rows_out": 46,
+        "duplicates_removed": 0,
+        "sha256": "768d23157f0ca5e9322cb3b62a61def54ba1507cb9a8c091433170b2f84b03b1",
+        "hour": "2026-09-20T23",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T00.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T00.deduped.jsonl.zst",
+        "rows_in": 1169201,
+        "rows_out": 1169201,
+        "duplicates_removed": 0,
+        "sha256": "7783be7d6330949c34b974752b1d3e71e2af166c0be66151ddd5af0cb459d20a",
+        "hour": "2026-09-21T00",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T00.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T00.deduped.jsonl.zst",
+        "rows_in": 1863,
+        "rows_out": 1863,
+        "duplicates_removed": 0,
+        "sha256": "bee7f915dc988a21f2208e9bbffadbf8606d3617ebc7d4ffbf6dfcef4d733095",
+        "hour": "2026-09-21T00",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T00.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T00.deduped.jsonl.zst",
+        "rows_in": 48,
+        "rows_out": 48,
+        "duplicates_removed": 0,
+        "sha256": "a7828f931013c05735a3d1255dbc9282232fb8b4f4dd0fecc1197f9a9b613a38",
+        "hour": "2026-09-21T00",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T01.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T01.deduped.jsonl.zst",
+        "rows_in": 963990,
+        "rows_out": 963990,
+        "duplicates_removed": 0,
+        "sha256": "b0550834c0bacae98f2620988007bf763a3bdae34c1fe50b48baf709314ad058",
+        "hour": "2026-09-21T01",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T01.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T01.deduped.jsonl.zst",
+        "rows_in": 1269,
+        "rows_out": 1269,
+        "duplicates_removed": 0,
+        "sha256": "9dc5ab3352967bb835d65195d01610067de961204f204938730bab6aa313d2af",
+        "hour": "2026-09-21T01",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T01.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T01.deduped.jsonl.zst",
+        "rows_in": 49,
+        "rows_out": 49,
+        "duplicates_removed": 0,
+        "sha256": "f7b7c72e1b46be55618d5aa4096e3b87e5082326276358aa3bd14a29afe412cd",
+        "hour": "2026-09-21T01",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T02.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T02.deduped.jsonl.zst",
+        "rows_in": 1118159,
+        "rows_out": 1118159,
+        "duplicates_removed": 0,
+        "sha256": "0f1163cded6abbcb44b241f3e45d21af755426df4913652fd44631cb1b365bcd",
+        "hour": "2026-09-21T02",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T02.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T02.deduped.jsonl.zst",
+        "rows_in": 1060,
+        "rows_out": 1060,
+        "duplicates_removed": 0,
+        "sha256": "b9835c70add3d119222f29daadf54cfbf31daf87887dfaaf5e404547a3291f1b",
+        "hour": "2026-09-21T02",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T02.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T02.deduped.jsonl.zst",
+        "rows_in": 58,
+        "rows_out": 58,
+        "duplicates_removed": 0,
+        "sha256": "245b9757c0abf8f28303879ad27a2da26622578c032c2bb5c4b983ee2fffe2fb",
+        "hour": "2026-09-21T02",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T03.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T03.deduped.jsonl.zst",
+        "rows_in": 1027052,
+        "rows_out": 1027052,
+        "duplicates_removed": 0,
+        "sha256": "89f93b19d55e2b8963b2b50c6a9dcf71b31f1c650793b2e338ed90e0346dd8c7",
+        "hour": "2026-09-21T03",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T03.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T03.deduped.jsonl.zst",
+        "rows_in": 1050,
+        "rows_out": 1050,
+        "duplicates_removed": 0,
+        "sha256": "ae87c09eb662aa80e5cab58031e1dfa64ec5261dddf32fb28dd1f353e43f3e98",
+        "hour": "2026-09-21T03",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T03.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T03.deduped.jsonl.zst",
+        "rows_in": 62,
+        "rows_out": 62,
+        "duplicates_removed": 0,
+        "sha256": "5f4b2011dc0eaefa47e89b183a74782a6319b9c65a49d2a1abc045379ff55956",
+        "hour": "2026-09-21T03",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T04.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T04.deduped.jsonl.zst",
+        "rows_in": 1009191,
+        "rows_out": 1009191,
+        "duplicates_removed": 0,
+        "sha256": "2e9d323a20874f57eb9b7fd9a0badddcf09be57814770fd8212bf35d02895721",
+        "hour": "2026-09-21T04",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T04.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T04.deduped.jsonl.zst",
+        "rows_in": 1028,
+        "rows_out": 1028,
+        "duplicates_removed": 0,
+        "sha256": "c6a91e2c62ac304b23298f32992af67b1188c3ff17d709832d150c2548f0e9b3",
+        "hour": "2026-09-21T04",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T04.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T04.deduped.jsonl.zst",
+        "rows_in": 44,
+        "rows_out": 44,
+        "duplicates_removed": 0,
+        "sha256": "143e0d2a145e862ac9522c16e66ae4021f3229d538a710831937a3228be1ad35",
+        "hour": "2026-09-21T04",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T05.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T05.deduped.jsonl.zst",
+        "rows_in": 1070563,
+        "rows_out": 1070563,
+        "duplicates_removed": 0,
+        "sha256": "0e057a886ad7199fdf948f724e3e13161f9994ad348788f68c477313fbb7c805",
+        "hour": "2026-09-21T05",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T05.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T05.deduped.jsonl.zst",
+        "rows_in": 998,
+        "rows_out": 998,
+        "duplicates_removed": 0,
+        "sha256": "8ee0835aeb81e1c1a59597f9de4e848dba802d2669a02508d6adfbef683daa40",
+        "hour": "2026-09-21T05",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T05.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T05.deduped.jsonl.zst",
+        "rows_in": 44,
+        "rows_out": 44,
+        "duplicates_removed": 0,
+        "sha256": "41d78d43b609f9a2ee83495bbacf4dc1568c22c93d55c0eb46a088fb8a3981c0",
+        "hour": "2026-09-21T05",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T06.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T06.deduped.jsonl.zst",
+        "rows_in": 1017060,
+        "rows_out": 1017060,
+        "duplicates_removed": 0,
+        "sha256": "91a60c87f21f247dfd80b7b12797d5c58d9d5672d223b411bdf52a9f5667ff24",
+        "hour": "2026-09-21T06",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T06.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T06.deduped.jsonl.zst",
+        "rows_in": 848,
+        "rows_out": 848,
+        "duplicates_removed": 0,
+        "sha256": "4762680b62b7ada44de549b7b61e1ddd07268b597c61215e7cf2e2cb5f6f134a",
+        "hour": "2026-09-21T06",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T06.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T06.deduped.jsonl.zst",
+        "rows_in": 36,
+        "rows_out": 36,
+        "duplicates_removed": 0,
+        "sha256": "f8db44047d91c977974976cf004fc96a06103ae19f3585edb41597625da92587",
+        "hour": "2026-09-21T06",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T07.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T07.deduped.jsonl.zst",
+        "rows_in": 1006460,
+        "rows_out": 1006460,
+        "duplicates_removed": 0,
+        "sha256": "32bd80ec14bb5ef1bac233571f6d915f88885687bb1f17b7b0eb00f887bf8fd4",
+        "hour": "2026-09-21T07",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T07.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T07.deduped.jsonl.zst",
+        "rows_in": 907,
+        "rows_out": 907,
+        "duplicates_removed": 0,
+        "sha256": "ac2d6ee6c5556c971d731847341e3100aaa1f9a1bf31a4d686e0b0027ef0df24",
+        "hour": "2026-09-21T07",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T07.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T07.deduped.jsonl.zst",
+        "rows_in": 31,
+        "rows_out": 31,
+        "duplicates_removed": 0,
+        "sha256": "0ea936dedecaa1220bdd0198187bfb5d393b6a43a4cb8b4beaa3f3cf91ccf8c8",
+        "hour": "2026-09-21T07",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T08.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T08.deduped.jsonl.zst",
+        "rows_in": 989475,
+        "rows_out": 989475,
+        "duplicates_removed": 0,
+        "sha256": "5fca27f3aaf4438c136695b10238a675d2fd04a60bcf04bf3b6efe41b3dff762",
+        "hour": "2026-09-21T08",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T08.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T08.deduped.jsonl.zst",
+        "rows_in": 884,
+        "rows_out": 884,
+        "duplicates_removed": 0,
+        "sha256": "0fef07bd27953c838e56acab92aa95f2f6acb83058626c8561a091dcdd837ffe",
+        "hour": "2026-09-21T08",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T08.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T08.deduped.jsonl.zst",
+        "rows_in": 36,
+        "rows_out": 36,
+        "duplicates_removed": 0,
+        "sha256": "ba0261c6e11792148696f2684c2d545d9bcb137c68fea292a4f20737f25454b4",
+        "hour": "2026-09-21T08",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T09.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T09.deduped.jsonl.zst",
+        "rows_in": 998050,
+        "rows_out": 998050,
+        "duplicates_removed": 0,
+        "sha256": "44736aae636957eceb2b0290ca190725b414a730bfe0bb2a1aa0b20e607d4160",
+        "hour": "2026-09-21T09",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T09.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T09.deduped.jsonl.zst",
+        "rows_in": 943,
+        "rows_out": 943,
+        "duplicates_removed": 0,
+        "sha256": "60eb0d4784a8752a993c4de0b560a9bf4e7146c8a00432d4c1a22e3d75754de3",
+        "hour": "2026-09-21T09",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T09.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T09.deduped.jsonl.zst",
+        "rows_in": 35,
+        "rows_out": 35,
+        "duplicates_removed": 0,
+        "sha256": "0c6648d3be89d6961066c7d81a949fa0f362ffb9e222b541a735766751f5239a",
+        "hour": "2026-09-21T09",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T10.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T10.deduped.jsonl.zst",
+        "rows_in": 942444,
+        "rows_out": 942444,
+        "duplicates_removed": 0,
+        "sha256": "ebe33ea7d2ca3ba9bb16d17dabef22eab30c54b1e327789bd85aa31f93116946",
+        "hour": "2026-09-21T10",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T10.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T10.deduped.jsonl.zst",
+        "rows_in": 1195,
+        "rows_out": 1195,
+        "duplicates_removed": 0,
+        "sha256": "0db12ad135c263bac4a010a0c5ae1db848790580643d141b93f4c3557111dc9e",
+        "hour": "2026-09-21T10",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T10.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T10.deduped.jsonl.zst",
+        "rows_in": 31,
+        "rows_out": 31,
+        "duplicates_removed": 0,
+        "sha256": "4adf894bf915b8563bc590634e8094a727d7735a8d8ac8b3a39672a2b112669c",
+        "hour": "2026-09-21T10",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T11.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T11.deduped.jsonl.zst",
+        "rows_in": 960061,
+        "rows_out": 960061,
+        "duplicates_removed": 0,
+        "sha256": "bb4bd9bbcabfe05532afed1f7cf3627b2698b5350c27ab3ca43531409aeea747",
+        "hour": "2026-09-21T11",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T11.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T11.deduped.jsonl.zst",
+        "rows_in": 1175,
+        "rows_out": 1175,
+        "duplicates_removed": 0,
+        "sha256": "f8a5a64a6735e805a61892a066f0e861c81b41e00495e5c575e55cfbc1acc25e",
+        "hour": "2026-09-21T11",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T11.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T11.deduped.jsonl.zst",
+        "rows_in": 36,
+        "rows_out": 36,
+        "duplicates_removed": 0,
+        "sha256": "da5fc9d367e85115968292c646cef67ac49285b910ca11b287f8dd64e4be818c",
+        "hour": "2026-09-21T11",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T12.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T12.deduped.jsonl.zst",
+        "rows_in": 1076779,
+        "rows_out": 1076779,
+        "duplicates_removed": 0,
+        "sha256": "0b23451289e675094a8fb076302df15f887798cc5e799cd607c4b72799ccde4a",
+        "hour": "2026-09-21T12",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T12.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T12.deduped.jsonl.zst",
+        "rows_in": 1456,
+        "rows_out": 1456,
+        "duplicates_removed": 0,
+        "sha256": "25f72691fd9dd16c0824d822b8c43b88b4ce7e459213e0a328572a5916808a59",
+        "hour": "2026-09-21T12",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T12.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T12.deduped.jsonl.zst",
+        "rows_in": 37,
+        "rows_out": 37,
+        "duplicates_removed": 0,
+        "sha256": "9180f3c76094441d1e8d6a72ca7a6f53360c1ebaa7562e6375971a95422d4c6f",
+        "hour": "2026-09-21T12",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T13.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T13.deduped.jsonl.zst",
+        "rows_in": 1172624,
+        "rows_out": 1172624,
+        "duplicates_removed": 0,
+        "sha256": "44efe493ec71bfacc4398b598dd2473004e4624bd66fe809b14489dbecc1f0e1",
+        "hour": "2026-09-21T13",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T13.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T13.deduped.jsonl.zst",
+        "rows_in": 1524,
+        "rows_out": 1524,
+        "duplicates_removed": 0,
+        "sha256": "2654fbb074184a6928d5acfed917d76f05864b9124b90c08687b628dea71611e",
+        "hour": "2026-09-21T13",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T13.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T13.deduped.jsonl.zst",
+        "rows_in": 71,
+        "rows_out": 71,
+        "duplicates_removed": 0,
+        "sha256": "96238ebe48529e4f67856b0293c231820b909d3e6be5228b90e028d7617e6847",
+        "hour": "2026-09-21T13",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T14.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T14.deduped.jsonl.zst",
+        "rows_in": 1069330,
+        "rows_out": 1069330,
+        "duplicates_removed": 0,
+        "sha256": "a0982e3eb81687d4503797e677a48c6f49d29f9816cd58d9d7238bef6b938b80",
+        "hour": "2026-09-21T14",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T14.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T14.deduped.jsonl.zst",
+        "rows_in": 1931,
+        "rows_out": 1931,
+        "duplicates_removed": 0,
+        "sha256": "1994cf5f7dce3e576f395bc74425c0b088386d418ec629dbe2bf49409a9751f2",
+        "hour": "2026-09-21T14",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T14.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T14.deduped.jsonl.zst",
+        "rows_in": 46,
+        "rows_out": 46,
+        "duplicates_removed": 0,
+        "sha256": "69a184b8a3e9309b207df27fe83081c7809a9f67c1d8684d6cd4c59ac2dcc1e2",
+        "hour": "2026-09-21T14",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T15.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T15.deduped.jsonl.zst",
+        "rows_in": 1058104,
+        "rows_out": 1058104,
+        "duplicates_removed": 0,
+        "sha256": "c45eba70a770fa211ac39b7bb453fcfe55ab52c1ae70cdea22b2227b90a65b19",
+        "hour": "2026-09-21T15",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T15.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T15.deduped.jsonl.zst",
+        "rows_in": 1889,
+        "rows_out": 1889,
+        "duplicates_removed": 0,
+        "sha256": "81d9ca0b18038e46bd00e8491654fc6ed38497c9138ab1ea0c4e299a66f45fb1",
+        "hour": "2026-09-21T15",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T15.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T15.deduped.jsonl.zst",
+        "rows_in": 52,
+        "rows_out": 52,
+        "duplicates_removed": 0,
+        "sha256": "a112eb5b042b0966c54b5d335dc5e84999ed432b64d03601b86bcf0bc2544c23",
+        "hour": "2026-09-21T15",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T16.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T16.deduped.jsonl.zst",
+        "rows_in": 1225825,
+        "rows_out": 1225825,
+        "duplicates_removed": 0,
+        "sha256": "caf819903bd09ffb04282c78f4ba809ddb22a0ffcdde77a966255ba7ffcb8832",
+        "hour": "2026-09-21T16",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T16.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T16.deduped.jsonl.zst",
+        "rows_in": 1784,
+        "rows_out": 1784,
+        "duplicates_removed": 0,
+        "sha256": "fca7b451640358584a50c90075e6dba82ac44745c5094afa3eb003f73c47d7b7",
+        "hour": "2026-09-21T16",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T16.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T16.deduped.jsonl.zst",
+        "rows_in": 51,
+        "rows_out": 51,
+        "duplicates_removed": 0,
+        "sha256": "dd17ee78248662d4e09af8c9c238351ca47db6f4a6a88fff6c6ae88f7a22f591",
+        "hour": "2026-09-21T16",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T17.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T17.deduped.jsonl.zst",
+        "rows_in": 1215672,
+        "rows_out": 1215672,
+        "duplicates_removed": 0,
+        "sha256": "bd4c520e56bcaedf05916501e46e82d1dfecfcf2cf50e422577bac9fd5d7f44c",
+        "hour": "2026-09-21T17",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T17.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T17.deduped.jsonl.zst",
+        "rows_in": 1749,
+        "rows_out": 1749,
+        "duplicates_removed": 0,
+        "sha256": "1e53edccf120048efc83e21a0cd3d7f556dedbbbd0292e67468ef07d470fed23",
+        "hour": "2026-09-21T17",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T17.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T17.deduped.jsonl.zst",
+        "rows_in": 47,
+        "rows_out": 47,
+        "duplicates_removed": 0,
+        "sha256": "0963d88515b7933281e1dc9d68402b3df1e5def0353b46d8ed8845debe1127f9",
+        "hour": "2026-09-21T17",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T18.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T18.deduped.jsonl.zst",
+        "rows_in": 1265932,
+        "rows_out": 1265932,
+        "duplicates_removed": 0,
+        "sha256": "af79572347d1d0916cfb7a94c7b8618b63dfeee88e6c1b497872889a3a605442",
+        "hour": "2026-09-21T18",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T18.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T18.deduped.jsonl.zst",
+        "rows_in": 2197,
+        "rows_out": 2197,
+        "duplicates_removed": 0,
+        "sha256": "00e2e7a8526ee631d7c9651b8899b9bd43b341501f7aabd9d256c0949137b229",
+        "hour": "2026-09-21T18",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T18.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T18.deduped.jsonl.zst",
+        "rows_in": 56,
+        "rows_out": 56,
+        "duplicates_removed": 0,
+        "sha256": "f2e3c6390aff7ca0d9f396d6a384d5949b4ac7cf9aacc1a527e67e49b9e293c8",
+        "hour": "2026-09-21T18",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T19.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T19.deduped.jsonl.zst",
+        "rows_in": 1254073,
+        "rows_out": 1254073,
+        "duplicates_removed": 0,
+        "sha256": "eea0ba2079add224f3faf1dd31c0d2c72ba67dd058a787f2825e023115efa3ef",
+        "hour": "2026-09-21T19",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T19.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T19.deduped.jsonl.zst",
+        "rows_in": 2024,
+        "rows_out": 2024,
+        "duplicates_removed": 0,
+        "sha256": "e005fe5a0ca6312ca2439058ac41aec7ae9fd0091876bd90af496b4746a6672f",
+        "hour": "2026-09-21T19",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T19.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T19.deduped.jsonl.zst",
+        "rows_in": 99,
+        "rows_out": 99,
+        "duplicates_removed": 0,
+        "sha256": "fa80cd75c41167a25b78e2d44610cd13b5b56cdda2d2181b0b4c3a3a58fb5b18",
+        "hour": "2026-09-21T19",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T20.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T20.deduped.jsonl.zst",
+        "rows_in": 1123889,
+        "rows_out": 1123889,
+        "duplicates_removed": 0,
+        "sha256": "17e9ff64bef12afa8e29a1663e09b4d9554adf28b6992b8a31a61d83da882122",
+        "hour": "2026-09-21T20",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T20.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T20.deduped.jsonl.zst",
+        "rows_in": 1750,
+        "rows_out": 1750,
+        "duplicates_removed": 0,
+        "sha256": "a7609aa9b726e8b42f4d80a097ac21a1e18211fef3310dbdaa962f18b5ffced2",
+        "hour": "2026-09-21T20",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T20.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T20.deduped.jsonl.zst",
+        "rows_in": 41,
+        "rows_out": 41,
+        "duplicates_removed": 0,
+        "sha256": "fe6b5af118c7f525e106bbd061cb1ec64efc6b3bf1b803f942828e90b4126094",
+        "hour": "2026-09-21T20",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T21.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T21.deduped.jsonl.zst",
+        "rows_in": 1209546,
+        "rows_out": 1209546,
+        "duplicates_removed": 0,
+        "sha256": "ec7525773ae7f2c5cdee8d7a6fb3df91a1e8531db098eff2b78f58cb994c7cf6",
+        "hour": "2026-09-21T21",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T21.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T21.deduped.jsonl.zst",
+        "rows_in": 2038,
+        "rows_out": 2038,
+        "duplicates_removed": 0,
+        "sha256": "91c5bd12c081eb7a27b1051c228fe9a9716c99e6d73428a5cccfd367527e8f26",
+        "hour": "2026-09-21T21",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T21.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T21.deduped.jsonl.zst",
+        "rows_in": 52,
+        "rows_out": 52,
+        "duplicates_removed": 0,
+        "sha256": "06288a0835dab457b93f6a20cf108daa4fa42bb319fb14d03bd56459e90bd1ae",
+        "hour": "2026-09-21T21",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T22.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T22.deduped.jsonl.zst",
+        "rows_in": 1207169,
+        "rows_out": 1207169,
+        "duplicates_removed": 0,
+        "sha256": "db1daac9ee9aed67e16f99683530d4a259395e8069929bd28b8b831077c6fa44",
+        "hour": "2026-09-21T22",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T22.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T22.deduped.jsonl.zst",
+        "rows_in": 1759,
+        "rows_out": 1759,
+        "duplicates_removed": 0,
+        "sha256": "5743ba5dc15e942630f2352a930f46154b4bf634feb37e460fb11b430be4d9e5",
+        "hour": "2026-09-21T22",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T22.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T22.deduped.jsonl.zst",
+        "rows_in": 45,
+        "rows_out": 45,
+        "duplicates_removed": 0,
+        "sha256": "06b60afa9ae77f42720620b252531967b60071b9ac65064b90d5d04f0233db91",
+        "hour": "2026-09-21T22",
+        "sub": "migrations"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/trades/trades-2026-09-21T23.deduped.jsonl.zst",
+        "rows_in": 1059728,
+        "rows_out": 1059728,
+        "duplicates_removed": 0,
+        "sha256": "d6f254796fd34a063d7dcd034e6aeda89812427cb9a6e166407191902edbcde8",
+        "hour": "2026-09-21T23",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/creates/creates-2026-09-21T23.deduped.jsonl.zst",
+        "rows_in": 1432,
+        "rows_out": 1432,
+        "duplicates_removed": 0,
+        "sha256": "8dfc31acb2795e7a4e52e1c5547ae605748a3e4e8efb30116b8e9eede5746b4e",
+        "hour": "2026-09-21T23",
+        "sub": "creates"
+      },
+      {
+        "source": "/data/mal/raw/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T23.jsonl.zst",
+        "dest": "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00/migrations/migrations-2026-09-21T23.deduped.jsonl.zst",
+        "rows_in": 74,
+        "rows_out": 74,
+        "duplicates_removed": 0,
+        "sha256": "1d2d2b1f87fc8a513a6333994653b033150459863efb3875f2c4bd57ed51522e",
+        "hour": "2026-09-21T23",
+        "sub": "migrations"
+      }
+    ]
+  }
+}

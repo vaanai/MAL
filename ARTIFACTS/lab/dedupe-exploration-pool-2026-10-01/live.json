@@ -1,0 +1,2484 @@
+{
+  "dir": "/data/mal/raw/oracle-live-2026-09-25_27",
+  "from": "2026-09-25T07",
+  "to_exclusive": "2026-09-28T00",
+  "hours_checked": 65,
+  "hours_flagged": 65,
+  "hours": [
+    {
+      "hour": "2026-09-25T07",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T07.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 5 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 186682,
+          "unique": 186677,
+          "duplicates": 5
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T08",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T08.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 35 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 923622,
+          "unique": 923587,
+          "duplicates": 35
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T09",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T09.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 27 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 891081,
+          "unique": 891054,
+          "duplicates": 27
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T10",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T10.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 25 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 907236,
+          "unique": 907211,
+          "duplicates": 25
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T11",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T11.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 29 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 822209,
+          "unique": 822180,
+          "duplicates": 29
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T12",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T12.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 89 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 854432,
+          "unique": 854343,
+          "duplicates": 89
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T13",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T13.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 41 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1000827,
+          "unique": 1000786,
+          "duplicates": 41
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T14",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T14.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 149 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1035058,
+          "unique": 1034909,
+          "duplicates": 149
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T15",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T15.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 98 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 963682,
+          "unique": 963584,
+          "duplicates": 98
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T16",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T16.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 135 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1026001,
+          "unique": 1025866,
+          "duplicates": 135
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T17",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T17.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 205 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1013780,
+          "unique": 1013575,
+          "duplicates": 205
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T18",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T18.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 74 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1046717,
+          "unique": 1046643,
+          "duplicates": 74
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T19",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T19.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 76 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1054947,
+          "unique": 1054871,
+          "duplicates": 76
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T20",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T20.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 166 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1005961,
+          "unique": 1005795,
+          "duplicates": 166
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T21",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T21.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 326 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 914462,
+          "unique": 914136,
+          "duplicates": 326
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T22",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T22.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 110 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 981982,
+          "unique": 981872,
+          "duplicates": 110
+        }
+      }
+    },
+    {
+      "hour": "2026-09-25T23",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T23.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 27 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 360305,
+          "unique": 360278,
+          "duplicates": 27
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T00",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T00.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 188 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 604113,
+          "unique": 603925,
+          "duplicates": 188
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T01",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T01.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 149 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 570550,
+          "unique": 570401,
+          "duplicates": 149
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T02",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T02.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 167 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 714042,
+          "unique": 713875,
+          "duplicates": 167
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T03",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T03.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 89 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 769068,
+          "unique": 768979,
+          "duplicates": 89
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T04",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T04.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 67 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 911452,
+          "unique": 911385,
+          "duplicates": 67
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T05",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T05.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 60 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 934864,
+          "unique": 934804,
+          "duplicates": 60
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T06",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T06.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 53 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 910039,
+          "unique": 909986,
+          "duplicates": 53
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T07",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T07.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 11 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 988406,
+          "unique": 988395,
+          "duplicates": 11
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T08",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T08.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 15 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 881096,
+          "unique": 881081,
+          "duplicates": 15
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T09",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T09.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 26 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 926851,
+          "unique": 926825,
+          "duplicates": 26
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T10",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T10.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 34 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 920541,
+          "unique": 920507,
+          "duplicates": 34
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T11",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T11.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 20 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 934400,
+          "unique": 934380,
+          "duplicates": 20
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T12",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T12.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 24 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 900197,
+          "unique": 900173,
+          "duplicates": 24
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T13",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T13.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 20 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 999729,
+          "unique": 999709,
+          "duplicates": 20
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T14",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T14.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 223 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 993256,
+          "unique": 993033,
+          "duplicates": 223
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T15",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T15.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 106 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1023166,
+          "unique": 1023060,
+          "duplicates": 106
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T16",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T16.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 92 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 998589,
+          "unique": 998497,
+          "duplicates": 92
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T17",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T17.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 73 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 942889,
+          "unique": 942816,
+          "duplicates": 73
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T18",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T18.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 98 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 880752,
+          "unique": 880654,
+          "duplicates": 98
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T19",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T19.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 44 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 853185,
+          "unique": 853141,
+          "duplicates": 44
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T20",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T20.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 51 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 966317,
+          "unique": 966266,
+          "duplicates": 51
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T21",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T21.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 123 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 863130,
+          "unique": 863007,
+          "duplicates": 123
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T22",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T22.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 47 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 961276,
+          "unique": 961229,
+          "duplicates": 47
+        }
+      }
+    },
+    {
+      "hour": "2026-09-26T23",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T23.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 77 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 946707,
+          "unique": 946630,
+          "duplicates": 77
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T00",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T00.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 98 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1016577,
+          "unique": 1016479,
+          "duplicates": 98
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T01",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T01.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 42 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 982390,
+          "unique": 982348,
+          "duplicates": 42
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T02",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T02.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 20 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1086852,
+          "unique": 1086832,
+          "duplicates": 20
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T03",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T03.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 30 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 955948,
+          "unique": 955918,
+          "duplicates": 30
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T04",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T04.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 14 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 959844,
+          "unique": 959830,
+          "duplicates": 14
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T05",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T05.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 32 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 953345,
+          "unique": 953313,
+          "duplicates": 32
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T06",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T06.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 18 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 921995,
+          "unique": 921977,
+          "duplicates": 18
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T07",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T07.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 18 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 880866,
+          "unique": 880848,
+          "duplicates": 18
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T08",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T08.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 12 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 863172,
+          "unique": 863160,
+          "duplicates": 12
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T09",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T09.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 33 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 864895,
+          "unique": 864862,
+          "duplicates": 33
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T10",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T10.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 30 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 899030,
+          "unique": 899000,
+          "duplicates": 30
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T11",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T11.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 44 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 762193,
+          "unique": 762149,
+          "duplicates": 44
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T12",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T12.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 54 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 864170,
+          "unique": 864116,
+          "duplicates": 54
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T13",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T13.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 42 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1100762,
+          "unique": 1100720,
+          "duplicates": 42
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T14",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T14.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 65 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1238654,
+          "unique": 1238589,
+          "duplicates": 65
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T15",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T15.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 117 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1191987,
+          "unique": 1191870,
+          "duplicates": 117
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T16",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T16.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 63 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1103415,
+          "unique": 1103352,
+          "duplicates": 63
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T17",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T17.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 150 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1059101,
+          "unique": 1058951,
+          "duplicates": 150
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T18",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T18.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 130 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1177151,
+          "unique": 1177021,
+          "duplicates": 130
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T19",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T19.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 79 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1055559,
+          "unique": 1055480,
+          "duplicates": 79
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T20",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T20.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 61 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 978730,
+          "unique": 978669,
+          "duplicates": 61
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T21",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T21.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 57 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1099301,
+          "unique": 1099244,
+          "duplicates": 57
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T22",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T22.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 24 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 963250,
+          "unique": 963226,
+          "duplicates": 24
+        }
+      }
+    },
+    {
+      "hour": "2026-09-27T23",
+      "checkpoint_status": "unknown",
+      "stats_present": false,
+      "files": {
+        "trades": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T23.jsonl.zst",
+        "creates": null,
+        "migrations": null
+      },
+      "sealed": {
+        "trades": true,
+        "creates": false,
+        "migrations": false
+      },
+      "issues": [
+        "trades: 23 duplicate rows"
+      ],
+      "start_slot": null,
+      "end_slot": null,
+      "slots_done": null,
+      "content": {
+        "trades": {
+          "rows": 1031470,
+          "unique": 1031447,
+          "duplicates": 23
+        }
+      }
+    }
+  ],
+  "dedupe": {
+    "manifest": "/data/mal/clean/oracle-live-2026-09-25_27/manifest.json",
+    "entries": [
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T07.deduped.jsonl.zst",
+        "rows_in": 186682,
+        "rows_out": 186677,
+        "duplicates_removed": 5,
+        "sha256": "bd05a2c6101fdb4d1c7c0189632d832ef5c006082c8564d56aff5f229144a5b0",
+        "hour": "2026-09-25T07",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T08.deduped.jsonl.zst",
+        "rows_in": 923622,
+        "rows_out": 923587,
+        "duplicates_removed": 35,
+        "sha256": "df17294ddbd51aca8e0fa6fefebeadbba9ec30e07d88b270a46a75bd0a8ac9bf",
+        "hour": "2026-09-25T08",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T09.deduped.jsonl.zst",
+        "rows_in": 891081,
+        "rows_out": 891054,
+        "duplicates_removed": 27,
+        "sha256": "6458147cf3ddd28b716aea3cc5b957d482e1608c26a9ceb78bb73089a6f31c41",
+        "hour": "2026-09-25T09",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T10.deduped.jsonl.zst",
+        "rows_in": 907236,
+        "rows_out": 907211,
+        "duplicates_removed": 25,
+        "sha256": "eb098f7b5d49bac846c1da9a8c5307152f24af98f6a905683c7ec6f33f44bbdd",
+        "hour": "2026-09-25T10",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T11.deduped.jsonl.zst",
+        "rows_in": 822209,
+        "rows_out": 822180,
+        "duplicates_removed": 29,
+        "sha256": "e24e9970a397819052f65c76a5be8aa09eade342bde84a972df04581da58daab",
+        "hour": "2026-09-25T11",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T12.deduped.jsonl.zst",
+        "rows_in": 854432,
+        "rows_out": 854343,
+        "duplicates_removed": 89,
+        "sha256": "658b77d7f64fa7747f5ca9ec1f755084661ea43817ed625159d5375c36bb792d",
+        "hour": "2026-09-25T12",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T13.deduped.jsonl.zst",
+        "rows_in": 1000827,
+        "rows_out": 1000786,
+        "duplicates_removed": 41,
+        "sha256": "6fbf118ce37eeb5363ef592d59e7dc661efd85e819d8ba3c4e5f2b75965db2be",
+        "hour": "2026-09-25T13",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T14.deduped.jsonl.zst",
+        "rows_in": 1035058,
+        "rows_out": 1034909,
+        "duplicates_removed": 149,
+        "sha256": "e61efbffb887adee8bc059bfe21a26bb63eb88393ffa0e759b8561af40d9a77c",
+        "hour": "2026-09-25T14",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T15.deduped.jsonl.zst",
+        "rows_in": 963682,
+        "rows_out": 963584,
+        "duplicates_removed": 98,
+        "sha256": "034b5499dd043832738852defd87f6960a7cbd0bb5351c6cc9e74d889aae5036",
+        "hour": "2026-09-25T15",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T16.deduped.jsonl.zst",
+        "rows_in": 1026001,
+        "rows_out": 1025866,
+        "duplicates_removed": 135,
+        "sha256": "a3f8a47f5df78237d9192f3863e76eaf6086facc9e5380766d1b3f6dc35ca34a",
+        "hour": "2026-09-25T16",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T17.deduped.jsonl.zst",
+        "rows_in": 1013780,
+        "rows_out": 1013575,
+        "duplicates_removed": 205,
+        "sha256": "7d2054e0d58bc59fbc426592d4d256b1fc2dab6851d602b454f0ccb515bae105",
+        "hour": "2026-09-25T17",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T18.deduped.jsonl.zst",
+        "rows_in": 1046717,
+        "rows_out": 1046643,
+        "duplicates_removed": 74,
+        "sha256": "5d12f239c80d240be420d571e77cdbdea28db11b51b2991963fe4e4eb958d10a",
+        "hour": "2026-09-25T18",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T19.deduped.jsonl.zst",
+        "rows_in": 1054947,
+        "rows_out": 1054871,
+        "duplicates_removed": 76,
+        "sha256": "3dfd5973c9fd9bd95ccd4ff99bd18c6fce978d23d8b1c68c652299a665a04e60",
+        "hour": "2026-09-25T19",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T20.deduped.jsonl.zst",
+        "rows_in": 1005961,
+        "rows_out": 1005795,
+        "duplicates_removed": 166,
+        "sha256": "55c1e1877b320ec593e865f44b11862ce1cc560a4d29c2d49225d81163ea36ea",
+        "hour": "2026-09-25T20",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T21.deduped.jsonl.zst",
+        "rows_in": 914462,
+        "rows_out": 914136,
+        "duplicates_removed": 326,
+        "sha256": "01d032c5685c0561a1a1518c71b073f47115ee43c6d1557b441ec37ad5dc1277",
+        "hour": "2026-09-25T21",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T22.deduped.jsonl.zst",
+        "rows_in": 981982,
+        "rows_out": 981872,
+        "duplicates_removed": 110,
+        "sha256": "a28b56f19f2bf3abaca4458ed55e75d2ba21007067f412ad744c38de06ab6fee",
+        "hour": "2026-09-25T22",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-25T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-25T23.deduped.jsonl.zst",
+        "rows_in": 360305,
+        "rows_out": 360278,
+        "duplicates_removed": 27,
+        "sha256": "22b48eea11becd7682feb60c022af81bd044e675851092aab7e24efa7763f447",
+        "hour": "2026-09-25T23",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T00.deduped.jsonl.zst",
+        "rows_in": 604113,
+        "rows_out": 603925,
+        "duplicates_removed": 188,
+        "sha256": "7741d71583c5d1caf2d5ec15ff155b3fc1ad495a96b7251a06277d6748bb95d0",
+        "hour": "2026-09-26T00",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T01.deduped.jsonl.zst",
+        "rows_in": 570550,
+        "rows_out": 570401,
+        "duplicates_removed": 149,
+        "sha256": "2b7ab082d7673a8c7a2c42c7b4def9f3e6cd870798a80c5f318190b06ac38b78",
+        "hour": "2026-09-26T01",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T02.deduped.jsonl.zst",
+        "rows_in": 714042,
+        "rows_out": 713875,
+        "duplicates_removed": 167,
+        "sha256": "33142d8cb7aa69099e7854dd32bb06f78a938c36bd240b8fe51fe67d4b07ca96",
+        "hour": "2026-09-26T02",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T03.deduped.jsonl.zst",
+        "rows_in": 769068,
+        "rows_out": 768979,
+        "duplicates_removed": 89,
+        "sha256": "7f94a049768bb17f8c4f52d10ee9feec15f9f2a1912c4e8f3692ec39988e5676",
+        "hour": "2026-09-26T03",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T04.deduped.jsonl.zst",
+        "rows_in": 911452,
+        "rows_out": 911385,
+        "duplicates_removed": 67,
+        "sha256": "cda660eed85b90aeb7f7274f392942dc8ddb250b3cd773f96b9dade81ab78d4f",
+        "hour": "2026-09-26T04",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T05.deduped.jsonl.zst",
+        "rows_in": 934864,
+        "rows_out": 934804,
+        "duplicates_removed": 60,
+        "sha256": "970f78b9e6a023b0750b32094da8a85aee328bfad09428033cc492aa09663843",
+        "hour": "2026-09-26T05",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T06.deduped.jsonl.zst",
+        "rows_in": 910039,
+        "rows_out": 909986,
+        "duplicates_removed": 53,
+        "sha256": "83d473a968684ddc9f07c420d1a9955300010cc8d6a912f4bb5cad982494e35d",
+        "hour": "2026-09-26T06",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T07.deduped.jsonl.zst",
+        "rows_in": 988406,
+        "rows_out": 988395,
+        "duplicates_removed": 11,
+        "sha256": "54d2313611df72a9e5264ebef859421415c5e6fa6d825d51d1668047de3b0cd8",
+        "hour": "2026-09-26T07",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T08.deduped.jsonl.zst",
+        "rows_in": 881096,
+        "rows_out": 881081,
+        "duplicates_removed": 15,
+        "sha256": "9e599605f313fabbb3304368b31325b2a5633d0eed7fcd3888f02995f9a2b34d",
+        "hour": "2026-09-26T08",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T09.deduped.jsonl.zst",
+        "rows_in": 926851,
+        "rows_out": 926825,
+        "duplicates_removed": 26,
+        "sha256": "85f4423e75290ef3775ab99b19b03a4e08e0e0590af05fd09f9b0fe06d7eee64",
+        "hour": "2026-09-26T09",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T10.deduped.jsonl.zst",
+        "rows_in": 920541,
+        "rows_out": 920507,
+        "duplicates_removed": 34,
+        "sha256": "279aebc4cd0795257741a934826cc6ebefd92af3f3d4b3f431962ae566eea312",
+        "hour": "2026-09-26T10",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T11.deduped.jsonl.zst",
+        "rows_in": 934400,
+        "rows_out": 934380,
+        "duplicates_removed": 20,
+        "sha256": "1db47849b644852e16a56762e6855cd536883f9e5db36a3bd446a00c0a4fd42d",
+        "hour": "2026-09-26T11",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T12.deduped.jsonl.zst",
+        "rows_in": 900197,
+        "rows_out": 900173,
+        "duplicates_removed": 24,
+        "sha256": "b922e1cface82da13e493e7db6274ddbccba00ec2dd4fb066ae3de4ba7c6fd84",
+        "hour": "2026-09-26T12",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T13.deduped.jsonl.zst",
+        "rows_in": 999729,
+        "rows_out": 999709,
+        "duplicates_removed": 20,
+        "sha256": "eefac6b76fa7402dc0bfd4f511dd455c597370076cc6458d9c4e73b63876784b",
+        "hour": "2026-09-26T13",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T14.deduped.jsonl.zst",
+        "rows_in": 993256,
+        "rows_out": 993033,
+        "duplicates_removed": 223,
+        "sha256": "f1b2e37cc5023adb2b87ddfb7173964a014ff604c30f018faed6b050b682a6f1",
+        "hour": "2026-09-26T14",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T15.deduped.jsonl.zst",
+        "rows_in": 1023166,
+        "rows_out": 1023060,
+        "duplicates_removed": 106,
+        "sha256": "e3488cb4d3efa146c583d66c6f3e608bcba81eb91d57619d36f6d9fc668ff336",
+        "hour": "2026-09-26T15",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T16.deduped.jsonl.zst",
+        "rows_in": 998589,
+        "rows_out": 998497,
+        "duplicates_removed": 92,
+        "sha256": "cc3d9f49323e2c3e82d540121da2f094c468abcefe96249bdf6b693f7d99bff3",
+        "hour": "2026-09-26T16",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T17.deduped.jsonl.zst",
+        "rows_in": 942889,
+        "rows_out": 942816,
+        "duplicates_removed": 73,
+        "sha256": "1df61c7416b9a6bf5dca3b5e6bc4e8143f7fa15bd3d37815cc8cf8ee66a98709",
+        "hour": "2026-09-26T17",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T18.deduped.jsonl.zst",
+        "rows_in": 880752,
+        "rows_out": 880654,
+        "duplicates_removed": 98,
+        "sha256": "df7ceeb031bcd8f3570f80102b3b2db0873984646337974502b5e9038ad3cb78",
+        "hour": "2026-09-26T18",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T19.deduped.jsonl.zst",
+        "rows_in": 853185,
+        "rows_out": 853141,
+        "duplicates_removed": 44,
+        "sha256": "bbd6925d0eee4030d672d13e8df16ced92445f3ee027ae94821809e9707007d3",
+        "hour": "2026-09-26T19",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T20.deduped.jsonl.zst",
+        "rows_in": 966317,
+        "rows_out": 966266,
+        "duplicates_removed": 51,
+        "sha256": "5813e4938e15fd213b2013191e36d968ddb710fb48276fe5bd058a4821a15a11",
+        "hour": "2026-09-26T20",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T21.deduped.jsonl.zst",
+        "rows_in": 863130,
+        "rows_out": 863007,
+        "duplicates_removed": 123,
+        "sha256": "3fbd0e6f35e5c863f649a2f623ca8d0920641e188ec71bdc221570f5d7f6b981",
+        "hour": "2026-09-26T21",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T22.deduped.jsonl.zst",
+        "rows_in": 961276,
+        "rows_out": 961229,
+        "duplicates_removed": 47,
+        "sha256": "4d907d5dfc2dc66b086f80887b5f425df921f2b9fbc278c8351cbb9a37740504",
+        "hour": "2026-09-26T22",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-26T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-26T23.deduped.jsonl.zst",
+        "rows_in": 946707,
+        "rows_out": 946630,
+        "duplicates_removed": 77,
+        "sha256": "01f20c91fecac13aba81454728219bcff034bcd7db68fc78872e926e5f8a87ac",
+        "hour": "2026-09-26T23",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T00.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T00.deduped.jsonl.zst",
+        "rows_in": 1016577,
+        "rows_out": 1016479,
+        "duplicates_removed": 98,
+        "sha256": "443c091dff84fedf117787fc50b069ef0bd15932ce38eea6bce283e9230b3e20",
+        "hour": "2026-09-27T00",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T01.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T01.deduped.jsonl.zst",
+        "rows_in": 982390,
+        "rows_out": 982348,
+        "duplicates_removed": 42,
+        "sha256": "c97ca1053a7d8d92a9fd157392cab7dfe5412a41e63946e52b042cd9beb451c7",
+        "hour": "2026-09-27T01",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T02.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T02.deduped.jsonl.zst",
+        "rows_in": 1086852,
+        "rows_out": 1086832,
+        "duplicates_removed": 20,
+        "sha256": "c301ebf52ceaea54adf5344335b024316ee536baf84e08a5f1286ce5f56347fb",
+        "hour": "2026-09-27T02",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T03.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T03.deduped.jsonl.zst",
+        "rows_in": 955948,
+        "rows_out": 955918,
+        "duplicates_removed": 30,
+        "sha256": "5cbe02578460e50cb0e26d2b16a889b5c25dc6132842f54d5879dafb6c4c331f",
+        "hour": "2026-09-27T03",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T04.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T04.deduped.jsonl.zst",
+        "rows_in": 959844,
+        "rows_out": 959830,
+        "duplicates_removed": 14,
+        "sha256": "3c86faf6a457bab648f51fd7cb3258400f0d095f128b74c5d06a7bf1a985301f",
+        "hour": "2026-09-27T04",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T05.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T05.deduped.jsonl.zst",
+        "rows_in": 953345,
+        "rows_out": 953313,
+        "duplicates_removed": 32,
+        "sha256": "a6ff474edb602f0e04d19e1b399c0098d6ccdda0eedaa65c343cef2befb19d82",
+        "hour": "2026-09-27T05",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T06.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T06.deduped.jsonl.zst",
+        "rows_in": 921995,
+        "rows_out": 921977,
+        "duplicates_removed": 18,
+        "sha256": "220bd4686ef8b29f81a394e80e24f40531f7448ac1585e2bf256e469d3a32025",
+        "hour": "2026-09-27T06",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T07.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T07.deduped.jsonl.zst",
+        "rows_in": 880866,
+        "rows_out": 880848,
+        "duplicates_removed": 18,
+        "sha256": "caf3ef84275e8881f4aa05a487fe24f5b69d4863ec0dbaeb208d9a972159fc8e",
+        "hour": "2026-09-27T07",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T08.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T08.deduped.jsonl.zst",
+        "rows_in": 863172,
+        "rows_out": 863160,
+        "duplicates_removed": 12,
+        "sha256": "85ba78733e633eb6280e5a431c53d1b077d5bc981332b39222301ff6c7462e3d",
+        "hour": "2026-09-27T08",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T09.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T09.deduped.jsonl.zst",
+        "rows_in": 864895,
+        "rows_out": 864862,
+        "duplicates_removed": 33,
+        "sha256": "928ba4e4c5eb8a47da62658e35941845a3970391b033152f88d89ed7f6a191f0",
+        "hour": "2026-09-27T09",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T10.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T10.deduped.jsonl.zst",
+        "rows_in": 899030,
+        "rows_out": 899000,
+        "duplicates_removed": 30,
+        "sha256": "7a0a581d56d20491add81b076d6123c1f57d6ec3a633f4ab48e9cd270a4cd6f7",
+        "hour": "2026-09-27T10",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T11.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T11.deduped.jsonl.zst",
+        "rows_in": 762193,
+        "rows_out": 762149,
+        "duplicates_removed": 44,
+        "sha256": "fc66f06cac3de750b7da49b3b43a51bf4b9e26141cfbc815e5a5e4409a99b081",
+        "hour": "2026-09-27T11",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T12.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T12.deduped.jsonl.zst",
+        "rows_in": 864170,
+        "rows_out": 864116,
+        "duplicates_removed": 54,
+        "sha256": "5852bfb369b5128d6a76b343cc734bb2c6da39f530f670a3b36650aa008f9894",
+        "hour": "2026-09-27T12",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T13.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T13.deduped.jsonl.zst",
+        "rows_in": 1100762,
+        "rows_out": 1100720,
+        "duplicates_removed": 42,
+        "sha256": "8ece905e4cb97ae08a95bd13197e6855a097715895dc5020597cbc2e472797a9",
+        "hour": "2026-09-27T13",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T14.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T14.deduped.jsonl.zst",
+        "rows_in": 1238654,
+        "rows_out": 1238589,
+        "duplicates_removed": 65,
+        "sha256": "31f1e7ded8890eab1a5590d25f3311e6862ff544ec818a53b47456f0bc3ccecc",
+        "hour": "2026-09-27T14",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T15.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T15.deduped.jsonl.zst",
+        "rows_in": 1191987,
+        "rows_out": 1191870,
+        "duplicates_removed": 117,
+        "sha256": "e2d0f9e24305773b6affe97c53d962aabdfec3cf268b024b0859745567f4309e",
+        "hour": "2026-09-27T15",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T16.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T16.deduped.jsonl.zst",
+        "rows_in": 1103415,
+        "rows_out": 1103352,
+        "duplicates_removed": 63,
+        "sha256": "122ec5ab58c14d3c93458966b0bfe8898b94644dc5168b03201c1f98d38bb7d7",
+        "hour": "2026-09-27T16",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T17.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T17.deduped.jsonl.zst",
+        "rows_in": 1059101,
+        "rows_out": 1058951,
+        "duplicates_removed": 150,
+        "sha256": "7d4efa76c82f42e9b36cf00b0558a33d9289fd1b97b0a7d2bab3984c25fd8fd9",
+        "hour": "2026-09-27T17",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T18.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T18.deduped.jsonl.zst",
+        "rows_in": 1177151,
+        "rows_out": 1177021,
+        "duplicates_removed": 130,
+        "sha256": "05a3e2626018a0e01d1db497a110f0ed978da9bb8ed80a44036ad5eab725cadc",
+        "hour": "2026-09-27T18",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T19.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T19.deduped.jsonl.zst",
+        "rows_in": 1055559,
+        "rows_out": 1055480,
+        "duplicates_removed": 79,
+        "sha256": "c3bfd4657927dae2f1a5d17c4a4feb91236d538fbd67379b39ef1aff042656d6",
+        "hour": "2026-09-27T19",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T20.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T20.deduped.jsonl.zst",
+        "rows_in": 978730,
+        "rows_out": 978669,
+        "duplicates_removed": 61,
+        "sha256": "08220e1e6450b4eb2af3713cb9ee51b643ef7a3b1c630c07f9c3a5a1cbf3bccd",
+        "hour": "2026-09-27T20",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T21.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T21.deduped.jsonl.zst",
+        "rows_in": 1099301,
+        "rows_out": 1099244,
+        "duplicates_removed": 57,
+        "sha256": "87eecfd089acde440ba9883cd4022cca7f3e516327f26f384d3677173406cac1",
+        "hour": "2026-09-27T21",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T22.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T22.deduped.jsonl.zst",
+        "rows_in": 963250,
+        "rows_out": 963226,
+        "duplicates_removed": 24,
+        "sha256": "1be45596e564c1099a26317e9eb304bd98ab5b4eee39c8b060bc58e5cf751e49",
+        "hour": "2026-09-27T22",
+        "sub": "trades"
+      },
+      {
+        "source": "/data/mal/raw/oracle-live-2026-09-25_27/trades/trades-2026-09-27T23.jsonl.zst",
+        "dest": "/data/mal/clean/oracle-live-2026-09-25_27/trades/trades-2026-09-27T23.deduped.jsonl.zst",
+        "rows_in": 1031470,
+        "rows_out": 1031447,
+        "duplicates_removed": 23,
+        "sha256": "89efebd1b3e569bdf0f8e6b25c554f8efc7e09d820980cd72aceccf5cf970399",
+        "hour": "2026-09-27T23",
+        "sub": "trades"
+      }
+    ]
+  }
+}
