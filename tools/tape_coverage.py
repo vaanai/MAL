@@ -526,10 +526,11 @@ def render_markdown(rep: dict, meta: dict) -> str:
     ]
     if not rep["schema_pairs_on_matched_rows"]:
         lines.append("No matched rows.")
+    same = sum(pr["matched_rows"] for pr in rep["schema_pairs_on_matched_rows"] if pr["identical"])
+    if same:
+        lines.append(f"- {same:,} matched rows: field names and types identical on both hosts.")
     for pr in rep["schema_pairs_on_matched_rows"]:
-        if pr["identical"]:
-            lines.append(f"- {pr['matched_rows']:,} matched rows: field names and types identical on both hosts.")
-        else:
+        if not pr["identical"]:
             lines.append(
                 f"- {pr['matched_rows']:,} matched rows differ. Only on fast: `{pr['only_fast']}`. "
                 f"Only on Oracle: `{pr['only_oracle']}`. Type differs: `{pr['type_differs']}`."
