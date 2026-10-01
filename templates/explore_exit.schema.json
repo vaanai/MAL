@@ -80,7 +80,7 @@
     "data_root": {
       "type": ["string", "null"],
       "default": null,
-      "description": "Root of the sealed fast-pool hours (trades/ and creates/ subdirectories). Must resolve (symlinks and .. followed) to an allowlisted exploration-pool root or the run is refused before any file is opened. Null uses env MAL_FAST_POOL_ROOT, else /var/lib/mal/backfill-fast. On mal-research-0: /data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00."
+      "description": "Root of the sealed fast-pool hours (trades/ and creates/ subdirectories). Must resolve (symlinks and .. followed) to an allowlisted exploration-pool root or the run is refused before any file is opened. Null uses env MAL_FAST_POOL_ROOT, else /var/lib/mal/backfill-fast. On mal-research-0: /data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00."
     },
     "mcap_band": {
       "type": ["object", "null"],

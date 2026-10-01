@@ -61,7 +61,7 @@ returns every hour `run` opens, including the trailing 2-hour buffer past each
 chunk end (clipped at 2026-09-21T23); contiguous hours merge into one block.
 Data root: optional `data_root` param, else env `MAL_FAST_POOL_ROOT`, else
 `/var/lib/mal/backfill-fast` (on mal-research-0:
-`/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00`). **Two separate
+`/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00`). **Two separate
 gates:** `check_read` gates the hour labels only; the root is gated by
 `tools.exploration_exits.POOL_ROOT_ALLOWLIST` (`/var/lib/mal/backfill-fast`
 and the research-0 clean pool). `Path(root).resolve()` (symlinks and `..`

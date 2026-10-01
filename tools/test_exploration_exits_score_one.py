@@ -295,7 +295,7 @@ def _allow_fixture_root(pool_root, monkeypatch):
 def test_real_allowlist_contents():
     assert [str(p) for p in REAL_ALLOWLIST] == [
         "/var/lib/mal/backfill-fast",
-        "/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00",
+        "/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00",
     ]
 
 

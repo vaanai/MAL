@@ -724,7 +724,7 @@ DEFAULT_BUFFER_HOURS = 2
 # ledger check (tools.mal_catalog.check_read) only gates hour labels.
 POOL_ROOT_ALLOWLIST: tuple[Path, ...] = (
     Path("/var/lib/mal/backfill-fast"),
-    Path("/data/mal/clean/fast-pool-2026-09-18T23_2026-09-22T00"),
+    Path("/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00"),
 )
 
 
