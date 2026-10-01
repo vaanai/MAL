@@ -1,0 +1,10 @@
+[Unit]
+Description=MAL mal-research-0 status file, every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00 UTC
+Persistent=false
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

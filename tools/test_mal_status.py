@@ -389,3 +389,724 @@ def test_snapshot_never_raises_on_missing_files(tmp_path):
     by_job = {r["job"]: r for r in result}
     assert by_job["walker_1"]["credits_used"] is None
     assert by_job["pre_create"]["credits_used"] is None
+
+
+# === per-unit "running now" view (units list) ===================================
+
+from datetime import datetime, timezone  # noqa: E402
+
+UNIT_KEYS = {
+    "name", "owner_user", "scope", "kind", "active_state", "sub_state", "since", "uptime_s",
+    "memory", "last_log", "last_log_ts", "last_log_age_s",
+}
+NOW = datetime(2026, 10, 1, 2, 0, 0, tzinfo=timezone.utc)
+B58_44 = "HdBmmZf41x3ffQ4rX1EWVd4q9wwTvfAEkj3oobNpump"  # a pump.fun-style mint
+HEX_40 = "a3f1c2d4e5b60718293a4b5c6d7e8f9012345678"
+
+
+# --- scrub_log_line ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line, secret",
+    [
+        ("connect api-key=abc123SECRET ok", "abc123SECRET"),
+        ("connect api_key=abc123SECRET ok", "abc123SECRET"),
+        ("connect apikey=abc123SECRET ok", "abc123SECRET"),
+        ("connect API_KEY: abc123SECRET ok", "abc123SECRET"),
+        ("retry token=tok_9f8e7d6c ok", "tok_9f8e7d6c"),
+        ("retry access_token=tok_9f8e7d6c ok", "tok_9f8e7d6c"),
+        ("sent Bearer eyJhbGciOi.payload.sig now", "eyJhbGciOi"),
+        ("hdr Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ("GET https://mainnet.helius-rpc.com/?foo=bar&x=y failed", "foo=bar"),
+        ("ws wss://atlas-mainnet.helius-rpc.com/?zzz=1 closed", "zzz=1"),
+        (f"mint {B58_44} seen", B58_44),
+        (f"hash {HEX_40} seen", HEX_40),
+        ("key mck_live_abcDEF123 used", "abcDEF123"),
+        ("key sk-ant-api03-ABCdef123456 used", "ABCdef123456"),
+    ],
+)
+def test_scrub_redacts_each_pattern(line, secret):
+    out = mal_status.scrub_log_line(line)
+    assert secret not in out
+    assert "[redacted]" in out
+
+
+def test_scrub_helius_url_query_gone():
+    out = mal_status.scrub_log_line("GET https://mainnet.helius-rpc.com/?api-key=SEKRET failed")
+    assert "SEKRET" not in out
+    assert "api-key" not in out
+
+
+def test_scrub_truncates_to_200_plus_ellipsis():
+    long_line = "lorem ipsum " * 50  # spaces keep it from looking like a long id
+    out = mal_status.scrub_log_line(long_line)
+    assert out == long_line.strip()[:200] + "…" and len(out) == 201
+    exact = ("lorem ipsum " * 17)[:200]
+    assert mal_status.scrub_log_line(exact) == exact.strip()  # at the limit: no ellipsis
+    assert not mal_status.scrub_log_line("x" * 500).endswith("…")  # a bare 500-char run is an id: redacted first
+
+
+def test_scrub_redacts_before_truncating():
+    # A secret straddling the cut must not survive as a partial prefix.
+    line = "lorem ipsum " * 15 + "token=" + "S" * 40  # token starts just before char 200
+    out = mal_status.scrub_log_line(line)
+    assert "SSS" not in out and "token=" not in out
+
+
+def test_scrub_benign_line_unchanged():
+    line = "2026-10-01 01:27:04,199 INFO mal.attention heartbeat written=4090 genuine=4089 snapshot=1"
+    assert mal_status.scrub_log_line(line) == line
+
+
+def test_scrub_short_hex_id_unchanged():
+    line = "ingest_sealed id=deadbeef slot=412345678 path=/var/lib/mal/x.jsonl"
+    assert mal_status.scrub_log_line(line) == line
+
+
+def test_scrub_none_and_idempotent():
+    assert mal_status.scrub_log_line(None) is None
+    once = mal_status.scrub_log_line(f"{B58_44} " + "z" * 400)
+    assert mal_status.scrub_log_line(once) == once
+
+
+# --- parsers -----------------------------------------------------------------
+
+SHOW_FIXTURE = """\
+ControlGroup=/user.slice/user-1000.slice/user@1000.service/app.slice/mal-fast-create.service
+Id=mal-fast-create.service
+ActiveState=active
+SubState=running
+ActiveEnterTimestamp=Tue 2026-09-29 04:27:17 UTC
+
+ControlGroup=
+Id=mal-fast-backfill.service
+ActiveState=inactive
+SubState=dead
+ActiveEnterTimestamp=Tue 2026-09-29 14:20:57 UTC
+
+Id=mal-status.timer
+ActiveState=active
+SubState=waiting
+ActiveEnterTimestamp=
+ControlGroup=
+"""
+
+LIST_FIXTURE = """\
+mal-fast-backfill.service loaded    inactive dead    MAL fast-box Helius backfill
+mal-fast-create.service   loaded    active   running MAL phase-1 create alarm
+mal-status.timer          loaded    active   waiting MAL local status file
+mal-backup.slice          loaded    active   active  Slice for MAL backup jobs
+not-mal.service           loaded    active   running other
+"""
+
+
+def test_parse_systemctl_show_fixture():
+    props = mal_status.parse_systemctl_show(SHOW_FIXTURE)
+    assert set(props) == {"mal-fast-create.service", "mal-fast-backfill.service", "mal-status.timer"}
+    create = props["mal-fast-create.service"]
+    assert create["ActiveState"] == "active"
+    assert create["SubState"] == "running"
+    assert create["ControlGroup"].endswith("/mal-fast-create.service")
+    assert props["mal-status.timer"]["ActiveEnterTimestamp"] == ""
+
+
+def test_parse_list_units_keeps_only_mal_services_and_timers():
+    assert mal_status.parse_list_units(LIST_FIXTURE) == [
+        "mal-fast-backfill.service", "mal-fast-create.service", "mal-status.timer",
+    ]
+
+
+def test_parse_systemd_timestamp():
+    assert mal_status.parse_systemd_timestamp("Tue 2026-09-29 04:27:17 UTC") == datetime(2026, 9, 29, 4, 27, 17, tzinfo=timezone.utc)
+    assert mal_status.parse_systemd_timestamp("") is None
+    assert mal_status.parse_systemd_timestamp("Tue 2026-09-29 04:27:17 CEST") is None  # never guess a zone
+    assert mal_status.parse_systemd_timestamp("garbage in here now") is None
+
+
+def test_parse_journal_line():
+    msg, ts = mal_status.parse_journal_line("2026-09-29T04:27:17+00:00 mal-fast-0 systemd[965]: Started mal-fast-create.service - MAL.")
+    assert msg == "Started mal-fast-create.service - MAL."
+    assert ts == datetime(2026, 9, 29, 4, 27, 17, tzinfo=timezone.utc)
+    assert mal_status.parse_journal_line("-- No entries --") == (None, None)
+    assert mal_status.parse_journal_line("") == (None, None)
+
+
+# --- cgroup memory -----------------------------------------------------------
+
+
+def test_unit_cgroup_memory_read_from_tmp_file(tmp_path):
+    cg = tmp_path / "user.slice" / "x.service"
+    cg.mkdir(parents=True)
+    (cg / "memory.current").write_text("55242752\n", encoding="utf-8")
+    mem = mal_status.read_unit_cgroup_memory("/user.slice/x.service", str(tmp_path))
+    assert mem == {"bytes": 55242752, "source": "cgroup memory.current (includes page cache)"}
+
+
+def test_unit_cgroup_memory_missing_is_null(tmp_path):
+    assert mal_status.read_unit_cgroup_memory("/nope/x.service", str(tmp_path)) is None
+    assert mal_status.read_unit_cgroup_memory("", str(tmp_path)) is None
+    assert mal_status.read_unit_cgroup_memory(None, str(tmp_path)) is None
+
+
+def test_unit_cgroup_memory_garbage_or_traversal_is_null(tmp_path):
+    cg = tmp_path / "x.service"
+    cg.mkdir()
+    (cg / "memory.current").write_text("max\n", encoding="utf-8")
+    assert mal_status.read_unit_cgroup_memory("/x.service", str(tmp_path)) is None
+    assert mal_status.read_unit_cgroup_memory("/../etc", str(tmp_path)) is None
+
+
+# --- collect_units (mocked subprocess) ---------------------------------------
+
+
+class _Proc:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = ""
+
+
+def _fake_systemd(calls):
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        argv = [c for c in cmd if c not in ("sudo", "-n")]
+        if "list-units" in argv:
+            return _Proc(LIST_FIXTURE)
+        if "show" in argv:
+            return _Proc(SHOW_FIXTURE)
+        if "journalctl" in argv:
+            unit = argv[argv.index("-u") + 1]
+            return _Proc(f"2026-10-01T01:59:30+00:00 mal-fast-0 py[1]: {unit} api-key=SEKRET {B58_44}\n")
+        raise AssertionError(cmd)
+
+    return fake_run
+
+
+def test_collect_units_shape_scrub_and_call_budget(monkeypatch, tmp_path):
+    cg = tmp_path / "user.slice/user-1000.slice/user@1000.service/app.slice/mal-fast-create.service"
+    cg.mkdir(parents=True)
+    (cg / "memory.current").write_text("1234\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(mal_status.subprocess, "run", _fake_systemd(calls))
+
+    units, errors, meta = mal_status.collect_units(
+        [{"scope": "system", "owner_user": "root", "prefix": []}, {"scope": "user", "owner_user": "claude", "prefix": []}],
+        now=NOW, cgroup_root=str(tmp_path),
+    )
+    assert errors == []
+    assert len(units) == 6  # 3 mal-* units per scope (slice and non-mal filtered out)
+    # 2 sources x (1 list + 1 batched show) + 1 journalctl per unit
+    assert meta["subprocesses"] == len(calls) == 2 * 2 + 6
+    shows = [c for c in calls if "show" in c]
+    assert len(shows) == 2 and all(c.count("mal-fast-create.service") == 1 for c in shows)  # batched, not per unit
+    assert shows[0][shows[0].index("-p") + 1] == "Id,ActiveState,SubState,ActiveEnterTimestamp,ControlGroup"
+    assert any(c[:2] == ["systemctl", "--user"] for c in calls)
+
+    for u in units:
+        assert set(u) >= UNIT_KEYS
+        assert "SEKRET" not in u["last_log"] and B58_44 not in u["last_log"]
+        assert u["last_log_ts"] == "2026-10-01T01:59:30Z"
+        assert u["last_log_age_s"] == 30
+    create = next(u for u in units if u["name"] == "mal-fast-create.service" and u["scope"] == "user")
+    assert (create["kind"], create["active_state"], create["sub_state"]) == ("service", "active", "running")
+    assert create["since"] == "2026-09-29T04:27:17Z"
+    assert create["uptime_s"] == int((NOW - datetime(2026, 9, 29, 4, 27, 17, tzinfo=timezone.utc)).total_seconds())
+    assert create["memory"] == {"bytes": 1234, "source": "cgroup memory.current (includes page cache)"}
+    dead = next(u for u in units if u["name"] == "mal-fast-backfill.service")
+    assert dead["uptime_s"] is None and dead["memory"] is None and dead["since"] == "2026-09-29T14:20:57Z"
+    timer = next(u for u in units if u["name"] == "mal-status.timer")
+    assert timer["kind"] == "timer" and timer["since"] is None and timer["uptime_s"] is None
+
+
+def test_collect_units_sudo_prefix_applies_to_every_call(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(mal_status.subprocess, "run", _fake_systemd(calls))
+    prefix = ["sudo", "-n", "-u", "ubuntu", "XDG_RUNTIME_DIR=/run/user/1000"]
+    units, _, meta = mal_status.collect_units([{"scope": "user", "owner_user": "ubuntu", "prefix": prefix}], now=NOW)
+    assert all(c[:5] == prefix for c in calls)
+    assert {u["owner_user"] for u in units} == {"ubuntu"}
+    assert meta["subprocesses"] == 2 + 3
+
+
+def test_collect_units_subprocess_failures_degrade_to_null(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        if "list-units" in cmd:
+            return _Proc(LIST_FIXTURE)
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=1)
+
+    monkeypatch.setattr(mal_status.subprocess, "run", fake_run)
+    units, errors, _ = mal_status.collect_units([{"scope": "user", "owner_user": "claude", "prefix": []}], now=NOW)
+    assert len(units) == 3
+    assert any("show" in e for e in errors)
+    for u in units:
+        assert set(u) >= UNIT_KEYS
+        assert u["active_state"] is None and u["memory"] is None and u["last_log"] is None
+
+
+def test_collect_units_list_failure_is_recorded_not_raised(monkeypatch):
+    monkeypatch.setattr(mal_status.subprocess, "run", lambda cmd, **kw: _Proc("", returncode=1))
+    units, errors, meta = mal_status.collect_units([{"scope": "system", "owner_user": "root", "prefix": []}], now=NOW)
+    assert units == [] and len(errors) == 1 and meta["subprocesses"] == 1
+
+
+def test_collect_local_status_carries_units(monkeypatch, tmp_path):
+    fake_units = [mal_status.empty_unit("mal-x.service", "user", "service", "claude")]
+    monkeypatch.setattr(mal_status, "collect_units", lambda sources=None: (fake_units, ["units boom"], {"wall_ms": 1, "subprocesses": 3}))
+    status = mal_status.collect_local_status(
+        host="h", cgroups=[], mounts=[], services=[], walkers=[],
+        pre_create_credits_path=str(tmp_path / "nope"), restart_log_path=str(tmp_path / "nope2"),
+    )
+    assert status["units"] == fake_units
+    assert status["units_meta"] == {"wall_ms": 1, "subprocesses": 3}
+    assert "units boom" in status["errors"]
+
+
+# --- Oracle /proc parsing (fake /proc tree) ----------------------------------
+
+
+def _remote_ns():
+    ns: dict = {}
+    exec(mal_status._REMOTE_LIB, ns)  # noqa: S102 - the embedded snippet, run in-process
+    return ns
+
+
+def _fake_proc(root: Path, pid: int, cmdline: str, start_ticks: int, rss_kb: int | None) -> None:
+    d = root / str(pid)
+    d.mkdir()
+    (d / "cmdline").write_bytes(cmdline.replace(" ", "\x00").encode())
+    # comm contains a space and parens on purpose: parsing must split after the last ")".
+    fields = ["S", "1", str(pid), "0", "0", "-1", "4194560", "1", "0", "0", "0", "10", "5", "0", "0", "20", "0", "1", "0"]
+    (d / "stat").write_text(f"{pid} (my (py) proc) " + " ".join(fields) + f" {start_ticks} 0 0\n", encoding="utf-8")
+    status = f"Name:\tpython3\nVmRSS:\t{rss_kb} kB\n" if rss_kb is not None else "Name:\tpython3\n"
+    (d / "status").write_text(status, encoding="utf-8")
+
+
+def test_oracle_proc_parsing_uptime_memory_and_log_tail(tmp_path):
+    ns = _remote_ns()
+    root = tmp_path / "proc"
+    root.mkdir()
+    (root / "stat").write_text("cpu  1 2 3\nbtime 1790000000\n", encoding="utf-8")
+    _fake_proc(root, 101, "python3 -m observe.attention --x", start_ticks=500_000, rss_kb=100_000)
+    _fake_proc(root, 102, "bash forward-paper.sh", start_ticks=300_000, rss_kb=2_000)
+    _fake_proc(root, 103, "python3 -m tools.forward_paper serve", start_ticks=300_100, rss_kb=700_000)
+    _fake_proc(root, 104, "sleep 1000", start_ticks=1, rss_kb=5)  # matches nothing
+    (root / "self").mkdir()  # non-numeric entry is skipped
+
+    log = tmp_path / "attention.log"
+    log.write_text("old line\n" * 2000 + "2026-10-01 01:30:34,830 INFO mal.attention heartbeat token=SEKRET99\n\n", encoding="utf-8")
+    now = 1790000000 + 500_000 / 100 + 3600  # one hour after the attention start
+
+    pids = ns["scan_procs"](ns["MATCHERS"], str(root))
+    assert pids["mal-attention"] == [101]
+    assert sorted(pids["mal-forward-paper"]) == [102, 103]
+    assert pids["mal-observe"] == []
+    assert ns["proc_running"](ns["MATCHERS"], str(root))["mal-attention"] is True
+
+    views = {v["name"]: v for v in ns["unit_views"](pids, {"mal-attention": str(log)}, root=str(root), now=now, hz=100)}
+    att = views["mal-attention.service"]
+    assert set(att) == UNIT_KEYS
+    assert (att["active_state"], att["sub_state"]) == ("active", "running")
+    assert att["uptime_s"] == 3600
+    assert att["since"] == datetime.fromtimestamp(1790000000 + 5000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert att["memory"] == {"bytes": 100_000 * 1024, "source": mal_status.MEM_SOURCE_RSS}
+    assert att["last_log"].endswith("token=SEKRET99")  # raw here; scrubbed by the parent
+    assert att["last_log_age_s"] >= 0
+
+    fwd = views["mal-forward-paper.service"]
+    assert fwd["memory"]["bytes"] == (2_000 + 700_000) * 1024  # summed over matched pids
+    assert fwd["uptime_s"] == int(now - (1790000000 + 300_000 / 100))
+    assert fwd["last_log"] is None  # no log file configured -> null
+
+    obs = views["mal-observe.service"]
+    assert (obs["active_state"], obs["sub_state"]) == ("inactive", "dead")
+    assert obs["since"] is None and obs["uptime_s"] is None and obs["memory"] is None
+
+
+def test_oracle_missing_pieces_are_null_not_errors(tmp_path):
+    ns = _remote_ns()
+    root = tmp_path / "proc"
+    root.mkdir()  # no /proc/stat: btime unreadable
+    _fake_proc(root, 7, "python3 -m observe.trade_tape", start_ticks=1, rss_kb=None)
+    pids = ns["scan_procs"](ns["MATCHERS"], str(root))
+    views = {v["name"]: v for v in ns["unit_views"](pids, {"mal-trade-tape": str(tmp_path / "missing.log")}, root=str(root), now=1.0, hz=100)}
+    tape = views["mal-trade-tape.service"]
+    assert tape["active_state"] == "active"
+    assert tape["since"] is None and tape["uptime_s"] is None and tape["memory"] is None
+    assert tape["last_log"] is None and tape["last_log_ts"] is None
+
+
+def test_oracle_tail_reads_only_last_4kb(tmp_path):
+    ns = _remote_ns()
+    path = tmp_path / "big.log"
+    path.write_bytes(b"A" * 1_000_000 + b"\nlast good line\n")
+    line, mtime = ns["tail_last_line"](str(path))
+    assert line == "last good line" and mtime > 0
+    assert ns["tail_last_line"](str(tmp_path / "nope.log")) == (None, None)
+
+
+def test_collect_remote_core_status_units_normalised_and_scrubbed(monkeypatch):
+    canned = {
+        "load": [0.1, 0.1, 0.1],
+        "processes": {"mal-attention": True},
+        "units": [{"name": "mal-attention.service", "scope": "user", "kind": "service", "active_state": "active",
+                   "last_log": "poll api_key=SEKRET " + "w" * 400}],
+    }
+
+    class FakeProc:
+        returncode = 0
+        stdout = json.dumps(canned)
+        stderr = ""
+
+    monkeypatch.setattr(mal_status.subprocess, "run", lambda cmd, **kw: FakeProc())
+    status = mal_status.collect_remote_core_status()
+    unit = status["units"][0]
+    assert set(unit) == UNIT_KEYS  # every key present, null when the remote did not send it
+    assert unit["memory"] is None and unit["since"] is None
+    assert "SEKRET" not in unit["last_log"] and len(unit["last_log"]) <= 201
+
+
+# --- mal-research-0 (--remote research) ---------------------------------------
+
+
+def test_collect_remote_research_pipes_this_file_and_scrubs(monkeypatch):
+    canned = {
+        "uptime_s": 5.0, "load": [1.0, 2.0, 3.0], "memory": {"mem_total_mb": 1.0, "mem_available_mb": 1.0},
+        "units": [{"name": "mal-walker-w1.service", "owner_user": "claude", "scope": "user", "kind": "service",
+                   "active_state": "active", "sub_state": "running", "since": "2026-10-01T00:53:55Z", "uptime_s": 10,
+                   "memory": {"bytes": 1, "source": "cgroup memory.current (includes page cache)"},
+                   "last_log": f"progress {B58_44}", "last_log_ts": "2026-10-01T01:00:00Z", "last_log_age_s": 3}],
+        "units_meta": {"wall_ms": 50, "subprocesses": 11}, "errors": [],
+    }
+    seen = {}
+
+    class FakeProc:
+        returncode = 0
+        stdout = json.dumps(canned)
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"], seen["input"] = cmd, kwargs.get("input")
+        return FakeProc()
+
+    monkeypatch.setattr(mal_status.subprocess, "run", fake_run)
+    status = mal_status.collect_remote_research_status()
+    assert seen["cmd"][0] == "ssh" and "mal-research-0" in seen["cmd"]
+    assert "--units-json" in seen["cmd"] and seen["cmd"][seen["cmd"].index("mal-research-0") + 1:][:2] == ["python3", "-"]
+    assert "def collect_units" in seen["input"] and "def scrub_log_line" in seen["input"]  # same collector code
+    assert status["reachable"] is True and status["load1"] == 1.0
+    assert B58_44 not in status["units"][0]["last_log"]
+    assert status["units"][0]["name"] == "mal-walker-w1.service"
+
+
+@pytest.mark.parametrize("failure", ["exit", "timeout", "badjson"])
+def test_collect_remote_research_failures_never_crash(monkeypatch, failure):
+    class FakeProc:
+        returncode = 255 if failure == "exit" else 0
+        stdout = "not json" if failure == "badjson" else ""
+        stderr = "ssh: connection refused"
+
+    def fake_run(cmd, **kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=1)
+        return FakeProc()
+
+    monkeypatch.setattr(mal_status.subprocess, "run", fake_run)
+    status = mal_status.collect_remote_research_status()
+    assert status["reachable"] is False and status["error"]
+
+
+def test_main_remote_research_writes_host_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(mal_status, "collect_remote_research_status", lambda host: {"host": host, "reachable": True, "units": []})
+    assert mal_status.main(["--out-dir", str(tmp_path), "--remote", "research"]) == 0
+    assert json.loads((tmp_path / "mal-research-0.json").read_text())["host"] == "mal-research-0"
+
+
+def test_units_json_mode_prints_json_and_needs_no_out_dir(monkeypatch, capsys):
+    monkeypatch.setattr(mal_status, "collect_units", lambda sources=None: ([mal_status.empty_unit("mal-a.service", "user", "service")], [], {"wall_ms": 1, "subprocesses": 2}))
+    assert mal_status.main(["--units-json", "--unit-sources", "research"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["units"][0]["name"] == "mal-a.service" and out["units_meta"]["subprocesses"] == 2
+    assert "load" in out and "memory" in out
+
+
+# === review round: scrubber leaks, ReDoS, deadline, tail fragment, error text ====
+
+import time as _time  # noqa: E402
+
+UUID = "3f2a9c1e-7b44-4d0a-9e61-0c5d8a1b2f37"  # Helius-style key
+
+
+@pytest.mark.parametrize(
+    "line, secret",
+    [
+        (f"using {UUID} for rpc", UUID),
+        (f"GET https://mainnet.helius-rpc.com/v0/{UUID}/tx failed", UUID),
+        (f"GET https://rpc.helius.xyz/abcDEF123 failed", "abcDEF123"),
+        ('{"apiKey":"SEKRET-value"}', "SEKRET-value"),
+        ('{"api_key": "SEKRET-value"}', "SEKRET-value"),
+        ("{'api-key': 'SEKRET-value'}", "SEKRET-value"),
+        ('{"apikey":"SEKRET-value","x":1}', "SEKRET-value"),
+        ('{"client_secret":"SEKRET-value"}', "SEKRET-value"),
+        ('{"password":"SEKRET value with spaces"}', "SEKRET"),
+        ('{"auth": "SEKRET-value"}', "SEKRET-value"),
+        ('{"key": "SEKRET-value"}', "SEKRET-value"),
+        ('{"access_token":"SEKRET-value"}', "SEKRET-value"),
+        ("secret=SEKRET-value", "SEKRET-value"),
+        ("password=SEKRET-value", "SEKRET-value"),
+        ("passwd=SEKRET-value", "SEKRET-value"),
+        ("x_api_key=SEKRET-value", "SEKRET-value"),
+        ("key=SEKRET-value", "SEKRET-value"),
+        ("token: SEKRET-value", "SEKRET-value"),
+        ("auth=SEKRET-value", "SEKRET-value"),
+        (f"HELIUS_API_KEY {UUID}", UUID),
+        ("HELIUS_API_KEY shortsecret", "shortsecret"),
+        ("X-Api-Key: SEKRET-value", "SEKRET-value"),
+        ("x-helius-key: SEKRET-value", "SEKRET-value"),
+        ("Cookie: session=SEKRET-value; other=1", "SEKRET-value"),
+        ("Set-Cookie: sid=SEKRET-value", "SEKRET-value"),
+        ("connect postgres://mal_app:SEKRET-pass@127.0.0.1:5432/meme", "SEKRET-pass"),
+        ("GET https://example.com/x?sig=ABCDEFGHIJKLMNOPQRSTUVWXYZ12 ok", "ABCDEFGHIJKLMNOPQRSTUVWXYZ12"),
+        ("blob QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5== end", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldY"),
+        ("blob QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVow-MTIzNDU2_Nzg5+/ end", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldY"),
+        (f"sent Bearer%20{UUID.replace('-', '')}", UUID.replace("-", "")),
+        ("sent Bearer%20shortkey1", "shortkey1"),
+        ("k " + "0123456789abcdef" + "%2F" + "0123456789abcdef", "0123456789abcdef"),
+        ("p api%5Fkey%3DSEKRET-value", "SEKRET-value"),
+    ],
+)
+def test_scrub_attack_forms(line, secret):
+    out = mal_status.scrub_log_line(line)
+    assert secret not in out
+    assert "[redacted]" in out
+
+
+def test_scrub_key_straddling_the_200_cut():
+    for pad in (170, 185, 195, 199):
+        line = ("lorem ipsum " * 20)[:pad] + " api_key=" + "Zq" * 30
+        out = mal_status.scrub_log_line(line)
+        assert "Zq" not in out and "api_key" not in out, pad
+    line = ("lorem ipsum " * 20)[:190] + " " + "Zq" * 30  # bare long run across the cut
+    assert "ZqZq" not in mal_status.scrub_log_line(line)
+
+
+def test_scrub_input_cap_does_not_leak_cut_secret():
+    line = "x y " * 1020 + "api_key=" + "Q" * 100  # 'api_key=' sits right at the 4096 cap
+    assert "QQQ" not in mal_status.scrub_log_line(line)
+
+
+def test_scrub_still_leaves_benign_short_things():
+    for line in (
+        "ingest_sealed id=deadbeef slot=412345678 ok",
+        "heartbeat written=4090 genuine=4089 snapshot=1",
+        "path=/var/lib/mal/logs/observe.log size=12",
+        "author=bob monkey business turkey",
+    ):
+        assert mal_status.scrub_log_line(line) == line
+
+
+@pytest.mark.parametrize("payload", ["a" * 48_000, "QUJD" * 12_000, "a-" * 24_000, "key=" * 12_000, "X-" * 24_000, "http://" * 6_800, "token " * 8_000, "a:b@" * 12_000])
+def test_scrub_is_fast_on_hostile_input(payload):
+    started = _time.perf_counter()
+    mal_status.scrub_log_line(payload)
+    assert _time.perf_counter() - started < 0.05
+
+
+def test_scrub_double_encoded_and_idempotent():
+    out = mal_status.scrub_log_line("sent Bearer%2520SEKRET-value-here")
+    assert "SEKRET" not in out
+    again = mal_status.scrub_log_line(out)
+    assert again == out
+
+
+# --- collect_units deadline -----------------------------------------------------
+
+
+def test_collect_units_deadline_skips_remaining_journal_calls(monkeypatch):
+    t = {"now": 0.0}
+    calls: list[list[str]] = []
+    inner = _fake_systemd(calls)
+
+    def fake_run(cmd, **kwargs):
+        if "journalctl" in cmd:
+            t["now"] += 20.0  # every journalctl call "takes" 20 s
+        return inner(cmd, **kwargs)
+
+    monkeypatch.setattr(mal_status.subprocess, "run", fake_run)
+    units, errors, meta = mal_status.collect_units(
+        [{"scope": "user", "owner_user": "claude", "prefix": []}], now=NOW, deadline_s=30.0, clock=lambda: t["now"],
+    )
+    assert len(units) == 3  # all units still listed, with state
+    assert sum(1 for c in calls if "journalctl" in c) == 2  # third skipped
+    assert units[-1]["last_log"] is None and units[-1]["active_state"] is not None
+    assert any("deadline" in e for e in errors)
+    assert meta["subprocesses"] == len(calls)
+
+
+def test_collect_units_deadline_skips_unqueried_sources(monkeypatch):
+    t = {"now": 100.0}
+    calls: list[list[str]] = []
+    monkeypatch.setattr(mal_status.subprocess, "run", _fake_systemd(calls))
+    units, errors, _ = mal_status.collect_units(
+        [{"scope": "user", "owner_user": "claude", "prefix": []}], now=NOW, deadline_s=0.0, clock=lambda: t["now"],
+    )
+    assert units == [] and calls == [] and any("deadline" in e for e in errors)
+
+
+def test_collect_units_without_deadline_hit_has_no_deadline_error(monkeypatch):
+    monkeypatch.setattr(mal_status.subprocess, "run", _fake_systemd([]))
+    _, errors, _ = mal_status.collect_units([{"scope": "user", "owner_user": "claude", "prefix": []}], now=NOW)
+    assert errors == []
+
+
+# --- Oracle tail fragment ---------------------------------------------------------
+
+
+def test_oracle_tail_returns_none_for_mid_line_fragment(tmp_path):
+    ns = _remote_ns()
+    one_long_line = tmp_path / "long.log"
+    one_long_line.write_bytes(b"A" * 1_000_000)  # offset > 0, no newline in the chunk
+    assert ns["tail_last_line"](str(one_long_line)) == (None, None)
+
+    trailing_newline_only = tmp_path / "long2.log"
+    trailing_newline_only.write_bytes(b"B" * 10_000 + b"\n")  # chunk = fragment + "\n"
+    assert ns["tail_last_line"](str(trailing_newline_only))[0] is None
+
+    short = tmp_path / "short.log"
+    short.write_bytes(b"first\nonly line fits entirely\n")  # offset == 0: nothing is a fragment
+    assert ns["tail_last_line"](str(short))[0] == "only line fits entirely"
+    single = tmp_path / "single.log"
+    single.write_bytes(b"no newline but whole file")
+    assert ns["tail_last_line"](str(single))[0] == "no newline but whole file"
+
+
+# --- remote error text, nameless units, unreachable payload -------------------------
+
+
+def test_normalise_drops_nameless_units():
+    assert mal_status.normalise_unit({"scope": "user"}) is None
+    assert mal_status.normalise_unit({"name": None}) is None
+    assert mal_status.normalise_unit({"name": "  "}) is None
+    assert mal_status.normalise_unit("junk") is None
+    assert mal_status.normalise_units([{"name": "mal-a.service"}, {}, None, 3]) == [
+        mal_status.normalise_unit({"name": "mal-a.service"})
+    ]
+    assert mal_status.normalise_units(None) == [] and mal_status.normalise_units("x") == []
+
+
+def test_unreachable_payload_has_empty_units_and_scrubbed_error(monkeypatch):
+    class FakeProc:
+        returncode = 255
+        stdout = ""
+        stderr = f"ssh: denied token=SEKRET-value for {UUID}"
+
+    monkeypatch.setattr(mal_status.subprocess, "run", lambda cmd, **kw: FakeProc())
+    for status in (mal_status.collect_remote_core_status(), mal_status.collect_remote_research_status()):
+        assert status["reachable"] is False
+        assert status["units"] == []
+        blob = json.dumps(status)
+        assert "SEKRET" not in blob and UUID not in blob
+
+
+def test_remote_errors_list_is_scrubbed(monkeypatch):
+    canned = {"load": [1, 1, 1], "units": [{"name": "mal-x.service"}, {"scope": "user"}],
+              "errors": [f"meminfo: bad key={UUID}", "api_key=SEKRET-value"]}
+
+    class FakeProc:
+        returncode = 0
+        stdout = json.dumps(canned)
+        stderr = ""
+
+    monkeypatch.setattr(mal_status.subprocess, "run", lambda cmd, **kw: FakeProc())
+    for status in (mal_status.collect_remote_core_status(), mal_status.collect_remote_research_status()):
+        blob = json.dumps(status["errors"])
+        assert "SEKRET" not in blob and UUID not in blob
+        assert [u["name"] for u in status["units"]] == ["mal-x.service"]  # nameless unit dropped
+
+
+# === review round 2: glued names, unterminated quotes, cap-cut partials ==========
+
+B64_VALUE = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5=="
+HEX_VALUE = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.mark.parametrize(
+    "line, secret",
+    [
+        ("PGPASSWORD=SEKRET-value psql", "SEKRET-value"),
+        ("DBPASSWORD=SEKRET-value", "SEKRET-value"),
+        ("MYSECRET=SEKRET-value", "SEKRET-value"),
+        ("PRIVATEKEY=SEKRET-value", "SEKRET-value"),
+        ("authtoken: SEKRET-value", "SEKRET-value"),
+        ("secretKey: SEKRET-value", "SEKRET-value"),
+        ("1password=SEKRET-value", "SEKRET-value"),
+        ("SECRET_KEY=SEKRET-value", "SEKRET-value"),
+        ("db-password=SEKRET-value", "SEKRET-value"),
+        ("private_key=SEKRET-value", "SEKRET-value"),
+        ('{"secretKey":"SEKRET-value"}', "SEKRET-value"),
+        ('{"private-key": "SEKRET-value"}', "SEKRET-value"),
+        ("MY_AUTH_TOKEN=SEKRET-value", "SEKRET-value"),
+    ],
+)
+def test_scrub_glued_key_names(line, secret):
+    out = mal_status.scrub_log_line(line)
+    assert secret not in out and "[redacted]" in out
+
+
+def test_scrub_glued_name_prefix_is_redacted_with_the_value():
+    out = mal_status.scrub_log_line("run PGPASSWORD=SEKRET-value psql")
+    assert out == "run [redacted] psql"
+    assert mal_status.scrub_log_line('x "apiKey":"v"') == "x [redacted]"
+
+
+@pytest.mark.parametrize(
+    "line, secret",
+    [
+        ('password="hunter2hunter', "hunter2hunter"),
+        ("token='abc", "abc"),
+        ('{"apiKey":"valueNotUuid', "valueNotUuid"),
+        ('{"password":"two words unterminated', "unterminated"),
+        ('secret = "quoted secret that is closed" tail', "quoted secret"),
+        ("passwd='half closed", "half closed"),
+    ],
+)
+def test_scrub_unterminated_and_quoted_values(line, secret):
+    out = mal_status.scrub_log_line(line)
+    assert secret not in out and "[redacted]" in out
+
+
+@pytest.mark.parametrize("value", [UUID, B58_44, HEX_VALUE, B64_VALUE], ids=["uuid", "base58", "hex40", "base64"])
+@pytest.mark.parametrize("sep", ["=", ": ", '="'])
+def test_scrub_cap_cut_partial_does_not_survive(value, sep):
+    # 4068 filler chars then "=value": the 4096 cap lands inside the value.
+    line = "x" * 4068 + sep + value
+    assert len(line) > 4096
+    out = mal_status.scrub_log_line(line)
+    for n in (8, 12, 16):
+        assert value[:n] not in out
+    assert out.endswith("…")
+    # same with spaced filler so the redacted line shrinks well below 200 chars
+    line = "ab " * 1356 + "token" + sep + value
+    out = mal_status.scrub_log_line(line)
+    assert value[:8] not in out
+
+
+@pytest.mark.parametrize("value", [UUID, B58_44, HEX_VALUE, B64_VALUE])
+def test_scrub_cap_cut_bare_value_at_the_cap(value):
+    for pad in range(4096 - len(value) - 3, 4096):
+        out = mal_status.scrub_log_line(("ab " * 2000)[:pad] + " " + value)
+        assert value[:8] not in out
+
+
+def test_scrub_cap_cut_marks_ellipsis_and_is_idempotent():
+    out = mal_status.scrub_log_line("hello world " * 500)
+    assert out.endswith("…") and len(out) <= 201
+    assert mal_status.scrub_log_line(out) == out
+
+
+@pytest.mark.parametrize("unit", ["a", "key=", "token ", "a:b@", 'password="', "_key", "secret-", "x-a-", "http://", "a b "])
+def test_scrub_is_fast_just_under_the_cap(unit):
+    payload = (unit * 4096)[:4090]  # the cap does not fire, every regex really runs
+    started = _time.perf_counter()
+    mal_status.scrub_log_line(payload)
+    assert _time.perf_counter() - started < 0.05
