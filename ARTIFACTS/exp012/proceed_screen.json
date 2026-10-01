@@ -1,0 +1,17 @@
+{
+  "schema": "exp012_proceed_screen_v1",
+  "rule": "EXP-012 section 3.3 (B3 screen): both fail models, pooled mean net % > 0, ex-top-3 SOL > 0, days positive > n_days/2",
+  "inputs": {
+    "n_days_total": 9,
+    "flat_net_mean_pct": 7.43247570684624,
+    "flat_ex_top3_sol": 31.140748286599997,
+    "n_days_flat_positive": 9,
+    "press_net_mean_pct": 4.672464066442589,
+    "press_ex_top3_sol": 19.458084402126982,
+    "n_days_press_positive": 9
+  },
+  "flat_ok": true,
+  "press_ok": true,
+  "proceed": true,
+  "majority_needed": 4.5
+}

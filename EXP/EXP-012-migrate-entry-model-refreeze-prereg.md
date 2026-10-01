@@ -11,7 +11,7 @@
 | **Parent** | [EXP-011](EXP-011-migrate-entry-model-prereg.md) (closed NOT_DECIDABLE, §8 retired its model); [dedupe note](../ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md); [clean B3 re-run](../ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md) |
 | **Hypothesis** | The same pre-migration curve-state features, read by the same S2 recipe retrained on **deduplicated** data, select `migrate` entries whose net after fees is positive on a block nobody has read. |
 | **Kill condition** | The primary cell (§5) fails the unchanged promotion gate (§6) under **either** fail model on the fresh block (§4); or the proceed condition (§3.3) fails before any holdout read (withdrawn, block released). One read, no second read (§8). |
-| **Result** | Not run. |
+| **Result** | Not run. Freeze done 2026-10-01, proceed screen PASS (§12); holdout not read. |
 
 ---
 
@@ -174,6 +174,38 @@ python3 -m tools.exp011_freeze --table /data/mal/exp012/table.jsonl --out-dir AR
 ```
 
 The read command is `python3 -m tools.exp012_score` with `--w1-dir/--w2-dir/--w3-dir`, `--w1-clean-dir/...`, `--artifact-dir ARTIFACTS/exp012`, `--dedupe-pin`, `--frozen-manifest-md5` and `--freeze-commit` (all required); Part 2 records the exact line.
+
+## 12. Freeze record (Part 2, 2026-10-01)
+
+The binding freeze ran once, as MiScusi job #23 (`j_eFNPWZPCx0PEQg`) on `mal-research-0`, from a clean checkout at the pre-registration merge commit `ea5ec374010378b14a5c19e81bf045679bde73b9` (`train_manifest.json`: `code_commit` as given, `code_dirty: false`, seed 1). It used the §11 commands verbatim. The input VIEW pins were verified by the build (219 + 237 + 69 files). No earlier freeze output exists: a pre-merge table build (job #5, code `ed6f756`) was cancelled before it finished, its partial scratch output was moved aside unread, and no model or screen was produced from it.
+
+- Table: `/data/mal/exp012/table.jsonl` sha256 `7ebdd2aec002a85d9065794f7ebcfc4f9069bfd6484382ff2e7ce09efb3e9205` (`table.md5` = `14ada9ea6694f00cf7d351600b4e2193`); settings 2 / 24 / 12, `verify_view: true`.
+- Frozen manifest: `ARTIFACTS/exp012/FROZEN.md5`, whose own md5 is **`a01f05dfb1e622f78b2bba55d174be09`**. `model.txt` md5 `a1810d219ed61db64a396f40dc302ce5`, `features.json` `5dec821ed0f4098b71b1c544de23a0ab` (identical to EXP-011's ablated 18-feature list), `threshold.json` `c6dfa593bfa38450d7f3b29344308315`.
+- Threshold: **0.8030766588450794**, the 90th percentile of 8,801 pooled outer out-of-fold scores (881 at or above it, 10.01%). EXP-011's dirty-pool threshold was 0.8012473581008048.
+
+**Proceed screen (§3.3): PASS** (`proceed_screen.json`, copied, not rounded):
+
+| Leg | Pooled mean net % | Ex-top-3 SOL | Days positive (of 9) |
+| --- | ---: | ---: | ---: |
+| flat 15% | +7.43247570684624 | +31.140748286599997 | 9 |
+| pressure scale 1 | +4.672464066442589 | +19.458084402126982 | 9 |
+
+Report-only context from `nested_fixed_threshold_lodo.json`: n = 891 entered. Flat CI lower bound +5.188668409001117%, pressure +3.1683341591043632%. These are in-sample exploration-pool numbers (each fold's threshold is chosen without its own test day, but the pool has been read many times; see §1 and §10). They are **not** gate evidence and do not predict the holdout. The comparable EXP-011 dirty-pool preview was flat +7.9934%, pressure +4.9233%, 9/9 days.
+
+**Read command** (run once, after §4.1's verify, dedupe and pin steps; from a worktree at the freeze commit plus only the Part 2 and dedupe-pin commits; `/data/mal/blocks-clean/fresh-0903/wN` is where `backfill_verify --dedupe-out` writes):
+
+```
+python3 -m tools.exp012_score \
+  --w1-dir /data/mal/blocks/fresh-0903/w1 --w1-clean-dir /data/mal/blocks-clean/fresh-0903/w1 \
+  --w2-dir /data/mal/blocks/fresh-0903/w2 --w2-clean-dir /data/mal/blocks-clean/fresh-0903/w2 \
+  --w3-dir /data/mal/blocks/fresh-0903/w3 --w3-clean-dir /data/mal/blocks-clean/fresh-0903/w3 \
+  --artifact-dir ARTIFACTS/exp012 --dedupe-pin ARTIFACTS/exp012/dedupe_pin.sha256 \
+  --frozen-manifest-md5 a01f05dfb1e622f78b2bba55d174be09 \
+  --freeze-commit ea5ec374010378b14a5c19e81bf045679bde73b9 \
+  --out-dir /data/mal/exp012/read --result-out /data/mal/exp012/read/result.json
+```
+
+Run `--dry-run-preconditions` with the same arguments first. Any refusal there stops the read without spending the block.
 
 ## Sources
 

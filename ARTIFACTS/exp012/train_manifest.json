@@ -1,0 +1,67 @@
+{
+  "pools": {
+    "A": {
+      "start": "2026-09-19T01",
+      "end": "2026-09-21T23",
+      "n_hours": 71,
+      "n_rows": 3092
+    },
+    "C": {
+      "start": "2026-09-22T00",
+      "end": "2026-09-25T06",
+      "n_hours": 79,
+      "n_rows": 3372
+    },
+    "B": {
+      "start": "2026-09-25T07",
+      "end": "2026-09-27T23",
+      "n_hours": 65,
+      "n_rows": 2337
+    }
+  },
+  "roots": {
+    "A": "/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00",
+    "C": "/data/mal/clean-view/oracle-insample-2026-09-22_25",
+    "B": "/data/mal/clean-view/oracle-live-2026-09-25_27"
+  },
+  "n_rows_total": 8801,
+  "days": [
+    "2026-09-19",
+    "2026-09-20",
+    "2026-09-21",
+    "2026-09-22",
+    "2026-09-23",
+    "2026-09-24",
+    "2026-09-25",
+    "2026-09-26",
+    "2026-09-27"
+  ],
+  "verify_view": true,
+  "view_sha256_file_sha256": {
+    "A": "05486f70f53c7ef848b151f40d310ecc16e3ef517ff98ed7d4348250a32effe8",
+    "C": "ab4fa8b058a1a3b35c7b090b89840b6d9135aede3cd08cc64516a9446d05b2c3",
+    "B": "a765603e535cb6757e7fe9227355f315f82fb603239f99fa200d8d9abae09251"
+  },
+  "schema": "exp011_train_manifest_v1",
+  "target_spec": "tpsl_tp50_sl30",
+  "label": "pressure net > 0 under the frozen execution (migrate, slot+1, direct, 0.0005 SOL/side, 0.5 SOL, exit tp50_sl30)",
+  "lgb_params": {
+    "num_leaves": 15,
+    "min_data_in_leaf": 20,
+    "learning_rate": 0.05,
+    "rounds": 100
+  },
+  "seed": 1,
+  "deterministic": true,
+  "num_threads": 1,
+  "code_commit": "ea5ec374010378b14a5c19e81bf045679bde73b9",
+  "code_dirty": false,
+  "trained_at_utc": "2026-10-01T03:04:12Z",
+  "wall_s": 9.231000661849976,
+  "model_md5": "a1810d219ed61db64a396f40dc302ce5",
+  "holdout_fence": {
+    "start": "2026-09-09T12",
+    "end": "2026-09-15T12",
+    "note": "never read by this script; asserted at import time"
+  }
+}

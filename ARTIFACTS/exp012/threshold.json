@@ -1,0 +1,9 @@
+{
+  "role": "frozen holdout threshold -- the single number tools/exp011_score.py uses for 'enter iff score(T) >= threshold' on the reserved fast-box holdout",
+  "threshold": 0.8030766588450794,
+  "percentile_definition": "pooled OUTER out-of-fold scores (9-fold LODO -- each day scored by the model trained on the other 8 days), non-interpolating index=round(p*(n-1)) into the sorted array (same convention as tools.exploration_entry_model_b3._pct)",
+  "percentile": 0.9,
+  "n_oof": 8801,
+  "n_selected_at_or_above_threshold": 881,
+  "selected_fraction": 0.10010226110669242
+}

@@ -1,0 +1,216 @@
+{
+  "schema": "exp011_nested_fixed_threshold_lodo_v1",
+  "note": "REPORT ONLY. Not gating. Must not be used to change the frozen threshold, features, or params.",
+  "n_days_total": 9,
+  "n_days_flat_positive": 9,
+  "n_days_press_positive": 9,
+  "flat": {
+    "n": 891,
+    "mean_pct": 7.43247570684624,
+    "ci_lo_pct": 5.188668409001117,
+    "total_sol": 33.111679274,
+    "ex_top3_sol": 31.140748286599997
+  },
+  "press": {
+    "n": 891,
+    "mean_pct": 4.672464066442589,
+    "ci_lo_pct": 3.1683341591043632,
+    "total_sol": 20.81582741600173,
+    "ex_top3_sol": 19.458084402126982
+  },
+  "per_day": [
+    {
+      "day": "2026-09-19",
+      "threshold": 0.7977888326625899,
+      "n_test": 962,
+      "n_entered": 93,
+      "selected_fraction": 0.09667359667359668,
+      "flat_mean_pct": 2.669265323655914,
+      "press_mean_pct": 3.5975491520595364
+    },
+    {
+      "day": "2026-09-20",
+      "threshold": 0.8020399636897679,
+      "n_test": 1059,
+      "n_entered": 113,
+      "selected_fraction": 0.10670443814919736,
+      "flat_mean_pct": 4.700393764690266,
+      "press_mean_pct": 2.49589971234868
+    },
+    {
+      "day": "2026-09-21",
+      "threshold": 0.8006346580792303,
+      "n_test": 1071,
+      "n_entered": 96,
+      "selected_fraction": 0.0896358543417367,
+      "flat_mean_pct": 5.075432959583333,
+      "press_mean_pct": 3.787813672322117
+    },
+    {
+      "day": "2026-09-22",
+      "threshold": 0.7993787655883208,
+      "n_test": 1018,
+      "n_entered": 125,
+      "selected_fraction": 0.12278978388998035,
+      "flat_mean_pct": 8.80567196152,
+      "press_mean_pct": 4.989376169888116
+    },
+    {
+      "day": "2026-09-23",
+      "threshold": 0.8044023419895164,
+      "n_test": 1052,
+      "n_entered": 132,
+      "selected_fraction": 0.12547528517110265,
+      "flat_mean_pct": 5.635402931515151,
+      "press_mean_pct": 2.137959949088798
+    },
+    {
+      "day": "2026-09-24",
+      "threshold": 0.8012877496148277,
+      "n_test": 1017,
+      "n_entered": 105,
+      "selected_fraction": 0.10324483775811209,
+      "flat_mean_pct": 9.622729899238095,
+      "press_mean_pct": 5.651637645097164
+    },
+    {
+      "day": "2026-09-25",
+      "threshold": 0.8030336815122301,
+      "n_test": 844,
+      "n_entered": 84,
+      "selected_fraction": 0.0995260663507109,
+      "flat_mean_pct": 8.07514129690476,
+      "press_mean_pct": 4.889823017180923
+    },
+    {
+      "day": "2026-09-26",
+      "threshold": 0.8074217195258674,
+      "n_test": 915,
+      "n_entered": 74,
+      "selected_fraction": 0.08087431693989071,
+      "flat_mean_pct": 12.215340884864863,
+      "press_mean_pct": 8.270604697691995
+    },
+    {
+      "day": "2026-09-27",
+      "threshold": 0.8043127617697992,
+      "n_test": 863,
+      "n_entered": 69,
+      "selected_fraction": 0.07995365005793743,
+      "flat_mean_pct": 13.31148122,
+      "press_mean_pct": 9.577566140538291
+    }
+  ],
+  "fill_conditional": {
+    "all_entered": {
+      "n": 891,
+      "flat_mean_pct": 7.43247570684624,
+      "press_mean_pct": 4.672464066442589
+    },
+    "filled_only": {
+      "n": 871,
+      "flat_mean_pct": 7.605437261538461,
+      "press_mean_pct": 4.782049923306942
+    }
+  },
+  "source_split": {
+    "A": {
+      "n": 302,
+      "flat_mean_pct": 4.194131571622516,
+      "press_mean_pct": 3.245824010529341
+    },
+    "C": {
+      "n": 391,
+      "flat_mean_pct": 7.647979839565218,
+      "press_mean_pct": 3.8910183090046893
+    },
+    "B": {
+      "n": 198,
+      "flat_mean_pct": 11.946202034848485,
+      "press_mean_pct": 8.391608450503291
+    }
+  },
+  "fold_info": [
+    {
+      "outer_day": "2026-09-19",
+      "trained": true,
+      "threshold": 0.7977888326625899,
+      "n_inner_oof": 7839,
+      "n_test": 962,
+      "n_entered": 93,
+      "selected_fraction": 0.09667359667359668
+    },
+    {
+      "outer_day": "2026-09-20",
+      "trained": true,
+      "threshold": 0.8020399636897679,
+      "n_inner_oof": 7742,
+      "n_test": 1059,
+      "n_entered": 113,
+      "selected_fraction": 0.10670443814919736
+    },
+    {
+      "outer_day": "2026-09-21",
+      "trained": true,
+      "threshold": 0.8006346580792303,
+      "n_inner_oof": 7730,
+      "n_test": 1071,
+      "n_entered": 96,
+      "selected_fraction": 0.0896358543417367
+    },
+    {
+      "outer_day": "2026-09-22",
+      "trained": true,
+      "threshold": 0.7993787655883208,
+      "n_inner_oof": 7783,
+      "n_test": 1018,
+      "n_entered": 125,
+      "selected_fraction": 0.12278978388998035
+    },
+    {
+      "outer_day": "2026-09-23",
+      "trained": true,
+      "threshold": 0.8044023419895164,
+      "n_inner_oof": 7749,
+      "n_test": 1052,
+      "n_entered": 132,
+      "selected_fraction": 0.12547528517110265
+    },
+    {
+      "outer_day": "2026-09-24",
+      "trained": true,
+      "threshold": 0.8012877496148277,
+      "n_inner_oof": 7784,
+      "n_test": 1017,
+      "n_entered": 105,
+      "selected_fraction": 0.10324483775811209
+    },
+    {
+      "outer_day": "2026-09-25",
+      "trained": true,
+      "threshold": 0.8030336815122301,
+      "n_inner_oof": 7957,
+      "n_test": 844,
+      "n_entered": 84,
+      "selected_fraction": 0.0995260663507109
+    },
+    {
+      "outer_day": "2026-09-26",
+      "trained": true,
+      "threshold": 0.8074217195258674,
+      "n_inner_oof": 7886,
+      "n_test": 915,
+      "n_entered": 74,
+      "selected_fraction": 0.08087431693989071
+    },
+    {
+      "outer_day": "2026-09-27",
+      "trained": true,
+      "threshold": 0.8043127617697992,
+      "n_inner_oof": 7938,
+      "n_test": 863,
+      "n_entered": 69,
+      "selected_fraction": 0.07995365005793743
+    }
+  ]
+}
