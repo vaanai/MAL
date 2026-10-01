@@ -453,7 +453,7 @@ REDACTED = "[redacted]"
 # quadratically; the 4096-char input cap bounds the rest.
 _KEY_NAMES = (
     r"(?:api[-_]?key|apikey|client[-_]?secret|secret[-_]?key|private[-_]?key|auth[-_]?token"
-    r"|secret|passw(?:or)?d|passwd|access[-_]?token|token|auth|key)"
+    r"|mnemonic|seed[-_]?phrase|seed|secret|passw(?:or)?d|passwd|pwd|pw|access[-_]?token|token|auth|key)"
 )
 # A quoted value may be unterminated (log lines get cut): take up to 512 chars
 # and the closing quote only if it is there.
@@ -489,6 +489,13 @@ def _redact_key_values(text: str) -> str:
 
 # Order matters: whole-header / whole-URL rules run before the narrower ones.
 _SCRUB_BEFORE_KV: list[re.Pattern[str]] = [
+    # A seed phrase is many words: everything after the name goes, to end of line.
+    re.compile(
+        r"(?i)(?:mnemonic|(?:seed|recovery|backup|wallet)[-_\s]{0,3}(?:phrase|words?)|pass[-_\s]?phrase|bip-?39"
+        r"|seed[\"']?\s{0,3}[:=])[^\n]{0,4096}"
+    ),
+    # Solana keypair JSON byte arrays (64 numbers); the closing bracket may be cut off.
+    re.compile(r"\[\s{0,3}(?:\d{1,3}\s{0,3},\s{0,3}){15,}\d{0,3}\s{0,3}\]?"),
     # bare dashed UUIDs (Helius keys are UUIDs)
     re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
     # headers: Authorization, Cookie / Set-Cookie, X-...-Key
@@ -507,13 +514,15 @@ _SCRUB_BEFORE_KV: list[re.Pattern[str]] = [
 ]
 _SCRUB_AFTER_KV: list[re.Pattern[str]] = [
     # vendor key prefixes
-    re.compile(r"\bmck_[A-Za-z0-9_-]{1,200}"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{8,200}"),
+    re.compile(r"mck_[A-Za-z0-9_-]{1,200}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{8,200}"),
     # any 32+ run of base64 / base64url / base58 / hex characters (mints, signatures, keys)
     re.compile(r"[A-Za-z0-9+/_-]{32,}={0,2}"),
 ]
 _CUT_RUN_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_=%.:-"
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+# Zero-width and BOM characters can hide a label ("mne\u200bmonic"); dropped before scrubbing.
+_ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff]")
 
 
 def scrub_log_line(line: str | None) -> str | None:
@@ -541,6 +550,7 @@ def scrub_log_line(line: str | None) -> str | None:
         if decoded == text:
             break
         text = decoded
+    text = _ZERO_WIDTH.sub("", text)
     text = _CONTROL_CHARS.sub(" ", text).strip()
     for pattern in _SCRUB_BEFORE_KV:
         text = pattern.sub(REDACTED, text)

@@ -1110,3 +1110,84 @@ def test_scrub_is_fast_just_under_the_cap(unit):
     started = _time.perf_counter()
     mal_status.scrub_log_line(payload)
     assert _time.perf_counter() - started < 0.05
+
+
+
+# --- scrub: glued mck_/sk- keys and wallet-style names ------------------------
+
+
+@pytest.mark.parametrize("line", ["xmck_ABCDEF123456", "console_mck_ABCDEF123456", "keyxsk-abcdefgh12345678"])
+def test_scrub_glued_mck_and_sk_redacted(line):
+    out = mal_status.scrub_log_line(line)
+    assert "ABCDEF123456" not in out
+    assert "abcdefgh12345678" not in out
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "pw=hunter2hunter2",
+        'pwd: "hunter2hunter2"',
+        "mnemonic=abandon ability able",
+        "seed_phrase: abandon",
+        "WALLET_SEED=abandonability",
+    ],
+)
+def test_scrub_wallet_style_names_redacted(line):
+    out = mal_status.scrub_log_line(line)
+    assert "hunter2" not in out
+    assert "abandon" not in out
+    assert "ability" not in out
+
+
+def test_scrub_seed_phrase_redacts_rest_of_line():
+    out = mal_status.scrub_log_line("restored wallet, seed phrase: abandon ability able about above absent")
+    assert out.startswith("restored wallet, ")
+    for word in ("abandon", "ability", "able", "about", "above", "absent"):
+        assert word not in out
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "seed: abandon ability able about above absent",
+        "SEED=abandon ability able about above absent",
+        "WALLET_SEED=abandon ability able about above absent",
+        "seed words: abandon ability able about above absent",
+        "Seed Words = abandon ability able about above absent",
+        "seed  phrase:\tabandon ability able about above absent",
+        "recovery phrase: abandon ability able about above absent",
+        "secret recovery phrase: abandon ability able about above absent",
+        "recovery_phrase=abandon ability able about above absent",
+        "backup words: abandon ability able about above absent",
+        "wallet words: abandon ability able about above absent",
+        "passphrase: abandon ability able about above absent",
+        "BIP39: abandon ability able about above absent",
+        "mne​monic: abandon ability able about above absent",
+    ],
+)
+def test_scrub_multiword_seed_forms_redacted(line):
+    out = mal_status.scrub_log_line(line)
+    for word in ("abandon", "ability", "able", "about", "above", "absent"):
+        assert word not in out, (line, out)
+
+
+def test_scrub_keypair_byte_array_redacted():
+    arr = "[" + ",".join(str((i * 37) % 256) for i in range(64)) + "]"
+    for line in (arr, "keypair: " + arr, "loaded " + arr[:120]):
+        out = mal_status.scrub_log_line(line)
+        assert ",".join(str((i * 37) % 256) for i in range(5, 12)) not in out, (line, out)
+
+
+def test_scrub_benign_seed_like_words_kept():
+    assert mal_status.scrub_log_line("seeded run ok") == "seeded run ok"
+    assert mal_status.scrub_log_line("hours [1, 2, 3] sealed") == "hours [1, 2, 3] sealed"
+
+
+def test_scrub_new_rules_stay_fast():
+    import time
+
+    for hostile in ("[" + "1," * 3000, "[" + "1 , " * 1500, "seed " * 1000, "recovery " * 800 + "phrase"):
+        t0 = time.perf_counter()
+        mal_status.scrub_log_line(hostile)
+        assert time.perf_counter() - t0 < 0.05
