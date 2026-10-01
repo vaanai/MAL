@@ -692,6 +692,7 @@ FROZEN_MANIFEST_FILES = (
     "model.txt",
     "nested_fixed_threshold_lodo.json",
     "oof_scores.json",
+    "proceed_screen.json",
     "table.md5",
     "table_row_counts.json",
     "threshold.json",
@@ -758,7 +759,10 @@ def freeze(
     fast_dir: Path | None = None,
     insample_dir: Path | None = None,
     live_dir: Path | None = None,
+    entries_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any], list[dict[str, Any]], dict[str, Any], float, dict[str, Any] | None]:
+    """`entries_sink` (EXP-012): if given, the nested LODO's entered rows are appended to it
+    (for the result.v1 record). Outputs are unchanged."""
     t0 = time.time()
     if table_path is not None:
         rows, manifest = load_table(table_path)
@@ -773,6 +777,8 @@ def freeze(
     if run_nested_lodo:
         print("EXP-011 freeze: running the nested fixed-threshold LODO (report only, 9 outer x 8 inner fits)...", file=sys.stderr, flush=True)
         entries, fold_info = nested_fixed_threshold_lodo(rows)
+        if entries_sink is not None:
+            entries_sink.extend(entries)
         nested_report = nested_lodo_report(entries, fold_info)
         print(
             f"EXP-011 freeze: nested LODO n={nested_report['flat']['n']} flat_mean={nested_report['flat']['mean_pct']} press_mean={nested_report['press']['mean_pct']}",
@@ -798,14 +804,20 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="EXP-012: also write FROZEN.md5 (md5 of every frozen artifact) and, with --table, copy table.md5 / table_row_counts.json next to them",
     )
+    ap.add_argument("--result-out", default=None, help="also write a result.v1 record (role exploration) of the nested LODO here")
+    ap.add_argument("--tries-log", default=None, help="tries log for the result.v1 record (default: MAL_TRIES_LOG / data/tries.jsonl)")
     add_root_args(ap)
     args = ap.parse_args(argv)
+    if args.result_out and args.skip_nested_lodo:
+        raise SystemExit("--result-out needs the nested LODO (drop --skip-nested-lodo)")
     assert args.max_workers <= 3, "keep max-workers <= 3 -- two backfill walkers share this box"
     if args.table and any(r is not None for r in (args.fast_dir, args.oracle_insample_dir, args.oracle_live_dir)):
         raise SystemExit("pool roots belong to the table build (tools.exp011_build_table); --table reads no pool")
     roots = resolve_roots(args) if not args.table else {"fast": None, "insample": None, "live": None}
 
+    entries_sink: list[dict[str, Any]] = []
     model, threshold_info, oof, manifest, wall_s, nested_report = freeze(
+        entries_sink=entries_sink,
         max_workers=args.max_workers,
         buffer_hours=args.buffer_hours,
         run_nested_lodo=not args.skip_nested_lodo,
@@ -815,11 +827,21 @@ def main(argv: Sequence[str] | None = None) -> None:
         live_dir=roots["live"],
     )
     out = write_outputs(Path(args.out_dir), model, threshold_info, oof, manifest, wall_s, nested_report=nested_report)
+    if args.frozen_manifest and nested_report is not None:
+        from tools.exp012_support import proceed_screen
+
+        screen = proceed_screen(nested_report)
+        (Path(args.out_dir) / "proceed_screen.json").write_text(json.dumps(screen, indent=2) + "\n", encoding="utf-8")
+        print(f"EXP-012 proceed screen: proceed={screen['proceed']} flat_ok={screen['flat_ok']} press_ok={screen['press_ok']}", file=sys.stderr, flush=True)
     if args.frozen_manifest:
         if args.table:
             copy_table_records(Path(args.table), Path(args.out_dir))
         mpath = write_frozen_manifest(Path(args.out_dir))
         print(f"EXP-011 freeze: wrote {mpath}", file=sys.stderr, flush=True)
+    if args.result_out:
+        from tools.exp012_support import write_freeze_result
+
+        write_freeze_result(Path(args.result_out), entries_sink, nested_report, command=" ".join(sys.argv), runtime_s=wall_s, tries_log=args.tries_log, git_sha=_git_commit())
     print(f"EXP-011 freeze: wrote {args.out_dir} model_md5={out['model_md5']} wall_s={wall_s:.1f}", file=sys.stderr, flush=True)
 
 

@@ -61,7 +61,7 @@ The freeze also runs the report-only **nested fixed-threshold LODO** (EXP-011 §
 - pooled ex-top-3 SOL **> 0**, and
 - **more than 4 of the 9** outer days positive (that fail model's own count).
 
-If it fails, **EXP-012 is withdrawn before any holdout read** and the block `[2026-09-03T12, 2026-09-09T12)` is released (ledger edit; it stays unread). Nothing — features, hyperparameters, seed, threshold rule, exit, size, the roots — may change in response to the freeze output, in either direction. In particular a pass does not license picking among variants and a fail does not license a second freeze with different settings under this ID. The freeze output is recorded in Part 2 (the artifacts PR) with md5s (`ARTIFACTS/exp012/FROZEN.md5`).
+If it fails, **EXP-012 is withdrawn before any holdout read** and the block `[2026-09-03T12, 2026-09-09T12)` is released (ledger edit; it stays unread). Nothing — features, hyperparameters, seed, threshold rule, exit, size, the roots — may change in response to the freeze output, in either direction. In particular a pass does not license picking among variants and a fail does not license a second freeze with different settings under this ID. The screen is computed mechanically (`tools.exp012_support.proceed_screen`, which calls B3's own `screen_candidate`) and written by the freeze to `ARTIFACTS/exp012/proceed_screen.json`. The freeze output is recorded in Part 2 (the artifacts PR) with md5s (`ARTIFACTS/exp012/FROZEN.md5`).
 
 ## 4. Holdout
 
@@ -137,7 +137,8 @@ nice -n 19 python3 -m tools.exp011_build_table --max-workers 2 --verify-view \
   --fast-dir /data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00 \
   --oracle-insample-dir /data/mal/clean-view/oracle-insample-2026-09-22_25 \
   --oracle-live-dir /data/mal/clean-view/oracle-live-2026-09-25_27
-python3 -m tools.exp011_freeze --table /data/mal/exp012/table.jsonl --out-dir ARTIFACTS/exp012 --frozen-manifest
+python3 -m tools.exp011_freeze --table /data/mal/exp012/table.jsonl --out-dir ARTIFACTS/exp012 --frozen-manifest \
+  --result-out /data/mal/exp012/freeze-result.json
 ```
 
 The read command and its flags are in `tools/exp012_score.py --help`; Part 2 records the exact line with the frozen manifest md5 and the dedupe pin.
