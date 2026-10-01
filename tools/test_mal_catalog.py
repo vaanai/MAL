@@ -36,7 +36,7 @@ def _check(blocks: list[Block], role: str, host: str, start: str, end: str, exp_
 
 def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     by_name = {b.name: b for b in blocks}
-    assert len(blocks) == 8
+    assert len(blocks) == 11
     assert by_name["Fast EXP-009 block"].owner == "EXP-009"
     assert by_name["Fast EXP-009 exclusion"].explicit_hours == ("2026-09-18T23", "2026-09-19T00")
     assert by_name["Forward paper, kill review"].host == "oracle-forward"
@@ -47,7 +47,13 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     unassigned = by_name["Future fast backfill"]
     assert unassigned.owner == "unassigned"
     assert unassigned.start_hour is None
-    assert unassigned.end_hour_exclusive == "2026-09-09T12"
+    assert unassigned.end_hour_exclusive == "2026-08-14T12"
+    assert by_name["Fresh confirmation block"].owner == "EXP-012"
+    assert by_name["Fresh confirmation block"].host == "research"
+    assert by_name["Backup confirmation block"].owner == "reserved"
+    assert by_name["Backup confirmation block"].host == "research"
+    assert by_name["Exploration expansion"].owner == "exploration-pool"
+    assert by_name["Exploration expansion"].host == "research"
 
 
 # --- check_read against the real ledger -----------------------------------
@@ -86,7 +92,7 @@ def test_exploration_fast_exp011_deny_and_confirmation_allow(blocks: list[Block]
 
 
 def test_exploration_fast_unassigned_deny(blocks: list[Block]) -> None:
-    ok, reasons = _check(blocks, "exploration", "fast", "2026-09-01T00", "2026-09-01T01")
+    ok, reasons = _check(blocks, "exploration", "fast", "2026-08-01T00", "2026-08-01T01")
     assert not ok
     assert any("unassigned" in r for r in reasons)
 
@@ -217,7 +223,7 @@ def test_build_catalog_validates_and_is_deterministic() -> None:
     assert doc1["schema_version"] == "catalog.v1"
     assert doc1["ledger_sha256"] == doc2["ledger_sha256"]
     assert len(doc1["ledger_sha256"]) == 64
-    assert len(doc1["blocks"]) == 8
+    assert len(doc1["blocks"]) == 11
     assert doc1["walkers"] == []
 
     def _stable(d: dict) -> dict:
@@ -263,3 +269,17 @@ def test_build_catalog_missing_checkpoint_reports_error_not_crash(tmp_path: Path
     doc = build_catalog(LEDGER_PATH, checkpoint_dirs={"walker_missing": str(tmp_path / "does-not-exist")})
     assert len(doc["walkers"]) == 1
     assert "error" in doc["walkers"][0]
+
+
+def test_reserved_block_denied_for_every_role_even_the_exp_its_text_mentions(blocks: list[Block]) -> None:
+    # "reserved: the confirmation test after EXP-012" must not unlock for EXP-012.
+    for role, exp in (("exploration", None), ("confirmation-oneshot", "EXP-012"), ("confirmation-oneshot", "EXP-013")):
+        ok, reasons = _check(blocks, role, "research", "2026-09-01T00", "2026-09-01T01", exp_id=exp)
+        assert not ok, (role, exp, reasons)
+
+
+def test_research_exploration_expansion_allowed_and_exp012_block_needs_its_id(blocks: list[Block]) -> None:
+    ok, reasons = _check(blocks, "exploration", "research", "2026-08-20T00", "2026-08-20T01")
+    assert ok, reasons
+    ok, _ = _check(blocks, "exploration", "research", "2026-09-05T00", "2026-09-05T01")
+    assert not ok
