@@ -308,9 +308,10 @@ def compare(
     oo_t = o_t[o_in]
     oo_ven = o_ven[o_in]
     oo_sch = o_sch[o_in]
-    d_all = f_t[pos_o][found_o] - oo_t[found_o]  # fast - oracle, ms
-    m_ven_fast = f_ven[pos_o][found_o]
-    m_sch_fast = f_sch[pos_o][found_o]
+    pos_m = pos_o[found_o]  # indexes only matched rows, so an empty scored side is fine
+    d_all = f_t[pos_m] - oo_t[found_o]  # fast - oracle, ms
+    m_ven_fast = f_ven[pos_m]
+    m_sch_fast = f_sch[pos_m]
     m_ven_orc = oo_ven[found_o]
     m_sch_orc = oo_sch[found_o]
     m_t_orc = oo_t[found_o]
@@ -716,7 +717,7 @@ def render_chain_markdown(ch: dict, meta: dict) -> str:
         "",
         "A tape row (window rows, matched by identity) with no chain counterpart is either a duplicate or replay the tape "
         "recorded twice, a decode or `event_index` difference, a transaction the walk skipped (failed transactions are skipped "
-        "by the walk), or a gap in the walk. The signature columns separate the first two: signature present on chain means the "
+        "by the walk), or a gap in the walk. The signature lines below separate the first two: signature present on chain means the "
         "tape numbered its events differently, signature absent means chain has no such transaction.",
         "",
         "| Tape | Slice | Tape rows | In chain | Not in chain | Share not in chain |",
@@ -759,7 +760,9 @@ def render_chain_markdown(ch: dict, meta: dict) -> str:
         "",
         "- Window is bounded by each row's own stamp (receive time for a tape, `block_time` for chain). Receive lag moves a "
         f"trade across the edge; rows within the {meta['margin_s']} s scan margin are still matched, but a lag larger than the margin leaves "
-        "edge rows unmatched on either side. Use a margin above the tape's p99 lag.",
+        "edge rows unmatched on either side. Use a margin above the tape's p99 lag. If the chain walk does not include the hour before the "
+        "window (or the one after it), the margin there is empty: tape rows that arrive just after the window start for blocks from "
+        "before it then show as not in chain, and the 'hour files not found' warnings for those margin hours are expected.",
         "- Hashing: identities are 8-byte blake2b hashes; a collision would count as a match.",
         "- Chain is only as complete as the `getBlock` walk and only as correct as the shared decoder. A trade both tapes and chain "
         "decode wrongly the same way is invisible here.",
