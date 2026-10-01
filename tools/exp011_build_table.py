@@ -51,6 +51,11 @@ def _md5_of_file(path: Path) -> str:
     return h.hexdigest()
 
 
+FORCED_MAX_WORKERS = 2
+FORCED_BUFFER_HOURS = 24
+FORCED_MAX_HOME_HOURS = 12
+
+
 def _sha256_of_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -68,7 +73,17 @@ def build_table(
     fast_dir: Path | None = None,
     insample_dir: Path | None = None,
     live_dir: Path | None = None,
+    verify_view: bool = False,
 ) -> dict[str, Any]:
+    if any(r is not None for r in (fast_dir, insample_dir, live_dir)):
+        # EXP-012 section 3.1/4: the table settings are part of the recipe; with explicit roots they are forced.
+        if (max_workers, buffer_hours, max_home_hours) != (FORCED_MAX_WORKERS, FORCED_BUFFER_HOURS, FORCED_MAX_HOME_HOURS):
+            raise SystemExit(
+                f"with explicit pool roots the table settings are fixed at max_workers={FORCED_MAX_WORKERS}, buffer_hours={FORCED_BUFFER_HOURS}, max_home_hours={FORCED_MAX_HOME_HOURS} "
+                f"(got {max_workers}, {buffer_hours}, {max_home_hours})"
+            )
+        if not verify_view:
+            raise SystemExit("explicit pool roots require --verify-view")
     t0 = time.time()
     rows, manifest = load_tp50_rows(
         max_workers=max_workers,
@@ -80,6 +95,7 @@ def build_table(
         live_dir=live_dir,
     )
     if "roots" in manifest:
+        manifest["verify_view"] = True
         # Provenance of a clean-view input: the sha256 of each root's own VIEW.sha256.
         manifest["view_sha256_file_sha256"] = {
             label: (_sha256_of_file(root / "VIEW.sha256") if root is not None and (root / "VIEW.sha256").is_file() else None)
@@ -147,6 +163,7 @@ def main(argv: list[str] | None = None) -> None:
         fast_dir=roots["fast"],
         insample_dir=roots["insample"],
         live_dir=roots["live"],
+        verify_view=args.verify_view,
     )
 
 

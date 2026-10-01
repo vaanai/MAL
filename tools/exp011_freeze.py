@@ -307,6 +307,8 @@ def resolve_roots(args: argparse.Namespace) -> dict[str, Path | None]:
         if root is not None:
             roots[label] = assert_root_allowed(root, label)
     n_given = sum(r is not None for r in roots.values())
+    if n_given and not args.verify_view:
+        raise SystemExit("pool roots require --verify-view (the clean-view hashes are pinned in the pre-registration)")
     if 0 < n_given < 3:
         raise SystemExit("give all three pool roots (--fast-dir, --oracle-insample-dir, --oracle-live-dir) or none: a partial override mixes dirty and clean pools")
     if all(r is not None for r in roots.values()):
@@ -651,12 +653,25 @@ def _git_commit() -> str:
         return "unknown"
 
 
-def _git_state() -> tuple[str, bool]:
-    """(HEAD sha, tracked files modified?). ("unknown", True) if the repo cannot say."""
-    repo = str(Path(__file__).resolve().parents[1])
+def _git_state(out_dir: Path | str | None = None) -> tuple[str, bool]:
+    """(HEAD sha, dirty?). Dirty = any tracked file modified, OR any file (tracked
+    or untracked, ignored files aside) under tools/, schemas/ or `out_dir` (when
+    inside the repo) that git status lists. ("unknown", True) if git cannot say."""
+    repo_p = Path(__file__).resolve().parents[1]
+    repo = str(repo_p)
     try:
         sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, stderr=subprocess.DEVNULL).decode().strip()
         dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo, stderr=subprocess.DEVNULL).decode().strip())
+        specs = ["tools", "schemas"]
+        if out_dir is not None:
+            try:
+                rel = os.path.relpath(Path(out_dir).resolve(), repo_p.resolve())
+                if not rel.startswith(".."):
+                    specs.append(rel)
+            except ValueError:
+                pass
+        if not dirty:
+            dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=all", "--", *specs], cwd=repo, stderr=subprocess.DEVNULL).decode().strip())
         return sha, dirty
     except Exception:
         return "unknown", True
@@ -860,7 +875,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         # EXP-012 section 3.3: the first completed freeze is binding.
         if args.skip_nested_lodo:
             raise SystemExit("--frozen-manifest needs the nested LODO (the proceed screen is computed from it); drop --skip-nested-lodo")
-        sha, dirty = _git_state()
+        sha, dirty = _git_state(args.out_dir)
         if not args.expect_commit or sha != args.expect_commit or dirty:
             raise SystemExit(f"--frozen-manifest needs --expect-commit == HEAD with tracked files unmodified (HEAD={sha}, dirty={dirty}, expected={args.expect_commit})")
         if (Path(args.out_dir) / FROZEN_MANIFEST_NAME).exists():

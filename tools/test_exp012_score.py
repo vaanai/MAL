@@ -79,7 +79,17 @@ NESTED_PASS = {
 }
 
 
-def write_frozen_artifacts(art: Path, *, nested: dict | None = None, screen: dict | None = None, commit: str = FREEZE_COMMIT, dirty: bool = False, views: dict | None = None) -> None:
+def write_frozen_artifacts(
+    art: Path,
+    *,
+    nested: dict | None = None,
+    screen: dict | None = None,
+    commit: str = FREEZE_COMMIT,
+    dirty: bool = False,
+    views: dict | None = None,
+    settings: tuple[int, int, int] = (2, 24, 12),
+    verify_view: bool = True,
+) -> None:
     art.mkdir(parents=True, exist_ok=True)
     rng = random.Random(3)
     x = [[rng.random() for _ in fz.FROZEN_FEATURE_NAMES] for _ in range(200)]
@@ -93,7 +103,12 @@ def write_frozen_artifacts(art: Path, *, nested: dict | None = None, screen: dic
     (art / "nested_fixed_threshold_lodo.json").write_text(json.dumps(nested))
     (art / "proceed_screen.json").write_text(json.dumps(sup.proceed_screen(nested) if screen is None else screen))
     (art / "train_manifest.json").write_text(json.dumps({"code_commit": commit, "code_dirty": dirty}))
-    (art / "table_row_counts.json").write_text(json.dumps({"manifest": {"view_sha256_file_sha256": fz.VIEW_PIN_BY_POOL if views is None else views}}))
+    manifest = {"view_sha256_file_sha256": fz.VIEW_PIN_BY_POOL if views is None else views}
+    if verify_view:
+        manifest["verify_view"] = True
+    (art / "table_row_counts.json").write_text(
+        json.dumps({"max_workers": settings[0], "buffer_hours": settings[1], "max_home_hours": settings[2], "manifest": manifest})
+    )
     fz.write_frozen_manifest(art)
 
 
@@ -435,6 +450,18 @@ class RefusalTests(Base):
         write_frozen_artifacts(root / "ARTIFACTS" / "exp012", views={"A": "0" * 64, "C": "0" * 64, "B": "0" * 64})
         self.assert_refused(root, "pinned VIEW.sha256")
 
+    def test_table_settings_must_be_24_12_2(self) -> None:
+        for name, settings in (("workers", (3, 24, 12)), ("buffer", (2, 2, 12)), ("home hours", (2, 24, 6))):
+            with self.subTest(name):
+                root = self.fresh()
+                write_frozen_artifacts(root / "ARTIFACTS" / "exp012", settings=settings)
+                self.assert_refused(root, "the pre-registration fixes (2, 24, 12)")
+
+    def test_verify_view_must_be_recorded(self) -> None:
+        root = self.fresh()
+        write_frozen_artifacts(root / "ARTIFACTS" / "exp012", verify_view=False)
+        self.assert_refused(root, "verify_view: true")
+
     def test_lock_already_exists(self) -> None:
         root = self.fresh()
         lock_of(root).parent.mkdir(parents=True)
@@ -517,6 +544,31 @@ class RepoStateTests(unittest.TestCase):
             self._git(repo, "commit", "-q", "-am", "code change after the freeze")
             self.assertTrue(any("changed between the freeze commit" in e for e in s12.check_repo_state(paths, freeze, repo)))
             self.assertTrue(any("outside the repository" in e for e in s12.check_repo_state([Path("/etc/hostname")], freeze, repo)))
+
+    def test_dirty_tools_file_and_untracked_shadow_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._git(repo, "init", "-q")
+            (repo / "tools").mkdir()
+            (repo / "ARTIFACTS" / "exp012").mkdir(parents=True)
+            (repo / "tools" / "paper_attention_promote.py").write_text("X = 1\n")
+            (repo / "ARTIFACTS" / "exp012" / "FROZEN.md5").write_text("m\n")
+            self._git(repo, "add", "-A")
+            self._git(repo, "commit", "-q", "-m", "one")
+            freeze = self._git(repo, "rev-parse", "HEAD")
+            paths = [repo / "ARTIFACTS" / "exp012" / "FROZEN.md5"]
+            self.assertEqual(s12.check_repo_state(paths, freeze, repo), [])
+            # a dirty module that is NOT one of the guarded files
+            (repo / "tools" / "paper_attention_promote.py").write_text("X = 2\n")
+            self.assertTrue(any("working tree is dirty" in e for e in s12.check_repo_state(paths, freeze, repo)))
+            self._git(repo, "checkout", "--", "tools/paper_attention_promote.py")
+            self.assertEqual(s12.check_repo_state(paths, freeze, repo), [])
+            # an untracked shadow file under tools/ and under ARTIFACTS/exp012
+            (repo / "tools" / "shadow.py").write_text("import evil\n")
+            self.assertTrue(any("working tree is dirty" in e for e in s12.check_repo_state(paths, freeze, repo)))
+            (repo / "tools" / "shadow.py").unlink()
+            (repo / "ARTIFACTS" / "exp012" / "extra.json").write_text("{}")
+            self.assertTrue(any("working tree is dirty" in e for e in s12.check_repo_state(paths, freeze, repo)))
 
 
 class PinTests(Base):

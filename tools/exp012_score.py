@@ -220,6 +220,11 @@ def _check_screen_and_provenance(artifact_dir: Path, freeze_commit: str | None) 
         errors.append("--freeze-commit must be the 40-hex commit the freeze ran at")
     elif train.get("code_commit") != freeze_commit or train.get("code_dirty") is not False:
         errors.append(f"train_manifest.json code_commit/code_dirty ({train.get('code_commit')!r}, {train.get('code_dirty')!r}) != --freeze-commit {freeze_commit} clean")
+    got_settings = (counts.get("max_workers"), counts.get("buffer_hours"), counts.get("max_home_hours"))
+    if got_settings != (2, 24, 12):
+        errors.append(f"table_row_counts.json shows (max_workers, buffer_hours, max_home_hours) = {got_settings}, the pre-registration fixes (2, 24, 12)")
+    if (counts.get("manifest") or {}).get("verify_view") is not True:
+        errors.append("table_row_counts.json does not record verify_view: true (the table must be built with --verify-view)")
     views = (counts.get("manifest") or {}).get("view_sha256_file_sha256")
     if views != VIEW_PIN_BY_POOL:
         errors.append("table_row_counts.json does not record the pinned VIEW.sha256 hashes for pools A/C/B (EXP-012 section 3.2)")
@@ -247,6 +252,9 @@ def check_repo_state(paths: Sequence[Path], freeze_commit: str | None, repo_root
             errors.append(f"{rel} is not tracked by the repository")
         elif _git(repo_root, "diff", "--quiet", "HEAD", "--", rel)[0] != 0:
             errors.append(f"{rel} differs from HEAD (uncommitted change)")
+    rc, out = _git(repo_root, "status", "--porcelain", "--untracked-files=all", "--", "tools", "schemas", "ARTIFACTS/exp012")
+    if rc != 0 or out:
+        errors.append(f"working tree is dirty under tools/, schemas/ or ARTIFACTS/exp012 (modified or untracked files, e.g. {out.splitlines()[0] if out else 'git status failed'})")
     if freeze_commit:
         rc, _ = _git(repo_root, "diff", "--quiet", freeze_commit, "HEAD", "--", "tools", "schemas")
         if rc != 0:

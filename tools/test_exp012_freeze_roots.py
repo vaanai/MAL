@@ -169,7 +169,15 @@ class LoaderRootsEquivalenceTests(unittest.TestCase):
                 "--out-dir", out, "--max-workers", "1", "--buffer-hours", "2", "--max-home-hours", "0",
                 "--fast-dir", str(self.fast), "--oracle-insample-dir", str(self.ins), "--oracle-live-dir", str(self.live),
             ]
-            build_table_mod.main(argv)
+            # explicit roots force the recipe's table settings and --verify-view
+            with self.assertRaises(SystemExit):
+                build_table_mod.main(argv + ["--verify-view"])
+            self.assertFalse((Path(out) / "table.jsonl").exists())
+            argv = [a for a in argv if a not in ("1", "2", "0", "--max-workers", "--buffer-hours", "--max-home-hours")]
+            argv = [a for a in argv] + ["--max-workers", "2", "--buffer-hours", "24", "--max-home-hours", "12", "--verify-view"]
+            # the fixture roots are not the pinned clean views: stub the content/pin checks (covered separately)
+            with mock.patch.object(fz, "verify_view_sha256", return_value=1), mock.patch.object(fz, "check_view_pin", return_value="x"):
+                build_table_mod.main(argv)
             table = Path(out) / "table.jsonl"
             lines = [json.loads(x) for x in table.read_text().splitlines() if x.strip()]
             self.assertEqual(len(lines), GOLDEN_LOADER_ROWS_N)
@@ -178,7 +186,26 @@ class LoaderRootsEquivalenceTests(unittest.TestCase):
             counts = json.loads((Path(out) / "row_counts.json").read_text())
             self.assertEqual(counts["manifest"]["roots"]["A"], str(self.fast))
             self.assertIn("view_sha256_file_sha256", counts["manifest"])
+            self.assertIs(counts["manifest"]["verify_view"], True)
+            self.assertEqual((counts["max_workers"], counts["buffer_hours"], counts["max_home_hours"]), (2, 24, 12))
             self.assertTrue((Path(out) / "scratch").is_dir())
+
+    def test_roots_without_verify_view_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as out:
+            argv = ["--out-dir", out, "--fast-dir", str(self.fast), "--oracle-insample-dir", str(self.ins), "--oracle-live-dir", str(self.live)]
+            with self.assertRaises(SystemExit) as cm:
+                build_table_mod.main(argv)
+            self.assertIn("--verify-view", str(cm.exception))
+            self.assertFalse((Path(out) / "table.jsonl").exists())
+
+    def test_build_table_function_refuses_wrong_settings_or_missing_verify_view(self) -> None:
+        with tempfile.TemporaryDirectory() as out:
+            kw = dict(fast_dir=self.fast, insample_dir=self.ins, live_dir=self.live)
+            for settings in ({"max_workers": 1}, {"buffer_hours": 2}, {"max_home_hours": None}):
+                with self.subTest(settings), self.assertRaises(SystemExit):
+                    build_table_mod.build_table(Path(out) / "t.jsonl", Path(out) / "s", verify_view=True, **kw, **settings)
+            with self.assertRaises(SystemExit):
+                build_table_mod.build_table(Path(out) / "t.jsonl", Path(out) / "s", **kw)
 
     def test_build_table_defaults_call_the_loaders_with_no_override(self) -> None:
         seen: dict = {}
@@ -308,7 +335,7 @@ class ViewShaTests(unittest.TestCase):
 
         ap = argparse.ArgumentParser()
         fz.add_root_args(ap)
-        for argv in (["--fast-dir", "/x/f"], ["--oracle-insample-dir", "/x/i", "--oracle-live-dir", "/x/l"]):
+        for argv in (["--fast-dir", "/x/f", "--verify-view"], ["--oracle-insample-dir", "/x/i", "--oracle-live-dir", "/x/l", "--verify-view"]):
             with self.subTest(argv), self.assertRaises(SystemExit) as cm:
                 fz.resolve_roots(ap.parse_args(argv))
             self.assertIn("all three", str(cm.exception))
@@ -355,10 +382,19 @@ class ViewShaTests(unittest.TestCase):
         fz.add_root_args(ap)
         with tempfile.TemporaryDirectory() as td:
             empty = Path(td) / "empty"
-            args = ap.parse_args(["--fast-dir", str(empty), "--oracle-insample-dir", str(empty), "--oracle-live-dir", str(empty)])
+            args = ap.parse_args(["--fast-dir", str(empty), "--oracle-insample-dir", str(empty), "--oracle-live-dir", str(empty), "--verify-view"])
             with self.assertRaises(SystemExit) as cm:
                 fz.resolve_roots(args)
             self.assertIn("required file(s) missing", str(cm.exception))
+
+    def test_roots_without_verify_view_refused_by_resolve_roots(self) -> None:
+        import argparse
+
+        ap = argparse.ArgumentParser()
+        fz.add_root_args(ap)
+        with self.assertRaises(SystemExit) as cm:
+            fz.resolve_roots(ap.parse_args(["--fast-dir", "/x/f", "--oracle-insample-dir", "/x/i", "--oracle-live-dir", "/x/l"]))
+        self.assertIn("--verify-view", str(cm.exception))
 
     def test_resolve_roots_default_is_all_none(self) -> None:
         import argparse
@@ -374,6 +410,31 @@ class ViewShaTests(unittest.TestCase):
         fz.add_root_args(ap)
         with self.assertRaises(SystemExit):
             fz.resolve_roots(ap.parse_args(["--verify-view"]))
+
+
+class RepoStateQueryTests(unittest.TestCase):
+    def test_state_query_covers_untracked_files_under_tools_schemas_and_out_dir(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake(cmd, **kw):
+            calls.append(list(cmd))
+            return b"abc\n" if cmd[1] == "rev-parse" else b""
+
+        repo = Path(fz.__file__).resolve().parents[1]
+        with mock.patch.object(fz.subprocess, "check_output", fake):
+            self.assertEqual(fz._git_state(repo / "ARTIFACTS" / "exp012"), ("abc", False))
+        status = [c for c in calls if c[1] == "status" and "--untracked-files=all" in c]
+        self.assertEqual(len(status), 1)
+        self.assertEqual(status[0][status[0].index("--") + 1 :], ["tools", "schemas", "ARTIFACTS/exp012"])
+
+    def test_untracked_output_reports_dirty(self) -> None:
+        def fake(cmd, **kw):
+            if cmd[1] == "rev-parse":
+                return b"abc\n"
+            return b"?? tools/shadow.py\n" if "--untracked-files=all" in cmd else b""
+
+        with mock.patch.object(fz.subprocess, "check_output", fake):
+            self.assertEqual(fz._git_state(), ("abc", True))
 
 
 class ManifestParseTests(unittest.TestCase):
