@@ -285,7 +285,9 @@ def build_creator_history(backfill: Path | None = None) -> dict[str, list[int]]:
 # --- Load pool creates with both a _Mint (for exit scoring) and a _Feat ----
 
 
-def _load_creates_full(hours: Sequence[dict[str, Any]]) -> dict[str, tuple[_Mint, _Feat]]:
+def _load_creates_full(hours: Sequence[dict[str, Any]], strict_hours: bool = False) -> dict[str, tuple[_Mint, _Feat]]:
+    """`strict_hours` (single-cell path only): drop creates whose block_time is
+    outside the hour file being read. Default False = the frozen grid behavior."""
     found: dict[str, tuple[_Mint, _Feat]] = {}
     for hour in hours:
         path = hour.get("create")
@@ -298,6 +300,8 @@ def _load_creates_full(hours: Sequence[dict[str, Any]]) -> dict[str, tuple[_Mint
             slot = row.get("slot")
             block = row.get("block_time")
             if not isinstance(mint_id, str) or not isinstance(slot, int) or not isinstance(block, int):
+                continue
+            if strict_hours and not (hour["end"] - 3600 <= block < hour["end"]):
                 continue
             quote_mint = row.get("quote_mint")
             if isinstance(quote_mint, str) and quote_mint and quote_mint != WSOL:
@@ -344,7 +348,17 @@ def score_one(
     curve: FailCurve,
     tape_through_ms: int,
     creator_hist: dict[str, list[int]],
+    *,
+    specs: Sequence[dict[str, Any]] | None = None,
+    size: int | None = None,
+    priority: int | None = None,
 ) -> list[dict[str, Any]]:
+    """`specs`/`size`/`priority` default (None) to TARGET_SPECS / ENTRY_SIZE /
+    ENTRY_PRIORITY_LAMPORTS, resolved here at call time, so the frozen B3 grid
+    path is unchanged; the single-cell entry point passes them explicitly."""
+    specs = TARGET_SPECS if specs is None else specs
+    size = ENTRY_SIZE if size is None else size
+    priority = ENTRY_PRIORITY_LAMPORTS if priority is None else priority
     if mint.mig_slot is None or mint.mig_ms is None or feat is None:
         return []
     fills, trigger_slot, trigger_block_ms, ref = _fills_for(mint, migrate=True)
@@ -372,25 +386,25 @@ def score_one(
     feats["nearby_buy_sol"] = nearby / LAMPORTS_PER_SOL
     out: list[dict[str, Any]] = []
     if state is None:
-        flat = mixed_net(0, 1, MISS, ENTRY_PRIORITY_LAMPORTS, 0.0)
-        for spec in TARGET_SPECS:
+        flat = mixed_net(0, 1, MISS, priority, 0.0)
+        for spec in specs:
             out.append(_row(mint_id, spec["id"], day, MISS, False, 0, flat, flat, feats))
         return out
-    buy = _try_buy(state, ENTRY_SIZE, ENTRY_PORTAL_PPM, ref)
+    buy = _try_buy(state, size, ENTRY_PORTAL_PPM, ref)
     if buy is None:
-        flat = mixed_net(0, 1, MISS, ENTRY_PRIORITY_LAMPORTS, 0.0)
-        for spec in TARGET_SPECS:
+        flat = mixed_net(0, 1, MISS, priority, 0.0)
+        for spec in specs:
             out.append(_row(mint_id, spec["id"], day, MISS, False, 0, flat, flat, feats))
         return out
     venue = state.venue
     p_press = curve.p(Pressure(buys, nearby))
-    for spec in TARGET_SPECS:
-        result = eval_spec(spec, fills, idx, state.price_sol, buy, venue, landing_ms, tape_through_ms)
+    for spec in specs:
+        result = eval_spec(spec, fills, idx, state.price_sol, buy, venue, landing_ms, tape_through_ms, size)
         if result is None:
             continue
         net0, gross, sides, status = result
-        flat = mixed_net(net0, sides, status, ENTRY_PRIORITY_LAMPORTS, FLAT_FAIL)
-        press = mixed_net(net0, sides, status, ENTRY_PRIORITY_LAMPORTS, p_press)
+        flat = mixed_net(net0, sides, status, priority, FLAT_FAIL)
+        press = mixed_net(net0, sides, status, priority, p_press)
         out.append(_row(mint_id, spec["id"], day, status, True, gross, flat, press, feats))
     return out
 
@@ -408,8 +422,17 @@ def run_worker_features(
     row_iter_fn: Any = _iter_trades,
     creates_override: dict[str, tuple[_Mint, _Feat]] | None = None,
     rows_out_path: Path | None = None,
+    specs: Sequence[dict[str, Any]] | None = None,
+    size: int | None = None,
+    priority: int | None = None,
+    strict_hours: bool = False,
 ) -> list[dict[str, Any]]:
-    """`hour_info_fn`/`row_iter_fn`/`creates_override` let a second pool with a
+    """`specs`/`size`/`priority`/`strict_hours` (single-cell entry point only;
+    defaults reproduce the frozen B3 grid exactly): see score_one and
+    _load_creates_full; `strict_hours` also drops trade rows whose block_time is
+    outside the hour file being read.
+
+    `hour_info_fn`/`row_iter_fn`/`creates_override` let a second pool with a
     different on-disk layout (e.g. the Oracle live tape in
     tools.oracle_live_adapter / tools.exploration_entry_model_b2) reuse this
     exact streaming worker and score_one unchanged. Every default reproduces
@@ -434,7 +457,7 @@ def run_worker_features(
     home_hours = [hour_info_fn(k) for k in home_keys]
     buffer_hours = [hour_info_fn(k) for k in buffer_keys]
     hours = home_hours + buffer_hours
-    creates = creates_override if creates_override is not None else _load_creates_full(home_hours)
+    creates = creates_override if creates_override is not None else _load_creates_full(home_hours, strict_hours)
     hot: dict[str, _Mint] = {mid: m for mid, (m, _f) in creates.items()}
     feat: dict[str, _Feat] = {mid: f for mid, (_m, f) in creates.items()}
     watch: dict[str, _Mint] = {}
@@ -448,7 +471,7 @@ def run_worker_features(
         nonlocal scored
         if mint.mig_slot is None or mint.mig_done:
             return
-        rows = score_one(mint_id, mint, feat.get(mint_id), curve, through_ms, creator_hist)
+        rows = score_one(mint_id, mint, feat.get(mint_id), curve, through_ms, creator_hist, specs=specs, size=size, priority=priority)
         if out_fh is not None:
             for r in rows:
                 out_fh.write(json.dumps(r) + "\n")
@@ -497,6 +520,8 @@ def run_worker_features(
                 continue
             block = row.get("block_time")
             if not isinstance(block, int):
+                continue
+            if strict_hours and not (hour["end"] - 3600 <= block < hour["end"]):
                 continue
             if row.get("t_recv_ms") is None:
                 row["t_recv_ms"] = block * 1000
