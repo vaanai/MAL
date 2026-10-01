@@ -108,8 +108,10 @@ Pure function in `tools/mal_status.py`, applied to every `last_log`, and
 also to the remote `errors` list and the SSH `error` text, before anything
 is written. Steps, in order:
 
-1. Cap the input at 4096 characters (a token cut by the cap is dropped),
-   so scrub time is bounded. Every regex is bounded or linear; tests assert
+1. Cap the input at 4096 characters, so scrub time is bounded. When the
+   cap fires, the trailing run of key-alphabet characters (at least the last
+   64 characters) is dropped before scrubbing and the line ends with `…`, so
+   a half-cut secret cannot survive. Every regex is bounded or linear; tests assert
    hostile 48,000-character lines scrub in under 50 ms.
 2. Percent-decode (up to twice), so `Bearer%20key`, `api%5Fkey%3D…` and
    `hex%2Fhex` are seen as their decoded form. Control characters become
@@ -125,11 +127,14 @@ is written. Steps, in order:
    - any URL query value of 20+ characters;
    - `HELIUS_API_KEY <value>` (space-separated);
    - `name=value`, `name: value` and JSON `"name":"value"` forms (quotes
-     optional around name and value; quoted values may contain spaces) for
-     `api-key`/`api_key`/`apikey`, `client_secret`, `secret`, `password`/
-     `passwd`, `access_token`, `token`, `auth` and bare `key`. The name must
-     not be glued to a preceding letter or digit, so `author=` and
-     `monkey` are untouched;
+     optional around name and value; quoted values may contain spaces and
+     may be unterminated, to a 512-character limit) for `api-key`/
+     `api_key`/`apikey`, `client_secret`, `secret_key`, `private_key`,
+     `auth_token`, `secret`, `password`/`passwd`, `access_token`, `token`,
+     `auth` and bare `key`, matched case-insensitively. The name may be
+     glued to a prefix of up to 40 letters, digits, `_` or `-` (`PGPASSWORD`,
+     `db-password`, `1password`, `x_api_key`, `secretKey`); the prefix is
+     redacted with the value. So `monkey: 5` is redacted too;
    - `mck_…` and `sk-…` keys;
    - any run of 32+ characters from `[A-Za-z0-9+/_-]` plus up to two `=`
      (base64, base64url, base58 mints/signatures, hex).

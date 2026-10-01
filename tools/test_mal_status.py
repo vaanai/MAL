@@ -1022,3 +1022,91 @@ def test_remote_errors_list_is_scrubbed(monkeypatch):
         blob = json.dumps(status["errors"])
         assert "SEKRET" not in blob and UUID not in blob
         assert [u["name"] for u in status["units"]] == ["mal-x.service"]  # nameless unit dropped
+
+
+# === review round 2: glued names, unterminated quotes, cap-cut partials ==========
+
+B64_VALUE = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5=="
+HEX_VALUE = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.mark.parametrize(
+    "line, secret",
+    [
+        ("PGPASSWORD=SEKRET-value psql", "SEKRET-value"),
+        ("DBPASSWORD=SEKRET-value", "SEKRET-value"),
+        ("MYSECRET=SEKRET-value", "SEKRET-value"),
+        ("PRIVATEKEY=SEKRET-value", "SEKRET-value"),
+        ("authtoken: SEKRET-value", "SEKRET-value"),
+        ("secretKey: SEKRET-value", "SEKRET-value"),
+        ("1password=SEKRET-value", "SEKRET-value"),
+        ("SECRET_KEY=SEKRET-value", "SEKRET-value"),
+        ("db-password=SEKRET-value", "SEKRET-value"),
+        ("private_key=SEKRET-value", "SEKRET-value"),
+        ('{"secretKey":"SEKRET-value"}', "SEKRET-value"),
+        ('{"private-key": "SEKRET-value"}', "SEKRET-value"),
+        ("MY_AUTH_TOKEN=SEKRET-value", "SEKRET-value"),
+    ],
+)
+def test_scrub_glued_key_names(line, secret):
+    out = mal_status.scrub_log_line(line)
+    assert secret not in out and "[redacted]" in out
+
+
+def test_scrub_glued_name_prefix_is_redacted_with_the_value():
+    out = mal_status.scrub_log_line("run PGPASSWORD=SEKRET-value psql")
+    assert out == "run [redacted] psql"
+    assert mal_status.scrub_log_line('x "apiKey":"v"') == "x [redacted]"
+
+
+@pytest.mark.parametrize(
+    "line, secret",
+    [
+        ('password="hunter2hunter', "hunter2hunter"),
+        ("token='abc", "abc"),
+        ('{"apiKey":"valueNotUuid', "valueNotUuid"),
+        ('{"password":"two words unterminated', "unterminated"),
+        ('secret = "quoted secret that is closed" tail', "quoted secret"),
+        ("passwd='half closed", "half closed"),
+    ],
+)
+def test_scrub_unterminated_and_quoted_values(line, secret):
+    out = mal_status.scrub_log_line(line)
+    assert secret not in out and "[redacted]" in out
+
+
+@pytest.mark.parametrize("value", [UUID, B58_44, HEX_VALUE, B64_VALUE], ids=["uuid", "base58", "hex40", "base64"])
+@pytest.mark.parametrize("sep", ["=", ": ", '="'])
+def test_scrub_cap_cut_partial_does_not_survive(value, sep):
+    # 4068 filler chars then "=value": the 4096 cap lands inside the value.
+    line = "x" * 4068 + sep + value
+    assert len(line) > 4096
+    out = mal_status.scrub_log_line(line)
+    for n in (8, 12, 16):
+        assert value[:n] not in out
+    assert out.endswith("…")
+    # same with spaced filler so the redacted line shrinks well below 200 chars
+    line = "ab " * 1356 + "token" + sep + value
+    out = mal_status.scrub_log_line(line)
+    assert value[:8] not in out
+
+
+@pytest.mark.parametrize("value", [UUID, B58_44, HEX_VALUE, B64_VALUE])
+def test_scrub_cap_cut_bare_value_at_the_cap(value):
+    for pad in range(4096 - len(value) - 3, 4096):
+        out = mal_status.scrub_log_line(("ab " * 2000)[:pad] + " " + value)
+        assert value[:8] not in out
+
+
+def test_scrub_cap_cut_marks_ellipsis_and_is_idempotent():
+    out = mal_status.scrub_log_line("hello world " * 500)
+    assert out.endswith("…") and len(out) <= 201
+    assert mal_status.scrub_log_line(out) == out
+
+
+@pytest.mark.parametrize("unit", ["a", "key=", "token ", "a:b@", 'password="', "_key", "secret-", "x-a-", "http://", "a b "])
+def test_scrub_is_fast_just_under_the_cap(unit):
+    payload = (unit * 4096)[:4090]  # the cap does not fire, every regex really runs
+    started = _time.perf_counter()
+    mal_status.scrub_log_line(payload)
+    assert _time.perf_counter() - started < 0.05

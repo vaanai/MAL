@@ -452,13 +452,43 @@ REDACTED = "[redacted]"
 # that is not preceded by an open-ended prefix, so no rule backtracks
 # quadratically; the 4096-char input cap bounds the rest.
 _KEY_NAMES = (
-    r"(?:api[-_]?key|apikey|client[-_]?secret|secret|passw(?:or)?d|passwd"
-    r"|access[-_]?token|token|auth|key)"
+    r"(?:api[-_]?key|apikey|client[-_]?secret|secret[-_]?key|private[-_]?key|auth[-_]?token"
+    r"|secret|passw(?:or)?d|passwd|access[-_]?token|token|auth|key)"
 )
-_KV_VALUE = r"(?:\"[^\"]{0,512}\"|'[^']{0,512}'|[^\s\"'&,;}]{1,512})"
+# A quoted value may be unterminated (log lines get cut): take up to 512 chars
+# and the closing quote only if it is there.
+_KV_VALUE = r"(?:\"[^\"]{0,512}\"?|'[^']{0,512}'?|[^\s\"'&,;}]{1,512})"
+_KV_RE = re.compile(r"(?i)" + _KEY_NAMES + r"[\"']?\s*[:=]\s*" + _KV_VALUE)
+_KV_PREFIX_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+_KV_PREFIX_MAX = 40
+
+
+def _redact_key_values(text: str) -> str:
+    """Redact ``name=value`` / ``name: value`` / JSON ``"name":"value"`` pairs.
+
+    The name may be glued to a prefix (``PGPASSWORD``, ``db-password``,
+    ``1password``, ``x_api_key``): up to ``_KV_PREFIX_MAX`` prefix characters
+    and one opening quote are redacted with it. Done by walking back from the
+    match instead of a regex prefix so the scan stays linear.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _KV_RE.finditer(text):
+        start = m.start()
+        lo = max(pos, start - _KV_PREFIX_MAX)
+        while start > lo and text[start - 1] in _KV_PREFIX_CHARS:
+            start -= 1
+        if start > pos and text[start - 1] in "\"'":
+            start -= 1
+        out.append(text[pos:start])
+        out.append(REDACTED)
+        pos = m.end()
+    out.append(text[pos:])
+    return "".join(out)
+
 
 # Order matters: whole-header / whole-URL rules run before the narrower ones.
-_SCRUB_PATTERNS: list[re.Pattern[str]] = [
+_SCRUB_BEFORE_KV: list[re.Pattern[str]] = [
     # bare dashed UUIDs (Helius keys are UUIDs)
     re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
     # headers: Authorization, Cookie / Set-Cookie, X-...-Key
@@ -474,14 +504,15 @@ _SCRUB_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"[?&][^\s=&#\"']{1,64}=[^\s&\"']{20,}"),
     # HELIUS_API_KEY <value> (space-separated)
     re.compile(r"(?i)helius[-_]?(?:api[-_]?)?key\s+\S{1,512}"),
-    # key=value / key: value / JSON "key":"value", optional quotes around both
-    re.compile(r"(?i)[\"']?(?<![A-Za-z0-9])" + _KEY_NAMES + r"[\"']?\s*[:=]\s*" + _KV_VALUE),
+]
+_SCRUB_AFTER_KV: list[re.Pattern[str]] = [
     # vendor key prefixes
     re.compile(r"\bmck_[A-Za-z0-9_-]{1,200}"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,200}"),
     # any 32+ run of base64 / base64url / base58 / hex characters (mints, signatures, keys)
     re.compile(r"[A-Za-z0-9+/_-]{32,}={0,2}"),
 ]
+_CUT_RUN_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_=%.:-"
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
@@ -497,19 +528,27 @@ def scrub_log_line(line: str | None) -> str | None:
     if line is None:
         return None
     text = str(line)
-    if len(text) > LOG_INPUT_MAX:
+    capped = len(text) > LOG_INPUT_MAX
+    if capped:
         text = text[:LOG_INPUT_MAX]
-        parts = text.rsplit(None, 1)  # drop a token the cap may have cut in half
-        if len(parts) == 2:
-            text = parts[0]
+        # The cap may have cut a secret (or its "name=" label) in half; what is
+        # left of it would survive redaction once earlier text shrinks. Drop the
+        # trailing run of key-alphabet characters, and at least the last 64.
+        run = len(text) - len(text.rstrip(_CUT_RUN_CHARS))
+        text = text[: len(text) - max(run, 64)]
     for _ in range(2):  # twice: %2520 style double encoding
         decoded = unquote(text)
         if decoded == text:
             break
         text = decoded
     text = _CONTROL_CHARS.sub(" ", text).strip()
-    for pattern in _SCRUB_PATTERNS:
+    for pattern in _SCRUB_BEFORE_KV:
         text = pattern.sub(REDACTED, text)
+    text = _redact_key_values(text)
+    for pattern in _SCRUB_AFTER_KV:
+        text = pattern.sub(REDACTED, text)
+    if capped:
+        text += "…"
     if len(text) > LOG_LINE_MAX:
         text = text[:LOG_LINE_MAX] + "…"
     return text
