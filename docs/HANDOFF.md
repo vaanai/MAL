@@ -38,14 +38,20 @@ There is little slack. Every day of waiting on a key, a merge or a re-fetch come
 - **Helius:** Developer plan, **50 rps**, about **1 credit per getBlock** (dashboard 5.6M vs walker self-reports about 4.2M). All walkers share **about 40 rps**. See the memory note `helius-plan-limits`.
 - **MiScusi:** 8 jobs per session. Delegated tasks to devices stall on Bash permission prompts (reported to the owner), so use in-session agents for now.
 
-**In flight:**
-- **EXP-012 freeze:** MiScusi job #23 at `ea5ec37`, writing to `ARTIFACTS/exp012` in the job checkout and `/data/mal/exp012`. The job copies its artifacts to `$MISCUSI_OUTPUT_DIR`.
-  - Next is **Part 2:** commit `ARTIFACTS/exp012` (FROZEN.md5, proceed_screen.json and the rest).
-  - `quant-proof` checks the proceed numbers.
-  - If `proceed` is false, EXP-012 is withdrawn and the block released.
-- **EXP-012 block walkers:** user units `mal-walker-w1/w2/w3`, about 42 rps, done around 12:30Z. Then follow EXP-012 §4.1: `backfill_verify` (metadata + `--content`), dedupe, `exp012_score --write-dedupe-pin`, commit the pin, `--dry-run-preconditions`, then the read from a worktree at the freeze commit plus only the Part 2 commit.
-- **Gated walkers #24–#29:** the backup block and expansion w1–w3. They start when the EXP-012 walkers finish, at most 4 at once, at 10 rps each. Queue expansion w4–w7 (`[08-14T12, 08-22T12)`) the same way once slots free.
-- **Exploration expansion:** once sealed and verified, run sweeps on research-0. The owner will raise the slot count for CPU-only sweeps when asked.
+**In flight (updated 09:40Z):**
+- **EXP-012 Part 1 and Part 2 are merged** (#194 `ea5ec37`, #200 `60cc1f1`). Frozen artifacts are in `ARTIFACTS/exp012`. `FROZEN.md5` md5 is `a01f05dfb1e622f78b2bba55d174be09`. The proceed screen passed (in-sample; the fast-only split is weaker, see EXP-012 §12).
+- **EXP-012 block walkers** (user units `mal-walker-w1/w2/w3`) had 97/144 sealed at 09:40Z, with ETA about 15:00Z. Credits run about 11.7k/hour.
+- **Job #30 (`j_MRCSTs1Zyxo2rg`, MiScusi)** is gated on those walkers. It checks 48/48 sealed per walker, runs `backfill_verify` (metadata and `--content`) with `--dedupe-out /data/mal/blocks-clean/fresh-0903/wN`, and stops on any non-duplicate issue. It then writes `ARTIFACTS/exp012/dedupe_pin.sha256` into its job output dir (`~/.miscusi/jobs/j_MRCSTs1Zyxo2rg/out/` on research-0).
+- **Read sequence after job #30 is clean:**
+  1. Copy `dedupe_pin.sha256` into `ARTIFACTS/exp012/` and commit it in a PR that touches only that file. Merge it.
+  2. Make a worktree at main, and check `git diff --quiet ea5ec37 HEAD -- tools schemas`. If anything in `tools/` was merged since, branch from `ea5ec37`, then cherry-pick #200's merge and the pin commit.
+  3. Run EXP-012 §12's read command with `--dry-run-preconditions` as a MiScusi job on research-0. Any refusal spends nothing; fix it and repeat.
+  4. Run the same command without `--dry-run-preconditions`, once.
+  5. Have `quant-proof` check the result against the gate before any sentence about it is written.
+  6. Write the result into EXP-012 Result, LAB_STATE, the ledger, `console.json` and the notebook.
+- **After the read:** merge **#205** (explore_entry_filter wiring, approved, held only to keep `tools/` frozen until the read). Fix the 3 `tools/test_mal_catalog.py` tests that expect 8 ledger rows; there are now 11.
+- **Gated walkers #24–#29** (backup block plus expansion w1–w3, `--rps 10`, 4 Helius lock slots) start when the EXP-012 walkers exit. Queue expansion w4–w7 (`[08-14T12, 08-22T12)`) the same way when slots free.
+- **DEC-015** (forward paper on fast-0 after 10-05) is merged with the input inventory (#204). Next: the tape trial, the observe unit, the equivalence replay and the memory measurement. All of these are allowed before 10-05; no books.
 
 **Known gaps:**
 - `backfill_verify`'s slot-span sanity check needs per-period bounds before August blocks are verified.
