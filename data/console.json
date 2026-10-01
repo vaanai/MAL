@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-09-30T20:50:00Z",
+  "updated_utc": "2026-10-01T01:45:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -12,23 +12,48 @@
   ],
   "events": [
     {
-      "id": "walker-fix",
+      "id": "walkers-0903",
+      "kind": "job",
+      "title": "Fresh test block fetching (research-0)",
+      "detail": "3 walkers sealing [09-03T12, 09-09T12), 144h, never read. About 13 min per hour each; all done about 12:00Z. Then: verify, dedupe, sha256 manifest. ~1.65M Helius credits expected (3.6M cap).",
+      "atUtc": "2026-10-01T12:00:00Z",
+      "approx": true
+    },
+    {
+      "id": "exp012-freeze",
       "kind": "other",
-      "title": "Walker data-integrity fix",
-      "detail": "Fix duplicate rows and empty sealed hours, then deduplicate the exploration pool and re-check the entry model on clean data.",
+      "title": "EXP-012: re-freeze the entry model on clean data",
+      "detail": "Pre-registration in progress. EXP-011's recipe unchanged (ablated features, same threshold rule), trained on the deduplicated pool. Its own leave-one-day-out check must pass the B3 screen before the fresh block is read.",
       "urgent": true
+    },
+    {
+      "id": "running-now",
+      "kind": "other",
+      "title": "Console: 'Running now' panel",
+      "detail": "Collector (per-unit state, uptime, memory, scrubbed last log line) and Console panel being built; deploy after review and screenshot QA."
     }
   ],
   "ladder": [
     {
-      "id": "b3-clean",
-      "title": "Entry model, clean-data re-check",
+      "id": "EXP-012",
+      "title": "EXP-012 entry model (re-freeze)",
       "stage": "exploring",
-      "note": "B3 idea re-run on the deduplicated exploration pool, on research-0",
+      "note": "Pre-registering. Fresh block [09-03T12, 09-09T12) sealing on research-0; read once after verify + dedupe.",
       "tag": {
         "text": "next",
         "tone": "accent"
       }
+    },
+    {
+      "id": "b3-clean",
+      "title": "Entry model, clean-data re-check",
+      "stage": "exploring",
+      "note": "Done: same 4 cells pass on deduplicated data. Lead cell flat +6.05% / pressure +3.72%, 8/9 days. Exploration only, unablated model.",
+      "tag": {
+        "text": "passed screen",
+        "tone": "accent"
+      },
+      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md"
     },
     {
       "id": "lane-d",
@@ -95,6 +120,12 @@
   ],
   "for_you": [
     {
+      "id": "fy-20261001",
+      "from": "claude",
+      "text": "Clean data is in. The exploration pool is deduplicated (2.47M duplicate trade rows removed, all in 3 resumed hours), and the entry-model idea still passes its screen on it. Next is EXP-012, a fresh one-shot test on a never-read 6-day block, which is fetching now on research-0. Expected read: today after about 12:00Z, if the re-frozen model passes its pre-stated check first.",
+      "atUtc": "2026-10-01T01:45:00Z"
+    },
+    {
       "id": "fy-exp011",
       "from": "claude",
       "text": "EXP-011 closed NOT_DECIDABLE: the walkers wrote duplicate rows and one empty hour. No result was seen. Next: fix the data, re-check the entry model on clean data, then a new test on a fresh block.",
@@ -129,6 +160,48 @@
       "kind": "decision",
       "text": "EXP-011 closed NOT_DECIDABLE. The read aborted on a sealed-but-empty hour, and resumed walker hours hold exact duplicate rows. No outcome was observed. The holdout is spent, and the walker fix and dedupe come first.",
       "atUtc": "2026-09-30T20:50:00Z"
+    },
+    {
+      "id": "s-20261001-0045",
+      "from": "claude",
+      "kind": "status",
+      "text": "Manager2 took over. research-0 is now the work machine: data staged, venv, Helius key placed by Helm.",
+      "atUtc": "2026-10-01T00:45:00Z"
+    },
+    {
+      "id": "s-20261001-0054",
+      "from": "claude",
+      "kind": "status",
+      "text": "Reserved the fresh block [09-03T12, 09-09T12) in the ledger before any hour was fetched; 3 walkers started on research-0.",
+      "atUtc": "2026-10-01T00:54:00Z"
+    },
+    {
+      "id": "s-20261001-0105",
+      "from": "claude",
+      "kind": "finding",
+      "text": "Exploration pool deduplicated: fast lost 2,467,409 trade rows (3 resumed hours), Oracle in-sample 0, Oracle live 4,730. Matches the census.",
+      "atUtc": "2026-10-01T01:05:00Z"
+    },
+    {
+      "id": "s-20261001-0120",
+      "from": "claude",
+      "kind": "finding",
+      "text": "B3 re-run on clean data: same 4 cells pass the unchanged screen. Lead cell tp50_sl30/s2_clf flat +6.73% → +6.05%, pressure +3.84% → +3.72%, 8/9 days each; one fast day (09-20) turned negative. Rules out a bad-data artifact. Exploration only, not proof of profit.",
+      "atUtc": "2026-10-01T01:20:00Z"
+    },
+    {
+      "id": "s-20261001-0135",
+      "from": "claude",
+      "kind": "decision",
+      "text": "EXP-012 re-freezes EXP-011's recipe on clean data rather than reusing its retired model (quant-proof review). The re-frozen model must pass the same screen before the fresh block is read.",
+      "atUtc": "2026-10-01T01:35:00Z"
+    },
+    {
+      "id": "s-20261001-0140",
+      "from": "claude",
+      "kind": "status",
+      "text": "explore_exit job template wired (#186) with a data-root allowlist. MiScusi guard fix (#12) and Opus 5.5 1M context fix (#13) ready for Grokbot.",
+      "atUtc": "2026-10-01T01:40:00Z"
     }
   ]
 }
