@@ -62,6 +62,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
 import time
@@ -72,7 +74,7 @@ from typing import Any, Sequence
 from tools.exploration_entry_model import FEATURE_NAMES, SEED
 from tools.exploration_entry_model import run_all_features as run_all_features_a
 from tools.exploration_entry_model_b2 import _ex_top3_sol, run_all_features_b
-from tools.exploration_entry_model_b3 import DAYS_ALL, _ci_lo, run_all_features_c
+from tools.exploration_entry_model_b3 import DAYS_ALL, _ci_lo, run_all_features_c, verify_pool_files
 from tools.exploration_entry_model import compute_features
 from tools.exploration_exits import ENTRY_SIZE, POOL_HOURS as POOL_A_HOURS
 from tools.oracle_insample_adapter import POOL_C_HOURS
@@ -122,6 +124,21 @@ _assert_never_holdout(POOL_B_HOURS, "pool B")
 assert all(h >= HOLDOUT_END for h in POOL_A_HOURS), "pool A reaches into or before the holdout"
 assert all(h >= HOLDOUT_END for h in POOL_C_HOURS), "pool C reaches into or before the holdout"
 assert all(h >= HOLDOUT_END for h in POOL_B_HOURS), "pool B reaches into or before the holdout"
+
+# EXP-012's fresh block (walked on mal-research-0). No exploration pool may
+# reach into it either; the pools are all >= 2026-09-18T23, so this holds.
+EXP012_BLOCK_START = "2026-09-03T12"
+EXP012_BLOCK_END = "2026-09-09T12"
+
+
+def _assert_never_block(hours: Sequence[str], label: str) -> None:
+    for h in hours:
+        assert not (EXP012_BLOCK_START <= h < EXP012_BLOCK_END), f"{label} hour {h!r} falls inside EXP-012's fresh block [{EXP012_BLOCK_START}, {EXP012_BLOCK_END})"
+
+
+_assert_never_block(POOL_A_HOURS, "pool A")
+_assert_never_block(POOL_C_HOURS, "pool C")
+_assert_never_block(POOL_B_HOURS, "pool B")
 
 # --- Frozen S2 lgb_medium hyperparameters -----------------------------------
 
@@ -180,19 +197,162 @@ def _label(rows: Sequence[dict[str, Any]]) -> list[int]:
 # --- Data loading: pools A + C + B, tp50_sl30 rows only, sorted -----------
 
 
+# --- Pool data roots (EXP-012: re-freeze of this recipe on the deduplicated pool)
+#
+# The recipe is unchanged; only the INPUT roots may differ. Each default is
+# the module-level path the loaders have always used (None = that default,
+# bit-for-bit the old behavior). A root may never point at a reserved
+# holdout block or a holdout walker directory: the freeze trains on
+# exploration pools only. The check is lexical (os.path.abspath, no
+# filesystem access) so it cannot itself touch a forbidden path.
+
+FORBIDDEN_ROOT_PREFIXES: tuple[str, ...] = (
+    "/data/mal/blocks",  # EXP-012's sealed fresh block (mal-research-0)
+    "/var/lib/mal/backfill-fast-b",  # EXP-011's spent holdout walkers
+    "/var/lib/mal/backfill-fast-c",
+)
+
+
+def assert_root_allowed(root: Path | str, label: str) -> Path:
+    p = os.path.abspath(str(root))
+    for bad in FORBIDDEN_ROOT_PREFIXES:
+        if p == bad or p.startswith(bad.rstrip("/") + "/"):
+            raise SystemExit(f"{label} root {str(root)!r} is inside a reserved holdout location ({bad}); the freeze never reads holdout data")
+    return Path(p)
+
+
+_SHA256_LINE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+\*?(.+)$")
+
+
+def verify_view_sha256(root: Path) -> int:
+    """Check every file named in `root/VIEW.sha256` (sha256sum format, paths
+    relative to `root`) hashes to its listed value. Refuses (SystemExit)
+    listing every problem, on a missing VIEW.sha256, an unparsable line, a
+    missing file, or a mismatch. Returns the number of files verified.
+    Only the clean-view roots carry this file."""
+    view = root / "VIEW.sha256"
+    if not view.is_file():
+        raise SystemExit(f"--verify-view: {view} not found")
+    problems: list[str] = []
+    n = 0
+    for lineno, line in enumerate(view.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        m = _SHA256_LINE.match(line)
+        if m is None:
+            problems.append(f"{view}:{lineno}: unparsable line")
+            continue
+        want, rel = m.group(1).lower(), m.group(2)
+        norm = os.path.normpath(rel)  # accepts a leading "./"
+        if os.path.isabs(norm) or norm == ".." or norm.startswith("../"):
+            problems.append(f"{view}:{lineno}: path escapes the root: {rel!r}")
+            continue
+        path = root / norm
+        if not path.is_file():
+            problems.append(f"missing file listed in VIEW.sha256: {path}")
+            continue
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 22), b""):
+                h.update(chunk)
+        n += 1
+        if h.hexdigest() != want:
+            problems.append(f"sha256 mismatch: {path}")
+    if problems:
+        shown = "\n  ".join(problems[:50])
+        more = f"\n  ... and {len(problems) - 50} more" if len(problems) > 50 else ""
+        raise SystemExit(f"--verify-view: {len(problems)} problem(s) under {root}:\n  {shown}{more}")
+    if n == 0:
+        raise SystemExit(f"--verify-view: {view} lists no files")
+    return n
+
+
+# EXP-012 section 3.2: sha256 of each clean-view root's own VIEW.sha256 file
+# (pinned in the pre-registration). Keyed by the root directory's name.
+VIEW_SHA256_PINS: dict[str, str] = {
+    "fast-pool-2026-09-18T23_2026-09-22T00": "05486f70f53c7ef848b151f40d310ecc16e3ef517ff98ed7d4348250a32effe8",
+    "oracle-insample-2026-09-22_25": "ab4fa8b058a1a3b35c7b090b89840b6d9135aede3cd08cc64516a9446d05b2c3",
+    "oracle-live-2026-09-25_27": "a765603e535cb6757e7fe9227355f315f82fb603239f99fa200d8d9abae09251",
+}
+VIEW_PIN_BY_POOL = {
+    "A": VIEW_SHA256_PINS["fast-pool-2026-09-18T23_2026-09-22T00"],
+    "C": VIEW_SHA256_PINS["oracle-insample-2026-09-22_25"],
+    "B": VIEW_SHA256_PINS["oracle-live-2026-09-25_27"],
+}
+
+
+def check_view_pin(root: Path) -> str:
+    """Refuse unless sha256(root/VIEW.sha256) equals the pinned value for this root's name."""
+    want = VIEW_SHA256_PINS.get(root.name)
+    if want is None:
+        raise SystemExit(f"--verify-view: {root.name!r} is not one of the pinned clean-view roots {sorted(VIEW_SHA256_PINS)}")
+    got = hashlib.sha256((root / "VIEW.sha256").read_bytes()).hexdigest()
+    if got != want:
+        raise SystemExit(f"--verify-view: sha256 of {root / 'VIEW.sha256'} is {got}, the pre-registration pins {want}")
+    return got
+
+
+def add_root_args(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--fast-dir", type=Path, default=None, help="pool A root (default: the module's own fast-box path, unchanged)")
+    ap.add_argument("--oracle-insample-dir", type=Path, default=None, help="pool C root (default: unchanged)")
+    ap.add_argument("--oracle-live-dir", type=Path, default=None, help="pool B root (default: unchanged)")
+    ap.add_argument("--verify-view", action="store_true", help="before reading, check VIEW.sha256 under every root given (refuses if absent/mismatched)")
+
+
+def resolve_roots(args: argparse.Namespace) -> dict[str, Path | None]:
+    """Apply the holdout fence to the given roots, then (with --verify-view)
+    check their VIEW.sha256. Returns {'fast','insample','live'} -> Path|None."""
+    roots: dict[str, Path | None] = {"fast": args.fast_dir, "insample": args.oracle_insample_dir, "live": args.oracle_live_dir}
+    for label, root in roots.items():
+        if root is not None:
+            roots[label] = assert_root_allowed(root, label)
+    n_given = sum(r is not None for r in roots.values())
+    if n_given and not args.verify_view:
+        raise SystemExit("pool roots require --verify-view (the clean-view hashes are pinned in the pre-registration)")
+    if 0 < n_given < 3:
+        raise SystemExit("give all three pool roots (--fast-dir, --oracle-insample-dir, --oracle-live-dir) or none: a partial override mixes dirty and clean pools")
+    if all(r is not None for r in roots.values()):
+        # Checkpoint-less (deduplicated) copies: every whitelisted hour's files must exist.
+        verify_pool_files(roots["fast"], roots["insample"], roots["live"])
+    if args.verify_view:
+        given = {k: v for k, v in roots.items() if v is not None}
+        if not given:
+            raise SystemExit("--verify-view needs at least one explicit root")
+        for label, root in given.items():
+            n = verify_view_sha256(root)
+            check_view_pin(root)
+            print(f"EXP-011 freeze: VIEW.sha256 OK for {label} root {root} ({n} files)", file=sys.stderr, flush=True)
+    return roots
+
+
 def load_tp50_rows(
-    max_workers: int = 3, buffer_hours: int = 2, out_dir: Path | None = None, max_home_hours: int | None = None
+    max_workers: int = 3,
+    buffer_hours: int = 2,
+    out_dir: Path | None = None,
+    max_home_hours: int | None = None,
+    fast_dir: Path | None = None,
+    insample_dir: Path | None = None,
+    live_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """`out_dir` (added for tools/exp011_build_table.py's Phase A): forwarded
     to each pool's run_all_features_* as its own streaming scratch dir
     (out_dir/poolA, out_dir/poolC, out_dir/poolB) so no pool's workers hold
     their whole row set in memory at once -- see run_worker_features's
-    rows_out_path docstring. None (default): unchanged in-memory behavior."""
+    rows_out_path docstring. None (default): unchanged in-memory behavior.
+
+    `fast_dir` / `insample_dir` / `live_dir` (EXP-012): pool A / C / B data-root
+    overrides, forwarded as the loaders' own `backfill=` / `root=`. None (the
+    default) is each loader's own default path, exactly the old behavior. When
+    any is given the manifest records it under "roots"."""
     manifest: dict[str, Any] = {"pools": {}}
+    if any(r is not None for r in (fast_dir, insample_dir, live_dir)):
+        manifest["roots"] = {"A": str(fast_dir) if fast_dir else None, "C": str(insample_dir) if insample_dir else None, "B": str(live_dir) if live_dir else None}
     print("EXP-011 freeze: loading pool A (fast-box backfill)...", file=sys.stderr, flush=True)
     rows_a = [
         r
-        for r in run_all_features_a(max_workers=max_workers, buffer_hours=buffer_hours, max_home_hours=max_home_hours, out_dir=(out_dir / "poolA" if out_dir else None))
+        for r in run_all_features_a(
+            max_workers=max_workers, buffer_hours=buffer_hours, max_home_hours=max_home_hours, out_dir=(out_dir / "poolA" if out_dir else None), backfill=fast_dir
+        )
         if r["spec"] == TARGET_SPEC_ID
     ]
     for r in rows_a:
@@ -203,7 +363,9 @@ def load_tp50_rows(
     print("EXP-011 freeze: loading pool C (Oracle in-sample backfill)...", file=sys.stderr, flush=True)
     rows_c = [
         r
-        for r in run_all_features_c(max_workers=max_workers, buffer_hours=buffer_hours, max_home_hours=max_home_hours, out_dir=(out_dir / "poolC" if out_dir else None))
+        for r in run_all_features_c(
+            max_workers=max_workers, buffer_hours=buffer_hours, max_home_hours=max_home_hours, out_dir=(out_dir / "poolC" if out_dir else None), root=insample_dir
+        )
         if r["spec"] == TARGET_SPEC_ID
     ]
     for r in rows_c:
@@ -214,7 +376,9 @@ def load_tp50_rows(
     print("EXP-011 freeze: loading pool B (Oracle live tape)...", file=sys.stderr, flush=True)
     rows_b = [
         r
-        for r in run_all_features_b(max_workers=max_workers, buffer_hours=buffer_hours, max_home_hours=max_home_hours, out_dir=(out_dir / "poolB" if out_dir else None))
+        for r in run_all_features_b(
+            max_workers=max_workers, buffer_hours=buffer_hours, max_home_hours=max_home_hours, out_dir=(out_dir / "poolB" if out_dir else None), root=live_dir
+        )
         if r["spec"] == TARGET_SPEC_ID
     ]
     for r in rows_b:
@@ -489,6 +653,30 @@ def _git_commit() -> str:
         return "unknown"
 
 
+def _git_state(out_dir: Path | str | None = None) -> tuple[str, bool]:
+    """(HEAD sha, dirty?). Dirty = any tracked file modified, OR any file (tracked
+    or untracked, ignored files aside) under tools/, schemas/ or `out_dir` (when
+    inside the repo) that git status lists. ("unknown", True) if git cannot say."""
+    repo_p = Path(__file__).resolve().parents[1]
+    repo = str(repo_p)
+    try:
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, stderr=subprocess.DEVNULL).decode().strip()
+        dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo, stderr=subprocess.DEVNULL).decode().strip())
+        specs = ["tools", "schemas"]
+        if out_dir is not None:
+            try:
+                rel = os.path.relpath(Path(out_dir).resolve(), repo_p.resolve())
+                if not rel.startswith(".."):
+                    specs.append(rel)
+            except ValueError:
+                pass
+        if not dirty:
+            dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=all", "--", *specs], cwd=repo, stderr=subprocess.DEVNULL).decode().strip())
+        return sha, dirty
+    except Exception:
+        return "unknown", True
+
+
 def _md5_of_file(path: Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()
 
@@ -530,6 +718,7 @@ def write_outputs(
             "deterministic": True,
             "num_threads": 1,
             "code_commit": _git_commit(),
+            "code_dirty": _git_state()[1],
             "trained_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "wall_s": wall_s,
             "model_md5": model_md5,
@@ -552,6 +741,62 @@ def write_outputs(
     return {"model_md5": model_md5}
 
 
+# --- Frozen-artifact manifest (EXP-012) ---------------------------------------
+# `md5sum`-format file listing the md5 of every artifact the scorer or the
+# pre-registration relies on. Written only on request (--frozen-manifest);
+# tools/exp012_score.py refuses unless every listed file still matches.
+
+FROZEN_MANIFEST_NAME = "FROZEN.md5"
+FROZEN_MANIFEST_FILES = (
+    "features.json",
+    "model.txt",
+    "nested_fixed_threshold_lodo.json",
+    "oof_scores.json",
+    "proceed_screen.json",
+    "table.md5",
+    "table_row_counts.json",
+    "threshold.json",
+    "train_manifest.json",
+)
+FROZEN_MANIFEST_REQUIRED = ("features.json", "model.txt", "threshold.json")
+
+
+def write_frozen_manifest(out_dir: Path) -> Path:
+    lines = []
+    for name in FROZEN_MANIFEST_FILES:
+        path = out_dir / name
+        if path.is_file():
+            lines.append(f"{_md5_of_file(path)}  {name}")
+    path = out_dir / FROZEN_MANIFEST_NAME
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def parse_md5_manifest(path: Path) -> dict[str, str]:
+    """{filename: md5} from an `md5sum`-format file. ValueError on a bad line or a repeated name."""
+    out: dict[str, str] = {}
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        m = re.match(r"^([0-9a-fA-F]{32})[ \t]+\*?(.+)$", line)
+        if m is None:
+            raise ValueError(f"{path}:{lineno}: not an md5sum line")
+        name = m.group(2)
+        if name in out:
+            raise ValueError(f"{path}:{lineno}: {name!r} listed twice")
+        out[name] = m.group(1).lower()
+    return out
+
+
+def copy_table_records(table_path: Path, out_dir: Path) -> None:
+    """Bring the table's md5 and row counts next to the frozen artifacts (the table itself stays out of the repo)."""
+    import shutil
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(table_path.with_suffix(".md5"), out_dir / "table.md5")
+    shutil.copyfile(table_path.parent / "row_counts.json", out_dir / "table_row_counts.json")
+
+
 def load_table(table_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Phase B input: the rows `tools/exp011_build_table.py` wrote (one JSON
     object per line, same order), plus the manifest from its sibling
@@ -567,13 +812,22 @@ def load_table(table_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 
 def freeze(
-    max_workers: int = 3, buffer_hours: int = 2, run_nested_lodo: bool = True, table_path: Path | None = None
+    max_workers: int = 3,
+    buffer_hours: int = 2,
+    run_nested_lodo: bool = True,
+    table_path: Path | None = None,
+    fast_dir: Path | None = None,
+    insample_dir: Path | None = None,
+    live_dir: Path | None = None,
+    entries_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any], list[dict[str, Any]], dict[str, Any], float, dict[str, Any] | None]:
+    """`entries_sink` (EXP-012): if given, the nested LODO's entered rows are appended to it
+    (for the result.v1 record). Outputs are unchanged."""
     t0 = time.time()
     if table_path is not None:
         rows, manifest = load_table(table_path)
     else:
-        rows, manifest = load_tp50_rows(max_workers=max_workers, buffer_hours=buffer_hours)
+        rows, manifest = load_tp50_rows(max_workers=max_workers, buffer_hours=buffer_hours, fast_dir=fast_dir, insample_dir=insample_dir, live_dir=live_dir)
     print(f"EXP-011 freeze: {len(rows)} {TARGET_SPEC_ID} rows over {len(manifest['days'])} days; computing ablated S2 LODO...", file=sys.stderr, flush=True)
     oof = leave_one_day_out_oof(rows)
     threshold_info = compute_threshold(oof)
@@ -583,6 +837,8 @@ def freeze(
     if run_nested_lodo:
         print("EXP-011 freeze: running the nested fixed-threshold LODO (report only, 9 outer x 8 inner fits)...", file=sys.stderr, flush=True)
         entries, fold_info = nested_fixed_threshold_lodo(rows)
+        if entries_sink is not None:
+            entries_sink.extend(entries)
         nested_report = nested_lodo_report(entries, fold_info)
         print(
             f"EXP-011 freeze: nested LODO n={nested_report['flat']['n']} flat_mean={nested_report['flat']['mean_pct']} press_mean={nested_report['press']['mean_pct']}",
@@ -596,23 +852,66 @@ def freeze(
     return model, threshold_info, oof, manifest, wall_s, nested_report
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out-dir", default="ARTIFACTS/exp011")
     ap.add_argument("--max-workers", type=int, default=3)
     ap.add_argument("--buffer-hours", type=int, default=2)
     ap.add_argument("--skip-nested-lodo", action="store_true", help="skip the report-only nested fixed-threshold LODO (Part A)")
     ap.add_argument("--table", default=None, help="Phase B: train from a tools/exp011_build_table.py table.jsonl instead of replaying the pools")
-    args = ap.parse_args()
+    ap.add_argument(
+        "--frozen-manifest",
+        action="store_true",
+        help="EXP-012: also write FROZEN.md5 (md5 of every frozen artifact) and, with --table, copy table.md5 / table_row_counts.json next to them",
+    )
+    ap.add_argument("--expect-commit", default=None, help="EXP-012: with --frozen-manifest, the freeze must run at exactly this commit (the pre-registration PR's merge commit) with tracked files unmodified")
+    ap.add_argument("--result-out", default=None, help="also write a result.v1 record (role exploration) of the nested LODO here")
+    ap.add_argument("--tries-log", default=None, help="tries log for the result.v1 record (default: MAL_TRIES_LOG / data/tries.jsonl)")
+    add_root_args(ap)
+    args = ap.parse_args(argv)
+    if args.result_out and args.skip_nested_lodo:
+        raise SystemExit("--result-out needs the nested LODO (drop --skip-nested-lodo)")
+    if args.frozen_manifest:
+        # EXP-012 section 3.3: the first completed freeze is binding.
+        if args.skip_nested_lodo:
+            raise SystemExit("--frozen-manifest needs the nested LODO (the proceed screen is computed from it); drop --skip-nested-lodo")
+        sha, dirty = _git_state(args.out_dir)
+        if not args.expect_commit or sha != args.expect_commit or dirty:
+            raise SystemExit(f"--frozen-manifest needs --expect-commit == HEAD with tracked files unmodified (HEAD={sha}, dirty={dirty}, expected={args.expect_commit})")
+        if (Path(args.out_dir) / FROZEN_MANIFEST_NAME).exists():
+            raise SystemExit(f"{Path(args.out_dir) / FROZEN_MANIFEST_NAME} already exists: the first completed freeze is binding; a re-run goes to a different --out-dir and must reproduce it byte for byte")
     assert args.max_workers <= 3, "keep max-workers <= 3 -- two backfill walkers share this box"
+    if args.table and any(r is not None for r in (args.fast_dir, args.oracle_insample_dir, args.oracle_live_dir)):
+        raise SystemExit("pool roots belong to the table build (tools.exp011_build_table); --table reads no pool")
+    roots = resolve_roots(args) if not args.table else {"fast": None, "insample": None, "live": None}
 
+    entries_sink: list[dict[str, Any]] = []
     model, threshold_info, oof, manifest, wall_s, nested_report = freeze(
+        entries_sink=entries_sink,
         max_workers=args.max_workers,
         buffer_hours=args.buffer_hours,
         run_nested_lodo=not args.skip_nested_lodo,
         table_path=(Path(args.table) if args.table else None),
+        fast_dir=roots["fast"],
+        insample_dir=roots["insample"],
+        live_dir=roots["live"],
     )
     out = write_outputs(Path(args.out_dir), model, threshold_info, oof, manifest, wall_s, nested_report=nested_report)
+    if args.frozen_manifest and nested_report is not None:
+        from tools.exp012_support import proceed_screen
+
+        screen = proceed_screen(nested_report)
+        (Path(args.out_dir) / "proceed_screen.json").write_text(json.dumps(screen, indent=2) + "\n", encoding="utf-8")
+        print(f"EXP-012 proceed screen: proceed={screen['proceed']} flat_ok={screen['flat_ok']} press_ok={screen['press_ok']}", file=sys.stderr, flush=True)
+    if args.frozen_manifest:
+        if args.table:
+            copy_table_records(Path(args.table), Path(args.out_dir))
+        mpath = write_frozen_manifest(Path(args.out_dir))
+        print(f"EXP-011 freeze: wrote {mpath}", file=sys.stderr, flush=True)
+    if args.result_out:
+        from tools.exp012_support import write_freeze_result
+
+        write_freeze_result(Path(args.result_out), entries_sink, nested_report, command=" ".join(sys.argv), runtime_s=wall_s, tries_log=args.tries_log, git_sha=_git_commit())
     print(f"EXP-011 freeze: wrote {args.out_dir} model_md5={out['model_md5']} wall_s={wall_s:.1f}", file=sys.stderr, flush=True)
 
 
