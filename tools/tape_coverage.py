@@ -17,6 +17,18 @@ is written on either host. Per row we keep 8-byte hashes and an int64 stamp
 
     python3 -m tools.tape_coverage --start 2026-10-01T17 --end 2026-10-01T19 \\
         --json-out out.json --md-out out.md
+
+With ``--chain-dir`` a third source is added: a ``pump_history_backfill`` output
+directory (rows from ``getBlock``, decoded by the same ``records_from_logs``). Its
+identity is the same ``(signature, event_index)``, its stamp is ``block_time`` in
+seconds (``t_recv_ms`` is set to ``block_time * 1000``) and it is marked source
+``chain``: no lag is ever computed against it. The report then adds
+|tape intersect chain| / |chain| for fast and for Oracle, per hour, pooled and by
+venue, and the count of tape rows chain does not have. Verdict (DEC-015 2.2):
+fast vs chain coverage >= 95% is PASS, INCONCLUSIVE under 2 complete hours.
+
+    python3 -m tools.tape_coverage --start 2026-10-01T17 --end 2026-10-01T19 \\
+        --chain-dir /data/mal/blocks/truth-1001 --chain-ssh mal-research-0 --margin-s 60
 """
 
 from __future__ import annotations
@@ -78,8 +90,9 @@ def classify_venue(venue: str) -> str:
 class Side:
     """Compact per-row columns for one tape. Appending is O(1) memory per row."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, source: str = "tape") -> None:
         self.name = name
+        self.source = source  # "tape" (t_recv_ms stamps) or "chain" (block_time * 1000)
         self.id_hash = array("Q")
         self.sig_hash = array("Q")
         self.t = array("q")
@@ -109,9 +122,9 @@ class Side:
         return len(self.t)
 
 
-def load_stream(lines: Iterable[str], name: str) -> Side:
+def load_stream(lines: Iterable[str], name: str, source: str = "tape") -> Side:
     """Parse the scan protocol (see tape_coverage_scan) into a Side, streaming."""
-    side = Side(name)
+    side = Side(name, source)
     done = False
     for line in lines:
         line = line.rstrip("\n")
@@ -130,16 +143,21 @@ def load_stream(lines: Iterable[str], name: str) -> Side:
             side.add(sig, int(idx), int(t_ms), "" if venue == "-" else venue, int(sid))
     if not done:
         raise RuntimeError(f"{name}: stream ended without a #done footer (truncated)")
+    want = "block_time" if source == "chain" else "t_recv_ms"
+    got = side.footer.get("time_field", "t_recv_ms")  # an older scan script only knew t_recv_ms
+    if got != want:
+        raise RuntimeError(f"{name}: scan stamped rows by {got}, a {source} source needs {want}")
     return side
 
 
-def load_local(directory: Path, lo_ms: int, hi_ms: int, name: str) -> Side:
+def load_local(directory: Path, lo_ms: int, hi_ms: int, name: str, source: str = "tape") -> Side:
     """Run the same scan code in-process and feed it through the same parser."""
+    time_field = "block_time" if source == "chain" else "t_recv_ms"
 
     def lines() -> Iterator[str]:
         schemas = scan.SchemaTable()
         stats: dict = {}
-        for item in scan.scan_rows(directory, lo_ms, hi_ms, schemas, stats):
+        for item in scan.scan_rows(directory, lo_ms, hi_ms, schemas, stats, time_field):
             yield scan.format_row(*item)
         for sid, smap in enumerate(schemas.maps):
             yield f"#schema {sid} {json.dumps(smap, sort_keys=True, separators=(',', ':'))}"
@@ -150,24 +168,33 @@ def load_local(directory: Path, lo_ms: int, hi_ms: int, name: str) -> Side:
             "missing": stats.get("missing", []),
             "files": stats.get("files", []),
             "schema_overflow": schemas.overflow,
+            "time_field": time_field,
         }
         yield "#done " + json.dumps(footer, sort_keys=True, separators=(",", ":"))
 
-    return load_stream(lines(), name)
+    return load_stream(lines(), name, source)
 
 
 def load_remote(
-    ssh_host: str, directory: str, lo_ms: int, hi_ms: int, name: str, runner: Callable | None = None
+    ssh_host: str,
+    directory: str,
+    lo_ms: int,
+    hi_ms: int,
+    name: str,
+    runner: Callable | None = None,
+    source: str = "tape",
 ) -> Side:
     """Pipe the scan script to ``ssh <host> python3 -`` and parse its stdout as it arrives."""
     cmd = ["ssh", ssh_host, "nice", "-n", "19", "python3", "-", directory, str(lo_ms), str(hi_ms)]
+    if source == "chain":
+        cmd.append("block_time")
     with open(SCAN_PATH, "rb") as script:
         proc = (runner or subprocess.Popen)(
             cmd, stdin=script, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         assert proc.stdout is not None
         try:
-            side = load_stream(proc.stdout, name)
+            side = load_stream(proc.stdout, name, source)
         finally:
             proc.stdout.close()
         err = proc.stderr.read() if proc.stderr else ""
@@ -241,7 +268,14 @@ def compare(
     *,
     bar: float = COVERAGE_BAR,
 ) -> dict:
-    """Coverage and lag over [lo_ms, hi_ms). Rows outside it (the scan margin) only serve as match candidates."""
+    """Coverage and lag over [lo_ms, hi_ms). Rows outside it (the scan margin) only serve as match candidates.
+
+    Pairwise: ``fast`` is the side being scored and ``oracle`` the reference whose rows are the
+    denominator. If either side is a chain source (``Side.source == "chain"``) no lag, percentile
+    or schema comparison is computed (the stamps are block_time seconds, not receive times): the
+    lag fields are ``None`` and the schema pair list is empty.
+    """
+    lag_ok = fast.source != "chain" and oracle.source != "chain"
     f_h, f_t, f_ven, f_sch, f_dups = dedupe(
         np.frombuffer(fast.id_hash, dtype=np.uint64) if len(fast) else np.zeros(0, np.uint64),
         np.frombuffer(fast.t, dtype=np.int64) if len(fast) else np.zeros(0, np.int64),
@@ -303,7 +337,7 @@ def compare(
         }
 
     pooled = block(int(o_in.sum()), int(found_o.sum()), int(f_in.sum()), int(found_f.sum()))
-    pooled["lag_ms_fast_minus_oracle"] = lag_summary(d_all)
+    pooled["lag_ms_fast_minus_oracle"] = lag_summary(d_all) if lag_ok else None
     pooled["signature_level"] = block(
         int(so_in.sum()), int(found_so.sum()), int(sf_in.sum()), int(found_sf.sum())
     )
@@ -333,7 +367,7 @@ def compare(
                 "slice_start": iso(a),
                 "slice_end": iso(b),
                 "full_hour": bool(a == start and b == start + HOUR_MS),
-                "lag_ms_fast_minus_oracle": lag_summary(d_all[sel_m]),
+                "lag_ms_fast_minus_oracle": lag_summary(d_all[sel_m]) if lag_ok else None,
             }
         )
         entry["meets_bar"] = bool(entry["coverage"] is not None and entry["coverage"] >= bar)
@@ -353,14 +387,27 @@ def compare(
             "oracle_rows": total,
             "matched": int((found_o & sel).sum()),
             "coverage": ratio(int((found_o & sel).sum()), total),
-            "lag_ms_fast_minus_oracle": lag_summary(d_all[sel[found_o]]),
+            "lag_ms_fast_minus_oracle": lag_summary(d_all[sel[found_o]]) if lag_ok else None,
+        }
+    # The same split from the scored side's rows: how many of its rows the reference lacks.
+    fast_cls = f_class[f_ven[f_in]] if f_in.any() else np.array([], dtype=str)
+    fast_venues = {}
+    for cls in ("bonding", "pumpswap", "other"):
+        sel = fast_cls == cls
+        total = int(sel.sum())
+        if total == 0:
+            continue
+        fast_venues[cls] = {
+            "fast_rows": total,
+            "matched": int((found_f & sel).sum()),
+            "fast_only": int((~found_f & sel).sum()),
         }
     m_cls_f = f_class[m_ven_fast] if len(m_ven_fast) else np.array([], dtype=str)
     m_cls_o = o_class[m_ven_orc] if len(m_ven_orc) else np.array([], dtype=str)
 
     # Field names and types (no values), per distinct schema pair on matched rows.
     pair_counts: dict[tuple[int, int], int] = {}
-    if len(m_sch_fast):
+    if len(m_sch_fast) and lag_ok:
         pairs, counts = np.unique(np.stack([m_sch_fast, m_sch_orc]), axis=1, return_counts=True)
         for (fs, os_), c in zip(pairs.T.tolist(), counts.tolist()):
             pair_counts[(fs, os_)] = c
@@ -391,12 +438,16 @@ def compare(
     warnings = []
     if f_first is not None and f_first > lo_ms + 5_000:
         warnings.append(
-            f"fast tape's first row in the window is {iso(f_first)}, {(f_first - lo_ms) / 1000:.0f} s after the "
+            f"{fast.name} tape's first row in the window is {iso(f_first)}, {(f_first - lo_ms) / 1000:.0f} s after the "
             "window start; coverage is understated by the span before the listener existed (use --clip-to-fast)"
         )
     if f_in.sum() == 0:
-        warnings.append("no fast rows in the window")
+        warnings.append(f"no {fast.name} rows in the window")
     for side in (fast, oracle):
+        if side.source == "chain":
+            unsealed = [n for n in side.footer.get("files", []) if not n.endswith(".zst")]
+            if unsealed:
+                warnings.append(f"{side.name}: hour files not zstd-sealed (walk may be incomplete): {unsealed}")
         if side.footer.get("missing"):
             warnings.append(f"{side.name}: hour files not found: {side.footer['missing']}")
         if side.footer.get("bad_lines"):
@@ -413,6 +464,7 @@ def compare(
         "pooled": pooled,
         "hours": hours,
         "venues": venues,
+        "fast_venues": fast_venues,
         "matched_venue_class_disagreements": int((m_cls_f != m_cls_o).sum()) if len(m_cls_f) else 0,
         "venue_names": {"fast": fast.venue_names, "oracle": oracle.venue_names},
         "schema_pairs_on_matched_rows": pair_report,
@@ -425,6 +477,51 @@ def compare(
         },
         "scan_footers": {"fast": fast.footer, "oracle": oracle.footer},
         "warnings": warnings,
+    }
+
+
+def compare_chain(
+    fast: Side,
+    oracle: Side,
+    chain: Side,
+    lo_ms: int,
+    hi_ms: int,
+    *,
+    bar: float = COVERAGE_BAR,
+) -> dict:
+    """Score each tape against chain truth, pairwise, with ``compare`` (no lag, see there).
+
+    In each inner report the ``oracle_*`` keys describe the reference, here the chain:
+    ``oracle_rows`` is the chain row count and ``coverage`` is |tape intersect chain| / |chain|.
+    ``fast_only`` is the number of tape rows chain does not have. The verdict is the fast tape's
+    (DEC-015 2.2): coverage >= bar is PASS, below is FAIL, and INCONCLUSIVE if fewer than 2
+    complete hours back it (``bar_verdict`` keeps the bare PASS/FAIL).
+    """
+    if chain.source != "chain":
+        raise ValueError("compare_chain needs a chain-source Side")
+    fast_rep = compare(fast, chain, lo_ms, hi_ms, bar=bar)
+    oracle_rep = compare(oracle, chain, lo_ms, hi_ms, bar=bar)
+    bar_verdict = fast_rep["verdict"]
+    if bar_verdict == "NO_DATA":
+        verdict = "NO_DATA"
+    elif fast_rep["complete_hours"] < 2:
+        verdict = "INCONCLUSIVE"
+    else:
+        verdict = bar_verdict
+    for rep_ in (fast_rep, oracle_rep):
+        rep_.pop("schemas", None)  # tape-vs-chain field names are not compared
+    return {
+        "window": fast_rep["window"],
+        "bar": bar,
+        "verdict": verdict,
+        "bar_verdict": bar_verdict,
+        "complete_hours": fast_rep["complete_hours"],
+        "evidence_sufficient": bool(fast_rep["complete_hours"] >= 2 and bar_verdict != "NO_DATA"),
+        "fast_vs_chain": fast_rep,
+        "oracle_vs_chain": oracle_rep,
+        "chain": {"venue_names": chain.venue_names, "scan_footer": chain.footer},
+        "warnings": list(fast_rep["warnings"])
+        + [w for w in oracle_rep["warnings"] if w not in fast_rep["warnings"]],
     }
 
 
@@ -562,6 +659,116 @@ def render_markdown(rep: dict, meta: dict) -> str:
     return "\n".join(lines)
 
 
+def render_chain_markdown(ch: dict, meta: dict) -> str:
+    fr, orr = ch["fast_vs_chain"], ch["oracle_vs_chain"]
+    lines = [
+        "# Tape coverage against chain truth",
+        "",
+        f"Window `{ch['window']['start']}` to `{ch['window']['end']}` ({ch['window']['seconds'] / 3600:.3f} h). "
+        "Chain rows come from a `pump_history_backfill` (`getBlock`) walk decoded by `observe.trade_decode.records_from_logs`, "
+        "the decoder the tapes use. Chain rows are stamped by `block_time` (seconds), not by receive time, so **no lag is computed against chain**.",
+        "",
+        f"**Verdict, fast tape vs chain, against the {100 * ch['bar']:.0f}% bar (DEC-015 2.2): {ch['verdict']}**. "
+        f"Complete UTC hours in the window: {ch['complete_hours']}. "
+        + (
+            "Evidence is sufficient on hours."
+            if ch["evidence_sufficient"]
+            else "**Fewer than 2 complete hours: this is a partial result, not the 2.2 sign-off.**"
+        ),
+        "",
+        "## Coverage of each tape against chain (|tape intersect chain| / |chain|)",
+        "",
+        "Identity = (signature, event_index).",
+        "",
+        "| Slice | Chain rows | Fast matched | Fast coverage | Oracle matched | Oracle coverage |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for fh, oh in zip(fr["hours"], orr["hours"]):
+        tag = fh["hour"] + ("" if fh["full_hour"] else " (partial)")
+        lines.append(
+            f"| {tag} | {fh['oracle_rows']:,} | {fh['matched']:,} | {pct(fh['coverage'])} "
+            f"| {oh['matched']:,} | {pct(oh['coverage'])} |"
+        )
+    fp, op = fr["pooled"], orr["pooled"]
+    lines.append(
+        f"| **Pooled** | {fp['oracle_rows']:,} | {fp['matched']:,} | **{pct(fp['coverage'])}** "
+        f"| {op['matched']:,} | **{pct(op['coverage'])}** |"
+    )
+    fs, os_ = fp["signature_level"], op["signature_level"]
+    lines += [
+        "",
+        f"Signature level: fast has {fs['matched']:,} of {fs['oracle_rows']:,} chain signatures ({pct(fs['coverage'])}), "
+        f"Oracle {os_['matched']:,} of {os_['oracle_rows']:,} ({pct(os_['coverage'])}).",
+        "",
+        "## By venue (the chain row's venue class)",
+        "",
+        "| Venue | Chain rows | Fast matched | Fast coverage | Oracle matched | Oracle coverage |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for name, v in fr["venues"].items():
+        o = orr["venues"].get(name, {"matched": 0, "coverage": None})
+        lines.append(
+            f"| {name} | {v['oracle_rows']:,} | {v['matched']:,} | {pct(v['coverage'])} | {o['matched']:,} | {pct(o['coverage'])} |"
+        )
+    lines += [
+        "",
+        "## Tape rows chain does not have",
+        "",
+        "A tape row (window rows, matched by identity) with no chain counterpart is either a duplicate or replay the tape "
+        "recorded twice, a decode or `event_index` difference, a transaction the walk skipped (failed transactions are skipped "
+        "by the walk), or a gap in the walk. The signature columns separate the first two: signature present on chain means the "
+        "tape numbered its events differently, signature absent means chain has no such transaction.",
+        "",
+        "| Tape | Slice | Tape rows | In chain | Not in chain | Share not in chain |",
+        "| --- | --- | ---: | ---: | ---: | ---: |",
+    ]
+    for label, rep_ in (("fast", fr), ("Oracle", orr)):
+        for h in rep_["hours"]:
+            share = h["fast_only"] / h["fast_rows"] if h["fast_rows"] else None
+            lines.append(
+                f"| {label} | {h['hour']} | {h['fast_rows']:,} | {h['reverse_matched']:,} "
+                f"| {h['fast_only']:,} | {pct(share)} |"
+            )
+        p = rep_["pooled"]
+        share = p["fast_only"] / p["fast_rows"] if p["fast_rows"] else None
+        lines.append(
+            f"| {label} | **Pooled** | {p['fast_rows']:,} | {p['reverse_matched']:,} | {p['fast_only']:,} | {pct(share)} |"
+        )
+    lines.append("")
+    for label, rep_ in (("fast", fr), ("Oracle", orr)):
+        sig = rep_["pooled"]["signature_level"]
+        lines.append(
+            f"- {label}: {sig['fast_only']:,} of {sig['fast_rows']:,} tape signatures are not on chain at all "
+            "(each is at least one of the rows above). A not-in-chain row whose signature chain does have differs in `event_index` or decode."
+        )
+    lines += ["", "Not in chain, pooled, by venue:", "", "| Tape | Venue | Tape rows | Not in chain |", "| --- | --- | ---: | ---: |"]
+    for label, rep_ in (("fast", fr), ("Oracle", orr)):
+        for name, v in rep_["fast_venues"].items():
+            lines.append(f"| {label} | {name} | {v['fast_rows']:,} | {v['fast_only']:,} |")
+    lines += [
+        "",
+        f"Duplicate identities dropped (earliest stamp kept): fast {fr['duplicates_dropped']['fast_identity']:,}, "
+        f"Oracle {orr['duplicates_dropped']['fast_identity']:,}, chain {fr['duplicates_dropped']['oracle_identity']:,}.",
+        f"Venue strings seen on chain: {ch['chain']['venue_names']}.",
+    ]
+    for warn in ch["warnings"]:
+        lines.append(f"- WARNING: {warn}")
+    lines += [
+        "",
+        "## What this does not measure",
+        "",
+        "- Window is bounded by each row's own stamp (receive time for a tape, `block_time` for chain). Receive lag moves a "
+        f"trade across the edge; rows within the {meta['margin_s']} s scan margin are still matched, but a lag larger than the margin leaves "
+        "edge rows unmatched on either side. Use a margin above the tape's p99 lag.",
+        "- Hashing: identities are 8-byte blake2b hashes; a collision would count as a match.",
+        "- Chain is only as complete as the `getBlock` walk and only as correct as the shared decoder. A trade both tapes and chain "
+        "decode wrongly the same way is invisible here.",
+        "- No claim about the runner, its lag, or any book.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def peak_rss_mb() -> float:
     try:
         import resource
@@ -578,12 +785,21 @@ def run(args: argparse.Namespace) -> dict:
     if hi <= lo:
         raise SystemExit("--end must be after --start")
     margin = int(args.margin_s * 1000)
-    fast = load_local(Path(args.fast_dir), lo - margin, hi + margin, "fast")
-    oracle = load_remote(args.oracle_ssh, args.oracle_dir, lo - margin, hi + margin, "oracle")
+    lo_scan, hi_scan = lo - margin, hi + margin
+    fast = load_local(Path(args.fast_dir), lo_scan, hi_scan, "fast")
+    oracle = load_remote(args.oracle_ssh, args.oracle_dir, lo_scan, hi_scan, "oracle")
     if args.clip_to_fast and len(fast):
         first = min(fast.t)
         lo = max(lo, first + int(args.clip_to_fast_s * 1000))
     rep = compare(fast, oracle, lo, hi)
+    if args.chain_dir:
+        if args.chain_ssh:
+            chain = load_remote(
+                args.chain_ssh, args.chain_dir, lo_scan, hi_scan, "chain", source="chain"
+            )
+        else:
+            chain = load_local(Path(args.chain_dir), lo_scan, hi_scan, "chain", source="chain")
+        rep["chain_truth"] = compare_chain(fast, oracle, chain, lo, hi)
     meta = {
         "margin_s": args.margin_s,
         "command": "python3 -m tools.tape_coverage " + " ".join(args.argv),
@@ -605,6 +821,17 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--margin-s", type=float, default=10.0, help="extra seconds scanned each side to match edge rows")
     ap.add_argument("--clip-to-fast", action="store_true", help="start the window at the fast tape's first row")
     ap.add_argument("--clip-to-fast-s", type=float, default=2.0)
+    ap.add_argument(
+        "--chain-dir",
+        default=None,
+        help="chain-truth source: a pump_history_backfill output dir (hour files directly in it or under trades/); "
+        "adds coverage of each tape against chain and the DEC-015 2.2 verdict on fast vs chain",
+    )
+    ap.add_argument(
+        "--chain-ssh",
+        default=None,
+        help="read --chain-dir over `ssh <host> python3 -` (e.g. mal-research-0); omit if the dir is local",
+    )
     ap.add_argument("--json-out", default=None)
     ap.add_argument("--md-out", default=None)
     return ap
@@ -616,12 +843,17 @@ def main(argv: list[str] | None = None) -> int:
     args.argv = argv
     rep = run(args)
     md = render_markdown(rep, rep["meta"])
+    verdict = rep["verdict"]
+    if "chain_truth" in rep:
+        # The chain verdict is the 2.2 one; the fast-vs-Oracle report follows it unchanged.
+        md = render_chain_markdown(rep["chain_truth"], rep["meta"]) + "\n---\n\n" + md
+        verdict = rep["chain_truth"]["verdict"]
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(rep, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if args.md_out:
         Path(args.md_out).write_text(md, encoding="utf-8")
     print(md)
-    return 0 if rep["verdict"] == "PASS" else 1
+    return 0 if verdict == "PASS" else 1
 
 
 if __name__ == "__main__":

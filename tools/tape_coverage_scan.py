@@ -6,6 +6,12 @@ line per trade row inside a time window and nothing else from the row:
 
     <signature> <event_index> <t_recv_ms> <venue> <schema_id>
 
+With the optional ``block_time`` time field the input is a ``pump_history_backfill``
+output directory (chain truth, rows carry ``block_time`` in seconds and a null
+``t_recv_ms``). The same five fields are printed with the third one set to
+``block_time * 1000`` and the window is applied to that value. The directory may
+be the backfill output root (hour files under ``trades/``) or the ``trades/`` dir.
+
 ``venue`` is the row's venue string (a two-value category). ``schema_id`` is a
 small integer naming the row's field-name/type map; the maps are printed once at
 the end as ``#schema <id> <json>``. No amounts, wallets, mints or prices leave
@@ -28,6 +34,7 @@ from typing import IO, Iterator
 
 HOUR_MS = 3_600_000
 MAX_SCHEMAS = 64
+TIME_FIELDS = ("t_recv_ms", "block_time")
 
 
 def hour_stamp(hour_ms: int) -> str:
@@ -45,19 +52,26 @@ def hour_starts(lo_ms: int, hi_ms: int) -> list[int]:
 
 def find_hour_file(directory: Path, hour_ms: int) -> Path | None:
     stamp = hour_stamp(hour_ms)
-    for name in (f"trades-{stamp}.jsonl", f"trades-{stamp}.jsonl.zst"):
-        path = directory / name
-        if path.is_file():
-            return path
+    # A backfill output root keeps its hour files under trades/.
+    for base in (directory, directory / "trades"):
+        for name in (f"trades-{stamp}.jsonl", f"trades-{stamp}.jsonl.zst"):
+            path = base / name
+            if path.is_file():
+                return path
     return None
 
 
 def open_lines(path: Path) -> Iterator[bytes]:
     """Yield raw lines one at a time. Sealed ``.zst`` goes through ``zstd -dc``."""
     if path.name.endswith(".zst"):
-        proc = subprocess.Popen(
-            ["zstd", "-dc", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-        )
+        try:
+            proc = subprocess.Popen(
+                ["zstd", "-dc", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+        except FileNotFoundError:  # the backfill host may only ship zstdcat
+            proc = subprocess.Popen(
+                ["zstdcat", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
         assert proc.stdout is not None
         try:
             yield from proc.stdout
@@ -100,8 +114,15 @@ def scan_rows(
     hi_ms: int,
     schemas: SchemaTable,
     stats: dict,
+    time_field: str = "t_recv_ms",
 ) -> Iterator[tuple[str, int, int, str, int]]:
-    """Yield (signature, event_index, t_recv_ms, venue, schema_id) for lo<=t<hi."""
+    """Yield (signature, event_index, t_ms, venue, schema_id) for lo<=t_ms<hi.
+
+    ``t_ms`` is ``t_recv_ms`` for a tape, or ``block_time * 1000`` for chain rows.
+    """
+    if time_field not in TIME_FIELDS:
+        raise ValueError(f"time_field must be one of {TIME_FIELDS}")
+    scale = 1000 if time_field == "block_time" else 1
     stats.setdefault("files", [])
     stats.setdefault("missing", [])
     stats.setdefault("bad_lines", 0)
@@ -117,7 +138,7 @@ def scan_rows(
             stats["rows_scanned"] += 1
             try:
                 row = json.loads(raw)
-                t_ms = int(row["t_recv_ms"])
+                t_ms = int(row[time_field]) * scale
                 sig = row["signature"]
                 idx = int(row.get("event_index", 0))
             except (ValueError, KeyError, TypeError):
@@ -134,10 +155,12 @@ def format_row(sig: str, idx: int, t_ms: int, venue: str, schema_id: int) -> str
     return f"{sig} {idx} {t_ms} {venue or '-'} {schema_id}"
 
 
-def write_stream(directory: Path, lo_ms: int, hi_ms: int, out: IO[str]) -> dict:
+def write_stream(
+    directory: Path, lo_ms: int, hi_ms: int, out: IO[str], time_field: str = "t_recv_ms"
+) -> dict:
     schemas = SchemaTable()
     stats: dict = {}
-    for item in scan_rows(directory, lo_ms, hi_ms, schemas, stats):
+    for item in scan_rows(directory, lo_ms, hi_ms, schemas, stats, time_field):
         out.write(format_row(*item) + "\n")
     for sid, smap in enumerate(schemas.maps):
         out.write(f"#schema {sid} {json.dumps(smap, sort_keys=True, separators=(',', ':'))}\n")
@@ -148,6 +171,7 @@ def write_stream(directory: Path, lo_ms: int, hi_ms: int, out: IO[str]) -> dict:
         "missing": stats.get("missing", []),
         "files": stats.get("files", []),
         "schema_overflow": schemas.overflow,
+        "time_field": time_field,
     }
     out.write("#done " + json.dumps(footer, sort_keys=True, separators=(",", ":")) + "\n")
     out.flush()
@@ -155,10 +179,11 @@ def write_stream(directory: Path, lo_ms: int, hi_ms: int, out: IO[str]) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 4:
-        sys.stderr.write("usage: scan <dir> <lo_ms> <hi_ms>\n")
+    if len(argv) not in (4, 5) or (len(argv) == 5 and argv[4] not in TIME_FIELDS):
+        sys.stderr.write("usage: scan <dir> <lo_ms> <hi_ms> [t_recv_ms|block_time]\n")
         return 2
-    write_stream(Path(argv[1]), int(argv[2]), int(argv[3]), sys.stdout)
+    time_field = argv[4] if len(argv) == 5 else "t_recv_ms"
+    write_stream(Path(argv[1]), int(argv[2]), int(argv[3]), sys.stdout, time_field)
     return 0
 
 
