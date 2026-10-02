@@ -42,6 +42,7 @@ from observe.trade_source import (
     SOURCES,
     HeliusTransactionSource,
     LogsSubscribeSource,
+    MultiSocketLogsSource,
     RawNotice,
 )
 from observe.trade_store import (
@@ -273,7 +274,19 @@ def _pool_mint_lines(path: Path) -> list[str]:
     return text.splitlines()
 
 
-def build_source(name: str, ws_url: str, commitment: str, helius_key: str, programs: tuple[str, ...]):
+def build_source(
+    name: str,
+    ws_url: str,
+    commitment: str,
+    helius_key: str,
+    programs: tuple[str, ...],
+    sockets: int = 1,
+    ws_urls: list[str] | None = None,
+):
+    if name == SOURCE_PUBLIC_RPC_LOGS and sockets > 1:
+        return MultiSocketLogsSource(
+            ws_urls=ws_urls or [ws_url], sockets=sockets, programs=programs, commitment=commitment
+        )
     if name == SOURCE_PUBLIC_RPC_LOGS:
         return LogsSubscribeSource(ws_url=ws_url, programs=programs, commitment=commitment)
     if name == SOURCE_HELIUS_TX:
@@ -373,11 +386,14 @@ async def run_tape(
                     {"free_bytes": avail, "total_bytes": total, "hold": guard.holding},
                 )
                 stats = source.stats
+                extra = ""
+                if hasattr(stats, "summary"):
+                    extra = f" dedup_dropped={stats.dedup_dropped} sockets=[{stats.summary()}]"
                 log.info(
                     "heartbeat source=%s commitment=%s trades=%s notes=%s failed_notes=%s "
                     "reconnects=%s slot_jumps=%s last_slot=%s unresolved=%s pool_cache=%s "
                     "bytes=%s hold=%s dropped=%s keep_days=%s free_ratio=%.3f stats=%s "
-                    "pending_pools=%s quote_dropped=%s",
+                    "pending_pools=%s quote_dropped=%s%s",
                     type(source).__name__,
                     source.commitment,
                     trades_written,
@@ -396,6 +412,7 @@ async def run_tape(
                     row is not None,
                     len(cache._pending),
                     cache.unresolved_dropped,
+                    extra,
                 )
 
     log.info(
@@ -436,8 +453,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--ws-url",
-        default=os.environ.get("MAL_TRADE_TAPE_WS_URL", "wss://api.mainnet-beta.solana.com"),
-        help="Public RPC websocket. Ignored for helius_tx.",
+        action="append",
+        default=None,
+        help="Public RPC websocket. Repeatable with --sockets N: socket i uses url i mod len. "
+        "Default is MAL_TRADE_TAPE_WS_URL or the public cluster. Ignored for helius_tx.",
+    )
+    parser.add_argument(
+        "--sockets",
+        type=int,
+        default=int(os.environ.get("MAL_TRADE_TAPE_SOCKETS", "1") or 1),
+        help="Redundant logsSubscribe sockets, merged and deduplicated by signature. "
+        "1 (default) is the single-socket feed, unchanged. public_rpc_logs only.",
     )
     parser.add_argument(
         "--http-url",
@@ -488,12 +514,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_keep_days is not None and args.max_keep_days < 1:
         log.error("max-keep-days must be >= 1")
         return 2
+    if args.sockets < 1:
+        log.error("sockets must be >= 1")
+        return 2
+    if args.sockets > 1 and args.source != SOURCE_PUBLIC_RPC_LOGS:
+        log.error("--sockets > 1 is for public_rpc_logs only")
+        return 2
+    ws_urls = args.ws_url or [os.environ.get("MAL_TRADE_TAPE_WS_URL", "wss://api.mainnet-beta.solana.com")]
     helius_key = os.environ.get("HELIUS_API_KEY", "")
     if args.source == SOURCE_HELIUS_TX and not helius_key.strip():
         log.error("HELIUS_API_KEY is not set; not starting helius_tx")
         return 2
     programs = programs_for_venues(args.venues)
-    source = build_source(args.source, args.ws_url, args.commitment, helius_key, programs)
+    source = build_source(
+        args.source, ws_urls[0], args.commitment, helius_key, programs, args.sockets, ws_urls
+    )
 
     stop = asyncio.Event()
     loop = asyncio.new_event_loop()
