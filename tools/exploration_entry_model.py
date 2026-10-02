@@ -45,6 +45,7 @@ import bisect
 import json
 import math
 import multiprocessing as mp
+import numbers
 import os
 import sys
 import time
@@ -352,21 +353,30 @@ def score_one(
     specs: Sequence[dict[str, Any]] | None = None,
     size: int | None = None,
     priority: int | None = None,
+    entry_land_k: int | None = None,
+    entry_bound: str | None = None,
 ) -> list[dict[str, Any]]:
     """`specs`/`size`/`priority` default (None) to TARGET_SPECS / ENTRY_SIZE /
     ENTRY_PRIORITY_LAMPORTS, resolved here at call time, so the frozen B3 grid
-    path is unchanged; the single-cell entry point passes them explicitly."""
+    path is unchanged; the single-cell entry point passes them explicitly.
+
+    `entry_land_k`/`entry_bound` (latency sensitivity, exploration only): the
+    slot offset and bound of the ENTRY state. None resolves to ENTRY_LAND_K /
+    ENTRY_BOUND, byte-identical to before. They move only the entry; the exit
+    delay inside eval_spec still uses exploration_exits' frozen constants."""
     specs = TARGET_SPECS if specs is None else specs
     size = ENTRY_SIZE if size is None else size
     priority = ENTRY_PRIORITY_LAMPORTS if priority is None else priority
+    land_k = ENTRY_LAND_K if entry_land_k is None else entry_land_k
+    bound = ENTRY_BOUND if entry_bound is None else entry_bound
     if mint.mig_slot is None or mint.mig_ms is None or feat is None:
         return []
     fills, trigger_slot, trigger_block_ms, ref = _fills_for(mint, migrate=True)
     if not fills:
         return []
     day = _utc_day(mint.mig_ms)
-    target = trigger_slot + ENTRY_LAND_K
-    idx = _state_index(fills, target, ENTRY_BOUND)
+    target = trigger_slot + land_k
+    idx = _state_index(fills, target, bound)
     fallback = fills[idx].t_recv_ms if idx >= 0 else trigger_block_ms
     landing_ms = _slot_time(fills, target, fallback)
     state = fills[idx] if idx >= 0 else None
@@ -426,8 +436,15 @@ def run_worker_features(
     size: int | None = None,
     priority: int | None = None,
     strict_hours: bool = False,
+    entry_land_k: int | Sequence[int] | None = None,
+    entry_bound: str | None = None,
 ) -> list[dict[str, Any]]:
-    """`specs`/`size`/`priority`/`strict_hours` (single-cell entry point only;
+    """`entry_land_k`/`entry_bound`: None = the frozen entry (unchanged). An
+    int scores every mint at that entry offset. A sequence of ints scores each
+    mint once per k from the same single tape pass and adds an "entry_land_k"
+    key to every row (latency sensitivity, exploration only).
+
+    `specs`/`size`/`priority`/`strict_hours` (single-cell entry point only;
     defaults reproduce the frozen B3 grid exactly): see score_one and
     _load_creates_full; `strict_hours` also drops trade rows whose block_time is
     outside the hour file being read.
@@ -462,6 +479,8 @@ def run_worker_features(
     feat: dict[str, _Feat] = {mid: f for mid, (_m, f) in creates.items()}
     watch: dict[str, _Mint] = {}
     curve = _curve()
+    multi_k = entry_land_k is not None and not isinstance(entry_land_k, numbers.Integral)
+    k_list: list[int | None] = [int(k) for k in entry_land_k] if multi_k else [None if entry_land_k is None else int(entry_land_k)]  # type: ignore[union-attr]
     out: list[dict[str, Any]] = []
     out_fh = rows_out_path.open("w", encoding="utf-8") if rows_out_path is not None else None
     now_ms = 0
@@ -471,7 +490,16 @@ def run_worker_features(
         nonlocal scored
         if mint.mig_slot is None or mint.mig_done:
             return
-        rows = score_one(mint_id, mint, feat.get(mint_id), curve, through_ms, creator_hist, specs=specs, size=size, priority=priority)
+        rows = []
+        for k in k_list:
+            part = score_one(
+                mint_id, mint, feat.get(mint_id), curve, through_ms, creator_hist,
+                specs=specs, size=size, priority=priority, entry_land_k=k, entry_bound=entry_bound,
+            )
+            if multi_k:
+                for r in part:
+                    r["entry_land_k"] = k
+            rows.extend(part)
         if out_fh is not None:
             for r in rows:
                 out_fh.write(json.dumps(r) + "\n")
@@ -586,14 +614,17 @@ def run_worker_a(
     creator_hist: dict[str, list[int]],
     rows_out_path: Path | None = None,
     backfill: Path | None = None,
+    entry_land_k: int | Sequence[int] | None = None,
+    entry_bound: str | None = None,
 ) -> list[dict[str, Any]]:
     """A fixed-positional-signature wrapper so `rows_out_path` (keyword-only
     on run_worker_features) can be passed through `Pool.starmap`, which only
     unpacks tuples positionally."""
+    ek = {"entry_land_k": entry_land_k, "entry_bound": entry_bound}
     if backfill is None:
-        return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, rows_out_path=rows_out_path)
+        return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, rows_out_path=rows_out_path, **ek)
     return run_worker_features(
-        worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=partial(_hour_info, backfill=backfill), rows_out_path=rows_out_path
+        worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=partial(_hour_info, backfill=backfill), rows_out_path=rows_out_path, **ek
     )
 
 
@@ -603,6 +634,8 @@ def run_all_features(
     out_dir: Path | None = None,
     max_home_hours: int | None = None,
     backfill: Path | None = None,
+    entry_land_k: int | Sequence[int] | None = None,
+    entry_bound: str | None = None,
 ) -> list[dict[str, Any]]:
     """out_dir=None (default): every worker returns its rows in memory, as
     before -- fine for tests and small slices. out_dir set: each worker
@@ -626,7 +659,7 @@ def run_all_features(
     print(f"worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
     paths = [_rows_out_path(out_dir, "A", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
-    extra = () if backfill is None else (backfill,)
+    extra = (backfill, entry_land_k, entry_bound)
     if max_workers <= 1 or len(plan) <= 1:
         for (worker_id, home, buf), path in zip(plan, paths):
             rows.extend(run_worker_a(worker_id, home, buf, creator_hist, path, *extra))

@@ -193,13 +193,15 @@ def run_worker_c(
     creator_hist: dict[str, list[int]],
     rows_out_path: Path | None = None,
     root: Path | None = None,
+    entry_land_k: Any = None,
+    entry_bound: str | None = None,
 ) -> list[dict[str, Any]]:
     """`rows_out_path`: same streaming-to-disk fix ported to pool A (see
     run_worker_features's docstring); a fixed-positional trailing arg so it
     survives `Pool.starmap`. `root`: pool-C data root override (a partial of
     the module-level resolver, so it pickles into spawn workers)."""
     fn = _hour_info_c if root is None else partial(_hour_info_c, root=root)
-    return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=fn, rows_out_path=rows_out_path)
+    return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, hour_info_fn=fn, rows_out_path=rows_out_path, entry_land_k=entry_land_k, entry_bound=entry_bound)
 
 
 def run_all_features_c(
@@ -208,6 +210,8 @@ def run_all_features_c(
     out_dir: Path | None = None,
     max_home_hours: int | None = None,
     root: Path | None = None,
+    entry_land_k: Any = None,
+    entry_bound: str | None = None,
 ) -> list[dict[str, Any]]:
     """out_dir set: each worker streams to `out_dir/poolC-w<i>.jsonl` instead
     of holding rows in memory (see run_all_features's docstring in
@@ -222,7 +226,7 @@ def run_all_features_c(
     print(f"pool C worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
     paths = [_rows_out_path(out_dir, "C", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
-    extra = () if root is None else (root,)
+    extra = (root, entry_land_k, entry_bound)
     if max_workers <= 1 or len(plan) <= 1:
         for (worker_id, home, buf), path in zip(plan, paths):
             rows.extend(run_worker_c(worker_id, home, buf, creator_hist, path, *extra))

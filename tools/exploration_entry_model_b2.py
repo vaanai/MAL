@@ -160,6 +160,8 @@ def run_worker_b(
     creator_hist: dict[str, list[int]],
     rows_out_path: Path | None = None,
     root: Path | None = None,
+    entry_land_k: Any = None,
+    entry_bound: str | None = None,
 ) -> list[dict[str, Any]]:
     """Partition the pre-loaded pool-B creates by this worker's home-hour
     window (Oracle creates are day-granular, loaded once in the parent, not
@@ -187,6 +189,8 @@ def run_worker_b(
         row_iter_fn=iter_trade_rows_sorted,
         creates_override=home_creates,
         rows_out_path=rows_out_path,
+        entry_land_k=entry_land_k,
+        entry_bound=entry_bound,
     )
 
 
@@ -196,6 +200,8 @@ def run_all_features_b(
     out_dir: Path | None = None,
     max_home_hours: int | None = None,
     root: Path | None = None,
+    entry_land_k: Any = None,
+    entry_bound: str | None = None,
 ) -> list[dict[str, Any]]:
     """out_dir set: each worker streams to `out_dir/poolB-w<i>.jsonl` instead
     of holding rows in memory (see run_all_features's docstring in
@@ -213,7 +219,7 @@ def run_all_features_b(
     print(f"pool B worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
     paths = [_rows_out_path(out_dir, "B", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
-    extra = () if root is None else (root,)
+    extra = (root, entry_land_k, entry_bound)
     if max_workers <= 1 or len(plan) <= 1:
         for (worker_id, home, buf), path in zip(plan, paths):
             rows.extend(run_worker_b(worker_id, home, buf, all_creates, creator_hist, path, *extra))
