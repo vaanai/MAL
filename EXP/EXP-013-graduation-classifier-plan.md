@@ -40,3 +40,16 @@ Nested leave-one-day-out over all clean days. The screen passes only if **all** 
 6. mint Jaccard with EXP-012's OOF-selected set ≤ 0.5. The daily-PnL correlation with EXP-012 is reported.
 
 On a FAIL the family is closed and not re-tuned.
+
+## Amendment 1 (2026-10-02, before any real-data run): design clarifications from PR1 (#244)
+
+Fixed before any table is built on real data:
+
+1. **Stop sell delay.** The stop's sell lands k slots after the stop print, the same k as the entry. This is conservative, because lag applies to exits too.
+2. **Priority fee.** 500,000 lamports at every k (EXP-012's convention).
+3. **Pressure curve.** Evaluated at the entry state and applied to both legs, including the PumpSwap sell, as in EXP-012. Disclosed: the post-migration sell may face more contention than this models.
+4. **Missed entries.** An entry after the curve completed or migrated is a MISS that costs the priority fee. It is a row with label 0, kept in training, like EXP-012's MISS rows.
+5. **Day and overlap.** A row's day is the trigger day. Screen item 6:
+   - Jaccard is computed by mint;
+   - the daily-PnL correlation pairs trigger days with EXP-012's migration days, and that mismatch is disclosed.
+6. **The screen runs exactly once**, on the 9-day pool plus every `explore-0814/wN` view whose `VIEW.sha256` exists at **2026-10-04T12:00:00Z**. Table builds before then are for debugging only: no model, no LODO and no screen output is computed or read from them. The run's manifest pins the view shas.
