@@ -67,6 +67,14 @@ class EntryLatencyTests(unittest.TestCase):
         self.assertNotEqual(k1["gross"], k4["gross"])
         self.assertNotEqual(k1["flat"], k4["flat"])
 
+    def test_numpy_integer_is_a_scalar_k(self) -> None:
+        import numpy as np
+
+        want = self._rows(entry_land_k=4)
+        got = self._rows(entry_land_k=np.int64(4))
+        self.assertEqual(json.dumps(got, sort_keys=True), json.dumps(want, sort_keys=True))
+        self.assertNotIn("entry_land_k", got[0])
+
     def test_sequence_scores_each_k_from_one_pass_and_matches_scalar_runs(self) -> None:
         multi = self._rows(entry_land_k=[1, 4])
         self.assertEqual(sorted(r["entry_land_k"] for r in multi), [1, 4])

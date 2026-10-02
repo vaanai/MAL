@@ -45,6 +45,7 @@ import bisect
 import json
 import math
 import multiprocessing as mp
+import numbers
 import os
 import sys
 import time
@@ -478,8 +479,8 @@ def run_worker_features(
     feat: dict[str, _Feat] = {mid: f for mid, (_m, f) in creates.items()}
     watch: dict[str, _Mint] = {}
     curve = _curve()
-    multi_k = entry_land_k is not None and not isinstance(entry_land_k, int)
-    k_list: list[int | None] = list(entry_land_k) if multi_k else [entry_land_k]  # type: ignore[arg-type]
+    multi_k = entry_land_k is not None and not isinstance(entry_land_k, numbers.Integral)
+    k_list: list[int | None] = [int(k) for k in entry_land_k] if multi_k else [None if entry_land_k is None else int(entry_land_k)]  # type: ignore[union-attr]
     out: list[dict[str, Any]] = []
     out_fh = rows_out_path.open("w", encoding="utf-8") if rows_out_path is not None else None
     now_ms = 0

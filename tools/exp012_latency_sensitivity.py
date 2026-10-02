@@ -47,12 +47,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from tools.exp011_freeze import TARGET_SPEC_ID, add_root_args, resolve_roots
+import tools.exp011_freeze as fz
+from tools.exp011_freeze import TARGET_SPEC_ID, add_root_args
 from tools.exp011_score import _book_trades, compute_gate
 from tools.exploration_entry_model import iter_rows_jsonl, run_all_features as run_all_features_a
 from tools.exploration_entry_model_b2 import run_all_features_b
@@ -62,7 +64,47 @@ from tools.paper_attention_promote import book_stats
 DEFAULT_KS = (1, 2, 4, 6, 8, 12)
 DEFAULT_ARTIFACT_DIR = Path(__file__).resolve().parent.parent / "ARTIFACTS" / "exp012"
 SCRATCH_ROWS = "rows_by_k.jsonl"
+# Beyond exp011_freeze.FORBIDDEN_ROOT_PREFIXES: the clean copies of the sealed blocks.
+# Directory prefixes, except the second, which is a string prefix (fresh-0903, fresh-0828...).
+EXTRA_FORBIDDEN_DIRS = ("/data/mal/blocks-clean",)
+EXTRA_FORBIDDEN_STR = ("/data/mal/clean-view/fresh-",)
 KEEP = ("mint", "day", "entry_land_k", "filled", "status", "gross", "flat", "press", "pool")
+
+
+# --- root guard -----------------------------------------------------------------
+
+
+def _forbidden_hit(rp: str) -> str | None:
+    for bad in [os.path.realpath(p) for p in fz.FORBIDDEN_ROOT_PREFIXES] + list(EXTRA_FORBIDDEN_DIRS):
+        if rp == bad or rp.startswith(bad.rstrip("/") + "/"):
+            return bad
+    for bad in EXTRA_FORBIDDEN_STR:
+        if rp.startswith(bad):
+            return bad
+    return None
+
+
+def guarded_roots(args: argparse.Namespace) -> dict[str, Path]:
+    """All three roots and --verify-view are required (no module-default
+    fallback). Each root is resolved with os.path.realpath (symlinks followed)
+    BEFORE the forbidden-prefix check, then handed to the freeze's own
+    resolve_roots (fence + VIEW.sha256 + pin)."""
+    given = {"fast": args.fast_dir, "insample": args.oracle_insample_dir, "live": args.oracle_live_dir}
+    missing = [k for k, v in given.items() if v is None]
+    if missing:
+        raise SystemExit(f"refusing: --fast-dir, --oracle-insample-dir and --oracle-live-dir are all required (missing: {', '.join(missing)}); there are no default roots")
+    if not args.verify_view:
+        raise SystemExit("refusing: --verify-view is required")
+    real: dict[str, Path] = {}
+    for label, root in given.items():
+        rp = os.path.realpath(str(root))
+        bad = _forbidden_hit(rp)
+        if bad:
+            raise SystemExit(f"refusing: {label} root {str(root)!r} resolves to {rp!r}, inside a reserved holdout location ({bad})")
+        real[label] = Path(rp)
+    args.fast_dir, args.oracle_insample_dir, args.oracle_live_dir = real["fast"], real["insample"], real["live"]
+    out = fz.resolve_roots(args)
+    return {k: v for k, v in out.items() if v is not None}
 
 
 # --- heavy pass ---------------------------------------------------------------
@@ -107,8 +149,8 @@ def write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
 # --- analysis (pure; tested on fixtures) ------------------------------------------
 
 
-def load_oof(artifact_dir: Path) -> tuple[dict[str, float], float, dict[str, Any]]:
-    """({mint: OOF score}, frozen threshold, threshold.json). Refuses if the OOF
+def load_oof(artifact_dir: Path) -> tuple[dict[str, float], float, dict[str, Any], dict[str, str]]:
+    """({mint: OOF score}, frozen threshold, threshold.json, {mint: OOF day}). Refuses if the OOF
     scores are not stored: this tool does not fall back to in-sample scores."""
     oof_path = artifact_dir / "oof_scores.json"
     thr_path = artifact_dir / "threshold.json"
@@ -117,11 +159,13 @@ def load_oof(artifact_dir: Path) -> tuple[dict[str, float], float, dict[str, Any
     doc = json.loads(oof_path.read_text(encoding="utf-8"))
     thr_doc = json.loads(thr_path.read_text(encoding="utf-8"))
     scores: dict[str, float] = {}
+    days: dict[str, str] = {}
     for r in doc["rows"]:
         if r["mint"] in scores:
             raise SystemExit(f"duplicate mint in oof_scores.json: {r['mint']}")
         scores[r["mint"]] = float(r["score"])
-    return scores, float(thr_doc["threshold"]), thr_doc
+        days[r["mint"]] = r["day"]
+    return scores, float(thr_doc["threshold"]), thr_doc, days
 
 
 def _side(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -159,10 +203,49 @@ def press_zero_crossing(by_k: Mapping[int, Mapping[str, Any]]) -> dict[str, Any]
     return {"crosses": False, "note": f"pressure mean stays > 0 through k={means[-1][0]} (no extrapolation)"}
 
 
-def analyze(rows: Sequence[Mapping[str, Any]], scores: Mapping[str, float], threshold: float, thr_doc: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def check_integrity(
+    by_k_rows: Mapping[int, Sequence[Mapping[str, Any]]],
+    scores: Mapping[str, float],
+    threshold: float,
+    thr_doc: Mapping[str, Any],
+    oof_days: Mapping[str, str] | None = None,
+) -> None:
+    """Hard asserts (raise SystemExit): rows keyed (mint, k) with no repeat, the
+    row count at every k equals the freeze's n_oof, the day of every row equals
+    its OOF day, and the selected count at the smallest k equals the threshold
+    file's n_selected_at_or_above_threshold."""
+    n_oof = int(thr_doc["n_oof"])
+    for k, rs in sorted(by_k_rows.items()):
+        seen: set[tuple[str, int]] = set()
+        for r in rs:
+            key = (r["mint"], k)
+            if key in seen:
+                raise SystemExit(f"integrity: mint {r['mint']} repeats at k={k}")
+            seen.add(key)
+            if oof_days is not None and r["mint"] in oof_days and oof_days[r["mint"]] != r["day"]:
+                raise SystemExit(f"integrity: mint {r['mint']} k={k} day {r['day']} != OOF day {oof_days[r['mint']]}")
+        if len(rs) != n_oof:
+            raise SystemExit(f"integrity: k={k} has {len(rs)} rows, expected n_oof={n_oof}")
+    k0 = min(by_k_rows)
+    n_sel = sum(1 for r in by_k_rows[k0] if scores.get(r["mint"], float("-inf")) >= threshold)
+    want = int(thr_doc["n_selected_at_or_above_threshold"])
+    if n_sel != want:
+        raise SystemExit(f"integrity: {n_sel} rows selected at k={k0}, threshold file says {want}")
+
+
+def analyze(
+    rows: Sequence[Mapping[str, Any]],
+    scores: Mapping[str, float],
+    threshold: float,
+    thr_doc: Mapping[str, Any] | None = None,
+    oof_days: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     by_k_rows: dict[int, list[Mapping[str, Any]]] = {}
     for r in rows:
         by_k_rows.setdefault(int(r["entry_land_k"]), []).append(r)
+    if thr_doc is not None and by_k_rows:
+        check_integrity(by_k_rows, scores, threshold, thr_doc, oof_days)
+    n_rows_min_k = len(by_k_rows[min(by_k_rows)]) if by_k_rows else 0
     by_k: dict[int, dict[str, Any]] = {}
     for k in sorted(by_k_rows):
         rs = by_k_rows[k]
@@ -170,6 +253,7 @@ def analyze(rows: Sequence[Mapping[str, Any]], scores: Mapping[str, float], thre
         entered = [r for r in scored if scores[r["mint"]] >= threshold]
         by_k[k] = {
             "n_rows": len(rs),
+            "censored_vs_smallest_k": len(rs) < n_rows_min_k,
             "n_without_oof_score": len(rs) - len(scored),
             "entered": _side(entered),
             "baseline_unfiltered": _side(rs),
@@ -221,17 +305,18 @@ def render_md(rep: Mapping[str, Any]) -> str:
         "",
         "Mean SOL per trade (0.5 SOL entries), 90% CI, ex-top-3 total SOL.",
         "",
-        "| k | book | n | fill | flat mean | flat CI90 | flat ex-top3 | press mean | press CI90 | press ex-top3 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| k | n_rows | book | n | fill | flat mean | flat CI90 | flat ex-top3 | press mean | press CI90 | press ex-top3 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for k, v in rep["by_k"].items():
+        nr = f"{v['n_rows']}" + (" CENSORED (fewer rows than smallest k)" if v["censored_vs_smallest_k"] else "")
         for name, key in (("OOF-selected", "entered"), ("unfiltered", "baseline_unfiltered")):
             s = v[key]
             if not s["n"]:
-                lines.append(f"| {k} | {name} | 0 | n/a | | | | | | |")
+                lines.append(f"| {k} | {nr} | {name} | 0 | n/a | | | | | | |")
                 continue
             lines.append(
-                f"| {k} | {name} | {s['n']} | {s['fill_rate']:.3f} | {_f(s['flat']['mean_sol'])} | {_ci(s['flat']['ci90_sol'])} | {_f(s['flat']['ex_top3_sol'], 3)} "
+                f"| {k} | {nr} | {name} | {s['n']} | {s['fill_rate']:.3f} | {_f(s['flat']['mean_sol'])} | {_ci(s['flat']['ci90_sol'])} | {_f(s['flat']['ex_top3_sol'], 3)} "
                 f"| {_f(s['press']['mean_sol'])} | {_ci(s['press']['ci90_sol'])} | {_f(s['press']['ex_top3_sol'], 3)} |"
             )
     z = rep["press_zero_crossing"]
@@ -257,19 +342,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     ks = [int(x) for x in args.ks.split(",") if x.strip()]
     if len(set(ks)) != len(ks) or not ks:
         raise SystemExit("--ks must be distinct integers")
-    scores, threshold, thr_doc = load_oof(args.artifact_dir)
+    scores, threshold, thr_doc, oof_days = load_oof(args.artifact_dir)
     rows_path = args.out_dir / SCRATCH_ROWS
     t0 = time.time()
     if args.reuse_rows and rows_path.is_file():
         rows = list(iter_rows_jsonl(rows_path))
     else:
-        roots = resolve_roots(args)
+        roots = guarded_roots(args)
         rows = collect_rows(
             roots["fast"], roots["insample"], roots["live"], ks, args.out_dir / "scratch",
             max_workers=args.max_workers, buffer_hours=args.buffer_hours, max_home_hours=(args.max_home_hours or None),
         )
         write_rows(rows_path, rows)
-    rep = analyze(rows, scores, threshold, thr_doc)
+    rep = analyze(rows, scores, threshold, thr_doc, oof_days)
     rep["ks"] = ks
     rep["wall_s"] = time.time() - t0
     (args.out_dir / "latency_sensitivity.json").write_text(json.dumps(rep, indent=2) + "\n", encoding="utf-8")
