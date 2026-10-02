@@ -72,3 +72,11 @@ From a review of #243. No EXP-013 code has run on real data, and no model, LODO 
    - fail models: flat 15% and the pressure curve at scale 1, both as expected values (`mixed_net`), as in EXP-012;
    - a MISS costs the priority fee.
 6. **Holdout.** Nothing here changes ledger ownership. The backup block stays reserved and unread until a pre-registration merges after a clean screen.
+
+## Amendment 3 (2026-10-02, before any real-data run): two execution details aligned with EXP-012 and made conservative
+
+From the #244 review:
+1. **Cap exit.** The 30-minute cap's sell lands **k slots after the cap instant**, the same k as the entry, like the stop and migration sells. Every exit lags.
+2. **Missing entry state.** It is scored as a **MISS** (priority fee lost, label 0), as in EXP-012, not censored.
+
+Rows near each pool's first and last day are flagged in the table: censored mints, capped `secs_since_create`, and mints absent because they trigger after the pool end. The screen reports bars 1–3 with and without the flagged edge days. **The pass decision uses the full set**, so no bar moves.
