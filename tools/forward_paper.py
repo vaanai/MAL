@@ -1443,6 +1443,7 @@ class ForwardEngine:
                 chain_ms if chain_ms is not None else create.t_signal_ms,
                 vs / vt if vs and vt and vs > 0 and vt > 0 else None,
                 chain=chain_ms is not None,
+                signature=create.signature,
             )
         self.tracks[create.mint] = _Track()
         self.mint_order[create.mint] = len(self.mint_order)
@@ -1598,7 +1599,7 @@ class ForwardEngine:
             self._last_event_ts = event_ts
             self.exp012.note_print(
                 mint, venue=pr.venue, t_recv_ms=pr.t_recv_ms, event_ts=event_ts, side=pr.side, trader=pr.trader,
-                sol_lamports=pr.sol_lamports, token_raw=pr.token_raw, price_sol=pr.price_sol,
+                sol_lamports=pr.sol_lamports, token_raw=pr.token_raw, price_sol=pr.price_sol, signature=pr.signature,
             )
         self.wallets.observe_print(mint, pr)
         self.latency.note_print(pr.t_recv_ms, event_ts)
@@ -3467,8 +3468,8 @@ def serve(config_path: Path) -> int:
         tx_order_prune_ms=TX_ORDER_PRUNE_MS,
     )
     if engine.exp012 is not None:
-        n_hist = engine.exp012.preload(creates_dir, boot_ms)
-        print(f"forward_paper exp012_gate books={sorted(engine.exp012_gates)} creator_history_preloaded={n_hist}", file=sys.stderr)
+        n_hist = engine.exp012.preload(creates_dir, boot_ms, tape_dir=tape_dir)
+        print(f"forward_paper exp012_gate books={sorted(engine.exp012_gates)} creator_history_preloaded={n_hist} {engine.exp012.preload_stats}", file=sys.stderr)
     bind_attention(engine, attention_dir)
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
     if graph_dir.is_dir():

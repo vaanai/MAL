@@ -275,7 +275,41 @@ class ParityTests(unittest.TestCase):
         self.assertLess(want["sniper_buy_share"], 1.0)
         self._assert_equal(row["features"], {n: want[n] for n in NAMES})
         self.assertEqual(row["mig_ms"], mig_ms)
-        self.assertEqual(row["time_fallbacks"], {"prints": 0, "create": False, "migration": False})
+        self.assertEqual(row["time_fallbacks"], {"prints": 0, "create_sig_match": False, "create_fallback": False, "create_row": True, "migration": False})
+
+    def _sig_mint(self, mint: str, signature_match: bool, lag_ms: int):
+        """Create received `lag_ms` after T0 (its chain second is T0's). The creator's initial
+        buy carries the create signature and is delivered late (receive time after other prints)."""
+        rows = _mint_rows(mint, 6)
+        init = _trade(mint, T0 + 5_000, trader="creatorbuy", sol=3_000_000_000, slot=9, event_index=0)
+        init["event_ts"] = T0 // 1000  # chain second of the create
+        init["signature"] = f"sig-{mint}" if signature_match else "other-sig"
+        rows.append(init)
+        rows.sort(key=lambda r: r["t_recv_ms"])
+        return [_create(mint, T0 + lag_ms, "CS")], rows
+
+    def test_create_signature_match_equals_offline(self) -> None:
+        creates, rows = self._sig_mint("S", True, 1_000)  # t_ws second is one later than the chain second
+        row = self._online(creates, rows, END)["S"]  # no chain time on the create row
+        fp = 35.0 / 1_073_000_000.0
+        mig_ms = ((T0 + 20_000) // 1000) * 1000
+        want = _offline(rows, creator="CS", create_ms=_chain(T0), first_price=fp, mig_ms=mig_ms, hist={"CS": [_chain(T0)]})
+        self.assertEqual(want["time_to_migrate_s"], (mig_ms - _chain(T0)) / 1000.0)
+        self._assert_equal(row["features"], {n: want[n] for n in NAMES})
+        self.assertEqual(row["time_fallbacks"]["create_sig_match"], True)
+        self.assertEqual(row["time_fallbacks"]["create_fallback"], False)
+
+    def test_create_without_signature_match_falls_back_to_floor_t_ws(self) -> None:
+        creates, rows = self._sig_mint("N", False, 1_000)
+        row = self._online(creates, rows, END)["N"]
+        floor_ws = _chain(T0 + 1_000)
+        self.assertNotEqual(floor_ws, _chain(T0))
+        fp = 35.0 / 1_073_000_000.0
+        mig_ms = ((T0 + 20_000) // 1000) * 1000
+        want = _offline(rows, creator="CS", create_ms=floor_ws, first_price=fp, mig_ms=mig_ms, hist={"CS": [floor_ws]})
+        self._assert_equal(row["features"], {n: want[n] for n in NAMES})
+        self.assertEqual(row["time_fallbacks"]["create_fallback"], True)
+        self.assertEqual(row["time_fallbacks"]["create_sig_match"], False)
 
     def test_fallback_to_recv_time_is_counted(self) -> None:
         rows = _mint_rows("F", 5)
@@ -284,10 +318,11 @@ class ParityTests(unittest.TestCase):
         row = self._online([_create("F", T0, "CF")], rows, END)["F"]
         fb = row["time_fallbacks"]
         self.assertEqual(fb["prints"], 5)
-        self.assertTrue(fb["create"])
+        self.assertTrue(fb["create_fallback"])
+        self.assertFalse(fb["create_sig_match"])
         self.assertTrue(fb["migration"])
         self.assertEqual(row["mig_ms"], T0 + 20_000)  # receive time, only because event_ts is missing
-        self.assertEqual(row["features"]["time_to_migrate_s"], 20.0)
+        self.assertEqual(row["features"]["time_to_migrate_s"], (T0 + 20_000 - _chain(T0)) / 1000.0)
 
     def test_late_bonding_print_before_mig_is_counted(self) -> None:
         rows = _mint_rows("L", 5)
@@ -482,6 +517,40 @@ class ReloadVisibilityTests(unittest.TestCase):
 
 
 class AccumulatorBoundTests(unittest.TestCase):
+    def test_preload_resolves_signatures_from_tape_else_floor_t_ws(self) -> None:
+        import time
+
+        boot = 1_790_000_000_000
+        sig_a, sig_b = "5" * 64, "6" * 64
+        t_ws_a, t_ws_b = boot / 1000 - 1800.7, boot / 1000 - 1700.4
+        chain_a = int(t_ws_a) - 1  # the create's real chain second, earlier than floor(t_ws)
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "creates").mkdir()
+            (d / "tape").mkdir()
+            day = time.strftime("%Y-%m-%d", time.gmtime(boot / 1000 - 3600))
+            obs = lambda m, sig, t: json.dumps({"stream": "subscribeNewToken", "txType": "create", "mint": m, "traderPublicKey": "CR", "signature": sig, "t_ws": t})
+            (d / "creates" / f"observe-{day}.jsonl").write_text(obs("A", sig_a, t_ws_a) + "\n" + obs("B", sig_b, t_ws_b) + "\n", encoding="utf-8")
+            hour = time.strftime("%Y-%m-%dT%H", time.gmtime(t_ws_a))
+            tape_row = {"type": "trade", "venue": "pump_bonding", "signature": sig_a, "event_ts": chain_a, "mint": "A"}
+            (d / "tape" / f"trades-{hour}.jsonl").write_text(json.dumps(tape_row) + "\n", encoding="utf-8")
+            with_tape = Exp012Online()
+            with_tape.preload(d / "creates", boot, tape_dir=d / "tape")
+            self.assertEqual(with_tape.hist["CR"], sorted([chain_a * 1000, int(t_ws_b) * 1000]))
+            self.assertEqual(with_tape.preload_stats, {"rows": 2, "sig_matched": 1, "fallback_floor_t_ws": 1})
+            no_tape = Exp012Online()
+            no_tape.preload(d / "creates", boot)
+            self.assertEqual(no_tape.hist["CR"], sorted([int(t_ws_a) * 1000, int(t_ws_b) * 1000]))
+            self.assertEqual(no_tape.preload_stats["sig_matched"], 0)
+
+    def test_live_signature_fix_moves_creator_history_entry(self) -> None:
+        acc = Exp012Online()
+        acc.note_create("m", "c", 1_700_000_001_500, 1.0, chain=False, signature="sg")
+        self.assertEqual(acc.hist["c"], [1_700_000_001_000])
+        acc.note_print("m", venue="pump_bonding", t_recv_ms=1_700_000_001_600, event_ts=1_700_000_000, side="buy", trader="t", sol_lamports=1, token_raw=1, price_sol=1.0, signature="sg")
+        self.assertEqual(acc.hist["c"], [1_700_000_000_000])
+        self.assertEqual(acc.acc["m"].create_src, "sig")
+
     def test_unmigrated_mint_dropped_after_60_min_and_history_trimmed(self) -> None:
         acc = Exp012Online()
         acc.note_create("m", "c", 1_000, 1.0)

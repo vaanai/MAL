@@ -11,10 +11,17 @@ Where the online path can differ from the offline builder (the replay helper
 
 1. Time basis. Feature inputs use chain time: `event_ts * 1000` (whole seconds; in
    the offline getBlock walk `t_recv_ms` is None and times are `block_time * 1000`).
-   Prints and the migration use the row's `event_ts`; the create uses the create row's
-   `event_ts`/`block_time`/`blockTime` when the runner passes it, else the observe
-   receive time. Any fallback to `t_recv_ms` is counted in the gate row
-   (`time_fallbacks`). The runner's own decision clock and fills stay on `t_recv_ms`.
+   Prints and the migration use the row's `event_ts`. Live observe create rows carry no
+   chain time (only `t_ws`, receive), so the create's chain second comes from the tape:
+   `create_ms = event_ts * 1000` of the first bonding print whose `signature` equals the
+   create row's signature (the creator's initial buy is usually in the create tx).
+   Features are computed at decision time, so a matching print that arrives late still
+   fixes it. If none arrived by the decision, `create_ms = floor(t_ws to the second)`.
+   Counted in the gate row: `time_fallbacks.create_sig_match` / `create_fallback`
+   (and `create_row` if the runner was given a chain time on the create row itself);
+   `prints` / `migration` count fallbacks to `t_recv_ms`. A fallback create is later than
+   the true create by the receive lag, which also shifts the 32 min truncation edge.
+   The runner's own decision clock and fills stay on `t_recv_ms`.
    First price is `v_sol / v_token_ui` online, reserves-derived offline (same value
    up to float rounding).
 2. Trade prints are the runner's `FlowPrint`s, after its dedupe (a repeated
@@ -38,7 +45,12 @@ Where the online path can differ from the offline builder (the replay helper
 6. Migration definition. Online: the runner's first `pumpswap` print at or after
    the create. Offline additionally needs a prior bonding print. The gate skips with
    `no_bond_history` if no bonding print was seen, which matches offline (unscored).
-7. Creator history (`creator_prior_mints_24h`). Offline sees every create in the
+7. Creator history (`creator_prior_mints_24h`). Preloaded observe creates are resolved to
+   chain seconds by signature match against the tape files for the same window when
+   `tape_dir` is given and its hours exist (a regex signature scan, bounded by a time
+   budget, default 120 s); creates not matched, or if there is no tape, use
+   `floor(t_ws)`. Live creates are fixed by the same signature match as note 1, and the
+   creator's history entry is moved to the corrected time. Offline sees every create in the
    whole pool. Online sees creates preloaded at boot from the creates dir (the
    previous and current UTC day, plus fast-format hour files) and creates registered
    since. At the 00:00Z daily restart the in-memory accumulators are lost: a mint
@@ -127,16 +139,18 @@ def load_gate(model_path: str, model_md5: str, threshold: float, features_path: 
 
 
 class _Acc:
-    __slots__ = ("feat", "had_bond", "migrated", "truncated", "mig_ms", "fb_prints", "fb_create", "fb_mig")
+    __slots__ = ("feat", "had_bond", "migrated", "truncated", "mig_ms", "fb_prints", "create_src", "create_sig", "fb_mig", "mint", "creator")
 
-    def __init__(self, feat: _Feat, fb_create: bool = False) -> None:
+    def __init__(self, feat: _Feat, create_src: str = "row", create_sig: str | None = None, mint: str = "") -> None:
         self.feat = feat
+        self.create_src = create_src  # "row" (chain time given), "sig" (matched a print), "fallback" (floor t_ws)
+        self.create_sig = create_sig
+        self.mint = mint
         self.had_bond = False
         self.migrated = False
         self.truncated = False
         self.mig_ms: int | None = None
         self.fb_prints = 0
-        self.fb_create = fb_create
         self.fb_mig = False
 
 
@@ -164,6 +178,7 @@ class Exp012Online:
         self.hist: dict[str, list[int]] = {}
         self.hist_mints: dict[str, tuple[str, int]] = {}
         self._pruned_at: int | None = None
+        self.preload_stats: dict[str, int] = {}
         self.errors: dict[str, str] = {}  # mint -> exception class name from a feed hook
 
     # --- creator history -------------------------------------------------
@@ -173,13 +188,47 @@ class Exp012Online:
         self.hist_mints[mint] = (creator, create_ms)
         bisect.insort(self.hist.setdefault(creator, []), create_ms)
 
-    def preload(self, creates_dir: Path, boot_ms: int) -> int:
+    def _resolve_sigs(self, tape_dir: Path, wanted: dict[str, int], lo_ms: int, boot_ms: int, budget_s: float) -> dict[str, int]:
+        """signature -> chain ms for `wanted` signatures, from the first bonding-looking
+        row of each in the tape files for [lo, boot]. Regex scan, no json parse. Never raises."""
+        import re
+        import time as _time
+
+        from tools.paper_price_path import open_text
+
+        pat = re.compile(r'"signature":\s*"([1-9A-HJ-NP-Za-km-z]{40,100})"')
+        ets = re.compile(r'"event_ts":\s*(\d{10})')
+        found: dict[str, int] = {}
+        deadline = _time.monotonic() + budget_s
+        hours = sorted({_time.strftime("%Y-%m-%dT%H", _time.gmtime(t / 1000.0)) for t in range(lo_ms, boot_ms + 1, 1_800_000)})
+        for hour in hours:
+            for sfx in (".jsonl", ".jsonl.zst"):
+                path = tape_dir / f"trades-{hour}{sfx}"
+                try:
+                    if not path.is_file():
+                        continue
+                    with open_text(path) as fh:
+                        for line in fh:
+                            if '"pump_bonding"' not in line:
+                                continue
+                            m = pat.search(line)
+                            if m is None or m.group(1) not in wanted or m.group(1) in found:
+                                continue
+                            e = ets.search(line)
+                            if e is not None:
+                                found[m.group(1)] = int(e.group(1)) * 1000
+                            if _time.monotonic() > deadline:
+                                return found
+                except Exception:  # noqa: BLE001
+                    continue
+        return found
+
+    def preload(self, creates_dir: Path, boot_ms: int, tape_dir: Path | None = None, budget_s: float = 120.0) -> int:
         """Creator history from disk, rows strictly before `boot_ms`. Never raises.
         Reads observe-{day}.jsonl[.zst] for the 25 h before boot and fast-format
         creates-{hour}.jsonl[.zst] (type == create). Returns rows added."""
         from tools.paper_price_path import create_from_observe_row, open_text
 
-        added = 0
         lo = boot_ms - HIST_KEEP_MS
         days = {time.strftime("%Y-%m-%d", time.gmtime(t / 1000.0)) for t in range(lo, boot_ms + 1, 3_600_000)}
         days.add(time.strftime("%Y-%m-%d", time.gmtime(boot_ms / 1000.0)))
@@ -191,6 +240,7 @@ class Exp012Online:
         for hour in sorted(hours):
             for sfx in (".jsonl", ".jsonl.zst"):
                 paths.append(creates_dir / f"creates-{hour}{sfx}")
+        rows: list[tuple[str, str, int, str | None]] = []  # mint, creator, t_ms, signature (observe rows only)
         for path in paths:
             try:
                 if not path.is_file():
@@ -203,38 +253,78 @@ class Exp012Online:
                             continue
                         if not isinstance(row, dict):
                             continue
-                        mint = creator = None
-                        t_ms = None
                         if row.get("type") == "create" and isinstance(row.get("block_time"), int):
-                            mint, creator, t_ms = row.get("mint"), row.get("creator"), row["block_time"] * 1000
+                            mint, creator, t_ms, sig = row.get("mint"), row.get("creator"), row["block_time"] * 1000, None
                         else:
                             c = create_from_observe_row(row)
-                            if c is not None:
-                                mint, creator, t_ms = c.mint, c.creator, c.t_signal_ms
-                        if isinstance(mint, str) and isinstance(creator, str) and t_ms is not None and lo <= t_ms < boot_ms:
-                            before = len(self.hist_mints)
-                            self._add_hist(mint, creator, t_ms)
-                            added += len(self.hist_mints) - before
+                            if c is None:
+                                continue
+                            mint, creator, t_ms, sig = c.mint, c.creator, (c.t_signal_ms // 1000) * 1000, c.signature
+                        if isinstance(mint, str) and isinstance(creator, str) and lo <= t_ms < boot_ms:
+                            rows.append((mint, creator, t_ms, sig))
             except Exception:  # noqa: BLE001 - a bad file must not stop boot; history just undercounts
                 continue
+        sig_matched = 0
+        resolved: dict[str, int] = {}
+        if tape_dir is not None:
+            wanted = {sig: t for _m, _c, t, sig in rows if sig}
+            if wanted:
+                resolved = self._resolve_sigs(Path(tape_dir), wanted, lo, boot_ms, budget_s)
+        added = 0
+        for mint, creator, t_ms, sig in rows:
+            if sig and sig in resolved:
+                t_ms = resolved[sig]
+                sig_matched += 1
+            before = len(self.hist_mints)
+            self._add_hist(mint, creator, t_ms)
+            added += len(self.hist_mints) - before
+        self.preload_stats = {"rows": added, "sig_matched": sig_matched, "fallback_floor_t_ws": sum(1 for r in rows if r[3]) - sig_matched}
         return added
 
     # --- feed ------------------------------------------------------------
-    def note_create(self, mint: str, creator: str | None, create_ms: int, first_price: float | None, chain: bool = True) -> None:
-        """`create_ms` is chain time if `chain`, else the observe receive time (counted)."""
+    def note_create(self, mint: str, creator: str | None, create_ms: int, first_price: float | None, chain: bool = True, signature: str | None = None) -> None:
+        """`create_ms` is chain time if `chain`; else the floor-second of the observe
+        receive time, to be replaced by the first bonding print with `signature`."""
         try:
             if mint in self.acc:
                 return
-            self.acc[mint] = _Acc(_Feat(creator or "", create_ms, first_price if first_price and first_price > 0 else None), fb_create=not chain)
+            src = "row" if chain else "fallback"
+            if not chain:
+                create_ms = (create_ms // 1000) * 1000
+            self.acc[mint] = _Acc(
+                _Feat(creator or "", create_ms, first_price if first_price and first_price > 0 else None),
+                create_src=src,
+                create_sig=signature if isinstance(signature, str) and signature and not chain else None,
+                mint=mint,
+            )
             self._add_hist(mint, creator, create_ms)
         except Exception as exc:  # noqa: BLE001 - never break the runner's hot path
             self.errors[mint] = type(exc).__name__
 
-    def note_print(self, mint: str, *, venue: str, t_recv_ms: int, event_ts: int | None, side: str, trader: str | None, sol_lamports: int, token_raw: int, price_sol: float | None) -> None:
+    def _fix_create(self, a: _Acc, new_ms: int) -> None:
+        old = a.feat.create_ms
+        a.feat.create_ms = new_ms
+        a.create_src = "sig"
+        entry = self.hist_mints.get(a.mint)
+        if entry is not None:
+            creator, _t = entry
+            times = self.hist.get(creator)
+            if times is not None:
+                k = bisect.bisect_left(times, old)
+                if k < len(times) and times[k] == old:
+                    del times[k]
+                bisect.insort(times, new_ms)
+            self.hist_mints[a.mint] = (creator, new_ms)
+
+    def note_print(self, mint: str, *, venue: str, t_recv_ms: int, event_ts: int | None, side: str, trader: str | None, sol_lamports: int, token_raw: int, price_sol: float | None, signature: str | None = None) -> None:
         a = self.acc.get(mint)
         if a is None or venue != "pump_bonding":
             return
         try:
+            if a.create_src == "fallback" and a.create_sig is not None and signature == a.create_sig:
+                ts, fb = _chain_ms(event_ts, t_recv_ms)
+                if not fb:
+                    self._fix_create(a, ts)
             a.had_bond = True
             if a.truncated:
                 return
@@ -291,7 +381,13 @@ class Exp012Online:
         a = self.acc.get(mint)
         if a is None:
             return None
-        return {"prints": a.fb_prints, "create": a.fb_create, "migration": a.fb_mig}
+        return {
+            "prints": a.fb_prints,
+            "create_sig_match": a.create_src == "sig",
+            "create_fallback": a.create_src == "fallback",
+            "create_row": a.create_src == "row",
+            "migration": a.fb_mig,
+        }
 
     def drop(self, mint: str) -> None:
         self.acc.pop(mint, None)
