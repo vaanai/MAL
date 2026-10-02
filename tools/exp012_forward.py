@@ -903,8 +903,12 @@ def write_lock(out_dir: Path, doc: dict[str, Any]) -> None:
         os.close(dfd)
 
 
+def _report_json_bytes(rep: dict[str, Any]) -> bytes:
+    return (json.dumps(rep, indent=2, default=str) + "\n").encode("utf-8")
+
+
 def _write_final_files(out_dir: Path, rep: dict[str, Any]) -> None:
-    atomic_write(out_dir / "report.json", (json.dumps(rep, indent=2, default=str) + "\n").encode("utf-8"))
+    atomic_write(out_dir / "report.json", _report_json_bytes(rep))
     md = render_secondary_markdown(rep) if rep.get("schema") == SCHEMA_SECONDARY_REPORT else render_markdown(rep)
     atomic_write(out_dir / "report.md", md.encode("utf-8"))
 
@@ -980,17 +984,27 @@ def run_report(
             changed = [k for k, v in ctx0["binding"].items() if lock.get(k) != v]
             if changed:
                 raise Refused([f"--reprint: {experiment}'s lock binds {changed} to values that differ from the current registry, spec or frozen manifest"])
-        bind = ctx0["binding"] if secondary else None
+        bind = None
+        if secondary:
+            # the report is deterministic given rows, runs, ctx and the lock's time; it must hash to what the lock recorded
+            rep = _final_report(rows, runs, spec, ctx0)
+            rep["read_end"] = re_s
+            _mark_test(rep, test_window)
+            rep["generated_at_utc"] = lock.get("utc_time")
+            if hashlib.sha256(_report_json_bytes(rep)).hexdigest() != lock.get("report_sha256"):
+                raise Refused([f"--reprint refused: {experiment}'s report does not re-render to the report_sha256 in its lock"])
+            bind = {**ctx0["binding"], "report_sha256": lock["report_sha256"]}
         # a crash between the lock and the markers leaves none: complete them from the lock
         have_runs = any(m.get("final") for m in all_runs)
         if not have_runs:
             _append_marker_to_runs(out_dir, _final_docs(out_dir, lock["rows_sha256"], cc_s, re_s, test_window, experiment, bind))
         if final_ledger is not None and not any(m.get("out_dir") == str(out_dir.resolve()) and (m.get("clean_clock"), m.get("read_end")) == (cc_s, re_s) for m in ledger_markers(final_ledger)):
             ledger_append(final_ledger, _final_docs(out_dir, lock["rows_sha256"], cc_s, re_s, test_window, experiment, bind))
-        rep = _final_report(rows, runs, spec, ctx0)
-        rep["read_end"] = re_s
-        rep["reprint_of_lock"] = lock.get("utc_time")
-        _mark_test(rep, test_window)
+        if not secondary:
+            rep = _final_report(rows, runs, spec, ctx0)
+            rep["read_end"] = re_s
+            rep["reprint_of_lock"] = lock.get("utc_time")
+            _mark_test(rep, test_window)
         _write_final_files(out_dir, rep)
         return rep
     if lock_path.exists():
@@ -1028,14 +1042,21 @@ def run_report(
     rep = _final_report(rows, runs, spec, ctx)
     rep["read_end"] = re_s
     _mark_test(rep, test_window)
+    # a secondary's lock binds the rendered report's sha256: render first (in memory), then lock, then print/write
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    extra: dict[str, Any] = {}
+    if secondary:
+        rep["generated_at_utc"] = stamp  # a reprint reproduces the same bytes from the lock's time
+        extra = {"report_sha256": hashlib.sha256(_report_json_bytes(rep)).hexdigest()}
     # 1. the lock, fsynced, before anything about the result is printed or written
     write_lock(
         out_dir,
         {
             "experiment": experiment,
             **(ctx["binding"] if secondary else {}),
+            **extra,
             "schema": SCHEMA_LOCK,
-            "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "utc_time": stamp if secondary else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "clean_clock": cc_s,
             "read_end": re_s,
             "test_window": test_window,
@@ -1046,7 +1067,7 @@ def run_report(
         },
     )
     # 2. durable markers: runs.jsonl and the external append-only ledger
-    marker = _final_docs(out_dir, now_sha, cc_s, re_s, test_window, experiment, ctx["binding"] if secondary else None)
+    marker = _final_docs(out_dir, now_sha, cc_s, re_s, test_window, experiment, {**ctx["binding"], **extra} if secondary else None)
     _append_marker_to_runs(out_dir, marker)
     if final_ledger is not None:
         ledger_append(final_ledger, marker)
@@ -1103,7 +1124,7 @@ def ledger_final(ledger: Path | None, experiment: str, cc_s: str, re_s: str, tes
     lock = _locked_final(out, cc_s, re_s, test_window, f"{experiment} FINAL", experiment)
     if _sha256_file(out / LOCK_NAME) != m.get("lock_sha256") or lock.get("rows_sha256") != m.get("rows_sha256"):
         raise Refused([f"{experiment} FINAL: the lock in {out} does not match its ledger marker"])
-    return {"out_dir": str(out), "lock_sha256": m["lock_sha256"], "rows_sha256": m["rows_sha256"]}
+    return {"out_dir": str(out), "lock_sha256": m["lock_sha256"], "rows_sha256": m["rows_sha256"], "report_sha256": m.get("report_sha256"), "lock": lock}
 
 
 def gate_verdict(rows: Sequence[dict[str, Any]]) -> str:
@@ -1267,7 +1288,7 @@ def render_secondary_markdown(rep: dict[str, Any]) -> str:
     return "\n".join(L) + "\n"
 
 
-def run_family_holm(registry_path: Path | None, out_dirs: dict[str, Path], primary_ledger: Path | None, clean_clock: datetime, read_end: datetime, test_window: bool, output: Path) -> dict[str, Any]:
+def run_family_holm(registry_path: Path | None, out_dirs: dict[str, Path], primary_ledger: Path | None, clean_clock: datetime, read_end: datetime, test_window: bool, output: Path, ledgers: dict[str, Path] | None = None) -> dict[str, Any]:
     """Holm-Bonferroni across every registered secondary (fixed k), both fail models, on the p-values their
     FINAL reports hold. Reads only locked, hash-checked reports. Writes `output` atomically."""
     check_window(clean_clock, read_end, test_window)
@@ -1295,7 +1316,16 @@ def run_family_holm(registry_path: Path | None, out_dirs: dict[str, Path], prima
         rp = d / "report.json"
         if not rp.is_file():
             raise Refused([f"{exp}: {rp} is missing; run its `report --reprint` first"])
-        rep = json.loads(rp.read_text(encoding="utf-8"))
+        # the report is bound to the lock and to the ledger marker by sha256 before any p-value is read
+        led = (ledgers or {}).get(exp) or ff.default_ledger(exp)
+        info = ledger_final(led, exp, cc_s, re_s, test_window, out_dir=d)
+        want = lock.get("report_sha256")
+        if not want or want != info["report_sha256"]:
+            raise Refused([f"{exp}: the lock's report_sha256 is missing or differs from its ledger marker's"])
+        report_bytes = rp.read_bytes()
+        if hashlib.sha256(report_bytes).hexdigest() != want:
+            raise Refused([f"{exp}: {rp} no longer hashes to the report_sha256 in its lock; `report --reprint` restores it"])
+        rep = json.loads(report_bytes.decode("utf-8"))
         if rep.get("schema") != SCHEMA_SECONDARY_REPORT or rep.get("mode") != "FINAL" or rep.get("experiment") != exp or rep.get("registration_order") != registered[exp]:
             raise Refused([f"{exp}: {rp} is not that registered secondary's FINAL report"])
         if rep.get("binding", {}).get("registry_sha256") != reg_sha:
@@ -1409,6 +1439,7 @@ def main(argv: list[str] | None = None) -> int:
     fh.add_argument("--test-window", action="store_true")
     fh.add_argument("--primary-ledger", default=str(ff.PRIMARY_LEDGER))
     fh.add_argument("--registry", default=str(ff.REGISTRY_PATH))
+    fh.add_argument("--ledger", action="append", default=[], metavar="EXP-###=PATH", help="a secondary's FINAL ledger (default /data/mal/forward-family/<exp>/FINAL_READS.jsonl)")
     args = ap.parse_args(argv)
     try:
         spec = _resolve_spec(args) if args.cmd in ("score", "report") else None
@@ -1429,7 +1460,8 @@ def main(argv: list[str] | None = None) -> int:
                 if not path or name in outs:
                     raise Refused([f"--out-dir needs EXP-###=PATH, once per experiment, got {item!r}"])
                 outs[name] = Path(path)
-            res = run_family_holm(Path(args.registry), outs, Path(args.primary_ledger), cc_arg, re_arg, args.test_window, Path(args.output))
+            leds = {k: Path(v) for k, _, v in (x.partition("=") for x in args.ledger)}
+            res = run_family_holm(Path(args.registry), outs, Path(args.primary_ledger), cc_arg, re_arg, args.test_window, Path(args.output), leds)
         except Refused as exc:
             return _refuse(exc)
         print(f"family_holm: k={res['k']} gate {res['gate_state']}; candidate order {res['candidate_order']}", file=sys.stderr)

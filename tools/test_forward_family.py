@@ -440,8 +440,11 @@ class HolmTests(Fam):
         out.mkdir(parents=True)
         (out / "rows.jsonl").write_text("")
         cc, re_ = fw._wins(fw.parse_clock(CLEAN_CLOCK), fw.parse_clock(READ_END))
-        (out / "final_read.lock").write_text(json.dumps({"experiment": report["experiment"], "registry_sha256": ff.file_sha256(self.registry), "clean_clock": cc, "read_end": re_, "test_window": True, "rows_sha256": fw._rows_sha256(out)}))
-        (out / "report.json").write_text(json.dumps(report))
+        (out / "report.json").write_bytes(fw._report_json_bytes(report))
+        lock = {"experiment": report["experiment"], "registry_sha256": ff.file_sha256(self.registry), "report_sha256": fw._sha256_file(out / "report.json"), "clean_clock": cc, "read_end": re_, "test_window": True, "rows_sha256": fw._rows_sha256(out)}
+        (out / "final_read.lock").write_text(json.dumps(lock))
+        marker = {"final": True, "experiment": report["experiment"], "clean_clock": cc, "read_end": re_, "test_window": True, "rows_sha256": lock["rows_sha256"], "lock_sha256": fw._sha256_file(out / "final_read.lock"), "report_sha256": lock["report_sha256"], "out_dir": str(out.resolve())}
+        fw.ledger_append(self.sec_ledger(report["experiment"]), marker)
 
     def _family(self, p_a: dict, p_b: dict, own: tuple[bool, bool] = (True, True), primary: str = "PASS") -> tuple[Path, Path]:
         self.primary_final(primary if primary == "PASS" else None)
@@ -458,7 +461,7 @@ class HolmTests(Fam):
     def run_holm(self, out: Path, dirs: dict, *extra_dirs: str) -> tuple[int, str]:
         argv = ["family_holm", "--registry", str(self.registry), "--primary-ledger", str(self.ledger12), "--output", str(out), *self.win()]
         for e, d in dirs.items():
-            argv += ["--out-dir", f"{e}={d}"]
+            argv += ["--out-dir", f"{e}={d}", "--ledger", f"{e}={self.sec_ledger(e)}"]
         return self.main(argv + list(extra_dirs))
 
     def test_holm_across_two_fixture_secondaries(self) -> None:
@@ -647,19 +650,48 @@ class ReviewFixTests(Fam):
         self.assertEqual(rc, 2)
         self.assertIn("registry_sha256", err)
 
-    def test_family_holm_needs_one_registry_sha_equal_to_the_current_file(self) -> None:
-        h = HolmTests("test_holm_across_two_fixture_secondaries")
-        # build the fabricated family on this fixture
-        out, dirs = HolmTests._family(self, {"flat": 0.01, "press": 0.01}, {"flat": 0.01, "press": 0.01})
+    def test_family_holm_refuses_a_tampered_secondary_report(self) -> None:
+        out, dirs = HolmTests._family(self, {"flat": 0.01, "press": 0.01}, {"flat": 0.2, "press": 0.2})
         self.assertEqual(HolmTests.run_holm(self, out, dirs)[0], 0)
+        res = json.loads(out.read_text())
+        self.assertEqual(res["secondaries"][SEC2]["verdict"], "FAIL")
         rp = dirs[SEC2] / "report.json"
         rep = json.loads(rp.read_text())
-        rep["binding"]["registry_sha256"] = "0" * 64
+        rep["tested_quantity"]["p"] = {"flat": 0.0001, "press": 0.0001}  # make the loser look like a winner
         rp.write_text(json.dumps(rep))
+        out.unlink()
         rc, err = HolmTests.run_holm(self, out, dirs)
         self.assertEqual(rc, 2)
-        self.assertIn("registry sha256", err)
-        del h
+        self.assertIn("no longer hashes to the report_sha256", err)
+        self.assertFalse(out.exists())
+        # a lock whose report sha was edited to match is caught by the ledger marker
+        lock_path = dirs[SEC2] / "final_read.lock"
+        lock = json.loads(lock_path.read_text())
+        lock["report_sha256"] = fw._sha256_file(rp)
+        lock_path.write_text(json.dumps(lock))
+        rc, err = HolmTests.run_holm(self, out, dirs)
+        self.assertEqual(rc, 2)
+        self.assertIn("does not match its ledger marker", err)
+
+    def test_secondary_report_is_bound_to_lock_and_marker_and_reprints_byte_identically(self) -> None:
+        spec = self.write_spec()
+        self.assertEqual(self.score_sec(spec)[0], 0)
+        self.primary_final()
+        self.assertEqual(self.report_sec(spec)[0], 0)
+        rp = self.sec_out() / "report.json"
+        sha = fw._sha256_file(rp)
+        lock = json.loads((self.sec_out() / "final_read.lock").read_text())
+        self.assertEqual(lock["report_sha256"], sha)
+        self.assertEqual(lock["utc_time"], json.loads(rp.read_text())["generated_at_utc"])
+        self.assertEqual(jl(self.sec_ledger())[-1]["report_sha256"], sha)
+        self.assertEqual([m["report_sha256"] for m in jl(self.sec_out() / "runs.jsonl") if m.get("final")], [sha])
+        md = (self.sec_out() / "report.md").read_bytes()
+        rp.write_text("{}")  # a damaged report is restored by reprint, byte for byte
+        self.assertEqual(self.report_sec(spec, SEC, "--reprint")[0], 0)
+        self.assertEqual(fw._sha256_file(rp), sha)
+        self.assertEqual((self.sec_out() / "report.md").read_bytes(), md)
+        # EXP-012's own lock carries no report sha
+        self.assertNotIn("report_sha256", json.loads((self.out12 / "final_read.lock").read_text()) if (self.out12 / "final_read.lock").exists() else {})
 
     def test_family_holm_refuses_a_registry_changed_since_the_reads(self) -> None:
         out, dirs = HolmTests._family(self, {"flat": 0.01, "press": 0.01}, {"flat": 0.01, "press": 0.01})
