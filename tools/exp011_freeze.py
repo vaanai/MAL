@@ -299,6 +299,19 @@ def add_root_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--verify-view", action="store_true", help="before reading, check VIEW.sha256 under every root given (refuses if absent/mismatched)")
 
 
+def add_extra_view_arg(ap: argparse.ArgumentParser) -> None:
+    """EXP-013 options. Defined here, with no import of tools.exp013_pool, so the EXP-012 CLIs
+    never depend on that module unless an extra view is actually given."""
+    ap.add_argument(
+        "--extra-fast-view",
+        action="append",
+        default=None,
+        metavar="DIR",
+        help="EXP-013 exploration only, repeatable: an extra fast-format clean view (needs VIEW.sha256; hours/days come from it; refuses forbidden roots and overlaps)",
+    )
+    ap.add_argument("--allow-gap", action="store_true", help="EXP-013: accept missing hour ranges between extra views (recorded in the manifest and screens)")
+
+
 def resolve_roots(args: argparse.Namespace) -> dict[str, Path | None]:
     """Apply the holdout fence to the given roots, then (with --verify-view)
     check their VIEW.sha256. Returns {'fast','insample','live'} -> Path|None."""
@@ -915,8 +928,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--result-out", default=None, help="also write a result.v1 record (role exploration) of the nested LODO here")
     ap.add_argument("--tries-log", default=None, help="tries log for the result.v1 record (default: MAL_TRIES_LOG / data/tries.jsonl)")
     add_root_args(ap)
-    from tools.exp013_pool import add_extra_view_arg
-
     add_extra_view_arg(ap)
     args = ap.parse_args(argv)
     if args.extra_fast_view:
@@ -947,7 +958,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
         if any(r is None for r in roots.values()):
             raise SystemExit("--extra-fast-view needs all three clean-view pool roots (with --verify-view) too")
-        extra_views = load_extra_views(args.extra_fast_view, DAYS_ALL)
+        extra_views = load_extra_views(args.extra_fast_view, DAYS_ALL, allow_gap=args.allow_gap)
 
     entries_sink: list[dict[str, Any]] = []
     model, threshold_info, oof, manifest, wall_s, nested_report = freeze(

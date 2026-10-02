@@ -47,7 +47,7 @@ from typing import Any, Sequence
 import tools.exp011_freeze as fz
 from tools.exp011_build_table import FORCED_BUFFER_HOURS, FORCED_MAX_HOME_HOURS, FORCED_MAX_WORKERS, build_table
 from tools import exp013_screens
-from tools.exp013_pool import EXPANSION_END, EXPANSION_START, add_extra_view_arg, json_dumps, load_extra_views
+from tools.exp013_pool import EXPANSION_END, EXPANSION_START, add_extra_view_arg, edge_censoring, json_dumps, load_extra_views, union_gaps
 
 DEFAULT_OUT_ROOT = "/data/mal/exp013-candidate"
 DEFAULT_EXP012_DIR = str(Path(__file__).resolve().parents[1] / "ARTIFACTS" / "exp012")
@@ -207,6 +207,8 @@ def write_manifest(
             }
             for d in days
         ],
+        "extra_pool_gaps": union_gaps(extra_views),
+        "edge_censoring": edge_censoring(extra_views, rows),
         "no_holdout_statement": NO_HOLDOUT_STATEMENT,
         "no_holdout_assertions": assert_no_holdout(rows, days, extra_views, roots, e12_dir) if e12_dir is not None else [],
         "exp012_files_sha256": exp013_screens.e12_file_sha256(e12_dir) if e12_dir is not None else None,
@@ -230,7 +232,7 @@ def run(args: argparse.Namespace) -> Path:
     roots = fz.resolve_roots(args)
     if any(r is None for r in roots.values()):
         raise SystemExit("give all three clean-view pool roots (--fast-dir, --oracle-insample-dir, --oracle-live-dir)")
-    extra_views = load_extra_views(args.extra_fast_view, fz.DAYS_ALL)
+    extra_views = load_extra_views(args.extra_fast_view, fz.DAYS_ALL, allow_gap=args.allow_gap)
 
     t0 = time.time()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -258,6 +260,8 @@ def run(args: argparse.Namespace) -> Path:
     (out_dir / "per_day_lodo.md").write_text(per_day_markdown(doc), encoding="utf-8")
     e12_dir = Path(args.exp012_dir)
     screens = exp013_screens.run_screens(rows, oof, thr["threshold"], e12_dir)
+    screens["extra_pool_gaps"] = union_gaps(extra_views)
+    screens["edge_censoring"] = edge_censoring(extra_views, rows)
     (out_dir / "screens.json").write_text(json_dumps(screens), encoding="utf-8")
     (out_dir / "screens.md").write_text(exp013_screens.screens_markdown(screens), encoding="utf-8")
     args_doc = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}

@@ -155,6 +155,10 @@ def source_screens(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
 def _assert_not_read_path(d: Path) -> Path:
     real = Path(os.path.realpath(str(d)))
+    from tools.exp013_pool import _is_forbidden
+
+    if _is_forbidden(str(real)) is not None:
+        raise SystemExit(f"{d}: resolves into a forbidden location; the refit never opens it")
     if "read" in real.parts and "exp012" in real.parts[: real.parts.index("read")]:
         raise SystemExit(f"{d}: EXP-012's read/ directory is never opened by the refit")
     return real
@@ -278,4 +282,13 @@ def screens_markdown(doc: dict[str, Any]) -> str:
             lines.append(f"| {b['scope']} | 0 | | | | | |")
             continue
         lines.append(f"| {b['scope']} | {b['n_candidate_selected']} | {b['n_exp012_selected']} | {b['n_both']} | {_f(b['share_of_candidate_also_in_exp012'])} | {_f(b['share_of_exp012_also_in_candidate'])} | {_f(b['jaccard'])} |")
+    gaps = doc.get("extra_pool_gaps")
+    if gaps is not None:
+        lines += ["", "## Gaps between extra views", ""]
+        lines += [f"- missing {g['from']}..{g['to']} ({g['n_hours']} h), accepted with --allow-gap" for g in gaps] or ["- none"]
+    ec = doc.get("edge_censoring")
+    if ec is not None:
+        lines += ["", "## Edge censoring (pool X)", "", ec["statement"], "", "| Run | Role | Edge day | Zone hours on day | Rows on day |", "| --- | --- | --- | ---: | ---: |"]
+        for e in ec["edge_days"]:
+            lines.append(f"| {e['run'][0]}..{e['run'][1]} | {e['role']} | {e['day']} | {e['zone_hours_on_day']} | {e['n_rows_on_day']} |")
     return "\n".join(lines) + "\n"

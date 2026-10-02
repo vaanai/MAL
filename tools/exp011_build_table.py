@@ -40,8 +40,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from tools.exp011_freeze import TARGET_SPEC_ID, add_root_args, load_tp50_rows, resolve_roots
-from tools.exp013_pool import add_extra_view_arg
+from tools.exp011_freeze import TARGET_SPEC_ID, add_extra_view_arg, add_root_args, load_tp50_rows, resolve_roots
 
 
 def _md5_of_file(path: Path) -> str:
@@ -166,7 +165,7 @@ def main(argv: list[str] | None = None) -> None:
         from tools.exp013_pool import load_extra_views
 
         assert_out_not_frozen_dir(out)
-        extra_views = load_extra_views(args.extra_fast_view, DAYS_ALL)
+        extra_views = load_extra_views(args.extra_fast_view, DAYS_ALL, allow_gap=args.allow_gap)
     build_table(
         out,
         scratch,
