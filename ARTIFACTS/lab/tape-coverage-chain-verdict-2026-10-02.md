@@ -36,7 +36,7 @@ Generated report: [tape-coverage-chain-2026-10-01.md](tape-coverage-chain-2026-1
 
 The fast tape (`mal-fast-trade-tape`, trial drop-in) subscribes to the public `logsSubscribe` websocket at `api.mainnet-beta.solana.com`.
 
-**Reconnects.** In the window it logged 64 websocket closes (code 1006), from heartbeat `reconnects` 20 at 17:00:36Z to 84 at 19:00:36Z, and 55 slot jumps. Those 12 windows show 0 to 14 reconnects each. The worst coverage hour, 17, is the one with the most closes (32 against 16 in hour 18).
+**Reconnects.** In the window it logged 64 reconnects (47 websocket closes with code 1006 and 17 handshake rejections with HTTP 413), from heartbeat `reconnects` 20 at 17:00:36Z to 84 at 19:00:36Z, and 55 slot jumps. The 12 stats windows ending 17:05Z to 18:55Z show 0 to 14 reconnects each. The worst coverage hour, 17, is the one with the most closes (32 against 16 in hour 18).
 
 **Receive lag.** Lag behind block time in the 12 stats windows ending 17:05Z to 18:55Z: p50 1.28 to 7.152 s, p99 11.43 to 39.557 s. That is above the runner's 5,000 ms stale cap (`STALE_ACTION_MS`), so a forward runner on this feed would also drop many of the rows it does get.
 
@@ -59,7 +59,7 @@ A second chain-truth window in the quiet stretch separates the two: `[2026-10-02
 - **A. getBlock tip follower (Helius).**
   - Coverage: complete by construction, with the same source, decoder and row shape as the training walks (`tools/pump_history_backfill`).
   - Cost: 13,355 to 13,452 slots per hour here, about 3.7 slots/s. At 1 credit per getBlock that is about 0.32M credits/day, about 9.7M/month, inside the ~40M/month budget. It needs at least 4 rps (6 with headroom) against the 50 rps plan, beside the walkers' 40.
-  - Latency: unmeasured. It is confirmed-block time plus the fetch of a block of about 1.2 MB (16.7 GB wire per hour here).
+  - Latency: unmeasured. It is confirmed-block time plus the fetch of a block of about 1.2 MB (16.0 to 16.7 GB wire per hour here).
   - Next step: a short latency probe.
 - **B. Redundant public sockets.**
   - Two or more concurrent `logsSubscribe` connections, deduplicated by `(signature, event_index)`. $0.
