@@ -636,13 +636,10 @@ class ReportTests(unittest.TestCase):
 
     def test_report_fields_come_from_compute_gate(self) -> None:
         rows = self._rows(240)
-        with tempfile.TemporaryDirectory() as td:
-            out = Path(td)
-            (out / "rows.jsonl").write_text("".join(fw._dump(r) + "\n" for r in rows))
-            (out / "runs.jsonl").write_text(json.dumps({"clean_clock": CLEAN_CLOCK, "to_exclusive": "2026-10-12T00", "model_md5": "m", "threshold": 0.5}) + "\n")
-            rep = fw.run_report(out)
-            md = (out / "report.md").read_text()
-            on_disk = json.loads((out / "report.json").read_text())
+        runs = [{"clean_clock": CLEAN_CLOCK, "to_exclusive": "2026-10-12T00", "model_md5": "m", "threshold": 0.5}]
+        rep = fw.build_report(rows, runs)
+        md = fw.render_markdown(rep)
+        on_disk = json.loads(json.dumps(rep))
         entered = [r for r in rows if r["entered"]]
         gate = e11.compute_gate(entered)
         pgate = e11.compute_gate([{**r, "flat": r["press"]} for r in entered])
@@ -667,8 +664,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(rep["scored_through_exclusive"], "2026-10-12T00")
 
     def test_empty_book_is_a_fail_on_min_n(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            rep = fw.run_report(Path(td))
+        rep = fw.build_report([], [])
         self.assertEqual(rep["n_entered"], 0)
         self.assertEqual(rep["verdict"], "FAIL")
         self.assertIn("min_n", rep["gate"]["promote_blockers"])

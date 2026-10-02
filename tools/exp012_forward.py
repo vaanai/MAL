@@ -3,7 +3,7 @@
 
     python3 -m tools.exp012_forward verify --walk-dir D --hour H
     python3 -m tools.exp012_forward score  --walk-dir D --out-dir OUT [--clean-clock ISO] [--to HOUR] [--pool-start HOUR]
-    python3 -m tools.exp012_forward report --out-dir OUT
+    python3 -m tools.exp012_forward report --out-dir OUT --walk-dir D [--clean-clock ISO] [--read-end ISO] [--reprint]
 
 This is NOT a one-shot read and writes no HOLDOUT lock. It runs the code path
 `tools/exp012_score.py` used for the read, by import and not by copy:
@@ -16,6 +16,15 @@ This is NOT a one-shot read and writes no HOLDOUT lock. It runs the code path
   - the gate is `exp011_score.compute_gate` (both fail models).
 Only the hour source differs: one raw walker directory instead of three
 deduplicated copies (see "Where the forward path differs from the read").
+
+One pre-registered read (DEC-016 Amendment 1): clean clock 2026-10-06T00:00:00Z, read end
+2026-10-16T00:00:00Z (exclusive). `score` counts migrations in [clean clock, min(to, read end)).
+`report` is INTERIM (rows, entered count, per-day entered counts; no mean, CI, SOL, day sign or
+verdict in any output) unless every hour in [pool start, read end + 1 h) is sealed and verified
+AND a score run reached `to >= read end + 1 h` (the 30-minute exit cap needs the next hour).
+Then it is FINAL: the gate plus report-only context, and `final_read.lock` is written once. A second
+FINAL report refuses; `--reprint` re-renders only if rows.jsonl still hashes to the lock's sha256.
+`score` refuses once the lock exists. (rows.jsonl itself holds each row's nets; it is data, not a report.)
 
 Inputs and refusals (exit 2, each reason on stderr, before any row is read):
   - `check_frozen(artifact_dir)` must return no error (FROZEN.md5 md5s, model.md5,
@@ -96,7 +105,10 @@ from tools.latency_curve import _hour_file
 SCHEMA_ROW = "exp012_forward_row_v1"
 SCHEMA_REPORT = "exp012_forward_report_v1"
 LABEL = "forward simulated paper, not money made"
-DEFAULT_CLEAN_CLOCK = "2026-10-05T05:00:00Z"
+DEFAULT_CLEAN_CLOCK = "2026-10-06T00:00:00Z"  # DEC-016 Amendment 1
+DEFAULT_READ_END = "2026-10-16T00:00:00Z"  # exclusive: 10 full UTC days
+LOCK_NAME = "final_read.lock"
+SCHEMA_LOCK = "exp012_forward_final_read_lock_v1"
 DEFAULT_FREEZE_COMMIT = "ea5ec374010378b14a5c19e81bf045679bde73b9"  # EXP-012 section 12 (Part 2)
 ROWS_NAME = "rows.jsonl"
 RUNS_NAME = "runs.jsonl"
@@ -438,7 +450,10 @@ def merge_rows(existing: Sequence[dict[str, Any]], fresh: Sequence[dict[str, Any
     return new, conflicts
 
 
-def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None) -> dict[str, Any]:
+def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None, read_end: datetime | None = None) -> dict[str, Any]:
+    read_end = read_end if read_end is not None else parse_clock(DEFAULT_READ_END)
+    if (out_dir / LOCK_NAME).exists():
+        raise Refused([f"{out_dir / LOCK_NAME} exists: the final read was taken; score no longer writes rows here"])
     errors = s12.check_frozen(artifact_dir, frozen_manifest_md5, freeze_commit)
     if errors:
         raise Refused(errors)
@@ -470,7 +485,7 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
 
     t0 = time.time()
     rows, threshold = score_hours(walk_dir, pool, artifact_dir, out_dir / "scratch")
-    lo, hi = ms(clean_clock), ms(to)
+    lo, hi = ms(clean_clock), min(ms(to), ms(read_end))
     fresh = [make_row(r, threshold) for r in rows if lo <= int(r["mig_ms"]) < hi]
     existing = read_rows(rows_path)
     new, conflicts = merge_rows(existing, fresh)
@@ -484,6 +499,7 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
         "clean_clock": cc_s,
         "pool_from": pool[0],
         "to_exclusive": hour_key(to),
+        "read_end": read_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "n_hours": len(pool),
         "warnings": warnings,
         "n_rows_seen_in_range": len(fresh),
@@ -541,6 +557,7 @@ def build_report(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]])
     last = runs[-1] if runs else {}
     return {
         "schema": SCHEMA_REPORT,
+        "mode": "FINAL",
         "label": LABEL,
         "verdict": "PASS" if gate.get("promote") else "FAIL",
         "verdict_note": "forward gate under both fail models; a PASS is forward simulated paper and is not live evidence",
@@ -560,6 +577,7 @@ def build_report(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]])
             "promote_pressure_1": gate.get("promote_pressure_1", False),
             "pressure_scale_1_from_gate": p1,
         },
+        "context_report_only": build_context(rows),
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
@@ -576,15 +594,168 @@ def render_markdown(rep: dict[str, Any]) -> str:
     L += ["", f"gate (both models): promote={rep['gate']['promote']} blockers={rep['gate']['promote_blockers']}", "", "## Per UTC day (migration day)", "| day | n_decided | n_entered | flat SOL | pressure SOL |", "| --- | --- | --- | --- | --- |"]
     for d in rep["per_day"]:
         L.append(f"| {d['day']} | {d['n_decided']} | {d['n_entered']} | {d['flat_total_sol']:.6f} | {d['press_total_sol']:.6f} |")
+    ctx = rep.get("context_report_only")
+    if ctx:
+        def pct(x: Any) -> str:
+            return "-" if x is None else f"{x * 100:.1f}%"
+
+        L += ["", "## Report-only context (no role in the gate)", "| day | all rows | baseline flat mean SOL | baseline pressure mean SOL | entered | selected fraction | fill rate entered | fill rate all rows |", "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+        for name, d in [("ALL", ctx["overall"])] + [(x["day"], x) for x in ctx["per_day"]]:
+            bl = d["baseline_unfiltered"]
+            fm = "-" if bl["flat_mean_sol"] is None else f"{bl['flat_mean_sol']:.6f}"
+            pm = "-" if bl["press_mean_sol"] is None else f"{bl['press_mean_sol']:.6f}"
+            L.append(f"| {name} | {bl['n_all_rows']} | {fm} | {pm} | {d['n_entered']} | {pct(d['selected_fraction'])} | {pct(d['fill_rate_entered'])} | {pct(d['fill_rate_all_rows'])} |")
     L += ["", f"Result label: {rep['label']}."]
     return "\n".join(L) + "\n"
 
 
-def run_report(out_dir: Path) -> dict[str, Any]:
+def _rows_sha256(out_dir: Path) -> str:
+    return _sha256_file(out_dir / ROWS_NAME) if (out_dir / ROWS_NAME).is_file() else hashlib.sha256(b"").hexdigest()
+
+
+def _frac(n: int, d: int) -> float | None:
+    return (n / d) if d else None
+
+
+def build_context(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """FINAL only, report-only, never part of the gate. Uses only fields already in the rows:
+    `entered`, `filled`, `flat`, `press`, `day`. Baseline = every scored row (entered or not) on its own nets."""
+    def baseline(rs: Sequence[dict[str, Any]]) -> dict[str, Any]:
+        n = len(rs)
+        return {
+            "n_all_rows": n,
+            "flat_mean_sol": (sum(r["flat"] for r in rs) / n / LAMPORTS) if n else None,
+            "flat_total_sol": sum(r["flat"] for r in rs) / LAMPORTS,
+            "press_mean_sol": (sum(r["press"] for r in rs) / n / LAMPORTS) if n else None,
+            "press_total_sol": sum(r["press"] for r in rs) / LAMPORTS,
+        }
+
+    def block(rs: Sequence[dict[str, Any]]) -> dict[str, Any]:
+        ent = [r for r in rs if r["entered"]]
+        return {
+            "baseline_unfiltered": baseline(rs),
+            "n_entered": len(ent),
+            "selected_fraction": _frac(len(ent), len(rs)),
+            "fill_rate_entered": _frac(sum(1 for r in ent if r["filled"]), len(ent)),
+            "fill_rate_all_rows": _frac(sum(1 for r in rs if r["filled"]), len(rs)),
+        }
+
+    by_day: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        by_day.setdefault(r["day"], []).append(r)
+    return {
+        "note": "report-only context; no role in the gate or the verdict",
+        "overall": block(rows),
+        "per_day": [{"day": d, **block(by_day[d])} for d in sorted(by_day)],
+    }
+
+
+def build_interim(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]], reasons: Sequence[str], clean_clock: str, read_end: str) -> dict[str, Any]:
+    """Counts only. No P&L field of any kind, no gate call, no verdict."""
+    by_day: dict[str, int] = {}
+    for r in rows:
+        if r["entered"]:
+            by_day[r["day"]] = by_day.get(r["day"], 0) + 1
+    last = runs[-1] if runs else {}
+    return {
+        "schema": SCHEMA_REPORT,
+        "mode": "INTERIM",
+        "label": LABEL,
+        "note": "INTERIM: counts only. No mean, CI, SOL, day sign or verdict until the read is FINAL.",
+        "clean_clock": clean_clock,
+        "read_end": read_end,
+        "scored_through_exclusive": last.get("to_exclusive"),
+        "why_interim": list(reasons),
+        "n_rows": len(rows),
+        "n_entered": sum(by_day.values()),
+        "per_day_entered": [{"day": d, "n_entered": by_day[d]} for d in sorted(by_day)],
+        "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def render_interim_markdown(rep: dict[str, Any]) -> str:
+    L = [f"# EXP-012 forward report (INTERIM): {rep['label']}", "", rep["note"], ""]
+    L.append(f"clean clock {rep['clean_clock']}, read end {rep['read_end']}, scored through (exclusive) {rep['scored_through_exclusive']}")
+    L.append(f"n_rows={rep['n_rows']} n_entered={rep['n_entered']}")
+    L += ["", "Why interim: " + ("; ".join(rep["why_interim"]) or "-"), "", "| day | n_entered |", "| --- | --- |"]
+    L += [f"| {d['day']} | {d['n_entered']} |" for d in rep["per_day_entered"]]
+    return "\n".join(L) + "\n"
+
+
+def coverage_reasons(walk_dir: Path, start: datetime, read_end: datetime, runs: Sequence[dict[str, Any]]) -> list[str]:
+    need_to = read_end + timedelta(hours=1)
+    hours = e11._hours_range(hour_key(start), hour_key(need_to))
+    probs = hour_problems(walk_dir, hours)
+    out = []
+    if probs:
+        out.append(f"{len(probs)} hour problem(s) before read end + 1 h ({hour_key(need_to)}), first: {probs[0]}")
+    last_to = runs[-1].get("to_exclusive") if runs else None
+    if last_to is None or last_to < hour_key(need_to):
+        out.append(f"rows scored only through {last_to}, need a score run with --to >= {hour_key(need_to)}")
+    return out
+
+
+def write_lock(out_dir: Path, doc: dict[str, Any]) -> None:
+    fd = os.open(str(out_dir / LOCK_NAME), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _write_final_files(out_dir: Path, rep: dict[str, Any]) -> None:
+    atomic_write(out_dir / "report.json", (json.dumps(rep, indent=2, default=str) + "\n").encode("utf-8"))
+    atomic_write(out_dir / "report.md", render_markdown(rep).encode("utf-8"))
+
+
+def run_report(out_dir: Path, walk_dir: Path | None = None, clean_clock: datetime | None = None, read_end: datetime | None = None, pool_start: datetime | None = None, reprint: bool = False) -> dict[str, Any]:
+    cc = clean_clock if clean_clock is not None else parse_clock(DEFAULT_CLEAN_CLOCK)
+    re_ = read_end if read_end is not None else parse_clock(DEFAULT_READ_END)
+    cc_s, re_s = cc.strftime("%Y-%m-%dT%H:%M:%SZ"), re_.strftime("%Y-%m-%dT%H:%M:%SZ")
+    lock_path = out_dir / LOCK_NAME
     rows = read_rows(out_dir / ROWS_NAME)
-    rep = build_report(rows, read_rows(out_dir / RUNS_NAME))
-    (out_dir / "report.json").write_text(json.dumps(rep, indent=2, default=str) + "\n", encoding="utf-8")
-    (out_dir / "report.md").write_text(render_markdown(rep), encoding="utf-8")
+    runs = read_rows(out_dir / RUNS_NAME)
+    if reprint:
+        if not lock_path.is_file():
+            raise Refused([f"--reprint: {lock_path} does not exist; there is no final read to re-render"])
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        if _rows_sha256(out_dir) != lock.get("rows_sha256"):
+            raise Refused([f"--reprint refused: {out_dir / ROWS_NAME} no longer hashes to the lock's rows_sha256"])
+        rep = build_report(rows, runs)
+        rep["reprint_of_lock"] = lock.get("utc_time")
+        _write_final_files(out_dir, rep)
+        return rep
+    if lock_path.exists():
+        raise Refused([f"{lock_path} exists: the final read was already taken. `--reprint` re-renders it from the lock's rows sha256"])
+    if walk_dir is None:
+        raise Refused(["report needs --walk-dir to decide INTERIM or FINAL"])
+    start = pool_start if pool_start is not None else default_pool_start(cc)
+    reasons = coverage_reasons(walk_dir, start, re_, runs)
+    if any(r.get("clean_clock") != cc_s for r in runs):
+        reasons.append("runs.jsonl was written under a different clean clock")
+    if reasons:
+        rep = build_interim(rows, runs, reasons, cc_s, re_s)
+        atomic_write(out_dir / "report.json", (json.dumps(rep, indent=2) + "\n").encode("utf-8"))
+        atomic_write(out_dir / "report.md", render_interim_markdown(rep).encode("utf-8"))
+        return rep
+    rep = build_report(rows, runs)
+    rep["read_end"] = re_s
+    # the verdict goes to stderr before anything is written, then the lock, then the files
+    print(f"VERDICT: {rep['verdict']} ({LABEL}); n_entered={rep['n_entered']}", file=sys.stderr, flush=True)
+    write_lock(
+        out_dir,
+        {
+            "schema": SCHEMA_LOCK,
+            "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "clean_clock": cc_s,
+            "read_end": re_s,
+            "rows_sha256": _rows_sha256(out_dir),
+            "n_rows": len(rows),
+            "model_md5": runs[-1].get("model_md5") if runs else None,
+            "code_commit": _git_commit(),
+        },
+    )
+    _write_final_files(out_dir, rep)
     return rep
 
 
@@ -598,6 +769,7 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--walk-dir", required=True)
     sc.add_argument("--clean-clock", default=DEFAULT_CLEAN_CLOCK)
     sc.add_argument("--to", default=None, help="YYYY-MM-DDTHH, exclusive (default: latest sealed+verified hour boundary)")
+    sc.add_argument("--read-end", default=DEFAULT_READ_END, help="exclusive end of the counted window (default 2026-10-16T00:00:00Z)")
     sc.add_argument("--pool-start", default=None, help="YYYY-MM-DDTHH (default: clean clock hour - 2 x BUFFER_HOURS = 48 h)")
     sc.add_argument("--artifact-dir", default=str(DEFAULT_ARTIFACT_DIR))
     sc.add_argument("--out-dir", required=True)
@@ -608,15 +780,30 @@ def main(argv: list[str] | None = None) -> int:
     vf.add_argument("--hour", required=True, help="YYYY-MM-DDTHH")
     rp = sub.add_parser("report", help="write report.json and report.md from rows.jsonl")
     rp.add_argument("--out-dir", required=True)
+    rp.add_argument("--walk-dir", default=None)
+    rp.add_argument("--clean-clock", default=DEFAULT_CLEAN_CLOCK)
+    rp.add_argument("--read-end", default=DEFAULT_READ_END)
+    rp.add_argument("--pool-start", default=None)
+    rp.add_argument("--reprint", action="store_true", help="re-render the FINAL report from the lock's rows sha256 (no new read)")
     args = ap.parse_args(argv)
     if args.cmd == "report":
         try:
-            rep = run_report(Path(args.out_dir))
+            rep = run_report(
+                Path(args.out_dir),
+                Path(args.walk_dir) if args.walk_dir else None,
+                parse_clock(args.clean_clock),
+                parse_clock(args.read_end),
+                parse_clock(args.pool_start) if args.pool_start else None,
+                args.reprint,
+            )
         except Refused as exc:
             for r in exc.reasons:
                 print(f"REFUSED: {r}", file=sys.stderr)
             return exc.code
-        print(f"VERDICT: {rep['verdict']} ({LABEL}); n_entered={rep['n_entered']}", file=sys.stderr)
+        if rep["mode"] == "INTERIM":
+            print(f"INTERIM ({LABEL}): n_rows={rep['n_rows']} n_entered={rep['n_entered']}; no verdict until the read is FINAL", file=sys.stderr)
+        else:
+            print(f"FINAL written ({LABEL}); n_entered={rep['n_entered']}", file=sys.stderr)
         return 0
     if args.cmd == "verify":
         rec, appended = run_verify(Path(args.walk_dir), args.hour)
@@ -633,6 +820,7 @@ def main(argv: list[str] | None = None) -> int:
             args.freeze_commit,
             args.frozen_manifest_md5,
             parse_clock(args.pool_start) if args.pool_start else None,
+            parse_clock(args.read_end),
         )
     except Refused as exc:
         for r in exc.reasons:
