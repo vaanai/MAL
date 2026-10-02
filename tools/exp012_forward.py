@@ -661,7 +661,7 @@ def build_interim(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]]
         "schema": SCHEMA_REPORT,
         "mode": "INTERIM",
         "label": LABEL,
-        "note": "INTERIM: counts only. No mean, CI, SOL, day sign or verdict until the read is FINAL.",
+        "note": "INTERIM: counts only. Nothing about profit is shown until the read is FINAL.",
         "clean_clock": clean_clock,
         "read_end": read_end,
         "scored_through_exclusive": last.get("to_exclusive"),
@@ -801,7 +801,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"REFUSED: {r}", file=sys.stderr)
             return exc.code
         if rep["mode"] == "INTERIM":
-            print(f"INTERIM ({LABEL}): n_rows={rep['n_rows']} n_entered={rep['n_entered']}; no verdict until the read is FINAL", file=sys.stderr)
+            print(f"INTERIM ({LABEL}): n_rows={rep['n_rows']} n_entered={rep['n_entered']}; no result until the read is FINAL", file=sys.stderr)
         else:
             print(f"FINAL written ({LABEL}); n_entered={rep['n_entered']}", file=sys.stderr)
         return 0

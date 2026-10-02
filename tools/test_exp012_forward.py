@@ -623,6 +623,169 @@ class ParityPinnedTests(Base):
         self.assertEqual(norm(results[1]), norm(results[2]))
 
 
+READ_END = "2026-10-05T08:00:00Z"  # read_end + 1 h = 09:00; the fixture walk runs to 11
+FORBIDDEN = ("mean", "ci90", "_sol", "verdict", "promote", "flat", "press", "gross", "positive", "baseline")
+
+
+class ReadTests(Base):
+    def score(self, walk: Path, art: Path, out: Path, to: str) -> None:
+        rc, err = self.run_score(walk, art, out, "--to", to, "--read-end", READ_END)
+        self.assertEqual(rc, 0, err)
+
+    def report(self, walk: Path, out: Path, *extra: str) -> tuple[int, str]:
+        err = io.StringIO()
+        argv = ["report", "--out-dir", str(out), "--walk-dir", str(walk), "--clean-clock", CLEAN_CLOCK, "--read-end", READ_END, *extra]
+        with patched(), mock.patch("sys.stderr", err):
+            rc = fw.main(argv)
+        return rc, err.getvalue()
+
+    def test_defaults_are_the_amendment_1_window(self) -> None:
+        self.assertEqual(fw.DEFAULT_CLEAN_CLOCK, "2026-10-06T00:00:00Z")
+        self.assertEqual(fw.DEFAULT_READ_END, "2026-10-16T00:00:00Z")
+
+    def test_score_counts_only_before_the_read_end(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T11")  # the tape runs past the read end; mF migrates 09:01
+        self.assertEqual({r["mint"] for r in self.rows(out)}, {"mB2", "mC", "mD", "mE"})
+        self.assertTrue(all(r["mig_ms"] < fw.ms(fw.parse_clock(READ_END)) for r in self.rows(out)))
+
+    def test_interim_shows_counts_only_and_no_pnl_anywhere(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T07")  # short of read end + 1 h
+        rc, err = self.report(walk, out)
+        self.assertEqual(rc, 0, err)
+        rep = json.loads((out / "report.json").read_text())
+        self.assertEqual(rep["mode"], "INTERIM")
+        self.assertEqual(rep["n_rows"], 2)
+        self.assertEqual(rep["n_entered"], 2)
+        self.assertEqual(rep["per_day_entered"], [{"day": "2026-10-05", "n_entered": 2}])
+        self.assertTrue(any("rows scored only through" in x for x in rep["why_interim"]))
+        self.assertFalse((out / "final_read.lock").exists())
+        texts = {
+            "report.json": (out / "report.json").read_text(),
+            "report.md": (out / "report.md").read_text(),
+            "runs.jsonl": (out / "runs.jsonl").read_text(),
+            "stderr": err,
+        }
+        for name, text in texts.items():
+            for word in FORBIDDEN:
+                self.assertNotIn(word, text.lower(), f"{word!r} leaked into {name}")
+        self.assertEqual(set(rep), {"schema", "mode", "label", "note", "clean_clock", "read_end", "scored_through_exclusive", "why_interim", "n_rows", "n_entered", "per_day_entered", "generated_at_utc"})
+
+    def test_interim_when_a_needed_hour_is_unverified(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        lines = [x for x in (walk / "verify.jsonl").read_text().splitlines() if '"2026-10-05T08"' not in x]
+        (walk / "verify.jsonl").write_text("\n".join(lines) + "\n")
+        rc, err = self.report(walk, out)
+        self.assertEqual(rc, 0, err)
+        rep = json.loads((out / "report.json").read_text())
+        self.assertEqual(rep["mode"], "INTERIM")
+        self.assertTrue(any("hour 2026-10-05T08 has no OK line" in x for x in rep["why_interim"]))
+        self.assertNotIn("verdict", rep)
+
+    def test_final_only_when_coverage_is_complete(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        rc, err = self.report(walk, out)
+        self.assertEqual(rc, 0, err)
+        rep = json.loads((out / "report.json").read_text())
+        self.assertEqual(rep["mode"], "FINAL")
+        self.assertIn(rep["verdict"], ("PASS", "FAIL"))
+        self.assertEqual(rep["n_entered"], 4)
+        self.assertIn("flat_15", rep)
+        self.assertIn("VERDICT:", err)
+        lock = json.loads((out / "final_read.lock").read_text())
+        self.assertEqual(lock["rows_sha256"], fw._sha256_file(out / "rows.jsonl"))
+        self.assertEqual(lock["n_rows"], 4)
+
+    def test_lock_is_taken_once_and_reprint_is_bound_to_the_rows_hash(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        self.assertEqual(self.report(walk, out)[0], 0)
+        lock_bytes = (out / "final_read.lock").read_bytes()
+        first = json.loads((out / "report.json").read_text())
+        before = (out / "report.json").read_bytes()
+        rc, err = self.report(walk, out)
+        self.assertEqual(rc, 2, err)
+        self.assertIn("already taken", err)
+        self.assertEqual((out / "report.json").read_bytes(), before)
+        self.assertEqual((out / "final_read.lock").read_bytes(), lock_bytes)
+        rc, err = self.report(walk, out, "--reprint")
+        self.assertEqual(rc, 0, err)
+        again = json.loads((out / "report.json").read_text())
+        for k in ("verdict", "n_entered", "flat_15", "pressure_scale_1", "gate", "context_report_only", "per_day"):
+            self.assertEqual(first[k], again[k], k)
+        self.assertEqual((out / "final_read.lock").read_bytes(), lock_bytes)
+        # score no longer writes here
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T11", "--read-end", READ_END)
+        self.assertEqual(rc, 2)
+        self.assertIn("the final read was taken", err)
+        # a changed rows file cannot be re-rendered
+        with (out / "rows.jsonl").open("a") as fh:
+            fh.write(fw._dump({**self.rows(out)[0], "mint": "extra"}) + "\n")
+        rc, err = self.report(walk, out, "--reprint")
+        self.assertEqual(rc, 2)
+        self.assertIn("no longer hashes", err)
+
+    def test_reprint_without_a_lock_is_refused(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        rc, err = self.report(walk, out, "--reprint")
+        self.assertEqual(rc, 2)
+        self.assertIn("no final read to re-render", err)
+
+    def test_final_report_carries_the_context_columns(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        self.assertEqual(self.report(walk, out)[0], 0)
+        rep = json.loads((out / "report.json").read_text())
+        ctx = rep["context_report_only"]
+        rows = self.rows(out)
+        self.assertEqual(ctx["overall"]["baseline_unfiltered"]["n_all_rows"], len(rows))
+        self.assertAlmostEqual(ctx["overall"]["baseline_unfiltered"]["flat_total_sol"], sum(r["flat"] for r in rows) / 1e9)
+        self.assertEqual(ctx["overall"]["selected_fraction"], 1.0)  # fixture threshold 0.0 enters every row
+        self.assertIn("Report-only context", (out / "report.md").read_text())
+
+
+class ContextTests(unittest.TestCase):
+    def test_context_columns_on_fixture_rows(self) -> None:
+        def row(i, day, entered, filled, flat, press):
+            return {"mint": f"c{i}", "mig_ms": i, "day": day, "entered": entered, "score": 0.0, "filled": filled, "status": 0, "gross": 0, "flat": flat, "press": press}
+
+        rows = [
+            row(1, "2026-10-06", True, True, 100_000_000.0, 80_000_000.0),
+            row(2, "2026-10-06", False, True, -50_000_000.0, -40_000_000.0),
+            row(3, "2026-10-06", False, False, -10_000_000.0, -10_000_000.0),
+            row(4, "2026-10-06", True, False, -10_000_000.0, -10_000_000.0),
+            row(5, "2026-10-07", False, False, -20_000_000.0, -20_000_000.0),
+        ]
+        ctx = fw.build_context(rows)
+        d6, d7 = ctx["per_day"]
+        self.assertEqual((d6["day"], d7["day"]), ("2026-10-06", "2026-10-07"))
+        self.assertEqual(d6["baseline_unfiltered"]["n_all_rows"], 4)
+        self.assertAlmostEqual(d6["baseline_unfiltered"]["flat_total_sol"], 0.03)
+        self.assertAlmostEqual(d6["baseline_unfiltered"]["flat_mean_sol"], 0.0075)
+        self.assertAlmostEqual(d6["baseline_unfiltered"]["press_mean_sol"], 0.005)
+        self.assertEqual(d6["selected_fraction"], 0.5)
+        self.assertEqual(d6["fill_rate_entered"], 0.5)
+        self.assertEqual(d6["fill_rate_all_rows"], 0.5)
+        self.assertEqual(d7["n_entered"], 0)
+        self.assertEqual(d7["selected_fraction"], 0.0)
+        self.assertIsNone(d7["fill_rate_entered"])  # no entered rows that day
+        self.assertEqual(d7["fill_rate_all_rows"], 0.0)
+        self.assertEqual(ctx["overall"]["selected_fraction"], 0.4)
+        self.assertEqual(ctx["overall"]["fill_rate_all_rows"], 0.4)
+        self.assertIn("no role in the gate", ctx["note"])
+
+    def test_context_does_not_change_the_gate(self) -> None:
+        rows = [{"mint": f"g{i}", "mig_ms": i, "day": f"2026-10-{6 + i % 6:02d}", "entered": i % 3 != 0, "score": 1.0, "flat": float(i * 1_000_000 - 40_000_000), "press": float(i * 900_000 - 40_000_000), "filled": i % 2 == 0, "status": 0, "gross": 0} for i in range(120)]
+        rep = fw.build_report(rows, [])
+        gate = e11.compute_gate([r for r in rows if r["entered"]])
+        self.assertEqual(rep["gate"]["promote"], gate["promote"])
+        self.assertEqual(rep["flat_15"]["mean_sol"], gate["mean_sol"])
+
+
 class ReportTests(unittest.TestCase):
     def _rows(self, n: int, seed: int = 5) -> list[dict]:
         rng = random.Random(seed)
