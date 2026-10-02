@@ -80,3 +80,7 @@ From the #244 review:
 2. **Missing entry state.** It is scored as a **MISS** (priority fee lost, label 0), as in EXP-012, not censored.
 
 Rows near each pool's first and last day are flagged in the table: censored mints, capped `secs_since_create`, and mints absent because they trigger after the pool end. The screen reports bars 1–3 with and without the flagged edge days. **The pass decision uses the full set**, so no bar moves.
+
+## Amendment 4 (2026-10-02, before any real-data run): migration sell delay
+
+The migration sell lands at **migration + max(4, k) slots**. That equals the fixed design (migration + 4) at k ≤ 4, including the primary k = 4. At k = 8 it lags like the other exits. This resolves the wording in Amendment 3 §1 conservatively.
