@@ -43,7 +43,10 @@ Full run (see the PR body):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -167,6 +170,7 @@ def side(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 FAST_POOL = "A"  # pool A is the fast-source tape; C and B are Oracle sources
+FAST_ONLY_LABEL = "all-days selection rule, scored on fast days (about 3-4 days, coarse)"
 EXIT_LATENCY_NOT_IMPLEMENTED = (
     "not implemented: tools/exploration_exits.py fixes the exit's landing delay to its entry constants "
     "(_delayed(..., ENTRY_LAND_K, ENTRY_BOUND, ENTRY_BOUND)) and a time-cap exit has no delay at all; "
@@ -210,6 +214,7 @@ def paired_diffs(
 
     ref = entered(TARGET_SPEC_ID)
     out: dict[str, list[dict[str, Any]]] = {}
+    # pairwise: each variant against the reference on the mints both have a row for
     for v in variants:
         vr = entered(v["id"])
         out[v["id"]] = [
@@ -220,8 +225,22 @@ def paired_diffs(
     return out
 
 
-def nested_lodo(diffs: Mapping[str, Sequence[Mapping[str, Any]]], order: Sequence[str]) -> dict[str, Any]:
-    """Nested leave-one-day-out selection of the exit.
+def common_mint_set(diffs: Mapping[str, Sequence[Mapping[str, Any]]], ids: Sequence[str]) -> set[str]:
+    """Mints with a paired row in EVERY variant of `ids` (each already paired with the reference)."""
+    sets = [{r["mint"] for r in diffs[i]} for i in ids]
+    return set.intersection(*sets) if sets else set()
+
+
+def nested_lodo(
+    diffs: Mapping[str, Sequence[Mapping[str, Any]]],
+    order: Sequence[str],
+    excluded_censored: Mapping[str, int] | None = None,
+    n_ref_entered: int | None = None,
+) -> dict[str, Any]:
+    """Nested leave-one-day-out selection of the exit, on the COMMON mint set: only
+    mints that have a row in every candidate variant and the reference are used,
+    for the choice and for the held-out score. CENSORED variants are not
+    candidates (`excluded_censored` = {variant id: mints lost to censoring}).
 
     For each held-out day d: pick the variant (the reference, whose paired mean is
     0, is a candidate) with the best pooled PRESSURE paired mean over the other
@@ -230,9 +249,12 @@ def nested_lodo(diffs: Mapping[str, Sequence[Mapping[str, Any]]], order: Sequenc
     over days and reported under both fail models, plus on fast-source mints
     (pool A) only, with the gate's bootstrap and per-day positive share.
     Ties go to the earlier variant in `order` (the reference is first)."""
+    common = common_mint_set(diffs, list(order))
+    diffs = {k: [r for r in diffs[k] if r["mint"] in common] for k in order}
+    excl = dict(excluded_censored or {})
     days = sorted({r["day"] for rs in diffs.values() for r in rs})
     if len(days) < 2:
-        return {"available": False, "reason": "needs at least 2 days"}
+        return {"available": False, "reason": "needs at least 2 days", "common_set_size": len(common), "excluded_censored": excl}
     held: list[dict[str, Any]] = []
     choices: dict[str, str] = {}
     for d in days:
@@ -250,6 +272,11 @@ def nested_lodo(diffs: Mapping[str, Sequence[Mapping[str, Any]]], order: Sequenc
         "available": True,
         "selection_rule": "per held-out day: variant with the best pooled pressure paired mean on the other days (reference = 0 is a candidate); scored on the held-out day",
         "n_days": len(days),
+        "common_set_size": len(common),
+        "n_ref_entered": n_ref_entered,
+        "candidates": list(order),
+        "excluded_censored": excl,
+        "fast_only_label": FAST_ONLY_LABEL,
         "choices_by_day": [{"day": d, "chosen": choices[d]} for d in days],
         "times_chosen": counts,
         "pooled": paired_side(held),
@@ -316,7 +343,7 @@ def analyze(
     for r in rows:
         by_spec_rows.setdefault(r["spec"], []).append(r)
     missing = [v["id"] for v in variants if v["id"] not in by_spec_rows]
-    if thr_doc is not None and missing and not allow_censored:
+    if missing:  # a variant with 0 rows is an error, with or without --allow-censored
         raise SystemExit(f"integrity: no rows for variant(s) {missing}")
     if thr_doc is not None:
         check_integrity(by_spec_rows, scores, threshold, thr_doc, oof_days, allow_censored)
@@ -349,10 +376,27 @@ def analyze(
     for o in out:
         o.setdefault("rank_press_mean", None)
     diffs = paired_diffs(by_spec_rows, scores, threshold, variants)
+    ref_rows = by_spec_rows.get(TARGET_SPEC_ID, [])
+    ref_mint_day = {r["mint"]: r["day"] for r in ref_rows}
+    n_ref_entered = sum(1 for r in ref_rows if scores.get(r["mint"], float("-inf")) >= threshold)
     for o in out:
-        o["paired_vs_reference"] = None if o["reference"] else paired_side(diffs[o["id"]])
-    order = [TARGET_SPEC_ID] + [v["id"] for v in variants if v["id"] != TARGET_SPEC_ID]
-    nested = nested_lodo({k: diffs[k] for k in order if k in diffs}, [k for k in order if k in diffs])
+        if o["reference"]:
+            o["paired_vs_reference"] = None
+            continue
+        p = paired_side(diffs[o["id"]])
+        p["n_common_with_reference"] = p["n"]
+        p["n_lost_to_censoring"] = n_ref_entered - p["n"]
+        o["paired_vs_reference"] = p
+        have = {r["mint"] for r in by_spec_rows.get(o["id"], [])}
+        by_day: dict[str, int] = {}
+        for m, d in ref_mint_day.items():
+            if m not in have:
+                by_day[d] = by_day.get(d, 0) + 1
+        if by_day:
+            o["censored_rows_by_day"] = dict(sorted(by_day.items()))
+    order = [TARGET_SPEC_ID] + [v["id"] for v in variants if v["id"] != TARGET_SPEC_ID and not next(o for o in out if o["id"] == v["id"])["censored_vs_reference"]]
+    excluded = {o["id"]: n_ref_entered - o["paired_vs_reference"]["n"] for o in out if o["censored_vs_reference"] and not o["reference"]}
+    nested = nested_lodo({k: diffs[k] for k in order if k in diffs}, [k for k in order if k in diffs], excluded, n_ref_entered)
     return {
         "schema": "exp012_exit_sensitivity_v1",
         "status": "EXPLORATION, NOT EVIDENCE",
@@ -428,18 +472,18 @@ def render_md(rep: Mapping[str, Any]) -> str:
         "Per-mint difference (variant net minus tp50_sl30 net) on the same OOF-selected mints, mean SOL/trade with the gate's 90% CI "
         "(1,000 draws, seed 1) and the share of days whose mean difference is positive, under both fail models.",
         "",
-        "| variant | paired n | flat diff | flat CI90 | flat days+ | press diff | press CI90 | press days+ |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| variant | paired n (common with ref) | lost to censoring | flat diff | flat CI90 | flat days+ | press diff | press CI90 | press days+ |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for v in vs:
         p = v["paired_vs_reference"]
         if p is None:
-            lines.append(f"| `{v['id']}` **REF** | | 0 by construction | | | 0 by construction | | |")
+            lines.append(f"| `{v['id']}` **REF** | | | 0 by construction | | | 0 by construction | | |")
         elif not p["n"]:
-            lines.append(f"| `{v['id']}` | 0 | n/a | | | n/a | | |")
+            lines.append(f"| `{v['id']}` | 0 | {p['n_lost_to_censoring']} | n/a | | | n/a | | |")
         else:
             lines.append(
-                f"| `{v['id']}` | {p['n']} | {_f(p['flat']['mean_sol'])} | {_ci(p['flat']['ci90_sol'])} | {_share(p['flat'])} "
+                f"| `{v['id']}` | {p['n']} | {p['n_lost_to_censoring']} | {_f(p['flat']['mean_sol'])} | {_ci(p['flat']['ci90_sol'])} | {_share(p['flat'])} "
                 f"| {_f(p['press']['mean_sol'])} | {_ci(p['press']['ci90_sol'])} | {_share(p['press'])} |"
             )
     lines += ["", "## Nested leave-one-day-out selection of the exit", ""]
@@ -450,12 +494,20 @@ def render_md(rep: Mapping[str, Any]) -> str:
         lines += [
             f"Rule: {nl['selection_rule']}. Held-out days: {nl['n_days']}.",
             "",
+            f"Common mint set (a row in every candidate variant and the reference, used for the choice and the held-out score): {nl['common_set_size']} of {nl['n_ref_entered']} OOF-selected mints. Candidates: "
+            + ", ".join(f"`{c}`" for c in nl["candidates"])
+            + ".",
+            "",
+            ("CENSORED variants excluded from the candidate set (mints lost to censoring): " + ", ".join(f"`{k}` ({n})" for k, n in nl["excluded_censored"].items()) + ".")
+            if nl["excluded_censored"]
+            else "No variant was excluded as censored.",
+            "",
             "Advantage of the selection procedure over tp50_sl30, held-out days only (mean SOL/trade of chosen minus reference).",
             "",
             "| scope | paired n | flat adv | flat CI90 | flat days+ | press adv | press CI90 | press days+ |",
             "| --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
-        for label, key in (("all held-out days", "pooled"), ("fast-source days only", "fast_only")):
+        for label, key in (("all held-out days", "pooled"), (nl["fast_only_label"], "fast_only")):
             p = nl[key]
             if not p["n"]:
                 lines.append(f"| {label} | 0 | n/a | | | n/a | | |")
@@ -466,6 +518,10 @@ def render_md(rep: Mapping[str, Any]) -> str:
             )
         lines += ["", "Times chosen (of the held-out days): " + ", ".join(f"`{k}` {n}" for k, n in nl["times_chosen"].items() if n) + ".", ""]
         lines += ["| held-out day | chosen |", "| --- | --- |"] + [f"| {c['day']} | `{c['chosen']}` |" for c in nl["choices_by_day"]]
+    cens = [v for v in vs if v.get("censored_rows_by_day")]
+    if cens:
+        lines += ["", "Censored rows per day (reference rows with no row under the variant):"]
+        lines += [f"- `{v['id']}`: " + ", ".join(f"{d} {n}" for d, n in v["censored_rows_by_day"].items()) for v in cens]
     lines += ["", "## Exit-side latency", "", rep["exit_side_latency"], ""]
     t = rep["tries"]
     lines += [
@@ -488,24 +544,147 @@ def _share(leg: Mapping[str, Any]) -> str:
     return "n/a" if s is None else f"{leg['days_positive']}/{leg['n_days']} ({s:.2f})"
 
 
-def log_tries(rep: dict[str, Any], out_dir: Path, tries_log: str | Path | None) -> int:
-    """One result.v1 tries-log line per variant scored (tools.mal_result.append_try,
-    default data/tries.jsonl or MAL_TRIES_LOG), role 'exploration', data blocks =
-    the three exploration-pool blocks."""
+# --- rows provenance ---------------------------------------------------------------
+
+
+ROWS_META = "rows_meta.json"
+
+
+def variants_hash(variants: Sequence[Mapping[str, Any]]) -> str:
+    canon = json.dumps([v["spec"] for v in variants], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _view_sha256s(roots: Mapping[str, Path]) -> dict[str, str | None]:
+    """sha256 of each root's own VIEW.sha256 manifest file (what the EXP-012 freeze pins)."""
+    out: dict[str, str | None] = {}
+    for label, root in sorted(roots.items()):
+        f = Path(root) / "VIEW.sha256"
+        out[label] = hashlib.sha256(f.read_bytes()).hexdigest() if f.is_file() else None
+    return out
+
+
+def _code_commit() -> str:
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parent, capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+    except Exception:  # noqa: BLE001 - provenance only, never fatal
+        return "unknown"
+
+
+def write_rows_meta(out_dir: Path, variants: Sequence[Mapping[str, Any]], roots: Mapping[str, Path]) -> dict[str, Any]:
+    meta = {
+        "schema": "exp012_exit_rows_meta_v1",
+        "variants": [v["id"] for v in variants],
+        "variants_sha256": variants_hash(variants),
+        "code_commit": _code_commit(),
+        "input_view_sha256": _view_sha256s(roots),
+    }
+    (out_dir / ROWS_META).write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    return meta
+
+
+def check_rows_meta(out_dir: Path, variants: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """--reuse-rows gate. With rows_meta.json: refuse unless the stored variant hash
+    equals the current variant list's. Without it (rows from before this sidecar
+    existed): refuse unless every spec id in the rows is a current variant, and say
+    so in the report."""
+    path = out_dir / ROWS_META
+    cur = variants_hash(variants)
+    if path.is_file():
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        if meta.get("variants_sha256") != cur:
+            raise SystemExit(f"refusing --reuse-rows: the stored variant list {meta.get('variants')} (hash {str(meta.get('variants_sha256'))[:12]}) differs from the current one (hash {cur[:12]}, {[v['id'] for v in variants]}); rerun the tape pass")
+        return {**meta, "legacy_no_meta": False}
+    have = {r["spec"] for r in rows}
+    extra = sorted(have - {v["id"] for v in variants})
+    if extra:
+        raise SystemExit(f"refusing --reuse-rows: no {ROWS_META} and the rows hold spec ids not in the current variant list: {extra}")
+    return {"legacy_no_meta": True, "note": f"no {ROWS_META} next to the rows (written before provenance existed); spec ids checked against the current list only", "variants_sha256_current": cur}
+
+
+# --- tries log ---------------------------------------------------------------------
+
+
+def resolve_tries_path(arg: str | None) -> Path:
+    """Absolute tries-log path. --tries-log, else MAL_TRIES_LOG, else data/tries.jsonl.
+    Under a MiScusi job ($MISCUSI_OUTPUT_DIR set) a relative path would land in the job's
+    checkout, so it is refused: pass an absolute --tries-log or set an absolute MAL_TRIES_LOG."""
+    in_miscusi = bool(os.environ.get("MISCUSI_OUTPUT_DIR"))
+    if arg:
+        src, p = "--tries-log", Path(arg)
+    elif os.environ.get("MAL_TRIES_LOG"):
+        src, p = "MAL_TRIES_LOG", Path(os.environ["MAL_TRIES_LOG"])
+    else:
+        src, p = "default data/tries.jsonl", Path("data/tries.jsonl")
+    if not p.is_absolute():
+        if in_miscusi:
+            raise SystemExit(f"refusing: tries log {str(p)!r} ({src}) is relative under a MiScusi checkout; give an absolute --tries-log or an absolute MAL_TRIES_LOG")
+        p = p.resolve()
+    return p
+
+
+def _read_marker(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    text = path.read_text(encoding="utf-8").strip()
+    try:
+        doc = json.loads(text)
+        return set(doc["logged_variants"])
+    except (ValueError, KeyError, TypeError):
+        return {"*"}  # legacy marker ("N lines"): the whole set was logged
+
+
+def _write_marker(path: Path, ids: set[str]) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"logged_variants": sorted(ids)}) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _already_in_log(log: Path, variant: str, result_path: Path) -> bool:
+    if not log.is_file():
+        return False
+    for line in log.read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("tool") == "tools.exp012_exit_sensitivity" and rec.get("config", {}).get("variant") == variant and rec.get("result_path") == str(result_path):
+            return True
+    return False
+
+
+def log_tries(rep: dict[str, Any], out_dir: Path, tries_log: str | Path) -> int:
+    """One result.v1 tries-log line per variant scored (tools.mal_result.append_try),
+    role 'exploration', data blocks = the three exploration-pool blocks. Idempotent:
+    after each appended line the marker (out_dir/TRIES_MARKER) is atomically rewritten
+    with the set of logged variant ids; a variant already in the marker, or already
+    present in the log for this result path (a crash between append and marker),
+    is not appended again. Returns the number of lines appended now."""
     from tools import mal_result
     from tools.exp012_support import exploration_pool_blocks
 
+    marker = out_dir / TRIES_MARKER
+    done = _read_marker(marker)
+    if "*" in done:
+        return 0
+    result_path = out_dir / "exit_sensitivity.json"
     blocks = exploration_pool_blocks()
+    n = 0
     for v in rep["variants"]:
-        mal_result.append_try(
-            tries_log,
-            tool="tools.exp012_exit_sensitivity",
-            config={"experiment": "EXP-012 exit sensitivity", "variant": v["id"], "family": v["family"], "reference": v["reference"], "entry": rep["entry"], "selection": "OOF"},
-            data_blocks=blocks,
-            result_path=out_dir / "exit_sensitivity.json",
-            role="exploration",
-        )
-    return len(rep["variants"])
+        if v["id"] not in done:
+            if not _already_in_log(Path(tries_log), v["id"], result_path):
+                mal_result.append_try(
+                    tries_log,
+                    tool="tools.exp012_exit_sensitivity",
+                    config={"experiment": "EXP-012 exit sensitivity", "variant": v["id"], "family": v["family"], "reference": v["reference"], "entry": rep["entry"], "selection": "OOF"},
+                    data_blocks=blocks,
+                    result_path=result_path,
+                    role="exploration",
+                )
+                n += 1
+            done.add(v["id"])
+            _write_marker(marker, done)
+    return n
 
 
 # --- CLI -----------------------------------------------------------------------
@@ -519,17 +698,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--max-workers", type=int, default=2)
     ap.add_argument("--buffer-hours", type=int, default=24)
     ap.add_argument("--max-home-hours", type=int, default=12)
-    ap.add_argument("--allow-censored", action="store_true", help="let a non-reference variant have fewer rows than n_oof (exit past the end of the tape); flagged CENSORED")
-    ap.add_argument("--tries-log", default=None, help="tries log for the per-variant lines (default: MAL_TRIES_LOG / data/tries.jsonl)")
-    ap.add_argument("--reuse-rows", action="store_true", help=f"skip the tape pass and analyze OUT_DIR/{SCRATCH_ROWS} if it exists")
+    ap.add_argument("--allow-censored", action="store_true", help="let a non-reference variant have fewer rows than n_oof (exit past the end of the tape); flagged CENSORED. A variant with 0 rows is always an error")
+    ap.add_argument("--tries-log", default=None, help="absolute tries-log path (default: MAL_TRIES_LOG, else data/tries.jsonl; a relative path is refused under a MiScusi checkout)")
+    ap.add_argument("--reuse-rows", action="store_true", help=f"skip the tape pass and analyze OUT_DIR/{SCRATCH_ROWS} if it exists (refused if the variant list changed since {ROWS_META})")
     args = ap.parse_args(argv)
     assert args.max_workers <= 2, "keep max-workers <= 2 (same memory budget as the table build)"
+    tries_path = resolve_tries_path(args.tries_log)  # refuse a bad path before any long pass
     variants, skipped = resolve_variants()
     scores, threshold, thr_doc, oof_days = load_oof(args.artifact_dir)
     rows_path = args.out_dir / SCRATCH_ROWS
     t0 = time.time()
     if args.reuse_rows and rows_path.is_file():
         rows = list(iter_rows_jsonl(rows_path))
+        provenance = check_rows_meta(args.out_dir, variants, rows)
     else:
         roots = guarded_roots(args)
         rows = collect_rows(
@@ -537,15 +718,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_workers=args.max_workers, buffer_hours=args.buffer_hours, max_home_hours=(args.max_home_hours or None),
         )
         write_rows(rows_path, rows)
+        provenance = {**write_rows_meta(args.out_dir, variants, roots), "legacy_no_meta": False}
     rep = analyze(rows, scores, threshold, variants, skipped, thr_doc, oof_days, args.allow_censored)
     rep["wall_s"] = time.time() - t0
-    marker = args.out_dir / TRIES_MARKER
-    if marker.exists():
-        rep["tries"]["logged"] = 0
-        rep["tries"]["log_note"] = f"already logged by an earlier analysis of these rows ({TRIES_MARKER}); not logged again"
-    else:
-        rep["tries"]["logged"] = log_tries(rep, args.out_dir, args.tries_log)
-        marker.write_text(f"{rep['tries']['logged']} lines\n", encoding="utf-8")
+    rep["rows_provenance"] = provenance
+    rep["tries"]["logged"] = log_tries(rep, args.out_dir, tries_path)
+    rep["tries"]["log_path"] = str(tries_path)
+    if rep["tries"]["logged"] < len(rep["variants"]):
+        rep["tries"]["log_note"] = "the rest were already logged by an earlier analysis of these rows"
     (args.out_dir / "exit_sensitivity.json").write_text(json.dumps(rep, indent=2) + "\n", encoding="utf-8")
     md = render_md(rep)
     (args.out_dir / "exit_sensitivity.md").write_text(md, encoding="utf-8")

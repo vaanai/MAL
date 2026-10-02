@@ -201,6 +201,62 @@ class PairedAndNestedTests(unittest.TestCase):
         # held-out scores: 09-22 -> 0 (reference), 09-20/21 -> -0.01 each
         self.assertAlmostEqual(nl["pooled"]["press"]["mean_sol"], -0.02 / 3)
 
+    def _censored_case(self):
+        # "ladder_take50_trail20" is great (+0.5) but loses both of 09-22's mints (censored);
+        # "trail_30" is complete and mildly positive.
+        rows = [r for r in self._rows({REF: 0.0, "trail_30": 0.01, "ladder_take50_trail20": 0.5}) if not (r["spec"] == "ladder_take50_trail20" and r["day"] == "2026-09-22")]
+        scores = {f"m{d}{j}": 0.9 for d in range(3) for j in range(2)}
+        return es.analyze(rows, scores, 0.8, _variants(REF, "trail_30", "ladder_take50_trail20"), allow_censored=True)
+
+    def test_censored_variant_is_not_a_nested_candidate_and_is_reported(self) -> None:
+        rep = self._censored_case()
+        nl = rep["nested_lodo"]
+        self.assertEqual(nl["candidates"], [REF, "trail_30"])
+        self.assertEqual(nl["excluded_censored"], {"ladder_take50_trail20": 2})
+        self.assertNotIn("ladder_take50_trail20", nl["times_chosen"])
+        self.assertEqual(nl["common_set_size"], 6)
+        self.assertEqual(nl["n_ref_entered"], 6)
+        self.assertTrue(all(c["chosen"] == "trail_30" for c in nl["choices_by_day"]))
+        self.assertIn("CENSORED variants excluded", es.render_md(rep))
+
+    def test_paired_reports_common_set_and_lost_mints_and_censored_rows_by_day(self) -> None:
+        v = {o["id"]: o for o in self._censored_case()["variants"]}
+        p = v["ladder_take50_trail20"]["paired_vs_reference"]
+        self.assertEqual((p["n"], p["n_common_with_reference"], p["n_lost_to_censoring"]), (4, 4, 2))
+        self.assertAlmostEqual(p["press"]["mean_sol"], 0.5)
+        self.assertEqual(v["ladder_take50_trail20"]["censored_rows_by_day"], {"2026-09-22": 2})
+        self.assertTrue(v["ladder_take50_trail20"]["censored_vs_reference"])
+        self.assertEqual(v["trail_30"]["paired_vs_reference"]["n_lost_to_censoring"], 0)
+        self.assertNotIn("censored_rows_by_day", v["trail_30"])
+
+    def test_nested_score_uses_only_the_common_mint_set(self) -> None:
+        # two candidates; trail_30 lacks mint m21 (a lone censored row): the common set drops it for BOTH
+        # the choice and the held-out score, so the pooled n is 5, not 6.
+        rows = [r for r in self._rows({REF: 0.0, "trail_30": 0.03}) if not (r["spec"] == "trail_30" and r["mint"] == "m21")]
+        scores = {f"m{d}{j}": 0.9 for d in range(3) for j in range(2)}
+        # a lone censored row keeps trail_30 at 5 < 6 rows: flagged censored -> excluded from candidates (no common-set shrink)
+        rep = es.analyze(rows, scores, 0.8, _variants(REF, "trail_30"), allow_censored=True)
+        self.assertEqual(rep["nested_lodo"]["candidates"], [REF])
+        self.assertEqual(rep["nested_lodo"]["common_set_size"], 6)
+        # direct call on two uncensored candidates with unequal mint sets: intersection is used
+        diffs = {
+            REF: [{"mint": f"m{i}", "day": f"2026-09-2{i % 3}", "pool": "A", "dflat": 0, "dpress": 0} for i in range(6)],
+            "t": [{"mint": f"m{i}", "day": f"2026-09-2{i % 3}", "pool": "A", "dflat": 1, "dpress": 1} for i in range(5)],
+        }
+        nl = es.nested_lodo(diffs, [REF, "t"])
+        self.assertEqual(nl["common_set_size"], 5)
+        self.assertEqual(nl["pooled"]["n"], 5)
+
+    def test_zero_row_variant_is_an_error_even_with_allow_censored(self) -> None:
+        rows = [r for r in self._rows({REF: 0.0, "trail_30": 0.03}) if r["spec"] == REF]
+        scores = {f"m{d}{j}": 0.9 for d in range(3) for j in range(2)}
+        with self.assertRaisesRegex(SystemExit, "no rows for variant"):
+            es.analyze(rows, scores, 0.8, _variants(REF, "trail_30"), allow_censored=True)
+
+    def test_fast_only_is_labelled_as_an_all_days_rule(self) -> None:
+        rep = self._analyze({REF: 0.0, "trail_30": 0.03})
+        self.assertIn("all-days selection rule, scored on fast days (about 3-4 days, coarse)", es.render_md(rep))
+
     def test_nested_needs_two_days(self) -> None:
         rows = [r for r in self._rows({REF: 0.0, "trail_30": 0.03}) if r["day"] == "2026-09-20"]
         rep = es.analyze(rows, {f"m0{j}": 0.9 for j in range(2)}, 0.8, _variants(REF, "trail_30"))
@@ -210,7 +266,7 @@ class PairedAndNestedTests(unittest.TestCase):
         rep = self._analyze({REF: 0.0, "trail_30": 0.03})
         rep["tries"]["logged"] = 2
         md = es.render_md(rep)
-        for needle in ("Paired increment vs the reference", "Nested leave-one-day-out", "fast-source days only", "Times chosen", "Exit-side latency", "not implemented", "Variants tried: 2", "Tries-log lines written this run: 2"):
+        for needle in ("Paired increment vs the reference", "Nested leave-one-day-out", "scored on fast days", "Times chosen", "Exit-side latency", "not implemented", "Variants tried: 2", "Tries-log lines written this run: 2"):
             self.assertIn(needle, md)
         self.assertIn("not implemented", rep["exit_side_latency"])
 
@@ -232,6 +288,62 @@ class TriesLogTests(unittest.TestCase):
         self.assertEqual({x["role"] for x in lines}, {"exploration"})
         self.assertEqual([x["variant_n"] for x in lines], [1, 2])
         self.assertEqual(len({x["data_key"] for x in lines}), 1)
+
+    REP = {"entry": "e", "variants": [{"id": i, "family": "f", "reference": i == REF} for i in (REF, "trail_20", "trail_30")]}
+
+    def test_marker_is_per_variant_and_a_crash_and_rerun_never_duplicates(self) -> None:
+        from tools import mal_result
+
+        real = mal_result.append_try
+        calls = {"n": 0}
+
+        def crashing(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise RuntimeError("crash")
+            return real(*a, **kw)
+
+        with tempfile.TemporaryDirectory() as td:
+            out, log = Path(td), Path(td) / "t.jsonl"
+            with mock.patch.object(mal_result, "append_try", side_effect=crashing), self.assertRaises(RuntimeError):
+                es.log_tries(self.REP, out, log)
+            self.assertEqual(sorted(json.loads((out / es.TRIES_MARKER).read_text())["logged_variants"]), sorted([REF, "trail_20"]))
+            self.assertEqual(es.log_tries(self.REP, out, log), 1)
+            self.assertEqual(len(log.read_text().splitlines()), 3)
+            self.assertEqual(es.log_tries(self.REP, out, log), 0)
+            # crash BETWEEN the append and the marker update: the log already holds the line, so no duplicate
+            (out / es.TRIES_MARKER).write_text(json.dumps({"logged_variants": [REF]}))
+            self.assertEqual(es.log_tries(self.REP, out, log), 0)
+            self.assertEqual(len(log.read_text().splitlines()), 3)
+
+    def test_legacy_marker_means_everything_was_logged(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / es.TRIES_MARKER).write_text("17 lines\n")
+            self.assertEqual(es.log_tries(self.REP, Path(td), Path(td) / "t.jsonl"), 0)
+            self.assertFalse((Path(td) / "t.jsonl").exists())
+
+    def test_tries_path_resolution(self) -> None:
+        with mock.patch.dict("os.environ", {}, clear=False):
+            import os
+
+            for k in ("MISCUSI_OUTPUT_DIR", "MAL_TRIES_LOG"):
+                os.environ.pop(k, None)
+            self.assertTrue(es.resolve_tries_path(None).is_absolute())  # outside MiScusi the default is made absolute
+            os.environ["MAL_TRIES_LOG"] = "/abs/tries.jsonl"
+            self.assertEqual(es.resolve_tries_path(None), Path("/abs/tries.jsonl"))
+            self.assertEqual(es.resolve_tries_path("/other/t.jsonl"), Path("/other/t.jsonl"))
+            os.environ["MISCUSI_OUTPUT_DIR"] = "/out"
+            self.assertEqual(es.resolve_tries_path(None), Path("/abs/tries.jsonl"))
+            self.assertEqual(es.resolve_tries_path("/other/t.jsonl"), Path("/other/t.jsonl"))
+            with self.assertRaisesRegex(SystemExit, "relative under a MiScusi"):
+                es.resolve_tries_path("rel/t.jsonl")
+            os.environ["MAL_TRIES_LOG"] = "rel.jsonl"
+            with self.assertRaisesRegex(SystemExit, "relative under a MiScusi"):
+                es.resolve_tries_path(None)
+            os.environ.pop("MAL_TRIES_LOG")
+            with self.assertRaisesRegex(SystemExit, "relative under a MiScusi"):
+                es.resolve_tries_path(None)
+            self.assertEqual(es.resolve_tries_path("/x/t.jsonl"), Path("/x/t.jsonl"))
 
 
 class IntegrityTests(unittest.TestCase):
@@ -382,7 +494,8 @@ class FixtureTapeTests(unittest.TestCase):
             [(key(r), *[r[f] for f in fields]) for r in sorted(lat, key=key)],
         )
         scores = {r["mint"]: 0.9 for r in mine}
-        rep = es.analyze(self.rows, scores, 0.8, self.variants, self.skipped, allow_censored=True)
+        have = {r["spec"] for r in self.rows}
+        rep = es.analyze(self.rows, scores, 0.8, [v for v in self.variants if v["id"] in have], self.skipped, allow_censored=True)
         ref = next(o for o in rep["variants"] if o["reference"])["entered"]
         old = ls.analyze(lat, scores, 0.8)["by_k"]["1"]["entered"]
         for leg in ("flat", "press"):
@@ -409,23 +522,39 @@ class FixtureTapeTests(unittest.TestCase):
             "--fast-dir", str(self.fast), "--oracle-insample-dir", str(self.ins), "--oracle-live-dir", str(self.live),
         ]
         with mock.patch.object(fz, "verify_view_sha256", return_value=1), mock.patch.object(fz, "check_view_pin", return_value="x"):
-            # default: the censored 60 min cap trips the hard row-count assert (rows are saved first)
-            with self.assertRaisesRegex(SystemExit, "timecap_60m_tp50_sl30 has 0 rows|no rows for variant"):
-                es.main(argv)
+            # the 60 min cap has 0 rows on this short fixture tape: an error even with --allow-censored
+            # (rows and rows_meta are saved first)
+            with self.assertRaisesRegex(SystemExit, "no rows for variant"):
+                es.main(argv + ["--allow-censored"])
             self.assertTrue((out / es.SCRATCH_ROWS).is_file())
-            self.assertEqual(es.main(argv + ["--allow-censored"]), 0)
-        rep = json.loads((out / "exit_sensitivity.json").read_text())
-        self.assertEqual(rep["n_variants_tried"], 17)
-        self.assertEqual({o["entered"]["n"] for o in rep["variants"] if o["n_rows"]}, {1})
-        self.assertTrue(next(o for o in rep["variants"] if o["id"] == "timecap_60m_tp50_sl30")["censored_vs_reference"])
-        self.assertTrue((out / "exit_sensitivity.md").is_file())
-        self.assertEqual(rep["tries"]["logged"], 17)
-        self.assertEqual(len(tries.read_text().splitlines()), 17)
-        self.assertIn("not implemented", rep["exit_side_latency"])
-        with mock.patch.object(es, "collect_rows", side_effect=AssertionError("must not re-run the tape pass")):
-            self.assertEqual(es.main(["--tries-log", str(tries), "--out-dir", str(out), "--artifact-dir", str(art), "--reuse-rows", "--allow-censored"]), 0)
-        # the re-analysis does not log the same tries twice
-        self.assertEqual(len(tries.read_text().splitlines()), 17)
+            self.assertTrue((out / es.ROWS_META).is_file())
+            self.assertFalse(tries.exists())
+            # without the 60 min cap the run completes
+            keep = [v for v in self.variants if v["id"] != "timecap_60m_tp50_sl30"]
+            with mock.patch.object(es, "resolve_variants", return_value=(keep, self.skipped)):
+                self.assertEqual(es.main(argv), 0)
+                rep = json.loads((out / "exit_sensitivity.json").read_text())
+                self.assertEqual(rep["n_variants_tried"], 16)
+                self.assertEqual({o["entered"]["n"] for o in rep["variants"]}, {1})
+                self.assertTrue((out / "exit_sensitivity.md").is_file())
+                self.assertEqual(rep["tries"]["logged"], 16)
+                self.assertEqual(len(tries.read_text().splitlines()), 16)
+                self.assertFalse(rep["rows_provenance"]["legacy_no_meta"])
+                self.assertEqual(rep["rows_provenance"]["variants_sha256"], es.variants_hash(keep))
+                self.assertIn("not implemented", rep["exit_side_latency"])
+                with mock.patch.object(es, "collect_rows", side_effect=AssertionError("must not re-run the tape pass")):
+                    re_argv = ["--tries-log", str(tries), "--out-dir", str(out), "--artifact-dir", str(art), "--reuse-rows"]
+                    self.assertEqual(es.main(re_argv), 0)
+                    # the re-analysis does not log the same tries twice
+                    self.assertEqual(len(tries.read_text().splitlines()), 16)
+                    # a legacy rows dir (no sidecar) is accepted if its spec ids are current variants
+                    (out / es.ROWS_META).unlink()
+                    self.assertEqual(es.main(re_argv), 0)
+                    self.assertTrue(json.loads((out / "exit_sensitivity.json").read_text())["rows_provenance"]["legacy_no_meta"])
+                    (out / es.ROWS_META).write_text(json.dumps({"variants_sha256": es.variants_hash(keep), "variants": []}))
+            # the variant list changed since the rows were written: --reuse-rows refuses
+            with self.assertRaisesRegex(SystemExit, "differs from the current one"):
+                es.main(re_argv)
 
 
 if __name__ == "__main__":
