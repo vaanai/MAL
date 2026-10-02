@@ -233,6 +233,14 @@ class EndToEndTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "already holds files"):
             run_main(argv_for(self.td, "run-001"))
 
+    def test_two_spawned_workers_give_the_same_table_as_one(self) -> None:
+        argv = [a if a != "1" else "2" for a in argv_for(self.td, "run-w2")]
+        self.assertEqual(argv[argv.index("--max-workers") + 1], "2")
+        self.assertEqual(run_main(argv), 0)
+        if not (self.td / "out" / "run-001" / "table.md5").exists():
+            self.assertEqual(run_main(argv_for(self.td, "run-001")), 0)
+        self.assertEqual((self.td / "out" / "run-w2" / "table.md5").read_text(), (self.td / "out" / "run-001" / "table.md5").read_text())
+
     def test_tape_ending_before_the_exit_is_counted_not_scored(self) -> None:
         with tempfile.TemporaryDirectory() as td2:
             t2 = Path(td2)
