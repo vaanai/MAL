@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """EXP-012 FORWARD scorer (DEC-016): the frozen model on sealed forward getBlock hours.
 
-    python3 -m tools.exp012_forward score  --walk-dir D --out-dir OUT [--clean-clock ISO] [--to HOUR]
+    python3 -m tools.exp012_forward verify --walk-dir D --hour H
+    python3 -m tools.exp012_forward score  --walk-dir D --out-dir OUT [--clean-clock ISO] [--to HOUR] [--pool-start HOUR]
     python3 -m tools.exp012_forward report --out-dir OUT
 
 This is NOT a one-shot read and writes no HOLDOUT lock. It runs the code path
@@ -19,13 +20,17 @@ deduplicated copies (see "Where the forward path differs from the read").
 Inputs and refusals (exit 2, each reason on stderr, before any row is read):
   - `check_frozen(artifact_dir)` must return no error (FROZEN.md5 md5s, model.md5,
     features, proceed screen, provenance at --freeze-commit);
-  - every hour in [clean_clock_hour - BUFFER_HOURS, to) must be `sealed` in
-    D/checkpoint.json AND have an OK line in D/verify.jsonl. The hour is named.
-    An OK line is one per-hour record of `backfill_verify --content` (the
-    `hours[]` entry of its JSON report), with `issues == []`, a `content` map, and
-    `duplicates == 0` for every file. An optional `sha256` map {sub: hex} is
-    checked against the file bytes when present. The last line for an hour wins.
-    This module never writes verify.jsonl; an external step does;
+  - every hour in [pool start, to) must be `sealed` in D/checkpoint.json AND have
+    an OK line in D/verify.jsonl. The hour is named. Pool start defaults to the
+    clean clock's hour minus 2 x BUFFER_HOURS (48 h): a counted mint can be created
+    up to 24 h before the clock, and its `creator_prior_mints_24h` needs 24 h of
+    creates before that. `--pool-start` overrides it.
+    An OK line is the `hours[]` entry of `backfill_verify --content` for [H, H+1)
+    plus a `sha256` map {sub: hex} of each sealed file, with `issues == []`, a
+    `content` map, `duplicates == 0` for every file, and a trades sha256. The
+    sha256 is re-checked against the file bytes on every score. The last line for
+    an hour wins. The `verify` subcommand writes exactly this line (idempotent:
+    nothing is appended if the hour's last line is identical);
   - a rows.jsonl written under a different clean clock.
 `--to` defaults to the end of the longest sealed-and-verified run that starts at
 the buffer start. It is exclusive and hour-aligned.
@@ -40,11 +45,17 @@ Where the forward path differs from the read (disclosed, not hidden):
   1. Raw walker files, not the `--dedupe-out` copy. Verification requires zero
      duplicates, in which case the deduplicated copy is the same rows, so the
      read bytes are equal in content. Hours with duplicates are refused, not deduped.
-  2. The hour list is [clean clock - 24 h, to), growing with `--to`, not a fixed 144
-     hours. `chunk_plan` splits it into 12 hour home chunks, so chunk boundaries
-     move between runs. Creator history starts at the buffer start, so a mint
-     created in the first hours of the buffer has a short `creator_prior_mints_24h`
-     window (the read had the same undercount in its first 24 h).
+  2. The hour list is [pool start, to), growing with `--to`, not a fixed 144 hours.
+     The chunk plan is anchored at the pool start: fixed home chunks of
+     MAX_HOME_HOURS (12) hours, each with the next BUFFER_HOURS (24) pool hours as
+     buffer, only the last chunk partial. The read's `chunk_plan` splits N hours
+     into ceil(N/12) near-equal chunks, which is the same plan when N is a multiple
+     of 12 (the read's 144) and differs otherwise. A chunk's buffer is cut by `to`
+     until `to` is 24 h past the chunk's end; mints created in a chunk with a cut
+     buffer and migrating later are decided in a later run. Creator history starts
+     at the pool start, so a mint created in the first 24 h of the pool has a
+     short `creator_prior_mints_24h` window; with the 48 h default no counted mint
+     is created that early (a counted mint is created at most 24 h before the clock).
   3. A migration needs its exit deadline inside the tape (`exploration_exits`
      censors it otherwise). Rows near `--to` therefore appear in a later run.
      Rows already written are complete; the conflict check above guards that.
@@ -68,6 +79,7 @@ import tools.exp011_score as e11
 import tools.exploration_entry_model as eem
 import tools.exp012_score as s12
 from tools.exp011_freeze import FROZEN_MANIFEST_NAME, _git_commit, _md5_of_file
+import tools.backfill_verify as bv
 from tools.latency_curve import _hour_file
 
 SCHEMA_ROW = "exp012_forward_row_v1"
@@ -115,9 +127,25 @@ def ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def buffer_start(clean_clock: datetime) -> datetime:
+def default_pool_start(clean_clock: datetime) -> datetime:
+    """Clean clock hour minus 2 x BUFFER_HOURS (48 h): 24 h for the oldest counted mint's
+    creation, and 24 h of creator history before that."""
     floor = clean_clock.replace(minute=0, second=0, microsecond=0)
-    return floor - timedelta(hours=s12.BUFFER_HOURS)
+    return floor - timedelta(hours=2 * s12.BUFFER_HOURS)
+
+
+def anchored_plan(pool: Sequence[str], home_hours: int | None, buffer_hours: int) -> list[tuple[int, list[str], list[str]]]:
+    """Chunk plan anchored at pool[0]: fixed home chunks of `home_hours`, last one partial; each
+    chunk's buffer is the next `buffer_hours` pool hours. Chunks covering earlier hours do not
+    depend on the pool's end. `home_hours` None means one chunk (test settings only)."""
+    pool = list(pool)
+    step = len(pool) if not home_hours or home_hours <= 0 else home_hours
+    plan = []
+    for i, a in enumerate(range(0, len(pool), step)):
+        home = pool[a : a + step]
+        b = a + len(home)
+        plan.append((i, home, pool[b : b + buffer_hours]))
+    return plan
 
 
 # --- sealed + verified hours -------------------------------------------------------
@@ -146,6 +174,9 @@ def _sha256_file(path: Path) -> str:
 
 def _line_ok(rec: dict[str, Any]) -> bool:
     if rec.get("issues") != [] or not isinstance(rec.get("content"), dict):
+        return False
+    sha = rec.get("sha256")
+    if not isinstance(sha, dict) or not isinstance(sha.get("trades"), str):
         return False
     for stats in rec["content"].values():
         if not isinstance(stats, dict) or stats.get("duplicates") != 0:
@@ -182,13 +213,51 @@ def hour_problems(walk_dir: Path, hours: Sequence[str]) -> list[str]:
         elif _hour_file(walk_dir / "trades", "trades", h) is None:
             out.append(f"hour {h} is sealed and verified but has no trades file under {walk_dir / 'trades'}")
         else:
-            want = ok[h].get("sha256")
-            if isinstance(want, dict):
-                for sub, digest in sorted(want.items()):
-                    f = _hour_file(walk_dir / sub, sub, h)
-                    if f is None or _sha256_file(f) != digest:
-                        out.append(f"hour {h}: {sub} bytes do not match the sha256 in {VERIFY_NAME}")
+            for sub, digest in sorted(ok[h]["sha256"].items()):
+                f = _hour_file(walk_dir / sub, sub, h)
+                if f is None or _sha256_file(f) != digest:
+                    out.append(f"hour {h}: {sub} bytes do not match the sha256 in {VERIFY_NAME}")
     return out
+
+
+def verify_line(walk_dir: Path, hour: str) -> dict[str, Any]:
+    """`tools.backfill_verify` with --content for [hour, hour+1), plus the sha256 of each sealed file."""
+    nxt = hour_key(hour_dt(hour) + timedelta(hours=1))
+    report = bv.build_report(walk_dir, hour, nxt, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=14_000)
+    rec = report["hours"][0]
+    if rec["files"].get("trades") is None and "sealed_with_no_trades_file" not in rec["issues"]:
+        rec["issues"].append("no_trades_file")
+    sha: dict[str, str] = {}
+    for sub, path in sorted(rec["files"].items()):
+        if path is None:
+            continue
+        if rec["sealed"].get(sub):
+            sha[sub] = _sha256_file(Path(path))
+        else:
+            rec["issues"].append(f"{sub}: not sealed to .zst")
+    rec["sha256"] = sha
+    return rec
+
+
+def run_verify(walk_dir: Path, hour: str) -> tuple[dict[str, Any], bool]:
+    """(line, appended). Appends to D/verify.jsonl unless the hour's last line is identical."""
+    rec = verify_line(walk_dir, hour)
+    path = walk_dir / VERIFY_NAME
+    text = json.dumps(rec, sort_keys=True)
+    last = None
+    if path.is_file():
+        for x in path.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(x)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(r, dict) and r.get("hour") == hour:
+                last = x.strip()
+    if last == text:
+        return rec, False
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(text + "\n")
+    return rec, True
 
 
 def default_to(walk_dir: Path, start: datetime) -> datetime:
@@ -244,7 +313,8 @@ def score_hours(walk_dir: Path, pool: Sequence[str], artifact_dir: Path, scratch
     """Rows of the read's pipeline on `pool`, scored by the frozen model. Every row has mig_ms and score."""
     model, threshold, names = e11.load_frozen_spec(artifact_dir)
     hours = ForwardHours(str(walk_dir), frozenset(pool))
-    rows = s12.load_rows(hours, s12.MAX_WORKERS, s12.BUFFER_HOURS, s12.MAX_HOME_HOURS, scratch, pool_hours=list(pool), worker_fn=_tagged_worker)
+    plan = anchored_plan(pool, s12.MAX_HOME_HOURS, s12.BUFFER_HOURS)
+    rows = s12.load_rows(hours, s12.MAX_WORKERS, s12.BUFFER_HOURS, s12.MAX_HOME_HOURS, scratch, pool_hours=list(pool), worker_fn=_tagged_worker, plan=plan)
     e11.score_rows(model, rows, names)
     return rows, threshold
 
@@ -299,15 +369,17 @@ def merge_rows(existing: Sequence[dict[str, Any]], fresh: Sequence[dict[str, Any
     return new, conflicts
 
 
-def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None) -> dict[str, Any]:
+def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None) -> dict[str, Any]:
     errors = s12.check_frozen(artifact_dir, frozen_manifest_md5, freeze_commit)
     if errors:
         raise Refused(errors)
-    start = buffer_start(clean_clock)
+    start = pool_start if pool_start is not None else default_pool_start(clean_clock)
+    if start.minute or start.second or start.microsecond:
+        raise Refused([f"--pool-start {start.isoformat()} is not hour-aligned"])
     if to is None:
         to = default_to(walk_dir, start)
         if to <= start:
-            raise Refused(hour_problems(walk_dir, [hour_key(start)]) or [f"no sealed+verified hour at the buffer start {hour_key(start)}"])
+            raise Refused(hour_problems(walk_dir, [hour_key(start)]) or [f"no sealed+verified hour at the pool start {hour_key(start)}"])
     if to.minute or to.second or to.microsecond:
         raise Refused([f"--to {to.isoformat()} is not hour-aligned"])
     if to <= clean_clock:
@@ -454,10 +526,14 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--walk-dir", required=True)
     sc.add_argument("--clean-clock", default=DEFAULT_CLEAN_CLOCK)
     sc.add_argument("--to", default=None, help="YYYY-MM-DDTHH, exclusive (default: latest sealed+verified hour boundary)")
+    sc.add_argument("--pool-start", default=None, help="YYYY-MM-DDTHH (default: clean clock hour - 2 x BUFFER_HOURS = 48 h)")
     sc.add_argument("--artifact-dir", default=str(DEFAULT_ARTIFACT_DIR))
     sc.add_argument("--out-dir", required=True)
     sc.add_argument("--freeze-commit", default=DEFAULT_FREEZE_COMMIT)
     sc.add_argument("--frozen-manifest-md5", default=None)
+    vf = sub.add_parser("verify", help="backfill_verify --content for one hour, append its line to D/verify.jsonl")
+    vf.add_argument("--walk-dir", required=True)
+    vf.add_argument("--hour", required=True, help="YYYY-MM-DDTHH")
     rp = sub.add_parser("report", help="write report.json and report.md from rows.jsonl")
     rp.add_argument("--out-dir", required=True)
     args = ap.parse_args(argv)
@@ -465,6 +541,11 @@ def main(argv: list[str] | None = None) -> int:
         rep = run_report(Path(args.out_dir))
         print(f"VERDICT: {rep['verdict']} ({LABEL}); n_entered={rep['n_entered']}", file=sys.stderr)
         return 0
+    if args.cmd == "verify":
+        rec, appended = run_verify(Path(args.walk_dir), args.hour)
+        ok = _line_ok(rec)
+        print(f"hour {args.hour}: {'OK' if ok else 'NOT OK ' + str(rec['issues'])}; {'appended' if appended else 'identical line already present'}", file=sys.stderr)
+        return 0 if ok else 1
     try:
         summary = run_score(
             Path(args.walk_dir),
@@ -474,6 +555,7 @@ def main(argv: list[str] | None = None) -> int:
             parse_clock(args.to) if args.to else None,
             args.freeze_commit,
             args.frozen_manifest_md5,
+            parse_clock(args.pool_start) if args.pool_start else None,
         )
     except Refused as exc:
         for r in exc.reasons:

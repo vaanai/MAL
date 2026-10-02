@@ -28,8 +28,8 @@ from tools.exp012_fixtures import hour_start_s, mint_tape, write_zst_jsonl
 from tools.test_exp012_score import FREEZE_COMMIT, write_frozen_artifacts
 
 CLEAN_CLOCK = "2026-10-05T05:00:00Z"
-START = "2026-10-05T03"  # clean clock hour minus the patched 2 hour buffer
-ALL_HOURS = e11._hours_range("2026-10-05T03", "2026-10-05T11")
+START = "2026-10-05T01"  # clean clock hour minus 2 x the patched 2 hour buffer
+ALL_HOURS = e11._hours_range("2026-10-05T01", "2026-10-05T11")
 # hour -> [(mint, offset_s into the hour, later-print delay s)]
 MINTS = {
     "2026-10-05T03": [("mA", 60, 1900)],  # migrates 03:01:10, before the clock
@@ -59,18 +59,13 @@ def write_walk(root: Path, hours=ALL_HOURS) -> None:
             for r in t:
                 trades_by[datetime.fromtimestamp(r["block_time"], timezone.utc).strftime("%Y-%m-%dT%H")].append(r)
     cp = {"hours": {}}
-    verify = []
     for h in hours:
-        trades = sorted(trades_by[h], key=lambda r: (r["t_recv_ms"], r["slot"]))
-        creates = creates_by[h]
-        write_zst_jsonl(root / "trades" / f"trades-{h}.jsonl.zst", trades)
-        write_zst_jsonl(root / "creates" / f"creates-{h}.jsonl.zst", creates)
+        write_zst_jsonl(root / "trades" / f"trades-{h}.jsonl.zst", sorted(trades_by[h], key=lambda r: (r["t_recv_ms"], r["slot"])))
+        write_zst_jsonl(root / "creates" / f"creates-{h}.jsonl.zst", creates_by[h])
         cp["hours"][h] = {"status": "sealed", "stop_reason": None}
-        verify.append(
-            {"hour": h, "checkpoint_status": "sealed", "issues": [], "content": {"trades": {"rows": len(trades), "unique": len(trades), "duplicates": 0}, "creates": {"rows": len(creates), "unique": len(creates), "duplicates": 0}}}
-        )
     (root / "checkpoint.json").write_text(json.dumps(cp))
-    (root / "verify.jsonl").write_text("".join(json.dumps(v) + "\n" for v in verify))
+    for h in hours:  # the walk's verify.jsonl is written by the module's own verify step
+        fw.run_verify(root, h)
 
 
 @dataclass(frozen=True)
@@ -91,11 +86,11 @@ class RefHours:
 
 
 @contextmanager
-def patched():
+def patched(home: int | None = None):
     with ExitStack() as st:
         st.enter_context(mock.patch.object(s12, "MAX_WORKERS", 1))
         st.enter_context(mock.patch.object(s12, "BUFFER_HOURS", 2))
-        st.enter_context(mock.patch.object(s12, "MAX_HOME_HOURS", None))
+        st.enter_context(mock.patch.object(s12, "MAX_HOME_HOURS", home))
         yield
 
 
@@ -121,10 +116,12 @@ class Base(unittest.TestCase):
         shutil.copytree(self.art_master, d / "art")
         return d / "walk", d / "art", d / "out"
 
+    home: int | None = None
+
     def run_score(self, walk: Path, art: Path, out: Path, *extra: str) -> tuple[int, str]:
         err = io.StringIO()
         argv = ["score", "--walk-dir", str(walk), "--artifact-dir", str(art), "--out-dir", str(out), "--clean-clock", CLEAN_CLOCK, "--freeze-commit", FREEZE_COMMIT, *extra]
-        with patched(), mock.patch("sys.stderr", err):
+        with patched(self.home), mock.patch("sys.stderr", err):
             rc = fw.main(argv)
         return rc, err.getvalue()
 
@@ -384,3 +381,4 @@ class ReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

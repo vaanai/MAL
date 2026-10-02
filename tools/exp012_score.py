@@ -573,15 +573,16 @@ def load_rows(
     *,
     pool_hours: Sequence[str] | None = None,
     worker_fn: Any = None,
+    plan: Sequence[tuple[int, list[str], list[str]]] | None = None,
 ) -> list[dict[str, Any]]:
     """`pool_hours` (default: the 144-hour block) and `worker_fn` (default
-    `_run_worker`) are keyword-only hooks for tools/exp012_forward.py, which feeds
+    `_run_worker`) and `plan` (a precomputed chunk plan, default `chunk_plan(...)`) are keyword-only hooks for tools/exp012_forward.py, which feeds
     the same table build a different hour list. Defaults reproduce the read exactly."""
     pool_keys = BLOCK_HOURS if pool_hours is None else list(pool_hours)
     worker = _run_worker if worker_fn is None else worker_fn
     creator_hist = build_creator_history(hours, pool_keys)
     print(f"EXP-012 score: holdout creator_history creators={len(creator_hist)}", file=sys.stderr, flush=True)
-    plan = chunk_plan(pool_keys, max_workers, buffer_hours, max_home_hours)
+    plan = list(plan) if plan is not None else chunk_plan(pool_keys, max_workers, buffer_hours, max_home_hours)
     paths = [_rows_out_path(out_dir, "HOLDOUT12", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
     if max_workers <= 1 or len(plan) <= 1:
