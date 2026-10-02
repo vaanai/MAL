@@ -636,6 +636,12 @@ class CompletenessMonitor:
             "disk_total_bytes": disk.get("total_bytes"),
             "hold": bool(disk.get("hold")),
         }
+        socket_rows = getattr(self.stats, "socket_rows", None)
+        if callable(socket_rows):
+            # Multi-socket only; cumulative since start. Absent for one socket.
+            row["dedup_dropped"] = int(getattr(self.stats, "dedup_dropped", 0))
+            row["dedup_mismatch"] = int(getattr(self.stats, "dedup_mismatch", 0))
+            row["sockets"] = socket_rows()
         self._append(row)
         self.creates_prev = set(self.creates_cur)
         self.creates_cur = set()

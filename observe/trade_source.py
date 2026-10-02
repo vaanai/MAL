@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import collections
 import logging
+import random
 import ssl
 import time
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Mapping, Sequence
+from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 
 import certifi
 import websockets
@@ -45,6 +47,9 @@ SOURCES = (SOURCE_PUBLIC_RPC_LOGS, SOURCE_HELIUS_TX)
 
 DEFAULT_PUBLIC_WS = "wss://api.mainnet-beta.solana.com"
 DEFAULT_HELIUS_WS = "wss://mainnet.helius-rpc.com"
+
+INITIAL_BACKOFF_S = 1.0
+MAX_BACKOFF_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -187,6 +192,11 @@ class _ReconnectStats:
         self.failed_notes = 0
         self.slot_jumps = 0
         self.last_slot: int | None = None
+        # Handshake rejections by HTTP status (e.g. {413: 3}). Counted in every
+        # feed; only the multi-socket heartbeat prints it.
+        self.rejections: dict[int, int] = {}
+        # Websocket close codes seen (e.g. {1006: 47}); 1006 = no close frame.
+        self.closes: dict[int, int] = {}
 
     def observe(self, note: RawNotice) -> None:
         self.notes += 1
@@ -209,12 +219,17 @@ async def _iter_ws(
     stats: _ReconnectStats,
     *,
     log_url: str,
+    jitter: Callable[[float], float] | None = None,
+    label: str = "",
 ) -> AsyncIterator[RawNotice]:
-    backoff = 1.0
-    max_backoff = 60.0
+    # jitter=None keeps the single-socket sleep exactly as before. label is
+    # appended to log lines only when set (multi-socket runs).
+    tag = f" {label}" if label else ""
+    backoff = INITIAL_BACKOFF_S
+    max_backoff = MAX_BACKOFF_S
     while not stop.is_set():
         try:
-            log.info("ws_connect feed=%s url=%s", feed, log_url)
+            log.info("ws_connect feed=%s url=%s%s", feed, log_url, tag)
             async with websockets.connect(
                 url,
                 ping_interval=20,
@@ -224,7 +239,7 @@ async def _iter_ws(
                 max_size=8_000_000,
                 ssl=_ssl_context(),
             ) as ws:
-                backoff = 1.0
+                backoff = INITIAL_BACKOFF_S
                 for payload in subscribe_payloads:
                     await ws.send(json.dumps(payload))
                     log.info("subscribed feed=%s method=%s id=%s", feed, payload.get("method"), payload.get("id"))
@@ -251,22 +266,29 @@ async def _iter_ws(
                     stats.observe(note)
                     yield note
         except ConnectionClosed as exc:
+            close_code = exc.rcvd.code if exc.rcvd is not None else 1006
+            stats.closes[close_code] = stats.closes.get(close_code, 0) + 1
             log.warning(
-                "ws_closed feed=%s code=%s reason=%s last_slot=%s",
+                "ws_closed feed=%s code=%s reason=%s last_slot=%s%s",
                 feed,
                 exc.code,
                 _safe_err(Exception(exc.reason or "")),
                 stats.last_slot,
+                tag,
             )
         except InvalidStatusCode as exc:
-            log.warning("ws_handshake_rejected feed=%s status_code=%s", feed, exc.status_code)
+            # InvalidStatusCode is the websockets<14 name (requirements-observe.txt
+            # pins <14); 14+ renames it InvalidStatus and this clause must follow.
+            stats.rejections[exc.status_code] = stats.rejections.get(exc.status_code, 0) + 1
+            log.warning("ws_handshake_rejected feed=%s status_code=%s%s", feed, exc.status_code, tag)
         except OSError as exc:
             log.warning("ws_error feed=%s err=%s", feed, _safe_err(exc))
         if stop.is_set():
             break
         stats.reconnects += 1
-        log.info("ws_reconnect feed=%s sleep_s=%.1f reconnects=%s", feed, backoff, stats.reconnects)
-        await asyncio.sleep(backoff)
+        delay = backoff if jitter is None else jitter(backoff)
+        log.info("ws_reconnect feed=%s sleep_s=%.1f reconnects=%s%s", feed, delay, stats.reconnects, tag)
+        await asyncio.sleep(delay)
         backoff = min(backoff * 2, max_backoff)
 
 
@@ -306,6 +328,238 @@ class LogsSubscribeSource:
             log_url=self.ws_url.split("?")[0],
         ):
             yield note
+
+
+class SeenSet:
+    """Time-windowed, size-capped map of keys to a fingerprint. Memory stays bounded.
+
+    Keys expire window_s after first sight, and the oldest keys go first when
+    max_keys is hit. Insertion order is time order, so expiry is a popleft loop.
+    """
+
+    def __init__(self, window_s: float = 600.0, max_keys: int = 500_000,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.window_s = window_s
+        self.max_keys = max_keys
+        self._clock = clock
+        self._first: collections.OrderedDict[str, tuple[float, Any]] = collections.OrderedDict()
+        self.last_mismatch = False
+
+    def __len__(self) -> int:
+        return len(self._first)
+
+    def _expire(self, now: float) -> None:
+        cutoff = now - self.window_s
+        while self._first:
+            key, (seen_at, _fp) = next(iter(self._first.items()))
+            if seen_at > cutoff:
+                break
+            del self._first[key]
+
+    def add(self, key: str, fingerprint: Any = None) -> bool:
+        """True when key is new (and is now remembered), False for a duplicate.
+
+        On a duplicate, last_mismatch says whether its fingerprint differs from
+        the first sighting's.
+        """
+        now = self._clock()
+        self._expire(now)
+        self.last_mismatch = False
+        seen = self._first.get(key)
+        if seen is not None:
+            self.last_mismatch = seen[1] != fingerprint
+            return False
+        self._first[key] = (now, fingerprint)
+        while len(self._first) > self.max_keys:
+            self._first.popitem(last=False)
+        return True
+
+
+class SocketStats(_ReconnectStats):
+    """Per-socket counters. unique = notices this socket delivered first."""
+
+    def __init__(self, index: int, url: str) -> None:
+        super().__init__()
+        self.index = index
+        self.url = url
+        self.unique = 0
+        self.errors: dict[str, int] = {}  # unexpected exceptions by class name
+        self.dedup_mismatch = 0
+
+    def row(self) -> dict[str, Any]:
+        return {
+            "i": self.index,
+            "reconnects": self.reconnects,
+            "rejections": {str(code): n for code, n in sorted(self.rejections.items())},
+            "notes": self.notes,
+            "unique": self.unique,
+            "closes": {str(code): n for code, n in sorted(self.closes.items())},
+            "errors": dict(sorted(self.errors.items())),
+            "dedup_mismatch": self.dedup_mismatch,
+        }
+
+
+class MergedStats:
+    """Source-level stats for N sockets. notes/failed_notes/slot_jumps count the
+    merged (deduplicated) stream, so they match what the recorder decodes;
+    reconnects is the sum over sockets."""
+
+    def __init__(self, sockets: Sequence[SocketStats]) -> None:
+        self.sockets = list(sockets)
+        self._merged = _ReconnectStats()
+        self.dedup_dropped = 0
+        self.dedup_mismatch = 0
+        self.queue_full_waits = 0
+
+    notes = property(lambda self: self._merged.notes)
+    failed_notes = property(lambda self: self._merged.failed_notes)
+    slot_jumps = property(lambda self: self._merged.slot_jumps)
+    last_slot = property(lambda self: self._merged.last_slot)
+    reconnects = property(lambda self: sum(s.reconnects for s in self.sockets))
+
+    def observe(self, note: RawNotice) -> None:
+        self._merged.observe(note)
+
+    def socket_rows(self) -> list[dict[str, Any]]:
+        return [s.row() for s in self.sockets]
+
+    def summary(self) -> str:
+        parts = []
+        for s in self.sockets:
+            rej = ",".join(f"{code}x{n}" for code, n in sorted(s.rejections.items())) or "0"
+            closes = ",".join(f"{code}x{n}" for code, n in sorted(s.closes.items())) or "0"
+            errs = ",".join(f"{name}x{n}" for name, n in sorted(s.errors.items())) or "0"
+            parts.append(
+                f"s{s.index}[reconnects={s.reconnects} rejected={rej} closes={closes} "
+                f"errors={errs} notes={s.notes} unique={s.unique} mismatch={s.dedup_mismatch}]"
+            )
+        return " ".join(parts)
+
+
+class MultiSocketLogsSource:
+    """N redundant public logsSubscribe sockets merged into one notice stream.
+
+    Each socket has its own connect, subscribe and reconnect loop (jittered
+    backoff, staggered first connect). Notices are deduplicated by transaction
+    signature before decode; the first to reach the merge wins, so t_recv_ms is
+    that socket's own receive stamp. Not used unless --sockets > 1.
+    """
+
+    def __init__(
+        self,
+        ws_urls: Sequence[str] = (DEFAULT_PUBLIC_WS,),
+        sockets: int = 2,
+        programs: Sequence[str] = TRADE_PROGRAMS,
+        commitment: str = "confirmed",
+        stagger_s: float = 3.0,
+        seen_window_s: float = 600.0,
+        max_seen: int = 500_000,
+        max_queue: int = 10_000,
+        rng: random.Random | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if sockets < 1:
+            raise ValueError("sockets must be >= 1")
+        urls = list(ws_urls) or [DEFAULT_PUBLIC_WS]
+        self.ws_urls = [urls[i % len(urls)] for i in range(sockets)]
+        self.programs = tuple(programs)
+        self.commitment = commitment
+        self.stagger_s = stagger_s
+        self._rng = rng or random.Random()
+        self.max_queue = max_queue
+        self._clock = clock
+        self._last_mismatch_log = float("-inf")
+        self.seen = SeenSet(seen_window_s, max_seen, clock)
+        self.socket_stats = [SocketStats(i, u) for i, u in enumerate(self.ws_urls)]
+        self.stats = MergedStats(self.socket_stats)
+
+    def subscribe_payloads(self) -> list[dict[str, Any]]:
+        return [
+            logs_subscribe_request(program, self.commitment, index)
+            for index, program in enumerate(self.programs, start=1)
+        ]
+
+    def _jitter(self, backoff: float) -> float:
+        # Full-ish jitter: 50-100% of the nominal backoff, so sockets that
+        # dropped together do not come back together.
+        return backoff * (0.5 + 0.5 * self._rng.random())
+
+    async def _pump(self, index: int, queue: "asyncio.Queue[tuple[int, RawNotice]]", stop: asyncio.Event) -> None:
+        if index and self.stagger_s > 0:
+            await asyncio.sleep(self.stagger_s * index)
+        url = self.ws_urls[index]
+        stats = self.socket_stats[index]
+        backoff = INITIAL_BACKOFF_S
+        while not stop.is_set():
+            try:
+                async for note in _iter_ws(
+                    url,
+                    self.subscribe_payloads(),
+                    parse_logs_notification,
+                    self.commitment,
+                    SOURCE_PUBLIC_RPC_LOGS,
+                    stop,
+                    stats,
+                    log_url=url.split("?")[0],
+                    jitter=self._jitter,
+                    label=f"socket={index}",
+                ):
+                    backoff = INITIAL_BACKOFF_S
+                    if queue.full():
+                        self.stats.queue_full_waits += 1
+                    await queue.put((index, note))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # one socket's failure must not end the feed
+                name = type(exc).__name__
+                stats.errors[name] = stats.errors.get(name, 0) + 1
+                log.warning("ws_pump_error socket=%s error_class=%s err=%s", index, name, _safe_err(exc))
+                delay = self._jitter(backoff)
+                backoff = min(backoff * 2, MAX_BACKOFF_S)
+                await asyncio.sleep(delay)
+
+    def _note_mismatch(self, index: int, signature: str) -> None:
+        self.stats.dedup_mismatch += 1
+        self.socket_stats[index].dedup_mismatch += 1
+        now = self._clock()
+        if now - self._last_mismatch_log >= 60.0:  # rate-limited
+            self._last_mismatch_log = now
+            log.warning("dedup_mismatch signature=%s", signature)
+
+    async def notices(self, stop: asyncio.Event) -> AsyncIterator[RawNotice]:
+        queue: asyncio.Queue[tuple[int, RawNotice]] = asyncio.Queue(maxsize=self.max_queue)
+        tasks = [asyncio.create_task(self._pump(i, queue, stop)) for i in range(len(self.ws_urls))]
+        try:
+            while True:
+                try:
+                    index, note = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    if all(t.done() for t in tasks):
+                        if stop.is_set():
+                            break
+                        causes = [t.exception() for t in tasks if not t.cancelled() and t.exception()]
+                        raise RuntimeError(
+                            "all logsSubscribe sockets ended while the feed was running"
+                        ) from (causes[0] if causes else None)
+                    if stop.is_set() and queue.empty():
+                        break
+                    try:
+                        index, note = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        continue
+                fp = (note.failed, len(note.logs))
+                if not self.seen.add(note.signature, fp):
+                    self.stats.dedup_dropped += 1
+                    if self.seen.last_mismatch:
+                        self._note_mismatch(index, note.signature)
+                    continue
+                self.socket_stats[index].unique += 1
+                self.stats.observe(note)
+                yield note
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class HeliusTransactionSource:
