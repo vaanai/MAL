@@ -40,3 +40,35 @@ Nested leave-one-day-out over all clean days. The screen passes only if **all** 
 6. mint Jaccard with EXP-012's OOF-selected set ≤ 0.5. The daily-PnL correlation with EXP-012 is reported.
 
 On a FAIL the family is closed and not re-tuned.
+
+## Amendment 1 (2026-10-02, before any real-data run): design clarifications from PR1 (#244)
+
+Fixed before any table is built on real data:
+
+1. **Stop sell delay.** The stop's sell lands k slots after the stop print, the same k as the entry. This is conservative, because lag applies to exits too.
+2. **Priority fee.** 500,000 lamports at every k (EXP-012's convention).
+3. **Pressure curve.** Evaluated at the entry state and applied to both legs, including the PumpSwap sell, as in EXP-012. Disclosed: the post-migration sell may face more contention than this models.
+4. **Missed entries.** An entry after the curve completed or migrated is a MISS that costs the priority fee. It is a row with label 0, kept in training, like EXP-012's MISS rows.
+5. **Day and overlap.** A row's day is the trigger day. Screen item 6:
+   - Jaccard is computed by mint;
+   - the daily-PnL correlation pairs trigger days with EXP-012's migration days, and that mismatch is disclosed.
+6. **The screen runs exactly once**, on the 9-day pool plus every `explore-0814/wN` view whose `VIEW.sha256` exists at **2026-10-04T12:00:00Z**. Table builds before then are for debugging only: no model, no LODO and no screen output is computed or read from them. The run's manifest pins the view shas.
+
+## Amendment 2 (2026-10-02, before any real-data run): screen item 4 made explicit and stricter; number reuse; execution assumptions
+
+From a review of #243. No EXP-013 code has run on real data, and no model, LODO or screen output exists.
+
+1. **What "getBlock-only" means.** "Pool A" is the **fast-box getBlock backfill**: the `pump_history_backfill` walker output in `/var/lib/mal/backfill-fast`, served as clean view `fast-pool-2026-09-18T23_2026-09-22T00`. Its rows carry `source: "backfill"` and no `t_recv_ms`, the same feed as the expansion walks. "Fast" names the host it was walked on, **not** the fast live listener. Pools B and C are the Oracle live tape, the non-getBlock source.
+2. **Screen item 4 is replaced by two separate items. Both must pass**, under both fail models, with bars 1–3 (mean and CI lower bound > 0, ex-top-3 > 0, more than half of days positive):
+   - **4a. All getBlock-sourced days.** Pool A `[2026-09-19T01, 2026-09-22T00)`, plus every `explore-0814/wN` view verified by 2026-10-04T12:00Z (Amendment 1 §6).
+   - **4b. The August expansion days alone.** Only the `explore-0814/wN` views from 4a. This is the out-of-period getBlock slice, the source the prior calls weakest, and it gets its own hard bar.
+
+   This is stricter than the original wording, since 4b is an added requirement. No bar is relaxed.
+3. **Pinned days.** The screen run's manifest lists each view's hour range and the sha256 of its `VIEW.sha256` file. It also lists the clean-view `VIEW.sha256` for pools A, B and C. The screen refuses a view that isn't listed there.
+4. **Number reuse.** The earlier `exp013-candidate` / `tools/exp013_*` refit tooling (#239–#242) was DEC-017 candidate (a), the expanded-pool refit of EXP-012's recipe. It was never a registered EXP-013 and is closed (FAIL, [dec017-candidates note](../ARTIFACTS/lab/dec017-candidates-2026-10-02.md)). This plan is a new, independent family that reuses the number. Its code lives in `tools/exp013_grad_*`.
+5. **Execution assumptions, stated in full:**
+   - 0.5 SOL per entry, direct route (portal fee 0), priority 500,000 lamports per side at every k;
+   - curve buy and PumpSwap sell priced by the existing curve math in `tools/latency_curve.py` and `tools/paper_curve_math.py`, including pool and protocol fees as implemented there;
+   - fail models: flat 15% and the pressure curve at scale 1, both as expected values (`mixed_net`), as in EXP-012;
+   - a MISS costs the priority fee.
+6. **Holdout.** Nothing here changes ledger ownership. The backup block stays reserved and unread until a pre-registration merges after a clean screen.
