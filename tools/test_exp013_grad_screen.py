@@ -716,8 +716,9 @@ class EndToEndTests(unittest.TestCase):
     def test_cli_guards_run(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             fx = Fixture(td, rows=synth_rows(AUG_DAYS[:1] + POOL_DAYS[:1], per_day=3))
-            with self.assertRaises(SystemExit):
-                sc.main(["--table-run-dir", str(fx.table), "--view-manifest", str(fx.view_manifest), "--out-dir", str(fx.out)])  # default exp012 / expectation refuse the fixture
+            with mock.patch.object(sc, "run", return_value={"verdict": "FAIL", "items": [], "n_selected": 0}) as run:  # never reach the default ledger / tries log
+                sc.main(["--table-run-dir", str(fx.table), "--view-manifest", str(fx.view_manifest), "--out-dir", str(fx.out)])
+            self.assertEqual(set(run.call_args.kwargs), {"n_jobs", "command"})
             for flag in ("--tries-log", "--ledger-dir", "--exp012-dir"):
                 with self.assertRaises(SystemExit) as cm:  # the flags are gone: argparse refuses them
                     sc.main(["--table-run-dir", "d", "--view-manifest", "m", "--out-dir", "o", flag, "x"])
