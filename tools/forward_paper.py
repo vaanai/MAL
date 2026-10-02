@@ -12,6 +12,7 @@ Paper only. This process has no key, does not sign, and does not send.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import gc
 import heapq
 import json
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TextIO
 
 from observe.attention import is_genuine_arrival, load_poller_start_ms, load_snapshot_keys
+from tools.forward_exp012_gate import Exp012Online, GateConfigError, GateSpec, gate_row, load_gate
 from tools.funding_graph import fill_funding_features
 from tools.graduated_swing import (
     SWING_EXITS,
@@ -879,6 +881,13 @@ class BookSpec:
     token_cooldown_ms: int = 300_000
     size_lamports: int = DEFAULT_SIZE_LAMPORTS
     freeze_ms: int | None = None
+    # EXP-012 gate (DEC-016 section 3), migrate books only. Plain config here; the
+    # model is verified at load (books_from_config) and loaded once by the engine.
+    # Never hot-reloaded: adopt_book_limits keeps the running book's values.
+    entry_model: str | None = None
+    entry_model_md5: str | None = None
+    entry_threshold: float | None = None
+    entry_features: str | None = None
 
     def resolved_exit(self, deploy_rule: str) -> ExitRule | LadderRule:
         rule_id = deploy_rule if self.exit_rule == "deploy" else self.exit_rule
@@ -1009,8 +1018,30 @@ def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
                 raise SystemExit(f"book {item.get('id')} swing book needs a point")
         elif model_key not in ("entry", "barrier"):
             raise SystemExit(f"book {item.get('id')} model must be entry or barrier")
+        entry_keys = ("entry_model", "entry_model_md5", "entry_threshold", "entry_features")
+        entry_cfg: dict[str, Any] = {}
+        if any(item.get(k) is not None for k in entry_keys):
+            if kind != "migrate":
+                _reject_risk(f"book {book_id} entry_model is for migrate books only")
+            missing = [k for k in entry_keys if item.get(k) is None]
+            if missing:
+                _reject_risk(f"book {book_id} entry gate needs {', '.join(missing)}")
+            thr = _finite(item.get("entry_threshold"))
+            if thr is None:
+                _reject_risk(f"book {book_id} entry_threshold is not a finite number")
+            try:
+                load_gate(str(item["entry_model"]), str(item["entry_model_md5"]), float(thr), str(item["entry_features"]))
+            except GateConfigError as exc:
+                _reject_risk(f"book {book_id}: {exc}")
+            entry_cfg = {
+                "entry_model": str(item["entry_model"]),
+                "entry_model_md5": str(item["entry_model_md5"]).strip().lower(),
+                "entry_threshold": float(thr),
+                "entry_features": str(item["entry_features"]),
+            }
         found.append(
             BookSpec(
+                **entry_cfg,
                 book_id=str(item["id"]),
                 kind=kind,
                 exit_rule=str(item.get("exit") or ("hold_30s" if kind == "baseline" else "tp50_sl30" if kind == "migrate" else "deploy")),
@@ -1289,6 +1320,22 @@ class ForwardEngine:
                 run.rank = _RankWindow(spec.top_frac)
             self.books.append(run)
         self.kill_file = kill_file
+        # EXP-012 gate: built only when a book asks for it. None keeps every other
+        # path byte-identical (no hook below runs).
+        self.exp012: Exp012Online | None = None
+        self.exp012_gates: dict[str, GateSpec] = {}
+        self.exp012_rows: list[dict[str, Any]] = []
+        for run in self.books:
+            sp = run.spec
+            if sp.entry_model is not None:
+                try:
+                    self.exp012_gates[sp.book_id] = load_gate(
+                        sp.entry_model, sp.entry_model_md5 or "", float(sp.entry_threshold), sp.entry_features or ""
+                    )
+                except GateConfigError as exc:
+                    raise SystemExit(f"book {sp.book_id}: {exc}") from exc
+        if self.exp012_gates:
+            self.exp012 = Exp012Online()
         self.latency = latency or LatencyMeter()
         self.model = model or ModelSlot(None, None)
         self.barrier = barrier or ModelSlot(None, None)
@@ -1376,6 +1423,11 @@ class ForwardEngine:
             return
         book = MintBook(create=create, flow=[])
         self.library[create.mint] = book
+        if self.exp012 is not None:
+            vs, vt = create.v_sol, create.v_token_ui
+            self.exp012.note_create(
+                create.mint, create.creator, create.t_signal_ms, vs / vt if vs and vt and vs > 0 and vt > 0 else None
+            )
         self.tracks[create.mint] = _Track()
         self.mint_order[create.mint] = len(self.mint_order)
         if create.creator:
@@ -1526,6 +1578,11 @@ class ForwardEngine:
             return False
         self.seen[mint].add(key)
         self._insert_print(book, pr)
+        if self.exp012 is not None:
+            self.exp012.note_print(
+                mint, venue=pr.venue, t_ms=pr.t_recv_ms, side=pr.side, trader=pr.trader,
+                sol_lamports=pr.sol_lamports, token_raw=pr.token_raw, price_sol=pr.price_sol,
+            )
         self.wallets.observe_print(mint, pr)
         self.latency.note_print(pr.t_recv_ms, event_ts)
         self._prints += 1
@@ -1565,6 +1622,8 @@ class ForwardEngine:
         if not track.migrate_done and pr.venue == "pumpswap" and pr.t_recv_ms >= t0:
             track.migrate_done = True
             track.migration_t_ms = pr.t_recv_ms
+            if self.exp012 is not None:
+                self.exp012.mark_migrated(mint)
             self._triggers.append((mint, pr.t_recv_ms, "migrate"))
             self._schedule_mig15(mint, pr.t_recv_ms)
             self._flush_attention(mint)
@@ -1741,15 +1800,57 @@ class ForwardEngine:
             )
             if self.record_packets and self.retain_rows:
                 self.packets.append((mint, t_ms, trigger, dict(feats)))
+        gate_feats: dict[str, float] | None = None
+        gate_reason: str | None = None
+        if trigger == "migrate" and self.exp012 is not None:
+            gate_feats, gate_reason = self.exp012.features_at(mint, t_ms)
         for run in self.books:
             if not _point_matches(run.spec, book, t_ms, trigger):
                 continue
             if run.spec.kind == "laya":
                 self._enter_or_skip(run, book, t_ms, trigger, feats)
             elif run.spec.kind == "migrate" and trigger == "migrate":
-                self._enter_or_skip(run, book, t_ms, trigger, feats)
+                gate_score: float | None = None
+                if run.spec.book_id in self.exp012_gates:
+                    passed, gate_score = self._exp012_pass(run, book, t_ms, trigger, gate_feats, gate_reason)
+                    if not passed:
+                        continue
+                self._enter_or_skip(run, book, t_ms, trigger, feats, gate_score=gate_score)
             elif run.spec.kind == "swing":
                 self._enter_or_skip(run, book, t_ms, trigger, feats)
+        if trigger == "migrate" and self.exp012 is not None:
+            self.exp012.drop(mint)
+
+    def _exp012_pass(
+        self,
+        run: _BookRun,
+        book: MintBook,
+        t_ms: int,
+        trigger: str,
+        feats: dict[str, float] | None,
+        reason: str | None,
+    ) -> tuple[bool, float | None]:
+        """EXP-012 model gate. Emits one gate row per (book, mint). True = go on to the
+        normal path (risk gate, fill, exits unchanged). False = a skip was recorded.
+        `entered` in the gate row means the model gate passed; a risk cap can still skip."""
+        gate = self.exp012_gates[run.spec.book_id]
+        mint = book.create.mint
+        score: float | None = None
+        passed = False
+        if feats is not None:
+            score = gate.score(feats)
+            passed = score >= gate.threshold
+            if not passed:
+                reason = "below_threshold"
+        row = gate_row(run.spec.book_id, mint, t_ms, gate, feats, score, passed, reason)
+        if self.retain_rows:
+            self.exp012_rows.append(row)
+        log = self.logs.get("exp012_gate")
+        if log is not None:
+            log.write(row)
+        if not passed:
+            self._decision(run, book, t_ms, trigger, "skip", reason, score, None)
+        return passed, score
 
     def _enter_or_skip(
         self,
@@ -1758,11 +1859,12 @@ class ForwardEngine:
         t_ms: int,
         trigger: str,
         feats: dict[str, float] | None,
+        gate_score: float | None = None,
     ) -> None:
         spec = run.spec
         mint = book.create.mint
         creator = book.create.creator
-        score = None
+        score = gate_score
         if spec.kind == "swing":
             freeze = spec.freeze_ms if spec.freeze_ms is not None else SWING_FREEZE_MS
             if t_ms <= freeze:
@@ -2385,6 +2487,8 @@ class ForwardEngine:
                 busy.update(ledger.open)
                 busy.update(ledger.pending)
         self._prune_cooldowns(now_ms)
+        if self.exp012 is not None:
+            self.exp012.prune(now_ms)
         live_now = self.latency.now_ms() if self.latency.now_ms is not None else now_ms
         self._prune_early(live_now)
         if self.tx_order_prune_ms is not None:
@@ -3201,6 +3305,15 @@ def adopt_book_limits(engine: ForwardEngine, books: Sequence[BookSpec]) -> None:
     for run in engine.books:
         spec = incoming.get(run.spec.book_id)
         if spec is not None:
+            if run.spec.entry_model is not None or spec.entry_model is not None:
+                # No hot reload of the gate keys: the running book keeps its own.
+                spec = dataclasses.replace(
+                    spec,
+                    entry_model=run.spec.entry_model,
+                    entry_model_md5=run.spec.entry_model_md5,
+                    entry_threshold=run.spec.entry_threshold,
+                    entry_features=run.spec.entry_features,
+                )
             run.spec = spec
 
 
@@ -3256,6 +3369,8 @@ def serve(config_path: Path) -> int:
         "latency": JsonlLog(output_dir / "latency.jsonl"),
         "mem_census": JsonlLog(output_dir / "mem-census.jsonl"),
     }
+    if any(b.entry_model is not None for b in books):
+        logs["exp012_gate"] = JsonlLog(output_dir / "exp012-gate.jsonl")
     model = ModelSlot(model_path, meta_path)
     model.maybe_reload(force=True)
     barrier = ModelSlot(barrier_path, meta_path)
@@ -3270,13 +3385,16 @@ def serve(config_path: Path) -> int:
         barrier=barrier,
         swing=swing,
         slippage_cap=slippage,
-        logs={"decisions": logs["decisions"], "positions": logs["positions"]},
+        logs={k: logs[k] for k in ("decisions", "positions", "exp012_gate") if k in logs},
         fail_rate=DEFAULT_FAIL_RATE,
         positions_path=output_dir / "positions.jsonl",
         dead_mints=dead_mints,
         early_timeout_ms=EARLY_BUFFER_DEAD_MS,
         tx_order_prune_ms=TX_ORDER_PRUNE_MS,
     )
+    if engine.exp012 is not None:
+        n_hist = engine.exp012.preload(creates_dir, boot_ms)
+        print(f"forward_paper exp012_gate books={sorted(engine.exp012_gates)} creator_history_preloaded={n_hist}", file=sys.stderr)
     bind_attention(engine, attention_dir)
     graph_dir = Path(str(raw.get("graph_dir") or "/var/lib/mal/graph"))
     if graph_dir.is_dir():
