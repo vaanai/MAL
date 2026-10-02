@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Proposed** (2026-10-02). **Nothing starts before the owner's OK.** It spends paid Helius credits on forward data, and the owner reserved paid-feed changes to himself (via Helm, 2026-10-02). For a 2026-10-05T05:00:00Z clean clock the walk must start by **2026-10-03T05Z**: 48 h of buffer, so every counted mint (created up to 24 h before its migration) also has 24 h of creator history. |
+| **Status** | **Proposed** (2026-10-02). **Nothing starts before the owner's OK.** It spends paid Helius credits on forward data, and the owner reserved paid-feed changes to himself (via Helm, 2026-10-02). With the clean clock of Amendment 1 (2026-10-06T00:00:00Z), the walk must start by **2026-10-04T00Z**: 48 h of buffer, so every counted mint (created up to 24 h before its migration) also has 24 h of creator history. |
 | **Decider** | Claude manager (`mal-research-0`). Owner confirmation asked 2026-10-02. |
 | **Date** | 2026-10-02 |
 | **Amends** | [DEC-015](DEC-015-forward-paper-on-fast.md) §1, only for **how EXP-012's forward book is measured**. DEC-015's runner track on `mal-fast-0` continues as the live-readiness track (§3). |
@@ -50,3 +50,24 @@ Its paper rows are compared with the forward scorer's rows for the same mints, t
 - Until the owner answers, a builder writes and tests `tools/exp012_forward.py`. It is needed either way, because it can also score a forward tape.
 - About 9.7M credits/month go to the forward walk while it runs. Report: unit (MiScusi job id), credits per day, and what it enables (forward book plus continuous chain truth).
 - If the owner declines, no forward walk runs, and EXP-012's forward book waits for the runner track and a gate-grade feed, as DEC-015 planned.
+
+## Amendment 1 (2026-10-02): one pre-registered read, a full-day clock, and what a PASS does and does not support
+
+This follows a `quant-proof` review of the design. It is fixed before any forward hour is walked.
+
+1. **Clean clock: 2026-10-06T00:00:00Z.** It replaces 2026-10-05T05:00:00Z in §2.3, so the clock starts after the kill-review week and on a full UTC day. The pool starts 48 h earlier, at 2026-10-04T00Z.
+2. **One read, at a fixed end: 10 full UTC days, `[2026-10-06T00, 2026-10-16T00)`.**
+   - The read runs once, after the last migration in the window has had its 30-minute exit cap and its hour is sealed and verified, at about 2026-10-16T02Z.
+   - Any `report` before then is **INTERIM**: it shows counts, and **no verdict, mean, CI or day sign**.
+   - The end date is not moved by what interim counts show.
+   - Why 10 days: about 75 trades/day (451 over 6 days at the read) gives about 750 trades. The read's CIs imply a per-trade spread of about 0.21 SOL (flat) and 0.12 SOL (pressure). At n ≈ 750 the pressure CI lower bound stays above 0 even if the mean halves (0.0103 − 1.645 × 0.0044 ≈ 0.003). A 5-day book (n ≈ 375) would be a coin flip at a halved mean.
+3. **Gate:** CLAUDE.md's promotion gate, under both fail models, k = 1 (a single pre-registered primary book). If another book is a live candidate at the same read, DEC-014 Holm at 10,000 draws applies.
+4. **Report-only context (no gate role), recorded per day:**
+   - the unfiltered migrate-direct baseline on the same hours;
+   - the selected fraction;
+   - the fill rate.
+   These separate the model from the market.
+5. **What a PASS supports.** Only asking the owner for a small live trial, and only after both of these:
+   - (a) **Latency and size sensitivity** on the same rows: re-scored at entry slot + k for the measured fast-0 p50 and p90 latency, and at the trial's size and priority fee. **A PASS that turns negative at measured latency or at trial size does not support live.** The rule is stated now, before any forward data exists.
+   - (b) The **live-readiness comparison** (§3): runner paper rows against scorer rows for the same mints, with tolerances fixed before the read. It covers entered-set overlap, fill agreement, entry slot and price difference, realized fail rate against the pressure model by bucket, and exit price difference.
+6. **Not changed:** the frozen model, threshold, execution, size (0.5 SOL in the scorer) and both fail models.
