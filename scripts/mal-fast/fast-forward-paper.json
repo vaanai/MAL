@@ -1,0 +1,26 @@
+{
+  "tape_dir": "/var/lib/mal/sealed/fast-trades-live",
+  "creates_dir": "/var/lib/mal/sealed/fast-observe",
+  "output_dir": "/var/lib/mal/paper/fast-forward-paper",
+  "graph_dir": "/var/lib/mal/fast-forward/no-graph",
+  "kill_file": "/var/lib/mal/paper/fast-forward-paper/KILL",
+  "size_sol": 0.05,
+  "slippage_cap": 0.15,
+  "holdback_ms": 300,
+  "books": [
+    {
+      "id": "exp012_migrate_tp50_sl30",
+      "kind": "migrate",
+      "exit": "tp50_sl30",
+      "entry_model": "/var/lib/mal/fast-forward/exp012/model.txt",
+      "entry_model_md5": "a1810d219ed61db64a396f40dc302ce5",
+      "entry_threshold": 0.8030766588450794,
+      "entry_features": "/var/lib/mal/fast-forward/exp012/features.json",
+      "size_sol": 0.05,
+      "max_concurrent": 3,
+      "daily_loss_sol": 0.2,
+      "creator_cooldown_s": 60,
+      "token_cooldown_s": 300
+    }
+  ]
+}

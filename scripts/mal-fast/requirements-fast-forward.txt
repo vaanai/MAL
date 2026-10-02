@@ -1,0 +1,9 @@
+# Fast-host forward runner venv (x86_64). Pins copied from /data/mal/venv on research-0
+# (pip list, 2026-10-02, Python 3.12.3), the build the EXP-012 gate and the md5 replay ran on.
+# The repo's requirements-laya.txt only has ranges; these are the exact versions.
+# Build: python3 -m venv /var/lib/mal/fast-forward/venv
+#        /var/lib/mal/fast-forward/venv/bin/pip install -r requirements-fast-forward.txt
+lightgbm==4.7.0
+numpy==2.5.3
+scipy==1.18.1
+scikit-learn==1.9.1
