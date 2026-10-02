@@ -509,5 +509,256 @@ class HolmTests(Fam):
         self.assertIn("no longer hashes", err)
 
 
+class ReviewFixTests(Fam):
+    """PR #240 review: verdict bound to locked rows, ownership, bindings, pairing blockers, band assert."""
+
+    BAND = dict(variant_kind="band", reference_experiment=None, exit_spec_id="tpsl_tp50_sl30")
+    _fabricate = HolmTests._fabricate
+
+    def win_clocks(self) -> tuple[str, str]:
+        return fw._wins(fw.parse_clock(CLEAN_CLOCK), fw.parse_clock(READ_END))
+
+    # 1. gate verdict bound to the lock
+    def test_tampered_report_json_cannot_open_the_gate(self) -> None:
+        spec = self.write_spec()
+        self.assertEqual(self.score_sec(spec)[0], 0)
+        self.primary_final()  # a real FAIL
+        rp = self.out12 / "report.json"
+        rep = json.loads(rp.read_text())
+        rep["verdict"] = "PASS"
+        rp.write_text(json.dumps(rep))
+        rc, err = self.report_sec(spec)
+        self.assertEqual(rc, 0, err)
+        r = json.loads((self.sec_out() / "report.json").read_text())
+        self.assertEqual((r["gate_state"], r["verdict"], r["primary"]["verdict"]), ("closed", None, "FAIL"))
+        self.assertEqual(fw.primary_final(self.ledger12, *self.win_clocks(), True)["verdict"], "FAIL")
+
+    def test_verdict_is_recomputed_from_the_locked_rows(self) -> None:
+        self.score12()
+        self.assertEqual(self.report12()[0], 0)
+        rows = jl(self.out12 / "rows.jsonl")
+        self.assertEqual(fw.primary_final(self.ledger12, *self.win_clocks(), True)["verdict"], REAL_GATE(rows))
+
+    def test_tampered_primary_rows_are_refused(self) -> None:
+        spec = self.write_spec()
+        self.assertEqual(self.score_sec(spec)[0], 0)
+        self.primary_final()
+        with (self.out12 / "rows.jsonl").open("a") as fh:
+            fh.write(fw._dump({**jl(self.out12 / "rows.jsonl")[0], "mint": "extra"}) + "\n")
+        rc, err = self.report_sec(spec)
+        self.assertEqual(rc, 2)
+        self.assertIn("no longer hashes", err)
+        self.assertFalse((self.sec_out() / "final_read.lock").exists())
+
+    # 2. experiment ownership
+    def test_locks_and_markers_carry_the_experiment(self) -> None:
+        self.primary_final()
+        self.assertEqual(json.loads((self.out12 / "final_read.lock").read_text())["experiment"], "EXP-012")
+        self.assertEqual({m["experiment"] for m in jl(self.ledger12)}, {"EXP-012"})
+
+    def test_reprint_cannot_overwrite_another_experiments_report(self) -> None:
+        spec = self.write_spec()
+        self.primary_final()
+        before = {n: (self.out12 / n).read_bytes() for n in ("report.json", "report.md", "final_read.lock", "runs.jsonl")}
+        argv = ["report", "--experiment", SEC, "--spec", str(spec), "--walk-dir", str(self.walk), "--out-dir", str(self.out12), "--final-ledger", str(self.sec_ledger()), "--primary-ledger", str(self.ledger12), "--registry", str(self.registry), "--reprint", *self.win()]
+        rc, err = self.main(argv)
+        self.assertEqual(rc, 2)
+        self.assertIn("belongs to EXP-012, not EXP-013", err)
+        for n, b in before.items():
+            self.assertEqual((self.out12 / n).read_bytes(), b, n)
+        self.assertFalse(self.sec_ledger().exists())
+        # and the other way: EXP-012 cannot reprint over a secondary's FINAL
+        self.assertEqual(self.score_sec(spec)[0], 0)
+        self.assertEqual(self.report_sec(spec)[0], 0)
+        sec_before = (self.sec_out() / "report.json").read_bytes()
+        rc, err = self.main(["report", "--out-dir", str(self.sec_out()), "--walk-dir", str(self.walk), "--final-ledger", str(self.ledger12), "--reprint", *self.win()])
+        self.assertEqual(rc, 2)
+        self.assertIn("belongs to EXP-013, not EXP-012", err)
+        self.assertEqual((self.sec_out() / "report.json").read_bytes(), sec_before)
+
+    def test_old_locks_without_the_field_are_exp012s(self) -> None:
+        self.score12()
+        self.assertEqual(self.report12()[0], 0)
+        lock = json.loads((self.out12 / "final_read.lock").read_text())
+        del lock["experiment"]
+        (self.out12 / "final_read.lock").write_text(json.dumps(lock))
+        fw.check_lock_owner(self.out12, "EXP-012")  # does not raise
+        with self.assertRaises(fw.Refused):
+            fw.check_lock_owner(self.out12, SEC)
+
+    def test_locked_final_checks_the_experiment(self) -> None:
+        self.primary_final()
+        cc, re_ = self.win_clocks()
+        fw._locked_final(self.out12, cc, re_, True, "x", "EXP-012")
+        with self.assertRaises(fw.Refused) as cm:
+            fw._locked_final(self.out12, cc, re_, True, "x", SEC)
+        self.assertIn("belongs to EXP-012", str(cm.exception))
+
+    def test_secondary_ledger_may_not_be_exp012s_by_realpath(self) -> None:
+        spec = self.write_spec()
+        link = self.d / "link.jsonl"
+        link.symlink_to(self.ledger12)
+        rc, err = self.score_sec(spec, SEC, "--final-ledger", str(link))
+        self.assertEqual(rc, 2)
+        self.assertIn("is EXP-012's ledger", err)
+        self.assertEqual(self.score_sec(spec)[0], 0)
+        rc, err = self.report_sec(spec, SEC, "--final-ledger", str(link))
+        self.assertEqual(rc, 2)
+        self.assertIn("is EXP-012's ledger", err)
+
+    # 3. bindings
+    def test_runs_lock_marker_and_report_record_the_bindings(self) -> None:
+        spec = self.write_spec()
+        self.assertEqual(self.score_sec(spec)[0], 0)
+        self.primary_final()
+        self.assertEqual(self.report_sec(spec)[0], 0)
+        want = {"registry_sha256": ff.file_sha256(self.registry), "spec_sha256": ff.file_sha256(spec), "frozen_manifest_md5": fw._md5_of_file(self.art / "FROZEN.md5")}
+        run = jl(self.sec_out() / "runs.jsonl")[0]
+        lock = json.loads((self.sec_out() / "final_read.lock").read_text())
+        marker = jl(self.sec_ledger())[-1]
+        rep = json.loads((self.sec_out() / "report.json").read_text())
+        for doc in (run, lock, marker, rep["binding"]):
+            for k, v in want.items():
+                self.assertEqual(doc[k], v, k)
+
+    def test_registry_or_spec_change_after_scoring_refuses_final(self) -> None:
+        spec = self.write_spec()
+        self.assertEqual(self.score_sec(spec)[0], 0)
+        self.primary_final()
+        self.write_registry([SEC, SEC2])
+        rc, err = self.report_sec(spec)
+        self.assertEqual(rc, 2)
+        self.assertIn("registry_sha256", err)
+        self.write_registry([SEC])
+        self.write_spec(exit_spec_id="tpsl_tp75_sl30")
+        rc, err = self.report_sec(spec)
+        self.assertEqual(rc, 2)
+        self.assertIn("spec_sha256", err)
+        self.assertFalse((self.sec_out() / "final_read.lock").exists())
+
+    def test_reprint_refuses_when_a_binding_moved(self) -> None:
+        spec = self.write_spec()
+        self.assertEqual(self.score_sec(spec)[0], 0)
+        self.primary_final()
+        self.assertEqual(self.report_sec(spec)[0], 0)
+        self.assertEqual(self.report_sec(spec, SEC, "--reprint")[0], 0)
+        self.write_registry([SEC, SEC2])
+        rc, err = self.report_sec(spec, SEC, "--reprint")
+        self.assertEqual(rc, 2)
+        self.assertIn("registry_sha256", err)
+
+    def test_family_holm_needs_one_registry_sha_equal_to_the_current_file(self) -> None:
+        h = HolmTests("test_holm_across_two_fixture_secondaries")
+        # build the fabricated family on this fixture
+        out, dirs = HolmTests._family(self, {"flat": 0.01, "press": 0.01}, {"flat": 0.01, "press": 0.01})
+        self.assertEqual(HolmTests.run_holm(self, out, dirs)[0], 0)
+        rp = dirs[SEC2] / "report.json"
+        rep = json.loads(rp.read_text())
+        rep["binding"]["registry_sha256"] = "0" * 64
+        rp.write_text(json.dumps(rep))
+        rc, err = HolmTests.run_holm(self, out, dirs)
+        self.assertEqual(rc, 2)
+        self.assertIn("registry sha256", err)
+        del h
+
+    def test_family_holm_refuses_a_registry_changed_since_the_reads(self) -> None:
+        out, dirs = HolmTests._family(self, {"flat": 0.01, "press": 0.01}, {"flat": 0.01, "press": 0.01})
+        self.registry.write_text(self.registry.read_text() + "\n")
+        rc, err = HolmTests.run_holm(self, out, dirs)
+        self.assertEqual(rc, 2)
+        self.assertIn("registry file now hashes", err)
+
+    def test_registry_deadline_uses_the_files_last_commit_date(self) -> None:
+        import os
+        import subprocess
+
+        repo = self.d / "repo"
+        repo.mkdir()
+        reg = repo / "registry.json"
+        reg.write_text(self.registry.read_text())
+
+        def git(*a: str, date: str | None = None) -> None:
+            env = {**os.environ, **({"GIT_COMMITTER_DATE": date, "GIT_AUTHOR_DATE": date} if date else {})}
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=repo, env=env, check=True, capture_output=True)
+
+        git("init", "-q")
+        deadline = "2026-10-05T23:59:00Z"
+        self.assertIn("no git commit date", ff.registry_commit_problem(reg, deadline))  # untracked
+        git("add", "registry.json")
+        git("commit", "-q", "-m", "k", date="2026-10-05T12:00:00+00:00")
+        self.assertIsNone(ff.registry_commit_problem(reg, deadline))
+        reg.write_text(reg.read_text() + "\n")
+        git("commit", "-q", "-am", "late", date="2026-10-06T00:30:00+00:00")
+        self.assertIn("after the registry deadline", ff.registry_commit_problem(reg, deadline))
+        # the CLI refuses on the pinned window (no --test-window) before reading any ledger
+        rc, err = self.main(["family_holm", "--registry", str(reg), "--primary-ledger", str(self.ledger12), "--output", str(self.d / "f.json"), "--out-dir", f"{SEC}={self.d}"])
+        self.assertEqual(rc, 2)
+        self.assertIn("after the registry deadline", err)
+        rc, err = self.main(["family_holm", "--registry", str(reg), "--primary-ledger", str(self.ledger12), "--output", str(self.d / "f.json"), "--out-dir", f"{SEC}={self.d}", *self.win()])
+        self.assertNotIn("registry deadline", err)  # --test-window skips the date check
+
+    def test_committed_registry_has_the_deadline(self) -> None:
+        self.assertEqual(ff.load_registry()["registry_deadline"], "2026-10-05T23:59:00Z")
+
+    # 4. exit-variant pairing
+    def _rows(self, mints: list[str], delta: float = 0.0) -> list[dict]:
+        return [{"mint": m, "mig_ms": 1000 + i, "day": "2026-10-06", "score": 0.9, "entered": True, "filled": True, "status": 0, "gross": 0, "flat": 1e7 + delta, "press": 1e7 + delta} for i, m in enumerate(mints)]
+
+    def test_exit_variant_with_the_same_model_needs_identical_entered_sets(self) -> None:
+        spec = ff.parse_spec({"schema": ff.SCHEMA_SPEC, "experiment": SEC, "role": "secondary", "registration_order": 1, "variant_kind": "exit", "artifact_dir": "x", "reference_experiment": "EXP-012", "exit_spec_id": "tpsl_tp100_sl30", "freeze_commit": "abc", "clean_clock": ff.DEC017_CLEAN_CLOCK, "read_end": ff.DEC017_READ_END})
+        ref = self._rows([f"m{i}" for i in range(12)])
+        var = self._rows([f"m{i}" for i in range(11)] + ["extra"], delta=5e7)
+        base_ctx = {"gate_open": True, "primary": {"verdict": "PASS", "rows_sha256": "r", "lock_sha256": "l"}, "reference_rows": ref, "binding": {}}
+
+        def tq(model_ref: str) -> dict:
+            runs = [{"model_md5": "M", "threshold": 0.5, "clean_clock": "c", "to_exclusive": "t"}]
+            return fw.build_secondary_report(var, runs, spec, {**base_ctx, "reference_model_md5": model_ref})["tested_quantity"]
+
+        same = tq("M")
+        self.assertTrue(same["same_model_as_reference"])
+        self.assertEqual((same["n_variant_only"], same["n_reference_only"]), (1, 1))
+        self.assertEqual(len(same["blockers"]), 1)
+        self.assertFalse(same["clears"])  # a positive increment on 11 pairs is not enough
+        other = tq("N")
+        self.assertEqual(other["blockers"], [])
+        self.assertTrue(other["clears"])
+        equal = fw.build_secondary_report(self._rows([f"m{i}" for i in range(12)], delta=5e7), [{"model_md5": "M", "threshold": 0.5, "clean_clock": "c", "to_exclusive": "t"}], spec, {**base_ctx, "reference_model_md5": "M"})["tested_quantity"]
+        self.assertEqual((equal["blockers"], equal["clears"]), ([], True))
+
+    def test_reference_out_dir_is_bound_to_its_experiments_ledger(self) -> None:
+        self.primary_final("PASS")
+        self.write_registry([SEC, SEC2])
+        spec2 = self.write_spec(SEC2, 2, artifact_dir=self.band_art(2.0), selection_band={"t_low": 0.0, "t_high": 2.0}, **self.BAND)
+        self.assertEqual(self.score_sec(spec2, SEC2)[0], 0)
+        self.assertEqual(self.report_sec(spec2, SEC2)[0], 0)
+        spec = self.write_spec(SEC, 1)
+        self.assertEqual(self.score_sec(spec)[0], 0)
+        # the secondary's own dir is not EXP-012's FINAL: its lock belongs to another experiment / it is not in EXP-012's ledger
+        for extra in (["--reference-out-dir", str(self.sec_out(SEC2))], ["--reference-out-dir", str(self.sec_out(SEC2)), "--reference-ledger", str(self.sec_ledger(SEC2))]):
+            rc, err = self.report_sec(spec, SEC, *extra)
+            self.assertEqual(rc, 2, err)
+            self.assertIn("EXP-012's FINAL read", err)
+        self.assertFalse((self.sec_out(SEC) / "final_read.lock").exists())
+        # the right pairing still works
+        self.assertEqual(self.report_sec(spec)[0], 0)
+
+    # 5. band
+    def test_band_t_high_must_equal_the_frozen_threshold(self) -> None:
+        spec = self.write_spec(selection_band={"t_low": -1.0, "t_high": 0.5}, **self.BAND)  # the fixture's frozen threshold is 0.0
+        rc, err = self.score_sec(spec)
+        self.assertEqual(rc, 2)
+        self.assertIn("must equal the frozen threshold", err)
+        self.assertFalse((self.sec_out() / "rows.jsonl").exists())
+        ok = self.write_spec(selection_band={"t_low": -1.0, "t_high": 0.0}, **self.BAND)
+        self.assertEqual(self.score_sec(ok)[0], 0)
+
+    # 6. low
+    def test_a_secondary_needs_its_own_freeze_commit(self) -> None:
+        spec = self.write_spec(freeze_commit=None)
+        rc, err = self.score_sec(spec)
+        self.assertEqual(rc, 2)
+        self.assertIn("its own freeze_commit", err)
+
+
 if __name__ == "__main__":
     unittest.main()

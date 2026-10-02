@@ -1194,6 +1194,7 @@ def build_secondary_report(rows: Sequence[dict[str, Any]], runs: Sequence[dict[s
         "selection_band": list(spec.band) if spec.band else None,
         "n_decided": len(rows),
         "n_entered": len(entered),
+        "binding": ctx["binding"],
         "primary": {"experiment": ff.PRIMARY_EXPERIMENT, "verdict": ctx["primary"]["verdict"], "rows_sha256": ctx["primary"]["rows_sha256"], "lock_sha256": ctx["primary"]["lock_sha256"]},
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -1241,7 +1242,6 @@ def build_secondary_report(rows: Sequence[dict[str, Any]], runs: Sequence[dict[s
             "full_book_gate": {"promote": full_clears, "blockers": gate.get("promote_blockers"), "flat_15": flat_leg, "pressure_scale_1": press_leg},
             "tested_quantity": tested,
             "bootstrap": {"draws": ff.BOOTSTRAP_DRAWS, "seed": ff.BOOTSTRAP_SEED, "note": "the p-values and the increment CI use 10,000 draws; the full-book gate's own CI (tools.paper_attention_promote) uses 1,000 draws, seed 1"},
-            "binding": ctx["binding"],
             "context_report_only": build_context(rows),
         }
     )
