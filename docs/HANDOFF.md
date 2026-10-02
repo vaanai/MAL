@@ -1,155 +1,147 @@
-# Manager handoff 2026-10-02 (Manager2 → manager on mal-research-0)
+# Manager handoff 2026-10-02 (manager on mal-research-0 → next manager)
 
-Replace this page at the next handoff; don't append to it. Read it first, then [LAB_STATE.md](../LAB_STATE.md), [CONSTITUTION.md](../CONSTITUTION.md), [docs/HOSTS.md](HOSTS.md), [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md) and the B3 lab note [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](../ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md).
+Replace this page at the next handoff; don't append to it. Read it first, then:
+- [LAB_STATE.md](../LAB_STATE.md)
+- [CONSTITUTION.md](../CONSTITUTION.md)
+- [DEC-015](../DEC/DEC-015-forward-paper-on-fast.md), [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) (with Amendments 1–2) and [DEC-017](../DEC/DEC-017-forward-secondary-family.md)
+- [EXP-013 plan](../EXP/EXP-013-graduation-classifier-plan.md) (with Amendments 1–4)
+- [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md)
 
-`main` includes #181 and #182 (both merged 2026-10-01). Paper only. Once the new session confirms it has taken over, the old session (Manager1, 2026-10-01) stands down.
+`main` is at `d2056cb` (#249) plus this handoff PR. Paper only. The owner's goal is still real money by the end of October 2026: the owner's target, not evidence.
 
-## The goal, and why it is reachable
+## State at 2026-10-02T19:00Z
 
-**The owner's goal: real money in, and profitable, by the end of October 2026.** The owner wants the project to earn back what has been put into it, which means thousands of dollars of revenue. That is the owner's target, not evidence. The path to it is fixed and does not bend: clean tape → honest simulator → signals → one-shot test on unseen data → forward paper → promotion gate → owner approval → live.
+**One forward book: EXP-012.**
+- It is scored on chain-complete forward hours by the exact code that passed its one-shot read (DEC-016).
+- Counting window `[2026-10-06T00, 2026-10-16T00)`. **One FINAL read** at about 2026-10-16T02Z with `tools/exp012_forward.py`. Before that, reports are INTERIM: counts only.
+- **No peeking** (DEC-016 Amendment 2): nobody opens `rows.jsonl`, `OUT/scratch/*` or a FINAL report before the read. Only `score`, `report` and `export-decisions` (P&L-free) read them.
+- A PASS supports only asking the owner for a small live trial, and only after both of these:
+  - the latency/size sensitivity re-score at the measured fast-0 lag;
+  - the runner-vs-scorer comparison (DEC-016 Am.1 §5).
 
-What changed: we now have **mal-research-0** (32 cores, 125 GB RAM, ~868 GB disk), and it is idle. Compute is no longer the bottleneck. The things that cost us weeks were **waiting** and **mistakes**: a walker bug that duplicated rows and dropped an hour spent the whole EXP-011 holdout and we learned nothing from it. The way to go 5x faster is:
+**DEC-017 secondaries: none.**
+- All three candidates failed their pre-stated screens on exploration data (#242): exit variants (nested LODO negative), the expanded-pool refit (fast-only screen FAIL), and the p80 threshold band (negative).
+- k = 0 for the 10-16 read. The registration deadline 10-05T23:59Z effectively passes unused.
 
-1. **Never lose a test to bad data again.** Every block gets fetched with the fixed walker, checked with `tools/backfill_verify.py`, deduplicated, and fingerprinted (sha256) before anyone reads it.
-2. **Run many ideas in parallel on research-0**, on exploration data only, with every try logged. One dead candidate must not reset the clock: always have the next candidate already queued with its own fresh block.
-3. **Cut waiting time.** Walkers on research-0, several at once. Merge reviewed PRs promptly. Keep mal-fast-0 for live listeners, not heavy jobs.
+**Next independent signal: EXP-013, graduation-completion classifier (exploration stage).**
+- The plan, screen and tries cap were fixed before any code: [EXP-013 plan](../EXP/EXP-013-graduation-classifier-plan.md), #243 and Amendments #245–#248.
+  - Primary entry is slot+4.
+  - Screen item 4a: all getBlock days pass. 4b: the August days alone pass.
+  - It must stay positive at slot+8 and keep Jaccard with EXP-012 at most 0.5.
+  - At most 3 tries.
+  - **The screen runs exactly once**, on the 9-day pool plus every `explore-0814/wN` view verified by **2026-10-04T12:00Z**.
+- PR1 (trigger, features, exit, guarded table builder) is merged as #244 (215 tests). **Nothing has run on real data.**
+- PR2 (model + LODO) and PR3 (screens) are not started.
+- If it passes: a pre-registration for a k = 1 one-shot read on the **backup block** `[2026-08-28T12, 2026-09-03T12)`. That block is verified (#58–#60), unread and reserved.
+- Honest prior: about 20% or less.
 
-The bar does not drop. Winner's curse is real (B3 was the best of many cells). The gate in CLAUDE.md is what turns "looked good" into money. Hold it, and move fast everywhere else.
+**Feeds.**
+- Live tapes miss trades during websocket reconnect episodes:
+  - 10-01: fast 84.759% and Oracle 66.241% of chain;
+  - quiet 10-02T06–08: fast 100.000%.
+- The fast trial tape now runs `ca542c5` (#233) with **`--sockets 2`** (since 10-02T13:39:04Z, #234). Over 10-02T16–18 it caught **99.282%** of chain trades with 16 reconnects, while Oracle's single socket caught 82.062% (#249).
+- DEC-015 §2.2: redundant sockets are the runner feed plan, with a daily coverage check against the forward walk.
 
-### Timeline to end of October (plan, not promise)
+**Runner track (live readiness).**
+- The EXP-012 model gate in `tools/forward_paper.py` is merged (#228). The md5 decision-equivalence replay passed, A and B, on 3 h of Oracle tape.
+- The fast-0 deploy kit is merged (#231): `scripts/mal-fast/`, with an observe unit, `mal-forward.slice` (5G/6G), the runner unit, a restart timer and installers with `--commit <sha>`.
+- **Nothing is installed on fast-0.** The installer refuses before 2026-10-05T05:00Z except `--files-only`.
 
-| When | What |
-| --- | --- |
-| 10-01 | Clean exploration pool on research-0 (job #1 running). Re-run B3 on clean data on research-0. |
-| 10-01 → 10-02 | If B3 still clears its pre-stated screen: register the fresh block in the ledger **before** any hour is sealed, pre-register EXP-012, start walkers on research-0. In parallel, queue backup exploration lanes (exits, other entry families). |
-| 10-05 05:00Z | Kill review of the 9 forward books (procedure below). No new forward books before it. |
-| ~10-06 → 10-08 | Fresh block sealed, `backfill_verify` clean, one-shot read. |
-| ~10-08 → 10-20 | If it passes: forward paper until ≥100 trades over ≥5 UTC days, majority positive, CI and ex-top-3 checks under both fail models. |
-| late October | Gate cleared + owner approves → small live size. |
+## In-flight MiScusi jobs (session MALsession1, all on mal-research-0)
 
-There is little slack. Every day of waiting on a key, a merge or a re-fetch comes straight out of it.
+| Job | Id | What | Notes |
+| --- | --- | --- | --- |
+| #71 | `j_XRdI7CrrMEa_JQ` | DEC-016 forward walk → `/data/mal/blocks/forward-1002` | Owner-approved 10-02. Since hour 10-02T15, 3 hours sealed, 0 issues, about 13.5k credits per hour. Holds one Helius slot at `--rps 8`. **168 h limit: resubmit the same command (`bash scripts/research/forward-walk.sh`, params `{"start":"2026-10-02T15"}`, resumable, 10080 min) before about 2026-10-09T15Z.** It is idempotent. |
+| #45 | `j_78hqb5Pqn-wzbA` | expansion w2 `[08-24T12, 08-26T12)` | 23/48 at 18:51Z |
+| #46 | `j_wu1EzqTU6IyCuw` | expansion w3 `[08-22T12, 08-24T12)` | 24/48 |
+| #55 | `j_y8U5tq9aA77qwQ` | expansion w4 `[08-20T12, 08-22T12)` | 21/48 |
+| #72 | `j_LZAzubRuOflZqw` | expansion w5 `[08-18T12, 08-20T12)` | after #55; 15/48 already sealed |
+| #49 | `j_4XFKvo58yvSEJw` | expansion w6 `[08-16T12, 08-18T12)` | after #45 |
+| #50 | `j_XYPA00Q8bIUERA` | expansion w7 `[08-14T12, 08-16T12)` | after #46 |
+| #82–#87 | | verify, dedupe and clean-view for w2–w7 | each `after` its walker; uses `/data/mal/ops/verify-block.sh` |
 
-## State at 2026-10-02 06:25Z (Manager2 → manager on mal-research-0)
-
-The manager moves to `mal-research-0`. Read this section, then LAB_STATE.md, DEC-015, the EXP-012 file, and these memory notes:
-- `helius-plan-limits`
-- `long-jobs-via-miscusi`
-- `owner-wants-autonomy`
-
-The memory dir is per host. Recreate the key facts on research-0 from this file if the notes aren't there.
-
-### Headline
-
-**EXP-012 one-shot read: promotion-gate PASS under both fail models** (#208, checked by `quant-proof`). Block `[2026-09-03T12, 2026-09-09T12)` was read once:
-- n = 451
-- flat 0.0349 SOL/trade, CI90 [0.0187, 0.0513]
-- pressure 0.0205 SOL/trade, CI90 [0.0110, 0.0299]
-- 6/7 days positive
-- ex-top-3 +14.04 / +8.22 SOL
-
-This is a backward replay, **not money made**. Caveats, all in the EXP-012 Result:
-- The block is favourable: the unfiltered base trade is also positive.
-- The lift is mostly fill prediction (98.9% vs 28.0% fill); among fills it is not significant.
-- The unfiltered book made more total SOL.
-- Returns fade toward the latest day.
-
-Per EXP-012 §9 this earns a forward-paper book after the 2026-10-05T05:00Z kill review, on `mal-fast-0` per DEC-015. Live needs a forward gate pass plus owner approval.
-
-### Decisions (and why)
-
-- **EXP-012 re-froze EXP-011's recipe on clean data** rather than reusing the retired model. EXP-011 §8 retired it, and its threshold was calibrated on the dirty pool. Trail: pre-registration #194, freeze #200 (job #23 at `ea5ec37`), pin #207, read job #32, result #208.
-- **DEC-015 (#202–#204): new forward books run on `mal-fast-0`.**
-  - Why: paper should run where live will most likely run, and Oracle's runner backlog breaches its 5 s cap (cause undiagnosed).
-  - The runner is a systemd service: an owner-confirmed exception to "every long-running job is a MiScusi job".
-  - EXP-012's book needs only the trade tape, observe creates and the model.
-  - Preconditions: its own `mal-forward.slice` (5G/6G), tape coverage, md5 equivalence replay, lag probation.
-- **Helius:** Developer plan, **50 rps**, about 1 credit/getBlock (dashboard-confirmed). Walkers share **about 40 rps** via 4 flock slots `/data/mal/locks/helius-{1..4}.lock` at `--rps 10` each. Budget is about 40M credits/month.
-- **August hours have fewer slots** (about 8,700 / 9,850 vs 11,400 in Sept). August walkers use `--min-slots-per-hour 8000`, and their pre-read verify needs the same per-period bounds.
-- **Visibility:** every long job is a MiScusi job. Every result goes to the MiScusi notebook and `data/console.json` (merge, then `git -C ~/MAL pull` on mal-fast-0, where the Console reads it), and result.v1 records go to `~/data/results/` on mal-fast-0.
-
-### Still running: everything Manager2 started
-
-MiScusi jobs (session MALsession1, all on mal-research-0, all gated walkers at `--rps 10`):
-
-| Job | Id | Range | Sealed at 06:23Z | Credits |
-| --- | --- | --- | --- | --- |
-| #24 | `j_E7dSR9LYxDoduw` | backup `fresh-0828/w1` `[09-01T12, 09-03T12)` | 39/48 | 457,807 |
-| #25 | `j_2LixVPrbGaWkqQ` | backup `fresh-0828/w2` `[08-30T12, 09-01T12)` | 38/48 | 445,361 |
-| #26 | `j_0rbscFxTzCBzcg` | backup `fresh-0828/w3` `[08-28T12, 08-30T12)` | 38/48 | 450,089 |
-| #27 | `j_H4GFQEl5oxYsmA` | expansion `explore-0814/w1` `[08-26T12, 08-28T12)` | 39/48 | 394,233 |
-| #28 | `j_bmj84Om3r7SA5w` | expansion w2 `[08-24T12, 08-26T12)` | waiting for a lock slot | 0 |
-| #29 | `j_aX7jwPae1-WZnw` | expansion w3 `[08-22T12, 08-24T12)` | waiting for a lock slot | 0 |
-| #33 | `j_bBRcAQDLslxOqQ` | expansion w4 `[08-20T12, 08-22T12)` | waiting for a lock slot | 0 |
-
-(#28/#29's progress text still says "waiting for EXP-012 walkers"; that stage has passed and they now wait on lock slots.) The backup and expansion-w1 walkers should finish around 10:00–11:00Z. Then w2–w4 take the slots.
-
-**Not queued yet:** expansion w5 `[08-18T12, 08-20T12)`, w6 `[08-16T12, 08-18T12)`, w7 `[08-14T12, 08-16T12)`. Queue them as MiScusi jobs with the same gated command (copy #33's), output `/data/mal/blocks/explore-0814/wN`. w5's dir holds a harmless early checkpoint.
+- Walkers seal about 2.3 hours per wall hour. w2–w4 should finish around 10-03T06–08Z, and w5–w7 around 10-04T03–09Z, which is tight against EXP-013's 10-04T12Z cutoff.
+- Only views that actually have `VIEW.sha256` by the cutoff go into the screen.
 
 Outside MiScusi:
-- **Fast trade tape trial.** Ubuntu user unit `mal-fast-trade-tape` on **mal-fast-0**, started (not enabled) 2026-10-01T16:25Z, drop-in `trial.conf`, output `/var/lib/mal/sealed/fast-trades-trial` (2.2 GB at 06:23Z, 2-day retention; disk 46% used). Stop it once the coverage comparison is done, unless DEC-015 proceeds with it.
-- **`mal-status-research.timer`** on mal-fast-0 (claude user, every 5 min): status collection for research-0. It is meant to stay.
-- The EXP-012 walker units `mal-walker-w1..w3` on research-0 are **inactive** (finished). Remove them at leisure.
+- **Fast tape trial unit** `mal-fast-trade-tape` on mal-fast-0 (ubuntu user unit, drop-in `trial.conf`, `--sockets 2`, output `/var/lib/mal/sealed/fast-trades-trial`, 2-day retention).
+  - Rollback: copy back the backups in `/var/lib/mal/eng/observe.bak-69ff892-*`, then run daemon-reload and restart.
+- `mal-status-research.timer` on mal-fast-0 stays.
 
-**Finished, waiting for analysis:** job #35 `j_yUm7HdE50yxCOA`, the chain-truth walk `/data/mal/blocks/truth-1001` (2/2 sealed, 26,988 credits).
+## Next steps, in order
 
-### Housekeeping done at handoff
+1. **Daily:** check #71's newest hours in `/data/mal/blocks/forward-1002/verify.jsonl` (issues must be `[]`).
+2. **Daily, two-socket coverage check:** a MiScusi job on **mal-fast-0** (keep it under 2 GB; fast-0 refuses heavy jobs) running `tools.tape_coverage` against `--chain-dir /data/mal/blocks/forward-1002 --chain-ssh mal-research-0` over 2 complete hours. Copy the pattern from job #80. Write a short lab note if it fails or changes materially.
+3. **As walkers finish:** #82–#87 verify them. Check each `/data/mal/ops/verify/explore-0814-wN-content.json` shows 0 flagged and 0 duplicates.
+4. **EXP-013 PR2 and PR3** (builder, worktree):
+   - the LightGBM model with LODO on the table from `tools/exp013_grad_table.py`;
+   - the screen per the plan: 4a and 4b, slot+8, Jaccard, edge-day reporting, the 3-tries cap, and the tries log at an absolute path (`MAL_TRIES_LOG=/data/mal/ops/tries/tries.jsonl`, then copy to `data/tries.jsonl`).
+   - Review both. Table builds before 10-04T12Z are debug only. **Run the screen once** after the cutoff, with a manifest of pinned view shas.
+   - If PASS: write the EXP-013 pre-registration (backup block, k = 1), ask `quant-proof`, merge, then the one-shot read. If FAIL: close the family; don't re-tune.
+5. **2026-10-05T05:00:00Z kill review** of the 9 Oracle books, on a snapshot:
+   1. settle orphans;
+   2. pressure stamp;
+   3. run `tools/kill_review.py --pressure-from-ms <2026-09-29T00:00:00Z ms> --holm-draws 10000`;
+   4. `quant-proof`;
+   5. update LAB_STATE.
 
-- The tape-coverage worktree held a staged edit to `ARTIFACTS/lab/fast-tape-coverage-2026-10-01.md`. It was byte-identical to `1a57108`, the builder's pre-review text, and would have reverted the review fixes now on main (7afbc9a, via #212). It was dropped.
-- The `~/MAL` stash "wip-verify-backfill-fixes-tmp-407693" (`613c4fd`, on `claude/backfill-integrity`) is an earlier draft of #179 and is **superseded by main**. Every test class in it exists on main, and main has the later 10,500 minimum and a fuller heal message. Safe to drop; left for the owner.
+   Note as context Oracle's tape coverage (66.241% / 98.615% / 82.062% of chain in the three windows) and its lag breaches. After the review, set `review_windows: []` in `data/console.json`.
+6. **After the kill review: the runner on fast-0** (DEC-015, DEC-016 §3):
+   - build the x86_64 venv with the pinned `scripts/mal-fast/requirements-fast-forward.txt` (numpy 2.5.3 wheel availability on Python 3.12 is unverified);
+   - `install-fast-observe.sh --commit <sha>` as ubuntu;
+   - point `tape_dir` in `fast-forward-paper.json` at the two-socket tape dir;
+   - `install-fast-forward-paper.sh --commit <sha>`;
+   - start the runner and enable the restart timer;
+   - 2-day lag probation;
+   - record it all in LAB_STATE.
 
-### Next steps, in order
+   The runner's paper rows are for the runner-vs-scorer comparison, using `tools/forward_exp012_replay.py` and the scorer's P&L-free `export-decisions`. They are not a second gate.
+7. **About 10-16T02Z:** the EXP-012 FINAL read, then `quant-proof`, then latency/size sensitivity at the measured lag, then the runner comparison, then the owner.
 
-1. **#35 has sealed:** run the tape coverage command from the 10-01 notes (`python3 -m tools.tape_coverage --start 2026-10-01T17 --end 2026-10-01T19 --chain-dir /data/mal/blocks/truth-1001 --chain-ssh mal-research-0 --margin-s 60 --json-out ARTIFACTS/lab/tape-coverage-chain-2026-10-01.json --md-out ARTIFACTS/lab/tape-coverage-chain-2026-10-01.md`; from research-0, drop `--chain-ssh` since the dir is local; the fast tape side is on mal-fast-0, so check how the tool reaches it). Quote both fast-vs-chain and Oracle-vs-chain, write the lab note, and update DEC-015 §2.2 with the verdict.
-2. Queue expansion w5–w7 walkers (see the table above) as slots free.
-3. DEC-015 remaining preconditions (all allowed before 10-05; **no forward book starts before 2026-10-05T05:00Z**):
-   - observe unit on fast-0 (creates);
-   - md5 equivalence replay of the runner (MiScusi job on research-0);
-   - create `mal-forward.slice` and a runner unit (not started);
-   - DEC-014 tooling works on fast output.
-   Build these with builders in worktrees and review each.
-4. **2026-10-05T05:00Z kill review** of the 9 Oracle books: snapshot, settle orphans, pressure stamp, `tools/kill_review.py --pressure-from-ms <2026-09-29T00:00:00Z ms> --holm-draws 10000`, `quant-proof`, LAB_STATE. Note Oracle tape quality and lag breaches as context. After it: `review_windows: []` in data/console.json.
-5. After the kill review: start the EXP-012 forward book on fast-0 on probation (DEC-015). Its clean clock starts only after the 2-day lag probation.
-6. When the expansion data is verified: exploration sweeps with `explore_entry_filter` / `explore_exit` templates (#205, #186) on research-0. Log every try (result.v1 tries log). Ask the owner for more MiScusi slots for CPU sweeps at that point (offered: 12–16).
+## Decisions today (and why)
 
-### Gotchas
-
-- **Clean-view mirror:** `backfill_verify --dedupe-out` writes `*.deduped.jsonl.zst`, which loaders don't find. Build `/data/mal/clean-view/<block>` as hardlinks under the raw names, with `VIEW.sha256` checked against the clean `MANIFEST.sha256` (script in the session history: copy the approach from `/data/mal/clean-view`).
-- **Python on research-0:** always `/data/mal/venv/bin/python`, with `PYTHONPATH=$PWD` and `-m tools.X`.
-- **Delegated MiScusi device tasks stall on Bash permission prompts.** Use in-session builder agents (worktree isolation) instead.
-- **`gh pr edit` fails** (classic projects). Use `gh api -X PATCH repos/vaanai/MAL/pulls/N`.
-- **Don't merge `tools/` changes** between a freeze and its read; the scorer refuses if `tools/` differ from the freeze commit.
-- **Catalog hosts:** `research` (mal-research-0 blocks). Owner cells starting with "reserved" parse as `reserved` (denied for every role), per #210.
-- **Stale agent worktrees** in `.claude/worktrees/` can be removed with `git worktree remove` (literal paths).
-
-## Dated items
-
-- **Daily 00:00:00Z:** Oracle runner restarts. Check `/home/claude/reports/runner-restarts.jsonl` for `ok: true`, `head_sha d7485d2`. Daily review 05:00Z.
-- **2026-10-05T05:00:00Z kill review:** on a snapshot, settle orphans → pressure stamp → `tools/kill_review.py --pressure-from-ms <2026-09-29T00:00:00Z ms> --holm-draws 10000` → `quant-proof` → LAB_STATE. After it, set `review_windows: []` in `data/console.json` deliberately. Build the per-book paper P&L feed only after the review instant.
-
-## Console
-
-Live at `console.tradervaan.com` on mal-fast-0 (user service `mal-console`, 127.0.0.1:8787, from `~/apps/mal-console`, 512M / 50% CPU). It is deployed at mal-console `c67b7d1` and includes the "Running now" panel (#8) and DeepSeek error scrubbing (#9). The MiScusi key is in place. To redeploy, follow `deploy/README.md` in mal-console. The scrubber in `packages/server/src/scrub.ts` must stay at parity with `tools/mal_status.py` `scrub_log_line`; regenerate `test/fixtures/scrub-vectors.json` when either changes. Status timers on mal-fast-0: `mal-status` (every minute), `mal-status-core` (every 5 min) and `mal-status-research` (every 5 min, installed 10-01).
-
-## Paused (owner decision), not forgotten
-
-EXP-009 screen scorer; Lane D (run on research-0 with `chunk_plan`); Oracle lag spikes; backfill retry on `IncompleteRead`; warm start / live-readiness track; #90 keep.
+- **DEC-016 (owner-approved):** EXP-012's forward book is scored on getBlock forward hours with the read's own code. Why: the live tapes miss trades, and the runner can't run EXP-012 as tested (a fill-model difference, and the 0.05 SOL cap against 0.5).
+- **DEC-016 Am. 1:** one read after 10 full days. About 750 trades gives enough power if the edge halves; a 5-day read would be a coin flip.
+- **DEC-016 Am. 2:** no peeking at P&L files.
+- **DEC-017 (`quant-proof`-revised):** secondaries are gatekept behind EXP-012, read with Holm only if EXP-012 passes, so the overall false-PASS rate stays 0.05. A variant's tested quantity is its increment over EXP-012.
+- **Forward walk** at `--rps 8`, holding one of 4 Helius slots (#235). The walkers dropped to 3 slots.
+- **Exit and threshold variants dropped.** The frozen exit and threshold already sit where extra trades stop paying (#241, #242).
 
 ## Gotchas found this session
 
-- New Claude sessions on both servers start in **bypass permissions** (Grokbot, 2026-10-01). Server deny rules and MiScusi's protected-path guard still apply.
-- MiScusi's protected-path guard rejects any Bash command whose **text** names `.env`, even in a commit message or PR body. Put messages in files (`git commit -F`, `gh pr create --body-file`).
-- The clone at `~/.miscusi/repos/vaanai/MAL` had no git identity; it is now set repo-local to `Claude Code <reallybadaireviews@gmail.com>`, matching `/home/claude/MAL`.
-- `/home/ubuntu/mal-oos` (the old walkers' code) is a plain file copy, not a git repo. No walker was running at 2026-10-01T00:30Z.
-- MiScusi jobs run on a clean checkout of what's **pushed**; outputs go to `$MISCUSI_OUTPUT_DIR`, and you commit them yourself.
+- **fast-0 refuses heavy MiScusi jobs** (≥2 GB or ≥2 CPUs) since 10-02. Request 1.9 GB or less there.
+- **research-0 has no SSH config to other hosts.** Steps that need fast-0-local data run as MiScusi jobs on fast-0. The fast-0 job user can SSH to mal-core-0 and mal-research-0, and results come back by scp to `/data/mal/ops/` (create the target dir first).
+- **`tools/tape_coverage` exits 1 on a non-PASS verdict.** Don't use `set -e`; capture `RC=$?`.
+- **No `/usr/bin/time` on research-0.**
+- **MiScusi's reported "peak" can sit at the declared limit without an OOM** (file cache). Size tape-pass jobs at 20–48 GB, and don't cancel on peak alone.
+- **The session job cap is 16.** Flock-waiting walkers count against it, so chain walkers with `after`.
+- **"Pool A" / "fast pool" is the fast-box getBlock backfill**, not the live listener.
+- **Ledger Hours cells must parse in `tools/mal_catalog.py`.** Run the catalog tests after any ledger table edit (#225).
+- **Some combined shell commands get denied by the permission system:** `git worktree add` plus merge with `-c user.*`, and `rm -rf` in the scratchpad. Don't retry them in another form. Use a builder in its own worktree instead.
+- **`gh pr edit` fails.** Use `gh api -X PATCH .../pulls/N -F body=@file`.
+
+## Dated items
+
+- **Daily 00:00:00Z:** Oracle runner restarts. Check `/home/claude/reports/runner-restarts.jsonl` for `ok: true` and `head_sha d7485d2`. The daily review is at 05:00Z.
+- **2026-10-04T12:00Z:** EXP-013 view cutoff.
+- **2026-10-05T05:00:00Z:** kill review (step 5).
+- **2026-10-05T23:59Z:** DEC-017 registration deadline (k = 0).
+- **2026-10-06T00:00Z:** EXP-012 forward clean clock.
+- **About 2026-10-09T15Z:** resubmit forward walk #71.
+- **About 2026-10-16T02Z:** EXP-012 FINAL read.
+
+## Paused (owner decision), not forgotten
+
+EXP-009 screen scorer; Lane D; Oracle lag spikes; backfill retry on `IncompleteRead`; #90 keep.
 
 ## Rules this project learned the hard way
 
-1. **Memory on mal-fast-0:** one heavy job, ≤2 workers, bounded windows, whole-tree kill. Check `anon`, not `MemoryCurrent`. Better: run heavy work on research-0.
+1. **Memory on mal-fast-0:** one heavy job, at most 2 workers. Better: run heavy work on research-0.
 2. **Docs describe merged state only.** Fix the data and the wording, never a rule.
-3. **Holdout ledger:** only the manager assigns blocks, before sealing. A block that's been seen can't become a confirmation holdout.
+3. **Holdout ledger:** only the manager assigns blocks, before sealing.
 4. **Check ex-top-3 and the frozen feature list before calling anything a candidate.**
-5. **Offline replicas mirror every live branch.**
-6. **Builders stop at ~40 turns.** Tight numbered scopes; commit their WIP yourself.
+5. **Fix the screen, the tries cap and every design ambiguity before any data.** Never reinterpret a screen after seeing a result.
+6. **Builders stop at about 40 turns.** Use tight numbered scopes, and give every PR a reviewer pass. Use `quant-proof` for anything about edge or multiplicity.
 7. **Run merges as separate commands.**
-8. **Security review before merge for anything that gates data or limits.**
-9. **Verify data before reading it.** `backfill_verify` + sha256 manifest, every block, every time. This is the rule that would have saved EXP-011.
+8. **Security review before merge for anything that gates data, limits or installs units.**
+9. **Verify data before reading it:** `backfill_verify` plus a sha256 manifest, every block, every time.
