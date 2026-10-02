@@ -116,7 +116,8 @@ class ThresholdTests(unittest.TestCase):
 
     def test_outer_oof_covers_every_row_once(self) -> None:
         rows = synth_rows()
-        oof = gm.outer_lodo_oof(rows, DAYS)
+        oof, oinfo = gm.outer_lodo_oof(rows, DAYS)
+        self.assertEqual(oinfo["n_skipped_folds"], 0)
         self.assertEqual(len(oof), len(DAYS) * 40)
         self.assertEqual(len({(r["day"], r["mint"]) for r in oof}), len(oof))
         thr = gm.pooled_threshold(oof)
@@ -127,7 +128,7 @@ class NestedTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.rows = synth_rows()
-        cls.sel, cls.info = gm.nested_lodo_select(cls.rows, DAYS)
+        cls.sel, cls.info, cls.counts = gm.nested_lodo_select(cls.rows, DAYS)
 
     def test_shape(self) -> None:
         self.assertEqual([i["outer_day"] for i in self.info], list(DAYS))
@@ -147,7 +148,7 @@ class NestedTests(unittest.TestCase):
                 r["features"] = {n: rng.random() for n in gm.FEATURE_NAMES}
         # Day d's rows only change its test set: its threshold is identical, and so is the training
         # pool of its outer model; the other days' thresholds do change (d is in their inner pool).
-        sel2, info2 = gm.nested_lodo_select(rows2, DAYS)
+        sel2, info2, _ = gm.nested_lodo_select(rows2, DAYS)
         i1 = next(i for i in self.info if i["outer_day"] == d)
         i2 = next(i for i in info2 if i["outer_day"] == d)
         self.assertEqual(i1["threshold"], i2["threshold"])
@@ -157,7 +158,7 @@ class NestedTests(unittest.TestCase):
         for r in rows3:
             if r["day"] == d:
                 r["press"] = 99_000_000 if r["press"] <= 0 else -1
-        sel3, info3 = gm.nested_lodo_select(rows3, DAYS)
+        sel3, info3, _ = gm.nested_lodo_select(rows3, DAYS)
         self.assertEqual([s for s in self.sel if s["day"] == d], [s for s in sel3 if s["day"] == d])
         self.assertEqual(next(i for i in info3 if i["outer_day"] == d)["threshold"], i1["threshold"])
         other = DAYS[3]
@@ -166,23 +167,23 @@ class NestedTests(unittest.TestCase):
         )
 
     def test_n_jobs_equivalence(self) -> None:
-        sel2, info2 = gm.nested_lodo_select(self.rows, DAYS, n_jobs=2)
+        sel2, info2, _ = gm.nested_lodo_select(self.rows, DAYS, n_jobs=2)
         self.assertEqual(json.dumps(self.sel), json.dumps(sel2))
         self.assertEqual(json.dumps(self.info), json.dumps(info2))
 
     def test_skipped_folds(self) -> None:
         rows = synth_rows(days=DAYS[:3], per_day=5)  # 10 rows in the other days: below 20
-        sel, info = gm.nested_lodo_select(rows, DAYS[:3])
+        sel, info, _ = gm.nested_lodo_select(rows, DAYS[:3])
         self.assertEqual(sel, [])
         self.assertTrue(all(not i["trained"] and i["skip_reason"] for i in info))
         one_class = synth_rows(days=DAYS[:3])
         for r in one_class:
             r["press"] = -1
-        sel, info = gm.nested_lodo_select(one_class, DAYS[:3])
+        sel, info, _ = gm.nested_lodo_select(one_class, DAYS[:3])
         self.assertEqual(sel, [])
         self.assertTrue(all(not i["trained"] for i in info))
         # A day with no rows is skipped and recorded, not an error.
-        sel, info = gm.nested_lodo_select(synth_rows(days=DAYS[:3]), DAYS[:3] + ("2026-09-01",))
+        sel, info, _ = gm.nested_lodo_select(synth_rows(days=DAYS[:3]), DAYS[:3] + ("2026-09-01",))
         self.assertEqual(next(i for i in info if i["outer_day"] == "2026-09-01")["skip_reason"], "no test rows")
 
 
@@ -229,13 +230,54 @@ class GuardTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             gm.assert_run_dir_allowed("/data/mal/exp013-grad/run1", now=before)
         gm.assert_run_dir_allowed("/data/mal/exp013-grad/run1", now=after)
-        gm.assert_run_dir_allowed("/data/mal/exp013-grad/run1", now=before, allow_fixture=True)
+        with self.assertRaises(SystemExit):  # allow_fixture never opens a real path early
+            gm.assert_run_dir_allowed("/data/mal/exp013-grad/run1", now=before, allow_fixture=True)
+        gm.assert_run_dir_allowed("/data/mal/exp013-grad/run1", now=after, allow_fixture=True)
         gm.assert_run_dir_allowed("/tmp/not-real-data", now=before)  # outside /data/mal: fixtures
 
     def test_cutoff_applies_in_load_table(self) -> None:
         with self.assertRaises(SystemExit) as cm:
             gm.load_table("/data/mal/exp013-grad/run1", now=datetime(2026, 10, 2, tzinfo=UTC))
         self.assertIn("real data", str(cm.exception))
+
+    def test_cli_refuses_real_path_with_allow_fixture(self) -> None:
+        with mock.patch.object(gm, "_now", return_value=datetime(2026, 10, 3, tzinfo=UTC)), mock.patch.object(gm, "nested_lodo_select") as nl:
+            with self.assertRaises(SystemExit):
+                gm.main(["--run-dir", "/data/mal/exp013-grad/run1", "--allow-fixture"])
+        nl.assert_not_called()
+
+    def test_cli_fixture_outside_data_mal(self) -> None:
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as td:
+            rows = synth_rows(days=DAYS[:3], per_day=30)
+            self._write(Path(td) / "r", rows)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(gm.main(["--run-dir", str(Path(td) / "r"), "--allow-fixture"]), 0)
+        out = json.loads(buf.getvalue())
+        for key in ("n_rows_total", "n_k4_rows", "n_dropped_out_of_days", "n_mints_without_k4"):
+            self.assertIn(key, out)
+
+    def test_manifest_and_row_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rows = synth_rows(days=DAYS[:1], per_day=3)
+            self._write(Path(td) / "a", rows)
+            (Path(td) / "a" / "manifest.json").write_text(json.dumps({"n_rows": len(rows) + 1}), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                gm.load_table(Path(td) / "a")
+            (Path(td) / "a" / "manifest.json").write_text(json.dumps({"table_md5": "0" * 32}), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                gm.load_table(Path(td) / "a")
+            (Path(td) / "a" / "manifest.json").write_text(json.dumps({"n_rows": len(rows), "table_md5": hashlib.md5("".join(json.dumps(r) + "\n" for r in rows).encode()).hexdigest()}), encoding="utf-8")
+            self.assertEqual(len(gm.load_table(Path(td) / "a")[0]), len(rows))
+            bad = [dict(r) for r in rows]
+            del bad[1]["press"]
+            self._write(Path(td) / "b", bad)
+            with self.assertRaises(SystemExit) as cm:
+                gm.load_table(Path(td) / "b")
+            self.assertIn("press", str(cm.exception))
 
     def test_forbidden_always(self) -> None:
         after = datetime(2027, 1, 1, tzinfo=UTC)
@@ -247,7 +289,54 @@ class GuardTests(unittest.TestCase):
             gm.assert_run_dir_allowed(repo / "ARTIFACTS" / "exp012" / "read", now=after, allow_fixture=True)
 
 
+class CountTests(unittest.TestCase):
+    def test_counts_and_reports(self) -> None:
+        rows = synth_rows(days=DAYS[:3])
+        rows = [r for r in rows if not (r["mint"] == "m0-001" and r["entry_land_k"] == 4)]  # no k=4 row
+        _, _, c = gm.nested_lodo_select(rows, DAYS[:2])
+        self.assertEqual(c["n_rows_total"], len(rows))
+        self.assertEqual(c["n_k4_rows"], 119)
+        self.assertEqual(c["n_dropped_out_of_days"], 40)  # DAYS[2]
+        self.assertEqual(c["n_mints_without_k4"], 1)
+        _, oinfo = gm.outer_lodo_oof(synth_rows(days=DAYS[:3], per_day=5), DAYS[:3])
+        self.assertEqual(oinfo["n_skipped_folds"], 3)
+        self.assertEqual(oinfo["skipped_folds"], list(DAYS[:3]))
+
+    def test_empty_oof_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            gm.pooled_threshold([])
+
+    def test_duplicate_mint_k_refused(self) -> None:
+        rows = synth_rows(days=DAYS[:1], per_day=3)
+        sel = [{"day": DAYS[0], "mint": "m0-000", "score": 1.0, "threshold": 0.5}]
+        with self.assertRaises(ValueError):
+            gm.pnl_at_k(sel, rows + [dict(rows[0])], rows[0]["entry_land_k"])
+
+
+class RealParityTests(unittest.TestCase):
+    def test_booster_identical_to_fz_fit_on_18_features(self) -> None:
+        rows = gm.training_rows(synth_rows(days=DAYS[:3]))
+        names18 = list(fz.FROZEN_FEATURE_NAMES)
+        x = [[r["features"][n] for n in names18] for r in rows]
+        y = [1 if r["press"] > 0 else 0 for r in rows]
+        want = fz._fit(x, y)
+        with mock.patch.object(gm, "FEATURE_NAMES", names18):
+            got = gm.fit(rows)
+            got_scores = gm.predict(got, rows)
+        self.assertEqual(got.model_to_string(), want.model_to_string())
+        self.assertEqual(got_scores, fz._predict(want, x))
+
+
 class FinalTests(unittest.TestCase):
+    def test_fit_final_errors(self) -> None:
+        with self.assertRaises(ValueError):
+            gm.fit_final([])
+        rows = synth_rows(days=DAYS[:2])
+        for r in rows:
+            r["press"] = -1
+        with self.assertRaises(ValueError):
+            gm.fit_final(rows)
+
     def test_fit_final_uses_k4_only(self) -> None:
         rows = synth_rows(days=DAYS[:3])
         model = gm.fit_final(rows)
