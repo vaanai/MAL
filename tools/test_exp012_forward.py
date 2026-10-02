@@ -629,7 +629,7 @@ READ_END = "2026-10-05T08:00:00Z"  # read_end + 1 h = 09:00; the fixture walk ru
 FORBIDDEN = ("mean", "ci90", "_sol", "verdict", "promote", "flat", "press", "gross", "positive", "baseline")
 
 
-class ReadTests(Base):
+class ReadBase(Base):
     def score(self, walk: Path, art: Path, out: Path, to: str) -> None:
         rc, err = self.run_score(walk, art, out, "--to", to, "--read-end", READ_END)
         self.assertEqual(rc, 0, err)
@@ -641,6 +641,9 @@ class ReadTests(Base):
             rc = fw.main(argv)
         return rc, err.getvalue()
 
+
+
+class ReadTests(ReadBase):
     def test_defaults_are_the_amendment_1_window(self) -> None:
         self.assertEqual(fw.DEFAULT_CLEAN_CLOCK, "2026-10-06T00:00:00Z")
         self.assertEqual(fw.DEFAULT_READ_END, "2026-10-16T00:00:00Z")
@@ -786,6 +789,196 @@ class ContextTests(unittest.TestCase):
         gate = e11.compute_gate([r for r in rows if r["entered"]])
         self.assertEqual(rep["gate"]["promote"], gate["promote"])
         self.assertEqual(rep["flat_15"]["mean_sol"], gate["mean_sol"])
+
+
+class PinnedWindowTests(ReadBase):
+    def _argv(self, cmd: str, walk: Path, art: Path, out: Path, *extra: str) -> list[str]:
+        base = [cmd, "--walk-dir", str(walk), "--out-dir", str(out), "--final-ledger", str(out.parent / "ledger.jsonl")]
+        if cmd == "score":
+            base += ["--artifact-dir", str(art), "--freeze-commit", FREEZE_COMMIT, "--to", "2026-10-05T09"]
+        return base + list(extra)
+
+    def _main(self, argv: list[str]) -> tuple[int, str]:
+        err = io.StringIO()
+        with patched(), mock.patch("sys.stderr", err):
+            rc = fw.main(argv)
+        return rc, err.getvalue()
+
+    def test_overrides_are_refused_without_test_window(self) -> None:
+        walk, art, out = self.fresh()
+        for extra in (["--clean-clock", CLEAN_CLOCK], ["--read-end", READ_END], ["--read-end", "2026-10-15T00:00:00Z"]):
+            for cmd in ("score", "report"):
+                rc, err = self._main(self._argv(cmd, walk, art, out, *extra))
+                self.assertEqual(rc, 2, (cmd, extra, err))
+                self.assertIn("an override needs --test-window", err)
+        self.assertFalse((out / "rows.jsonl").exists())
+        fw.check_window(fw.parse_clock(fw.PINNED_CLEAN_CLOCK), fw.parse_clock(fw.PINNED_READ_END), False)
+        with self.assertRaises(fw.Refused):
+            fw.check_window(fw.parse_clock(fw.PINNED_CLEAN_CLOCK), fw.parse_clock("2026-10-15T00:00:00Z"), False)
+        with self.assertRaises(fw.Refused):  # the Python API enforces it too
+            fw.run_score(walk, out, art, fw.parse_clock(CLEAN_CLOCK), None, FREEZE_COMMIT)
+
+    def test_test_window_marks_runs_report_lock_and_banner(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        self.assertTrue(all(r["test_window"] is True for r in fw.score_runs(fw.read_rows(out / "runs.jsonl"))))
+        rc, err = self.report(walk, out)
+        self.assertEqual(rc, 0, err)
+        rep = json.loads((out / "report.json").read_text())
+        self.assertEqual((rep["mode"], rep["test_window"]), ("FINAL", True))
+        self.assertEqual(rep["window_note"], "TEST WINDOW, NOT THE PRE-REGISTERED READ")
+        self.assertTrue((out / "report.md").read_text().startswith("TEST WINDOW, NOT THE PRE-REGISTERED READ"))
+        self.assertIn("TEST WINDOW, NOT THE PRE-REGISTERED READ", err)
+        self.assertTrue(json.loads((out / "final_read.lock").read_text())["test_window"])
+        marks = [m for m in fw.read_rows(out / "runs.jsonl") if m.get("final")]
+        self.assertTrue(marks and marks[0]["test_window"] is True)
+        self.assertTrue(json.loads((out.parent / "ledger.jsonl").read_text().splitlines()[0])["test_window"])
+
+    def test_interim_under_a_test_window_is_marked_too(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T07")
+        self.assertEqual(self.report(walk, out)[0], 0)
+        rep = json.loads((out / "report.json").read_text())
+        self.assertEqual((rep["mode"], rep["test_window"]), ("INTERIM", True))
+        self.assertTrue((out / "report.md").read_text().startswith("TEST WINDOW"))
+
+    def test_report_refuses_runs_from_another_window(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        rc, err = self.report(walk, out, "--read-end", "2026-10-05T07:30:00Z")  # a truncated read end
+        self.assertEqual(rc, 2, err)
+        self.assertIn("different clean clock, read end or test_window flag", err)
+        self.assertFalse((out / "final_read.lock").exists())
+        self.assertEqual(self.report(walk, out, "--clean-clock", "2026-10-05T04:00:00Z")[0], 2)
+        runs = fw.read_rows(out / "runs.jsonl")
+        runs[0]["read_end"] = "2026-10-05T07:00:00Z"
+        (out / "runs.jsonl").write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in runs))
+        rc, err = self.report(walk, out)
+        self.assertEqual(rc, 2)
+        self.assertIn("different clean clock, read end", err)
+        runs[0]["read_end"] = READ_END
+        runs[0]["test_window"] = False  # a run without the flag mismatches a test-window report
+        (out / "runs.jsonl").write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in runs))
+        self.assertEqual(self.report(walk, out)[0], 2)
+
+    def test_score_refuses_to_mix_windows_in_one_out_dir(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T11", "--read-end", "2026-10-05T07:00:00Z")
+        self.assertEqual(rc, 2)
+        self.assertIn("different clean clock, read end or test_window flag", err)
+
+    def test_rows_outside_the_window_are_refused_at_report(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        rows = self.rows(out)
+        rows.append({**rows[0], "mint": "late", "mig_ms": fw.ms(fw.parse_clock(READ_END)) + 1000})
+        (out / "rows.jsonl").write_text("".join(fw._dump(r) + "\n" for r in rows))
+        runs = fw.read_rows(out / "runs.jsonl")
+        runs[-1]["rows_sha256"] = fw._sha256_file(out / "rows.jsonl")  # even with a consistent hash
+        (out / "runs.jsonl").write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in runs))
+        rc, err = self.report(walk, out)
+        self.assertEqual(rc, 2)
+        self.assertIn("outside [", err)
+        self.assertIn("mint late", err)
+
+    def test_rows_changed_outside_score_are_refused_at_report(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        rows = self.rows(out)
+        (out / "rows.jsonl").write_text("".join(fw._dump(r) + "\n" for r in rows[:-1]))  # one row dropped
+        rc, err = self.report(walk, out)
+        self.assertEqual(rc, 2)
+        self.assertIn("recorded by the last score run", err)
+        self.assertFalse((out / "final_read.lock").exists())
+
+    def test_conflict_exit_code_and_message_hold_no_values(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T07")
+        rows = self.rows(out)
+        rows[0]["flat"] += 1.0
+        rows[0]["press"] += 1.0
+        (out / "rows.jsonl").write_text("".join(fw._dump(r) + "\n" for r in rows))
+        stored = [str(rows[0]["flat"]), str(rows[0]["press"]), str(round(rows[0]["flat"] / 1e9, 4))]
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T11", "--read-end", READ_END)
+        self.assertEqual(rc, 4)
+        self.assertIn("differs in fields ['flat', 'press']", err)
+        for v in stored:
+            self.assertNotIn(v, err)
+        refused = err.split("REFUSED:")[1]
+        self.assertFalse(any(ch.isdigit() for ch in refused.replace(str(rows[0]["mig_ms"]), "").replace("mB2", "")), refused)
+
+    def test_deleting_the_lock_does_not_reopen_the_read(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        self.assertEqual(self.report(walk, out)[0], 0)
+        (out / "final_read.lock").unlink()
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T11", "--read-end", READ_END)
+        self.assertEqual(rc, 2)
+        self.assertIn("FINAL marker exists", err)
+        self.assertIn("is missing", err)
+        for extra in ((), ("--reprint",)):
+            rc, err = self.report(walk, out, *extra)
+            self.assertEqual(rc, 2, err)
+            self.assertIn("is missing", err)
+        self.assertFalse((out / "final_read.lock").exists())
+        runs = [r for r in fw.read_rows(out / "runs.jsonl") if not r.get("final")]  # strip the runs.jsonl markers
+        (out / "runs.jsonl").write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in runs))
+        rc, err = self.report(walk, out)  # the external ledger still remembers
+        self.assertEqual(rc, 2)
+        self.assertIn("is missing", err)
+        (out / "final_read.lock").write_text("{}\n")  # a lock with other bytes differs from the marker
+        rc, err = self.report(walk, out, "--reprint")
+        self.assertEqual(rc, 2)
+        self.assertIn("differs from the lock sha256", err)
+
+    def test_fresh_out_dir_refuses_when_the_ledger_has_a_pinned_final(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = Path(td) / "ledger.jsonl"
+            pinned = (fw.parse_clock(fw.PINNED_CLEAN_CLOCK), fw.parse_clock(fw.PINNED_READ_END))
+            fw.ledger_append(ledger, {"final": True, "clean_clock": fw.PINNED_CLEAN_CLOCK, "read_end": fw.PINNED_READ_END, "test_window": False, "out_dir": "/elsewhere/out", "rows_sha256": "r", "lock_sha256": "l"})
+            with self.assertRaises(fw.Refused) as cm:
+                fw.check_final_state(Path(td) / "fresh", ledger, *pinned, False)
+            self.assertIn("no second read", str(cm.exception))
+            fw.check_final_state(Path(td) / "fresh", ledger, pinned[0], pinned[1], True)  # a test window is not blocked by it
+            fw.ledger_append(ledger, {"final": True, "clean_clock": CLEAN_CLOCK, "read_end": READ_END, "test_window": True, "out_dir": "/elsewhere/t", "rows_sha256": "r", "lock_sha256": "l"})
+            fw.check_final_state(Path(td) / "fresh", ledger, fw.parse_clock(CLEAN_CLOCK), fw.parse_clock(READ_END), True)
+
+    def test_lock_is_durable_before_the_verdict_and_reprint_completes_the_markers(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        err = io.StringIO()
+        with mock.patch.object(fw, "ledger_append", side_effect=OSError("disk gone")), patched(), mock.patch("sys.stderr", err):
+            with self.assertRaises(OSError):
+                fw.run_report(out, walk, fw.parse_clock(CLEAN_CLOCK), fw.parse_clock(READ_END), None, False, True, out.parent / "ledger.jsonl")
+        self.assertTrue((out / "final_read.lock").is_file())  # the lock was written first
+        self.assertNotIn("VERDICT", err.getvalue())  # nothing about the result was printed
+        self.assertFalse((out / "report.json").exists())
+        self.assertEqual(self.report(walk, out)[0], 2)  # a plain re-run cannot take a second read
+        rc, err2 = self.report(walk, out, "--reprint")  # reprint finishes the job from the lock
+        self.assertEqual(rc, 0, err2)
+        self.assertTrue((out / "report.json").is_file())
+        self.assertEqual(sum(1 for m in fw.read_rows(out / "runs.jsonl") if m.get("final")), 1)
+        self.assertEqual(len((out.parent / "ledger.jsonl").read_text().splitlines()), 1)
+
+    def test_marker_carries_rows_and_lock_hashes(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        self.assertEqual(self.report(walk, out)[0], 0)
+        m = [x for x in fw.read_rows(out / "runs.jsonl") if x.get("final")][0]
+        self.assertEqual(m["rows_sha256"], fw._sha256_file(out / "rows.jsonl"))
+        self.assertEqual(m["lock_sha256"], fw._sha256_file(out / "final_read.lock"))
+        led = json.loads((out.parent / "ledger.jsonl").read_text().splitlines()[0])
+        self.assertEqual((led["rows_sha256"], led["lock_sha256"]), (m["rows_sha256"], m["lock_sha256"]))
+        self.assertEqual(fw.score_runs(fw.read_rows(out / "runs.jsonl"))[-1]["rows_sha256"], m["rows_sha256"])
+
+    def test_scratch_row_files_live_under_out_dir_and_hold_nets(self) -> None:
+        walk, art, out = self.fresh()
+        self.score(walk, art, out, "2026-10-05T09")
+        files = sorted((out / "scratch").glob("poolHOLDOUT12-w*.jsonl"))
+        self.assertTrue(files)
+        self.assertIn('"flat"', files[0].read_text())  # nets at rest, listed in the module docstring
+        self.assertIn("scratch/poolHOLDOUT12-w", fw.__doc__)
 
 
 class ReportTests(unittest.TestCase):
