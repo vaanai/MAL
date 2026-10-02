@@ -1,0 +1,16 @@
+{
+  "schema": "forward_spec_v1",
+  "experiment": "EXP-012",
+  "role": "primary",
+  "registration_order": 0,
+  "artifact_dir": "ARTIFACTS/exp012",
+  "frozen_manifest_md5": "a01f05dfb1e622f78b2bba55d174be09",
+  "model_file": "model.txt",
+  "threshold_file": "threshold.json",
+  "exit_spec_id": "tpsl_tp50_sl30",
+  "selection_band": null,
+  "reference_experiment": null,
+  "clean_clock": "2026-10-06T00:00:00Z",
+  "read_end": "2026-10-16T00:00:00Z",
+  "freeze_commit": "ea5ec374010378b14a5c19e81bf045679bde73b9"
+}

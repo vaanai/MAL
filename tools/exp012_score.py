@@ -574,8 +574,10 @@ def load_rows(
     pool_hours: Sequence[str] | None = None,
     worker_fn: Any = None,
     plan: Sequence[tuple[int, list[str], list[str]]] | None = None,
+    spec_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """`pool_hours` (default: the 144-hour block) and `worker_fn` (default
+    """`spec_id` (default: the read's tp50_sl30; DEC-017 secondaries pass their exit) picks which exit's rows are returned.
+    `pool_hours` (default: the 144-hour block) and `worker_fn` (default
     `_run_worker`) and `plan` (a precomputed chunk plan, default `chunk_plan(...)`) are keyword-only hooks for tools/exp012_forward.py, which feeds
     the same table build a different hour list. Defaults reproduce the read exactly."""
     pool_keys = BLOCK_HOURS if pool_hours is None else list(pool_hours)
@@ -595,7 +597,8 @@ def load_rows(
     if out_dir is not None:
         for p in paths:
             rows.extend(iter_rows_jsonl(p))
-    return [r for r in rows if r["spec"] == e11.TARGET_SPEC_ID]
+    want = e11.TARGET_SPEC_ID if spec_id is None else spec_id
+    return [r for r in rows if r["spec"] == want]
 
 
 # --- report ---------------------------------------------------------------------------
