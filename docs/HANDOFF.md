@@ -1,4 +1,4 @@
-# Manager handoff 2026-10-01 (Manager2 → next)
+# Manager handoff 2026-10-02 (Manager2 → manager on mal-research-0)
 
 Replace this page at the next handoff; don't append to it. Read it first, then [LAB_STATE.md](../LAB_STATE.md), [CONSTITUTION.md](../CONSTITUTION.md), [docs/HOSTS.md](HOSTS.md), [docs/HOLDOUT_LEDGER.md](HOLDOUT_LEDGER.md) and the B3 lab note [ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md](../ARTIFACTS/lab/exploration-entry-model-b3-2026-09-28.md).
 
@@ -29,48 +29,78 @@ The bar does not drop. Winner's curse is real (B3 was the best of many cells). T
 
 There is little slack. Every day of waiting on a key, a merge or a re-fetch comes straight out of it.
 
-## State at 2026-10-01 ~19:45Z (Manager2, handing off)
+## State at 2026-10-02 06:25Z (Manager2 → manager on mal-research-0)
 
-Read this section, then LAB_STATE.md, DEC-015, the EXP-012 file, and the memory notes `helius-plan-limits`, `long-jobs-via-miscusi` and `owner-wants-autonomy`.
+The manager moves to `mal-research-0`. Read this section, then LAB_STATE.md, DEC-015, the EXP-012 file, and these memory notes:
+- `helius-plan-limits`
+- `long-jobs-via-miscusi`
+- `owner-wants-autonomy`
+
+The memory dir is per host. Recreate the key facts on research-0 from this file if the notes aren't there.
 
 ### Headline
 
-**EXP-012 one-shot read: promotion-gate PASS under both fail models** (#208; `quant-proof` checked it). Block `[2026-09-03T12, 2026-09-09T12)` was read once: n = 451, flat 0.0349 SOL/trade (CI90 [0.0187, 0.0513]), pressure 0.0205 (CI90 [0.0110, 0.0299]), 6/7 days positive, ex-top-3 +14.04 / +8.22 SOL.
+**EXP-012 one-shot read: promotion-gate PASS under both fail models** (#208, checked by `quant-proof`). Block `[2026-09-03T12, 2026-09-09T12)` was read once:
+- n = 451
+- flat 0.0349 SOL/trade, CI90 [0.0187, 0.0513]
+- pressure 0.0205 SOL/trade, CI90 [0.0110, 0.0299]
+- 6/7 days positive
+- ex-top-3 +14.04 / +8.22 SOL
 
-It is a backward replay, **not money made**. Caveats (in the EXP-012 Result):
+This is a backward replay, **not money made**. Caveats, all in the EXP-012 Result:
 - The block is favourable: the unfiltered base trade is also positive.
-- The lift is mostly fill prediction (98.9% vs 28.0% fill), and among fills it is not significant.
+- The lift is mostly fill prediction (98.9% vs 28.0% fill); among fills it is not significant.
 - The unfiltered book made more total SOL.
 - Returns fade toward the latest day.
 
-Per EXP-012 §9, this earns a forward-paper book, started only after the 2026-10-05T05:00Z kill review, on `mal-fast-0` per DEC-015. Live needs a forward gate pass plus owner approval.
+Per EXP-012 §9 this earns a forward-paper book after the 2026-10-05T05:00Z kill review, on `mal-fast-0` per DEC-015. Live needs a forward gate pass plus owner approval.
 
-### Decisions today (and why)
+### Decisions (and why)
 
-- **EXP-012 re-froze EXP-011's recipe on clean data** rather than reusing the retired model (EXP-011 §8; threshold was calibrated on the dirty pool). Pre-registration #194, freeze #200 (job #23 at `ea5ec37`), pin #207, read job #32.
-- **DEC-015 (#202, #203, #204): new forward books run on `mal-fast-0`.**
-  - Why: paper should run where live will most likely run. Oracle's runner backlog (lag) breaches its 5 s cap; the cause is undiagnosed.
-  - The runner is a systemd service. This exception to "every long-running job is a MiScusi job" is owner-confirmed.
-  - EXP-012's book needs only the trade tape, observe creates and the model: no funding graph, no attention data.
-  - Preconditions: own memory slice `mal-forward.slice` (MemoryHigh 5G / MemoryMax 6G), tape coverage, md5 equivalence replay, lag probation (≤3 breaches/24h for 2 days, with books loaded but not counting).
-- **Helius:** Developer plan, **50 rps**, about 1 credit per getBlock (confirmed against the dashboard). All walkers share **about 40 rps** via 4 flock slots `/data/mal/locks/helius-{1..4}.lock` at `--rps 10` each. Owner budget is about 40M credits/month; the EXP-012 block cost 1.66M.
-- **August hours have fewer slots** (about 8,700 mid-Aug, about 9,850 late Aug vs about 11,400 in Sept). August walkers use `--min-slots-per-hour 8000`. Boundaries were verified against getBlockTime.
-- **Visibility:** every long job is a MiScusi job. Every result goes to the MiScusi notebook and to `data/console.json` (merge, then `git -C ~/MAL pull`), and result.v1 records go to `~/data/results/` (CLAUDE.md operating notes).
+- **EXP-012 re-froze EXP-011's recipe on clean data** rather than reusing the retired model. EXP-011 §8 retired it, and its threshold was calibrated on the dirty pool. Trail: pre-registration #194, freeze #200 (job #23 at `ea5ec37`), pin #207, read job #32, result #208.
+- **DEC-015 (#202–#204): new forward books run on `mal-fast-0`.**
+  - Why: paper should run where live will most likely run, and Oracle's runner backlog breaches its 5 s cap (cause undiagnosed).
+  - The runner is a systemd service: an owner-confirmed exception to "every long-running job is a MiScusi job".
+  - EXP-012's book needs only the trade tape, observe creates and the model.
+  - Preconditions: its own `mal-forward.slice` (5G/6G), tape coverage, md5 equivalence replay, lag probation.
+- **Helius:** Developer plan, **50 rps**, about 1 credit/getBlock (dashboard-confirmed). Walkers share **about 40 rps** via 4 flock slots `/data/mal/locks/helius-{1..4}.lock` at `--rps 10` each. Budget is about 40M credits/month.
+- **August hours have fewer slots** (about 8,700 / 9,850 vs 11,400 in Sept). August walkers use `--min-slots-per-hour 8000`, and their pre-read verify needs the same per-period bounds.
+- **Visibility:** every long job is a MiScusi job. Every result goes to the MiScusi notebook and `data/console.json` (merge, then `git -C ~/MAL pull` on mal-fast-0, where the Console reads it), and result.v1 records go to `~/data/results/` on mal-fast-0.
 
-### In flight (MiScusi session MALsession1, 8 job slots)
+### Still running: everything Manager2 started
 
-| What | Id | Notes |
-| --- | --- | --- |
-| Backup confirmation block `[08-28T12, 09-03T12)` | jobs #24, #25, #26 (`fresh-0828/w1..w3`) | 11/48 each at 19:39Z, ETA about 10:30Z 10-02. Ledger owner **reserved**. After it seals: `backfill_verify` + dedupe + manifest with `--min-slots-per-hour 8000` (August), as EXP-012 §4.1. Use it only for a new pre-registration. |
-| Exploration expansion `[08-14T12, 08-28T12)` | #27 (w1, 12/48), #28 (w2), #29 (w3), #33 (w4) | w2–w4 wait for a lock slot. **w5, w6, w7 are not queued**: #34 (w5) was cancelled to free a slot for #35. Queue w5–w7 the same way (gated, `--rps 10`, `--min-slots-per-hour 8000`, dirs `/data/mal/blocks/explore-0814/wN`, until 08-20T12 / 08-18T12 / 08-16T12) as slots free. ETA for the full 14 days is about late 10-03 or early 10-04. Then verify, dedupe, and a clean-view mirror (the hardlink trick, see below). |
-| Chain-truth walk 10-01 T17–T19 | job #35 (`/data/mal/blocks/truth-1001`) | Ops measurement for DEC-015 §2.2; ledger note #213. When it seals 2/2, run: `python3 -m tools.tape_coverage --start 2026-10-01T17 --end 2026-10-01T19 --chain-dir /data/mal/blocks/truth-1001 --chain-ssh mal-research-0 --margin-s 60 --json-out ARTIFACTS/lab/tape-coverage-chain-2026-10-01.json --md-out ARTIFACTS/lab/tape-coverage-chain-2026-10-01.md`. Quote **both** fast-vs-chain (the 2.2 verdict) and Oracle-vs-chain. A preliminary 6-min look (#212) suggested Oracle's tape may be dropping trades: fast saw 81,430 vs Oracle 51,129, and Oracle shows 11–12 reconnects/10 min. That is kill-review context. |
-| Fast trade tape trial | ubuntu user unit `mal-fast-trade-tape` on mal-fast-0, **started, not enabled**, drop-in `trial.conf` | Output `/var/lib/mal/sealed/fast-trades-trial`, 2-day retention (disk!). Stop it after the coverage comparison unless DEC-015 proceeds. Recorded in LAB_STATE (#211). |
-| EXP-012 walkers (user units `mal-walker-w1..w3` on research-0) | done | Finished. They can be disabled or removed. |
+MiScusi jobs (session MALsession1, all on mal-research-0, all gated walkers at `--rps 10`):
+
+| Job | Id | Range | Sealed at 06:23Z | Credits |
+| --- | --- | --- | --- | --- |
+| #24 | `j_E7dSR9LYxDoduw` | backup `fresh-0828/w1` `[09-01T12, 09-03T12)` | 39/48 | 457,807 |
+| #25 | `j_2LixVPrbGaWkqQ` | backup `fresh-0828/w2` `[08-30T12, 09-01T12)` | 38/48 | 445,361 |
+| #26 | `j_0rbscFxTzCBzcg` | backup `fresh-0828/w3` `[08-28T12, 08-30T12)` | 38/48 | 450,089 |
+| #27 | `j_H4GFQEl5oxYsmA` | expansion `explore-0814/w1` `[08-26T12, 08-28T12)` | 39/48 | 394,233 |
+| #28 | `j_bmj84Om3r7SA5w` | expansion w2 `[08-24T12, 08-26T12)` | waiting for a lock slot | 0 |
+| #29 | `j_aX7jwPae1-WZnw` | expansion w3 `[08-22T12, 08-24T12)` | waiting for a lock slot | 0 |
+| #33 | `j_bBRcAQDLslxOqQ` | expansion w4 `[08-20T12, 08-22T12)` | waiting for a lock slot | 0 |
+
+(#28/#29's progress text still says "waiting for EXP-012 walkers"; that stage has passed and they now wait on lock slots.) The backup and expansion-w1 walkers should finish around 10:00–11:00Z. Then w2–w4 take the slots.
+
+**Not queued yet:** expansion w5 `[08-18T12, 08-20T12)`, w6 `[08-16T12, 08-18T12)`, w7 `[08-14T12, 08-16T12)`. Queue them as MiScusi jobs with the same gated command (copy #33's), output `/data/mal/blocks/explore-0814/wN`. w5's dir holds a harmless early checkpoint.
+
+Outside MiScusi:
+- **Fast trade tape trial.** Ubuntu user unit `mal-fast-trade-tape` on **mal-fast-0**, started (not enabled) 2026-10-01T16:25Z, drop-in `trial.conf`, output `/var/lib/mal/sealed/fast-trades-trial` (2.2 GB at 06:23Z, 2-day retention; disk 46% used). Stop it once the coverage comparison is done, unless DEC-015 proceeds with it.
+- **`mal-status-research.timer`** on mal-fast-0 (claude user, every 5 min): status collection for research-0. It is meant to stay.
+- The EXP-012 walker units `mal-walker-w1..w3` on research-0 are **inactive** (finished). Remove them at leisure.
+
+**Finished, waiting for analysis:** job #35 `j_yUm7HdE50yxCOA`, the chain-truth walk `/data/mal/blocks/truth-1001` (2/2 sealed, 26,988 credits).
+
+### Housekeeping done at handoff
+
+- The tape-coverage worktree held a staged edit to `ARTIFACTS/lab/fast-tape-coverage-2026-10-01.md`. It was byte-identical to `1a57108`, the builder's pre-review text, and would have reverted the review fixes now on main (7afbc9a, via #212). It was dropped.
+- The `~/MAL` stash "wip-verify-backfill-fixes-tmp-407693" (`613c4fd`, on `claude/backfill-integrity`) is an earlier draft of #179 and is **superseded by main**. Every test class in it exists on main, and main has the later 10,500 minimum and a fuller heal message. Safe to drop; left for the owner.
 
 ### Next steps, in order
 
-1. When #35 seals: run the tape coverage command above, write the lab note, and update DEC-015 §2.2 with the verdict.
-2. Queue expansion w5–w7 walkers as slots free.
+1. **#35 has sealed:** run the tape coverage command from the 10-01 notes (`python3 -m tools.tape_coverage --start 2026-10-01T17 --end 2026-10-01T19 --chain-dir /data/mal/blocks/truth-1001 --chain-ssh mal-research-0 --margin-s 60 --json-out ARTIFACTS/lab/tape-coverage-chain-2026-10-01.json --md-out ARTIFACTS/lab/tape-coverage-chain-2026-10-01.md`; from research-0, drop `--chain-ssh` since the dir is local; the fast tape side is on mal-fast-0, so check how the tool reaches it). Quote both fast-vs-chain and Oracle-vs-chain, write the lab note, and update DEC-015 §2.2 with the verdict.
+2. Queue expansion w5–w7 walkers (see the table above) as slots free.
 3. DEC-015 remaining preconditions (all allowed before 10-05; **no forward book starts before 2026-10-05T05:00Z**):
    - observe unit on fast-0 (creates);
    - md5 equivalence replay of the runner (MiScusi job on research-0);
