@@ -1,0 +1,310 @@
+{
+  "schema": "exp013_screens_v1",
+  "note": "DEC-017 section 5 derivation screens. Descriptive, exploration-pool only; not a promotion test.",
+  "bootstrap": {
+    "draws": 1000,
+    "seed": 1,
+    "pctile": 5
+  },
+  "period_transfer": {
+    "august_to_september": {
+      "status": "ok",
+      "train_days": [
+        "2026-08-26",
+        "2026-08-27",
+        "2026-08-28"
+      ],
+      "test_days": [
+        "2026-09-19",
+        "2026-09-20",
+        "2026-09-21",
+        "2026-09-22",
+        "2026-09-23",
+        "2026-09-24",
+        "2026-09-25",
+        "2026-09-26",
+        "2026-09-27"
+      ],
+      "train_threshold": 0.7865291933881821,
+      "train_n_oof": 2500,
+      "train_selected_fraction_at_threshold": 0.1004,
+      "test": {
+        "n": 8801,
+        "n_selected": 1026,
+        "selected_fraction": 0.1165776616293603,
+        "n_days_selected": 9,
+        "flat": {
+          "mean_sol": 0.01912911352631579,
+          "mean_ci90_sol": [
+            0.009049839537816766,
+            0.02888099097529239
+          ],
+          "total_sol": 19.626470478,
+          "ex_top3_sol": 17.924017222
+        },
+        "press": {
+          "mean_sol": 0.011649787141325535,
+          "mean_ci90_sol": [
+            0.005106513880068227,
+            0.01808047988625731
+          ],
+          "total_sol": 11.952681607,
+          "ex_top3_sol": 10.681793256
+        }
+      }
+    },
+    "september_to_august": {
+      "status": "ok",
+      "train_days": [
+        "2026-09-19",
+        "2026-09-20",
+        "2026-09-21",
+        "2026-09-22",
+        "2026-09-23",
+        "2026-09-24",
+        "2026-09-25",
+        "2026-09-26",
+        "2026-09-27"
+      ],
+      "test_days": [
+        "2026-08-26",
+        "2026-08-27",
+        "2026-08-28"
+      ],
+      "train_threshold": 0.8030766588450794,
+      "train_n_oof": 8801,
+      "train_selected_fraction_at_threshold": 0.10010226110669242,
+      "test": {
+        "n": 2500,
+        "n_selected": 257,
+        "selected_fraction": 0.1028,
+        "n_days_selected": 3,
+        "flat": {
+          "mean_sol": 0.013220591828793773,
+          "mean_ci90_sol": [
+            -0.00950424201867704,
+            0.03481799266867703
+          ],
+          "total_sol": 3.3976921,
+          "ex_top3_sol": 1.871066229
+        },
+        "press": {
+          "mean_sol": 0.01280290380544747,
+          "mean_ci90_sol": [
+            -0.0029332547947470817,
+            0.02765871073774319
+          ],
+          "total_sol": 3.290346278,
+          "ex_top3_sol": 2.032265988
+        }
+      }
+    }
+  },
+  "source_screens": {
+    "september_only": {
+      "status": "ok",
+      "days": [
+        "2026-09-19",
+        "2026-09-20",
+        "2026-09-21",
+        "2026-09-22",
+        "2026-09-23",
+        "2026-09-24",
+        "2026-09-25",
+        "2026-09-26",
+        "2026-09-27"
+      ],
+      "n_folds": 9,
+      "threshold": 0.8030766588450794,
+      "cohort": {
+        "n": 8801,
+        "n_selected": 881,
+        "selected_fraction": 0.10010226110669242,
+        "n_days_selected": 9,
+        "flat": {
+          "mean_sol": 0.037073110421112374,
+          "mean_ci90_sol": [
+            0.025770965819125996,
+            0.048448382627695796
+          ],
+          "total_sol": 32.661410281,
+          "ex_top3_sol": 30.690479293
+        },
+        "press": {
+          "mean_sol": 0.023152055834279227,
+          "mean_ci90_sol": [
+            0.015433494874971624,
+            0.030884691960272416
+          ],
+          "total_sol": 20.39696119,
+          "ex_top3_sol": 19.039218176
+        }
+      }
+    },
+    "fast_only": {
+      "status": "ok",
+      "days": [
+        "2026-09-19",
+        "2026-09-20",
+        "2026-09-21"
+      ],
+      "n_folds": 3,
+      "threshold": 0.8082638524050582,
+      "cohort": {
+        "n": 3092,
+        "n_selected": 310,
+        "selected_fraction": 0.10025873221216042,
+        "n_days_selected": 3,
+        "flat": {
+          "mean_sol": 0.0024201996774193546,
+          "mean_ci90_sol": [
+            -0.018842185278870965,
+            0.022375582840645156
+          ],
+          "total_sol": 0.7502619,
+          "ex_top3_sol": -0.92803159
+        },
+        "press": {
+          "mean_sol": 0.0005175539032258065,
+          "mean_ci90_sol": [
+            -0.013724128227903226,
+            0.01368788575435482
+          ],
+          "total_sol": 0.16044171,
+          "ex_top3_sol": -1.010283205
+        }
+      }
+    },
+    "oracle_only": {
+      "status": "ok",
+      "days": [
+        "2026-09-22",
+        "2026-09-23",
+        "2026-09-24",
+        "2026-09-25",
+        "2026-09-26",
+        "2026-09-27"
+      ],
+      "n_folds": 6,
+      "threshold": 0.7982146710275277,
+      "cohort": {
+        "n": 5709,
+        "n_selected": 572,
+        "selected_fraction": 0.1001926782273603,
+        "n_days_selected": 6,
+        "flat": {
+          "mean_sol": 0.03602964458041958,
+          "mean_ci90_sol": [
+            0.02328932782910839,
+            0.049019840463374126
+          ],
+          "total_sol": 20.6089567,
+          "ex_top3_sol": 18.638025712
+        },
+        "press": {
+          "mean_sol": 0.021345547110139862,
+          "mean_ci90_sol": [
+            0.012428094249125873,
+            0.030083978285314686
+          ],
+          "total_sol": 12.209652947,
+          "ex_top3_sol": 10.904971336
+        }
+      }
+    },
+    "getblock_only": {
+      "status": "ok",
+      "days": [
+        "2026-08-26",
+        "2026-08-27",
+        "2026-08-28"
+      ],
+      "n_folds": 3,
+      "threshold": 0.7865291933881821,
+      "cohort": {
+        "n": 2500,
+        "n_selected": 251,
+        "selected_fraction": 0.1004,
+        "n_days_selected": 3,
+        "flat": {
+          "mean_sol": 0.024962182366533865,
+          "mean_ci90_sol": [
+            0.0048917650488047824,
+            0.04382251250796813
+          ],
+          "total_sol": 6.265507774,
+          "ex_top3_sol": 5.054053223
+        },
+        "press": {
+          "mean_sol": 0.016499485482071714,
+          "mean_ci90_sol": [
+            0.001776744967131474,
+            0.030349719621115535
+          ],
+          "total_sol": 4.141370856,
+          "ex_top3_sol": 3.173204524
+        }
+      }
+    },
+    "note": "fast = pool A (fast listener); oracle = pools C + B; getblock = pool X (expansion views). DEC-017 section 5 names the September-only and fast-only screens."
+  },
+  "overlap_with_exp012": {
+    "exp012_dir_files_sha256": {
+      "model.txt": "e4dc42e584f08e31ded1b61e8dc4d0883e1cc8cf87f50d423b4605c654ae2185",
+      "threshold.json": "3c9fb657eb704bc43bed83b9f5edd6dc522274d0bc4519f5c6e9fb2df5fb17bf",
+      "features.json": "da51ffec5ee02b8be083d201aad91bbf180f9603019a0c3ea0fb87bd018e335d",
+      "oof_scores.json": "e9b6e90f147bc39a2b821750816e9363b9a550cefc6bb6841e2203950cd21d47"
+    },
+    "exp012_threshold": 0.8030766588450794,
+    "candidate_threshold": 0.7968699332418617,
+    "all": {
+      "scope": "all pool days",
+      "n_scored_by_both": 11301,
+      "n_candidate_selected": 1131,
+      "n_exp012_selected": 1138,
+      "n_both": 840,
+      "share_of_candidate_also_in_exp012": 0.7427055702917772,
+      "share_of_exp012_also_in_candidate": 0.7381370826010545,
+      "jaccard": 0.5878236529041287,
+      "n_candidate_selected_without_exp012_score": 0
+    },
+    "by_period": {
+      "august": {
+        "scope": "august",
+        "n_scored_by_both": 2500,
+        "n_candidate_selected": 271,
+        "n_exp012_selected": 257,
+        "n_both": 186,
+        "share_of_candidate_also_in_exp012": 0.6863468634686347,
+        "share_of_exp012_also_in_candidate": 0.7237354085603113,
+        "jaccard": 0.543859649122807,
+        "n_candidate_selected_without_exp012_score": 0
+      },
+      "september": {
+        "scope": "september",
+        "n_scored_by_both": 8801,
+        "n_candidate_selected": 860,
+        "n_exp012_selected": 881,
+        "n_both": 654,
+        "share_of_candidate_also_in_exp012": 0.7604651162790698,
+        "share_of_exp012_also_in_candidate": 0.7423382519863791,
+        "jaccard": 0.6016559337626495,
+        "n_candidate_selected_without_exp012_score": 0
+      }
+    },
+    "exp012_score_source": {
+      "oof_days": [
+        "2026-09-19",
+        "2026-09-20",
+        "2026-09-21",
+        "2026-09-22",
+        "2026-09-23",
+        "2026-09-24",
+        "2026-09-25",
+        "2026-09-26",
+        "2026-09-27"
+      ],
+      "note": "OOF scores on EXP-012's own 9 days, frozen-model scores on every other day"
+    }
+  }
+}
