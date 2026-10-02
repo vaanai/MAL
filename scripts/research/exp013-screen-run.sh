@@ -46,7 +46,7 @@ RC=$?
 mapfile -t EXTRA < "${VIEWS%.json}.args.txt"
 
 echo "== build table"
-nice -n 19 "$PY" -m tools.exp013_grad_table --verify-view --run-id "$RUN_ID" --max-workers 2 \
+nice -n 19 "$PY" -m tools.exp013_grad_table --verify-view --run-id "$RUN_ID" --max-workers 2 --allow-gap \
   --fast-dir "$FAST" --oracle-insample-dir "$INS" --oracle-live-dir "$LIVE" \
   "${EXTRA[@]}"
 RC=$?

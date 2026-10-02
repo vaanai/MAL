@@ -24,7 +24,7 @@ from typing import Any, Callable, Sequence
 import tools.exp011_freeze as fz
 import tools.exp013_grad_table as gtab
 from tools.exp013_grad_screen import VIEW_CUTOFF, _utc_now
-from tools.exp013_pool import load_extra_views
+from tools.exp013_pool import load_extra_views, union_gaps
 
 _FMT = "%Y-%m-%dT%H:%M:%SZ"
 POOL_ARG = {"A": "fast_dir", "C": "oracle_insample_dir", "B": "oracle_live_dir"}
@@ -59,7 +59,7 @@ def pin_views(
             excluded.append({"root": str(c), "reason": f"VIEW.sha256 mtime {mt.strftime(_FMT)} is after {cutoff.strftime(_FMT)}"})
             continue
         included.append(Path(c))
-    extra = load_extra_views(included, fz.DAYS_ALL) if included else []
+    extra = load_extra_views(included, fz.DAYS_ALL, allow_gap=True) if included else []
     runs = gtab.pool_runs(extra)
     pools: dict[str, Any] = {}
     for tag in ("A", "B", "C"):
@@ -78,7 +78,7 @@ def pin_views(
             "root": d["root"], "hours": d["hours"], "view_sha256_file_sha256": d["view_sha256_file_sha256"],
             "view_sha256_mtime_utc": _mtime_utc(v.root / "VIEW.sha256", mtime_fn).strftime(_FMT),
         })
-    manifest = {"pinned_utc": now.strftime(_FMT), "cutoff_utc": cutoff.strftime(_FMT), "pools": pools, "extra_views": extra_views, "excluded": excluded}
+    manifest = {"pinned_utc": now.strftime(_FMT), "cutoff_utc": cutoff.strftime(_FMT), "pools": pools, "extra_views": extra_views, "excluded": excluded, "gaps": union_gaps(extra)}
     return manifest, [a for v in extra for a in ("--extra-fast-view", str(v.root))]
 
 

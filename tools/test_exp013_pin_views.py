@@ -116,6 +116,25 @@ class PinViewsTests(unittest.TestCase):
         self.assertEqual([strip(v) for v in m["extra_views"]], [strip(v) for v in exp["extra_views"]])
         gs.assert_view_manifest(m, tman, check_files=True, mtime_fn=self._mtime)
 
+    def test_gap_between_included_views_pins_and_matches_the_table(self) -> None:
+        w1 = _view(self.td / "xw1", "2026-08-22T00", "2026-08-22T05")
+        w3 = _view(self.td / "xw3", "2026-08-22T12", "2026-08-22T17")
+        w4 = _view(self.td / "xw4", "2026-08-22T18", "2026-08-22T23")
+        m, args = self._pin([w1, w3, w4])
+        self.assertEqual(m["gaps"], [{"from": "2026-08-22T06", "to": "2026-08-22T11", "n_hours": 6}])
+        argv = argv_for(self.td, "run-gap", *args, "--allow-gap")
+        with mock.patch.object(fz, "verify_view_sha256", side_effect=_verify), mock.patch.object(fz, "check_view_pin", return_value="x"):
+            with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+                self.assertEqual(gtab.main(argv), 0)
+        tman = json.loads((self.td / "out" / "run-gap" / "manifest.json").read_text())
+        exp = gs.expected_views(tman)
+
+        def key(v: dict) -> tuple:
+            return (v["root"], v["hours"], v["view_sha256_file_sha256"])
+
+        self.assertEqual([key(v) for v in m["extra_views"]], [key(v) for v in exp["extra_views"]])
+        gs.assert_view_manifest(m, tman, check_files=True, mtime_fn=self._mtime)
+
 
 class ScriptTests(unittest.TestCase):
     SCRIPT = REPO / "scripts" / "research" / "exp013-screen-run.sh"
