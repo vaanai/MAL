@@ -5,6 +5,16 @@
     python3 -m tools.exp012_forward score  --walk-dir D --out-dir OUT [--clean-clock ISO] [--to HOUR] [--pool-start HOUR]
     python3 -m tools.exp012_forward report --out-dir OUT --walk-dir D [--clean-clock ISO] [--read-end ISO] [--reprint]
 
+DEC-017 (secondary family): `--experiment EXP-###` (default EXP-012) picks a committed
+`ARTIFACTS/<exp>/forward_spec.json` (see tools/forward_family.py). EXP-012's spec equals the constants
+below and its outputs are byte-identical with or without it. A secondary has its own out-dir, lock and
+external ledger (/data/mal/forward-family/<exp>/FINAL_READS.jsonl), the DEC-017 window, and its FINAL
+refuses unless EXP-012's FINAL is in EXP-012's ledger (`--primary-ledger`). If EXP-012 FAILed it reports
+"not tested (gate closed)" with no verdict; if PASS it computes the full-book gate and the tested quantity
+(exit: paired increment vs the reference; band: the band's own gate; refit: the full gate) with one-sided
+bootstrap p-values (10,000 draws, seed 1, both fail models). `family_holm` applies Holm across every
+secondary in ARTIFACTS/forward-family/registry.json (fixed k). INTERIM hides P&L for every experiment.
+
 This is NOT a one-shot read and writes no HOLDOUT lock. It runs the code path
 `tools/exp012_score.py` used for the read, by import and not by copy:
   - the table build is `exp012_score.load_rows` (same `chunk_plan`, same
