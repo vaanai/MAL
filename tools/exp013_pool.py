@@ -53,6 +53,8 @@ FORBIDDEN_REALPATH_PREFIXES: tuple[str, ...] = (
     "/data/mal/clean-view/fresh-0903",
     "/data/mal/clean-view/forward-1002",
     "/data/mal/exp012",
+    "/data/mal/exp012-forward",
+    "/data/mal/forward-family",
     os.path.realpath(str(Path(__file__).resolve().parents[1] / "ARTIFACTS" / "exp012" / "read")),  # EXP-012's read/ dir (realpath'd)
     "/var/lib/mal/backfill-fast-b",  # EXP-011 block (spent) walkers
     "/var/lib/mal/backfill-fast-c",
