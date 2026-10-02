@@ -14,6 +14,7 @@ import io
 import json
 import random
 import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import ExitStack, contextmanager
@@ -318,6 +319,143 @@ class CleanClockTests(Base):
             rc = fw.main(["score", "--walk-dir", str(walk), "--artifact-dir", str(art), "--out-dir", str(out), "--clean-clock", "2026-10-05T06:00:00Z", "--freeze-commit", FREEZE_COMMIT, "--to", "2026-10-05T09"])
         self.assertEqual(rc, 0, err.getvalue())
         self.assertEqual({r["mint"] for r in self.rows(out)}, {"mD", "mE"})
+
+
+class PoolStartTests(Base):
+    def test_default_is_48h_back_and_overridable(self) -> None:
+        with patched():
+            self.assertEqual(fw.hour_key(fw.default_pool_start(fw.parse_clock(CLEAN_CLOCK))), START)
+        with mock.patch.object(s12, "BUFFER_HOURS", 24):
+            self.assertEqual(fw.hour_key(fw.default_pool_start(fw.parse_clock(CLEAN_CLOCK))), "2026-10-03T05")
+        walk, art, out = self.fresh()
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09", "--pool-start", "2026-10-05T03")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(fw.read_rows(out / "runs.jsonl")[0]["pool_from"], "2026-10-05T03")
+        walk, art, out2 = self.fresh()
+        rc, err = self.run_score(walk, art, out2, "--to", "2026-10-05T09", "--pool-start", "2026-10-05T00")
+        self.assertEqual(rc, 2, err)
+        self.assertIn("hour 2026-10-05T00 is not sealed", err)
+
+    def test_the_pool_start_hour_must_be_verified(self) -> None:
+        walk, art, out = self.fresh()
+        lines = [x for x in (walk / "verify.jsonl").read_text().splitlines() if f'"{START}"' not in x]
+        (walk / "verify.jsonl").write_text("\n".join(lines) + "\n")
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 2)
+        self.assertIn(f"hour {START} has no OK line", err)
+
+
+class StableChunkTests(Base):
+    home = 2
+
+    def test_anchored_plan_does_not_depend_on_the_pool_end(self) -> None:
+        short = fw.anchored_plan(ALL_HOURS[:7], 2, 2)
+        long = fw.anchored_plan(ALL_HOURS, 2, 2)
+        self.assertEqual([c[1] for c in long][:3], [c[1] for c in short][:3])  # full chunks identical
+        self.assertEqual(short[-1][1], [ALL_HOURS[6]])  # only the last chunk is partial
+        self.assertEqual(long[0], (0, ALL_HOURS[0:2], ALL_HOURS[2:4]))
+        from tools.exploration_exits import chunk_plan
+
+        blk = s12.BLOCK_HOURS  # the read's own plan on its 144 hours is the same plan
+        self.assertEqual(chunk_plan(blk, 2, 24, 12), fw.anchored_plan(blk, 12, 24))
+
+    def test_rows_of_complete_chunks_are_identical_whatever_to_is(self) -> None:
+        t1, t2 = "2026-10-05T09", "2026-10-05T11"
+        complete = set()
+        for _i, home, buf in fw.anchored_plan(e11._hours_range(START, t1), 2, 2):
+            if len(buf) == 2:
+                complete.update(home)
+        created_in = {name: h for h, ms_ in MINTS.items() for name, _o, _l in ms_}
+        stable = {m for m, h in created_in.items() if h in complete}
+        self.assertTrue({"mB2", "mC", "mD"} <= stable and "mE" not in stable)
+
+        walk, art, out_seq = self.fresh()
+        self.assertEqual(self.run_score(walk, art, out_seq, "--to", t1)[0], 0)
+        b1 = (out_seq / "rows.jsonl").read_bytes()
+        rc, err = self.run_score(walk, art, out_seq, "--to", t2)  # same out dir: a changed value would refuse
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("would change", err)
+        self.assertTrue((out_seq / "rows.jsonl").read_bytes().startswith(b1))
+
+        out_fresh = out_seq.parent / "out_fresh"  # T2 scored from scratch, no stored rows
+        self.assertEqual(self.run_score(walk, art, out_fresh, "--to", t2)[0], 0)
+        r1 = {r["mint"]: fw._dump(r) for r in fw.read_rows(out_seq / "rows.jsonl")[: len(b1.splitlines())]}
+        r2 = {r["mint"]: fw._dump(r) for r in fw.read_rows(out_fresh / "rows.jsonl")}
+        self.assertTrue(set(r1) & stable)
+        for m in r1:
+            self.assertEqual(r1[m], r2[m], m)
+
+
+class VerifyTests(Base):
+    def _run(self, walk: Path, hour: str) -> tuple[int, str]:
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            rc = fw.main(["verify", "--walk-dir", str(walk), "--hour", hour])
+        return rc, err.getvalue()
+
+    def test_clean_hour_writes_the_line_score_reads_and_is_idempotent(self) -> None:
+        walk, art, out = self.fresh()
+        (walk / "verify.jsonl").unlink()
+        h = "2026-10-05T05"
+        rc, err = self._run(walk, h)
+        self.assertEqual(rc, 0, err)
+        lines = (walk / "verify.jsonl").read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        rec = json.loads(lines[0])
+        self.assertEqual((rec["hour"], rec["issues"]), (h, []))
+        self.assertEqual(rec["content"]["trades"]["duplicates"], 0)
+        self.assertEqual(rec["sha256"]["trades"], fw._sha256_file(walk / "trades" / f"trades-{h}.jsonl.zst"))
+        self.assertEqual(rec["sha256"]["creates"], fw._sha256_file(walk / "creates" / f"creates-{h}.jsonl.zst"))
+        self.assertIn(h, fw.verified_hours(walk))
+        before = (walk / "verify.jsonl").read_bytes()
+        rc, err = self._run(walk, h)
+        self.assertEqual(rc, 0)
+        self.assertIn("identical line already present", err)
+        self.assertEqual((walk / "verify.jsonl").read_bytes(), before)
+
+    def test_every_hour_verified_by_the_step_scores(self) -> None:
+        walk, art, out = self.fresh()
+        (walk / "verify.jsonl").unlink()
+        for h in ALL_HOURS:
+            self.assertEqual(self._run(walk, h)[0], 0)
+        self.assertEqual(self.run_score(walk, art, out, "--to", "2026-10-05T09")[0], 0)
+
+    def test_duplicates_are_flagged_and_score_refuses(self) -> None:
+        walk, art, out = self.fresh()
+        h = "2026-10-05T05"
+        p = walk / "trades" / f"trades-{h}.jsonl.zst"
+        rows = [json.loads(x) for x in subprocess.run(["zstdcat", str(p)], capture_output=True, text=True).stdout.splitlines()]
+        write_zst_jsonl(p, rows + rows[:2])
+        rc, err = self._run(walk, h)
+        self.assertEqual(rc, 1, err)
+        last = json.loads((walk / "verify.jsonl").read_text().splitlines()[-1])
+        self.assertEqual(last["content"]["trades"]["duplicates"], 2)
+        self.assertTrue(last["issues"])
+        self.assertNotIn(h, fw.verified_hours(walk))  # the last line wins
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 2)
+        self.assertIn(f"hour {h} has no OK line", err)
+
+    def test_missing_trades_file_is_flagged(self) -> None:
+        walk, art, out = self.fresh()
+        h = "2026-10-05T06"
+        (walk / "trades" / f"trades-{h}.jsonl.zst").unlink()
+        rc, err = self._run(walk, h)
+        self.assertEqual(rc, 1, err)
+        last = json.loads((walk / "verify.jsonl").read_text().splitlines()[-1])
+        self.assertTrue(any("no_trades_file" in i for i in last["issues"]), last["issues"])
+        self.assertNotIn(h, fw.verified_hours(walk))
+
+    def test_unsealed_file_is_flagged(self) -> None:
+        walk, art, out = self.fresh()
+        h = "2026-10-05T06"
+        p = walk / "trades" / f"trades-{h}.jsonl.zst"
+        plain = subprocess.run(["zstdcat", str(p)], capture_output=True, check=True).stdout
+        p.unlink()
+        (walk / "trades" / f"trades-{h}.jsonl").write_bytes(plain)
+        rc, err = self._run(walk, h)
+        self.assertEqual(rc, 1, err)
+        self.assertIn("not sealed", err)
 
 
 class ReportTests(unittest.TestCase):
