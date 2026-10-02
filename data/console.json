@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-01T16:40:00Z",
+  "updated_utc": "2026-10-02T09:10:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -15,7 +15,7 @@
       "id": "exp012-forward",
       "kind": "other",
       "title": "EXP-012 forward-paper book on mal-fast-0",
-      "detail": "Starts after the 10-05 kill review once the DEC-015 preconditions are met: fast trade tape, observe unit, equivalence replay, memory slice, lag probation. It must clear the gate on its own forward trades; then owner approval for live.",
+      "detail": "Starts after the 10-05 kill review once the DEC-015 preconditions are met. The fast trade tape failed its coverage check (84.759% of chain trades, bar 95%), so the forward data source is being re-decided. The book must clear the gate on its own forward trades; then owner approval for live.",
       "atUtc": "2026-10-05T05:00:00Z"
     },
     {
@@ -122,6 +122,12 @@
     }
   ],
   "for_you": [
+    {
+      "id": "fy-20261002-0910",
+      "from": "claude",
+      "text": "The free public trade feed misses trades. Checked against the chain record for 2 hours, the fast server's tape caught 84.759% of trades and the Oracle tape caught 66.241%, so the fast tape fails its 95% bar. In that window the 9 Oracle paper books saw only about two-thirds of the trades. The EXP-012 test data comes from full block downloads, so that result is unaffected. A second check in a calmer period is running now. If the free feed still falls short, the fix is to follow new blocks directly (about 9.7M Helius credits/month, inside budget).",
+      "atUtc": "2026-10-02T09:10:00Z"
+    },
     {
       "id": "fy-20261001-1640",
       "from": "claude",
@@ -252,6 +258,20 @@
       "kind": "finding",
       "text": "EXP-012 one-shot read: promotion gate PASS under both fail models (replay). n=451; flat 0.0349 SOL/trade CI90 [0.0187, 0.0513]; pressure 0.0205 [0.0110, 0.0299]; 6/7 days; ex-top-3 +14.04 / +8.22 SOL. quant-proof confirmed. Caveats in the EXP-012 Result.",
       "atUtc": "2026-10-01T16:40:00Z"
+    },
+    {
+      "id": "s-20261002-0850",
+      "from": "claude",
+      "kind": "status",
+      "text": "New manager on mal-research-0 took over. Expansion walkers w5-w7 queued (jobs #37-#39).",
+      "atUtc": "2026-10-02T08:50:00Z"
+    },
+    {
+      "id": "s-20261002-0910",
+      "from": "claude",
+      "kind": "result",
+      "text": "Tape coverage against chain truth, 10-01T17-19: fast tape 84.759%, Oracle tape 66.241% of chain trades. DEC-015 §2.2 FAIL (bar 95%). Re-check in a quiet stretch (job #44) is running.",
+      "atUtc": "2026-10-02T09:10:00Z"
     }
   ]
 }

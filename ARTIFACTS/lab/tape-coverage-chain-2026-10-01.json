@@ -1,0 +1,957 @@
+{
+  "bar": 0.95,
+  "chain_truth": {
+    "bar": 0.95,
+    "bar_verdict": "FAIL",
+    "chain": {
+      "scan_footer": {
+        "bad_lines": 0,
+        "files": [
+          "trades-2026-10-01T17.jsonl.zst",
+          "trades-2026-10-01T18.jsonl.zst"
+        ],
+        "missing": [
+          "2026-10-01T16",
+          "2026-10-01T19"
+        ],
+        "rows_out": 2193393,
+        "rows_scanned": 2193393,
+        "schema_overflow": 0,
+        "time_field": "block_time"
+      },
+      "venue_names": [
+        "pump_bonding",
+        "pumpswap"
+      ]
+    },
+    "complete_hours": 2,
+    "evidence_sufficient": true,
+    "fast_vs_chain": {
+      "bar": 0.95,
+      "complete_hours": 2,
+      "duplicates_dropped": {
+        "fast_identity": 9804,
+        "fast_signature": 86717,
+        "oracle_identity": 0,
+        "oracle_signature": 73844
+      },
+      "evidence_sufficient": true,
+      "fast_venues": {
+        "bonding": {
+          "fast_only": 8969,
+          "fast_rows": 354843,
+          "matched": 345874
+        },
+        "pumpswap": {
+          "fast_only": 6380,
+          "fast_rows": 1518258,
+          "matched": 1511878
+        }
+      },
+      "hours": [
+        {
+          "coverage": 0.8241595193805281,
+          "fast_only": 7782,
+          "fast_rows": 868053,
+          "full_hour": true,
+          "hour": "2026-10-01T17",
+          "lag_ms_fast_minus_oracle": null,
+          "matched": 860411,
+          "meets_bar": false,
+          "oracle_only": 183575,
+          "oracle_rows": 1043986,
+          "reverse_coverage": 0.9910351096073626,
+          "reverse_matched": 860271,
+          "slice_end": "2026-10-01T18:00:00.000Z",
+          "slice_start": "2026-10-01T17:00:00.000Z"
+        },
+        {
+          "coverage": 0.8688767338288352,
+          "fast_only": 7567,
+          "fast_rows": 1005048,
+          "full_hour": true,
+          "hour": "2026-10-01T18",
+          "lag_ms_fast_minus_oracle": null,
+          "matched": 998693,
+          "meets_bar": false,
+          "oracle_only": 150714,
+          "oracle_rows": 1149407,
+          "reverse_coverage": 0.9924710063598953,
+          "reverse_matched": 997481,
+          "slice_end": "2026-10-01T19:00:00.000Z",
+          "slice_start": "2026-10-01T18:00:00.000Z"
+        }
+      ],
+      "hours_below_bar": [
+        "2026-10-01T17",
+        "2026-10-01T18"
+      ],
+      "matched_venue_class_disagreements": 0,
+      "pooled": {
+        "coverage": 0.8475927478568592,
+        "fast_only": 15349,
+        "fast_rows": 1873101,
+        "lag_ms_fast_minus_oracle": null,
+        "matched": 1859104,
+        "oracle_only": 334289,
+        "oracle_rows": 2193393,
+        "reverse_coverage": 0.9918055673452739,
+        "reverse_matched": 1857752,
+        "signature_level": {
+          "coverage": 0.8466357701567645,
+          "fast_only": 4378,
+          "fast_rows": 1797561,
+          "matched": 1794486,
+          "oracle_only": 325063,
+          "oracle_rows": 2119549,
+          "reverse_coverage": 0.9975644776449867,
+          "reverse_matched": 1793183
+        }
+      },
+      "scan_footers": {
+        "fast": {
+          "bad_lines": 0,
+          "files": [
+            "trades-2026-10-01T16.jsonl.zst",
+            "trades-2026-10-01T17.jsonl.zst",
+            "trades-2026-10-01T18.jsonl.zst",
+            "trades-2026-10-01T19.jsonl.zst"
+          ],
+          "missing": [],
+          "rows_out": 1916177,
+          "rows_scanned": 3475987,
+          "schema_overflow": 0,
+          "time_field": "t_recv_ms"
+        },
+        "oracle": {
+          "bad_lines": 0,
+          "files": [
+            "trades-2026-10-01T17.jsonl.zst",
+            "trades-2026-10-01T18.jsonl.zst"
+          ],
+          "missing": [
+            "2026-10-01T16",
+            "2026-10-01T19"
+          ],
+          "rows_out": 2193393,
+          "rows_scanned": 2193393,
+          "schema_overflow": 0,
+          "time_field": "block_time"
+        }
+      },
+      "schema_pairs_on_matched_rows": [],
+      "venue_names": {
+        "fast": [
+          "pumpswap",
+          "pump_bonding"
+        ],
+        "oracle": [
+          "pump_bonding",
+          "pumpswap"
+        ]
+      },
+      "venues": {
+        "bonding": {
+          "coverage": 0.8302065117528672,
+          "lag_ms_fast_minus_oracle": null,
+          "matched": 346094,
+          "oracle_rows": 416877
+        },
+        "pumpswap": {
+          "coverage": 0.8516725996275857,
+          "lag_ms_fast_minus_oracle": null,
+          "matched": 1513010,
+          "oracle_rows": 1776516
+        }
+      },
+      "verdict": "FAIL",
+      "warnings": [
+        "chain: hour files not found: ['2026-10-01T16', '2026-10-01T19']"
+      ],
+      "window": {
+        "end": "2026-10-01T19:00:00.000Z",
+        "seconds": 7200.0,
+        "start": "2026-10-01T17:00:00.000Z"
+      }
+    },
+    "oracle_vs_chain": {
+      "bar": 0.95,
+      "complete_hours": 2,
+      "duplicates_dropped": {
+        "fast_identity": 6892,
+        "fast_signature": 67508,
+        "oracle_identity": 0,
+        "oracle_signature": 73844
+      },
+      "evidence_sufficient": true,
+      "fast_venues": {
+        "bonding": {
+          "fast_only": 6714,
+          "fast_rows": 272423,
+          "matched": 265709
+        },
+        "pumpswap": {
+          "fast_only": 8215,
+          "fast_rows": 1193329,
+          "matched": 1185114
+        }
+      },
+      "hours": [
+        {
+          "coverage": 0.6089679363516369,
+          "fast_only": 8280,
+          "fast_rows": 643506,
+          "full_hour": true,
+          "hour": "2026-10-01T17",
+          "lag_ms_fast_minus_oracle": null,
+          "matched": 635754,
+          "meets_bar": false,
+          "oracle_only": 408232,
+          "oracle_rows": 1043986,
+          "reverse_coverage": 0.9871329871050153,
+          "reverse_matched": 635226,
+          "slice_end": "2026-10-01T18:00:00.000Z",
+          "slice_start": "2026-10-01T17:00:00.000Z"
+        },
+        {
+          "coverage": 0.7109596513680533,
+          "fast_only": 6649,
+          "fast_rows": 822246,
+          "full_hour": true,
+          "hour": "2026-10-01T18",
+          "lag_ms_fast_minus_oracle": null,
+          "matched": 817182,
+          "meets_bar": false,
+          "oracle_only": 332225,
+          "oracle_rows": 1149407,
+          "reverse_coverage": 0.9919136122279707,
+          "reverse_matched": 815597,
+          "slice_end": "2026-10-01T19:00:00.000Z",
+          "slice_start": "2026-10-01T18:00:00.000Z"
+        }
+      ],
+      "hours_below_bar": [
+        "2026-10-01T17",
+        "2026-10-01T18"
+      ],
+      "matched_venue_class_disagreements": 0,
+      "pooled": {
+        "coverage": 0.6624148066488769,
+        "fast_only": 14929,
+        "fast_rows": 1465752,
+        "lag_ms_fast_minus_oracle": null,
+        "matched": 1452936,
+        "oracle_only": 740457,
+        "oracle_rows": 2193393,
+        "reverse_coverage": 0.9898147844928746,
+        "reverse_matched": 1450823,
+        "signature_level": {
+          "coverage": 0.6617313400162016,
+          "fast_only": 5609,
+          "fast_rows": 1406156,
+          "matched": 1402572,
+          "oracle_only": 716977,
+          "oracle_rows": 2119549,
+          "reverse_coverage": 0.9960111111427181,
+          "reverse_matched": 1400547
+        }
+      },
+      "scan_footers": {
+        "fast": {
+          "bad_lines": 0,
+          "files": [
+            "trades-2026-10-01T16.jsonl.zst",
+            "trades-2026-10-01T17.jsonl.zst",
+            "trades-2026-10-01T18.jsonl.zst",
+            "trades-2026-10-01T19.jsonl.zst"
+          ],
+          "missing": [],
+          "rows_out": 1496112,
+          "rows_scanned": 2922309,
+          "schema_overflow": 0,
+          "time_field": "t_recv_ms"
+        },
+        "oracle": {
+          "bad_lines": 0,
+          "files": [
+            "trades-2026-10-01T17.jsonl.zst",
+            "trades-2026-10-01T18.jsonl.zst"
+          ],
+          "missing": [
+            "2026-10-01T16",
+            "2026-10-01T19"
+          ],
+          "rows_out": 2193393,
+          "rows_scanned": 2193393,
+          "schema_overflow": 0,
+          "time_field": "block_time"
+        }
+      },
+      "schema_pairs_on_matched_rows": [],
+      "venue_names": {
+        "fast": [
+          "pumpswap",
+          "pump_bonding"
+        ],
+        "oracle": [
+          "pump_bonding",
+          "pumpswap"
+        ]
+      },
+      "venues": {
+        "bonding": {
+          "coverage": 0.6381042849569537,
+          "lag_ms_fast_minus_oracle": null,
+          "matched": 266011,
+          "oracle_rows": 416877
+        },
+        "pumpswap": {
+          "coverage": 0.6681195103224513,
+          "lag_ms_fast_minus_oracle": null,
+          "matched": 1186925,
+          "oracle_rows": 1776516
+        }
+      },
+      "verdict": "FAIL",
+      "warnings": [
+        "chain: hour files not found: ['2026-10-01T16', '2026-10-01T19']"
+      ],
+      "window": {
+        "end": "2026-10-01T19:00:00.000Z",
+        "seconds": 7200.0,
+        "start": "2026-10-01T17:00:00.000Z"
+      }
+    },
+    "verdict": "FAIL",
+    "warnings": [
+      "chain: hour files not found: ['2026-10-01T16', '2026-10-01T19']"
+    ],
+    "window": {
+      "end": "2026-10-01T19:00:00.000Z",
+      "seconds": 7200.0,
+      "start": "2026-10-01T17:00:00.000Z"
+    }
+  },
+  "complete_hours": 2,
+  "duplicates_dropped": {
+    "fast_identity": 9804,
+    "fast_signature": 86717,
+    "oracle_identity": 6892,
+    "oracle_signature": 67508
+  },
+  "evidence_sufficient": true,
+  "fast_venues": {
+    "bonding": {
+      "fast_only": 108968,
+      "fast_rows": 354843,
+      "matched": 245875
+    },
+    "pumpswap": {
+      "fast_only": 425340,
+      "fast_rows": 1518258,
+      "matched": 1092918
+    }
+  },
+  "hours": [
+    {
+      "coverage": 0.8861766634654533,
+      "fast_only": 298097,
+      "fast_rows": 868053,
+      "full_hour": true,
+      "hour": "2026-10-01T17",
+      "lag_ms_fast_minus_oracle": {
+        "all": {
+          "mean": -4204.226195068916,
+          "n": 570260,
+          "p10": -12195.0,
+          "p50": -2109.0,
+          "p90": -14.0
+        },
+        "fast_first_share": 0.9061287833619752,
+        "outliers_over_5s": 219360,
+        "within_5s": {
+          "mean": -1041.9960444571102,
+          "n": 350900,
+          "p10": -3581.0,
+          "p50": -429.0,
+          "p90": 22.0
+        }
+      },
+      "matched": 570260,
+      "meets_bar": false,
+      "oracle_only": 73246,
+      "oracle_rows": 643506,
+      "reverse_coverage": 0.6565912450046253,
+      "reverse_matched": 569956,
+      "slice_end": "2026-10-01T18:00:00.000Z",
+      "slice_start": "2026-10-01T17:00:00.000Z"
+    },
+    {
+      "coverage": 0.9345925671879218,
+      "fast_only": 236211,
+      "fast_rows": 1005048,
+      "full_hour": true,
+      "hour": "2026-10-01T18",
+      "lag_ms_fast_minus_oracle": {
+        "all": {
+          "mean": -2013.6337907386803,
+          "n": 768465,
+          "p10": -8675.599999999991,
+          "p50": -518.0,
+          "p90": -70.0
+        },
+        "fast_first_share": 0.929512729922638,
+        "outliers_over_5s": 178337,
+        "within_5s": {
+          "mean": -952.6713984084809,
+          "n": 590128,
+          "p10": -3357.0,
+          "p50": -341.0,
+          "p90": -86.0
+        }
+      },
+      "matched": 768465,
+      "meets_bar": false,
+      "oracle_only": 53781,
+      "oracle_rows": 822246,
+      "reverse_coverage": 0.7649754041598014,
+      "reverse_matched": 768837,
+      "slice_end": "2026-10-01T19:00:00.000Z",
+      "slice_start": "2026-10-01T18:00:00.000Z"
+    }
+  ],
+  "hours_below_bar": [
+    "2026-10-01T17",
+    "2026-10-01T18"
+  ],
+  "matched_venue_class_disagreements": 0,
+  "meta": {
+    "command": "python3 -m tools.tape_coverage --start 2026-10-01T17 --end 2026-10-01T19 --chain-dir /data/mal/blocks/truth-1001 --chain-ssh mal-research-0 --margin-s 60 --json-out /home/claude/.miscusi/jobs/j_EbMx_nDDcs-CiQ/out/tape-coverage-chain-2026-10-01.json --md-out /home/claude/.miscusi/jobs/j_EbMx_nDDcs-CiQ/out/tape-coverage-chain-2026-10-01.md",
+    "margin_s": 60.0,
+    "peak_rss_mb": 740.69140625,
+    "run_at": "2026-10-02T08:47:57Z",
+    "wall_s": 182.11909747123718
+  },
+  "pooled": {
+    "coverage": 0.9133366353926176,
+    "fast_only": 534308,
+    "fast_rows": 1873101,
+    "lag_ms_fast_minus_oracle": {
+      "all": {
+        "mean": -2946.765856318512,
+        "n": 1338725,
+        "p10": -10350.600000000006,
+        "p50": -916.0,
+        "p90": -44.0
+      },
+      "fast_first_share": 0.9195518123587743,
+      "outliers_over_5s": 397697,
+      "within_5s": {
+        "mean": -985.9796722307944,
+        "n": 941028,
+        "p10": -3453.0,
+        "p50": -361.0,
+        "p90": -45.0
+      }
+    },
+    "matched": 1338725,
+    "oracle_only": 127027,
+    "oracle_rows": 1465752,
+    "reverse_coverage": 0.7147468289216652,
+    "reverse_matched": 1338793,
+    "signature_level": {
+      "coverage": 0.9131326822912963,
+      "fast_only": 513485,
+      "fast_rows": 1797561,
+      "matched": 1284007,
+      "oracle_only": 122149,
+      "oracle_rows": 1406156,
+      "reverse_coverage": 0.7143434909858414,
+      "reverse_matched": 1284076
+    }
+  },
+  "scan_footers": {
+    "fast": {
+      "bad_lines": 0,
+      "files": [
+        "trades-2026-10-01T16.jsonl.zst",
+        "trades-2026-10-01T17.jsonl.zst",
+        "trades-2026-10-01T18.jsonl.zst",
+        "trades-2026-10-01T19.jsonl.zst"
+      ],
+      "missing": [],
+      "rows_out": 1916177,
+      "rows_scanned": 3475987,
+      "schema_overflow": 0,
+      "time_field": "t_recv_ms"
+    },
+    "oracle": {
+      "bad_lines": 0,
+      "files": [
+        "trades-2026-10-01T16.jsonl.zst",
+        "trades-2026-10-01T17.jsonl.zst",
+        "trades-2026-10-01T18.jsonl.zst",
+        "trades-2026-10-01T19.jsonl.zst"
+      ],
+      "missing": [],
+      "rows_out": 1496112,
+      "rows_scanned": 2922309,
+      "schema_overflow": 0,
+      "time_field": "t_recv_ms"
+    }
+  },
+  "schema_pairs_on_matched_rows": [
+    {
+      "fast_schema_id": 0,
+      "identical": true,
+      "matched_rows": 642808,
+      "only_fast": [],
+      "only_oracle": [],
+      "oracle_schema_id": 1,
+      "type_differs": {}
+    },
+    {
+      "fast_schema_id": 1,
+      "identical": true,
+      "matched_rows": 449899,
+      "only_fast": [],
+      "only_oracle": [],
+      "oracle_schema_id": 0,
+      "type_differs": {}
+    },
+    {
+      "fast_schema_id": 2,
+      "identical": false,
+      "matched_rows": 230602,
+      "only_fast": [
+        "creator_fee",
+        "lp_fee",
+        "pool_quote_amount",
+        "protocol_fee"
+      ],
+      "only_oracle": [],
+      "oracle_schema_id": 2,
+      "type_differs": {}
+    },
+    {
+      "fast_schema_id": 3,
+      "identical": false,
+      "matched_rows": 15387,
+      "only_fast": [
+        "creator_fee",
+        "lp_fee",
+        "pool_quote_amount",
+        "protocol_fee"
+      ],
+      "only_oracle": [],
+      "oracle_schema_id": 3,
+      "type_differs": {}
+    },
+    {
+      "fast_schema_id": 4,
+      "identical": false,
+      "matched_rows": 28,
+      "only_fast": [
+        "creator_fee",
+        "lp_fee",
+        "pool_quote_amount",
+        "protocol_fee"
+      ],
+      "only_oracle": [],
+      "oracle_schema_id": 4,
+      "type_differs": {}
+    },
+    {
+      "fast_schema_id": 5,
+      "identical": true,
+      "matched_rows": 1,
+      "only_fast": [],
+      "only_oracle": [],
+      "oracle_schema_id": 5,
+      "type_differs": {}
+    }
+  ],
+  "schemas": {
+    "fast": {
+      "0": {
+        "base_reserve": "int",
+        "event_index": "int",
+        "event_ts": "int",
+        "mint": "str",
+        "pool": "str",
+        "price_sol": "float",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol_lamports": "int",
+        "t_recv_ms": "int",
+        "token_raw": "int",
+        "trader": "str",
+        "v": "int",
+        "venue": "str"
+      },
+      "1": {
+        "base_reserve": "int",
+        "event_index": "int",
+        "event_ts": "int",
+        "mint": "str",
+        "pool": "str",
+        "price_sol": "NoneType",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol_lamports": "int",
+        "t_recv_ms": "int",
+        "token_raw": "int",
+        "trader": "str",
+        "v": "int",
+        "venue": "str"
+      },
+      "2": {
+        "base_reserve": "int",
+        "commitment": "str",
+        "creator_fee": "NoneType",
+        "event_index": "int",
+        "event_ts": "int",
+        "feed": "str",
+        "lp_fee": "NoneType",
+        "market_cap_sol": "float",
+        "market_cap_supply_ui": "float",
+        "mint": "str",
+        "mint_source": "str",
+        "pool": "NoneType",
+        "pool_quote_amount": "NoneType",
+        "price_sol": "float",
+        "protocol_fee": "NoneType",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol": "float",
+        "sol_lamports": "int",
+        "t_recv": "str",
+        "t_recv_ms": "int",
+        "token": "float",
+        "token_raw": "int",
+        "trader": "str",
+        "type": "str",
+        "v": "int",
+        "venue": "str"
+      },
+      "3": {
+        "base_reserve": "int",
+        "commitment": "str",
+        "creator_fee": "NoneType",
+        "event_index": "int",
+        "event_ts": "int",
+        "feed": "str",
+        "lp_fee": "NoneType",
+        "market_cap_sol": "NoneType",
+        "market_cap_supply_ui": "float",
+        "mint": "str",
+        "mint_source": "str",
+        "pool": "NoneType",
+        "pool_quote_amount": "NoneType",
+        "price_sol": "NoneType",
+        "protocol_fee": "NoneType",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol": "float",
+        "sol_lamports": "int",
+        "t_recv": "str",
+        "t_recv_ms": "int",
+        "token": "float",
+        "token_raw": "int",
+        "trader": "str",
+        "type": "str",
+        "v": "int",
+        "venue": "str",
+        "zero_sol": "bool"
+      },
+      "4": {
+        "base_reserve": "int",
+        "commitment": "str",
+        "creator_fee": "NoneType",
+        "event_index": "int",
+        "event_ts": "int",
+        "feed": "str",
+        "lp_fee": "NoneType",
+        "market_cap_sol": "float",
+        "market_cap_supply_ui": "float",
+        "mint": "str",
+        "mint_source": "str",
+        "pool": "NoneType",
+        "pool_quote_amount": "NoneType",
+        "price_sol": "float",
+        "protocol_fee": "NoneType",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol": "float",
+        "sol_lamports": "int",
+        "t_recv": "str",
+        "t_recv_ms": "int",
+        "token": "float",
+        "token_raw": "int",
+        "trader": "str",
+        "type": "str",
+        "v": "int",
+        "venue": "str",
+        "zero_sol": "bool"
+      },
+      "5": {
+        "base_reserve": "int",
+        "event_index": "int",
+        "event_ts": "int",
+        "mint": "str",
+        "pool": "str",
+        "price_sol": "float",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol_lamports": "int",
+        "t_recv_ms": "int",
+        "token_raw": "int",
+        "trader": "str",
+        "v": "int",
+        "venue": "str",
+        "zero_sol": "bool"
+      }
+    },
+    "oracle": {
+      "0": {
+        "base_reserve": "int",
+        "event_index": "int",
+        "event_ts": "int",
+        "mint": "str",
+        "pool": "str",
+        "price_sol": "NoneType",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol_lamports": "int",
+        "t_recv_ms": "int",
+        "token_raw": "int",
+        "trader": "str",
+        "v": "int",
+        "venue": "str"
+      },
+      "1": {
+        "base_reserve": "int",
+        "event_index": "int",
+        "event_ts": "int",
+        "mint": "str",
+        "pool": "str",
+        "price_sol": "float",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol_lamports": "int",
+        "t_recv_ms": "int",
+        "token_raw": "int",
+        "trader": "str",
+        "v": "int",
+        "venue": "str"
+      },
+      "2": {
+        "base_reserve": "int",
+        "commitment": "str",
+        "event_index": "int",
+        "event_ts": "int",
+        "feed": "str",
+        "market_cap_sol": "float",
+        "market_cap_supply_ui": "float",
+        "mint": "str",
+        "mint_source": "str",
+        "pool": "NoneType",
+        "price_sol": "float",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol": "float",
+        "sol_lamports": "int",
+        "t_recv": "str",
+        "t_recv_ms": "int",
+        "token": "float",
+        "token_raw": "int",
+        "trader": "str",
+        "type": "str",
+        "v": "int",
+        "venue": "str"
+      },
+      "3": {
+        "base_reserve": "int",
+        "commitment": "str",
+        "event_index": "int",
+        "event_ts": "int",
+        "feed": "str",
+        "market_cap_sol": "NoneType",
+        "market_cap_supply_ui": "float",
+        "mint": "str",
+        "mint_source": "str",
+        "pool": "NoneType",
+        "price_sol": "NoneType",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol": "float",
+        "sol_lamports": "int",
+        "t_recv": "str",
+        "t_recv_ms": "int",
+        "token": "float",
+        "token_raw": "int",
+        "trader": "str",
+        "type": "str",
+        "v": "int",
+        "venue": "str",
+        "zero_sol": "bool"
+      },
+      "4": {
+        "base_reserve": "int",
+        "commitment": "str",
+        "event_index": "int",
+        "event_ts": "int",
+        "feed": "str",
+        "market_cap_sol": "float",
+        "market_cap_supply_ui": "float",
+        "mint": "str",
+        "mint_source": "str",
+        "pool": "NoneType",
+        "price_sol": "float",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol": "float",
+        "sol_lamports": "int",
+        "t_recv": "str",
+        "t_recv_ms": "int",
+        "token": "float",
+        "token_raw": "int",
+        "trader": "str",
+        "type": "str",
+        "v": "int",
+        "venue": "str",
+        "zero_sol": "bool"
+      },
+      "5": {
+        "base_reserve": "int",
+        "event_index": "int",
+        "event_ts": "int",
+        "mint": "str",
+        "pool": "str",
+        "price_sol": "float",
+        "quote_is_wsol": "bool",
+        "quote_mint": "str",
+        "quote_reserve": "int",
+        "side": "str",
+        "signature": "str",
+        "slot": "int",
+        "sol_lamports": "int",
+        "t_recv_ms": "int",
+        "token_raw": "int",
+        "trader": "str",
+        "v": "int",
+        "venue": "str",
+        "zero_sol": "bool"
+      }
+    }
+  },
+  "venue_names": {
+    "fast": [
+      "pumpswap",
+      "pump_bonding"
+    ],
+    "oracle": [
+      "pumpswap",
+      "pump_bonding"
+    ]
+  },
+  "venues": {
+    "bonding": {
+      "coverage": 0.9030698582718787,
+      "lag_ms_fast_minus_oracle": {
+        "all": {
+          "mean": -3037.193954076344,
+          "n": 246017,
+          "p10": -10541.399999999998,
+          "p50": -1117.0,
+          "p90": -31.0
+        },
+        "fast_first_share": 0.9122255779072178,
+        "outliers_over_5s": 78971,
+        "within_5s": {
+          "mean": -996.3675753983932,
+          "n": 167046,
+          "p10": -3494.0,
+          "p50": -349.0,
+          "p90": -35.0
+        }
+      },
+      "matched": 246017,
+      "oracle_rows": 272423
+    },
+    "pumpswap": {
+      "coverage": 0.9156804200685645,
+      "lag_ms_fast_minus_oracle": {
+        "all": {
+          "mean": -2926.4064837083647,
+          "n": 1092708,
+          "p10": -10310.0,
+          "p50": -875.0,
+          "p90": -47.0
+        },
+        "fast_first_share": 0.9212012724350879,
+        "outliers_over_5s": 318726,
+        "within_5s": {
+          "mean": -983.7376851141241,
+          "n": 773982,
+          "p10": -3441.0,
+          "p50": -364.0,
+          "p90": -48.0
+        }
+      },
+      "matched": 1092708,
+      "oracle_rows": 1193329
+    }
+  },
+  "verdict": "FAIL",
+  "warnings": [],
+  "window": {
+    "end": "2026-10-01T19:00:00.000Z",
+    "seconds": 7200.0,
+    "start": "2026-10-01T17:00:00.000Z"
+  }
+}
