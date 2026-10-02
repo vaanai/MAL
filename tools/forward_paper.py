@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TextIO
 
 from observe.attention import is_genuine_arrival, load_poller_start_ms, load_snapshot_keys
-from tools.forward_exp012_gate import Exp012Online, GateConfigError, GateSpec, gate_row, load_gate
 from tools.funding_graph import fill_funding_features
 from tools.graduated_swing import (
     SWING_EXITS,
@@ -1030,9 +1029,14 @@ def books_from_config(raw: dict[str, Any]) -> list[BookSpec]:
             if thr is None:
                 _reject_risk(f"book {book_id} entry_threshold is not a finite number")
             try:
+                # Lazy: a config with no gate keys never imports the gate module.
+                from tools.forward_exp012_gate import GateConfigError, load_gate
+
                 load_gate(str(item["entry_model"]), str(item["entry_model_md5"]), float(thr), str(item["entry_features"]))
+            except ImportError as exc:
+                _reject_risk(f"book {book_id} entry gate: cannot import gate ({type(exc).__name__}: {exc})")
             except GateConfigError as exc:
-                _reject_risk(f"book {book_id}: {exc}")
+                _reject_risk(f"book {book_id} entry gate: {exc}")
             entry_cfg = {
                 "entry_model": str(item["entry_model"]),
                 "entry_model_md5": str(item["entry_model_md5"]).strip().lower(),
@@ -1322,12 +1326,17 @@ class ForwardEngine:
         self.kill_file = kill_file
         # EXP-012 gate: built only when a book asks for it. None keeps every other
         # path byte-identical (no hook below runs).
-        self.exp012: Exp012Online | None = None
-        self.exp012_gates: dict[str, GateSpec] = {}
+        self.exp012: Any = None
+        self.exp012_gates: dict[str, Any] = {}
         self.exp012_rows: list[dict[str, Any]] = []
+        # Chain time of a create row, ms, set by serve() before push_create (gate only).
+        self.exp012_create_chain: dict[str, int] = {}
+        self._last_event_ts: int | None = None
         for run in self.books:
             sp = run.spec
             if sp.entry_model is not None:
+                from tools.forward_exp012_gate import GateConfigError, load_gate
+
                 try:
                     self.exp012_gates[sp.book_id] = load_gate(
                         sp.entry_model, sp.entry_model_md5 or "", float(sp.entry_threshold), sp.entry_features or ""
@@ -1335,6 +1344,8 @@ class ForwardEngine:
                 except GateConfigError as exc:
                     raise SystemExit(f"book {sp.book_id}: {exc}") from exc
         if self.exp012_gates:
+            from tools.forward_exp012_gate import Exp012Online
+
             self.exp012 = Exp012Online()
         self.latency = latency or LatencyMeter()
         self.model = model or ModelSlot(None, None)
@@ -1425,8 +1436,13 @@ class ForwardEngine:
         self.library[create.mint] = book
         if self.exp012 is not None:
             vs, vt = create.v_sol, create.v_token_ui
+            chain_ms = self.exp012_create_chain.pop(create.mint, None)
             self.exp012.note_create(
-                create.mint, create.creator, create.t_signal_ms, vs / vt if vs and vt and vs > 0 and vt > 0 else None
+                create.mint,
+                create.creator,
+                chain_ms if chain_ms is not None else create.t_signal_ms,
+                vs / vt if vs and vt and vs > 0 and vt > 0 else None,
+                chain=chain_ms is not None,
             )
         self.tracks[create.mint] = _Track()
         self.mint_order[create.mint] = len(self.mint_order)
@@ -1579,8 +1595,9 @@ class ForwardEngine:
         self.seen[mint].add(key)
         self._insert_print(book, pr)
         if self.exp012 is not None:
+            self._last_event_ts = event_ts
             self.exp012.note_print(
-                mint, venue=pr.venue, t_ms=pr.t_recv_ms, side=pr.side, trader=pr.trader,
+                mint, venue=pr.venue, t_recv_ms=pr.t_recv_ms, event_ts=event_ts, side=pr.side, trader=pr.trader,
                 sol_lamports=pr.sol_lamports, token_raw=pr.token_raw, price_sol=pr.price_sol,
             )
         self.wallets.observe_print(mint, pr)
@@ -1623,7 +1640,7 @@ class ForwardEngine:
             track.migrate_done = True
             track.migration_t_ms = pr.t_recv_ms
             if self.exp012 is not None:
-                self.exp012.mark_migrated(mint)
+                self.exp012.mark_migrated(mint, self._last_event_ts, pr.t_recv_ms)
             self._triggers.append((mint, pr.t_recv_ms, "migrate"))
             self._schedule_mig15(mint, pr.t_recv_ms)
             self._flush_attention(mint)
@@ -1802,8 +1819,15 @@ class ForwardEngine:
                 self.packets.append((mint, t_ms, trigger, dict(feats)))
         gate_feats: dict[str, float] | None = None
         gate_reason: str | None = None
+        gate_error: str | None = None
         if trigger == "migrate" and self.exp012 is not None:
-            gate_feats, gate_reason = self.exp012.features_at(mint, t_ms)
+            try:
+                gate_feats, gate_reason = self.exp012.features_at(mint, t_ms)
+            except Exception as exc:  # noqa: BLE001 - a gate failure must not stop ungated books
+                gate_feats, gate_reason, gate_error = None, "gate_error", type(exc).__name__
+            else:
+                if gate_reason == "gate_error":
+                    gate_error = self.exp012.errors.get(mint)
         for run in self.books:
             if not _point_matches(run.spec, book, t_ms, trigger):
                 continue
@@ -1812,7 +1836,7 @@ class ForwardEngine:
             elif run.spec.kind == "migrate" and trigger == "migrate":
                 gate_score: float | None = None
                 if run.spec.book_id in self.exp012_gates:
-                    passed, gate_score = self._exp012_pass(run, book, t_ms, trigger, gate_feats, gate_reason)
+                    passed, gate_score = self._exp012_pass(run, book, t_ms, trigger, gate_feats, gate_reason, gate_error)
                     if not passed:
                         continue
                 self._enter_or_skip(run, book, t_ms, trigger, feats, gate_score=gate_score)
@@ -1829,6 +1853,7 @@ class ForwardEngine:
         trigger: str,
         feats: dict[str, float] | None,
         reason: str | None,
+        error: str | None = None,
     ) -> tuple[bool, float | None]:
         """EXP-012 model gate. Emits one gate row per (book, mint). True = go on to the
         normal path (risk gate, fill, exits unchanged). False = a skip was recorded.
@@ -1838,11 +1863,28 @@ class ForwardEngine:
         score: float | None = None
         passed = False
         if feats is not None:
-            score = gate.score(feats)
-            passed = score >= gate.threshold
-            if not passed:
-                reason = "below_threshold"
-        row = gate_row(run.spec.book_id, mint, t_ms, gate, feats, score, passed, reason)
+            try:
+                score = gate.score(feats)
+                passed = score >= gate.threshold
+                if not passed:
+                    reason = "below_threshold"
+            except Exception as exc:  # noqa: BLE001
+                score, passed, reason, error = None, False, "gate_error", type(exc).__name__
+        from tools.forward_exp012_gate import gate_row
+
+        row = gate_row(
+            run.spec.book_id,
+            mint,
+            self.exp012.mig_ms_of(mint, t_ms),
+            gate,
+            feats,
+            score,
+            passed,
+            reason,
+            time_fallbacks=self.exp012.time_fallbacks(mint),
+            error=error,
+            decision_t_ms=t_ms,
+        )
         if self.retain_rows:
             self.exp012_rows.append(row)
         log = self.logs.get("exp012_gate")
@@ -3288,16 +3330,48 @@ def run_replay_files(
     return {"summary": summary, "reconcile": reconcile, "latency": latency}
 
 
-def reload_risk_config(path: Path, current: list[BookSpec]) -> tuple[list[BookSpec], Path | None]:
-    """Re-read host JSON. A file above a ceiling is logged and not applied."""
+SCHEMA_CONFIG_EVENT = "forward_paper_config_event_v1"
+_GATE_KEYS = ("entry_model", "entry_model_md5", "entry_threshold", "entry_features")
+
+
+def reload_risk_config_ex(path: Path, current: list[BookSpec]) -> tuple[list[BookSpec], Path | None, list[dict[str, Any]]]:
+    """Re-read host JSON. A file above a ceiling is logged and not applied.
+    Third item: events for the decisions log. `config_reload_refused` when the reload is
+    refused (`gate_error` true if an entry-gate check failed); `gate_keys_removed_ignored`
+    / `gate_keys_changed_ignored` when a running gated book's gate keys are removed or
+    changed in the file (they are not hot-reloaded: the running values stay)."""
+    events: list[dict[str, Any]] = []
     try:
         raw = load_config(path)
         books = books_from_config(raw)
     except (RiskConfigError, OSError, json.JSONDecodeError, SystemExit, KeyError, TypeError, ValueError) as exc:
         print(f"forward_paper risk refused: {exc}", file=sys.stderr)
-        return current, None
+        events.append({"event": "config_reload_refused", "gate_error": "entry gate" in str(exc), "reason": f"{type(exc).__name__}: {exc}"})
+        return current, None, events
+    incoming = {b.book_id: b for b in books}
+    for old in current:
+        if old.entry_model is None:
+            continue
+        new = incoming.get(old.book_id)
+        if new is None or new.entry_model is None:
+            events.append({"event": "gate_keys_removed_ignored", "book": old.book_id})
+        elif tuple(getattr(new, k) for k in _GATE_KEYS) != tuple(getattr(old, k) for k in _GATE_KEYS):
+            events.append({"event": "gate_keys_changed_ignored", "book": old.book_id})
     kill = raw.get("kill_file")
-    return books, Path(kill) if isinstance(kill, str) and kill else None
+    return books, Path(kill) if isinstance(kill, str) and kill else None, events
+
+
+def reload_risk_config(path: Path, current: list[BookSpec]) -> tuple[list[BookSpec], Path | None]:
+    books, kill, _events = reload_risk_config_ex(path, current)
+    return books, kill
+
+
+def emit_config_events(events: Sequence[dict[str, Any]], log: Any, now_ms: int) -> None:
+    """WARN line on stderr and one record per event in the decisions log."""
+    for ev in events:
+        print(f"forward_paper WARN {json.dumps(ev, sort_keys=True)}", file=sys.stderr)
+        if log is not None:
+            log.write({"schema": SCHEMA_CONFIG_EVENT, "ts_ms": now_ms, **ev})
 
 
 def adopt_book_limits(engine: ForwardEngine, books: Sequence[BookSpec]) -> None:
@@ -3461,6 +3535,12 @@ def serve(config_path: Path) -> int:
                 create = create_from_observe_row(row)
                 if create is None:
                     continue
+                if engine.exp012 is not None:
+                    from tools.forward_exp012_gate import create_chain_ms
+
+                    chain_ms = create_chain_ms(row)
+                    if chain_ms is not None:
+                        engine.exp012_create_chain[create.mint] = chain_ms
                 engine.push_create(create)
                 watermark = max(watermark, create.t_signal_ms)
             elif kind == "attention":
@@ -3490,7 +3570,8 @@ def serve(config_path: Path) -> int:
             except OSError:
                 mtime = config_mtime
             if mtime != config_mtime:
-                reloaded, kill = reload_risk_config(config_path, books)
+                reloaded, kill, cfg_events = reload_risk_config_ex(config_path, books)
+                emit_config_events(cfg_events, engine.logs.get("decisions"), now_ms)
                 if reloaded is not books:
                     books = reloaded
                     adopt_book_limits(engine, books)

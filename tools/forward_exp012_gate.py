@@ -9,17 +9,20 @@ fail draw are untouched. A gated migrate book only decides "enter or skip" here.
 Where the online path can differ from the offline builder (the replay helper
 `tools/forward_exp012_replay.py` measures these; each is also listed in the PR):
 
-1. Create time and first price. Offline: the fast-format create row's chain
-   `block_time * 1000` and `quote_reserve / (base_reserve * 1000)`. Online: the
-   runner's create comes from observe rows (`t_ws` receive time, and
-   `v_sol / v_token_ui`). `time_to_migrate_s`, the 3 s sniper window and the
-   24 h creator window therefore shift by the create's receive lag.
+1. Time basis. Feature inputs use chain time: `event_ts * 1000` (whole seconds; in
+   the offline getBlock walk `t_recv_ms` is None and times are `block_time * 1000`).
+   Prints and the migration use the row's `event_ts`; the create uses the create row's
+   `event_ts`/`block_time`/`blockTime` when the runner passes it, else the observe
+   receive time. Any fallback to `t_recv_ms` is counted in the gate row
+   (`time_fallbacks`). The runner's own decision clock and fills stay on `t_recv_ms`.
+   First price is `v_sol / v_token_ui` online, reserves-derived offline (same value
+   up to float rounding).
 2. Trade prints are the runner's `FlowPrint`s, after its dedupe (a repeated
    print is counted once online and twice offline), after `flow_from_tape_row`
    (rows with missing reserves, or `quote_is_wsol == False`, are dropped online but
    recorded offline) and with a derived price when the row has no `price_sol`
    (offline records `None` and keeps the last real price). Trader `"UNK"` is None.
-3. Event order on equal `t_recv_ms`: offline is file order, online is the runner's
+3. Event order on equal time: offline is file order, online is the runner's
    (slot, tx_index, event_index) order. Only `price_return_pre` and `mcap_at_t_sol`
    (last price) can see it.
 4. 32-minute truncation. The offline builder keeps a mint in a `hot` set and
@@ -110,6 +113,10 @@ def load_gate(model_path: str, model_md5: str, threshold: float, features_path: 
         want = list(doc["frozen_feature_names"])
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise GateConfigError(f"entry_features unreadable: {exc!r}") from exc
+    dummy = compute_features([], create_ms=0, first_price=None, mig_ms=0, creator_prior_mints_24h=0)
+    unknown = [n for n in want if n not in dummy]
+    if unknown:
+        raise GateConfigError(f"entry_features names not produced by compute_features: {unknown}")
     import lightgbm as lgb
 
     booster = lgb.Booster(model_file=str(mp))
@@ -120,13 +127,33 @@ def load_gate(model_path: str, model_md5: str, threshold: float, features_path: 
 
 
 class _Acc:
-    __slots__ = ("feat", "had_bond", "migrated", "truncated")
+    __slots__ = ("feat", "had_bond", "migrated", "truncated", "mig_ms", "fb_prints", "fb_create", "fb_mig")
 
-    def __init__(self, feat: _Feat) -> None:
+    def __init__(self, feat: _Feat, fb_create: bool = False) -> None:
         self.feat = feat
         self.had_bond = False
         self.migrated = False
         self.truncated = False
+        self.mig_ms: int | None = None
+        self.fb_prints = 0
+        self.fb_create = fb_create
+        self.fb_mig = False
+
+
+def _chain_ms(event_ts: int | None, t_recv_ms: int) -> tuple[int, bool]:
+    """(time_ms, used_fallback). event_ts is whole seconds of chain time."""
+    if isinstance(event_ts, int) and not isinstance(event_ts, bool) and event_ts >= 1_000_000_000:
+        return event_ts * 1000, False
+    return t_recv_ms, True
+
+
+def create_chain_ms(row: dict[str, Any]) -> int | None:
+    """Chain time of a create row, ms, if the row carries one."""
+    for key in ("event_ts", "block_time", "blockTime"):
+        v = row.get(key)
+        if isinstance(v, int) and not isinstance(v, bool) and v >= 1_000_000_000:
+            return v * 1000
+    return None
 
 
 class Exp012Online:
@@ -137,6 +164,7 @@ class Exp012Online:
         self.hist: dict[str, list[int]] = {}
         self.hist_mints: dict[str, tuple[str, int]] = {}
         self._pruned_at: int | None = None
+        self.errors: dict[str, str] = {}  # mint -> exception class name from a feed hook
 
     # --- creator history -------------------------------------------------
     def _add_hist(self, mint: str, creator: str | None, create_ms: int) -> None:
@@ -192,41 +220,59 @@ class Exp012Online:
         return added
 
     # --- feed ------------------------------------------------------------
-    def note_create(self, mint: str, creator: str | None, create_ms: int, first_price: float | None) -> None:
-        if mint in self.acc:
-            return
-        self.acc[mint] = _Acc(_Feat(creator or "", create_ms, first_price if first_price and first_price > 0 else None))
-        self._add_hist(mint, creator, create_ms)
+    def note_create(self, mint: str, creator: str | None, create_ms: int, first_price: float | None, chain: bool = True) -> None:
+        """`create_ms` is chain time if `chain`, else the observe receive time (counted)."""
+        try:
+            if mint in self.acc:
+                return
+            self.acc[mint] = _Acc(_Feat(creator or "", create_ms, first_price if first_price and first_price > 0 else None), fb_create=not chain)
+            self._add_hist(mint, creator, create_ms)
+        except Exception as exc:  # noqa: BLE001 - never break the runner's hot path
+            self.errors[mint] = type(exc).__name__
 
-    def note_print(self, mint: str, *, venue: str, t_ms: int, side: str, trader: str | None, sol_lamports: int, token_raw: int, price_sol: float | None) -> None:
+    def note_print(self, mint: str, *, venue: str, t_recv_ms: int, event_ts: int | None, side: str, trader: str | None, sol_lamports: int, token_raw: int, price_sol: float | None) -> None:
         a = self.acc.get(mint)
-        if a is None or a.migrated or venue != "pump_bonding":
+        if a is None or venue != "pump_bonding":
             return
-        a.had_bond = True
-        if a.truncated:
-            return
-        if t_ms >= a.feat.create_ms + WINDOW_MS:
-            a.truncated = True  # offline's hot -> watch move, at exactly 32 min (see module note 4)
-            return
-        a.feat.record(
-            {"side": side, "trader": trader, "sol_lamports": sol_lamports, "token_raw": token_raw, "price_sol": price_sol},
-            t_ms,
-        )
+        try:
+            a.had_bond = True
+            if a.truncated:
+                return
+            t_ms, fb = _chain_ms(event_ts, t_recv_ms)
+            if t_ms >= a.feat.create_ms + WINDOW_MS:
+                a.truncated = True  # offline's hot -> watch move, at exactly 32 min (see module note 4)
+                return
+            if fb:
+                a.fb_prints += 1
+            # Recording continues until the decision: a bonding print that arrives after the
+            # first pumpswap print but has t < mig_ms is counted. causal_events filters at decision.
+            a.feat.record(
+                {"side": side, "trader": trader, "sol_lamports": sol_lamports, "token_raw": token_raw, "price_sol": price_sol},
+                t_ms,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.errors[mint] = type(exc).__name__
 
-    def mark_migrated(self, mint: str) -> None:
+    def mark_migrated(self, mint: str, event_ts: int | None, t_recv_ms: int) -> None:
+        """The first pumpswap print: fixes the migration time (chain seconds) and keeps the
+        accumulator past the 60 min prune until the decision."""
         a = self.acc.get(mint)
         if a is not None:
             a.migrated = True
+            a.mig_ms, a.fb_mig = _chain_ms(event_ts, t_recv_ms)
 
     # --- decision ---------------------------------------------------------
-    def features_at(self, mint: str, mig_ms: int) -> tuple[dict[str, float] | None, str | None]:
-        """(features, None) or (None, reason). Cutoff is strictly `t < mig_ms`."""
+    def features_at(self, mint: str, fallback_mig_ms: int) -> tuple[dict[str, float] | None, str | None]:
+        """(features, None) or (None, reason). Cutoff is strictly `t < mig_ms` (chain ms)."""
+        if mint in self.errors:
+            return None, "gate_error"
         a = self.acc.get(mint)
         if a is None:
             return None, "no_features"
         if not a.had_bond:
             return None, "no_bond_history"
         f = a.feat
+        mig_ms = a.mig_ms if a.mig_ms is not None else fallback_mig_ms
         prior = count_prior_creates(self.hist, f.creator, f.create_ms)
         feats = compute_features(
             causal_events(f.events, mig_ms),
@@ -236,6 +282,16 @@ class Exp012Online:
             creator_prior_mints_24h=prior,
         )
         return feats, None
+
+    def mig_ms_of(self, mint: str, fallback_mig_ms: int) -> int:
+        a = self.acc.get(mint)
+        return a.mig_ms if a is not None and a.mig_ms is not None else fallback_mig_ms
+
+    def time_fallbacks(self, mint: str) -> dict[str, Any] | None:
+        a = self.acc.get(mint)
+        if a is None:
+            return None
+        return {"prints": a.fb_prints, "create": a.fb_create, "migration": a.fb_mig}
 
     def drop(self, mint: str) -> None:
         self.acc.pop(mint, None)
@@ -260,15 +316,32 @@ class Exp012Online:
                 del self.hist[creator]
 
 
-def gate_row(book: str, mint: str, mig_ms: int, gate: GateSpec, feats: dict[str, float] | None, score: float | None, passed: bool, reason: str | None) -> dict[str, Any]:
+def gate_row(
+    book: str,
+    mint: str,
+    mig_ms: int,
+    gate: GateSpec,
+    feats: dict[str, float] | None,
+    score: float | None,
+    passed: bool,
+    reason: str | None,
+    *,
+    time_fallbacks: dict[str, Any] | None = None,
+    error: str | None = None,
+    decision_t_ms: int | None = None,
+) -> dict[str, Any]:
+    """`mig_ms` is chain time (the scorer's key). `decision_t_ms` is the runner's receive clock."""
     return {
         "schema": SCHEMA_GATE,
         "book": book,
         "mint": mint,
         "mig_ms": mig_ms,
+        "decision_t_ms": decision_t_ms,
         "score": score,
         "threshold": gate.threshold,
         "entered": passed,
         "reason": reason,
+        "error": error,
+        "time_fallbacks": time_fallbacks,
         "features": None if feats is None else {n: feats[n] for n in gate.names},
     }
