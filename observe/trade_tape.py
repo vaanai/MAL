@@ -388,7 +388,7 @@ async def run_tape(
                 stats = source.stats
                 extra = ""
                 if hasattr(stats, "summary"):
-                    extra = f" dedup_dropped={stats.dedup_dropped} sockets=[{stats.summary()}]"
+                    extra = f" dedup_dropped={stats.dedup_dropped} dedup_mismatch={stats.dedup_mismatch} sockets=[{stats.summary()}]"
                 log.info(
                     "heartbeat source=%s commitment=%s trades=%s notes=%s failed_notes=%s "
                     "reconnects=%s slot_jumps=%s last_slot=%s unresolved=%s pool_cache=%s "

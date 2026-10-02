@@ -56,7 +56,7 @@ class _WS:
             if step[0] == "sleep":
                 await asyncio.sleep(step[1])
             elif step[0] == "close":
-                raise ConnectionClosed(Close(step[1], ""), None)
+                raise ConnectionClosed(Close(step[1], "") if step[1] else None, None)
             else:
                 _, t_ms, frame = step
                 self.net.now_ms = t_ms
@@ -82,6 +82,8 @@ class FakeNetwork:
         async def cm():
             if isinstance(entry, int):
                 raise InvalidStatusCode(entry, {})
+            if isinstance(entry, BaseException):
+                raise entry
             yield _WS(self, url, entry)
 
         return cm()

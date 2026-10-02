@@ -195,6 +195,8 @@ class _ReconnectStats:
         # Handshake rejections by HTTP status (e.g. {413: 3}). Counted in every
         # feed; only the multi-socket heartbeat prints it.
         self.rejections: dict[int, int] = {}
+        # Websocket close codes seen (e.g. {1006: 47}); 1006 = no close frame.
+        self.closes: dict[int, int] = {}
 
     def observe(self, note: RawNotice) -> None:
         self.notes += 1
@@ -264,6 +266,8 @@ async def _iter_ws(
                     stats.observe(note)
                     yield note
         except ConnectionClosed as exc:
+            close_code = exc.rcvd.code if exc.rcvd is not None else 1006
+            stats.closes[close_code] = stats.closes.get(close_code, 0) + 1
             log.warning(
                 "ws_closed feed=%s code=%s reason=%s last_slot=%s%s",
                 feed,
@@ -273,6 +277,8 @@ async def _iter_ws(
                 tag,
             )
         except InvalidStatusCode as exc:
+            # InvalidStatusCode is the websockets<14 name (requirements-observe.txt
+            # pins <14); 14+ renames it InvalidStatus and this clause must follow.
             stats.rejections[exc.status_code] = stats.rejections.get(exc.status_code, 0) + 1
             log.warning("ws_handshake_rejected feed=%s status_code=%s%s", feed, exc.status_code, tag)
         except OSError as exc:
@@ -325,7 +331,7 @@ class LogsSubscribeSource:
 
 
 class SeenSet:
-    """Time-windowed, size-capped set of keys. Memory stays bounded.
+    """Time-windowed, size-capped map of keys to a fingerprint. Memory stays bounded.
 
     Keys expire window_s after first sight, and the oldest keys go first when
     max_keys is hit. Insertion order is time order, so expiry is a popleft loop.
@@ -336,7 +342,8 @@ class SeenSet:
         self.window_s = window_s
         self.max_keys = max_keys
         self._clock = clock
-        self._first: collections.OrderedDict[str, float] = collections.OrderedDict()
+        self._first: collections.OrderedDict[str, tuple[float, Any]] = collections.OrderedDict()
+        self.last_mismatch = False
 
     def __len__(self) -> int:
         return len(self._first)
@@ -344,18 +351,25 @@ class SeenSet:
     def _expire(self, now: float) -> None:
         cutoff = now - self.window_s
         while self._first:
-            key, seen_at = next(iter(self._first.items()))
+            key, (seen_at, _fp) = next(iter(self._first.items()))
             if seen_at > cutoff:
                 break
             del self._first[key]
 
-    def add(self, key: str) -> bool:
-        """True when key is new (and is now remembered), False for a duplicate."""
+    def add(self, key: str, fingerprint: Any = None) -> bool:
+        """True when key is new (and is now remembered), False for a duplicate.
+
+        On a duplicate, last_mismatch says whether its fingerprint differs from
+        the first sighting's.
+        """
         now = self._clock()
         self._expire(now)
-        if key in self._first:
+        self.last_mismatch = False
+        seen = self._first.get(key)
+        if seen is not None:
+            self.last_mismatch = seen[1] != fingerprint
             return False
-        self._first[key] = now
+        self._first[key] = (now, fingerprint)
         while len(self._first) > self.max_keys:
             self._first.popitem(last=False)
         return True
@@ -369,6 +383,8 @@ class SocketStats(_ReconnectStats):
         self.index = index
         self.url = url
         self.unique = 0
+        self.errors: dict[str, int] = {}  # unexpected exceptions by class name
+        self.dedup_mismatch = 0
 
     def row(self) -> dict[str, Any]:
         return {
@@ -377,6 +393,9 @@ class SocketStats(_ReconnectStats):
             "rejections": {str(code): n for code, n in sorted(self.rejections.items())},
             "notes": self.notes,
             "unique": self.unique,
+            "closes": {str(code): n for code, n in sorted(self.closes.items())},
+            "errors": dict(sorted(self.errors.items())),
+            "dedup_mismatch": self.dedup_mismatch,
         }
 
 
@@ -389,6 +408,8 @@ class MergedStats:
         self.sockets = list(sockets)
         self._merged = _ReconnectStats()
         self.dedup_dropped = 0
+        self.dedup_mismatch = 0
+        self.queue_full_waits = 0
 
     notes = property(lambda self: self._merged.notes)
     failed_notes = property(lambda self: self._merged.failed_notes)
@@ -406,9 +427,11 @@ class MergedStats:
         parts = []
         for s in self.sockets:
             rej = ",".join(f"{code}x{n}" for code, n in sorted(s.rejections.items())) or "0"
+            closes = ",".join(f"{code}x{n}" for code, n in sorted(s.closes.items())) or "0"
+            errs = ",".join(f"{name}x{n}" for name, n in sorted(s.errors.items())) or "0"
             parts.append(
-                f"s{s.index}[reconnects={s.reconnects} rejected={rej} "
-                f"notes={s.notes} unique={s.unique}]"
+                f"s{s.index}[reconnects={s.reconnects} rejected={rej} closes={closes} "
+                f"errors={errs} notes={s.notes} unique={s.unique} mismatch={s.dedup_mismatch}]"
             )
         return " ".join(parts)
 
@@ -431,6 +454,7 @@ class MultiSocketLogsSource:
         stagger_s: float = 3.0,
         seen_window_s: float = 600.0,
         max_seen: int = 500_000,
+        max_queue: int = 10_000,
         rng: random.Random | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -442,6 +466,9 @@ class MultiSocketLogsSource:
         self.commitment = commitment
         self.stagger_s = stagger_s
         self._rng = rng or random.Random()
+        self.max_queue = max_queue
+        self._clock = clock
+        self._last_mismatch_log = float("-inf")
         self.seen = SeenSet(seen_window_s, max_seen, clock)
         self.socket_stats = [SocketStats(i, u) for i, u in enumerate(self.ws_urls)]
         self.stats = MergedStats(self.socket_stats)
@@ -461,33 +488,70 @@ class MultiSocketLogsSource:
         if index and self.stagger_s > 0:
             await asyncio.sleep(self.stagger_s * index)
         url = self.ws_urls[index]
-        async for note in _iter_ws(
-            url,
-            self.subscribe_payloads(),
-            parse_logs_notification,
-            self.commitment,
-            SOURCE_PUBLIC_RPC_LOGS,
-            stop,
-            self.socket_stats[index],
-            log_url=url.split("?")[0],
-            jitter=self._jitter,
-            label=f"socket={index}",
-        ):
-            await queue.put((index, note))
+        stats = self.socket_stats[index]
+        backoff = INITIAL_BACKOFF_S
+        while not stop.is_set():
+            try:
+                async for note in _iter_ws(
+                    url,
+                    self.subscribe_payloads(),
+                    parse_logs_notification,
+                    self.commitment,
+                    SOURCE_PUBLIC_RPC_LOGS,
+                    stop,
+                    stats,
+                    log_url=url.split("?")[0],
+                    jitter=self._jitter,
+                    label=f"socket={index}",
+                ):
+                    backoff = INITIAL_BACKOFF_S
+                    if queue.full():
+                        self.stats.queue_full_waits += 1
+                    await queue.put((index, note))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # one socket's failure must not end the feed
+                name = type(exc).__name__
+                stats.errors[name] = stats.errors.get(name, 0) + 1
+                log.warning("ws_pump_error socket=%s error_class=%s err=%s", index, name, _safe_err(exc))
+                delay = self._jitter(backoff)
+                backoff = min(backoff * 2, MAX_BACKOFF_S)
+                await asyncio.sleep(delay)
+
+    def _note_mismatch(self, index: int, signature: str) -> None:
+        self.stats.dedup_mismatch += 1
+        self.socket_stats[index].dedup_mismatch += 1
+        now = self._clock()
+        if now - self._last_mismatch_log >= 60.0:  # rate-limited
+            self._last_mismatch_log = now
+            log.warning("dedup_mismatch signature=%s", signature)
 
     async def notices(self, stop: asyncio.Event) -> AsyncIterator[RawNotice]:
-        queue: asyncio.Queue[tuple[int, RawNotice]] = asyncio.Queue(maxsize=10_000)
+        queue: asyncio.Queue[tuple[int, RawNotice]] = asyncio.Queue(maxsize=self.max_queue)
         tasks = [asyncio.create_task(self._pump(i, queue, stop)) for i in range(len(self.ws_urls))]
         try:
             while True:
                 try:
-                    index, note = await asyncio.wait_for(queue.get(), timeout=0.5)
-                except asyncio.TimeoutError:
-                    if queue.empty() and (stop.is_set() or all(t.done() for t in tasks)):
+                    index, note = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    if all(t.done() for t in tasks):
+                        if stop.is_set():
+                            break
+                        causes = [t.exception() for t in tasks if not t.cancelled() and t.exception()]
+                        raise RuntimeError(
+                            "all logsSubscribe sockets ended while the feed was running"
+                        ) from (causes[0] if causes else None)
+                    if stop.is_set() and queue.empty():
                         break
-                    continue
-                if not self.seen.add(note.signature):
+                    try:
+                        index, note = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        continue
+                fp = (note.failed, len(note.logs))
+                if not self.seen.add(note.signature, fp):
                     self.stats.dedup_dropped += 1
+                    if self.seen.last_mismatch:
+                        self._note_mismatch(index, note.signature)
                     continue
                 self.socket_stats[index].unique += 1
                 self.stats.observe(note)
