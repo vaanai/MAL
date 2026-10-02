@@ -459,6 +459,170 @@ class VerifyTests(Base):
         self.assertIn("not sealed", err)
 
 
+class CreatesAndShaTests(Base):
+    def test_hour_without_creates_is_flagged_by_verify_and_refused_by_score(self) -> None:
+        walk, art, out = self.fresh()
+        h = "2026-10-05T06"
+        (walk / "creates" / f"creates-{h}.jsonl.zst").unlink()
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            rc = fw.main(["verify", "--walk-dir", str(walk), "--hour", h])
+        self.assertEqual(rc, 1, err.getvalue())
+        last = json.loads((walk / "verify.jsonl").read_text().splitlines()[-1])
+        self.assertIn("no_creates_file", last["issues"])
+        rc, err2 = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 2)
+        self.assertIn(f"hour {h} has no OK line", err2)
+
+    def test_creates_deleted_after_a_clean_verify_is_refused_by_name(self) -> None:
+        walk, art, out = self.fresh()
+        h = "2026-10-05T06"
+        (walk / "creates" / f"creates-{h}.jsonl.zst").unlink()
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 2)
+        self.assertIn(f"hour {h} is sealed and verified but has no creates file", err)
+
+    def test_a_line_without_a_creates_sha_is_not_ok(self) -> None:
+        walk, art, out = self.fresh()
+        recs = [json.loads(x) for x in (walk / "verify.jsonl").read_text().splitlines()]
+        for r in recs:
+            if r["hour"] == "2026-10-05T06":
+                del r["sha256"]["creates"]
+        (walk / "verify.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 2)
+        self.assertIn("hour 2026-10-05T06 has no OK line", err)
+
+    def test_every_file_is_rehashed_and_an_unlisted_file_is_refused(self) -> None:
+        walk, art, out = self.fresh()
+        h = "2026-10-05T06"
+        write_zst_jsonl(walk / "migrations" / f"migrations-{h}.jsonl.zst", [{"x": 1}])  # present, not in the line
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 2)
+        self.assertIn(f"hour {h}: migrations file is present but not in the verify.jsonl line", err)
+        # verifying it brings it into the line; changing it afterwards is caught
+        self.assertEqual(fw.run_verify(walk, h)[1], True)
+        self.assertEqual(self.run_score(walk, art, out, "--to", "2026-10-05T09")[0], 0)
+        write_zst_jsonl(walk / "migrations" / f"migrations-{h}.jsonl.zst", [{"x": 2}])
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 2)
+        self.assertIn(f"hour {h}: migrations bytes do not match", err)
+        write_zst_jsonl(walk / "creates" / f"creates-{h}.jsonl.zst", [{"type": "create", "mint": "zz"}])
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertIn(f"hour {h}: creates bytes do not match", err)
+
+
+class AtomicTests(Base):
+    def test_torn_trailing_line_is_refused_with_a_clear_message(self) -> None:
+        walk, art, out = self.fresh()
+        self.assertEqual(self.run_score(walk, art, out, "--to", "2026-10-05T07")[0], 0)
+        good = (out / "rows.jsonl").read_bytes()
+        (out / "rows.jsonl").write_bytes(good + b'{"mint": "torn", "mig_')
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 2)
+        self.assertIn("torn line", err)
+        self.assertEqual(self.run_report_rc(out), 2)
+        (out / "rows.jsonl").write_bytes(good + b'{"mint": "torn"\n')
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 2)
+        self.assertIn("not valid JSON", err)
+
+    def run_report_rc(self, out: Path) -> int:
+        with mock.patch("sys.stderr", io.StringIO()):
+            return fw.main(["report", "--out-dir", str(out)])
+
+    def test_a_crash_while_replacing_leaves_the_old_file_whole(self) -> None:
+        walk, art, out = self.fresh()
+        self.assertEqual(self.run_score(walk, art, out, "--to", "2026-10-05T07")[0], 0)
+        before = (out / "rows.jsonl").read_bytes()
+        with mock.patch.object(fw.os, "replace", side_effect=OSError("crash")):
+            rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T11")
+        self.assertEqual(rc, 3, err)
+        self.assertEqual((out / "rows.jsonl").read_bytes(), before)
+        self.assertEqual(self.run_score(walk, art, out, "--to", "2026-10-05T11")[0], 0)  # recovers
+        self.assertTrue((out / "rows.jsonl").read_bytes().startswith(before))
+        self.assertFalse((out / "rows.jsonl.tmp").exists())
+
+    def test_the_new_file_is_old_bytes_plus_new_lines(self) -> None:
+        walk, art, out = self.fresh()
+        self.assertEqual(self.run_score(walk, art, out, "--to", "2026-10-05T07")[0], 0)
+        before = (out / "rows.jsonl").read_bytes()
+        seen = {}
+        real = fw.atomic_write
+
+        def spy(path, data):
+            seen[path.name] = data
+            real(path, data)
+
+        with mock.patch.object(fw, "atomic_write", spy):
+            self.assertEqual(self.run_score(walk, art, out, "--to", "2026-10-05T09")[0], 0)
+        self.assertTrue(seen["rows.jsonl"].startswith(before) and seen["rows.jsonl"].endswith(b"\n") and len(seen["rows.jsonl"]) > len(before))
+
+
+class WarningTests(Base):
+    def test_pool_start_warnings(self) -> None:
+        cc = fw.parse_clock(CLEAN_CLOCK)
+        with mock.patch.object(s12, "BUFFER_HOURS", 24):
+            self.assertEqual(fw.pool_warnings(cc, fw.default_pool_start(cc)), [])
+            self.assertEqual(len(fw.pool_warnings(cc, fw.parse_clock("2026-10-03T06"))), 2)  # 47 h: neither 48 nor on the grid
+            self.assertEqual(len(fw.pool_warnings(cc, fw.parse_clock("2026-10-04T05"))), 1)  # 24 h: on the grid, not 48
+
+    def test_warning_is_printed_and_recorded_in_runs(self) -> None:
+        walk, art, out = self.fresh()
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09", "--pool-start", "2026-10-05T03")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("WARNING: pool start 2026-10-05T03 is 2 h before", err)
+        self.assertTrue(fw.read_rows(out / "runs.jsonl")[0]["warnings"])
+
+
+class ParityPinnedTests(Base):
+    home = 2
+
+    def _pool(self) -> list[str]:
+        return e11._hours_range(START, "2026-10-05T11")
+
+    def test_forward_rows_equal_the_unhooked_read_path(self) -> None:
+        """Reference: exactly what exp012_score did before the hooks. chunk_plan + _run_worker +
+        build_creator_history(hours) with BLOCK_HOURS (patched to the fixture hours), no pool_hours, no worker_fn, no plan."""
+        from tools.exploration_exits import chunk_plan
+
+        walk, art, out = self.fresh()
+        self.assertEqual(self.run_score(walk, art, out, "--to", "2026-10-05T11")[0], 0)
+        got = {r["mint"]: r for r in fw.read_rows(out / "rows.jsonl")}
+        pool = self._pool()
+        ref_rows: list[dict] = []
+        with patched(2), mock.patch.object(s12, "BLOCK_HOURS", pool):
+            hours = RefHours(str(walk))
+            hist = s12.build_creator_history(hours)
+            for i, home, buf in chunk_plan(pool, 1, 2, 2):
+                ref_rows.extend(s12._run_worker(i, home, buf, hist, None, hours))
+        ref = [r for r in ref_rows if r["spec"] == e11.TARGET_SPEC_ID]
+        model, threshold, names = e11.load_frozen_spec(art)
+        e11.score_rows(model, ref, names)
+        lo = fw.ms(fw.parse_clock(CLEAN_CLOCK)) // 1000
+        want = {r["mint"]: r for r in ref if MIG_S[r["mint"]] >= lo}
+        self.assertEqual(set(got), set(want))
+        self.assertTrue(len(want) >= 4)
+        for m, w in want.items():
+            for key in ("score", "flat", "press", "gross", "status", "filled", "day"):
+                self.assertEqual(got[m][key], w[key], (m, key))
+            self.assertEqual(got[m]["entered"], w["score"] >= threshold)
+
+    def test_spawn_pool_with_the_tagged_worker_matches_one_worker(self) -> None:
+        walk, art, out = self.fresh()
+        pool = self._pool()
+        hours = fw.ForwardHours(str(walk), frozenset(pool))
+        plan = fw.anchored_plan(pool, 2, 2)
+        self.assertGreater(len(plan), 1)
+        results = {}
+        for workers in (1, 2):
+            results[workers] = s12.load_rows(hours, workers, 2, 2, out / f"scratch{workers}", pool_hours=pool, worker_fn=fw._tagged_worker, plan=plan)
+        norm = lambda rows: sorted(fw._dump({k: v for k, v in r.items()}) for r in rows)
+        self.assertTrue(results[1])
+        self.assertTrue(all("mig_ms" in r for r in results[2]))
+        self.assertEqual(norm(results[1]), norm(results[2]))
+
+
 class ReportTests(unittest.TestCase):
     def _rows(self, n: int, seed: int = 5) -> list[dict]:
         rng = random.Random(seed)

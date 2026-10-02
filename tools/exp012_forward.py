@@ -153,6 +153,17 @@ def default_pool_start(clean_clock: datetime) -> datetime:
     return floor - timedelta(hours=2 * s12.BUFFER_HOURS)
 
 
+def pool_warnings(clean_clock: datetime, start: datetime) -> list[str]:
+    clock_hour = clean_clock.replace(minute=0, second=0, microsecond=0)
+    back = int((clock_hour - start).total_seconds() // 3600)
+    out: list[str] = []
+    if back != 2 * s12.BUFFER_HOURS:
+        out.append(f"pool start {hour_key(start)} is {back} h before the clean clock hour, not the {2 * s12.BUFFER_HOURS} h default: a counted mint may have a short creator-history window")
+    if back % 12:
+        out.append(f"pool start {hour_key(start)} is not aligned to the 12 h chunk grid of the clean clock hour: chunk boundaries differ from the default plan")
+    return out
+
+
 def anchored_plan(pool: Sequence[str], home_hours: int | None, buffer_hours: int) -> list[tuple[int, list[str], list[str]]]:
     """Chunk plan anchored at pool[0]: fixed home chunks of `home_hours`, last one partial; each
     chunk's buffer is the next `buffer_hours` pool hours. Chunks covering earlier hours do not
@@ -447,13 +458,7 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
     if errors:
         raise Refused(errors)
 
-    warnings: list[str] = []
-    clock_hour = clean_clock.replace(minute=0, second=0, microsecond=0)
-    back = int((clock_hour - start).total_seconds() // 3600)
-    if back != 2 * s12.BUFFER_HOURS:
-        warnings.append(f"pool start {hour_key(start)} is {back} h before the clean clock hour, not the {2 * s12.BUFFER_HOURS} h default: a counted mint may have a short creator-history window")
-    if back % 12:
-        warnings.append(f"pool start {hour_key(start)} is not aligned to the 12 h chunk grid of the clean clock hour: chunk boundaries differ from the default plan")
+    warnings = pool_warnings(clean_clock, start)
     for w in warnings:
         print(f"WARNING: {w}", file=sys.stderr)
     out_dir.mkdir(parents=True, exist_ok=True)
