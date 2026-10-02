@@ -24,7 +24,9 @@
 1. **Forward walk (on the owner's OK).** A getBlock follower on `mal-research-0`, run as a MiScusi job:
    - It walks each complete UTC hour about 5 minutes after it ends, into `/data/mal/blocks/forward-1002`, with the same walker code the training walks use.
    - Every sealed hour gets `backfill_verify --content` (0 flagged, 0 duplicates) and a sha256 line before any scorer reads it.
-   - Cost: about 13.4k credits per hour, about 0.32M/day, about 9.7M/month, inside the ~40M/month budget, at `--rps 5`.
+   - Cost: about 13.4k credits per hour, about 0.32M/day, about 9.7M/month, inside the ~40M/month budget.
+   - Rate: `--rps 8` (`scripts/research/forward-walk.sh`), so an hour of about 13.4k slots seals in about 28 minutes and leaves room to catch up after downtime.
+   - Helius slot: the walk holds **one of the 4 shared Helius lock slots** (10 rps each) for its whole life, about 14 days from 2026-10-04T00Z through the read. The backfill walkers drop to 3 concurrent slots for that time. Total stays within the ~40 rps share.
    - The same hours are the chain truth for further tape-coverage checks.
 2. **Measurement (on owner confirmation).** EXP-012's forward book is the frozen model, threshold and execution of EXP-012 §2, scored by a forward scorer (`tools/exp012_forward.py`) that reuses `tools/exp012_score.py`'s table build and scoring path unchanged, on sealed forward hours only.
    - It checks the frozen artifacts' md5 (`ARTIFACTS/exp012/FROZEN.md5`) on every run.
