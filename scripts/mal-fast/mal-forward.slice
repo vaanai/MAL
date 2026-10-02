@@ -1,0 +1,9 @@
+[Unit]
+Description=MAL forward-paper runner memory slice (DEC-015 section 2.4)
+Documentation=https://github.com/vaanai/MAL
+
+[Slice]
+# System slice, a sibling of user.slice. Not under user-1000.slice, so a runner at its cap
+# cannot take the ubuntu listeners down.
+MemoryHigh=5G
+MemoryMax=6G
