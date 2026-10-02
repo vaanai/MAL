@@ -616,11 +616,12 @@ def run_worker_a(
     backfill: Path | None = None,
     entry_land_k: int | Sequence[int] | None = None,
     entry_bound: str | None = None,
+    specs: Sequence[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """A fixed-positional-signature wrapper so `rows_out_path` (keyword-only
     on run_worker_features) can be passed through `Pool.starmap`, which only
     unpacks tuples positionally."""
-    ek = {"entry_land_k": entry_land_k, "entry_bound": entry_bound}
+    ek = {"entry_land_k": entry_land_k, "entry_bound": entry_bound, "specs": specs}
     if backfill is None:
         return run_worker_features(worker_id, home_keys, buffer_keys, creator_hist, rows_out_path=rows_out_path, **ek)
     return run_worker_features(
@@ -636,6 +637,7 @@ def run_all_features(
     backfill: Path | None = None,
     entry_land_k: int | Sequence[int] | None = None,
     entry_bound: str | None = None,
+    specs: Sequence[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """out_dir=None (default): every worker returns its rows in memory, as
     before -- fine for tests and small slices. out_dir set: each worker
@@ -659,7 +661,7 @@ def run_all_features(
     print(f"worker_plan={[(i, h[0], h[-1], b) for i, h, b in plan]}", file=sys.stderr, flush=True)
     paths = [_rows_out_path(out_dir, "A", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
-    extra = (backfill, entry_land_k, entry_bound)
+    extra = (backfill, entry_land_k, entry_bound, specs)
     if max_workers <= 1 or len(plan) <= 1:
         for (worker_id, home, buf), path in zip(plan, paths):
             rows.extend(run_worker_a(worker_id, home, buf, creator_hist, path, *extra))
