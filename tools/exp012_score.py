@@ -541,9 +541,11 @@ def make_hours(walkers: Sequence[Walker]) -> HoldoutHours:
     return HoldoutHours(clean_by_hour, has_create)
 
 
-def build_creator_history(hours: HoldoutHours) -> dict[str, list[int]]:
+def build_creator_history(hours: Any, keys: Sequence[str] | None = None) -> dict[str, list[int]]:
+    """`keys` defaults to the 144-hour block. tools/exp012_forward.py passes its own
+    hour list and resolver; the body is unchanged."""
     hist: dict[str, list[int]] = {}
-    for key in BLOCK_HOURS:
+    for key in BLOCK_HOURS if keys is None else keys:
         path = hours(key).get("create")
         if path is None:
             continue
@@ -562,18 +564,33 @@ def _run_worker(worker_id: int, home: list[str], buf: list[str], creator_hist: d
     return run_worker_features(worker_id, home, buf, creator_hist, hour_info_fn=hours, rows_out_path=rows_out_path)
 
 
-def load_rows(hours: HoldoutHours, max_workers: int, buffer_hours: int, max_home_hours: int | None, out_dir: Path | None) -> list[dict[str, Any]]:
-    creator_hist = build_creator_history(hours)
+def load_rows(
+    hours: Any,
+    max_workers: int,
+    buffer_hours: int,
+    max_home_hours: int | None,
+    out_dir: Path | None,
+    *,
+    pool_hours: Sequence[str] | None = None,
+    worker_fn: Any = None,
+    plan: Sequence[tuple[int, list[str], list[str]]] | None = None,
+) -> list[dict[str, Any]]:
+    """`pool_hours` (default: the 144-hour block) and `worker_fn` (default
+    `_run_worker`) and `plan` (a precomputed chunk plan, default `chunk_plan(...)`) are keyword-only hooks for tools/exp012_forward.py, which feeds
+    the same table build a different hour list. Defaults reproduce the read exactly."""
+    pool_keys = BLOCK_HOURS if pool_hours is None else list(pool_hours)
+    worker = _run_worker if worker_fn is None else worker_fn
+    creator_hist = build_creator_history(hours, pool_keys)
     print(f"EXP-012 score: holdout creator_history creators={len(creator_hist)}", file=sys.stderr, flush=True)
-    plan = chunk_plan(BLOCK_HOURS, max_workers, buffer_hours, max_home_hours)
+    plan = list(plan) if plan is not None else chunk_plan(pool_keys, max_workers, buffer_hours, max_home_hours)
     paths = [_rows_out_path(out_dir, "HOLDOUT12", i) for i, _h, _b in plan]
     rows: list[dict[str, Any]] = []
     if max_workers <= 1 or len(plan) <= 1:
         for (i, h, b), p in zip(plan, paths):
-            rows.extend(_run_worker(i, h, b, creator_hist, p, hours))
+            rows.extend(worker(i, h, b, creator_hist, p, hours))
     else:
         with mp.get_context("spawn").Pool(processes=min(max_workers, len(plan))) as pool:
-            for part in pool.starmap(_run_worker, [(i, h, b, creator_hist, p, hours) for (i, h, b), p in zip(plan, paths)]):
+            for part in pool.starmap(worker, [(i, h, b, creator_hist, p, hours) for (i, h, b), p in zip(plan, paths)]):
                 rows.extend(part)
     if out_dir is not None:
         for p in paths:
