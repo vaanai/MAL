@@ -71,3 +71,13 @@ This follows a `quant-proof` review of the design. It is fixed before any forwar
    - (a) **Latency and size sensitivity** on the same rows: re-scored at entry slot + k for the measured fast-0 p50 and p90 latency, and at the trial's size and priority fee. **A PASS that turns negative at measured latency or at trial size does not support live.** The rule is stated now, before any forward data exists.
    - (b) The **live-readiness comparison** (§3): runner paper rows against scorer rows for the same mints, with tolerances fixed before the read. It covers entered-set overlap, fill agreement, entry slot and price difference, realized fail rate against the pressure model by bucket, and exit price difference.
 6. **Not changed:** the frozen model, threshold, execution, size (0.5 SOL in the scorer) and both fail models.
+
+## Amendment 2 (2026-10-02): files that hold P&L before the read are not opened
+
+`tools/exp012_forward.py` (#220, #223) enforces the pinned window, INTERIM-only reports, the `final_read.lock` and an external FINAL ledger at `/data/mal/exp012-forward/FINAL_READS.jsonl`. Three things still hold per-row nets at rest during the window, because the scorer needs them:
+
+- `OUT/rows.jsonl`
+- `OUT/scratch/*.jsonl`
+- a FINAL `report.json` or `report.md`, which only exists after the read
+
+**Rule:** before the FINAL read, no person, agent or job opens or prints these files, or any `flat`, `press`, `*_sol` or `gross` field from them. Only `tools/exp012_forward.py score` and `report` read them. Monitoring uses INTERIM `report` output and the `runs.jsonl` counts only. A breach is recorded here, dated, and the read is reported as compromised.
