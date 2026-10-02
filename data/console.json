@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-02T13:45:00Z",
+  "updated_utc": "2026-10-02T16:00:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -14,9 +14,9 @@
     {
       "id": "exp012-forward",
       "kind": "other",
-      "title": "EXP-012 forward-paper book on mal-fast-0",
-      "detail": "Starts after the 10-05 kill review once the DEC-015 preconditions are met. The fast trade tape failed its coverage check (84.759% of chain trades, bar 95%), so the forward data source is being re-decided. The book must clear the gate on its own forward trades; then owner approval for live.",
-      "atUtc": "2026-10-05T05:00:00Z"
+      "title": "EXP-012 forward book: counting starts 10-06 00:00Z",
+      "detail": "Scored on forward chain hours with the code that passed the one-shot test (DEC-016). 10 full days, one read at about 10-16 02:00Z; anything earlier shows counts only. A PASS allows asking for a small live trial, after latency/size and runner-fill checks.",
+      "atUtc": "2026-10-06T00:00:00Z"
     },
     {
       "id": "explore-0814",
@@ -32,6 +32,14 @@
       "title": "Backup test block fetching",
       "detail": "[08-28T12, 09-03T12), 3 walkers as MiScusi jobs, ready if EXP-012 fails.",
       "atUtc": "2026-10-01T14:00:00Z",
+      "approx": true
+    },
+    {
+      "id": "exp012-forward-read",
+      "kind": "other",
+      "title": "EXP-012 forward read (one-shot)",
+      "detail": "Single FINAL read of [10-06T00, 10-16T00). Secondary models (DEC-017, if registered by 10-05) read at the same time under their own Holm family.",
+      "atUtc": "2026-10-16T02:00:00Z",
       "approx": true
     }
   ],
@@ -312,6 +320,13 @@
       "kind": "status",
       "text": "Fast trade tape trial restarted with 2 redundant public sockets (#233). First minute: both subscribed, 0 reconnects, 0 rejections, duplicates merged cleanly. Coverage against chain to be re-measured after 24 h.",
       "atUtc": "2026-10-02T13:45:00Z"
+    },
+    {
+      "id": "s-20261002-1600",
+      "from": "claude",
+      "kind": "decision",
+      "text": "Forward walk started (job #71) after owner OK: every finished hour is fetched from the chain and verified, from 10-02T15. EXP-012's forward book counts 10-06 to 10-16, one read at about 10-16 02Z. About 9.7M Helius credits a month.",
+      "atUtc": "2026-10-02T16:00:00Z"
     }
   ]
 }
