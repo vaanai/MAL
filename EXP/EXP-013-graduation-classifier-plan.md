@@ -84,3 +84,35 @@ Rows near each pool's first and last day are flagged in the table: censored mint
 ## Amendment 4 (2026-10-02, before any real-data run): migration sell delay
 
 The migration sell lands at **migration + max(4, k) slots**. That equals the fixed design (migration + 4) at k ≤ 4, including the primary k = 4. At k = 8 it lags like the other exits. This resolves the wording in Amendment 3 §1 conservatively.
+
+## Amendment 5 (2026-10-02, before any real-data model run): how the screen computes each item
+
+Written by the manager before the screen code (PR3) exists. No model, LODO or screen output has been computed on real data. Debug table build job #88 (9-day pool + `explore-0814/w1`) builds the table only, to measure runtime and memory (Amendment 1 §6). Nothing below relaxes a bar.
+
+1. **Selection.**
+   - **Scheme.** One nested LODO over all screen days (`tools/exp013_grad_model.nested_lodo_select`). For each outer day d:
+     - the threshold is the p90 of the pooled inner-LODO OOF scores over the other days;
+     - the outer model is trained on the other days;
+     - day d's rows are selected at score ≥ threshold.
+   - **Training rows.** The k = 4 rows, MISS rows included. Selection is by mint.
+   - **Skips.** A mint censored at k = 4 is not scored. An outer day with < 20 training rows or a single label class is skipped. Both are counted in the report.
+2. **Bars 1–3** are computed by the project gate's own `tools.paper_attention_promote.book_stats` on the selected trades, under both fail models:
+   - its CI (1,000 draws, seed 1);
+   - its ex-top-3 rule;
+   - its majority-of-days rule, where the days are those with at least one selected trade.
+
+   Each trade's time is its trigger time, so its day is the trigger day (Amendment 1 §5). Bar 1 passes on CI lower bound > 0, which implies mean > 0. The gate's n ≥ 100 and ≥ 5-day conditions are reported, not screen bars.
+3. **Items 4a and 4b** restrict the **same** pooled nested-LODO selected trades from item 1 to the 4a days (pool A plus the August views) and to the 4b days (August views only), and apply bars 1–3 again. No separate within-source model is trained. The models that make the selection are the ones the confirmation freeze would use, so this tests the frozen recipe's edge on that source.
+4. **Item 5 (slot + 8).** For the item-1 selected mints, the pooled mean of the k = 8 rows (the same mints, priced at entry slot + 8 under Amendment 4) must be > 0 under both fail models. Selected mints with no k = 8 row (censored at k = 8) are counted and reported, never imputed.
+5. **Item 6 (Jaccard).** EXP-012's OOF-selected set exists only on its 9 pool days (`ARTIFACTS/exp012/oof_scores.json` at `threshold.json`). The Jaccard is computed by mint over those 9 days: the EXP-013 selected mints on those days against EXP-012's OOF-selected mints on those days. The August days have no EXP-012 OOF set and are reported as n/a. Only `oof_scores.json`, `threshold.json` and `features.json` are opened; `ARTIFACTS/exp012/read/` is refused. The daily-PnL correlation is reported on the same 9 days.
+6. **Tries.**
+   - A try is one configuration screened on real data.
+   - The plan fixes one configuration, and the screen runs once (Amendment 1 §6). After a FAIL the family closes, so this plan uses at most one try.
+   - The code refuses a fourth `exp013_grad` entry in the tries log as a hard ceiling. It also refuses to run a second time on the same pinned manifest.
+7. **Order of the single run** (after 2026-10-04T12:00:00Z):
+   1. pin the view manifest;
+   2. build the table;
+   3. run the screen once;
+   4. append the tries-log line.
+
+   The report shows bars 1–3 with and without edge-flagged days (Amendment 3). The pass decision uses the full set.
