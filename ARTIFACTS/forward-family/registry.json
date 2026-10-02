@@ -2,7 +2,7 @@
   "schema": "forward_family_registry_v1",
   "family": "S",
   "dec": "DEC-017",
-  "registration_deadline": "2026-10-05T23:59:00Z",
+  "registry_deadline": "2026-10-05T23:59:00Z",
   "k": 0,
   "secondaries": []
 }

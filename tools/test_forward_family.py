@@ -25,6 +25,7 @@ CLEAN_CLOCK, READ_END = T.CLEAN_CLOCK, T.READ_END
 TO = "2026-10-05T09"
 SEC = "EXP-013"
 SEC2 = "EXP-014"
+REAL_GATE = fw.gate_verdict
 VOLATILE = ("utc_time", "runtime_s", "generated_at_utc", "code_commit")
 
 
@@ -45,10 +46,14 @@ class Fam(T.Base):
         self.ledger12 = self.d / "ledger12.jsonl"
         self.registry = self.d / "registry.json"
         self.write_registry([SEC])
+        self.force: str | None = None  # a forced EXP-012 verdict: the 4-trade fixture book cannot PASS the gate
+        p = mock.patch.object(fw, "gate_verdict", side_effect=lambda rows: self.force or REAL_GATE(rows))
+        p.start()
+        self.addCleanup(p.stop)
 
     # --- helpers
     def write_registry(self, names: list[str]) -> None:
-        self.registry.write_text(json.dumps({"schema": ff.SCHEMA_REGISTRY, "family": "S", "k": len(names), "secondaries": [{"experiment": n, "registration_order": i} for i, n in enumerate(names, 1)]}))
+        self.registry.write_text(json.dumps({"schema": ff.SCHEMA_REGISTRY, "family": "S", "k": len(names), "registry_deadline": "2026-10-05T23:59:00Z", "secondaries": [{"experiment": n, "registration_order": i} for i, n in enumerate(names, 1)]}))
 
     def write_spec(self, exp: str = SEC, order: int = 1, **over) -> Path:
         doc = {
@@ -61,6 +66,17 @@ class Fam(T.Base):
         p = self.d / f"spec-{exp}.json"
         p.write_text(json.dumps(doc))
         return p
+
+    def band_art(self, thr: float) -> str:
+        """A copy of the fixture artifacts whose frozen threshold is `thr` (a band's t_high must equal it)."""
+        import tools.exp011_freeze as fz
+
+        dst = self.d / f"art-{thr}"
+        if not dst.exists():
+            shutil.copytree(self.art, dst)
+            (dst / "threshold.json").write_text(json.dumps({"threshold": thr}))
+            fz.write_frozen_manifest(dst)
+        return str(dst)
 
     def main(self, argv: list[str]) -> tuple[int, str]:
         err = io.StringIO()
@@ -85,7 +101,7 @@ class Fam(T.Base):
         return self.d / f"ledger-{exp}.jsonl"
 
     def score_sec(self, spec: Path, exp: str = SEC, *extra: str) -> tuple[int, str]:
-        return self.main(["score", "--experiment", exp, "--spec", str(spec), "--walk-dir", str(self.walk), "--out-dir", str(self.sec_out(exp)), "--final-ledger", str(self.sec_ledger(exp)), "--to", TO, *self.win(), *extra])
+        return self.main(["score", "--experiment", exp, "--spec", str(spec), "--walk-dir", str(self.walk), "--out-dir", str(self.sec_out(exp)), "--final-ledger", str(self.sec_ledger(exp)), "--registry", str(self.registry), "--primary-ledger", str(self.ledger12), "--to", TO, *self.win(), *extra])
 
     def report_sec(self, spec: Path, exp: str = SEC, *extra: str) -> tuple[int, str]:
         return self.main(["report", "--experiment", exp, "--spec", str(spec), "--walk-dir", str(self.walk), "--out-dir", str(self.sec_out(exp)), "--final-ledger", str(self.sec_ledger(exp)), "--primary-ledger", str(self.ledger12), "--registry", str(self.registry), *self.win(), *extra])
@@ -95,12 +111,9 @@ class Fam(T.Base):
         self.score12()
         rc, err = self.report12()
         self.assertEqual(rc, 0, err)
-        rp = self.out12 / "report.json"
-        rep = json.loads(rp.read_text())
-        self.assertEqual(rep["mode"], "FINAL")
+        self.assertEqual(json.loads((self.out12 / "report.json").read_text())["mode"], "FINAL")
         if verdict:
-            rep["verdict"] = verdict  # report.json is not under the lock's hash
-            rp.write_text(json.dumps(rep))
+            self.force = verdict
 
 
 class ExperimentSpecTests(unittest.TestCase):
@@ -120,7 +133,7 @@ class ExperimentSpecTests(unittest.TestCase):
         self.assertEqual((reg["k"], reg["secondaries"]), (0, []))
 
     def test_secondary_window_must_be_dec017s_unless_test_window(self) -> None:
-        base = {"schema": ff.SCHEMA_SPEC, "experiment": SEC, "role": "secondary", "registration_order": 1, "variant_kind": "refit", "artifact_dir": "x", "clean_clock": "2026-10-06T00:00:00Z", "read_end": "2026-10-16T00:00:00Z"}
+        base = {"schema": ff.SCHEMA_SPEC, "experiment": SEC, "role": "secondary", "registration_order": 1, "variant_kind": "refit", "artifact_dir": "x", "freeze_commit": "abc", "clean_clock": "2026-10-06T00:00:00Z", "read_end": "2026-10-16T00:00:00Z"}
         ff.parse_spec(base)
         for over in ({"clean_clock": "2026-10-07T00:00:00Z"}, {"read_end": "2026-10-15T00:00:00Z"}):
             with self.assertRaises(ff.SpecRefused) as cm:
@@ -129,11 +142,12 @@ class ExperimentSpecTests(unittest.TestCase):
             ff.parse_spec({**base, **over}, test_window=True)
 
     def test_spec_validation(self) -> None:
-        base = {"schema": ff.SCHEMA_SPEC, "experiment": SEC, "role": "secondary", "registration_order": 1, "variant_kind": "exit", "artifact_dir": "x", "reference_experiment": "EXP-012", "clean_clock": ff.DEC017_CLEAN_CLOCK, "read_end": ff.DEC017_READ_END}
+        base = {"schema": ff.SCHEMA_SPEC, "experiment": SEC, "role": "secondary", "registration_order": 1, "variant_kind": "exit", "artifact_dir": "x", "reference_experiment": "EXP-012", "freeze_commit": "abc", "clean_clock": ff.DEC017_CLEAN_CLOCK, "read_end": ff.DEC017_READ_END}
         ff.parse_spec(base)
         bad = [
             {"variant_kind": "exit", "reference_experiment": None},
             {"variant_kind": "band", "reference_experiment": None},
+            {"freeze_commit": None},
             {"variant_kind": "refit", "selection_band": {"t_low": 0.1, "t_high": 0.2}},
             {"variant_kind": "band", "reference_experiment": None, "selection_band": {"t_low": 0.3, "t_high": 0.2}},
             {"exit_spec_id": "no_such_exit"},
@@ -190,7 +204,11 @@ class Exp012ByteIdentityTests(Fam):
         for r in jl(a / "rows.jsonl"):
             self.assertNotIn("in_band", r)
         for doc in jl(a / "runs.jsonl") + jl(la):
-            self.assertNotIn("experiment", doc)  # EXP-012's documents carry no new key
+            if doc.get("final"):
+                self.assertEqual(doc["experiment"], "EXP-012")  # ownership is written into every lock and marker
+            else:
+                self.assertNotIn("experiment", doc)  # EXP-012's score summaries carry no new key
+        self.assertEqual(json.loads((a / "final_read.lock").read_text())["experiment"], "EXP-012")
 
     def test_make_row_without_a_band_is_unchanged(self) -> None:
         r = {"mint": "m", "mig_ms": 5, "day": "2026-10-06", "spec": "tpsl_tp50_sl30", "score": 0.9, "filled": True, "status": 0, "gross": 1, "flat": 2.0, "press": 3.0}
@@ -218,14 +236,14 @@ class SecondaryScoringTests(Fam):
         self.assertEqual(len(all_scores), 4)
         n0, n1 = all_scores.count(s0), all_scores.count(s1)
         # band [s0, s1): t_low inclusive, t_high exclusive; the full book is score >= t_low
-        spec = self.write_spec(variant_kind="band", reference_experiment=None, selection_band={"t_low": s0, "t_high": s1}, exit_spec_id="tpsl_tp50_sl30")
+        spec = self.write_spec(variant_kind="band", reference_experiment=None, selection_band={"t_low": s0, "t_high": s1}, exit_spec_id="tpsl_tp50_sl30", artifact_dir=self.band_art(s1))
         rc, err = self.score_sec(spec)
         self.assertEqual(rc, 0, err)
         rows = jl(self.sec_out() / "rows.jsonl")
         self.assertEqual((sum(r["entered"] for r in rows), sum(r["in_band"] for r in rows)), (4, n0))
         self.assertEqual({r["score"] for r in rows if r["in_band"]}, {s0})
         # band [mid, s1 + 1): only the upper rows are in the book and in the band
-        spec2 = self.write_spec(SEC2, 2, variant_kind="band", reference_experiment=None, selection_band={"t_low": (s0 + s1) / 2, "t_high": s1 + 1}, exit_spec_id="tpsl_tp50_sl30")
+        spec2 = self.write_spec(SEC2, 2, variant_kind="band", reference_experiment=None, selection_band={"t_low": (s0 + s1) / 2, "t_high": s1 + 1}, exit_spec_id="tpsl_tp50_sl30", artifact_dir=self.band_art(s1 + 1))
         rc, err = self.score_sec(spec2, SEC2)
         self.assertEqual(rc, 0, err)
         rows2 = jl(self.sec_out(SEC2) / "rows.jsonl")
@@ -275,7 +293,7 @@ class SecondaryScoringTests(Fam):
 
 class InterimTests(Fam):
     def test_interim_hides_pnl_for_a_secondary_too(self) -> None:
-        scores_spec = self.write_spec(variant_kind="band", reference_experiment=None, selection_band={"t_low": 0.0, "t_high": 2.0}, exit_spec_id="tpsl_tp50_sl30")
+        scores_spec = self.write_spec(variant_kind="band", reference_experiment=None, selection_band={"t_low": 0.0, "t_high": 2.0}, exit_spec_id="tpsl_tp50_sl30", artifact_dir=self.band_art(2.0))
         rc, err = self.main(["score", "--experiment", SEC, "--spec", str(scores_spec), "--walk-dir", str(self.walk), "--out-dir", str(self.sec_out()), "--final-ledger", str(self.sec_ledger()), "--to", "2026-10-05T07", *self.win()])
         self.assertEqual(rc, 0, err)
         rc, err = self.report_sec(scores_spec)
@@ -349,7 +367,7 @@ class GatekeepingTests(Fam):
         self.primary_final("PASS")
         kinds = {
             SEC: dict(),
-            SEC2: dict(variant_kind="band", reference_experiment=None, selection_band={"t_low": 0.0, "t_high": 2.0}, exit_spec_id="tpsl_tp50_sl30", registration_order=2),
+            SEC2: dict(variant_kind="band", reference_experiment=None, selection_band={"t_low": 0.0, "t_high": 2.0}, exit_spec_id="tpsl_tp50_sl30", registration_order=2, artifact_dir=self.band_art(2.0)),
             "EXP-015": dict(variant_kind="refit", reference_experiment=None, exit_spec_id="tpsl_tp50_sl30", registration_order=3),
         }
         self.write_registry([SEC, SEC2, "EXP-015"])
@@ -362,7 +380,9 @@ class GatekeepingTests(Fam):
             self.assertEqual(r["gate_state"], "open")
             self.assertIn(r["verdict"], ("PENDING_HOLM", "FAIL"))
             self.assertFalse(r["own_checks_clear"])  # 4 trades: the full-book gate needs n >= 100
-            self.assertEqual(r["bootstrap"], {"draws": 10000, "seed": 1})
+            self.assertEqual((r["bootstrap"]["draws"], r["bootstrap"]["seed"]), (10000, 1))
+            self.assertIn("1,000 draws", r["bootstrap"]["note"])
+            self.assertEqual(set(r["binding"]), {"registry_sha256", "spec_sha256", "frozen_manifest_md5"})
             self.assertEqual(set(r["tested_quantity"]["p"]), {"flat", "press"})
             self.assertIn(r["tested_quantity"]["kind"], ("exit_increment", "band", "refit_full_book"))
             self.assertIn("flat_15", r["full_book_gate"])
@@ -420,7 +440,7 @@ class HolmTests(Fam):
         out.mkdir(parents=True)
         (out / "rows.jsonl").write_text("")
         cc, re_ = fw._wins(fw.parse_clock(CLEAN_CLOCK), fw.parse_clock(READ_END))
-        (out / "final_read.lock").write_text(json.dumps({"clean_clock": cc, "read_end": re_, "test_window": True, "rows_sha256": fw._rows_sha256(out)}))
+        (out / "final_read.lock").write_text(json.dumps({"experiment": report["experiment"], "registry_sha256": ff.file_sha256(self.registry), "clean_clock": cc, "read_end": re_, "test_window": True, "rows_sha256": fw._rows_sha256(out)}))
         (out / "report.json").write_text(json.dumps(report))
 
     def _family(self, p_a: dict, p_b: dict, own: tuple[bool, bool] = (True, True), primary: str = "PASS") -> tuple[Path, Path]:
@@ -429,7 +449,7 @@ class HolmTests(Fam):
         self.write_registry([SEC, SEC2])
         dirs = {}
         for i, (exp, p, o) in enumerate(((SEC, p_a, own[0]), (SEC2, p_b, own[1])), 1):
-            rep = {"schema": fw.SCHEMA_SECONDARY_REPORT, "mode": "FINAL", "experiment": exp, "registration_order": i, "gate_state": "open" if primary == "PASS" else "closed", "own_checks_clear": o, "tested_quantity": {"p": p}, "primary": {"rows_sha256": prim["rows_sha256"]}}
+            rep = {"schema": fw.SCHEMA_SECONDARY_REPORT, "mode": "FINAL", "experiment": exp, "registration_order": i, "gate_state": "open" if primary == "PASS" else "closed", "own_checks_clear": o, "tested_quantity": {"p": p}, "primary": {"rows_sha256": prim["rows_sha256"]}, "binding": {"registry_sha256": ff.file_sha256(self.registry)}}
             dirs[exp] = self.d / f"fab-{exp}"
             self._fabricate(dirs[exp], rep)
         out = self.d / "family.json"

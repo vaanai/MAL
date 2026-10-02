@@ -19,8 +19,11 @@ Nothing here opens a tape or a P&L file; it only computes on rows it is handed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import subprocess
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -155,6 +158,8 @@ def parse_spec(doc: dict[str, Any], *, repo_root: Path = REPO_ROOT, source: Path
             bad.append("selection_band is only for variant_kind 'band'")
         if kind == "refit" and ref is not None:
             bad.append("a refit is tested on the full gate only; it has no reference_experiment")
+        if not doc.get("freeze_commit"):
+            bad.append("a secondary carries its own freeze_commit (no fallback to EXP-012's)")
         if not test_window and (cc, re_) != (DEC017_CLEAN_CLOCK, DEC017_READ_END):
             bad.append(f"a secondary's window must be DEC-017's [{DEC017_CLEAN_CLOCK}, {DEC017_READ_END}), spec has [{cc}, {re_}); an override needs --test-window")
     md5 = doc.get("frozen_manifest_md5")
@@ -212,6 +217,11 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
         bad.append("registry secondaries need unique experiment ids")
     if orders != list(range(1, len(secs) + 1)):
         bad.append(f"registration orders must be 1..k in file order, got {orders}")
+    deadline = doc.get("registry_deadline")
+    try:
+        datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
+    except ValueError:
+        bad.append(f"registry_deadline {deadline!r} is not an ISO instant")
     if doc.get("k") != len(secs):
         bad.append(f"registry k={doc.get('k')!r} but lists {len(secs)} secondaries; k is fixed at the deadline")
     if PRIMARY_EXPERIMENT in names:
@@ -219,6 +229,26 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
     if bad:
         raise SpecRefused(bad)
     return doc
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def registry_commit_problem(path: Path, deadline: str) -> str | None:
+    """None if the registry file's last git commit is at or before `deadline`; else the reason.
+    An uncommitted or untracked file is a problem too: the registry must be what git recorded."""
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%cI", "--", path.name], cwd=path.parent, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"cannot read the registry's git history ({exc})"
+    stamp = out.stdout.strip()
+    if out.returncode != 0 or not stamp:
+        return f"{path} has no git commit date (untracked or not in a git checkout)"
+    dl = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+    if datetime.fromisoformat(stamp) > dl:
+        return f"{path} was last committed {stamp}, after the registry deadline {deadline}: k was not fixed in time"
+    return None
 
 
 def require_registered(spec: ForwardSpec, registry: dict[str, Any]) -> None:

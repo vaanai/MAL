@@ -588,11 +588,52 @@ def check_final_state(out_dir: Path, ledger: Path | None, clean_clock: datetime,
         raise Refused(sorted(set(problems)))
 
 
-def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None, read_end: datetime | None = None, test_window: bool = False, final_ledger: Path | None = None, spec: ff.ForwardSpec | None = None) -> dict[str, Any]:
+def check_lock_owner(out_dir: Path, experiment: str) -> None:
+    """Refuse if this out-dir's lock or FINAL markers belong to another experiment (DEC-017 ownership).
+    Documents written before the `experiment` field existed are EXP-012's."""
+    docs = []
+    lock = out_dir / LOCK_NAME
+    if lock.is_file():
+        docs.append((LOCK_NAME, json.loads(lock.read_text(encoding="utf-8"))))
+    runs = out_dir / RUNS_NAME
+    if runs.is_file():
+        docs += [(RUNS_NAME, m) for m in read_rows(runs) if m.get("final")]
+    for name, d in docs:
+        if d.get("experiment", ff.PRIMARY_EXPERIMENT) != experiment:
+            raise Refused([f"{out_dir / name} belongs to {d.get('experiment', ff.PRIMARY_EXPERIMENT)}, not {experiment}; every experiment has its own --out-dir"])
+
+
+def check_ledgers(experiment: str, final_ledger: Path | None, primary_ledger: Path | None) -> None:
+    """A secondary's ledger may never be EXP-012's, by realpath."""
+    if experiment == ff.PRIMARY_EXPERIMENT or final_ledger is None:
+        return
+    mine = os.path.realpath(final_ledger)
+    for other in (ff.PRIMARY_LEDGER, primary_ledger):
+        if other is not None and os.path.realpath(other) == mine:
+            raise Refused([f"{experiment}'s --final-ledger {final_ledger} is EXP-012's ledger; a secondary has its own"])
+
+
+def secondary_binding(spec: ff.ForwardSpec, registry_path: Path | None, artifact_dir: Path) -> dict[str, Any]:
+    """What a secondary's runs, lock and FINAL marker are bound to: the registry file, the spec file, the frozen manifest."""
+    reg = registry_path if registry_path is not None else ff.REGISTRY_PATH
+    return {
+        "registry_sha256": ff.file_sha256(reg) if reg.is_file() else None,
+        "spec_sha256": ff.file_sha256(spec.source) if spec.source is not None and spec.source.is_file() else None,
+        "frozen_manifest_md5": _md5_of_file(artifact_dir / FROZEN_MANIFEST_NAME) if (artifact_dir / FROZEN_MANIFEST_NAME).is_file() else None,
+    }
+
+
+def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None, read_end: datetime | None = None, test_window: bool = False, final_ledger: Path | None = None, spec: ff.ForwardSpec | None = None, registry_path: Path | None = None, primary_ledger: Path | None = None) -> dict[str, Any]:
     read_end = read_end if read_end is not None else parse_clock(PINNED_READ_END)
     experiment = spec.experiment if spec is not None else ff.PRIMARY_EXPERIMENT
     secondary = spec is not None and spec.is_secondary
     check_window(clean_clock, read_end, test_window)
+    check_lock_owner(out_dir, experiment)
+    check_ledgers(experiment, final_ledger, primary_ledger)
+    if secondary and spec.band is not None:
+        thr_file = float(json.loads((artifact_dir / spec.threshold_file).read_text(encoding="utf-8"))["threshold"]) if (artifact_dir / spec.threshold_file).is_file() else None
+        if thr_file is None or spec.band[1] != thr_file or not spec.band[0] < spec.band[1]:
+            raise Refused([f"{experiment}: selection_band t_high {spec.band[1]!r} must equal the frozen threshold {thr_file!r} and t_low < t_high"])
     check_final_state(out_dir, final_ledger, clean_clock, read_end, test_window, experiment)
     if (out_dir / LOCK_NAME).exists():
         raise Refused([f"{out_dir / LOCK_NAME} exists: the final read was taken; score no longer writes rows here"])
@@ -659,7 +700,7 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
         "runtime_s": round(time.time() - t0, 1),
     }
     if secondary:
-        summary.update({"experiment": experiment, "exit_spec_id": spec.exit_spec_id, "selection_band": list(spec.band) if spec.band else None})
+        summary.update({"experiment": experiment, "exit_spec_id": spec.exit_spec_id, "selection_band": list(spec.band) if spec.band else None, **secondary_binding(spec, registry_path, artifact_dir)})
     summary["rows_sha256"] = _rows_sha256(out_dir)
     old_runs = runs_path.read_bytes() if runs_path.is_file() else b""
     atomic_write(runs_path, old_runs + (json.dumps(summary, sort_keys=True) + "\n").encode("utf-8"))
@@ -868,8 +909,9 @@ def _write_final_files(out_dir: Path, rep: dict[str, Any]) -> None:
     atomic_write(out_dir / "report.md", md.encode("utf-8"))
 
 
-def _final_docs(out_dir: Path, rows_sha: str, cc_s: str, re_s: str, test_window: bool, experiment: str = ff.PRIMARY_EXPERIMENT) -> dict[str, Any]:
+def _final_docs(out_dir: Path, rows_sha: str, cc_s: str, re_s: str, test_window: bool, experiment: str = ff.PRIMARY_EXPERIMENT, binding: dict[str, Any] | None = None) -> dict[str, Any]:
     doc = {
+        "experiment": experiment,
         "final": True,
         "schema": SCHEMA_MARKER,
         "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -880,8 +922,8 @@ def _final_docs(out_dir: Path, rows_sha: str, cc_s: str, re_s: str, test_window:
         "lock_sha256": _sha256_file(out_dir / LOCK_NAME),
         "out_dir": str(out_dir.resolve()),
     }
-    if experiment != ff.PRIMARY_EXPERIMENT:
-        doc["experiment"] = experiment
+    if binding:
+        doc.update(binding)
     return doc
 
 
@@ -910,6 +952,7 @@ def run_report(
     primary_ledger: Path | None = None,
     registry_path: Path | None = None,
     reference_out_dir: Path | None = None,
+    reference_ledger: Path | None = None,
 ) -> dict[str, Any]:
     experiment = spec.experiment if spec is not None else ff.PRIMARY_EXPERIMENT
     secondary = spec is not None and spec.is_secondary
@@ -917,6 +960,8 @@ def run_report(
     re_ = read_end if read_end is not None else parse_clock(PINNED_READ_END)
     check_window(cc, re_, test_window)
     cc_s, re_s = _wins(cc, re_)
+    check_lock_owner(out_dir, experiment)  # before --reprint can overwrite another experiment's report
+    check_ledgers(experiment, final_ledger, primary_ledger)
     check_final_state(out_dir, final_ledger, cc, re_, test_window, experiment)
     lock_path = out_dir / LOCK_NAME
     rows = read_rows(out_dir / ROWS_NAME)
@@ -930,13 +975,18 @@ def run_report(
             raise Refused(["--reprint: the lock was taken for a different window or test_window flag"])
         if _rows_sha256(out_dir) != lock.get("rows_sha256"):
             raise Refused([f"--reprint refused: {out_dir / ROWS_NAME} no longer hashes to the lock's rows_sha256"])
+        ctx0 = secondary_context(spec, cc_s, re_s, test_window, primary_ledger, registry_path, reference_out_dir, reference_ledger) if secondary else None
+        if secondary:
+            changed = [k for k, v in ctx0["binding"].items() if lock.get(k) != v]
+            if changed:
+                raise Refused([f"--reprint: {experiment}'s lock binds {changed} to values that differ from the current registry, spec or frozen manifest"])
+        bind = ctx0["binding"] if secondary else None
         # a crash between the lock and the markers leaves none: complete them from the lock
         have_runs = any(m.get("final") for m in all_runs)
         if not have_runs:
-            _append_marker_to_runs(out_dir, _final_docs(out_dir, lock["rows_sha256"], cc_s, re_s, test_window, experiment))
+            _append_marker_to_runs(out_dir, _final_docs(out_dir, lock["rows_sha256"], cc_s, re_s, test_window, experiment, bind))
         if final_ledger is not None and not any(m.get("out_dir") == str(out_dir.resolve()) and (m.get("clean_clock"), m.get("read_end")) == (cc_s, re_s) for m in ledger_markers(final_ledger)):
-            ledger_append(final_ledger, _final_docs(out_dir, lock["rows_sha256"], cc_s, re_s, test_window, experiment))
-        ctx0 = secondary_context(spec, cc_s, re_s, test_window, primary_ledger, registry_path, reference_out_dir) if secondary else None
+            ledger_append(final_ledger, _final_docs(out_dir, lock["rows_sha256"], cc_s, re_s, test_window, experiment, bind))
         rep = _final_report(rows, runs, spec, ctx0)
         rep["read_end"] = re_s
         rep["reprint_of_lock"] = lock.get("utc_time")
@@ -969,7 +1019,12 @@ def run_report(
         atomic_write(out_dir / "report.md", render_interim_markdown(rep).encode("utf-8"))
         return rep
     # DEC-017 point 1: a secondary needs EXP-012's FINAL lock. Refused here, before this out-dir's lock exists.
-    ctx = secondary_context(spec, cc_s, re_s, test_window, primary_ledger, registry_path, reference_out_dir) if secondary else None
+    ctx = secondary_context(spec, cc_s, re_s, test_window, primary_ledger, registry_path, reference_out_dir, reference_ledger) if secondary else None
+    if secondary:
+        bind = ctx["binding"]
+        stale = [k for k, v in bind.items() if any(r.get(k) != v for r in (runs[-1:] if k == "registry_sha256" else runs))]
+        if stale:
+            raise Refused([f"{experiment}: score runs were taken against a different {stale} than the current registry, spec or frozen manifest; re-score into a new --out-dir"])
     rep = _final_report(rows, runs, spec, ctx)
     rep["read_end"] = re_s
     _mark_test(rep, test_window)
@@ -977,6 +1032,8 @@ def run_report(
     write_lock(
         out_dir,
         {
+            "experiment": experiment,
+            **(ctx["binding"] if secondary else {}),
             "schema": SCHEMA_LOCK,
             "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "clean_clock": cc_s,
@@ -989,7 +1046,7 @@ def run_report(
         },
     )
     # 2. durable markers: runs.jsonl and the external append-only ledger
-    marker = _final_docs(out_dir, now_sha, cc_s, re_s, test_window, experiment)
+    marker = _final_docs(out_dir, now_sha, cc_s, re_s, test_window, experiment, ctx["binding"] if secondary else None)
     _append_marker_to_runs(out_dir, marker)
     if final_ledger is not None:
         ledger_append(final_ledger, marker)
@@ -1010,12 +1067,14 @@ def _spec_refused(exc: ff.SpecRefused) -> Refused:
     return Refused(exc.reasons)
 
 
-def _locked_final(out_dir: Path, cc_s: str, re_s: str, test_window: bool, what: str) -> dict[str, Any]:
-    """The lock of a FINAL read in `out_dir`, checked against its rows file and window. Names fields, never values."""
+def _locked_final(out_dir: Path, cc_s: str, re_s: str, test_window: bool, what: str, experiment: str = ff.PRIMARY_EXPERIMENT) -> dict[str, Any]:
+    """The lock of `experiment`'s FINAL read in `out_dir`, checked against its rows file and window. Names fields, never values."""
     lock_path = out_dir / LOCK_NAME
     if not lock_path.is_file():
         raise Refused([f"{what}: no {LOCK_NAME} in {out_dir}"])
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    if lock.get("experiment", ff.PRIMARY_EXPERIMENT) != experiment:
+        raise Refused([f"{what}: the lock in {out_dir} belongs to {lock.get('experiment', ff.PRIMARY_EXPERIMENT)}, not {experiment}"])
     if (lock.get("clean_clock"), lock.get("read_end"), bool(lock.get("test_window"))) != (cc_s, re_s, test_window):
         raise Refused([f"{what}: the lock in {out_dir} was taken for a different window or test_window flag"])
     if _rows_sha256(out_dir) != lock.get("rows_sha256"):
@@ -1023,31 +1082,51 @@ def _locked_final(out_dir: Path, cc_s: str, re_s: str, test_window: bool, what: 
     return lock
 
 
-def primary_final(primary_ledger: Path | None, cc_s: str, re_s: str, test_window: bool) -> dict[str, Any]:
-    """EXP-012's FINAL read, found in its external ledger: {out_dir, lock_sha256, rows_sha256, verdict}.
-    Refuses if the ledger holds no FINAL for this window, or its lock/rows/report do not agree."""
+def ledger_final(ledger: Path | None, experiment: str, cc_s: str, re_s: str, test_window: bool, out_dir: Path | None = None) -> dict[str, Any]:
+    """`experiment`'s FINAL read as recorded in its external ledger, with its lock and rows verified against the marker.
+    `out_dir` (if given) must be the marker's out_dir. Returns {out_dir, lock_sha256, rows_sha256}."""
+    want = str(out_dir.resolve()) if out_dir is not None else None
     markers = [
         m
-        for m in ledger_markers(primary_ledger)
+        for m in ledger_markers(ledger)
         if m.get("final")
-        and m.get("experiment", ff.PRIMARY_EXPERIMENT) == ff.PRIMARY_EXPERIMENT
+        and m.get("experiment", ff.PRIMARY_EXPERIMENT) == experiment
         and (m.get("clean_clock"), m.get("read_end")) == (cc_s, re_s)
         and bool(m.get("test_window")) == test_window
+        and (want is None or m.get("out_dir") == want)
     ]
     if not markers:
-        raise Refused([f"DEC-017 point 1: {ff.PRIMARY_EXPERIMENT}'s FINAL read for [{cc_s}, {re_s}) is not in {primary_ledger}; a secondary is read only after it"])
+        where = f" in {out_dir}" if out_dir is not None else ""
+        raise Refused([f"DEC-017: {experiment}'s FINAL read{where} for [{cc_s}, {re_s}) is not in {ledger}"])
     m = markers[-1]
     out = Path(m["out_dir"])
-    lock = _locked_final(out, cc_s, re_s, test_window, f"{ff.PRIMARY_EXPERIMENT} FINAL")
+    lock = _locked_final(out, cc_s, re_s, test_window, f"{experiment} FINAL", experiment)
     if _sha256_file(out / LOCK_NAME) != m.get("lock_sha256") or lock.get("rows_sha256") != m.get("rows_sha256"):
-        raise Refused([f"{ff.PRIMARY_EXPERIMENT} FINAL: the lock in {out} does not match its ledger marker"])
-    rp = out / "report.json"
-    if not rp.is_file():
-        raise Refused([f"{ff.PRIMARY_EXPERIMENT} FINAL: {rp} is missing; run `report --reprint` for EXP-012 first"])
-    rep = json.loads(rp.read_text(encoding="utf-8"))
-    if rep.get("mode") != "FINAL" or rep.get("verdict") not in ("PASS", "FAIL"):
-        raise Refused([f"{ff.PRIMARY_EXPERIMENT} FINAL: {rp} is not a FINAL report with a verdict"])
-    return {"out_dir": str(out), "lock_sha256": m["lock_sha256"], "rows_sha256": m["rows_sha256"], "verdict": rep["verdict"]}
+        raise Refused([f"{experiment} FINAL: the lock in {out} does not match its ledger marker"])
+    return {"out_dir": str(out), "lock_sha256": m["lock_sha256"], "rows_sha256": m["rows_sha256"]}
+
+
+def gate_verdict(rows: Sequence[dict[str, Any]]) -> str:
+    """The promotion gate's verdict recomputed from locked rows, the way `build_report` computes it."""
+    entered = [r for r in rows if r["entered"]]
+    return "PASS" if entered and e11.compute_gate(entered).get("promote") else "FAIL"
+
+
+def primary_final(primary_ledger: Path | None, cc_s: str, re_s: str, test_window: bool) -> dict[str, Any]:
+    """EXP-012's FINAL read from its external ledger: {out_dir, lock_sha256, rows_sha256, verdict}.
+    The verdict is RECOMPUTED from the locked rows (whose sha256 matches the lock and the ledger marker),
+    never read from the mutable report.json."""
+    try:
+        info = ledger_final(primary_ledger, ff.PRIMARY_EXPERIMENT, cc_s, re_s, test_window)
+    except Refused as exc:
+        raise Refused([f"{r}; a secondary is read only after EXP-012's FINAL" for r in exc.reasons])
+    info["verdict"] = gate_verdict(read_rows(Path(info["out_dir"]) / ROWS_NAME))
+    return info
+
+
+def _last_model_md5(out_dir: Path) -> str | None:
+    runs = score_runs(read_rows(out_dir / RUNS_NAME))
+    return runs[-1].get("model_md5") if runs else None
 
 
 def secondary_context(
@@ -1058,23 +1137,30 @@ def secondary_context(
     primary_ledger: Path | None,
     registry_path: Path | None,
     reference_out_dir: Path | None,
+    reference_ledger: Path | None = None,
 ) -> dict[str, Any]:
     """Everything a secondary's FINAL needs from outside its own out-dir; raises Refused before any lock is taken."""
+    reg_path = registry_path if registry_path is not None else ff.REGISTRY_PATH
     try:
-        ff.require_registered(spec, ff.load_registry(registry_path if registry_path is not None else ff.REGISTRY_PATH))
+        ff.require_registered(spec, ff.load_registry(reg_path))
     except ff.SpecRefused as exc:
         raise _spec_refused(exc)
-    prim = primary_final(primary_ledger if primary_ledger is not None else ff.PRIMARY_LEDGER, cc_s, re_s, test_window)
-    ctx: dict[str, Any] = {"primary": prim, "gate_open": prim["verdict"] == "PASS", "reference_rows": None}
+    prim_ledger = primary_ledger if primary_ledger is not None else ff.PRIMARY_LEDGER
+    prim = primary_final(prim_ledger, cc_s, re_s, test_window)
+    ctx: dict[str, Any] = {"primary": prim, "gate_open": prim["verdict"] == "PASS", "reference_rows": None, "binding": secondary_binding(spec, reg_path, spec.artifact_dir)}
     if ctx["gate_open"] and spec.variant_kind == "exit":
+        ref_exp = spec.reference_experiment
         ref_dir = reference_out_dir
         if ref_dir is None:
-            if spec.reference_experiment != ff.PRIMARY_EXPERIMENT:
-                raise Refused([f"{spec.experiment} is paired against {spec.reference_experiment}: pass --reference-out-dir"])
+            if ref_exp != ff.PRIMARY_EXPERIMENT:
+                raise Refused([f"{spec.experiment} is paired against {ref_exp}: pass --reference-out-dir"])
             ref_dir = Path(prim["out_dir"])
-        _locked_final(ref_dir, cc_s, re_s, test_window, f"reference {spec.reference_experiment}")
+        ref_ledger = reference_ledger if reference_ledger is not None else (prim_ledger if ref_exp == ff.PRIMARY_EXPERIMENT else ff.default_ledger(ref_exp))
+        # bound: the lock's experiment is the spec's reference, and its FINAL marker is in that experiment's ledger
+        ledger_final(ref_ledger, ref_exp, cc_s, re_s, test_window, out_dir=ref_dir)
         ctx["reference_rows"] = read_rows(ref_dir / ROWS_NAME)
         ctx["reference_out_dir"] = str(ref_dir.resolve())
+        ctx["reference_model_md5"] = _last_model_md5(ref_dir)
     return ctx
 
 
@@ -1129,8 +1215,14 @@ def build_secondary_report(rows: Sequence[dict[str, Any]], runs: Sequence[dict[s
     flat_leg, press_leg = _leg(gate), _leg(e11.compute_gate(_swap(entered)))
     full_clears = bool(gate.get("promote"))
     if spec.variant_kind == "exit":
-        tested = {"kind": "exit_increment", "reference_experiment": spec.reference_experiment, "reference_out_dir": ctx.get("reference_out_dir"), **ff.paired_increment(rows, ctx["reference_rows"])}
-        tested_clears = bool(tested["clears"])
+        inc = ff.paired_increment(rows, ctx["reference_rows"])
+        same_model = ctx.get("reference_model_md5") is not None and ctx.get("reference_model_md5") == last.get("model_md5")
+        blockers = []
+        if same_model and (inc["n_variant_only"] or inc["n_reference_only"]):
+            blockers.append(f"entered sets differ with the same model as the reference: {inc['n_variant_only']} variant-only, {inc['n_reference_only']} reference-only")
+        tested = {"kind": "exit_increment", "reference_experiment": spec.reference_experiment, "reference_out_dir": ctx.get("reference_out_dir"), "same_model_as_reference": same_model, **inc, "blockers": blockers}
+        tested["clears"] = bool(inc["clears"]) and not blockers
+        tested_clears = tested["clears"]
     elif spec.variant_kind == "band":
         bgate = e11.compute_gate(in_band) if in_band else {"promote": False, "promote_blockers": ["no trades in the band"]}
         tested = {"kind": "band", "band": list(spec.band), "n_in_band": len(in_band), "gate_promote": bool(bgate.get("promote")), "gate_blockers": bgate.get("promote_blockers"), **ff.book_test(in_band)}
@@ -1148,7 +1240,8 @@ def build_secondary_report(rows: Sequence[dict[str, Any]], runs: Sequence[dict[s
             "own_checks_clear": own,
             "full_book_gate": {"promote": full_clears, "blockers": gate.get("promote_blockers"), "flat_15": flat_leg, "pressure_scale_1": press_leg},
             "tested_quantity": tested,
-            "bootstrap": {"draws": ff.BOOTSTRAP_DRAWS, "seed": ff.BOOTSTRAP_SEED},
+            "bootstrap": {"draws": ff.BOOTSTRAP_DRAWS, "seed": ff.BOOTSTRAP_SEED, "note": "the p-values and the increment CI use 10,000 draws; the full-book gate's own CI (tools.paper_attention_promote) uses 1,000 draws, seed 1"},
+            "binding": ctx["binding"],
             "context_report_only": build_context(rows),
         }
     )
@@ -1179,24 +1272,34 @@ def run_family_holm(registry_path: Path | None, out_dirs: dict[str, Path], prima
     FINAL reports hold. Reads only locked, hash-checked reports. Writes `output` atomically."""
     check_window(clean_clock, read_end, test_window)
     cc_s, re_s = _wins(clean_clock, read_end)
+    reg_path = registry_path if registry_path is not None else ff.REGISTRY_PATH
     try:
-        reg = ff.load_registry(registry_path if registry_path is not None else ff.REGISTRY_PATH)
+        reg = ff.load_registry(reg_path)
     except ff.SpecRefused as exc:
         raise _spec_refused(exc)
+    if not test_window:
+        problem = ff.registry_commit_problem(reg_path, reg["registry_deadline"])
+        if problem:
+            raise Refused([problem])
+    reg_sha = ff.file_sha256(reg_path)
     registered = {s["experiment"]: s["registration_order"] for s in reg["secondaries"]}
     missing, extra = sorted(set(registered) - set(out_dirs)), sorted(set(out_dirs) - set(registered))
     if missing or extra:
-        raise Refused([f"family_holm needs exactly the {len(registered)} registered secondaries; missing {missing}, not registered {extra}"])
+        raise Refused([f"family_holm needs exactly the {len(registered)} registered secondaries; missing {missing}, not registered {extra}. A missing secondary FINAL blocks the family read: none is withdrawn once registered (DEC-017 point 2)"])
     prim = primary_final(primary_ledger if primary_ledger is not None else ff.PRIMARY_LEDGER, cc_s, re_s, test_window)
     reports: dict[str, dict[str, Any]] = {}
     for exp, d in sorted(out_dirs.items()):
-        _locked_final(d, cc_s, re_s, test_window, f"{exp} FINAL")
+        lock = _locked_final(d, cc_s, re_s, test_window, f"{exp} FINAL (a missing secondary FINAL blocks family_holm; none is withdrawn)", exp)
+        if lock.get("registry_sha256") != reg_sha:
+            raise Refused([f"{exp}: its lock binds registry sha256 {lock.get('registry_sha256')}, the registry file now hashes to {reg_sha}"])
         rp = d / "report.json"
         if not rp.is_file():
             raise Refused([f"{exp}: {rp} is missing; run its `report --reprint` first"])
         rep = json.loads(rp.read_text(encoding="utf-8"))
         if rep.get("schema") != SCHEMA_SECONDARY_REPORT or rep.get("mode") != "FINAL" or rep.get("experiment") != exp or rep.get("registration_order") != registered[exp]:
             raise Refused([f"{exp}: {rp} is not that registered secondary's FINAL report"])
+        if rep.get("binding", {}).get("registry_sha256") != reg_sha:
+            raise Refused([f"{exp}: its report does not share the registry sha256 {reg_sha}"])
         if rep["primary"]["rows_sha256"] != prim["rows_sha256"]:
             raise Refused([f"{exp}: its report was gated on a different EXP-012 read than the ledger's"])
         reports[exp] = rep
@@ -1273,6 +1376,8 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--pool-start", default=None, help="YYYY-MM-DDTHH (default: clean clock hour - 2 x BUFFER_HOURS = 48 h)")
     sc.add_argument("--artifact-dir", default=None, help="default: the spec's artifact dir")
     sc.add_argument("--out-dir", required=True)
+    sc.add_argument("--registry", default=str(ff.REGISTRY_PATH), help="secondaries: the family registry whose sha256 the runs record")
+    sc.add_argument("--primary-ledger", default=str(ff.PRIMARY_LEDGER), help="secondaries: EXP-012's ledger (a secondary's own ledger may never be it)")
     sc.add_argument("--freeze-commit", default=None, help="default: the spec's freeze commit")
     sc.add_argument("--frozen-manifest-md5", default=None, help="default: the spec's pin, unless --artifact-dir overrides the dir")
     vf = sub.add_parser("verify", help="backfill_verify --content for one hour, append its line to D/verify.jsonl")
@@ -1294,6 +1399,7 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--reprint", action="store_true", help="re-render the FINAL report from the lock's rows sha256 (no new read)")
     rp.add_argument("--primary-ledger", default=str(ff.PRIMARY_LEDGER), help="secondaries: EXP-012's external FINAL ledger (the gate)")
     rp.add_argument("--registry", default=str(ff.REGISTRY_PATH), help="secondaries: the fixed-k family registry")
+    rp.add_argument("--reference-ledger", default=None, help="exit variants: the reference experiment's FINAL ledger (default: EXP-012's --primary-ledger, or that experiment's own)")
     rp.add_argument("--reference-out-dir", default=None, help="exit variants: the reference experiment's locked out-dir (default: EXP-012's, from its ledger marker)")
     fh = sub.add_parser("family_holm", help="Holm-Bonferroni across every registered secondary's FINAL report (DEC-017)")
     fh.add_argument("--out-dir", action="append", required=True, metavar="EXP-###=PATH", help="repeat once per registered secondary")
@@ -1330,6 +1436,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "export-decisions":
         try:
+            check_lock_owner(Path(args.out_dir), args.experiment)
             runs = score_runs(read_rows(Path(args.out_dir) / RUNS_NAME))
             if any(r.get("experiment", ff.PRIMARY_EXPERIMENT) != args.experiment for r in runs):
                 raise Refused([f"{Path(args.out_dir) / RUNS_NAME} belongs to another experiment than {args.experiment}"])
@@ -1353,6 +1460,7 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.primary_ledger),
                 Path(args.registry),
                 Path(args.reference_out_dir) if args.reference_out_dir else None,
+                Path(args.reference_ledger) if args.reference_ledger else None,
             )
         except Refused as exc:
             return _refuse(exc)
@@ -1374,13 +1482,15 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.artifact_dir) if overridden else spec.artifact_dir,
             cc_arg,
             parse_clock(args.to) if args.to else None,
-            args.freeze_commit or spec.freeze_commit or DEFAULT_FREEZE_COMMIT,
+            args.freeze_commit or spec.freeze_commit or (None if spec.is_secondary else DEFAULT_FREEZE_COMMIT),
             args.frozen_manifest_md5 if (args.frozen_manifest_md5 or overridden) else spec.frozen_manifest_md5,
             parse_clock(args.pool_start) if args.pool_start else None,
             re_arg,
             args.test_window,
             Path(args.final_ledger) if args.final_ledger else ff.default_ledger(spec.experiment),
             spec,
+            Path(args.registry),
+            Path(args.primary_ledger),
         )
     except Refused as exc:
         return _refuse(exc)
