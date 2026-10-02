@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-02T13:35:00Z",
+  "updated_utc": "2026-10-02T13:45:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -305,6 +305,13 @@
       "kind": "result",
       "text": "Tape coverage re-check, quiet stretch 10-02T06-08: fast tape 100.000% of chain trades, Oracle 98.615%. The 10-01 losses (84.759%) came with websocket reconnect episodes. Feed is complete when stable; needs reconnect resilience before a book counts on it.",
       "atUtc": "2026-10-02T13:35:00Z"
+    },
+    {
+      "id": "s-20261002-1345",
+      "from": "claude",
+      "kind": "status",
+      "text": "Fast trade tape trial restarted with 2 redundant public sockets (#233). First minute: both subscribed, 0 reconnects, 0 rejections, duplicates merged cleanly. Coverage against chain to be re-measured after 24 h.",
+      "atUtc": "2026-10-02T13:45:00Z"
     }
   ]
 }
