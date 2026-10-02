@@ -215,7 +215,7 @@ class RefusalTests(Base):
         recs = [json.loads(x) for x in (walk / "verify.jsonl").read_text().splitlines()]
         for r in recs:
             if r["hour"] == "2026-10-05T05":
-                r["sha256"] = {"trades": "0" * 64}
+                r["sha256"]["trades"] = "0" * 64
         (walk / "verify.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
         self.assert_refused(out, rc, err, "trades bytes do not match the sha256")
@@ -284,8 +284,9 @@ class AppendOnlyTests(Base):
         (out / "rows.jsonl").write_text("".join(fw._dump(r) + "\n" for r in rows))
         before = (out / "rows.jsonl").read_bytes()
         rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T11")
-        self.assertEqual(rc, 2, err)
+        self.assertEqual(rc, 4, err)
         self.assertIn("stored rows would change", err)
+        self.assertIn(f"mint {rows[0]['mint']} mig_ms {rows[0]['mig_ms']} differs in ['flat']", err)
         self.assertEqual((out / "rows.jsonl").read_bytes(), before)
 
     def test_a_different_clean_clock_is_refused(self) -> None:

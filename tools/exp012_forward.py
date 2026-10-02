@@ -28,7 +28,9 @@ Inputs and refusals (exit 2, each reason on stderr, before any row is read):
     An OK line is the `hours[]` entry of `backfill_verify --content` for [H, H+1)
     plus a `sha256` map {sub: hex} of each sealed file, with `issues == []`, a
     `content` map, `duplicates == 0` for every file, and a trades sha256. The
-    sha256 is re-checked against the file bytes on every score. The last line for
+    sha256 is re-checked against the file bytes on every score, for trades, creates
+    and migrations alike; a file on disk that is not in the line is refused, and the
+    line must carry trades and creates (the read's `check_creates_presence` rule). The last line for
     an hour wins. The `verify` subcommand writes exactly this line (idempotent:
     nothing is appended if the hour's last line is identical);
   - a rows.jsonl written under a different clean clock.
@@ -58,7 +60,15 @@ Where the forward path differs from the read (disclosed, not hidden):
      is created that early (a counted mint is created at most 24 h before the clock).
   3. A migration needs its exit deadline inside the tape (`exploration_exits`
      censors it otherwise). Rows near `--to` therefore appear in a later run.
-     Rows already written are complete; the conflict check above guards that.
+     What the code guarantees: a row is never rewritten, and a later run that
+     computes a different value for a stored (mint, mig_ms) stops with exit 4 and
+     appends nothing. It does NOT guarantee that a row decided close to `--to` is
+     what a longer tape would give. In particular, a mint whose entry state or
+     exit needs prints after `--to` can be scored as a MISS (no fill) or by a cap
+     exit on the truncated tape; the stored row then differs from a later
+     recomputation and the guard stops the run instead of correcting it. Treat
+     rows within about 32 minutes of `--to` (the exit cap plus the watch window)
+     as the ones at risk, and prefer to run `score` with `--to` well past them.
   4. The read's pre-lock repo-state check (tools/ unchanged since the freeze) is not
      applied: this module is new code under tools/ by construction.
 """
@@ -68,6 +78,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -97,9 +108,17 @@ HOUR_FMT = "%Y-%m-%dT%H"
 
 
 class Refused(Exception):
+    code = 2
+
     def __init__(self, reasons: Sequence[str]):
         super().__init__("; ".join(reasons))
         self.reasons = list(reasons)
+
+
+class Conflict(Refused):
+    """A stored row would change. Exit 4, nothing appended."""
+
+    code = 4
 
 
 # --- time helpers -----------------------------------------------------------------
@@ -176,7 +195,7 @@ def _line_ok(rec: dict[str, Any]) -> bool:
     if rec.get("issues") != [] or not isinstance(rec.get("content"), dict):
         return False
     sha = rec.get("sha256")
-    if not isinstance(sha, dict) or not isinstance(sha.get("trades"), str):
+    if not isinstance(sha, dict) or not all(isinstance(sha.get(sub), str) for sub in ("trades", "creates")):
         return False
     for stats in rec["content"].values():
         if not isinstance(stats, dict) or stats.get("duplicates") != 0:
@@ -212,10 +231,18 @@ def hour_problems(walk_dir: Path, hours: Sequence[str]) -> list[str]:
             out.append(f"hour {h} has no OK line in {walk_dir / VERIFY_NAME} (backfill_verify --content: 0 issues, 0 duplicates)")
         elif _hour_file(walk_dir / "trades", "trades", h) is None:
             out.append(f"hour {h} is sealed and verified but has no trades file under {walk_dir / 'trades'}")
+        elif _hour_file(walk_dir / "creates", "creates", h) is None:
+            out.append(f"hour {h} is sealed and verified but has no creates file under {walk_dir / 'creates'}")
         else:
-            for sub, digest in sorted(ok[h]["sha256"].items()):
+            want = ok[h]["sha256"]
+            for sub in ("trades", "creates", "migrations"):
                 f = _hour_file(walk_dir / sub, sub, h)
-                if f is None or _sha256_file(f) != digest:
+                if f is None:
+                    if sub in want:
+                        out.append(f"hour {h}: {sub} file is gone but {VERIFY_NAME} has its sha256")
+                elif sub not in want:
+                    out.append(f"hour {h}: {sub} file is present but not in the {VERIFY_NAME} line")
+                elif _sha256_file(f) != want[sub]:
                     out.append(f"hour {h}: {sub} bytes do not match the sha256 in {VERIFY_NAME}")
     return out
 
@@ -227,6 +254,8 @@ def verify_line(walk_dir: Path, hour: str) -> dict[str, Any]:
     rec = report["hours"][0]
     if rec["files"].get("trades") is None and "sealed_with_no_trades_file" not in rec["issues"]:
         rec["issues"].append("no_trades_file")
+    if rec["files"].get("creates") is None:
+        rec["issues"].append("no_creates_file")
     sha: dict[str, str] = {}
     for sub, path in sorted(rec["files"].items()):
         if path is None:
@@ -346,7 +375,33 @@ def _dump(row: dict[str, Any]) -> str:
 def read_rows(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
-    return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+    text = path.read_text(encoding="utf-8")
+    if text and not text.endswith("\n"):
+        raise Refused([f"{path} ends with a torn line (no trailing newline); repair or restore it, nothing was changed"])
+    out = []
+    for n, x in enumerate(text.splitlines(), 1):
+        if not x.strip():
+            continue
+        try:
+            out.append(json.loads(x))
+        except json.JSONDecodeError as exc:
+            raise Refused([f"{path} line {n} is not valid JSON ({exc}); repair or restore it, nothing was changed"])
+    return out
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    """tmp + fsync + rename (+ directory fsync): a crash leaves the old file or the new one, never a torn one."""
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    dfd = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 def key_of(row: dict[str, Any]) -> tuple[str, int]:
@@ -362,7 +417,10 @@ def merge_rows(existing: Sequence[dict[str, Any]], fresh: Sequence[dict[str, Any
         k = key_of(r)
         if k in have:
             if have[k] != _dump(r):
-                conflicts.append(f"row {k[0]} @ {k[1]} differs from the stored row")
+                old = json.loads(have[k])
+                diff = sorted(f for f in set(old) | set(r) if old.get(f) != r.get(f))
+                detail = ", ".join(f"{f}: stored {old.get(f)!r} now {r.get(f)!r}" for f in diff)
+                conflicts.append(f"mint {k[0]} mig_ms {k[1]} differs in {diff} ({detail})")
         else:
             have[k] = _dump(r)
             new.append(r)
@@ -389,6 +447,15 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
     if errors:
         raise Refused(errors)
 
+    warnings: list[str] = []
+    clock_hour = clean_clock.replace(minute=0, second=0, microsecond=0)
+    back = int((clock_hour - start).total_seconds() // 3600)
+    if back != 2 * s12.BUFFER_HOURS:
+        warnings.append(f"pool start {hour_key(start)} is {back} h before the clean clock hour, not the {2 * s12.BUFFER_HOURS} h default: a counted mint may have a short creator-history window")
+    if back % 12:
+        warnings.append(f"pool start {hour_key(start)} is not aligned to the 12 h chunk grid of the clean clock hour: chunk boundaries differ from the default plan")
+    for w in warnings:
+        print(f"WARNING: {w}", file=sys.stderr)
     out_dir.mkdir(parents=True, exist_ok=True)
     rows_path, runs_path = out_dir / ROWS_NAME, out_dir / RUNS_NAME
     cc_s = clean_clock.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -403,17 +470,17 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
     existing = read_rows(rows_path)
     new, conflicts = merge_rows(existing, fresh)
     if conflicts:
-        raise Refused(["stored rows would change (nothing appended): " + "; ".join(conflicts[:5])])
+        raise Conflict(["stored rows would change (nothing appended): " + "; ".join(conflicts[:5])])
     if new:
-        with rows_path.open("a", encoding="utf-8") as fh:
-            for r in new:
-                fh.write(_dump(r) + "\n")
+        old_bytes = rows_path.read_bytes() if rows_path.is_file() else b""
+        atomic_write(rows_path, old_bytes + "".join(_dump(r) + "\n" for r in new).encode("utf-8"))
     summary = {
         "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "clean_clock": cc_s,
         "pool_from": pool[0],
         "to_exclusive": hour_key(to),
         "n_hours": len(pool),
+        "warnings": warnings,
         "n_rows_seen_in_range": len(fresh),
         "n_appended": len(new),
         "n_total": len(existing) + len(new),
@@ -423,8 +490,8 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
         "code_commit": _git_commit(),
         "runtime_s": round(time.time() - t0, 1),
     }
-    with runs_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(summary, sort_keys=True) + "\n")
+    old_runs = runs_path.read_bytes() if runs_path.is_file() else b""
+    atomic_write(runs_path, old_runs + (json.dumps(summary, sort_keys=True) + "\n").encode("utf-8"))
     return summary
 
 
@@ -538,7 +605,12 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--out-dir", required=True)
     args = ap.parse_args(argv)
     if args.cmd == "report":
-        rep = run_report(Path(args.out_dir))
+        try:
+            rep = run_report(Path(args.out_dir))
+        except Refused as exc:
+            for r in exc.reasons:
+                print(f"REFUSED: {r}", file=sys.stderr)
+            return exc.code
         print(f"VERDICT: {rep['verdict']} ({LABEL}); n_entered={rep['n_entered']}", file=sys.stderr)
         return 0
     if args.cmd == "verify":
@@ -560,7 +632,7 @@ def main(argv: list[str] | None = None) -> int:
     except Refused as exc:
         for r in exc.reasons:
             print(f"REFUSED: {r}", file=sys.stderr)
-        return 2
+        return exc.code
     except (SystemExit, Exception) as exc:  # noqa: BLE001
         print(f"FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 3
