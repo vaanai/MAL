@@ -21,10 +21,11 @@ Features (22 = EXP-012's 18 + 4)
   The 18 are `tools.exploration_entry_model.compute_features` with the trigger
   time in place of the migration time (so `time_to_migrate_s` here means
   seconds create -> trigger, and the hour features are the trigger hour), over
-  the events up to and including the trigger print by stream index. An event
-  that comes later in the stream is never read, even when it carries the same
-  `t_recv_ms` (getBlock rows share a block-time millisecond), which a pure
-  time cut would let through. `causal_events` is applied on top.
+  the events up to and including the trigger print by stream index (an event
+  later in the stream is never read, even with the same `t_recv_ms`, which
+  getBlock rows share), and then by time through `causal_events` (an event with
+  an earlier stream index but a later timestamp than the trigger is dropped).
+  All 22 features use that one causal list; every window is (t - W, t].
   The 4 new ones (windows are (t - W, t], the trigger print included):
     progress_velocity_60s  progress(trigger) - progress(last print at or before
                            t - 60 s); the create state (progress of the create
@@ -51,8 +52,9 @@ Execution and exit (one tape pass scores every k in KS)
     migrate the first `pumpswap` state at or before the cap: held through,
            sold into the PumpSwap state at the start of slot (migration
            slot + 4) (`_state_index` over the pumpswap states).
-    cap    30 minutes after the entry landing; sold at the last state at or
-           before the cap.
+    cap    30 minutes after the entry landing; the sell lands k slots after the
+           cap instant (Amendment 3), at the last state at or before that.
+  A missing entry state is a MISS (label 0, priority fee lost), not a censor.
   Both fail models, as EXP-012: flat 15% and the frozen pressure curve
   (`tools.exploration_exits._curve`, evaluated at the entry state only), via
   `tools.latency_curve.mixed_net`. `flat`/`press` are lamports net of the
@@ -60,7 +62,8 @@ Execution and exit (one tape pass scores every k in KS)
 
 Censoring: a (mint, k) whose entry landing, stop sell, migration sell or cap
 runs past the end of the tape read is not scored. It goes to the censored list
-with a reason and is counted; it is never a row.
+with a reason and is counted; it is never a row. A result whose entry or exit
+lands after an hour missing from the span read is censored as "touches_gap".
 """
 
 from __future__ import annotations
@@ -69,6 +72,8 @@ import json
 import os
 import sys
 import time
+from array import array
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -110,6 +115,7 @@ BUYERS_WINDOW_MS = 60_000
 # result equals scoring at the end of the tape (landing times can differ from trigger+k slots
 # by block-time granularity).
 SCORE_MARGIN_MS = 30_000
+SWEEP_EVERY_LINES = 300_000
 
 # EXP-012 freeze feature set (see tools/exp011_freeze.py) plus the four new ones.
 _DROPPED_LOOKAHEAD = ("same_slot_buys", "nearby_buy_sol")
@@ -177,8 +183,11 @@ def trigger_features(
         return None
     cut = list(events[: idx + 1])
     t = cut[idx][0]
+    # One causal boundary by TIME for everything: an event with an earlier stream index but a
+    # later timestamp than the trigger is dropped here, for the 18 features and the 4 new ones.
+    causal = causal_events(cut, t + 1)  # sorted by time (stable), only t_ms <= trigger time
     feats = compute_features(
-        causal_events([e[:6] for e in cut], t + 1),
+        [e[:6] for e in causal],
         create_ms=create_ms,
         first_price=first_price,
         mig_ms=t,
@@ -186,11 +195,11 @@ def trigger_features(
     )
     prog_now = cut[idx][6]
     base_prog = create_progress
-    for e in cut[:idx]:  # last print at or before t - 60 s
+    for e in causal:  # latest print at or before t - 60 s, by time
         if e[0] <= t - VELOCITY_WINDOW_MS and e[6] is not None:
             base_prog = e[6]
-    sol_in = sum(e[3] for e in cut if e[1] == "buy" and e[0] > t - SOL_IN_WINDOW_MS)
-    buyers = {e[2] for e in cut if e[1] == "buy" and e[2] and e[0] > t - BUYERS_WINDOW_MS}
+    sol_in = sum(e[3] for e in causal if e[1] == "buy" and t - SOL_IN_WINDOW_MS < e[0] <= t)
+    buyers = {e[2] for e in causal if e[1] == "buy" and e[2] and t - BUYERS_WINDOW_MS < e[0] <= t}
     feats["progress_velocity_60s"] = float(prog_now - base_prog)
     feats["sol_in_30s"] = sol_in / LAMPORTS_PER_SOL
     feats["distinct_buyers_60s"] = float(len(buyers))
@@ -233,22 +242,23 @@ def score_entry(
     *,
     size: int = ENTRY_SIZE,
     priority: int = ENTRY_PRIORITY_LAMPORTS,
+    gap_starts_ms: Sequence[int] = (),
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """(row, None) or (None, censored record) for one (mint, k)."""
+    """(row, None) or (None, censored record) for one (mint, k).
+
+    `gap_starts_ms`: start times of hours missing from the span of tape that was read. A result
+    whose entry or exit lands at or after the first gap that follows the trigger is censored
+    ("touches_gap"): the tape between is not whole."""
 
     def cens(reason: str) -> tuple[None, dict[str, Any]]:
         return None, {"mint": mint_id, "day": trig.day, "entry_land_k": k, "reason": reason}
 
-    target = trig.slot + k
-    idx = _state_index(fills, target, "start")
-    if idx < 0:
-        return cens("no_state")
-    landing_ms = _slot_time(fills, target, trig.t_ms + k * SLOT_MS)
-    if landing_ms > tape_through_ms:
-        return cens("entry_past_tape")
-    state = fills[idx]
+    def gap_hit(end_ms: int) -> bool:
+        return any(trig.t_ms < g <= end_ms for g in gap_starts_ms)
 
-    def row(kind: str, filled: bool, status: int, gross: int, net0: int, flat: float, press: float, entry_slot: int) -> tuple[dict[str, Any], None]:
+    def row(kind: str, filled: bool, status: int, gross: int, net0: int, flat: float, press: float, entry_slot: int | None, exit_ms: int) -> tuple[Any, Any]:
+        if gap_hit(exit_ms):
+            return cens("touches_gap")
         return {
             "mint": mint_id,
             "spec": GRAD_SPEC_ID,
@@ -267,15 +277,27 @@ def score_entry(
             "flat": flat,
             "press": press,
             "label": 1 if press > 0 else 0,
+            "exit_ms": exit_ms,
             "features": trig.features,
         }, None
+
+    target = trig.slot + k
+    idx = _state_index(fills, target, "start")
+    landing_ms = _slot_time(fills, target, trig.t_ms + k * SLOT_MS)
+    if idx < 0:
+        # Amendment 3: a missing entry state is a MISS (priority fee lost, label 0), not a censor.
+        miss = mixed_net(0, 1, MISS, priority, 0.0)
+        return row("miss", False, MISS, 0, 0, miss, miss, None, landing_ms)
+    if landing_ms > tape_through_ms:
+        return cens("entry_past_tape")
+    state = fills[idx]
 
     buy = None
     if state.venue == "pump_bonding":
         buy = _try_buy(state, size, ENTRY_PORTAL_PPM, trig.price)
     if buy is None:
         miss = mixed_net(0, 1, MISS, priority, 0.0)
-        return row("miss", False, MISS, 0, 0, miss, miss, state.slot)
+        return row("miss", False, MISS, 0, 0, miss, miss, state.slot, landing_ms)
     buys, nearby = _pressure(fills, idx, state.slot, landing_ms)
     p_press = curve.p(Pressure(buys, nearby))
     deadline = landing_ms + CAP_MS
@@ -308,22 +330,25 @@ def score_entry(
         kind = "stop"
     elif swap_i is not None and fills[swap_i].t_recv_ms <= deadline:
         mig_slot, mig_ms = fills[swap_i].slot, fills[swap_i].t_recv_ms
-        if mig_ms + MIG_EXIT_SLOTS * SLOT_MS > tape_through_ms:
+        t_exit = mig_ms + MIG_EXIT_SLOTS * SLOT_MS
+        if t_exit > tape_through_ms:
             return cens("migration_exit_past_tape")
         swaps = [pr for pr in fills[swap_i:] if pr.venue == "pumpswap"]
         sidx = _state_index(swaps, mig_slot + MIG_EXIT_SLOTS, "start")
         closed = _one_sell_close(swaps, sidx, buy, "pump_bonding", size, ENTRY_PORTAL_PPM)
         kind = "migrated"
     else:
-        if deadline > tape_through_ms:
+        # Amendment 3: the cap's sell lands k slots after the cap instant, like every other exit.
+        t_exit = deadline + k * SLOT_MS
+        if t_exit > tape_through_ms:
             return cens("cap_past_tape")
-        closed = _one_sell_close(fills, _state_at(fills, deadline), buy, "pump_bonding", size, ENTRY_PORTAL_PPM)
+        closed = _one_sell_close(fills, _state_at(fills, t_exit), buy, "pump_bonding", size, ENTRY_PORTAL_PPM)
         kind = "cap"
     assert closed is not None
     net0, gross, sides, status = closed
     flat = mixed_net(net0, sides, status, priority, FLAT_FAIL)
     press = mixed_net(net0, sides, status, priority, p_press)
-    return row(kind, True, status, gross, net0, flat, press, state.slot)
+    return row(kind, True, status, gross, net0, flat, press, state.slot, t_exit)
 
 
 def score_trigger(
@@ -343,17 +368,80 @@ def score_trigger(
 
 # --- streaming worker ----------------------------------------------------------
 
+_NAN = float("nan")
+
+
+class CompactEvents:
+    """Pre-trigger events of one mint in typed arrays (about 50 bytes each instead of a tuple of
+    boxed values). `to_list` rebuilds exactly the tuples make_event produced, so trigger_features
+    stays the single code path. Traders are interned to ids in a per-worker table."""
+
+    __slots__ = ("t", "side", "trader", "sol", "tok", "price", "prog", "max_prog")
+
+    def __init__(self) -> None:
+        self.t = array("q")
+        self.side = array("b")
+        self.trader = array("i")
+        self.sol = array("q")
+        self.tok = array("q")
+        self.price = array("d")
+        self.prog = array("d")
+        self.max_prog = 0.0
+
+    def __len__(self) -> int:
+        return len(self.t)
+
+    def append(self, ev: Event, intern: Any) -> None:
+        self.t.append(ev[0])
+        self.side.append(1 if ev[1] == "buy" else 0)
+        self.trader.append(-1 if ev[2] is None else intern(ev[2]))
+        self.sol.append(ev[3])
+        self.tok.append(ev[4])
+        self.price.append(_NAN if ev[5] is None else ev[5])
+        self.prog.append(_NAN if ev[6] is None else ev[6])
+        if ev[6] is not None and ev[6] > self.max_prog:
+            self.max_prog = ev[6]
+
+    def to_list(self, names: Sequence[str]) -> list[Event]:
+        out: list[Event] = []
+        for i in range(len(self.t)):
+            pr, pg = self.price[i], self.prog[i]
+            out.append(
+                (
+                    self.t[i],
+                    "buy" if self.side[i] else "sell",
+                    None if self.trader[i] < 0 else names[self.trader[i]],
+                    self.sol[i],
+                    self.tok[i],
+                    None if pr != pr else pr,
+                    None if pg != pg else pg,
+                )
+            )
+        return out
+
 
 class _GradFeat(_Feat):
-    """_Feat plus the trigger state. `events` holds only pre-trigger-inclusive events and stops
-    growing at the trigger."""
+    """_Feat plus the compact pre-trigger events and the trigger state."""
 
     __slots__ = ("g_events", "trigger")
 
     def __init__(self, base: _Feat) -> None:
         super().__init__(base.creator, base.create_ms, base.first_price)
-        self.g_events: list[Event] = []
+        self.g_events: CompactEvents | None = CompactEvents()
         self.trigger: Trigger | None = None
+
+
+def missing_hour_starts_ms(hour_keys: Sequence[str]) -> list[int]:
+    """Start time (ms) of every hour missing between the first and last of `hour_keys`."""
+    have = sorted({int(datetime.strptime(k, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp()) for k in hour_keys})
+    out: list[int] = []
+    if not have:
+        return out
+    present = set(have)
+    for sec in range(have[0], have[-1], 3600):
+        if sec not in present:
+            out.append(sec * 1000)
+    return out
 
 
 def run_worker_grad(
@@ -371,17 +459,31 @@ def run_worker_grad(
 ) -> dict[str, Any]:
     """One chunk: creates from the home hours, tape through the home + buffer hours. Rows and
     censored records stream to disk (paths) or, when a path is None, are returned in the
-    summary under "rows" / "censored". Returns the counts."""
+    summary under "rows" / "censored". Returns the counts, including per create day the mints
+    that never triggered by the end of the tape (`untriggered_by_create_day`: n, and near = max
+    progress seen >= 0.5), which is where a mint that would trigger after the tape end hides."""
     try:
         os.nice(19)
     except OSError:
         pass
+    all_keys = list(home_keys) + list(buffer_keys)
     home = [hour_info_fn(k) for k in home_keys]
     hours = home + [hour_info_fn(k) for k in buffer_keys]
+    gap_starts = missing_hour_starts_ms(all_keys)
     creates = creates_override if creates_override is not None else _load_creates_full(home)
     hot: dict[str, _Mint] = {mid: m for mid, (m, _f) in creates.items()}
     feat: dict[str, _GradFeat] = {mid: _GradFeat(f) for mid, (_m, f) in creates.items()}
     pending: dict[str, Trigger] = {}
+    trader_ids: dict[str, int] = {}
+    trader_names: list[str] = []
+
+    def intern(name: str) -> int:
+        i = trader_ids.get(name)
+        if i is None:
+            i = trader_ids[name] = len(trader_names)
+            trader_names.append(name)
+        return i
+
     curve = _curve()
     out_rows: list[dict[str, Any]] = []
     out_cens: list[dict[str, Any]] = []
@@ -390,18 +492,20 @@ def run_worker_grad(
     triggers_by_day: dict[str, int] = {}
     n_rows = n_cens = 0
     now_ms = 0
-    max_exit_ms = max(ks) * SLOT_MS + CAP_MS + MIG_EXIT_SLOTS * SLOT_MS + SCORE_MARGIN_MS
+    max_exit_ms = max(ks) * SLOT_MS * 2 + CAP_MS + MIG_EXIT_SLOTS * SLOT_MS + SCORE_MARGIN_MS
+    seen_keys: set[tuple[str, int]] = set()
 
     def resolve(mint_id: str, through_ms: int) -> None:
         nonlocal n_rows, n_cens
         trig = pending.pop(mint_id)
-        rows, cens = score_trigger(mint_id, trig, hot[mint_id], curve, through_ms, ks)
-        for r in rows:
+        rows, cens = score_trigger(mint_id, trig, hot[mint_id], curve, through_ms, ks, gap_starts_ms=gap_starts)
+        for it in rows + cens:
+            ident = (it["mint"], it["entry_land_k"])
+            if ident in seen_keys:
+                raise SystemExit(f"duplicate (mint, k) {ident} in worker {worker_id}")
+            seen_keys.add(ident)
             if pool_tag is not None:
-                r["pool"] = pool_tag
-        for c in cens:
-            if pool_tag is not None:
-                c["pool"] = pool_tag
+                it["pool"] = pool_tag
         for target_fh, target_list, items in ((rows_fh, out_rows, rows), (cens_fh, out_cens, cens)):
             if target_fh is not None:
                 for it in items:
@@ -423,6 +527,8 @@ def run_worker_grad(
         print(f"[w{worker_id}] hour={hour['hour']} hot={len(hot)} pending={len(pending)} rows={n_rows} rss_mb={_rss_mb()}", file=sys.stderr, flush=True)
         for row in row_iter_fn(hour["trade"]):
             lines += 1
+            if lines % SWEEP_EVERY_LINES == 0:  # before any `continue`, so it really runs every 300k lines
+                sweep(False)
             mint_id = row.get("mint")
             mint = hot.get(mint_id) if isinstance(mint_id, str) else None
             if mint is None:
@@ -440,11 +546,12 @@ def run_worker_grad(
                 if ev is not None:
                     if parsed is None:
                         ev = ev[:6] + (None,)  # a print the exec model cannot price is never a trigger
-                    f.g_events.append(ev)
+                    assert f.g_events is not None
+                    f.g_events.append(ev, intern)
                     if ev[6] is not None and ev[6] >= TRIGGER_PROGRESS:
                         anchor = mint.anchor
                         res = trigger_features(
-                            f.g_events,
+                            f.g_events.to_list(trader_names),
                             create_ms=f.create_ms,
                             first_price=f.first_price,
                             create_progress=progress_of_base(anchor.base_reserve) if anchor is not None else 0.0,
@@ -456,19 +563,27 @@ def run_worker_grad(
                         f.trigger = Trigger(t_ms, pr0.slot, pr0.price_sol, ev[6], res[1])
                         triggers_by_day[f.trigger.day] = triggers_by_day.get(f.trigger.day, 0) + 1
                         pending[mint_id] = f.trigger
-                        f.g_events = []
+                        f.g_events = None
             if parsed is None:
                 continue
             _name, pr = parsed
             now_ms = pr.t_recv_ms if pr.t_recv_ms > now_ms else now_ms
             mint.add(pr)
-            if lines % 300_000 == 0:
-                sweep(False)
         sweep(False)
         _trim_heap()
     sweep(True)
+    untriggered: dict[str, dict[str, int]] = {}
+    for mint_id, f in feat.items():
+        if f.trigger is None:
+            d = untriggered.setdefault(_utc_day(f.create_ms), {"n": 0, "near": 0})
+            d["n"] += 1
+            if f.g_events is not None and f.g_events.max_prog >= 0.5:
+                d["near"] += 1
     for fh in (rows_fh, cens_fh):
         if fh is not None:
             fh.close()
-    print(f"[w{worker_id}] done lines={lines} triggers={sum(triggers_by_day.values())} rows={n_rows} censored={n_cens}", file=sys.stderr, flush=True)
-    return {"triggers_by_day": triggers_by_day, "n_rows": n_rows, "n_censored": n_cens, "tape_through_ms": now_ms, "rows": out_rows, "censored": out_cens}
+    print(f"[w{worker_id}] done lines={lines} triggers={sum(triggers_by_day.values())} rows={n_rows} censored={n_cens} rss_mb={_rss_mb()}", file=sys.stderr, flush=True)
+    return {
+        "triggers_by_day": triggers_by_day, "untriggered_by_create_day": untriggered, "n_rows": n_rows, "n_censored": n_cens, "tape_through_ms": now_ms,
+        "gap_hours": len(gap_starts), "rows": out_rows, "censored": out_cens,
+    }
