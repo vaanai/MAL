@@ -18,13 +18,27 @@ Only the hour source differs: one raw walker directory instead of three
 deduplicated copies (see "Where the forward path differs from the read").
 
 One pre-registered read (DEC-016 Amendment 1): clean clock 2026-10-06T00:00:00Z, read end
-2026-10-16T00:00:00Z (exclusive). `score` counts migrations in [clean clock, min(to, read end)).
+2026-10-16T00:00:00Z (exclusive). These are constants. A different clock or end is refused unless
+`--test-window` is given; everything produced under it carries `test_window: true` (runs.jsonl,
+report, lock, ledger) and a FINAL says "TEST WINDOW, NOT THE PRE-REGISTERED READ". `report`
+refuses unless every score run in runs.jsonl has the report's clean clock, read end and
+test_window flag, every row's mig_ms is in [clean clock, read end), and rows.jsonl hashes to the
+last run's recorded rows_sha256. `score` counts migrations in [clean clock, min(to, read end)).
 `report` is INTERIM (rows, entered count, per-day entered counts; no mean, CI, SOL, day sign or
 verdict in any output) unless every hour in [pool start, read end + 1 h) is sealed and verified
 AND a score run reached `to >= read end + 1 h` (the 30-minute exit cap needs the next hour).
 Then it is FINAL: the gate plus report-only context, and `final_read.lock` is written once. A second
 FINAL report refuses; `--reprint` re-renders only if rows.jsonl still hashes to the lock's sha256.
-`score` refuses once the lock exists. (rows.jsonl itself holds each row's nets; it is data, not a report.)
+`score` refuses once the lock exists.
+FINAL order: lock (fsync) first, then a FINAL marker (rows sha256, lock sha256, time) appended to
+runs.jsonl and to the append-only ledger `--final-ledger` (default /data/mal/exp012-forward/FINAL_READS.jsonl),
+and only then the verdict is printed and the report files written. `score` and `report` refuse if a
+FINAL marker for the window exists in runs.jsonl or the ledger and this out-dir's lock is missing or
+differs; a fresh out-dir refuses if the ledger holds a non-test FINAL for the window.
+Files that hold P&L at rest: OUT/rows.jsonl; OUT/scratch/poolHOLDOUT12-w*.jsonl (the table
+build's per-worker row files, rewritten every score run, with each row's flat and press nets and
+features); OUT/report.json and OUT/report.md once FINAL. INTERIM report files, runs.jsonl,
+the ledger and stderr carry none. The conflict refusal names fields, never values. 
 
 Inputs and refusals (exit 2, each reason on stderr, before any row is read):
   - `check_frozen(artifact_dir)` must return no error (FROZEN.md5 md5s, model.md5,
@@ -105,8 +119,13 @@ from tools.latency_curve import _hour_file
 SCHEMA_ROW = "exp012_forward_row_v1"
 SCHEMA_REPORT = "exp012_forward_report_v1"
 LABEL = "forward simulated paper, not money made"
-DEFAULT_CLEAN_CLOCK = "2026-10-06T00:00:00Z"  # DEC-016 Amendment 1
-DEFAULT_READ_END = "2026-10-16T00:00:00Z"  # exclusive: 10 full UTC days
+PINNED_CLEAN_CLOCK = "2026-10-06T00:00:00Z"  # DEC-016 Amendment 1
+PINNED_READ_END = "2026-10-16T00:00:00Z"  # exclusive: 10 full UTC days
+DEFAULT_CLEAN_CLOCK = PINNED_CLEAN_CLOCK
+DEFAULT_READ_END = PINNED_READ_END
+DEFAULT_LEDGER = Path("/data/mal/exp012-forward/FINAL_READS.jsonl")
+TEST_WINDOW_BANNER = "TEST WINDOW, NOT THE PRE-REGISTERED READ"
+SCHEMA_MARKER = "exp012_forward_final_marker_v1"
 LOCK_NAME = "final_read.lock"
 SCHEMA_LOCK = "exp012_forward_final_read_lock_v1"
 DEFAULT_FREEZE_COMMIT = "ea5ec374010378b14a5c19e81bf045679bde73b9"  # EXP-012 section 12 (Part 2)
@@ -442,16 +461,85 @@ def merge_rows(existing: Sequence[dict[str, Any]], fresh: Sequence[dict[str, Any
             if have[k] != _dump(r):
                 old = json.loads(have[k])
                 diff = sorted(f for f in set(old) | set(r) if old.get(f) != r.get(f))
-                detail = ", ".join(f"{f}: stored {old.get(f)!r} now {r.get(f)!r}" for f in diff)
-                conflicts.append(f"mint {k[0]} mig_ms {k[1]} differs in {diff} ({detail})")
+                conflicts.append(f"mint {k[0]} mig_ms {k[1]} differs in fields {diff} (values withheld)")
         else:
             have[k] = _dump(r)
             new.append(r)
     return new, conflicts
 
 
-def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None, read_end: datetime | None = None) -> dict[str, Any]:
-    read_end = read_end if read_end is not None else parse_clock(DEFAULT_READ_END)
+def check_window(clean_clock: datetime, read_end: datetime, test_window: bool) -> None:
+    cc_s, re_s = clean_clock.strftime("%Y-%m-%dT%H:%M:%SZ"), read_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not test_window and (cc_s, re_s) != (PINNED_CLEAN_CLOCK, PINNED_READ_END):
+        raise Refused([f"clean clock {cc_s} / read end {re_s} differ from the pinned window ({PINNED_CLEAN_CLOCK}, {PINNED_READ_END}); an override needs --test-window"])
+
+
+def _wins(clean_clock: datetime, read_end: datetime) -> tuple[str, str]:
+    return clean_clock.strftime("%Y-%m-%dT%H:%M:%SZ"), read_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def score_runs(runs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r for r in runs if not r.get("final")]
+
+
+def ledger_markers(ledger: Path | None) -> list[dict[str, Any]]:
+    if ledger is None or not ledger.is_file():
+        return []
+    text = ledger.read_text(encoding="utf-8")
+    if text and not text.endswith("\n"):
+        raise Refused([f"{ledger} ends with a torn line; repair it before any score or report"])
+    out = []
+    for n, x in enumerate(text.splitlines(), 1):
+        if x.strip():
+            try:
+                out.append(json.loads(x))
+            except json.JSONDecodeError:
+                raise Refused([f"{ledger} line {n} is not valid JSON"])
+    return out
+
+
+def ledger_append(ledger: Path, doc: dict[str, Any]) -> None:
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(ledger), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, (json.dumps(doc, sort_keys=True) + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    dfd = os.open(str(ledger.parent), os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def check_final_state(out_dir: Path, ledger: Path | None, clean_clock: datetime, read_end: datetime, test_window: bool) -> None:
+    """Refuse if a FINAL marker for this window exists and this out-dir's lock is missing or differs,
+    or if the ledger holds a non-test FINAL for the window from another out-dir."""
+    cc_s, re_s = _wins(clean_clock, read_end)
+    here = str(out_dir.resolve())
+    lock = out_dir / LOCK_NAME
+    markers = [{**m, "out_dir": here} for m in read_rows(out_dir / RUNS_NAME) if m.get("final")] + ledger_markers(ledger)
+    problems: list[str] = []
+    for m in markers:
+        if (m.get("clean_clock"), m.get("read_end")) != (cc_s, re_s) or bool(m.get("test_window")) != test_window:
+            continue
+        if m.get("out_dir") != here:
+            if not m.get("test_window"):
+                problems.append(f"the ledger holds a FINAL read for this window taken in {m.get('out_dir')}; no second read in {here}")
+            continue
+        if not lock.is_file():
+            problems.append(f"a FINAL marker exists (rows sha256 {m.get('rows_sha256')}) but {lock} is missing; the lock was deleted or lost")
+        elif _sha256_file(lock) != m.get("lock_sha256"):
+            problems.append(f"{lock} differs from the lock sha256 in the FINAL marker")
+    if problems:
+        raise Refused(sorted(set(problems)))
+
+
+def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None, read_end: datetime | None = None, test_window: bool = False, final_ledger: Path | None = None) -> dict[str, Any]:
+    read_end = read_end if read_end is not None else parse_clock(PINNED_READ_END)
+    check_window(clean_clock, read_end, test_window)
+    check_final_state(out_dir, final_ledger, clean_clock, read_end, test_window)
     if (out_dir / LOCK_NAME).exists():
         raise Refused([f"{out_dir / LOCK_NAME} exists: the final read was taken; score no longer writes rows here"])
     errors = s12.check_frozen(artifact_dir, frozen_manifest_md5, freeze_commit)
@@ -479,9 +567,10 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
     out_dir.mkdir(parents=True, exist_ok=True)
     rows_path, runs_path = out_dir / ROWS_NAME, out_dir / RUNS_NAME
     cc_s = clean_clock.strftime("%Y-%m-%dT%H:%M:%SZ")
-    prior_runs = read_rows(runs_path)
-    if any(r.get("clean_clock") != cc_s for r in prior_runs):
-        raise Refused([f"{runs_path} was written under a different clean clock; use a new --out-dir"])
+    prior_runs = score_runs(read_rows(runs_path))
+    re_s0 = read_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if any((r.get("clean_clock"), r.get("read_end"), bool(r.get("test_window"))) != (cc_s, re_s0, bool(test_window)) for r in prior_runs):
+        raise Refused([f"{runs_path} was written under a different clean clock, read end or test_window flag; use a new --out-dir"])
 
     t0 = time.time()
     rows, threshold = score_hours(walk_dir, pool, artifact_dir, out_dir / "scratch")
@@ -500,6 +589,7 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
         "pool_from": pool[0],
         "to_exclusive": hour_key(to),
         "read_end": read_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "test_window": bool(test_window),
         "n_hours": len(pool),
         "warnings": warnings,
         "n_rows_seen_in_range": len(fresh),
@@ -511,6 +601,7 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
         "code_commit": _git_commit(),
         "runtime_s": round(time.time() - t0, 1),
     }
+    summary["rows_sha256"] = _rows_sha256(out_dir)
     old_runs = runs_path.read_bytes() if runs_path.is_file() else b""
     atomic_write(runs_path, old_runs + (json.dumps(summary, sort_keys=True) + "\n").encode("utf-8"))
     return summary
@@ -583,7 +674,7 @@ def build_report(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]])
 
 
 def render_markdown(rep: dict[str, Any]) -> str:
-    L = [f"# EXP-012 forward report: {rep['label']}", "", f"VERDICT: {rep['verdict']} ({rep['verdict_note']})", ""]
+    L = ([TEST_WINDOW_BANNER, ""] if rep.get("test_window") else []) + [f"# EXP-012 forward report: {rep['label']}", "", f"VERDICT: {rep['verdict']} ({rep['verdict_note']})", ""]
     L.append(f"clean clock {rep['clean_clock']}, scored through (exclusive) {rep['scored_through_exclusive']}, model md5 {rep['model_md5']}, threshold {rep['threshold']!r}")
     L.append(f"n_decided={rep['n_decided']} n_entered={rep['n_entered']}")
     L += ["", "| model | n | mean SOL/trade | 90% CI of mean | total SOL | total ex top-3 SOL | days positive | clears gate | blockers |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
@@ -664,6 +755,7 @@ def build_interim(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]]
         "note": "INTERIM: counts only. Nothing about profit is shown until the read is FINAL.",
         "clean_clock": clean_clock,
         "read_end": read_end,
+        "test_window": False,
         "scored_through_exclusive": last.get("to_exclusive"),
         "why_interim": list(reasons),
         "n_rows": len(rows),
@@ -674,7 +766,7 @@ def build_interim(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]]
 
 
 def render_interim_markdown(rep: dict[str, Any]) -> str:
-    L = [f"# EXP-012 forward report (INTERIM): {rep['label']}", "", rep["note"], ""]
+    L = ([TEST_WINDOW_BANNER, ""] if rep.get("test_window") else []) + [f"# EXP-012 forward report (INTERIM): {rep['label']}", "", rep["note"], ""]
     L.append(f"clean clock {rep['clean_clock']}, read end {rep['read_end']}, scored through (exclusive) {rep['scored_through_exclusive']}")
     L.append(f"n_rows={rep['n_rows']} n_entered={rep['n_entered']}")
     L += ["", "Why interim: " + ("; ".join(rep["why_interim"]) or "-"), "", "| day | n_entered |", "| --- | --- |"]
@@ -701,6 +793,11 @@ def write_lock(out_dir: Path, doc: dict[str, Any]) -> None:
         fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
         fh.flush()
         os.fsync(fh.fileno())
+    dfd = os.open(str(out_dir), os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 def _write_final_files(out_dir: Path, rep: dict[str, Any]) -> None:
@@ -708,40 +805,100 @@ def _write_final_files(out_dir: Path, rep: dict[str, Any]) -> None:
     atomic_write(out_dir / "report.md", render_markdown(rep).encode("utf-8"))
 
 
-def run_report(out_dir: Path, walk_dir: Path | None = None, clean_clock: datetime | None = None, read_end: datetime | None = None, pool_start: datetime | None = None, reprint: bool = False) -> dict[str, Any]:
-    cc = clean_clock if clean_clock is not None else parse_clock(DEFAULT_CLEAN_CLOCK)
-    re_ = read_end if read_end is not None else parse_clock(DEFAULT_READ_END)
-    cc_s, re_s = cc.strftime("%Y-%m-%dT%H:%M:%SZ"), re_.strftime("%Y-%m-%dT%H:%M:%SZ")
+def _final_docs(out_dir: Path, rows_sha: str, cc_s: str, re_s: str, test_window: bool) -> dict[str, Any]:
+    return {
+        "final": True,
+        "schema": SCHEMA_MARKER,
+        "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "clean_clock": cc_s,
+        "read_end": re_s,
+        "test_window": test_window,
+        "rows_sha256": rows_sha,
+        "lock_sha256": _sha256_file(out_dir / LOCK_NAME),
+        "out_dir": str(out_dir.resolve()),
+    }
+
+
+def _append_marker_to_runs(out_dir: Path, marker: dict[str, Any]) -> None:
+    runs_path = out_dir / RUNS_NAME
+    old = runs_path.read_bytes() if runs_path.is_file() else b""
+    atomic_write(runs_path, old + (json.dumps(marker, sort_keys=True) + "\n").encode("utf-8"))
+
+
+def _mark_test(rep: dict[str, Any], test_window: bool) -> None:
+    rep["test_window"] = test_window
+    if test_window:
+        rep["window_note"] = TEST_WINDOW_BANNER
+
+
+def run_report(
+    out_dir: Path,
+    walk_dir: Path | None = None,
+    clean_clock: datetime | None = None,
+    read_end: datetime | None = None,
+    pool_start: datetime | None = None,
+    reprint: bool = False,
+    test_window: bool = False,
+    final_ledger: Path | None = None,
+) -> dict[str, Any]:
+    cc = clean_clock if clean_clock is not None else parse_clock(PINNED_CLEAN_CLOCK)
+    re_ = read_end if read_end is not None else parse_clock(PINNED_READ_END)
+    check_window(cc, re_, test_window)
+    cc_s, re_s = _wins(cc, re_)
+    check_final_state(out_dir, final_ledger, cc, re_, test_window)
     lock_path = out_dir / LOCK_NAME
     rows = read_rows(out_dir / ROWS_NAME)
-    runs = read_rows(out_dir / RUNS_NAME)
+    all_runs = read_rows(out_dir / RUNS_NAME)
+    runs = score_runs(all_runs)
     if reprint:
         if not lock_path.is_file():
             raise Refused([f"--reprint: {lock_path} does not exist; there is no final read to re-render"])
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        if (lock.get("clean_clock"), lock.get("read_end"), bool(lock.get("test_window"))) != (cc_s, re_s, test_window):
+            raise Refused(["--reprint: the lock was taken for a different window or test_window flag"])
         if _rows_sha256(out_dir) != lock.get("rows_sha256"):
             raise Refused([f"--reprint refused: {out_dir / ROWS_NAME} no longer hashes to the lock's rows_sha256"])
+        # a crash between the lock and the markers leaves none: complete them from the lock
+        have_runs = any(m.get("final") for m in all_runs)
+        if not have_runs:
+            _append_marker_to_runs(out_dir, _final_docs(out_dir, lock["rows_sha256"], cc_s, re_s, test_window))
+        if final_ledger is not None and not any(m.get("out_dir") == str(out_dir.resolve()) and (m.get("clean_clock"), m.get("read_end")) == (cc_s, re_s) for m in ledger_markers(final_ledger)):
+            ledger_append(final_ledger, _final_docs(out_dir, lock["rows_sha256"], cc_s, re_s, test_window))
         rep = build_report(rows, runs)
+        rep["read_end"] = re_s
         rep["reprint_of_lock"] = lock.get("utc_time")
+        _mark_test(rep, test_window)
         _write_final_files(out_dir, rep)
         return rep
     if lock_path.exists():
         raise Refused([f"{lock_path} exists: the final read was already taken. `--reprint` re-renders it from the lock's rows sha256"])
     if walk_dir is None:
         raise Refused(["report needs --walk-dir to decide INTERIM or FINAL"])
+    bad = [r for r in runs if (r.get("clean_clock"), r.get("read_end"), bool(r.get("test_window"))) != (cc_s, re_s, test_window)]
+    if bad:
+        raise Refused([f"{len(bad)} run(s) in {out_dir / RUNS_NAME} have a different clean clock, read end or test_window flag than this report ({cc_s}, {re_s}, test_window={test_window})"])
+    lo, hi = ms(cc), ms(re_)
+    outside = [r for r in rows if not (lo <= int(r["mig_ms"]) < hi)]
+    if outside:
+        raise Refused([f"{len(outside)} row(s) in {out_dir / ROWS_NAME} have mig_ms outside [{cc_s}, {re_s}), first: mint {outside[0]['mint']} mig_ms {outside[0]['mig_ms']}"])
+    now_sha = _rows_sha256(out_dir)
+    if runs:
+        if runs[-1].get("rows_sha256") != now_sha:
+            raise Refused([f"{out_dir / ROWS_NAME} does not hash to the rows_sha256 recorded by the last score run: the file changed outside `score`"])
+    elif rows:
+        raise Refused([f"{out_dir / ROWS_NAME} has rows but {out_dir / RUNS_NAME} records no score run"])
     start = pool_start if pool_start is not None else default_pool_start(cc)
     reasons = coverage_reasons(walk_dir, start, re_, runs)
-    if any(r.get("clean_clock") != cc_s for r in runs):
-        reasons.append("runs.jsonl was written under a different clean clock")
     if reasons:
         rep = build_interim(rows, runs, reasons, cc_s, re_s)
+        _mark_test(rep, test_window)
         atomic_write(out_dir / "report.json", (json.dumps(rep, indent=2) + "\n").encode("utf-8"))
         atomic_write(out_dir / "report.md", render_interim_markdown(rep).encode("utf-8"))
         return rep
     rep = build_report(rows, runs)
     rep["read_end"] = re_s
-    # the verdict goes to stderr before anything is written, then the lock, then the files
-    print(f"VERDICT: {rep['verdict']} ({LABEL}); n_entered={rep['n_entered']}", file=sys.stderr, flush=True)
+    _mark_test(rep, test_window)
+    # 1. the lock, fsynced, before anything about the result is printed or written
     write_lock(
         out_dir,
         {
@@ -749,12 +906,20 @@ def run_report(out_dir: Path, walk_dir: Path | None = None, clean_clock: datetim
             "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "clean_clock": cc_s,
             "read_end": re_s,
-            "rows_sha256": _rows_sha256(out_dir),
+            "test_window": test_window,
+            "rows_sha256": now_sha,
             "n_rows": len(rows),
             "model_md5": runs[-1].get("model_md5") if runs else None,
             "code_commit": _git_commit(),
         },
     )
+    # 2. durable markers: runs.jsonl and the external append-only ledger
+    marker = _final_docs(out_dir, now_sha, cc_s, re_s, test_window)
+    _append_marker_to_runs(out_dir, marker)
+    if final_ledger is not None:
+        ledger_append(final_ledger, marker)
+    # 3. only now the verdict
+    print(f"VERDICT: {rep['verdict']} ({LABEL}){' [' + TEST_WINDOW_BANNER + ']' if test_window else ''}; n_entered={rep['n_entered']}", file=sys.stderr, flush=True)
     _write_final_files(out_dir, rep)
     return rep
 
@@ -767,9 +932,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sc = sub.add_parser("score", help="score sealed+verified forward hours; append new rows")
     sc.add_argument("--walk-dir", required=True)
-    sc.add_argument("--clean-clock", default=DEFAULT_CLEAN_CLOCK)
+    sc.add_argument("--clean-clock", default=None, help=f"pinned {PINNED_CLEAN_CLOCK}; an override needs --test-window")
+    sc.add_argument("--test-window", action="store_true", help="allow a non-pinned clean clock / read end; output is marked test_window")
+    sc.add_argument("--final-ledger", default=str(DEFAULT_LEDGER))
     sc.add_argument("--to", default=None, help="YYYY-MM-DDTHH, exclusive (default: latest sealed+verified hour boundary)")
-    sc.add_argument("--read-end", default=DEFAULT_READ_END, help="exclusive end of the counted window (default 2026-10-16T00:00:00Z)")
+    sc.add_argument("--read-end", default=None, help=f"exclusive end of the counted window (pinned {PINNED_READ_END}; an override needs --test-window)")
     sc.add_argument("--pool-start", default=None, help="YYYY-MM-DDTHH (default: clean clock hour - 2 x BUFFER_HOURS = 48 h)")
     sc.add_argument("--artifact-dir", default=str(DEFAULT_ARTIFACT_DIR))
     sc.add_argument("--out-dir", required=True)
@@ -781,20 +948,33 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("report", help="write report.json and report.md from rows.jsonl")
     rp.add_argument("--out-dir", required=True)
     rp.add_argument("--walk-dir", default=None)
-    rp.add_argument("--clean-clock", default=DEFAULT_CLEAN_CLOCK)
-    rp.add_argument("--read-end", default=DEFAULT_READ_END)
+    rp.add_argument("--clean-clock", default=None)
+    rp.add_argument("--read-end", default=None)
+    rp.add_argument("--test-window", action="store_true")
+    rp.add_argument("--final-ledger", default=str(DEFAULT_LEDGER))
     rp.add_argument("--pool-start", default=None)
     rp.add_argument("--reprint", action="store_true", help="re-render the FINAL report from the lock's rows sha256 (no new read)")
     args = ap.parse_args(argv)
+    if args.cmd in ("report", "score"):
+        cc_arg = parse_clock(args.clean_clock or PINNED_CLEAN_CLOCK)
+        re_arg = parse_clock(args.read_end or PINNED_READ_END)
+        try:
+            check_window(cc_arg, re_arg, args.test_window)
+        except Refused as exc:
+            for r in exc.reasons:
+                print(f"REFUSED: {r}", file=sys.stderr)
+            return exc.code
     if args.cmd == "report":
         try:
             rep = run_report(
                 Path(args.out_dir),
                 Path(args.walk_dir) if args.walk_dir else None,
-                parse_clock(args.clean_clock),
-                parse_clock(args.read_end),
+                cc_arg,
+                re_arg,
                 parse_clock(args.pool_start) if args.pool_start else None,
                 args.reprint,
+                args.test_window,
+                Path(args.final_ledger),
             )
         except Refused as exc:
             for r in exc.reasons:
@@ -815,12 +995,14 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.walk_dir),
             Path(args.out_dir),
             Path(args.artifact_dir),
-            parse_clock(args.clean_clock),
+            cc_arg,
             parse_clock(args.to) if args.to else None,
             args.freeze_commit,
             args.frozen_manifest_md5,
             parse_clock(args.pool_start) if args.pool_start else None,
-            parse_clock(args.read_end),
+            re_arg,
+            args.test_window,
+            Path(args.final_ledger),
         )
     except Refused as exc:
         for r in exc.reasons:

@@ -121,7 +121,7 @@ class Base(unittest.TestCase):
 
     def run_score(self, walk: Path, art: Path, out: Path, *extra: str) -> tuple[int, str]:
         err = io.StringIO()
-        argv = ["score", "--walk-dir", str(walk), "--artifact-dir", str(art), "--out-dir", str(out), "--clean-clock", CLEAN_CLOCK, "--freeze-commit", FREEZE_COMMIT, *extra]
+        argv = ["score", "--walk-dir", str(walk), "--artifact-dir", str(art), "--out-dir", str(out), "--clean-clock", CLEAN_CLOCK, "--test-window", "--final-ledger", str(out.parent / "ledger.jsonl"), "--freeze-commit", FREEZE_COMMIT, *extra]
         with patched(self.home), mock.patch("sys.stderr", err):
             rc = fw.main(argv)
         return rc, err.getvalue()
@@ -286,7 +286,9 @@ class AppendOnlyTests(Base):
         rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T11")
         self.assertEqual(rc, 4, err)
         self.assertIn("stored rows would change", err)
-        self.assertIn(f"mint {rows[0]['mint']} mig_ms {rows[0]['mig_ms']} differs in ['flat']", err)
+        self.assertIn(f"mint {rows[0]['mint']} mig_ms {rows[0]['mig_ms']} differs in fields ['flat'] (values withheld)", err)
+        for leak in ("68423", "0.0684", "flat\": "):
+            self.assertNotIn(leak, err, "a net value leaked on the conflict path")
         self.assertEqual((out / "rows.jsonl").read_bytes(), before)
 
     def test_a_different_clean_clock_is_refused(self) -> None:
@@ -294,7 +296,7 @@ class AppendOnlyTests(Base):
         self.assertEqual(self.run_score(walk, art, out, "--to", "2026-10-05T07")[0], 0)
         err = io.StringIO()
         with patched(), mock.patch("sys.stderr", err):
-            rc = fw.main(["score", "--walk-dir", str(walk), "--artifact-dir", str(art), "--out-dir", str(out), "--clean-clock", "2026-10-05T05:30:00Z", "--freeze-commit", FREEZE_COMMIT, "--to", "2026-10-05T09"])
+            rc = fw.main(["score", "--walk-dir", str(walk), "--artifact-dir", str(art), "--out-dir", str(out), "--clean-clock", "2026-10-05T05:30:00Z", "--freeze-commit", FREEZE_COMMIT, "--to", "2026-10-05T09", "--test-window", "--final-ledger", str(out.parent / "ledger.jsonl")])
         self.assertEqual(rc, 2)
         self.assertIn("different clean clock", err.getvalue())
 
@@ -317,7 +319,7 @@ class CleanClockTests(Base):
         walk, art, out = self.fresh()
         err = io.StringIO()
         with patched(), mock.patch("sys.stderr", err):
-            rc = fw.main(["score", "--walk-dir", str(walk), "--artifact-dir", str(art), "--out-dir", str(out), "--clean-clock", "2026-10-05T06:00:00Z", "--freeze-commit", FREEZE_COMMIT, "--to", "2026-10-05T09"])
+            rc = fw.main(["score", "--walk-dir", str(walk), "--artifact-dir", str(art), "--out-dir", str(out), "--clean-clock", "2026-10-05T06:00:00Z", "--freeze-commit", FREEZE_COMMIT, "--to", "2026-10-05T09", "--test-window", "--final-ledger", str(out.parent / "ledger.jsonl")])
         self.assertEqual(rc, 0, err.getvalue())
         self.assertEqual({r["mint"] for r in self.rows(out)}, {"mD", "mE"})
 
@@ -634,7 +636,7 @@ class ReadTests(Base):
 
     def report(self, walk: Path, out: Path, *extra: str) -> tuple[int, str]:
         err = io.StringIO()
-        argv = ["report", "--out-dir", str(out), "--walk-dir", str(walk), "--clean-clock", CLEAN_CLOCK, "--read-end", READ_END, *extra]
+        argv = ["report", "--out-dir", str(out), "--walk-dir", str(walk), "--clean-clock", CLEAN_CLOCK, "--read-end", READ_END, "--test-window", "--final-ledger", str(out.parent / "ledger.jsonl"), *extra]
         with patched(), mock.patch("sys.stderr", err):
             rc = fw.main(argv)
         return rc, err.getvalue()
@@ -670,7 +672,7 @@ class ReadTests(Base):
         for name, text in texts.items():
             for word in FORBIDDEN:
                 self.assertNotIn(word, text.lower(), f"{word!r} leaked into {name}")
-        self.assertEqual(set(rep), {"schema", "mode", "label", "note", "clean_clock", "read_end", "scored_through_exclusive", "why_interim", "n_rows", "n_entered", "per_day_entered", "generated_at_utc"})
+        self.assertEqual(set(rep), {"test_window", "window_note", "schema", "mode", "label", "note", "clean_clock", "read_end", "scored_through_exclusive", "why_interim", "n_rows", "n_entered", "per_day_entered", "generated_at_utc"})
 
     def test_interim_when_a_needed_hour_is_unverified(self) -> None:
         walk, art, out = self.fresh()
