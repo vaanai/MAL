@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Proposed** (2026-10-02). **Nothing starts before the owner's OK.** It spends paid Helius credits on forward data, and the owner reserved paid-feed changes to himself (via Helm, 2026-10-02). For a 2026-10-05T05:00:00Z clean clock the walk must start by **2026-10-04T05Z**, which gives the 24 h feature buffer. |
+| **Status** | **Proposed** (2026-10-02). **Nothing starts before the owner's OK.** It spends paid Helius credits on forward data, and the owner reserved paid-feed changes to himself (via Helm, 2026-10-02). For a 2026-10-05T05:00:00Z clean clock the walk must start by **2026-10-03T05Z**: 48 h of buffer, so every counted mint (created up to 24 h before its migration) also has 24 h of creator history. |
 | **Decider** | Claude manager (`mal-research-0`). Owner confirmation asked 2026-10-02. |
 | **Date** | 2026-10-02 |
 | **Amends** | [DEC-015](DEC-015-forward-paper-on-fast.md) §1, only for **how EXP-012's forward book is measured**. DEC-015's runner track on `mal-fast-0` continues as the live-readiness track (§3). |
@@ -30,7 +30,7 @@
    - It checks the frozen artifacts' md5 (`ARTIFACTS/exp012/FROZEN.md5`) on every run.
    - Its rows are append-only, keyed by mint and migration time.
    - The gate is computed by `tools.exp011_score.compute_gate`, under both fail models.
-3. **Clean clock: 2026-10-05T05:00:00Z.** Only migrations at or after it count. Hours before it are feature buffer only (24 h of creates and `buffer_hours=24`). The scorer reads no hour before 2026-10-04T05.
+3. **Clean clock: 2026-10-05T05:00:00Z.** Only migrations at or after it count. Hours before it are feature buffer only. The scorer's pool starts 48 h before the clean clock: `buffer_hours=24` for create-to-migration, plus 24 h of creator history (`creator_prior_mints_24h`). It reads no hour before 2026-10-03T05.
 4. **Gate:** exactly CLAUDE.md's, under both fail models. A pass here is **forward simulated paper**, not live evidence. It earns the owner's decision on a small live trial, with the live-readiness track (§3) as a precondition.
 
 ## 3. The live-readiness track (DEC-015, unchanged in purpose)
