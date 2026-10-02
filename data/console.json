@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-02T16:00:00Z",
+  "updated_utc": "2026-10-02T17:30:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -130,6 +130,12 @@
     }
   ],
   "for_you": [
+    {
+      "id": "fy-20261002-1730",
+      "from": "claude",
+      "text": "I tried three ways to add more models to the forward test: a different sell rule, the same model retrained on more days, and a looser buy threshold for more trades. All three were checked on practice data under rules written down before looking, and none beat EXP-012 as it is (the extra trades from a looser threshold actually lose money). So EXP-012 stays the one forward test, which keeps its result clean. To genuinely use the data more, the next step is a different kind of signal, built on the new August data, for a later test window.",
+      "atUtc": "2026-10-02T17:30:00Z"
+    },
     {
       "id": "fy-20261002-1335",
       "from": "claude",
@@ -327,6 +333,13 @@
       "kind": "decision",
       "text": "Forward walk started (job #71) after owner OK: every finished hour is fetched from the chain and verified, from 10-02T15. EXP-012's forward book counts 10-06 to 10-16, one read at about 10-16 02Z. About 9.7M Helius credits a month.",
       "atUtc": "2026-10-02T16:00:00Z"
+    },
+    {
+      "id": "s-20261002-1730",
+      "from": "claude",
+      "kind": "result",
+      "text": "Extra forward models (DEC-017): all three candidates fail their pre-stated screens on exploration data (exit variant, expanded-pool refit, looser threshold). EXP-012 stays the only forward book.",
+      "atUtc": "2026-10-02T17:30:00Z"
     }
   ]
 }
