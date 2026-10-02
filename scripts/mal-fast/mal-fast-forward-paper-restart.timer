@@ -1,0 +1,11 @@
+[Unit]
+Description=MAL fast-host forward paper daily restart timer (installed, not enabled by the installer)
+Documentation=https://github.com/vaanai/MAL
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 UTC
+Persistent=false
+Unit=mal-fast-forward-paper-restart.service
+
+[Install]
+WantedBy=timers.target

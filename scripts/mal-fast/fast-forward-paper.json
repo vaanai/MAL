@@ -2,6 +2,7 @@
   "tape_dir": "/var/lib/mal/sealed/fast-trades-live",
   "creates_dir": "/var/lib/mal/sealed/fast-observe",
   "output_dir": "/var/lib/mal/paper/fast-forward-paper",
+  "graph_dir": "/var/lib/mal/fast-forward/no-graph",
   "kill_file": "/var/lib/mal/paper/fast-forward-paper/KILL",
   "size_sol": 0.05,
   "slippage_cap": 0.15,

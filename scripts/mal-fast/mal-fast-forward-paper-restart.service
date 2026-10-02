@@ -1,0 +1,7 @@
+[Unit]
+Description=MAL fast-host forward paper daily restart (00:00Z)
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart mal-fast-forward-paper.service
