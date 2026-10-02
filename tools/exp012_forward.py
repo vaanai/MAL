@@ -431,6 +431,26 @@ def read_rows(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+# The only fields export-decisions may write. No net, gross, status or filled field, ever.
+DECISION_EXPORT_KEYS = ("mint", "mig_ms", "score", "entered", "day")
+DECISIONS_NAME = "decisions.jsonl"
+
+
+def export_decisions(out_dir: Path, output: Path | None = None) -> int:
+    """Write OUT/decisions.jsonl: one allowlisted row per (mint, mig_ms) for the live-readiness
+    comparison (tools/forward_exp012_replay.py). The tool reads rows.jsonl in-process, like
+    score and report do; it prints and writes none of its P&L fields. Returns rows written."""
+    seen: dict[tuple[str, int], dict[str, Any]] = {}
+    for r in read_rows(out_dir / ROWS_NAME):
+        key = (r["mint"], int(r["mig_ms"]))
+        seen.setdefault(key, {k: r[k] for k in DECISION_EXPORT_KEYS})
+    rows = [seen[k] for k in sorted(seen)]
+    assert all(set(r) == set(DECISION_EXPORT_KEYS) for r in rows)
+    dest = output if output is not None else out_dir / DECISIONS_NAME
+    atomic_write(dest, "".join(_dump(r) + "\n" for r in rows).encode("utf-8"))
+    return len(rows)
+
+
 def atomic_write(path: Path, data: bytes) -> None:
     """tmp + fsync + rename (+ directory fsync): a crash leaves the old file or the new one, never a torn one."""
     tmp = path.with_name(path.name + ".tmp")
@@ -945,6 +965,9 @@ def main(argv: list[str] | None = None) -> int:
     vf = sub.add_parser("verify", help="backfill_verify --content for one hour, append its line to D/verify.jsonl")
     vf.add_argument("--walk-dir", required=True)
     vf.add_argument("--hour", required=True, help="YYYY-MM-DDTHH")
+    ex = sub.add_parser("export-decisions", help="write decisions.jsonl (mint, mig_ms, score, entered, day only) for the live-readiness comparison")
+    ex.add_argument("--out-dir", required=True)
+    ex.add_argument("--output", default=None)
     rp = sub.add_parser("report", help="write report.json and report.md from rows.jsonl")
     rp.add_argument("--out-dir", required=True)
     rp.add_argument("--walk-dir", default=None)
@@ -964,6 +987,15 @@ def main(argv: list[str] | None = None) -> int:
             for r in exc.reasons:
                 print(f"REFUSED: {r}", file=sys.stderr)
             return exc.code
+    if args.cmd == "export-decisions":
+        try:
+            n = export_decisions(Path(args.out_dir), Path(args.output) if args.output else None)
+        except Refused as exc:
+            for r in exc.reasons:
+                print(f"REFUSED: {r}", file=sys.stderr)
+            return exc.code
+        print(f"decisions exported: {n} rows, keys {list(DECISION_EXPORT_KEYS)}", file=sys.stderr)
+        return 0
     if args.cmd == "report":
         try:
             rep = run_report(

@@ -1,21 +1,28 @@
-"""Compare the runner's EXP-012 gate rows with tools/exp012_forward.py's rows.
+"""Compare the runner's EXP-012 gate rows with the forward scorer's decision export.
 
-Input: runner `exp012-gate.jsonl` rows (schema forward_paper_exp012_gate_v1) and the
-forward scorer's rows.jsonl. Join key: mint (the scorer writes one row per mint and
-exit spec with the same score; the first per mint is used). Output: entered-set
-overlap, score agreement over mints on both sides, migration-time difference, and,
-if a scorer row carries a `features` map, per-feature mismatch counts. Measurement
-only: no tolerance is applied to a verdict here (tolerances are fixed in DEC-016).
+DEC-016 Amendment 2: before the FINAL read nobody opens OUT/rows.jsonl. This helper
+reads only `decisions.jsonl` written by `tools/exp012_forward.py export-decisions`,
+whose keys are the allowlist `DECISION_EXPORT_KEYS` (mint, mig_ms, score, entered,
+day). A scorer file with any other key is refused, so a rows.jsonl cannot be passed
+in by mistake. Runner side: `exp012-gate.jsonl` rows (forward_paper_exp012_gate_v1).
+Output: entered-set overlap, score agreement (max |delta|) over mints on both sides,
+migration-time difference and runner skip reasons. Per-feature comparison is not
+done: the scorer export carries no features. Measurement only; no verdict.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 from typing import Any, Iterable
+
+from tools.exp012_forward import DECISION_EXPORT_KEYS
+
+
+class ExportRefused(Exception):
+    pass
 
 
 def _read(path: Path) -> list[dict[str, Any]]:
@@ -26,6 +33,17 @@ def _read(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def check_export(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Refuse any scorer row whose keys are not exactly the export allowlist."""
+    out = list(rows)
+    for n, r in enumerate(out, 1):
+        extra = sorted(set(r) - set(DECISION_EXPORT_KEYS))
+        missing = sorted(set(DECISION_EXPORT_KEYS) - set(r))
+        if extra or missing:
+            raise ExportRefused(f"scorer row {n} is not a decisions export row (extra keys: {extra}, missing: {missing}); read only export-decisions output")
+    return out
+
+
 def _by_mint(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for r in rows:
@@ -33,8 +51,8 @@ def _by_mint(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def compare(runner_rows: Iterable[dict[str, Any]], scorer_rows: Iterable[dict[str, Any]], *, feature_tol: float = 1e-9) -> dict[str, Any]:
-    run, sco = _by_mint(runner_rows), _by_mint(scorer_rows)
+def compare(runner_rows: Iterable[dict[str, Any]], scorer_rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    run, sco = _by_mint(runner_rows), _by_mint(check_export(scorer_rows))
     both = sorted(set(run) & set(sco))
     run_in = {m for m, r in run.items() if r.get("entered")}
     sco_in = {m for m, r in sco.items() if r.get("entered")}
@@ -45,18 +63,6 @@ def compare(runner_rows: Iterable[dict[str, Any]], scorer_rows: Iterable[dict[st
         if run[m].get("score") is not None and sco[m].get("score") is not None
     ]
     mig = [abs(int(run[m]["mig_ms"]) - int(sco[m]["mig_ms"])) for m in both if "mig_ms" in run[m] and "mig_ms" in sco[m]]
-    feat_mismatch: dict[str, int] = {}
-    n_feat = 0
-    for m in both:
-        rf, sf = run[m].get("features"), sco[m].get("features")
-        if not isinstance(rf, dict) or not isinstance(sf, dict):
-            continue
-        n_feat += 1
-        for name in sorted(set(rf) | set(sf)):
-            a, b = rf.get(name), sf.get(name)
-            same = a is not None and b is not None and math.isclose(float(a), float(b), rel_tol=feature_tol, abs_tol=feature_tol)
-            if not same:
-                feat_mismatch[name] = feat_mismatch.get(name, 0) + 1
     runner_skips: dict[str, int] = {}
     for r in run.values():
         if not r.get("entered"):
@@ -77,8 +83,6 @@ def compare(runner_rows: Iterable[dict[str, Any]], scorer_rows: Iterable[dict[st
         "score_n_compared": len(deltas),
         "score_max_abs_delta": max(deltas) if deltas else None,
         "mig_ms_max_abs_delta": max(mig) if mig else None,
-        "feature_n_mints_compared": n_feat,
-        "feature_mismatch_counts": feat_mismatch,
         "runner_skip_reasons": runner_skips,
     }
 
@@ -86,10 +90,13 @@ def compare(runner_rows: Iterable[dict[str, Any]], scorer_rows: Iterable[dict[st
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("runner_gate_jsonl", type=Path)
-    ap.add_argument("scorer_rows_jsonl", type=Path)
-    ap.add_argument("--feature-tol", type=float, default=1e-9)
+    ap.add_argument("scorer_decisions_jsonl", type=Path, help="export-decisions output only")
     args = ap.parse_args(argv)
-    report = compare(_read(args.runner_gate_jsonl), _read(args.scorer_rows_jsonl), feature_tol=args.feature_tol)
+    try:
+        report = compare(_read(args.runner_gate_jsonl), _read(args.scorer_decisions_jsonl))
+    except ExportRefused as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 2
     json.dump(report, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
     return 0
