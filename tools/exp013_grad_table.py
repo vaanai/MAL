@@ -6,7 +6,7 @@ the EXP-012 freeze read) plus any verified expansion views (pool X,
 `--extra-fast-view`). For every mint it finds the first bonding print at
 progress >= 0.80 (tools/exp013_grad_trigger.py), records the 22 features at that
 print, and scores a curve buy at trigger slot + k for k in 1, 4, 8, held through
-migration and sold at the PumpSwap state at migration + 4 slots (30 minute cap,
+migration and sold at the PumpSwap state at migration + max(4, k) slots (30 minute cap,
 -30% stop on the curve, 0.5 SOL, direct, flat 15% and pressure fail models).
 
 Output, under `<out-root>/<run-id>/` (default out-root /data/mal/exp013-grad):

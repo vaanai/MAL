@@ -270,6 +270,33 @@ class PnlTests(unittest.TestCase):
         self.assertEqual(row["label"], 1)
         self.assertEqual(row["gross"], 669_202_439 + (500_000_000 - 493_750_000) + (1_184_002_470 - 1_169_202_439))
 
+    def test_migration_sell_lands_at_max_4_k_slots_after_migration(self) -> None:
+        # Amendment 4. Migration at slot 1100. k=1 and k=4 sell at the start of slot 1104 (the slot-1103 print);
+        # k=8 sells at the start of slot 1108 (the slot-1107 print), 3.2 s after the migration print.
+        mig_t = TRIG_T + 40_000
+        prints = _entry_prints() + [
+            P(1100, mig_t, "pumpswap", "buy", 80_000_000_000, 200_000_000_000_000),
+            P(1103, mig_t + 1_200, "pumpswap", "buy", 80_000_000_000, 200_000_000_000_000),  # k=1, k=4 exit state
+            P(1104, mig_t + 1_600, "pumpswap", "buy", 99_000_000_000, 150_000_000_000_000),
+            P(1107, mig_t + 2_800, "pumpswap", "buy", 85_000_000_000, 206_900_000_000_000),  # k=8 exit state
+            P(1108, mig_t + 3_200, "pumpswap", "buy", 99_000_000_000, 150_000_000_000_000),  # never used
+        ]
+        r8, c8 = self._score(prints, k=8)
+        self.assertIsNone(c8)
+        assert r8 is not None
+        self.assertEqual((r8["outcome"], r8["entry_slot"], r8["exit_ms"]), ("migrated", 1004, mig_t + 8 * 400))
+        # entry at the slot-1004 state (Q=74e9, B=437e12): tokens = 493_750_000 * 437e12 // (74e9 + 493_750_000) = 2_896_467_824_481;
+        # sold into (85e9, 206.9e12), mcap 410.8 SOL (1.25% tier): gross = 1_173_517_207, sol_out = 1_158_848_241
+        self.assertEqual(r8["net0"], 658_848_241)
+        r4, _ = self._score(prints, k=4)
+        assert r4 is not None
+        self.assertEqual(r4["exit_ms"], mig_t + 4 * 400)
+        # k=8 censors when the tape ends before migration + 8 slots (k=4 does not)
+        r4b, _ = self._score(prints, k=4, through=mig_t + 4 * 400)
+        _, c8b = self._score(prints, k=8, through=mig_t + 8 * 400 - 1)
+        self.assertIsNotNone(r4b)
+        self.assertEqual(c8b["reason"], "migration_exit_past_tape")  # type: ignore[index]
+
     def test_hand_checked_stop_exit(self) -> None:
         prints = _entry_prints() + [
             P(1010, TRIG_T + 5_000, "pump_bonding", "sell", 52_000_000_000, 600_000_000_000_000),  # -48% with our buy in the book

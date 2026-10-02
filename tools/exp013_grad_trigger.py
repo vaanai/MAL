@@ -51,7 +51,7 @@ Execution and exit (one tape pass scores every k in KS)
            delay as the entry. It is sold into whatever state is current.
     migrate the first `pumpswap` state at or before the cap: held through,
            sold into the PumpSwap state at the start of slot (migration
-           slot + 4) (`_state_index` over the pumpswap states).
+           slot + max(4, k), Amendment 4) (`_state_index` over the pumpswap states).
     cap    30 minutes after the entry landing; the sell lands k slots after the
            cap instant (Amendment 3), at the last state at or before that.
   A missing entry state is a MISS (label 0, priority fee lost), not a censor.
@@ -330,11 +330,12 @@ def score_entry(
         kind = "stop"
     elif swap_i is not None and fills[swap_i].t_recv_ms <= deadline:
         mig_slot, mig_ms = fills[swap_i].slot, fills[swap_i].t_recv_ms
-        t_exit = mig_ms + MIG_EXIT_SLOTS * SLOT_MS
+        mig_slots = max(MIG_EXIT_SLOTS, k)  # Amendment 4: migration + max(4, k) slots
+        t_exit = mig_ms + mig_slots * SLOT_MS
         if t_exit > tape_through_ms:
             return cens("migration_exit_past_tape")
         swaps = [pr for pr in fills[swap_i:] if pr.venue == "pumpswap"]
-        sidx = _state_index(swaps, mig_slot + MIG_EXIT_SLOTS, "start")
+        sidx = _state_index(swaps, mig_slot + mig_slots, "start")
         closed = _one_sell_close(swaps, sidx, buy, "pump_bonding", size, ENTRY_PORTAL_PPM)
         kind = "migrated"
     else:
