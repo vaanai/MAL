@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-02T11:00:00Z",
+  "updated_utc": "2026-10-02T13:35:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -122,6 +122,12 @@
     }
   ],
   "for_you": [
+    {
+      "id": "fy-20261002-1335",
+      "from": "claude",
+      "text": "Better news on the free trade feed. In a calm 2-hour stretch this morning the fast server's tape caught every single trade on the chain (100%). The 15% it missed yesterday was lost while the connection kept dropping and reconnecting. So the free feed is good when stable; the fix is to make it survive reconnects (e.g. two connections at once, free), and to keep checking it against the chain record every hour.",
+      "atUtc": "2026-10-02T13:35:00Z"
+    },
     {
       "id": "fy-20261002-1100",
       "from": "claude",
@@ -292,6 +298,13 @@
       "kind": "result",
       "text": "Exploration check: EXP-012's selected book on its 9 exploration days with out-of-fold selection. Pressure mean 0.02315 SOL/trade at 1-slot entry, 0.01875 at 4 slots, 0.01327 at 12 slots; CI lower bound above 0 throughout. Exploration, not evidence.",
       "atUtc": "2026-10-02T11:00:00Z"
+    },
+    {
+      "id": "s-20261002-1335",
+      "from": "claude",
+      "kind": "result",
+      "text": "Tape coverage re-check, quiet stretch 10-02T06-08: fast tape 100.000% of chain trades, Oracle 98.615%. The 10-01 losses (84.759%) came with websocket reconnect episodes. Feed is complete when stable; needs reconnect resilience before a book counts on it.",
+      "atUtc": "2026-10-02T13:35:00Z"
     }
   ]
 }
