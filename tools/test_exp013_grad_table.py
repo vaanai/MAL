@@ -149,7 +149,7 @@ class RootGuardTests(unittest.TestCase):
     def test_forbidden_root_is_refused_before_any_read(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ok = Path(td)
-            for bad in ("/data/mal/blocks/fresh-0828/w1", "/data/mal/clean-view/fresh-0828/w2", "/data/mal/blocks/forward-1002", "/var/lib/mal/backfill-fast-c"):
+            for bad in ("/data/mal/blocks/fresh-0828/w1", "/data/mal/clean-view/fresh-0828/w2", "/data/mal/blocks/forward-1002", "/var/lib/mal/backfill-fast-c", "/data/mal/clean-view/forward-1002", "/data/mal/exp012", "/data/mal/exp012-forward/x", "/data/mal/forward-family/y"):
                 argv = ["--run-id", "run-001", "--out-root", str(ok / "o"), "--verify-view", "--fast-dir", bad, "--oracle-insample-dir", str(ok), "--oracle-live-dir", str(ok)]
                 with self.subTest(bad), self.assertRaisesRegex(SystemExit, "reserved holdout"):
                     gtab.main(argv)
@@ -165,8 +165,85 @@ class RootGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             fake = {"fast": Path(td), "insample": Path(td), "live": Path(td)}
             for bad in ("/data/mal/blocks-clean/fresh-0828/w1", "/data/mal/clean-view/fresh-0903/w2", "/data/mal/blocks/forward-1002"):
-                with self.subTest(bad), mock.patch.object(gtab, "guarded_roots", return_value=fake), self.assertRaisesRegex(SystemExit, "forbidden"):
+                with self.subTest(bad), mock.patch.object(gtab, "guarded_roots", return_value=fake), mock.patch.object(gtab, "assert_builtin_views_complete"), self.assertRaisesRegex(SystemExit, "forbidden"):
                     gtab.main(argv_for(Path(td), "run-001", "--extra-fast-view", bad))
+
+
+class BuiltinViewTests(unittest.TestCase):
+    def test_unlisted_data_file_in_a_builtin_root_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "fast"
+            write_fast_format_root(root, ["2026-09-19T01", "2026-09-19T02"], {})
+            write_view_sha256(root)
+            gtab.assert_builtin_views_complete({"A": root})  # complete: passes
+            write_zst_jsonl(root / "trades" / "trades-2026-09-19T03.jsonl.zst", [])
+            with self.assertRaisesRegex(SystemExit, "not listed in VIEW.sha256"):
+                gtab.assert_builtin_views_complete({"A": root})
+
+    def test_pool_b_observe_files_are_not_mistaken_for_unlisted_data(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "live"
+            write_pool_b(root)
+            gtab.assert_builtin_views_complete({"B": root})
+
+
+class DuplicateTests(unittest.TestCase):
+    def test_duplicate_mint_k_across_chunks_is_refused_as_it_is_appended(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            t = Path(td)
+            row = {"mint": "m", "day": "2026-09-20", "entry_land_k": 4, "pool": "A"}
+            specs = []
+            for i in range(2):
+                (t / f"r{i}.jsonl").write_text(json.dumps(row) + "\n")
+                specs.append({"tag": "A", "worker_id": i, "rows_path": t / f"r{i}.jsonl", "cens_path": t / f"c{i}.jsonl"})
+            res = {"tag": "A", "triggers_by_day": {}, "untriggered_by_create_day": {}, "tape_through_ms": 0}
+            with mock.patch.object(gtab, "plan_pools", return_value=specs), mock.patch.object(gtab, "_worker", return_value=res):
+                with self.assertRaisesRegex(SystemExit, "duplicate"), redirect_stderr(io.StringIO()):
+                    gtab.build_table(t / "out", {"fast": t, "insample": t, "live": t}, None, max_workers=1)
+
+
+class EdgeTests(unittest.TestCase):
+    RUNS = {"A": [("2026-09-19T01", "2026-09-21T23")], "X": [("2026-08-20T00", "2026-08-20T05"), ("2026-08-22T12", "2026-08-23T11")]}
+
+    def _ms(self, hour: str, plus_s: int = 0) -> int:
+        return gtab._hour_ms(hour) + plus_s * 1000
+
+    def test_first_and_last_day_are_flagged_with_the_secs_cap(self) -> None:
+        f = gtab.edge_flags("A", "2026-09-19", self._ms("2026-09-19T03", 30), self.RUNS)
+        self.assertEqual((f["edge_left"], f["edge_right"], f["secs_cap_s"]), (True, False, 2 * 3600 + 30))
+        f = gtab.edge_flags("A", "2026-09-21", self._ms("2026-09-21T10"), self.RUNS)
+        self.assertEqual((f["edge_left"], f["edge_right"], f["secs_cap_s"]), (False, True, None))
+        f = gtab.edge_flags("A", "2026-09-20", self._ms("2026-09-20T10"), self.RUNS)
+        self.assertEqual((f["edge_left"], f["edge_right"]), (False, False))
+
+    def test_a_run_shorter_than_a_day_is_both_edges(self) -> None:
+        f = gtab.edge_flags("X", "2026-08-20", self._ms("2026-08-20T02"), self.RUNS)
+        self.assertEqual((f["edge_left"], f["edge_right"]), (True, True))
+
+    def test_second_run_of_a_pool_has_its_own_edges(self) -> None:
+        self.assertTrue(gtab.edge_flags("X", "2026-08-22", self._ms("2026-08-22T13"), self.RUNS)["edge_left"])
+        self.assertTrue(gtab.edge_flags("X", "2026-08-23", self._ms("2026-08-23T01"), self.RUNS)["edge_right"])
+        self.assertFalse(gtab.edge_flags("X", "2026-08-21", self._ms("2026-08-21T01"), self.RUNS)["edge_left"])
+
+    def test_censored_records_without_a_trigger_time_are_flagged_by_day(self) -> None:
+        f = gtab.edge_flags("A", "2026-09-21", None, self.RUNS)
+        self.assertEqual((f["edge_right"], f["secs_cap_s"]), (True, None))
+
+    def test_pool_runs_split_extra_views_at_gaps(self) -> None:
+        class V:
+            hours = ["2026-08-20T00", "2026-08-20T01", "2026-08-20T05"]
+
+        runs = gtab.pool_runs([V()])
+        self.assertEqual(runs["X"], [("2026-08-20T00", "2026-08-20T01"), ("2026-08-20T05", "2026-08-20T05")])
+
+    def test_edge_report_counts(self) -> None:
+        rows = [{"pool": "A", "day": "2026-09-19", "entry_land_k": 4}, {"pool": "A", "day": "2026-09-20", "entry_land_k": 4}]
+        cens = [{"pool": "A", "day": "2026-09-21", "entry_land_k": 4, "reason": "cap_past_tape"}]
+        rep = gtab.edge_report({"A": self.RUNS["A"]}, {"A": {"2026-09-19": 5, "2026-09-21": 7}}, {"A": {"2026-09-21": {"n": 30, "near": 4}}}, rows, cens)
+        left, right = rep
+        self.assertEqual((left["role"], left["day"], left["triggers"], left["rows_scored"]), ("left", "2026-09-19", 5, 1))
+        self.assertEqual((right["role"], right["triggers"], right["censored"], right["censored_reasons"]), ("right", 7, 1, {"cap_past_tape": 1}))
+        self.assertEqual((right["absent_proxy_n"], right["absent_proxy_near"]), (30, 4))
 
 
 class SummaryTests(unittest.TestCase):
@@ -218,7 +295,17 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(counts["triggers_total"], 1)
         self.assertEqual(counts["by_day"][day]["triggers"], 1)
         self.assertEqual(counts["by_day"][day]["by_k"]["4"]["scored"], 1)
+        # the fixture mint triggers on pool A's first day: left edge, with the secs cap, not right edge
+        self.assertTrue(all(r["edge_left"] and not r["edge_right"] for r in rows))
+        trig_s = (rows[0]["trigger_ms"] - gtab._hour_ms(ex.POOL_HOURS[0])) / 1000.0
+        self.assertEqual(rows[0]["secs_cap_s"], trig_s)
+        self.assertLessEqual(rows[0]["features"]["secs_since_create"], rows[0]["secs_cap_s"])
         man = json.loads((out / "manifest.json").read_text())
+        left_a = next(e for e in man["edge_days"] if e["pool"] == "A" and e["role"] == "left")
+        self.assertEqual((left_a["day"], left_a["triggers"], left_a["rows_scored"], left_a["censored"]), (self.hour[:10], 1, 3, 0))
+        right_a = next(e for e in man["edge_days"] if e["pool"] == "A" and e["role"] == "right")
+        self.assertEqual(right_a["day"], "2026-09-21")
+        self.assertEqual(man["pool_runs"]["A"], [[ex.POOL_HOURS[0], ex.POOL_HOURS[-1]]])
         self.assertEqual(man["n_rows"], 3)
         self.assertEqual(man["n_censored"], 0)
         self.assertEqual(man["table_md5"], (out / "table.md5").read_text().strip())
