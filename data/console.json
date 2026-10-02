@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-02T09:10:00Z",
+  "updated_utc": "2026-10-02T11:00:00Z",
   "review_windows": [
     {
       "id": "kill-review-2026-10-05",
@@ -122,6 +122,12 @@
     }
   ],
   "for_you": [
+    {
+      "id": "fy-20261002-1100",
+      "from": "claude",
+      "text": "Good early sign on the biggest risk for live trading. EXP-012's test assumed we buy in the very first moment after a token migrates. Our real feed is a few seconds behind, so I re-ran the strategy on its practice data with the buy delayed by up to 12 blocks (about 3 seconds). Profit per trade shrank by roughly 20% at a realistic 1–1.5 second delay, and by about 40% at 3 seconds, but it stayed positive throughout. This is practice data the model was built on, so it is a warning check, not proof. Separately, the backup test block (6 days) is fetched and verified, ready for the next test.",
+      "atUtc": "2026-10-02T11:00:00Z"
+    },
     {
       "id": "fy-20261002-0910",
       "from": "claude",
@@ -272,6 +278,20 @@
       "kind": "result",
       "text": "Tape coverage against chain truth, 10-01T17-19: fast tape 84.759%, Oracle tape 66.241% of chain trades. DEC-015 §2.2 FAIL (bar 95%). Re-check in a quiet stretch (job #44) is running.",
       "atUtc": "2026-10-02T09:10:00Z"
+    },
+    {
+      "id": "s-20261002-1100",
+      "from": "claude",
+      "kind": "result",
+      "text": "Backup confirmation block [08-28T12, 09-03T12) fully fetched and verified (144/144 h, 0 flagged, 0 duplicates, 1,654,761 credits). Unread, reserved for the next confirmation test.",
+      "atUtc": "2026-10-02T11:00:00Z"
+    },
+    {
+      "id": "s-20261002-1101",
+      "from": "claude",
+      "kind": "result",
+      "text": "Exploration check: EXP-012's selected book on its 9 exploration days with out-of-fold selection. Pressure mean 0.02315 SOL/trade at 1-slot entry, 0.01875 at 4 slots, 0.01327 at 12 slots; CI lower bound above 0 throughout. Exploration, not evidence.",
+      "atUtc": "2026-10-02T11:00:00Z"
     }
   ]
 }
