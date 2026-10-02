@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.exp011_freeze import TARGET_SPEC_ID, add_root_args, load_tp50_rows, resolve_roots
+from tools.exp013_pool import add_extra_view_arg
 
 
 def _md5_of_file(path: Path) -> str:
@@ -74,8 +75,9 @@ def build_table(
     insample_dir: Path | None = None,
     live_dir: Path | None = None,
     verify_view: bool = False,
+    extra_views: Any = None,
 ) -> dict[str, Any]:
-    if any(r is not None for r in (fast_dir, insample_dir, live_dir)):
+    if extra_views or any(r is not None for r in (fast_dir, insample_dir, live_dir)):
         # EXP-012 section 3.1/4: the table settings are part of the recipe; with explicit roots they are forced.
         if (max_workers, buffer_hours, max_home_hours) != (FORCED_MAX_WORKERS, FORCED_BUFFER_HOURS, FORCED_MAX_HOME_HOURS):
             raise SystemExit(
@@ -84,6 +86,8 @@ def build_table(
             )
         if not verify_view:
             raise SystemExit("explicit pool roots require --verify-view")
+        if extra_views and any(r is None for r in (fast_dir, insample_dir, live_dir)):
+            raise SystemExit("extra views need all three clean-view pool roots too: a dirty built-in pool next to clean extras is not the recipe")
     t0 = time.time()
     rows, manifest = load_tp50_rows(
         max_workers=max_workers,
@@ -93,6 +97,7 @@ def build_table(
         fast_dir=fast_dir,
         insample_dir=insample_dir,
         live_dir=live_dir,
+        extra_views=extra_views,
     )
     if "roots" in manifest:
         manifest["verify_view"] = True
@@ -140,6 +145,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--scratch-dir", default="/home/claude/data/exp011/scratch")
     ap.add_argument("--out-dir", default=None, help="write DIR/table.jsonl (+ .md5, row_counts.json) with scratch under DIR/scratch; overrides --out/--scratch-dir")
     add_root_args(ap)
+    add_extra_view_arg(ap)
     ap.add_argument("--max-workers", type=int, default=2)
     ap.add_argument(
         "--buffer-hours",
@@ -154,6 +160,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.out_dir:
         out, scratch = Path(args.out_dir) / "table.jsonl", Path(args.out_dir) / "scratch"
     roots = resolve_roots(args)
+    extra_views = None
+    if args.extra_fast_view:
+        from tools.exp011_freeze import DAYS_ALL, assert_out_not_frozen_dir
+        from tools.exp013_pool import load_extra_views
+
+        assert_out_not_frozen_dir(out)
+        extra_views = load_extra_views(args.extra_fast_view, DAYS_ALL)
     build_table(
         out,
         scratch,
@@ -164,6 +177,7 @@ def main(argv: list[str] | None = None) -> None:
         insample_dir=roots["insample"],
         live_dir=roots["live"],
         verify_view=args.verify_view,
+        extra_views=extra_views,
     )
 
 

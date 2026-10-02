@@ -333,8 +333,13 @@ def load_tp50_rows(
     fast_dir: Path | None = None,
     insample_dir: Path | None = None,
     live_dir: Path | None = None,
+    extra_views: Sequence[Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """`out_dir` (added for tools/exp011_build_table.py's Phase A): forwarded
+    """`extra_views` (EXP-013, exploration only): verified tools.exp013_pool.ExtraView
+    objects. None (the default) is byte-for-byte the old behavior. When given, their
+    rows join as pool "X" and the manifest gains "extra_pools" and "extra_days".
+
+    `out_dir` (added for tools/exp011_build_table.py's Phase A): forwarded
     to each pool's run_all_features_* as its own streaming scratch dir
     (out_dir/poolA, out_dir/poolC, out_dir/poolB) so no pool's workers hold
     their whole row set in memory at once -- see run_worker_features's
@@ -386,7 +391,25 @@ def load_tp50_rows(
     manifest["pools"]["B"] = {"start": POOL_B_HOURS[0], "end": POOL_B_HOURS[-1], "n_hours": len(POOL_B_HOURS), "n_rows": len(rows_b)}
     print(f"pool B: {len(rows_b)} {TARGET_SPEC_ID} rows", file=sys.stderr, flush=True)
 
-    rows = rows_a + rows_c + rows_b
+    rows_x: list[dict[str, Any]] = []
+    if extra_views:
+        from tools import exp013_pool
+
+        print("EXP-013 refit: loading extra pool X (expansion clean views)...", file=sys.stderr, flush=True)
+        rows_x = [
+            r
+            for r in exp013_pool.run_all_features_x(
+                extra_views, max_workers=max_workers, buffer_hours=buffer_hours, max_home_hours=max_home_hours, out_dir=(out_dir / "poolX" if out_dir else None)
+            )
+            if r["spec"] == TARGET_SPEC_ID
+        ]
+        for r in rows_x:
+            r["pool"] = "X"
+        manifest["extra_pools"] = exp013_pool.extra_manifest(extra_views, len(rows_x))
+        manifest["extra_days"] = manifest["extra_pools"]["days"]
+        print(f"pool X: {len(rows_x)} {TARGET_SPEC_ID} rows", file=sys.stderr, flush=True)
+
+    rows = rows_a + rows_c + rows_b + rows_x
     # Deterministic order: independent of worker scheduling/process timing,
     # so two runs over the same sealed data always fit on the same row
     # order -- required for the md5 reproducibility check.
@@ -689,6 +712,7 @@ def write_outputs(
     manifest: dict[str, Any],
     wall_s: float,
     nested_report: dict[str, Any] | None = None,
+    days: Sequence[str] | None = None,
 ) -> dict[str, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     model_path = out_dir / "model.txt"
@@ -730,7 +754,7 @@ def write_outputs(
     oof_doc = {
         "schema": "exp011_oof_scores_v1",
         "n_oof": len(oof),
-        "days": DAYS_ALL,
+        "days": DAYS_ALL if days is None else list(days),
         "rows": list(oof),
     }
     (out_dir / "oof_scores.json").write_text(json.dumps(oof_doc, indent=2) + "\n", encoding="utf-8")
@@ -811,6 +835,27 @@ def load_table(table_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     return rows, counts["manifest"]
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def assert_out_not_frozen_dir(out_dir: Path | str) -> None:
+    """Expanded-pool (EXP-013) output must never land in the repo's ARTIFACTS tree
+    (ARTIFACTS/exp011 and ARTIFACTS/exp012 hold frozen artifacts)."""
+    real = Path(os.path.realpath(str(out_dir)))
+    art = (_REPO_ROOT / "ARTIFACTS").resolve()
+    if real == art or art in real.parents:
+        raise SystemExit(f"--extra-fast-view output {str(out_dir)!r} is under ARTIFACTS/: expanded-pool candidates go to /data/mal/exp013-candidate/<run-id>/, never next to frozen artifacts")
+
+
+def pool_days(manifest: dict[str, Any]) -> tuple[str, ...]:
+    """The LODO day list: DAYS_ALL (the 9 original days), plus a table/loader manifest's
+    "extra_days" (EXP-013). Without extras this is DAYS_ALL itself."""
+    extra = manifest.get("extra_days")
+    if not extra:
+        return DAYS_ALL
+    return tuple(sorted(set(DAYS_ALL) | set(extra)))
+
+
 def freeze(
     max_workers: int = 3,
     buffer_hours: int = 2,
@@ -820,6 +865,7 @@ def freeze(
     insample_dir: Path | None = None,
     live_dir: Path | None = None,
     entries_sink: list[dict[str, Any]] | None = None,
+    extra_views: Sequence[Any] | None = None,
 ) -> tuple[Any, dict[str, Any], list[dict[str, Any]], dict[str, Any], float, dict[str, Any] | None]:
     """`entries_sink` (EXP-012): if given, the nested LODO's entered rows are appended to it
     (for the result.v1 record). Outputs are unchanged."""
@@ -827,19 +873,20 @@ def freeze(
     if table_path is not None:
         rows, manifest = load_table(table_path)
     else:
-        rows, manifest = load_tp50_rows(max_workers=max_workers, buffer_hours=buffer_hours, fast_dir=fast_dir, insample_dir=insample_dir, live_dir=live_dir)
+        rows, manifest = load_tp50_rows(max_workers=max_workers, buffer_hours=buffer_hours, fast_dir=fast_dir, insample_dir=insample_dir, live_dir=live_dir, extra_views=extra_views)
+    days = pool_days(manifest)
     print(f"EXP-011 freeze: {len(rows)} {TARGET_SPEC_ID} rows over {len(manifest['days'])} days; computing ablated S2 LODO...", file=sys.stderr, flush=True)
-    oof = leave_one_day_out_oof(rows)
+    oof = leave_one_day_out_oof(rows, days)
     threshold_info = compute_threshold(oof)
     print(f"EXP-011 freeze: threshold={threshold_info['threshold']:.6f} n_oof={threshold_info['n_oof']} selected_fraction={threshold_info['selected_fraction']:.4f}", file=sys.stderr, flush=True)
 
     nested_report: dict[str, Any] | None = None
     if run_nested_lodo:
         print("EXP-011 freeze: running the nested fixed-threshold LODO (report only, 9 outer x 8 inner fits)...", file=sys.stderr, flush=True)
-        entries, fold_info = nested_fixed_threshold_lodo(rows)
+        entries, fold_info = nested_fixed_threshold_lodo(rows, days)
         if entries_sink is not None:
             entries_sink.extend(entries)
-        nested_report = nested_lodo_report(entries, fold_info)
+        nested_report = nested_lodo_report(entries, fold_info, days)
         print(
             f"EXP-011 freeze: nested LODO n={nested_report['flat']['n']} flat_mean={nested_report['flat']['mean_pct']} press_mean={nested_report['press']['mean_pct']}",
             file=sys.stderr,
@@ -868,7 +915,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--result-out", default=None, help="also write a result.v1 record (role exploration) of the nested LODO here")
     ap.add_argument("--tries-log", default=None, help="tries log for the result.v1 record (default: MAL_TRIES_LOG / data/tries.jsonl)")
     add_root_args(ap)
+    from tools.exp013_pool import add_extra_view_arg
+
+    add_extra_view_arg(ap)
     args = ap.parse_args(argv)
+    if args.extra_fast_view:
+        # EXP-013: exploration candidate only. Never the frozen-artifact dirs, never a frozen manifest.
+        assert_out_not_frozen_dir(args.out_dir)
+        if args.frozen_manifest:
+            raise SystemExit("--extra-fast-view is exploration only; it cannot write a frozen manifest")
+        if args.table:
+            raise SystemExit("--extra-fast-view belongs to the table build (tools.exp011_build_table); --table reads no pool")
     if args.result_out and args.skip_nested_lodo:
         raise SystemExit("--result-out needs the nested LODO (drop --skip-nested-lodo)")
     if args.frozen_manifest:
@@ -884,6 +941,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.table and any(r is not None for r in (args.fast_dir, args.oracle_insample_dir, args.oracle_live_dir)):
         raise SystemExit("pool roots belong to the table build (tools.exp011_build_table); --table reads no pool")
     roots = resolve_roots(args) if not args.table else {"fast": None, "insample": None, "live": None}
+    extra_views = None
+    if args.extra_fast_view:
+        from tools.exp013_pool import load_extra_views
+
+        if any(r is None for r in roots.values()):
+            raise SystemExit("--extra-fast-view needs all three clean-view pool roots (with --verify-view) too")
+        extra_views = load_extra_views(args.extra_fast_view, DAYS_ALL)
 
     entries_sink: list[dict[str, Any]] = []
     model, threshold_info, oof, manifest, wall_s, nested_report = freeze(
@@ -895,8 +959,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         fast_dir=roots["fast"],
         insample_dir=roots["insample"],
         live_dir=roots["live"],
+        extra_views=extra_views,
     )
-    out = write_outputs(Path(args.out_dir), model, threshold_info, oof, manifest, wall_s, nested_report=nested_report)
+    if manifest.get("extra_days"):
+        assert_out_not_frozen_dir(args.out_dir)
+    out = write_outputs(Path(args.out_dir), model, threshold_info, oof, manifest, wall_s, nested_report=nested_report, days=pool_days(manifest))
     if args.frozen_manifest and nested_report is not None:
         from tools.exp012_support import proceed_screen
 
