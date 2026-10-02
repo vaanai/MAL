@@ -36,7 +36,7 @@ def hour_ms(hour: str) -> int:
 def pool_of(day: str) -> str:
     if day in AUG_DAYS:
         return "X"
-    return "A" if day <= "2026-09-21" else ("C" if day <= "2026-09-24" else "B")
+    return "A" if day <= "2026-09-21" else ("C" if day <= "2026-09-25" else "B")
 
 
 def synth_rows(days, per_day=30, seed=5, ks=(1, 4, 8), skip_k8=()) -> list[dict]:
@@ -97,7 +97,8 @@ class Fixture:
     def vm_doc(self) -> dict:
         ranges = {"A": ("2026-09-19T01", "2026-09-21T23"), "C": ("2026-09-22T00", "2026-09-25T06"), "B": ("2026-09-25T07", "2026-09-27T23")}
         name = {"A": "fast", "C": "insample", "B": "live"}
-        return {"pools": {t: {"root": self.roots[name[t]], "hours": list(ranges[t]), "view_sha256_file_sha256": self.shas[name[t]]} for t in ranges},
+        return {"pools": {t: {"root": self.roots[name[t]], "hours": list(ranges[t]), "view_sha256_file_sha256": self.shas[name[t]],
+                              "view_sha256_mtime_utc": "2026-10-03T00:00:00Z"} for t in ranges},
                 "extra_views": [dict(v, view_sha256_mtime_utc="2026-10-03T00:00:00Z") for v in self.extra]}
 
     def write_view_manifest(self, doc=None) -> None:
@@ -116,6 +117,7 @@ class Fixture:
         kw.setdefault("ledger_dir", self.ledger)
         kw.setdefault("tries_log", self.tries)
         kw.setdefault("exp012_dir", self.e12)
+        kw.setdefault("e12_expect", None)
         return sc.run(self.table, self.view_manifest, kw.pop("out_dir", self.out), **kw)
 
 
@@ -233,6 +235,19 @@ class ExclusionTests(unittest.TestCase):
         self.assertFalse(sc.trigger_excluded(self.row(4, gap + 4 * 3_600_000, "X"), runs))
         self.assertTrue(sc.trigger_excluded(self.row(4, 0, "nowhere"), runs))
 
+    def test_trigger_must_be_inside_a_run(self) -> None:
+        runs = {"X": [["2026-08-10T00", "2026-08-10T05"], ["2026-08-10T08", "2026-08-12T23"]]}
+        in_gap = hour_ms("2026-08-10T06")
+        self.assertIsNone(sc.exit_bound_ms("X", in_gap, runs))
+        self.assertTrue(sc.trigger_excluded(self.row(4, in_gap, "X"), runs))
+        before = hour_ms("2026-08-09T23")
+        self.assertIsNone(sc.exit_bound_ms("X", before, runs))
+        self.assertTrue(sc.trigger_excluded(self.row(4, before, "X"), runs))
+        self.assertIsNone(sc.exit_bound_ms("X", hour_ms("2026-08-13T00"), runs))
+        self.assertEqual(sc.exit_bound_ms("X", hour_ms("2026-08-11T00"), runs), hour_ms("2026-08-12T23") + 3_600_000)
+        self.assertFalse(sc.trigger_excluded(self.row(4, hour_ms("2026-08-11T00"), "X"), runs))
+        self.assertEqual(sc.exit_bound_ms("X", hour_ms("2026-08-10T00"), runs), hour_ms("2026-08-10T05") + 3_600_000)
+
     def test_whatever_the_realized_exit(self) -> None:
         r = dict(self.row(4, self.END - 1000), flat=5, press=5, filled=True, outcome="tp")
         eligible, info = sc.split_eligible([r, dict(r, entry_land_k=8)], POOL_RUNS)
@@ -243,6 +258,7 @@ class ExclusionTests(unittest.TestCase):
         cens = [{"mint": "a", "entry_land_k": 8, "reason": "x"}, {"mint": "b", "entry_land_k": 8, "reason": "x"}, {"mint": "zz", "entry_land_k": 4, "reason": "y"}]
         r = sc.censored_report(cens, rows, POOL_RUNS)
         self.assertEqual((r["n_censored"], r["n_trigger_time_rule_would_keep"], r["n_trigger_time_unknown"], r["by_reason"]), (3, 1, 1, {"x": 2, "y": 1}))
+        self.assertEqual(r["n_trigger_time_rule_would_keep_by_k"], {"8": 1})
         self.assertEqual(sc.censored_report(None, rows, POOL_RUNS), {"available": False})
 
     def test_excluded_rows_never_reach_selection(self) -> None:
@@ -325,6 +341,13 @@ class Item5Tests(unittest.TestCase):
                 r8["press"] = -10_000_000
         self.assertFalse(sc.item_5(sel, rows)["pass"])  # one leg negative fails
 
+    def test_missing_split_trigger_excluded_vs_table_censored(self) -> None:
+        full = synth_rows(["2026-08-10"], per_day=4, skip_k8={"m0-003"})  # m0-003: table-censored at k=8
+        eligible = [r for r in full if not (r["entry_land_k"] == 8 and r["mint"] == "m0-002")]  # m0-002: excluded by trigger time
+        sel = [{"day": "2026-08-10", "mint": f"m0-00{i}", "score": 1.0, "threshold": 0.5} for i in range(4)]
+        r = sc.item_5(sel, eligible, full)
+        self.assertEqual((r["n_missing_k8"], r["n_missing_k8_trigger_time_excluded"], r["n_missing_k8_table_censored"]), (2, 1, 1))
+
     def test_nothing_joined_fails(self) -> None:
         rows = synth_rows(["2026-08-10"], per_day=2, ks=(4,))
         r = sc.item_5([{"day": "2026-08-10", "mint": "m0-000", "score": 1.0, "threshold": 0.5}], rows)
@@ -362,6 +385,29 @@ class Item6Tests(unittest.TestCase):
         r = sc.item_6(trades[:2], rows, {("2026-09-19", "m1-000"), ("2026-09-19", "m1-001")} | {("2026-09-19", "m1-00%d" % i) for i in (2, 3)})
         self.assertAlmostEqual(r["jaccard"], 0.5)
         self.assertTrue(r["pass"])  # exactly 0.5 passes
+
+    def test_b_from_full_table_post_exclusion_is_report_only(self) -> None:
+        full = self.rows()
+        eligible = [r for r in full if r["mint"] != "m1-001"]  # m1-001 is excluded by trigger time
+        trades = [trade("2026-09-19", 0.1, mint="m1-000"), trade("2026-09-19", 0.1, mint="m1-002")]
+        sel = {("2026-09-19", "m1-001"), ("2026-09-19", "m1-002"), ("2026-09-19", "m1-003")}
+        r = sc.item_6(trades, full, sel, eligible_rows=eligible)
+        self.assertEqual(r["n_b"], 3)  # the gate's B counts the excluded mint
+        self.assertAlmostEqual(r["jaccard"], 1 / 4)
+        self.assertAlmostEqual(r["jaccard_post_exclusion_b_report_only"], 1 / 3)  # B shrinks to 2 mints
+
+    def test_threshold_and_count_asserted(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fx = Fixture(td, rows=synth_rows(AUG_DAYS[:1] + POOL_DAYS[:1], per_day=3))
+            with self.assertRaises(SystemExit):
+                sc.exp012_selected(fx.e12)  # default expectation: 0.8030766588450794 and 881
+            n = len(sc.exp012_selected(fx.e12, None)[1])
+            sc.exp012_selected(fx.e12, (0.5, n))
+            with self.assertRaises(SystemExit):
+                sc.exp012_selected(fx.e12, (0.5, n + 1))
+            with self.assertRaises(SystemExit):
+                sc.exp012_selected(fx.e12, (0.6, n))
+        self.assertEqual((sc.E12_THRESHOLD, sc.E12_N_SELECTED), (0.8030766588450794, 881))
 
     def test_empty_union_fails(self) -> None:
         self.assertFalse(sc.item_6([], self.rows(), set())["pass"])
@@ -500,6 +546,11 @@ class GuardTests(unittest.TestCase):
             log.write_text(json.dumps({"tool": "exp013_grad", "data_key": "whatever"}) + "\n")
             with self.assertRaises(SystemExit):
                 sc.assert_no_prior_try(log)
+            log.write_text('{"tool": "exp013_grad", "data_ke\n')  # a damaged line that names the tool is a prior try
+            with self.assertRaises(SystemExit):
+                sc.assert_no_prior_try(log)
+            log.write_text('not json at all\n\n{"tool": "other"}\n')
+            sc.assert_no_prior_try(log)
 
     def test_guards_before_any_fit_ledger_or_try(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -524,6 +575,41 @@ class GuardTests(unittest.TestCase):
             self.assertFalse((fx.ledger / "SCREEN_RUNS.jsonl").exists())
             self.assertEqual(fx.tries.read_text(), "")
 
+    def test_kill_between_the_two_start_lines_leaves_no_rerun_path(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fx = self.small(td)
+            with mock.patch.object(sc, "ledger_start", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+                fx.run()
+            self.assertEqual(sc.count_tries(fx.tries), 1)  # the tries line was written first
+            self.assertFalse((fx.ledger / "SCREEN_RUNS.jsonl").exists())
+            with self.assertRaises(SystemExit):
+                fx.run(out_dir=fx.root / "out2")
+
+    def test_real_run_refuses_non_default_ledger_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(SystemExit) as cm:
+                sc.run("/data/mal/exp013-grad/r1", "m.json", Path(td) / "o", now=datetime(2026, 10, 5, tzinfo=UTC), ledger_dir=Path(td) / "led", tries_log=Path(td) / "t")
+            self.assertIn("default ledger dir", str(cm.exception))
+
+    def test_pool_views_get_the_extra_view_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fx = self.small(td)
+            tm = json.loads((fx.table / "manifest.json").read_text())
+            doc = fx.vm_doc()
+            doc["pools"]["B"]["view_sha256_mtime_utc"] = "2026-10-04T12:00:01Z"
+            with self.assertRaises(SystemExit):
+                sc.assert_view_manifest(doc, tm)
+            doc = fx.vm_doc()
+            del doc["pools"]["A"]["view_sha256_mtime_utc"]
+            with self.assertRaises(SystemExit):
+                sc.assert_view_manifest(doc, tm)
+            late = lambda p: datetime(2026, 10, 4, 12, 0, 1, tzinfo=UTC).timestamp()  # noqa: E731
+            with self.assertRaises(SystemExit):
+                sc.assert_view_manifest(fx.vm_doc(), tm, check_files=True, mtime_fn=late)
+            (Path(fx.roots["insample"]) / "VIEW.sha256").write_text("tampered\n")  # re-hash of a pool view
+            with self.assertRaises(SystemExit):
+                sc.assert_view_manifest(fx.vm_doc(), tm, check_files=True, mtime_fn=lambda p: 0.0)
+
     def test_crash_after_start_uses_the_try(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             fx = self.small(td)
@@ -534,6 +620,48 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(set(tries[0]["config"]), {"k", "table_md5", "view_manifest_sha256", "code_commit", "event"})
             with self.assertRaises(SystemExit):  # the try is spent: a second run is refused, whatever the manifest
                 fx.run(out_dir=fx.root / "out2", ledger_dir=fx.root / "ledger2")
+
+
+class OrderAndReportTests(unittest.TestCase):
+    def test_result_line_and_ledger_finish_before_screen_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fx = Fixture(td, rows=synth_rows(AUG_DAYS[:1] + POOL_DAYS[:1], per_day=30))
+            with mock.patch.object(sc, "to_markdown", side_effect=RuntimeError("boom")), self.assertRaises(RuntimeError):
+                fx.run()
+            tries = [json.loads(x) for x in fx.tries.read_text().splitlines()]
+            self.assertEqual([t["config"]["event"] for t in tries], ["started", "result"])
+            self.assertEqual([json.loads(x)["event"] for x in (fx.ledger / "SCREEN_RUNS.jsonl").read_text().splitlines()], ["started", "finished"])
+            self.assertFalse((fx.out / "screen.md").exists())  # the lines were written before the report files
+
+    def test_edge_days_from_pool_runs(self) -> None:
+        runs = {"A": [["2026-09-19T01", "2026-09-21T23"]], "X": [["2026-08-10T00", "2026-08-11T23"], ["2026-08-13T00", "2026-08-13T23"]]}
+        self.assertEqual(sc.edge_days(runs), {"2026-09-19", "2026-09-21", "2026-08-10", "2026-08-11", "2026-08-13"})
+
+    def test_book_stats_once_per_fail_model_shared_across_items_1_to_3(self) -> None:
+        man = {"pool_runs": POOL_RUNS}
+        rows = synth_rows(AUG_DAYS + POOL_DAYS, per_day=3, ks=(1, 4, 8))
+        sel = [{"day": r["day"], "mint": r["mint"], "score": 1.0, "threshold": 0.5} for r in rows if r["entry_land_k"] == 4]
+        with mock.patch.object(sc, "book_stats", wraps=sc.book_stats) as bs:
+            doc = sc.evaluate(rows, man, sel, [], {}, set())
+        # full set (2) + 4a (2) + 4b (2) + the edge split's without-edge set (2); items 1-3, the gate counts and the with-edge side reuse the full set
+        self.assertEqual(bs.call_count, 8)
+        self.assertEqual(doc["items"][0]["legs"], doc["gate_report_only"]["legs"])
+
+    def test_result_note_and_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fx = Fixture(td, rows=synth_rows(AUG_DAYS[:1] + POOL_DAYS[:1], per_day=30), censored=[{"mint": "m0-001", "entry_land_k": 4, "reason": "x"}])
+            doc = fx.run()
+            res = json.loads((fx.out / "result.json").read_text())
+            self.assertIn("NOT the screen verdict", res["gate_note"])
+            self.assertIn("NOT the screen verdict", res["notes"])
+            self.assertEqual(doc["tries_log"], os.path.realpath(str(fx.tries)))
+            self.assertTrue(os.path.isabs(doc["tries_log"]))
+            self.assertIn("Table-censored k=4 rows the trigger-time rule would have kept", (fx.out / "screen.md").read_text())
+
+    def test_env_tries_log_resolved_absolute(self) -> None:
+        with mock.patch.dict(os.environ, {"MAL_TRIES_LOG": "rel/tries.jsonl"}):
+            self.assertEqual(sc.resolved_tries_log(None), os.path.realpath("rel/tries.jsonl"))
+            self.assertTrue(os.path.isabs(sc.resolved_tries_log(None)))
 
 
 class EndToEndTests(unittest.TestCase):
@@ -589,9 +717,11 @@ class EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             fx = Fixture(td, rows=synth_rows(AUG_DAYS[:1] + POOL_DAYS[:1], per_day=3))
             with self.assertRaises(SystemExit):
-                sc.main(["--table-run-dir", str(fx.table), "--view-manifest", str(fx.view_manifest), "--out-dir", str(fx.out), "--ledger-dir", str(fx.ledger),
-                         "--tries-log", str(fx.tries), "--exp012-dir", str(READ_DIR)])
-            self.assertFalse(fx.ledger.exists())
+                sc.main(["--table-run-dir", str(fx.table), "--view-manifest", str(fx.view_manifest), "--out-dir", str(fx.out)])  # default exp012 / expectation refuse the fixture
+            for flag in ("--tries-log", "--ledger-dir", "--exp012-dir"):
+                with self.assertRaises(SystemExit) as cm:  # the flags are gone: argparse refuses them
+                    sc.main(["--table-run-dir", "d", "--view-manifest", "m", "--out-dir", "o", flag, "x"])
+                self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":

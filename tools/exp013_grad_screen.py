@@ -110,11 +110,11 @@ def assert_view_manifest(
             raise SystemExit(f"view manifest does not list pool {tag}")
         if _view_key(pinned[tag]) != _view_key(exp["pools"][tag]):
             raise SystemExit(f"view manifest pool {tag} {_view_key(pinned[tag])} != table manifest {_view_key(exp['pools'][tag])}")
-    for v in view_manifest.get("extra_views", []):
+    for v in [*pinned.values(), *view_manifest.get("extra_views", [])]:
         if "view_sha256_mtime_utc" not in v:
-            raise SystemExit(f"view manifest extra view {v.get('root')} does not record view_sha256_mtime_utc")
+            raise SystemExit(f"view manifest view {v.get('root')} does not record view_sha256_mtime_utc")
         if _parse_utc(v["view_sha256_mtime_utc"]) > cutoff:
-            raise SystemExit(f"view manifest extra view {v['root']}: VIEW.sha256 mtime {v['view_sha256_mtime_utc']} is after {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+            raise SystemExit(f"view manifest view {v['root']}: VIEW.sha256 mtime {v['view_sha256_mtime_utc']} is after {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')}")
     extra_pinned = {_view_key(v) for v in view_manifest.get("extra_views", [])}
     extra_table = {_view_key(v) for v in exp["extra_views"]}
     if len(extra_pinned) != len(view_manifest.get("extra_views", [])):
@@ -127,7 +127,7 @@ def assert_view_manifest(
         raise SystemExit(f"view manifest lists view(s) the table did not read: {sorted(surplus)}")
     if check_files:
         mt = mtime_fn or (lambda p: p.stat().st_mtime)
-        for v in exp["extra_views"]:
+        for v in [*exp["pools"].values(), *exp["extra_views"]]:
             f = Path(os.path.realpath(str(v["root"]))) / "VIEW.sha256"
             if not f.is_file():
                 raise SystemExit(f"{f} missing")
@@ -155,11 +155,14 @@ def count_tries(tries_log: Path | str | None, tool: str = TOOL) -> int:
     n = 0
     if p.exists():
         for line in p.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
             try:
                 if json.loads(line).get("tool") == tool:
                     n += 1
             except (json.JSONDecodeError, AttributeError):
-                continue
+                if tool in line:  # a damaged line that mentions this tool counts as a prior try
+                    n += 1
     return n
 
 
@@ -172,6 +175,16 @@ def assert_no_prior_try(tries_log: Path | str | None) -> None:
 
 def ledger_path(ledger_dir: Path | str) -> Path:
     return Path(ledger_dir) / LEDGER_NAME
+
+
+def assert_ledger_empty(ledger_dir: Path | str) -> None:
+    p = ledger_path(ledger_dir)
+    if p.exists() and TOOL in p.read_text(encoding="utf-8"):
+        raise SystemExit(f"{p} already holds a {TOOL} line: the screen runs once")
+
+
+def resolved_tries_log(tries_log: Path | str | None) -> str:
+    return os.path.realpath(str(mal_result._tries_log_path(tries_log)))
 
 
 def ledger_start(ledger_dir: Path | str, info: Mapping[str, Any]) -> None:
@@ -235,14 +248,13 @@ def day_groups(table_manifest: Mapping[str, Any]) -> dict[str, set[str]]:
 
 
 def exit_bound_ms(pool: str | None, trigger_ms: int, pool_runs: Mapping[str, Sequence[Sequence[str]]]) -> int | None:
-    """min(end of the pool run holding the trigger, first gap start after the trigger). A gap starts where a run
-    of the same pool ends, so both come from `pool_runs`. None if the pool has no run covering/after the trigger."""
-    ends = []
+    """End of the pool run that contains the trigger (hour_ms(first) <= trigger_ms < end); a gap starts where a run of
+    the same pool ends, so this is also the first gap start after the trigger. None if no run contains it."""
     for first, last in pool_runs.get(pool or "", []):
         end = _hour_ms(last) + 3_600_000
-        if trigger_ms < end:
-            ends.append(end)
-    return min(ends) if ends else None
+        if _hour_ms(first) <= trigger_ms < end:
+            return end
+    return None  # no run contains the trigger (in a gap, before the first run, or after the last): excluded
 
 
 def trigger_excluded(row: Mapping[str, Any], pool_runs: Mapping[str, Sequence[Sequence[str]]], trigger_ms: int | None = None) -> bool:
@@ -277,6 +289,7 @@ def censored_report(censored: Sequence[Mapping[str, Any]] | None, rows: Sequence
     trig = {r["mint"]: (r["trigger_ms"], r.get("pool")) for r in rows}
     reasons: dict[str, int] = {}
     kept = unknown = 0
+    kept_by_k: dict[str, int] = {}
     for c in censored:
         reasons[c.get("reason", "?")] = reasons.get(c.get("reason", "?"), 0) + 1
         t = c.get("trigger_ms")
@@ -287,7 +300,9 @@ def censored_report(censored: Sequence[Mapping[str, Any]] | None, rows: Sequence
             unknown += 1
         elif not trigger_excluded({"entry_land_k": c["entry_land_k"], "pool": pool}, pool_runs, int(t)):
             kept += 1
-    return {"available": True, "n_censored": len(censored), "by_reason": dict(sorted(reasons.items())), "n_trigger_time_rule_would_keep": kept, "n_trigger_time_unknown": unknown}
+            kept_by_k[str(c["entry_land_k"])] = kept_by_k.get(str(c["entry_land_k"]), 0) + 1
+    return {"available": True, "n_censored": len(censored), "by_reason": dict(sorted(reasons.items())), "n_trigger_time_rule_would_keep": kept,
+            "n_trigger_time_rule_would_keep_by_k": dict(sorted(kept_by_k.items())), "n_trigger_time_unknown": unknown}
 
 
 def k_rows_by_mint(rows: Sequence[Mapping[str, Any]], k: int = SCREEN_K) -> dict[str, Mapping[str, Any]]:
@@ -322,9 +337,9 @@ def selected_trades(selected: Sequence[Mapping[str, Any]], rows: Sequence[Mappin
     return out
 
 
-def edge_days(rows: Sequence[Mapping[str, Any]]) -> set[str]:
-    """Days on which any k=4 row carries an Amendment 3 edge flag."""
-    return {r["day"] for r in rows if r["entry_land_k"] == SCREEN_K and (r.get("edge_left") or r.get("edge_right"))}
+def edge_days(pool_runs: Mapping[str, Sequence[Sequence[str]]]) -> set[str]:
+    """Amendment 3 edge days from the manifest's pool_runs: the first and last day of every contiguous run."""
+    return {d[:10] for runs in pool_runs.values() for first, last in runs for d in (first, last)}
 
 
 def book(trades: Sequence[Mapping[str, Any]], leg: str) -> list[BookTrade]:
@@ -363,24 +378,25 @@ def bars(trades: Sequence[Mapping[str, Any]], all_days: set[str] | None = None) 
     return {"legs": legs, "pass": all(legs[leg]["pass"] for leg in LEGS)}
 
 
-def _bar_item(item: str, what: str, key: str, trades: Sequence[Mapping[str, Any]], all_days: set[str] | None) -> dict[str, Any]:
-    legs = {leg: leg_bars(trades, leg, all_days) for leg in LEGS}
+def _bar_item(item: str, what: str, key: str, trades: Sequence[Mapping[str, Any]], all_days: set[str] | None, legs: Mapping[str, Any] | None) -> dict[str, Any]:
+    """`legs` = a precomputed bars()["legs"]: evaluate() computes book_stats once per fail model and shares it across items 1-3."""
+    legs = dict(legs) if legs is not None else {leg: leg_bars(trades, leg, all_days) for leg in LEGS}
     return {"item": item, "what": what, "pass": all(legs[leg][key] for leg in LEGS), "legs": legs}
 
 
-def item_1(trades: Sequence[Mapping[str, Any]], all_days: set[str] | None = None) -> dict[str, Any]:
+def item_1(trades: Sequence[Mapping[str, Any]], all_days: set[str] | None = None, legs: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Bar 1: mean > 0 and CI90 lower bound > 0, both fail models."""
-    return _bar_item("1", "mean SOL > 0 and CI90 lower bound > 0", "bar1_mean_gt_0_and_ci_lo_gt_0", trades, all_days)
+    return _bar_item("1", "mean SOL > 0 and CI90 lower bound > 0", "bar1_mean_gt_0_and_ci_lo_gt_0", trades, all_days, legs)
 
 
-def item_2(trades: Sequence[Mapping[str, Any]], all_days: set[str] | None = None) -> dict[str, Any]:
+def item_2(trades: Sequence[Mapping[str, Any]], all_days: set[str] | None = None, legs: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Bar 2: total SOL > 0 after removing the top 3 trades (None fails)."""
-    return _bar_item("2", "ex-top-3 total SOL > 0", "bar2_ex_top3_gt_0", trades, all_days)
+    return _bar_item("2", "ex-top-3 total SOL > 0", "bar2_ex_top3_gt_0", trades, all_days, legs)
 
 
-def item_3(trades: Sequence[Mapping[str, Any]], all_days: set[str] | None = None) -> dict[str, Any]:
+def item_3(trades: Sequence[Mapping[str, Any]], all_days: set[str] | None = None, legs: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Bar 3: positive days x 2 > N, N = every manifest day; an empty day is not positive."""
-    return _bar_item("3", "positive days x 2 > manifest days", "bar3_majority_of_manifest_days_positive", trades, all_days)
+    return _bar_item("3", "positive days x 2 > manifest days", "bar3_majority_of_manifest_days_positive", trades, all_days, legs)
 
 
 def assert_pool_agrees(trades: Sequence[Mapping[str, Any]], tags: set[str], days: set[str], pd: Mapping[str, set[str]]) -> None:
@@ -408,25 +424,41 @@ def item_4b(trades: Sequence[Mapping[str, Any]], groups: Mapping[str, set[str]],
     return item_4("4b", trades, {"X"}, groups["4b"], pd)
 
 
-def item_5(selected: Sequence[Mapping[str, Any]], eligible_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def item_5(selected: Sequence[Mapping[str, Any]], eligible_rows: Sequence[Mapping[str, Any]], all_rows: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """Slot + 8: pooled mean of the k=8 rows of the selected mints > 0 under both fail models. `eligible_rows` already
-    excludes the trigger-time-excluded rows: a selected mint without a k=8 row is counted, never imputed."""
+    excludes the trigger-time-excluded rows. A selected mint without an eligible k=8 row is counted, never imputed;
+    with `all_rows` (the table before the exclusion) the count is split into trigger-time exclusions (the table has a
+    k=8 row) and table-censored k=8 (it has none)."""
     p = gm.pnl_at_k(selected, eligible_rows, K_REFERENCE_SLOT8)
     legs: dict[str, Any] = {}
     for leg in LEGS:
         vals = [r[leg] for r in p["records"]]
         mean = (sum(vals) / len(vals) / LAMPORTS) if vals else None
         legs[leg] = {"mean_sol": mean, "n": len(vals), "pass": bool(mean is not None and mean > 0)}
-    return {"item": "5", "what": "slot+8 pooled mean SOL > 0", "n_selected": p["n_selected"], "n_joined": p["n_joined"], "n_missing_k8": p["n_missing_k"],
-            "legs": legs, "pass": all(legs[leg]["pass"] for leg in LEGS)}
+    out = {"item": "5", "what": "slot+8 pooled mean SOL > 0", "n_selected": p["n_selected"], "n_joined": p["n_joined"], "n_missing_k8": p["n_missing_k"],
+           "legs": legs, "pass": all(legs[leg]["pass"] for leg in LEGS)}
+    if all_rows is not None:
+        have8 = {r["mint"] for r in all_rows if r["entry_land_k"] == K_REFERENCE_SLOT8}
+        miss = [m["mint"] for m in p["missing"]]
+        out["n_missing_k8_trigger_time_excluded"] = sum(1 for m in miss if m in have8)
+        out["n_missing_k8_table_censored"] = sum(1 for m in miss if m not in have8)
+    return out
 
 
-def exp012_selected(e12_dir: Path | str) -> tuple[set[str], set[tuple[str, str]], float]:
-    """(days, selected (day, mint) pairs, threshold) from EXP-012's oof_scores.json at threshold.json."""
+E12_THRESHOLD = 0.8030766588450794
+E12_N_SELECTED = 881
+
+
+def exp012_selected(e12_dir: Path | str, expect: tuple[float, int] | None = (E12_THRESHOLD, E12_N_SELECTED)) -> tuple[set[str], set[tuple[str, str]], float]:
+    """(days, selected (day, mint) pairs, threshold) from EXP-012's oof_scores.json at threshold.json. Refuses unless the
+    threshold is exactly E12_THRESHOLD and the selected count is E12_N_SELECTED (`expect=None` is for synthetic fixtures)."""
     d = assert_exp012_dir(e12_dir)
     oof = json.loads((d / "oof_scores.json").read_text(encoding="utf-8"))
     thr = float(json.loads((d / "threshold.json").read_text(encoding="utf-8"))["threshold"])
-    return set(oof["days"]), {(o["day"], o["mint"]) for o in oof["rows"] if o["score"] >= thr}, thr
+    sel = {(o["day"], o["mint"]) for o in oof["rows"] if o["score"] >= thr}
+    if expect is not None and (thr != expect[0] or len(sel) != expect[1]):
+        raise SystemExit(f"EXP-012 threshold {thr!r} / selected {len(sel)} != expected {expect[0]!r} / {expect[1]}")
+    return set(oof["days"]), sel, thr
 
 
 def exp012_daily_pnl(e12_dir: Path | str) -> dict[str, dict[str, float]]:
@@ -464,9 +496,10 @@ def item_6(
     e12_sel: set[tuple[str, str]],
     e12_daily: Mapping[str, Mapping[str, float]] | None = None,
     e12_days: Sequence[str] = E12_DAYS,
+    eligible_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """A = selected mints with trigger day in EXP-012's 9 days. B = EXP-012's OOF-selected mints that have a k=4 row in
-    the table. Bar: J(A, B) <= 0.5; an empty union fails. Reported: J over the unrestricted B, |A and B| / min, and the
+    the full table (`rows`, before the trigger-time exclusion). J on B restricted to the eligible k=4 mints is report-only. Bar: J(A, B) <= 0.5; an empty union fails. Reported: J over the unrestricted B, |A and B| / min, and the
     daily-PnL correlation on those days (report-only)."""
     days = set(e12_days)
     a = {t["mint"] for t in trades if t["day"] in days}
@@ -474,6 +507,10 @@ def item_6(
     b_all = {m for _, m in e12_sel}
     b = b_all & k4
     j = jaccard(a, b)
+    j_post = None
+    if eligible_rows is not None:
+        k4e = {r["mint"] for r in eligible_rows if r["entry_land_k"] == SCREEN_K}
+        j_post = jaccard(a, b_all & k4e)
     corr: dict[str, Any] = {}
     if e12_daily is not None:
         for leg in LEGS:
@@ -481,7 +518,7 @@ def item_6(
             corr[leg] = pearson(mine, [e12_daily[leg].get(d, 0.0) for d in sorted(days)])
     return {
         "item": "6", "what": f"mint Jaccard J(A, B) <= {JACCARD_MAX}", "n_a": len(a), "n_b": len(b), "n_b_unrestricted": len(b_all), "n_both": len(a & b),
-        "jaccard": j, "jaccard_unrestricted_b_report_only": jaccard(a, b_all), "overlap_min_report_only": (len(a & b) / min(len(a), len(b))) if a and b else None,
+        "jaccard": j, "jaccard_post_exclusion_b_report_only": j_post, "jaccard_unrestricted_b_report_only": jaccard(a, b_all), "overlap_min_report_only": (len(a & b) / min(len(a), len(b))) if a and b else None,
         "other_days": "n/a", "daily_pnl_corr_report_only": corr, "pass": bool(j is not None and j <= JACCARD_MAX),
     }
 
@@ -519,9 +556,9 @@ def fold_fraction_by_source(fold_info: Sequence[Mapping[str, Any]], rows: Sequen
     return [{"day": f["outer_day"], "source": "+".join(sorted(pools.get(f["outer_day"], {"?"}))), "trained": f["trained"], "selected_fraction": f["selected_fraction"]} for f in fold_info]
 
 
-def edge_split(trades: Sequence[Mapping[str, Any]], edge: set[str], all_days: set[str]) -> dict[str, Any]:
+def edge_split(trades: Sequence[Mapping[str, Any]], edge: set[str], all_days: set[str], full: Mapping[str, Any] | None = None) -> dict[str, Any]:
     kept = [t for t in trades if t["day"] not in edge]
-    return {"edge_days": sorted(edge), "with_edge_days": bars(trades, all_days), "without_edge_days": bars(kept, all_days - edge), "n_removed": len(trades) - len(kept)}
+    return {"edge_days": sorted(edge), "with_edge_days": full if full is not None else bars(trades, all_days), "without_edge_days": bars(kept, all_days - edge), "n_removed": len(trades) - len(kept)}
 
 
 def slot1_reference(selected: Sequence[Mapping[str, Any]], eligible_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -552,25 +589,29 @@ def evaluate(
     counts: Mapping[str, int],
     e12_sel: set[tuple[str, str]],
     e12_daily: Mapping[str, Mapping[str, float]] | None = None,
+    all_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Everything after selection. `rows` are the eligible rows (trigger-time exclusion applied). No fitting."""
+    """Everything after selection. `rows` are the eligible rows (trigger-time exclusion applied); `all_rows` the full
+    table (item 6's set B and item 5's split). book_stats runs once per fail model for the full set and is shared. No fitting."""
+    all_rows = rows if all_rows is None else all_rows
     trades = selected_trades(selected, rows)
     groups, pd, all_days = day_groups(table_manifest), pool_days(table_manifest), all_manifest_days(table_manifest)
     shared = sorted(d for d in all_days if sum(1 for s in pd.values() if d in s) > 1)
+    full = bars(trades, all_days)
     items = [
-        item_1(trades, all_days), item_2(trades, all_days), item_3(trades, all_days), item_4a(trades, groups, pd), item_4b(trades, groups, pd),
-        item_5(selected, rows), item_6(trades, rows, e12_sel, e12_daily),
+        item_1(trades, all_days, full["legs"]), item_2(trades, all_days, full["legs"]), item_3(trades, all_days, full["legs"]), item_4a(trades, groups, pd),
+        item_4b(trades, groups, pd), item_5(selected, rows, all_rows), item_6(trades, all_rows, e12_sel, e12_daily, eligible_rows=rows),
     ]
     return {
         "schema": "exp013_grad_screen_v1",
         "note": "EXPLORATION screen, Amendment 5. Not evidence, no edge claim.",
         "verdict": verdict_of(items),
         "items": items,
-        "gate_report_only": bars(trades, all_days),
+        "gate_report_only": full,
         "n_selected": len(trades),
         "day_groups": {k: sorted(v) for k, v in groups.items()},
         "days_in_more_than_one_pool": shared,
-        "edge_split_report_only": edge_split(trades, edge_days(rows), all_days),
+        "edge_split_report_only": edge_split(trades, edge_days(table_manifest.get("pool_runs", {})), all_days, full),
         "per_day": per_day_table(rows, trades),
         "fold_info": list(fold_info),
         "fold_fraction_by_source": fold_fraction_by_source(fold_info, rows),
@@ -593,11 +634,15 @@ def to_markdown(doc: Mapping[str, Any]) -> str:
             keys = ("n", "mean_sol", "ci90_lo_sol", "ex_top3_sol", "days_positive", "n_manifest_days")
             detail = "; ".join(f"{leg}: " + ", ".join(f"{k}={_f(v)}" for k, v in lg.items() if k in keys) for leg, lg in it["legs"].items())
         if it["item"] == "5":
-            detail += f" | joined {it['n_joined']} of {it['n_selected']}, missing k=8: {it['n_missing_k8']}"
+            detail += (f" | joined {it['n_joined']} of {it['n_selected']}, missing k=8: {it['n_missing_k8']} (trigger-time excluded {it.get('n_missing_k8_trigger_time_excluded')}, "
+                       f"table-censored {it.get('n_missing_k8_table_censored')})")
         if it["item"] == "6":
-            detail = (f"J={_f(it['jaccard'])}, |A|={it['n_a']}, |B|={it['n_b']}, both={it['n_both']}, J(unrestricted B)={_f(it['jaccard_unrestricted_b_report_only'])}, "
+            detail = (f"J={_f(it['jaccard'])} (post-exclusion B, report-only: {_f(it['jaccard_post_exclusion_b_report_only'])}), |A|={it['n_a']}, |B|={it['n_b']}, both={it['n_both']}, J(unrestricted B)={_f(it['jaccard_unrestricted_b_report_only'])}, "
                       f"overlap/min={_f(it['overlap_min_report_only'])}, corr(report-only)={it['daily_pnl_corr_report_only']}, other days: n/a")
         lines.append(f"| {it['item']} {it['what']} | {'PASS' if it['pass'] else 'FAIL'} | {detail} |")
+    tc = doc["table_censored"]
+    k4 = tc.get("n_trigger_time_rule_would_keep_by_k", {}).get(str(SCREEN_K), 0) if tc.get("available") else "n/a"
+    lines += ["", f"Table-censored k={SCREEN_K} rows the trigger-time rule would have kept (read next to bars 1-3 above): {k4}"]
     g = doc["gate_report_only"]["legs"]
     lines += ["", "## Gate counts (report-only)", ""]
     lines += [f"- {leg}: n={g[leg]['n']}, days={g[leg]['n_days']}, n>=100: {g[leg]['report_only_n_ge_100']}, days>=5: {g[leg]['report_only_days_ge_5']}, book_stats majority: {g[leg]['book_stats_majority_days_positive']}" for leg in LEGS]
@@ -611,7 +656,7 @@ def to_markdown(doc: Mapping[str, Any]) -> str:
     lines += [f"| {d['day']} | {d['n_rows']} | {d['n_selected']} | {_f(d['flat_mean_sol'])} | {_f(d['press_mean_sol'])} |" for d in doc["per_day"]]
     lines += ["", "## Selected fraction by fold and source", ""]
     lines += [f"- {f['day']} ({f['source']}): {_f(f['selected_fraction'])}{'' if f['trained'] else ' (skipped)'}" for f in doc["fold_fraction_by_source"]]
-    lines += ["", "## Exclusions and reference", "", f"- trigger-time exclusion: {json.dumps(doc['trigger_time_exclusion'])}", f"- table-censored rows: {json.dumps(doc['table_censored'])}",
+    lines += ["", "## Exclusions and reference", "", f"- trigger-time exclusion: {json.dumps(doc['trigger_time_exclusion'])}", f"- table-censored rows: {json.dumps(doc['table_censored'])}", f"- tries log: {doc['tries_log']}",
               f"- slot+1 (reference): {json.dumps(doc['slot1_reference'])}",
               f"- frozen pooled-OOF p90 (freeze reference, not screen): {json.dumps({k: v for k, v in doc['freeze_reference'].items() if k != 'skipped_folds'})}",
               f"- counts: {json.dumps(doc['counts'])}", f"- folds: {len(doc['fold_info'])}, skipped: {sum(1 for f in doc['fold_info'] if not f['trained'])}"]
@@ -653,6 +698,12 @@ def _read_censored(run_dir: Path) -> list[dict[str, Any]] | None:
     return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
 
 
+GATE_NOTE = (
+    "gate.pass_both in this file comes from mal_result.build_result and is NOT the screen verdict: it counts only days that have a trade "
+    "and applies n >= 100. The screen verdict is the top-level `verdict` (bars over every manifest day, items 1-6)."
+)
+
+
 def run(
     table_run_dir: Path | str,
     view_manifest_path: Path | str,
@@ -662,62 +713,72 @@ def run(
     ledger_dir: Path | str = DEFAULT_LEDGER_DIR,
     tries_log: Path | str | None = None,
     exp012_dir: Path | str = DEFAULT_EXP012_DIR,
+    e12_expect: tuple[float, int] | None = (E12_THRESHOLD, E12_N_SELECTED),
     now: datetime | None = None,
     mtime_fn: Callable[[Path], float] | None = None,
     view_cutoff: datetime = VIEW_CUTOFF,
     check_view_files: bool | None = None,
     command: str = "",
 ) -> dict[str, Any]:
+    """ledger_dir, tries_log, exp012_dir, e12_expect, now, mtime_fn, view_cutoff and check_view_files are for tests
+    only; the CLI never sets them."""
     t0 = time.time()
     # --- guards, all before any fit ---
     real_table = gm.assert_run_dir_allowed(table_run_dir, now=now)
+    is_real = str(real_table) == gm.REAL_DATA_PREFIX or str(real_table).startswith(gm.REAL_DATA_PREFIX + "/")
+    if is_real and os.path.realpath(str(ledger_dir)) != os.path.realpath(str(DEFAULT_LEDGER_DIR)):
+        raise SystemExit(f"a real-data run must use the default ledger dir {DEFAULT_LEDGER_DIR}, got {ledger_dir}")
     out = assert_out_dir_fresh(out_dir)
     assert_exp012_dir(exp012_dir)
     rows, tmanifest = gm.load_table(real_table, now=now)
     vm_bytes = Path(view_manifest_path).read_bytes()
     view_manifest = json.loads(vm_bytes.decode("utf-8"))
-    is_real = str(real_table) == gm.REAL_DATA_PREFIX or str(real_table).startswith(gm.REAL_DATA_PREFIX + "/")
     assert_view_manifest(view_manifest, tmanifest, check_files=is_real if check_view_files is None else check_view_files, mtime_fn=mtime_fn, cutoff=view_cutoff)
-    assert_no_prior_try(tries_log)
-    e12_days, e12_sel, e12_thr = exp012_selected(exp012_dir)
+    tries_path = resolved_tries_log(tries_log)
+    assert_no_prior_try(tries_path)
+    assert_ledger_empty(ledger_dir)
+    e12_days, e12_sel, e12_thr = exp012_selected(exp012_dir, e12_expect)
     e12_daily = exp012_daily_pnl(exp012_dir)
     pool_runs = tmanifest.get("pool_runs", {})
     eligible, exclusion = split_eligible(rows, pool_runs)
     censored = censored_report(_read_censored(real_table), rows, pool_runs)
-    # --- the try is used from here on, even if the run crashes ---
     manifest_sha = hashlib.sha256(vm_bytes).hexdigest()
     blocks = data_blocks_of(tmanifest)
     base_cfg = {"k": SCREEN_K, "table_md5": tmanifest.get("table_md5"), "view_manifest_sha256": manifest_sha, "code_commit": _git_sha()}
     result_path = out / "result.json"
+    # --- the try is used from here on, even if the run crashes. The tries line comes first: a kill between the two
+    # lines leaves the tries log refusing a rerun. ---
+    mal_result.append_try(tries_path, tool=TOOL, config={**base_cfg, "event": "started"}, data_blocks=blocks, result_path=result_path, role="exploration")
     ledger_start(ledger_dir, {"table_md5": tmanifest.get("table_md5"), "view_manifest_sha256": manifest_sha, "out_dir": str(out)})
-    mal_result.append_try(tries_log, tool=TOOL, config={**base_cfg, "event": "started"}, data_blocks=blocks, result_path=result_path, role="exploration")
     # --- the screen ---
     days = sorted({r["day"] for r in gm.training_rows(eligible)})
     selected, fold_info, counts = gm.nested_lodo_select(eligible, days, n_jobs=n_jobs)
-    doc = evaluate(eligible, tmanifest, selected, fold_info, counts, e12_sel, e12_daily)
+    doc = evaluate(eligible, tmanifest, selected, fold_info, counts, e12_sel, e12_daily, all_rows=rows)
     doc["freeze_reference"] = freeze_reference(eligible, days)
     doc["trigger_time_exclusion"] = exclusion
     doc["table_censored"] = censored
     doc["table_md5"] = tmanifest.get("table_md5")
     doc["view_manifest_sha256"] = manifest_sha
+    doc["tries_log"] = tries_path
     doc["exp012"] = {"threshold": e12_thr, "oof_days": sorted(e12_days)}
-    out.mkdir(parents=True)
-    (out / "screen.json").write_text(json.dumps(doc, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
-    (out / "screen.md").write_text(to_markdown(doc), encoding="utf-8")
-    # --- result line + result.v1 ---
+    # --- result tries line and ledger "finished" first, then the files ---
     trades = selected_trades(selected, eligible)
-    ap = mal_result.append_try(tries_log, tool=TOOL, config={**base_cfg, "event": "result", "verdict": doc["verdict"]}, data_blocks=blocks, result_path=result_path, role="exploration")
-    tries = {**ap, **mal_result.tries_summary(tries_log, ap["data_key"])}
+    ap = mal_result.append_try(tries_path, tool=TOOL, config={**base_cfg, "event": "result", "verdict": doc["verdict"]}, data_blocks=blocks, result_path=result_path, role="exploration")
+    tries = {**ap, **mal_result.tries_summary(tries_path, ap["data_key"])}
+    ledger_finish(ledger_dir, {"verdict": doc["verdict"], "out_dir": str(out), "n_selected": len(trades)})
     result = mal_result.build_result(
         tool=TOOL, git_sha=base_cfg["code_commit"], command=command, config={**base_cfg, "verdict": doc["verdict"]}, role="exploration", data_blocks=blocks,
         stage="failed" if doc["verdict"] == "FAIL" else "candidate",
         trades_flat=_trades_for_result(trades, "flat"), trades_pressure_s1=_trades_for_result(trades, "press"), tries=tries,
         n_candidates=counts["n_k4_rows"], n_days=len(days), runtime_s=time.time() - t0,
-        notes=f"EXP-013 exploration screen, verdict {doc['verdict']}. Not evidence, no edge claim.",
+        notes=f"EXP-013 exploration screen, verdict {doc['verdict']}. Not evidence, no edge claim. {GATE_NOTE}",
     )
     result["verdict"] = doc["verdict"]
+    result["gate_note"] = GATE_NOTE
+    out.mkdir(parents=True)
     mal_result.write_result(result_path, result)
-    ledger_finish(ledger_dir, {"verdict": doc["verdict"], "out_dir": str(out), "n_selected": len(trades)})
+    (out / "screen.json").write_text(json.dumps(doc, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    (out / "screen.md").write_text(to_markdown(doc), encoding="utf-8")
     sink = os.environ.get("MISCUSI_RESULT")
     if sink:
         metrics = {"n_selected": len(trades), "n_days": len(days), **{f"item_{it['item']}": it["pass"] for it in doc["items"]}}
@@ -727,19 +788,13 @@ def run(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="EXP-013 grad exploration screen (Amendment 5). Runs once.")
+    ap = argparse.ArgumentParser(description="EXP-013 grad exploration screen (Amendment 5). Runs once. The tries log is MAL_TRIES_LOG or the default.")
     ap.add_argument("--table-run-dir", required=True)
     ap.add_argument("--view-manifest", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--n-jobs", type=int, default=1)
-    ap.add_argument("--ledger-dir", default=str(DEFAULT_LEDGER_DIR))
-    ap.add_argument("--tries-log", default=None, help="default: MAL_TRIES_LOG or data/tries.jsonl")
-    ap.add_argument("--exp012-dir", default=str(DEFAULT_EXP012_DIR))
     args = ap.parse_args(argv)
-    doc = run(
-        args.table_run_dir, args.view_manifest, args.out_dir, n_jobs=args.n_jobs, ledger_dir=args.ledger_dir, tries_log=args.tries_log, exp012_dir=args.exp012_dir,
-        command="python -m tools.exp013_grad_screen " + " ".join(argv if argv is not None else sys.argv[1:]),
-    )
+    doc = run(args.table_run_dir, args.view_manifest, args.out_dir, n_jobs=args.n_jobs, command="python -m tools.exp013_grad_screen " + " ".join(argv if argv is not None else sys.argv[1:]))
     print(json.dumps({"verdict": doc["verdict"], "items": {i["item"]: i["pass"] for i in doc["items"]}, "n_selected": doc["n_selected"]}, indent=2))
     return 0
 
