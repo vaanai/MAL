@@ -518,13 +518,23 @@ def run_worker_grad(
         hot[mint_id].release()
         del hot[mint_id]
 
+    watermark_ms = 0
+
     def sweep(final: bool) -> None:
+        # Rows inside one hour file are NOT in time order (PumpSwap rows trail the running max by up
+        # to ~1,600 s), so `now_ms` is no proof that every row with t <= now_ms has been read. A
+        # mid-file or end-of-hour sweep therefore uses the START of the current hour: every row of
+        # that hour and later has a clock at or after it, so every row before it is already read.
+        # The final sweep has read everything and uses now_ms.
+        # min(): never claim tape past what was actually read (an empty or missing later hour).
+        mark = now_ms if final else min(now_ms, watermark_ms)
         for mint_id in list(pending):
-            if final or now_ms >= pending[mint_id].t_ms + max_exit_ms:
-                resolve(mint_id, now_ms)
+            if final or mark >= pending[mint_id].t_ms + max_exit_ms:
+                resolve(mint_id, mark)
 
     lines = 0
     for hour in hours:
+        watermark_ms = int(datetime.strptime(hour["hour"], "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp()) * 1000
         print(f"[w{worker_id}] hour={hour['hour']} hot={len(hot)} pending={len(pending)} rows={n_rows} rss_mb={_rss_mb()}", file=sys.stderr, flush=True)
         for row in row_iter_fn(hour["trade"]):
             lines += 1
