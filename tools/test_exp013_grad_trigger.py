@@ -8,6 +8,7 @@ import math
 import random
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 import tools.exp013_grad_trigger as g
@@ -581,13 +582,15 @@ class WorkerTests(unittest.TestCase):
         from unittest import mock
 
         tape = _tape()
-        late = _row("M2", 5000, T_CREATE + 100_000, "pump_bonding", "buy", 40_000_000_000, 800_000_000_000_000, SOL, "z", "sz")
-        skipped = [_row("NOPE", 1, T_CREATE + 100_001, "pump_bonding", "buy", 1, 1, 1, "q", f"sq{i}") for i in range(3)]
+        late = _row("M2", 5000, T_CREATE + 2_800, "pump_bonding", "buy", 40_000_000_000, 800_000_000_000_000, SOL, "z", "sz")
+        skipped = [_row("NOPE", 1, T_CREATE + 2_801, "pump_bonding", "buy", 1, 1, 1, "q", f"sq{i}") for i in range(3)]
+        # hour 14 holds the tape; hour 15 (starts at T_CREATE + 2800 s) holds the clock-advancing row and skipped rows
+        by_hour = {"2026-09-21T14": tape, "2026-09-21T15": [late] + skipped}
         stream = tape + [late] + skipped
         consumed = {"n": 0}
 
-        def rows(_key: str):
-            for r in copy.deepcopy(stream):
+        def rows(key: str):
+            for r in copy.deepcopy(by_hour[key]):
                 consumed["n"] += 1
                 yield r
 
@@ -600,9 +603,56 @@ class WorkerTests(unittest.TestCase):
 
         creates = {"M1": _create_pair("M1", T_CREATE * 1000), "M2": _create_pair("M2", T_CREATE * 1000)}
         with mock.patch.object(g, "SWEEP_EVERY_LINES", 1), mock.patch.object(g, "score_trigger", spy):
-            g.run_worker_grad(0, ["2026-09-21T14"], [], {}, None, None, lambda k: {"hour": k, "trade": k}, row_iter_fn=rows, creates_override=creates)
+            g.run_worker_grad(0, ["2026-09-21T14", "2026-09-21T15"], [], {}, None, None, lambda k: {"hour": k, "trade": k}, row_iter_fn=rows, creates_override=creates)
         self.assertEqual(len(seen), 1)
         self.assertLess(seen[0], len(stream))  # resolved mid-stream (at a skipped row), not at the final flush
+
+    def _one_hour_run(self, stream_fn, every: int):
+        """Run M1 (+ M2 as a clock-advancer) over one hour file; stream_fn(shift_s) builds the rows."""
+        from unittest import mock
+
+        key = datetime.fromtimestamp(T_CREATE, timezone.utc).strftime("%Y-%m-%dT%H")
+        hour_start = int(datetime.strptime(key, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp())
+        shift = hour_start + 10 - T_CREATE  # create at hour start + 10 s: the whole stream stays inside the hour
+        stream = stream_fn(shift)
+        creates = {"M1": _create_pair("M1", (T_CREATE + shift) * 1000), "M2": _create_pair("M2", (T_CREATE + shift) * 1000)}
+        with mock.patch.object(g, "SWEEP_EVERY_LINES", every):
+            return g.run_worker_grad(
+                0, [key], [], {}, None, None, lambda k: {"hour": k, "trade": k},
+                row_iter_fn=lambda _k: iter(copy.deepcopy(stream)), creates_override=creates, pool_tag="A",
+            )
+
+    @staticmethod
+    def _shifted(rows: list[dict], shift: int) -> list[dict]:
+        for r in rows:
+            r["t_recv_ms"] += shift * 1000
+            r["block_time"] += shift
+        return rows
+
+    def test_late_pumpswap_row_does_not_change_output_with_sweep_cadence(self) -> None:
+        def stream(shift: int) -> list[dict]:
+            rows = _tape("M1", with_migration=False)
+            clock = _row("M2", 5000, T_CREATE + 2000, "pump_bonding", "buy", 40_000_000_000, 800_000_000_000_000, SOL, "z", "sz")
+            filler = [_row("NOPE", 1, T_CREATE + 2001, "pump_bonding", "buy", 1, 1, 1, "q", f"sq{i}") for i in range(3)]
+            late = [r for r in _tape("M1") if r["venue"] == "pumpswap"]  # t = +140 s, +150 s: far behind the running max
+            return self._shifted(rows + [clock] + filler + late, shift)
+
+        baseline = self._one_hour_run(stream, 10**9)
+        self.assertEqual({r["outcome"] for r in baseline["rows"]}, {"migrated"})  # the late rows were read
+        for every in (1, 2, 3, 5, 7):
+            out = self._one_hour_run(stream, every)
+            self.assertEqual(json.dumps(out, sort_keys=True), json.dumps(baseline, sort_keys=True), f"SWEEP_EVERY_LINES={every}")
+
+    def test_ordered_tape_output_is_independent_of_sweep_cadence(self) -> None:
+        def stream(shift: int) -> list[dict]:
+            clock = _row("M2", 5000, T_CREATE + 2000, "pump_bonding", "buy", 40_000_000_000, 800_000_000_000_000, SOL, "z", "sz")
+            return self._shifted(_tape("M1") + [clock], shift)
+
+        baseline = self._one_hour_run(stream, 10**9)
+        self.assertTrue(baseline["rows"])
+        for every in (1, 2, 4):
+            out = self._one_hour_run(stream, every)
+            self.assertEqual(json.dumps(out, sort_keys=True), json.dumps(baseline, sort_keys=True), f"SWEEP_EVERY_LINES={every}")
 
     def test_streaming_to_disk_matches_in_memory(self) -> None:
         mem = run_worker(_tape())
