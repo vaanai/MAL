@@ -22,9 +22,13 @@ TAPE_FIRST_HOUR="${KR_TAPE_FIRST_HOUR:-2026-09-27T00}"
 TAPE_LAST_HOUR="${KR_TAPE_LAST_HOUR:-2026-10-05T04}"
 CREATES_FIRST_DAY="${KR_CREATES_FIRST_DAY:-2026-09-27}"
 CREATES_LAST_DAY="${KR_CREATES_LAST_DAY:-2026-10-05}"
+# Hours/days inside the review window must all exist; only the margin before it may be missing.
+REQ_FIRST_HOUR="${KR_REQ_FIRST_HOUR:-2026-09-28T00}"
+REQ_FIRST_DAY="${REQ_FIRST_HOUR%T*}"
 
 [ -f "$SRC_RESTARTS" ] || kr_die "missing local restarts log $SRC_RESTARTS"
 $RES_CMD "test ! -e '$KR_SNAP/MANIFEST.sha256'" || kr_die "snapshot already exists at research-0:$KR_SNAP (immutable; not overwriting)"
+$RES_CMD "test -z \"\$(ls -A '$KR_SNAP' 2>/dev/null)\"" || kr_die "$KR_SNAP on research-0 is non-empty and has no MANIFEST.sha256 (an earlier snapshot failed part-way). Clear it, then rerun: ssh mal-research-0 'cd $KR_ROOT && chmod -R u+w snap && rm -rf snap'"
 $RES_CMD "mkdir -p '$KR_SNAP/tape' '$KR_SNAP/creates'"
 FREE_GB=$($RES_CMD "df -P -BG '$KR_SNAP' | tail -1 | awk '{print \$4}' | tr -dc 0-9")
 [ "$FREE_GB" -ge "$MIN_FREE_GB" ] || kr_die "research-0 has ${FREE_GB} GB free at $KR_SNAP, need $MIN_FREE_GB"
@@ -86,7 +90,7 @@ PY
 n_t=0
 for H in $hours; do
   f="$(printf '%s\n' "$LIST_T" | grep -E "^trades-$H\.jsonl(\.zst|\.gz)?$" | head -1 || true)"
-  if [ -z "$f" ]; then echo "kill-review-1005: WARN no tape file for hour $H" >&2; echo "$H" >> "$WIRE/missing-tape-hours"; continue; fi
+  if [ -z "$f" ]; then echo "kill-review-1005: WARN no tape file for hour $H" >&2; echo "tape $H" >> "$WIRE/missing"; continue; fi
   case "$f" in *.jsonl) trim=1 ;; *) trim=0 ;; esac
   stream_file src "$SRC_TAPE/$f" "tape/$f" $trim; n_t=$((n_t+1))
 done
@@ -101,12 +105,30 @@ PY
 n_c=0
 for D in $days; do
   f="$(printf '%s\n' "$LIST_C" | grep -E "^observe-$D\.jsonl(\.zst)?$" | head -1 || true)"
-  if [ -z "$f" ]; then echo "kill-review-1005: WARN no creates file for $D" >&2; continue; fi
+  if [ -z "$f" ]; then echo "kill-review-1005: WARN no creates file for $D" >&2; echo "creates $D" >> "$WIRE/missing"; continue; fi
   case "$f" in *.jsonl) trim=1 ;; *) trim=0 ;; esac
   stream_file src "$SRC_CREATES/$f" "creates/$f" $trim; n_c=$((n_c+1))
 done
 [ "$n_t" -gt 0 ] || kr_die "no tape files copied"
 [ "$n_c" -gt 0 ] || kr_die "no creates files copied"
+
+# 2b. Missing inputs inside [REQ_FIRST_HOUR, TAPE_LAST_HOUR] (and creates days from REQ_FIRST_DAY) are an error unless KR_ALLOW_MISSING=1.
+REQ_MISSING=""
+if [ -f "$WIRE/missing" ]; then
+  while read -r kind key; do
+    if [ "$kind" = tape ] && [[ ! "$key" < "$REQ_FIRST_HOUR" ]]; then REQ_MISSING="$REQ_MISSING$kind $key"$'\n'; fi
+    if [ "$kind" = creates ] && [[ ! "$key" < "$REQ_FIRST_DAY" ]]; then REQ_MISSING="$REQ_MISSING$kind $key"$'\n'; fi
+  done < "$WIRE/missing"
+fi
+if [ -n "$REQ_MISSING" ]; then
+  if [ -n "${MISCUSI_OUTPUT_DIR:-}" ]; then mkdir -p "$MISCUSI_OUTPUT_DIR"; printf '%s' "$REQ_MISSING" > "$MISCUSI_OUTPUT_DIR/snapshot-missing.txt"; fi
+  if [ "${KR_ALLOW_MISSING:-}" != "1" ]; then
+    printf 'missing inputs inside the review window:\n%s' "$REQ_MISSING" >&2
+    kr_die "required tape hours or creates days are missing; set KR_ALLOW_MISSING=1 only on the manager's decision (it is recorded in snap/MISSING.txt). Clear snap on research-0 before any rerun."
+  fi
+  { echo "KR_ALLOW_MISSING=1 override; missing inside the review window:"; printf '%s' "$REQ_MISSING"; } > "$WIRE/MISSING.txt"
+  stream_file local "$WIRE/MISSING.txt" MISSING.txt 0
+fi
 
 # 3. Manifest on research-0 from the bytes on disk; compare with the in-flight hashes; then make the tree read-only.
 $RES_CMD "cd '$KR_SNAP' && find . -type f ! -name MANIFEST.sha256 -print0 | sort -z | xargs -0 sha256sum > MANIFEST.sha256 && chmod -R a-w ."
@@ -114,10 +136,15 @@ $RES_CMD "cat '$KR_SNAP/MANIFEST.sha256'" > "$WIRE/disk.sha256"
 sort "$WIRE/wire.sha256" > "$WIRE/wire.sorted"; sort "$WIRE/disk.sha256" > "$WIRE/disk.sorted"
 diff -u "$WIRE/wire.sorted" "$WIRE/disk.sorted" || kr_die "in-flight hashes differ from disk hashes: copy corrupted; remove $KR_SNAP on research-0 and rerun"
 echo "snapshot ok: $(wc -l < "$WIRE/disk.sha256") files, tape=$n_t creates=$n_c"
-[ ! -f "$WIRE/missing-tape-hours" ] || { echo "missing tape hours:"; cat "$WIRE/missing-tape-hours"; }
+[ ! -f "$WIRE/missing" ] || { echo "missing (margin or overridden):"; cat "$WIRE/missing"; }
+MSHA="$($RES_CMD "sha256sum '$KR_SNAP/MANIFEST.sha256'" | cut -c1-64)"
+[ "${#MSHA}" -eq 64 ] || kr_die "could not hash MANIFEST.sha256"
+echo "MANIFEST_SHA256=$MSHA"
+echo "Give the score job: KR_EXPECT_MANIFEST_SHA256=$MSHA"
 
 if [ -n "${MISCUSI_OUTPUT_DIR:-}" ]; then
   mkdir -p "$MISCUSI_OUTPUT_DIR"
   cp "$WIRE/disk.sha256" "$MISCUSI_OUTPUT_DIR/snapshot-MANIFEST.sha256"
-  [ ! -f "$WIRE/missing-tape-hours" ] || cp "$WIRE/missing-tape-hours" "$MISCUSI_OUTPUT_DIR/snapshot-missing-tape-hours.txt"
+  echo "$MSHA  MANIFEST.sha256" > "$MISCUSI_OUTPUT_DIR/snapshot-MANIFEST.sha256.sha256"
+  [ ! -f "$WIRE/missing" ] || cp "$WIRE/missing" "$MISCUSI_OUTPUT_DIR/snapshot-missing-margin.txt"
 fi

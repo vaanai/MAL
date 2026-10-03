@@ -27,10 +27,10 @@ COMMON = SCRIPTS / "kill-review-1005-common.sh"
 INSTANT = 1791176400  # 2026-10-05T05:00:00Z
 
 
-def _run(script: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
+def _run(script: Path, env: dict[str, str], cwd: Path | None = None) -> subprocess.CompletedProcess:
     full = {k: v for k, v in os.environ.items() if not k.startswith(("KR_", "MISCUSI_"))}
     full.update(env)
-    return subprocess.run(["bash", str(script)], env=full, capture_output=True, text=True, cwd=REPO, timeout=300)
+    return subprocess.run(["bash", str(script)], env=full, capture_output=True, text=True, cwd=cwd or REPO, timeout=300)
 
 
 def _tree(root: Path) -> list[str]:
@@ -89,6 +89,16 @@ class BeforeInstantTests(unittest.TestCase):
         self.assertFalse(self.trace.exists())
 
 
+class TestModeRootGuardTests(unittest.TestCase):
+    def test_test_mode_refuses_real_or_unset_root(self) -> None:
+        base = {"KR_TEST_MODE": "1", "KR_NOW_EPOCH": str(INSTANT + 1)}
+        for script in (SNAP, SCORE):
+            for extra in ({}, {"KR_ROOT": "/data/mal/kill-review-1005"}, {"KR_ROOT": "/data/mal/kill-review-1005/"}):
+                r = _run(script, {**base, **extra})
+                self.assertEqual(r.returncode, 4, (script.name, extra, r.stderr))
+                self.assertIn("requires KR_ROOT", r.stderr)
+
+
 class EndToEndTests(unittest.TestCase):
     """Snapshot (local `bash -c` hops) then score, on the kill_review synthetic fixtures."""
 
@@ -124,12 +134,11 @@ class EndToEndTests(unittest.TestCase):
             "KR_SRC_CREATES": str(self.creates),
             "KR_SRC_RESTARTS": str(self.restarts),
             "KR_MIN_FREE_GB": "0",
-            "KR_TAPE_FIRST_HOUR": "2026-09-28T00",
-            "KR_TAPE_LAST_HOUR": "2026-09-28T02",
+            "KR_TAPE_FIRST_HOUR": "2026-09-27T23",  # margin hour, absent on purpose
+            "KR_TAPE_LAST_HOUR": "2026-09-28T01",
             "KR_CREATES_FIRST_DAY": "2026-09-28",
             "KR_CREATES_LAST_DAY": "2026-09-28",
             "KR_PY": sys.executable,
-            "PYTHONPATH": str(REPO),
             "MISCUSI_OUTPUT_DIR": str(self.out),
         }
 
@@ -147,14 +156,15 @@ class EndToEndTests(unittest.TestCase):
         snap = self.root / "snap"
         manifest = (snap / "MANIFEST.sha256").read_text()
         for name in ("positions.jsonl", "forward-paper.json", "runner-restarts.jsonl",
-                     "tape/trades-2026-09-28T00.jsonl", "tape/trades-2026-09-28T00.jsonl",
+                     "tape/trades-2026-09-28T00.jsonl",
                      "creates/observe-2026-09-28.jsonl"):
             self.assertIn("./" + name, manifest)
         # The partial trailing line of the live file was dropped.
         copied = (snap / "positions.jsonl").read_text()
         self.assertTrue(copied.endswith("\n"))
         self.assertNotIn("partial", copied)
-        self.assertIn("missing tape hours", r.stdout)  # hour 02 has no file
+        self.assertIn("MANIFEST_SHA256=", r.stdout)
+        self.assertIn("missing (margin", r.stdout)  # 09-27T23 is before the window: warning only
         self.assertTrue((self.out / "snapshot-MANIFEST.sha256").is_file())
 
         # A second snapshot must refuse (immutable).
@@ -162,9 +172,16 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotEqual(again.returncode, 0)
         self.assertIn("already exists", again.stderr)
 
-        # Score.
-        s = _run(SCORE, self.env)
+        # Score. A wrong manifest sha refuses before reading anything; the right one (from the snapshot output) passes,
+        # run from an unrelated cwd to show PYTHONPATH/cwd come from the script's own path.
+        sha = self._manifest_sha(r.stdout)
+        bad = _run(SCORE, {**self.env, "KR_EXPECT_MANIFEST_SHA256": "0" * 64}, cwd=self.tmp)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("expected", bad.stderr)
+        self.assertFalse((self.root / "out").exists())
+        s = _run(SCORE, {**self.env, "KR_EXPECT_MANIFEST_SHA256": sha}, cwd=self.tmp)
         self.assertEqual(s.returncode, 0, s.stdout + s.stderr)
+        self.assertEqual((self.out / "snapshot-MANIFEST.sha256.sha256").read_text().split()[0], sha)
         out = self.root / "out"
         result = json.loads((out / "kill_review.json").read_text())
         self.assertIn("RC=0", s.stdout)
@@ -180,6 +197,74 @@ class EndToEndTests(unittest.TestCase):
         again = _run(SCORE, self.env)
         self.assertNotEqual(again.returncode, 0)
         self.assertIn("single read", again.stderr)
+
+    @staticmethod
+    def _manifest_sha(stdout: str) -> str:
+        line = [x for x in stdout.splitlines() if x.startswith("MANIFEST_SHA256=")][0]
+        return line.split("=", 1)[1].strip()
+
+    def _wrapper(self, fail_module: str) -> str:
+        """A python that fails (exit 7) for one tool module and runs the real python otherwise."""
+        w = self.tmp / "pywrap"
+        w.write_text(f'#!/bin/sh\ncase "$*" in *"{fail_module}"*) echo boom >&2; exit 7;; esac\nexec {sys.executable} "$@"\n')
+        w.chmod(0o755)
+        return str(w)
+
+    def test_settle_failure_publishes_logs_and_exits_nonzero(self) -> None:
+        self.assertEqual(_run(SNAP, self.env).returncode, 0)
+        s = _run(SCORE, {**self.env, "KR_PY": self._wrapper("forward_paper_settle_orphans")})
+        self.assertNotEqual(s.returncode, 0)
+        self.assertIn("settle orphans failed", s.stderr)
+        self.assertEqual((self.out / "settle.log").read_text().strip(), "boom")
+        self.assertTrue((self.out / "snapshot-MANIFEST.sha256").is_file())
+        self.assertFalse((self.out / "kill_review.json").exists())
+        self.assertFalse((self.out / "pressure.log").exists())
+
+    def test_pressure_failure_publishes_logs_and_exits_nonzero(self) -> None:
+        self.assertEqual(_run(SNAP, self.env).returncode, 0)
+        s = _run(SCORE, {**self.env, "KR_PY": self._wrapper("forward_paper_pressure_stamp")})
+        self.assertNotEqual(s.returncode, 0)
+        self.assertIn("pressure stamp failed", s.stderr)
+        self.assertTrue((self.out / "settle.log").is_file())
+        self.assertTrue((self.out / "settlements.jsonl").is_file())
+        self.assertEqual((self.out / "pressure.log").read_text().strip(), "boom")
+        self.assertFalse((self.out / "kill_review.json").exists())
+
+    def test_kill_review_failure_exits_nonzero_and_publishes(self) -> None:
+        self.assertEqual(_run(SNAP, self.env).returncode, 0)
+        s = _run(SCORE, {**self.env, "KR_PY": self._wrapper("tools.kill_review")})
+        self.assertNotEqual(s.returncode, 0)
+        self.assertEqual((self.out / "kill_review.rc").read_text().strip(), "7")
+        self.assertTrue((self.out / "pressure.jsonl").is_file())
+
+    def test_snapshot_refuses_nonempty_dir_without_manifest(self) -> None:
+        (self.root / "snap").mkdir(parents=True)
+        (self.root / "snap" / "leftover").write_text("x")
+        r = _run(SNAP, self.env)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("non-empty", r.stderr)
+        self.assertIn("chmod -R u+w snap && rm -rf snap", r.stderr)
+        self.assertFalse((self.root / "snap" / "MANIFEST.sha256").exists())
+
+    def test_missing_required_hour_fails_unless_allowed(self) -> None:
+        env = {**self.env, "KR_TAPE_LAST_HOUR": "2026-09-28T02"}  # hour 02 has no file
+        r = _run(SNAP, env)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("tape 2026-09-28T02", r.stderr)
+        self.assertIn("2026-09-28T02", (self.out / "snapshot-missing.txt").read_text())
+        self.assertFalse((self.root / "snap" / "MANIFEST.sha256").exists())
+        # clear and rerun with the explicit override: succeeds and is recorded in the snapshot and the output
+        shutil.rmtree(self.root / "snap")
+        r = _run(SNAP, {**env, "KR_ALLOW_MISSING": "1"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("KR_ALLOW_MISSING=1", (self.root / "snap" / "MISSING.txt").read_text())
+        self.assertIn("./MISSING.txt", (self.root / "snap" / "MANIFEST.sha256").read_text())
+        self.assertIn("tape 2026-09-28T02", (self.out / "snapshot-missing.txt").read_text())
+
+    def test_missing_required_creates_day_fails(self) -> None:
+        r = _run(SNAP, {**self.env, "KR_CREATES_LAST_DAY": "2026-09-29"})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("creates 2026-09-29", r.stderr)
 
     def test_score_rejects_tampered_snapshot(self) -> None:
         self.assertEqual(_run(SNAP, self.env).returncode, 0)
