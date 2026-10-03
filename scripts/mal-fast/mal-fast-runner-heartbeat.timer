@@ -1,0 +1,13 @@
+[Unit]
+Description=MAL fast-host runner heartbeat sampler timer (installed, not enabled by the installer)
+Documentation=https://github.com/vaanai/MAL
+
+[Timer]
+OnActiveSec=15s
+OnUnitActiveSec=15s
+AccuracySec=1s
+Persistent=false
+Unit=mal-fast-runner-heartbeat.service
+
+[Install]
+WantedBy=timers.target
