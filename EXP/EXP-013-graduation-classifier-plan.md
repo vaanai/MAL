@@ -149,3 +149,11 @@ Written by the manager before the screen code (PR3) exists. Revised after a `qua
    Debug job #88's outputs, other than runtime, memory and row counts, are not opened. That includes the outcomes in `trigger_counts.json` and the `flat` / `press` / `outcome` fields in `table.jsonl`. Its run dir is deleted before step 1.
 
    The report shows bars 1–3 with and without edge-flagged days (Amendment 3). The pass decision uses the full set.
+
+## Amendment 6 (2026-10-03, before any real-data model run): table code fix for out-of-order rows
+
+- **The defect.** Within one hour file, rows are not in time order. On real hours of pool A, pool C and `explore-0814/w1`, PumpSwap rows trailed the running time maximum by up to 1,594 s (checked on slot, block_time and venue only).
+- **The effect.** The table builder's mid-file sweep resolved a triggered mint on that running maximum. Late rows before the mint's exit could then be ignored, and the result depended on the sweep interval.
+- **The fix (#267).** Every non-final sweep uses `min(running max, start of the current hour)` as its watermark. The output is now byte-identical for any sweep interval (tested).
+- **Pool B check.** The fix relies on every row in hour file h having a clock at or after the start of hour h. In pool B (files named by write time), at most one row per file precedes its hour, by at most 246 ms. That is inside the 30 s `SCORE_MARGIN_MS`.
+- **Scope.** No EXP-013 model, LODO or screen output existed when this was found. The single screen run (Amendment 5 §7) builds its table with the fixed code. Debug build #88 used the old code; its table is never opened and is deleted before the run. No design item or bar changes.
