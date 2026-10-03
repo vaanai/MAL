@@ -56,7 +56,6 @@ from tools.exp012_latency_sensitivity import guarded_roots
 from tools.exp013_grad_table import (  # noqa: F401  (re-exported guards)
     assert_builtin_roots_allowed,
     assert_builtin_views_complete,
-    assert_hour_fence,
     assert_out_dir_allowed,
     assert_recipe_settings,
     edge_flags,
@@ -68,6 +67,22 @@ DEFAULT_OUT_ROOT = Path("/data/mal/exp014-m15")
 SCHEMA = "exp014_m15_table_v1"
 # Plan item 13: only views whose VIEW.sha256 mtime is at or before this are in the exploration pool.
 VIEW_MTIME_CUTOFF = "2026-10-05T12:00:00Z"
+
+
+# Added to EXP-013's forbidden hour ranges: the second backup confirmation block (docs/HOLDOUT_LEDGER.md),
+# which EXP-014 reads once, later. (The extra-view loader already fences views to the expansion block.)
+EXTRA_FORBIDDEN_HOUR_RANGES: tuple[tuple[str, str], ...] = (("2026-08-08T12", "2026-08-14T12"),)
+
+
+def assert_hour_fence(pools_hours_: dict[str, Sequence[str]]) -> int:
+    """EXP-013's fence (the 0828 backup, EXP-012 / EXP-011 / EXP-009 blocks, the forward period, an hour in
+    two pools) plus the 0808 backup block."""
+    for tag, hours in pools_hours_.items():
+        for h in hours:
+            for lo, hi in EXTRA_FORBIDDEN_HOUR_RANGES:
+                if lo <= h < hi:
+                    raise SystemExit(f"hour fence: pool {tag} hour {h} is inside the forbidden range [{lo}, {hi})")
+    return g13.assert_hour_fence(pools_hours_)
 
 
 def _cutoff_s() -> int:
