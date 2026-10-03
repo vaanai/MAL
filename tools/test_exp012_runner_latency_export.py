@@ -72,7 +72,7 @@ class ExportTests(unittest.TestCase):
 
     def test_negative_latency_floors_at_min_one_in_percentile(self) -> None:
         rows = [{"mint": str(i), "mig_ms": T0, "decision_t_ms": T0, "recv_to_decision_ms": 0, "ledger": "shadow", "action": "enter", "stale": False} for i in range(100)]
-        res = ex.compute(rows, 268.0, T0 - 1, T0 + 1)
+        res = ex.compute(rows, 268.0, T0 - 1, T0 + 1, n_hours_used=24)
         # L = -500 -> ceil(-1.87) = -1 -> k = 0 -> floored to 1
         self.assertEqual(res["k_p50"], 1)
         self.assertEqual(res["k_p90"], 1)
@@ -101,19 +101,19 @@ class ExportTests(unittest.TestCase):
         return out
 
     def test_not_decidable_below_100(self) -> None:
-        res = ex.compute(self._rows(99), 268.0, T0, T0 + 10_000)
+        res = ex.compute(self._rows(99), 268.0, T0, T0 + 10_000, n_hours_used=24)
         self.assertEqual(res["verdict"], "NOT_DECIDABLE")
         self.assertEqual(res["n"], 99)
-        res = ex.compute(self._rows(100), 268.0, T0, T0 + 10_000)
+        res = ex.compute(self._rows(100), 268.0, T0, T0 + 10_000, n_hours_used=24)
         self.assertEqual(res["verdict"], "OK")
         self.assertEqual(res["k_p50"], 2)  # L=100 -> 1+1
         self.assertEqual(len(res["in_window_rows_sha256"]), 64)
 
     def test_not_decidable_without_slot(self) -> None:
-        self.assertEqual(ex.compute(self._rows(100), None, T0, T0 + 10_000)["verdict"], "NOT_DECIDABLE")
+        self.assertEqual(ex.compute(self._rows(100), None, T0, T0 + 10_000, n_hours_used=24)["verdict"], "NOT_DECIDABLE")
 
     def test_stale_is_infinite_and_drives_p90(self) -> None:
-        res = ex.compute(self._rows(100, stale=20), 268.0, T0, T0 + 10_000)
+        res = ex.compute(self._rows(100, stale=20), 268.0, T0, T0 + 10_000, n_hours_used=24)
         self.assertEqual(res["n_stale"], 20)
         self.assertEqual(res["k_p50"], 2)
         self.assertEqual(res["k_p90"], "inf")
@@ -121,7 +121,7 @@ class ExportTests(unittest.TestCase):
     def test_window_is_half_open(self) -> None:
         rows = self._rows(100)
         rows[0]["decision_t_ms"] = T0 + 10_000  # == to: excluded
-        res = ex.compute(rows, 268.0, T0, T0 + 10_000)
+        res = ex.compute(rows, 268.0, T0, T0 + 10_000, n_hours_used=24)
         self.assertEqual(res["n"], 99)
 
     def test_two_shas_in_cli(self) -> None:
@@ -145,21 +145,49 @@ class ExportTests(unittest.TestCase):
             self.assertIn("in_window_rows_sha256", res)
             self.assertNotIn("export_sha256", res)
 
-    def test_slot_ms_from_verify(self) -> None:
-        f = 1_790_000_000_000
-        hour = "2026-10-06T00"
+    def test_slot_ms_from_verify_uses_only_clean_hours(self) -> None:
         from datetime import datetime, timezone
 
+        f = 1_790_000_000_000
         t = int(datetime(2026, 10, 6, tzinfo=timezone.utc).timestamp() * 1000)
         v = [
-            {"hour": hour, "start_slot": 100, "end_slot": 100 + 13_432, "slot_span": 13_432, "issues": []},
-            {"hour": "2026-10-06T01", "start_slot": 0, "end_slot": 13_432, "issues": []},  # span derived
-            {"hour": "2026-10-06T02", "slot_span": 1, "issues": ["x"]},  # skipped
-            {"hour": "2026-10-09T00", "slot_span": 1, "issues": []},  # outside window
+            {"hour": "2026-10-06T00", "stats_present": True, "start_slot": 100, "end_slot": 100 + 13_432, "slot_span": 13_432, "issues": []},
+            {"hour": "2026-10-06T01", "stats_present": True, "start_slot": 0, "end_slot": 13_432, "issues": []},  # span derived
+            {"hour": "2026-10-06T02", "stats_present": True, "slot_span": 1, "issues": ["x"]},  # issues
+            {"hour": "2026-10-06T03", "stats_present": False, "slot_span": 1, "issues": []},  # no stats
+            {"hour": "2026-10-06T04", "stats_present": True, "slot_span": 1},  # issues key missing
+            {"hour": "2026-10-09T00", "stats_present": True, "slot_span": 1, "issues": []},  # outside window
         ]
-        slot = ex.slot_ms_from_verify(v, t, t + 86_400_000)
+        slot, used, skipped = ex.slot_ms_from_verify(v, t, t + 86_400_000)
         self.assertAlmostEqual(slot, 3_600_000 / 13_432)
-        self.assertIsNone(ex.slot_ms_from_verify(v, f, f + 1))
+        self.assertEqual((used, skipped), (2, 3))
+        self.assertEqual(ex.slot_ms_from_verify(v, f, f + 1), (None, 0, 0))
+
+    def test_not_decidable_when_fewer_than_24_hours_per_window_day(self) -> None:
+        day = 86_400_000
+        rows = self._rows(100)
+        ok = ex.compute(rows, 268.0, T0, T0 + 2 * day - 1, n_hours_used=48, n_hours_skipped=0)
+        self.assertEqual(ok["window_days"], 2)
+        self.assertEqual(ok["verdict"], "OK")
+        short = ex.compute(rows, 268.0, T0, T0 + 2 * day - 1, n_hours_used=47, n_hours_skipped=1)
+        self.assertEqual(short["verdict"], "NOT_DECIDABLE")
+        self.assertEqual((short["n_hours_used"], short["n_hours_skipped"]), (47, 1))
+        self.assertEqual(ex.compute(rows, 268.0, T0, T0 + 1)["verdict"], "NOT_DECIDABLE")  # hours unknown
+
+    def test_n_dropped_missing_fields(self) -> None:
+        rows = self._rows(100)
+        rows[0]["recv_to_decision_ms"] = None
+        rows[1]["mig_ms"] = None
+        rows[2]["decision_t_ms"] = None
+        res = ex.compute(rows, 268.0, T0, T0 + 10_000, n_hours_used=24)
+        self.assertEqual(res["n_dropped_missing_fields"], 3)
+        self.assertEqual(res["n"], 97)
+
+    def test_forbidden_names_are_case_insensitive(self) -> None:
+        for name in ("Positions.JSONL", "RUNNER-STATUS.json", "Runner-Status-1.json"):
+            with self.assertRaises(ex.Refused):
+                ex.refuse_forbidden(Path("/x") / name)
+        ex.refuse_forbidden(Path("/x/decisions.jsonl"))
 
 
 if __name__ == "__main__":

@@ -29,6 +29,8 @@ from datetime import datetime
 from typing import Any, Iterable, Sequence
 
 from tools.exp012_forward import DECISION_EXPORT_KEYS
+from tools.exp012_runner_latency_export import EXPORT_KEYS as LATENCY_EXPORT_KEYS
+from tools.exp012_runner_latency_export import Refused, refuse_forbidden
 
 
 class ExportRefused(Exception):
@@ -36,6 +38,7 @@ class ExportRefused(Exception):
 
 
 def _read(path: Path) -> list[dict[str, Any]]:
+    refuse_forbidden(path)  # positions* and runner-status* are sealed (DEC-016 Amendment 3)
     rows = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
@@ -61,6 +64,7 @@ def _by_mint(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return out
 
 
+# Tolerance comparisons below are strict float comparisons (>= / <=), with no epsilon.
 COVERAGE_MIN = 0.95
 JACCARD_MIN = 0.90
 DELTA_P95_MAX = 0.02
@@ -77,6 +81,8 @@ def _pct(sorted_vals: Sequence[float], p: float) -> float:
 def _to_ms(v: Any) -> int:
     if isinstance(v, (int, float)):
         return int(v)
+    if isinstance(v, str) and v.strip().lstrip("-").isdigit():
+        return int(v)
     return int(datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp() * 1000)
 
 
@@ -89,12 +95,15 @@ def amendment3_b(
     sco: dict[str, dict[str, Any]],
     *,
     stale_mints: Iterable[str] | None = None,
-    downtime: Sequence[tuple[int, int]] = (),
+    downtime: Sequence[tuple[int, int]] | None = None,
     from_ms: int | None = None,
     to_ms: int | None = None,
 ) -> dict[str, Any]:
     """Rows 0-2 of DEC-016 Amendment 3 (b). `run` and `sco` are by-mint maps."""
     stale_known = stale_mints is not None
+    window_supplied = from_ms is not None and to_ms is not None
+    downtime_supplied = downtime is not None
+    downtime = downtime or ()
     stale = set(stale_mints or ())
 
     def in_pop(row: dict[str, Any]) -> bool:
@@ -131,7 +140,7 @@ def amendment3_b(
     row2 = None if p95 is None else (p95 <= DELTA_P95_MAX and p99 <= DELTA_P99_MAX)
     decidable = len(entered_both) >= MIN_ENTERED_BOTH and len(days) >= MIN_DAYS
     rows = (row0, row1, row2)
-    if not decidable or any(x is None for x in rows):
+    if not decidable or not window_supplied or not downtime_supplied or any(x is None for x in rows):
         verdict = "NOT_DECIDABLE"
     else:
         verdict = "PASS" if all(rows) else "FAIL"
@@ -145,6 +154,9 @@ def amendment3_b(
         "min_days": MIN_DAYS,
         "decidable": decidable,
         "stale_mints_supplied": stale_known,
+        "window_supplied": window_supplied,
+        "downtime_supplied": downtime_supplied,
+        "n_both_seen_unscored": sum(1 for m in both if run[m].get("score") is None or pop[m].get("score") is None),
         "row0_coverage": cov,
         "row0_pass": row0,
         "row1_jaccard_both_seen": jac,
@@ -163,7 +175,7 @@ def compare(
     scorer_rows: Iterable[dict[str, Any]],
     *,
     stale_mints: Iterable[str] | None = None,
-    downtime: Sequence[tuple[int, int]] = (),
+    downtime: Sequence[tuple[int, int]] | None = None,
     from_ms: int | None = None,
     to_ms: int | None = None,
 ) -> dict[str, Any]:
@@ -215,16 +227,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         stale: list[str] | None = None
         if args.latency_export:
-            stale = [r["mint"] for r in _read(args.latency_export) if r.get("stale")]
+            lat = _read(args.latency_export)
+            for n, r in enumerate(lat, 1):
+                if set(r) != set(LATENCY_EXPORT_KEYS):
+                    raise ExportRefused(f"latency export row {n} keys are not exactly the allowlist {LATENCY_EXPORT_KEYS}")
+            stale = [r["mint"] for r in lat if r.get("stale")]
         report = compare(
             _read(args.runner_gate_jsonl),
             _read(args.scorer_decisions_jsonl),
             stale_mints=stale,
-            downtime=load_downtime(args.downtime) if args.downtime else (),
+            downtime=load_downtime(args.downtime) if args.downtime else None,
             from_ms=_to_ms(args.from_) if args.from_ else None,
             to_ms=_to_ms(args.to) if args.to else None,
         )
-    except ExportRefused as exc:
+    except (ExportRefused, Refused) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
     json.dump(report, sys.stdout, indent=2, sort_keys=True)

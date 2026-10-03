@@ -42,7 +42,7 @@ class Refused(Exception):
 
 
 def refuse_forbidden(path: Path) -> None:
-    name = Path(path).name
+    name = Path(path).name.lower()
     if any(name.startswith(p) for p in FORBIDDEN_PREFIXES):
         raise Refused(f"{name}: positions.jsonl and runner-status* hold P&L and are sealed (DEC-016 Amendment 3)")
 
@@ -104,16 +104,24 @@ def pct(sorted_vals: Sequence[float], p: float) -> float:
     return sorted_vals[int(round(p * (len(sorted_vals) - 1)))]
 
 
-def slot_ms_from_verify(verify_rows: Iterable[dict[str, Any]], from_ms: int, to_ms: int) -> float | None:
-    """3_600_000 / mean slot span over clean hours in [from_ms, to_ms). Last line per hour wins."""
+def slot_ms_from_verify(verify_rows: Iterable[dict[str, Any]], from_ms: int, to_ms: int) -> tuple[float | None, int, int]:
+    """(slot_ms, n_hours_used, n_hours_skipped) over hours in [from_ms, to_ms).
+
+    Last line per hour wins. An hour is used only with `stats_present` true and an
+    empty `issues` list (a missing `issues` key is not clean). slot_ms is
+    3_600_000 / mean slot span of the used hours."""
     last: dict[str, dict[str, Any]] = {}
     for r in verify_rows:
         if isinstance(r.get("hour"), str):
             last[r["hour"]] = r
     spans = []
+    skipped = 0
     for hour, r in last.items():
         t = datetime.strptime(hour, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp() * 1000
-        if not (from_ms <= t < to_ms) or r.get("issues"):
+        if not (from_ms <= t < to_ms):
+            continue
+        if r.get("stats_present") is not True or r.get("issues") != []:
+            skipped += 1
             continue
         span = r.get("slot_span")
         s, e = r.get("start_slot"), r.get("end_slot")
@@ -121,9 +129,11 @@ def slot_ms_from_verify(verify_rows: Iterable[dict[str, Any]], from_ms: int, to_
             span = e - s
         if isinstance(span, int) and span > 0:
             spans.append(span)
+        else:
+            skipped += 1
     if not spans:
-        return None
-    return HOUR_MS / (sum(spans) / len(spans))
+        return None, 0, skipped
+    return HOUR_MS / (sum(spans) / len(spans)), len(spans), skipped
 
 
 def k_value(row: dict[str, Any], slot_ms: float) -> float:
@@ -133,22 +143,49 @@ def k_value(row: dict[str, Any], slot_ms: float) -> float:
     return 1 + math.ceil(lat / slot_ms)
 
 
-def compute(rows: Sequence[dict[str, Any]], slot_ms: float | None, from_ms: int, to_ms: int) -> dict[str, Any]:
+def compute(
+    rows: Sequence[dict[str, Any]],
+    slot_ms: float | None,
+    from_ms: int,
+    to_ms: int,
+    *,
+    n_hours_used: int | None = None,
+    n_hours_skipped: int | None = None,
+) -> dict[str, Any]:
+    """NOT_DECIDABLE unless n >= 100, slot_ms is known and n_hours_used >= 24 per window day."""
     sel = []
     seen: set[str] = set()
+    dropped = 0
     for r in rows:
         t = r.get("decision_t_ms")
-        if t is None or not (from_ms <= t < to_ms):
+        if t is None:
+            dropped += 1
             continue
-        if not r.get("stale") and (r.get("action") != "enter" or r.get("recv_to_decision_ms") is None or r.get("mig_ms") is None):
+        if not (from_ms <= t < to_ms):
+            continue
+        if not r.get("stale") and r.get("action") == "enter" and (r.get("recv_to_decision_ms") is None or r.get("mig_ms") is None):
+            dropped += 1
+            continue
+        if not r.get("stale") and r.get("action") != "enter":
             continue
         if r["mint"] in seen:
             continue
         seen.add(r["mint"])
         sel.append(r)
     n = len(sel)
-    out: dict[str, Any] = {"n": n, "n_stale": sum(1 for r in sel if r.get("stale")), "slot_ms": slot_ms, "in_window_rows_sha256": export_sha256(sel)}
-    if n < MIN_DECISIONS or not slot_ms:
+    window_days = max(1, math.ceil((to_ms - from_ms) / 86_400_000))
+    hours_ok = n_hours_used is not None and n_hours_used >= 24 * window_days
+    out: dict[str, Any] = {
+        "n": n,
+        "n_stale": sum(1 for r in sel if r.get("stale")),
+        "n_dropped_missing_fields": dropped,
+        "slot_ms": slot_ms,
+        "n_hours_used": n_hours_used,
+        "n_hours_skipped": n_hours_skipped,
+        "window_days": window_days,
+        "in_window_rows_sha256": export_sha256(sel),
+    }
+    if n < MIN_DECISIONS or not slot_ms or not hours_ok:
         out.update(verdict="NOT_DECIDABLE", k_p50=None, k_p90=None)
         return out
     ks = sorted(k_value(r, slot_ms) for r in sel)
@@ -183,7 +220,8 @@ def main(argv: list[str] | None = None) -> int:
     text = export_file_text(rows)
     if args.export_out:
         args.export_out.write_text(text, encoding="utf-8")
-    res = compute(rows, slot_ms_from_verify(verify, f, t), f, t)
+    slot, used, skipped = slot_ms_from_verify(verify, f, t)
+    res = compute(rows, slot, f, t, n_hours_used=used, n_hours_skipped=skipped)
     # sha256 of the whole written export file (all allowlisted rows, not only the window)
     res["export_file_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
     json.dump(res, sys.stdout, indent=2, sort_keys=True)
