@@ -88,13 +88,14 @@ def amendment3_b(
     run: dict[str, dict[str, Any]],
     sco: dict[str, dict[str, Any]],
     *,
-    stale_mints: Iterable[str] = (),
+    stale_mints: Iterable[str] | None = None,
     downtime: Sequence[tuple[int, int]] = (),
     from_ms: int | None = None,
     to_ms: int | None = None,
 ) -> dict[str, Any]:
     """Rows 0-2 of DEC-016 Amendment 3 (b). `run` and `sco` are by-mint maps."""
-    stale = set(stale_mints)
+    stale_known = stale_mints is not None
+    stale = set(stale_mints or ())
 
     def in_pop(row: dict[str, Any]) -> bool:
         t = row.get("mig_ms")
@@ -120,7 +121,8 @@ def amendment3_b(
         for m in both
         if run[m].get("score") is not None and pop[m].get("score") is not None
     )
-    cov = (len(covered) / len(sco_entered)) if sco_entered else None
+    # Never assume there were no stale decisions: without the latency export row 0 is undecidable.
+    cov = (len(covered) / len(sco_entered)) if (sco_entered and stale_known) else None
     jac = (len(entered_both) / len(union)) if union else None
     p95 = _pct(deltas, 0.95) if deltas else None
     p99 = _pct(deltas, 0.99) if deltas else None
@@ -142,6 +144,7 @@ def amendment3_b(
         "min_entered_by_both": MIN_ENTERED_BOTH,
         "min_days": MIN_DAYS,
         "decidable": decidable,
+        "stale_mints_supplied": stale_known,
         "row0_coverage": cov,
         "row0_pass": row0,
         "row1_jaccard_both_seen": jac,
@@ -159,7 +162,7 @@ def compare(
     runner_rows: Iterable[dict[str, Any]],
     scorer_rows: Iterable[dict[str, Any]],
     *,
-    stale_mints: Iterable[str] = (),
+    stale_mints: Iterable[str] | None = None,
     downtime: Sequence[tuple[int, int]] = (),
     from_ms: int | None = None,
     to_ms: int | None = None,
@@ -210,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--latency-export", type=Path, help="exp012_runner_latency_export rows (jsonl); stale=true marks stale_recv drops")
     args = ap.parse_args(argv)
     try:
-        stale: list[str] = []
+        stale: list[str] | None = None
         if args.latency_export:
             stale = [r["mint"] for r in _read(args.latency_export) if r.get("stale")]
         report = compare(

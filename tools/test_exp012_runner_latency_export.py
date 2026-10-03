@@ -107,7 +107,7 @@ class ExportTests(unittest.TestCase):
         res = ex.compute(self._rows(100), 268.0, T0, T0 + 10_000)
         self.assertEqual(res["verdict"], "OK")
         self.assertEqual(res["k_p50"], 2)  # L=100 -> 1+1
-        self.assertEqual(len(res["export_sha256"]), 64)
+        self.assertEqual(len(res["in_window_rows_sha256"]), 64)
 
     def test_not_decidable_without_slot(self) -> None:
         self.assertEqual(ex.compute(self._rows(100), None, T0, T0 + 10_000)["verdict"], "NOT_DECIDABLE")
@@ -123,6 +123,27 @@ class ExportTests(unittest.TestCase):
         rows[0]["decision_t_ms"] = T0 + 10_000  # == to: excluded
         res = ex.compute(rows, 268.0, T0, T0 + 10_000)
         self.assertEqual(res["n"], 99)
+
+    def test_two_shas_in_cli(self) -> None:
+        import contextlib
+        import hashlib
+        import io
+
+        gates = [_gate("a", T0)]
+        decs = [_dec("a", T0 + 600, 10)]
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "g.jsonl").write_text("".join(json.dumps(x) + "\n" for x in gates), encoding="utf-8")
+            (d / "d.jsonl").write_text("".join(json.dumps(x) + "\n" for x in decs), encoding="utf-8")
+            (d / "verify.jsonl").write_text("", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = ex.main(["--gate", str(d / "g.jsonl"), "--decisions", str(d / "d.jsonl"), "--verify", str(d / "verify.jsonl"), "--from", "0", "--to", str(T0 * 2), "--export-out", str(d / "out.jsonl")])
+            self.assertEqual(rc, 0)
+            res = json.loads(buf.getvalue())
+            self.assertEqual(res["export_file_sha256"], hashlib.sha256((d / "out.jsonl").read_bytes()).hexdigest())
+            self.assertIn("in_window_rows_sha256", res)
+            self.assertNotIn("export_sha256", res)
 
     def test_slot_ms_from_verify(self) -> None:
         f = 1_790_000_000_000

@@ -92,6 +92,11 @@ def export_sha256(rows: Sequence[dict[str, Any]]) -> str:
     return h.hexdigest()
 
 
+def export_file_text(rows: Sequence[dict[str, Any]]) -> str:
+    """Exact text of the `--export-out` file."""
+    return "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows)
+
+
 def pct(sorted_vals: Sequence[float], p: float) -> float:
     """Non-interpolating percentile, the `_pct` convention."""
     if not sorted_vals:
@@ -142,7 +147,7 @@ def compute(rows: Sequence[dict[str, Any]], slot_ms: float | None, from_ms: int,
         seen.add(r["mint"])
         sel.append(r)
     n = len(sel)
-    out: dict[str, Any] = {"n": n, "n_stale": sum(1 for r in sel if r.get("stale")), "slot_ms": slot_ms, "export_sha256": export_sha256(sel)}
+    out: dict[str, Any] = {"n": n, "n_stale": sum(1 for r in sel if r.get("stale")), "slot_ms": slot_ms, "in_window_rows_sha256": export_sha256(sel)}
     if n < MIN_DECISIONS or not slot_ms:
         out.update(verdict="NOT_DECIDABLE", k_p50=None, k_p90=None)
         return out
@@ -175,9 +180,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
     f, t = _ms(args.from_), _ms(args.to)
+    text = export_file_text(rows)
     if args.export_out:
-        args.export_out.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows), encoding="utf-8")
+        args.export_out.write_text(text, encoding="utf-8")
     res = compute(rows, slot_ms_from_verify(verify, f, t), f, t)
+    # sha256 of the whole written export file (all allowlisted rows, not only the window)
+    res["export_file_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
     json.dump(res, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
     return 0
