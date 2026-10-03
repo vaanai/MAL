@@ -336,6 +336,15 @@ def build_table(
                 seen.add(ident)
                 item.update(row_edge_flags(s["tag"], item, runs))
                 target.append(item)
+    pool_prints = _merge_counters(results)
+    within_by_pool = {t: sum(c["by_day"]["rows_after_scored_within_bound"].values()) for t, c in pool_prints.items()}
+    within_bound = sum(within_by_pool.values())
+    if within_bound > 0:
+        # A row of an already-scored mint, with a clock at or before the time its scoring read the tape through, means
+        # the mint was scored on incomplete tape. Refuse before table.jsonl exists, so no screen and no try is spent.
+        refusal = {"schema": SCHEMA, "run_id": run_id, "refused": True, "rows_after_scored_within_bound": within_bound, "rows_after_scored_within_bound_by_pool": within_by_pool}
+        (out_dir / "manifest.json").write_text(json.dumps(refusal, indent=2) + "\n", encoding="utf-8")
+        raise SystemExit(f"REFUSED: rows_after_scored_within_bound = {within_bound} (by pool {within_by_pool}); must be 0. table.jsonl not written.")
     key = lambda r: (r["day"], r["mint"], r["entry_land_k"])  # noqa: E731
     rows.sort(key=key)
     censored.sort(key=key)
@@ -349,7 +358,7 @@ def build_table(
         for c in censored:
             fh.write(json.dumps(c) + "\n")
     counts = summarize(rows, censored, triggers_by_day)
-    counts["pool_prints"] = _merge_counters(results)
+    counts["pool_prints"] = pool_prints
     counts["edge_days"] = edge_report(runs, triggers_by_tag, rows, censored)
     (out_dir / "trigger_counts.json").write_text(json.dumps(counts, indent=2) + "\n", encoding="utf-8")
     manifest = {
@@ -369,6 +378,8 @@ def build_table(
         "tape_through_ms_by_chunk": [{"pool": r["tag"], "tape_through_ms": r["tape_through_ms"]} for r in results],
         "edge_days": counts["edge_days"], "pool_runs": {t: [list(x) for x in v] for t, v in runs.items()},
         "n_gap_hours_in_chunks": sum(r.get("gap_hours", 0) for r in results), "pool_prints": counts["pool_prints"],
+        "rows_after_scored_within_bound": within_bound,
+        "rows_after_scored_post_bound": sum(sum(c["by_day"]["rows_after_scored_post_bound"].values()) for c in pool_prints.values()),
         "label": "1{press > 0}; the primary row is d=4 (rows carry entry_land_k = d)",
         "censoring_note": (
             "A (mint, d) whose entry landing, tp/sl sell or 30-minute cap sell runs past the end of the tape read, or touches a chunk gap, is in censored.jsonl with a reason, never in table.jsonl. "

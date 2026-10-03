@@ -243,6 +243,35 @@ class DuplicateTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "duplicate"), redirect_stderr(io.StringIO()):
                     tab.build_table(t / "out", {"fast": t, "insample": t, "live": t}, None, max_workers=1)
 
+    def _spec_and_result(self, within: int, post: int) -> tuple[Path, dict, dict]:
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        t = Path(td.name)
+        (t / "r.jsonl").write_text("")
+        (t / "c.jsonl").write_text("")
+        by_day = {n: {} for n in mt.COUNTER_NAMES}
+        by_day["rows_after_scored_within_bound"] = {"2026-09-20": within} if within else {}
+        by_day["rows_after_scored_post_bound"] = {"2026-09-20": post} if post else {}
+        res = {"tag": "A", "triggers_by_day": {}, "counters": {"by_day": by_day, "buys": 0, "null_trader_buys": 0}, "tape_through_ms": 0}
+        spec = {"tag": "A", "worker_id": 0, "rows_path": t / "r.jsonl", "cens_path": t / "c.jsonl"}
+        return t, spec, res
+
+    def test_a_within_bound_late_row_refuses_the_build_before_the_table(self) -> None:
+        t, spec, res = self._spec_and_result(2, 5)
+        with mock.patch.object(tab, "plan_pools", return_value=[spec]), mock.patch.object(tab, "_worker", return_value=res):
+            with self.assertRaisesRegex(SystemExit, "rows_after_scored_within_bound = 2"), redirect_stderr(io.StringIO()):
+                tab.build_table(t / "out", {"fast": t, "insample": t, "live": t}, None, max_workers=1)
+        self.assertFalse((t / "out" / "table.jsonl").exists())
+        self.assertEqual(json.loads((t / "out" / "manifest.json").read_text())["rows_after_scored_within_bound"], 2)
+
+    def test_post_bound_rows_do_not_refuse_the_build(self) -> None:
+        t, spec, res = self._spec_and_result(0, 5)
+        with mock.patch.object(tab, "plan_pools", return_value=[spec]), mock.patch.object(tab, "_worker", return_value=res):
+            with redirect_stderr(io.StringIO()):
+                man = tab.build_table(t / "out", {"fast": t, "insample": t, "live": t}, None, max_workers=1)
+        self.assertTrue((t / "out" / "table.jsonl").exists())
+        self.assertEqual((man["rows_after_scored_within_bound"], man["rows_after_scored_post_bound"]), (0, 5))
+
     def test_the_worker_refuses_a_duplicate_key_itself(self) -> None:
         # one mint cannot migrate twice, so a duplicate can only come from a second chunk; the table-level check is the guard
         self.assertTrue(callable(tab._worker))

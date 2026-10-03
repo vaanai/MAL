@@ -803,18 +803,33 @@ class WatermarkTests(unittest.TestCase):
         self.assertGreater(len(a["rows"]), 0)
         self.assertEqual(json.dumps(a["rows"], sort_keys=True), json.dumps(b["rows"], sort_keys=True))
         self.assertEqual(json.dumps(a["censored"], sort_keys=True), json.dumps(b["censored"], sort_keys=True))
-        self.assertEqual(b["counters"]["by_day"]["late_rows_after_scored"], {})
+        self.assertEqual(b["counters"]["by_day"]["rows_after_scored_within_bound"], {})
         # the late rows matter: without them the rows differ, and with them the window sees the late buy
         plain = self._run(late_tape(with_late=False), 10**9)
         self.assertNotEqual(json.dumps(plain["rows"], sort_keys=True), json.dumps(b["rows"], sort_keys=True))
         self.assertEqual(b["rows"][0]["features"]["m15_buys"], plain["rows"][0]["features"]["m15_buys"] + 1)
 
-    def test_a_late_row_after_the_hour_is_scored_is_counted(self) -> None:
+    def test_a_late_row_inside_the_scoring_bound_is_counted_within_bound(self) -> None:
+        main = long_tape()
+        # arrives in the second hour file after M1 was resolved at hour 0's end, but its clock is before that bound
+        late = R("M1", 9998, TT + 100, "pumpswap", "buy", 80 * SOL, B0, SOL, "x", "inside", pool="P1")
+        creates = {"M1": create_pair("M1", BASE_S * 1000)}
+        files = {KEYS[0]: [r for r in main if hour_key_of(r) == KEYS[0]], KEYS[1]: [late] + [r for r in main if hour_key_of(r) == KEYS[1]]}
+        out = m.run_worker_m15(
+            0, [KEYS[0]], KEYS[1:], {}, None, None, lambda key: {"hour": key, "trade": key},
+            row_iter_fn=lambda key: iter(copy.deepcopy(files.get(key, []))), creates_override=creates, ks=m.KS, pool_tag="A",
+        )
+        by = out["counters"]["by_day"]
+        self.assertEqual(sum(by["rows_after_scored_within_bound"].values()), 1)
+
+    def test_a_row_after_the_scoring_bound_is_post_bound(self) -> None:
         rows = long_tape()
         # a row for M1 arrives in a later hour file, long after M1 was resolved at the end of hour 0
         rows.append(R("M1", 9999, TT + 3 * 3600, "pumpswap", "buy", 80 * SOL, B0, SOL, "x", "after", pool="P1"))
         out = run_worker(rows)
-        self.assertEqual(sum(out["counters"]["by_day"]["late_rows_after_scored"].values()), 1)
+        by = out["counters"]["by_day"]
+        self.assertEqual(sum(by["rows_after_scored_post_bound"].values()), 1)
+        self.assertEqual(by["rows_after_scored_within_bound"], {})
 
     def test_scoring_watermark_is_the_hour_start_mid_file(self) -> None:
         from unittest import mock
