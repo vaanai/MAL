@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """EXP-012 forward latency/size sensitivity re-score (DEC-016 Amendment 3 (a) section 3).
 
-    python3 -m tools.exp012_forward_sensitivity --walk-dir D --out-dir FWD_OUT --k-p50 N --k-p90 M \
-        --latency-n N --latency-export-sha256 HEX --slot-ms MS \
+    python3 -m tools.exp012_forward_sensitivity --walk-dir D --out-dir FWD_OUT --latency-summary S.json --latency-export E.jsonl \
         [--size-sol 0.5] [--priority-lamports 500000] [--tip-lamports 0] [--max-concurrent 3] [--result-dir R]
 
 NOT part of the pre-registered read. It decides nothing about the FINAL verdict, makes no edge claim,
@@ -182,7 +181,7 @@ Variant = tuple[str, int, str, int, int]
 @dataclass(frozen=True)
 class SensHours(fw.ForwardHours):
     variants: tuple[Variant, ...] = ()
-    slot_ms: int = 268
+    slot_ms: float = 268.0
 
 
 class _Capture:
@@ -201,7 +200,7 @@ class _Capture:
         self.p_press: float | None = None
 
 
-def _detail(cap: _Capture, row: dict[str, Any], k: int, slot_ms: int, cap_ms: int) -> dict[str, Any]:
+def _detail(cap: _Capture, row: dict[str, Any], k: int, slot_ms: float, cap_ms: int) -> dict[str, Any]:
     fills = cap.fills
     d: dict[str, Any] = {"mig_slot": cap.trigger_slot, "entry_target_slot": cap.target, "entry_state_slot": None, "entry_spot_sol": None, "exit_state_slot": None, "exit_spot_sol": None, "exit_reason": "no_fill", "pressure_prob": None, "landing_ms": cap.landing_ms, "exit_ms": None}
     if fills is None or cap.state_idx is None or cap.state_idx < 0 or not row["filled"]:
@@ -323,8 +322,8 @@ def _sens_worker(worker_id: int, home: list[str], buf: list[str], creator_hist: 
         ee.ENTRY_LAND_K, ee.ENTRY_BOUND = saved[("ee", "ENTRY_LAND_K")], saved[("ee", "ENTRY_BOUND")]
 
 
-def sensitivity_rows(walk_dir: Path, pool: Sequence[str], variants: Sequence[Variant], slot_ms: int, scratch: Path) -> list[dict[str, Any]]:
-    hours = SensHours(str(walk_dir), frozenset(pool), None, tuple(variants), int(slot_ms))
+def sensitivity_rows(walk_dir: Path, pool: Sequence[str], variants: Sequence[Variant], slot_ms: float, scratch: Path) -> list[dict[str, Any]]:
+    hours = SensHours(str(walk_dir), frozenset(pool), None, tuple(variants), float(slot_ms))
     plan = fw.anchored_plan(pool, s12.MAX_HOME_HOURS, s12.BUFFER_HOURS)
     return s12.load_rows(hours, s12.MAX_WORKERS, s12.BUFFER_HOURS, s12.MAX_HOME_HOURS, scratch, pool_hours=list(pool), worker_fn=_sens_worker, plan=plan)
 
@@ -493,6 +492,49 @@ def render_markdown(rep: dict[str, Any]) -> str:
     return "\n".join(L)
 
 
+def _k_from_summary(v: Any, name: str) -> float:
+    if v == "inf":
+        return math.inf
+    if isinstance(v, int) and not isinstance(v, bool) and v >= 1:
+        return v
+    raise fw.Refused([f"latency summary: {name} must be an integer >= 1 or \"inf\", got {v!r}"])
+
+
+def resolve_latency(test_window: bool, summary_path: Path | None, export_path: Path | None, k_p50: Any, k_p90: Any, n: Any, sha: Any, slot_ms: Any) -> dict[str, Any]:
+    """The latency inputs. On the real window they come only from `--latency-summary` (the JSON printed by
+    tools/exp012_runner_latency_export.py) checked against `--latency-export` (its sha256 must equal the
+    summary's export_file_sha256); no free number is accepted next to them. Explicit numbers are for
+    --test-window fixtures only."""
+    explicit = [k_p50, k_p90, n, sha, slot_ms]
+    if summary_path is None and export_path is None:
+        if not test_window:
+            raise fw.Refused(["the real window takes its latency inputs only from --latency-summary and --latency-export"])
+        if any(x is None for x in explicit):
+            raise fw.Refused(["--test-window without a latency summary needs --k-p50, --k-p90, --latency-n, --latency-export-sha256 and --slot-ms"])
+        return {"k_p50": k_p50, "k_p90": k_p90, "n": n, "export_sha256": sha, "slot_ms": slot_ms, "summary_sha256": None}
+    if summary_path is None or export_path is None:
+        raise fw.Refused(["--latency-summary and --latency-export go together"])
+    if any(x is not None for x in explicit):
+        raise fw.Refused(["with --latency-summary no k, n, slot_ms or sha256 may be given on the command line: they come from the summary"])
+    try:
+        doc = json.loads(summary_path.read_text(encoding="utf-8"))
+        export_sha = fw._sha256_file(export_path)
+        summary_sha = fw._sha256_file(summary_path)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise fw.Refused([f"cannot read the latency summary or export: {type(exc).__name__}"])
+    if not isinstance(doc, dict):
+        raise fw.Refused(["the latency summary is not a JSON object"])
+    if doc.get("export_file_sha256") != export_sha:
+        raise fw.Refused(["--latency-export does not hash to the summary's export_file_sha256"])
+    if doc.get("verdict") != "OK":
+        raise fw.Refused([f"NOT_DECIDABLE: the latency summary's verdict is {doc.get('verdict')!r}"])
+    n_ = doc.get("n")
+    sm = doc.get("slot_ms")
+    if not isinstance(n_, int) or isinstance(n_, bool) or isinstance(sm, bool) or not isinstance(sm, (int, float)):
+        raise fw.Refused(["latency summary: n and slot_ms must be numbers"])
+    return {"k_p50": _k_from_summary(doc.get("k_p50"), "k_p50"), "k_p90": _k_from_summary(doc.get("k_p90"), "k_p90"), "n": n_, "export_sha256": export_sha, "slot_ms": float(sm), "summary_sha256": summary_sha}
+
+
 def _kstr(k: float) -> Any:
     return "inf" if math.isinf(k) else int(k)
 
@@ -501,12 +543,14 @@ def run(
     walk_dir: Path,
     out_dir: Path,
     artifact_dir: Path,
-    k_p50: float,
-    k_p90: float,
+    k_p50: float | None = None,
+    k_p90: float | None = None,
     *,
-    latency_n: int,
-    latency_export_sha256: str,
-    slot_ms: int,
+    latency_summary: Path | None = None,
+    latency_export: Path | None = None,
+    latency_n: int | None = None,
+    latency_export_sha256: str | None = None,
+    slot_ms: float | None = None,
     size_sol: float = DEFAULT_SIZE_SOL,
     priority_lamports: int = DEFAULT_PRIORITY,
     tip_lamports: int = DEFAULT_TIP,
@@ -522,12 +566,14 @@ def run(
     cc = clean_clock if clean_clock is not None else fw.parse_clock(fw.PINNED_CLEAN_CLOCK)
     re_ = read_end if read_end is not None else fw.parse_clock(fw.PINNED_READ_END)
     # --- inputs (refusals here record nothing: nothing was computed)
+    lat = resolve_latency(test_window, latency_summary, latency_export, k_p50, k_p90, latency_n, latency_export_sha256, slot_ms)
+    k_p50, k_p90, latency_n, latency_export_sha256, slot_ms = lat["k_p50"], lat["k_p90"], lat["n"], lat["export_sha256"], lat["slot_ms"]
     if latency_n < MIN_LATENCY_N:
         raise fw.Refused([f"NOT_DECIDABLE: the latency export has n={latency_n} decisions, fewer than {MIN_LATENCY_N} (DEC-016 Amendment 3 (a) 1)"])
     if not re.fullmatch(r"[0-9a-f]{64}", latency_export_sha256 or ""):
-        raise fw.Refused(["--latency-export-sha256 must be the 64 hex chars of the latency export's sha256"])
+        raise fw.Refused(["the latency export sha256 must be 64 hex chars"])
     if slot_ms <= 0:
-        raise fw.Refused(["--slot-ms must be positive"])
+        raise fw.Refused(["slot_ms must be positive"])
     if math.isnan(k_p50) or math.isnan(k_p90) or k_p50 < 1 or k_p90 < k_p50:
         raise fw.Refused([f"need 1 <= k_p50 <= k_p90, got {k_p50}, {k_p90}"])
     if size_sol <= 0 or tip_lamports < 0 or (max_concurrent is not None and max_concurrent < 1):
@@ -564,10 +610,10 @@ def run(
     cc_s, re_s = fw._wins(cc, re_)
     base = {"schema": SCHEMA_RUN, "clean_clock": cc_s, "read_end": re_s, "test_window": bool(test_window), "experiment": ff.PRIMARY_EXPERIMENT, "out_dir": str(out_dir.resolve()), "result_dir": str(result_dir.resolve())}
     terms = {"size_sol": size_sol, "priority_lamports": priority_lamports, "tip_lamports": tip_lamports, "max_concurrent": max_concurrent}
-    start = {**base, "state": "STARTED", "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "k_p50": _kstr(k_p50), "k_p90": _kstr(k_p90), "trial_terms": terms, "latency_export_sha256": latency_export_sha256, "latency_n": latency_n, "slot_ms": slot_ms}
+    start = {**base, "state": "STARTED", "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "k_p50": _kstr(k_p50), "k_p90": _kstr(k_p90), "trial_terms": terms, "latency_export_sha256": latency_export_sha256, "latency_summary_sha256": lat["summary_sha256"], "latency_n": latency_n, "slot_ms": slot_ms}
     append_marker(ledger, start, claim_window=None if test_window else (cc_s, re_s))
     try:
-        rep = _rescore(walk_dir, out_dir, pool, stored, repro, result_dir, k_p50, k_p90, terms, latency_n, latency_export_sha256, slot_ms, test_window, cc_s, re_s, to)
+        rep = _rescore(walk_dir, out_dir, pool, stored, repro, result_dir, k_p50, k_p90, terms, latency_n, latency_export_sha256, slot_ms, test_window, cc_s, re_s, to, lat["summary_sha256"])
     except BaseException as exc:  # noqa: BLE001 -- terminal: the window is spent and cannot be re-run
         append_marker(ledger, {**base, "state": "NOT_DECIDABLE", "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "reason": type(exc).__name__})
         raise
@@ -575,7 +621,7 @@ def run(
     return rep
 
 
-def _rescore(walk_dir: Path, out_dir: Path, pool: Sequence[str], stored: Sequence[dict[str, Any]], repro: dict[str, Any], result_dir: Path, k_p50: float, k_p90: float, terms: dict[str, Any], latency_n: int, sha: str, slot_ms: int, test_window: bool, cc_s: str, re_s: str, to: datetime) -> dict[str, Any]:
+def _rescore(walk_dir: Path, out_dir: Path, pool: Sequence[str], stored: Sequence[dict[str, Any]], repro: dict[str, Any], result_dir: Path, k_p50: float, k_p90: float, terms: dict[str, Any], latency_n: int, sha: str, slot_ms: int, test_window: bool, cc_s: str, re_s: str, to: datetime, summary_sha256: str | None = None) -> dict[str, Any]:
     size = int(round(terms["size_sol"] * LAMPORTS))
     per_side = terms["priority_lamports"] + terms["tip_lamports"]
     finite = sorted({int(k) for k in (k_p50, k_p90) if not math.isinf(k)})
@@ -627,7 +673,7 @@ def _rescore(walk_dir: Path, out_dir: Path, pool: Sequence[str], stored: Sequenc
         "k_p50": _kstr(k_p50),
         "k_p90": _kstr(k_p90),
         "trial_terms": terms,
-        "latency": {"n": latency_n, "slot_ms": slot_ms, "export_sha256": sha},
+        "latency": {"n": latency_n, "slot_ms": slot_ms, "export_sha256": sha, "summary_sha256": summary_sha256},
         "entry_bound": ENTRY_BOUND_SENS,
         "exit_bound": ENTRY_BOUND_SENS,
         "reproduction": repro,
@@ -652,11 +698,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", required=True, help="the forward scorer's out-dir (rows.jsonl, runs.jsonl, final_read.lock)")
     ap.add_argument("--result-dir", default=None, help="default: OUT/sensitivity (the run itself is once per window, whatever the directory)")
     ap.add_argument("--artifact-dir", default=str(fw.DEFAULT_ARTIFACT_DIR))
-    ap.add_argument("--k-p50", type=_k_arg, required=True, help="integer, or inf (a stale_recv drop at that percentile)")
-    ap.add_argument("--k-p90", type=_k_arg, required=True, help="integer, or inf")
-    ap.add_argument("--latency-n", type=int, required=True, help="decisions in the latency export; below 100 is NOT_DECIDABLE")
-    ap.add_argument("--latency-export-sha256", required=True)
-    ap.add_argument("--slot-ms", type=int, required=True, help="slot_ms of DEC-016 Amendment 3 (a) 1 (the measured value, about 268)")
+    ap.add_argument("--latency-summary", default=None, help="the JSON summary printed by tools/exp012_runner_latency_export.py (k, n and slot_ms come only from it)")
+    ap.add_argument("--latency-export", default=None, help="the export file itself; its sha256 must equal the summary's export_file_sha256")
+    ap.add_argument("--k-p50", type=_k_arg, default=None, help="--test-window fixtures only")
+    ap.add_argument("--k-p90", type=_k_arg, default=None, help="--test-window fixtures only")
+    ap.add_argument("--latency-n", type=int, default=None, help="--test-window fixtures only")
+    ap.add_argument("--latency-export-sha256", default=None, help="--test-window fixtures only")
+    ap.add_argument("--slot-ms", type=float, default=None, help="--test-window fixtures only")
     ap.add_argument("--size-sol", type=float, default=DEFAULT_SIZE_SOL)
     ap.add_argument("--priority-lamports", type=int, default=DEFAULT_PRIORITY, help=f"per side, at least {MIN_PRIORITY}")
     ap.add_argument("--tip-lamports", type=int, default=DEFAULT_TIP)
@@ -671,7 +719,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         rep = run(
             Path(a.walk_dir), Path(a.out_dir), Path(a.artifact_dir), a.k_p50, a.k_p90,
-            latency_n=a.latency_n, latency_export_sha256=a.latency_export_sha256, slot_ms=a.slot_ms,
+            latency_summary=Path(a.latency_summary) if a.latency_summary else None, latency_export=Path(a.latency_export) if a.latency_export else None, latency_n=a.latency_n, latency_export_sha256=a.latency_export_sha256, slot_ms=a.slot_ms,
             size_sol=a.size_sol, priority_lamports=a.priority_lamports, tip_lamports=a.tip_lamports, max_concurrent=a.max_concurrent,
             result_dir=Path(a.result_dir) if a.result_dir else None,
             clean_clock=fw.parse_clock(a.clean_clock) if a.clean_clock else None,

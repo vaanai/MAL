@@ -37,6 +37,18 @@ SHA = "a" * 64
 LAT = {"latency_n": 100, "latency_export_sha256": SHA, "slot_ms": 268}
 
 
+def write_latency(k50, k90, *, n: int = 100, slot_ms: float = SLOT_MS_TEST, verdict: str = "OK", sha_override: str | None = None, extra: dict | None = None) -> dict:
+    """A summary like tools/exp012_runner_latency_export.py prints, plus the export file it hashes."""
+    d = Path(tempfile.mkdtemp())
+    exp = d / "export.jsonl"
+    exp.write_text('{"mint": "x"}\n')
+    doc = {"n": n, "slot_ms": slot_ms, "verdict": verdict, "k_p50": k50 if verdict == "OK" else None, "k_p90": k90 if verdict == "OK" else None, "export_file_sha256": sha_override or fw._sha256_file(exp), "in_window_rows_sha256": "b" * 64}
+    doc.update(extra or {})
+    summ = d / "summary.json"
+    summ.write_text(json.dumps(doc))
+    return {"latency_summary": summ, "latency_export": exp}
+
+
 def shape(trades: list[dict], slot0: int) -> list[dict]:
     """Replace the generic post-migration prints with: a small bump at slot0+52 (moves the entry state when k
     reaches it), a take-profit print at slot0+56, a retrace at slot0+58 (moves the delayed exit), then the late print."""
@@ -105,9 +117,15 @@ class Fx(unittest.TestCase):
     def run_sens(self, out: Path, ledger: Path, k50=1, k90=3, *, verdict: str = "PASS", **kw):
         """The fixture book is far below n=100, so its FINAL is a FAIL; `verdict` stands in for the FINAL's verdict."""
         kw.setdefault("test_window", True)
-        kw.setdefault("latency_n", 100)
-        kw.setdefault("latency_export_sha256", SHA)
-        kw.setdefault("slot_ms", SLOT_MS_TEST)
+        if kw["test_window"] is False and "latency_summary" not in kw:
+            kw.update(write_latency("inf" if k50 == math.inf else k50, "inf" if k90 == math.inf else k90))
+            k50 = k90 = None
+        elif "latency_summary" in kw:
+            k50 = k90 = None
+        else:
+            kw.setdefault("latency_n", 100)
+            kw.setdefault("latency_export_sha256", SHA)
+            kw.setdefault("slot_ms", SLOT_MS_TEST)
         with patched(), mock.patch("sys.stderr", io.StringIO()), mock.patch.object(sens, "final_verdict", return_value=verdict):
             return sens.run(self.walk, out, self.art, k50, k90, clean_clock=fw.parse_clock(CLEAN_CLOCK), read_end=fw.parse_clock(READ_END), final_ledger=ledger, freeze_commit=FREEZE_COMMIT, **kw)
 
@@ -260,20 +278,20 @@ class SealGuard(Fx):
         out = d / "out"
         out.mkdir()
         with mock.patch.object(fw, "DEFAULT_LEDGER", d / "none.jsonl"), self.assertRaises(fw.Refused) as cm:
-            sens.run(self.walk, out, self.art, 1, 2, final_ledger=d / "none.jsonl", **LAT)  # pinned window, no test flag
+            sens.run(self.walk, out, self.art, final_ledger=d / "none.jsonl", **write_latency(1, 2))  # pinned window, no test flag
         self.assertIn("no FINAL read", str(cm.exception))
         self.assertFalse((out / "sensitivity").exists())
 
     def test_real_window_refused_with_only_a_test_window_marker(self) -> None:
         out, ledger = self.sealed()
         with mock.patch.object(fw, "DEFAULT_LEDGER", ledger), self.assertRaises(fw.Refused) as cm:
-            sens.run(self.walk, out, self.art, 1, 2, final_ledger=ledger, **LAT)
+            sens.run(self.walk, out, self.art, final_ledger=ledger, **write_latency(1, 2))
         self.assertIn("no FINAL read", str(cm.exception))
 
     def test_non_pinned_window_needs_the_test_flag(self) -> None:
         out, ledger = self.sealed()
         with self.assertRaises(fw.Refused) as cm:
-            sens.run(self.walk, out, self.art, 1, 2, clean_clock=fw.parse_clock(CLEAN_CLOCK), read_end=fw.parse_clock(READ_END), final_ledger=ledger, **LAT)
+            sens.run(self.walk, out, self.art, clean_clock=fw.parse_clock(CLEAN_CLOCK), read_end=fw.parse_clock(READ_END), final_ledger=ledger, **write_latency(1, 2))
         self.assertIn("--test-window", str(cm.exception))
 
     def test_refused_when_rows_changed_after_the_lock(self) -> None:
@@ -404,7 +422,7 @@ class Inputs(Fx):
         self.addCleanup(shutil.rmtree, d, True)
         (d / "out").mkdir()
         with mock.patch.object(fw, "DEFAULT_LEDGER", d / "real.jsonl"), self.assertRaises(fw.Refused) as cm:
-            sens.run(self.walk, d / "out", self.art, 1, 2, final_ledger=d / "other.jsonl", **LAT)
+            sens.run(self.walk, d / "out", self.art, final_ledger=d / "other.jsonl", **write_latency(1, 2))
         self.assertIn("must be", str(cm.exception))
 
     def test_test_window_refused_under_the_real_blocks_dir(self) -> None:
@@ -492,7 +510,10 @@ class OncePerWindow(Fx):
         with real_window(ledger):
             self.run_sens(out, ledger, 2, 4, test_window=False, tip_lamports=7, max_concurrent=2)
         m = self.lines(sens.runs_ledger_path(ledger))[0]
-        self.assertEqual((m["k_p50"], m["k_p90"], m["latency_n"], m["slot_ms"], m["latency_export_sha256"]), (2, 4, 100, SLOT_MS_TEST, SHA))
+        self.assertEqual((m["k_p50"], m["k_p90"], m["latency_n"], m["slot_ms"]), (2, 4, 100, SLOT_MS_TEST))
+        self.assertRegex(m["latency_export_sha256"], "^[0-9a-f]{64}$")
+        self.assertRegex(m["latency_summary_sha256"], "^[0-9a-f]{64}$")
+        self.assertNotEqual(m["latency_export_sha256"], m["latency_summary_sha256"])
         self.assertEqual(m["trial_terms"], {"size_sol": 0.5, "priority_lamports": 500_000, "tip_lamports": 7, "max_concurrent": 2})
         self.assertEqual((m["clean_clock"], m["read_end"], m["test_window"]), ("2026-10-05T05:00:00Z", "2026-10-05T08:00:00Z", False))
 
@@ -621,3 +642,86 @@ class Lows(Fx):
         kept, skipped = sens.apply_cap(rows, 2)
         self.assertEqual([r["mint"] for r in kept], ["b", "z"])
         self.assertEqual([r["mint"] for r in skipped], ["a"])
+
+
+class LatencyFiles(Fx):
+    def test_real_window_without_files_is_refused_and_explicit_numbers_are_not_enough(self) -> None:
+        out, ledger = self.sealed()
+        with self.assertRaises(fw.Refused) as cm:
+            sens.resolve_latency(False, None, None, 1, 2, 100, SHA, 268)
+        self.assertIn("only from --latency-summary", str(cm.exception))
+        with self.assertRaises(fw.Refused):
+            sens.resolve_latency(False, None, None, None, None, None, None, None)
+
+    def test_numbers_come_only_from_the_summary(self) -> None:
+        kw = write_latency(3, 7, n=250, slot_ms=268.5)
+        got = sens.resolve_latency(True, kw["latency_summary"], kw["latency_export"], None, None, None, None, None)
+        self.assertEqual((got["k_p50"], got["k_p90"], got["n"], got["slot_ms"]), (3, 7, 250, 268.5))
+        self.assertEqual(got["export_sha256"], fw._sha256_file(kw["latency_export"]))
+        self.assertEqual(got["summary_sha256"], fw._sha256_file(kw["latency_summary"]))
+        for extra in ({"k_p50": 1}, {"k_p90": 2}, {"n": 5}, {"sha": SHA}, {"slot_ms": 1}):
+            args = dict(k_p50=None, k_p90=None, n=None, sha=None, slot_ms=None)
+            args.update(extra)
+            with self.assertRaises(fw.Refused, msg=str(extra)) as cm:
+                sens.resolve_latency(True, kw["latency_summary"], kw["latency_export"], args["k_p50"], args["k_p90"], args["n"], args["sha"], args["slot_ms"])
+            self.assertIn("no k, n, slot_ms", str(cm.exception))
+
+    def test_export_hash_must_match_the_summary(self) -> None:
+        kw = write_latency(1, 2, sha_override="c" * 64)
+        with self.assertRaises(fw.Refused) as cm:
+            sens.resolve_latency(False, kw["latency_summary"], kw["latency_export"], None, None, None, None, None)
+        self.assertIn("does not hash", str(cm.exception))
+        kw = write_latency(1, 2)
+        kw["latency_export"].write_text("tampered\n")
+        with self.assertRaises(fw.Refused):
+            sens.resolve_latency(False, kw["latency_summary"], kw["latency_export"], None, None, None, None, None)
+
+    def test_not_decidable_summary_is_refused(self) -> None:
+        kw = write_latency(None, None, verdict="NOT_DECIDABLE")
+        with self.assertRaises(fw.Refused) as cm:
+            sens.resolve_latency(False, kw["latency_summary"], kw["latency_export"], None, None, None, None, None)
+        self.assertIn("NOT_DECIDABLE", str(cm.exception))
+
+    def test_inf_and_bad_k_in_the_summary(self) -> None:
+        kw = write_latency(2, "inf")
+        got = sens.resolve_latency(False, kw["latency_summary"], kw["latency_export"], None, None, None, None, None)
+        self.assertTrue(math.isinf(got["k_p90"]))
+        for bad in (0, -1, 1.5, None, "7", True):
+            kw = write_latency(bad, 3)
+            with self.assertRaises(fw.Refused, msg=repr(bad)):
+                sens.resolve_latency(False, kw["latency_summary"], kw["latency_export"], None, None, None, None, None)
+
+    def test_summary_and_export_go_together_and_must_be_readable(self) -> None:
+        kw = write_latency(1, 2)
+        with self.assertRaises(fw.Refused):
+            sens.resolve_latency(False, kw["latency_summary"], None, None, None, None, None, None)
+        with self.assertRaises(fw.Refused):
+            sens.resolve_latency(False, kw["latency_summary"].with_name("nope.json"), kw["latency_export"], None, None, None, None, None)
+        kw["latency_summary"].write_text("[1]")
+        with self.assertRaises(fw.Refused):
+            sens.resolve_latency(False, kw["latency_summary"], kw["latency_export"], None, None, None, None, None)
+
+    def test_summary_n_below_100_is_not_decidable_in_run(self) -> None:
+        out, ledger = self.sealed()
+        with self.assertRaises(fw.Refused) as cm:
+            self.run_sens(out, ledger, **write_latency(1, 2, n=99))
+        self.assertIn("NOT_DECIDABLE", str(cm.exception))
+        self.assertFalse(sens.runs_ledger_path(ledger).exists())
+
+    def test_run_with_summary_uses_its_k_and_float_slot_ms(self) -> None:
+        out, ledger = self.sealed()
+        rep = self.run_sens(out, ledger, **write_latency(1, 3, slot_ms=100000.5))
+        self.assertEqual((rep["k_p50"], rep["k_p90"], rep["latency"]["slot_ms"]), (1, 3, 100000.5))
+        self.assertRegex(rep["latency"]["summary_sha256"], "^[0-9a-f]{64}$")
+        m = self.lines(sens.runs_ledger_path(ledger))[0]
+        self.assertEqual(m["latency_summary_sha256"], rep["latency"]["summary_sha256"])
+        self.assertEqual(m["latency_export_sha256"], rep["latency"]["export_sha256"])
+
+    def test_cli_with_summary_and_a_free_number_is_refused(self) -> None:
+        out, ledger = self.sealed()
+        kw = write_latency(1, 2)
+        err = io.StringIO()
+        argv = ["--walk-dir", str(self.walk), "--out-dir", str(out), "--artifact-dir", str(self.art), "--latency-summary", str(kw["latency_summary"]), "--latency-export", str(kw["latency_export"]), "--k-p50", "1", "--clean-clock", CLEAN_CLOCK, "--read-end", READ_END, "--test-window", "--final-ledger", str(ledger)]
+        with patched(), mock.patch("sys.stderr", err):
+            self.assertEqual(sens.main(argv), 2)
+        self.assertIn("no k, n, slot_ms", err.getvalue())
