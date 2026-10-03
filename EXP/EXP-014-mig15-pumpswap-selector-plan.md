@@ -151,3 +151,18 @@ A pre-registration on the target block, with `quant-proof` review, for one m = 1
   - Item 1x now excludes pool A days and **2026-09-25 within pool C** (C runs to 2026-09-25T06), the days used to pick the offset.
   - Nothing else changes.
 - **Why this is not a forking path.** It is a data-quality rule, fixed before any EXP-014 row exists. It drops the source with the weakest clock. Pool B days were part of the graduated-swing study that picked the offset (disclosed above), so excluding them removes some selection, not adds it.
+
+## Amendment 3 (2026-10-03, before any real-data run): item 6(b) is on EXP-012's 9 OOF days
+
+This follows the `quant-proof` review of the screen code (#269). Item 6 is headed "on its 9 OOF days". Item 6(b) is now read that way:
+
+- **Gating:** the EXP-014 selected trades whose **migration day** is in 2026-09-19..2026-09-27 and whose mint is not in B must have a pooled mean > 0 under both fail models. If no such trade exists, 6(b) fails.
+- **Reported, not gating:** the same mean over selected trades on any day.
+
+Outside those 9 days B is empty by construction, so the any-day version would let August trades carry the bar. Those are trades EXP-012 was never asked about. This reading is stricter, and no other bar changes.
+
+The screen's `screen.json` also reports:
+- censored counts by reason at d = 4 and d = 8, with how many of those EXP-014's own trigger-time rule would have kept;
+- Jaccard variants (B restricted to eligible d = 4 mints; unrestricted B; overlap / min).
+
+These are report only.
