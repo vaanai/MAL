@@ -36,7 +36,7 @@ def _check(blocks: list[Block], role: str, host: str, start: str, end: str, exp_
 
 def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     by_name = {b.name: b for b in blocks}
-    assert len(blocks) == 12
+    assert len(blocks) == 13
     assert by_name["Fast EXP-009 block"].owner == "EXP-009"
     assert by_name["Fast EXP-009 exclusion"].explicit_hours == ("2026-09-18T23", "2026-09-19T00")
     assert by_name["Forward paper, kill review"].host == "oracle-forward"
@@ -47,11 +47,15 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     unassigned = by_name["Future fast backfill"]
     assert unassigned.owner == "unassigned"
     assert unassigned.start_hour is None
-    assert unassigned.end_hour_exclusive == "2026-08-14T12"
+    assert unassigned.end_hour_exclusive == "2026-08-08T12"
     assert by_name["Fresh confirmation block"].owner == "EXP-012"
     assert by_name["Fresh confirmation block"].host == "research"
     assert by_name["Backup confirmation block"].owner == "reserved"
     assert by_name["Backup confirmation block"].host == "research"
+    second = by_name["Second backup confirmation block"]
+    assert second.owner == "reserved"
+    assert second.host == "research"
+    assert (second.start_hour, second.end_hour_exclusive) == ("2026-08-08T12", "2026-08-14T12")
     assert by_name["Exploration expansion"].owner == "exploration-pool"
     assert by_name["Exploration expansion"].host == "research"
     fwd = by_name["Forward walk"]
@@ -228,7 +232,7 @@ def test_build_catalog_validates_and_is_deterministic() -> None:
     assert doc1["schema_version"] == "catalog.v1"
     assert doc1["ledger_sha256"] == doc2["ledger_sha256"]
     assert len(doc1["ledger_sha256"]) == 64
-    assert len(doc1["blocks"]) == 12
+    assert len(doc1["blocks"]) == 13
     assert doc1["walkers"] == []
 
     def _stable(d: dict) -> dict:
