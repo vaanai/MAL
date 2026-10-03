@@ -18,10 +18,9 @@ Migration and T (item 2)
   Amendment 1: where `block_time` is absent the time is `event_ts * 1000` (the same on-chain
   second; pool B rows carry only `event_ts`). A row with neither is dropped and counted per pool
   and per day (`no_clock_rows`, by the hour's day). `tools.oracle_live_adapter.adapt_trade_row`
-  FABRICATES `block_time = t_recv_ms // 1000` on pool B, so pool B must be read with
-  `iter_trade_rows_event_clock` (below), which sets `block_time` from `event_ts` first and flags
-  a row with neither as `_no_clock`. The creates streams carry their own clocks (see the table
-  module docstring): pool B creates are on the PumpPortal websocket time `t_ws`, not on-chain.
+  FABRICATES `block_time = t_recv_ms // 1000` on pool B, and pool B creates are on the PumpPortal
+  websocket time `t_ws`, not on-chain. Pool B is therefore EXCLUDED from EXP-014 (plan Amendment 2):
+  no pool B row is read, and the pool B event-clock reader was removed.
 
 Pool (item 3)
   Only prints of the migration print's `pool` are used. Other pools' prints are dropped and
@@ -542,26 +541,6 @@ def row_clock_ms(row: dict[str, Any]) -> int | None:
         if isinstance(v, int) and not isinstance(v, bool):
             return v * 1000
     return None
-
-
-def iter_trade_rows_event_clock(path: Path) -> list[dict[str, Any]]:
-    """Pool B reader: like tools.oracle_live_adapter.iter_trade_rows_sorted (wsol stamp, same
-    (slot, t_recv_ms, event_index) re-sort) but the clock is `event_ts`, never the adapter's
-    `t_recv_ms // 1000` stand-in. A row with neither `block_time` nor `event_ts` is flagged."""
-    from tools.oracle_live_adapter import _row_sort_key, adapt_trade_row
-
-    rows = []
-    for r in _iter_trades(path):
-        r = dict(r)
-        if not isinstance(r.get("block_time"), int):
-            ev = r.get("event_ts")
-            if isinstance(ev, int) and not isinstance(ev, bool):
-                r["block_time"] = ev
-            else:
-                r["_no_clock"] = True
-        rows.append(adapt_trade_row(r))
-    rows.sort(key=_row_sort_key)
-    return rows
 
 
 def row_is_tape_print(row: dict[str, Any]) -> bool:

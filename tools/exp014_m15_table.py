@@ -59,9 +59,28 @@ from tools.exp013_grad_table import (  # noqa: F401  (re-exported guards)
     assert_out_dir_allowed,
     assert_recipe_settings,
     edge_flags,
-    pool_runs,
-    pools_hours,
 )
+
+# Plan Amendment 2: pool B (oracle-live) has no on-chain create time (creates use the PumpPortal
+# websocket time t_ws), so it is excluded. Its root is still resolved, VIEW.sha256-checked, pinned and
+# fenced, but no pool B chunk is planned and no pool B tape is read.
+EXCLUDED_POOLS: tuple[str, ...] = ("B",)
+
+
+def pools_hours_all(extra_views: Sequence[Any] | None) -> dict[str, list[str]]:
+    """Every pool, for the guards (the fence covers pool B's hours too)."""
+    return g13.pools_hours(extra_views)
+
+
+def pools_hours(extra_views: Sequence[Any] | None) -> dict[str, list[str]]:
+    """The pools that are read: A, C and X. Each is one run (X has one per contiguous stretch); C and B are
+    never treated as contiguous."""
+    return {t: h for t, h in pools_hours_all(extra_views).items() if t not in EXCLUDED_POOLS}
+
+
+def pool_runs(extra_views: Sequence[Any] | None) -> dict[str, list[tuple[str, str]]]:
+    return {t: r for t, r in g13.pool_runs(extra_views).items() if t not in EXCLUDED_POOLS}
+
 
 DEFAULT_OUT_ROOT = Path("/data/mal/exp014-m15")
 SCHEMA = "exp014_m15_table_v1"
@@ -123,17 +142,39 @@ def _worker(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def plan_pools(roots: dict[str, Path], extra_views: Sequence[Any] | None, scratch: Path, ks: Sequence[int]) -> list[dict[str, Any]]:
-    """EXP-013's chunk plan (A, C, B, X) with the pool run end and the pool's missing hours added
-    to every spec, for the item-11 exclusion flag."""
-    specs = g13.plan_pools(roots, extra_views, scratch, ks)
-    for s in specs:
-        if s["tag"] == "B":  # Amendment 1: pool B's clock is event_ts, not the adapter's t_recv_ms stand-in
-            s["row_iter_fn"] = mt.iter_trade_rows_event_clock
+    """Chunks for pools A, C and X only (EXP-013's plan, pool B dropped: Amendment 2), each with the pool
+    run end and the pool's missing hours for the item-11 exclusion flag. Pool B's creates are not even read."""
+    from functools import partial
+
+    from tools import exp013_pool as xp
+    from tools.exploration_entry_model import _rows_out_path, build_creator_history
+    from tools.exploration_entry_model_b3 import build_creator_history_c
+    from tools.exploration_exits import POOL_HOURS as POOL_A_HOURS, _hour_info as _hour_info_a, chunk_plan
+    from tools.latency_curve import _iter_trades
+    from tools.oracle_insample_adapter import POOL_C_HOURS, _hour_info_c
+
+    specs: list[dict[str, Any]] = []
+    b, m = FORCED_BUFFER_HOURS, FORCED_MAX_HOME_HOURS
     ph = pools_hours(extra_views)
-    for s in specs:
-        hours = ph[s["tag"]]
-        s["pool_end_ms"] = g13._hour_ms(hours[-1]) + 3_600_000
-        s["pool_gap_starts_ms"] = mt.missing_hour_starts_ms(hours)
+
+    def add(tag: str, plan: Any, hour_info_fn: Any, hist: dict[str, list[int]]) -> None:
+        for i, home, buf in plan:
+            specs.append(
+                {
+                    "tag": tag, "worker_id": i, "home": home, "buf": buf, "creator_hist": hist, "hour_info_fn": hour_info_fn, "row_iter_fn": _iter_trades,
+                    "creates": None, "ks": tuple(ks), "rows_path": _rows_out_path(scratch, tag, i), "cens_path": scratch / f"pool{tag}-w{i}.censored.jsonl",
+                    "pool_end_ms": g13._hour_ms(ph[tag][-1]) + 3_600_000, "pool_gap_starts_ms": mt.missing_hour_starts_ms(ph[tag]),
+                }
+            )
+
+    fast, ins = roots["fast"], roots["insample"]
+    add("A", chunk_plan(POOL_A_HOURS, FORCED_MAX_WORKERS, b, m), partial(_hour_info_a, backfill=fast), build_creator_history(fast))
+    add("C", chunk_plan(POOL_C_HOURS, FORCED_MAX_WORKERS, b, m), partial(_hour_info_c, root=ins), build_creator_history_c(ins))
+    if extra_views:
+        hour_roots = {h: v.files[h] for v in extra_views for h in v.hours}
+        hours = sorted(hour_roots)
+        add("X", xp.plan_extra(hours, FORCED_MAX_WORKERS, b, m), partial(xp._hour_info_x, hour_roots=hour_roots), xp.build_creator_history_x(hours, hour_roots))
+    assert not any(s["tag"] in EXCLUDED_POOLS for s in specs)
     return specs
 
 
@@ -214,7 +255,7 @@ def settings_doc(ks: Sequence[int]) -> dict[str, Any]:
         "size_lamports": mt.ENTRY_SIZE, "priority_lamports": mt.ENTRY_PRIORITY_LAMPORTS, "portal_ppm": mt.ENTRY_PORTAL_PPM, "flat_fail": mt.FLAT_FAIL,
         "pressure_intercept": mt._curve().intercept, "spec": mt.SPEC_ID, "feature_names": mt.FEATURE_NAMES, "exclusion_tail_ms": mt.EXCL_TAIL_MS,
         "clock": "block_time*1000, else event_ts*1000, else the row is dropped and counted (Amendment 1)",
-        "create_clock": {"A": "creates block_time", "C": "creates block_time", "X": "creates block_time", "B": "PumpPortal t_ws (receive time, not on-chain), via tools.oracle_live_adapter.adapt_create_row"}, "view_mtime_cutoff": VIEW_MTIME_CUTOFF,
+        "create_clock": {"A": "creates block_time", "C": "creates block_time", "X": "creates block_time"}, "view_mtime_cutoff": VIEW_MTIME_CUTOFF,
         "max_workers": FORCED_MAX_WORKERS, "buffer_hours": FORCED_BUFFER_HOURS, "max_home_hours": FORCED_MAX_HOME_HOURS,
     }
 
@@ -248,7 +289,8 @@ def build_table(
 ) -> dict[str, Any]:
     """The heavy pass. Call only after the guards (main does)."""
     assert_recipe_settings(max_workers, FORCED_BUFFER_HOURS, FORCED_MAX_HOME_HOURS)
-    n_hours = assert_hour_fence(pools_hours(extra_views))
+    n_hours_guarded = assert_hour_fence(pools_hours_all(extra_views))
+    n_hours = sum(len(h) for h in pools_hours(extra_views).values())
     out_dir.mkdir(parents=True, exist_ok=True)
     scratch = out_dir / "scratch"
     scratch.mkdir(exist_ok=True)
@@ -301,7 +343,10 @@ def build_table(
         "view_sha256_file_sha256": sha_of_roots or {},
         "pinned_view_sha256": {t: fz.VIEW_PIN_BY_POOL[t] for t in ("A", "C", "B")},
         "extra_views": [v.describe() for v in (extra_views or [])], "extra_view_mtimes": list(mtimes or []),
-        "n_hours": n_hours, "n_rows": len(rows), "n_censored": len(censored), "n_triggers": counts["triggers_total"],
+        "n_hours": n_hours, "n_hours_guarded": n_hours_guarded,
+        "excluded_pools": list(EXCLUDED_POOLS),
+        "excluded_pools_note": "Pool B (oracle-live) is excluded by EXP-014 plan Amendment 2: its creates carry no on-chain time (PumpPortal t_ws). Its root is resolved, VIEW.sha256-checked, pinned and fenced, but no pool B chunk is planned and no pool B tape or creates are read.",
+        "n_rows": len(rows), "n_censored": len(censored), "n_triggers": counts["triggers_total"],
         "n_excluded_by_time": sum(1 for r in rows if r["excluded_by_time"]),
         "table_md5": md5, "wall_s": time.time() - t0,
         "tape_through_ms_by_chunk": [{"pool": r["tag"], "tape_through_ms": r["tape_through_ms"]} for r in results],
@@ -338,13 +383,13 @@ def main(argv: list[str] | None = None) -> int:
 
         extra_views = load_extra_views(args.extra_fast_view, fz.DAYS_ALL, allow_gap=args.allow_gap)
     mtimes = assert_view_mtimes(extra_views)
-    n_hours = assert_hour_fence(pools_hours(extra_views))
+    n_hours = assert_hour_fence(pools_hours_all(extra_views))
     shas = {k: (_sha256_of_file(r / "VIEW.sha256") if r is not None else None) for k, r in roots.items()}
     if args.dry_run:
         print(
             json.dumps(
                 {
-                    "out_dir": str(out), "n_hours": n_hours, "roots": {k: str(v) for k, v in roots.items()}, "view_sha256_file_sha256": shas,
+                    "out_dir": str(out), "n_hours": n_hours, "excluded_pools": list(EXCLUDED_POOLS), "roots": {k: str(v) for k, v in roots.items()}, "view_sha256_file_sha256": shas,
                     "extra_views": [v.describe() for v in (extra_views or [])], "extra_view_mtimes": mtimes, "view_mtime_cutoff": VIEW_MTIME_CUTOFF,
                     "pool_runs": {t: [list(x) for x in v] for t, v in pool_runs(extra_views).items()},
                 },

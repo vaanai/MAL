@@ -328,23 +328,6 @@ class EventTsClockTests(unittest.TestCase):
         out = run_worker(rows)
         self.assertEqual(out["counters"]["by_day"]["no_clock_rows"], {"2026-09-20": 3})  # the hour being read
 
-    def test_the_pool_b_reader_does_not_fall_back_to_the_adapter_t_recv_clock(self) -> None:
-        from tools.exp012_fixtures import write_zst_jsonl
-
-        rows = poolb_shaped(long_tape())[:6]
-        del rows[2]["event_ts"]
-        with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "trades-x.jsonl.zst"
-            write_zst_jsonl(path, [{k: v for k, v in r.items() if k != "block_time"} for r in rows])
-            got = m.iter_trade_rows_event_clock(path)
-        self.assertEqual(sum(1 for r in got if r.get("_no_clock")), 1)
-        flagged = next(r for r in got if r.get("_no_clock"))
-        self.assertIsNone(m.row_clock_ms(flagged))  # the adapter's fabricated block_time is not used
-        for r in got:
-            if not r.get("_no_clock"):
-                self.assertEqual(m.row_clock_ms(r), r["event_ts"] * 1000)
-                self.assertTrue(r["quote_is_wsol"] if r["venue"] == "pumpswap" else True)
-
     def test_every_dropped_or_ignored_row_is_counted_or_justified(self) -> None:
         # unparseable rows and pumpswap-before-bond rows are counted; the rest are justified in code comments
         rows = long_tape()

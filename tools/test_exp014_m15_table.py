@@ -103,8 +103,9 @@ def set_mtime(path: Path, iso: str) -> None:
 
 class FenceTests(unittest.TestCase):
     def test_builtin_pools_pass_and_count(self) -> None:
-        n = tab.assert_hour_fence(tab.pools_hours(None))
-        self.assertEqual(n, len(ex.POOL_HOURS) + len(ia.POOL_C_HOURS) + len(la.POOL_B_HOURS))
+        n = tab.assert_hour_fence(tab.pools_hours_all(None))
+        self.assertEqual(n, len(ex.POOL_HOURS) + len(ia.POOL_C_HOURS) + len(la.POOL_B_HOURS))  # the guards still cover pool B
+        self.assertEqual(set(tab.pools_hours(None)), {"A", "C"})
 
     def test_forbidden_blocks_are_refused(self) -> None:
         # the 0808 backup block, the 0828 backup block, the EXP-012 / EXP-011 / EXP-009 blocks, the forward period
@@ -298,16 +299,31 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(s["by_day"]["2026-09-21"]["by_d"]["4"]["scored"], 0)
 
 
-class PoolBClockTests(unittest.TestCase):
-    def test_plan_reads_pool_b_with_the_event_ts_iterator(self) -> None:
+class PoolBExcludedTests(unittest.TestCase):
+    def test_plan_has_no_pool_b_chunk_and_reads_no_pool_b_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             t = Path(td)
             write_m15_root(t / "fast")
             write_pool_c(t / "ins")
-            write_pool_b(t / "live")
-            specs = tab.plan_pools({"fast": t / "fast", "insample": t / "ins", "live": t / "live"}, None, t / "s", (1, 4, 8))
-        self.assertTrue(all(s["row_iter_fn"] is mt.iter_trade_rows_event_clock for s in specs if s["tag"] == "B"))
-        self.assertFalse(any(s["row_iter_fn"] is mt.iter_trade_rows_event_clock for s in specs if s["tag"] != "B"))
+            # no live root at all: planning must not touch it
+            specs = tab.plan_pools({"fast": t / "fast", "insample": t / "ins", "live": t / "does-not-exist"}, None, t / "s", (1, 4, 8))
+        self.assertEqual({s["tag"] for s in specs}, {"A", "C"})
+
+    def test_pool_runs_are_a_and_c_and_c_ends_at_its_real_end(self) -> None:
+        runs = tab.pool_runs(None)
+        self.assertEqual(set(runs), {"A", "C"})
+        self.assertEqual(runs["C"], [(ia.POOL_C_HOURS[0], ia.POOL_C_HOURS[-1])])
+        self.assertEqual(ia.POOL_C_HOURS[-1], "2026-09-25T06")
+        with tempfile.TemporaryDirectory() as td:
+            t = Path(td)
+            write_m15_root(t / "fast")
+            write_pool_c(t / "ins")
+            specs = tab.plan_pools({"fast": t / "fast", "insample": t / "ins", "live": t / "x"}, None, t / "s", (1, 4, 8))
+        c = next(s for s in specs if s["tag"] == "C")
+        self.assertEqual(c["pool_end_ms"], g13._hour_ms("2026-09-25T07"))  # not extended into pool B's first hour
+        self.assertEqual(c["pool_gap_starts_ms"], [])
+        self.assertFalse(mt.excluded_by_time(c["pool_end_ms"] - 1_800_000 - 800 - 60_000 - 1, 1, c["pool_end_ms"], []))
+        self.assertTrue(mt.excluded_by_time(c["pool_end_ms"] - 1_800_000 - 800 - 60_000, 1, c["pool_end_ms"], []))
 
     def test_counts_merge_per_pool_and_per_day(self) -> None:
         def res(tag: str, n: int) -> dict:
@@ -315,9 +331,9 @@ class PoolBClockTests(unittest.TestCase):
             by["no_clock_rows"] = {"2026-09-26": n}
             return {"tag": tag, "counters": {"by_day": by, "buys": 0, "null_trader_buys": 0}}
 
-        merged = tab._merge_counters([res("B", 2), res("B", 3), res("A", 1)])
-        self.assertEqual(merged["B"]["by_day"]["no_clock_rows"], {"2026-09-26": 5})
-        self.assertEqual(merged["A"]["by_day"]["no_clock_rows"], {"2026-09-26": 1})
+        merged = tab._merge_counters([res("A", 2), res("A", 3), res("C", 1)])
+        self.assertEqual(merged["A"]["by_day"]["no_clock_rows"], {"2026-09-26": 5})
+        self.assertEqual(merged["C"]["by_day"]["no_clock_rows"], {"2026-09-26": 1})
 
 
 class ViewMtimeTests(unittest.TestCase):
@@ -368,7 +384,9 @@ class EndToEndTests(unittest.TestCase):
         plan = json.loads(buf.getvalue())
         self.assertEqual(plan["view_mtime_cutoff"], "2026-10-05T12:00:00Z")
         self.assertEqual(set(plan["roots"]), {"fast", "insample", "live"})
-        self.assertEqual(plan["n_hours"], len(ex.POOL_HOURS) + len(ia.POOL_C_HOURS) + len(la.POOL_B_HOURS))
+        self.assertEqual(plan["n_hours"], len(ex.POOL_HOURS) + len(ia.POOL_C_HOURS) + len(la.POOL_B_HOURS))  # guarded hours, pool B included
+        self.assertEqual(plan["excluded_pools"], ["B"])
+        self.assertNotIn("B", plan["pool_runs"])
 
     def test_build_writes_table_counts_censored_and_manifest(self) -> None:
         self.assertEqual(run_main(argv_for(self.td, "run-001")), 0)
@@ -404,11 +422,18 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(man["table_md5"], (out / "table.md5").read_text().strip())
         self.assertEqual((man["n_rows"], man["n_censored"], man["n_triggers"], man["n_excluded_by_time"]), (3, 0, 1, 0))
         self.assertEqual(set(man["view_sha256_file_sha256"]), {"fast", "insample", "live"})
-        self.assertEqual(set(man["pinned_view_sha256"]), {"A", "C", "B"})
+        self.assertEqual(set(man["pinned_view_sha256"]), {"A", "C", "B"})  # pool B's view is still pinned
+        self.assertEqual(man["excluded_pools"], ["B"])
+        self.assertIn("Amendment 2", man["excluded_pools_note"])
+        self.assertNotIn("B", man["pool_runs"])
+        self.assertNotIn("B", man["pool_prints"])
+        self.assertEqual(man["n_hours"], len(ex.POOL_HOURS) + len(ia.POOL_C_HOURS))
+        self.assertEqual(man["n_hours_guarded"], len(ex.POOL_HOURS) + len(ia.POOL_C_HOURS) + len(la.POOL_B_HOURS))
+        self.assertNotIn("B", {r["pool"] for r in rows})
         self.assertEqual(man["settings"]["ks"], [1, 4, 8])
         self.assertEqual(man["settings"]["offset_ms"], 900_000)
         self.assertTrue(man["settings"]["clock"].startswith("block_time*1000, else event_ts*1000"))
-        self.assertIn("t_ws", man["settings"]["create_clock"]["B"])
+        self.assertNotIn("B", man["settings"]["create_clock"])
         self.assertEqual((man["settings"]["max_workers"], man["settings"]["buffer_hours"], man["settings"]["max_home_hours"]), (2, 24, 12))
         self.assertEqual(man["settings"]["feature_names"], mt.FEATURE_NAMES)
         self.assertIn("exp014_m15_trigger.py", man["code_sha256"])
@@ -417,6 +442,25 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual((self.td / "out" / "run-002" / "table.md5").read_text(), (out / "table.md5").read_text())
         with self.assertRaisesRegex(SystemExit, "already holds files"):
             run_main(argv_for(self.td, "run-001"))
+
+    def test_no_pool_b_row_even_if_the_live_root_holds_a_migrating_mint(self) -> None:
+        with tempfile.TemporaryDirectory() as td2:
+            t2 = Path(td2)
+            write_m15_root(t2 / "fast")
+            write_pool_c(t2 / "ins")
+            h = la.POOL_B_HOURS[5]
+            write_pool_b(t2 / "live")
+            creates, trades = m15_hour_rows(h, "bM", 60, 7200)
+            for r in trades:
+                r.pop("block_time")
+                r["event_ts"] = 1
+            write_zst_jsonl(t2 / "live" / "trades" / f"trades-{h}.jsonl.zst", trades)
+            write_view_sha256(t2 / "live")
+            self.assertEqual(run_main(argv_for(t2, "run-001")), 0)
+            out = t2 / "out" / "run-001"
+            rows = [json.loads(line) for line in (out / "table.jsonl").read_text().splitlines()]
+            self.assertEqual({r["mint"] for r in rows}, {"migM"})
+            self.assertNotIn("bM", (out / "censored.jsonl").read_text())
 
     def test_two_spawned_workers_give_the_same_table_as_one(self) -> None:
         argv = [a if a != "1" else "2" for a in argv_for(self.td, "run-w2")]
@@ -477,7 +521,7 @@ class EndToEndTests(unittest.TestCase):
         man = json.loads((out / "manifest.json").read_text())
         self.assertEqual(man["extra_views"][0]["n_hours"], 6)
         self.assertEqual(man["extra_view_mtimes"][0]["view_sha256_mtime_utc"], "2026-10-04T10:00:00Z")
-        self.assertEqual(man["n_hours"], len(ex.POOL_HOURS) + len(ia.POOL_C_HOURS) + len(la.POOL_B_HOURS) + 6)
+        self.assertEqual(man["n_hours"], len(ex.POOL_HOURS) + len(ia.POOL_C_HOURS) + 6)
         rows = [json.loads(line) for line in (out / "table.jsonl").read_text().splitlines()]
         xrows = [r for r in rows if r["pool"] == "X"]
         self.assertEqual(sorted(r["entry_land_k"] for r in xrows), [1, 4, 8])
