@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import shutil
 import tempfile
 import unittest
+from contextlib import contextmanager
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+import tools.exploration_entry_model as eem
+import tools.exploration_exits as ee
 import tools.exp012_forward as fw
+import tools.exp012_score as s12
 import tools.exp012_forward_sensitivity as sens
 from tools.exp012_fixtures import hour_start_s, mint_tape, write_zst_jsonl
 from tools.test_exp012_forward import ALL_HOURS, CLEAN_CLOCK, READ_END, patched
@@ -24,8 +30,11 @@ from tools.test_exp012_score import FREEZE_COMMIT, write_frozen_artifacts
 MINTS = {
     "2026-10-05T05": [("mC", 60, 1900), ("mC2", 62, 1900)],
     "2026-10-05T06": [("mD", 60, 1900)],
-    "2026-10-05T07": [("mE", 60, 1900)],
+    "2026-10-05T07": [("mE", 60, 1900), ("mF", 100, 1900)],  # mF: no trigger print, exits on the time cap
 }
+SLOT_MS_TEST = 100_000  # deliberately huge so (k-1) * slot_ms spans the gap between the cap print and the late print
+SHA = "a" * 64
+LAT = {"latency_n": 100, "latency_export_sha256": SHA, "slot_ms": 268}
 
 
 def shape(trades: list[dict], slot0: int) -> list[dict]:
@@ -38,6 +47,8 @@ def shape(trades: list[dict], slot0: int) -> list[dict]:
     def px(tag: str, dslot: int, dt_s: int, mult: float) -> dict:
         return {**mig, "slot": slot0 + dslot, "t_recv_ms": mig["t_recv_ms"] + dt_s * 1000, "block_time": mig["block_time"] + dt_s, "signature": f"sig-{tag}-" + mig["mint"], "quote_reserve": int(mig["quote_reserve"] * mult), "trader": "w" + tag}
 
+    if mig["mint"] == "mF":
+        return keep + [mig, px("bump", 52, 1, 1.05), px("mid", 60, 60, 1.05), later]
     return keep + [mig, px("bump", 52, 1, 1.05), px("tp", 56, 4, 1.8), px("back", 58, 5, 1.4), later]
 
 
@@ -91,10 +102,17 @@ class Fx(unittest.TestCase):
         self.assertTrue((out / "final_read.lock").is_file())
         return out, ledger
 
-    def run_sens(self, out: Path, ledger: Path, k50: int = 1, k90: int = 3, **kw):
+    def run_sens(self, out: Path, ledger: Path, k50=1, k90=3, *, verdict: str = "PASS", **kw):
+        """The fixture book is far below n=100, so its FINAL is a FAIL; `verdict` stands in for the FINAL's verdict."""
         kw.setdefault("test_window", True)
-        with patched(), mock.patch("sys.stderr", io.StringIO()):
+        kw.setdefault("latency_n", 100)
+        kw.setdefault("latency_export_sha256", SHA)
+        kw.setdefault("slot_ms", SLOT_MS_TEST)
+        with patched(), mock.patch("sys.stderr", io.StringIO()), mock.patch.object(sens, "final_verdict", return_value=verdict):
             return sens.run(self.walk, out, self.art, k50, k90, clean_clock=fw.parse_clock(CLEAN_CLOCK), read_end=fw.parse_clock(READ_END), final_ledger=ledger, freeze_commit=FREEZE_COMMIT, **kw)
+
+    def lines(self, path: Path) -> list[dict]:
+        return [json.loads(x) for x in path.read_text().splitlines()] if path.is_file() else []
 
     def detail(self, result_dir: Path) -> list[dict]:
         return [json.loads(x) for x in (result_dir / sens.DETAIL_NAME).read_text().splitlines()]
@@ -115,7 +133,7 @@ class ReproAndRescore(Fx):
         out, ledger = self.sealed()
         rep = self.run_sens(out, ledger, max_concurrent=None)
         self.assertTrue(rep["reproduction"]["byte_identical"])
-        self.assertEqual(rep["reproduction"]["n_rows"], 4)
+        self.assertEqual(rep["reproduction"]["n_rows"], 5)
         res = out / "sensitivity"
         for name in (sens.RESULT_JSON, sens.RESULT_MD, sens.DETAIL_NAME, sens.REPRO_NAME):
             self.assertTrue((res / name).is_file(), name)
@@ -132,7 +150,7 @@ class ReproAndRescore(Fx):
         self.run_sens(out, ledger, 1, 1, max_concurrent=None)
         stored = {fw.key_of(r): r for r in fw.read_rows(out / "rows.jsonl")}
         got = self.detail(out / "sensitivity")
-        self.assertEqual(len(got), 8)
+        self.assertEqual(len(got), 10)
         for d in got:
             s = stored[(d["mint"], d["mig_ms"])]
             self.assertEqual(json.dumps(d["flat"]), json.dumps(s["flat"]), d["mint"])
@@ -215,8 +233,8 @@ class ReproAndRescore(Fx):
         (out / "rows.jsonl").write_text((out / "rows.jsonl").read_text().replace('"press": ', '"press": 1', 1))
         self.reseal(out, ledger)
         err = io.StringIO()
-        argv = ["--walk-dir", str(self.walk), "--out-dir", str(out), "--artifact-dir", str(self.art), "--k-p50", "1", "--k-p90", "2", "--clean-clock", CLEAN_CLOCK, "--read-end", READ_END, "--test-window", "--final-ledger", str(ledger), "--freeze-commit", FREEZE_COMMIT]
-        with mock.patch("sys.stdout", io.StringIO()) as so, patched(), mock.patch("sys.stderr", err):
+        argv = ["--walk-dir", str(self.walk), "--out-dir", str(out), "--artifact-dir", str(self.art), "--k-p50", "1", "--k-p90", "2", "--latency-n", "100", "--latency-export-sha256", SHA, "--slot-ms", "268", "--clean-clock", CLEAN_CLOCK, "--read-end", READ_END, "--test-window", "--final-ledger", str(ledger), "--freeze-commit", FREEZE_COMMIT]
+        with mock.patch("sys.stdout", io.StringIO()) as so, patched(), mock.patch("sys.stderr", err), mock.patch.object(sens, "final_verdict", return_value="PASS"):
             rc = sens.main(argv)
         self.assertEqual(rc, 2)
         text = (so.getvalue() + err.getvalue()).lower()
@@ -241,21 +259,21 @@ class SealGuard(Fx):
         self.addCleanup(shutil.rmtree, d, True)
         out = d / "out"
         out.mkdir()
-        with self.assertRaises(fw.Refused) as cm:
-            sens.run(self.walk, out, self.art, 1, 2, final_ledger=d / "none.jsonl")  # pinned window, no test flag
+        with mock.patch.object(fw, "DEFAULT_LEDGER", d / "none.jsonl"), self.assertRaises(fw.Refused) as cm:
+            sens.run(self.walk, out, self.art, 1, 2, final_ledger=d / "none.jsonl", **LAT)  # pinned window, no test flag
         self.assertIn("no FINAL read", str(cm.exception))
         self.assertFalse((out / "sensitivity").exists())
 
     def test_real_window_refused_with_only_a_test_window_marker(self) -> None:
         out, ledger = self.sealed()
-        with self.assertRaises(fw.Refused) as cm:
-            sens.run(self.walk, out, self.art, 1, 2, final_ledger=ledger)
+        with mock.patch.object(fw, "DEFAULT_LEDGER", ledger), self.assertRaises(fw.Refused) as cm:
+            sens.run(self.walk, out, self.art, 1, 2, final_ledger=ledger, **LAT)
         self.assertIn("no FINAL read", str(cm.exception))
 
     def test_non_pinned_window_needs_the_test_flag(self) -> None:
         out, ledger = self.sealed()
         with self.assertRaises(fw.Refused) as cm:
-            sens.run(self.walk, out, self.art, 1, 2, clean_clock=fw.parse_clock(CLEAN_CLOCK), read_end=fw.parse_clock(READ_END), final_ledger=ledger)
+            sens.run(self.walk, out, self.art, 1, 2, clean_clock=fw.parse_clock(CLEAN_CLOCK), read_end=fw.parse_clock(READ_END), final_ledger=ledger, **LAT)
         self.assertIn("--test-window", str(cm.exception))
 
     def test_refused_when_rows_changed_after_the_lock(self) -> None:
@@ -350,3 +368,256 @@ class VerdictLogic(unittest.TestCase):
     def test_book_legs_small_book_blocked_by_n(self) -> None:
         book = [{"mint": f"m{i}", "mig_ms": i, "day": "2026-10-06", "flat": 1e7, "press": 1e7} for i in range(10)]
         self.assertFalse(sens.book_legs(book)["promote"])
+
+
+@contextmanager
+def real_window(ledger: Path):
+    """Make the fixture window the 'pinned' one, so a non-test run can be exercised end to end."""
+    with mock.patch.object(fw, "PINNED_CLEAN_CLOCK", CLEAN_CLOCK), mock.patch.object(fw, "PINNED_READ_END", READ_END), mock.patch.object(fw, "DEFAULT_LEDGER", ledger):
+        yield
+
+
+class Inputs(Fx):
+    def test_latency_n_below_100_is_not_decidable_and_records_nothing(self) -> None:
+        out, ledger = self.sealed()
+        with self.assertRaises(fw.Refused) as cm:
+            self.run_sens(out, ledger, latency_n=99)
+        self.assertIn("NOT_DECIDABLE", str(cm.exception))
+        self.assertFalse(sens.runs_ledger_path(ledger).exists())
+        self.assertFalse((out / "sensitivity").exists())
+
+    def test_priority_below_the_frozen_500k_is_refused(self) -> None:
+        out, ledger = self.sealed()
+        with self.assertRaises(fw.Refused) as cm:
+            self.run_sens(out, ledger, priority_lamports=499_999)
+        self.assertIn("not refit", str(cm.exception))
+
+    def test_bad_sha_and_slot_ms_refused(self) -> None:
+        out, ledger = self.sealed()
+        with self.assertRaises(fw.Refused):
+            self.run_sens(out, ledger, latency_export_sha256="xyz")
+        with self.assertRaises(fw.Refused):
+            self.run_sens(out, ledger, slot_ms=0)
+
+    def test_real_window_needs_the_default_final_ledger(self) -> None:
+        d = Path(tempfile.mkdtemp(dir=self._td.name))
+        self.addCleanup(shutil.rmtree, d, True)
+        (d / "out").mkdir()
+        with mock.patch.object(fw, "DEFAULT_LEDGER", d / "real.jsonl"), self.assertRaises(fw.Refused) as cm:
+            sens.run(self.walk, d / "out", self.art, 1, 2, final_ledger=d / "other.jsonl", **LAT)
+        self.assertIn("must be", str(cm.exception))
+
+    def test_test_window_refused_under_the_real_blocks_dir(self) -> None:
+        d = Path(tempfile.mkdtemp(dir=self._td.name))
+        self.addCleanup(shutil.rmtree, d, True)
+        with self.assertRaises(fw.Refused) as cm:
+            sens.run(Path("/data/mal/blocks/forward-1002"), d, self.art, 1, 2, test_window=True, final_ledger=d / "l.jsonl", **LAT)
+        self.assertIn("/data/mal/blocks/", str(cm.exception))
+
+    def test_final_that_was_not_a_pass_is_refused_before_any_work(self) -> None:
+        out, ledger = self.sealed()
+        with mock.patch.object(sens, "sensitivity_rows") as spy, self.assertRaises(fw.Refused) as cm:
+            self.run_sens(out, ledger, verdict="FAIL")
+        self.assertIn("not a PASS", str(cm.exception))
+        spy.assert_not_called()
+        self.assertFalse(sens.runs_ledger_path(ledger).exists())
+
+    def test_final_verdict_is_the_forward_scorers_expression(self) -> None:
+        out, _ledger = self.sealed()
+        rows = fw.read_rows(out / "rows.jsonl")
+        self.assertEqual(sens.final_verdict(rows), fw.gate_verdict(rows))
+        self.assertEqual(sens.final_verdict(rows), "FAIL")  # 5 trades cannot clear n >= 100
+        self.assertEqual(sens.final_verdict([]), "FAIL")
+
+    def test_duplicate_keys_in_rows_refused(self) -> None:
+        r = {"mint": "m", "mig_ms": 1}
+        with self.assertRaises(fw.Refused):
+            sens.check_unique_keys([r, dict(r)])
+        sens.check_unique_keys([r, {"mint": "m", "mig_ms": 2}])
+
+    def test_corrupt_lock_is_a_refusal_not_a_crash(self) -> None:
+        out, ledger = self.sealed()
+        (out / "final_read.lock").write_text("{not json")
+        with self.assertRaises(fw.Refused):
+            self.run_sens(out, ledger)
+
+    def test_inf_k_fails_its_part_without_scoring(self) -> None:
+        out, ledger = self.sealed()
+        seen = []
+        real = sens.sensitivity_rows
+
+        def spy(w, p, v, sm, sc):
+            seen.append([x[0] for x in v])
+            return real(w, p, v, sm, sc)
+
+        with mock.patch.object(sens, "sensitivity_rows", side_effect=spy):
+            rep = self.run_sens(out, ledger, 1, math.inf, max_concurrent=None)
+        self.assertEqual(seen, [["repro", "k1"]])
+        self.assertEqual(rep["k_p90"], "inf")
+        self.assertFalse(rep["books"]["p90"]["scored"])
+        self.assertEqual(rep["verdict"], sens.DOES_NOT_SUPPORT)
+        self.assertFalse(rep["rule"]["p90_mean_and_ex_top3_positive"])
+        out2, ledger2 = self.sealed()
+        rep = self.run_sens(out2, ledger2, math.inf, math.inf)
+        self.assertEqual(rep["verdict"], sens.DOES_NOT_SUPPORT)
+        self.assertFalse(rep["rule"]["p50_full_gate"])
+
+
+class OncePerWindow(Fx):
+    def sealed_real(self) -> tuple[Path, Path]:
+        """A FINAL taken as the (patched) pinned window, i.e. not a test window."""
+        d = Path(tempfile.mkdtemp(dir=self._td.name))
+        self.addCleanup(shutil.rmtree, d, True)
+        out, ledger = d / "out", d / "ledger.jsonl"
+        common = ["--walk-dir", str(self.walk), "--out-dir", str(out), "--clean-clock", CLEAN_CLOCK, "--read-end", READ_END, "--final-ledger", str(ledger)]
+        with real_window(ledger), patched(), mock.patch("sys.stderr", io.StringIO()) as err:
+            self.assertEqual(fw.main(["score", *common, "--artifact-dir", str(self.art), "--freeze-commit", FREEZE_COMMIT, "--to", "2026-10-05T09"]), 0, err.getvalue())
+            self.assertEqual(fw.main(["report", *common]), 0, err.getvalue())
+        return out, ledger
+
+    def test_second_real_run_is_refused_whatever_the_result_dir(self) -> None:
+        out, ledger = self.sealed_real()
+        with real_window(ledger):
+            rep = self.run_sens(out, ledger, test_window=False)
+            states = [m["state"] for m in self.lines(sens.runs_ledger_path(ledger))]
+            self.assertEqual(states, ["STARTED", "DONE"])
+            self.assertEqual(rep["test_window"], False)
+            with self.assertRaises(fw.Refused) as cm:
+                self.run_sens(out, ledger, test_window=False, result_dir=out / "elsewhere")
+        self.assertIn("once per window", str(cm.exception))
+        self.assertFalse((out / "elsewhere").exists())
+
+    def test_started_marker_records_the_bound_inputs(self) -> None:
+        out, ledger = self.sealed_real()
+        with real_window(ledger):
+            self.run_sens(out, ledger, 2, 4, test_window=False, tip_lamports=7, max_concurrent=2)
+        m = self.lines(sens.runs_ledger_path(ledger))[0]
+        self.assertEqual((m["k_p50"], m["k_p90"], m["latency_n"], m["slot_ms"], m["latency_export_sha256"]), (2, 4, 100, SLOT_MS_TEST, SHA))
+        self.assertEqual(m["trial_terms"], {"size_sol": 0.5, "priority_lamports": 500_000, "tip_lamports": 7, "max_concurrent": 2})
+        self.assertEqual((m["clean_clock"], m["read_end"], m["test_window"]), ("2026-10-05T05:00:00Z", "2026-10-05T08:00:00Z", False))
+
+    def test_a_crash_after_the_claim_is_terminal_not_decidable(self) -> None:
+        out, ledger = self.sealed_real()
+        with real_window(ledger):
+            with mock.patch.object(sens, "sensitivity_rows", side_effect=RuntimeError("boom")), self.assertRaises(RuntimeError):
+                self.run_sens(out, ledger, test_window=False)
+            states = [m["state"] for m in self.lines(sens.runs_ledger_path(ledger))]
+            self.assertEqual(states, ["STARTED", "NOT_DECIDABLE"])
+            with self.assertRaises(fw.Refused) as cm:
+                self.run_sens(out, ledger, test_window=False)
+        self.assertIn("once per window", str(cm.exception))
+
+    def test_a_post_reproduction_refusal_is_recorded_too(self) -> None:
+        out, ledger = self.sealed_real()
+        bad = ["field 'flat' differs in 1 row(s) (values withheld)"]
+        with real_window(ledger):
+            with mock.patch.object(sens, "compare_rows", side_effect=[[], bad]), self.assertRaises(fw.Refused) as cm:
+                self.run_sens(out, ledger, test_window=False)
+            self.assertIn("did not reproduce", str(cm.exception))
+            self.assertEqual([m["state"] for m in self.lines(sens.runs_ledger_path(ledger))], ["STARTED", "NOT_DECIDABLE"])
+        self.assertFalse((out / "sensitivity" / sens.RESULT_JSON).exists())
+
+    def test_a_first_pass_reproduction_mismatch_does_not_spend_the_window(self) -> None:
+        out, ledger = self.sealed_real()
+        bad = ["field 'flat' differs in 1 row(s) (values withheld)"]
+        with real_window(ledger):
+            with mock.patch.object(sens, "compare_rows", return_value=bad), self.assertRaises(fw.Refused):
+                self.run_sens(out, ledger, test_window=False)
+            self.assertFalse(sens.runs_ledger_path(ledger).exists())
+
+    def test_test_window_runs_are_not_blocked_by_the_ledger(self) -> None:
+        out, ledger = self.sealed()
+        self.run_sens(out, ledger)
+        self.run_sens(out, ledger, result_dir=out / "again")
+        self.assertEqual([m["state"] for m in self.lines(sens.runs_ledger_path(ledger))], ["STARTED", "DONE", "STARTED", "DONE"])
+
+    def test_append_marker_claim_unit(self) -> None:
+        d = Path(tempfile.mkdtemp(dir=self._td.name))
+        self.addCleanup(shutil.rmtree, d, True)
+        path = d / "SENSITIVITY_RUNS.jsonl"
+        w = ("a", "b")
+        sens.append_marker(path, {"clean_clock": "a", "read_end": "b", "test_window": True}, claim_window=None)
+        sens.append_marker(path, {"clean_clock": "a", "read_end": "b", "test_window": False, "state": "STARTED"}, claim_window=w)
+        with self.assertRaises(fw.Refused):
+            sens.append_marker(path, {"clean_clock": "a", "read_end": "b", "test_window": False}, claim_window=w)
+        sens.append_marker(path, {"clean_clock": "c", "read_end": "d", "test_window": False}, claim_window=("c", "d"))
+        self.assertEqual(len(self.lines(path)), 3)
+
+
+class ExitHolding(Fx):
+    def test_time_cap_exit_is_delayed_from_the_deadline(self) -> None:
+        out, ledger = self.sealed()
+        self.run_sens(out, ledger, 1, 3, max_concurrent=None)
+        rows = {(d["book"], d["mint"]): d for d in self.detail(out / "sensitivity")}
+        a, b = rows[("p50", "mF")], rows[("p90", "mF")]
+        self.assertEqual((a["exit_reason"], b["exit_reason"]), ("time_cap", "time_cap"))
+        self.assertEqual(a["exit_state_slot"], 5060)  # the print before the deadline
+        self.assertEqual(b["exit_state_slot"], 5090)  # deadline + 2 slots (2 x 100 s here) reaches the late print
+
+    def test_time_cap_exit_ms_is_landing_plus_cap_plus_delay(self) -> None:
+        cap_ms = int([s for s in eem.build_specs() if s["id"] == "tpsl_tp50_sl30"][0]["cap_ms"])
+        cap = sens._Capture()
+        cap.fills = [SimpleNamespace(slot=1, price_sol=1.0, t_recv_ms=10), SimpleNamespace(slot=2, price_sol=1.2, t_recv_ms=20)]
+        cap.state_idx, cap.target, cap.landing_ms, cap.exit_idx, cap.trigger_slot = 0, 2, 1_000, 1, 1
+        d = sens._detail(cap, {"filled": True}, 3, 268, cap_ms)
+        self.assertEqual((d["exit_reason"], d["exit_ms"]), ("time_cap", 1_000 + cap_ms + 2 * 268))
+        d1 = sens._detail(cap, {"filled": True}, 1, 268, cap_ms)
+        self.assertEqual(d1["exit_ms"], 1_000 + cap_ms)
+
+    def test_trigger_exit_uses_the_t_exit_the_delay_hook_returns(self) -> None:
+        cap = sens._Capture()
+        cap.fills = [SimpleNamespace(slot=1, price_sol=1.0, t_recv_ms=10), SimpleNamespace(slot=5, price_sol=1.8, t_recv_ms=50)]
+        cap.state_idx, cap.target, cap.landing_ms, cap.exit_idx, cap.trigger_slot = 0, 2, 20, 1, 1
+        cap.hit_pr, cap.t_exit = cap.fills[1], 987_654
+        d = sens._detail(cap, {"filled": True}, 3, 268, 1_800_000)
+        self.assertEqual((d["exit_reason"], d["exit_ms"]), ("tp", 987_654))
+        cap.hit_pr = SimpleNamespace(price_sol=0.6, t_recv_ms=50)
+        self.assertEqual(sens._detail(cap, {"filled": True}, 3, 268, 1_800_000)["exit_reason"], "sl")
+        cap.exit_idx, cap.hit_pr = -1, None
+        d = sens._detail(cap, {"filled": True}, 3, 268, 1_800_000)
+        self.assertEqual((d["exit_reason"], d["exit_ms"]), ("exit_state_missing", 20 + 1_800_000 + 2 * 268))
+
+    def test_exit_bound_is_end_and_everything_is_restored(self) -> None:
+        out, ledger = self.sealed()
+        before = (ee.ENTRY_LAND_K, ee.ENTRY_BOUND, eem.score_one, ee._state_at, ee._delayed, eem.mixed_net)
+        self.run_sens(out, ledger, 1, 3, max_concurrent=None)
+        self.assertEqual((ee.ENTRY_LAND_K, ee.ENTRY_BOUND, eem.score_one, ee._state_at, ee._delayed, eem.mixed_net), before)
+        rep = json.loads((out / "sensitivity" / sens.RESULT_JSON).read_text())
+        self.assertEqual((rep["entry_bound"], rep["exit_bound"]), ("end", "end"))
+
+    def test_trigger_exits_are_tp_in_the_fixture(self) -> None:
+        out, ledger = self.sealed()
+        self.run_sens(out, ledger, 1, 3, max_concurrent=None)
+        rows = [d for d in self.detail(out / "sensitivity") if d["mint"] == "mC"]
+        self.assertEqual({d["exit_reason"] for d in rows}, {"tp"})
+
+
+class Lows(Fx):
+    def _call(self, **kw):
+        base = dict(specs=None, size=None, priority=None, entry_land_k=None, entry_bound=None)
+
+        def fake(*a, **k):
+            eem.score_one("m", SimpleNamespace(mig_ms=1), None, None, 0, {}, **{**base, **kw})
+
+        hours = sens.SensHours("x", frozenset(), None, (("x", 1, "start", 1, 1),), 268)
+        with mock.patch.object(s12, "run_worker_features", fake):
+            sens._sens_worker(0, [], [], {}, None, hours)
+
+    def test_tagged_score_one_raises_on_unexpected_kwargs(self) -> None:
+        with self.assertRaises(RuntimeError) as cm:
+            self._call(surprise=1)
+        self.assertIn("does not model", str(cm.exception))
+
+    def test_tagged_score_one_raises_on_a_non_default_value(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self._call(size=5)
+
+    def test_ties_break_by_migration_slot_then_mint(self) -> None:
+        rows = [
+            {"mint": "a", "mig_ms": 5, "mig_slot": 20, "filled": True, "exit_ms": 99},
+            {"mint": "z", "mig_ms": 5, "mig_slot": 10, "filled": True, "exit_ms": 99},
+            {"mint": "b", "mig_ms": 5, "mig_slot": 10, "filled": True, "exit_ms": 99},
+        ]
+        kept, skipped = sens.apply_cap(rows, 2)
+        self.assertEqual([r["mint"] for r in kept], ["b", "z"])
+        self.assertEqual([r["mint"] for r in skipped], ["a"])
