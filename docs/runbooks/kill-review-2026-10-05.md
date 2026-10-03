@@ -15,6 +15,10 @@ Code: `scripts/research/kill-review-1005-snapshot.sh` (mal-fast-0), `scripts/res
 | `runner-restarts.jsonl` | mal-fast-0 `/home/claude/reports/` | kill_review (day annotations) |
 | `settlements.jsonl`, `pressure.jsonl` | produced by steps 2 and 3 | kill_review |
 
+Not copied, on purpose: `guard-live.json`, `invalid-for-promotion.json`, `offsets.json`, `pnl-daily.jsonl`. `kill_review` passes `--window-start` (2026-09-28) as the void-window `live_at_ms` to `position_row_counts_for_promotion`, so the void window is applied by constants (`VOID_FROM_MS`, `VOID_UNTIL`) and none of those files is read. There is no `settlements*` file on Oracle; step 2 creates it.
+
+Sizes checked by the coordinator on 2026-10-03 (metadata only): `positions.jsonl` 405,510,671 bytes; `forward-paper.json` 2,904 bytes; Oracle sealed trades 26 GB in 391 hourly files (09-27..10-03 subset 20 GB); research-0 has 600 GB free. The newest tape hour is a plain `.jsonl` while open and the rest are `.jsonl.zst`; the snapshot handles both suffixes (a plain file gets its partial last line trimmed).
+
 Tape copied: hours 2026-09-27T00 through 2026-10-05T04 (a day of margin before the window; later hours only hold post-instant events). Size: about 3.6 GB/day compressed (`ARTIFACTS/lab/trade-tape.md`), so about 30 GB, plus a current plain hour. `positions.jsonl` size is not in the docs. Creates files are small by comparison (size not documented). The scoring host needs `zstd` on PATH.
 
 ## Order
