@@ -161,3 +161,13 @@ This is a separate owner decision and DEC. Today's rule of no trading keys stays
 - size, maximum concurrent positions, a daily loss cap and a total-loss stop, written down;
 - every live fill logged with slot, pre-fee spot and fees, next to the scorer's simulated fill for that mint;
 - a landing-fail stop: after 30 live attempts, halt if realized failures exceed the pressure model's expected failures on those same attempts by more than 10 pp (one-sided).
+
+### Trial terms, named by the owner (2026-10-03)
+
+On 2026-10-03, before any runner row existed and well before the FINAL read, the owner chose the defaults in the manager session ("defaults seem good to me"), answering question `q_Wy3S6eK9bN74Ng`. For Amendment 3 (a), the trial terms are:
+- **0.5 SOL** per entry;
+- **3** maximum concurrent positions;
+- **500,000 lamports** priority per side;
+- **no tip**.
+
+They are fixed here, and they do not change after the read.
