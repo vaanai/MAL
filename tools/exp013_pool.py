@@ -49,6 +49,7 @@ from typing import Any, Sequence
 FORBIDDEN_REALPATH_PREFIXES: tuple[str, ...] = (
     "/data/mal/blocks",  # includes fresh-0903, fresh-0828, explore-0814 raw walkers, forward-1002, truth-*
     "/data/mal/blocks-clean",
+    "/data/mal/clean-view/fresh-0808",  # second backup block (EXP-014 target), docs/HOLDOUT_LEDGER.md
     "/data/mal/clean-view/fresh-0828",
     "/data/mal/clean-view/fresh-0903",
     "/data/mal/clean-view/forward-1002",
