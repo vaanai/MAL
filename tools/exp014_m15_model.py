@@ -65,6 +65,12 @@ def assert_run_dir_allowed(run_dir: Path | str, *, now: datetime | None = None) 
     return Path(real)
 
 
+def manifest_names_real_roots(manifest: dict[str, Any]) -> bool:
+    """True if the table manifest names a view root under /data/mal (a real-data table, wherever its run dir is)."""
+    roots = [*(manifest.get("roots") or {}).values(), *(v.get("root", "") for v in manifest.get("extra_views", []))]
+    return any((r := os.path.realpath(str(x))) == REAL_DATA_PREFIX or r.startswith(REAL_DATA_PREFIX + "/") for x in roots if x)
+
+
 def load_table(run_dir: Path | str, *, now: datetime | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """(rows, manifest) of an exp014_m15_table run dir. Bytes are read once; those bytes are hashed and parsed."""
     d = assert_run_dir_allowed(run_dir, now=now)
@@ -83,6 +89,10 @@ def load_table(run_dir: Path | str, *, now: datetime | None = None) -> tuple[lis
     manifest = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("schema") != TABLE_SCHEMA:
         raise SystemExit(f"manifest schema {manifest.get('schema')!r} != {TABLE_SCHEMA!r}")
+    if manifest_names_real_roots(manifest):
+        t = now if now is not None else _now()
+        if t < REAL_DATA_CUTOFF:
+            raise SystemExit(f"the table manifest names real {REAL_DATA_PREFIX} view roots and it is {t.strftime('%Y-%m-%dT%H:%M:%SZ')}, before {REAL_DATA_CUTOFF.strftime('%Y-%m-%dT%H:%M:%SZ')}")
     if "table_md5" in manifest and manifest["table_md5"] != got:
         raise SystemExit(f"manifest table_md5 {manifest['table_md5']} != loaded {got}")
     if "n_rows" in manifest and manifest["n_rows"] != len(rows):

@@ -232,20 +232,32 @@ def exp012_b(e12_sel: set[tuple[str, str]], all_rows: Sequence[Mapping[str, Any]
     return unrestricted & have, unrestricted
 
 
-def item_6a(trades: Sequence[Mapping[str, Any]], b: set[str], b_unrestricted: set[str], e12_days: Sequence[str] = E12_DAYS) -> dict[str, Any]:
-    """A = selected mints whose migration day is one of EXP-012's 9 OOF days. J(A, B) <= 0.5; an empty union fails."""
+def item_6a(
+    trades: Sequence[Mapping[str, Any]], b: set[str], b_unrestricted: set[str], e12_days: Sequence[str] = E12_DAYS, eligible_k4_mints: set[str] | None = None
+) -> dict[str, Any]:
+    """A = selected mints whose migration day is one of EXP-012's 9 OOF days. J(A, B) <= 0.5; an empty union fails.
+    Report-only beside the gating J: J with B restricted to eligible d=4 mints (`eligible_k4_mints`), J over the
+    unrestricted B, and |A and B| / min(|A|, |B|)."""
     days = set(e12_days)
     a = {t["mint"] for t in trades if t["mig_day"] in days}
     j = sc.jaccard(a, b)
     return {"item": "6a", "what": f"mint Jaccard J(A, B) <= {JACCARD_MAX} on EXP-012's OOF days", "n_a": len(a), "n_b": len(b), "n_b_unrestricted": len(b_unrestricted), "n_both": len(a & b),
-            "jaccard": j, "pass": bool(j is not None and j <= JACCARD_MAX)}
+            "jaccard": j, "pass": bool(j is not None and j <= JACCARD_MAX),
+            "jaccard_b_eligible_d4_report_only": None if eligible_k4_mints is None else sc.jaccard(a, b_unrestricted & eligible_k4_mints),
+            "jaccard_unrestricted_b_report_only": sc.jaccard(a, b_unrestricted),
+            "overlap_min_report_only": (len(a & b) / min(len(a), len(b))) if a and b else None}
 
 
-def item_6b(trades: Sequence[Mapping[str, Any]], b: set[str]) -> dict[str, Any]:
-    """Selected trades on mints not in B: pooled mean > 0 under both fail models. None there fails."""
-    out = [t for t in trades if t["mint"] not in b]
-    it = _mean_item("6b", "selected trades on mints outside EXP-012's B: pooled mean SOL > 0", {leg: [t[leg] for t in out] for leg in LEGS})
-    it["n_outside_b"] = len(out)
+def item_6b(trades: Sequence[Mapping[str, Any]], b: set[str], e12_days: Sequence[str] = E12_DAYS) -> dict[str, Any]:
+    """Gating: selected trades whose migration day is one of EXP-012's 9 OOF days and whose mint is not in B: pooled
+    mean > 0 under both fail models. None there fails. Report-only: the same over every selected trade outside B."""
+    days = set(e12_days)
+    gating = [t for t in trades if t["mint"] not in b and t["mig_day"] in days]
+    anyday = [t for t in trades if t["mint"] not in b]
+    it = _mean_item("6b", "selected trades on EXP-012 OOF migration days, mints outside EXP-012's B: pooled mean SOL > 0", {leg: [t[leg] for t in gating] for leg in LEGS})
+    it["n_outside_b"] = len(gating)
+    any_item = _mean_item("6b_any_day", "report only", {leg: [t[leg] for t in anyday] for leg in LEGS})
+    it["any_day_report_only"] = {"n": len(anyday), "legs": any_item["legs"]}
     return it
 
 
@@ -267,7 +279,9 @@ def spearman(x: Sequence[float], y: Sequence[float]) -> float | None:
     return sc.pearson(ranks(x), ranks(y)) if len(x) == len(y) else None
 
 
-def item_6c(trades: Sequence[Mapping[str, Any]], e12_daily: Mapping[str, Mapping[str, float]] | None, e12_days: Sequence[str] = E12_DAYS) -> dict[str, Any]:
+def item_6c(
+    trades: Sequence[Mapping[str, Any]], e12_daily: Mapping[str, Mapping[str, float]] | None, e12_days: Sequence[str] = E12_DAYS, tm: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Report only. Daily SOL totals of the EXP-014 trades grouped by MIGRATION day (no trade = 0) against EXP-012's
     per-day totals, on EXP-012's 9 OOF days. None = undefined (zero variance, or too few days)."""
     days = sorted(e12_days)
@@ -279,6 +293,66 @@ def item_6c(trades: Sequence[Mapping[str, Any]], e12_daily: Mapping[str, Mapping
         theirs = [e12_daily[leg].get(d, 0.0) for d in days]
         out["pearson"][leg] = sc.pearson(mine, theirs)
         out["spearman"][leg] = spearman(mine, theirs)
+    out["uncovered_days"] = uncovered_days(tm, days) if tm is not None else None
+    return out
+
+
+def _tag_hours(runs: Sequence[Sequence[str]]) -> list[str]:
+    from tools.exp013_pool import _hour_range
+
+    return [h for first, last in runs for h in _hour_range(first, last)]
+
+
+def pool_end_ms_of(tm: Mapping[str, Any], tag: str) -> int:
+    given = tm.get("pool_end_ms_by_pool", {})
+    if tag in given:
+        return int(given[tag])
+    import tools.exp014_m15_table as t14
+
+    return t14.pool_end_ms(tag, _tag_hours(tm["pool_runs"][tag]))
+
+
+def uncovered_days(tm: Mapping[str, Any], days: Sequence[str]) -> dict[str, list[str]]:
+    """6(c) days EXP-014 cannot fully cover: `none` = no pool of the manifest has the day (e.g. 09-26 and 09-27 are only
+    pool B, which is excluded); `partial` = the day is the last day of a pool run that ends before the day's end."""
+    covered = sc.all_manifest_days(tm)
+    partial = set()
+    for tag, runs in tm.get("pool_runs", {}).items():
+        end = pool_end_ms_of(tm, tag)
+        for _, last in runs:
+            d = last[:10]
+            if sc._hour_ms(d + "T00") + 86_400_000 > end >= sc._hour_ms(d + "T00"):
+                partial.add(d)
+    return {"none": sorted(d for d in days if d not in covered), "partial": sorted(d for d in days if d in partial)}
+
+
+# --- E2: table-censored rows under EXP-014's own exclusion rule -------------------------------
+
+
+def censored_report(censored: Sequence[Mapping[str, Any]] | None, rows: Sequence[Mapping[str, Any]], tm: Mapping[str, Any]) -> dict[str, Any]:
+    """censored.jsonl counts at d = 4 and d = 8 by reason, and how many EXP-014's `excluded_by_time` rule (T + 1,800,000
+    + 2 d x 400 + 60,000 at or after the pool run end or the first gap start after T) would have kept. A censored record has
+    trigger_ms but no pool: the pool comes from another row of the same mint (`unknown` when the mint has none)."""
+    if censored is None:
+        return {"available": False}
+    import tools.exp014_m15_trigger as mt
+
+    pool_of_mint = {r["mint"]: r.get("pool") for r in rows}
+    ends = {tag: pool_end_ms_of(tm, tag) for tag in tm.get("pool_runs", {})}
+    gaps = {tag: mt.missing_hour_starts_ms(_tag_hours(runs)) for tag, runs in tm.get("pool_runs", {}).items()}
+    out: dict[str, Any] = {"available": True, "n_censored": len(censored), "by_d": {}}
+    for d in (4, 8):
+        recs = [c for c in censored if c["entry_land_k"] == d]
+        reasons: dict[str, int] = {}
+        kept = unknown = 0
+        for c in recs:
+            reasons[c.get("reason", "?")] = reasons.get(c.get("reason", "?"), 0) + 1
+            tag = pool_of_mint.get(c["mint"])
+            if tag is None or tag not in ends or c.get("trigger_ms") is None:
+                unknown += 1
+            elif not mt.excluded_by_time(int(c["trigger_ms"]), d, ends[tag], gaps[tag]):
+                kept += 1
+        out["by_d"][str(d)] = {"n_censored": len(recs), "by_reason": dict(sorted(reasons.items())), "n_would_be_kept_by_exclusion_rule": kept, "n_unknown_pool": unknown}
     return out
 
 
@@ -309,14 +383,14 @@ def evaluate(
     items = [
         sc.item_1(trades, all_days, full["legs"]), sc.item_2(trades, all_days, full["legs"]), sc.item_3(trades, all_days, full["legs"]),
         item_1x(trades, tm), sc.item_4a(trades, groups, pd), sc.item_4b(trades, groups, pd), sc.item_5(selected, rows, all_rows),
-        item_6a(trades, b, b_unrestricted), item_6b(trades, b),
+        item_6a(trades, b, b_unrestricted, eligible_k4_mints={r["mint"] for r in rows if r["entry_land_k"] == mm.PRIMARY_K}), item_6b(trades, b),
     ]
     return {
         "schema": "exp014_m15_screen_v1",
         "note": "EXPLORATION screen. Not evidence, no edge claim.",
         "verdict": verdict_of(items),
         "items": items,
-        "item_6c_report_only": item_6c(trades, e12_daily),
+        "item_6c_report_only": item_6c(trades, e12_daily, tm=tm),
         "gate_report_only": full,
         "n_selected": len(trades),
         "day_groups": {k: sorted(v) for k, v in groups.items()} | {"1x": sorted(days_1x(tm))},
@@ -356,7 +430,7 @@ def to_markdown(doc: Mapping[str, Any]) -> str:
         lines.append(f"| {it['item']} {it['what']} | {'PASS' if it['pass'] else 'FAIL'} | {detail} |")
     c = doc["item_6c_report_only"]
     lines += ["", "## Item 6c (report only)", "", f"- pearson: {json.dumps(c['pearson'])}", f"- spearman: {json.dumps(c['spearman'])}"]
-    lines += ["", "## Exclusions and reference", "", f"- excluded_by_time: {json.dumps(doc['excluded_by_time'])}", f"- tries log: {doc['tries_log']}",
+    lines += ["", "## Exclusions and reference", "", f"- excluded_by_time: {json.dumps(doc['excluded_by_time'])}", f"- table-censored (EXP-014 rule): {json.dumps(doc['table_censored'])}", f"- tries log: {doc['tries_log']}",
               f"- slot+1 (reference): {json.dumps(doc['slot1_reference'])}", f"- counts: {json.dumps(doc['counts'])}"]
     return "\n".join(lines) + "\n"
 
@@ -404,7 +478,11 @@ def run(
         raise SystemExit(f"a real-data run must use the default ledger dir {DEFAULT_LEDGER_DIR}, got {ledger_dir}")
     out = sc.assert_out_dir_fresh(out_dir)
     sc.assert_exp012_dir(exp012_dir)
-    rows, tm = mm.load_table(real_table, now=now)
+    rows, tm = mm.load_table(real_table, now=now)  # also refuses a manifest that names real view roots before the cutoff
+    if mm.manifest_names_real_roots(tm):
+        is_real = True
+        if os.path.realpath(str(ledger_dir)) != os.path.realpath(str(DEFAULT_LEDGER_DIR)):
+            raise SystemExit(f"a table naming real {mm.REAL_DATA_PREFIX} view roots must use the default ledger dir {DEFAULT_LEDGER_DIR}, got {ledger_dir}")
     vm_bytes = Path(view_manifest_path).read_bytes()
     vm = json.loads(vm_bytes.decode("utf-8"))
     assert_view_manifest(vm, tm, check_files=is_real if check_view_files is None else check_view_files, mtime_fn=mtime_fn, cutoff=view_cutoff)
@@ -414,52 +492,64 @@ def run(
     e12_days, e12_sel, e12_thr = sc.exp012_selected(exp012_dir, e12_expect)
     e12_daily = sc.exp012_daily_pnl(exp012_dir)
     eligible, exclusion = mm.eligible_rows(rows)
+    censored = censored_report(sc._read_censored(real_table), rows, tm)
     manifest_sha = hashlib.sha256(vm_bytes).hexdigest()
     blocks = data_blocks_of(tm)
     base_cfg = {"d": mm.PRIMARY_K, "table_md5": tm.get("table_md5"), "view_manifest_sha256": manifest_sha, "code_commit": sc._git_sha()}
     result_path = out / "result.json"
+    out.mkdir(parents=True)  # before `started`: a crash after it still leaves a place for whatever was computed
     # --- the try is used from here on, even if the run crashes (tries line first, then the ledger) ---
     mal_result.append_try(tries_path, tool=TOOL, config={**base_cfg, "event": "started"}, data_blocks=blocks, result_path=result_path, role="exploration")
     ledger_start(ledger_dir, {"table_md5": tm.get("table_md5"), "view_manifest_sha256": manifest_sha, "out_dir": str(out)})
-    # --- 4b precondition: before any fit ---
-    if len(august_days(tm)) < MIN_AUGUST_DAYS:
-        doc = not_decidable_doc(tm)
-        doc["table_md5"], doc["view_manifest_sha256"], doc["tries_log"] = tm.get("table_md5"), manifest_sha, tries_path
-        mal_result.append_try(tries_path, tool=TOOL, config={**base_cfg, "event": "result", "verdict": doc["verdict"]}, data_blocks=blocks, result_path=result_path, role="exploration")
-        ledger_finish(ledger_dir, {"verdict": doc["verdict"], "out_dir": str(out), "n_selected": 0, "n_august_days": doc["n_august_days"]})
-        out.mkdir(parents=True)
-        (out / "screen.json").write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        # --- 4b precondition: before any fit ---
+        if len(august_days(tm)) < MIN_AUGUST_DAYS:
+            doc = not_decidable_doc(tm)
+            doc["table_md5"], doc["view_manifest_sha256"], doc["tries_log"] = tm.get("table_md5"), manifest_sha, tries_path
+            (out / "screen.json").write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            (out / "screen.md").write_text(to_markdown(doc), encoding="utf-8")
+            mal_result.append_try(tries_path, tool=TOOL, config={**base_cfg, "event": "result", "verdict": doc["verdict"]}, data_blocks=blocks, result_path=out / "screen.json", role="exploration")
+            ledger_finish(ledger_dir, {"verdict": doc["verdict"], "out_dir": str(out), "n_selected": 0, "n_august_days": doc["n_august_days"]})
+            return doc
+        # --- the screen ---
+        days = sorted({r["day"] for r in mm.training_rows(eligible)})
+        selected, fold_info, counts = mm.nested_lodo_select(eligible, days, n_jobs=n_jobs)
+        doc = evaluate(eligible, tm, selected, fold_info, counts, e12_sel, e12_daily, all_rows=rows)
+        doc.update({"excluded_by_time": exclusion, "table_censored": censored, "table_md5": tm.get("table_md5"), "view_manifest_sha256": manifest_sha, "tries_log": tries_path,
+                    "exp012": {"threshold": e12_thr, "oof_days": sorted(e12_days)}, "selected": list(selected)})
+        trades = selected_trades(selected, eligible)
+        # --- the screen files first: what was computed is on disk before any result bookkeeping ---
+        (out / "screen.json").write_text(json.dumps(doc, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
         (out / "screen.md").write_text(to_markdown(doc), encoding="utf-8")
+        ap = mal_result.append_try(tries_path, tool=TOOL, config={**base_cfg, "event": "result", "verdict": doc["verdict"]}, data_blocks=blocks, result_path=result_path, role="exploration")
+        tries = {**ap, **mal_result.tries_summary(tries_path, ap["data_key"])}
+        ledger_finish(ledger_dir, {"verdict": doc["verdict"], "out_dir": str(out), "n_selected": len(trades)})
+        try:
+            result = mal_result.build_result(
+                tool=TOOL, git_sha=base_cfg["code_commit"], command=command, config={**base_cfg, "verdict": doc["verdict"]}, role="exploration", data_blocks=blocks,
+                stage="failed" if doc["verdict"] == "FAIL" else "candidate",
+                trades_flat=sc._trades_for_result(trades, "flat"), trades_pressure_s1=sc._trades_for_result(trades, "press"), tries=tries,
+                n_candidates=counts["n_k4_rows"], n_days=len(days), runtime_s=time.time() - t0,
+                notes=f"EXP-014 exploration screen, verdict {doc['verdict']}. Not evidence, no edge claim. {GATE_NOTE}",
+            )
+            result["verdict"] = doc["verdict"]
+            result["gate_note"] = GATE_NOTE
+            mal_result.write_result(result_path, result)
+        except Exception as e:  # the screen is already on disk and in the ledger; only result.v1 is missing
+            (out / "result_error.txt").write_text(f"{type(e).__name__}: {e}\n", encoding="utf-8")
+            _ledger_write(ledger_dir, "result_v1_error", {"error": f"{type(e).__name__}: {e}", "out_dir": str(out)}, once=False)
+        sink = os.environ.get("MISCUSI_RESULT")
+        if sink:
+            metrics = {"n_selected": len(trades), "n_days": len(days), **{f"item_{it['item']}": it["pass"] for it in doc["items"]}}
+            summary = f"EXP-014 m15 screen {doc['verdict']}: {len(trades)} selected over {len(days)} days (exploration, no edge claim)"
+            Path(sink).write_text(json.dumps({"ok": True, "verdict": doc["verdict"], "metrics": metrics, "summary": summary}) + "\n", encoding="utf-8")
         return doc
-    # --- the screen ---
-    days = sorted({r["day"] for r in mm.training_rows(eligible)})
-    selected, fold_info, counts = mm.nested_lodo_select(eligible, days, n_jobs=n_jobs)
-    doc = evaluate(eligible, tm, selected, fold_info, counts, e12_sel, e12_daily, all_rows=rows)
-    doc.update({"excluded_by_time": exclusion, "table_md5": tm.get("table_md5"), "view_manifest_sha256": manifest_sha, "tries_log": tries_path,
-                "exp012": {"threshold": e12_thr, "oof_days": sorted(e12_days)}})
-    trades = selected_trades(selected, eligible)
-    ap = mal_result.append_try(tries_path, tool=TOOL, config={**base_cfg, "event": "result", "verdict": doc["verdict"]}, data_blocks=blocks, result_path=result_path, role="exploration")
-    tries = {**ap, **mal_result.tries_summary(tries_path, ap["data_key"])}
-    ledger_finish(ledger_dir, {"verdict": doc["verdict"], "out_dir": str(out), "n_selected": len(trades)})
-    result = mal_result.build_result(
-        tool=TOOL, git_sha=base_cfg["code_commit"], command=command, config={**base_cfg, "verdict": doc["verdict"]}, role="exploration", data_blocks=blocks,
-        stage="failed" if doc["verdict"] == "FAIL" else "candidate",
-        trades_flat=sc._trades_for_result(trades, "flat"), trades_pressure_s1=sc._trades_for_result(trades, "press"), tries=tries,
-        n_candidates=counts["n_k4_rows"], n_days=len(days), runtime_s=time.time() - t0,
-        notes=f"EXP-014 exploration screen, verdict {doc['verdict']}. Not evidence, no edge claim. {GATE_NOTE}",
-    )
-    result["verdict"] = doc["verdict"]
-    result["gate_note"] = GATE_NOTE
-    out.mkdir(parents=True)
-    mal_result.write_result(result_path, result)
-    (out / "screen.json").write_text(json.dumps(doc, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
-    (out / "screen.md").write_text(to_markdown(doc), encoding="utf-8")
-    sink = os.environ.get("MISCUSI_RESULT")
-    if sink:
-        metrics = {"n_selected": len(trades), "n_days": len(days), **{f"item_{it['item']}": it["pass"] for it in doc["items"]}}
-        summary = f"EXP-014 m15 screen {doc['verdict']}: {len(trades)} selected over {len(days)} days (exploration, no edge claim)"
-        Path(sink).write_text(json.dumps({"ok": True, "verdict": doc["verdict"], "metrics": metrics, "summary": summary}) + "\n", encoding="utf-8")
-    return doc
+    except BaseException as e:
+        try:
+            _ledger_write(ledger_dir, "crashed", {"error": f"{type(e).__name__}: {e}", "out_dir": str(out)}, once=False)
+        except Exception:
+            pass
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> int:

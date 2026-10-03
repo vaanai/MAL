@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 # EXP-014 real screen, one MiScusi job (plan EXP/EXP-014-mig15-pumpswap-selector-plan.md, Screen).
 #   PYTHONPATH=$PWD bash scripts/research/exp014-screen-run.sh RUN_ID
-# Refuses before the cutoff and while any debug table dir exists. Stops at the first failure. Never deletes
-# data. The screen's nonzero exit can be a FAIL verdict. Run it ONCE: the screen itself refuses a second try.
-# EXP014_NOW_OVERRIDE (UTC, %Y-%m-%dT%H:%M:%SZ) and EXP014_DATA_ROOT exist for the test only.
+# Refuses before the cutoff and while ANY entry other than SCREEN_RUNS.jsonl exists under /data/mal/exp014-m15
+# (debug-* table dirs, an earlier run id, a stale views file). Stops at the first failure. Never deletes data.
+# The screen prints its verdict and exits 0 for PASS, FAIL and NOT_DECIDABLE alike: a nonzero exit code is a
+# crash or a refused guard, not a verdict (read screen.md). Run it ONCE: the screen refuses a second try.
+# EXP014_NOW_OVERRIDE (UTC, %Y-%m-%dT%H:%M:%SZ), EXP014_DATA_ROOT and EXP014_PYTHON are honoured ONLY when
+# EXP014_TEST_MODE=1 (the tests); otherwise they are ignored.
 set -u
 
 RUN_ID="${1:-}"
 [ -n "$RUN_ID" ] || { echo "usage: $0 RUN_ID" >&2; exit 2; }
 
 CUTOFF="2026-10-05T12:00:00Z"
-DATA="${EXP014_DATA_ROOT:-/data/mal}"
-PY="${EXP014_PYTHON:-/data/mal/venv/bin/python}"
+DATA="/data/mal"
+PY="/data/mal/venv/bin/python"
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [ "${EXP014_TEST_MODE:-}" = "1" ]; then
+  DATA="${EXP014_DATA_ROOT:-$DATA}"
+  PY="${EXP014_PYTHON:-$PY}"
+  NOW="${EXP014_NOW_OVERRIDE:-$NOW}"
+fi
 M15="$DATA/exp014-m15"
 VIEWS="$M15/$RUN_ID.views.json"
 CLEAN="$DATA/clean-view"
@@ -19,18 +28,20 @@ FAST="$CLEAN/fast-pool-2026-09-18T23_2026-09-22T00"
 INS="$CLEAN/oracle-insample-2026-09-22_25"
 LIVE="$CLEAN/oracle-live-2026-09-25_27"
 
-NOW="${EXP014_NOW_OVERRIDE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 # Equal-width ISO-8601 UTC strings sort as time.
 if [[ "$NOW" < "$CUTOFF" ]]; then
   echo "refusing: $NOW is before cutoff $CUTOFF" >&2
   exit 3
 fi
 
-shopt -s nullglob
-DEBUGS=("$M15"/debug-*)
-shopt -u nullglob
-if [ "${#DEBUGS[@]}" -gt 0 ]; then
-  echo "refusing: debug table dir(s) still exist: ${DEBUGS[*]}; the manager deletes them by hand first (plan item 14)" >&2
+shopt -s nullglob dotglob
+EXISTING=()
+for e in "$M15"/*; do
+  [ "$(basename "$e")" = "SCREEN_RUNS.jsonl" ] || EXISTING+=("$e")
+done
+shopt -u nullglob dotglob
+if [ "${#EXISTING[@]}" -gt 0 ]; then
+  echo "refusing: $M15 already holds ${EXISTING[*]}; only SCREEN_RUNS.jsonl may exist. The manager deletes debug-* dirs by hand first (plan item 14)" >&2
   exit 4
 fi
 
@@ -60,7 +71,7 @@ OUT="$M15/$RUN_ID-screen"
 MAL_TRIES_LOG="$DATA/ops/tries/tries.jsonl" "$PY" -m tools.exp014_m15_screen \
   --table-run-dir "$M15/$RUN_ID" --view-manifest "$VIEWS" --out-dir "$OUT" --n-jobs 8
 SCREEN_RC=$?
-echo "screen exit code: $SCREEN_RC (nonzero can be a FAIL verdict; read result.json)"
+echo "screen exit code: $SCREEN_RC (0 for PASS, FAIL and NOT_DECIDABLE; nonzero is a crash: read screen.md / the ledger)"
 
 if [ -n "${MISCUSI_OUTPUT_DIR:-}" ]; then
   for f in screen.md screen.json result.json; do

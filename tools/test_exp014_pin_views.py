@@ -127,7 +127,7 @@ class ScriptTests(unittest.TestCase):
     SCRIPT = REPO / "scripts" / "research" / "exp014-screen-run.sh"
 
     def _env(self, td: str, now: str) -> dict:
-        return {**os.environ, "EXP014_NOW_OVERRIDE": now, "EXP014_DATA_ROOT": td, "PYTHONPATH": str(REPO)}
+        return {**os.environ, "EXP014_TEST_MODE": "1", "EXP014_NOW_OVERRIDE": now, "EXP014_DATA_ROOT": td, "PYTHONPATH": str(REPO)}
 
     def test_syntax(self) -> None:
         subprocess.run(["bash", "-n", str(self.SCRIPT)], check=True)
@@ -146,6 +146,45 @@ class ScriptTests(unittest.TestCase):
             self.assertEqual(r.returncode, 4)
             self.assertIn("debug", r.stderr)
             self.assertEqual([p.name for p in (Path(td) / "exp014-m15").iterdir()], ["debug-whatever"])
+
+    def test_any_existing_entry_but_the_ledger_refuses(self) -> None:
+        for name, is_dir in (("2026-run-old", True), ("old.views.json", False), ("debug-x", True)):
+            with tempfile.TemporaryDirectory() as td:
+                m15 = Path(td) / "exp014-m15"
+                m15.mkdir()
+                (m15 / "SCREEN_RUNS.jsonl").write_text("")
+                if is_dir:
+                    (m15 / name).mkdir()
+                else:
+                    (m15 / name).write_text("{}")
+                r = subprocess.run(["bash", str(self.SCRIPT), "run-test"], capture_output=True, text=True, env=self._env(td, "2026-10-05T12:00:00Z"), cwd=REPO)
+                self.assertEqual(r.returncode, 4, name)
+                self.assertIn(name, r.stderr)
+
+    def test_the_ledger_alone_does_not_refuse(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            m15 = Path(td) / "exp014-m15"
+            m15.mkdir()
+            (m15 / "SCREEN_RUNS.jsonl").write_text("")
+            env = {**self._env(td, "2026-10-05T12:00:00Z"), "EXP014_PYTHON": "/bin/false"}
+            r = subprocess.run(["bash", str(self.SCRIPT), "run-test"], capture_output=True, text=True, env=env, cwd=REPO)
+            self.assertEqual(r.returncode, 10)  # past both guards; the stubbed pin step failed
+
+    def test_overrides_are_read_only_inside_the_test_mode_block(self) -> None:
+        # Not run without test mode: after the cutoff that would start the real pipeline on /data/mal.
+        text = self.SCRIPT.read_text()
+        head, _, rest = text.partition('if [ "${EXP014_TEST_MODE:-}" = "1" ]; then')
+        self.assertTrue(rest, "no test-mode block")
+        block = rest.split("\nfi\n", 1)[0]
+        for var in ("EXP014_DATA_ROOT", "EXP014_PYTHON", "EXP014_NOW_OVERRIDE"):
+            self.assertIn(var, block)
+            self.assertNotIn(var + ":-", head.split("set -u", 1)[1])
+        self.assertIn('DATA="/data/mal"', head)
+
+    def test_comment_says_exit_zero_for_every_verdict(self) -> None:
+        text = self.SCRIPT.read_text()
+        self.assertIn("exits 0 for PASS, FAIL and NOT_DECIDABLE alike", text)
+        self.assertNotIn("nonzero can be a FAIL verdict", text)
 
     def test_missing_run_id_fails(self) -> None:
         r = subprocess.run(["bash", str(self.SCRIPT)], capture_output=True, text=True, cwd=REPO)

@@ -457,7 +457,9 @@ class GuardTests(unittest.TestCase):
                     fx.run()
             self.assertIn('"event": "started"', seen["tries"])
             self.assertIn("started", seen["ledger"])
-            self.assertFalse(fx.out.exists())
+            self.assertTrue(fx.out.is_dir())  # created before `started`
+            self.assertEqual([json.loads(x)["event"] for x in sc.ledger_path(fx.ledger).read_text().splitlines()], ["started", "crashed"])
+            self.assertIn("crash", json.loads(sc.ledger_path(fx.ledger).read_text().splitlines()[-1])["error"])
             with self.assertRaises(SystemExit):  # the try is spent
                 fx.run(out_dir=fx.root / "out2", ledger_dir=fx.root / "ledger2")
 
