@@ -7,7 +7,16 @@ day). A scorer file with any other key is refused, so a rows.jsonl cannot be pas
 in by mistake. Runner side: `exp012-gate.jsonl` rows (forward_paper_exp012_gate_v1).
 Output: entered-set overlap, score agreement (max |delta|) over mints on both sides,
 migration-time difference and runner skip reasons. Per-feature comparison is not
-done: the scorer export carries no features. Measurement only; no verdict.
+done: the scorer export carries no features. Measurement only for the legacy keys.
+
+DEC-016 Amendment 3 (b) rows 0-2 are computed under the key `amendment3_b`, each with
+a pass/fail and an overall verdict (PASS / FAIL / NOT_DECIDABLE). Population: scorer
+mints with `mig_ms` in [--from, --to) outside the downtime intervals. The runner does
+not log its heartbeat history (runner-status.json is overwritten in place and is
+sealed), so runner-up minutes cannot be derived from its logs: pass `--downtime FILE`
+(JSON list of [start, end) pairs, epoch ms or ISO) with each restart from stop until
+10 min after the first heartbeat, plus every minute whose heartbeat was 60 s or older.
+`stale_recv` drops come from an `exp012_runner_latency_export` file (`--latency-export`).
 """
 
 from __future__ import annotations
@@ -16,7 +25,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Iterable
+from datetime import datetime
+from typing import Any, Iterable, Sequence
 
 from tools.exp012_forward import DECISION_EXPORT_KEYS
 
@@ -51,7 +61,109 @@ def _by_mint(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def compare(runner_rows: Iterable[dict[str, Any]], scorer_rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+COVERAGE_MIN = 0.95
+JACCARD_MIN = 0.90
+DELTA_P95_MAX = 0.02
+DELTA_P99_MAX = 0.05
+MIN_ENTERED_BOTH = 200
+MIN_DAYS = 5
+
+
+def _pct(sorted_vals: Sequence[float], p: float) -> float:
+    """Non-interpolating percentile, index round(p * (n - 1))."""
+    return sorted_vals[int(round(p * (len(sorted_vals) - 1)))]
+
+
+def _to_ms(v: Any) -> int:
+    if isinstance(v, (int, float)):
+        return int(v)
+    return int(datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp() * 1000)
+
+
+def load_downtime(path: Path) -> list[tuple[int, int]]:
+    return [(_to_ms(a), _to_ms(b)) for a, b in json.loads(path.read_text(encoding="utf-8"))]
+
+
+def amendment3_b(
+    run: dict[str, dict[str, Any]],
+    sco: dict[str, dict[str, Any]],
+    *,
+    stale_mints: Iterable[str] = (),
+    downtime: Sequence[tuple[int, int]] = (),
+    from_ms: int | None = None,
+    to_ms: int | None = None,
+) -> dict[str, Any]:
+    """Rows 0-2 of DEC-016 Amendment 3 (b). `run` and `sco` are by-mint maps."""
+    stale = set(stale_mints)
+
+    def in_pop(row: dict[str, Any]) -> bool:
+        t = row.get("mig_ms")
+        if t is None:
+            return False
+        if from_ms is not None and t < from_ms:
+            return False
+        if to_ms is not None and t >= to_ms:
+            return False
+        return not any(a <= t < b for a, b in downtime)
+
+    pop = {m: r for m, r in sco.items() if in_pop(r)}
+    sco_entered = {m for m, r in pop.items() if r.get("entered")}
+    covered = {m for m in sco_entered if m in run and m not in stale}
+    both = sorted(m for m in pop if m in run)
+    r_in = {m for m in both if run[m].get("entered")}
+    s_in = {m for m in both if pop[m].get("entered")}
+    entered_both = r_in & s_in
+    union = r_in | s_in
+    days = {pop[m]["day"] for m in entered_both}
+    deltas = sorted(
+        abs(float(run[m]["score"]) - float(pop[m]["score"]))
+        for m in both
+        if run[m].get("score") is not None and pop[m].get("score") is not None
+    )
+    cov = (len(covered) / len(sco_entered)) if sco_entered else None
+    jac = (len(entered_both) / len(union)) if union else None
+    p95 = _pct(deltas, 0.95) if deltas else None
+    p99 = _pct(deltas, 0.99) if deltas else None
+    row0 = None if cov is None else cov >= COVERAGE_MIN
+    row1 = None if jac is None else jac >= JACCARD_MIN
+    row2 = None if p95 is None else (p95 <= DELTA_P95_MAX and p99 <= DELTA_P99_MAX)
+    decidable = len(entered_both) >= MIN_ENTERED_BOTH and len(days) >= MIN_DAYS
+    rows = (row0, row1, row2)
+    if not decidable or any(x is None for x in rows):
+        verdict = "NOT_DECIDABLE"
+    else:
+        verdict = "PASS" if all(rows) else "FAIL"
+    return {
+        "n_population_scorer_mints": len(pop),
+        "n_population_scorer_entered": len(sco_entered),
+        "n_both_seen": len(both),
+        "n_entered_by_both": len(entered_both),
+        "n_utc_days_entered_by_both": len(days),
+        "min_entered_by_both": MIN_ENTERED_BOTH,
+        "min_days": MIN_DAYS,
+        "decidable": decidable,
+        "row0_coverage": cov,
+        "row0_pass": row0,
+        "row1_jaccard_both_seen": jac,
+        "row1_pass": row1,
+        "row2_n": len(deltas),
+        "row2_p95": p95,
+        "row2_p99": p99,
+        "row2_max_reported_only": deltas[-1] if deltas else None,
+        "row2_pass": row2,
+        "verdict": verdict,
+    }
+
+
+def compare(
+    runner_rows: Iterable[dict[str, Any]],
+    scorer_rows: Iterable[dict[str, Any]],
+    *,
+    stale_mints: Iterable[str] = (),
+    downtime: Sequence[tuple[int, int]] = (),
+    from_ms: int | None = None,
+    to_ms: int | None = None,
+) -> dict[str, Any]:
     run, sco = _by_mint(runner_rows), _by_mint(check_export(scorer_rows))
     both = sorted(set(run) & set(sco))
     run_in = {m for m, r in run.items() if r.get("entered")}
@@ -84,6 +196,7 @@ def compare(runner_rows: Iterable[dict[str, Any]], scorer_rows: Iterable[dict[st
         "score_max_abs_delta": max(deltas) if deltas else None,
         "mig_ms_max_abs_delta": max(mig) if mig else None,
         "runner_skip_reasons": runner_skips,
+        "amendment3_b": amendment3_b(run, sco, stale_mints=stale_mints, downtime=downtime, from_ms=from_ms, to_ms=to_ms),
     }
 
 
@@ -91,9 +204,23 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("runner_gate_jsonl", type=Path)
     ap.add_argument("scorer_decisions_jsonl", type=Path, help="export-decisions output only")
+    ap.add_argument("--from", dest="from_", help="runner clean clock (ISO or epoch ms)")
+    ap.add_argument("--to", help="exclusive end (ISO or epoch ms)")
+    ap.add_argument("--downtime", type=Path, help="JSON list of [start, end) runner-down intervals")
+    ap.add_argument("--latency-export", type=Path, help="exp012_runner_latency_export rows (jsonl); stale=true marks stale_recv drops")
     args = ap.parse_args(argv)
     try:
-        report = compare(_read(args.runner_gate_jsonl), _read(args.scorer_decisions_jsonl))
+        stale: list[str] = []
+        if args.latency_export:
+            stale = [r["mint"] for r in _read(args.latency_export) if r.get("stale")]
+        report = compare(
+            _read(args.runner_gate_jsonl),
+            _read(args.scorer_decisions_jsonl),
+            stale_mints=stale,
+            downtime=load_downtime(args.downtime) if args.downtime else (),
+            from_ms=_to_ms(args.from_) if args.from_ else None,
+            to_ms=_to_ms(args.to) if args.to else None,
+        )
     except ExportRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
