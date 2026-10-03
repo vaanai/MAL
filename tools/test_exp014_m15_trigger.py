@@ -828,9 +828,43 @@ class WatermarkTests(unittest.TestCase):
 
         with mock.patch.object(m, "score_trigger", spy):
             self._run(late_tape(), 1)
-        hour_start = hour_start_s(H0) * 1000
-        self.assertEqual(len(calls), 1)
-        self.assertIn(calls[0], {hour_start + 3_600_000 * i for i in range(1, 7)})  # an hour boundary, never a row time
+        mid = list(calls)
+        calls.clear()
+        with mock.patch.object(m, "score_trigger", spy):
+            self._run(late_tape(), 10**9)
+        # one resolution, at the end of hour 0 (clamped to the last time seen), the same with and without mid-file sweeps
+        self.assertEqual(len(mid), 1)
+        self.assertEqual(mid, calls)
+        self.assertLessEqual(mid[0], hour_start_s(H0) * 1000 + 3_600_000)
+
+
+class ShortLastFileTests(unittest.TestCase):
+    """A pool's last file can stop before its hour end (pool C: the 06:58 cut)."""
+
+    def _rows(self, stop_s: int) -> list[dict]:
+        hs = hour_start_s(H0)
+        rows = copy.deepcopy(mint_rows())
+        for r in rows:
+            r["block_time"] += 440  # migration at hs + 600 s, T = hs + 1500 s, the cap exit about hs + 3300 s
+        rows += [r for r in long_tape() if r["mint"] == "OTHER"]
+        return [r for r in rows if r["block_time"] <= hs + stop_s and hour_key_of(r) == H0]
+
+    def test_an_exit_in_the_missing_tail_is_censored_not_scored(self) -> None:
+        # the file stops at hs + 3000 s; hour end is hs + 3600 s. The exit (about 3300 s) is in the tail.
+        out = run_worker(self._rows(3000), n_keys=1)
+        self.assertEqual(out["rows"], [])
+        self.assertEqual({c["reason"] for c in out["censored"]}, {"cap_past_tape"})
+        self.assertEqual(out["n_censored"], 3)
+
+    def test_the_same_rows_are_scored_when_the_file_reaches_the_exit(self) -> None:
+        out = run_worker(self._rows(3500), n_keys=1)
+        self.assertEqual(len(out["rows"]), 3)
+
+    def test_the_exclusion_flag_uses_the_pool_end_not_the_hour_end(self) -> None:
+        # T + 1800 s + 2 d 400 ms + 60 s = 3360.8 / 3363.2 / 3366.4 s for d = 1 / 4 / 8; the pool ends at 3364 s
+        hs = hour_start_s(H0)
+        out = run_worker(self._rows(3500), n_keys=1, pool_end_ms=(hs + 3364) * 1000)
+        self.assertEqual({r["entry_land_k"]: r["excluded_by_time"] for r in out["rows"]}, {1: False, 4: False, 8: True})
 
 
 class WorkerTruncationTests(unittest.TestCase):

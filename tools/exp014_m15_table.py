@@ -51,6 +51,7 @@ from typing import Any, Sequence
 import tools.exp011_freeze as fz
 import tools.exp013_grad_table as g13
 import tools.exp014_m15_trigger as mt
+import tools.latency_curve as lc
 from tools.exp011_build_table import FORCED_BUFFER_HOURS, FORCED_MAX_HOME_HOURS, FORCED_MAX_WORKERS, _md5_of_file, _sha256_of_file
 from tools.exp012_latency_sensitivity import guarded_roots
 from tools.exp013_grad_table import (  # noqa: F401  (re-exported guards)
@@ -80,6 +81,20 @@ def pools_hours(extra_views: Sequence[Any] | None) -> dict[str, list[str]]:
 
 def pool_runs(extra_views: Sequence[Any] | None) -> dict[str, list[tuple[str, str]]]:
     return {t: r for t, r in g13.pool_runs(extra_views).items() if t not in EXCLUDED_POOLS}
+
+
+def _iso_ms(text: str) -> int:
+    return int(datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()) * 1000
+
+
+# A pool's real run end where its last hour file stops before the hour end: pool C's last file,
+# 2026-09-25T06, ends at the 06:58 cut (tools.latency_curve.HOLDOUT_END), not at 07:00.
+POOL_END_OVERRIDE_MS: dict[str, int] = {"C": _iso_ms(lc.HOLDOUT_END)}
+
+
+def pool_end_ms(tag: str, hours: Sequence[str]) -> int:
+    end = g13._hour_ms(hours[-1]) + 3_600_000
+    return min(end, POOL_END_OVERRIDE_MS.get(tag, end))
 
 
 DEFAULT_OUT_ROOT = Path("/data/mal/exp014-m15")
@@ -163,7 +178,7 @@ def plan_pools(roots: dict[str, Path], extra_views: Sequence[Any] | None, scratc
                 {
                     "tag": tag, "worker_id": i, "home": home, "buf": buf, "creator_hist": hist, "hour_info_fn": hour_info_fn, "row_iter_fn": _iter_trades,
                     "creates": None, "ks": tuple(ks), "rows_path": _rows_out_path(scratch, tag, i), "cens_path": scratch / f"pool{tag}-w{i}.censored.jsonl",
-                    "pool_end_ms": g13._hour_ms(ph[tag][-1]) + 3_600_000, "pool_gap_starts_ms": mt.missing_hour_starts_ms(ph[tag]),
+                    "pool_end_ms": pool_end_ms(tag, ph[tag]), "pool_gap_starts_ms": mt.missing_hour_starts_ms(ph[tag]),
                 }
             )
 
@@ -345,6 +360,8 @@ def build_table(
         "extra_views": [v.describe() for v in (extra_views or [])], "extra_view_mtimes": list(mtimes or []),
         "n_hours": n_hours, "n_hours_guarded": n_hours_guarded,
         "excluded_pools": list(EXCLUDED_POOLS),
+        "pool_end_ms_by_pool": {t: pool_end_ms(t, h) for t, h in pools_hours(extra_views).items()},
+        "pool_end_overrides": {t: {"end_ms": v, "source": "tools.latency_curve.HOLDOUT_END (the 06:58 cut)"} for t, v in POOL_END_OVERRIDE_MS.items()},
         "excluded_pools_note": "Pool B (oracle-live) is excluded by EXP-014 plan Amendment 2: its creates carry no on-chain time (PumpPortal t_ws). Its root is resolved, VIEW.sha256-checked, pinned and fenced, but no pool B chunk is planned and no pool B tape or creates are read.",
         "n_rows": len(rows), "n_censored": len(censored), "n_triggers": counts["triggers_total"],
         "n_excluded_by_time": sum(1 for r in rows if r["excluded_by_time"]),

@@ -724,7 +724,7 @@ def run_worker_m15(
                 pending[mint_id] = trk
         if counting and row_iter_fn.bad > bad_before:
             counters.bump("bad_json_lines", hour_day, row_iter_fn.bad - bad_before)
-        sweep(hour_end)  # end of the hour: its end
+        sweep(min(hour_end, now_ms))  # end of the hour: its end, unless the file stopped short of it (a pool's last file)
         _trim_heap()
     sweep(None)
     for fh in (rows_fh, cens_fh):

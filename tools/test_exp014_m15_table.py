@@ -331,7 +331,7 @@ class PoolBExcludedTests(unittest.TestCase):
             write_pool_c(t / "ins")
             specs = tab.plan_pools({"fast": t / "fast", "insample": t / "ins", "live": t / "x"}, None, t / "s", (1, 4, 8))
         c = next(s for s in specs if s["tag"] == "C")
-        self.assertEqual(c["pool_end_ms"], g13._hour_ms("2026-09-25T07"))  # not extended into pool B's first hour
+        self.assertEqual(c["pool_end_ms"], g13._hour_ms("2026-09-25T06") + 58 * 60 * 1000)  # the 06:58 cut, not 07:00 and not pool B's first hour
         self.assertEqual(c["pool_gap_starts_ms"], [])
         self.assertFalse(mt.excluded_by_time(c["pool_end_ms"] - 1_800_000 - 800 - 60_000 - 1, 1, c["pool_end_ms"], []))
         self.assertTrue(mt.excluded_by_time(c["pool_end_ms"] - 1_800_000 - 800 - 60_000, 1, c["pool_end_ms"], []))
@@ -435,6 +435,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(set(man["view_sha256_file_sha256"]), {"fast", "insample", "live"})
         self.assertEqual(set(man["pinned_view_sha256"]), {"A", "C", "B"})  # pool B's view is still pinned
         self.assertEqual(man["excluded_pools"], ["B"])
+        self.assertEqual(man["pool_end_ms_by_pool"]["C"], g13._hour_ms("2026-09-25T06") + 58 * 60 * 1000)
+        self.assertEqual(man["pool_end_ms_by_pool"]["A"], g13._hour_ms("2026-09-21T23") + 3_600_000)
+        self.assertIn("HOLDOUT_END", man["pool_end_overrides"]["C"]["source"])
         self.assertIn("Amendment 2", man["excluded_pools_note"])
         self.assertNotIn("B", man["pool_runs"])
         self.assertNotIn("B", man["pool_prints"])
