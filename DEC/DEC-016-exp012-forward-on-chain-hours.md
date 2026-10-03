@@ -84,40 +84,80 @@ This follows a `quant-proof` review of the design. It is fixed before any forwar
 
 **Rule:** before the FINAL read, no person, agent or job opens or prints these files, or any `flat`, `press`, `*_sol` or `gross` field from them. Only `tools/exp012_forward.py score`, `report` and `export-decisions` read them. `export-decisions` writes only the allowlisted keys `mint, mig_ms, score, entered, day`, never a net, SOL, gross, status or fill field, and that export may be used before the read for the runner-vs-scorer comparison (§3; added 2026-10-02 with #228). Monitoring uses INTERIM `report` output and the `runs.jsonl` counts only. A breach is recorded here, dated, and the read is reported as compromised.
 
-## Amendment 3 (2026-10-03): the latency/size rule and the runner-vs-scorer tolerances, fixed before any runner row exists
+## Amendment 3 (2026-10-03): the latency/size rule, the runner-vs-scorer tolerances, the runner seal, and live preconditions, fixed before any runner row exists
 
-Written before the fast-0 runner is installed. The installer refuses before 2026-10-05T05:00Z, so no runner row exists yet. No forward P&L has been opened (Amendment 2). This fills in Amendment 1 §5 (a) and (b). It is checked only after a FINAL PASS, and neither part can turn a FAIL into a PASS.
+Written before the fast-0 runner is installed. The installer refuses before 2026-10-05T05:00Z, so no runner row exists yet. No forward P&L has been opened (Amendment 2).
+
+This fills in Amendment 1 §5 (a) and (b). It was revised after a `quant-proof` review of #256, applying edits E1–E8. Neither part can turn a FAIL into a PASS. Both are checked only after a FINAL PASS, apart from the P&L-free rows marked "before read".
 
 ### (a) Latency and size sensitivity
 
-1. **Measured latency.** The latency is the runner's own `applied_latency_ms` on its EXP-012 decisions (DEC-015 runner on fast-0). It is taken over the clean-clock window `[2026-10-06T00, 2026-10-16T00)` after its lag probation, and only from decisions the runner acted on. Two figures are used, p50 and p90.
-   - If the runner has fewer than 100 such decisions, the check is **not decidable**, and live is not supported until it is.
-2. **Slots.** `k(L) = 1 + ceil(L / 400 ms)`, at least 1, for L = p50 and L = p90. The slot + 1 primary already assumes one slot.
+1. **Measured latency.**
+   - **Decisions used.** The fast-0 runner's EXP-012 **shadow-ledger** `enter` decisions with `decision_t_ms` in [runner clean clock, 2026-10-16T00Z). The runner clean clock is the end of the DEC-015 §2.5 probation, as recorded in LAB_STATE.
+   - **Per-decision latency.** For each decision, L_i = `decision_t_ms` + `recv_to_decision_ms` − (gate-row `mig_ms` + 500).
+   - **Slot offset.** k_i = 1 + ceil(L_i / slot_ms).
+     - slot_ms = 3,600,000 / the mean slots per sealed forward-walk hour over the same window. The lab measurement is about 268 ms, not 400.
+     - A `stale_recv` drop of an EXP-012 migrate counts as k_i = +∞.
+   - **Percentiles.** k(p50) and k(p90) are the non-interpolating percentiles of k_i (`_pct` convention), with a minimum of 1.
+   - **Minimum sample.** With fewer than 100 decisions, the check is **not decidable**.
+   - **Send and inclusion.** The "1 +" is the only allowance for send and inclusion. It is an assumption, not a measurement.
+2. **Source.**
+   - Use only an allowlisted latency export: `mint, mig_ms, decision_t_ms, recv_to_decision_ms, ledger, action, stale` from `exp012-gate.jsonl` and `decisions.jsonl`. Never `positions.jsonl` or `runner-status`.
+   - k(p50), k(p90), slot_ms, n and the export's sha256 are written into this DEC **before** the FINAL read.
 3. **Re-score.**
-   - Same FINAL-window rows, the same frozen model, threshold and selected set.
-   - The scorer's `latency` path (`tools/exp012_latency_sensitivity.py` logic on the forward pool) prices entry at slot + k(p50) and slot + k(p90).
-   - Separately, at slot + 1, the entry is priced at the trial size and its priority fee, which the owner names before the re-score. If the owner names none, 0.5 SOL and 500,000 lamports, the frozen values, are used.
-4. **The rule.** Live is supported only if both of these hold:
-   - at k(p50) **and** at the trial size, under both fail models: mean SOL/trade > 0, and the 90% CI lower bound > 0 (the gate's `book_stats` CI);
-   - at k(p90), under both fail models: mean SOL/trade > 0.
+   - **The tool.** A forward sensitivity tool, merged with fixture tests and its commit recorded here, before 2026-10-16T00Z. It re-runs the FINAL window's sealed hours through `exp012_forward`'s scoring path.
+   - **Reproduction first.** Before any other output is read, it must reproduce the FINAL rows' `flat` and `press` byte for byte at k = 1, bound `start`, 0.5 SOL, 500,000 lamports, no cap.
+   - **Then it scores the FINAL `entered` set with:**
+     - entry at slot + k, bound `end`;
+     - every exit fill delayed by k − 1 more slots;
+     - the trial's size, priority, tip and maximum concurrent positions, applied in decision order.
+   - **Post-read fields.** It also writes the per-row entry and exit slot, pre-fee spot, exit reason and pressure probability, for use after the read only.
+   - `tools/exp012_latency_sensitivity.py` is not used, because it refuses the forward root.
+   - **Trial terms.** The owner names size, priority, tip and maximum concurrent positions in writing before 2026-10-16T00Z. If none are named: 0.5 SOL, 500,000 lamports, no tip, max concurrent 3.
+4. **Rule.** Live is supported only if both of these hold:
+   - (i) the trial book at k(p50) clears the **full promotion gate** under both fail models: n ≥ 100; at least 5 UTC days with a majority positive; 90% CI lower bound > 0; ex-top-3 > 0;
+   - (ii) the trial book at k(p90) has mean > 0 and ex-top-3 > 0 under both fail models.
 
-   If either fails, the PASS stands as a measurement but does **not** support live. There are no re-tries with other k or sizes.
+   Each is computed once. A later runner fix or a new latency measurement does not re-open (a) on these rows. That needs a new forward window and a new read.
 
 ### (b) Runner-vs-scorer live-readiness comparison
 
-- **Population:** migrations in `[2026-10-06T00, 2026-10-16T00)` that fall in runner-up minutes. Runner-up minutes are those where the runner's heartbeat is less than 60 s old, and its restart windows are excluded.
-- **Minimum sample:** at least 50 mints entered by both over at least 5 UTC days. With less, the check is **not decidable**.
-- **Before the read**, only the P&L-free parts may be computed, from `export-decisions` (Amendment 2): rows 1–2 below. Rows 3–6 use fill and price fields and are computed **after** the FINAL read.
+- **Population:** mints whose migration chain time is in [runner clean clock, 2026-10-16T00Z) and in runner-up minutes.
+  - Runner-up means the heartbeat is less than 60 s old, excluding each restart from stop until 10 min after the first heartbeat.
+  - "Both-seen" means the runner wrote an `exp012-gate` row and the scorer has a row.
+- **Minimum:** at least 200 mints entered by both, over at least 5 UTC days. Below that the check is **not decidable**.
 
-| # | Quantity (both-seen mints) | Tolerance |
-| --- | --- | --- |
-| 1 | Entered-set agreement: Jaccard of entered mints | ≥ 0.90 |
-| 2 | Model score parity: \|runner score − scorer score\| | p95 ≤ 0.02 and max ≤ 0.05 |
-| 3 | Fill agreement on mints entered by both (filled vs MISS) | ≥ 90% agree |
-| 4 | Entry slot: runner landing slot − scorer entry slot | median ≤ k(p50) − 1 slots |
-| 5 | Entry price: \|runner / scorer − 1\| on mints filled by both | median ≤ 2%, p90 ≤ 5% |
-| 6 | Exit price: \|runner / scorer − 1\| on mints filled by both, same exit reason | median ≤ 2%, p90 ≤ 5% |
-| 7 | Realized fail rate against the pressure model, by the pressure curve's own buckets with n ≥ 20 | each bucket's realized rate ≤ model rate + 10 pp; pooled rate ≤ model rate + 5 pp |
+| # | Quantity | Tolerance | When |
+| --- | --- | --- | --- |
+| 0 | Coverage: share of scorer-entered population mints with a runner gate row and no `stale_recv` drop | ≥ 95% | before read |
+| 1 | Jaccard of entered sets, both-seen mints | ≥ 0.90 | before read |
+| 2 | \|runner score − scorer score\|, both-seen mints | p95 ≤ 0.02, p99 ≤ 0.05; max reported only | before read |
+| 3 | Curve-fill agreement on mints entered by both. The runner's fill is taken **before** the flat 15% landing draw: `missed_landing` with `counterfactual_fill` counts as filled. | ≥ 95% agree, and runner fill rate ≥ scorer fill rate − 3 pp | after read |
+| 4 | Entry pre-fee spot: runner `entry_spot_sol` vs the scorer state price at the runner's landing slot, mints filled by both | median ≤ 0.5%, p90 ≤ 2% | after read |
+| 5 | Exit-reason agreement on mints filled by both. Where the reasons match, pre-fee exit spot vs the scorer state price at the runner's exit slot | ≥ 90% agree; median ≤ 0.5%, p90 ≤ 2% | after read |
+| 6 | Scorer book limited to runner-attempted mints (scorer-entered, runner gate pass, not stale), at k(p50) and the trial terms | mean > 0, both fail models | after read |
 
-- Row 7's realized fail rate is the runner's simulated-paper fail outcome. It is reported, and it counts toward the rule. **On paper it cannot measure real-chain landing failure**, so the first live trial's own fail rate is the first real measurement of it. That limit is stated here, not hidden.
-- **The rule.** Live is supported only if every row holds. Any row that fails, or is not decidable, blocks the request to the owner until it is fixed and re-measured on a later, fresh window. A fix to the runner never changes the scorer or the FINAL verdict.
+- **Landing failure.** The runner's fail outcome is a flat 15% draw (`DEFAULT_FAIL_RATE`), so no paper row tests landing failure. That test moves to (c).
+- **Tooling.** `tools/forward_exp012_replay.py` is updated before the window to compute rows 0–2 as defined here.
+- **Before the window.** The reachability of rows 1–2 is checked P&L-free on a recorded tape. If it falls short, the runner is fixed, not the tolerance.
+- **Rule.** Live is supported only if every row holds. Any row that fails, or is not decidable, blocks the request to the owner until it is fixed and re-measured on a later, fresh window. A fix to the runner never changes the scorer or the FINAL verdict.
+
+### Seal extension (adds to Amendment 2's rule)
+
+Until the FINAL read, the seal also covers the fast-0 runner's EXP-012 book:
+- every `pnl`, `cost` or `exit` field in `positions.jsonl`;
+- `day_pnl_sol` and any totals in `runner-status.json` or runner reports for that book;
+- `daily_loss_cap` reasons and counts;
+- any Console or brief line built from them;
+- pricing the exported entered mints from any outside source.
+
+Health checks print lag, heartbeat and counts only, never the whole of `runner-status`.
+
+### (c) Before the first live order
+
+This is a separate owner decision and DEC. Today's rule of no trading keys stays until then. It needs:
+- key custody, and a wallet funded with only the trial bankroll;
+- the send path and its tip, which are part of the trial fee in (a);
+- size, maximum concurrent positions, a daily loss cap and a total-loss stop, written down;
+- every live fill logged with slot, pre-fee spot and fees, next to the scorer's simulated fill for that mint;
+- a landing-fail stop: after 30 live attempts, halt if realized failures exceed the pressure model's expected failures on those same attempts by more than 10 pp (one-sided).
