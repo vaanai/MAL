@@ -131,3 +131,9 @@ A pre-registration on the target block, with `quant-proof` review, for one m = 1
 1. **PR1.** `tools/exp014_m15_*`: trigger, features, entry and exit, and a table builder with the guards of `tools/exp013_grad_table.py`. Includes the truncation test from design item 4.
 2. **PR2.** Reuse `tools/exp013_grad_model.py` through a feature-list or config parameter. The model code is not forked.
 3. **PR3.** Reuse `tools/exp013_grad_screen.py` item functions through a config, adding items 1x and 6(a/b), plus a pin and run script.
+
+## Amendment 1 (2026-10-03, before any real-data run): the block clock on pool B
+
+- **Finding (field-presence checks only, no outcome read).** While PR1 (#264) was in review, the manager checked which fields the real rows carry. Pool B rows (the Oracle live view `oracle-live-2026-09-25_27`) have **no `block_time`**. They do carry `event_ts`, the on-chain timestamp in seconds. On pools A and C and on `explore-0814/w1`, `event_ts == block_time` on every one of 50,000 rows sampled per pool. Every PumpSwap row sampled carries `pool` and `slot`.
+- **Design item 1 now reads:** every print's time is `block_time × 1000`. Where `block_time` is absent, it is `event_ts × 1000`, the same on-chain second. Receive time (`t_recv_ms`) is never used. A row with neither field is dropped, and the drop is counted per pool and per day.
+- **Why this is needed.** Without the rule, pool B would silently contribute no rows. This amendment changes no bar and selects nothing.
