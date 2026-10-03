@@ -10,7 +10,9 @@
 #
 # It NEVER enables or starts anything and does not touch ufw, sshd, cloudflared or any
 # other unit. It installs the slice, the runner unit, and the daily-restart service and
-# timer (the timer stays disabled; the manager enables it with the runner).
+# timer, plus the heartbeat sampler service and timer (DEC-016 Amendment 3 (b); the sampler
+# comes from the same <sha>, via tools/). Both timers stay disabled; the manager enables them
+# with the runner.
 #
 # Before 2026-10-05T05:00:00Z (kill-review week, DEC-015 section 3) it refuses to run
 # unless --files-only. --files-only copies the config and the model files (md5 checked
@@ -44,6 +46,9 @@ SLICE="mal-forward.slice"
 UNIT="mal-fast-forward-paper.service"
 RESTART_UNIT="mal-fast-forward-paper-restart.service"
 RESTART_TIMER="mal-fast-forward-paper-restart.timer"
+HB_UNIT="mal-fast-runner-heartbeat.service"
+HB_TIMER="mal-fast-runner-heartbeat.timer"
+HB_DIR="${MAL_ROOT}/fast-forward-heartbeat"
 LOGFILE="${MAL_ROOT}/logs/fast-forward-paper.log"
 MODEL_FILES=(model.txt features.json threshold.json)
 
@@ -155,11 +160,12 @@ run sudo -n install "${OWN_ARGS[@]}" -m 0755 "${KIT}/fast-forward-paper.sh" "${F
 if [[ "${DRY}" == 1 || ! -e "${LOGFILE}" ]]; then
   run sudo -n install -m 0644 "${OWN_ARGS[@]}" /dev/null "${LOGFILE}"
 fi
-for u in "${SLICE}" "${UNIT}" "${RESTART_UNIT}" "${RESTART_TIMER}"; do
+run sudo -n install -d "${OWN_ARGS[@]}" -m 0755 "${HB_DIR}"
+for u in "${SLICE}" "${UNIT}" "${RESTART_UNIT}" "${RESTART_TIMER}" "${HB_UNIT}" "${HB_TIMER}"; do
   run sudo -n install -m 0644 "${KIT}/${u}" "${SYSTEMD_DIR}/${u}"
 done
 run sudo -n systemctl daemon-reload
 
 log "slice, unit, restart service and timer installed. Nothing enabled, nothing running."
 log "venv is NOT built here: python3 -m venv ${FWD}/venv && ${FWD}/venv/bin/pip install -r ${KIT}/requirements-fast-forward.txt"
-log "manual next step (manager only, after DEC-015 section 2 preconditions): systemctl start ${UNIT}; enable ${RESTART_TIMER} together with it"
+log "manual next step (manager only, after DEC-015 section 2 preconditions): systemctl start ${UNIT}; enable ${RESTART_TIMER} and ${HB_TIMER} together with it"

@@ -419,6 +419,8 @@ def test_observe_reconnects(tmp_path):
         "mal-fast-observe.service",
         "mal-fast-forward-paper-restart.service",
         "mal-fast-forward-paper-restart.timer",
+        "mal-fast-runner-heartbeat.service",
+        "mal-fast-runner-heartbeat.timer",
     ],
 )
 def test_systemd_analyze_syntax(name):

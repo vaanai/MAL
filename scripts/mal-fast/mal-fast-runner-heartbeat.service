@@ -1,0 +1,25 @@
+[Unit]
+Description=MAL fast-host runner heartbeat sampler (DEC-016 Amendment 3 (b); reads runner-status, appends allowlisted fields)
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=oneshot
+User=ubuntu
+Slice=mal-forward.slice
+Nice=19
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+Environment=PYTHONPATH=/var/lib/mal/fast-forward/src
+ExecStart=/var/lib/mal/fast-forward/venv/bin/python /var/lib/mal/fast-forward/src/tools/fast_runner_heartbeat.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal/fast-forward-heartbeat
+ReadOnlyPaths=/var/lib/mal/paper/fast-forward-paper /var/lib/mal/fast-forward
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemorySwapMax=0
