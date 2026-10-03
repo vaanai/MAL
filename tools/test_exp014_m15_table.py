@@ -298,6 +298,28 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(s["by_day"]["2026-09-21"]["by_d"]["4"]["scored"], 0)
 
 
+class PoolBClockTests(unittest.TestCase):
+    def test_plan_reads_pool_b_with_the_event_ts_iterator(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            t = Path(td)
+            write_m15_root(t / "fast")
+            write_pool_c(t / "ins")
+            write_pool_b(t / "live")
+            specs = tab.plan_pools({"fast": t / "fast", "insample": t / "ins", "live": t / "live"}, None, t / "s", (1, 4, 8))
+        self.assertTrue(all(s["row_iter_fn"] is mt.iter_trade_rows_event_clock for s in specs if s["tag"] == "B"))
+        self.assertFalse(any(s["row_iter_fn"] is mt.iter_trade_rows_event_clock for s in specs if s["tag"] != "B"))
+
+    def test_counts_merge_per_pool_and_per_day(self) -> None:
+        def res(tag: str, n: int) -> dict:
+            by = {k: {} for k in mt.COUNTER_NAMES}
+            by["no_clock_rows"] = {"2026-09-26": n}
+            return {"tag": tag, "counters": {"by_day": by, "buys": 0, "null_trader_buys": 0}}
+
+        merged = tab._merge_counters([res("B", 2), res("B", 3), res("A", 1)])
+        self.assertEqual(merged["B"]["by_day"]["no_clock_rows"], {"2026-09-26": 5})
+        self.assertEqual(merged["A"]["by_day"]["no_clock_rows"], {"2026-09-26": 1})
+
+
 class ViewMtimeTests(unittest.TestCase):
     def test_a_view_newer_than_the_cutoff_is_refused_and_older_is_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -385,7 +407,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(set(man["pinned_view_sha256"]), {"A", "C", "B"})
         self.assertEqual(man["settings"]["ks"], [1, 4, 8])
         self.assertEqual(man["settings"]["offset_ms"], 900_000)
-        self.assertEqual(man["settings"]["clock"], "block_time*1000")
+        self.assertTrue(man["settings"]["clock"].startswith("block_time*1000, else event_ts*1000"))
+        self.assertIn("t_ws", man["settings"]["create_clock"]["B"])
         self.assertEqual((man["settings"]["max_workers"], man["settings"]["buffer_hours"], man["settings"]["max_home_hours"]), (2, 24, 12))
         self.assertEqual(man["settings"]["feature_names"], mt.FEATURE_NAMES)
         self.assertIn("exp014_m15_trigger.py", man["code_sha256"])

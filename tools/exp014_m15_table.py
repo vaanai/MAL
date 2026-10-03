@@ -126,6 +126,9 @@ def plan_pools(roots: dict[str, Path], extra_views: Sequence[Any] | None, scratc
     """EXP-013's chunk plan (A, C, B, X) with the pool run end and the pool's missing hours added
     to every spec, for the item-11 exclusion flag."""
     specs = g13.plan_pools(roots, extra_views, scratch, ks)
+    for s in specs:
+        if s["tag"] == "B":  # Amendment 1: pool B's clock is event_ts, not the adapter's t_recv_ms stand-in
+            s["row_iter_fn"] = mt.iter_trade_rows_event_clock
     ph = pools_hours(extra_views)
     for s in specs:
         hours = ph[s["tag"]]
@@ -210,7 +213,8 @@ def settings_doc(ks: Sequence[int]) -> dict[str, Any]:
         "offset_ms": mt.OFFSET_MS, "ks": list(ks), "primary_d": mt.PRIMARY_K, "take_profit": mt.TAKE_PROFIT, "stop_loss": mt.STOP_LOSS, "cap_ms": mt.CAP_MS,
         "size_lamports": mt.ENTRY_SIZE, "priority_lamports": mt.ENTRY_PRIORITY_LAMPORTS, "portal_ppm": mt.ENTRY_PORTAL_PPM, "flat_fail": mt.FLAT_FAIL,
         "pressure_intercept": mt._curve().intercept, "spec": mt.SPEC_ID, "feature_names": mt.FEATURE_NAMES, "exclusion_tail_ms": mt.EXCL_TAIL_MS,
-        "clock": "block_time*1000", "view_mtime_cutoff": VIEW_MTIME_CUTOFF,
+        "clock": "block_time*1000, else event_ts*1000, else the row is dropped and counted (Amendment 1)",
+        "create_clock": {"A": "creates block_time", "C": "creates block_time", "X": "creates block_time", "B": "PumpPortal t_ws (receive time, not on-chain), via tools.oracle_live_adapter.adapt_create_row"}, "view_mtime_cutoff": VIEW_MTIME_CUTOFF,
         "max_workers": FORCED_MAX_WORKERS, "buffer_hours": FORCED_BUFFER_HOURS, "max_home_hours": FORCED_MAX_HOME_HOURS,
     }
 

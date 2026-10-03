@@ -296,6 +296,79 @@ class ClockTests(unittest.TestCase):
         self.assertEqual(out["rows"][0]["features"]["m15_sells"], 1.0)  # p2 (a sell) is gone, p5 remains
 
 
+def poolb_shaped(rows: list[dict]) -> list[dict]:
+    """Pool B shape: no block_time, an on-chain event_ts, and a t_recv_ms that is NOT that second."""
+    out = copy.deepcopy(rows)
+    for r in out:
+        r["event_ts"] = r.pop("block_time")
+        r["t_recv_ms"] = r["event_ts"] * 1000 + 123_456
+    return out
+
+
+class EventTsClockTests(unittest.TestCase):
+    def test_a_row_with_only_event_ts_is_used_and_matches_block_time(self) -> None:
+        a = run_worker(long_tape())
+        b = run_worker(poolb_shaped(long_tape()))
+        self.assertGreater(len(b["rows"]), 0)
+        self.assertEqual(json.dumps(a["rows"], sort_keys=True), json.dumps(b["rows"], sort_keys=True))
+        self.assertEqual(b["counters"]["by_day"]["no_clock_rows"], {})
+
+    def test_block_time_wins_over_event_ts(self) -> None:
+        self.assertEqual(m.row_clock_ms({"block_time": 5, "event_ts": 9, "t_recv_ms": 1}), 5000)
+        self.assertEqual(m.row_clock_ms({"event_ts": 9, "t_recv_ms": 1}), 9000)
+        self.assertIsNone(m.row_clock_ms({"t_recv_ms": 1}))
+        self.assertIsNone(m.row_clock_ms({"block_time": True}))
+        self.assertIsNone(m.row_clock_ms({"block_time": 5, "_no_clock": True}))
+
+    def test_a_row_with_neither_is_counted_per_day_and_dropped(self) -> None:
+        rows = poolb_shaped(long_tape())
+        victims = [r for r in rows if r["mint"] == "OTHER"][:3]
+        for r in victims:
+            del r["event_ts"]
+        out = run_worker(rows)
+        self.assertEqual(out["counters"]["by_day"]["no_clock_rows"], {"2026-09-20": 3})  # the hour being read
+
+    def test_the_pool_b_reader_does_not_fall_back_to_the_adapter_t_recv_clock(self) -> None:
+        from tools.exp012_fixtures import write_zst_jsonl
+
+        rows = poolb_shaped(long_tape())[:6]
+        del rows[2]["event_ts"]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "trades-x.jsonl.zst"
+            write_zst_jsonl(path, [{k: v for k, v in r.items() if k != "block_time"} for r in rows])
+            got = m.iter_trade_rows_event_clock(path)
+        self.assertEqual(sum(1 for r in got if r.get("_no_clock")), 1)
+        flagged = next(r for r in got if r.get("_no_clock"))
+        self.assertIsNone(m.row_clock_ms(flagged))  # the adapter's fabricated block_time is not used
+        for r in got:
+            if not r.get("_no_clock"):
+                self.assertEqual(m.row_clock_ms(r), r["event_ts"] * 1000)
+                self.assertTrue(r["quote_is_wsol"] if r["venue"] == "pumpswap" else True)
+
+    def test_every_dropped_or_ignored_row_is_counted_or_justified(self) -> None:
+        # unparseable rows and pumpswap-before-bond rows are counted; the rest are justified in code comments
+        rows = long_tape()
+        rows.append(R("M1", 1, BASE_S + 1, "pumpswap", "buy", Q0, B0, SOL, "x", "early", pool="P1"))  # before any bonding print
+        rows.append(R("M1", 2, BASE_S + 2, "pump_bonding", "buy", 0, 0, SOL, "x", "bad"))  # no reserves
+        rows.sort(key=lambda r: (r["block_time"], r["slot"]))
+        out = run_worker(rows)
+        day = m._utc_day((BASE_S + 1) * 1000)
+        self.assertEqual(out["counters"]["by_day"]["pumpswap_before_bond_rows"], {day: 1})
+        self.assertEqual(out["counters"]["by_day"]["unparsed_rows"], {day: 1})
+
+    def test_no_silent_continue_in_the_worker_loop(self) -> None:
+        import inspect
+        import re
+
+        src = inspect.getsource(m.run_worker_m15)
+        lines = src.splitlines()
+        for i, line in enumerate(lines):
+            if line.strip() == "continue":
+                window = "\n".join(lines[max(0, i - 6) : i + 1])
+                self.assertTrue("counters.bump" in window or "By design" in window, f"uncounted, unjustified continue near: {window}")
+        self.assertIsNotNone(re.search("no_clock_rows", src))
+
+
 class MigrationTests(unittest.TestCase):
     def test_migration_is_the_first_pumpswap_print_after_a_bonding_print(self) -> None:
         trk = feed(mint_rows())

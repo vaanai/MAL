@@ -15,6 +15,14 @@ Migration and T (item 2)
   in stream order, as `tools.latency_curve._Mint.add` defines it. mig_t is its block time,
   T = mig_t + 900,000 ms. Only the first migration counts.
 
+  Amendment 1: where `block_time` is absent the time is `event_ts * 1000` (the same on-chain
+  second; pool B rows carry only `event_ts`). A row with neither is dropped and counted per pool
+  and per day (`no_clock_rows`, by the hour's day). `tools.oracle_live_adapter.adapt_trade_row`
+  FABRICATES `block_time = t_recv_ms // 1000` on pool B, so pool B must be read with
+  `iter_trade_rows_event_clock` (below), which sets `block_time` from `event_ts` first and flags
+  a row with neither as `_no_clock`. The creates streams carry their own clocks (see the table
+  module docstring): pool B creates are on the PumpPortal websocket time `t_ws`, not on-chain.
+
 Pool (item 3)
   Only prints of the migration print's `pool` are used. Other pools' prints are dropped and
   counted per day, as are pumpswap rows with no `pool` field. A migration print with no `pool`
@@ -113,7 +121,7 @@ M15_FEATURE_NAMES: list[str] = [
 FEATURE_NAMES: list[str] = EXP012_FEATURE_NAMES + M15_FEATURE_NAMES
 assert len(EXP012_FEATURE_NAMES) == 18 and len(FEATURE_NAMES) == 27
 
-COUNTER_NAMES = ("migrations", "dropped_other_pool", "no_pool_rows", "no_side_rows")
+COUNTER_NAMES = ("migrations", "dropped_other_pool", "no_pool_rows", "no_side_rows", "no_clock_rows", "unparsed_rows", "pumpswap_before_bond_rows")
 
 Win = tuple  # (t, slot, tx_index, event_index, side|None, sol_lamports, trader|None, quote, base)
 
@@ -294,6 +302,9 @@ class M15Mint:
     def feed(self, row: dict[str, Any], parsed: tuple[str, TapePrint] | None, t_ms: int) -> bool:
         """Feed one row (block-clock `t_ms`). Returns True when this row is the migration."""
         venue = row.get("venue")
+        if parsed is None and venue in ("pump_bonding", "pumpswap"):
+            # cannot be priced (no reserves / no wSOL flag): not a fill, not a migration
+            self.counters.bump("unparsed_rows", _utc_day(t_ms))
         if self.mig_t is None:
             if venue == "pump_bonding":
                 ev = make_event6(row, t_ms)
@@ -312,9 +323,12 @@ class M15Mint:
                 self.counters.bump("migrations", _utc_day(t_ms))
                 self._pool_print(row, pr, t_ms, first=True)
                 return True
-            return False
+            if venue == "pumpswap" and parsed is not None:
+                self.counters.bump("pumpswap_before_bond_rows", _utc_day(t_ms))  # no bonding print seen: not a migration
+            return False  # any other row before migration (create-type etc.) carries no feature
         if venue == "pumpswap" and parsed is not None:
             self._pool_print(row, parsed[1], t_ms, first=False)
+        # a bonding row after the migration is neither a feature (EXP-012 stops at the migration) nor a pool fill
         return False
 
     def _pool_print(self, row: dict[str, Any], pr: TapePrint, t_ms: int, first: bool) -> None:
@@ -518,6 +532,38 @@ def _hour_key_ms(key: str) -> int:
     return int(datetime.strptime(key, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp()) * 1000
 
 
+def row_clock_ms(row: dict[str, Any]) -> int | None:
+    """Amendment 1: block_time * 1000, else event_ts * 1000, else None. Never t_recv_ms. A row
+    flagged `_no_clock` (see iter_trade_rows_event_clock) has no clock."""
+    if row.get("_no_clock"):
+        return None
+    for key in ("block_time", "event_ts"):
+        v = row.get(key)
+        if isinstance(v, int) and not isinstance(v, bool):
+            return v * 1000
+    return None
+
+
+def iter_trade_rows_event_clock(path: Path) -> list[dict[str, Any]]:
+    """Pool B reader: like tools.oracle_live_adapter.iter_trade_rows_sorted (wsol stamp, same
+    (slot, t_recv_ms, event_index) re-sort) but the clock is `event_ts`, never the adapter's
+    `t_recv_ms // 1000` stand-in. A row with neither `block_time` nor `event_ts` is flagged."""
+    from tools.oracle_live_adapter import _row_sort_key, adapt_trade_row
+
+    rows = []
+    for r in _iter_trades(path):
+        r = dict(r)
+        if not isinstance(r.get("block_time"), int):
+            ev = r.get("event_ts")
+            if isinstance(ev, int) and not isinstance(ev, bool):
+                r["block_time"] = ev
+            else:
+                r["_no_clock"] = True
+        rows.append(adapt_trade_row(r))
+    rows.sort(key=_row_sort_key)
+    return rows
+
+
 def row_is_tape_print(row: dict[str, Any]) -> bool:
     return row.get("type") in (None, "trade")
 
@@ -608,10 +654,10 @@ def run_worker_m15(
             lines += 1
             if lines % SWEEP_EVERY_LINES == 0:
                 sweep(False)
-            block = row.get("block_time")
-            if not isinstance(block, int) or isinstance(block, bool):
+            t_ms = row_clock_ms(row)  # the block clock (else event_ts); t_recv_ms is never read
+            if t_ms is None:
+                counters.bump("no_clock_rows", str(hour["hour"])[:10])  # dropped and counted per day
                 continue
-            t_ms = block * 1000  # the block clock; t_recv_ms is never read
             row["t_recv_ms"] = t_ms
             if t_ms > now_ms:
                 now_ms = t_ms
@@ -621,6 +667,9 @@ def run_worker_m15(
             mint_id = row.get("mint")
             trk = hot.get(mint_id) if isinstance(mint_id, str) else None
             if trk is None or not row_is_tape_print(row):
+                # Not a tracked mint (mints created outside this chunk's home hours are scored by
+                # their own chunk), or not a trade row. By design, not a loss: the global slot clock
+                # above already saw the row.
                 continue
             parsed = print_from_trade_row(row)
             if trk.feed(row, parsed, t_ms):
