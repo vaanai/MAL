@@ -1,5 +1,8 @@
 """Golden test: EXP-013's default end-to-end fixture screen output is unchanged by the EXP-014 work.
 
+This is a regression pin on one synthetic fixture, not full coverage of EXP-013's behaviour. The guarantee that
+EXP-013 is unchanged is that no EXP-013 file is edited by this PR.
+
 EXP-014 (tools/exp014_m15_*) imports tools/exp013_grad_screen.py and tools/exp013_grad_model.py and does not
 edit them. This pins the screen document of EXP-013's own synthetic fixture (tools/test_exp013_grad_screen.py's
 Fixture) by its canonical-JSON sha256, minus the two fields that depend on the temp dir.
