@@ -19,7 +19,7 @@ The 15-minute offset was picked from data **twice**:
   - A LightGBM selector, the same idea as this plan, was already tried.
   - Its best slice was mig+15m, top 20%: n = 26, mean +0.0026, median +0.017, **ex-top-3 −0.003**.
 
-So **this is not the first selector tried after migration.** What is new here: 23+ getBlock days instead of one day, the closed feature set below, and a gate-shaped screen with an out-of-period slice. Unselected waiting after migration lost in every other band (adverse selection), and the getBlock slice has been the weakest source.
+So **this is not the first selector tried after migration.** What is new here: up to 23 screen days (the 9-day pool plus up to 14 August days), of which up to 17 are getBlock, instead of one day; the closed feature set below, and a gate-shaped screen with an out-of-period slice. Unselected waiting after migration lost in every other band (adverse selection), and the getBlock slice has been the weakest source.
 
 ## Hypothesis
 
@@ -65,12 +65,13 @@ At mig+15 most new PumpSwap pools have lost their migration pop. A minority are 
 6. **Exit.**
    - tp50 and sl30 use the `_tpsl` mark, measured from the spot after our buy.
    - The 30-minute cap is landing + 30 min.
-   - Every sell lands d slots after its trigger print, or after the cap instant: `_state_at(t + d × 400)`.
+   - A tp or sl sell lands at the state at the start of slot (trigger print slot + d) (`_delayed`, bound `start`).
+   - A cap sell lands at the start of slot S_cap + d, where S_cap is the largest slot of any tape print with t ≤ the cap instant.
 7. **Fail models.** Flat 15%, and the pressure curve at scale 1, both evaluated at the entry state and applied to both legs as expected values (`mixed_net`).
 8. **Label.** `1{press > 0}` at d = 4, MISS rows included.
 9. **Model.** S2 `lgb_medium` with EXP-012's hyperparameters, seed 1.
 10. **Threshold.** The p90 of the pooled OOF scores, `index = round(0.90 (n − 1))`. A row is selected if score ≥ threshold.
-11. **Exclusion by trigger time alone.** A row (training or scored) is excluded if `T + 1,800,000 + 2d × 400 + 60,000` ms is at or after the end of its pool run, or after the first gap after T. Table-censored rows are counted separately.
+11. **Exclusion by trigger time alone.** A row (training or scored) is excluded if `T + 1,800,000 + 2d × 400 + 60,000` ms is at or after the end of its pool run, or at or after the start of the first gap after T. Table-censored rows are counted separately.
 12. **Edge days** (report-only) are:
     - (i) the first day of each pool run, because `had_bond` drops mints whose bonding prints come before the run, and the EXP-012 features are truncated there;
     - (ii) the last day of each run.
@@ -84,7 +85,8 @@ At mig+15 most new PumpSwap pools have lost their migration pop. A minority are 
 ## Screen (stated before any computation)
 
 - **When.** Run once, after 2026-10-05T12:00:00Z, with EXP-013 Amendment 5 mechanics: nested LODO; `book_stats` once per fail model; N counts every manifest day for the item; a day with no trade is not positive.
-- **Precondition.** If fewer than 6 August days are in the manifest, the screen does not run.
+- **Row day.** A row's day for bars 1–3, 1x, 4a and 4b is the UTC day of T. Only item 6 uses the migration day.
+- **Precondition.** If fewer than 6 August days are in the manifest, the screen does not run and EXP-014 closes NOT_DECIDABLE. The cutoff is never moved.
 - **Pass rule.** It passes only if **all** of these hold under **both** fail models:
 
 1. **Bars 1–3, all screen days.**
@@ -97,7 +99,7 @@ At mig+15 most new PumpSwap pools have lost their migration pop. A minority are 
 5. **Item 5.** The pooled mean is > 0 at d = 8 for the same selected mints.
 6. **Item 6, overlap with EXP-012 on its 9 OOF days.**
    - **(a) Gating:** J(A, B) ≤ 0.5. A and B are as in EXP-013 Amendment 5 §5, with B restricted to mints that have an EXP-014 row. An empty A ∪ B fails.
-   - **(b) Gating:** the EXP-014 selected trades on mints **not** in B have a pooled mean > 0 under both fail models.
+   - **(b) Gating:** the EXP-014 selected trades on mints **not** in B have a pooled mean > 0 under both fail models. If no selected trade falls on a mint outside B, 6(b) fails.
    - **(c) Reported:** Pearson and Spearman correlation of daily SOL totals, flat and pressure.
      - EXP-014 is grouped by **migration** day, to line up with EXP-012.
      - A day with no trade counts as 0 SOL.
