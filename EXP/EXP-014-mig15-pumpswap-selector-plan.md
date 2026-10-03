@@ -137,3 +137,17 @@ A pre-registration on the target block, with `quant-proof` review, for one m = 1
 - **Finding (field-presence checks only, no outcome read).** While PR1 (#264) was in review, the manager checked which fields the real rows carry. Pool B rows (the Oracle live view `oracle-live-2026-09-25_27`) have **no `block_time`**. They do carry `event_ts`, the on-chain timestamp in seconds. On pools A and C and on `explore-0814/w1`, `event_ts == block_time` on every one of 50,000 rows sampled per pool. Every PumpSwap row sampled carries `pool` and `slot`.
 - **Design item 1 now reads:** every print's time is `block_time × 1000`. Where `block_time` is absent, it is `event_ts × 1000`, the same on-chain second. Receive time (`t_recv_ms`) is never used. A row with neither field is dropped, and the drop is counted per pool and per day.
 - **Why this is needed.** Without the rule, pool B would silently contribute no rows. This amendment changes no bar and selects nothing.
+
+## Amendment 2 (2026-10-03, before any real-data run): pool B is excluded
+
+- **Finding (code and field checks only, no outcome read).** Pool B (`oracle-live-2026-09-25_27`) has no on-chain time for **creates**. `adapt_create_row` takes `t_ws`, the PumpPortal websocket receive time. Its trades have only `event_ts`, the on-chain time (Amendment 1). So on pool B, the EXP-012 features that join creates to trades would mix two clocks:
+  - `time_to_migrate_s`;
+  - `sniper_buy_share`, which uses a 3 s window;
+  - creator history.
+
+  Pool B is also the Oracle tape that had lag spikes. Every other source (pool A, pool C, the August views) carries `block_time` on both creates and trades.
+- **Decision.** Pool B is excluded from EXP-014's table, training and screen. The screen days are pool A, pool C and the verified August views.
+  - The table builder still pins and verifies the pool B root, to keep the guards uniform, but plans no pool B chunk.
+  - Item 1x now excludes pool A days and **2026-09-25 within pool C** (C runs to 2026-09-25T06), the days used to pick the offset.
+  - Nothing else changes.
+- **Why this is not a forking path.** It is a data-quality rule, fixed before any EXP-014 row exists. It drops the source with the weakest clock. Pool B days were part of the graduated-swing study that picked the offset (disclosed above), so excluding them removes some selection, not adds it.
