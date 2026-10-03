@@ -803,18 +803,67 @@ class WatermarkTests(unittest.TestCase):
         self.assertGreater(len(a["rows"]), 0)
         self.assertEqual(json.dumps(a["rows"], sort_keys=True), json.dumps(b["rows"], sort_keys=True))
         self.assertEqual(json.dumps(a["censored"], sort_keys=True), json.dumps(b["censored"], sort_keys=True))
-        self.assertEqual(b["counters"]["by_day"]["late_rows_after_scored"], {})
+        self.assertEqual(b["counters"]["by_day"]["rows_after_scored_within_bound"], {})
         # the late rows matter: without them the rows differ, and with them the window sees the late buy
         plain = self._run(late_tape(with_late=False), 10**9)
         self.assertNotEqual(json.dumps(plain["rows"], sort_keys=True), json.dumps(b["rows"], sort_keys=True))
         self.assertEqual(b["rows"][0]["features"]["m15_buys"], plain["rows"][0]["features"]["m15_buys"] + 1)
 
-    def test_a_late_row_after_the_hour_is_scored_is_counted(self) -> None:
+    def test_a_late_row_inside_the_scoring_bound_is_counted_within_bound(self) -> None:
+        main = long_tape()
+        # arrives in the second hour file after M1 was resolved at hour 0's end, but its clock is before that bound
+        late = R("M1", 9998, TT + 100, "pumpswap", "buy", 80 * SOL, B0, SOL, "x", "inside", pool="P1")
+        creates = {"M1": create_pair("M1", BASE_S * 1000)}
+        files = {KEYS[0]: [r for r in main if hour_key_of(r) == KEYS[0]], KEYS[1]: [late] + [r for r in main if hour_key_of(r) == KEYS[1]]}
+        out = m.run_worker_m15(
+            0, [KEYS[0]], KEYS[1:], {}, None, None, lambda key: {"hour": key, "trade": key},
+            row_iter_fn=lambda key: iter(copy.deepcopy(files.get(key, []))), creates_override=creates, ks=m.KS, pool_tag="A",
+        )
+        by = out["counters"]["by_day"]
+        self.assertEqual(sum(by["rows_after_scored_within_bound"].values()), 1)
+
+    def test_a_row_after_the_scoring_bound_is_post_bound(self) -> None:
         rows = long_tape()
         # a row for M1 arrives in a later hour file, long after M1 was resolved at the end of hour 0
         rows.append(R("M1", 9999, TT + 3 * 3600, "pumpswap", "buy", 80 * SOL, B0, SOL, "x", "after", pool="P1"))
         out = run_worker(rows)
-        self.assertEqual(sum(out["counters"]["by_day"]["late_rows_after_scored"].values()), 1)
+        by = out["counters"]["by_day"]
+        self.assertEqual(sum(by["rows_after_scored_post_bound"].values()), 1)
+        self.assertEqual(by["rows_after_scored_within_bound"], {})
+
+    def test_a_row_at_exactly_the_next_hours_second_zero_is_post_bound(self) -> None:
+        main = long_tape()
+        hour_end_ms = hour_start_s(H0) * 1000 + 3_600_000
+        # tape is complete through hour_end - 1 ms at the end-of-hour sweep, so t == hour_end was never read
+        row_at_end = R("M1", 9997, hour_start_s(H0) + 3600, "pumpswap", "buy", 80 * SOL, B0, SOL, "x", "at-end", pool="P1")
+        creates = {"M1": create_pair("M1", BASE_S * 1000)}
+        files = {KEYS[0]: [r for r in main if hour_key_of(r) == KEYS[0]], KEYS[1]: [row_at_end] + [r for r in main if hour_key_of(r) == KEYS[1]]}
+        out = m.run_worker_m15(
+            0, [KEYS[0]], KEYS[1:], {}, None, None, lambda key: {"hour": key, "trade": key},
+            row_iter_fn=lambda key: iter(copy.deepcopy(files.get(key, []))), creates_override=creates, ks=m.KS, pool_tag="A",
+        )
+        self.assertEqual(row_at_end["block_time"] * 1000, hour_end_ms)
+        by = out["counters"]["by_day"]
+        self.assertEqual(by["rows_after_scored_within_bound"], {})
+        self.assertEqual(sum(by["rows_after_scored_post_bound"].values()), 1)
+
+    def test_a_mint_whose_exit_falls_exactly_at_hour_end_waits_for_the_next_hour(self) -> None:
+        from unittest import mock
+
+        hour_end_ms = hour_start_s(H0) * 1000 + 3_600_000
+        # make T + max_exit_ms == hour_end exactly
+        margin = hour_end_ms - TT * 1000 - max(m.KS) * m.SLOT_MS * 2 - m.CAP_MS
+        calls: list[int] = []
+        real = m.score_trigger
+
+        def spy(mint_id, trig, mint, curve, gs, through_ms, *a, **kw):
+            calls.append(through_ms)
+            return real(mint_id, trig, mint, curve, gs, through_ms, *a, **kw)
+
+        with mock.patch.object(m, "SCORE_MARGIN_MS", margin), mock.patch.object(m, "score_trigger", spy):
+            run_worker(long_tape())
+        self.assertEqual(len(calls), 1)
+        self.assertGreater(calls[0], hour_end_ms)  # old watermark hour_end would resolve at hour 0 with through == hour_end; now: not resolved at hour 0's end (bound hour_end - 1)
 
     def test_scoring_watermark_is_the_hour_start_mid_file(self) -> None:
         from unittest import mock
@@ -835,7 +884,7 @@ class WatermarkTests(unittest.TestCase):
         # one resolution, at the end of hour 0 (clamped to the last time seen), the same with and without mid-file sweeps
         self.assertEqual(len(mid), 1)
         self.assertEqual(mid, calls)
-        self.assertLessEqual(mid[0], hour_start_s(H0) * 1000 + 3_600_000)
+        self.assertLessEqual(mid[0], hour_start_s(H0) * 1000 + 3_600_000 - 1)
 
 
 class ShortLastFileTests(unittest.TestCase):

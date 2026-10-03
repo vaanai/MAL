@@ -123,7 +123,7 @@ assert len(EXP012_FEATURE_NAMES) == 18 and len(FEATURE_NAMES) == 27
 
 COUNTER_NAMES = (
     "migrations", "dropped_other_pool", "no_pool_rows", "no_side_rows", "no_clock_rows", "unparsed_rows", "pumpswap_before_bond_rows",
-    "late_rows_after_scored", "non_home_mint_rows", "non_trade_rows", "post_mig_bond_rows", "bad_json_lines", "clock_past_hour_rows",
+    "rows_after_scored_within_bound", "rows_after_scored_post_bound", "non_home_mint_rows", "non_trade_rows", "post_mig_bond_rows", "bad_json_lines", "clock_past_hour_rows",
 )
 # A row whose clock is more than this past the end of the hour file being read is rejected and counted.
 CLOCK_PAST_HOUR_MS = 600_000
@@ -662,15 +662,20 @@ def run_worker_m15(
         n_cens += len(cens)
         trk.mint.release()
         del hot[mint_id]
-        scored.add(mint_id)
+        # The bound is the tape-through watermark this resolve passed to score_trigger: every d row and every
+        # censored record of the mint was decided against the tape read up to through_ms (the exit and cap
+        # checks compare against it), so it is the exact latest time the scoring could have used. A max exit
+        # plus margin would be looser for a censored record, which stops at the tape end, not at an exit.
+        scored_bound_ms[mint_id] = through_ms
 
-    scored: set[str] = set()
+    scored_bound_ms: dict[str, int] = {}  # mint -> int; its key set is the scored set
 
     def sweep(watermark_ms: int | None) -> None:
         """E1. Rows inside an hour file are NOT time-ordered (PumpSwap rows can trail the running max by
-        about 1,600 s), so a mid-file sweep may only trust the START of the current hour as the tape
-        clock: a mint is resolved when that watermark is past T + the longest exit, and the tape is
-        scored as read through the watermark. End-of-hour sweeps pass the hour's end. `None` is the final
+        about 1,600 s), so a mid-file sweep may only trust the ms before the START of the current hour
+        as the tape clock (watermarks are inclusive: the tape is complete through them, and a next-file row at
+        t == hour_end is not yet read): a mint is resolved when that watermark is past T + the longest exit, and the tape is
+        scored as read through the watermark. End-of-hour sweeps pass the hour's end minus 1 ms. `None` is the final
         sweep: everything pending is resolved against the last time seen."""
         for mint_id in list(pending):
             T = pending[mint_id].T
@@ -693,7 +698,7 @@ def run_worker_m15(
         for row in row_iter_fn(hour["trade"]):
             lines += 1
             if lines % SWEEP_EVERY_LINES == 0:
-                sweep(hour_start)  # mid-file: the start of the current hour, never now_ms
+                sweep(hour_start - 1)  # mid-file: complete through the ms before the current hour, never now_ms
             t_ms = row_clock_ms(row)  # the block clock (else event_ts); t_recv_ms is never read
             if t_ms is None:
                 counters.bump("no_clock_rows", hour_day)  # dropped and counted per day
@@ -714,7 +719,14 @@ def run_worker_m15(
             trk = hot.get(mint_id) if isinstance(mint_id, str) else None
             if trk is None:
                 # A row of a mint this chunk does not track. The global slot clock above already saw it.
-                counters.bump("late_rows_after_scored" if mint_id in scored else "non_home_mint_rows", _utc_day(t_ms))
+                if mint_id in scored_bound_ms:
+                    # Within the bound: the mint was scored before this row arrived, yet the row's clock is at or
+                    # before the latest time its scoring read, so the scoring saw incomplete tape (must be 0).
+                    # Past the bound: ordinary trading after the mint's exit window.
+                    name = "rows_after_scored_within_bound" if t_ms <= scored_bound_ms[mint_id] else "rows_after_scored_post_bound"
+                    counters.bump(name, _utc_day(t_ms))
+                else:
+                    counters.bump("non_home_mint_rows", _utc_day(t_ms))
                 continue
             parsed = print_from_trade_row(row)
             if trk.feed(row, parsed, t_ms):
@@ -724,7 +736,7 @@ def run_worker_m15(
                 pending[mint_id] = trk
         if counting and row_iter_fn.bad > bad_before:
             counters.bump("bad_json_lines", hour_day, row_iter_fn.bad - bad_before)
-        sweep(min(hour_end, now_ms))  # end of the hour: its end, unless the file stopped short of it (a pool's last file)
+        sweep(min(hour_end - 1, now_ms))  # end of the hour: complete through its last ms (the next file may hold t == hour_end), unless the file stopped short of it (a pool's last file)
         _trim_heap()
     sweep(None)
     for fh in (rows_fh, cens_fh):
