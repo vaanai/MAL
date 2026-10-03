@@ -623,15 +623,49 @@ class GuardTests(unittest.TestCase):
 
 
 class OrderAndReportTests(unittest.TestCase):
-    def test_result_line_and_ledger_finish_before_screen_files(self) -> None:
+    def test_screen_files_before_result_line_and_ledger_finish(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             fx = Fixture(td, rows=synth_rows(AUG_DAYS[:1] + POOL_DAYS[:1], per_day=30))
-            with mock.patch.object(sc, "to_markdown", side_effect=RuntimeError("boom")), self.assertRaises(RuntimeError):
+            with mock.patch.object(sc.mal_result, "append_try", wraps=sc.mal_result.append_try) as at, mock.patch.object(sc, "to_markdown", side_effect=RuntimeError("boom")), self.assertRaises(RuntimeError):
                 fx.run()
+            # screen.md failed: the screen record is written before the result line and ledger "finished", so neither exists
+            tries = [json.loads(x) for x in fx.tries.read_text().splitlines()]
+            self.assertEqual([t["config"]["event"] for t in tries], ["started"])
+            self.assertEqual([json.loads(x)["event"] for x in (fx.ledger / "SCREEN_RUNS.jsonl").read_text().splitlines()], ["started"])
+            self.assertFalse((fx.out / "screen.md").exists())
+            self.assertEqual(at.call_count, 1)
+            with self.assertRaises(SystemExit):
+                fx.run(out_dir=fx.root / "out2", ledger_dir=fx.root / "ledger2")
+
+    def test_result_v1_failure_keeps_screen_record_and_spends_the_try(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fx = Fixture(td, rows=synth_rows(AUG_DAYS[:1] + POOL_DAYS[:1], per_day=30))
+            with mock.patch.object(sc.mal_result, "write_result", side_effect=ValueError("schema: host")), self.assertRaises(SystemExit) as cm:
+                fx.run()
+            self.assertIn("screen.json", str(cm.exception))
+            self.assertTrue((fx.out / "screen.json").is_file())
+            self.assertTrue((fx.out / "screen.md").is_file())
+            self.assertFalse((fx.out / "result.json").exists())
+            self.assertIn("schema: host", (fx.out / "result_error.txt").read_text())
             tries = [json.loads(x) for x in fx.tries.read_text().splitlines()]
             self.assertEqual([t["config"]["event"] for t in tries], ["started", "result"])
-            self.assertEqual([json.loads(x)["event"] for x in (fx.ledger / "SCREEN_RUNS.jsonl").read_text().splitlines()], ["started", "finished"])
-            self.assertFalse((fx.out / "screen.md").exists())  # the lines were written before the report files
+            led = [json.loads(x) for x in (fx.ledger / "SCREEN_RUNS.jsonl").read_text().splitlines()]
+            self.assertEqual([x["event"] for x in led], ["started", "finished", "result_v1_error"])
+            self.assertIn("schema: host", led[-1]["result_v1_error"])
+            with self.assertRaises(SystemExit):
+                fx.run(out_dir=fx.root / "out2", ledger_dir=fx.root / "ledger2")
+
+    def test_out_dir_created_before_started_line(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fx = Fixture(td, rows=synth_rows(AUG_DAYS[:1] + POOL_DAYS[:1], per_day=30))
+            seen = []
+            real = sc.mal_result.append_try
+            def spy(*a, **k):  # noqa: ANN001
+                seen.append(fx.out.is_dir())
+                return real(*a, **k)
+            with mock.patch.object(sc.mal_result, "append_try", side_effect=spy):
+                fx.run()
+            self.assertEqual(seen, [True, True])
 
     def test_edge_days_from_pool_runs(self) -> None:
         runs = {"A": [["2026-09-19T01", "2026-09-21T23"]], "X": [["2026-08-10T00", "2026-08-11T23"], ["2026-08-13T00", "2026-08-13T23"]]}
@@ -687,6 +721,13 @@ class EndToEndTests(unittest.TestCase):
         sink = json.loads(self.sink.read_text())
         self.assertTrue(sink["ok"])
         self.assertEqual(sink["verdict"], self.doc["verdict"])
+
+    def test_screen_files_byte_identical_to_pre_reorder_code(self) -> None:
+        # md5s of screen.json / screen.md (tmp dir name normalised) computed on origin/main before the write-order change
+        # view_manifest_sha256 hashes tmp paths, so that one line is dropped from the json comparison
+        norm = lambda name: "".join(x for x in (self.fx.out / name).read_text().replace(self.td.name, "TD").splitlines(True) if "view_manifest_sha256" not in x).encode()  # noqa: E731
+        self.assertEqual(hashlib.md5(norm("screen.json")).hexdigest(), "e01f6e4b9d86bc8b4201ddcd29373134")
+        self.assertEqual(hashlib.md5(norm("screen.md")).hexdigest(), "859dfe07e4be02751b9e0ae7587ad29a")
 
     def test_items_and_extras(self) -> None:
         self.assertEqual([i["item"] for i in self.doc["items"]], list(sc.ITEM_ORDER))

@@ -748,6 +748,7 @@ def run(
     result_path = out / "result.json"
     # --- the try is used from here on, even if the run crashes. The tries line comes first: a kill between the two
     # lines leaves the tries log refusing a rerun. ---
+    out.mkdir(parents=True)  # a mkdir collision fails here, before the try is spent
     mal_result.append_try(tries_path, tool=TOOL, config={**base_cfg, "event": "started"}, data_blocks=blocks, result_path=result_path, role="exploration")
     ledger_start(ledger_dir, {"table_md5": tmanifest.get("table_md5"), "view_manifest_sha256": manifest_sha, "out_dir": str(out)})
     # --- the screen ---
@@ -761,24 +762,33 @@ def run(
     doc["view_manifest_sha256"] = manifest_sha
     doc["tries_log"] = tries_path
     doc["exp012"] = {"threshold": e12_thr, "oof_days": sorted(e12_days)}
-    # --- result tries line and ledger "finished" first, then the files ---
+    # --- the screen record first: screen.json and screen.md hold everything, so a later failure cannot lose the one-shot output ---
+    (out / "screen.json").write_text(json.dumps(doc, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    (out / "screen.md").write_text(to_markdown(doc), encoding="utf-8")
+    # --- then the result tries line and ledger "finished" ---
     trades = selected_trades(selected, eligible)
     ap = mal_result.append_try(tries_path, tool=TOOL, config={**base_cfg, "event": "result", "verdict": doc["verdict"]}, data_blocks=blocks, result_path=result_path, role="exploration")
     tries = {**ap, **mal_result.tries_summary(tries_path, ap["data_key"])}
     ledger_finish(ledger_dir, {"verdict": doc["verdict"], "out_dir": str(out), "n_selected": len(trades)})
-    result = mal_result.build_result(
-        tool=TOOL, git_sha=base_cfg["code_commit"], command=command, config={**base_cfg, "verdict": doc["verdict"]}, role="exploration", data_blocks=blocks,
-        stage="failed" if doc["verdict"] == "FAIL" else "candidate",
-        trades_flat=_trades_for_result(trades, "flat"), trades_pressure_s1=_trades_for_result(trades, "press"), tries=tries,
-        n_candidates=counts["n_k4_rows"], n_days=len(days), runtime_s=time.time() - t0,
-        notes=f"EXP-013 exploration screen, verdict {doc['verdict']}. Not evidence, no edge claim. {GATE_NOTE}",
-    )
-    result["verdict"] = doc["verdict"]
-    result["gate_note"] = GATE_NOTE
-    out.mkdir(parents=True)
-    mal_result.write_result(result_path, result)
-    (out / "screen.json").write_text(json.dumps(doc, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
-    (out / "screen.md").write_text(to_markdown(doc), encoding="utf-8")
+    # --- result.v1 last. It raises on a schema error; the screen record above stays, the failure is written down, the run exits nonzero ---
+    try:
+        result = mal_result.build_result(
+            tool=TOOL, git_sha=base_cfg["code_commit"], command=command, config={**base_cfg, "verdict": doc["verdict"]}, role="exploration", data_blocks=blocks,
+            stage="failed" if doc["verdict"] == "FAIL" else "candidate",
+            trades_flat=_trades_for_result(trades, "flat"), trades_pressure_s1=_trades_for_result(trades, "press"), tries=tries,
+            n_candidates=counts["n_k4_rows"], n_days=len(days), runtime_s=time.time() - t0,
+            notes=f"EXP-013 exploration screen, verdict {doc['verdict']}. Not evidence, no edge claim. {GATE_NOTE}",
+        )
+        result["verdict"] = doc["verdict"]
+        result["gate_note"] = GATE_NOTE
+        mal_result.write_result(result_path, result)
+    except Exception as exc:  # noqa: BLE001
+        err = f"{type(exc).__name__}: {exc}"
+        try:
+            (out / "result_error.txt").write_text(err + "\n", encoding="utf-8")
+        finally:
+            ledger_finish(ledger_dir, {"event": "result_v1_error", "result_v1_error": err, "verdict": doc["verdict"], "out_dir": str(out)})
+        raise SystemExit(f"result.v1 failed ({err}); the screen record is {out}/screen.json (verdict {doc['verdict']}); see result_error.txt. The try is spent.") from exc
     sink = os.environ.get("MISCUSI_RESULT")
     if sink:
         metrics = {"n_selected": len(trades), "n_days": len(days), **{f"item_{it['item']}": it["pass"] for it in doc["items"]}}
