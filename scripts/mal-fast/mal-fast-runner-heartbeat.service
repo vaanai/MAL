@@ -15,6 +15,14 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/mal/fast-forward-heartbeat
 ReadOnlyPaths=/var/lib/mal/paper/fast-forward-paper /var/lib/mal/fast-forward
+# The sampler may read runner-status.json only. systemd cannot hide a whole directory except
+# one file, so every runner output file other than runner-status.json is listed explicitly
+# (output_dir in fast-forward-paper.json is /var/lib/mal/paper/fast-forward-paper). A "-" prefix
+# ignores a path that does not exist yet.
+InaccessiblePaths=/var/lib/mal/sealed
+InaccessiblePaths=-/var/lib/mal/paper/fast-forward-paper/positions.jsonl -/var/lib/mal/paper/fast-forward-paper/decisions.jsonl -/var/lib/mal/paper/fast-forward-paper/pnl-daily.jsonl
+InaccessiblePaths=-/var/lib/mal/paper/fast-forward-paper/exp012-gate.jsonl -/var/lib/mal/paper/fast-forward-paper/latency.jsonl -/var/lib/mal/paper/fast-forward-paper/latency.json -/var/lib/mal/paper/fast-forward-paper/mem-census.jsonl -/var/lib/mal/paper/fast-forward-paper/mem-census.json
+InaccessiblePaths=-/var/lib/mal/paper/fast-forward-paper/reconcile.json -/var/lib/mal/paper/fast-forward-paper/offsets.json -/var/lib/mal/paper/fast-forward-paper/guard-live.json -/var/lib/mal/paper/fast-forward-paper/invalid-for-promotion.json
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true
@@ -23,3 +31,8 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemorySwapMax=0
+PrivateDevices=true
+ProtectKernelLogs=true
+CapabilityBoundingSet=
+# AF_UNIX is the only family: systemctl show talks to systemd over its unix socket. The sampler needs no network.
+RestrictAddressFamilies=AF_UNIX

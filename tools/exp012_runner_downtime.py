@@ -2,13 +2,20 @@
 """Derive fast-0 runner downtime from heartbeat.jsonl (DEC-016 Amendment 3 (b)).
 
 Output: JSON list of merged [start_ms, end_ms) pairs for `forward_exp012_replay.py --downtime`,
-plus a summary on stdout. A sample is fresh if ok and sampled_ms - status_ts_ms < 60_000.
-Down: (1) every minute of [--from, --to) (aligned to --from) with no fresh sample;
-(2) every minute overlapping a sampler gap longer than 60 s (no evidence of being up);
-(3) each restart, from the last fresh sample before it to 10 min after the first fresh
-sample of the new run. A restart is a pid change between fresh samples or an ok:false gap.
-The first fresh sample in the file counts as an initial start: excluded for 10 min, not
-counted as a restart.
+plus a summary on stdout.
+
+A sample is fresh if ok and 0 <= sampled_ms - status_ts_ms < 60_000 (a future status
+timestamp is not fresh). Each sample's fresh/stale state holds until the next sample, capped
+at 60 s; time not held fresh is down, so a sampler gap over 60 s is down. Clipped to
+[--from, --to). The minute grid (aligned to --from) is used only in the summary.
+
+Also down: each restart, from the last fresh sample before it to 10 min after the first
+fresh sample of the new run. A restart is a pid change between fresh samples or >= 2
+consecutive ok:false samples (one can be a torn read). The first fresh sample in the file
+counts as an initial start: excluded for 10 min, not counted as a restart.
+
+If more than 5% of in-window samples have a null pid, or there are no samples, the summary
+has NOT_DECIDABLE true and the exit code is 3 (the downtime file is still written).
 """
 from __future__ import annotations
 
@@ -23,6 +30,8 @@ from tools.forward_exp012_replay import _to_ms
 MINUTE = 60_000
 FRESH_MS = 60_000
 SETTLE_MS = 600_000
+MIN_BAD_RUN = 2
+NULL_PID_MAX_SHARE = 0.05
 
 
 def load_samples(path: Path) -> list[dict[str, Any]]:
@@ -43,7 +52,9 @@ def load_samples(path: Path) -> list[dict[str, Any]]:
 
 def is_fresh(r: dict[str, Any]) -> bool:
     ts = r.get("status_ts_ms")
-    return bool(r.get("ok")) and isinstance(ts, int) and r["sampled_ms"] - ts < FRESH_MS
+    if not (bool(r.get("ok")) and isinstance(ts, int)):
+        return False
+    return 0 <= r["sampled_ms"] - ts < FRESH_MS
 
 
 def merge(iv: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -61,60 +72,64 @@ def merge(iv: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
 def derive(samples: list[dict[str, Any]], from_ms: int, to_ms: int) -> tuple[list[tuple[int, int]], dict[str, Any]]:
     assert to_ms > from_ms
     n_min = -(-(to_ms - from_ms) // MINUTE)
-    fresh_minutes: set[int] = set()
-    seen_minutes: set[int] = set()
-    for r in samples:
-        t = r["sampled_ms"]
-        if not (from_ms <= t < to_ms):
+    up: list[tuple[int, int]] = []
+    for i, r in enumerate(samples):
+        if not is_fresh(r):
             continue
-        k = (t - from_ms) // MINUTE
-        seen_minutes.add(k)
-        if is_fresh(r):
-            fresh_minutes.add(k)
+        end = r["sampled_ms"] + FRESH_MS
+        if i + 1 < len(samples):
+            end = min(end, samples[i + 1]["sampled_ms"])
+        up.append((r["sampled_ms"], end))
+    up = merge([(max(a, from_ms), min(b, to_ms)) for a, b in up])
     down: list[tuple[int, int]] = []
-
-    def minute_iv(k: int) -> tuple[int, int]:
-        return from_ms + k * MINUTE, min(from_ms + (k + 1) * MINUTE, to_ms)
-
-    for k in range(n_min):
-        if k not in fresh_minutes:
-            down.append(minute_iv(k))
-    # sampler gaps longer than 60 s
-    gaps = 0
-    for a, b in zip(samples, samples[1:]):
-        if b["sampled_ms"] - a["sampled_ms"] > FRESH_MS:
-            gaps += 1
-            lo, hi = a["sampled_ms"], b["sampled_ms"]
-            for k in range(n_min):
-                s, e = minute_iv(k)
-                if s < hi and e > lo:
-                    down.append((s, e))
-    # restarts
+    cur = from_ms
+    for a, b in up:
+        if a > cur:
+            down.append((cur, a))
+        cur = max(cur, b)
+    if cur < to_ms:
+        down.append((cur, to_ms))
+    gaps = sum(1 for a, b in zip(samples, samples[1:]) if b["sampled_ms"] - a["sampled_ms"] > FRESH_MS)
     restarts = 0
     excl: list[tuple[int, int]] = []
     last_fresh: dict[str, Any] | None = None
-    bad_run = False  # an ok:false sample since last_fresh
+    last_pid: int | None = None
+    bad_run = 0
     for r in samples:
         if is_fresh(r):
             if last_fresh is None:
                 excl.append((r["sampled_ms"], r["sampled_ms"] + SETTLE_MS))
             else:
-                p0, p1 = last_fresh.get("pid"), r.get("pid")
-                if bad_run or (p0 is not None and p1 is not None and p0 != p1):
+                p1 = r.get("pid")
+                if bad_run >= MIN_BAD_RUN or (last_pid is not None and p1 is not None and last_pid != p1):
                     restarts += 1
                     excl.append((last_fresh["sampled_ms"], r["sampled_ms"] + SETTLE_MS))
-            last_fresh, bad_run = r, False
+            last_fresh, bad_run = r, 0
+            if r.get("pid") is not None:
+                last_pid = r["pid"]
         elif not r.get("ok"):
-            bad_run = True
-    if bad_run and last_fresh is not None:
+            bad_run += 1
+    if bad_run >= MIN_BAD_RUN and last_fresh is not None:
         restarts += 1
         excl.append((last_fresh["sampled_ms"], to_ms))
     down.extend(excl)
-    clipped = [(max(a, from_ms), min(b, to_ms)) for a, b in down]
-    merged = merge([iv for iv in clipped if iv[1] > iv[0]])
+    merged = merge([iv for iv in ((max(a, from_ms), min(b, to_ms)) for a, b in down) if iv[1] > iv[0]])
+
+    def minute_iv(k: int) -> tuple[int, int]:
+        return from_ms + k * MINUTE, min(from_ms + (k + 1) * MINUTE, to_ms)
+
     down_minutes = sum(
         1 for k in range(n_min) if any(a < minute_iv(k)[1] and b > minute_iv(k)[0] for a, b in merged)
     )
+    inwin = [r for r in samples if from_ms <= r["sampled_ms"] < to_ms]
+    seen = {(r["sampled_ms"] - from_ms) // MINUTE for r in inwin}
+    null_pid = sum(1 for r in inwin if r.get("pid") is None)
+    share = null_pid / len(inwin) if inwin else 1.0
+    reasons = []
+    if not inwin:
+        reasons.append("no samples in window")
+    if share > NULL_PID_MAX_SHARE:
+        reasons.append(f"null pid share {share:.3f} > {NULL_PID_MAX_SHARE}")
     summary = {
         "from_ms": from_ms,
         "to_ms": to_ms,
@@ -124,8 +139,12 @@ def derive(samples: list[dict[str, Any]], from_ms: int, to_ms: int) -> tuple[lis
         "down_ms": sum(b - a for a, b in merged),
         "restarts": restarts,
         "sampler_gaps_over_60s": gaps,
-        "sampler_coverage": len(seen_minutes) / n_min,
-        "samples_in_window": sum(1 for r in samples if from_ms <= r["sampled_ms"] < to_ms),
+        "sampler_coverage": len(seen) / n_min,
+        "samples_in_window": len(inwin),
+        "null_pid_samples": null_pid,
+        "null_pid_share": share,
+        "NOT_DECIDABLE": bool(reasons),
+        "not_decidable_reasons": reasons,
     }
     return merged, summary
 
@@ -140,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     merged, summary = derive(load_samples(args.heartbeat), _to_ms(args.from_), _to_ms(args.to))
     args.out.write_text(json.dumps([[a, b] for a, b in merged]) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
-    return 0
+    return 3 if summary["NOT_DECIDABLE"] else 0
 
 
 if __name__ == "__main__":

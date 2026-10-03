@@ -104,3 +104,42 @@ def test_installer_wiring_and_fence():
         if line.startswith(("#", "log ", "echo ", "printf ", "die ")):
             continue
         assert not re.search(r"\b(enable|--now)\b", line), line
+
+
+def test_torn_read_retries_once(tmp_path):
+    st = tmp_path / "s.json"
+    st.write_text('{"ts_ms": 10, "lag_')  # torn
+    sleeps = []
+
+    def fix(d):
+        sleeps.append(d)
+        st.write_text(json.dumps(SECRET_STATUS))
+
+    rec = build_record(st, now_ms=1_005_000, pid_fn=lambda: 3, sleep_fn=fix)
+    assert sleeps == [0.2] and rec["ok"] is True and rec["status_ts_ms"] == 1_000_000
+
+
+def test_empty_file_retries_then_fails_once(tmp_path):
+    st = tmp_path / "s.json"
+    st.write_text("")
+    sleeps = []
+    rec = build_record(st, now_ms=5, pid_fn=lambda: 3, sleep_fn=sleeps.append)
+    assert len(sleeps) == 1 and rec["ok"] is False
+
+
+def test_good_read_does_not_sleep(tmp_path):
+    st = tmp_path / "s.json"
+    st.write_text(json.dumps(SECRET_STATUS))
+    sleeps = []
+    build_record(st, now_ms=5, pid_fn=lambda: 3, sleep_fn=sleeps.append)
+    assert sleeps == []
+
+
+def test_service_hardening():
+    svc = (KIT / "mal-fast-runner-heartbeat.service").read_text()
+    for line in ("RestrictAddressFamilies=AF_UNIX", "CapabilityBoundingSet=", "PrivateDevices=true",
+                 "ProtectKernelLogs=true"):
+        assert re.search(rf"^{re.escape(line)}$", svc, re.M), line
+    inacc = " ".join(re.findall(r"^InaccessiblePaths=(.*)$", svc, re.M))
+    for p in ("/var/lib/mal/sealed", "positions.jsonl", "decisions.jsonl", "pnl-daily.jsonl"):
+        assert p in inacc, p

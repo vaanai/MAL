@@ -168,4 +168,5 @@ run sudo -n systemctl daemon-reload
 
 log "slice, unit, restart service and timer installed. Nothing enabled, nothing running."
 log "venv is NOT built here: python3 -m venv ${FWD}/venv && ${FWD}/venv/bin/pip install -r ${KIT}/requirements-fast-forward.txt"
+log "before enabling ${HB_TIMER}: run 'systemctl start ${HB_UNIT}' once by hand on fast-0 and check the last line of ${HB_DIR}/heartbeat.jsonl has ok true and a non-null pid (else the deriver reports NOT_DECIDABLE)"
 log "manual next step (manager only, after DEC-015 section 2 preconditions): systemctl start ${UNIT}; enable ${RESTART_TIMER} and ${HB_TIMER} together with it"

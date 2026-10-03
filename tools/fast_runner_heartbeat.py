@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 ALLOWED_KEYS = ("sampled_ms", "status_ts_ms", "lag_ms", "pid", "ok")
 UNIT = "mal-fast-forward-paper.service"  # a system unit (installed to /etc/systemd/system)
+RETRY_S = 0.2
 DEFAULT_STATUS = Path("/var/lib/mal/paper/fast-forward-paper/runner-status.json")
 DEFAULT_OUT = Path("/var/lib/mal/fast-forward-heartbeat/heartbeat.jsonl")
 
@@ -45,22 +46,32 @@ def build_record(
     *,
     now_ms: int,
     pid_fn: Callable[[], int | None] = main_pid,
+    sleep_fn: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     status_ts_ms: int | None = None
     lag_ms: int | None = None
     ok = False
     pid: int | None = None
-    try:
-        raw = json.loads(status_path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            status_ts_ms = _int_or_none(raw.get("ts_ms"))
-            lag_ms = _int_or_none(raw.get("lag_ms"))
-            if status_ts_ms is None:
+    raw: Any = None
+    for attempt in range(2):
+        # The runner overwrites the file in place, so a read can be torn or empty: retry once.
+        try:
+            raw = json.loads(status_path.read_text(encoding="utf-8"))
+            break
+        except (OSError, ValueError):
+            raw = None
+            if attempt == 0:
+                sleep_fn(RETRY_S)
+    if isinstance(raw, dict):
+        status_ts_ms = _int_or_none(raw.get("ts_ms"))
+        lag_ms = _int_or_none(raw.get("lag_ms"))
+        if status_ts_ms is None:
+            try:
                 status_ts_ms = int(status_path.stat().st_mtime * 1000)
-            pid = _int_or_none(raw.get("pid"))
-            ok = True
-    except (OSError, ValueError):
-        ok = False
+            except OSError:
+                status_ts_ms = None
+        pid = _int_or_none(raw.get("pid"))
+        ok = status_ts_ms is not None
     if pid is None:
         pid = pid_fn()
     rec = {
