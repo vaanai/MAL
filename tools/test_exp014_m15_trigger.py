@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import tools.exp014_m15_trigger as m
+from tools.exp012_fixtures import hour_start_s
+from tools.exp013_fixtures import hours_between
 from tools.exploration_entry_model import _Feat
 from tools.exploration_exits import ENTRY_PORTAL_PPM, ENTRY_PRIORITY_LAMPORTS, ENTRY_SIZE, _curve
 from tools.latency_curve import MISS, SEND, Pressure, _Mint, _state_index, _tpsl
@@ -88,7 +90,8 @@ def score(pool, d, through=100_000_000, extra_global=None, **kw):
 
 # --- features -------------------------------------------------------------------------
 
-BASE_S = 1_790_000_000  # a block time in seconds
+H0 = "2026-09-20T10"
+BASE_S = hour_start_s(H0) + 60  # a block time in seconds, 60 s into hour H0
 
 
 def R(mint: str, slot: int, t_s: int, venue: str, side: str, q: int, b: int, sol: int, trader: str | None, sig: str, pool: str | None = None, t_recv_ms: int | None = None) -> dict:
@@ -255,11 +258,23 @@ class TruncationTests(unittest.TestCase):
 # --- clock, migration, pool, global slot ---------------------------------------------------
 
 
-def run_worker(rows: list[dict], ks=m.KS, **kw: Any) -> dict:
+def hour_key_of(r: dict) -> str:
+    if "_h" in r:
+        return r["_h"]
+    t = r.get("block_time", r.get("event_ts"))
+    return m.datetime.fromtimestamp(t, tz=m.timezone.utc).strftime("%Y-%m-%dT%H")
+
+
+KEYS = hours_between(H0, "2026-09-20T15")  # one home hour, five buffer hours
+
+
+def run_worker(rows: list[dict], ks=m.KS, creator_hist=None, rows_out_path=None, censored_out_path=None, n_keys=len(KEYS), **kw: Any) -> dict:
+    """Rows are routed to the hour file of their clock, in the order given (so a late row stays late)."""
     creates = {"M1": create_pair("M1", BASE_S * 1000)}
     info = lambda key: {"hour": key, "trade": key}  # noqa: E731
     return m.run_worker_m15(
-        0, ["2026-09-20T10"], [], {}, None, None, info, row_iter_fn=lambda key: iter(copy.deepcopy(rows)), creates_override=creates, ks=ks, pool_tag="A", **kw
+        0, [KEYS[0]], KEYS[1:n_keys], creator_hist or {}, rows_out_path, censored_out_path, info,
+        row_iter_fn=lambda key: iter(copy.deepcopy([r for r in rows if hour_key_of(r) == key])), creates_override=creates, ks=ks, pool_tag="A", **kw
     )
 
 
@@ -291,6 +306,7 @@ class ClockTests(unittest.TestCase):
         rows = long_tape()
         for r in rows:
             if r["mint"] == "M1" and r["signature"] == "p2":
+                r["_h"] = hour_key_of(r)
                 del r["block_time"]
         out = run_worker(rows)
         self.assertEqual(out["rows"][0]["features"]["m15_sells"], 1.0)  # p2 (a sell) is gone, p5 remains
@@ -324,6 +340,7 @@ class EventTsClockTests(unittest.TestCase):
         rows = poolb_shaped(long_tape())
         victims = [r for r in rows if r["mint"] == "OTHER"][:3]
         for r in victims:
+            r["_h"] = hour_key_of(r)
             del r["event_ts"]
         out = run_worker(rows)
         self.assertEqual(out["counters"]["by_day"]["no_clock_rows"], {"2026-09-20": 3})  # the hour being read
@@ -654,7 +671,13 @@ class ExitTests(unittest.TestCase):
         pool = exit_pool(170 * SOL)
         row, cens = score(pool, 4, gap_starts_ms=[T + 11_000])
         self.assertEqual(cens["reason"], "touches_gap")  # type: ignore[index]
-        row, cens = score(pool, 4, gap_starts_ms=[T - 1])  # a gap before T does not
+        # E2: a gap that starts between the migration and T (the pool state is stale) is censored too
+        row, cens = score(pool, 4, gap_starts_ms=[T - 1])
+        self.assertEqual(cens["reason"], "touches_gap")  # type: ignore[index]
+        row, cens = score(pool, 4, gap_starts_ms=[MIG_T + 1])
+        self.assertEqual(cens["reason"], "touches_gap")  # type: ignore[index]
+        # a gap at or before the migration does not
+        row, cens = score(pool, 4, gap_starts_ms=[MIG_T, MIG_T - 3_600_000])
         self.assertIsNotNone(row)
 
     def test_no_global_slot_is_censored(self) -> None:
@@ -713,7 +736,11 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(out["counters"]["by_day"]["migrations"], {m._utc_day(MS * 1000): 1})
 
     def test_tape_ending_before_the_exit_is_censored(self) -> None:
-        out = run_worker(mint_rows())  # the tape ends at T: nothing after it
+        # shifted late in the hour so that no end-of-hour sweep can resolve it: the tape ends at T
+        rows = copy.deepcopy(mint_rows())
+        for r in rows:
+            r["block_time"] += 1800
+        out = run_worker(rows, n_keys=1)
         self.assertEqual(out["rows"], [])
         self.assertEqual(sorted(c["entry_land_k"] for c in out["censored"]), [1, 4, 8])
         self.assertEqual({c["reason"] for c in out["censored"]}, {"entry_past_tape"})
@@ -729,11 +756,9 @@ class WorkerTests(unittest.TestCase):
 
     def test_streaming_to_disk_matches_in_memory(self) -> None:
         mem = run_worker(long_tape())
-        tape = long_tape()
         with tempfile.TemporaryDirectory() as td:
             rp, cp = Path(td) / "rows.jsonl", Path(td) / "cens.jsonl"
-            creates = {"M1": create_pair("M1", BASE_S * 1000)}
-            m.run_worker_m15(0, ["2026-09-20T10"], [], {}, rp, cp, lambda k: {"hour": k, "trade": k}, row_iter_fn=lambda k: iter(copy.deepcopy(tape)), creates_override=creates, pool_tag="A")
+            run_worker(long_tape(), rows_out_path=rp, censored_out_path=cp)
             disk = [json.loads(line) for line in rp.read_text().splitlines()]
         self.assertEqual(json.dumps(disk, sort_keys=True), json.dumps(mem["rows"], sort_keys=True))
 
@@ -749,6 +774,132 @@ class WorkerTests(unittest.TestCase):
         out = run_worker(long_tape(), pool_end_ms=10**13, pool_gap_starts_ms=[gap])
         flags = {r["entry_land_k"]: r["excluded_by_time"] for r in out["rows"]}
         self.assertEqual(flags, {1: False, 4: True, 8: True})
+
+
+def late_tape(with_late: bool = True) -> list[dict]:
+    """Stream order is NOT time order inside the hour file. After a filler print at TT + 2440 s (past T + every
+    exit), two M1 rows arrive late: one inside the feature window and one before the cap exit."""
+    rows = long_tape()
+    if not with_late:
+        return rows
+    i = next(k for k, r in enumerate(rows) if r["mint"] == "OTHER" and r["block_time"] == TT + 2440)
+    late_window = R("M1", 1230, MS + 500, "pumpswap", "buy", 86 * SOL, 189_000_000_000_000, 5 * SOL, "late1", "late-w", pool="P1")
+    late_exit = R("M1", 9000, TT + 1000, "pumpswap", "sell", 70 * SOL, 220_000_000_000_000, 3 * SOL, "late2", "late-x", pool="P1")
+    return rows[: i + 1] + [late_window, late_exit] + rows[i + 1 :]
+
+
+class WatermarkTests(unittest.TestCase):
+    """E1: late rows are never lost to a mid-file sweep."""
+
+    def _run(self, rows: list[dict], every: int) -> dict:
+        from unittest import mock
+
+        with mock.patch.object(m, "SWEEP_EVERY_LINES", every):
+            return run_worker(rows)
+
+    def test_mid_file_sweeps_do_not_lose_late_rows(self) -> None:
+        a = self._run(late_tape(), 10**9)  # end-of-hour sweeps only
+        b = self._run(late_tape(), 1)  # a sweep before every row
+        self.assertGreater(len(a["rows"]), 0)
+        self.assertEqual(json.dumps(a["rows"], sort_keys=True), json.dumps(b["rows"], sort_keys=True))
+        self.assertEqual(json.dumps(a["censored"], sort_keys=True), json.dumps(b["censored"], sort_keys=True))
+        self.assertEqual(b["counters"]["by_day"]["late_rows_after_scored"], {})
+        # the late rows matter: without them the rows differ, and with them the window sees the late buy
+        plain = self._run(late_tape(with_late=False), 10**9)
+        self.assertNotEqual(json.dumps(plain["rows"], sort_keys=True), json.dumps(b["rows"], sort_keys=True))
+        self.assertEqual(b["rows"][0]["features"]["m15_buys"], plain["rows"][0]["features"]["m15_buys"] + 1)
+
+    def test_a_late_row_after_the_hour_is_scored_is_counted(self) -> None:
+        rows = long_tape()
+        # a row for M1 arrives in a later hour file, long after M1 was resolved at the end of hour 0
+        rows.append(R("M1", 9999, TT + 3 * 3600, "pumpswap", "buy", 80 * SOL, B0, SOL, "x", "after", pool="P1"))
+        out = run_worker(rows)
+        self.assertEqual(sum(out["counters"]["by_day"]["late_rows_after_scored"].values()), 1)
+
+    def test_scoring_watermark_is_the_hour_start_mid_file(self) -> None:
+        from unittest import mock
+
+        calls: list[int] = []
+        real = m.score_trigger
+
+        def spy(mint_id, trig, mint, curve, gs, through_ms, *a, **kw):
+            calls.append(through_ms)
+            return real(mint_id, trig, mint, curve, gs, through_ms, *a, **kw)
+
+        with mock.patch.object(m, "score_trigger", spy):
+            self._run(late_tape(), 1)
+        hour_start = hour_start_s(H0) * 1000
+        self.assertEqual(len(calls), 1)
+        self.assertIn(calls[0], {hour_start + 3_600_000 * i for i in range(1, 7)})  # an hour boundary, never a row time
+
+
+class WorkerTruncationTests(unittest.TestCase):
+    """E3: a late row inside the window, and creator history with creates after create_ms."""
+
+    HIST = {"creatorZ": [BASE_S * 1000 - 5_000, BASE_S * 1000 + 1_000, BASE_S * 1000 + 50_000, BASE_S * 1000 + 86_400_000]}
+
+    def test_features_ignore_stream_order_inside_the_window_and_creates_after_create_ms(self) -> None:
+        in_order = run_worker(long_tape(), creator_hist=self.HIST)["rows"]
+        moved = long_tape()
+        k = next(i for i, r in enumerate(moved) if r.get("signature") == "p1")
+        row = moved.pop(k)
+        j = next(i for i, r in enumerate(moved) if r.get("signature") == "p5")
+        moved.insert(j + 1, row)  # the in-window print p1 now arrives after p5 (late)
+        got = run_worker(moved, creator_hist=self.HIST)["rows"]
+        self.assertEqual(json.dumps(got, sort_keys=True), json.dumps(in_order, sort_keys=True))
+        self.assertEqual(in_order[0]["features"]["creator_prior_mints_24h"], 1.0)  # only the create before create_ms
+
+    def test_deleting_this_mints_rows_after_T_changes_no_feature(self) -> None:
+        full = run_worker(long_tape(), creator_hist=self.HIST)["rows"]
+        cut = [r for r in long_tape() if not (r["mint"] == "M1" and r["block_time"] > TT)]
+        got = run_worker(cut, creator_hist=self.HIST)["rows"]
+        self.assertEqual([r["features"] for r in got], [r["features"] for r in full])
+
+
+class CounterTests(unittest.TestCase):
+    def test_non_home_non_trade_post_mig_bond_and_past_hour_rows_are_counted(self) -> None:
+        rows = long_tape()
+        rows.append({"type": "migration", "mint": "M1", "block_time": TT + 5, "slot": 1})
+        rows.append(R("M1", 1500, MS + 1000, "pump_bonding", "buy", 70 * SOL, 400_000_000_000_000, SOL, "q", "pm"))
+        rows.append(R("OTHER", 3, BASE_S + 3, "pump_bonding", "buy", 50 * SOL, 500_000_000_000_000, SOL, "o", "far", pool=None))
+        far = R("M1", 5, BASE_S + 3, "pump_bonding", "buy", 50 * SOL, 500_000_000_000_000, SOL, "o", "far2")
+        far["_h"] = H0
+        far["block_time"] = hour_start_s(H0) + 3600 + 601  # more than 10 minutes past the end of the hour read
+        rows.append(far)
+        out = run_worker(rows)
+        by = out["counters"]["by_day"]
+        self.assertEqual(sum(by["non_trade_rows"].values()), 1)
+        self.assertEqual(sum(by["post_mig_bond_rows"].values()), 1)
+        self.assertEqual(sum(by["clock_past_hour_rows"].values()), 1)
+        self.assertGreater(sum(by["non_home_mint_rows"].values()), 10)
+
+    def test_ten_minutes_exactly_is_not_rejected(self) -> None:
+        rows = long_tape()
+        ok = R("M1", 5, BASE_S + 3, "pump_bonding", "buy", 50 * SOL, 500_000_000_000_000, SOL, "o", "edge")
+        ok["_h"] = H0
+        ok["block_time"] = hour_start_s(H0) + 3600 + 600
+        rows.append(ok)
+        self.assertEqual(run_worker(rows)["counters"]["by_day"]["clock_past_hour_rows"], {})
+
+    def test_bad_json_lines_are_counted(self) -> None:
+        from tools.exp012_fixtures import write_zst_jsonl
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "t.jsonl"
+            path.write_text('{"a": 1}\nnot json\n[1, 2]\n\n{"b": 2}\n')
+            it = m.CountingTrades()
+            got = list(it(path))
+            self.assertEqual(got, [{"a": 1}, {"b": 2}])
+            self.assertEqual(it.bad, 2)
+            creates = {"M1": create_pair("M1", BASE_S * 1000)}
+            info = lambda key: {"hour": key, "trade": path}  # noqa: E731
+            out = m.run_worker_m15(0, [H0], [], {}, None, None, info, creates_override=creates)  # default iterator: counting
+            self.assertEqual(out["counters"]["by_day"]["bad_json_lines"], {"2026-09-20": 2})
+
+    def test_mark_skipped_is_recorded_on_the_row(self) -> None:
+        row, _ = score(base_pool(), 4)
+        assert row is not None
+        self.assertFalse(row["mark_skipped"])
 
 
 if __name__ == "__main__":

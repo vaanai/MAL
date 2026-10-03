@@ -62,11 +62,22 @@ def m15_hour_rows(hour: str, mint: str = "migM", mig_off: int = 60, through_s: i
     return [create], trades
 
 
+def write_by_hour(root: Path, trades: list[dict]) -> None:
+    """Rows go to the hour file of their block time (a row far past its file's hour is rejected by the worker)."""
+    from datetime import datetime, timezone
+
+    by: dict[str, list[dict]] = {}
+    for r in trades:
+        by.setdefault(datetime.fromtimestamp(r["block_time"], tz=timezone.utc).strftime("%Y-%m-%dT%H"), []).append(r)
+    for h, rows in by.items():
+        write_zst_jsonl(root / "trades" / f"trades-{h}.jsonl.zst", rows)
+
+
 def write_m15_root(root: Path, hour_idx: int = 10, mig_off: int = 60, through_s: int = 7200, mint: str = "migM") -> str:
     write_fast_format_root(root, ex.POOL_HOURS, {})
     h = ex.POOL_HOURS[hour_idx]
     creates, trades = m15_hour_rows(h, mint, mig_off, through_s)
-    write_zst_jsonl(root / "trades" / f"trades-{h}.jsonl.zst", trades)
+    write_by_hour(root, trades)
     write_zst_jsonl(root / "creates" / f"creates-{h}.jsonl.zst", creates)
     write_view_sha256(root)
     return h
@@ -452,8 +463,7 @@ class EndToEndTests(unittest.TestCase):
             write_pool_b(t2 / "live")
             creates, trades = m15_hour_rows(h, "bM", 60, 7200)
             for r in trades:
-                r.pop("block_time")
-                r["event_ts"] = 1
+                r["event_ts"] = r.pop("block_time")  # pool B shape: event_ts only
             write_zst_jsonl(t2 / "live" / "trades" / f"trades-{h}.jsonl.zst", trades)
             write_view_sha256(t2 / "live")
             self.assertEqual(run_main(argv_for(t2, "run-001")), 0)
@@ -463,18 +473,22 @@ class EndToEndTests(unittest.TestCase):
             self.assertNotIn("bM", (out / "censored.jsonl").read_text())
 
     def test_two_spawned_workers_give_the_same_table_as_one(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            specs = tab.plan_pools({"fast": self.td / "fast", "insample": self.td / "ins", "live": self.td / "live"}, None, Path(td), (1, 4, 8))
+        self.assertGreaterEqual(len(specs), 2)  # a real pool, not a single chunk run in-process
         argv = [a if a != "1" else "2" for a in argv_for(self.td, "run-w2")]
         self.assertEqual(argv[argv.index("--max-workers") + 1], "2")
         self.assertEqual(run_main(argv), 0)
-        if not (self.td / "out" / "run-001" / "table.md5").exists():
-            self.assertEqual(run_main(argv_for(self.td, "run-001")), 0)
-        self.assertEqual((self.td / "out" / "run-w2" / "table.md5").read_text(), (self.td / "out" / "run-001" / "table.md5").read_text())
-        self.assertEqual((self.td / "out" / "run-w2" / "table.jsonl").read_text(), (self.td / "out" / "run-001" / "table.jsonl").read_text())
+        self.assertEqual(run_main(argv_for(self.td, "run-w1")), 0)
+        self.assertEqual((self.td / "out" / "run-w2" / "table.md5").read_text(), (self.td / "out" / "run-w1" / "table.md5").read_text())
+        self.assertEqual((self.td / "out" / "run-w2" / "table.jsonl").read_text(), (self.td / "out" / "run-w1" / "table.jsonl").read_text())
 
     def test_tape_ending_before_the_exit_is_counted_not_scored(self) -> None:
+        # last pool hour, migration 2000 s in: T = 2900 s, the cap runs past the hour, and no sweep can resolve it
+        # before the final one (the hour end, 3600 s, is before T + the longest exit). The global tape ends at 3500 s.
         with tempfile.TemporaryDirectory() as td2:
             t2 = Path(td2)
-            h = write_m15_root(t2 / "fast", through_s=1_000)  # the global tape ends 100 s after T (T = +960 s)
+            write_m15_root(t2 / "fast", hour_idx=len(ex.POOL_HOURS) - 1, mig_off=2000, through_s=1500)
             write_pool_c(t2 / "ins")
             write_pool_b(t2 / "live")
             self.assertEqual(run_main(argv_for(t2, "run-001")), 0)
@@ -484,8 +498,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual({c["entry_land_k"]: c["reason"] for c in cens}, {1: "cap_past_tape", 4: "cap_past_tape", 8: "cap_past_tape"})
             counts = json.loads((out / "trigger_counts.json").read_text())
             self.assertEqual(counts["triggers_total"], 1)
-            self.assertEqual(counts["by_day"][json.loads((out / "censored.jsonl").read_text().splitlines()[0])["day"]]["by_d"]["4"]["censored"], 1)
-            self.assertTrue(h)
+            self.assertEqual(counts["by_day"][cens[0]["day"]]["by_d"]["4"]["censored"], 1)
 
     def test_a_trigger_close_to_the_pool_end_is_kept_and_flagged(self) -> None:
         # last pool hour; migration 860 s in, so T + 30 min + 2 d 400 ms + 60 s is past the end of the run (3600 s) for every d,
@@ -512,7 +525,7 @@ class EndToEndTests(unittest.TestCase):
         write_fast_format_root(view, hours, {})
         h = hours[1]
         creates, trades = m15_hour_rows(h, "xm1", 60, 7200)
-        write_zst_jsonl(view / "trades" / f"trades-{h}.jsonl.zst", trades)
+        write_by_hour(view, trades)
         write_zst_jsonl(view / "creates" / f"creates-{h}.jsonl.zst", creates)
         write_view_sha256(view)
         set_mtime(view / "VIEW.sha256", "2026-10-04T10:00:00Z")

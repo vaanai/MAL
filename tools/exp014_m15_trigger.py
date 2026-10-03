@@ -64,6 +64,7 @@ Exclusion flag (item 11)
 from __future__ import annotations
 
 import bisect
+import functools
 import json
 import os
 import sys
@@ -120,13 +121,23 @@ M15_FEATURE_NAMES: list[str] = [
 FEATURE_NAMES: list[str] = EXP012_FEATURE_NAMES + M15_FEATURE_NAMES
 assert len(EXP012_FEATURE_NAMES) == 18 and len(FEATURE_NAMES) == 27
 
-COUNTER_NAMES = ("migrations", "dropped_other_pool", "no_pool_rows", "no_side_rows", "no_clock_rows", "unparsed_rows", "pumpswap_before_bond_rows")
+COUNTER_NAMES = (
+    "migrations", "dropped_other_pool", "no_pool_rows", "no_side_rows", "no_clock_rows", "unparsed_rows", "pumpswap_before_bond_rows",
+    "late_rows_after_scored", "non_home_mint_rows", "non_trade_rows", "post_mig_bond_rows", "bad_json_lines", "clock_past_hour_rows",
+)
+# A row whose clock is more than this past the end of the hour file being read is rejected and counted.
+CLOCK_PAST_HOUR_MS = 600_000
 
 Win = tuple  # (t, slot, tx_index, event_index, side|None, sol_lamports, trader|None, quote, base)
 
 
+@functools.lru_cache(maxsize=4096)
+def _day_of_hour(hour_index: int) -> str:
+    return datetime.fromtimestamp(hour_index * 3600, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
 def _utc_day(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+    return _day_of_hour(ms // 3_600_000)
 
 
 # --- global slot clock -----------------------------------------------------------
@@ -327,7 +338,9 @@ class M15Mint:
             return False  # any other row before migration (create-type etc.) carries no feature
         if venue == "pumpswap" and parsed is not None:
             self._pool_print(row, parsed[1], t_ms, first=False)
-        # a bonding row after the migration is neither a feature (EXP-012 stops at the migration) nor a pool fill
+        if venue == "pump_bonding":
+            # neither a feature (EXP-012 stops at the migration) nor a pool fill
+            self.counters.bump("post_mig_bond_rows", _utc_day(t_ms))
         return False
 
     def _pool_print(self, row: dict[str, Any], pr: TapePrint, t_ms: int, first: bool) -> None:
@@ -412,11 +425,15 @@ def score_entry(
         return None, {"mint": mint_id, "day": trig.day, "mig_day": trig.mig_day, "trigger_ms": T, "entry_land_k": d, "reason": reason}
 
     def gap_hit(end_ms: int) -> bool:
-        return any(T < g <= end_ms for g in gap_starts_ms)
+        # E2: a missing hour that starts anywhere in (mig_t, exit] leaves the pool state (the window, the spot
+        # at T, the entry state) stale or the tape incomplete, so the result is censored, not scored.
+        return any(trig.mig_t < g <= end_ms for g in gap_starts_ms)
 
     s_t = gs.max_slot_le(T)
     if s_t is None:
         return cens("no_global_slot")
+
+    mark_skipped = False  # True when the post-buy mark is not positive: the tp/sl scan is skipped (cap exit)
 
     def row(outcome: str, filled: bool, status: int, gross: int, net0: int, flat: float, press: float, entry_slot: int | None, landing: int, exit_ms: int, s_cap: int | None) -> tuple[Any, Any]:
         if gap_hit(exit_ms):
@@ -444,6 +461,7 @@ def score_entry(
             "label": 1 if press > 0 else 0,
             "exit_ms": exit_ms,
             "excluded_by_time": excluded_by_time(T, d, pool_end_ms, pool_gap_starts_ms),
+            "mark_skipped": mark_skipped,
             "features": trig.features,
         }, None
 
@@ -469,6 +487,7 @@ def score_entry(
 
     hit: TapePrint | None = None
     outcome = "cap"
+    mark_skipped = mark <= 0
     if mark > 0:
         for pr in fills[idx + 1 :]:
             if pr.t_recv_ms > deadline:
@@ -541,6 +560,31 @@ def row_clock_ms(row: dict[str, Any]) -> int | None:
         if isinstance(v, int) and not isinstance(v, bool):
             return v * 1000
     return None
+
+
+class CountingTrades:
+    """`tools.latency_curve._iter_trades` with the decode failures counted instead of swallowed.
+    A line that is not JSON, or JSON that is not an object, adds to `bad`."""
+
+    def __init__(self) -> None:
+        self.bad = 0
+
+    def __call__(self, path: Path) -> Any:
+        from tools.latency_curve import _open_text
+
+        for line in _open_text(path):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                self.bad += 1
+                continue
+            if isinstance(row, dict):
+                yield row
+            else:
+                self.bad += 1
 
 
 def row_is_tape_print(row: dict[str, Any]) -> bool:
@@ -618,37 +662,59 @@ def run_worker_m15(
         n_cens += len(cens)
         trk.mint.release()
         del hot[mint_id]
+        scored.add(mint_id)
 
-    def sweep(final: bool) -> None:
+    scored: set[str] = set()
+
+    def sweep(watermark_ms: int | None) -> None:
+        """E1. Rows inside an hour file are NOT time-ordered (PumpSwap rows can trail the running max by
+        about 1,600 s), so a mid-file sweep may only trust the START of the current hour as the tape
+        clock: a mint is resolved when that watermark is past T + the longest exit, and the tape is
+        scored as read through the watermark. End-of-hour sweeps pass the hour's end. `None` is the final
+        sweep: everything pending is resolved against the last time seen."""
         for mint_id in list(pending):
             T = pending[mint_id].T
             assert T is not None
-            if final or now_ms >= T + max_exit_ms:
+            if watermark_ms is None:
                 resolve(mint_id, now_ms)
+            elif watermark_ms >= T + max_exit_ms:
+                resolve(mint_id, watermark_ms)
 
+    counting = row_iter_fn is _iter_trades
+    if counting:
+        row_iter_fn = CountingTrades()
     lines = 0
     for hour in hours:
         print(f"[w{worker_id}] hour={hour['hour']} hot={len(hot)} pending={len(pending)} rows={n_rows} rss_mb={_rss_mb()}", file=sys.stderr, flush=True)
+        hour_start = _hour_key_ms(str(hour["hour"]))
+        hour_end = hour_start + 3_600_000
+        hour_day = str(hour["hour"])[:10]
+        bad_before = row_iter_fn.bad if counting else 0
         for row in row_iter_fn(hour["trade"]):
             lines += 1
             if lines % SWEEP_EVERY_LINES == 0:
-                sweep(False)
+                sweep(hour_start)  # mid-file: the start of the current hour, never now_ms
             t_ms = row_clock_ms(row)  # the block clock (else event_ts); t_recv_ms is never read
             if t_ms is None:
-                counters.bump("no_clock_rows", str(hour["hour"])[:10])  # dropped and counted per day
+                counters.bump("no_clock_rows", hour_day)  # dropped and counted per day
+                continue
+            if t_ms > hour_end + CLOCK_PAST_HOUR_MS:
+                counters.bump("clock_past_hour_rows", hour_day)  # more than 10 min past the file's hour: rejected
                 continue
             row["t_recv_ms"] = t_ms
             if t_ms > now_ms:
                 now_ms = t_ms
+            if not row_is_tape_print(row):
+                counters.bump("non_trade_rows", _utc_day(t_ms))
+                continue
             slot = row.get("slot")
-            if row_is_tape_print(row) and isinstance(slot, int) and not isinstance(slot, bool):
+            if isinstance(slot, int) and not isinstance(slot, bool):
                 gs.add(t_ms, slot)
             mint_id = row.get("mint")
             trk = hot.get(mint_id) if isinstance(mint_id, str) else None
-            if trk is None or not row_is_tape_print(row):
-                # Not a tracked mint (mints created outside this chunk's home hours are scored by
-                # their own chunk), or not a trade row. By design, not a loss: the global slot clock
-                # above already saw the row.
+            if trk is None:
+                # A row of a mint this chunk does not track. The global slot clock above already saw it.
+                counters.bump("late_rows_after_scored" if mint_id in scored else "non_home_mint_rows", _utc_day(t_ms))
                 continue
             parsed = print_from_trade_row(row)
             if trk.feed(row, parsed, t_ms):
@@ -656,9 +722,11 @@ def run_worker_m15(
                 day = _utc_day(trk.T)
                 triggers_by_day[day] = triggers_by_day.get(day, 0) + 1
                 pending[mint_id] = trk
-        sweep(False)
+        if counting and row_iter_fn.bad > bad_before:
+            counters.bump("bad_json_lines", hour_day, row_iter_fn.bad - bad_before)
+        sweep(hour_end)  # end of the hour: its end
         _trim_heap()
-    sweep(True)
+    sweep(None)
     for fh in (rows_fh, cens_fh):
         if fh is not None:
             fh.close()
