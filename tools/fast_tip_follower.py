@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from observe.trade_decode import decode_pool_account
+from tools.pumpswap_tx import parse_pool_account
 from tools.pump_history_backfill import (
     CreditBudget,
     RateLimiter,
@@ -99,6 +100,20 @@ class LRUPools(OrderedDict):
             self.move_to_end(key)
             return super().__getitem__(key)
         return default
+
+
+V_RETRY_S = 30.0  # first retry of a pool whose V could not be read (never stamped 0); doubles per failure
+V_RETRY_CAP_S = 300.0
+
+
+def decode_pool_virtual(data: bytes) -> int | None:
+    """The pool's virtual quote reserve V (lamports), read by `pumpswap_tx.parse_pool_account`.
+    None when the account is too short or has no readable tail. Never 0 as a stand-in."""
+    try:
+        v = parse_pool_account(data).get("virtual_quote_reserves")
+    except (ValueError, TypeError):
+        return None
+    return int(v) if isinstance(v, int) and v >= 0 else None
 
 
 def hour_of_ms(ms: int) -> str:
@@ -193,6 +208,7 @@ class TipFollower:
         get_tip: Callable[[], int],
         creates_dir: Path | None = None,
         lookup: Callable[[list[str]], dict[str, tuple[str, str]]] | None = None,
+        v_lookup: Callable[[list[str]], dict[str, int | None]] | None = None,
         credits: Callable[[], int] = lambda: 0,
         clock_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         sleep: Callable[[float], None] = time.sleep,
@@ -212,6 +228,13 @@ class TipFollower:
         self.fetch = fetch
         self.get_tip = get_tip
         self.lookup = lookup or (lambda pools: {})
+        # V (virtual quote reserve) per PumpSwap pool: pool -> lamports, or None when the account was
+        # read and has no V. Unknown pools get a getMultipleAccounts read; failures are not cached.
+        self.v_lookup = v_lookup or getattr(self.lookup, "v_lookup", None)
+        self._v_seen: dict[str, int | None] = getattr(self.lookup, "v_seen", None) or {}
+        self.v_cache: LRUPools = LRUPools(pool_cap)
+        self._v_retry_at: dict[str, float] = {}
+        self._v_fails: dict[str, int] = {}
         self.credits = credits
         self.clock_ms = clock_ms
         self.sleep = sleep
@@ -421,6 +444,7 @@ class TipFollower:
             for kind in KINDS:
                 rows[kind] = list(decoded.get(kind) or [])
             rows["trades"].extend(ready)
+            self._stamp_virtual(rows["trades"])
             for kind in KINDS:
                 for r in rows[kind]:
                     r["t_recv_ms"] = t_ms
@@ -457,6 +481,58 @@ class TipFollower:
                            "lookup_failed": self._lookup_failed, "t_recv_ms": t_ms})
         self.last_t_recv_ms = t_ms
         self._count_hour(hour, rows, outcome)
+
+    def _stamp_virtual(self, trades: list[dict[str, Any]]) -> None:
+        """Add `virtual_quote_reserve` (lamports, int, or null if unknown) to every PumpSwap trade row."""
+        swaps = [r for r in trades if r.get("venue") == "pumpswap"]
+        if not swaps:
+            return
+        self._drain_seen()
+        now = time.monotonic()
+        need: list[str] = []
+        for r in swaps:
+            pool = r.get("pool")
+            if isinstance(pool, str) and pool not in self.v_cache and pool not in need \
+                    and self._v_retry_at.get(pool, 0.0) <= now:
+                need.append(pool)
+        if need and self.v_lookup is not None:
+            for off in range(0, len(need), 100):
+                chunk = need[off : off + 100]
+                try:
+                    got = self.v_lookup(chunk)
+                except Exception as exc:  # network: rows stay null, retried later
+                    self.lookup_failures += 1
+                    self._log_limited("v_lookup", f"pool V lookup failed: {type(exc).__name__}")
+                    got = {}
+                for pool in chunk:
+                    self._note_v(pool, got.get(pool), now)
+        for r in swaps:
+            pool = r.get("pool")
+            v = self.v_cache.get(pool) if isinstance(pool, str) else None
+            r["virtual_quote_reserve"] = v if isinstance(v, int) else None
+
+    def _note_v(self, pool: str, v: int | None, now: float) -> None:
+        """A known V is never overwritten by a failed or empty read. No V is not cached: retry with
+        bounded backoff (a too-short account fetched mid-creation must not stick as null)."""
+        if isinstance(v, int):
+            self.v_cache[pool] = v
+            self._v_retry_at.pop(pool, None)
+            self._v_fails.pop(pool, None)
+            return
+        if pool in self.v_cache:
+            return
+        n = self._v_fails.get(pool, 0)
+        self._v_fails[pool] = n + 1
+        self._v_retry_at[pool] = now + min(V_RETRY_CAP_S, V_RETRY_S * (2 ** n))
+        if len(self._v_fails) > 200_000:  # bound the bookkeeping
+            self._v_fails.clear()
+            self._v_retry_at.clear()
+
+    def _drain_seen(self) -> None:
+        now = time.monotonic()
+        while self._v_seen:
+            pool, v = self._v_seen.popitem()
+            self._note_v(pool, v, now)
 
     def _safe_lookup(self, pools: list[str]) -> dict[str, tuple[str, str]]:
         try:
@@ -628,30 +704,50 @@ def make_rpc(
             return None, code
         raise TransientError(f"getBlock no block code={code}")
 
-    def lookup(pools: list[str]) -> dict[str, tuple[str, str]]:
-        """getMultipleAccounts through the same limiter and credit budget as getBlock."""
-        if not pools:
-            return {}
+    v_seen: dict[str, int | None] = {}
+
+    def _accounts(pools: list[str]) -> tuple[dict[str, tuple[str, str]], dict[str, int | None]]:
         result, _w, _c = rpc_call(
             url, "getMultipleAccounts", [pools, {"encoding": "base64", "commitment": "confirmed"}],
             limiter, timeout=20.0, budget=budget,
         )
         values = result.get("value") if isinstance(result, dict) else None
         found: dict[str, tuple[str, str]] = {}
+        vs: dict[str, int | None] = {}
         if not isinstance(values, list):
-            return found
+            return found, vs
         for pool, entry in zip(pools, values):
             data = entry.get("data") if isinstance(entry, dict) else None
             if not (isinstance(data, list) and data and isinstance(data[0], str)):
                 continue
             try:
-                decoded = decode_pool_account(base64.b64decode(data[0]))
+                raw = base64.b64decode(data[0])
+                decoded = decode_pool_account(raw)
             except (ValueError, binascii.Error):
                 continue
             if decoded is not None:
                 found[pool] = (decoded["base_mint"], decoded["quote_mint"])
+                vs[pool] = decode_pool_virtual(raw)
+        return found, vs
+
+    def lookup(pools: list[str]) -> dict[str, tuple[str, str]]:
+        """getMultipleAccounts through the same limiter and credit budget as getBlock.
+        V of every decoded pool is kept in `lookup.v_seen` for the follower."""
+        if not pools:
+            return {}
+        found, vs = _accounts(pools)
+        v_seen.update(vs)
         return found
 
+    def v_lookup(pools: list[str]) -> dict[str, int | None]:
+        """V for pools already in the mint cache (primed from CreatePool logs). Pools whose account
+        was not returned are absent from the result, so the caller retries them."""
+        if not pools:
+            return {}
+        return _accounts(pools)[1]
+
+    lookup.v_seen = v_seen  # type: ignore[attr-defined]
+    lookup.v_lookup = v_lookup  # type: ignore[attr-defined]
     return fetch, get_tip, (lambda: budget.used), lookup
 
 

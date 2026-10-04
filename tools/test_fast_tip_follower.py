@@ -573,3 +573,124 @@ def test_getblock_version_matches_walker(monkeypatch):
     walker = _getblock_params(5, full=True)[1]
     assert seen["p"][1]["maxSupportedTransactionVersion"] == walker["maxSupportedTransactionVersion"] == 1
     assert seen["p"][1]["transactionDetails"] == "full"
+
+
+# ---------------------------------------------------------------- PumpSwap virtual quote reserve (V)
+
+V_LAMPORTS = 17_580_000_000
+
+
+def _pool_account(v: int | None, short_tail: bool = False) -> bytes:
+    disc = bytes.fromhex("f19a6d0411b16dbc")
+    body = bytes([1]) + (0).to_bytes(2, "little") + b"".join(bytes([i]) * 32 for i in range(1, 7))
+    body += (5).to_bytes(8, "little") + bytes([9]) * 32
+    if v is not None:
+        body += b"\x00\x00" + v.to_bytes(8, "little")
+    elif not short_tail:
+        body += b"\x00" * 10
+    return disc + body
+
+
+def test_decode_pool_virtual_reads_v_and_never_zero_fills():
+    from tools.pumpswap_tx import parse_pool_account
+
+    raw = _pool_account(V_LAMPORTS)
+    assert ftf.decode_pool_virtual(raw) == V_LAMPORTS == parse_pool_account(raw)["virtual_quote_reserves"]
+    assert ftf.decode_pool_virtual(_pool_account(0)) == 0  # a real on-chain 0 is kept as 0
+    assert ftf.decode_pool_virtual(_pool_account(None, short_tail=True)) is None  # no tail: unknown
+    assert ftf.decode_pool_virtual(b"\x00" * 50) is None
+
+
+def _swap_block(slot):
+    blk = _block(slot)
+    blk["transactions"][0]["meta"]["logMessages"] = [_line("pumpswap_sell_event.b64")]
+    return blk
+
+
+def test_make_rpc_lookup_records_v_and_v_lookup_returns_it(monkeypatch):
+    import base64
+
+    good, bare = _pool_account(V_LAMPORTS), _pool_account(None, short_tail=True)
+
+    def fake(url, method, params, limiter, timeout=60.0, budget=None, header_out=None):
+        enc = lambda b: {"data": [base64.b64encode(b).decode(), "base64"]}
+        return {"value": [enc(good), enc(bare), None]}, 0, None
+
+    monkeypatch.setattr(ftf, "rpc_call", fake)
+    *_, lookup = ftf.make_rpc("https://example.invalid/?api-key=K", 1000.0)
+    found = lookup(["P1", "P2", "P3"])
+    assert set(found) == {"P1", "P2"}
+    assert lookup.v_seen == {"P1": V_LAMPORTS, "P2": None}
+    assert lookup.v_lookup(["P1", "P2", "P3"]) == {"P1": V_LAMPORTS, "P2": None}  # P3 absent: retried later
+
+
+def test_pumpswap_trade_rows_carry_virtual_quote_reserve(tmp_path):
+    from observe.trade_decode import WSOL_MINT
+
+    asked = []
+
+    def lookup(pools):
+        return {pools[0]: ("Mint111", WSOL_MINT)}
+
+    def v_lookup(pools):
+        asked.append(list(pools))
+        return {pools[0]: V_LAMPORTS}
+
+    f = _follower(tmp_path, Rpc(tip=6, script={5: [_swap_block(5)], 6: [_swap_block(6)]}), lookup=lookup, v_lookup=v_lookup)
+    _seed(f, 4)
+    f.step()
+    rows = _all(tmp_path)
+    assert len(rows) == 2 and all(r["virtual_quote_reserve"] == V_LAMPORTS for r in rows)
+    assert all(type(r["virtual_quote_reserve"]) is int for r in rows)
+    assert len(asked) == 1  # cached per pool: one read for both rows
+
+
+def test_unreadable_v_is_null_not_zero_and_is_retried(tmp_path):
+    from observe.trade_decode import WSOL_MINT
+
+    answers = [{}, {}]  # the first two reads return nothing for the pool
+
+    def v_lookup(pools):
+        return answers.pop(0) if answers else {pools[0]: V_LAMPORTS}
+
+    f = _follower(tmp_path, Rpc(tip=5, script={5: [_swap_block(5)]}),
+                  lookup=lambda p: {p[0]: ("Mint111", WSOL_MINT)}, v_lookup=v_lookup)
+    _seed(f, 4)
+    f.step()
+    rows = _all(tmp_path)
+    assert rows[0]["virtual_quote_reserve"] is None and "virtual_quote_reserve" in rows[0]
+    pool = rows[0]["pool"]
+    assert pool not in f.v_cache  # a failed read is not cached
+    f._v_retry_at.clear()
+    rows2 = [{"venue": "pumpswap", "pool": pool}]
+    f._stamp_virtual(rows2)
+    assert rows2[0]["virtual_quote_reserve"] is None  # second empty answer
+    f._v_retry_at.clear()
+    f._stamp_virtual(rows2)
+    assert rows2[0]["virtual_quote_reserve"] == V_LAMPORTS
+
+
+def test_no_lookup_means_null_and_bonding_rows_untouched(tmp_path):
+    f = _follower(tmp_path, Rpc(tip=5, script={5: [_block(5)]}))
+    _seed(f, 4)
+    f.step()
+    assert all("virtual_quote_reserve" not in r for r in _all(tmp_path))
+    rows = [{"venue": "pumpswap", "pool": "X"}]
+    f._stamp_virtual(rows)
+    assert rows == [{"venue": "pumpswap", "pool": "X", "virtual_quote_reserve": None}]
+
+
+def test_known_v_is_never_overwritten_and_no_v_is_retried_with_backoff(tmp_path):
+    f = _follower(tmp_path, Rpc(tip=4))
+    f._note_v("P", V_LAMPORTS, 0.0)
+    f._note_v("P", None, 1.0)  # a failed re-read does not erase a known V
+    assert f.v_cache.get("P") == V_LAMPORTS
+    f._note_v("Q", None, 0.0)  # decoded without V: not cached, retried
+    assert "Q" not in f.v_cache and f._v_retry_at["Q"] == ftf.V_RETRY_S
+    f._note_v("Q", None, 0.0)
+    assert f._v_retry_at["Q"] == 2 * ftf.V_RETRY_S
+    for _ in range(10):
+        f._note_v("Q", None, 0.0)
+    assert f._v_retry_at["Q"] == ftf.V_RETRY_CAP_S
+    f._note_v("Q", V_LAMPORTS, 5.0)  # later read succeeds
+    assert f.v_cache.get("Q") == V_LAMPORTS and "Q" not in f._v_retry_at
