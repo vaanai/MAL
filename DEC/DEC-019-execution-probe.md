@@ -63,6 +63,12 @@ EXP-012's edge rests on execution: its selected entries filled 98.9% of the time
   - has no other secret;
   - has outbound network access only.
 
+- *Wallet created 2026-10-04 by Helm (§6 item 5, first half):*
+  - Public key `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk`.
+  - Installed from a root-owned clone at `d5085b48aa6ffa2eaf781b5ddae6481a7eca2cb3` (HEAD check ok, manifest verified). The four installed sha256s match the manager's manifest.
+  - `mal-live` is uid 999 (nologin, no extra groups). `/var/lib/mal-live` is mal-live 0700. The key is root:root 0400 in a root:root 0700 dir. Helm checked that neither Claude nor `mal-live` can read it.
+  - **Not funded.** Funding waits for a clean 6 h keyless dry run (§6 item 3). The live drop-in stays off until Helm checks its hashes against the deployed commit.
+
 ## 6. Before the first live send (all required)
 
 1. The keyless transaction builder and simulator (PR in progress) are merged.
