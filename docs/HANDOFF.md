@@ -1,148 +1,95 @@
-# Manager handoff 2026-10-04 (Manager 2-3 on mal-research-0 → next manager)
+# Manager handoff 2026-10-04 late (manager4 on mal-research-0)
 
-Replace this page at the next handoff; don't append to it. Read it first, then [LAB_STATE.md](../LAB_STATE.md) (last refreshed at #260; see the "Since LAB_STATE" section below), [CONSTITUTION.md](../CONSTITUTION.md), DEC-015, DEC-016 (Amendments 1–3), DEC-018, DEC-019, and the memory notes `profit-focus`, `pumpswap-virtual-reserve`, `execution-probe`, `exp012-forward-read`.
+Replace this page at the next handoff; don't append to it. Read it first, then [LAB_STATE.md](../LAB_STATE.md) (last refreshed at #260; the kill review refreshes it next), [CONSTITUTION.md](../CONSTITUTION.md), DEC-016 (Amendments 1–4), DEC-018, DEC-019, and the memory notes `profit-focus`, `exp012-latency-binding`, `pumpswap-virtual-reserve`, `execution-probe`, `exp012-forward-read`.
 
 Paper only. No key exists yet.
 
 ## Owner direction (2026-10-04)
 
-> "Get to profit in about a month. Be deliberate. Work from previous mistakes and take steps forward, not sideways. Build the edge, build a dataset around the bot, make good decisions, make them quick."
+> "Work like our lives depend on this working… test ideas we're genuinely curious about and think will work… learn from past mistakes."
 
-The critical path is **EXP-012 → forward read (~10-16) → DEC-016 Amendment 3 checks → owner yes → small live trial (DEC-018)**. In parallel, a **live execution probe** (DEC-019) measures real fills early.
+- The owner approved the **0.5 SOL live execution probe** (DEC-019) to run alongside paper.
+- The critical path is still EXP-012 → forward read (~10-16) → Am.3/Am.4 checks → owner → trial.
+- The probe measures real execution first.
 
-## THE big finding of this session: PumpSwap virtual quote reserve
+## Most important finding this session: entry latency under V
 
-- **What it is.** Every PumpSwap pool has a per-pool virtual quote reserve V, constant per pool. In about 69% of migrated pools V is about 17.584505 SOL; the rest have V ≈ 0. The swap math prices on `vault + V`.
-- **The gap.** Our tape's `quote_reserve`/`price_sol` and `tools/paper_curve_math.py` ignore V. V was present across all our data (2026-08-26..09-21). Proof: #280 `tools/pumpswap_virtual_history.py`, and a reconciliation over 54.9M prints.
-- **Size of the error.** At EXP-012's entry (mig slot+1, 0.5 SOL), paper credits about 19–20% too many tokens; real buys there come in at −1,943 bps. Exits are mispriced the other way.
-- **V-corrected re-score of EXP-012 (#281, r1)**, a correction analysis, not a new read:
+Lab note `ARTIFACTS/lab/exp012-latency-virtual-2026-10-04.md` (#292, quant-proof edited). This is exploration, not evidence.
 
-| Book | Metric | Frozen | Corrected |
-| --- | --- | --- | --- |
-| Spent one-shot block (n=451) | flat mean SOL/trade | 0.03487 | **0.02527** |
-| | flat CI lower bound | 3.62% | **1.79%** |
-| | pressure mean | 4.108% | **3.068%** |
-| | flat ex-top-3 SOL | 14.04 | **9.86** |
-| | gate | PASS | **still PASS** |
-| Exploration OOF (n=891) | flat mean | 7.432% | 6.040% |
-| | days positive | 9/9 | 9/9 |
-| Exploration, **unfiltered** baseline | flat | +0.133% | **−0.144%** |
+EXP-012 selected book under V pricing, pressure mean / CI90 lower bound, SOL per 0.5 SOL entry:
 
-  The unfiltered baseline flips negative, so the selection carries the edge.
-- **Review and merges.**
-  - **quant-proof verdict on #281:** OK with edits, as a **correction analysis only**. The findings are in the #281 comment.
-    - The gate's flat CI90 lower bound is 0.01875 → **0.00928 SOL**.
-    - The fifth positive day, 09-09, is only +0.0086 SOL.
-    - Fill flips explain 0.73 of the 4.33 SOL drop.
-    - The fee-tier ambiguity is bounded at ≤ 0.0005 SOL/trade and does not change the conclusion.
-    - No refit: the frozen book is the right test.
-    - Continuing to the 10-16 read and the probe is supported.
-  - **#281 is merged.**
-  - **DEC-016 Amendment 4 is merged (#282).** The FINAL run computes (A) the frozen book, which carries the verdict, and (B) the V-corrected book. **Live support requires (B)**, with a full V map, null-V guards, a fee-tier dual check and validation bars.
-- **Follow-ups (required):**
-  1. Fix `tools/pumpswap_virtual.py` `_pools_from_file`. It keeps only the first pool per mint (`setdefault`); collect every pool. This is needed for Amendment 4 §3.
-  2. Record the adapter commit in DEC-016 Amendment 4 §1 before 2026-10-16T00Z.
-  3. **r2** runs **outside MiScusi** as PID 3506243 (`python -m tools.exp012_virtual_rescore rescore --run-id r2`, from worktree `.claude/worktrees/agent-a5df37fa533ce6cea`; do not remove that worktree until r2 ends). It writes `/data/mal/exp012-virtual-rescore/r2/`. When it finishes, write a lab note with the exit mix and book (a) on the full V map.
-  4. Recompute the pressure CI90 lower bound with `book_stats`.
-- **Every older PumpSwap P&L number** in this lab, including migrate-direct, EXP-013/014 screens as built and DEC-017, is unverified until re-priced.
+| k | Pressure mean | CI90 lower bound |
+| ---: | ---: | ---: |
+| 1 | 0.01866 | 0.01114 |
+| 4 | 0.01332 | 0.00653 |
+| 6 | 0.01246 | 0.00541 |
+| 8 | 0.00769 | 0.00117 |
+| ≥ 12 | — | < 0 (every bound) |
 
-## State at 2026-10-04T05:45Z
+- **What it means:** a fast-0 k(p50) of about 8 or more slots makes live support unlikely even if the FINAL passes. Am.3 also delays exits and applies the trial terms.
+- **First thing after the runner is up:** measure k with the runner latency export and the probe's stage timestamps (`python -m tools.probe_executor --latency-report`).
+- **If k(p50) > ~6:** latency work comes first.
+  - The candidates are the tip follower's confirmed-getBlock lag and the runner's 300 ms holdback.
+  - The executor's own tail interval was already fixed in #293 (50 ms signal loop).
 
-### Running (MiScusi, session MALsession1, mal-research-0 unless noted)
+## Merged this session
 
-| Job | What | Notes |
-| --- | --- | --- |
-| #71 `j_XRdI7CrrMEa_JQ` | DEC-016 forward walk → `/data/mal/blocks/forward-1002` | Through 10-04T02, 0 issues, 486k credits. **Resubmit by ~10-09T15Z** (same command, params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
-| #94/#95/#96 | fresh-0808 walkers w1/w2/w3 (`[08-08T12, 08-14T12)`, reserved block, #261) | At 38/32/36 of 48 sealed. |
-| #97/#98/#99 | Verify jobs for fresh-0808 | Each runs `after` its walker. Check 0 flagged / 0 duplicates. |
-| PID 3506243 (not MiScusi) | #281 r2 re-score | See above. |
-
-### EXP-013 (graduation classifier)
-
-- Tooling is merged, with pre-run fixes #267 (sweep watermark) and #271 (screen.json before result.v1), recorded as Amendment 6 (#268, #272).
-- **The single screen job #102 was CANCELLED before it started** (10-04T03:17Z), because of the V finding. No try was spent: no tries line, `/data/mal/exp013-grad/` is empty.
-- **Before re-queueing:**
-  1. Write an EXP-013 Amendment 7 that the PumpSwap sell prices use V, via `tools/pumpswap_virtual_adapter.py` inside `exp013_grad_trigger`'s worker (new code, plan amendment, before any run).
-  2. Add tests.
-  3. Then queue the run. The view cutoff stays 10-04T12Z; all w1–w7 are verified before it.
-- The run script is `scripts/research/exp013-screen-run.sh <RUN_ID>`, one MiScusi job, 24 GB, 8 CPU.
-- **Prior: about 20% or less.** It is a backup, not the main effort.
-
-### EXP-014 (mig+15 PumpSwap selector)
-
-- Plan and Amendments 1–3 are merged (#263, #265, #266, #270). The table builder is merged (#264, #273); its late-row guard reads 0 on real data (debug #101).
-- **#269 (model and screen) is reviewed but NOT merged.** It is marked do-not-merge until the EXP-013 screen runs.
-- EXP-014 is entirely PumpSwap, so it **must get V pricing (plan amendment plus table-builder change) before its screen.** Its cutoff is 10-05T12Z for views; all w1–w7 are verified.
-- **Prior: about 10%.** It is cheap, but do not spend much more builder time on it.
-
-### EXP-015 (rolling retrain): parked
-
-#278 is a draft. quant-proof found the "model aging" motive unsupported by EXP-012's own data, and this is the second try of a family that failed once (DEC-017 (a)). Do not revive it unless something new supports it.
-
-### Feed and runner (DEC-015)
-
-- **The free two-socket public tape FAILED coverage** over 10-03T20–22: 93.869% of chain trades (#274). The cause is HTTP 413 rejections and 1006 closes on the public RPC.
-- **The owner chose option A, a getBlock tip follower** (#275). It is merged as `tools/fast_tip_follower.py` + `mal-fast-tip-follower.service` (#276), and is not installed. It also writes observe-format creates, so the runner switches with **config only**.
-- **Nothing is installed on fast-0 yet.** The installer refuses before 2026-10-05T05:00Z.
-- **Heartbeat sampler and downtime tool** are merged (#259). After install, start the heartbeat service once by hand and check that `pid` is non-null **before** enabling its timer.
-- Daily coverage checks run `tools.tape_coverage` against forward-1002, as jobs on fast-0 (≤1.9 GB). Copy job #103.
-
-### Live track (DEC-018 proposed, DEC-019 approved in principle)
-
-- **Trial terms** (owner, #262): 0.5 SOL, 3 concurrent, 500k lamports priority per side, no tip.
-- **DEC-016 Amendment 3 tooling is merged:**
-  - #257 latency export and runner compare rows 0–2;
-  - #258 forward sensitivity re-score;
-  - #259 heartbeat.
-- **Keyless PumpSwap builder and simulator** are merged (#280): `tools/pumpswap_tx.py`, `tools/pumpswap_simulate.py`. They reproduce real buys and sells byte for byte and add `virtual_quote_reserves` parsing.
-- **Execution probe (DEC-019, #279):**
-  - 30 × 0.05 SOL on EXP-012 runner signals, PumpSwap only, at most 3 concurrent, 0.25 SOL loss cap, 4 days, 0.5 SOL deposit.
-  - **Helm or the owner** generates the key as user `mal-live` (script still to write: `scripts/mal-fast/make-probe-wallet.sh`). The manager never sees the key.
-  - Preconditions, in DEC-019 §6:
-    1. the executor (signer/sender, every limit coded) is built and passes reviewer plus security review;
-    2. a 6 h keyless dry run on live signals with 0 errors;
-    3. the runner is up;
-    4. the wallet is funded;
-    5. a withdraw address is named.
-  - The executor must price with V.
-
-### Owner questions open in MiScusi (no close tool on the manager side; ask the owner to dismiss answered ones)
-
-| Question | Status |
+| PR | What |
 | --- | --- |
-| `q_YBNB8Qi1lR_WjQ` DEC-018 five live decisions | Due ~10-14, open. |
-| `q_8eiu9qbtVa7TcA` execution probe | Answered "approve" in chat (DEC-019); the owner should dismiss it. |
-| `q_Wy3S6eK9bN74Ng` trial terms | Answered "defaults" (#262); dismiss. |
-| `q_lVujDVpXz-K3cg` debug-dir deletes | Done by the owner; dismiss. |
-| `q_Oj6H5DPXKSswZg` feed | Answered "A". |
+| #284 | V map: every pool per mint (Am.4 §3). |
+| #285 | r2 re-score lab note. Pressure-leg CI90 lower bound **0.00604** (spent block, V). Am.4 §1 adapter commit recorded. |
+| #287, #292 | Latency × V wrapper and lab note. |
+| #288 | **Runner + tip follower V pricing** (`pumpswap_virtual: require` in the fast config). |
+| #286, #290, #293 | **Probe executor**: dry run + live (two switches), DEC-019 limits clamped, pre-sign whitelist, canonical pool, 50 ms signal loop, stage timestamps. |
+| #289, #291 | **Wallet custody**. Pinned sha for Helm: `d5085b48aa6ffa2eaf781b5ddae6481a7eca2cb3`. |
+
+**#288 details:**
+- md5 equivalence with the flag off was EQUIVALENT (job #111: 95,948 decision rows and 18,030 position rows).
+- EXP-012 features are unchanged; this is proved by test.
+
+**#286, #290, #293 details:**
+- Live requires both config `mode: live` and `--live`.
+- The pre-sign whitelist means RPC data can't pick programs or destinations.
+- **Bug found:** `pool_v2(mint)` is NOT the pool. `tx.canonical_pool(mint)` matched the tape for 95/100 sampled mints.
+
+**#289, #291 custody (final, owner + Helm):**
+- The key is at `/etc/mal-probe/probe-wallet.json`, root:root 0400.
+- The executor gets it only via systemd `LoadCredential` in the live drop-in.
+- Withdraw is root-only, from a pinned root install with hashed wheels.
+- Repo deny rules cover `//etc/mal-probe/**` and `/run/credentials`.
+
+## In flight
+
+| Item | State |
+| --- | --- |
+| Job #108 (fast-0) | Kill-review SNAPSHOT. Sleeps until 05:00:30Z, then copies Oracle read-only. Then submit the score job on research-0 with `KR_EXPECT_MANIFEST_SHA256` (runbook `docs/runbooks/kill-review-2026-10-05.md`). The 9 Oracle books are V-less: report V-blindness as a caveat and never promote on V-less numbers. |
+| Job #71 | Forward walk forward-1002. **Resubmit by ~10-09T15Z** (same command, params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
+| Helm | Moving the Console off fast-0, fast-0 deny lines and auditd watch, then the wallet script at the pinned sha with the manifest. Sends **only the public key**. The owner relays. Also add `Read(//run/credentials/**)` and `Bash(*run/credentials*)` on fast-0. |
+| Owner | Withdraw address (after Phantom setup). Funding 0.5 SOL only after a clean 6 h keyless dry run. DEC-018 five decisions q_YBNB8Qi1lR_WjQ due ~10-14. |
 
 ## Next steps, in order
 
-1. **V follow-ups:** the `_pools_from_file` fix, the r2 lab note, and the adapter commit recorded in DEC-016 Amendment 4. #281 and Amendment 4 (#282) are merged.
-2. **2026-10-05T05:00Z kill review.**
-   - Follow `docs/runbooks/kill-review-2026-10-05.md`: snapshot job on fast-0, copy `MANIFEST_SHA256` into the score job on research-0, then quant-proof, then LAB_STATE, then `review_windows: []`.
-   - The 9 Oracle books are priced with the V-less model. Report V-blindness as a caveat on any book that trades PumpSwap, and do not promote on V-less numbers.
-3. **Right after the kill review**, install on fast-0 with `--commit <main sha>`:
-   1. observe + runner + heartbeat + tip follower;
-   2. build the venv (pins verified for cp312 x86_64);
-   3. start the tip follower;
-   4. check its coverage against forward-1002 over 2 h;
-   5. point the runner `tape_dir`/`creates_dir` at the tip dirs;
-   6. start the runner;
-   7. heartbeat check, then enable the timer;
-   8. 2-day lag probation;
-   9. record it all in LAB_STATE.
-4. **Executor PR for the probe:** signing, sending and limits, priced with V. Reviewer plus security review, then the 6 h keyless dry run, then ask Helm to make the key and the owner to fund it.
-5. **EXP-013 and EXP-014.** Add V-pricing amendments and code, then their single screens. Both are low priority.
-6. **About 10-09T15Z:** resubmit forward walk #71.
-7. **About 10-16T02Z:** EXP-012 FINAL read, then quant-proof, then the V-corrected book (Amendment 4), then the Amendment 3 (a) sensitivity at measured latency and the (b) runner comparison, then the owner.
+1. **05:00Z kill review.** Snapshot #108, then the score job, then quant-proof, then LAB_STATE, notebook and console. Set `review_windows: []`.
+2. **Right after it, install on fast-0** (paper only; the owner confirmed it is not blocked by Helm's lockdown). `scripts/mal-fast/install-fast-forward-paper.sh --commit <main sha>`:
+   1. Start the tip follower.
+   2. Check 2 h coverage against forward-1002.
+   3. Point the runner `tape_dir`/`creates_dir` at the tip dirs. This is required: `pumpswap_virtual: require` skips `no_v` on old-tape rows.
+   4. Start the runner.
+   5. Check the heartbeat, then enable the timers.
+   6. Record the restart in LAB_STATE.
+3. **Install the probe executor in dry-run mode** (no key; the unit has no LoadCredential).
+   - Before starting it, create `mal-live` and `/var/lib/mal-live` (0700), or ask Helm whether their wallet script run should do it first.
+   - Verify `mal-live` can read `decisions.jsonl` and that the bind survives the runner's daily restart.
+   - Run 6 h. Need 0 build errors and `live_validate_err` empty on real pools.
+   - Then run `--latency-report`.
+4. **Measure k(p50)/k(p90).** This decides the latency work and frames the owner conversation.
+5. **When Helm sends the pubkey and the dry run is clean,** ask the owner to fund 0.5 SOL. Helm enables the live drop-in; post sha256 of `scripts/mal-fast/probe-executor-live.json` and `mal-probe-executor-live.conf` at the deployed commit for Helm to check.
+6. **EXP-013 and EXP-014** still need V-pricing amendments before their single screens. Low priority (priors ≤ 20% and ≈ 10%).
+7. **~10-16T02Z:** EXP-012 FINAL, then the V book (Am.4), then Am.3 at the measured k.
 
-## Gotchas found this session
+## Gotchas
 
-- **No `rm -rf` under `/data/mal` or in the scratchpad from this session** (permission denied). Ask the owner, which can be done through Helm. A 22 GB analysis cache sits in the scratchpad `recon/cache/` and can be deleted.
-- **Hour files are not time-ordered.** PumpSwap rows lag up to about 1,600 s within a file. Never resolve on a running max mid-file. EXP-012's frozen scorer is safe (final flush only).
-- **Pool B (Oracle live)** has no `block_time` on trades (use `event_ts`). Its creates carry only receive time `t_ws`.
-- **Tape buy `sol_lamports` is inconsistent:** about 50% of PumpSwap buys exclude the fee.
-- **`book_stats` "promote"** includes n ≥ 100 and ≥ 5 days. Screens must not read it; they compute bars themselves.
-- **MiScusi jobs run on the pushed commit at submit time.** A job queued early is pinned to that code.
-- **Builders often stop at 40 turns.** Resume them with SendMessage and a tight scope.
+- MiScusi job commands need `/data/mal/venv/bin/python` (`python` is not on PATH).
+- There is no direct SSH from research-0 (`agent-ssh.sh` env unset). Use MiScusi jobs on fast-0.
+- Quant-proof enforces "never round in the favorable direction". Build tables from raw JSON with floor rounding.
+- Hour files are not time-ordered. PumpSwap rows lag up to ~1,600 s.
