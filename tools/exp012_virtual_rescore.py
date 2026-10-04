@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -199,24 +200,29 @@ def _migrated_mints(root: Path, dedup: bool) -> set[str]:
     return out
 
 
-def _pools_from_file(args: tuple[str, frozenset[str]]) -> dict[str, str]:
-    import re
+_POOL_RX = re.compile(r'"mint":"([^"]+)".*?"pool":"([^"]+)"')
 
-    path, mints = args
-    rx = re.compile(r'"mint":"([^"]+)".*?"pool":"([^"]+)"')
-    got: dict[str, str] = {}
-    for line in _zcat_lines(Path(path), '"venue":"pumpswap"'):
-        m = rx.search(line)
+
+def collect_pools(lines: Iterable[str], mints: frozenset[str] | set[str]) -> dict[str, set[str]]:
+    """Every PumpSwap pool seen per mint (a mint can have more than one pool)."""
+    got: dict[str, set[str]] = {}
+    for line in lines:
+        m = _POOL_RX.search(line)
         if m and m.group(1) in mints:
-            got.setdefault(m.group(1), m.group(2))
+            got.setdefault(m.group(1), set()).add(m.group(2))
     return got
+
+
+def _pools_from_file(args: tuple[str, frozenset[str]]) -> dict[str, set[str]]:
+    path, mints = args
+    return collect_pools(_zcat_lines(Path(path), '"venue":"pumpswap"'), mints)
 
 
 def cmd_pools(a: argparse.Namespace) -> int:
     import multiprocessing as mp
 
     roots = [_guard(r) for r in a.root]
-    pools: dict[str, str] = {}
+    by_mint: dict[str, set[str]] = {}
     for root in roots:
         mints = frozenset(_migrated_mints(root, False))
         if not mints and not (root / "migrations").exists():  # oracle live view: no migrations dir; use the table's pool-B mints
@@ -225,11 +231,17 @@ def cmd_pools(a: argparse.Namespace) -> int:
         print(f"pools: {root} migrated_mints={len(mints)} trade_files={len(files)}", file=sys.stderr, flush=True)
         with mp.get_context("spawn").Pool(processes=min(a.workers, 2)) as pool:
             for part in pool.imap_unordered(_pools_from_file, [(str(f), mints) for f in files]):
-                pools.update({p: m for m, p in part.items()})
+                for m, ps in part.items():
+                    by_mint.setdefault(m, set()).update(ps)
+    pools = sorted({p for ps in by_mint.values() for p in ps})
     out = OUT_ROOT / a.run_id / a.out_name
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(sorted(pools)) + "\n", encoding="utf-8")
-    print(f"pools: {len(pools)} distinct -> {out}", file=sys.stderr)
+    # pools.json stays a flat sorted list of every pool (backward-readable by fetch-v); the mint map is a sidecar.
+    out.write_text(json.dumps(pools) + "\n", encoding="utf-8")
+    side = out.with_name(out.stem + "_by_mint.json")
+    side.write_text(json.dumps({m: sorted(ps) for m, ps in sorted(by_mint.items())}) + "\n", encoding="utf-8")
+    multi = sum(1 for ps in by_mint.values() if len(ps) > 1)
+    print(f"pools: {len(pools)} distinct over {len(by_mint)} mints ({multi} with >1 pool) -> {out}, {side}", file=sys.stderr)
     return 0
 
 
