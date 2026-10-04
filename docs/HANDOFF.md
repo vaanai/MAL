@@ -29,10 +29,21 @@ The critical path is **EXP-012 → forward read (~10-16) → DEC-016 Amendment 3
 | Exploration, **unfiltered** baseline | flat | +0.133% | **−0.144%** |
 
   The unfiltered baseline flips negative, so the selection carries the edge.
-- **Still open:**
-  - **`quant-proof` review of #281.** It was running at handoff; check its result. If it is OK, merge #281.
-  - **r2.** A rerun with the exit mix and the full V map for (a), running **outside MiScusi** as PID 3506243 (`python -m tools.exp012_virtual_rescore rescore --run-id r2`), writing to `/data/mal/exp012-virtual-rescore/r2/`. When it finishes, update the #281 body: exit mix, CI upper bounds, (a) numbers.
-  - **DEC-016 Amendment 4**, still to write before the read. Live support also requires the **V-corrected** forward book (same entries, re-priced with `tools/pumpswap_virtual_adapter.py`) to clear the full gate under both fail models. The frozen forward read itself stays as pre-registered. quant-proof was asked to draft the text; use it.
+- **Review and merges.**
+  - **quant-proof verdict on #281:** OK with edits, as a **correction analysis only**. The findings are in the #281 comment.
+    - The gate's flat CI90 lower bound is 0.01875 → **0.00928 SOL**.
+    - The fifth positive day, 09-09, is only +0.0086 SOL.
+    - Fill flips explain 0.73 of the 4.33 SOL drop.
+    - The fee-tier ambiguity is bounded at ≤ 0.0005 SOL/trade and does not change the conclusion.
+    - No refit: the frozen book is the right test.
+    - Continuing to the 10-16 read and the probe is supported.
+  - **#281 is merged.**
+  - **DEC-016 Amendment 4 is merged (#282).** The FINAL run computes (A) the frozen book, which carries the verdict, and (B) the V-corrected book. **Live support requires (B)**, with a full V map, null-V guards, a fee-tier dual check and validation bars.
+- **Follow-ups (required):**
+  1. Fix `tools/pumpswap_virtual.py` `_pools_from_file`. It keeps only the first pool per mint (`setdefault`); collect every pool. This is needed for Amendment 4 §3.
+  2. Record the adapter commit in DEC-016 Amendment 4 §1 before 2026-10-16T00Z.
+  3. **r2** runs **outside MiScusi** as PID 3506243 (`python -m tools.exp012_virtual_rescore rescore --run-id r2`, from worktree `.claude/worktrees/agent-a5df37fa533ce6cea`; do not remove that worktree until r2 ends). It writes `/data/mal/exp012-virtual-rescore/r2/`. When it finishes, write a lab note with the exit mix and book (a) on the full V map.
+  4. Recompute the pressure CI90 lower bound with `book_stats`.
 - **Every older PumpSwap P&L number** in this lab, including migrate-direct, EXP-013/014 screens as built and DEC-017, is unverified until re-priced.
 
 ## State at 2026-10-04T05:45Z
@@ -107,7 +118,7 @@ The critical path is **EXP-012 → forward read (~10-16) → DEC-016 Amendment 3
 
 ## Next steps, in order
 
-1. **#281.** Read quant-proof's verdict, fix anything it requires, and merge. Write **DEC-016 Amendment 4** (V-corrected forward book must also pass for live support) before 10-06T00Z, since forward P&L is sealed until then.
+1. **V follow-ups:** the `_pools_from_file` fix, the r2 lab note, and the adapter commit recorded in DEC-016 Amendment 4. #281 and Amendment 4 (#282) are merged.
 2. **2026-10-05T05:00Z kill review.**
    - Follow `docs/runbooks/kill-review-2026-10-05.md`: snapshot job on fast-0, copy `MANIFEST_SHA256` into the score job on research-0, then quant-proof, then LAB_STATE, then `review_windows: []`.
    - The 9 Oracle books are priced with the V-less model. Report V-blindness as a caveat on any book that trades PumpSwap, and do not promote on V-less numbers.
