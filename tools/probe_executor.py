@@ -1,11 +1,11 @@
-"""DEC-019 execution probe, PR-A: KEYLESS DRY-RUN executor.
+"""DEC-019 execution probe: KEYLESS DRY-RUN executor (live mode is tools/probe_live.py).
 
 Follows the fast-0 paper runner's EXP-012 `enter` decisions, builds the exact PumpSwap buy the
 probe would send (0.05 SOL, 500k lamports priority, DEFAULT_SLIPPAGE_CAP), runs
 simulateTransaction (sigVerify off) against the live chain, tracks a virtual position with the
 paper exit rule (tp50/sl30/30-minute cap), and logs every attempt to an append-only JSONL.
 
-There is no signing, no sending and no key loading in this module (live mode is PR-B). The fee
+There is no signing, no sending and no key loading in this module (live mode is tools/probe_live.py). The fee
 payer in simulation is a public funded address (pumpswap_simulate.DEFAULT_USER), never a key we hold.
 
 FORWARD-READ SEAL (DEC-016 Am.2/Am.3): the only runner file read is the decisions log, and only
@@ -112,6 +112,7 @@ class State:
     started: bool = False  # offset initialised (first run starts at end of file)
     mode: str = MODE
     would_halt: dict[str, int] = field(default_factory=dict)  # dry run: budget stops that live would have hit
+    pending: dict[str, dict[str, Any]] = field(default_factory=dict)  # live: in-flight signed txs by mint (buy or sell)
 
     def save(self, path: Path) -> None:
         """Atomic and durable (fsync file, rename, fsync dir). Called write-ahead of any attempt."""
@@ -207,10 +208,11 @@ class LimitedRpc:
     RETRY = {"rate_limited", "server_error", "timeout"}
 
     def __init__(self, rpc: Callable[[str, list], dict], rps: float = MAX_RPS, retries: int = 3,
-                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep):
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
+                 max_rps: float = MAX_RPS):
         if not (math.isfinite(rps) and rps > 0):
             raise ValueError("rps must be finite and positive")
-        self.rpc, self.interval, self.retries, self.clock, self.sleep = rpc, 1.0 / min(rps, MAX_RPS), retries, clock, sleep
+        self.rpc, self.interval, self.retries, self.clock, self.sleep = rpc, 1.0 / min(rps, max_rps), retries, clock, sleep
         self._next = 0.0
         self.calls = 0
 
@@ -422,8 +424,9 @@ def sim_message(rpc: Callable, msg: Message, user: Pubkey, watch: list[Pubkey]) 
     return sim.simulate(rpc, msg, user, watch)
 
 
-def buy_probe_message(snap: Snapshot, user: Pubkey, spend: int, slip_bps: int, expected: int, priority: int) -> Message:
-    return tx.build_buy(snap.ps, user, spend, slip_bps, expected, priority_total_lamports=priority)
+def buy_probe_message(snap: Snapshot, user: Pubkey, spend: int, slip_bps: int, expected: int, priority: int,
+                      blockhash: Hash | None = None) -> Message:
+    return tx.build_buy(snap.ps, user, spend, slip_bps, expected, priority_total_lamports=priority, blockhash=blockhash)
 
 
 def sell_probe_message(snap: Snapshot, user: Pubkey, spend: int, slip_bps: int, priority: int) -> tuple[Message, int, int]:
@@ -628,19 +631,77 @@ class Executor:
         return len(sigs)
 
 
+def status_report(cfg: dict[str, Any]) -> str:
+    """Counters, open positions and realized P&L from the state files and the fill log. Reads no key and
+    no URL, makes no RPC call."""
+    lim = Limits.from_config(cfg)
+    lines = [f"stop_file_present={Path(lim.stop_file).exists()}"]
+    for mode in (MODE, "live"):
+        path = state_path_for(cfg["state_dir"], mode)
+        if not path.exists():
+            lines.append(f"[{mode}] no state file")
+            continue
+        st = State.load(path, mode)
+        lines.append(
+            f"[{mode}] attempts={st.attempts}/{lim.max_attempts} realized_sol={st.realized_lamports / LAMPORTS:.6f} "
+            f"loss_cap_sol={lim.loss_cap_lamports / LAMPORTS:.3f} open={len(st.open)}/{lim.max_open} pending={len(st.pending)} "
+            f"first_attempt_ms={st.first_attempt_ms} would_halt={st.would_halt}")
+        for mint, pos in st.open.items():
+            lines.append(f"  open {mint} tokens={pos.get('tokens')} spend={pos.get('spend')} stuck={bool(pos.get('stuck'))} "
+                         f"sell_attempts={pos.get('sell_attempts', 0)}")
+        for mint, p in st.pending.items():
+            lines.append(f"  pending {p.get('kind')} {mint} sig={p.get('signature')} sends={p.get('sends')}")
+    counts: dict[str, int] = {}
+    fl = Path(cfg["fill_log"])
+    if fl.exists():
+        for raw in fl.read_text().splitlines():
+            try:
+                r = json.loads(raw)
+            except ValueError:
+                continue
+            key = f"{r.get('mode')}:{r.get('kind')}"
+            counts[key] = counts.get(key, 0) + 1
+    lines.append(f"fill_rows={dict(sorted(counts.items()))}")
+    return "\n".join(lines)
+
+
+def resolve_mode(cfg_mode: str, live_flag: bool) -> tuple[str, str | None]:
+    """Live needs BOTH the config mode and the --live flag. Returns (mode, warning)."""
+    if cfg_mode not in (MODE, "live"):
+        raise SystemExit(f"unknown mode {cfg_mode!r}")
+    cfg_live = cfg_mode == "live"
+    if cfg_live and live_flag:
+        return "live", None
+    if cfg_live or live_flag:
+        missing = "--live flag" if cfg_live else 'config "mode": "live"'
+        return MODE, f"live requested but {missing} is missing: running DRY RUN"
+    return MODE, None
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="DEC-019 probe executor, keyless dry-run")
+    ap = argparse.ArgumentParser(description="DEC-019 probe executor (dry run by default; live needs config mode AND --live)")
     ap.add_argument("--config", required=True)
     ap.add_argument("--once", action="store_true", help="one tail+poll pass, then exit")
+    ap.add_argument("--live", action="store_true", help='second live switch; also needs config "mode": "live"')
+    ap.add_argument("--status", action="store_true", help="print counters, open positions, realized P&L; no key, no URL")
     ap.add_argument("--env-file", default=sim.DEFAULT_ENV_FILE)
     args = ap.parse_args(argv)
     cfg = json.loads(Path(args.config).read_text())
-    if cfg.get("mode", MODE) != MODE:
-        raise SystemExit("only mode=dryrun exists in this build (live is PR-B)")
+    if args.status:
+        print(status_report(cfg))
+        return 0
+    mode, warn = resolve_mode(cfg.get("mode", MODE), args.live)
+    cfg["mode"] = mode
+    if warn:
+        print(f"probe_executor WARNING {warn}", flush=True)
+    poll_s = max(1.0, float(cfg.get("poll_s", 5.0)))
+    if mode == "live":
+        from tools import probe_live  # key handling lives only in that module
+
+        return probe_live.run_live(cfg, args, poll_s)
     rpc = LimitedRpc(ProbeRpc(sim.load_rpc_url(None, args.env_file)), rps=float(cfg.get("rps", MAX_RPS)))
     ex = Executor(rpc, cfg)
-    poll_s = max(1.0, float(cfg.get("poll_s", 5.0)))
-    print(f"probe_executor dryrun book={ex.book} limits={ex.limits}", flush=True)
+    print(f"probe_executor mode=dryrun book={ex.book} limits={ex.limits}", flush=True)
     while True:
         ex.step()
         if args.once:

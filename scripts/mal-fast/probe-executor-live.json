@@ -1,0 +1,21 @@
+{
+  "mode": "live",
+  "book": "exp012_migrate_tp50_sl30",
+  "signals_dir": "/var/lib/mal/paper/fast-forward-paper",
+  "state_dir": "/var/lib/mal/live",
+  "fill_log": "/var/lib/mal/live/probe-fills.jsonl",
+  "stop_file": "/var/lib/mal/live/STOP",
+  "commitment": "confirmed",
+  "poll_s": 5.0,
+  "rps": 4.0,
+  "max_signal_age_s": 120,
+  "size_lamports": 50000000,
+  "priority_lamports": 500000,
+  "max_attempts": 30,
+  "max_open": 3,
+  "loss_cap_lamports": 250000000,
+  "max_days": 4,
+  "slippage_cap": 0.15,
+  "sell_retries": 5,
+  "key_path": "/var/lib/mal/live/probe-wallet.json"
+}
