@@ -91,7 +91,9 @@
       "Bash(sudo dd /etc/mal-probe*)",
       "Edit(//var/lib/mal-live/probe-wallet.json)",
       "Write(//var/lib/mal-live/probe-wallet.json)",
-      "Bash(*probe-wallet.json*)"
+      "Bash(*probe-wallet.json*)",
+      "Read(//run/credentials/**)",
+      "Bash(*run/credentials*)"
     ]
   }
 }
