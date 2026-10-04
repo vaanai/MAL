@@ -49,6 +49,7 @@ REBROADCAST_MS = 2_000
 BLOCKHASH_TTL_MS = 10_000
 BLOCKHASH_STALE_OK_MS = 40_000  # reuse a cached hash this long if the refresh call fails
 EXPIRY_RECHECK_MS = 5_000  # after the block height passes, look once more before calling it expired
+PENDING_POLL_MS = 1_000  # confirm-loop cadence (unchanged from the old 1 s loop)
 STUCK_RETRY_MS = 30_000  # first stuck retry delay; doubles per failure up to the max
 STUCK_RETRY_MAX_MS = 600_000
 SELL_MAX_ATTEMPTS = 10  # hard cap per position; config can only lower it
@@ -309,6 +310,8 @@ class LiveExecutor(pe.Executor):
         self.bh = BlockhashCache(rpc, self.commitment, self.now_ms)
         self._last_tail = 0
         self._height: int | None = None
+        self._last_adv = 0
+        self._clock_saved = 0
 
     def __repr__(self) -> str:  # never reveal the Keypair
         return f"LiveExecutor(user={self.user})"
@@ -374,6 +377,7 @@ class LiveExecutor(pe.Executor):
         if mint in self.state.bought:
             return self._skip(sig, "already_bought")
         snap, pool, err = self._snapshot(mint)
+        t_state = self.now_ms()
         if snap is None:
             return self._skip(sig, err or "no_pool", pool=pool)
         if snap.quote_priced is None:
@@ -395,6 +399,7 @@ class LiveExecutor(pe.Executor):
             if isinstance(exc, UnsafeTx):
                 self._alert("unsafe_tx_refused", mint, why=exc.label)
             return self._skip(sig, f"build_error:{pe.error_label(exc)}", pool=pool)
+        t_built = self.now_ms()
         # Write-ahead: the attempt, the signature and the signed tx are durable BEFORE the first send.
         self.state.attempts += 1
         self.state.bought.append(mint)
@@ -406,6 +411,8 @@ class LiveExecutor(pe.Executor):
             "q_tokens": q["tokens"], "q_net_in": q["net_in"], "q_mark": q["mark"], "fee_ppm": q["fee_ppm"],
             "v_lamports": snap.v, "base_ata": str(tx.ata(self.user, snap.ps.base_mint, snap.ps.base_token_program)),
             "base_mint": str(snap.ps.base_mint), "base_tp": str(snap.ps.base_token_program), "sends": 0,
+            "seen_ms": sig.get("seen_ms"), "state_ms": t_state, "state_slot": snap.slot, "built_ms": t_built,
+            "runner_latency": sig.get("latency"),
         }
         self.save()
         p = self.state.pending[mint]
@@ -427,6 +434,7 @@ class LiveExecutor(pe.Executor):
         except (Exception, SystemExit):
             return None
 
+    @pe.critical
     def advance_pending(self) -> None:
         pend = self.state.pending
         if not pend:
@@ -466,13 +474,19 @@ class LiveExecutor(pe.Executor):
 
     def _timing(self, p: dict[str, Any]) -> dict[str, Any]:
         t_send, t_conf = p.get("first_send_ms"), p.get("confirm_seen_ms") or self.now_ms()
+        stages: dict[str, Any] = {}
+        if p.get("kind") == "buy":  # stage stamps (see `--latency-report`); `latency` is the runner row's own object, verbatim
+            stages = dict(seen_ms=p.get("seen_ms"), state_ms=p.get("state_ms"), state_slot=p.get("state_slot"),
+                          built_ms=p.get("built_ms"), sent_ms=t_send, latency=p.get("runner_latency"))
         return dict(
+            **stages,
             decision_t_ms=p.get("decision_t_ms"), receive_ms=p.get("receive_ms"), first_send_ms=t_send, confirm_seen_ms=t_conf,
             ms_decision_to_send=(t_send - p["decision_t_ms"]) if t_send and p.get("decision_t_ms") else None,
             ms_send_to_confirm=(t_conf - t_send) if t_send else None, sends=p.get("sends"), signature=p["signature"],
             snapshot_slot=p.get("snap_slot"),
         )
 
+    @pe.critical
     def _resolve_expired(self, mint: str, p: dict[str, Any]) -> None:
         del self.state.pending[mint]
         row = dict(landed=False, fail_class="expired", **self._timing(p), pool=p.get("pool"))
@@ -484,6 +498,7 @@ class LiveExecutor(pe.Executor):
             self._log("sell", mint, sell_attempt=pos["sell_attempts"], stuck=bool(pos.get("stuck")), **row)
         self.save()
 
+    @pe.critical
     def _resolve_landed(self, mint: str, p: dict[str, Any], st: dict[str, Any]) -> None:
         try:
             res = self.rpc("getTransaction", [p["signature"], {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}])
@@ -531,8 +546,10 @@ class LiveExecutor(pe.Executor):
         base = tx.BASE_FEE_PER_SIGNATURE
         return min(base, fee), max(0, fee - base)
 
+    @pe.critical
     def _finish_buy(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
-        del self.state.pending[mint]
+        # The ATA balance read (an RPC call) happens BEFORE pending is deleted, so the position is always in
+        # `pending` or `open` whenever state is saved or counted.
         base_fee, prio_fee = self._fee_split(m["fee"])
         row: dict[str, Any] = dict(
             spend_lamports=p["spend"], expected_tokens=p["q_tokens"], sim_tokens=p.get("sim_tokens"), pool=p["pool"],
@@ -542,6 +559,7 @@ class LiveExecutor(pe.Executor):
         )
         if m["err"] is not None:
             cls = classify_failure(m["err"], m["logs"], self.slip_codes)
+            del self.state.pending[mint]
             self.state.realized_lamports += m["sol_delta"]  # the fee actually paid
             self._log("buy", mint, landed=False, fail_class=cls, err=m["err"], cost_lamports=-m["sol_delta"], **row)
             self.save()
@@ -560,6 +578,7 @@ class LiveExecutor(pe.Executor):
             entry_vs_quote_bps=bps(tokens, p["q_tokens"]), entry_vs_sim_bps=bps(tokens, p["sim_tokens"]) if p.get("sim_tokens") else None,
             price_vs_quote_bps=bps(p["q_tokens"], tokens) if tokens else None,  # cost per token vs quoted, + = we paid more
         )
+        del self.state.pending[mint]
         self._log("buy", mint, **row)
         if tokens <= 0:
             self.state.realized_lamports -= cost  # SOL is spent and nothing came back: a realized loss now
@@ -584,6 +603,7 @@ class LiveExecutor(pe.Executor):
             pos["abandoned"] = True  # HALT-like for this position: no more sells, buys stay stopped
             self._alert("sell_abandoned", pos["mint"], attempts=pos["sell_attempts"])
 
+    @pe.critical
     def _start_sell(self, mint: str, pos: dict[str, Any], snap: pe.Snapshot, reason: str, now: int) -> None:
         try:
             bal = int(self.rpc("getTokenAccountBalance", [pos["base_ata"], {"commitment": self.commitment}])["value"]["amount"])
@@ -647,6 +667,7 @@ class LiveExecutor(pe.Executor):
             if reason:
                 self._start_sell(mint, pos, snap, reason, now)
 
+    @pe.critical
     def _finish_sell(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
         del self.state.pending[mint]
         pos = self.state.open[mint]
@@ -678,12 +699,34 @@ class LiveExecutor(pe.Executor):
         self.save()
 
     # -- loop
+    def prewarm(self) -> None:
+        """Slow loop: refresh the static accounts and keep the blockhash cache warm (the cache's own 10 s TTL
+        decides whether a call is made), so the buy path signs with a cached hash."""
+        super().prewarm()
+        try:
+            self.bh.get()
+        except (Exception, SystemExit):
+            pass
+
+    def _clock_note(self, now: int) -> None:
+        if now + CLOCK_BACK_TOLERANCE_MS >= self.state.max_seen_ms:  # a backwards step is never absorbed
+            self.state.max_seen_ms = max(self.state.max_seen_ms, now)
+        if now - self._clock_saved >= self.poll_ms:  # persisted at the slow cadence (every buy/sell save carries it too)
+            self._clock_saved = now
+            self.save()
+
+    def housekeeping(self, now: int) -> None:
+        """Confirm loop and rebroadcasts: their own ~1 s timer (the old loop period), after the signal check."""
+        if self.state.pending and now - self._last_adv >= PENDING_POLL_MS:
+            self._last_adv = now
+            self.advance_pending()
+
     def step(self) -> int:
         self.advance_pending()
         n = 0
         now = self.now_ms()
-        if now + CLOCK_BACK_TOLERANCE_MS >= self.state.max_seen_ms:  # a backwards step is never absorbed
-            self.state.max_seen_ms = max(self.state.max_seen_ms, now)
+        self._clock_note(now)
+        self.save()
         if now - self._last_tail >= self.poll_ms:
             self._last_tail = now
             n = super().step()
@@ -700,11 +743,11 @@ def run_live(cfg: dict[str, Any], args: Any, poll_s: float) -> int:
     rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file)), rps=rps, max_rps=LIVE_MAX_RPS)
     ex = LiveExecutor(rpc, cfg, kp)
     print(f"probe_executor mode=LIVE user={ex.user} book={ex.book} limits={ex.limits}", flush=True)
-    while True:
+    if args.once:
         ex.step()
-        if args.once:
-            return 0
-        time.sleep(1.0)
+        return 0
+    ex.run_loop()
+    return 0
 
 
 if __name__ == "__main__":

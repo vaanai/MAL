@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import functools
 import json
 import math
 import os
@@ -58,6 +60,19 @@ UNPRICED_GRACE_MS = 60_000  # retry window past the 30 min deadline before a for
 EXIT_RULE = next(r for r in EXIT_RULES if r.rule_id == "tp50_sl30")  # tp 0.50 / sl 0.30, same object the scorer uses
 DECISIONS_FILE = "decisions.jsonl"  # the ONLY runner file this module opens
 KEEP_FIELDS = ("mint", "decision_t_ms", "score", "trigger", "book")
+MAX_LATENCY_JSON = 2048  # the runner row's own `latency` object (decision-time hop timings) is copied only when small
+SIGNAL_POLL_MS_DEFAULT, SIGNAL_POLL_MS_MIN, SIGNAL_POLL_MS_MAX = 50, 20, 500
+STATIC_TTL_MS = 300_000  # cached global config is never used past this age
+STATIC_REFRESH_MS = 60_000  # the slow loop refreshes it this often
+PRIORITY_BURST = 4  # buy-path calls may run up to this many rate-limit intervals ahead; sustained rate is unchanged
+IDLE_SLICE_S = 0.02
+
+
+def clamp_signal_poll_ms(value: Any) -> int:
+    """Signal tail period: default 50 ms, clamped to [20, 500]. Anything unparseable falls back to the default."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return SIGNAL_POLL_MS_DEFAULT
+    return int(min(SIGNAL_POLL_MS_MAX, max(SIGNAL_POLL_MS_MIN, value)))
 
 
 # --- limits (pure; the live mode must import and use this unchanged) -------------------------
@@ -214,19 +229,56 @@ class LimitedRpc:
 
     def __init__(self, rpc: Callable[[str, list], dict], rps: float = MAX_RPS, retries: int = 3,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
-                 max_rps: float = MAX_RPS):
+                 max_rps: float = MAX_RPS, burst: int = PRIORITY_BURST):
         if not (math.isfinite(rps) and rps > 0):
             raise ValueError("rps must be finite and positive")
         self.rpc, self.interval, self.retries, self.clock, self.sleep = rpc, 1.0 / min(rps, max_rps), retries, clock, sleep
         self._next = 0.0
         self.calls = 0
+        self.burst = max(1, int(burst))
+        self._prio = 0
+        self.idle_hook: Callable[[], Any] | None = None  # run while a NON-priority call waits (the loop's signal check)
+        self._in_hook = False
+
+    @contextlib.contextmanager
+    def priority(self):
+        """Buy-path calls inside this block may run up to `burst` intervals ahead of the schedule instead of
+        waiting behind position polling. The schedule still advances one interval per call, so the sustained
+        rate stays capped (a burst is paid back by later waits)."""
+        self._prio += 1
+        try:
+            yield
+        finally:
+            self._prio -= 1
+
+    def _sleep(self, total: float) -> None:
+        """Plain sleep, or (non-priority only) short slices with the idle hook run between them so a new
+        signal is never stuck behind a position poll's rate-limit wait."""
+        if self.idle_hook is None or self._prio or self._in_hook:
+            self.sleep(total)
+            return
+        end = self.clock() + total
+        while True:
+            left = end - self.clock()
+            if left <= 0:
+                return
+            self.sleep(min(left, IDLE_SLICE_S))
+            self._in_hook = True
+            try:
+                self.idle_hook()
+            finally:
+                self._in_hook = False
 
     def _wait(self) -> None:
         now = self.clock()
-        if now < self._next:
-            self.sleep(self._next - now)
-            now = self._next
-        self._next = now + self.interval
+        slack = (self.burst - 1) * self.interval if self._prio else 0.0
+        for _ in range(4):  # re-check after each sleep: the idle hook's buy may have pushed the schedule out
+            if now + slack >= self._next:
+                break
+            self._sleep(self._next - slack - now)
+            now = max(now, self.clock())
+        now = max(now, self._next - slack) if self.idle_hook is None else now
+        self._next = max(self._next, now) + self.interval
 
     def __call__(self, method: str, params: list) -> dict:
         delay = 1.0
@@ -239,7 +291,7 @@ class LimitedRpc:
                 label = error_label(exc)
                 if label not in self.RETRY or attempt == self.retries:
                     raise RpcError(label) from None
-                self.sleep(delay)
+                self._sleep(delay)
                 delay *= 2
         raise RpcError("unreachable")
 
@@ -363,6 +415,12 @@ def parse_enter(line: str, book: str, ledger: str) -> dict[str, Any] | None:
     sig = {k: row.get(k) for k in KEEP_FIELDS}
     if not sig["mint"] or not isinstance(sig["decision_t_ms"], int):
         return None
+    lat = row.get("latency")  # decision-time hop timings: only finite numeric values are kept (no free-form text)
+    if isinstance(lat, dict):
+        num = {str(k): v for k, v in lat.items()
+               if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)}
+        if num and len(json.dumps(num, separators=(",", ":"))) <= MAX_LATENCY_JSON:
+            sig["latency"] = num
     return sig
 
 
@@ -399,8 +457,36 @@ def tail_signals(path: Path, st: State, book: str, ledger: str = DEFAULT_LEDGER)
 # --- chain access ----------------------------------------------------------------------------
 
 
-def fetch_snapshot(rpc: Callable[[str, list], dict], pool: str, commitment: str, user: Pubkey) -> Snapshot | str:
-    """Pool + vaults + global config in two calls. Returns a Snapshot, or a skip-reason string."""
+class StaticCache:
+    """Pre-warmed static accounts: the parsed global config (fee recipients). A buy then needs only the pool
+    and its vaults. Never used past STATIC_TTL_MS; a refresh failure keeps the old value until then."""
+
+    def __init__(self) -> None:
+        self.gc: dict[str, Any] | None = None
+        self.t_ms = 0
+
+    def get(self, now_ms: int) -> dict[str, Any] | None:
+        return self.gc if self.gc is not None and 0 <= now_ms - self.t_ms < STATIC_TTL_MS else None
+
+    def put(self, gc: dict[str, Any], now_ms: int) -> None:
+        self.gc, self.t_ms = gc, now_ms
+
+    def refresh(self, rpc: Callable[[str, list], dict], commitment: str, now_ms: int) -> None:
+        if self.gc is not None and 0 <= now_ms - self.t_ms < STATIC_REFRESH_MS:
+            return
+        try:
+            info = rpc("getAccountInfo", [str(tx.GLOBAL_CONFIG), {"encoding": "base64", "commitment": commitment}]).get("value")
+            if info:
+                self.put(tx.parse_global_config(sim._b64(info)), now_ms)
+        except KeyboardInterrupt:
+            raise
+        except BaseException:  # incl. the solders panic type (a BaseException) on malformed account data
+            pass  # keep serving the cached value until its TTL; the buy path refetches inline after that
+
+
+def fetch_snapshot(rpc: Callable[[str, list], dict], pool: str, commitment: str, user: Pubkey,
+                   static: StaticCache | None = None, now_ms: int = 0) -> Snapshot | str:
+    """Pool + vaults (+ global config when not cached) in two calls. Returns a Snapshot, or a skip-reason string."""
     pk = Pubkey.from_string(pool)
     res = rpc("getAccountInfo", [pool, {"encoding": "base64", "commitment": commitment}])
     info = res.get("value")
@@ -413,12 +499,20 @@ def fetch_snapshot(rpc: Callable[[str, list], dict], pool: str, commitment: str,
         p = tx.parse_pool_account(pdata)
     except ValueError:
         return "no_pool"
-    keys = [str(tx.GLOBAL_CONFIG), str(p["base_mint"]), str(p["base_vault"]), str(p["quote_vault"])]
+    cfg = static.get(now_ms) if static is not None else None
+    keys = [str(p["base_mint"]), str(p["base_vault"]), str(p["quote_vault"])]
+    if cfg is None:
+        keys.insert(0, str(tx.GLOBAL_CONFIG))
     multi = rpc("getMultipleAccounts", [keys, {"encoding": "base64", "commitment": commitment}])
-    gc, mint, bv, qv = multi["value"]
+    vals = list(multi["value"])
+    gc = vals.pop(0) if cfg is None else True
+    mint, bv, qv = vals
     if not (gc and mint and bv and qv):
         return "missing_accounts"
-    cfg = tx.parse_global_config(sim._b64(gc))
+    if cfg is None:
+        cfg = tx.parse_global_config(sim._b64(multi["value"][0]))
+        if static is not None:
+            static.put(cfg, now_ms)
     recips = [r for r in cfg["protocol_fee_recipients"] if r != user]
     ps = tx.pool_state_from_accounts(
         pk, pdata, base_token_program=Pubkey.from_string(mint["owner"]),
@@ -479,6 +573,19 @@ class FillLog:
             fh.write(json.dumps(row, separators=(",", ":")) + "\n")
 
 
+def critical(fn):
+    """Mark a multi-step state mutation with RPC calls inside. While it runs, the signal hook inside the limiter
+    wait does not handle signals (`signal_tick` returns 0; the next tick picks the rows up)."""
+    @functools.wraps(fn)
+    def wrapper(self, *a, **kw):
+        self._crit += 1
+        try:
+            return fn(self, *a, **kw)
+        finally:
+            self._crit -= 1
+    return wrapper
+
+
 class Executor:
     def __init__(self, rpc: Callable[[str, list], dict], cfg: dict[str, Any], *, now_ms: Callable[[], int] | None = None):
         self.rpc = rpc
@@ -499,6 +606,16 @@ class Executor:
             raise ValueError("slippage_cap must be finite and positive")
         self.slip_bps = int(round(min(cap, DEFAULT_SLIPPAGE_CAP) * 10_000))  # config can lower, never raise
         self.max_signal_age_ms = int(float(cfg.get("max_signal_age_s", 120)) * 1000)
+        self.signal_poll_ms = clamp_signal_poll_ms(cfg.get("signal_poll_ms", SIGNAL_POLL_MS_DEFAULT))
+        self.poll_ms = int(max(1.0, float(cfg.get("poll_s", 5.0))) * 1000)  # slow loop: positions, exits, pre-warm
+        self.static = StaticCache()
+        self._crit = 0
+        self._last_slow: int | None = None
+
+    def _prio(self):
+        """Rate-limiter priority for the buy path (a no-op for a plain callable rpc)."""
+        fn = getattr(self.rpc, "priority", None)
+        return fn() if fn else contextlib.nullcontext()
 
     # -- helpers
     def _log(self, kind: str, mint: str, **kw: Any) -> None:
@@ -513,7 +630,7 @@ class Executor:
         except ValueError:
             return None, "", "bad_mint"
         try:
-            snap = fetch_snapshot(self.rpc, pool, self.commitment, self.user)
+            snap = fetch_snapshot(self.rpc, pool, self.commitment, self.user, self.static, self.now_ms())
         except (Exception, SystemExit) as exc:  # label only; Ctrl-C and crashes still propagate
             return None, pool, error_label(exc)
         if isinstance(snap, str):
@@ -540,6 +657,7 @@ class Executor:
         if sig["mint"] in self.state.open:
             return self._skip(sig, "already_open")
         snap, pool, err = self._snapshot(sig["mint"])
+        t_state = self.now_ms()
         if snap is None:
             return self._skip(sig, err or "no_pool", pool=pool)
         if snap.quote_priced is None:
@@ -578,7 +696,8 @@ class Executor:
             sim_tokens = sim.token_amount(sim._b64(accts[1]))
         row = dict(
             decision_t_ms=sig["decision_t_ms"], pool=pool, pool_slot=snap.slot, score=sig.get("score"),
-            t_built_ms=t_built, t_sim_ms=t_sim, ms_decision_to_built=t_built - sig["decision_t_ms"],
+            seen_ms=sig.get("seen_ms"), state_ms=t_state, state_slot=snap.slot, built_ms=t_built, simulated_ms=t_sim,
+            latency=sig.get("latency"), t_built_ms=t_built, t_sim_ms=t_sim, ms_decision_to_built=t_built - sig["decision_t_ms"],
             ms_built_to_sim=t_sim - t_built, spend_lamports=spend, slippage_bps=self.slip_bps,
             priority_lamports=self.limits.priority_lamports, v_lamports=snap.v, quote_vault_lamports=snap.quote_vault,
             base_reserve=snap.base_reserve, fee_ppm=q["fee_ppm"], expected_tokens=q["tokens"],
@@ -612,6 +731,7 @@ class Executor:
             if chk["reason"]:
                 self._close(mint, pos, snap, chk, now)
 
+    @critical
     def _close(self, mint: str, pos: dict[str, Any], snap: Snapshot | None, chk: dict[str, Any], now: int) -> None:
         row: dict[str, Any] = dict(
             exit_reason=chk["reason"], ret=chk["ret"], t_entry_ms=pos["t_entry_ms"], hold_ms=now - pos["t_entry_ms"],
@@ -643,13 +763,69 @@ class Executor:
         self.save()
 
     # -- loop
-    def step(self) -> int:
-        sigs = tail_signals(self.decisions, self.state, self.book)
-        self.save()  # offset first: a crash mid-signal must not replay it
-        for sig in sigs:
-            self.handle_signal(sig)
-        self.poll_positions()
+    def signal_tick(self) -> int:
+        """The fast path. Stat first (inode and size against the persisted offset) and read only when the file
+        grew, rotated or shrank. New `enter` rows are handled immediately, under buy priority on the limiter."""
+        if self._crit:
+            return 0
+        try:
+            s = self.decisions.stat()
+        except FileNotFoundError:
+            return 0
+        st = self.state
+        if st.started and st.inode == s.st_ino and s.st_size == st.offset:
+            return 0
+        before = (st.started, st.offset, st.inode)
+        sigs = tail_signals(self.decisions, st, self.book)
+        seen = self.now_ms()
+        if (st.started, st.offset, st.inode) != before:
+            self.save()  # offset first: a crash mid-signal must not replay it
+        if not sigs:
+            return 0
+        with self._prio():
+            for sig in sigs:
+                sig["seen_ms"] = seen
+                self.handle_signal(sig)
         return len(sigs)
+
+    def step(self) -> int:
+        n = self.signal_tick()
+        self.poll_positions()
+        return n
+
+    def prewarm(self) -> None:
+        self.static.refresh(self.rpc, self.commitment, self.now_ms())
+
+    def _clock_note(self, now: int) -> None:
+        pass
+
+    def housekeeping(self, now: int) -> None:
+        pass
+
+    def tick(self) -> int:
+        """One pass of the split loop: signal check every call (the caller sleeps `signal_poll_ms`), position
+        work and pre-warm every `poll_ms`. If a buy was handled this pass the slow work waits one cycle, unless
+        it is already more than a full period overdue."""
+        now = self.now_ms()
+        self._clock_note(now)
+        n = self.signal_tick()
+        now = self.now_ms()
+        self.housekeeping(now)
+        last = self._last_slow
+        if last is None or now - last >= self.poll_ms:
+            if n and last is not None and now - last < 2 * self.poll_ms:
+                return n
+            self._last_slow = now
+            self.prewarm()
+            self.poll_positions()
+        return n
+
+    def run_loop(self, sleep: Callable[[float], None] = time.sleep) -> None:
+        if hasattr(self.rpc, "idle_hook"):
+            self.rpc.idle_hook = self.signal_tick  # a rate-limit wait inside a position poll still sees new signals
+        while True:
+            self.tick()
+            sleep(self.signal_poll_ms / 1000.0)
 
 
 def status_report(cfg: dict[str, Any]) -> str:
@@ -689,6 +865,58 @@ def status_report(cfg: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+STAGES = (  # (label, from field, to field); live rows end at sent_ms, dry-run rows at simulated_ms
+    ("decision_to_seen", "decision_t_ms", "seen_ms"),
+    ("seen_to_state", "seen_ms", "state_ms"),
+    ("state_to_built", "state_ms", "built_ms"),
+    ("built_to_sent", "built_ms", "sent_ms"),
+    ("built_to_simulated", "built_ms", "simulated_ms"),
+    ("decision_to_sent", "decision_t_ms", "sent_ms"),
+    ("decision_to_simulated", "decision_t_ms", "simulated_ms"),
+)
+
+
+def _pct(vals: list[float], q: float) -> float:
+    v = sorted(vals)
+    pos = (len(v) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(v) - 1)
+    return v[lo] + (v[hi] - v[lo]) * (pos - lo)
+
+
+def latency_report(cfg: dict[str, Any]) -> str:
+    """p50/p90 of every stage delta over the buy rows of the fill log, per mode. Timing only: no P&L, no key,
+    no URL, no RPC call."""
+    fl = Path(cfg["fill_log"])
+    rows: list[dict[str, Any]] = []
+    if fl.exists():
+        for raw in fl.read_text().splitlines():
+            try:
+                r = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("kind") == "buy" and r.get("seen_ms") is not None:
+                rows.append(r)
+    lines: list[str] = []
+    for mode in sorted({str(r.get("mode")) for r in rows}):
+        rs = [r for r in rows if str(r.get("mode")) == mode]
+        lines.append(f"[{mode}] buy rows with stage stamps: {len(rs)} (ms)")
+        series: list[tuple[str, list[float]]] = []
+        for label, a, b in STAGES:
+            vals = [r[b] - r[a] for r in rs if isinstance(r.get(a), (int, float)) and isinstance(r.get(b), (int, float))]
+            series.append((label, vals))
+        slots = [r["landed_slot"] - r["state_slot"] for r in rs
+                 if isinstance(r.get("landed_slot"), int) and isinstance(r.get("state_slot"), int) and r["state_slot"]]
+        series.append(("state_to_landed_slots", slots))
+        applied = [r["latency"]["applied_latency_ms"] for r in rs
+                   if isinstance(r.get("latency"), dict) and isinstance(r["latency"].get("applied_latency_ms"), (int, float))]
+        series.append(("runner_applied_latency_ms", applied))
+        for label, vals in series:
+            if vals:
+                lines.append(f"  {label:<28} n={len(vals):<5} p50={_pct(vals, 0.5):.1f} p90={_pct(vals, 0.9):.1f}")
+    return "\n".join(lines) if lines else "no buy rows with stage stamps"
+
+
 def resolve_mode(cfg_mode: str, live_flag: bool) -> tuple[str, str | None]:
     """Live needs BOTH the config mode and the --live flag. Returns (mode, warning)."""
     if cfg_mode not in (MODE, "live"):
@@ -708,11 +936,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--once", action="store_true", help="one tail+poll pass, then exit")
     ap.add_argument("--live", action="store_true", help='second live switch; also needs config "mode": "live"')
     ap.add_argument("--status", action="store_true", help="print counters, open positions, realized P&L; no key, no URL")
+    ap.add_argument("--latency-report", action="store_true", help="p50/p90 of each stage delta from the fill log; no P&L, no key, no URL")
     ap.add_argument("--env-file", default=sim.DEFAULT_ENV_FILE)
     args = ap.parse_args(argv)
     cfg = json.loads(Path(args.config).read_text())
     if args.status:
         print(status_report(cfg))
+        return 0
+    if args.latency_report:
+        print(latency_report(cfg))
         return 0
     mode, warn = resolve_mode(cfg.get("mode", MODE), args.live)
     cfg["mode"] = mode
@@ -726,11 +958,11 @@ def main(argv: list[str] | None = None) -> int:
     rpc = LimitedRpc(ProbeRpc(sim.load_rpc_url(None, args.env_file)), rps=float(cfg.get("rps", MAX_RPS)))
     ex = Executor(rpc, cfg)
     print(f"probe_executor mode=dryrun book={ex.book} limits={ex.limits}", flush=True)
-    while True:
+    if args.once:
         ex.step()
-        if args.once:
-            return 0
-        time.sleep(poll_s)
+        return 0
+    ex.run_loop()
+    return 0
 
 
 if __name__ == "__main__":
