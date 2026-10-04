@@ -37,7 +37,9 @@ def parse_virtual(data: bytes) -> int | None:
         v = tx.parse_pool_account(data).get("virtual_quote_reserves")
     except ValueError:
         return None
-    return int(v) if isinstance(v, int) else None
+    if not isinstance(v, int) or v >= 2**63:  # a u64 near 2**64 is a negative i64 / a different layout: unreadable, not a V
+        return None
+    return int(v)
 
 
 def _rpc_url(env_file: str = DEFAULT_ENV_FILE) -> str:
