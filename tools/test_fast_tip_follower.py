@@ -678,3 +678,19 @@ def test_no_lookup_means_null_and_bonding_rows_untouched(tmp_path):
     rows = [{"venue": "pumpswap", "pool": "X"}]
     f._stamp_virtual(rows)
     assert rows == [{"venue": "pumpswap", "pool": "X", "virtual_quote_reserve": None}]
+
+
+def test_known_v_is_never_overwritten_and_no_v_is_retried_with_backoff(tmp_path):
+    f = _follower(tmp_path, Rpc(tip=4))
+    f._note_v("P", V_LAMPORTS, 0.0)
+    f._note_v("P", None, 1.0)  # a failed re-read does not erase a known V
+    assert f.v_cache.get("P") == V_LAMPORTS
+    f._note_v("Q", None, 0.0)  # decoded without V: not cached, retried
+    assert "Q" not in f.v_cache and f._v_retry_at["Q"] == ftf.V_RETRY_S
+    f._note_v("Q", None, 0.0)
+    assert f._v_retry_at["Q"] == 2 * ftf.V_RETRY_S
+    for _ in range(10):
+        f._note_v("Q", None, 0.0)
+    assert f._v_retry_at["Q"] == ftf.V_RETRY_CAP_S
+    f._note_v("Q", V_LAMPORTS, 5.0)  # later read succeeds
+    assert f.v_cache.get("Q") == V_LAMPORTS and "Q" not in f._v_retry_at

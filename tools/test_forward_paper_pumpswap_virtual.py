@@ -50,10 +50,11 @@ def _books_migrate() -> list[BookSpec]:
     return [BookSpec("migrate_hold_30s", "migrate", "hold_30s", creator_cooldown_ms=0, token_cooldown_ms=0)]
 
 
-def _run(rows, mode="off", books=None):
+def _run(rows, mode="off", books=None, record_packets=False):
     creates, _ = _fixture()
     return replay_rows(creates.values(), rows, books or _books_migrate(), tape_end_ms=END,
-                       kill_file=Path("/tmp/forward-paper-virtual-test"), offsets_ms=(5_000, 15_000), pumpswap_virtual=mode)
+                       kill_file=Path("/tmp/forward-paper-virtual-test"), offsets_ms=(5_000, 15_000), pumpswap_virtual=mode,
+                       record_packets=record_packets)
 
 
 def _dump(engine) -> str:
@@ -118,7 +119,7 @@ class VirtualRunnerTests(unittest.TestCase):
                     self.assertIsNone(b)
                     continue
                 self.assertEqual(a[0], b[0])
-                self.assertEqual(a[1], dataclasses.replace(b[1], exec_tape=None, v_null=False))
+                self.assertEqual(a[1], dataclasses.replace(b[1], exec_tape=None, v_null=False, v_lamports=None, v_row=None))
         # (2) what the EXP-012 online features are fed (note_print) and the book's flow are the same
         def feed(rows, mode):
             calls: list[object] = []
@@ -137,7 +138,7 @@ class VirtualRunnerTests(unittest.TestCase):
                 if parsed is not None:
                     engine.push_print(parsed[0], parsed[1], T0 // 1000)
             engine.drain_until(END, final=True)
-            return calls, [dataclasses.replace(p, exec_tape=None, v_null=False) for p in engine.library["MintA"].flow]
+            return calls, [dataclasses.replace(p, exec_tape=None, v_null=False, v_lamports=None, v_row=None) for p in engine.library["MintA"].flow]
 
         base_calls, base_flow = feed(_swap_rows(), "off")
         self.assertTrue(base_calls)
@@ -157,6 +158,42 @@ class VirtualRunnerTests(unittest.TestCase):
         # with V the same tape enters
         eng3 = _run(_swap_rows(V), "require")
         self.assertEqual(eng3.books[0].ceiling.skip_reasons.get("no_v", 0), 0)
+
+    def test_h1_null_v_print_after_entry_is_repriced_with_remembered_v(self) -> None:
+        full = _run(_swap_rows(V), "require")
+        rows = _swap_rows(V)
+        n = 0
+        for r in rows:
+            if r.get("venue") == "pumpswap" and r["t_recv_ms"] >= T0 + 14_000:
+                r["virtual_quote_reserve"] = None
+                n += 1
+        self.assertGreater(n, 20)
+        got = _run(rows, "require")
+        self.assertTrue(json.loads(_dump(got))["positions"])
+        self.assertEqual(_dump(full), _dump(got))
+        self.assertEqual(got.no_v_prints, 0)
+        for fp, pp in zip(got.library["MintA"].flow, got.library["MintA"].path.prints):
+            if fp.venue == "pumpswap":
+                self.assertEqual(pp.quote_reserve, fp.quote_reserve + V)
+        # a prune-style rebuild does not move the counter
+        before = got.no_v_prints
+        got._prune(END + 10**9) if hasattr(got, "_prune") else None
+        self.assertEqual(got.no_v_prints, before)
+        # never any V for the pool: counted, entry skipped
+        never = _run(_swap_rows(None), "require")
+        self.assertGreater(never.no_v_prints, 0)
+        self.assertGreaterEqual(never.books[0].ceiling.skip_reasons.get("no_v", 0), 1)
+        self.assertEqual(never.summary()["no_v_prints"], never.no_v_prints)
+        self.assertNotIn("no_v_prints", _run(_swap_rows(V), "off").summary())
+
+    def test_h2_packets_do_not_override_the_v_reference_price(self) -> None:
+        wrapped = make_wrapper(laya_v0.print_from_trade_row, {POOL: V}, "v")
+        with mock.patch.object(laya_v0, "print_from_trade_row", wrapped):
+            ref = _run(_swap_rows(), "off", record_packets=True)
+        got = _run(_swap_rows(V), "require", record_packets=True)
+        self.assertTrue(json.loads(_dump(got))["positions"])
+        self.assertEqual(_dump(ref), _dump(got))
+        self.assertEqual(_dump(got), _dump(_run(_swap_rows(V), "require", record_packets=False)))
 
     def test_mode_is_validated_and_configured_require(self) -> None:
         with self.assertRaises(ValueError):

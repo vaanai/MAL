@@ -102,7 +102,8 @@ class LRUPools(OrderedDict):
         return default
 
 
-V_RETRY_S = 30.0  # a pool whose V could not be read is retried after this long (never stamped 0)
+V_RETRY_S = 30.0  # first retry of a pool whose V could not be read (never stamped 0); doubles per failure
+V_RETRY_CAP_S = 300.0
 
 
 def decode_pool_virtual(data: bytes) -> int | None:
@@ -233,6 +234,7 @@ class TipFollower:
         self._v_seen: dict[str, int | None] = getattr(self.lookup, "v_seen", None) or {}
         self.v_cache: LRUPools = LRUPools(pool_cap)
         self._v_retry_at: dict[str, float] = {}
+        self._v_fails: dict[str, int] = {}
         self.credits = credits
         self.clock_ms = clock_ms
         self.sleep = sleep
@@ -503,19 +505,34 @@ class TipFollower:
                     self._log_limited("v_lookup", f"pool V lookup failed: {type(exc).__name__}")
                     got = {}
                 for pool in chunk:
-                    if pool in got:
-                        self.v_cache[pool] = got[pool]
-                    else:
-                        self._v_retry_at[pool] = now + V_RETRY_S
+                    self._note_v(pool, got.get(pool), now)
         for r in swaps:
             pool = r.get("pool")
             v = self.v_cache.get(pool) if isinstance(pool, str) else None
             r["virtual_quote_reserve"] = v if isinstance(v, int) else None
 
+    def _note_v(self, pool: str, v: int | None, now: float) -> None:
+        """A known V is never overwritten by a failed or empty read. No V is not cached: retry with
+        bounded backoff (a too-short account fetched mid-creation must not stick as null)."""
+        if isinstance(v, int):
+            self.v_cache[pool] = v
+            self._v_retry_at.pop(pool, None)
+            self._v_fails.pop(pool, None)
+            return
+        if pool in self.v_cache:
+            return
+        n = self._v_fails.get(pool, 0)
+        self._v_fails[pool] = n + 1
+        self._v_retry_at[pool] = now + min(V_RETRY_CAP_S, V_RETRY_S * (2 ** n))
+        if len(self._v_fails) > 200_000:  # bound the bookkeeping
+            self._v_fails.clear()
+            self._v_retry_at.clear()
+
     def _drain_seen(self) -> None:
+        now = time.monotonic()
         while self._v_seen:
             pool, v = self._v_seen.popitem()
-            self.v_cache[pool] = v
+            self._note_v(pool, v, now)
 
     def _safe_lookup(self, pools: list[str]) -> dict[str, tuple[str, str]]:
         try:

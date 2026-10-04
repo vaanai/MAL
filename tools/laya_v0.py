@@ -241,6 +241,8 @@ class FlowPrint:
     # at their defaults for every row without a `virtual_quote_reserve` field.
     exec_tape: TapePrint | None = None
     v_null: bool = False
+    v_lamports: int | None = None  # the V this print was priced with
+    v_row: Any = field(default=None, compare=False, repr=False)  # the raw row, kept only for v_null prints
 
     def to_exec_tape(self) -> TapePrint:
         return self.exec_tape if self.exec_tape is not None else self.to_tape()

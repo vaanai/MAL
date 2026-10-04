@@ -804,8 +804,8 @@ def flow_from_tape_row(row: dict[str, Any]) -> tuple[str, FlowPrint] | None:
         return parsed
     v = row["virtual_quote_reserve"]
     if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-        return parsed[0], dataclasses.replace(parsed[1], v_null=True)
-    return parsed[0], dataclasses.replace(parsed[1], exec_tape=virtual_exec_print(row, v))
+        return parsed[0], dataclasses.replace(parsed[1], v_null=True, v_row=row)
+    return parsed[0], dataclasses.replace(parsed[1], exec_tape=virtual_exec_print(row, v), v_lamports=v)
 
 
 def _percentile(values: Sequence[int], p: float) -> float | None:
@@ -1371,7 +1371,8 @@ class ForwardEngine:
         self.kill_file = kill_file
         # EXP-012 gate: built only when a book asks for it. None keeps every other
         # path byte-identical (no hook below runs).
-        self.no_v_prints = 0
+        self.no_v_prints = 0  # PumpSwap prints with no V, now or carried (counted once, when first seen)
+        self._mint_v: dict[str, int] = {}
         self.exp012: Any = None
         self.exp012_gates: dict[str, Any] = {}
         self.exp012_rows: list[dict[str, Any]] = []
@@ -1640,6 +1641,11 @@ class ForwardEngine:
         if key in self.seen[mint]:
             return False
         self.seen[mint].add(key)
+        if self.pumpswap_virtual == "require" and pr.venue == "pumpswap":
+            if pr.v_lamports is not None:
+                self._mint_v[mint] = pr.v_lamports
+            elif mint not in self._mint_v:
+                self.no_v_prints += 1
         self._insert_print(book, pr)
         if self.exp012 is not None:
             self._last_event_ts = event_ts
@@ -1652,19 +1658,24 @@ class ForwardEngine:
         self._prints += 1
         return True
 
-    def _exec_tape(self, pr: FlowPrint) -> TapePrint:
-        """The print execution is priced on: vault + V in `require` mode, else the plain tape print."""
+    def _exec_tape(self, pr: FlowPrint, mint: str) -> TapePrint:
+        """The print execution is priced on: vault + V in `require` mode, else the plain tape print.
+        V is constant per pool: a null-V print is re-priced with the last V seen for this mint."""
         if self.pumpswap_virtual == "require" and pr.venue == "pumpswap":
             if pr.exec_tape is not None:
                 return pr.exec_tape
-            self.no_v_prints += 1
+            v = self._mint_v.get(mint)
+            if v is not None and pr.v_row is not None:
+                carried = virtual_exec_print(pr.v_row, v)
+                if carried is not None:
+                    return carried
         return pr.to_tape()
 
     def _no_v_at(self, book: MintBook, t_ms: int) -> bool:
-        """True when the latest print at or before `t_ms` is a PumpSwap print with no usable V."""
+        """True when the latest print at or before `t_ms` is a PumpSwap print with no V, now or ever, for this mint."""
         for pr in reversed(book.flow):
             if pr.t_recv_ms <= t_ms:
-                return pr.venue == "pumpswap" and pr.exec_tape is None
+                return pr.venue == "pumpswap" and pr.exec_tape is None and book.create.mint not in self._mint_v
         return False
 
     def _insert_print(self, book: MintBook, pr: FlowPrint) -> None:
@@ -1672,13 +1683,13 @@ class ForwardEngine:
         key = (pr.t_recv_ms, pr.slot, pr.tx_index, pr.event_index, pr.trader or "", pr.side)
         if not flow:
             book.flow.append(pr)
-            book.path.prints.append(self._exec_tape(pr))
+            book.path.prints.append(self._exec_tape(pr, book.create.mint))
             return
         last = flow[-1]
         last_key = (last.t_recv_ms, last.slot, last.tx_index, last.event_index, last.trader or "", last.side)
         if key >= last_key:
             book.flow.append(pr)
-            book.path.prints.append(self._exec_tape(pr))
+            book.path.prints.append(self._exec_tape(pr, book.create.mint))
             return
         lo, hi = 0, len(flow)
         while lo < hi:
@@ -1690,7 +1701,7 @@ class ForwardEngine:
             else:
                 hi = mid
         flow.insert(lo, pr)
-        book.path.prints.insert(lo, self._exec_tape(pr))
+        book.path.prints.insert(lo, self._exec_tape(pr, book.create.mint))
 
     def _consider_triggers(self, mint: str, pr: FlowPrint) -> None:
         book = self.library[mint]
@@ -2083,6 +2094,16 @@ class ForwardEngine:
             self._fill_one(run, ledger, pending)
 
     def _ref_price(self, book: MintBook, t_ms: int, feats: dict[str, float] | None) -> float | None:
+        if self.pumpswap_virtual == "require":
+            # execution reference on a PumpSwap print is its vault + V price, packet or no packet
+            # (a LAYA packet's f_price_sol is the plain vault price: features keep it, execution must not)
+            for pr in reversed(book.flow):
+                if pr.t_recv_ms <= t_ms:
+                    if pr.venue == "pumpswap":
+                        price = self._exec_tape(pr, book.create.mint).price_sol
+                        if price > 0:
+                            return price
+                    break
         if feats is not None:
             price = _finite(feats.get("f_price_sol"))
             if price is not None and price > 0:
@@ -2092,11 +2113,6 @@ class ForwardEngine:
             found = _finite(spot)
             if found is not None and found > 0:
                 return found
-        if self.pumpswap_virtual == "require":
-            # execution reference: the last print's vault + V price (features keep the plain flow price)
-            seen = flow_as_of(book.flow, t_ms)
-            if seen and seen[-1].exec_tape is not None:
-                return seen[-1].exec_tape.price_sol
         price = _price_at(book, t_ms)
         if price is not None and price > 0:
             return price
@@ -2619,7 +2635,7 @@ class ForwardEngine:
                     if not kept:
                         kept = [book.flow[-1]]
                     book.flow = kept
-                    book.path.prints = [self._exec_tape(pr) for pr in kept]
+                    book.path.prints = [self._exec_tape(pr, mint) for pr in kept]
                     self.seen[mint] = {_dedupe_key(pr) for pr in kept}
             last = book.flow[-1].t_recv_ms if book.flow else book.create.t_signal_ms
             if live_now - last < PRUNE_AFTER_MS:
@@ -2639,7 +2655,7 @@ class ForwardEngine:
                 if pr is not None and pr not in keep:
                     keep.append(pr)
             book.flow = keep
-            book.path.prints = [self._exec_tape(pr) for pr in keep]
+            book.path.prints = [self._exec_tape(pr, mint) for pr in keep]
             self.seen[mint] = {_dedupe_key(pr) for pr in keep}
 
     def summary(self, t_ms: int | None = None) -> dict[str, Any]:
@@ -2685,7 +2701,7 @@ class ForwardEngine:
             if run.spec.kind == "swing" and run.spec.freeze_ms is not None:
                 freeze = run.spec.freeze_ms
                 break
-        return {
+        out = {
             "schema": SCHEMA_PNL,
             "day": day,
             "t_ms": when,
@@ -2701,6 +2717,9 @@ class ForwardEngine:
             "books": books,
             "latency": self.latency.report(),
         }
+        if self.pumpswap_virtual == "require":
+            out["no_v_prints"] = self.no_v_prints
+        return out
 
 
 def _ledger_view(
