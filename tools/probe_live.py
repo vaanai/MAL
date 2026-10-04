@@ -43,7 +43,7 @@ from tools import probe_executor as pe
 from tools import pumpswap_simulate as sim
 from tools import pumpswap_tx as tx
 
-KEY_PATH = "/var/lib/mal/live/probe-wallet.json"
+KEY_PATH = "/var/lib/mal-live/probe-wallet.json"
 MIN_BALANCE_BUFFER = 20_000_000  # refuse to buy below size + 0.02 SOL (config may raise, never lower)
 REBROADCAST_MS = 2_000
 BLOCKHASH_TTL_MS = 10_000
@@ -69,9 +69,34 @@ def harden_process() -> None:
         raise SystemExit("prctl(PR_SET_DUMPABLE, 0) failed: refusing to load the key")
 
 
-def load_probe_key(path: str = KEY_PATH) -> Keypair:
+def check_parent_chain(path: str, stat_fn: Callable[[str], os.stat_result] = os.stat) -> None:
+    """Every directory above the key's leaf directory must be owned by root and not group/world-writable;
+    the leaf directory must be owned by root or the running uid and not group/world-writable. Symlinks in
+    the path are resolved first. A writable or foreign-owned ancestor would let someone swap the key."""
+    real = os.path.realpath(path)
+    parents = []
+    cur = os.path.dirname(real)
+    while True:
+        parents.append(cur)
+        if cur == os.path.dirname(cur):
+            break
+        cur = os.path.dirname(cur)
+    for i, d in enumerate(parents):  # parents[0] is the leaf directory
+        st = stat_fn(d)
+        allowed = (0, os.geteuid()) if i == 0 else (0,)
+        if st.st_uid not in allowed:
+            raise SystemExit("probe key parent directory has the wrong owner")
+        if st.st_mode & 0o022:
+            raise SystemExit("probe key parent directory is group or world writable")
+
+
+def load_probe_key(path: str = KEY_PATH, *, verify_chain: bool = True,
+                   stat_fn: Callable[[str], os.stat_result] = os.stat) -> Keypair:
     """Solana CLI keypair file (JSON array of 64 ints). Refuses unless the file is a regular file,
-    mode exactly 0400 or 0600, owned by the running uid. Error text never contains file content."""
+    mode exactly 0400 or 0600, owned by the running uid, and (verify_chain) its parent chain is
+    root-owned and not group/world-writable apart from the leaf dir. Error text never contains file content."""
+    if verify_chain:
+        check_parent_chain(path, stat_fn)
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError:

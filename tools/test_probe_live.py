@@ -183,7 +183,7 @@ class KeyTests(unittest.TestCase):
         kp = Keypair()
         with tempfile.TemporaryDirectory() as d:
             for mode in (0o400, 0o600):
-                self.assertEqual(pl.load_probe_key(self.write(d, kp, mode)).pubkey(), kp.pubkey())
+                self.assertEqual(pl.load_probe_key(self.write(d, kp, mode), verify_chain=False).pubkey(), kp.pubkey())
                 os.chmod(Path(d) / "k.json", 0o600)
 
     def test_refuses_bad_mode_owner_symlink_and_malformed(self):
@@ -192,22 +192,44 @@ class KeyTests(unittest.TestCase):
             for mode in (0o644, 0o640, 0o604, 0o700, 0o666):
                 path = self.write(d, kp, mode)
                 with self.assertRaises(SystemExit) as cm:
-                    pl.load_probe_key(path)
+                    pl.load_probe_key(path, verify_chain=False)
                 self.assertNotIn(str(kp.pubkey()), str(cm.exception))
                 os.chmod(path, 0o600)
             path = self.write(d, kp, 0o600)
             with mock.patch("os.geteuid", return_value=os.geteuid() + 1), self.assertRaises(SystemExit):
-                pl.load_probe_key(path)
+                pl.load_probe_key(path, verify_chain=False)
             link = Path(d) / "link.json"
             link.symlink_to(path)
             with self.assertRaises(SystemExit):
-                pl.load_probe_key(str(link))
+                pl.load_probe_key(str(link), verify_chain=False)
             Path(path).write_text("[1,2,3]")
             with self.assertRaises(SystemExit) as cm:
-                pl.load_probe_key(path)
+                pl.load_probe_key(path, verify_chain=False)
             self.assertNotIn("1,2,3", str(cm.exception))
             with self.assertRaises(SystemExit):
-                pl.load_probe_key(str(Path(d) / "missing.json"))
+                pl.load_probe_key(str(Path(d) / "missing.json"), verify_chain=False)
+
+    def test_parent_chain(self):
+        import types
+
+        def fake(table):
+            return lambda d: types.SimpleNamespace(st_uid=table[d][0], st_mode=table[d][1])
+
+        good = {"/": (0, 0o755), "/var": (0, 0o755), "/var/lib": (0, 0o755), "/var/lib/mal-live": (os.geteuid(), 0o700)}
+        pl.check_parent_chain("/var/lib/mal-live/probe-wallet.json", fake(good))  # ok
+        for path, entry in (("/var/lib", (1000, 0o755)), ("/var", (0, 0o775)), ("/", (0, 0o757)),
+                            ("/var/lib/mal-live", (os.geteuid() + 5, 0o700)), ("/var/lib/mal-live", (os.geteuid(), 0o770))):
+            bad = {**good, path: entry}
+            with self.assertRaises(SystemExit, msg=path), mock.patch("os.path.realpath", side_effect=lambda p: p):
+                pl.check_parent_chain("/var/lib/mal-live/probe-wallet.json", fake(bad))
+
+    def test_load_checks_chain_by_default(self):
+        with tempfile.TemporaryDirectory() as d, self.assertRaises(SystemExit):
+            kp = Keypair()
+            pl.load_probe_key(self.write(d, kp, 0o400))  # /tmp ancestors are not root-owned/unwritable-safe
+
+    def test_default_key_path(self):
+        self.assertEqual(pl.KEY_PATH, "/var/lib/mal-live/probe-wallet.json")
 
     def test_harden_process(self):
         import ctypes
@@ -520,7 +542,7 @@ class NoKeyLeakTests(unittest.TestCase):
                 kp_path = tmp / "k.key"
                 kp_path.write_text(json.dumps(list(bytes(kp))))
                 os.chmod(kp_path, 0o400)
-                loaded = pl.load_probe_key(str(kp_path))
+                loaded = pl.load_probe_key(str(kp_path), verify_chain=False)
                 ex._kp = loaded
                 ex.user = loaded.pubkey()
                 open_position(ex, rpc, clock)

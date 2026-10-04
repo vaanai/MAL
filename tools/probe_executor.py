@@ -81,7 +81,7 @@ class Limits:
     max_days: float = DEC019_MAX["max_days"]
     size_lamports: int = DEC019_MAX["size_lamports"]
     priority_lamports: int = DEC019_MAX["priority_lamports"]
-    stop_file: str = "/var/lib/mal/live/STOP"
+    stop_file: str = "/var/lib/mal-live/STOP"
 
     def __post_init__(self) -> None:
         """Clamp to the DEC-019 maxima on EVERY construction path, and reject NaN/inf/non-positive."""

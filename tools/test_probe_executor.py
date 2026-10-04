@@ -378,7 +378,7 @@ class SealUnitTests(unittest.TestCase):
             self.assertNotIn(n, UNIT, n)
 
     def test_unit_hardening_present(self):
-        for k in ("NoNewPrivileges=true", "ProtectSystem=strict", "ReadWritePaths=/var/lib/mal/live", "MemoryMax=1G", "User=mal-live",
+        for k in ("NoNewPrivileges=true", "ProtectSystem=strict", "ReadWritePaths=/var/lib/mal-live", "MemoryMax=1G", "User=mal-live",
                   "RestrictAddressFamilies=AF_INET AF_INET6", "CapabilityBoundingSet="):
             self.assertIn(k, UNIT)
 
