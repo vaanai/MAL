@@ -4,6 +4,7 @@
 # Build: python3 -m venv /var/lib/mal/fast-forward/venv
 #        /var/lib/mal/fast-forward/venv/bin/pip install -r requirements-fast-forward.txt
 lightgbm==4.7.0
+solders==0.29.0  # keyless PumpSwap tx builder (tools/pumpswap_tx.py); abi3 wheel, x86_64 + aarch64
 numpy==2.5.3
 scipy==1.18.1
 scikit-learn==1.9.1
