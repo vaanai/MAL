@@ -1,4 +1,6 @@
 """Withdraw the DEC-019 probe wallet. Run as ROOT by Helm or the owner, never by agents.
+Root-only: refuses unless euid==0 and the key is /etc/mal-probe/probe-wallet.json-style
+(root:root 0400 in a root:root 0700 dir).
 
 SELF-CONTAINED on purpose: stdlib + solders only, no imports from this repo, so root never
 executes mutable repo code while the key is in memory. Run it with `python -I` from the
@@ -34,7 +36,7 @@ from solders.system_program import ID as SYSTEM_PROGRAM
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
-DEFAULT_KEYFILE = "/var/lib/mal-live/probe-wallet.json"
+DEFAULT_KEYFILE = "/etc/mal-probe/probe-wallet.json"
 DEFAULT_RPC_ENV = "/var/lib/mal/fast-listener/helius.env"
 DEFAULT_STATE = "/var/lib/mal-live/state-live.json"
 DEFAULT_FILL_LOG = "/var/lib/mal-live/probe-fills.jsonl"
@@ -111,6 +113,27 @@ class Rpc:
 
 
 # ------------------------------------------------------------------ checks
+
+
+def check_key_location(path: str) -> None:
+    """Key file must be root:root 0400 in a root:root 0700 directory (no symlinks)."""
+    import os
+    import stat as st
+
+    p = Path(path)
+    try:
+        d = os.lstat(p.parent)
+        f = os.lstat(p)
+    except OSError:
+        raise Refuse(f"cannot stat keyfile {path} or its directory") from None
+    if st.S_ISLNK(d.st_mode) or not st.S_ISDIR(d.st_mode):
+        raise Refuse(f"refusing: {p.parent} is a symlink or not a directory")
+    if (d.st_uid, d.st_gid) != (0, 0) or st.S_IMODE(d.st_mode) != 0o700:
+        raise Refuse(f"refusing: {p.parent} must be root:root 0700")
+    if not st.S_ISREG(f.st_mode):
+        raise Refuse(f"refusing: {path} is not a regular file")
+    if (f.st_uid, f.st_gid) != (0, 0) or st.S_IMODE(f.st_mode) != 0o400:
+        raise Refuse(f"refusing: {path} must be root:root 0400")
 
 
 def load_keypair(path: str) -> Keypair:
@@ -284,7 +307,9 @@ def warn_destination(rpc, dest: Pubkey, out) -> None:
 # ------------------------------------------------------------------ main flow
 
 
-def run(args, rpc, *, is_active=executor_active, input_fn=input, out=print, sleep=time.sleep) -> int:
+def run(args, rpc, *, is_active=executor_active, input_fn=input, out=print, sleep=time.sleep, check_location=True) -> int:
+    if check_location:
+        check_key_location(args.keyfile)
     kp = load_keypair(args.keyfile)
     wallet = kp.pubkey()
     dest = parse_destination(args.to, wallet)
@@ -385,8 +410,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--allow-stranded", action="store_true", help="proceed even though non-zero tokens remain")
     ap.add_argument("--skip-close", action="store_true", help="do not close token accounts; just move SOL")
     args = ap.parse_args(argv)
+    if os.geteuid() != 0 and os.environ.get("MAL_LIVE_TEST") != "1":
+        print("refusing: withdraw is root-only", file=sys.stderr)
+        return 1
     try:
-        return run(args, Rpc(load_rpc_url(args.rpc_env)))
+        # Ownership/mode of the key is enforced except in offline tests (never as root).
+        return run(args, Rpc(load_rpc_url(args.rpc_env)), check_location=os.environ.get("MAL_LIVE_TEST") != "1")
     except SystemExit as e:  # Refuse and Rpc errors
         print(redact(str(e.code)), file=sys.stderr)
         return 1

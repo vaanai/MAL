@@ -2,9 +2,12 @@
 # Create the DEC-019 probe wallet. Run as root by Helm or the owner, never by agents.
 # Run the pinned copy in /usr/local/lib/mal-probe (see docs/runbooks/probe-wallet.md).
 # Prints only the public key. The secret goes from solders straight into a 0400 file;
-# it is never in argv, env, stdout, stderr, a shell variable, or a file outside the live dir.
+# it is never in argv, env, stdout, stderr, a shell variable, or a file outside the key dir.
+# The key lives in /etc/mal-probe (root:root 0700 dir, root:root 0400 file). It is never
+# chowned to mal-live: the executor gets it only via systemd LoadCredential, and withdraw
+# is root-only. /var/lib/mal-live (mal-live, 0700) holds executor state only, no key.
 #
-# MAL_LIVE_DIR / MAL_LIVE_USER / MAL_LIVE_PY are honored ONLY when MAL_LIVE_TEST=1.
+# MAL_LIVE_DIR / MAL_LIVE_KEY_DIR / MAL_LIVE_USER / MAL_LIVE_PY are honored ONLY when MAL_LIVE_TEST=1.
 # MAL_LIVE_TEST=1 also skips the root check, useradd, chown and the install-location check.
 set -euo pipefail
 ulimit -c 0
@@ -14,16 +17,19 @@ if [ "${MAL_LIVE_TEST:-0}" = "1" ]; then
   [ "$(id -u)" -ne 0 ] || { echo "MAL_LIVE_TEST is not allowed as root" >&2; exit 1; }
   TEST=1
   LIVE_DIR="${MAL_LIVE_DIR:-/var/lib/mal-live}"
+  KEY_DIR="${MAL_LIVE_KEY_DIR:-/etc/mal-probe}"
   LIVE_USER="${MAL_LIVE_USER:-mal-live}"
   PY="${MAL_LIVE_PY:-/usr/local/lib/mal-probe/venv/bin/python}"
 else
   TEST=0
-  unset MAL_LIVE_DIR MAL_LIVE_USER MAL_LIVE_PY MAL_LIVE_TEST PYTHONPATH PYTHONHOME PYTHONSTARTUP || true
+  unset MAL_LIVE_DIR MAL_LIVE_KEY_DIR MAL_LIVE_USER MAL_LIVE_PY MAL_LIVE_TEST PYTHONPATH PYTHONHOME PYTHONSTARTUP || true
   LIVE_DIR=/var/lib/mal-live
+  KEY_DIR=/etc/mal-probe
   LIVE_USER=mal-live
   PY=/usr/local/lib/mal-probe/venv/bin/python
 fi
-KEYFILE="$LIVE_DIR/probe-wallet.json"
+KEYFILE="$KEY_DIR/probe-wallet.json"
+LEGACY_KEYFILE="$LIVE_DIR/probe-wallet.json"
 
 DRY=0
 case "${1:-}" in
@@ -39,32 +45,44 @@ if [ "$TEST" != "1" ]; then
 fi
 
 [ ! -L "$LIVE_DIR" ] || { echo "refusing: $LIVE_DIR is a symlink" >&2; exit 1; }
+[ ! -L "$KEY_DIR" ] || { echo "refusing: $KEY_DIR is a symlink" >&2; exit 1; }
 if [ -e "$KEYFILE" ] || [ -L "$KEYFILE" ]; then
   echo "refusing: $KEYFILE already exists (never overwrite a key)" >&2
   exit 1
 fi
+if [ -e "$LEGACY_KEYFILE" ] || [ -L "$LEGACY_KEYFILE" ]; then
+  echo "refusing: legacy key $LEGACY_KEYFILE exists (one probe wallet only; Helm decides)" >&2
+  exit 1
+fi
 [ -x "$PY" ] || { echo "python not found or not executable: $PY" >&2; exit 1; }
-# Every ancestor of the live dir must be not group/world-writable, and (in production)
-# root-owned, so nobody but root can rename or replace the live dir or the key in it.
-d="$(dirname "$LIVE_DIR")"
-[ -d "$d" ] || { echo "refusing: parent $d does not exist" >&2; exit 1; }
-d="$(cd "$d" && pwd -P)"
-while :; do
-  case "$(stat -c %a "$d")" in
-    *[2367][0-7]|*[0-7][2367]) echo "refusing: $d is group/world-writable" >&2; exit 1 ;;
-  esac
-  if [ "$TEST" != "1" ] && [ "$(stat -c %u "$d")" -ne 0 ]; then
-    echo "refusing: $d is not root-owned" >&2; exit 1
-  fi
-  [ "$d" != "/" ] || break
-  [ "$TEST" != "1" ] || break  # tests live under /tmp; only the immediate parent is checked
-  d="$(dirname "$d")"
-done
+
+# Every ancestor of a dir must be not group/world-writable, and (in production)
+# root-owned, so nobody but root can rename or replace the dir or the key in it.
+check_ancestors() {
+  local d
+  d="$(dirname "$1")"
+  [ -d "$d" ] || { echo "refusing: parent $d does not exist" >&2; exit 1; }
+  d="$(cd "$d" && pwd -P)"
+  while :; do
+    case "$(stat -c %a "$d")" in
+      *[2367][0-7]|*[0-7][2367]) echo "refusing: $d is group/world-writable" >&2; exit 1 ;;
+    esac
+    if [ "$TEST" != "1" ] && [ "$(stat -c %u "$d")" -ne 0 ]; then
+      echo "refusing: $d is not root-owned" >&2; exit 1
+    fi
+    [ "$d" != "/" ] || break
+    [ "$TEST" != "1" ] || break  # tests live under /tmp; only the immediate parent is checked
+    d="$(dirname "$d")"
+  done
+}
+check_ancestors "$LIVE_DIR"
+check_ancestors "$KEY_DIR"
 
 if [ "$DRY" = "1" ]; then
   echo "[dry-run] ensure/verify system user $LIVE_USER (useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin)"
-  echo "[dry-run] install -d -m 0700 -o $LIVE_USER -g $LIVE_USER $LIVE_DIR; verify owner and mode"
-  echo "[dry-run] generate Ed25519 keypair with $PY -I, write $KEYFILE (O_EXCL, 0400), fsync, read back and verify"
+  echo "[dry-run] install -d -m 0700 -o $LIVE_USER -g $LIVE_USER $LIVE_DIR (executor state only, no key); verify owner and mode"
+  echo "[dry-run] install -d -m 0700 -o root -g root $KEY_DIR; verify owner and mode"
+  echo "[dry-run] generate Ed25519 keypair with $PY -I, write $KEYFILE (root:root, O_EXCL, 0400), fsync, read back and verify"
   echo "[dry-run] print public key only"
   exit 0
 fi
@@ -85,13 +103,16 @@ if [ "$TEST" != "1" ]; then
   fi
   install -d -m 0700 -o "$LIVE_USER" -g "$LIVE_USER" "$LIVE_DIR"
   [ "$(stat -c '%U:%G %a' "$LIVE_DIR")" = "$LIVE_USER:$LIVE_USER 700" ] || { echo "refusing: $LIVE_DIR owner/mode wrong" >&2; exit 1; }
+  install -d -m 0700 -o root -g root "$KEY_DIR"
+  [ ! -L "$KEY_DIR" ] && [ "$(stat -c '%U:%G %a' "$KEY_DIR")" = "root:root 700" ] || { echo "refusing: $KEY_DIR owner/mode wrong" >&2; exit 1; }
 else
   install -d -m 0700 "$LIVE_DIR"
+  install -d -m 0700 "$KEY_DIR"
 fi
 
 # The script text is fixed; only non-secret arguments are passed (path, owner, test flag).
 "$PY" -I -c '
-import json, os, pwd, resource, sys
+import json, os, resource, sys
 from solders.keypair import Keypair
 
 resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
@@ -101,14 +122,13 @@ try:
 except Exception:
     pass
 
-path, owner, test = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+path, test = sys.argv[1], sys.argv[2] == "1"
 kp = Keypair()
 pub = str(kp.pubkey())
 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o400)
 try:
     if not test:
-        pw = pwd.getpwnam(owner)
-        os.fchown(fd, pw.pw_uid, pw.pw_gid)
+        os.fchown(fd, 0, 0)  # root:root, never the service user
     os.fchmod(fd, 0o400)
     with os.fdopen(fd, "w") as f:
         fd = None
@@ -122,7 +142,8 @@ try:
         os.close(dfd)
     with open(path) as g:
         back = Keypair.from_bytes(bytes(json.load(g)))
-    if str(back.pubkey()) != pub or (os.stat(path).st_mode & 0o777) != 0o400:
+    st = os.stat(path)
+    if str(back.pubkey()) != pub or (st.st_mode & 0o777) != 0o400 or (not test and (st.st_uid, st.st_gid) != (0, 0)):
         raise RuntimeError("readback verification failed")
 except BaseException:
     if fd is not None:
@@ -134,5 +155,5 @@ except BaseException:
     print("key file write/verify failed; nothing created", file=sys.stderr)
     sys.exit(1)
 print(pub)
-' "$KEYFILE" "$LIVE_USER" "$TEST"
+' "$KEYFILE" "$TEST"
 echo "Fund with 0.5 SOL. Never share the file."
