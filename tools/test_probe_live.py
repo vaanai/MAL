@@ -961,5 +961,62 @@ class FastSignalLiveTests(unittest.TestCase):
         self.assertEqual(self.rpc.sent, [])
 
 
+    def test_signal_hook_inside_ata_read_cannot_open_a_fourth_position(self):
+        from tools.test_probe_executor import enter_row
+
+        (self.tmp / "sig" / "decisions.jsonl").write_text("")
+        self.ex.signal_tick()
+        for i in range(2):  # two other positions already open
+            self.ex.state.open[f"OTHER{i}"] = {"mint": f"OTHER{i}", "pool": "p", "t_entry_ms": self.clock(), "tokens": 1,
+                                               "net_in": 1, "mark": 1.0, "spend": 1, "base_ata": "a", "base_mint": "m"}
+        p = signal_buy(self.ex, self.clock)
+        self.assertEqual(len(self.ex.state.open) + len(self.ex.state.pending), 3)
+        snaps = []
+        orig = self.rpc.__class__.__call__
+
+        def hooked(rpc, method, params):
+            if method == "getTokenAccountBalance":  # the limiter's idle hook fires here, as in run_loop
+                with (self.tmp / "sig" / "decisions.jsonl").open("a") as fh:
+                    fh.write(enter_row(mint="FOURTH", t=self.clock()))
+                self.ex.signal_tick()
+                st = pe.State.load(self.tmp / "state-live.json", "live")
+                snaps.append((MINT in st.pending or MINT in st.open, len(st.open) + len(st.pending)))
+            return orig(rpc, method, params)
+        self.rpc.__class__.__call__ = hooked
+        try:
+            self.rpc.statuses[p["signature"]] = {"slot": 2_000, "confirmationStatus": "confirmed", "err": None}
+            res = meta_result(self.ex, MINT, delta=-(p["spend"] + 500_000 + RENT), fee=500_000, tok_delta=0, ata_post=RENT)
+            res["meta"]["preTokenBalances"] = None  # token delta unknown: forces the ATA balance read
+            res["meta"]["postTokenBalances"] = None
+            self.rpc.txs[p["signature"]] = res
+            self.rpc.token_balance = p["q_tokens"]
+            self.ex.advance_pending()
+        finally:
+            self.rpc.__class__.__call__ = orig
+        self.assertTrue(snaps, "the ATA read must have happened")
+        self.assertTrue(all(s == (True, 3) for s in snaps))  # saved state always holds the position, never a 4th
+        self.assertEqual(len(self.ex.state.open), 3)
+        self.assertNotIn("FOURTH", self.ex.state.pending)
+        self.ex.signal_tick()  # the next tick picks the row up, and max_open refuses it
+        self.assertNotIn("FOURTH", self.ex.state.pending)
+        self.assertEqual(fills(self.conf)[-1]["reason"], "limit:max_open")
+
+    def test_ata_read_precedes_pending_delete(self):
+        p = signal_buy(self.ex, self.clock)
+        seen = []
+        orig = self.ex._ata_balance
+
+        def spy(ata):
+            seen.append((MINT in self.ex.state.pending, MINT in self.ex.state.open))
+            return orig(ata)
+        self.ex._ata_balance = spy
+        m = dict(slot=2_000, err=None, fee=500_000, sol_delta=-50_000_000, token_delta=None, ata_rent_pre=0, ata_rent_post=RENT, logs=[])
+        self.rpc.token_balance = p["q_tokens"]
+        self.ex._finish_buy(MINT, p, m)
+        self.assertEqual(seen, [(True, False)])
+        self.assertIn(MINT, self.ex.state.open)
+        self.assertNotIn(MINT, self.ex.state.pending)
+
+
 if __name__ == "__main__":
     unittest.main()

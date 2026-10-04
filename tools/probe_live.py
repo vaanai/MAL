@@ -50,7 +50,7 @@ BLOCKHASH_TTL_MS = 10_000
 BLOCKHASH_STALE_OK_MS = 40_000  # reuse a cached hash this long if the refresh call fails
 EXPIRY_RECHECK_MS = 5_000  # after the block height passes, look once more before calling it expired
 PENDING_POLL_MS = 1_000  # confirm-loop cadence (unchanged from the old 1 s loop)
-STUCK_RETRY_MS = 30_000 # first stuck retry delay; doubles per failure up to the max
+STUCK_RETRY_MS = 30_000  # first stuck retry delay; doubles per failure up to the max
 STUCK_RETRY_MAX_MS = 600_000
 SELL_MAX_ATTEMPTS = 10  # hard cap per position; config can only lower it
 CLOCK_BACK_TOLERANCE_MS = 60_000
@@ -434,6 +434,7 @@ class LiveExecutor(pe.Executor):
         except (Exception, SystemExit):
             return None
 
+    @pe.critical
     def advance_pending(self) -> None:
         pend = self.state.pending
         if not pend:
@@ -485,6 +486,7 @@ class LiveExecutor(pe.Executor):
             snapshot_slot=p.get("snap_slot"),
         )
 
+    @pe.critical
     def _resolve_expired(self, mint: str, p: dict[str, Any]) -> None:
         del self.state.pending[mint]
         row = dict(landed=False, fail_class="expired", **self._timing(p), pool=p.get("pool"))
@@ -496,6 +498,7 @@ class LiveExecutor(pe.Executor):
             self._log("sell", mint, sell_attempt=pos["sell_attempts"], stuck=bool(pos.get("stuck")), **row)
         self.save()
 
+    @pe.critical
     def _resolve_landed(self, mint: str, p: dict[str, Any], st: dict[str, Any]) -> None:
         try:
             res = self.rpc("getTransaction", [p["signature"], {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}])
@@ -543,8 +546,10 @@ class LiveExecutor(pe.Executor):
         base = tx.BASE_FEE_PER_SIGNATURE
         return min(base, fee), max(0, fee - base)
 
+    @pe.critical
     def _finish_buy(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
-        del self.state.pending[mint]
+        # The ATA balance read (an RPC call) happens BEFORE pending is deleted, so the position is always in
+        # `pending` or `open` whenever state is saved or counted.
         base_fee, prio_fee = self._fee_split(m["fee"])
         row: dict[str, Any] = dict(
             spend_lamports=p["spend"], expected_tokens=p["q_tokens"], sim_tokens=p.get("sim_tokens"), pool=p["pool"],
@@ -554,6 +559,7 @@ class LiveExecutor(pe.Executor):
         )
         if m["err"] is not None:
             cls = classify_failure(m["err"], m["logs"], self.slip_codes)
+            del self.state.pending[mint]
             self.state.realized_lamports += m["sol_delta"]  # the fee actually paid
             self._log("buy", mint, landed=False, fail_class=cls, err=m["err"], cost_lamports=-m["sol_delta"], **row)
             self.save()
@@ -572,6 +578,7 @@ class LiveExecutor(pe.Executor):
             entry_vs_quote_bps=bps(tokens, p["q_tokens"]), entry_vs_sim_bps=bps(tokens, p["sim_tokens"]) if p.get("sim_tokens") else None,
             price_vs_quote_bps=bps(p["q_tokens"], tokens) if tokens else None,  # cost per token vs quoted, + = we paid more
         )
+        del self.state.pending[mint]
         self._log("buy", mint, **row)
         if tokens <= 0:
             self.state.realized_lamports -= cost  # SOL is spent and nothing came back: a realized loss now
@@ -596,6 +603,7 @@ class LiveExecutor(pe.Executor):
             pos["abandoned"] = True  # HALT-like for this position: no more sells, buys stay stopped
             self._alert("sell_abandoned", pos["mint"], attempts=pos["sell_attempts"])
 
+    @pe.critical
     def _start_sell(self, mint: str, pos: dict[str, Any], snap: pe.Snapshot, reason: str, now: int) -> None:
         try:
             bal = int(self.rpc("getTokenAccountBalance", [pos["base_ata"], {"commitment": self.commitment}])["value"]["amount"])
@@ -659,6 +667,7 @@ class LiveExecutor(pe.Executor):
             if reason:
                 self._start_sell(mint, pos, snap, reason, now)
 
+    @pe.critical
     def _finish_sell(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
         del self.state.pending[mint]
         pos = self.state.open[mint]

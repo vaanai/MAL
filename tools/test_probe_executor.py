@@ -850,5 +850,15 @@ class LatencyReportTests(unittest.TestCase):
             self.assertEqual(cfg["signal_poll_ms"], 50)
 
 
+class LatencyWhitelistTests(unittest.TestCase):
+    def test_only_finite_numeric_values_are_kept(self):
+        row = json.loads(enter_row())
+        row["latency"] = {"applied_latency_ms": 250, "note": "pnl=5", "flag": True, "bad": None, "nested": {"a": 1}}
+        got = pe.parse_enter(json.dumps(row), pe.DEFAULT_BOOK, "ceiling")
+        self.assertEqual(got["latency"], {"applied_latency_ms": 250})
+        row["latency"] = {"note": "text only"}
+        self.assertNotIn("latency", pe.parse_enter(json.dumps(row), pe.DEFAULT_BOOK, "ceiling"))
+
+
 if __name__ == "__main__":
     unittest.main()

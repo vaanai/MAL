@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import functools
 import json
 import math
 import os
@@ -271,9 +272,12 @@ class LimitedRpc:
     def _wait(self) -> None:
         now = self.clock()
         slack = (self.burst - 1) * self.interval if self._prio else 0.0
-        if now + slack < self._next:
+        for _ in range(4):  # re-check after each sleep: the idle hook's buy may have pushed the schedule out
+            if now + slack >= self._next:
+                break
             self._sleep(self._next - slack - now)
-            now = max(now, self.clock(), self._next - slack)
+            now = max(now, self.clock())
+        now = max(now, self._next - slack) if self.idle_hook is None else now
         self._next = max(self._next, now) + self.interval
 
     def __call__(self, method: str, params: list) -> dict:
@@ -411,9 +415,12 @@ def parse_enter(line: str, book: str, ledger: str) -> dict[str, Any] | None:
     sig = {k: row.get(k) for k in KEEP_FIELDS}
     if not sig["mint"] or not isinstance(sig["decision_t_ms"], int):
         return None
-    lat = row.get("latency")  # decision-time hop timings only (no exit or P&L); copied verbatim when present and small
-    if isinstance(lat, dict) and len(json.dumps(lat, separators=(",", ":"))) <= MAX_LATENCY_JSON:
-        sig["latency"] = lat
+    lat = row.get("latency")  # decision-time hop timings: only finite numeric values are kept (no free-form text)
+    if isinstance(lat, dict):
+        num = {str(k): v for k, v in lat.items()
+               if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)}
+        if num and len(json.dumps(num, separators=(",", ":"))) <= MAX_LATENCY_JSON:
+            sig["latency"] = num
     return sig
 
 
@@ -566,6 +573,19 @@ class FillLog:
             fh.write(json.dumps(row, separators=(",", ":")) + "\n")
 
 
+def critical(fn):
+    """Mark a multi-step state mutation with RPC calls inside. While it runs, the signal hook inside the limiter
+    wait does not handle signals (`signal_tick` returns 0; the next tick picks the rows up)."""
+    @functools.wraps(fn)
+    def wrapper(self, *a, **kw):
+        self._crit += 1
+        try:
+            return fn(self, *a, **kw)
+        finally:
+            self._crit -= 1
+    return wrapper
+
+
 class Executor:
     def __init__(self, rpc: Callable[[str, list], dict], cfg: dict[str, Any], *, now_ms: Callable[[], int] | None = None):
         self.rpc = rpc
@@ -589,7 +609,7 @@ class Executor:
         self.signal_poll_ms = clamp_signal_poll_ms(cfg.get("signal_poll_ms", SIGNAL_POLL_MS_DEFAULT))
         self.poll_ms = int(max(1.0, float(cfg.get("poll_s", 5.0))) * 1000)  # slow loop: positions, exits, pre-warm
         self.static = StaticCache()
-        self.buy_inflight = False
+        self._crit = 0
         self._last_slow: int | None = None
 
     def _prio(self):
@@ -711,6 +731,7 @@ class Executor:
             if chk["reason"]:
                 self._close(mint, pos, snap, chk, now)
 
+    @critical
     def _close(self, mint: str, pos: dict[str, Any], snap: Snapshot | None, chk: dict[str, Any], now: int) -> None:
         row: dict[str, Any] = dict(
             exit_reason=chk["reason"], ret=chk["ret"], t_entry_ms=pos["t_entry_ms"], hold_ms=now - pos["t_entry_ms"],
@@ -745,6 +766,8 @@ class Executor:
     def signal_tick(self) -> int:
         """The fast path. Stat first (inode and size against the persisted offset) and read only when the file
         grew, rotated or shrank. New `enter` rows are handled immediately, under buy priority on the limiter."""
+        if self._crit:
+            return 0
         try:
             s = self.decisions.stat()
         except FileNotFoundError:
@@ -759,14 +782,10 @@ class Executor:
             self.save()  # offset first: a crash mid-signal must not replay it
         if not sigs:
             return 0
-        self.buy_inflight = True
-        try:
-            with self._prio():
-                for sig in sigs:
-                    sig["seen_ms"] = seen
-                    self.handle_signal(sig)
-        finally:
-            self.buy_inflight = False
+        with self._prio():
+            for sig in sigs:
+                sig["seen_ms"] = seen
+                self.handle_signal(sig)
         return len(sigs)
 
     def step(self) -> int:
