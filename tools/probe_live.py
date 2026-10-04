@@ -43,7 +43,7 @@ from tools import probe_executor as pe
 from tools import pumpswap_simulate as sim
 from tools import pumpswap_tx as tx
 
-KEY_PATH = "/var/lib/mal-live/probe-wallet.json"
+CREDENTIAL_NAME = "probe-wallet"  # LoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json
 MIN_BALANCE_BUFFER = 20_000_000  # refuse to buy below size + 0.02 SOL (config may raise, never lower)
 REBROADCAST_MS = 2_000
 BLOCKHASH_TTL_MS = 10_000
@@ -77,49 +77,31 @@ def harden_process() -> None:
         raise SystemExit("prctl(PR_SET_DUMPABLE, 0) failed: refusing to load the key")
 
 
-def check_parent_chain(path: str, stat_fn: Callable[[str], os.stat_result] = os.stat) -> None:
-    """Every directory above the key's leaf directory must be owned by root and not group/world-writable;
-    the leaf directory must be owned by root or the running uid and not group/world-writable. Symlinks in
-    the path are resolved first. A writable or foreign-owned ancestor would let someone swap the key."""
-    real = os.path.realpath(path)
-    parents = []
-    cur = os.path.dirname(real)
-    while True:
-        parents.append(cur)
-        if cur == os.path.dirname(cur):
-            break
-        cur = os.path.dirname(cur)
-    for i, d in enumerate(parents):  # parents[0] is the leaf directory
-        st = stat_fn(d)
-        allowed = (0, os.geteuid()) if i == 0 else (0,)
-        if st.st_uid not in allowed:
-            raise SystemExit("probe key parent directory has the wrong owner")
-        if st.st_mode & 0o022:
-            raise SystemExit("probe key parent directory is group or world writable")
+def credential_path(env: dict[str, str] | None = None) -> str:
+    """The ONLY place live mode reads the key from: systemd's per-service credential directory
+    (LoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json in the live drop-in). There is no path
+    override: the key at /etc/mal-probe is root-only and never opened by this process directly."""
+    d = (os.environ if env is None else env).get("CREDENTIALS_DIRECTORY")
+    if not d:
+        raise SystemExit("CREDENTIALS_DIRECTORY is not set: live mode only loads the key from the systemd credential")
+    return str(Path(d) / CREDENTIAL_NAME)
 
 
-def load_probe_key(path: str = KEY_PATH, *, verify_chain: bool = True,
-                   stat_fn: Callable[[str], os.stat_result] = os.stat) -> Keypair:
-    """Solana CLI keypair file (JSON array of 64 ints). Refuses unless the file is a regular file,
-    mode exactly 0400 or 0600, owned by the running uid, and (verify_chain) its parent chain is
-    root-owned and not group/world-writable apart from the leaf dir. Error text never contains file content."""
-    if verify_chain:
-        check_parent_chain(path, stat_fn)
+def load_probe_key(path: str | None = None) -> Keypair:
+    """Solana CLI keypair file (JSON array of 64 ints) from the systemd credential (default). The credential
+    directory is private to the service, so no owner/mode/parent checks are made here. Error text never
+    contains file content."""
+    path = path or credential_path()
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError:
-        raise SystemExit("probe key file cannot be opened") from None
+        raise SystemExit("probe key credential cannot be opened") from None
     buf = bytearray(1024)
     secret = bytearray()
     try:
         with os.fdopen(fd, "rb", buffering=0) as fh:
-            st = os.fstat(fh.fileno())
-            if not stat.S_ISREG(st.st_mode):
-                raise SystemExit("probe key file is not a regular file")
-            if stat.S_IMODE(st.st_mode) not in (0o400, 0o600):
-                raise SystemExit("probe key file mode must be 0400 or 0600")
-            if st.st_uid != os.geteuid():
-                raise SystemExit("probe key file is not owned by the running uid")
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                raise SystemExit("probe key credential is not a regular file")
             n = fh.readinto(buf)
         del buf[n:]
         try:
@@ -132,7 +114,7 @@ def load_probe_key(path: str = KEY_PATH, *, verify_chain: bool = True,
         except SystemExit:
             raise
         except Exception:
-            raise SystemExit("probe key file is malformed") from None
+            raise SystemExit("probe key credential is malformed") from None
     finally:
         for b in (buf, secret):  # best effort: the immutable bytes() copy handed to solders cannot be zeroed
             for i in range(len(b)):
@@ -231,8 +213,8 @@ def validate_message(msg: Message, ps: tx.PoolState, mint: Pubkey, user: Pubkey,
         raise UnsafeTx("quote_not_wsol")
     if ps.base_token_program not in (tx.TOKEN_PROGRAM, tx.TOKEN_2022_PROGRAM) or ps.quote_token_program != tx.TOKEN_PROGRAM:
         raise UnsafeTx("token_program")
-    if ps.pool != tx.pool_v2(mint):
-        raise UnsafeTx("pool_not_derived")
+    if ps.pool != tx.canonical_pool(mint):
+        raise UnsafeTx("pool_not_canonical")
     if ps.base_vault != tx.ata(ps.pool, mint, ps.base_token_program) or ps.quote_vault != tx.ata(ps.pool, tx.WSOL_MINT, tx.TOKEN_PROGRAM):
         raise UnsafeTx("vault_not_derived")
     keys = list(msg.account_keys)
@@ -711,7 +693,9 @@ class LiveExecutor(pe.Executor):
 
 def run_live(cfg: dict[str, Any], args: Any, poll_s: float) -> int:
     harden_process()
-    kp = load_probe_key(cfg.get("key_path", KEY_PATH))
+    if "key_path" in cfg:
+        raise SystemExit("live mode has no key path override: the key comes from the systemd credential only")
+    kp = load_probe_key()
     rps = float(cfg.get("rps", pe.MAX_RPS))
     rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file)), rps=rps, max_rps=LIVE_MAX_RPS)
     ex = LiveExecutor(rpc, cfg, kp)

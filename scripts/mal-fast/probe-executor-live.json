@@ -16,6 +16,5 @@
   "loss_cap_lamports": 250000000,
   "max_days": 4,
   "slippage_cap": 0.15,
-  "sell_retries": 5,
-  "key_path": "/var/lib/mal-live/probe-wallet.json"
+  "sell_retries": 5
 }

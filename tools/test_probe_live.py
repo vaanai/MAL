@@ -19,20 +19,9 @@ from solders.transaction import VersionedTransaction
 from tools import probe_executor as pe
 from tools import probe_live as pl
 from tools import pumpswap_tx as tx
-from tools.test_probe_executor import MINT, T0, Clock, FakeRpc, fills, sig as mk_sig
+from tools.test_probe_executor import POOL_B64 as FX_POOL, MINT, T0, Clock, FakeRpc, fills, sig as mk_sig
 
-def _consistent_pool_b64() -> str:
-    """The recorded pool with vaults rewritten to the derived ATAs of the address we fetch (pool_v2(MINT))."""
-    from solders.pubkey import Pubkey
-
-    d = bytearray(base64.b64decode(__import__("tools.test_probe_executor", fromlist=["x"]).POOL_B64))
-    pool, mint = tx.pool_v2(Pubkey.from_string(MINT)), Pubkey.from_string(MINT)
-    d[139:171] = bytes(tx.ata(pool, mint, tx.TOKEN_PROGRAM))
-    d[171:203] = bytes(tx.ata(pool, tx.WSOL_MINT, tx.TOKEN_PROGRAM))
-    return base64.b64encode(bytes(d)).decode()
-
-
-POOL_OK = _consistent_pool_b64()
+POOL_OK = None  # the recorded pool is the canonical pool of MINT with its real vaults (Token-2022 mint)
 LVBH = 1_000
 BAL = 500_000_000
 RENT = 2_039_280
@@ -89,7 +78,7 @@ class LiveRpc(FakeRpc):
 
 def make_live(tmp: Path, **cfg):
     clock = Clock()
-    rpc = LiveRpc(clock, pool_b64=POOL_OK)
+    rpc = LiveRpc(clock)
     kp = Keypair()
     conf = {"signals_dir": str(tmp / "sig"), "state_dir": str(tmp), "fill_log": str(tmp / "fills.jsonl"),
             "stop_file": str(tmp / "STOP"), "halt_file": str(tmp / "HALT"), "mode": "live", "poll_s": 5.0, **cfg}
@@ -186,63 +175,60 @@ class GatingTests(unittest.TestCase):
 
 
 class KeyTests(unittest.TestCase):
-    def write(self, d, kp, mode):
-        p = Path(d) / "k.json"
+    def write(self, d, kp, mode=0o400):
+        p = Path(d) / pl.CREDENTIAL_NAME
         p.write_text(json.dumps(list(bytes(kp))))
         os.chmod(p, mode)
         return str(p)
 
-    def test_loads_good_modes(self):
-        kp = Keypair()
-        with tempfile.TemporaryDirectory() as d:
-            for mode in (0o400, 0o600):
-                self.assertEqual(pl.load_probe_key(self.write(d, kp, mode), verify_chain=False).pubkey(), kp.pubkey())
-                os.chmod(Path(d) / "k.json", 0o600)
-
-    def test_refuses_bad_mode_owner_symlink_and_malformed(self):
-        kp = Keypair()
-        with tempfile.TemporaryDirectory() as d:
-            for mode in (0o644, 0o640, 0o604, 0o700, 0o666):
-                path = self.write(d, kp, mode)
-                with self.assertRaises(SystemExit) as cm:
-                    pl.load_probe_key(path, verify_chain=False)
-                self.assertNotIn(str(kp.pubkey()), str(cm.exception))
-                os.chmod(path, 0o600)
-            path = self.write(d, kp, 0o600)
-            with mock.patch("os.geteuid", return_value=os.geteuid() + 1), self.assertRaises(SystemExit):
-                pl.load_probe_key(path, verify_chain=False)
-            link = Path(d) / "link.json"
-            link.symlink_to(path)
-            with self.assertRaises(SystemExit):
-                pl.load_probe_key(str(link), verify_chain=False)
-            Path(path).write_text("[1,2,3]")
+    def test_live_refuses_without_credentials_directory(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CREDENTIALS_DIRECTORY", None)
             with self.assertRaises(SystemExit) as cm:
-                pl.load_probe_key(path, verify_chain=False)
-            self.assertNotIn("1,2,3", str(cm.exception))
+                pl.load_probe_key()
+            self.assertIn("CREDENTIALS_DIRECTORY", str(cm.exception))
             with self.assertRaises(SystemExit):
-                pl.load_probe_key(str(Path(d) / "missing.json"), verify_chain=False)
+                pl.credential_path()
+        with mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": ""}):
+            with self.assertRaises(SystemExit):
+                pl.credential_path()
 
-    def test_parent_chain(self):
-        import types
+    def test_loads_from_credentials_directory(self):
+        kp = Keypair()
+        with tempfile.TemporaryDirectory() as d:
+            self.write(d, kp)
+            with mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": d}):
+                self.assertEqual(pl.load_probe_key().pubkey(), kp.pubkey())
 
-        def fake(table):
-            return lambda d: types.SimpleNamespace(st_uid=table[d][0], st_mode=table[d][1])
+    def test_missing_malformed_and_symlink_refused_without_leaking(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": d}):
+            with self.assertRaises(SystemExit):
+                pl.load_probe_key()  # file missing
+            p = Path(d) / pl.CREDENTIAL_NAME
+            p.write_text("[1,2,3]")
+            with self.assertRaises(SystemExit) as cm:
+                pl.load_probe_key()
+            self.assertNotIn("1,2,3", str(cm.exception))
+            p.unlink()
+            real = self.write(d, Keypair())
+            os.rename(real, Path(d) / "real")
+            p.symlink_to(Path(d) / "real")
+            with self.assertRaises(SystemExit):
+                pl.load_probe_key()
 
-        good = {"/": (0, 0o755), "/var": (0, 0o755), "/var/lib": (0, 0o755), "/var/lib/mal-live": (os.geteuid(), 0o700)}
-        pl.check_parent_chain("/var/lib/mal-live/probe-wallet.json", fake(good))  # ok
-        for path, entry in (("/var/lib", (1000, 0o755)), ("/var", (0, 0o775)), ("/", (0, 0o757)),
-                            ("/var/lib/mal-live", (os.geteuid() + 5, 0o700)), ("/var/lib/mal-live", (os.geteuid(), 0o770))):
-            bad = {**good, path: entry}
-            with self.assertRaises(SystemExit, msg=path), mock.patch("os.path.realpath", side_effect=lambda p: p):
-                pl.check_parent_chain("/var/lib/mal-live/probe-wallet.json", fake(bad))
+    def test_no_path_override_in_live(self):
+        with mock.patch.object(pl, "harden_process"), mock.patch.object(pl, "load_probe_key", side_effect=AssertionError("must not load")):
+            with self.assertRaises(SystemExit) as cm:
+                pl.run_live({"mode": "live", "key_path": "/somewhere/else.json"}, mock.Mock(env_file="x"), 5.0)
+        self.assertIn("no key path override", str(cm.exception))
 
-    def test_load_checks_chain_by_default(self):
-        with tempfile.TemporaryDirectory() as d, self.assertRaises(SystemExit):
-            kp = Keypair()
-            pl.load_probe_key(self.write(d, kp, 0o400))  # /tmp ancestors are not root-owned/unwritable-safe
-
-    def test_default_key_path(self):
-        self.assertEqual(pl.KEY_PATH, "/var/lib/mal-live/probe-wallet.json")
+    def test_unit_and_dropin_text(self):
+        root = Path(__file__).parent.parent / "scripts/mal-fast"
+        drop = (root / "mal-probe-executor-live.conf").read_text()
+        self.assertIn("LoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json", drop)
+        self.assertNotIn("LoadCredential", (root / "mal-probe-executor.service").read_text())
+        self.assertNotIn("key_path", (root / "probe-executor-live.json").read_text())
+        self.assertNotIn("probe-wallet.json", (root / "probe-executor.json").read_text())
 
     def test_harden_process(self):
         import ctypes
@@ -259,7 +245,7 @@ class KeyTests(unittest.TestCase):
     def test_run_live_hardens_before_loading_key(self):
         order = []
 
-        def key(_p):
+        def key(*_a):
             order.append("key")
             raise SystemExit("stop")
 
@@ -489,8 +475,8 @@ class ExitFlowTests(unittest.TestCase):
         self.assertEqual(p["tokens"], self.pos["tokens"] - 7)
         t = VersionedTransaction.from_bytes(base64.b64decode(self.rpc.sent[-1][1]))
         progs = [str(t.message.account_keys[i.program_id_index]) for i in t.message.instructions]
-        self.assertEqual(progs[-1], str(tx.TOKEN_PROGRAM))  # close token ATA is last
-        self.assertEqual(progs.count(str(tx.TOKEN_PROGRAM)), 2)  # WSOL close + token ATA close
+        self.assertEqual(progs[-1], str(tx.TOKEN_2022_PROGRAM))  # close of the (Token-2022) token ATA is last
+        self.assertEqual((progs.count(str(tx.TOKEN_PROGRAM)), progs.count(str(tx.TOKEN_2022_PROGRAM))), (1, 1))  # WSOL close, token ATA close
         self.assertEqual(p["min_out"], tx.min_out_with_slippage(p["q_out"], self.ex.slip_bps))
         buy_cost = self.pos["buy_cost_lamports"]
         land_sell(self.ex, self.rpc, proceeds=49_000_000)
@@ -589,7 +575,7 @@ class NoKeyLeakTests(unittest.TestCase):
                 kp_path = tmp / "k.key"
                 kp_path.write_text(json.dumps(list(bytes(kp))))
                 os.chmod(kp_path, 0o400)
-                loaded = pl.load_probe_key(str(kp_path), verify_chain=False)
+                loaded = pl.load_probe_key(str(kp_path))
                 ex._kp = loaded
                 ex.user = loaded.pubkey()
                 open_position(ex, rpc, clock)
@@ -767,10 +753,27 @@ class HighFixTests(unittest.TestCase):
         self.assertIn("unsafe_tx", fills(self.conf)[-1]["reason"])
         self.assertEqual((len(self.rpc.sent), self.ex.state.attempts, self.ex.state.pending), (0, 0, {}))
 
-    def test_token_2022_allowed_by_owner_but_vault_must_match(self):
-        self.rpc.mint_owner = str(tx.TOKEN_2022_PROGRAM)  # vaults in the pool data are Token-program ATAs: mismatch -> refuse
+    def test_token_program_that_does_not_match_the_vaults_refused(self):
+        self.rpc.mint_owner = str(tx.TOKEN_PROGRAM)  # the recorded pool's vaults are Token-2022 ATAs: mismatch -> refuse
         self.assertIsNone(signal_buy(self.ex, self.clock))
         self.assertIn("unsafe_tx", fills(self.conf)[-1]["reason"])
+
+    def test_pool_not_canonical_or_wrong_mints_skipped(self):
+        import dataclasses
+
+        snap, _pool, _e = self.ex._snapshot(MINT)
+        self.assertIsNotNone(snap)
+        # a pool account whose base mint is not the requested mint: skipped, never traded
+        d = bytearray(base64.b64decode(FX_POOL))
+        d[43:75] = bytes(Keypair().pubkey())
+        self.rpc.pool_b64 = base64.b64encode(bytes(d)).decode()
+        self.assertEqual(self.ex._snapshot(MINT)[2], "no_canonical_pool")
+        self.assertIsNone(signal_buy(self.ex, self.clock))
+        self.assertEqual(fills(self.conf)[-1]["reason"], "no_canonical_pool")
+        d = bytearray(base64.b64decode(FX_POOL))
+        d[75:107] = bytes(Keypair().pubkey())  # quote mint not WSOL
+        self.rpc.pool_b64 = base64.b64encode(bytes(d)).decode()
+        self.assertEqual(self.ex._snapshot(MINT)[2], "no_canonical_pool")
 
     def test_mismatched_base_mint_refused(self):
         other = str(Keypair().pubkey())
@@ -853,7 +856,7 @@ class HighFixTests(unittest.TestCase):
     def test_dry_run_row_reports_live_whitelist_result(self):
         from tools.test_probe_executor import make as make_dry
 
-        ex, conf = make_dry(self.tmp / "dry" if (self.tmp / "dry").mkdir() is None else self.tmp, rpc=LiveRpc(self.clock, pool_b64=POOL_OK))
+        ex, conf = make_dry(self.tmp / "dry" if (self.tmp / "dry").mkdir() is None else self.tmp, rpc=LiveRpc(self.clock))
         ex.handle_signal(mk_sig(ex, t=T0))
         buy = [r for r in fills(conf) if r["kind"] == "buy"][-1]
         self.assertIn("live_validate_err", buy)

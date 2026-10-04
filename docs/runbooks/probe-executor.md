@@ -1,6 +1,6 @@
 # Probe executor runbook (DEC-019)
 
-The executor is `tools/probe_executor.py` (keyless dry run) plus `tools/probe_live.py` (live). Unit: `mal-probe-executor` on `mal-fast-0`, user `mal-live`. The key is created by Helm or the owner: see [probe-wallet.md](probe-wallet.md) (PR #289). The manager never sees it.
+The executor is `tools/probe_executor.py` (keyless dry run) plus `tools/probe_live.py` (live). Unit: `mal-probe-executor` on `mal-fast-0`, user `mal-live`. The key is created by Helm or the owner (see [probe-wallet.md](probe-wallet.md), PR #289, for the creation steps; the key location is now `/etc/mal-probe`, below). The manager never sees it.
 
 ## Who does what
 
@@ -34,7 +34,9 @@ sudo systemctl restart mal-probe-executor
 journalctl -u mal-probe-executor -n 20 --no-pager   # expect: mode=LIVE user=<public key>
 ```
 
-At start live mode sets RLIMIT_CORE 0 and PR_SET_DUMPABLE 0, then loads `/var/lib/mal-live/probe-wallet.json`. It refuses (exit, no key text in the message) unless the file is a regular file, mode 0400 or 0600, owned by the running uid, and every parent directory above `/var/lib/mal-live` is root-owned and not group/world-writable (the leaf dir may be owned by `mal-live`, not group/world-writable). Only the public key is printed.
+Key custody: the key is `/etc/mal-probe/probe-wallet.json`, root:root 0400, in `/etc/mal-probe` (root 0700). The executor never opens that path. The live drop-in has `LoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json`, systemd gives the service a private copy, and the executor loads ONLY `$CREDENTIALS_DIRECTORY/probe-wallet` (it refuses if `CREDENTIALS_DIRECTORY` is unset or the file is missing; there is no path override in live mode, and a `key_path` in the config is refused). The dry-run unit has no `LoadCredential`. State, fill log, STOP and HALT stay in `/var/lib/mal-live` (mal-live, 0700). Helm sets an auditd watch on `/etc/mal-probe`.
+
+At start live mode sets RLIMIT_CORE 0 and PR_SET_DUMPABLE 0, then loads the credential. It refuses (exit, no key text in the message) if the credential is missing or malformed. Only the public key is printed.
 
 Live state is `/var/lib/mal-live/state-live.json`, separate from the dry run's `state-dryrun.json`. Deleting it does not reset the budget: with live rows in the fill log and no state file, live refuses to start.
 

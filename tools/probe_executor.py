@@ -509,7 +509,7 @@ class Executor:
 
     def _snapshot(self, mint: str) -> tuple[Snapshot | None, str, str | None]:
         try:
-            pool = str(tx.pool_v2(Pubkey.from_string(mint)))
+            pool = str(tx.canonical_pool(Pubkey.from_string(mint)))
         except ValueError:
             return None, "", "bad_mint"
         try:
@@ -518,6 +518,8 @@ class Executor:
             return None, pool, error_label(exc)
         if isinstance(snap, str):
             return None, pool, snap
+        if str(snap.ps.base_mint) != mint or snap.ps.quote_mint != tx.WSOL_MINT:
+            return None, pool, "no_canonical_pool"
         return snap, pool, None
 
     @staticmethod

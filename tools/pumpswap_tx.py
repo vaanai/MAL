@@ -115,6 +115,17 @@ def creator_vault_authority(coin_creator: Pubkey) -> Pubkey:
     return pda([b"creator_vault", bytes(coin_creator)])
 
 
+PUMP_PROGRAM = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+
+
+def canonical_pool(mint: Pubkey) -> Pubkey:
+    """The migrated pump.fun pool: pool_authority = PDA(["pool-authority", mint], pump program), pool = PDA(
+    ["pool", index 0 (u16 LE), pool_authority, mint, WSOL], PumpSwap). NOT pool_v2, which is only a helper
+    account in the swap's remaining accounts. Non-canonical pools (other index/creator) are not covered."""
+    authority = pda([b"pool-authority", bytes(mint)], PUMP_PROGRAM)
+    return pda([b"pool", (0).to_bytes(2, "little"), bytes(authority), bytes(mint), bytes(WSOL_MINT)])
+
+
 def pool_v2(base_mint: Pubkey) -> Pubkey:
     return pda([b"pool-v2", bytes(base_mint)])
 
