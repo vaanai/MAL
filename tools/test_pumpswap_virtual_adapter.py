@@ -98,11 +98,12 @@ class AdapterTests(unittest.TestCase):
     def test_exit_capture_restored(self):
         import tools.exploration_exits as ee
 
-        d, s = ee._delayed, eem.score_one
+        d, s, e = ee._delayed, eem.score_one, eem.eval_spec
         with ad.exit_capture():
             self.assertIsNot(eem.score_one, s)
         self.assertIs(ee._delayed, d)
         self.assertIs(eem.score_one, s)
+        self.assertIs(eem.eval_spec, e)
 
     def test_build_map_null_and_retry(self):
         calls = []

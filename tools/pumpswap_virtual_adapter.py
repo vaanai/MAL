@@ -126,30 +126,36 @@ def _cached_vmap() -> tuple[dict[str, int | None], str]:
 
 @contextlib.contextmanager
 def exit_capture() -> Iterator[None]:
-    """Tag each scored row with `exit`: "trigger" (a tp/sl print was hit: `_delayed` ran) or "cap" (time cap).
-    Only valid when one spec is scored per call (the frozen tp50_sl30); otherwise the tag is "unknown".
-    Restored on exit."""
+    """Tag each scored row with `exit` by spec: "trigger" (a tp/sl print was hit, so `_delayed` ran inside that
+    spec's `eval_spec`) or "cap" (time cap or no trigger); unfilled rows are "none". Restored on exit."""
     import tools.exploration_exits as ee
 
     flag = {"hit": False}
-    orig_d, orig_s = ee._delayed, eem.score_one
+    hits: dict[str, bool] = {}
+    orig_d, orig_s, orig_e = ee._delayed, eem.score_one, eem.eval_spec
 
     def delayed(*a: Any, **k: Any) -> Any:
         flag["hit"] = True
         return orig_d(*a, **k)
 
-    def score_one(*a: Any, **k: Any) -> Any:
+    def eval_spec(spec: Any, *a: Any, **k: Any) -> Any:
         flag["hit"] = False
+        res = orig_e(spec, *a, **k)
+        hits[spec["id"]] = flag["hit"]
+        return res
+
+    def score_one(*a: Any, **k: Any) -> Any:
+        hits.clear()
         rows = orig_s(*a, **k)
         for r in rows:
-            r["exit"] = ("unknown" if len(rows) != 1 else "trigger" if flag["hit"] else "cap") if r.get("filled") else "none"
+            r["exit"] = ("trigger" if hits.get(r["spec"]) else "cap") if r.get("filled") else "none"
         return rows
 
-    ee._delayed, eem.score_one = delayed, score_one
+    ee._delayed, eem.score_one, eem.eval_spec = delayed, score_one, eval_spec
     try:
         yield
     finally:
-        ee._delayed, eem.score_one = orig_d, orig_s
+        ee._delayed, eem.score_one, eem.eval_spec = orig_d, orig_s, orig_e
 
 
 def _run_patched(orig: Callable[..., Any], tag: str, *args: Any, **kw: Any) -> Any:
