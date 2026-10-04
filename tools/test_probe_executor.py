@@ -38,13 +38,17 @@ class FakeRpc:
 
     def __call__(self, method, params):
         self.calls.append(method)
+        if method == "getAccountInfo" and params[0] == str(tx.GLOBAL_CONFIG):
+            return {"context": {"slot": 77}, "value": {"owner": "x", "data": [GC["data_b64"], "base64"], "lamports": 1}}
         if method == "getAccountInfo":
             return {"context": {"slot": 77}, "value": {"owner": self.owner, "data": [self.pool_b64, "base64"], "lamports": 1}}
         if method == "getMultipleAccounts":
-            return {"context": {"slot": 77}, "value": [
-                {"owner": "x", "data": [GC["data_b64"], "base64"], "lamports": 1},
-                {"owner": getattr(self, "mint_owner", str(tx.TOKEN_2022_PROGRAM)), "data": ["", "base64"], "lamports": 1},
-                tok_acct(self.base), tok_acct(self.quote)]}
+            self.multi_keys = list(params[0])
+            vals = [{"owner": getattr(self, "mint_owner", str(tx.TOKEN_2022_PROGRAM)), "data": ["", "base64"], "lamports": 1},
+                    tok_acct(self.base), tok_acct(self.quote)]
+            if str(tx.GLOBAL_CONFIG) in params[0]:  # like the chain: one value per key requested
+                vals.insert(0, {"owner": "x", "data": [GC["data_b64"], "base64"], "lamports": 1})
+            return {"context": {"slot": 77}, "value": vals}
         if method == "simulateTransaction":
             if self.sim_err:
                 return {"value": {"err": self.sim_err, "logs": ["Program x failed: custom program error: 0x1"], "unitsConsumed": 1}}
@@ -596,6 +600,254 @@ class DryrunSoftStopTests(unittest.TestCase):
             self.assertEqual([r["would_have_halted"] for r in buys], [[], ["max_attempts"], ["max_attempts"]])
             self.assertEqual(ex.state.would_halt, {"max_attempts": 2})
             self.assertEqual(pe.State.load(Path(d) / "state-dryrun.json").would_halt, {"max_attempts": 2})
+
+
+
+class TickClock:
+    """Advances 5 ms per read, so every stage stamp is distinct and ordered."""
+
+    def __init__(self, t=T0):
+        self.t = t
+
+    def __call__(self):
+        self.t += 5
+        return self.t
+
+
+class SignalTickTests(unittest.TestCase):
+    def _ex(self, d, **cfg):
+        clock = Clock()
+        rpc = FakeRpc()
+        ex, conf = make(Path(d), rpc=rpc, clock=clock, **cfg)
+        dec = Path(conf["signals_dir"]) / "decisions.jsonl"
+        dec.write_text("")
+        ex.tick()  # starts at end of file; slow work (pre-warm) runs once
+        return ex, conf, clock, rpc, dec
+
+    def test_clamps(self):
+        self.assertEqual(pe.clamp_signal_poll_ms(None), 50)
+        self.assertEqual(pe.clamp_signal_poll_ms(1), 20)
+        self.assertEqual(pe.clamp_signal_poll_ms(10_000), 500)
+        self.assertEqual(pe.clamp_signal_poll_ms(120), 120)
+        for bad in (float("nan"), float("inf"), "50", True, [1]):
+            self.assertEqual(pe.clamp_signal_poll_ms(bad), 50)
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(make(Path(d), signal_poll_ms=0)[0].signal_poll_ms, 20)
+            self.assertEqual(make(Path(d), signal_poll_ms=99999)[0].signal_poll_ms, 500)
+            self.assertEqual(make(Path(d))[0].signal_poll_ms, 50)
+
+    def test_fast_tail_handles_row_while_position_poll_pending(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf, clock, rpc, dec = self._ex(d)
+            ex.state.open["OPENMINT"] = {"mint": "OPENMINT", "pool": "p", "t_entry_ms": clock(), "tokens": 1, "net_in": 1, "mark": 1.0, "spend": 1}
+            polls = []
+            ex.poll_positions = lambda: polls.append(1)
+            clock.t += 100  # slow timer not due (poll_ms 5000)
+            with dec.open("a") as fh:
+                fh.write(enter_row(t=clock.t))
+            self.assertEqual(ex.tick(), 1)  # one signal tick, buy done in it
+            self.assertEqual(polls, [])
+            self.assertEqual([r["kind"] for r in fills(conf)], ["buy"])
+
+    def test_stat_first_no_read_when_unchanged(self):
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf, clock, rpc, dec = self._ex(d)
+            with mock.patch.object(pe, "tail_signals", wraps=pe.tail_signals) as spy:
+                for _ in range(5):
+                    self.assertEqual(ex.signal_tick(), 0)
+                self.assertEqual(spy.call_count, 0)
+                with dec.open("a") as fh:
+                    fh.write(enter_row(t=clock.t))
+                ex.signal_tick()
+                self.assertEqual(spy.call_count, 1)
+                ex.signal_tick()
+                self.assertEqual(spy.call_count, 1)
+
+    def test_buy_defers_slow_work_one_cycle(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf, clock, rpc, dec = self._ex(d)
+            polls = []
+            ex.poll_positions = lambda: polls.append(clock.t)
+            clock.t += 5_100  # slow work due
+            with dec.open("a") as fh:
+                fh.write(enter_row(t=clock.t))
+            ex.tick()
+            self.assertEqual(polls, [])  # buy first, positions wait
+            clock.t += 50
+            ex.tick()
+            self.assertEqual(len(polls), 1)
+            # never starved: overdue by more than a full period runs even with a buy
+            clock.t += 10_500
+            with dec.open("a") as fh:
+                fh.write(enter_row(mint="OTHER", t=clock.t))
+            ex.tick()
+            self.assertEqual(len(polls), 2)
+
+    def test_stage_fields_present_and_monotonic(self):
+        with tempfile.TemporaryDirectory() as d:
+            clock = TickClock()
+            ex, conf = make(Path(d), rpc=FakeRpc(), clock=clock)
+            dec = Path(conf["signals_dir"]) / "decisions.jsonl"
+            dec.write_text("")
+            ex.tick()
+            lat = {"recv_to_decision_ms": 3, "applied_latency_ms": 250}
+            with dec.open("a") as fh:
+                fh.write(enter_row(t=clock.t, latency=lat))
+            ex.tick()
+            row = [r for r in fills(conf) if r["kind"] == "buy"][0]
+            for k in ("decision_t_ms", "seen_ms", "state_ms", "state_slot", "built_ms", "simulated_ms", "latency"):
+                self.assertIn(k, row)
+            self.assertEqual(row["latency"], lat)
+            self.assertEqual(row["state_slot"], 77)
+            self.assertLessEqual(row["decision_t_ms"], row["seen_ms"])
+            self.assertLess(row["seen_ms"], row["state_ms"])
+            self.assertLess(row["state_ms"], row["built_ms"])
+            self.assertLess(row["built_ms"], row["simulated_ms"])
+
+    def test_latency_copied_only_when_present_and_small(self):
+        row = json.loads(enter_row())
+        self.assertNotIn("latency", pe.parse_enter(json.dumps(row), pe.DEFAULT_BOOK, "ceiling"))
+        row["latency"] = {"x": "y" * 5000}
+        self.assertNotIn("latency", pe.parse_enter(json.dumps(row), pe.DEFAULT_BOOK, "ceiling"))
+        row["latency"] = {"applied_latency_ms": 1}
+        self.assertEqual(pe.parse_enter(json.dumps(row), pe.DEFAULT_BOOK, "ceiling")["latency"], {"applied_latency_ms": 1})
+
+    def test_global_config_cached_then_refetched_after_ttl(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf, clock, rpc, dec = self._ex(d)  # tick() pre-warmed the static cache
+            self.assertIsNotNone(ex.static.gc)
+            ex._snapshot(MINT)
+            self.assertNotIn(str(tx.GLOBAL_CONFIG), rpc.multi_keys)
+            self.assertEqual(len(rpc.multi_keys), 3)
+            clock.t += pe.STATIC_TTL_MS + 1
+            ex._snapshot(MINT)
+            self.assertIn(str(tx.GLOBAL_CONFIG), rpc.multi_keys)
+
+    def test_prewarm_refresh_failure_keeps_cache(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf, clock, rpc, dec = self._ex(d)
+            gc = ex.static.gc
+
+            def boom(m, p):
+                raise RpcErrorProxy()
+            ex.rpc = boom
+            clock.t += pe.STATIC_REFRESH_MS + 1
+            ex.prewarm()
+            self.assertIs(ex.static.gc, gc)
+
+
+class LimiterPriorityTests(unittest.TestCase):
+    def _lim(self, hook=None):
+        t = [0.0]
+
+        def sleep(x):
+            t[0] += x
+        lim = pe.LimitedRpc(lambda m, p: {}, rps=2, clock=lambda: t[0], sleep=sleep)
+        lim.idle_hook = hook
+        return lim, t
+
+    def test_priority_burst_skips_wait_but_rate_stays_capped(self):
+        lim, t = self._lim()
+        with lim.priority():
+            for _ in range(4):
+                lim("m", [])
+        self.assertEqual(t[0], 0.0)  # buy path: a burst of 4 goes straight out
+        lim2, t2 = self._lim()
+        with lim2.priority():
+            for _ in range(21):
+                lim2("m", [])
+        self.assertGreaterEqual(t2[0], (21 - pe.PRIORITY_BURST) * 0.5 - 1e-9)  # sustained rate still capped at 2 rps
+
+    def test_non_priority_waits_behind_schedule(self):
+        lim, t = self._lim()
+        lim("m", [])
+        lim("m", [])
+        self.assertAlmostEqual(t[0], 0.5)
+
+    def test_idle_hook_runs_during_non_priority_wait_only(self):
+        hits = []
+        lim, t = self._lim(hook=lambda: hits.append(1))
+        lim("m", [])
+        lim("m", [])  # waits 0.5 s in 20 ms slices
+        self.assertGreaterEqual(len(hits), 20)
+        n = len(hits)
+        with lim.priority():
+            lim("m", [])
+            lim("m", [])
+        self.assertEqual(len(hits), n)
+
+    def test_hook_is_not_reentrant(self):
+        depth = []
+        lim, t = self._lim()
+
+        def hook():
+            depth.append(lim._in_hook)
+            lim("m", [])  # a call made from inside the hook must not recurse into the hook
+        lim.idle_hook = hook
+        lim("m", [])
+        lim("m", [])
+        self.assertTrue(depth and all(depth))
+
+    def test_new_signal_handled_during_a_position_poll_wait(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = [0.0]
+            fired = []
+            dec_holder = []
+
+            def sleep(x):
+                t[0] += x
+                if not fired and dec_holder:  # a signal lands while a position poll waits on the limiter
+                    fired.append(1)
+                    with dec_holder[0].open("a") as fh:
+                        fh.write(enter_row(t=T0))
+            lim = pe.LimitedRpc(FakeRpc(), rps=2, clock=lambda: t[0], sleep=sleep)
+            ex, conf = make(Path(d), rpc=lim, clock=Clock())
+            dec = Path(conf["signals_dir"]) / "decisions.jsonl"
+            dec.write_text("")
+            ex.signal_tick()
+            dec_holder.append(dec)
+            lim.idle_hook = ex.signal_tick
+            gc = [str(tx.GLOBAL_CONFIG), {"encoding": "base64"}]
+            lim("getAccountInfo", gc)
+            lim("getAccountInfo", gc)  # non-priority: waits, slices, the hook runs the buy
+            self.assertEqual([r["kind"] for r in fills(conf)], ["buy"])
+
+
+class LatencyReportTests(unittest.TestCase):
+    def test_report_p50_p90_and_no_pnl_or_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            fl = Path(d) / "fills.jsonl"
+            rows = []
+            for i in range(10):
+                rows.append({"mode": "dryrun", "kind": "buy", "decision_t_ms": 1000, "seen_ms": 1010 + i, "state_ms": 1100 + i,
+                             "built_ms": 1110 + i, "simulated_ms": 1300 + i, "latency": {"applied_latency_ms": 250}, "pnl_lamports": 5})
+            rows.append({"mode": "dryrun", "kind": "skip", "seen_ms": 1})
+            rows.append({"mode": "live", "kind": "buy", "decision_t_ms": 1000, "seen_ms": 1020, "state_ms": 1120, "built_ms": 1130,
+                         "sent_ms": 1140, "state_slot": 100, "landed_slot": 103})
+            fl.write_text("\n".join(json.dumps(r) for r in rows) + "\nnot json\n")
+            out = pe.latency_report({"fill_log": str(fl)})
+            self.assertIn("[dryrun] buy rows with stage stamps: 10", out)
+            self.assertRegex(out, r"decision_to_seen\s+n=10\s+p50=14\.5 p90=18\.1")
+            self.assertRegex(out, r"decision_to_simulated\s+n=10\s+p50=304\.5")
+            self.assertIn("[live] buy rows with stage stamps: 1", out)
+            self.assertRegex(out, r"decision_to_sent\s+n=1\s+p50=140\.0")
+            self.assertRegex(out, r"state_to_landed_slots\s+n=1\s+p50=3\.0")
+            self.assertRegex(out, r"runner_applied_latency_ms\s+n=10\s+p50=250\.0")
+            self.assertNotIn("pnl", out)
+
+    def test_cli_and_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfgp = Path(d) / "c.json"
+            cfgp.write_text(json.dumps({"fill_log": str(Path(d) / "none.jsonl")}))
+            self.assertEqual(pe.main(["--config", str(cfgp), "--latency-report"]), 0)
+            self.assertEqual(pe.latency_report({"fill_log": str(Path(d) / "none.jsonl")}), "no buy rows with stage stamps")
+
+    def test_configs_carry_signal_poll(self):
+        for name in ("probe-executor.json", "probe-executor-live.json"):
+            cfg = json.loads((REPO / "scripts/mal-fast" / name).read_text())
+            self.assertEqual(cfg["signal_poll_ms"], 50)
 
 
 if __name__ == "__main__":

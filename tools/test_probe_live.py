@@ -863,5 +863,103 @@ class HighFixTests(unittest.TestCase):
         self.assertIsNone(buy["live_validate_err"])
 
 
+
+class FastSignalLiveTests(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name)
+        self.ex, self.rpc, self.clock, self.kp, self.conf = make_live(self.tmp)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def _enter(self, **extra):
+        from tools.test_probe_executor import enter_row
+
+        dec = self.tmp / "sig" / "decisions.jsonl"
+        with dec.open("a") as fh:
+            fh.write(enter_row(t=self.clock(), **extra))
+
+    def test_tick_buys_on_the_signal_tick_with_prewarmed_blockhash(self):
+        (self.tmp / "sig" / "decisions.jsonl").write_text("")
+        self.ex.tick()  # starts at end of file; slow work pre-warms static accounts and the blockhash
+        self.assertEqual(self.rpc.fetches, 1)
+        self.assertIsNotNone(self.ex.static.gc)
+        self.rpc.calls.clear()
+        self.clock.t += 100  # slow timer not due
+        self._enter(latency={"applied_latency_ms": 250})
+        self.assertEqual(self.ex.tick(), 1)
+        self.assertIn(MINT, self.ex.state.pending)
+        self.assertEqual(self.rpc.fetches, 1)  # no getLatestBlockhash on the buy path
+        self.assertNotIn("getLatestBlockhash", self.rpc.calls)
+        self.assertLessEqual(self.rpc.calls.count("getAccountInfo") + self.rpc.calls.count("getMultipleAccounts"), 2)
+        self.assertEqual(len(self.rpc.sent), 1)
+
+    def test_buy_row_stage_fields_after_landing(self):
+        (self.tmp / "sig" / "decisions.jsonl").write_text("")
+        self.ex.tick()
+        self.clock.t += 10
+        self._enter(latency={"applied_latency_ms": 250})
+        self.ex.tick()
+        p = self.ex.state.pending[MINT]
+        for k in ("seen_ms", "state_ms", "state_slot", "built_ms", "first_send_ms"):
+            self.assertIsNotNone(p[k], k)
+        land_buy(self.ex, self.rpc, slot=2_000)
+        row = [r for r in fills(self.conf) if r["kind"] == "buy"][-1]
+        self.assertEqual(row["landed_slot"], 2_000)
+        self.assertEqual(row["latency"], {"applied_latency_ms": 250})
+        self.assertEqual(row["sent_ms"], row["first_send_ms"])
+        self.assertLessEqual(row["decision_t_ms"], row["seen_ms"])
+        self.assertLessEqual(row["seen_ms"], row["state_ms"])
+        self.assertLessEqual(row["state_ms"], row["built_ms"])
+        self.assertLessEqual(row["built_ms"], row["sent_ms"])
+        self.assertEqual(row["state_slot"], 77)
+        self.assertIn("state_to_landed_slots", pe.latency_report(self.conf))
+
+    def test_expired_buy_row_keeps_stage_fields(self):
+        p = signal_buy(self.ex, self.clock)
+        self.assertIsNotNone(p)
+        self.ex._resolve_expired(MINT, self.ex.state.pending[MINT])
+        row = [r for r in fills(self.conf) if r["kind"] == "buy"][-1]
+        self.assertIn("state_ms", row)
+        self.assertIn("sent_ms", row)
+        self.assertIsNone(row.get("landed_slot"))
+
+    def test_write_ahead_still_precedes_send_on_the_fast_path(self):
+        (self.tmp / "sig" / "decisions.jsonl").write_text("")
+        self.ex.tick()
+        seen = {}
+
+        def hook(params):
+            st = pe.State.load(self.tmp / "state-live.json", "live")
+            seen["attempts"], seen["pending"] = st.attempts, list(st.pending)
+        self.rpc.send_hook = hook
+        self._enter()
+        self.ex.tick()
+        self.assertEqual(seen, {"attempts": 1, "pending": [MINT]})
+
+    def test_confirm_loop_runs_on_its_own_timer_in_tick(self):
+        (self.tmp / "sig" / "decisions.jsonl").write_text("")
+        self.ex.tick()
+        self._enter()
+        self.ex.tick()
+        self.rpc.calls.clear()
+        self.clock.t += 500
+        self.ex.tick()
+        self.assertNotIn("getSignatureStatuses", self.rpc.calls)
+        self.clock.t += 600
+        self.ex.tick()
+        self.assertIn("getSignatureStatuses", self.rpc.calls)
+
+    def test_limits_still_enforced_on_fast_path(self):
+        (self.tmp / "sig" / "decisions.jsonl").write_text("")
+        self.ex.tick()
+        (self.tmp / "STOP").write_text("")
+        self._enter()
+        self.assertEqual(self.ex.tick(), 1)
+        self.assertEqual(fills(self.conf)[-1]["reason"], "limit:stop_file")
+        self.assertEqual(self.rpc.sent, [])
+
+
 if __name__ == "__main__":
     unittest.main()
