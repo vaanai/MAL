@@ -433,3 +433,72 @@ def test_scripts_syntax_modes_and_core_dump_limit():
         assert subprocess.run(["bash", "-n", str(sh)]).returncode == 0
     assert "ulimit -c 0" in WRAP.read_text()
     assert "RLIMIT_CORE" in (ROOT / "tools/probe_withdraw.py").read_text()
+
+
+def _fake_root_path(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "id"
+    fake.write_text('#!/bin/sh\n[ "$1" = "-u" ] && echo 0 && exit 0\nexec /usr/bin/id "$@"\n')
+    fake.chmod(0o755)
+    return f"{bindir}:{os.environ['PATH']}"
+
+
+def test_test_flag_refused_when_euid_is_root(tmp_path, monkeypatch):
+    env = {
+        "PATH": _fake_root_path(tmp_path),
+        "MAL_LIVE_TEST": "1",
+        "MAL_LIVE_PY": sys.executable,
+        "MAL_LIVE_DIR": str(tmp_path / "live"),
+        "MAL_PROBE_WITHDRAW_PY": str(ROOT / "tools/probe_withdraw.py"),
+    }
+    for sh in (MAKE, WRAP):
+        r = subprocess.run(["bash", str(sh), "--help"], env=env, capture_output=True, text=True)
+        assert r.returncode != 0 and "not allowed as root" in r.stderr
+    assert not (tmp_path / "live").exists()
+    monkeypatch.setenv("MAL_LIVE_TEST", "1")
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    assert pw.main(["--to", str(Keypair().pubkey())]) == 1
+
+
+def test_live_dir_default_moved_and_parent_checks():
+    text = MAKE.read_text()
+    assert "LIVE_DIR=/var/lib/mal-live" in text and "/var/lib/mal/live" not in text
+    assert 'stat -c %u "$d")" -ne 0' in text and "is not root-owned" in text
+    for f in (ROOT / "tools/probe_withdraw.py", ROOT / "docs/runbooks/probe-wallet.md"):
+        assert "/var/lib/mal/live" not in f.read_text()
+    assert pw.DEFAULT_KEYFILE == "/var/lib/mal-live/probe-wallet.json"
+    assert pw.DEFAULT_STATE.startswith("/var/lib/mal-live/") and pw.DEFAULT_FILL_LOG.startswith("/var/lib/mal-live/")
+
+
+def test_make_wallet_refuses_writable_parent(tmp_path):
+    parent = tmp_path / "p"
+    parent.mkdir()
+    parent.chmod(0o777)
+    env = {"PATH": os.environ["PATH"], "MAL_LIVE_DIR": str(parent / "live"), "MAL_LIVE_PY": sys.executable, "MAL_LIVE_TEST": "1"}
+    r = subprocess.run(["bash", str(MAKE)], env=env, capture_output=True, text=True)
+    assert r.returncode != 0 and "writable" in r.stderr
+    assert not (parent / "live").exists()
+
+
+def test_skip_close_still_counts_wsol_as_stranded(tmp_path):
+    w = Keypair().pubkey()
+    kp, dest, args, rpc = _setup(tmp_path, accounts_fn=lambda kp: [(w, _tok(), pw.WSOL_MINT, 50_000_000, 52_039_280)])
+    args.skip_close = True
+    with pytest.raises(SystemExit, match="stranded"):
+        _run(args, rpc)
+    assert rpc.sent == []
+    args.allow_stranded = True
+    rc, out = _run(args, rpc)
+    assert rc == 0 and len(rpc.sent) == 1 and f"mint={pw.WSOL_MINT}" in out
+
+
+def test_installer_guards_and_hashed_requirements():
+    t = (ROOT / "scripts/mal-fast/install-probe-tools.sh").read_text()
+    assert "core.attributesFile=/dev/null" in t and 'show "$COMMIT:$f"' in t and "git archive" not in t and "archive" not in t
+    assert "not root-owned" in t and "sha256 mismatch" in t and 'rm -rf "$DEST/venv"' in t
+    assert "--require-hashes --only-binary=:all:" in t
+    req = (ROOT / "scripts/mal-fast/requirements-probe-tools.txt").read_text()
+    for name in ("solders==", "jsonalias==", "typing_extensions=="):
+        assert name in req
+    assert req.count("--hash=sha256:") == 3

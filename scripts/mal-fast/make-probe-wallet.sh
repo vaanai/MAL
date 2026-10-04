@@ -11,14 +11,15 @@ ulimit -c 0
 umask 077
 
 if [ "${MAL_LIVE_TEST:-0}" = "1" ]; then
+  [ "$(id -u)" -ne 0 ] || { echo "MAL_LIVE_TEST is not allowed as root" >&2; exit 1; }
   TEST=1
-  LIVE_DIR="${MAL_LIVE_DIR:-/var/lib/mal/live}"
+  LIVE_DIR="${MAL_LIVE_DIR:-/var/lib/mal-live}"
   LIVE_USER="${MAL_LIVE_USER:-mal-live}"
   PY="${MAL_LIVE_PY:-/usr/local/lib/mal-probe/venv/bin/python}"
 else
   TEST=0
   unset MAL_LIVE_DIR MAL_LIVE_USER MAL_LIVE_PY MAL_LIVE_TEST PYTHONPATH PYTHONHOME PYTHONSTARTUP || true
-  LIVE_DIR=/var/lib/mal/live
+  LIVE_DIR=/var/lib/mal-live
   LIVE_USER=mal-live
   PY=/usr/local/lib/mal-probe/venv/bin/python
 fi
@@ -43,11 +44,22 @@ if [ -e "$KEYFILE" ] || [ -L "$KEYFILE" ]; then
   exit 1
 fi
 [ -x "$PY" ] || { echo "python not found or not executable: $PY" >&2; exit 1; }
-PARENT="$(dirname "$LIVE_DIR")"
-[ -d "$PARENT" ] || { echo "refusing: parent $PARENT does not exist" >&2; exit 1; }
-case "$(stat -c %a "$PARENT")" in
-  *[2367][0-7]|*[0-7][2367]) echo "refusing: $PARENT is group/world-writable" >&2; exit 1 ;;
-esac
+# Every ancestor of the live dir must be not group/world-writable, and (in production)
+# root-owned, so nobody but root can rename or replace the live dir or the key in it.
+d="$(dirname "$LIVE_DIR")"
+[ -d "$d" ] || { echo "refusing: parent $d does not exist" >&2; exit 1; }
+d="$(cd "$d" && pwd -P)"
+while :; do
+  case "$(stat -c %a "$d")" in
+    *[2367][0-7]|*[0-7][2367]) echo "refusing: $d is group/world-writable" >&2; exit 1 ;;
+  esac
+  if [ "$TEST" != "1" ] && [ "$(stat -c %u "$d")" -ne 0 ]; then
+    echo "refusing: $d is not root-owned" >&2; exit 1
+  fi
+  [ "$d" != "/" ] || break
+  [ "$TEST" != "1" ] || break  # tests live under /tmp; only the immediate parent is checked
+  d="$(dirname "$d")"
+done
 
 if [ "$DRY" = "1" ]; then
   echo "[dry-run] ensure/verify system user $LIVE_USER (useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin)"

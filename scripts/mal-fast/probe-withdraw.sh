@@ -8,6 +8,7 @@ set -euo pipefail
 ulimit -c 0
 
 if [ "${MAL_LIVE_TEST:-0}" = "1" ]; then
+  [ "$(id -u)" -ne 0 ] || { echo "MAL_LIVE_TEST is not allowed as root" >&2; exit 1; }
   PY="${MAL_LIVE_PY:?}"
   SCRIPT="${MAL_PROBE_WITHDRAW_PY:?}"
 else

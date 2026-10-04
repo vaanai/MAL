@@ -4,15 +4,20 @@ Who: **Helm or the owner**, as **root** on `mal-fast-0`. The manager and agents 
 
 Root never runs code from the repo checkout (agents can write to it). Root runs only copies installed from a pinned commit into `/usr/local/lib/mal-probe/` (root-owned), with a root-owned venv. The scripts refuse to run from anywhere else, and ignore every `MAL_LIVE_*` override (those exist only for the offline tests).
 
-## 0. Install the pinned tools
+## 0. Install the pinned tools (fresh root-owned clone, never the agent checkout)
 
-The manager gives you the full 40-character commit sha of the reviewed PR merge.
+The manager gives you the full 40-character sha of the reviewed merge commit and, ideally, a manifest of sha256 hashes for the four installed files (`scripts/mal-fast/make-probe-wallet.sh`, `scripts/mal-fast/probe-withdraw.sh`, `tools/probe_withdraw.py`, `scripts/mal-fast/requirements-probe-tools.txt`; one `<sha256>  <repo path>` per line).
 
 ```
-sudo /var/lib/mal/fast-forward/src/scripts/mal-fast/install-probe-tools.sh <FULL_SHA>
+sudo -i
+git clone https://github.com/vaanai/MAL /root/mal-probe-src
+git -C /root/mal-probe-src checkout --detach <FULL_SHA>
+test "$(git -C /root/mal-probe-src rev-parse HEAD)" = "<FULL_SHA>" && echo sha ok
+less /root/mal-probe-src/scripts/mal-fast/install-probe-tools.sh      # read it before running it
+/root/mal-probe-src/scripts/mal-fast/install-probe-tools.sh <FULL_SHA> [/root/manifest.txt]
 ```
 
-(That script only does `git archive <sha>` of three files and installs them 0500/0400 root:root; read it first if you want. It creates `/usr/local/lib/mal-probe/venv` with `solders==0.29.0` if absent.) It prints the sha256 of each installed file; compare them with the hashes the manager posts. `probe-withdraw.sh` prints the sha256 of `probe_withdraw.py` every time it starts.
+The installer refuses unless its own clone and every parent directory are root-owned and not group/world-writable, and `HEAD` equals the sha. It reads each file with `git show <sha>:<path>` (no archive attributes), checks the manifest if given (any mismatch refuses), installs into `/usr/local/lib/mal-probe/` (root-owned), and always rebuilds the venv from hashed wheels (`--require-hashes --only-binary=:all:`). It prints the sha256 of each installed file. `probe-withdraw.sh` prints the sha256 of `probe_withdraw.py` every time it starts. Never run the installer or these scripts from `/var/lib/mal/fast-forward/src` or any agent-writable checkout. Do not set `safe.directory '*'`.
 
 ## 1. Create the wallet
 
@@ -21,8 +26,8 @@ sudo /usr/local/lib/mal-probe/make-probe-wallet.sh --dry-run   # prints the plan
 sudo /usr/local/lib/mal-probe/make-probe-wallet.sh
 ```
 
-- Creates (or verifies) the `mal-live` system user (nologin, no extra groups) and `/var/lib/mal/live` (0700, mal-live). It refuses a symlinked directory.
-- Writes `/var/lib/mal/live/probe-wallet.json` (0400, mal-live), fsyncs it, reads it back and checks the public key before printing. It refuses if the file exists. Never delete or replace it by hand while the wallet holds funds.
+- Creates (or verifies) the `mal-live` system user (nologin, no extra groups) and `/var/lib/mal-live` (0700, mal-live). It refuses a symlinked directory, and refuses unless `/var/lib` and every ancestor is root-owned and not group/world-writable.
+- Writes `/var/lib/mal-live/probe-wallet.json` (0400, mal-live), fsyncs it, reads it back and checks the public key before printing. It refuses if the file exists. Never delete or replace it by hand while the wallet holds funds.
 - Prints two lines: the **public key** and `Fund with 0.5 SOL. Never share the file.`
 
 If it prints an error instead, nothing was created. Do not fund anything.
@@ -46,7 +51,7 @@ sudo /usr/local/lib/mal-probe/probe-withdraw.sh --to <OWNER_ADDRESS>
 
 - It refuses if the executor is active, if `state-live.json` shows open positions, or if `state-live.json` is missing/unreadable while `probe-fills.jsonl` has live rows. `--force` overrides; only use it if you understand why.
 - It refuses if any non-zero token balance (other than wrapped SOL) remains, because draining SOL would leave no fee to move it. Sell or move those tokens first. `--allow-stranded` overrides.
-- It closes zero-balance token accounts and wrapped-SOL accounts (rent and wrapped SOL return to the wallet), then sends all remaining SOL minus the fee to `--to`, leaving 0. If a close fails it retries accounts one by one and lists any that could not be closed; `--skip-close` skips closing entirely so the SOL can always be recovered.
+- It closes zero-balance token accounts and wrapped-SOL accounts (rent and wrapped SOL return to the wallet), then sends all remaining SOL minus the fee to `--to`, leaving 0. If a close fails it retries accounts one by one and lists any that could not be closed; `--skip-close` skips closing entirely so the SOL can always be recovered (wrapped SOL left in an unclosed account still counts as stranded and needs `--allow-stranded`).
 - It asks you to type the **full** destination address. Type or paste it from the owner's own message, not from the script output. Read any `WARNING` about the destination (off-curve, or owned by a program) before continuing. `--yes` skips the prompt; do not use it unattended.
 - The RPC key is read from `/var/lib/mal/fast-listener/helius.env` and is never printed.
 - Send back to the manager: the printed signatures (public).
@@ -55,7 +60,7 @@ sudo /usr/local/lib/mal-probe/probe-withdraw.sh --to <OWNER_ADDRESS>
 
 - Never print, copy, email, paste, commit or screenshot `probe-wallet.json`, or its contents in any form.
 - Never pass the key through a command line, env var, ticket, chat or MiScusi.
-- Never run the repo-checkout copies of these scripts as root, and never put `MAL_LIVE_TEST` in a real run.
+- Never run the repo-checkout copies of these scripts as root, and never set `MAL_LIVE_TEST` (the scripts refuse it as root).
 - Never reuse this wallet for anything else, and never fund it beyond 0.5 SOL.
 - Never run these against a wallet that is not the probe wallet.
 - Never open ports or edit `ufw`, `sshd` or cloudflared for this.

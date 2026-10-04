@@ -34,10 +34,10 @@ from solders.system_program import ID as SYSTEM_PROGRAM
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
-DEFAULT_KEYFILE = "/var/lib/mal/live/probe-wallet.json"
+DEFAULT_KEYFILE = "/var/lib/mal-live/probe-wallet.json"
 DEFAULT_RPC_ENV = "/var/lib/mal/fast-listener/helius.env"
-DEFAULT_STATE = "/var/lib/mal/live/state-live.json"
-DEFAULT_FILL_LOG = "/var/lib/mal/live/probe-fills.jsonl"
+DEFAULT_STATE = "/var/lib/mal-live/state-live.json"
+DEFAULT_FILL_LOG = "/var/lib/mal-live/probe-fills.jsonl"
 HELIUS_HTTP = "https://mainnet.helius-rpc.com"
 EXECUTOR_UNIT = "mal-probe-executor"
 WSOL_MINT = "So11111111111111111111111111111111111111112"
@@ -294,6 +294,8 @@ def run(args, rpc, *, is_active=executor_active, input_fn=input, out=print, slee
     closable = [a for a in accounts if a["amount"] == 0 or a["mint"] == WSOL_MINT]
     stranded = [a for a in accounts if a["amount"] > 0 and a["mint"] != WSOL_MINT]
     if args.skip_close:
+        # Skipping closes must not hide wrapped SOL: it still counts as stranded value.
+        stranded += [a for a in closable if a["mint"] == WSOL_MINT and a["amount"] > 0]
         closable = []
     balance = int(rpc("getBalance", [str(wallet), {"commitment": "confirmed"}])["value"])
 
@@ -365,6 +367,11 @@ def run(args, rpc, *, is_active=executor_active, input_fn=input, out=print, slee
 
 
 def main(argv: list[str] | None = None) -> int:
+    import os
+
+    if os.environ.get("MAL_LIVE_TEST") == "1" and os.geteuid() == 0:
+        print("MAL_LIVE_TEST is not allowed as root", file=sys.stderr)
+        return 1
     harden_process()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--to", required=True, help="destination base58 address")
