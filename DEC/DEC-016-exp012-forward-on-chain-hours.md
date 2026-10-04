@@ -183,6 +183,7 @@ This is fixed before any runner row exists and before any forward P&L is opened 
 1. **Two books, one FINAL run.** The FINAL read at about 2026-10-16T02Z computes two books in the same run:
    - **(A)** the pre-registered book, unchanged (frozen pricing). Its verdict is recorded as the EXP-012 FINAL verdict.
    - **(B)** the V-corrected book: the same entered set, asserted identical mint by mint, re-priced by `tools/pumpswap_virtual_adapter.py` with `mcap_mode="v"`. The adapter commit is recorded here before 2026-10-16T00Z.
+     **Recorded 2026-10-04:** adapter `tools/pumpswap_virtual_adapter.py` at commit `bbcaeb64b347d4b4f8063ead802994d23eb35009` (in main since #281), and driver `tools/exp012_virtual_rescore.py` at main `0a3020c` (#284: every pool per mint, for §3). r2 reproduced r1 exactly (`ARTIFACTS/lab/exp012-virtual-rescore-r2-2026-10-04.md`).
 
    The unpatched pass must reproduce (A)'s `flat` and `press` byte for byte before (B) is read.
 2. **Live support requires (B).** Amendment 1 §5 and Amendment 3 (a) are evaluated on (B), not (A):
