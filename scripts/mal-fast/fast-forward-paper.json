@@ -7,6 +7,7 @@
   "size_sol": 0.05,
   "slippage_cap": 0.15,
   "holdback_ms": 300,
+  "pumpswap_virtual": "require",
   "books": [
     {
       "id": "exp012_migrate_tp50_sl30",

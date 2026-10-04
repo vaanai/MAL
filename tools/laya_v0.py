@@ -236,6 +236,14 @@ class FlowPrint:
     market_cap_sol: float
     signature: str | None = None
     tx_index: int = -1
+    # PumpSwap V correction (DEC-016 Am.4 s6). `exec_tape` is the print re-priced on vault + V; the
+    # fields above (and `to_tape()`) are never changed, so every feature stays what it was. Both stay
+    # at their defaults for every row without a `virtual_quote_reserve` field.
+    exec_tape: TapePrint | None = None
+    v_null: bool = False
+
+    def to_exec_tape(self) -> TapePrint:
+        return self.exec_tape if self.exec_tape is not None else self.to_tape()
 
     def to_tape(self) -> TapePrint:
         return TapePrint(

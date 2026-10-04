@@ -37,6 +37,7 @@ from tools.graduated_swing import (
     features_at,
 )
 from tools.laya_v0 import (
+    flow_as_of,
     BUYER_TRIGGER_NS,
     CURVE_LEVELS,
     DECISION_OFFSETS_MS,
@@ -71,11 +72,13 @@ from tools.paper_curve_math import (
 from tools.paper_price_path import (
     CreateSignal,
     MintPath,
+    TapePrint,
     TxOrder,
     create_from_observe_row,
     load_creates,
     open_text,
     parse_time_ms,
+    print_from_trade_row,
 )
 from tools.paper_tape_scoreboard import (
     DEFAULT_FAIL_RATE,
@@ -765,11 +768,44 @@ def _event_ts(row: dict[str, Any]) -> int | None:
     return whole
 
 
+def virtual_exec_print(row: dict[str, Any], v: int) -> TapePrint | None:
+    """The print priced on vault + V, exactly as `pumpswap_virtual_adapter.make_wrapper` +
+    `correct_print(mcap_mode="v")` do it: the pre-trade fee tier is read from price_sol on vault + V, the
+    row is parsed as usual, then V is added to the posted quote and price / mcap are recomputed.
+    Bonding rows and v <= 0 come back as the plain print."""
+    if row.get("venue") == "pumpswap":
+        try:
+            q, b = int(row["quote_reserve"]), int(row["base_reserve"])
+            if q > 0 and b > 0:
+                row = dict(row, price_sol=(q + int(v)) / (b * 1000))
+        except (KeyError, TypeError, ValueError):
+            pass
+    parsed = print_from_trade_row(row)
+    if parsed is None:
+        return None
+    pr = parsed[1]
+    if pr.venue != "pumpswap" or v <= 0:
+        return pr
+    quote = pr.quote_reserve + int(v)
+    price = quote / (pr.base_reserve * 1000)
+    return dataclasses.replace(pr, quote_reserve=quote, price_sol=price, market_cap_sol=price * 1_000_000_000)
+
+
 def flow_from_tape_row(row: dict[str, Any]) -> tuple[str, FlowPrint] | None:
-    """Same acceptance rule as the offline book loader."""
+    """Same acceptance rule as the offline book loader.
+
+    A PumpSwap row that carries `virtual_quote_reserve` also gets `exec_tape` (the vault + V print) or
+    `v_null` (field present, value null). The FlowPrint's own fields are the same either way, so features
+    never see V. A row without the field comes back exactly as before."""
     if row.get("quote_is_wsol") is False:
         return None
-    return flow_from_row(row)
+    parsed = flow_from_row(row)
+    if parsed is None or "virtual_quote_reserve" not in row or parsed[1].venue != "pumpswap":
+        return parsed
+    v = row["virtual_quote_reserve"]
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        return parsed[0], dataclasses.replace(parsed[1], v_null=True)
+    return parsed[0], dataclasses.replace(parsed[1], exec_tape=virtual_exec_print(row, v))
 
 
 def _percentile(values: Sequence[int], p: float) -> float | None:
@@ -1288,6 +1324,9 @@ class JsonlLog:
         self._fh.close()
 
 
+PUMPSWAP_VIRTUAL_MODES = ("off", "require")
+
+
 class ForwardEngine:
     """Incremental tape → packets → paper books.
 
@@ -1316,7 +1355,13 @@ class ForwardEngine:
         dead_mints: frozenset[str] | None = None,
         early_timeout_ms: int | None = None,
         tx_order_prune_ms: int | None = None,
+        pumpswap_virtual: str = "off",
     ) -> None:
+        if pumpswap_virtual not in PUMPSWAP_VIRTUAL_MODES:
+            raise ValueError(f"pumpswap_virtual must be one of {PUMPSWAP_VIRTUAL_MODES}, got {pumpswap_virtual!r}")
+        # "require": price execution on vault + V; an entry whose pool has no V is skipped (`no_v`).
+        # "off" (default): the V field is ignored, byte-identical to the runner before this option.
+        self.pumpswap_virtual = pumpswap_virtual
         self.books = []
         for spec in books:
             run = _BookRun(spec)
@@ -1326,6 +1371,7 @@ class ForwardEngine:
         self.kill_file = kill_file
         # EXP-012 gate: built only when a book asks for it. None keeps every other
         # path byte-identical (no hook below runs).
+        self.no_v_prints = 0
         self.exp012: Any = None
         self.exp012_gates: dict[str, Any] = {}
         self.exp012_rows: list[dict[str, Any]] = []
@@ -1606,18 +1652,33 @@ class ForwardEngine:
         self._prints += 1
         return True
 
+    def _exec_tape(self, pr: FlowPrint) -> TapePrint:
+        """The print execution is priced on: vault + V in `require` mode, else the plain tape print."""
+        if self.pumpswap_virtual == "require" and pr.venue == "pumpswap":
+            if pr.exec_tape is not None:
+                return pr.exec_tape
+            self.no_v_prints += 1
+        return pr.to_tape()
+
+    def _no_v_at(self, book: MintBook, t_ms: int) -> bool:
+        """True when the latest print at or before `t_ms` is a PumpSwap print with no usable V."""
+        for pr in reversed(book.flow):
+            if pr.t_recv_ms <= t_ms:
+                return pr.venue == "pumpswap" and pr.exec_tape is None
+        return False
+
     def _insert_print(self, book: MintBook, pr: FlowPrint) -> None:
         flow = book.flow
         key = (pr.t_recv_ms, pr.slot, pr.tx_index, pr.event_index, pr.trader or "", pr.side)
         if not flow:
             book.flow.append(pr)
-            book.path.prints.append(pr.to_tape())
+            book.path.prints.append(self._exec_tape(pr))
             return
         last = flow[-1]
         last_key = (last.t_recv_ms, last.slot, last.tx_index, last.event_index, last.trader or "", last.side)
         if key >= last_key:
             book.flow.append(pr)
-            book.path.prints.append(pr.to_tape())
+            book.path.prints.append(self._exec_tape(pr))
             return
         lo, hi = 0, len(flow)
         while lo < hi:
@@ -1629,7 +1690,7 @@ class ForwardEngine:
             else:
                 hi = mid
         flow.insert(lo, pr)
-        book.path.prints.insert(lo, pr.to_tape())
+        book.path.prints.insert(lo, self._exec_tape(pr))
 
     def _consider_triggers(self, mint: str, pr: FlowPrint) -> None:
         book = self.library[mint]
@@ -1908,6 +1969,9 @@ class ForwardEngine:
         mint = book.create.mint
         creator = book.create.creator
         score = gate_score
+        if self.pumpswap_virtual == "require" and self._no_v_at(book, t_ms):
+            self._decision(run, book, t_ms, trigger, "skip", "no_v", None, None)
+            return
         if spec.kind == "swing":
             freeze = spec.freeze_ms if spec.freeze_ms is not None else SWING_FREEZE_MS
             if t_ms <= freeze:
@@ -2028,6 +2092,11 @@ class ForwardEngine:
             found = _finite(spot)
             if found is not None and found > 0:
                 return found
+        if self.pumpswap_virtual == "require":
+            # execution reference: the last print's vault + V price (features keep the plain flow price)
+            seen = flow_as_of(book.flow, t_ms)
+            if seen and seen[-1].exec_tape is not None:
+                return seen[-1].exec_tape.price_sol
         price = _price_at(book, t_ms)
         if price is not None and price > 0:
             return price
@@ -2550,7 +2619,7 @@ class ForwardEngine:
                     if not kept:
                         kept = [book.flow[-1]]
                     book.flow = kept
-                    book.path.prints = [pr.to_tape() for pr in kept]
+                    book.path.prints = [self._exec_tape(pr) for pr in kept]
                     self.seen[mint] = {_dedupe_key(pr) for pr in kept}
             last = book.flow[-1].t_recv_ms if book.flow else book.create.t_signal_ms
             if live_now - last < PRUNE_AFTER_MS:
@@ -2570,7 +2639,7 @@ class ForwardEngine:
                 if pr is not None and pr not in keep:
                     keep.append(pr)
             book.flow = keep
-            book.path.prints = [pr.to_tape() for pr in keep]
+            book.path.prints = [self._exec_tape(pr) for pr in keep]
             self.seen[mint] = {_dedupe_key(pr) for pr in keep}
 
     def summary(self, t_ms: int | None = None) -> dict[str, Any]:
@@ -2689,9 +2758,11 @@ def replay_rows(
     record_packets: bool = False,
     retain_rows: bool = True,
     logs: dict[str, JsonlLog] | None = None,
+    pumpswap_virtual: str = "off",
 ) -> ForwardEngine:
     engine = ForwardEngine(
         books,
+        pumpswap_virtual=pumpswap_virtual,
         kill_file=kill_file,
         latency=LatencyMeter(extra_ms=extra_ms),
         model=model,
@@ -2783,6 +2854,7 @@ def build_shadow_state(
     early_timeout_ms: int | None = None,
     attn_t_start_ms: int = 0,
     attn_snapshot: set[tuple[str, str]] | None = None,
+    pumpswap_virtual: str = "off",
 ) -> ForwardEngine:
     """Throwaway engine that replays sealed input up to `until_ms` for its
     cross-mint state only. `splice_state` moves that state onto a freshly
@@ -2860,6 +2932,7 @@ def build_shadow_state(
     clock_box: dict[str, int] = {"ms": 0}
     engine = ForwardEngine(
         books,
+        pumpswap_virtual=pumpswap_virtual,
         kill_file=Path("/nonexistent/forward-paper-shadow-kill-never"),
         latency=LatencyMeter(now_ms=lambda: clock_box["ms"]),
         model=model,
@@ -3278,6 +3351,7 @@ def run_replay_files(
     tape_end_ms: int | None,
     slippage_cap: float,
     span_ms: int | None = None,
+    pumpswap_virtual: str = "off",
 ) -> dict[str, Any]:
     loaded = load_creates(creates)
     rows = list(_iter_jsonl(tape, span_ms=span_ms))
@@ -3306,6 +3380,7 @@ def run_replay_files(
         slippage_cap=slippage_cap,
         logs=logs,
         record_packets=True,
+        pumpswap_virtual=pumpswap_virtual,
     )
     baseline_ids = [b.spec.book_id for b in engine.books if b.spec.kind == "baseline"]
     reconcile = None
@@ -3466,6 +3541,7 @@ def serve(config_path: Path) -> int:
         dead_mints=dead_mints,
         early_timeout_ms=EARLY_BUFFER_DEAD_MS,
         tx_order_prune_ms=TX_ORDER_PRUNE_MS,
+        pumpswap_virtual=str(raw.get("pumpswap_virtual", "off")),
     )
     if engine.exp012 is not None:
         n_hist = engine.exp012.preload(creates_dir, boot_ms, tape_dir=tape_dir)
@@ -3662,6 +3738,7 @@ def main(argv: list[str] | None = None) -> int:
         tape_end_ms=args.tape_end_ms,
         slippage_cap=float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP)),
         span_ms=None if args.span_min <= 0 else int(args.span_min * 60_000),
+        pumpswap_virtual=str(raw.get("pumpswap_virtual", "off")),
     )
     recon = result.get("reconcile") or {}
     gap = (recon.get("online_vs_same_latency") or {}).get("pnl_mismatches")
