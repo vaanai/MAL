@@ -1,0 +1,49 @@
+[Unit]
+Description=MAL DEC-019 execution probe, keyless dry-run executor (no signing, no sending)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mal-live
+Slice=mal-forward.slice
+Nice=10
+WorkingDirectory=/var/lib/mal/fast-forward/src
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+# Helius key: systemd reads it as root, the process never logs it. One secret, nothing else.
+EnvironmentFile=/var/lib/mal/fast-listener/helius.env
+ExecStart=/var/lib/mal/fast-forward/venv/bin/python -m tools.probe_executor --config /var/lib/mal/fast-forward/src/scripts/mal-fast/probe-executor.json
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+# Hardening. Writes only /var/lib/mal/live (must exist: mal-live, 0700, created at provisioning). Reads the runner's decisions log (in the paper
+# output dir) and nothing else of the runner: the other runner files are hidden (forward-read seal).
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal/live
+ReadOnlyPaths=/var/lib/mal/fast-forward
+# Seal by WHITELIST (a denylist misses new runner files): the runner output dir is replaced by an
+# empty tmpfs and ONLY decisions.jsonl is bound back in, read-only. Verify once on host that the
+# bind survives the runner's daily restart (same inode, appended in place).
+TemporaryFileSystem=/var/lib/mal/paper/fast-forward-paper:ro
+BindReadOnlyPaths=-/var/lib/mal/paper/fast-forward-paper/decisions.jsonl
+InaccessiblePaths=/var/lib/mal/sealed
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
+MemoryMax=1G
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
