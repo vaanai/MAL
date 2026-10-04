@@ -219,12 +219,14 @@ def cmd_pools(a: argparse.Namespace) -> int:
     pools: dict[str, str] = {}
     for root in roots:
         mints = frozenset(_migrated_mints(root, False))
+        if not mints and not (root / "migrations").exists():  # oracle live view: no migrations dir; use the table's pool-B mints
+            mints = frozenset(json.loads(line)["mint"] for line in TABLE.read_text().splitlines() if line.strip() and '"pool": "B"' in line)
         files = sorted((root / "trades").glob("trades-*.jsonl*"))
         print(f"pools: {root} migrated_mints={len(mints)} trade_files={len(files)}", file=sys.stderr, flush=True)
         with mp.get_context("spawn").Pool(processes=min(a.workers, 2)) as pool:
             for part in pool.imap_unordered(_pools_from_file, [(str(f), mints) for f in files]):
                 pools.update({p: m for m, p in part.items()})
-    out = OUT_ROOT / a.run_id / "pools.json"
+    out = OUT_ROOT / a.run_id / a.out_name
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(sorted(pools)) + "\n", encoding="utf-8")
     print(f"pools: {len(pools)} distinct -> {out}", file=sys.stderr)
@@ -402,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "pools":
             sp.add_argument("--root", action="append", required=True)
             sp.add_argument("--workers", type=int, default=2)
+            sp.add_argument("--out-name", default="pools.json")
         if name == "fetch-v":
             sp.add_argument("--pools", required=True)
             sp.add_argument("--rps", type=float, default=5.0)
