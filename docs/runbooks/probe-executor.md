@@ -54,7 +54,7 @@ cd /var/lib/mal/fast-forward/src
 /var/lib/mal/fast-forward/venv/bin/python -m tools.probe_executor --config scripts/mal-fast/probe-executor-live.json --status
 ```
 
-Prints stop-file presence, attempts out of 30, realized SOL, open and pending positions, and fill-row counts by kind. It reads local files only: no key, no URL, no RPC. (Run as `mal-live` or root, since `/var/lib/mal-live` is 0700.)
+Prints stop-file presence, open exposure (cost of open and in-flight buys; the DEC-019 loss cap counts realized loss only, so worst case is the 0.25 SOL cap plus the open positions, still under the 0.5 SOL deposit), attempts out of 30, realized SOL, open and pending positions, and fill-row counts by kind. It reads local files only: no key, no URL, no RPC. (Run as `mal-live` or root, since `/var/lib/mal-live` is 0700.)
 
 ## 5. What each halt means
 
@@ -67,6 +67,11 @@ Prints stop-file presence, attempts out of 30, realized SOL, open and pending po
 | `limit:max_days` | 4 days since first attempt | probe is done |
 | `limit:max_open` | 3 positions open or in flight | normal |
 | `limit:sell_stuck` and `ALERT sell_stuck` | a sell failed or expired 5 times (config `sell_retries`); buys halted, the sell retries every 30 s | look at the sell rows (`fail_class`); STOP and sell by hand if it persists |
+| `ALERT sell_abandoned` | 10 sell attempts on one position all failed (cap, config can only lower it). No more sells for it and buys stay halted. Retries before that back off 30 s, 60 s, ... up to 10 min; every landed failed sell's fees are already in realized loss | sell by hand or accept; STOP the unit |
+| `limit:clock_backwards` | the system clock stepped back more than 60 s since the highest reading (persisted) | fix the clock; buys resume once it is past the old reading |
+| `already_bought` | the mint was attempted before (kept in state; never re-bought, whatever the tailer does) | normal |
+| `ALERT unsafe_tx_refused` | the pre-signing whitelist refused a tx (foreign program id, wrong mint/quote/token program, non-derived vault, priority over cap, extra signer). Nothing was signed | investigate the RPC |
+| `ALERT meta_malformed` | `getTransaction` returned something unparseable or for a different signature; retried every step, balance fallback after 60 s | check RPC |
 | `balance_guard` | wallet below size + 0.02 SOL | fund it or stop |
 | `ALERT unpriced_position` | no V-priced quote for an open position; the executor never sells without a min_out | check the RPC and pool |
 | `ALERT zero_token_balance` | the token account is empty but the position is open (a sell may have landed unseen) | reconcile by hand from the signatures in the fill log |

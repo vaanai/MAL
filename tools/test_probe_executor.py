@@ -43,7 +43,7 @@ class FakeRpc:
         if method == "getMultipleAccounts":
             return {"context": {"slot": 77}, "value": [
                 {"owner": "x", "data": [GC["data_b64"], "base64"], "lamports": 1},
-                {"owner": str(tx.TOKEN_PROGRAM), "data": ["", "base64"], "lamports": 1},
+                {"owner": getattr(self, "mint_owner", str(tx.TOKEN_PROGRAM)), "data": ["", "base64"], "lamports": 1},
                 tok_acct(self.base), tok_acct(self.quote)]}
         if method == "simulateTransaction":
             if self.sim_err:

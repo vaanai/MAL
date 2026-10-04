@@ -21,6 +21,18 @@ from tools import probe_live as pl
 from tools import pumpswap_tx as tx
 from tools.test_probe_executor import MINT, T0, Clock, FakeRpc, fills, sig as mk_sig
 
+def _consistent_pool_b64() -> str:
+    """The recorded pool with vaults rewritten to the derived ATAs of the address we fetch (pool_v2(MINT))."""
+    from solders.pubkey import Pubkey
+
+    d = bytearray(base64.b64decode(__import__("tools.test_probe_executor", fromlist=["x"]).POOL_B64))
+    pool, mint = tx.pool_v2(Pubkey.from_string(MINT)), Pubkey.from_string(MINT)
+    d[139:171] = bytes(tx.ata(pool, mint, tx.TOKEN_PROGRAM))
+    d[171:203] = bytes(tx.ata(pool, tx.WSOL_MINT, tx.TOKEN_PROGRAM))
+    return base64.b64encode(bytes(d)).decode()
+
+
+POOL_OK = _consistent_pool_b64()
 LVBH = 1_000
 BAL = 500_000_000
 RENT = 2_039_280
@@ -77,7 +89,7 @@ class LiveRpc(FakeRpc):
 
 def make_live(tmp: Path, **cfg):
     clock = Clock()
-    rpc = LiveRpc(clock)
+    rpc = LiveRpc(clock, pool_b64=POOL_OK)
     kp = Keypair()
     conf = {"signals_dir": str(tmp / "sig"), "state_dir": str(tmp), "fill_log": str(tmp / "fills.jsonl"),
             "stop_file": str(tmp / "STOP"), "halt_file": str(tmp / "HALT"), "mode": "live", "poll_s": 5.0, **cfg}
@@ -94,7 +106,8 @@ def meta_result(ex, mint, *, delta, fee, tok_delta=0, err=None, ata_pre=0, ata_p
 
     pre_tok = row(-tok_delta) if tok_delta < 0 else []
     post_tok = row(tok_delta) if tok_delta > 0 else []
-    return {"slot": slot, "transaction": {"message": {"accountKeys": [str(ex.user), ata]}},
+    sig_ = (ex.state.pending.get(mint) or {}).get("signature")
+    return {"slot": slot, "transaction": {"signatures": [sig_], "message": {"accountKeys": [str(ex.user), ata]}},
             "meta": {"err": err, "fee": fee, "preBalances": [BAL, ata_pre], "postBalances": [BAL + delta, ata_post],
                      "preTokenBalances": pre_tok, "postTokenBalances": post_tok, "logMessages": logs or []}}
 
@@ -320,8 +333,11 @@ class BuyFlowTests(unittest.TestCase):
         self.rpc.height = LVBH + 1
         self.clock.t += 2_000
         self.ex.advance_pending()
-        self.assertIn(MINT, self.ex.state.pending)  # first sighting: look once more
+        self.assertIn(MINT, self.ex.state.pending)  # first sighting: look again, twice, 5 s apart
         n = len(self.rpc.sent)
+        self.clock.t += pl.EXPIRY_RECHECK_MS
+        self.ex.advance_pending()
+        self.assertIn(MINT, self.ex.state.pending)
         self.clock.t += pl.EXPIRY_RECHECK_MS
         self.ex.advance_pending()
         self.assertNotIn(MINT, self.ex.state.pending)
@@ -335,8 +351,11 @@ class BuyFlowTests(unittest.TestCase):
         signal_buy(self.ex, self.clock)
         self.rpc.height = LVBH + 1
         self.ex.advance_pending()
-        land_buy(self.ex, self.rpc)
+        self.clock.t += pl.EXPIRY_RECHECK_MS
+        self.ex.advance_pending()  # one recheck done, still empty
+        land_buy(self.ex, self.rpc)  # lands late: becomes an open position, not an expired buy
         self.assertIn(MINT, self.ex.state.open)
+        self.assertEqual([r for r in fills(self.conf) if r["kind"] == "buy"][-1]["landed"], True)
 
     def test_landed_buy_measurements(self):
         p = signal_buy(self.ex, self.clock)
@@ -518,9 +537,9 @@ class ExitFlowTests(unittest.TestCase):
     def test_sell_expiry_counts_as_failed_attempt(self):
         self.trigger_exit()
         self.rpc.height = LVBH + 1
-        self.ex.advance_pending()
-        self.clock.t += pl.EXPIRY_RECHECK_MS
-        self.ex.advance_pending()
+        for _ in range(3):
+            self.ex.advance_pending()
+            self.clock.t += pl.EXPIRY_RECHECK_MS
         self.assertNotIn(MINT, self.ex.state.pending)
         self.assertEqual(self.ex.state.open[MINT]["sell_attempts"], 1)
         self.assertEqual(self.ex.state.open[MINT]["tokens"], self.pos["tokens"])  # still held
@@ -606,6 +625,239 @@ class StatusTests(unittest.TestCase):
             with contextlib.redirect_stdout(buf), mock.patch.object(pe.sim, "load_rpc_url", side_effect=AssertionError("no url")):
                 self.assertEqual(pe.main(["--config", str(cp), "--status"]), 0)
             self.assertIn("[live] attempts=1/30", buf.getvalue())
+
+
+def sell_stuck_helper(ex, rpc, clock, n):
+    """Fail n landed sells in a row, advancing the clock past any backoff each time."""
+    sent = 0
+    for _ in range(n):
+        clock.t += 11 * 60_000
+        ex.poll_positions()
+        if MINT in ex.state.pending:
+            sent += 1
+            land_sell(ex, rpc, proceeds=0, err={"InstructionError": [3, {"Custom": 6004}]})
+    return sent
+
+
+class HighFixTests(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name)
+        self.ex, self.rpc, self.clock, self.kp, self.conf = make_live(self.tmp)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    # H1
+    def test_failed_sell_fees_hit_realized_immediately(self):
+        pos = open_position(self.ex, self.rpc, self.clock)
+        self.clock.t += 31 * 60_000
+        self.ex.poll_positions()
+        land_sell(self.ex, self.rpc, proceeds=0, err={"InstructionError": [3, {"Custom": 6004}]})
+        self.assertEqual(self.ex.state.realized_lamports, -505_000)
+
+    def test_100_failed_sells_capped_and_abandoned(self):
+        open_position(self.ex, self.rpc, self.clock)
+        self.clock.t += 31 * 60_000
+        sent = sell_stuck_helper(self.ex, self.rpc, self.clock, 100)
+        self.assertEqual(sent, pl.SELL_MAX_ATTEMPTS)
+        self.assertEqual(self.ex.state.realized_lamports, -pl.SELL_MAX_ATTEMPTS * 505_000)
+        self.assertLess(-self.ex.state.realized_lamports, self.ex.limits.loss_cap_lamports)
+        self.assertTrue(self.ex.state.open[MINT]["abandoned"])
+        self.assertTrue(any(r.get("alert") == "sell_abandoned" for r in fills(self.conf)))
+        self.ex.handle_signal(mk_sig(self.ex, mint="11111111111111111111111111111112", t=self.clock()))
+        self.assertEqual(fills(self.conf)[-1]["reason"], "limit:sell_stuck")
+        self.assertIn("abandoned=True", pe.status_report(self.conf))
+
+    def test_sell_attempt_cap_cannot_be_raised_and_backoff_doubles(self):
+        ex, *_ = make_live(self.tmp / "x" if (self.tmp / "x").mkdir() is None else self.tmp, sell_max_attempts=999)
+        self.assertEqual(ex.sell_max_attempts, pl.SELL_MAX_ATTEMPTS)
+        open_position(self.ex, self.rpc, self.clock)
+        self.clock.t += 31 * 60_000
+        self.ex.poll_positions()
+        for i in range(self.ex.sell_retries):
+            land_sell(self.ex, self.rpc, proceeds=0, err="X")
+            if i < self.ex.sell_retries - 1:
+                self.ex.poll_positions()
+        for k in range(3):  # waits 30 s, 60 s, 120 s
+            wait = 30_000 * 2 ** k
+            n = len(self.rpc.sent)
+            self.clock.t += wait - 1
+            self.ex.poll_positions()
+            self.assertEqual(len(self.rpc.sent), n)
+            self.clock.t += 1
+            self.ex.poll_positions()
+            self.assertEqual(len(self.rpc.sent), n + 1)
+            land_sell(self.ex, self.rpc, proceeds=0, err="X")
+
+    def test_retry_priority_never_above_cap(self):
+        open_position(self.ex, self.rpc, self.clock)
+        self.clock.t += 31 * 60_000
+        self.ex.poll_positions()
+        for _ in range(3):
+            land_sell(self.ex, self.rpc, proceeds=0, err="X")
+            self.clock.t += 11 * 60_000
+            self.ex.poll_positions()
+        for _, b64 in self.rpc.sent:
+            t = VersionedTransaction.from_bytes(base64.b64decode(b64))
+            ixs = [bytes(i.data) for i in t.message.instructions if t.message.account_keys[i.program_id_index] == pl.COMPUTE_BUDGET_PROGRAM]
+            cu = int.from_bytes(ixs[0][1:], "little")
+            price = int.from_bytes(ixs[1][1:], "little")
+            self.assertLessEqual(price * cu // 1_000_000, 500_000 + 1)
+
+    # H2
+    def test_zero_token_row_in_meta_is_a_realized_loss(self):
+        p = signal_buy(self.ex, self.clock)
+        spend, fee = p["spend"], 500_000
+        self.rpc.statuses[p["signature"]] = {"slot": 5, "confirmationStatus": "confirmed", "err": None}
+        res = meta_result(self.ex, MINT, delta=-(spend + fee + RENT), fee=fee, tok_delta=1, ata_post=RENT)
+        res["meta"]["postTokenBalances"][0]["uiTokenAmount"]["amount"] = "0"
+        self.rpc.txs[p["signature"]] = res
+        self.ex.advance_pending()
+        self.assertEqual(self.ex.state.open, {})
+        self.assertEqual(self.ex.state.realized_lamports, -(spend + fee + RENT))
+        self.assertTrue(any(r.get("alert") == "buy_landed_zero_tokens" for r in fills(self.conf)))
+
+    def test_missing_owner_is_unknown_not_zero_and_ata_is_reread(self):
+        p = signal_buy(self.ex, self.clock)
+        spend, fee = p["spend"], 500_000
+        self.rpc.statuses[p["signature"]] = {"slot": 5, "confirmationStatus": "confirmed", "err": None}
+        res = meta_result(self.ex, MINT, delta=-(spend + fee + RENT), fee=fee, tok_delta=1234, ata_post=RENT)
+        for r in res["meta"]["postTokenBalances"]:
+            r.pop("owner")
+            r.pop("accountIndex")  # nothing identifies our account: unknown
+        self.rpc.txs[p["signature"]] = res
+        self.rpc.token_balance = 777
+        self.ex.advance_pending()
+        self.assertEqual(self.ex.state.open[MINT]["tokens"], 777)
+        self.assertEqual([r for r in fills(self.conf) if r["kind"] == "buy"][-1]["tokens_source"], "ata_balance")
+        self.assertEqual(self.ex.state.realized_lamports, 0)
+
+    def test_still_unknown_opens_flagged_and_sell_reads_ata(self):
+        p = signal_buy(self.ex, self.clock)
+        spend, fee = p["spend"], 500_000
+        self.rpc.statuses[p["signature"]] = {"slot": 5, "confirmationStatus": "confirmed", "err": None}
+        res = meta_result(self.ex, MINT, delta=-(spend + fee + RENT), fee=fee, tok_delta=1234, ata_post=RENT)
+        del res["meta"]["postTokenBalances"]
+        self.rpc.txs[p["signature"]] = res
+        with mock.patch.object(self.ex, "_ata_balance", return_value=None):
+            self.ex.advance_pending()
+        pos = self.ex.state.open[MINT]
+        self.assertTrue(pos["balance_pending"])
+        self.rpc.token_balance = 10**9
+        self.clock.t += 31 * 60_000
+        self.ex.poll_positions()
+        self.assertEqual(self.ex.state.pending[MINT]["tokens"], 10**9)
+
+    def test_meta_missing_fallback_after_60s(self):
+        p = signal_buy(self.ex, self.clock)
+        self.rpc.statuses[p["signature"]] = {"slot": 5, "confirmationStatus": "confirmed", "err": None}
+        self.rpc.token_balance = 999
+        self.ex.advance_pending()
+        self.assertIn(MINT, self.ex.state.pending)
+        self.clock.t += pl.META_FALLBACK_MS
+        self.ex.advance_pending()
+        self.assertEqual(self.ex.state.open[MINT]["tokens"], 999)
+        self.assertTrue([r for r in fills(self.conf) if r["kind"] == "buy"][-1]["estimated"])
+
+    # H3
+    def test_hostile_mint_owner_refused(self):
+        self.rpc.mint_owner = str(Keypair().pubkey())  # random program
+        self.assertIsNone(signal_buy(self.ex, self.clock))
+        self.assertIn("unsafe_tx", fills(self.conf)[-1]["reason"])
+        self.assertEqual((len(self.rpc.sent), self.ex.state.attempts, self.ex.state.pending), (0, 0, {}))
+
+    def test_token_2022_allowed_by_owner_but_vault_must_match(self):
+        self.rpc.mint_owner = str(tx.TOKEN_2022_PROGRAM)  # vaults in the pool data are Token-program ATAs: mismatch -> refuse
+        self.assertIsNone(signal_buy(self.ex, self.clock))
+        self.assertIn("unsafe_tx", fills(self.conf)[-1]["reason"])
+
+    def test_mismatched_base_mint_refused(self):
+        other = str(Keypair().pubkey())
+        self.ex.handle_signal(mk_sig(self.ex, mint=other, t=self.clock()))
+        # the pool for `other` does not exist on chain (pool_v2 differs) in reality; the hostile RPC returns our fixture pool
+        self.assertNotIn(other, self.ex.state.pending)
+        self.assertEqual(len(self.rpc.sent), 0)
+
+    def test_validator_rejects_foreign_program_signer_and_destinations(self):
+        from solders.instruction import AccountMeta, Instruction
+        from solders.message import Message
+        from solders.pubkey import Pubkey
+
+        p = signal_buy(self.ex, self.clock)
+        snap, _pool, _e = self.ex._snapshot(MINT)
+        mint = Pubkey.from_string(MINT)
+        good = tx.build_buy(snap.ps, self.ex.user, 50_000_000, 1500, 1000, priority_total_lamports=500_000)
+        pl.validate_message(good, snap.ps, mint, self.ex.user, 500_000)
+        evil = Pubkey.from_string("11111111111111111111111111111112")
+        ixs = list(tx.buy_instructions(snap.ps, self.ex.user, 50_000_000, 1000, 1500, priority_total_lamports=500_000))
+        cases = {
+            "program": ixs + [Instruction(evil, b"", [AccountMeta(self.ex.user, True, True)])],
+            "transfer_dest": [*ixs[:4], tx.transfer(tx.TransferParams(from_pubkey=self.ex.user, to_pubkey=evil, lamports=5)), *ixs[5:]],
+            "second_signer": ixs + [Instruction(tx.TOKEN_PROGRAM, b"\x09", [AccountMeta(evil, True, True)])],
+            "close_dest": ixs[:-1] + [tx.close_account(tx.ata(self.ex.user, tx.WSOL_MINT, tx.TOKEN_PROGRAM), evil, self.ex.user)],
+        }
+        for name, seq in cases.items():
+            with self.assertRaises(pl.UnsafeTx, msg=name):
+                pl.validate_message(Message.new_with_blockhash(seq, self.ex.user, tx.Hash.default()), snap.ps, mint, self.ex.user, 500_000)
+        with self.assertRaises(pl.UnsafeTx):  # priority above the cap
+            pl.validate_message(tx.build_buy(snap.ps, self.ex.user, 50_000_000, 1500, 1000, priority_total_lamports=600_000), snap.ps, mint, self.ex.user, 500_000)
+        with self.assertRaises(pl.UnsafeTx):  # quote mint not WSOL
+            import dataclasses
+            pl.validate_message(good, dataclasses.replace(snap.ps, quote_mint=evil), mint, self.ex.user, 500_000)
+        with self.assertRaises(pl.UnsafeTx):  # base mint != requested
+            pl.validate_message(good, snap.ps, evil, self.ex.user, 500_000)
+
+    # mediums
+    def test_malformed_gettransaction_does_not_crash_and_retries(self):
+        p = signal_buy(self.ex, self.clock)
+        self.rpc.statuses[p["signature"]] = {"slot": 5, "confirmationStatus": "confirmed", "err": None}
+        for bad in ({"meta": {"fee": 1}, "transaction": {"signatures": [p["signature"]], "message": {"accountKeys": []}}},
+                    {"meta": {"fee": 1}, "transaction": {"signatures": ["other"], "message": {"accountKeys": []}}},
+                    {"meta": {}, "transaction": None}):
+            self.rpc.txs[p["signature"]] = bad
+            self.ex.advance_pending()
+            self.assertIn(MINT, self.ex.state.pending)
+        self.assertEqual(sum(1 for r in fills(self.conf) if r.get("alert") == "meta_malformed"), 1)
+        self.rpc.txs[p["signature"]] = meta_result(self.ex, MINT, delta=-52_500_000, fee=500_000, tok_delta=p["q_tokens"], ata_post=RENT)
+        self.ex.advance_pending()
+        self.assertIn(MINT, self.ex.state.open)
+
+    def test_mint_never_rebought_even_after_close_and_restart(self):
+        open_position(self.ex, self.rpc, self.clock)
+        self.clock.t += 31 * 60_000
+        self.ex.poll_positions()
+        land_sell(self.ex, self.rpc, proceeds=50_000_000)
+        self.assertEqual(self.ex.state.open, {})
+        ex2 = pl.LiveExecutor(self.rpc, self.conf, self.kp, now_ms=self.clock)
+        ex2.handle_signal(mk_sig(ex2, t=self.clock()))
+        self.assertEqual(fills(self.conf)[-1]["reason"], "already_bought")
+        self.assertEqual(ex2.state.attempts, 1)
+
+    def test_clock_backwards_halts_buys(self):
+        self.ex.step()
+        self.clock.t -= 61_000
+        self.ex.handle_signal(mk_sig(self.ex, t=self.clock()))
+        self.assertEqual(fills(self.conf)[-1]["reason"], "limit:clock_backwards")
+        ex2 = pl.LiveExecutor(self.rpc, self.conf, self.kp, now_ms=self.clock)  # persisted: survives a restart
+        ex2.handle_signal(mk_sig(ex2, t=self.clock()))
+        self.assertEqual(fills(self.conf)[-1]["reason"], "limit:clock_backwards")
+        self.clock.t += 61_000 + 1
+        self.ex.handle_signal(mk_sig(self.ex, t=self.clock()))
+        self.assertIn(MINT, self.ex.state.pending)
+
+    def test_status_shows_open_exposure(self):
+        open_position(self.ex, self.rpc, self.clock)
+        self.assertIn("open_exposure_sol=0.050000", pe.status_report(self.conf))
+
+    def test_dry_run_row_reports_live_whitelist_result(self):
+        from tools.test_probe_executor import make as make_dry
+
+        ex, conf = make_dry(self.tmp / "dry" if (self.tmp / "dry").mkdir() is None else self.tmp, rpc=LiveRpc(self.clock, pool_b64=POOL_OK))
+        ex.handle_signal(mk_sig(ex, t=T0))
+        buy = [r for r in fills(conf) if r["kind"] == "buy"][-1]
+        self.assertIn("live_validate_err", buy)
+        self.assertIsNone(buy["live_validate_err"])
 
 
 if __name__ == "__main__":

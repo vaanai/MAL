@@ -49,7 +49,14 @@ REBROADCAST_MS = 2_000
 BLOCKHASH_TTL_MS = 10_000
 BLOCKHASH_STALE_OK_MS = 40_000  # reuse a cached hash this long if the refresh call fails
 EXPIRY_RECHECK_MS = 5_000  # after the block height passes, look once more before calling it expired
-STUCK_RETRY_MS = 30_000
+STUCK_RETRY_MS = 30_000  # first stuck retry delay; doubles per failure up to the max
+STUCK_RETRY_MAX_MS = 600_000
+SELL_MAX_ATTEMPTS = 10  # hard cap per position; config can only lower it
+CLOCK_BACK_TOLERANCE_MS = 60_000
+EXPIRY_RECHECKS = 2  # status re-reads (searchTransactionHistory), >= EXPIRY_RECHECK_MS apart, before `expired`
+COMPUTE_BUDGET_PROGRAM = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
+ALLOWED_PROGRAMS = frozenset({COMPUTE_BUDGET_PROGRAM, tx.SYSTEM_PROGRAM, tx.TOKEN_PROGRAM, tx.TOKEN_2022_PROGRAM,
+                              tx.ATA_PROGRAM, tx.PUMPSWAP_PROGRAM})
 META_FALLBACK_MS = 60_000
 LIVE_MAX_RPS = 5.0
 # The log-text match ("slippage" in the tx logs) is the PRIMARY signal. The numeric Pump AMM
@@ -170,20 +177,31 @@ def parse_meta(res: dict, user: Pubkey, base_mint: Pubkey, base_ata: Pubkey) -> 
     ui = keys.index(str(user))
     pre, post = int(meta["preBalances"][ui]), int(meta["postBalances"][ui])
 
-    def tok(rows: list | None) -> int:
-        tot = 0
-        for r in rows or []:
-            if r.get("mint") == str(base_mint) and r.get("owner") == str(user):
-                tot += int(r["uiTokenAmount"]["amount"])
-        return tot
-
     ai = keys.index(str(base_ata)) if str(base_ata) in keys else None
+
+    def tok(rows: list | None, must_exist: bool) -> int | None:
+        """Token balance of OUR ata by account index. None means unknown (fail closed), never 0."""
+        if rows is None or ai is None:
+            return None
+        vals = []
+        for r in rows:
+            if r.get("accountIndex") != ai:
+                continue
+            if r.get("mint") not in (None, str(base_mint)):
+                return None
+            vals.append(int(r["uiTokenAmount"]["amount"]))
+        if len(vals) > 1 or (not vals and must_exist):
+            return None
+        return vals[0] if vals else 0
+
+    pre_t, post_t = tok(meta.get("preTokenBalances"), False), tok(meta.get("postTokenBalances"), True)
+    delta = 0 if meta.get("err") is not None else (None if pre_t is None or post_t is None else post_t - pre_t)
     return {
         "slot": res.get("slot"),
         "err": meta.get("err"),
         "fee": int(meta["fee"]),
         "sol_delta": post - pre,  # post - pre of the wallet: includes fees, rent, pool legs
-        "token_delta": tok(meta.get("postTokenBalances")) - tok(meta.get("preTokenBalances")),
+        "token_delta": delta,  # None = unknown: caller re-reads the ATA balance
         "ata_rent_pre": int(meta["preBalances"][ai]) if ai is not None else 0,
         "ata_rent_post": int(meta["postBalances"][ai]) if ai is not None else 0,
         "logs": meta.get("logMessages") or [],
@@ -192,6 +210,76 @@ def parse_meta(res: dict, user: Pubkey, base_mint: Pubkey, base_ata: Pubkey) -> 
 
 def bps(actual: float, ref: float) -> float | None:
     return round((actual - ref) * 10_000 / ref, 2) if ref else None
+
+
+# --- pre-signing whitelist (RPC data never reaches a signature unchecked) -----------------------
+
+
+class UnsafeTx(pe.RpcError):
+    def __init__(self, why: str):
+        super().__init__(f"unsafe_tx:{why}")
+
+
+def validate_message(msg: Message, ps: tx.PoolState, mint: Pubkey, user: Pubkey, max_priority_lamports: int) -> None:
+    """Fail closed before every signature. Pool data and the mint's owner come from RPC, so: the base token
+    program is Token or Token-2022, quote is WSOL, base mint is the requested mint, the pool and its vaults are
+    the derived addresses; only ComputeBudget/System/Token/Token-2022/ATA/PumpSwap are invoked; the user is the
+    only signer; every system transfer, ATA create and account close touches only the user's own accounts."""
+    if ps.base_mint != mint:
+        raise UnsafeTx("base_mint_mismatch")
+    if ps.quote_mint != tx.WSOL_MINT:
+        raise UnsafeTx("quote_not_wsol")
+    if ps.base_token_program not in (tx.TOKEN_PROGRAM, tx.TOKEN_2022_PROGRAM) or ps.quote_token_program != tx.TOKEN_PROGRAM:
+        raise UnsafeTx("token_program")
+    if ps.pool != tx.pool_v2(mint):
+        raise UnsafeTx("pool_not_derived")
+    if ps.base_vault != tx.ata(ps.pool, mint, ps.base_token_program) or ps.quote_vault != tx.ata(ps.pool, tx.WSOL_MINT, tx.TOKEN_PROGRAM):
+        raise UnsafeTx("vault_not_derived")
+    keys = list(msg.account_keys)
+    if msg.header.num_required_signatures != 1 or keys[0] != user:
+        raise UnsafeTx("signers")
+    u_base = tx.ata(user, mint, ps.base_token_program)
+    u_wsol = tx.ata(user, tx.WSOL_MINT, tx.TOKEN_PROGRAM)
+    cu_limit = cu_price = None
+    for ix in msg.instructions:
+        pid = keys[ix.program_id_index]
+        acc = [keys[i] for i in ix.accounts]
+        data = bytes(ix.data)
+        if pid not in ALLOWED_PROGRAMS:
+            raise UnsafeTx("program_not_allowed")
+        if pid == COMPUTE_BUDGET_PROGRAM:
+            if data[:1] == b"\x02" and len(data) == 5:
+                cu_limit = int.from_bytes(data[1:], "little")
+            elif data[:1] == b"\x03" and len(data) == 9:
+                cu_price = int.from_bytes(data[1:], "little")
+            else:
+                raise UnsafeTx("compute_budget_ix")
+        elif pid == tx.SYSTEM_PROGRAM:
+            if not (len(data) == 12 and data[:4] == b"\x02\x00\x00\x00" and acc == [user, u_wsol]):
+                raise UnsafeTx("system_ix")
+        elif pid == tx.ATA_PROGRAM:
+            ok = (data == b"\x01" and len(acc) == 6 and acc[0] == user and acc[2] == user and acc[4] == tx.SYSTEM_PROGRAM
+                  and ((acc[3] == mint and acc[1] == u_base and acc[5] == ps.base_token_program)
+                       or (acc[3] == tx.WSOL_MINT and acc[1] == u_wsol and acc[5] == tx.TOKEN_PROGRAM)))
+            if not ok:
+                raise UnsafeTx("ata_ix")
+        elif pid in (tx.TOKEN_PROGRAM, tx.TOKEN_2022_PROGRAM):
+            if data == b"\x11":
+                ok = acc == [u_wsol] and pid == tx.TOKEN_PROGRAM
+            elif data == b"\x09":
+                ok = len(acc) == 3 and acc[1] == user and acc[2] == user and (
+                    (acc[0] == u_wsol and pid == tx.TOKEN_PROGRAM) or (acc[0] == u_base and pid == ps.base_token_program))
+            else:
+                ok = False
+            if not ok:
+                raise UnsafeTx("token_ix")
+        else:  # PumpSwap
+            if (len(acc) < 19 or acc[:9] != [ps.pool, user, tx.GLOBAL_CONFIG, mint, tx.WSOL_MINT, u_base, u_wsol, ps.base_vault, ps.quote_vault]
+                    or acc[11] != ps.base_token_program or acc[12] != tx.TOKEN_PROGRAM or acc[13] != tx.SYSTEM_PROGRAM
+                    or acc[14] != tx.ATA_PROGRAM or acc[16] != tx.PUMPSWAP_PROGRAM):
+                raise UnsafeTx("swap_accounts")
+    if cu_limit is None or cu_price is None or cu_price * cu_limit // 1_000_000 > max_priority_lamports + 1:
+        raise UnsafeTx("priority_over_cap")
 
 
 # --- blockhash cache -------------------------------------------------------------------------
@@ -232,6 +320,7 @@ class LiveExecutor(pe.Executor):
         self._kp = keypair
         self.user = keypair.pubkey()
         self.sell_retries = max(1, int(cfg.get("sell_retries", 5)))
+        self.sell_max_attempts = min(SELL_MAX_ATTEMPTS, max(self.sell_retries, int(cfg.get("sell_max_attempts", SELL_MAX_ATTEMPTS))))
         self.balance_buffer = max(MIN_BALANCE_BUFFER, int(cfg.get("min_balance_buffer_lamports", MIN_BALANCE_BUFFER)))
         self.slip_codes = frozenset(cfg.get("slippage_error_codes") or SLIPPAGE_ERROR_CODES)
         self.poll_ms = int(max(1.0, float(cfg.get("poll_s", 5.0))) * 1000)
@@ -247,7 +336,8 @@ class LiveExecutor(pe.Executor):
         self._log("alert", mint, alert=what, **kw)
         print(f"probe_executor ALERT {what} mint={mint} {json.dumps(kw, default=str)[:300]}", flush=True)
 
-    def _sign(self, msg: Message) -> tuple[str, str]:
+    def _sign(self, msg: Message, ps: tx.PoolState, mint: str) -> tuple[str, str]:
+        validate_message(msg, ps, Pubkey.from_string(mint), self.user, self.limits.priority_lamports)
         t = VersionedTransaction(msg, [self._kp])
         raw = bytes(t)
         if len(raw) > tx.TX_SIZE_LIMIT:
@@ -267,7 +357,13 @@ class LiveExecutor(pe.Executor):
         p.setdefault("first_send_ms", now)
 
     def sell_stuck(self) -> bool:
-        return any(pos.get("stuck") for pos in self.state.open.values())
+        return any(pos.get("stuck") or pos.get("abandoned") for pos in self.state.open.values())
+
+    def _ata_balance(self, ata: str) -> int | None:
+        try:
+            return int(self.rpc("getTokenAccountBalance", [ata, {"commitment": self.commitment}])["value"]["amount"])
+        except (Exception, SystemExit):
+            return None
 
     def _balance(self) -> int | None:
         try:
@@ -280,6 +376,8 @@ class LiveExecutor(pe.Executor):
         now = self.now_ms()
         mint = sig["mint"]
         why = pe.check_buy(self.limits, self.state, now, pe.check_stop_file(self.limits), "live", pe.check_halt_file(self.limits))
+        if not why and now + CLOCK_BACK_TOLERANCE_MS < self.state.max_seen_ms:
+            why = "clock_backwards"
         if not why and self.sell_stuck():
             why = "sell_stuck"
         buys_pending = sum(1 for p in self.state.pending.values() if p["kind"] == "buy")
@@ -291,6 +389,8 @@ class LiveExecutor(pe.Executor):
             return self._skip(sig, "stale_signal")
         if mint in self.state.open or mint in self.state.pending:
             return self._skip(sig, "already_open")
+        if mint in self.state.bought:
+            return self._skip(sig, "already_bought")
         snap, pool, err = self._snapshot(mint)
         if snap is None:
             return self._skip(sig, err or "no_pool", pool=pool)
@@ -308,11 +408,14 @@ class LiveExecutor(pe.Executor):
         try:
             bhash, lvbh = self.bh.get()
             msg = pe.buy_probe_message(snap, self.user, spend, self.slip_bps, q["tokens"], self.limits.priority_lamports, bhash)
-            signature, tx_b64 = self._sign(msg)
+            signature, tx_b64 = self._sign(msg, snap.ps, mint)
         except (Exception, SystemExit) as exc:
+            if isinstance(exc, UnsafeTx):
+                self._alert("unsafe_tx_refused", mint, why=exc.label)
             return self._skip(sig, f"build_error:{pe.error_label(exc)}", pool=pool)
         # Write-ahead: the attempt, the signature and the signed tx are durable BEFORE the first send.
         self.state.attempts += 1
+        self.state.bought.append(mint)
         if self.state.first_attempt_ms is None:
             self.state.first_attempt_ms = now
         self.state.pending[mint] = {
@@ -367,9 +470,13 @@ class LiveExecutor(pe.Executor):
             if height is None:
                 height = self._block_height()
             if height is not None and height > p["lvbh"]:
-                seen = p.setdefault("expired_seen_ms", now)
-                if now - seen >= EXPIRY_RECHECK_MS:
-                    self._resolve_expired(mint, p)
+                last = p.setdefault("expired_seen_ms", now)
+                p.setdefault("expiry_checks", 0)
+                if now - last >= EXPIRY_RECHECK_MS:  # this step's statuses (history search on) were still empty
+                    p["expiry_checks"] += 1
+                    p["expired_seen_ms"] = now
+                    if p["expiry_checks"] >= EXPIRY_RECHECKS:
+                        self._resolve_expired(mint, p)
                 continue
             if not halt and now - p.get("last_send_ms", 0) >= REBROADCAST_MS:
                 self._send(p, mint)  # the SAME signed tx
@@ -401,19 +508,42 @@ class LiveExecutor(pe.Executor):
         except (Exception, SystemExit):
             res = None
         now = self.now_ms()
-        base_mint, base_ata = Pubkey.from_string(p.get("base_mint") or self.state.open[mint]["base_mint"]), Pubkey.from_string(
-            p.get("base_ata") or self.state.open[mint]["base_ata"])
-        if not res or not res.get("meta"):
+        src = p if p["kind"] == "buy" else self.state.open[mint]
+        m = None
+        if res and res.get("meta"):
+            try:  # malformed or foreign data must never crash the loop: retry later
+                sigs = (res.get("transaction") or {}).get("signatures") or []
+                if not sigs or sigs[0] != p["signature"]:
+                    raise ValueError("signature mismatch")
+                m = parse_meta(res, self.user, Pubkey.from_string(src["base_mint"]), Pubkey.from_string(src["base_ata"]))
+            except Exception:
+                if not p.get("parse_alerted"):
+                    p["parse_alerted"] = True
+                    self._alert("meta_malformed", mint, signature=p["signature"])
+        if m is None:
             since = p.setdefault("meta_wait_since", now)
-            if now - since >= META_FALLBACK_MS and p["kind"] == "buy" and st.get("err") is None and not p.get("meta_alerted"):
-                p["meta_alerted"] = True
-                self._alert("meta_missing", mint, signature=p["signature"])
-            return
-        m = parse_meta(res, self.user, base_mint, base_ata)
+            if now - since >= META_FALLBACK_MS and p["kind"] == "buy":
+                if not p.get("meta_alerted"):
+                    p["meta_alerted"] = True
+                    self._alert("meta_missing", mint, signature=p["signature"])
+                m = self._fallback_buy_meta(p, st)
+            if m is None:
+                return
         if p["kind"] == "buy":
             self._finish_buy(mint, p, m)
         else:
             self._finish_sell(mint, p, m)
+
+    def _fallback_buy_meta(self, p: dict[str, Any], st: dict[str, Any]) -> dict[str, Any] | None:
+        """No usable meta for 60 s: book the estimated fee (and spend if tokens arrived), flagged `estimated`."""
+        fee = tx.BASE_FEE_PER_SIGNATURE + self.limits.priority_lamports
+        base = dict(slot=st.get("slot"), fee=fee, ata_rent_pre=0, ata_rent_post=0, logs=[], estimated=True)
+        if st.get("err") is not None:
+            return {**base, "err": st["err"], "sol_delta": -fee, "token_delta": 0}
+        bal = self._ata_balance(p["base_ata"])
+        if bal is None:
+            return None
+        return {**base, "err": None, "sol_delta": -(p["spend"] + fee), "token_delta": bal}
 
     def _fee_split(self, fee: int) -> tuple[int, int]:
         base = tx.BASE_FEE_PER_SIGNATURE
@@ -436,7 +566,13 @@ class LiveExecutor(pe.Executor):
             return
         cost = -m["sol_delta"]
         tokens = m["token_delta"]
-        row.update(
+        tokens_src = "meta"
+        if tokens is None:  # fail closed: unknown is not zero. The ATA balance is the authority.
+            tokens, tokens_src = self._ata_balance(p["base_ata"]), "ata_balance"
+        balance_pending = tokens is None
+        if balance_pending:  # still unknown: open flagged, and the sell reads whatever the ATA holds
+            tokens, tokens_src = p["q_tokens"], "quote_estimate"
+        row.update(tokens_source=tokens_src, estimated=bool(m.get("estimated")),
             landed=True, tokens_received=tokens, sol_spent_lamports=cost, rent_charged_lamports=m["ata_rent_post"],
             pool_fee_est_lamports=p["fee_ppm"] * p["spend"] // 1_000_000,
             entry_vs_quote_bps=bps(tokens, p["q_tokens"]), entry_vs_sim_bps=bps(tokens, p["sim_tokens"]) if p.get("sim_tokens") else None,
@@ -444,13 +580,14 @@ class LiveExecutor(pe.Executor):
         )
         self._log("buy", mint, **row)
         if tokens <= 0:
-            self._alert("buy_landed_zero_tokens", mint, signature=p["signature"])
+            self.state.realized_lamports -= cost  # SOL is spent and nothing came back: a realized loss now
+            self._alert("buy_landed_zero_tokens", mint, signature=p["signature"], cost_lamports=cost)
         else:
             self.state.open[mint] = {
                 "mint": mint, "pool": p["pool"], "t_entry_ms": self.now_ms(), "tokens": tokens, "net_in": p["q_net_in"],
                 "mark": p["q_mark"], "spend": p["spend"], "buy_cost_lamports": cost, "buy_sig": p["signature"],
                 "base_ata": p["base_ata"], "base_mint": p["base_mint"], "base_tp": p["base_tp"], "sell_attempts": 0,
-                "extra_cost": 0, "stuck": False, "exit_reason": None, "q_tokens": p["q_tokens"], "buy_slot": m["slot"],
+                "extra_cost": 0, "stuck": False, "abandoned": False, "exit_reason": None, "balance_pending": balance_pending, "q_tokens": p["q_tokens"], "buy_slot": m["slot"],
             }
         self.save()
 
@@ -461,6 +598,9 @@ class LiveExecutor(pe.Executor):
         if pos["sell_attempts"] >= self.sell_retries and not pos.get("stuck"):
             pos["stuck"] = True
             self._alert("sell_stuck", pos["mint"], attempts=pos["sell_attempts"])
+        if pos["sell_attempts"] >= self.sell_max_attempts and not pos.get("abandoned"):
+            pos["abandoned"] = True  # HALT-like for this position: no more sells, buys stay stopped
+            self._alert("sell_abandoned", pos["mint"], attempts=pos["sell_attempts"])
 
     def _start_sell(self, mint: str, pos: dict[str, Any], snap: pe.Snapshot, reason: str, now: int) -> None:
         try:
@@ -484,7 +624,7 @@ class LiveExecutor(pe.Executor):
             bhash, lvbh = self.bh.get(fresh=pos.get("sell_attempts", 0) > 0)
             ixs = [*tx.sell_instructions(snap.ps, self.user, bal, min_out, priority_total_lamports=self.limits.priority_lamports),
                    close_token_account(Pubkey.from_string(pos["base_ata"]), self.user, Pubkey.from_string(pos["base_tp"]))]
-            signature, tx_b64 = self._sign(Message.new_with_blockhash(ixs, self.user, bhash))
+            signature, tx_b64 = self._sign(Message.new_with_blockhash(ixs, self.user, bhash), snap.ps, mint)
             if signature in pos.setdefault("sell_sigs", []):
                 raise pe.RpcError("duplicate_signature")
             pos["sell_sigs"].append(signature)
@@ -508,8 +648,12 @@ class LiveExecutor(pe.Executor):
             if mint in self.state.pending:
                 continue
             now = self.now_ms()
-            if pos.get("stuck") and now - pos.get("last_sell_fail_ms", 0) < STUCK_RETRY_MS:
+            if pos.get("abandoned"):
                 continue
+            if pos.get("stuck"):
+                wait = min(STUCK_RETRY_MS * 2 ** max(0, pos["sell_attempts"] - self.sell_retries), STUCK_RETRY_MAX_MS)
+                if now - pos.get("last_sell_fail_ms", 0) < wait:
+                    continue
             snap, _pool, _err = self._snapshot(mint)
             if snap is None or snap.quote_priced is None:
                 # Never sell blind (no min_out) and never price on the vault alone: keep retrying.
@@ -532,6 +676,7 @@ class LiveExecutor(pe.Executor):
         )
         if m["err"] is not None:
             pos["extra_cost"] += -m["sol_delta"]
+            self.state.realized_lamports += m["sol_delta"]  # a landed failed sell's fees are realized loss NOW
             self._sell_failed(pos)
             self._log("sell", mint, landed=False, fail_class=classify_failure(m["err"], m["logs"], self.slip_codes), err=m["err"],
                       sell_attempt=pos["sell_attempts"], stuck=bool(pos.get("stuck")), cost_lamports=-m["sol_delta"], **row)
@@ -546,7 +691,7 @@ class LiveExecutor(pe.Executor):
             sell_net_lamports=m["sol_delta"], sell_attempts=pos["sell_attempts"] + 1, failed_attempt_cost_lamports=pos.get("extra_cost", 0),
             ret_exit_vs_entry_actual=bps(proceeds, pos["spend"]), **row,
         )
-        self.state.realized_lamports += pnl
+        self.state.realized_lamports += pnl + pos.get("extra_cost", 0)  # failed-sell fees were booked as they landed
         del self.state.open[mint]
         self.save()
 
@@ -555,6 +700,8 @@ class LiveExecutor(pe.Executor):
         self.advance_pending()
         n = 0
         now = self.now_ms()
+        if now + CLOCK_BACK_TOLERANCE_MS >= self.state.max_seen_ms:  # a backwards step is never absorbed
+            self.state.max_seen_ms = max(self.state.max_seen_ms, now)
         if now - self._last_tail >= self.poll_ms:
             self._last_tail = now
             n = super().step()

@@ -116,6 +116,8 @@ class State:
     mode: str = MODE
     would_halt: dict[str, int] = field(default_factory=dict)  # dry run: budget stops that live would have hit
     pending: dict[str, dict[str, Any]] = field(default_factory=dict)  # live: in-flight signed txs by mint (buy or sell)
+    bought: list[str] = field(default_factory=list)  # live: every mint ever attempted; never re-bought (<= 30 entries)
+    max_seen_ms: int = 0  # live: highest clock reading seen; a clock stepping back fails closed
 
     def save(self, path: Path) -> None:
         """Atomic and durable (fsync file, rename, fsync dir). Called write-ahead of any attempt."""
@@ -554,6 +556,13 @@ class Executor:
             self.state.first_attempt_ms = now
         self.save()
         msg = buy_probe_message(snap, self.user, spend, self.slip_bps, q["tokens"], self.limits.priority_lamports)
+        validate_err = None
+        try:  # would the live signer's whitelist accept this message? (a real-pool check during the dry run)
+            from tools import probe_live
+
+            probe_live.validate_message(msg, snap.ps, Pubkey.from_string(sig["mint"]), self.user, self.limits.priority_lamports)
+        except Exception as exc:
+            validate_err = getattr(exc, "label", type(exc).__name__)
         t_built = self.now_ms()
         user_base = tx.ata(self.user, snap.ps.base_mint, snap.ps.base_token_program)
         try:
@@ -571,7 +580,7 @@ class Executor:
             ms_built_to_sim=t_sim - t_built, spend_lamports=spend, slippage_bps=self.slip_bps,
             priority_lamports=self.limits.priority_lamports, v_lamports=snap.v, quote_vault_lamports=snap.quote_vault,
             base_reserve=snap.base_reserve, fee_ppm=q["fee_ppm"], expected_tokens=q["tokens"],
-            sim_tokens=sim_tokens, would_have_halted=would, tx_bytes=tx.serialized_size(msg), **self._sim_summary(res),
+            sim_tokens=sim_tokens, would_have_halted=would, live_validate_err=validate_err, tx_bytes=tx.serialized_size(msg), **self._sim_summary(res),
         )
         if sim_tokens is not None and q["tokens"]:
             row["sim_vs_expected_bps"] = round((sim_tokens - q["tokens"]) * 10_000 / q["tokens"], 2)
@@ -656,9 +665,12 @@ def status_report(cfg: dict[str, Any]) -> str:
             f"[{mode}] attempts={st.attempts}/{lim.max_attempts} realized_sol={st.realized_lamports / LAMPORTS:.6f} "
             f"loss_cap_sol={lim.loss_cap_lamports / LAMPORTS:.3f} open={len(st.open)}/{lim.max_open} pending={len(st.pending)} "
             f"first_attempt_ms={st.first_attempt_ms} would_halt={st.would_halt}")
+        exposure = sum(int(p.get("spend") or 0) for p in st.open.values()) + sum(
+            int(p.get("spend") or 0) for p in st.pending.values() if p.get("kind") == "buy")
+        lines.append(f"  open_exposure_sol={exposure / LAMPORTS:.6f} (cost of open + in-flight buys; the loss cap counts realized loss only)")
         for mint, pos in st.open.items():
             lines.append(f"  open {mint} tokens={pos.get('tokens')} spend={pos.get('spend')} stuck={bool(pos.get('stuck'))} "
-                         f"sell_attempts={pos.get('sell_attempts', 0)}")
+                         f"abandoned={bool(pos.get('abandoned'))} sell_attempts={pos.get('sell_attempts', 0)}")
         for mint, p in st.pending.items():
             lines.append(f"  pending {p.get('kind')} {mint} sig={p.get('signature')} sends={p.get('sends')}")
     counts: dict[str, int] = {}
