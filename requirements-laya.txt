@@ -2,3 +2,4 @@
 lightgbm>=4.6,<4.8
 scikit-learn>=1.4
 numpy>=1.26
+solders==0.29.0
