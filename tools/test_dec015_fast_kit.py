@@ -121,6 +121,30 @@ def test_forward_unit_and_slice():
     assert not re.search(r"^Slice=", sl, re.M)  # a system slice, no user-1000 parent
 
 
+def test_tip_follower_unit_and_installer():
+    unit = (KIT / "mal-fast-tip-follower.service").read_text()
+    assert re.search(r"^Slice=mal-forward\.slice$", unit, re.M)
+    assert re.search(r"^User=ubuntu$", unit, re.M)
+    assert re.search(r"^Restart=always$", unit, re.M)
+    assert re.search(r"^EnvironmentFile=/var/lib/mal/fast-listener/helius\.env$", unit, re.M)
+    for line in ("ProtectSystem=strict", "NoNewPrivileges=true", "ProtectHome=true", "PrivateTmp=true",
+                 "ProtectKernelTunables=true", "ProtectKernelModules=true", "ProtectControlGroups=true",
+                 "RestrictSUIDSGID=true", "LockPersonality=true", "MemorySwapMax=0",
+                 "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX", "CapabilityBoundingSet=",
+                 "PrivateDevices=true", "ProtectKernelLogs=true", "ProtectClock=true",
+                 "SystemCallFilter=@system-service", "UMask=0077", "RestartSec=30", "StartLimitBurst=5"):
+        assert re.search(rf"^{re.escape(line)}$", unit, re.M), line
+    assert "--creates-out /var/lib/mal/sealed/fast-creates-tip" in unit
+    assert "--max-keep-days 3" in unit
+    assert "-m tools.fast_tip_follower" in unit
+    assert "api-key" not in unit.lower() and "HELIUS_API_KEY=" not in unit
+    inst = (KIT / "install-fast-forward-paper.sh").read_text()
+    assert 'TIP_UNIT="mal-fast-tip-follower.service"' in inst
+    assert '"${TIP_UNIT}"; do' in inst
+    cfg = json.loads(CFG.read_text())
+    assert cfg["tape_dir"] == "/var/lib/mal/sealed/fast-trades-live"  # not switched yet
+
+
 def test_observe_unit():
     unit = (KIT / "mal-fast-observe.service").read_text()
     assert re.search(r"^MemoryMax=1G$", unit, re.M)
@@ -421,6 +445,7 @@ def test_observe_reconnects(tmp_path):
         "mal-fast-forward-paper-restart.timer",
         "mal-fast-runner-heartbeat.service",
         "mal-fast-runner-heartbeat.timer",
+        "mal-fast-tip-follower.service",
     ],
 )
 def test_systemd_analyze_syntax(name):

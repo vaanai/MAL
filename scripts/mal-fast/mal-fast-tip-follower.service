@@ -1,0 +1,48 @@
+[Unit]
+Description=MAL fast-host getBlock tip follower (DEC-015 2.2 feed for the paper runner; paper only)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+Slice=mal-forward.slice
+Nice=10
+WorkingDirectory=/var/lib/mal/fast-forward/src
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+# Helius key: systemd reads it, the process never logs it. Not enabled by the installer.
+EnvironmentFile=/var/lib/mal/fast-listener/helius.env
+ExecStart=/var/lib/mal/fast-forward/venv/bin/python -m tools.fast_tip_follower --out /var/lib/mal/sealed/fast-trades-tip --creates-out /var/lib/mal/sealed/fast-creates-tip --state-dir /var/lib/mal/fast-tip-follower --rps 5 --max-keep-days 3
+Restart=always
+RestartSec=30
+NoNewPrivileges=true
+# Hardening. Writes only its output and state dirs; the log file is opened by systemd.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal/sealed/fast-trades-tip /var/lib/mal/sealed/fast-creates-tip /var/lib/mal/fast-tip-follower /var/lib/mal/logs
+ReadOnlyPaths=/var/lib/mal/fast-forward
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemorySwapMax=0
+MemoryMax=512M
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectKernelLogs=true
+ProtectClock=true
+SystemCallFilter=@system-service
+UMask=0077
+StandardOutput=append:/var/lib/mal/logs/fast-tip-follower.log
+StandardError=append:/var/lib/mal/logs/fast-tip-follower.log
+
+[Install]
+WantedBy=multi-user.target
