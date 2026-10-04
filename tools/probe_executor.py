@@ -111,6 +111,7 @@ class State:
     inode: int | None = None
     started: bool = False  # offset initialised (first run starts at end of file)
     mode: str = MODE
+    would_halt: dict[str, int] = field(default_factory=dict)  # dry run: budget stops that live would have hit
 
     def save(self, path: Path) -> None:
         """Atomic and durable (fsync file, rename, fsync dir). Called write-ahead of any attempt."""
@@ -240,16 +241,28 @@ def check_stop_file(limits: Limits) -> bool:
     return Path(limits.stop_file).exists()
 
 
-def check_buy(limits: Limits, st: State, now_ms: int, stop_file_present: bool) -> str | None:
-    """None when a new buy attempt is allowed, else the stop reason. Order is fixed."""
+def soft_stops(limits: Limits, st: State, now_ms: int) -> list[str]:
+    """The budget stops (attempts, realized loss, days). Live halts on these; dry run only records them."""
+    out = []
+    if st.attempts >= limits.max_attempts:
+        out.append("max_attempts")
+    if st.realized_lamports <= -limits.loss_cap_lamports:
+        out.append("loss_cap")
+    if st.first_attempt_ms is not None and now_ms - st.first_attempt_ms >= limits.max_days * 86_400_000:
+        out.append("max_days")
+    return out
+
+
+def check_buy(limits: Limits, st: State, now_ms: int, stop_file_present: bool, mode: str = "live") -> str | None:
+    """None when a new buy attempt is allowed, else the stop reason. Order is fixed. The default
+    mode is the strict one. In mode "dryrun" the three budget stops do not halt (the dry run costs
+    nothing and its rows are the dataset); max_open and the stop file still do."""
     if stop_file_present:
         return "stop_file"
-    if st.attempts >= limits.max_attempts:
-        return "max_attempts"
-    if st.realized_lamports <= -limits.loss_cap_lamports:
-        return "loss_cap"
-    if st.first_attempt_ms is not None and now_ms - st.first_attempt_ms >= limits.max_days * 86_400_000:
-        return "max_days"
+    if mode != MODE:
+        soft = soft_stops(limits, st, now_ms)
+        if soft:
+            return soft[0]
     if len(st.open) >= limits.max_open:
         return "max_open"
     return None
@@ -502,7 +515,7 @@ class Executor:
     # -- entry
     def handle_signal(self, sig: dict[str, Any]) -> None:
         now = self.now_ms()
-        why = check_buy(self.limits, self.state, now, check_stop_file(self.limits))
+        why = check_buy(self.limits, self.state, now, check_stop_file(self.limits), self.mode)
         if why:
             return self._skip(sig, f"limit:{why}")
         if now - sig["decision_t_ms"] > self.max_signal_age_ms:
@@ -520,6 +533,9 @@ class Executor:
             return self._skip(sig, "zero_quote", pool=pool, pool_slot=snap.slot)
         # Write-ahead: the attempt is counted and durably persisted BEFORE anything is built or
         # simulated (PR-B: before send), so a crash can only over-count, never reset.
+        would = soft_stops(self.limits, self.state, now) if self.mode == MODE else []
+        for w in would:
+            self.state.would_halt[w] = self.state.would_halt.get(w, 0) + 1
         self.state.attempts += 1
         if self.state.first_attempt_ms is None:
             self.state.first_attempt_ms = now
@@ -542,7 +558,7 @@ class Executor:
             ms_built_to_sim=t_sim - t_built, spend_lamports=spend, slippage_bps=self.slip_bps,
             priority_lamports=self.limits.priority_lamports, v_lamports=snap.v, quote_vault_lamports=snap.quote_vault,
             base_reserve=snap.base_reserve, fee_ppm=q["fee_ppm"], expected_tokens=q["tokens"],
-            sim_tokens=sim_tokens, tx_bytes=tx.serialized_size(msg), **self._sim_summary(res),
+            sim_tokens=sim_tokens, would_have_halted=would, tx_bytes=tx.serialized_size(msg), **self._sim_summary(res),
         )
         if sim_tokens is not None and q["tokens"]:
             row["sim_vs_expected_bps"] = round((sim_tokens - q["tokens"]) * 10_000 / q["tokens"], 2)

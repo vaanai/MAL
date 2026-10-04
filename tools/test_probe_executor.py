@@ -128,10 +128,10 @@ class LimitsTests(unittest.TestCase):
     def test_executor_restart_cannot_reset_attempts(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            ex, conf = make(tmp, max_attempts=1)
+            ex, conf = make(tmp, max_attempts=1, mode="live")
             ex.handle_signal(sig(ex))
             self.assertEqual(ex.state.attempts, 1)
-            ex2, _ = make(tmp, max_attempts=1)  # restart
+            ex2, _ = make(tmp, max_attempts=1, mode="live")  # restart
             ex2.state.open.clear()
             ex2.handle_signal(sig(ex2))
             self.assertEqual(ex2.state.attempts, 1)
@@ -158,7 +158,7 @@ class LimitsTests(unittest.TestCase):
 
     def test_loss_cap_stops_new_buys(self):
         with tempfile.TemporaryDirectory() as d:
-            ex, conf = make(Path(d), loss_cap_lamports=10)
+            ex, conf = make(Path(d), loss_cap_lamports=10, mode="live")
             ex.state.realized_lamports = -10
             ex.handle_signal(sig(ex))
             self.assertEqual(fills(conf)[0]["reason"], "limit:loss_cap")
@@ -548,6 +548,32 @@ class RpcLimiterTests(unittest.TestCase):
             self.assertLessEqual(st.offset, pe.MAX_READ_BYTES)
             second = pe.tail_signals(p, st, pe.DEFAULT_BOOK)
             self.assertEqual(len(first) + len(second), total)
+
+
+class DryrunSoftStopTests(unittest.TestCase):
+    def test_live_halts_dryrun_does_not(self):
+        lim = pe.Limits()
+        over = pe.State(attempts=30, realized_lamports=-250_000_000, first_attempt_ms=T0)
+        late = T0 + 4 * 86_400_000
+        self.assertEqual(pe.check_buy(lim, pe.State(attempts=30), T0, False, "live"), "max_attempts")
+        self.assertEqual(pe.check_buy(lim, pe.State(realized_lamports=-250_000_000), T0, False, "live"), "loss_cap")
+        self.assertEqual(pe.check_buy(lim, pe.State(first_attempt_ms=T0), late, False, "live"), "max_days")
+        self.assertIsNone(pe.check_buy(lim, over, late, False, "dryrun"))
+        # the hard stops still apply in dry run
+        self.assertEqual(pe.check_buy(lim, pe.State(open={"a": {}, "b": {}, "c": {}}), T0, False, "dryrun"), "max_open")
+        self.assertEqual(pe.check_buy(lim, over, late, True, "dryrun"), "stop_file")
+
+    def test_dryrun_continues_past_budget_and_logs_would_halt(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf = make(Path(d), max_attempts=1)
+            for i in range(3):
+                ex.state.open.clear()
+                ex.handle_signal(sig(ex))
+            buys = [r for r in fills(conf) if r["kind"] == "buy"]
+            self.assertEqual(len(buys), 3)
+            self.assertEqual([r["would_have_halted"] for r in buys], [[], ["max_attempts"], ["max_attempts"]])
+            self.assertEqual(ex.state.would_halt, {"max_attempts": 2})
+            self.assertEqual(pe.State.load(Path(d) / "state-dryrun.json").would_halt, {"max_attempts": 2})
 
 
 if __name__ == "__main__":
