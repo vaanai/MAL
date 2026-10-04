@@ -12,7 +12,7 @@ if [ "${MAL_LIVE_TEST:-0}" = "1" ]; then
   PY="${MAL_LIVE_PY:?}"
   SCRIPT="${MAL_PROBE_WITHDRAW_PY:?}"
 else
-  unset MAL_LIVE_DIR MAL_LIVE_USER MAL_LIVE_PY MAL_LIVE_TEST MAL_PROBE_WITHDRAW_PY \
+  unset MAL_LIVE_DIR MAL_LIVE_KEY_DIR MAL_LIVE_USER MAL_LIVE_PY MAL_LIVE_TEST MAL_PROBE_WITHDRAW_PY \
         PYTHONPATH PYTHONHOME PYTHONSTARTUP HELIUS_API_KEY || true
   [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
   HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"

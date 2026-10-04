@@ -26,8 +26,11 @@ sudo /usr/local/lib/mal-probe/make-probe-wallet.sh --dry-run   # prints the plan
 sudo /usr/local/lib/mal-probe/make-probe-wallet.sh
 ```
 
-- Creates (or verifies) the `mal-live` system user (nologin, no extra groups) and `/var/lib/mal-live` (0700, mal-live). It refuses a symlinked directory, and refuses unless `/var/lib` and every ancestor is root-owned and not group/world-writable.
-- Writes `/var/lib/mal-live/probe-wallet.json` (0400, mal-live), fsyncs it, reads it back and checks the public key before printing. It refuses if the file exists. Never delete or replace it by hand while the wallet holds funds.
+- Creates (or verifies) the `mal-live` system user (nologin, no extra groups) and `/var/lib/mal-live` (0700, mal-live). That directory holds executor state only (`state-live.json`, `probe-fills.jsonl`), never the key.
+- Creates `/etc/mal-probe` (`root:root` 0700) and verifies owner and mode. It refuses a symlinked `/var/lib/mal-live` or `/etc/mal-probe`, and refuses unless `/var/lib`, `/etc` and every ancestor is root-owned and not group/world-writable.
+- Writes `/etc/mal-probe/probe-wallet.json` (`root:root` 0400, never chowned to `mal-live`), fsyncs it and its directory, reads it back and checks the public key, owner and mode before printing. It refuses if the file exists, or if a legacy `/var/lib/mal-live/probe-wallet.json` exists. Never delete or replace it by hand while the wallet holds funds.
+- The executor gets the key only through systemd `LoadCredential=` (a root-run unit hands it a private copy); `mal-live` has no read access to `/etc/mal-probe`. The unit change (live drop-in `LoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json`) is in PR #290. The runtime copy appears under `/run/credentials/mal-probe-executor.service/`; the deny lines cover `/run/credentials` too.
+- Helm applies the same deny lines as the repo `.claude/settings.json` (Read/Edit/Write on `//etc/mal-probe/**`, Bash reads of `/etc/mal-probe`, `systemd-creds`) to fast-0's user-level and checkout Claude settings, and runs an auditd watch on `/etc/mal-probe`. Absolute file paths in those rules need the `//` prefix.
 - Prints two lines: the **public key** and `Fund with 0.5 SOL. Never share the file.`
 
 If it prints an error instead, nothing was created. Do not fund anything.
@@ -40,7 +43,7 @@ The owner sends **0.5 SOL** to the public key from their own wallet. Check the b
 
 ## 3. Withdraw (end of probe, or when the owner asks) — root only
 
-Run it as root, not as `mal-live`: the RPC key file is not readable by `mal-live` and must not be.
+Withdraw is **root-only**. It refuses unless euid is 0, and refuses unless the key file is `root:root` 0400 in a `root:root` 0700 directory (default `--keyfile /etc/mal-probe/probe-wallet.json`). It reads the key file directly. It reads `state-live.json` and `probe-fills.jsonl` from `/var/lib/mal-live`. The RPC key file is not readable by `mal-live` and must not be.
 
 Preconditions: the owner has named the destination address; `mal-probe-executor` is stopped (`systemctl stop mal-probe-executor`); no open positions.
 
@@ -58,7 +61,7 @@ sudo /usr/local/lib/mal-probe/probe-withdraw.sh --to <OWNER_ADDRESS>
 
 ## Never
 
-- Never print, copy, email, paste, commit or screenshot `probe-wallet.json`, or its contents in any form.
+- Never print, copy, email, paste, commit or screenshot `/etc/mal-probe/probe-wallet.json`, or its contents in any form.
 - Never pass the key through a command line, env var, ticket, chat or MiScusi.
 - Never run the repo-checkout copies of these scripts as root, and never set `MAL_LIVE_TEST` (the scripts refuse it as root).
 - Never reuse this wallet for anything else, and never fund it beyond 0.5 SOL.

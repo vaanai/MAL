@@ -27,6 +27,7 @@ def _make(tmp_path, *extra):
     env = {
         "PATH": os.environ["PATH"],
         "MAL_LIVE_DIR": str(tmp_path / "live"),
+        "MAL_LIVE_KEY_DIR": str(tmp_path / "key"),
         "MAL_LIVE_PY": sys.executable,
         "MAL_LIVE_TEST": "1",
     }
@@ -36,7 +37,7 @@ def _make(tmp_path, *extra):
 def test_make_wallet_creates_key_and_prints_only_pubkey(tmp_path):
     r = _make(tmp_path)
     assert r.returncode == 0, r.stderr
-    f = tmp_path / "live/probe-wallet.json"
+    f = tmp_path / "key/probe-wallet.json"
     assert stat.S_IMODE(f.stat().st_mode) == 0o400
     assert stat.S_IMODE(f.parent.stat().st_mode) == 0o700
     raw = json.loads(f.read_text())
@@ -49,12 +50,13 @@ def test_make_wallet_creates_key_and_prints_only_pubkey(tmp_path):
     secret = bytes(raw)
     for needle in (json.dumps(raw), secret[:32].hex(), base64.b64encode(secret).decode()):
         assert needle not in r.stdout + r.stderr
-    assert [p.name for p in tmp_path.iterdir()] == ["live"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["key", "live"]
+    assert list((tmp_path / "live").iterdir()) == []  # executor state dir holds no key
 
 
 def test_make_wallet_refuses_overwrite(tmp_path):
     assert _make(tmp_path).returncode == 0
-    f = tmp_path / "live/probe-wallet.json"
+    f = tmp_path / "key/probe-wallet.json"
     before = f.read_bytes()
     r = _make(tmp_path)
     assert r.returncode != 0 and "already exists" in r.stderr
@@ -64,16 +66,17 @@ def test_make_wallet_refuses_overwrite(tmp_path):
 def test_make_wallet_dry_run_writes_nothing(tmp_path):
     r = _make(tmp_path, "--dry-run")
     assert r.returncode == 0 and "[dry-run]" in r.stdout
-    assert not (tmp_path / "live").exists()
+    assert not (tmp_path / "live").exists() and not (tmp_path / "key").exists()
 
 
 def test_make_wallet_ignores_overrides_without_test_flag(tmp_path):
     if os.geteuid() == 0:
         pytest.skip("running as root")
-    env = {"PATH": os.environ["PATH"], "MAL_LIVE_DIR": str(tmp_path / "live"), "MAL_LIVE_PY": sys.executable}
+    env = {"PATH": os.environ["PATH"], "MAL_LIVE_DIR": str(tmp_path / "live"),
+           "MAL_LIVE_KEY_DIR": str(tmp_path / "key"), "MAL_LIVE_PY": sys.executable}
     r = subprocess.run(["bash", str(MAKE)], env=env, capture_output=True, text=True)
     assert r.returncode != 0 and "root" in r.stderr
-    assert not (tmp_path / "live").exists()
+    assert not (tmp_path / "live").exists() and not (tmp_path / "key").exists()
 
 
 def test_make_wallet_refuses_symlinked_dir(tmp_path):
@@ -83,6 +86,41 @@ def test_make_wallet_refuses_symlinked_dir(tmp_path):
     r = _make(tmp_path)
     assert r.returncode != 0 and "symlink" in r.stderr
     assert list(real.iterdir()) == []
+
+
+def test_make_wallet_refuses_symlinked_key_dir(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "key").symlink_to(real)
+    r = _make(tmp_path)
+    assert r.returncode != 0 and "symlink" in r.stderr
+    assert list(real.iterdir()) == [] and not (tmp_path / "live").exists()
+
+
+def test_make_wallet_refuses_legacy_key(tmp_path):
+    (tmp_path / "live").mkdir()
+    (tmp_path / "live/probe-wallet.json").write_text("x")
+    r = _make(tmp_path)
+    assert r.returncode != 0 and "legacy" in r.stderr
+    assert not (tmp_path / "key").exists()
+
+
+def test_make_wallet_refuses_writable_key_dir_parent(tmp_path):
+    parent = tmp_path / "p"
+    parent.mkdir()
+    parent.chmod(0o777)
+    env = {"PATH": os.environ["PATH"], "MAL_LIVE_DIR": str(tmp_path / "live"), "MAL_LIVE_KEY_DIR": str(parent / "key"),
+           "MAL_LIVE_PY": sys.executable, "MAL_LIVE_TEST": "1"}
+    r = subprocess.run(["bash", str(MAKE)], env=env, capture_output=True, text=True)
+    assert r.returncode != 0 and "writable" in r.stderr
+    assert not (parent / "key").exists()
+
+
+def test_make_wallet_key_is_root_owned_never_chowned_to_service_user():
+    text = MAKE.read_text()
+    assert "os.fchown(fd, 0, 0)" in text and "pwd.getpwnam" not in text
+    assert 'install -d -m 0700 -o root -g root "$KEY_DIR"' in text and "root:root 700" in text
+    assert "KEY_DIR=/etc/mal-probe" in text and 'KEYFILE="$KEY_DIR/probe-wallet.json"' in text
 
 
 def test_make_wallet_fsync_readback_before_print_and_hardening():
@@ -105,10 +143,11 @@ def test_make_wallet_readback_failure_removes_file_and_prints_no_pubkey(tmp_path
         "exec(compile(code, 'c', 'exec'))\n"
     )
     shim.chmod(0o755)
-    env = {"PATH": os.environ["PATH"], "MAL_LIVE_DIR": str(tmp_path / "live"), "MAL_LIVE_PY": str(shim), "MAL_LIVE_TEST": "1"}
+    env = {"PATH": os.environ["PATH"], "MAL_LIVE_DIR": str(tmp_path / "live"), "MAL_LIVE_KEY_DIR": str(tmp_path / "key"),
+           "MAL_LIVE_PY": str(shim), "MAL_LIVE_TEST": "1"}
     r = subprocess.run(["bash", str(MAKE)], env=env, capture_output=True, text=True)
     assert r.returncode != 0 and "write/verify failed" in r.stderr
-    assert not (tmp_path / "live/probe-wallet.json").exists()
+    assert not (tmp_path / "key/probe-wallet.json").exists()
     assert "Fund with" not in r.stdout
 
 
@@ -198,6 +237,7 @@ def _run(args, rpc, **kw):
     lines: list[str] = []
     kw.setdefault("is_active", lambda: False)
     kw.setdefault("sleep", lambda s: None)
+    kw.setdefault("check_location", False)
     rc = pw.run(args, rpc, out=lines.append, **kw)
     return rc, "\n".join(lines)
 
@@ -384,6 +424,7 @@ def test_rpc_url_redacted_and_process_env_ignored(tmp_path, monkeypatch, capsys)
     envf = tmp_path / "helius.env"
     envf.write_text(f"HELIUS_API_KEY={secret}\n")
     monkeypatch.setenv("HELIUS_API_KEY", "FROMENV")
+    monkeypatch.setenv("MAL_LIVE_TEST", "1")
     assert pw.load_rpc_url(str(envf)).endswith(secret)
 
     def boom(self, method, params):
@@ -450,12 +491,13 @@ def test_test_flag_refused_when_euid_is_root(tmp_path, monkeypatch):
         "MAL_LIVE_TEST": "1",
         "MAL_LIVE_PY": sys.executable,
         "MAL_LIVE_DIR": str(tmp_path / "live"),
+        "MAL_LIVE_KEY_DIR": str(tmp_path / "key"),
         "MAL_PROBE_WITHDRAW_PY": str(ROOT / "tools/probe_withdraw.py"),
     }
     for sh in (MAKE, WRAP):
         r = subprocess.run(["bash", str(sh), "--help"], env=env, capture_output=True, text=True)
         assert r.returncode != 0 and "not allowed as root" in r.stderr
-    assert not (tmp_path / "live").exists()
+    assert not (tmp_path / "live").exists() and not (tmp_path / "key").exists()
     monkeypatch.setenv("MAL_LIVE_TEST", "1")
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     assert pw.main(["--to", str(Keypair().pubkey())]) == 1
@@ -467,7 +509,7 @@ def test_live_dir_default_moved_and_parent_checks():
     assert 'stat -c %u "$d")" -ne 0' in text and "is not root-owned" in text
     for f in (ROOT / "tools/probe_withdraw.py", ROOT / "docs/runbooks/probe-wallet.md"):
         assert "/var/lib/mal/live" not in f.read_text()
-    assert pw.DEFAULT_KEYFILE == "/var/lib/mal-live/probe-wallet.json"
+    assert pw.DEFAULT_KEYFILE == "/etc/mal-probe/probe-wallet.json"
     assert pw.DEFAULT_STATE.startswith("/var/lib/mal-live/") and pw.DEFAULT_FILL_LOG.startswith("/var/lib/mal-live/")
 
 
@@ -502,3 +544,52 @@ def test_installer_guards_and_hashed_requirements():
     for name in ("solders==", "jsonalias==", "typing_extensions=="):
         assert name in req
     assert req.count("--hash=sha256:") == 3
+
+
+def test_withdraw_refuses_non_root_outside_test_mode(monkeypatch, capsys):
+    monkeypatch.delenv("MAL_LIVE_TEST", raising=False)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    assert pw.main(["--to", str(Keypair().pubkey())]) == 1
+    assert "root-only" in capsys.readouterr().err
+
+
+def test_key_location_requires_root_owned_0400_in_root_0700_dir(tmp_path, monkeypatch):
+    d = tmp_path / "etc-mal-probe"
+    d.mkdir()
+    d.chmod(0o700)
+    k = d / "probe-wallet.json"
+    k.write_text("[]")
+    k.chmod(0o400)
+    if os.geteuid() != 0:  # files are owned by the test user, so ownership must refuse
+        with pytest.raises(SystemExit, match="root:root 0700"):
+            pw.check_key_location(str(k))
+    real = os.lstat
+
+    def fake(p, *a, **kw):  # pretend everything is root:root; only modes matter now
+        r = real(p, *a, **kw)
+        return os.stat_result((r.st_mode, r.st_ino, r.st_dev, r.st_nlink, 0, 0, *r[6:]))
+
+    monkeypatch.setattr(os, "lstat", fake)
+    pw.check_key_location(str(k))
+    k.chmod(0o440)
+    with pytest.raises(SystemExit, match="root:root 0400"):
+        pw.check_key_location(str(k))
+    k.chmod(0o400)
+    d.chmod(0o750)
+    with pytest.raises(SystemExit, match="root:root 0700"):
+        pw.check_key_location(str(k))
+    d.chmod(0o700)
+    link = tmp_path / "link"
+    link.symlink_to(d)
+    with pytest.raises(SystemExit, match="symlink"):
+        pw.check_key_location(str(link / "probe-wallet.json"))
+    k.unlink()
+    with pytest.raises(SystemExit, match="cannot stat"):
+        pw.check_key_location(str(k))
+
+
+def test_run_checks_key_location_by_default(tmp_path):
+    kp, dest, args, rpc = _setup(tmp_path)
+    with pytest.raises(SystemExit, match="must be|refusing"):
+        pw.run(args, rpc, out=lambda s: None, is_active=lambda: False)
+    assert rpc.methods == []
