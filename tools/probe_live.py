@@ -52,8 +52,9 @@ EXPIRY_RECHECK_MS = 5_000  # after the block height passes, look once more befor
 STUCK_RETRY_MS = 30_000
 META_FALLBACK_MS = 60_000
 LIVE_MAX_RPS = 5.0
-# Pump AMM ExceededSlippage custom error code. UNVERIFIED against the IDL; a log-text match
-# ("slippage") is the second signal. Config key `slippage_error_codes` overrides.
+# The log-text match ("slippage" in the tx logs) is the PRIMARY signal. The numeric Pump AMM
+# ExceededSlippage code below is UNVERIFIED: no IDL or decoder in this repo carries it. Config key
+# `slippage_error_codes` overrides.
 SLIPPAGE_ERROR_CODES = frozenset({6004})
 FAIL_CLASSES = ("expired", "slippage_exceeded", "insufficient_funds", "other")
 
@@ -278,7 +279,7 @@ class LiveExecutor(pe.Executor):
     def handle_signal(self, sig: dict[str, Any]) -> None:
         now = self.now_ms()
         mint = sig["mint"]
-        why = pe.check_buy(self.limits, self.state, now, pe.check_stop_file(self.limits), "live")
+        why = pe.check_buy(self.limits, self.state, now, pe.check_stop_file(self.limits), "live", pe.check_halt_file(self.limits))
         if not why and self.sell_stuck():
             why = "sell_stuck"
         buys_pending = sum(1 for p in self.state.pending.values() if p["kind"] == "buy")
@@ -352,7 +353,7 @@ class LiveExecutor(pe.Executor):
         except (Exception, SystemExit):
             return  # cannot judge anything this step; never rebroadcast or expire blind
         height: int | None = None
-        stop = pe.check_stop_file(self.limits)
+        halt = pe.check_halt_file(self.limits)  # STOP does not stop rebroadcasts: in-flight txs must land or expire
         for mint, st in zip(mints, statuses):
             p = pend[mint]
             now = self.now_ms()
@@ -370,7 +371,7 @@ class LiveExecutor(pe.Executor):
                 if now - seen >= EXPIRY_RECHECK_MS:
                     self._resolve_expired(mint, p)
                 continue
-            if not stop and now - p.get("last_send_ms", 0) >= REBROADCAST_MS:
+            if not halt and now - p.get("last_send_ms", 0) >= REBROADCAST_MS:
                 self._send(p, mint)  # the SAME signed tx
         self.save()
 
@@ -502,7 +503,7 @@ class LiveExecutor(pe.Executor):
 
     def poll_positions(self) -> None:
         for mint, pos in list(self.state.open.items()):
-            if pe.check_sell(pe.check_stop_file(self.limits)):
+            if pe.check_sell(pe.check_halt_file(self.limits)):
                 return
             if mint in self.state.pending:
                 continue

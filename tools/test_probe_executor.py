@@ -66,7 +66,7 @@ class Clock:
 
 def make(tmp: Path, rpc=None, clock=None, **cfg):
     conf = {"signals_dir": str(tmp / "sig"), "state_dir": str(tmp), "fill_log": str(tmp / "fills.jsonl"),
-            "stop_file": str(tmp / "STOP"), **cfg}
+            "stop_file": str(tmp / "STOP"), "halt_file": str(tmp / "HALT"), **cfg}
     (tmp / "sig").mkdir(exist_ok=True)
     return pe.Executor(rpc or FakeRpc(), conf, now_ms=clock or Clock()), conf
 
@@ -114,7 +114,7 @@ class LimitsTests(unittest.TestCase):
         self.assertEqual(pe.check_buy(lim, pe.State(open={"a": {}, "b": {}, "c": {}}), T0, False), "max_open")
 
     def test_sell_only_halted_by_stop_file(self):
-        self.assertEqual(pe.check_sell(True), "stop_file")
+        self.assertEqual(pe.check_sell(True), "halt_file")
         self.assertIsNone(pe.check_sell(False))
 
     def test_state_persists_across_restart(self):
@@ -145,12 +145,12 @@ class LimitsTests(unittest.TestCase):
             self.assertEqual(fills(conf)[0]["reason"], "limit:stop_file")
             self.assertEqual(ex.rpc.calls, [])
 
-    def test_stop_file_halts_sell(self):
+    def test_halt_file_halts_sell(self):
         with tempfile.TemporaryDirectory() as d:
             rpc = FakeRpc()
             ex, conf = make(Path(d), rpc=rpc)
             ex.handle_signal(sig(ex))
-            Path(conf["stop_file"]).write_text("")
+            Path(conf["halt_file"]).write_text("")
             rpc.calls.clear()
             ex.poll_positions()
             self.assertEqual(rpc.calls, [])
@@ -321,6 +321,28 @@ class ExitRuleTests(unittest.TestCase):
             self.assertEqual(ex.state.realized_lamports, sell["pnl_lamports"])
             self.assertEqual(ex.state.open, {})
             self.assertIsNone(sell["sell_probe_err"])
+
+
+class StopHaltDryRunTests(unittest.TestCase):
+    def test_stop_halts_buys_only_halt_freezes_exits(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            clock = Clock()
+            ex, conf = make(tmp, rpc=FakeRpc(), clock=clock)
+            ex.handle_signal(sig(ex))
+            self.assertIn(MINT, ex.state.open)
+            (tmp / "STOP").write_text("")
+            clock.t += pe.MAX_HOLD_MS + 1000
+            (tmp / "HALT").write_text("")
+            ex.poll_positions()
+            self.assertIn(MINT, ex.state.open)  # HALT: frozen
+            (tmp / "HALT").unlink()
+            ex.poll_positions()
+            self.assertNotIn(MINT, ex.state.open)  # STOP alone: exit proceeds
+            ex.handle_signal(sig(ex, t=clock()))
+            self.assertEqual(fills(conf)[-1]["reason"], "limit:stop_file")
+            (tmp / "HALT").write_text("")
+            self.assertEqual(pe.check_buy(ex.limits, ex.state, clock(), False, "live", True), "halt_file")
 
 
 class FillSchemaTests(unittest.TestCase):

@@ -42,7 +42,8 @@ Back to dry run: `sudo rm /etc/systemd/system/mal-probe-executor.service.d/live.
 
 ## 3. Stop
 
-- Soft: `touch /var/lib/mal-live/STOP`. No new buys, and no new sells or rebroadcasts. Txs already sent are still tracked to confirmation. **Open positions stay open** until the file is removed or the owner sells them by hand.
+- STOP: `touch /var/lib/mal-live/STOP`. No new buys. Exits, sells and rebroadcasts of in-flight txs KEEP running, so positions do not strand. Normal way to wind the probe down.
+- HALT (emergency): `touch /var/lib/mal-live/HALT`. Freezes everything: no buys, no sells, no rebroadcasts (status polling only). Open positions stay open until the file is removed. Use only if something is wrong with the executor or the wallet.
 - Hard: `sudo systemctl stop mal-probe-executor`. A restart resumes any pending signature without re-buying.
 - Automatic: 30 buy attempts, 0.25 SOL realized loss, 4 days from the first attempt. Each halts new buys only; open positions are still sold.
 
@@ -59,7 +60,8 @@ Prints stop-file presence, attempts out of 30, realized SOL, open and pending po
 
 | Log or skip reason | Meaning | Action |
 | --- | --- | --- |
-| `limit:stop_file` | STOP file exists | remove it to resume |
+| `limit:stop_file` | STOP file exists | remove it to resume buys |
+| `limit:halt_file` | HALT file exists (buys, sells and rebroadcasts frozen) | investigate, then remove it |
 | `limit:max_attempts` | 30 buys attempted (counts every send, landed or not) | probe is done |
 | `limit:loss_cap` | realized loss at or past 0.25 SOL | probe is done; review |
 | `limit:max_days` | 4 days since first attempt | probe is done |

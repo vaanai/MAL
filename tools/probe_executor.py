@@ -81,7 +81,8 @@ class Limits:
     max_days: float = DEC019_MAX["max_days"]
     size_lamports: int = DEC019_MAX["size_lamports"]
     priority_lamports: int = DEC019_MAX["priority_lamports"]
-    stop_file: str = "/var/lib/mal-live/STOP"
+    stop_file: str = "/var/lib/mal-live/STOP"  # no new buys; exits and in-flight sells continue
+    halt_file: str = "/var/lib/mal-live/HALT"  # freezes everything: no buys, no sells, no rebroadcasts
 
     def __post_init__(self) -> None:
         """Clamp to the DEC-019 maxima on EVERY construction path, and reject NaN/inf/non-positive."""
@@ -96,6 +97,8 @@ class Limits:
         kw: dict[str, Any] = {k: cfg[k] for k in DEC019_MAX if cfg.get(k) is not None}
         if cfg.get("stop_file"):
             kw["stop_file"] = str(cfg["stop_file"])
+        if cfg.get("halt_file"):
+            kw["halt_file"] = str(cfg["halt_file"])
         return cls(**kw)
 
 
@@ -243,6 +246,10 @@ def check_stop_file(limits: Limits) -> bool:
     return Path(limits.stop_file).exists()
 
 
+def check_halt_file(limits: Limits) -> bool:
+    return Path(limits.halt_file).exists()
+
+
 def soft_stops(limits: Limits, st: State, now_ms: int) -> list[str]:
     """The budget stops (attempts, realized loss, days). Live halts on these; dry run only records them."""
     out = []
@@ -255,10 +262,13 @@ def soft_stops(limits: Limits, st: State, now_ms: int) -> list[str]:
     return out
 
 
-def check_buy(limits: Limits, st: State, now_ms: int, stop_file_present: bool, mode: str = "live") -> str | None:
+def check_buy(limits: Limits, st: State, now_ms: int, stop_file_present: bool, mode: str = "live",
+              halt_file_present: bool = False) -> str | None:
     """None when a new buy attempt is allowed, else the stop reason. Order is fixed. The default
     mode is the strict one. In mode "dryrun" the three budget stops do not halt (the dry run costs
     nothing and its rows are the dataset); max_open and the stop file still do."""
+    if halt_file_present:
+        return "halt_file"
     if stop_file_present:
         return "stop_file"
     if mode != MODE:
@@ -270,10 +280,10 @@ def check_buy(limits: Limits, st: State, now_ms: int, stop_file_present: bool, m
     return None
 
 
-def check_sell(stop_file_present: bool) -> str | None:
-    """The stop file is the kill switch and halts every action. The automatic stops
-    (attempts, loss, days) halt new buys only: an open position is still wound down."""
-    return "stop_file" if stop_file_present else None
+def check_sell(halt_file_present: bool) -> str | None:
+    """Only the HALT file freezes sells. The STOP file and the automatic stops (attempts, loss,
+    days) halt new buys only: an open position is still wound down, so nothing strands."""
+    return "halt_file" if halt_file_present else None
 
 
 # --- pricing (V-corrected, mirrors the paper scorer) -----------------------------------------
@@ -518,7 +528,7 @@ class Executor:
     # -- entry
     def handle_signal(self, sig: dict[str, Any]) -> None:
         now = self.now_ms()
-        why = check_buy(self.limits, self.state, now, check_stop_file(self.limits), self.mode)
+        why = check_buy(self.limits, self.state, now, check_stop_file(self.limits), self.mode, check_halt_file(self.limits))
         if why:
             return self._skip(sig, f"limit:{why}")
         if now - sig["decision_t_ms"] > self.max_signal_age_ms:
@@ -576,7 +586,7 @@ class Executor:
     # -- exit
     def poll_positions(self) -> None:
         for mint, pos in list(self.state.open.items()):
-            if check_sell(check_stop_file(self.limits)):
+            if check_sell(check_halt_file(self.limits)):
                 return
             snap, _pool, err = self._snapshot(mint)
             now = self.now_ms()
@@ -635,7 +645,7 @@ def status_report(cfg: dict[str, Any]) -> str:
     """Counters, open positions and realized P&L from the state files and the fill log. Reads no key and
     no URL, makes no RPC call."""
     lim = Limits.from_config(cfg)
-    lines = [f"stop_file_present={Path(lim.stop_file).exists()}"]
+    lines = [f"stop_file_present={Path(lim.stop_file).exists()} halt_file_present={Path(lim.halt_file).exists()}"]
     for mode in (MODE, "live"):
         path = state_path_for(cfg["state_dir"], mode)
         if not path.exists():

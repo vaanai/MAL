@@ -80,7 +80,7 @@ def make_live(tmp: Path, **cfg):
     rpc = LiveRpc(clock)
     kp = Keypair()
     conf = {"signals_dir": str(tmp / "sig"), "state_dir": str(tmp), "fill_log": str(tmp / "fills.jsonl"),
-            "stop_file": str(tmp / "STOP"), "mode": "live", "poll_s": 5.0, **cfg}
+            "stop_file": str(tmp / "STOP"), "halt_file": str(tmp / "HALT"), "mode": "live", "poll_s": 5.0, **cfg}
     (tmp / "sig").mkdir(exist_ok=True)
     return pl.LiveExecutor(rpc, conf, kp, now_ms=clock), rpc, clock, kp, conf
 
@@ -406,14 +406,42 @@ class LimitsLiveTests(unittest.TestCase):
         signal_buy(self.ex, self.clock)
         self.assertEqual(self.reason(), "limit:max_open")
 
-    def test_stop_file_blocks_rebroadcast_but_not_status(self):
+    def test_stop_file_keeps_rebroadcast_and_exits_running(self):
         signal_buy(self.ex, self.clock)
         (self.tmp / "STOP").write_text("")
         self.clock.t += 5_000
         self.ex.advance_pending()
-        self.assertEqual(len(self.rpc.sent), 1)
+        self.assertEqual(len(self.rpc.sent), 2)  # in-flight buy is still rebroadcast
         land_buy(self.ex, self.rpc)
         self.assertIn(MINT, self.ex.state.open)
+        self.clock.t += 31 * 60_000
+        self.ex.poll_positions()  # exit still starts under STOP
+        self.assertEqual(self.ex.state.pending[MINT]["kind"], "sell")
+        self.clock.t += 3_000
+        n = len(self.rpc.sent)
+        self.ex.advance_pending()
+        self.assertEqual(len(self.rpc.sent), n + 1)  # in-flight sell is rebroadcast
+        self.ex.handle_signal(mk_sig(self.ex, mint="11111111111111111111111111111112", t=self.clock()))
+        self.assertEqual(self.reason(), "limit:stop_file")
+
+    def test_halt_file_freezes_everything(self):
+        signal_buy(self.ex, self.clock)
+        land_buy(self.ex, self.rpc)
+        self.clock.t += 31 * 60_000
+        (self.tmp / "HALT").write_text("")
+        n = len(self.rpc.sent)
+        self.ex.poll_positions()
+        self.assertEqual((len(self.rpc.sent), MINT in self.ex.state.pending), (n, False))  # no sell
+        self.ex.handle_signal(mk_sig(self.ex, mint="11111111111111111111111111111112", t=self.clock()))
+        self.assertEqual(self.reason(), "limit:halt_file")
+        (self.tmp / "HALT").unlink()
+        self.ex.poll_positions()
+        self.assertEqual(self.ex.state.pending[MINT]["kind"], "sell")
+        (self.tmp / "HALT").write_text("")
+        self.clock.t += 5_000
+        n = len(self.rpc.sent)
+        self.ex.advance_pending()
+        self.assertEqual(len(self.rpc.sent), n)  # no rebroadcast under HALT
 
     def test_size_and_priority_clamped(self):
         ex, *_ = make_live(self.tmp, size_lamports=10**12, priority_lamports=10**9)

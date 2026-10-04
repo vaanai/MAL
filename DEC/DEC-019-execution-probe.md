@@ -53,11 +53,12 @@ EXP-012's edge rests on execution: its selected entries filled 98.9% of the time
 ## 5. Custody (the manager never sees the key)
 
 - **A dedicated system user, `mal-live`, on `mal-fast-0`.** Only the executor unit runs as it.
-- **Key creation.** The key is generated **by Helm or the owner** with `scripts/mal-fast/make-probe-wallet.sh`, to be added with the executor. That script writes `/var/lib/mal/live/probe-wallet.json` with mode 0400, owner `mal-live`, and prints only the public address.
+- **Key creation.** The key is generated **by Helm or the owner** with `scripts/mal-fast/make-probe-wallet.sh`, to be added with the executor. That script writes `/var/lib/mal-live/probe-wallet.json` with mode 0400, owner `mal-live`, and prints only the public address.
+- *Moved 2026-10-04 after security review: root-owned parent (`/var/lib/mal-live`, was `/var/lib/mal/live`).*
 - **The key never leaves that file.** It is never in git, logs, MiScusi, status files or any agent's output. The executor loads it in-process only.
 - **The executor unit:**
   - is hardened like the runner's;
-  - has write access only to `/var/lib/mal/live/`;
+  - has write access only to `/var/lib/mal-live/`;
   - has no other secret;
   - has outbound network access only.
 
