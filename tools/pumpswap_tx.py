@@ -142,7 +142,7 @@ class PoolState:
 def parse_pool_account(data: bytes) -> dict[str, Pubkey | int]:
     """Pool account layout: disc8, bump u8, index u16, creator, base_mint, quote_mint,
     lp_mint, pool_base_vault, pool_quote_vault (32 each), lp_supply u64, coin_creator."""
-    if len(data) < 211:
+    if len(data) < 243:  # coin_creator ends at byte 243; the old 211 guard let a short account panic in Pubkey.from_bytes
         raise ValueError("pool account too short")
     o = 11
     out: dict[str, Pubkey | int] = {"index": int.from_bytes(data[9:11], "little")}

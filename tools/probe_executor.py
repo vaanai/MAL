@@ -26,9 +26,13 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import os
+import re
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -48,6 +52,9 @@ SCHEMA_FILL = "probe_fill_v1"
 DEFAULT_BOOK = "exp012_migrate_tp50_sl30"
 DEFAULT_LEDGER = "ceiling"
 LAMPORTS = 1_000_000_000
+MAX_RPS = 2.0  # sustained, shared across every call (Helius plan is shared with the listener)
+MAX_READ_BYTES = 1 << 20  # per tail pass
+UNPRICED_GRACE_MS = 60_000  # retry window past the 30 min deadline before a forced close
 EXIT_RULE = next(r for r in EXIT_RULES if r.rule_id == "tp50_sl30")  # tp 0.50 / sl 0.30, same object the scorer uses
 DECISIONS_FILE = "decisions.jsonl"  # the ONLY runner file this module opens
 KEEP_FIELDS = ("mint", "decision_t_ms", "score", "trigger", "book")
@@ -76,14 +83,17 @@ class Limits:
     priority_lamports: int = DEC019_MAX["priority_lamports"]
     stop_file: str = "/var/lib/mal/live/STOP"
 
+    def __post_init__(self) -> None:
+        """Clamp to the DEC-019 maxima on EVERY construction path, and reject NaN/inf/non-positive."""
+        for key, cap in DEC019_MAX.items():
+            val = getattr(self, key)
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
+                raise ValueError(f"limit {key} must be a finite positive number")
+            object.__setattr__(self, key, min(val if key == "max_days" else int(val), cap))
+
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "Limits":
-        kw: dict[str, Any] = {}
-        for key, cap in DEC019_MAX.items():
-            if key in cfg and cfg[key] is not None:
-                kw[key] = min(type(cap)(cfg[key]) if key != "max_days" else float(cfg[key]), cap)
-                if kw[key] <= 0:
-                    raise ValueError(f"limit {key} must be positive")
+        kw: dict[str, Any] = {k: cfg[k] for k in DEC019_MAX if cfg.get(k) is not None}
         if cfg.get("stop_file"):
             kw["stop_file"] = str(cfg["stop_file"])
         return cls(**kw)
@@ -100,19 +110,130 @@ class State:
     offset: int = 0
     inode: int | None = None
     started: bool = False  # offset initialised (first run starts at end of file)
+    mode: str = MODE
 
     def save(self, path: Path) -> None:
+        """Atomic and durable (fsync file, rename, fsync dir). Called write-ahead of any attempt."""
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self.__dict__, separators=(",", ":")))
+        with tmp.open("w") as fh:
+            fh.write(json.dumps(self.__dict__, separators=(",", ":")))
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, path)
+        fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     @classmethod
-    def load(cls, path: Path) -> "State":
+    def load(cls, path: Path, mode: str = MODE) -> "State":
         if not path.exists():
-            return cls()
+            return cls(mode=mode)
         raw = json.loads(path.read_text())
-        return cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
+        st = cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
+        if st.mode != mode:
+            raise SystemExit(f"state file mode {st.mode!r} does not match run mode {mode!r}")
+        return st
+
+
+def state_path_for(state_dir: str | Path, mode: str) -> Path:
+    """One state file per mode: a dry run can never consume the live budget."""
+    return Path(state_dir) / f"state-{mode}.json"
+
+
+def guard_live_state(mode: str, state_path: Path, fill_log: Path) -> None:
+    """Live mode refuses to start when its state file is gone but the fill log shows live rows:
+    deleting the state file must not reset the limits. (Reconstruct by hand, or halt.)"""
+    if mode != "live" or state_path.exists() or not fill_log.exists():
+        return
+    with fill_log.open("rb") as fh:
+        for raw in fh:
+            if b'"mode":"live"' in raw:
+                raise SystemExit("live state file missing but the fill log has live rows: refusing to start")
+
+
+# --- rpc: rate limit, backoff, labelled errors (never carries a URL or message) ---------------
+
+
+class RpcError(Exception):
+    def __init__(self, label: str):
+        super().__init__(label)
+        self.label = label
+
+
+def error_label(exc: BaseException) -> str:
+    if isinstance(exc, RpcError):
+        return exc.label
+    text = str(exc)
+    if "429" in text:
+        return "rate_limited"
+    if "timed out" in text.lower() or isinstance(exc, TimeoutError):
+        return "timeout"
+    if re.search(r"\b5\d\d\b", text):
+        return "server_error"
+    return f"rpc_error:{type(exc).__name__}"
+
+
+class ProbeRpc:
+    """HTTP JSON-RPC with only a status-class label on failure. The URL never leaves this object."""
+
+    def __init__(self, url: str, timeout: float = 15.0):
+        self._url, self._timeout = url, timeout
+
+    def __call__(self, method: str, params: list) -> dict:
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+        req = urllib.request.Request(self._url, body, {"Content-Type": "application/json"})
+        try:
+            resp = json.load(urllib.request.urlopen(req, timeout=self._timeout))
+        except urllib.error.HTTPError as exc:
+            raise RpcError("rate_limited" if exc.code == 429 else "server_error" if exc.code >= 500 else f"http_{exc.code}") from None
+        except (TimeoutError, OSError) as exc:
+            raise RpcError("timeout" if "timed out" in str(exc).lower() or isinstance(exc, TimeoutError) else "network") from None
+        except ValueError:
+            raise RpcError("bad_json") from None
+        if "error" in resp:
+            code = resp["error"].get("code") if isinstance(resp["error"], dict) else None
+            raise RpcError(f"rpc_error_{code}")
+        return resp["result"]
+
+
+class LimitedRpc:
+    """Shared token bucket across ALL calls (default 2 rps sustained) plus exponential backoff
+    on rate_limited / server_error / timeout. Raises RpcError with the last label."""
+
+    RETRY = {"rate_limited", "server_error", "timeout"}
+
+    def __init__(self, rpc: Callable[[str, list], dict], rps: float = MAX_RPS, retries: int = 3,
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep):
+        if not (math.isfinite(rps) and rps > 0):
+            raise ValueError("rps must be finite and positive")
+        self.rpc, self.interval, self.retries, self.clock, self.sleep = rpc, 1.0 / min(rps, MAX_RPS), retries, clock, sleep
+        self._next = 0.0
+        self.calls = 0
+
+    def _wait(self) -> None:
+        now = self.clock()
+        if now < self._next:
+            self.sleep(self._next - now)
+            now = self._next
+        self._next = now + self.interval
+
+    def __call__(self, method: str, params: list) -> dict:
+        delay = 1.0
+        for attempt in range(self.retries + 1):
+            self._wait()
+            self.calls += 1
+            try:
+                return self.rpc(method, params)
+            except (Exception, SystemExit) as exc:  # label only; Ctrl-C and crashes still propagate
+                label = error_label(exc)
+                if label not in self.RETRY or attempt == self.retries:
+                    raise RpcError(label) from None
+                self.sleep(delay)
+                delay *= 2
+        raise RpcError("unreachable")
 
 
 def check_stop_file(limits: Limits) -> bool:
@@ -234,9 +355,11 @@ def tail_signals(path: Path, st: State, book: str, ledger: str = DEFAULT_LEDGER)
     out: list[dict[str, Any]] = []
     with path.open("rb") as fh:
         fh.seek(st.offset)
-        data = fh.read()
+        data = fh.read(MAX_READ_BYTES)
     end = data.rfind(b"\n")
     if end < 0:
+        if len(data) >= MAX_READ_BYTES:  # one line longer than the cap: skip it, never grow without bound
+            st.offset += len(data)
         return []
     for raw in data[: end + 1].splitlines():
         sig = parse_enter(raw.decode("utf-8", "replace"), book, ledger)
@@ -318,12 +441,12 @@ def sell_probe_message(snap: Snapshot, user: Pubkey, spend: int, slip_bps: int, 
 
 
 class FillLog:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, mode: str = MODE):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.path = path
+        self.path, self.mode = path, mode
 
     def write(self, row: dict[str, Any]) -> None:
-        row = {"schema": SCHEMA_FILL, "mode": MODE, **row}
+        row = {"schema": SCHEMA_FILL, "mode": self.mode, **row}
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, separators=(",", ":")) + "\n")
 
@@ -336,12 +459,17 @@ class Executor:
         self.limits = Limits.from_config(cfg)
         self.book = cfg.get("book", DEFAULT_BOOK)
         self.decisions = Path(cfg["signals_dir"]) / DECISIONS_FILE
-        self.state_path = Path(cfg["state_file"])
-        self.state = State.load(self.state_path)
-        self.fills = FillLog(Path(cfg["fill_log"]))
+        self.mode = cfg.get("mode", MODE)
+        self.state_path = state_path_for(cfg["state_dir"], self.mode)
+        guard_live_state(self.mode, self.state_path, Path(cfg["fill_log"]))
+        self.state = State.load(self.state_path, self.mode)
+        self.fills = FillLog(Path(cfg["fill_log"]), self.mode)
         self.user = Pubkey.from_string(cfg.get("user") or sim.DEFAULT_USER)  # public, read-only
         self.commitment = cfg.get("commitment", "confirmed")
-        self.slip_bps = int(round(float(cfg.get("slippage_cap", DEFAULT_SLIPPAGE_CAP)) * 10_000))
+        cap = float(cfg.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
+        if not math.isfinite(cap) or cap <= 0:
+            raise ValueError("slippage_cap must be finite and positive")
+        self.slip_bps = int(round(min(cap, DEFAULT_SLIPPAGE_CAP) * 10_000))  # config can lower, never raise
         self.max_signal_age_ms = int(float(cfg.get("max_signal_age_s", 120)) * 1000)
 
     # -- helpers
@@ -358,8 +486,8 @@ class Executor:
             return None, "", "bad_mint"
         try:
             snap = fetch_snapshot(self.rpc, pool, self.commitment, self.user)
-        except (SystemExit, Exception) as exc:  # Rpc raises SystemExit with a redacted message
-            return None, pool, f"rpc_error:{type(exc).__name__}"
+        except (Exception, SystemExit) as exc:  # label only; Ctrl-C and crashes still propagate
+            return None, pool, error_label(exc)
         if isinstance(snap, str):
             return None, pool, snap
         return snap, pool, None
@@ -390,17 +518,19 @@ class Executor:
         q = entry_quote(snap, spend)
         if q["tokens"] <= 0:
             return self._skip(sig, "zero_quote", pool=pool, pool_slot=snap.slot)
+        # Write-ahead: the attempt is counted and durably persisted BEFORE anything is built or
+        # simulated (PR-B: before send), so a crash can only over-count, never reset.
+        self.state.attempts += 1
+        if self.state.first_attempt_ms is None:
+            self.state.first_attempt_ms = now
+        self.save()
         msg = buy_probe_message(snap, self.user, spend, self.slip_bps, q["tokens"], self.limits.priority_lamports)
         t_built = self.now_ms()
         user_base = tx.ata(self.user, snap.ps.base_mint, snap.ps.base_token_program)
-        # The attempt counts once a buy is built, so limits are exercised in dry-run too.
-        self.state.attempts += 1
-        if self.state.first_attempt_ms is None:
-            self.state.first_attempt_ms = t_built
         try:
             res = sim_message(self.rpc, msg, self.user, [self.user, user_base])
-        except (SystemExit, Exception) as exc:
-            res = {"err": f"rpc_error:{type(exc).__name__}"}
+        except (Exception, SystemExit) as exc:  # label only; Ctrl-C and crashes still propagate
+            res = {"err": error_label(exc)}
         t_sim = self.now_ms()
         sim_tokens = None
         accts = res.get("accounts") or [None, None]
@@ -432,9 +562,11 @@ class Executor:
             snap, _pool, err = self._snapshot(mint)
             now = self.now_ms()
             if snap is None or snap.quote_priced is None:
-                if now - pos["t_entry_ms"] <= EXIT_RULE.max_hold_ms:
-                    continue  # no usable V this poll: never price on the vault alone; retry
-                chk = {"reason": "time_stop", "ret": None, "quote_out": None}
+                # No usable price (RPC error or no V): never price on the vault alone. Keep retrying
+                # through the deadline and a grace window; only then force a labelled close.
+                if now - pos["t_entry_ms"] <= EXIT_RULE.max_hold_ms + UNPRICED_GRACE_MS:
+                    continue
+                chk = {"reason": "timeout_unpriced", "ret": None, "quote_out": None}
             else:
                 chk = exit_check(pos, snap, now)
             if chk["reason"]:
@@ -452,8 +584,8 @@ class Executor:
             t_built = self.now_ms()
             try:
                 res = sim_message(self.rpc, msg, self.user, [self.user])
-            except (SystemExit, Exception) as exc:
-                res = {"err": f"rpc_error:{type(exc).__name__}"}
+            except (Exception, SystemExit) as exc:  # label only; Ctrl-C and crashes still propagate
+                res = {"err": error_label(exc)}
             row.update(t_built_ms=t_built, t_sim_ms=self.now_ms(), probe_sell_tokens=sell_tokens, probe_min_sol_out=min_out, **self._sim_summary(res))
             err = res.get("err")
         if chk["quote_out"] is not None:
@@ -462,10 +594,11 @@ class Executor:
             fees = 2 * self.limits.priority_lamports + 2 * tx.BASE_FEE_PER_SIGNATURE
             pnl = chk["quote_out"] - pos["spend"] - fees
         else:
-            pnl = -pos["spend"]  # nothing priceable at the time stop: worst case, stops stay conservative
+            pnl = None  # forced close with no price: labelled, and NOT booked into realized loss
         row.update(pnl_lamports=pnl, sell_probe_err=err)
         self._log("sell", mint, **row)
-        self.state.realized_lamports += pnl
+        if pnl is not None:
+            self.state.realized_lamports += pnl
         del self.state.open[mint]
         self.save()
 
@@ -488,9 +621,9 @@ def main(argv: list[str] | None = None) -> int:
     cfg = json.loads(Path(args.config).read_text())
     if cfg.get("mode", MODE) != MODE:
         raise SystemExit("only mode=dryrun exists in this build (live is PR-B)")
-    rpc = sim.Rpc(sim.load_rpc_url(None, args.env_file))
+    rpc = LimitedRpc(ProbeRpc(sim.load_rpc_url(None, args.env_file)), rps=float(cfg.get("rps", MAX_RPS)))
     ex = Executor(rpc, cfg)
-    poll_s = float(cfg.get("poll_s", 2.0))
+    poll_s = max(1.0, float(cfg.get("poll_s", 5.0)))
     print(f"probe_executor dryrun book={ex.book} limits={ex.limits}", flush=True)
     while True:
         ex.step()

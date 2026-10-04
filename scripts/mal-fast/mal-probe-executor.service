@@ -19,12 +19,17 @@ ExecStart=/var/lib/mal/fast-forward/venv/bin/python -m tools.probe_executor --co
 Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true
-# Hardening. Writes only /var/lib/mal/live. Reads the runner's decisions log (in the paper
+# Hardening. Writes only /var/lib/mal/live (must exist: mal-live, 0700, created at provisioning). Reads the runner's decisions log (in the paper
 # output dir) and nothing else of the runner: the other runner files are hidden (forward-read seal).
 ProtectSystem=strict
 ReadWritePaths=/var/lib/mal/live
-ReadOnlyPaths=/var/lib/mal/paper/fast-forward-paper /var/lib/mal/fast-forward
-InaccessiblePaths=-/var/lib/mal/paper/fast-forward-paper/positions.jsonl -/var/lib/mal/paper/fast-forward-paper/latency.jsonl -/var/lib/mal/paper/fast-forward-paper/runner-status.json /var/lib/mal/sealed
+ReadOnlyPaths=/var/lib/mal/fast-forward
+# Seal by WHITELIST (a denylist misses new runner files): the runner output dir is replaced by an
+# empty tmpfs and ONLY decisions.jsonl is bound back in, read-only. Verify once on host that the
+# bind survives the runner's daily restart (same inode, appended in place).
+TemporaryFileSystem=/var/lib/mal/paper/fast-forward-paper:ro
+BindReadOnlyPaths=-/var/lib/mal/paper/fast-forward-paper/decisions.jsonl
+InaccessiblePaths=/var/lib/mal/sealed
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true
@@ -32,6 +37,11 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
 MemoryMax=1G
 MemorySwapMax=0
 

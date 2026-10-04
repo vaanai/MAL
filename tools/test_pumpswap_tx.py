@@ -214,6 +214,13 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(str(p["base_vault"]), keys[7])
         self.assertEqual(str(p["quote_vault"]), keys[8])
 
+    def test_pool_parse_rejects_short_account(self):
+        raw = base64.b64decode(load("buy_exact_quote_in_a")["pool_account_b64"])
+        for n in (211, 242):
+            with self.assertRaises(ValueError):
+                t.parse_pool_account(raw[:n])
+        self.assertNotIn("virtual_quote_reserves", t.parse_pool_account(raw[:243]))
+
     def test_global_config_recipients_contain_real_ones(self):
         gc = json.loads((FIX / "global_config.json").read_text())
         g = t.parse_global_config(base64.b64decode(gc["data_b64"]))

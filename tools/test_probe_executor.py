@@ -65,7 +65,7 @@ class Clock:
 
 
 def make(tmp: Path, rpc=None, clock=None, **cfg):
-    conf = {"signals_dir": str(tmp / "sig"), "state_file": str(tmp / "state.json"), "fill_log": str(tmp / "fills.jsonl"),
+    conf = {"signals_dir": str(tmp / "sig"), "state_dir": str(tmp), "fill_log": str(tmp / "fills.jsonl"),
             "stop_file": str(tmp / "STOP"), **cfg}
     (tmp / "sig").mkdir(exist_ok=True)
     return pe.Executor(rpc or FakeRpc(), conf, now_ms=clock or Clock()), conf
@@ -348,6 +348,206 @@ class FillSchemaTests(unittest.TestCase):
         self.assertEqual((lim.size_lamports, lim.priority_lamports), (50_000_000, 500_000))
         self.assertEqual(cfg["book"], pe.DEFAULT_BOOK)
         self.assertNotIn("helius", json.dumps(cfg).lower())
+
+
+REPO = Path(__file__).parent.parent
+UNIT = (REPO / "scripts/mal-fast/mal-probe-executor.service").read_text()
+
+
+class RpcErrorProxy(Exception):
+    def __str__(self):
+        return "HTTP Error 429: too many requests"
+
+
+class SealUnitTests(unittest.TestCase):
+    def test_unit_whitelists_only_decisions_jsonl(self):
+        self.assertIn("TemporaryFileSystem=/var/lib/mal/paper/fast-forward-paper:ro", UNIT)
+        binds = re.findall(r"^BindReadOnlyPaths=(.*)$", UNIT, re.M)
+        self.assertEqual(len(binds), 1)
+        self.assertEqual(binds[0].strip(), "-/var/lib/mal/paper/fast-forward-paper/decisions.jsonl")
+        self.assertNotRegex(UNIT, r"(?m)^ReadWritePaths=.*paper")
+        self.assertNotRegex(UNIT, r"(?m)^ReadOnlyPaths=.*fast-forward-paper")
+
+    def test_code_references_no_other_runner_filename(self):
+        runner = (REPO / "tools/forward_paper.py").read_text()
+        names = set(re.findall(r"""["']([A-Za-z0-9_.-]+\.jsonl?)["']""", runner)) - {"decisions.jsonl"}
+        self.assertIn("positions.jsonl", names)  # the scan finds the files it should
+        src = Path(pe.__file__).read_text()
+        for n in names:
+            self.assertNotIn(n, src, n)
+            self.assertNotIn(n, UNIT, n)
+
+    def test_unit_hardening_present(self):
+        for k in ("NoNewPrivileges=true", "ProtectSystem=strict", "ReadWritePaths=/var/lib/mal/live", "MemoryMax=1G", "User=mal-live",
+                  "RestrictAddressFamilies=AF_INET AF_INET6", "CapabilityBoundingSet="):
+            self.assertIn(k, UNIT)
+
+
+class ClampTests(unittest.TestCase):
+    def test_direct_construction_is_clamped(self):
+        lim = pe.Limits(max_attempts=999, max_open=9, loss_cap_lamports=10**12, max_days=99, size_lamports=10**10, priority_lamports=10**9)
+        for k, cap in pe.DEC019_MAX.items():
+            self.assertEqual(getattr(lim, k), cap)
+
+    def test_nan_inf_and_bad_types_rejected(self):
+        for bad in (float("nan"), float("inf"), -1, 0, True, "5"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                pe.Limits(max_days=bad)
+        cfg = json.loads('{"max_days": NaN}')  # valid for Python's json
+        with self.assertRaises(ValueError):
+            pe.Limits.from_config(cfg)
+
+    def test_slippage_clamped_and_validated(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, _ = make(Path(d), slippage_cap=0.9)
+            self.assertEqual(ex.slip_bps, 1500)
+            ex, _ = make(Path(d), slippage_cap=0.05)
+            self.assertEqual(ex.slip_bps, 500)
+            with self.assertRaises(ValueError):
+                make(Path(d), slippage_cap=float("nan"))
+
+
+class ModeStateTests(unittest.TestCase):
+    def test_state_files_are_per_mode(self):
+        self.assertNotEqual(pe.state_path_for("/x", "dryrun"), pe.state_path_for("/x", "live"))
+
+    def test_mode_mismatch_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.json"
+            pe.State(mode="dryrun").save(p)
+            with self.assertRaises(SystemExit):
+                pe.State.load(p, "live")
+
+    def test_live_refuses_missing_state_with_live_fill_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            fl = Path(d) / "f.jsonl"
+            fl.write_text(json.dumps({"mode": "dryrun"}, separators=(",", ":")) + "\n")
+            pe.guard_live_state("live", Path(d) / "state-live.json", fl)  # dry rows only: ok
+            fl.write_text(json.dumps({"mode": "live"}, separators=(",", ":")) + "\n")
+            with self.assertRaises(SystemExit):
+                pe.guard_live_state("live", Path(d) / "state-live.json", fl)
+            pe.guard_live_state("dryrun", Path(d) / "state-dryrun.json", fl)  # dry run unaffected
+
+    def test_dryrun_state_not_shared(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, _ = make(Path(d))
+            ex.handle_signal(sig(ex))
+            self.assertTrue((Path(d) / "state-dryrun.json").exists())
+            self.assertFalse((Path(d) / "state-live.json").exists())
+
+    def test_attempt_is_written_ahead(self):
+        with tempfile.TemporaryDirectory() as d:
+            class Boom(FakeRpc):
+                def __call__(self, method, params):
+                    if method == "simulateTransaction":
+                        raise KeyboardInterrupt  # crash mid-simulation
+                    return super().__call__(method, params)
+            ex, _ = make(Path(d), rpc=Boom())
+            with self.assertRaises(KeyboardInterrupt):
+                ex.handle_signal(sig(ex))
+            self.assertEqual(pe.State.load(Path(d) / "state-dryrun.json").attempts, 1)
+
+
+class UnpricedCloseTests(unittest.TestCase):
+    def _open(self, d):
+        rpc = FakeRpc()
+        clock = Clock()
+        ex, conf = make(Path(d), rpc=rpc, clock=clock)
+        ex.handle_signal(sig(ex))
+        return ex, conf, clock, ex.state.open[MINT]["t_entry_ms"]
+
+    @staticmethod
+    def _fail(m, p):
+        raise RpcErrorProxy()
+
+    def test_rpc_failure_past_deadline_retries_within_grace(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf, clock, entry = self._open(d)
+            ex.rpc = self._fail
+            clock.t = entry + pe.MAX_HOLD_MS + 1000
+            ex.poll_positions()
+            self.assertIn(MINT, ex.state.open)  # still open: retry, no loss booked
+            self.assertEqual(ex.state.realized_lamports, 0)
+
+    def test_forced_close_is_labelled_and_not_booked(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf, clock, entry = self._open(d)
+            ex.rpc = self._fail
+            clock.t = entry + pe.MAX_HOLD_MS + pe.UNPRICED_GRACE_MS + 1
+            ex.poll_positions()
+            sell = fills(conf)[-1]
+            self.assertEqual(sell["exit_reason"], "timeout_unpriced")
+            self.assertIsNone(sell["pnl_lamports"])
+            self.assertEqual(ex.state.realized_lamports, 0)
+            self.assertEqual(ex.state.open, {})
+
+
+class RpcLimiterTests(unittest.TestCase):
+    def test_label_classification(self):
+        self.assertEqual(pe.error_label(RpcErrorProxy()), "rate_limited")
+        self.assertEqual(pe.error_label(SystemExit("rpc x failed: TimeoutError: timed out")), "timeout")
+        self.assertEqual(pe.error_label(SystemExit("rpc x failed: HTTPError: HTTP Error 503")), "server_error")
+        self.assertEqual(pe.error_label(pe.RpcError("rate_limited")), "rate_limited")
+
+    def test_token_bucket_caps_to_2rps(self):
+        t = [0.0]
+
+        def sleep(x):
+            t[0] += x
+        lim = pe.LimitedRpc(lambda m, p: {}, rps=100, clock=lambda: t[0], sleep=sleep)  # asked 100, capped to 2
+        for _ in range(11):
+            lim("m", [])
+        self.assertGreaterEqual(t[0], 5.0 - 1e-9)  # 11 calls at 2 rps take >= 5 s
+
+    def test_backoff_then_success_and_final_label(self):
+        t = [0.0]
+
+        def sleep(x):
+            t[0] += x
+        n = {"i": 0}
+
+        def flaky(m, p):
+            n["i"] += 1
+            if n["i"] < 3:
+                raise RpcErrorProxy()
+            return {"ok": 1}
+        lim = pe.LimitedRpc(flaky, clock=lambda: t[0], sleep=sleep)
+        self.assertEqual(lim("m", []), {"ok": 1})
+        self.assertGreaterEqual(t[0], 3.0)  # 1 s then 2 s backoff
+
+        def always(m, p):
+            raise RpcErrorProxy()
+        lim2 = pe.LimitedRpc(always, retries=1, clock=lambda: t[0], sleep=sleep)
+        with self.assertRaises(pe.RpcError) as cm:
+            lim2("m", [])
+        self.assertEqual(cm.exception.label, "rate_limited")
+
+    def test_url_never_in_errors_or_log(self):
+        def leaky(m, p):
+            raise SystemExit("rpc x failed: https://h/?api-key=SECRET123 HTTP Error 429")
+        lim = pe.LimitedRpc(leaky, retries=0, clock=lambda: 0.0, sleep=lambda x: None)
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf = make(Path(d), rpc=lim)
+            ex.handle_signal(sig(ex))
+            blob = Path(conf["fill_log"]).read_text()
+            self.assertNotIn("SECRET123", blob)
+            self.assertNotIn("api-key", blob)
+            self.assertEqual(json.loads(blob.splitlines()[0])["reason"], "rate_limited")
+
+    def test_tail_read_is_bounded(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "decisions.jsonl"
+            p.write_text("")
+            st = pe.State()
+            pe.tail_signals(p, st, pe.DEFAULT_BOOK)
+            row = enter_row()
+            total = pe.MAX_READ_BYTES // len(row) + 50
+            p.write_text(row * total)
+            first = pe.tail_signals(p, st, pe.DEFAULT_BOOK)
+            self.assertLess(st.offset, p.stat().st_size)  # one pass did not consume everything
+            self.assertLessEqual(st.offset, pe.MAX_READ_BYTES)
+            second = pe.tail_signals(p, st, pe.DEFAULT_BOOK)
+            self.assertEqual(len(first) + len(second), total)
 
 
 if __name__ == "__main__":

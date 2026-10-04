@@ -30,7 +30,7 @@ EXP-012's edge rests on execution: its selected entries filled 98.9% of the time
 
 | Limit | Value |
 | --- | --- |
-| Signals | EXP-012 decisions from the fast-0 paper runner only (shadow-ledger `enter`) |
+| Signals | EXP-012 decisions from the fast-0 paper runner only (**ceiling**-ledger `enter`; manager decision 2026-10-04, replacing "shadow": the ceiling ledger already applies max_concurrent=3, so paper ceiling and probe positions align) |
 | Venue | PumpSwap only (the migrate-direct route EXP-012 uses) |
 | Size | **0.05 SOL** per entry (one tenth of trial size) |
 | Priority | 500,000 lamports per side (the trial term; landing depends on the absolute fee) |
