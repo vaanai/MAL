@@ -152,6 +152,12 @@ def parse_pool_account(data: bytes) -> dict[str, Pubkey | int]:
     out["lp_supply"] = int.from_bytes(data[o : o + 8], "little")
     o += 8
     out["coin_creator"] = Pubkey.from_bytes(data[o : o + 32])
+    o += 32
+    # Tail: two flag bytes, then a u64 that is ~17.58 SOL (17.58e9 lamports) on every pool seen.
+    # The sim-vs-paper decomposition shows the swap math adds it to the quote reserve.
+    if len(data) >= o + 10:
+        out["flags"] = data[o : o + 2].hex()
+        out["virtual_quote_reserves"] = int.from_bytes(data[o + 2 : o + 10], "little")
     return out
 
 
