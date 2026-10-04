@@ -52,6 +52,7 @@ HB_TIMER="mal-fast-runner-heartbeat.timer"
 HB_DIR="${MAL_ROOT}/fast-forward-heartbeat"
 TIP_UNIT="mal-fast-tip-follower.service"
 TIP_OUT="${MAL_ROOT}/sealed/fast-trades-tip"
+TIP_CREATES="${MAL_ROOT}/sealed/fast-creates-tip"
 TIP_STATE="${MAL_ROOT}/fast-tip-follower"
 TIP_LOG="${MAL_ROOT}/logs/fast-tip-follower.log"
 LOGFILE="${MAL_ROOT}/logs/fast-forward-paper.log"
@@ -167,7 +168,7 @@ if [[ "${DRY}" == 1 || ! -e "${LOGFILE}" ]]; then
 fi
 run sudo -n install -d "${OWN_ARGS[@]}" -m 0755 "${HB_DIR}"
 # getBlock tip follower (DEC-015 2.2): dirs and log only. The unit is never enabled here.
-run sudo -n install -d "${OWN_ARGS[@]}" -m 0755 "${TIP_OUT}" "${TIP_STATE}"
+run sudo -n install -d "${OWN_ARGS[@]}" -m 0755 "${TIP_OUT}" "${TIP_CREATES}" "${TIP_STATE}"
 if [[ "${DRY}" == 1 || ! -e "${TIP_LOG}" ]]; then
   run sudo -n install -m 0644 "${OWN_ARGS[@]}" /dev/null "${TIP_LOG}"
 fi

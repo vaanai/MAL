@@ -23,7 +23,7 @@ def _line(name: str) -> str:
     return blob if blob.startswith("Program data") else "Program data: " + blob
 
 
-def _block(slot: int, n: int = 1) -> dict:
+def _block(slot: int, n: int = 1, parent: int | None = None) -> dict:
     txs = [
         {
             "meta": {"err": None, "logMessages": [_line("pump_trade_event.b64")]},
@@ -31,7 +31,7 @@ def _block(slot: int, n: int = 1) -> dict:
         }
         for i in range(n)
     ]
-    return {"slot": slot, "blockTime": BLOCK_TIME, "parentSlot": slot - 1, "transactions": txs}
+    return {"slot": slot, "blockTime": BLOCK_TIME, "parentSlot": slot - 1 if parent is None else parent, "transactions": txs}
 
 
 class Clock:
@@ -67,7 +67,10 @@ class Rpc:
             return item, None
         if slot in self.skipped:
             return None, -32007
-        return _block(slot), None
+        parent = slot - 1
+        while parent in self.skipped:
+            parent -= 1
+        return _block(slot, parent=parent), None
 
 
 def _follower(tmp_path, rpc, clock=None, **kw):
@@ -75,6 +78,7 @@ def _follower(tmp_path, rpc, clock=None, **kw):
     kw.setdefault("log", lambda m: None)
     return TipFollower(
         out_dir=tmp_path / "out",
+        creates_dir=tmp_path / "creates",
         state_dir=tmp_path / "state",
         fetch=rpc.fetch,
         get_tip=rpc.get_tip,
@@ -204,6 +208,7 @@ def test_rows_schema_identical_to_walker(tmp_path):
     assert isinstance(g.pop("t_recv_ms"), int)
     w = dict(want[0])
     assert w.pop("t_recv_ms") is None
+    assert (g.pop("source"), w.pop("source")) == ("tip", "backfill")
     assert g == w
     assert list(got[0].keys()) == list(want[0].keys())
 
@@ -259,7 +264,9 @@ def test_retention(tmp_path):
     out = tmp_path / "out"
     for name in ("trades-2026-10-01T05.jsonl", "creates-2026-10-05T13.jsonl", "trades-2026-10-06T11.jsonl", "gaps.jsonl"):
         (out / name).write_text("x")
-    assert f.retain(2) == 1
+    (tmp_path / "creates" / "observe-2026-10-01.jsonl").write_text("x")
+    (tmp_path / "creates" / "observe-2026-10-05.jsonl").write_text("x")
+    assert f.retain(2) == 2
     assert not (out / "trades-2026-10-01T05.jsonl").exists()
     assert (out / "creates-2026-10-05T13.jsonl").exists() and (out / "gaps.jsonl").exists()
 
@@ -322,3 +329,247 @@ def test_run_loop_stops(tmp_path):
     f.step = step
     f.run(stop)
     assert (tmp_path / "state" / "status.json").is_file()
+
+
+def _create_log() -> str:
+    import base64
+
+    from tools.pump_history_backfill import _CREATE_DISC
+
+    def s(t: str) -> bytes:
+        b = t.encode()
+        return len(b).to_bytes(4, "little") + b
+
+    mint, user, creator = bytes([1] * 32), bytes([2] * 32), bytes([3] * 32)
+    raw = (
+        _CREATE_DISC + s("Name") + s("SYM") + s("uri") + mint + bytes([9] * 32) + user + creator
+        + (1_790_318_900).to_bytes(8, "little", signed=True)
+        + (1_073_000_000_000_000).to_bytes(8, "little")  # vtok
+        + (30_000_000_000).to_bytes(8, "little")  # vsol
+        + (793_000_000_000_000).to_bytes(8, "little")
+        + (1_000_000_000_000_000).to_bytes(8, "little")
+    )
+    return "Program data: " + base64.b64encode(raw).decode()
+
+
+def _create_block(slot: int) -> dict:
+    blk = _block(slot)
+    blk["transactions"][0]["meta"]["logMessages"] = [_create_log()]
+    return blk
+
+
+def test_precreate_next_hour_and_day(tmp_path):
+    h23 = int(datetime(2026, 10, 6, 23, 59, 56, tzinfo=timezone.utc).timestamp() * 1000)
+    f = _follower(tmp_path, Rpc(tip=1), lambda: h23)
+    f.precreate(h23)
+    out, cr = tmp_path / "out", tmp_path / "creates"
+    for n in ("trades-2026-10-06T23.jsonl", "trades-2026-10-07T00.jsonl", "migrations-2026-10-07T00.jsonl"):
+        assert (out / n).is_file() and (out / n).stat().st_size == 0, n
+    assert (cr / "observe-2026-10-06.jsonl").is_file() and (cr / "observe-2026-10-07.jsonl").is_file()
+    mid = int(datetime(2026, 10, 6, 10, 30, tzinfo=timezone.utc).timestamp() * 1000)
+    f.precreate(mid)
+    assert not (out / "trades-2026-10-06T11.jsonl").exists()
+
+
+def test_first_block_of_hour_lands_in_precreated_file(tmp_path):
+    t = int(datetime(2026, 10, 6, 10, 59, 57, tzinfo=timezone.utc).timestamp() * 1000)
+    f = _follower(tmp_path, Rpc(tip=1), lambda: t)
+    f.precreate(t)
+    nxt = tmp_path / "out" / "trades-2026-10-06T11.jsonl"
+    assert nxt.is_file() and nxt.stat().st_size == 0  # exists before any row, so a tail starts at 0
+    f2 = _follower(tmp_path, Rpc(tip=5), lambda: t + 4000)
+    f2.last_done = 4
+    f2.step()
+    assert nxt.stat().st_size > 0
+
+
+def test_backlog_jump_records_range_and_never_stamps_old_blocks(tmp_path):
+    rpc = Rpc(tip=1000)
+    f = _follower(tmp_path, rpc, backlog_slots=50)
+    _seed(f, 100)
+    f.step()
+    gaps = _rows(tmp_path / "out" / "gaps.jsonl")
+    jump = [g for g in gaps if g.get("reason") == "backlog_jump"]
+    assert len(jump) == 1 and (jump[0]["from_slot"], jump[0]["to_slot"]) == (101, 999)
+    assert rpc.calls == [1000]  # only the tip was fetched
+    assert f.gaps == 899 and f.backlog_jumps == 1 and f.last_done == 1000
+
+
+def test_small_lag_is_caught_up_not_jumped(tmp_path):
+    rpc = Rpc(tip=140)
+    f = _follower(tmp_path, rpc, backlog_slots=50)
+    _seed(f, 100)
+    while f.step():
+        pass
+    assert f.backlog_jumps == 0 and rpc.calls == list(range(101, 141))
+
+
+def test_lookup_failure_counted_and_logged_per_slot(tmp_path):
+    blk = _block(5)
+    blk["transactions"][0]["meta"]["logMessages"] = [_line("pumpswap_sell_event.b64")]
+
+    def bad(pools):
+        raise RuntimeError("net")
+
+    f = _follower(tmp_path, Rpc(tip=5, script={5: [blk]}), lookup=bad)
+    _seed(f, 4)
+    f.step()
+    assert f.unresolved_dropped == 1 and f.lookup_failures == 1
+    gaps = _rows(tmp_path / "out" / "gaps.jsonl")
+    assert [(g["slot"], g["kind"], g["n"]) for g in gaps] == [(5, "unresolved_dropped", 1)]
+    assert _all(tmp_path) == []
+
+
+def test_lookup_goes_through_limiter_and_budget(monkeypatch):
+    calls = []
+
+    def fake(url, method, params, limiter, timeout=60.0, budget=None, header_out=None):
+        calls.append((method, limiter is not None, budget is not None))
+        return {"value": [None]}, 0, None
+
+    monkeypatch.setattr(ftf, "rpc_call", fake)
+    _f, _t, _credits, lookup = ftf.make_rpc("https://example.invalid/?api-key=K", 1000.0)
+    assert lookup(["PoolA"]) == {}
+    assert calls == [("getMultipleAccounts", True, True)]
+
+
+def test_credits_per_call_is_a_flag(monkeypatch):
+    seen = []
+    real = ftf.CreditBudget
+
+    def spy(cap, per_call, used=0):
+        seen.append(per_call)
+        return real(cap, per_call, used)
+
+    monkeypatch.setattr(ftf, "CreditBudget", spy)
+    ftf.make_rpc("https://example.invalid/?api-key=K", 10.0)
+    ftf.make_rpc("https://example.invalid/?api-key=K", 10.0, credits_per_call=10)
+    assert seen == [1, 10]
+
+
+def test_observe_create_row_feeds_runner_reader(tmp_path):
+    from tools.paper_price_path import create_from_observe_row
+
+    f = _follower(tmp_path, Rpc(tip=7, script={7: [_create_block(7)]}))
+    _seed(f, 6)
+    f.step()
+    day_files = list((tmp_path / "creates").glob("observe-*.jsonl"))
+    rows = [r for p in day_files for r in _rows(p)]
+    assert len(rows) == 1
+    row = rows[0]
+    for k in ("event_ts", "block_time", "initialBuy", "solAmount"):
+        assert k not in row
+    assert row["stream"] == "subscribeNewToken" and row["txType"] == "create"
+    assert row["t_ws"].endswith("+00:00") and "." in row["t_ws"]
+    sig = create_from_observe_row(row)
+    assert sig is not None
+    assert sig.mint == row["mint"] and sig.creator == row["traderPublicKey"]
+    assert sig.t_signal_ms == f.last_t_recv_ms
+    assert sig.v_sol == 30.0 and sig.v_token_ui == 1_073_000_000.0
+    assert sig.initial_buy_ui is None and sig.sol_amount is None
+    assert day_files[0].name == "observe-" + hour_of_ms(f.last_t_recv_ms)[:10] + ".jsonl"
+
+
+def test_idle_backoff_on_tip_failures(tmp_path):
+    waits = []
+
+    class Stop(threading.Event):
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            if len(waits) >= 9:
+                self.set()
+            return self.is_set()
+
+    def tip():
+        raise TransientError("getSlot transport")
+
+    f = _follower(tmp_path, Rpc(tip=1))
+    f.get_tip = tip
+    f.run(Stop())
+    assert waits[:6] == [0.4, 0.8, 1.6, 3.2, 6.4, 12.8]
+    assert max(waits) <= 30.0 and waits[6:8] == [25.6, 30.0]
+
+
+def test_tip_breaker_pauses_on_repeated_429(tmp_path):
+    waits = []
+
+    class Stop(threading.Event):
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            if len(waits) >= 4:
+                self.set()
+            return self.is_set()
+
+    def tip():
+        raise TransientError("getSlot gave up after 429")
+
+    f = _follower(tmp_path, Rpc(tip=1), breaker_after=2, breaker_pause_s=60.0)
+    f.get_tip = tip
+    f.run(Stop())
+    assert f.breaker_trips >= 1 and 60.0 in waits
+
+
+def test_fetch_breaker_pauses_on_repeated_429(tmp_path):
+    sleeps = []
+    state = {"n": 6}
+
+    def fetch(slot):
+        if state["n"] > 0:
+            state["n"] -= 1
+            raise TransientError("getBlock http 429")
+        return _block(slot, parent=slot - 1), None
+
+    f = _follower(tmp_path, Rpc(tip=10), breaker_after=3, breaker_pause_s=60.0, sleep=sleeps.append)
+    f.fetch = fetch
+    _seed(f, 9)
+    f.step()
+    assert f.breaker_trips == 2 and sleeps.count(60.0) == 2 and f.gaps == 0
+
+
+def test_skip_contradicted_by_parent_becomes_gap_and_is_refetched(tmp_path):
+    # 103 reports skipped, but block 104 has parentSlot 103: the skip was wrong.
+    rpc = Rpc(tip=104, script={103: [-32007, -32007, _block(103, parent=102)]})
+    f = _follower(tmp_path, rpc, skip_rechecks=1)
+    _seed(f, 102)
+    f.step()
+    gaps = _rows(tmp_path / "out" / "gaps.jsonl")
+    assert [g["reason"] for g in gaps] == ["skip_contradicted"]
+    assert f.skipped == 0
+    assert [r["slot"] for r in _all(tmp_path)] == [103, 104]  # refetched block is written before 104
+
+
+def test_confirmed_skip_stays_a_skip(tmp_path):
+    rpc = Rpc(tip=105, skipped={103, 104})
+    f = _follower(tmp_path, rpc)
+    _seed(f, 102)
+    f.step()
+    assert f.skipped == 2 and f.gaps == 0
+
+
+def test_pool_cache_is_lru_capped():
+    c = ftf.LRUPools(3)
+    for i in range(5):
+        c[f"p{i}"] = ("b", "q")
+    assert list(c) == ["p2", "p3", "p4"]
+    c.get("p2")
+    c["p5"] = ("b", "q")
+    assert "p2" in c and "p3" not in c
+    c.update({"p6": ("b", "q")})
+    assert len(c) == 3
+
+
+def test_getblock_version_matches_walker(monkeypatch):
+    seen = {}
+
+    def fake(url, method, params, *a, **k):
+        seen["p"] = params
+        return None, 0, -32007
+
+    monkeypatch.setattr(ftf, "rpc_call", fake)
+    fetch, *_ = ftf.make_rpc("https://example.invalid/?api-key=K", 10.0)
+    fetch(5)
+    from tools.pump_history_backfill import _getblock_params
+
+    walker = _getblock_params(5, full=True)[1]
+    assert seen["p"][1]["maxSupportedTransactionVersion"] == walker["maxSupportedTransactionVersion"] == 1
+    assert seen["p"][1]["transactionDetails"] == "full"

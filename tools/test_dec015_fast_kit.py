@@ -129,8 +129,13 @@ def test_tip_follower_unit_and_installer():
     assert re.search(r"^EnvironmentFile=/var/lib/mal/fast-listener/helius\.env$", unit, re.M)
     for line in ("ProtectSystem=strict", "NoNewPrivileges=true", "ProtectHome=true", "PrivateTmp=true",
                  "ProtectKernelTunables=true", "ProtectKernelModules=true", "ProtectControlGroups=true",
-                 "RestrictSUIDSGID=true", "LockPersonality=true", "MemorySwapMax=0"):
+                 "RestrictSUIDSGID=true", "LockPersonality=true", "MemorySwapMax=0",
+                 "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX", "CapabilityBoundingSet=",
+                 "PrivateDevices=true", "ProtectKernelLogs=true", "ProtectClock=true",
+                 "SystemCallFilter=@system-service", "UMask=0077", "RestartSec=30", "StartLimitBurst=5"):
         assert re.search(rf"^{re.escape(line)}$", unit, re.M), line
+    assert "--creates-out /var/lib/mal/sealed/fast-creates-tip" in unit
+    assert "--max-keep-days 3" in unit
     assert "-m tools.fast_tip_follower" in unit
     assert "api-key" not in unit.lower() and "HELIUS_API_KEY=" not in unit
     inst = (KIT / "install-fast-forward-paper.sh").read_text()
