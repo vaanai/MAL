@@ -178,11 +178,12 @@ This is fixed before any runner row exists and before any forward P&L is opened 
 
 **Context.** PR #280 and PR #281 show that PumpSwap swaps price on quote vault + V, where V is the pool's virtual quote reserve, and that the frozen paper path prices on the vault alone.
 - At migration, vault + V reproduces the bonding curve's final price (ratio 0.9998). The vault alone is 20.7% low.
-- On the spent read block (correction analysis, not a new read), V-correction lowered the flat mean from 0.03487 to 0.02527 SOL per trade. The gate's flat CI90 lower bound fell from 0.01875 to 0.00928 SOL.
+- On the spent read block (correction analysis, not a new read), V-correction lowered the flat mean from 0.03486 to 0.02526 SOL per trade. The gate's flat CI90 lower bound fell from 0.01874 to 0.00928 SOL.
 
 1. **Two books, one FINAL run.** The FINAL read at about 2026-10-16T02Z computes two books in the same run:
    - **(A)** the pre-registered book, unchanged (frozen pricing). Its verdict is recorded as the EXP-012 FINAL verdict.
    - **(B)** the V-corrected book: the same entered set, asserted identical mint by mint, re-priced by `tools/pumpswap_virtual_adapter.py` with `mcap_mode="v"`. The adapter commit is recorded here before 2026-10-16T00Z.
+     **Recorded 2026-10-04:** adapter `tools/pumpswap_virtual_adapter.py` at commit `bbcaeb64b347d4b4f8063ead802994d23eb35009` (in main since #281), and driver `tools/exp012_virtual_rescore.py` at main `0a3020c` (#284: every pool per mint, for §3). r2 (driver at `79b34c2`, before #284) reproduced r1's gate numbers exactly (`ARTIFACTS/lab/exp012-virtual-rescore-r2-2026-10-04.md`). r2 did not run the #284 driver.
 
    The unpatched pass must reproduce (A)'s `flat` and `press` byte for byte before (B) is read.
 2. **Live support requires (B).** Amendment 1 §5 and Amendment 3 (a) are evaluated on (B), not (A):
