@@ -19,10 +19,10 @@ ExecStart=/var/lib/mal/fast-forward/venv/bin/python -m tools.probe_executor --co
 Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true
-# Hardening. Writes only /var/lib/mal/live (must exist: mal-live, 0700, created at provisioning). Reads the runner's decisions log (in the paper
+# Hardening. Writes only /var/lib/mal-live (must exist: mal-live, 0700, created at provisioning). Reads the runner's decisions log (in the paper
 # output dir) and nothing else of the runner: the other runner files are hidden (forward-read seal).
 ProtectSystem=strict
-ReadWritePaths=/var/lib/mal/live
+ReadWritePaths=/var/lib/mal-live
 ReadOnlyPaths=/var/lib/mal/fast-forward
 # Seal by WHITELIST (a denylist misses new runner files): the runner output dir is replaced by an
 # empty tmpfs and ONLY decisions.jsonl is bound back in, read-only. Verify once on host that the

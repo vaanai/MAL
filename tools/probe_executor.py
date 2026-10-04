@@ -1,11 +1,11 @@
-"""DEC-019 execution probe, PR-A: KEYLESS DRY-RUN executor.
+"""DEC-019 execution probe: KEYLESS DRY-RUN executor (live mode is tools/probe_live.py).
 
 Follows the fast-0 paper runner's EXP-012 `enter` decisions, builds the exact PumpSwap buy the
 probe would send (0.05 SOL, 500k lamports priority, DEFAULT_SLIPPAGE_CAP), runs
 simulateTransaction (sigVerify off) against the live chain, tracks a virtual position with the
 paper exit rule (tp50/sl30/30-minute cap), and logs every attempt to an append-only JSONL.
 
-There is no signing, no sending and no key loading in this module (live mode is PR-B). The fee
+There is no signing, no sending and no key loading in this module (live mode is tools/probe_live.py). The fee
 payer in simulation is a public funded address (pumpswap_simulate.DEFAULT_USER), never a key we hold.
 
 FORWARD-READ SEAL (DEC-016 Am.2/Am.3): the only runner file read is the decisions log, and only
@@ -81,7 +81,8 @@ class Limits:
     max_days: float = DEC019_MAX["max_days"]
     size_lamports: int = DEC019_MAX["size_lamports"]
     priority_lamports: int = DEC019_MAX["priority_lamports"]
-    stop_file: str = "/var/lib/mal/live/STOP"
+    stop_file: str = "/var/lib/mal-live/STOP"  # no new buys; exits and in-flight sells continue
+    halt_file: str = "/var/lib/mal-live/HALT"  # freezes everything: no buys, no sells, no rebroadcasts
 
     def __post_init__(self) -> None:
         """Clamp to the DEC-019 maxima on EVERY construction path, and reject NaN/inf/non-positive."""
@@ -96,6 +97,8 @@ class Limits:
         kw: dict[str, Any] = {k: cfg[k] for k in DEC019_MAX if cfg.get(k) is not None}
         if cfg.get("stop_file"):
             kw["stop_file"] = str(cfg["stop_file"])
+        if cfg.get("halt_file"):
+            kw["halt_file"] = str(cfg["halt_file"])
         return cls(**kw)
 
 
@@ -112,6 +115,9 @@ class State:
     started: bool = False  # offset initialised (first run starts at end of file)
     mode: str = MODE
     would_halt: dict[str, int] = field(default_factory=dict)  # dry run: budget stops that live would have hit
+    pending: dict[str, dict[str, Any]] = field(default_factory=dict)  # live: in-flight signed txs by mint (buy or sell)
+    bought: list[str] = field(default_factory=list)  # live: every mint ever attempted; never re-bought (<= 30 entries)
+    max_seen_ms: int = 0  # live: highest clock reading seen; a clock stepping back fails closed
 
     def save(self, path: Path) -> None:
         """Atomic and durable (fsync file, rename, fsync dir). Called write-ahead of any attempt."""
@@ -207,10 +213,11 @@ class LimitedRpc:
     RETRY = {"rate_limited", "server_error", "timeout"}
 
     def __init__(self, rpc: Callable[[str, list], dict], rps: float = MAX_RPS, retries: int = 3,
-                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep):
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
+                 max_rps: float = MAX_RPS):
         if not (math.isfinite(rps) and rps > 0):
             raise ValueError("rps must be finite and positive")
-        self.rpc, self.interval, self.retries, self.clock, self.sleep = rpc, 1.0 / min(rps, MAX_RPS), retries, clock, sleep
+        self.rpc, self.interval, self.retries, self.clock, self.sleep = rpc, 1.0 / min(rps, max_rps), retries, clock, sleep
         self._next = 0.0
         self.calls = 0
 
@@ -241,6 +248,10 @@ def check_stop_file(limits: Limits) -> bool:
     return Path(limits.stop_file).exists()
 
 
+def check_halt_file(limits: Limits) -> bool:
+    return Path(limits.halt_file).exists()
+
+
 def soft_stops(limits: Limits, st: State, now_ms: int) -> list[str]:
     """The budget stops (attempts, realized loss, days). Live halts on these; dry run only records them."""
     out = []
@@ -253,10 +264,13 @@ def soft_stops(limits: Limits, st: State, now_ms: int) -> list[str]:
     return out
 
 
-def check_buy(limits: Limits, st: State, now_ms: int, stop_file_present: bool, mode: str = "live") -> str | None:
+def check_buy(limits: Limits, st: State, now_ms: int, stop_file_present: bool, mode: str = "live",
+              halt_file_present: bool = False) -> str | None:
     """None when a new buy attempt is allowed, else the stop reason. Order is fixed. The default
     mode is the strict one. In mode "dryrun" the three budget stops do not halt (the dry run costs
     nothing and its rows are the dataset); max_open and the stop file still do."""
+    if halt_file_present:
+        return "halt_file"
     if stop_file_present:
         return "stop_file"
     if mode != MODE:
@@ -268,10 +282,10 @@ def check_buy(limits: Limits, st: State, now_ms: int, stop_file_present: bool, m
     return None
 
 
-def check_sell(stop_file_present: bool) -> str | None:
-    """The stop file is the kill switch and halts every action. The automatic stops
-    (attempts, loss, days) halt new buys only: an open position is still wound down."""
-    return "stop_file" if stop_file_present else None
+def check_sell(halt_file_present: bool) -> str | None:
+    """Only the HALT file freezes sells. The STOP file and the automatic stops (attempts, loss,
+    days) halt new buys only: an open position is still wound down, so nothing strands."""
+    return "halt_file" if halt_file_present else None
 
 
 # --- pricing (V-corrected, mirrors the paper scorer) -----------------------------------------
@@ -422,8 +436,9 @@ def sim_message(rpc: Callable, msg: Message, user: Pubkey, watch: list[Pubkey]) 
     return sim.simulate(rpc, msg, user, watch)
 
 
-def buy_probe_message(snap: Snapshot, user: Pubkey, spend: int, slip_bps: int, expected: int, priority: int) -> Message:
-    return tx.build_buy(snap.ps, user, spend, slip_bps, expected, priority_total_lamports=priority)
+def buy_probe_message(snap: Snapshot, user: Pubkey, spend: int, slip_bps: int, expected: int, priority: int,
+                      blockhash: Hash | None = None) -> Message:
+    return tx.build_buy(snap.ps, user, spend, slip_bps, expected, priority_total_lamports=priority, blockhash=blockhash)
 
 
 def sell_probe_message(snap: Snapshot, user: Pubkey, spend: int, slip_bps: int, priority: int) -> tuple[Message, int, int]:
@@ -494,7 +509,7 @@ class Executor:
 
     def _snapshot(self, mint: str) -> tuple[Snapshot | None, str, str | None]:
         try:
-            pool = str(tx.pool_v2(Pubkey.from_string(mint)))
+            pool = str(tx.canonical_pool(Pubkey.from_string(mint)))
         except ValueError:
             return None, "", "bad_mint"
         try:
@@ -503,6 +518,8 @@ class Executor:
             return None, pool, error_label(exc)
         if isinstance(snap, str):
             return None, pool, snap
+        if str(snap.ps.base_mint) != mint or snap.ps.quote_mint != tx.WSOL_MINT:
+            return None, pool, "no_canonical_pool"
         return snap, pool, None
 
     @staticmethod
@@ -515,7 +532,7 @@ class Executor:
     # -- entry
     def handle_signal(self, sig: dict[str, Any]) -> None:
         now = self.now_ms()
-        why = check_buy(self.limits, self.state, now, check_stop_file(self.limits), self.mode)
+        why = check_buy(self.limits, self.state, now, check_stop_file(self.limits), self.mode, check_halt_file(self.limits))
         if why:
             return self._skip(sig, f"limit:{why}")
         if now - sig["decision_t_ms"] > self.max_signal_age_ms:
@@ -541,6 +558,13 @@ class Executor:
             self.state.first_attempt_ms = now
         self.save()
         msg = buy_probe_message(snap, self.user, spend, self.slip_bps, q["tokens"], self.limits.priority_lamports)
+        validate_err = None
+        try:  # would the live signer's whitelist accept this message? (a real-pool check during the dry run)
+            from tools import probe_live
+
+            probe_live.validate_message(msg, snap.ps, Pubkey.from_string(sig["mint"]), self.user, self.limits.priority_lamports)
+        except Exception as exc:
+            validate_err = getattr(exc, "label", type(exc).__name__)
         t_built = self.now_ms()
         user_base = tx.ata(self.user, snap.ps.base_mint, snap.ps.base_token_program)
         try:
@@ -558,7 +582,7 @@ class Executor:
             ms_built_to_sim=t_sim - t_built, spend_lamports=spend, slippage_bps=self.slip_bps,
             priority_lamports=self.limits.priority_lamports, v_lamports=snap.v, quote_vault_lamports=snap.quote_vault,
             base_reserve=snap.base_reserve, fee_ppm=q["fee_ppm"], expected_tokens=q["tokens"],
-            sim_tokens=sim_tokens, would_have_halted=would, tx_bytes=tx.serialized_size(msg), **self._sim_summary(res),
+            sim_tokens=sim_tokens, would_have_halted=would, live_validate_err=validate_err, tx_bytes=tx.serialized_size(msg), **self._sim_summary(res),
         )
         if sim_tokens is not None and q["tokens"]:
             row["sim_vs_expected_bps"] = round((sim_tokens - q["tokens"]) * 10_000 / q["tokens"], 2)
@@ -573,7 +597,7 @@ class Executor:
     # -- exit
     def poll_positions(self) -> None:
         for mint, pos in list(self.state.open.items()):
-            if check_sell(check_stop_file(self.limits)):
+            if check_sell(check_halt_file(self.limits)):
                 return
             snap, _pool, err = self._snapshot(mint)
             now = self.now_ms()
@@ -628,19 +652,80 @@ class Executor:
         return len(sigs)
 
 
+def status_report(cfg: dict[str, Any]) -> str:
+    """Counters, open positions and realized P&L from the state files and the fill log. Reads no key and
+    no URL, makes no RPC call."""
+    lim = Limits.from_config(cfg)
+    lines = [f"stop_file_present={Path(lim.stop_file).exists()} halt_file_present={Path(lim.halt_file).exists()}"]
+    for mode in (MODE, "live"):
+        path = state_path_for(cfg["state_dir"], mode)
+        if not path.exists():
+            lines.append(f"[{mode}] no state file")
+            continue
+        st = State.load(path, mode)
+        lines.append(
+            f"[{mode}] attempts={st.attempts}/{lim.max_attempts} realized_sol={st.realized_lamports / LAMPORTS:.6f} "
+            f"loss_cap_sol={lim.loss_cap_lamports / LAMPORTS:.3f} open={len(st.open)}/{lim.max_open} pending={len(st.pending)} "
+            f"first_attempt_ms={st.first_attempt_ms} would_halt={st.would_halt}")
+        exposure = sum(int(p.get("spend") or 0) for p in st.open.values()) + sum(
+            int(p.get("spend") or 0) for p in st.pending.values() if p.get("kind") == "buy")
+        lines.append(f"  open_exposure_sol={exposure / LAMPORTS:.6f} (cost of open + in-flight buys; the loss cap counts realized loss only)")
+        for mint, pos in st.open.items():
+            lines.append(f"  open {mint} tokens={pos.get('tokens')} spend={pos.get('spend')} stuck={bool(pos.get('stuck'))} "
+                         f"abandoned={bool(pos.get('abandoned'))} sell_attempts={pos.get('sell_attempts', 0)}")
+        for mint, p in st.pending.items():
+            lines.append(f"  pending {p.get('kind')} {mint} sig={p.get('signature')} sends={p.get('sends')}")
+    counts: dict[str, int] = {}
+    fl = Path(cfg["fill_log"])
+    if fl.exists():
+        for raw in fl.read_text().splitlines():
+            try:
+                r = json.loads(raw)
+            except ValueError:
+                continue
+            key = f"{r.get('mode')}:{r.get('kind')}"
+            counts[key] = counts.get(key, 0) + 1
+    lines.append(f"fill_rows={dict(sorted(counts.items()))}")
+    return "\n".join(lines)
+
+
+def resolve_mode(cfg_mode: str, live_flag: bool) -> tuple[str, str | None]:
+    """Live needs BOTH the config mode and the --live flag. Returns (mode, warning)."""
+    if cfg_mode not in (MODE, "live"):
+        raise SystemExit(f"unknown mode {cfg_mode!r}")
+    cfg_live = cfg_mode == "live"
+    if cfg_live and live_flag:
+        return "live", None
+    if cfg_live or live_flag:
+        missing = "--live flag" if cfg_live else 'config "mode": "live"'
+        return MODE, f"live requested but {missing} is missing: running DRY RUN"
+    return MODE, None
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="DEC-019 probe executor, keyless dry-run")
+    ap = argparse.ArgumentParser(description="DEC-019 probe executor (dry run by default; live needs config mode AND --live)")
     ap.add_argument("--config", required=True)
     ap.add_argument("--once", action="store_true", help="one tail+poll pass, then exit")
+    ap.add_argument("--live", action="store_true", help='second live switch; also needs config "mode": "live"')
+    ap.add_argument("--status", action="store_true", help="print counters, open positions, realized P&L; no key, no URL")
     ap.add_argument("--env-file", default=sim.DEFAULT_ENV_FILE)
     args = ap.parse_args(argv)
     cfg = json.loads(Path(args.config).read_text())
-    if cfg.get("mode", MODE) != MODE:
-        raise SystemExit("only mode=dryrun exists in this build (live is PR-B)")
+    if args.status:
+        print(status_report(cfg))
+        return 0
+    mode, warn = resolve_mode(cfg.get("mode", MODE), args.live)
+    cfg["mode"] = mode
+    if warn:
+        print(f"probe_executor WARNING {warn}", flush=True)
+    poll_s = max(1.0, float(cfg.get("poll_s", 5.0)))
+    if mode == "live":
+        from tools import probe_live  # key handling lives only in that module
+
+        return probe_live.run_live(cfg, args, poll_s)
     rpc = LimitedRpc(ProbeRpc(sim.load_rpc_url(None, args.env_file)), rps=float(cfg.get("rps", MAX_RPS)))
     ex = Executor(rpc, cfg)
-    poll_s = max(1.0, float(cfg.get("poll_s", 5.0)))
-    print(f"probe_executor dryrun book={ex.book} limits={ex.limits}", flush=True)
+    print(f"probe_executor mode=dryrun book={ex.book} limits={ex.limits}", flush=True)
     while True:
         ex.step()
         if args.once:
