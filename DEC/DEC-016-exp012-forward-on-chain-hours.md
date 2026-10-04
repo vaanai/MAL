@@ -171,3 +171,33 @@ On 2026-10-03, before any runner row existed and well before the FINAL read, the
 - **no tip**.
 
 They are fixed here, and they do not change after the read.
+
+## Amendment 4 (2026-10-04): the live-support book is priced on vault + V
+
+This is fixed before any runner row exists and before any forward P&L is opened (Amendment 2). Text drafted by `quant-proof`.
+
+**Context.** PR #280 and PR #281 show that PumpSwap swaps price on quote vault + V, where V is the pool's virtual quote reserve, and that the frozen paper path prices on the vault alone.
+- At migration, vault + V reproduces the bonding curve's final price (ratio 0.9998). The vault alone is 20.7% low.
+- On the spent read block (correction analysis, not a new read), V-correction lowered the flat mean from 0.03487 to 0.02527 SOL per trade. The gate's flat CI90 lower bound fell from 0.01875 to 0.00928 SOL.
+
+1. **Two books, one FINAL run.** The FINAL read at about 2026-10-16T02Z computes two books in the same run:
+   - **(A)** the pre-registered book, unchanged (frozen pricing). Its verdict is recorded as the EXP-012 FINAL verdict.
+   - **(B)** the V-corrected book: the same entered set, asserted identical mint by mint, re-priced by `tools/pumpswap_virtual_adapter.py` with `mcap_mode="v"`. The adapter commit is recorded here before 2026-10-16T00Z.
+
+   The unpatched pass must reproduce (A)'s `flat` and `press` byte for byte before (B) is read.
+2. **Live support requires (B).** Amendment 1 §5 and Amendment 3 (a) are evaluated on (B), not (A):
+   - at k = 1, and at k(p50) with the trial terms: the full gate under both fail models;
+   - at k(p90): mean > 0 and ex-top-3 > 0.
+
+   If (A) passes and (B) fails, live is not supported. If (A) fails, live is not supported, whatever (B) shows. V-correction can only remove support; it never adds it.
+3. **V map.**
+   - After 2026-10-16T00Z and before the read, V is fetched with `getMultipleAccounts` for **every** PumpSwap pool of every migrated mint in the window, not one pool per mint.
+   - The map's sha256 and its null count are recorded here.
+   - A pool with no readable V is never treated as V = 0.
+   - If any of the top 3 trades, or more than 1% of entered trades, touch a null-V pool, (B) is **not decidable**, and live is not supported.
+4. **Fee tier.** (B) is also computed with `mcap_mode="vault"`, for report only. The rule in §2 applies to `mcap_mode="v"`. If the two modes disagree on any gate condition, live is not supported until the tier rule is resolved on chain.
+5. **Validation, after the read and before the live decision.** On the window's sealed hours, both of these must hold, otherwise (B) is not decidable:
+   - V-corrected sell residuals for V > 0 pools: median |error| < 1 bps and at least 75% within 1 bps. The spent block measured 79.9%.
+   - Buy implied-fee residual: at least 90% within 1 bps.
+6. **Runner rows.** Amendment 3 (b) rows 4–5 compare the runner's spot with the scorer's **V-corrected** state price. A runner that prices on the vault alone fails rows 4–5 by construction, and must be fixed before any live request.
+7. **Not changed:** the model, threshold, features, execution, size, both fail models, the window, the read date, the no-peek seal and the trial terms.
