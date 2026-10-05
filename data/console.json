@@ -1,16 +1,22 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-03T06:00:00Z",
-  "review_windows": [
-    {
-      "id": "kill-review-2026-10-05",
-      "label": "Kill review · 9 forward books",
-      "startUtc": "2026-09-28T00:00:00Z",
-      "endUtc": "2026-10-05T05:00:00Z",
-      "rule": "DEC-014 single read"
-    }
-  ],
+  "updated_utc": "2026-10-05T09:50:00Z",
+  "review_windows": [],
   "events": [
+    {
+      "id": "fast0-runner-probe-dryrun",
+      "kind": "job",
+      "title": "fast-0: paper runner (probation) + probe dry run live; feed ~1.9 s behind chain",
+      "detail": "Tip follower keeps up (lag 2–3 slots). EXP-012 runner on probation since 05:31Z. Probe executor dry run since 05:35Z, no key. Early timing: on-chain → ready-to-send ≈ 2.2–2.3 s, about 7–8 slots with landing, at the edge of the ~8-slot window. Testing a faster migration stream.",
+      "atUtc": "2026-10-05T07:45:00Z"
+    },
+    {
+      "id": "kill-review-2026-10-05-result",
+      "kind": "result",
+      "title": "Kill review: no book promoted; all 8 NOT_DECIDABLE (incomplete), every mean negative",
+      "detail": "Single read of the 9 Oracle forward books (job #121). Formally NOT_DECIDABLE (open orphans / settle failures), but every book's mean is below 0 with the CI90 entirely below 0 under both fail models and 0 of 8 days positive. Priced without V. EXP-012 stays the only candidate.",
+      "atUtc": "2026-10-05T09:42:00Z"
+    },
     {
       "id": "exp012-forward",
       "kind": "other",
@@ -156,6 +162,12 @@
     }
   ],
   "for_you": [
+    {
+      "id": "fy-20261005-0950",
+      "from": "claude",
+      "text": "Kill review done: none of the 9 old books shows any edge (all lose money on paper, every day), so we drop them and focus on EXP-012. The live probe is ready on the code side. Its dry run ends around 11:36Z. If clean, I'll give Helm the hashes and ask you to fund 0.5 SOL. Biggest finding today: our entries land ~7–8 slots after a migration, right at the edge of where EXP-012 still makes money. I'm testing a faster feed that should save about 1 s, at almost no credit cost on our current plan.",
+      "atUtc": "2026-10-05T09:50:00Z"
+    },
     {
       "id": "fy-20261003-0545",
       "from": "claude",
