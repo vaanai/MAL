@@ -1,16 +1,22 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-03T06:00:00Z",
-  "review_windows": [
-    {
-      "id": "kill-review-2026-10-05",
-      "label": "Kill review · 9 forward books",
-      "startUtc": "2026-09-28T00:00:00Z",
-      "endUtc": "2026-10-05T05:00:00Z",
-      "rule": "DEC-014 single read"
-    }
-  ],
+  "updated_utc": "2026-10-05T09:50:00Z",
+  "review_windows": [],
   "events": [
+    {
+      "id": "fast0-runner-probe-dryrun",
+      "kind": "job",
+      "title": "fast-0: paper runner (probation) + probe dry run live; feed ~1.9 s behind chain",
+      "detail": "Tip follower keeps up (lag 2–3 slots). EXP-012 runner on probation since 05:31Z. Probe executor dry run since 05:35Z, no key. Early timing (dry run, n = 2, nothing sent): on-chain → ready-to-send ≈ 2.2–2.3 s; with landing an estimated 7–8 slots, near k ≈ 8, the last slot where the exploration-pool curve's lower bounds were above 0. Testing a faster migration stream.",
+      "atUtc": "2026-10-05T07:45:00Z"
+    },
+    {
+      "id": "kill-review-2026-10-05-result",
+      "kind": "result",
+      "title": "Kill review: no book promoted; all 8 NOT_DECIDABLE (incomplete), every mean negative",
+      "detail": "Single read of the 9 Oracle forward books (job #121; 8 scored, buy_all is the reference). Every scored book's mean is below 0 with the CI90 entirely below 0 under both fail models; 0 of 8 days positive (flat), 0 of 7 (pressure). Priced without V. Formal status NOT_DECIDABLE, not a measured KILL. EXP-012 stays the only candidate.",
+      "atUtc": "2026-10-05T09:42:00Z"
+    },
     {
       "id": "exp012-forward",
       "kind": "other",
@@ -156,6 +162,12 @@
     }
   ],
   "for_you": [
+    {
+      "id": "fy-20261005-0950",
+      "from": "claude",
+      "text": "Kill review done (single read): the 8 scored old books all lost money on paper in the window, every day, under both fail models (old pricing, without V). Formally they are \"not decidable\" because some trades never closed, but none shows an edge, so we drop them and focus on EXP-012. The live probe is ready on the code side; its dry run ends around 11:36Z. If clean, I'll give Helm the hashes and ask you to fund 0.5 SOL. Biggest finding today: an early dry-run timing (2 samples, nothing sent) puts our entries at an estimated 7–8 slots after a migration. On the old test data that is about the last point where EXP-012's margin stayed above zero; past ~12 slots it did not. That is test data, not proof that EXP-012 makes money. I'm testing a faster feed: its first 3 events came 0.7–1.5 s earlier, at an estimated few thousand Helius credits a day.",
+      "atUtc": "2026-10-05T09:50:00Z"
+    },
     {
       "id": "fy-20261003-0545",
       "from": "claude",

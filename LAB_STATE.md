@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers. **As-of:** 2026-10-03 ~06:00Z. `main` through [#259](https://github.com/vaanai/MAL/pull/259) (`166ec84`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
+Compact reload for managers. **As-of:** 2026-10-05 ~09:45Z (after the kill review). `main` through [#301](https://github.com/vaanai/MAL/pull/301) (`8a6849b`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
 
 ## Objective
 
@@ -59,20 +59,31 @@ Detail, units, logs, memory limits, and what is safe to restart: [docs/HOSTS.md]
   - Most of the lift is predicted fills (98.9% vs 28.0%), and the lift among fills is not significant.
   - Returns fall toward the present day.
 - Next: an EXP-012 forward-paper book on `mal-fast-0` after the 2026-10-05T05:00:00Z kill review ([DEC-015](DEC/DEC-015-forward-paper-on-fast.md)). It must clear the gate on its own forward data, and then get owner approval, before live. Details: [EXP-012](EXP/EXP-012-migrate-entry-model-refreeze-prereg.md) Result.
+- **V correction (2026-10-04, [#281](https://github.com/vaanai/MAL/pull/281), [#285](https://github.com/vaanai/MAL/pull/285); a correction analysis, not a new read).**
+  - PumpSwap prices on quote vault + V, the virtual quote reserve (about 17.58 SOL on about 69% of pools). Our paper pricing ignored it.
+  - Re-priced on the **spent** read block (already read; a post-hoc re-pricing, not fresh out-of-sample and not gate evidence), the same 451 entries still meet every gate condition numerically. Flat mean 0.02526; flat CI90 lower bound 0.00928; pressure CI90 lower bound 0.00604; 5/7 days positive on both legs.
+  - Live support is judged on the V book (DEC-016 Amendment 4).
+- **Entry latency under V (exploration, [#292](https://github.com/vaanai/MAL/pull/292)).** Pressure mean / CI90 lower bound by entry slot k:
+  - k = 1: 0.01866 / 0.01114
+  - k = 8: 0.00769 / 0.00117
+  - k ≥ 12: every lower bound is below 0.
+  - Entry speed is the largest measured sensitivity.
+  - On the 9-day exploration pool the recipe was tuned on (winner's curse); exits are still at k = 1, so live decay is at least this.
 
 ## What is running
 
+As of 2026-10-05 ~09:45Z.
+
 | System | Where | Status |
 | --- | --- | --- |
-| EXP-012 forward walk (MiScusi job #71) | `mal-research-0` | DEC-016, owner-approved, running from 2026-10-02T15. Output `/data/mal/blocks/forward-1002`. 13 hours sealed through 10-03T03 with 0 issues, about 13.5k credits/hour. **Resubmit before about 10-09T15Z.** |
-| Expansion walkers `explore-0814` (MiScusi jobs) | `mal-research-0` | w1–w4 sealed and verified, 0 flagged, 0 duplicates; clean views in `/data/mal/clean-view/explore-0814/w1..w4`. Credits: w2 475,326, w3 474,978, w4 451,197. w5 (#72), w6 (#49) and w7 (#50) running, with verify jobs #85–#87 chained after them. |
-| Fast trade tape **trial**, two sockets (DEC-015 §2.2) | `mal-fast-0`, user unit `mal-fast-trade-tape` | On `ca542c5` with `--sockets 2` since 2026-10-02T13:39:04Z. Coverage against chain: **99.282%** over `[10-02T16, 18)` (#249; Oracle 82.062%); **100.000%** over `[10-03T00, 02)` (job #89; Oracle 95.671%). Feed measurement, not a forward book. 2-day retention applies. |
-| Oracle forward-paper runner | Oracle `mal-forward-paper.service` | Code `d7485d2`. Restarts **daily at 00:00:00Z** via the claude timer `mal-runner-daily-restart` on `mal-fast-0` ([#137](https://github.com/vaanai/MAL/pull/137), [#155](https://github.com/vaanai/MAL/pull/155)), logged to `/home/claude/reports/runner-restarts.jsonl`. The 10-03 restart was ok, `head_sha` d7485d2. Each restart resets in-memory state; open positions settle offline. |
-| EXP-012 runner on `mal-fast-0` | `mal-fast-0` | **Nothing installed yet.** The deploy kit ([#231](https://github.com/vaanai/MAL/pull/231)) and the heartbeat sampler ([#259](https://github.com/vaanai/MAL/pull/259)) install after the 2026-10-05T05:00Z kill review. |
-| Fast listeners | `mal-fast-0` | `mal-fast-create`, `mal-fast-public-logs`, `mal-fast-pre-create` up. Early-trade and full fast tape installed, not running. |
-| Claude schedules | `mal-fast-0`, user `claude` | `mal-daily-review` 05:00 UTC, `mal-runner-daily-restart` 00:00 UTC. `mal-oos-check` was a one-shot for the 2026-09-28 21:00Z read; it already ran and is not recurring. |
-| Frozen migrate-direct scorers | Oracle + `mal-fast-0` | **Stopped.** The cell is dead — no more credits go to it. |
-| LAYA / attention-daily timers | Oracle | **Disabled until 2026-10-05.** |
+| EXP-012 forward walk (MiScusi #71) | `mal-research-0` | DEC-016, through about 10-05T04, 837k credits so far. **Resubmit before about 10-09T15Z.** |
+| getBlock tip follower `mal-fast-tip-follower` | `mal-fast-0`, system unit | The runner's feed (DEC-015 2.2, owner option A). Parallel fetch ([#297](https://github.com/vaanai/MAL/pull/297)), 8 workers, rps 15. Restarted 10-05 ~05:27Z on `d0109f7`. Since then: lag 2–3 slots, block-lag p50 about 1.7–1.9 s, 0 backlog jumps. Every PumpSwap row carries `virtual_quote_reserve` ([#288](https://github.com/vaanai/MAL/pull/288)). **About 560k Helius credits/day measured** (getSlot polling is about half). |
+| Fast-0 paper runner `mal-fast-forward-paper` (EXP-012 book) | `mal-fast-0`, system unit | **Started 2026-10-05T05:31:40Z, on probation (rows do not count).** Reads the tip tape (`pumpswap_virtual: require`, [#296](https://github.com/vaanai/MAL/pull/296)). Heartbeat ok. Daily-restart and heartbeat timers enabled. Mid-week start, recorded here. |
+| DEC-019 probe executor `mal-probe-executor` | `mal-fast-0`, user `mal-live` | **Dry run since 2026-10-05T05:35:47Z** (no key, no live drop-in). Executor stages ~0.12 s; on chain → ready-to-send about 2.2–2.3 s (n = 2 early read). Wallet created by Helm, pubkey `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk`, **not funded**. |
+| Migration stream probe (MiScusi #127) | `mal-fast-0`, transient unit | 6 h measurement of a processed `transactionSubscribe` on the pump migration authority against the tip follower. First 3 events: about 0.7–1.5 s earlier on the same slot. |
+| Oracle forward-paper runner | Oracle `mal-forward-paper.service` | Code `d7485d2`, daily 00:00Z restart via the claude timer on `mal-fast-0`. Its 9 books were read at the kill review (below). |
+| Fast listeners / two-socket public tape trial | `mal-fast-0` | Superseded as the runner's feed by the tip follower. The public tape failed coverage on 10-03 (93.869%). |
+| Claude schedules | `mal-fast-0`, user `claude` | `mal-daily-review` 05:00 UTC, `mal-runner-daily-restart` 00:00 UTC. |
 | Healthcheck | Oracle `mal-healthcheck.timer` every 5 min | `/var/lib/mal/eng/healthcheck.sh` |
 
 ## Current research state
@@ -106,6 +117,42 @@ Single read, once, at or after that instant, on a snapshot — never on a live, 
 - If the pressure stamp can't cover a book (missing pnl field, a `pressure_error`, an unresolved restart-orphan, or `settle_failed`), that book is NOT_DECIDABLE (DEC-014 Amendment 2).
 - Holm–Bonferroni across the 9 books (DEC-014). No new forward books during the kill-review week.
 
+### Result (read 2026-10-05, single read)
+
+**VERDICT: PROMOTE = none, KILL = none, NOT_DECIDABLE = all 8 Holm-family books.**
+- `buy_all` is the reference book, not a candidate.
+- Holm k = 8, 10,000 draws, seed 1.
+- Every book is INCOMPLETE: open orphans with no close or settlement, and some `settle_failed`. Under DEC-014 Amendment 2 that is NOT_DECIDABLE, not a measured KILL.
+
+**The point estimates are one-sided.** Every book has a negative mean with the CI90 entirely below 0 under both fail models, and 0 positive flat days out of 8. Values are floored, so a loss is never shown smaller.
+
+| Book | n (flat) | flat mean | flat CI90 | press mean | press CI90 | days + (flat) | orphans | settle failed | status |
+| --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | --- |
+| laya_0.6 | 135,542 | −0.00350 | [−0.00369, −0.00329] | −0.00311 | [−0.00329, −0.00293] | 0/8 | 478 | 0 | NOT_DECIDABLE |
+| laya_0.7 | 54,395 | −0.00357 | [−0.00380, −0.00333] | −0.00319 | [−0.00337, −0.00299] | 0/8 | 465 | 2 | NOT_DECIDABLE |
+| migrate_hold_30s | 5,747 | −0.00256 | [−0.00318, −0.00188] | −0.00227 | [−0.00268, −0.00184] | 0/8 | 502 | 0 | NOT_DECIDABLE |
+| migrate_tp50_sl30 | 5,746 | −0.00331 | [−0.00384, −0.00277] | −0.00262 | [−0.00295, −0.00226] | 0/8 | 412 | 2 | NOT_DECIDABLE |
+| attn_first_hold_60m | 3,123 | −0.02250 | [−0.02459, −0.02048] | −0.01904 | [−0.02054, −0.01739] | 0/8 | 112 | 20 | NOT_DECIDABLE |
+| t30_top1_hold30 | 2,439 | −0.00320 | [−0.00377, −0.00263] | −0.00288 | [−0.00331, −0.00246] | 0/8 | 416 | 0 | NOT_DECIDABLE |
+| buyers8_top5_ladder2x | 1,775 | −0.00719 | [−0.00857, −0.00578] | −0.00541 | [−0.00651, −0.00427] | 0/8 | 162 | 3 | NOT_DECIDABLE |
+| mig15_top20_tp50_sl30 | 998 | −0.00563 | [−0.00699, −0.00426] | −0.00516 | [−0.00624, −0.00405] | 0/8 | 259 | 3 | NOT_DECIDABLE |
+
+**Provenance:**
+- Snapshot manifest sha256: `399bf566f15a228360f59129f2ddf38a99658151da5ed0ea5f5b1ea5ceaa4e1c` (209 files: 197 tape hours, 9 creates days, 3 state files; nothing missing).
+- Jobs:
+  - #108: snapshot.
+  - #118: score, out of memory at 32 GB in the pressure stamp, before the read.
+  - #120: blocked by a read-only leftover; its partial output was kept at `/data/mal/kill-review-1005/out.oom-118`.
+  - **#121**: the read. Pressure stamp in 4 mint chunks, [#299](https://github.com/vaanai/MAL/pull/299); its output is identical for any chunk count by test.
+- Settlements are byte-identical across #118 and #121.
+- `kill_review.json` sha256 `c66d6a5a798d77fe6fe0563a9319efeb7aa22a8ef5f9d76615f6f9cd66fdfde3`. Totals: 329 settled offline, 30 settle failures, 2,806 open orphans.
+
+**Settle failures.** `settle.log`: 470 orphan settle failures (all books incl. buy_all, any time). By `decision_t_ms`: 424 before the void end 09-27T06:58:12Z (394 `no_tape_for_mint`, 25 `missed_no_state`, 5 `tokens_mismatch`; the snapshot tape starts 09-27T00 by design); 4 `tokens_mismatch` between the void end and the window start; 32 inside the window [09-28T00, 10-05T05): 19 `censored_tape_too_short` (entries from 10-05T04:04Z, exits past the tape end), 11 `tokens_mismatch`, 2 `missed_slippage`; 10 after 05:00Z (6 `tokens_mismatch`, 2 censored, 2 `venue_mismatch`). The scorer counts 30 settle_failed across the 8 candidates.
+
+**Caveat: all 9 books are priced without V.** The PumpSwap books (migrate_tp50_sl30, migrate_hold_30s, mig15_top20_tp50_sl30) cannot be promoted on these numbers in any case.
+
+**Manager reading.** None of the 8 shows an edge. They get no more work; the formal status stays NOT_DECIDABLE. EXP-012 remains the only candidate.
+
 ## Promotion gate
 
 At least **100** out-of-sample trades, at least **5** distinct UTC days with a majority of those days positive, lower **90%** CI bound of mean SOL per trade **> 0**, and total SOL still positive after removing the top 3 trades. The book must clear that bar under **both** the flat 15% fail rate and the pressure-fail model at slope scale 1. Bootstrap: 1,000 draws, seed 1. The lower bound is the 5th percentile of those means.
@@ -130,13 +177,13 @@ Clean clock: **2026-09-28T00:00:00Z**. Kill review: **2026-10-05T05:00:00Z**.
 
 ## Next work
 
-1. 2026-10-04T12Z: the EXP-013 single screen run.
-2. 2026-10-05T05Z: the kill review, following the runbook.
-3. After the kill review: install the fast-0 runner, observe and heartbeat (start the heartbeat by hand and check its pid before enabling), then the 2-day lag probation.
-4. Daily: forward-walk verify and the two-socket coverage check.
-5. About 10-09T15Z: resubmit forward walk #71.
-6. About 10-16T02Z: the EXP-012 FINAL read → quant-proof → sensitivity re-score → runner comparison → owner.
-7. *(Paused.)* EXP-009 screen scorer; Lane D (`claude/explore-early-entry-model`, needs bounded windows). Console: [docs/HANDOFF.md](docs/HANDOFF.md) §B–C.
+1. **Probe:** let the 6 h keyless dry run finish (about 11:36Z). If it is clean, post the live-config and drop-in sha256 for Helm, then owner funding (0.5 SOL), then Helm enables the live drop-in.
+2. **About 11Z:** tip-follower coverage against forward-1002 over `[10-05T06, 08)`. This must pass before any runner row counts. Then the 2-day lag probation.
+3. **Latency:** read the migration-stream probe (#127). If the gain holds, design the processed fast path, probably near-graduation subscriptions so features stay complete. Do it without changing the runner inside the forward window unless it comes with an md5 proof and a recorded restart.
+4. **Credits:** cut the tip follower's getSlot polling, about half of its 560k/day.
+5. **About 10-09T15Z:** resubmit forward walk #71.
+6. **About 10-16T02Z:** EXP-012 FINAL read → quant-proof → V book (Am.4) → Am.3 at measured k → owner.
+7. **Low priority:** EXP-013/014 need V-pricing amendments before their single screens.
 
 ## Pointers
 
