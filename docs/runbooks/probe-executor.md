@@ -66,6 +66,25 @@ systemctl show mal-probe-executor -p ExecStart --value | grep -c fast-forward   
 
 The unit must be stopped for the install because the venv is replaced. The new venv is built as `venv.<sha>.new` and swapped in only after the pip install and a smoke import both succeed, so a failed install leaves the old venv (and a rollback to an older pinned sha) intact; a failed run also removes its staging dirs. A restart with open positions resumes pending signatures without re-buying, but do the swap at 0 open positions.
 
+Installer fix (2026-10-05): the first version's final check (`find ... ! -user root -o -perm /022`) matched every venv symlink (`bin/python`, `python3`, `python3.x`, `lib64`; lstat mode 0777), so it always exited with an error after moving `<sha>/` and the venv into place and before `current` existed; a rerun then refused because `<sha>/` existed. The check now lives in `scripts/mal-fast/check-probe-exec-tree.sh`: everything (symlinks included) must be root-owned, no non-symlink may be group/world-writable, and every symlink must resolve inside the checked dir or to the system python (`/usr/bin/python3*`, `/usr/lib/python3*`). It runs on the staged tree and staged venv BEFORE any move (a failure installs nothing) and again after the moves; if the post-move check or final smoke import fails, the installer rolls back (removes `<sha>/` and the new venv, restores `venv.old`) and, if the rollback itself fails, prints exactly what to remove by hand.
+
+Recovering from a half-finished install made with the OLD installer (as root, unit stopped): `rm -rf /usr/local/lib/mal-probe-exec/<sha> /usr/local/lib/mal-probe-exec/venv.<sha>.new /usr/local/lib/mal-probe-exec/venv.<sha>`, then rerun the installer from a clone at the fixed commit. The old installer had already swapped `venv` in (and deleted `venv.old`) before failing; the rerun rebuilds `venv` from the hashed requirements, so nothing else needs fixing. `current` never existed for that sha.
+
+Before switching live to pinned: Helm runs the pinned launcher once KEYLESS in dry-run mode on fast-0, to prove the pinned path and the edited `tools/pumpswap_simulate.py` run on the real host. The dry-run config is copied with a scratch state dir so the real `/var/lib/mal-live` state and fill log are not touched; no key is involved (dry-run mode holds none). Expect the launcher to start, print its dry-run mode line, and run until the 90 s limit without a traceback:
+
+```
+sudo install -d -o mal-live -g mal-live -m 0700 /tmp/pinned-dry
+sudo sed -e 's#"state_dir": *"[^"]*"#"state_dir": "/tmp/pinned-dry"#' \
+        -e 's#"fill_log": *"[^"]*"#"fill_log": "/tmp/pinned-dry/probe-fills.jsonl"#' \
+        -e 's#"stop_file": *"[^"]*"#"stop_file": "/tmp/pinned-dry/STOP"#' \
+        scripts/mal-fast/probe-executor.json | sudo -u mal-live tee /tmp/pinned-dry/dry.json >/dev/null
+sudo systemd-run --wait --collect --pipe -p RuntimeMaxSec=90 -p User=mal-live -p NoNewPrivileges=yes -p ProtectSystem=strict -p ReadWritePaths=/tmp/pinned-dry \
+  /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config /tmp/pinned-dry/dry.json
+sudo rm -rf /tmp/pinned-dry
+```
+
+systemd-run reporting that the unit hit its 90 s runtime limit (result `timeout`) with no traceback is a pass (`RuntimeMaxSec` stops the unit itself); an import error or a `tools` path refusal is a fail, so do not switch.
+
 Update to a new commit: same steps. Each `<sha>` dir is immutable and the installer refuses to overwrite one; `current` moves only after a smoke import from the final location succeeds.
 
 Rollback to the old agent-deployed path: stop the unit, `sudo install -D -m 0644 scripts/mal-fast/mal-probe-executor-live.conf /etc/systemd/system/mal-probe-executor.service.d/live.conf`, daemon-reload, start. Rollback to an earlier pinned commit: stop, then `sudo ln -s <old-sha> /usr/local/lib/mal-probe-exec/.current.tmp && sudo mv -T /usr/local/lib/mal-probe-exec/.current.tmp /usr/local/lib/mal-probe-exec/current`, start (the venv is shared; if requirements changed between the two commits, remove that sha's dir and re-run the installer for it instead). Back to dry run: remove the drop-in as in section 2.

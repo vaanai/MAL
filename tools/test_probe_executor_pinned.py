@@ -202,6 +202,7 @@ def _run_installer(tmp_path, *args, fake_root=True, tamper=None, mode="755"):
     for f in files:
         shutil.copy(ROOT / f, clone / f)
     shutil.copy(INSTALL, clone / "scripts/mal-fast/install-probe-executor-pinned.sh")
+    shutil.copy(CHECK, clone / "scripts/mal-fast/check-probe-exec-tree.sh")
     g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(clone)]
     subprocess.run([*g, "init", "-q"], check=True)
     subprocess.run([*g, "add", "-A"], check=True)
@@ -314,7 +315,7 @@ def test_installer_clean_git_env_and_failure_safe_staging():
     # EXIT trap removes TMP, the stage dir and the half-built venv
     assert "trap cleanup EXIT" in t and 'rm -rf "$STAGE"' in t and 'rm -rf "$VENV_NEW"' in t
     # new venv is built beside the old one and swapped only after pip and a smoke import
-    assert 'VENV_NEW="$DEST/venv.$COMMIT.new"' in t and 'rm -rf "$DEST/venv"' not in t
+    assert 'VENV_NEW="$DEST/venv.$COMMIT.new"' in t and not re.search(r'^\s*rm -rf "\$DEST/venv"$', t, re.M)
     assert t.index("pip install") < t.index('mv -T "$VENV_NEW" "$DEST/venv"')
     assert t.index('"$VENV_NEW/bin/python" -I -B -c') < t.index('mv -T "$STAGE"')
 
@@ -325,3 +326,83 @@ def test_runbook_sudo_and_helius_env_note():
     assert "sudo touch /var/lib/mal-live/STOP" in t
     assert "helius.env` is root-owned, mode 0600" in t and "LD_PRELOAD" in t
     assert "install-fast-forward-paper.sh" in t and "live-pinned.conf" in t
+
+
+# --- permission/symlink check, run for real against a REAL venv (no network, no pip) ----------------------
+
+CHECK = ROOT / "scripts/mal-fast/check-probe-exec-tree.sh"
+
+
+def _check(*dirs, uid=None):
+    env = {"PATH": os.environ["PATH"], "MAL_TREE_CHECK_TEST_UID": str(os.getuid() if uid is None else uid)}
+    return subprocess.run(["bash", str(CHECK), *map(str, dirs)], env=env, capture_output=True, text=True)
+
+
+@pytest.fixture
+def real_venv(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("check test mode is refused as root")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    venv = dest / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    for root, dirs, files in os.walk(dest):  # normalise to 0755/0644-style regardless of the umask
+        for n in dirs + files:
+            q = Path(root, n)
+            if not q.is_symlink():
+                q.chmod(q.stat().st_mode & ~0o022)
+    venv.chmod(venv.stat().st_mode & ~0o022)
+    return dest, venv
+
+
+def test_check_accepts_real_venv_with_its_symlinks(real_venv):
+    dest, venv = real_venv
+    links = [p for p in venv.rglob("*") if p.is_symlink()]
+    assert links, "a real venv has symlinks (bin/python, lib64, ...)"
+    # the old check flagged these (lstat mode 0777); the new one must not
+    old = subprocess.run(["find", str(dest), "-perm", "/022"], capture_output=True, text=True).stdout
+    assert str(links[0]) in old or any(str(p) in old for p in links)
+    r = _check(venv)
+    assert r.returncode == 0, r.stderr
+
+
+def test_check_refuses_symlink_pointing_outside(real_venv, tmp_path):
+    dest, venv = real_venv
+    outside = tmp_path / "x"
+    outside.write_text("evil")
+    (venv / "bin" / "evil").symlink_to(outside)
+    r = _check(venv)
+    assert r.returncode != 0 and "points outside" in r.stderr and "evil" in r.stderr
+
+
+def test_check_refuses_dangling_symlink_and_writable_file(real_venv):
+    dest, venv = real_venv
+    (venv / "dangling").symlink_to(venv / "nope")
+    r = _check(venv)
+    assert r.returncode != 0 and "does not resolve" in r.stderr
+    (venv / "dangling").unlink()
+    f = venv / "w.py"
+    f.write_text("x")
+    f.chmod(0o666)
+    r = _check(venv)
+    assert r.returncode != 0 and "group/world-writable" in r.stderr
+
+
+def test_check_refuses_wrong_owner(real_venv):
+    dest, venv = real_venv
+    r = _check(venv, uid=os.getuid() + 1)
+    assert r.returncode != 0 and "not owned by uid" in r.stderr
+
+
+def test_check_test_mode_refused_as_root():
+    t = CHECK.read_text()
+    assert 'id -u)" -ne 0' in t and "not allowed as root" in t
+
+
+def test_installer_checks_before_moves_and_rolls_back():
+    t = INSTALL.read_text()
+    assert t.index('"$CHECK" "$STAGE" "$VENV_NEW"') < t.index('mv -T "$STAGE" "$DEST/$COMMIT"')
+    assert t.index('"$CHECK" "$DEST/$COMMIT" "$DEST/venv"') > t.index('mv -T "$STAGE" "$DEST/$COMMIT"')
+    assert t.index('"$CHECK" "$DEST/$COMMIT"') < t.index('mv -T "$DEST/.current.tmp"')
+    assert "rollback()" in t and "Remove by hand" in t
+    assert 'find "$DEST" ! -user root' not in t

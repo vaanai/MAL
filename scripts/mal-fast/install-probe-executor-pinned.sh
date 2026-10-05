@@ -93,24 +93,41 @@ rm -rf "$VENV_NEW"
 /usr/bin/python3 -m venv "$VENV_NEW"
 "$VENV_NEW/bin/python" -I -m pip install --quiet --require-hashes --only-binary=:all: --no-deps --no-cache-dir --disable-pip-version-check \
   -r "$STAGE/requirements-probe-exec.txt"
+# Permission + symlink check of the staged tree and staged venv BEFORE anything is moved, so a failure
+# leaves nothing half-installed (the EXIT trap removes the stage and the new venv).
+chown -R root:root "$STAGE" "$VENV_NEW"
+CHECK="$HERE/check-probe-exec-tree.sh"
+"$CHECK" "$STAGE" "$VENV_NEW" || { echo "refusing: staged tree or venv failed the permission/symlink check; nothing was installed" >&2; exit 1; }
 # Smoke import from the staged tree with the new venv, before anything is moved.
 "$VENV_NEW/bin/python" -I -B -c "import sys; sys.path.insert(0, sys.argv[1]); import tools.probe_executor, tools.probe_live" "$STAGE"
 
-# Point of no return: put the sha dir and the venv in place (unit is stopped), then verify.
+# Point of no return: put the sha dir and the venv in place (unit is stopped), then verify. The previous
+# venv is kept as venv.old until the final checks pass so a failure can be rolled back.
+rollback() {
+  echo "ROLLBACK: $1" >&2
+  local ok=1
+  rm -rf "$DEST/$COMMIT" || ok=0
+  rm -rf "$DEST/venv" "$DEST/venv.$COMMIT" "$DEST/venv.$COMMIT.new" || ok=0
+  if [ -e "$DEST/venv.old" ]; then mv -T "$DEST/venv.old" "$DEST/venv" || ok=0; fi
+  if [ "$ok" -ne 1 ]; then
+    echo "rollback FAILED. Remove by hand as root, then rerun:" >&2
+    echo "  rm -rf $DEST/$COMMIT $DEST/venv.$COMMIT $DEST/venv.$COMMIT.new" >&2
+    echo "  (if $DEST/venv.old exists and $DEST/venv is bad: rm -rf $DEST/venv && mv $DEST/venv.old $DEST/venv)" >&2
+  fi
+  exit 1
+}
+rm -rf "$DEST/venv.old"
 mv -T "$STAGE" "$DEST/$COMMIT"
 STAGE=""
-rm -rf "$DEST/venv.old"
 if [ -e "$DEST/venv" ]; then mv -T "$DEST/venv" "$DEST/venv.old"; fi
 mv -T "$VENV_NEW" "$DEST/venv"
 VENV_NEW=""
-rm -rf "$DEST/venv.old"
-chown -R root:root "$DEST"
-if [ -n "$(find "$DEST" ! -user root -o -perm /022 2>/dev/null | head -n1)" ]; then
-  echo "refusing: $DEST has non-root-owned or group/world-writable entries" >&2
-  exit 1
-fi
+chown -R root:root "$DEST/$COMMIT" "$DEST/venv"
+"$CHECK" "$DEST/$COMMIT" "$DEST/venv" || rollback "post-move permission/symlink check failed"
 # Final smoke import from the final locations, before the pointer moves.
-"$DEST/venv/bin/python" -I -B -c "import sys; sys.path.insert(0, sys.argv[1]); import tools.probe_executor, tools.probe_live" "$DEST/$COMMIT"
+"$DEST/venv/bin/python" -I -B -c "import sys; sys.path.insert(0, sys.argv[1]); import tools.probe_executor, tools.probe_live" "$DEST/$COMMIT" \
+  || rollback "final smoke import failed"
+rm -rf "$DEST/venv.old"
 
 # Atomic switch of the pointer (last step).
 rm -f "$DEST/.current.tmp"
