@@ -99,3 +99,5 @@ EXP-012's edge rests on execution: its selected entries filled 98.9% of the time
 - At the end: a lab note with every number, reviewed by `quant-proof` before any sentence compares live to paper.
 
 - *2026-10-05 (owner's PR checker):* the §7 lab note reports attempts **grouped by executor build sha, never pooled**. Group `8a6849b` (pre-#307, about 14–15 slots of latency) is in `ARTIFACTS/lab/probe-live-2026-10-05.md`. Later groups are keyed by the pinned `<sha>` in use when each fill row was made.
+
+- *Note 2026-10-05 (base unit and kill file):* the pinned drop-in inherits `User=`, `Environment=`, `EnvironmentFile=` and hardening from `mal-probe-executor.service`, so while it is present `install-fast-forward-paper.sh` no longer installs that base unit; only `install-probe-executor-pinned.sh` (root clone, manifest including the unit, then a Helm restart) writes it. The paper runner's KILL file stops live buys only from the next intent row (`runner_kill` in `intents.jsonl`; the executor refuses with reason `runner_kill`). To stop live buys immediately, touch `/var/lib/mal-live/STOP`.
