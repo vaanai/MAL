@@ -466,7 +466,7 @@ def test_installer_probe_dryrun_only():
     fence = inst[inst.index("live key-holder fence"):inst.index("# --- date fence")]
     code = "\n".join(l for l in inst.replace(fence, "").splitlines() if not l.lstrip().startswith("#"))
     # (message text and comments may mention the pinned installer; no command may install or copy)
-    fence_cmds = "\n".join(l for l in fence.splitlines() if not l.lstrip().startswith(("#", "echo", "die", "*)")) and "NOTE" not in l)
+    fence_cmds = "\n".join(l for l in fence.splitlines() if not l.lstrip().startswith(("#", "echo ", "die ", "fence_note ")))
     assert not __import__("re").search(r"\binstall\b|\bcp\b", fence_cmds)
     assert "service.d" not in code and "LoadCredential" not in code and "live.conf" not in code
     assert "enable" not in "\n".join(l for l in inst.splitlines() if "PROBE" in l)
@@ -553,6 +553,49 @@ def test_forward_install_dry_run_reports_probe_unit_decision(kit_repo, tmp_path)
     env2 = _full_install_env(tmp_path / "n", pinned=False) if (tmp_path / "n").mkdir() is None else None
     r = _fwd(kit_repo["repo"], "--dry-run", "--commit", kit_repo["good"], env=env2)
     assert r.returncode == 0 and "mal-probe-executor.service" in r.stdout
+
+
+def test_forward_install_notes_split_missing_and_differs(kit_repo, tmp_path):
+    env = _full_install_env(tmp_path, pinned=True)
+    r = _fwd(kit_repo["repo"], "--commit", kit_repo["good"], env=env)
+    assert r.returncode == 0, r.stderr
+    assert "is MISSING" in r.stderr and "DIFFERS" not in r.stderr
+    assert not (tmp_path / "systemd" / "mal-probe-executor.service").exists()
+    env2 = _full_install_env(tmp_path / "d", pinned=True) if (tmp_path / "d").mkdir() is None else None
+    (tmp_path / "d" / "systemd" / "mal-probe-executor.service").write_text("[Service]\nUser=other\n")
+    r = _fwd(kit_repo["repo"], "--commit", kit_repo["good"], env=env2)
+    assert "DIFFERS" in r.stderr and "is MISSING" not in r.stderr
+
+
+def test_forward_install_scans_run_and_lib_dropin_dirs(kit_repo, tmp_path):
+    """A non-pinned drop-in in the /run or /usr/lib copies of the drop-in dir (test-mode overrides) also refuses."""
+    for var, sub in (("MAL_PROBE_DROPIN_RUN_DIR", "runx"), ("MAL_PROBE_DROPIN_LIB_DIR", "libx")):
+        tp = tmp_path / sub
+        tp.mkdir()
+        env = _full_install_env(tp, pinned=False)
+        d = tp / "other.service.d"
+        d.mkdir()
+        (d / "evil.conf").write_text((KIT / "mal-probe-executor-live.conf").read_text())
+        env[var] = str(d)
+        r = _fwd(kit_repo["repo"], "--commit", kit_repo["good"], env=env)
+        assert r.returncode != 0 and "non-pinned" in r.stderr, (var, r.stderr)
+
+
+def test_fence_merges_dirs_with_masking(tmp_path):
+    fence = _fence()
+    a, b = tmp_path / "etc", tmp_path / "lib"
+    a.mkdir()
+    b.mkdir()
+    (b / "live.conf").write_text("[Service]\nLoadCredential=probe-wallet:/x\nExecStart=\nExecStart=/bin/evil\n")
+    assert fence.verdict_dirs([a, b], PINNED_CONF).startswith("unpinned")
+    (a / "live.conf").write_text("[Unit]\nDescription=masks the lib file\n")  # same name in the higher dir masks it
+    assert fence.verdict_dirs([a, b], PINNED_CONF) == "none"
+
+
+def test_forward_install_rechecks_fence_before_unit_install():
+    t = (KIT / "install-fast-forward-paper.sh").read_text()
+    assert t.index("FENCE_PASS=recheck") < t.index('for u in "${UNITS[@]}"')
+    assert t.count("\nfence_eval\n") == 2 and "SKIP_PROBE_UNIT=0" in t
 
 
 def test_forward_install_allowed_when_pinned_conf_is_installed_as_live_conf(kit_repo, tmp_path):

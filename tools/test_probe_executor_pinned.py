@@ -73,6 +73,7 @@ def closure_files() -> list[str]:
 
 
 BASE_UNIT = "scripts/mal-fast/mal-probe-executor.service"
+CHECKER = "scripts/mal-fast/check-probe-base-unit.py"
 
 
 def installer_var(name: str) -> str:
@@ -201,7 +202,7 @@ def _run_installer(tmp_path, *args, fake_root=True, tamper=None, mode="755"):
     clone = tmp_path / "clone"
     (clone / "scripts/mal-fast").mkdir(parents=True)
     (clone / "tools").mkdir()
-    files = closure_files() + [e.split(":")[0] for e in installer_var("EXTRA").split()] + [BASE_UNIT]
+    files = closure_files() + [e.split(":")[0] for e in installer_var("EXTRA").split()] + [BASE_UNIT, CHECKER]
     for f in files:
         shutil.copy(ROOT / f, clone / f)
     shutil.copy(INSTALL, clone / "scripts/mal-fast/install-probe-executor-pinned.sh")
@@ -227,7 +228,9 @@ def _run_installer(tmp_path, *args, fake_root=True, tamper=None, mode="755"):
         p.write_text("#!/bin/sh\n" + body + "\n")
         p.chmod(0o755)
     manifest = None
-    if tamper is not None:
+    if tamper is None:
+        tamper = lambda lines: lines  # noqa: E731  the manifest is mandatory
+    if True:
         lines = []
         for f in files:
             h = subprocess.run(["sha256sum", str(clone / f)], capture_output=True, text=True).stdout.split()[0]
@@ -292,7 +295,7 @@ def test_refuses_while_executor_active(tmp_path):
     (tmp_path / "bin/systemctl").write_text("#!/bin/sh\nexit 0\n")
     sh = tmp_path / "clone/scripts/mal-fast/install-probe-executor-pinned.sh"
     sha = subprocess.run(["git", "-C", str(tmp_path / "clone"), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-    r = subprocess.run(["bash", str(sh), sha], env={"PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"},
+    r = subprocess.run(["bash", str(sh), sha, str(tmp_path / "manifest")], env={"PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"},
                        capture_output=True, text=True)
     assert r.returncode != 0 and "is active; stop it first" in r.stderr and "FAKE-INSTALL" not in r.stdout
 
@@ -327,7 +330,7 @@ def test_runbook_sudo_and_helius_env_note():
     t = (ROOT / "docs/runbooks/probe-executor.md").read_text()
     assert not re.search(r"(^|`)touch /var/lib/mal-live", t, re.M)
     assert "sudo touch /var/lib/mal-live/STOP" in t
-    assert "helius.env` is root-owned, mode 0600" in t and "LD_PRELOAD" in t
+    assert "holding `helius.env` (`root:root`, mode 0600" in t and "LD_PRELOAD" in t and "/etc/mal-probe-rpc" in t
     assert "install-fast-forward-paper.sh" in t and "live-pinned.conf" in t
 
 
@@ -416,7 +419,7 @@ def test_installer_moves_all_guarded_by_rollback():
         if re.match(r"\s*(mv -T|chown)\b", ln):
             assert "|| rollback" in ln, ln
             n += 1
-    assert n == 4
+    assert n == 5
     assert tail.index("OLD_MOVED=1") < tail.index('mv -T "$VENV_NEW" "$DEST/venv"')
     # a failed first mv must not delete the previous venv: venv is removed only once the new one was placed
     assert 'if [ "$NEW_PLACED" -eq 1 ]; then rm -rf "$DEST/venv"' in t
@@ -436,43 +439,146 @@ def test_installer_checks_before_moves_and_rolls_back():
     assert 'find "$DEST" ! -user root' not in t
 
 
-def test_base_unit_is_manifest_checked_and_installed_after_pointer_switch():
+def test_base_unit_and_checker_are_manifest_checked_and_unit_installed_before_pointer_switch():
     t = INSTALL.read_text()
     assert 'BASE_UNIT_SRC="scripts/mal-fast/mal-probe-executor.service"' in t
-    assert BASE_UNIT == "scripts/mal-fast/mal-probe-executor.service" and (ROOT / BASE_UNIT).is_file()
-    # same git-show + manifest loop as MODULES/EXTRA: it is appended to PATHS before both
-    assert t.index('PATHS="$PATHS $BASE_UNIT_SRC"') < t.index('"${G[@]}" show "$COMMIT:$f"') < t.index('sha256 mismatch or missing manifest entry')
-    # written only after the pointer switch, root-owned, then daemon-reload
-    assert t.index('mv -T "$DEST/.current.tmp" "$DEST/current"') < t.index('install -m 0644 -o root -g root "$TMP/$BASE_UNIT_SRC" "$BASE_UNIT_DEST"')
-    assert "systemctl daemon-reload" in t and "STOPPED" in t
+    assert 'BASE_UNIT_CHECK="scripts/mal-fast/check-probe-base-unit.py"' in t
+    assert (ROOT / BASE_UNIT).is_file() and (ROOT / CHECKER).is_file()
+    # same git-show + manifest loop as MODULES/EXTRA: both are appended to PATHS before it
+    assert t.index('PATHS="$PATHS $BASE_UNIT_SRC $BASE_UNIT_CHECK"') < t.index('"${G[@]}" show "$COMMIT:$f"') < t.index('sha256 mismatch or missing manifest entry')
+    # the checker copy from the commit (in $TMP) runs under -I before anything is installed or moved
+    run_check = t.index('/usr/bin/python3 -I "$TMP/$BASE_UNIT_CHECK" "$TMP/$BASE_UNIT_SRC"')
+    assert run_check < t.index("is-active --quiet")
+    # staged as .new, renamed into place and reloaded BEFORE the pointer switch; rollback restores the previous unit
+    stage = t.index('install -m 0644 -o root -g root "$TMP/$BASE_UNIT_SRC" "$BASE_UNIT_DEST.new"')
+    place = t.index('mv -T "$BASE_UNIT_DEST.new" "$BASE_UNIT_DEST"')
+    reload_ = t.index('systemctl daemon-reload || rollback')
+    pointer = t.index('mv -T "$DEST/.current.tmp" "$DEST/current"')
+    assert stage < place < reload_ < pointer
+    assert 'mv -T "$BASE_UNIT_DEST.old" "$BASE_UNIT_DEST"' in t and "UNIT_PLACED" in t
+    assert "grep" not in t[t.index("Allowlist check"):t.index("is-active --quiet")]
 
 
-def test_base_unit_guard_user_and_ld_and_envfile():
-    t = INSTALL.read_text()
-    assert "User=mal-live" in t and "Environment=.*LD_" in t and "EnvironmentFile=/var/lib/mal/fast-listener/helius.env" in t
-    assert t.index("User=mal-live") < t.index("is-active --quiet")  # guard runs before anything is installed
+def test_manifest_argument_is_mandatory(tmp_path):
+    _run_installer(tmp_path, "SHA")  # builds the clone and bin/
+    clone = tmp_path / "clone"
+    sha = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    env = {"PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"}
+    r = subprocess.run(["bash", str(clone / "scripts/mal-fast/install-probe-executor-pinned.sh"), sha], env=env, capture_output=True, text=True)
+    assert r.returncode != 0 and "manifest argument is mandatory" in r.stderr and "FAKE-INSTALL" not in r.stdout
+
+
+def _checker():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("check_probe_base_unit", ROOT / CHECKER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_checker_accepts_the_shipped_unit_and_has_the_intended_hardening():
+    c = _checker()
     unit = (ROOT / BASE_UNIT).read_text()
-    assert "User=mal-live" in unit.splitlines() and "LD_" not in unit
+    assert c.problems(unit) == []
+    assert "EnvironmentFile=/etc/mal-probe-rpc/helius.env" in unit.splitlines()
+    assert any(l.startswith("ExecStartPre=+/bin/sh -c 'test ") for l in unit.splitlines())
+    assert "Slice=" not in unit
+    assert "fast-listener" not in "\n".join(l for l in unit.splitlines() if not l.startswith("#"))
+    assert "ExecStartPre=" + c.PRE in unit.splitlines()
+
+
+def _mutations():
+    unit = (ROOT / BASE_UNIT).read_text()
+    pre = next(l for l in unit.splitlines() if l.startswith("ExecStartPre="))
+    return {
+        "later User=root": unit.replace("[Install]", "User=root\n[Install]"),
+        "later User=root in Service": unit.replace("MemorySwapMax=0", "MemorySwapMax=0\nUser=root"),
+        "empty User=": unit.replace("User=mal-live", "User="),
+        "Environment spaced LD_": unit.replace("Environment=LANG=C.UTF-8", "Environment=LANG=C.UTF-8\nEnvironment = LD_PRELOAD=/x.so"),
+        "continuation": unit.replace("Environment=LANG=C.UTF-8", "Environment=LANG=C.UTF-8 \\\n LD_PRELOAD=/x.so"),
+        "continuation of User": unit.replace("User=mal-live", "User=mal-live \\\nroot"),
+        "ExecStartPre +/tmp/x": unit.replace(pre, pre + "\nExecStartPre=+/tmp/x"),
+        "ExecStartPre replaced": unit.replace(pre, "ExecStartPre=+/tmp/x"),
+        "ExecStartPost": unit.replace("Restart=on-failure", "ExecStartPost=/tmp/x\nRestart=on-failure"),
+        "ReadWritePaths=/": unit.replace("ReadWritePaths=/var/lib/mal-live", "ReadWritePaths=/"),
+        "extra ReadWritePaths": unit.replace("ReadWritePaths=/var/lib/mal-live", "ReadWritePaths=/var/lib/mal-live\nReadWritePaths=/etc"),
+        "CapabilityBoundingSet set": unit.replace("CapabilityBoundingSet=\n", "CapabilityBoundingSet=CAP_SYS_ADMIN\n"),
+        "CapabilityBoundingSet removed": unit.replace("CapabilityBoundingSet=\n", ""),
+        "duplicate Service": unit.replace("[Install]", "[Service]\nUser=root\n[Install]"),
+        "unknown section": unit.replace("[Install]", "[Socket]\nListenStream=1\n[Install]"),
+        "PassEnvironment": unit.replace("Nice=10", "Nice=10\nPassEnvironment=LD_PRELOAD"),
+        "UnsetEnvironment": unit.replace("Nice=10", "Nice=10\nUnsetEnvironment=HOME"),
+        "BindPaths": unit.replace("Nice=10", "Nice=10\nBindPaths=/etc"),
+        "old ubuntu env file": unit.replace("/etc/mal-probe-rpc/helius.env", "/var/lib/mal/fast-listener/helius.env"),
+        "dash env file": unit.replace("EnvironmentFile=/etc", "EnvironmentFile=-/etc"),
+        "second EnvironmentFile": unit.replace("Nice=10", "Nice=10\nEnvironmentFile=/tmp/e"),
+        "Slice back": unit.replace("Nice=10", "Nice=10\nSlice=mal-forward.slice"),
+        "ExecStart changed": unit.replace("-m tools.probe_executor", "-m tools.evil"),
+        "line outside section": "User=root\n" + unit,
+        "no equals": unit.replace("Nice=10", "Nice=10\ngarbage"),
+        "reordered": unit.replace("Type=simple\nUser=mal-live", "User=mal-live\nType=simple"),
+    }
+
+
+def test_checker_refuses_every_bypass():
+    c = _checker()
+    muts = _mutations()
+    assert len(muts) >= 25
+    good = (ROOT / BASE_UNIT).read_text()
+    for name, text in muts.items():
+        assert text != good, name
+        assert c.problems(text), f"checker accepted: {name}"
+
+
+def test_checker_normalises_only_whitespace_around_equals():
+    c = _checker()
+    unit = (ROOT / BASE_UNIT).read_text()
+    assert c.problems(unit.replace("User=mal-live", "User = mal-live")) == []
+    assert c.problems(unit.replace("User=mal-live", "User=mal-live2"))
+
+
+def _hash_manifest(clone, files):
+    import hashlib
+
+    return "\n".join(f"{hashlib.sha256((clone / f).read_bytes()).hexdigest()}  {f}" for f in files) + "\n"
 
 
 def _bad_unit_run(tmp_path, old, new):
-    # build the clone via the normal harness, then edit the unit, recommit and rerun
+    # build the clone via the normal harness, edit the unit, recommit, regenerate the manifest (so only the checker can refuse)
     r = _run_installer(tmp_path, "SHA", tamper=lambda lines: lines)
     assert "FAKE-INSTALL" in r.stdout
     clone = tmp_path / "clone"
     u = clone / BASE_UNIT
+    assert old in u.read_text()
     u.write_text(u.read_text().replace(old, new))
     g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(clone)]
     subprocess.run([*g, "commit", "-q", "-am", "bad"], check=True)
     sha = subprocess.run([*g, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-    return subprocess.run(["bash", str(clone / "scripts/mal-fast/install-probe-executor-pinned.sh"), sha],
+    files = closure_files() + [e.split(":")[0] for e in installer_var("EXTRA").split()] + [BASE_UNIT, CHECKER]
+    (tmp_path / "manifest").write_text(_hash_manifest(clone, files))
+    return subprocess.run(["bash", str(clone / "scripts/mal-fast/install-probe-executor-pinned.sh"), sha, str(tmp_path / "manifest")],
                           env={"PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"}, capture_output=True, text=True)
 
 
-def test_bad_base_unit_refused_before_any_install(tmp_path):
-    r = _bad_unit_run(tmp_path / "a", "User=mal-live", "User=root")
-    assert r.returncode != 0 and "User=mal-live" in r.stderr and r.stdout.count("FAKE-INSTALL") == 0
-    r = _bad_unit_run(tmp_path / "b", "Environment=LC_ALL=C.UTF-8", "Environment=LD_PRELOAD=/x.so")
-    assert r.returncode != 0 and "LD_" in r.stderr and "FAKE-INSTALL" not in r.stdout
-    r = _bad_unit_run(tmp_path / "c", "EnvironmentFile=/var/lib/mal/fast-listener/helius.env", "EnvironmentFile=/tmp/evil.env")
-    assert r.returncode != 0 and "EnvironmentFile" in r.stderr and "FAKE-INSTALL" not in r.stdout
+def test_installer_runs_checker_and_refuses_bad_unit_before_any_install(tmp_path):
+    cases = [
+        ("User=mal-live", "User=root"),
+        ("Environment=LC_ALL=C.UTF-8", "Environment = LD_PRELOAD=/x.so"),
+        ("EnvironmentFile=/etc/mal-probe-rpc/helius.env", "EnvironmentFile=/var/lib/mal/fast-listener/helius.env"),
+    ]
+    for i, (old, new) in enumerate(cases):
+        r = _bad_unit_run(tmp_path / str(i), old, new)
+        assert r.returncode != 0 and "failed the allowlist check" in r.stderr and "FAKE-INSTALL" not in r.stdout, (old, r.stderr)
+        assert "manifest verified" in r.stdout
+
+
+def test_tampered_checker_refused_by_manifest(tmp_path):
+    r = _run_installer(tmp_path, "SHA", tamper=lambda lines: [f"{'0' * 64}  {l.split('  ')[1]}" if l.endswith(CHECKER) else l for l in lines])
+    assert r.returncode != 0 and "sha256 mismatch" in r.stderr and "FAKE-INSTALL" not in r.stdout
+
+
+def test_withdraw_default_rpc_env_is_the_root_only_file():
+    from tools import probe_withdraw
+
+    assert probe_withdraw.DEFAULT_RPC_ENV == "/etc/mal-probe-rpc/helius.env"

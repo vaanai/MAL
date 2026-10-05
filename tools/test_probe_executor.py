@@ -7,6 +7,7 @@ import json
 import re
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from tools import probe_executor as pe
@@ -417,6 +418,56 @@ def intent_row(**kw):
     return json.dumps(row) + "\n"
 
 
+class RpcEnvDirTests(unittest.TestCase):
+    """The key holder's EnvironmentFile dir /etc/mal-probe-rpc must be root:root 0700; checked before the key loads."""
+
+    def _check(self, live, **st):
+        import io
+        import os
+        import stat
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            res = os.stat(d)
+            fake = mock.Mock(st_mode=st.get("mode", stat.S_IFDIR | 0o700), st_uid=st.get("uid", 0), st_gid=st.get("gid", 0))
+            with mock.patch.object(pe, "RPC_ENV_DIR", d), mock.patch.object(pe.os, "stat", return_value=fake):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = pe.startup_rpc_env_check(live)
+            self.assertIsNotNone(res)
+            return rc, buf.getvalue()
+
+    def test_good_dir_passes(self):
+        self.assertEqual(self._check(True), (0, ""))
+
+    def test_live_refuses_wrong_owner_group_mode_or_type(self):
+        import stat
+
+        for kw in ({"uid": 1000}, {"gid": 1000}, {"mode": stat.S_IFDIR | 0o755}, {"mode": stat.S_IFDIR | 0o770},
+                   {"mode": stat.S_IFREG | 0o700}):
+            rc, out = self._check(True, **kw)
+            self.assertEqual(rc, 2, kw)
+            self.assertIn("ALERT startup_refused rpc_env", out)
+
+    def test_dry_run_only_warns(self):
+        rc, out = self._check(False, uid=1000)
+        self.assertEqual(rc, 0)
+        self.assertIn("WARNING rpc_env", out)
+        self.assertNotIn("ALERT", out)
+
+    def test_missing_dir_live_refuses_dry_run_warns(self):
+        from unittest import mock
+
+        with mock.patch.object(pe, "RPC_ENV_DIR", "/nonexistent/mal-probe-rpc-test"):
+            self.assertEqual(pe.startup_rpc_env_check(True), 2)
+            self.assertEqual(pe.startup_rpc_env_check(False), 0)
+
+    def test_check_runs_before_the_key_is_loaded(self):
+        src = Path(pe.__file__).read_text()
+        self.assertLess(src.index("startup_rpc_env_check(mode =="), src.index("probe_live.run_live(cfg"))
+
+
 class IntentTests(unittest.TestCase):
     def test_parse_intent_whitelists_fields(self):
         got = pe.parse_intent(intent_row(pnl_lamports=5, creator="X"), pe.DEFAULT_BOOK, "ceiling")
@@ -494,7 +545,8 @@ class MissingSignalsTests(unittest.TestCase):
             cfgp.write_text(json.dumps(cfg))
             out = io.StringIO()
             with redirect_stdout(out):
-                rc = pe.main(["--config", str(cfgp), "--live"])
+                with unittest.mock.patch.object(pe, "rpc_env_problem", return_value=None):
+                    rc = pe.main(["--config", str(cfgp), "--live"])
             self.assertEqual(rc, 2)
             self.assertIn("ALERT startup_refused", out.getvalue())
             self.assertIn("start the runner first", out.getvalue())
