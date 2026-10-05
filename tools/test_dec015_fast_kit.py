@@ -140,7 +140,7 @@ def test_tip_follower_unit_and_installer():
     assert "api-key" not in unit.lower() and "HELIUS_API_KEY=" not in unit
     inst = (KIT / "install-fast-forward-paper.sh").read_text()
     assert 'TIP_UNIT="mal-fast-tip-follower.service"' in inst
-    assert '"${TIP_UNIT}"; do' in inst
+    assert '"${TIP_UNIT}" "${PROBE_UNIT}"; do' in inst
     cfg = json.loads(CFG.read_text())
     assert cfg["tape_dir"] == "/var/lib/mal/sealed/fast-trades-tip"  # switched: pumpswap_virtual=require needs the tip tape
 
@@ -462,7 +462,8 @@ def test_installer_probe_dryrun_only():
     assert 'PROBE_UNIT="mal-probe-executor.service"' in inst
     assert '"${TIP_UNIT}" "${PROBE_UNIT}"; do' in inst
     assert "scripts/mal-fast/probe-executor.json scripts/mal-fast/probe-executor-live.json" in inst
-    assert "service.d" not in inst and "LoadCredential" not in inst
+    code = "\n".join(l for l in inst.splitlines() if not l.lstrip().startswith("#"))
+    assert "service.d" not in code and "LoadCredential" not in code and "live.conf" not in code
     assert "enable" not in "\n".join(l for l in inst.splitlines() if "PROBE" in l)
     unit = (KIT / "mal-probe-executor.service").read_text()
     assert "LoadCredential" not in unit
