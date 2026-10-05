@@ -25,6 +25,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import urllib.request
 from pathlib import Path
@@ -39,11 +40,26 @@ DEFAULT_ENV_FILE = "/var/lib/mal/backfill/helius.env"
 DEFAULT_SOL = 0.5
 DEFAULT_SLIPPAGE_BPS = 300
 LAMPORTS = 1_000_000_000
+# Local copies of tools.pump_history_backfill.helius_http_url / redact_rpc_url (a test pins them equal).
+# That module imports observe.*; the root-owned pinned live executor install ships only tools/ modules
+# the executor needs, so this module must not import it.
+HELIUS_HTTP = "https://mainnet.helius-rpc.com"
+_API_KEY_RE = re.compile(r"(api-key=)[^&\s\"']+", re.IGNORECASE)
+
+
+def helius_http_url(api_key: str, base: str = HELIUS_HTTP) -> str:
+    """RPC URL for a Helius key. Caller must not log the return value."""
+    key = api_key.strip()
+    if not key or any(ch in key for ch in "\r\n& #"):
+        raise ValueError("HELIUS_API_KEY is empty or unsafe")
+    return f"{base.rstrip('/')}/?api-key={key}"
+
+
+def redact_rpc_url(text: str) -> str:
+    return _API_KEY_RE.sub(r"\1REDACTED", text)
 
 
 def load_rpc_url(explicit: str | None, env_file: str) -> str:
-    from tools.pump_history_backfill import helius_http_url
-
     if explicit:
         return explicit
     key = (os.environ.get("HELIUS_API_KEY") or "").strip()
@@ -65,8 +81,6 @@ class Rpc:
         self.calls = 0
 
     def __call__(self, method: str, params: list) -> dict:
-        from tools.pump_history_backfill import redact_rpc_url
-
         self.calls += 1
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
         req = urllib.request.Request(self._url, body, {"Content-Type": "application/json"})

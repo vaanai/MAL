@@ -28,5 +28,22 @@ class SimulateHelperTests(unittest.TestCase):
         self.assertEqual(s.load_rpc_url("http://localhost:8899", "/nonexistent"), "http://localhost:8899")
 
 
+
+class LocalRpcHelpersMatchBackfill(unittest.TestCase):
+    """pumpswap_simulate carries local copies so the pinned executor need not import observe.*."""
+
+    def test_same_behaviour(self):
+        from tools import pump_history_backfill as b
+
+        self.assertEqual(s.HELIUS_HTTP, b.HELIUS_HTTP)
+        self.assertEqual(s.helius_http_url(" k1 "), b.helius_http_url(" k1 "))
+        for bad in ("", "a b", "a&b", "a\nb"):
+            with self.assertRaises(ValueError):
+                s.helius_http_url(bad)
+        t = "failed https://x/?api-key=SECRET&y=1 'api-key=ZZ'"
+        self.assertEqual(s.redact_rpc_url(t), b.redact_rpc_url(t))
+        self.assertNotIn("SECRET", s.redact_rpc_url(t))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -83,6 +83,24 @@ run() {
   fi
 }
 
+# --- live key-holder fence (DEC-019) ---
+# A routine reinstall swaps ${FWD}/src and the units. While a live drop-in exists the probe executor may hold
+# the wallet key, so code under it must never change here. Refuse every mode except --dry-run. The drop-in
+# dir is fixed at /etc/systemd/system/mal-probe-executor.service.d; only test mode (MAL_FORWARD_OWNER set
+# and empty) may point it elsewhere, via MAL_PROBE_DROPIN_DIR (default: under MAL_SYSTEMD_DIR).
+if [[ -z "${MAL_FORWARD_OWNER+x}" || -n "${MAL_FORWARD_OWNER}" ]]; then
+  PROBE_DROPIN_DIR="/etc/systemd/system/mal-probe-executor.service.d"
+else
+  PROBE_DROPIN_DIR="${MAL_PROBE_DROPIN_DIR:-${SYSTEMD_DIR}/mal-probe-executor.service.d}"
+fi
+if [[ "${DRY}" == 0 ]]; then
+  for c in live.conf live-pinned.conf; do
+    if [[ -e "${PROBE_DROPIN_DIR}/${c}" || -L "${PROBE_DROPIN_DIR}/${c}" ]]; then
+      die "refusing: ${PROBE_DROPIN_DIR}/${c} exists, so the probe executor is configured LIVE and may hold the wallet key. A routine reinstall must never swap code or units under a live key-holding process. Helm or the owner removes the drop-in (DEC-019, docs/runbooks/probe-executor.md) first. --dry-run is still allowed."
+    fi
+  done
+fi
+
 # --- date fence (ISO-8601 Z strings sort lexically) ---
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [[ "${FILES_ONLY}" == 0 && "${NOW}" < "${NOT_BEFORE}" ]]; then
