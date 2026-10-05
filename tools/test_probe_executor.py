@@ -44,11 +44,12 @@ class FakeRpc:
             return {"context": {"slot": 77}, "value": {"owner": self.owner, "data": [self.pool_b64, "base64"], "lamports": 1}}
         if method == "getMultipleAccounts":
             self.multi_keys = list(params[0])
-            vals = [{"owner": getattr(self, "mint_owner", str(tx.TOKEN_2022_PROGRAM)), "data": ["", "base64"], "lamports": 1},
-                    tok_acct(self.base), tok_acct(self.quote)]
-            if str(tx.GLOBAL_CONFIG) in params[0]:  # like the chain: one value per key requested
-                vals.insert(0, {"owner": "x", "data": [GC["data_b64"], "base64"], "lamports": 1})
-            return {"context": {"slot": 77}, "value": vals}
+            self.multi_params = params
+            served = tx.parse_pool_account(base64.b64decode(self.pool_b64))
+            by_key = {str(served["base_mint"]): {"owner": getattr(self, "mint_owner", str(tx.TOKEN_2022_PROGRAM)), "data": ["", "base64"], "lamports": 1},
+                      str(served["base_vault"]): tok_acct(self.base), str(served["quote_vault"]): tok_acct(self.quote),
+                      str(tx.GLOBAL_CONFIG): {"owner": "x", "data": [GC["data_b64"], "base64"], "lamports": 1}}
+            return {"context": {"slot": 77}, "value": [by_key[k] for k in params[0]]}  # like the chain: one value per key requested
         if method == "simulateTransaction":
             if self.sim_err:
                 return {"value": {"err": self.sim_err, "logs": ["Program x failed: custom program error: 0x1"], "unitsConsumed": 1}}

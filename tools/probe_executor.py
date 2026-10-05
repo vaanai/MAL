@@ -68,6 +68,9 @@ STATIC_TTL_MS = 300_000  # cached global config is never used past this age
 STATIC_REFRESH_MS = 60_000  # the slow loop refreshes it this often
 PRIORITY_BURST = 4  # buy-path calls may run up to this many rate-limit intervals ahead; sustained rate is unchanged
 IDLE_SLICE_S = 0.02
+BATCH_MAX_AGE_MS = 1_000  # a batched exit snapshot is not used to price a position once it is older than this
+BATCH_ERR_LOG_EVERY_MS = 60_000
+EXIT_POLL_MS_MIN = 200  # floor for the open-position poll (`exit_poll_ms`)
 
 
 def clamp_signal_poll_ms(value: Any) -> int:
@@ -75,6 +78,13 @@ def clamp_signal_poll_ms(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         return SIGNAL_POLL_MS_DEFAULT
     return int(min(SIGNAL_POLL_MS_MAX, max(SIGNAL_POLL_MS_MIN, value)))
+
+
+def clamp_exit_poll_ms(value: Any, poll_ms: int) -> int:
+    """Open-position poll period: default (absent or unparseable) = `poll_ms`; otherwise clamped to [200, poll_ms]."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return poll_ms
+    return int(min(poll_ms, max(EXIT_POLL_MS_MIN, value)))
 
 
 # --- limits (pure; the live mode must import and use this unchanged) -------------------------
@@ -676,14 +686,25 @@ class Executor:
         self.max_signal_age_ms = int(float(cfg.get("max_signal_age_s", 120)) * 1000)
         self.signal_poll_ms = clamp_signal_poll_ms(cfg.get("signal_poll_ms", SIGNAL_POLL_MS_DEFAULT))
         self.poll_ms = int(max(1.0, float(cfg.get("poll_s", 5.0))) * 1000)  # slow loop: positions, exits, pre-warm
+        self.fast_exit = "exit_poll_ms" in cfg  # the exit fast path (batched vault read, buy-meta sell amount, priority) is opt-in
+        self.exit_poll_ms = clamp_exit_poll_ms(cfg.get("exit_poll_ms"), self.poll_ms)
+        self.exit_commitment = cfg.get("exit_commitment") or self.commitment  # exit snapshot + sell quote only
         self.static = StaticCache()
+        self._pool_cache: dict[str, tuple[tx.PoolState, int | None, int]] = {}  # mint -> (pool state, V, parsed at ms)
         self._crit = 0
         self._last_slow: int | None = None
+        self._last_pos: int | None = None
+        self._batch_ms = 0  # when the last batched exit read returned
+        self._batch_err_ms: int | None = None
 
     def _prio(self):
         """Rate-limiter priority for the buy path (a no-op for a plain callable rpc)."""
         fn = getattr(self.rpc, "priority", None)
         return fn() if fn else contextlib.nullcontext()
+
+    def _exit_prio(self):
+        """Exit-path calls skip ahead of non-urgent calls on the limiter (fast-exit configs only)."""
+        return self._prio() if self.fast_exit else contextlib.nullcontext()
 
     # -- helpers
     def _log(self, kind: str, mint: str, **kw: Any) -> None:
@@ -692,20 +713,81 @@ class Executor:
     def _skip(self, sig: dict[str, Any], reason: str, **kw: Any) -> None:
         self._log("skip", sig["mint"], reason=reason, decision_t_ms=sig["decision_t_ms"], **kw)
 
-    def _snapshot(self, mint: str) -> tuple[Snapshot | None, str, str | None]:
+    def _snapshot(self, mint: str, commitment: str | None = None) -> tuple[Snapshot | None, str, str | None]:
         try:
             pool = str(tx.canonical_pool(Pubkey.from_string(mint)))
         except ValueError:
             return None, "", "bad_mint"
         try:
-            snap = fetch_snapshot(self.rpc, pool, self.commitment, self.user, self.static, self.now_ms())
+            snap = fetch_snapshot(self.rpc, pool, commitment or self.commitment, self.user, self.static, self.now_ms())
         except (Exception, SystemExit) as exc:  # label only; Ctrl-C and crashes still propagate
             return None, pool, error_label(exc)
         if isinstance(snap, str):
             return None, pool, snap
         if str(snap.ps.base_mint) != mint or snap.ps.quote_mint != tx.WSOL_MINT:
             return None, pool, "no_canonical_pool"
+        if self.fast_exit:
+            self._pool_cache[mint] = (snap.ps, snap.v, self.now_ms())  # vault addresses and V are constant per pool
         return snap, pool, None
+
+    def _batched_exit_snapshots(self, mints: list[str]) -> dict[str, Snapshot]:
+        """ONE getMultipleAccounts for the base+quote vaults of every listed position whose pool was already
+        parsed (cache younger than STATIC_TTL_MS). Pool state and V come from the cache. Evidence that they are
+        constant per pool: tools/pumpswap_virtual_history.py (PR #280) found V about 17.584 SOL, constant per pool
+        across 2026-08-26 to 09-21, and the live fills show v_lamports 17,584,505,493 and 17,584,505,488 on two
+        different pools. The 300 s TTL still bounds how long a cached entry is trusted. Anything missing or
+        unparseable is simply left out: the caller falls back to a full `fetch_snapshot` for it."""
+        if not self.fast_exit:
+            return {}
+        now = self.now_ms()
+        ok = [m for m in mints if m in self._pool_cache and 0 <= now - self._pool_cache[m][2] < STATIC_TTL_MS]
+        if not ok:
+            return {}
+        keys: list[str] = []
+        for m in ok:
+            ps = self._pool_cache[m][0]
+            keys += [str(ps.base_vault), str(ps.quote_vault)]
+        out: dict[str, Snapshot] = {}
+        try:
+            with self._prio():
+                multi = self.rpc("getMultipleAccounts", [keys, {"encoding": "base64", "commitment": self.exit_commitment}])
+            vals = list(multi["value"])
+            if len(vals) != len(keys):
+                self._batch_err("bad_value_count")
+                return {}
+            slot = int((multi.get("context") or {}).get("slot") or 0)
+            for i, m in enumerate(ok):
+                bv, qv = vals[2 * i], vals[2 * i + 1]
+                if not (bv and qv):
+                    continue
+                ps, v, _t = self._pool_cache[m]
+                out[m] = Snapshot(ps, slot, sim.token_amount(sim._b64(qv)), sim.token_amount(sim._b64(bv)), v)
+        except (Exception, SystemExit) as exc:  # the full fetch is the fallback; log the label at most once a minute
+            self._batch_err(error_label(exc))
+            return {}
+        self._batch_ms = self.now_ms()
+        return out
+
+    def _batch_err(self, label: str) -> None:
+        now = self.now_ms()
+        if self._batch_err_ms is None or not 0 <= now - self._batch_err_ms < BATCH_ERR_LOG_EVERY_MS:
+            self._batch_err_ms = now
+            self._log("batch_fallback", "", label=label)
+
+    def _batch_stale(self, mint: str, batched: dict[str, Snapshot]) -> bool:
+        """True when `mint` would be priced from a batch fetched more than BATCH_MAX_AGE_MS ago (an earlier
+        sell in this pass was slow). The caller skips it; the next tick re-fetches."""
+        return mint in batched and self.now_ms() - self._batch_ms > BATCH_MAX_AGE_MS
+    def _exit_snapshot(self, mint: str, batched: dict[str, Snapshot]) -> tuple[Snapshot | None, str, str | None, str]:
+        """(snapshot, pool, err, "batched"|"full") for one open position."""
+        if mint in batched:
+            return batched[mint], str(self._pool_cache[mint][0].pool), None, "batched"
+        with self._exit_prio():
+            snap, pool, err = self._snapshot(mint, self.exit_commitment)
+        return snap, pool, err, "full"
+
+    def _exit_fields(self, kind: str) -> dict[str, Any]:
+        return {"exit_poll_ms": self.exit_poll_ms, "exit_commitment": self.exit_commitment, "exit_snapshot": kind}
 
     @staticmethod
     def _sim_summary(res: dict) -> dict[str, Any]:
@@ -783,10 +865,13 @@ class Executor:
 
     # -- exit
     def poll_positions(self) -> None:
+        batched = self._batched_exit_snapshots(list(self.state.open))
         for mint, pos in list(self.state.open.items()):
             if check_sell(check_halt_file(self.limits)):
                 return
-            snap, _pool, err = self._snapshot(mint)
+            if self._batch_stale(mint, batched):
+                continue
+            snap, _pool, err, kind = self._exit_snapshot(mint, batched)
             now = self.now_ms()
             if snap is None or snap.quote_priced is None:
                 # No usable price (RPC error or no V): never price on the vault alone. Keep retrying
@@ -797,14 +882,15 @@ class Executor:
             else:
                 chk = exit_check(pos, snap, now)
             if chk["reason"]:
-                self._close(mint, pos, snap, chk, now)
+                self._close(mint, pos, snap, chk, now, kind)
 
     @critical
-    def _close(self, mint: str, pos: dict[str, Any], snap: Snapshot | None, chk: dict[str, Any], now: int) -> None:
+    def _close(self, mint: str, pos: dict[str, Any], snap: Snapshot | None, chk: dict[str, Any], now: int, kind: str = "full") -> None:
         row: dict[str, Any] = dict(
             exit_reason=chk["reason"], ret=chk["ret"], t_entry_ms=pos["t_entry_ms"], hold_ms=now - pos["t_entry_ms"],
             pool=pos["pool"], tokens=pos["tokens"], spend_lamports=pos["spend"], quote_sol_out_lamports=chk["quote_out"],
             pool_slot=snap.slot if snap else None, priority_lamports=self.limits.priority_lamports,
+            **self._exit_fields(kind),
         )
         err: Any = "no_snapshot"
         if snap is not None and snap.quote_priced is not None:
@@ -895,9 +981,18 @@ class Executor:
             if n and last is not None and now - last < 2 * self.poll_ms:
                 return n
             self._last_slow = now
+            self._last_pos = now
             self.prewarm()
             self.poll_positions()
+        elif (self.exit_poll_ms < self.poll_ms and not n and self._active_positions()
+              and (self._last_pos is None or now - self._last_pos >= self.exit_poll_ms)):
+            self._last_pos = now  # fast exit poll: positions only; pre-warm stays on the slow cadence
+            self.poll_positions()
         return n
+
+    def _active_positions(self) -> bool:
+        pending = self.state.pending
+        return any(m not in pending for m in self.state.open)
 
     def run_loop(self, sleep: Callable[[float], None] = time.sleep) -> None:
         if hasattr(self.rpc, "idle_hook"):
