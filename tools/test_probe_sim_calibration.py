@@ -137,7 +137,7 @@ def test_tp_sl_disagree_and_build_aggregate(tmp_path):
     agg = psc.run(fills_file(tmp_path, [ba, sa, bb, sb]), d, tmp_path / "o")
     assert agg["a25eb17"]["tp_sl_disagree"] == 1 and agg["8a6849b"]["tp_sl_disagree"] == 0
     assert agg["8a6849b"]["n_trades"] == 1 and agg["all"]["n_trades"] == 2
-    assert agg["7004b16"]["n_trades"] == 0 and list(agg) == ["8a6849b", "a25eb17", "7004b16", "all"]
+    assert agg["7004b16"]["n_trades"] == 0 and list(agg) == ["8a6849b", "a25eb17", "7004b16", "faa3192", "all"]
     md = (tmp_path / "o" / "calibration.md").read_text()
     assert "Per trade, every variant" in md and "live_snapshot_correct" in md
     agg2 = psc.run(fills_file(tmp_path, [ba, sa, bb, sb]), d, tmp_path / "o2", builds=psc.parse_builds([f"0:old", f"{T_AFTER}:new"]))
