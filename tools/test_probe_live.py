@@ -1019,7 +1019,6 @@ class FastSignalLiveTests(unittest.TestCase):
         self.assertNotIn(MINT, self.ex.state.pending)
 
 
-
 class ExitFastPathTests(unittest.TestCase):
     """exit_poll_ms cadence, batched vault snapshot, exit_commitment, buy-meta sell amount."""
 
@@ -1198,6 +1197,71 @@ class ExitFastPathTests(unittest.TestCase):
     def test_old_config_exit_path_is_not_prioritised(self):
         ex = make_live(self.tmp)[0]
         self.assertEqual(type(ex._exit_prio()).__name__, "nullcontext")
+
+
+    def test_buy_meta_records_ata_pre_amount_and_nonzero_uses_rpc(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        self.assertEqual(pos["ata_pre_amount"], 0)
+        pos["ata_pre_amount"] = 5  # the ATA already held tokens before the buy: buy-meta tokens are not the balance
+        rpc.token_balance = pos["tokens"] + 5
+        self._crash(rpc)
+        rpc.calls.clear()
+        ex.poll_positions()
+        self.assertIn("getTokenAccountBalance", rpc.calls)
+        self.assertEqual((ex.state.pending[MINT]["balance_source"], ex.state.pending[MINT]["tokens"]), ("rpc", pos["tokens"] + 5))
+
+    def test_unknown_ata_pre_amount_uses_rpc(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        pos.pop("ata_pre_amount")
+        self._crash(rpc)
+        ex.poll_positions()
+        self.assertEqual(ex.state.pending[MINT]["balance_source"], "rpc")
+
+    def test_stale_batch_skips_remaining_positions(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        ex.state.open["M2"] = {**pos, "mint": "M2"}
+        ex._pool_cache["M2"] = ex._pool_cache[MINT]
+        rpc.send_hook = lambda params: setattr(clock, "t", clock.t + 1_500)  # the first sell's send is slow
+        self._crash(rpc)
+        rpc.calls.clear()
+        ex.poll_positions()
+        self.assertIn(MINT, ex.state.pending)
+        self.assertNotIn("M2", ex.state.pending)  # priced from a batch older than 1 s: skipped this tick
+        self.assertEqual(rpc.calls.count("getMultipleAccounts"), 1)
+        rpc.send_hook = None
+        rpc.calls.clear()
+        ex.poll_positions()  # next tick re-fetches
+        self.assertEqual(rpc.calls.count("getMultipleAccounts"), 1)
+
+    def test_fresh_batch_prices_second_position(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        ex.state.open["M2"] = {**pos, "mint": "M2"}
+        ex._pool_cache["M2"] = ex._pool_cache[MINT]
+        batched = ex._batched_exit_snapshots(["M2"])
+        self.assertFalse(ex._batch_stale("M2", batched))
+        clock.t += pe.BATCH_MAX_AGE_MS + 1
+        self.assertTrue(ex._batch_stale("M2", batched))
+
+    def test_batch_fallback_error_logged_once_a_minute(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        orig = rpc.__class__.__call__
+
+        def boom(self_, m, p):
+            if m == "getMultipleAccounts" and len(p[0]) == 2:
+                raise pe.RpcError("timeout")
+            return orig(self_, m, p)
+        rpc.__class__.__call__ = boom
+        try:
+            for _ in range(3):
+                clock.t += 400
+                self.assertEqual(ex._batched_exit_snapshots([MINT]), {})
+            rows = [r for r in fills(conf) if r["kind"] == "batch_fallback"]
+            self.assertEqual([r["label"] for r in rows], ["timeout"])
+            clock.t += 60_000
+            ex._batched_exit_snapshots([MINT])
+            self.assertEqual(len([r for r in fills(conf) if r["kind"] == "batch_fallback"]), 2)
+        finally:
+            rpc.__class__.__call__ = orig
 
 
 class ShippedExitConfigTests(unittest.TestCase):

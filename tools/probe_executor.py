@@ -68,6 +68,8 @@ STATIC_TTL_MS = 300_000  # cached global config is never used past this age
 STATIC_REFRESH_MS = 60_000  # the slow loop refreshes it this often
 PRIORITY_BURST = 4  # buy-path calls may run up to this many rate-limit intervals ahead; sustained rate is unchanged
 IDLE_SLICE_S = 0.02
+BATCH_MAX_AGE_MS = 1_000  # a batched exit snapshot is not used to price a position once it is older than this
+BATCH_ERR_LOG_EVERY_MS = 60_000
 EXIT_POLL_MS_MIN = 200  # floor for the open-position poll (`exit_poll_ms`)
 
 
@@ -692,6 +694,8 @@ class Executor:
         self._crit = 0
         self._last_slow: int | None = None
         self._last_pos: int | None = None
+        self._batch_ms = 0  # when the last batched exit read returned
+        self._batch_err_ms: int | None = None
 
     def _prio(self):
         """Rate-limiter priority for the buy path (a no-op for a plain callable rpc)."""
@@ -728,7 +732,10 @@ class Executor:
 
     def _batched_exit_snapshots(self, mints: list[str]) -> dict[str, Snapshot]:
         """ONE getMultipleAccounts for the base+quote vaults of every listed position whose pool was already
-        parsed (cache younger than STATIC_TTL_MS). Pool state and V come from the cache. Anything missing or
+        parsed (cache younger than STATIC_TTL_MS). Pool state and V come from the cache. Evidence that they are
+        constant per pool: tools/pumpswap_virtual_history.py (PR #280) found V about 17.584 SOL, constant per pool
+        across 2026-08-26 to 09-21, and the live fills show v_lamports 17,584,505,493 and 17,584,505,488 on two
+        different pools. The 300 s TTL still bounds how long a cached entry is trusted. Anything missing or
         unparseable is simply left out: the caller falls back to a full `fetch_snapshot` for it."""
         if not self.fast_exit:
             return {}
@@ -746,6 +753,7 @@ class Executor:
                 multi = self.rpc("getMultipleAccounts", [keys, {"encoding": "base64", "commitment": self.exit_commitment}])
             vals = list(multi["value"])
             if len(vals) != len(keys):
+                self._batch_err("bad_value_count")
                 return {}
             slot = int((multi.get("context") or {}).get("slot") or 0)
             for i, m in enumerate(ok):
@@ -754,10 +762,22 @@ class Executor:
                     continue
                 ps, v, _t = self._pool_cache[m]
                 out[m] = Snapshot(ps, slot, sim.token_amount(sim._b64(qv)), sim.token_amount(sim._b64(bv)), v)
-        except (Exception, SystemExit):  # label-free: the full fetch below is the fallback and reports its own error
+        except (Exception, SystemExit) as exc:  # the full fetch is the fallback; log the label at most once a minute
+            self._batch_err(error_label(exc))
             return {}
+        self._batch_ms = self.now_ms()
         return out
 
+    def _batch_err(self, label: str) -> None:
+        now = self.now_ms()
+        if self._batch_err_ms is None or not 0 <= now - self._batch_err_ms < BATCH_ERR_LOG_EVERY_MS:
+            self._batch_err_ms = now
+            self._log("batch_fallback", "", label=label)
+
+    def _batch_stale(self, mint: str, batched: dict[str, Snapshot]) -> bool:
+        """True when `mint` would be priced from a batch fetched more than BATCH_MAX_AGE_MS ago (an earlier
+        sell in this pass was slow). The caller skips it; the next tick re-fetches."""
+        return mint in batched and self.now_ms() - self._batch_ms > BATCH_MAX_AGE_MS
     def _exit_snapshot(self, mint: str, batched: dict[str, Snapshot]) -> tuple[Snapshot | None, str, str | None, str]:
         """(snapshot, pool, err, "batched"|"full") for one open position."""
         if mint in batched:
@@ -849,6 +869,8 @@ class Executor:
         for mint, pos in list(self.state.open.items()):
             if check_sell(check_halt_file(self.limits)):
                 return
+            if self._batch_stale(mint, batched):
+                continue
             snap, _pool, err, kind = self._exit_snapshot(mint, batched)
             now = self.now_ms()
             if snap is None or snap.quote_priced is None:
