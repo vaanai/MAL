@@ -14,7 +14,7 @@
   "rps": 4.0,
   "max_signal_age_s": 120,
   "size_lamports": 50000000,
-  "priority_lamports": 150000,
+  "priority_lamports": 500000,
   "max_attempts": 90,
   "max_open": 3,
   "loss_cap_lamports": 350000000,
