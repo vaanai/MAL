@@ -1933,6 +1933,7 @@ class EarlyArmTests(unittest.TestCase):
             "decisions": JsonlLog(tmp / "decisions.jsonl"),
             "positions": JsonlLog(tmp / "positions.jsonl"),
             "intents": JsonlLog(tmp / "intents.jsonl", fsync=True),
+            "arm_audit": JsonlLog(tmp / "arm-audit.jsonl"),
         }
         if kill:
             (tmp / "KILL").write_text("x")
@@ -1966,6 +1967,90 @@ class EarlyArmTests(unittest.TestCase):
     def test_no_arm_row_when_kill_file_exists(self) -> None:
         _e, tmp = self._run(self.dir, True, kill=True)
         self.assertEqual(self._arms(tmp), [])
+        self.assertEqual({r["outcome"] for r in self._audit(tmp) if "outcome" in r}, {"skipped_kill"})
+
+    @staticmethod
+    def _audit(tmp: Path) -> list[dict]:
+        p = tmp / "arm-audit.jsonl"
+        return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+
+    def test_audit_row_for_every_complete_pass_or_fail(self) -> None:
+        _e, tmp = self._run(self.dir, True)
+        rows = self._audit(tmp)
+        by = {r["mint"]: r for r in rows if "outcome" in r}
+        self.assertEqual(by["Hi"]["outcome"], "armed")
+        self.assertEqual(by["Lo"]["outcome"], "fail")
+        self.assertFalse(by["Lo"]["pass_any"])
+        self.assertEqual(len(by["Hi"]["candidates"]), 5)
+        self.assertEqual(by["Hi"]["complete_slot"], 98)
+        self.assertEqual(by["Hi"]["complete_t_recv_ms"], T0 + 16_500)
+        self.assertIsNotNone(by["Hi"]["eval_clock_ms"])
+        summ = [r for r in rows if r["schema"] == "forward_paper_arm_audit_summary_v1"]
+        self.assertEqual(summ[-1]["counts"], {"armed": 1, "fail": 1})
+        blob = json.dumps(rows)
+        for bad in ("pnl", "position", "realized", "lamports"):
+            self.assertNotIn(bad, blob)
+        arm = self._arms(tmp)[0]
+        self.assertEqual(arm["lead_ms"], arm["written_ms"] - arm["complete_t_recv_ms"])
+        self.assertNotIn("forward_paper_arm", (tmp / "arm-audit.jsonl").read_text().replace("forward_paper_arm_audit", ""))
+
+    def test_complete_after_migration_is_skipped_migrated(self) -> None:
+        _e, tmp = self._run(self.dir, True, mig_rows=[self._complete("Hi", T0 + 30_000)])
+        self.assertEqual([r["outcome"] for r in self._audit(tmp) if "outcome" in r], ["skipped_migrated"])
+        self.assertEqual(self._arms(tmp), [])
+
+    def test_serve_path_directory_tail_drain_and_audit(self) -> None:
+        """The serve() routing: DirectoryTail -> route_migration_rows -> engine drain_until -> arm.poll."""
+        from tools.forward_early_arm import EarlyArm
+        from tools.forward_paper import DirectoryTail, JsonlLog, route_migration_rows
+
+        def go(tmp: Path, arm_on: bool) -> ForwardEngine:
+            tape = tmp / "tape"
+            tape.mkdir()
+            hour = time.strftime("%Y-%m-%dT%H", time.gmtime())
+            tpath, mpath = tape / f"trades-{hour}.jsonl", tape / f"migrations-{hour}.jsonl"
+            creates, rows, mig = self._rows()
+            tpath.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            mpath.write_text("".join(json.dumps(r) + "\n" for r in mig))
+            logs = {"decisions": JsonlLog(tmp / "decisions.jsonl"), "positions": JsonlLog(tmp / "positions.jsonl"),
+                    "intents": JsonlLog(tmp / "intents.jsonl", fsync=True), "arm_audit": JsonlLog(tmp / "arm-audit.jsonl")}
+            eng = ForwardEngine([self.book], kill_file=tmp / "KILL", offsets_ms=(5_000,), logs=logs, tape_end_ms=T0 + 120_000)
+            for c in creates:
+                eng.push_create(c)
+            arm = EarlyArm(eng) if arm_on else None
+            if arm is not None:
+                eng.arm_hook = arm.poll
+            offsets = {f"trade:{tpath}": 0, f"migration:{mpath}": 0}
+            tail = DirectoryTail(tape, tmp, offsets, None, tape if arm_on else None)
+            batch = tail.poll()
+            if arm is not None:
+                batch = route_migration_rows(arm, batch, T0 + 17_000)
+            else:
+                self.assertFalse([k for k, _ in batch if k == "migration"])
+            wm = 0
+            for kind, row in batch:
+                parsed = flow_from_tape_row(row)
+                if parsed is None:
+                    continue
+                eng.push_print(parsed[0], parsed[1], None if "event_ts" not in row else row["event_ts"])
+                wm = max(wm, parsed[1].t_recv_ms)
+            eng.drain_until(wm - 300)
+            eng.drain_until(T0 + 120_000, final=True)
+            if arm is not None:
+                arm.flush_summary(T0 + 120_000)
+            for log in logs.values():
+                log.close()
+            return eng
+
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            go(Path(a), False)
+            go(Path(b), True)
+            for name in ("decisions.jsonl", "positions.jsonl"):
+                self.assertTrue((Path(a) / name).read_bytes())
+                self.assertEqual((Path(a) / name).read_bytes(), (Path(b) / name).read_bytes())
+            self.assertEqual(len(self._arms(Path(b))), 1)
+            self.assertEqual([r["outcome"] for r in self._audit(Path(b)) if "outcome" in r], ["armed", "fail"])
+            self.assertEqual(self._arms(Path(a)), [])
 
     def test_engine_output_identical_arm_on_or_off(self) -> None:
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:

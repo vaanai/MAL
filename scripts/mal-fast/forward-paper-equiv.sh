@@ -20,6 +20,17 @@
 # hours, i.e. a tip-follower tape (mal-fast-0 /var/lib/mal/sealed/fast-trades-tip, or a clean view with
 # trades/ and migrations/). The default oracle clean view has no migrations/ dir: set MIG to the dir that has it.
 #
+#   TIP_TAPE=dir ...     replay a tip-follower tape dir (trades-<hour>.jsonl, migrations-<hour>.jsonl,
+#                        creates-<hour>.jsonl, plain or .zst) instead of $CV. Sets the trades to
+#                        $TIP_TAPE/trades-<hour>.jsonl, MIG to $TIP_TAPE, and converts creates-<hour>.jsonl to the
+#                        observe format (tools.fast_tip_follower.observe_create_row) under $OUT/creates.
+#
+# Example (mal-research-0, the 2026-10-05 tip tape; ONE hour, a trades hour is ~650 MB and the slice is
+# loaded into a list):
+#   ARM_HEAD=1 CONFIG=scripts/mal-fast/fast-forward-paper.json TIP_TAPE=/data/mal/ops/tip-tape-1005 \
+#     HOURS=2026-10-05T08 BASE=origin/main HEAD_REF=origin/claude/runner-early-arm \
+#     scripts/mal-fast/forward-paper-equiv.sh
+#
 # Env: CV (clean-view root), HOURS (space separated, default 2026-09-26T00 01 02 = a 3 h slice),
 #      MIG (migrations dir, default $CV/migrations; ARM_HEAD only),
 #      OUT (default $MISCUSI_OUTPUT_DIR or /data/mal/ops/fp-equiv), M (model dir).
@@ -45,7 +56,39 @@ git -C "$repo" worktree add -q --detach "$OUT/wt-base" "$BASE"
 git -C "$repo" worktree add -q --detach "$OUT/wt-head" "$HEAD_REF"
 echo "base=$(git -C "$OUT/wt-base" rev-parse HEAD) head=$(git -C "$OUT/wt-head" rev-parse HEAD)" | tee "$OUT/refs.txt"
 (cd "$M" && md5sum entry_model.txt scoreboard.json barrier_hit_100_30.txt mig15_model.txt)
-TAPE=""; for h in $HOURS; do TAPE="$TAPE $CV/trades/trades-$h.jsonl.zst"; done
+TAPE=""
+if [ -n "${TIP_TAPE:-}" ]; then
+  MIG="$TIP_TAPE"; mkdir -p "$OUT/creates"
+  for h in $HOURS; do
+    f="$TIP_TAPE/trades-$h.jsonl"; [ -f "$f" ] || f="$f.zst"
+    [ -f "$f" ] || { echo "missing $TIP_TAPE/trades-$h.jsonl[.zst]" >&2; exit 1; }
+    TAPE="$TAPE $f"
+  done
+  (cd "$repo" && "$PY" - "$TIP_TAPE" "$OUT/creates" $HOURS <<'PYEOF'
+import json, sys, gzip
+from collections import defaultdict
+from pathlib import Path
+from tools.fast_tip_follower import observe_create_row
+src, dst, hours = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3:]
+by_day = defaultdict(list)
+for h in hours:
+    for name in (f"creates-{h}.jsonl",):
+        p = src / name
+        if not p.is_file():
+            raise SystemExit(f"missing {p}")
+        for line in p.open():
+            r = json.loads(line)
+            if r.get("type") == "create" and isinstance(r.get("t_recv_ms"), int):
+                by_day[h[:10]].append(observe_create_row(r, r["t_recv_ms"]))
+for day, rows in by_day.items():
+    (dst / f"observe-{day}.jsonl").write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows))
+PYEOF
+  )
+  CREATES="$OUT/creates"
+else
+  for h in $HOURS; do TAPE="$TAPE $CV/trades/trades-$h.jsonl.zst"; done
+  CREATES="$CV/creates"
+fi
 (cd "$repo" && "$PY" - "$OUT" "$M" "$CONFIG" <<'PYEOF'
 import json, sys
 w, m, cfg = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -78,7 +121,7 @@ for label in base head; do
     [ "${ARM_HEAD:-0}" = 1 ] && extra=(--migrations-dir "$MIG")
   fi
   (cd "$OUT/wt-$label" && PYTHONPATH="$PWD" OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 "$PY" -m tools.forward_paper replay \
-      --config "$cfg" --tape $TAPE --creates-dir "$CV/creates" --output-dir "$OUT/out-$label" ${extra[@]+"${extra[@]}"}) > "$OUT/out-$label.log" 2>&1 \
+      --config "$cfg" --tape $TAPE --creates-dir "$CREATES" --output-dir "$OUT/out-$label" ${extra[@]+"${extra[@]}"}) > "$OUT/out-$label.log" 2>&1 \
     || { tail -30 "$OUT/out-$label.log"; exit 1; }
 done
 status=0
@@ -89,6 +132,6 @@ for f in decisions.jsonl positions.jsonl; do
 done
 [ -f "$OUT/out-head/intents.jsonl" ] && echo "intents.jsonl lines=$(wc -l < "$OUT/out-head/intents.jsonl")"
 if [ "${ARM_HEAD:-0}" = 1 ]; then
-  echo "arm rows=$(grep -c '"forward_paper_arm_v1"' "$OUT/out-head/intents.jsonl" 2>/dev/null || true)"
+  echo "arm rows=$(grep -c '"forward_paper_arm_v1"' "$OUT/out-head/intents.jsonl" 2>/dev/null || true) audit rows=$(wc -l < "$OUT/out-head/arm-audit.jsonl" 2>/dev/null || echo 0)"
 fi
 if [ "$status" = 0 ]; then echo "EQUIVALENT"; else echo "MISMATCH"; exit 1; fi

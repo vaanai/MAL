@@ -1584,6 +1584,8 @@ class ForwardEngine:
         if final:
             self._before_time(watermark_ms + 1)
             self._at_time(watermark_ms)
+            if self.arm_hook is not None:
+                self.arm_hook(watermark_ms)  # pending completes at the end of a replay
 
     def _before_time(self, t_ms: int) -> None:
         self._emit_grids_through(t_ms - 1)
@@ -2858,7 +2860,8 @@ def replay_rows(
         barrier.maybe_reload(force=True)
     if swing is not None:
         swing.maybe_reload(force=True)
-    if early_arm_rows is not None and engine.exp012 is not None and "intents" in engine.logs:
+    arm = None
+    if early_arm_rows is not None and engine.exp012 is not None and "intents" in engine.logs and "arm_audit" in engine.logs:
         from tools.forward_early_arm import EarlyArm
 
         arm = EarlyArm(engine)
@@ -2879,6 +2882,8 @@ def replay_rows(
     for row in attention_rows or ():
         engine.push_attention(row)
     engine.drain_until(tape_end_ms, final=True)
+    if arm is not None:
+        arm.flush_summary(tape_end_ms)
     return engine
 
 
@@ -3460,6 +3465,8 @@ def run_replay_files(
     }
     if intents_file:
         logs["intents"] = JsonlLog(output_dir / "intents.jsonl", fsync=True)
+        if early_arm:
+            logs["arm_audit"] = JsonlLog(output_dir / "arm-audit.jsonl")
     model = ModelSlot(model_path, meta_path)
     barrier = ModelSlot(barrier_path, meta_path)
     swing_slot = ModelSlot(swing_path, None)
@@ -3572,6 +3579,14 @@ def bind_attention(engine: ForwardEngine, directory: Path | None) -> None:
     engine.attn_snapshot = load_snapshot_keys(directory)
 
 
+def route_migration_rows(early_arm: Any, batch: list[tuple[str, dict[str, Any]]], now_ms: int) -> list[tuple[str, dict[str, Any]]]:
+    """Hand `migration` rows to the early arm and return the rest. Nothing here touches the engine."""
+    for kind, row in batch:
+        if kind == "migration":
+            early_arm.note_row(row, now_ms)
+    return [(k, r) for k, r in batch if k != "migration"]
+
+
 def serve(config_path: Path) -> int:
     try:
         raw = load_config(config_path)
@@ -3617,6 +3632,8 @@ def serve(config_path: Path) -> int:
     }
     if raw.get("intents_file") is True:
         logs["intents"] = JsonlLog(output_dir / "intents.jsonl", fsync=True)
+        if raw.get("early_arm") is True:
+            logs["arm_audit"] = JsonlLog(output_dir / "arm-audit.jsonl")
     if any(b.entry_model is not None for b in books):
         logs["exp012_gate"] = JsonlLog(output_dir / "exp012-gate.jsonl")
     model = ModelSlot(model_path, meta_path)
@@ -3633,7 +3650,7 @@ def serve(config_path: Path) -> int:
         barrier=barrier,
         swing=swing,
         slippage_cap=slippage,
-        logs={k: logs[k] for k in ("decisions", "positions", "exp012_gate", "intents") if k in logs},
+        logs={k: logs[k] for k in ("decisions", "positions", "exp012_gate", "intents", "arm_audit") if k in logs},
         fail_rate=DEFAULT_FAIL_RATE,
         positions_path=output_dir / "positions.jsonl",
         dead_mints=dead_mints,
@@ -3653,7 +3670,7 @@ def serve(config_path: Path) -> int:
     gc_stats = install_gc_mitigation()
     mem_census = MemCensus()
     early_arm = None
-    if raw.get("early_arm") is True and engine.exp012 is not None and "intents" in engine.logs:
+    if raw.get("early_arm") is True and engine.exp012 is not None and "intents" in engine.logs and "arm_audit" in engine.logs:
         from tools.forward_early_arm import EarlyArm
 
         early_arm = EarlyArm(engine)
@@ -3698,10 +3715,7 @@ def serve(config_path: Path) -> int:
         now_ms = int(time.time() * 1000)
         if early_arm is not None:
             # migrations rows feed ONLY the arm: no engine clock, no staleness counters, no push_*.
-            for kind, row in batch:
-                if kind == "migration":
-                    early_arm.note_row(row, now_ms)
-            batch = [(k, r) for k, r in batch if k != "migration"]
+            batch = route_migration_rows(early_arm, batch, now_ms)
         fresh: list[tuple[str, dict[str, Any]]] = []
         for kind, row in batch:
             clock = row_clock_ms(kind, row)
@@ -3794,6 +3808,8 @@ def serve(config_path: Path) -> int:
         maybe_gc_freeze(gc_stats, now)
         if not batch:
             time.sleep(0.025)
+    if early_arm is not None:
+        early_arm.flush_summary(engine._clock_ms)
     if engine._clock_ms:
         logs["pnl"].write(engine.summary())
     offset_path.write_text(json.dumps(tail.offsets) + "\n", encoding="utf-8")
