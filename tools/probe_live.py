@@ -422,17 +422,16 @@ class LiveExecutor(pe.Executor):
             return self._skip(sig, err or "no_pool", pool=pool)
         if snap.quote_priced is None:
             return self._skip(sig, "no_v", pool=pool, pool_slot=snap.slot)
+        drift = pe.drift_vs_seed(snap)  # logged only; never a reason to skip
         spend = self.limits.size_lamports
         q = pe.entry_quote(snap, spend)
         if q["tokens"] <= 0:
-            return self._skip(sig, "zero_quote", pool=pool, pool_slot=snap.slot)
-        if self._entry_vetoed(sig, snap, pool):
-            return
+            return self._skip(sig, "zero_quote", pool=pool, pool_slot=snap.slot, drift_vs_seed=drift)
         bal = self._balance()
         if bal is None:
-            return self._skip(sig, "balance_unreadable", pool=pool)
+            return self._skip(sig, "balance_unreadable", pool=pool, drift_vs_seed=drift)
         if bal < spend + self.balance_buffer:
-            return self._skip(sig, "balance_guard", pool=pool, balance_lamports=bal)
+            return self._skip(sig, "balance_guard", pool=pool, balance_lamports=bal, drift_vs_seed=drift)
         try:
             bhash, lvbh = self.bh.get()
             msg = pe.buy_probe_message(snap, self.user, spend, self.slip_bps, q["tokens"], self.limits.priority_lamports, bhash)
@@ -440,7 +439,7 @@ class LiveExecutor(pe.Executor):
         except (Exception, SystemExit) as exc:
             if isinstance(exc, UnsafeTx):
                 self._alert("unsafe_tx_refused", mint, why=exc.label)
-            return self._skip(sig, f"build_error:{pe.error_label(exc)}", pool=pool)
+            return self._skip(sig, f"build_error:{pe.error_label(exc)}", pool=pool, drift_vs_seed=drift)
         t_built = self.now_ms()
         # Write-ahead: the attempt, the signature and the signed tx are durable BEFORE the first send.
         self.state.attempts += 1
@@ -448,7 +447,7 @@ class LiveExecutor(pe.Executor):
         if self.state.first_attempt_ms is None:
             self.state.first_attempt_ms = now
         self.state.pending[mint] = {
-            "kind": "buy", "signature": signature, "tx_b64": tx_b64, "lvbh": lvbh, "pool": pool, "snap_slot": snap.slot,
+            "kind": "buy", "signature": signature, "tx_b64": tx_b64, "lvbh": lvbh, "pool": pool, "snap_slot": snap.slot, "drift_vs_seed": drift,
             "decision_t_ms": sig["decision_t_ms"], "receive_ms": now, "score": sig.get("score"), "spend": spend,
             "q_tokens": q["tokens"], "q_net_in": q["net_in"], "q_mark": q["mark"], "fee_ppm": q["fee_ppm"],
             "v_lamports": snap.v, "base_vault": str(snap.ps.base_vault), "quote_vault": str(snap.ps.quote_vault), "base_ata": str(tx.ata(self.user, snap.ps.base_mint, snap.ps.base_token_program)),
@@ -598,6 +597,7 @@ class LiveExecutor(pe.Executor):
             spend_lamports=p["spend"], expected_tokens=p["q_tokens"], sim_tokens=p.get("sim_tokens"), pool=p["pool"],
             landed_slot=m["slot"], slots_between=(m["slot"] - p["snap_slot"]) if m["slot"] and p.get("snap_slot") else None,
             fee_lamports=m["fee"], base_fee_lamports=base_fee, priority_fee_lamports=prio_fee, priority_lamports=self.limits.priority_lamports, v_lamports=p.get("v_lamports"),
+            drift_vs_seed=p.get("drift_vs_seed"), pool_slot=p.get("snap_slot"),
             **self._timing(p),
         )
         if m["err"] is not None:
