@@ -107,21 +107,35 @@ fi
 # the pinned drop-in only sets LoadCredential/WorkingDirectory/ReadOnlyPaths/ExecStart/LimitCORE and INHERITS User=,
 # Environment=, EnvironmentFile= and all hardening from the base unit, so rewriting it here could change the key-holder's
 # user or inject LD_PRELOAD with no re-hash. Only install-probe-executor-pinned.sh (Helm, root clone, manifest) writes it.
-SKIP_PROBE_UNIT=0
+# systemd also merges drop-ins from /run and /usr/lib (same file name in /etc masks them): all three are scanned. Verdict
+# `none` means no drop-in in any of them sets LoadCredential or an ExecStart; the key only arrives via LoadCredential.
+if [[ -z "${MAL_FORWARD_OWNER+x}" || -n "${MAL_FORWARD_OWNER}" ]]; then
+  PROBE_DROPIN_RUN_DIR="/run/systemd/system/mal-probe-executor.service.d"
+  PROBE_DROPIN_LIB_DIR="/usr/lib/systemd/system/mal-probe-executor.service.d"
+else
+  PROBE_DROPIN_RUN_DIR="${MAL_PROBE_DROPIN_RUN_DIR:-${SYSTEMD_DIR}/run/mal-probe-executor.service.d}"
+  PROBE_DROPIN_LIB_DIR="${MAL_PROBE_DROPIN_LIB_DIR:-${SYSTEMD_DIR}/lib/mal-probe-executor.service.d}"
+fi
+FENCE_PASS=first
+fence_note() { if [[ "${FENCE_PASS}" == first ]]; then echo "$1" >&2; fi; }
+# fence_eval sets SKIP_PROBE_UNIT. It runs once here (refusals, notes) and again right before the unit install loop;
+# the second verdict is the one that decides, so a drop-in that appears in between is honoured.
+fence_eval() {
+  SKIP_PROBE_UNIT=0
 # The runbook installs the pinned conf under the name live.conf, so names prove nothing. The helper reads
 # every *.conf in the drop-in dir in lexical order with ExecStart reset semantics and calls the executor
 # PINNED only when the final effective ExecStart is exactly the pinned command of
 # mal-probe-executor-live-pinned.conf (taken from the repo checkout this script runs from).
-if FENCE_VERDICT="$(python3 "${SELF_DIR}/probe-dropin-fence.py" "${PROBE_DROPIN_DIR}" "${SELF_DIR}/mal-probe-executor-live-pinned.conf")"; then
+if FENCE_VERDICT="$(python3 "${SELF_DIR}/probe-dropin-fence.py" "${PROBE_DROPIN_DIR}" "${PROBE_DROPIN_RUN_DIR}" "${PROBE_DROPIN_LIB_DIR}" "${SELF_DIR}/mal-probe-executor-live-pinned.conf")"; then
   case "${FENCE_VERDICT}" in
     none) ;;
     pinned*)
       SKIP_PROBE_UNIT=1
-      echo "fast-forward-paper NOTE: the live probe executor drop-in in ${PROBE_DROPIN_DIR} is PINNED (${FENCE_VERDICT#pinned }): it runs root-owned code that this script does not touch. Runner files only. The probe base unit ${PROBE_UNIT} is NOT installed here either (the drop-in inherits its User=, Environment= and hardening). The pinned executor code, config and base unit change only through install-probe-executor-pinned.sh." >&2 ;;
+      fence_note "fast-forward-paper NOTE: the live probe executor drop-in in ${PROBE_DROPIN_DIR} is PINNED (${FENCE_VERDICT#pinned }): it runs root-owned code that this script does not touch. Runner files only. The probe base unit ${PROBE_UNIT} is NOT installed here either (the drop-in inherits its User=, Environment= and hardening). The pinned executor code, config and base unit change only through install-probe-executor-pinned.sh." ;;
     *)
       if [[ "${DRY}" == 1 ]]; then
         SKIP_PROBE_UNIT=1
-        echo "fast-forward-paper NOTE (dry-run): ${PROBE_DROPIN_DIR} makes the probe executor LIVE with a non-pinned command (${FENCE_VERDICT}); a real run would refuse. The probe base unit would NOT be installed." >&2
+        fence_note "fast-forward-paper NOTE (dry-run): ${PROBE_DROPIN_DIR} makes the probe executor LIVE with a non-pinned command (${FENCE_VERDICT}); a real run would refuse. The probe base unit would NOT be installed."
       else
         die "refusing: ${PROBE_DROPIN_DIR} makes the probe executor LIVE with a non-pinned command (${FENCE_VERDICT}); it may hold the wallet key. A routine reinstall must never swap code or units under a live key-holding process. Helm or the owner removes the drop-in (DEC-019, docs/runbooks/probe-executor.md) first. --dry-run is still allowed."
       fi ;;
@@ -129,11 +143,13 @@ if FENCE_VERDICT="$(python3 "${SELF_DIR}/probe-dropin-fence.py" "${PROBE_DROPIN_
 else
   if [[ "${DRY}" == 1 ]]; then
     SKIP_PROBE_UNIT=1
-    echo "fast-forward-paper NOTE (dry-run): could not evaluate the probe drop-in dir ${PROBE_DROPIN_DIR}; the probe base unit would NOT be installed." >&2
+    fence_note "fast-forward-paper NOTE (dry-run): could not evaluate the probe drop-in dir ${PROBE_DROPIN_DIR}; the probe base unit would NOT be installed."
   else
     die "refusing: could not evaluate the probe drop-in dir ${PROBE_DROPIN_DIR}"
   fi
 fi
+}
+fence_eval
 
 # --- date fence (ISO-8601 Z strings sort lexically) ---
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -229,11 +245,15 @@ run sudo -n install -d "${OWN_ARGS[@]}" -m 0755 "${TIP_OUT}" "${TIP_CREATES}" "$
 if [[ "${DRY}" == 1 || ! -e "${TIP_LOG}" ]]; then
   run sudo -n install -m 0644 "${OWN_ARGS[@]}" /dev/null "${TIP_LOG}"
 fi
+FENCE_PASS=recheck
+fence_eval
 UNITS=("${SLICE}" "${UNIT}" "${RESTART_UNIT}" "${RESTART_TIMER}" "${HB_UNIT}" "${HB_TIMER}" "${TIP_UNIT}")
 if [[ "${SKIP_PROBE_UNIT}" == 0 ]]; then
   UNITS+=("${PROBE_UNIT}")
+elif [[ ! -e "${SYSTEMD_DIR}/${PROBE_UNIT}" ]]; then
+  echo "fast-forward-paper NOTE: the probe base unit ${SYSTEMD_DIR}/${PROBE_UNIT} is MISSING and was NOT installed (verdict skips it). Only install-probe-executor-pinned.sh (Helm, root clone, manifest) may write it." >&2
 elif ! cmp -s "${KIT}/${PROBE_UNIT}" "${SYSTEMD_DIR}/${PROBE_UNIT}"; then
-  echo "fast-forward-paper NOTE: the probe base unit ${SYSTEMD_DIR}/${PROBE_UNIT} was NOT updated: the installed file differs from (or is missing against) the copy at ${COMMIT}. Only install-probe-executor-pinned.sh (Helm, root clone, manifest) may write it, followed by a Helm restart." >&2
+  echo "fast-forward-paper NOTE: the probe base unit ${SYSTEMD_DIR}/${PROBE_UNIT} DIFFERS from the copy at ${COMMIT} and was NOT updated. Only install-probe-executor-pinned.sh (Helm, root clone, manifest) may write it, followed by a Helm restart." >&2
 fi
 for u in "${UNITS[@]}"; do
   run sudo -n install -m 0644 "${KIT}/${u}" "${SYSTEMD_DIR}/${u}"

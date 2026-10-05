@@ -81,7 +81,7 @@ sudo sed -e "s#\"state_dir\": *\"[^\"]*\"#\"state_dir\": \"$D\"#" \
          -e "s#\"stop_file\": *\"[^\"]*\"#\"stop_file\": \"$D/STOP\"#" \
          scripts/mal-fast/probe-executor.json | sudo -u mal-live tee "$D/dry.json" >/dev/null
 sudo systemd-run --wait --collect --pipe -p RuntimeMaxSec=90 -p User=mal-live -p NoNewPrivileges=yes -p ProtectSystem=strict -p ReadWritePaths="$D" \
-  -p EnvironmentFile=/var/lib/mal/fast-listener/helius.env \
+  -p EnvironmentFile=/etc/mal-probe-rpc/helius.env \
   /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config "$D/dry.json"
 sudo rm -rf "$D"
 ```

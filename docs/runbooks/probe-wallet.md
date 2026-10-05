@@ -56,7 +56,7 @@ sudo /usr/local/lib/mal-probe/probe-withdraw.sh --to <OWNER_ADDRESS>
 - It refuses if any non-zero token balance (other than wrapped SOL) remains, because draining SOL would leave no fee to move it. Sell or move those tokens first. `--allow-stranded` overrides.
 - It closes zero-balance token accounts and wrapped-SOL accounts (rent and wrapped SOL return to the wallet), then sends all remaining SOL minus the fee to `--to`, leaving 0. If a close fails it retries accounts one by one and lists any that could not be closed; `--skip-close` skips closing entirely so the SOL can always be recovered (wrapped SOL left in an unclosed account still counts as stranded and needs `--allow-stranded`).
 - It asks you to type the **full** destination address. Type or paste it from the owner's own message, not from the script output. Read any `WARNING` about the destination (off-curve, or owned by a program) before continuing. `--yes` skips the prompt; do not use it unattended.
-- The RPC key is read from `/var/lib/mal/fast-listener/helius.env` and is never printed.
+- The RPC key is read from `/etc/mal-probe-rpc/helius.env` and is never printed.
 - Send back to the manager: the printed signatures (public).
 
 ## Never

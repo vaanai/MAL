@@ -37,7 +37,7 @@ from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
 DEFAULT_KEYFILE = "/etc/mal-probe/probe-wallet.json"
-DEFAULT_RPC_ENV = "/var/lib/mal/fast-listener/helius.env"
+DEFAULT_RPC_ENV = "/etc/mal-probe-rpc/helius.env"
 DEFAULT_STATE = "/var/lib/mal-live/state-live.json"
 DEFAULT_FILL_LOG = "/var/lib/mal-live/probe-fills.jsonl"
 HELIUS_HTTP = "https://mainnet.helius-rpc.com"
