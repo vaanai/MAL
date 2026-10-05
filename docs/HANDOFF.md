@@ -16,13 +16,13 @@ The owner approved a **0.5 SOL live execution probe** (DEC-019) running alongsid
 | Code | Deployed src commit `8a6849b4a9dba468c2a1c32cc9106aeba9ea1dc4` (Helm verified 261/261 files) |
 | Wallet | `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk`, funded 509,528,770 lamports. Key root:root 0400 at `/etc/mal-probe/probe-wallet.json`, delivered via LoadCredential. **Never touch it.** The withdraw address is held by Helm. |
 | Limits | 30 buys of 0.05 SOL, ≤ 3 open, stop at 0.25 SOL realized loss, 4 days. STOP file (no new buys, exits continue) / HALT file, both in `/var/lib/mal-live/` |
-| Status at 15:21Z (job #140) | 2/30 attempts, both landed, both exited sl within about 30 s, realized −0.039502 SOL, 0 open |
+| Status at 16:22Z (job #149) | **6/30 attempts, all landed at k = 11–15 from migrate (17–22 from complete), 5 sl / 1 tp, realized −0.100536 SOL, 0 open.** Per-buy data: `ARTIFACTS/lab/probe-live-2026-10-05.md` (#310). |
 
 **Key finding, the first live data.** The two buys landed **15 and 14 slots after the migration** (job #141). EXP-012's edge on exploration data survives only about 8 slots (#292).
 - **Cause:** the paper runner writes the `enter` row only at its *simulated* fill (`decision + applied_latency_ms` ≈ 1.9 s, `tools/forward_paper.py` `_queue`/`_fill_one`), and the executor acts on that row. The latency is counted twice.
 - **Fix: PR #307** (below).
 
-**Owner question OPEN:** `q_TtklEqCl3wlMfA`, whether to pause new buys (Helm: `sudo touch /var/lib/mal-live/STOP`) until #307 is deployed. I recommended **yes**. Check its answer first.
+**The owner said YES to the pause** (`q_TtklEqCl3wlMfA` closed). Helm is placing `/var/lib/mal-live/STOP`. **Verify `stop_file_present=True` first**; at 16:22Z it was still False.
 
 **Hourly monitor.** This session's cron dies with it. The next session must **recreate the monitor**: a read-only MiScusi job on fast-0 every hour that reads the unit's state/NRestarts/DropInPaths, `--status` with `scripts/mal-fast/probe-executor-live.json` (run as mal-live from `/var/lib/mal/fast-forward/src`), journal lines for halt/stuck/abandon/alert/error, and live fill rows. **Alert the owner** on: a restart, the unit down, a stuck or abandoned sell, any halt, realized loss ≥ 0.15 SOL, or errors. **Never read `/etc/mal-probe` or `/run/credentials`.**
 
@@ -32,11 +32,43 @@ The owner approved a **0.5 SOL live execution probe** (DEC-019) running alongsid
 
 | Item | State / next action |
 | --- | --- |
-| **PR #307** `claude/runner-enter-intents` @ `d0883df466b5d2aedfeefc4dae4d9e732d2593c0` | **Runner writes `intents.jsonl` at decision time; the executor acts on it.** Expected saving about 1.9–2.5 s, about 6 slots. Reviewer and security review: **merge-ready** (second pass). Includes the missing-signals-file startup refusal and the exact-pinned-command fence (`scripts/mal-fast/probe-dropin-fence.py`). **Waiting on md5 equivalence job #143** (`j_pMdYuamPoMRtVA`, research-0). It must print `EQUIVALENT` for intents off, and identical decisions/positions md5 with intents on. Then merge. |
-| **Deploy #307** (after merge) | **Order matters** (runbook `docs/runbooks/probe-executor.md` §2b/§2c).<br>1. Owner/Helm: STOP new buys, wait for open = 0.<br>2. Helm: switch live to the **root-owned pinned executor** (PR #305) **at the #307 merge sha**. Run `install-probe-executor-pinned.sh <sha> <manifest>` from a fresh root clone, swap `live.conf` for the pinned drop-in, daemon-reload. Give Helm the full sha, the manifest of the 11 installed files, and the sha256 of the pinned drop-in and installer, computed from git at that sha (see #305 for the file list).<br>3. Me: redeploy the runner, which is now allowed because the fence sees the pinned command. `install-fast-forward-paper.sh --commit <sha>`, then restart `mal-fast-forward-paper`, then `test -s /var/lib/mal/paper/fast-forward-paper/intents.jsonl`.<br>4. Helm: start the executor (it refuses live without the signals file), then remove STOP.<br>Record the runner restart in LAB_STATE (a mid-week change) and do it **before 10-06T00Z** if possible, when the forward window opens. |
+| **PR #307** (merged `9fa57ea`) | The runner writes `intents.jsonl` at decision time and the executor acts on it. Expected saving is about 6 slots. md5 job #143: EQUIVALENT with intents off and on (95,948 / 18,030 rows; 103 intents). **Not deployed yet.** |
+| **PR #311** (merged → `8333ef1`) | Fixes the pinned installer: venv symlinks failed its final check, so it always aborted half-installed. It adds `check-probe-exec-tree.sh`, checks run before any move, rollback on every move, and a corrected keyless dry-run command (mktemp under /run, EnvironmentFile). Security review: merge. |
+| **DEPLOY at `8333ef1c018d8211de5b1f454b9f795cb8dbb61d`** (owner + Helm; see the block below) | Not started. STOP was requested from Helm about 16:20Z and was **not yet present at 16:22Z** (`stop_file_present=False`). Confirm STOP first. |
 | **Job #127** (done) | Migration-stream probe, 6 h. 282 migrations; 217 matched with the tip follower's `complete` by mint. Stream earlier by p50 212 ms / p90 996 ms (first in 162 of 217). But the migrate tx lands p50 **3 slots after** `complete`. **Conclusion:** the migration-authority stream alone gains only about 0.2 s on the trigger. The real gain (about 1.4 s, estimated) needs processed subscriptions to **near-graduation bonding curves** to catch `complete` and the final trades. Notebook entry posted. |
 | **Job #71** (research-0) | DEC-016 forward walk forward-1002. **Resubmit by about 10-09T15Z** (same command, params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
 | Owner question `q_YBNB8Qi1lR_WjQ` | DEC-018: five live-trial decisions, due about 10-14. |
+
+## Deploy block for Helm (#307 + #305 + #311), pin `8333ef1c018d8211de5b1f454b9f795cb8dbb61d`
+
+Order (runbook `docs/runbooks/probe-executor.md` §2b/§2c):
+1. Confirm `/var/lib/mal-live/STOP` is present and `open=0`.
+2. **Helm:** `systemctl stop mal-probe-executor`, then remove `/etc/systemd/system/mal-probe-executor.service.d/live.conf`. With no non-pinned live drop-in, the runner installer's fence passes.
+3. **Manager** (announce first: this writes src, and `malprobe-code` will alert):
+   - `install-fast-forward-paper.sh --commit 8333ef1c018d8211de5b1f454b9f795cb8dbb61d`;
+   - restart `mal-fast-forward-paper`;
+   - check `test -e /var/lib/mal/paper/fast-forward-paper/intents.jsonl` (it may be empty until the first decision);
+   - record the runner restart in LAB_STATE as a mid-week change.
+
+   This also installs the base unit with the `intents.jsonl` bind (sha256 `b7957e95…f9a`).
+4. **Helm:** from a fresh root clone at the sha, run `install-probe-executor-pinned.sh 8333ef1c018d8211de5b1f454b9f795cb8dbb61d /root/manifest-exec.txt`. The installer is `f29d10d3…9cca`; it calls `check-probe-exec-tree.sh` `7eeba7f8…5f92`. Then the **keyless dry run** of the pinned launcher (runbook §2b), then install `mal-probe-executor-live-pinned.conf` (`c4dc451d…6819`), `daemon-reload`, start. Check the journal shows `mode=LIVE` and no `startup_refused`. Remove STOP.
+5. **Manager:** recreate the hourly monitor, running `--status` from the pinned copy (runbook "pinned-mode status"), not from src. The live §7 groups are keyed by build: `8a6849b` (pre-#307, `ARTIFACTS/lab/probe-live-2026-10-05.md`) against `8333ef1`.
+
+`/root/manifest-exec.txt`:
+```
+128f9efbc7a03d4148c0df6f4d36a6672e69a17348b9bde37c0e86ed6a67614b  tools/__init__.py
+019c64c317d98d8b11d1319d8202ca72d49df3fee12b983cf3c6f407753fcafa  tools/paper_curve_math.py
+25e543baace5d20aadf5109b228a27e272ecdd0d78190a5e638237337ba08235  tools/paper_price_path.py
+354d03602600c8df50ace4f5fed1307cf19f9fc9271ef6532706aafaa750f590  tools/paper_tape_scoreboard.py
+fd469885cb6a30f6de53b7ace11e6e07ef16d53c008af8f9a05fce1f0fdaea7e  tools/probe_executor.py
+4a9fd23dea5148e20f2220f8b3cbe487d432d42f79082e45cd3b279247067da8  tools/probe_live.py
+0a2e777844e70c8eb44e34e2509f7dbc2265e5f5660c9c403018cd01d7fa2930  tools/pumpswap_simulate.py
+418e52c16ad46cb38cb8bf4709ae6ec57caba4beed73c0a6a22a972c67030aa2  tools/pumpswap_tx.py
+10e8052cb529b6b6b1a6d5402b966b10ae4146e6b190f1ce1b9c922035a1fa7e  scripts/mal-fast/probe_exec_launcher.py
+32325d9d27e072c0b34bf4ae9eb01241f7653d9947f496267ede8d91badcca32  scripts/mal-fast/probe-executor-live.json
+ed5b79869cb16fe61c15f09cdf70976e3ed4044ef8b31227fb37caf815f62342  scripts/mal-fast/requirements-probe-exec.txt
+```
+Recovery from a half-finished pinned install: see runbook §2b. Remove `/usr/local/lib/mal-probe-exec/<sha>` and any `venv.<sha>.new` by hand, then rerun.
 
 ## State on fast-0 (paper; DEC-015)
 
