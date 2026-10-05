@@ -407,6 +407,9 @@ def exit_check(pos: dict[str, Any], snap: Snapshot, now_ms: int, *, own_trade_in
     pool plus our virtual buy against the post-buy mark; tp/sl on that return; time stop at
     MAX_HOLD_MS after entry. Returns {"reason": tp|sl|time_stop|None, ret, quote_out}."""
     q = snap.quote_priced
+    # ASSUMPTION (own_trade_in_state=True): the snapshot contains our buy whenever exit_commitment is at least as fresh
+    # as the commitment the buy confirmed at. True for processed or confirmed; NOT for finalized (the executor
+    # refuses to start live with exit_commitment == "finalized").
     if own_trade_in_state:
         book = (q, snap.base_reserve) if q and q > 0 and snap.base_reserve > 0 else None
     else:
@@ -745,6 +748,9 @@ class Executor:
         self.fast_exit = "exit_poll_ms" in cfg  # the exit fast path (batched vault read, buy-meta sell amount, priority) is opt-in
         self.exit_poll_ms = clamp_exit_poll_ms(cfg.get("exit_poll_ms"), self.poll_ms)
         self.exit_commitment = cfg.get("exit_commitment") or self.commitment  # exit snapshot + sell quote only
+        if self.mode == "live" and self.exit_commitment == "finalized":
+            # exit_check(own_trade_in_state=True) assumes the snapshot already holds our landed buy.
+            raise SystemExit("live refused: exit_commitment 'finalized' can lag the buy's commitment, so the exit snapshot may not hold our buy")
         self.static = StaticCache()
         self._pool_cache: dict[str, tuple[tx.PoolState, int | None, int]] = {}  # mint -> (pool state, V, parsed at ms)
         self._crit = 0

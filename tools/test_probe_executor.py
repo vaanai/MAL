@@ -1196,7 +1196,6 @@ class OwnTradeInStateTests(unittest.TestCase):
     def test_tp_threshold_moves_with_real_state(self):
         # price just under tp on the real book: live does not fire, the double count fires
         q = self.real.quote_priced
-        target = (1 + pe.EXIT_RULE.tp) * self.pos["mark"]
         lo, hi = 0, 10 * q
         while hi - lo > 1:
             mid = (lo + hi) // 2
@@ -1207,7 +1206,6 @@ class OwnTradeInStateTests(unittest.TestCase):
         just_under = pe.Snapshot(None, 2, lo - V, self.real.base_reserve, V)  # type: ignore[arg-type]
         self.assertIsNone(pe.exit_check(self.pos, just_under, T0 + 1, own_trade_in_state=True)["reason"])
         self.assertEqual(pe.exit_check(self.pos, just_under, T0 + 1)["reason"], "tp")
-        self.assertTrue(target > 0)
 
 
 if __name__ == "__main__":

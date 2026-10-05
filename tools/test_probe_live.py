@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest import mock
 
@@ -1155,6 +1156,31 @@ class ExitFastPathTests(unittest.TestCase):
 
     def _crash(self, rpc):
         rpc.quote = rpc.quote // 3  # price collapses: sl
+
+    def test_live_exit_check_calls_pass_own_trade_in_state(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        # no trigger: poll_positions' own call
+        calls = []
+        real = pe.exit_check
+        def spy(*a, **k):
+            calls.append(k.get("own_trade_in_state"))
+            return real(*a, **k)
+        with unittest.mock.patch.object(pe, "exit_check", spy):
+            clock.t += 400
+            ex.tick()
+            self.assertGreaterEqual(len(calls), 1)
+            self.assertEqual(set(calls), {True})
+            n = len(calls)
+            self._crash(rpc)  # trigger: poll_positions then _start_sell (quote_out / min_out)
+            clock.t += 400
+            ex.tick()
+        self.assertIn(MINT, ex.state.pending)
+        self.assertGreaterEqual(len(calls) - n, 2)
+        self.assertEqual(set(calls), {True})
+
+    def test_live_refuses_finalized_exit_commitment(self):
+        with self.assertRaises(SystemExit):
+            make_live(self.tmp, exit_poll_ms=400, exit_commitment="finalized")
 
     def test_first_sell_uses_buy_meta_then_retry_uses_rpc(self):
         ex, rpc, clock, conf, pos = self.fast()
