@@ -31,6 +31,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from tools import paper_curve_math as pcm
 from tools import probe_executor as pe
 from tools import pumpswap_tx as tx
 
@@ -176,35 +177,72 @@ def sim_buy(row: dict[str, Any], spend: int) -> dict[str, Any] | None:
     return q if q["tokens"] > 0 else None
 
 
-def sim_exit(rows: list[dict[str, Any]], entry_slot: int, pos: dict[str, Any], delay_slots: int | None) -> dict[str, Any]:
-    """First exit trigger after `entry_slot` (executor `exit_check`), sold at the trigger row and at +delay."""
-    trig = None
+BOOKS = ("executor", "correct")  # executor-identical (adds our buy again) vs raw tape book (our buy already in the tape)
+POSITIONS = ("sim", "live")  # position from the simulated entry vs from the LIVE fill
+VARIANTS = tuple(f"{p}_{b}" for p in POSITIONS for b in BOOKS)
+
+
+def eval_book(pos: dict[str, Any], row: dict[str, Any], book: str) -> dict[str, Any]:
+    """ret / sell proceeds at one tape row. `executor`: pe.exit_check, which re-adds our buy to the book
+    (reserves_with_our_buy, same_venue=True): a double count when the tape row already holds our real buy.
+    `correct`: raw tape state, our position applied only as the sell (tokens out)."""
+    snap = snap_of(row)
+    if book == "executor":
+        r = pe.exit_check(pos, snap, pos["t_entry_ms"])  # now == entry: tp/sl only, the time stop is handled here
+        return {"ret": r["ret"], "out": r["quote_out"], "reason": r["reason"] if r["reason"] in ("tp", "sl") else None}
+    q = snap.quote_priced
+    if not q or snap.base_reserve <= 0:
+        return {"ret": None, "out": None, "reason": None}
+    ret = pcm.spot_sol_per_ui(q, snap.base_reserve) / pos["mark"] - 1.0
+    out = tx.cp_sell_out(pos["tokens"], q, snap.base_reserve, pe.fee_ppm_for(q, snap.base_reserve))
+    reason = "tp" if ret >= pe.EXIT_RULE.tp else ("sl" if ret <= -pe.EXIT_RULE.sl else None)
+    return {"ret": ret, "out": out, "reason": reason}
+
+
+def walk_exit(rows: list[dict[str, Any]], entry_slot: int, entry_row: dict[str, Any], pos: dict[str, Any],
+              delay_slots: int | None, book: str, deadline_covered: bool = True) -> dict[str, Any]:
+    """First exit after `entry_slot`. tp/sl on the row that crosses; time stop once a row is past the deadline, priced
+    at the LAST ROW BEFORE the deadline (quiet pools included, when the tape covers the deadline). The delayed sell is
+    priced at the last row with slot < trigger + delay, never at our own sell's row."""
+    deadline = pos["t_entry_ms"] + pe.EXIT_RULE.max_hold_ms
+    last = entry_row
+    trig: dict[str, Any] | None = None
     for r in rows:
         if r["slot"] <= entry_slot:
             continue
         now = row_ms(r)
         if now is None:
             continue
-        res = pe.exit_check(pos, snap_of(r), now)
-        if res["reason"] and res["quote_out"] is not None:
-            trig = (r, res)
+        if now > deadline:
+            trig = {"reason": "time_stop", "row": last, "ms": deadline}
             break
+        ev = eval_book(pos, r, book)
+        if ev["reason"] and ev["out"] is not None:
+            trig = {"reason": ev["reason"], "row": r, "ms": now}
+            break
+        last = r
     if trig is None:
+        if not deadline_covered:
+            return {"reason": None}
+        trig = {"reason": "time_stop", "row": last, "ms": deadline}
+    row = trig["row"]
+    ev = eval_book(pos, row, book)
+    if ev["out"] is None:
         return {"reason": None}
-    r, res = trig
-    out: dict[str, Any] = {"reason": res["reason"], "ret": res["ret"], "trigger_slot": r["slot"], "trigger_ms": row_ms(r),
-                           "out_lamports": res["quote_out"], "delayed_out_lamports": None, "delayed_slot": None}
+    res: dict[str, Any] = {"reason": trig["reason"], "ret": ev["ret"], "trigger_slot": row["slot"], "trigger_ms": trig["ms"],
+                           "out_lamports": ev["out"], "delayed_out_lamports": None, "delayed_slot": None}
     if delay_slots is not None:
-        dr = last_before(rows, r["slot"] + delay_slots + 1)  # state at the landing slot: rows with slot <= trigger + delay
-        if dr is not None:
-            d = pe.exit_check(pos, snap_of(dr), row_ms(dr) or 0)
-            if d["quote_out"] is not None:
-                out["delayed_out_lamports"], out["delayed_slot"] = d["quote_out"], dr["slot"]
-    return out
+        dr = last_before(rows, row["slot"] + delay_slots)
+        if dr is None or dr["slot"] < row["slot"]:
+            dr = row
+        dv = eval_book(pos, dr, book)
+        if dv["out"] is not None:
+            res["delayed_out_lamports"], res["delayed_slot"] = dv["out"], dr["slot"]
+    return res
 
 
 def side_fee(fill: dict[str, Any] | None, prio: int | None) -> int:
-    """Fee of one side in lamports; `prio` swaps the priority part (base fee kept)."""
+    """Fee of one side in lamports; `prio` swaps the priority part (base fee kept). LIVE-derived input."""
     if fill is None:
         return 0
     f = int(fill.get("fee_lamports") or 0)
@@ -215,16 +253,64 @@ def side_fee(fill: dict[str, Any] | None, prio: int | None) -> int:
     return f - live_prio + prio
 
 
-def simulate_trade(trade: dict[str, Any], rows: list[dict[str, Any]], fill_mints: set[str]) -> dict[str, Any]:
+def rent_net(b: dict[str, Any], s: dict[str, Any] | None) -> int:
+    """ATA rent charged on the buy minus rent refunded on the sell (0 when it nets out)."""
+    if s is None:
+        return 0
+    return int(b.get("rent_charged_lamports") or 0) - int(s.get("rent_refunded_lamports") or 0)
+
+
+def pnl_of(out: int, spend: int, b: dict[str, Any], s: dict[str, Any] | None, prio: int | None = None) -> int:
+    """Live parity: proceeds - spend - both fees - failed-sell cost (extra_cost) - net ATA rent."""
+    extra = int((s or {}).get("failed_attempt_cost_lamports") or 0)
+    return out - spend - side_fee(b, prio) - side_fee(s, prio) - extra - rent_net(b, s)
+
+
+def variant_result(name: str, ex: dict[str, Any], b: dict[str, Any], s: dict[str, Any] | None) -> dict[str, Any]:
+    if ex["reason"] is None:
+        return {"reason": None}
+    spend = int(b["spend_lamports"])
+    d = ex["delayed_out_lamports"]
+    v: dict[str, Any] = {"reason": ex["reason"], "ret": ex["ret"], "trigger_slot": ex["trigger_slot"], "trigger_ms": ex["trigger_ms"],
+                         "pnl_immediate_lamports": pnl_of(ex["out_lamports"], spend, b, s),
+                         "pnl_delayed_lamports": None if d is None else pnl_of(d, spend, b, s)}
+    if s:
+        live_trig_ms = s.get("first_send_ms") or s.get("ts_ms")
+        v["trigger_time_diff_ms"] = ex["trigger_ms"] - live_trig_ms if live_trig_ms else None
+        if s.get("snapshot_slot"):
+            v["trigger_slot_diff"] = ex["trigger_slot"] - int(s["snapshot_slot"])
+        v["reason_agree"] = ex["reason"] == s.get("exit_reason")
+        v["tp_sl_disagree"] = (ex["reason"] in ("tp", "sl") and s.get("exit_reason") in ("tp", "sl")
+                               and ex["reason"] != s["exit_reason"])
+        if s.get("pnl_lamports") is not None:
+            used = v["pnl_delayed_lamports"] if d is not None else v["pnl_immediate_lamports"]
+            v["pnl_gap_lamports"] = s["pnl_lamports"] - used  # live minus sim
+    return v
+
+
+def live_position(b: dict[str, Any], er: dict[str, Any], q: dict[str, Any]) -> dict[str, Any]:
+    """Position from the LIVE fill: live tokens, net_in = spend - pool_fee_est, and the mark the executor would have
+    stored (post-buy spot) re-derived from the entry-row state. mark/net_in are derived, not recorded in the fills."""
+    spend, tokens = int(b["spend_lamports"]), int(b["tokens_received"])
+    net = spend - int(b["pool_fee_est_lamports"]) if b.get("pool_fee_est_lamports") is not None else q["net_in"]
+    snap = snap_of(er)
+    mark = pcm.spot_sol_per_ui(snap.quote_priced + net, snap.base_reserve - tokens)
+    return {"tokens": tokens, "net_in": net, "mark": mark, "t_entry_ms": b["ts_ms"]}
+
+
+def simulate_trade(trade: dict[str, Any], rows: list[dict[str, Any]], fill_mints: set[str],
+                   own_trade_in_tape: bool = True, deadline_covered: bool = True) -> dict[str, Any]:
     b, s = trade["buy"], trade["sell"]
     mint = b["mint"]
     if mint not in fill_mints:  # seal
         raise ValueError("seal: mint is not in the live fills file")
     spend = int(b["spend_lamports"])
+    primary = "sim_correct" if own_trade_in_tape else "sim_executor"
     out: dict[str, Any] = {"mint": mint, "build": build_of(b["ts_ms"]), "buy_ts_ms": b["ts_ms"], "landed_slot": b["landed_slot"],
                            "live_tokens": b["tokens_received"], "spend_lamports": spend, "live_entry_vs_quote_bps": b.get("entry_vs_quote_bps"),
                            "live_exit_reason": (s or {}).get("exit_reason"), "live_ret": (s or {}).get("ret"),
-                           "live_pnl_lamports": (s or {}).get("pnl_lamports"), "live_hold_ms": (s or {}).get("hold_ms")}
+                           "live_pnl_lamports": (s or {}).get("pnl_lamports"), "live_hold_ms": (s or {}).get("hold_ms"),
+                           "rent_net_lamports": rent_net(b, s), "primary_variant": primary}
     er = last_before(rows, int(b["landed_slot"]))
     q = sim_buy(er, spend) if er else None
     if q is None:
@@ -236,34 +322,48 @@ def simulate_trade(trade: dict[str, Any], rows: list[dict[str, Any]], fill_mints
     if s and s.get("landed_slot") and s.get("snapshot_slot"):
         delay = int(s["landed_slot"]) - int(s["snapshot_slot"])
     out["live_sell_delay_slots"] = delay
-    pos = {"tokens": q["tokens"], "net_in": q["net_in"], "mark": q["mark"], "t_entry_ms": b["ts_ms"]}
-    ex = sim_exit(rows, int(b["landed_slot"]), pos, delay)
-    out["sim_exit_reason"] = ex["reason"]
-    if ex["reason"] is None:
+    slot = int(b["landed_slot"])
+    pos_sim = {"tokens": q["tokens"], "net_in": q["net_in"], "mark": q["mark"], "t_entry_ms": b["ts_ms"]}
+    pos_live = live_position(b, er, q) if b.get("tokens_received") else None
+    walks: dict[str, dict[str, Any]] = {}
+    variants: dict[str, Any] = {}
+    for pname, pos in (("sim", pos_sim), ("live", pos_live)):
+        if pos is None:
+            continue
+        for book in BOOKS:
+            ex = walk_exit(rows, slot, er, pos, delay, book, deadline_covered)
+            walks[f"{pname}_{book}"] = ex
+            variants[f"{pname}_{book}"] = variant_result(f"{pname}_{book}", ex, b, s)
+    out["variants"] = variants
+    pv = variants[primary]
+    out["sim_exit_reason"] = pv["reason"]
+    if pv["reason"] is None:
         out["status"] = "no_exit_in_tape"
         return out
-    out.update(sim_ret=ex["ret"], sim_trigger_slot=ex["trigger_slot"], sim_trigger_ms=ex["trigger_ms"])
-    if s:
-        live_trig_ms = s.get("first_send_ms") or s.get("ts_ms")
-        out["trigger_time_diff_ms"] = ex["trigger_ms"] - live_trig_ms if live_trig_ms else None
-        if s.get("snapshot_slot"):
-            out["trigger_slot_diff"] = ex["trigger_slot"] - int(s["snapshot_slot"])
-        out["reason_agree"] = ex["reason"] == s.get("exit_reason")
-        out["tp_sl_disagree"] = (ex["reason"] in ("tp", "sl") and s.get("exit_reason") in ("tp", "sl")
-                                 and ex["reason"] != s["exit_reason"])
-    fees = side_fee(b, None) + side_fee(s, None)
-    d = ex["delayed_out_lamports"]
-    out["sim_pnl_immediate_lamports"] = ex["out_lamports"] - spend - fees
-    out["sim_pnl_delayed_lamports"] = None if d is None else d - spend - fees
-    out_used = d if d is not None else ex["out_lamports"]
-    if s and out["live_pnl_lamports"] is not None:
-        out["pnl_gap_lamports"] = out["live_pnl_lamports"] - (out_used - spend - fees)  # live minus sim
+    for k_out, k_v in (("sim_ret", "ret"), ("sim_trigger_slot", "trigger_slot"), ("sim_trigger_ms", "trigger_ms"),
+                       ("trigger_time_diff_ms", "trigger_time_diff_ms"), ("trigger_slot_diff", "trigger_slot_diff"),
+                       ("reason_agree", "reason_agree"), ("tp_sl_disagree", "tp_sl_disagree"),
+                       ("sim_pnl_immediate_lamports", "pnl_immediate_lamports"), ("sim_pnl_delayed_lamports", "pnl_delayed_lamports"),
+                       ("pnl_gap_lamports", "pnl_gap_lamports")):
+        if k_v in pv:
+            out[k_out] = pv[k_v]
+    # double count: ret of the two books at the LIVE trigger row (the executor's snapshot slot), same sim position
+    if s and s.get("snapshot_slot"):
+        lr = last_before(rows, int(s["snapshot_slot"]) + 1)
+        if lr is not None and lr["slot"] > slot:
+            e, c = eval_book(pos_sim, lr, "executor"), eval_book(pos_sim, lr, "correct")
+            if e["ret"] is not None and c["ret"] is not None:
+                out["ret_executor_at_live_trigger"], out["ret_correct_at_live_trigger"] = e["ret"], c["ret"]
+                out["ret_diff_executor_minus_correct"] = e["ret"] - c["ret"]
+    pw = walks[primary]
+    used = pw["delayed_out_lamports"] if pw["delayed_out_lamports"] is not None else pw["out_lamports"]
     sens: dict[str, Any] = {}
-    fees_alt = side_fee(b, PRIORITY_ALT) + side_fee(s, PRIORITY_ALT)
     sens["priority_150k"] = {
-        "sim_pnl_lamports": out_used - spend - fees_alt,
-        "live_pnl_adjusted_lamports": None if out["live_pnl_lamports"] is None else out["live_pnl_lamports"] + (fees - fees_alt),
+        "sim_pnl_lamports": pnl_of(used, spend, b, s, PRIORITY_ALT),
+        "live_pnl_adjusted_lamports": None if out["live_pnl_lamports"] is None else out["live_pnl_lamports"]
+        + (side_fee(b, None) + side_fee(s, None) - side_fee(b, PRIORITY_ALT) - side_fee(s, PRIORITY_ALT)),
     }
+    book = "correct" if own_trade_in_tape else "executor"
     for sz in SIZES_SOL:
         sp = int(sz * LAMPORTS)
         q2 = sim_buy(er, sp)  # price impact re-simulated against the same pool state with V
@@ -271,13 +371,14 @@ def simulate_trade(trade: dict[str, Any], rows: list[dict[str, Any]], fill_mints
             sens[f"size_{sz}"] = None
             continue
         p2 = {"tokens": q2["tokens"], "net_in": q2["net_in"], "mark": q2["mark"], "t_entry_ms": b["ts_ms"]}
-        e2 = sim_exit(rows, int(b["landed_slot"]), p2, delay)
+        e2 = walk_exit(rows, slot, er, p2, delay, book, deadline_covered)
         if e2["reason"] is None:
             sens[f"size_{sz}"] = {"exit_reason": None}
             continue
         o2 = e2["delayed_out_lamports"] if e2["delayed_out_lamports"] is not None else e2["out_lamports"]
+        pn = pnl_of(o2, sp, b, s)
         sens[f"size_{sz}"] = {"exit_reason": e2["reason"], "entry_impact_bps_vs_spot": _impact_bps(er, sp, q2),
-                              "sim_pnl_lamports": o2 - sp - fees, "pnl_pct_of_size": (o2 - sp - fees) / sp * 100}
+                              "sim_pnl_lamports": pn, "pnl_pct_of_size": pn / sp * 100}
     out["sensitivity"] = sens
     return out
 
@@ -298,6 +399,18 @@ def _stats(xs: list[Any]) -> dict[str, Any]:
     return {"n": len(xs), "mean": statistics.fmean(xs) if xs else None, "median": statistics.median(xs) if xs else None}
 
 
+def _variant_agg(rs: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    vs = [r["variants"][name] for r in rs if r.get("variants", {}).get(name, {}).get("reason") and "reason_agree" in r["variants"][name]]
+    dis = sum(1 for v in vs if v["tp_sl_disagree"])
+    return {"n_paired": len(vs), "exit_reason_agree": sum(1 for v in vs if v["reason_agree"]),
+            "tp_sl_disagree": dis,
+            "trigger_time_diff_ms": _stats([v.get("trigger_time_diff_ms") for v in vs]),
+            "pnl_gap_lamports_live_minus_sim": _stats([v.get("pnl_gap_lamports") for v in vs]),
+            "sim_pnl_lamports": _stats([v["pnl_delayed_lamports"] if v.get("pnl_delayed_lamports") is not None else v["pnl_immediate_lamports"]
+                                        for v in vs]),
+            "ret": _stats([v.get("ret") for v in vs])}
+
+
 def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for name in (BUILD_BEFORE, BUILD_AFTER, "all"):
@@ -310,6 +423,7 @@ def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
             vals = [r["sensitivity"][k] for r in ok if r.get("sensitivity", {}).get(k)]
             sens[k] = _stats([v.get("sim_pnl_lamports") for v in vals])
         dis = sum(1 for r in both if r["tp_sl_disagree"])
+        rents = [r["rent_net_lamports"] for r in rs if r.get("live_pnl_lamports") is not None]
         out[name] = {
             "n_trades": len(rs), "n_sim_ok": len(ok),
             "entry_gap_bps": _stats([r.get("entry_gap_bps") for r in rs]),
@@ -320,49 +434,73 @@ def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
             "live_pnl_lamports": _stats([r.get("live_pnl_lamports") for r in paired]),
             "sim_pnl_lamports": _stats([r["sim_pnl_delayed_lamports"] if r.get("sim_pnl_delayed_lamports") is not None
                                         else r["sim_pnl_immediate_lamports"] for r in paired]),
+            "ret_diff_executor_minus_correct_at_live_trigger": _stats([r.get("ret_diff_executor_minus_correct") for r in rs]),
+            "ata_rent_net_lamports": {"n": len(rents), "n_nonzero": sum(1 for x in rents if x), "sum": sum(rents)},
+            "variants": {v: _variant_agg(rs, v) for v in VARIANTS},
             "sensitivity_sim_pnl_lamports": sens,
         }
     return out
 
 
 def to_markdown(results: list[dict[str, Any]], agg: dict[str, Any]) -> str:
-    L = ["# Probe vs simulator calibration", "",
-         "ARITHMETIC ON n LIVE TRADES, NOT EVIDENCE. Seal: only mints from the live fills were simulated.", ""]
+    L = ["# Probe vs simulator comparison", "",
+         "ARITHMETIC ON n LIVE TRADES, NOT EVIDENCE. Not a calibration. Seal: only mints from the live fills were simulated.",
+         "Sell delay and fees are LIVE-derived inputs (fee_lamports per side, sell landed_slot - sell snapshot_slot), "
+         "so the pnl gap does not test them. Live-position variants derive mark and net_in from the fill (not recorded).", ""]
     for name, a in agg.items():
-        L += [f"## {name}", "", f"- trades {a['n_trades']}, simulated {a['n_sim_ok']}",
+        n = a["n_paired"]
+        L += [f"## {name}", "",
+              f"Sim reproduces the executor's exit decisions on {a['exit_reason_agree']}/{n} (n={n}) (primary variant); "
+              f"tp-vs-sl disagree {a['tp_sl_disagree']}/{a['n_tp_sl_both']}.", "",
+              f"- trades {a['n_trades']}, simulated {a['n_sim_ok']}",
               f"- entry gap bps (sim tokens vs live): {a['entry_gap_bps']}",
-              f"- exit reason agree {a['exit_reason_agree']}/{a['n_paired']}; tp-vs-sl disagree {a['tp_sl_disagree']}/{a['n_tp_sl_both']}",
               f"- trigger time diff ms (sim - live send): {a['trigger_time_diff_ms']}",
-              f"- pnl gap lamports (live - sim): {a['pnl_gap_lamports_live_minus_sim']}",
+              f"- pnl gap lamports (live - sim; delay and fees are live-derived inputs): {a['pnl_gap_lamports_live_minus_sim']}",
               f"- live pnl {a['live_pnl_lamports']}; sim pnl {a['sim_pnl_lamports']}",
-              f"- sensitivity (sim pnl lamports): {a['sensitivity_sim_pnl_lamports']}", ""]
-    L += ["## Per trade", "",
-          "| build | mint | status | entry gap bps | live exit | sim exit | trig dt ms | live pnl | sim pnl | gap |",
-          "|---|---|---|---|---|---|---|---|---|---|"]
+              f"- ret diff, executor-identical minus correct book, at the live trigger row (double count): "
+              f"{a['ret_diff_executor_minus_correct_at_live_trigger']}",
+              f"- ATA rent charged minus refunded: {a['ata_rent_net_lamports']}",
+              f"- sensitivity (sim pnl lamports): {a['sensitivity_sim_pnl_lamports']}", "",
+              "| variant | exit reason agree | tp/sl disagree | trigger dt ms | pnl gap (live-sim) | sim pnl | ret |", "|---|---|---|---|---|---|---|"]
+        for v, va in a["variants"].items():
+            L.append(f"| {v} | {va['exit_reason_agree']}/{va['n_paired']} | {va['tp_sl_disagree']} | {va['trigger_time_diff_ms']['mean']} | "
+                     f"{va['pnl_gap_lamports_live_minus_sim']['mean']} | {va['sim_pnl_lamports']['mean']} | {va['ret']['mean']} |")
+        L.append("")
+    L += ["## Per trade (primary variant)", "",
+          "| build | mint | status | entry gap bps | live exit | sim exit | trig dt ms | ret diff exec-correct | live pnl | sim pnl | gap |",
+          "|---|---|---|---|---|---|---|---|---|---|---|"]
 
     def f(x: Any) -> str:
-        return "" if x is None else (f"{x:.1f}" if isinstance(x, float) else str(x))
+        return "" if x is None else (f"{x:.4g}" if isinstance(x, float) else str(x))
 
     for r in results:
         sp = r.get("sim_pnl_delayed_lamports")
         sp = sp if sp is not None else r.get("sim_pnl_immediate_lamports")
         L.append(f"| {r['build']} | {r['mint'][:8]} | {r['status']} | {f(r.get('entry_gap_bps'))} | {f(r['live_exit_reason'])} | "
-                 f"{f(r.get('sim_exit_reason'))} | {f(r.get('trigger_time_diff_ms'))} | {f(r['live_pnl_lamports'])} | {f(sp)} | "
-                 f"{f(r.get('pnl_gap_lamports'))} |")
+                 f"{f(r.get('sim_exit_reason'))} | {f(r.get('trigger_time_diff_ms'))} | {f(r.get('ret_diff_executor_minus_correct'))} | "
+                 f"{f(r['live_pnl_lamports'])} | {f(sp)} | {f(r.get('pnl_gap_lamports'))} |")
     L += ["", "Unverified: tape reserves are post-trade state; live trigger time approximated by the sell's first_send_ms; "
-          "sell delay = live sell landed_slot - live sell snapshot_slot."]
+          "sell delay = live sell landed_slot - live sell snapshot_slot; a time stop is emitted when the tape file of the "
+          "deadline hour exists, even if no row follows."]
     return "\n".join(L) + "\n"
 
 
-def run(fills_path: Path, tape_dir: Path, out_dir: Path) -> dict[str, Any]:
+def run(fills_path: Path, tape_dir: Path, out_dir: Path, own_trade_in_tape: bool = True) -> dict[str, Any]:
     trades = pair_trades(load_fills(fills_path))
     fill_mints = {t["buy"]["mint"] for t in trades}
-    tape = read_tape_rows(tape_dir, hours_needed(trades), fill_mints)
-    results = [simulate_trade(t, tape.get(t["buy"]["mint"], []), fill_mints) for t in trades]
+    hours = hours_needed(trades)
+    tape = read_tape_rows(tape_dir, hours, fill_mints)
+    present = {h for h in hours if (tape_dir / f"trades-{h}.jsonl").exists() or (tape_dir / f"trades-{h}.jsonl.zst").exists()}
+    results = []
+    for t in trades:
+        dl = t["buy"]["ts_ms"] + pe.EXIT_RULE.max_hold_ms
+        results.append(simulate_trade(t, tape.get(t["buy"]["mint"], []), fill_mints, own_trade_in_tape,
+                                      deadline_covered=_hour_name(dl) in present))
     agg = aggregate(results)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "calibration.json").write_text(
-        json.dumps({"label": "arithmetic on n trades, not evidence", "aggregate": agg, "trades": results}, indent=1))
+        json.dumps({"label": "arithmetic on n trades, not evidence", "own_trade_in_tape": own_trade_in_tape,
+                    "aggregate": agg, "trades": results}, indent=1))
     (out_dir / "calibration.md").write_text(to_markdown(results, agg))
     return agg
 
@@ -372,8 +510,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fills", type=Path, required=True)
     ap.add_argument("--tape-dir", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--own-trade-in-tape", action=argparse.BooleanOptionalAction, default=True,
+                    help="primary variant prices exits on the raw tape book (our buy is already in post-landing rows); "
+                         "default on. Both books are always reported.")
     a = ap.parse_args(argv)
-    agg = run(a.fills, a.tape_dir, a.out_dir)
+    agg = run(a.fills, a.tape_dir, a.out_dir, a.own_trade_in_tape)
     print(json.dumps({k: {"n_trades": v["n_trades"], "n_sim_ok": v["n_sim_ok"]} for k, v in agg.items()}))
     return 0
 

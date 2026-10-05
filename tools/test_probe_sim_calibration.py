@@ -133,3 +133,72 @@ def test_tp_sl_disagree_and_build_aggregate(tmp_path):
     agg = psc.run(fills_file(tmp_path, [ba, sa, bb, sb]), d, tmp_path / "o")
     assert agg["a25eb17"]["tp_sl_disagree"] == 1 and agg["8a6849b"]["tp_sl_disagree"] == 0
     assert agg["8a6849b"]["n_trades"] == 1 and agg["all"]["n_trades"] == 2
+
+
+DEADLINE = T_AFTER + 30 * 60_000
+
+
+def quiet_rows(extra=()):
+    return [trow(M1, 100, Q0, T_AFTER - 2000), trow(M1, 101, Q0, T_AFTER - 1000),
+            trow(M1, 103, Q0 + 10**9, T_AFTER + 60_000), *extra]
+
+
+def test_time_stop_quiet_pool_priced_before_deadline():
+    _, b, s = make()
+    s["exit_reason"] = "time_stop"
+    rows = quiet_rows()  # nothing after slot 103: no row ever crosses the deadline
+    r = psc.simulate_trade({"buy": b, "sell": s}, rows, {M1})
+    assert r["sim_exit_reason"] == "time_stop" and r["sim_trigger_slot"] == 103 and r["sim_trigger_ms"] == DEADLINE
+    assert r["reason_agree"] is True
+    # an uncovered deadline hour emits no exit
+    assert psc.simulate_trade({"buy": b, "sell": s}, rows, {M1}, deadline_covered=False)["status"] == "no_exit_in_tape"
+
+
+def test_time_stop_not_priced_on_row_past_deadline():
+    _, b, s = make()
+    spike = trow(M1, 900, Q0 + 90 * 10**9, DEADLINE + 5000)  # first row after the deadline, would be a tp
+    r = psc.simulate_trade({"buy": b, "sell": s}, quiet_rows([spike]), {M1})
+    assert r["sim_exit_reason"] == "time_stop" and r["sim_trigger_slot"] == 103
+
+
+def test_delayed_sell_not_priced_on_own_sell_row():
+    rows, b, s = make()
+    rows = rows[:4] + [trow(M1, 106, Q0 + 1 * 10**9, T_AFTER + 3000)]  # row at the landing slot, post-sell crash
+    r = psc.simulate_trade({"buy": b, "sell": s}, rows, {M1})
+    # target slot 104 + 2 = 106 -> last row with slot < 106 is the trigger row itself
+    assert r["sim_pnl_delayed_lamports"] == r["sim_pnl_immediate_lamports"]
+
+
+def test_double_count_variants():
+    rows, b, s = make()
+    r = psc.simulate_trade({"buy": b, "sell": s}, rows, {M1})
+    ve, vc = r["variants"]["sim_executor"], r["variants"]["sim_correct"]
+    assert ve["ret"] > vc["ret"]  # executor re-adds our buy: inflates the book ret
+    assert r["ret_diff_executor_minus_correct"] > 0
+    assert r["ret_diff_executor_minus_correct"] == pytest.approx(r["ret_executor_at_live_trigger"] - r["ret_correct_at_live_trigger"])
+    assert r["primary_variant"] == "sim_correct" and r["sim_ret"] == vc["ret"]
+    r2 = psc.simulate_trade({"buy": b, "sell": s}, rows, {M1}, own_trade_in_tape=False)
+    assert r2["primary_variant"] == "sim_executor" and r2["sim_ret"] == ve["ret"]
+    assert set(r["variants"]) == {"sim_executor", "sim_correct", "live_executor", "live_correct"}
+
+
+def test_pnl_parity_extra_cost_and_rent():
+    rows, b, s = make()
+    base = psc.simulate_trade({"buy": b, "sell": s}, rows, {M1})["sim_pnl_delayed_lamports"]
+    b2 = {**b, "rent_charged_lamports": 2_039_280}
+    s2 = {**s, "failed_attempt_cost_lamports": 7_000, "rent_refunded_lamports": 2_039_000}
+    r = psc.simulate_trade({"buy": b2, "sell": s2}, rows, {M1})
+    assert r["rent_net_lamports"] == 280
+    assert r["sim_pnl_delayed_lamports"] == base - 7_000 - 280
+
+
+def test_cli_flag_default_on(tmp_path):
+    rows, b, s = make()
+    d = tmp_path / "tape"
+    write_tape(d, rows, T_AFTER)
+    f = fills_file(tmp_path, [b, s])
+    assert psc.main(["--fills", str(f), "--tape-dir", str(d), "--out-dir", str(tmp_path / "o1")]) == 0
+    assert json.loads((tmp_path / "o1/calibration.json").read_text())["own_trade_in_tape"] is True
+    psc.main(["--fills", str(f), "--tape-dir", str(d), "--out-dir", str(tmp_path / "o2"), "--no-own-trade-in-tape"])
+    assert json.loads((tmp_path / "o2/calibration.json").read_text())["own_trade_in_tape"] is False
+    assert "Sim reproduces the executor's exit decisions on 1/1 (n=1)" in (tmp_path / "o1/calibration.md").read_text()
