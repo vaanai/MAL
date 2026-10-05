@@ -1,0 +1,44 @@
+[Unit]
+Description=MAL fast-host graduation stream (processed transactionSubscribe measurement; paper only, read-only on chain)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# NOT enabled and NOT installed by install-fast-forward-paper.sh. The manager runs the measurement
+# as a MiScusi job instead: timeout 6h python -m tools.fast_grad_stream ...  This unit is the
+# reference for env, hardening and limits. Create /var/lib/mal/fast-grad-stream (owner ubuntu) first:
+# ReadWritePaths= fails on a missing path.
+Type=simple
+User=ubuntu
+Slice=mal-forward.slice
+Nice=10
+WorkingDirectory=/var/lib/mal/fast-forward/src
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+# Helius key: systemd reads it, the process never logs it.
+EnvironmentFile=/var/lib/mal/fast-listener/helius.env
+ExecStart=/var/lib/mal/fast-forward/venv/bin/python -m tools.fast_grad_stream --out /var/lib/mal/fast-grad-stream --tip-dir /var/lib/mal/sealed/fast-trades-tip --threshold 0.90 --cap 200
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal/fast-grad-stream
+ReadOnlyPaths=/var/lib/mal/fast-forward /var/lib/mal/sealed/fast-trades-tip
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemorySwapMax=0
+MemoryMax=400M
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectKernelLogs=true
+ProtectClock=true
+SystemCallFilter=@system-service
+UMask=0077
