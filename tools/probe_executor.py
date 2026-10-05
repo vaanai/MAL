@@ -421,6 +421,9 @@ def rebase_mark(pos: dict[str, Any], snap: Snapshot | None, now_ms: int) -> bool
     # mark would hide the loss from sl. Past the grace window the mark is always the fill price.
     if not late and snap is not None and q and q > 0 and snap.base_reserve > 0 and (not landed_slot or snap.slot >= landed_slot):
         mark, source = pcm.spot_sol_per_ui(q, snap.base_reserve), "landed_snapshot"
+        fm = fill_price_mark(pos)
+        if fm > 0 and mark / fm - 1.0 <= -EXIT_RULE.sl:
+            return False  # already crashed vs the fill price: re-basing would hide it; stay pending, the sl check fires
     elif late and pos["tokens"] > 0 and pos["net_in"] > 0:
         mark, source = fill_price_mark(pos), "fill_price"
     else:

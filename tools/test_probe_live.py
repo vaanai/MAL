@@ -1369,7 +1369,7 @@ class MarkAtLandingTests(unittest.TestCase):
         ex, rpc, clock = self.ex, self.rpc, self.clock
         signal_buy(ex, clock)
         rpc.quote = self.priced(0.7)
-        land_buy(ex, rpc)
+        land_buy(ex, rpc, tok=int(ex.state.pending[MINT]["q_tokens"] * 1.4198))  # fill price ~ the landed spot
         clock.t += 400
         ex.tick()
         self.assertNotIn(MINT, ex.state.pending)
@@ -1423,6 +1423,18 @@ class MarkAtLandingTests(unittest.TestCase):
         clock.t += 400
         ex.tick()
         self.assertTrue(ex.state.open[MINT]["mark_pending"])
+        self.assertEqual(ex.state.pending[MINT]["reason"], "sl")
+
+    def test_in_window_snapshot_already_crashed_is_not_the_mark(self):
+        ex, rpc, clock = self.ex, self.rpc, self.clock
+        signal_buy(ex, clock)
+        land_buy(ex, rpc)
+        rpc.quote = self.priced(0.65)  # first post-landing snapshot, inside the window, ~35% below the fill price
+        clock.t += 400
+        ex.tick()
+        pos = ex.state.open[MINT]
+        self.assertTrue(pos["mark_pending"])
+        self.assertIsNone(pos["mark_source"])
         self.assertEqual(ex.state.pending[MINT]["reason"], "sl")
 
     def test_late_snapshot_after_crash_uses_fill_price_so_sl_fires(self):
