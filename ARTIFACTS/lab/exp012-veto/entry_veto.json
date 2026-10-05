@@ -1,0 +1,1189 @@
+{
+  "schema": "exp012_entry_veto_v1",
+  "status": "EXPLORATION, BEST-OF-N, NOT A PROMOTE, NOT GATE EVIDENCE",
+  "n_rules_tried": 7,
+  "cumulative_tries_on_pool": 61,
+  "existing_tries_on_pool": 54,
+  "n_days": 9,
+  "days": [
+    "2026-09-19",
+    "2026-09-20",
+    "2026-09-21",
+    "2026-09-22",
+    "2026-09-23",
+    "2026-09-24",
+    "2026-09-25",
+    "2026-09-26",
+    "2026-09-27"
+  ],
+  "frozen_point": {
+    "threshold": 0.8030766588450794,
+    "k": 6,
+    "size_sol": 0.05,
+    "fee": 505000
+  },
+  "observation_window_slots": {
+    "tape_rules": [
+      "mig+1",
+      "mig+1"
+    ],
+    "drift_rules": "last print with slot <= mig+3 (executor snapshot, RPC processed)"
+  },
+  "n_frozen_trades_without_features": 0,
+  "ci": "gate cluster bootstrap, 1000 draws, seed 1 (tools.paper_attention_promote.book_stats)",
+  "caveats": [
+    "exploration pool, the same 9 days the model was frozen on: best-of-N, winner's curse applies; not a promote, not gate evidence",
+    "tape rules use slot mig+1 only (confirmed tape lags ~1.8 s, ~4 slots); drift uses the last print with slot <= mig+3 (executor snapshot, RPC processed); the lags are not measured here",
+    "a positive result for the five tape-derived rules is NOT deployable as-is: the live executor would need the processed grad stream or extra RPC to see more than the first post-migration slot",
+    "a vetoed entry is assumed to cost nothing (no tx sent); a window with no print gives no veto",
+    "the nested number is an UPPER BOUND: stored OOF scores saw the other days, and the rule family was written after the live stop-loss pattern was known",
+    "only the ENTRY slot is delayed (k=6); the exit delay stays at the frozen k=1 'start'; the live sell shortfall and entry noise are not added",
+    "V-priced execution; exit sells quoted by the frozen exec model"
+  ],
+  "frozen_stats": {
+    "id": "t0.8031_k6_s0.05_f505000",
+    "axis": "primary",
+    "threshold": 0.8030766588450794,
+    "k": 6,
+    "size_sol": 0.05,
+    "fee": 505000,
+    "n": 881,
+    "n_censored": 0,
+    "n_days_total": 9,
+    "trades_per_day": 97.88888888888889,
+    "fill_rate": 0.9103291713961408,
+    "flat": {
+      "mean_sol": 0.0010718747196367764,
+      "mean_bps_of_size": 214.37494392735525,
+      "ci90_sol": [
+        -3.560180300794551e-05,
+        0.0022078018619750284
+      ],
+      "sol_per_day": 0.10492462533333333,
+      "total_sol": 0.944321628,
+      "ex_top3_sol": 0.824983511,
+      "days_positive": 6,
+      "days_with_trades": 9
+    },
+    "press": {
+      "mean_sol": 0.0005833716923950058,
+      "mean_bps_of_size": 116.67433847900114,
+      "ci90_sol": [
+        -0.00012130813007945515,
+        0.001306228901248581
+      ],
+      "sol_per_day": 0.057105606777777776,
+      "total_sol": 0.513950461,
+      "ex_top3_sol": 0.434599791,
+      "days_positive": 7,
+      "days_with_trades": 9
+    }
+  },
+  "rules": [
+    {
+      "rule": "drift_gt_25",
+      "n_vetoed": 46,
+      "n_kept": 835,
+      "vetoed_press_mean_sol": -0.0012011203548043545,
+      "vetoed_flat_mean_sol": -0.0019907487043478262,
+      "kept_press_mean_sol": 0.0006816790383233533,
+      "kept_flat_mean_sol": 0.0012405940946107784,
+      "paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": 0.0001039437468785471,
+          "ci90_sol": [
+            3.142032389330307e-05,
+            0.00019942154602724176
+          ],
+          "total_sol": 0.091574441,
+          "days_positive": 9,
+          "n_days": 9,
+          "share_days_positive": 1.0,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0003038297356321839
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 4.508928571428571e-06
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 0.0002200416813186813
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.0002637806890756303
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 2.9925925925925927e-05
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": 2.5e-05
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": 6.011904761904761e-06
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": 3.695121951219512e-05
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 4.4607985714285716e-05
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": 6.271456980703746e-05,
+          "ci90_sol": [
+            2.7023028433598184e-05,
+            0.00010761622440408622
+          ],
+          "total_sol": 0.055251536,
+          "days_positive": 9,
+          "n_days": 9,
+          "share_days_positive": 1.0,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.00018237641379310345
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 4.508928571428571e-06
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 0.00010295978021978022
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.00015262310084033614
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 2.9925925925925927e-05
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": 2.5e-05
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": 6.011904761904761e-06
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": 3.695121951219512e-05
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 1.7832842857142856e-05
+            }
+          ]
+        }
+      }
+    },
+    {
+      "rule": "drift_gt_50",
+      "n_vetoed": 20,
+      "n_kept": 861,
+      "vetoed_press_mean_sol": -0.000740102913486973,
+      "vetoed_flat_mean_sol": -0.00145306586,
+      "kept_press_mean_sol": 0.0006141144239256679,
+      "kept_flat_mean_sol": 0.0011305260685249708,
+      "paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": 3.298673893303065e-05,
+          "ci90_sol": [
+            8.024971623155505e-06,
+            7.832457548240636e-05
+          ],
+          "total_sol": 0.029061317,
+          "days_positive": 8,
+          "n_days": 9,
+          "share_days_positive": 0.8888888888888888,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 5.804597701149425e-06
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 1.10989010989011e-05
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 1.273109243697479e-05
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 3.740740740740741e-06
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": 1e-05
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": 6.011904761904761e-06
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": 3.079268292682927e-05
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 0.0003069473857142857
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": 1.680142792281498e-05,
+          "ci90_sol": [
+            8.024971623155505e-06,
+            2.9768642451759367e-05
+          ],
+          "total_sol": 0.014802058,
+          "days_positive": 8,
+          "n_days": 9,
+          "share_days_positive": 0.8888888888888888,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 5.804597701149425e-06
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 1.10989010989011e-05
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 1.273109243697479e-05
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 3.740740740740741e-06
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": 1e-05
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": 6.011904761904761e-06
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": 3.079268292682927e-05
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 0.00010324368571428571
+            }
+          ]
+        }
+      }
+    },
+    {
+      "rule": "netflow_neg",
+      "n_vetoed": 241,
+      "n_kept": 640,
+      "vetoed_press_mean_sol": 0.0010298305441545955,
+      "vetoed_flat_mean_sol": 0.0021531820253112032,
+      "kept_press_mean_sol": 0.0004152520296875,
+      "kept_flat_mean_sol": 0.000664694928125,
+      "paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": -0.0005890089375709421,
+          "ci90_sol": [
+            -0.001143591349262202,
+            -2.5897979171396464e-05
+          ],
+          "total_sol": -0.518916874,
+          "days_positive": 2,
+          "n_days": 9,
+          "share_days_positive": 0.2222222222222222,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0004504869310344828
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": -0.0007186820178571428
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -0.0006019605054945055
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": -0.0002846076806722689
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 7.661582222222223e-05
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.0010008400396039603
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.001008346988095238
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.0008713802804878049
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": -0.0020296299
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": -0.000281713010215664,
+          "ci90_sol": [
+            -0.0006092535521566401,
+            7.13196132803632e-05
+          ],
+          "total_sol": -0.248189162,
+          "days_positive": 3,
+          "n_days": 9,
+          "share_days_positive": 0.3333333333333333,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.00015660964367816092
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": -0.00029655247321428574
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -0.00034372475824175823
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 6.037637815126051e-05
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 6.186981481481482e-05
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.0005367883267326732
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.000503881880952381
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.0002897667195121951
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": -0.0013222287857142857
+            }
+          ]
+        }
+      }
+    },
+    {
+      "rule": "maxsell_ge_2sol",
+      "n_vetoed": 92,
+      "n_kept": 789,
+      "vetoed_press_mean_sol": 0.00031391207999692067,
+      "vetoed_flat_mean_sol": 0.001128020702173913,
+      "kept_press_mean_sol": 0.0006147915690747782,
+      "kept_flat_mean_sol": 0.0010653279112801013,
+      "paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": -0.00011779558002270147,
+          "ci90_sol": [
+            -0.0004566392199205449,
+            0.0002511181792281498
+          ],
+          "total_sol": -0.103777906,
+          "days_positive": 4,
+          "n_days": 9,
+          "share_days_positive": 0.4444444444444444,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": -0.000850245356321839
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 7.44685e-05
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 4.041283516483517e-05
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": -0.0001883674705882353
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.00040341877777777774
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.00040772063366336633
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.00022785941666666665
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.0008309059024390244
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 0.0007797693285714286
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": -3.27808320090806e-05,
+          "ci90_sol": [
+            -0.0002307785417707151,
+            0.00017897252446083992
+          ],
+          "total_sol": -0.028879913,
+          "days_positive": 3,
+          "n_days": 9,
+          "share_days_positive": 0.3333333333333333,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": -0.000624511183908046
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 7.298726785714285e-05
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -6.756701098901098e-05
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": -2.6911092436974792e-06
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.00019459435555555554
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.0002585698415841584
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -1.2265726190476191e-05
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.0002500119512195122
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 0.0006446206142857144
+            }
+          ]
+        }
+      }
+    },
+    {
+      "rule": "maxsell_ge_5sol",
+      "n_vetoed": 17,
+      "n_kept": 864,
+      "vetoed_press_mean_sol": -0.0005899484573996492,
+      "vetoed_flat_mean_sol": -0.0002752489500000001,
+      "kept_press_mean_sol": 0.0006064578518518518,
+      "kept_flat_mean_sol": 0.0010983806261574073,
+      "paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": 5.31127468785471e-06,
+          "ci90_sol": [
+            -0.00015367220567536887,
+            0.0001686187127128263
+          ],
+          "total_sol": 0.004679233,
+          "days_positive": 3,
+          "n_days": 9,
+          "share_days_positive": 0.3333333333333333,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 0.0001483202767857143
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 0.0005914710879120879
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": -0.0005244224117647059
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.00035036814851485145
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.0003596548292682927
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 0.0008789805571428571
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": 1.1383794551645856e-05,
+          "ci90_sol": [
+            -6.96883505107832e-05,
+            9.794944387060156e-05
+          ],
+          "total_sol": 0.010029123,
+          "days_positive": 3,
+          "n_days": 9,
+          "share_days_positive": 0.3333333333333333,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 0.00010613973214285715
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 0.00022343657142857143
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": -0.00016132686554621849
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.000220486801980198
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.00020018803658536586
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 0.0005098746857142857
+            }
+          ]
+        }
+      }
+    },
+    {
+      "rule": "creator_sold",
+      "n_vetoed": 1,
+      "n_kept": 880,
+      "vetoed_press_mean_sol": 0.012726756813470595,
+      "vetoed_flat_mean_sol": 0.01736020225,
+      "kept_press_mean_sol": 0.0005695723909090909,
+      "kept_flat_mean_sol": 0.0010533652568181819,
+      "paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": -1.970511010215664e-05,
+          "ci90_sol": [
+            -5.911533030646992e-05,
+            0.0
+          ],
+          "total_sol": -0.017360202,
+          "days_positive": 0,
+          "n_days": 9,
+          "share_days_positive": 0.0,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.00017188318811881188
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 0.0
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": -1.4445808172531214e-05,
+          "ci90_sol": [
+            -4.333742451759365e-05,
+            0.0
+          ],
+          "total_sol": -0.012726757,
+          "days_positive": 0,
+          "n_days": 9,
+          "share_days_positive": 0.0,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.00012600749504950494
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 0.0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "rule": "sells_ge_buys",
+      "n_vetoed": 198,
+      "n_kept": 683,
+      "vetoed_press_mean_sol": 0.0007513919706797655,
+      "vetoed_flat_mean_sol": 0.0013929793083333332,
+      "kept_press_mean_sol": 0.0005346630336749634,
+      "kept_flat_mean_sol": 0.0009787872957540264,
+      "paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": -0.0003130645913734393,
+          "ci90_sol": [
+            -0.0007807660491486946,
+            0.00018632065351872846
+          ],
+          "total_sol": -0.275809905,
+          "days_positive": 2,
+          "n_days": 9,
+          "share_days_positive": 0.2222222222222222,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0014004046666666668
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": -0.0014216511607142858
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -0.00034758715384615387
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": -0.00030626684033613447
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": -0.00017806288888888886
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.0008885499405940594
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.0003581611785714286
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.0003653049146341463
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 4.9694e-05
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": -0.00016887129284903519,
+          "ci90_sol": [
+            -0.00046838859074914863,
+            0.00014382346748013615
+          ],
+          "total_sol": -0.148775609,
+          "days_positive": 2,
+          "n_days": 9,
+          "share_days_positive": 0.2222222222222222,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.000764756091954023
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": -0.0007708696607142857
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -0.00025430283516483516
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": -4.8905747899159663e-05
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 1.8476962962962964e-06
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.0005463442673267326
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.00014175654761904765
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.00018557398780487804
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": -0.00025649565714285714
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "nested_lodo": {
+    "available": true,
+    "candidates": [
+      "frozen",
+      "drift_gt_25",
+      "drift_gt_50",
+      "netflow_neg",
+      "maxsell_ge_2sol",
+      "maxsell_ge_5sol",
+      "creator_sold",
+      "sells_ge_buys"
+    ],
+    "min_train_trades": 100,
+    "n_days": 9,
+    "n_unavailable_folds": 0,
+    "folds": [
+      {
+        "day": "2026-09-19",
+        "chosen": "drift_gt_25",
+        "available": true,
+        "n_held_out": 87
+      },
+      {
+        "day": "2026-09-20",
+        "chosen": "drift_gt_25",
+        "available": true,
+        "n_held_out": 112
+      },
+      {
+        "day": "2026-09-21",
+        "chosen": "drift_gt_25",
+        "available": true,
+        "n_held_out": 91
+      },
+      {
+        "day": "2026-09-22",
+        "chosen": "drift_gt_25",
+        "available": true,
+        "n_held_out": 119
+      },
+      {
+        "day": "2026-09-23",
+        "chosen": "drift_gt_25",
+        "available": true,
+        "n_held_out": 135
+      },
+      {
+        "day": "2026-09-24",
+        "chosen": "drift_gt_25",
+        "available": true,
+        "n_held_out": 101
+      },
+      {
+        "day": "2026-09-25",
+        "chosen": "drift_gt_25",
+        "available": true,
+        "n_held_out": 84
+      },
+      {
+        "day": "2026-09-26",
+        "chosen": "drift_gt_25",
+        "available": true,
+        "n_held_out": 82
+      },
+      {
+        "day": "2026-09-27",
+        "chosen": "drift_gt_25",
+        "available": true,
+        "n_held_out": 70
+      }
+    ],
+    "times_chosen": {
+      "frozen": 0,
+      "drift_gt_25": 9,
+      "drift_gt_50": 0,
+      "netflow_neg": 0,
+      "maxsell_ge_2sol": 0,
+      "maxsell_ge_5sol": 0,
+      "creator_sold": 0,
+      "sells_ge_buys": 0
+    },
+    "heldout_paired_vs_frozen": {
+      "n": 881,
+      "flat": {
+        "mean_sol": 0.0001039437468785471,
+        "ci90_sol": [
+          3.142032389330307e-05,
+          0.00019942154602724176
+        ],
+        "total_sol": 0.091574441,
+        "days_positive": 9,
+        "n_days": 9,
+        "share_days_positive": 1.0,
+        "days": [
+          {
+            "day": "2026-09-19",
+            "n": 87,
+            "mean_sol": 0.0003038297356321839
+          },
+          {
+            "day": "2026-09-20",
+            "n": 112,
+            "mean_sol": 4.508928571428571e-06
+          },
+          {
+            "day": "2026-09-21",
+            "n": 91,
+            "mean_sol": 0.0002200416813186813
+          },
+          {
+            "day": "2026-09-22",
+            "n": 119,
+            "mean_sol": 0.0002637806890756303
+          },
+          {
+            "day": "2026-09-23",
+            "n": 135,
+            "mean_sol": 2.9925925925925927e-05
+          },
+          {
+            "day": "2026-09-24",
+            "n": 101,
+            "mean_sol": 2.5e-05
+          },
+          {
+            "day": "2026-09-25",
+            "n": 84,
+            "mean_sol": 6.011904761904761e-06
+          },
+          {
+            "day": "2026-09-26",
+            "n": 82,
+            "mean_sol": 3.695121951219512e-05
+          },
+          {
+            "day": "2026-09-27",
+            "n": 70,
+            "mean_sol": 4.4607985714285716e-05
+          }
+        ]
+      },
+      "press": {
+        "mean_sol": 6.271456980703746e-05,
+        "ci90_sol": [
+          2.7023028433598184e-05,
+          0.00010761622440408622
+        ],
+        "total_sol": 0.055251536,
+        "days_positive": 9,
+        "n_days": 9,
+        "share_days_positive": 1.0,
+        "days": [
+          {
+            "day": "2026-09-19",
+            "n": 87,
+            "mean_sol": 0.00018237641379310345
+          },
+          {
+            "day": "2026-09-20",
+            "n": 112,
+            "mean_sol": 4.508928571428571e-06
+          },
+          {
+            "day": "2026-09-21",
+            "n": 91,
+            "mean_sol": 0.00010295978021978022
+          },
+          {
+            "day": "2026-09-22",
+            "n": 119,
+            "mean_sol": 0.00015262310084033614
+          },
+          {
+            "day": "2026-09-23",
+            "n": 135,
+            "mean_sol": 2.9925925925925927e-05
+          },
+          {
+            "day": "2026-09-24",
+            "n": 101,
+            "mean_sol": 2.5e-05
+          },
+          {
+            "day": "2026-09-25",
+            "n": 84,
+            "mean_sol": 6.011904761904761e-06
+          },
+          {
+            "day": "2026-09-26",
+            "n": 82,
+            "mean_sol": 3.695121951219512e-05
+          },
+          {
+            "day": "2026-09-27",
+            "n": 70,
+            "mean_sol": 1.7832842857142856e-05
+          }
+        ]
+      }
+    },
+    "insample_best": "drift_gt_25",
+    "insample_best_paired_press_mean_sol": 6.271457017139649e-05,
+    "optimism_gap_press_sol": 3.643590285170792e-13
+  },
+  "wall_s": 3228.5626258850098,
+  "tries": {
+    "logged": 7,
+    "log_path": "/data/mal/ops/tries-exp012-veto.jsonl"
+  }
+}
