@@ -1856,3 +1856,46 @@ class IntentsFileTests(unittest.TestCase):
     def test_shipped_runner_config_enables_intents(self) -> None:
         cfg = json.loads((Path(__file__).resolve().parents[1] / "scripts/mal-fast/fast-forward-paper.json").read_text())
         self.assertIs(cfg["intents_file"], True)
+
+
+class IntentWriteErrorTests(unittest.TestCase):
+    def test_failed_intent_write_is_counted_and_never_raises_or_changes_outputs(self) -> None:
+        import io
+        from contextlib import redirect_stderr
+        from tools.forward_paper import JsonlLog
+
+        class Boom(JsonlLog):
+            def write(self, row):  # type: ignore[override]
+                raise OSError("disk full")
+
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            ref_dec, ref_pos, _ = IntentsFileTests()._run(Path(a), False)
+            creates, rows = _fixture()
+            books = [
+                BookSpec("buy_all", "baseline", "hold_30s", max_concurrent=None, daily_loss_lamports=None, creator_cooldown_ms=0, token_cooldown_ms=0),
+                BookSpec("migrate_hold_30s", "migrate", "hold_30s", creator_cooldown_ms=0, token_cooldown_ms=0),
+                BookSpec("migrate_tp50_sl30", "migrate", "tp50_sl30", creator_cooldown_ms=0, token_cooldown_ms=0),
+            ]
+            tmp = Path(b)
+            logs = {"decisions": JsonlLog(tmp / "decisions.jsonl"), "positions": JsonlLog(tmp / "positions.jsonl"), "intents": Boom(tmp / "intents.jsonl")}
+            err = io.StringIO()
+            with redirect_stderr(err):
+                engine = replay_rows(creates.values(), rows, books, tape_end_ms=TAPE_END, kill_file=tmp / "KILL", offsets_ms=OFFSETS, logs=logs)
+            for log in logs.values():
+                log.close()
+            self.assertGreater(engine.intent_write_errors, 0)
+            self.assertEqual((tmp / "decisions.jsonl").read_bytes(), ref_dec)
+            self.assertEqual((tmp / "positions.jsonl").read_bytes(), ref_pos)
+            # logged at most once a minute: many errors, one line
+            self.assertEqual(err.getvalue().count("intent_write_error"), 1)
+
+    def test_runner_status_reports_the_counter(self) -> None:
+        import tools.forward_paper as fp
+
+        creates, rows = _fixture()
+        engine = replay_rows(creates.values(), rows, [BookSpec("m", "migrate", "hold_30s")], tape_end_ms=TAPE_END, kill_file=Path("/tmp/fp-kill-none"))
+        engine.intent_write_errors = 3
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "status.json"
+            fp.write_runner_status(path, engine, live_at_ms=None)
+            self.assertEqual(json.loads(path.read_text())["intent_write_errors"], 3)

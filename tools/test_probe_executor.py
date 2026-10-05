@@ -456,6 +456,81 @@ class IntentTests(unittest.TestCase):
             self.assertEqual(json.loads((REPO / "scripts/mal-fast" / n).read_text())["signals_file"], "intents.jsonl")
 
 
+class MissingSignalsTests(unittest.TestCase):
+    def _cfg(self, d: Path, **extra) -> dict:
+        (d / "sig").mkdir(exist_ok=True)
+        return {"signals_dir": str(d / "sig"), "signals_file": "intents.jsonl", "state_dir": str(d), "fill_log": str(d / "f.jsonl"), **extra}
+
+    def test_live_startup_refuses_with_exit_2_when_file_missing(self):
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d), mode="live")
+            cfgp = Path(d) / "c.json"
+            cfgp.write_text(json.dumps(cfg))
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = pe.main(["--config", str(cfgp), "--live"])
+            self.assertEqual(rc, 2)
+            self.assertIn("ALERT startup_refused", out.getvalue())
+            self.assertIn("start the runner first", out.getvalue())
+
+    def test_startup_check_passes_when_present_and_dryrun_only_warns(self):
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(pe.startup_signals_check(cfg, live=False), 0)  # dry run: warn, no exit
+                self.assertEqual(pe.startup_signals_check(cfg, live=True), 2)
+            self.assertIn("WARNING", out.getvalue())
+            (Path(d) / "sig" / "intents.jsonl").write_text("")
+            self.assertEqual(pe.startup_signals_check(cfg, live=True), 0)
+
+    def test_unreadable_file_refuses_live(self):
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            f = Path(d) / "sig" / "intents.jsonl"
+            f.write_text("")
+            f.chmod(0)
+            try:
+                if os.access(f, os.R_OK):
+                    self.skipTest("running as a user that ignores file modes")
+                self.assertEqual(pe.startup_signals_check(cfg, live=True), 2)
+            finally:
+                f.chmod(0o600)
+
+    def test_absent_alert_at_most_once_a_minute_and_clears(self):
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock()
+            ex, conf = make(Path(d), clock=clock, signals_file="intents.jsonl")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                ex.signal_tick()
+                clock.t += 30_000
+                ex.signal_tick()
+                self.assertEqual(out.getvalue().count("signals_file_missing"), 1)
+                clock.t += 31_000
+                ex.signal_tick()
+            self.assertEqual(out.getvalue().count("signals_file_missing"), 2)
+            self.assertIn("WARNING", out.getvalue())  # dry run
+            self.assertNotIn("ALERT", out.getvalue())
+
+    def test_live_mode_absent_is_an_alert(self):
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            ex, _ = make(Path(d), mode="live", signals_file="intents.jsonl")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                ex.signal_tick()
+            self.assertIn("ALERT signals_file_missing", out.getvalue())
+
+
 class ClampTests(unittest.TestCase):
     def test_direct_construction_is_clamped(self):
         lim = pe.Limits(max_attempts=999, max_open=9, loss_cap_lamports=10**12, max_days=99, size_lamports=10**10, priority_lamports=10**9)

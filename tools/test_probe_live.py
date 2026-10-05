@@ -145,6 +145,7 @@ class GatingTests(unittest.TestCase):
 
     def test_main_goes_live_only_with_both(self):
         with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "decisions.jsonl").write_text("")
             conf = {"signals_dir": d, "state_dir": d, "fill_log": f"{d}/f.jsonl", "mode": "live"}
             cp = Path(d) / "c.json"
             cp.write_text(json.dumps(conf))

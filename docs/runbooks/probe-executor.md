@@ -82,6 +82,19 @@ Helm confirms once, before live: `/var/lib/mal/fast-listener/helius.env` is root
 
 State, fill log, STOP/HALT, the credential and the signals bind are unchanged from the base unit. The dry-run unit still uses the agent-deployed path (it holds no key).
 
+## 2c. Signals file: start order and what the executor does when it is missing
+
+The executor reads `intents.jsonl` (config `signals_file`), which the RUNNER creates (`intents_file: true`). The unit's bind of that file is optional (`-`) so a rotation cannot wedge systemd, which also means a missing file is silent at the unit level. The executor therefore checks it itself:
+
+- Start or restart the runner FIRST, then confirm `test -s /var/lib/mal/paper/fast-forward-paper/intents.jsonl` (non-empty, or at least `test -e`) before starting the executor. After a runner restart that recreated the file, restart the executor too (the bind pins an inode).
+- Live: if the file does not exist or is not readable at startup, the executor prints `ALERT startup_refused ...` and exits 2 before loading the key. systemd restarts it, `NRestarts` rises, and the monitor alerts.
+- Running: if the file disappears or stays absent, it prints `ALERT signals_file_missing path=...` at most once a minute (dry run: `WARNING`, same rate, never exits).
+- The runner's intent write cannot stop the paper runner. A failed write is counted in `runner-status.json` as `intent_write_errors` and logged to stderr at most once a minute. A non-zero count means the executor may have missed signals.
+
+### What intents change about the live-vs-paper comparison
+
+With `signals_file: intents.jsonl` the live executor acts on every CEILING-ledger migrate decision at decision time, including mints the paper runner later skips (kill switch, missed slippage at its simulated fill time, no price). Live fills are therefore NOT a subset of paper fills. They are bounded by the executor's own limits, STOP/HALT files and `already_bought`. The DEC-019 section 7 comparison joins live vs paper by mint and reports both the matched set and the live-only set.
+
 ## 3. Stop
 
 - STOP: `sudo touch /var/lib/mal-live/STOP`. No new buys. Exits, sells and rebroadcasts of in-flight txs KEEP running, so positions do not strand. Normal way to wind the probe down.

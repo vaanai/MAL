@@ -398,6 +398,41 @@ def exit_check(pos: dict[str, Any], snap: Snapshot, now_ms: int) -> dict[str, An
     return {"reason": reason, "ret": ret, "quote_out": out}
 
 
+def signals_path(cfg: dict[str, Any]) -> Path:
+    sig_file = cfg.get("signals_file", DECISIONS_FILE)
+    if sig_file not in SIGNAL_FILES:
+        raise ValueError(f"signals_file must be one of {SIGNAL_FILES}")
+    return Path(cfg["signals_dir"]) / sig_file
+
+
+def signals_problem(path: Path) -> str | None:
+    """None when the signals file exists and is readable. The unit's bind is optional (`-`), so a missing
+    file would otherwise be a silent no-op: the executor would wait forever for signals that never come."""
+    try:
+        if not path.is_file():
+            return f"signals file {path} does not exist (start the runner first: it creates it)"
+        if not os.access(path, os.R_OK):
+            return f"signals file {path} is not readable"
+    except OSError as exc:
+        return f"signals file {path} cannot be checked: {type(exc).__name__}"
+    return None
+
+
+def startup_signals_check(cfg: dict[str, Any], live: bool) -> int:
+    """Live: refuse to start (exit 2) so systemd's NRestarts rises and the monitor alerts. Dry run: warn."""
+    why = signals_problem(signals_path(cfg))
+    if why is None:
+        return 0
+    if live:
+        print(f"probe_executor ALERT startup_refused {why}", flush=True)
+        return 2
+    print(f"probe_executor WARNING {why}", flush=True)
+    return 0
+
+
+ABSENT_ALERT_EVERY_MS = 60_000
+
+
 # --- signal tailer (the seal lives here) -----------------------------------------------------
 
 
@@ -624,11 +659,9 @@ class Executor:
         self.now_ms = now_ms or (lambda: int(time.time() * 1000))
         self.limits = Limits.from_config(cfg)
         self.book = cfg.get("book", DEFAULT_BOOK)
-        sig_file = cfg.get("signals_file", DECISIONS_FILE)
-        if sig_file not in SIGNAL_FILES:
-            raise ValueError(f"signals_file must be one of {SIGNAL_FILES}")
-        self.use_intents = sig_file == INTENTS_FILE
-        self.decisions = Path(cfg["signals_dir"]) / sig_file
+        self.decisions = signals_path(cfg)
+        self.use_intents = self.decisions.name == INTENTS_FILE
+        self._absent_last_ms: int | None = None
         self.mode = cfg.get("mode", MODE)
         self.state_path = state_path_for(cfg["state_dir"], self.mode)
         guard_live_state(self.mode, self.state_path, Path(cfg["fill_log"]))
@@ -806,7 +839,9 @@ class Executor:
         try:
             s = self.decisions.stat()
         except FileNotFoundError:
+            self._signals_absent()
             return 0
+        self._absent_last_ms = None
         st = self.state
         if st.started and st.inode == s.st_ino and s.st_size == st.offset:
             return 0
@@ -822,6 +857,15 @@ class Executor:
                 sig["seen_ms"] = seen
                 self.handle_signal(sig)
         return len(sigs)
+
+    def _signals_absent(self) -> None:
+        """The signals file is gone or never appeared: say so loudly, at most once a minute (live: ALERT)."""
+        now = self.now_ms()
+        if self._absent_last_ms is not None and 0 <= now - self._absent_last_ms < ABSENT_ALERT_EVERY_MS:
+            return
+        self._absent_last_ms = now
+        tag = "ALERT" if self.mode == "live" else "WARNING"
+        print(f"probe_executor {tag} signals_file_missing path={self.decisions}", flush=True)
 
     def step(self) -> int:
         n = self.signal_tick()
@@ -986,6 +1030,9 @@ def main(argv: list[str] | None = None) -> int:
     if warn:
         print(f"probe_executor WARNING {warn}", flush=True)
     poll_s = max(1.0, float(cfg.get("poll_s", 5.0)))
+    rc = startup_signals_check(cfg, mode == "live")
+    if rc:
+        return rc
     if mode == "live":
         from tools import probe_live  # key handling lives only in that module
 

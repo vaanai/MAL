@@ -744,6 +744,7 @@ def write_runner_status(path: Path, engine: "ForwardEngine", *, live_at_ms: int 
         "stale_cap_ms": STALE_ACTION_MS,
         "lag_ms": lag,
         "stale_dropped": engine.stale_dropped,
+        "intent_write_errors": engine.intent_write_errors,
         "fail_rate": engine.fail_rate,
         "promotion_live_ms": live_at_ms,
         "newest_recv_ms": newest,
@@ -1420,6 +1421,8 @@ class ForwardEngine:
         # Durable ledger. summary() scores this file for promotion and does not rewrite it.
         self.positions_path = positions_path
         self.stale_dropped = 0
+        self.intent_write_errors = 0  # DEC-019 side file only; reported in runner-status.json
+        self._intent_err_logged_s = 0
         self.newest_recv_ms: int | None = None
         self._tx_order = TxOrder()
         # Opt-in, `serve()`-only (see `TX_ORDER_PRUNE_MS`'s comment). `None`
@@ -2109,20 +2112,31 @@ class ForwardEngine:
         log = self.logs.get("intents")
         if log is None:
             return
-        now = self.latency.now_ms() if self.latency.now_ms is not None else int(time.time() * 1000)
-        log.write(
-            {
-                "schema": SCHEMA_INTENT,
-                "book": book_id,
-                "ledger": "ceiling",
-                "mint": pending.mint,
-                "creator": pending.creator,
-                "decision_t_ms": pending.decision_t_ms,
-                "written_ms": now,
-                "trigger": pending.trigger,
-                "score": pending.score,
-            }
-        )
+        try:
+            now = self.latency.now_ms() if self.latency.now_ms is not None else int(time.time() * 1000)
+            log.write(
+                {
+                    "schema": SCHEMA_INTENT,
+                    "book": book_id,
+                    "ledger": "ceiling",
+                    "mint": pending.mint,
+                    "creator": pending.creator,
+                    "decision_t_ms": pending.decision_t_ms,
+                    "written_ms": now,
+                    "trigger": pending.trigger,
+                    "score": pending.score,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001  a side file must never stop the paper runner or change its decisions
+            self.intent_write_errors += 1
+            wall = int(time.time())
+            if wall - self._intent_err_logged_s >= 60:
+                self._intent_err_logged_s = wall
+                print(
+                    f"forward_paper intent_write_error n={self.intent_write_errors} {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     def _ref_price(self, book: MintBook, t_ms: int, feats: dict[str, float] | None) -> float | None:
         if self.pumpswap_virtual == "require":
