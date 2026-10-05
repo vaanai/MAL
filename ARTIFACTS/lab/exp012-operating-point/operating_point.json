@@ -1,0 +1,2333 @@
+{
+  "schema": "exp012_operating_point_v2",
+  "status": "EXPLORATION, BEST-OF-N, NOT A PROMOTE, NOT GATE EVIDENCE",
+  "n_cells_tried": 36,
+  "n_primary_cells": 12,
+  "cumulative_tries_on_pool": 54,
+  "existing_tries_on_pool": 18,
+  "n_days": 9,
+  "days": [
+    "2026-09-19",
+    "2026-09-20",
+    "2026-09-21",
+    "2026-09-22",
+    "2026-09-23",
+    "2026-09-24",
+    "2026-09-25",
+    "2026-09-26",
+    "2026-09-27"
+  ],
+  "grid": {
+    "thresholds": [
+      0.8030766588450794,
+      0.82,
+      0.85
+    ],
+    "ks": [
+      6,
+      8,
+      10,
+      12
+    ],
+    "primary_size_sol": 0.05,
+    "primary_fee": 505000,
+    "sens_fee": 155000,
+    "sens_sizes_sol": [
+      0.1,
+      0.25,
+      0.5
+    ]
+  },
+  "selection": "OUT-OF-FOLD stored LODO scores; enter iff score >= threshold (scored at k=1 timing, not recomputed per k)",
+  "ci": "gate cluster bootstrap, 1000 draws, seed 1 (tools.paper_attention_promote.book_stats)",
+  "notes": {
+    "below_frozen": "thresholds below 0.803 already failed DEC-017 (c): pressure -0.00312, CI90 [-0.01022, +0.00426]; 0.90 keeps 4 mints",
+    "k_definition": "k counts from the first PumpSwap print (entry_land_k); live a25eb17 entries land k(migrate) = 5-6, notebook evidence from jobs #170/#171, not measured here",
+    "fee_coupling": "fee 155k is a sensitivity at the same k; fee and k are coupled live (DEC-019 Am.1 stop rule) and the pressure curve is calibrated at 500k",
+    "size_label": "missing size-proportional costs (exit lag, sell shortfall, MEV); does not support any live size above 0.05 SOL",
+    "oof_upper_bound": "no inner OOF scores are stored by the freeze; training-day selection used scores from models that saw the held-out day, so the nested number is an UPPER BOUND"
+  },
+  "caveats": [
+    "exploration pool, the same 9 days the model was frozen on: best-of-N, winner's curse applies; not a promote, not gate evidence",
+    "only the ENTRY slot is delayed per k; the exit delay stays at the frozen k=1 'start' (a live exit lags too)",
+    "a missed fill (no state, slippage cap) costs one per-side fee and stays in n",
+    "V-priced (vault + V) execution; a pool with no V is left unchanged and counted, never V=0 silently",
+    "exit sell fills are quoted by the frozen exec model; the live probe's -11..-16 bps sell shortfall and +-300 bps entry noise are NOT added"
+  ],
+  "reference_frozen": {
+    "cell": {
+      "threshold": 0.8030766588450794,
+      "k": 6,
+      "size_sol": 0.05,
+      "fee": 505000
+    },
+    "stats": {
+      "id": "t0.8031_k6_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.8030766588450794,
+      "k": 6,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.9103291713961408,
+      "flat": {
+        "mean_sol": 0.0010718747196367764,
+        "mean_bps_of_size": 214.37494392735525,
+        "ci90_sol": [
+          -3.560180300794551e-05,
+          0.0022078018619750284
+        ],
+        "sol_per_day": 0.10492462533333333,
+        "total_sol": 0.944321628,
+        "ex_top3_sol": 0.824983511,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0005833716923950058,
+        "mean_bps_of_size": 116.67433847900114,
+        "ci90_sol": [
+          -0.00012130813007945515,
+          0.001306228901248581
+        ],
+        "sol_per_day": 0.057105606777777776,
+        "total_sol": 0.513950461,
+        "ex_top3_sol": 0.434599791,
+        "days_positive": 7,
+        "days_with_trades": 9
+      }
+    }
+  },
+  "cells": [
+    {
+      "id": "t0.8031_k6_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.8030766588450794,
+      "k": 6,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.9103291713961408,
+      "flat": {
+        "mean_sol": 0.0010718747196367764,
+        "mean_bps_of_size": 214.37494392735525,
+        "ci90_sol": [
+          -3.560180300794551e-05,
+          0.0022078018619750284
+        ],
+        "sol_per_day": 0.10492462533333333,
+        "total_sol": 0.944321628,
+        "ex_top3_sol": 0.824983511,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0005833716923950058,
+        "mean_bps_of_size": 116.67433847900114,
+        "ci90_sol": [
+          -0.00012130813007945515,
+          0.001306228901248581
+        ],
+        "sol_per_day": 0.057105606777777776,
+        "total_sol": 0.513950461,
+        "ex_top3_sol": 0.434599791,
+        "days_positive": 7,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8200_k6_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.82,
+      "k": 6,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 663,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 73.66666666666667,
+      "fill_rate": 0.8944193061840121,
+      "flat": {
+        "mean_sol": 0.0014507479049773757,
+        "mean_bps_of_size": 290.1495809954751,
+        "ci90_sol": [
+          0.00027883494954751136,
+          0.0026465732430618395
+        ],
+        "sol_per_day": 0.10687176233333334,
+        "total_sol": 0.961845861,
+        "ex_top3_sol": 0.849318345,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0008259081085972851,
+        "mean_bps_of_size": 165.181621719457,
+        "ci90_sol": [
+          5.637167699849171e-05,
+          0.0015839166697586725
+        ],
+        "sol_per_day": 0.06084189733333334,
+        "total_sol": 0.547577076,
+        "ex_top3_sol": 0.469116372,
+        "days_positive": 5,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8500_k6_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.85,
+      "k": 6,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 312,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 34.666666666666664,
+      "fill_rate": 0.8974358974358975,
+      "flat": {
+        "mean_sol": 0.0029686062275641025,
+        "mean_bps_of_size": 593.7212455128205,
+        "ci90_sol": [
+          0.0011420469407051282,
+          0.004835511634935898
+        ],
+        "sol_per_day": 0.10291168255555555,
+        "total_sol": 0.926205143,
+        "ex_top3_sol": 0.815739706,
+        "days_positive": 8,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0017871035192307692,
+        "mean_bps_of_size": 357.4207038461538,
+        "ci90_sol": [
+          0.0006049706185897436,
+          0.002996729025480769
+        ],
+        "sol_per_day": 0.061952921999999994,
+        "total_sol": 0.557576298,
+        "ex_top3_sol": 0.48101419,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k8_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.8030766588450794,
+      "k": 8,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8706015891032917,
+      "flat": {
+        "mean_sol": 0.00046941006469920543,
+        "mean_bps_of_size": 93.88201293984109,
+        "ci90_sol": [
+          -0.0006506091582292848,
+          0.0015313085743473326
+        ],
+        "sol_per_day": 0.04595002966666667,
+        "total_sol": 0.413550267,
+        "ex_top3_sol": 0.306820984,
+        "days_positive": 4,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.00015552813620885357,
+        "mean_bps_of_size": 31.105627241770712,
+        "ci90_sol": [
+          -0.0004995439368898979,
+          0.0008039132501135072
+        ],
+        "sol_per_day": 0.015224476444444444,
+        "total_sol": 0.137020288,
+        "ex_top3_sol": 0.058978332,
+        "days_positive": 5,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8200_k8_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.82,
+      "k": 8,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 663,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 73.66666666666667,
+      "fill_rate": 0.8536953242835595,
+      "flat": {
+        "mean_sol": 0.0008442019743589744,
+        "mean_bps_of_size": 168.84039487179487,
+        "ci90_sol": [
+          -0.0003421146026395173,
+          0.002008808218552036
+        ],
+        "sol_per_day": 0.06218954544444444,
+        "total_sol": 0.559705909,
+        "ex_top3_sol": 0.459804922,
+        "days_positive": 5,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0004028170377073907,
+        "mean_bps_of_size": 80.56340754147813,
+        "ci90_sol": [
+          -0.0003160499365007541,
+          0.001100614679260935
+        ],
+        "sol_per_day": 0.029674188444444447,
+        "total_sol": 0.267067696,
+        "ex_top3_sol": 0.194781164,
+        "days_positive": 5,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8500_k8_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.85,
+      "k": 8,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 312,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 34.666666666666664,
+      "fill_rate": 0.8397435897435898,
+      "flat": {
+        "mean_sol": 0.0017255499166666667,
+        "mean_bps_of_size": 345.10998333333333,
+        "ci90_sol": [
+          -9.761146458333334e-05,
+          0.0035272267895833324
+        ],
+        "sol_per_day": 0.05981906377777778,
+        "total_sol": 0.538371574,
+        "ex_top3_sol": 0.441950965,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0008708749391025642,
+        "mean_bps_of_size": 174.17498782051283,
+        "ci90_sol": [
+          -0.00023083195592948715,
+          0.0019374471975961538
+        ],
+        "sol_per_day": 0.030190331222222224,
+        "total_sol": 0.271712981,
+        "ex_top3_sol": 0.200103379,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k10_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.8030766588450794,
+      "k": 10,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8524404086265607,
+      "flat": {
+        "mean_sol": 2.6396530079455166e-05,
+        "mean_bps_of_size": 5.279306015891033,
+        "ci90_sol": [
+          -0.0010510495226447219,
+          0.0010971725824631103
+        ],
+        "sol_per_day": 0.002583927,
+        "total_sol": 0.023255343,
+        "ex_top3_sol": -0.082391128,
+        "days_positive": 5,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": -8.867993076049944e-05,
+        "mean_bps_of_size": -17.735986152099887,
+        "ci90_sol": [
+          -0.0008098972537457435,
+          0.0006268553155505103
+        ],
+        "sol_per_day": -0.00868077988888889,
+        "total_sol": -0.078127019,
+        "ex_top3_sol": -0.16965583,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8200_k10_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.82,
+      "k": 10,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 663,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 73.66666666666667,
+      "fill_rate": 0.8355957767722474,
+      "flat": {
+        "mean_sol": 0.0006030978355957768,
+        "mean_bps_of_size": 120.61956711915536,
+        "ci90_sol": [
+          -0.0005245721472096531,
+          0.0017774086386877822
+        ],
+        "sol_per_day": 0.04442820722222222,
+        "total_sol": 0.399853865,
+        "ex_top3_sol": 0.304694582,
+        "days_positive": 5,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.00026070054449472095,
+        "mean_bps_of_size": 52.140108898944185,
+        "ci90_sol": [
+          -0.0004946365335595776,
+          0.0010668853899698338
+        ],
+        "sol_per_day": 0.01920494011111111,
+        "total_sol": 0.172844461,
+        "ex_top3_sol": 0.103128519,
+        "days_positive": 5,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8500_k10_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.85,
+      "k": 10,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 312,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 34.666666666666664,
+      "fill_rate": 0.8301282051282052,
+      "flat": {
+        "mean_sol": 0.0015514912916666668,
+        "mean_bps_of_size": 310.29825833333337,
+        "ci90_sol": [
+          -0.00016504972644230766,
+          0.0032359608551282048
+        ],
+        "sol_per_day": 0.053785031444444444,
+        "total_sol": 0.484065283,
+        "ex_top3_sol": 0.394733707,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0009517708301282051,
+        "mean_bps_of_size": 190.35416602564104,
+        "ci90_sol": [
+          -0.0002414500049679487,
+          0.002024217391987179
+        ],
+        "sol_per_day": 0.03299472211111111,
+        "total_sol": 0.296952499,
+        "ex_top3_sol": 0.236878007,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k12_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.8030766588450794,
+      "k": 12,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8320090805902384,
+      "flat": {
+        "mean_sol": -0.00011081413620885358,
+        "mean_bps_of_size": -22.162827241770717,
+        "ci90_sol": [
+          -0.0011851061110102156,
+          0.0009447737723609532
+        ],
+        "sol_per_day": -0.010847472666666667,
+        "total_sol": -0.097627254,
+        "ex_top3_sol": -0.199940403,
+        "days_positive": 5,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": -0.0002857771089670829,
+        "mean_bps_of_size": -57.15542179341657,
+        "ci90_sol": [
+          -0.0010295494726447218,
+          0.0004231040593643586
+        ],
+        "sol_per_day": -0.027974403666666665,
+        "total_sol": -0.251769633,
+        "ex_top3_sol": -0.320136674,
+        "days_positive": 4,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8200_k12_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.82,
+      "k": 12,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 663,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 73.66666666666667,
+      "fill_rate": 0.8265460030165912,
+      "flat": {
+        "mean_sol": 0.00046294739969834084,
+        "mean_bps_of_size": 92.58947993966817,
+        "ci90_sol": [
+          -0.0007293897407239817,
+          0.0016141641090497737
+        ],
+        "sol_per_day": 0.034103791777777774,
+        "total_sol": 0.306934126,
+        "ex_top3_sol": 0.206292202,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0002189012277526395,
+        "mean_bps_of_size": 43.780245550527894,
+        "ci90_sol": [
+          -0.000608020984464555,
+          0.0010031454520361993
+        ],
+        "sol_per_day": 0.016125723777777778,
+        "total_sol": 0.145131514,
+        "ex_top3_sol": 0.077789531,
+        "days_positive": 5,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8500_k12_s0.05_f505000",
+      "axis": "primary",
+      "threshold": 0.85,
+      "k": 12,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "n": 312,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 34.666666666666664,
+      "fill_rate": 0.8269230769230769,
+      "flat": {
+        "mean_sol": 0.0016867237147435898,
+        "mean_bps_of_size": 337.34474294871796,
+        "ci90_sol": [
+          -5.022170993589739e-05,
+          0.003488421062339743
+        ],
+        "sol_per_day": 0.05847308877777778,
+        "total_sol": 0.526257799,
+        "ex_top3_sol": 0.436050475,
+        "days_positive": 7,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.001147369576923077,
+        "mean_bps_of_size": 229.4739153846154,
+        "ci90_sol": [
+          1.1532290705128205e-05,
+          0.0022979003687499987
+        ],
+        "sol_per_day": 0.03977547866666667,
+        "total_sol": 0.357979308,
+        "ex_top3_sol": 0.298990665,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k6_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 6,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.9103291713961408,
+      "flat": {
+        "mean_sol": 0.0016926976481271283,
+        "mean_bps_of_size": 338.53952962542564,
+        "ci90_sol": [
+          0.0005856551200340523,
+          0.002828334654483541
+        ],
+        "sol_per_day": 0.165696292,
+        "total_sol": 1.491266628,
+        "ex_top3_sol": 1.369986011,
+        "days_positive": 8,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.001098691772985244,
+        "mean_bps_of_size": 219.73835459704875,
+        "ci90_sol": [
+          0.00039518172712826334,
+          0.0018243742270715097
+        ],
+        "sol_per_day": 0.10754971688888888,
+        "total_sol": 0.967947452,
+        "ex_top3_sol": 0.886874079,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8200_k6_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.82,
+      "k": 6,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 663,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 73.66666666666667,
+      "fill_rate": 0.8944193061840121,
+      "flat": {
+        "mean_sol": 0.002066837648567119,
+        "mean_bps_of_size": 413.3675297134238,
+        "ci90_sol": [
+          0.0008918844815233786,
+          0.0032654001661387637
+        ],
+        "sol_per_day": 0.1522570401111111,
+        "total_sol": 1.370313361,
+        "ex_top3_sol": 1.255843345,
+        "days_positive": 7,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0013380013076923077,
+        "mean_bps_of_size": 267.60026153846155,
+        "ci90_sol": [
+          0.0005679155741327299,
+          0.002096062489517345
+        ],
+        "sol_per_day": 0.09856609633333333,
+        "total_sol": 0.887094867,
+        "ex_top3_sol": 0.806915232,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8500_k6_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.85,
+      "k": 6,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 312,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 34.666666666666664,
+      "fill_rate": 0.8974358974358975,
+      "flat": {
+        "mean_sol": 0.003585593407051282,
+        "mean_bps_of_size": 717.1186814102564,
+        "ci90_sol": [
+          0.0017589864439102566,
+          0.005456408269551283
+        ],
+        "sol_per_day": 0.12430057144444444,
+        "total_sol": 1.118705143,
+        "ex_top3_sol": 1.006297206,
+        "days_positive": 8,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.002303090653846154,
+        "mean_bps_of_size": 460.6181307692308,
+        "ci90_sol": [
+          0.0011188956690705127,
+          0.0035136118072115383
+        ],
+        "sol_per_day": 0.07984047600000001,
+        "total_sol": 0.718564284,
+        "ex_top3_sol": 0.640309399,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k8_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 8,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8706015891032917,
+      "flat": {
+        "mean_sol": 0.0010784140374574347,
+        "mean_bps_of_size": 215.68280749148693,
+        "ci90_sol": [
+          -3.177856799091939e-05,
+          0.002141561979568672
+        ],
+        "sol_per_day": 0.10556475188888889,
+        "total_sol": 0.950082767,
+        "ex_top3_sol": 0.841410984,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0006566066458569808,
+        "mean_bps_of_size": 131.32132917139614,
+        "ci90_sol": [
+          4.080246935300807e-06,
+          0.0013051659334846766
+        ],
+        "sol_per_day": 0.064274495,
+        "total_sol": 0.578470455,
+        "ex_top3_sol": 0.498699714,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8200_k8_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.82,
+      "k": 8,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 663,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 73.66666666666667,
+      "fill_rate": 0.8536953242835595,
+      "flat": {
+        "mean_sol": 0.0014481763333333332,
+        "mean_bps_of_size": 289.6352666666666,
+        "ci90_sol": [
+          0.0002641706537707391,
+          0.0026179529456259423
+        ],
+        "sol_per_day": 0.10668232322222222,
+        "total_sol": 0.960140909,
+        "ex_top3_sol": 0.858297422,
+        "days_positive": 7,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0009007950437405731,
+        "mean_bps_of_size": 180.15900874811462,
+        "ci90_sol": [
+          0.0001837853267722474,
+          0.001597955989291101
+        ],
+        "sol_per_day": 0.06635856822222222,
+        "total_sol": 0.597227114,
+        "ex_top3_sol": 0.523230413,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8500_k8_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.85,
+      "k": 8,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 312,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 34.666666666666664,
+      "fill_rate": 0.8397435897435898,
+      "flat": {
+        "mean_sol": 0.0023253736346153845,
+        "mean_bps_of_size": 465.07472692307687,
+        "ci90_sol": [
+          0.0004988481532051282,
+          0.004132839083974358
+        ],
+        "sol_per_day": 0.08061295266666667,
+        "total_sol": 0.725516574,
+        "ex_top3_sol": 0.627153465,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0013682739198717948,
+        "mean_bps_of_size": 273.65478397435896,
+        "ci90_sol": [
+          0.00026732495208333333,
+          0.0024299830376602557
+        ],
+        "sol_per_day": 0.047433495888888885,
+        "total_sol": 0.426901463,
+        "ex_top3_sol": 0.353497266,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k10_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 10,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8524404086265607,
+      "flat": {
+        "mean_sol": 0.0006299975516458569,
+        "mean_bps_of_size": 125.99951032917137,
+        "ci90_sol": [
+          -0.00044507609279228154,
+          0.0017003549939273554
+        ],
+        "sol_per_day": 0.06166976033333333,
+        "total_sol": 0.555027843,
+        "ex_top3_sol": 0.447438872,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.00042197359818388195,
+        "mean_bps_of_size": 84.39471963677639,
+        "ci90_sol": [
+          -0.0002981246928490352,
+          0.0011365517459704876
+        ],
+        "sol_per_day": 0.04130652666666666,
+        "total_sol": 0.37175874,
+        "ex_top3_sol": 0.278401584,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8200_k10_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.82,
+      "k": 10,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 663,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 73.66666666666667,
+      "fill_rate": 0.8355957767722474,
+      "flat": {
+        "mean_sol": 0.0012016875791855204,
+        "mean_bps_of_size": 240.33751583710406,
+        "ci90_sol": [
+          7.273230226244344e-05,
+          0.002377905433559577
+        ],
+        "sol_per_day": 0.08852431833333334,
+        "total_sol": 0.796718865,
+        "ex_top3_sol": 0.699617082,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0007680550211161388,
+        "mean_bps_of_size": 153.61100422322775,
+        "ci90_sol": [
+          8.031473001508337e-06,
+          0.0015749776342383105
+        ],
+        "sol_per_day": 0.056580053222222225,
+        "total_sol": 0.509220479,
+        "ex_top3_sol": 0.43776698,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8500_k10_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.85,
+      "k": 10,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 312,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 34.666666666666664,
+      "fill_rate": 0.8301282051282052,
+      "flat": {
+        "mean_sol": 0.0021484544326923075,
+        "mean_bps_of_size": 429.6908865384615,
+        "ci90_sol": [
+          0.00042978179054487187,
+          0.003831955515705128
+        ],
+        "sol_per_day": 0.07447975366666666,
+        "total_sol": 0.670317783,
+        "ex_top3_sol": 0.579043707,
+        "days_positive": 7,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0014603581698717947,
+        "mean_bps_of_size": 292.0716339743589,
+        "ci90_sol": [
+          0.00026773786025641026,
+          0.0025450719846153843
+        ],
+        "sol_per_day": 0.050625749888888884,
+        "total_sol": 0.455631749,
+        "ex_top3_sol": 0.393770341,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k12_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 12,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8320090805902384,
+      "flat": {
+        "mean_sol": 0.0004867085652667423,
+        "mean_bps_of_size": 97.34171305334846,
+        "ci90_sol": [
+          -0.0005852702710556185,
+          0.0015486714622587967
+        ],
+        "sol_per_day": 0.04764336066666666,
+        "total_sol": 0.428790246,
+        "ex_top3_sol": 0.324534597,
+        "days_positive": 5,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0002275628206583428,
+        "mean_bps_of_size": 45.51256413166856,
+        "ci90_sol": [
+          -0.0005159047809875142,
+          0.0009366522009648124
+        ],
+        "sol_per_day": 0.022275871666666665,
+        "total_sol": 0.200482845,
+        "ex_top3_sol": 0.130386836,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8200_k12_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.82,
+      "k": 12,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 663,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 73.66666666666667,
+      "fill_rate": 0.8265460030165912,
+      "flat": {
+        "mean_sol": 0.0010588448355957768,
+        "mean_bps_of_size": 211.76896711915535,
+        "ci90_sol": [
+          -0.00013160008190045243,
+          0.0022087928502262442
+        ],
+        "sol_per_day": 0.07800156955555555,
+        "total_sol": 0.702014126,
+        "ex_top3_sol": 0.599429702,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0007322737435897436,
+        "mean_bps_of_size": 146.45474871794872,
+        "ci90_sol": [
+          -9.606087466063347e-05,
+          0.0015175887631221716
+        ],
+        "sol_per_day": 0.053944165777777775,
+        "total_sol": 0.485497492,
+        "ex_top3_sol": 0.416505908,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8500_k12_s0.05_f155000",
+      "axis": "fee_sensitivity",
+      "threshold": 0.85,
+      "k": 12,
+      "size_sol": 0.05,
+      "fee": 155000,
+      "n": 312,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 34.666666666666664,
+      "fill_rate": 0.8269230769230769,
+      "flat": {
+        "mean_sol": 0.002282733330128205,
+        "mean_bps_of_size": 456.546666025641,
+        "ci90_sol": [
+          0.0005494600488782053,
+          0.004089532039903846
+        ],
+        "sol_per_day": 0.07913475544444444,
+        "total_sol": 0.712212799,
+        "ex_top3_sol": 0.620062975,
+        "days_positive": 9,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0016616317564102565,
+        "mean_bps_of_size": 332.3263512820513,
+        "ci90_sol": [
+          0.0005233059211538462,
+          0.0028166536092948708
+        ],
+        "sol_per_day": 0.057603234222222216,
+        "total_sol": 0.518429108,
+        "ex_top3_sol": 0.457673955,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k6_s0.1_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 6,
+      "size_sol": 0.1,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.9103291713961408,
+      "flat": {
+        "mean_sol": 0.0030361581418842224,
+        "mean_bps_of_size": 303.61581418842223,
+        "ci90_sol": [
+          0.0008230238319523269,
+          0.005308029233484676
+        ],
+        "sol_per_day": 0.29720614700000003,
+        "total_sol": 2.674855323,
+        "ex_top3_sol": 2.433460938,
+        "days_positive": 8,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0019081722497162315,
+        "mean_bps_of_size": 190.81722497162315,
+        "ci90_sol": [
+          0.0005001455163450624,
+          0.0033582208757661747
+        ],
+        "sol_per_day": 0.18678886133333333,
+        "total_sol": 1.681099752,
+        "ex_top3_sol": 1.519969458,
+        "days_positive": 7,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k6_s0.25_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 6,
+      "size_sol": 0.25,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.9091940976163451,
+      "flat": {
+        "mean_sol": 0.008992151086265606,
+        "mean_bps_of_size": 359.68604345062425,
+        "ci90_sol": [
+          0.003434292841089671,
+          0.014662275715720773
+        ],
+        "sol_per_day": 0.8802316785555555,
+        "total_sol": 7.922085107,
+        "ex_top3_sol": 7.315028089,
+        "days_positive": 8,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.005899208385925086,
+        "mean_bps_of_size": 235.96833543700342,
+        "ci90_sol": [
+          0.002390301350794552,
+          0.009507305650567534
+        ],
+        "sol_per_day": 0.5774669542222222,
+        "total_sol": 5.197202588,
+        "ex_top3_sol": 4.791072428,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k6_s0.5_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 6,
+      "size_sol": 0.5,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.9069239500567536,
+      "flat": {
+        "mean_sol": 0.018789949304199773,
+        "mean_bps_of_size": 375.7989860839955,
+        "ci90_sol": [
+          0.007589996417366628,
+          0.02997765592678773
+        ],
+        "sol_per_day": 1.8393272596666665,
+        "total_sol": 16.553945337,
+        "ex_top3_sol": 15.339129117,
+        "days_positive": 8,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.012456946514188423,
+        "mean_bps_of_size": 249.13893028376845,
+        "ci90_sol": [
+          0.005402011212429058,
+          0.019687266584279224
+        ],
+        "sol_per_day": 1.2193966532222222,
+        "total_sol": 10.974569879,
+        "ex_top3_sol": 10.161230772,
+        "days_positive": 8,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k8_s0.1_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 8,
+      "size_sol": 0.1,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8706015891032917,
+      "flat": {
+        "mean_sol": 0.0018149253552780932,
+        "mean_bps_of_size": 181.49253552780928,
+        "ci90_sol": [
+          -0.0004100685972758229,
+          0.003939587894948921
+        ],
+        "sol_per_day": 0.17766102644444445,
+        "total_sol": 1.598949238,
+        "ex_top3_sol": 1.382766075,
+        "days_positive": 5,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0010324783711691261,
+        "mean_bps_of_size": 103.2478371169126,
+        "ci90_sol": [
+          -0.00027366726373439273,
+          0.002329557671282633
+        ],
+        "sol_per_day": 0.10106816055555555,
+        "total_sol": 0.909613445,
+        "ex_top3_sol": 0.751091913,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k8_s0.25_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 8,
+      "size_sol": 0.25,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8683314415437003,
+      "flat": {
+        "mean_sol": 0.005605295856980704,
+        "mean_bps_of_size": 224.21183427922816,
+        "ci90_sol": [
+          -2.2162996594773814e-07,
+          0.010925994089330305
+        ],
+        "sol_per_day": 0.5486961833333334,
+        "total_sol": 4.93826565,
+        "ex_top3_sol": 4.394188383,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0035685400011350736,
+        "mean_bps_of_size": 142.74160004540295,
+        "ci90_sol": [
+          0.00031179766044267884,
+          0.006763205641884219
+        ],
+        "sol_per_day": 0.34932041566666666,
+        "total_sol": 3.143883741,
+        "ex_top3_sol": 2.744263102,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k8_s0.5_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 8,
+      "size_sol": 0.5,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8649262202043133,
+      "flat": {
+        "mean_sol": 0.011756924993189557,
+        "mean_bps_of_size": 235.13849986379114,
+        "ci90_sol": [
+          0.0006368091319523275,
+          0.022250985212656074
+        ],
+        "sol_per_day": 1.1508723243333334,
+        "total_sol": 10.357850919,
+        "ex_top3_sol": 9.268833628,
+        "days_positive": 7,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0076856491225879685,
+        "mean_bps_of_size": 153.71298245175936,
+        "ci90_sol": [
+          0.001172625711180477,
+          0.0141750424685017
+        ],
+        "sol_per_day": 0.752339653,
+        "total_sol": 6.771056877,
+        "ex_top3_sol": 5.970730512,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k10_s0.1_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 10,
+      "size_sol": 0.1,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8501702610669694,
+      "flat": {
+        "mean_sol": 0.0009054477026106697,
+        "mean_bps_of_size": 90.54477026106697,
+        "ci90_sol": [
+          -0.001230606912202043,
+          0.0030550852838819517
+        ],
+        "sol_per_day": 0.08863326955555556,
+        "total_sol": 0.797699426,
+        "ex_top3_sol": 0.583680828,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0005414719114642452,
+        "mean_bps_of_size": 54.14719114642452,
+        "ci90_sol": [
+          -0.0009036501173098751,
+          0.00195490201123723
+        ],
+        "sol_per_day": 0.05300408377777778,
+        "total_sol": 0.477036754,
+        "ex_top3_sol": 0.29140807,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k10_s0.25_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 10,
+      "size_sol": 0.25,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8479001135073779,
+      "flat": {
+        "mean_sol": 0.0035340349409761634,
+        "mean_bps_of_size": 141.36139763904654,
+        "ci90_sol": [
+          -0.0018593051411464245,
+          0.009012307459761634
+        ],
+        "sol_per_day": 0.34594275366666666,
+        "total_sol": 3.113484783,
+        "ex_top3_sol": 2.574811021,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0024791836560726444,
+        "mean_bps_of_size": 99.16734624290578,
+        "ci90_sol": [
+          -0.0011028550362656073,
+          0.006081277102951191
+        ],
+        "sol_per_day": 0.24268453344444443,
+        "total_sol": 2.184160801,
+        "ex_top3_sol": 1.716633182,
+        "days_positive": 7,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k10_s0.5_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 10,
+      "size_sol": 0.5,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8456299659477866,
+      "flat": {
+        "mean_sol": 0.007144935919409761,
+        "mean_bps_of_size": 142.89871838819522,
+        "ci90_sol": [
+          -0.003642506956469921,
+          0.017914487307207717
+        ],
+        "sol_per_day": 0.6994098383333333,
+        "total_sol": 6.294688545,
+        "ex_top3_sol": 5.308522018,
+        "days_positive": 6,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.005211360994324631,
+        "mean_bps_of_size": 104.22721988649262,
+        "ci90_sol": [
+          -0.0019080979543700343,
+          0.012356630216799084
+        ],
+        "sol_per_day": 0.5101343373333334,
+        "total_sol": 4.591209036,
+        "ex_top3_sol": 3.773199528,
+        "days_positive": 7,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k12_s0.1_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 12,
+      "size_sol": 0.1,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8320090805902384,
+      "flat": {
+        "mean_sol": 0.0006383364710556186,
+        "mean_bps_of_size": 63.83364710556186,
+        "ci90_sol": [
+          -0.001506238437003405,
+          0.002757237580760499
+        ],
+        "sol_per_day": 0.06248604788888888,
+        "total_sol": 0.562374431,
+        "ex_top3_sol": 0.355039473,
+        "days_positive": 5,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.00016772244154370034,
+        "mean_bps_of_size": 16.772244154370032,
+        "ci90_sol": [
+          -0.00131893788507378,
+          0.0015852840720771845
+        ],
+        "sol_per_day": 0.016418163444444446,
+        "total_sol": 0.147763471,
+        "ex_top3_sol": 0.008584892,
+        "days_positive": 5,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k12_s0.25_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 12,
+      "size_sol": 0.25,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8297389330306469,
+      "flat": {
+        "mean_sol": 0.002889689021566402,
+        "mean_bps_of_size": 115.58756086265608,
+        "ci90_sol": [
+          -0.002545721790295119,
+          0.00817983363586833
+        ],
+        "sol_per_day": 0.28286844755555557,
+        "total_sol": 2.545816028,
+        "ex_top3_sol": 2.023977995,
+        "days_positive": 5,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0015530035005675367,
+        "mean_bps_of_size": 62.12014002270147,
+        "ci90_sol": [
+          -0.0021784869367763907,
+          0.00514058116816118
+        ],
+        "sol_per_day": 0.1520217871111111,
+        "total_sol": 1.368196084,
+        "ex_top3_sol": 1.016882942,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    },
+    {
+      "id": "t0.8031_k12_s0.5_f505000",
+      "axis": "size_sensitivity",
+      "threshold": 0.8030766588450794,
+      "k": 12,
+      "size_sol": 0.5,
+      "fee": 505000,
+      "n": 881,
+      "n_censored": 0,
+      "n_days_total": 9,
+      "trades_per_day": 97.88888888888889,
+      "fill_rate": 0.8251986379114642,
+      "flat": {
+        "mean_sol": 0.005804698019296254,
+        "mean_bps_of_size": 116.09396038592509,
+        "ci90_sol": [
+          -0.0047980848011918275,
+          0.016511205981157774
+        ],
+        "sol_per_day": 0.5682154394444444,
+        "total_sol": 5.113938955,
+        "ex_top3_sol": 4.069790411,
+        "days_positive": 5,
+        "days_with_trades": 9
+      },
+      "press": {
+        "mean_sol": 0.0033451955062429057,
+        "mean_bps_of_size": 66.90391012485811,
+        "ci90_sol": [
+          -0.004128130527979569,
+          0.010502848744040862
+        ],
+        "sol_per_day": 0.32745747122222224,
+        "total_sol": 2.947117241,
+        "ex_top3_sol": 2.243241262,
+        "days_positive": 6,
+        "days_with_trades": 9
+      }
+    }
+  ],
+  "nested_threshold_lodo_by_k": {
+    "6": {
+      "available": true,
+      "k": 6,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "candidates": [
+        "t0.8031_k6_s0.05_f505000",
+        "t0.8200_k6_s0.05_f505000",
+        "t0.8500_k6_s0.05_f505000"
+      ],
+      "reference": "t0.8031_k6_s0.05_f505000",
+      "min_train_trades": 100,
+      "n_days": 9,
+      "n_unavailable_folds": 0,
+      "folds": [
+        {
+          "day": "2026-09-19",
+          "chosen": "t0.8031_k6_s0.05_f505000",
+          "available": true,
+          "n_held_out": 87
+        },
+        {
+          "day": "2026-09-20",
+          "chosen": "t0.8500_k6_s0.05_f505000",
+          "available": true,
+          "n_held_out": 112
+        },
+        {
+          "day": "2026-09-21",
+          "chosen": "t0.8200_k6_s0.05_f505000",
+          "available": true,
+          "n_held_out": 91
+        },
+        {
+          "day": "2026-09-22",
+          "chosen": "t0.8500_k6_s0.05_f505000",
+          "available": true,
+          "n_held_out": 119
+        },
+        {
+          "day": "2026-09-23",
+          "chosen": "t0.8031_k6_s0.05_f505000",
+          "available": true,
+          "n_held_out": 135
+        },
+        {
+          "day": "2026-09-24",
+          "chosen": "t0.8200_k6_s0.05_f505000",
+          "available": true,
+          "n_held_out": 101
+        },
+        {
+          "day": "2026-09-25",
+          "chosen": "t0.8500_k6_s0.05_f505000",
+          "available": true,
+          "n_held_out": 84
+        },
+        {
+          "day": "2026-09-26",
+          "chosen": "t0.8500_k6_s0.05_f505000",
+          "available": true,
+          "n_held_out": 82
+        },
+        {
+          "day": "2026-09-27",
+          "chosen": "t0.8500_k6_s0.05_f505000",
+          "available": true,
+          "n_held_out": 70
+        }
+      ],
+      "times_chosen": {
+        "t0.8031_k6_s0.05_f505000": 2,
+        "t0.8200_k6_s0.05_f505000": 2,
+        "t0.8500_k6_s0.05_f505000": 5
+      },
+      "common_set_size": 881,
+      "heldout_paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": -0.0007154344199772985,
+          "ci90_sol": [
+            -0.0013672483836549376,
+            -6.93256879682182e-05
+          ],
+          "total_sol": -0.630297724,
+          "days_positive": 0,
+          "n_days": 9,
+          "share_days_positive": 0.0,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": -0.0011814025535714287
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -0.0005172345494505495
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": -0.00011586544537815126
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.00048687261386138616
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.0010718019404761905
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.002272554536585366
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": -0.0015938476714285714
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": -0.00035025789443813844,
+          "ci90_sol": [
+            -0.000760379324631101,
+            7.025367298524382e-05
+          ],
+          "total_sol": -0.308577205,
+          "days_positive": 1,
+          "n_days": 9,
+          "share_days_positive": 0.1111111111111111,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": -0.0005467424464285714
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -0.00026217423076923077
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.0002341016218487395
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.0
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.0003559402079207921
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.0005913210952380953
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.0009336205609756098
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": -0.001273778142857143
+            }
+          ]
+        }
+      },
+      "insample_best": "t0.8500_k6_s0.05_f505000",
+      "insample_best_paired_press_mean_sol": 4.951855505117369e-05,
+      "insample_paired_press_mean_by_candidate_sol": {
+        "t0.8031_k6_s0.05_f505000": 0.0,
+        "t0.8200_k6_s0.05_f505000": 3.816869825982234e-05,
+        "t0.8500_k6_s0.05_f505000": 4.951855505117369e-05
+      },
+      "optimism_gap_press_sol": 0.0003997764494893121
+    },
+    "8": {
+      "available": true,
+      "k": 8,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "candidates": [
+        "t0.8031_k8_s0.05_f505000",
+        "t0.8200_k8_s0.05_f505000",
+        "t0.8500_k8_s0.05_f505000"
+      ],
+      "reference": "t0.8031_k8_s0.05_f505000",
+      "min_train_trades": 100,
+      "n_days": 9,
+      "n_unavailable_folds": 0,
+      "folds": [
+        {
+          "day": "2026-09-19",
+          "chosen": "t0.8500_k8_s0.05_f505000",
+          "available": true,
+          "n_held_out": 87
+        },
+        {
+          "day": "2026-09-20",
+          "chosen": "t0.8500_k8_s0.05_f505000",
+          "available": true,
+          "n_held_out": 112
+        },
+        {
+          "day": "2026-09-21",
+          "chosen": "t0.8200_k8_s0.05_f505000",
+          "available": true,
+          "n_held_out": 91
+        },
+        {
+          "day": "2026-09-22",
+          "chosen": "t0.8500_k8_s0.05_f505000",
+          "available": true,
+          "n_held_out": 119
+        },
+        {
+          "day": "2026-09-23",
+          "chosen": "t0.8200_k8_s0.05_f505000",
+          "available": true,
+          "n_held_out": 135
+        },
+        {
+          "day": "2026-09-24",
+          "chosen": "t0.8200_k8_s0.05_f505000",
+          "available": true,
+          "n_held_out": 101
+        },
+        {
+          "day": "2026-09-25",
+          "chosen": "t0.8200_k8_s0.05_f505000",
+          "available": true,
+          "n_held_out": 84
+        },
+        {
+          "day": "2026-09-26",
+          "chosen": "t0.8500_k8_s0.05_f505000",
+          "available": true,
+          "n_held_out": 82
+        },
+        {
+          "day": "2026-09-27",
+          "chosen": "t0.8500_k8_s0.05_f505000",
+          "available": true,
+          "n_held_out": 70
+        }
+      ],
+      "times_chosen": {
+        "t0.8031_k8_s0.05_f505000": 0,
+        "t0.8200_k8_s0.05_f505000": 4,
+        "t0.8500_k8_s0.05_f505000": 5
+      },
+      "common_set_size": 881,
+      "heldout_paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": -0.0002655045664018161,
+          "ci90_sol": [
+            -0.0009834493685017026,
+            0.0004961992613507376
+          ],
+          "total_sol": -0.233909523,
+          "days_positive": 3,
+          "n_days": 9,
+          "share_days_positive": 0.3333333333333333,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0014763878275862068
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": -0.001505993642857143
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -0.0008097958241758241
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.0002218914957983193
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.0011208435333333335
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -0.00018640753465346536
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.0010890845
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.0015590676585365852
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": -0.0008508244857142858
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": -9.147448240635641e-05,
+          "ci90_sol": [
+            -0.0005120639654937571,
+            0.00036162552888762767
+          ],
+          "total_sol": -0.080589019,
+          "days_positive": 3,
+          "n_days": 9,
+          "share_days_positive": 0.3333333333333333,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0009201612528735632
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": -0.0007055571607142857
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -0.000528992967032967
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.0003827080504201681
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.0006755213407407407
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": -5.522066336633663e-05
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.0006679213928571428
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.0005566038780487805
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": -0.0008985103285714286
+            }
+          ]
+        }
+      },
+      "insample_best": "t0.8500_k8_s0.05_f505000",
+      "insample_best_paired_press_mean_sol": 0.00015288613565036486,
+      "insample_paired_press_mean_by_candidate_sol": {
+        "t0.8031_k8_s0.05_f505000": 0.0,
+        "t0.8200_k8_s0.05_f505000": 0.00014761340445302763,
+        "t0.8500_k8_s0.05_f505000": 0.00015288613565036486
+      },
+      "optimism_gap_press_sol": 0.00024436061805672125
+    },
+    "10": {
+      "available": true,
+      "k": 10,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "candidates": [
+        "t0.8031_k10_s0.05_f505000",
+        "t0.8200_k10_s0.05_f505000",
+        "t0.8500_k10_s0.05_f505000"
+      ],
+      "reference": "t0.8031_k10_s0.05_f505000",
+      "min_train_trades": 100,
+      "n_days": 9,
+      "n_unavailable_folds": 0,
+      "folds": [
+        {
+          "day": "2026-09-19",
+          "chosen": "t0.8500_k10_s0.05_f505000",
+          "available": true,
+          "n_held_out": 87
+        },
+        {
+          "day": "2026-09-20",
+          "chosen": "t0.8500_k10_s0.05_f505000",
+          "available": true,
+          "n_held_out": 112
+        },
+        {
+          "day": "2026-09-21",
+          "chosen": "t0.8500_k10_s0.05_f505000",
+          "available": true,
+          "n_held_out": 91
+        },
+        {
+          "day": "2026-09-22",
+          "chosen": "t0.8500_k10_s0.05_f505000",
+          "available": true,
+          "n_held_out": 119
+        },
+        {
+          "day": "2026-09-23",
+          "chosen": "t0.8200_k10_s0.05_f505000",
+          "available": true,
+          "n_held_out": 135
+        },
+        {
+          "day": "2026-09-24",
+          "chosen": "t0.8500_k10_s0.05_f505000",
+          "available": true,
+          "n_held_out": 101
+        },
+        {
+          "day": "2026-09-25",
+          "chosen": "t0.8500_k10_s0.05_f505000",
+          "available": true,
+          "n_held_out": 84
+        },
+        {
+          "day": "2026-09-26",
+          "chosen": "t0.8500_k10_s0.05_f505000",
+          "available": true,
+          "n_held_out": 82
+        },
+        {
+          "day": "2026-09-27",
+          "chosen": "t0.8500_k10_s0.05_f505000",
+          "available": true,
+          "n_held_out": 70
+        }
+      ],
+      "times_chosen": {
+        "t0.8031_k10_s0.05_f505000": 0,
+        "t0.8200_k10_s0.05_f505000": 1,
+        "t0.8500_k10_s0.05_f505000": 8
+      },
+      "common_set_size": 881,
+      "heldout_paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": 0.00035161573325766173,
+          "ci90_sol": [
+            -0.00040176978723041997,
+            0.0011515930391032914
+          ],
+          "total_sol": 0.309773461,
+          "days_positive": 6,
+          "n_days": 9,
+          "share_days_positive": 0.6666666666666666,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0010351843218390803
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": -0.0006758079196428571
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -0.00030865656043956046
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.0008577133445378151
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.001275687651851852
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": 0.0009506869603960397
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": 3.5092785714285716e-05
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.0011987211707317072
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 0.0006933271
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": 0.00028324508059023837,
+          "ci90_sol": [
+            -0.00020499618359818387,
+            0.0008077558578320089
+          ],
+          "total_sol": 0.249538916,
+          "days_positive": 6,
+          "n_days": 9,
+          "share_days_positive": 0.6666666666666666,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0007063141609195402
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 2.1978991071428574e-05
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": -0.0001393315934065934
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.0004909064453781513
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.0009440830814814815
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": 0.0004091001485148515
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.00010054340476190477
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": -0.00042989903658536584
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 0.00021166115714285714
+            }
+          ]
+        }
+      },
+      "insample_best": "t0.8500_k10_s0.05_f505000",
+      "insample_best_paired_press_mean_sol": 0.0004257429205350145,
+      "insample_paired_press_mean_by_candidate_sol": {
+        "t0.8031_k10_s0.05_f505000": 0.0,
+        "t0.8200_k10_s0.05_f505000": 0.0002848711449180563,
+        "t0.8500_k10_s0.05_f505000": 0.0004257429205350145
+      },
+      "optimism_gap_press_sol": 0.00014249783994477611
+    },
+    "12": {
+      "available": true,
+      "k": 12,
+      "size_sol": 0.05,
+      "fee": 505000,
+      "candidates": [
+        "t0.8031_k12_s0.05_f505000",
+        "t0.8200_k12_s0.05_f505000",
+        "t0.8500_k12_s0.05_f505000"
+      ],
+      "reference": "t0.8031_k12_s0.05_f505000",
+      "min_train_trades": 100,
+      "n_days": 9,
+      "n_unavailable_folds": 0,
+      "folds": [
+        {
+          "day": "2026-09-19",
+          "chosen": "t0.8500_k12_s0.05_f505000",
+          "available": true,
+          "n_held_out": 87
+        },
+        {
+          "day": "2026-09-20",
+          "chosen": "t0.8500_k12_s0.05_f505000",
+          "available": true,
+          "n_held_out": 112
+        },
+        {
+          "day": "2026-09-21",
+          "chosen": "t0.8500_k12_s0.05_f505000",
+          "available": true,
+          "n_held_out": 91
+        },
+        {
+          "day": "2026-09-22",
+          "chosen": "t0.8500_k12_s0.05_f505000",
+          "available": true,
+          "n_held_out": 119
+        },
+        {
+          "day": "2026-09-23",
+          "chosen": "t0.8500_k12_s0.05_f505000",
+          "available": true,
+          "n_held_out": 135
+        },
+        {
+          "day": "2026-09-24",
+          "chosen": "t0.8500_k12_s0.05_f505000",
+          "available": true,
+          "n_held_out": 101
+        },
+        {
+          "day": "2026-09-25",
+          "chosen": "t0.8500_k12_s0.05_f505000",
+          "available": true,
+          "n_held_out": 84
+        },
+        {
+          "day": "2026-09-26",
+          "chosen": "t0.8500_k12_s0.05_f505000",
+          "available": true,
+          "n_held_out": 82
+        },
+        {
+          "day": "2026-09-27",
+          "chosen": "t0.8500_k12_s0.05_f505000",
+          "available": true,
+          "n_held_out": 70
+        }
+      ],
+      "times_chosen": {
+        "t0.8031_k12_s0.05_f505000": 0,
+        "t0.8200_k12_s0.05_f505000": 0,
+        "t0.8500_k12_s0.05_f505000": 9
+      },
+      "common_set_size": 881,
+      "heldout_paired_vs_frozen": {
+        "n": 881,
+        "flat": {
+          "mean_sol": 0.0007081555652667424,
+          "ci90_sol": [
+            -4.9911572814982964e-05,
+            0.0015569522955164586
+          ],
+          "total_sol": 0.623885053,
+          "days_positive": 7,
+          "n_days": 9,
+          "share_days_positive": 0.7777777777777778,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0014000764827586207
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 0.0002757858125
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 0.00014677185714285712
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.0005526841596638656
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.002629126066666667
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": 0.0008110019207920792
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.0006195103928571428
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": 0.00027241485365853656
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": -0.00021539462857142857
+            }
+          ]
+        },
+        "press": {
+          "mean_sol": 0.0006921100351872871,
+          "ci90_sol": [
+            0.0001841671553348468,
+            0.0012831354310442677
+          ],
+          "total_sol": 0.609748941,
+          "days_positive": 8,
+          "n_days": 9,
+          "share_days_positive": 0.8888888888888888,
+          "days": [
+            {
+              "day": "2026-09-19",
+              "n": 87,
+              "mean_sol": 0.0011221403908045977
+            },
+            {
+              "day": "2026-09-20",
+              "n": 112,
+              "mean_sol": 0.00035409047321428573
+            },
+            {
+              "day": "2026-09-21",
+              "n": 91,
+              "mean_sol": 0.00014394669230769231
+            },
+            {
+              "day": "2026-09-22",
+              "n": 119,
+              "mean_sol": 0.000576295025210084
+            },
+            {
+              "day": "2026-09-23",
+              "n": 135,
+              "mean_sol": 0.002047119133333333
+            },
+            {
+              "day": "2026-09-24",
+              "n": 101,
+              "mean_sol": 0.0005138318811881189
+            },
+            {
+              "day": "2026-09-25",
+              "n": 84,
+              "mean_sol": -0.0001556422619047619
+            },
+            {
+              "day": "2026-09-26",
+              "n": 82,
+              "mean_sol": 0.0009053318292682926
+            },
+            {
+              "day": "2026-09-27",
+              "n": 70,
+              "mean_sol": 1.9499628571428574e-05
+            }
+          ]
+        }
+      },
+      "insample_best": "t0.8500_k12_s0.05_f505000",
+      "insample_best_paired_press_mean_sol": 0.0006921100282915827,
+      "insample_paired_press_mean_by_candidate_sol": {
+        "t0.8031_k12_s0.05_f505000": 0.0,
+        "t0.8200_k12_s0.05_f505000": 0.00045051208371723987,
+        "t0.8500_k12_s0.05_f505000": 0.0006921100282915827
+      },
+      "optimism_gap_press_sol": -6.8957043851056166e-12
+    }
+  },
+  "wall_s": 2950.2116775512695,
+  "tries": {
+    "logged": 36,
+    "log_path": "/data/mal/ops/tries-exp012-opoint.jsonl"
+  }
+}
