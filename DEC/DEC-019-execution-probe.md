@@ -95,3 +95,5 @@ EXP-012's edge rests on execution: its selected entries filled 98.9% of the time
 
 - A live log on `mal-fast-0`, plus a daily summary for the owner (notebook and Console): attempts, landed, the bps differences, fees and realized P&L.
 - At the end: a lab note with every number, reviewed by `quant-proof` before any sentence compares live to paper.
+
+- *2026-10-05 (owner's PR checker):* the §7 lab note reports attempts **grouped by executor build sha, never pooled**. Group `8a6849b` (pre-#307, about 14–15 slots of latency) is in `ARTIFACTS/lab/probe-live-2026-10-05.md`. Later groups are keyed by the pinned `<sha>` in use when each fill row was made.
