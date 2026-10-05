@@ -476,17 +476,46 @@ def test_installer_probe_dryrun_only():
 
 # ---------------------------------------------------------------- DEC-019 live key-holder fence
 
-@pytest.mark.parametrize("conf", ["live.conf", "live-pinned.conf"])
+@pytest.mark.parametrize("conf", ["live.conf"])
 @pytest.mark.parametrize("args", [["--files-only"], []])
 def test_forward_install_refuses_while_live_dropin_exists(kit_repo, tmp_path, conf, args):
     bindir, calls = _stubs(tmp_path)
     env = _env(tmp_path, bindir)
     d = tmp_path / "systemd" / "mal-probe-executor.service.d"
     d.mkdir()
-    (d / conf).write_text("[Service]\n")
+    (d / conf).write_text((KIT / "mal-probe-executor-live.conf").read_text())
     r = _fwd(kit_repo["repo"], *args, "--commit", kit_repo["good"], env=env)
-    assert r.returncode != 0 and conf in r.stderr and "LIVE" in r.stderr and "key-holding" in r.stderr, r.stderr
+    assert r.returncode != 0 and "non-pinned" in r.stderr and "LIVE" in r.stderr and "key-holding" in r.stderr, r.stderr
     assert calls.read_text() == "" and not (tmp_path / "mal").exists()
+
+
+def test_forward_install_allowed_with_pinned_live_dropin_with_note(kit_repo, tmp_path):
+    """live-pinned.conf runs root-owned code the installer never touches: the runner reinstall proceeds, with a note."""
+    bindir, _ = _stubs(tmp_path)
+    env = _env(tmp_path, bindir)
+    d = tmp_path / "systemd" / "mal-probe-executor.service.d"
+    d.mkdir()
+    (d / "live-pinned.conf").write_text((KIT / "mal-probe-executor-live-pinned.conf").read_text())
+    r = _fwd(kit_repo["repo"], "--files-only", "--commit", kit_repo["good"], env=env)
+    assert "refusing: " not in r.stderr, r.stderr
+    assert "is PINNED" in r.stderr, r.stderr
+    assert r.returncode == 0, r.stderr
+
+
+def test_forward_install_allowed_when_pinned_conf_is_installed_as_live_conf(kit_repo, tmp_path):
+    """The runbook installs the pinned conf under the name live.conf: it is told apart by its ExecStart."""
+    bindir, _ = _stubs(tmp_path)
+    env = _env(tmp_path, bindir)
+    d = tmp_path / "systemd" / "mal-probe-executor.service.d"
+    d.mkdir()
+    pinned = (KIT / "mal-probe-executor-live-pinned.conf").read_text()
+    (d / "live.conf").write_text(pinned)
+    r = _fwd(kit_repo["repo"], "--files-only", "--commit", kit_repo["good"], env=env)
+    assert r.returncode == 0 and "is PINNED" in r.stderr, r.stderr
+    # the non-pinned conf under the same name still refuses
+    (d / "live.conf").write_text((KIT / "mal-probe-executor-live.conf").read_text())
+    r = _fwd(kit_repo["repo"], "--files-only", "--commit", kit_repo["good"], env=env)
+    assert r.returncode != 0 and "key-holding" in r.stderr
 
 
 def test_forward_install_dry_run_allowed_with_live_dropin(kit_repo, tmp_path):
@@ -494,7 +523,7 @@ def test_forward_install_dry_run_allowed_with_live_dropin(kit_repo, tmp_path):
     env = _env(tmp_path, bindir)
     d = tmp_path / "systemd" / "mal-probe-executor.service.d"
     d.mkdir()
-    (d / "live.conf").write_text("[Service]\n")
+    (d / "live.conf").write_text((KIT / "mal-probe-executor-live.conf").read_text())
     r = _fwd(kit_repo["repo"], "--dry-run", "--files-only", "--commit", kit_repo["good"], env=env)
     assert r.returncode == 0, r.stderr
 
@@ -504,13 +533,84 @@ def test_forward_install_dropin_dir_override_is_test_mode_only(kit_repo, tmp_pat
     env = _env(tmp_path, bindir)
     d = tmp_path / "elsewhere"
     d.mkdir()
-    (d / "live.conf").write_text("[Service]\n")
+    (d / "live.conf").write_text((KIT / "mal-probe-executor-live.conf").read_text())
     env["MAL_PROBE_DROPIN_DIR"] = str(d)
     r = _fwd(kit_repo["repo"], "--files-only", "--commit", kit_repo["good"], env=env)
-    assert r.returncode != 0 and "live.conf" in r.stderr  # test mode honours the override
+    assert r.returncode != 0 and "non-pinned" in r.stderr  # test mode honours the override
     t = (KIT / "install-fast-forward-paper.sh").read_text()
     # outside test mode (owner set or unset) the path is the fixed /etc one
     assert '-z "${MAL_FORWARD_OWNER+x}" || -n "${MAL_FORWARD_OWNER}"' in t
     assert 'PROBE_DROPIN_DIR="/etc/systemd/system/mal-probe-executor.service.d"' in t
     # the fence sits before commit verification and any install
     assert t.index("live key-holder fence") < t.index("verify_commit \"${COMMIT_ARG}\"")
+
+
+# ---------------------------------------------------------------- DEC-019 fence helper (effective ExecStart)
+
+def _fence():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("probe_dropin_fence", KIT / "probe-dropin-fence.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+PINNED_CONF = KIT / "mal-probe-executor-live-pinned.conf"
+PINNED_EXEC = next(l for l in PINNED_CONF.read_text().splitlines() if l.startswith("ExecStart=/"))
+
+
+def _verdict(tmp_path, files):
+    d = tmp_path / f"d{len(list(tmp_path.iterdir()))}"
+    d.mkdir()
+    for name, text in files.items():
+        (d / name).write_text(text)
+    return _fence().verdict(d, PINNED_CONF).split()[0]
+
+
+def test_fence_pinned_conf_any_name(tmp_path):
+    assert _verdict(tmp_path, {"live.conf": PINNED_CONF.read_text()}) == "pinned"
+    assert _fence().verdict(tmp_path / "missing", PINNED_CONF) == "none"
+
+
+def test_fence_launcher_path_as_argument_is_not_pinned(tmp_path):
+    cmd = "ExecStart=/var/lib/mal/fast-forward/venv/bin/python -m tools.probe_executor --live /usr/local/lib/mal-probe-exec/current/launcher.py\n"
+    assert _verdict(tmp_path, {"live.conf": "[Service]\nLoadCredential=probe-wallet:/x\nExecStart=\n" + cmd}) == "unpinned"
+
+
+def test_fence_earlier_pinned_line_overridden_by_later_exec(tmp_path):
+    text = "[Service]\nExecStart=\n" + PINNED_EXEC + "\nExecStart=\nExecStart=/bin/evil --live\n"
+    assert _verdict(tmp_path, {"live.conf": text}) == "unpinned"
+
+
+def test_fence_later_dropin_overrides_pinned(tmp_path):
+    files = {"live.conf": PINNED_CONF.read_text(), "zz-override.conf": "[Service]\nExecStart=\nExecStart=/bin/evil\n"}
+    assert _verdict(tmp_path, files) == "unpinned"
+
+
+def test_fence_later_dropin_restoring_pinned_is_pinned(tmp_path):
+    files = {"a.conf": "[Service]\nExecStart=\nExecStart=/bin/evil\n", "live.conf": PINNED_CONF.read_text()}
+    assert _verdict(tmp_path, files) == "pinned"
+
+
+def test_fence_appended_second_exec_is_unpinned(tmp_path):
+    text = PINNED_CONF.read_text() + "[Service]\nExecStart=/bin/evil\n"
+    assert _verdict(tmp_path, {"live.conf": text}) == "unpinned"
+
+
+def test_fence_comments_and_continuations(tmp_path):
+    commented = "[Service]\n# ExecStart=\n; ExecStart=/bin/evil\n" + PINNED_CONF.read_text()
+    assert _verdict(tmp_path, {"live.conf": commented}) == "pinned"
+    cont = "[Service]\nLoadCredential=probe-wallet:/x\nExecStart=\nExecStart=/bin/ok \\\n  # not a command\n  --live\n"
+    assert _verdict(tmp_path, {"live.conf": cont}) == "unpinned"
+    glued = "[Service]\nExecStart=\n" + PINNED_EXEC + " \\\n --extra\n"
+    assert _verdict(tmp_path, {"live.conf": glued}) == "unpinned"
+
+
+def test_fence_live_pinned_name_gets_same_content_check(tmp_path):
+    assert _verdict(tmp_path, {"live-pinned.conf": "[Service]\nLoadCredential=probe-wallet:/x\nExecStart=\nExecStart=/bin/evil\n"}) == "unpinned"
+    assert _verdict(tmp_path, {"live-pinned.conf": PINNED_CONF.read_text()}) == "pinned"
+
+
+def test_fence_non_service_section_is_ignored(tmp_path):
+    assert _verdict(tmp_path, {"x.conf": "[Unit]\nDescription=ExecStart=/bin/evil\n"}) == "none"

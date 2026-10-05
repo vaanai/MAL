@@ -5,6 +5,8 @@
 # (pumpswap_virtual absent = off), and compares md5 of decisions.jsonl and positions.jsonl.
 #
 #   BASE=origin/main HEAD_REF=origin/claude/runner-pumpswap-virtual scripts/mal-fast/forward-paper-equiv.sh
+#   INTENTS_HEAD=1 ...   the HEAD replay runs with "intents_file": true (decisions/positions must still match
+#                        base; the new intents.jsonl is counted, not compared)
 #
 # Env: CV (clean-view root), HOURS (space separated, default 2026-09-26T00 01 02 = a 3 h slice),
 #      OUT (default $MISCUSI_OUTPUT_DIR or /data/mal/ops/fp-equiv), M (model dir).
@@ -42,9 +44,18 @@ for k in ("tape_dir", "creates_dir", "output_dir", "kill_file", "pumpswap_virtua
 json.dump(c, open(f"{w}/cfg-a.json", "w"), indent=1)
 PYEOF
 )
+python3 - "$OUT" "${INTENTS_HEAD:-0}" <<'PYEOF'
+import json, sys
+w, on = sys.argv[1], sys.argv[2] == "1"
+c = json.load(open(f"{w}/cfg-a.json"))
+if on:
+    c["intents_file"] = True
+json.dump(c, open(f"{w}/cfg-head.json", "w"), indent=1)
+PYEOF
 for label in base head; do
+  cfg="$OUT/cfg-a.json"; [ "$label" = head ] && cfg="$OUT/cfg-head.json"
   (cd "$OUT/wt-$label" && PYTHONPATH="$PWD" OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 "$PY" -m tools.forward_paper replay \
-      --config "$OUT/cfg-a.json" --tape $TAPE --creates-dir "$CV/creates" --output-dir "$OUT/out-$label") > "$OUT/out-$label.log" 2>&1 \
+      --config "$cfg" --tape $TAPE --creates-dir "$CV/creates" --output-dir "$OUT/out-$label") > "$OUT/out-$label.log" 2>&1 \
     || { tail -30 "$OUT/out-$label.log"; exit 1; }
 done
 status=0
@@ -53,4 +64,5 @@ for f in decisions.jsonl positions.jsonl; do
   echo "$f base=${a%% *} head=${b%% *} lines=$(wc -l < "$OUT/out-base/$f")"
   [ "$a" = "$b" ] || status=1
 done
+[ -f "$OUT/out-head/intents.jsonl" ] && echo "intents.jsonl lines=$(wc -l < "$OUT/out-head/intents.jsonl")"
 if [ "$status" = 0 ]; then echo "EQUIVALENT"; else echo "MISMATCH"; exit 1; fi

@@ -219,6 +219,7 @@ class TailerTests(unittest.TestCase):
         for name in ("positions.jsonl", "runner-status", "latency.jsonl", "summary.json"):
             self.assertNotIn(name, src)
         self.assertEqual(pe.DECISIONS_FILE, "decisions.jsonl")
+        self.assertEqual(pe.SIGNAL_FILES, ("decisions.jsonl", "intents.jsonl"))
         for pat in (r"\.sign\(", r"Keypair", r"from_seed", r"sendTransaction", r"send_transaction"):
             self.assertIsNone(re.search(pat, src), pat)
 
@@ -386,17 +387,17 @@ class RpcErrorProxy(Exception):
 
 
 class SealUnitTests(unittest.TestCase):
-    def test_unit_whitelists_only_decisions_jsonl(self):
+    def test_unit_whitelists_only_intents_jsonl(self):
         self.assertIn("TemporaryFileSystem=/var/lib/mal/paper/fast-forward-paper:ro", UNIT)
         binds = re.findall(r"^BindReadOnlyPaths=(.*)$", UNIT, re.M)
         self.assertEqual(len(binds), 1)
-        self.assertEqual(binds[0].strip(), "-/var/lib/mal/paper/fast-forward-paper/decisions.jsonl")
+        self.assertEqual(binds[0].strip(), "-/var/lib/mal/paper/fast-forward-paper/intents.jsonl")
         self.assertNotRegex(UNIT, r"(?m)^ReadWritePaths=.*paper")
         self.assertNotRegex(UNIT, r"(?m)^ReadOnlyPaths=.*fast-forward-paper")
 
     def test_code_references_no_other_runner_filename(self):
         runner = (REPO / "tools/forward_paper.py").read_text()
-        names = set(re.findall(r"""["']([A-Za-z0-9_.-]+\.jsonl?)["']""", runner)) - {"decisions.jsonl"}
+        names = set(re.findall(r"""["']([A-Za-z0-9_.-]+\.jsonl?)["']""", runner)) - {"decisions.jsonl", "intents.jsonl"}
         self.assertIn("positions.jsonl", names)  # the scan finds the files it should
         src = Path(pe.__file__).read_text()
         for n in names:
@@ -407,6 +408,127 @@ class SealUnitTests(unittest.TestCase):
         for k in ("NoNewPrivileges=true", "ProtectSystem=strict", "ReadWritePaths=/var/lib/mal-live", "MemoryMax=1G", "User=mal-live",
                   "RestrictAddressFamilies=AF_INET AF_INET6", "CapabilityBoundingSet="):
             self.assertIn(k, UNIT)
+
+
+def intent_row(**kw):
+    row = {"schema": "forward_paper_intent_v1", "book": pe.DEFAULT_BOOK, "ledger": "ceiling", "mint": "M1", "creator": "C",
+           "decision_t_ms": 1_000, "written_ms": 1_100, "trigger": "migrate", "score": 0.9}
+    row.update(kw)
+    return json.dumps(row) + "\n"
+
+
+class IntentTests(unittest.TestCase):
+    def test_parse_intent_whitelists_fields(self):
+        got = pe.parse_intent(intent_row(pnl_lamports=5, creator="X"), pe.DEFAULT_BOOK, "ceiling")
+        self.assertEqual(got, {"mint": "M1", "decision_t_ms": 1000, "score": 0.9, "trigger": "migrate",
+                               "book": pe.DEFAULT_BOOK, "written_ms": 1100})
+
+    def test_parse_intent_rejects_other_rows(self):
+        self.assertIsNone(pe.parse_intent(intent_row(ledger="shadow"), pe.DEFAULT_BOOK, "ceiling"))
+        self.assertIsNone(pe.parse_intent(intent_row(book="other"), pe.DEFAULT_BOOK, "ceiling"))
+        self.assertIsNone(pe.parse_intent(intent_row(written_ms=None), pe.DEFAULT_BOOK, "ceiling"))
+        self.assertIsNone(pe.parse_intent(intent_row(schema="forward_paper_decision_v1"), pe.DEFAULT_BOOK, "ceiling"))
+        self.assertIsNone(pe.parse_intent(enter_row(), pe.DEFAULT_BOOK, "ceiling"))  # an `enter` row is not an intent
+        self.assertIsNone(pe.parse_enter(intent_row(), pe.DEFAULT_BOOK, "ceiling"))
+
+    def test_tail_intents_and_age_uses_written_ms(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "intents.jsonl"
+            p.write_text("")
+            st = pe.State()
+            pe.tail_signals(p, st, pe.DEFAULT_BOOK, intents=True)
+            p.write_text(intent_row())
+            out = pe.tail_signals(p, st, pe.DEFAULT_BOOK, intents=True)
+            self.assertEqual([s["mint"] for s in out], ["M1"])
+            self.assertEqual(pe.signal_age_ms(out[0], 1_600), 500)  # written_ms, not the older tape time
+            self.assertEqual(pe.signal_age_ms({"decision_t_ms": 1000}, 1_600), 600)
+
+    def test_executor_reads_only_configured_signals_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf = make(Path(d), signals_file="intents.jsonl")
+            self.assertEqual(ex.decisions.name, "intents.jsonl")
+            self.assertTrue(ex.use_intents)
+            with self.assertRaises(ValueError):
+                make(Path(d), signals_file="positions.jsonl")
+
+    def test_shipped_configs_use_intents(self):
+        for n in ("probe-executor.json", "probe-executor-live.json"):
+            self.assertEqual(json.loads((REPO / "scripts/mal-fast" / n).read_text())["signals_file"], "intents.jsonl")
+
+
+class MissingSignalsTests(unittest.TestCase):
+    def _cfg(self, d: Path, **extra) -> dict:
+        (d / "sig").mkdir(exist_ok=True)
+        return {"signals_dir": str(d / "sig"), "signals_file": "intents.jsonl", "state_dir": str(d), "fill_log": str(d / "f.jsonl"), **extra}
+
+    def test_live_startup_refuses_with_exit_2_when_file_missing(self):
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d), mode="live")
+            cfgp = Path(d) / "c.json"
+            cfgp.write_text(json.dumps(cfg))
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = pe.main(["--config", str(cfgp), "--live"])
+            self.assertEqual(rc, 2)
+            self.assertIn("ALERT startup_refused", out.getvalue())
+            self.assertIn("start the runner first", out.getvalue())
+
+    def test_startup_check_passes_when_present_and_dryrun_only_warns(self):
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(pe.startup_signals_check(cfg, live=False), 0)  # dry run: warn, no exit
+                self.assertEqual(pe.startup_signals_check(cfg, live=True), 2)
+            self.assertIn("WARNING", out.getvalue())
+            (Path(d) / "sig" / "intents.jsonl").write_text("")
+            self.assertEqual(pe.startup_signals_check(cfg, live=True), 0)
+
+    def test_unreadable_file_refuses_live(self):
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            f = Path(d) / "sig" / "intents.jsonl"
+            f.write_text("")
+            f.chmod(0)
+            try:
+                if os.access(f, os.R_OK):
+                    self.skipTest("running as a user that ignores file modes")
+                self.assertEqual(pe.startup_signals_check(cfg, live=True), 2)
+            finally:
+                f.chmod(0o600)
+
+    def test_absent_alert_at_most_once_a_minute_and_clears(self):
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock()
+            ex, conf = make(Path(d), clock=clock, signals_file="intents.jsonl")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                ex.signal_tick()
+                clock.t += 30_000
+                ex.signal_tick()
+                self.assertEqual(out.getvalue().count("signals_file_missing"), 1)
+                clock.t += 31_000
+                ex.signal_tick()
+            self.assertEqual(out.getvalue().count("signals_file_missing"), 2)
+            self.assertIn("WARNING", out.getvalue())  # dry run
+            self.assertNotIn("ALERT", out.getvalue())
+
+    def test_live_mode_absent_is_an_alert(self):
+        import io
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            ex, _ = make(Path(d), mode="live", signals_file="intents.jsonl")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                ex.signal_tick()
+            self.assertIn("ALERT signals_file_missing", out.getvalue())
 
 
 class ClampTests(unittest.TestCase):

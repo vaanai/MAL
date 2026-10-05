@@ -26,6 +26,8 @@ EXP-012's edge rests on execution: its selected entries filled 98.9% of the time
    - ATA and WSOL rent charged and refunded.
 5. **Realized failure rate against the pressure model's** expected failures for those attempts.
 
+- *2026-10-05: signals come from the runner's decision-time `intents.jsonl` (PR #307), not from `enter` rows written after the simulated latency. The live executor therefore acts on every ceiling-ledger migrate decision at decision time, including mints the paper runner later skips (kill switch, missed slippage at its simulated time, no price). Live fills are not a subset of paper fills. They are bounded by the executor's own limits, STOP/HALT and `already_bought`. The section 7 comparison joins live vs paper by mint and reports both the matched set and the live-only set.*
+
 ## 3. Scope and hard limits (enforced in code and config, not by a person)
 
 | Limit | Value |

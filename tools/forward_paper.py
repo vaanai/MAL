@@ -17,6 +17,7 @@ import gc
 import heapq
 import json
 import math
+import os
 import random
 import signal
 import statistics
@@ -96,6 +97,7 @@ from tools.paper_tape_scoreboard import (
 )
 
 SCHEMA_DECISION = "forward_paper_decision_v1"
+SCHEMA_INTENT = "forward_paper_intent_v1"
 SCHEMA_POSITION = "forward_paper_position_v1"
 SCHEMA_PNL = "forward_paper_pnl_v1"
 SCHEMA_LATENCY = "forward_paper_latency_v1"
@@ -742,6 +744,7 @@ def write_runner_status(path: Path, engine: "ForwardEngine", *, live_at_ms: int 
         "stale_cap_ms": STALE_ACTION_MS,
         "lag_ms": lag,
         "stale_dropped": engine.stale_dropped,
+        "intent_write_errors": engine.intent_write_errors,
         "fail_rate": engine.fail_rate,
         "promotion_live_ms": live_at_ms,
         "newest_recv_ms": newest,
@@ -1311,14 +1314,19 @@ class ModelSlot:
 
 
 class JsonlLog:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, fsync: bool = False) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        self._fsync = fsync
         self._fh: TextIO = path.open("a", encoding="utf-8")
 
     def write(self, row: dict[str, Any]) -> None:
         self._fh.write(json.dumps(_json_safe(row), separators=(",", ":"), ensure_ascii=False) + "\n")
         self._fh.flush()
+        if self._fsync:
+            # intents only: one row per migrate decision (a handful a day), so the fsync is cheap and the
+            # row is durable before the executor's 50 ms tailer can see a half-written one.
+            os.fsync(self._fh.fileno())
 
     def close(self) -> None:
         self._fh.close()
@@ -1413,6 +1421,8 @@ class ForwardEngine:
         # Durable ledger. summary() scores this file for promotion and does not rewrite it.
         self.positions_path = positions_path
         self.stale_dropped = 0
+        self.intent_write_errors = 0  # DEC-019 side file only; reported in runner-status.json
+        self._intent_err_logged_s = 0
         self.newest_recv_ms: int | None = None
         self._tx_order = TxOrder()
         # Opt-in, `serve()`-only (see `TX_ORDER_PRUNE_MS`'s comment). `None`
@@ -2090,8 +2100,43 @@ class ForwardEngine:
             ledger=name,
         )
         ledger.pending[pending.mint] = pending
+        if name == "ceiling" and spec.kind == "migrate":
+            self._intent(spec.book_id, pending, book)
         if pending.t_entry_ms <= self._clock_ms:
             self._fill_one(run, ledger, pending)
+
+    def _intent(self, book_id: str, pending: "_Pending", book: MintBook) -> None:
+        """DEC-019: tell the probe executor about a ceiling migrate decision NOW, not after the simulated
+        latency has elapsed (`enter` is only written in _fill_one). Carries no P&L or fill field. Written
+        only when the `intents` log exists (config `intents_file`); it feeds nothing back into the engine."""
+        log = self.logs.get("intents")
+        if log is None:
+            return
+        try:
+            now = self.latency.now_ms() if self.latency.now_ms is not None else int(time.time() * 1000)
+            log.write(
+                {
+                    "schema": SCHEMA_INTENT,
+                    "book": book_id,
+                    "ledger": "ceiling",
+                    "mint": pending.mint,
+                    "creator": pending.creator,
+                    "decision_t_ms": pending.decision_t_ms,
+                    "written_ms": now,
+                    "trigger": pending.trigger,
+                    "score": pending.score,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001  a side file must never stop the paper runner or change its decisions
+            self.intent_write_errors += 1
+            wall = int(time.time())
+            if wall - self._intent_err_logged_s >= 60:
+                self._intent_err_logged_s = wall
+                print(
+                    f"forward_paper intent_write_error n={self.intent_write_errors} {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     def _ref_price(self, book: MintBook, t_ms: int, feats: dict[str, float] | None) -> float | None:
         if self.pumpswap_virtual == "require":
@@ -3371,6 +3416,7 @@ def run_replay_files(
     slippage_cap: float,
     span_ms: int | None = None,
     pumpswap_virtual: str = "off",
+    intents_file: bool = False,
 ) -> dict[str, Any]:
     loaded = load_creates(creates)
     rows = list(_iter_jsonl(tape, span_ms=span_ms))
@@ -3384,6 +3430,8 @@ def run_replay_files(
         "decisions": JsonlLog(output_dir / "decisions.jsonl"),
         "positions": JsonlLog(output_dir / "positions.jsonl"),
     }
+    if intents_file:
+        logs["intents"] = JsonlLog(output_dir / "intents.jsonl", fsync=True)
     model = ModelSlot(model_path, meta_path)
     barrier = ModelSlot(barrier_path, meta_path)
     swing_slot = ModelSlot(swing_path, None)
@@ -3538,6 +3586,8 @@ def serve(config_path: Path) -> int:
         "latency": JsonlLog(output_dir / "latency.jsonl"),
         "mem_census": JsonlLog(output_dir / "mem-census.jsonl"),
     }
+    if raw.get("intents_file") is True:
+        logs["intents"] = JsonlLog(output_dir / "intents.jsonl", fsync=True)
     if any(b.entry_model is not None for b in books):
         logs["exp012_gate"] = JsonlLog(output_dir / "exp012-gate.jsonl")
     model = ModelSlot(model_path, meta_path)
@@ -3554,7 +3604,7 @@ def serve(config_path: Path) -> int:
         barrier=barrier,
         swing=swing,
         slippage_cap=slippage,
-        logs={k: logs[k] for k in ("decisions", "positions", "exp012_gate") if k in logs},
+        logs={k: logs[k] for k in ("decisions", "positions", "exp012_gate", "intents") if k in logs},
         fail_rate=DEFAULT_FAIL_RATE,
         positions_path=output_dir / "positions.jsonl",
         dead_mints=dead_mints,
@@ -3758,6 +3808,7 @@ def main(argv: list[str] | None = None) -> int:
         slippage_cap=float(raw.get("slippage_cap", DEFAULT_SLIPPAGE_CAP)),
         span_ms=None if args.span_min <= 0 else int(args.span_min * 60_000),
         pumpswap_virtual=str(raw.get("pumpswap_virtual", "off")),
+        intents_file=raw.get("intents_file") is True,
     )
     recon = result.get("reconcile") or {}
     gap = (recon.get("online_vs_same_latency") or {}).get("pnl_mismatches")

@@ -370,7 +370,7 @@ class LiveExecutor(pe.Executor):
             why = "max_open"
         if why:
             return self._skip(sig, f"limit:{why}")
-        if now - sig["decision_t_ms"] > self.max_signal_age_ms:
+        if pe.signal_age_ms(sig, now) > self.max_signal_age_ms:
             return self._skip(sig, "stale_signal")
         if mint in self.state.open or mint in self.state.pending:
             return self._skip(sig, "already_open")
