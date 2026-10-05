@@ -70,6 +70,8 @@ class FakeWs:
         if self.frames:
             f = self.frames.pop(0)
             return f if isinstance(f, str) else json.dumps(f)
+        if self.end_with is None:  # quiet socket: block like an idle connection
+            await asyncio.sleep(3600)
         raise self.end_with
 
 
@@ -83,6 +85,65 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual(row["signature"], SIG)
         self.assertEqual(row["t_recv_ms"], T0)
         self.assertEqual(row["canonical_pool"], p.canonical_pool_str(row["mint"]))
+
+    def test_nesting_variants(self) -> None:
+        logs = ["x", _migration_log()]
+        entry = {"transaction": {"signatures": [SIG], "message": {}}, "meta": {"err": None, "logMessages": logs}}
+        for result in (
+            {"signature": SIG, "slot": 5, "transaction": entry},
+            {"signature": SIG, "slot": 5, **entry},
+            {"signature": SIG, "slot": 5, "transaction": {"signatures": [SIG], "message": {}},
+             "meta": entry["meta"]},
+        ):
+            row = p.row_from_notification({"method": "transactionNotification", "params": {"result": result}}, T0)
+            self.assertTrue(row["is_migration"], result.keys())
+            self.assertEqual(row["mint"], b58encode(_pk(2)))
+            self.assertEqual(row["signature"], SIG)
+
+    def test_migrate_instruction_without_event_logs(self) -> None:
+        # The migrate tx itself carries no Program-data event: detect the instruction, mint = account 2.
+        keys = [b58encode(_pk(n)) for n in (10, 11, 12, 13)] + [p.PUMP_PROGRAM]
+        for disc in ("9beae792ec9ea21e", "bbcb121fceedfe29"):
+            data = bytes.fromhex(disc) + b"\x01"
+            ix = {"programIdIndex": 4, "accounts": [0, 1, 2, 3], "data": b58encode(data)}
+            for where in ("top", "inner"):
+                meta = {"err": None, "logMessages": ["Program log: Instruction: Migrate"]}
+                msg = {"accountKeys": keys, "instructions": [ix] if where == "top" else []}
+                if where == "inner":
+                    meta["innerInstructions"] = [{"index": 0, "instructions": [ix]}]
+                result = {"signature": SIG, "slot": 9, "transaction": {"transaction": {"signatures": [SIG], "message": msg}, "meta": meta}}
+                row = p.row_from_notification({"method": "transactionNotification", "params": {"result": result}}, T0)
+                self.assertTrue(row["is_migration"], (disc, where))
+                self.assertEqual(row["mint"], keys[2])
+        other = {"programIdIndex": 4, "accounts": [0, 1, 2], "data": b58encode(bytes.fromhex("33e685a4017f83ad"))}
+        result = {"signature": SIG, "slot": 9, "transaction": {"transaction": {"message": {"accountKeys": keys, "instructions": [other]}},
+                                                           "meta": {"err": None, "logMessages": []}}}
+        row = p.row_from_notification({"method": "transactionNotification", "params": {"result": result}}, T0)
+        self.assertFalse(row["is_migration"])
+
+    def test_b58_roundtrip(self) -> None:
+        for raw in (b"\x00\x00abc", bytes(range(1, 40)), _pk(7)):
+            self.assertEqual(p._b58decode(b58encode(raw)), raw)
+
+    def test_matches_rows_from_block(self) -> None:
+        from tools.pump_history_backfill import rows_from_block
+        logs = ["x", _migration_log()]
+        blk = {"blockTime": T0 // 1000, "slot": 100, "transactions": [
+            {"transaction": {"signatures": [SIG]}, "meta": {"err": None, "logMessages": logs}}]}
+        want = rows_from_block(blk, {})["migrations"][0]
+        row = p.row_from_notification(_notif(logs), T0)
+        self.assertEqual((row["mint"], row["pool"], row["event_type"]), (want["mint"], want["pool"], want["type"]))
+
+    def test_raw_dump_limits_and_skips_acks(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / "raw.jsonl")
+            dump = p.RawDump(path, limit=2)
+            for i in range(4):
+                dump.add(_notif(["n"], slot=i))
+            dump.add({"jsonrpc": "2.0", "result": 1, "id": 1})
+            lines = Path(path).read_text().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(json.loads(lines[0])["slot"], 0)
 
     def test_non_migration_and_err_and_other_methods(self) -> None:
         row = p.row_from_notification(_notif(["Program log: hi"], err={"InstructionError": [0, "x"]}), T0)
@@ -168,6 +229,62 @@ class ReconnectTests(unittest.TestCase):
         self.assertEqual([r["slot"] for r in rows], [100, 101])
         self.assertTrue(files[0].name.startswith("migrations-2026-"))
 
+    def test_ack_logged_each_reconnect_and_counter_continues(self) -> None:
+        ack = {"jsonrpc": "2.0", "result": 4242, "id": 1}
+        sockets = [FakeWs([ack, _notif(["a", _migration_log()])]), FakeWs([ack, _notif(["noise"], slot=101)])]
+        stream = io.StringIO()
+        h = logging.StreamHandler(stream)
+        p.log.addHandler(h)
+        p.log.setLevel(logging.INFO)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                async def go():
+                    async def nosleep(_):
+                        return None
+                    return await p.run("wss://x", "json", p.Writer(Path(d)), asyncio.Event(),
+                                       connect=lambda u: sockets.pop(0), sleep=nosleep, max_sessions=2)
+                counts = asyncio.run(go())
+        finally:
+            p.log.removeHandler(h)
+        self.assertEqual(stream.getvalue().count("subscribed id=4242"), 2)
+        self.assertEqual(counts.notifications, 2)
+
+    def test_resubscribe_sent_on_every_connection(self) -> None:
+        sockets = [FakeWs([]), FakeWs([])]
+        made = list(sockets)
+        with tempfile.TemporaryDirectory() as d:
+            async def go():
+                async def nosleep(_):
+                    return None
+                return await p.run("wss://x", "json", p.Writer(Path(d)), asyncio.Event(),
+                                   connect=lambda u: sockets.pop(0), sleep=nosleep, max_sessions=2)
+            asyncio.run(go())
+        for ws in made:
+            self.assertEqual([m["method"] for m in ws.sent], ["transactionSubscribe"])
+
+    def test_quiet_acked_socket_survives_but_missing_ack_drops(self) -> None:
+        ws = FakeWs([{"jsonrpc": "2.0", "result": 1, "id": 1}], end_with=None)
+
+        async def go():
+            task = asyncio.create_task(p.session(ws, "json", None, p.Counts(), lambda: T0, asyncio.Event(),
+                                                 data_timeout_s=600, ack_timeout_s=0.05))
+            await asyncio.sleep(0.3)  # well past ack_timeout: an acked quiet socket must stay up
+            alive = not task.done()
+            task.cancel()
+            return alive
+        self.assertTrue(asyncio.run(go()))
+        silent = FakeWs([], end_with=None)
+        with self.assertRaises(ConnectionError) as cm:
+            asyncio.run(p.session(silent, "json", None, p.Counts(), lambda: T0, asyncio.Event(), ack_timeout_s=0.05))
+        self.assertIn("ack", str(cm.exception))
+
+    def test_ping_pong_is_the_liveness_signal(self) -> None:
+        import inspect
+        src = inspect.getsource(p.run)
+        self.assertIn("ping_interval=20", src)
+        self.assertIn("ping_timeout=20", src)
+        self.assertGreaterEqual(p.DATA_TIMEOUT_S, 600)
+
     def test_backoff_capped(self) -> None:
         b = 1.0
         for _ in range(20):
@@ -207,6 +324,17 @@ class CompareTests(unittest.TestCase):
         self.assertAlmostEqual(out["delta_ms_p90"], 780.0)
         self.assertEqual(out["slot_equal"], 1)
         self.assertEqual(out["signature_equal"], 2)
+        vc = out["vs_tip_complete"]
+        self.assertEqual((vc["n_matched"], vc["delta_ms_p50"]), (1, 700.0))
+        self.assertEqual(vc["slot_diff_stream_minus_tip_max"], 0)
+
+    def test_compare_complete_slot_lag(self) -> None:
+        stream = [{"mint": "A", "t_recv_ms": 1000, "slot": 12, "signature": "m", "is_migration": True, "err": None}]
+        tip = [{"mint": "A", "t_recv_ms": 1900, "slot": 10, "signature": "c", "type": "complete"}]
+        out = p.compare_rows(stream, tip)
+        self.assertEqual(out["n_matched"], 0)
+        self.assertEqual(out["vs_tip_complete"]["delta_ms_p50"], 900.0)
+        self.assertEqual(out["vs_tip_complete"]["slot_diff_stream_minus_tip_p50"], 2.0)
 
     def test_compare_dirs_window(self) -> None:
         start = p.parse_time_ms("2026-10-05T10:00:00Z")
