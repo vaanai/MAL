@@ -9,6 +9,7 @@ The executor is `tools/probe_executor.py` (keyless dry run) plus `tools/probe_li
 | Install and start the dry-run unit | manager |
 | Create the key, fund 0.5 SOL, name the withdraw address | Helm or owner |
 | Install the live drop-in and restart | Helm or owner (after the DEC-019 section 6 checklist is all done) |
+| Install the pinned copy (section 2b) and swap the drop-in | Helm or owner |
 | Stop, STOP file, status | anyone with sudo on `mal-fast-0` |
 | Withdraw | Helm or owner |
 
@@ -41,6 +42,41 @@ At start live mode sets RLIMIT_CORE 0 and PR_SET_DUMPABLE 0, then loads the cred
 Live state is `/var/lib/mal-live/state-live.json`, separate from the dry run's `state-dryrun.json`. Deleting it does not reset the budget: with live rows in the fill log and no state file, live refuses to start.
 
 Back to dry run: `sudo rm /etc/systemd/system/mal-probe-executor.service.d/live.conf && sudo systemctl daemon-reload && sudo systemctl restart mal-probe-executor`.
+
+## 2b. Live from a root-owned pinned copy (replaces live.conf)
+
+`live.conf` runs code from `/var/lib/mal/fast-forward/src` with the ubuntu-owned venv, both writable by agents. The pinned variant runs from `/usr/local/lib/mal-probe-exec`, all `root:root` (dirs 0755, files 0644), same pattern as `/usr/local/lib/mal-probe` ([probe-wallet.md](probe-wallet.md)). Installed files: the import closure of `tools.probe_executor` and `tools.probe_live` inside `tools/` (8 modules; a test recomputes it), `launcher.py`, `probe-executor-live.json`, the hashed `requirements-probe-exec.txt`. Venv: `solders`, `jsonalias`, `typing_extensions` only, `--require-hashes --only-binary=:all: --no-deps` (hashes checked against pypi.org JSON on 2026-10-05, same as `requirements-probe-tools.txt`). The unit runs `python -I -B -u launcher.py`. `-I` ignores `PYTHONPATH` and the working directory, so the root-owned launcher puts only its own resolved directory on `sys.path` and refuses if `tools` came from anywhere else. The drop-in sets no `PYTHONPATH`.
+
+Switch (Helm or the owner, as root, from a fresh root-owned clone detached at the reviewed merge commit):
+
+```
+# 1. wind down: STOP file, wait for 0 open and pending positions (--status, section 4), then stop the unit
+touch /var/lib/mal-live/STOP
+sudo systemctl stop mal-probe-executor
+# 2. install (refuses if the unit is active, a clone dir is not root-owned, HEAD != sha, or a manifest entry mismatches)
+sudo scripts/mal-fast/install-probe-executor-pinned.sh <40-char-sha> [manifest]   # prints sha256 of every installed file; compare with the manager's list
+# 3. swap the drop-in, reload, remove STOP, start
+sudo install -D -m 0644 scripts/mal-fast/mal-probe-executor-live-pinned.conf /etc/systemd/system/mal-probe-executor.service.d/live.conf
+sudo systemctl daemon-reload
+sudo rm -f /var/lib/mal-live/STOP
+sudo systemctl start mal-probe-executor
+journalctl -u mal-probe-executor -n 20 --no-pager   # expect: mode=LIVE user=<public key>
+systemctl show mal-probe-executor -p ExecStart --value | grep -c fast-forward   # expect 0
+```
+
+The unit must be stopped for the install because the venv is rebuilt in place. A restart with open positions resumes pending signatures without re-buying, but do the swap at 0 open positions.
+
+Update to a new commit: same steps. Each `<sha>` dir is immutable and the installer refuses to overwrite one; `current` moves only after a smoke import from the final location succeeds.
+
+Rollback to the old agent-deployed path: stop the unit, `sudo install -D -m 0644 scripts/mal-fast/mal-probe-executor-live.conf /etc/systemd/system/mal-probe-executor.service.d/live.conf`, daemon-reload, start. Rollback to an earlier pinned commit: stop, then `sudo ln -s <old-sha> /usr/local/lib/mal-probe-exec/.current.tmp && sudo mv -T /usr/local/lib/mal-probe-exec/.current.tmp /usr/local/lib/mal-probe-exec/current`, start (the venv is shared; if requirements changed between the two commits, remove that sha's dir and re-run the installer for it instead). Back to dry run: remove the drop-in as in section 2.
+
+Status in pinned mode (local files only, no key; run as root or `mal-live`):
+
+```
+sudo /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config /usr/local/lib/mal-probe-exec/current/probe-executor-live.json --status
+```
+
+State, fill log, STOP/HALT, the credential and the signals bind are unchanged from the base unit. The dry-run unit still uses the agent-deployed path (it holds no key).
 
 ## 3. Stop
 

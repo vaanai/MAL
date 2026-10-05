@@ -1,0 +1,12 @@
+# Hashed pins for the PINNED LIVE EXECUTOR venv (Python 3.12, linux x86_64 = mal-fast-0).
+# Only what the executor's module closure imports from outside the stdlib: tools.probe_executor and
+# tools.probe_live need solders (which needs jsonalias and typing_extensions); nothing else.
+# Install ONLY with: pip install --require-hashes --only-binary=:all: --no-deps --no-cache-dir -r this-file
+# Hashes are sha256 of the PyPI wheels, checked against pypi.org/pypi/<name>/<version>/json on 2026-10-05
+# and identical to requirements-probe-tools.txt. A test pins this file's three pins to that one.
+solders==0.29.0 \
+    --hash=sha256:00524baf575ae5edb2ba43cdb1d80491c59efdc16b48fec96a6f929c0401d0e4
+jsonalias==0.1.1 \
+    --hash=sha256:a56d2888e6397812c606156504e861e8ec00e188005af149f003c787db3d3f18
+typing_extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
