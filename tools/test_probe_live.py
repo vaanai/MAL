@@ -149,7 +149,7 @@ class GatingTests(unittest.TestCase):
             conf = {"signals_dir": d, "state_dir": d, "fill_log": f"{d}/f.jsonl", "mode": "live"}
             cp = Path(d) / "c.json"
             cp.write_text(json.dumps(conf))
-            with mock.patch.object(pl, "run_live", return_value=0) as rl, mock.patch.object(pe.sim, "load_rpc_url", return_value="http://x"), \
+            with mock.patch.object(pl, "run_live", return_value=0) as rl, mock.patch.object(pe, "rpc_env_problem", return_value=None), mock.patch.object(pe.sim, "load_rpc_url", return_value="http://x"), \
                     mock.patch.object(pe.Executor, "step", return_value=0), contextlib.redirect_stdout(io.StringIO()) as out:
                 pe.main(["--config", str(cp), "--once"])  # config live, no flag
                 rl.assert_not_called()
