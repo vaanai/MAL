@@ -11,15 +11,20 @@ per-side fee 505,000 lamports, frozen tp50_sl30 exit, V pricing. Only the 9-day 
 same guarded roots as tools.exp012_operating_point. Never the EXP-012 holdout, the backup block, the EXP-011 block or
 anything from 2026-10-02 onwards.
 
-What is knowable at send time (the whole point of this module)
-  mig = the migration slot (first PumpSwap print). The entry lands at mig + 6. The tx is sent before it lands, and the
-  feed reaches the executor with some lag. The veto therefore reads ONLY PumpSwap prints with
-      mig + 1 <= slot <= mig + 2          (OBS_FIRST_OFFSET .. OBS_LAST_OFFSET)
-  mig+1 is the decision state; mig+2 is the most the brief allows. Nothing at slot mig+3 or later is read: that is
-  the landing state (mig+5, bound "start") and the veto must not see it. The feed lag is NOT measured here: if the live
-  listener lags by more than about 2 slots then even the mig+2 prints are not knowable at send and only the mig+1 prints
-  are safe. Prints at the migration slot itself are not used (the migrate tx's own print). The creator-sold flag uses the
-  trader field of PumpSwap sell rows in the same slots, matched to the creator on the create row.
+What is knowable at send time (the whole point of this module). mig = the migration slot (first PumpSwap print).
+The live entry lands at mig+5..6. Two different information sources, so two windows:
+  1. Drift rules (drift_gt_25, drift_gt_50): window "executor snapshot, RPC processed". The executor reads the pool
+     state by RPC at the send state, about 2 slots before landing, i.e. mig+3..4. Drift therefore uses the last
+     PumpSwap print with slot <= mig+3 (DRIFT_LAST_OFFSET) against the migration-slot price. A print at mig+4 or later
+     is never read.
+  2. Tape-derived rules (netflow_neg, maxsell_ge_2sol, maxsell_ge_5sol, creator_sold, sells_ge_buys): the runner's
+     confirmed tip tape lags about 1.8 s (about 4 slots), so at decision time it knows prints only up to about the
+     first-swap slot. These use the window [mig+1, mig+1] only (TAPE_FIRST_OFFSET = TAPE_LAST_OFFSET = 1). A print at
+     mig+2 or later is never read. The live executor would need the processed grad stream or extra RPC to see more,
+     so a positive result for these five rules is NOT deployable as-is.
+  Prints at the migration slot are not used by the tape rules. The creator-sold flag uses the trader field of
+  PumpSwap sell rows in the tape window, matched to the creator on the create row.
+  The live feed lags themselves are NOT measured here; they are the coordinator's figures.
   A vetoed entry sends no tx and costs nothing (scored 0 in the pairing, so a veto is charged what the trade would have
   earned). A window with no print is "no information": no rule fires on it.
 
@@ -72,8 +77,9 @@ K = op.FROZEN_K
 SIZE_SOL = op.PRIMARY_SIZE_SOL
 FEE = op.PRIMARY_FEE
 FROZEN_CELL = op.FROZEN_CELL
-OBS_FIRST_OFFSET = 1
-OBS_LAST_OFFSET = 2
+TAPE_FIRST_OFFSET = 1
+TAPE_LAST_OFFSET = 1
+DRIFT_LAST_OFFSET = 3  # executor snapshot, RPC processed
 NESTED_MIN_TRAIN_TRADES = 100
 EXISTING_TRIES_ON_POOL = 54  # 18 + the 36 operating-point cells
 SCRATCH_ROWS = "veto_rows.jsonl"
@@ -113,18 +119,21 @@ def veto_features(
     mig_slot: int,
     ref_price: float | None,
     creator_sell_slots: Sequence[int] = (),
-    first_off: int = OBS_FIRST_OFFSET,
-    last_off: int = OBS_LAST_OFFSET,
+    first_off: int = TAPE_FIRST_OFFSET,
+    last_off: int = TAPE_LAST_OFFSET,
+    drift_last_off: int = DRIFT_LAST_OFFSET,
 ) -> dict[str, Any]:
-    """Features from PumpSwap prints with mig_slot+first_off <= slot <= mig_slot+last_off ONLY. A print or a creator
-    sell at any later slot is never read (it is the landing state, not the send-time state)."""
+    """Tape-derived features come from PumpSwap prints with mig+first_off <= slot <= mig+last_off ONLY (default
+    [mig+1, mig+1]). Drift comes from the last PumpSwap print with slot <= mig+drift_last_off (executor snapshot,
+    RPC processed). A print or a creator sell past the relevant window is never read."""
     lo, hi = mig_slot + first_off, mig_slot + last_off
     win = [p for p in fills if p.venue == "pumpswap" and lo <= p.slot <= hi]
     buys = [p.sol_lamports for p in win if p.side == "buy"]
     sells = [p.sol_lamports for p in win if p.side == "sell"]
+    snap = [p for p in fills if p.venue == "pumpswap" and mig_slot <= p.slot <= mig_slot + drift_last_off]
     drift = 0.0
-    if win and ref_price and ref_price > 0:
-        drift = win[-1].price_sol / ref_price - 1.0
+    if snap and ref_price and ref_price > 0:
+        drift = snap[-1].price_sol / ref_price - 1.0
     return {
         "n_window": len(win),
         "n_buys": len(buys),
@@ -135,6 +144,7 @@ def veto_features(
         "drift": drift,
         "creator_sold": any(lo <= s <= hi for s in creator_sell_slots),
         "window": [lo, hi],
+        "drift_last_slot": mig_slot + drift_last_off,
     }
 
 
@@ -355,12 +365,13 @@ def analyze(rows: Sequence[Mapping[str, Any]], scores: Mapping[str, float], thr_
         "n_days": len(days),
         "days": days,
         "frozen_point": {"threshold": FROZEN_THRESHOLD, "k": K, "size_sol": SIZE_SOL, "fee": FEE},
-        "observation_window_slots": [f"mig+{OBS_FIRST_OFFSET}", f"mig+{OBS_LAST_OFFSET}"],
+        "observation_window_slots": {"tape_rules": [f"mig+{TAPE_FIRST_OFFSET}", f"mig+{TAPE_LAST_OFFSET}"], "drift_rules": f"last print with slot <= mig+{DRIFT_LAST_OFFSET} (executor snapshot, RPC processed)"},
         "n_frozen_trades_without_features": missing,
         "ci": "gate cluster bootstrap, 1000 draws, seed 1 (tools.paper_attention_promote.book_stats)",
         "caveats": [
             "exploration pool, the same 9 days the model was frozen on: best-of-N, winner's curse applies; not a promote, not gate evidence",
-            f"features use PumpSwap prints in slots mig+{OBS_FIRST_OFFSET}..mig+{OBS_LAST_OFFSET} only; whether the live feed delivers mig+{OBS_LAST_OFFSET} before the send is NOT measured here",
+            f"tape rules use slot mig+{TAPE_FIRST_OFFSET} only (confirmed tape lags ~1.8 s, ~4 slots); drift uses the last print with slot <= mig+{DRIFT_LAST_OFFSET} (executor snapshot, RPC processed); the lags are not measured here",
+            "a positive result for the five tape-derived rules is NOT deployable as-is: the live executor would need the processed grad stream or extra RPC to see more than the first post-migration slot",
             "a vetoed entry is assumed to cost nothing (no tx sent); a window with no print gives no veto",
             "the nested number is an UPPER BOUND: stored OOF scores saw the other days, and the rule family was written after the live stop-loss pattern was known",
             "only the ENTRY slot is delayed (k=6); the exit delay stays at the frozen k=1 'start'; the live sell shortfall and entry noise are not added",
@@ -399,7 +410,7 @@ def render_md(rep: Mapping[str, Any]) -> str:
         "",
         f"**{rep['status']}.** N = {rep['n_rules_tried']} rules; cumulative tries on these {rep['n_days']} days: {rep['existing_tries_on_pool']} existing + {rep['n_rules_tried']} new = {rep['cumulative_tries_on_pool']}. CI: {rep['ci']}.",
         "",
-        f"Frozen point: {rep['frozen_point']}. Observation window: PumpSwap prints in slots {rep['observation_window_slots'][0]}..{rep['observation_window_slots'][1]} only.",
+        f"Frozen point: {rep['frozen_point']}. Windows: tape rules {rep['observation_window_slots']['tape_rules']}; drift rules {rep['observation_window_slots']['drift_rules']}.",
         "",
         "Caveats:",
         *[f"- {c}" for c in rep["caveats"]],

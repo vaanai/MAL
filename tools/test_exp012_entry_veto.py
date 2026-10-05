@@ -26,8 +26,8 @@ class FeatureTests(unittest.TestCase):
     def test_window_counts_and_drift(self):
         fills = [P(MIG, "buy", 9, 1.0), P(MIG + 1, "buy", 1, 1.2), P(MIG + 1, "sell", 3, 1.1), P(MIG + 2, "sell", 0.5, 1.4)]
         f = ev.veto_features(fills, MIG, 1.0)
-        self.assertEqual((f["n_buys"], f["n_sells"]), (1, 2))
-        self.assertEqual((f["buy_sol"], f["sell_sol"], f["max_sell"]), (SOL, int(3.5 * SOL), 3 * SOL))
+        self.assertEqual((f["n_buys"], f["n_sells"]), (1, 1))  # the mig+2 sell is outside the tape window
+        self.assertEqual((f["buy_sol"], f["sell_sol"], f["max_sell"]), (SOL, 3 * SOL, 3 * SOL))
         self.assertAlmostEqual(f["drift"], 0.4)
         self.assertTrue(ev.vetoed("drift_gt_25", f))
         self.assertFalse(ev.vetoed("drift_gt_50", f))
@@ -36,24 +36,43 @@ class FeatureTests(unittest.TestCase):
         self.assertFalse(ev.vetoed("maxsell_ge_5sol", f))
         self.assertTrue(ev.vetoed("sells_ge_buys", f))
 
-    def test_later_slots_never_trigger_a_veto(self):
+    def test_print_at_mig_plus_2_does_not_affect_tape_rules(self):
         calm = [P(MIG, "buy", 1, 1.0), P(MIG + 1, "buy", 1, 1.01)]
-        later = calm + [P(MIG + 3, "sell", 50, 3.0), P(MIG + 4, "sell", 50, 0.2), P(MIG + 5, "sell", 50, 9.0)]
+        later = calm + [P(MIG + 2, "sell", 50, 1.01)]
         base = ev.veto_features(calm, MIG, 1.0, [])
-        f = ev.veto_features(later, MIG, 1.0, [MIG + 3, MIG + 5])
-        self.assertEqual({k: v for k, v in f.items()}, {k: v for k, v in base.items()})
+        f = ev.veto_features(later, MIG, 1.0, [MIG + 2])
+        for k in ("n_window", "n_buys", "n_sells", "buy_sol", "sell_sol", "max_sell", "creator_sold"):
+            self.assertEqual(f[k], base[k], k)
+        for r in ("netflow_neg", "maxsell_ge_2sol", "maxsell_ge_5sol", "creator_sold", "sells_ge_buys"):
+            self.assertFalse(ev.vetoed(r, f), r)
+
+    def test_print_at_mig_plus_4_does_not_affect_drift_but_mig_plus_3_does(self):
+        calm = [P(MIG, "buy", 1, 1.0), P(MIG + 1, "buy", 1, 1.01)]
+        f4 = ev.veto_features(calm + [P(MIG + 4, "buy", 1, 3.0), P(MIG + 5, "buy", 1, 9.0)], MIG, 1.0)
+        self.assertAlmostEqual(f4["drift"], 0.01)
+        self.assertFalse(ev.vetoed("drift_gt_25", f4))
+        f3 = ev.veto_features(calm + [P(MIG + 3, "buy", 1, 1.6)], MIG, 1.0)
+        self.assertAlmostEqual(f3["drift"], 0.6)
+        self.assertTrue(ev.vetoed("drift_gt_50", f3))
+        self.assertEqual(f3["n_window"], 1)  # the mig+3 print is not in the tape window
+
+    def test_later_slots_never_trigger_any_veto(self):
+        calm = [P(MIG, "buy", 1, 1.0), P(MIG + 1, "buy", 1, 1.01)]
+        later = calm + [P(MIG + 4, "sell", 50, 3.0), P(MIG + 5, "sell", 50, 9.0)]
+        f = ev.veto_features(later, MIG, 1.0, [MIG + 4, MIG + 5])
+        self.assertEqual(f, ev.veto_features(calm, MIG, 1.0, []))
         for r in ev.RULE_IDS:
             self.assertFalse(ev.vetoed(r, f), r)
 
     def test_prints_at_or_before_the_migration_slot_are_not_read(self):
-        fills = [P(MIG - 1, "sell", 50, 9.0), P(MIG, "sell", 50, 9.0)]
+        fills = [P(MIG - 1, "sell", 50, 9.0), P(MIG, "sell", 50, 1.0)]
         f = ev.veto_features(fills, MIG, 1.0, [MIG])
         self.assertEqual((f["n_window"], f["max_sell"], f["drift"], f["creator_sold"]), (0, 0, 0.0, False))
         for r in ev.RULE_IDS:
             self.assertFalse(ev.vetoed(r, f), r)
 
     def test_bonding_prints_ignored_and_creator_in_window(self):
-        f = ev.veto_features([P(MIG + 1, "sell", 9, 2.0, venue="bonding")], MIG, 1.0, [MIG + 2])
+        f = ev.veto_features([P(MIG + 1, "sell", 9, 2.0, venue="bonding")], MIG, 1.0, [MIG + 1])
         self.assertEqual(f["n_window"], 0)
         self.assertTrue(f["creator_sold"])
         self.assertTrue(ev.vetoed("creator_sold", f))
