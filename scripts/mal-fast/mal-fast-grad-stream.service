@@ -5,13 +5,13 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-# NOT enabled and NOT installed by install-fast-forward-paper.sh. The manager runs the measurement
+# NOT ENABLED and NOT installed by install-fast-forward-paper.sh. No Slice=: it must never share the
+# runner's mal-forward.slice. MemoryMax=300M matches the 6 h MiScusi measurement run. The manager runs the measurement
 # as a MiScusi job instead: timeout 6h python -m tools.fast_grad_stream ...  This unit is the
 # reference for env, hardening and limits. Create /var/lib/mal/fast-grad-stream (owner ubuntu) first:
 # ReadWritePaths= fails on a missing path.
 Type=simple
 User=ubuntu
-Slice=mal-forward.slice
 Nice=10
 WorkingDirectory=/var/lib/mal/fast-forward/src
 Environment=PYTHONUNBUFFERED=1
@@ -34,7 +34,7 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemorySwapMax=0
-MemoryMax=400M
+MemoryMax=300M
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 PrivateDevices=true

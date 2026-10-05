@@ -25,7 +25,7 @@ from tools.migration_stream_probe import hour_of_ms, parse_time_ms, pct
 
 DEFAULT_STREAM = "/var/lib/mal/fast-grad-stream"
 DEFAULT_TIP = "/var/lib/mal/sealed/fast-trades-tip"
-_HOUR_RE = re.compile(r"^[a-z]+-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl$")
+_HOUR_RE = re.compile(r"^[a-z-]+-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl$")
 
 
 def iter_rows(directory: Path, prefix: str, start_ms: int, end_ms: int) -> Iterator[dict[str, Any]]:
@@ -56,8 +56,45 @@ def _first_by_mint(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return out
 
 
+class SlotSet:
+    """Single slots plus inclusive ranges the tip follower did not cover."""
+
+    def __init__(self) -> None:
+        self.slots: set[int] = set()
+        self.ranges: list[tuple[int, int]] = []
+
+    def add_row(self, r: dict[str, Any]) -> None:
+        if isinstance(r.get("slot"), int):
+            self.slots.add(r["slot"])
+        if isinstance(r.get("from_slot"), int) and isinstance(r.get("to_slot"), int):
+            self.ranges.append((r["from_slot"], r["to_slot"]))
+
+    def contains(self, slot: Any) -> bool:
+        return isinstance(slot, int) and (slot in self.slots or any(a <= slot <= b for a, b in self.ranges))
+
+
+def load_skipped(tip_dir: Path, start_ms: int, end_ms: int) -> SlotSet:
+    """skipped-slots-<hour>.jsonl rows {slot,kind:skipped} and gaps.jsonl rows ({slot,kind:gap} or
+    a backlog_jump {from_slot,to_slot}), as written by tools/fast_tip_follower.py."""
+    out = SlotSet()
+    for r in iter_rows(tip_dir, "skipped-slots", start_ms, end_ms):
+        out.add_row(r)
+    gaps = tip_dir / "gaps.jsonl"
+    if gaps.is_file():
+        with open(gaps, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                t = r.get("t_recv_ms")
+                if isinstance(t, int) and start_ms <= t <= end_ms:
+                    out.add_row(r)
+    return out
+
+
 def compare(stream_rows: Iterable[dict[str, Any]], tip_mig: Iterable[dict[str, Any]],
-            tip_trades: Iterable[dict[str, Any]]) -> dict[str, Any]:
+            tip_trades: Iterable[dict[str, Any]], skipped: "SlotSet | None" = None) -> dict[str, Any]:
     stream_rows = list(stream_rows)
     tip_mig = list(tip_mig)
     s_complete = _first_by_mint(r for r in stream_rows if r.get("kind") == "complete")
@@ -81,13 +118,19 @@ def compare(stream_rows: Iterable[dict[str, Any]], tip_mig: Iterable[dict[str, A
     for r in tip_mig:
         if r.get("type") == "complete" and r.get("signature") and r.get("mint"):
             conf["complete"].add((r["mint"], r["signature"]))
-    roll: dict[str, dict[str, Any]] = {}
-    for kind in ("trade", "complete"):
-        seen = {(r["mint"], r["signature"]) for r in stream_rows
-                if r.get("kind") == kind and r.get("mint") and r.get("signature")}
-        missing = len(seen - conf[kind])
-        roll[kind] = {"processed": len(seen), "not_confirmed": missing,
-                      "rate": (missing / len(seen)) if seen else None}
+    def roll_for(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for kind in ("trade", "complete"):
+            seen = {(r["mint"], r["signature"]) for r in rows
+                    if r.get("kind") == kind and r.get("mint") and r.get("signature")}
+            missing = len(seen - conf[kind])
+            out[kind] = {"processed": len(seen), "not_confirmed": missing,
+                         "rate": (missing / len(seen)) if seen else None}
+        return out
+
+    roll = roll_for(stream_rows)
+    kept = [r for r in stream_rows if not (skipped and skipped.contains(r.get("slot")))]
+    roll_excl = roll_for(kept)
     return {
         "n_tip_complete": len(t_complete),
         "n_stream_complete": len(s_complete),
@@ -105,6 +148,8 @@ def compare(stream_rows: Iterable[dict[str, Any]], tip_mig: Iterable[dict[str, A
             "lead_ms_p90": pct(mw_leads, 90),
         },
         "rollback": roll,
+        "rollback_excl_tip_skipped_or_gap_slots": {
+            **roll_excl, "excluded_rows": len(stream_rows) - len(kept)},
     }
 
 
@@ -121,7 +166,7 @@ def compare_dirs(stream_dir: Path, tip_dir: Path, start_ms: int, end_ms: int,
         for r in iter_rows(tip_dir, "trades", start_ms, end_ms + slack_ms)
         if r.get("mint") in mints or r.get("signature") in sigs
     ]
-    return compare(stream, tip_mig, tip_trades)
+    return compare(stream, tip_mig, tip_trades, load_skipped(tip_dir, start_ms, end_ms + slack_ms))
 
 
 def summary_text(res: dict[str, Any]) -> str:
@@ -135,8 +180,12 @@ def summary_text(res: dict[str, Any]) -> str:
         f"lead_ms (tip - stream) p10/p50/p90: {f(lead['p10'])} / {f(lead['p50'])} / {f(lead['p90'])}",
         f"stream complete before tip first PumpSwap trade: {f(bf['share'])} of {bf['n']} "
         f"(lead p50 {f(bf['lead_ms_p50'])} ms)",
-        f"rollback trade {f(rb['trade']['rate'])} of {rb['trade']['processed']}, "
+        f"rollback (all rows) trade {f(rb['trade']['rate'])} of {rb['trade']['processed']}, "
         f"complete {f(rb['complete']['rate'])} of {rb['complete']['processed']}",
+        "rollback excluding tip skipped/gap slots: "
+        f"trade {f(res['rollback_excl_tip_skipped_or_gap_slots']['trade']['rate'])}, "
+        f"complete {f(res['rollback_excl_tip_skipped_or_gap_slots']['complete']['rate'])} "
+        f"({res['rollback_excl_tip_skipped_or_gap_slots']['excluded_rows']} rows excluded)",
     ])
 
 

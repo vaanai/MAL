@@ -66,7 +66,8 @@ DEFAULT_TIP_DIR = "/var/lib/mal/sealed/fast-trades-tip"
 SOURCE = "grad_stream_processed"
 IDLE_MS = 600_000
 MAX_TRACKED = 50_000
-BOOTSTRAP_TAIL_BYTES = 32 * 1024 * 1024
+BOOTSTRAP_TAIL_BYTES = 8 * 1024 * 1024
+MAX_PENDING_SUBS = 3
 CREDITS_PER_100KB = 3  # ASSUMPTION, see module docstring
 _KEY_RE = re.compile(r"(api-key=)[^&\s\"']+", re.I)
 
@@ -175,49 +176,50 @@ class TapeTail:
     def __init__(self, directory: Path, tracker: WatchTracker, tail_bytes: int = BOOTSTRAP_TAIL_BYTES) -> None:
         self.dir, self.tracker, self.tail_bytes = Path(directory), tracker, tail_bytes
         self.offsets: dict[str, int] = {}
+        self.prev_polled: set[str] = set()
         self.rows_read = 0
 
     def _consume(self, path: Path, hour: str) -> None:
+        """Read new complete lines line by line (no whole-buffer copies)."""
         try:
             size = path.stat().st_size
         except OSError:
             return
-        start = self.offsets.get(hour)
+        pos = self.offsets.get(hour)
         skip_partial = False
-        if start is None:
-            start = max(0, size - self.tail_bytes)
-            skip_partial = start > 0
-        elif start > size:
-            start = 0
+        if pos is None:
+            pos = max(0, size - self.tail_bytes)
+            skip_partial = pos > 0
+        elif pos > size:
+            pos = 0
         with open(path, "rb") as fh:
-            fh.seek(start)
-            data = fh.read(size - start)
-        if skip_partial:
-            nl = data.find(b"\n")
-            cut = nl + 1 if nl >= 0 else len(data)
-            start, data = start + cut, data[cut:]
-        end = data.rfind(b"\n")
-        if end < 0:
-            self.offsets[hour] = start
-            return
-        self.offsets[hour] = start + end + 1
-        for line in data[: end + 1].splitlines():
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            self.rows_read += 1
-            self.tracker.feed(row)
+            fh.seek(pos)
+            if skip_partial:
+                pos += len(fh.readline())  # drop the partial first line
+            while True:
+                line = fh.readline()
+                if not line.endswith(b"\n"):
+                    break  # EOF or a half-written last line: leave it for the next poll
+                pos += len(line)
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                self.rows_read += 1
+                self.tracker.feed(row)
+        self.offsets[hour] = pos
 
     def poll(self, now_ms: int) -> None:
         cur = hour_of_ms(now_ms)
         prev = hour_of_ms(now_ms - 3_600_000)
-        if prev not in self.offsets:
+        if prev not in self.prev_polled:
+            # once per hour: bootstrap the tail, or pick up what was written after the rollover
             self._consume(self.dir / f"trades-{prev}.jsonl", prev)
-            self.offsets.setdefault(prev, 0)
+            self.prev_polled.add(prev)
         self._consume(self.dir / f"trades-{cur}.jsonl", cur)
         for h in [h for h in self.offsets if h not in (cur, prev)]:
             del self.offsets[h]
+        self.prev_polled &= {cur, prev}
 
 
 # ---------------------------------------------------------------- subscription
@@ -244,13 +246,15 @@ class Subscriber:
     """One connection, one live subscription. A change opens the new subscription first and
     unsubscribes the old id only once the new one is acked."""
 
-    def __init__(self, ws) -> None:
+    def __init__(self, ws, mono: Callable[[], float] = time.monotonic) -> None:
         self.ws = ws
         self.active_id: int | None = None
         self.active_set: tuple[str, ...] = ()
         self.pending: dict[int, tuple[str, ...]] = {}
+        self.pending_at: dict[int, float] = {}
         self.unsubs: set[int] = set()
         self._req = 0
+        self.mono = mono
 
     def _next(self) -> int:
         self._req += 1
@@ -262,9 +266,18 @@ class Subscriber:
             return
         if self.pending and accounts == self.pending[max(self.pending)]:
             return
+        if len(self.pending) >= MAX_PENDING_SUBS:
+            raise ConnectionError(f"{len(self.pending)} subscribes pending without an ack")
         rid = self._next()
         self.pending[rid] = accounts
+        self.pending_at[rid] = self.mono()
         await self.ws.send(json.dumps(subscribe_request(accounts, rid)))
+
+    def check_stale(self, ack_timeout_s: float) -> None:
+        now = self.mono()
+        for rid, t in self.pending_at.items():
+            if now - t > ack_timeout_s:
+                raise ConnectionError("subscribe ack older than ack_timeout")
 
     async def on_response(self, msg: Mapping[str, Any]) -> bool:
         """True if the frame was a subscribe/unsubscribe response (consumed)."""
@@ -273,9 +286,13 @@ class Subscriber:
             return False
         if rid in self.unsubs:
             self.unsubs.discard(rid)
+            if "error" in msg or msg.get("result") is not True:
+                # the old subscription may still be live and billing: reconnect
+                raise ConnectionError(f"unsubscribe failed: {redact_secrets(str(msg.get('error', msg.get('result'))))[:200]}")
             return True
         if rid in self.pending:
             accounts = self.pending.pop(rid)
+            self.pending_at.pop(rid, None)
             if "error" in msg:
                 raise ConnectionError(f"subscribe error: {redact_secrets(str(msg['error']))[:200]}")
             old = self.active_id
@@ -472,23 +489,22 @@ class Engine:
 
 async def session(ws, eng: Engine, stop: asyncio.Event, data_timeout_s: float = DATA_TIMEOUT_S,
                   ack_timeout_s: float = 30.0, mono: Callable[[], float] = time.monotonic) -> None:
-    sub = Subscriber(ws)
+    sub = Subscriber(ws, mono)
     await sub.request(eng.accounts())
     eng.next_refresh = mono() + eng.refresh_s
-    last_data = sent_at = mono()
+    last_data = mono()
     while not stop.is_set():
         now = mono()
         if now >= eng.next_refresh:
             eng.next_refresh = now + eng.refresh_s
             await sub.request(eng.accounts())
             eng.stats.refreshes += 1
+        sub.check_stale(ack_timeout_s)
         eng.periodic_status(now)
         wait = max(0.05, min(eng.next_refresh - now, 1.0))
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=wait)
         except asyncio.TimeoutError:
-            if sub.active_id is None and mono() - sent_at > ack_timeout_s:
-                raise ConnectionError("no subscribe ack")
             if mono() - last_data > data_timeout_s:
                 raise ConnectionError("data backstop timeout")
             continue

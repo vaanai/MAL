@@ -98,6 +98,23 @@ class WatchSetTests(unittest.TestCase):
             tail.poll(T0 + 10)
             self.assertEqual(tr.select(T0 + 10), ["B", "A"])
 
+    def test_previous_hour_polled_once_after_rollover(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            h0, h1 = g.hour_of_ms(T0), g.hour_of_ms(T0 + 3_600_000)
+            p0 = Path(d) / f"trades-{h0}.jsonl"
+            p0.write_text(json.dumps(trade_row("A", 0.95, T0)) + "\n")
+            tr = g.WatchTracker(idle_ms=10**12)
+            tail = g.TapeTail(Path(d), tr)
+            tail.poll(T0)
+            with open(p0, "a") as fh:
+                fh.write(json.dumps(trade_row("B", 0.96, T0 + 1)) + "\n")
+            tail.poll(T0 + 3_600_000)  # rollover: late rows of the old hour are picked up once
+            self.assertIn("B", tr.state)
+            with open(p0, "a") as fh:
+                fh.write(json.dumps(trade_row("C", 0.96, T0 + 2)) + "\n")
+            tail.poll(T0 + 3_600_001)
+            self.assertNotIn("C", tr.state)
+
     def test_tape_tail_bootstrap_skips_partial_first_line(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             hour = g.hour_of_ms(T0)
@@ -145,6 +162,41 @@ class SubscriberTests(unittest.TestCase):
             self.assertTrue(await s.on_response({"id": ws.sent[-1]["id"], "result": True}))
             self.assertEqual(ws.sent[1]["params"][0]["accountInclude"], ["a", "c"])
             self.assertEqual(ws.sent[1]["params"][1]["commitment"], "processed")
+        asyncio.run(go())
+
+    def test_unsubscribe_false_result_or_error_raises(self) -> None:
+        async def go(reply):
+            ws = FakeWs()
+            s = g.Subscriber(ws)
+            await s.request(["a"])
+            await s.on_response({"id": 1, "result": 11})
+            await s.request(["b"])
+            await s.on_response({"id": 2, "result": 12})
+            uid = ws.sent[-1]["id"]
+            await s.on_response({"id": uid, **reply})
+        for reply in ({"result": False}, {"error": {"code": -32602, "message": "bad"}}):
+            with self.assertRaises(ConnectionError):
+                asyncio.run(go(reply))
+
+    def test_too_many_pending_or_stale_ack_raises(self) -> None:
+        async def go():
+            now = [0.0]
+            ws = FakeWs()
+            s = g.Subscriber(ws, lambda: now[0])
+            await s.request(["a"])
+            await s.on_response({"id": 1, "result": 11})  # active_id is set
+            await s.request(["b"])
+            now[0] = 5.0
+            s.check_stale(30.0)  # young: fine
+            now[0] = 40.0
+            with self.assertRaises(ConnectionError):
+                s.check_stale(30.0)
+            s.pending.clear()
+            s.pending_at.clear()
+            for x in "cde"[: g.MAX_PENDING_SUBS]:
+                await s.request([x])
+            with self.assertRaises(ConnectionError):
+                await s.request(["z"])
         asyncio.run(go())
 
     def test_notification_is_not_a_response(self) -> None:
@@ -294,6 +346,30 @@ class CompareTests(unittest.TestCase):
         # C and D completes were never confirmed on the tip tape; A and B were
         self.assertEqual(r["rollback"]["complete"]["not_confirmed"], 2)
         self.assertIn("coverage", c.summary_text(r))
+
+    def test_rollback_excluding_skipped_and_gap_slots(self) -> None:
+        stream = [_s("trade", "A", 10, "ok", slot=1), _s("trade", "A", 11, "g1", slot=50),
+                  _s("trade", "A", 12, "g2", slot=120), _s("trade", "A", 13, "g3", slot=7)]
+        tip_trades = [{"venue": "pump_bonding", "mint": "A", "t_recv_ms": 20, "signature": "ok"}]
+        sk = c.SlotSet()
+        sk.add_row({"slot": 50, "kind": "skipped"})
+        sk.add_row({"kind": "gap", "reason": "backlog_jump", "from_slot": 100, "to_slot": 130})
+        r = c.compare(stream, [], tip_trades, sk)
+        self.assertEqual(r["rollback"]["trade"]["rate"], 0.75)
+        ex = r["rollback_excl_tip_skipped_or_gap_slots"]
+        self.assertEqual(ex["excluded_rows"], 2)
+        self.assertEqual(ex["trade"], {"processed": 2, "not_confirmed": 1, "rate": 0.5})
+
+    def test_load_skipped_from_follower_files(self) -> None:
+        h = g.hour_of_ms(T0)
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / f"skipped-slots-{h}.jsonl").write_text(
+                json.dumps({"slot": 5, "kind": "skipped", "t_recv_ms": T0 + 1}) + "\n")
+            (Path(d) / "gaps.jsonl").write_text(
+                json.dumps({"kind": "gap", "reason": "backlog_jump", "from_slot": 10, "to_slot": 20,
+                            "t_recv_ms": T0 + 2}) + "\n")
+            sk = c.load_skipped(Path(d), T0, T0 + 1000)
+        self.assertTrue(sk.contains(5) and sk.contains(15) and not sk.contains(6))
 
     def test_empty(self) -> None:
         r = c.compare([], [], [])
