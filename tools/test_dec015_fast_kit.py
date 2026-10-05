@@ -140,7 +140,7 @@ def test_tip_follower_unit_and_installer():
     assert "api-key" not in unit.lower() and "HELIUS_API_KEY=" not in unit
     inst = (KIT / "install-fast-forward-paper.sh").read_text()
     assert 'TIP_UNIT="mal-fast-tip-follower.service"' in inst
-    assert '"${TIP_UNIT}"; do' in inst
+    assert '"${TIP_UNIT}" "${PROBE_UNIT}"; do' in inst
     cfg = json.loads(CFG.read_text())
     assert cfg["tape_dir"] == "/var/lib/mal/sealed/fast-trades-tip"  # switched: pumpswap_virtual=require needs the tip tape
 
@@ -454,3 +454,18 @@ def test_systemd_analyze_syntax(name):
     # Paths and the ubuntu user do not exist on this host. Only syntax problems count.
     bad = re.compile(r"Unknown (key|section)|Failed to parse|Invalid|Unknown lvalue|Assignment outside", re.I)
     assert not [ln for ln in out.splitlines() if bad.search(ln)], out
+
+
+def test_installer_probe_dryrun_only():
+    """DEC-019: the installer ships the dry-run executor unit and its configs, never the live drop-in."""
+    inst = (KIT / "install-fast-forward-paper.sh").read_text()
+    assert 'PROBE_UNIT="mal-probe-executor.service"' in inst
+    assert '"${TIP_UNIT}" "${PROBE_UNIT}"; do' in inst
+    assert "scripts/mal-fast/probe-executor.json scripts/mal-fast/probe-executor-live.json" in inst
+    code = "\n".join(l for l in inst.splitlines() if not l.lstrip().startswith("#"))
+    assert "service.d" not in code and "LoadCredential" not in code and "live.conf" not in code
+    assert "enable" not in "\n".join(l for l in inst.splitlines() if "PROBE" in l)
+    unit = (KIT / "mal-probe-executor.service").read_text()
+    assert "LoadCredential" not in unit
+    assert "--config /var/lib/mal/fast-forward/src/scripts/mal-fast/probe-executor.json" in unit
+    assert json.loads((KIT / "probe-executor.json").read_text())["mode"] == "dryrun"
