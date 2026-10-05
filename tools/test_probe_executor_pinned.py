@@ -205,7 +205,10 @@ def _run_installer(tmp_path, *args, fake_root=True, tamper=None, mode="755"):
     files = closure_files() + [e.split(":")[0] for e in installer_var("EXTRA").split()] + [BASE_UNIT, CHECKER]
     for f in files:
         shutil.copy(ROOT / f, clone / f)
-    shutil.copy(INSTALL, clone / "scripts/mal-fast/install-probe-executor-pinned.sh")
+    # The shipped script calls /usr/bin/stat by absolute path (PATH-proof). A non-root test cannot fake that, so the
+    # copy under test uses plain `stat` (the PATH fake below); that token is the only difference.
+    script = clone / "scripts/mal-fast/install-probe-executor-pinned.sh"
+    script.write_text(INSTALL.read_text().replace("/usr/bin/stat", "stat"))
     shutil.copy(CHECK, clone / "scripts/mal-fast/check-probe-exec-tree.sh")
     g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(clone)]
     subprocess.run([*g, "init", "-q"], check=True)
@@ -422,9 +425,20 @@ def test_installer_moves_all_guarded_by_rollback():
             assert "|| rollback" in ln, ln
             n += 1
     assert n == 5
-    assert tail.index("OLD_MOVED=1") < tail.index('mv -T "$VENV_NEW" "$DEST/venv"')
-    # a failed first mv must not delete the previous venv: venv is removed only once the new one was placed
-    assert 'if [ "$NEW_PLACED" -eq 1 ]; then rm -rf "$DEST/venv"' in t
+    # flags are set BEFORE their mv (a signal in the gap must roll back) ...
+    assert tail.index("OLD_MOVED=1") < tail.index('mv -T "$DEST/venv" "$DEST/venv.old"')
+    assert tail.index("NEW_PLACED=1") < tail.index('mv -T "$VENV_NEW" "$DEST/venv"')
+    # ... so rollback tests existence first: the new venv counts as moved only if venv.$COMMIT.new is gone, and the
+    # previous venv is restored only if venv.old exists and venv does not
+    assert 'if [ "$NEW_PLACED" -eq 1 ] && [ ! -e "$DEST/venv.$COMMIT.new" ]; then NEW_VENV_MOVED=1; fi' in t
+    assert 'if [ "$NEW_VENV_MOVED" -eq 1 ] && [ -e "$DEST/venv" ]; then rm -rf "$DEST/venv"' in t
+    assert 'if [ "$OLD_MOVED" -eq 1 ] && [ -e "$DEST/venv.old" ] && [ ! -e "$DEST/venv" ]' in t
+    assert t.index("NEW_VENV_MOVED=0") < t.index('rm -rf "$DEST/$COMMIT" "$DEST/venv.$COMMIT"')
+
+
+def test_installer_uses_absolute_stat():
+    t = INSTALL.read_text()
+    assert t.count("/usr/bin/stat -c") == 4 and not re.search(r"(?<![/\w])stat -c", t)
 
 
 def test_check_test_mode_refused_as_root():
