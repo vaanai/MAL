@@ -627,7 +627,7 @@ class LiveExecutor(pe.Executor):
             self._sell_failed(pos)
             self.save()
             return
-        chk = pe.exit_check({**pos, "tokens": bal}, snap, now)
+        chk = pe.exit_check({**pos, "tokens": bal}, snap, now, own_trade_in_state=True)
         if not chk["quote_out"] or chk["quote_out"] <= 0:
             return
         min_out = tx.min_out_with_slippage(chk["quote_out"], self.slip_bps)
@@ -690,7 +690,7 @@ class LiveExecutor(pe.Executor):
                     pos["unpriced_alert_ms"] = now
                     self._alert("unpriced_position", mint, held_ms=now - pos["t_entry_ms"])
                 continue
-            reason = pos.get("exit_reason") or pe.exit_check(pos, snap, now)["reason"]
+            reason = pos.get("exit_reason") or pe.exit_check(pos, snap, now, own_trade_in_state=True)["reason"]
             if reason:
                 with self._exit_prio():
                     self._start_sell(mint, pos, snap, reason, now, kind)
