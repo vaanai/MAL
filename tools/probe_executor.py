@@ -397,15 +397,26 @@ def entry_quote(snap: Snapshot, spend: int) -> dict[str, Any]:
     return {"tokens": tokens, "net_in": net, "fee_ppm": fee, "mark": mark}
 
 
-def exit_check(pos: dict[str, Any], snap: Snapshot, now_ms: int) -> dict[str, Any]:
-    """Paper rule `_walk_exit` (tools/paper_tape_scoreboard.py) on a V-priced book: spot of the
+def exit_check(pos: dict[str, Any], snap: Snapshot, now_ms: int, *, own_trade_in_state: bool = False) -> dict[str, Any]:
+    """own_trade_in_state=True (LIVE: our buy landed, so the RPC pool/vault state already holds it): spot, ret and
+    the sell quote use the raw snapshot reserves and our tokens are only the sell. The mark is unchanged (it is the
+    spot right after our buy, which is what the real state is right after the landing, so ret ~ 0 at entry).
+    False (dry run / paper: our buy never happened, the state lacks it): our buy is added to the book below.
+
+    Paper rule `_walk_exit` (tools/paper_tape_scoreboard.py) on a V-priced book: spot of the
     pool plus our virtual buy against the post-buy mark; tp/sl on that return; time stop at
     MAX_HOLD_MS after entry. Returns {"reason": tp|sl|time_stop|None, ret, quote_out}."""
     q = snap.quote_priced
-    book = pcm.reserves_with_our_buy(
-        quote_lamports=q or 0, base_raw=snap.base_reserve,
-        net_in_lamports=pos["net_in"], tokens_raw=pos["tokens"], same_venue=True,
-    ) if q else None
+    # ASSUMPTION (own_trade_in_state=True): the snapshot contains our buy whenever exit_commitment is at least as fresh
+    # as the commitment the buy confirmed at. True for processed or confirmed; NOT for finalized (the executor
+    # refuses to start live with exit_commitment == "finalized").
+    if own_trade_in_state:
+        book = (q, snap.base_reserve) if q and q > 0 and snap.base_reserve > 0 else None
+    else:
+        book = pcm.reserves_with_our_buy(
+            quote_lamports=q or 0, base_raw=snap.base_reserve,
+            net_in_lamports=pos["net_in"], tokens_raw=pos["tokens"], same_venue=True,
+        ) if q else None
     if book is None:
         return {"reason": "time_stop" if now_ms > pos["t_entry_ms"] + EXIT_RULE.max_hold_ms else None, "ret": None, "quote_out": None}
     spot = pcm.spot_sol_per_ui(*book)
@@ -737,6 +748,9 @@ class Executor:
         self.fast_exit = "exit_poll_ms" in cfg  # the exit fast path (batched vault read, buy-meta sell amount, priority) is opt-in
         self.exit_poll_ms = clamp_exit_poll_ms(cfg.get("exit_poll_ms"), self.poll_ms)
         self.exit_commitment = cfg.get("exit_commitment") or self.commitment  # exit snapshot + sell quote only
+        if self.mode == "live" and self.exit_commitment == "finalized":
+            # exit_check(own_trade_in_state=True) assumes the snapshot already holds our landed buy.
+            raise SystemExit("live refused: exit_commitment 'finalized' can lag the buy's commitment, so the exit snapshot may not hold our buy")
         self.static = StaticCache()
         self._pool_cache: dict[str, tuple[tx.PoolState, int | None, int]] = {}  # mint -> (pool state, V, parsed at ms)
         self._crit = 0
@@ -930,7 +944,7 @@ class Executor:
                     continue
                 chk = {"reason": "timeout_unpriced", "ret": None, "quote_out": None}
             else:
-                chk = exit_check(pos, snap, now)
+                chk = exit_check(pos, snap, now, own_trade_in_state=self.mode == "live")
             if chk["reason"]:
                 self._close(mint, pos, snap, chk, now, kind)
 

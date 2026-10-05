@@ -1156,5 +1156,57 @@ class LatencyWhitelistTests(unittest.TestCase):
         self.assertNotIn("latency", pe.parse_enter(json.dumps(row), pe.DEFAULT_BOOK, "ceiling"))
 
 
+class OwnTradeInStateTests(unittest.TestCase):
+    """LIVE: the RPC state already holds our landed buy, so exit_check must not add it again."""
+
+    def setUp(self):
+        self.pre = pe.Snapshot(None, 1, Q0, BASE0, V)  # type: ignore[arg-type]
+        q = pe.entry_quote(self.pre, 50_000_000)
+        self.pos = {"t_entry_ms": T0, "tokens": q["tokens"], "net_in": q["net_in"], "mark": q["mark"], "spend": 50_000_000}
+        # the real state right after our buy landed: pre-buy book plus net_in, minus our tokens
+        self.real = pe.Snapshot(None, 2, Q0 + q["net_in"], BASE0 - q["tokens"], V)  # type: ignore[arg-type]
+
+    def test_ret_is_zero_right_after_landing_and_double_count_is_not(self):
+        live = pe.exit_check(self.pos, self.real, T0 + 1, own_trade_in_state=True)
+        old = pe.exit_check(self.pos, self.real, T0 + 1)  # pre-fix live behaviour: buy added twice
+        self.assertAlmostEqual(live["ret"], 0.0, places=9)
+        self.assertAlmostEqual(old["ret"], 0.0011278, places=6)  # ~0.11 pp overstatement (measured live: 0.0010595 mean, n=19)
+        self.assertGreater(old["ret"] - live["ret"], 0.001)
+
+    def test_live_ret_matches_probe_sim_calibration_correct_book(self):
+        from tools import probe_sim_calibration as psc
+        row = {"slot": 2, "quote_reserve": Q0 + self.pos["net_in"] + 3 * 10**9, "base_reserve": self.real.base_reserve, "virtual_quote_reserve": V}
+        snap = psc.snap_of(row)
+        want = psc.eval_book(self.pos, row, "correct")
+        got = pe.exit_check(self.pos, snap, T0 + 1, own_trade_in_state=True)
+        self.assertEqual(got["ret"], want["ret"])
+        self.assertEqual(got["quote_out"], want["out"])
+
+    def test_sell_quote_is_our_tokens_into_real_reserves(self):
+        got = pe.exit_check(self.pos, self.real, T0 + 1, own_trade_in_state=True)
+        q, b = self.real.quote_priced, self.real.base_reserve
+        self.assertEqual(got["quote_out"], tx.cp_sell_out(self.pos["tokens"], q, b, pe.fee_ppm_for(q, b)))
+
+    def test_dry_run_keeps_adding_our_buy(self):
+        a = pe.exit_check(self.pos, self.pre, T0 + 1)
+        b = pe.exit_check(self.pos, self.pre, T0 + 1, own_trade_in_state=False)
+        self.assertEqual(a, b)
+        self.assertAlmostEqual(a["ret"], 0.0, places=9)
+
+    def test_tp_threshold_moves_with_real_state(self):
+        # price just under tp on the real book: live does not fire, the double count fires
+        q = self.real.quote_priced
+        lo, hi = 0, 10 * q
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if pe.exit_check(self.pos, pe.Snapshot(None, 2, mid - V, self.real.base_reserve, V), T0 + 1, own_trade_in_state=True)["ret"] >= pe.EXIT_RULE.tp:
+                hi = mid
+            else:
+                lo = mid
+        just_under = pe.Snapshot(None, 2, lo - V, self.real.base_reserve, V)  # type: ignore[arg-type]
+        self.assertIsNone(pe.exit_check(self.pos, just_under, T0 + 1, own_trade_in_state=True)["reason"])
+        self.assertEqual(pe.exit_check(self.pos, just_under, T0 + 1)["reason"], "tp")
+
+
 if __name__ == "__main__":
     unittest.main()

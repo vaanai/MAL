@@ -177,7 +177,7 @@ def sim_buy(row: dict[str, Any], spend: int) -> dict[str, Any] | None:
     return q if q["tokens"] > 0 else None
 
 
-BOOKS = ("executor", "correct")  # executor-identical (adds our buy again) vs raw tape book (our buy already in the tape)
+BOOKS = ("executor", "correct")  # "executor" = legacy double-count (pre-#324 executor); key kept so old JSON stays readable; executor-identical (adds our buy again) vs raw tape book (our buy already in the tape)
 POSITIONS = ("sim", "live")  # position from the simulated entry vs from the LIVE fill
 VARIANTS = tuple(f"{p}_{b}" for p in POSITIONS for b in BOOKS)
 
@@ -457,7 +457,7 @@ def to_markdown(results: list[dict[str, Any]], agg: dict[str, Any]) -> str:
               f"- trigger time diff ms (sim - live send): {a['trigger_time_diff_ms']}",
               f"- pnl gap lamports (live - sim; delay and fees are live-derived inputs): {a['pnl_gap_lamports_live_minus_sim']}",
               f"- live pnl {a['live_pnl_lamports']}; sim pnl {a['sim_pnl_lamports']}",
-              f"- ret diff, executor-identical minus correct book, at the live trigger row (double count): "
+              f"- ret diff, legacy double-count (pre-#324 executor) minus correct book, at the live trigger row (double count): "
               f"{a['ret_diff_executor_minus_correct_at_live_trigger']}",
               f"- ATA rent charged minus refunded: {a['ata_rent_net_lamports']}",
               f"- sensitivity (sim pnl lamports): {a['sensitivity_sim_pnl_lamports']}", "",
