@@ -587,7 +587,8 @@ class LiveExecutor(pe.Executor):
         else:
             self.state.open[mint] = {
                 "mint": mint, "pool": p["pool"], "t_entry_ms": self.now_ms(), "tokens": tokens, "net_in": p["q_net_in"],
-                "mark": p["q_mark"], "spend": p["spend"], "buy_cost_lamports": cost, "buy_sig": p["signature"],
+                "mark": p["q_mark"], "mark_send": p["q_mark"], "mark_pending": True, "mark_source": None,
+                "spend": p["spend"], "buy_cost_lamports": cost, "buy_sig": p["signature"],
                 "base_ata": p["base_ata"], "base_mint": p["base_mint"], "base_tp": p["base_tp"], "sell_attempts": 0,
                 "ata_pre_amount": m.get("ata_pre_amount"), "extra_cost": 0, "stuck": False, "abandoned": False, "exit_reason": None, "balance_pending": balance_pending, "q_tokens": p["q_tokens"], "buy_slot": m["slot"],
             }
@@ -684,6 +685,8 @@ class LiveExecutor(pe.Executor):
                 if now - pos.get("last_sell_fail_ms", 0) < wait:
                     continue
             snap, _pool, _err, kind = self._exit_snapshot(mint, batched)
+            if pe.rebase_mark(pos, snap, now):  # once; a late or unpriced snapshot is handled inside
+                self.save()
             if snap is None or snap.quote_priced is None:
                 # Never sell blind (no min_out) and never price on the vault alone: keep retrying.
                 if now - pos.get("unpriced_alert_ms", 0) >= 60_000:
@@ -705,6 +708,7 @@ class LiveExecutor(pe.Executor):
             min_sol_out_lamports=p["min_out"], landed_slot=m["slot"], fee_lamports=m["fee"], base_fee_lamports=base_fee,
             priority_fee_lamports=prio_fee, priority_lamports=self.limits.priority_lamports, hold_ms=self.now_ms() - pos["t_entry_ms"], **self._timing(p),
             **{k: p[k] for k in ("exit_poll_ms", "exit_commitment", "exit_snapshot", "balance_source") if k in p},
+            **{k: pos[k] for k in ("mark_send", "mark", "mark_source", "mark_shift_bps") if k in pos},
         )
         if m["err"] is not None:
             pos["extra_cost"] += -m["sol_delta"]
