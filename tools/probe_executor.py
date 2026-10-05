@@ -440,6 +440,38 @@ def startup_signals_check(cfg: dict[str, Any], live: bool) -> int:
     return 0
 
 
+RPC_ENV_DIR = "/etc/mal-probe-rpc"  # root-only dir holding the key holder's helius.env (module constant; tests monkeypatch it)
+
+
+def rpc_env_problem() -> str | None:
+    """The key holder's EnvironmentFile lives in a root:root 0700 dir. mal-live can stat the DIR but not the file inside
+    (the dir is 0700), so the file's owner/mode is checked by the root ExecStartPre in the unit; here only the dir."""
+    d = RPC_ENV_DIR
+    try:
+        st = os.stat(d)
+    except OSError as exc:
+        return f"rpc_env {d} not stat-able ({type(exc).__name__})"
+    import stat as _stat
+
+    if not _stat.S_ISDIR(st.st_mode):
+        return f"rpc_env {d} is not a directory"
+    if st.st_uid != 0 or st.st_gid != 0 or _stat.S_IMODE(st.st_mode) != 0o700:
+        return f"rpc_env {d} must be a directory owned by uid 0 gid 0 with mode 0700 (is {st.st_uid}:{st.st_gid} {_stat.S_IMODE(st.st_mode):04o})"
+    return None
+
+
+def startup_rpc_env_check(live: bool) -> int:
+    """Live: refuse (exit 2) BEFORE the key is loaded. Dry run: warning only."""
+    why = rpc_env_problem()
+    if why is None:
+        return 0
+    if live:
+        print(f"probe_executor ALERT startup_refused {why}", flush=True)
+        return 2
+    print(f"probe_executor WARNING {why}", flush=True)
+    return 0
+
+
 ABSENT_ALERT_EVERY_MS = 60_000
 
 
@@ -466,6 +498,8 @@ def parse_intent(line: str, book: str, ledger: str) -> dict[str, Any] | None:
     if not isinstance(w, int) or isinstance(w, bool):
         return None
     sig["written_ms"] = w
+    if row.get("runner_kill") is True:  # absent (old runner) or false: unchanged behaviour
+        sig["runner_kill"] = True
     return sig
 
 
@@ -799,6 +833,8 @@ class Executor:
     # -- entry
     def handle_signal(self, sig: dict[str, Any]) -> None:
         now = self.now_ms()
+        if sig.get("runner_kill") is True:  # the paper runner's KILL file existed when this intent was written
+            return self._skip(sig, "runner_kill")
         why = check_buy(self.limits, self.state, now, check_stop_file(self.limits), self.mode, check_halt_file(self.limits))
         if why:
             return self._skip(sig, f"limit:{why}")
@@ -1125,7 +1161,7 @@ def main(argv: list[str] | None = None) -> int:
     if warn:
         print(f"probe_executor WARNING {warn}", flush=True)
     poll_s = max(1.0, float(cfg.get("poll_s", 5.0)))
-    rc = startup_signals_check(cfg, mode == "live")
+    rc = startup_rpc_env_check(mode == "live") or startup_signals_check(cfg, mode == "live")
     if rc:
         return rc
     if mode == "live":

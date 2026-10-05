@@ -53,8 +53,11 @@ Switch (Helm or the owner, as root, from a fresh root-owned clone detached at th
 # 1. wind down: STOP file, wait for 0 open and pending positions (--status, section 4), then stop the unit
 sudo touch /var/lib/mal-live/STOP
 sudo systemctl stop mal-probe-executor
-# 2. install (refuses if the unit is active, a clone dir is not root-owned, HEAD != sha, or a manifest entry mismatches)
-sudo scripts/mal-fast/install-probe-executor-pinned.sh <40-char-sha> [manifest]   # prints sha256 of every installed file; compare with the manager's list
+# 1b. BEFORE the install (Helm, once): the root-only key dir. The installer refuses without it.
+sudo install -d -m 0700 -o root -g root /etc/mal-probe-rpc
+#     create /etc/mal-probe-rpc/helius.env as root:root 0600 with ONLY the HELIUS_API_KEY= line (key never printed)
+# 2. install (refuses without the manifest argument, if /etc/mal-probe-rpc is not root:root 0700 with a root:root 0600 helius.env, if the unit is active, a clone dir is not root-owned, HEAD != sha, or a manifest entry mismatches)
+sudo scripts/mal-fast/install-probe-executor-pinned.sh <40-char-sha> <manifest>   # prints sha256 of every installed file; compare with the manager's list
 # 3. swap the drop-in, reload, remove STOP, start
 sudo install -D -m 0644 scripts/mal-fast/mal-probe-executor-live-pinned.conf /etc/systemd/system/mal-probe-executor.service.d/live.conf
 sudo systemctl daemon-reload
@@ -63,6 +66,8 @@ sudo systemctl start mal-probe-executor
 journalctl -u mal-probe-executor -n 20 --no-pager   # expect: mode=LIVE user=<public key>
 systemctl show mal-probe-executor -p ExecStart --value | grep -c fast-forward   # expect 0
 ```
+
+The installer also writes the base unit `/etc/systemd/system/mal-probe-executor.service` (from the manifest-checked blob, staged as `.new` and moved into place with `daemon-reload` BEFORE the `current` pointer switch); it refuses any unit that is not identical (allowlist) to the intended one.
 
 The unit must be stopped for the install because the venv is replaced. The new venv is built as `venv.<sha>.new` and swapped in only after the pip install and a smoke import both succeed, so a failed install leaves the old venv (and a rollback to an older pinned sha) intact; a failed run also removes its staging dirs. A restart with open positions resumes pending signatures without re-buying, but do the swap at 0 open positions.
 
@@ -79,7 +84,7 @@ sudo sed -e "s#\"state_dir\": *\"[^\"]*\"#\"state_dir\": \"$D\"#" \
          -e "s#\"stop_file\": *\"[^\"]*\"#\"stop_file\": \"$D/STOP\"#" \
          scripts/mal-fast/probe-executor.json | sudo -u mal-live tee "$D/dry.json" >/dev/null
 sudo systemd-run --wait --collect --pipe -p RuntimeMaxSec=90 -p User=mal-live -p NoNewPrivileges=yes -p ProtectSystem=strict -p ReadWritePaths="$D" \
-  -p EnvironmentFile=/var/lib/mal/fast-listener/helius.env \
+  -p EnvironmentFile=/etc/mal-probe-rpc/helius.env \
   /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config "$D/dry.json"
 sudo rm -rf "$D"
 ```
@@ -96,9 +101,9 @@ Status in pinned mode (local files only, no key; run as root or `mal-live`):
 sudo /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config /usr/local/lib/mal-probe-exec/current/probe-executor-live.json --status
 ```
 
-Helm confirms once, before live: `/var/lib/mal/fast-listener/helius.env` is root-owned, mode 0600, and contains only the Helius key line (`HELIUS_API_KEY=...`). systemd loads it as an `EnvironmentFile`, so any other line (for example `LD_PRELOAD`) would be injected into the key-holding process.
+Helm provisions once, before live: `/etc/mal-probe-rpc` (`root:root`, mode 0700) holding `helius.env` (`root:root`, mode 0600, only the `HELIUS_API_KEY=...` line). The base unit loads that file as its `EnvironmentFile`, never `/var/lib/mal/fast-listener/helius.env`, because that one is `ubuntu:ubuntu` and the paper side must keep writing it: systemd reads an `EnvironmentFile` as root, so any ubuntu-writable file there could inject `LD_PRELOAD` or other variables into the key-holding process. Two checks keep it that way. A root-run inline `ExecStartPre=+/usr/bin/env -i /bin/sh -c ...` (no file-based code; `env -i` and absolute paths because `EnvironmentFile` also applies to the `+` command, so a `PATH=` or `LD_PRELOAD=` in that file could otherwise redirect `stat`; `+` lifts the unit's sandbox for that one command, so `SystemCallFilter`, the empty `CapabilityBoundingSet=` and `NoNewPrivileges` do not apply to it) tests the dir is `0:0:700` and the file `0:0:600`. The executor itself refuses live start with `ALERT startup_refused rpc_env ...` (exit 2) before loading the key if `/etc/mal-probe-rpc` is not a root:root 0700 directory (it can stat the dir but not the 0700 file inside, hence the root check for the file); in dry-run it only warns. Live also refuses with `ALERT startup_refused rpc_key_missing` (exit 2, before the wallet key loads) if `HELIUS_API_KEY` is not in the environment, and in live mode no env-file fallback is ever read (dry-run keeps the old fallback).
 
-`install-fast-forward-paper.sh` refuses to run (every mode except `--dry-run`) while a NON-pinned live drop-in (`live.conf` whose ExecStart runs `${FWD}/src`) exists, so a routine reinstall cannot swap code under a live key-holder. A pinned drop-in (`live-pinned.conf`, or the pinned conf installed as `live.conf`: its ExecStart runs `/usr/local/lib/mal-probe-exec/current/launcher.py`) does not block the runner reinstall; the installer prints a note, because the pinned code and config are root-owned and change only through `install-probe-executor-pinned.sh`. Note the base unit's signals bind (`intents.jsonl`) and the pinned `probe-executor-live.json` (`signals_file`) must change together: re-pin after this change.
+`install-fast-forward-paper.sh` refuses to run (every mode except `--dry-run`) while a NON-pinned live drop-in (`live.conf` whose ExecStart runs `${FWD}/src`) exists, so a routine reinstall cannot swap code or units under a live key-holder. A pinned drop-in (`live-pinned.conf`, or the pinned conf installed as `live.conf`: its ExecStart runs `/usr/local/lib/mal-probe-exec/current/launcher.py`) does not block the runner reinstall; the installer prints a note, because the pinned code and config are root-owned and change only through `install-probe-executor-pinned.sh`. The pinned drop-in inherits `User=`, `Environment=`, `EnvironmentFile=` and all hardening from the base unit, so base-unit changes for the probe go only through `install-probe-executor-pinned.sh` (from a root clone, with the MANDATORY manifest, which includes `scripts/mal-fast/mal-probe-executor.service` and `scripts/mal-fast/check-probe-base-unit.py`) and a Helm restart. The installer refuses without a manifest. It runs the manifest-verified allowlist checker on the unit text (the unit must equal the intended unit line for line) before moving anything, installs the unit (staged as `.new`, previous kept as `.old`, `daemon-reload`) BEFORE switching `current`, and rollback restores the previous unit. INT, TERM and HUP between the point of no return and the pointer switch run the same rollback (the traps are cleared right after the pointer switch; after that nothing is half done). A SIGKILL or power loss cannot be trapped: if it happens, check `current`, the `.old`/`.new` unit files and `venv.old` by hand, as the "rollback FAILED" message lists. The drop-in scan covers every drop-in dir name systemd merges for the unit (`mal-probe-executor.service.d`, `mal-probe-executor-.service.d`, `mal-probe-.service.d`, `mal-.service.d`, top-level `service.d`) under system.control, transient, `/etc`, `/run`, `/usr/local/lib`, `/usr/lib`, `/lib` and the generator dirs; documented gap: a drop-in reachable only through a unit alias or another unit that pulls this one in is not scanned (the installer cannot see it); verdict `none` means none of them sets `LoadCredential` or an `ExecStart` (the key only arrives via `LoadCredential`). While the pinned drop-in is present the paper installer skips `mal-probe-executor.service` and prints a NOTE if the installed file differs from the repo copy. Note the base unit's signals bind (`intents.jsonl`) and the pinned `probe-executor-live.json` (`signals_file`) must change together: re-pin after this change.
 
 State, fill log, STOP/HALT, the credential and the signals bind are unchanged from the base unit. The dry-run unit still uses the agent-deployed path (it holds no key).
 
@@ -117,6 +122,7 @@ With `signals_file: intents.jsonl` the live executor acts on every CEILING-ledge
 
 ## 3. Stop
 
+- Paper runner KILL file: NOT a reliable stop for live. The runner checks KILL before it writes an intent, so a KILL present at decision time already means no intent. `runner_kill: true` in an intent row (the executor refuses it with reason `runner_kill`) covers ONLY the race between the runner's risk check and the intent write. A KILL touched while an earlier intent is in flight does not reach the executor. The executor cannot see the KILL file itself (its unit hides the runner dir except `intents.jsonl`), so `/var/lib/mal-live/STOP` is the real stop: touch it to stop live buys.
 - STOP: `sudo touch /var/lib/mal-live/STOP`. No new buys. Exits, sells and rebroadcasts of in-flight txs KEEP running, so positions do not strand. Normal way to wind the probe down.
 - HALT (emergency): `sudo touch /var/lib/mal-live/HALT`. Freezes everything: no buys, no sells, no rebroadcasts (status polling only). Open positions stay open until the file is removed. Use only if something is wrong with the executor or the wallet.
 - Hard: `sudo systemctl stop mal-probe-executor`. A restart resumes any pending signature without re-buying.

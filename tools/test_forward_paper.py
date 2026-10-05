@@ -1841,8 +1841,9 @@ class IntentsFileTests(unittest.TestCase):
             self.assertTrue({r["book"] for r in rows} <= {"migrate_hold_30s", "migrate_tp50_sl30"})
             for r in rows:
                 self.assertEqual(
-                    set(r), {"schema", "book", "ledger", "mint", "creator", "decision_t_ms", "written_ms", "trigger", "score"}
+                    set(r), {"schema", "book", "ledger", "mint", "creator", "decision_t_ms", "written_ms", "trigger", "score", "runner_kill"}
                 )
+                self.assertIs(r["runner_kill"], False)
                 self.assertIsInstance(r["written_ms"], int)
             decs = [json.loads(x) for x in dec_b.decode().splitlines()]
             for r in rows:
@@ -1852,6 +1853,32 @@ class IntentsFileTests(unittest.TestCase):
                         for x in decs
                     )
                 )
+
+    def test_intent_rows_carry_runner_kill_when_kill_file_exists(self) -> None:
+        """KILL present at decision time already blocks the intent (risk check runs first). The field covers the
+        window where KILL appears between that check and the intent write: simulate it by touching KILL there."""
+        from tools.forward_paper import ForwardEngine
+
+        orig = ForwardEngine._risk_reason
+
+        def risk_then_kill(self, run, mint, creator, t_ms, size, *, ledger=None, capped=True):  # type: ignore[no-untyped-def]
+            out = orig(self, run, mint, creator, t_ms, size, ledger=ledger, capped=capped)
+            if capped and run.spec.kind == "migrate":
+                self.kill_file.write_text("x")
+            return out
+
+        ForwardEngine._risk_reason = risk_then_kill  # type: ignore[method-assign]
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                dec_b, pos_b, path = self._run(Path(d), True)
+                rows = [json.loads(x) for x in path.read_text().splitlines()]
+        finally:
+            ForwardEngine._risk_reason = orig  # type: ignore[method-assign]
+        self.assertTrue(rows)
+        self.assertEqual({r["runner_kill"] for r in rows}, {True})
+        # the field is on the intents row only
+        for line in dec_b.decode().splitlines() + pos_b.decode().splitlines():
+            self.assertNotIn("runner_kill", line)
 
     def test_shipped_runner_config_enables_intents(self) -> None:
         cfg = json.loads((Path(__file__).resolve().parents[1] / "scripts/mal-fast/fast-forward-paper.json").read_text())

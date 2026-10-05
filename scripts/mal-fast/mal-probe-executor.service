@@ -7,14 +7,18 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=mal-live
-Slice=mal-forward.slice
 Nice=10
 WorkingDirectory=/var/lib/mal/fast-forward/src
 Environment=PYTHONUNBUFFERED=1
 Environment=LC_ALL=C.UTF-8
 Environment=LANG=C.UTF-8
-# Helius key: systemd reads it as root, the process never logs it. One secret, nothing else.
-EnvironmentFile=/var/lib/mal/fast-listener/helius.env
+# Helius key for the key holder: a ROOT-ONLY copy (/etc/mal-probe-rpc root:root 0700, helius.env root:root 0600, only the
+# HELIUS_API_KEY= line). systemd reads it as root, so it must never be a file the ubuntu paper side can write (that one,
+# /var/lib/mal/fast-listener/helius.env, stays ubuntu:ubuntu 0600 for paper). No "-" prefix: a missing file fails the start.
+EnvironmentFile=/etc/mal-probe-rpc/helius.env
+# Root-run inline check, no file-based code (nothing ubuntu-writable may run as root). "+" lifts the sandbox for this
+# command only, so SystemCallFilter/CapabilityBoundingSet=/NoNewPrivileges do not apply to it. %% is systemd's escape for %.
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-probe-rpc)" = 0:0:700 && test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-probe-rpc/helius.env)" = 0:0:600'
 ExecStart=/var/lib/mal/fast-forward/venv/bin/python -m tools.probe_executor --config /var/lib/mal/fast-forward/src/scripts/mal-fast/probe-executor.json
 Restart=on-failure
 RestartSec=10

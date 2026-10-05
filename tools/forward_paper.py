@@ -2131,6 +2131,8 @@ class ForwardEngine:
                     "written_ms": now,
                     "trigger": pending.trigger,
                     "score": pending.score,
+                    # the executor cannot see the KILL file; it refuses buys on rows written while it exists
+                    "runner_kill": bool(self.kill_file.is_file()),
                 }
             )
         except Exception as exc:  # noqa: BLE001  a side file must never stop the paper runner or change its decisions

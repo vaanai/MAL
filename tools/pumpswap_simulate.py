@@ -59,11 +59,12 @@ def redact_rpc_url(text: str) -> str:
     return _API_KEY_RE.sub(r"\1REDACTED", text)
 
 
-def load_rpc_url(explicit: str | None, env_file: str) -> str:
+def load_rpc_url(explicit: str | None, env_file: str, *, use_env_file: bool = True) -> str:
+    """use_env_file=False (live executor): the key must be in the environment, no file is ever read."""
     if explicit:
         return explicit
     key = (os.environ.get("HELIUS_API_KEY") or "").strip()
-    if not key and Path(env_file).exists():
+    if not key and use_env_file and Path(env_file).exists():
         for line in Path(env_file).read_text().splitlines():
             line = line.strip()
             if line.startswith("export "):
