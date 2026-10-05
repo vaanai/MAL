@@ -1394,22 +1394,85 @@ class MarkAtLandingTests(unittest.TestCase):
         self.assertNotIn(MINT, ex.state.pending)
         self.assertEqual(ex.state.open[MINT]["mark_source"], "landed_snapshot")
 
-    def test_no_tp_sl_before_the_mark_is_set_but_time_stop_applies(self):
+    def test_pending_window_no_tp_and_sl_only_against_fill_price(self):
         ex, rpc, clock = self.ex, self.rpc, self.clock
         signal_buy(ex, clock)
         land_buy(ex, rpc)
         rpc.snap_slot = 1_999  # every snapshot predates the landing slot: it does not hold our buy
-        rpc.quote = self.priced(0.3)  # would be a deep sl on the send-state mark
+        rpc.quote = self.priced(1.8)  # +80%: no tp while pending
         clock.t += 400
         ex.tick()
         pos = ex.state.open[MINT]
         self.assertTrue(pos["mark_pending"])
         self.assertEqual(pos["mark"], pos["mark_send"])
         self.assertNotIn(MINT, ex.state.pending)
-        r = pe.exit_check(pos, pe.Snapshot(None, 5, self.priced(0.3), 400_000_000 * 10**6, V), clock(), own_trade_in_state=True)  # type: ignore[arg-type]
-        self.assertEqual((r["reason"], r["ret"]), (None, None))
-        r = pe.exit_check(pos, pe.Snapshot(None, 5, Q0, 400_000_000 * 10**6, V), pos["t_entry_ms"] + pe.EXIT_RULE.max_hold_ms + 1, own_trade_in_state=True)  # type: ignore[arg-type]
+        base = 400_000_000 * 10**6
+        up = pe.exit_check(pos, pe.Snapshot(None, 5, self.priced(1.8), base, V), clock(), own_trade_in_state=True)  # type: ignore[arg-type]
+        self.assertIsNone(up["reason"])
+        mild = pe.exit_check(pos, pe.Snapshot(None, 5, self.priced(0.9), base, V), clock(), own_trade_in_state=True)  # type: ignore[arg-type]
+        self.assertIsNone(mild["reason"])
+        r = pe.exit_check(pos, pe.Snapshot(None, 5, Q0, base, V), pos["t_entry_ms"] + pe.EXIT_RULE.max_hold_ms + 1, own_trade_in_state=True)  # type: ignore[arg-type]
         self.assertEqual(r["reason"], "time_stop")
+
+    def test_rug_in_pending_window_fires_sl_vs_fill_price(self):
+        ex, rpc, clock = self.ex, self.rpc, self.clock
+        signal_buy(ex, clock)
+        land_buy(ex, rpc)
+        rpc.snap_slot = 1_999
+        rpc.quote = self.priced(0.5)  # > 30% below the fill price
+        clock.t += 400
+        ex.tick()
+        self.assertTrue(ex.state.open[MINT]["mark_pending"])
+        self.assertEqual(ex.state.pending[MINT]["reason"], "sl")
+
+    def test_late_snapshot_after_crash_uses_fill_price_so_sl_fires(self):
+        ex, rpc, clock = self.ex, self.rpc, self.clock
+        signal_buy(ex, clock)
+        land_buy(ex, rpc)
+        rpc.quote = self.priced(0.4)  # crashed; the first snapshot we see is past the grace window (stall / restart)
+        clock.t += pe.MARK_SNAPSHOT_GRACE_MS + 1
+        ex.tick()
+        pos = ex.state.open.get(MINT)
+        self.assertEqual(pos["mark_source"], "fill_price")
+        self.assertAlmostEqual(pos["mark"], pos["net_in"] / (pos["tokens"] * 1000), places=15)
+        self.assertEqual(ex.state.pending[MINT]["reason"], "sl")
+
+    def test_state_roundtrip_and_single_rebase(self):
+        ex, rpc, clock = self.ex, self.rpc, self.clock
+        signal_buy(ex, clock)
+        land_buy(ex, rpc)
+        pos = ex.state.open[MINT]
+        before = {k: pos[k] for k in ("mark_pending", "buy_slot", "t_entry_ms", "mark", "mark_send")}
+        path = self.tmp / "rt.json"
+        ex.state.save(path)
+        loaded = pe.State.load(path, "live").open[MINT]
+        self.assertEqual({k: loaded[k] for k in before}, before)
+        self.assertTrue(loaded["mark_pending"])
+        self.assertEqual(loaded["buy_slot"], 2_000)
+        snap = pe.Snapshot(None, 2_001, self.priced(0.9), 400_000_000 * 10**6, V)  # type: ignore[arg-type]
+        self.assertTrue(pe.rebase_mark(loaded, snap, loaded["t_entry_ms"] + 100))
+        first = loaded["mark"]
+        other = pe.Snapshot(None, 2_002, self.priced(0.5), 400_000_000 * 10**6, V)  # type: ignore[arg-type]
+        self.assertFalse(pe.rebase_mark(loaded, other, loaded["t_entry_ms"] + 200))
+        self.assertEqual(loaded["mark"], first)
+
+    def test_snapshot_after_grace_window_is_not_taken(self):
+        pos = {"t_entry_ms": T0, "tokens": 10**9, "net_in": 49_000_000, "mark": 9.9, "mark_send": 9.9,
+               "mark_pending": True, "mark_source": None, "buy_slot": 100}
+        snap = pe.Snapshot(None, 101, Q0, 400_000_000 * 10**6, V)  # type: ignore[arg-type]
+        self.assertTrue(pe.rebase_mark(pos, snap, T0 + pe.MARK_SNAPSHOT_GRACE_MS))
+        self.assertEqual(pos["mark_source"], "fill_price")
+
+    def test_legacy_position_without_mark_pending_is_as_before(self):
+        pos = {"t_entry_ms": T0, "tokens": 10**9, "net_in": 49_000_000, "mark": 1e-9, "spend": 5 * 10**7}
+        snap = pe.Snapshot(None, 1, Q0, 400_000_000 * 10**6, V)  # type: ignore[arg-type]
+        for flag in (False, True):
+            self.assertFalse(pe.rebase_mark(pos, snap, T0 + 10**9))
+            r = pe.exit_check(pos, snap, T0 + 1, own_trade_in_state=flag)
+            self.assertEqual(r["ret"], pe.pcm.spot_sol_per_ui(*((Q0 + V, snap.base_reserve) if flag else
+                             pe.pcm.reserves_with_our_buy(quote_lamports=Q0 + V, base_raw=snap.base_reserve, net_in_lamports=pos["net_in"],
+                                                          tokens_raw=pos["tokens"], same_venue=True))) / pos["mark"] - 1.0)
+            self.assertEqual(r["reason"], "tp")  # mark far below spot: tp, exactly the old rule
 
     def test_fallback_is_the_effective_fill_price(self):
         ex, rpc, clock = self.ex, self.rpc, self.clock
@@ -1422,6 +1485,7 @@ class MarkAtLandingTests(unittest.TestCase):
         self.assertTrue(pos["mark_pending"])  # inside the grace window: still waiting for a landed snapshot
         clock.t += pe.MARK_SNAPSHOT_GRACE_MS
         ex.tick()
+        pos = ex.state.open[MINT]
         self.assertEqual((pos["mark_source"], pos["mark_pending"]), ("fill_price", False))
         self.assertAlmostEqual(pos["mark"], pos["net_in"] / (pos["tokens"] * 1000), places=15)
         self.assertIn("mark_shift_bps", pos)

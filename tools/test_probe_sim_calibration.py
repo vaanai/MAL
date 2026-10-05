@@ -215,6 +215,7 @@ def test_cli_flag_default_on(tmp_path):
     f = fills_file(tmp_path, [b, s])
     assert psc.main(["--fills", str(f), "--tape-dir", str(d), "--out-dir", str(tmp_path / "o1")]) == 0
     assert json.loads((tmp_path / "o1/calibration.json").read_text())["own_trade_in_tape"] is True
+    assert json.loads((tmp_path / "o1/calibration.json").read_text())["schema_version"] == psc.SCHEMA_VERSION == 2
     psc.main(["--fills", str(f), "--tape-dir", str(d), "--out-dir", str(tmp_path / "o2"), "--no-own-trade-in-tape"])
     assert json.loads((tmp_path / "o2/calibration.json").read_text())["own_trade_in_tape"] is False
     assert "Sim reproduces the executor's exit decisions on 1/1 (n=1)" in (tmp_path / "o1/calibration.md").read_text()

@@ -685,7 +685,7 @@ class LiveExecutor(pe.Executor):
                 if now - pos.get("last_sell_fail_ms", 0) < wait:
                     continue
             snap, _pool, _err, kind = self._exit_snapshot(mint, batched)
-            if (snap is None or snap.quote_priced is None) and pe.rebase_mark(pos, None, now):
+            if pe.rebase_mark(pos, snap, now):  # once; a late or unpriced snapshot is handled inside
                 self.save()
             if snap is None or snap.quote_priced is None:
                 # Never sell blind (no min_out) and never price on the vault alone: keep retrying.
@@ -693,8 +693,6 @@ class LiveExecutor(pe.Executor):
                     pos["unpriced_alert_ms"] = now
                     self._alert("unpriced_position", mint, held_ms=now - pos["t_entry_ms"])
                 continue
-            if pe.rebase_mark(pos, snap, now):
-                self.save()
             reason = pos.get("exit_reason") or pe.exit_check(pos, snap, now, own_trade_in_state=True)["reason"]
             if reason:
                 with self._exit_prio():

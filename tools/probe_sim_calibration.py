@@ -178,6 +178,7 @@ def sim_buy(row: dict[str, Any], spend: int) -> dict[str, Any] | None:
 
 
 BOOKS = ("executor", "correct")  # "executor" = legacy double-count (pre-#324 executor); key kept so old JSON stays readable; executor-identical (adds our buy again) vs raw tape book (our buy already in the tape)
+SCHEMA_VERSION = 2  # 2: live_executor / live_correct model the mark at landing; the old model is live_legacy_*
 POSITIONS = ("sim", "live", "live_legacy")  # simulated entry; LIVE fill + mark at landing (current executor); LIVE fill + send-state mark model (legacy)
 VARIANTS = tuple(f"{p}_{b}" for p in POSITIONS for b in BOOKS)
 
@@ -519,7 +520,7 @@ def run(fills_path: Path, tape_dir: Path, out_dir: Path, own_trade_in_tape: bool
     agg = aggregate(results)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "calibration.json").write_text(
-        json.dumps({"label": "arithmetic on n trades, not evidence", "own_trade_in_tape": own_trade_in_tape,
+        json.dumps({"schema_version": SCHEMA_VERSION, "label": "arithmetic on n trades, not evidence", "own_trade_in_tape": own_trade_in_tape,
                     "aggregate": agg, "trades": results}, indent=1))
     (out_dir / "calibration.md").write_text(to_markdown(results, agg))
     return agg

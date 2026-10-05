@@ -398,22 +398,31 @@ def entry_quote(snap: Snapshot, spend: int) -> dict[str, Any]:
     return {"tokens": tokens, "net_in": net, "fee_ppm": fee, "mark": mark}
 
 
+def fill_price_mark(pos: dict[str, Any]) -> float:
+    """Effective fill price, net_in / tokens, in the units of spot_sol_per_ui (lamports per raw token / 1000)."""
+    return pos["net_in"] / (pos["tokens"] * 1000) if pos.get("tokens", 0) > 0 and pos.get("net_in", 0) > 0 else 0.0
+
+
 def rebase_mark(pos: dict[str, Any], snap: Snapshot | None, now_ms: int) -> bool:
     """LIVE only (probe_live sets pos["mark_pending"]; the dry run never does, so its send-state mark is untouched:
     it has no real landing, the send-state quote IS its fill). The entry quote's mark is the SEND-state pool plus a
     virtual buy; the buy lands ~2 slots later into a different state, so ret against it is off by the price move
     (job #183: 7fX2pvgh read ret -0.3653 straight after a landing at +4,197.82 bps more tokens). Re-base once, on the
     first priced snapshot at or after the landing slot (that state holds our buy): mark_source "landed_snapshot".
-    If none exists MARK_SNAPSHOT_GRACE_MS after entry, use the effective fill price net_in / tokens: "fill_price".
+    If the first priced snapshot is not seen within MARK_SNAPSHOT_GRACE_MS of entry (stall, restart), the mark is the
+    effective fill price net_in / tokens: "fill_price" (a late snapshot is never taken: it may already be crashed).
     The send-state mark is kept in mark_send. Returns True when the mark was set on this call."""
     if not pos.get("mark_pending"):
         return False
     q = snap.quote_priced if snap is not None else None
     landed_slot = pos.get("buy_slot")
-    if snap is not None and q and q > 0 and snap.base_reserve > 0 and (not landed_slot or snap.slot >= landed_slot):
+    late = now_ms - pos["t_entry_ms"] >= MARK_SNAPSHOT_GRACE_MS
+    # A snapshot that arrives late (RPC stall, restart after downtime) may already show a crash: taking it as the
+    # mark would hide the loss from sl. Past the grace window the mark is always the fill price.
+    if not late and snap is not None and q and q > 0 and snap.base_reserve > 0 and (not landed_slot or snap.slot >= landed_slot):
         mark, source = pcm.spot_sol_per_ui(q, snap.base_reserve), "landed_snapshot"
-    elif now_ms - pos["t_entry_ms"] >= MARK_SNAPSHOT_GRACE_MS and pos["tokens"] > 0 and pos["net_in"] > 0:
-        mark, source = pos["net_in"] / (pos["tokens"] * 1000), "fill_price"  # same units as spot_sol_per_ui
+    elif late and pos["tokens"] > 0 and pos["net_in"] > 0:
+        mark, source = fill_price_mark(pos), "fill_price"
     else:
         return False
     if mark <= 0:
@@ -429,7 +438,7 @@ def rebase_mark(pos: dict[str, Any], snap: Snapshot | None, now_ms: int) -> bool
 def exit_check(pos: dict[str, Any], snap: Snapshot, now_ms: int, *, own_trade_in_state: bool = False) -> dict[str, Any]:
     """own_trade_in_state=True (LIVE: our buy landed, so the RPC pool/vault state already holds it): spot, ret and
     the sell quote use the raw snapshot reserves and our tokens are only the sell. The live mark is re-based on the landed
-    state by rebase_mark (until then mark_pending: no tp/sl, time stop only), so ret ~ 0 right after landing.
+    state by rebase_mark (until then mark_pending: time stop, and sl only against the fill price), so ret ~ 0 right after landing.
     False (dry run / paper: our buy never happened, the state lacks it): our buy is added to the book below.
 
     Paper rule `_walk_exit` (tools/paper_tape_scoreboard.py) on a V-priced book: spot of the
@@ -450,14 +459,19 @@ def exit_check(pos: dict[str, Any], snap: Snapshot, now_ms: int, *, own_trade_in
         return {"reason": "time_stop" if now_ms > pos["t_entry_ms"] + EXIT_RULE.max_hold_ms else None, "ret": None, "quote_out": None}
     spot = pcm.spot_sol_per_ui(*book)
     pending = bool(pos.get("mark_pending"))  # live, mark not yet re-based on the landed state
-    ret = None if pending else spot / pos["mark"] - 1.0
+    if pending:  # safety net while the mark is unset: sl only, never tp, against the FILL price (not the send-state mark)
+        fm = fill_price_mark(pos)
+        ret = spot / fm - 1.0 if fm > 0 else None
+    else:
+        ret = spot / pos["mark"] - 1.0
     fee = fee_ppm_for(*book)
     out = tx.cp_sell_out(pos["tokens"], book[0], book[1], fee)
     reason = None
     if now_ms - pos["t_entry_ms"] > EXIT_RULE.max_hold_ms:
         reason = "time_stop"
     elif pending:
-        pass  # no tp/sl against a mark that is still the send-state one
+        if ret is not None and ret <= -EXIT_RULE.sl:
+            reason = "sl"
     elif ret >= EXIT_RULE.tp:
         reason = "tp"
     elif ret <= -EXIT_RULE.sl:
