@@ -174,3 +174,19 @@ If more than 20% of buys sent under 150,000 land more than 3 slots after the sen
 - Starts in build: `<sha, to be filled with the merge sha of this PR>`.
 - `a0bea86` (#330, mark from the first exit snapshot after landing) was **never installed**: that method folds up to about 5 s of post-landing drift into the mark (a 25% drop in the gap resets the mark, and sl then fires only near -47.5% against our fill). It is kept in `tools/probe_sim_calibration.py` as the labelled `live_snapshot_*` variant for comparison only.
 - The §7 build groups separate the **send-state-mark builds** (`8a6849b`, `a25eb17`, `7004b16`) from this build. Do not pool them: their tp/sl fired against a mark that could differ from the real post-buy state by hundreds to thousands of bps (e.g. mint 7fX2pvgh, +4,197.82 bps more tokens than quoted). A calibration replay (`tools/probe_sim_calibration.py`, schema_version 3) must run before the re-pin.
+
+## Entry drift logging (2026-10-05)
+
+The study (exploration only, job #181, `tools/exp012_entry_veto.py`, PR #328) proposed rule `drift_gt_25`: skip the entry if the pool's spot at the last print with slot <= mig+3 is more than 25% above the price at the migration slot. It looked small and was best-of-N, an UPPER BOUND, with the rule family written after the live pattern was seen.
+
+Quant-proof verdict: **FAIL as an active skip.**
+
+- 40 of its 46 vetoes (of 881 entries) were simulated misses (the sim's 15% SLIPPAGE_CAP against the migration price in `tools/latency_curve.py` `_try_buy`), not avoided losses.
+- Filled-only, the paired pressure gain is +3.9786e-05 SOL per mint, CI90 [5.74e-06, 8.623e-05], and rests on 6 trades with 3/9 days positive.
+
+Decision: **no skip.** The skip code path was removed entirely, not kept behind a key (the executor holds a wallet key; the smaller diff wins). `entry_veto_drift_max` is not a config key and is ignored if present. Instead drift is LOGGED on every live and dry entry for a re-run on live entries: `drift_vs_seed` = V-priced spot of the send snapshot / P_mig - 1, with `snap_slot` and `pool_slot`, on the buy row (and on the existing skip rows that follow the snapshot). It is null when V is missing or more than 1% off the seed V.
+
+P_mig is a constant seed price (about 4.1078e-07 SOL per token: vault 67.4058 SOL + V 17.5845 SOL over 206.9M tokens). The study used the first migration-slot print instead; on the fast-pool tape (2026-09-19T04..11Z, 215 migrated mints with a known V) the two agree within 1% for 77.7% of mints, so they differ for about 22%.
+
+Starts in the next build. It changes no decision, so trades are not a separate section 7 group on account of it.
+

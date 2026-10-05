@@ -1319,6 +1319,36 @@ class ExitFastPathTests(unittest.TestCase):
             rpc.__class__.__call__ = orig
 
 
+class EntryDriftLogLiveTests(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name)
+        self.addCleanup(self._d.cleanup)
+        spot = (Q0 + V) / (BASE0 * 1000)
+        for p in (mock.patch.object(pe, "V_SEED_LAMPORTS", V), mock.patch.object(pe, "P_MIG_SPOT_SOL", spot / 1.9)):  # drift +0.9
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_drift_0_9_still_buys_and_is_logged(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, entry_veto_drift_max=0.25)  # a stale key is inert
+        p = signal_buy(ex, clock)
+        self.assertIsNotNone(p)
+        self.assertAlmostEqual(p["drift_vs_seed"], 0.9)
+        self.assertEqual((ex.state.attempts, len(rpc.sent)), (1, 1))
+        land_buy(ex, rpc)
+        row = [r for r in fills(conf) if r["kind"] == "buy"][-1]
+        self.assertAlmostEqual(row["drift_vs_seed"], 0.9)
+        self.assertEqual(row["pool_slot"], row["snapshot_slot"])
+        self.assertNotIn("veto", json.dumps(fills(conf)))
+
+    def test_off_seed_v_logs_null_and_still_buys(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp)
+        with mock.patch.object(pe, "V_SEED_LAMPORTS", V * 2):
+            p = signal_buy(ex, clock)
+        self.assertIsNotNone(p)
+        self.assertIsNone(p["drift_vs_seed"])
+
+
 class ShippedExitConfigTests(unittest.TestCase):
     def test_live_and_dryrun_configs_mirror_the_exit_keys(self):
         d = Path(__file__).resolve().parent.parent / "scripts" / "mal-fast"

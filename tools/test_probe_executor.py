@@ -1207,6 +1207,84 @@ class OwnTradeInStateTests(unittest.TestCase):
         self.assertIsNone(pe.exit_check(self.pos, just_under, T0 + 1, own_trade_in_state=True)["reason"])
         self.assertEqual(pe.exit_check(self.pos, just_under, T0 + 1)["reason"], "tp")
 
+class EntryDriftLogTests(unittest.TestCase):
+    """Drift vs the seed price is LOGGED on every entry and never skips one (the drift_gt_25 veto failed quant-proof)."""
+
+    SPOT = (Q0 + V) / (BASE0 * 1000)
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name)
+        self.addCleanup(self._d.cleanup)
+        p = unittest.mock.patch.object(pe, "V_SEED_LAMPORTS", V)  # the fixture pool's V stands in for the seed V
+        p.start()
+        self.addCleanup(p.stop)
+
+    def run_drift(self, drift, **cfg):
+        pm = unittest.mock.patch.object(pe, "P_MIG_SPOT_SOL", self.SPOT / (1 + drift))
+        pm.start()
+        self.addCleanup(pm.stop)
+        ex, conf = make(self.tmp, **cfg)
+        ex.handle_signal(sig(ex))
+        return ex, fills(conf)
+
+    def test_drift_is_logged_on_the_buy_row(self):
+        ex, rows = self.run_drift(0.10)
+        self.assertEqual(rows[-1]["kind"], "buy")
+        self.assertAlmostEqual(rows[-1]["drift_vs_seed"], 0.10)
+        self.assertEqual(rows[-1]["snap_slot"], 77)
+        self.assertEqual(rows[-1]["pool_slot"], 77)
+
+    def test_no_skip_ever_even_at_extreme_drift(self):
+        for d in (0.2501, 0.9, 5.0):
+            self.tmp = Path(tempfile.mkdtemp(dir=self._d.name))
+            ex, rows = self.run_drift(d, entry_veto_drift_max=0.25)  # a stale config key is inert
+            self.assertEqual([r["kind"] for r in rows], ["buy"], d)
+            self.assertAlmostEqual(rows[-1]["drift_vs_seed"], d)
+            self.assertEqual(ex.state.attempts, 1)
+            self.assertFalse(hasattr(ex, "entry_veto_drift_max"))
+
+    def test_off_seed_v_logs_null_and_still_buys(self):
+        with unittest.mock.patch.object(pe, "V_SEED_LAMPORTS", V * 2):
+            ex, rows = self.run_drift(5.0)
+        self.assertEqual(rows[-1]["kind"], "buy")
+        self.assertIsNone(rows[-1]["drift_vs_seed"])
+
+    def test_v_boundary_is_one_percent_of_seed(self):
+        seed = pe.V_SEED_LAMPORTS
+        edge = int(seed * 0.01)
+
+        def d(v):
+            return pe.drift_vs_seed(pe.Snapshot(None, 5, Q0, BASE0, v))  # type: ignore[arg-type]
+
+        self.assertIsNotNone(d(seed + edge))
+        self.assertIsNotNone(d(seed - edge))
+        self.assertIsNone(d(seed + edge + 2))
+        self.assertIsNone(d(seed - edge - 2))
+        self.assertIsNone(d(None))
+
+    def test_drift_matches_the_study_definition(self):
+        from types import SimpleNamespace
+
+        import tools.exp012_entry_veto as ev
+
+        p_mig = pe.P_MIG_SPOT_SOL
+        for want in (-0.2, 0.0, 0.2499, 0.2501, 0.8):
+            q = int(round(p_mig * (1 + want) * BASE0 * 1000)) - pe.V_SEED_LAMPORTS
+            got = pe.drift_vs_seed(pe.Snapshot(None, 9, q, BASE0, pe.V_SEED_LAMPORTS))  # type: ignore[arg-type]
+            spot = p_mig * (1 + got)
+            prints = [SimpleNamespace(slot=100, side="buy", sol_lamports=1, price_sol=p_mig, venue="pumpswap"),
+                      SimpleNamespace(slot=103, side="buy", sol_lamports=1, price_sol=spot, venue="pumpswap")]
+            self.assertAlmostEqual(got, ev.veto_features(prints, 100, p_mig)["drift"], places=9)
+
+    def test_shipped_configs_have_no_veto_key(self):
+        d = Path(__file__).resolve().parent.parent / "scripts" / "mal-fast"
+        for name in ("probe-executor-live.json", "probe-executor.json"):
+            self.assertNotIn("entry_veto_drift_max", json.loads((d / name).read_text()))
+
+    def test_seed_constant_is_the_seeded_pool_price(self):
+        self.assertAlmostEqual(pe.P_MIG_SPOT_SOL, (67_405_853_863 + 17_584_505_288) / (206_900_000 * 10**6 * 1000), delta=1e-13)
+
 
 if __name__ == "__main__":
     unittest.main()
