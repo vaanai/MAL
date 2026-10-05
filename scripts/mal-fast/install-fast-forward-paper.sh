@@ -51,6 +51,10 @@ HB_UNIT="mal-fast-runner-heartbeat.service"
 HB_TIMER="mal-fast-runner-heartbeat.timer"
 HB_DIR="${MAL_ROOT}/fast-forward-heartbeat"
 TIP_UNIT="mal-fast-tip-follower.service"
+# DEC-019 probe executor: the DRY-RUN unit only (no key, no LoadCredential). Installed, never enabled or started here.
+# The live drop-in (mal-probe-executor-live.conf) is never installed by this script: Helm installs it after checking hashes.
+PROBE_UNIT="mal-probe-executor.service"
+PROBE_CFGS="scripts/mal-fast/probe-executor.json scripts/mal-fast/probe-executor-live.json"
 TIP_OUT="${MAL_ROOT}/sealed/fast-trades-tip"
 TIP_CREATES="${MAL_ROOT}/sealed/fast-creates-tip"
 TIP_STATE="${MAL_ROOT}/fast-tip-follower"
@@ -153,10 +157,11 @@ fi
 run sudo -n rm -rf "${FWD}/src.new" "${FWD}/src.old"
 run sudo -n install -d "${OWN_ARGS[@]}" -m 0755 "${FWD}/src.new"
 if [[ "${DRY}" == 1 ]]; then
-  echo "DRY-RUN: git -C ${ROOT} archive ${COMMIT} tools observe | ${AS_OWNER[*]} tar -x -C ${FWD}/src.new"
+  echo "DRY-RUN: git -C ${ROOT} archive ${COMMIT} tools observe ${PROBE_CFGS} | ${AS_OWNER[*]} tar -x -C ${FWD}/src.new"
   echo "DRY-RUN: write ${COMMIT} to ${FWD}/src.new/SOURCE_COMMIT"
 else
-  git -C "${ROOT}" archive "${COMMIT}" tools observe | "${AS_OWNER[@]}" tar -x -C "${FWD}/src.new"
+  # shellcheck disable=SC2086  # PROBE_CFGS is a fixed list of repo paths
+  git -C "${ROOT}" archive "${COMMIT}" tools observe ${PROBE_CFGS} | "${AS_OWNER[@]}" tar -x -C "${FWD}/src.new"
   printf '%s\n' "${COMMIT}" | "${AS_OWNER[@]}" tee "${FWD}/src.new/SOURCE_COMMIT" >/dev/null
 fi
 run sudo -n bash -c "if [ -d '${FWD}/src' ]; then mv '${FWD}/src' '${FWD}/src.old'; fi; mv '${FWD}/src.new' '${FWD}/src'; rm -rf '${FWD}/src.old'"
@@ -172,7 +177,7 @@ run sudo -n install -d "${OWN_ARGS[@]}" -m 0755 "${TIP_OUT}" "${TIP_CREATES}" "$
 if [[ "${DRY}" == 1 || ! -e "${TIP_LOG}" ]]; then
   run sudo -n install -m 0644 "${OWN_ARGS[@]}" /dev/null "${TIP_LOG}"
 fi
-for u in "${SLICE}" "${UNIT}" "${RESTART_UNIT}" "${RESTART_TIMER}" "${HB_UNIT}" "${HB_TIMER}" "${TIP_UNIT}"; do
+for u in "${SLICE}" "${UNIT}" "${RESTART_UNIT}" "${RESTART_TIMER}" "${HB_UNIT}" "${HB_TIMER}" "${TIP_UNIT}" "${PROBE_UNIT}"; do
   run sudo -n install -m 0644 "${KIT}/${u}" "${SYSTEMD_DIR}/${u}"
 done
 run sudo -n systemctl daemon-reload
