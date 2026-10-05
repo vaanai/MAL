@@ -669,6 +669,41 @@ class Amendment1Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             pe.Limits(end_ms=0)
 
+    def test_end_ms_and_priority_negative_cases(self):
+        for bad in ("1791763200000", True, -1, float("inf")):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                pe.Limits(end_ms=bad)
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                pe.Limits.from_config({"end_ms": bad})
+        for bad in ("150000", -150_000, True, 0):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                pe.Limits(priority_lamports=bad)
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                pe.Limits.from_config({"priority_lamports": bad})
+
+    def test_soft_stops_full_lists(self):
+        lim = pe.Limits()
+        first = 1791211793036
+        self.assertEqual(pe.soft_stops(lim, pe.State(first_attempt_ms=first), first + 1000), [])
+        # everything at once, in the documented order
+        st = pe.State(attempts=90, realized_lamports=-350_000_000, first_attempt_ms=first)
+        self.assertEqual(pe.soft_stops(lim, st, pe.DEC019_END_MS + 7 * 86_400_000),
+                         ["max_attempts", "loss_cap", "max_days", "end_instant"])
+        # past 7 days from the real first attempt, the end instant is also past
+        self.assertEqual(pe.soft_stops(lim, pe.State(first_attempt_ms=first), first + 7 * 86_400_000),
+                         ["max_days", "end_instant"])
+
+    def test_seven_day_cap_fires_alone_and_lowered_end_fires_alone(self):
+        # a first attempt early enough that 7 days elapse before the end instant: only max_days fires
+        first = pe.DEC019_END_MS - 7 * 86_400_000 - 3_600_000
+        lim = pe.Limits()
+        self.assertEqual(pe.soft_stops(lim, pe.State(first_attempt_ms=first), first + 7 * 86_400_000 - 1), [])
+        self.assertEqual(pe.soft_stops(lim, pe.State(first_attempt_ms=first), first + 7 * 86_400_000), ["max_days"])
+        # end instant lowered via config: it fires alone, before the days cap
+        low = pe.Limits.from_config({"end_ms": first + 1000})
+        self.assertEqual(pe.soft_stops(low, pe.State(first_attempt_ms=first), first + 1000), ["end_instant"])
+        self.assertEqual(pe.soft_stops(low, pe.State(first_attempt_ms=first), first + 999), [])
+
 
 class ClampTests(unittest.TestCase):
     def test_direct_construction_is_clamped(self):

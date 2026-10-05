@@ -155,7 +155,7 @@ class State:
     mode: str = MODE
     would_halt: dict[str, int] = field(default_factory=dict)  # dry run: budget stops that live would have hit
     pending: dict[str, dict[str, Any]] = field(default_factory=dict)  # live: in-flight signed txs by mint (buy or sell)
-    bought: list[str] = field(default_factory=list)  # live: every mint ever attempted; never re-bought (<= 30 entries)
+    bought: list[str] = field(default_factory=list)  # live: every mint ever attempted; never re-bought (<= max_attempts entries, 90 under Amendment 1)
     max_seen_ms: int = 0  # live: highest clock reading seen; a clock stepping back fails closed
 
     def save(self, path: Path) -> None:
