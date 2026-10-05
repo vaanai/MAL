@@ -36,6 +36,7 @@ So the move is justified by (2), and by (1) as a **hypothesis to test**: the bac
    - **Latency.** It trails the tip by the getBlock confirmation delay. That latency is measured, not assumed, and it enters DEC-016 Amendment 3 (a) through the runner's `applied_latency_ms`.
    - **The public tape.** It keeps running as a comparison feed only.
    - **Check.** Coverage of the tip-follower tape against the forward walk is checked daily, with the same tool and bar.
+   **Tip-follower result (2026-10-05): PASS, 100.000% of chain trades** (3,672,868 of 3,672,868 rows; 3,535,536 of 3,535,536 signatures) over `[2026-10-05T06, 10)`, MiScusi job #131. Oracle's tape held 88.972% in the same window. Measured after the parallel-fetch fix ([#297](https://github.com/vaanai/MAL/pull/297)); the first serial version kept only about 55% of slots and was replaced before the runner started. [ARTIFACTS/lab/tape-coverage-chain-2026-10-05T06-tip.md](../ARTIFACTS/lab/tape-coverage-chain-2026-10-05T06-tip.md).
 
    3. **Code equivalence.** An md5 decision-equivalence replay of the fast-0 runner build against Oracle's runner on the same recorded tape, as CLAUDE.md requires for every runner change. This proves the **code** makes the same decisions; it does not prove the live fast feed behaves like Oracle's, which is what check 2.2 is for. The replay is a heavy job: it runs on `mal-research-0` as a MiScusi job.
    4. **Memory.** The runner's RSS grows about 200–300 MB/h on Oracle and reached 4.5 GiB at the daily restart.

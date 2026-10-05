@@ -77,7 +77,7 @@ As of 2026-10-05 ~09:45Z.
 | System | Where | Status |
 | --- | --- | --- |
 | EXP-012 forward walk (MiScusi #71) | `mal-research-0` | DEC-016, through about 10-05T04, 837k credits so far. **Resubmit before about 10-09T15Z.** |
-| getBlock tip follower `mal-fast-tip-follower` | `mal-fast-0`, system unit | The runner's feed (DEC-015 2.2, owner option A). Parallel fetch ([#297](https://github.com/vaanai/MAL/pull/297)), 8 workers, rps 15. Restarted 10-05 ~05:27Z on `d0109f7`. Since then: lag 2–3 slots, block-lag p50 about 1.7–1.9 s, 0 backlog jumps. Every PumpSwap row carries `virtual_quote_reserve` ([#288](https://github.com/vaanai/MAL/pull/288)). **About 560k Helius credits/day measured** (getSlot polling is about half). |
+| getBlock tip follower `mal-fast-tip-follower` | `mal-fast-0`, system unit | The runner's feed (DEC-015 2.2, owner option A). Parallel fetch ([#297](https://github.com/vaanai/MAL/pull/297)), 8 workers, rps 15. Restarted 10-05 ~05:27Z on `d0109f7`. Since then: lag 2–3 slots, block-lag p50 about 1.7–1.9 s, 0 backlog jumps. Every PumpSwap row carries `virtual_quote_reserve` ([#288](https://github.com/vaanai/MAL/pull/288)). **Coverage against chain: 100.000%** over `[10-05T06, 10)` (job #131; Oracle 88.972%), so DEC-015 §2.2 passes. **About 560k Helius credits/day measured** (getSlot polling is about half). |
 | Fast-0 paper runner `mal-fast-forward-paper` (EXP-012 book) | `mal-fast-0`, system unit | **Started 2026-10-05T05:31:40Z, on probation (rows do not count).** Reads the tip tape (`pumpswap_virtual: require`, [#296](https://github.com/vaanai/MAL/pull/296)). Heartbeat ok. Daily-restart and heartbeat timers enabled. Mid-week start, recorded here. |
 | DEC-019 probe executor `mal-probe-executor` | `mal-fast-0`, user `mal-live` | **Dry run since 2026-10-05T05:35:47Z** (no key, no live drop-in). Executor stages ~0.12 s; on chain → ready-to-send about 2.2–2.3 s (n = 2 early read). Wallet created by Helm, pubkey `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk`, **not funded**. |
 | Migration stream probe (MiScusi #127) | `mal-fast-0`, transient unit | 6 h measurement of a processed `transactionSubscribe` on the pump migration authority against the tip follower. First 3 events: about 0.7–1.5 s earlier on the same slot. |
@@ -178,7 +178,7 @@ Clean clock: **2026-09-28T00:00:00Z**. Kill review: **2026-10-05T05:00:00Z**.
 ## Next work
 
 1. **Probe:** let the 6 h keyless dry run finish (about 11:36Z). If it is clean, post the live-config and drop-in sha256 for Helm, then owner funding (0.5 SOL), then Helm enables the live drop-in.
-2. **About 11Z:** tip-follower coverage against forward-1002 over `[10-05T06, 08)`. This must pass before any runner row counts. Then the 2-day lag probation.
+2. **Tip-follower coverage PASSED** (100.000%, job #131). The 2-day lag probation runs from 10-05; the coverage check is repeated daily.
 3. **Latency:** read the migration-stream probe (#127). If the gain holds, design the processed fast path, probably near-graduation subscriptions so features stay complete. Do it without changing the runner inside the forward window unless it comes with an md5 proof and a recorded restart.
 4. **Credits:** cut the tip follower's getSlot polling, about half of its 560k/day.
 5. **About 10-09T15Z:** resubmit forward walk #71.
