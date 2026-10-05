@@ -178,7 +178,7 @@ def sim_buy(row: dict[str, Any], spend: int) -> dict[str, Any] | None:
 
 
 BOOKS = ("executor", "correct")  # "executor" = legacy double-count (pre-#324 executor); key kept so old JSON stays readable; executor-identical (adds our buy again) vs raw tape book (our buy already in the tape)
-POSITIONS = ("sim", "live")  # position from the simulated entry vs from the LIVE fill
+POSITIONS = ("sim", "live", "live_legacy")  # simulated entry; LIVE fill + mark at landing (current executor); LIVE fill + send-state mark model (legacy)
 VARIANTS = tuple(f"{p}_{b}" for p in POSITIONS for b in BOOKS)
 
 
@@ -288,9 +288,27 @@ def variant_result(name: str, ex: dict[str, Any], b: dict[str, Any], s: dict[str
     return v
 
 
+def live_position_landed(b: dict[str, Any], rows: list[dict[str, Any]], er: dict[str, Any], q: dict[str, Any]) -> dict[str, Any]:
+    """Position from the LIVE fill with the CURRENT executor's mark (probe_executor.rebase_mark): the raw spot of the
+    first tape row at or after the landing slot (the state that holds our buy), `mark_source` landed_snapshot; with no
+    such row, the effective fill price net_in / tokens, `fill_price`. The send-state mark is kept as mark_send."""
+    pos = live_position(b, er, q)
+    slot = int(b["landed_slot"])
+    first = next((r for r in rows if r["slot"] >= slot), None)
+    snap = snap_of(first) if first else None
+    mark_send = pos["mark"]
+    if snap is not None and snap.quote_priced and snap.base_reserve > 0:
+        pos["mark"], pos["mark_source"] = pcm.spot_sol_per_ui(snap.quote_priced, snap.base_reserve), "landed_snapshot"
+    else:
+        pos["mark"], pos["mark_source"] = pos["net_in"] / (pos["tokens"] * 1000), "fill_price"
+    pos["mark_send"] = mark_send
+    return pos
+
+
 def live_position(b: dict[str, Any], er: dict[str, Any], q: dict[str, Any]) -> dict[str, Any]:
-    """Position from the LIVE fill: live tokens, net_in = spend - pool_fee_est, and the mark the executor would have
-    stored (post-buy spot) re-derived from the entry-row state. mark/net_in are derived, not recorded in the fills."""
+    """LEGACY live-position variant (`live_legacy_*`): live tokens, net_in = spend - pool_fee_est, and the post-buy spot
+    re-derived from the PRE-landing entry-row state (the send-state mark model the executor used before the
+    mark-at-landing fix). mark/net_in are derived, not recorded in the fills."""
     spend, tokens = int(b["spend_lamports"]), int(b["tokens_received"])
     net = spend - int(b["pool_fee_est_lamports"]) if b.get("pool_fee_est_lamports") is not None else q["net_in"]
     snap = snap_of(er)
@@ -324,10 +342,12 @@ def simulate_trade(trade: dict[str, Any], rows: list[dict[str, Any]], fill_mints
     out["live_sell_delay_slots"] = delay
     slot = int(b["landed_slot"])
     pos_sim = {"tokens": q["tokens"], "net_in": q["net_in"], "mark": q["mark"], "t_entry_ms": b["ts_ms"]}
-    pos_live = live_position(b, er, q) if b.get("tokens_received") else None
+    has_live = bool(b.get("tokens_received"))
+    pos_live = live_position_landed(b, rows, er, q) if has_live else None  # current: mark at landing
+    pos_legacy = live_position(b, er, q) if has_live else None  # legacy: send-state mark model
     walks: dict[str, dict[str, Any]] = {}
     variants: dict[str, Any] = {}
-    for pname, pos in (("sim", pos_sim), ("live", pos_live)):
+    for pname, pos in (("sim", pos_sim), ("live", pos_live), ("live_legacy", pos_legacy)):
         if pos is None:
             continue
         for book in BOOKS:

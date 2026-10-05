@@ -428,8 +428,8 @@ def rebase_mark(pos: dict[str, Any], snap: Snapshot | None, now_ms: int) -> bool
 
 def exit_check(pos: dict[str, Any], snap: Snapshot, now_ms: int, *, own_trade_in_state: bool = False) -> dict[str, Any]:
     """own_trade_in_state=True (LIVE: our buy landed, so the RPC pool/vault state already holds it): spot, ret and
-    the sell quote use the raw snapshot reserves and our tokens are only the sell. The mark is unchanged (it is the
-    spot right after our buy, which is what the real state is right after the landing, so ret ~ 0 at entry).
+    the sell quote use the raw snapshot reserves and our tokens are only the sell. The live mark is re-based on the landed
+    state by rebase_mark (until then mark_pending: no tp/sl, time stop only), so ret ~ 0 right after landing.
     False (dry run / paper: our buy never happened, the state lacks it): our buy is added to the book below.
 
     Paper rule `_walk_exit` (tools/paper_tape_scoreboard.py) on a V-priced book: spot of the

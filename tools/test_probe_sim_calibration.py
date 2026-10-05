@@ -179,7 +179,23 @@ def test_double_count_variants():
     assert r["primary_variant"] == "sim_correct" and r["sim_ret"] == vc["ret"]
     r2 = psc.simulate_trade({"buy": b, "sell": s}, rows, {M1}, own_trade_in_tape=False)
     assert r2["primary_variant"] == "sim_executor" and r2["sim_ret"] == ve["ret"]
-    assert set(r["variants"]) == {"sim_executor", "sim_correct", "live_executor", "live_correct"}
+    assert set(r["variants"]) == {"sim_executor", "sim_correct", "live_executor", "live_correct",
+                                  "live_legacy_executor", "live_legacy_correct"}
+
+
+def test_live_position_mark_at_landing_vs_legacy():
+    rows, b, s = make()
+    er = psc.last_before(rows, int(b["landed_slot"]))
+    q = psc.sim_buy(er, int(b["spend_lamports"]))
+    new = psc.live_position_landed(b, rows, er, q)
+    old = psc.live_position(b, er, q)
+    first = next(r for r in rows if r["slot"] >= int(b["landed_slot"]))
+    snap = psc.snap_of(first)
+    assert new["mark_source"] == "landed_snapshot"
+    assert new["mark"] == pytest.approx(psc.pcm.spot_sol_per_ui(snap.quote_priced, snap.base_reserve))
+    assert new["mark_send"] == old["mark"] and "mark_source" not in old  # legacy keeps the send-state model
+    fb = psc.live_position_landed(b, [], er, q)
+    assert fb["mark_source"] == "fill_price" and fb["mark"] == pytest.approx(old["net_in"] / (old["tokens"] * 1000))
 
 
 def test_pnl_parity_extra_cost_and_rent():
