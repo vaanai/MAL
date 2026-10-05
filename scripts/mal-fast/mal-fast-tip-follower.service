@@ -17,7 +17,7 @@ Environment=LC_ALL=C.UTF-8
 Environment=LANG=C.UTF-8
 # Helius key: systemd reads it, the process never logs it. Not enabled by the installer.
 EnvironmentFile=/var/lib/mal/fast-listener/helius.env
-ExecStart=/var/lib/mal/fast-forward/venv/bin/python -m tools.fast_tip_follower --out /var/lib/mal/sealed/fast-trades-tip --creates-out /var/lib/mal/sealed/fast-creates-tip --state-dir /var/lib/mal/fast-tip-follower --rps 5 --max-keep-days 3
+ExecStart=/var/lib/mal/fast-forward/venv/bin/python -m tools.fast_tip_follower --out /var/lib/mal/sealed/fast-trades-tip --creates-out /var/lib/mal/sealed/fast-creates-tip --state-dir /var/lib/mal/fast-tip-follower --rps 15 --fetch-workers 8 --max-keep-days 3
 Restart=always
 RestartSec=30
 NoNewPrivileges=true
@@ -33,7 +33,8 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemorySwapMax=0
-MemoryMax=512M
+# up to 16 parsed getBlock results in flight/buffered (fetch-workers*2); a full block is tens of MB as Python objects
+MemoryMax=1G
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 PrivateDevices=true

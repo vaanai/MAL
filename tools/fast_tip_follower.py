@@ -41,7 +41,8 @@ import signal
 import sys
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -66,6 +67,8 @@ TIP_SOURCE = "tip"
 SKIP_CODES = frozenset({-32007, -32009})
 HEARTBEAT_S = 15.0
 PRECREATE_LEAD_S = 5  # create next hour's files at about :59:55
+MAX_FETCH_WORKERS = 16
+METRIC_WINDOW = 200
 BATCH_SLOTS = 20  # slots per tip poll, so the backlog check is re-run often
 KINDS = ("trades", "creates", "migrations")
 _FILE_RE = re.compile(r"^(trades|creates|migrations|skipped-slots)-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl$")
@@ -114,6 +117,13 @@ def decode_pool_virtual(data: bytes) -> int | None:
     except (ValueError, TypeError):
         return None
     return int(v) if isinstance(v, int) and v >= 0 else None
+
+
+def _pct(values, q: int) -> float | None:
+    vals = sorted(values)
+    if not vals:
+        return None
+    return vals[min(len(vals) - 1, int(round((q / 100.0) * (len(vals) - 1))))]
 
 
 def hour_of_ms(ms: int) -> str:
@@ -220,6 +230,9 @@ class TipFollower:
         breaker_after: int = 5,
         breaker_pause_s: float = 60.0,
         pool_cap: int = 200_000,
+        fetch_workers: int = 1,
+        tip_poll_s: float = 0.0,
+        summary_every_s: float = 60.0,
         log: Callable[[str], None] | None = None,
     ) -> None:
         self.out_dir = out_dir
@@ -245,6 +258,17 @@ class TipFollower:
         self.backlog_slots = backlog_slots
         self.breaker_after = breaker_after
         self.breaker_pause_s = breaker_pause_s
+        self.fetch_workers = max(1, min(MAX_FETCH_WORKERS, int(fetch_workers)))
+        self.tip_poll_s = tip_poll_s
+        self.summary_every_s = summary_every_s
+        self._stat_lock = threading.Lock()
+        self._pool: ThreadPoolExecutor | None = None
+        self._futs: dict[int, Future] = {}
+        self._next_submit: int | None = None
+        self._tip_at = -1e9
+        self._last_summary = time.monotonic()
+        self._block_lags: deque[int] = deque(maxlen=METRIC_WINDOW)
+        self._fetch_ms: deque[float] = deque(maxlen=METRIC_WINDOW)
         self._log = log or (lambda m: print(redact_rpc_url(m), file=sys.stderr, flush=True))
         for d in (out_dir, self.creates_dir, state_dir):
             d.mkdir(parents=True, exist_ok=True)
@@ -360,16 +384,20 @@ class TipFollower:
                 block, code = self.fetch(slot)
             except TransientError as exc:
                 attempt += 1
-                self.retries += 1
-                if exc.rate_limited:
-                    self._consec_429 += 1
-                    if self._consec_429 >= self.breaker_after:
-                        self.breaker_trips += 1
-                        self._log_limited("breaker", f"circuit breaker: {self._consec_429} rate limits, pausing")
-                        self.sleep(self.breaker_pause_s)
+                trip = False
+                with self._stat_lock:
+                    self.retries += 1
+                    if exc.rate_limited:
+                        self._consec_429 += 1
+                        if self._consec_429 >= self.breaker_after:
+                            self.breaker_trips += 1
+                            trip = True
+                            self._log_limited("breaker", f"circuit breaker: {self._consec_429} rate limits, pausing")
+                            self._consec_429 = 0
+                    else:
                         self._consec_429 = 0
-                else:
-                    self._consec_429 = 0
+                if trip:
+                    self.sleep(self.breaker_pause_s)
                 if attempt > self.max_retries:
                     self._log_limited("unfetchable", f"slot {slot} unfetchable after {self.max_retries} retries")
                     return None, "gap"
@@ -385,13 +413,17 @@ class TipFollower:
                     continue
                 return None, "skipped"
             attempt += 1  # no block and no skip code: transient
-            self.retries += 1
+            with self._stat_lock:
+                self.retries += 1
             if attempt > self.max_retries:
                 return None, "gap"
             self._backoff(attempt)
 
     def process_slot(self, slot: int) -> None:
         block, outcome = self._fetch_with_retry(slot)
+        self._commit(slot, block, outcome)
+
+    def _commit(self, slot: int, block: dict[str, Any] | None, outcome: str) -> None:
         if outcome == "ok" and block is not None:
             self._verify_skips(block)
         self._emit(slot, block, outcome)
@@ -453,6 +485,7 @@ class TipFollower:
             obs = [observe_create_row(r, t_ms) for r in rows["creates"]]
             if isinstance(bt, int):
                 self.last_block_lag_ms = t_ms - bt * 1000
+                self._block_lags.append(self.last_block_lag_ms)
             self.blocks += 1
         elif outcome == "skipped":
             self.skipped += 1
@@ -583,6 +616,12 @@ class TipFollower:
             "pool_cache": len(self.pool_cache),
             "blocks": self.blocks,
             "credits_used": self.credits(),
+            "inflight": len(self._futs),
+            "fetch_workers": self.fetch_workers,
+            "block_lag_ms_p50": _pct(self._block_lags, 50),
+            "block_lag_ms_p90": _pct(self._block_lags, 90),
+            "fetch_ms_p50": _pct(self._fetch_ms, 50),
+            "fetch_ms_p90": _pct(self._fetch_ms, 90),
         }
 
     def heartbeat(self, force: bool = False) -> None:
@@ -590,6 +629,16 @@ class TipFollower:
         if force or now - self._last_beat >= HEARTBEAT_S:
             self._last_beat = now
             _atomic_json(self.status_path, self.status())
+        if now - self._last_summary >= self.summary_every_s:
+            self._last_summary = now
+            st = self.status()
+            self._log(
+                "summary " + " ".join(
+                    f"{k}={st[k]}" for k in (
+                        "lag_slots", "block_lag_ms_p50", "block_lag_ms_p90", "fetch_ms_p50", "fetch_ms_p90",
+                        "inflight", "backlog_jumps", "gaps", "skipped", "retries", "blocks", "credits_used")
+                )
+            )
 
     def retain(self, max_keep_days: int) -> int:
         cutoff_ms = self.clock_ms() - max_keep_days * 86_400_000
@@ -614,12 +663,79 @@ class TipFollower:
         self.gaps += n
         self.backlog_jumps += 1
         self._pending_skips.clear()
+        self._drop_inflight()
         self.last_done = last
+        self._next_submit = None
         self._checkpoint(None)
         self._log(f"backlog jump: {n} slots {first}..{last} recorded as gaps, resuming at tip {tip}")
 
+    def _drop_inflight(self) -> None:
+        for fut in self._futs.values():
+            fut.cancel()
+        self._futs.clear()
+
+    def _poll_tip(self) -> int:
+        now = time.monotonic()
+        if self.tip is None or now - self._tip_at >= self.tip_poll_s:
+            self.tip = self.get_tip()
+            self._tip_at = now
+        return self.tip
+
+    def _timed_fetch(self, slot: int) -> tuple[dict[str, Any] | None, str, float]:
+        t0 = time.monotonic()
+        block, outcome = self._fetch_with_retry(slot)
+        return block, outcome, (time.monotonic() - t0) * 1000.0
+
+    def _step_parallel(self) -> int:
+        """Pipelined step: keep up to fetch_workers*2 slots in flight (last_done + 1 .. tip),
+        commit strictly in slot order. Returns slots committed."""
+        tip = self._poll_tip()
+        if self.last_done is None:
+            self.last_done = tip - 1
+            self._checkpoint(None)
+        if tip - self.last_done > self.backlog_slots:
+            self._backlog_jump(tip)
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=self.fetch_workers, thread_name_prefix="getblock")
+        if self._next_submit is None or self._next_submit <= self.last_done:
+            self._next_submit = self.last_done + 1
+        cap = self.fetch_workers * 2
+        while self._next_submit <= tip and len(self._futs) < cap:
+            self._futs[self._next_submit] = self._pool.submit(self._timed_fetch, self._next_submit)
+            self._next_submit += 1
+        n = 0
+        while self._futs:
+            slot = self.last_done + 1
+            fut = self._futs.get(slot)
+            if fut is None:  # a contradicted-skip refetch moved nothing here; resync
+                self._drop_inflight()
+                self._next_submit = None
+                break
+            if not fut.done():
+                if n:
+                    break  # commit what is ready, go refill the pipeline
+                try:
+                    fut.result(timeout=0.2)
+                except FutureTimeout:
+                    break
+            del self._futs[slot]
+            block, outcome, ms = fut.result()
+            self._fetch_ms.append(ms)
+            self._commit(slot, block, outcome)
+            n += 1
+            self.heartbeat()
+        return n
+
+    def close_pool(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+            self._pool = None
+        self._futs.clear()
+
     def step(self) -> int:
         """Fetch up to BATCH_SLOTS slots, from last_done + 1 toward the tip. Returns slots processed."""
+        if self.fetch_workers > 1:
+            return self._step_parallel()
         tip = self.get_tip()
         self.tip = tip
         if self.last_done is None:
@@ -659,8 +775,9 @@ class TipFollower:
             if time.monotonic() - last_retain > 3600:
                 last_retain = time.monotonic()
                 self._log(f"retention removed {self.retain(max_keep_days)} files")
-            if n == 0:
+            if n == 0 and not self._futs:
                 stop.wait(idle_s)
+        self.close_pool()
         self.writer.close()
         self.cwriter.close()
         self.heartbeat(force=True)
@@ -756,10 +873,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--creates-out", default=DEFAULT_CREATES)
     ap.add_argument("--state-dir", default=DEFAULT_STATE)
-    ap.add_argument("--rps", type=float, default=5.0)
+    ap.add_argument("--rps", type=float, default=15.0)
+    ap.add_argument("--fetch-workers", type=int, default=8)
     ap.add_argument("--max-keep-days", type=int, default=3)
     ap.add_argument("--max-retries", type=int, default=8)
-    ap.add_argument("--backlog-slots", type=int, default=50)
+    ap.add_argument("--backlog-slots", type=int, default=150)
     ap.add_argument("--credits-per-call", type=int, default=1)
     args = ap.parse_args(argv)
     if args.rps <= 0:
@@ -779,6 +897,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         credits=credits,
         max_retries=args.max_retries,
         backlog_slots=args.backlog_slots,
+        fetch_workers=max(1, min(MAX_FETCH_WORKERS, args.fetch_workers)),
+        tip_poll_s=0.4,
     )
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):

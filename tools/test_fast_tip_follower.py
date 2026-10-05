@@ -694,3 +694,164 @@ def test_known_v_is_never_overwritten_and_no_v_is_retried_with_backoff(tmp_path)
     assert f._v_retry_at["Q"] == ftf.V_RETRY_CAP_S
     f._note_v("Q", V_LAMPORTS, 5.0)  # later read succeeds
     assert f.v_cache.get("Q") == V_LAMPORTS and "Q" not in f._v_retry_at
+
+
+# ---------------------------------------------------------------- parallel fetch, ordered commit
+import random
+import time as _time
+
+
+class SlowRpc(Rpc):
+    """Thread-safe fake chain with random per-slot latency; counts concurrency and limiter use."""
+
+    def __init__(self, tip, skipped=(), max_lat=0.01, seed=3) -> None:
+        super().__init__(tip, skipped)
+        self.rng = random.Random(seed)
+        self.lat = {}
+        self.lock = threading.Lock()
+        self.max_lat = max_lat
+        self.active = 0
+        self.max_active = 0
+        self.max_buffered = 0
+
+    def fetch(self, slot):
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            lat = self.lat.setdefault(slot, self.rng.random() * self.max_lat)
+        _time.sleep(lat)
+        try:
+            return super().fetch(slot)
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
+def _run_steps(f, until_slot, timeout=20.0):
+    t0 = _time.monotonic()
+    while (f.last_done or 0) < until_slot and _time.monotonic() - t0 < timeout:
+        f.step()
+    f.close_pool()
+
+
+def _snapshot(tmp_path):
+    out = {}
+    for base in ("out", "creates"):
+        for p in sorted((tmp_path / base).glob("*.jsonl")):
+            if p.name.startswith("gaps"):
+                continue
+            out[f"{base}/{p.name}"] = p.read_bytes()
+    return out
+
+
+def _fixed_clock():
+    return Clock(1_790_318_933_000)
+
+
+def test_parallel_output_byte_identical_to_sequential(tmp_path):
+    skipped = {105, 106, 111, 130}
+    seq_dir, par_dir = tmp_path / "seq", tmp_path / "par"
+    seq = _follower(seq_dir, SlowRpc(140, skipped, max_lat=0), backlog_slots=1000)
+    _seed(seq, 100)
+    seq.step(); seq.step()
+    assert seq.last_done == 140
+    rpc = SlowRpc(140, skipped, max_lat=0.01)
+    par = _follower(par_dir, rpc, fetch_workers=8, backlog_slots=1000)
+    _seed(par, 100)
+    _run_steps(par, 140)
+    assert par.last_done == 140
+    assert _snapshot(seq_dir) == _snapshot(par_dir)
+    assert rpc.max_active > 1  # actually concurrent
+    slots = [r["slot"] for r in _all(par_dir)]
+    assert slots == sorted(slots)
+    assert par.gaps == 0 and par.skipped == seq.skipped == 4
+
+
+def test_parallel_no_gaps_and_bounded_buffer(tmp_path):
+    rpc = SlowRpc(400, max_lat=0.005)
+    f = _follower(tmp_path, rpc, fetch_workers=4, backlog_slots=1000)
+    _seed(f, 100)
+    seen = 0
+    t0 = _time.monotonic()
+    while f.last_done < 400 and _time.monotonic() - t0 < 20:
+        f.step()
+        seen = max(seen, len(f._futs))
+    f.close_pool()
+    assert f.last_done == 400 and f.gaps == 0 and f.backlog_jumps == 0
+    assert seen <= 8 and rpc.max_active <= 4
+    slots = [r["slot"] for r in _all(tmp_path)]
+    assert slots == list(range(101, 401))
+
+
+def test_parallel_backlog_jump_when_chain_outruns(tmp_path):
+    rpc = SlowRpc(1000, max_lat=0)
+    f = _follower(tmp_path, rpc, fetch_workers=4, backlog_slots=150)
+    _seed(f, 100)
+    f.step()
+    f.close_pool()
+    assert f.backlog_jumps == 1
+    assert min(r["slot"] for r in _all(tmp_path)) >= 999
+    assert f.status()["backlog_jumps"] == 1
+
+
+def test_parallel_checkpoint_is_highest_contiguous_after_midflight_stop(tmp_path):
+    rpc = SlowRpc(200, max_lat=0)
+    rpc.lat[104] = 0.5  # head of line blocks while 105.. finish
+    f = _follower(tmp_path, rpc, fetch_workers=4, backlog_slots=1000)
+    _seed(f, 103)
+    f.step()  # commits nothing past 103 until 104 lands
+    f.close_pool()
+    assert f.last_done == 103
+    ck = json.loads((tmp_path / "state" / "checkpoint.json").read_text())
+    assert ck["last_done"] == 103
+    assert not list((tmp_path / "out").glob("trades-*.jsonl")) or _all(tmp_path) == []
+
+
+def test_parallel_limiter_shared_and_never_exceeded(monkeypatch):
+    from tools import pump_history_backfill as phb
+
+    stamps = []
+    lim = phb.RateLimiter(50)
+    orig = lim.acquire
+
+    def acquire():
+        orig()
+        stamps.append(_time.monotonic())
+
+    lim.acquire = acquire  # type: ignore[method-assign]
+    stop = threading.Event()
+
+    def worker():
+        for _ in range(10):
+            lim.acquire()
+
+    ts = [threading.Thread(target=worker) for _ in range(8)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    stamps.sort()
+    assert len(stamps) == 80
+    # 50 rps: any 1 s window holds at most ~51 calls
+    assert all(stamps[i + 51] - stamps[i] >= 0.95 for i in range(len(stamps) - 51))
+    b = phb.CreditBudget(cap=100, per_call=1)
+    got = []
+    ts = [threading.Thread(target=lambda: got.extend(b.reserve() for _ in range(50))) for _ in range(8)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert sum(got) == 100 and b.used == 100
+
+
+def test_parallel_status_metrics_and_summary(tmp_path):
+    logs = []
+    rpc = SlowRpc(130, max_lat=0.002)
+    f = _follower(tmp_path, rpc, fetch_workers=4, backlog_slots=1000, log=logs.append, summary_every_s=0.0)
+    _seed(f, 100)
+    _run_steps(f, 130)
+    st = f.status()
+    for k in ("lag_slots", "block_lag_ms_p50", "block_lag_ms_p90", "fetch_ms_p50", "fetch_ms_p90", "inflight", "backlog_jumps"):
+        assert k in st
+    assert st["fetch_ms_p50"] is not None and st["lag_slots"] == 0
+    assert any(m.startswith("summary ") for m in logs)
+
+
+def test_parallel_workers_clamped_and_defaults():
+    assert ftf.MAX_FETCH_WORKERS == 16
+    ap_src = Path(ftf.__file__).read_text()
+    assert "--fetch-workers" in ap_src and "default=15.0" in ap_src and "default=150" in ap_src
