@@ -39,43 +39,41 @@ The owner approved a **0.5 SOL live execution probe** (DEC-019) running alongsid
 | **Job #71** (research-0) | DEC-016 forward walk forward-1002. **Resubmit by about 10-09T15Z** (same command, params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
 | Owner question `q_YBNB8Qi1lR_WjQ` | DEC-018: five live-trial decisions, due about 10-14. |
 
-## Live probe status and next pin (manager5, 10-05 ~20:30Z)
+## Live probe status (manager5, 10-05 ~23:30Z)
 
-**Running:** pinned `a25eb17` since 17:53Z. At 20:26Z (job #178): 21/30 attempts, realized −0.072382 SOL, 1 open. Helm placed STOP for the re-pin.
+**Live build:** pinned `faa319227eee420319eed06e85774f64dd2273b1` since 23:09:56Z (Helm re-pin, 13/13 hashes, dry run passed). It contains:
+- #331: the mark from our own buy tx's postTokenBalances;
+- #332: log-only `drift_vs_seed`, with no skip.
 
-**Wallet (job #176, 20:16Z):**
-- 365,595,877 lamports, from a 509,528,770 deposit.
-- By build: `8a6849b` 6 trades −100,536,289 lamports; `a25eb17` 13 closed +8,622,236.
+**Limits:** 90 attempts, cap 0.25, priority 500k, end 2026-10-12T00Z. At resume: 28/90, −0.153362 SOL, 0 open.
 
-**Next pin: `7004b168f17ef063aff69d8b85c2ec43936194c6`** (DEC-019 Amendment 1 + 1a, plus #324).
-- Live config: 90 attempts, loss cap **250,000,000**, priority **500,000**, hard end **2026-10-12T00:00Z**.
-- Size 0.05 SOL and max 3 open are unchanged.
-- #324: exits no longer double count our own buy; ret was overstated by a mean 0.0010595, n = 19.
-- `f87eb48` was never installed.
-- Manifest is in the PR #325 thread and the notebook. The paper runner is unchanged.
-- Helm re-pins with the same steps as before. After that, the manager:
-  - runs the evidence job (13/13 hashes, tree check, fence verdict `pinned`);
-  - points the monitor at `7004b16`, with the loss alert at **0.20 SOL**.
+**Never installed:**
+- `a0bea86` (#330 snapshot mark; drift folded in);
+- `64d4a97` (only #331);
+- `f87eb48` (150k / 0.35).
 
-**Wallet floor (DEC-019 Am.1a):** about 0.10 SOL worst case (cap hit and 3 open positions at zero); about 0.20 SOL in a realistic bad case.
-
-**Landing baseline at 500k (a25eb17):** 14/14 buys landed 1–3 slots after the state read; 0 more than 3; 0 expiries.
+**Rollback:** `7004b16` is kept.
 
 **Monitoring:**
-- The hourly monitor is a session cron, so it dies with the session. Recreate it with the pinned `--status`, expecting `current` = the installed pin.
-- A durable root timer with Discord alerts has been requested from Helm.
-- Hard limits are enforced in code either way.
+- Helm's `mal-probe-watch.timer` posts to Discord. It is durable.
+- The manager's hourly session cron expects `current` = faa3192. Recreate it each session.
 
-**Measured today (notebook):**
-- **Entry:** a25eb17 lands 5–6 slots after migrate, vs 11–15 on 8a6849b.
-- **Exits:** sell decision→send ~30 ms; fills about −11 to −16 bps against the quote.
-- **Live vs sim** (`tools/probe_sim_calibration.py`, #322): exit decisions match on 18/19; median pnl gap −1,062,125 lamports. This checks execution, not edge.
+**10-05 results** (notebook; lab notes #327, probe-calibration-2026-10-05.md):
+- **Live vs sim (job #187):** exit decisions match 27/28. The buy-tx mark agrees best.
+- **Operating point:** keep threshold 0.8031. 0.05 SOL with 500k is about break-even after fees.
+- **Exit re-check under V with lag 2:** keep tp50/sl30. The nested advantage is 0.00000.
+- **Entry veto drift_gt_25:** quant-proof FAIL (40/46 vetoes were sim misses). It is log-only now.
+- **15% sim cap vs live:** 5/28 live trades fall outside it, and they made money. No guard.
+- **Rug-risk study** (#336, job #191): running.
+- **Grad stream** (job #167): result due ~00:30Z.
 
-**Running research:**
-- Job #167: grad-stream 6 h measurement. It ends about 00:30Z and then compares itself to the tip tape.
-- Job #177: EXP-012 operating point v2, exploration only. Threshold × k paired against frozen; size and fee are sensitivity only, per the quant-proof blockers.
-- 48 h early-arm shadow: `arm-audit.jsonl`.
-- No sim result can support a live size above 0.05 SOL (quant-proof).
+**DEC-020 (size step, proposal):**
+- Corrected cap math (Warden): at 0.25 SOL a stop costs 0.075–0.10 SOL.
+- Replay (job #190): the median is about 16 trades before the 0.35 cap, and about 7 before Option B's 0.20 cap.
+- The 0.05 probe stops during the step.
+- Owner question `q_p0Bl0UMhOgUV4g`.
+
+**Merge rule:** merge only on pytest's own exit code. #334 merged with a failing test through a `| tail` pipe; #335 fixed it.
 
 ## State on fast-0 (paper; DEC-015)
 

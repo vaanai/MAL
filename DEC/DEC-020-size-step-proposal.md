@@ -31,7 +31,10 @@ Source: the pinned `--status` and fills, 2026-10-05 ~23Z.
   - entry lands 5–6 slots after migration;
   - sell decision→send takes about 30 ms;
   - sim and live agree on exit decisions in 27/28 trades (job #187).
-- **Live build:** faa3192, which includes the mark from our own buy tx and log-only drift.
+- **Live build:** `faa319227eee420319eed06e85774f64dd2273b1`, live since 2026-10-05T23:09:56Z. It is #331 (mark from our own buy tx) plus #332 (log-only drift).
+  - **Re-pin record (Helm):** all 13 manifest hashes match, installer RC=0 with "manifest verified", keyless dry run passed, `mode=LIVE` with unchanged limits, STOP removed at 23:10:32Z, previous build 7004b16 kept for rollback.
+  - **Calibration replay that #331 required:** job #187, run on #331 at 0ab8ad1. #332 only adds logging. See [probe-calibration-2026-10-05.md](../ARTIFACTS/lab/probe-calibration-2026-10-05.md).
+  - **No faa3192 trades** are in the table above; they had not happened when this was written.
 
 The owner plans to add 1 SOL, which puts the wallet at about **1.36 SOL**.
 
@@ -44,7 +47,7 @@ These limits are enforced in executor code and config, not by a person. They are
 | size per entry | **0.25 SOL** | 5× the probe, half the DEC-018 trial size |
 | max open | **2** | caps exposure at about 0.52 SOL at cost |
 | attempts at 0.25 | **40** | enough to measure size costs; a separate count, never pooled with the 0.05 trades |
-| loss cap (realized, this step only) | **0.35 SOL** | about 7 full stop-losses at −0.30 to −0.40 |
+| loss cap (realized, this step only) | **0.35 SOL** | about **3.5–4.7** full stop-losses. At 0.25 SOL one stop at −0.30 to −0.40 costs 0.075–0.10 SOL, and one rug like 7004b16's C71Lk8Ko costs about −0.2318 SOL. See §3a. |
 | priority | 500,000 per side | landing conditions unchanged |
 | exits / entry | frozen tp50/sl30, frozen threshold, no veto | the studied strategy, unchanged |
 | end | the existing DEC-019 end instant, 2026-10-12T00:00Z, unless the owner extends it | |
@@ -54,6 +57,35 @@ These limits are enforced in executor code and config, not by a person. They are
 - Hard worst case: cap hit, plus 2 open positions at zero: 1.36 − 0.35 − 2 × 0.252 ≈ **0.50 SOL** left.
 - Realistic bad case: cap hit, with the open positions stopping near −40%: about **0.80 SOL** left.
 
+## 3a. Expected attempts before the cap (replay, job #190)
+
+**Correction.** The first version of this DEC (#333) said the 0.35 SOL cap covers "about 7 full stop-losses". That was the count at 0.05 SOL, not 0.25. Warden's review caught it, and the corrected numbers follow.
+
+**Method:**
+- Take the 22 closed trades on the fixed builds (a25eb17 and 7004b16), which sum to −52,825,937 lamports at 0.05 SOL.
+- Scale each to 0.25 SOL: the price-move part ×5, with fees fixed at 1,010,000 lamports per round trip.
+- This leaves out every size-proportional cost (exit lag, sell shortfall, MEV) and the extra price impact of a 5× order, so real results would be somewhat worse.
+- Scaled sum: −0.1752 SOL, mean −0.00797 SOL per trade.
+- The cap is checked on realized loss at buy time, as the executor does.
+
+| Sequence | Cap 0.35 SOL (40 attempts) | Cap 0.20 SOL (Option B, 20 attempts) |
+| --- | --- | --- |
+| The 22 fixed-build trades in their real order | all 22 made, cap not hit | cap hit; **12** attempts made |
+| The 7004b16 sequence alone (7 trades, sum −0.3739 SOL at 0.25) | cap hit after all **7** | cap hit; **6** of 7 made |
+| Bootstrap, 10,000 random 40- or 20-trade sequences from the 22 | attempts p10 **4**, p50 **16**, p90 40, mean 20.4; P(cap hit) **0.737** | attempts p10 **2**, p50 **7**, p90 20, mean 10.1; P(cap hit) **0.733** |
+
+**Reading:**
+- If the fixed builds' live record is representative, the 0.25 step most likely stops early: about 16 trades at the median with the 0.35 cap, and 7 with the 0.20 cap. Both caps are hit about 3 times in 4.
+- Option B's 20 attempts would most likely end after about 7 trades. That is too few to measure exit lag, sell shortfall or MEV, which is the reason for running it.
+- The caps are left as proposed so the owner decides with correct numbers. Raising a cap is a separate owner decision.
+- All of this uses the fixed builds' live record. Under Option A, the step only runs after a PASS on the forward read, which is evidence that this record may be worse than the strategy's true rate. That has not been measured.
+
+## 3b. The 0.05 probe during the 0.25 step
+
+Proposed: **the 0.05 probe stops (STOP) for the whole 0.25 step**, so the two never share the wallet.
+
+If both ran at once, the hard worst case would include the 0.05 probe's remaining cap room (about 0.097 SOL at writing) and its 3 open positions (about 3 × 0.052 SOL). That gives 1.36 − 0.35 − 2 × 0.252 − 0.097 − 3 × 0.052 ≈ **0.25 SOL** left, instead of about 0.50.
+
 ## 4. Options for the owner
 
 **Option A (default, recommended): start after the forward read.**
@@ -61,7 +93,7 @@ These limits are enforced in executor code and config, not by a person. They are
 - If the read fails, the size step does not happen, and the funds stay for the next candidate or are withdrawn.
 
 **Option B: a short cost-measurement run now.**
-- 20 attempts at 0.25 SOL, loss cap 0.20 SOL, max open 2, before the forward read.
+- 20 attempts at 0.25 SOL, loss cap 0.20 SOL, max open 2, before the forward read. Per §3a, it most likely stops after about 7 trades (p50; P(cap hit) 0.733 in the bootstrap).
 - Purpose: measure the size-proportional costs (exit lag, sell shortfall, MEV) early, so a PASS on 10-16 can go straight to a trial.
 - Risk: it puts real money behind an edge that is not yet proven out-of-sample. With the 0.20 cap, about 0.65 SOL stays in the wallet in the hard worst case.
 - This is the owner's call. The manager does not recommend it over Option A.
