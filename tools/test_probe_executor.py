@@ -423,6 +423,30 @@ class IntentTests(unittest.TestCase):
         self.assertEqual(got, {"mint": "M1", "decision_t_ms": 1000, "score": 0.9, "trigger": "migrate",
                                "book": pe.DEFAULT_BOOK, "written_ms": 1100})
 
+    def test_parse_intent_runner_kill_field(self):
+        d = pe.DEFAULT_BOOK
+        self.assertNotIn("runner_kill", pe.parse_intent(intent_row(), d, "ceiling"))  # old runner: unchanged
+        self.assertNotIn("runner_kill", pe.parse_intent(intent_row(runner_kill=False), d, "ceiling"))
+        self.assertIs(pe.parse_intent(intent_row(runner_kill=True), d, "ceiling")["runner_kill"], True)
+
+    def test_runner_kill_refuses_buy_but_false_or_missing_buys(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf = make(Path(d))
+            s = sig(ex)
+            s["runner_kill"] = True
+            ex.handle_signal(s)
+            self.assertEqual(fills(conf)[-1]["reason"], "runner_kill")
+            self.assertEqual(ex.state.attempts, 0)
+            self.assertEqual(ex.rpc.calls, [])
+        for extra in ({}, {"runner_kill": False}):
+            with tempfile.TemporaryDirectory() as d:
+                ex, conf = make(Path(d))
+                s = sig(ex)
+                s.update(extra)
+                ex.handle_signal(s)
+                self.assertEqual(ex.state.attempts, 1)
+                self.assertEqual(fills(conf)[-1]["kind"], "buy")
+
     def test_parse_intent_rejects_other_rows(self):
         self.assertIsNone(pe.parse_intent(intent_row(ledger="shadow"), pe.DEFAULT_BOOK, "ceiling"))
         self.assertIsNone(pe.parse_intent(intent_row(book="other"), pe.DEFAULT_BOOK, "ceiling"))

@@ -18,7 +18,13 @@
 # Before 2026-10-05T05:00:00Z (kill-review week, DEC-015 section 3) it refuses to run
 # unless --files-only. --files-only copies the config and the model files (md5 checked
 # against ARTIFACTS/exp012/FROZEN.md5 at <sha>) and nothing else.
-# --dry-run prints every action and changes nothing. It still verifies <sha> and md5s.
+# --dry-run prints every action and changes nothing. It still verifies <sha> and md5s, and evaluates the probe
+# drop-in fence read-only to print whether the probe base unit would be installed or skipped.
+#
+# Probe base unit (mal-probe-executor.service): installed only when there is no live drop-in (verdict none, the
+# keyless dry-run unit). Under a PINNED drop-in it is NOT installed or overwritten (a NOTE on stderr says so when the
+# installed file differs from <sha>); only install-probe-executor-pinned.sh may write it then. An unpinned live
+# drop-in still refuses every mode except --dry-run.
 set -euo pipefail
 export LC_ALL=C.UTF-8 LANG=C.UTF-8
 
@@ -51,7 +57,8 @@ HB_UNIT="mal-fast-runner-heartbeat.service"
 HB_TIMER="mal-fast-runner-heartbeat.timer"
 HB_DIR="${MAL_ROOT}/fast-forward-heartbeat"
 TIP_UNIT="mal-fast-tip-follower.service"
-# DEC-019 probe executor: the DRY-RUN unit only (no key, no LoadCredential). Installed, never enabled or started here.
+# DEC-019 probe executor: the DRY-RUN unit only (no key, no LoadCredential). Installed, never enabled or started here,
+# and ONLY while no live drop-in exists (fence verdict none). With a pinned drop-in it is skipped (see the fence below).
 # The live drop-in (mal-probe-executor-live.conf) is never installed by this script: Helm installs it after checking hashes.
 PROBE_UNIT="mal-probe-executor.service"
 PROBE_CFGS="scripts/mal-fast/probe-executor.json scripts/mal-fast/probe-executor-live.json"
@@ -95,20 +102,37 @@ if [[ -z "${MAL_FORWARD_OWNER+x}" || -n "${MAL_FORWARD_OWNER}" ]]; then
 else
   PROBE_DROPIN_DIR="${MAL_PROBE_DROPIN_DIR:-${SYSTEMD_DIR}/mal-probe-executor.service.d}"
 fi
-if [[ "${DRY}" == 0 ]]; then
-  # The runbook installs the pinned conf under the name live.conf, so names prove nothing. The helper reads
-  # every *.conf in the drop-in dir in lexical order with ExecStart reset semantics and calls the executor
-  # PINNED only when the final effective ExecStart is exactly the pinned command of
-  # mal-probe-executor-live-pinned.conf (taken from the repo checkout this script runs from).
-  FENCE_VERDICT="$(python3 "${SELF_DIR}/probe-dropin-fence.py" "${PROBE_DROPIN_DIR}" "${SELF_DIR}/mal-probe-executor-live-pinned.conf")" \
-    || die "refusing: could not evaluate the probe drop-in dir ${PROBE_DROPIN_DIR}"
+# The verdict is read-only (the helper only reads), so --dry-run evaluates it too: it decides whether the probe BASE unit
+# (mal-probe-executor.service) is installed. While the drop-in is pinned (or not provably none) the base unit is SKIPPED:
+# the pinned drop-in only sets LoadCredential/WorkingDirectory/ReadOnlyPaths/ExecStart/LimitCORE and INHERITS User=,
+# Environment=, EnvironmentFile= and all hardening from the base unit, so rewriting it here could change the key-holder's
+# user or inject LD_PRELOAD with no re-hash. Only install-probe-executor-pinned.sh (Helm, root clone, manifest) writes it.
+SKIP_PROBE_UNIT=0
+# The runbook installs the pinned conf under the name live.conf, so names prove nothing. The helper reads
+# every *.conf in the drop-in dir in lexical order with ExecStart reset semantics and calls the executor
+# PINNED only when the final effective ExecStart is exactly the pinned command of
+# mal-probe-executor-live-pinned.conf (taken from the repo checkout this script runs from).
+if FENCE_VERDICT="$(python3 "${SELF_DIR}/probe-dropin-fence.py" "${PROBE_DROPIN_DIR}" "${SELF_DIR}/mal-probe-executor-live-pinned.conf")"; then
   case "${FENCE_VERDICT}" in
     none) ;;
     pinned*)
-      echo "fast-forward-paper NOTE: the live probe executor drop-in in ${PROBE_DROPIN_DIR} is PINNED (${FENCE_VERDICT#pinned }): it runs root-owned code that this script does not touch. Runner files only. The pinned executor code and config change only through its own pinned script." >&2 ;;
+      SKIP_PROBE_UNIT=1
+      echo "fast-forward-paper NOTE: the live probe executor drop-in in ${PROBE_DROPIN_DIR} is PINNED (${FENCE_VERDICT#pinned }): it runs root-owned code that this script does not touch. Runner files only. The probe base unit ${PROBE_UNIT} is NOT installed here either (the drop-in inherits its User=, Environment= and hardening). The pinned executor code, config and base unit change only through install-probe-executor-pinned.sh." >&2 ;;
     *)
-      die "refusing: ${PROBE_DROPIN_DIR} makes the probe executor LIVE with a non-pinned command (${FENCE_VERDICT}); it may hold the wallet key. A routine reinstall must never swap code or units under a live key-holding process. Helm or the owner removes the drop-in (DEC-019, docs/runbooks/probe-executor.md) first. --dry-run is still allowed." ;;
+      if [[ "${DRY}" == 1 ]]; then
+        SKIP_PROBE_UNIT=1
+        echo "fast-forward-paper NOTE (dry-run): ${PROBE_DROPIN_DIR} makes the probe executor LIVE with a non-pinned command (${FENCE_VERDICT}); a real run would refuse. The probe base unit would NOT be installed." >&2
+      else
+        die "refusing: ${PROBE_DROPIN_DIR} makes the probe executor LIVE with a non-pinned command (${FENCE_VERDICT}); it may hold the wallet key. A routine reinstall must never swap code or units under a live key-holding process. Helm or the owner removes the drop-in (DEC-019, docs/runbooks/probe-executor.md) first. --dry-run is still allowed."
+      fi ;;
   esac
+else
+  if [[ "${DRY}" == 1 ]]; then
+    SKIP_PROBE_UNIT=1
+    echo "fast-forward-paper NOTE (dry-run): could not evaluate the probe drop-in dir ${PROBE_DROPIN_DIR}; the probe base unit would NOT be installed." >&2
+  else
+    die "refusing: could not evaluate the probe drop-in dir ${PROBE_DROPIN_DIR}"
+  fi
 fi
 
 # --- date fence (ISO-8601 Z strings sort lexically) ---
@@ -205,7 +229,13 @@ run sudo -n install -d "${OWN_ARGS[@]}" -m 0755 "${TIP_OUT}" "${TIP_CREATES}" "$
 if [[ "${DRY}" == 1 || ! -e "${TIP_LOG}" ]]; then
   run sudo -n install -m 0644 "${OWN_ARGS[@]}" /dev/null "${TIP_LOG}"
 fi
-for u in "${SLICE}" "${UNIT}" "${RESTART_UNIT}" "${RESTART_TIMER}" "${HB_UNIT}" "${HB_TIMER}" "${TIP_UNIT}" "${PROBE_UNIT}"; do
+UNITS=("${SLICE}" "${UNIT}" "${RESTART_UNIT}" "${RESTART_TIMER}" "${HB_UNIT}" "${HB_TIMER}" "${TIP_UNIT}")
+if [[ "${SKIP_PROBE_UNIT}" == 0 ]]; then
+  UNITS+=("${PROBE_UNIT}")
+elif ! cmp -s "${KIT}/${PROBE_UNIT}" "${SYSTEMD_DIR}/${PROBE_UNIT}"; then
+  echo "fast-forward-paper NOTE: the probe base unit ${SYSTEMD_DIR}/${PROBE_UNIT} was NOT updated: the installed file differs from (or is missing against) the copy at ${COMMIT}. Only install-probe-executor-pinned.sh (Helm, root clone, manifest) may write it, followed by a Helm restart." >&2
+fi
+for u in "${UNITS[@]}"; do
   run sudo -n install -m 0644 "${KIT}/${u}" "${SYSTEMD_DIR}/${u}"
 done
 run sudo -n systemctl daemon-reload

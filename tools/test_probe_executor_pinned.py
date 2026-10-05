@@ -72,6 +72,9 @@ def closure_files() -> list[str]:
     return sorted({"tools/__init__.py", *(m.replace(".", "/") + ".py" for m in mods)})
 
 
+BASE_UNIT = "scripts/mal-fast/mal-probe-executor.service"
+
+
 def installer_var(name: str) -> str:
     m = re.search(rf'^{name}="([^"]*)"', INSTALL.read_text(), re.M)
     assert m, name
@@ -198,7 +201,7 @@ def _run_installer(tmp_path, *args, fake_root=True, tamper=None, mode="755"):
     clone = tmp_path / "clone"
     (clone / "scripts/mal-fast").mkdir(parents=True)
     (clone / "tools").mkdir()
-    files = closure_files() + [e.split(":")[0] for e in installer_var("EXTRA").split()]
+    files = closure_files() + [e.split(":")[0] for e in installer_var("EXTRA").split()] + [BASE_UNIT]
     for f in files:
         shutil.copy(ROOT / f, clone / f)
     shutil.copy(INSTALL, clone / "scripts/mal-fast/install-probe-executor-pinned.sh")
@@ -431,3 +434,45 @@ def test_installer_checks_before_moves_and_rolls_back():
     assert t.index('"$CHECK" "$DEST/$COMMIT"') < t.index('mv -T "$DEST/.current.tmp"')
     assert "rollback()" in t and "Remove by hand" in t
     assert 'find "$DEST" ! -user root' not in t
+
+
+def test_base_unit_is_manifest_checked_and_installed_after_pointer_switch():
+    t = INSTALL.read_text()
+    assert 'BASE_UNIT_SRC="scripts/mal-fast/mal-probe-executor.service"' in t
+    assert BASE_UNIT == "scripts/mal-fast/mal-probe-executor.service" and (ROOT / BASE_UNIT).is_file()
+    # same git-show + manifest loop as MODULES/EXTRA: it is appended to PATHS before both
+    assert t.index('PATHS="$PATHS $BASE_UNIT_SRC"') < t.index('"${G[@]}" show "$COMMIT:$f"') < t.index('sha256 mismatch or missing manifest entry')
+    # written only after the pointer switch, root-owned, then daemon-reload
+    assert t.index('mv -T "$DEST/.current.tmp" "$DEST/current"') < t.index('install -m 0644 -o root -g root "$TMP/$BASE_UNIT_SRC" "$BASE_UNIT_DEST"')
+    assert "systemctl daemon-reload" in t and "STOPPED" in t
+
+
+def test_base_unit_guard_user_and_ld_and_envfile():
+    t = INSTALL.read_text()
+    assert "User=mal-live" in t and "Environment=.*LD_" in t and "EnvironmentFile=/var/lib/mal/fast-listener/helius.env" in t
+    assert t.index("User=mal-live") < t.index("is-active --quiet")  # guard runs before anything is installed
+    unit = (ROOT / BASE_UNIT).read_text()
+    assert "User=mal-live" in unit.splitlines() and "LD_" not in unit
+
+
+def _bad_unit_run(tmp_path, old, new):
+    # build the clone via the normal harness, then edit the unit, recommit and rerun
+    r = _run_installer(tmp_path, "SHA", tamper=lambda lines: lines)
+    assert "FAKE-INSTALL" in r.stdout
+    clone = tmp_path / "clone"
+    u = clone / BASE_UNIT
+    u.write_text(u.read_text().replace(old, new))
+    g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(clone)]
+    subprocess.run([*g, "commit", "-q", "-am", "bad"], check=True)
+    sha = subprocess.run([*g, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["bash", str(clone / "scripts/mal-fast/install-probe-executor-pinned.sh"), sha],
+                          env={"PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"}, capture_output=True, text=True)
+
+
+def test_bad_base_unit_refused_before_any_install(tmp_path):
+    r = _bad_unit_run(tmp_path / "a", "User=mal-live", "User=root")
+    assert r.returncode != 0 and "User=mal-live" in r.stderr and r.stdout.count("FAKE-INSTALL") == 0
+    r = _bad_unit_run(tmp_path / "b", "Environment=LC_ALL=C.UTF-8", "Environment=LD_PRELOAD=/x.so")
+    assert r.returncode != 0 and "LD_" in r.stderr and "FAKE-INSTALL" not in r.stdout
+    r = _bad_unit_run(tmp_path / "c", "EnvironmentFile=/var/lib/mal/fast-listener/helius.env", "EnvironmentFile=/tmp/evil.env")
+    assert r.returncode != 0 and "EnvironmentFile" in r.stderr and "FAKE-INSTALL" not in r.stdout

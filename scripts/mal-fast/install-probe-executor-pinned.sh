@@ -8,6 +8,9 @@
 #   /usr/local/lib/mal-probe-exec/<sha>/{launcher.py,probe-executor-live.json,requirements-probe-exec.txt,tools/*.py}
 #   /usr/local/lib/mal-probe-exec/venv       built from the hashed requirements only
 #   /usr/local/lib/mal-probe-exec/current -> <sha>   (atomic swap, last step)
+# This script is the ONLY writer of the live base unit /etc/systemd/system/mal-probe-executor.service (the pinned
+# drop-in inherits its User=, Environment=, EnvironmentFile= and hardening); the paper installer skips it while the
+# drop-in is pinned. The unit text comes from the same commit, is manifest-checked, and is installed after the pointer switch.
 # MODULES is the transitive import closure of tools.probe_executor + tools.probe_live inside tools/
 # (tools/test_probe_executor_pinned.py recomputes it from the sources and fails if this list differs).
 set -euo pipefail
@@ -21,6 +24,8 @@ UNIT=mal-probe-executor
 MODULES="tools/__init__.py tools/paper_curve_math.py tools/paper_price_path.py tools/paper_tape_scoreboard.py tools/probe_executor.py tools/probe_live.py tools/pumpswap_simulate.py tools/pumpswap_tx.py"
 # repo path:installed name (relative to <sha>/)
 EXTRA="scripts/mal-fast/probe_exec_launcher.py:launcher.py scripts/mal-fast/probe-executor-live.json:probe-executor-live.json scripts/mal-fast/requirements-probe-exec.txt:requirements-probe-exec.txt"
+BASE_UNIT_SRC="scripts/mal-fast/mal-probe-executor.service"
+BASE_UNIT_DEST=/etc/systemd/system/mal-probe-executor.service
 
 case "$COMMIT" in *[!0-9a-f]*|"") echo "commit must be a lowercase hex sha" >&2; exit 1 ;; esac
 [ "${#COMMIT}" -eq 40 ] || { echo "commit must be the full 40-char sha" >&2; exit 1; }
@@ -52,6 +57,7 @@ cleanup() { rm -rf "$TMP"; [ -z "$STAGE" ] || rm -rf "$STAGE"; [ -z "$VENV_NEW" 
 trap cleanup EXIT
 PATHS="$MODULES"
 for e in $EXTRA; do PATHS="$PATHS ${e%%:*}"; done
+PATHS="$PATHS $BASE_UNIT_SRC"
 for f in $PATHS; do
   mkdir -p "$TMP/$(dirname "$f")"
   # plain blob content: no export attributes or substitution
@@ -65,6 +71,17 @@ if [ -n "$MANIFEST" ]; then
     [ -n "$want" ] && [ "$want" = "$got" ] || { echo "refusing: sha256 mismatch or missing manifest entry for $f" >&2; exit 1; }
   done
   echo "manifest verified"
+fi
+
+# Defense in depth (grep-level) on the base unit text, before anything is installed: it must run as mal-live and may
+# inject no LD_* variable and no EnvironmentFile other than the Helius env file.
+UNIT_TXT="$TMP/$BASE_UNIT_SRC"
+grep -qx 'User=mal-live' "$UNIT_TXT" || { echo "refusing: $BASE_UNIT_SRC does not contain User=mal-live" >&2; exit 1; }
+if grep -Eq '^[[:space:]]*Environment=.*LD_' "$UNIT_TXT"; then
+  echo "refusing: $BASE_UNIT_SRC sets an LD_* environment variable" >&2; exit 1
+fi
+if grep -E '^[[:space:]]*EnvironmentFile=' "$UNIT_TXT" | grep -qvx 'EnvironmentFile=/var/lib/mal/fast-listener/helius.env'; then
+  echo "refusing: $BASE_UNIT_SRC has an EnvironmentFile other than /var/lib/mal/fast-listener/helius.env" >&2; exit 1
 fi
 
 # The venv is rebuilt in place, so the executor must not be running (stop it at 0 open positions first).
@@ -142,6 +159,13 @@ rm -rf "$DEST/venv.old"
 rm -f "$DEST/.current.tmp"
 ln -s "$COMMIT" "$DEST/.current.tmp"
 mv -T "$DEST/.current.tmp" "$DEST/current"
+
+# Base unit (the unit is stopped): root-owned, from the manifest-checked blob of this commit.
+if ! { install -m 0644 -o root -g root "$TMP/$BASE_UNIT_SRC" "$BASE_UNIT_DEST" && systemctl daemon-reload; }; then
+  echo "ERROR: the pointer now targets $COMMIT but installing $BASE_UNIT_DEST or daemon-reload FAILED. $UNIT is STOPPED; do not start it. Fix and rerun by hand: install -m 0644 -o root -g root <unit> $BASE_UNIT_DEST && systemctl daemon-reload" >&2
+  exit 1
+fi
+echo "installed base unit $BASE_UNIT_DEST: $(sha256sum "$BASE_UNIT_DEST")"
 
 echo "installed commit $COMMIT into $DEST/$COMMIT (previous current: ${PREV:-none}); sha256 of installed files:"
 (cd "$DEST/$COMMIT" && find . -type f -print0 | sort -z | xargs -0 sha256sum)
