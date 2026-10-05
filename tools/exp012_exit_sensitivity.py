@@ -441,7 +441,7 @@ def render_md(rep: Mapping[str, Any]) -> str:
         "Caveats:",
         *[f"- {c}" for c in rep["caveats"]],
         "",
-        "Mean SOL per trade (0.5 SOL entries), 90% CI, ex-top-3 total SOL. REF = the frozen tp50_sl30. Rank is by pressure mean among the variants tried.",
+        f"Mean SOL per trade ({rep.get('size_label', '0.5 SOL entries')}), 90% CI, ex-top-3 total SOL. REF = the frozen tp50_sl30. Rank is by pressure mean among the variants tried.",
         "",
         "| rank | variant | n | fill | flat mean | flat CI90 | flat ex-top3 | press mean | press CI90 | press ex-top3 | press days+ | unfiltered press mean |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",

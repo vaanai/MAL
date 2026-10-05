@@ -355,6 +355,7 @@ def score_one(
     priority: int | None = None,
     entry_land_k: int | None = None,
     entry_bound: str | None = None,
+    exit_land_k: int = 0,
 ) -> list[dict[str, Any]]:
     """`specs`/`size`/`priority` default (None) to TARGET_SPECS / ENTRY_SIZE /
     ENTRY_PRIORITY_LAMPORTS, resolved here at call time, so the frozen B3 grid
@@ -363,7 +364,8 @@ def score_one(
     `entry_land_k`/`entry_bound` (latency sensitivity, exploration only): the
     slot offset and bound of the ENTRY state. None resolves to ENTRY_LAND_K /
     ENTRY_BOUND, byte-identical to before. They move only the entry; the exit
-    delay inside eval_spec still uses exploration_exits' frozen constants."""
+    delay inside eval_spec still uses exploration_exits' frozen constants unless
+    `exit_land_k` > 0 (exit lag, exploration only; 0 = unchanged)."""
     specs = TARGET_SPECS if specs is None else specs
     size = ENTRY_SIZE if size is None else size
     priority = ENTRY_PRIORITY_LAMPORTS if priority is None else priority
@@ -409,7 +411,7 @@ def score_one(
     venue = state.venue
     p_press = curve.p(Pressure(buys, nearby))
     for spec in specs:
-        result = eval_spec(spec, fills, idx, state.price_sol, buy, venue, landing_ms, tape_through_ms, size)
+        result = eval_spec(spec, fills, idx, state.price_sol, buy, venue, landing_ms, tape_through_ms, size, exit_land_k)
         if result is None:
             continue
         net0, gross, sides, status = result

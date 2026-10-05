@@ -270,11 +270,13 @@ class PairedAndNestedTests(unittest.TestCase):
             self.assertIn(needle, md)
         self.assertIn("not implemented", rep["exit_side_latency"])
 
-    def test_exit_latency_really_is_not_a_parameter_of_exploration_exits(self) -> None:
+    def test_exit_lag_is_an_optional_parameter_defaulting_to_the_frozen_behaviour(self) -> None:
+        # Superseded the "exit latency is not a parameter" check: exit_land_k now exists (tools.exp012_exit_sensitivity_v
+        # uses it) and its default 0 leaves this tool's k=1 results unchanged (tools/test_exploration_exits_lag.py).
         import inspect
 
         for fn in (ex._eval_tpsl, ex._eval_trail, ex._eval_ladder, ex.eval_spec):
-            self.assertFalse([p for p in inspect.signature(fn).parameters if "delay" in p or "land_k" in p or "exit_land" in p or "exit_k" in p], fn.__name__)
+            self.assertEqual(inspect.signature(fn).parameters["exit_land_k"].default, 0, fn.__name__)
 
 
 class TriesLogTests(unittest.TestCase):
