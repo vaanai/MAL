@@ -8,6 +8,8 @@
   "stop_file": "/var/lib/mal-live/STOP",
   "commitment": "confirmed",
   "poll_s": 5.0,
+  "exit_poll_ms": 400,
+  "exit_commitment": "processed",
   "signal_poll_ms": 50,
   "rps": 2.0,
   "max_signal_age_s": 120,
