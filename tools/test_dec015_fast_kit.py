@@ -592,6 +592,39 @@ def test_fence_merges_dirs_with_masking(tmp_path):
     assert fence.verdict_dirs([a, b], PINNED_CONF) == "none"
 
 
+def test_forward_install_refuses_non_pinned_dropin_in_prefix_and_toplevel_dirs(kit_repo, tmp_path):
+    """systemd also merges service.d, mal-.service.d, mal-probe-.service.d, mal-probe-executor-.service.d, under /etc, /run,
+    /usr/local/lib and /usr/lib (test mode: under MAL_SYSTEMD_DIR, run/, usrlocal/, lib/)."""
+    names = ["service.d", "mal-.service.d", "mal-probe-.service.d", "mal-probe-executor-.service.d", "mal-probe-executor.service.d"]
+    roots = ["", "run", "usrlocal", "lib"]
+    n = 0
+    for root in roots:
+        for name in names:
+            tp = tmp_path / f"c{n}"
+            n += 1
+            tp.mkdir()
+            env = _full_install_env(tp, pinned=False)
+            d = tp / "systemd" / root / name
+            d.mkdir(parents=True)
+            (d / "evil.conf").write_text((KIT / "mal-probe-executor-live.conf").read_text())
+            r = _fwd(kit_repo["repo"], "--commit", kit_repo["good"], env=env)
+            assert r.returncode != 0 and "non-pinned" in r.stderr, (root, name, r.stderr)
+            assert not (tp / "systemd" / "mal-probe-executor.service").exists()
+
+
+def test_forward_install_notes_missing_rpc_dir_but_never_refuses(kit_repo, tmp_path):
+    env = _full_install_env(tmp_path, pinned=False)
+    env["MAL_PROBE_RPC_DIR"] = str(tmp_path / "no-such-rpc-dir")
+    r = _fwd(kit_repo["repo"], "--commit", kit_repo["good"], env=env)
+    assert r.returncode == 0, r.stderr
+    assert "does not exist" in r.stderr and "fast-forward-paper NOTE" in r.stderr
+    assert (tmp_path / "systemd" / "mal-probe-executor.service").is_file()  # still installed
+    (tmp_path / "rpcdir").mkdir()
+    env["MAL_PROBE_RPC_DIR"] = str(tmp_path / "rpcdir")
+    r = _fwd(kit_repo["repo"], "--commit", kit_repo["good"], env=env)
+    assert r.returncode == 0 and "does not exist" not in r.stderr
+
+
 def test_forward_install_rechecks_fence_before_unit_install():
     t = (KIT / "install-fast-forward-paper.sh").read_text()
     assert t.index("FENCE_PASS=recheck") < t.index('for u in "${UNITS[@]}"')

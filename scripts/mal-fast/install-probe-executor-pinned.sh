@@ -80,6 +80,14 @@ echo "manifest verified"
 /usr/bin/python3 -I "$TMP/$BASE_UNIT_CHECK" "$TMP/$BASE_UNIT_SRC" \
   || { echo "refusing: $BASE_UNIT_SRC failed the allowlist check; nothing was installed" >&2; exit 1; }
 
+# Pre-flight: the key holder's EnvironmentFile must already be the root-only copy (this script runs as root, so it can
+# stat both). Refuse otherwise, before anything is installed or moved.
+RPC_DIR=/etc/mal-probe-rpc
+[ "$(stat -c %u:%g:%a "$RPC_DIR" 2>/dev/null)" = "0:0:700" ] \
+  || { echo "refusing: $RPC_DIR must exist as a root:root 0700 directory (Helm provisions it first; docs/runbooks/probe-executor.md 2b)" >&2; exit 1; }
+[ "$(stat -c %u:%g:%a "$RPC_DIR/helius.env" 2>/dev/null)" = "0:0:600" ] \
+  || { echo "refusing: $RPC_DIR/helius.env must exist as a root:root 0600 file (only the HELIUS_API_KEY= line)" >&2; exit 1; }
+
 # The venv is rebuilt in place, so the executor must not be running (stop it at 0 open positions first).
 if systemctl is-active --quiet "$UNIT"; then
   echo "refusing: $UNIT is active; stop it first (see docs/runbooks/probe-executor.md section 2b)" >&2
@@ -121,7 +129,12 @@ NEW_PLACED=0  # the new venv now sits at $DEST/venv
 UNIT_PLACED=0 # the new base unit now sits at $BASE_UNIT_DEST (previous kept as .old)
 rollback() {
   echo "ROLLBACK: $1" >&2
+  trap '' INT TERM HUP   # a second signal must not interrupt the rollback itself
   local ok=1
+  # the pointer may already have moved (a signal between its switch and the end): put it back before removing the sha dir
+  if [ "$(readlink "$DEST/current" 2>/dev/null || true)" = "$COMMIT" ]; then
+    if [ -n "$PREV" ]; then ln -sfn "$PREV" "$DEST/current" || ok=0; else rm -f "$DEST/current" || ok=0; fi
+  fi
   if [ "$UNIT_PLACED" -eq 1 ]; then
     if [ -e "$BASE_UNIT_DEST.old" ]; then mv -T "$BASE_UNIT_DEST.old" "$BASE_UNIT_DEST" || ok=0
     else rm -f "$BASE_UNIT_DEST" || ok=0; fi
@@ -141,6 +154,9 @@ rollback() {
   fi
   exit 1
 }
+# From here to the pointer switch a signal runs the same rollback (it removes the sha dir, restores the venv and the
+# previous base unit). The traps are cleared right after the pointer switch.
+trap 'rollback "interrupted by a signal"' INT TERM HUP
 rm -rf "$DEST/venv.old"
 mv -T "$STAGE" "$DEST/$COMMIT" || rollback "moving the staged tree failed"
 STAGE=""
@@ -169,6 +185,7 @@ systemctl daemon-reload || rollback "daemon-reload failed ($UNIT is stopped)"
 rm -f "$DEST/.current.tmp"
 ln -s "$COMMIT" "$DEST/.current.tmp" || rollback "creating the pointer failed"
 mv -T "$DEST/.current.tmp" "$DEST/current" || rollback "switching the pointer failed"
+trap - INT TERM HUP
 rm -rf "$DEST/venv.old"
 rm -f "$BASE_UNIT_DEST.old"
 echo "installed base unit $BASE_UNIT_DEST: $(sha256sum "$BASE_UNIT_DEST")"

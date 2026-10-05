@@ -216,7 +216,9 @@ def _run_installer(tmp_path, *args, fake_root=True, tamper=None, mode="755"):
     bindir.mkdir()
     fakes = {
         "id": '[ "$1" = "-u" ] && echo 0 && exit 0\nexec /usr/bin/id "$@"',
-        "stat": f'case "$2" in %a) echo {mode};; %u) echo 0;; *) exec /usr/bin/stat "$@";; esac',
+        "stat": (f'case "$2" in %a) echo {mode};; %u) echo 0;; '
+                 '%u:%g:%a) case "$3" in */helius.env) echo 0:0:600;; *) echo 0:0:700;; esac;; '
+                 '*) exec /usr/bin/stat "$@";; esac'),
         "find": "exit 0",
         "systemctl": "exit 3",  # not active
         "install": 'echo "FAKE-INSTALL $*"; exit 99',  # never touch the real filesystem
@@ -482,10 +484,14 @@ def test_checker_accepts_the_shipped_unit_and_has_the_intended_hardening():
     unit = (ROOT / BASE_UNIT).read_text()
     assert c.problems(unit) == []
     assert "EnvironmentFile=/etc/mal-probe-rpc/helius.env" in unit.splitlines()
-    assert any(l.startswith("ExecStartPre=+/bin/sh -c 'test ") for l in unit.splitlines())
+    assert any(l.startswith("ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test ") for l in unit.splitlines())
     assert "Slice=" not in unit
     assert "fast-listener" not in "\n".join(l for l in unit.splitlines() if not l.startswith("#"))
     assert "ExecStartPre=" + c.PRE in unit.splitlines()
+    # EnvironmentFile applies to the "+" command too: env -i and absolute paths keep PATH=/LD_PRELOAD= out of it
+    assert c.PRE.startswith("+/usr/bin/env -i /bin/sh -c ") and "/usr/bin/stat -c" in c.PRE and " stat -c" not in c.PRE
+    for exe in ("/usr/bin/env", "/usr/bin/stat", "/bin/sh"):
+        assert os.path.exists(exe), exe
 
 
 def _mutations():
@@ -534,8 +540,40 @@ def test_checker_refuses_every_bypass():
 def test_checker_normalises_only_whitespace_around_equals():
     c = _checker()
     unit = (ROOT / BASE_UNIT).read_text()
-    assert c.problems(unit.replace("User=mal-live", "User = mal-live")) == []
+    assert c.problems(unit.replace("User=mal-live", "  User=mal-live  ")) == []
+    assert c.problems(unit.replace("User=mal-live", "User= mal-live")) == []  # systemd strips leading value whitespace
+    assert c.problems(unit.replace("User=mal-live", "User =mal-live"))  # systemd: unknown key "User "
+    assert c.problems(unit.replace("NoNewPrivileges=true", "NoNewPrivileges =true"))
     assert c.problems(unit.replace("User=mal-live", "User=mal-live2"))
+
+
+def test_checker_refuses_unicode_whitespace_and_control_bytes():
+    c = _checker()
+    unit = (ROOT / BASE_UNIT).read_text()
+    assert unit.isascii() and "\r" not in unit
+    cases = {
+        "nbsp in key": unit.replace("User=mal-live", "User\u00a0=mal-live"),
+        "nbsp in value": unit.replace("User=mal-live", "User=mal-live\u00a0"),
+        "nbsp leading": unit.replace("\nUser=mal-live", "\n\u00a0User=mal-live"),
+        "ideographic space": unit.replace("Nice=10", "\u3000Nice=10"),
+        "lone CR hides a line": unit.replace("Nice=10", "#x\rNoNewPrivileges=true\nNice=10"),
+        "lone CR": unit.replace("Nice=10\n", "Nice=10\r"),
+        "CRLF": unit.replace("\n", "\r\n"),
+        "VT": unit.replace("Nice=10", "\x0bNice=10"),
+        "FF": unit.replace("Nice=10", "Nice=10\x0c"),
+        "FS 0x1c": unit.replace("Nice=10", "Nice=10\x1c"),
+        "GS 0x1d": unit.replace("Nice=10", "Nice=10\x1d"),
+        "RS 0x1e": unit.replace("Nice=10", "Nice=10\x1e"),
+        "NEL u0085": unit.replace("Nice=10", "Nice=10\u0085"),
+        "NUL": unit.replace("Nice=10", "Nice=10\x00"),
+        "BOM": "\ufeff" + unit,
+        "U+2028": unit.replace("Nice=10", "Nice=10\u2028User=root"),
+    }
+    for name, text in cases.items():
+        assert text != unit, name
+        assert c.problems(text), f"checker accepted: {name}"
+    assert c.problems(unit.encode("ascii")) == []
+    assert c.problems(unit.encode("ascii").replace(b"Nice=10", b"Nice=10\xc2\xa0"))  # raw bytes input
 
 
 def _hash_manifest(clone, files):
@@ -561,10 +599,33 @@ def _bad_unit_run(tmp_path, old, new):
                           env={"PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"}, capture_output=True, text=True)
 
 
+def test_preflight_refuses_without_root_only_key_dir_and_file(tmp_path):
+    _run_installer(tmp_path, "SHA")
+    clone = tmp_path / "clone"
+    sha = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    env = {"PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"}
+    for body, want in (('case "$3" in */helius.env) echo 0:0:600;; *) echo 1000:1000:755;; esac', "root:root 0700 directory"),
+                       ('case "$3" in */helius.env) echo 1000:1000:644;; *) echo 0:0:700;; esac', "root:root 0600 file")):
+        (tmp_path / "bin/stat").write_text('#!/bin/sh\ncase "$2" in %a) echo 755;; %u) echo 0;; %u:%g:%a) ' + body + ';; *) exec /usr/bin/stat "$@";; esac\n')
+        r = subprocess.run(["bash", str(clone / "scripts/mal-fast/install-probe-executor-pinned.sh"), sha, str(tmp_path / "manifest")],
+                           env=env, capture_output=True, text=True)
+        assert r.returncode != 0 and want in r.stderr and "FAKE-INSTALL" not in r.stdout, r.stderr
+
+
+def test_installer_traps_signals_for_rollback_and_clears_after_pointer_switch():
+    t = INSTALL.read_text()
+    arm = t.index("trap 'rollback \"interrupted by a signal\"' INT TERM HUP")
+    assert arm < t.index('mv -T "$STAGE" "$DEST/$COMMIT"')
+    assert t.index('mv -T "$DEST/.current.tmp" "$DEST/current"') < t.index("trap - INT TERM HUP")
+    assert "trap '' INT TERM HUP" in t  # rollback itself is not interruptible
+    assert t.index("stat -c %u:%g:%a") < t.index("is-active --quiet")  # pre-flight before anything is moved
+
+
 def test_installer_runs_checker_and_refuses_bad_unit_before_any_install(tmp_path):
     cases = [
         ("User=mal-live", "User=root"),
         ("Environment=LC_ALL=C.UTF-8", "Environment = LD_PRELOAD=/x.so"),
+        ("User=mal-live", "User =mal-live"),
         ("EnvironmentFile=/etc/mal-probe-rpc/helius.env", "EnvironmentFile=/var/lib/mal/fast-listener/helius.env"),
     ]
     for i, (old, new) in enumerate(cases):

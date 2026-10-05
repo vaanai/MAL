@@ -250,10 +250,27 @@ class KeyTests(unittest.TestCase):
             order.append("key")
             raise SystemExit("stop")
 
-        with mock.patch.object(pl, "harden_process", lambda: order.append("harden")), mock.patch.object(pl, "load_probe_key", side_effect=key):
+        with mock.patch.object(pl, "harden_process", lambda: order.append("harden")), mock.patch.object(pl, "load_probe_key", side_effect=key), \
+                mock.patch.dict(os.environ, {"HELIUS_API_KEY": "k"}):
             with self.assertRaises(SystemExit):
                 pl.run_live({"mode": "live"}, mock.Mock(env_file="x"), 5.0)
         self.assertEqual(order, ["harden", "key"])
+
+    def test_live_fails_closed_without_rpc_key_and_never_reads_env_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            envf = Path(d) / "helius.env"
+            envf.write_text("HELIUS_API_KEY=from-file\n")
+            env = {k: v for k, v in os.environ.items() if k != "HELIUS_API_KEY"}
+            with mock.patch.object(pl, "harden_process"), mock.patch.object(pl, "load_probe_key") as lk, \
+                    mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = pl.run_live({"mode": "live"}, mock.Mock(env_file=str(envf)), 5.0)
+            self.assertEqual(rc, 2)
+            self.assertIn("ALERT startup_refused rpc_key_missing", out.getvalue())
+            lk.assert_not_called()  # before the wallet key loads
+            with mock.patch.dict(os.environ, env, clear=True):
+                with self.assertRaises(SystemExit):
+                    pl.sim.load_rpc_url(None, str(envf), use_env_file=False)  # no fallback file
+                self.assertIn("from-file", pl.sim.load_rpc_url(None, str(envf)))  # dry run keeps the fallback
 
 
 class BuyFlowTests(unittest.TestCase):

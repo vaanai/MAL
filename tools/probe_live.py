@@ -767,9 +767,14 @@ def run_live(cfg: dict[str, Any], args: Any, poll_s: float) -> int:
     harden_process()
     if "key_path" in cfg:
         raise SystemExit("live mode has no key path override: the key comes from the systemd credential only")
+    # Fail closed BEFORE the wallet key loads: the RPC key must come from the root-only EnvironmentFile via the
+    # environment. No env-file fallback in live mode (the fallback files are not root-only).
+    if not (os.environ.get("HELIUS_API_KEY") or "").strip():
+        print("probe_executor ALERT startup_refused rpc_key_missing", flush=True)
+        return 2
     kp = load_probe_key()
     rps = float(cfg.get("rps", pe.MAX_RPS))
-    rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file)), rps=rps, max_rps=LIVE_MAX_RPS)
+    rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file, use_env_file=False)), rps=rps, max_rps=LIVE_MAX_RPS)
     ex = LiveExecutor(rpc, cfg, kp)
     print(f"probe_executor mode=LIVE user={ex.user} book={ex.book} limits={ex.limits}", flush=True)
     if args.once:

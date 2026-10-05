@@ -18,7 +18,7 @@ Environment=LANG=C.UTF-8
 EnvironmentFile=/etc/mal-probe-rpc/helius.env
 # Root-run inline check, no file-based code (nothing ubuntu-writable may run as root). "+" lifts the sandbox for this
 # command only, so SystemCallFilter/CapabilityBoundingSet=/NoNewPrivileges do not apply to it. %% is systemd's escape for %.
-ExecStartPre=+/bin/sh -c 'test "$(stat -c %%u:%%g:%%a /etc/mal-probe-rpc)" = 0:0:700 && test "$(stat -c %%u:%%g:%%a /etc/mal-probe-rpc/helius.env)" = 0:0:600'
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-probe-rpc)" = 0:0:700 && test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-probe-rpc/helius.env)" = 0:0:600'
 ExecStart=/var/lib/mal/fast-forward/venv/bin/python -m tools.probe_executor --config /var/lib/mal/fast-forward/src/scripts/mal-fast/probe-executor.json
 Restart=on-failure
 RestartSec=10

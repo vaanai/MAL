@@ -109,12 +109,33 @@ fi
 # user or inject LD_PRELOAD with no re-hash. Only install-probe-executor-pinned.sh (Helm, root clone, manifest) writes it.
 # systemd also merges drop-ins from /run and /usr/lib (same file name in /etc masks them): all three are scanned. Verdict
 # `none` means no drop-in in any of them sets LoadCredential or an ExecStart; the key only arrives via LoadCredential.
+# Scanned: every drop-in dir name systemd merges for this unit (<unit>.service.d, and the dash-prefix forms
+# mal-probe-executor-.service.d, mal-probe-.service.d, mal-.service.d, plus the top-level service.d) under each unit search
+# root: system.control, transient, /etc, /run, /usr/local/lib, /usr/lib, /lib and the generator dirs. Paths are fixed in prod;
+# test mode (MAL_FORWARD_OWNER set and empty) puts them under MAL_SYSTEMD_DIR and honours MAL_PROBE_DROPIN_{RUN,LIB}_DIR as
+# extra dirs. NOT covered (documented gap): a drop-in reachable only through a unit alias or a `Also=`/Requires= unit that
+# is not this unit, and a mask symlink of the unit file itself (a masked unit cannot start, so it fails closed).
+DROPIN_NAMES=(mal-probe-executor.service.d mal-probe-executor-.service.d mal-probe-.service.d mal-.service.d service.d)
 if [[ -z "${MAL_FORWARD_OWNER+x}" || -n "${MAL_FORWARD_OWNER}" ]]; then
-  PROBE_DROPIN_RUN_DIR="/run/systemd/system/mal-probe-executor.service.d"
-  PROBE_DROPIN_LIB_DIR="/usr/lib/systemd/system/mal-probe-executor.service.d"
+  DROPIN_ROOTS=(/etc/systemd/system.control /run/systemd/system.control /run/systemd/transient /run/systemd/generator.early
+    /etc/systemd/system /run/systemd/system /run/systemd/generator /usr/local/lib/systemd/system /usr/lib/systemd/system
+    /lib/systemd/system /run/systemd/generator.late)
+  EXTRA_DROPIN_DIRS=()
 else
-  PROBE_DROPIN_RUN_DIR="${MAL_PROBE_DROPIN_RUN_DIR:-${SYSTEMD_DIR}/run/mal-probe-executor.service.d}"
-  PROBE_DROPIN_LIB_DIR="${MAL_PROBE_DROPIN_LIB_DIR:-${SYSTEMD_DIR}/lib/mal-probe-executor.service.d}"
+  DROPIN_ROOTS=("${SYSTEMD_DIR}" "${SYSTEMD_DIR}/run" "${SYSTEMD_DIR}/usrlocal" "${SYSTEMD_DIR}/lib")
+  EXTRA_DROPIN_DIRS=("${MAL_PROBE_DROPIN_RUN_DIR:-${SYSTEMD_DIR}/run/mal-probe-executor.service.d}"
+    "${MAL_PROBE_DROPIN_LIB_DIR:-${SYSTEMD_DIR}/lib/mal-probe-executor.service.d}")
+fi
+PROBE_DROPIN_DIRS=("${PROBE_DROPIN_DIR}")
+for r in "${DROPIN_ROOTS[@]}"; do
+  for n in "${DROPIN_NAMES[@]}"; do PROBE_DROPIN_DIRS+=("${r}/${n}"); done
+done
+PROBE_DROPIN_DIRS+=("${EXTRA_DROPIN_DIRS[@]}")
+# NOTE only (never a refusal: paper work must not block): the base unit needs the root-only key dir to start.
+if [[ -z "${MAL_FORWARD_OWNER+x}" || -n "${MAL_FORWARD_OWNER}" ]]; then
+  PROBE_RPC_DIR="/etc/mal-probe-rpc"
+else
+  PROBE_RPC_DIR="${MAL_PROBE_RPC_DIR:-/etc/mal-probe-rpc}"
 fi
 FENCE_PASS=first
 fence_note() { if [[ "${FENCE_PASS}" == first ]]; then echo "$1" >&2; fi; }
@@ -126,7 +147,7 @@ fence_eval() {
 # every *.conf in the drop-in dir in lexical order with ExecStart reset semantics and calls the executor
 # PINNED only when the final effective ExecStart is exactly the pinned command of
 # mal-probe-executor-live-pinned.conf (taken from the repo checkout this script runs from).
-if FENCE_VERDICT="$(python3 "${SELF_DIR}/probe-dropin-fence.py" "${PROBE_DROPIN_DIR}" "${PROBE_DROPIN_RUN_DIR}" "${PROBE_DROPIN_LIB_DIR}" "${SELF_DIR}/mal-probe-executor-live-pinned.conf")"; then
+if FENCE_VERDICT="$(python3 "${SELF_DIR}/probe-dropin-fence.py" "${PROBE_DROPIN_DIRS[@]}" "${SELF_DIR}/mal-probe-executor-live-pinned.conf")"; then
   case "${FENCE_VERDICT}" in
     none) ;;
     pinned*)
@@ -250,6 +271,9 @@ fence_eval
 UNITS=("${SLICE}" "${UNIT}" "${RESTART_UNIT}" "${RESTART_TIMER}" "${HB_UNIT}" "${HB_TIMER}" "${TIP_UNIT}")
 if [[ "${SKIP_PROBE_UNIT}" == 0 ]]; then
   UNITS+=("${PROBE_UNIT}")
+  if [[ ! -d "${PROBE_RPC_DIR}" ]]; then
+    echo "fast-forward-paper NOTE: ${PROBE_RPC_DIR} does not exist (root:root 0700, holds helius.env). The probe base unit ${PROBE_UNIT} is installed anyway (dry-run unit, never started here) but it will fail to start until Helm provisions that directory." >&2
+  fi
 elif [[ ! -e "${SYSTEMD_DIR}/${PROBE_UNIT}" ]]; then
   echo "fast-forward-paper NOTE: the probe base unit ${SYSTEMD_DIR}/${PROBE_UNIT} is MISSING and was NOT installed (verdict skips it). Only install-probe-executor-pinned.sh (Helm, root clone, manifest) may write it." >&2
 elif ! cmp -s "${KIT}/${PROBE_UNIT}" "${SYSTEMD_DIR}/${PROBE_UNIT}"; then
