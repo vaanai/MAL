@@ -153,7 +153,45 @@ def _keys(res: dict) -> list[str]:
     return [k if isinstance(k, str) else k["pubkey"] for k in res["transaction"]["message"]["accountKeys"]]
 
 
-def parse_meta(res: dict, user: Pubkey, base_mint: Pubkey, base_ata: Pubkey) -> dict[str, Any]:
+def _vault_post(res: dict, base_mint: Pubkey, base_vault: str | None, quote_vault: str | None) -> dict[str, int | None]:
+    """Post-tx raw balances of the pool's base and quote vaults, by account index in `meta.postTokenBalances`. None for
+    a vault that is not identified, absent, duplicated, of the wrong mint or unparseable (never 0)."""
+    out: dict[str, int | None] = {"base": None, "quote": None}
+    try:
+        keys, rows = _keys(res), (res["meta"].get("postTokenBalances") or [])
+    except Exception:
+        return out
+    for name, key, mint in (("base", base_vault, str(base_mint)), ("quote", quote_vault, str(tx.WSOL_MINT))):
+        try:
+            if not key or key not in keys:
+                continue
+            idx = keys.index(key)
+            vals = [r for r in rows if r.get("accountIndex") == idx]
+            if len(vals) != 1 or vals[0].get("mint") not in (None, mint):
+                continue
+            amount = int(vals[0]["uiTokenAmount"]["amount"])
+            out[name] = amount if amount > 0 else None
+        except Exception:
+            continue
+    return out
+
+
+def buy_tx_mark(p: dict[str, Any], tokens: int, vault_post: dict[str, int | None] | None) -> tuple[float, str]:
+    """The position mark, final at creation. Post-buy spot on the V-priced book from our own buy tx's vault balances:
+    (quote_vault_post + V) / base_vault_post, in spot_sol_per_ui units = the paper rule's post-buy spot, no drift.
+    Fallback: the effective fill price, net_in / tokens (same units). Last resort: the send-state mark."""
+    vp, v = vault_post or {}, p.get("v_lamports")
+    if vp.get("base") and vp.get("quote") and isinstance(v, int) and v >= 0:
+        mark = pe.pcm.spot_sol_per_ui(vp["quote"] + v, vp["base"])
+        if mark > 0:
+            return mark, "buy_tx_post"
+    if tokens > 0 and p.get("q_net_in", 0) > 0:
+        return p["q_net_in"] / (tokens * 1000), "fill_price"
+    return p["q_mark"], "send_state"
+
+
+def parse_meta(res: dict, user: Pubkey, base_mint: Pubkey, base_ata: Pubkey,
+               base_vault: str | None = None, quote_vault: str | None = None) -> dict[str, Any]:
     """Everything the fill row needs from one getTransaction result (encoding json)."""
     meta = res["meta"]
     keys = _keys(res)
@@ -189,6 +227,7 @@ def parse_meta(res: dict, user: Pubkey, base_mint: Pubkey, base_ata: Pubkey) -> 
         "ata_rent_pre": int(meta["preBalances"][ai]) if ai is not None else 0,
         "ata_rent_post": int(meta["postBalances"][ai]) if ai is not None else 0,
         "logs": meta.get("logMessages") or [],
+        "vault_post": _vault_post(res, base_mint, base_vault, quote_vault),
     }
 
 
@@ -410,7 +449,7 @@ class LiveExecutor(pe.Executor):
             "kind": "buy", "signature": signature, "tx_b64": tx_b64, "lvbh": lvbh, "pool": pool, "snap_slot": snap.slot,
             "decision_t_ms": sig["decision_t_ms"], "receive_ms": now, "score": sig.get("score"), "spend": spend,
             "q_tokens": q["tokens"], "q_net_in": q["net_in"], "q_mark": q["mark"], "fee_ppm": q["fee_ppm"],
-            "v_lamports": snap.v, "base_ata": str(tx.ata(self.user, snap.ps.base_mint, snap.ps.base_token_program)),
+            "v_lamports": snap.v, "base_vault": str(snap.ps.base_vault), "quote_vault": str(snap.ps.quote_vault), "base_ata": str(tx.ata(self.user, snap.ps.base_mint, snap.ps.base_token_program)),
             "base_mint": str(snap.ps.base_mint), "base_tp": str(snap.ps.base_token_program), "sends": 0,
             "seen_ms": sig.get("seen_ms"), "state_ms": t_state, "state_slot": snap.slot, "built_ms": t_built,
             "runner_latency": sig.get("latency"),
@@ -513,7 +552,8 @@ class LiveExecutor(pe.Executor):
                 sigs = (res.get("transaction") or {}).get("signatures") or []
                 if not sigs or sigs[0] != p["signature"]:
                     raise ValueError("signature mismatch")
-                m = parse_meta(res, self.user, Pubkey.from_string(src["base_mint"]), Pubkey.from_string(src["base_ata"]))
+                m = parse_meta(res, self.user, Pubkey.from_string(src["base_mint"]), Pubkey.from_string(src["base_ata"]),
+                                 src.get("base_vault"), src.get("quote_vault"))
             except Exception:
                 if not p.get("parse_alerted"):
                     p["parse_alerted"] = True
@@ -580,6 +620,9 @@ class LiveExecutor(pe.Executor):
             price_vs_quote_bps=bps(p["q_tokens"], tokens) if tokens else None,  # cost per token vs quoted, + = we paid more
         )
         del self.state.pending[mint]
+        mark, mark_source = buy_tx_mark(p, tokens, m.get("vault_post"))
+        mark_shift = bps(mark, p["q_mark"])
+        row.update(mark_send=p["q_mark"], mark=mark, mark_source=mark_source, mark_shift_bps=mark_shift)
         self._log("buy", mint, **row)
         if tokens <= 0:
             self.state.realized_lamports -= cost  # SOL is spent and nothing came back: a realized loss now
@@ -587,8 +630,7 @@ class LiveExecutor(pe.Executor):
         else:
             self.state.open[mint] = {
                 "mint": mint, "pool": p["pool"], "t_entry_ms": self.now_ms(), "tokens": tokens, "net_in": p["q_net_in"],
-                "mark": p["q_mark"], "mark_send": p["q_mark"], "mark_pending": True, "mark_source": None,
-                "spend": p["spend"], "buy_cost_lamports": cost, "buy_sig": p["signature"],
+                "mark": mark, "mark_send": p["q_mark"], "mark_source": mark_source, "mark_shift_bps": mark_shift, "spend": p["spend"], "buy_cost_lamports": cost, "buy_sig": p["signature"],
                 "base_ata": p["base_ata"], "base_mint": p["base_mint"], "base_tp": p["base_tp"], "sell_attempts": 0,
                 "ata_pre_amount": m.get("ata_pre_amount"), "extra_cost": 0, "stuck": False, "abandoned": False, "exit_reason": None, "balance_pending": balance_pending, "q_tokens": p["q_tokens"], "buy_slot": m["slot"],
             }
@@ -685,14 +727,15 @@ class LiveExecutor(pe.Executor):
                 if now - pos.get("last_sell_fail_ms", 0) < wait:
                     continue
             snap, _pool, _err, kind = self._exit_snapshot(mint, batched)
-            if pe.rebase_mark(pos, snap, now):  # once; a late or unpriced snapshot is handled inside
-                self.save()
             if snap is None or snap.quote_priced is None:
                 # Never sell blind (no min_out) and never price on the vault alone: keep retrying.
                 if now - pos.get("unpriced_alert_ms", 0) >= 60_000:
                     pos["unpriced_alert_ms"] = now
                     self._alert("unpriced_position", mint, held_ms=now - pos["t_entry_ms"])
                 continue
+            if "first_exit_snap_slot" not in pos:  # post-landing drift is measured, it does not set the mark
+                pos["first_exit_snap_slot"], pos["first_exit_snap_ms"] = snap.slot, now
+                self.save()
             reason = pos.get("exit_reason") or pe.exit_check(pos, snap, now, own_trade_in_state=True)["reason"]
             if reason:
                 with self._exit_prio():
@@ -709,6 +752,9 @@ class LiveExecutor(pe.Executor):
             priority_fee_lamports=prio_fee, priority_lamports=self.limits.priority_lamports, hold_ms=self.now_ms() - pos["t_entry_ms"], **self._timing(p),
             **{k: p[k] for k in ("exit_poll_ms", "exit_commitment", "exit_snapshot", "balance_source") if k in p},
             **{k: pos[k] for k in ("mark_send", "mark", "mark_source", "mark_shift_bps") if k in pos},
+            buy_landed_slot=pos.get("buy_slot"), first_exit_snap_slot=pos.get("first_exit_snap_slot"), first_exit_snap_ms=pos.get("first_exit_snap_ms"),
+            first_exit_snap_dslot=(pos["first_exit_snap_slot"] - pos["buy_slot"]) if isinstance(pos.get("first_exit_snap_slot"), int) and isinstance(pos.get("buy_slot"), int) else None,
+            first_exit_snap_dms=(pos["first_exit_snap_ms"] - pos["t_entry_ms"]) if "first_exit_snap_ms" in pos else None,
         )
         if m["err"] is not None:
             pos["extra_cost"] += -m["sol_delta"]

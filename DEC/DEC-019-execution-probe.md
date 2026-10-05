@@ -167,3 +167,10 @@ If more than 20% of buys sent under 150,000 land more than 3 slots after the sen
 - The Amendment 1 stop rule for 150k no longer applies.
 
 **Monitoring.** The manager's hourly monitor is session-bound. The hard limits (attempts, loss cap, end instant, STOP/HALT) are enforced in code and do not depend on it. A durable root timer that alerts Discord on probe thresholds is requested from Helm.
+
+## Mark source (2026-10-05)
+
+- The position mark (the reference for the tp +0.5 and sl -0.3 returns) is the **post-buy spot from our own buy transaction**: `(quote_vault_post + V) / base_vault_post`, read from the pool vaults' `meta.postTokenBalances` of the landed buy tx, V-priced, in `spot_sol_per_ui` units. This is the paper rule's post-buy spot with no post-landing drift. If either vault balance is missing or unparseable the mark falls back to the effective fill price (`net_in / tokens`), flagged `mark_source: "fill_price"` (normal case `"buy_tx_post"`). The mark is final at position creation; the send-state mark is kept as `mark_send` and `mark_shift_bps` is logged on the buy and sell rows. Positions persisted by older builds (no `mark_source`) behave as before; dry run is unchanged.
+- Starts in build: `<sha, to be filled with the merge sha of this PR>`.
+- `a0bea86` (#330, mark from the first exit snapshot after landing) was **never installed**: that method folds up to about 5 s of post-landing drift into the mark (a 25% drop in the gap resets the mark, and sl then fires only near -47.5% against our fill). It is kept in `tools/probe_sim_calibration.py` as the labelled `live_snapshot_*` variant for comparison only.
+- The §7 build groups separate the **send-state-mark builds** (`8a6849b`, `a25eb17`, `7004b16`) from this build. Do not pool them: their tp/sl fired against a mark that could differ from the real post-buy state by hundreds to thousands of bps (e.g. mint 7fX2pvgh, +4,197.82 bps more tokens than quoted). A calibration replay (`tools/probe_sim_calibration.py`, schema_version 3) must run before the re-pin.
