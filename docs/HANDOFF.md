@@ -39,59 +39,43 @@ The owner approved a **0.5 SOL live execution probe** (DEC-019) running alongsid
 | **Job #71** (research-0) | DEC-016 forward walk forward-1002. **Resubmit by about 10-09T15Z** (same command, params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
 | Owner question `q_YBNB8Qi1lR_WjQ` | DEC-018: five live-trial decisions, due about 10-14. |
 
-## Deploy block for Helm (manager5, 10-05 ~18Z): pin `a25eb17ce70883d24144cbf54b1297e705beb9ba`
+## Live probe status and next pin (manager5, 10-05 ~20:30Z)
 
-**This SUPERSEDES the 8333ef1 block. Do not deploy 8333ef1.**
+**Running:** pinned `a25eb17` since 17:53Z. At 20:26Z (job #178): 21/30 attempts, realized −0.072382 SOL, 1 open. Helm placed STOP for the re-pin.
 
-**What is in it:**
-- #314: the #307 base-unit fence. The paper installer never writes the probe unit while a pinned drop-in exists.
-- The pinned installer is the only writer, with a MANDATORY manifest and a byte-level allowlist checker.
-- The root-only RPC env file `/etc/mal-probe-rpc/helius.env`, created by Helm 10-05.
-- `runner_kill` on intents.
-- Live fails closed without HELIUS_API_KEY.
-- #315: fast exits. `exit_poll_ms` 400, processed commitment, batched vaults, sell from buy meta.
-- #316 + #317: the early arm, on in paper. The executor ignores arm rows.
+**Wallet (job #176, 20:16Z):**
+- 365,595,877 lamports, from a 509,528,770 deposit.
+- By build: `8a6849b` 6 trades −100,536,289 lamports; `a25eb17` 13 closed +8,622,236.
 
-**Evidence:**
-- md5 job #161 (exact sha, fast config, arm and intents on): decisions 93 lines and positions 30 lines identical. EQUIVALENT.
-- Job #159 (#316) EQUIVALENT.
-- Job #154 (#314 runner change, Oracle config) was still running at writing.
-- Security review verdict on #314 at f0049e8: MERGE.
+**Next pin: `7004b168f17ef063aff69d8b85c2ec43936194c6`** (DEC-019 Amendment 1 + 1a, plus #324).
+- Live config: 90 attempts, loss cap **250,000,000**, priority **500,000**, hard end **2026-10-12T00:00Z**.
+- Size 0.05 SOL and max 3 open are unchanged.
+- #324: exits no longer double count our own buy; ret was overstated by a mean 0.0010595, n = 19.
+- `f87eb48` was never installed.
+- Manifest is in the PR #325 thread and the notebook. The paper runner is unchanged.
+- Helm re-pins with the same steps as before. After that, the manager:
+  - runs the evidence job (13/13 hashes, tree check, fence verdict `pinned`);
+  - points the monitor at `7004b16`, with the loss alert at **0.20 SOL**.
 
-`/root/manifest-exec.txt`:
-```
-128f9efbc7a03d4148c0df6f4d36a6672e69a17348b9bde37c0e86ed6a67614b  tools/__init__.py
-019c64c317d98d8b11d1319d8202ca72d49df3fee12b983cf3c6f407753fcafa  tools/paper_curve_math.py
-25e543baace5d20aadf5109b228a27e272ecdd0d78190a5e638237337ba08235  tools/paper_price_path.py
-354d03602600c8df50ace4f5fed1307cf19f9fc9271ef6532706aafaa750f590  tools/paper_tape_scoreboard.py
-5a88629e400c1aaed9c4cea819db5aef4e663dbbe6d68674c56272b318ab84c9  tools/probe_executor.py
-d9f7d9aa9fc412970cc44d59792a7470fb4535570cf60c784403a46aa508fc7b  tools/probe_live.py
-0d381fe14a2e9cef1d366b64899506a4dc6ffb864c52c64664abdd46bf7f1b69  tools/pumpswap_simulate.py
-418e52c16ad46cb38cb8bf4709ae6ec57caba4beed73c0a6a22a972c67030aa2  tools/pumpswap_tx.py
-10e8052cb529b6b6b1a6d5402b966b10ae4146e6b190f1ce1b9c922035a1fa7e  scripts/mal-fast/probe_exec_launcher.py
-d975b218c284897bc07b75645917dda972a4137450599e4388cb365077f5c1e6  scripts/mal-fast/probe-executor-live.json
-ed5b79869cb16fe61c15f09cdf70976e3ed4044ef8b31227fb37caf815f62342  scripts/mal-fast/requirements-probe-exec.txt
-6f0c3faf0598f624e8b1fa77956f4ec45d0a65a3c741723f9962cccc67251559  scripts/mal-fast/mal-probe-executor.service
-86a77cd29287d05f401466aa41ad18964c5f0d7a40dbb4f32e5ffd0108893da6  scripts/mal-fast/check-probe-base-unit.py
-```
-Not in the manifest; Helm verifies these in the clone:
-- `install-probe-executor-pinned.sh` e1242d1b…6e78
-- `check-probe-exec-tree.sh` 7eeba7f8…5f92
-- `mal-probe-executor-live-pinned.conf` c4dc451d…6819
+**Wallet floor (DEC-019 Am.1a):** about 0.10 SOL worst case (cap hit and 3 open positions at zero); about 0.20 SOL in a realistic bad case.
 
-**Order:**
-1. **Helm:** STOP present, open=0. Stop the unit and remove `live.conf`.
-2. **Manager:** announce first. Run `install-fast-forward-paper.sh --commit a25eb17…`, then restart `mal-fast-forward-paper`. Check `intents.jsonl` exists. Record the restart in LAB_STATE.
-3. **Helm:** fresh root clone, then `install-probe-executor-pinned.sh <sha> /root/manifest-exec.txt`.
-4. **Helm:** keyless dry run (§2b). Install the pinned conf as `live.conf`, daemon-reload, start. Check `mode=LIVE` and no `startup_refused`. Remove STOP.
-5. **Manager:** switch the hourly monitor to the pinned `--status`. Run a read-only evidence job for Warden #304/#306: `current` → root-owned `<sha>/`, ExecStart is the pinned launcher, the fence holds. Key §7 groups by build: `8a6849b` vs `a25eb17`.
+**Landing baseline at 500k (a25eb17):** 14/14 buys landed 1–3 slots after the state read; 0 more than 3; 0 expiries.
 
-**Exit leak (job #153, notebook):**
-- Live sl fired at −0.3135…−0.7369.
-- Fills came in −326…−780 bps vs quote.
-- Sell decision→send was ~1 s. #315 targets this.
+**Monitoring:**
+- The hourly monitor is a session cron, so it dies with the session. Recreate it with the pinned `--status`, expecting `current` = the installed pin.
+- A durable root timer with Discord alerts has been requested from Helm.
+- Hard limits are enforced in code either way.
 
-**Next latency step:** PR-A2, the executor armed path. The executor picks the candidate second from when the pool appears; the +0 s candidate scores very differently. Needs 48 h of shadow `arm-audit.jsonl` first. Re-pin and Helm.
+**Measured today (notebook):**
+- **Entry:** a25eb17 lands 5–6 slots after migrate, vs 11–15 on 8a6849b.
+- **Exits:** sell decision→send ~30 ms; fills about −11 to −16 bps against the quote.
+- **Live vs sim** (`tools/probe_sim_calibration.py`, #322): exit decisions match on 18/19; median pnl gap −1,062,125 lamports. This checks execution, not edge.
+
+**Running research:**
+- Job #167: grad-stream 6 h measurement. It ends about 00:30Z and then compares itself to the tip tape.
+- Job #177: EXP-012 operating point v2, exploration only. Threshold × k paired against frozen; size and fee are sensitivity only, per the quant-proof blockers.
+- 48 h early-arm shadow: `arm-audit.jsonl`.
+- No sim result can support a live size above 0.05 SOL (quant-proof).
 
 ## State on fast-0 (paper; DEC-015)
 
