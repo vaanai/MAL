@@ -61,13 +61,14 @@ Detail, units, logs, memory limits, and what is safe to restart: [docs/HOSTS.md]
 - Next: an EXP-012 forward-paper book on `mal-fast-0` after the 2026-10-05T05:00:00Z kill review ([DEC-015](DEC/DEC-015-forward-paper-on-fast.md)). It must clear the gate on its own forward data, and then get owner approval, before live. Details: [EXP-012](EXP/EXP-012-migrate-entry-model-refreeze-prereg.md) Result.
 - **V correction (2026-10-04, [#281](https://github.com/vaanai/MAL/pull/281), [#285](https://github.com/vaanai/MAL/pull/285); a correction analysis, not a new read).**
   - PumpSwap prices on quote vault + V, the virtual quote reserve (about 17.58 SOL on about 69% of pools). Our paper pricing ignored it.
-  - Re-priced, the same 451 entries still meet every gate condition. Flat mean 0.02526; flat CI90 lower bound 0.00928; pressure CI90 lower bound 0.00604; 5/7 days positive.
+  - Re-priced on the **spent** read block (already read; a post-hoc re-pricing, not fresh out-of-sample and not gate evidence), the same 451 entries still meet every gate condition numerically. Flat mean 0.02526; flat CI90 lower bound 0.00928; pressure CI90 lower bound 0.00604; 5/7 days positive on both legs.
   - Live support is judged on the V book (DEC-016 Amendment 4).
 - **Entry latency under V (exploration, [#292](https://github.com/vaanai/MAL/pull/292)).** Pressure mean / CI90 lower bound by entry slot k:
   - k = 1: 0.01866 / 0.01114
   - k = 8: 0.00769 / 0.00117
   - k ≥ 12: every lower bound is below 0.
   - Entry speed is the largest measured sensitivity.
+  - On the 9-day exploration pool the recipe was tuned on (winner's curse); exits are still at k = 1, so live decay is at least this.
 
 ## What is running
 
@@ -125,7 +126,7 @@ Single read, once, at or after that instant, on a snapshot — never on a live, 
 
 **The point estimates are one-sided.** Every book has a negative mean with the CI90 entirely below 0 under both fail models, and 0 positive flat days out of 8. Values are floored, so a loss is never shown smaller.
 
-| Book | n | flat mean | flat CI90 | press mean | press CI90 | days + (flat) | orphans | settle failed | status |
+| Book | n (flat) | flat mean | flat CI90 | press mean | press CI90 | days + (flat) | orphans | settle failed | status |
 | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: | --- |
 | laya_0.6 | 135,542 | −0.00350 | [−0.00369, −0.00329] | −0.00311 | [−0.00329, −0.00293] | 0/8 | 478 | 0 | NOT_DECIDABLE |
 | laya_0.7 | 54,395 | −0.00357 | [−0.00380, −0.00333] | −0.00319 | [−0.00337, −0.00299] | 0/8 | 465 | 2 | NOT_DECIDABLE |
@@ -137,7 +138,7 @@ Single read, once, at or after that instant, on a snapshot — never on a live, 
 | mig15_top20_tp50_sl30 | 998 | −0.00563 | [−0.00699, −0.00426] | −0.00516 | [−0.00624, −0.00405] | 0/8 | 259 | 3 | NOT_DECIDABLE |
 
 **Provenance:**
-- Snapshot manifest sha256: `399bf566f15a228360f59129f2ddf38a99658151da5ed0ea5f5b1ea5ceaa4e1c` (209 files: 197 tape hours, 9 creates days; nothing missing).
+- Snapshot manifest sha256: `399bf566f15a228360f59129f2ddf38a99658151da5ed0ea5f5b1ea5ceaa4e1c` (209 files: 197 tape hours, 9 creates days, 3 state files; nothing missing).
 - Jobs:
   - #108: snapshot.
   - #118: score, out of memory at 32 GB in the pressure stamp, before the read.
@@ -146,11 +147,7 @@ Single read, once, at or after that instant, on a snapshot — never on a live, 
 - Settlements are byte-identical across #118 and #121.
 - `kill_review.json` sha256 `c66d6a5a798d77fe6fe0563a9319efeb7aa22a8ef5f9d76615f6f9cd66fdfde3`. Totals: 329 settled offline, 30 settle failures, 2,806 open orphans.
 
-**Settle failures.** 428 of 470 orphan failures came from before 09-27T06:58Z, outside the window, mostly `no_tape_for_mint`. The tape was copied from 09-27 by design. Inside the window:
-- 21 `censored_tape_too_short` (exits past 05:00Z);
-- 17 `tokens_mismatch`;
-- 2 slippage;
-- 2 venue.
+**Settle failures.** `settle.log`: 470 orphan settle failures (all books incl. buy_all, any time). By `decision_t_ms`: 424 before the void end 09-27T06:58:12Z (394 `no_tape_for_mint`, 25 `missed_no_state`, 5 `tokens_mismatch`; the snapshot tape starts 09-27T00 by design); 4 `tokens_mismatch` between the void end and the window start; 32 inside the window [09-28T00, 10-05T05): 19 `censored_tape_too_short` (entries from 10-05T04:04Z, exits past the tape end), 11 `tokens_mismatch`, 2 `missed_slippage`; 10 after 05:00Z (6 `tokens_mismatch`, 2 censored, 2 `venue_mismatch`). The scorer counts 30 settle_failed across the 8 candidates.
 
 **Caveat: all 9 books are priced without V.** The PumpSwap books (migrate_tp50_sl30, migrate_hold_30s, mig15_top20_tp50_sl30) cannot be promoted on these numbers in any case.
 
