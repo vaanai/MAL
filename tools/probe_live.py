@@ -185,6 +185,7 @@ def parse_meta(res: dict, user: Pubkey, base_mint: Pubkey, base_ata: Pubkey) -> 
         "fee": int(meta["fee"]),
         "sol_delta": post - pre,  # post - pre of the wallet: includes fees, rent, pool legs
         "token_delta": delta,  # None = unknown: caller re-reads the ATA balance
+        "ata_pre_amount": pre_t,  # our token ATA balance before the tx; None = unknown
         "ata_rent_pre": int(meta["preBalances"][ai]) if ai is not None else 0,
         "ata_rent_post": int(meta["postBalances"][ai]) if ai is not None else 0,
         "logs": meta.get("logMessages") or [],
@@ -588,7 +589,7 @@ class LiveExecutor(pe.Executor):
                 "mint": mint, "pool": p["pool"], "t_entry_ms": self.now_ms(), "tokens": tokens, "net_in": p["q_net_in"],
                 "mark": p["q_mark"], "spend": p["spend"], "buy_cost_lamports": cost, "buy_sig": p["signature"],
                 "base_ata": p["base_ata"], "base_mint": p["base_mint"], "base_tp": p["base_tp"], "sell_attempts": 0,
-                "extra_cost": 0, "stuck": False, "abandoned": False, "exit_reason": None, "balance_pending": balance_pending, "q_tokens": p["q_tokens"], "buy_slot": m["slot"],
+                "ata_pre_amount": m.get("ata_pre_amount"), "extra_cost": 0, "stuck": False, "abandoned": False, "exit_reason": None, "balance_pending": balance_pending, "q_tokens": p["q_tokens"], "buy_slot": m["slot"],
             }
         self.save()
 
@@ -604,11 +605,21 @@ class LiveExecutor(pe.Executor):
             self._alert("sell_abandoned", pos["mint"], attempts=pos["sell_attempts"])
 
     @pe.critical
-    def _start_sell(self, mint: str, pos: dict[str, Any], snap: pe.Snapshot, reason: str, now: int) -> None:
-        try:
-            bal = int(self.rpc("getTokenAccountBalance", [pos["base_ata"], {"commitment": self.commitment}])["value"]["amount"])
-        except (Exception, SystemExit):
-            return
+    def _start_sell(self, mint: str, pos: dict[str, Any], snap: pe.Snapshot, reason: str, now: int,
+                    exit_snapshot: str = "full") -> None:
+        known = pos.get("tokens")
+        # Accepted risk: tokens received on the buy equal the ATA balance only if the ATA was empty before it.
+        # Each mint gets a fresh ATA and the probe never re-buys a mint, so a pre-existing balance is not expected;
+        # when the buy meta shows a non-zero (or unknown) pre-balance anyway, the first sell reads the RPC.
+        if (self.fast_exit and pos.get("sell_attempts", 0) == 0 and isinstance(known, int) and known > 0
+                and not pos.get("balance_pending") and pos.get("ata_pre_amount") == 0):
+            bal, balance_source = known, "buy_meta"  # first attempt: the buy's own token delta, no RPC round trip
+        else:
+            balance_source = "rpc"
+            try:
+                bal = int(self.rpc("getTokenAccountBalance", [pos["base_ata"], {"commitment": self.commitment}])["value"]["amount"])
+            except (Exception, SystemExit):
+                return
         if bal <= 0:
             if not pos.get("zero_alerted"):
                 pos["zero_alerted"] = True
@@ -637,17 +648,33 @@ class LiveExecutor(pe.Executor):
         self.state.pending[mint] = {
             "kind": "sell", "signature": signature, "tx_b64": tx_b64, "lvbh": lvbh, "pool": pos["pool"], "snap_slot": snap.slot,
             "decision_t_ms": now, "receive_ms": now, "tokens": bal, "q_out": chk["quote_out"], "min_out": min_out, "reason": reason,
-            "ret": chk["ret"], "sends": 0,
+            "ret": chk["ret"], "sends": 0, **self._exit_fields(exit_snapshot), "balance_source": balance_source,
         }
         self.save()  # write-ahead
         self._send(self.state.pending[mint], mint)
         self.save()
 
+    def _exit_candidates(self) -> list[str]:
+        now = self.now_ms()
+        out = []
+        for mint, pos in self.state.open.items():
+            if mint in self.state.pending or pos.get("abandoned"):
+                continue
+            if pos.get("stuck"):
+                wait = min(STUCK_RETRY_MS * 2 ** max(0, pos["sell_attempts"] - self.sell_retries), STUCK_RETRY_MAX_MS)
+                if now - pos.get("last_sell_fail_ms", 0) < wait:
+                    continue
+            out.append(mint)
+        return out
+
     def poll_positions(self) -> None:
+        batched = self._batched_exit_snapshots(self._exit_candidates())
         for mint, pos in list(self.state.open.items()):
             if pe.check_sell(pe.check_halt_file(self.limits)):
                 return
             if mint in self.state.pending:
+                continue
+            if self._batch_stale(mint, batched):
                 continue
             now = self.now_ms()
             if pos.get("abandoned"):
@@ -656,7 +683,7 @@ class LiveExecutor(pe.Executor):
                 wait = min(STUCK_RETRY_MS * 2 ** max(0, pos["sell_attempts"] - self.sell_retries), STUCK_RETRY_MAX_MS)
                 if now - pos.get("last_sell_fail_ms", 0) < wait:
                     continue
-            snap, _pool, _err = self._snapshot(mint)
+            snap, _pool, _err, kind = self._exit_snapshot(mint, batched)
             if snap is None or snap.quote_priced is None:
                 # Never sell blind (no min_out) and never price on the vault alone: keep retrying.
                 if now - pos.get("unpriced_alert_ms", 0) >= 60_000:
@@ -665,7 +692,8 @@ class LiveExecutor(pe.Executor):
                 continue
             reason = pos.get("exit_reason") or pe.exit_check(pos, snap, now)["reason"]
             if reason:
-                self._start_sell(mint, pos, snap, reason, now)
+                with self._exit_prio():
+                    self._start_sell(mint, pos, snap, reason, now, kind)
 
     @pe.critical
     def _finish_sell(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
@@ -676,6 +704,7 @@ class LiveExecutor(pe.Executor):
             pool=pos["pool"], exit_reason=p["reason"], ret=p["ret"], tokens=p["tokens"], quote_sol_out_lamports=p["q_out"],
             min_sol_out_lamports=p["min_out"], landed_slot=m["slot"], fee_lamports=m["fee"], base_fee_lamports=base_fee,
             priority_fee_lamports=prio_fee, hold_ms=self.now_ms() - pos["t_entry_ms"], **self._timing(p),
+            **{k: p[k] for k in ("exit_poll_ms", "exit_commitment", "exit_snapshot", "balance_source") if k in p},
         )
         if m["err"] is not None:
             pos["extra_cost"] += -m["sol_delta"]

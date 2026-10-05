@@ -1019,5 +1019,260 @@ class FastSignalLiveTests(unittest.TestCase):
         self.assertNotIn(MINT, self.ex.state.pending)
 
 
+class ExitFastPathTests(unittest.TestCase):
+    """exit_poll_ms cadence, batched vault snapshot, exit_commitment, buy-meta sell amount."""
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def fast(self, **cfg):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, exit_poll_ms=400, exit_commitment="processed", **cfg)
+        (self.tmp / "sig" / "decisions.jsonl").write_text("")
+        pos = open_position(ex, rpc, clock)
+        ex.tick()  # first slow pass (starts the signal offset, pre-warm, one position poll)
+        return ex, rpc, clock, conf, pos
+
+    @staticmethod
+    def multis(rpc):
+        return rpc.calls.count("getMultipleAccounts")
+
+    def test_clamps(self):
+        self.assertEqual(pe.clamp_exit_poll_ms(None, 5000), 5000)
+        self.assertEqual(pe.clamp_exit_poll_ms(50, 5000), 200)
+        self.assertEqual(pe.clamp_exit_poll_ms(400, 5000), 400)
+        self.assertEqual(pe.clamp_exit_poll_ms(99_999, 5000), 5000)
+        for bad in (float("nan"), float("inf"), "400", True, [1]):
+            self.assertEqual(pe.clamp_exit_poll_ms(bad, 5000), 5000)
+        ex = make_live(self.tmp, exit_poll_ms=1, poll_s=2.0)[0]
+        self.assertEqual((ex.exit_poll_ms, ex.poll_ms, ex.exit_commitment), (200, 2000, "confirmed"))
+
+    def test_old_config_is_unchanged(self):
+        ex, rpc, clock, _kp, _conf = make_live(self.tmp)
+        (self.tmp / "sig" / "decisions.jsonl").write_text("")
+        open_position(ex, rpc, clock)
+        self.assertFalse(ex.fast_exit)
+        self.assertEqual((ex.exit_poll_ms, ex.exit_commitment), (ex.poll_ms, ex.commitment))
+        ex.tick()
+        n = self.multis(rpc)
+        for _ in range(10):  # 400 ms steps: nothing before poll_ms
+            clock.t += 400
+            ex.tick()
+        self.assertEqual(self.multis(rpc), n)  # 4000 ms after the last poll: not yet due on the slow clock
+        clock.t += 1_000
+        ex.tick()
+        self.assertEqual(self.multis(rpc), n + 1)  # one full fetch per slow poll
+
+    def test_cadence_fast_when_open_slow_when_none(self):
+        ex, rpc, clock, _conf, _pos = self.fast()
+        n = self.multis(rpc)
+        clock.t += 200
+        ex.tick()
+        self.assertEqual(self.multis(rpc), n)  # not due
+        clock.t += 200
+        ex.tick()
+        self.assertEqual(self.multis(rpc), n + 1)  # 400 ms after the last position poll
+        clock.t += 400
+        ex.tick()
+        self.assertEqual(self.multis(rpc), n + 2)
+        del ex.state.open[MINT]  # nothing open: only the slow clock (pre-warm) runs
+        m, g = self.multis(rpc), rpc.calls.count("getAccountInfo")
+        for _ in range(5):
+            clock.t += 400
+            ex.tick()
+        self.assertEqual((self.multis(rpc), rpc.calls.count("getAccountInfo")), (m, g))
+
+    def test_pending_position_is_not_polled_fast(self):
+        ex, rpc, clock, _conf, _pos = self.fast()
+        ex.state.pending[MINT] = {"kind": "sell"}
+        n = self.multis(rpc)
+        clock.t += 400
+        ex.tick()
+        self.assertEqual(self.multis(rpc), n)
+
+    def test_batched_one_call_prices_like_full_fetch(self):
+        ex, rpc, clock, _conf, _pos = self.fast()
+        full = pe.fetch_snapshot(rpc, ex._snapshot(MINT)[1], "confirmed", ex.user, ex.static, clock())
+        extra = ["m2", "m3"]
+        for m in extra:
+            ex._pool_cache[m] = ex._pool_cache[MINT]
+        rpc.calls.clear()
+        got = ex._batched_exit_snapshots([MINT, *extra])
+        self.assertEqual(rpc.calls, ["getMultipleAccounts"])
+        self.assertEqual(rpc.multi_params[0], [str(full.ps.base_vault), str(full.ps.quote_vault)] * 3)
+        self.assertEqual(rpc.multi_params[1]["commitment"], "processed")
+        self.assertEqual(set(got), {MINT, *extra})
+        for m in got:
+            self.assertEqual(got[m], full)  # same pool state, slot, reserves and V
+            self.assertEqual(pe.exit_check(ex.state.open[MINT], got[m], clock()), pe.exit_check(ex.state.open[MINT], full, clock()))
+
+    def test_fallback_to_full_fetch_without_cache_or_after_ttl(self):
+        ex, rpc, clock, _conf, pos = self.fast()
+        ex._pool_cache.clear()
+        rpc.calls.clear()
+        self.assertEqual(ex._batched_exit_snapshots([MINT]), {})
+        self.assertEqual(rpc.calls, [])  # nothing cached: no batch call at all
+        snap, _p, err, kind = ex._exit_snapshot(MINT, {})
+        self.assertEqual((err, kind), (None, "full"))
+        self.assertEqual(rpc.calls, ["getAccountInfo", "getMultipleAccounts"])
+        self.assertEqual(rpc.multi_params[1]["commitment"], "processed")
+        self.assertIn(MINT, ex._pool_cache)  # re-cached by the full fetch
+        clock.t += pe.STATIC_TTL_MS + 1  # a stale cache is not used
+        self.assertEqual(ex._batched_exit_snapshots([MINT]), {})
+
+    def test_batched_parse_problem_or_missing_vault_falls_back(self):
+        ex, rpc, clock, _conf, _pos = self.fast()
+        orig = rpc.__class__.__call__
+        rpc.__class__.__call__ = lambda self, m, p: ({"context": {"slot": 1}, "value": [None, None]} if m == "getMultipleAccounts" and len(p[0]) == 2 else orig(self, m, p))
+        try:
+            self.assertEqual(ex._batched_exit_snapshots([MINT]), {})
+            snap, _p, err, kind = ex._exit_snapshot(MINT, {})
+        finally:
+            rpc.__class__.__call__ = orig
+        self.assertEqual(kind, "full")
+
+    def _crash(self, rpc):
+        rpc.quote = rpc.quote // 3  # price collapses: sl
+
+    def test_first_sell_uses_buy_meta_then_retry_uses_rpc(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        rpc.token_balance = pos["tokens"] - 7  # the RPC would say something else: it must not be asked
+        self._crash(rpc)
+        clock.t += 400
+        rpc.calls.clear()
+        ex.tick()
+        p = ex.state.pending[MINT]
+        self.assertNotIn("getTokenAccountBalance", rpc.calls)
+        self.assertEqual(p["tokens"], pos["tokens"])
+        self.assertEqual((p["balance_source"], p["exit_snapshot"], p["exit_poll_ms"], p["exit_commitment"]), ("buy_meta", "batched", 400, "processed"))
+        self.assertEqual(rpc.calls.count("getMultipleAccounts"), 1)
+        land_sell(ex, rpc, proceeds=0, err={"InstructionError": [3, {"Custom": 6004}]})
+        row = [r for r in fills(conf) if r["kind"] == "sell"][-1]
+        self.assertEqual((row["balance_source"], row["exit_snapshot"], row["exit_poll_ms"], row["exit_commitment"]), ("buy_meta", "batched", 400, "processed"))
+        clock.t += 400
+        rpc.calls.clear()
+        ex.tick()
+        p2 = ex.state.pending[MINT]
+        self.assertIn("getTokenAccountBalance", rpc.calls)  # retry: balance from the RPC
+        self.assertEqual((p2["balance_source"], p2["tokens"]), ("rpc", pos["tokens"] - 7))
+
+    def _fallback(self, bad):
+        ex, rpc, clock, conf, pos = self.fast()
+        pos["tokens"] = bad
+        rpc.token_balance = 123_456
+        self._crash(rpc)
+        rpc.calls.clear()
+        ex.poll_positions()
+        self.assertIn("getTokenAccountBalance", rpc.calls)
+        self.assertEqual(ex.state.pending[MINT]["balance_source"], "rpc")
+        self.assertEqual(ex.state.pending[MINT]["tokens"], 123_456)
+
+    def test_zero_buy_tokens_fall_back_to_rpc(self):
+        self._fallback(0)
+
+    def test_balance_pending_position_reads_rpc(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        pos["balance_pending"] = True
+        rpc.token_balance = pos["tokens"] - 3
+        self._crash(rpc)
+        ex.poll_positions()
+        self.assertEqual((ex.state.pending[MINT]["balance_source"], ex.state.pending[MINT]["tokens"]), ("rpc", pos["tokens"] - 3))
+
+    def test_exit_calls_use_limiter_priority(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        seen = []
+        lim = pe.LimitedRpc(rpc, rps=4.0, max_rps=5.0, clock=lambda: 0.0, sleep=lambda s: None)
+        inner = lim.rpc
+        lim.rpc = lambda m, p: (seen.append((m, lim._prio)), inner(m, p))[1]
+        ex.rpc = lim
+        self._crash(rpc)
+        ex.poll_positions()
+        got = dict(seen)
+        self.assertGreater(got["getMultipleAccounts"], 0)
+        self.assertGreater(got["sendTransaction"], 0)
+
+    def test_old_config_exit_path_is_not_prioritised(self):
+        ex = make_live(self.tmp)[0]
+        self.assertEqual(type(ex._exit_prio()).__name__, "nullcontext")
+
+
+    def test_buy_meta_records_ata_pre_amount_and_nonzero_uses_rpc(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        self.assertEqual(pos["ata_pre_amount"], 0)
+        pos["ata_pre_amount"] = 5  # the ATA already held tokens before the buy: buy-meta tokens are not the balance
+        rpc.token_balance = pos["tokens"] + 5
+        self._crash(rpc)
+        rpc.calls.clear()
+        ex.poll_positions()
+        self.assertIn("getTokenAccountBalance", rpc.calls)
+        self.assertEqual((ex.state.pending[MINT]["balance_source"], ex.state.pending[MINT]["tokens"]), ("rpc", pos["tokens"] + 5))
+
+    def test_unknown_ata_pre_amount_uses_rpc(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        pos.pop("ata_pre_amount")
+        self._crash(rpc)
+        ex.poll_positions()
+        self.assertEqual(ex.state.pending[MINT]["balance_source"], "rpc")
+
+    def test_stale_batch_skips_remaining_positions(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        ex.state.open["M2"] = {**pos, "mint": "M2"}
+        ex._pool_cache["M2"] = ex._pool_cache[MINT]
+        rpc.send_hook = lambda params: setattr(clock, "t", clock.t + 1_500)  # the first sell's send is slow
+        self._crash(rpc)
+        rpc.calls.clear()
+        ex.poll_positions()
+        self.assertIn(MINT, ex.state.pending)
+        self.assertNotIn("M2", ex.state.pending)  # priced from a batch older than 1 s: skipped this tick
+        self.assertEqual(rpc.calls.count("getMultipleAccounts"), 1)
+        rpc.send_hook = None
+        rpc.calls.clear()
+        ex.poll_positions()  # next tick re-fetches
+        self.assertEqual(rpc.calls.count("getMultipleAccounts"), 1)
+
+    def test_fresh_batch_prices_second_position(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        ex.state.open["M2"] = {**pos, "mint": "M2"}
+        ex._pool_cache["M2"] = ex._pool_cache[MINT]
+        batched = ex._batched_exit_snapshots(["M2"])
+        self.assertFalse(ex._batch_stale("M2", batched))
+        clock.t += pe.BATCH_MAX_AGE_MS + 1
+        self.assertTrue(ex._batch_stale("M2", batched))
+
+    def test_batch_fallback_error_logged_once_a_minute(self):
+        ex, rpc, clock, conf, pos = self.fast()
+        orig = rpc.__class__.__call__
+
+        def boom(self_, m, p):
+            if m == "getMultipleAccounts" and len(p[0]) == 2:
+                raise pe.RpcError("timeout")
+            return orig(self_, m, p)
+        rpc.__class__.__call__ = boom
+        try:
+            for _ in range(3):
+                clock.t += 400
+                self.assertEqual(ex._batched_exit_snapshots([MINT]), {})
+            rows = [r for r in fills(conf) if r["kind"] == "batch_fallback"]
+            self.assertEqual([r["label"] for r in rows], ["timeout"])
+            clock.t += 60_000
+            ex._batched_exit_snapshots([MINT])
+            self.assertEqual(len([r for r in fills(conf) if r["kind"] == "batch_fallback"]), 2)
+        finally:
+            rpc.__class__.__call__ = orig
+
+
+class ShippedExitConfigTests(unittest.TestCase):
+    def test_live_and_dryrun_configs_mirror_the_exit_keys(self):
+        d = Path(__file__).resolve().parent.parent / "scripts" / "mal-fast"
+        live = json.loads((d / "probe-executor-live.json").read_text())
+        dry = json.loads((d / "probe-executor.json").read_text())
+        for c in (live, dry):
+            self.assertEqual((c["exit_poll_ms"], c["exit_commitment"]), (400, "processed"))
+        self.assertLessEqual(live["rps"], pl.LIVE_MAX_RPS)
+
+
 if __name__ == "__main__":
     unittest.main()
