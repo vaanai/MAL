@@ -39,20 +39,24 @@ The owner approved a **0.5 SOL live execution probe** (DEC-019) running alongsid
 | **Job #71** (research-0) | DEC-016 forward walk forward-1002. **Resubmit by about 10-09T15Z** (same command, params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
 | Owner question `q_YBNB8Qi1lR_WjQ` | DEC-018: five live-trial decisions, due about 10-14. |
 
-## Deploy block for Helm (#307 + #305 + #311), pin `8333ef1c018d8211de5b1f454b9f795cb8dbb61d`
+## Deploy block for Helm (manager5, 10-05 ~18Z): pin `a25eb17ce70883d24144cbf54b1297e705beb9ba`
 
-Order (runbook `docs/runbooks/probe-executor.md` §2b/§2c):
-1. `/var/lib/mal-live/STOP` has been present since 16:30:06Z, with `open=0`. Re-confirm it.
-2. **Helm:** `systemctl stop mal-probe-executor`, then remove `/etc/systemd/system/mal-probe-executor.service.d/live.conf`. With no non-pinned live drop-in, the runner installer's fence passes.
-3. **Manager** (announce first: this writes src, and `malprobe-code` will alert):
-   - `install-fast-forward-paper.sh --commit 8333ef1c018d8211de5b1f454b9f795cb8dbb61d`;
-   - restart `mal-fast-forward-paper`;
-   - check `test -e /var/lib/mal/paper/fast-forward-paper/intents.jsonl` (it may be empty until the first decision);
-   - record the runner restart in LAB_STATE as a mid-week change.
+**This SUPERSEDES the 8333ef1 block. Do not deploy 8333ef1.**
 
-   This also installs the base unit with the `intents.jsonl` bind (sha256 `b7957e95…f9a`).
-4. **Helm:** from a fresh root clone at the sha, run `install-probe-executor-pinned.sh 8333ef1c018d8211de5b1f454b9f795cb8dbb61d /root/manifest-exec.txt`. The installer is `f29d10d3…9cca`; it calls `check-probe-exec-tree.sh` `7eeba7f8…5f92`. Then the **keyless dry run** of the pinned launcher (runbook §2b), then install `mal-probe-executor-live-pinned.conf` (`c4dc451d…6819`), `daemon-reload`, start. Check the journal shows `mode=LIVE` and no `startup_refused`. Remove STOP.
-5. **Manager:** recreate the hourly monitor, running `--status` from the pinned copy (runbook "pinned-mode status"), not from src. The live §7 groups are keyed by build: `8a6849b` (pre-#307, `ARTIFACTS/lab/probe-live-2026-10-05.md`) against `8333ef1`.
+**What is in it:**
+- #314: the #307 base-unit fence. The paper installer never writes the probe unit while a pinned drop-in exists.
+- The pinned installer is the only writer, with a MANDATORY manifest and a byte-level allowlist checker.
+- The root-only RPC env file `/etc/mal-probe-rpc/helius.env`, created by Helm 10-05.
+- `runner_kill` on intents.
+- Live fails closed without HELIUS_API_KEY.
+- #315: fast exits. `exit_poll_ms` 400, processed commitment, batched vaults, sell from buy meta.
+- #316 + #317: the early arm, on in paper. The executor ignores arm rows.
+
+**Evidence:**
+- md5 job #161 (exact sha, fast config, arm and intents on): decisions 93 lines and positions 30 lines identical. EQUIVALENT.
+- Job #159 (#316) EQUIVALENT.
+- Job #154 (#314 runner change, Oracle config) was still running at writing.
+- Security review verdict on #314 at f0049e8: MERGE.
 
 `/root/manifest-exec.txt`:
 ```
@@ -60,15 +64,34 @@ Order (runbook `docs/runbooks/probe-executor.md` §2b/§2c):
 019c64c317d98d8b11d1319d8202ca72d49df3fee12b983cf3c6f407753fcafa  tools/paper_curve_math.py
 25e543baace5d20aadf5109b228a27e272ecdd0d78190a5e638237337ba08235  tools/paper_price_path.py
 354d03602600c8df50ace4f5fed1307cf19f9fc9271ef6532706aafaa750f590  tools/paper_tape_scoreboard.py
-fd469885cb6a30f6de53b7ace11e6e07ef16d53c008af8f9a05fce1f0fdaea7e  tools/probe_executor.py
-4a9fd23dea5148e20f2220f8b3cbe487d432d42f79082e45cd3b279247067da8  tools/probe_live.py
-0a2e777844e70c8eb44e34e2509f7dbc2265e5f5660c9c403018cd01d7fa2930  tools/pumpswap_simulate.py
+5a88629e400c1aaed9c4cea819db5aef4e663dbbe6d68674c56272b318ab84c9  tools/probe_executor.py
+d9f7d9aa9fc412970cc44d59792a7470fb4535570cf60c784403a46aa508fc7b  tools/probe_live.py
+0d381fe14a2e9cef1d366b64899506a4dc6ffb864c52c64664abdd46bf7f1b69  tools/pumpswap_simulate.py
 418e52c16ad46cb38cb8bf4709ae6ec57caba4beed73c0a6a22a972c67030aa2  tools/pumpswap_tx.py
 10e8052cb529b6b6b1a6d5402b966b10ae4146e6b190f1ce1b9c922035a1fa7e  scripts/mal-fast/probe_exec_launcher.py
-32325d9d27e072c0b34bf4ae9eb01241f7653d9947f496267ede8d91badcca32  scripts/mal-fast/probe-executor-live.json
+d975b218c284897bc07b75645917dda972a4137450599e4388cb365077f5c1e6  scripts/mal-fast/probe-executor-live.json
 ed5b79869cb16fe61c15f09cdf70976e3ed4044ef8b31227fb37caf815f62342  scripts/mal-fast/requirements-probe-exec.txt
+6f0c3faf0598f624e8b1fa77956f4ec45d0a65a3c741723f9962cccc67251559  scripts/mal-fast/mal-probe-executor.service
+86a77cd29287d05f401466aa41ad18964c5f0d7a40dbb4f32e5ffd0108893da6  scripts/mal-fast/check-probe-base-unit.py
 ```
-Recovery from a half-finished pinned install: see runbook §2b. Remove `/usr/local/lib/mal-probe-exec/<sha>` and any `venv.<sha>.new` by hand, then rerun.
+Not in the manifest; Helm verifies these in the clone:
+- `install-probe-executor-pinned.sh` e1242d1b…6e78
+- `check-probe-exec-tree.sh` 7eeba7f8…5f92
+- `mal-probe-executor-live-pinned.conf` c4dc451d…6819
+
+**Order:**
+1. **Helm:** STOP present, open=0. Stop the unit and remove `live.conf`.
+2. **Manager:** announce first. Run `install-fast-forward-paper.sh --commit a25eb17…`, then restart `mal-fast-forward-paper`. Check `intents.jsonl` exists. Record the restart in LAB_STATE.
+3. **Helm:** fresh root clone, then `install-probe-executor-pinned.sh <sha> /root/manifest-exec.txt`.
+4. **Helm:** keyless dry run (§2b). Install the pinned conf as `live.conf`, daemon-reload, start. Check `mode=LIVE` and no `startup_refused`. Remove STOP.
+5. **Manager:** switch the hourly monitor to the pinned `--status`. Run a read-only evidence job for Warden #304/#306: `current` → root-owned `<sha>/`, ExecStart is the pinned launcher, the fence holds. Key §7 groups by build: `8a6849b` vs `a25eb17`.
+
+**Exit leak (job #153, notebook):**
+- Live sl fired at −0.3135…−0.7369.
+- Fills came in −326…−780 bps vs quote.
+- Sell decision→send was ~1 s. #315 targets this.
+
+**Next latency step:** PR-A2, the executor armed path. The executor picks the candidate second from when the pool appears; the +0 s candidate scores very differently. Needs 48 h of shadow `arm-audit.jsonl` first. Re-pin and Helm.
 
 ## State on fast-0 (paper; DEC-015)
 
