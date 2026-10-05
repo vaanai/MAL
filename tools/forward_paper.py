@@ -1384,6 +1384,8 @@ class ForwardEngine:
         self.exp012: Any = None
         self.exp012_gates: dict[str, Any] = {}
         self.exp012_rows: list[dict[str, Any]] = []
+        # Read-only observer called after each applied time step (tools/forward_early_arm.py). None = off.
+        self.arm_hook: Any = None
         # Chain time of a create row, ms, set by serve() before push_create (gate only).
         self.exp012_create_chain: dict[str, int] = {}
         self._last_event_ts: int | None = None
@@ -1571,6 +1573,8 @@ class ForwardEngine:
         while idx < len(ready):
             t_ms = ready[idx][0]
             self._before_time(t_ms)
+            if self.arm_hook is not None:
+                self.arm_hook(t_ms - 1)  # read-only: state as of just before this step
             batch: list[tuple[int, int, int, Any]] = []
             while idx < len(ready) and ready[idx][0] == t_ms:
                 batch.append(ready[idx])
@@ -2173,7 +2177,10 @@ class ForwardEngine:
         *,
         ledger: _Ledger | None = None,
         capped: bool = True,
+        readonly: bool = False,
     ) -> str | None:
+        # `readonly=True` (early arm) is the same check without `_roll_day`: a stale ledger day reads as
+        # day_pnl 0 and nothing is written.
         # Kill switch is not configurable. A loosened BookSpec still cannot trade past the ceilings.
         # `capped=False` is the shadow ledger: no concurrent cap and no daily-loss halt.
         # It does not raise position size, and it does not turn the kill switch off.
@@ -2185,13 +2192,18 @@ class ForwardEngine:
             return "max_position_size"
         if mint in book.open or mint in book.pending:
             return "already_open"
-        self._roll_day(book, t_ms)
+        day_pnl = book.day_pnl
+        if not readonly:
+            self._roll_day(book, t_ms)
+            day_pnl = book.day_pnl
+        elif book.day != time.strftime("%Y-%m-%d", time.gmtime(t_ms / 1000)):
+            day_pnl = 0
         if capped:
             concurrent = CEILING_MAX_CONCURRENT if spec.max_concurrent is None else min(spec.max_concurrent, CEILING_MAX_CONCURRENT)
             if len(book.open) + len(book.pending) >= concurrent:
                 return "max_concurrent"
             loss_cap = CEILING_DAILY_LOSS_LAMPORTS if spec.daily_loss_lamports is None else min(spec.daily_loss_lamports, CEILING_DAILY_LOSS_LAMPORTS)
-            if book.day_pnl <= -loss_cap:
+            if day_pnl <= -loss_cap:
                 return "daily_loss_cap"
         if t_ms < book.token_ready.get(mint, 0):
             return "token_cooldown"
@@ -2823,6 +2835,7 @@ def replay_rows(
     retain_rows: bool = True,
     logs: dict[str, JsonlLog] | None = None,
     pumpswap_virtual: str = "off",
+    early_arm_rows: Iterable[dict[str, Any]] | None = None,
 ) -> ForwardEngine:
     engine = ForwardEngine(
         books,
@@ -2845,6 +2858,13 @@ def replay_rows(
         barrier.maybe_reload(force=True)
     if swing is not None:
         swing.maybe_reload(force=True)
+    if early_arm_rows is not None and engine.exp012 is not None and "intents" in engine.logs:
+        from tools.forward_early_arm import EarlyArm
+
+        arm = EarlyArm(engine)
+        for arm_row in sorted((r for r in early_arm_rows if isinstance(r.get("t_recv_ms"), int)), key=lambda r: r["t_recv_ms"]):
+            arm.note_row(arm_row)
+        engine.arm_hook = arm.poll
     for create in creates:
         if create.t_signal_ms <= tape_end_ms:
             engine.push_create(create)
@@ -3349,7 +3369,9 @@ class DirectoryTail:
         creates_dir: Path,
         offsets: dict[str, int],
         attention_dir: Path | None = None,
+        migrations_dir: Path | None = None,
     ) -> None:
+        self.migrations_dir = migrations_dir
         self.tape_dir = tape_dir
         self.creates_dir = creates_dir
         self.attention_dir = attention_dir
@@ -3369,6 +3391,8 @@ class DirectoryTail:
                 kind = "create"
             elif key.startswith("attention:"):
                 kind = "attention"
+            elif key.startswith("migration:"):
+                kind = "migration"
             else:
                 kind = "trade"
             for line in lines:
@@ -3389,6 +3413,8 @@ class DirectoryTail:
         watched = [("trade", trade), ("create", create)]
         if self.attention_dir is not None:
             watched.append(("attention", self.attention_dir / f"attention-{hour}.jsonl"))
+        if self.migrations_dir is not None:
+            watched.append(("migration", self.migrations_dir / f"migrations-{hour}.jsonl"))
         for kind, path in watched:
             key = f"{kind}:{path}"
             if key in self._open or not path.is_file():
@@ -3417,6 +3443,8 @@ def run_replay_files(
     span_ms: int | None = None,
     pumpswap_virtual: str = "off",
     intents_file: bool = False,
+    migrations: Sequence[Path] = (),
+    early_arm: bool = False,
 ) -> dict[str, Any]:
     loaded = load_creates(creates)
     rows = list(_iter_jsonl(tape, span_ms=span_ms))
@@ -3448,6 +3476,7 @@ def run_replay_files(
         logs=logs,
         record_packets=True,
         pumpswap_virtual=pumpswap_virtual,
+        early_arm_rows=list(_iter_jsonl(migrations)) if early_arm else None,
     )
     baseline_ids = [b.spec.book_id for b in engine.books if b.spec.kind == "baseline"]
     reconcile = None
@@ -3623,7 +3652,15 @@ def serve(config_path: Path) -> int:
     # thresholds and freeze the static baseline. See GC_THRESHOLD's comment.
     gc_stats = install_gc_mitigation()
     mem_census = MemCensus()
-    tail = DirectoryTail(tape_dir, creates_dir, offsets, attention_dir)
+    early_arm = None
+    if raw.get("early_arm") is True and engine.exp012 is not None and "intents" in engine.logs:
+        from tools.forward_early_arm import EarlyArm
+
+        early_arm = EarlyArm(engine)
+        engine.arm_hook = early_arm.poll
+    elif raw.get("early_arm") is True:
+        print("forward_paper early_arm requested but needs a gated book and intents_file; off", file=sys.stderr)
+    tail = DirectoryTail(tape_dir, creates_dir, offsets, attention_dir, tape_dir if early_arm is not None else None)
     stop = {"flag": False}
 
     def _stop(_signum: int, _frame: Any) -> None:
@@ -3659,6 +3696,12 @@ def serve(config_path: Path) -> int:
     while not stop["flag"]:
         batch = tail.poll()
         now_ms = int(time.time() * 1000)
+        if early_arm is not None:
+            # migrations rows feed ONLY the arm: no engine clock, no staleness counters, no push_*.
+            for kind, row in batch:
+                if kind == "migration":
+                    early_arm.note_row(row, now_ms)
+            batch = [(k, r) for k, r in batch if k != "migration"]
         fresh: list[tuple[str, dict[str, Any]]] = []
         for kind, row in batch:
             clock = row_clock_ms(kind, row)
@@ -3705,6 +3748,8 @@ def serve(config_path: Path) -> int:
             engine.drain_until(max(0, watermark - holdback_ms))
         elif engine.inbox:
             engine.flush()
+        if early_arm is not None:
+            early_arm.poll(engine._clock_ms)
         now = time.monotonic()
         if now - last_model > 30:
             model.maybe_reload()
@@ -3770,6 +3815,7 @@ def main(argv: list[str] | None = None) -> int:
     replay_p.add_argument("--creates", nargs="*", type=Path, default=[])
     replay_p.add_argument("--tape-dir", type=Path)
     replay_p.add_argument("--creates-dir", type=Path)
+    replay_p.add_argument("--migrations-dir", type=Path, help="migrations-*.jsonl[.zst]; read only when the config sets early_arm")
     replay_p.add_argument("--output-dir", required=True, type=Path)
     replay_p.add_argument("--tape-end-ms", type=int)
     replay_p.add_argument("--span-min", type=float, default=0, help="stop this many minutes after the first tape row; 0 reads the file")
@@ -3809,6 +3855,8 @@ def main(argv: list[str] | None = None) -> int:
         span_ms=None if args.span_min <= 0 else int(args.span_min * 60_000),
         pumpswap_virtual=str(raw.get("pumpswap_virtual", "off")),
         intents_file=raw.get("intents_file") is True,
+        migrations=sorted(_discover(args.migrations_dir, ("migrations-*.jsonl", "migrations-*.jsonl.zst", "migrations-*.jsonl.gz"))) if args.migrations_dir else (),
+        early_arm=raw.get("early_arm") is True,
     )
     recon = result.get("reconcile") or {}
     gap = (recon.get("online_vs_same_latency") or {}).get("pnl_mismatches")

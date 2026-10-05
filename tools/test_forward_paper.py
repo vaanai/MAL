@@ -1899,3 +1899,139 @@ class IntentWriteErrorTests(unittest.TestCase):
             path = Path(d) / "status.json"
             fp.write_runner_status(path, engine, live_at_ms=None)
             self.assertEqual(json.loads(path.read_text())["intent_write_errors"], 3)
+
+
+class EarlyArmTests(unittest.TestCase):
+    """Early arm: the EXP-012 gate answered at `complete` time. Read-only observer, a new row schema in
+    intents.jsonl, nothing else may change."""
+
+    def setUp(self) -> None:
+        from tools.test_forward_exp012_gate import _gated, _make_model
+
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.dir = Path(self._td.name)
+        self.model, self.md5, self.feats = _make_model(self.dir)
+        self.book = _gated(self.model, self.md5, self.feats)
+
+    def _complete(self, mint: str, t_ms: int, slot: int = 98) -> dict:
+        return {"type": "complete", "mint": mint, "event_ts": t_ms // 1000, "slot": slot, "t_recv_ms": t_ms, "source": "tip"}
+
+    def _rows(self):
+        from tools.test_forward_exp012_gate import _mint_rows
+
+        creates = [_create("Hi", T0, "CH"), _create("Lo", T0, "CL")]
+        rows = sorted(_mint_rows("Hi", 7) + _mint_rows("Lo", 1), key=lambda r: r["t_recv_ms"])
+        mig = [self._complete("Hi", T0 + 16_500), self._complete("Lo", T0 + 16_600)]
+        return creates, rows, mig
+
+    def _run(self, tmp: Path, arm: bool, *, kill: bool = False, mig_rows=None):
+        from tools.forward_paper import JsonlLog
+
+        creates, rows, mig = self._rows()
+        logs = {
+            "decisions": JsonlLog(tmp / "decisions.jsonl"),
+            "positions": JsonlLog(tmp / "positions.jsonl"),
+            "intents": JsonlLog(tmp / "intents.jsonl", fsync=True),
+        }
+        if kill:
+            (tmp / "KILL").write_text("x")
+        engine = replay_rows(
+            creates, rows, [self.book], tape_end_ms=T0 + 120_000, kill_file=tmp / "KILL", offsets_ms=(5_000,), logs=logs,
+            early_arm_rows=(mig if mig_rows is None else mig_rows) if arm else None,
+        )
+        for log in logs.values():
+            log.close()
+        return engine, tmp
+
+    @staticmethod
+    def _arms(tmp: Path) -> list[dict]:
+        p = tmp / "intents.jsonl"
+        out = [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+        return [r for r in out if r.get("schema") == "forward_paper_arm_v1"]
+
+    def test_arm_row_for_passing_mint_only(self) -> None:
+        _e, tmp = self._run(self.dir, True)
+        arms = self._arms(tmp)
+        self.assertEqual([a["mint"] for a in arms], ["Hi"])
+        a = arms[0]
+        self.assertTrue(a["pass_all"] and a["pass_any"])
+        self.assertEqual(a["complete_slot"], 98)
+        self.assertEqual(a["book"], self.book.book_id)
+        self.assertEqual([c["mig_ms"] for c in a["candidates"]], [(T0 + 16_500) // 1000 * 1000 + k * 1000 for k in range(5)])
+        self.assertTrue(all(c["score"] is not None for c in a["candidates"]))
+        self.assertIs(a["runner_kill"], False)
+        self.assertIsInstance(a["written_ms"], int)
+
+    def test_no_arm_row_when_kill_file_exists(self) -> None:
+        _e, tmp = self._run(self.dir, True, kill=True)
+        self.assertEqual(self._arms(tmp), [])
+
+    def test_engine_output_identical_arm_on_or_off(self) -> None:
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            e_off, off = self._run(Path(a), False)
+            e_on, on = self._run(Path(b), True)
+            for name in ("decisions.jsonl", "positions.jsonl"):
+                self.assertTrue((off / name).read_bytes())
+                self.assertEqual((off / name).read_bytes(), (on / name).read_bytes())
+            self.assertEqual(e_off.exp012_rows, e_on.exp012_rows)
+            self.assertEqual(self._arms(off), [])
+            self.assertEqual(len(self._arms(on)), 1)
+
+            def strip(p: Path) -> list[dict]:
+                return [{k: v for k, v in json.loads(x).items() if k != "written_ms"} for x in p.read_text().splitlines() if "forward_paper_intent_v1" in x]
+
+            self.assertEqual(strip(off / "intents.jsonl"), strip(on / "intents.jsonl"))
+
+    def test_non_complete_and_stale_rows_ignored(self) -> None:
+        from tools.forward_early_arm import EarlyArm
+
+        eng = ForwardEngine([BookSpec("b", "migrate", "tp50_sl30")], kill_file=self.dir / "KILL")
+        arm = EarlyArm(eng)
+        self.assertFalse(arm.note_row({"type": "migration", "mint": "M", "event_ts": 1_800_000_000, "t_recv_ms": 1}))
+        self.assertFalse(arm.note_row(self._complete("M", 1_800_000_000_000), now_ms=1_800_000_000_000 + 10_000_000))
+        self.assertEqual(len(arm.pending), 0)
+
+    def test_risk_reason_readonly_writes_no_state(self) -> None:
+        eng = ForwardEngine([BookSpec("b", "migrate", "tp50_sl30")], kill_file=self.dir / "KILL")
+        run = eng.books[0]
+        run.ceiling.day, run.ceiling.day_pnl = "1999-01-01", -10**12
+        self.assertIsNone(eng._risk_reason(run, "M", "C", T0, 50_000_000, ledger=run.ceiling, capped=True, readonly=True))
+        self.assertEqual((run.ceiling.day, run.ceiling.day_pnl), ("1999-01-01", -10**12))
+        eng._risk_reason(run, "M", "C", T0, 50_000_000, ledger=run.ceiling, capped=True)
+        self.assertEqual(run.ceiling.day_pnl, 0)
+
+    def test_parse_intent_and_tail_signals_ignore_arm_row(self) -> None:
+        from tools import probe_executor as pe
+
+        _e, tmp = self._run(self.dir, True)
+        line = next(x for x in (tmp / "intents.jsonl").read_text().splitlines() if "forward_paper_arm_v1" in x)
+        self.assertIsNone(pe.parse_intent(line, self.book.book_id, "ceiling"))
+        st = pe.State()
+        path = tmp / "arm-only.jsonl"
+        path.write_text("")
+        pe.tail_signals(path, st, self.book.book_id, intents=True)  # start at end
+        path.write_text(line + "\n")
+        self.assertEqual(pe.tail_signals(path, st, self.book.book_id, intents=True), [])
+
+    def test_directory_tail_follows_migrations_only_when_asked(self) -> None:
+        from tools.forward_paper import DirectoryTail
+
+        hour = time.strftime("%Y-%m-%dT%H", time.gmtime())
+        mig = self.dir / f"migrations-{hour}.jsonl"
+        mig.write_text("")
+        (self.dir / f"trades-{hour}.jsonl").write_text("")
+        off = DirectoryTail(self.dir, self.dir, {})
+        off.poll()
+        self.assertFalse([k for k in off._open if k.startswith("migration:")])
+        on = DirectoryTail(self.dir, self.dir, {}, None, self.dir)
+        on.poll()
+        self.assertIn(f"migration:{mig}", on._open)
+        with mig.open("a") as fh:
+            fh.write(json.dumps(self._complete("Hi", T0)) + "\n")
+        got = on.poll()
+        self.assertEqual([k for k, _ in got], ["migration"])
+
+    def test_shipped_fast_config_early_arm_flag_is_boolean(self) -> None:
+        cfg = json.loads((Path(__file__).resolve().parents[1] / "scripts/mal-fast/fast-forward-paper.json").read_text())
+        self.assertIsInstance(cfg.get("early_arm", False), bool)
