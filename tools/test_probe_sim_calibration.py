@@ -65,8 +65,12 @@ def make(t=T_AFTER, mint=M1):
 
 
 def test_build_split():
-    assert psc.build_of(psc.BUILD_SPLIT_MS - 1) == "8a6849b"
-    assert psc.build_of(psc.BUILD_SPLIT_MS) == "a25eb17"
+    assert psc.build_of(1791223983000 - 1) == "8a6849b"
+    assert psc.build_of(1791223983000) == "a25eb17"
+    assert psc.build_of(1791232766000 - 1) == "a25eb17"
+    assert psc.build_of(1791232766000) == "7004b16"
+    assert psc.build_of(5, [(10, "x")]) == "unknown"
+    assert psc.build_of(15, psc.parse_builds(["10:x", "20:y"])) == "x"
 
 
 def test_pair_ignores_dryrun_and_failed(tmp_path):
@@ -133,6 +137,11 @@ def test_tp_sl_disagree_and_build_aggregate(tmp_path):
     agg = psc.run(fills_file(tmp_path, [ba, sa, bb, sb]), d, tmp_path / "o")
     assert agg["a25eb17"]["tp_sl_disagree"] == 1 and agg["8a6849b"]["tp_sl_disagree"] == 0
     assert agg["8a6849b"]["n_trades"] == 1 and agg["all"]["n_trades"] == 2
+    assert agg["7004b16"]["n_trades"] == 0 and list(agg) == ["8a6849b", "a25eb17", "7004b16", "all"]
+    md = (tmp_path / "o" / "calibration.md").read_text()
+    assert "Per trade, every variant" in md and "live_snapshot_correct" in md
+    agg2 = psc.run(fills_file(tmp_path, [ba, sa, bb, sb]), d, tmp_path / "o2", builds=psc.parse_builds([f"0:old", f"{T_AFTER}:new"]))
+    assert agg2["new"]["n_trades"] == 1 and agg2["old"]["n_trades"] == 1
 
 
 DEADLINE = T_AFTER + 30 * 60_000
@@ -180,22 +189,27 @@ def test_double_count_variants():
     r2 = psc.simulate_trade({"buy": b, "sell": s}, rows, {M1}, own_trade_in_tape=False)
     assert r2["primary_variant"] == "sim_executor" and r2["sim_ret"] == ve["ret"]
     assert set(r["variants"]) == {"sim_executor", "sim_correct", "live_executor", "live_correct",
-                                  "live_legacy_executor", "live_legacy_correct"}
+                                  "live_legacy_executor", "live_legacy_correct",
+                                  "live_snapshot_executor", "live_snapshot_correct"}
 
 
-def test_live_position_mark_at_landing_vs_legacy():
+def test_live_position_marks_post_buy_vs_legacy_vs_snapshot():
     rows, b, s = make()
     er = psc.last_before(rows, int(b["landed_slot"]))
     q = psc.sim_buy(er, int(b["spend_lamports"]))
-    new = psc.live_position_landed(b, rows, er, q)
-    old = psc.live_position(b, er, q)
+    cur = psc.live_position(b, er, q)
+    snap_er = psc.snap_of(er)
+    assert cur["mark_source"] == "buy_tx_post"
+    assert cur["mark"] == pytest.approx(psc.pcm.spot_sol_per_ui(snap_er.quote_priced + cur["net_in"], snap_er.base_reserve - cur["tokens"]))
+    leg = psc.live_legacy_position(b, rows, er, q)
+    assert leg["mark_source"] == "send_state" and leg["tokens"] == cur["tokens"]
     first = next(r for r in rows if r["slot"] >= int(b["landed_slot"]))
-    snap = psc.snap_of(first)
-    assert new["mark_source"] == "landed_snapshot"
-    assert new["mark"] == pytest.approx(psc.pcm.spot_sol_per_ui(snap.quote_priced, snap.base_reserve))
-    assert new["mark_send"] == old["mark"] and "mark_source" not in old  # legacy keeps the send-state model
-    fb = psc.live_position_landed(b, [], er, q)
-    assert fb["mark_source"] == "fill_price" and fb["mark"] == pytest.approx(old["net_in"] / (old["tokens"] * 1000))
+    ss = psc.live_snapshot_position(b, rows, er, q)
+    sn = psc.snap_of(first)
+    assert ss["mark_source"] == "landed_snapshot"
+    assert ss["mark"] == pytest.approx(psc.pcm.spot_sol_per_ui(sn.quote_priced, sn.base_reserve))
+    fb = psc.live_snapshot_position(b, [], er, q)
+    assert fb["mark_source"] == "fill_price" and fb["mark"] == pytest.approx(cur["net_in"] / (cur["tokens"] * 1000))
 
 
 def test_pnl_parity_extra_cost_and_rent():
@@ -215,7 +229,7 @@ def test_cli_flag_default_on(tmp_path):
     f = fills_file(tmp_path, [b, s])
     assert psc.main(["--fills", str(f), "--tape-dir", str(d), "--out-dir", str(tmp_path / "o1")]) == 0
     assert json.loads((tmp_path / "o1/calibration.json").read_text())["own_trade_in_tape"] is True
-    assert json.loads((tmp_path / "o1/calibration.json").read_text())["schema_version"] == psc.SCHEMA_VERSION == 2
+    assert json.loads((tmp_path / "o1/calibration.json").read_text())["schema_version"] == psc.SCHEMA_VERSION == 3
     psc.main(["--fills", str(f), "--tape-dir", str(d), "--out-dir", str(tmp_path / "o2"), "--no-own-trade-in-tape"])
     assert json.loads((tmp_path / "o2/calibration.json").read_text())["own_trade_in_tape"] is False
     assert "Sim reproduces the executor's exit decisions on 1/1 (n=1)" in (tmp_path / "o1/calibration.md").read_text()

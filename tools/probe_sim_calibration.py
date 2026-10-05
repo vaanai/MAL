@@ -35,16 +35,36 @@ from tools import paper_curve_math as pcm
 from tools import probe_executor as pe
 from tools import pumpswap_tx as tx
 
-BUILD_SPLIT_MS = 1791223983000  # 2026-10-05T17:53:03Z
-BUILD_BEFORE, BUILD_AFTER = "8a6849b", "a25eb17"
+# Live builds as (start_ms, sha) boundaries, ascending; a trade belongs to the last boundary at or before its buy ts.
+# Override on the CLI with repeated --build START_MS:SHA (the override replaces this list).
+BUILDS: tuple[tuple[int, str], ...] = (
+    (0, "8a6849b"),               # before 2026-10-05T17:53:03Z
+    (1791223983000, "a25eb17"),   # from 2026-10-05T17:53:03Z
+    (1791232766000, "7004b16"),   # from 2026-10-05T20:39:26Z
+    # (<start_ms>, "<next build sha>"),  # PLACEHOLDER: add the next build's boundary here (the buy-tx-mark build)
+)
 SIZES_SOL = (0.1, 0.25)
 PRIORITY_ALT = 150_000
 EXIT_MARGIN_MS = 5 * 60_000
 LAMPORTS = 1_000_000_000
 
 
-def build_of(ts_ms: int) -> str:
-    return BUILD_BEFORE if ts_ms < BUILD_SPLIT_MS else BUILD_AFTER
+def build_of(ts_ms: int, builds: Iterable[tuple[int, str]] | None = None) -> str:
+    label = "unknown"  # before the first boundary
+    for start, sha in sorted(builds if builds is not None else BUILDS):
+        if ts_ms >= start:
+            label = sha
+    return label
+
+
+def parse_builds(specs: list[str]) -> tuple[tuple[int, str], ...]:
+    out = []
+    for sp in specs:
+        start, _, sha = sp.partition(":")
+        if not sha or not start.isdigit():
+            raise ValueError(f"--build wants START_MS:SHA, got {sp!r}")
+        out.append((int(start), sha))
+    return tuple(sorted(out))
 
 
 # --- fills ----------------------------------------------------------------------------------------
@@ -178,8 +198,8 @@ def sim_buy(row: dict[str, Any], spend: int) -> dict[str, Any] | None:
 
 
 BOOKS = ("executor", "correct")  # "executor" = legacy double-count (pre-#324 executor); key kept so old JSON stays readable; executor-identical (adds our buy again) vs raw tape book (our buy already in the tape)
-SCHEMA_VERSION = 2  # 2: live_executor / live_correct model the mark at landing; the old model is live_legacy_*
-POSITIONS = ("sim", "live", "live_legacy")  # simulated entry; LIVE fill + mark at landing (current executor); LIVE fill + send-state mark model (legacy)
+SCHEMA_VERSION = 3  # 3: live_* = mark from the post-buy state (the buy-tx method); live_legacy_* = send-state mark; live_snapshot_* = #330 first-snapshot mark. 2 (#330) meant live_* = first snapshot.
+POSITIONS = ("sim", "live", "live_legacy", "live_snapshot")
 VARIANTS = tuple(f"{p}_{b}" for p in POSITIONS for b in BOOKS)
 
 
@@ -289,43 +309,51 @@ def variant_result(name: str, ex: dict[str, Any], b: dict[str, Any], s: dict[str
     return v
 
 
-def live_position_landed(b: dict[str, Any], rows: list[dict[str, Any]], er: dict[str, Any], q: dict[str, Any]) -> dict[str, Any]:
-    """Position from the LIVE fill with the CURRENT executor's mark (probe_executor.rebase_mark): the raw spot of the
-    first tape row at or after the landing slot (the state that holds our buy), `mark_source` landed_snapshot; with no
-    such row, the effective fill price net_in / tokens, `fill_price`. The send-state mark is kept as mark_send."""
-    pos = live_position(b, er, q)
-    slot = int(b["landed_slot"])
-    first = next((r for r in rows if r["slot"] >= slot), None)
-    snap = snap_of(first) if first else None
-    mark_send = pos["mark"]
-    if snap is not None and snap.quote_priced and snap.base_reserve > 0:
-        pos["mark"], pos["mark_source"] = pcm.spot_sol_per_ui(snap.quote_priced, snap.base_reserve), "landed_snapshot"
-    else:
-        pos["mark"], pos["mark_source"] = pos["net_in"] / (pos["tokens"] * 1000), "fill_price"
-    pos["mark_send"] = mark_send
-    return pos
-
-
 def live_position(b: dict[str, Any], er: dict[str, Any], q: dict[str, Any]) -> dict[str, Any]:
-    """LEGACY live-position variant (`live_legacy_*`): live tokens, net_in = spend - pool_fee_est, and the post-buy spot
-    re-derived from the PRE-landing entry-row state (the send-state mark model the executor used before the
-    mark-at-landing fix). mark/net_in are derived, not recorded in the fills."""
+    """`live_*` variants, the CURRENT executor's mark (buy-tx method): live tokens, net_in = spend - pool_fee_est, and the
+    mark = the post-buy spot = the pre-landing tape state (last row before the landing slot) plus our buy applied with
+    the live tokens, V-priced. On chain this is the pool's vault state right after our own tx, which the executor reads
+    from the buy tx's postTokenBalances. mark/net_in are derived, not recorded in the fills."""
     spend, tokens = int(b["spend_lamports"]), int(b["tokens_received"])
     net = spend - int(b["pool_fee_est_lamports"]) if b.get("pool_fee_est_lamports") is not None else q["net_in"]
     snap = snap_of(er)
     mark = pcm.spot_sol_per_ui(snap.quote_priced + net, snap.base_reserve - tokens)
-    return {"tokens": tokens, "net_in": net, "mark": mark, "t_entry_ms": b["ts_ms"]}
+    return {"tokens": tokens, "net_in": net, "mark": mark, "mark_source": "buy_tx_post", "t_entry_ms": b["ts_ms"]}
+
+
+def live_legacy_position(b: dict[str, Any], rows: list[dict[str, Any]], er: dict[str, Any], q: dict[str, Any]) -> dict[str, Any]:
+    """`live_legacy_*`: live tokens, but the SEND-state mark (builds 8a6849b, a25eb17, 7004b16): the entry quote's
+    mark on the tape row at the buy's send-state slot (`state_slot`), else on the pre-landing row."""
+    pos = live_position(b, er, q)
+    sr = last_before(rows, int(b["state_slot"]) + 1) if isinstance(b.get("state_slot"), int) else None
+    sq = sim_buy(sr, int(b["spend_lamports"])) if sr else None
+    pos["mark"], pos["mark_source"] = (sq or q)["mark"], "send_state"
+    return pos
+
+
+def live_snapshot_position(b: dict[str, Any], rows: list[dict[str, Any]], er: dict[str, Any], q: dict[str, Any]) -> dict[str, Any]:
+    """`live_snapshot_*`: the #330 method (never installed), for comparison: the raw spot of the first tape row at or
+    after the landing slot (up to ~5 s of post-landing drift folded in), else the fill price."""
+    pos = live_position(b, er, q)
+    first = next((r for r in rows if r["slot"] >= int(b["landed_slot"])), None)
+    snap = snap_of(first) if first else None
+    if snap is not None and snap.quote_priced and snap.base_reserve > 0:
+        pos["mark"], pos["mark_source"] = pcm.spot_sol_per_ui(snap.quote_priced, snap.base_reserve), "landed_snapshot"
+    else:
+        pos["mark"], pos["mark_source"] = pos["net_in"] / (pos["tokens"] * 1000), "fill_price"
+    return pos
 
 
 def simulate_trade(trade: dict[str, Any], rows: list[dict[str, Any]], fill_mints: set[str],
-                   own_trade_in_tape: bool = True, deadline_covered: bool = True) -> dict[str, Any]:
+                   own_trade_in_tape: bool = True, deadline_covered: bool = True,
+                   builds: Iterable[tuple[int, str]] | None = None) -> dict[str, Any]:
     b, s = trade["buy"], trade["sell"]
     mint = b["mint"]
     if mint not in fill_mints:  # seal
         raise ValueError("seal: mint is not in the live fills file")
     spend = int(b["spend_lamports"])
     primary = "sim_correct" if own_trade_in_tape else "sim_executor"
-    out: dict[str, Any] = {"mint": mint, "build": build_of(b["ts_ms"]), "buy_ts_ms": b["ts_ms"], "landed_slot": b["landed_slot"],
+    out: dict[str, Any] = {"mint": mint, "build": build_of(b["ts_ms"], builds), "buy_ts_ms": b["ts_ms"], "landed_slot": b["landed_slot"],
                            "live_tokens": b["tokens_received"], "spend_lamports": spend, "live_entry_vs_quote_bps": b.get("entry_vs_quote_bps"),
                            "live_exit_reason": (s or {}).get("exit_reason"), "live_ret": (s or {}).get("ret"),
                            "live_pnl_lamports": (s or {}).get("pnl_lamports"), "live_hold_ms": (s or {}).get("hold_ms"),
@@ -344,11 +372,12 @@ def simulate_trade(trade: dict[str, Any], rows: list[dict[str, Any]], fill_mints
     slot = int(b["landed_slot"])
     pos_sim = {"tokens": q["tokens"], "net_in": q["net_in"], "mark": q["mark"], "t_entry_ms": b["ts_ms"]}
     has_live = bool(b.get("tokens_received"))
-    pos_live = live_position_landed(b, rows, er, q) if has_live else None  # current: mark at landing
-    pos_legacy = live_position(b, er, q) if has_live else None  # legacy: send-state mark model
+    pos_live = live_position(b, er, q) if has_live else None  # current: post-buy state (buy-tx mark)
+    pos_legacy = live_legacy_position(b, rows, er, q) if has_live else None  # send-state mark
+    pos_snapshot = live_snapshot_position(b, rows, er, q) if has_live else None  # #330 first-snapshot mark
     walks: dict[str, dict[str, Any]] = {}
     variants: dict[str, Any] = {}
-    for pname, pos in (("sim", pos_sim), ("live", pos_live), ("live_legacy", pos_legacy)):
+    for pname, pos in (("sim", pos_sim), ("live", pos_live), ("live_legacy", pos_legacy), ("live_snapshot", pos_snapshot)):
         if pos is None:
             continue
         for book in BOOKS:
@@ -432,9 +461,12 @@ def _variant_agg(rs: list[dict[str, Any]], name: str) -> dict[str, Any]:
             "ret": _stats([v.get("ret") for v in vs])}
 
 
-def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate(results: list[dict[str, Any]], builds: Iterable[tuple[int, str]] | None = None) -> dict[str, Any]:
+    """One aggregate per build (every configured build, even with no trades, then any other label present), then "all"."""
     out: dict[str, Any] = {}
-    for name in (BUILD_BEFORE, BUILD_AFTER, "all"):
+    names = list(dict.fromkeys([sha for _, sha in sorted(builds if builds is not None else BUILDS)] + [r["build"] for r in results] + ["all"]))
+    names = [n for n in names if n != "all"] + ["all"]
+    for name in names:
         rs = [r for r in results if name == "all" or r["build"] == name]
         ok = [r for r in rs if r.get("sim_exit_reason")]
         paired = [r for r in ok if "reason_agree" in r]
@@ -500,13 +532,25 @@ def to_markdown(results: list[dict[str, Any]], agg: dict[str, Any]) -> str:
         L.append(f"| {r['build']} | {r['mint'][:8]} | {r['status']} | {f(r.get('entry_gap_bps'))} | {f(r['live_exit_reason'])} | "
                  f"{f(r.get('sim_exit_reason'))} | {f(r.get('trigger_time_diff_ms'))} | {f(r.get('ret_diff_executor_minus_correct'))} | "
                  f"{f(r['live_pnl_lamports'])} | {f(sp)} | {f(r.get('pnl_gap_lamports'))} |")
+    L += ["", "## Per trade, every variant (exit reason / ret; sim_correct is the tape-sim entry, live_* use the live fill)", "",
+          "| build | mint | live exit / ret | sim_correct | live_correct (buy-tx mark) | live_snapshot_correct (#330) | live_legacy_correct (send-state) |",
+          "|---|---|---|---|---|---|---|"]
+
+    def vr(r: dict[str, Any], name: str) -> str:
+        v = (r.get("variants") or {}).get(name)
+        return "" if not v else f"{f(v.get('reason'))} / {f(v.get('ret'))}"
+
+    for r in results:
+        L.append(f"| {r['build']} | {r['mint'][:8]} | {f(r['live_exit_reason'])} / {f(r.get('live_ret'))} | "
+                 + " | ".join(vr(r, v) for v in ("sim_correct", "live_correct", "live_snapshot_correct", "live_legacy_correct")) + " |")
     L += ["", "Unverified: tape reserves are post-trade state; live trigger time approximated by the sell's first_send_ms; "
           "sell delay = live sell landed_slot - live sell snapshot_slot; a time stop is emitted when the tape file of the "
           "deadline hour exists, even if no row follows."]
     return "\n".join(L) + "\n"
 
 
-def run(fills_path: Path, tape_dir: Path, out_dir: Path, own_trade_in_tape: bool = True) -> dict[str, Any]:
+def run(fills_path: Path, tape_dir: Path, out_dir: Path, own_trade_in_tape: bool = True,
+        builds: Iterable[tuple[int, str]] | None = None) -> dict[str, Any]:
     trades = pair_trades(load_fills(fills_path))
     fill_mints = {t["buy"]["mint"] for t in trades}
     hours = hours_needed(trades)
@@ -516,11 +560,12 @@ def run(fills_path: Path, tape_dir: Path, out_dir: Path, own_trade_in_tape: bool
     for t in trades:
         dl = t["buy"]["ts_ms"] + pe.EXIT_RULE.max_hold_ms
         results.append(simulate_trade(t, tape.get(t["buy"]["mint"], []), fill_mints, own_trade_in_tape,
-                                      deadline_covered=_hour_name(dl) in present))
-    agg = aggregate(results)
+                                      deadline_covered=_hour_name(dl) in present, builds=builds))
+    agg = aggregate(results, builds)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "calibration.json").write_text(
         json.dumps({"schema_version": SCHEMA_VERSION, "label": "arithmetic on n trades, not evidence", "own_trade_in_tape": own_trade_in_tape,
+                    "builds": [list(b) for b in sorted(builds if builds is not None else BUILDS)],
                     "aggregate": agg, "trades": results}, indent=1))
     (out_dir / "calibration.md").write_text(to_markdown(results, agg))
     return agg
@@ -534,8 +579,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--own-trade-in-tape", action=argparse.BooleanOptionalAction, default=True,
                     help="primary variant prices exits on the raw tape book (our buy is already in post-landing rows); "
                          "default on. Both books are always reported.")
+    ap.add_argument("--build", action="append", default=[], metavar="START_MS:SHA",
+                    help="build boundary, repeatable; replaces the BUILDS constant (a trade belongs to the last boundary at or before its buy)")
     a = ap.parse_args(argv)
-    agg = run(a.fills, a.tape_dir, a.out_dir, a.own_trade_in_tape)
+    agg = run(a.fills, a.tape_dir, a.out_dir, a.own_trade_in_tape, parse_builds(a.build) if a.build else None)
     print(json.dumps({k: {"n_trades": v["n_trades"], "n_sim_ok": v["n_sim_ok"]} for k, v in agg.items()}))
     return 0
 
