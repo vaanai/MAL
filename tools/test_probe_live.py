@@ -1341,6 +1341,17 @@ class EntryVetoLiveTests(unittest.TestCase):
         self.assertIn("snap_slot", row)
         self.assertNotIn("sendTransaction", rpc.calls)
 
+    def test_stop_and_halt_win_over_the_veto(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, entry_veto_drift_max=0.25)
+        for name in ("STOP", "HALT"):
+            (self.tmp / name).write_text("")
+            ex.handle_signal(mk_sig(ex, t=clock()))
+            row = fills(conf)[-1]
+            self.assertTrue(row["reason"].startswith("limit:"), (name, row))
+            self.assertNotIn("drift", row)
+            self.assertEqual((ex.state.attempts, rpc.sent), (0, []))
+            (self.tmp / name).unlink()
+
     def test_old_config_still_buys(self):
         ex, rpc, clock, kp, conf = make_live(self.tmp)
         self.assertIsNotNone(signal_buy(ex, clock))

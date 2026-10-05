@@ -174,3 +174,19 @@ If more than 20% of buys sent under 150,000 land more than 3 slots after the sen
 - Starts in build: `<sha, to be filled with the merge sha of this PR>`.
 - `a0bea86` (#330, mark from the first exit snapshot after landing) was **never installed**: that method folds up to about 5 s of post-landing drift into the mark (a 25% drop in the gap resets the mark, and sl then fires only near -47.5% against our fill). It is kept in `tools/probe_sim_calibration.py` as the labelled `live_snapshot_*` variant for comparison only.
 - The §7 build groups separate the **send-state-mark builds** (`8a6849b`, `a25eb17`, `7004b16`) from this build. Do not pool them: their tp/sl fired against a mark that could differ from the real post-buy state by hundreds to thousands of bps (e.g. mint 7fX2pvgh, +4,197.82 bps more tokens than quoted). A calibration replay (`tools/probe_sim_calibration.py`, schema_version 3) must run before the re-pin.
+
+## Entry veto drift_gt_25 (2026-10-05)
+
+Evidence (exploration only, job #181, `tools/exp012_entry_veto.py`, PR #328). Rule `drift_gt_25`: skip the entry if the pool's spot price at the last print with slot <= mig+3 is more than 25% above the price at the migration slot.
+
+- Nested leave-one-day-out over 7 rules picked it on 9/9 folds.
+- Paired pressure vs frozen: +0.00006 SOL per mint, CI90 [0.00003, 0.00011], 9/9 held-out days positive. Flat: +0.00010, CI90 [0.00003, 0.00020]. Optimism gap 0.
+- It vetoes 46/881 entries. Vetoed pressure mean -0.00120, kept 0.00068.
+- The result is small and is an UPPER BOUND: best-of-N, and the rule family was written after the live pattern was seen. It is an exploration result, not gate evidence, and 0.25 is not a measured edge.
+
+Implementation (`tools/probe_executor.py`, shared by the dry run and live). At send time, after the V-priced quote and before the write-ahead (and after `check_buy`, so STOP and HALT still apply first), drift = V-priced spot of the send snapshot / P_mig - 1. Above `entry_veto_drift_max` (0.25, clamped to [0.10, 1.0]; absent = no veto) the executor logs a skip row `veto:drift_gt_25` with drift, p_mig, spot and snap_slot; no tx is sent and the attempt is not consumed.
+
+- Live P_mig is a constant seed price (about 4.1078e-07 SOL per token: vault 67.4058 SOL + V 17.5845 SOL over 206.9M tokens). The study used the first migration-slot print instead. On the fast-pool tape (2026-09-19T04..11Z, 215 migrated mints with a known V) the two agree within 1% for 77.7% of mints, so they differ for about 22%, where trades preceded the first print in the slot. Live drift can therefore differ from the study's for those mints.
+- A pool V more than 1% off the seed V (or missing) fails open: a `veto_unavailable` row is logged and the entry proceeds with no veto.
+
+Starts in the next build. Trades under this veto are a separate section 7 group, reported apart from the pre-veto trades and not pooled with them.

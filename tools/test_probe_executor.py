@@ -1301,6 +1301,31 @@ class EntryVetoTests(unittest.TestCase):
         for name in ("probe-executor-live.json", "probe-executor.json"):
             self.assertEqual(json.loads((d / name).read_text())["entry_veto_drift_max"], 0.25)
 
+    def test_stop_and_halt_win_over_the_veto(self):
+        for name in ("STOP", "HALT"):
+            (self.tmp / name).write_text("")
+            with unittest.mock.patch.object(pe, "P_MIG_SPOT_SOL", self.SPOT / 1.9):
+                ex, conf = make(self.tmp, entry_veto_drift_max=0.25)
+                ex.handle_signal(sig(ex))
+            rows = fills(conf)
+            self.assertTrue(rows[-1]["reason"].startswith("limit:"), (name, rows))
+            self.assertNotIn("drift", rows[-1])
+            (self.tmp / name).unlink()
+
+    def test_v_boundary_is_one_percent_of_seed(self):
+        def avail(v):
+            snap = pe.Snapshot(None, 5, Q0, BASE0, v)  # type: ignore[arg-type]
+            return pe.drift_veto(0.25, snap)[0] != "veto_unavailable"
+
+        seed = pe.V_SEED_LAMPORTS
+        edge = int(seed * 0.01)
+        with unittest.mock.patch.object(pe, "V_SEED_LAMPORTS", seed):
+            self.assertTrue(avail(seed + edge))
+            self.assertTrue(avail(seed - edge))
+            self.assertFalse(avail(seed + edge + 2))
+            self.assertFalse(avail(seed - edge - 2))
+            self.assertFalse(avail(None))
+
     def test_seed_constant_is_the_seeded_pool_price(self):
         self.assertAlmostEqual(pe.P_MIG_SPOT_SOL, (67_405_853_863 + 17_584_505_288) / (206_900_000 * 10**6 * 1000), delta=1e-13)
 

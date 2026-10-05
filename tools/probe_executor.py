@@ -76,7 +76,7 @@ EXIT_POLL_MS_MIN = 200  # floor for the open-position poll (`exit_poll_ms`)
 # Entry veto drift_gt_25 (DEC-019 note 2026-10-05; tools/exp012_entry_veto.py). EXPLORATION, best-of-N, an upper bound.
 # P_mig: the study's reference is the V-priced price of the first PumpSwap print at the migration slot (the tape's
 # quote_reserve is the PRE-trade vault). pump.fun seeds every migrated pool the same way (vault 67.4058 SOL + V 17.5845
-# SOL over 206.9M tokens), so that price is the constant below. Measured on the fast-pool tape (2026-09-19T04..11Z,
+# SOL over 206.9M tokens), so that price is approximately the constant below. Measured on the fast-pool tape (2026-09-19T04..11Z,
 # 215 migrated mints with a known V): the first mig-slot print is within 1% of the constant for 77.7%, within 5% for
 # 86.5%; the rest had trades earlier in the same slot. If the pool's V is not the seed V, P_mig is unavailable.
 P_MIG_SPOT_SOL = 4.1077988968583855e-07  # SOL per UI token, (67_405_853_863 + 17_584_505_288) / (206.9e12 * 1000)
