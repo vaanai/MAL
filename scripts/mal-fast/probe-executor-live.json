@@ -14,11 +14,12 @@
   "rps": 4.0,
   "max_signal_age_s": 120,
   "size_lamports": 50000000,
-  "priority_lamports": 500000,
-  "max_attempts": 30,
+  "priority_lamports": 150000,
+  "max_attempts": 90,
   "max_open": 3,
-  "loss_cap_lamports": 250000000,
-  "max_days": 4,
+  "loss_cap_lamports": 350000000,
+  "max_days": 7,
+  "end_ms": 1791763200000,
   "slippage_cap": 0.15,
   "sell_retries": 5
 }

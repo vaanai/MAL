@@ -35,12 +35,12 @@ EXP-012's edge rests on execution: its selected entries filled 98.9% of the time
 | Signals | EXP-012 decisions from the fast-0 paper runner only (**ceiling**-ledger `enter`; manager decision 2026-10-04, replacing "shadow": the ceiling ledger already applies max_concurrent=3, so paper ceiling and probe positions align) |
 | Venue | PumpSwap only (the migrate-direct route EXP-012 uses) |
 | Size | **0.05 SOL** per entry (one tenth of trial size) |
-| Priority | 500,000 lamports per side (the trial term; landing depends on the absolute fee) |
+| Priority | 500,000 lamports per side (the trial term; landing depends on the absolute fee) *(superseded by Amendment 1: see below)* |
 | Concurrent | at most **3** open positions |
-| Attempts | at most **30** buy attempts, then the probe stops by itself |
-| Loss cap | stop when realized loss reaches **0.25 SOL** |
+| Attempts | at most **30** buy attempts, then the probe stops by itself *(superseded by Amendment 1: see below)* |
+| Loss cap | stop when realized loss reaches **0.25 SOL** *(superseded by Amendment 1: see below)* |
 | Slippage | the simulator's `DEFAULT_SLIPPAGE_CAP`, so we measure the same bound we model |
-| Duration | at most 4 days from the first send |
+| Duration | at most 4 days from the first send *(superseded by Amendment 1: see below)* |
 | Kill switch | a stop file, `systemctl stop`, and the two automatic stops above |
 
 ## 4. Money
@@ -48,8 +48,8 @@ EXP-012's edge rests on execution: its selected entries filled 98.9% of the time
 - **Deposit: 0.5 SOL** into a new dedicated wallet.
   - Up to 0.15 SOL is in open positions at once (3 × 0.05).
   - Up to about 0.01 SOL is temporarily in token and WSOL account rent, which is refunded when the accounts are closed after each sell.
-  - The probe stops at 0.25 SOL realized loss, so at least about 0.24 SOL always remains.
-- **Expected cost.** The priority fees total 0.001 SOL per round trip, about 0.03 SOL over 30 trades, plus pool fees and the net of price moves. The likely net is a small loss of about 0.02–0.10 SOL. The hard worst case is the 0.25 SOL cap.
+  - The probe stops at 0.25 SOL realized loss, so at least about 0.24 SOL always remains. *(superseded by Amendment 1: see below)*
+- **Expected cost.** The priority fees total 0.001 SOL per round trip, about 0.03 SOL over 30 trades, plus pool fees and the net of price moves. The likely net is a small loss of about 0.02–0.10 SOL. The hard worst case is the 0.25 SOL cap. *(superseded by Amendment 1: see below)*
 - **Withdrawal.** At the end, or whenever the owner asks, the remaining balance goes to an address the owner names, using a withdraw script that Helm or the owner runs.
 
 ## 5. Custody (the manager never sees the key)
@@ -101,3 +101,38 @@ EXP-012's edge rests on execution: its selected entries filled 98.9% of the time
 - *2026-10-05 (owner's PR checker):* the §7 lab note reports attempts **grouped by executor build sha, never pooled**. Group `8a6849b` (pre-#307, about 14–15 slots of latency) is in `ARTIFACTS/lab/probe-live-2026-10-05.md`. Later groups are keyed by the pinned `<sha>` in use when each fill row was made.
 
 - *Note 2026-10-05 (base unit, key env file, kill file):* the pinned drop-in inherits `User=`, `Environment=`, `EnvironmentFile=` and hardening from `mal-probe-executor.service`, so while it is present `install-fast-forward-paper.sh` no longer installs that base unit (it re-evaluates the drop-in verdict, over `/etc`, `/run` and `/usr/lib`, right before the unit install; `none` means no drop-in sets `LoadCredential` or an `ExecStart`, and the key only arrives via `LoadCredential`). Only `install-probe-executor-pinned.sh` writes it: mandatory sha256 manifest, an allowlist check (`check-probe-base-unit.py`, in the manifest) that the unit equals the intended text, install before the `current` switch, rollback restores the previous unit. The key holder loads `/etc/mal-probe-rpc/helius.env` (`root:root` 0600 in a `root:root` 0700 dir), not the ubuntu-writable `/var/lib/mal/fast-listener/helius.env`; a root-run inline `ExecStartPre=+` checks both modes and the executor refuses live start (`startup_refused rpc_env`) if the dir is wrong. `Slice=mal-forward.slice` was removed from the unit so the key holder is not in a slice the paper installer writes; it falls back to `system.slice` and keeps its own `MemoryMax=1G`. The paper runner's KILL file is not a reliable stop for live: `runner_kill` in `intents.jsonl` covers only the race between the runner's risk check and the intent write (KILL present at decision time already suppresses the intent). `/var/lib/mal-live/STOP` is the real stop. Hardening added on re-review: the unit checker reads bytes and refuses anything outside TAB, LF and 0x20-0x7e (Python and systemd disagree on Unicode whitespace, lone CR, VT, FF); the root `ExecStartPre=+` runs under `env -i` with absolute paths (the EnvironmentFile applies to it too); live refuses without `HELIUS_API_KEY` in the environment (`rpc_key_missing`) and never falls back to an env file; the pinned installer pre-flights `/etc/mal-probe-rpc` (root:root 0700, `helius.env` root:root 0600) and rolls back on INT/TERM/HUP.
+
+## Amendment 1 (APPROVED by the owner 2026-10-05 (~20Z))
+
+**Status: APPROVED by the owner 2026-10-05 (~20Z). It takes effect when the manager re-pins the executor at the merge sha.** The text above is not changed.
+
+### Numbers
+
+| Limit | Before | Amendment 1 |
+| --- | --- | --- |
+| max_attempts (whole probe) | 30 | **90** (+60; the 15 attempts already used keep counting, state is not reset) |
+| loss_cap_lamports (total realized loss, same semantics) | 250,000,000 | **350,000,000** |
+| priority_lamports per side | 500,000 | **150,000** (the code clamp stays at 500,000 as a maximum; lower values are accepted) |
+| max_days (counted from `first_attempt_ms` in state) | 4 | cap raised to 7, plus an absolute end instant **2026-10-12T00:00:00Z** (`end_ms` 1791763200000) |
+| size_lamports, max_open, slippage_cap, STOP/HALT semantics | 50,000,000 / 3 / 0.15 / as is | **unchanged** |
+
+End instant, why absolute: the first attempt was 2026-10-05T14:49Z (`first_attempt_ms` 1791211793036). A days count from that instant gives either 4 days (ends 10-09T14:49Z, likely before the attempts run out) or 7 days (ends 10-12T14:49Z, past the requested bound). An absolute instant ends the probe at the stated time. The max_days cap (7) stays as a second, independent stop; whichever fires first halts new buys. Config may lower `end_ms`, never raise it above the code constant. The stop reason is logged as `end_instant`.
+
+### Reason
+
+Build a25eb17 execution now tracks paper. Over 9 trades: sells were -11 to -16 bps against the quote on 7 of 9, and the stops were -0.3039 to -0.4338. The fee drag is 1,010,000 lamports per round trip (2 x 500,000 priority + 2 x 5,000 base), which is 2.02% at 0.05 SOL, comparable to the roughly 1.5% per trade exploration edge at k about 8. At 150,000 per side the round-trip drag is 310,000 lamports (0.62%). More attempts give each build group enough rows to read. This is an execution measurement, not an edge claim.
+
+### Worst case
+
+The loss cap is checked on realized loss at buy time, so up to 3 open positions (about 156M lamports at cost: 3 x (50,000,000 + fees and rent)) can add to it before they close. The wallet balance guard (size + 0.02 SOL) is the final bound.
+
+### Stop rule for the lower priority
+
+The manager's hourly monitor and a per-build report evaluate this rule. The dry-run config (`probe-executor.json`) intentionally keeps priority at 500,000.
+
+If more than 20% of buys sent under 150,000 land more than 3 slots after the send-state slot, or any buy expires, the manager reverts priority to 500,000 by re-pin. Fill rows now carry `priority_lamports` (the configured per-side value) on buys and sells, next to the existing base/priority fee split, so landing time can be grouped by priority.
+
+### Reporting and gate
+
+- Attempts stay grouped by executor build sha and are also grouped by `priority_lamports`; never pooled.
+- Probe trades still never count toward any promotion gate.

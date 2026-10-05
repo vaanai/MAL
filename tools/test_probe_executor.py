@@ -20,7 +20,7 @@ POOL_B64 = FX["pool_account_b64"]
 POOL = tx.parse_pool_account(base64.b64decode(POOL_B64))
 MINT = str(POOL["base_mint"])
 V = POOL["virtual_quote_reserves"]
-T0 = 1_800_000_000_000
+T0 = 1_791_300_000_000  # 2026-10-06, before the DEC-019 end instant
 BASE0 = 400_000_000 * 10**6
 Q0 = 70 * 10**9
 
@@ -111,12 +111,13 @@ class LimitsTests(unittest.TestCase):
         lim = pe.Limits()
         self.assertIsNone(pe.check_buy(lim, pe.State(), T0, False))
         self.assertEqual(pe.check_buy(lim, pe.State(), T0, True), "stop_file")
-        self.assertEqual(pe.check_buy(lim, pe.State(attempts=30), T0, False), "max_attempts")
-        self.assertEqual(pe.check_buy(lim, pe.State(realized_lamports=-250_000_000), T0, False), "loss_cap")
-        self.assertIsNone(pe.check_buy(lim, pe.State(realized_lamports=-249_999_999), T0, False))
+        self.assertEqual(pe.check_buy(lim, pe.State(attempts=90), T0, False), "max_attempts")
+        self.assertEqual(pe.check_buy(lim, pe.State(realized_lamports=-350_000_000), T0, False), "loss_cap")
+        self.assertIsNone(pe.check_buy(lim, pe.State(realized_lamports=-349_999_999), T0, False))
         st = pe.State(first_attempt_ms=T0)
-        self.assertIsNone(pe.check_buy(lim, st, T0 + 4 * 86_400_000 - 1, False))
-        self.assertEqual(pe.check_buy(lim, st, T0 + 4 * 86_400_000, False), "max_days")
+        lim1 = pe.Limits(max_days=1)  # T0 + 7 days is past the absolute end instant, so test the days cap at 1
+        self.assertIsNone(pe.check_buy(lim1, st, T0 + 86_400_000 - 1, False))
+        self.assertEqual(pe.check_buy(lim1, st, T0 + 86_400_000, False), "max_days")
         self.assertEqual(pe.check_buy(lim, pe.State(open={"a": {}, "b": {}, "c": {}}), T0, False), "max_open")
 
     def test_sell_only_halted_by_stop_file(self):
@@ -608,6 +609,102 @@ class MissingSignalsTests(unittest.TestCase):
             self.assertIn("ALERT signals_file_missing", out.getvalue())
 
 
+class Amendment1Tests(unittest.TestCase):
+    LIVE_CFG = json.loads((Path(__file__).resolve().parent.parent / "scripts/mal-fast/probe-executor-live.json").read_text())
+
+    def test_new_maxima(self):
+        self.assertEqual(pe.DEC019_MAX["max_attempts"], 90)
+        self.assertEqual(pe.DEC019_MAX["loss_cap_lamports"], 350_000_000)
+        self.assertEqual(pe.DEC019_MAX["priority_lamports"], 500_000)
+        self.assertEqual((pe.DEC019_MAX["size_lamports"], pe.DEC019_MAX["max_open"]), (50_000_000, 3))
+        lim = pe.Limits.from_config({"max_attempts": 91, "loss_cap_lamports": 350_000_001, "priority_lamports": 500_001})
+        self.assertEqual((lim.max_attempts, lim.loss_cap_lamports, lim.priority_lamports), (90, 350_000_000, 500_000))
+        lim = pe.Limits.from_config({"max_attempts": 90, "loss_cap_lamports": 350_000_000})
+        self.assertEqual((lim.max_attempts, lim.loss_cap_lamports), (90, 350_000_000))
+
+    def test_priority_lower_accepted(self):
+        self.assertEqual(pe.Limits.from_config({"priority_lamports": 150_000}).priority_lamports, 150_000)
+        self.assertEqual(pe.Limits(priority_lamports=1).priority_lamports, 1)
+
+    def test_live_config_values(self):
+        lim = pe.Limits.from_config(self.LIVE_CFG)
+        self.assertEqual((lim.max_attempts, lim.loss_cap_lamports, lim.priority_lamports, lim.size_lamports, lim.max_open),
+                         (90, 350_000_000, 150_000, 50_000_000, 3))
+        self.assertEqual(lim.end_ms, pe.DEC019_END_MS)
+        self.assertEqual(self.LIVE_CFG["slippage_cap"], 0.15)
+
+    def test_existing_state_with_15_attempts_continues(self):
+        lim = pe.Limits.from_config(self.LIVE_CFG)
+        st = pe.State(attempts=15, realized_lamports=-1_000_000, first_attempt_ms=1791211793036)
+        now = 1791211793036 + 3_600_000
+        self.assertIsNone(pe.check_buy(lim, st, now, False, "live"))
+        st.attempts = 89
+        self.assertIsNone(pe.check_buy(lim, st, now, False, "live"))
+        st.attempts = 90
+        self.assertEqual(pe.check_buy(lim, st, now, False, "live"), "max_attempts")
+        # loaded from disk, not reset
+        with tempfile.TemporaryDirectory() as d:
+            sp = Path(d) / "state.json"
+            sp.write_text(json.dumps({"attempts": 15, "realized_lamports": -5, "first_attempt_ms": 1791211793036}))
+            data = json.loads(sp.read_text())
+            self.assertEqual(pe.State(**{k: data[k] for k in ("attempts", "realized_lamports", "first_attempt_ms")}).attempts, 15)
+
+    def test_end_instant(self):
+        import datetime
+        self.assertEqual(pe.DEC019_END_MS, int(datetime.datetime(2026, 10, 12, tzinfo=datetime.timezone.utc).timestamp() * 1000))
+        lim = pe.Limits()
+        first = 1791211793036  # 2026-10-05T14:49Z
+        st = pe.State(first_attempt_ms=first)
+        self.assertIsNone(pe.check_buy(lim, st, pe.DEC019_END_MS - 1, False, "live"))
+        self.assertEqual(pe.check_buy(lim, st, pe.DEC019_END_MS, False, "live"), "end_instant")
+        # the days cap alone would run past the end instant; the instant binds
+        self.assertGreater(first + 7 * 86_400_000, pe.DEC019_END_MS)
+        # applies even with no attempt yet
+        self.assertEqual(pe.check_buy(lim, pe.State(), pe.DEC019_END_MS, False, "live"), "end_instant")
+        # config may lower the end, never raise it
+        self.assertEqual(pe.Limits.from_config({"end_ms": 5}).end_ms, 5)
+        self.assertEqual(pe.Limits.from_config({"end_ms": pe.DEC019_END_MS + 10**9}).end_ms, pe.DEC019_END_MS)
+        with self.assertRaises(ValueError):
+            pe.Limits(end_ms=float("nan"))
+        with self.assertRaises(ValueError):
+            pe.Limits(end_ms=0)
+
+    def test_end_ms_and_priority_negative_cases(self):
+        for bad in ("1791763200000", True, -1, float("inf")):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                pe.Limits(end_ms=bad)
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                pe.Limits.from_config({"end_ms": bad})
+        for bad in ("150000", -150_000, True, 0):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                pe.Limits(priority_lamports=bad)
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                pe.Limits.from_config({"priority_lamports": bad})
+
+    def test_soft_stops_full_lists(self):
+        lim = pe.Limits()
+        first = 1791211793036
+        self.assertEqual(pe.soft_stops(lim, pe.State(first_attempt_ms=first), first + 1000), [])
+        # everything at once, in the documented order
+        st = pe.State(attempts=90, realized_lamports=-350_000_000, first_attempt_ms=first)
+        self.assertEqual(pe.soft_stops(lim, st, pe.DEC019_END_MS + 7 * 86_400_000),
+                         ["max_attempts", "loss_cap", "max_days", "end_instant"])
+        # past 7 days from the real first attempt, the end instant is also past
+        self.assertEqual(pe.soft_stops(lim, pe.State(first_attempt_ms=first), first + 7 * 86_400_000),
+                         ["max_days", "end_instant"])
+
+    def test_seven_day_cap_fires_alone_and_lowered_end_fires_alone(self):
+        # a first attempt early enough that 7 days elapse before the end instant: only max_days fires
+        first = pe.DEC019_END_MS - 7 * 86_400_000 - 3_600_000
+        lim = pe.Limits()
+        self.assertEqual(pe.soft_stops(lim, pe.State(first_attempt_ms=first), first + 7 * 86_400_000 - 1), [])
+        self.assertEqual(pe.soft_stops(lim, pe.State(first_attempt_ms=first), first + 7 * 86_400_000), ["max_days"])
+        # end instant lowered via config: it fires alone, before the days cap
+        low = pe.Limits.from_config({"end_ms": first + 1000})
+        self.assertEqual(pe.soft_stops(low, pe.State(first_attempt_ms=first), first + 1000), ["end_instant"])
+        self.assertEqual(pe.soft_stops(low, pe.State(first_attempt_ms=first), first + 999), [])
+
+
 class ClampTests(unittest.TestCase):
     def test_direct_construction_is_clamped(self):
         lim = pe.Limits(max_attempts=999, max_open=9, loss_cap_lamports=10**12, max_days=99, size_lamports=10**10, priority_lamports=10**9)
@@ -778,10 +875,10 @@ class RpcLimiterTests(unittest.TestCase):
 class DryrunSoftStopTests(unittest.TestCase):
     def test_live_halts_dryrun_does_not(self):
         lim = pe.Limits()
-        over = pe.State(attempts=30, realized_lamports=-250_000_000, first_attempt_ms=T0)
-        late = T0 + 4 * 86_400_000
-        self.assertEqual(pe.check_buy(lim, pe.State(attempts=30), T0, False, "live"), "max_attempts")
-        self.assertEqual(pe.check_buy(lim, pe.State(realized_lamports=-250_000_000), T0, False, "live"), "loss_cap")
+        over = pe.State(attempts=90, realized_lamports=-350_000_000, first_attempt_ms=T0)
+        late = T0 + 7 * 86_400_000
+        self.assertEqual(pe.check_buy(lim, pe.State(attempts=90), T0, False, "live"), "max_attempts")
+        self.assertEqual(pe.check_buy(lim, pe.State(realized_lamports=-350_000_000), T0, False, "live"), "loss_cap")
         self.assertEqual(pe.check_buy(lim, pe.State(first_attempt_ms=T0), late, False, "live"), "max_days")
         self.assertIsNone(pe.check_buy(lim, over, late, False, "dryrun"))
         # the hard stops still apply in dry run
