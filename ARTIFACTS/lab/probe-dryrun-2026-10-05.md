@@ -50,3 +50,35 @@ git -C <root clone> show 8a6849b4a9dba468c2a1c32cc9106aeba9ea1dc4:scripts/mal-fa
 python3 -c "import json;R=[json.loads(l) for l in open('/var/lib/mal-live/probe-fills.jsonl') if l.strip()];B=[r for r in R if r.get('kind')=='buy'];print(len(R),'rows',len(B),'buys',sum(1 for r in R if r.get('err')),'err',sum(1 for r in B if r.get('live_validate_err') is not None),'validate_err')"
 cd /var/lib/mal/fast-forward/src && sudo -u mal-live /var/lib/mal/fast-forward/venv/bin/python -m tools.probe_executor --config scripts/mal-fast/probe-executor.json --latency-report
 ```
+
+## Addendum (2026-10-05, after the owner's PR checker)
+
+**Code under the running dry run.** The dry-run process started 2026-10-05T05:35:47Z on code from `ff9cacb`. The src tree was later swapped under it twice by `install-fast-forward-paper.sh`: to `20d72bb` (09:29Z, job #123) and to `8a6849b` (job #127). Across all three commits, the executor's whole import closure and both probe configs have **0 diff lines**. The files are `tools/probe_executor.py`, `tools/probe_live.py`, `tools/pumpswap_tx.py`, `tools/pumpswap_simulate.py`, `tools/paper_curve_math.py`, `tools/paper_price_path.py`, `tools/paper_tape_scoreboard.py`, `tools/__init__.py`, `scripts/mal-fast/probe-executor.json` and `probe-executor-live.json`. So the dry-run evidence holds for the code Helm verified.
+
+Guards against a repeat:
+- the installer refuses while a live drop-in exists ([#305](https://github.com/vaanai/MAL/pull/305));
+- the root-owned pinned executor ([#305](https://github.com/vaanai/MAL/pull/305));
+- Helm's `malprobe-code` auditd watch on src and venv.
+
+**Executor vs paper runner timing** (job #130, n = 10, ms, p50):
+
+| Quantity | Value |
+| --- | ---: |
+| Paper runner `applied_latency_ms` (on chain → its booked entry) | 1,869 |
+| Executor decision → seen | 2,055 |
+| Executor seen → pool state | 62.5 |
+
+The executor reads pool state about **2.12 s** after the trigger, roughly **250 ms after the paper runner's entry**, before it sends or lands anything. The §7 live-versus-paper note counts this gap as latency against paper, not as slippage.
+
+**Simulated fills short of the V quote.** In 3 of the 20 buys through 14:37Z (job #139) the simulated buy received fewer tokens than the V-priced quote:
+
+| Mint | bps vs quote |
+| --- | ---: |
+| `5eGi…yCz2` | −121.16 |
+| `H8oe…q8C7U` | −195.56 |
+| One further buy | −163.96 |
+
+The other buys are within about ±10 bps (p50 +1.44 at 6 h).
+- **Cause.** The quote uses pool state read at `confirmed` commitment (executor config `commitment: confirmed`). `simulateTransaction` runs at `processed` (`tools/pumpswap_simulate.py`), 1–2 slots later. In those slots other buyers moved the price, right after migration. This is not a pricing bug: the V math matched within 2 bps whenever the pool did not move.
+- **What it measures.** The same latency cost, seen from the price side.
+- **Live sends.** `min_out` is computed from the confirmed-state quote with the 15% slippage cap, so these moves fill rather than fail.

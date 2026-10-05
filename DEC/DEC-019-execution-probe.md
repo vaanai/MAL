@@ -83,6 +83,14 @@ EXP-012's edge rests on execution: its selected entries filled 98.9% of the time
 5. Helm or the owner has generated the key and given the public address, and the owner has funded it with 0.5 SOL.
 6. The owner has named the withdraw address.
 
+- *§6 status, 2026-10-05:*
+  - Items 1–2: merged with reviewer and security reviews (#280, #286, #290, #293, #289, #291).
+  - **Item 3: DONE.** 6 h keyless dry run on live runner signals, 0 build errors, 0 pre-signing failures. Jobs #130 (6 h mark, 10 buys / 10 sells) and #136 (through 14:37Z, 20 / 20). Evidence: `ARTIFACTS/lab/probe-dryrun-2026-10-05.md`.
+  - Item 4: runner up on the tip follower (coverage 100.000%, job #131).
+  - Items 5–6: Helm created the key and checked the hashes at `8a6849b`; Vaan funded 509,528,770 lamports; the withdraw address is held by Helm.
+  - **Live since 2026-10-05T14:46:17Z.**
+- *Timing note for §7:* the executor reads pool state about 250 ms after the paper runner's booked entry (p50: decision → seen 2,055 ms against applied 1,869 ms; seen → state 62.5 ms). The live-versus-paper comparison counts that gap against paper as latency, not slippage.
+
 ## 7. Reporting
 
 - A live log on `mal-fast-0`, plus a daily summary for the owner (notebook and Console): attempts, landed, the bps differences, fees and realized P&L.
