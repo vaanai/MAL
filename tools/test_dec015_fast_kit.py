@@ -65,8 +65,8 @@ def test_config_yields_one_gated_migrate_book(tmp_path):
 
 def test_config_paths_and_scope():
     raw = json.loads(CFG.read_text())
-    assert raw["tape_dir"] == "/var/lib/mal/sealed/fast-trades-live"
-    assert raw["creates_dir"] == "/var/lib/mal/sealed/fast-observe"
+    assert raw["tape_dir"] == "/var/lib/mal/sealed/fast-trades-tip"  # DEC-015 2.2 tip follower (V field, #288)
+    assert raw["creates_dir"] == "/var/lib/mal/sealed/fast-creates-tip"
     assert raw["output_dir"] == "/var/lib/mal/paper/fast-forward-paper"
     assert raw["graph_dir"] == "/var/lib/mal/fast-forward/no-graph"
     assert "attention_dir" not in raw
@@ -142,7 +142,7 @@ def test_tip_follower_unit_and_installer():
     assert 'TIP_UNIT="mal-fast-tip-follower.service"' in inst
     assert '"${TIP_UNIT}"; do' in inst
     cfg = json.loads(CFG.read_text())
-    assert cfg["tape_dir"] == "/var/lib/mal/sealed/fast-trades-live"  # not switched yet
+    assert cfg["tape_dir"] == "/var/lib/mal/sealed/fast-trades-tip"  # switched: pumpswap_virtual=require needs the tip tape
 
 
 def test_observe_unit():
