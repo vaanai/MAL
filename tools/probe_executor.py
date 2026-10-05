@@ -73,6 +73,39 @@ BATCH_ERR_LOG_EVERY_MS = 60_000
 EXIT_POLL_MS_MIN = 200  # floor for the open-position poll (`exit_poll_ms`)
 
 
+# Entry veto drift_gt_25 (DEC-019 note 2026-10-05; tools/exp012_entry_veto.py). EXPLORATION, best-of-N, an upper bound.
+# P_mig: the study's reference is the V-priced price of the first PumpSwap print at the migration slot (the tape's
+# quote_reserve is the PRE-trade vault). pump.fun seeds every migrated pool the same way (vault 67.4058 SOL + V 17.5845
+# SOL over 206.9M tokens), so that price is the constant below. Measured on the fast-pool tape (2026-09-19T04..11Z,
+# 215 migrated mints with a known V): the first mig-slot print is within 1% of the constant for 77.7%, within 5% for
+# 86.5%; the rest had trades earlier in the same slot. If the pool's V is not the seed V, P_mig is unavailable.
+P_MIG_SPOT_SOL = 4.1077988968583855e-07  # SOL per UI token, (67_405_853_863 + 17_584_505_288) / (206.9e12 * 1000)
+V_SEED_LAMPORTS = 17_584_505_288
+V_SEED_TOLERANCE = 0.01
+ENTRY_VETO_DRIFT_MIN, ENTRY_VETO_DRIFT_MAX = 0.10, 1.0
+
+
+def clamp_entry_veto(value: Any) -> float | None:
+    """None (absent, null, unparseable) = no veto; otherwise clamped to [0.10, 1.0]."""
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(min(ENTRY_VETO_DRIFT_MAX, max(ENTRY_VETO_DRIFT_MIN, value)))
+
+
+def drift_veto(max_drift: float | None, snap: "Snapshot") -> tuple[str | None, dict[str, Any]]:
+    """(reason, fields). reason is "veto:drift_gt_25" (drift strictly above the limit), "veto_unavailable" (limit set but
+    P_mig cannot be trusted: V missing or not the seed V), or None. Drift = V-priced spot of the send snapshot / P_mig - 1."""
+    if max_drift is None:
+        return None, {}
+    q = snap.quote_priced
+    if q is None or snap.base_reserve <= 0 or snap.v is None or abs(snap.v - V_SEED_LAMPORTS) > V_SEED_LAMPORTS * V_SEED_TOLERANCE:
+        return "veto_unavailable", {"snap_slot": snap.slot, "veto_max_drift": max_drift}
+    spot = pcm.spot_sol_per_ui(q, snap.base_reserve)
+    drift = spot / P_MIG_SPOT_SOL - 1.0
+    fields = {"drift": drift, "p_mig": P_MIG_SPOT_SOL, "spot": spot, "snap_slot": snap.slot, "veto_max_drift": max_drift}
+    return ("veto:drift_gt_25" if drift > max_drift else None), fields
+
+
 def clamp_signal_poll_ms(value: Any) -> int:
     """Signal tail period: default 50 ms, clamped to [20, 500]. Anything unparseable falls back to the default."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -743,6 +776,7 @@ class Executor:
             raise ValueError("slippage_cap must be finite and positive")
         self.slip_bps = int(round(min(cap, DEFAULT_SLIPPAGE_CAP) * 10_000))  # config can lower, never raise
         self.max_signal_age_ms = int(float(cfg.get("max_signal_age_s", 120)) * 1000)
+        self.entry_veto_drift_max = clamp_entry_veto(cfg.get("entry_veto_drift_max"))  # absent = no veto
         self.signal_poll_ms = clamp_signal_poll_ms(cfg.get("signal_poll_ms", SIGNAL_POLL_MS_DEFAULT))
         self.poll_ms = int(max(1.0, float(cfg.get("poll_s", 5.0))) * 1000)  # slow loop: positions, exits, pre-warm
         self.fast_exit = "exit_poll_ms" in cfg  # the exit fast path (batched vault read, buy-meta sell amount, priority) is opt-in
@@ -774,6 +808,18 @@ class Executor:
 
     def _skip(self, sig: dict[str, Any], reason: str, **kw: Any) -> None:
         self._log("skip", sig["mint"], reason=reason, decision_t_ms=sig["decision_t_ms"], **kw)
+
+    def _entry_vetoed(self, sig: dict[str, Any], snap: Snapshot, pool: str) -> bool:
+        """drift_gt_25 at the send snapshot. True = skip row written, nothing counted, nothing sent. Runs BEFORE the
+        write-ahead attempt. P_mig unavailable: a veto_unavailable row is logged and the entry goes on (no veto)."""
+        reason, fields = drift_veto(self.entry_veto_drift_max, snap)
+        if reason == "veto_unavailable":
+            self._log("veto_unavailable", sig["mint"], decision_t_ms=sig["decision_t_ms"], pool=pool, **fields)
+            return False
+        if reason:
+            self._skip(sig, reason, pool=pool, pool_slot=snap.slot, **fields)
+            return True
+        return False
 
     def _snapshot(self, mint: str, commitment: str | None = None) -> tuple[Snapshot | None, str, str | None]:
         try:
@@ -880,6 +926,8 @@ class Executor:
         q = entry_quote(snap, spend)
         if q["tokens"] <= 0:
             return self._skip(sig, "zero_quote", pool=pool, pool_slot=snap.slot)
+        if self._entry_vetoed(sig, snap, pool):
+            return
         # Write-ahead: the attempt is counted and durably persisted BEFORE anything is built or
         # simulated (PR-B: before send), so a crash can only over-count, never reset.
         would = soft_stops(self.limits, self.state, now) if self.mode == MODE else []

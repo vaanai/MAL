@@ -426,6 +426,8 @@ class LiveExecutor(pe.Executor):
         q = pe.entry_quote(snap, spend)
         if q["tokens"] <= 0:
             return self._skip(sig, "zero_quote", pool=pool, pool_slot=snap.slot)
+        if self._entry_vetoed(sig, snap, pool):
+            return
         bal = self._balance()
         if bal is None:
             return self._skip(sig, "balance_unreadable", pool=pool)

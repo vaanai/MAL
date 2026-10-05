@@ -1319,6 +1319,41 @@ class ExitFastPathTests(unittest.TestCase):
             rpc.__class__.__call__ = orig
 
 
+class EntryVetoLiveTests(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name)
+        self.addCleanup(self._d.cleanup)
+        spot = (Q0 + V) / (BASE0 * 1000)
+        for p in (mock.patch.object(pe, "V_SEED_LAMPORTS", V), mock.patch.object(pe, "P_MIG_SPOT_SOL", spot / 1.5)):  # drift +0.5
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_veto_sends_nothing_and_counts_no_attempt(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, entry_veto_drift_max=0.25)
+        self.assertIsNone(signal_buy(ex, clock))
+        self.assertEqual((ex.state.attempts, rpc.sent, ex.state.bought, ex.state.pending), (0, [], [], {}))
+        row = fills(conf)[-1]
+        self.assertEqual((row["kind"], row["reason"]), ("skip", "veto:drift_gt_25"))
+        self.assertAlmostEqual(row["drift"], 0.5)
+        self.assertIn("p_mig", row)
+        self.assertIn("spot", row)
+        self.assertIn("snap_slot", row)
+        self.assertNotIn("sendTransaction", rpc.calls)
+
+    def test_old_config_still_buys(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp)
+        self.assertIsNotNone(signal_buy(ex, clock))
+        self.assertEqual((ex.state.attempts, len(rpc.sent)), (1, 1))
+
+    def test_unavailable_p_mig_buys(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, entry_veto_drift_max=0.25)
+        with mock.patch.object(pe, "V_SEED_LAMPORTS", V * 2):
+            self.assertIsNotNone(signal_buy(ex, clock))
+        self.assertIn("veto_unavailable", [r["kind"] for r in fills(conf)])
+        self.assertEqual(ex.state.attempts, 1)
+
+
 class ShippedExitConfigTests(unittest.TestCase):
     def test_live_and_dryrun_configs_mirror_the_exit_keys(self):
         d = Path(__file__).resolve().parent.parent / "scripts" / "mal-fast"

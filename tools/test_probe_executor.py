@@ -1207,6 +1207,103 @@ class OwnTradeInStateTests(unittest.TestCase):
         self.assertIsNone(pe.exit_check(self.pos, just_under, T0 + 1, own_trade_in_state=True)["reason"])
         self.assertEqual(pe.exit_check(self.pos, just_under, T0 + 1)["reason"], "tp")
 
+class EntryVetoTests(unittest.TestCase):
+    """drift_gt_25: spot(send snapshot) / P_mig - 1 > limit skips the entry; nothing is counted or sent."""
+
+    SPOT = (Q0 + V) / (BASE0 * 1000)
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name)
+        p = unittest.mock.patch.multiple(pe, V_SEED_LAMPORTS=V)  # the fixture pool's V stands in for the seed V
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(self._d.cleanup)
+
+    def run_drift(self, drift, **cfg):
+        pm = unittest.mock.patch.object(pe, "P_MIG_SPOT_SOL", self.SPOT / (1 + drift))
+        pm.start()
+        self.addCleanup(pm.stop)
+        ex, conf = make(self.tmp, **cfg)
+        ex.handle_signal(sig(ex))
+        return ex, fills(conf)
+
+    def test_clamp(self):
+        for raw, want in ((0.25, 0.25), (0.01, 0.10), (5, 1.0), (None, None), ("x", None), (True, None), (float("nan"), None)):
+            self.assertEqual(pe.clamp_entry_veto(raw), want, raw)
+
+    def test_fires_above_and_not_at_or_below(self):
+        ex, rows = self.run_drift(0.2501, entry_veto_drift_max=0.25)
+        self.assertEqual(rows[-1]["kind"], "skip")
+        self.assertEqual(rows[-1]["reason"], "veto:drift_gt_25")
+        self.assertAlmostEqual(rows[-1]["drift"], 0.2501)
+        self.assertAlmostEqual(rows[-1]["spot"], self.SPOT)
+        self.assertAlmostEqual(rows[-1]["p_mig"], self.SPOT / 1.2501)
+        self.assertEqual(rows[-1]["snap_slot"], 77)
+        # exactly at the limit: not vetoed (strictly greater)
+        snap = pe.Snapshot(None, 5, Q0, BASE0, V)  # type: ignore[arg-type]
+        with unittest.mock.patch.object(pe, "P_MIG_SPOT_SOL", self.SPOT / 1.25):
+            at = pe.drift_veto(0.25, snap)[1]["drift"]
+            self.assertIsNone(pe.drift_veto(at, snap)[0])  # limit == drift: not vetoed
+            self.assertEqual(pe.drift_veto(at - 1e-9, snap)[0], "veto:drift_gt_25")
+        with unittest.mock.patch.object(pe, "P_MIG_SPOT_SOL", self.SPOT / 1.2499):
+            self.assertIsNone(pe.drift_veto(0.25, snap)[0])
+
+    def test_below_limit_buys(self):
+        ex, rows = self.run_drift(0.10, entry_veto_drift_max=0.25)
+        self.assertEqual(rows[-1]["kind"], "buy")
+        self.assertEqual(ex.state.attempts, 1)
+
+    def test_veto_consumes_no_attempt(self):
+        ex, rows = self.run_drift(0.9, entry_veto_drift_max=0.25)
+        self.assertEqual(ex.state.attempts, 0)
+        self.assertIsNone(ex.state.first_attempt_ms)
+        self.assertEqual(ex.state.bought if hasattr(ex.state, "bought") else [], [])
+        self.assertEqual(ex.state.open, {})
+        self.assertEqual([r["kind"] for r in rows], ["skip"])
+
+    def test_unavailable_p_mig_does_not_veto(self):
+        with unittest.mock.patch.object(pe, "V_SEED_LAMPORTS", V * 2):  # pool V is not the seed V
+            ex, rows = self.run_drift(5.0, entry_veto_drift_max=0.25)
+        kinds = [r["kind"] for r in rows]
+        self.assertEqual(kinds, ["veto_unavailable", "buy"])
+        self.assertEqual(ex.state.attempts, 1)
+
+    def test_old_config_unchanged(self):
+        ex, rows = self.run_drift(5.0)  # no entry_veto_drift_max
+        self.assertIsNone(ex.entry_veto_drift_max)
+        self.assertEqual([r["kind"] for r in rows], ["buy"])
+
+    def test_config_is_clamped(self):
+        ex, rows = self.run_drift(0.15, entry_veto_drift_max=0.01)  # clamped up to 0.10
+        self.assertEqual(ex.entry_veto_drift_max, 0.10)
+        self.assertEqual(rows[-1]["reason"], "veto:drift_gt_25")
+
+    def test_drift_matches_the_study_definition(self):
+        from types import SimpleNamespace
+
+        import tools.exp012_entry_veto as ev
+
+        p_mig = pe.P_MIG_SPOT_SOL
+        for want in (-0.2, 0.0, 0.2499, 0.2501, 0.8):
+            price = p_mig * (1 + want)
+            q = int(round(price * BASE0 * 1000)) - V  # vault so that (vault + V) / (base * 1000) == price
+            snap = pe.Snapshot(None, 9, q, BASE0, pe.V_SEED_LAMPORTS)  # type: ignore[arg-type]
+            reason, f = pe.drift_veto(0.25, snap)
+            prints = [SimpleNamespace(slot=100, side="buy", sol_lamports=1, price_sol=p_mig, venue="pumpswap"),
+                      SimpleNamespace(slot=103, side="buy", sol_lamports=1, price_sol=f["spot"], venue="pumpswap")]
+            study = ev.veto_features(prints, 100, p_mig)
+            self.assertAlmostEqual(f["drift"], study["drift"], places=9)
+            self.assertEqual(reason == "veto:drift_gt_25", ev.vetoed("drift_gt_25", study))
+
+    def test_shipped_configs_enable_it(self):
+        d = Path(__file__).resolve().parent.parent / "scripts" / "mal-fast"
+        for name in ("probe-executor-live.json", "probe-executor.json"):
+            self.assertEqual(json.loads((d / name).read_text())["entry_veto_drift_max"], 0.25)
+
+    def test_seed_constant_is_the_seeded_pool_price(self):
+        self.assertAlmostEqual(pe.P_MIG_SPOT_SOL, (67_405_853_863 + 17_584_505_288) / (206_900_000 * 10**6 * 1000), delta=1e-13)
+
 
 if __name__ == "__main__":
     unittest.main()

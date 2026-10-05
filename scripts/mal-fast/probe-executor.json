@@ -20,5 +20,6 @@
   "loss_cap_lamports": 350000000,
   "max_days": 7,
   "end_ms": 1791763200000,
-  "slippage_cap": 0.15
+  "slippage_cap": 0.15,
+  "entry_veto_drift_max": 0.25
 }
