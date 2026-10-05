@@ -136,3 +136,34 @@ If more than 20% of buys sent under 150,000 land more than 3 slots after the sen
 
 - Attempts stay grouped by executor build sha and are also grouped by `priority_lamports`; never pooled.
 - Probe trades still never count toward any promotion gate.
+
+## Amendment 1a (2026-10-05 ~20:30Z): loss cap stays 0.25 SOL, priority stays 500k; record and wallet floor
+
+**This replaces two Amendment 1 values before Amendment 1 was ever installed.** Helm did not run the installer for `f87eb48`. Amendment 1's attempts (90), absolute end instant (2026-10-12T00:00:00Z) and max_days (7) stand. The code maxima are unchanged: loss cap max 350,000,000, priority max 500,000. The live config sets:
+
+| Limit | Amendment 1 (never installed) | Amendment 1a (live config) |
+| --- | --- | --- |
+| loss_cap_lamports | 350,000,000 | **250,000,000** (the original cap) |
+| priority_lamports per side | 150,000 | **500,000** (the original value) |
+
+**Decision.** The owner left the cap to the manager. The manager chose (b): 0.25 SOL and 500k. An external review of #321 prompted this. The reasons follow.
+
+**Probe state when the decision was made** (job #176, 2026-10-05T20:16Z, pinned `--status` plus a getBalance of the wallet):
+- attempts 20/30, realized −0.091914 SOL, 1 open (open exposure 0.050000 SOL at cost), STOP present (Helm), executor on `a25eb17`;
+- wallet balance 365,595,877 lamports. The deposit was 509,528,770.
+- By build: `8a6849b` had 6 trades and −100,536,289 lamports; `a25eb17` had 13 closed trades and +8,622,236 lamports.
+- The probe was **not** near the 0.25 SOL cap. Keeping 0.25 still leaves 0.158 SOL of realized-loss room.
+
+**Wallet floor** (this corrects §4, which ignored open positions):
+- Hard worst case: deposit − cap − 3 open positions going to zero, i.e. 0.5095 − 0.25 − 3 × 0.052 ≈ **0.10 SOL** left.
+- A more realistic bad case, with the open positions stopping near −40%: about **0.20 SOL** left.
+- At the 0.35 cap the same cases leave about 0.004 SOL and 0.10 SOL. That is why the cap stays at 0.25.
+
+**Why priority stays at 500k:**
+- The 2.02% fee drag is an artifact of the 0.05 SOL probe size. At the 0.5 SOL trial size the same fee is about 0.2%.
+- EXP-012's edge depends on landing fast, so the probe keeps the landing conditions a trial would use.
+- Baseline at 500k (job #176, a25eb17): **14/14 buys landed 1–3 slots after the state read, 0 more than 3, 0 expiries**. The 8a6849b buys all landed 2 slots after.
+- P&L net of the priority fee is reported as arithmetic from the logged fee split. The fee itself is not changed.
+- The Amendment 1 stop rule for 150k no longer applies.
+
+**Monitoring.** The manager's hourly monitor is session-bound. The hard limits (attempts, loss cap, end instant, STOP/HALT) are enforced in code and do not depend on it. A durable root timer that alerts Discord on probe thresholds is requested from Helm.

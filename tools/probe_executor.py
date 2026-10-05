@@ -90,8 +90,8 @@ def clamp_exit_poll_ms(value: Any, poll_ms: int) -> int:
 # --- limits (pure; the live mode must import and use this unchanged) -------------------------
 
 # DEC-019 section 3 maxima. Config may lower these; it can never raise them.
-# Amendment 1 (PROPOSED 2026-10-05, awaiting owner approval) raises attempts to 90, loss cap to 350,000,000 and
-# max_days to 7, and adds an absolute end instant. Priority max stays 500,000; config may go lower (150,000 live).
+# Amendment 1 (owner-approved 2026-10-05) raises the attempts max to 90, the loss-cap max to 350,000,000 and max_days to 7,
+# and adds an absolute end instant. Priority max stays 500,000. The live config sets the values actually used.
 DEC019_MAX = {
     "max_attempts": 90,
     "max_open": 3,

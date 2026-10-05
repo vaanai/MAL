@@ -629,7 +629,7 @@ class Amendment1Tests(unittest.TestCase):
     def test_live_config_values(self):
         lim = pe.Limits.from_config(self.LIVE_CFG)
         self.assertEqual((lim.max_attempts, lim.loss_cap_lamports, lim.priority_lamports, lim.size_lamports, lim.max_open),
-                         (90, 350_000_000, 150_000, 50_000_000, 3))
+                         (90, 250_000_000, 500_000, 50_000_000, 3))
         self.assertEqual(lim.end_ms, pe.DEC019_END_MS)
         self.assertEqual(self.LIVE_CFG["slippage_cap"], 0.15)
 
