@@ -20,7 +20,7 @@ from solders.transaction import VersionedTransaction
 from tools import probe_executor as pe
 from tools import probe_live as pl
 from tools import pumpswap_tx as tx
-from tools.test_probe_executor import POOL_B64 as FX_POOL, MINT, T0, Clock, FakeRpc, fills, sig as mk_sig
+from tools.test_probe_executor import BASE0, POOL_B64 as FX_POOL, MINT, Q0, T0, V, Clock, FakeRpc, fills, sig as mk_sig
 
 POOL_OK = None  # the recorded pool is the canonical pool of MINT with its real vaults (Token-2022 mint)
 LVBH = 1_000
@@ -43,6 +43,7 @@ class LiveRpc(FakeRpc):
         self.fetches = 0
         self.send_hook = None
         self.send_fails = False
+        self.snap_slot = None  # when set, getMultipleAccounts reports this context slot
 
     def __call__(self, method, params):
         if method == "getBalance":
@@ -74,7 +75,10 @@ class LiveRpc(FakeRpc):
         if method == "getTokenAccountBalance":
             self.calls.append(method)
             return {"value": {"amount": str(self.token_balance)}}
-        return super().__call__(method, params)
+        res = super().__call__(method, params)
+        if method == "getMultipleAccounts" and self.snap_slot is not None and isinstance(res, dict):
+            res = {**res, "context": {**res["context"], "slot": self.snap_slot}}
+        return res
 
 
 def make_live(tmp: Path, **cfg):
@@ -87,7 +91,7 @@ def make_live(tmp: Path, **cfg):
     return pl.LiveExecutor(rpc, conf, kp, now_ms=clock), rpc, clock, kp, conf
 
 
-def meta_result(ex, mint, *, delta, fee, tok_delta=0, err=None, ata_pre=0, ata_post=0, slot=2_000, logs=None):
+def meta_result(ex, mint, *, delta, fee, tok_delta=0, err=None, ata_pre=0, ata_post=0, slot=2_000, logs=None, vaults=None):
     src = ex.state.pending[mint] if mint in ex.state.pending and "base_ata" in ex.state.pending[mint] else ex.state.open[mint]
     ata, bm = src["base_ata"], src["base_mint"]
 
@@ -97,8 +101,14 @@ def meta_result(ex, mint, *, delta, fee, tok_delta=0, err=None, ata_pre=0, ata_p
     pre_tok = row(-tok_delta) if tok_delta < 0 else []
     post_tok = row(tok_delta) if tok_delta > 0 else []
     sig_ = (ex.state.pending.get(mint) or {}).get("signature")
-    return {"slot": slot, "transaction": {"signatures": [sig_], "message": {"accountKeys": [str(ex.user), ata]}},
-            "meta": {"err": err, "fee": fee, "preBalances": [BAL, ata_pre], "postBalances": [BAL + delta, ata_post],
+    keys = [str(ex.user), ata]
+    if vaults is not None:  # (base_post, quote_post) raw amounts; None entries leave that vault out of the meta
+        for i, (name, mint_, amt) in enumerate((("base_vault", bm, vaults[0]), ("quote_vault", str(tx.WSOL_MINT), vaults[1]))):
+            keys.append(src[name])
+            if amt is not None:
+                post_tok = post_tok + [{"accountIndex": 2 + i, "mint": mint_, "owner": "pool", "uiTokenAmount": {"amount": str(amt)}}]
+    return {"slot": slot, "transaction": {"signatures": [sig_], "message": {"accountKeys": keys}},
+            "meta": {"err": err, "fee": fee, "preBalances": [BAL, ata_pre] + [0] * (len(keys) - 2), "postBalances": [BAL + delta, ata_post] + [0] * (len(keys) - 2),
                      "preTokenBalances": pre_tok, "postTokenBalances": post_tok, "logMessages": logs or []}}
 
 
@@ -107,12 +117,12 @@ def signal_buy(ex, clock):
     return ex.state.pending.get(MINT)
 
 
-def land_buy(ex, rpc, tok=None, slot=2_000):
+def land_buy(ex, rpc, tok=None, slot=2_000, vaults=None):
     p = ex.state.pending[MINT]
     tok = tok or p["q_tokens"]
     spend, fee = p["spend"], 5_000 + 495_000
     rpc.statuses[p["signature"]] = {"slot": slot, "confirmationStatus": "confirmed", "err": None}
-    rpc.txs[p["signature"]] = meta_result(ex, MINT, delta=-(spend + fee + RENT), fee=fee, tok_delta=tok, ata_post=RENT, slot=slot)
+    rpc.txs[p["signature"]] = meta_result(ex, MINT, delta=-(spend + fee + RENT), fee=fee, tok_delta=tok, ata_post=RENT, slot=slot, vaults=vaults)
     rpc.token_balance = tok
     ex.advance_pending()
 
@@ -1317,6 +1327,111 @@ class ShippedExitConfigTests(unittest.TestCase):
         for c in (live, dry):
             self.assertEqual((c["exit_poll_ms"], c["exit_commitment"]), (400, "processed"))
         self.assertLessEqual(live["rps"], pl.LIVE_MAX_RPS)
+
+
+class MarkFromBuyTxTests(unittest.TestCase):
+    """The mark is the post-buy spot from OUR buy tx's vault balances (V-priced), final at position creation."""
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name)
+        self.ex, self.rpc, self.clock, _kp, self.conf = make_live(self.tmp, exit_poll_ms=400, exit_commitment="processed")
+        (self.tmp / "sig" / "decisions.jsonl").write_text("")
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def land_at(self, pre_frac):
+        """Send at the default state, land into a pool whose pre-buy price is pre_frac of it. The tx's own post-buy
+        vault balances and the RPC state right after it are consistent, as on chain."""
+        ex, rpc = self.ex, self.rpc
+        p = signal_buy(ex, self.clock)
+        q_pre = int((Q0 + V) * pre_frac) - V
+        fee = p["fee_ppm"]
+        tok = tx.cp_buy_out(p["spend"], q_pre + V, BASE0, fee)
+        net = p["spend"] * (1_000_000 - fee) // 1_000_000
+        vaults = (BASE0 - tok, q_pre + net)
+        rpc.snap_slot = 2_001
+        rpc.quote, rpc.base = vaults[1], vaults[0]  # the state right after our buy
+        land_buy(ex, rpc, tok=tok, vaults=vaults)
+        return p, ex.state.open[MINT], vaults, tok
+
+    def spot(self, q, b):
+        return pe.pcm.spot_sol_per_ui(q + V, b)
+
+    def drop_to(self, vaults, f):  # vault quote whose V-priced spot is f x the post-buy spot (base unchanged)
+        return int(f * (vaults[1] + V)) - V
+
+    def test_mark_equals_paper_post_buy_spot(self):
+        p, pos, vaults, tok = self.land_at(1.0)
+        self.assertEqual(pos["mark_source"], "buy_tx_post")
+        self.assertEqual(pos["mark"], self.spot(vaults[1], vaults[0]))
+        self.assertAlmostEqual(pos["mark"] / p["q_mark"], 1.0, places=12)  # same state as the send: paper entry_quote mark
+        self.assertEqual(pos["mark_send"], p["q_mark"])
+
+    def test_missing_vault_balances_fall_back_to_fill_price(self):
+        for vaults in ((None, None), (400, None), (None, 400)):
+            with self.subTest(vaults=vaults):
+                ex = make_live(Path(tempfile.mkdtemp(dir=self.tmp)), exit_poll_ms=400)
+                e, rpc, clock = ex[0], ex[1], ex[2]
+                signal_buy(e, clock)
+                land_buy(e, rpc, vaults=vaults)
+                pos = e.state.open[MINT]
+                self.assertEqual(pos["mark_source"], "fill_price")
+                self.assertAlmostEqual(pos["mark"], pos["net_in"] / (pos["tokens"] * 1000), places=15)
+        for key in ("mark", "mark_send", "mark_shift_bps"):
+            self.assertIn(key, pos)
+
+    def test_7fX2_price_fell_before_landing_does_not_fire_sl(self):
+        p, pos, vaults, tok = self.land_at(0.65)  # price fell ~35% between the send state and the landing
+        self.assertGreater(tok, p["q_tokens"] * 1.3)
+        self.assertLess(pos["mark_shift_bps"], -2_000)
+        self.assertLessEqual(self.spot(vaults[1], vaults[0]) / p["q_mark"] - 1.0, -pe.EXIT_RULE.sl)  # old mark: false stop
+        self.clock.t += 400
+        self.ex.tick()
+        self.assertNotIn(MINT, self.ex.state.pending)
+        self.assertIn(MINT, self.ex.state.open)
+
+    def test_drop_after_landing_fires_sl_at_minus_30_vs_real_mark(self):
+        p, pos, vaults, tok = self.land_at(0.7)
+        self.rpc.quote = self.drop_to(vaults, 0.75)  # -25% right after landing: not yet sl
+        self.clock.t += 400
+        self.ex.tick()
+        self.assertNotIn(MINT, self.ex.state.pending)
+        self.rpc.quote = self.drop_to(vaults, 0.69)  # -31% vs our real post-buy mark: sl (the #330 snapshot method needed ~-47.5%)
+        self.clock.t += 400
+        self.ex.tick()
+        self.assertEqual(self.ex.state.pending[MINT]["reason"], "sl")
+        land_sell(self.ex, self.rpc, proceeds=10_000_000)
+        row = [r for r in fills(self.conf) if r["kind"] == "sell"][-1]
+        self.assertEqual(row["mark_source"], "buy_tx_post")
+        self.assertEqual((row["buy_landed_slot"], row["first_exit_snap_slot"]), (2_000, 2_001))
+        self.assertEqual((row["first_exit_snap_dslot"], row["first_exit_snap_dms"]), (1, 400))
+        for k in ("mark_send", "mark", "mark_shift_bps"):
+            self.assertIn(k, row)
+
+    def test_pump_after_landing_fires_tp_at_plus_50_vs_real_mark(self):
+        p, pos, vaults, tok = self.land_at(1.0)
+        self.rpc.quote = self.drop_to(vaults, 1.45)
+        self.clock.t += 400
+        self.ex.tick()
+        self.assertNotIn(MINT, self.ex.state.pending)
+        self.rpc.quote = self.drop_to(vaults, 1.52)
+        self.clock.t += 400
+        self.ex.tick()
+        self.assertEqual(self.ex.state.pending[MINT]["reason"], "tp")
+
+    def test_legacy_position_without_mark_source_is_unchanged(self):
+        pos = {"t_entry_ms": T0, "tokens": 10**9, "net_in": 49_000_000, "mark": 1e-9, "spend": 5 * 10**7}
+        snap = pe.Snapshot(None, 1, Q0, BASE0, V)  # type: ignore[arg-type]
+        r = pe.exit_check(pos, snap, T0 + 1, own_trade_in_state=True)
+        self.assertEqual(r["reason"], "tp")  # exactly the old rule against the stored mark
+        self.assertAlmostEqual(r["ret"], pe.pcm.spot_sol_per_ui(Q0 + V, BASE0) / 1e-9 - 1.0)
+
+    def test_dry_run_executor_has_no_mark_fields(self):
+        import inspect
+        self.assertFalse(hasattr(pe, "rebase_mark"))
+        self.assertNotIn("mark_source", inspect.getsource(pe))
 
 
 if __name__ == "__main__":
