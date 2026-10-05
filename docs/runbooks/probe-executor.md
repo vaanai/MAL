@@ -78,7 +78,7 @@ sudo /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-p
 
 Helm confirms once, before live: `/var/lib/mal/fast-listener/helius.env` is root-owned, mode 0600, and contains only the Helius key line (`HELIUS_API_KEY=...`). systemd loads it as an `EnvironmentFile`, so any other line (for example `LD_PRELOAD`) would be injected into the key-holding process.
 
-`install-fast-forward-paper.sh` refuses to run (every mode except `--dry-run`) while `/etc/systemd/system/mal-probe-executor.service.d/live.conf` or `live-pinned.conf` exists, so a routine reinstall cannot swap code or units under a live key-holder. Remove the drop-in (stop the unit first) before any such reinstall.
+`install-fast-forward-paper.sh` refuses to run (every mode except `--dry-run`) while a NON-pinned live drop-in (`live.conf` whose ExecStart runs `${FWD}/src`) exists, so a routine reinstall cannot swap code under a live key-holder. A pinned drop-in (`live-pinned.conf`, or the pinned conf installed as `live.conf`: its ExecStart runs `/usr/local/lib/mal-probe-exec/current/launcher.py`) does not block the runner reinstall; the installer prints a note, because the pinned code and config are root-owned and change only through `install-probe-executor-pinned.sh`. Note the base unit's signals bind (`intents.jsonl`) and the pinned `probe-executor-live.json` (`signals_file`) must change together: re-pin after this change.
 
 State, fill log, STOP/HALT, the credential and the signals bind are unchanged from the base unit. The dry-run unit still uses the agent-deployed path (it holds no key).
 

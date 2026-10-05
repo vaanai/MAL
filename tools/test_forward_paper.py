@@ -1798,3 +1798,61 @@ def _parsed(mint: str, t_ms: int):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IntentsFileTests(unittest.TestCase):
+    """DEC-019: decision-time intents for the probe executor. A new file, nothing else may change."""
+
+    def _run(self, tmp: Path, intents: bool) -> tuple[bytes, bytes, Path]:
+        from tools.forward_paper import JsonlLog
+
+        creates, rows = _fixture()
+        books = [
+            BookSpec("buy_all", "baseline", "hold_30s", max_concurrent=None, daily_loss_lamports=None, creator_cooldown_ms=0, token_cooldown_ms=0),
+            BookSpec("migrate_hold_30s", "migrate", "hold_30s", creator_cooldown_ms=0, token_cooldown_ms=0),
+            BookSpec("migrate_tp50_sl30", "migrate", "tp50_sl30", creator_cooldown_ms=0, token_cooldown_ms=0),
+        ]
+        logs = {"decisions": JsonlLog(tmp / "decisions.jsonl"), "positions": JsonlLog(tmp / "positions.jsonl")}
+        if intents:
+            logs["intents"] = JsonlLog(tmp / "intents.jsonl", fsync=True)
+        replay_rows(
+            creates.values(), rows, books, tape_end_ms=TAPE_END, kill_file=tmp / "KILL", offsets_ms=OFFSETS, logs=logs
+        )
+        for log in logs.values():
+            log.close()
+        return (tmp / "decisions.jsonl").read_bytes(), (tmp / "positions.jsonl").read_bytes(), tmp / "intents.jsonl"
+
+    def test_intents_do_not_change_decisions_or_positions_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            off_dec, off_pos, off_int = self._run(Path(a), False)
+            on_dec, on_pos, on_int = self._run(Path(b), True)
+            self.assertTrue(off_dec and off_pos)
+            self.assertEqual(off_dec, on_dec)
+            self.assertEqual(off_pos, on_pos)
+            self.assertFalse(off_int.exists())  # default off: no file
+
+    def test_intent_rows_are_migrate_ceiling_only_and_carry_no_pnl(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            dec_b, _pos, path = self._run(Path(d), True)
+            rows = [json.loads(x) for x in path.read_text().splitlines()]
+            self.assertTrue(rows)
+            self.assertEqual({r["schema"] for r in rows}, {"forward_paper_intent_v1"})
+            self.assertEqual({r["ledger"] for r in rows}, {"ceiling"})
+            self.assertTrue({r["book"] for r in rows} <= {"migrate_hold_30s", "migrate_tp50_sl30"})
+            for r in rows:
+                self.assertEqual(
+                    set(r), {"schema", "book", "ledger", "mint", "creator", "decision_t_ms", "written_ms", "trigger", "score"}
+                )
+                self.assertIsInstance(r["written_ms"], int)
+            decs = [json.loads(x) for x in dec_b.decode().splitlines()]
+            for r in rows:
+                self.assertTrue(
+                    any(
+                        x["book"] == r["book"] and x["mint"] == r["mint"] and x["decision_t_ms"] == r["decision_t_ms"] and x["ledger"] == "ceiling"
+                        for x in decs
+                    )
+                )
+
+    def test_shipped_runner_config_enables_intents(self) -> None:
+        cfg = json.loads((Path(__file__).resolve().parents[1] / "scripts/mal-fast/fast-forward-paper.json").read_text())
+        self.assertIs(cfg["intents_file"], True)

@@ -8,8 +8,8 @@ paper exit rule (tp50/sl30/30-minute cap), and logs every attempt to an append-o
 There is no signing, no sending and no key loading in this module (live mode is tools/probe_live.py). The fee
 payer in simulation is a public funded address (pumpswap_simulate.DEFAULT_USER), never a key we hold.
 
-FORWARD-READ SEAL (DEC-016 Am.2/Am.3): the only runner file read is the decisions log, and only
-rows whose action is `enter` on the ceiling ledger of the configured book are kept, reduced to
+FORWARD-READ SEAL (DEC-016 Am.2/Am.3): the only runner file read is ONE of the decisions log or the
+intents log (config signals_file), and only rows whose action is `enter` (or intents rows) on the ceiling ledger of the configured book are kept, reduced to
 mint, decision_t_ms, score, trigger and book. No exit or P&L field is ever stored here, and no
 other runner file (positions, status, latency) is opened.
 
@@ -58,7 +58,9 @@ MAX_RPS = 2.0  # sustained, shared across every call (Helius plan is shared with
 MAX_READ_BYTES = 1 << 20  # per tail pass
 UNPRICED_GRACE_MS = 60_000  # retry window past the 30 min deadline before a forced close
 EXIT_RULE = next(r for r in EXIT_RULES if r.rule_id == "tp50_sl30")  # tp 0.50 / sl 0.30, same object the scorer uses
-DECISIONS_FILE = "decisions.jsonl"  # the ONLY runner file this module opens
+DECISIONS_FILE = "decisions.jsonl"  # legacy signal source (after the simulated latency)
+INTENTS_FILE = "intents.jsonl"  # the decision-time intent file (forward_paper_intent_v1); no P&L field exists in it
+SIGNAL_FILES = (DECISIONS_FILE, INTENTS_FILE)  # the ONLY runner files this module may open, and only ONE of them is configured
 KEEP_FIELDS = ("mint", "decision_t_ms", "score", "trigger", "book")
 MAX_LATENCY_JSON = 2048  # the runner row's own `latency` object (decision-time hop timings) is copied only when small
 SIGNAL_POLL_MS_DEFAULT, SIGNAL_POLL_MS_MIN, SIGNAL_POLL_MS_MAX = 50, 20, 500
@@ -399,6 +401,34 @@ def exit_check(pos: dict[str, Any], snap: Snapshot, now_ms: int) -> dict[str, An
 # --- signal tailer (the seal lives here) -----------------------------------------------------
 
 
+def parse_intent(line: str, book: str, ledger: str) -> dict[str, Any] | None:
+    """An intents.jsonl row (schema forward_paper_intent_v1), whitelisted to the same fields as an `enter`
+    plus `written_ms` (wall clock the runner wrote it; the staleness clock). Anything else is dropped."""
+    if '"forward_paper_intent_v1"' not in line:
+        return None
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(row, dict) or row.get("schema") != "forward_paper_intent_v1":
+        return None
+    if row.get("book") != book or row.get("ledger") != ledger:
+        return None
+    sig = {k: row.get(k) for k in KEEP_FIELDS}
+    if not sig["mint"] or not isinstance(sig["decision_t_ms"], int):
+        return None
+    w = row.get("written_ms")
+    if not isinstance(w, int) or isinstance(w, bool):
+        return None
+    sig["written_ms"] = w
+    return sig
+
+
+def signal_age_ms(sig: dict[str, Any], now: int) -> int:
+    """Age of a signal. Intents carry written_ms (wall clock); an `enter` row only has the tape time."""
+    return now - sig.get("written_ms", sig["decision_t_ms"])
+
+
 def parse_enter(line: str, book: str, ledger: str) -> dict[str, Any] | None:
     """The cheap substring test runs first; the row is then parsed and only a whitelisted
     subset of an `enter` row is returned. Anything else is dropped without being kept."""
@@ -424,7 +454,7 @@ def parse_enter(line: str, book: str, ledger: str) -> dict[str, Any] | None:
     return sig
 
 
-def tail_signals(path: Path, st: State, book: str, ledger: str = DEFAULT_LEDGER) -> list[dict[str, Any]]:
+def tail_signals(path: Path, st: State, book: str, ledger: str = DEFAULT_LEDGER, *, intents: bool = False) -> list[dict[str, Any]]:
     """New `enter` signals since the persisted offset. Advances st.offset only over complete
     lines. First run (no state) starts at end of file so history is never replayed. A smaller
     file or a new inode (rotation or truncation) restarts from 0."""
@@ -447,7 +477,8 @@ def tail_signals(path: Path, st: State, book: str, ledger: str = DEFAULT_LEDGER)
             st.offset += len(data)
         return []
     for raw in data[: end + 1].splitlines():
-        sig = parse_enter(raw.decode("utf-8", "replace"), book, ledger)
+        parse = parse_intent if intents else parse_enter
+        sig = parse(raw.decode("utf-8", "replace"), book, ledger)
         if sig:
             out.append(sig)
     st.offset += end + 1
@@ -593,7 +624,11 @@ class Executor:
         self.now_ms = now_ms or (lambda: int(time.time() * 1000))
         self.limits = Limits.from_config(cfg)
         self.book = cfg.get("book", DEFAULT_BOOK)
-        self.decisions = Path(cfg["signals_dir"]) / DECISIONS_FILE
+        sig_file = cfg.get("signals_file", DECISIONS_FILE)
+        if sig_file not in SIGNAL_FILES:
+            raise ValueError(f"signals_file must be one of {SIGNAL_FILES}")
+        self.use_intents = sig_file == INTENTS_FILE
+        self.decisions = Path(cfg["signals_dir"]) / sig_file
         self.mode = cfg.get("mode", MODE)
         self.state_path = state_path_for(cfg["state_dir"], self.mode)
         guard_live_state(self.mode, self.state_path, Path(cfg["fill_log"]))
@@ -652,7 +687,7 @@ class Executor:
         why = check_buy(self.limits, self.state, now, check_stop_file(self.limits), self.mode, check_halt_file(self.limits))
         if why:
             return self._skip(sig, f"limit:{why}")
-        if now - sig["decision_t_ms"] > self.max_signal_age_ms:
+        if signal_age_ms(sig, now) > self.max_signal_age_ms:
             return self._skip(sig, "stale_signal")
         if sig["mint"] in self.state.open:
             return self._skip(sig, "already_open")
@@ -776,7 +811,7 @@ class Executor:
         if st.started and st.inode == s.st_ino and s.st_size == st.offset:
             return 0
         before = (st.started, st.offset, st.inode)
-        sigs = tail_signals(self.decisions, st, self.book)
+        sigs = tail_signals(self.decisions, st, self.book, intents=self.use_intents)
         seen = self.now_ms()
         if (st.started, st.offset, st.inode) != before:
             self.save()  # offset first: a crash mid-signal must not replay it

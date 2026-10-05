@@ -476,7 +476,7 @@ def test_installer_probe_dryrun_only():
 
 # ---------------------------------------------------------------- DEC-019 live key-holder fence
 
-@pytest.mark.parametrize("conf", ["live.conf", "live-pinned.conf"])
+@pytest.mark.parametrize("conf", ["live.conf"])
 @pytest.mark.parametrize("args", [["--files-only"], []])
 def test_forward_install_refuses_while_live_dropin_exists(kit_repo, tmp_path, conf, args):
     bindir, calls = _stubs(tmp_path)
@@ -487,6 +487,35 @@ def test_forward_install_refuses_while_live_dropin_exists(kit_repo, tmp_path, co
     r = _fwd(kit_repo["repo"], *args, "--commit", kit_repo["good"], env=env)
     assert r.returncode != 0 and conf in r.stderr and "LIVE" in r.stderr and "key-holding" in r.stderr, r.stderr
     assert calls.read_text() == "" and not (tmp_path / "mal").exists()
+
+
+def test_forward_install_allowed_with_pinned_live_dropin_with_note(kit_repo, tmp_path):
+    """live-pinned.conf runs root-owned code the installer never touches: the runner reinstall proceeds, with a note."""
+    bindir, _ = _stubs(tmp_path)
+    env = _env(tmp_path, bindir)
+    d = tmp_path / "systemd" / "mal-probe-executor.service.d"
+    d.mkdir()
+    (d / "live-pinned.conf").write_text("[Service]\n")
+    r = _fwd(kit_repo["repo"], "--files-only", "--commit", kit_repo["good"], env=env)
+    assert "refusing: " not in r.stderr, r.stderr
+    assert "PINNED live drop-in" in r.stderr, r.stderr
+    assert r.returncode == 0, r.stderr
+
+
+def test_forward_install_allowed_when_pinned_conf_is_installed_as_live_conf(kit_repo, tmp_path):
+    """The runbook installs the pinned conf under the name live.conf: it is told apart by its ExecStart."""
+    bindir, _ = _stubs(tmp_path)
+    env = _env(tmp_path, bindir)
+    d = tmp_path / "systemd" / "mal-probe-executor.service.d"
+    d.mkdir()
+    pinned = (KIT / "mal-probe-executor-live-pinned.conf").read_text()
+    (d / "live.conf").write_text(pinned)
+    r = _fwd(kit_repo["repo"], "--files-only", "--commit", kit_repo["good"], env=env)
+    assert r.returncode == 0 and "PINNED live drop-in" in r.stderr, r.stderr
+    # the non-pinned conf under the same name still refuses
+    (d / "live.conf").write_text((KIT / "mal-probe-executor-live.conf").read_text())
+    r = _fwd(kit_repo["repo"], "--files-only", "--commit", kit_repo["good"], env=env)
+    assert r.returncode != 0 and "key-holding" in r.stderr
 
 
 def test_forward_install_dry_run_allowed_with_live_dropin(kit_repo, tmp_path):

@@ -219,6 +219,7 @@ class TailerTests(unittest.TestCase):
         for name in ("positions.jsonl", "runner-status", "latency.jsonl", "summary.json"):
             self.assertNotIn(name, src)
         self.assertEqual(pe.DECISIONS_FILE, "decisions.jsonl")
+        self.assertEqual(pe.SIGNAL_FILES, ("decisions.jsonl", "intents.jsonl"))
         for pat in (r"\.sign\(", r"Keypair", r"from_seed", r"sendTransaction", r"send_transaction"):
             self.assertIsNone(re.search(pat, src), pat)
 
@@ -386,17 +387,17 @@ class RpcErrorProxy(Exception):
 
 
 class SealUnitTests(unittest.TestCase):
-    def test_unit_whitelists_only_decisions_jsonl(self):
+    def test_unit_whitelists_only_intents_jsonl(self):
         self.assertIn("TemporaryFileSystem=/var/lib/mal/paper/fast-forward-paper:ro", UNIT)
         binds = re.findall(r"^BindReadOnlyPaths=(.*)$", UNIT, re.M)
         self.assertEqual(len(binds), 1)
-        self.assertEqual(binds[0].strip(), "-/var/lib/mal/paper/fast-forward-paper/decisions.jsonl")
+        self.assertEqual(binds[0].strip(), "-/var/lib/mal/paper/fast-forward-paper/intents.jsonl")
         self.assertNotRegex(UNIT, r"(?m)^ReadWritePaths=.*paper")
         self.assertNotRegex(UNIT, r"(?m)^ReadOnlyPaths=.*fast-forward-paper")
 
     def test_code_references_no_other_runner_filename(self):
         runner = (REPO / "tools/forward_paper.py").read_text()
-        names = set(re.findall(r"""["']([A-Za-z0-9_.-]+\.jsonl?)["']""", runner)) - {"decisions.jsonl"}
+        names = set(re.findall(r"""["']([A-Za-z0-9_.-]+\.jsonl?)["']""", runner)) - {"decisions.jsonl", "intents.jsonl"}
         self.assertIn("positions.jsonl", names)  # the scan finds the files it should
         src = Path(pe.__file__).read_text()
         for n in names:
@@ -407,6 +408,52 @@ class SealUnitTests(unittest.TestCase):
         for k in ("NoNewPrivileges=true", "ProtectSystem=strict", "ReadWritePaths=/var/lib/mal-live", "MemoryMax=1G", "User=mal-live",
                   "RestrictAddressFamilies=AF_INET AF_INET6", "CapabilityBoundingSet="):
             self.assertIn(k, UNIT)
+
+
+def intent_row(**kw):
+    row = {"schema": "forward_paper_intent_v1", "book": pe.DEFAULT_BOOK, "ledger": "ceiling", "mint": "M1", "creator": "C",
+           "decision_t_ms": 1_000, "written_ms": 1_100, "trigger": "migrate", "score": 0.9}
+    row.update(kw)
+    return json.dumps(row) + "\n"
+
+
+class IntentTests(unittest.TestCase):
+    def test_parse_intent_whitelists_fields(self):
+        got = pe.parse_intent(intent_row(pnl_lamports=5, creator="X"), pe.DEFAULT_BOOK, "ceiling")
+        self.assertEqual(got, {"mint": "M1", "decision_t_ms": 1000, "score": 0.9, "trigger": "migrate",
+                               "book": pe.DEFAULT_BOOK, "written_ms": 1100})
+
+    def test_parse_intent_rejects_other_rows(self):
+        self.assertIsNone(pe.parse_intent(intent_row(ledger="shadow"), pe.DEFAULT_BOOK, "ceiling"))
+        self.assertIsNone(pe.parse_intent(intent_row(book="other"), pe.DEFAULT_BOOK, "ceiling"))
+        self.assertIsNone(pe.parse_intent(intent_row(written_ms=None), pe.DEFAULT_BOOK, "ceiling"))
+        self.assertIsNone(pe.parse_intent(intent_row(schema="forward_paper_decision_v1"), pe.DEFAULT_BOOK, "ceiling"))
+        self.assertIsNone(pe.parse_intent(enter_row(), pe.DEFAULT_BOOK, "ceiling"))  # an `enter` row is not an intent
+        self.assertIsNone(pe.parse_enter(intent_row(), pe.DEFAULT_BOOK, "ceiling"))
+
+    def test_tail_intents_and_age_uses_written_ms(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "intents.jsonl"
+            p.write_text("")
+            st = pe.State()
+            pe.tail_signals(p, st, pe.DEFAULT_BOOK, intents=True)
+            p.write_text(intent_row())
+            out = pe.tail_signals(p, st, pe.DEFAULT_BOOK, intents=True)
+            self.assertEqual([s["mint"] for s in out], ["M1"])
+            self.assertEqual(pe.signal_age_ms(out[0], 1_600), 500)  # written_ms, not the older tape time
+            self.assertEqual(pe.signal_age_ms({"decision_t_ms": 1000}, 1_600), 600)
+
+    def test_executor_reads_only_configured_signals_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf = make(Path(d), signals_file="intents.jsonl")
+            self.assertEqual(ex.decisions.name, "intents.jsonl")
+            self.assertTrue(ex.use_intents)
+            with self.assertRaises(ValueError):
+                make(Path(d), signals_file="positions.jsonl")
+
+    def test_shipped_configs_use_intents(self):
+        for n in ("probe-executor.json", "probe-executor-live.json"):
+            self.assertEqual(json.loads((REPO / "scripts/mal-fast" / n).read_text())["signals_file"], "intents.jsonl")
 
 
 class ClampTests(unittest.TestCase):

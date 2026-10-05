@@ -84,21 +84,34 @@ run() {
 }
 
 # --- live key-holder fence (DEC-019) ---
-# A routine reinstall swaps ${FWD}/src and the units. While a live drop-in exists the probe executor may hold
-# the wallet key, so code under it must never change here. Refuse every mode except --dry-run. The drop-in
-# dir is fixed at /etc/systemd/system/mal-probe-executor.service.d; only test mode (MAL_FORWARD_OWNER set
-# and empty) may point it elsewhere, via MAL_PROBE_DROPIN_DIR (default: under MAL_SYSTEMD_DIR).
+# A routine reinstall swaps ${FWD}/src and the units. While the NON-pinned live drop-in (live.conf) exists the
+# probe executor runs its code from ${FWD}/src and may hold the wallet key, so that code must never change
+# here: refuse every mode except --dry-run. The PINNED live drop-in (live-pinned.conf) runs root-owned code
+# from /usr/local/lib/mal-probe-exec that this script never touches, so the runner reinstall is allowed (note
+# printed). The drop-in dir is fixed at /etc/systemd/system/mal-probe-executor.service.d; only test mode
+# (MAL_FORWARD_OWNER set and empty) may point it elsewhere, via MAL_PROBE_DROPIN_DIR (default: under MAL_SYSTEMD_DIR).
 if [[ -z "${MAL_FORWARD_OWNER+x}" || -n "${MAL_FORWARD_OWNER}" ]]; then
   PROBE_DROPIN_DIR="/etc/systemd/system/mal-probe-executor.service.d"
 else
   PROBE_DROPIN_DIR="${MAL_PROBE_DROPIN_DIR:-${SYSTEMD_DIR}/mal-probe-executor.service.d}"
 fi
 if [[ "${DRY}" == 0 ]]; then
+  # The runbook installs the pinned conf under the name live.conf, so the name alone cannot tell the two apart:
+  # a drop-in is PINNED when it is live-pinned.conf, or when its ExecStart runs the root-owned pinned launcher.
+  PINNED_MARK="/usr/local/lib/mal-probe-exec/current/launcher.py"
+  pinned_note=""
   for c in live.conf live-pinned.conf; do
-    if [[ -e "${PROBE_DROPIN_DIR}/${c}" || -L "${PROBE_DROPIN_DIR}/${c}" ]]; then
-      die "refusing: ${PROBE_DROPIN_DIR}/${c} exists, so the probe executor is configured LIVE and may hold the wallet key. A routine reinstall must never swap code or units under a live key-holding process. Helm or the owner removes the drop-in (DEC-019, docs/runbooks/probe-executor.md) first. --dry-run is still allowed."
+    f="${PROBE_DROPIN_DIR}/${c}"
+    [[ -e "${f}" || -L "${f}" ]] || continue
+    if [[ "${c}" == live-pinned.conf ]] || grep -q "^ExecStart=.*${PINNED_MARK}" "${f}" 2>/dev/null; then
+      pinned_note="${f}"
+      continue
     fi
+    die "refusing: ${f} exists, so the probe executor is configured LIVE from ${FWD}/src and may hold the wallet key. A routine reinstall must never swap code or units under a live key-holding process. Helm or the owner removes the drop-in (DEC-019, docs/runbooks/probe-executor.md) first. --dry-run is still allowed."
   done
+  if [[ -n "${pinned_note}" ]]; then
+    echo "fast-forward-paper NOTE: ${pinned_note} is the PINNED live drop-in: the live probe executor runs root-owned code that this script does not touch. Runner files only. The pinned executor code and config change only through its own pinned script." >&2
+  fi
 fi
 
 # --- date fence (ISO-8601 Z strings sort lexically) ---
