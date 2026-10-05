@@ -8,6 +8,7 @@
   "slippage_cap": 0.15,
   "holdback_ms": 300,
   "intents_file": true,
+  "early_arm": true,
   "pumpswap_virtual": "require",
   "books": [
     {
