@@ -90,14 +90,19 @@ def clamp_exit_poll_ms(value: Any, poll_ms: int) -> int:
 # --- limits (pure; the live mode must import and use this unchanged) -------------------------
 
 # DEC-019 section 3 maxima. Config may lower these; it can never raise them.
+# Amendment 1 (PROPOSED 2026-10-05, awaiting owner approval) raises attempts to 90, loss cap to 350,000,000 and
+# max_days to 7, and adds an absolute end instant. Priority max stays 500,000; config may go lower (150,000 live).
 DEC019_MAX = {
-    "max_attempts": 30,
+    "max_attempts": 90,
     "max_open": 3,
-    "loss_cap_lamports": 250_000_000,
-    "max_days": 4,
+    "loss_cap_lamports": 350_000_000,
+    "max_days": 7,
     "size_lamports": 50_000_000,
     "priority_lamports": 500_000,
 }
+# Absolute end of the probe: 2026-10-12T00:00:00Z. The days cap counts from first_attempt_ms (2026-10-05T14:49Z), so
+# 7 days alone would run to 10-12T14:49Z; this instant is the binding time stop. Config may lower it, never raise it.
+DEC019_END_MS = 1791763200000
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,7 @@ class Limits:
     max_days: float = DEC019_MAX["max_days"]
     size_lamports: int = DEC019_MAX["size_lamports"]
     priority_lamports: int = DEC019_MAX["priority_lamports"]
+    end_ms: int = DEC019_END_MS
     stop_file: str = "/var/lib/mal-live/STOP"  # no new buys; exits and in-flight sells continue
     halt_file: str = "/var/lib/mal-live/HALT"  # freezes everything: no buys, no sells, no rebroadcasts
 
@@ -118,10 +124,16 @@ class Limits:
             if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
                 raise ValueError(f"limit {key} must be a finite positive number")
             object.__setattr__(self, key, min(val if key == "max_days" else int(val), cap))
+        e = self.end_ms
+        if isinstance(e, bool) or not isinstance(e, (int, float)) or not math.isfinite(e) or e <= 0:
+            raise ValueError("limit end_ms must be a finite positive number")
+        object.__setattr__(self, "end_ms", min(int(e), DEC019_END_MS))
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "Limits":
         kw: dict[str, Any] = {k: cfg[k] for k in DEC019_MAX if cfg.get(k) is not None}
+        if cfg.get("end_ms") is not None:
+            kw["end_ms"] = cfg["end_ms"]
         if cfg.get("stop_file"):
             kw["stop_file"] = str(cfg["stop_file"])
         if cfg.get("halt_file"):
@@ -325,6 +337,8 @@ def soft_stops(limits: Limits, st: State, now_ms: int) -> list[str]:
         out.append("loss_cap")
     if st.first_attempt_ms is not None and now_ms - st.first_attempt_ms >= limits.max_days * 86_400_000:
         out.append("max_days")
+    if now_ms >= limits.end_ms:
+        out.append("end_instant")
     return out
 
 

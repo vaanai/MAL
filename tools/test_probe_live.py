@@ -372,6 +372,7 @@ class BuyFlowTests(unittest.TestCase):
         self.assertEqual(row["tokens_received"], got)
         self.assertEqual(row["entry_vs_quote_bps"], round((got - p["q_tokens"]) * 1e4 / p["q_tokens"], 2))
         self.assertEqual(row["sol_spent_lamports"], 50_000_000 + 500_000 + RENT)
+        self.assertEqual(row["priority_lamports"], self.ex.limits.priority_lamports)
         self.assertEqual((row["base_fee_lamports"], row["priority_fee_lamports"]), (5_000, 495_000))
         self.assertEqual(row["rent_charged_lamports"], RENT)
         self.assertEqual(row["landed_slot"], 2_000)
@@ -406,15 +407,15 @@ class LimitsLiveTests(unittest.TestCase):
         return fills(self.conf)[-1]["reason"]
 
     def test_each_limit_halts_live(self):
-        self.ex.state.attempts = 30
+        self.ex.state.attempts = 90
         self.assertIsNone(signal_buy(self.ex, self.clock))
         self.assertEqual(self.reason(), "limit:max_attempts")
         self.ex.state.attempts = 0
-        self.ex.state.realized_lamports = -250_000_000
+        self.ex.state.realized_lamports = -350_000_000
         signal_buy(self.ex, self.clock)
         self.assertEqual(self.reason(), "limit:loss_cap")
         self.ex.state.realized_lamports = 0
-        self.ex.state.first_attempt_ms = T0 - 4 * 86_400_000
+        self.ex.state.first_attempt_ms = T0 - 7 * 86_400_000
         signal_buy(self.ex, self.clock)
         self.assertEqual(self.reason(), "limit:max_days")
         self.ex.state.first_attempt_ms = None
@@ -499,6 +500,7 @@ class ExitFlowTests(unittest.TestCase):
         buy_cost = self.pos["buy_cost_lamports"]
         land_sell(self.ex, self.rpc, proceeds=49_000_000)
         row = [r for r in fills(self.conf) if r["kind"] == "sell"][-1]
+        self.assertEqual(row["priority_lamports"], self.ex.limits.priority_lamports)
         self.assertTrue(row["landed"])
         self.assertEqual(row["sol_received_lamports"], 49_000_000)
         self.assertEqual(row["rent_refunded_lamports"], RENT)
@@ -619,7 +621,7 @@ class StatusTests(unittest.TestCase):
             ex, rpc, clock, kp, conf = make_live(Path(d))
             open_position(ex, rpc, clock)
             out = pe.status_report(conf)
-            self.assertIn("[live] attempts=1/30", out)
+            self.assertIn("[live] attempts=1/90", out)
             self.assertIn(MINT, out)
             self.assertIn("realized_sol=0.000000", out)
             self.assertNotIn("http", out)
@@ -628,7 +630,7 @@ class StatusTests(unittest.TestCase):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf), mock.patch.object(pe.sim, "load_rpc_url", side_effect=AssertionError("no url")):
                 self.assertEqual(pe.main(["--config", str(cp), "--status"]), 0)
-            self.assertIn("[live] attempts=1/30", buf.getvalue())
+            self.assertIn("[live] attempts=1/90", buf.getvalue())
 
 
 def sell_stuck_helper(ex, rpc, clock, n):

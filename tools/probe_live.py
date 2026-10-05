@@ -555,7 +555,7 @@ class LiveExecutor(pe.Executor):
         row: dict[str, Any] = dict(
             spend_lamports=p["spend"], expected_tokens=p["q_tokens"], sim_tokens=p.get("sim_tokens"), pool=p["pool"],
             landed_slot=m["slot"], slots_between=(m["slot"] - p["snap_slot"]) if m["slot"] and p.get("snap_slot") else None,
-            fee_lamports=m["fee"], base_fee_lamports=base_fee, priority_fee_lamports=prio_fee, v_lamports=p.get("v_lamports"),
+            fee_lamports=m["fee"], base_fee_lamports=base_fee, priority_fee_lamports=prio_fee, priority_lamports=self.limits.priority_lamports, v_lamports=p.get("v_lamports"),
             **self._timing(p),
         )
         if m["err"] is not None:
@@ -703,7 +703,7 @@ class LiveExecutor(pe.Executor):
         row: dict[str, Any] = dict(
             pool=pos["pool"], exit_reason=p["reason"], ret=p["ret"], tokens=p["tokens"], quote_sol_out_lamports=p["q_out"],
             min_sol_out_lamports=p["min_out"], landed_slot=m["slot"], fee_lamports=m["fee"], base_fee_lamports=base_fee,
-            priority_fee_lamports=prio_fee, hold_ms=self.now_ms() - pos["t_entry_ms"], **self._timing(p),
+            priority_fee_lamports=prio_fee, priority_lamports=self.limits.priority_lamports, hold_ms=self.now_ms() - pos["t_entry_ms"], **self._timing(p),
             **{k: p[k] for k in ("exit_poll_ms", "exit_commitment", "exit_snapshot", "balance_source") if k in p},
         )
         if m["err"] is not None:
