@@ -36,6 +36,7 @@ from tools.latency_curve import (
     FLAT_FAIL,
     MISS,
     SEND,
+    SLOT_MS,
     WINDOW_MS,
     WSOL,
     FailCurve,
@@ -199,6 +200,28 @@ assert len(SPECS) <= 60, len(SPECS)
 assert len(SPECS) == len(set(s["id"] for s in SPECS)), "duplicate exit spec id"
 
 
+# --- Exit lag (exploration only) ----------------------------------------------
+
+
+def _exit_fill(fills: Sequence[TapePrint], hit: TapePrint, exit_land_k: int) -> tuple[int, int]:
+    """(fill state index, exit chain ms) for an exit triggered by print `hit`.
+
+    exit_land_k == 0 (default): the frozen behaviour, byte-identical to before
+    (the exit lands ENTRY_LAND_K slots after the trigger print, bound "start").
+    exit_land_k > 0: the sell lands that many slots after the trigger print's
+    slot and fills at the state of the last print before slot hit.slot +
+    exit_land_k (bound "start"). So 0 and 1 coincide for event triggers."""
+    k = ENTRY_LAND_K if exit_land_k <= 0 else exit_land_k
+    return _delayed(fills, hit, k, ENTRY_BOUND, ENTRY_BOUND)
+
+
+def _deadline_fill(fills: Sequence[TapePrint], deadline: int, exit_land_k: int) -> tuple[int, int]:
+    """(state index, chain ms) for a time-cap exit. exit_land_k == 0: no delay (frozen behaviour).
+    exit_land_k > 0: the cap fires at `deadline` and the sell lands exit_land_k slots later."""
+    t = deadline + (exit_land_k * SLOT_MS if exit_land_k > 0 else 0)
+    return _state_at(fills, t), t
+
+
 # --- Exit evaluators (adapted from tools.latency_curve, exec model unchanged) -
 
 
@@ -213,6 +236,7 @@ def _eval_tpsl(
     tp: float,
     sl: float,
     cap_ms: int,
+    exit_land_k: int = 0,
 ) -> tuple[int, int, int, int] | None:
     mark = spot_sol_per_ui(buy.quote_after, buy.base_after)
     if mark <= 0:
@@ -239,10 +263,11 @@ def _eval_tpsl(
             hit = pr
             break
     if hit is None:
-        if deadline > tape_through_ms:
+        state_idx, t_exit = _deadline_fill(fills, deadline, exit_land_k)
+        if t_exit > tape_through_ms:
             return None
-        return _one_sell_close(fills, _state_at(fills, deadline), buy, venue, size, ENTRY_PORTAL_PPM)
-    state_idx, t_exit = _delayed(fills, hit, ENTRY_LAND_K, ENTRY_BOUND, ENTRY_BOUND)
+        return _one_sell_close(fills, state_idx, buy, venue, size, ENTRY_PORTAL_PPM)
+    state_idx, t_exit = _exit_fill(fills, hit, exit_land_k)
     if t_exit > tape_through_ms:
         return None
     return _one_sell_close(fills, state_idx, buy, venue, size, ENTRY_PORTAL_PPM)
@@ -259,6 +284,7 @@ def _eval_trail(
     trail: float,
     activation: float | None,
     cap_ms: int,
+    exit_land_k: int = 0,
 ) -> tuple[int, int, int, int] | None:
     mark = spot_sol_per_ui(buy.quote_after, buy.base_after)
     if mark <= 0:
@@ -292,10 +318,11 @@ def _eval_trail(
             hit = pr
             break
     if hit is None:
-        if deadline > tape_through_ms:
+        state_idx, t_exit = _deadline_fill(fills, deadline, exit_land_k)
+        if t_exit > tape_through_ms:
             return None
-        return _one_sell_close(fills, _state_at(fills, deadline), buy, venue, size, ENTRY_PORTAL_PPM)
-    state_idx, t_exit = _delayed(fills, hit, ENTRY_LAND_K, ENTRY_BOUND, ENTRY_BOUND)
+        return _one_sell_close(fills, state_idx, buy, venue, size, ENTRY_PORTAL_PPM)
+    state_idx, t_exit = _exit_fill(fills, hit, exit_land_k)
     if t_exit > tape_through_ms:
         return None
     return _one_sell_close(fills, state_idx, buy, venue, size, ENTRY_PORTAL_PPM)
@@ -313,6 +340,7 @@ def _eval_ladder(
     take: float,
     trail_rem: float,
     cap_ms: int,
+    exit_land_k: int = 0,
 ) -> tuple[int, int, int, int] | None:
     if entry_spot <= 0 or buy.tokens_raw <= 0:
         return None
@@ -368,22 +396,23 @@ def _eval_ladder(
             peak = spot
         ret = spot / entry_spot - 1.0
         if not scaled and ret >= take and remaining > scale_tokens:
-            state_idx, t_exit = _delayed(fills, pr, ENTRY_LAND_K, ENTRY_BOUND, ENTRY_BOUND)
+            state_idx, t_exit = _exit_fill(fills, pr, exit_land_k)
             if not attempt(state_idx, scale_tokens, t_exit):
                 return None
             scaled = True
         if remaining <= 0:
             break
         if ret <= -trail_rem or (scaled and spot <= peak * (1.0 - trail_rem)):
-            state_idx, t_exit = _delayed(fills, pr, ENTRY_LAND_K, ENTRY_BOUND, ENTRY_BOUND)
+            state_idx, t_exit = _exit_fill(fills, pr, exit_land_k)
             if not attempt(state_idx, remaining, t_exit):
                 return None
             remaining = 0
             break
     if remaining > 0:
-        if deadline > tape_through_ms:
+        state_idx, t_exit = _deadline_fill(fills, deadline, exit_land_k)
+        if t_exit > tape_through_ms:
             return None
-        if not attempt(_state_at(fills, deadline), remaining, deadline):
+        if not attempt(state_idx, remaining, t_exit):
             return None
     if attempts == 0:
         return None
@@ -402,12 +431,13 @@ def eval_spec(
     landing_ms: int,
     tape_through_ms: int,
     size: int | None = None,
+    exit_land_k: int = 0,
 ) -> tuple[int, int, int, int] | None:
     size = ENTRY_SIZE if size is None else size
     kind = spec["type"]
     if kind == "tpsl":
         return _eval_tpsl(
-            fills, entry_idx, buy, venue, size, landing_ms, tape_through_ms, spec["tp"], spec["sl"], spec["cap_ms"]
+            fills, entry_idx, buy, venue, size, landing_ms, tape_through_ms, spec["tp"], spec["sl"], spec["cap_ms"], exit_land_k
         )
     if kind == "trail":
         return _eval_trail(
@@ -421,6 +451,7 @@ def eval_spec(
             spec["trail"],
             spec["activation"],
             spec["cap_ms"],
+            exit_land_k,
         )
     if kind == "ladder":
         return _eval_ladder(
@@ -435,6 +466,7 @@ def eval_spec(
             spec["take"],
             spec["trail_rem"],
             spec["cap_ms"],
+            exit_land_k,
         )
     raise ValueError(f"unknown exit spec type {kind!r}")
 
@@ -454,6 +486,7 @@ def score_migration(
     specs: Sequence[dict[str, Any]] | None = None,
     size: int | None = None,
     priority: int | None = None,
+    exit_land_k: int = 0,
 ) -> list[dict[str, Any]]:
     """One migration trigger. One row per spec, plus a shared miss row when the
     entry itself does not fill (state missing or slippage cap). Rows whose exit
@@ -491,7 +524,7 @@ def score_migration(
     buys, nearby = _pressure(fills, idx, state.slot, landing_ms)
     p_press = curve.p(Pressure(buys, nearby))
     for spec in specs:
-        result = eval_spec(spec, fills, idx, state.price_sol, buy, venue, landing_ms, tape_through_ms, size)
+        result = eval_spec(spec, fills, idx, state.price_sol, buy, venue, landing_ms, tape_through_ms, size, exit_land_k)
         if result is None:
             continue
         net0, gross, sides, status = result
