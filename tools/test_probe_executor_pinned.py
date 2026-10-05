@@ -394,6 +394,31 @@ def test_check_refuses_wrong_owner(real_venv):
     assert r.returncode != 0 and "not owned by uid" in r.stderr
 
 
+def test_check_fails_closed_when_find_fails(real_venv, tmp_path):
+    dest, venv = real_venv
+    fb = tmp_path / "fakebin"
+    fb.mkdir()
+    (fb / "find").write_text("#!/bin/sh\nexit 1\n")
+    (fb / "find").chmod(0o755)
+    env = {"PATH": f"{fb}:{os.environ['PATH']}", "MAL_TREE_CHECK_TEST_UID": str(os.getuid())}
+    r = subprocess.run(["bash", str(CHECK), str(venv)], env=env, capture_output=True, text=True)
+    assert r.returncode != 0 and "find failed" in r.stderr
+
+
+def test_installer_moves_all_guarded_by_rollback():
+    t = INSTALL.read_text()
+    tail = t[t.index('mv -T "$STAGE" "$DEST/$COMMIT"'):t.index("# Atomic switch")]
+    n = 0
+    for ln in tail.splitlines():
+        if re.match(r"\s*(mv -T|chown)\b", ln):
+            assert "|| rollback" in ln, ln
+            n += 1
+    assert n == 4
+    assert tail.index("OLD_MOVED=1") < tail.index('mv -T "$VENV_NEW" "$DEST/venv"')
+    # a failed first mv must not delete the previous venv: venv is removed only once the new one was placed
+    assert 'if [ "$NEW_PLACED" -eq 1 ]; then rm -rf "$DEST/venv"' in t
+
+
 def test_check_test_mode_refused_as_root():
     t = CHECK.read_text()
     assert 'id -u)" -ne 0' in t and "not allowed as root" in t

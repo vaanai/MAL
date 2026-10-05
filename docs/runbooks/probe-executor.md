@@ -70,17 +70,18 @@ Installer fix (2026-10-05): the first version's final check (`find ... ! -user r
 
 Recovering from a half-finished install made with the OLD installer (as root, unit stopped): `rm -rf /usr/local/lib/mal-probe-exec/<sha> /usr/local/lib/mal-probe-exec/venv.<sha>.new /usr/local/lib/mal-probe-exec/venv.<sha>`, then rerun the installer from a clone at the fixed commit. The old installer had already swapped `venv` in (and deleted `venv.old`) before failing; the rerun rebuilds `venv` from the hashed requirements, so nothing else needs fixing. `current` never existed for that sha.
 
-Before switching live to pinned: Helm runs the pinned launcher once KEYLESS in dry-run mode on fast-0, to prove the pinned path and the edited `tools/pumpswap_simulate.py` run on the real host. The dry-run config is copied with a scratch state dir so the real `/var/lib/mal-live` state and fill log are not touched; no key is involved (dry-run mode holds none). Expect the launcher to start, print its dry-run mode line, and run until the 90 s limit without a traceback:
+Before switching live to pinned: Helm runs the pinned launcher once KEYLESS in dry-run mode on fast-0, to prove the pinned path and the edited `tools/pumpswap_simulate.py` run on the real host. The dry-run config is copied with a scratch state dir so the real `/var/lib/mal-live` state and fill log are not touched; no wallet key is involved (dry-run mode holds none). The Helius env file is passed via `EnvironmentFile` (as the real unit does) because the executor needs the RPC URL; systemd reads it as root, so `mal-live` need not read it, and the scratch dir is a fresh `mktemp -d` under `/run`, not a predictable path. Expect the launcher to start, print its dry-run mode line, and run until the 90 s limit without a traceback:
 
 ```
-sudo install -d -o mal-live -g mal-live -m 0700 /tmp/pinned-dry
-sudo sed -e 's#"state_dir": *"[^"]*"#"state_dir": "/tmp/pinned-dry"#' \
-        -e 's#"fill_log": *"[^"]*"#"fill_log": "/tmp/pinned-dry/probe-fills.jsonl"#' \
-        -e 's#"stop_file": *"[^"]*"#"stop_file": "/tmp/pinned-dry/STOP"#' \
-        scripts/mal-fast/probe-executor.json | sudo -u mal-live tee /tmp/pinned-dry/dry.json >/dev/null
-sudo systemd-run --wait --collect --pipe -p RuntimeMaxSec=90 -p User=mal-live -p NoNewPrivileges=yes -p ProtectSystem=strict -p ReadWritePaths=/tmp/pinned-dry \
-  /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config /tmp/pinned-dry/dry.json
-sudo rm -rf /tmp/pinned-dry
+D=$(sudo mktemp -d /run/pinned-dry.XXXXXX) && sudo chown mal-live:mal-live "$D"
+sudo sed -e "s#\"state_dir\": *\"[^\"]*\"#\"state_dir\": \"$D\"#" \
+         -e "s#\"fill_log\": *\"[^\"]*\"#\"fill_log\": \"$D/probe-fills.jsonl\"#" \
+         -e "s#\"stop_file\": *\"[^\"]*\"#\"stop_file\": \"$D/STOP\"#" \
+         scripts/mal-fast/probe-executor.json | sudo -u mal-live tee "$D/dry.json" >/dev/null
+sudo systemd-run --wait --collect --pipe -p RuntimeMaxSec=90 -p User=mal-live -p NoNewPrivileges=yes -p ProtectSystem=strict -p ReadWritePaths="$D" \
+  -p EnvironmentFile=/var/lib/mal/fast-listener/helius.env \
+  /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config "$D/dry.json"
+sudo rm -rf "$D"
 ```
 
 systemd-run reporting that the unit hit its 90 s runtime limit (result `timeout`) with no traceback is a pass (`RuntimeMaxSec` stops the unit itself); an import error or a `tools` path refusal is a fail, so do not switch.

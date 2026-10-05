@@ -103,12 +103,17 @@ CHECK="$HERE/check-probe-exec-tree.sh"
 
 # Point of no return: put the sha dir and the venv in place (unit is stopped), then verify. The previous
 # venv is kept as venv.old until the final checks pass so a failure can be rolled back.
+OLD_MOVED=0   # previous venv was renamed to venv.old
+NEW_PLACED=0  # the new venv now sits at $DEST/venv
 rollback() {
   echo "ROLLBACK: $1" >&2
   local ok=1
-  rm -rf "$DEST/$COMMIT" || ok=0
-  rm -rf "$DEST/venv" "$DEST/venv.$COMMIT" "$DEST/venv.$COMMIT.new" || ok=0
-  if [ -e "$DEST/venv.old" ]; then mv -T "$DEST/venv.old" "$DEST/venv" || ok=0; fi
+  rm -rf "$DEST/$COMMIT" "$DEST/venv.$COMMIT" "$DEST/venv.$COMMIT.new" || ok=0
+  # Only touch $DEST/venv if we replaced it; a failed first mv leaves the previous venv in place.
+  if [ "$NEW_PLACED" -eq 1 ]; then rm -rf "$DEST/venv" || ok=0; fi
+  if [ "$OLD_MOVED" -eq 1 ] && [ -e "$DEST/venv.old" ] && [ ! -e "$DEST/venv" ]; then
+    mv -T "$DEST/venv.old" "$DEST/venv" || ok=0
+  fi
   if [ "$ok" -ne 1 ]; then
     echo "rollback FAILED. Remove by hand as root, then rerun:" >&2
     echo "  rm -rf $DEST/$COMMIT $DEST/venv.$COMMIT $DEST/venv.$COMMIT.new" >&2
@@ -117,12 +122,16 @@ rollback() {
   exit 1
 }
 rm -rf "$DEST/venv.old"
-mv -T "$STAGE" "$DEST/$COMMIT"
+mv -T "$STAGE" "$DEST/$COMMIT" || rollback "moving the staged tree failed"
 STAGE=""
-if [ -e "$DEST/venv" ]; then mv -T "$DEST/venv" "$DEST/venv.old"; fi
-mv -T "$VENV_NEW" "$DEST/venv"
+if [ -e "$DEST/venv" ]; then
+  mv -T "$DEST/venv" "$DEST/venv.old" || rollback "moving the previous venv aside failed"
+  OLD_MOVED=1
+fi
+mv -T "$VENV_NEW" "$DEST/venv" || rollback "moving the new venv into place failed"
+NEW_PLACED=1
 VENV_NEW=""
-chown -R root:root "$DEST/$COMMIT" "$DEST/venv"
+chown -R root:root "$DEST/$COMMIT" "$DEST/venv" || rollback "chown failed"
 "$CHECK" "$DEST/$COMMIT" "$DEST/venv" || rollback "post-move permission/symlink check failed"
 # Final smoke import from the final locations, before the pointer moves.
 "$DEST/venv/bin/python" -I -B -c "import sys; sys.path.insert(0, sys.argv[1]); import tools.probe_executor, tools.probe_live" "$DEST/$COMMIT" \
