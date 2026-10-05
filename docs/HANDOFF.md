@@ -1,95 +1,72 @@
-# Manager handoff 2026-10-04 late (manager4 on mal-research-0)
+# Manager handoff 2026-10-05 ~16Z (manager4 on mal-research-0 → next manager)
 
-Replace this page at the next handoff; don't append to it. Read it first, then [LAB_STATE.md](../LAB_STATE.md) (last refreshed at #260; the kill review refreshes it next), [CONSTITUTION.md](../CONSTITUTION.md), DEC-016 (Amendments 1–4), DEC-018, DEC-019, and the memory notes `profit-focus`, `exp012-latency-binding`, `pumpswap-virtual-reserve`, `execution-probe`, `exp012-forward-read`.
+Replace this page at the next handoff; don't append. Read it first, then [LAB_STATE.md](../LAB_STATE.md) (refreshed 10-05 #302/#303/#306), [CONSTITUTION.md](../CONSTITUTION.md), DEC-015, DEC-016 (Amendments 1–4), DEC-019, and the memory notes `execution-probe`, `exp012-latency-binding`, `console-sync`, `helius-plan-limits`, `profit-focus`.
 
-Paper only. No key exists yet.
+## Owner direction
 
-## Owner direction (2026-10-04)
+> "Push to profitability… be smart… test ideas we genuinely think will work… work like our lives depend on this."
 
-> "Work like our lives depend on this working… test ideas we're genuinely curious about and think will work… learn from past mistakes."
+The owner approved a **0.5 SOL live execution probe** (DEC-019) running alongside paper. EXP-012 is the only candidate. The FINAL forward read is about 10-16T02Z.
 
-- The owner approved the **0.5 SOL live execution probe** (DEC-019) to run alongside paper.
-- The critical path is still EXP-012 → forward read (~10-16) → Am.3/Am.4 checks → owner → trial.
-- The probe measures real execution first.
+## THE LIVE PROBE IS RUNNING WITH REAL MONEY
 
-## Most important finding this session: entry latency under V
-
-Lab note `ARTIFACTS/lab/exp012-latency-virtual-2026-10-04.md` (#292, quant-proof edited). This is exploration, not evidence.
-
-EXP-012 selected book under V pricing, pressure mean / CI90 lower bound, SOL per 0.5 SOL entry:
-
-| k | Pressure mean | CI90 lower bound |
-| ---: | ---: | ---: |
-| 1 | 0.01866 | 0.01114 |
-| 4 | 0.01332 | 0.00653 |
-| 6 | 0.01246 | 0.00541 |
-| 8 | 0.00769 | 0.00117 |
-| ≥ 12 | — | < 0 (every bound) |
-
-- **What it means:** a fast-0 k(p50) of about 8 or more slots makes live support unlikely even if the FINAL passes. Am.3 also delays exits and applies the trial terms.
-- **First thing after the runner is up:** measure k with the runner latency export and the probe's stage timestamps (`python -m tools.probe_executor --latency-report`).
-- **If k(p50) > ~6:** latency work comes first.
-  - The candidates are the tip follower's confirmed-getBlock lag and the runner's 300 ms holdback.
-  - The executor's own tail interval was already fixed in #293 (50 ms signal loop).
-
-## Merged this session
-
-| PR | What |
+| Item | Value |
 | --- | --- |
-| #284 | V map: every pool per mint (Am.4 §3). |
-| #285 | r2 re-score lab note. Pressure-leg CI90 lower bound **0.00604** (spent block, V). Am.4 §1 adapter commit recorded. |
-| #287, #292 | Latency × V wrapper and lab note. |
-| #288 | **Runner + tip follower V pricing** (`pumpswap_virtual: require` in the fast config). |
-| #286, #290, #293 | **Probe executor**: dry run + live (two switches), DEC-019 limits clamped, pre-sign whitelist, canonical pool, 50 ms signal loop, stage timestamps. |
-| #289, #291 | **Wallet custody**. Pinned sha for Helm: `d5085b48aa6ffa2eaf781b5ddae6481a7eca2cb3`. |
+| Unit | `mal-probe-executor` on fast-0, user `mal-live`, **live since 2026-10-05T14:46:17Z** (drop-in `/etc/systemd/system/mal-probe-executor.service.d/live.conf`, installed by Helm) |
+| Code | Deployed src commit `8a6849b4a9dba468c2a1c32cc9106aeba9ea1dc4` (Helm verified 261/261 files) |
+| Wallet | `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk`, funded 509,528,770 lamports. Key root:root 0400 at `/etc/mal-probe/probe-wallet.json`, delivered via LoadCredential. **Never touch it.** The withdraw address is held by Helm. |
+| Limits | 30 buys of 0.05 SOL, ≤ 3 open, stop at 0.25 SOL realized loss, 4 days. STOP file (no new buys, exits continue) / HALT file, both in `/var/lib/mal-live/` |
+| Status at 15:21Z (job #140) | 2/30 attempts, both landed, both exited sl within about 30 s, realized −0.039502 SOL, 0 open |
 
-**#288 details:**
-- md5 equivalence with the flag off was EQUIVALENT (job #111: 95,948 decision rows and 18,030 position rows).
-- EXP-012 features are unchanged; this is proved by test.
+**Key finding, the first live data.** The two buys landed **15 and 14 slots after the migration** (job #141). EXP-012's edge on exploration data survives only about 8 slots (#292).
+- **Cause:** the paper runner writes the `enter` row only at its *simulated* fill (`decision + applied_latency_ms` ≈ 1.9 s, `tools/forward_paper.py` `_queue`/`_fill_one`), and the executor acts on that row. The latency is counted twice.
+- **Fix: PR #307** (below).
 
-**#286, #290, #293 details:**
-- Live requires both config `mode: live` and `--live`.
-- The pre-sign whitelist means RPC data can't pick programs or destinations.
-- **Bug found:** `pool_v2(mint)` is NOT the pool. `tx.canonical_pool(mint)` matched the tape for 95/100 sampled mints.
+**Owner question OPEN:** `q_TtklEqCl3wlMfA`, whether to pause new buys (Helm: `sudo touch /var/lib/mal-live/STOP`) until #307 is deployed. I recommended **yes**. Check its answer first.
 
-**#289, #291 custody (final, owner + Helm):**
-- The key is at `/etc/mal-probe/probe-wallet.json`, root:root 0400.
-- The executor gets it only via systemd `LoadCredential` in the live drop-in.
-- Withdraw is root-only, from a pinned root install with hashed wheels.
-- Repo deny rules cover `//etc/mal-probe/**` and `/run/credentials`.
+**Hourly monitor.** This session's cron dies with it. The next session must **recreate the monitor**: a read-only MiScusi job on fast-0 every hour that reads the unit's state/NRestarts/DropInPaths, `--status` with `scripts/mal-fast/probe-executor-live.json` (run as mal-live from `/var/lib/mal/fast-forward/src`), journal lines for halt/stuck/abandon/alert/error, and live fill rows. **Alert the owner** on: a restart, the unit down, a stuck or abandoned sell, any halt, realized loss ≥ 0.15 SOL, or errors. **Never read `/etc/mal-probe` or `/run/credentials`.**
+
+**Commitment to the owner and Helm.** Do NOT redeploy fast-0 src (`install-fast-forward-paper.sh`) while non-pinned live code holds the key without telling them first. Helm's auditd key `malprobe-code` alerts on any write to `/var/lib/mal/fast-forward/{src,venv}`.
 
 ## In flight
 
-| Item | State |
+| Item | State / next action |
 | --- | --- |
-| Job #108 (fast-0) | Kill-review SNAPSHOT. Sleeps until 05:00:30Z, then copies Oracle read-only. Then submit the score job on research-0 with `KR_EXPECT_MANIFEST_SHA256` (runbook `docs/runbooks/kill-review-2026-10-05.md`). The 9 Oracle books are V-less: report V-blindness as a caveat and never promote on V-less numbers. |
-| Job #71 | Forward walk forward-1002. **Resubmit by ~10-09T15Z** (same command, params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
-| Helm | Moving the Console off fast-0, fast-0 deny lines and auditd watch, then the wallet script at the pinned sha with the manifest. Sends **only the public key**. The owner relays. Also add `Read(//run/credentials/**)` and `Bash(*run/credentials*)` on fast-0. |
-| Owner | Withdraw address (after Phantom setup). Funding 0.5 SOL only after a clean 6 h keyless dry run. DEC-018 five decisions q_YBNB8Qi1lR_WjQ due ~10-14. |
+| **PR #307** `claude/runner-enter-intents` @ `d0883df466b5d2aedfeefc4dae4d9e732d2593c0` | **Runner writes `intents.jsonl` at decision time; the executor acts on it.** Expected saving about 1.9–2.5 s, about 6 slots. Reviewer and security review: **merge-ready** (second pass). Includes the missing-signals-file startup refusal and the exact-pinned-command fence (`scripts/mal-fast/probe-dropin-fence.py`). **Waiting on md5 equivalence job #143** (`j_pMdYuamPoMRtVA`, research-0). It must print `EQUIVALENT` for intents off, and identical decisions/positions md5 with intents on. Then merge. |
+| **Deploy #307** (after merge) | **Order matters** (runbook `docs/runbooks/probe-executor.md` §2b/§2c).<br>1. Owner/Helm: STOP new buys, wait for open = 0.<br>2. Helm: switch live to the **root-owned pinned executor** (PR #305) **at the #307 merge sha**. Run `install-probe-executor-pinned.sh <sha> <manifest>` from a fresh root clone, swap `live.conf` for the pinned drop-in, daemon-reload. Give Helm the full sha, the manifest of the 11 installed files, and the sha256 of the pinned drop-in and installer, computed from git at that sha (see #305 for the file list).<br>3. Me: redeploy the runner, which is now allowed because the fence sees the pinned command. `install-fast-forward-paper.sh --commit <sha>`, then restart `mal-fast-forward-paper`, then `test -s /var/lib/mal/paper/fast-forward-paper/intents.jsonl`.<br>4. Helm: start the executor (it refuses live without the signals file), then remove STOP.<br>Record the runner restart in LAB_STATE (a mid-week change) and do it **before 10-06T00Z** if possible, when the forward window opens. |
+| **Job #127** (fast-0) | Migration-stream probe v2: 6 h `transactionSubscribe` at processed on the pump migration authority. It ran from about 09:38Z, then runs `compare` against the tip follower. **Read its `compare.txt`.** The first 3 events showed 0.7–1.5 s earlier than the tip follower on the same slot. If confirmed, the next latency step is a processed migration/near-graduation fast path. Write a lab note. |
+| **Job #71** (research-0) | DEC-016 forward walk forward-1002. **Resubmit by about 10-09T15Z** (same command, params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
+| Owner question `q_YBNB8Qi1lR_WjQ` | DEC-018: five live-trial decisions, due about 10-14. |
+
+## State on fast-0 (paper; DEC-015)
+
+- **Tip follower** `mal-fast-tip-follower`: getBlock, parallel fetch (#297), rps 15, 8 workers. **Coverage against chain: 100.000% over [10-05T06,10)** (job #131, #303). Lag 0–3 slots, block-lag p50 about 1.8 s. **About 560k Helius credits/day**; getSlot polling is about half of that, a follow-up to cut it. Memory anon is stable at about 759 MB under a 1 GB limit (0 OOM).
+- **Runner** `mal-fast-forward-paper`: started 10-05T05:31:40Z **on probation** (2 days, rows don't count). Reads the tip tape, `pumpswap_virtual: require` (#288, #296). Daily restart and heartbeat timers on. anon grows about 29 MB/h.
+- **Seal:** never read runner P&L (`positions.jsonl`, `runner-status*`, `pnl-daily`); only counts, lag and heartbeat.
+
+## Today's results (all in LAB_STATE and the notebook)
+
+- **Kill review (single read, job #121):** PROMOTE none, KILL none, all 8 scored books NOT_DECIDABLE (incomplete). Every mean is below 0 with CI90 entirely below 0 under both fail models; 0/8 days positive (flat), 0/7 (pressure). Priced V-less. These books get no further work.
+- **Latency × V (#292, exploration):** pressure-mean CI90 lower bound is 0.01114 at k=1, 0.00117 at k=8, and below 0 at k ≥ 12.
+- **Dry-run evidence (#304, #306):**
+  - The executor reads state about 250 ms after the paper runner's booked entry.
+  - 3 of 20 dry buys simulated 121–196 bps short of the quote. The cause: confirmed-state quote against processed-state simulation, with the market moving in 1–2 slots.
+- **Helius (memory `helius-plan-limits`):** the Developer plan includes processed `transactionSubscribe`. Filtering on the migration authority `39azUYF…` costs about 6–18k credits/month (estimate).
 
 ## Next steps, in order
 
-1. **05:00Z kill review.** Snapshot #108, then the score job, then quant-proof, then LAB_STATE, notebook and console. Set `review_windows: []`.
-2. **Right after it, install on fast-0** (paper only; the owner confirmed it is not blocked by Helm's lockdown). `scripts/mal-fast/install-fast-forward-paper.sh --commit <main sha>`:
-   1. Start the tip follower.
-   2. Check 2 h coverage against forward-1002.
-   3. Point the runner `tape_dir`/`creates_dir` at the tip dirs. This is required: `pumpswap_virtual: require` skips `no_v` on old-tape rows.
-   4. Start the runner.
-   5. Check the heartbeat, then enable the timers.
-   6. Record the restart in LAB_STATE.
-3. **Install the probe executor in dry-run mode** (no key; the unit has no LoadCredential).
-   - Before starting it, create `mal-live` and `/var/lib/mal-live` (0700), or ask Helm whether their wallet script run should do it first.
-   - Verify `mal-live` can read `decisions.jsonl` and that the bind survives the runner's daily restart.
-   - Run 6 h. Need 0 build errors and `live_validate_err` empty on real pools.
-   - Then run `--latency-report`.
-4. **Measure k(p50)/k(p90).** This decides the latency work and frames the owner conversation.
-5. **When Helm sends the pubkey and the dry run is clean,** ask the owner to fund 0.5 SOL. Helm enables the live drop-in; post sha256 of `scripts/mal-fast/probe-executor-live.json` and `mal-probe-executor-live.conf` at the deployed commit for Helm to check.
-6. **EXP-013 and EXP-014** still need V-pricing amendments before their single screens. Low priority (priors ≤ 20% and ≈ 10%).
-7. **~10-16T02Z:** EXP-012 FINAL, then the V book (Am.4), then Am.3 at the measured k.
+1. Check `q_TtklEqCl3wlMfA` (the pause decision), and recreate the hourly probe monitor.
+2. Job #143 → merge #307 → coordinate the deploy with the owner and Helm (order above).
+3. Read the #127 comparison. Plan the processed-commitment fast path: a migration trigger plus near-graduation trade subscriptions so features stay complete. Do it on paper first, with no runner change mid-window without md5 proof and a recorded restart.
+4. When the probe ends (30 attempts, 4 days, loss cap or STOP): the DEC-019 §7 lab note, then quant-proof. Join live against paper by mint, reporting the matched and live-only sets. Count the executor-vs-paper latency gap against paper. Withdrawal is Helm's.
+5. Cut tip-follower credits (getSlot polling).
+6. About 10-09T15Z: resubmit #71. About 10-16T02Z: EXP-012 FINAL → quant-proof → V book (Am.4) → Am.3 at the **measured live k** → owner.
 
 ## Gotchas
 
-- MiScusi job commands need `/data/mal/venv/bin/python` (`python` is not on PATH).
-- There is no direct SSH from research-0 (`agent-ssh.sh` env unset). Use MiScusi jobs on fast-0.
-- Quant-proof enforces "never round in the favorable direction". Build tables from raw JSON with floor rounding.
-- Hour files are not time-ordered. PumpSwap rows lag up to ~1,600 s.
+- MiScusi job shells are `sh`: no `${s:0:10}`; use python.
+- Use `/data/mal/venv/bin/python` in jobs on research-0.
+- Reviewers may leave `~/.miscusi/repos/vaanai/MAL` detached; `git checkout main` before working.
+- Builders stop at about 40 turns; resume them with SendMessage. A worktree deleted after merge cannot be resumed; start a new builder.
+- quant-proof enforces "never round favorably". Build tables from raw JSON with floor.
+- The Console reads a one-way mirror of fast-0 `~/MAL` (memory `console-sync`). Update `data/console.json` via a PR, then `git -C ~/MAL pull` on fast-0.
