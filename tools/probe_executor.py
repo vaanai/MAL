@@ -70,6 +70,7 @@ PRIORITY_BURST = 4  # buy-path calls may run up to this many rate-limit interval
 IDLE_SLICE_S = 0.02
 BATCH_MAX_AGE_MS = 1_000  # a batched exit snapshot is not used to price a position once it is older than this
 BATCH_ERR_LOG_EVERY_MS = 60_000
+MARK_SNAPSHOT_GRACE_MS = 5_000  # live: no usable post-landing snapshot this long after landing -> fill-price mark
 EXIT_POLL_MS_MIN = 200  # floor for the open-position poll (`exit_poll_ms`)
 
 
@@ -397,6 +398,34 @@ def entry_quote(snap: Snapshot, spend: int) -> dict[str, Any]:
     return {"tokens": tokens, "net_in": net, "fee_ppm": fee, "mark": mark}
 
 
+def rebase_mark(pos: dict[str, Any], snap: Snapshot | None, now_ms: int) -> bool:
+    """LIVE only (probe_live sets pos["mark_pending"]; the dry run never does, so its send-state mark is untouched:
+    it has no real landing, the send-state quote IS its fill). The entry quote's mark is the SEND-state pool plus a
+    virtual buy; the buy lands ~2 slots later into a different state, so ret against it is off by the price move
+    (job #183: 7fX2pvgh read ret -0.3653 straight after a landing at +4,197.82 bps more tokens). Re-base once, on the
+    first priced snapshot at or after the landing slot (that state holds our buy): mark_source "landed_snapshot".
+    If none exists MARK_SNAPSHOT_GRACE_MS after entry, use the effective fill price net_in / tokens: "fill_price".
+    The send-state mark is kept in mark_send. Returns True when the mark was set on this call."""
+    if not pos.get("mark_pending"):
+        return False
+    q = snap.quote_priced if snap is not None else None
+    landed_slot = pos.get("buy_slot")
+    if snap is not None and q and q > 0 and snap.base_reserve > 0 and (not landed_slot or snap.slot >= landed_slot):
+        mark, source = pcm.spot_sol_per_ui(q, snap.base_reserve), "landed_snapshot"
+    elif now_ms - pos["t_entry_ms"] >= MARK_SNAPSHOT_GRACE_MS and pos["tokens"] > 0 and pos["net_in"] > 0:
+        mark, source = pos["net_in"] / (pos["tokens"] * 1000), "fill_price"  # same units as spot_sol_per_ui
+    else:
+        return False
+    if mark <= 0:
+        return False
+    pos["mark_send"] = pos["mark"]
+    pos["mark"] = mark
+    pos["mark_source"] = source
+    pos["mark_shift_bps"] = round((mark / pos["mark_send"] - 1.0) * 10_000, 2) if pos["mark_send"] else None
+    pos["mark_pending"] = False
+    return True
+
+
 def exit_check(pos: dict[str, Any], snap: Snapshot, now_ms: int, *, own_trade_in_state: bool = False) -> dict[str, Any]:
     """own_trade_in_state=True (LIVE: our buy landed, so the RPC pool/vault state already holds it): spot, ret and
     the sell quote use the raw snapshot reserves and our tokens are only the sell. The mark is unchanged (it is the
@@ -420,12 +449,15 @@ def exit_check(pos: dict[str, Any], snap: Snapshot, now_ms: int, *, own_trade_in
     if book is None:
         return {"reason": "time_stop" if now_ms > pos["t_entry_ms"] + EXIT_RULE.max_hold_ms else None, "ret": None, "quote_out": None}
     spot = pcm.spot_sol_per_ui(*book)
-    ret = spot / pos["mark"] - 1.0
+    pending = bool(pos.get("mark_pending"))  # live, mark not yet re-based on the landed state
+    ret = None if pending else spot / pos["mark"] - 1.0
     fee = fee_ppm_for(*book)
     out = tx.cp_sell_out(pos["tokens"], book[0], book[1], fee)
     reason = None
     if now_ms - pos["t_entry_ms"] > EXIT_RULE.max_hold_ms:
         reason = "time_stop"
+    elif pending:
+        pass  # no tp/sl against a mark that is still the send-state one
     elif ret >= EXIT_RULE.tp:
         reason = "tp"
     elif ret <= -EXIT_RULE.sl:

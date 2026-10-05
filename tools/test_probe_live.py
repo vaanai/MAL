@@ -43,6 +43,7 @@ class LiveRpc(FakeRpc):
         self.fetches = 0
         self.send_hook = None
         self.send_fails = False
+        self.snap_slot = None  # when set, getMultipleAccounts reports this context slot (state after a landing)
 
     def __call__(self, method, params):
         if method == "getBalance":
@@ -74,7 +75,10 @@ class LiveRpc(FakeRpc):
         if method == "getTokenAccountBalance":
             self.calls.append(method)
             return {"value": {"amount": str(self.token_balance)}}
-        return super().__call__(method, params)
+        res = super().__call__(method, params)
+        if method == "getMultipleAccounts" and self.snap_slot is not None and isinstance(res, dict):
+            res = {**res, "context": {**res["context"], "slot": self.snap_slot}}
+        return res
 
 
 def make_live(tmp: Path, **cfg):
@@ -112,6 +116,7 @@ def land_buy(ex, rpc, tok=None, slot=2_000):
     tok = tok or p["q_tokens"]
     spend, fee = p["spend"], 5_000 + 495_000
     rpc.statuses[p["signature"]] = {"slot": slot, "confirmationStatus": "confirmed", "err": None}
+    rpc.snap_slot = slot + 1  # snapshots taken from now on are at or after the landing
     rpc.txs[p["signature"]] = meta_result(ex, MINT, delta=-(spend + fee + RENT), fee=fee, tok_delta=tok, ata_post=RENT, slot=slot)
     rpc.token_balance = tok
     ex.advance_pending()
