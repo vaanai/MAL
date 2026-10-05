@@ -19,7 +19,7 @@ SPEND = 50_000_000
 
 
 def trow(mint, slot, quote, t_ms, base=BASE):
-    return {"v": 2, "venue": "pumpswap", "mint": mint, "side": "buy", "pool": "P" + mint, "slot": slot, "tx_index": 0,
+    return {"v": 2, "venue": "pumpswap", "quote_is_wsol": True, "mint": mint, "side": "buy", "pool": "P" + mint, "slot": slot, "tx_index": 0,
             "event_index": 0, "t_recv_ms": t_ms, "quote_reserve": quote, "base_reserve": base, "virtual_quote_reserve": V}
 
 
@@ -233,3 +233,50 @@ def test_cli_flag_default_on(tmp_path):
     psc.main(["--fills", str(f), "--tape-dir", str(d), "--out-dir", str(tmp_path / "o2"), "--no-own-trade-in-tape"])
     assert json.loads((tmp_path / "o2/calibration.json").read_text())["own_trade_in_tape"] is False
     assert "Sim reproduces the executor's exit decisions on 1/1 (n=1)" in (tmp_path / "o1/calibration.md").read_text()
+
+
+def _cap_rows(frac, mint=M1, t=T_AFTER):
+    """Migration-slot print at the base price (slot 100), then a print at `frac` x that V-priced price (slot 101)."""
+    q1 = int((Q0 + V) * frac) - V
+    return [trow(mint, 100, Q0, t - 2000), trow(mint, 101, q1, t - 1000)]
+
+
+@pytest.mark.parametrize("frac,miss", [(1.0, False), (1.10, False), (1.14, False), (1.20, True), (0.6, False)])
+def test_cap_fields_flag_matches_sim_cap(frac, miss):
+    r = psc.cap_fields(_cap_rows(frac), 102, SPEND)
+    ref = (Q0 + V) / (BASE * 1000)
+    assert r["p_mig_first_print"] == pytest.approx(ref)
+    assert r["drift_land"] == pytest.approx(frac - 1.0, abs=1e-9)
+    assert r["sim_cap_miss"] is miss
+
+
+def test_cap_flag_uses_the_sim_constant_not_a_copy(monkeypatch):
+    assert psc.cap_fields(_cap_rows(1.20), 102, SPEND)["sim_cap_miss"] is True
+    monkeypatch.setattr(psc.lc, "SLIPPAGE_CAP", 0.5)
+    assert psc.cap_fields(_cap_rows(1.20), 102, SPEND)["sim_cap_miss"] is False
+
+
+def test_cap_fields_unknown_without_prints_or_state():
+    assert psc.cap_fields([], 102, SPEND)["sim_cap_miss"] is None
+    only_mig = psc.cap_fields(_cap_rows(1.0)[:1], 100, SPEND)  # no print before the landing slot
+    assert only_mig["p_mig_first_print"] is not None and only_mig["sim_cap_miss"] is None
+    no_v = [{k: v for k, v in r.items() if k != "virtual_quote_reserve"} for r in _cap_rows(1.0)]
+    assert psc.cap_fields(no_v, 102, SPEND)["p_mig_first_print"] is None  # never a V-less price
+
+
+def test_cap_miss_aggregate_per_build_and_trade_fields(tmp_path):
+    ra, ba, sa = make(T_AFTER, M1)  # fixture tape sits at ~1.0 x the migration price at landing: not a miss
+    rb = _cap_rows(1.25, M2, T_BEFORE) + tape_rows(M2, T_BEFORE)[2:]
+    bb, sb = fills(M2, T_BEFORE, pnl=-7_000_000)
+    bb["tokens_received"] = live_tokens(tape_rows(M2, T_BEFORE))
+    d = tmp_path / "tape"
+    write_tape(d, ra, T_AFTER)
+    write_tape(d, rb, T_BEFORE)
+    agg = psc.run(fills_file(tmp_path, [ba, sa, bb, sb]), d, tmp_path / "o")
+    old, new = agg["8a6849b"]["sim_cap_miss"], agg["a25eb17"]["sim_cap_miss"]
+    assert (old["n_sim_cap_miss"], old["live_pnl_lamports_cap_miss"], old["live_pnl_lamports_others"]) == (1, -7_000_000, 0)
+    assert (new["n_sim_cap_miss"], new["n_not_cap_miss"], new["live_pnl_lamports_others"]) == (0, 1, 1_000_000)
+    assert agg["all"]["sim_cap_miss"]["n_sim_cap_miss"] == 1 and old["cap"] == psc.lc.SLIPPAGE_CAP
+    trades = json.loads((tmp_path / "o/calibration.json").read_text())["trades"]
+    miss = next(t for t in trades if t["mint"] == M2)
+    assert miss["sim_cap_miss"] is True and miss["drift_land"] == pytest.approx(0.25, abs=1e-6) and miss["p_mig_first_print"] > 0

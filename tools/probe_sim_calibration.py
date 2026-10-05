@@ -31,7 +31,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from tools import latency_curve as lc
 from tools import paper_curve_math as pcm
+from tools import pumpswap_virtual_adapter as psva
+from tools.paper_price_path import TapePrint, print_from_trade_row
 from tools import probe_executor as pe
 from tools import pumpswap_tx as tx
 
@@ -151,9 +154,10 @@ def read_tape_rows(tape_dir: Path, hours: Iterable[str], mints: set[str]) -> dic
                     continue
                 if not all(isinstance(r.get(k), int) for k in ("slot", "quote_reserve", "base_reserve")):
                     continue
-                keep[r["mint"]].append({k: r.get(k) for k in (
+                pr = print_of(r)  # the exploration simulator's own print (V-priced), built from the full row
+                keep[r["mint"]].append({"_print": pr, **{k: r.get(k) for k in (
                     "slot", "tx_index", "event_index", "t_recv_ms", "block_time", "quote_reserve", "base_reserve",
-                    "virtual_quote_reserve", "pool", "side")})
+                    "virtual_quote_reserve", "pool", "side")}})
         finally:
             fh.close()
             if proc:
@@ -161,6 +165,52 @@ def read_tape_rows(tape_dir: Path, hours: Iterable[str], mints: set[str]) -> dic
     for rows in keep.values():
         rows.sort(key=lambda r: (r["slot"], r.get("tx_index") or 0, r.get("event_index") or 0))
     return keep
+
+
+def print_of(r: dict[str, Any]) -> TapePrint | None:
+    """The exploration simulator's print for a tape row, V-priced exactly as the V-priced curve runs it
+    (`print_from_trade_row` wrapped by pumpswap_virtual_adapter.make_wrapper; V = the row's virtual_quote_reserve).
+    None when the simulator would not price the row, or V is unknown (never mix a V-less price in)."""
+    if "_print" in r:
+        return r["_print"]
+    v = r.get("virtual_quote_reserve")
+    pool = r.get("pool")
+    if not isinstance(v, int) or v <= 0 or not isinstance(pool, str):
+        return None
+    try:
+        res = psva.make_wrapper(print_from_trade_row, {pool: v})(r)
+    except Exception:
+        return None
+    return res[1] if res else None
+
+
+def cap_fields(rows: list[dict[str, Any]], landed_slot: int, spend: int) -> dict[str, Any]:
+    """Would the exploration simulator have refused this live entry on its slippage cap?
+    `p_mig_first_print`: price of the first priced PumpSwap print of the migration slot (latency_curve `_fills_for`:
+    first fillable print with slot == mig_slot; the migration slot is the mint's first PumpSwap print slot in the
+    tape we read, as `mint.mig_slot` in latency_curve, so a pool whose first print precedes the tape window is not
+    reproduced). `drift_land`: price of the last print before landed_slot over it, minus 1. `sim_cap_miss`: the real
+    `latency_curve._try_buy` refuses with the ref and fills without it (so other refusal reasons do not count)."""
+    out: dict[str, Any] = {"p_mig_first_print": None, "drift_land": None, "sim_cap_miss": None}
+    prints = [pr for pr in (print_of(r) for r in rows) if pr is not None]
+    prints.sort(key=lambda pr: (pr.t_recv_ms, pr.slot, pr.tx_index, pr.event_index))
+    if not prints:
+        return out
+    mig_slot = min(pr.slot for pr in prints)
+    ref = next((pr.price_sol for pr in prints if pr.slot == mig_slot and pr.price_sol > 0), None)
+    state = None
+    for pr in prints:
+        if pr.slot < landed_slot:
+            state = pr
+    if ref is None:
+        return out
+    out["p_mig_first_print"] = ref
+    if state is None:
+        return out
+    out["drift_land"] = state.price_sol / ref - 1.0
+    refused = lc._try_buy(state, spend, pcm.PORTAL_FEE_PPM, ref) is None
+    out["sim_cap_miss"] = bool(refused and lc._try_buy(state, spend, pcm.PORTAL_FEE_PPM, None) is not None)
+    return out
 
 
 def row_ms(r: dict[str, Any]) -> int | None:
@@ -359,6 +409,7 @@ def simulate_trade(trade: dict[str, Any], rows: list[dict[str, Any]], fill_mints
                            "live_exit_reason": (s or {}).get("exit_reason"), "live_ret": (s or {}).get("ret"),
                            "live_pnl_lamports": (s or {}).get("pnl_lamports"), "live_hold_ms": (s or {}).get("hold_ms"),
                            "rent_net_lamports": rent_net(b, s), "primary_variant": primary}
+    out.update(cap_fields(rows, int(b["landed_slot"]), spend))
     er = last_before(rows, int(b["landed_slot"]))
     q = sim_buy(er, spend) if er else None
     if q is None:
@@ -462,6 +513,21 @@ def _variant_agg(rs: list[dict[str, Any]], name: str) -> dict[str, Any]:
             "ret": _stats([v.get("ret") for v in vs])}
 
 
+def _cap_agg(rs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Live trades the exploration simulator would have refused on its 15% slippage cap (scored a MISS there),
+    versus the others: counts and summed live pnl. Only live-traded mints are ever in `rs` (seal)."""
+    flagged = [r for r in rs if r.get("sim_cap_miss") is True]
+    others = [r for r in rs if r.get("sim_cap_miss") is False]
+
+    def pnl(xs: list[dict[str, Any]]) -> int:
+        return sum(r["live_pnl_lamports"] for r in xs if r.get("live_pnl_lamports") is not None)
+
+    return {"cap": lc.SLIPPAGE_CAP, "n_trades": len(rs), "n_sim_cap_miss": len(flagged), "n_not_cap_miss": len(others),
+            "n_unknown": len(rs) - len(flagged) - len(others),
+            "live_pnl_lamports_cap_miss": pnl(flagged), "live_pnl_lamports_others": pnl(others),
+            "n_cap_miss_without_pnl": sum(1 for r in flagged if r.get("live_pnl_lamports") is None)}
+
+
 def aggregate(results: list[dict[str, Any]], builds: Iterable[tuple[int, str]] | None = None) -> dict[str, Any]:
     """One aggregate per build (every configured build, even with no trades, then any other label present), then "all"."""
     out: dict[str, Any] = {}
@@ -490,6 +556,7 @@ def aggregate(results: list[dict[str, Any]], builds: Iterable[tuple[int, str]] |
                                         else r["sim_pnl_immediate_lamports"] for r in paired]),
             "ret_diff_executor_minus_correct_at_live_trigger": _stats([r.get("ret_diff_executor_minus_correct") for r in rs]),
             "ata_rent_net_lamports": {"n": len(rents), "n_nonzero": sum(1 for x in rents if x), "sum": sum(rents)},
+            "sim_cap_miss": _cap_agg(rs),
             "variants": {v: _variant_agg(rs, v) for v in VARIANTS},
             "sensitivity_sim_pnl_lamports": sens,
         }
@@ -513,6 +580,7 @@ def to_markdown(results: list[dict[str, Any]], agg: dict[str, Any]) -> str:
               f"- live pnl {a['live_pnl_lamports']}; sim pnl {a['sim_pnl_lamports']}",
               f"- ret diff, legacy double-count (pre-#324 executor) minus correct book, at the live trigger row (double count): "
               f"{a['ret_diff_executor_minus_correct_at_live_trigger']}",
+              f"- sim cap (latency_curve SLIPPAGE_CAP) would have refused: {a['sim_cap_miss']}",
               f"- ATA rent charged minus refunded: {a['ata_rent_net_lamports']}",
               f"- sensitivity (sim pnl lamports): {a['sensitivity_sim_pnl_lamports']}", "",
               "| variant | exit reason agree | tp/sl disagree | trigger dt ms | pnl gap (live-sim) | sim pnl | ret |", "|---|---|---|---|---|---|---|"]
