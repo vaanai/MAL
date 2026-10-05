@@ -28,8 +28,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from tools.pump_history_backfill import (
-    lifecycle_from_logs,
     redact_rpc_url,
+    rows_from_block,
     tx_signature,
 )
 
@@ -104,6 +104,81 @@ def canonical_pool_str(mint: str) -> str | None:
         return None
 
 
+def tx_entry_from_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalise a notification result to a getBlock-style entry {"transaction": ..., "meta": ...}.
+
+    Helius wraps it as result.transaction = {transaction, meta}; also accept the entry sitting
+    directly on result, or a flat result.transaction (message body) with meta on result.
+    """
+    def _meta(d: Mapping[str, Any]) -> dict[str, Any]:
+        return d.get("meta") if isinstance(d.get("meta"), dict) else {}
+
+    inner = result.get("transaction")
+    if isinstance(inner, dict):
+        if isinstance(inner.get("meta"), dict) or isinstance(inner.get("transaction"), dict):
+            return {"transaction": inner.get("transaction") or {}, "meta": _meta(inner)}
+        return {"transaction": inner, "meta": _meta(result)}
+    return {"transaction": {}, "meta": _meta(result)}
+
+
+def decode_migrations(entry: Mapping[str, Any], sig: str | None, slot: Any, t_recv_ms: int) -> list[dict[str, Any]]:
+    """Migration rows via the backfill's own rows_from_block on a one-transaction synthetic block."""
+    entry = dict(entry)
+    tx = dict(entry.get("transaction") or {})
+    if sig and not tx.get("signatures"):
+        tx["signatures"] = [sig]
+    entry["transaction"] = tx
+    block = {
+        "blockTime": int(t_recv_ms) // 1000,
+        "slot": slot if isinstance(slot, int) else 0,
+        "transactions": [entry],
+    }
+    return rows_from_block(block, {})["migrations"]
+
+
+PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+# Pump `migrate` / `migrate_v2` instruction discriminators; base mint is account index 2 in both
+# (same table as tools/fast_helius_pre.py). The migrate transaction itself usually carries no
+# decodable Program-data event: the `complete` event is in the earlier bonding-curve tx.
+_MIGRATE_IX = {bytes.fromhex("9beae792ec9ea21e"): "migrate", bytes.fromhex("bbcb121fceedfe29"): "migrate_v2"}
+
+
+def _b58decode(text: str) -> bytes:
+    n = 0
+    for ch in text:
+        n = n * 58 + _B58.index(ch)
+    body = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return b"\x00" * (len(text) - len(text.lstrip("1"))) + body
+
+
+def migrate_from_instructions(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Detect a pump migrate instruction (top level or inner) in a json-encoded transaction."""
+    try:
+        msg = (entry.get("transaction") or {}).get("message") or {}
+        meta = entry.get("meta") or {}
+        keys = list(msg.get("accountKeys") or [])
+        keys = [k.get("pubkey") if isinstance(k, dict) else k for k in keys]
+        loaded = meta.get("loadedAddresses") or {}
+        keys += list(loaded.get("writable") or []) + list(loaded.get("readonly") or [])
+        ixs = list(msg.get("instructions") or [])
+        for group in meta.get("innerInstructions") or []:
+            ixs += list(group.get("instructions") or [])
+        for ix in ixs:
+            pid = ix.get("programId") or (keys[ix["programIdIndex"]] if "programIdIndex" in ix else None)
+            if pid != PUMP_PROGRAM:
+                continue
+            kind = _MIGRATE_IX.get(_b58decode(ix.get("data") or "")[:8])
+            if kind is None:
+                continue
+            accts = [keys[a] if isinstance(a, int) else a for a in ix.get("accounts") or []]
+            if len(accts) > 2:
+                return {"type": kind, "mint": accts[2], "pool": None}
+    except (KeyError, IndexError, ValueError, TypeError, AttributeError):
+        return None
+    return None
+
+
 def row_from_notification(msg: Mapping[str, Any], t_recv_ms: int) -> dict[str, Any] | None:
     """One output row from a transactionNotification, or None if it is not one."""
     if msg.get("method") != "transactionNotification":
@@ -111,12 +186,13 @@ def row_from_notification(msg: Mapping[str, Any], t_recv_ms: int) -> dict[str, A
     result = (msg.get("params") or {}).get("result")
     if not isinstance(result, dict):
         return None
-    tx = result.get("transaction") if isinstance(result.get("transaction"), dict) else {}
-    meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
-    sig = result.get("signature") or tx_signature(tx)
-    logs = meta.get("logMessages") or []
-    _, moved = lifecycle_from_logs(logs if isinstance(logs, list) else [])
+    entry = tx_entry_from_result(result)
+    meta = entry["meta"]
+    sig = result.get("signature") or tx_signature(entry)
+    moved = decode_migrations(entry, sig, result.get("slot"), t_recv_ms)
     mig = next((m for m in moved if m.get("type") == "migration"), None) or (moved[0] if moved else None)
+    if mig is None and meta.get("err") is None:
+        mig = migrate_from_instructions(entry)
     mint = mig.get("mint") if mig else None
     return {
         "v": 1,
@@ -132,6 +208,23 @@ def row_from_notification(msg: Mapping[str, Any], t_recv_ms: int) -> dict[str, A
         "canonical_pool": canonical_pool_str(mint) if mint else None,
         "commitment": "processed",
     }
+
+
+class RawDump:
+    """First N raw notification results as JSONL. Public tx data only; the URL is never in a frame."""
+
+    def __init__(self, path: str | None, limit: int = 50) -> None:
+        self.path, self.limit, self.n = path, limit, 0
+
+    def add(self, msg: Mapping[str, Any]) -> None:
+        if not self.path or self.n >= self.limit or msg.get("method") != "transactionNotification":
+            return
+        result = (msg.get("params") or {}).get("result")
+        if result is None:
+            return
+        with open(self.path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(result, sort_keys=True) + "\n")
+        self.n += 1
 
 
 class Writer:
@@ -172,15 +265,21 @@ def next_backoff(prev: float, cap: float = 60.0, jitter: Callable[[], float] = r
     return min(cap, max(1.0, prev * 2)) * (0.9 + 0.2 * jitter())
 
 
+DATA_TIMEOUT_S = 900.0  # liveness is WebSocket ping/pong; the account is quiet, so this is only a backstop
+ACK_TIMEOUT_S = 30.0
+
+
 async def session(ws, encoding: str, writer: Writer, counts: Counts, clock_ms: Callable[[], int],
-                  stop: asyncio.Event, ping_s: float = 20.0) -> None:
-    """One connected session: subscribe, then read until the socket closes or stop is set."""
-    await ws.send(json.dumps(subscribe_request(encoding)))
+                  stop: asyncio.Event, raw_dump: RawDump | None = None, req_id: int = 1,
+                  data_timeout_s: float = DATA_TIMEOUT_S, ack_timeout_s: float = ACK_TIMEOUT_S) -> None:
+    """One connected session: subscribe (every time), require the ack, read until close or stop."""
+    await ws.send(json.dumps(subscribe_request(encoding, req_id)))
+    acked = False
     while not stop.is_set():
         try:
-            raw = await asyncio.wait_for(ws.recv(), timeout=ping_s * 3)
+            raw = await asyncio.wait_for(ws.recv(), timeout=data_timeout_s if acked else ack_timeout_s)
         except asyncio.TimeoutError:
-            raise ConnectionError("no frame within keepalive window")
+            raise ConnectionError("data backstop timeout" if acked else "no subscribe ack")
         t = clock_ms()
         try:
             msg = json.loads(raw)
@@ -188,6 +287,12 @@ async def session(ws, encoding: str, writer: Writer, counts: Counts, clock_ms: C
             continue
         if "error" in msg and "method" not in msg:
             raise ConnectionError(f"subscribe error: {redact_rpc_url(str(msg['error']))[:200]}")
+        if "method" not in msg and msg.get("id") == req_id and "result" in msg:
+            acked = True
+            log.info("subscribed id=%s", msg["result"])
+            continue
+        if raw_dump is not None:
+            raw_dump.add(msg)
         row = row_from_notification(msg, t)
         if row is None:
             continue
@@ -199,7 +304,8 @@ async def session(ws, encoding: str, writer: Writer, counts: Counts, clock_ms: C
 
 async def run(url: str, encoding: str, writer: Writer, stop: asyncio.Event, connect=None,
               clock_ms: Callable[[], int] = lambda: int(time.time() * 1000),
-              sleep=asyncio.sleep, counts: Counts | None = None, max_sessions: int | None = None) -> Counts:
+              sleep=asyncio.sleep, counts: Counts | None = None, max_sessions: int | None = None,
+              raw_dump: RawDump | None = None) -> Counts:
     counts = counts or Counts()
     if connect is None:
         import websockets
@@ -214,7 +320,7 @@ async def run(url: str, encoding: str, writer: Writer, stop: asyncio.Event, conn
         try:
             async with connect(url) as ws:
                 log.info("ws_connected")
-                await session(ws, encoding, writer, counts, clock_ms, stop)
+                await session(ws, encoding, writer, counts, clock_ms, stop, raw_dump)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # reconnect on anything; message is redacted
@@ -248,7 +354,8 @@ async def amain(args) -> int:
     writer, counts = Writer(Path(args.out)), Counts()
     logger = asyncio.create_task(_log_counts(counts, stop))
     try:
-        await run(url, args.encoding, writer, stop, counts=counts)
+        await run(url, args.encoding, writer, stop, counts=counts,
+                  raw_dump=RawDump(args.raw_dump, args.raw_dump_n) if args.raw_dump else None)
     finally:
         stop.set()
         await logger
@@ -298,20 +405,14 @@ def pct(values: Sequence[float], q: float) -> float | None:
     return v[f] + (v[c] - v[f]) * (k - f)
 
 
-def compare_rows(stream: Iterable[Mapping[str, Any]], tip: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    """Join by mint. Stream rows must be migrations; tip rows are the tip follower's migration events."""
-    s_by: dict[str, Mapping[str, Any]] = {}
-    for r in stream:
-        if r.get("mint") and r.get("is_migration", True) and r.get("err") is None:
-            s_by.setdefault(r["mint"], r)  # first arrival wins
-    t_by: dict[str, Mapping[str, Any]] = {}
-    for r in tip:
-        if r.get("mint") and r.get("type", "migration") == "migration":
-            t_by.setdefault(r["mint"], r)
+def _join(s_by: Mapping[str, Mapping[str, Any]], t_by: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     matched = sorted(set(s_by) & set(t_by))
     deltas = [t_by[m]["t_recv_ms"] - s_by[m]["t_recv_ms"] for m in matched]
-    same_slot = sum(1 for m in matched if s_by[m].get("slot") == t_by[m].get("slot"))
-    same_sig = sum(1 for m in matched if s_by[m].get("signature") == t_by[m].get("signature"))
+    slot_diffs = [
+        s_by[m]["slot"] - t_by[m]["slot"]
+        for m in matched
+        if isinstance(s_by[m].get("slot"), int) and isinstance(t_by[m].get("slot"), int)
+    ]
     return {
         "n_matched": len(matched),
         "n_only_stream": len(set(s_by) - set(t_by)),
@@ -320,10 +421,30 @@ def compare_rows(stream: Iterable[Mapping[str, Any]], tip: Iterable[Mapping[str,
         "delta_ms_p90": pct(deltas, 90),
         "delta_ms_min": min(deltas) if deltas else None,
         "delta_ms_max": max(deltas) if deltas else None,
-        "slot_equal": same_slot,
-        "signature_equal": same_sig,
+        "slot_equal": sum(1 for d in slot_diffs if d == 0),
+        "slot_diff_stream_minus_tip_p50": pct(slot_diffs, 50),
+        "slot_diff_stream_minus_tip_max": max(slot_diffs) if slot_diffs else None,
+        "signature_equal": sum(1 for m in matched if s_by[m].get("signature") == t_by[m].get("signature")),
         "stream_first": sum(1 for d in deltas if d > 0),
     }
+
+
+def compare_rows(stream: Iterable[Mapping[str, Any]], tip: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Join by mint. The stream sees the migrate transaction, which lands 0-3 slots after the
+    bonding curve's `complete` event; the tip follower mostly records `complete`, rarely `migration`.
+    Top-level keys compare against tip `migration` rows; `vs_tip_complete` compares against `complete`."""
+    s_by: dict[str, Mapping[str, Any]] = {}
+    for r in stream:
+        if r.get("mint") and r.get("is_migration", True) and r.get("err") is None:
+            s_by.setdefault(r["mint"], r)  # first arrival wins
+    by_type: dict[str, dict[str, Mapping[str, Any]]] = {"migration": {}, "complete": {}}
+    for r in tip:
+        typ = r.get("type", "migration")
+        if r.get("mint") and typ in by_type:
+            by_type[typ].setdefault(r["mint"], r)
+    out = _join(s_by, by_type["migration"])
+    out["vs_tip_complete"] = _join(s_by, by_type["complete"])
+    return out
 
 
 def compare_dirs(stream_dir: Path, tip_dir: Path, start_ms: int, end_ms: int, slack_ms: int = 600_000) -> dict[str, Any]:
@@ -339,6 +460,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     r.add_argument("--out", default=DEFAULT_OUT)
     r.add_argument("--env-file", default=DEFAULT_ENV_FILE)
     r.add_argument("--encoding", default="json", choices=("json", "jsonParsed"))
+    r.add_argument("--raw-dump", default=None, help="write the first N raw notification results as JSONL")
+    r.add_argument("--raw-dump-n", type=int, default=50)
     c = sub.add_parser("compare")
     c.add_argument("--start", required=True)
     c.add_argument("--end", required=True)
