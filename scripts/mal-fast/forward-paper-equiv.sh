@@ -7,8 +7,32 @@
 #   BASE=origin/main HEAD_REF=origin/claude/runner-pumpswap-virtual scripts/mal-fast/forward-paper-equiv.sh
 #   INTENTS_HEAD=1 ...   the HEAD replay runs with "intents_file": true (decisions/positions must still match
 #                        base; the new intents.jsonl is counted, not compared)
+#   ARM_HEAD=1 ...       the HEAD replay runs with "early_arm": true and --migrations-dir (the base replay never
+#                        sees the key). decisions/positions must still match base; the arm rows
+#                        (forward_paper_arm_v1 in intents.jsonl) are counted, not compared. Needs "intents_file"
+#                        in the config, so ARM_HEAD=1 sets it too. The EXP-012 gate is only exercised with
+#                        CONFIG=scripts/mal-fast/fast-forward-paper.json.
+#   CONFIG=path ...      replay this config instead of scripts/mal-core/forward-paper.json (which has no EXP-012
+#                        gate). Model/feature paths in it are used as written (they must exist on the host);
+#                        only tape_dir/creates_dir/output_dir/kill_file/graph_dir are dropped.
+#
+# ARM_HEAD needs a tape dir with trades-<hour>.jsonl[.zst] AND migrations-<hour>.jsonl[.zst] for the same
+# hours, i.e. a tip-follower tape (mal-fast-0 /var/lib/mal/sealed/fast-trades-tip, or a clean view with
+# trades/ and migrations/). The default oracle clean view has no migrations/ dir: set MIG to the dir that has it.
+#
+#   TIP_TAPE=dir ...     replay a tip-follower tape dir (trades-<hour>.jsonl, migrations-<hour>.jsonl,
+#                        creates-<hour>.jsonl, plain or .zst) instead of $CV. Sets the trades to
+#                        $TIP_TAPE/trades-<hour>.jsonl, MIG to $TIP_TAPE, and converts creates-<hour>.jsonl to the
+#                        observe format (tools.fast_tip_follower.observe_create_row) under $OUT/creates.
+#
+# Example (mal-research-0, the 2026-10-05 tip tape; ONE hour, a trades hour is ~650 MB and the slice is
+# loaded into a list):
+#   ARM_HEAD=1 CONFIG=scripts/mal-fast/fast-forward-paper.json TIP_TAPE=/data/mal/ops/tip-tape-1005 \
+#     HOURS=2026-10-05T08 BASE=origin/main HEAD_REF=origin/claude/runner-early-arm \
+#     scripts/mal-fast/forward-paper-equiv.sh
 #
 # Env: CV (clean-view root), HOURS (space separated, default 2026-09-26T00 01 02 = a 3 h slice),
+#      MIG (migrations dir, default $CV/migrations; ARM_HEAD only),
 #      OUT (default $MISCUSI_OUTPUT_DIR or /data/mal/ops/fp-equiv), M (model dir).
 # Keep HOURS short: run_replay_files loads the whole slice into a list. One replay at a time; base
 # then head run sequentially. Run from a MAL checkout as a MiScusi job.
@@ -17,6 +41,7 @@ PY=/data/mal/venv/bin/python
 BASE="${BASE:-origin/main}"; HEAD_REF="${HEAD_REF:-origin/claude/runner-pumpswap-virtual}"
 OUT="${OUT:-${MISCUSI_OUTPUT_DIR:-/data/mal/ops/fp-equiv}}"
 CV="${CV:-/data/mal/clean-view/oracle-live-2026-09-25_27}"; M="${M:-/data/mal/ops/oracle-models}"
+MIG="${MIG:-$CV/migrations}"; CONFIG="${CONFIG:-}"
 HOURS="${HOURS:-2026-09-26T00 2026-09-26T01 2026-09-26T02}"
 repo="$(git rev-parse --show-toplevel)"
 cleanup() {
@@ -31,31 +56,72 @@ git -C "$repo" worktree add -q --detach "$OUT/wt-base" "$BASE"
 git -C "$repo" worktree add -q --detach "$OUT/wt-head" "$HEAD_REF"
 echo "base=$(git -C "$OUT/wt-base" rev-parse HEAD) head=$(git -C "$OUT/wt-head" rev-parse HEAD)" | tee "$OUT/refs.txt"
 (cd "$M" && md5sum entry_model.txt scoreboard.json barrier_hit_100_30.txt mig15_model.txt)
-TAPE=""; for h in $HOURS; do TAPE="$TAPE $CV/trades/trades-$h.jsonl.zst"; done
-(cd "$repo" && "$PY" - "$OUT" "$M" <<'PYEOF'
+TAPE=""
+if [ -n "${TIP_TAPE:-}" ]; then
+  MIG="$TIP_TAPE"; mkdir -p "$OUT/creates"
+  for h in $HOURS; do
+    f="$TIP_TAPE/trades-$h.jsonl"; [ -f "$f" ] || f="$f.zst"
+    [ -f "$f" ] || { echo "missing $TIP_TAPE/trades-$h.jsonl[.zst]" >&2; exit 1; }
+    TAPE="$TAPE $f"
+  done
+  (cd "$repo" && "$PY" - "$TIP_TAPE" "$OUT/creates" $HOURS <<'PYEOF'
+import json, sys, gzip
+from collections import defaultdict
+from pathlib import Path
+from tools.fast_tip_follower import observe_create_row
+src, dst, hours = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3:]
+by_day = defaultdict(list)
+for h in hours:
+    for name in (f"creates-{h}.jsonl",):
+        p = src / name
+        if not p.is_file():
+            raise SystemExit(f"missing {p}")
+        for line in p.open():
+            r = json.loads(line)
+            if r.get("type") == "create" and isinstance(r.get("t_recv_ms"), int):
+                by_day[h[:10]].append(observe_create_row(r, r["t_recv_ms"]))
+for day, rows in by_day.items():
+    (dst / f"observe-{day}.jsonl").write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows))
+PYEOF
+  )
+  CREATES="$OUT/creates"
+else
+  for h in $HOURS; do TAPE="$TAPE $CV/trades/trades-$h.jsonl.zst"; done
+  CREATES="$CV/creates"
+fi
+(cd "$repo" && "$PY" - "$OUT" "$M" "$CONFIG" <<'PYEOF'
 import json, sys
-w, m = sys.argv[1], sys.argv[2]
-c = json.load(open("scripts/mal-core/forward-paper.json"))
+w, m, cfg = sys.argv[1], sys.argv[2], sys.argv[3]
+c = json.load(open(cfg or "scripts/mal-core/forward-paper.json"))
 c.pop("attention_dir", None)
-c.update(model_path=f"{m}/entry_model.txt", model_meta=f"{m}/scoreboard.json",
-         barrier_model=f"{m}/barrier_hit_100_30.txt", swing_model=f"{m}/mig15_model.txt")
-for k in ("tape_dir", "creates_dir", "output_dir", "kill_file", "pumpswap_virtual"):
+drop = ["tape_dir", "creates_dir", "output_dir", "kill_file", "graph_dir", "early_arm"]
+if not cfg:
+    c.update(model_path=f"{m}/entry_model.txt", model_meta=f"{m}/scoreboard.json",
+             barrier_model=f"{m}/barrier_hit_100_30.txt", swing_model=f"{m}/mig15_model.txt")
+    drop.append("pumpswap_virtual")
+for k in drop:
     c.pop(k, None)
 json.dump(c, open(f"{w}/cfg-a.json", "w"), indent=1)
 PYEOF
 )
-python3 - "$OUT" "${INTENTS_HEAD:-0}" <<'PYEOF'
+python3 - "$OUT" "${INTENTS_HEAD:-0}" "${ARM_HEAD:-0}" <<'PYEOF'
 import json, sys
-w, on = sys.argv[1], sys.argv[2] == "1"
+w, on, arm = sys.argv[1], sys.argv[2] == "1", sys.argv[3] == "1"
 c = json.load(open(f"{w}/cfg-a.json"))
-if on:
+if on or arm:
     c["intents_file"] = True
+if arm:
+    c["early_arm"] = True
 json.dump(c, open(f"{w}/cfg-head.json", "w"), indent=1)
 PYEOF
 for label in base head; do
-  cfg="$OUT/cfg-a.json"; [ "$label" = head ] && cfg="$OUT/cfg-head.json"
+  cfg="$OUT/cfg-a.json"; extra=()
+  if [ "$label" = head ]; then
+    cfg="$OUT/cfg-head.json"
+    [ "${ARM_HEAD:-0}" = 1 ] && extra=(--migrations-dir "$MIG")
+  fi
   (cd "$OUT/wt-$label" && PYTHONPATH="$PWD" OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 "$PY" -m tools.forward_paper replay \
-      --config "$cfg" --tape $TAPE --creates-dir "$CV/creates" --output-dir "$OUT/out-$label") > "$OUT/out-$label.log" 2>&1 \
+      --config "$cfg" --tape $TAPE --creates-dir "$CREATES" --output-dir "$OUT/out-$label" ${extra[@]+"${extra[@]}"}) > "$OUT/out-$label.log" 2>&1 \
     || { tail -30 "$OUT/out-$label.log"; exit 1; }
 done
 status=0
@@ -65,4 +131,7 @@ for f in decisions.jsonl positions.jsonl; do
   [ "$a" = "$b" ] || status=1
 done
 [ -f "$OUT/out-head/intents.jsonl" ] && echo "intents.jsonl lines=$(wc -l < "$OUT/out-head/intents.jsonl")"
+if [ "${ARM_HEAD:-0}" = 1 ]; then
+  echo "arm rows=$(grep -c '"forward_paper_arm_v1"' "$OUT/out-head/intents.jsonl" 2>/dev/null || true) audit rows=$(wc -l < "$OUT/out-head/arm-audit.jsonl" 2>/dev/null || echo 0)"
+fi
 if [ "$status" = 0 ]; then echo "EQUIVALENT"; else echo "MISMATCH"; exit 1; fi
