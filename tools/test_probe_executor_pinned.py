@@ -118,7 +118,7 @@ def test_installer_static_guards():
     assert "not root-owned" in t and "group/world-writable" in t and "sha256 mismatch" in t
     assert 'must run as root' in t and '"${#COMMIT}" -eq 40' in t and "clone HEAD is not" in t
     assert "--require-hashes --only-binary=:all:" in t and "--no-deps" in t
-    assert 'rm -rf "$DEST/venv"' in t and "DEST=/usr/local/lib/mal-probe-exec" in t
+    assert 'VENV_NEW="$DEST/venv.$COMMIT.new"' in t and "DEST=/usr/local/lib/mal-probe-exec" in t
     assert "install -m 0644 -o root -g root" in t and "install -d -m 0755 -o root -g root" in t
     assert "already exists" in t and "is active; stop it first" in t
     assert 'mv -T "$DEST/.current.tmp" "$DEST/current"' in t  # atomic pointer swap
@@ -301,3 +301,27 @@ def test_load_rpc_url_needs_no_observe_import():
     r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert r.stdout.split() == ["http://x", "https://mainnet.helius-rpc.com/?api-key=k"]
+
+
+def test_installer_clean_git_env_and_failure_safe_staging():
+    t = INSTALL.read_text()
+    # every git invocation goes through a clean environment
+    assert "GITENV=(env -i PATH=/usr/bin:/bin)" in t
+    for ln in t.splitlines():
+        if re.search(r"(^|[\s(\"])git\s", ln) and not ln.lstrip().startswith(("#", "[", "echo")):
+            assert "GITENV" in ln or ln.startswith("G=("), ln
+    assert t.count('"${GITENV[@]}" git') == 2
+    # EXIT trap removes TMP, the stage dir and the half-built venv
+    assert "trap cleanup EXIT" in t and 'rm -rf "$STAGE"' in t and 'rm -rf "$VENV_NEW"' in t
+    # new venv is built beside the old one and swapped only after pip and a smoke import
+    assert 'VENV_NEW="$DEST/venv.$COMMIT.new"' in t and 'rm -rf "$DEST/venv"' not in t
+    assert t.index("pip install") < t.index('mv -T "$VENV_NEW" "$DEST/venv"')
+    assert t.index('"$VENV_NEW/bin/python" -I -B -c') < t.index('mv -T "$STAGE"')
+
+
+def test_runbook_sudo_and_helius_env_note():
+    t = (ROOT / "docs/runbooks/probe-executor.md").read_text()
+    assert not re.search(r"(^|`)touch /var/lib/mal-live", t, re.M)
+    assert "sudo touch /var/lib/mal-live/STOP" in t
+    assert "helius.env` is root-owned, mode 0600" in t and "LD_PRELOAD" in t
+    assert "install-fast-forward-paper.sh" in t and "live-pinned.conf" in t

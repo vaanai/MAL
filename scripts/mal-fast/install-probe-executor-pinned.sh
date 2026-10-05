@@ -40,11 +40,16 @@ if [ -n "$(find "$REPO/.git" "$HERE" ! -user root -o -perm /022 2>/dev/null | he
   echo "refusing: $REPO/.git or $HERE has non-root-owned or group/world-writable entries" >&2
   exit 1
 fi
-[ "$(git -C "$REPO" rev-parse HEAD)" = "$COMMIT" ] || { echo "clone HEAD is not $COMMIT (checkout --detach it first)" >&2; exit 1; }
+# Every git call runs with a clean environment (no GIT_DIR, GIT_CONFIG_*, GIT_EXEC_PATH, ...).
+GITENV=(env -i PATH=/usr/bin:/bin)
+[ "$("${GITENV[@]}" git -C "$REPO" rev-parse HEAD)" = "$COMMIT" ] || { echo "clone HEAD is not $COMMIT (checkout --detach it first)" >&2; exit 1; }
 
-G=(git -c core.attributesFile=/dev/null -c core.fsmonitor=false -C "$REPO")
+G=("${GITENV[@]}" git -c core.attributesFile=/dev/null -c core.fsmonitor=false -C "$REPO")
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+STAGE=""
+VENV_NEW=""
+cleanup() { rm -rf "$TMP"; [ -z "$STAGE" ] || rm -rf "$STAGE"; [ -z "$VENV_NEW" ] || rm -rf "$VENV_NEW"; }
+trap cleanup EXIT
 PATHS="$MODULES"
 for e in $EXTRA; do PATHS="$PATHS ${e%%:*}"; done
 for f in $PATHS; do
@@ -81,19 +86,30 @@ install -d -m 0755 -o root -g root "$STAGE" "$STAGE/tools"
 for f in $MODULES; do install -m 0644 -o root -g root "$TMP/$f" "$STAGE/$f"; done
 for e in $EXTRA; do install -m 0644 -o root -g root "$TMP/${e%%:*}" "$STAGE/${e#*:}"; done
 
-# Always rebuild the venv from hashed wheels; never reuse an unverified one.
-rm -rf "$DEST/venv"
-/usr/bin/python3 -m venv "$DEST/venv"
-"$DEST/venv/bin/python" -I -m pip install --quiet --require-hashes --only-binary=:all: --no-deps --no-cache-dir --disable-pip-version-check \
+# Build the new venv beside the old one from hashed wheels; the old venv (and so a rollback to an older
+# pinned sha) stays intact unless every step below succeeded. Never reuse an unverified venv.
+VENV_NEW="$DEST/venv.$COMMIT.new"
+rm -rf "$VENV_NEW"
+/usr/bin/python3 -m venv "$VENV_NEW"
+"$VENV_NEW/bin/python" -I -m pip install --quiet --require-hashes --only-binary=:all: --no-deps --no-cache-dir --disable-pip-version-check \
   -r "$STAGE/requirements-probe-exec.txt"
+# Smoke import from the staged tree with the new venv, before anything is moved.
+"$VENV_NEW/bin/python" -I -B -c "import sys; sys.path.insert(0, sys.argv[1]); import tools.probe_executor, tools.probe_live" "$STAGE"
 
+# Point of no return: put the sha dir and the venv in place (unit is stopped), then verify.
 mv -T "$STAGE" "$DEST/$COMMIT"
+STAGE=""
+rm -rf "$DEST/venv.old"
+if [ -e "$DEST/venv" ]; then mv -T "$DEST/venv" "$DEST/venv.old"; fi
+mv -T "$VENV_NEW" "$DEST/venv"
+VENV_NEW=""
+rm -rf "$DEST/venv.old"
 chown -R root:root "$DEST"
 if [ -n "$(find "$DEST" ! -user root -o -perm /022 2>/dev/null | head -n1)" ]; then
   echo "refusing: $DEST has non-root-owned or group/world-writable entries" >&2
   exit 1
 fi
-# Smoke import from the final location, before anything points at it.
+# Final smoke import from the final locations, before the pointer moves.
 "$DEST/venv/bin/python" -I -B -c "import sys; sys.path.insert(0, sys.argv[1]); import tools.probe_executor, tools.probe_live" "$DEST/$COMMIT"
 
 # Atomic switch of the pointer (last step).

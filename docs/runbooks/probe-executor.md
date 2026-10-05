@@ -51,7 +51,7 @@ Switch (Helm or the owner, as root, from a fresh root-owned clone detached at th
 
 ```
 # 1. wind down: STOP file, wait for 0 open and pending positions (--status, section 4), then stop the unit
-touch /var/lib/mal-live/STOP
+sudo touch /var/lib/mal-live/STOP
 sudo systemctl stop mal-probe-executor
 # 2. install (refuses if the unit is active, a clone dir is not root-owned, HEAD != sha, or a manifest entry mismatches)
 sudo scripts/mal-fast/install-probe-executor-pinned.sh <40-char-sha> [manifest]   # prints sha256 of every installed file; compare with the manager's list
@@ -64,7 +64,7 @@ journalctl -u mal-probe-executor -n 20 --no-pager   # expect: mode=LIVE user=<pu
 systemctl show mal-probe-executor -p ExecStart --value | grep -c fast-forward   # expect 0
 ```
 
-The unit must be stopped for the install because the venv is rebuilt in place. A restart with open positions resumes pending signatures without re-buying, but do the swap at 0 open positions.
+The unit must be stopped for the install because the venv is replaced. The new venv is built as `venv.<sha>.new` and swapped in only after the pip install and a smoke import both succeed, so a failed install leaves the old venv (and a rollback to an older pinned sha) intact; a failed run also removes its staging dirs. A restart with open positions resumes pending signatures without re-buying, but do the swap at 0 open positions.
 
 Update to a new commit: same steps. Each `<sha>` dir is immutable and the installer refuses to overwrite one; `current` moves only after a smoke import from the final location succeeds.
 
@@ -76,12 +76,16 @@ Status in pinned mode (local files only, no key; run as root or `mal-live`):
 sudo /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config /usr/local/lib/mal-probe-exec/current/probe-executor-live.json --status
 ```
 
+Helm confirms once, before live: `/var/lib/mal/fast-listener/helius.env` is root-owned, mode 0600, and contains only the Helius key line (`HELIUS_API_KEY=...`). systemd loads it as an `EnvironmentFile`, so any other line (for example `LD_PRELOAD`) would be injected into the key-holding process.
+
+`install-fast-forward-paper.sh` refuses to run (every mode except `--dry-run`) while `/etc/systemd/system/mal-probe-executor.service.d/live.conf` or `live-pinned.conf` exists, so a routine reinstall cannot swap code or units under a live key-holder. Remove the drop-in (stop the unit first) before any such reinstall.
+
 State, fill log, STOP/HALT, the credential and the signals bind are unchanged from the base unit. The dry-run unit still uses the agent-deployed path (it holds no key).
 
 ## 3. Stop
 
-- STOP: `touch /var/lib/mal-live/STOP`. No new buys. Exits, sells and rebroadcasts of in-flight txs KEEP running, so positions do not strand. Normal way to wind the probe down.
-- HALT (emergency): `touch /var/lib/mal-live/HALT`. Freezes everything: no buys, no sells, no rebroadcasts (status polling only). Open positions stay open until the file is removed. Use only if something is wrong with the executor or the wallet.
+- STOP: `sudo touch /var/lib/mal-live/STOP`. No new buys. Exits, sells and rebroadcasts of in-flight txs KEEP running, so positions do not strand. Normal way to wind the probe down.
+- HALT (emergency): `sudo touch /var/lib/mal-live/HALT`. Freezes everything: no buys, no sells, no rebroadcasts (status polling only). Open positions stay open until the file is removed. Use only if something is wrong with the executor or the wallet.
 - Hard: `sudo systemctl stop mal-probe-executor`. A restart resumes any pending signature without re-buying.
 - Automatic: 30 buy attempts, 0.25 SOL realized loss, 4 days from the first attempt. Each halts new buys only; open positions are still sold.
 

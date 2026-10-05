@@ -462,10 +462,55 @@ def test_installer_probe_dryrun_only():
     assert 'PROBE_UNIT="mal-probe-executor.service"' in inst
     assert '"${TIP_UNIT}" "${PROBE_UNIT}"; do' in inst
     assert "scripts/mal-fast/probe-executor.json scripts/mal-fast/probe-executor-live.json" in inst
-    code = "\n".join(l for l in inst.splitlines() if not l.lstrip().startswith("#"))
+    # the live key-holder fence only READS the drop-in dir (refuses when live.conf exists); it never installs one
+    fence = inst[inst.index("live key-holder fence"):inst.index("# --- date fence")]
+    code = "\n".join(l for l in inst.replace(fence, "").splitlines() if not l.lstrip().startswith("#"))
+    assert not __import__("re").search(r"\binstall\b|\bcp\b", fence)
     assert "service.d" not in code and "LoadCredential" not in code and "live.conf" not in code
     assert "enable" not in "\n".join(l for l in inst.splitlines() if "PROBE" in l)
     unit = (KIT / "mal-probe-executor.service").read_text()
     assert "LoadCredential" not in unit
     assert "--config /var/lib/mal/fast-forward/src/scripts/mal-fast/probe-executor.json" in unit
     assert json.loads((KIT / "probe-executor.json").read_text())["mode"] == "dryrun"
+
+
+# ---------------------------------------------------------------- DEC-019 live key-holder fence
+
+@pytest.mark.parametrize("conf", ["live.conf", "live-pinned.conf"])
+@pytest.mark.parametrize("args", [["--files-only"], []])
+def test_forward_install_refuses_while_live_dropin_exists(kit_repo, tmp_path, conf, args):
+    bindir, calls = _stubs(tmp_path)
+    env = _env(tmp_path, bindir)
+    d = tmp_path / "systemd" / "mal-probe-executor.service.d"
+    d.mkdir()
+    (d / conf).write_text("[Service]\n")
+    r = _fwd(kit_repo["repo"], *args, "--commit", kit_repo["good"], env=env)
+    assert r.returncode != 0 and conf in r.stderr and "LIVE" in r.stderr and "key-holding" in r.stderr, r.stderr
+    assert calls.read_text() == "" and not (tmp_path / "mal").exists()
+
+
+def test_forward_install_dry_run_allowed_with_live_dropin(kit_repo, tmp_path):
+    bindir, _ = _stubs(tmp_path)
+    env = _env(tmp_path, bindir)
+    d = tmp_path / "systemd" / "mal-probe-executor.service.d"
+    d.mkdir()
+    (d / "live.conf").write_text("[Service]\n")
+    r = _fwd(kit_repo["repo"], "--dry-run", "--files-only", "--commit", kit_repo["good"], env=env)
+    assert r.returncode == 0, r.stderr
+
+
+def test_forward_install_dropin_dir_override_is_test_mode_only(kit_repo, tmp_path):
+    bindir, _ = _stubs(tmp_path)
+    env = _env(tmp_path, bindir)
+    d = tmp_path / "elsewhere"
+    d.mkdir()
+    (d / "live.conf").write_text("[Service]\n")
+    env["MAL_PROBE_DROPIN_DIR"] = str(d)
+    r = _fwd(kit_repo["repo"], "--files-only", "--commit", kit_repo["good"], env=env)
+    assert r.returncode != 0 and "live.conf" in r.stderr  # test mode honours the override
+    t = (KIT / "install-fast-forward-paper.sh").read_text()
+    # outside test mode (owner set or unset) the path is the fixed /etc one
+    assert '-z "${MAL_FORWARD_OWNER+x}" || -n "${MAL_FORWARD_OWNER}"' in t
+    assert 'PROBE_DROPIN_DIR="/etc/systemd/system/mal-probe-executor.service.d"' in t
+    # the fence sits before commit verification and any install
+    assert t.index("live key-holder fence") < t.index("verify_commit \"${COMMIT_ARG}\"")
