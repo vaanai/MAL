@@ -418,6 +418,7 @@ def stamp_rows(
     tape_end_ms: int,
     priority_lamports: int = PRIORITY_FEE_LAMPORTS,
     slippage_cap: float = DEFAULT_SLIPPAGE_CAP,
+    mint_chunks: int = 1,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     curve_1 = scale_1_curve()
     curve_2 = scale_2_curve()
@@ -431,19 +432,23 @@ def stamp_rows(
         for row, kind, _reason in classified
         if kind in ("send", "miss_counterfactual") and isinstance(row.get("mint"), str)
     }
-    paths = rebuild_mint_paths(tape_mints, tape_paths=tape_paths, create_paths=create_paths, tape_end_ms=tape_end_ms)
+    if mint_chunks < 1:
+        raise ValueError("mint_chunks must be >= 1")
+    ordered_mints = sorted(tape_mints)
+    chunk_of = {mint: i % mint_chunks for i, mint in enumerate(ordered_mints)}
+    # Row indices per chunk. Rows with no tape mint need no path (chunk 0 only).
+    chunk_rows: list[list[int]] = [[] for _ in range(mint_chunks)]
+    for idx, (row, kind, _reason) in enumerate(classified):
+        mint = row.get("mint")
+        if kind in ("send", "miss_counterfactual") and isinstance(mint, str):
+            chunk_rows[chunk_of[mint]].append(idx)
+        else:
+            chunk_rows[0].append(idx)
 
-    out: list[dict[str, Any]] = []
-    counts: dict[str, int] = {}
-
-    def bump(label: str) -> None:
-        counts[label] = counts.get(label, 0) + 1
-
-    for row, kind, reason in classified:
+    def stamp_one(row: dict[str, Any], kind: str, reason: str | None, paths: dict[str, MintPath]) -> tuple[dict[str, Any] | None, str]:
         key = _key(row)
         if not _valid_key(key):
-            bump("skipped_bad_key")
-            continue
+            return None, "skipped_bad_key"
         ledger, book, mint, decision_t_ms = key
         base = {
             "schema": SCHEMA_PRESSURE,
@@ -455,12 +460,12 @@ def stamp_rows(
         }
         if kind == "send":
             base.update(stamp_send_row(row, paths.get(mint), curve_1=curve_1, curve_2=curve_2, priority_lamports=priority_lamports))
-            bump("pressure_error" if "pressure_error" in base else "send")
+            label = "pressure_error" if "pressure_error" in base else "send"
         elif kind == "miss_unfilled":
             pnl = int(row["pnl_lamports"])
             base["pressure_scale_1_pnl_lamports"] = pnl
             base["pressure_scale_2_pnl_lamports"] = pnl
-            bump("miss_unfilled")
+            label = "miss_unfilled"
         elif kind == "miss_counterfactual":
             base.update(
                 stamp_counterfactual_miss_row(
@@ -473,11 +478,31 @@ def stamp_rows(
                     priority_lamports=priority_lamports,
                 )
             )
-            bump("pressure_error" if "pressure_error" in base else "miss_counterfactual")
+            label = "pressure_error" if "pressure_error" in base else "miss_counterfactual"
         else:
             base["pressure_error"] = reason or ERROR_UNKNOWN_EVENT
-            bump("pressure_error")
-        out.append(base)
+            label = "pressure_error"
+        return base, label
+
+    results: dict[int, tuple[dict[str, Any] | None, str]] = {}
+    for ci in range(mint_chunks):
+        if mint_chunks == 1:
+            chunk_mints = tape_mints
+        else:
+            chunk_mints = {m for m in ordered_mints if chunk_of[m] == ci}
+        paths = rebuild_mint_paths(chunk_mints, tape_paths=tape_paths, create_paths=create_paths, tape_end_ms=tape_end_ms)
+        for idx in chunk_rows[ci]:
+            row, kind, reason = classified[idx]
+            results[idx] = stamp_one(row, kind, reason, paths)
+        del paths
+
+    out: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for idx in range(len(classified)):
+        base, label = results[idx]
+        counts[label] = counts.get(label, 0) + 1
+        if base is not None:
+            out.append(base)
     return out, counts
 
 
@@ -491,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--creates", nargs="*", type=Path, default=[])
     parser.add_argument("--creates-dir", type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--mint-chunks", type=int, default=1, help="rebuild price paths for 1/N of the mints per tape pass (bounds memory; output identical for any N)")
     parser.add_argument("--tape-end-ms", type=int, help="default: now")
     parser.add_argument("--window-start-ms", type=int)
     parser.add_argument("--window-end-ms", type=int)
@@ -553,6 +579,7 @@ def main(argv: list[str] | None = None) -> int:
         create_paths=create_paths,
         tape_end_ms=tape_end_ms,
         slippage_cap=slippage_cap,
+        mint_chunks=args.mint_chunks,
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

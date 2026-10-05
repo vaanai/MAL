@@ -172,6 +172,37 @@ class EquivalenceTests(unittest.TestCase):
             self.assertEqual(stamped["pressure_scale_1_pnl_lamports"], int(round(ground_truth)))
 
 
+class MintChunksTests(unittest.TestCase):
+    def test_chunked_output_byte_identical(self) -> None:
+        mints = ["MintA", "MintB", "MintC", "MintD"]
+        creates = {m: _create(m, T0) for m in mints}
+        trades: list[dict[str, object]] = []
+        for i, m in enumerate(mints):
+            for j in range(3):
+                trades.append(
+                    _trade(m, T0 + 1000 + 200 * j + i, slot=20 + i, event_index=j + 1, sol=(j + 1) * 1_000_000_000,
+                           quote=70_000_000_000 + j * 10**9, base=536_500_000_000_000 - j * 10**11)
+                )
+        rows = []
+        for i, m in enumerate(["MintC", "MintA", "MintD", "MintB", "MintA"]):
+            rows.append({
+                "schema": "forward_paper_position_v1", "ledger": "shadow", "event": "close",
+                "book": f"b{i % 2}", "mint": m, "decision_t_ms": T0 + 1400 + i, "t_entry_ms": T0 + 1400 + i,
+                "exit_status": "realized", "pnl_lamports": 1000 * i,
+            })
+        with tempfile.TemporaryDirectory() as tmp:
+            tape_path, create_path = _write_tape(Path(tmp), creates, trades)
+            outs = []
+            for n in (1, 2, 3, 7):
+                out, counts = pstamp.stamp_rows(
+                    rows, tape_paths=[tape_path], create_paths=[create_path], tape_end_ms=T0 + 10_000_000, mint_chunks=n
+                )
+                outs.append(("\n".join(json.dumps(r) for r in out), counts))
+            self.assertEqual(len(outs[0][1]) > 0, True)
+            for o in outs[1:]:
+                self.assertEqual(o, outs[0])
+
+
 class BookKindCoverageTests(unittest.TestCase):
     """(b) A ladder-book row and a hold-book row both get a value (or an
     explicit pressure_error) -- no crash. Book kind never branches the

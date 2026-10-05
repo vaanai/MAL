@@ -63,7 +63,7 @@ cat "$KR_OUT/settle.log"
 "$PY" -m tools.forward_paper_pressure_stamp --config "$CFG" --positions "$POS" --settlements "$KR_OUT/settlements.jsonl" \
   --tape-dir "$KR_SNAP/tape" --creates-dir "$KR_SNAP/creates" \
   --tape-end-ms "$KR_WINDOW_END_MS" --window-start-ms "$KR_WINDOW_START_MS" --window-end-ms "$KR_WINDOW_END_MS" \
-  --out "$KR_OUT/pressure.jsonl" --i-know-its-a-snapshot 2> "$KR_OUT/pressure.log" || RC=$?
+  --out "$KR_OUT/pressure.jsonl" --mint-chunks "${KR_PRESSURE_MINT_CHUNKS:-1}" --i-know-its-a-snapshot 2> "$KR_OUT/pressure.log" || RC=$?
 cat "$KR_OUT/pressure.log"
 [ "$RC" -eq 0 ] || kr_die "pressure stamp failed, RC=$RC"
 

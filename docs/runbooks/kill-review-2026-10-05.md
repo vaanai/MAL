@@ -53,3 +53,7 @@ Published to `$MISCUSI_OUTPUT_DIR`: snapshot step: `snapshot-MANIFEST.sha256`, `
 5. Run `quant-proof` on any sentence that says a book made money, then update LAB_STATE.md (numbers copied from the files, not rounded up). Add the notebook entry and `data/console.json`.
 6. Set `review_windows: []` in `data/console.json`.
 7. Record the snapshot manifest hash and the job ids in LAB_STATE.
+
+## Pressure stamp memory (`KR_PRESSURE_MINT_CHUNKS`)
+
+The pressure stamp builds a price path per mint across all tape hours; books that touch nearly every mint OOMed at 32 GB. `KR_PRESSURE_MINT_CHUNKS=N` (default 1, the reviewed behaviour) passes `--mint-chunks N` to `tools.forward_paper_pressure_stamp`: the needed mints are split by sorted index modulo N, the tape is streamed once per chunk, and only that chunk's paths are held. Output rows, order and counts are identical for any N (tested). Tape reads scale N times; try 4-8 after an OOM.
