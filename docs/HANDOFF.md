@@ -22,7 +22,7 @@ The owner approved a **0.5 SOL live execution probe** (DEC-019) running alongsid
 - **Cause:** the paper runner writes the `enter` row only at its *simulated* fill (`decision + applied_latency_ms` ≈ 1.9 s, `tools/forward_paper.py` `_queue`/`_fill_one`), and the executor acts on that row. The latency is counted twice.
 - **Fix: PR #307** (below).
 
-**The owner said YES to the pause** (`q_TtklEqCl3wlMfA` closed). Helm is placing `/var/lib/mal-live/STOP`. **Verify `stop_file_present=True` first**; at 16:22Z it was still False.
+**PAUSED.** At the owner's request, with Helm's machine restarting, the manager placed `/var/lib/mal-live/STOP` at **2026-10-05T16:30:06Z** (job #150). The executor confirms `stop_file_present=True`. 6/30 used, −0.100536 SOL, 0 open. New buys resume only at the end of the deploy block, when STOP is removed.
 
 **Hourly monitor.** This session's cron dies with it. The next session must **recreate the monitor**: a read-only MiScusi job on fast-0 every hour that reads the unit's state/NRestarts/DropInPaths, `--status` with `scripts/mal-fast/probe-executor-live.json` (run as mal-live from `/var/lib/mal/fast-forward/src`), journal lines for halt/stuck/abandon/alert/error, and live fill rows. **Alert the owner** on: a restart, the unit down, a stuck or abandoned sell, any halt, realized loss ≥ 0.15 SOL, or errors. **Never read `/etc/mal-probe` or `/run/credentials`.**
 
@@ -34,7 +34,7 @@ The owner approved a **0.5 SOL live execution probe** (DEC-019) running alongsid
 | --- | --- |
 | **PR #307** (merged `9fa57ea`) | The runner writes `intents.jsonl` at decision time and the executor acts on it. Expected saving is about 6 slots. md5 job #143: EQUIVALENT with intents off and on (95,948 / 18,030 rows; 103 intents). **Not deployed yet.** |
 | **PR #311** (merged → `8333ef1`) | Fixes the pinned installer: venv symlinks failed its final check, so it always aborted half-installed. It adds `check-probe-exec-tree.sh`, checks run before any move, rollback on every move, and a corrected keyless dry-run command (mktemp under /run, EnvironmentFile). Security review: merge. |
-| **DEPLOY at `8333ef1c018d8211de5b1f454b9f795cb8dbb61d`** (owner + Helm; see the block below) | Not started. STOP was requested from Helm about 16:20Z and was **not yet present at 16:22Z** (`stop_file_present=False`). Confirm STOP first. |
+| **DEPLOY at `8333ef1c018d8211de5b1f454b9f795cb8dbb61d`** (owner + Helm; see the block below) | Not started. STOP is in place since 16:30:06Z (job #150). |
 | **Job #127** (done) | Migration-stream probe, 6 h. 282 migrations; 217 matched with the tip follower's `complete` by mint. Stream earlier by p50 212 ms / p90 996 ms (first in 162 of 217). But the migrate tx lands p50 **3 slots after** `complete`. **Conclusion:** the migration-authority stream alone gains only about 0.2 s on the trigger. The real gain (about 1.4 s, estimated) needs processed subscriptions to **near-graduation bonding curves** to catch `complete` and the final trades. Notebook entry posted. |
 | **Job #71** (research-0) | DEC-016 forward walk forward-1002. **Resubmit by about 10-09T15Z** (same command, params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
 | Owner question `q_YBNB8Qi1lR_WjQ` | DEC-018: five live-trial decisions, due about 10-14. |
@@ -42,7 +42,7 @@ The owner approved a **0.5 SOL live execution probe** (DEC-019) running alongsid
 ## Deploy block for Helm (#307 + #305 + #311), pin `8333ef1c018d8211de5b1f454b9f795cb8dbb61d`
 
 Order (runbook `docs/runbooks/probe-executor.md` §2b/§2c):
-1. Confirm `/var/lib/mal-live/STOP` is present and `open=0`.
+1. `/var/lib/mal-live/STOP` has been present since 16:30:06Z, with `open=0`. Re-confirm it.
 2. **Helm:** `systemctl stop mal-probe-executor`, then remove `/etc/systemd/system/mal-probe-executor.service.d/live.conf`. With no non-pinned live drop-in, the runner installer's fence passes.
 3. **Manager** (announce first: this writes src, and `malprobe-code` will alert):
    - `install-fast-forward-paper.sh --commit 8333ef1c018d8211de5b1f454b9f795cb8dbb61d`;
