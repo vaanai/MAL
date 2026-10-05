@@ -8,3 +8,4 @@ solders==0.29.0  # keyless PumpSwap tx builder (tools/pumpswap_tx.py); abi3 whee
 numpy==2.5.3
 scipy==1.18.1
 scikit-learn==1.9.1
+websockets==13.1  # tools/migration_stream_probe.py (Helius transactionSubscribe); pure-python, no hashes used in this file
