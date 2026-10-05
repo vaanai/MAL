@@ -41,7 +41,8 @@ BUILDS: tuple[tuple[int, str], ...] = (
     (0, "8a6849b"),               # before 2026-10-05T17:53:03Z
     (1791223983000, "a25eb17"),   # from 2026-10-05T17:53:03Z
     (1791232766000, "7004b16"),   # from 2026-10-05T20:39:26Z
-    # (<start_ms>, "<next build sha>"),  # PLACEHOLDER: add the next build's boundary here (the buy-tx-mark build)
+    (1791241796000, "faa3192"),   # from 2026-10-05T23:09:56Z: mark from our own buy tx (#331) + log-only drift (#332)
+    # (<start_ms>, "<next build sha>"),  # add the next build's boundary here
 )
 SIZES_SOL = (0.1, 0.25)
 PRIORITY_ALT = 150_000
