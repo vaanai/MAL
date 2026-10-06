@@ -188,6 +188,8 @@ OUT_RECORD = "RUN.record.json"
 CACHE_DIR = "cache"
 CACHE_SCHEMA = "exp015_tape_cache_v1"
 ENV_MODE = "MAL_EXP015_MODE"
+ENV_COMBOS = "MAL_EXP015_COMBOS"  # EXP-017 re-sim: JSON [[k, size_sol, lag], ...]
+ENV_SELECTED = "MAL_EXP015_SELECTED"  # EXP-017 re-sim: path of a JSON list of mints to simulate
 
 OUTCOME_PASS = "SCREEN PASS: {name} goes to confirmation (largest pooled pressure mean on the non-P1 dates; no discretion). This means 'worth one confirmation read of fresh-0808', never 'has an edge'."
 OUTCOME_NONE = (
@@ -428,6 +430,16 @@ def check_no_prior_tries(*logs: Path) -> None:
 # --- tape pass: workers and patches ----------------------------------------------------------------------------------
 
 
+class _SelScores:
+    """Selected-mints-only score map (EXP-017 re-sim): 1.0 for a selected mint, None (not simulated) otherwise."""
+
+    def __init__(self, selected: Any) -> None:
+        self.selected = selected
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return 1.0 if key in self.selected else default
+
+
 class _AllScores:
     """Stands in for the OOF score map: every migration is simulated (the universe has no selection)."""
 
@@ -447,12 +459,19 @@ def e15_v_patch() -> Any:
     """V-priced pass: wrap eem.score_one. Per migration: the frozen k=1 row gives the features; the operating point's multi_cell_patch
     simulates every report cell (k, size 0.05, exit lag) with NO selection; ONE record per migration is emitted. Restores on exit."""
     base = eem.score_one
-    with op.multi_cell_patch(_AllScores(), 0.0, combos=COMBOS):
+    combos, sel = COMBOS, None  # EXP-017 re-sim only: env overrides (inherited by spawned workers); unset = the EXP-015 behaviour, unchanged
+    if os.environ.get(ENV_COMBOS):
+        combos = tuple((int(k), float(sz), int(lag)) for k, sz, lag in json.loads(os.environ[ENV_COMBOS]))
+    if os.environ.get(ENV_SELECTED):
+        sel = frozenset(json.loads(Path(os.environ[ENV_SELECTED]).read_text(encoding="utf-8")))
+    with op.multi_cell_patch(_AllScores() if sel is None else _SelScores(sel), 0.0, combos=combos):
         inner = eem.score_one
 
         def v_score(mint_id: str, mint: Any, feat: Any, curve: Any, through_ms: int, creator_hist: Any, **kw: Any) -> list[dict[str, Any]]:
             if any(v is not None for v in kw.values()):
                 raise RuntimeError(f"score_one was called with arguments this pass does not model: {sorted(kw)}")
+            if sel is not None and mint_id not in sel:
+                return []
             frozen = [r for r in base(mint_id, mint, feat, curve, through_ms, creator_hist) if r["spec"] == TARGET]
             if not frozen:
                 return []
@@ -1854,6 +1873,9 @@ def make_report(base: Mapping[str, Any], screen: Mapping[str, Any], with_p4: boo
 def main(argv: Sequence[str] | None = None) -> int:
     from tools.exp012_exit_sensitivity import resolve_tries_path
 
+    if os.environ.get(ENV_COMBOS) or os.environ.get(ENV_SELECTED):  # the EXP-017 re-sim overrides must never reach a real EXP-015 run
+        print(f"refusing: {ENV_COMBOS} / {ENV_SELECTED} is set", file=sys.stderr)
+        return 2
     args = _parser().parse_args(argv)
     tries_path = resolve_tries_path(args.tries_log)
     canonical = Path(args.canonical_tries).resolve()
