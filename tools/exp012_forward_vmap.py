@@ -549,7 +549,7 @@ def _v0(detail: dict[str, Any], p: str, v: int | None) -> int | None:
     if b is not None:
         return b
     d = detail.get(p)
-    if isinstance(d, dict) and d.get("pending") is None and d.get("v_base") is None and isinstance(v, int) and not isinstance(v, bool):
+    if isinstance(d, dict) and "pending" in d and "v_base" in d and d["pending"] is None and d["v_base"] is None and isinstance(v, int) and not isinstance(v, bool):
         return v
     return None
 

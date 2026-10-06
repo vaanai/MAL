@@ -363,6 +363,7 @@ def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_fr
                 res[p] = {"lp_mint": None, "events": [], "resolved": False, "reason": a["error"], "lp_supply": None, "supply_slot": None}
             else:
                 res[p] = _history_one(rpc, lim, p, a["lp_mint"], t_from_unix, max_pages)
+                res[p]["lp_supply_first"] = a["lp_supply"]  # read BEFORE the signature listing
             res[p]["attempts"] = n
         ok_ids = [p for p in todo if res[p]["resolved"]]
         end = _read_accounts(rpc, lim, ok_ids) if ok_ids else {}  # the supply AFTER the history (every resolved pool, zero events included)
@@ -377,6 +378,8 @@ def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_fr
                 last = e["events"][-1]
                 if last["s_before"] + last["lp_delta"] != a["lp_supply"]:
                     e["resolved"], e["reason"] = False, "last_supply_mismatch"
+            elif e.get("lp_supply_first") != a["lp_supply"]:  # zero events: nothing may have moved between the first read and the end read
+                e["resolved"], e["reason"] = False, "last_supply_mismatch"
         for p in todo:  # every attempt, per pool, with its pass and reason (earlier reasons are kept)
             log.setdefault(p, []).append({"pass": n, "resolved": res[p]["resolved"], "reason": res[p]["reason"]})
         if attempts is not None:

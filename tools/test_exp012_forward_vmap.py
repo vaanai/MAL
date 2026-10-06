@@ -982,6 +982,13 @@ class LpMoveTests(unittest.TestCase):
         self.assertEqual(self.side_file(out, "unresolved"), {})
         self.assertEqual(self.meta(out)["lp_moves"]["n_explained"], 0)
 
+    def test_missing_key_does_not_trigger_short_account_rule(self) -> None:
+        self.assertEqual(vm._v0({"A": {"pending": None, "v_base": None}}, "A", 7), 7)
+        self.assertIsNone(vm._v0({"A": {"pending": None}}, "A", 7))
+        self.assertIsNone(vm._v0({"A": {"v_base": None}}, "A", 7))
+        self.assertIsNone(vm._v0({"A": {}}, "A", 7))
+        self.assertIsNone(vm._v0({}, "A", 7))
+
     def test_pending_int_never_falls_back_to_stored_v(self) -> None:
         # pending is an int but v_base missing: V0 is unknown, so a difference cannot be judged
         s1 = self.snap({"A": 5000}, detail={"A": {"pending": 3, "v_base": None}}, fetch=SNAP_FETCH)

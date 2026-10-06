@@ -489,3 +489,24 @@ def test_fetch_history_last_supply_must_equal_account_supply() -> None:
     chain = FakeChain({pool: mint}, {mint: rows}, supply={mint: 1010})
     out, _ = run_hist(chain, [pool], 0, 1000)
     assert out[pool]["resolved"] and out[pool]["lp_supply"] == 1010
+
+
+def test_zero_event_pool_supply_must_not_move_between_first_and_end_read() -> None:
+    pool, mint = pk(1), pk(50)
+
+    class Moves(FakeChain):
+        n = 0
+
+        def __call__(self, method, params):
+            if method == "getMultipleAccounts":
+                Moves.n += 1
+                self.supply = {mint: 1000 if Moves.n == 1 else 1010}  # a deposit lands after the listing began
+            return super().__call__(method, params)
+
+    chain = Moves({pool: mint}, {mint: [("s1", 1, 100, None, [])]})
+    att: list = []
+    out, _ = run_hist(chain, [pool], 0, 1000, attempts=att)
+    assert out[pool]["resolved"] is False and out[pool]["reason"] == "last_supply_mismatch"
+    assert out[pool]["lp_supply_first"] == 1000 and out[pool]["lp_supply"] == 1010 and len(att) == 1  # not retried
+    out, _ = run_hist(FakeChain({pool: mint}, {mint: [("s1", 1, 100, None, [])]}, supply={mint: 1000}), [pool], 0, 1000)
+    assert out[pool]["resolved"] is True  # unchanged supply: resolved
