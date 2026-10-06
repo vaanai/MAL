@@ -1264,16 +1264,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--env-file", default=sim.DEFAULT_ENV_FILE)
     args = ap.parse_args(argv)
     cfg = json.loads(Path(args.config).read_text())
+    try:
+        Limits.from_config(cfg)  # unknown profile / missing dec020 end instant refuse here, before any key is loaded
+    except ValueError as exc:
+        raise SystemExit(f"limits refused: {exc}") from None
     if args.status:
         print(status_report(cfg))
         return 0
     if args.latency_report:
         print(latency_report(cfg))
         return 0
-    try:
-        Limits.from_config(cfg)  # unknown profile / missing dec020 end instant refuse here, before any key is loaded
-    except ValueError as exc:
-        raise SystemExit(f"limits refused: {exc}") from None
     mode, warn = resolve_mode(cfg.get("mode", MODE), args.live)
     cfg["mode"] = mode
     if warn:

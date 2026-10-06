@@ -107,6 +107,38 @@ Helm provisions once, before live: `/etc/mal-probe-rpc` (`root:root`, mode 0700)
 
 State, fill log, STOP/HALT, the credential and the signals bind are unchanged from the base unit. The dry-run unit still uses the agent-deployed path (it holds no key).
 
+## 2b-dec020. Re-pin for the DEC-020 size step (0.25 SOL). NOT done until the owner approves after the 10-16 forward read
+
+The code is in the pinned set but selected only by config: `limits_profile` is `dec019` when absent (today's limits, state file `state-live.json`, fill rows unchanged), or `dec020` (size 0.25 SOL, max open 2, 40 attempts, loss cap 0.35 SOL, 500,000 priority, 7 days, end ceiling 2026-10-31T00:00Z; config can lower any of these, never raise). Any other value refuses at startup, before the key loads. A dec020 run:
+
+- uses its own state file `state-live-dec020.json` (attempts and realized loss never pool with the probe's) and its own fill log `probe-fills-dec020.jsonl`, whose rows carry `"limits_profile":"dec020"`; the dec019 fill rows are byte-identical to before (no new key);
+- on its first start copies the dec019 `bought` list (never re-buy) from `state-live.json`, read-only;
+- refuses to start (every start) if `state-live.json` shows any open or pending position (DEC-020 3b);
+- refuses a config with no `end_ms` or `end_ms <= 0`. The shipped `probe-executor-live-dec020.json` has `"end_ms": 0` on purpose: **the owner's end instant is written into that file in a reviewed commit, which makes a new sha**. Root-owned pinned files cannot be edited in place.
+
+Files added to the pinned set (installer `EXTRA`): `scripts/mal-fast/probe-executor-live-dec020.json` (installed as `<sha>/probe-executor-live-dec020.json`). Manifest: **13 lines become 14** (8 modules, 4 EXTRA, base unit, checker). `tools/probe_executor.py` changes hash. The drop-in `scripts/mal-fast/mal-probe-executor-live-pinned-dec020.conf` is not manifest-checked (same as the current pinned drop-in) and differs from it only in `--config .../probe-executor-live-dec020.json`. The installer's code path is unchanged; the current pin (`faa3192`) is not touched by merging this.
+
+Steps for Helm, only after the 0.05 probe has ended, at 0 open and 0 pending (`--status` on the dec019 config shows `open=0/3 pending=0`):
+
+```
+# 1. STOP, confirm nothing open, stop the unit (as section 2b step 1)
+sudo touch /var/lib/mal-live/STOP
+sudo /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config /usr/local/lib/mal-probe-exec/current/probe-executor-live.json --status
+sudo systemctl stop mal-probe-executor
+# 2. install the new sha with a 14-line manifest (as section 2b step 2). Nothing else about the installer changes.
+sudo scripts/mal-fast/install-probe-executor-pinned.sh <40-char-sha> <manifest>
+# 3. keyless check of the new config: it must REFUSE if end_ms is still 0, and print limits_profile=dec020 once the owner's end instant is in
+sudo /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config /usr/local/lib/mal-probe-exec/current/probe-executor-live-dec020.json --status
+# 4. swap the drop-in to the dec020 one, remove STOP, start
+sudo install -D -m 0644 scripts/mal-fast/mal-probe-executor-live-pinned-dec020.conf /etc/systemd/system/mal-probe-executor.service.d/live.conf
+sudo systemctl daemon-reload
+sudo rm -f /var/lib/mal-live/STOP
+sudo systemctl start mal-probe-executor
+journalctl -u mal-probe-executor -n 20 --no-pager   # expect: mode=LIVE ... profile='dec020' size_lamports=250000000
+```
+
+Rollback to the dec019 drop-in: stop, install `mal-probe-executor-live-pinned.conf` as `live.conf`, daemon-reload, start. The watchdog (`LOSS_ALERT_SOL`, DEC-020 section 7) must read `state-live-dec020.json` for the step. Review, security review, the md5 replay proof and the owner's approval come first; none of this is installed by merging the code.
+
 ## 2c. Signals file: start order and what the executor does when it is missing
 
 The executor reads `intents.jsonl` (config `signals_file`), which the RUNNER creates (`intents_file: true`). The unit's bind of that file is optional (`-`) so a rotation cannot wedge systemd, which also means a missing file is silent at the unit level. The executor therefore checks it itself:
