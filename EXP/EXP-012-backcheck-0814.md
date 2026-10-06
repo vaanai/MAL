@@ -29,7 +29,7 @@ Frozen threshold 0.8031, fee 505,000 lamports per side (500,000 priority + 5,000
 | sensitivity | 4 | 0.05 | 2 | |
 | sensitivity | 8 | 0.05 | 2 | |
 
-Exit lag is `exit_land_k` (slots the sell lands after the trigger). Sensitivities are report-only, never selected among, and cannot replace the primary. The 0.25 and 0.5 cells are reported as percent of size. Sell shortfall (-11..-16 bps), entry noise (+-300 bps) and MEV are not added. Primary exit lag 2 slots; still optimistic versus the measured live exit leak; the lag-0 cell is an upper bound.
+Exit lag is `exit_land_k` (slots the sell lands after the trigger). Sensitivities are report-only, never selected among, and cannot replace the primary. The 0.25 and 0.5 cells are reported as percent of size. The deciding read nets the sell shortfall (16 bps of proceeds) and the sim-vs-live entry gap (+26.08 bps, job #175) out of every filled trade; entry noise (+-300 bps) and MEV are not added; the raw simulator result is report-only. Primary exit lag 2 slots; still optimistic versus the measured live exit leak; the lag-0 cell is an upper bound.
 
 Reported per cell and fail model: n entered, filled, miss, counted days with days positive, mean SOL per trade, CI90 (gate cluster bootstrap, 1,000 draws, seed 1, 5th-95th percentile of the mean), total, total ex-top-3, tp/sl/time-stop counts, tp rate among filled. For the primary also: per-day table, first-7 vs last-6 days (report-only), the primary without w1 (report-only), and the sharp-drop rate under the #336 label (report-only; it measures post-migration volatility, not rugs). Raw (unadjusted) cells are report-only.
 
