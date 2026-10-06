@@ -8,7 +8,7 @@
 | **Why a new family** | The rug screen #191 ([note](../ARTIFACTS/lab/exp012-rug-risk-2026-10-06.md), job #191, PR #336) found that none of 6 concentration vetoes helped. Its "rug" label had a base rate of 0.5664: it measured migration volatility, not rugs. Its features were only bonding-curve holder shares, buyer count and creator prior mints. §1 says what changes. |
 | **Hypothesis** | A strict, outcome-defined rug event (§2) is predictable at the EXP-012 decision time from launch-bundle, creator-behaviour and wallet-cluster information on the tape (§3). Vetoing the predicted rugs improves the frozen EXP-012 book, paired on the same mints, at realistic costs, and does more than remove winners. |
 | **Frozen book it is layered on** | EXP-012 as frozen: model md5 `a1810d219ed61db64a396f40dc302ce5`, threshold 0.8030766588450794, `migrate` trigger, `tp50_sl30`. Nothing frozen is edited. The veto can only remove entries. |
-| **Target confirmation block** | `[2026-08-02T12, 2026-08-08T12)`, ledger row "Third backup confirmation block" (reserved in #380, being walked now). It is claimed only by a merged EXP-016 Part 1, and only if no other pre-registration claimed it first (§8). |
+| **Target confirmation block** | `[2026-08-02T12, 2026-08-08T12)`, ledger row "Third backup confirmation block" (reserved in #380, being walked now). It is claimed only by a merged EXP-016 Part 1. **EXP-016 has priority on it** (manager decision 2026-10-06, because the owner asked for this study). §8 says what that means for EXP-014. |
 | **Prior (my honest estimate)** | Low. Screen pass about 15%. A confirmation PASS, which needs the kept book to clear the full gate as well, about 5%. §10 gives the reasons. This is an estimate, not a measurement. |
 | **Measured by this file** | Nothing. No row under `/data/mal` was read. Only repo code and docs were read. |
 
@@ -40,7 +40,7 @@ From the code, not from data:
 
 For a migrated mint m:
 - **Canonical pool** `p_m` = the `pool` field of m's `migration` row. Only prints with `pool == p_m` are used. They are ordered by `(slot, tx_index, event_index)`.
-- **Effective quote.** Before print i: `E_i = quote_reserve_i + V(p_m)`, where V comes from the pinned pool-to-V map (`pool_v_0909.json`, sha `70914a16…5b42e` for the exploration pools; a new map for the confirmation block, §8). After print i: `E⁺_i` = the post-trade vault from `tools.paper_price_path.pumpswap_post_trade_reserves` (with its `fee_ppm` fallback, because v2 rows drop the fee fields) plus V. The fallback's error is about the fee on one trade, around 1% of that trade's quote, which is small next to a 36.75% threshold.
+- **Effective quote.** Before print i: `E_i = quote_reserve_i + V_i(p_m)`. `V_i` is the pool's virtual quote reserve **in force at print i**, decoded at the pool's own value and taken from the V source pinned after the parser fix (§11, P1). If V turns out to be constant over a pool's life, `V_i` is that constant. The label follows whatever pricing that fix establishes; it does not fix its own. After print i: `E⁺_i` = the post-trade vault from `tools.paper_price_path.pumpswap_post_trade_reserves` (with its `fee_ppm` fallback, because v2 rows drop the fee fields) plus `V_i`. The fallback's error is about the fee on one trade, around 1% of that trade's quote, which is small next to a 36.75% threshold.
 - **Hold window `H_m`.** This is defined only for a FILLED frozen-cell trade. It runs from the entry-state print the frozen simulator fills against at the deciding cell (k = 6, §6) to the print its `tp50_sl30` exit fills against, with exit lag 2, inclusive. A MISS has no hold window and no label.
 
 **RUG(m) = 1 iff event A or event B occurs inside `H_m`:**
@@ -49,7 +49,9 @@ For a migrated mint m:
 
 **Properties, by construction.** A RUG trade cannot exit at the tp after the step. The step starts below 1.5·P0, or the tp would already have fired, and it ends below 0.40 of its start, so below 0.6·P0. Its stop fires inside the step or right after it, and the exit lands near or below 0.6·P0 unless the price recovers within the 2-slot exit lag. RUG is therefore, up to that lag, a subset of "stop exits with a gap of at least 10 points past the stop", plus censored rows. A dump **after** a tp exit is RUG = 0, because it costs the book nothing.
 
-**Reported, never selected on:** (i) **RUG70-1**: the owner's example, one slot, price ratio ≤ 0.30 (E ratio ≤ 0.5477); (ii) #191's label, so the two are compared on the same rows; (iii) A-only and B-only counts; (iv) the count of hold windows that the frozen simulator fills from a non-canonical pool. The simulator's print list is per mint (`latency_curve._Mint.fillable`), so this is a check on the label's pool choice (§11, Q6).
+**Reported, never selected on:** (i) **RUG70-1**: the owner's example, one slot, price ratio ≤ 0.30 (E ratio ≤ 0.5477); (ii) #191's label, so the two are compared on the same rows; (iii) A-only and B-only counts; (iv) the count of prints from other pools seen inside hold windows. Those prints are reported and never filled (§11, P2).
+
+**Primary label pinned as written** (manager, 2026-10-06): A or B, −60% within 3 slots. RUG70-1 and #191's label are report-only.
 
 ### 2.3 Pool arithmetic (the scale of a RUG)
 
@@ -71,7 +73,7 @@ This is arithmetic, not a measurement. A migrated pool is seeded at vault 67.41 
 
 ## 3. Candidate features
 
-**Decision time.** The live executor decides when it sees the migration, and k = 6 is landing latency. Every feature uses only events **strictly before the migration slot** (slot-based features) or EXP-012's `causal_events` receive-time cutoff (its existing features). Nothing from the 6 landing slots is used (§11, Q1). Bonding-curve trades all precede the `complete` event, so curve features are complete at migration.
+**Decision time.** The live executor decides when it sees the migration, and k = 6 is landing latency. Every feature uses only events **strictly before the migration slot** (slot-based features) or EXP-012's `causal_events` receive-time cutoff (its existing features). Nothing from the 6 landing slots is used. The manager confirmed this cutoff on 2026-10-06. Bonding-curve trades all precede the `complete` event, so curve features are complete at migration.
 
 **Definitions.**
 - **Supply** = 1e15 raw units. **Launch slots** = `[create_slot, create_slot + 2]`; N = 2 matches `funding_graph.SNIPER_SLOT_DELTA`.
@@ -109,7 +111,7 @@ This is arithmetic, not a measurement. A migrated pool is seeded at vault 67.41 
 - creators of all migrations (about 35k): about **0.3M credits**, about 8 h at 10 rps;
 - adding about 5 launch buyers per mint: about **1.5M credits**.
 
-If these methods bill at 10 credits a call, multiply by 10. Causality holds because `before = create signature` returns only earlier history. Phase 2 would be a **separate family with its own plan and tries**, not a rescue of a phase-1 FAIL (§11, Q3).
+If these methods bill at 10 credits a call, multiply by 10. Causality holds because `before = create signature` returns only earlier history. **Phase 1 is tape-only** (manager, 2026-10-06). Phase 2 is a **separate, later family with its own plan, tries and confirmation block**, not a rescue of a phase-1 FAIL.
 
 ## 4. Pools, dates and universe
 
@@ -122,7 +124,7 @@ If these methods bill at 10 credits a call, multiply by 10. Causality holds beca
   - any hour at or after 2026-10-02T00 (the forward walk, `/data/mal/blocks/forward-1002`, and the forward-paper runner's files).
 - **Frozen selection.** On P1, EXP-012's stored OOF scores (as #191). On P2-P4, the frozen model's scores. The selected set is every migration with score ≥ 0.8030766588450794.
 - **Training universe for the logistic:** every FILLED migration on the training dates at the deciding cell, labelled by §2. That is about ten times the selected set, so positives are not scarce. MISS rows are excluded (no hold window) and counted.
-- **Unpriceable pools:** EXP-015 §11 item 11 applies unchanged (pool-based removal before `started`, 0.5% cap, bias statement, report-only total-loss sensitivity).
+- **Unpriceable pools:** EXP-015 §11 item 11 applies unchanged (pool-based removal before `started`, 0.5% cap, bias statement, report-only total-loss sensitivity). It runs on the V source pinned after the parser fix (§11, P1), not on today's `pool_v_0909.json`: that map reads 321 pools as null, and some of them are canonical pools with a slightly negative V.
 
 ## 5. Candidates, model and tries cap
 
@@ -164,19 +166,13 @@ The bars in §7 are computed on the **outer** results of this procedure, not on 
 
 - **Cap:** 6 candidates, logged before any fit. One `started` line goes to `data/tries.jsonl` (keys `exp016_r1..r4`, `exp016_l5`, `exp016_l10`) with the row-universe and feature-table sha256. Result lines follow.
 - The run refuses if any `exp016_*` line already exists. EXP-015 §11 item 9's try-spend and resume rules apply: nothing outcome-derived is printed before `started`.
-- **Each candidate counts on every pool it touches**, so +6 per pool. The run reads the file and records the actual counts in its report.
-
-| pool | in `data/tries.jsonl` at f4daaa0 | after EXP-015's 3 (its §7) | after EXP-016 |
-| --- | ---: | ---: | ---: |
-| P1 (9 days) | 74 | 77 | 83 |
-| P2 `explore-0814` | 6 (+1 DEC-017 (a), not in the file) | 10 | 16 |
-| P3 fresh-0903 | 0 (+ EXP-012's one read) | 3 | 9 |
-| P4 EXP-011 block | 0 | 3 | 9 |
+- **Each candidate counts on every pool it touches**, so +6 per pool.
+- **Prior tries:** P1 has at least 74 (the count in `data/tries.jsonl` at f4daaa0); `explore-0814` has at least 6 in the file, plus DEC-017 (a), which is not in the file; P3 also carries EXP-012's one confirmation read. **The exact counts are read from `data/tries.jsonl` when the `started` line is written**, and recorded in that line and in the report. Nothing here assumes other families' lines (EXP-015 or any other) exist or don't.
 
 ## 6. Costs in every deciding cell
 
 These are EXP-015 §4, unchanged, and the costs `tools/exp015_screen.py` already pins:
-- V pricing (vault + V);
+- V pricing (vault + V, with V from the fixed parser, §11 P1);
 - k = 6;
 - 0.05 SOL;
 - 505,000 lamports per side (a MISS pays the fee);
@@ -226,8 +222,8 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 - **Before Part 1** (outcome-blind, counts and hashes only):
   - `backfill_verify` in both modes (`--content --min-slots-per-hour 8000`);
   - dedupe, sha256 manifest, and a clean view with `VIEW.sha256`;
-  - a V map built from **every** PumpSwap pool traded in the block, with its sha pinned.
-- **Ownership.** The ledger names an owner only through a merged pre-registration. EXP-014 is the other named candidate, and the first one merged claims the block (§11, Q4).
+  - a V source covering **every** PumpSwap pool traded in the block, built with the fixed V parser (§11, P1), with its sha pinned.
+- **Ownership and priority.** The ledger names an owner only through a merged pre-registration. EXP-016 has priority on this block (manager decision, 2026-10-06, because the owner asked for this study). **The manager will not merge an EXP-014 pre-registration that claims `[2026-08-02T12, 2026-08-08T12)` while EXP-016's Part 1 is pending. EXP-014 waits for the next block.** There is no race. If EXP-016 fails its screen, the block is released by ledger edit, unread, as §7 says.
 - **Buffer.** Block history (d1-d4, `creator_prior_mints_24h`) is built from the block's own hours. fresh-0808, which follows it, stays unread, so the first ~24 h is left-censored, as in training.
 
 **Part 1 and Part 2, after the screen passes and before the read.**
@@ -264,8 +260,8 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 
 - **What it can claim:** "one gate clearance for frozen EXP-012 plus the veto, at k = 1, on a getBlock-only August block, at modelled costs whose exit lag 2 is optimistic." It is not a profit result and not live evidence.
 - **It earns a DEC-021 challenger, and only that.** The variant is "frozen EXP-012 plus the frozen EXP-016 veto". It is registered by its own pre-registration in a DEC-021 walk family, paired against the champion sim arm on the same mints, under both fail models and the §6 costs.
-- **Walk 2 timing.** Walk 2's registrations must merge before 2026-10-16T01. That needs EXP-016's code, screen, Part 1, Part 2 and read to finish within about nine days, behind EXP-015's screen on the one-heavy-job rule. That is unlikely, and if it slips EXP-016 waits for a later walk. DEC-021 covers at most 2 walks, so a third walk needs a new DEC.
-- **Never a live change without the owner.** This plan asks for the owner's explicit yes before any live veto, even though DEC-021 §6(f) delegates the switch to the manager (§11, Q5). The veto does not change k, the fee, size or wallet. Live feature computation (curve history and 24 h block state on the fast box) is a DEC-021 §7 pre-live check.
+- **EXP-016 targets a later walk, not walk 2.** Walk 2's registrations must merge before 2026-10-16T01, and EXP-016 will not be ready by then. DEC-021 covers at most 2 walks, so if the later walk would be a third, it needs a new DEC.
+- **Live change follows DEC-021 as approved.** A passing challenger switches under DEC-021 §6 and §7, on the manager's decision, with the notebook decision and Console entry that §6(f) requires. Helm does the re-pin. **Size and funding stay owner decisions** (DEC-020): a switch never changes size or wallet. The veto does not change k or the fee either. Computing the features live (curve history and 24 h block state on the fast box) is part of the DEC-021 §7 pre-live checks.
 - **No effect on EXP-012's 10-16 read.** EXP-016 opens no hour at or after 2026-10-02T00 and changes nothing frozen.
 
 ## 10. What it cannot show, and the honest prior
@@ -287,16 +283,28 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
   - the 36 closed live trades total −174,249,232 lamports, against a simulator prediction of +0.00058 per trade (job #208, #327).
 - **A veto cannot make a non-edge into an edge.** At best it removes a fat left tail.
 
-## 11. Open questions for the manager
+## 11. Manager decisions and preconditions
 
-1. **Decision cutoff.** Features stop strictly before the migration slot, because the executor sends on the migration and k = 6 is latency. Use migration + 6 only if the executor can wait. That would be a different k and a DEC-019 matter.
-2. **Label strength.** Primary is −60% within 3 slots, or an untaped 36.75% drain. The owner's −70% in one slot is reported only. Choose before the pin. After the pin it cannot change.
-3. **Phase 2 funding (f1).** Creator-only lookup is about 0.03-0.3M credits by the estimate in §3. Fold it into phase 1, which must be decided before the pin and adds a probe job, or keep it as a later, separate family.
-4. **The 0802 block.** It goes to whichever of EXP-014 and EXP-016 merges a pre-registration first. Is that the intended race, or should the manager assign it?
-5. **Live wording.** This plan requires the owner's explicit yes for any live veto, which is stricter than DEC-021 §6(f). Keep it, or defer to DEC-021?
-6. **Pool attribution.** The label uses the migration pool only, but the frozen simulator's print list is per mint. Confirm the simulator never fills an EXP-012 trade from a non-canonical pool, or accept the report-only count in §2.2 (iv).
-7. **Tries count.** The brief said 77 on P1. The file at f4daaa0 shows 74, and 77 assumes EXP-015's three are logged first. The run records whatever the file says.
-8. **Ordering.** EXP-015's screen is queued on research-0 under the one-heavy-job rule. EXP-016's table build (a new causal per-block pass over every pool) is a second heavy job.
+**Decisions (manager, 2026-10-06, before the pin):**
+1. **Decision cutoff:** strictly before the migration slot (§3). This is conservative and matches when the executor decides.
+2. **Label:** A or B, −60% within 3 slots, is primary and is pinned as written (§2.2). RUG70-1 and #191's label are report-only.
+3. **Creator funding (f1):** phase 2, a separate later family. Phase 1 is tape-only (§3).
+4. **The 0802 block:** EXP-016 has priority. The manager will not merge an EXP-014 pre-registration claiming it while EXP-016's Part 1 is pending, and EXP-014 waits for the next block (§8).
+5. **Live:** DEC-021 as approved. Size and funding stay owner decisions (§9).
+6. **Tries:** at least 74 on P1. Exact counts are read from `data/tries.jsonl` when the `started` line is written (§5.4).
+7. **Timing:** EXP-016 targets a later walk, not walk 2 (§9).
+
+**Preconditions. No EXP-016 row (label, feature or table) is built before all of these hold:**
+- **P1, the V parser fix.** Some canonical PumpSwap pools carry a slightly negative V in a 16-byte signed tail field, which the current parser rejects as unreadable: 321 null pools in `pool_v_0909.json`, and 609 of 52,015 pools in the forward window. The label prices on vault + V, so the fix (in progress, a separate PR) must merge first.
+  - V is decoded at the pool's own value, sign included.
+  - If V is not constant over a pool's life, the label and the costs use the V in force at each print.
+  - The label definition follows whatever pricing the fix establishes. The V source for every pool and for the confirmation block is rebuilt with the fixed parser, and its sha256 is pinned in the tool by a reviewed commit before any row is built. EXP-015 §11 item 11's removal rule then applies only to pools that are still unpriceable after the fix.
+- **P2, pool attribution.** The builder verifies, with a unit test and a count on the real pool, that an EXP-012 fill (entry and exit) is never priced from a pool other than the mint's migration pool. The count is taken before `started` and is outcome-blind: pool ids only. A print from another pool inside a hold window is reported and never filled. If the frozen simulator does fill from another pool, the tool refuses before `started`, and the manager decides on a fix before any try is spent.
+- **P3, the pin.** The manager records this plan's head sha in a PR comment, and `quant-proof` reviews the bars.
+- **P4, the tool PR with tests:**
+  - **Label:** synthetic prints for a 3-slot dump (fires); an untaped drain (fires); a slow decline (does not fire); a dump after the tp exit (does not fire); a negative-V pool priced correctly.
+  - **Features:** causality checks. Shuffled future events, including events in the migration slot itself, must not change any feature, as `tools/test_exploration_entry_model.py` checks today. The per-block cluster pass must never use another mint's event at or after this mint's migration slot.
+- **P5, data.** EXP-015's P4 preconditions are recorded (or the run goes without P4 and says so). The build runs as a MiScusi job, one heavy job at a time.
 
 ## Sources
 
