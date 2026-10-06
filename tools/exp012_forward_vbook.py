@@ -49,7 +49,9 @@ LP LAW (DEC-016 Amendment 5 section 7(a), (c), (d)). `lphist-entered` (first arg
 pools every entered trade touched (frozen tape pass, so no V-priced result is opened), fetches their LP history over
 [window start - 1 h, final fetch end] (key read inside Python, never printed, <= 5 rps), writes a read-only file + meta, and
 appends a COMPLETED line to LPHIST_RUNS.jsonl beside the FINAL out dir. `--lphist FILE` (required unless --test-window) must be the
-FIRST completed line for the window (later runs are never used); its sha256 goes into the STARTED line. The merge meta must carry
+FIRST completed line for the window (later runs are never used); its sha256 goes into the STARTED line. Both subcommands take `--vmap-merge-meta` and `--final-fetch-map` (the FINAL fetch map: its .fetch.json and .detail.json must hash to the
+merge meta's sha256.fetch / sha256.final_detail; the merged OUT carries neither); the lphist run records the merge-meta sha256 and vbook requires
+it to match; lphist `t_to` must reach the final fetch's end; off the test window fetch_slot_max must be recorded; all before STARTED. The merge meta must carry
 `lp_moves` (sidecars sha-checked) and `--snapshot` files must hash to it. Each entered trade is priced at V0 at its entry fill
 slot (`pool_values`, `lp_min_rows`): same-slot events both ways, events inside the hold at entry-slot and exit-slot V0, the lower
 P&L per leg; unresolved, unexplained or ambiguous pools are null-V. Sensitivity (d)(i) (final-map V0) goes to `live_blockers` if its
@@ -532,15 +534,25 @@ class LpContext:
         return None
 
 
-def load_anchors(vmap_path: Path, merged: dict[str, int | None], meta: dict[str, Any] | None, snapshots: Sequence[Path]) -> tuple[dict[str, Any], int | None]:
-    """pool -> (V0, pending, (t0, t1) unix span) or a reason string; plus the final fetch's fetch_slot_max. A pool the merge filled
+def bind_final_fetch(final_fetch_map: Path, meta: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The FINAL fetch map's `.fetch.json` and `.detail.json` (the merged OUT carries neither). Each must hash to the merge meta's
+    `sha256.fetch` and `sha256.final_detail`, so a hand-copied file cannot switch off the supply-slot check. Returns (fetch doc, detail)."""
+    sh = meta.get("sha256") if isinstance(meta.get("sha256"), dict) else {}
+    fj, dj = vm.side(final_fetch_map, ".fetch.json"), vm.side(final_fetch_map, ".detail.json")
+    for f, key in ((fj, "fetch"), (dj, "final_detail")):
+        if not f.is_file():
+            raise Refused([f"--final-fetch-map: {f} is missing"])
+        if fw._sha256_file(f) != sh.get(key):
+            raise Refused([f"--final-fetch-map: {f} does not hash to the merge meta's sha256.{key}"])
+    return vm.load_json_dict(fj, "fetch file"), vm.load_detail(final_fetch_map)
+
+
+def load_anchors(fdoc: dict[str, Any], final_detail: dict[str, Any], merged: dict[str, int | None], meta: dict[str, Any] | None, snapshots: Sequence[Path]) -> tuple[dict[str, Any], int | None]:
+    """pool -> (V0, pending, fetch span) or a reason string; plus the final fetch's fetch_slot_max. A pool the merge filled
     from a snapshot is anchored at the LAST snapshot that has it (that snapshot's V0 and span); every other pool at the
-    final map's detail and span."""
+    final fetch's detail and span. V0 is `vm._v0` (a short account without pending counters has V0 = its stored V)."""
     import tools.pumpswap_virtual as pv
 
-    final_detail = vm.load_detail(vmap_path)
-    fj = vm.side(vmap_path, ".fetch.json")
-    fdoc = vm.load_json_dict(fj, "fetch file") if fj.is_file() else {}
     spans = (meta or {}).get("lp_moves", {}).get("fetch_spans_unix") if meta else None
     final_span = vm.span_of(fdoc) if fdoc else None  # carries fetch_slot_min/max when recorded
     if final_span is None and spans and spans[-1]:
@@ -567,7 +579,7 @@ def load_anchors(vmap_path: Path, merged: dict[str, int | None], meta: dict[str,
             detail, span = src[1], src[2]
         else:
             detail, span = final_detail, final_span
-        b = vm._b(detail, p)
+        b = vm._v0(detail, p, v)
         if b is None:
             out[p] = "no_v_base"
         elif span is None:
@@ -615,33 +627,41 @@ def first_lphist_run(ledger: Path, clean_clock: str, read_end: str, test_window:
     return None
 
 
-def build_lp_context(lphist: Path, ledger: Path, marker: dict[str, Any], test_window: bool, vmap: Path, merged: dict[str, int | None], meta: dict[str, Any] | None, meta_path: Path | None, snapshots: Sequence[Path]) -> tuple[LpContext, dict[str, Any]]:
-    """Every check that reads no V-priced row. Refuses unless `lphist` (with its meta) is the FIRST completed lphist-entered
-    run for the window, covers the window start - 1 h, and (non-test) the merge meta carries lp_moves and the snapshots it names."""
+def build_lp_context(lphist: Path, ledger: Path, marker: dict[str, Any], test_window: bool, merged: dict[str, int | None], meta: dict[str, Any], meta_path: Path, snapshots: Sequence[Path], final_fetch_map: Path) -> tuple[LpContext, dict[str, Any]]:
+    """Every check that reads no V-priced row; all refusals come before STARTED. `lphist` must be the FIRST completed lphist-entered
+    run for the window, recorded against THIS merge meta (sha256), cover the window start - 1 h and the final fetch's end; the merge meta
+    must carry lp_moves; the snapshots must hash to it; the final fetch map's `.fetch.json` and `.detail.json` must hash to it; off the test
+    window the final fetch must record fetch_slot_max."""
     lh = vm.LpHistory(lphist)
     first = first_lphist_run(ledger, marker["clean_clock"], marker["read_end"], test_window)
     if first is None:
         raise Refused([f"{ledger} has no completed lphist-entered line for this window"])
     if first.get("sha256") != lh.sha256:
         raise Refused([f"--lphist {lphist} sha256 {lh.sha256} is not the first completed lphist run for this window ({first.get('sha256')}, utc {first.get('utc_time')}); later runs are never used"])
+    meta_sha = fw._sha256_file(meta_path)
+    if first.get("merge_meta_sha256") != meta_sha or lh.meta.get("merge_meta_sha256") != meta_sha:
+        raise Refused(["the first lphist run was not recorded against this --vmap-merge-meta (merge_meta_sha256 differs)"])
     start = int(fw.parse_clock(marker["clean_clock"]).timestamp())
     if not (isinstance(lh.t_from, int) and lh.t_from <= start - LPHIST_PAD_S):
         raise Refused([f"--lphist range starts at {lh.t_from}, after the window start - 1 h ({start - LPHIST_PAD_S})"])
-    static_bad: dict[str, str] = {}
-    lp_info: dict[str, Any] = {}
+    static_bad, lp_info = load_lp_moves(meta, meta_path)
+    sh = meta.get("sha256", {}) if isinstance(meta.get("sha256"), dict) else {}
     snaps = sorted(snapshots, key=lambda x: x.name)
-    if meta is not None and meta_path is not None:
-        static_bad, lp_info = load_lp_moves(meta, meta_path)
-        sh = meta.get("sha256", {}) if isinstance(meta.get("sha256"), dict) else {}
-        if [fw._sha256_file(s) for s in snaps] != list(sh.get("snapshots", [])):
-            raise Refused(["--snapshot files (sorted by name) do not hash to the merge meta's sha256.snapshots"])
-        if [fw._sha256_file(vm.side(s, ".detail.json")) for s in snaps] != list(sh.get("snapshot_details", [])):
-            raise Refused(["--snapshot detail files do not hash to the merge meta's sha256.snapshot_details"])
-        if vm.side(vmap, ".detail.json").is_file() and fw._sha256_file(vm.side(vmap, ".detail.json")) != sh.get("final_detail"):
-            raise Refused(["the V map's detail file does not hash to the merge meta's sha256.final_detail"])
-    anchors, slot_max = load_anchors(vmap, merged, meta, snaps)
+    if [fw._sha256_file(s) for s in snaps] != list(sh.get("snapshots", [])):
+        raise Refused(["--snapshot files (sorted by name) do not hash to the merge meta's sha256.snapshots"])
+    if [fw._sha256_file(vm.side(s, ".detail.json")) for s in snaps] != list(sh.get("snapshot_details", [])):
+        raise Refused(["--snapshot detail files do not hash to the merge meta's sha256.snapshot_details"])
+    fdoc, final_detail = bind_final_fetch(final_fetch_map, meta)
+    fspan = vm.span_of(fdoc)
+    if fspan is None:
+        raise Refused(["the final fetch record has no usable span"])
+    if not (isinstance(lh.t_to, int) and lh.t_to >= fspan[1]):
+        raise Refused([f"--lphist range ends at {lh.t_to}, before the final fetch's end ({fspan[1]})"])
+    anchors, slot_max = load_anchors(fdoc, final_detail, merged, meta, snaps)
+    if slot_max is None and not test_window:
+        raise Refused(["the final fetch records no fetch_slot_max: the supply-slot check cannot run"])
     ctx = LpContext(lh, anchors, static_bad, slot_max)
-    info = {"lphist_sha256": lh.sha256, "lphist_meta_sha256": lh.meta_sha256, "first_run_utc": first.get("utc_time"), "n_pools": lh.meta.get("n_pools"), "n_unresolved": lh.meta.get("n_unresolved"), "t_from_unix": lh.t_from, "t_to_unix": lh.t_to, "attempts": lh.meta.get("attempts"), "merge_lp_moves": lp_info}
+    info = {"lphist_sha256": lh.sha256, "lphist_meta_sha256": lh.meta_sha256, "first_run_utc": first.get("utc_time"), "n_pools": lh.meta.get("n_pools"), "n_unresolved": lh.meta.get("n_unresolved"), "t_from_unix": lh.t_from, "t_to_unix": lh.t_to, "attempts": lh.meta.get("attempts"), "merge_lp_moves": lp_info, "merge_meta_sha256": meta_sha, "final_fetch_slot_max": slot_max}
     return ctx, info
 
 
@@ -658,7 +678,7 @@ def plan_lp(rows: Sequence[dict[str, Any]], ctx: LpContext, merged: dict[str, in
         missing = [t for t in LP_TAGS if t not in r]
         if missing:
             raise Refused([f"entered row {r.get('mint')} has no {missing} tag(s): the LP tracking did not run; refusing (fail closed)"])
-        rec: dict[str, Any] = {"bad": {}, "hold": False, "same_slot": False, "changed": set()}
+        rec: dict[str, Any] = {"bad": {}, "hold": False, "same_slot": False, "changed": set(), "cands": {}}
         e, x = r["entry_slot"], r["exit_slot"]
         if x is None:
             x = r["last_slot"]
@@ -680,9 +700,10 @@ def plan_lp(rows: Sequence[dict[str, Any]], ctx: LpContext, merged: dict[str, in
                 continue
             rec["hold"] |= fl["hold"]
             rec["same_slot"] |= fl["same_slot"]
-            if res != [merged[pool]]:
+            if res != [merged[pool]]:  # candidates are THIS trade's own (its entry and exit slots), never another trade's
                 overrides.setdefault(pool, set()).update(res)
                 rec["changed"].add(pool)
+                rec["cands"][pool] = list(res)
         info[fw.key_of(r)] = rec
     return overrides, info
 
@@ -695,47 +716,86 @@ def write_vmap_file(path: Path, vmap: dict[str, int | None]) -> str:
     return fw._sha256_file(path)
 
 
-def lp_min_rows(base_rows: Sequence[dict[str, Any]], plan: tuple[dict[str, set[int]], dict[tuple[str, int], dict[str, Any]]], merged: dict[str, int | None], run_pass: Callable[[Path, str], list[dict[str, Any]]], map_dir: Path, tag: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Price every trade whose pools have several candidate V values at each of them and keep, per trade and per leg
-    (`flat`, `press` separately), the LOWER P&L. `run_pass(map_path, pass_tag)` is the adapter scoring pass at a given V map; the
-    caller bakes in k (entry and exit lag) and the entered-set check, so this is reusable at k(p50) and k(p90). Pass j gives each
-    overridden pool its j-th candidate (the last repeats); duplicate maps are skipped. A trade whose entry or exit slot
-    moves in a candidate pass (the exit trigger depends on V) is listed in `shifted`: its (e, x) classification no longer
-    holds, and the caller treats its pools as unresolved. Returns (rows, report) with the map files in map_dir."""
-    overrides, info = plan
+MAX_COMBOS = 64  # candidate combinations per trade; above it the trade's pools are null-V
+
+
+def lp_min_rows(base_rows: Sequence[dict[str, Any]], plan: tuple[dict[str, set[int]], dict[tuple[str, int], dict[str, Any]]], merged: dict[str, int | None], run_pass: Callable[[Path, str], list[dict[str, Any]]], map_dir: Path, tag: str, max_combos: int = MAX_COMBOS) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Price every trade that has candidate V values at each of them and keep, per trade and per leg (`flat`, `press`
+    separately), the LOWER P&L over the FULL PRODUCT of that trade's own candidates for its changed pools (<= max_combos,
+    else the trade is null-V). `run_pass(map_path, pass_tag)` is the adapter scoring pass at a V map and bakes in k (entry and
+    exit lag), so this is reusable at k(p50) and k(p90); it must not raise on an entered-set change. Candidates are per trade
+    (`info[key]["cands"]`): trades that share a changed pool are put in different groups so no map has to give one pool two values;
+    each group's passes cover its trades' products (mixed radix over the pools, wrapping).
+
+    The entered set is (A)'s. A mint a candidate pass enters that the base pass did not is NOT added (counted in
+    `n_would_add`). A trade the pass would drop, or whose entry or exit fill slot it would move, is listed in `shifted`
+    (key -> reasons): its (e, x) classification no longer holds, and the caller treats its pools as null-V. Returns (rows, report)."""
+    _unused, info = plan
     maps: list[dict[str, Any]] = []
-    if not overrides:
-        return list(base_rows), {"n_passes": 0, "maps": maps, "shifted": {}}
-    cand = {p: sorted(c) for p, c in overrides.items()}
-    n = max(len(c) for c in cand.values())
-    passes: list[dict[tuple[str, int], dict[str, Any]]] = []
-    seen: set[tuple] = set()
-    for j in range(n):
-        m = dict(merged)
-        for p, c in cand.items():
-            m[p] = c[min(j, len(c) - 1)]
-        sig = tuple(sorted((p, m[p]) for p in cand))
-        if sig in seen:
+    shifted: dict[tuple[str, int], set[str]] = {}
+    sched: dict[tuple[str, int], tuple[list[str], int]] = {}
+    for key, rec in sorted(info.items()):
+        pools = sorted(rec["changed"])
+        if not pools:
             continue
-        seen.add(sig)
-        path = map_dir / f"vmap-{tag}-{j}.json"
-        sha = write_vmap_file(path, m)
-        rows_j = run_pass(path, f"{tag}{j}")
-        passes.append({fw.key_of(r): r for r in rows_j})
-        maps.append({"tag": f"{tag}-{j}", "file": path.name, "sha256": sha, "n_overridden_pools": len(cand)})
-    affected = {k for k, rec in info.items() if rec["changed"]}
+        n = 1
+        for q in pools:
+            n *= len(rec["cands"][q])
+        if n > max_combos:
+            shifted.setdefault(key, set()).add("too_many_candidate_combinations")
+        else:
+            sched[key] = (pools, n)
+    groups: list[list[tuple[str, int]]] = []
+    for key in sched:  # greedy: a group holds no two trades with a changed pool in common
+        for g in groups:
+            if not any(set(sched[key][0]) & set(sched[o][0]) for o in g):
+                g.append(key)
+                break
+        else:
+            groups.append([key])
+    base_entered = {fw.key_of(r) for r in base_rows if r["entered"]}
+    by_key: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    would_add: set[tuple[str, int]] = set()
+    seen: set[tuple] = set()
+    for gi, g in enumerate(groups):
+        for j in range(max(sched[k][1] for k in g)):
+            m = dict(merged)
+            sig = []
+            for key in g:
+                pools, n = sched[key]
+                stride = 1
+                for q in pools:
+                    c = info[key]["cands"][q]
+                    m[q] = c[((j % n) // stride) % len(c)]
+                    sig.append((q, m[q]))
+                    stride *= len(c)
+            sig_t = tuple(sorted(sig))
+            if sig_t in seen:
+                continue
+            seen.add(sig_t)
+            path = map_dir / f"vmap-{tag}-{gi}-{j}.json"
+            sha = write_vmap_file(path, m)
+            rows_j = run_pass(path, f"{tag}{gi}-{j}")
+            for r in rows_j:
+                k = fw.key_of(r)
+                if r["entered"] and k not in base_entered:
+                    would_add.add(k)  # not added: the entered set is (A)'s
+                if k in g:
+                    by_key.setdefault(k, []).append(r)
+            maps.append({"tag": f"{tag}-{gi}-{j}", "file": path.name, "sha256": sha, "n_overridden_pools": len({q for k in g for q in sched[k][0]})})
     out: list[dict[str, Any]] = []
-    shifted: dict[tuple[str, int], str] = {}
     for r in base_rows:
         key = fw.key_of(r)
-        if key in affected:
-            rr = [bp[key] for bp in passes if key in bp]
+        if key in sched and by_key.get(key):
+            rr = by_key[key]
+            if any(not q["entered"] for q in rr):
+                shifted.setdefault(key, set()).add("entry_dropped_in_candidate_pass")
             if any((q.get("entry_slot"), q.get("exit_slot")) != (r.get("entry_slot"), r.get("exit_slot")) for q in rr):
-                shifted[key] = "entry_or_exit_slot_moved_with_v"
+                shifted.setdefault(key, set()).add("entry_or_exit_slot_moved_with_v")
             flat, press = min(q["flat"] for q in rr), min(q["press"] for q in rr)
             r = {**r, "flat": flat, "press": press, "flat_sol": flat / fw.LAMPORTS, "press_sol": press / fw.LAMPORTS}
         out.append(r)
-    return out, {"n_passes": len(passes), "maps": maps, "shifted": shifted}
+    return out, {"n_passes": len(maps), "n_groups": len(groups), "maps": maps, "shifted": shifted, "n_would_add": len(would_add)}
 
 
 def with_lp_bad(rows: Sequence[dict[str, Any]], info: dict[tuple[str, int], dict[str, Any]], shifted: dict[tuple[str, int], str]) -> list[dict[str, Any]]:
@@ -752,7 +812,7 @@ def with_lp_bad(rows: Sequence[dict[str, Any]], info: dict[tuple[str, int], dict
     return out
 
 
-def lp_counts(info: dict[tuple[str, int], dict[str, Any]], shifted: dict[tuple[str, int], str]) -> dict[str, Any]:
+def lp_counts(info: dict[tuple[str, int], dict[str, Any]], shifted: dict[tuple[str, int], Any], n_would_add: int = 0) -> dict[str, Any]:
     def n(pred: Callable[[dict[str, Any]], bool]) -> int:
         return sum(1 for r in info.values() if pred(r))
 
@@ -769,7 +829,11 @@ def lp_counts(info: dict[tuple[str, int], dict[str, Any]], shifted: dict[tuple[s
         "n_entered_touching_lphist_unresolved": n(lambda r: any(w.startswith(("lphist_unresolved", "not_in_lphist", "lphist_window", "supply_read")) for w in r["bad"].values())),
         "n_entered_touching_ambiguous_or_inconsistent": n(lambda r: any(w in ("ambiguous_anchor_placement", "no_consistent_v0", "too_many_ambiguous_events", "event_slot_missing") for w in r["bad"].values())),
         "n_entered_touching_any_unresolved": n(lambda r: bool(r["bad"])),
-        "n_entered_slot_shifted_by_v": len(shifted),
+        "n_entered_slot_moved_in_candidate_pass": sum(1 for v in shifted.values() if "entry_or_exit_slot_moved_with_v" in v),
+        "n_entered_dropped_in_candidate_pass": sum(1 for v in shifted.values() if "entry_dropped_in_candidate_pass" in v),
+        "n_entered_over_combo_cap": sum(1 for v in shifted.values() if "too_many_candidate_combinations" in v),
+        "n_entered_multi_pool_product": n(lambda r: len(r["changed"]) >= 2),
+        "n_mints_candidate_pass_would_add_not_added": n_would_add,
         "same_slot_rule": "tape rows carry no usable transaction position against an LP event, so every same-slot event is priced both ways (lower P&L)",
     }
 
@@ -783,7 +847,7 @@ def book_summary(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]])
 # --- lphist-entered ---------------------------------------------------------------------
 
 
-def run_lphist_entered(walk_dir: Path, final_out_dir: Path, final_ledger: Path, vmap: Path, vmap_sha256: str, out: Path, artifact_dir: Path = fw.DEFAULT_ARTIFACT_DIR, freeze_commit: str | None = fw.DEFAULT_FREEZE_COMMIT, frozen_manifest_md5: str | None = None, test_window: bool = False, score_fn: ScoreFn = score_hours_v, rpc: Callable[[str, list], Any] | None = None, rps: float = 5.0, sleep: Callable[[float], None] | None = None) -> dict[str, Any]:
+def run_lphist_entered(walk_dir: Path, final_out_dir: Path, final_ledger: Path, vmap: Path, vmap_sha256: str, out: Path, artifact_dir: Path = fw.DEFAULT_ARTIFACT_DIR, freeze_commit: str | None = fw.DEFAULT_FREEZE_COMMIT, frozen_manifest_md5: str | None = None, test_window: bool = False, score_fn: ScoreFn = score_hours_v, vmap_merge_meta: Path | None = None, final_fetch_map: Path | None = None, rpc: Callable[[str, list], Any] | None = None, rps: float = 5.0, sleep: Callable[[float], None] | None = None) -> dict[str, Any]:
     """After the FINAL (A) read: the LP history of every pool an entered trade touched (Am.5 s5 touch: any pumpswap pool the
     mint printed on in the scoring worker's tape), over [window start - 1 h, the final fetch's end]. Reads pool fields and
     transaction logs only. The tape pass is FROZEN pricing (no V), so it shows nothing but (A), which is already read; no V-priced
@@ -801,14 +865,18 @@ def run_lphist_entered(walk_dir: Path, final_out_dir: Path, final_ledger: Path, 
     cc, re_ = fw.parse_clock(marker["clean_clock"]), fw.parse_clock(marker["read_end"])
     fw.check_window(cc, re_, test_window)
     vinfo = check_vmap(vmap, vmap_sha256)
+    if vmap_merge_meta is None or final_fetch_map is None:
+        raise Refused(["lphist-entered needs --vmap-merge-meta and --final-fetch-map"])
+    merge_doc = check_merge_meta(vmap_merge_meta, vmap_sha256)  # non-dry, new: true, after the cutoff
+    merge_sha = fw._sha256_file(vmap_merge_meta)
     meta_path = vm.side(out, ".meta.json")
     for p in (out, meta_path):
         if p.exists():
             raise Refused([f"{p} exists; refusing to overwrite"])
-    fj = vm.side(vmap, ".fetch.json")
-    span = vm.span_of(vm.load_json_dict(fj, "fetch file")) if fj.is_file() else None
+    fdoc, _detail = bind_final_fetch(final_fetch_map, merge_doc)
+    span = vm.span_of(fdoc)
     if span is None:
-        raise Refused([f"{fj} is missing or has no usable fetch span: the lphist range ends at the final fetch's end"])
+        raise Refused(["the final fetch record has no usable span: the lphist range ends at the final fetch's end"])
     t_from, t_to = int(cc.timestamp()) - LPHIST_PAD_S, span[1]
     run_start = datetime.now(timezone.utc)
     errors = s12.check_frozen(artifact_dir, frozen_manifest_md5, freeze_commit)
@@ -844,9 +912,9 @@ def run_lphist_entered(walk_dir: Path, final_out_dir: Path, final_ledger: Path, 
     n_unres = sum(1 for e in hist.values() if not e["resolved"])
     sha = fw._sha256_file(out)
     utc = _utc()
-    meta = {"sha256": sha, "n_pools": len(hist), "n_unresolved": n_unres, "n_events": sum(len(e["events"]) for e in hist.values()), "calls": calls, "utc": utc, "t_from_unix": t_from, "t_to_unix": t_to, "pools_sha256": fw._sha256_file(pools_path), "vmap_sha256": vinfo["sha256"], "run_start_utc": run_start.strftime(TS_FMT), "run_start_unix": int(run_start.timestamp()), "attempts": attempts, "kind": "entered_touch_pools", "reasons": {r: sum(1 for e in hist.values() if e["reason"] == r) for r in sorted({e["reason"] for e in hist.values() if e["reason"]})}}
+    meta = {"sha256": sha, "n_pools": len(hist), "n_unresolved": n_unres, "n_events": sum(len(e["events"]) for e in hist.values()), "calls": calls, "utc": utc, "t_from_unix": t_from, "t_to_unix": t_to, "pools_sha256": fw._sha256_file(pools_path), "vmap_sha256": vinfo["sha256"], "merge_meta_sha256": merge_sha, "run_start_utc": run_start.strftime(TS_FMT), "run_start_unix": int(run_start.timestamp()), "attempts": attempts, "kind": "entered_touch_pools", "reasons": {r: sum(1 for e in hist.values() if e["reason"] == r) for r in sorted({e["reason"] for e in hist.values() if e["reason"]})}}
     vm._write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n", readonly=True)
-    line = {"schema": SCHEMA_LPHIST_RUN, "state": "COMPLETED", "clean_clock": marker["clean_clock"], "read_end": marker["read_end"], "test_window": bool(test_window), "sha256": sha, "meta_sha256": fw._sha256_file(meta_path), "utc_time": utc, "n_pools": len(hist), "n_unresolved": n_unres, "attempts": attempts, "out": str(out.resolve())}
+    line = {"schema": SCHEMA_LPHIST_RUN, "state": "COMPLETED", "clean_clock": marker["clean_clock"], "read_end": marker["read_end"], "test_window": bool(test_window), "sha256": sha, "meta_sha256": fw._sha256_file(meta_path), "merge_meta_sha256": merge_sha, "utc_time": utc, "n_pools": len(hist), "n_unresolved": n_unres, "attempts": attempts, "out": str(out.resolve())}
     fw.ledger_append(final_out_dir.resolve().parent / LPHIST_RUNS_NAME, line)
     return line
 
@@ -859,6 +927,8 @@ def lphist_entered_main(argv: Sequence[str]) -> int:
     ap.add_argument("--vmap", required=True)
     ap.add_argument("--vmap-sha256", required=True)
     ap.add_argument("--out", required=True, help="the lphist file; OUT.meta.json and OUT.pools.json are written beside it")
+    ap.add_argument("--vmap-merge-meta", required=True, help="the merge's OUT.merge.json; its sha256 is recorded in the lphist meta and the LPHIST_RUNS line")
+    ap.add_argument("--final-fetch-map", required=True, help="the FINAL fetch map; its .fetch.json and .detail.json must hash to the merge meta")
     ap.add_argument("--rps", type=float, default=5.0)
     ap.add_argument("--test-window", action="store_true")
     ap.add_argument("--artifact-dir", default=None)
@@ -866,7 +936,7 @@ def lphist_entered_main(argv: Sequence[str]) -> int:
     ap.add_argument("--frozen-manifest-md5", default=None)
     a = ap.parse_args(list(argv))
     try:
-        line = run_lphist_entered(Path(a.walk_dir), Path(a.final_out_dir), Path(a.final_ledger), Path(a.vmap), a.vmap_sha256, Path(a.out), Path(a.artifact_dir) if a.artifact_dir else fw.DEFAULT_ARTIFACT_DIR, a.freeze_commit or fw.DEFAULT_FREEZE_COMMIT, a.frozen_manifest_md5, a.test_window, rps=a.rps)
+        line = run_lphist_entered(Path(a.walk_dir), Path(a.final_out_dir), Path(a.final_ledger), Path(a.vmap), a.vmap_sha256, Path(a.out), Path(a.artifact_dir) if a.artifact_dir else fw.DEFAULT_ARTIFACT_DIR, a.freeze_commit or fw.DEFAULT_FREEZE_COMMIT, a.frozen_manifest_md5, a.test_window, vmap_merge_meta=Path(a.vmap_merge_meta), final_fetch_map=Path(a.final_fetch_map), rps=a.rps)
     except Refused as exc:
         return _refuse(exc)
     except (SystemExit, Exception) as exc:  # noqa: BLE001
@@ -898,6 +968,7 @@ def run_vbook(
     runs_ledger: Path | None = None,
     lphist: Path | None = None,
     snapshots: Sequence[Path] = (),
+    final_fetch_map: Path | None = None,
 ) -> dict[str, Any]:
     if test_window and str(walk_dir.resolve()).startswith(REAL_BLOCKS_PREFIX):
         raise Refused([f"--test-window is refused on a walk dir under {REAL_BLOCKS_PREFIX}"])
@@ -918,7 +989,9 @@ def run_vbook(
     if lphist is not None:  # no V-priced row is read here
         from tools.pumpswap_virtual import load_map
 
-        lp_ctx, lp_info = build_lp_context(lphist, final_out_dir.resolve().parent / LPHIST_RUNS_NAME, marker, test_window, vmap, load_map(vmap), merge_doc, vmap_merge_meta, snapshots)
+        if vmap_merge_meta is None or merge_doc is None or final_fetch_map is None:
+            raise Refused(["--lphist needs --vmap-merge-meta and --final-fetch-map (the FINAL fetch map whose .fetch.json and .detail.json the merge meta binds)"])
+        lp_ctx, lp_info = build_lp_context(lphist, final_out_dir.resolve().parent / LPHIST_RUNS_NAME, marker, test_window, load_map(vmap), merge_doc, vmap_merge_meta, snapshots, final_fetch_map)
     if out_dir.exists():
         raise Refused([f"{out_dir} exists; every run needs a new --out-dir"])
     errors = s12.check_frozen(artifact_dir, frozen_manifest_md5, freeze_commit)
@@ -975,17 +1048,13 @@ def run_vbook(
             map_dir = scratch_root / "vmaps"
 
             def run_pass(path: Path, tag: str) -> list[dict[str, Any]]:
-                rows_j = one(tag, "v", False, path)[0]
-                bad_j = check_entered_set(a_rows, rows_j, f"LP-law pass {tag}")
-                if bad_j:
-                    raise Refused(bad_j)
-                return rows_j
+                return one(tag, "v", False, path)[0]  # never refuses: an entered-set change is handled in lp_min_rows
 
             plan = plan_lp(v_rows, lp_ctx, merged, True)
             min_rows, minfo = lp_min_rows(v_rows, plan, merged, run_pass, map_dir, "c")
             b_rows = with_lp_bad(min_rows, plan[1], minfo["shifted"])
             primary = book_summary(b_rows, runs)
-            sens = book_summary(v_rows, runs)  # (d)(i): every LP-moved entered pool at its final-map V0
+            sens = book_summary(with_lp_bad(v_rows, plan[1], {}), runs)  # (d)(i): LP-moved pools at their final-map V0, same null-V set
             if sens["verdict"] != primary["verdict"]:
                 extra_blockers.append(f"sensitivity (d)(i): (B) with LP-moved pools at their final-map V0 is {sens['verdict']}, the primary (c) is {primary['verdict']}")
             plan0 = plan_lp(v_rows, lp_ctx, merged, False)  # (d)(ii): pending = 0, report only
@@ -995,7 +1064,7 @@ def run_vbook(
                 map_bytes[f.name] = f.read_bytes()
             lp_rep = {
                 "lphist": lp_info,
-                "counts": lp_counts(plan[1], minfo["shifted"]),
+                "counts": lp_counts(plan[1], minfo["shifted"], minfo["n_would_add"]),
                 "vmaps": [{**m, "kind": "primary_c"} for m in minfo["maps"]] + [{**m, "kind": "pending0_report_only"} for m in minfo0["maps"]],
                 "primary_map_is_the_merged_final_map": vinfo["sha256"],
                 "sensitivity_final_map_v0": {**{k: sens[k] for k in ("verdict", "gate_verdict", "n_entered")}, "differs_from_primary": sens["verdict"] != primary["verdict"], "flat_15": sens["flat_15"], "pressure_scale_1": sens["pressure_scale_1"]},
@@ -1110,6 +1179,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--vmap-merge-meta", default=None, help="the V map merge's OUT.merge.json (sha256.out must equal --vmap-sha256); required unless --test-window")
     ap.add_argument("--runs-ledger", default=None, help="default: VBOOK_RUNS.jsonl beside the FINAL out dir")
     ap.add_argument("--lphist", default=None, help="the lphist-entered output; refused unless it is the FIRST completed run for the window in LPHIST_RUNS.jsonl; required unless --test-window")
+    ap.add_argument("--final-fetch-map", default=None, help="the FINAL fetch map (the file given to `fetch --new`): its .fetch.json and .detail.json must hash to the merge meta's sha256.fetch and sha256.final_detail; required with --lphist")
     ap.add_argument("--snapshot", action="append", default=[], help="a V map snapshot named by the merge meta (repeatable; sha256-checked against it)")
     ap.add_argument("--test-window", action="store_true", help="accept only a test_window FINAL marker (fixture windows)")
     ap.add_argument("--artifact-dir", default=None)
@@ -1123,7 +1193,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(a.artifact_dir) if overridden else fw.DEFAULT_ARTIFACT_DIR, a.freeze_commit or fw.DEFAULT_FREEZE_COMMIT,
             a.frozen_manifest_md5, a.test_window,
             vmap_merge_meta=Path(a.vmap_merge_meta) if a.vmap_merge_meta else None, runs_ledger=Path(a.runs_ledger) if a.runs_ledger else None,
-            lphist=Path(a.lphist) if a.lphist else None, snapshots=[Path(x) for x in a.snapshot],
+            lphist=Path(a.lphist) if a.lphist else None, snapshots=[Path(x) for x in a.snapshot], final_fetch_map=Path(a.final_fetch_map) if a.final_fetch_map else None,
         )
     except Refused as exc:
         return _refuse(exc)

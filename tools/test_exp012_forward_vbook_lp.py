@@ -8,8 +8,12 @@ Run: PYTHONPATH=$PWD python -m pytest -q tools/test_exp012_forward_vbook_lp.py
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
+import os
+import time
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -125,19 +129,100 @@ def row(mint, flat, press, e=1, x=2):
     return {"mint": mint, "mig_ms": 1, "entered": True, "flat": flat, "press": press, "flat_sol": flat / 1e9, "press_sol": press / 1e9, "entry_slot": e, "exit_slot": x, "no_v_pools": []}
 
 
+def info_of(key, cands, **kw):
+    return {key: {"changed": set(cands), "cands": {q: list(v) for q, v in cands.items()}, "bad": {}, "hold": True, "same_slot": False, **kw}}
+
+
+def tmpdir() -> Path:
+    return Path(__import__("tempfile").mkdtemp())
+
+
 def test_min_is_taken_separately_per_leg_and_only_for_affected_trades() -> None:
     base = [row("a", 5.0, 5.0), row("b", 7.0, 7.0)]
-    passes = {"c0": [row("a", 1.0, 9.0), row("b", 0.0, 0.0)], "c1": [row("a", 4.0, 2.0), row("b", 0.0, 0.0)]}
-    info = {("a", 1): {"changed": {"p"}, "bad": {}, "hold": True, "same_slot": False}, ("b", 1): {"changed": set(), "bad": {}, "hold": False, "same_slot": False}}
-    d = Path(__import__("tempfile").mkdtemp())
-    out, rep = vb.lp_min_rows(base, ({"p": {10, 20}}, info), {"p": 15}, lambda path, tag: passes[tag], d, "c")
-    assert rep["n_passes"] == 2 and [m["tag"] for m in rep["maps"]] == ["c-0", "c-1"]
+    passes = {"c0-0": [row("a", 1.0, 9.0), row("b", 0.0, 0.0)], "c0-1": [row("a", 4.0, 2.0), row("b", 0.0, 0.0)]}
+    info = {**info_of(("a", 1), {"p": [10, 20]}), ("b", 1): {"changed": set(), "cands": {}, "bad": {}, "hold": False, "same_slot": False}}
+    d = tmpdir()
+    out, rep = vb.lp_min_rows(base, ({}, info), {"p": 15}, lambda path, tag: passes[tag], d, "c")
+    assert rep["n_passes"] == 2 and [m["tag"] for m in rep["maps"]] == ["c-0-0", "c-0-1"]
     a, b = out
     assert (a["flat"], a["press"]) == (1.0, 2.0)  # the lower of each leg, from different passes
     assert (a["flat_sol"], a["press_sol"]) == (1e-9, 2e-9)
     assert b["flat"] == 7.0  # not affected: untouched
     assert [load_map(d / m["file"])["p"] for m in rep["maps"]] == [10, 20]
     assert all(m["sha256"] == fw._sha256_file(d / m["file"]) for m in rep["maps"])
+
+
+def test_full_product_over_a_trades_changed_pools_finds_the_cross_combination() -> None:
+    base = [row("a", 9.0, 9.0)]
+    table = {(10, 30): 5.0, (10, 40): 3.0, (20, 30): 4.0, (20, 40): 8.0}  # the minimum 3.0 is the cross (10, 40): neither pool's own extreme path finds it
+
+    def run_pass(path, tag):
+        m = load_map(path)
+        return [row("a", table[(m["p"], m["q"])], table[(m["p"], m["q"])] + 1)]
+
+    d = tmpdir()
+    out, rep = vb.lp_min_rows(base, ({}, info_of(("a", 1), {"p": [10, 20], "q": [30, 40]})), {"p": 15, "q": 35}, run_pass, d, "c")
+    assert rep["n_passes"] == 4  # 2 x 2 products
+    assert (out[0]["flat"], out[0]["press"]) == (3.0, 4.0)
+    assert not rep["shifted"]
+
+
+def test_over_the_combo_cap_the_trade_is_null_v_and_no_pass_is_run() -> None:
+    cands = {f"p{i}": [1, 2] for i in range(7)}  # 128 > 64
+    calls = []
+    d = tmpdir()
+    out, rep = vb.lp_min_rows([row("a", 5.0, 5.0)], ({}, info_of(("a", 1), cands)), {k: 0 for k in cands}, lambda path, tag: calls.append(tag) or [], d, "c")
+    assert calls == [] and rep["shifted"] == {("a", 1): {"too_many_candidate_combinations"}}
+    assert out[0]["flat"] == 5.0
+    rows = [{**out[0], "no_v_pools": []}]
+    assert vb.with_lp_bad(rows, info_of(("a", 1), cands), rep["shifted"])[0]["no_v_pools"] == sorted(cands)
+    assert vb.lp_counts(info_of(("a", 1), cands), rep["shifted"])["n_entered_over_combo_cap"] == 1
+
+
+def test_candidates_are_per_trade_and_trades_sharing_a_pool_get_separate_groups() -> None:
+    base = [row("a", 9.0, 9.0), {**row("b", 9.0, 9.0), "mig_ms": 2}]
+    info = {**info_of(("a", 1), {"p": [10, 20]}), **info_of(("b", 2), {"p": [50]})}  # b never sees a's 10 / 20, a never sees b's 50
+    seen = []
+
+    def run_pass(path, tag):
+        v = load_map(path)["p"]
+        seen.append(v)
+        return [row("a", float(v), float(v)), {**row("b", float(v), float(v)), "mig_ms": 2}]
+
+    d = tmpdir()
+    out, rep = vb.lp_min_rows(base, ({}, info), {"p": 15}, run_pass, d, "c")
+    assert rep["n_groups"] == 2
+    assert sorted(seen) == [10, 20, 50]
+    assert out[0]["flat"] == 10.0 and out[1]["flat"] == 50.0  # a: min over {10, 20}; b: only 50
+
+
+def test_entered_set_change_in_a_candidate_pass_nulls_the_trade_adds_nothing_and_never_raises() -> None:
+    base = [row("a", 5.0, 5.0), {**row("x", 5.0, 5.0), "mig_ms": 2, "entered": False}]
+
+    def run_pass(path, tag):
+        return [{**row("a", 1.0, 1.0), "entered": False}, {**row("x", 0.0, 0.0), "mig_ms": 2, "entered": True}]  # drops a, would add x
+
+    d = tmpdir()
+    info = info_of(("a", 1), {"p": [10]})
+    out, rep = vb.lp_min_rows(base, ({}, info), {"p": 15}, run_pass, d, "c")
+    assert rep["shifted"] == {("a", 1): {"entry_dropped_in_candidate_pass"}}
+    assert rep["n_would_add"] == 1
+    assert [r["mint"] for r in out if r["entered"]] == ["a"]  # x is not added: the entered set is (A)'s
+    c = vb.lp_counts(info, rep["shifted"], rep["n_would_add"])
+    assert (c["n_entered_dropped_in_candidate_pass"], c["n_mints_candidate_pass_would_add_not_added"]) == (1, 1)
+
+
+def test_a_slot_move_in_a_candidate_pass_is_counted() -> None:
+    info = info_of(("a", 1), {"p": [10]})
+    out, rep = vb.lp_min_rows([row("a", 5.0, 5.0)], ({}, info), {"p": 15}, lambda path, tag: [row("a", 1.0, 1.0, x=9)], tmpdir(), "c")
+    assert vb.lp_counts(info, rep["shifted"])["n_entered_slot_moved_in_candidate_pass"] == 1
+
+
+def test_short_account_anchor_is_its_stored_v_with_zero_pending() -> None:
+    fdoc = {"fetch_started_utc": "2026-10-16T01:00:00Z", "fetch_ended_utc": "2026-10-16T01:10:00Z"}
+    anchors, _ = vb.load_anchors(fdoc, {"p": {"pending": None, "v_base": None}, "q": {"pending": 5}}, {"p": 777, "q": 888}, None, [])
+    assert anchors["p"][:2] == (777, 0)
+    assert anchors["q"] == "no_v_base"  # pending is an int and v_base is missing: unknown, never the stored V
 
 
 def test_slots_recorded_in_the_fetch_are_used_for_the_anchor_span() -> None:
@@ -152,7 +237,7 @@ def test_slots_recorded_in_the_fetch_are_used_for_the_anchor_span() -> None:
 
 def test_a_slot_shift_under_the_candidate_map_marks_the_trade() -> None:
     base = [row("a", 5.0, 5.0)]
-    info = {("a", 1): {"changed": {"p"}, "bad": {}, "hold": True, "same_slot": False}}
+    info = info_of(("a", 1), {"p": [10]})
     d = Path(__import__("tempfile").mkdtemp())
     out, rep = vb.lp_min_rows(base, ({"p": {10}}, info), {"p": 15}, lambda path, tag: [row("a", 1.0, 1.0, x=9)], d, "c")
     assert ("a", 1) in rep["shifted"]
@@ -187,71 +272,94 @@ def test_merge_meta_without_lp_moves_is_refused_and_sidecars_are_sha_checked(tmp
 
 
 class LpBase(VBase):
-    def prep(self, out: Path, events: dict[str, list[dict]] | None = None, unresolved: dict[str, str] | None = None, meta: bool = False, unexplained: tuple = (), merge_unresolved: dict | None = None, **ent_extra) -> dict:
-        """The V map (+ detail + fetch), an lphist file with meta, its ledger line, and optionally a merge meta with sidecars."""
+    def setUp(self) -> None:
+        super().setUp()
+        for target in (mock.patch.object(vm, "CUTOFF", "2026-10-01T00:00:00Z"), mock.patch.object(vb, "CUTOFF", "2026-10-01T00:00:00Z"), mock.patch.object(time, "sleep")):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def prep(self, out: Path, events: dict[str, list[dict]] | None = None, unresolved: dict[str, str] | None = None, meta_edit=None, unexplained: tuple = (), merge_unresolved: dict | None = None, **ent_extra) -> dict:
+        """A REAL merge: `fetch` (snapshot), `snapshot`, `fetch --new` (the FINAL fetch map) and `merge` through exp012_forward_vmap, so the
+        V map vbook gets is a real merge OUT (no .detail.json / .fetch.json beside it). Then an lphist file with meta and its ledger line."""
         events = events or {}
         d = out.parent
-        vmap, detail = {}, {}
-        for p in POOLS:
-            evs = chain_events(events.get(p, []))
-            v0 = lph.replay_forward(X0, evs)
-            vmap[p], detail[p] = v0 - PEND, {"pending": PEND, "v_base": v0}
-            if p in unexplained or p in (merge_unresolved or {}):
-                vmap[p] = None  # the merge writes held pools as null in OUT
-        path = d / "pool_v.json"
-        sha = write_vmap(path, vmap)
-        vm.side(path, ".detail.json").write_text(json.dumps(detail) + "\n")
-        fj = {"fetch_started_utc": "2026-10-16T01:00:00Z", "fetch_ended_utc": "2026-10-16T01:10:00Z", "fetch_slot_min": 9000, "fetch_slot_max": 9010, "new": True}
-        vm.side(path, ".fetch.json").write_text(json.dumps(fj) + "\n")
+        v0s = {pool: lph.replay_forward(X0, chain_events(events.get(pool, []))) for pool in POOLS}
+        (d / "pools.json").write_text(json.dumps(sorted(POOLS)))
+
+        def fetch_at(slot):
+            return lambda chunk: [(v0s[q] - PEND, None, {"pending": PEND, "v_base": v0s[q], "lp_supply": S, "slot": slot}) for q in chunk]
+
+        def do_fetch(path: Path, new: bool, slot: int) -> None:
+            ns = argparse.Namespace(pools=str(d / "pools.json"), vmap=str(path), rps=5.0, new=new)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(vm.cmd_fetch(ns, fetch=fetch_at(slot)), 0)
+
+        do_fetch(d / "snapsrc.json", False, 8000)
+        with redirect_stdout(io.StringIO()):
+            vm.cmd_snapshot(argparse.Namespace(vmap=str(d / "snapsrc.json"), out=str(d / "snaps")))
+        snap = [x for x in (d / "snaps").glob("vmap-snapshot-*.json") if ".json." not in x.name][0]
+        ffm = d / "ffm.json"
+        do_fetch(ffm, True, 9005)  # the FINAL fetch map (fetch --new)
+        out_map = d / "pool_v.json"
+        ns = argparse.Namespace(final=str(ffm), pools=str(d / "pools.json"), snapshot=[str(snap)], snapshot_fetch=[], dry_run=False, lphist=[], out=str(out_map))
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(vm.cmd_merge(ns), 0)
+        mp = Path(str(out_map) + ".merge.json")
+        doc = json.loads(mp.read_text())
+        for key, content in (("unexplained", sorted(unexplained)), ("unresolved", merge_unresolved or {})):
+            if content:
+                f = d / doc["lp_moves"][f"{key}_file"]
+                os.chmod(f, 0o644)
+                f.write_text(json.dumps(content))
+                doc["lp_moves"][f"{key}_sha256"] = fw._sha256_file(f)
+        if meta_edit:
+            meta_edit(doc)
+        os.chmod(mp, 0o644)
+        mp.write_text(json.dumps(doc))
+        self.meta_sha = fw._sha256_file(mp)
         marker = vb.find_final_marker(out, d / "ledger.jsonl", True)
         t_from = int(fw.parse_clock(marker["clean_clock"]).timestamp()) - 3600
+        self.span = vm.span_of(json.loads(vm.side(ffm, ".fetch.json").read_text()))
+        self.t_to = self.span[1]
         hist = {}
-        for p in POOLS:
-            if p in (unresolved or {}):
-                hist[p] = {"lp_mint": pk(9), "events": [], "resolved": False, "reason": unresolved[p], "lp_supply": None, "attempts": 1}
+        for pool in POOLS:
+            if pool in (unresolved or {}):
+                hist[pool] = {"lp_mint": pk(9), "events": [], "resolved": False, "reason": unresolved[pool], "lp_supply": None, "attempts": 1}
             else:
-                hist[p] = {"lp_mint": pk(9), "events": chain_events(events.get(p, [])), "resolved": True, "reason": None, "lp_supply": 1, "supply_slot": 10000, "attempts": 1, **ent_extra}
+                hist[pool] = {"lp_mint": pk(9), "events": chain_events(events.get(pool, [])), "resolved": True, "reason": None, "lp_supply": 1, "supply_slot": 10000, "attempts": 1, **ent_extra}
         lh = self.write_lphist(out, hist, t_from, name="lph1.json")
-        res = {"vpath": path, "sha": sha, "lphist": lh, "t_from": t_from, "meta": None}
-        if meta:
-            res["meta"] = self.write_meta(d, sha, path, unexplained, merge_unresolved or {})
-        return res
+        return {"vpath": out_map, "sha": fw._sha256_file(out_map), "lphist": lh, "t_from": t_from, "meta": mp, "ffm": ffm, "snap": snap}
 
-    def write_lphist(self, out: Path, hist: dict, t_from: int, name: str, ledger: bool = True, t_to: int = T1) -> Path:
+    def write_lphist(self, out: Path, hist: dict, t_from: int, name: str, ledger: bool = True, t_to: int | None = None, meta_sha: str | None = None) -> Path:
         d = out.parent
         f = d / name
         f.write_text(json.dumps(hist, sort_keys=True) + "\n")
         sha = fw._sha256_file(f)
+        msha = meta_sha or self.meta_sha
         mp = f.with_name(f.name + ".meta.json")
-        mp.write_text(json.dumps({"sha256": sha, "n_pools": len(hist), "n_unresolved": sum(1 for e in hist.values() if not e["resolved"]), "t_from_unix": t_from, "t_to_unix": t_to, "attempts": []}) + "\n")
+        mp.write_text(json.dumps({"sha256": sha, "n_pools": len(hist), "n_unresolved": sum(1 for e in hist.values() if not e["resolved"]), "t_from_unix": t_from, "t_to_unix": self.t_to if t_to is None else t_to, "merge_meta_sha256": msha, "attempts": []}) + "\n")
         if ledger:
             marker = vb.find_final_marker(out, d / "ledger.jsonl", True)
-            fw.ledger_append(d / vb.LPHIST_RUNS_NAME, {"state": "COMPLETED", "clean_clock": marker["clean_clock"], "read_end": marker["read_end"], "test_window": True, "sha256": sha, "utc_time": "2026-10-16T01:30:00Z", "n_pools": len(hist), "n_unresolved": 0, "attempts": []})
+            fw.ledger_append(d / vb.LPHIST_RUNS_NAME, {"state": "COMPLETED", "clean_clock": marker["clean_clock"], "read_end": marker["read_end"], "test_window": True, "sha256": sha, "merge_meta_sha256": msha, "utc_time": "2026-10-16T01:30:00Z", "n_pools": len(hist), "n_unresolved": 0, "attempts": []})
         return f
 
-    def write_meta(self, d: Path, sha: str, vpath: Path, unexplained: tuple, merge_unresolved: dict) -> Path:
-        un, ur = d / "pool_v.merge.json.unexplained.json", d / "pool_v.merge.json.unresolved.json"
-        un.write_text(json.dumps(sorted(unexplained)))
-        ur.write_text(json.dumps(merge_unresolved))
-        meta = {
-            "sha256": {"out": sha, "final_detail": fw._sha256_file(vm.side(vpath, ".detail.json")), "snapshots": [], "snapshot_details": []},
-            "final_fetch": tvb.FRESH, "filled_pools": [],
-            "lp_moves": {"n_explained": 0, "n_unexplained": len(unexplained), "n_unresolved": len(merge_unresolved), "ceiling": 0.001, "unexplained_file": un.name, "unexplained_sha256": fw._sha256_file(un), "unresolved_file": ur.name, "unresolved_sha256": fw._sha256_file(ur), "fetch_spans_unix": [[T0, T1]]},
-        }
-        mp = d / "pool_v.merge.json"
-        mp.write_text(json.dumps(meta))
-        return mp
-
     def go(self, walk, art, out, p: dict, lphist: Path | None = None, vb_out: Path | None = None):
-        extra = ["--lphist", str(lphist or p["lphist"])]
-        if p["meta"]:
-            extra += ["--vmap-merge-meta", str(p["meta"])]
+        extra = ["--lphist", str(lphist or p["lphist"]), "--vmap-merge-meta", str(p["meta"]), "--final-fetch-map", str(p["ffm"]), "--snapshot", str(p["snap"])]
         rc, err = self.run_vbook(walk, art, out, p["vpath"], p["sha"], *extra, vb_out=vb_out)
         rep = None
         f = (vb_out or out.parent / "vb") / "vbook_report.json"
         if f.exists():
             rep = json.loads(f.read_text())
         return rc, err, rep
+
+    def direct(self, walk, art, out, p: dict, score_fn=vb.score_hours_v):
+        """run_vbook called directly (a custom score_fn); returns (report or None, Refused or None)."""
+        try:
+            with tfw.patched():
+                rep = vb.run_vbook(walk, out, out.parent / "ledger.jsonl", p["vpath"], p["sha"], out.parent / "vb", art, tvb.FREEZE_COMMIT, None, True, score_fn=score_fn, vmap_merge_meta=p["meta"], lphist=p["lphist"], final_fetch_map=p["ffm"], snapshots=[p["snap"]])
+            return rep, None
+        except fw.Refused as exc:
+            return None, exc
 
     def ledger_lines(self, out: Path) -> list[dict]:
         f = out.parent / vb.RUNS_LEDGER_NAME
@@ -347,7 +455,7 @@ class TestEndToEnd(LpBase):
     def test_merge_unexplained_and_unresolved_pools_are_null_v(self) -> None:
         for kw, key in (({"unexplained": ("pool-mB2",)}, "n_entered_touching_merge_unexplained"), ({"merge_unresolved": {"pool-mB2": "no_v_base"}}, "n_entered_touching_merge_unresolved")):
             walk, art, out = self.final()
-            p = self.prep(out, meta=True, **kw)
+            p = self.prep(out, **kw)
             rc, err, rep = self.go(walk, art, out, p)
             self.assertEqual(rc, 0, err)
             self.assertEqual(rep["b_verdict"], vb.NOT_DECIDABLE)
@@ -356,10 +464,7 @@ class TestEndToEnd(LpBase):
 
     def test_merge_meta_without_lp_moves_refuses_before_started(self) -> None:
         walk, art, out = self.final()
-        p = self.prep(out, meta=True)
-        doc = json.loads(p["meta"].read_text())
-        del doc["lp_moves"]
-        p["meta"].write_text(json.dumps(doc))
+        p = self.prep(out, meta_edit=lambda doc: doc.pop("lp_moves"))
         rc, err, rep = self.go(walk, art, out, p)
         self.assertEqual(rc, 2)
         self.assertIn("no lp_moves", err)
@@ -367,10 +472,7 @@ class TestEndToEnd(LpBase):
 
     def test_dry_run_merge_meta_is_refused(self) -> None:
         walk, art, out = self.final()
-        p = self.prep(out, meta=True)
-        doc = json.loads(p["meta"].read_text())
-        doc["dry_run"] = True
-        p["meta"].write_text(json.dumps(doc))
+        p = self.prep(out, meta_edit=lambda doc: doc.update(dry_run=True))
         rc, err, rep = self.go(walk, art, out, p)
         self.assertEqual(rc, 2)
         self.assertIn("dry-run", err)
@@ -411,7 +513,7 @@ class TestEndToEnd(LpBase):
         late = self.write_lphist(out, {}, p["t_from"] + 7200, "late.json", ledger=False)
         (out.parent / vb.LPHIST_RUNS_NAME).unlink()
         marker = vb.find_final_marker(out, out.parent / "ledger.jsonl", True)
-        fw.ledger_append(out.parent / vb.LPHIST_RUNS_NAME, {"state": "COMPLETED", "clean_clock": marker["clean_clock"], "read_end": marker["read_end"], "test_window": True, "sha256": fw._sha256_file(late), "utc_time": "x"})
+        fw.ledger_append(out.parent / vb.LPHIST_RUNS_NAME, {"state": "COMPLETED", "clean_clock": marker["clean_clock"], "read_end": marker["read_end"], "test_window": True, "sha256": fw._sha256_file(late), "merge_meta_sha256": self.meta_sha, "utc_time": "x"})
         rc, err, _ = self.go(walk, art, out, p, lphist=late)
         self.assertEqual(rc, 2)
         self.assertIn("after the window start - 1 h", err)
@@ -488,7 +590,7 @@ class TestLphistEntered(LpBase):
         return rpc, pools_seen
 
     def do_run(self, walk, art, out, p, name="lph.json", rpc=None):
-        return vb.run_lphist_entered(walk, out, out.parent / "ledger.jsonl", p["vpath"], p["sha"], out.parent / name, art, tvb.FREEZE_COMMIT, None, True, rpc=rpc, sleep=lambda s: None)
+        return vb.run_lphist_entered(walk, out, out.parent / "ledger.jsonl", p["vpath"], p["sha"], out.parent / name, art, tvb.FREEZE_COMMIT, None, True, vmap_merge_meta=p["meta"], final_fetch_map=p["ffm"], rpc=rpc, sleep=lambda s: None)
 
     def test_collects_the_pools_of_the_entered_set_and_logs_the_run(self) -> None:
         walk, art, out, p = self.final_with_map()
@@ -501,7 +603,8 @@ class TestLphistEntered(LpBase):
         f = out.parent / "lph.json"
         meta = json.loads((out.parent / "lph.json.meta.json").read_text())
         self.assertEqual(meta["sha256"], fw._sha256_file(f))
-        self.assertEqual(meta["t_to_unix"], T1)
+        self.assertEqual(meta["t_to_unix"], self.t_to)
+        self.assertEqual(meta["merge_meta_sha256"], fw._sha256_file(p["meta"]))
         cc = int(fw.parse_clock(vb.find_final_marker(out, out.parent / "ledger.jsonl", True)["clean_clock"]).timestamp())
         self.assertEqual(meta["t_from_unix"], cc - 3600)
         self.assertEqual(json.loads((out.parent / "lph.json.pools.json").read_text()), want)
@@ -509,6 +612,7 @@ class TestLphistEntered(LpBase):
         self.assertFalse(f.stat().st_mode & 0o222)  # read-only
         lines = [json.loads(x) for x in (out.parent / vb.LPHIST_RUNS_NAME).read_text().splitlines()]
         self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["merge_meta_sha256"], fw._sha256_file(p["meta"]))
         for k, v in (("sha256", meta["sha256"]), ("n_pools", len(want)), ("n_unresolved", 0), ("state", "COMPLETED"), ("clean_clock", line["clean_clock"])):
             self.assertEqual(lines[0][k], v)
         self.assertIn("utc_time", lines[0])
@@ -531,13 +635,13 @@ class TestLphistEntered(LpBase):
         walk, art, out = self.fresh()
         self.score(walk, art, out, "2026-10-05T09")
         with self.assertRaises(fw.Refused):
-            vb.run_lphist_entered(walk, out, out.parent / "ledger.jsonl", out.parent / "x.json", "0" * 64, out.parent / "o.json", art, tvb.FREEZE_COMMIT, None, True, rpc=lambda *a: None)
+            vb.run_lphist_entered(walk, out, out.parent / "ledger.jsonl", out.parent / "x.json", "0" * 64, out.parent / "o.json", art, tvb.FREEZE_COMMIT, None, True, vmap_merge_meta=out.parent / "m", final_fetch_map=out.parent / "f", rpc=lambda *a: None)
 
     def test_the_cli_prints_no_pool_id_and_no_url(self) -> None:
         walk, art, out, p = self.final_with_map()
         rpc, _ = self.fake_rpc()
         err = io.StringIO()
-        argv = ["lphist-entered", "--walk-dir", str(walk), "--final-out-dir", str(out), "--final-ledger", str(out.parent / "ledger.jsonl"), "--vmap", str(p["vpath"]), "--vmap-sha256", p["sha"], "--out", str(out.parent / "cli.json"), "--artifact-dir", str(art), "--freeze-commit", tvb.FREEZE_COMMIT, "--test-window"]
+        argv = ["lphist-entered", "--walk-dir", str(walk), "--final-out-dir", str(out), "--final-ledger", str(out.parent / "ledger.jsonl"), "--vmap", str(p["vpath"]), "--vmap-sha256", p["sha"], "--vmap-merge-meta", str(p["meta"]), "--final-fetch-map", str(p["ffm"]), "--out", str(out.parent / "cli.json"), "--artifact-dir", str(art), "--freeze-commit", tvb.FREEZE_COMMIT, "--test-window"]
         with tfw.patched(), mock.patch("sys.stderr", err), mock.patch("tools.pumpswap_simulate.Rpc", lambda url: rpc), mock.patch("tools.pumpswap_virtual._rpc_url", lambda: "https://x/?api-key=SECRET"):
             rc = vb.main(argv)
         self.assertEqual(rc, 0, err.getvalue())
@@ -551,7 +655,7 @@ class TestLphistEntered(LpBase):
             raise SystemExit("boom https://x/?api-key=SECRET")
 
         err = io.StringIO()
-        argv = ["lphist-entered", "--walk-dir", str(walk), "--final-out-dir", str(out), "--final-ledger", str(out.parent / "ledger.jsonl"), "--vmap", str(p["vpath"]), "--vmap-sha256", p["sha"], "--out", str(out.parent / "cli2.json"), "--artifact-dir", str(art), "--freeze-commit", tvb.FREEZE_COMMIT, "--test-window"]
+        argv = ["lphist-entered", "--walk-dir", str(walk), "--final-out-dir", str(out), "--final-ledger", str(out.parent / "ledger.jsonl"), "--vmap", str(p["vpath"]), "--vmap-sha256", p["sha"], "--vmap-merge-meta", str(p["meta"]), "--final-fetch-map", str(p["ffm"]), "--out", str(out.parent / "cli2.json"), "--artifact-dir", str(art), "--freeze-commit", tvb.FREEZE_COMMIT, "--test-window"]
         with tfw.patched(), mock.patch("sys.stderr", err), mock.patch("tools.pumpswap_simulate.Rpc", lambda url: rpc), mock.patch("tools.pumpswap_virtual._rpc_url", lambda: "https://x/?api-key=SECRET"):
             rc = vb.main(argv)
         self.assertEqual(rc, 0)  # fetch_lp_history records every failure as an unresolved pool, never the message
@@ -559,3 +663,117 @@ class TestLphistEntered(LpBase):
         meta = json.loads((out.parent / "cli2.json.meta.json").read_text())
         self.assertGreater(meta["n_unresolved"], 0)
         self.assertNotIn("SECRET", (out.parent / "cli2.json").read_text())
+
+
+class TestBindingAndCandidatePasses(LpBase):
+    def test_vbook_runs_on_a_real_merge_out_that_has_no_sidecars(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out)
+        self.assertFalse(vm.side(p["vpath"], ".detail.json").exists() or vm.side(p["vpath"], ".fetch.json").exists())
+        rc, err, rep = self.go(walk, art, out, p)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(rep["lp_pricing"]["lphist"]["merge_meta_sha256"], fw._sha256_file(p["meta"]))
+        self.assertEqual(rep["lp_pricing"]["lphist"]["final_fetch_slot_max"], 9005)
+
+    def test_a_tampered_final_fetch_map_refuses_before_started(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out)
+        fj = vm.side(p["ffm"], ".fetch.json")
+        doc = json.loads(fj.read_text())
+        doc["fetch_slot_max"] = 1  # would switch the supply-slot check off in effect
+        fj.write_text(json.dumps(doc))
+        rc, err, _ = self.go(walk, art, out, p)
+        self.assertEqual(rc, 2)
+        self.assertIn("sha256.fetch", err)
+        self.assertEqual(self.ledger_lines(out), [])
+
+    def test_vbook_needs_the_final_fetch_map_and_the_lphist_bound_to_this_merge_meta(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out)
+        rc, err = self.run_vbook(walk, art, out, p["vpath"], p["sha"], "--lphist", str(p["lphist"]), "--vmap-merge-meta", str(p["meta"]))
+        self.assertEqual(rc, 2)
+        self.assertIn("--final-fetch-map", err)
+        other = out.parent / "other.merge.json"
+        other.write_text(p["meta"].read_text() + " ")  # same content bar one space: another file, another sha256
+        rc, err = self.run_vbook(walk, art, out, p["vpath"], p["sha"], "--lphist", str(p["lphist"]), "--vmap-merge-meta", str(other), "--final-fetch-map", str(p["ffm"]))
+        self.assertEqual(rc, 2)
+        self.assertIn("merge_meta_sha256", err)
+        self.assertEqual(self.ledger_lines(out), [])
+
+    def test_lphist_ending_before_the_final_fetch_refuses(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out)
+        (out.parent / vb.LPHIST_RUNS_NAME).unlink()
+        short = self.write_lphist(out, json.loads(p["lphist"].read_text()), p["t_from"], "short.json", t_to=self.t_to - 1)
+        rc, err, _ = self.go(walk, art, out, p, lphist=short)
+        self.assertEqual(rc, 2)
+        self.assertIn("before the final fetch's end", err)
+        self.assertEqual(self.ledger_lines(out), [])
+
+    def test_lphist_entered_refuses_a_dry_run_meta_and_a_wrong_fetch_map(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out)
+        (out.parent / vb.LPHIST_RUNS_NAME).unlink()
+        doc = json.loads(p["meta"].read_text())
+        dry = out.parent / "x.merge.json"
+        dry.write_text(json.dumps({**doc, "dry_run": True}))
+        with self.assertRaises(fw.Refused) as cm, tfw.patched():
+            vb.run_lphist_entered(walk, out, out.parent / "ledger.jsonl", p["vpath"], p["sha"], out.parent / "l.json", art, tvb.FREEZE_COMMIT, None, True, vmap_merge_meta=dry, final_fetch_map=p["ffm"], rpc=lambda *a: None)
+        self.assertIn("dry-run", str(cm.exception))
+        other = out.parent / "other_ffm.json"
+        for suffix in (".fetch.json", ".detail.json"):
+            other.with_name(other.name + suffix).write_text(vm.side(p["ffm"], suffix).read_text() + " ")
+        with self.assertRaises(fw.Refused), tfw.patched():
+            vb.run_lphist_entered(walk, out, out.parent / "ledger.jsonl", p["vpath"], p["sha"], out.parent / "l2.json", art, tvb.FREEZE_COMMIT, None, True, vmap_merge_meta=p["meta"], final_fetch_map=other, rpc=lambda *a: None)
+
+    def test_a_candidate_pass_that_drops_an_entry_never_refuses_after_started(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out, {"pool-mC": [dep(4070)]})
+        real = vb.score_hours_v
+
+        def fake(walk_, pool, art_, scratch, vmap, mode, counts, frozen):
+            rows, thr = real(walk_, pool, art_, scratch, vmap, mode, counts, frozen)
+            if not frozen and mode == "v" and Path(vmap).name.startswith("vmap-c"):  # a candidate map of the primary pricing
+                rows = [dict(r) for r in rows]
+                for r in rows:
+                    if r["mint"] == "mC":
+                        r["score"] = thr - 1.0  # (A) entered it, this pass would not
+            return rows, thr
+
+        rep, exc = self.direct(walk, art, out, p, score_fn=fake)
+        self.assertIsNone(exc)
+        self.assertEqual([x["state"] for x in self.ledger_lines(out)], ["STARTED", "DONE"])
+        c = rep["lp_pricing"]["counts"]
+        self.assertEqual(c["n_entered_dropped_in_candidate_pass"], 1)
+        self.assertEqual(c["n_mints_candidate_pass_would_add_not_added"], 0)  # the add side is unit-tested (no in-window non-entered mint here)
+        self.assertEqual(rep["b_mcap_mode_v"]["n_entered"], 4)  # the entered set is (A)'s
+        self.assertEqual(rep["b_verdict"], vb.NOT_DECIDABLE)
+        self.assertIn("pool-mC", rep["null_v"]["null_v_pool_ids"])
+
+    def test_a_candidate_pass_that_moves_the_exit_slot_nulls_the_trade(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out, {"pool-mC": [dep(4070)]})
+        real = vb.score_hours_v
+
+        def fake(walk_, pool, art_, scratch, vmap, mode, counts, frozen):
+            rows, thr = real(walk_, pool, art_, scratch, vmap, mode, counts, frozen)
+            if not frozen and mode == "v" and Path(vmap).name.startswith("vmap-c"):
+                rows = [dict(r) for r in rows]
+                for r in rows:
+                    if r["mint"] == "mC":
+                        r["exit_slot"] = (r["exit_slot"] or 0) + 1
+            return rows, thr
+
+        rep, exc = self.direct(walk, art, out, p, score_fn=fake)
+        self.assertIsNone(exc)
+        self.assertEqual(rep["lp_pricing"]["counts"]["n_entered_slot_moved_in_candidate_pass"], 1)
+        self.assertEqual(rep["b_verdict"], vb.NOT_DECIDABLE)
+
+    def test_sensitivity_uses_the_same_null_v_set_as_the_primary(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out, unresolved={"pool-mC": "logs_truncated"})
+        rc, err, rep = self.go(walk, art, out, p)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(rep["b_verdict"], vb.NOT_DECIDABLE)
+        self.assertEqual(rep["lp_pricing"]["sensitivity_final_map_v0"]["verdict"], vb.NOT_DECIDABLE)  # only the pricing differs
+        self.assertFalse(any("sensitivity" in b for b in rep["live_blockers"]))
