@@ -278,6 +278,10 @@ The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded 
   - An event inside the final fetch's span is computed both ways. If the two results differ, the pool is unresolved.
   - **LP event inside the hold.** A trade with a PumpSwap LP event after its entry fill slot and at or before its exit fill slot is priced at both its entry-slot V0 and its exit-slot V0. **The primary uses the lower P&L of the two, taken separately for `flat` and for `press`, and separately at each k (1, k(p50), k(p90)).** A trade with no exit fill uses its last priced slot as the exit slot. The count of such trades is reported.
   - A trade whose pool is unexplained or unresolved is treated as a **null-V pool** under Amendment 4 §3: the top-3 union, or > 1% of entered trades, gives NOT_DECIDABLE.
+- **(c′) Candidate passes (clarified 2026-10-06, pre-read, after quant-proof on #405).**
+  - **Entered-set changes.** Pricing an entered trade at a candidate V0 (exit-slot, same-slot or ambiguous-target value) must not change which mints are entered; the entered set stays (A)'s. If a candidate pass would change a trade's entry, that trade's pools are treated as null-V under Amendment 4 §3, like the shifted case. The pass never refuses after STARTED. The count of such trades is reported.
+  - **Several affected pools.** A trade with more than one affected pool is priced at every combination of its pools' candidate values, up to 64 combinations, and takes the lower P&L per leg. Above 64 combinations its pools are null-V.
+  - **Every k.** The rule of (c) applies at every k where (B) or the Amendment 3(a) sensitivity re-score is computed: 1, k(p50) and k(p90). The sensitivity tool must use the same candidate pricing. If it is not wired with quant-proof OK before 2026-10-16T00:00Z, Amendment 3(a) on (B) is NOT_DECIDABLE, and live is not supported.
 - **(d) Sensitivity lines.**
   - (B) is recomputed with every LP-moved entered pool priced at its final-map V0 instead of (c). **If the verdict differs from (c)'s, this is listed in `live_blockers`** (the Am.4 §4 pattern); (B)'s verdict stays (c)'s.
   - (B) is also recomputed with pending = 0, report only.
