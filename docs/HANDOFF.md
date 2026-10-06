@@ -53,10 +53,10 @@ Install only after the 10-16 PASS, the owner's funding and the end instant. Helm
 - **Root cause, shared by everything:** the V maps were built from migrated mints' pools only. This also refused **EXP-013 #225** at its pre-pass (1.59% / 675 pools; no outcome, no try spent).
 - **Fix in flight:** a complete map, `pool_v_0909.json`. Chain:
   1. #221: walker-c re-walk of 4 resumed EXP-011 hours (**done**).
-  2. #222: install the 6 re-walked hours, verify and dedupe. **Done: b and c 72/72 hours, 0 flagged, 0 duplicates; clean views at /data/mal/clean-view/exp011-0909/{b,c}.** Copy-integrity sha256 check fast-0 vs research-0 is **job #231**. When it is clean, make the ledger edit that moves the EXP-011 block to exploration (preconditions met: both verify modes, re-walks, sha check).
-  3. #224: 0909 = 0814 + EXP-011 pools + 30 pools.
-  4. **#228**: every PumpSwap pool printed in all research views, fetched into 0909. It writes `/data/mal/ops/still-no-v-pools.json`.
-  5. **#226**: the closed-account pool `7WQAs8wA…`'s implied V from its own buys, via pumpswap_virtual_history. Add it to 0909 by hand, outcome-blind, BEFORE pinning.
+  2. #222: install the 6 re-walked hours, verify and dedupe. **Done: b and c 72/72 hours, 0 flagged, 0 duplicates; clean views at /data/mal/clean-view/exp011-0909/{b,c}.** Copy integrity **#231 clean**: b 216/216 and c 213/213 files match the source, 0 missing, 0 mismatched. **All preconditions met.** Next: the ledger edit moving the EXP-011 block to exploration (cite #213/#217/#220/#221/#222/#231).
+  3. #224 **done**: 0909 has 41,396 pools, superset unchanged, sha at that point f12cc672…. Null pools: 7WQAs8wA… (explore-0814), DVb1LwQh… and EP1un5vo… (EXP-011).
+  4. **#232** (retry of #228, which crashed on a control character; now json strict=False): every PumpSwap pool in all research views, fetched into 0909. It writes `/data/mal/ops/still-no-v-pools.json` and prints the FINAL sha. Pin THAT sha.
+  5. #226 **failed**: no buy prints for 7WQAs8wA… in explore-0814. Decision: use the pre-declared fallback. EXP-015's pool-based removal drops mints on still-null pools and lists them, with the bias statement. EXP-013 has only its 1% rule. Don't chase the closed pools further unless still-no-v-pools.json is large.
 - **Then pin:**
   - one reviewed commit sets `VMAP_0909_SHA256` in `tools/exp015_screen.py` ("PENDING_JOB_224"), and `VMAP_0909_SHA256` plus `V_SHA256` in the EXP-013 table and screen ("PENDING_JOB_228", PR #364);
   - update the tests that assert the placeholders;
