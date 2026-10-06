@@ -101,7 +101,8 @@ def test_installer_extra_files_exist_in_repo():
         src, dst = e.split(":")
         assert (ROOT / src).is_file() and "/" not in dst
     assert {e.split(":")[1] for e in installer_var("EXTRA").split()} == {
-        "launcher.py", "probe-executor-live.json", "probe-executor-live-dec020.json", "requirements-probe-exec.txt"}
+        "launcher.py", "probe-executor-live.json", "probe-executor-live-dec020.json",
+        "mal-probe-executor-live-pinned-dec020.conf", "requirements-probe-exec.txt"}
 
 
 def test_requirements_pins_match_tools_requirements_and_are_hashed():
@@ -660,12 +661,13 @@ def test_withdraw_default_rpc_env_is_the_root_only_file():
 
 
 def test_dec020_pinned_set_and_drop_in():
-    """DEC-020 re-pin: the manifest grows from 13 to 14 lines (one added file); the dec020 drop-in differs from the
+    """DEC-020 re-pin: the manifest grows from 13 to 15 lines (two added files); the dec020 drop-in differs from the
     current pinned drop-in only in the --config path (and its header comment)."""
     extra = [e.split(":")[0] for e in installer_var("EXTRA").split()]
     assert "scripts/mal-fast/probe-executor-live-dec020.json" in extra
     assert "scripts/mal-fast/probe-executor-live.json" in extra  # the current config is still pinned unchanged
-    assert len(closure_files()) + len(extra) + 2 == 14  # + BASE_UNIT and CHECKER
+    assert "scripts/mal-fast/mal-probe-executor-live-pinned-dec020.conf" in extra  # L7: the drop-in is manifest-verified
+    assert len(closure_files()) + len(extra) + 2 == 15  # + BASE_UNIT and CHECKER
     d20 = FAST / "mal-probe-executor-live-pinned-dec020.conf"
     a = [l for l in CONF.read_text().splitlines() if not l.startswith("#")]
     b = [l for l in d20.read_text().splitlines() if not l.startswith("#")]
@@ -674,3 +676,32 @@ def test_dec020_pinned_set_and_drop_in():
     assert len(diff) == 1 and diff[0][0].startswith("ExecStart=/usr/local/lib/mal-probe-exec/venv/bin/python")
     assert diff[0][1] == diff[0][0].replace("current/probe-executor-live.json", "current/probe-executor-live-dec020.json")
     assert d20.read_text().count("--live") >= 1 and "probe-executor-live-dec020.json --live" in b[-2]
+
+
+def test_dec020_drop_in_header_is_not_stale():
+    """L6: the dec020 drop-in must not tell Helm to install the dec019 drop-in from a working tree."""
+    t = (FAST / "mal-probe-executor-live-pinned-dec020.conf").read_text()
+    assert "install -D -m 0644 scripts/mal-fast/mal-probe-executor-live-pinned.conf" not in t
+    assert "/usr/local/lib/mal-probe-exec/<sha>/mal-probe-executor-live-pinned-dec020.conf" in t
+    assert 'probe-executor-live-dec020.json --live' in t
+
+
+def test_compare_executor_fills_script(tmp_path):
+    import importlib.util
+    import json as _json
+
+    spec = importlib.util.spec_from_file_location("cmp_fills", FAST / "compare_executor_fills.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    a = [{"kind": "buy", "mint": "M", "ts_ms": 1, "seen_ms": 5, "spend": 50, "signature": "s1"}]
+    b = [{"kind": "buy", "mint": "M", "ts_ms": 9, "seen_ms": 7, "spend": 50, "signature": "s2"}]
+    r = mod.compare(a, b, mod.DEFAULT_IGNORE)
+    assert r["identical"] and r["md5_old"] == r["md5_new"] and r["differing_fields"] == []
+    assert set(r["dropped_fields"]) == {"ts_ms", "seen_ms", "signature"}
+    r = mod.compare(a, [{**b[0], "spend": 51}], mod.DEFAULT_IGNORE)
+    assert not r["identical"] and r["differing_fields"] == ["spend"] and r["md5_old"] != r["md5_new"]
+    assert not mod.compare(a, a + a, mod.DEFAULT_IGNORE)["identical"]
+    fo, fn = tmp_path / "o.jsonl", tmp_path / "n.jsonl"
+    fo.write_text(_json.dumps(a[0]) + "\n")
+    fn.write_text(_json.dumps(b[0]) + "\n")
+    assert mod.main([str(fo), str(fn)]) == 0

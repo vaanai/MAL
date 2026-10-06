@@ -125,9 +125,10 @@ DEC019_END_MS = 1791763200000
 
 
 # DEC-020 section 3 maxima (the 0.25 SOL step). Same rule: config may lower, never raise. Selected ONLY by config
-# `limits_profile: "dec020"`; the default profile is dec019 and its constants above are untouched. The DEC-020 end
-# ceiling is 2026-10-31T00:00:00Z; the owner's actual end instant must be written into the config (a dec020 config
-# with no end_ms, or end_ms <= 0, refuses at startup, so the shipped placeholder cannot run).
+# `limits_profile: "dec020"`; the default profile is dec019 and its constants above are untouched.
+# DEC-020 sets no end instant of its own: the owner decides it. DEC020_END_MS stays None until the owner-approved end is
+# written here in a reviewed one-line commit (a new sha). While it is None, dec020 REFUSES at startup. The config's
+# end_ms must still be explicit and positive, and is clamped to this constant (never above it).
 DEC020_MAX = {
     "max_attempts": 40,
     "max_open": 2,
@@ -136,14 +137,23 @@ DEC020_MAX = {
     "size_lamports": 250_000_000,
     "priority_lamports": 500_000,
 }
-DEC020_END_MS = 1793404800000  # 2026-10-31T00:00:00Z
+DEC020_END_MS: int | None = None  # owner end instant, ms epoch UTC; None = dec020 refuses (DEC-020 section 3 and 7)
+
+LIVE_DIR = Path("/var/lib/mal-live")  # FIXED. Handover and cross-profile checks read state only from here, never from cfg.
 
 DEFAULT_PROFILE = "dec019"
-DEC019_FILL_LOG = "/var/lib/mal-live/probe-fills.jsonl"  # dec019 only; another profile must use its own fill log
-PROFILES: dict[str, tuple[dict[str, int], int]] = {
-    "dec019": (DEC019_MAX, DEC019_END_MS),
-    "dec020": (DEC020_MAX, DEC020_END_MS),
-}
+PROFILES = ("dec019", "dec020")
+
+
+def profile_spec(name: Any) -> tuple[dict[str, int], int]:
+    """(maxima, end ceiling) of a profile, read at call time. Unknown profile or an unset dec020 end refuses."""
+    if not isinstance(name, str) or name not in PROFILES:
+        raise ValueError(f"unknown limits_profile {name!r} (known: {sorted(PROFILES)})")
+    if name == "dec019":
+        return DEC019_MAX, DEC019_END_MS
+    if DEC020_END_MS is None:
+        raise ValueError("dec020 refused: owner end instant not set in code; DEC-020 section 3 and 7")
+    return DEC020_MAX, DEC020_END_MS
 
 
 @dataclass(frozen=True)
@@ -162,9 +172,7 @@ class Limits:
     def __post_init__(self) -> None:
         """Clamp to the profile's maxima on EVERY construction path, and reject NaN/inf/non-positive.
         An unknown profile refuses (never falls back to another profile's maxima)."""
-        if not isinstance(self.profile, str) or self.profile not in PROFILES:
-            raise ValueError(f"unknown limits_profile {self.profile!r} (known: {sorted(PROFILES)})")
-        maxima, end_ceiling = PROFILES[self.profile]
+        maxima, end_ceiling = profile_spec(self.profile)
         for key, cap in maxima.items():
             val = getattr(self, key)
             if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
@@ -182,9 +190,7 @@ class Limits:
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "Limits":
         profile = cfg.get("limits_profile", DEFAULT_PROFILE)
-        if not isinstance(profile, str) or profile not in PROFILES:
-            raise ValueError(f"unknown limits_profile {profile!r} (known: {sorted(PROFILES)})")
-        maxima = PROFILES[profile][0]  # a key absent from the config takes the profile max (dec019: same as the field default)
+        maxima = profile_spec(profile)[0]  # a key absent from the config takes the profile max (dec019: same as the field default)
         kw: dict[str, Any] = {k: (cfg[k] if cfg.get(k) is not None else maxima[k]) for k in maxima}
         if cfg.get("end_ms") is not None:
             kw["end_ms"] = cfg["end_ms"]
@@ -248,18 +254,62 @@ def state_path_for(state_dir: str | Path, mode: str, profile: str = DEFAULT_PROF
     return Path(state_dir) / f"state-{mode}-{profile}.json"
 
 
-def dec019_handover(state_dir: str | Path, own_state_exists: bool) -> list[str]:
-    """DEC-020 section 3b. READ-ONLY look at the dec019 live state (never saves). Refuses (SystemExit) if the 0.05 probe
-    still has an open or pending position. Returns the dec019 `bought` list to seed the never-re-buy list from, only on
-    the first start (own state file absent); [] otherwise, or when no dec019 live state exists."""
-    path = state_path_for(state_dir, "live", DEFAULT_PROFILE)
+def _live_state_open(path: Path) -> tuple[int, int] | None:
+    """(open, pending) of a live state file read-only, or None when the file does not exist."""
     if not path.exists():
+        return None
+    st = State.load(path, "live")  # reads only; never saves
+    return len(st.open), len(st.pending)
+
+
+def check_profile_files(cfg: dict[str, Any], limits: "Limits") -> None:
+    """L5, non-default profiles (live): state_dir must be the fixed LIVE_DIR, fill_log must be a regular (non-symlink)
+    path that resolves under LIVE_DIR, and must not be the dec019 probe's fill log. Raises SystemExit."""
+    prof = limits.profile
+    if Path(str(cfg["state_dir"])).resolve() != LIVE_DIR.resolve():
+        raise SystemExit(f"{prof} refused: state_dir must be {LIVE_DIR}")
+    fl = Path(str(cfg["fill_log"]))
+    if fl.is_symlink():  # lstat: the final component must not be a symlink
+        raise SystemExit(f"{prof} refused: fill_log is a symlink")
+    try:
+        under = fl.resolve().is_relative_to(LIVE_DIR.resolve())
+    except OSError:
+        under = False
+    if not under:
+        raise SystemExit(f"{prof} refused: fill_log must resolve under {LIVE_DIR}")
+    if fl.name == "probe-fills.jsonl":
+        raise SystemExit(f"{prof} refused: fill_log must not be the dec019 probe's probe-fills.jsonl")
+
+
+def profile_precheck(cfg: dict[str, Any], mode: str) -> list[str]:
+    """KEYLESS gate, run before the wallet key is ever loaded (main, run_live, and --status). Returns the dec019 `bought`
+    list to seed from (dec020 first start) or []. Raises SystemExit/ValueError on any refusal:
+    - limits invalid (unknown profile, dec020 end unset, ...): Limits.from_config raises;
+    - dec020 live (DEC-020 3, 3b): the dec019 live state at the FIXED path LIVE_DIR/state-live.json must exist and show
+      0 open and 0 pending; the dec020 files must be under LIVE_DIR;
+    - dec019 live (rollback guard): the dec020 live state at the FIXED path, if it exists, must show 0 open and 0 pending,
+      so a rollback can never orphan dec020 positions."""
+    limits = Limits.from_config(cfg)
+    if mode != "live":
         return []
-    old = State.load(path, "live")
-    if old.open or old.pending:
-        raise SystemExit(f"dec020 refused: the dec019 live state has {len(old.open)} open and {len(old.pending)} pending "
+    d19 = state_path_for(LIVE_DIR, "live", DEFAULT_PROFILE)
+    d20 = state_path_for(LIVE_DIR, "live", "dec020")
+    if limits.profile == DEFAULT_PROFILE:
+        counts = _live_state_open(d20)
+        if counts and any(counts):
+            raise SystemExit(f"dec019 refused: the dec020 live state has {counts[0]} open and {counts[1]} pending "
+                             "position(s); wind dec020 down to 0 open and 0 pending before running dec019")
+        return []
+    check_profile_files(cfg, limits)
+    counts = _live_state_open(d19)
+    if counts is None:
+        raise SystemExit(f"{limits.profile} refused: the dec019 live state {d19} is missing (DEC-020 3b needs it for the handover)")
+    if any(counts):
+        raise SystemExit(f"{limits.profile} refused: the dec019 live state has {counts[0]} open and {counts[1]} pending "
                          "position(s); the 0.05 probe must be stopped with nothing open (DEC-020 section 3b)")
-    return [] if own_state_exists else list(old.bought)
+    if state_path_for(cfg["state_dir"], "live", limits.profile).exists():
+        return []
+    return list(State.load(d19, "live").bought)
 
 
 def guard_live_state(mode: str, state_path: Path, fill_log: Path) -> None:
@@ -811,14 +861,10 @@ class Executor:
         guard_live_state(self.mode, self.state_path, Path(cfg["fill_log"]))
         first_start = not self.state_path.exists()
         self.state = State.load(self.state_path, self.mode)
-        if self.mode == "live" and self.limits.profile != DEFAULT_PROFILE:
-            # DEC-020 3b: refuse while the 0.05 probe has anything open; seed never-re-buy from its list on first start.
-            if Path(cfg["fill_log"]).name == Path(DEC019_FILL_LOG).name:
-                raise SystemExit(f"{self.limits.profile} refused: fill_log must not be the dec019 probe's {DEC019_FILL_LOG}")
-            seed = dec019_handover(cfg["state_dir"], not first_start)
-            if first_start:
-                self.state.bought = list(dict.fromkeys([*seed, *self.state.bought]))
-                self.state.save(self.state_path)
+        seed = profile_precheck(cfg, self.mode)  # same keyless gate main/run_live ran; repeated so no entry point skips it
+        if self.mode == "live" and self.limits.profile != DEFAULT_PROFILE and first_start:
+            self.state.bought = list(dict.fromkeys([*seed, *self.state.bought]))
+            self.state.save(self.state_path)
         self.fills = FillLog(Path(cfg["fill_log"]), self.mode, self.limits.profile)
         self.user = Pubkey.from_string(cfg.get("user") or sim.DEFAULT_USER)  # public, read-only
         self.commitment = cfg.get("commitment", "confirmed")
@@ -979,7 +1025,8 @@ class Executor:
         try:  # would the live signer's whitelist accept this message? (a real-pool check during the dry run)
             from tools import probe_live
 
-            probe_live.validate_message(msg, snap.ps, Pubkey.from_string(sig["mint"]), self.user, self.limits.priority_lamports)
+            probe_live.validate_message(msg, snap.ps, Pubkey.from_string(sig["mint"]), self.user, self.limits.priority_lamports,
+                                        self.limits.size_lamports)
         except Exception as exc:
             validate_err = getattr(exc, "label", type(exc).__name__)
         t_built = self.now_ms()
@@ -1155,8 +1202,7 @@ def status_report(cfg: dict[str, Any]) -> str:
     """Counters, open positions and realized P&L from the state files and the fill log. Reads no key and
     no URL, makes no RPC call."""
     lim = Limits.from_config(cfg)
-    lines = [f"limits_profile={lim.profile} size_sol={lim.size_lamports / LAMPORTS:.3f} end_ms={lim.end_ms}",
-             f"stop_file_present={Path(lim.stop_file).exists()} halt_file_present={Path(lim.halt_file).exists()}"]
+    lines = [f"stop_file_present={Path(lim.stop_file).exists()} halt_file_present={Path(lim.halt_file).exists()}"]
     for mode in (MODE, "live"):
         path = state_path_for(cfg["state_dir"], mode, lim.profile)
         if not path.exists():
@@ -1186,6 +1232,13 @@ def status_report(cfg: dict[str, Any]) -> str:
             key = f"{r.get('mode')}:{r.get('kind')}"
             counts[key] = counts.get(key, 0) + 1
     lines.append(f"fill_rows={dict(sorted(counts.items()))}")
+    lines.append(f"limits_profile={lim.profile} size_sol={lim.size_lamports / LAMPORTS:.3f} end_ms={lim.end_ms}")
+    if cfg.get("mode") == "live":
+        try:
+            profile_precheck(cfg, "live")
+            lines.append("precheck=ok")
+        except SystemExit as exc:
+            lines.append(f"precheck=REFUSED {exc}")
     return "\n".join(lines)
 
 
@@ -1276,6 +1329,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     mode, warn = resolve_mode(cfg.get("mode", MODE), args.live)
     cfg["mode"] = mode
+    try:
+        profile_precheck(cfg, mode)  # keyless; before startup checks and before any key load
+    except ValueError as exc:
+        raise SystemExit(f"limits refused: {exc}") from None
     if warn:
         print(f"probe_executor WARNING {warn}", flush=True)
     poll_s = max(1.0, float(cfg.get("poll_s", 5.0)))

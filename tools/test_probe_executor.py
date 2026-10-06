@@ -1291,6 +1291,27 @@ class Dec020ProfileTests(unittest.TestCase):
 
     OLD_DEC019_MAX = {"max_attempts": 90, "max_open": 3, "loss_cap_lamports": 350_000_000, "max_days": 7,
                       "size_lamports": 50_000_000, "priority_lamports": 500_000}
+    SHIPPED_END = pe.DEC020_END_MS  # read at import: the real constant, before any test patches it
+    TEST_END = 4_000_000_000_000
+
+    def setUp(self):
+        p = unittest.mock.patch.object(pe, "DEC020_END_MS", self.TEST_END)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_dec020_refuses_while_the_end_constant_is_unset(self):
+        self.assertIsNone(self.SHIPPED_END)  # M3: no invented ceiling; the owner's end goes in as a reviewed one-line commit
+        with unittest.mock.patch.object(pe, "DEC020_END_MS", None):
+            for cfg in ({"limits_profile": "dec020", "end_ms": 5}, {"limits_profile": "dec020", "end_ms": 4_000_000_000_000}):
+                with self.assertRaises(ValueError) as cm:
+                    pe.Limits.from_config(cfg)
+                self.assertIn("owner end instant not set in code", str(cm.exception))
+            with self.assertRaises(ValueError):
+                pe.Limits(profile="dec020", end_ms=5)
+            with self.assertRaises(SystemExit):
+                pe.main(["--config", self._cfg_file({"limits_profile": "dec020", "end_ms": 5, "mode": "live"}), "--live"])
+        pe.Limits.from_config({"limits_profile": "dec019"})  # dec019 never depends on it
+
     ABOVE = {"max_attempts": 10**6, "max_open": 10**6, "loss_cap_lamports": 10**15, "max_days": 10**6,
              "size_lamports": 10**15, "priority_lamports": 10**9}
 
@@ -1313,7 +1334,6 @@ class Dec020ProfileTests(unittest.TestCase):
         self.assertEqual(pe.DEC020_MAX, {"max_attempts": 40, "max_open": 2, "loss_cap_lamports": 350_000_000, "max_days": 7,
                                          "size_lamports": 250_000_000, "priority_lamports": 500_000})
         import datetime
-        self.assertEqual(pe.DEC020_END_MS, int(datetime.datetime(2026, 10, 31, tzinfo=datetime.timezone.utc).timestamp() * 1000))
 
     def test_dec020_config_above_every_max_is_clamped(self):
         lim = pe.Limits.from_config({"limits_profile": "dec020", "end_ms": 10**15, **self.ABOVE})
