@@ -6,6 +6,7 @@ Run: PYTHONPATH=$PWD /data/mal/venv/bin/python -m pytest -q tools/test_exp012_fo
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -63,7 +64,8 @@ class DefaultUnchanged(VFx):
         vmap, sha = self.vmap()
         withv = self.run_v(out2, ledger2, vmap, sha)
         self.assertEqual(base["books"], withv["books"])
-        self.assertEqual(base["verdict"], withv["verdict"])
+        self.assertEqual(base["verdict"], withv["a_priced_verdict"])
+        self.assertEqual(withv["verdict"], withv["b_v"]["verdict"])
 
 
 class VBook(VFx):
@@ -80,16 +82,26 @@ class VBook(VFx):
             self.assertLess(b_tot, a_tot)  # vault + V prices the same fills worse than the vault alone
             self.assertFalse(b["null_v"][name]["not_decidable"])
         self.assertIn(b["verdict"], (sens.SUPPORTS, sens.DOES_NOT_SUPPORT))
+        self.assertEqual(rep["verdict"], b["verdict"])  # with V on the top-level verdict is (B)'s
+        self.assertIn(rep["a_priced_verdict"], (sens.SUPPORTS, sens.DOES_NOT_SUPPORT))
+        self.assertGreater(b["adapter_counts"]["corrected"], 0)
+        self.assertEqual(b["adapter_counts"]["no_v"], 0)
+        self.assertTrue(rep["reproduction"]["v_repro_variant_equals_forward_v_rows"])
+        done = [m for m in self.lines(sens.runs_ledger_path(ledger)) if m["state"] == "DONE"]
+        self.assertEqual(done[0]["verdict"], rep["verdict"])
         self.assertTrue((out / "sensitivity" / sens.DETAIL_V_NAME).is_file())
         self.assertIn("Book (B)", (out / "sensitivity" / sens.RESULT_MD).read_text())
 
-    def test_not_decidable_propagates_and_leaves_the_a_verdict_alone(self) -> None:
+    def test_not_decidable_propagates_to_the_top_level_verdict(self) -> None:
         out, ledger = self.sealed()
         vmap, sha = self.vmap({**{p: V for p in POOLS}, "pool-mC": None})
         rep = self.run_v(out, ledger, vmap, sha)
         self.assertEqual(rep["b_v"]["verdict"], vb.NOT_DECIDABLE)
         self.assertIn(rep["b_v"]["verdict_if_decidable"], (sens.SUPPORTS, sens.DOES_NOT_SUPPORT))
-        self.assertIn(rep["verdict"], (sens.SUPPORTS, sens.DOES_NOT_SUPPORT))
+        self.assertEqual(rep["verdict"], vb.NOT_DECIDABLE)  # (B)'s verdict is the top-level one
+        self.assertIn(rep["a_priced_verdict"], (sens.SUPPORTS, sens.DOES_NOT_SUPPORT))
+        done = [m for m in self.lines(sens.runs_ledger_path(ledger)) if m["state"] == "DONE"]
+        self.assertEqual(done[0]["verdict"], vb.NOT_DECIDABLE)
         self.assertTrue(any("pool-mC" in nv["null_v_pool_ids"] for nv in rep["b_v"]["null_v"].values()))
 
     def test_absent_pool_is_not_v_zero(self) -> None:
@@ -100,6 +112,68 @@ class VBook(VFx):
 
 
 class VRefusals(VFx):
+    def test_missing_null_v_tags_fail_closed_before_the_claim(self) -> None:
+        out, ledger = self.sealed()
+        vmap, sha = self.vmap()
+        real = sens.sensitivity_rows
+
+        def strip(*a, **k):
+            rows = real(*a, **k)
+            for r in rows:
+                r.pop("no_v_pools", None)
+            return rows
+
+        with mock.patch.object(sens, "sensitivity_rows", strip):
+            with self.assertRaises(fw.Refused) as cm:
+                self.run_v(out, ledger, vmap, sha)
+        self.assertIn("fail closed", str(cm.exception))
+        self.assertEqual(self.lines(sens.runs_ledger_path(ledger)), [])
+
+    def test_repro_variant_mismatch_under_v_refuses_before_the_claim(self) -> None:
+        out, ledger = self.sealed()
+        vmap, sha = self.vmap()
+        real = sens.sensitivity_rows
+
+        def perturb(*a, **k):
+            rows = real(*a, **k)
+            for r in rows:
+                if r["variant"] == "repro" and r["mint"] == "mC":
+                    r["flat"] += 1.0
+            return rows
+
+        with mock.patch.object(sens, "sensitivity_rows", perturb):
+            with self.assertRaises(fw.Refused) as cm:
+                self.run_v(out, ledger, vmap, sha)
+        self.assertIn("repro variant", str(cm.exception))
+        self.assertEqual(self.lines(sens.runs_ledger_path(ledger)), [])
+        self.assertFalse((out / "sensitivity" / sens.RESULT_JSON).exists())
+
+    def test_pinned_window_requires_all_v_options_and_the_vbook_report(self) -> None:
+        out, ledger = self.sealed()
+        vmap, sha = self.vmap()
+        with mock.patch.object(fw, "PINNED_CLEAN_CLOCK", tsens.CLEAN_CLOCK), mock.patch.object(fw, "PINNED_READ_END", tsens.READ_END), mock.patch.object(fw, "DEFAULT_LEDGER", ledger):
+            for kw in ({}, {"vmap": vmap, "vmap_sha256": sha, "mcap_mode": "v"}):
+                with self.assertRaises(fw.Refused) as cm:
+                    self.run_sens(out, ledger, test_window=False, **kw)
+                self.assertIn("--vbook-report", str(cm.exception))
+        self.assertEqual(self.lines(sens.runs_ledger_path(ledger)), [])
+
+    def test_vbook_report_must_be_finished_for_this_map_and_window(self) -> None:
+        win = ("2026-10-06T00:00:00Z", "2026-10-16T00:00:00Z")
+        good = {"schema": vb.SCHEMA_REPORT, "vmap": {"sha256": "a" * 64}, "b_verdict": "FAIL", "clean_clock": win[0], "read_end": win[1], "test_window": False}
+        d = Path(tempfile.mkdtemp(dir=self._td.name))
+
+        def check(doc, sha="a" * 64):
+            f = d / "r.json"
+            f.write_text(json.dumps(doc))
+            return sens.check_vbook_report(f, sha, win, False)
+
+        self.assertEqual(check(good)["b_verdict"], "FAIL")
+        for bad, sha in (({**good, "vmap": {"sha256": "b" * 64}}, "a" * 64), ({**good, "b_verdict": None}, "a" * 64), ({**good, "schema": "x"}, "a" * 64), ({**good, "read_end": "z"}, "a" * 64), (good, "c" * 64)):
+            with self.assertRaises(fw.Refused):
+                check(bad, sha)
+        with self.assertRaises(fw.Refused):
+            sens.check_vbook_report(d / "missing.json", "a" * 64, win, False)
     def test_wrong_sha_refuses_and_records_nothing(self) -> None:
         out, ledger = self.sealed()
         vmap, _sha = self.vmap()

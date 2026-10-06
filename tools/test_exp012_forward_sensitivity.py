@@ -277,14 +277,14 @@ class SealGuard(Fx):
         self.addCleanup(shutil.rmtree, d, True)
         out = d / "out"
         out.mkdir()
-        with mock.patch.object(fw, "DEFAULT_LEDGER", d / "none.jsonl"), self.assertRaises(fw.Refused) as cm:
+        with mock.patch.object(fw, "DEFAULT_LEDGER", d / "none.jsonl"), mock.patch.object(sens, "REQUIRE_V_ON_PINNED", False), self.assertRaises(fw.Refused) as cm:
             sens.run(self.walk, out, self.art, final_ledger=d / "none.jsonl", **write_latency(1, 2))  # pinned window, no test flag
         self.assertIn("no FINAL read", str(cm.exception))
         self.assertFalse((out / "sensitivity").exists())
 
     def test_real_window_refused_with_only_a_test_window_marker(self) -> None:
         out, ledger = self.sealed()
-        with mock.patch.object(fw, "DEFAULT_LEDGER", ledger), self.assertRaises(fw.Refused) as cm:
+        with mock.patch.object(fw, "DEFAULT_LEDGER", ledger), mock.patch.object(sens, "REQUIRE_V_ON_PINNED", False), self.assertRaises(fw.Refused) as cm:
             sens.run(self.walk, out, self.art, final_ledger=ledger, **write_latency(1, 2))
         self.assertIn("no FINAL read", str(cm.exception))
 
@@ -391,7 +391,7 @@ class VerdictLogic(unittest.TestCase):
 @contextmanager
 def real_window(ledger: Path):
     """Make the fixture window the 'pinned' one, so a non-test run can be exercised end to end."""
-    with mock.patch.object(fw, "PINNED_CLEAN_CLOCK", CLEAN_CLOCK), mock.patch.object(fw, "PINNED_READ_END", READ_END), mock.patch.object(fw, "DEFAULT_LEDGER", ledger):
+    with mock.patch.object(fw, "PINNED_CLEAN_CLOCK", CLEAN_CLOCK), mock.patch.object(fw, "PINNED_READ_END", READ_END), mock.patch.object(fw, "DEFAULT_LEDGER", ledger), mock.patch.object(sens, "REQUIRE_V_ON_PINNED", False):
         yield
 
 
