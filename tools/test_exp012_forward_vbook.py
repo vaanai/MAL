@@ -307,6 +307,19 @@ class RunTests(VBase):
         self.assertGreater(rep["null_v"]["n_entered_touching_zero_v"], 0)
         self.assertEqual(rep["null_v"]["zero_v_pool_ids"], ["pool-mC"])
 
+    def test_negative_v_pool_is_zero_v_not_no_v(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out, {**{p: V for p in POOLS}, "pool-mC": -172_362})
+        rc, err = self.run_vbook(walk, art, out, vpath, sha)
+        self.assertEqual(rc, 0, err)
+        rep = json.loads((out.parent / "vb" / "vbook_report.json").read_text())
+        self.assertFalse(rep["null_v"]["not_decidable"])
+        self.assertGreater(rep["null_v"]["n_entered_touching_zero_v"], 0)
+        self.assertEqual(rep["null_v"]["zero_v_pool_ids"], ["pool-mC"])
+        self.assertEqual(rep["null_v"]["null_v_pool_ids"], [])
+        self.assertEqual(rep["vmap"]["n_zero_v"], 1)
+        self.assertEqual(rep["vmap"]["n_null"], 0)
+
     def test_null_v_pool_on_the_entered_set_is_not_decidable(self) -> None:
         walk, art, out = self.final()
         vmap = {p: V for p in POOLS}

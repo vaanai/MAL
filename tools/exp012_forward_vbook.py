@@ -95,7 +95,7 @@ VALIDATION_REMINDER = "Am.4 s5 validation must also pass (`exp012_forward_vmap v
 
 def tracked_call(inner: Callable[..., Any], *args: Any, **kw: Any) -> Any:
     """Run the worker `inner`, with each row it scores also carrying the PumpSwap pools its mint printed on
-    (`pumpswap_pools`), which of those have no V (`no_v_pools`) and which have V = 0 (`zero_v_pools`). Runs inside the adapter's patch, so
+    (`pumpswap_pools`), which of those have no V (`no_v_pools`) and which have V <= 0 (`zero_v_pools`; the name is kept, it means V <= 0: parse_virtual is signed, and the V0 = 0 pools carry a small negative V that the adapter prices on the vault). Runs inside the adapter's patch, so
     `eem.print_from_trade_row` is already the V wrapper; both wrappers here are restored on exit."""
     vmap, _mode = ad._cached_vmap()
     seen: dict[str, set[str]] = {}
@@ -110,7 +110,7 @@ def tracked_call(inner: Callable[..., Any], *args: Any, **kw: Any) -> Any:
             seen.setdefault(mint, set()).add(pid)
             if not isinstance(pool, str) or vmap.get(pool) is None:
                 no_v.setdefault(mint, set()).add(pid)
-            elif vmap.get(pool) == 0:
+            elif vmap.get(pool) <= 0:  # V <= 0, not == 0: signed decode, same test as the adapter's vault-only branch
                 zero_v.setdefault(mint, set()).add(pid)
         return inner_print(row)
 
@@ -213,6 +213,7 @@ def find_final_marker(final_out_dir: Path, final_ledger: Path, test_window: bool
 
 
 def check_vmap(vmap: Path, want_sha: str) -> dict[str, Any]:
+    """Hash and count the map. `n_zero_v` counts pools with V <= 0 (signed V; the name is kept)."""
     from tools.pumpswap_virtual import load_map
 
     if not vmap.is_file():
@@ -221,7 +222,7 @@ def check_vmap(vmap: Path, want_sha: str) -> dict[str, Any]:
     if got != want_sha.strip().lower():
         raise Refused([f"V map {vmap} sha256 {got} differs from --vmap-sha256 {want_sha}"])
     m = load_map(vmap)
-    return {"path": str(vmap), "sha256": got, "n_pools": len(m), "n_null": sum(1 for v in m.values() if v is None), "n_zero_v": sum(1 for v in m.values() if v == 0)}
+    return {"path": str(vmap), "sha256": got, "n_pools": len(m), "n_null": sum(1 for v in m.values() if v is None), "n_zero_v": sum(1 for v in m.values() if v is not None and v <= 0)}  # V <= 0, see tracked_call
 
 
 def check_merge_meta(meta: Path, vmap_sha: str) -> dict[str, Any]:

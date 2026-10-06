@@ -48,6 +48,11 @@ def reset_counts() -> None:
 
 def correct_print(pr: TapePrint, v: int | None, mcap_mode: str = "v") -> TapePrint:
     """Return `pr` with V added to a PumpSwap quote. Bonding prints and v=None return `pr` unchanged."""
+    # v <= 0 stays unchanged (vault-only) on purpose. parse_virtual is signed now, so the ~321 V ~ 0 pools
+    # (stored V = -(A + B), |V| <= 0.002 SOL) arrive here as small negative ints. For historical rescoring
+    # vault-only fits them at 0.000 bps against 0.02-0.33 bps for today's snapshot V, because the snapshot's
+    # pending counters are not the ones at trade time. See the 2026-10-06 negative-V findings and PR for
+    # pumpswap-v-signed-base. Live pricing from a fresh account read should use vault + signed V.
     if pr.venue != "pumpswap" or v is None or v <= 0:
         return pr
     quote = pr.quote_reserve + int(v)
