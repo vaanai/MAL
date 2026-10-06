@@ -257,3 +257,27 @@ class NoKeyMaterialTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignedVTests(unittest.TestCase):
+    @staticmethod
+    def _acct(v, n):
+        raw = bytearray(base64.b64decode(load("buy_exact_quote_in_a")["pool_account_b64"]))
+        raw.extend(b"\x00" * max(0, n - len(raw)))
+        raw[245:261] = v.to_bytes(16, "little", signed=True) if n >= 261 else (v & (2**64 - 1)).to_bytes(8, "little") + raw[253:261]
+        return bytes(raw[:n])
+
+    def test_signed_decode_at_253_300_301_bytes(self):
+        for n in (253, 300, 301):
+            for v in (17_584_000_000, 0, -1, -5_000_000_000, 2**63 - 1, -(2**63)):
+                raw = self._acct(v, n)
+                self.assertEqual(t.parse_virtual_signed(raw), v)
+                self.assertEqual(t.parse_pool_account(raw)["virtual_quote_reserves"], v)
+
+    def test_unrepresentable_or_short_is_none_and_key_omitted(self):
+        raw = bytearray(self._acct(0, 301))
+        raw[245:261] = (2**63).to_bytes(16, "little")  # i128 above i64
+        self.assertIsNone(t.parse_virtual_signed(bytes(raw)))
+        self.assertNotIn("virtual_quote_reserves", t.parse_pool_account(bytes(raw)))
+        self.assertIsNone(t.parse_virtual_signed(bytes(raw[:252])))
+        self.assertIsNone(t.parse_virtual_signed(b""))

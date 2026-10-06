@@ -110,13 +110,15 @@ V_RETRY_CAP_S = 300.0
 
 
 def decode_pool_virtual(data: bytes) -> int | None:
-    """The pool's virtual quote reserve V (lamports), read by `pumpswap_tx.parse_pool_account`.
-    None when the account is too short or has no readable tail. Never 0 as a stand-in."""
+    """The pool's stored virtual quote reserve V (lamports), SIGNED, read by `pumpswap_tx.parse_pool_account`.
+    Negative on V0 = 0 pools with pending counters: it is stamped as that negative value, never as the
+    unsigned reading (~1.8e19). None when the account is too short, has no readable tail, or V is outside
+    i64. Never 0 as a stand-in."""
     try:
         v = parse_pool_account(data).get("virtual_quote_reserves")
     except (ValueError, TypeError):
         return None
-    return int(v) if isinstance(v, int) and v >= 0 else None
+    return int(v) if isinstance(v, int) and -(2**63) <= v < 2**63 else None
 
 
 def _pct(values, q: int) -> float | None:
