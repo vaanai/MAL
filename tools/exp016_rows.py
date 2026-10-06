@@ -1,9 +1,17 @@
 """Compact per-mint row storage for the EXP-016 screen (memory, job #296: about 1.35 KB per retained dict row).
 
-A `RowStore` keeps one mint's tape rows as columns (`array('q')` for the integer fields, `array('d')` for the two float fields, `array('B')` for the
-categorical fields, `array('i')` interned ids for the string fields) and yields plain dicts on iteration, so every consumer (admission, features, the
-block pass, the simulator wrapper) is unchanged. Only the fields those consumers read are stored (`FIELDS`); a row that does not fit the columns
-(a non-int in an int field, an out-of-range int, an unexpected categorical) is kept whole in `_fallback`, so nothing is lost or altered.
+A `RowStore` keeps one mint's tape rows as columns (`array('q')` for the integer fields, `array('d')` for the float fields, `array('B')` for the
+categorical fields, `array('i')` interned ids for wallet and pool, ascii bytes for the signature) and yields plain dicts on iteration, so every
+consumer (admission, `print_from_trade_row`, `make_wrapper`, the simulator, features, the block pass, `stamp_rows`) is unchanged.
+
+What is and is not preserved, exactly:
+  * A row whose keys are ALL in `STORED_KEYS` (the fields the consumers read, reviewed against `print_from_trade_row`, `make_wrapper`,
+    `latency_curve`, `exploration_exits`, `exp016_rug`, `_Feat.record`, the admission gates and `adapt_trade_row`) and whose values fit the columns
+    comes back with the same keys and values.
+  * The only key allowed to be dropped is in the reviewed `IGNORABLE_KEYS` (`event_ts`: no consumer reads it).
+  * ANY other key forces the whole row into `_fallback`, stored and returned as a dict copy. A key is never dropped silently, and the unknown key
+    names are counted (`RowStore.unknown_keys`), so a real layout shows what to review. The same fallback holds a row whose value does not fit
+    (a non-int in an int field, an out-of-range int, an unexpected categorical).
 
 No outcome is computed here: this is storage only.
 """
@@ -14,12 +22,18 @@ from array import array
 from typing import Any, Iterator, Mapping
 
 NONE = -(1 << 63)  # int64 sentinel for "absent or None"
-INT_FIELDS = ("slot", "t_recv_ms", "block_time", "quote_reserve", "base_reserve", "sol_lamports", "token_raw", "tx_index", "event_index")
+INT_FIELDS = ("slot", "t_recv_ms", "block_time", "quote_reserve", "base_reserve", "sol_lamports", "token_raw", "tx_index", "event_index",
+              "pool_quote_amount", "lp_fee", "protocol_fee", "creator_fee")  # the last four: `print_from_trade_row` reads them for PumpSwap v1 rows
 FLOAT_FIELDS = ("price_sol", "market_cap_sol")
 CAT_FIELDS = ("venue", "side", "type")  # str or None
 STR_FIELDS = ("trader", "pool")  # interned (a wallet or pool repeats across rows)
 SIG_MAX = 255  # `signature` (unique per row, skipped for slim rows) is kept as ascii bytes in one blob per mint, not as a str object
 FIELDS = INT_FIELDS + FLOAT_FIELDS + CAT_FIELDS + STR_FIELDS + ("signature", "quote_is_wsol", "mint")
+STORED_KEYS = frozenset(FIELDS)
+IGNORABLE_KEYS = frozenset({"event_ts"})  # reviewed: read by no consumer (see `oracle_live_adapter.adapt_trade_row`)
+
+
+UNKNOWN_KEY_CAP = 64  # distinct unknown key names remembered (counts only)
 
 
 class Interner:
@@ -28,6 +42,8 @@ class Interner:
     def __init__(self) -> None:
         self.ids: dict[str, int] = {}
         self.vals: list[str] = []
+        self.unknown_keys: dict[str, int] = {}  # key name -> rows stored whole because of it (shared by the source's stores)
+        self.n_fallback = 0
 
     def get(self, s: str) -> int:
         i = self.ids.get(s)
@@ -76,10 +92,16 @@ class RowStore:
             tab.append(v)
             return len(tab) - 1
 
-    def append(self, r: Mapping[str, Any], slim: bool = False) -> None:
+    def append(self, r: Mapping[str, Any]) -> None:
         ints = []
         ok = True
-        for f in INT_FIELDS:
+        for k in r:
+            if k not in STORED_KEYS and k not in IGNORABLE_KEYS:  # FAIL SAFE: an unreviewed key keeps the whole row
+                ok = False
+                uk = self._it.unknown_keys
+                if k in uk or len(uk) < UNKNOWN_KEY_CAP:
+                    uk[k] = uk.get(k, 0) + 1
+        for f in INT_FIELDS if ok else ():
             v = r.get(f)
             if v is None:
                 ints.append(NONE)
@@ -119,7 +141,7 @@ class RowStore:
                     ok = False
                     break
         sig = b""
-        if ok and not slim:
+        if ok:
             sv = r.get("signature")
             if sv is not None:
                 try:
@@ -134,6 +156,7 @@ class RowStore:
         if ok and r.get("mint") not in (None, self.mint):
             ok = False  # a row filed under another mint: keep it whole
         if not ok:
+            self._it.n_fallback += 1
             self._fallback[self._n] = dict(r)
             ints, floats, cats, strs, w, sig = [NONE] * len(INT_FIELDS), [math.nan] * len(FLOAT_FIELDS), [0] * len(CAT_FIELDS), [-1] * len(STR_FIELDS), None, b""
         for col, v in zip(self._ints, ints):

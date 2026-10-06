@@ -900,10 +900,11 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
             store = rows_by_mint.get(m)
             if store is None:
                 store = rows_by_mint[m] = RowStore(m, interner)
-            store.append(r, slim=m not in migrations)  # compact columns (tools/exp016_rows.py); slim = no signature for a never-migrated mint
+            store.append(r)  # compact columns (tools/exp016_rows.py); an unreviewed key keeps the whole row (fail safe)
     if late_creates:
         raise Refused(f"{tag}: {late_creates} create row(s) appear after their mint's trades (hours out of order, or a create outside the read set); counts only, refusing")
-    progress(f"{tag}: tape pass done rows_read={n_read} rows_kept={n_kept} mints_kept={len(rows_by_mint)} creates={len(creates)} migrations={len(migrations)}")
+    progress(f"{tag}: tape pass done rows_read={n_read} rows_kept={n_kept} rows_stored_whole={interner.n_fallback} mints_kept={len(rows_by_mint)} creates={len(creates)} "
+             f"migrations={len(migrations)} unknown_row_keys={dict(sorted(interner.unknown_keys.items()))}")
     hist = creator_history(creates)  # ALL creates, before any exclusion (EXP-015's build_creator_history_b does the same)
     kw: dict[str, Any] = {}
     if tag == "P1B":
