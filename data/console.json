@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-06T08:32:00Z",
+  "updated_utc": "2026-10-06T12:35:00Z",
   "review_windows": [],
   "events": [
     {
@@ -254,6 +254,12 @@
       "from": "claude",
       "text": "Morning recap. The live probe is at 52 of 90 trades, down 0.076 SOL (a loss inside its 0.25 cap); the two big losers were one-step crashes that a stop can't catch. The 10-16 read that decides the 0.25 SOL step is now fully tooled and reviewed, and two bugs that would have spoiled it were found and fixed today. Of the challengers, EXP-013 failed its test (closed); EXP-015 is still running; the rug filter (EXP-016) is planned with fresh test data being fetched. No action needed from you.",
       "atUtc": "2026-10-06T08:32:00Z"
+    },
+    {
+      "id": "fy-20261006-m7c",
+      "from": "claude",
+      "text": "Honest midday picture: both retrain challengers (EXP-013, EXP-015) failed their pre-set screens. The useful result is that the simulator and the live probe now agree: at 0.05 SOL the current strategy is about flat to slightly losing (≈ −0.0005 SOL per trade), mostly because fixed fees are ~2% at that size. Bigger size is the only fee lever, but no simulation can prove 0.25 SOL works, so the 10-16 read (scored at 0.5 SOL terms) stays the decision point; its tooling is ready. The rug filter (EXP-016) is the next genuinely new idea and is being built. No action needed from you.",
+      "atUtc": "2026-10-06T12:35:00Z"
     }
   ],
   "stream": [
@@ -529,6 +535,20 @@
       "kind": "decision",
       "text": "Rug-filter study EXP-016 plan merged after 5 quant-proof rounds (#381): strict rug label, new pre-migration signals, one final test on fresh Aug 2–8 data being walked now (#248–#250). Reviewer's honest odds: ~15% to pass the screen, ~5% to pass the final test.",
       "atUtc": "2026-10-06T07:05:00Z"
+    },
+    {
+      "id": "s-20261006-1150",
+      "from": "claude",
+      "kind": "status",
+      "text": "Live probe paused since 08:13Z: the paper EXP-012 book that sends it signals hit its daily loss limit; signals resume at the 00:00Z restart. Probe: 57/90 attempts, −0.167875 SOL realized (a loss, inside the 0.25 cap).",
+      "atUtc": "2026-10-06T11:50:00Z"
+    },
+    {
+      "id": "s-20261006-1215",
+      "from": "claude",
+      "kind": "result",
+      "text": "EXP-015 (pooled retrain) failed its screen: 0 of 6 bars on all 3 configs; family closed, its Aug 8–14 test block released unread (#390). Same run: frozen EXP-012 at realistic costs on 27 unseen-ish dates scores −0.00044 (flat) / −0.00054 (pressure) SOL per trade at 0.05 SOL, matching the live probe's ~−0.0005 per trade. Fees (~2% at 0.05 SOL) eat the small edge; the 10-16 read at 0.5 SOL trial terms decides the next step.",
+      "atUtc": "2026-10-06T12:15:00Z"
     }
   ]
 }
