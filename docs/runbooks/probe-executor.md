@@ -210,7 +210,9 @@ Fill rows with `fail_class`: `expired` (blockhash passed, nothing landed, no cos
 
 ## 6. Withdraw
 
-Per [probe-wallet.md](probe-wallet.md) section 3: stop the unit, confirm no open positions in `--status`, then Helm or the owner runs `probe-withdraw.sh --to <OWNER_ADDRESS>`.
+Per [probe-wallet.md](probe-wallet.md) section 3: stop the unit, confirm no open positions in `--status`, then Helm or the owner runs `probe-withdraw.sh --to 5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi` (OWNER_DEST).
+
+Never copy a withdraw address from transaction history (address-poisoning dust exists on this wallet); the tool only sends to OWNER_DEST.
 
 ## Never
 

@@ -213,11 +213,18 @@ class FakeRpc:
         raise AssertionError(method)
 
 
+@pytest.fixture(autouse=True)
+def _lock_to_test_dest(monkeypatch):
+    """The destination lock only allows OWNER_DEST; these tests use a random dest, so _setup repoints it."""
+    monkeypatch.setattr(pw, "OWNER_DEST", pw.OWNER_DEST)
+
+
 def _setup(tmp_path, balance=100_000_000, accounts_fn=None):
     kp = Keypair()
     keyfile = tmp_path / "k.json"
     keyfile.write_text(json.dumps(list(bytes(kp))))
     dest = Keypair().pubkey()
+    pw.OWNER_DEST = str(dest)  # restored by _lock_to_test_dest
     accounts = accounts_fn(kp) if accounts_fn else []
     args = SimpleNamespace(
         to=str(dest),
@@ -341,9 +348,10 @@ def test_state_check_fails_closed(tmp_path):
 def test_destination_validation(tmp_path):
     kp, dest, args, rpc = _setup(tmp_path)
     args.to = "not-an-address"
-    with pytest.raises(SystemExit, match="valid base58"):
+    with pytest.raises(SystemExit, match="does not match the owner address"):
         _run(args, rpc)
     args.to = str(kp.pubkey())
+    pw.OWNER_DEST = args.to  # lock passes; the wallet-equals-destination check must still fire
     with pytest.raises(SystemExit, match="must differ"):
         _run(args, rpc)
     assert rpc.methods == []
@@ -549,7 +557,7 @@ def test_installer_guards_and_hashed_requirements():
 def test_withdraw_refuses_non_root_outside_test_mode(monkeypatch, capsys):
     monkeypatch.delenv("MAL_LIVE_TEST", raising=False)
     monkeypatch.setattr(os, "geteuid", lambda: 1000)
-    assert pw.main(["--to", str(Keypair().pubkey())]) == 1
+    assert pw.main(["--to", pw.OWNER_DEST]) == 1
     assert "root-only" in capsys.readouterr().err
 
 
