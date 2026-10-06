@@ -22,7 +22,7 @@ import tools.oracle_insample_adapter as ia
 import tools.oracle_live_adapter as la
 from tools.exp012_fixtures import write_fast_format_root
 from tools.exp013_fixtures import hours_between, write_view_sha256
-from tools.test_exp013_grad_table import argv_for, write_grad_root, write_pool_b, write_pool_c
+from tools.test_exp013_grad_table import V_PATH, V_SHA, argv_for, write_grad_root, write_pool_b, write_pool_c
 
 REPO = Path(__file__).resolve().parent.parent
 AFTER = gs.VIEW_CUTOFF + timedelta(hours=1)
@@ -103,7 +103,8 @@ class PinViewsTests(unittest.TestCase):
     def test_manifest_matches_the_table_the_builder_writes(self) -> None:
         m, args = self._pin([self.v1, self.late, self.v2])
         argv = argv_for(self.td, "run-pin", *args)
-        with mock.patch.object(fz, "verify_view_sha256", side_effect=_verify), mock.patch.object(fz, "check_view_pin", return_value="x"):
+        argv = [*argv, "--vmap", str(V_PATH)]
+        with mock.patch.object(fz, "verify_view_sha256", side_effect=_verify), mock.patch.object(fz, "check_view_pin", return_value="x"), mock.patch.object(gtab, "VMAP_SHA256", V_SHA):
             with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 self.assertEqual(gtab.main(argv), 0)
         tman = json.loads((self.td / "out" / "run-pin" / "manifest.json").read_text())
@@ -123,7 +124,8 @@ class PinViewsTests(unittest.TestCase):
         m, args = self._pin([w1, w3, w4])
         self.assertEqual(m["gaps"], [{"from": "2026-08-22T06", "to": "2026-08-22T11", "n_hours": 6}])
         argv = argv_for(self.td, "run-gap", *args, "--allow-gap")
-        with mock.patch.object(fz, "verify_view_sha256", side_effect=_verify), mock.patch.object(fz, "check_view_pin", return_value="x"):
+        argv = [*argv, "--vmap", str(V_PATH)]
+        with mock.patch.object(fz, "verify_view_sha256", side_effect=_verify), mock.patch.object(fz, "check_view_pin", return_value="x"), mock.patch.object(gtab, "VMAP_SHA256", V_SHA):
             with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 self.assertEqual(gtab.main(argv), 0)
         tman = json.loads((self.td / "out" / "run-gap" / "manifest.json").read_text())
