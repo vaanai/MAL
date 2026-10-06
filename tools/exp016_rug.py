@@ -236,18 +236,28 @@ class LabelResult:
     v_source: str | None = None
 
 
+def _suffix_min(slots: Sequence[int]) -> list[int]:
+    """suffix_min[i] = min(slots[i:]). Built once per slot list (it does not depend on the query limit)."""
+    n = len(slots)
+    out = [0] * n
+    cur = 1 << 62
+    for i in range(n - 1, -1, -1):
+        cur = min(cur, slots[i])
+        out[i] = cur
+    return out
+
+
+def _last_within_sm(suffix_min: Sequence[int], limit: int) -> int:
+    """`_last_within` on a prebuilt suffix-minimum list: O(log n) per query."""
+    return bisect.bisect_right(suffix_min, limit) - 1
+
+
 def _last_within(slots: Sequence[int], limit: int) -> int:
     """Index of the LAST print, in stamped order, whose slot is <= `limit` (-1 if none). Stamped order is by receive
     time first, so slots are NOT monotone (Oracle rows can invert across slots) and a plain bisect on the slot list is
     wrong. Exact: everything after the answer has slot > limit, so the suffix minimum is non-decreasing and can be
-    bisected."""
-    n = len(slots)
-    suffix_min = [0] * n
-    cur = 1 << 62
-    for i in range(n - 1, -1, -1):
-        cur = min(cur, slots[i])
-        suffix_min[i] = cur
-    return bisect.bisect_right(suffix_min, limit) - 1
+    bisected. Callers that query one slot list many times build `_suffix_min` once and use `_last_within_sm`."""
+    return _last_within_sm(_suffix_min(slots), limit)
 
 
 def count_slot_inversions(rows: Iterable[Mapping[str, Any]]) -> int:
@@ -270,9 +280,9 @@ def _window_ratios(win: Sequence[Priced], slots: int) -> tuple[float | None, flo
     slot_first: dict[int, Priced] = {}
     for p in win:
         slot_first.setdefault(p.slot, p)
-    slot_list = [p.slot for p in win]  # NOT monotone: stamped order is receive-time first
+    sm = _suffix_min([p.slot for p in win])  # slots are NOT monotone (stamped order is receive-time first); built once, not per query
     for s, first in slot_first.items():
-        j = _last_within(slot_list, s + slots)  # last print in stamped order with slot <= s + slots
+        j = _last_within_sm(sm, s + slots)  # last print in stamped order with slot <= s + slots
         if first.e_before > 0:
             r = win[j].e_after / first.e_before
             a_min = r if a_min is None else min(a_min, r)
@@ -616,13 +626,13 @@ class DumpStep:
 def find_dump_steps(series: Sequence[Priced], ratio: float = RUG_RATIO) -> list[DumpStep]:
     """Event A's arithmetic over one mint's own priced prints (ordered). Uses only prints with slot <= s + 2."""
     steps: list[DumpStep] = []
-    slots = [p.slot for p in series]
+    sm = _suffix_min([p.slot for p in series])
     seen: set[int] = set()
     for p in series:
         if p.slot in seen:
             continue
         seen.add(p.slot)
-        j = _last_within(slots, p.slot + WINDOW_SLOTS)
+        j = _last_within_sm(sm, p.slot + WINDOW_SLOTS)
         if p.e_before > 0 and series[j].e_after / p.e_before <= ratio:
             sellers = frozenset(q.trader for q in series if p.slot <= q.slot <= p.slot + WINDOW_SLOTS and q.side == "sell" and q.trader)
             steps.append(DumpStep(p.slot, sellers))
