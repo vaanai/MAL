@@ -179,3 +179,4 @@ These are report only.
   - Bars 4a and 4b are therefore **no longer on unread data**. That is in addition to the `w1` disclosure in item 4b.
   - No bar is relaxed, and the precondition and every item still gate.
   - `screen.md` must carry this disclosure in its banner.
+- **Post-read changes.** Any change to EXP-014 beyond V pricing that merges after the EXP-012 backcheck read counts as post-read. It must be disclosed as post-read in `screen.md` and needs a `quant-proof` pass. The reviewer of the adapter PR checks that its diff is pricing-only.
