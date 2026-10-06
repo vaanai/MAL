@@ -1980,5 +1980,73 @@ class CoverageCountsTests(unittest.TestCase):
         self.assertLess(m.index('progress("guards start")'), m.index("run_guards(args)"))
 
 
+def many_source(n=40, with_extra=3):
+    """n migrated mints (distinct creators/pools, overlapping 24h window) plus never-migrated creates, in the real row shape."""
+    creates, migs, rows, vmap = {}, {}, {}, {}
+    for i in range(n):
+        m = f"MINT{i:04d}"
+        s0 = 1000 + i * 100
+        c, t = mint_tape(m, T0 + i * 20, creator=f"cr{i % 5}", slot0=s0, n_bond=6)
+        for r in t:
+            if r["venue"] == "pumpswap":
+                r["pool"] = f"POOL{i}"
+        creates[m], rows[m] = c[0], t
+        migs[m] = {"type": "migration", "mint": m, "pool": f"POOL{i}", "slot": s0 + 50}
+        vmap[f"POOL{i}"] = 17_584_000_000
+        for q in range(with_extra):
+            m2 = f"X{i:04d}_{q}"
+            c2, t2 = mint_tape(m2, T0 + i * 20 + q, creator=f"cr{(i + q) % 5}", slot0=s0 + 2 + 3 * q, n_bond=6)
+            creates[m2], rows[m2] = c2[0], [r for r in t2 if r["venue"] == "pump_bonding"]
+    return x.SourceData("P1A", "P1", creates, migs, rows, (T0 + n * 20 + 4000) * 1000), vmap
+
+
+class ParallelCellsTests(unittest.TestCase):
+    def _run(self, workers, **kw):
+        src, vmap = many_source(**kw)
+        old = x.PROCESS_WORKERS
+        x.PROCESS_WORKERS = workers
+        try:
+            return x.process_source(src, vmap)
+        finally:
+            x.PROCESS_WORKERS = old
+
+    def test_parallel_cells_equal_serial_cells_in_the_same_order(self):
+        serial = self._run(1)
+        self.assertGreaterEqual(len(serial["cells"]), 30)
+        self.assertEqual([c["mint"] for c in serial["cells"]], sorted(c["mint"] for c in serial["cells"]))
+        self.assertGreater(len([c for c in serial["cells"] if c["status"] == "FILLED"]), 0)  # not vacuous
+        for workers in (2, 4):
+            par = self._run(workers)
+            self.assertEqual(par["cells"], serial["cells"])
+            self.assertEqual(repr(par), repr(serial))  # the whole record, byte for byte
+        self.assertEqual(repr(self._run(3)), repr(self._run(3)))  # deterministic across runs
+
+    def test_the_first_error_in_mint_order_is_raised_in_parallel_too(self):
+        real = x.simulate_mint
+
+        def boom(mint_id, *a, **k):
+            if mint_id in ("MINT0007", "MINT0031"):
+                raise ValueError("secret 123456")
+            return real(mint_id, *a, **k)
+
+        for workers in (1, 3):
+            with mock.patch.object(x, "simulate_mint", side_effect=boom):
+                with self.assertRaises(x.SimulationError) as cm:
+                    self._run(workers)
+            self.assertIn("MINT0007", str(cm.exception))
+            self.assertNotIn("123456", str(cm.exception))
+
+    def test_progress_lines_are_counts_only(self):
+        import io
+        from contextlib import redirect_stderr
+
+        buf = io.StringIO()
+        with mock.patch.object(x, "PROGRESS_EVERY", 10), redirect_stderr(buf):
+            self._run(2)
+        lines = [ln for ln in buf.getvalue().splitlines() if " cells " in ln and "/" in ln]
+        self.assertEqual(len(lines), 4)
+        self.assertTrue(all(re.fullmatch(r"\[exp016\] P1A: cells \d+/40 rss_mb=-?\d+", ln) for ln in lines), lines)
+
+
 if __name__ == "__main__":
     unittest.main()
