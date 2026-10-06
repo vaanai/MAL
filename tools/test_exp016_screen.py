@@ -1756,5 +1756,27 @@ class MemoryRegressionTests(unittest.TestCase):
             self.assertNotIn(banned, text.lower())
 
 
+
+class CompactRowsEquivalenceTests(unittest.TestCase):
+    def test_process_source_is_identical_with_compact_row_stores(self):
+        from tools.exp016_rows import Interner, RowStore
+
+        for foreign in (False, True):
+            plain = fixture_source(foreign_first=foreign)
+            compact = fixture_source(foreign_first=foreign)
+            it = Interner()
+            stores = {}
+            for m, rows in compact.rows_by_mint.items():
+                st = RowStore(m, it)
+                for r in rows:
+                    st.append(r)
+                stores[m] = st
+            compact.rows_by_mint = stores
+            a = x.process_source(plain, VMAP)
+            b = x.process_source(compact, VMAP)
+            self.assertEqual(a, b)
+            self.assertEqual(a["cells"][0]["status"], "FILLED")
+
+
 if __name__ == "__main__":
     unittest.main()

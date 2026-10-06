@@ -46,6 +46,7 @@ import tools.exp012_backcheck as bc
 import tools.exp012_operating_point as op
 import tools.exp015_screen as e15
 import tools.exp016_rug as rug
+from tools.exp016_rows import Interner, RowStore
 import tools.exploration_entry_model as eem
 import tools.exploration_exits as xx
 from tools.exp012_latency_sensitivity import DEFAULT_ARTIFACT_DIR, load_oof
@@ -733,6 +734,22 @@ def p1b_gap_slots(src: SourceData) -> dict[str, Any]:
     return {"n": len(gaps), "n_no_bonding": n_none, "p50": _pctile(gaps, 0.5), "p90": _pctile(gaps, 0.9), "max": max(gaps)}
 
 
+class LazyRows(Mapping):
+    """mint -> rows, computed on access (and not cached): memory stays at one mint's rows."""
+
+    def __init__(self, keys: Sequence[str], make: Callable[[str], Any]) -> None:
+        self._keys, self._make = list(keys), make
+
+    def __getitem__(self, k: str) -> Any:
+        return self._make(k)
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+
 def in_counted_window(block: str, migration_row: Mapping[str, Any]) -> bool:
     """The limit denominators' window is exactly `e15.in_block_window` (the counted window, not the read set with its buffer). A migration row with no
     time (P1B's derived rows: the tape read IS the counted hours) counts as inside."""
@@ -745,8 +762,11 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
     `canonical_fn` (production: `canonical_pool_str`) adds the report-only pool-vs-canonical count for sources with migration rows."""
     pool_by_mint = rug.migration_pool_map(src.migrations.values())
     no_pool = rug.count_no_pool_mints(src.migrations.values())
-    fed = {m: list(rug.restrict_rows_to_migration_pool(admit_rows(rs), pool_by_mint.get(m))) for m, rs in src.rows_by_mint.items() if m in src.migrations}
-    raw = {m: admit_rows(rs) for m, rs in src.rows_by_mint.items() if m in src.migrations}
+    # LAZY views: each mint's admitted / pool-restricted rows are built when the gate asks for that mint and freed after, never all at once
+    # (the compact stores are the only full copy of the rows).
+    migrated = [m for m in src.rows_by_mint if m in src.migrations]
+    fed = LazyRows(migrated, lambda m: list(rug.restrict_rows_to_migration_pool(admit_rows(src.rows_by_mint[m]), pool_by_mint.get(m))))
+    raw = LazyRows(migrated, lambda m: admit_rows(src.rows_by_mint[m]))
     gate = rug.pool_attribution_gate(raw, fed, pool_by_mint)  # raises PoolAttributionRefusal before any try
     records = [
         rug.build_mint_record(m, cr, admit_rows(src.rows_by_mint.get(m, ())), pool=pool_by_mint.get(m), vmap=vmap)
@@ -844,10 +864,10 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
                     continue
                 if r.get("type") == "migration" and isinstance(r.get("mint"), str):
                     migrations.setdefault(r["mint"], r)
-    rows_by_mint: dict[str, list[Mapping[str, Any]]] = {}
+    rows_by_mint: dict[str, Any] = {}  # mint -> RowStore (iterates as dicts)
     through = 0
     n_read = n_kept = late_creates = 0
-    keep = ("venue", "side", "trader", "slot", "token_raw", "sol_lamports", "quote_reserve", "base_reserve", "signature", "event_index", "tx_index", "block_time", "t_recv_ms", "mint", "pool", "quote_is_wsol")
+    interner = Interner()
     for h in pool_hours:
         info = hours_fn(h)
         if info.get("create") is not None:
@@ -876,9 +896,11 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
             if m not in migrations:
                 if r.get("venue") != "pump_bonding":
                     continue  # a never-migrated mint has no pool: its PumpSwap rows feed nothing (the block pass prices only its curve)
-                r = {k: r[k] for k in keep if k in r}
             n_kept += 1
-            rows_by_mint.setdefault(m, []).append(r)
+            store = rows_by_mint.get(m)
+            if store is None:
+                store = rows_by_mint[m] = RowStore(m, interner)
+            store.append(r, slim=m not in migrations)  # compact columns (tools/exp016_rows.py); slim = no signature for a never-migrated mint
     if late_creates:
         raise Refused(f"{tag}: {late_creates} create row(s) appear after their mint's trades (hours out of order, or a create outside the read set); counts only, refusing")
     progress(f"{tag}: tape pass done rows_read={n_read} rows_kept={n_kept} mints_kept={len(rows_by_mint)} creates={len(creates)} migrations={len(migrations)}")
