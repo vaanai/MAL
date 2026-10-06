@@ -1778,5 +1778,76 @@ class CompactRowsEquivalenceTests(unittest.TestCase):
             self.assertEqual(a["cells"][0]["status"], "FILLED")
 
 
+class MigrationRowShapesTests(unittest.TestCase):
+    """Real key names of a fast-pool view's migrations/ files (job #301): a `complete` row (no pool) on every migrated mint and a `migration` row
+    (with pool, migration_fee, token_raw ...) on a few. The loader must treat the `complete` mints as migrated (EXP-015's definition)."""
+
+    COMPLETE = ["block_time", "bonding_curve", "commitment", "event_index", "event_ts", "feed", "mint", "quote_mint", "signature", "slot", "source", "t_recv", "t_recv_ms", "trader",
+                "tx_index", "type", "v", "venue"]
+    MIGRATION = COMPLETE[:6] + ["migration_fee"] + COMPLETE[6:7] + ["pool"] + COMPLETE[7:]
+
+    def _row(self, kind, mint, slot, bt):
+        keys = self.MIGRATION if kind == "migration" else self.COMPLETE
+        base = {"block_time": bt, "bonding_curve": "BC", "commitment": "confirmed", "event_index": 3, "event_ts": "2026-09-19T00:00:00Z", "feed": "f", "mint": mint,
+                "quote_mint": "So11111111111111111111111111111111111111112", "signature": "sig" + mint, "slot": slot, "source": "helius", "t_recv": bt, "t_recv_ms": bt * 1000,
+                "trader": "w", "tx_index": 1, "type": kind, "v": 2, "venue": "pump_bonding", "migration_fee": 0, "pool": "POOL_" + mint}
+        return {k: base[k] for k in keys}
+
+    def _load(self, rows, creates_for):
+        creates, trades = [], []
+        for m in creates_for:
+            c, tr = mint_tape(m, T0)
+            creates += c
+            trades += [t for t in tr if t["venue"] == "pump_bonding"]
+        with tempfile.TemporaryDirectory() as d:
+            tp, cp = Path(d) / "trades.jsonl", Path(d) / "creates.jsonl"
+            (Path(d) / "migrations").mkdir()
+            (Path(d) / "migrations" / "migrations-x.jsonl.zst").write_bytes(b"")
+            tp.write_text("".join(json.dumps(t) + "\n" for t in trades))
+            cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
+            lines = [json.dumps(r) for r in rows]
+
+            def fake(path, needle, limit=None):
+                return [l for l in lines if needle in l]
+
+            with mock.patch("tools.exp012_virtual_rescore._zcat_lines", fake):
+                return x.load_source_data("P1A", "P1", lambda h: {"trade": tp, "create": cp}, ["h0"], [Path(d)], canonical_fn=fake_canon)
+
+    def test_complete_rows_are_the_migrated_set_and_migration_rows_give_the_pool(self):
+        rows = [self._row("complete", f"MINT{i}", 100 + i, T0 + i) for i in range(5)] + [self._row("migration", "MINT1", 101, T0 + 1)]
+        src = self._load(rows, ["MINTA"])
+        self.assertEqual(sorted(src.migrations), [f"MINT{i}" for i in range(5)])  # all 5 completes, not just the 1 migration row
+        self.assertEqual(src.migrations["MINT1"]["pool"], "POOL_MINT1")  # a migration row's own pool wins
+        self.assertEqual(src.migrations["MINT1"]["type"], "migration")
+        self.assertEqual(src.migrations["MINT0"]["pool"], "CANON_MINT0")  # complete-only: canonical_pool(mint)
+        self.assertEqual(src.migrations["MINT0"]["slot"], 100)  # the event's own slot and time
+        self.assertTrue(src.migrations["MINT0"]["from_complete"])
+
+    def test_yield_at_the_real_ratio_is_not_4_percent(self):
+        n = 200
+        rows = [self._row("complete", f"M{i}", 1000 + i, T0 + i) for i in range(n)] + [self._row("migration", f"M{i}", 1000 + i, T0 + i) for i in range(0, n, 25)]
+        src = self._load(rows, ["MINTA"])
+        self.assertEqual(len(src.migrations), n)  # 8 migration rows alone would have kept 4%
+
+    def test_pool_vs_canonical_ignores_complete_derived_rows(self):
+        rows = [self._row("complete", "MINT0", 100, T0), self._row("complete", "MINT1", 101, T0), self._row("migration", "MINT1", 101, T0)]
+        src = self._load(rows, ["MINTA"])
+        self.assertEqual(x.count_pool_vs_canonical(src.migrations, fake_canon), {"equal": 0, "not_equal": 1, "underivable": 0})  # only the migration row compares
+
+    def test_with_create_share_limit(self):
+        r = _res("P1A", n_win=100)
+        r["n_window_with_create"] = 79
+        (why,) = x.check_limits([r])
+        self.assertIn("join failure", why)
+        r["n_window_with_create"] = 80
+        self.assertEqual(x.check_limits([r]), [])
+        self.assertEqual(x.LIMIT_MIN_WITH_CREATE, 0.80)
+
+    def test_process_source_reports_the_with_create_count(self):
+        src = fixture_source()
+        r = x.process_source(src, VMAP)
+        self.assertEqual((r["n_migrations_window"], r["n_window_with_create"]), (1, 1))
+
+
 if __name__ == "__main__":
     unittest.main()
