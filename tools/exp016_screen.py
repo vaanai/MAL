@@ -27,6 +27,7 @@ memory (full rows for migrated mints, slimmed rows for the rest), not measured: 
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import json
 import os
@@ -115,6 +116,7 @@ CANDIDATES: dict[str, dict[str, Any]] = {
 }
 assert len(CANDIDATES) == TRIES_CAP
 STARTED_KEY = "exp016_started"
+EXTRA_RESERVED = ("fresh-0802",)  # the confirmation block (plan 4); EXP-015's fragment list does not carry it
 NONE_ID = "none"  # the frozen book, always a candidate
 
 OUT_REPORT, OUT_MD = "report.json", "report.md"
@@ -132,8 +134,9 @@ class Refused(Exception):
     code = 2
 
 
-class SimulatorDrift(RuntimeError):
-    """The exit print this tool derived does not reproduce the frozen simulator's net: refuse rather than label the wrong window."""
+class SimulatorDrift(Refused):
+    """The exit print this tool derived does not reproduce the frozen simulator's net: refuse rather than label the wrong window. A Refused (caught
+    by `main` like any other), and its message names the mint id only: no net, no outcome number."""
 
 
 # --- guards ------------------------------------------------------------------------------------------------------------------
@@ -215,6 +218,11 @@ def run_guards(args: argparse.Namespace, enforce_base: bool = True, verify: bool
         e15.assert_hours_allowed(list(g2["pool"]) + list(g4["pool"] if g4 else []) + p3_hours, with_p4=g4 is not None)
     except e15.Refused as exc:
         raise Refused(str(exc)) from None
+    for label, v in (("P1 fast", args.p1_fast_dir), ("P1 insample", args.p1_oracle_insample_dir), ("P1 live", args.p1_oracle_live_dir), ("P3", args.p3_root),
+                     *[("P2 view", q) for q in (args.p2_view_dir or [])], *[("P4 view", q) for q in (args.p4_view_dir or [])]):
+        for raw in (str(v), os.path.realpath(str(v))):
+            if any(f in raw for f in EXTRA_RESERVED):
+                raise Refused(f"{label} path {str(v)!r} is the confirmation block ({EXTRA_RESERVED}); EXP-016 never reads it before its lock")
     sha = check_vmap(args.vmap)
     return {"g1": g1, "g2": g2, "g3": g3, "g4": g4, "vmap_sha256": sha, "frozen": frozen, "with_p4": g4 is not None}
 
@@ -237,8 +245,6 @@ def check_v_constancy(samples: Sequence[Mapping[str, Any]], vmap: Mapping[str, i
     print's vault quote)}. A pool DISAGREES if |v_implied - stored V| > max(1 bp of the quote reserve, 0.002 SOL); a pool with no readable stored V
     (None, or absent) is not a disagreement (it is priced by the section 4 rule). Refuses if the sample is smaller than `min_sample` or more than 1% disagree.
     Reports pool ids and differences only."""
-    if len(samples) < min_sample:
-        raise Refused(f"V-constancy sample has {len(samples)} pool(s), fewer than the pinned {min_sample}")
     bad: list[dict[str, Any]] = []
     n_checked = 0
     for s in samples:
@@ -250,11 +256,21 @@ def check_v_constancy(samples: Sequence[Mapping[str, Any]], vmap: Mapping[str, i
         diff = float(s["v_implied"]) - int(v)
         if abs(diff) > tol:
             bad.append({"pool": s["pool"], "diff_lamports": diff, "tolerance_lamports": tol})
-    rate = len(bad) / len(samples)
+    if n_checked < min_sample:  # the floor and the rate both use the pools actually CHECKED (a readable stored V), never the sample size
+        raise Refused(f"V-constancy check: only {n_checked} sampled pool(s) have a readable stored V, fewer than the pinned {min_sample}")
+    rate = len(bad) / n_checked
     rec = {"n_sample": len(samples), "n_checked": n_checked, "n_disagree": len(bad), "rate": rate, "max_rate": V_DISAGREE_MAX, "disagreeing": bad}
     if rate > V_DISAGREE_MAX:
-        raise Refused(f"V-constancy check: {len(bad)} of {len(samples)} sampled pools disagree ({rate:.2%} > {V_DISAGREE_MAX:.0%}); pools: {bad[:5]}")
+        raise Refused(f"V-constancy check: {len(bad)} of {n_checked} checked pools disagree ({rate:.2%} of {n_checked} checked > {V_DISAGREE_MAX:.0%}); pools: {bad[:5]}")
     return rec
+
+
+def check_constancy_sample(samples: Sequence[Mapping[str, Any]], p2_pools: Iterable[str]) -> None:
+    """After the tape pass, before `started`: the constancy file must hold exactly the seeded `sample_pools()` draw from the P2 pools."""
+    got = [s.get("pool") for s in samples]
+    want = sample_pools(p2_pools)
+    if len(got) != len(set(got)) or set(got) != set(want):
+        raise Refused(f"the --v-constancy-json pools ({len(set(got))}) are not the seeded sample_pools() draw from the {len(set(p2_pools))} P2 pools ({len(want)}); refusing")
 
 
 def v_coverage(pools: Iterable[str], vmap: Mapping[str, int | None]) -> dict[str, Any]:
@@ -374,7 +390,7 @@ def simulate_mint(
     wrapped = make_wrapper(print_from_trade_row, vmap)
     made = make_mint(create_row)
     if made is None:
-        return {"mint": mint_id, "status": "NO_SIM", "why": "bad create row"}
+        return {"mint": mint_id, "pool": pool, "status": "NO_SIM", "why": "bad create row"}
     mint, feat = made
     curve = curve if curve is not None else xx._curve()
     for row in fed:
@@ -385,7 +401,7 @@ def simulate_mint(
             continue
         mint.add(parsed[1])
     if mint.mig_slot is None or mint.mig_ms is None:
-        return {"mint": mint_id, "status": "NO_SIM", "why": "no canonical-pool print after a bonding print"}
+        return {"mint": mint_id, "pool": pool, "status": "NO_SIM", "why": "no canonical-pool print after a bonding print"}
     # the report cells under the multi-cell capture (as exp015), then the frozen k=1 row for the EXP-012 features (unedited score_one)
     with op.multi_cell_patch(e15._AllScores(), 0.0, combos=COMBOS):
         raw_cells = eem.score_one(mint_id, mint, feat, curve, tape_through_ms, creator_hist)
@@ -394,7 +410,7 @@ def simulate_mint(
     cells = {(int(c["k"]), int(c.get("exit_lag", 0))): e15._slim_cell({**c, "exit_lag": c.get("exit_lag", 0)}) for c in raw_cells}
     prim = cells.get(PRIMARY_CELL)
     if exp12 is None and not (prim is not None and prim["censored"]):
-        return {"mint": mint_id, "status": "NO_SIM", "why": "no frozen row"}
+        return {"mint": mint_id, "pool": pool, "status": "NO_SIM", "why": "no frozen row"}
     rec: dict[str, Any] = {
         "mint": mint_id, "pool": pool, "mig_ms": int(mint.mig_ms), "date": e15.utc_date(int(mint.mig_ms)), "exp012_features": exp12, "cells": cells,
         "slot_inversions": rug.count_slot_inversions(rows), "label191": None,
@@ -411,7 +427,8 @@ def simulate_mint(
         rec["status"] = "NO_SIM"
         rec["why"] = "no primary cell"
         return rec
-    if prim["censored"]:
+    # plan 2.2 (manager ruling 2026-10-06): a cell is censored iff its exit deadline is beyond the block edge, whether or not tp/sl would hit first
+    if prim["censored"] or landing_ms + int(_target_spec()["cap_ms"]) > tape_through_ms:
         rec["status"] = "CENSORED"
         return rec
     if not prim["filled"]:
@@ -422,10 +439,11 @@ def simulate_mint(
         spec = _target_spec()
         ex = tpsl_exit(fills, idx, buy, state.venue, landing_ms, tape_through_ms, EXIT_LAG, spec)
         if ex is None:
-            raise SimulatorDrift(f"{mint_id}: the simulator filled the primary cell but the mirrored exit is censored")
+            rec["status"] = "CENSORED"  # the exit lands past the tape end: censored (plan 2.2), never a drift
+            return rec
         closed = xx._one_sell_close(fills, ex["state_idx"], buy, state.venue, size, xx.ENTRY_PORTAL_PPM)
         if closed is None or int(closed[0]) != int(prim["net0"]):
-            raise SimulatorDrift(f"{mint_id}: mirrored exit net {None if closed is None else closed[0]} != simulator net0 {prim['net0']}")
+            raise SimulatorDrift(f"{mint_id}: the mirrored exit does not reproduce the simulator's close (no outcome value is printed)")
         exit_fill = fills[ex["state_idx"]] if ex["state_idx"] >= 0 else state
         rug.check_migration_pool_only(fed, pool, [state, exit_fill])  # P2: both endpoints are canonical-pool prints, or refuse
         stamped = rug.stamp_rows([r for r in fed if r.get("trader") != rug.PROBE_WALLET])  # the label drops our own wallet before stamping
@@ -524,6 +542,29 @@ def count_pool_vs_canonical(migrations: Mapping[str, Mapping[str, Any]], canonic
     return {"equal": eq, "not_equal": ne, "underivable": bad}
 
 
+def _pctile(xs: Sequence[int], q: float) -> int:
+    ys = sorted(xs)
+    return ys[min(len(ys) - 1, max(0, int(-(-q * len(ys) // 1)) - 1))]
+
+
+def p1b_gap_slots(src: SourceData) -> dict[str, Any]:
+    """P1B disclosure (plan 13 item 6): slots between a mint's last bonding-curve print (at or before its first canonical-pool print) and that first
+    canonical-pool print. Slots only; no price, no outcome. `n_no_bonding` = derived-migrated mints with no bonding print on the tape."""
+    gaps: list[int] = []
+    n_none = 0
+    for m, mr in src.migrations.items():
+        if not mr.get("pool") or not isinstance(mr.get("slot"), int):
+            continue
+        bs = [r["slot"] for r in src.rows_by_mint.get(m, ()) if r.get("venue") == "pump_bonding" and isinstance(r.get("slot"), int) and r["slot"] <= mr["slot"]]
+        if bs:
+            gaps.append(int(mr["slot"]) - max(bs))
+        else:
+            n_none += 1
+    if not gaps:
+        return {"n": 0, "n_no_bonding": n_none, "p50": None, "p90": None, "max": None}
+    return {"n": len(gaps), "n_no_bonding": n_none, "p50": _pctile(gaps, 0.5), "p90": _pctile(gaps, 0.9), "max": max(gaps)}
+
+
 def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn: Callable[[str], str] | None = None) -> dict[str, Any]:
     """The tape pass for one source: P2 gate, block history, one cell per migrated mint. Outcome-blind counters are returned beside the cells.
     `canonical_fn` (production: `canonical_pool_str`) adds the report-only pool-vs-canonical count for sources with migration rows."""
@@ -539,16 +580,26 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
     history = rug.BlockHistory(records)
     hist = creator_history(src.creates)
     cells: list[dict[str, Any]] = []
+    no_create_row: list[str] = []
+    no_migration_slot: list[str] = []
     for m in sorted(src.migrations):
         pool, cr = pool_by_mint.get(m), src.creates.get(m)
-        if not pool or cr is None:
+        if not pool:
             continue
-        cell = simulate_mint(m, cr, src.rows_by_mint.get(m, ()), pool=pool, migration_slot=int(src.migrations[m].get("slot") or 0), vmap=vmap,
+        if cr is None:
+            no_create_row.append(m)  # a migrated mint whose create row is not on this tape: counted, excluded
+            continue
+        mslot = src.migrations[m].get("slot")
+        if not isinstance(mslot, int) or isinstance(mslot, bool) or mslot <= 0:
+            no_migration_slot.append(m)  # never defaulted to 0 (that would open the d-group cutoff to everything): counted, excluded
+            continue
+        cell = simulate_mint(m, cr, src.rows_by_mint.get(m, ()), pool=pool, migration_slot=mslot, vmap=vmap,
                              tape_through_ms=src.through_ms, creator_hist=hist, history=history)
         cell.update({"source": src.tag, "block": src.block})
         cells.append(cell)
     pool_vs_canonical = count_pool_vs_canonical(src.migrations, canonical_fn) if (canonical_fn is not None and not src.derived_pools) else None
-    return {"tag": src.tag, "cells": cells, "no_pool_mints": no_pool, "pool_vs_canonical": pool_vs_canonical, "gate": {k: v for k, v in gate.items() if k != "pools"}, "n_migrations": len(src.migrations),
+    return {"tag": src.tag, "cells": cells, "no_pool_mints": no_pool, "no_create_row": no_create_row, "no_migration_slot": no_migration_slot,
+            "p1b_gap_slots": p1b_gap_slots(src) if src.derived_pools else None, "pool_vs_canonical": pool_vs_canonical, "gate": {k: v for k, v in gate.items() if k != "pools"}, "n_migrations": len(src.migrations),
             "slot_inversions": sum(c.get("slot_inversions", 0) for c in cells)}
 
 
@@ -577,7 +628,7 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
     creates: dict[str, Mapping[str, Any]] = {}
     rows_by_mint: dict[str, list[Mapping[str, Any]]] = {}
     through = 0
-    keep = ("venue", "side", "trader", "slot", "token_raw", "sol_lamports", "quote_reserve", "base_reserve", "signature", "event_index", "tx_index", "block_time", "t_recv_ms", "mint", "pool")
+    keep = ("venue", "side", "trader", "slot", "token_raw", "sol_lamports", "quote_reserve", "base_reserve", "signature", "event_index", "tx_index", "block_time", "t_recv_ms", "mint", "pool", "quote_is_wsol")
     for h in pool_hours:
         info = hours_fn(h)
         if info.get("create") is not None:
@@ -616,7 +667,7 @@ def frozen_flags(cells: Sequence[Mapping[str, Any]], oof: Mapping[str, float] | 
                  scorer: Callable[[Sequence[Sequence[float]]], Sequence[float]] | None = None) -> list[bool]:
     """Frozen EXP-012 selection: P1 rows by the stored OOF score (as #191), P2-P4 rows by the frozen model (never refit); score >= 0.8030766588450794."""
     out = [False] * len(cells)
-    idx_model = [i for i, c in enumerate(cells) if c.get("block") != "P1"]
+    idx_model = [i for i, c in enumerate(cells) if c.get("block") != "P1" and c.get("exp012_features") is not None]  # NO_SIM / censored cells have no features: never scored
     for i, c in enumerate(cells):
         if c.get("block") == "P1" and oof is not None:
             s = oof.get(c["mint"])
@@ -637,8 +688,8 @@ def pre_started_counts(results: Sequence[Mapping[str, Any]], sel_by_mint: Mappin
                        raw_by_source: Mapping[str, SourceData] | None = None) -> dict[str, Any]:
     """Everything the plan counts BEFORE `started`: ids and counts only, no net, no label. `sel_by_mint` is the frozen selection (model scores only)."""
     cells = [c for r in results for c in r["cells"]]
-    sel_pools = sorted({c["pool"] for c in cells if sel_by_mint.get(c["mint"]) and in_book(c)})
-    all_pools = sorted({c["pool"] for c in cells})
+    sel_pools = sorted({c["pool"] for c in cells if sel_by_mint.get(c["mint"]) and in_book(c) and c.get("pool")})
+    all_pools = sorted({c["pool"] for c in cells if c.get("pool")})
     unp = rug.count_unpriced_pools(sel_pools, vmap, closed=closed)
     n_cens = [c["mint"] for c in cells if c.get("status") == "CENSORED" and e15.in_block_window(c["block"], int(c["mig_ms"]))]
     return {
@@ -652,12 +703,16 @@ def pre_started_counts(results: Sequence[Mapping[str, Any]], sel_by_mint: Mappin
         "slot_inversions": {r["tag"]: r["slot_inversions"] for r in results},
         "n_canonical_pools": len(all_pools), "n_cells": len(cells),
         "no_sim": sum(1 for c in cells if c.get("status") == "NO_SIM"),
+        "no_sim_by_reason": dict(sorted(collections.Counter(str(c.get("why")) for c in cells if c.get("status") == "NO_SIM").items())),
+        "no_migration_slot_mints": {r["tag"]: r.get("no_migration_slot", []) for r in results},
+        "migrated_mints_without_create_row": {r["tag"]: len(r.get("no_create_row", [])) for r in results},
+        "p1b_gap_slots": {r["tag"]: r["p1b_gap_slots"] for r in results if r.get("p1b_gap_slots") is not None},
     }
 
 
 def total_loss_flags(cells: Sequence[Mapping[str, Any]], bad_pools: set[str], silent_ids: set[str]) -> dict[str, bool]:
     """mint -> scored at total loss in the sensitivity: its pool is closed or parse-fail (section 4), or its cell is a silent-pool cell (section 2.2)."""
-    return {c["mint"]: (c["pool"] in bad_pools or c["mint"] in silent_ids) for c in cells}
+    return {c["mint"]: (c.get("pool") in bad_pools or c["mint"] in silent_ids) for c in cells}
 
 
 def build_table(cells: Sequence[Mapping[str, Any]], sel: Sequence[bool]) -> list[dict[str, Any]]:
@@ -1045,8 +1100,9 @@ def write_report(out_dir: Path, rep: Mapping[str, Any]) -> None:
 
 
 def started_blocks(with_p4: bool) -> list[dict[str, str]]:
-    last = "P4" if with_p4 else "P3"
-    return [{"start_hour": e15.BLOCKS["P2"][0], "end_hour_exclusive": e15.BLOCKS[last][1], "host": "mal-research-0", "ledger_owner": "EXP-016 row universe (bookkeeping, not a pool try)"}]
+    """P2, P3 (and P4) separately, never one span (a span would also cover hours between the blocks)."""
+    return [{"start_hour": e15.BLOCKS[b][0], "end_hour_exclusive": e15.BLOCKS[b][1], "host": "mal-research-0", "ledger_owner": "EXP-016 row universe (bookkeeping, not a pool try)"}
+            for b in ("P2", "P3") + (("P4",) if with_p4 else ())]
 
 
 def _in_log(log: Path, key: str, group: str, status: str, result_path: Path) -> bool:
@@ -1202,7 +1258,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         fallback = {k: int(v) for k, v in json.loads(args.v_fallback_json.read_text()).items()} if args.v_fallback_json else {}
         closed = set(json.loads(args.closed_pools_json.read_text())) if args.closed_pools_json else set()
         vmap = rug.merge_v_map(vmap_raw, fallback)  # ONE merged map, to the label and to make_wrapper
-        constancy = check_v_constancy(json.loads(args.v_constancy_json.read_text()), vmap_raw)
+        constancy_samples = json.loads(args.v_constancy_json.read_text())
+        constancy = check_v_constancy(constancy_samples, vmap_raw)
+        input_shas = {k: (hashlib.sha256(Path(f).read_bytes()).hexdigest() if f else None)
+                      for k, f in (("v_fallback_json_sha256", args.v_fallback_json), ("v_constancy_json_sha256", args.v_constancy_json), ("closed_pools_json_sha256", args.closed_pools_json))}
+        print(f"input files: {json.dumps(input_shas)}", file=sys.stderr)
         if args.guards_only:
             print("guards OK (no outcome row was read)", file=sys.stderr)
             return 0
@@ -1223,7 +1283,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         for tag, block, hours_fn, pool_hours, mig_roots in build_sources(g):
             src = load_source_data(tag, block, hours_fn, pool_hours, mig_roots)
             results.append(process_source(src, vmap, canonical_pool_str))
-            pool_print_ms.update(pool_print_times(src, rug.migration_pool_map(src.migrations.values())))
+            for p_, ts_ in pool_print_times(src, rug.migration_pool_map(src.migrations.values())).items():
+                pool_print_ms.setdefault(p_, []).extend(ts_)  # merge, never overwrite (a pool can appear in two sources)
             del src
         cells = [c for r in results for c in r["cells"]]
         try:
@@ -1232,11 +1293,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise Refused(str(exc)) from None
         sel = frozen_flags(cells, oof, args.artifact_dir)
         pre = pre_started_counts(results, {c["mint"]: s for c, s in zip(cells, sel)}, vmap_raw, closed)
-        pre["v_coverage"] = v_coverage([c["pool"] for c in cells], vmap_raw)
+        pre["v_coverage"] = v_coverage([c["pool"] for c in cells if c.get("pool")], vmap_raw)
         pre["v_constancy"] = constancy
+        check_constancy_sample(constancy_samples, [c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")])  # before `started`
         table = build_table(cells, sel)
         usha, fsha = universe_sha256(table), feature_table_sha256(table)
-        prior = prior_tries_per_pool(tries_path, with_p4)
+        prior = prior_tries_per_pool(canonical, with_p4)  # the canonical data/tries.jsonl, not an alternate --tries-log
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / OUT_UNIVERSE).write_text(usha + "\n")
         (out_dir / OUT_FEATURES).write_text(fsha + "\n")
@@ -1246,7 +1308,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"refusing: {out_dir / e15.OUT_LOCK} appeared (concurrent run)", file=sys.stderr)
             return 2
         locked = True
-        extra = {"universe_sha256": usha, "feature_table_sha256": fsha, "prior_tries_per_pool": prior, "with_p4": with_p4, "vmap_sha256": g["vmap_sha256"]}
+        check_no_prior_tries(tries_path, canonical)  # re-checked under the lock, right before the spend point
+        extra = {"universe_sha256": usha, "feature_table_sha256": fsha, "prior_tries_per_pool": prior, "with_p4": with_p4, "vmap_sha256": g["vmap_sha256"], **input_shas}
         log_all(out_dir, tries_path, canonical, "started", with_p4, extra)  # the spend point
         started = True
         base = {"schema": SCHEMA, "banner": BANNER, "first_line": first_line(with_p4), "with_p4": with_p4, "pre_started": pre, "prior_tries": prior, "universe_sha256": usha,
@@ -1257,7 +1320,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             holder["g"] = dict(gd)
             write_report(out_dir, {**base, "guards_after_started": gd, "decision": {"outcome": "guards computed; candidates not yet scored"}, "partial": True})
 
-        bad = set(pre["closed_pools_frozen_selected"]) | set(pre["parse_fail_pools_frozen_selected"])
+        bad = set(pre["closed_pools_frozen_selected"]) | set(pre["parse_fail_pools_frozen_selected"]) | set(pre["unmapped_pools_frozen_selected"])
         res = run_screen(table, cells, pool_print_ms, bad, with_p4, on_guards)
         rep = {**base, "guards_after_started": res["guards"], "bars": res["bars"], "decision": res["decision"], "report_only": res.get("report_only"), "wall_s": time.time() - t0, "partial": False}
         write_report(out_dir, rep)

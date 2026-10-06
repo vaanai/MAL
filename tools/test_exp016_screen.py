@@ -187,9 +187,35 @@ class GuardTests(unittest.TestCase):
         # the tolerance is the larger of 1 bp of the quote reserve and 0.002 SOL
         big = [dict(s, quote_reserve=500 * SOL, v_implied=17_584_000_000 + 40_000_000) for s in ok]  # 1 bp of 500 SOL = 0.05 SOL > 0.04 SOL diff
         self.assertEqual(x.check_v_constancy(big, vmap)["n_disagree"], 0)
-        # a pool with no readable stored V is not a disagreement (priced by the section 4 rule)
+        # a pool with no readable stored V is not a disagreement (priced by the section 4 rule) but it is not CHECKED either: the floor and the
+        # 1% rate use n_checked, so an all-unreadable sample refuses
         none_map = {k: None for k in vmap}
-        self.assertEqual(x.check_v_constancy(three, none_map)["n_disagree"], 0)
+        with self.assertRaises(x.Refused):
+            x.check_v_constancy(three, none_map)
+
+    def test_v_constancy_floor_and_rate_use_n_checked(self):
+        vmap = {f"p{i}": 17_584_000_000 for i in range(300)}
+        ok = [{"pool": f"p{i}", "v_implied": 17_584_000_000, "quote_reserve": 10 * SOL} for i in range(300)]
+        part = {**vmap, **{f"p{i}": None for i in range(200, 300)}}  # 200 checked, 100 unreadable
+        self.assertEqual(x.check_v_constancy(ok, part)["n_checked"], 200)
+        part199 = {**vmap, **{f"p{i}": None for i in range(199, 300)}}  # 199 checked of 300: below the floor
+        with self.assertRaises(x.Refused):
+            x.check_v_constancy(ok, part199)
+        bad3 = [dict(s, v_implied=s["v_implied"] + 5_000_000) if i < 3 else s for i, s in enumerate(ok)]
+        self.assertEqual(x.check_v_constancy(bad3, vmap)["n_disagree"], 3)  # 3/300 = 1.0%: passes on the sample size ...
+        with self.assertRaises(x.Refused):
+            x.check_v_constancy(bad3, part)  # ... but 3/200 = 1.5% of the checked pools refuses
+
+    def test_constancy_file_must_be_the_seeded_p2_sample(self):
+        p2 = [f"pool{i}" for i in range(1000)]
+        good = [{"pool": p} for p in x.sample_pools(p2)]
+        x.check_constancy_sample(good, p2)
+        with self.assertRaises(x.Refused):
+            x.check_constancy_sample(good[:-1] + [{"pool": "pool_not_in_the_draw"}], p2)
+        with self.assertRaises(x.Refused):
+            x.check_constancy_sample(good[:-1], p2)
+        with self.assertRaises(x.Refused):
+            x.check_constancy_sample(good + good[:1], p2)  # duplicates
 
     def test_v_coverage_counts_only_readable_pools(self):
         vmap = {f"p{i}": (0 if i % 2 else -5) for i in range(200)}  # <= 0 is readable (vault-only)
