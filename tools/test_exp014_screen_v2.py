@@ -256,7 +256,7 @@ class EvaluateTests(unittest.TestCase):
         dates = sorted({r["day"] for r in rows})
         main = [r for r in rows if r["size"] == sv.DECIDING_SIZE]
         transfer = {"threshold_p90": 0.5, "selected": [r for r in main if r["entry_land_k"] == 4 and r["day"] < "2026-09" and r["mint"].endswith(("-0", "-1", "-2", "-3"))]}
-        ev = sv.evaluate(rows, selected, transfer, frozen_mints=set(), dates=dates)
+        ev = sv.evaluate(rows, selected, transfer, frozen_mints=set(), dates=dates, lag_d_rows=rows)
         self.assertEqual(list(ev["bars"]), ["bar1", "bar2", "bar3", "bar2b", "bar4", "bar5", "bar6", "item5_d8", "item6", "holm"])
         self.assertEqual(len(ev["bars"]["holm"]["report"]), sv.HOLM_K)
         self.assertEqual(ev["bars"]["holm"]["alpha"], 0.05)
@@ -336,7 +336,7 @@ class Item4bTests(unittest.TestCase):
 
     def run_ev(self, aug_win: bool) -> dict:
         rows, selected, dates = self.rows_for(aug_win)
-        return sv.evaluate(rows, selected, {"threshold_p90": 0.5, "selected": []}, set(), dates)
+        return sv.evaluate(rows, selected, {"threshold_p90": 0.5, "selected": []}, set(), dates, lag_d_rows=rows)
 
     def test_august_losers_fail_4b_even_when_september_passes(self) -> None:
         ev = self.run_ev(False)
@@ -355,13 +355,144 @@ class Item4bTests(unittest.TestCase):
     def test_report_only_legs_exist(self) -> None:
         ro = self.run_ev(True)["report_only"]
         self.assertIn("bars_without_edge_days", ro)
-        self.assertIn("lag_equals_d", ro)
+        self.assertNotIn("lag_equals_d", ro)  # no longer report-only: it gates (bars_pinned_d)
+
+
+class BothExitLegsTests(unittest.TestCase):
+    """Amendment 7 pre-read addendum: PASS needs every bar on BOTH the lag-2 leg and the pinned lag = d leg."""
+
+    def legs(self, lag2_win: bool, lagd_win: bool) -> dict:
+        rows, _ = EvaluateTests().synth()
+        dates = sorted({r["day"] for r in rows})
+        top = tuple(f"-{j}" for j in range(8))  # 8 selected a day: 13 September dates x 8 = 104 >= 100
+        selected = [{"day": r["day"], "mint": r["mint"], "score": 1.0} for r in rows if r["entry_land_k"] == 4 and r["size"] == sv.SIZES[0] and r["mint"].endswith(top)]
+
+        def leg(win: bool) -> list[dict]:
+            out = []
+            for r in rows:
+                good = win and r["mint"].endswith(top)
+                q = {**r, "net0": 40_000_000 if good else -9_000_000}
+                n = sv.row_nets(q)
+                q["flat"], q["press"] = n["flat"], n["press"]
+                out.append(q)
+            return out
+
+        r2, rd = leg(lag2_win), leg(lagd_win)
+        main = [r for r in r2 if r["size"] == sv.DECIDING_SIZE and r["entry_land_k"] == 4 and r["day"] < "2026-09" and r["mint"].endswith(top)]
+        return sv.evaluate(r2, selected, {"threshold_p90": 0.5, "selected": main}, set(), dates, lag_d_rows=rd)
+
+    def test_both_legs_pass(self) -> None:
+        ev = self.legs(True, True)
+        self.assertEqual(ev["passes_by_leg"], {"lag2": True, "pinned_d": True})
+        self.assertTrue(ev["passes"])
+        self.assertTrue(sv.outcome_line({"passes": True, **ev}).startswith("SCREEN PASS"))
+
+    def test_pass_on_lag2_fail_on_lag_d_is_screen_none(self) -> None:
+        ev = self.legs(True, False)
+        self.assertEqual(ev["passes_by_leg"], {"lag2": True, "pinned_d": False})
+        self.assertFalse(ev["passes"])
+        out = sv.outcome_line({"outcome": "", **ev})
+        self.assertTrue(out.startswith("SCREEN NONE"))
+        self.assertIn("@lag=d", out)
+
+    def test_fail_on_lag2_pass_on_lag_d_is_screen_none(self) -> None:
+        ev = self.legs(False, True)
+        self.assertEqual(ev["passes_by_leg"], {"lag2": False, "pinned_d": True})
+        self.assertFalse(ev["passes"])
+        self.assertTrue(sv.outcome_line(ev).startswith("SCREEN NONE"))
+
+    def test_holm_p_is_the_larger_of_the_two_legs(self) -> None:
+        ev = self.legs(True, False)
+        h = ev["bars"]["holm"]
+        self.assertEqual(h["p"], max(h["p_lag2"], h["p_pinned_d"]))
+        self.assertEqual(len(h["report"]), sv.HOLM_K)
+        self.assertEqual(ev["bars_pinned_d"]["holm"]["p"], h["p"])
+
+
+class MainEndToEndTests(unittest.TestCase):
+    """main() on a tiny fixture: guards, view pins and the V-map pin are stubbed; the tape pass and the model are replaced by a synthetic table."""
+
+    def run_main(self, td: str, tape_raises: BaseException | None = None) -> tuple[int | None, BaseException | None, Path, Path, Path]:
+        out, ops, canon = Path(td) / "out", Path(td) / "ops.jsonl", Path(td) / "canon.jsonl"
+        rows, selected = EvaluateTests().synth()
+        table = []
+        for r in rows:
+            for lag in sorted({sv.EXIT_LAG, r["entry_land_k"]}):
+                table.append({**r, "exit_lag": lag, "mig_ms": 0, "amm_pool": None, "excluded_by_time": False, "features": {}})
+        dates = sorted({r["day"] for r in rows})
+        stats = {"rows_after_scored_within_bound": 0, "v_counts": {"no_v": 0, "pumpswap_prints": 100}, "no_v_pools": []}
+
+        def fake_tape(*_a, **_k):
+            if tape_raises is not None:
+                raise tape_raises
+            return table, stats
+
+        g = {"layout": {}, "hours_present": {}, "vmap_sha256": "v", "view_sha256": {}}
+        patches = [
+            mock.patch.object(sv, "run_guards", lambda *_a, **_k: g),
+            mock.patch.object(sv, "layout_digest", lambda _g: "digest"),
+            mock.patch.object(sv, "check_precount", lambda *_a, **_k: {"counts": {}, "layout_digest": "digest"}),
+            mock.patch.object(sv, "frozen_selected_mints", lambda *_a, **_k: (set(), set())),
+            mock.patch.object(sv, "tape_pass", fake_tape),
+            mock.patch.object(sv.mm, "nested_lodo_select", lambda *_a, **_k: (selected, [], {})),
+            mock.patch.object(sv, "transfer_selection", lambda *_a, **_k: {"threshold_p90": 0.5, "selected": []}),
+            mock.patch.object(sv.e17, "check_canonical_tries", lambda *_a, **_k: None),
+            mock.patch.object(sv.e15, "non_p1_dates", lambda *_a, **_k: dates),
+            mock.patch.object(sv.e15, "in_block_window", lambda *_a, **_k: True),
+            mock.patch.object(sv.e15, "git_state", lambda: {"head": "deadbeef", "dirty_tools": False}),
+        ]
+        for pt in patches:
+            pt.start()
+            self.addCleanup(pt.stop)
+        canon.write_text("", encoding="utf-8")
+        argv = ["--out-dir", str(out), "--tries-log", str(ops), "--canonical-tries", str(canon), "--p2-view-dir", "x", "--p4-view-dir", "y", "--max-workers", "1"]
+        rc, exc = None, None
+        try:
+            rc = sv.main(argv)
+        except BaseException as e:  # noqa: BLE001
+            exc = e
+        return rc, exc, out, ops, canon
+
+    @staticmethod
+    def statuses(log: Path) -> list[str]:
+        return [json.loads(x)["config"]["status"] for x in log.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+    def test_full_run_started_to_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rc, exc, out, ops, canon = self.run_main(td)
+            self.assertIsNone(exc)
+            self.assertEqual(rc, 0)
+            self.assertEqual(self.statuses(ops), ["started", "completed"])
+            self.assertEqual(self.statuses(canon), ["started", "completed"])
+            rep = json.loads((out / sv.OUT_SCREEN).read_text(encoding="utf-8"))
+            self.assertIn("bars_pinned_d", rep["evaluation"])
+            self.assertIn("passes_by_leg", rep["evaluation"])
+            self.assertTrue((out / sv.OUT_MD).is_file())
+            self.assertEqual(json.loads((out / e15.OUT_RECORD).read_text(encoding="utf-8"))["status"], "completed")
+
+    def test_failure_after_started_writes_aborted_in_both_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rc, exc, out, ops, canon = self.run_main(td, RuntimeError("boom"))
+            self.assertIsNone(exc)
+            self.assertEqual(rc, 3)
+            self.assertEqual(self.statuses(ops), ["started", "aborted"])
+            self.assertEqual(self.statuses(canon), ["started", "aborted"])
+            self.assertFalse((out / sv.OUT_SCREEN).exists())
+
+    def test_systemexit_after_started_writes_aborted_and_reraises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rc, exc, out, ops, canon = self.run_main(td, SystemExit(9))
+            self.assertIsInstance(exc, SystemExit)
+            self.assertEqual(self.statuses(ops), ["started", "aborted"])
+            self.assertEqual(self.statuses(canon), ["started", "aborted"])
 
 
 class OutcomeTests(unittest.TestCase):
     def test_outcome_lines(self) -> None:
         self.assertIn("never 'has an edge'", sv.outcome_line({"passes": True, "bars": {}}))
         self.assertIn("bar2", sv.outcome_line({"passes": False, "bars": {"bar1": {"pass": True}, "bar2": {"pass": False}}}))
+        self.assertTrue(sv.outcome_line({"passes": False, "bars": {"bar1": {"pass": True}}, "bars_pinned_d": {"bar1": {"pass": False}}}).startswith("SCREEN NONE"))
+        self.assertIn("bar1@lag=d", sv.outcome_line({"passes": False, "bars": {"bar1": {"pass": True}}, "bars_pinned_d": {"bar1": {"pass": False}}}))
 
 
 if __name__ == "__main__":

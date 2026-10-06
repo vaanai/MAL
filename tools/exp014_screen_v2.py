@@ -10,7 +10,7 @@ Modes
                  Counts rows, bad lines, rows without a clock, PumpSwap rows with no pool or no V, migrations (tape order) per T day, creates.
                  Refuses (exit 2) on any missing hour, a zstd stream that does not end rc 0, or V coverage below the pins. Writes precount.json.
   (screen)       refuses unless precount.json is clean and was made by the same code and layout; takes RUN.lock (O_EXCL); writes a `started` line to BOTH
-                 tries logs; runs the tape pass (V-priced, exit lag 2, stakes 0.05 and 0.5 SOL), the nested LODO, the bars and the Holm test (k = 1);
+                 tries logs; runs the tape pass (V-priced, exit lag 2 and the pinned lag = d, stakes 0.05 and 0.5 SOL), the nested LODO, the bars on BOTH exit legs and the Holm test (k = 1, larger p of the two legs);
                  writes screen.json and screen.md and the `completed` lines. A second run is refused, before and after `started`.
 
 Run (research host, one heavy job at a time, as a MiScusi job; see the PR body for the exact lines):
@@ -72,6 +72,9 @@ DEFAULT_OUT = Path("/data/mal/exp014-screen-v2")
 CODE_FILES = ("tools/exp014_screen_v2.py", "tools/exp014_m15_trigger.py", "tools/exp014_m15_model.py", "tools/exp015_screen.py", "tools/exp017_screen.py", "tools/pumpswap_virtual_adapter.py", "tools/pumpswap_virtual.py")
 BANNER = (
     "EXPLORATION, NO EDGE CLAIM. EXP-014 screen v2. Prior odds about 10 % (plan). One try, Holm k = 1. P1 is not read. "
+    "Family count: this is the 7th family scoped to these 27 non-P1 dates (EXP-015, EXP-016, EXP-017, EXP-018, EXP-019, EXP-020 report-only, EXP-014 v2); "
+    "by data/tries.jsonl 3 have spent their try (EXP-015, EXP-018, EXP-019, all failed) and 3 others have not read an outcome yet (EXP-016, EXP-017, EXP-020); "
+    "the Holm k = 1 here does not correct for them. PASS needs every bar on BOTH the lag-2 and the pinned lag = d exit legs. "
     "Post-read disclosures: the explore-0814 days were read by DEC-017 (a) and by the EXP-012 backcheck; fresh-0903 was spent by EXP-012; exp011-0909 by EXP-011/015."
 )
 
@@ -571,14 +574,15 @@ def edge_dates() -> set[tuple[str, str]]:
     return out
 
 
-def evaluate(rows: Sequence[dict[str, Any]], selected: Sequence[Mapping[str, Any]], transfer: Mapping[str, Any], frozen_mints: set[str], dates: Sequence[str],
-             lag_d_rows: Sequence[dict[str, Any]] = (), cached_mints: set[str] | None = None) -> dict[str, Any]:
-    """Bars 1-6 (EXP-015 bars adapted; P1 is out of scope), item 5 (d = 8), item 6 (Jaccard, non-B mean), Holm k = 1."""
+def _leg_bars(rows: Sequence[dict[str, Any]], selected: Sequence[Mapping[str, Any]], transfer_sel: Sequence[Mapping[str, Any]], threshold_p90: Any,
+              frozen_mints: set[str], dates: Sequence[str], k_primary: int, k_item5: int) -> tuple[dict[str, Any], list[float | None], dict[str, Any]]:
+    """Bars 1-6, item 5 and item 6 on ONE exit leg's rows (the deciding lag 2, or the pinned lag = d). `rows` are that leg's screen rows (one row per
+    mint, d, size); `transfer_sel` are that leg's rows for the bar-6 selected mints. Returns (bars without Holm, per-fail-model Holm p's, scratch)."""
     idx = index_rows(rows)
     n_dates = len(dates)
     sept = [d for d in dates if d >= "2026-09-01"]
-    main, _ = selected_rows(selected, idx, PRIMARY_K, DECIDING_SIZE)
-    elig = [r for r in rows if r["entry_land_k"] == PRIMARY_K and r["size"] == DECIDING_SIZE]
+    main, _ = selected_rows(selected, idx, k_primary, DECIDING_SIZE)
+    elig = [r for r in rows if r["entry_land_k"] == k_primary and r["size"] == DECIDING_SIZE]
     bars: dict[str, Any] = {}
     rep_all = e15.scope_report(sel_trades(main), n_dates)
     bars["bar1"] = {"scope": f"all {n_dates} non-P1 dates", "report": rep_all, "pass": rep_all["gate_all"]}
@@ -597,34 +601,56 @@ def evaluate(rows: Sequence[dict[str, Any]], selected: Sequence[Mapping[str, Any
     p2p4 = mean_pass(sel_trades([r for r in main if r["source"] in ("P2", "P4")]))
     bars["bar5"] = {"scope": "P2 + P4 only", "report": p2p4, "pass": p2p4["pass"]}
     august = [d for d in dates if d < "2026-09-01"]
-    tr_t = sel_trades(transfer["selected"])
+    tr_t = sel_trades(transfer_sel)
     t_stats = {leg: e15.leg_stats(tr_t, leg) for leg in LEGS}
     t_ok = {leg: t_stats[leg]["mean_sol"] is not None and t_stats[leg]["mean_sol"] > 0 and t_stats[leg]["dates_positive"] * 2 > len(august) for leg in LEGS}
-    bars["bar6"] = {"scope": f"fit on September dates, score P2 ({len(august)} dates)", "threshold_p90": transfer["threshold_p90"], "n": t_stats["flat"]["n"], "per_leg": t_ok,
+    bars["bar6"] = {"scope": f"fit on September dates, score P2 ({len(august)} dates)", "threshold_p90": threshold_p90, "n": t_stats["flat"]["n"], "per_leg": t_ok,
                     "mean_sol": {leg: t_stats[leg]["mean_sol"] for leg in LEGS}, "pass": all(t_ok.values())}
-    d8, d8_miss = selected_rows(selected, idx, 8, DECIDING_SIZE)
+    d8, d8_miss = selected_rows(selected, idx, k_item5, DECIDING_SIZE)
     item5 = mean_pass(sel_trades(d8))
     item5["selected_without_d8_row"] = d8_miss
-    bars["item5_d8"] = {"scope": "same selected mints at d = 8, pooled mean > 0 both legs", "report": item5, "pass": item5["pass"]}
+    bars["item5_d8"] = {"scope": f"same selected mints at d = {k_item5}, pooled mean > 0 both legs", "report": item5, "pass": item5["pass"]}
     eligible_mints = {r["mint"] for r in elig}
     sel_mints = {s["mint"] for s in selected}
     jac = jaccard_vs_frozen(sel_mints, eligible_mints, frozen_mints)
     non_b = [r for r in main if r["mint"] not in frozen_mints]
     nb = mean_pass(sel_trades(non_b))
     bars["item6"] = {"scope": "overlap with the frozen EXP-012 selection on the same dates", "jaccard": jac, "non_b_trades": nb, "pass": bool(jac["pass"] and nb["pass"])}
-    ps = []
+    ps: list[float | None] = []
     for leg in LEGS:
         bd: dict[str, list[float]] = {}
         for t in sel_trades(main):
             bd.setdefault(t["day"], []).append(float(t[leg]))
         ps.append(e17.boot_p(bd))
-    p = None if any(x is None for x in ps) else max(ps)
+    return bars, ps, {"main": main, "elig": elig, "allnets": allnets, "eligible_mints": eligible_mints}
+
+
+ORDER = ("bar1", "bar2", "bar2b", "bar3", "bar4", "bar5", "bar6", "item5_d8", "item6")
+
+
+def evaluate(rows: Sequence[dict[str, Any]], selected: Sequence[Mapping[str, Any]], transfer: Mapping[str, Any], frozen_mints: set[str], dates: Sequence[str],
+             lag_d_rows: Sequence[dict[str, Any]] = (), cached_mints: set[str] | None = None) -> dict[str, Any]:
+    """Bars 1-6, item 5, item 6 and Holm k = 1, scored on BOTH exit legs (Amendment 7 pre-read addendum): the deciding lag 2 (`rows`) and the pinned
+    lag = d (`lag_d_rows`: sell offset = entry offset, d = 4, and d = 8 for item 5). PASS needs every bar on both legs, both fail models. Holm uses the
+    larger p over both legs and both fail models."""
+    n_dates = len(dates)
+    bars, ps2, sc = _leg_bars(rows, selected, transfer["selected"], transfer["threshold_p90"], frozen_mints, dates, PRIMARY_K, 8)
+    d_idx = index_rows(lag_d_rows)
+    t_pinned = [d_idx[(r["mint"], PRIMARY_K, DECIDING_SIZE)] for r in transfer["selected"] if (r["mint"], PRIMARY_K, DECIDING_SIZE) in d_idx]
+    bars_d, ps_d, _scd = _leg_bars(lag_d_rows, selected, t_pinned, transfer["threshold_p90"], frozen_mints, dates, PRIMARY_K, 8)
+    allp = ps2 + ps_d
+    p = None if any(x is None for x in allp) else max(allp)
     hm = e17.holm({TRIES_KEY: p}, HOLM_ALPHA)
     assert len(hm) == HOLM_K
-    bars["holm"] = {"scope": "date-cluster one-sided bootstrap p of mean > 0, max over legs, 10,000 draws, seed 1, Holm k = 1", "p": p, "alpha": HOLM_ALPHA, "report": hm, "pass": bool(hm[TRIES_KEY]["reject"])}
-    order = ("bar1", "bar2", "bar2b", "bar3", "bar4", "bar5", "bar6", "item5_d8", "item6", "holm")
-    passes = all(bars[k]["pass"] for k in order)
-    big, _ = selected_rows(selected, idx, PRIMARY_K, SIZES[1])
+    holm = {"scope": "date-cluster one-sided bootstrap p of mean > 0, max over both fail models AND both exit legs (lag 2, lag = d), 10,000 draws, seed 1, Holm k = 1",
+            "p": p, "p_lag2": None if any(x is None for x in ps2) else max(ps2), "p_pinned_d": None if any(x is None for x in ps_d) else max(ps_d),
+            "alpha": HOLM_ALPHA, "report": hm, "pass": bool(hm[TRIES_KEY]["reject"])}
+    bars["holm"] = dict(holm)
+    bars_d["holm"] = dict(holm)
+    pass_by_leg = {"lag2": all(bars[k]["pass"] for k in ORDER), "pinned_d": all(bars_d[k]["pass"] for k in ORDER)}  # bars 1-6, item 5, item 6; Holm is shared (max p)
+    passes = pass_by_leg["lag2"] and pass_by_leg["pinned_d"] and holm["pass"]
+    main, elig, allnets, eligible_mints = sc["main"], sc["elig"], sc["allnets"], sc["eligible_mints"]
+    big, _ = selected_rows(selected, index_rows(rows), PRIMARY_K, SIZES[1])
     report_only = {
         "stake_0.5_sol": {"n": len(big), "report": e15.scope_report(sel_trades(big), n_dates) if big else None},
         "enter_all_mig15": {leg: (sum(n[leg] for n in allnets) / len(allnets) / LAMPORTS) if allnets else None for leg in LEGS},
@@ -635,24 +661,25 @@ def evaluate(rows: Sequence[dict[str, Any]], selected: Sequence[Mapping[str, Any
     edge_days = {d for (_t, d) in edges}
     ne_dates = [d for d in dates if d not in edge_days]
     report_only["bars_without_edge_days"] = {"edge_dates": sorted(f"{t}:{d}" for t, d in edges), "report": e15.scope_report(sel_trades(ne), len(ne_dates)) if ne else None}
-    ld = selected_rows(selected, index_rows(lag_d_rows), PRIMARY_K, DECIDING_SIZE)[0] if lag_d_rows else []
-    report_only["lag_equals_d"] = {"note": "report-only: sell offset = d (4) instead of the deciding lag 2", "n": len(ld), "report": e15.scope_report(sel_trades(ld), n_dates) if ld else None}
     if cached_mints is not None:
         report_only["item6_eligible_mints_missing_from_exp015_cache"] = {"missing": len(eligible_mints - cached_mints), "eligible": len(eligible_mints)}
-    return {"bars": bars, "passes": bool(passes), "n_selected": len(selected), "n_eligible_rows": len(elig), "report_only": report_only}
+    return {"bars": bars, "bars_pinned_d": bars_d, "passes_by_leg": pass_by_leg, "passes": bool(passes), "n_selected": len(selected), "n_eligible_rows": len(elig),
+            "report_only": report_only}
 
 
 def outcome_line(rep: Mapping[str, Any]) -> str:
     if rep["passes"]:
-        return "SCREEN PASS: EXP-014 may get a pre-registration on a not-yet-reserved block. This means 'worth one confirmation read', never 'has an edge'."
-    failed = [k for k, v in rep["bars"].items() if not v["pass"]]
-    return f"SCREEN FAIL: the family is closed (plan item 14). Failed: {', '.join(failed)}."
+        return "SCREEN PASS (both exit legs): EXP-014 may get a pre-registration on a not-yet-reserved block. This means 'worth one confirmation read', never 'has an edge'."
+    failed = [k for k, v in rep["bars"].items() if not v["pass"]] + [f"{k}@lag=d" for k, v in rep.get("bars_pinned_d", {}).items() if not v["pass"]]
+    return f"SCREEN NONE: the family is closed (plan item 14). Failed: {', '.join(failed)}."
 
 
 def render_md(rep: Mapping[str, Any]) -> str:
     lines = [f"# EXP-014 screen v2", "", BANNER, "", rep["outcome"], "", "| bar | scope | pass |", "| --- | --- | --- |"]
     for k, v in rep["evaluation"]["bars"].items():
         lines.append(f"| {k} | {v['scope']} | {v['pass']} |")
+    for k, v in rep["evaluation"].get("bars_pinned_d", {}).items():
+        lines.append(f"| {k} @ pinned lag = d | {v['scope']} | {v['pass']} |")
     lines += ["", f"Selected {rep['evaluation']['n_selected']} of {rep['evaluation']['n_eligible_rows']} eligible d = 4 rows (0.05 SOL).", ""]
     return "\n".join(lines) + "\n"
 
@@ -754,13 +781,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         status = "completed"
         print(rep["outcome"])
         return 0
-    except Exception as exc:  # noqa: BLE001 - the try is spent after `started`; record and stop
+    except BaseException as exc:  # noqa: BLE001 - the try is spent after `started`; record in both logs, then stop (SystemExit / KeyboardInterrupt re-raise)
         print(f"aborted after started: {type(exc).__name__}: {exc}", file=sys.stderr)
         if started:
             try:
                 log_try(logs, out_dir, "aborted")  # both logs, so the spent try is on record
             except Exception as exc2:  # noqa: BLE001
                 print(f"could not write the aborted line: {exc2}", file=sys.stderr)
+        if not isinstance(exc, Exception):
+            raise
         return 3
     finally:
         e15.write_record(out_dir, status, started, {TRIES_KEY: status})
