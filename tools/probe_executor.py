@@ -124,6 +124,28 @@ DEC019_MAX = {
 DEC019_END_MS = 1791763200000
 
 
+# DEC-020 section 3 maxima (the 0.25 SOL step). Same rule: config may lower, never raise. Selected ONLY by config
+# `limits_profile: "dec020"`; the default profile is dec019 and its constants above are untouched. The DEC-020 end
+# ceiling is 2026-10-31T00:00:00Z; the owner's actual end instant must be written into the config (a dec020 config
+# with no end_ms, or end_ms <= 0, refuses at startup, so the shipped placeholder cannot run).
+DEC020_MAX = {
+    "max_attempts": 40,
+    "max_open": 2,
+    "loss_cap_lamports": 350_000_000,
+    "max_days": 7,
+    "size_lamports": 250_000_000,
+    "priority_lamports": 500_000,
+}
+DEC020_END_MS = 1793404800000  # 2026-10-31T00:00:00Z
+
+DEFAULT_PROFILE = "dec019"
+DEC019_FILL_LOG = "/var/lib/mal-live/probe-fills.jsonl"  # dec019 only; another profile must use its own fill log
+PROFILES: dict[str, tuple[dict[str, int], int]] = {
+    "dec019": (DEC019_MAX, DEC019_END_MS),
+    "dec020": (DEC020_MAX, DEC020_END_MS),
+}
+
+
 @dataclass(frozen=True)
 class Limits:
     max_attempts: int = DEC019_MAX["max_attempts"]
@@ -132,32 +154,45 @@ class Limits:
     max_days: float = DEC019_MAX["max_days"]
     size_lamports: int = DEC019_MAX["size_lamports"]
     priority_lamports: int = DEC019_MAX["priority_lamports"]
-    end_ms: int = DEC019_END_MS
+    end_ms: int | None = None  # None = DEC019_END_MS for dec019; REQUIRED (explicit) for dec020
     stop_file: str = "/var/lib/mal-live/STOP"  # no new buys; exits and in-flight sells continue
     halt_file: str = "/var/lib/mal-live/HALT"  # freezes everything: no buys, no sells, no rebroadcasts
+    profile: str = DEFAULT_PROFILE
 
     def __post_init__(self) -> None:
-        """Clamp to the DEC-019 maxima on EVERY construction path, and reject NaN/inf/non-positive."""
-        for key, cap in DEC019_MAX.items():
+        """Clamp to the profile's maxima on EVERY construction path, and reject NaN/inf/non-positive.
+        An unknown profile refuses (never falls back to another profile's maxima)."""
+        if not isinstance(self.profile, str) or self.profile not in PROFILES:
+            raise ValueError(f"unknown limits_profile {self.profile!r} (known: {sorted(PROFILES)})")
+        maxima, end_ceiling = PROFILES[self.profile]
+        for key, cap in maxima.items():
             val = getattr(self, key)
             if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
                 raise ValueError(f"limit {key} must be a finite positive number")
             object.__setattr__(self, key, min(val if key == "max_days" else int(val), cap))
         e = self.end_ms
+        if e is None:
+            if self.profile != DEFAULT_PROFILE:
+                raise ValueError(f"limits_profile {self.profile!r} needs an explicit end_ms (the owner's end instant)")
+            e = end_ceiling
         if isinstance(e, bool) or not isinstance(e, (int, float)) or not math.isfinite(e) or e <= 0:
             raise ValueError("limit end_ms must be a finite positive number")
-        object.__setattr__(self, "end_ms", min(int(e), DEC019_END_MS))
+        object.__setattr__(self, "end_ms", min(int(e), end_ceiling))
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "Limits":
-        kw: dict[str, Any] = {k: cfg[k] for k in DEC019_MAX if cfg.get(k) is not None}
+        profile = cfg.get("limits_profile", DEFAULT_PROFILE)
+        if not isinstance(profile, str) or profile not in PROFILES:
+            raise ValueError(f"unknown limits_profile {profile!r} (known: {sorted(PROFILES)})")
+        maxima = PROFILES[profile][0]  # a key absent from the config takes the profile max (dec019: same as the field default)
+        kw: dict[str, Any] = {k: (cfg[k] if cfg.get(k) is not None else maxima[k]) for k in maxima}
         if cfg.get("end_ms") is not None:
             kw["end_ms"] = cfg["end_ms"]
         if cfg.get("stop_file"):
             kw["stop_file"] = str(cfg["stop_file"])
         if cfg.get("halt_file"):
             kw["halt_file"] = str(cfg["halt_file"])
-        return cls(**kw)
+        return cls(**kw, profile=profile)
 
 
 @dataclass
@@ -203,9 +238,28 @@ class State:
         return st
 
 
-def state_path_for(state_dir: str | Path, mode: str) -> Path:
-    """One state file per mode: a dry run can never consume the live budget."""
-    return Path(state_dir) / f"state-{mode}.json"
+def state_path_for(state_dir: str | Path, mode: str, profile: str = DEFAULT_PROFILE) -> Path:
+    """One state file per mode AND limits profile: a dry run can never consume the live budget, and a non-default
+    profile (dec020) never pools its counters with the dec019 probe's. dec019 keeps the original file name."""
+    if profile == DEFAULT_PROFILE:
+        return Path(state_dir) / f"state-{mode}.json"
+    if profile not in PROFILES:
+        raise ValueError(f"unknown limits_profile {profile!r}")
+    return Path(state_dir) / f"state-{mode}-{profile}.json"
+
+
+def dec019_handover(state_dir: str | Path, own_state_exists: bool) -> list[str]:
+    """DEC-020 section 3b. READ-ONLY look at the dec019 live state (never saves). Refuses (SystemExit) if the 0.05 probe
+    still has an open or pending position. Returns the dec019 `bought` list to seed the never-re-buy list from, only on
+    the first start (own state file absent); [] otherwise, or when no dec019 live state exists."""
+    path = state_path_for(state_dir, "live", DEFAULT_PROFILE)
+    if not path.exists():
+        return []
+    old = State.load(path, "live")
+    if old.open or old.pending:
+        raise SystemExit(f"dec020 refused: the dec019 live state has {len(old.open)} open and {len(old.pending)} pending "
+                         "position(s); the 0.05 probe must be stopped with nothing open (DEC-020 section 3b)")
+    return [] if own_state_exists else list(old.bought)
 
 
 def guard_live_state(mode: str, state_path: Path, fill_log: Path) -> None:
@@ -717,12 +771,14 @@ def sell_probe_message(snap: Snapshot, user: Pubkey, spend: int, slip_bps: int, 
 
 
 class FillLog:
-    def __init__(self, path: Path, mode: str = MODE):
+    def __init__(self, path: Path, mode: str = MODE, profile: str = DEFAULT_PROFILE):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.path, self.mode = path, mode
+        self.path, self.mode, self.profile = path, mode, profile
 
     def write(self, row: dict[str, Any]) -> None:
-        row = {"schema": SCHEMA_FILL, "mode": self.mode, **row}
+        # dec019 rows are byte-identical to before (no new key); every non-default profile tags its rows.
+        tag = {} if self.profile == DEFAULT_PROFILE else {"limits_profile": self.profile}
+        row = {"schema": SCHEMA_FILL, "mode": self.mode, **tag, **row}
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, separators=(",", ":")) + "\n")
 
@@ -751,10 +807,19 @@ class Executor:
         self.use_intents = self.decisions.name == INTENTS_FILE
         self._absent_last_ms: int | None = None
         self.mode = cfg.get("mode", MODE)
-        self.state_path = state_path_for(cfg["state_dir"], self.mode)
+        self.state_path = state_path_for(cfg["state_dir"], self.mode, self.limits.profile)
         guard_live_state(self.mode, self.state_path, Path(cfg["fill_log"]))
+        first_start = not self.state_path.exists()
         self.state = State.load(self.state_path, self.mode)
-        self.fills = FillLog(Path(cfg["fill_log"]), self.mode)
+        if self.mode == "live" and self.limits.profile != DEFAULT_PROFILE:
+            # DEC-020 3b: refuse while the 0.05 probe has anything open; seed never-re-buy from its list on first start.
+            if Path(cfg["fill_log"]).name == Path(DEC019_FILL_LOG).name:
+                raise SystemExit(f"{self.limits.profile} refused: fill_log must not be the dec019 probe's {DEC019_FILL_LOG}")
+            seed = dec019_handover(cfg["state_dir"], not first_start)
+            if first_start:
+                self.state.bought = list(dict.fromkeys([*seed, *self.state.bought]))
+                self.state.save(self.state_path)
+        self.fills = FillLog(Path(cfg["fill_log"]), self.mode, self.limits.profile)
         self.user = Pubkey.from_string(cfg.get("user") or sim.DEFAULT_USER)  # public, read-only
         self.commitment = cfg.get("commitment", "confirmed")
         cap = float(cfg.get("slippage_cap", DEFAULT_SLIPPAGE_CAP))
@@ -1090,9 +1155,10 @@ def status_report(cfg: dict[str, Any]) -> str:
     """Counters, open positions and realized P&L from the state files and the fill log. Reads no key and
     no URL, makes no RPC call."""
     lim = Limits.from_config(cfg)
-    lines = [f"stop_file_present={Path(lim.stop_file).exists()} halt_file_present={Path(lim.halt_file).exists()}"]
+    lines = [f"limits_profile={lim.profile} size_sol={lim.size_lamports / LAMPORTS:.3f} end_ms={lim.end_ms}",
+             f"stop_file_present={Path(lim.stop_file).exists()} halt_file_present={Path(lim.halt_file).exists()}"]
     for mode in (MODE, "live"):
-        path = state_path_for(cfg["state_dir"], mode)
+        path = state_path_for(cfg["state_dir"], mode, lim.profile)
         if not path.exists():
             lines.append(f"[{mode}] no state file")
             continue
@@ -1204,6 +1270,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.latency_report:
         print(latency_report(cfg))
         return 0
+    try:
+        Limits.from_config(cfg)  # unknown profile / missing dec020 end instant refuse here, before any key is loaded
+    except ValueError as exc:
+        raise SystemExit(f"limits refused: {exc}") from None
     mode, warn = resolve_mode(cfg.get("mode", MODE), args.live)
     cfg["mode"] = mode
     if warn:

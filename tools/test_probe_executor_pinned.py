@@ -101,7 +101,7 @@ def test_installer_extra_files_exist_in_repo():
         src, dst = e.split(":")
         assert (ROOT / src).is_file() and "/" not in dst
     assert {e.split(":")[1] for e in installer_var("EXTRA").split()} == {
-        "launcher.py", "probe-executor-live.json", "requirements-probe-exec.txt"}
+        "launcher.py", "probe-executor-live.json", "probe-executor-live-dec020.json", "requirements-probe-exec.txt"}
 
 
 def test_requirements_pins_match_tools_requirements_and_are_hashed():

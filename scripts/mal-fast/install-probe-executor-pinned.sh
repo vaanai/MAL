@@ -26,7 +26,7 @@ DEST=/usr/local/lib/mal-probe-exec
 UNIT=mal-probe-executor
 MODULES="tools/__init__.py tools/paper_curve_math.py tools/paper_price_path.py tools/paper_tape_scoreboard.py tools/probe_executor.py tools/probe_live.py tools/pumpswap_simulate.py tools/pumpswap_tx.py"
 # repo path:installed name (relative to <sha>/)
-EXTRA="scripts/mal-fast/probe_exec_launcher.py:launcher.py scripts/mal-fast/probe-executor-live.json:probe-executor-live.json scripts/mal-fast/requirements-probe-exec.txt:requirements-probe-exec.txt"
+EXTRA="scripts/mal-fast/probe_exec_launcher.py:launcher.py scripts/mal-fast/probe-executor-live.json:probe-executor-live.json scripts/mal-fast/probe-executor-live-dec020.json:probe-executor-live-dec020.json scripts/mal-fast/requirements-probe-exec.txt:requirements-probe-exec.txt"
 BASE_UNIT_SRC="scripts/mal-fast/mal-probe-executor.service"
 BASE_UNIT_CHECK="scripts/mal-fast/check-probe-base-unit.py"
 BASE_UNIT_DEST=/etc/systemd/system/mal-probe-executor.service
