@@ -143,7 +143,9 @@ At 0.25 SOL the fee drag falls to about 0.4%. If the exploration edge holds out-
    - a separate state file and fill-log tag, so the 0.05 and 0.25 counters never pool;
    - the never-re-buy list carried over.
 
-   The change is built and reviewed before 10-16, including a security review. It is **not installed**. The proposal gives Helm the full sha, the 13-line manifest and the steps. The install is a re-pin at 0 open positions, after the probe has ended.
+   The change is built and reviewed before 10-16, including a security review. It is **not installed**. The proposal gives Helm the full sha, the 15-line manifest (13 today, plus the dec020 config and its drop-in) and the steps. The install is a re-pin at 0 open positions, after the probe has ended.
+
+   **Code status:** the limits profile is in [#348](https://github.com/vaanai/MAL/pull/348). It is **not installed**. `DEC020_END_MS` is `None` in code, so dec020 refuses to start until the owner's end instant is written there in a reviewed one-line commit (a new sha).
 6. **The read itself.** The FINAL verdict, quant-proof's note, and the V book under DEC-016 Am.4 at the measured live k.
 
 Nothing in this section changes the gate, DEC-016, or DEC-018 §1.

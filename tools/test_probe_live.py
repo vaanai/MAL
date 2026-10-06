@@ -1464,5 +1464,224 @@ class MarkFromBuyTxTests(unittest.TestCase):
         self.assertNotIn("mark_source", inspect.getsource(pe))
 
 
+class Dec020LiveTests(unittest.TestCase):
+    """DEC-020 3 / 3b: own state file, never-re-buy seed, keyless refusals, cross-profile guards, file checks."""
+
+    END = {"limits_profile": "dec020", "end_ms": 4_000_000_000_000}
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name).resolve()
+        for target, val in ((pe, "LIVE_DIR"), (pe, "DEC020_END_MS")):
+            p = mock.patch.object(target, val, self.tmp if val == "LIVE_DIR" else 4_000_000_000_000)
+            p.start()
+            self.addCleanup(p.stop)
+        self._dec019_state()  # the dec019 state must exist for a dec020 start (M1)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def _dec019_state(self, **kw):
+        pe.State(mode="live", **kw).save(self.tmp / "state-live.json")
+        return (self.tmp / "state-live.json").read_bytes()
+
+    def _dec020_state(self, **kw):
+        pe.State(mode="live", **kw).save(self.tmp / "state-live-dec020.json")
+
+    def test_dec020_first_start_seeds_bought_from_dec019_read_only(self):
+        before = self._dec019_state(attempts=57, bought=["M1", "M2"], realized_lamports=-120_000_000)
+        ex, *_ = make_live(self.tmp, **self.END)
+        self.assertEqual(ex.limits.profile, "dec020")
+        self.assertEqual(ex.limits.size_lamports, 250_000_000)
+        self.assertEqual(ex.state_path, self.tmp / "state-live-dec020.json")
+        self.assertEqual(ex.state.bought, ["M1", "M2"])
+        self.assertEqual((ex.state.attempts, ex.state.realized_lamports), (0, 0))  # counters never pool
+        self.assertEqual(json.loads((self.tmp / "state-live-dec020.json").read_text())["bought"], ["M1", "M2"])
+        self.assertEqual((self.tmp / "state-live.json").read_bytes(), before)  # dec019 file untouched
+
+    def test_seeded_mint_is_never_re_bought(self):
+        self._dec019_state(bought=[MINT])
+        ex, rpc, clock, *_ = make_live(self.tmp, **self.END)
+        ex.handle_signal(mk_sig(ex, t=clock()))
+        self.assertNotIn(MINT, ex.state.pending)
+        self.assertEqual((ex.state.attempts, rpc.sent), (0, []))
+
+    def test_seed_is_first_start_only_and_counters_survive_restart(self):
+        self._dec019_state(bought=["M1"])
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END)
+        ex.state.attempts = 5
+        ex.state.bought.append("M3")
+        ex.save()
+        self._dec019_state(bought=["M1", "LATE"])
+        ex2 = pl.LiveExecutor(rpc, conf, kp, now_ms=clock)
+        self.assertEqual((ex2.state.attempts, ex2.state.bought), (5, ["M1", "M3"]))
+
+    def test_m1_dec019_state_missing_refuses(self):
+        (self.tmp / "state-live.json").unlink()
+        with self.assertRaises(SystemExit) as cm:
+            make_live(self.tmp, **self.END)
+        self.assertIn("missing", str(cm.exception))
+        self.assertFalse((self.tmp / "state-live-dec020.json").exists())
+
+    def test_m1_handover_path_is_fixed_not_from_cfg(self):
+        # a decoy dec019 state in another dir with other bought mints must be ignored; cfg state_dir must be the fixed dir
+        other = self.tmp / "elsewhere"
+        other.mkdir()
+        pe.State(mode="live", bought=["DECOY"]).save(other / "state-live.json")
+        self._dec019_state(bought=["REAL"])
+        ex, *_ = make_live(self.tmp, **self.END)
+        self.assertEqual(ex.state.bought, ["REAL"])
+        with self.assertRaises(SystemExit):
+            make_live(other, **self.END)  # state_dir != LIVE_DIR
+
+    def test_refuses_when_dec019_has_open_or_pending_position(self):
+        for kw in ({"open": {"M1": {"spend": 50_000_000}}}, {"pending": {"M2": {"kind": "buy", "spend": 50_000_000}}}):
+            before = self._dec019_state(**kw)
+            with self.assertRaises(SystemExit) as cm:
+                make_live(self.tmp, **self.END)
+            self.assertIn("section 3b", str(cm.exception))
+            self.assertFalse((self.tmp / "state-live-dec020.json").exists())
+            self.assertEqual((self.tmp / "state-live.json").read_bytes(), before)
+
+    def test_refusal_also_applies_after_first_start(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END)
+        ex.save()
+        self._dec019_state(open={"M1": {"spend": 1}})
+        with self.assertRaises(SystemExit):
+            pl.LiveExecutor(rpc, conf, kp, now_ms=clock)
+
+    def test_m2_dec019_refuses_while_dec020_has_open_or_pending(self):
+        for kw in ({"open": {"M1": {"spend": 250_000_000}}}, {"pending": {"M2": {"kind": "buy", "spend": 250_000_000}}}):
+            self._dec020_state(**kw)
+            with self.assertRaises(SystemExit) as cm:
+                make_live(self.tmp)  # default profile = dec019
+            self.assertIn("dec020 live state", str(cm.exception))
+        self._dec020_state()  # 0 open, 0 pending: the rollback is allowed
+        ex, *_ = make_live(self.tmp)
+        self.assertEqual(ex.limits.profile, "dec019")
+
+    def test_l4_refusal_fires_before_the_key_is_loaded(self):
+        self._dec019_state(open={"M1": {"spend": 1}})
+        cfg = {"signals_dir": str(self.tmp / "sig"), "state_dir": str(self.tmp), "fill_log": str(self.tmp / "fills.jsonl"),
+               "mode": "live", **self.END}
+        boom = mock.Mock(side_effect=AssertionError("load_probe_key was called"))
+        with mock.patch.object(pl, "load_probe_key", boom), mock.patch.object(pl, "harden_process", boom):
+            with self.assertRaises(SystemExit) as cm:
+                pl.run_live(cfg, mock.Mock(args=None), 5.0)
+            self.assertIn("section 3b", str(cm.exception))
+            # and through main(): the dec019 side of the guard, dec020 has an open position
+            self._dec019_state()
+            self._dec020_state(open={"M1": {"spend": 1}})
+            cfg19 = {k: v for k, v in cfg.items() if k not in ("limits_profile", "end_ms")}
+            import io
+            f = self.tmp / "c.json"
+            f.write_text(json.dumps({**cfg19, "signals_file": "intents.jsonl"}))
+            with self.assertRaises(SystemExit):
+                pe.main(["--config", str(f), "--live"])
+        boom.assert_not_called()
+
+    def test_l4_status_reports_the_precheck(self):
+        self._dec019_state(open={"M1": {"spend": 1}})
+        cfg = {"state_dir": str(self.tmp), "fill_log": str(self.tmp / "fills.jsonl"), "mode": "live",
+               "stop_file": str(self.tmp / "S"), "halt_file": str(self.tmp / "H"), **self.END}
+        lines = pe.status_report(cfg).splitlines()
+        self.assertTrue(lines[-2].startswith("limits_profile=dec020"), lines)  # the new line is at the END
+        self.assertTrue(lines[-1].startswith("precheck=REFUSED"), lines)
+
+    def test_l5_fill_log_checks(self):
+        with self.assertRaises(SystemExit):
+            make_live(self.tmp, fill_log=str(self.tmp / "probe-fills.jsonl"), **self.END)  # the dec019 probe's log
+        with tempfile.TemporaryDirectory() as outside:
+            with self.assertRaises(SystemExit):
+                make_live(self.tmp, fill_log=str(Path(outside) / "f.jsonl"), **self.END)  # not under LIVE_DIR
+            (self.tmp / "link.jsonl").symlink_to(Path(outside) / "f.jsonl")
+            with self.assertRaises(SystemExit) as cm:
+                make_live(self.tmp, fill_log=str(self.tmp / "link.jsonl"), **self.END)
+            self.assertIn("symlink", str(cm.exception))
+            (self.tmp / "dirlink").symlink_to(outside)
+            with self.assertRaises(SystemExit):
+                make_live(self.tmp, fill_log=str(self.tmp / "dirlink" / "f.jsonl"), **self.END)  # symlinked dir escapes
+        ex, *_ = make_live(self.tmp, fill_log=str(self.tmp / "sub" / "f.jsonl"), **self.END)  # under LIVE_DIR is fine
+        self.assertEqual(ex.limits.profile, "dec020")
+
+    def test_dec020_buy_uses_its_size_and_tags_rows(self):
+        ex, rpc, clock, *_ = make_live(self.tmp, **self.END)
+        p = signal_buy(ex, clock)
+        self.assertEqual(p["spend"], 250_000_000)
+        land_buy(ex, rpc)
+        rows = fills({"fill_log": str(self.tmp / "fills.jsonl")})
+        self.assertTrue(rows and all(r["limits_profile"] == "dec020" for r in rows))
+        self.assertEqual(json.loads((self.tmp / "state-live-dec020.json").read_text())["attempts"], 1)
+
+    def test_dec019_buy_is_unchanged_size_state_file_and_rows(self):
+        ex19, rpc19, clock19, *_ = make_live(self.tmp)
+        p19 = signal_buy(ex19, clock19)
+        self.assertEqual(p19["spend"], 50_000_000)  # the spend validator passes the current 0.05 buy tx
+        land_buy(ex19, rpc19)
+        rows = fills({"fill_log": str(self.tmp / "fills.jsonl")})
+        self.assertTrue(rows and all("limits_profile" not in r for r in rows))
+        self.assertEqual(json.loads((self.tmp / "state-live.json").read_text())["attempts"], 1)
+        self.assertFalse((self.tmp / "state-live-dec020.json").exists())
+
+    def test_dec020_stops_at_its_own_attempt_cap_without_touching_dec019_counters(self):
+        self._dec019_state(attempts=10)
+        ex, *_ = make_live(self.tmp, **self.END)
+        ex.state.attempts = 40
+        self.assertEqual(pe.soft_stops(ex.limits, ex.state, 1), ["max_attempts"])
+        ex.state.attempts = 39
+        self.assertEqual(pe.soft_stops(ex.limits, ex.state, 1), [])
+
+
+class SpendValidatorTests(unittest.TestCase):
+    """L8: the pre-sign whitelist refuses a buy that moves more SOL than limits.size_lamports (margin 0, derived in
+    probe_live.SPEND_MARGIN_LAMPORTS: the wrap transfer is exactly the spend in the only shape the executor builds)."""
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.addCleanup(self._d.cleanup)
+        self.ex, self.rpc, self.clock, *_ = make_live(Path(self._d.name))
+        signal_buy(self.ex, self.clock)
+        self.snap, _p, _e = self.ex._snapshot(MINT)
+        from solders.pubkey import Pubkey
+        self.mint = Pubkey.from_string(MINT)
+
+    def _check(self, msg, cap=50_000_000):
+        pl.validate_message(msg, self.snap.ps, self.mint, self.ex.user, 500_000, cap)
+
+    def test_margin_is_zero(self):
+        self.assertEqual(pl.SPEND_MARGIN_LAMPORTS, 0)
+
+    def test_current_buy_shape_passes_unchanged(self):
+        good = tx.build_buy(self.snap.ps, self.ex.user, 50_000_000, 1500, 1000, priority_total_lamports=500_000)
+        self._check(good)
+        pl.validate_message(good, self.snap.ps, self.mint, self.ex.user, 500_000)  # no cap given: old call still works
+        self._check(tx.build_buy(self.snap.ps, self.ex.user, 49_999_999, 1500, 1000, priority_total_lamports=500_000))
+
+    def test_inflated_buy_refuses(self):
+        for spend in (50_000_001, 250_000_000):
+            with self.assertRaises(pl.UnsafeTx, msg=spend) as cm:
+                self._check(tx.build_buy(self.snap.ps, self.ex.user, spend, 1500, 1000, priority_total_lamports=500_000))
+            self.assertIn("spend_over_size", str(cm.exception))
+        # the max_quote shape (exact_quote_in=False) wraps sol_in * (1 + slippage) and so is over the size: refuse
+        with self.assertRaises(pl.UnsafeTx):
+            self._check(tx.build_buy(self.snap.ps, self.ex.user, 50_000_000, 1500, 1000, priority_total_lamports=500_000, exact_quote_in=False))
+
+    def test_transfer_ok_but_swap_spend_field_inflated_refuses(self):
+        from solders.instruction import Instruction
+        from solders.message import Message
+
+        ixs = list(tx.buy_instructions(self.snap.ps, self.ex.user, 50_000_000, 1000, 1500, priority_total_lamports=500_000))
+        swap = ixs[5]
+        bad = Instruction(swap.program_id, tx.buy_exact_quote_in_data(60_000_000, 1), list(swap.accounts))
+        msg = Message.new_with_blockhash([*ixs[:5], bad, *ixs[6:]], self.ex.user, tx.Hash.default())
+        with self.assertRaises(pl.UnsafeTx):
+            self._check(msg)
+
+    def test_dec020_size_cap_passes_250m_and_refuses_above(self):
+        self._check(tx.build_buy(self.snap.ps, self.ex.user, 250_000_000, 1500, 1000, priority_total_lamports=500_000), cap=250_000_000)
+        with self.assertRaises(pl.UnsafeTx):
+            self._check(tx.build_buy(self.snap.ps, self.ex.user, 250_000_001, 1500, 1000, priority_total_lamports=500_000), cap=250_000_000)
+
+
 if __name__ == "__main__":
     unittest.main()

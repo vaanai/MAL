@@ -107,6 +107,49 @@ Helm provisions once, before live: `/etc/mal-probe-rpc` (`root:root`, mode 0700)
 
 State, fill log, STOP/HALT, the credential and the signals bind are unchanged from the base unit. The dry-run unit still uses the agent-deployed path (it holds no key).
 
+## 2b-dec020. Re-pin for the DEC-020 size step (0.25 SOL). NOT done until the owner approves after the 10-16 forward read
+
+The code is in the pinned set but selected only by config: `limits_profile` is `dec019` when absent (today's limits, state file `state-live.json`, fill rows unchanged), or `dec020` (size 0.25 SOL, max open 2, 40 attempts, loss cap 0.35 SOL, 500,000 priority, 7 days, an end instant the owner sets in code (none yet); config can lower any of these, never raise). Any other value refuses at startup, before the key loads. A dec020 run:
+
+- uses its own state file `state-live-dec020.json` (attempts and realized loss never pool with the probe's) and its own fill log `probe-fills-dec020.jsonl`, whose rows carry `"limits_profile":"dec020"`; the dec019 fill rows are byte-identical to before (no new key);
+- on its first start copies the dec019 `bought` list (never re-buy) from `state-live.json`, read-only;
+- refuses to start (every start) if `state-live.json` shows any open or pending position (DEC-020 3b);
+- refuses while `DEC020_END_MS` in `tools/probe_executor.py` is `None` ("owner end instant not set in code; DEC-020 section 3 and 7"). There is no invented ceiling: the owner-approved end is written into that constant, and into the config's `end_ms`, in a reviewed commit, which makes a new sha. The config `end_ms` must be explicit and positive and is clamped to the constant. The shipped config has `"end_ms": 0` on purpose. Root-owned pinned files cannot be edited in place;
+- reads the dec019 state only from the FIXED path `/var/lib/mal-live/state-live.json` (never from the config) and refuses if that file is missing. Its `state_dir` must be `/var/lib/mal-live`; its `fill_log` must not be a symlink, must resolve under `/var/lib/mal-live`, and must not be `probe-fills.jsonl`;
+- all of these refusals run keyless in `main()` and at the top of `run_live`, before the wallet key is loaded. `--status` prints `limits_profile=...` and then `precheck=ok` or `precheck=REFUSED <reason>` as its last lines;
+- rollback guard: the dec019 profile (live) refuses to start while `/var/lib/mal-live/state-live-dec020.json` shows any open or pending position, so a rollback cannot orphan dec020 positions.
+
+Files added to the pinned set (installer `EXTRA`): `scripts/mal-fast/probe-executor-live-dec020.json` (installed as `<sha>/probe-executor-live-dec020.json`) and `scripts/mal-fast/mal-probe-executor-live-pinned-dec020.conf` (installed as `<sha>/mal-probe-executor-live-pinned-dec020.conf`, so its sha256 is verified). **Manifest: 13 lines become 15 (8 modules, 5 EXTRA, base unit, checker).** `tools/probe_executor.py` and `tools/probe_live.py` change hash. The drop-in differs from the current pinned drop-in only in `--config .../probe-executor-live-dec020.json`. `tools/probe_live.py` also gains a spend check in the pre-sign whitelist (see below). The installer's code path is unchanged; the current pin (`faa3192`) is not touched by merging this.
+
+Steps for Helm, only after the 0.05 probe has ended, at 0 open and 0 pending (`--status` on the dec019 config shows `open=0/3 pending=0`):
+
+```
+# 1. STOP, confirm nothing open, stop the unit (as section 2b step 1)
+sudo touch /var/lib/mal-live/STOP
+sudo /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config /usr/local/lib/mal-probe-exec/current/probe-executor-live.json --status
+sudo systemctl stop mal-probe-executor
+# 2. install the new sha with a 15-line manifest (as section 2b step 2). Nothing else about the installer changes.
+sudo scripts/mal-fast/install-probe-executor-pinned.sh <40-char-sha> <manifest>
+# 3. keyless check of the new config: it must REFUSE if end_ms is still 0, and print limits_profile=dec020 once the owner's end instant is in
+sudo /usr/local/lib/mal-probe-exec/venv/bin/python -I -B -u /usr/local/lib/mal-probe-exec/current/launcher.py --config /usr/local/lib/mal-probe-exec/current/probe-executor-live-dec020.json --status
+# 4. swap the drop-in to the dec020 one, remove STOP, start
+sudo install -D -m 0644 /usr/local/lib/mal-probe-exec/<sha>/mal-probe-executor-live-pinned-dec020.conf /etc/systemd/system/mal-probe-executor.service.d/live.conf   # the verified root-owned copy, not a working tree
+sudo systemctl daemon-reload
+sudo rm -f /var/lib/mal-live/STOP
+sudo systemctl start mal-probe-executor
+journalctl -u mal-probe-executor -n 20 --no-pager   # expect: mode=LIVE ... profile='dec020' size_lamports=250000000
+```
+
+**Precondition for any switch between the two profiles, in either direction (including this rollback): 0 open and 0 pending in BOTH `state-live.json` and `state-live-dec020.json`** (read both with `--status`; the executor also refuses to start otherwise). Rollback to the dec019 drop-in: STOP, confirm that precondition, stop the unit, install `mal-probe-executor-live-pinned.conf` as `live.conf`, daemon-reload, start. The watchdog (`LOSS_ALERT_SOL`, DEC-020 section 7) must read `state-live-dec020.json` for the step. Review, security review, the replay check below and the owner's approval come first; none of this is installed by merging the code.
+
+Spend check (all profiles, including the running dec019 probe): `validate_message` now also refuses before signing when the SOL moved by the buy's system transfer(s), or the swap instruction's spend field, exceeds `limits.size_lamports`. The margin is 0 (`probe_live.SPEND_MARGIN_LAMPORTS`), derived from `tx.buy_instructions`: with `exact_quote_in=True`, the only shape the executor builds, the wrap transfer equals the spend exactly and no rent or fee is added to it (ATA creates are ATA-program instructions). A tx shape that adds a transfer must raise that constant in a reviewed change. The 0.05 SOL buy passes unchanged (tested); 50,000,001 and the `exact_quote_in=False` shape refuse.
+
+**Pre-deploy replay check (before the re-pin, by the manager or Helm, no key, nothing live):**
+
+1. Dry-run replay, old sha vs new sha, same recorded `intents.jsonl`, the dec019 dry-run config for both, each into its own scratch state dir and fill log (as in the keyless pinned dry run above). Compare with `python3 scripts/mal-fast/compare_executor_fills.py OLD.jsonl NEW.jsonl`. It drops every `*_ms` key and `latency`, `signature`, `blockhash`, `lvbh` and the slot fields, md5s the remaining rows, and prints the names (never values) of any other field that differs. Expected: the same rows and identical md5 apart from the dropped timing and signature fields. The dry run reads live RPC pool state, so price fields can differ between two runs at different times; any such difference is reported and must be explained, not waved through. The new sha must add no key to dec019 rows (`limits_profile` appears only for dec020). The script has only been tested on synthetic rows; it has not been run on real fills.
+2. `--status` diff on a COPY of `state-live.json` (copy it into a scratch state dir, point a copy of the dec019 config at it): old sha vs new sha. Expected difference: only the added `limits_profile=` and `precheck=` lines at the end.
+3. A dec020 dry run (config `mode` dryrun, `limits_profile` dec020, scratch dirs, a temporary build where the end constant is set): size 0.25, own `state-dryrun-dec020.json`, rows tagged `limits_profile: dec020`. The shipped build must instead refuse with the end-instant message.
+
 ## 2c. Signals file: start order and what the executor does when it is missing
 
 The executor reads `intents.jsonl` (config `signals_file`), which the RUNNER creates (`intents_file: true`). The unit's bind of that file is optional (`-`) so a rotation cannot wedge systemd, which also means a missing file is silent at the unit level. The executor therefore checks it itself:

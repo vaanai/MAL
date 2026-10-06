@@ -1286,5 +1286,158 @@ class EntryDriftLogTests(unittest.TestCase):
         self.assertAlmostEqual(pe.P_MIG_SPOT_SOL, (67_405_853_863 + 17_584_505_288) / (206_900_000 * 10**6 * 1000), delta=1e-13)
 
 
+class Dec020ProfileTests(unittest.TestCase):
+    """DEC-020 limits profile. dec019 must stay exactly the old behaviour; dec020 is opt-in by config only."""
+
+    OLD_DEC019_MAX = {"max_attempts": 90, "max_open": 3, "loss_cap_lamports": 350_000_000, "max_days": 7,
+                      "size_lamports": 50_000_000, "priority_lamports": 500_000}
+    SHIPPED_END = pe.DEC020_END_MS  # read at import: the real constant, before any test patches it
+    TEST_END = 4_000_000_000_000
+
+    def setUp(self):
+        p = unittest.mock.patch.object(pe, "DEC020_END_MS", self.TEST_END)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_dec020_refuses_while_the_end_constant_is_unset(self):
+        self.assertIsNone(self.SHIPPED_END)  # M3: no invented ceiling; the owner's end goes in as a reviewed one-line commit
+        with unittest.mock.patch.object(pe, "DEC020_END_MS", None):
+            for cfg in ({"limits_profile": "dec020", "end_ms": 5}, {"limits_profile": "dec020", "end_ms": 4_000_000_000_000}):
+                with self.assertRaises(ValueError) as cm:
+                    pe.Limits.from_config(cfg)
+                self.assertIn("owner end instant not set in code", str(cm.exception))
+            with self.assertRaises(ValueError):
+                pe.Limits(profile="dec020", end_ms=5)
+            with self.assertRaises(SystemExit):
+                pe.main(["--config", self._cfg_file({"limits_profile": "dec020", "end_ms": 5, "mode": "live"}), "--live"])
+        pe.Limits.from_config({"limits_profile": "dec019"})  # dec019 never depends on it
+
+    ABOVE = {"max_attempts": 10**6, "max_open": 10**6, "loss_cap_lamports": 10**15, "max_days": 10**6,
+             "size_lamports": 10**15, "priority_lamports": 10**9}
+
+    def test_dec019_constants_and_default_limits_are_byte_identical_to_the_old_ones(self):
+        self.assertEqual(pe.DEC019_MAX, self.OLD_DEC019_MAX)
+        self.assertEqual(pe.DEC019_END_MS, 1791763200000)
+        old = dict(self.OLD_DEC019_MAX, end_ms=1791763200000, stop_file="/var/lib/mal-live/STOP", halt_file="/var/lib/mal-live/HALT")
+        for lim in (pe.Limits(), pe.Limits.from_config({}), pe.Limits.from_config({"limits_profile": "dec019"})):
+            got = {k: getattr(lim, k) for k in old}
+            self.assertEqual(got, old)
+            self.assertEqual(lim.profile, "dec019")
+        # the shipped live config clamps exactly as before
+        cfg = json.loads((Path(__file__).resolve().parent.parent / "scripts/mal-fast/probe-executor-live.json").read_text())
+        self.assertNotIn("limits_profile", cfg)
+        lim = pe.Limits.from_config(cfg)
+        self.assertEqual((lim.size_lamports, lim.max_open, lim.max_attempts, lim.loss_cap_lamports, lim.end_ms),
+                         (50_000_000, 3, 90, 250_000_000, 1791763200000))
+
+    def test_dec020_maxima_are_the_dec020_section_3_values(self):
+        self.assertEqual(pe.DEC020_MAX, {"max_attempts": 40, "max_open": 2, "loss_cap_lamports": 350_000_000, "max_days": 7,
+                                         "size_lamports": 250_000_000, "priority_lamports": 500_000})
+        import datetime
+
+    def test_dec020_config_above_every_max_is_clamped(self):
+        lim = pe.Limits.from_config({"limits_profile": "dec020", "end_ms": 10**15, **self.ABOVE})
+        for k, cap in pe.DEC020_MAX.items():
+            self.assertEqual(getattr(lim, k), cap, k)
+        self.assertEqual(lim.end_ms, pe.DEC020_END_MS)
+        self.assertEqual(lim.profile, "dec020")
+
+    def test_dec020_config_can_lower_but_not_raise(self):
+        lim = pe.Limits.from_config({"limits_profile": "dec020", "end_ms": 5, "size_lamports": 100_000_000, "max_open": 1})
+        self.assertEqual((lim.size_lamports, lim.max_open, lim.end_ms), (100_000_000, 1, 5))
+
+    def test_dec019_profile_can_never_reach_dec020_values(self):
+        for cfg in ({}, {"limits_profile": "dec019"}):
+            lim = pe.Limits.from_config({**cfg, **self.ABOVE, "end_ms": 10**15})
+            self.assertEqual(lim.size_lamports, 50_000_000)
+            self.assertLess(lim.size_lamports, pe.DEC020_MAX["size_lamports"])
+            for k, cap in self.OLD_DEC019_MAX.items():
+                self.assertEqual(getattr(lim, k), cap, k)
+            self.assertEqual(lim.end_ms, pe.DEC019_END_MS)
+        self.assertEqual(pe.Limits(size_lamports=250_000_000).size_lamports, 50_000_000)  # direct construction too
+
+    def test_unknown_profile_refuses_everywhere(self):
+        for bad in ("dec021", "DEC020", "", None, 20, ["dec020"]):
+            with self.assertRaises(ValueError):
+                pe.Limits.from_config({"limits_profile": bad, "end_ms": 5})
+        with self.assertRaises(ValueError):
+            pe.Limits(profile="nope")
+        with self.assertRaises(SystemExit):
+            pe.main(["--config", self._cfg_file({"limits_profile": "dec021"}), "--once"])
+
+    def test_dec020_needs_an_explicit_positive_end_instant(self):
+        for cfg in ({"limits_profile": "dec020"}, {"limits_profile": "dec020", "end_ms": 0},
+                    {"limits_profile": "dec020", "end_ms": -1}, {"limits_profile": "dec020", "end_ms": float("nan")},
+                    {"limits_profile": "dec020", "end_ms": True}):
+            with self.assertRaises(ValueError, msg=cfg):
+                pe.Limits.from_config(cfg)
+        with self.assertRaises(ValueError):
+            pe.Limits(profile="dec020")
+        # main() refuses before any key or state is touched
+        with self.assertRaises(SystemExit) as cm:
+            pe.main(["--config", self._cfg_file({"limits_profile": "dec020", "end_ms": 0, "mode": "live"}), "--live"])
+        self.assertIn("limits refused", str(cm.exception))
+
+    def test_dec020_nan_inf_nonpositive_rejected_like_dec019(self):
+        for key in pe.DEC020_MAX:
+            for bad in (float("nan"), float("inf"), 0, -1, True):
+                with self.assertRaises(ValueError, msg=(key, bad)):
+                    pe.Limits.from_config({"limits_profile": "dec020", "end_ms": 5, key: bad})
+
+    def test_state_paths_never_pool(self):
+        d = Path("/x")
+        self.assertEqual(pe.state_path_for(d, "live"), d / "state-live.json")
+        self.assertEqual(pe.state_path_for(d, "live", "dec019"), d / "state-live.json")
+        self.assertEqual(pe.state_path_for(d, "live", "dec020"), d / "state-live-dec020.json")
+        self.assertEqual(pe.state_path_for(d, "dryrun", "dec020"), d / "state-dryrun-dec020.json")
+        with self.assertRaises(ValueError):
+            pe.state_path_for(d, "live", "x")
+
+    def test_fill_rows_tag_non_default_profile_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, b = Path(d) / "a.jsonl", Path(d) / "b.jsonl"
+            pe.FillLog(a, "live").write({"kind": "skip"})
+            pe.FillLog(b, "live", "dec020").write({"kind": "skip"})
+            self.assertEqual(a.read_text(), '{"schema":"%s","mode":"live","kind":"skip"}\n' % pe.SCHEMA_FILL)  # byte-identical to before
+            self.assertEqual(json.loads(b.read_text())["limits_profile"], "dec020")
+
+    def test_status_prints_profile_and_its_own_counters(self):
+        with tempfile.TemporaryDirectory() as d:
+            pe.State(attempts=7, mode="live").save(pe.state_path_for(d, "live"))
+            pe.State(attempts=3, mode="live").save(pe.state_path_for(d, "live", "dec020"))
+            base = {"state_dir": d, "fill_log": str(Path(d) / "f.jsonl"), "stop_file": str(Path(d) / "S"), "halt_file": str(Path(d) / "H")}
+            out19 = pe.status_report(base)
+            out20 = pe.status_report({**base, "limits_profile": "dec020", "end_ms": 5})
+            self.assertIn("limits_profile=dec019", out19)
+            self.assertIn("[live] attempts=7/90", out19)
+            self.assertIn("limits_profile=dec020", out20)
+            self.assertIn("[live] attempts=3/40", out20)
+            self.assertIn("size_sol=0.250", out20)
+
+    def test_shipped_dec020_config(self):
+        d = Path(__file__).resolve().parent.parent / "scripts" / "mal-fast"
+        live, dec = (json.loads((d / n).read_text()) for n in ("probe-executor-live.json", "probe-executor-live-dec020.json"))
+        self.assertEqual(dec["limits_profile"], "dec020")
+        for k, v in (("size_lamports", 250_000_000), ("max_open", 2), ("max_attempts", 40), ("loss_cap_lamports", 350_000_000),
+                     ("priority_lamports", 500_000), ("mode", "live")):
+            self.assertEqual(dec[k], v, k)
+        self.assertNotEqual(dec["fill_log"], live["fill_log"])
+        self.assertNotEqual(Path(dec["fill_log"]).name, "probe-fills.jsonl")
+        self.assertEqual(dec["state_dir"], live["state_dir"])  # same dir, different state file by profile
+        # every other key is the dec019 config's, unchanged
+        changed = {k for k in live if dec.get(k) != live[k]}
+        self.assertEqual(changed, {"size_lamports", "max_attempts", "max_open", "loss_cap_lamports", "fill_log", "end_ms"})
+        self.assertEqual(set(dec) - set(live), {"limits_profile"})
+        with self.assertRaises(ValueError):  # the placeholder end instant refuses: it cannot run until the owner's is written in
+            pe.Limits.from_config(dec)
+
+    @staticmethod
+    def _cfg_file(cfg):
+        f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump({"state_dir": "/nonexistent-dec020-test", "fill_log": "/nonexistent-dec020-test/f.jsonl", **cfg}, f)
+        f.close()
+        return f.name
+
+
 if __name__ == "__main__":
     unittest.main()

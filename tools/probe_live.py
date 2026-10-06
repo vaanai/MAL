@@ -243,7 +243,16 @@ class UnsafeTx(pe.RpcError):
         super().__init__(f"unsafe_tx:{why}")
 
 
-def validate_message(msg: Message, ps: tx.PoolState, mint: Pubkey, user: Pubkey, max_priority_lamports: int) -> None:
+# SOL moved into a buy = the system transfer that wraps it (and the swap instruction's spend field). In the current buy
+# shape (tx.buy_instructions, exact_quote_in=True, the only shape the executor builds) the transfer is EXACTLY the
+# buy size: wrap = sol_in_lamports, no rent or fee is added to it (the ATA creates are ATA-program ix funded from the
+# wallet, not system transfers in this message). So the margin over limits.size_lamports is 0. If the tx shape ever adds
+# a system transfer on top of the size, this constant must be raised in a reviewed change, not guessed.
+SPEND_MARGIN_LAMPORTS = 0
+
+
+def validate_message(msg: Message, ps: tx.PoolState, mint: Pubkey, user: Pubkey, max_priority_lamports: int,
+                     max_spend_lamports: int | None = None) -> None:
     """Fail closed before every signature. Pool data and the mint's owner come from RPC, so: the base token
     program is Token or Token-2022, quote is WSOL, base mint is the requested mint, the pool and its vaults are
     the derived addresses; only ComputeBudget/System/Token/Token-2022/ATA/PumpSwap are invoked; the user is the
@@ -264,6 +273,7 @@ def validate_message(msg: Message, ps: tx.PoolState, mint: Pubkey, user: Pubkey,
     u_base = tx.ata(user, mint, ps.base_token_program)
     u_wsol = tx.ata(user, tx.WSOL_MINT, tx.TOKEN_PROGRAM)
     cu_limit = cu_price = None
+    moved = 0  # lamports sent by system transfers into the user's own WSOL account
     for ix in msg.instructions:
         pid = keys[ix.program_id_index]
         acc = [keys[i] for i in ix.accounts]
@@ -280,6 +290,7 @@ def validate_message(msg: Message, ps: tx.PoolState, mint: Pubkey, user: Pubkey,
         elif pid == tx.SYSTEM_PROGRAM:
             if not (len(data) == 12 and data[:4] == b"\x02\x00\x00\x00" and acc == [user, u_wsol]):
                 raise UnsafeTx("system_ix")
+            moved += int.from_bytes(data[4:], "little")
         elif pid == tx.ATA_PROGRAM:
             ok = (data == b"\x01" and len(acc) == 6 and acc[0] == user and acc[2] == user and acc[4] == tx.SYSTEM_PROGRAM
                   and ((acc[3] == mint and acc[1] == u_base and acc[5] == ps.base_token_program)
@@ -301,8 +312,16 @@ def validate_message(msg: Message, ps: tx.PoolState, mint: Pubkey, user: Pubkey,
                     or acc[11] != ps.base_token_program or acc[12] != tx.TOKEN_PROGRAM or acc[13] != tx.SYSTEM_PROGRAM
                     or acc[14] != tx.ATA_PROGRAM or acc[16] != tx.PUMPSWAP_PROGRAM):
                 raise UnsafeTx("swap_accounts")
+            if max_spend_lamports is not None:
+                cap = max_spend_lamports + SPEND_MARGIN_LAMPORTS
+                if data[:8] == tx.DISC_BUY_EXACT_QUOTE_IN and len(data) >= 16 and int.from_bytes(data[8:16], "little") > cap:
+                    raise UnsafeTx("spend_over_size")
+                if data[:8] == tx.DISC_BUY and len(data) >= 24 and int.from_bytes(data[16:24], "little") > cap:
+                    raise UnsafeTx("spend_over_size")
     if cu_limit is None or cu_price is None or cu_price * cu_limit // 1_000_000 > max_priority_lamports + 1:
         raise UnsafeTx("priority_over_cap")
+    if max_spend_lamports is not None and moved > max_spend_lamports + SPEND_MARGIN_LAMPORTS:
+        raise UnsafeTx("spend_over_size")
 
 
 # --- blockhash cache -------------------------------------------------------------------------
@@ -362,7 +381,7 @@ class LiveExecutor(pe.Executor):
         print(f"probe_executor ALERT {what} mint={mint} {json.dumps(kw, default=str)[:300]}", flush=True)
 
     def _sign(self, msg: Message, ps: tx.PoolState, mint: str) -> tuple[str, str]:
-        validate_message(msg, ps, Pubkey.from_string(mint), self.user, self.limits.priority_lamports)
+        validate_message(msg, ps, Pubkey.from_string(mint), self.user, self.limits.priority_lamports, self.limits.size_lamports)
         t = VersionedTransaction(msg, [self._kp])
         raw = bytes(t)
         if len(raw) > tx.TX_SIZE_LIMIT:
@@ -816,6 +835,10 @@ class LiveExecutor(pe.Executor):
 
 
 def run_live(cfg: dict[str, Any], args: Any, poll_s: float) -> int:
+    try:
+        pe.profile_precheck(cfg, "live")  # keyless refusals (DEC-020 3b, rollback guard, files) BEFORE the key is touched
+    except ValueError as exc:
+        raise SystemExit(f"limits refused: {exc}") from None
     harden_process()
     if "key_path" in cfg:
         raise SystemExit("live mode has no key path override: the key comes from the systemd credential only")
