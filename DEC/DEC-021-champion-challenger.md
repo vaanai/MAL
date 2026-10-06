@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Proposed 2026-10-06, rev 3.** Quant-proof asked for 9 edits on rev 1 and 5 more (E1–E5) on rev 2; all are applied here. It needs the owner's yes, because §6 decides what may replace the live strategy. |
+| **Status** | **Proposed 2026-10-06, rev 4.** Quant-proof asked for 9 edits on rev 1, 5 on rev 2 (E1–E5) and 2 on rev 3 (E6–E7); all are applied here. It needs the owner's yes, because §6 decides what may replace the live strategy. |
 | **Decider** | Vaan (owner) for §6. The Claude manager runs the rest. |
 | **Builds on** | DEC-014, DEC-016 (Am.1–4), DEC-017, DEC-019, DEC-020 (Option A). |
 | **Amends** | **DEC-016 Am.1 §5** and **DEC-018 §1**, only in this respect: a challenger that clears §6 may replace the live strategy, after the same pre-live checks the champion had to pass (§7). |
@@ -51,7 +51,7 @@ This uses per-trade SD about 0.02 SOL at 0.05 SOL size, n = 100, a normal approx
      - The champion's sim is compared with its own live fills on the same mints in the window.
      - It needs at least **20** live champion fills, otherwise the read is **NOT_DECIDABLE**.
      - If the **mean** live−sim residual is below −δmin/2 (−0.0015 per 0.05 SOL, scaled with size), or exit agreement is below 90%, the read is NOT_DECIDABLE.
-   - **Sim optimism in (c):** the challenger's own book has the measured mean live−sim residual subtracted per trade. In the switch family that is the window's. Otherwise it is the latest calibration with at least 20 fills. Today that is all fixed-build fills: faa3192 mean −384,022 lamports, median −209,670 lamports per trade (probe-calibration-2026-10-06).
+   - **Sim optimism in (c):** each challenger trade's simulated P&L is adjusted by **min(0, r̄)**. r̄ is the mean live−sim residual per trade (live minus sim), scaled with size. The adjustment can only lower the book; a positive r̄ is never applied. r̄ comes from a named set of at least 20 closed fills from **one** build, cited by job id. In the switch family it is the window's champion fills. **No qualifying calibration exists yet:** faa3192 has n = 8, with mean −384,022 and median −209,670 lamports per trade (probe-calibration-2026-10-06). Until one exists, (c) in a primary-promotion-family read is **NOT_DECIDABLE**.
 5. **Read.**
    - One pre-registered read per walk. The window length is set before the walk by a power calculation using the ρ and SD measured on exploration data. It is never shorter than 7 days, and the DEC states the power at the pre-declared minimum effect, even if it is below 0.5.
    - **Holm–Bonferroni across the k challengers at the per-walk family α = 0.025** applies both to the paired test (b) and to each challenger's own full-book mean > 0 test (c). Each test is a one-sided bootstrap p-value (10,000 draws, seed 1, both fail models) at or below its Holm threshold. At rank 1 that is 0.00833, a one-sided 99.17% bound. The base gate (CI90, 1,000 draws, seed 1) applies on top. Days and ex-top-3 are reported per arm.
