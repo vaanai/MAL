@@ -123,8 +123,10 @@ SIZES_SOL = (PRIMARY_SIZE_SOL,) + SENS_SIZES_SOL
 
 
 @contextlib.contextmanager
-def multi_cell_patch(scores: Mapping[str, float], t_min: float, ks: Sequence[int] = KS, sizes_sol: Sequence[float] = SIZES_SOL) -> Iterator[None]:
-    """Replace eem.score_one so each selected migration (OOF score >= t_min) is scored once per (k, size) with
+def multi_cell_patch(scores: Mapping[str, float], t_min: float, ks: Sequence[int] = KS, sizes_sol: Sequence[float] = SIZES_SOL, combos: Sequence[tuple[int, float, int]] | None = None) -> Iterator[None]:
+    """`combos` (optional, used by tools.exp012_backcheck): explicit (k, size_sol, exit_lag) triples replacing the
+    ks x sizes_sol product; exit_lag > 0 passes exit_land_k to score_one. Default None = unchanged behaviour.
+    Replace eem.score_one so each selected migration (OOF score >= t_min) is scored once per (k, size) with
     the frozen tp50_sl30 exit, and emits one cached row per (k, size). Not-selected migrations emit nothing.
     Restores everything on exit."""
     spec = [s for s in build_specs() if s["id"] == TARGET_SPEC_ID]
@@ -149,27 +151,28 @@ def multi_cell_patch(scores: Mapping[str, float], t_min: float, ks: Sequence[int
         if sc is None or sc < t_min:
             return []
         out: list[dict[str, Any]] = []
-        for k in ks:
-            for sol in sizes_sol:
-                cap["calls"] = []
-                cap["fills"] = None
-                rows = orig_score(mint_id, mint, feat, curve, through_ms, creator_hist, specs=spec, size=size_lamports(sol), priority=REF_FEE, entry_land_k=k)
-                if cap["fills"] is None:
-                    continue
-                if not rows:
-                    # exit deadline past the tape end: censored, kept as a marker so n is honest
-                    out.append({"mint": mint_id, "spec": TARGET_SPEC_ID, "score": sc, "k": k, "size": size_lamports(sol), "censored": True, "day": _day_of(mint)})
-                    continue
-                r = rows[0]
-                calls = cap["calls"]
-                net0, sides, status, _ = calls[0]
-                p_press = calls[1][3] if len(calls) > 1 else 0.0
-                if abs(orig_mixed(net0, sides, status, REF_FEE, FLAT_FAIL) - r["flat"]) > 1e-6 or abs(orig_mixed(net0, sides, status, REF_FEE, p_press) - r["press"]) > 1e-6:
-                    raise RuntimeError(f"capture mismatch for {mint_id} k={k} size={sol}: {calls} vs flat={r['flat']} press={r['press']}")
-                out.append(
-                    {"mint": mint_id, "spec": TARGET_SPEC_ID, "day": r["day"], "score": sc, "k": k, "size": size_lamports(sol), "censored": False, "filled": bool(r["filled"]),
-                     "status": status, "gross": r["gross"], "net0": net0, "sides": sides, "p_press": p_press}
-                )
+        todo = list(combos) if combos is not None else [(k, sol, 0) for k in ks for sol in sizes_sol]
+        for k, sol, lag in todo:
+            cap["calls"] = []
+            cap["fills"] = None
+            extra = {"exit_land_k": lag} if lag else {}
+            rows = orig_score(mint_id, mint, feat, curve, through_ms, creator_hist, specs=spec, size=size_lamports(sol), priority=REF_FEE, entry_land_k=k, **extra)
+            if cap["fills"] is None:
+                continue
+            if not rows:
+                # exit deadline past the tape end: censored, kept as a marker so n is honest
+                out.append({"mint": mint_id, "spec": TARGET_SPEC_ID, "score": sc, "k": k, "size": size_lamports(sol), "censored": True, "day": _day_of(mint), **({"exit_lag": lag} if lag else {})})
+                continue
+            r = rows[0]
+            calls = cap["calls"]
+            net0, sides, status, _ = calls[0]
+            p_press = calls[1][3] if len(calls) > 1 else 0.0
+            if abs(orig_mixed(net0, sides, status, REF_FEE, FLAT_FAIL) - r["flat"]) > 1e-6 or abs(orig_mixed(net0, sides, status, REF_FEE, p_press) - r["press"]) > 1e-6:
+                raise RuntimeError(f"capture mismatch for {mint_id} k={k} size={sol}: {calls} vs flat={r['flat']} press={r['press']}")
+            out.append(
+                {"mint": mint_id, "spec": TARGET_SPEC_ID, "day": r["day"], "score": sc, "k": k, "size": size_lamports(sol), "censored": False, "filled": bool(r["filled"]),
+                 "status": status, "gross": r["gross"], "net0": net0, "sides": sides, "p_press": p_press, **({"exit": r["exit"]} if "exit" in r else {}), **({"exit_lag": lag} if lag else {})}
+            )
         return out
 
     eem.score_one, eem._fills_for, eem.mixed_net = multi, fills_for, mixed
