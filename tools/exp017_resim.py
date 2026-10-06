@@ -62,9 +62,11 @@ def _parser() -> Any:
     return ap
 
 
-def run_pass(args: Any, g: dict[str, Any], sel_path: Path, out_dir: Path, head: str) -> dict[str, str]:
-    """One V-mode pass per source with the env overrides read by exp015_screen.e15_v_patch. Returns {source: rows sha256}."""
-    os.environ[e15.ENV_COMBOS] = json.dumps([[k, s, lag] for k, s, lag in COMBOS])
+def run_pass(args: Any, g: dict[str, Any], sel_path: Path, out_dir: Path, head: str, combos: Sequence[tuple[int, float, int]] = COMBOS) -> dict[str, str]:
+    """One V-mode pass per source with the env overrides read by exp015_screen.e15_v_patch. Returns {source: rows sha256}.
+    `combos` defaults to the EXP-017 sizes (EXP-020 passes its own grid); the default behaviour is unchanged."""
+    combos_ = tuple(combos)
+    os.environ[e15.ENV_COMBOS] = json.dumps([[k, s, lag] for k, s, lag in combos_])
     os.environ[e15.ENV_SELECTED] = str(sel_path)
     work, cache = out_dir / "work", out_dir / SIZED_DIR
     mw = min(args.max_workers, WORKERS_CAP)
@@ -73,7 +75,7 @@ def run_pass(args: Any, g: dict[str, Any], sel_path: Path, out_dir: Path, head: 
     sel_sha = e15._file_sha256(sel_path)
 
     def done(tag: str, rows: list[dict[str, Any]], vmap_key: str) -> None:
-        meta = {"tag": tag, "head": head, "combos": [list(c) for c in COMBOS], "selected_sha256": sel_sha, "vmap_sha256": g["vmap_sha256"][vmap_key]}
+        meta = {"tag": tag, "head": head, "combos": [list(c) for c in combos_], "selected_sha256": sel_sha, "vmap_sha256": g["vmap_sha256"][vmap_key]}
         shas[tag] = e15.write_cache(cache, "v", tag, rows, meta, {})
         print(f"EXP-017 resim {tag}: rows={len(rows)} sha256={shas[tag][:16]}", file=sys.stderr, flush=True)
 
