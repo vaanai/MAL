@@ -497,6 +497,14 @@ def simulate_mint(
         mint.add(parsed[1])
     if mint.mig_slot is None or mint.mig_ms is None:
         return {"mint": mint_id, "pool": pool, "status": "NO_SIM", "why": "no canonical-pool print after a bonding print"}
+    # SLOTS (plan 13 item 13). Two clocks, never mixed: the DECISION cutoff of the features and of the d-group block history is the migration row's slot
+    # (a `complete` event's slot for a complete-only mint; the first canonical print for P1B, which has no migration rows). The SIMULATOR clock (mint.mig_slot,
+    # entry k, landing, the label's window) is the first print on the migration pool. A cutoff past the simulator clock would see events after the
+    # first tradable print, so it is clamped to it (counted as `cutoff_clamped`).
+    cutoff_slot = int(migration_slot)
+    cutoff_clamped = bool(isinstance(mint.mig_slot, int) and mint.mig_slot > 0 and cutoff_slot > mint.mig_slot)
+    if cutoff_clamped:
+        cutoff_slot = int(mint.mig_slot)
     # the report cells under the multi-cell capture (as exp015), then the frozen k=1 row for the EXP-012 features (unedited score_one)
     with op.multi_cell_patch(e15._AllScores(), 0.0, combos=COMBOS):
         raw_cells = eem.score_one(mint_id, mint, feat, curve, tape_through_ms, creator_hist)
@@ -509,6 +517,7 @@ def simulate_mint(
     rec: dict[str, Any] = {
         "mint": mint_id, "pool": pool, "mig_ms": int(mint.mig_ms), "date": e15.utc_date(int(mint.mig_ms)), "exp012_features": exp12, "cells": cells,
         "slot_inversions": rug.count_slot_inversions(rows), "label191": None,
+        "cutoff_slot": cutoff_slot, "clock_slot": int(mint.mig_slot), "cutoff_clamped": cutoff_clamped,
     }
     fills, trigger_slot, _tb, ref = eem._fills_for(mint, migrate=True)
     size = op.size_lamports(SIZE_SOL)
@@ -545,7 +554,7 @@ def simulate_mint(
                               exit_key=resolve_key(stamped, exit_fill, mint=mint_id, endpoint="exit"), vmap=vmap, mint=mint_id)
         rec.update({"exit_kind": ex["kind"], "deadline_ms": ex["deadline_ms"], "label": _label_dict(lab)})
         rec["label191"] = _label191(fills, idx, landing_ms)
-    rec["features"] = rug.features(mint_id, create_row=create_row, rows=admitted, migration_slot=migration_slot, history=history)
+    rec["features"] = rug.features(mint_id, create_row=create_row, rows=admitted, migration_slot=cutoff_slot, history=history)
     return rec
 
 
@@ -576,6 +585,7 @@ class SourceData:
     pool_print_ms: dict[str, list[int]] = field(default_factory=dict)  # canonical pool -> print times (ints only; for the silent-pool count)
     excluded_other: dict[str, list[str]] = field(default_factory=dict)  # P1B: pre_tape_create / pre_tape_migration / gap_over (plan 13 item 9)
     creator_hist: dict[str, list[int]] | None = None  # built from ALL creates before any exclusion (as EXP-015's build_creator_history_b)
+    migration_no_complete: int = 0  # mints with a `migration` row but no `complete` row (membership count, outcome-blind)
     canonical_no_create: int = 0  # P1B: COUNT of mints with canonical-pool prints but no create row (pre-period tokens; no rows kept, outside every limit)
     excluded_no_bonding: list[str] = field(default_factory=list)  # creates with a placeholder slot and no pump_bonding print on the tape (plan 13 item 9)
     create_stats: dict[str, Any] | None = None  # outcome-blind counts from `apply_create_slot_rule`
@@ -697,8 +707,8 @@ def count_pool_vs_canonical(migrations: Mapping[str, Mapping[str, Any]], canonic
     eq = ne = bad = 0
     for m, r in migrations.items():
         p = r.get("pool")
-        if not p:
-            continue
+        if not p or r.get("from_complete"):
+            continue  # a complete-derived row is canonical by construction: it says nothing about agreement
         try:
             c = canonical_fn(m)
         except Exception:  # noqa: BLE001
@@ -795,14 +805,18 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
         if not isinstance(mslot, int) or isinstance(mslot, bool) or mslot <= 0:
             no_migration_slot.append(m)  # never defaulted to 0 (that would open the d-group cutoff to everything): counted, excluded
             continue
+        origin = "complete_only" if src.migrations[m].get("from_complete") else "migration_row"
+        # A complete-only mint's slot is the slot of the transaction that COMPLETES the curve, which also holds the completing bonding buy: the cutoff is
+        # complete slot + 1 (plan 13 item 13), so that buy is in the features like every migration-row mint's curve; simulate_mint still clamps it to the
+        # first print on the pool, so every feature stays strictly before any pool print.
         try:
-            cell = simulate_mint(m, cr, src.rows_by_mint.get(m, ()), pool=pool, migration_slot=mslot, vmap=vmap,
+            cell = simulate_mint(m, cr, src.rows_by_mint.get(m, ()), pool=pool, migration_slot=mslot + (1 if origin == "complete_only" else 0), vmap=vmap,
                                  tape_through_ms=src.through_ms, creator_hist=hist, history=history)
         except (Refused, rug.PoolAttributionRefusal):
             raise
         except Exception as exc:  # noqa: BLE001 - the message may hold a net; name the mint and the type only
             raise SimulationError(f"{m}: unexpected {type(exc).__name__} in the simulation (message withheld: it may carry outcome numbers)") from None
-        cell.update({"source": src.tag, "block": src.block})
+        cell.update({"source": src.tag, "block": src.block, "origin": origin})
         cells.append(cell)
     progress(f"{src.tag}: cells built cells={len(cells)}")
     win = {m for m, mr in src.migrations.items() if in_counted_window(src.block, mr)}
@@ -811,7 +825,13 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
             "no_bonding_excluded": no_bonding, "pre_tape_create_excluded": other.get("pre_tape_create", []),
             "pre_tape_migration_excluded": other.get("pre_tape_migration", []), "gap_excluded": other.get("gap_over", []),
             "p1b_canonical_no_create": src.canonical_no_create,
-            "n_migrations_window": len(win), "no_create_window": len([m for m in no_create_row if m in win]), "no_pool_window": len([m for m in no_pool if m in win]),
+            "n_migrations_window": len(win), "migration_no_complete": src.migration_no_complete,
+            "no_sim_by_origin": {o: dict(sorted(collections.Counter(str(c.get("why")) for c in cells if c.get("status") == "NO_SIM" and c.get("origin") == o).items()))
+                                 for o in ("complete_only", "migration_row")},
+            "foreign_first_by_origin": {o: len([m for m in gate["foreign_first_mints"] if (src.migrations.get(m) or {}).get("from_complete", False) == (o == "complete_only")])
+                                        for o in ("complete_only", "migration_row")}, "n_cells_window": len([c for c in cells if c["mint"] in win]),
+            "cutoff_clamped": len([c for c in cells if c.get("cutoff_clamped")]), "n_window_with_create": len([m for m in win if m in src.creates or m in excluded_set]),
+            "n_migrations_complete_only": sum(1 for mr in src.migrations.values() if mr.get("from_complete")), "no_create_window": len([m for m in no_create_row if m in win]), "no_pool_window": len([m for m in no_pool if m in win]),
             "p1b_cap_denominator": (src.create_stats or {}).get("n_post_start_with_migration"),
             "n_creates": len(src.creates) + len(excluded_set), "create_stats": src.create_stats,
             "n_creates_with_migration": len([m for m in src.migrations if m in src.creates or m in excluded_set]),
@@ -855,6 +875,8 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
         del everything
         progress(f"{tag}: P1B creates={len(creates)} migrations_derived={len(migrations)} (pass 1 over the tape done)")
         migration_roots = []
+    completes: dict[str, Mapping[str, Any]] = {}
+    n_migration_rows = 0
     for root in migration_roots:
         for f in sorted((Path(root) / "migrations").glob("migrations-*.jsonl.zst")):
             for line in _zcat_lines(f, '"migration"'):
@@ -864,6 +886,31 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
                     continue
                 if r.get("type") == "migration" and isinstance(r.get("mint"), str):
                     migrations.setdefault(r["mint"], r)
+                    n_migration_rows += 1
+            for line in _zcat_lines(f, '"complete"'):
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("type") == "complete" and isinstance(r.get("mint"), str):
+                    completes.setdefault(r["mint"], r)
+    # ROOT CAUSE of the 4% yield (job #301): the views' migrations/ files hold two row types. `complete` (the bonding-curve completion; EXP-015's migrated
+    # set, `exp012_virtual_rescore._migrated_mints`) is on every migrated mint, but only a small share also has a `migration` row (the one with `pool`).
+    # Reading `migration` rows alone kept about 4% of the migrated mints. A complete-only mint gets a migration row built from its `complete` event
+    # (slot and block_time of the event) with pool = canonical_pool(mint), the same deterministic, outcome-blind rule as P1B (plan 13 item 13).
+    migration_no_complete = len([m for m, r in migrations.items() if r.get("type") == "migration" and m not in completes]) if completes or n_migration_rows else 0
+    n_complete_only = 0
+    for m, r in completes.items():
+        if m in migrations:
+            continue
+        try:
+            pool = canonical_fn(m)
+        except Exception:  # noqa: BLE001 - an un-derivable pool is a no-pool mint
+            pool = ""
+        migrations[m] = {**r, "type": "migration", "pool": pool, "from_complete": True}
+        n_complete_only += 1
+    if completes or n_migration_rows:
+        progress(f"{tag}: migrations from files: migration_rows={n_migration_rows} complete_rows={len(completes)} complete_only={n_complete_only} total={len(migrations)}")
     rows_by_mint: dict[str, Any] = {}  # mint -> RowStore (iterates as dicts)
     through = 0
     n_read = n_kept = late_creates = 0
@@ -915,7 +962,7 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
     creates, excluded, stats = apply_create_slot_rule(creates, rows_by_mint, **kw)
     return SourceData(tag, block, creates, migrations, rows_by_mint, through, excluded_no_bonding=excluded, create_stats=stats, derived_pools=(tag == "P1B"),
                       excluded_other={k: v for k, v in stats["excluded"].items() if k != "no_bonding"}, creator_hist=hist,
-                      canonical_no_create=canonical_no_create)
+                      canonical_no_create=canonical_no_create, migration_no_complete=migration_no_complete)
 
 
 def pool_print_times(src: SourceData, pool_by_mint: Mapping[str, str]) -> dict[str, list[int]]:
@@ -991,6 +1038,8 @@ LIMIT_P1B_PRE_TAPE_MIG = 0.05  # pre-tape migrations / P1B creates at or after P
 LIMIT_P1B_GAP_OVER = 0.05  # gap_over (> P1B_MAX_GAP_S) / the same denominator
 LIMIT_MIN_IN_BOOK = 30  # in-book cells (FILLED or MISS inside the window) per source
 LIMIT_NO_SIM_SHARE = 0.25  # NO_SIM cells / all cells per source
+LIMIT_MIN_WITH_CREATE = 0.80  # in-window migrations that have a create row / all in-window migrations, per source: a join failure refuses before `started`
+LIMIT_MIN_CELLS_OF_MIGRATED = 0.90  # cells built (any status) / in-window migrated mints, per source: a yield failure refuses before `started`
 LIMIT_P1_NO_OOF = 0.02  # in-book P1 cells with no stored OOF score / in-book P1 cells, per P1 source
 LP_V_CLUSTER = (17_584_505_200, 17_584_505_699)  # the canonical creation cluster of v_base (V0); plan 13 item 10(c)
 LP_V_MARGIN = 1_000
@@ -1026,7 +1075,23 @@ def oof_counts(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] | 
     return out
 
 
-def check_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] | None = None) -> list[str]:
+LIMIT_OOF_NO_CELL = 0.05  # OOF-scored in-window P1 mints with NO EXP-016 cell / all such mints
+
+
+def oof_without_cell(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] | None, oof_days: Mapping[str, str] | None, p1_dates: Sequence[str]) -> dict[str, Any]:
+    """The reverse of LIMIT_P1_NO_OOF (membership only): OOF-scored mints whose OOF day is in the P1 counted dates, and how many have no cell (any status)
+    in any P1 source. `oof_days` is `load_oof`'s {mint: OOF day}. The sources cannot be told apart by an OOF mint, so this is over P1 as a whole."""
+    if oof is None or oof_days is None:
+        return {"available": False}
+    have = {c["mint"] for r in results for c in r["cells"] if c.get("block") == "P1"}
+    dates = set(p1_dates)
+    scored = [m for m in oof if oof_days.get(m) in dates]
+    missing = [m for m in scored if m not in have]
+    return {"available": True, "n_scored_in_window": len(scored), "n_without_cell": len(missing),
+            "by_day": dict(sorted(collections.Counter(oof_days[m] for m in missing).items()))}
+
+
+def check_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] | None = None, oof_cover: Mapping[str, Any] | None = None) -> list[str]:
     """Pre-declared refusal limits (plan 13 items 9 and 12), outcome-blind, counts only. Returns the reasons (empty = none). Shares: no-create-row and
     no-pool over the source's migrations inside its counted pool hours; for P1B, no-bonding over its creates that have a migration; in-book
     cells and the NO_SIM share per source; the no-OOF share of in-book P1 cells per P1 source (when `oof` is given)."""
@@ -1044,6 +1109,12 @@ def check_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] 
         n_mig = int(r.get("n_migrations_window", n_mig))  # migrations inside the counted window only
         n_nc = int(r.get("no_create_window", len(r.get("no_create_row", []))))
         n_np = int(r.get("no_pool_window", len(r.get("no_pool_mints", []))))
+        n_wc = r.get("n_window_with_create")
+        n_cw = r.get("n_cells_window")
+        if n_cw is not None and n_mig and n_cw / n_mig < LIMIT_MIN_CELLS_OF_MIGRATED:
+            why.append(f"{tag}: only {n_cw} cells built for {n_mig} in-window migrated mints (< {LIMIT_MIN_CELLS_OF_MIGRATED:.0%}): a yield failure")
+        if n_wc is not None and n_mig and n_wc / n_mig < LIMIT_MIN_WITH_CREATE:
+            why.append(f"{tag}: only {n_wc} of {n_mig} in-window migrations have a create row (< {LIMIT_MIN_WITH_CREATE:.0%}): a join failure")
         if n_mig and n_nc / n_mig > LIMIT_NO_CREATE:
             why.append(f"{tag}: no-create-row {n_nc} of {n_mig} migrated mints in the counted window (> {LIMIT_NO_CREATE:.0%})")
         if n_mig and n_np / n_mig > LIMIT_NO_POOL:
@@ -1054,6 +1125,9 @@ def check_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] 
                 k = len(r.get(key, []))
                 if den and k / den > lim:
                     why.append(f"P1B: {k} of {den} creates at or after the tape start with a migration are {name} (> {lim:.0%})")
+    if oof_cover and oof_cover.get("available") and oof_cover["n_scored_in_window"]:
+        if oof_cover["n_without_cell"] / oof_cover["n_scored_in_window"] > LIMIT_OOF_NO_CELL:
+            why.append(f"P1: {oof_cover['n_without_cell']} of {oof_cover['n_scored_in_window']} OOF-scored in-window mints have no cell (> {LIMIT_OOF_NO_CELL:.0%})")
     if oof is not None:
         for tag, d in oof_counts(results, oof).items():
             if d["without_score"] / d["in_book"] > LIMIT_P1_NO_OOF:
@@ -1061,8 +1135,8 @@ def check_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] 
     return why
 
 
-def enforce_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] | None = None) -> None:
-    why = check_limits(results, oof)
+def enforce_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] | None = None, oof_cover: Mapping[str, Any] | None = None) -> None:
+    why = check_limits(results, oof, oof_cover)
     if why:
         raise Refused("pre-declared limit(s) exceeded (plan 13 item 9): " + "; ".join(why))
 
@@ -1637,7 +1711,8 @@ def source_counts(r: Mapping[str, Any], vmap: Mapping[str, int | None]) -> dict[
         "no_bonding_excluded": len(r.get("no_bonding_excluded", [])), "foreign_first": len(r["gate"]["foreign_first_mints"]),
         "pre_tape_create_excluded": len(r.get("pre_tape_create_excluded", [])), "pre_tape_migration_excluded": len(r.get("pre_tape_migration_excluded", [])),
         "gap_excluded": len(r.get("gap_excluded", [])), "p1b_canonical_no_create": r.get("p1b_canonical_no_create", 0),
-        "n_migrations_window": r.get("n_migrations_window"), "p1b_cap_denominator": r.get("p1b_cap_denominator"), "in_book": len(in_book_cells(cells)),
+        "n_migrations_window": r.get("n_migrations_window"), "migration_no_complete": r.get("migration_no_complete"),
+        "no_sim_by_origin": r.get("no_sim_by_origin"), "foreign_first_by_origin": r.get("foreign_first_by_origin"), "n_cells_window": r.get("n_cells_window"), "cutoff_clamped": r.get("cutoff_clamped"), "n_window_with_create": r.get("n_window_with_create"), "n_migrations_complete_only": r.get("n_migrations_complete_only"), "p1b_cap_denominator": r.get("p1b_cap_denominator"), "in_book": len(in_book_cells(cells)),
         "create_stats": r.get("create_stats"), "p1b_gap_slots": r.get("p1b_gap_slots"),
         "censored": sum(1 for c in cells if c.get("status") == "CENSORED"),  # the deadline rule (plan 13 item 7): a status, not an outcome
         "no_sim_by_reason": dict(sorted(collections.Counter(str(c.get("why")) for c in cells if c.get("status") == "NO_SIM").items())),
@@ -1649,8 +1724,10 @@ def precount(args: argparse.Namespace) -> int:
     """`--precount`: the same guards and tape pass as the real run on every source as given, then ONLY the counts. No lock, no tries line, no label
     and no P&L is written or printed; the counts JSON goes to stdout and `OUT_DIR/precount.json`. The pre-declared limits are reported as would-refuse."""
     try:
+        progress("precount: guards start")
         refuse_extra_reserved(args)
         g = run_guards(args, pin_required=False)
+        progress("precount: guards done")
         if args.vmap and re.fullmatch(r"[0-9a-f]{64}", VMAP_EXP016_SHA256):
             vmap_raw = load_pinned_vmap(args.vmap)
             vmap_note = "pinned"
@@ -1684,14 +1761,18 @@ def precount(args: argparse.Namespace) -> int:
     cells = [c for r in results for c in r["cells"]]
     sel_by_mint: dict[str, bool] = {}
     oof: Mapping[str, float] | None = None
+    oof_days: Mapping[str, str] | None = None
     try:
-        oof = load_oof(args.artifact_dir)[0]
+        oof_all = load_oof(args.artifact_dir)
+        oof, oof_days = oof_all[0], oof_all[3]
         sel_by_mint = {c["mint"]: s for c, s in zip(cells, frozen_flags(cells, oof, args.artifact_dir))}
     except (SystemExit, Exception):  # noqa: BLE001
         sel_by_mint = {}
     pre = pre_started_counts(results, sel_by_mint, vmap_raw, closed, detail=detail)
     pre["p1_oof_score_counts"] = oof_counts(results, oof)
-    would = check_limits(results, oof)
+    oof_cover = oof_without_cell(results, oof, oof_days, e15.block_dates("P1"))
+    pre["p1_oof_without_cell"] = oof_cover
+    would = check_limits(results, oof, oof_cover)
     if oof is None:
         would.append("P1: stored OOF scores could not be loaded")
     # exactly what the real run checks before `started`: V coverage over ALL cells on the raw map, and the constancy file when given
@@ -1732,7 +1813,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     canonical = Path(args.canonical_tries).resolve()
     out_dir = args.out_dir
     try:
+        progress("guards start")
         g = run_guards(args)
+        progress("guards done")
         check_no_prior_tries(tries_path, canonical)
         try:
             e15.check_run_lock(out_dir)
@@ -1780,7 +1863,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             progress(f"{tag}: source done, rows freed, cells kept={len(results[-1]['cells'])}")
         cells = [c for r in results for c in r["cells"]]
         try:
-            oof = load_oof(args.artifact_dir)[0]
+            oof_all = load_oof(args.artifact_dir)
+            oof, oof_days = oof_all[0], oof_all[3]
         except SystemExit as exc:
             raise Refused(str(exc)) from None
         sel = frozen_flags(cells, oof, args.artifact_dir)
@@ -1792,7 +1876,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             detail = None
         pre = pre_started_counts(results, {c["mint"]: s for c, s in zip(cells, sel)}, vmap_raw, closed, detail=detail)
         pre["p1_oof_score_counts"] = oof_counts(results, oof)
-        enforce_limits(results, oof)  # the pre-declared limits (plan 13 items 9 and 12), before `started`
+        oof_cover = oof_without_cell(results, oof, oof_days, e15.block_dates("P1"))
+        pre["p1_oof_without_cell"] = oof_cover
+        enforce_limits(results, oof, oof_cover)  # the pre-declared limits (plan 13 items 9 and 12), before `started`
         pre["v_coverage"] = v_coverage([c["pool"] for c in cells if c.get("pool")], vmap_raw)
         pre["v_constancy"] = constancy
         check_constancy_sample(constancy_samples, readable_pools([c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")], vmap_raw))  # before `started`
