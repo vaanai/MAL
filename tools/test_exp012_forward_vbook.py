@@ -40,8 +40,8 @@ def write_vmap(path: Path, vmap: dict) -> str:
     return fw._sha256_file(path)
 
 
-def brow(mint, flat, no_v=(), day="2026-10-06", entered=True, mig_ms=1):
-    return {"mint": mint, "mig_ms": mig_ms, "day": day, "entered": entered, "flat": flat, "press": flat, "flat_sol": flat / 1e9, "no_v_pools": list(no_v)}
+def brow(mint, flat, no_v=(), day="2026-10-06", entered=True, mig_ms=1, press=None, zero_v=()):
+    return {"mint": mint, "mig_ms": mig_ms, "day": day, "entered": entered, "flat": flat, "press": flat if press is None else press, "flat_sol": flat / 1e9, "no_v_pools": list(no_v), "zero_v_pools": list(zero_v)}
 
 
 class VBase(tfw.ReadBase):
@@ -78,6 +78,63 @@ class VBase(tfw.ReadBase):
         return rc, err.getvalue()
 
 
+class BindingTests(VBase):
+    def test_merge_meta_is_required_off_the_test_window(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out)
+        with self.assertRaises(fw.Refused) as cm:
+            vb.run_vbook(walk, out, out.parent / "ledger.jsonl", vpath, sha, out.parent / "vb", art, FREEZE_COMMIT, None, False)
+        self.assertIn("--vmap-merge-meta", str(cm.exception))
+
+    def test_merge_meta_sha_must_equal_the_vmap_sha_and_is_embedded(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out)
+        bad = out.parent / "bad.merge.json"
+        bad.write_text(json.dumps({"sha256": {"out": "0" * 64}}))
+        rc, err = self.run_vbook(walk, art, out, vpath, sha, "--vmap-merge-meta", str(bad))
+        self.assertEqual(rc, 2, err)
+        self.assertIn("sha256.out", err)
+        good = out.parent / "good.merge.json"
+        good.write_text(json.dumps({"sha256": {"out": sha, "final": "f"}, "n": 3}))
+        rc, err = self.run_vbook(walk, art, out, vpath, sha, "--vmap-merge-meta", str(good))
+        self.assertEqual(rc, 0, err)
+        rep = json.loads((out.parent / "vb" / "vbook_report.json").read_text())
+        self.assertEqual(rep["vmap_merge"], {"sha256": {"out": sha, "final": "f"}, "n": 3})
+
+    def test_every_run_is_appended_and_prior_runs_are_counted(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out)
+        for i in range(2):
+            rc, err = self.run_vbook(walk, art, out, vpath, sha, vb_out=out.parent / f"vb{i}")
+            self.assertEqual(rc, 0, err)
+            rep = json.loads((out.parent / f"vb{i}" / "vbook_report.json").read_text())
+            self.assertEqual(rep["prior_vbook_runs"], i)
+        runs = [json.loads(x) for x in (out.parent / vb.RUNS_LEDGER_NAME).read_text().splitlines()]
+        self.assertEqual(len(runs), 2)
+        self.assertEqual(runs[1]["vmap_sha256"], sha)
+        self.assertIn(runs[1]["verdict"], ("PASS", "FAIL", vb.NOT_DECIDABLE))
+        self.assertIn("git_commit", runs[1])
+        ledger2 = out.parent / "other_runs.jsonl"
+        rc, err = self.run_vbook(walk, art, out, vpath, sha, "--runs-ledger", str(ledger2), vb_out=out.parent / "vb9")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(ledger2.read_text().splitlines()), 1)
+
+    def test_a_refused_run_is_not_logged(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out)
+        rc, _ = self.run_vbook(walk, art, out, vpath, "0" * 64)
+        self.assertEqual(rc, 2)
+        self.assertFalse((out.parent / vb.RUNS_LEDGER_NAME).exists())
+
+    def test_test_window_is_refused_under_real_data(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out)
+        with mock.patch.object(vb, "REAL_BLOCKS_PREFIX", str(walk.resolve().parent)):
+            rc, err = self.run_vbook(walk, art, out, vpath, sha)
+        self.assertEqual(rc, 2, err)
+        self.assertIn("--test-window is refused", err)
+
+
 class SealTests(VBase):
     def test_refuses_with_no_final_marker(self) -> None:
         walk, art, out = self.fresh()
@@ -91,7 +148,9 @@ class SealTests(VBase):
     def test_a_test_marker_does_not_open_a_real_window(self) -> None:
         walk, art, out = self.final()
         vpath, sha = self.vmap(out)
-        rc, err = self.run_vbook(walk, art, out, vpath, sha, test_window=False)
+        meta = out.parent / "m.merge.json"
+        meta.write_text(json.dumps({"sha256": {"out": sha}}))
+        rc, err = self.run_vbook(walk, art, out, vpath, sha, "--vmap-merge-meta", str(meta), test_window=False)
         self.assertEqual(rc, 2, err)
         self.assertIn("no FINAL read", err)
 
@@ -144,6 +203,27 @@ class RunTests(VBase):
         self.assertEqual(rep["vmap"]["sha256"], sha)
         self.assertIn("git_commit", rep)
         self.assertEqual([p for p in out.parent.iterdir() if p.name.startswith("vbook-scratch")], [])
+
+    def test_report_has_live_blockers_and_zero_v_fields(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out)
+        rc, err = self.run_vbook(walk, art, out, vpath, sha)
+        self.assertEqual(rc, 0, err)
+        rep = json.loads((out.parent / "vb" / "vbook_report.json").read_text())
+        self.assertEqual(rep["live_blockers"][-1], vb.VALIDATION_REMINDER)
+        self.assertEqual(rep["null_v"]["n_entered_touching_zero_v"], 0)
+        self.assertIsNone(rep["vmap_merge"])
+
+    def test_zero_v_pool_is_reported_not_a_blocker(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out, {**{p: V for p in POOLS}, "pool-mC": 0})
+        rc, err = self.run_vbook(walk, art, out, vpath, sha)
+        self.assertEqual(rc, 0, err)
+        rep = json.loads((out.parent / "vb" / "vbook_report.json").read_text())
+        self.assertFalse(rep["null_v"]["not_decidable"])
+        self.assertIn(rep["b_verdict"], ("PASS", "FAIL"))
+        self.assertGreater(rep["null_v"]["n_entered_touching_zero_v"], 0)
+        self.assertEqual(rep["null_v"]["zero_v_pool_ids"], ["pool-mC"])
 
     def test_null_v_pool_on_the_entered_set_is_not_decidable(self) -> None:
         walk, art, out = self.final()
@@ -246,6 +326,48 @@ def e11_hours():
 
 
 class NullVRuleTests(unittest.TestCase):
+    def test_a_null_v_trade_in_the_press_top3_only_is_not_decidable(self) -> None:
+        rows = [brow(f"m{i}", 1_000.0 * (i + 1), mig_ms=i, press=1_000.0 * (i + 1)) for i in range(1000)]
+        rows[10]["press"] = 9e9  # large only in the pressure leg; not in the flat top 3
+        rows[10]["no_v_pools"] = ["nullpool"]
+        res = vb.null_v_assessment(rows)
+        self.assertNotIn("m10", [t["mint"] for t in res["top3"]])
+        self.assertIn("m10", res["top3_union_mints"])
+        self.assertTrue(res["top3_touches_null_v"])
+        self.assertTrue(res["not_decidable"])
+
+    def test_zero_v_is_reported_and_never_a_blocker(self) -> None:
+        rows = [brow(f"m{i}", 1_000.0 * (i + 1), mig_ms=i) for i in range(100)]
+        rows[99]["zero_v_pools"] = ["zp"]  # the top trade
+        rows[0]["zero_v_pools"] = ["zp"]
+        res = vb.null_v_assessment(rows)
+        self.assertFalse(res["not_decidable"])
+        self.assertEqual(res["n_entered_touching_zero_v"], 2)
+        self.assertEqual(res["n_top3_union_touching_zero_v"], 1)
+        self.assertEqual(res["zero_v_pool_ids"], ["zp"])
+
+    def test_missing_tags_fail_closed(self) -> None:
+        for tag in ("no_v_pools", "zero_v_pools"):
+            rows = [brow("m", 1.0)]
+            del rows[0][tag]
+            with self.assertRaises(fw.Refused):
+                vb.null_v_assessment(rows)
+        raw = {"mint": "m", "mig_ms": 5, "day": "d", "spec": "s", "score": 1.0, "filled": True, "status": 0, "gross": 0, "flat": 1.0, "press": 1.0, "pumpswap_pools": [], "no_v_pools": []}
+        with self.assertRaises(fw.Refused) as cm:
+            vb.window_rows([raw], 0.0, 0, 10)
+        self.assertIn("zero_v_pools", str(cm.exception))
+        self.assertEqual(vb.window_rows([{**raw, "zero_v_pools": []}], 0.0, 0, 10)[0]["zero_v_pools"], [])
+
+    def test_live_blockers_name_each_condition_and_the_validation_reminder(self) -> None:
+        agree = {"agree_on_every_gate_condition": True, "disagreements": []}
+        nv = {"not_decidable": False}
+        self.assertEqual(vb.live_blockers(agree, [], nv, "PASS"), [vb.VALIDATION_REMINDER])
+        dis = {"agree_on_every_gate_condition": False, "disagreements": [{"leg": "flat_15", "condition": "mean_ci90"}]}
+        got = vb.live_blockers(dis, ["vault: entered set differs"], {"not_decidable": True}, "FAIL")
+        self.assertEqual(len(got), 5)
+        self.assertEqual(got[-1], vb.VALIDATION_REMINDER)
+        self.assertTrue(any("disagree" in x for x in got) and any("vault-mode entered set" in x for x in got) and any("NOT_DECIDABLE" in x for x in got))
+
     def rows(self, n, touching, top_clean=True):
         # n entered trades; `touching` of them touch a null-V pool; the 3 largest winners are clean when top_clean
         rows = [brow(f"m{i}", 1_000.0 * (i + 1), mig_ms=i) for i in range(n)]

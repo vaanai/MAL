@@ -2,7 +2,7 @@
 """EXP-012 forward, book (B): the same entered set re-priced on PumpSwap vault + V (DEC-016 Amendment 4).
 
     python3 -m tools.exp012_forward_vbook --walk-dir D --final-out-dir O --final-ledger L \
-        --vmap M --vmap-sha256 S --out-dir X [--test-window]
+        --vmap M --vmap-sha256 S --vmap-merge-meta M.merge.json --out-dir X [--runs-ledger R] [--test-window]
 
 Book (A) is `tools/exp012_forward.py`, unchanged; its FINAL read is the EXP-012 verdict. This tool computes
 (B) afterwards, from the same sealed hours, and never before:
@@ -10,18 +10,29 @@ Book (A) is `tools/exp012_forward.py`, unchanged; its FINAL read is the EXP-012 
   0. SEAL. It refuses unless the FINAL (A) read is recorded: a non-test FINAL marker for the pinned window in
      the ledger (`exp012_forward.ledger_markers`), for `--final-out-dir`, whose lock and rows.jsonl still hash
      to the marker. `--test-window` instead accepts only a `test_window` marker (fixture windows). No row is
-     opened before this passes. The V map must hash to `--vmap-sha256`.
+     opened before this passes. The V map must hash to `--vmap-sha256`, and `--vmap-merge-meta` (the
+     `OUT.merge.json` of `exp012_forward_vmap merge`, required unless --test-window) must carry
+     `sha256.out` equal to it; its fields are embedded in the report as `vmap_merge`. `--test-window` is
+     refused on a walk dir under /data/mal/blocks/. Every run is appended to VBOOK_RUNS.jsonl (beside
+     the FINAL out dir, or `--runs-ledger`) and the report counts the prior runs.
   1. REPRODUCTION (section 1). A pass with frozen pricing (no V) must reproduce (A)'s per-row `flat` and
      `press` byte for byte, keyed by `exp012_forward.key_of`. Any difference refuses (exit 2) before (B).
   2. (B) at mcap_mode "v" (the rule) and "vault" (report only, section 4). The entered set must equal (A)'s,
      key by key; a difference refuses.
   3. NULL-V (section 3). Each row carries the PumpSwap pools its mint printed on and which of them have no V
-     (null or absent in the map; never treated as V = 0). If any of (B)'s top 3 entered trades by flat, or
-     more than 1% of entered trades, touch such a pool, (B) is NOT_DECIDABLE.
+     (null or absent in the map; never treated as V = 0). If any trade in the union of (B)'s top 3 entered
+     trades by flat and its top 3 by pressure net (each leg drops its own top 3), or more than 1% of
+     entered trades, touch such a pool, (B) is NOT_DECIDABLE. A row without its tags is refused (fail
+     closed). A pool whose V is 0 is the chain's real value (vault-only pricing is right for it): it is
+     reported (`zero_v_pools`, `n_entered_touching_zero_v`), never a blocker.
   4. The gate is `exp012_forward.build_report` on (B)'s rows, the same code path as (A)'s.
 
-Pool-per-mint tracking is a superset: a mint's pools are those it printed on up to the moment it was scored
-(including prints after the exit), so it can only over-report null-V contact, never miss it.
+Pool-per-mint tracking is a superset: a mint's pools are those it printed on up to the moment it was scored,
+which includes prints after the exit, so it over-reports contact (it can only add a mint to the null-V
+set, never miss one).
+
+Vault-mode (report only) disagreements, a vault entered-set mismatch, a NOT_DECIDABLE (B) and the Am.4 s5
+validation are listed in the top-level `live_blockers`; none of them is decided here.
 
 Outputs, in a new `--out-dir` (refused if it exists): vbook_report.json, vbook_report.md. Scratch row files
 (P&L at rest) live in a temp directory next to it and are deleted.
@@ -37,6 +48,7 @@ import os
 import shutil
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -56,6 +68,11 @@ NULL_V_SHARE_LIMIT = 0.01  # more than 1% of entered trades
 TOP_N = 3
 CONDITIONS = ("min_n", "min_days", "mean_ci90", "drop_top3", "majority_days")
 LABEL = "forward simulated paper re-priced on vault + V, not money made"
+REAL_BLOCKS_PREFIX = "/data/mal/blocks/"
+RUNS_LEDGER_NAME = "VBOOK_RUNS.jsonl"
+SCHEMA_RUN = "exp012_forward_vbook_run_v1"
+TAGS = ("pumpswap_pools", "no_v_pools", "zero_v_pools")
+VALIDATION_REMINDER = "Am.4 s5 validation must also pass (`exp012_forward_vmap validate`)"
 
 
 # --- the V-patched worker ---------------------------------------------------------------
@@ -63,11 +80,12 @@ LABEL = "forward simulated paper re-priced on vault + V, not money made"
 
 def _tracked_tagged(*args: Any, **kw: Any) -> Any:
     """`exp012_forward._tagged_worker`, with each row also carrying the PumpSwap pools its mint printed on
-    (`pumpswap_pools`) and which of those have no V (`no_v_pools`). Runs inside the adapter's patch, so
+    (`pumpswap_pools`), which of those have no V (`no_v_pools`) and which have V = 0 (`zero_v_pools`). Runs inside the adapter's patch, so
     `eem.print_from_trade_row` is already the V wrapper; both wrappers here are restored on exit."""
     vmap, _mode = ad._cached_vmap()
     seen: dict[str, set[str]] = {}
     no_v: dict[str, set[str]] = {}
+    zero_v: dict[str, set[str]] = {}
     inner_print, inner_score = eem.print_from_trade_row, eem.score_one
 
     def tracked_print(row: dict[str, Any]) -> Any:
@@ -77,6 +95,8 @@ def _tracked_tagged(*args: Any, **kw: Any) -> Any:
             seen.setdefault(mint, set()).add(pid)
             if not isinstance(pool, str) or vmap.get(pool) is None:
                 no_v.setdefault(mint, set()).add(pid)
+            elif vmap.get(pool) == 0:
+                zero_v.setdefault(mint, set()).add(pid)
         return inner_print(row)
 
     def tracked_score(mint_id: str, *a: Any, **k: Any) -> list[dict[str, Any]]:
@@ -84,6 +104,7 @@ def _tracked_tagged(*args: Any, **kw: Any) -> Any:
         for r in rows:
             r["pumpswap_pools"] = sorted(seen.get(mint_id, ()))
             r["no_v_pools"] = sorted(no_v.get(mint_id, ()))
+            r["zero_v_pools"] = sorted(zero_v.get(mint_id, ()))
         return rows
 
     eem.print_from_trade_row, eem.score_one = tracked_print, tracked_score
@@ -183,6 +204,36 @@ def check_vmap(vmap: Path, want_sha: str) -> dict[str, Any]:
     return {"path": str(vmap), "sha256": got, "n_pools": len(m), "n_null": sum(1 for v in m.values() if v is None), "n_zero_v": sum(1 for v in m.values() if v == 0)}
 
 
+def check_merge_meta(meta: Path, vmap_sha: str) -> dict[str, Any]:
+    """#374's `OUT.merge.json`: its `sha256.out` must be the V map's sha256 (`--vmap-sha256`). Returned whole, embedded as `vmap_merge`."""
+    try:
+        doc = json.loads(meta.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refused([f"--vmap-merge-meta {meta} is unreadable: {type(exc).__name__}"])
+    out = doc.get("sha256", {}).get("out") if isinstance(doc, dict) and isinstance(doc.get("sha256"), dict) else None
+    if out != vmap_sha.strip().lower():
+        raise Refused([f"--vmap-merge-meta {meta}: sha256.out {out!r} does not equal --vmap-sha256 {vmap_sha}"])
+    return doc
+
+
+def prior_runs(ledger: Path) -> int:
+    return len(fw.ledger_markers(ledger))
+
+
+def live_blockers(agreement: dict[str, Any], vault_bad: Sequence[str], null_v: dict[str, Any], b_verdict_if_decidable: str) -> list[str]:
+    out = []
+    if not agreement["agree_on_every_gate_condition"] and agreement["disagreements"]:
+        out.append(f"vault mode and v mode disagree on gate condition(s): {sorted({(d['leg'], d['condition']) for d in agreement['disagreements']})}")
+    if vault_bad:
+        out.append("vault-mode entered set differs from (A)'s: " + "; ".join(vault_bad))
+    if null_v["not_decidable"]:
+        out.append("null-V rule: (B) is NOT_DECIDABLE")
+    if b_verdict_if_decidable != "PASS":
+        out.append("(B) at mcap_mode v does not PASS the gate")
+    out.append(VALIDATION_REMINDER)
+    return out
+
+
 # --- checks -----------------------------------------------------------------------------
 
 
@@ -192,8 +243,11 @@ def window_rows(rows: Sequence[dict[str, Any]], threshold: float, lo: int, hi: i
     for r in rows:
         if lo <= int(r["mig_ms"]) < hi:
             row = fw.make_row(r, threshold)
-            row["pumpswap_pools"] = list(r.get("pumpswap_pools", []))
-            row["no_v_pools"] = list(r.get("no_v_pools", []))
+            missing = [t for t in TAGS if t not in r]
+            if missing:
+                raise Refused([f"row mint {r['mint']} mig_ms {r['mig_ms']} has no {missing} tag(s): the V-contact tracking did not run; refusing (fail closed)"])
+            for t in TAGS:
+                row[t] = list(r[t])
             out.append(row)
     return sorted(out, key=lambda x: (x["mig_ms"], x["mint"]))
 
@@ -222,12 +276,24 @@ def check_entered_set(a_rows: Sequence[dict[str, Any]], b_rows: Sequence[dict[st
 
 
 def null_v_assessment(b_rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    """Amendment 4 section 3. A pool with no readable V is never V = 0: if any of (B)'s top 3 entered trades by flat,
-    or more than 1% of entered trades, touch one, (B) is not decidable."""
+    """Amendment 4 section 3. A pool with no readable V is never V = 0: if any trade in the union of (B)'s top 3 entered
+    trades by flat and top 3 by press (each leg drops its own top 3), or more than 1% of entered trades, touch one, (B) is
+    not decidable. A row without `no_v_pools` or `zero_v_pools` is refused (fail closed). V = 0 pools are
+    reported, never a blocker."""
     entered = [r for r in b_rows if r["entered"]]
-    touching = [r for r in entered if r.get("no_v_pools")]
-    top = sorted(entered, key=lambda r: r["flat"], reverse=True)[:TOP_N]
-    top_hit = [r for r in top if r.get("no_v_pools")]
+    for r in entered:
+        absent = [t for t in ("no_v_pools", "zero_v_pools") if t not in r]
+        if absent:
+            raise Refused([f"entered row {r.get('mint')} has no {absent} tag(s); refusing (fail closed)"])
+    touching = [r for r in entered if r["no_v_pools"]]
+    zero = [r for r in entered if r["zero_v_pools"]]
+    top_flat = sorted(entered, key=lambda r: r["flat"], reverse=True)[:TOP_N]
+    top_press = sorted(entered, key=lambda r: r["press"], reverse=True)[:TOP_N]
+    union: list[dict[str, Any]] = []
+    for r in top_flat + top_press:
+        if not any(r is u for u in union):
+            union.append(r)
+    top_hit = [r for r in union if r["no_v_pools"]]
     n = len(entered)
     over = len(touching) > NULL_V_SHARE_LIMIT * n  # exactly 1% is allowed
     return {
@@ -236,10 +302,16 @@ def null_v_assessment(b_rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "share_touching_null_v": (len(touching) / n) if n else None,
         "limit_share": NULL_V_SHARE_LIMIT,
         "over_limit": over,
-        "top3": [{"mint": r["mint"], "flat_sol": r["flat_sol"], "no_v_pools": list(r.get("no_v_pools", []))} for r in top],
+        "top3": [{"mint": r["mint"], "flat_sol": r["flat_sol"], "no_v_pools": list(r["no_v_pools"])} for r in top_flat],
+        "top3_by_press": [{"mint": r["mint"], "press_sol": r["press"] / 1e9, "no_v_pools": list(r["no_v_pools"])} for r in top_press],
+        "top3_union_mints": [r["mint"] for r in union],
         "top3_touches_null_v": bool(top_hit),
         "not_decidable": bool(over or top_hit),
         "null_v_pool_ids": sorted({p for r in touching for p in r["no_v_pools"]}),
+        "n_entered_touching_zero_v": len(zero),
+        "n_top3_union_touching_zero_v": sum(1 for r in union if r["zero_v_pools"]),
+        "zero_v_pool_ids": sorted({p for r in zero for p in r["zero_v_pools"]}),
+        "zero_v_note": "V = 0 is the chain's real value for a native pool; vault-only pricing is right for it. Report only, not a blocker.",
     }
 
 
@@ -258,7 +330,7 @@ def compare_modes(v: dict[str, Any], vault: dict[str, Any]) -> dict[str, Any]:
 
 def gate_block(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """(A)'s own `build_report` on these rows, without the per-run clocks that only describe (A)."""
-    return fw.build_report([{k: v for k, v in r.items() if k not in ("pumpswap_pools", "no_v_pools")} for r in rows], runs)
+    return fw.build_report([{k: v for k, v in r.items() if k not in TAGS} for r in rows], runs)
 
 
 # --- the run ----------------------------------------------------------------------------
@@ -279,11 +351,20 @@ def run_vbook(
     frozen_manifest_md5: str | None = None,
     test_window: bool = False,
     score_fn: ScoreFn = score_hours_v,
+    vmap_merge_meta: Path | None = None,
+    runs_ledger: Path | None = None,
 ) -> dict[str, Any]:
+    if test_window and str(walk_dir.resolve()).startswith(REAL_BLOCKS_PREFIX):
+        raise Refused([f"--test-window is refused on a walk dir under {REAL_BLOCKS_PREFIX}"])
+    if vmap_merge_meta is None and not test_window:
+        raise Refused(["--vmap-merge-meta (the V map merge's OUT.merge.json) is required unless --test-window"])
     marker = find_final_marker(final_out_dir, final_ledger, test_window)  # 0. before any row is opened
     cc, re_ = fw.parse_clock(marker["clean_clock"]), fw.parse_clock(marker["read_end"])
     fw.check_window(cc, re_, test_window)
     vinfo = check_vmap(vmap, vmap_sha256)
+    merge_doc = check_merge_meta(vmap_merge_meta, vmap_sha256) if vmap_merge_meta is not None else None
+    ledger_path = runs_ledger if runs_ledger is not None else final_out_dir.resolve().parent / RUNS_LEDGER_NAME
+    n_prior = prior_runs(ledger_path)
     if out_dir.exists():
         raise Refused([f"{out_dir} exists; every run needs a new --out-dir"])
     errors = s12.check_frozen(artifact_dir, frozen_manifest_md5, freeze_commit)
@@ -349,6 +430,9 @@ def run_vbook(
         "null_v": null_v,
         "adapter_counts": {"mcap_mode_v": v_counts, "mcap_mode_vault": vault_counts},
         "vmap": vinfo,
+        "vmap_merge": merge_doc,
+        "prior_vbook_runs": n_prior,
+        "live_blockers": live_blockers(agreement, vault_bad, null_v, b_gate["verdict"]),
         "adapter_file_sha256": hashlib.sha256(adapter_file.read_bytes()).hexdigest(),
         "git_commit": commit,
         "live_support_note": "Amendment 4 section 2: live needs (A) PASS and (B) at mcap_mode v PASS; V-correction can only remove support. This report does not decide live.",
@@ -356,6 +440,7 @@ def run_vbook(
     out_dir.mkdir(parents=True)
     fw.atomic_write(out_dir / REPORT_JSON, (json.dumps(rep, indent=2, default=str) + "\n").encode("utf-8"))
     fw.atomic_write(out_dir / REPORT_MD, render_markdown(rep).encode("utf-8"))
+    fw.ledger_append(ledger_path, {"schema": SCHEMA_RUN, "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "git_commit": commit, "vmap_sha256": vinfo["sha256"], "verdict": verdict, "test_window": test_window, "out_dir": str(out_dir.resolve())})
     return rep
 
 
@@ -374,6 +459,9 @@ def render_markdown(rep: dict[str, Any]) -> str:
     L += ["", f"## Vault vs v: agree on every gate condition = {vv['agree_on_every_gate_condition']}", f"disagreements: {vv['disagreements']}"]
     n = rep["null_v"]
     L += ["", "## Null-V rule", f"entered {n['n_entered']}, touching a null or absent V pool {n['n_entered_touching_null_v']} (limit {n['limit_share']:.0%}, over limit {n['over_limit']}); top 3 touch null V: {n['top3_touches_null_v']}; NOT_DECIDABLE: {n['not_decidable']}", f"null-V pool ids touched by entered trades: {n['null_v_pool_ids']}"]
+    L += [f"V = 0 pools: {n['n_entered_touching_zero_v']} entered trades touch one ({n['n_top3_union_touching_zero_v']} in the top-3 union); report only"]
+    L += ["", "## Live blockers (none is decided here)"] + [f"- {x}" for x in rep["live_blockers"]]
+    L += ["", f"prior vbook runs on this window: {rep['prior_vbook_runs']}"]
     L += ["", "## Adapter counts", f"{json.dumps(rep['adapter_counts'])}", "", f"V map {rep['vmap']['path']} sha256 {rep['vmap']['sha256']} ({rep['vmap']['n_pools']} pools, {rep['vmap']['n_null']} null)", "", f"Result label: {rep['label']}."]
     return "\n".join(L) + "\n"
 
@@ -392,6 +480,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--vmap", required=True)
     ap.add_argument("--vmap-sha256", required=True)
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--vmap-merge-meta", default=None, help="the V map merge's OUT.merge.json (sha256.out must equal --vmap-sha256); required unless --test-window")
+    ap.add_argument("--runs-ledger", default=None, help="default: VBOOK_RUNS.jsonl beside the FINAL out dir")
     ap.add_argument("--test-window", action="store_true", help="accept only a test_window FINAL marker (fixture windows)")
     ap.add_argument("--artifact-dir", default=None)
     ap.add_argument("--freeze-commit", default=None)
@@ -403,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(a.walk_dir), Path(a.final_out_dir), Path(a.final_ledger), Path(a.vmap), a.vmap_sha256, Path(a.out_dir),
             Path(a.artifact_dir) if overridden else fw.DEFAULT_ARTIFACT_DIR, a.freeze_commit or fw.DEFAULT_FREEZE_COMMIT,
             a.frozen_manifest_md5, a.test_window,
+            vmap_merge_meta=Path(a.vmap_merge_meta) if a.vmap_merge_meta else None, runs_ledger=Path(a.runs_ledger) if a.runs_ledger else None,
         )
     except Refused as exc:
         return _refuse(exc)
