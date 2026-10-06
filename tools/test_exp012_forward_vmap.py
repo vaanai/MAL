@@ -347,11 +347,13 @@ class MergeTests(unittest.TestCase):
         (self.tmp / "final.json.fetch.json").write_text(json.dumps(doc))
         return str(self.tmp / "final.json")
 
-    def snap(self, v: dict, ledger: bool = True, detail: dict | None = None) -> str:
-        """A snapshot made with the real snapshot command (so it is in snapshots.jsonl)."""
+    def snap(self, v: dict, ledger: bool = True, detail: dict | None = None, fetch: dict | None = None) -> str:
+        """A snapshot made with the real snapshot command (so it is in snapshots.jsonl). `fetch` writes the source's .fetch.json first."""
         self.n_snap += 1
         src = self.tmp / f"src{self.n_snap}.json"
         write_map(src, v, detail)
+        if fetch is not None:  # a real fetch.json carries the detail sha of the map it fetched
+            src.with_name(src.name + ".fetch.json").write_text(json.dumps({"detail_sha256": sha(src.with_name(src.name + ".detail.json")), **fetch}))
         ns = argparse.Namespace(vmap=str(src), out=str(self.tmp / "snaps"))
         with redirect_stdout(StringIO()):
             vm.cmd_snapshot(ns, now=datetime(2026, 10, 6, 0, 0, self.n_snap, tzinfo=timezone.utc))
@@ -364,7 +366,7 @@ class MergeTests(unittest.TestCase):
         (self.tmp / "pools.json").write_text(json.dumps(ids))
         return str(self.tmp / "pools.json")
 
-    def merge(self, final: str, snaps: list[str], pools: str, out: Path):
+    def merge(self, final: str, snaps: list[str], pools: str, out: Path, lphist: list[str] | None = None):
         fj = Path(final + ".fetch.json")
         if fj.is_file():  # stand in for a fetch over exactly this pool set, unless the test set its own
             try:
@@ -382,6 +384,8 @@ class MergeTests(unittest.TestCase):
         argv = ["merge", "--final", final, "--pools", pools, "--out", str(out)]
         for s in snaps:
             argv += ["--snapshot", s]
+        for h in lphist or []:
+            argv += ["--lphist", h]
         return run(argv)
 
     def test_fill_ignore_and_meta(self) -> None:
@@ -499,12 +503,12 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(rc, 2)
 
     def test_snapshot_disagreement_refused(self) -> None:
-        final = self.final({"B": None})
+        final = self.final({"B": None}, {"B": "closed"})
         s1, s2 = self.snap({"B": 1}), self.snap({"B": 2})
         out = self.tmp / "out.json"
         rc, _, err = self.merge(final, [s1, s2], self.pools(["B"]), out)
         self.assertEqual(rc, 2)
-        self.assertIn("disagree", err)
+        self.assertIn("unresolved", err)  # no LP history given: a differing V0 is unresolved, over the 0.1% ceiling here
         self.assertFalse(out.exists())
 
     def test_final_vs_snapshot_conflict_refused(self) -> None:
@@ -513,7 +517,7 @@ class MergeTests(unittest.TestCase):
         out = self.tmp / "out.json"
         rc, _, err = self.merge(final, [s1], self.pools(["A"]), out)
         self.assertEqual(rc, 2)
-        self.assertIn("post-cutoff", err)
+        self.assertIn("unresolved", err)
         self.assertFalse(out.exists())
 
     def test_out_exists_refused(self) -> None:
@@ -578,7 +582,7 @@ class DetailMergeTests(MergeTests):
         out2 = self.tmp / "out2.json"
         rc, _, err = self.merge(final2, [s1], self.pools(["A"]), out2)
         self.assertEqual(rc, 2)
-        self.assertIn("v_base", err)
+        self.assertIn("unresolved", err)
         self.assertFalse(out2.exists())
 
     def test_snapshots_disagreeing_on_v_base_refused_and_agreeing_with_moving_v_passes(self) -> None:
@@ -592,7 +596,7 @@ class DetailMergeTests(MergeTests):
         s3 = self.snap({"B": 90}, detail={"B": {"pending": 15, "v_base": 106}})
         rc, _, err = self.merge(final, [s1, s3], self.pools(["B"]), self.tmp / "out3.json")
         self.assertEqual(rc, 2)
-        self.assertIn("v_base", err)
+        self.assertIn("unresolved", err)
 
     def test_pending_guard_counted(self) -> None:
         big = {"A": {"pending": 10_000_001, "v_base": 20_000_000}, "C": {"pending": 10_000_000, "v_base": 5}}
@@ -636,6 +640,500 @@ class DetailMergeTests(MergeTests):
         Path(s1 + ".detail.json").write_text(json.dumps({"A": {"pending": 0, "v_base": 2}}))
         rc, _, err = self.merge(final, [s1], self.pools(["A"]), self.tmp / "o.json")
         self.assertEqual(rc, 2)
+
+
+SNAP_FETCH = {"fetch_started_utc": "2026-10-06T00:00:00Z", "fetch_ended_utc": "2026-10-06T00:10:00Z"}
+FINAL_FETCH = {"new": True, "fetch_started_utc": "2026-10-11T00:00:00Z", "fetch_ended_utc": "2026-10-11T00:10:00Z"}
+T_BETWEEN = vm._unix("2026-10-08T00:00:00Z")
+T_IN_SNAP_SPAN = vm._unix("2026-10-06T00:05:00Z")
+S0, D0, V_SNAP = 4193388325949, 81461253, 17584505649
+V_AFTER = 17584847247  # lab note: 8ewuF2o8
+
+
+def big_set(*ids: str, n: int = 1000) -> list[str]:
+    return list(ids) + [f"F{i}" for i in range(n - len(ids))]
+
+
+def dmap(v: dict) -> dict:
+    return {p: {"pending": 0, "v_base": x} for p, x in v.items() if x is not None}
+
+
+class LpMoveTests(unittest.TestCase):
+    """DEC-016 Amendment 5 section 7(b): merge by the LP rule."""
+
+    setUp = MergeTests.setUp
+    tearDown = MergeTests.tearDown
+    final = MergeTests.final
+    snap = MergeTests.snap
+    pools = MergeTests.pools
+    merge = MergeTests.merge
+
+    def lphist(self, name: str, entries: dict, t_from: int | None = None, t_to: int | None = None, tamper: bool = False, meta: bool = True, run_start: int | None = None) -> str:
+        path = self.tmp / name
+        path.write_text(json.dumps(entries))
+        if meta:
+            m = {"sha256": "0" * 64 if tamper else sha(path), "n_pools": len(entries), "n_unresolved": sum(1 for e in entries.values() if not e["resolved"]), "t_from_unix": t_from or vm._unix("2026-10-01T00:00:00Z"), "t_to_unix": t_to or vm._unix("2026-10-12T00:00:00Z"), "run_start_unix": run_start or vm._unix("2026-10-12T00:00:00Z")}
+            (self.tmp / (name + ".meta.json")).write_text(json.dumps(m))
+        return str(path)
+
+    @staticmethod
+    def entry(events: list[dict], resolved: bool = True, reason: str | None = None, supply_slot: int | None = None) -> dict:
+        return {"lp_mint": "L", "events": events, "resolved": resolved, "reason": reason, "supply_slot": supply_slot}
+
+    @staticmethod
+    def lp_ev(s: int, d: int, t: int, slot: int = 1) -> dict:
+        return {"slot": slot, "block_time": t, "sig": "sig", "kind": "deposit" if d > 0 else "withdraw", "s_before": s, "lp_delta": d, "idx": 0}
+
+    def setup_move(self, v_final: int = V_AFTER, pool: str = "A"):
+        s1 = self.snap({pool: V_SNAP}, detail=dmap({pool: V_SNAP}), fetch=SNAP_FETCH)
+        final = self.final({pool: v_final, "B": None}, {"B": "closed"}, fetch_doc=FINAL_FETCH, detail=dmap({pool: v_final}))
+        return final, s1
+
+    def meta(self, out: Path) -> dict:
+        return json.loads((self.tmp / (out.name + ".merge.json")).read_text())
+
+    def side_file(self, out: Path, kind: str):
+        return json.loads((self.tmp / f"{out.name}.{kind}.json").read_text())
+
+    def test_explained_move_passes_and_binds_lphist_sha(self) -> None:
+        final, s1 = self.setup_move()
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])})
+        out = self.tmp / "out.json"
+        rc, stdout, err = self.merge(final, [s1], self.pools(big_set("A", "B")), out, lphist=[h])
+        self.assertEqual(rc, 0, err)
+        lm = self.meta(out)["lp_moves"]
+        self.assertEqual((lm["n_explained"], lm["n_unexplained"], lm["n_unresolved"]), (1, 0, 0))
+        self.assertEqual(lm["lphist"][0]["sha256"], sha(Path(h)))
+        self.assertEqual(lm["unexplained_sha256"], sha(self.tmp / "out.json.unexplained.json"))
+        self.assertEqual(self.side_file(out, "unexplained"), [])
+        self.assertEqual(self.side_file(out, "unresolved"), {})
+
+    def test_event_inside_snapshot_fetch_span_is_ambiguous_and_can_explain(self) -> None:
+        final, s1 = self.setup_move()
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_IN_SNAP_SPAN)])})  # may have landed after the read
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "out.json", lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.meta(self.tmp / "out.json")["lp_moves"]["n_explained"], 1)
+
+    def test_unexplained_in_file_counted_and_ids_never_printed(self) -> None:
+        final, s1 = self.setup_move(v_final=V_AFTER + 5000, pool="PoolMovedXYZ")
+        h = self.lphist("h.json", {"PoolMovedXYZ": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])})
+        out = self.tmp / "out.json"
+        rc, stdout, err = self.merge(final, [s1], self.pools(big_set("PoolMovedXYZ", "B")), out, lphist=[h])
+        self.assertEqual(rc, 0, err)  # 1 of 1000 is exactly the 0.1% ceiling, not above it
+        lm = self.meta(out)["lp_moves"]
+        self.assertEqual((lm["n_unexplained"], lm["n_unresolved"]), (1, 0))
+        self.assertEqual(self.side_file(out, "unexplained"), ["PoolMovedXYZ"])
+        self.assertNotIn("PoolMovedXYZ", stdout + err)
+        self.assertNotIn("PoolMovedXYZ", json.dumps(self.meta(out)))  # ids only in files
+
+    def test_move_with_no_event_is_unexplained(self) -> None:
+        final, s1 = self.setup_move()
+        h = self.lphist("h.json", {"A": self.entry([])})
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "out.json", lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.side_file(self.tmp / "out.json", "unexplained"), ["A"])
+
+    def test_ceiling_refusal_above_point_one_percent(self) -> None:
+        s1 = self.snap({"MovedOne": V_SNAP, "MovedTwo": 500}, detail=dmap({"MovedOne": V_SNAP, "MovedTwo": 500}), fetch=SNAP_FETCH)
+        moved = {"MovedOne": V_AFTER + 1, "MovedTwo": 501}
+        final = self.final(moved, fetch_doc=FINAL_FETCH, detail=dmap(moved))
+        h = self.lphist("h.json", {"MovedOne": self.entry([]), "MovedTwo": self.entry([])})
+        out = self.tmp / "out.json"
+        rc, stdout, err = self.merge(final, [s1], self.pools(big_set("MovedOne", "MovedTwo")), out, lphist=[h])
+        self.assertEqual(rc, 2)
+        self.assertIn("2 unexplained", err)
+        self.assertNotIn("MovedOne", stdout + err)
+        self.assertFalse(out.exists())
+        self.assertFalse((self.tmp / "out.json.merge.json").exists())
+        self.assertEqual(sorted(self.side_file(out, "unexplained")), ["MovedOne", "MovedTwo"])  # ids are in the file for the manager
+        final = self.final(moved, fetch_doc=FINAL_FETCH, detail=dmap(moved))  # fetch record must match the larger set
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("MovedOne", "MovedTwo", n=2001)), out, lphist=[h])  # 2 <= 0.1% of 2001
+        self.assertEqual(rc, 0, err)
+
+    def test_unresolved_variants(self) -> None:
+        base = {"A": V_SNAP, "C": 500, "D": 600, "E": 700}
+        s1 = self.snap(base, detail=dmap(base), fetch=SNAP_FETCH)
+        moved = {"A": V_AFTER, "C": 510, "D": 601, "E": 701}
+        final = self.final(moved, fetch_doc=FINAL_FETCH, detail=dmap(moved))
+        h = self.lphist("h.json", {"A": self.entry([], resolved=False, reason="tx_fetch_failed:SystemExit"), "C": self.entry([self.lp_ev(S0, D0, T_BETWEEN)]), "D": self.entry([])})  # E not in the file
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "C", "D", "E", n=5000)), out, lphist=[h])
+        self.assertEqual(rc, 0, err)
+        unres = self.side_file(out, "unresolved")
+        self.assertEqual(unres, {"A": "lphist_unresolved:tx_fetch_failed:SystemExit", "E": "not_in_lphist"})
+        self.assertEqual(sorted(self.side_file(out, "unexplained")), ["C", "D"])  # judged, rule fails
+        self.assertEqual(self.meta(out)["lp_moves"]["n_unresolved"], 2)
+
+    def test_window_not_covering_is_unresolved(self) -> None:
+        final, s1 = self.setup_move()
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])}, t_to=vm._unix("2026-10-10T00:00:00Z"))  # ends before the final fetch
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "out.json", lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.side_file(self.tmp / "out.json", "unresolved"), {"A": "lphist_window_does_not_cover_fetches"})
+
+    def test_no_lphist_and_no_span_are_unresolved(self) -> None:
+        final, s1 = self.setup_move()
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o1.json")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.side_file(self.tmp / "o1.json", "unresolved"), {"A": "not_in_lphist"})
+        s2 = self.snap({"A": V_SNAP}, detail=dmap({"A": V_SNAP}))  # no fetch record anywhere
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])})
+        rc, _, err = self.merge(final, [s2], self.pools(big_set("A", "B")), self.tmp / "o2.json", lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.side_file(self.tmp / "o2.json", "unresolved"), {"A": "no_fetch_span"})
+
+    def test_never_fill_a_null_from_unexplained_or_unresolved_pool(self) -> None:
+        b1, b2 = {"B": 10, "C": 20, "D": 30}, {"B": 11, "C": 20, "D": 31}
+        s1 = self.snap(b1, detail=dmap(b1), fetch=SNAP_FETCH)
+        s2 = self.snap(b2, detail=dmap(b2), fetch={"fetch_started_utc": "2026-10-07T00:00:00Z", "fetch_ended_utc": "2026-10-07T00:10:00Z"})
+        final = self.final({"B": None, "C": None, "D": None}, {"B": "closed", "C": "closed", "D": "closed"}, fetch_doc=FINAL_FETCH)
+        h = self.lphist("h.json", {"B": self.entry([]), "D": self.entry([], resolved=False, reason="paging_did_not_reach_t_from")})  # B unexplained, D unresolved
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1, s2], self.pools(big_set("B", "C", "D", n=3000)), out, lphist=[h])
+        self.assertEqual(rc, 0, err)
+        got = pv.load_map(out)
+        self.assertEqual((got["B"], got["C"], got["D"]), (None, 20, None))
+        m = self.meta(out)
+        self.assertEqual(m["filled_pools"], ["C"])
+        self.assertEqual((m["lp_moves"]["n_unexplained"], m["lp_moves"]["n_unresolved"]), (1, 1))
+
+    def test_lphist_sha_and_meta_checked(self) -> None:
+        final, s1 = self.setup_move()
+        ents = {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])}
+        bad = self.lphist("bad.json", ents, tamper=True)
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o1.json", lphist=[bad])
+        self.assertEqual(rc, 2)
+        self.assertIn("sha256", err)
+        nometa = self.lphist("nometa.json", ents, meta=False)
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o2.json", lphist=[nometa])
+        self.assertEqual(rc, 2)
+        self.assertIn("meta", err)
+
+    def test_equal_v0_needs_no_history(self) -> None:
+        s1 = self.snap({"A": 5}, detail={"A": {"pending": 0, "v_base": 1000}}, fetch=SNAP_FETCH)
+        final = self.final({"A": 3}, fetch_doc=FINAL_FETCH, detail={"A": {"pending": 2, "v_base": 1000}})  # pending moved, V0 did not
+        rc, _, err = self.merge(final, [s1], self.pools(["A"]), self.tmp / "out.json")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.meta(self.tmp / "out.json")["lp_moves"]["n_unresolved"], 0)
+
+
+    def snapshot_fetch_setup(self, doc_overrides: dict | None = None):
+        """A snapshot with no fetch record of its own, and a separate fetch.json bound by detail_sha256."""
+        s1 = self.snap({"A": V_SNAP}, detail=dmap({"A": V_SNAP}))
+        row = json.loads((self.tmp / "snaps" / "snapshots.jsonl").read_text().splitlines()[-1])
+        doc = {"fetch_started_utc": "2026-10-06T00:00:00Z", "last_fetch_utc": "2026-10-06T00:00:00Z", "detail_sha256": row["detail_sha256"], **(doc_overrides or {})}
+        f = self.tmp / "old.fetch.json"
+        f.write_text(json.dumps(doc))
+        final = self.final({"A": V_AFTER, "B": None}, {"B": "closed"}, fetch_doc=FINAL_FETCH, detail=dmap({"A": V_AFTER}))
+        return final, s1, f
+
+    def merge_with_fetch(self, final, s1, f, out, h):
+        pools = self.pools(big_set("A", "B"))
+        fj = Path(final + ".fetch.json")
+        fj.write_text(json.dumps({**json.loads(fj.read_text()), "pools_sha256": sha(Path(pools)), "detail_sha256": sha(Path(final + ".detail.json"))}))
+        return run(["merge", "--final", final, "--pools", pools, "--out", str(out), "--snapshot", s1, "--lphist", h, "--snapshot-fetch", f"{s1}={f}"])
+
+    def test_snapshot_fetch_sha_binding_match_uses_span_and_records_assumption(self) -> None:
+        final, s1, f = self.snapshot_fetch_setup()
+        t_tail = vm._unix("2026-10-06T00:20:00Z")  # inside the assumed tail (last_fetch_utc + 30 min)
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, t_tail)])})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge_with_fetch(final, s1, f, out, h)
+        self.assertEqual(rc, 0, err)
+        m = self.meta(out)["lp_moves"]
+        self.assertEqual(m["n_explained"], 1)  # the event in the assumed tail may fall either side of the read
+        self.assertEqual(m["snapshot_fetch_sha256"], {Path(s1).name: sha(f)})
+        self.assertEqual(m["span_assumption"]["OLD_FETCH_MAX_MIN"], 30)
+        self.assertEqual((m["span_assumption"]["n_spans_with_assumed_end"], m["span_assumption"]["n_events_in_assumed_tail"]), (1, 1))
+
+    def test_snapshot_fetch_sha_binding_mismatch_refused(self) -> None:
+        final, s1, f = self.snapshot_fetch_setup({"detail_sha256": "0" * 64})
+        h = self.lphist("h.json", {"A": self.entry([])})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge_with_fetch(final, s1, f, out, h)
+        self.assertEqual(rc, 2)
+        self.assertIn("not this snapshot's fetch", err)
+        self.assertFalse(out.exists())
+
+    def test_new_snapshot_copies_fetch_json_readonly(self) -> None:
+        s1 = self.snap({"A": 1}, fetch=SNAP_FETCH)
+        sidecar = Path(s1 + ".fetch.json")
+        self.assertTrue(sidecar.is_file())
+        self.assertEqual(stat.S_IMODE(os.stat(sidecar).st_mode), 0o444)
+        self.assertEqual(json.loads(sidecar.read_text())["fetch_started_utc"], SNAP_FETCH["fetch_started_utc"])
+
+
+    def test_held_pools_are_null_in_out(self) -> None:
+        final, s1 = self.setup_move(v_final=V_AFTER + 5000)  # A moved, rule fails: unexplained, though the final map has a value
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), out, lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertIsNone(pv.load_map(out)["A"])
+        self.assertEqual(self.meta(out)["lp_moves"]["n_nulled_in_out"], 1)
+
+    def test_overlapping_lphist_files_for_one_pool_refused(self) -> None:
+        final, s1 = self.setup_move()
+        ents = {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])}
+        h1, h2 = self.lphist("h1.json", ents), self.lphist("h2.json", ents)
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o1.json", lphist=[h1, h2])
+        self.assertEqual(rc, 2)
+        self.assertIn("overlapping", err)
+        h3 = self.lphist("h3.json", {"Z": self.entry([])})  # different pool: fine
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o2.json", lphist=[h1, h3])
+        self.assertEqual(rc, 0, err)
+
+    def test_snapshot_fetch_without_detail_sha_refused(self) -> None:
+        s1 = self.snap({"A": V_SNAP}, detail=dmap({"A": V_SNAP}), fetch={**SNAP_FETCH, "detail_sha256": None})
+        final = self.final({"A": V_AFTER}, fetch_doc=FINAL_FETCH, detail=dmap({"A": V_AFTER}))
+        h = self.lphist("h.json", {"A": self.entry([])})
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A")), self.tmp / "out.json", lphist=[h])
+        self.assertEqual(rc, 2)
+        self.assertIn("detail_sha256", err)
+
+    def slot_setup(self, event_slot: int, supply_slot: int | None = 400, run_start: int | None = None, final_slots: bool = True):
+        s1 = self.snap({"A": V_SNAP}, detail=dmap({"A": V_SNAP}), fetch={**SNAP_FETCH, "fetch_slot_min": 200, "fetch_slot_max": 210})
+        ff = {**FINAL_FETCH, **({"fetch_slot_min": 300, "fetch_slot_max": 310} if final_slots else {})}
+        final = self.final({"A": V_AFTER, "B": None}, {"B": "closed"}, fetch_doc=ff, detail=dmap({"A": V_AFTER}))
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN, slot=event_slot)], supply_slot=supply_slot)}, run_start=run_start)
+        return final, s1, h
+
+    def test_placement_by_slot_when_the_fetch_has_slots(self) -> None:
+        final, s1, h = self.slot_setup(event_slot=150)  # before the snapshot's slots: reflected in its read, so it cannot explain the move
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o1.json", lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.side_file(self.tmp / "o1.json", "unexplained"), ["A"])  # block time alone (between) would have explained it
+        final, s1, h = self.slot_setup(event_slot=205)  # inside the snapshot's slot span: ambiguous, can be after the read
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o2.json", lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.meta(self.tmp / "o2.json")["lp_moves"]["n_explained"], 1)
+
+    def test_lphist_must_reach_the_final_fetch(self) -> None:
+        final, s1, h = self.slot_setup(event_slot=250, supply_slot=305)  # supply read before fetch_slot_max 310
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o1.json", lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.side_file(self.tmp / "o1.json", "unresolved"), {"A": "lphist_supply_read_before_final_fetch"})
+        final, s1, h = self.slot_setup(event_slot=250, supply_slot=None)
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o2.json", lphist=[h])
+        self.assertEqual(self.side_file(self.tmp / "o2.json", "unresolved"), {"A": "lphist_supply_slot_missing"})
+        final, s1, h = self.slot_setup(event_slot=250, supply_slot=311)
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o3.json", lphist=[h])
+        self.assertEqual(self.meta(self.tmp / "o3.json")["lp_moves"]["n_explained"], 1)
+        # no slots on the final fetch: the time of the run start must be at or after the final fetch end
+        final, s1, h = self.slot_setup(event_slot=250, final_slots=False, run_start=vm._unix("2026-10-11T00:05:00Z"))
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o4.json", lphist=[h])
+        self.assertEqual(self.side_file(self.tmp / "o4.json", "unresolved"), {"A": "lphist_supply_read_before_final_fetch"})
+
+    def dry_setup(self, n_bad: int = 0):
+        s_old = self.snap({"A": V_SNAP}, detail=dmap({"A": V_SNAP}), fetch=SNAP_FETCH)
+        s_new = self.snap({"A": V_AFTER + (5000 if n_bad else 0)}, detail=dmap({"A": V_AFTER + (5000 if n_bad else 0)}), fetch={"fetch_started_utc": "2026-10-09T00:00:00Z", "fetch_ended_utc": "2026-10-09T00:10:00Z"})
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])})
+        return s_old, s_new, h
+
+    def run_dry(self, s_old, s_new, h, out: str, pools_n: int = 1000):
+        return run(["merge", "--dry-run", "--final", s_new, "--snapshot", s_old, "--lphist", h, "--pools", self.pools(big_set("A", "B", n=pools_n)), "--out", str(self.tmp / out)])
+
+    def test_dry_run_uses_snapshot_as_final_and_marks_the_meta(self) -> None:
+        s_old, s_new, h = self.dry_setup()
+        rc, stdout, err = self.run_dry(s_old, s_new, h, "x.dryrun.json")
+        self.assertEqual(rc, 0, err)  # no fetch --new / cutoff / reasons-file checks in this mode
+        m = self.meta(self.tmp / "x.dryrun.json")
+        self.assertIs(m["dry_run"], True)
+        self.assertEqual(m["lp_moves"]["n_explained"], 1)
+        self.assertEqual(m["final_fetch"]["dry_run"], True)
+        with self.assertRaises(vm.Refused):  # the consumer-side loader refuses it
+            vm.load_merge_meta(self.tmp / "x.dryrun.json.merge.json")
+
+    def test_dry_run_name_and_real_merge_name_rules(self) -> None:
+        s_old, s_new, h = self.dry_setup()
+        rc, _, err = self.run_dry(s_old, s_new, h, "x.json")
+        self.assertEqual(rc, 2)
+        self.assertIn(".dryrun.json", err)
+        final = self.final({"A": V_AFTER}, fetch_doc=FINAL_FETCH, detail=dmap({"A": V_AFTER}))
+        rc, _, err = self.merge(final, [s_old], self.pools(big_set("A")), self.tmp / "y.dryrun.json", lphist=[h])
+        self.assertEqual(rc, 2)
+
+    def test_dry_run_still_enforces_ceiling_and_span_binding(self) -> None:
+        s_old, s_new, h = self.dry_setup(n_bad=1)
+        rc, _, err = self.run_dry(s_old, s_new, h, "a.dryrun.json", pools_n=100)  # 1 unexplained of 100 pools
+        self.assertEqual(rc, 2)
+        self.assertIn("unexplained", err)
+        rc, _, err = self.run_dry(s_old, s_new, h, "b.dryrun.json", pools_n=1000)
+        self.assertEqual(rc, 0, err)
+        # a snapshot-fetch whose detail sha is not the ledger's is refused in dry-run too
+        bad = self.tmp / "bad.fetch.json"
+        bad.write_text(json.dumps({"fetch_started_utc": "2026-10-09T00:00:00Z", "fetch_ended_utc": "2026-10-09T00:10:00Z", "detail_sha256": "0" * 64}))
+        rc, _, err = run(["merge", "--dry-run", "--final", s_new, "--snapshot", s_old, "--lphist", h, "--pools", self.pools(big_set("A", "B")), "--out", str(self.tmp / "c.dryrun.json"), "--snapshot-fetch", f"{s_new}={bad}"])
+        self.assertEqual(rc, 2)
+        self.assertIn("not this snapshot's fetch", err)
+
+    def test_short_accounts_use_stored_v_as_v0(self) -> None:
+        short = {"pending": None, "v_base": None}
+        s1 = self.snap({"A": 5000, "B": 5000, "C": 5000}, detail={"A": short, "B": short, "C": short}, fetch=SNAP_FETCH)
+        final = self.final({"A": 5000, "B": 5000, "C": 5001}, fetch_doc=FINAL_FETCH, detail={"A": short, "B": {"pending": 0, "v_base": 5000}, "C": short})
+        h = self.lphist("h.json", {"C": self.entry([])})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B", "C", n=5000)), out, lphist=[h])
+        self.assertEqual(rc, 0, err)
+        # A: both short, equal V -> consistent; B: short vs extended with equal V -> consistent
+        # C: short with differing V goes to the LP-law check as usual (no event: unexplained)
+        self.assertEqual(self.side_file(out, "unexplained"), ["C"])
+        self.assertEqual(self.side_file(out, "unresolved"), {})
+        self.assertEqual(self.meta(out)["lp_moves"]["n_explained"], 0)
+
+    def test_missing_key_does_not_trigger_short_account_rule(self) -> None:
+        self.assertEqual(vm._v0({"A": {"pending": None, "v_base": None}}, "A", 7), 7)
+        self.assertIsNone(vm._v0({"A": {"pending": None}}, "A", 7))
+        self.assertIsNone(vm._v0({"A": {"v_base": None}}, "A", 7))
+        self.assertIsNone(vm._v0({"A": {}}, "A", 7))
+        self.assertIsNone(vm._v0({}, "A", 7))
+
+    def test_pending_int_never_falls_back_to_stored_v(self) -> None:
+        # pending is an int but v_base missing: V0 is unknown, so a difference cannot be judged
+        s1 = self.snap({"A": 5000}, detail={"A": {"pending": 3, "v_base": None}}, fetch=SNAP_FETCH)
+        final = self.final({"A": 5001}, fetch_doc=FINAL_FETCH, detail={"A": {"pending": 0, "v_base": 5001}})
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", n=5000)), self.tmp / "out.json")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.side_file(self.tmp / "out.json", "unresolved"), {"A": "no_v_base"})
+
+    def test_real_merge_meta_loads(self) -> None:
+        final, s1 = self.setup_move()
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), out, lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertIs(vm.load_merge_meta(self.tmp / "out.json.merge.json")["dry_run"], False)
+
+
+class DiffsAndLphistCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._td.name)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_diffs_lists_only_changed_v0_in_the_pool_set(self) -> None:
+        (self.tmp / "a.json").write_text(json.dumps({"PA": {"v_base": 1}, "PB": {"v_base": 2}, "PC": {"v_base": 3}, "PX": {"v_base": 9}, "PN": {}}))
+        (self.tmp / "b.json").write_text(json.dumps({"PA": {"v_base": 1}, "PB": {"v_base": 7}, "PC": {"v_base": 3}, "PX": {"v_base": 8}, "PN": {"v_base": 4}}))
+        (self.tmp / "p.json").write_text(json.dumps(["PA", "PB", "PC", "PN"]))
+        out = self.tmp / "d.json"
+        argv = ["diffs", "--a", str(self.tmp / "a.json"), "--b", str(self.tmp / "b.json"), "--pools", str(self.tmp / "p.json"), "--out", str(out)]
+        rc, stdout, err = run(argv)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out.read_text())["diffs"], [{"pool": "PB", "a": 2, "b": 7}])
+        self.assertNotIn("PB", stdout + err)
+        rc, _, _ = run(argv)
+        self.assertEqual(rc, 2)  # no overwrite
+
+    def test_lphist_cli_with_injected_rpc_writes_readonly_file_and_meta(self) -> None:
+        import tools.test_pumpswap_lp_history as T
+
+        pool, mint = T.pk(1), T.pk(50)
+        t = vm._unix("2026-10-05T12:00:00Z")
+        chain = T.FakeChain({pool: mint}, {mint: [("s1", 7, t, None, [T.event_bytes("deposit", pool, 100, 1000)])]})
+        (self.tmp / "p.json").write_text(json.dumps({"diffs": [{"pool": pool, "a": 1, "b": 2}]}))  # a diffs file works as a pool list
+        out = self.tmp / "h.json"
+        ns = argparse.Namespace(pools=str(self.tmp / "p.json"), t_from="2026-10-05T00:00:00Z", t_to="2026-10-06T00:00:00Z", out=str(out), rps=5.0)
+        with mock.patch.object(time, "sleep"), redirect_stdout(StringIO()) as so:
+            rc = vm.cmd_lphist(ns, rpc=chain)
+        self.assertEqual(rc, 0)
+        self.assertNotIn(pool, so.getvalue())
+        data = json.loads(out.read_text())
+        self.assertEqual(data[pool]["events"][0]["lp_delta"], 100)
+        meta = json.loads((self.tmp / "h.json.meta.json").read_text())
+        self.assertEqual((meta["sha256"], meta["n_pools"], meta["n_unresolved"], meta["calls"]), (sha(out), 1, 0, 4))
+        self.assertIsInstance(meta["run_start_unix"], int)
+        self.assertEqual(meta["supply_slot_min"], 5)
+        self.assertEqual(meta["attempts"], [{"pass": 1, "n_pools": 1, "n_resolved": 1}])
+        self.assertEqual(stat.S_IMODE(os.stat(out).st_mode), 0o444)
+        self.assertRegex(meta["utc"], r"^\d{4}-\d\d-\d\dT")
+        with self.assertRaises(vm.Refused):  # no overwrite
+            vm.cmd_lphist(ns, rpc=chain)
+
+    def test_lphist_bad_args_refused_without_reaching_rpc(self) -> None:
+        (self.tmp / "p.json").write_text("[]")
+        base = ["lphist", "--pools", str(self.tmp / "p.json"), "--out", str(self.tmp / "h.json")]
+        rc, _, _ = run(base + ["--from", "2026-10-07T00:00:00Z", "--to", "2026-10-06T00:00:00Z"])
+        self.assertEqual(rc, 2)
+        rc, _, _ = run(base + ["--from", "2026-10-06T00:00:00Z", "--to", "2026-10-07T00:00:00Z", "--rps", "50"])
+        self.assertEqual(rc, 2)
+
+
+class FetchLpSupplyTests(unittest.TestCase):
+    def test_lp_supply_of_and_fetch_batch_parse_with_context_slot(self) -> None:
+        import base64
+        import io
+        import urllib.request
+
+        data = bytearray(301)
+        data[203:211] = (4193388325949).to_bytes(8, "little")
+        data[245:253] = (17584505649).to_bytes(8, "little")
+        self.assertEqual(vm.lp_supply_of(bytes(data)), 4193388325949)
+        self.assertIsNone(vm.lp_supply_of(b"\x00" * 50))
+        acc = {"data": [base64.b64encode(bytes(data)).decode(), "base64"]}
+        body = json.dumps({"result": {"context": {"slot": 777}, "value": [acc, None]}}).encode()
+        with mock.patch.object(urllib.request, "urlopen", return_value=io.BytesIO(body)):
+            res = vm.fetch_batch_reasons("https://rpc.invalid/?api-key=SECRET", ["P", "Q"])
+        self.assertEqual(res[0][0], 17584505649)
+        self.assertEqual((res[0][2]["lp_supply"], res[0][2]["slot"], res[0][2]["v_base"]), (4193388325949, 777, 17584505649))
+        self.assertEqual((res[1][0], res[1][1], res[1][2]["slot"]), (None, "closed", 777))
+
+    def _fetch(self, new: bool):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        d = Path(td.name)
+        (d / "pools.json").write_text(json.dumps(["A", "B", "C"]))
+        if not new:  # an old detail file (no lp_supply) stays loadable and keeps its entries
+            write_map(d / "v.json", {"A": 1}, detail={"A": {"pending": 0, "v_base": 1}})
+
+        def fetch(chunk):
+            res = {"A": (7, None, {"pending": 0, "v_base": 7, "lp_supply": 5, "slot": 130}), "B": (5, None, {"pending": 1, "v_base": 6, "lp_supply": 99, "slot": 120}), "C": (None, "closed", {"slot": 100})}
+            return [res[p] for p in chunk]
+
+        ns = argparse.Namespace(pools=str(d / "pools.json"), vmap=str(d / "v.json"), rps=5.0, new=new)
+        with mock.patch.object(time, "sleep"), redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+            self.assertEqual(vm.cmd_fetch(ns, fetch=fetch), 0)
+        return d, ns
+
+    def test_fetch_records_lp_supply_and_slot_range_and_old_detail_loads(self) -> None:
+        d, ns = self._fetch(new=False)
+        det = json.loads((d / "v.json.detail.json").read_text())
+        self.assertEqual(det["A"], {"pending": 0, "v_base": 1})  # old entry kept: lp_supply absent = None
+        self.assertEqual(det["B"], {"pending": 1, "v_base": 6, "lp_supply": 99})
+        fj = json.loads((d / "v.json.fetch.json").read_text())
+        self.assertEqual((fj["fetch_slot_min"], fj["fetch_slot_max"]), (100, 120))
+        self.assertRegex(fj["fetch_ended_utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(vm._b(vm.load_detail(d / "v.json"), "A"), 1)
+
+        def fetch2(chunk):
+            return [(None, "closed", {"slot": 90}) for _ in chunk]
+
+        with mock.patch.object(time, "sleep"), redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+            vm.cmd_fetch(ns, fetch=fetch2)
+        fj = json.loads((d / "v.json.fetch.json").read_text())
+        self.assertEqual((fj["fetch_slot_min"], fj["fetch_slot_max"]), (90, 120))
+
+    def test_fetch_new_writes_lp_supply_and_slots_for_the_final(self) -> None:
+        d, _ = self._fetch(new=True)
+        det = json.loads((d / "v.json.detail.json").read_text())
+        self.assertEqual((det["A"]["lp_supply"], det["B"]["lp_supply"]), (5, 99))
+        fj = json.loads((d / "v.json.fetch.json").read_text())
+        self.assertTrue(fj["new"])
+        self.assertEqual((fj["fetch_slot_min"], fj["fetch_slot_max"]), (100, 130))
+
+    def test_snapshot_ledger_records_fetch_span_and_slots(self) -> None:
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        d = Path(td.name)
+        write_map(d / "src.json", {"A": 1})
+        (d / "src.json.fetch.json").write_text(json.dumps({**SNAP_FETCH, "detail_sha256": sha(d / "src.json.detail.json"), "last_fetch_utc": "2026-10-06T00:00:00Z", "fetch_slot_min": 5, "fetch_slot_max": 9, "new": True}))
+        with redirect_stdout(StringIO()):
+            vm.cmd_snapshot(argparse.Namespace(vmap=str(d / "src.json"), out=str(d / "snaps")), now=datetime(2026, 10, 6, 0, 0, 1, tzinfo=timezone.utc))
+        rec = json.loads((d / "snaps" / "snapshots.jsonl").read_text().splitlines()[0])
+        self.assertEqual((rec["fetch_started_utc"], rec["fetch_ended_utc"], rec["fetch_slot_min"], rec["fetch_slot_max"]), ("2026-10-06T00:00:00Z", "2026-10-06T00:10:00Z", 5, 9))
+        self.assertEqual(vm.snapshot_span(d / "snaps" / "vmap-snapshot-20261006T000001Z.json"), (vm._unix("2026-10-06T00:00:00Z"), vm._unix("2026-10-06T00:10:00Z")))
 
 
 class FinalOutDirTests(unittest.TestCase):
