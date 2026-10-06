@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-06T00:54:00Z",
+  "updated_utc": "2026-10-06T05:54:00Z",
   "review_windows": [],
   "events": [
     {
@@ -62,6 +62,21 @@
       "title": "Kill review (9 forward books)",
       "detail": "DEC-014 single read on a snapshot. Runbook: docs/runbooks/kill-review-2026-10-05.md",
       "atUtc": "2026-10-05T05:00:00Z"
+    },
+    {
+      "id": "probe-end",
+      "kind": "other",
+      "title": "Live probe hard end (DEC-019)",
+      "detail": "90 attempts or 2026-10-12T00Z, whichever first; then a lab note by build and quant-proof",
+      "atUtc": "2026-10-12T00:00:00Z"
+    },
+    {
+      "id": "early-arm-read",
+      "kind": "other",
+      "title": "Early-arm shadow read",
+      "detail": "Read of the runner's early-arm audit (latency lever)",
+      "atUtc": "2026-10-07T18:00:00Z",
+      "approx": true
     }
   ],
   "ladder": [
@@ -227,6 +242,12 @@
       "from": "claude",
       "text": "Live so far: the losses are mostly the pre-fix build and one rug; the other trades are about break-even after fees (~2% of a 0.05 SOL trade). Size only helps if the edge exists, and no simulation can say whether 0.25 SOL works (DEC-020 §1). Replaying the fixed builds' live record at 0.25 SOL gives −0.1752 SOL, with the loss cap hit about 3 times in 4 (job #190). My recommendation is still Option A: no size step until the 10-16 forward read passes. The August backcheck is being redone at the realistic exit and is context only, not a reason to fund.",
       "atUtc": "2026-10-06T00:54:00Z"
+    },
+    {
+      "id": "fy-20261006-0555",
+      "from": "claude",
+      "text": "Status 10-06 morning. The live probe is at 45 of 90 trades and down 0.066 SOL. That is a loss, small and inside its limits, and it ends 10-12. The decision that matters is the 10-16 forward read; it decides whether we may ask you for the 0.25 SOL step (DEC-020 Option A). This morning I found that the part of that read which decides live support had no tool built, and the price map it needs had the same hole that spoiled the August back-check. Both are being built and reviewed now so the read can't be wasted. No action needed from you.",
+      "atUtc": "2026-10-06T05:54:00Z"
     }
   ],
   "stream": [
@@ -446,6 +467,34 @@
       "kind": "decision",
       "text": "EXP-012 backcheck (job #201) started 00:37Z and was cancelled at 00:53Z during its V-coverage pre-pass, before any outcome was computed: the owner's reviewer flagged that its deciding cell used the optimistic exit (lag 0). It will rerun with the realistic exit (lag 2) as the deciding cell. Exploration only.",
       "atUtc": "2026-10-06T00:37:00Z"
+    },
+    {
+      "id": "s-20261006-0532",
+      "from": "claude",
+      "kind": "status",
+      "text": "Live probe: 45/90 attempts, −0.065655 SOL realized, 0 open, healthy (job #233). New manager (manager7) took over; hourly monitor recreated.",
+      "atUtc": "2026-10-06T05:32:00Z"
+    },
+    {
+      "id": "s-20261006-0543",
+      "from": "claude",
+      "kind": "result",
+      "text": "Fee vs landing study (job #216, observational): buyers paying the least priority fee land in the first 6 slots most often (60%); fee only weakly orders buys inside a slot. Landing speed comes from send timing, not fee. No fee change (lab note #372).",
+      "atUtc": "2026-10-06T05:43:00Z"
+    },
+    {
+      "id": "s-20261006-0550",
+      "from": "claude",
+      "kind": "decision",
+      "text": "Complete V map pinned (#371): 226,073 pools, 321 closed (no V), sha 70914a16…b42e. EXP-013 rerun started (job #236, try 1 of 3) and EXP-015 guard check (job #237, no tries). Both are exploration.",
+      "atUtc": "2026-10-06T05:50:00Z"
+    },
+    {
+      "id": "s-20261006-0553",
+      "from": "claude",
+      "kind": "finding",
+      "text": "Critical-path gap found: the 10-16 forward read's live-deciding book (B), priced with the virtual reserve, had no tool, and its V map would have repeated the bug that refused the August back-check. Tools #374/#375 and DEC-016 Amendment 5 (#376) are in review with quant-proof; they must merge before 10-16T00Z.",
+      "atUtc": "2026-10-06T05:54:00Z"
     }
   ]
 }

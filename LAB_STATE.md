@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers. **As-of:** 2026-10-05 ~09:45Z (after the kill review). `main` through [#301](https://github.com/vaanai/MAL/pull/301) (`8a6849b`). **Paper only.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
+Compact reload for managers. **As-of:** 2026-10-06 ~05:50Z (manager7). `main` through [#370](https://github.com/vaanai/MAL/pull/370) (`ee9e09a`). **Paper research. One live execution probe (DEC-019, 0.05 SOL) runs on fast-0 under owner approval; it never counts toward any gate.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
 
 ## Objective
 
@@ -12,7 +12,7 @@ Edge is information plus modest latency versus humans and copy-traders, not MEV 
 
 ## Hard fences
 
-- Paper only. **No trading keys, wallet keys, or X keys** on either host. Signing stays off-host until live is authorized.
+- Paper only, except the DEC-019 execution probe: its key is Helm's, root-owned on fast-0, and reaches the executor only through systemd `LoadCredential`. No agent reads it. **No other trading keys, wallet keys, or X keys** on either host.
 - Postgres **localhost-only**. Never guess or commit the DB password.
 - **Port 22 is never public.** SSH for agents is Cloudflare Access. **Stop on a host-key mismatch.**
 - `/opt/miscusi` on `mal-fast-0` is a separate project, `vaanai/MiScusi`, led by the same Claude manager. Do not modify it from MAL work.
@@ -46,6 +46,11 @@ Detail, units, logs, memory limits, and what is safe to restart: [docs/HOSTS.md]
 | [DEC-013](DEC/DEC-013-claude-manager-merges.md) | Claude manager merges (not Helm); Helm keeps ufw/sshd/tunnel/Access/Oracle admin |
 | [DEC-014](DEC/DEC-014-holdout-ledger-and-multiplicity.md) | Holdout ledger (one owner per historical block); Holm–Bonferroni multiplicity correction; single read at kill review; pressure-leg start instant (Amendment 3) |
 | [DEC-015](DEC/DEC-015-forward-paper-on-fast.md) | New forward-paper books (after the 10-05 kill review) run on `mal-fast-0`; preconditions: all four runner inputs, trade-tape coverage, equivalence replay, own memory slice, lag probation; runner-as-service exception owner-confirmed |
+| [DEC-016](DEC/DEC-016-exp012-forward-on-chain-hours.md) | EXP-012 forward book: one FINAL read over `[10-06T00, 10-16T00)`; Am.3 live support at measured k; **Am.4 live support judged on the V-priced book (B)** |
+| [DEC-018](DEC/DEC-018-live-trial-readiness.md) | Live trial readiness. **Am.1 (10-06):** size ladder 0.05 → 0.25 (after the 10-16 read) → 0.5. Each rung is an owner yes; stop levels delegated to the manager |
+| [DEC-019](DEC/DEC-019-execution-probe.md) | Live execution probe, 0.05 SOL. Am.1/1a: 90 attempts, loss cap 0.25, 500k priority, end 2026-10-12T00Z |
+| [DEC-020](DEC/DEC-020-size-step-proposal.md) | Size step to 0.25: **Option A (owner, 10-06)**. Waits for the 10-16 FINAL read; no new funding before then. Same-day package in §7 |
+| [DEC-021](DEC/DEC-021-champion-challenger.md) | Champion/challenger: **approved (10-06); the switch is delegated to the manager** when §6(a)–(e) and §7 hold. Re-pin is Helm's |
 
 ## Latest confirmation result
 
@@ -79,7 +84,7 @@ As of 2026-10-05 ~09:45Z.
 | EXP-012 forward walk (MiScusi #71) | `mal-research-0` | DEC-016, through about 10-05T04, 837k credits so far. **Resubmit before about 10-09T15Z.** |
 | getBlock tip follower `mal-fast-tip-follower` | `mal-fast-0`, system unit | The runner's feed (DEC-015 2.2, owner option A). Parallel fetch ([#297](https://github.com/vaanai/MAL/pull/297)), 8 workers, rps 15. Restarted 10-05 ~05:27Z on `d0109f7`. Since then: lag 2–3 slots, block-lag p50 about 1.7–1.9 s, 0 backlog jumps. Every PumpSwap row carries `virtual_quote_reserve` ([#288](https://github.com/vaanai/MAL/pull/288)). **Coverage against chain: 100.000%** over `[10-05T06, 10)` (job #131; Oracle 88.972%), so DEC-015 §2.2 passes. **About 560k Helius credits/day measured** (getSlot polling is about half). |
 | Fast-0 paper runner `mal-fast-forward-paper` (EXP-012 book) | `mal-fast-0`, system unit | **Started 2026-10-05T05:31:40Z, on probation (rows do not count).** Reads the tip tape (`pumpswap_virtual: require`, [#296](https://github.com/vaanai/MAL/pull/296)). Heartbeat ok. Daily-restart and heartbeat timers enabled. Mid-week start, recorded here. **Mid-week restart 2026-10-05T17:44:41Z on `a25eb17`** (job #162). This deploy is #314 (`runner_kill` on intents), #316 and #317 (early arm on: `forward_paper_arm_v1` rows to `intents.jsonl`, audit to `arm-audit.jsonl`), and #315 (executor only). md5 proof: job #161, exact sha, fast config, arm and intents on, decisions and positions identical, EQUIVALENT. Also #159 (#316) and #154 (#314, Oracle config). Probation continues. |
-| DEC-019 probe executor `mal-probe-executor` | `mal-fast-0`, user `mal-live` | **LIVE on pinned `faa319227eee420319eed06e85774f64dd2273b1` since 2026-10-05T23:09:56Z.** Root-owned `/usr/local/lib/mal-probe-exec`, Helm re-pin, 13/13 hashes. It runs the mark from our own buy tx (#331) and log-only drift (#332). Limits (DEC-019 Am.1 + 1a): 90 attempts, 0.05 SOL, max 3 open, loss cap 0.25 SOL, priority 500k, end 2026-10-12T00:00Z. At resume: 28/90, −0.153362 SOL, 0 open. Build history, never pooled: `8a6849b` (14:46Z), `a25eb17` (17:53Z, #307/#314/#315), `7004b16` (20:39Z, #324 own-buy double count), `faa3192` (23:09Z). Live-vs-sim execution check: [probe-calibration-2026-10-05.md](ARTIFACTS/lab/probe-calibration-2026-10-05.md). Helm runs a durable Discord watchdog (`mal-probe-watch.timer`). Size step: DEC-020 (proposal). |
+| DEC-019 probe executor `mal-probe-executor` | `mal-fast-0`, user `mal-live` | **2026-10-06T05:32Z (job #233): 45/90 attempts, realized −0.065655 SOL, 0 open, healthy.** faa3192 exits agree with the sim 16/16 (job #230); live−sim mean −640,641, median +34,540 lamports per trade. #348 (dec020 limits) and #358 (rung-2 stops) are merged but NOT installed (they wait for the 10-16 PASS, owner funding, and a Helm re-pin). **LIVE on pinned `faa319227eee420319eed06e85774f64dd2273b1` since 2026-10-05T23:09:56Z.** Root-owned `/usr/local/lib/mal-probe-exec`, Helm re-pin, 13/13 hashes. It runs the mark from our own buy tx (#331) and log-only drift (#332). Limits (DEC-019 Am.1 + 1a): 90 attempts, 0.05 SOL, max 3 open, loss cap 0.25 SOL, priority 500k, end 2026-10-12T00:00Z. At resume: 28/90, −0.153362 SOL, 0 open. Build history, never pooled: `8a6849b` (14:46Z), `a25eb17` (17:53Z, #307/#314/#315), `7004b16` (20:39Z, #324 own-buy double count), `faa3192` (23:09Z). Live-vs-sim execution check: [probe-calibration-2026-10-05.md](ARTIFACTS/lab/probe-calibration-2026-10-05.md). Helm runs a durable Discord watchdog (`mal-probe-watch.timer`). Size step: DEC-020 (proposal). |
 | Migration stream probe (MiScusi #127) | `mal-fast-0`, transient unit | 6 h measurement of a processed `transactionSubscribe` on the pump migration authority against the tip follower. First 3 events: about 0.7–1.5 s earlier on the same slot. |
 | Oracle forward-paper runner | Oracle `mal-forward-paper.service` | Code `d7485d2`, daily 00:00Z restart via the claude timer on `mal-fast-0`. Its 9 books were read at the kill review (below). |
 | Fast listeners / two-socket public tape trial | `mal-fast-0` | Superseded as the runner's feed by the tip follower. The public tape failed coverage on 10-03 (93.869%). |
@@ -88,6 +93,11 @@ As of 2026-10-05 ~09:45Z.
 
 ## Current research state
 
+- **10-06 update (exploration; nothing here is gate evidence):**
+  - **EXP-012 back-check on explore-0814 (#342/#346): REFUSED_AFTER_READ** (job #207). 1 primary trade was on a pool with no V: 30 no-V pools, 29 absent from `pool_v_0814` plus 1 closed account. No reading and no rerun; 6 tries logged (explore-0814 count 7). [Result](EXP/EXP-012-backcheck-0814.md).
+  - **Root cause:** every V map was built only from the pools of mints migrating in a view. The same gap refused **EXP-013 #225** at its pre-pass (1.59% / 675 pools; no outcome and no try spent).
+  - **Fix:** `pool_v_0909.json` (job #232) covers every PumpSwap pool printed in all research views: 226,073 pools, 321 null (closed accounts), sha `70914a16…b42e`. All 23,477 non-null V values from 0814 are unchanged. Pinned for EXP-013 and EXP-015 in [#371](https://github.com/vaanai/MAL/pull/371).
+  - **EXP-015** (pooled retrain, plan v2 [#352](https://github.com/vaanai/MAL/pull/352), tooling #356/#361/#363) is ready to screen once the pin lands. It is a DEC-021 challenger only if it passes fresh-0808 and registers before 10-16T01.
 - **EXP-012:** one-shot PASS (replay), as above. Forward book per DEC-016: one FINAL read over `[2026-10-06T00, 2026-10-16T00)`, at about 10-16T02Z. No peeking (Amendment 2).
   - **Amendment 3 ([#256](https://github.com/vaanai/MAL/pull/256))** fixes the live-support rules before any runner row exists. Live is supported only if the re-score at the measured fast-0 latency k(p50), with the owner's trial terms, clears the full gate under both fail models; at k(p90), mean > 0 and ex-top-3 > 0 are required. Runner-vs-scorer rows 0–6 must also hold.
   - Tooling merged: [#257](https://github.com/vaanai/MAL/pull/257) (latency export, replay rows 0–2), [#258](https://github.com/vaanai/MAL/pull/258) (forward sensitivity re-score), [#259](https://github.com/vaanai/MAL/pull/259) (heartbeat sampler and downtime).
@@ -177,13 +187,17 @@ Clean clock: **2026-09-28T00:00:00Z**. Kill review: **2026-10-05T05:00:00Z**.
 
 ## Next work
 
-1. **Probe:** let the 6 h keyless dry run finish (about 11:36Z). If it is clean, post the live-config and drop-in sha256 for Helm, then owner funding (0.5 SOL), then Helm enables the live drop-in.
-2. **Tip-follower coverage PASSED** (100.000%, job #131). The 2-day lag probation runs from 10-05; the coverage check is repeated daily.
-3. **Latency:** read the migration-stream probe (#127). If the gain holds, design the processed fast path, probably near-graduation subscriptions so features stay complete. Do it without changing the runner inside the forward window unless it comes with an md5 proof and a recorded restart.
-4. **Credits:** cut the tip follower's getSlot polling, about half of its 560k/day.
-5. **About 10-09T15Z:** resubmit forward walk #71.
-6. **About 10-16T02Z:** EXP-012 FINAL read → quant-proof → V book (Am.4) → Am.3 at measured k → owner.
-7. **Low priority:** EXP-013/014 need V-pricing amendments before their single screens.
+As of 2026-10-06 ~05:50Z. The critical path is EXP-012 FINAL (about 10-16T02Z) → book (B) → Am.3 at measured k → DEC-020 package → owner.
+
+1. **Book (B) tooling, critical path.** No code computed DEC-016 Am.4's V-priced forward book. Two builders started 10-06:
+   - `claude/exp012-forward-vbook`: book (B) from the FINAL's own entered set; frozen reproduction, null-V rule, vault report;
+   - `claude/exp012-forward-vmap`: the forward-window V map from every printed pool, plus early snapshots so closed pools keep a V.
+   Both must merge, with quant-proof, before 10-16T00Z. The Am.3 sensitivity re-score on (B) comes next.
+2. **V map pin [#371](https://github.com/vaanai/MAL/pull/371):** `pool_v_0909.json`, sha `70914a16…b42e`, 226,073 pools, 321 null. Then the EXP-013 rerun (3 tries, none spent), then EXP-015 `--guards-only`, then the EXP-015 run. EXP-015 must register before 2026-10-16T01 to join DEC-021 walk 2.
+3. **Probe:** hourly monitor (session cron at :17; Helm's `mal-probe-watch.timer` is the durable alarm). Calibrate at ≥53 attempts. Hard end 2026-10-12T00Z, then the DEC-019 §7 lab note by build, then quant-proof.
+4. **#205** grad-stream at threshold 0.70: run the compare on research-0 after it ends.
+5. **10-07T18Z:** early-arm shadow read. **By 10-09T15Z:** resubmit forward walk #71.
+6. **Fee vs landing v2 (#216, lab note [#372](https://github.com/vaanai/MAL/pull/372)):** cheap no-tip buys land early most often. No fee change.
 
 ## Pointers
 
