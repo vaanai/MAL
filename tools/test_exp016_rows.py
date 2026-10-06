@@ -68,9 +68,33 @@ class RowStoreTests(unittest.TestCase):
         self.assertEqual(st._it.n_fallback, 2)
 
     def test_only_reviewed_ignorable_keys_may_be_dropped(self):
-        self.assertEqual(IGNORABLE_KEYS, frozenset({"event_ts"}))
+        from tools.exp016_rows import IGNORABLE
+
+        self.assertEqual(IGNORABLE_KEYS, {"event_ts", "v", "quote_mint", "source", "t_recv", "sol", "token", "feed", "commitment", "market_cap_supply_ui", "mint_source", "zero_sol"})
+        self.assertTrue(all(isinstance(r, str) and len(r) > 20 for r in IGNORABLE.values()))  # every one carries its reason
         (g,) = list(store_of([{"slot": 1, "event_ts": "2026-01-01T00:00:00Z"}]))
-        self.assertEqual(g, {"mint": "M", "slot": 1})  # the one documented drop
+        self.assertEqual(g, {"mint": "M", "slot": 1})  # the documented drop
+
+    def test_real_shaped_rows_with_the_listener_keys_are_stored_compactly(self):
+        """Key sample of every real source (job #299): v, quote_mint, source, t_recv on every row; sol, token, feed, commitment,
+        market_cap_supply_ui, mint_source on the bonding subset; zero_sol rare. None may force the whole-row fallback."""
+        rnd = random.Random(5)
+        common = {"v": 2, "quote_mint": "So11111111111111111111111111111111111111112", "source": "helius", "t_recv": 1_790_000_000}
+        swap = {**realistic_row(rnd, "M", "POOL", ["w1"], 0), **common, "side": "sell", "sol_lamports": 2_000_000_000, "token_raw": 3_000_000_000, "quote_reserve": 50_000_000_000,
+                "base_reserve": 700_000_000_000_000, "pool_quote_amount": 1_900_000_000, "lp_fee": 4_000_000, "protocol_fee": 1_000_000, "creator_fee": 1_000_000}
+        curve = {**{k: v for k, v in realistic_row(rnd, "M", "POOL", ["w2"], 1).items() if k not in ("pool", "pool_quote_amount", "lp_fee", "protocol_fee", "creator_fee")}, **common,
+                 "venue": "pump_bonding", "side": "buy", "sol": 1.5, "token": 2.5e6, "feed": "pumpportal", "commitment": "confirmed", "market_cap_supply_ui": 1_000_000.0,
+                 "mint_source": "decoded", "zero_sol": False}
+        rows = [swap, curve, {**swap, "slot": swap["slot"] + 1, "signature": swap["signature"][::-1]}, {**curve, "slot": curve["slot"] + 1, "signature": curve["signature"][::-1]}]
+        st = store_of(rows)
+        self.assertEqual(st._it.n_fallback, 0)  # compact, not whole-row
+        self.assertEqual(st._it.unknown_keys, {})
+        got = list(st)
+        for r, g in zip(rows, got):
+            self.assertEqual(print_from_trade_row(g), print_from_trade_row(r))  # identical pricing, fees included
+            self.assertTrue(set(g) <= STORED_KEYS)  # the ignorable keys are what was left out
+        self.assertEqual([k for _r, k in rug.stamp_rows(got)], [k for _r, k in rug.stamp_rows(rows)])
+        self.assertIsNotNone(print_from_trade_row(got[0]))
 
     def test_absent_none_and_false(self):
         st = store_of([{"venue": "pump_bonding", "side": "buy", "slot": 5, "quote_is_wsol": False, "t_recv_ms": None, "signature": "abc", "trader": "w"},
