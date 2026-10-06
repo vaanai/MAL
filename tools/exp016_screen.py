@@ -386,15 +386,15 @@ def simulate_mint(
         mint.add(parsed[1])
     if mint.mig_slot is None or mint.mig_ms is None:
         return {"mint": mint_id, "status": "NO_SIM", "why": "no canonical-pool print after a bonding print"}
-    # frozen k=1 row: the EXP-012 features (unedited score_one), then the report cells under the multi-cell capture, as exp015
-    frozen = [r for r in eem.score_one(mint_id, mint, feat, curve, tape_through_ms, creator_hist) if r["spec"] == TARGET]
-    if not frozen:
-        return {"mint": mint_id, "status": "NO_SIM", "why": "no frozen row"}
-    exp12 = [float(frozen[0]["features"].get(n, 0.0)) for n in fz.FROZEN_FEATURE_NAMES]
+    # the report cells under the multi-cell capture (as exp015), then the frozen k=1 row for the EXP-012 features (unedited score_one)
     with op.multi_cell_patch(e15._AllScores(), 0.0, combos=COMBOS):
         raw_cells = eem.score_one(mint_id, mint, feat, curve, tape_through_ms, creator_hist)
+    frozen = [r for r in eem.score_one(mint_id, mint, feat, curve, tape_through_ms, creator_hist) if r["spec"] == TARGET]
+    exp12 = [float(frozen[0]["features"].get(n, 0.0)) for n in fz.FROZEN_FEATURE_NAMES] if frozen else None
     cells = {(int(c["k"]), int(c.get("exit_lag", 0))): e15._slim_cell({**c, "exit_lag": c.get("exit_lag", 0)}) for c in raw_cells}
     prim = cells.get(PRIMARY_CELL)
+    if exp12 is None and not (prim is not None and prim["censored"]):
+        return {"mint": mint_id, "status": "NO_SIM", "why": "no frozen row"}
     rec: dict[str, Any] = {
         "mint": mint_id, "pool": pool, "mig_ms": int(mint.mig_ms), "date": e15.utc_date(int(mint.mig_ms)), "exp012_features": exp12, "cells": cells,
         "slot_inversions": rug.count_slot_inversions(rows), "label191": None,
@@ -427,7 +427,7 @@ def simulate_mint(
         if closed is None or int(closed[0]) != int(prim["net0"]):
             raise SimulatorDrift(f"{mint_id}: mirrored exit net {None if closed is None else closed[0]} != simulator net0 {prim['net0']}")
         exit_fill = fills[ex["state_idx"]] if ex["state_idx"] >= 0 else state
-        rug.check_migration_pool_only(fed, [state, exit_fill])  # P2: both endpoints are canonical-pool prints, or refuse
+        rug.check_migration_pool_only(fed, pool, [state, exit_fill])  # P2: both endpoints are canonical-pool prints, or refuse
         stamped = rug.stamp_rows([r for r in fed if r.get("trader") != rug.PROBE_WALLET])  # the label drops our own wallet before stamping
         lab = rug.label_trade(admitted, migration_pool=pool, entry_key=resolve_key(stamped, state), exit_key=resolve_key(stamped, exit_fill), vmap=vmap)
         rec.update({"exit_kind": ex["kind"], "deadline_ms": ex["deadline_ms"], "label": _label_dict(lab)})
