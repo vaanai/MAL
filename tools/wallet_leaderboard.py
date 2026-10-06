@@ -1166,7 +1166,7 @@ def run(
         "noisy_short_window": noisy,
         "create_overlay_n": len(creates),
         "fee_model": {
-            "tape_cashflow": "buy sol spent / sell sol received (curve fees inside)",
+            "tape_cashflow": "buy sol spent / sell sol received (NOTE: pump_bonding rows carry the PRE-fee amount, so curve fees are NOT inside; pumpswap rows are user-side; see EXP-018 plan section 2)",
             "tx_fee_lamports_per_trade": TX_FEE_LAMPORTS,
             "portal_bps_per_side_copy_haircut_only": PORTAL_BPS_PER_SIDE,
             "copy_round_trip_bps_documented": COPY_ROUND_TRIP_BPS,

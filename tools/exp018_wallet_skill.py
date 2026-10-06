@@ -5,7 +5,7 @@ Plan (follow it exactly): EXP/EXP-018-wallet-skill-plan.md.
 
 Modes
   --precount   OUTCOME-BLIND. Streams the clean-view tape of the scored series (explore-0814, and fresh-0903 + exp011-0909 as one contiguous
-               series), builds per-mint skill features at the cutoff (migration slot + 1), writes features.jsonl and precount.json (per-source
+               series), builds per-mint skill features at the cutoff (the universe row's mig_ms, EXP-012's causal_events boundary), writes features.jsonl and precount.json (per-source
                rows, wallets, mints with >= 1 skilled holder, coverage, warm-up effect on n). It never opens a net: the EXP-015 cache rows are
                parsed with an object hook that DROPS net0 / status / sides / p_press at parse time.
   (screen)     needs --features (the file --precount wrote; its sha256 is checked against precount.json). Refuses before `started` on any pin,
@@ -61,14 +61,16 @@ NET_KEYS = frozenset({"net0", "status", "sides", "p_press"})
 SCORED_SOURCES = ("P2", "P3", "P4")
 OUT_SCREEN, OUT_MD, OUT_FEATURES, OUT_PRECOUNT = "screen.json", "screen.md", "features.jsonl", "precount.json"
 
-# series: contiguous view sets, carried in time order. The warm-up (WARMUP_HOURS) is counted from each series' first hour.
+# series: contiguous hour sets, carried in time order. The warm-up (WARMUP_HOURS) is counted from each series' first hour. Hours resolve through
+# EXP-015's own guards and loaders (resolve_series): P2 via guard_p2 + MultiViewHours, P3 via guard_p3 + make_p3_hours (trades-<h>.deduped.jsonl.zst),
+# P4 via guard_p4 + MultiViewHours.
 SERIES: dict[str, dict[str, Any]] = {
-    "S_P2": {"sources": ("P2",), "start": "2026-08-14T12", "end": "2026-08-28T12",
-             "views": {"P2": [f"/data/mal/clean-view/explore-0814/w{i}" for i in range(1, 8)]}},
-    "S_P34": {"sources": ("P3", "P4"), "start": "2026-09-03T12", "end": "2026-09-15T12",
-              "views": {"P3": [f"/data/mal/blocks-clean/fresh-0903/w{i}" for i in range(1, 4)],
-                        "P4": ["/data/mal/clean-view/exp011-0909/b", "/data/mal/clean-view/exp011-0909/c"]}},
+    "S_P2": {"sources": ("P2",), "start": "2026-08-14T12", "end": "2026-08-28T12"},
+    "S_P34": {"sources": ("P3", "P4"), "start": "2026-09-03T12", "end": "2026-09-15T12"},
 }
+DEFAULT_P2_VIEWS = [f"{e15.P2_BASE}/w{i}" for i in range(1, 8)]
+DEFAULT_P4_VIEWS = ["/data/mal/clean-view/exp011-0909/b", "/data/mal/clean-view/exp011-0909/c"]
+BONDING_FEE_PPM = 12_500  # tools/paper_curve_math.BONDING_FEE_PPM (1.25%), each side; bonding rows' sol_lamports is PRE-fee
 BANNER = "EXP-018 wallet skill: EXPLORATION ONLY, NO EDGE CLAIM. A pass earns one confirmation read on an unread reserved block under a later pre-registration."
 
 
@@ -133,8 +135,9 @@ class SkillState:
         self.mid: dict[str, int] = {}
         self.pos: dict[int, dict[int, list[int]]] = {}
         self.last_hour: dict[int, int] = {}
-        self.buys: dict[int, list[tuple[int, int, int]]] = {}  # tracked mints only: (slot, wallet id, sol) of bonding buys in the window
+        self.buys: dict[int, list[tuple[int, int, int]]] = {}  # tracked mints only: (t_ms, wallet id, sol) of bonding buys in the window
         self.track_cutoff: dict[int, int] = {}
+        self.n_skilled = 0  # running count of skilled wallets
         self.stats = {"rows": 0, "late_rows": 0, "evicted_mints": 0, "evicted_positions": 0, "unmatched_sells": 0, "trips_closed": 0}
 
     def _w(self, w: str) -> int:
@@ -165,6 +168,11 @@ class SkillState:
         self.last_hour[mi] = hour_idx
         book = self.pos.setdefault(mi, {})
         p = book.get(wi)
+        if bonding:  # pre-fee row amount -> what the wallet paid / received (R2); pumpswap rows are already user-side
+            fee = sol * BONDING_FEE_PPM // 1_000_000
+            raw_sol, sol = sol, (sol + fee if side == "buy" else sol - fee)
+        else:
+            raw_sol = sol
         if side == "buy":
             if p is None:
                 p = book[wi] = [0, 0, 0, 0, 0]
@@ -172,7 +180,7 @@ class SkillState:
             p[1] += sol
             p[3] += 1
             if bonding and mi in self.track_cutoff and self.track_cutoff[mi] - WINDOW_MS <= t_ms < self.track_cutoff[mi]:
-                self.buys[mi].append((t_ms, wi, sol))
+                self.buys[mi].append((t_ms, wi, raw_sol))
             if bonding:
                 p[4] = 1
             return
@@ -191,8 +199,10 @@ class SkillState:
         p[3] += 1
         if p[0] <= DUST_TOKEN_RAW:
             net = p[2] - TX_FEE_LAMPORTS * p[3]
+            was = self.skilled(wi)
             self.pnl[wi] += net
             self.trips[wi] += 1
+            self.n_skilled += int(self.skilled(wi)) - int(was)
             self.stats["trips_closed"] += 1
             p[0], p[1], p[2], p[3] = 0, 0, 0, 0
 
@@ -221,7 +231,7 @@ class SkillState:
                     held += p[1]
                     sk_holders += 1
         tot = sk = 0
-        for _slot, wi, sol in self.buys.get(mi, ()):
+        for _t, wi, sol in self.buys.get(mi, ()):
             tot += sol
             if self.skilled(wi):
                 sk += sol
@@ -229,7 +239,7 @@ class SkillState:
         self.buys.pop(mi, None)
         return {"skilled_holder_lamports": held, "skilled_holder_count": sk_holders, "skilled_buyer_count": sk_buyers, "n_buyers": n_buyers, "n_holders": n_holders,
                 "win_buy_lamports": tot, "win_skilled_buy_lamports": sk, "skilled_share": (sk / tot) if tot else 0.0, "n_wallets": len(self.pnl),
-                "n_skilled_wallets": sum(1 for w in range(len(self.pnl)) if self.skilled(w))}
+                "n_skilled_wallets": self.n_skilled, "rows_before": self.stats["rows"]}
 
 
 def run_series(hours: Sequence[str], rows_of_hour: Callable[[str], Iterable[Mapping[str, Any]]], cutoffs: Mapping[str, int], min_trips: int = MIN_TRIPS,
@@ -269,25 +279,108 @@ def run_series(hours: Sequence[str], rows_of_hour: Callable[[str], Iterable[Mapp
 # --- loaders (real layout: <view>/trades/trades-<hour>.jsonl.zst, <view>/migrations/migrations-*.jsonl.zst) -----------
 
 
-def hour_files(views: Sequence[str], hours: Sequence[str]) -> dict[str, Path]:
-    from tools.latency_curve import _hour_file
+import subprocess
+from dataclasses import dataclass
 
-    out: dict[str, Path] = {}
+
+@dataclass(frozen=True)
+class SplitHours:
+    """Picklable resolver: hours in `first_hours` resolve through `first`, the rest through `second` (P3 then P4)."""
+
+    first: Any
+    second: Any
+    first_hours: frozenset
+
+    def __call__(self, h: str) -> dict[str, Any]:
+        return (self.first if h in self.first_hours else self.second)(h)
+
+
+def check_hours_resolve(series: str, hours: Sequence[str], fn: Callable[[str], Mapping[str, Any]]) -> None:
+    """Every hour of the series must resolve to an existing trades file, or refuse (also in precount)."""
+    missing: list[str] = []
     for h in hours:
-        found = [p for v in views if (p := _hour_file(Path(v) / "trades", "trades", h)) is not None]
-        if len(found) > 1:
-            raise Refused(f"hour {h} is in {len(found)} views of one series: {[str(p) for p in found]}")
-        if found:
-            out[h] = found[0]
+        try:
+            path = Path(fn(h)["trade"])
+        except (SystemExit, AssertionError, KeyError) as exc:
+            missing.append(f"{h} ({type(exc).__name__}: {exc})")
+            continue
+        if not path.is_file():
+            missing.append(f"{h} ({path})")
+    if missing:
+        raise Refused(f"series {series}: {len(missing)} of {len(hours)} hours have no trades file (first: {missing[0]})")
+
+
+def resolve_series(p2_views: Sequence[str], p3_root: str, p4_views: Sequence[str], verify: bool = True, enforce_base: bool = True) -> dict[str, dict[str, Any]]:
+    """Resolve both series through EXP-015's own guards and loaders (VIEW.sha256, tiling, dedupe manifests, reserved paths). Refuses on any missing hour."""
+    import tools.exp012_backcheck as bc
+
+    try:
+        g2 = e15.guard_p2(p2_views, verify, enforce_base)
+        g3 = e15.guard_p3(p3_root, verify, enforce_base)
+        g4 = e15.guard_p4(list(p4_views), verify)
+    except e15.Refused as exc:
+        raise Refused(str(exc)) from None
+    if g4 is None:
+        raise Refused("S_P34 needs the P4 views (exp011-0909)")
+    p3_hours = e15.block_hours("P3")
+    p4_hours = list(g4["pool"])
+    out = {
+        "S_P2": {"hours": list(g2["pool"]), "fn": bc.MultiViewHours(dict(g2["roots"]))},
+        "S_P34": {"hours": p3_hours + p4_hours, "fn": SplitHours(e15.make_p3_hours(g3["walkers"]), bc.MultiViewHours(dict(g4["roots"])), frozenset(p3_hours))},
+    }
+    for k, d in out.items():
+        spec = SERIES[k]
+        if bc.hours_range(spec["start"], spec["end"]) != d["hours"]:
+            raise Refused(f"series {k}: hours are not the contiguous {spec['start']}..{spec['end']} range")
+        check_hours_resolve(k, d["hours"], d["fn"])
     return out
 
 
-def make_rows_of_hour(files: Mapping[str, Path]) -> Callable[[str], Iterable[Mapping[str, Any]]]:
-    from tools.latency_curve import _iter_trades
+def read_trade_file(path: Path | str, hour: str, counters: dict[str, int]) -> Iterable[dict[str, Any]]:
+    """Local reader. zstd exiting non-zero refuses. Rows whose block_time lies outside the file's hour are dropped and counted
+    (as exploration_exits' strict_hours does for creates); a row without an integer block_time is kept."""
+    lo = e15.hour_ms(hour) // 1000
+    hi = lo + 3600
+    path = Path(path)
+    proc = None
+    if path.name.endswith(".zst"):
+        proc = subprocess.Popen(["zstd", "-dc", "-q", str(path)], stdout=subprocess.PIPE)
+        assert proc.stdout is not None
+        lines: Iterable[Any] = proc.stdout
+    else:
+        lines = open(path, "rb")
+    try:
+        for raw in lines:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                r = json.loads(raw)
+            except ValueError:
+                counters["bad_json"] = counters.get("bad_json", 0) + 1
+                continue
+            if not isinstance(r, dict):
+                continue
+            bt = r.get("block_time")
+            if isinstance(bt, int) and not isinstance(bt, bool) and not (lo <= bt < hi):
+                counters["out_of_hour_rows"] = counters.get("out_of_hour_rows", 0) + 1
+                continue
+            yield r
+    finally:
+        if proc is not None:
+            assert proc.stdout is not None
+            proc.stdout.close()
+            rc = proc.wait()
+        else:
+            lines.close()  # type: ignore[union-attr]
+            rc = 0
+    if rc != 0:
+        raise Refused(f"zstd exited {rc} on {path}")
 
+
+def make_rows_of_hour(fn: Callable[[str], Mapping[str, Any]], counters: dict[str, int]) -> Callable[[str], Iterable[Mapping[str, Any]]]:
     def rows_of_hour(h: str) -> Iterable[Mapping[str, Any]]:
-        p = files.get(h)
-        return _iter_trades(p) if p is not None else ()
+        return read_trade_file(fn(h)["trade"], h, counters)
 
     return rows_of_hour
 
@@ -381,24 +474,17 @@ def scored_flag(u: Mapping[str, Any]) -> bool:
     return u["mig_ms"] >= series_start_ms(series_of(u["source"])) + WARMUP_HOURS * 3_600_000
 
 
-def build_series_features(series: str, cutoffs: Mapping[str, int], views: Mapping[str, Sequence[str]] | None = None, progress: Callable[[str], None] | None = None) -> dict[str, Any]:
-    import tools.exp012_backcheck as bc
-
-    spec = SERIES[series]
-    views_by_source = dict(views or spec["views"])
-    all_views = [v for s in spec["sources"] for v in views_by_source[s]]
-    for v in all_views:
-        e15.refuse_reserved(v, f"view {series}")
-    hours = bc.hours_range(spec["start"], spec["end"])
-    files = hour_files(all_views, hours)
-    feats, st = run_series(hours, make_rows_of_hour(files), cutoffs, progress=progress)
-    return {"series": series, "features": feats, "hours": len(hours), "hours_with_file": len(files), "state": st.stats,
-            "n_wallets": len(st.pnl), "n_skilled_wallets_final": sum(1 for w in range(len(st.pnl)) if st.skilled(w))}
+def build_series_features(series: str, cutoffs: Mapping[str, int], hours: Sequence[str], fn: Callable[[str], Mapping[str, Any]],
+                          progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+    counters: dict[str, int] = {}
+    feats, st = run_series(hours, make_rows_of_hour(fn, counters), cutoffs, progress=progress)
+    return {"series": series, "features": feats, "hours": len(hours), "hours_with_file": len(hours), "state": st.stats, "reader": counters,
+            "n_wallets": len(st.pnl), "n_skilled_wallets_final": st.n_skilled}
 
 
-def _series_worker(args: tuple[str, dict[str, int]]) -> dict[str, Any]:
-    series, cutoffs = args
-    return build_series_features(series, cutoffs, progress=lambda m: print(f"[{series}] {m}", file=sys.stderr, flush=True))
+def _series_worker(args: tuple[str, dict[str, int], list[str], Any]) -> dict[str, Any]:
+    series, cutoffs, hours, fn = args
+    return build_series_features(series, cutoffs, hours, fn, progress=lambda m: print(f"[{series}] {m}", file=sys.stderr, flush=True))
 
 
 def precount_report(universe: Sequence[Mapping[str, Any]], built: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -413,6 +499,9 @@ def precount_report(universe: Sequence[Mapping[str, Any]], built: Sequence[Mappi
         f = feats.get(u["mint"])
         sc = scored_flag(u)
         d["n"] += 1
+        if f is not None and f.get("rows_before", 0) <= 0:
+            d["snapshots_without_tape"] = d.get("snapshots_without_tape", 0) + 1
+            f = None  # a snapshot counts only when its series had tape before the cutoff
         d["with_features"] += int(f is not None)
         d["scored_after_warmup"] += int(sc and f is not None)
         d["warmup_excluded"] += int(not sc)
@@ -422,7 +511,7 @@ def precount_report(universe: Sequence[Mapping[str, Any]], built: Sequence[Mappi
     for d in by_source.values():
         d["coverage"] = d["with_features"] / d["n"] if d["n"] else None
     dates = sorted({u["date"] for u in universe if u["source"] in SCORED_SOURCES and scored_flag(u)})
-    return {"by_source": by_source, "series": {b["series"]: {k: b[k] for k in ("hours", "hours_with_file", "state", "n_wallets", "n_skilled_wallets_final")} for b in built},
+    return {"by_source": by_source, "series": {b["series"]: {k: b[k] for k in ("hours", "hours_with_file", "state", "reader", "n_wallets", "n_skilled_wallets_final")} for b in built},
             "scored_dates": dates, "n_scored_dates": len(dates), "min_trips": MIN_TRIPS, "warmup_hours": WARMUP_HOURS, "outcome_blind": True}
 
 
@@ -467,7 +556,7 @@ def nested_thresholds(universe: Sequence[Mapping[str, Any]], frozen: Sequence[bo
 
 def build_masks(universe: Sequence[Mapping[str, Any]], scores: Sequence[float], feats: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     n = len(universe)
-    scope = [i for i, u in enumerate(universe) if u["block"] != "P1" and u["mint"] in feats and scored_flag(u)]
+    scope = [i for i, u in enumerate(universe) if u["block"] != "P1" and u["mint"] in feats and feats[u["mint"]].get("rows_before", 1) > 0 and scored_flag(u)]
     inscope = set(scope)
     frozen = [bool(i in inscope and scores[i] >= e15.FROZEN_THRESHOLD) for i in range(n)]
     share = [feats[u["mint"]]["skilled_share"] if i in inscope else None for i, u in enumerate(universe)]
@@ -649,6 +738,29 @@ COVERAGE_MIN = 0.90
 MIN_FROZEN_SCORED = 100
 
 
+def check_tries_log_arg(arg: str | None, canonical: Path) -> None:
+    if arg is not None and Path(arg).resolve() != Path(canonical).resolve():
+        raise Refused(f"--tries-log {arg} is not the canonical {canonical}")
+
+
+def set_cells(cells: Sequence[str]) -> None:
+    global CELLS
+    CELLS = tuple(cells)
+
+
+def selection_report(universe: Sequence[Mapping[str, Any]], masks: Mapping[str, Any], feats: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Outcome-blind (features and frozen scores only). W2 is degenerate, and dropped before the read, when tau_d is 0 (or undefined) on every date:
+    skilled_share >= 0 is always true, so W2 would equal the frozen book."""
+    sel = [i for i in masks["scope"] if masks["frozen"][i]]
+    n = len(sel)
+    pos_h = sum(1 for i in sel if feats[universe[i]["mint"]]["skilled_holder_lamports"] > 0)
+    pos_s = sum(1 for i in sel if feats[universe[i]["mint"]]["skilled_share"] > 0)
+    taus = masks["taus"]
+    degenerate = all(t is None or t == 0.0 for t in taus.values())
+    return {"frozen_selected_scored": n, "share_skilled_holder_gt0": (pos_h / n) if n else None, "share_skilled_share_gt0": (pos_s / n) if n else None,
+            "n_skilled_holder_gt0": pos_h, "n_skilled_share_gt0": pos_s, "tau_by_date": taus, "w2_degenerate": bool(degenerate)}
+
+
 def check_precount(precount: Mapping[str, Any], masks: Mapping[str, Any]) -> None:
     """Plan section 7 item 8: coverage below 90% on a scored source, fewer than 100 frozen-selected scored migrations, or no skilled holder at all."""
     by = precount.get("by_source") or {}
@@ -678,7 +790,7 @@ def render_md(rep: Mapping[str, Any]) -> str:
     for c in CELLS:
         r, h = rep["cells"][c], rep["holm"][c]
         L.append(f"| {c} | {r['n_trades']} | {r['n_scope_dates']} | {_fmt(h['p'])} | {h['threshold']:.4f} | {h['reject']} | " + " | ".join(str(r["bars"][f"B{i}"]["pass"]) for i in range(1, 7)) + f" | {r['bars_all']} |")
-    L += ["", f"Frozen book (scored scope): n selected {rep['n_frozen_selected']}; W1 {rep['n_selected']['W1']}; W2 {rep['n_selected']['W2']}.", "", "## Caveats"] + [f"- {x}" for x in CAVEATS]
+    L += ["", f"Frozen book (scored scope): n selected {rep['n_frozen_selected']}; " + "; ".join(f"{c} {rep['n_selected'][c]}" for c in CELLS) + ".", "", "## Caveats"] + [f"- {x}" for x in CAVEATS]
     return "\n".join(L) + "\n"
 
 
@@ -686,6 +798,8 @@ CAVEATS = (
     "Exploration. The cells reuse the non-P1 dates EXP-015 already read; the frozen cell is itself best-of-many (winner's curse).",
     "The first 72 h of each series are excluded from scoring; the dates that remain are fewer than 27 and the majority-of-days rules use that count.",
     "Skill is a trade-flow statistic: SPL transfers are not on the tape, and a wallet's other addresses are not linked.",
+    "The date-cluster bootstrap seed (1) is shared with EXP-015 / EXP-017, so p-values are not independent across screens.",
+    "Bonding fees (1.25% per side) are charged to wallet cash flow; priority fees and tips are not on the tape and are excluded.",
     "P1 dates are not scored here (their cutoff clock is derived, and P1 is report-only in EXP-015).",
 )
 
@@ -730,6 +844,9 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--artifact-dir", type=Path, default=None)
     ap.add_argument("--features", type=Path, default=None, help="features.jsonl written by --precount (screen mode)")
     ap.add_argument("--precount", action="store_true", help="outcome-blind tape pass: features.jsonl + precount.json; reads no net")
+    ap.add_argument("--p2-view-dir", action="append", default=None, help="explore-0814 view dirs (default w1..w7)")
+    ap.add_argument("--p3-root", default=e15.P3_BASE)
+    ap.add_argument("--p4-view-dir", action="append", default=None, help="exp011-0909 view dirs (default b, c)")
     ap.add_argument("--workers", type=int, default=2, help="one process per series (2 series); capped at 2")
     return ap
 
@@ -739,43 +856,57 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = _parser().parse_args(argv)
     out_dir: Path = args.out_dir
-    tries_path = resolve_tries_path(args.tries_log)
+    tries_path: Path | None = None
     try:
         cache = check_cache(args.scratch)
         e15.check_vmap(args.vmap, e15.VMAP_0909_SHA256, "V map")
-        prior = prior_exp018_lines(tries_path)
-        if prior:
-            raise Refused(f"{len(prior)} earlier exp018 line(s) in {tries_path}: a second run is refused")
+        resolved = resolve_series(args.p2_view_dir or DEFAULT_P2_VIEWS, args.p3_root, args.p4_view_dir or DEFAULT_P4_VIEWS)
         if args.precount:
+            if args.tries_log is not None:
+                raise Refused("--precount reads no tries log; do not pass --tries-log")
             universe, _stats = load_universe(args.scratch, blind=True)
-            wanted = {k: cutoffs_from_universe(universe, s["sources"]) for k, s in SERIES.items()}
+            jobs = [(k, cutoffs_from_universe(universe, SERIES[k]["sources"]), resolved[k]["hours"], resolved[k]["fn"]) for k in SERIES]
             if min(args.workers, 2) > 1:
                 from concurrent.futures import ProcessPoolExecutor
 
                 with ProcessPoolExecutor(max_workers=2) as ex:
-                    built = list(ex.map(_series_worker, [(k, wanted[k]) for k in SERIES]))
+                    built = list(ex.map(_series_worker, jobs))
             else:
-                built = [_series_worker((k, wanted[k])) for k in SERIES]
+                built = [_series_worker(j) for j in jobs]
             rep = precount_report(universe, built)
+            feats_all: dict[str, Mapping[str, Any]] = {}
+            for bt in built:
+                feats_all.update(bt["features"])
+            masks = build_masks(universe, frozen_scores(universe, args.artifact_dir), feats_all)
+            rep["selection"] = selection_report(universe, masks, feats_all)
             sha = write_features(out_dir / OUT_FEATURES, universe, built)
             write_json(out_dir / OUT_PRECOUNT, {**rep, "features_sha256": sha, "cache": cache})
             print(json.dumps({"mode": "precount", **rep, "features_sha256": sha}, indent=2, default=str))
             return 0
+        tries_path = Path(resolve_tries_path(None))
+        check_tries_log_arg(args.tries_log, tries_path)
+        prior = prior_exp018_lines(tries_path)
+        if prior:
+            raise Refused(f"{len(prior)} earlier exp018 line(s) in {tries_path}: a second run is refused")
         if args.features is None:
             raise Refused("screen mode needs --features (run --precount first)")
         check_features_file(args.features, out_dir)
+        pre = json.loads((out_dir / OUT_PRECOUNT).read_text(encoding="utf-8"))
+        if (pre.get("selection") or {}).get("w2_degenerate"):
+            set_cells(("W1",))  # pre-declared: tau_d is 0 on every date, W2 would equal the frozen book; dropped before the read, one try
         e15.check_run_lock(out_dir)
         universe, _stats = load_universe(args.scratch, blind=False)
         feats = load_features(args.features)
         scores = frozen_scores(universe, args.artifact_dir)
         masks = build_masks(universe, scores, feats)
         zero_cell_check(masks)
-        check_precount(json.loads((out_dir / OUT_PRECOUNT).read_text(encoding="utf-8")), masks)
+        check_precount(pre, masks)
         head = e15.git_state()["head"]
         e15.take_lock(out_dir, head, hashlib.sha256(json.dumps(sorted(vars(args).items(), key=lambda kv: kv[0]), default=str).encode()).hexdigest())
     except (Refused, e15.Refused) as exc:
         print(f"refusing (before started, no tries line): {exc}", file=sys.stderr)
         return 2
+    assert tries_path is not None
     t0, started, status = time.time(), False, "aborted_after_read"
     try:
         log_cell_tries(tries_path, out_dir, "started")

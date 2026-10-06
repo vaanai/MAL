@@ -39,6 +39,10 @@ def trip(slot0, mint, who, pnl_sign=1):
     return [row(slot0, mint, who, "buy", 10**9, 1000), row(slot0 + 1, mint, who, "sell", 15 * 10**8 if pnl_sign > 0 else 5 * 10**8, 1000)]
 
 
+def fee(x):
+    return x * w.BONDING_FEE_PPM // 1_000_000
+
+
 class TestParse(unittest.TestCase):
     def test_admission(self):
         self.assertIsNotNone(w.parse_row(row(5, "M", "A", "buy", 10, 10)))
@@ -62,9 +66,9 @@ class TestEngine(unittest.TestCase):
             for i, (side, sol, tok) in enumerate(rows):
                 st.feed(T(100 + i), 100 + i, "M", "A", side, sol, tok, True, 0)
                 if side == "buy":
-                    lots.append(Lot(token_raw=tok, cost_lamports=sol, t_ms=i, slot=100 + i))
+                    lots.append(Lot(token_raw=tok, cost_lamports=sol + fee(sol), t_ms=i, slot=100 + i))
                 else:
-                    pnl, *_ = match_sell(lots, tok, sol, i, "s")
+                    pnl, *_ = match_sell(lots, tok, sol - fee(sol), i, "s")
                     fifo_total += pnl
                     n_sells += 1
             self.assertEqual(st.trips[0], 1)
@@ -77,13 +81,38 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(st.trips[0], 0)
         st.feed(T(3), 3, "M", "A", "sell", 10**9, 500, True, 0)
         self.assertEqual(st.trips[0], 1)
-        self.assertEqual(st.pnl[0], 10**9 + 10**9 - 10**9 - 3 * w.TX_FEE_LAMPORTS)
+        self.assertEqual(st.pnl[0], 2 * (10**9 - fee(10**9)) - (10**9 + fee(10**9)) - 3 * w.TX_FEE_LAMPORTS)
 
     def test_sell_without_inventory_is_unmatched(self):
         st = w.SkillState(1)
         st.feed(T(1), 1, "M", "A", "sell", 10**9, 500, True, 0)
         self.assertEqual(st.trips[0], 0)
         self.assertEqual(st.stats["unmatched_sells"], 1)
+
+
+class TestFeesAndCounters(unittest.TestCase):
+    def test_bonding_fee_charged_pumpswap_not(self):
+        st = w.SkillState(1)
+        st.feed(T(1), 1, "M", "A", "buy", 10**9, 1000, True, 0)
+        st.feed(T(2), 2, "M", "A", "sell", 10**9, 1000, True, 0)
+        self.assertEqual(st.pnl[0], (10**9 - fee(10**9)) - (10**9 + fee(10**9)) - 2 * w.TX_FEE_LAMPORTS)
+        st2 = w.SkillState(1)
+        st2.feed(T(1), 1, "M", "A", "buy", 10**9, 1000, False, 0)
+        st2.feed(T(2), 2, "M", "A", "sell", 10**9, 1000, False, 0)
+        self.assertEqual(st2.pnl[0], -2 * w.TX_FEE_LAMPORTS)
+
+    def test_running_skilled_counter(self):
+        rows = {"h0": trip(10, "X", "A") + trip(20, "X2", "L", -1) + [row(100, "Z", "Q", "buy", 1, 1)]}
+        _, st = run(rows, {"M": 100}, min_trips=1)
+        self.assertEqual(st.n_skilled, sum(1 for i in range(len(st.pnl)) if st.skilled(i)))
+        self.assertEqual(st.n_skilled, 1)
+
+    def test_snapshot_without_tape_is_not_coverage(self):
+        uni = [{"mint": "M", "source": "P3", "mig_ms": w.series_start_ms("S_P34") + 100 * 3_600_000, "date": "2026-09-08"}]
+        built = [{"series": "S_P34", "features": {"M": {"skilled_holder_lamports": 0, "rows_before": 0}}, "hours": 1, "hours_with_file": 1, "state": {}, "reader": {}, "n_wallets": 0, "n_skilled_wallets_final": 0}]
+        rep = w.precount_report(uni, built)
+        self.assertEqual(rep["by_source"]["P3"]["with_features"], 0)
+        self.assertEqual(rep["by_source"]["P3"]["snapshots_without_tape"], 1)
 
 
 class TestCausality(unittest.TestCase):
@@ -99,7 +128,7 @@ class TestCausality(unittest.TestCase):
 
     def test_skilled_holder_counts_prior_trip(self):
         f = self.feats([row(100, "Z", "Q", "buy", 1, 1)])  # a row at the cutoff slot triggers the snapshot
-        self.assertEqual(f["skilled_holder_lamports"], 2 * 10**9)
+        self.assertEqual(f["skilled_holder_lamports"], 2 * 10**9 + fee(2 * 10**9))
         self.assertEqual(f["skilled_buyer_count"], 1)
 
     def test_trip_closing_at_or_after_cutoff_does_not_count(self):
@@ -107,12 +136,12 @@ class TestCausality(unittest.TestCase):
         extra = [row(60, "M", "B", "buy", 10**9, 3000), row(61, "Y", "B", "buy", 10**9, 1000),
                  row(100, "Y", "B", "sell", 3 * 10**9, 1000), row(101, "Y", "B", "buy", 1, 1)]
         f = self.feats(extra)
-        self.assertEqual(f["skilled_holder_lamports"], 2 * 10**9)  # only A
+        self.assertEqual(f["skilled_holder_lamports"], 2 * 10**9 + fee(2 * 10**9))  # only A
         self.assertEqual(f["skilled_buyer_count"], 1)
         # and the same trip closing one slot earlier DOES count
         extra2 = [row(60, "M", "B", "buy", 10**9, 3000), row(61, "Y", "B", "buy", 10**9, 1000), row(99, "Y", "B", "sell", 3 * 10**9, 1000), row(100, "Z", "Q", "buy", 1, 1)]
         f2 = self.feats(extra2)
-        self.assertEqual(f2["skilled_holder_lamports"], 3 * 10**9)
+        self.assertEqual(f2["skilled_holder_lamports"], (2 * 10**9 + fee(2 * 10**9)) + (10**9 + fee(10**9)))  # A and B
         self.assertEqual(f2["skilled_buyer_count"], 2)
 
     def test_cutoff_is_time_based_strictly_before_mig_ms(self):
@@ -133,12 +162,12 @@ class TestCausality(unittest.TestCase):
     def test_unsorted_hour_is_sorted_by_slot(self):
         rows = {"h0": list(reversed(self.base)) + [row(100, "Z", "Q", "buy", 1, 1)]}
         out, _ = run(rows, self.cut)
-        self.assertEqual(out["M"]["skilled_holder_lamports"], 2 * 10**9)
+        self.assertEqual(out["M"]["skilled_holder_lamports"], 2 * 10**9 + fee(2 * 10**9))
 
     def test_min_trips_and_negative_skill(self):
         rows = {"h0": trip(10, "X", "A") + trip(20, "X2", "L", -1) + [row(50, "M", "A", "buy", 10**9, 10), row(51, "M", "L", "buy", 10**9, 10), row(100, "Z", "Q", "buy", 1, 1)]}
         f, _ = run(rows, {"M": 100}, min_trips=1)
-        self.assertEqual(f["M"]["skilled_holder_lamports"], 10**9)  # A only: L's trip lost
+        self.assertEqual(f["M"]["skilled_holder_lamports"], 10**9 + fee(10**9))  # A only: L's trip lost
         f2, _ = run(rows, {"M": 100}, min_trips=2)
         self.assertEqual(f2["M"]["skilled_holder_lamports"], 0)
 
@@ -210,15 +239,66 @@ class TestRefusals(unittest.TestCase):
             (d / w.OUT_PRECOUNT).write_text(json.dumps({"features_sha256": w._file_sha256(d / "f.jsonl")}))
             w.check_features_file(d / "f.jsonl", d)
 
-    def test_hour_in_two_views_refused(self):
+    def test_p3_real_naming_resolves_and_missing_hour_refuses(self):
+        import shutil
+        import tempfile
+
+        if shutil.which("zstd") is None:
+            self.skipTest("zstd not installed")
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "w1"
+            (root / "trades").mkdir(parents=True)
+            h = "2026-09-03T12"
+            plain = root / "trades" / f"trades-{h}.deduped.jsonl"
+            plain.write_text(json.dumps(row(1, "M", "A", "buy", 1, 1)) + "\n")
+            subprocess.run(["zstd", "-q", "-f", str(plain), "-o", str(plain) + ".zst"], check=True)
+            plain.unlink()
+            fn = w.e15.DedupedHours({h: str(root), "2026-09-03T13": str(root)}, {}, frozenset({h, "2026-09-03T13"}))
+            w.check_hours_resolve("S", [h], fn)  # the real P3 name resolves
+            with self.assertRaises(w.Refused):
+                w.check_hours_resolve("S", [h, "2026-09-03T13"], fn)  # second hour has no file
+            # the old lookup would have missed it
+            from tools.latency_curve import _hour_file
+
+            self.assertIsNone(_hour_file(root / "trades", "trades", h))
+
+    def test_reader_drops_out_of_hour_and_refuses_bad_zstd(self):
+        import shutil
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
-            for v in ("a", "b"):
-                (Path(d) / v / "trades").mkdir(parents=True)
-                (Path(d) / v / "trades" / "trades-2026-08-20T00.jsonl").write_text("")
-            with self.assertRaises(w.Refused):
-                w.hour_files([str(Path(d) / "a"), str(Path(d) / "b")], ["2026-08-20T00"])
+            h = "2026-09-03T12"
+            lo = w.e15.hour_ms(h) // 1000
+            f = Path(d) / "t.jsonl"
+            f.write_text("\n".join(json.dumps(r) for r in (
+                {**row(1, "M", "A", "buy", 1, 1), "block_time": lo + 5}, {**row(2, "M", "A", "buy", 1, 1), "block_time": lo + 3600},
+                {**row(3, "M", "A", "buy", 1, 1), "block_time": lo - 1})) + "\n")
+            c: dict = {}
+            self.assertEqual(len(list(w.read_trade_file(f, h, c))), 1)
+            self.assertEqual(c["out_of_hour_rows"], 2)
+            if shutil.which("zstd"):
+                bad = Path(d) / "bad.jsonl.zst"
+                bad.write_bytes(b"not zstd at all")
+                with self.assertRaises(w.Refused):
+                    list(w.read_trade_file(bad, h, {}))
+
+    def test_tries_log_arg(self):
+        w.check_tries_log_arg(None, Path("/x/tries.jsonl"))
+        w.check_tries_log_arg("/x/tries.jsonl", Path("/x/tries.jsonl"))
+        with self.assertRaises(w.Refused):
+            w.check_tries_log_arg("/y/other.jsonl", Path("/x/tries.jsonl"))
+
+    def test_w2_degenerate_and_selection_report(self):
+        uni = [{"mint": "A"}, {"mint": "B"}]
+        feats = {"A": {"skilled_holder_lamports": 5, "skilled_share": 0.0}, "B": {"skilled_holder_lamports": 0, "skilled_share": 0.0}}
+        m = {"scope": [0, 1], "frozen": [True, True], "taus": {"d1": 0.0, "d2": None}}
+        r = w.selection_report(uni, m, feats)
+        self.assertTrue(r["w2_degenerate"])
+        self.assertEqual(r["share_skilled_holder_gt0"], 0.5)
+        m["taus"]["d2"] = 0.2
+        self.assertFalse(w.selection_report(uni, m, feats)["w2_degenerate"])
 
     def test_precount_refusals(self):
         pc = {"by_source": {"P2": {"coverage": 0.95, "with_skilled_holder": 3}}}
