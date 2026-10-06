@@ -677,8 +677,8 @@ class LpMoveTests(unittest.TestCase):
         return str(path)
 
     @staticmethod
-    def entry(events: list[dict], resolved: bool = True, reason: str | None = None) -> dict:
-        return {"lp_mint": "L", "events": events, "resolved": resolved, "reason": reason}
+    def entry(events: list[dict], resolved: bool = True, reason: str | None = None, supply_slot: int | None = None) -> dict:
+        return {"lp_mint": "L", "events": events, "resolved": resolved, "reason": reason, "supply_slot": supply_slot}
 
     @staticmethod
     def lp_ev(s: int, d: int, t: int, slot: int = 1) -> dict:
@@ -862,6 +862,119 @@ class LpMoveTests(unittest.TestCase):
         self.assertTrue(sidecar.is_file())
         self.assertEqual(stat.S_IMODE(os.stat(sidecar).st_mode), 0o444)
         self.assertEqual(json.loads(sidecar.read_text())["fetch_started_utc"], SNAP_FETCH["fetch_started_utc"])
+
+
+    def test_held_pools_are_null_in_out(self) -> None:
+        final, s1 = self.setup_move(v_final=V_AFTER + 5000)  # A moved, rule fails: unexplained, though the final map has a value
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), out, lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertIsNone(pv.load_map(out)["A"])
+        self.assertEqual(self.meta(out)["lp_moves"]["n_nulled_in_out"], 1)
+
+    def test_overlapping_lphist_files_for_one_pool_refused(self) -> None:
+        final, s1 = self.setup_move()
+        ents = {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])}
+        h1, h2 = self.lphist("h1.json", ents), self.lphist("h2.json", ents)
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o1.json", lphist=[h1, h2])
+        self.assertEqual(rc, 2)
+        self.assertIn("overlapping", err)
+        h3 = self.lphist("h3.json", {"Z": self.entry([])})  # different pool: fine
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o2.json", lphist=[h1, h3])
+        self.assertEqual(rc, 0, err)
+
+    def test_snapshot_fetch_without_detail_sha_refused(self) -> None:
+        s1 = self.snap({"A": V_SNAP}, detail=dmap({"A": V_SNAP}), fetch={**SNAP_FETCH, "detail_sha256": None})
+        final = self.final({"A": V_AFTER}, fetch_doc=FINAL_FETCH, detail=dmap({"A": V_AFTER}))
+        h = self.lphist("h.json", {"A": self.entry([])})
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A")), self.tmp / "out.json", lphist=[h])
+        self.assertEqual(rc, 2)
+        self.assertIn("detail_sha256", err)
+
+    def slot_setup(self, event_slot: int, supply_slot: int | None = 400, run_start: int | None = None, final_slots: bool = True):
+        s1 = self.snap({"A": V_SNAP}, detail=dmap({"A": V_SNAP}), fetch={**SNAP_FETCH, "fetch_slot_min": 200, "fetch_slot_max": 210})
+        ff = {**FINAL_FETCH, **({"fetch_slot_min": 300, "fetch_slot_max": 310} if final_slots else {})}
+        final = self.final({"A": V_AFTER, "B": None}, {"B": "closed"}, fetch_doc=ff, detail=dmap({"A": V_AFTER}))
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN, slot=event_slot)], supply_slot=supply_slot)}, run_start=run_start)
+        return final, s1, h
+
+    def test_placement_by_slot_when_the_fetch_has_slots(self) -> None:
+        final, s1, h = self.slot_setup(event_slot=150)  # before the snapshot's slots: reflected in its read, so it cannot explain the move
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o1.json", lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.side_file(self.tmp / "o1.json", "unexplained"), ["A"])  # block time alone (between) would have explained it
+        final, s1, h = self.slot_setup(event_slot=205)  # inside the snapshot's slot span: ambiguous, can be after the read
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o2.json", lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.meta(self.tmp / "o2.json")["lp_moves"]["n_explained"], 1)
+
+    def test_lphist_must_reach_the_final_fetch(self) -> None:
+        final, s1, h = self.slot_setup(event_slot=250, supply_slot=305)  # supply read before fetch_slot_max 310
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o1.json", lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.side_file(self.tmp / "o1.json", "unresolved"), {"A": "lphist_supply_read_before_final_fetch"})
+        final, s1, h = self.slot_setup(event_slot=250, supply_slot=None)
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o2.json", lphist=[h])
+        self.assertEqual(self.side_file(self.tmp / "o2.json", "unresolved"), {"A": "lphist_supply_slot_missing"})
+        final, s1, h = self.slot_setup(event_slot=250, supply_slot=311)
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o3.json", lphist=[h])
+        self.assertEqual(self.meta(self.tmp / "o3.json")["lp_moves"]["n_explained"], 1)
+        # no slots on the final fetch: the time of the run start must be at or after the final fetch end
+        final, s1, h = self.slot_setup(event_slot=250, final_slots=False, run_start=vm._unix("2026-10-11T00:05:00Z"))
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), self.tmp / "o4.json", lphist=[h])
+        self.assertEqual(self.side_file(self.tmp / "o4.json", "unresolved"), {"A": "lphist_supply_read_before_final_fetch"})
+
+    def dry_setup(self, n_bad: int = 0):
+        s_old = self.snap({"A": V_SNAP}, detail=dmap({"A": V_SNAP}), fetch=SNAP_FETCH)
+        s_new = self.snap({"A": V_AFTER + (5000 if n_bad else 0)}, detail=dmap({"A": V_AFTER + (5000 if n_bad else 0)}), fetch={"fetch_started_utc": "2026-10-09T00:00:00Z", "fetch_ended_utc": "2026-10-09T00:10:00Z"})
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])})
+        return s_old, s_new, h
+
+    def run_dry(self, s_old, s_new, h, out: str, pools_n: int = 1000):
+        return run(["merge", "--dry-run", "--final", s_new, "--snapshot", s_old, "--lphist", h, "--pools", self.pools(big_set("A", "B", n=pools_n)), "--out", str(self.tmp / out)])
+
+    def test_dry_run_uses_snapshot_as_final_and_marks_the_meta(self) -> None:
+        s_old, s_new, h = self.dry_setup()
+        rc, stdout, err = self.run_dry(s_old, s_new, h, "x.dryrun.json")
+        self.assertEqual(rc, 0, err)  # no fetch --new / cutoff / reasons-file checks in this mode
+        m = self.meta(self.tmp / "x.dryrun.json")
+        self.assertIs(m["dry_run"], True)
+        self.assertEqual(m["lp_moves"]["n_explained"], 1)
+        self.assertEqual(m["final_fetch"]["dry_run"], True)
+        with self.assertRaises(vm.Refused):  # the consumer-side loader refuses it
+            vm.load_merge_meta(self.tmp / "x.dryrun.json.merge.json")
+
+    def test_dry_run_name_and_real_merge_name_rules(self) -> None:
+        s_old, s_new, h = self.dry_setup()
+        rc, _, err = self.run_dry(s_old, s_new, h, "x.json")
+        self.assertEqual(rc, 2)
+        self.assertIn(".dryrun.json", err)
+        final = self.final({"A": V_AFTER}, fetch_doc=FINAL_FETCH, detail=dmap({"A": V_AFTER}))
+        rc, _, err = self.merge(final, [s_old], self.pools(big_set("A")), self.tmp / "y.dryrun.json", lphist=[h])
+        self.assertEqual(rc, 2)
+
+    def test_dry_run_still_enforces_ceiling_and_span_binding(self) -> None:
+        s_old, s_new, h = self.dry_setup(n_bad=1)
+        rc, _, err = self.run_dry(s_old, s_new, h, "a.dryrun.json", pools_n=100)  # 1 unexplained of 100 pools
+        self.assertEqual(rc, 2)
+        self.assertIn("unexplained", err)
+        rc, _, err = self.run_dry(s_old, s_new, h, "b.dryrun.json", pools_n=1000)
+        self.assertEqual(rc, 0, err)
+        # a snapshot-fetch whose detail sha is not the ledger's is refused in dry-run too
+        bad = self.tmp / "bad.fetch.json"
+        bad.write_text(json.dumps({"fetch_started_utc": "2026-10-09T00:00:00Z", "fetch_ended_utc": "2026-10-09T00:10:00Z", "detail_sha256": "0" * 64}))
+        rc, _, err = run(["merge", "--dry-run", "--final", s_new, "--snapshot", s_old, "--lphist", h, "--pools", self.pools(big_set("A", "B")), "--out", str(self.tmp / "c.dryrun.json"), "--snapshot-fetch", f"{s_new}={bad}"])
+        self.assertEqual(rc, 2)
+        self.assertIn("not this snapshot's fetch", err)
+
+    def test_real_merge_meta_loads(self) -> None:
+        final, s1 = self.setup_move()
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, T_BETWEEN)])})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1], self.pools(big_set("A", "B")), out, lphist=[h])
+        self.assertEqual(rc, 0, err)
+        self.assertIs(vm.load_merge_meta(self.tmp / "out.json.merge.json")["dry_run"], False)
 
 
 class DiffsAndLphistCliTests(unittest.TestCase):

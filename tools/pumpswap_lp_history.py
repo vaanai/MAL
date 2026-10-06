@@ -264,6 +264,7 @@ def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_fr
     uniq = sorted({p for p in pools if p})
     res: dict[str, dict[str, Any]] = {}
     todo = list(uniq)
+    log: dict[str, list[dict[str, Any]]] = {}
     for n in range(1, passes + 1):
         if not todo:
             break
@@ -279,17 +280,22 @@ def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_fr
         end = _read_accounts(rpc, lim, ok_ids) if ok_ids else {}  # the supply AFTER the history (every resolved pool, zero events included)
         for p in ok_ids:
             e, a = res[p], end[p]
-            if "error" in a:
-                e["resolved"], e["reason"] = False, "supply_read_failed:" + a["error"]
+            if "error" in a:  # an errored read is retried; a read that succeeded but shows no/odd account is not
+                transient = a["error"].startswith("accounts_fetch_failed")
+                e["resolved"], e["reason"] = False, ("supply_read_failed:" if transient else "supply_") + a["error"]
                 continue
             e["lp_supply"], e["supply_slot"] = a["lp_supply"], a["slot"]  # the history is complete up to this slot
             if e["events"]:
                 last = e["events"][-1]
                 if last["s_before"] + last["lp_delta"] != a["lp_supply"]:
                     e["resolved"], e["reason"] = False, "last_supply_mismatch"
+        for p in todo:  # every attempt, per pool, with its pass and reason (earlier reasons are kept)
+            log.setdefault(p, []).append({"pass": n, "resolved": res[p]["resolved"], "reason": res[p]["reason"]})
         if attempts is not None:
             attempts.append({"pass": n, "n_pools": len(todo), "n_resolved": sum(1 for p in todo if res[p]["resolved"])})
         todo = [p for p in todo if not res[p]["resolved"] and _is_transient(res[p]["reason"])]
+    for p in uniq:
+        res[p]["attempt_log"] = log.get(p, [])
     return {p: res[p] for p in uniq}, lim.calls
 
 

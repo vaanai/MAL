@@ -364,6 +364,29 @@ def test_fetch_history_account_and_supply_read_failures_are_retried() -> None:
     out, _ = run_hist(chain, [pool], 0, 1000, attempts=att)
     assert out[pool]["resolved"] is True and out[pool]["attempts"] == 3
     assert [(a["pass"], a["n_resolved"]) for a in att] == [(1, 0), (2, 0), (3, 1)]
+    # every attempt is logged per pool with its pass and reason; earlier reasons are kept
+    assert out[pool]["attempt_log"] == [{"pass": 1, "resolved": False, "reason": "accounts_fetch_failed:SystemExit"}, {"pass": 2, "resolved": False, "reason": "supply_read_failed:accounts_fetch_failed:SystemExit"}, {"pass": 3, "resolved": True, "reason": None}]
+
+
+def test_fetch_history_successful_read_of_missing_supply_account_is_not_retried() -> None:
+    pool, mint = pk(1), pk(50)
+    rows = [("s1", 1, 100, None, [event_bytes("deposit", pool, 10, 1000)])]
+
+    class Gone(FakeChain):
+        n = 0
+
+        def __call__(self, method, params):
+            if method == "getMultipleAccounts":
+                Gone.n += 1
+                if Gone.n == 2:  # the supply read succeeds but the account is gone
+                    self.calls.append((method, 0))
+                    return {"context": {"slot": 9}, "value": [None]}
+            return super().__call__(method, params)
+
+    chain = Gone({pool: mint}, {mint: rows})
+    att: list = []
+    out, _ = run_hist(chain, [pool], 0, 1000, attempts=att)
+    assert out[pool]["reason"] == "supply_account_missing" and out[pool]["attempts"] == 1 and len(att) == 1
 
 
 def test_fetch_history_last_supply_must_equal_account_supply() -> None:

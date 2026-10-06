@@ -42,6 +42,7 @@ LEDGER_NAME = "snapshots.jsonl"
 CUTOFF = "2026-10-16T00:00:00Z"  # the FINAL fetch must start at or after this; tests patch it, no CLI flag or env var
 FINAL_HOURS, FINAL_ROWS_PER_HOUR = 12, 60000  # validate sampling when the window comes from --final-out-dir
 TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
+DRYRUN_SUFFIX = ".dryrun.json"
 MOVED_CEILING = 0.001  # unexplained + unresolved pools may not exceed this share of the pool set
 OLD_FETCH_MAX_MIN = 30  # ASSUMPTION: a fetch record without fetch_ended_utc ended no later than last_fetch_utc (a START time) + this
 PENDING_GUARD_LAMPORTS = 10_000_000  # 0.01 SOL: flag pools whose pending counters (A + B) exceed it
@@ -576,7 +577,7 @@ def classify_pool(p: str, reads: Sequence[tuple[int | None, tuple[int, int] | No
     return status, ""
 
 
-def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | None]], pool_set: set[str], reasons: dict[str, str] | None = None, final_detail: dict[str, Any] | None = None, snap_details: Sequence[dict[str, Any]] | None = None, spans: Sequence[tuple[int, int] | None] | None = None, lphists: Sequence[LpHistory] = ()) -> tuple[dict[str, int | None], list[str], list[str], dict[str, Any]]:
+def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | None]], pool_set: set[str], reasons: dict[str, str] | None = None, final_detail: dict[str, Any] | None = None, snap_details: Sequence[dict[str, Any]] | None = None, spans: Sequence[tuple[int, int] | None] | None = None, lphists: Sequence[LpHistory] = (), strict_reasons: bool = True) -> tuple[dict[str, int | None], list[str], list[str], dict[str, Any]]:
     """(merged, filled, ignored_outside_set, classes).
 
     V0 (= v_base) moves only at LP events. For each pool of pool_set with two or more non-null reads (snapshots oldest
@@ -619,6 +620,10 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
     ignored = [p for p in want if p not in pool_set]
     filled = [p for p in want if p in pool_set and p not in held]
     no_reason = sorted(p for p in pool_set if p in final and final[p] is None and reasons.get(p) not in ("closed", "unreadable"))
+    if not strict_reasons:  # dry run only: a stand-in final has no reasons file; such pools are not filled, not refused
+        filled = [p for p in filled if p not in set(no_reason)]
+        classes["n_null_no_reason_dry_run"] = len(no_reason)
+        no_reason = []
     if no_reason:
         raise Refused(f"{len(no_reason)} pool(s) in the set are null in the final map with no recorded reason: never filled; refetch with this tool")
     bad = [p for p in filled if p in final and reasons.get(p) == "unreadable"]
@@ -660,19 +665,26 @@ def cmd_merge(a: argparse.Namespace) -> int:
     for p in (out, meta_path):
         if p.exists():
             raise Refused(f"{p} exists; refusing to overwrite")
+    dry = bool(getattr(a, "dry_run", False))
+    if dry != out.name.endswith(DRYRUN_SUFFIX):
+        raise Refused(f"--dry-run output must end {DRYRUN_SUFFIX}, and a real merge output must not")
     final_path = Path(a.final)
     snap_paths = [Path(s) for s in a.snapshot]
-    final_fetch = final_fetch_block(final_path, Path(a.pools))
+    if dry:  # rehearsal: the latest ledgered snapshot stands in for the final; no post-cutoff / fetch --new checks
+        check_in_ledger(final_path)
+        final_fetch = {"dry_run": True, "stand_in_snapshot": final_path.name}
+    else:
+        final_fetch = final_fetch_block(final_path, Path(a.pools))
     snap_paths = sorted(snap_paths, key=lambda x: x.name)  # oldest first (UTC in the name); a fill copies the latest
     for sp in snap_paths:
         check_in_ledger(sp)
     pool_set = set(json.loads(Path(a.pools).read_text(encoding="utf-8")))
-    if not side(final_path, ".reasons.json").is_file():
+    if not dry and not side(final_path, ".reasons.json").is_file():
         raise Refused(f"{side(final_path, '.reasons.json')} missing: run the final fetch with this tool so null reasons are recorded")
     reasons = load_reasons(final_path)
     final = pv.load_map(final_path)
     final_detail = load_detail(final_path)
-    if final_fetch["detail_sha256"] != sha256_file(side(final_path, ".detail.json")):
+    if not dry and final_fetch["detail_sha256"] != sha256_file(side(final_path, ".detail.json")):
         raise Refused(f"{side(final_path, '.detail.json')} does not match detail_sha256 in the fetch file")
     snap_details = [load_detail(sp) for sp in snap_paths]
     lphists = [LpHistory(Path(x)) for x in (a.lphist or [])]
@@ -680,22 +692,24 @@ def cmd_merge(a: argparse.Namespace) -> int:
         for h2 in lphists[i + 1 :]:
             if all(isinstance(x, int) for x in (h1.t_from, h1.t_to, h2.t_from, h2.t_to)) and h1.t_from <= h2.t_to and h2.t_from <= h1.t_to and set(h1.data) & set(h2.data):
                 raise Refused(f"{h1.path.name} and {h2.path.name} cover the same pool over overlapping windows; give one history per pool")
-    final_doc = load_json_dict(side(final_path, ".fetch.json"), "fetch file")
-    final_span = span_of(final_doc)
-    for h in lphists:
-        h.require_slot = final_span.slot_max if final_span is not None else None
-        h.require_time = final_span[1] if final_span is not None else None
     fetch_over: dict[str, Path] = {}
     for item in a.snapshot_fetch or []:
         name, sep, fpath = item.partition("=")
         if not sep or not fpath:
             raise Refused(f"--snapshot-fetch {item!r}: expected SNAPFILE=FETCHJSON")
         fetch_over[Path(name).name] = Path(fpath)
-    if set(fetch_over) - {sp.name for sp in snap_paths}:
+    if set(fetch_over) - {sp.name for sp in snap_paths} - ({final_path.name} if dry else set()):
         raise Refused("--snapshot-fetch names a file that is not one of the --snapshot arguments")
+    if dry:  # the stand-in's span is bound the same way as any snapshot's: ledger detail_sha256
+        final_span = snapshot_span(final_path, fetch_over.get(final_path.name))
+    else:
+        final_span = span_of(load_json_dict(side(final_path, ".fetch.json"), "fetch file"))
+    for h in lphists:
+        h.require_slot = final_span.slot_max if final_span is not None else None
+        h.require_time = final_span[1] if final_span is not None else None
     spans = [snapshot_span(sp, fetch_over.get(sp.name)) for sp in snap_paths] + [final_span]
     side_paths = {"unexplained": side(out, ".unexplained.json"), "unresolved": side(out, ".unresolved.json")}
-    merged, filled, ignored, classes = merge_maps(final, [pv.load_map(s) for s in snap_paths], pool_set, reasons, final_detail, snap_details, spans, lphists)
+    merged, filled, ignored, classes = merge_maps(final, [pv.load_map(s) for s in snap_paths], pool_set, reasons, final_detail, snap_details, spans, lphists, strict_reasons=not dry)
     for k, sp in side_paths.items():  # ids stay in files; diagnostics, so a refused run may rewrite them
         if sp.exists():
             os.chmod(sp, 0o644)
@@ -716,6 +730,7 @@ def cmd_merge(a: argparse.Namespace) -> int:
     os.chmod(out, 0o444)
     unreadable = sorted(p for p in pool_set if p in merged and merged[p] is None and reasons.get(p) == "unreadable")
     meta = {
+        "dry_run": dry,
         "final_fetch": final_fetch,
         "n": len(merged),
         "n_pools_set": len(pool_set),
@@ -748,7 +763,7 @@ def cmd_merge(a: argparse.Namespace) -> int:
             "snapshot_fetch_sidecar_sha256": {sp.name: sha256_file(side(sp, ".fetch.json")) for sp in snap_paths if side(sp, ".fetch.json").is_file()},
             "span_assumption": {"OLD_FETCH_MAX_MIN": OLD_FETCH_MAX_MIN, "note": "a fetch record without fetch_ended_utc is assumed to have ended by last_fetch_utc + OLD_FETCH_MAX_MIN", "n_spans_with_assumed_end": sum(1 for s in spans if getattr(s, "tail_from", None) is not None), "n_events_in_assumed_tail": classes["events_in_assumed_tail"]},
         },
-        "sha256": {"final": sha256_file(final_path), "pools": sha256_file(Path(a.pools)), "reasons": sha256_file(side(final_path, ".reasons.json")), "final_detail": sha256_file(side(final_path, ".detail.json")), "snapshot_details": [sha256_file(side(sp, ".detail.json")) for sp in snap_paths], "fetch": sha256_file(side(final_path, ".fetch.json")), "snapshots": [sha256_file(s) for s in snap_paths], "out": sha256_file(out)},
+        "sha256": {"final": sha256_file(final_path), "pools": sha256_file(Path(a.pools)), "reasons": sha256_file(side(final_path, ".reasons.json")) if side(final_path, ".reasons.json").is_file() else None, "final_detail": sha256_file(side(final_path, ".detail.json")), "snapshot_details": [sha256_file(side(sp, ".detail.json")) for sp in snap_paths], "fetch": sha256_file(side(final_path, ".fetch.json")) if side(final_path, ".fetch.json").is_file() else None, "snapshots": [sha256_file(s) for s in snap_paths], "out": sha256_file(out)},
     }
     _write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n", readonly=True)
     print(f"merge: n={meta['n']} filled={len(filled)} ignored={len(ignored)} n_null_after={meta['n_null_after']} n_absent_after={meta['n_absent_after']} n_unreadable={len(unreadable)} -> {out}")
@@ -812,6 +827,15 @@ def cmd_lphist(a: argparse.Namespace, rpc: Callable[[str, list], Any] | None = N
     _write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n", readonly=True)
     print(f"lphist: n={len(hist)} n_unresolved={n_unres} calls={calls} -> {out}")
     return 0
+
+
+def load_merge_meta(path: Path) -> dict[str, Any]:
+    """The merge record a consumer (vbook) binds to. A dry-run meta, or one for an output named *.dryrun.json, is refused:
+    a rehearsal can never stand in for the FINAL map."""
+    doc = load_json_dict(path, "merge meta")
+    if doc.get("dry_run") is True or path.name.endswith(DRYRUN_SUFFIX + ".merge.json"):
+        raise Refused(f"{path}: a dry-run merge record cannot be used for the FINAL")
+    return doc
 
 
 def sample_hours(hours: Sequence[str], n: int) -> list[str]:
@@ -978,6 +1002,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--pools", required=True, help="the section 1 pool set (pools.json)")
     p.add_argument("--snapshot", action="append", required=True)
     p.add_argument("--snapshot-fetch", action="append", default=[], help="SNAPFILE=FETCHJSON: a fetch record for a snapshot; accepted only if its detail_sha256 equals the ledger row's (repeatable)")
+    p.add_argument("--dry-run", action="store_true", help=f"rehearsal: --final is the latest ledgered snapshot; OUT must end {DRYRUN_SUFFIX}; the merge meta says dry_run and the FINAL path refuses it")
     p.add_argument("--lphist", action="append", default=[], help="an lphist output (its .meta.json sha256 is checked); repeatable")
     p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_merge)
