@@ -261,9 +261,9 @@ The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded 
     - a transaction has truncated logs, unless its event can be decoded from the program's self-CPI event instruction;
     - the S sequence does not chain, meaning an event's S_after differs from the next event's S_before;
     - the last S_after differs from the LP supply read in the same run, at or after the latest fetch.
-  - **Retries.** Up to 3 passes over pools unresolved for transient RPC reasons. Every attempt is logged.
+  - **Retries.** Every pool unresolved by a failed transaction fetch or failed signature paging gets the same up to 3 further passes. Pools unresolved by a chain, truncation or supply mismatch get none. Every attempt is logged.
   - **Output.** The output file's sha256 is recorded wherever it is used.
-  - **For (B):** one run over the pools of all entered trades, completed before the vbook STARTED line.
+  - **For (B):** one run over the pools of all entered trades. The first completed run for the window is the one used, and its sha256 goes into the vbook STARTED line. A later run for the same window is not used.
 - **(b) Merge.**
   - **Consistent pools.** Two V0 values of a pool (a snapshot and a later snapshot, or a snapshot and the final map) are **consistent** if they are equal. They are also consistent if replaying the pool's LP events between the two fetches reproduces the later value within 1 lamport per event. An event inside a fetch's own time span may be placed on either side, and any placement that reproduces the value counts.
   - **Other pools.** The rest are **unexplained** (the rule fails) or **unresolved** (per (a)).
@@ -273,9 +273,9 @@ The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded 
 - **(c) Pricing in (B).** Each entered trade's pool is priced at its **V0 at the entry fill slot, with pending from the final map**: stored V = V0(entry) − final-map pending.
   - V0(entry) is the final map's V0 with the pool's LP events after the entry fill slot, up to the final fetch, inverted. The inversion takes the smallest V0_before with floor(V0_before × S_after / S_before) = V0_after.
   - For a pool filled from a snapshot, the anchor is that snapshot's fetch, and events between that fetch and the entry slot are applied forward.
-  - An event in the entry fill slot is placed by its order within the slot.
+  - An LP event in the entry or exit fill slot counts as before the fill if its transaction precedes the tape row the fill is priced from, and after it otherwise. If that cannot be determined, the trade is priced both ways and takes the lower P&L.
   - An event inside the final fetch's span is computed both ways. If the two results differ, the pool is unresolved.
-  - **LP event inside the hold.** A trade with a PumpSwap LP event after its entry fill slot and at or before its exit fill slot is priced at both its entry-slot V0 and its exit-slot V0. **The primary uses the lower P&L of the two.** The count of such trades is reported.
+  - **LP event inside the hold.** A trade with a PumpSwap LP event after its entry fill slot and at or before its exit fill slot is priced at both its entry-slot V0 and its exit-slot V0. **The primary uses the lower P&L of the two, taken separately for `flat` and for `press`, and separately at each k (1, k(p50), k(p90)).** A trade with no exit fill uses its last priced slot as the exit slot. The count of such trades is reported.
   - A trade whose pool is unexplained or unresolved is treated as a **null-V pool** under Amendment 4 §3: the top-3 union, or > 1% of entered trades, gives NOT_DECIDABLE.
 - **(d) Sensitivity lines.**
   - (B) is recomputed with every LP-moved entered pool priced at its final-map V0 instead of (c). **If the verdict differs from (c)'s, this is listed in `live_blockers`** (the Am.4 §4 pattern); (B)'s verdict stays (c)'s.

@@ -20,11 +20,11 @@ No unread field explains the moves.
 
 Job #284 read each moved pool's LP-mint history. LP mint and supply come from `parse_pool_account`. Every one of the 6 pools had a PumpSwap `Deposit` or `Withdraw` in the window `[07:49:58Z, 13:53:11Z]`. A full instruction scan of the three quiet pools (6X2DJ4sA, 6ejg4aYJ, Agcjmdfx) found no other instruction that could change V. The others were trades (`Buy`, `Sell`, `BuyExactQuoteIn`, the `…V2` variants), `SweepProtocolFee`, `SweepCreatorFee` and `CloseUserVolumeAccumulator`. Agcjmdfx also showed `SwapV2` ×2 and `TransferChecked` ×1 from transactions with **truncated logs**. A truncated log can hide an LP event, so the tool treats it as unresolved. The three busy pools (8ewuF2o8, BaiHzFqn, CyJwKnLi) were not fully scanned because their histories are too deep.
 
-`DepositEvent` and `WithdrawEvent` (IDL layout: `lp_mint_supply` is the supply **before** the operation, followed by the LP amount out or in) give S_before and S_after. The rule
+`DepositEvent` and `WithdrawEvent` (IDL layout; after the discriminator, u64 index 1 is the LP amount out or in, and u64 index 10, `lp_mint_supply`, is the supply **before** the operation) give S_before and S_after. The rule
 
     V0_after = floor(V0_before × S_after / S_before)        (S = LP mint supply)
 
-applied event by event reproduces every move **to the lamport**. That is 16 LP operations in the interval. Quant-proof re-derived the rows independently and confirmed that `lp_mint_supply` is the pre-operation supply: on every pool the S values chain, and the last S_after equals the LP supply read at #282. Scaling by the quote-reserve ratio instead leaves residuals of up to 197,663 lamports.
+applied event by event reproduces every move **to the lamport**. That is 16 LP operations in the interval. Quant-proof re-derived the rows independently and confirmed that `lp_mint_supply` is the pre-operation supply: on every pool the S values chain, and the last S_after equals the LP supply read by job #284. Scaling by the quote-reserve ratio instead leaves residuals of up to 197,663 lamports.
 
 | pool | LP ops in window | V0 snapshot #2 | V0 #278 | predicted | residual |
 |---|---|---:|---:|---:|---:|
