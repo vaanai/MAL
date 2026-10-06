@@ -52,7 +52,7 @@ For a migrated mint m:
 - **Hold window `H_m`.** This is defined only for a FILLED frozen-cell trade. It runs from the entry-state print the frozen simulator fills against at the deciding cell (k = 6, §6) to the print its `tp50_sl30` exit fills against, with exit lag 2, inclusive. **Both endpoints are canonical-pool prints** (§11, P2). A MISS has no hold window and no label.
 - **Censored cells (EXP-015's rule, kept).** A cell is censored when the tape ends before its exit deadline. That is a block-edge effect, not an outcome.
   - Censored cells are **dropped from both books** and get no label. Their count is taken before `started`, outcome-blind (status counts only, no nets).
-  - **A time-cap exit with no print after the cap** is censored too, and handled by the same rule.
+  - Only that block-edge case is censored (as in `tools/latency_curve.py`: `deadline > tape_through_ms`). A **time-cap exit** is priced, as the code does, at the last print at or before the deadline and stays in both books. Cells whose last print before the deadline is more than 60 s before it (a pool gone silent after entry) are counted before `started` (status and timestamps only) and included in the total-loss sensitivity of S6 and §8 (g).
 - **Drains at the end of the window.** A drain that is itself the dump step is caught through `E⁺` of the print that does it, even when that print is the last in `H_m`: event A uses `E⁺`, not a later print. An **untaped** drain needs a later print (event B). Without one it is invisible (§10).
 
 **RUG(m) = 1 iff event A or event B occurs inside `H_m`:**
@@ -302,7 +302,7 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 - **Token transfers.** Creators who split supply to fresh wallets look dispersed. Every "held" figure is a trade-flow lower bound on what a group controls.
 - **Funding links.** Without f1, a ring funded from one wallet looks like strangers.
 - **Rugs after the hold window, or before the entry.** They are not in the label, by design.
-- **Pools without a print after a drain.** A taped drain is caught from that print's `E⁺`. An **untaped** drain with no later print is invisible. If the tape then ends before the deadline, the cell is censored and dropped (§2.2).
+- **Pools without a print after a drain.** A taped drain is caught from that print's `E⁺`. An **untaped** drain with no later print is invisible. A time-cap exit after it is priced at the last (pre-drain) print, which flatters both books and gives the veto no credit for avoiding it; the silent-pool count and the total-loss sensitivity (§2.2) bound this. If the tape itself ends before the deadline, the cell is censored and dropped (§2.2).
 - **Pending V counters.** Stored V carries them, by up to 0.002 SOL per pool (§2.2). A long-unclaimed cashback pool could carry more. That was not observed, but it is not ruled out.
 - **Within-slot order on P1's Oracle sources.** It is receive order (§2.1), so A's slot edges may be slightly off there. The deciding bars use getBlock dates.
 - **Live gap size.** Live exits leak beyond lag 2 (stops fired at −31% to −74% in early builds). A real rug costs more than the simulator charges, so the veto's value may be understated, while its false positives cost exactly what the simulator says.
@@ -334,7 +334,7 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
   - A V map covering every PumpSwap pool traded in every pool view (P1-P4) is then built with the fixed parser, and its sha256 is pinned in the tool by a reviewed commit. The confirmation block gets its own map (§8).
   - The pricing rule is fixed in §2.2: stored V from the pinned map, the value `correct_print` uses, with v ≤ 0 meaning vault-only, for the label and the simulator alike. Stored V differs from V0 by pending counters of ≤ 0.002 SOL (disclosed). Closed and parse-fail pools follow §4.
   - V coverage counts only pools with a readable stored V.
-  - **Constancy check (outcome-blind, before `started` and before the confirmation lock).** On a sample of P2 pools and of 0802 pools (the sample size is pinned in the tool), the V implied at trade time by each pool's own swaps (`tools.pumpswap_virtual_history`) is compared with the map's stored V.
+  - **Constancy check (outcome-blind, before `started` and before the confirmation lock).** On a sample of P2 pools and of 0802 pools (the sample size is pinned in the tool), the V implied at trade time by each pool's own swaps (`tools.pumpswap_virtual_history`) is compared with the map's stored V. **Timing on 0802:** the 0802 part runs only after Part 1 merges and names the block, and before the lock. It prints pool ids and differences only. A refusal there does not spend the block.
     - A pool **disagrees** if the difference exceeds **max(1 bp of that print's quote reserve, 0.002 SOL)**.
     - If **more than 1%** of sampled pools disagree, the run **refuses** and reports the pools, by id and difference only.
     - The check reads pool fields and swap amounts, not trade outcomes.
@@ -373,7 +373,7 @@ All made 2026-10-06, before any pin and before any EXP-016 code exists:
 
 3. Quant-proof round 2:
    - **Pricing field:** stored V with v ≤ 0 meaning vault-only, for the label and the simulator; V0 dropped as the pricing field (§2.2).
-   - **Censored cells:** dropped from both books (EXP-015's rule); a time-cap exit with no print follows the same rule.
+   - **Censored cells:** dropped from both books (EXP-015's rule, block edge only). Round 3: a time-cap exit is priced at the last print before the deadline, as the code does; silent-pool cells are counted and enter the total-loss sensitivity.
    - **Live wording:** the new DEC for a third walk.
    - **P1:** a constancy check.
    - **No-pool mints:** excluded from both books.
