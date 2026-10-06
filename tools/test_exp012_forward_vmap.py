@@ -347,11 +347,13 @@ class MergeTests(unittest.TestCase):
         (self.tmp / "final.json.fetch.json").write_text(json.dumps(doc))
         return str(self.tmp / "final.json")
 
-    def snap(self, v: dict, ledger: bool = True, detail: dict | None = None) -> str:
-        """A snapshot made with the real snapshot command (so it is in snapshots.jsonl)."""
+    def snap(self, v: dict, ledger: bool = True, detail: dict | None = None, fetch: dict | None = None) -> str:
+        """A snapshot made with the real snapshot command (so it is in snapshots.jsonl). `fetch` writes the source's .fetch.json first."""
         self.n_snap += 1
         src = self.tmp / f"src{self.n_snap}.json"
         write_map(src, v, detail)
+        if fetch is not None:
+            src.with_name(src.name + ".fetch.json").write_text(json.dumps(fetch))
         ns = argparse.Namespace(vmap=str(src), out=str(self.tmp / "snaps"))
         with redirect_stdout(StringIO()):
             vm.cmd_snapshot(ns, now=datetime(2026, 10, 6, 0, 0, self.n_snap, tzinfo=timezone.utc))
@@ -364,7 +366,7 @@ class MergeTests(unittest.TestCase):
         (self.tmp / "pools.json").write_text(json.dumps(ids))
         return str(self.tmp / "pools.json")
 
-    def merge(self, final: str, snaps: list[str], pools: str, out: Path):
+    def merge(self, final: str, snaps: list[str], pools: str, out: Path, lphist: list[str] | None = None):
         fj = Path(final + ".fetch.json")
         if fj.is_file():  # stand in for a fetch over exactly this pool set, unless the test set its own
             try:
@@ -382,6 +384,8 @@ class MergeTests(unittest.TestCase):
         argv = ["merge", "--final", final, "--pools", pools, "--out", str(out)]
         for s in snaps:
             argv += ["--snapshot", s]
+        for h in lphist or []:
+            argv += ["--lphist", h]
         return run(argv)
 
     def test_fill_ignore_and_meta(self) -> None:
@@ -499,12 +503,12 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(rc, 2)
 
     def test_snapshot_disagreement_refused(self) -> None:
-        final = self.final({"B": None})
+        final = self.final({"B": None}, {"B": "closed"})
         s1, s2 = self.snap({"B": 1}), self.snap({"B": 2})
         out = self.tmp / "out.json"
         rc, _, err = self.merge(final, [s1, s2], self.pools(["B"]), out)
         self.assertEqual(rc, 2)
-        self.assertIn("disagree", err)
+        self.assertIn("unresolved", err)  # no LP history given: a differing V0 is unresolved, over the 0.1% ceiling here
         self.assertFalse(out.exists())
 
     def test_final_vs_snapshot_conflict_refused(self) -> None:
@@ -513,7 +517,7 @@ class MergeTests(unittest.TestCase):
         out = self.tmp / "out.json"
         rc, _, err = self.merge(final, [s1], self.pools(["A"]), out)
         self.assertEqual(rc, 2)
-        self.assertIn("post-cutoff", err)
+        self.assertIn("unresolved", err)
         self.assertFalse(out.exists())
 
     def test_out_exists_refused(self) -> None:
@@ -578,7 +582,7 @@ class DetailMergeTests(MergeTests):
         out2 = self.tmp / "out2.json"
         rc, _, err = self.merge(final2, [s1], self.pools(["A"]), out2)
         self.assertEqual(rc, 2)
-        self.assertIn("v_base", err)
+        self.assertIn("unresolved", err)
         self.assertFalse(out2.exists())
 
     def test_snapshots_disagreeing_on_v_base_refused_and_agreeing_with_moving_v_passes(self) -> None:
@@ -592,7 +596,7 @@ class DetailMergeTests(MergeTests):
         s3 = self.snap({"B": 90}, detail={"B": {"pending": 15, "v_base": 106}})
         rc, _, err = self.merge(final, [s1, s3], self.pools(["B"]), self.tmp / "out3.json")
         self.assertEqual(rc, 2)
-        self.assertIn("v_base", err)
+        self.assertIn("unresolved", err)
 
     def test_pending_guard_counted(self) -> None:
         big = {"A": {"pending": 10_000_001, "v_base": 20_000_000}, "C": {"pending": 10_000_000, "v_base": 5}}
