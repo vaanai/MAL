@@ -223,7 +223,7 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
   - **Always reported:** the number of vetoed trades that exited at the tp, their total SOL, the vetoed trades' mean and CI90, and RUG precision and recall.
 - **S4, concentration.** The non-P1 paired total stays > 0 after removing the **3 vetoed trades with the largest avoided losses**, and again after removing the best date. A veto whose gain is three rugs is not reliable.
 - **S5, veto size.** The outer veto removes at most 20% of frozen-selected filled trades on every pinned date set.
-- **S6, the kept book is not a loser.** On the non-P1 dates, the kept book's mean SOL per trade is > 0. It must also stay > 0 when every kept trade on a closed or parse-fail pool (§4), or in a silent-pool cell (§2.2), is scored at total loss, −(size + both fees).
+- **S6, the kept book is not a loser.** On the non-P1 dates, the kept book's mean SOL per trade is > 0. It must also stay > 0 when every kept trade on a closed or parse-fail pool (§4), or in a silent-pool cell (§2.2), is scored at total loss, −(size + both fees) "Kept trade" here means a **filled** trade; a miss opens no position and keeps its miss cost.
 
 **Report-only, never gating:**
 - the kept book's full gate shape (n, days, CI, ex-top-3) on all dates and on the non-P1 dates;
@@ -267,7 +267,7 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 - (d) the kept book's total SOL is > 0 after removing its top 3 trades;
 - (e) the **paired** improvement mean x > 0, with a CI90 lower bound > 0 under both resamplers;
 - (f) the one-sided bootstrap p-values of the kept-book mean > 0 and of the paired mean > 0 are each ≤ **0.0125**, 10,000 draws, seed 1, both resamplers;
-- (g) (a)-(d) still hold when every kept trade on a closed or parse-fail pool (§4), or in a silent-pool cell (§2.2), is scored at total loss, −(size + both fees).
+- (g) (a)-(d) still hold when every kept trade on a closed or parse-fail pool (§4), or in a silent-pool cell (§2.2), is scored at total loss, −(size + both fees) "Kept trade" here means a **filled** trade; a miss opens no position and keeps its miss cost.
 
 **Multiplicity: lab-wide Bonferroni.** α = 0.05 is split equally across the four confirmation families EXP-013, EXP-014, EXP-015 and EXP-016: **α/4 = 0.0125 per family**. The other three were tightened to 0.0125 by pre-read amendments in #382 (merged). (f) only tightens the CLAUDE.md gate.
 
