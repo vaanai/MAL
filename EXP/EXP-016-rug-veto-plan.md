@@ -379,6 +379,14 @@ All made 2026-10-06, before any pin and before any EXP-016 code exists:
    - **No-pool mints:** excluded from both books.
    - **Multiplicity:** #382 cited.
 
+## 13. Post-pin edits (dated; none touches a bar, label threshold or try count)
+
+1. 2026-10-06, before any row is built. **P1 done:** the V parser fix merged as #383 (merge `6300915f45a9`): signed V decode, `parse_virtual_detail` (pending, v_base), base-V constancy at merge, zero-V report counts V ≤ 0. The fixed-parser maps for P1–P4 and 0802 are still to be built and pinned by a reviewed commit before PR 2 reads any row.
+2. 2026-10-06. **Pending counters are larger than §2.2 and §10 say.** Forward snapshot #2 (job #259, 52,697 pools): on V0 ≈ 17.58 pools, 18,846 have pending < 1e5 lamports, 1,476 under ~1 bp, 115 up to 0.01 SOL, 9 above 0.01 SOL, max 0.1319 SOL (about 0.75% of V). Read "up to 0.002 SOL" in §2.2 and §10 as "typically under ~1 bp; at most about 0.13 SOL on a handful of canonical pools". Pricing stays on stored V (§2.2); the error is at most about 0.1% of price on those pools. P1's constancy check keeps its pinned tolerance; a pool whose pending moved more than it disagrees, and the 1% refusal rule decides.
+3. 2026-10-06. **PR 1 merged** as #392 (merge `66d6ecb`), after 3 quant-proof rounds: the §2.2 label, the §3 features, the P2 pool filter and the pre-`started` counters. Judgment calls recorded in #392's body, all plan-consistent; one pinned here: the d-group trailing 24 h window is counted from each other mint's `create_slot`, not from this mint's decision slot (causal either way; this mint's cutoff still applies to every event).
+4. 2026-10-06. **P2 confirmed and its fix disclosed:** `latency_curve` never reads `pool`, so the frozen simulator can fill (and time the migration clock) from a foreign PumpSwap pool. EXP-016 feeds the simulator migration-pool rows only; this changes fills **and** `mig_slot`/entry timing for mints whose first PumpSwap print is foreign (`count_foreign_first_mints`, reported before `started`). Frozen-book change for EXP-016 only; EXP-012's own reads are unchanged.
+5. 2026-10-06. **Oracle intra-slot order** follows the simulator (receive time, then first-read order). Cross-slot receive inversions are counted (`count_slot_inversions`) and reported before `started`.
+
 ## Sources
 
 - **Lab notes and plans:**
