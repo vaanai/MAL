@@ -352,8 +352,8 @@ class MergeTests(unittest.TestCase):
         self.n_snap += 1
         src = self.tmp / f"src{self.n_snap}.json"
         write_map(src, v, detail)
-        if fetch is not None:
-            src.with_name(src.name + ".fetch.json").write_text(json.dumps(fetch))
+        if fetch is not None:  # a real fetch.json carries the detail sha of the map it fetched
+            src.with_name(src.name + ".fetch.json").write_text(json.dumps({"detail_sha256": sha(src.with_name(src.name + ".detail.json")), **fetch}))
         ns = argparse.Namespace(vmap=str(src), out=str(self.tmp / "snaps"))
         with redirect_stdout(StringIO()):
             vm.cmd_snapshot(ns, now=datetime(2026, 10, 6, 0, 0, self.n_snap, tzinfo=timezone.utc))
@@ -668,11 +668,11 @@ class LpMoveTests(unittest.TestCase):
     pools = MergeTests.pools
     merge = MergeTests.merge
 
-    def lphist(self, name: str, entries: dict, t_from: int | None = None, t_to: int | None = None, tamper: bool = False, meta: bool = True) -> str:
+    def lphist(self, name: str, entries: dict, t_from: int | None = None, t_to: int | None = None, tamper: bool = False, meta: bool = True, run_start: int | None = None) -> str:
         path = self.tmp / name
         path.write_text(json.dumps(entries))
         if meta:
-            m = {"sha256": "0" * 64 if tamper else sha(path), "n_pools": len(entries), "n_unresolved": sum(1 for e in entries.values() if not e["resolved"]), "t_from_unix": t_from or vm._unix("2026-10-01T00:00:00Z"), "t_to_unix": t_to or vm._unix("2026-10-12T00:00:00Z")}
+            m = {"sha256": "0" * 64 if tamper else sha(path), "n_pools": len(entries), "n_unresolved": sum(1 for e in entries.values() if not e["resolved"]), "t_from_unix": t_from or vm._unix("2026-10-01T00:00:00Z"), "t_to_unix": t_to or vm._unix("2026-10-12T00:00:00Z"), "run_start_unix": run_start or vm._unix("2026-10-12T00:00:00Z")}
             (self.tmp / (name + ".meta.json")).write_text(json.dumps(m))
         return str(path)
 
@@ -889,11 +889,11 @@ class DiffsAndLphistCliTests(unittest.TestCase):
         import tools.test_pumpswap_lp_history as T
 
         pool, mint = T.pk(1), T.pk(50)
-        t = vm._unix("2026-10-06T01:00:00Z")
+        t = vm._unix("2026-10-05T12:00:00Z")
         chain = T.FakeChain({pool: mint}, {mint: [("s1", 7, t, None, [T.event_bytes("deposit", pool, 100, 1000)])]})
         (self.tmp / "p.json").write_text(json.dumps({"diffs": [{"pool": pool, "a": 1, "b": 2}]}))  # a diffs file works as a pool list
         out = self.tmp / "h.json"
-        ns = argparse.Namespace(pools=str(self.tmp / "p.json"), t_from="2026-10-06T00:00:00Z", t_to="2026-10-07T00:00:00Z", out=str(out), rps=5.0)
+        ns = argparse.Namespace(pools=str(self.tmp / "p.json"), t_from="2026-10-05T00:00:00Z", t_to="2026-10-06T00:00:00Z", out=str(out), rps=5.0)
         with mock.patch.object(time, "sleep"), redirect_stdout(StringIO()) as so:
             rc = vm.cmd_lphist(ns, rpc=chain)
         self.assertEqual(rc, 0)
@@ -902,6 +902,8 @@ class DiffsAndLphistCliTests(unittest.TestCase):
         self.assertEqual(data[pool]["events"][0]["lp_delta"], 100)
         meta = json.loads((self.tmp / "h.json.meta.json").read_text())
         self.assertEqual((meta["sha256"], meta["n_pools"], meta["n_unresolved"], meta["calls"]), (sha(out), 1, 0, 4))
+        self.assertIsInstance(meta["run_start_unix"], int)
+        self.assertEqual(meta["supply_slot_min"], 5)
         self.assertEqual(meta["attempts"], [{"pass": 1, "n_pools": 1, "n_resolved": 1}])
         self.assertEqual(stat.S_IMODE(os.stat(out).st_mode), 0o444)
         self.assertRegex(meta["utc"], r"^\d{4}-\d\d-\d\dT")
@@ -984,7 +986,7 @@ class FetchLpSupplyTests(unittest.TestCase):
         self.addCleanup(td.cleanup)
         d = Path(td.name)
         write_map(d / "src.json", {"A": 1})
-        (d / "src.json.fetch.json").write_text(json.dumps({**SNAP_FETCH, "last_fetch_utc": "2026-10-06T00:00:00Z", "fetch_slot_min": 5, "fetch_slot_max": 9, "new": True}))
+        (d / "src.json.fetch.json").write_text(json.dumps({**SNAP_FETCH, "detail_sha256": sha(d / "src.json.detail.json"), "last_fetch_utc": "2026-10-06T00:00:00Z", "fetch_slot_min": 5, "fetch_slot_max": 9, "new": True}))
         with redirect_stdout(StringIO()):
             vm.cmd_snapshot(argparse.Namespace(vmap=str(d / "src.json"), out=str(d / "snaps")), now=datetime(2026, 10, 6, 0, 0, 1, tzinfo=timezone.utc))
         rec = json.loads((d / "snaps" / "snapshots.jsonl").read_text().splitlines()[0])
