@@ -417,12 +417,15 @@ def score_entry(
     gap_starts_ms: Sequence[int] = (),
     pool_end_ms: int | None = None,
     pool_gap_starts_ms: Sequence[int] = (),
+    exit_lag: int | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """(row, None) or (None, censored record) for one (mint, d)."""
+    """(row, None) or (None, censored record) for one (mint, d, size). `exit_lag` (slots) is the sell offset; None keeps the plan default (= d).
+    EXP-014 screen v2 passes 2 (the deciding exit lag). Rows carry size, exit_lag, sides and p_press so the screen can re-cost them."""
     T = trig.T
+    lag = d if exit_lag is None else exit_lag
 
     def cens(reason: str) -> tuple[None, dict[str, Any]]:
-        return None, {"mint": mint_id, "day": trig.day, "mig_day": trig.mig_day, "trigger_ms": T, "entry_land_k": d, "reason": reason}
+        return None, {"mint": mint_id, "day": trig.day, "mig_day": trig.mig_day, "trigger_ms": T, "entry_land_k": d, "size": size, "reason": reason}
 
     def gap_hit(end_ms: int) -> bool:
         # E2: a missing hour that starts anywhere in (mig_t, exit] leaves the pool state (the window, the spot
@@ -435,7 +438,7 @@ def score_entry(
 
     mark_skipped = False  # True when the post-buy mark is not positive: the tp/sl scan is skipped (cap exit)
 
-    def row(outcome: str, filled: bool, status: int, gross: int, net0: int, flat: float, press: float, entry_slot: int | None, landing: int, exit_ms: int, s_cap: int | None) -> tuple[Any, Any]:
+    def row(outcome: str, filled: bool, status: int, gross: int, net0: int, flat: float, press: float, entry_slot: int | None, landing: int, exit_ms: int, s_cap: int | None, sides: int = 1, p_fail: float = 0.0) -> tuple[Any, Any]:
         if gap_hit(exit_ms):
             return cens("touches_gap")
         return {
@@ -444,6 +447,10 @@ def score_entry(
             "day": trig.day,
             "mig_day": trig.mig_day,
             "entry_land_k": d,
+            "size": size,
+            "exit_lag": lag,
+            "sides": sides,
+            "p_press": p_fail,
             "trigger_ms": T,
             "mig_ms": trig.mig_t,
             "mig_slot": trig.mig_slot,
@@ -507,7 +514,7 @@ def score_entry(
                 break
     s_cap: int | None = None
     if hit is not None:
-        sidx, t_exit = _delayed(fills, hit, d, "start", "start")
+        sidx, t_exit = _delayed(fills, hit, lag, "start", "start")
         if t_exit > tape_through_ms:
             return cens("exit_past_tape")
     else:
@@ -515,9 +522,9 @@ def score_entry(
             return cens("cap_past_tape")
         s_cap = gs.max_slot_le(deadline)
         assert s_cap is not None  # the entry slot's own print is at or before the deadline
-        cap_target = s_cap + d
+        cap_target = s_cap + lag
         sidx = _state_index(fills, cap_target, "start")
-        t_exit = gs.slot_time(cap_target, deadline + d * SLOT_MS)
+        t_exit = gs.slot_time(cap_target, deadline + lag * SLOT_MS)
         if t_exit > tape_through_ms:
             return cens("cap_exit_past_tape")
     closed = _one_sell_close(fills, sidx, buy, "pumpswap", size, ENTRY_PORTAL_PPM)
@@ -525,21 +532,22 @@ def score_entry(
     net0, gross, sides, status = closed
     flat = mixed_net(net0, sides, status, priority, FLAT_FAIL)
     press = mixed_net(net0, sides, status, priority, p_press)
-    return row(outcome, True, status, gross, net0, flat, press, state.slot, landing_ms, t_exit, s_cap)
+    return row(outcome, True, status, gross, net0, flat, press, state.slot, landing_ms, t_exit, s_cap, sides, p_press)
 
 
 def score_trigger(
-    mint_id: str, trig: Trigger, mint: _Mint, curve: Any, gs: GlobalSlots, tape_through_ms: int, ks: Sequence[int] = KS, **kw: Any
+    mint_id: str, trig: Trigger, mint: _Mint, curve: Any, gs: GlobalSlots, tape_through_ms: int, ks: Sequence[int] = KS, sizes: Sequence[int] | None = None, **kw: Any
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     fills = mint.fillable(migrate=True)
     rows: list[dict[str, Any]] = []
     cens: list[dict[str, Any]] = []
-    for d in ks:
-        r, c = score_entry(mint_id, trig, fills, d, curve, gs, tape_through_ms, **kw)
-        if r is not None:
-            rows.append(r)
-        if c is not None:
-            cens.append(c)
+    for size in sizes if sizes else (kw.pop("size", ENTRY_SIZE),):
+        for d in ks:
+            r, c = score_entry(mint_id, trig, fills, d, curve, gs, tape_through_ms, size=size, **kw)
+            if r is not None:
+                rows.append(r)
+            if c is not None:
+                cens.append(c)
     return rows, cens
 
 
@@ -605,6 +613,8 @@ def run_worker_m15(
     pool_tag: str | None = None,
     pool_end_ms: int | None = None,
     pool_gap_starts_ms: Sequence[int] | None = None,
+    sizes: Sequence[int] | None = None,
+    exit_lag: int | None = None,
 ) -> dict[str, Any]:
     """One chunk: creates from the home hours, tape through the home + buffer hours. Rows and
     censored records stream to disk (paths) or, with a None path, come back under "rows" /
@@ -643,10 +653,10 @@ def run_worker_m15(
         assert trk.mig_t is not None and trk.T is not None and trk.mig_slot is not None
         trig = Trigger(trk.T, trk.mig_t, trk.mig_slot, trk.features(creator_hist))
         rows, cens = score_trigger(
-            mint_id, trig, trk.mint, curve, gs, through_ms, ks, gap_starts_ms=gap_starts, pool_end_ms=pool_end_ms, pool_gap_starts_ms=pool_gap_starts_ms
+            mint_id, trig, trk.mint, curve, gs, through_ms, ks, sizes, gap_starts_ms=gap_starts, pool_end_ms=pool_end_ms, pool_gap_starts_ms=pool_gap_starts_ms, exit_lag=exit_lag
         )
         for it in rows + cens:
-            ident = (it["mint"], it["entry_land_k"])
+            ident = (it["mint"], it["entry_land_k"], it.get("size"))
             if ident in seen_keys:
                 raise SystemExit(f"duplicate (mint, d) {ident} in worker {worker_id}")
             seen_keys.add(ident)
