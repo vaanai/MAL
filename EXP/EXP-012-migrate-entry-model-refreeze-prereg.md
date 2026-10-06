@@ -217,6 +217,10 @@ python3 -m tools.exp012_score \
 
 Run `--dry-run-preconditions` with the same arguments first. Any refusal there stops the read without spending the block.
 
+## Amendment 1 (2026-10-06): non-owner feature read of walk-1 hours by walk 2
+
+Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3. Nothing frozen above changes. `[2026-10-14T01, 2026-10-16T01)` is also read for features only as walk 2's buffer (DEC-021 §3); no outcome is used. That read runs only after EXP-012's FINAL is written.
+
 ## Sources
 
 [EXP-011](EXP-011-migrate-entry-model-prereg.md) §1, §1a, §3, §4, §6–§8, §10 and Result; `tools/exp011_freeze.py`, `tools/exp011_build_table.py`, `tools/exp011_score.py`; [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md); [dedupe note](../ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md); [clean B3 re-run](../ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md); [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md).
