@@ -818,6 +818,52 @@ class LpMoveTests(unittest.TestCase):
         self.assertEqual(self.meta(self.tmp / "out.json")["lp_moves"]["n_unresolved"], 0)
 
 
+    def snapshot_fetch_setup(self, doc_overrides: dict | None = None):
+        """A snapshot with no fetch record of its own, and a separate fetch.json bound by detail_sha256."""
+        s1 = self.snap({"A": V_SNAP}, detail=dmap({"A": V_SNAP}))
+        row = json.loads((self.tmp / "snaps" / "snapshots.jsonl").read_text().splitlines()[-1])
+        doc = {"fetch_started_utc": "2026-10-06T00:00:00Z", "last_fetch_utc": "2026-10-06T00:00:00Z", "detail_sha256": row["detail_sha256"], **(doc_overrides or {})}
+        f = self.tmp / "old.fetch.json"
+        f.write_text(json.dumps(doc))
+        final = self.final({"A": V_AFTER, "B": None}, {"B": "closed"}, fetch_doc=FINAL_FETCH, detail=dmap({"A": V_AFTER}))
+        return final, s1, f
+
+    def merge_with_fetch(self, final, s1, f, out, h):
+        pools = self.pools(big_set("A", "B"))
+        fj = Path(final + ".fetch.json")
+        fj.write_text(json.dumps({**json.loads(fj.read_text()), "pools_sha256": sha(Path(pools)), "detail_sha256": sha(Path(final + ".detail.json"))}))
+        return run(["merge", "--final", final, "--pools", pools, "--out", str(out), "--snapshot", s1, "--lphist", h, "--snapshot-fetch", f"{s1}={f}"])
+
+    def test_snapshot_fetch_sha_binding_match_uses_span_and_records_assumption(self) -> None:
+        final, s1, f = self.snapshot_fetch_setup()
+        t_tail = vm._unix("2026-10-06T00:20:00Z")  # inside the assumed tail (last_fetch_utc + 30 min)
+        h = self.lphist("h.json", {"A": self.entry([self.lp_ev(S0, D0, t_tail)])})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge_with_fetch(final, s1, f, out, h)
+        self.assertEqual(rc, 0, err)
+        m = self.meta(out)["lp_moves"]
+        self.assertEqual(m["n_explained"], 1)  # the event in the assumed tail may fall either side of the read
+        self.assertEqual(m["snapshot_fetch_sha256"], {Path(s1).name: sha(f)})
+        self.assertEqual(m["span_assumption"]["OLD_FETCH_MAX_MIN"], 30)
+        self.assertEqual((m["span_assumption"]["n_spans_with_assumed_end"], m["span_assumption"]["n_events_in_assumed_tail"]), (1, 1))
+
+    def test_snapshot_fetch_sha_binding_mismatch_refused(self) -> None:
+        final, s1, f = self.snapshot_fetch_setup({"detail_sha256": "0" * 64})
+        h = self.lphist("h.json", {"A": self.entry([])})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge_with_fetch(final, s1, f, out, h)
+        self.assertEqual(rc, 2)
+        self.assertIn("not this snapshot's fetch", err)
+        self.assertFalse(out.exists())
+
+    def test_new_snapshot_copies_fetch_json_readonly(self) -> None:
+        s1 = self.snap({"A": 1}, fetch=SNAP_FETCH)
+        sidecar = Path(s1 + ".fetch.json")
+        self.assertTrue(sidecar.is_file())
+        self.assertEqual(stat.S_IMODE(os.stat(sidecar).st_mode), 0o444)
+        self.assertEqual(json.loads(sidecar.read_text())["fetch_started_utc"], SNAP_FETCH["fetch_started_utc"])
+
+
 class DiffsAndLphistCliTests(unittest.TestCase):
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()

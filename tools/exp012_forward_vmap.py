@@ -43,7 +43,7 @@ CUTOFF = "2026-10-16T00:00:00Z"  # the FINAL fetch must start at or after this; 
 FINAL_HOURS, FINAL_ROWS_PER_HOUR = 12, 60000  # validate sampling when the window comes from --final-out-dir
 TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 MOVED_CEILING = 0.001  # unexplained + unresolved pools may not exceed this share of the pool set
-SPAN_END_MARGIN_S = 1800  # fetch end when the fetch file has no fetch_ended_utc (last_fetch_utc is a START time)
+OLD_FETCH_MAX_MIN = 30  # ASSUMPTION: a fetch record without fetch_ended_utc ended no later than last_fetch_utc (a START time) + this
 PENDING_GUARD_LAMPORTS = 10_000_000  # 0.01 SOL: flag pools whose pending counters (A + B) exceed it
 
 
@@ -350,6 +350,12 @@ def cmd_snapshot(a: argparse.Namespace, now: datetime | None = None) -> int:
         raise Refused(f"{dest_detail} exists; refusing to overwrite")
     _write_new(dest, src.read_text(encoding="utf-8"), readonly=True)
     _write_new(dest_detail, src_detail.read_text(encoding="utf-8"), readonly=True)
+    src_fetch0 = side(src, ".fetch.json")
+    if src_fetch0.is_file():  # self-describing: the fetch span and slots travel with the snapshot
+        dest_fetch = side(dest, ".fetch.json")
+        if dest_fetch.exists():
+            raise Refused(f"{dest_fetch} exists; refusing to overwrite")
+        _write_new(dest_fetch, src_fetch0.read_text(encoding="utf-8"), readonly=True)
     vmap = pv.load_map(dest)  # counts come from the copy, not the source
     rec = {"utc": utc, "file": dest.name, "sha256": sha256_file(dest), "detail_sha256": sha256_file(dest_detail), "n": len(vmap), "n_null": sum(v is None for v in vmap.values())}
     src_fetch = side(src, ".fetch.json")
@@ -391,40 +397,66 @@ def _unix(ts: Any) -> int | None:
         return None
 
 
-def span_of(doc: dict[str, Any] | None) -> tuple[int, int] | None:
-    """(start, end) unix seconds of a fetch from a fetch record: fetch_started_utc .. fetch_ended_utc, or
-    last_fetch_utc (a START time) plus SPAN_END_MARGIN_S when the record predates fetch_ended_utc. None if unusable."""
+class Span(tuple):
+    """(start, end) unix seconds. tail_from is set when `end` is an assumption (OLD_FETCH_MAX_MIN after last_fetch_utc)."""
+
+    tail_from: int | None = None
+
+
+def span_of(doc: dict[str, Any] | None) -> Span | None:
+    """Span of a fetch record: fetch_started_utc .. fetch_ended_utc, or, when the record predates fetch_ended_utc,
+    last_fetch_utc (a START time) + OLD_FETCH_MAX_MIN minutes, an assumption recorded in the merge meta (tail_from marks
+    where the assumed tail begins). None if unusable."""
     if not isinstance(doc, dict):
         return None
     t0 = _unix(doc.get("fetch_started_utc"))
     t1 = _unix(doc.get("fetch_ended_utc"))
+    tail = None
     if t1 is None:
         last = _unix(doc.get("last_fetch_utc"))
-        t1 = None if last is None else last + SPAN_END_MARGIN_S
+        if last is not None:
+            t1, tail = last + OLD_FETCH_MAX_MIN * 60, last
     if t0 is None or t1 is None or t1 < t0:
         return None
-    return t0, t1
+    sp = Span((t0, t1))
+    sp.tail_from = tail
+    return sp
 
 
-def snapshot_span(snap: Path) -> tuple[int, int] | None:
-    """A snapshot's fetch span: its .fetch.json sidecar if present, else the ledger line's fetch fields."""
+def ledger_row(snap: Path) -> dict[str, Any] | None:
+    ledger = snap.parent / LEDGER_NAME
+    if not ledger.is_file():
+        return None
+    want = sha256_file(snap)
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict) and r.get("file") == snap.name and r.get("sha256") == want:
+            return r
+    return None
+
+
+def snapshot_span(snap: Path, fetch_file: Path | None = None) -> Span | None:
+    """A snapshot's fetch span. `fetch_file` (--snapshot-fetch) is accepted only if its detail_sha256 equals the ledger
+    row's detail_sha256 for this snapshot (else Refused). Otherwise the snapshot's own .fetch.json sidecar (same check
+    against the snapshot's detail sha), else the ledger line's fetch fields."""
+    row = ledger_row(snap)
+    if fetch_file is not None:
+        if row is None:
+            raise Refused(f"{snap} is not in its ledger: cannot bind {fetch_file}")
+        doc = load_json_dict(fetch_file, "snapshot fetch file")
+        if doc.get("detail_sha256") != row.get("detail_sha256"):
+            raise Refused(f"{fetch_file}: detail_sha256 {doc.get('detail_sha256')} != the ledger's {row.get('detail_sha256')} for {snap.name}: not this snapshot's fetch")
+        return span_of(doc)
     fj = side(snap, ".fetch.json")
     if fj.is_file():
-        try:
-            return span_of(json.loads(fj.read_text(encoding="utf-8")))
-        except ValueError:
-            return None
-    ledger = snap.parent / LEDGER_NAME
-    want = sha256_file(snap)
-    if ledger.is_file():
-        for line in ledger.read_text(encoding="utf-8").splitlines():
-            try:
-                r = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(r, dict) and r.get("file") == snap.name and r.get("sha256") == want:
-                return span_of(r)
-    return None
+        doc = load_json_dict(fj, "snapshot fetch sidecar")
+        if doc.get("detail_sha256") not in (None, sha256_file(side(snap, ".detail.json"))):
+            raise Refused(f"{fj}: detail_sha256 does not match the snapshot's detail file")
+        return span_of(doc)
+    return span_of(row) if row else None
 
 
 class LpHistory:
@@ -480,7 +512,7 @@ def _b(detail: dict[str, Any], p: str) -> int | None:
     return b if isinstance(b, int) and not isinstance(b, bool) else None
 
 
-def classify_pool(p: str, reads: Sequence[tuple[int | None, tuple[int, int] | None]], lphists: Sequence[LpHistory]) -> tuple[str, str]:
+def classify_pool(p: str, reads: Sequence[tuple[int | None, tuple[int, int] | None]], lphists: Sequence[LpHistory], tally: dict[str, int] | None = None) -> tuple[str, str]:
     """('ok'|'explained'|'unexplained'|'unresolved', reason) for one pool's V0 reads, oldest first. Consecutive reads
     that differ must be explained by the pool's LP events (DEC-016 Amendment 5 section 7(b))."""
     status = "ok"
@@ -502,6 +534,11 @@ def classify_pool(p: str, reads: Sequence[tuple[int | None, tuple[int, int] | No
         if entry is None:
             return "unresolved", why
         between, ambiguous = classify_events(entry["events"], sp_a, sp_b)
+        if tally is not None:
+            for sp in (sp_a, sp_b):
+                tf = getattr(sp, "tail_from", None)
+                if tf is not None:  # events inside an assumed fetch tail (tried both ways like any in-span event)
+                    tally["events_in_assumed_tail"] = tally.get("events_in_assumed_tail", 0) + sum(1 for e in ambiguous if e.get("block_time") is not None and tf - 1 <= e["block_time"] <= sp[1] + 1)
         ok = lph.consistent(v_a, v_b, between, ambiguous)
         if ok is None:
             return "unresolved", "too_many_ambiguous_events"
@@ -530,6 +567,7 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
             if v is not None:
                 snap_v[p] = v
     classes: dict[str, Any] = {"explained": [], "unexplained": [], "unresolved": {}}
+    tally: dict[str, int] = {}
     for p in sorted(pool_set):
         reads: list[tuple[int | None, tuple[int, int] | None]] = []
         for i, (sm, sd) in enumerate(zip(snaps, snap_details)):
@@ -539,13 +577,14 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
             reads.append((_b(final_detail, p), spans[len(snaps)]))
         if len(reads) < 2:
             continue
-        status, why = classify_pool(p, reads, lphists)
+        status, why = classify_pool(p, reads, lphists, tally)
         if status == "explained":
             classes["explained"].append(p)
         elif status == "unexplained":
             classes["unexplained"].append(p)
         elif status == "unresolved":
             classes["unresolved"][p] = why
+    classes["events_in_assumed_tail"] = tally.get("events_in_assumed_tail", 0)
     held = set(classes["unexplained"]) | set(classes["unresolved"])
     out = dict(final)
     want = sorted(p for p, v in snap_v.items() if out.get(p) is None)
@@ -606,7 +645,15 @@ def cmd_merge(a: argparse.Namespace) -> int:
         raise Refused(f"{side(final_path, '.detail.json')} does not match detail_sha256 in the fetch file")
     snap_details = [load_detail(sp) for sp in snap_paths]
     lphists = [LpHistory(Path(x)) for x in (a.lphist or [])]
-    spans = [snapshot_span(sp) for sp in snap_paths] + [span_of(load_json_dict(side(final_path, ".fetch.json"), "fetch file"))]
+    fetch_over: dict[str, Path] = {}
+    for item in a.snapshot_fetch or []:
+        name, sep, fpath = item.partition("=")
+        if not sep or not fpath:
+            raise Refused(f"--snapshot-fetch {item!r}: expected SNAPFILE=FETCHJSON")
+        fetch_over[Path(name).name] = Path(fpath)
+    if set(fetch_over) - {sp.name for sp in snap_paths}:
+        raise Refused("--snapshot-fetch names a file that is not one of the --snapshot arguments")
+    spans = [snapshot_span(sp, fetch_over.get(sp.name)) for sp in snap_paths] + [span_of(load_json_dict(side(final_path, ".fetch.json"), "fetch file"))]
     side_paths = {"unexplained": side(out, ".unexplained.json"), "unresolved": side(out, ".unresolved.json")}
     merged, filled, ignored, classes = merge_maps(final, [pv.load_map(s) for s in snap_paths], pool_set, reasons, final_detail, snap_details, spans, lphists)
     for k, sp in side_paths.items():  # ids stay in files; diagnostics, so a refused run may rewrite them
@@ -656,6 +703,9 @@ def cmd_merge(a: argparse.Namespace) -> int:
             "unresolved_sha256": sha256_file(side_paths["unresolved"]),
             "lphist": [{"file": h.path.name, "sha256": h.sha256, "meta_sha256": h.meta_sha256, "t_from_unix": h.t_from, "t_to_unix": h.t_to, "n_pools": h.meta.get("n_pools"), "n_unresolved": h.meta.get("n_unresolved")} for h in lphists],
             "fetch_spans_unix": [list(s) if s else None for s in spans],
+            "snapshot_fetch_sha256": {n: sha256_file(f) for n, f in sorted(fetch_over.items())},
+            "snapshot_fetch_sidecar_sha256": {sp.name: sha256_file(side(sp, ".fetch.json")) for sp in snap_paths if side(sp, ".fetch.json").is_file()},
+            "span_assumption": {"OLD_FETCH_MAX_MIN": OLD_FETCH_MAX_MIN, "note": "a fetch record without fetch_ended_utc is assumed to have ended by last_fetch_utc + OLD_FETCH_MAX_MIN", "n_spans_with_assumed_end": sum(1 for s in spans if getattr(s, "tail_from", None) is not None), "n_events_in_assumed_tail": classes["events_in_assumed_tail"]},
         },
         "sha256": {"final": sha256_file(final_path), "pools": sha256_file(Path(a.pools)), "reasons": sha256_file(side(final_path, ".reasons.json")), "final_detail": sha256_file(side(final_path, ".detail.json")), "snapshot_details": [sha256_file(side(sp, ".detail.json")) for sp in snap_paths], "fetch": sha256_file(side(final_path, ".fetch.json")), "snapshots": [sha256_file(s) for s in snap_paths], "out": sha256_file(out)},
     }
@@ -883,6 +933,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--final", required=True)
     p.add_argument("--pools", required=True, help="the section 1 pool set (pools.json)")
     p.add_argument("--snapshot", action="append", required=True)
+    p.add_argument("--snapshot-fetch", action="append", default=[], help="SNAPFILE=FETCHJSON: a fetch record for a snapshot; accepted only if its detail_sha256 equals the ledger row's (repeatable)")
     p.add_argument("--lphist", action="append", default=[], help="an lphist output (its .meta.json sha256 is checked); repeatable")
     p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_merge)
