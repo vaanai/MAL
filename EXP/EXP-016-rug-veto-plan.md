@@ -40,20 +40,26 @@ From the code, not from data:
 
 For a migrated mint m:
 - **Canonical pool** `p_m` = the `pool` field of m's `migration` row. Only prints with `pool == p_m` are used. They are ordered by `(slot, tx_index, event_index)`.
-  - A mint whose migration row has no `pool` gets no label and is excluded from training. It stays in both books (the frozen book and the kept book), and the veto may act on it. Such mints are counted before `started`.
+  - A mint whose migration row has no `pool` is **excluded from both books** (the frozen book and the kept book) and from training. Such mints are counted before `started`.
 - **Excluded rows.** Rows whose `trader` is our own probe wallet are dropped from the label and from every feature. The tool pins the probe wallet's public key. No key material is used. The exploration pools end before the probe started, so this guards only the later blocks. Simulated fills are never written to the tape.
-- **V rule (pinned).** `V(p_m)` = **V0**, the pool's base virtual quote reserve, read from the pinned map built by the fixed parser (§11, P1). The pending fee and cashback counters are **ignored**. The stored V is V0 − A − B, where A and B are pending counters. They moved V by at most 0.002 SOL in the V investigation (2026-10-06). V0 was constant on 200 of 200 sampled pools. So "V in force at print i" equals V0 to within 0.002 SOL. That is about 1 bp at E ≈ 17.6 SOL and far less on deeper pools, and it is disclosed here rather than modelled. A pool with V0 = 0 (a pre-V-era pool) is priced on the vault alone, which is `pumpswap_virtual_adapter.correct_print`'s `v ≤ 0 → vault` rule.
-- **Effective quote.** Before print i: `E_i = quote_reserve_i + V0(p_m)`. After print i: `E⁺_i` = the post-trade vault from `tools.paper_price_path.pumpswap_post_trade_reserves`, plus V0.
-  - **Fee fallback.** v2 rows drop the fee fields, so the helper always takes its `fee_ppm` branch, with `fee_ppm = paper_curve_math.venue_fee_ppm("pumpswap", mcap)`. `mcap` is that print's market cap on vault + V0, as the V adapter's `mcap_mode="v"` computes it. The error is about one trade's fee, around 1% of that trade's quote, which is small next to a 36.75% threshold.
-  - **When the helper returns None.** For a sell whose pool delta is at least the vault, `E⁺_i` = V0 (the vault is drained; this can only make A or B fire). In every other None case (zero or malformed amounts), `E⁺_i` = `E_i`, and the print is treated as a no-op. Both cases are counted and reported.
+- **V rule (pinned; the same for the label and the simulator).** `Vp(p_m)` = the **stored V** from the pinned fixed-parser map (§11, P1), which is the value `pumpswap_virtual_adapter.correct_print` uses, with **v ≤ 0 → vault-only** (`Vp = 0`).
+  - The label and the frozen simulator therefore price every print identically, which is P4's test.
+  - **Disclosed:** stored V = V0 − A − B, where A and B are pending fee and cashback counters. In the V investigation (2026-10-06) they were at most 0.002 SOL (about 1 bp at E ≈ 17.6 SOL, and far less on deeper pools), and V0 was constant on 200 of 200 sampled pools.
+  - Stored V is one snapshot, so it differs from the V at trade time by at most those counters, subject to P1's constancy check.
+- **Effective quote.** Before print i: `E_i = quote_reserve_i + Vp(p_m)`. After print i: `E⁺_i` = the post-trade vault from `tools.paper_price_path.pumpswap_post_trade_reserves`, plus `Vp`.
+  - **Fee fallback.** v2 rows drop the fee fields, so the helper always takes its `fee_ppm` branch, with `fee_ppm = paper_curve_math.venue_fee_ppm("pumpswap", mcap)`. `mcap` is that print's market cap on vault + Vp, as the V adapter's `mcap_mode="v"` computes it. The error is about one trade's fee, around 1% of that trade's quote, which is small next to a 36.75% threshold.
+  - **When the helper returns None.** For a sell whose pool delta is at least the vault, `E⁺_i` = `Vp` (the vault is drained; this can only make A or B fire). In every other None case (zero or malformed amounts), `E⁺_i` = `E_i`, and the print is treated as a no-op. Both cases are counted and reported.
 - **Hold window `H_m`.** This is defined only for a FILLED frozen-cell trade. It runs from the entry-state print the frozen simulator fills against at the deciding cell (k = 6, §6) to the print its `tp50_sl30` exit fills against, with exit lag 2, inclusive. **Both endpoints are canonical-pool prints** (§11, P2). A MISS has no hold window and no label.
-- **Censored rows.** Some trades have no exit print before the tape or the cap ends. Their count is taken before `started`, outcome-blind (status counts only, no nets). Their window ends at the last canonical-pool print, and A and B are evaluated through that print's `E⁺`. A drain with no later print is therefore labelled RUG from the last print's state, never dropped. The kept book, like the frozen book, scores a censored row at its last print. This is disclosed, and it flatters both books equally.
+- **Censored cells (EXP-015's rule, kept).** A cell is censored when the tape ends before its exit deadline. That is a block-edge effect, not an outcome.
+  - Censored cells are **dropped from both books** and get no label. Their count is taken before `started`, outcome-blind (status counts only, no nets).
+  - **A time-cap exit with no print after the cap** is censored too, and handled by the same rule.
+- **Drains at the end of the window.** A drain that is itself the dump step is caught through `E⁺` of the print that does it, even when that print is the last in `H_m`: event A uses `E⁺`, not a later print. An **untaped** drain needs a later print (event B). Without one it is invisible (§10).
 
 **RUG(m) = 1 iff event A or event B occurs inside `H_m`:**
 - **A, a flow step.** For some slot s that has a print in `H_m`, let `A_before(s)` be E of the first print at s, and `A_after(s)` be E⁺ of the last print in `H_m` with slot ≤ s + 2. A fires if `A_after(s) / A_before(s) ≤ 0.6325` (= √0.40). Under constant product this is a spot-price fall of at least 60% within 3 slots. Three slots is the stop's reaction horizon: the trigger slot plus exit lag 2.
 - **B, an untaped drain.** For consecutive prints i, i+1 in `H_m`, B fires if `E_{i+1} / E⁺_i ≤ 0.6325`. The pool lost at least 36.75% of its effective SOL with no taped trade in between. That covers a liquidity withdrawal, an undecoded instruction or a missing row. In every case the reserves are real on-chain state, and the next sell gaps.
 
-**Properties, by construction.** A RUG trade cannot exit at the tp after the step. The step starts below 1.5·P0, or the tp would already have fired, and it ends below 0.40 of its start, so below 0.6·P0. Its stop fires inside the step or right after it, and the exit lands near or below 0.6·P0 unless the price recovers within the 2-slot exit lag. RUG is therefore, up to that lag, a subset of "stop exits with a gap of at least 10 points past the stop", plus censored rows. A dump **after** a tp exit is RUG = 0, because it costs the book nothing.
+**Properties, by construction.** A RUG trade cannot exit at the tp after the step. The step starts below 1.5·P0, or the tp would already have fired, and it ends below 0.40 of its start, so below 0.6·P0. Its stop fires inside the step or right after it, and the exit lands near or below 0.6·P0 unless the price recovers within the 2-slot exit lag. RUG is therefore, up to that lag, a subset of "stop exits with a gap of at least 10 points past the stop". A dump **after** a tp exit is RUG = 0, because it costs the book nothing.
 
 **Reported, never selected on:** (i) **RUG70-1**: the owner's example, one slot, price ratio ≤ 0.30 (E ratio ≤ 0.5477); (ii) #191's label, so the two are compared on the same rows; (iii) A-only and B-only counts, with **B split by source** (P1 A, B, C; P2, P3, P4). A B event on the Oracle tape may be a missed row rather than a drain. (iv) the count of prints from other pools seen inside hold windows. Those prints are reported and never filled (§11, P2).
 
@@ -86,7 +92,7 @@ This is arithmetic, not a measurement. A migrated pool is seeded at vault 67.41 
 - **Creator set** = {create row `creator`, create row `trader`}.
 - **Held** = curve buys minus curve sells by that wallet up to the cutoff, floored at 0 per wallet. This is a trade-flow balance only: **SPL token transfers are not on the tape** (§10).
 - **Block history** = the same block's own hours only, trailing 24 h, every event's slot strictly before this mint's migration slot. Each block is left-censored for about its first 24 h, as `creator_prior_mints_24h` already is.
-- **Dump step** (for d2 and d3, on another mint n, on any venue): event A's arithmetic over **n's own prints**, using **n's own V0** on n's canonical pool. On the bonding curve, n's post-trade virtual SOL stands in for E. A step at slot s counts only if **s + 2 < this mint's migration slot**, so the whole window, and every print in it, precedes this mint's cutoff.
+- **Dump step** (for d2 and d3, on another mint n, on any venue): event A's arithmetic over **n's own prints**, using **n's own `Vp`** on n's canonical pool (same rule as §2.2). On the bonding curve, n's post-trade virtual SOL stands in for E. A step at slot s counts only if **s + 2 < this mint's migration slot**, so the whole window, and every print in it, precedes this mint's cutoff.
 
 | id | feature | definition | availability | new vs #191 |
 | --- | --- | --- | --- | --- |
@@ -131,12 +137,13 @@ If these methods bill at 10 credits a call, multiply by 10. Causality holds beca
 - **Frozen selection.** On P1, EXP-012's stored OOF scores (as #191). On P2-P4, the frozen model's scores. The selected set is every migration with score ≥ 0.8030766588450794.
 - **Training universe for the logistic:** every FILLED migration on the training dates at the deciding cell, labelled by §2. That is about ten times the selected set, so positives are not scarce. MISS rows are excluded (no hold window) and counted.
 - **No pool is ever removed. No removal depends on outcomes.** EXP-015 §11 item 11's 0.5% removal rule is **not** used.
-  - The V investigation showed that `pool_v_0909.json`'s 321 null pools are V0 = 0 pools: vault pricing fits them at 0.000 bps. They are not closed accounts. The fixed-parser map reads them as V0 = 0, and they are priced vault-only.
-  - **Truly closed pools** (no account to read) are priced by a pinned rule: V0 from the pool's own historical swaps (`tools.pumpswap_virtual_history`, implied V from BuyEvents), or vault-only if there is none.
+  - The V investigation showed that `pool_v_0909.json`'s 321 null pools are V0 = 0 pools carrying small negative pending counters: vault pricing fits them at 0.000 bps. They are not closed accounts. The fixed-parser map reads a stored V ≤ 0 for them, so they are priced vault-only.
+  - **Truly closed pools** (no account to read) are priced by a pinned rule: V implied by the pool's own historical swaps (`tools.pumpswap_virtual_history`, from BuyEvents), or vault-only if there is none.
+    - **Disclosed:** that estimate uses a later observation of a quantity that is treated as constant. That is acceptable only because V0 is constant (P1's check). It is not a look-ahead on outcomes.
   - **Parse-fail pools** (an account that the fixed parser still cannot decode) get the same rule.
   - **Before `started`**, the number of closed pools and of parse-fail pools among frozen-selected mints is counted and written out, as pool ids only.
   - The kept book is **gated** on a total-loss sensitivity for these mints (§7 S6, §8 (g)).
-- **Disclosed frozen-book change.** The fixed-parser map prices the 321 V0 = 0 pools, and any pool whose V EXP-015 read differently, unlike EXP-015's pinned `pool_v_0909.json` (sha `70914a16…5b42e`). So the frozen EXP-012 book here is **not** byte-comparable with EXP-015's frozen side. Both EXP-016 arms use the same map, so the paired comparison is unaffected.
+- **Disclosed frozen-book change.** The fixed-parser map prices the 321 V ≤ 0 pools (vault-only), and any pool whose V EXP-015 read differently, unlike EXP-015's pinned `pool_v_0909.json` (sha `70914a16…5b42e`). So the frozen EXP-012 book here is **not** byte-comparable with EXP-015's frozen side. Both EXP-016 arms use the same map, so the paired comparison is unaffected.
 
 ## 5. Candidates, model and tries cap
 
@@ -186,7 +193,7 @@ The bars in §7 are computed on the **outer** results of this procedure, not on 
 ## 6. Costs in every deciding cell
 
 These are EXP-015 §4, unchanged, and the costs `tools/exp015_screen.py` already pins:
-- V pricing: vault + V0 per pool from the pinned fixed-parser map, with pending counters ignored (§2.2). V0 = 0 means vault-only. Closed and parse-fail pools follow §4's rule;
+- V pricing: vault + stored V from the pinned fixed-parser map, with v ≤ 0 meaning vault-only (§2.2), for the label and the simulator alike. Closed and parse-fail pools follow §4's rule;
 - k = 6;
 - 0.05 SOL;
 - 505,000 lamports per side (a MISS pays the fee);
@@ -201,7 +208,7 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 
 **Paired unit.** Over every frozen-selected migration m on the scored dates: **x_m = −v_m · net_m**, where v_m = 1 if the outer-selected veto removes m and net_m is m's haircut net under the leg.
 - **A vetoed MISS scores x_m = 0.** It keeps its fee in both arms. Simulator misses never count as gains (the #181 lesson: 40 of 46 vetoes there were misses).
-- Censored rows are scored at their last print, as in the frozen book (§2.2).
+- Censored cells and mints with no migration `pool` are not in either book (§2.2).
 
 **Date sets (pinned).** All pool dates; the non-P1 dates; and each pool on its own (P1, P2, P3, P4).
 
@@ -238,7 +245,7 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 - **Before Part 1** (outcome-blind, counts and hashes only):
   - `backfill_verify` in both modes (`--content --min-slots-per-hour 8000`);
   - dedupe, sha256 manifest, and a clean view with `VIEW.sha256`;
-  - a V0 map covering **every** PumpSwap pool traded in the block, built with the fixed V parser (§11, P1), with its sha pinned. Closed and parse-fail pools are priced by §4's rule and counted, as pool ids.
+  - a V map covering **every** PumpSwap pool traded in the block, built with the fixed V parser (§11, P1), with its sha pinned. Closed and parse-fail pools are priced by §4's rule and counted, as pool ids.
 - **Ownership and priority.** The ledger names an owner only through a merged pre-registration. EXP-016 has priority on this block (manager decision, 2026-10-06, because the owner asked for this study). **The manager will not merge an EXP-014 pre-registration that claims `[2026-08-02T12, 2026-08-08T12)` while EXP-016's Part 1 is pending. EXP-014 waits for the next block.** There is no race. If EXP-016 fails its screen, the block is released by ledger edit, unread, as §7 says.
 - **Buffer.** Block history (d1-d4, `creator_prior_mints_24h`) is built from the block's own hours. fresh-0808, which follows it, stays unread, so the first ~24 h is left-censored, as in training.
 
@@ -247,8 +254,8 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 - Part 2 records: candidate id, model and feature-list md5, threshold, feature-code commit, the row-universe and feature-table sha256 values, the view pins, and `FROZEN.md5`.
 - **The scorer refuses unless all of it matches.** It uses EXP-012's refusal list as the template: code commit match, a clean tree, an O_EXCL read-once lock at `/data/mal/exp016/HOLDOUT_READ.lock` taken before the first row, a view re-hash before the lock, 144/144 hours sealed, and the V0-map sha asserted.
 - **Two more checks run before the lock**, outcome-blind, from pool ids and frozen scores only:
-  - **V coverage** counts only pools with a readable V0 (V0 = 0 is readable). It must be over 99% of the block's traded canonical pools.
-  - **The gating-cell no-V check**: every frozen-selected mint's canonical pool has a readable V0 or a §4 rule price, and the count of closed and parse-fail pools is written out.
+  - **V coverage** counts only pools with a readable stored V (a value ≤ 0 is readable and means vault-only). It must be over 99% of the block's traded canonical pools.
+  - **The gating-cell no-V check**: every frozen-selected mint's canonical pool has a readable stored V or a §4 rule price, and the count of closed and parse-fail pools is written out.
 - A refusal before the lock does not spend the block. Any failure after the lock does.
 
 **The single gating cell.** Frozen EXP-012 selects. The frozen EXP-016 veto removes. The costs are §6. **The kept book** is the frozen-selected entries minus the vetoed ones, and a vetoed MISS stays in the kept book with its fee.
@@ -262,7 +269,7 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 - (f) the one-sided bootstrap p-values of the kept-book mean > 0 and of the paired mean > 0 are each ≤ **0.0125**, 10,000 draws, seed 1, both resamplers;
 - (g) (a)-(d) still hold when every kept trade on a closed or parse-fail pool (§4) is scored at total loss, −(size + both fees).
 
-**Multiplicity: lab-wide Bonferroni.** α = 0.05 is split equally across the four confirmation families EXP-013, EXP-014, EXP-015 and EXP-016: **α/4 = 0.0125 per family**. The manager is tightening the other three to 0.0125 by pre-read amendments. (f) only tightens the CLAUDE.md gate.
+**Multiplicity: lab-wide Bonferroni.** α = 0.05 is split equally across the four confirmation families EXP-013, EXP-014, EXP-015 and EXP-016: **α/4 = 0.0125 per family**. The other three were tightened to 0.0125 by pre-read amendments in #382 (merged). (f) only tightens the CLAUDE.md gate.
 
 **Few dates.** The block has 6-7 UTC migration dates. A date-cluster bootstrap over so few clusters **understates** the variance, so its CI and p-value are optimistic. The token-level `book_stats` resampler is required as well, but it ignores day effects. Neither is exact, and both must pass.
 
@@ -286,7 +293,7 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 - **Expected effect against DEC-021's δmin.** This is arithmetic, not a measurement. A veto of about 5% of selected trades that avoids about −0.01 SOL on each improves the book by about **+0.0005 SOL per frozen-selected trade** at 0.05 SOL. Over every migration in the window (DEC-021's paired unit, with about 10% of migrations selected) that is about +0.00005. Both are far below DEC-021's δmin of **+0.003 per trade**.
   - At ρ ≈ 0.9, DEC-021's table needs about 838 trades for 80% power at +0.001. Scaling by 1/δ², that is about 3,300 trades at +0.0005, many weeks of forward data.
   - **A forward paired test of this veto is therefore badly underpowered at any realistic window.** The new DEC must state its power at the expected effect, even if that is far below 0.5.
-- **Live change follows DEC-021 as approved.** A passing challenger switches under DEC-021 §6 and §7, on the manager's decision, with the notebook decision and Console entry that §6(f) requires. Helm does the re-pin. **Size and funding stay owner decisions** (DEC-020): a switch never changes size or wallet. The veto does not change k or the fee either. Computing the features live (curve history and 24 h block state on the fast box) is part of the DEC-021 §7 pre-live checks.
+- **Live change follows the new DEC (a third walk), modelled on DEC-021 §6-§7.** A passing challenger switches under that DEC's switch rule, on the manager's decision, with the notebook decision and Console entry that DEC-021 §6(f) requires. Helm does the re-pin. **Size and funding stay owner decisions** (DEC-020): a switch never changes size or wallet. The veto does not change k or the fee either. Computing the features live (curve history and 24 h block state on the fast box) is part of the DEC-021 §7 pre-live checks.
 - **No effect on EXP-012's 10-16 read.** EXP-016 opens no hour at or after 2026-10-02T00 and changes nothing frozen.
 
 ## 10. What it cannot show, and the honest prior
@@ -295,8 +302,8 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 - **Token transfers.** Creators who split supply to fresh wallets look dispersed. Every "held" figure is a trade-flow lower bound on what a group controls.
 - **Funding links.** Without f1, a ring funded from one wallet looks like strangers.
 - **Rugs after the hold window, or before the entry.** They are not in the label, by design.
-- **Pools without a print after a drain.** A taped drain is caught from the last print's `E⁺`. An **untaped** drain with no later print is invisible, and the censored trade is scored at its last print, which flatters both books (§2.2).
-- **Pending V counters.** Ignored, by up to 0.002 SOL per pool (§2.2). A long-unclaimed cashback pool could carry more. That was not observed, but it is not ruled out.
+- **Pools without a print after a drain.** A taped drain is caught from that print's `E⁺`. An **untaped** drain with no later print is invisible. If the tape then ends before the deadline, the cell is censored and dropped (§2.2).
+- **Pending V counters.** Stored V carries them, by up to 0.002 SOL per pool (§2.2). A long-unclaimed cashback pool could carry more. That was not observed, but it is not ruled out.
 - **Within-slot order on P1's Oracle sources.** It is receive order (§2.1), so A's slot edges may be slightly off there. The deciding bars use getBlock dates.
 - **Live gap size.** Live exits leak beyond lag 2 (stops fired at −31% to −74% in early builds). A real rug costs more than the simulator charges, so the veto's value may be understated, while its false positives cost exactly what the simulator says.
 - **Drift.** The confirmation block is August, two months before live, and it backcasts. LODO trains on both sides of each date.
@@ -316,30 +323,35 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 2. **Label:** A or B, −60% within 3 slots, is primary and is pinned as written (§2.2). RUG70-1 and #191's label are report-only.
 3. **Creator funding (f1):** phase 2, a separate later family. Phase 1 is tape-only (§3).
 4. **The 0802 block:** EXP-016 has priority. The manager will not merge an EXP-014 pre-registration claiming it while EXP-016's Part 1 is pending, and EXP-014 waits for the next block (§8).
-5. **Live:** DEC-021 as approved. Size and funding stay owner decisions (§9).
+5. **Live:** follows the new DEC (a third walk), modelled on DEC-021 §6-§7. Size and funding stay owner decisions (§9).
 6. **Tries:** at least 74 on P1. Exact counts are read from `data/tries.jsonl` when the `started` line is written (§5.4).
 7. **Timing:** EXP-016 targets a later walk, not walk 2 (§9).
 
 **Preconditions. No EXP-016 row (label, feature or table) is built before all of these hold:**
-- **P1, the V parser fix and the V0 map.**
+- **P1, the V parser fix and the V map.**
   - The fix PR `claude/pumpswap-v-signed-base` decodes V as signed, records the pending counters and `v_base` (V0), and checks constancy on V0. It must merge first.
   - **The merge sha is recorded in a dated post-pin edit of this file before any row is built.**
-  - A V0 map covering every PumpSwap pool traded in every pool view (P1-P4) is then built with the fixed parser, and its sha256 is pinned in the tool by a reviewed commit. The confirmation block gets its own map (§8).
-  - The pricing rule is fixed in §2.2: V0 per pool, pending ignored (≤ 0.002 SOL, disclosed); V0 = 0 means vault-only; closed and parse-fail pools follow §4.
-  - V coverage counts only pools with a readable V0.
+  - A V map covering every PumpSwap pool traded in every pool view (P1-P4) is then built with the fixed parser, and its sha256 is pinned in the tool by a reviewed commit. The confirmation block gets its own map (§8).
+  - The pricing rule is fixed in §2.2: stored V from the pinned map, the value `correct_print` uses, with v ≤ 0 meaning vault-only, for the label and the simulator alike. Stored V differs from V0 by pending counters of ≤ 0.002 SOL (disclosed). Closed and parse-fail pools follow §4.
+  - V coverage counts only pools with a readable stored V.
+  - **Constancy check (outcome-blind, before `started` and before the confirmation lock).** On a sample of P2 pools and of 0802 pools (the sample size is pinned in the tool), the V implied at trade time by each pool's own swaps (`tools.pumpswap_virtual_history`) is compared with the map's stored V.
+    - A pool **disagrees** if the difference exceeds **max(1 bp of that print's quote reserve, 0.002 SOL)**.
+    - If **more than 1%** of sampled pools disagree, the run **refuses** and reports the pools, by id and difference only.
+    - The check reads pool fields and swap amounts, not trade outcomes.
 - **P2, pool attribution.**
   - The builder verifies, with a unit test and a count on the real pools, that an EXP-012 fill (entry and exit) is never priced from a pool other than the mint's migration pool. The count is taken before `started` and is outcome-blind: pool ids only. A print from another pool inside a hold window is reported and never filled.
   - **This check is likely to refuse.** `latency_curve` builds a mint's print list without reading `pool`. The expected fix restricts the frozen simulator's prints to the migration pool. That is a **disclosed frozen-book change**: both EXP-016 arms use it, the PR that makes it says so, and the frozen book's numbers here may differ from earlier EXP-012 runs.
   - If the check refuses, nothing is spent. The manager approves the fix before any try is spent.
-  - The same pre-`started` pass counts the mints whose migration row has no `pool`.
+  - The same pre-`started` pass counts the mints whose migration row has no `pool`. They are excluded from both books (§2.2).
 - **P3, the pin.** The manager records this plan's head sha in a PR comment, and `quant-proof` reviews the bars.
 - **P4, the tool PR with tests:**
   - **Label:** synthetic prints for:
     - a 3-slot dump (fires) and a slow decline (does not fire);
-    - an untaped drain (fires), and a drain by the last print with no later print (fires);
+    - an untaped drain (fires), and a dump step made by the last print in the window (fires);
+    - a censored cell (dropped from both books, no label);
     - a dump after the tp exit (does not fire), and a probe-wallet row (ignored);
     - the `post_trade_reserves` None cases (§2.2);
-    - V0 > 0, V0 = 0 and stored-negative-V pools.
+    - stored V > 0, stored V = 0 and stored V < 0 (vault-only) pools.
   - **Adapter path.** The test covers the path `latency_curve` actually prices through: `pumpswap_virtual_adapter.correct_print`, including `v ≤ 0 → vault`. The label and the simulator must price the same print identically.
   - **Features:** causality checks. Shuffled future events, including events in the migration slot itself, must not change any feature, as `tools/test_exploration_entry_model.py` checks today. This covers c1 and e2 at the slot cutoff. The per-block cluster pass must never use another mint's event at or after this mint's migration slot. In particular, a d2/d3 dump step counts only if s + 2 < this mint's migration slot.
 - **P5, data.** EXP-015's P4 preconditions are recorded (or the run goes without P4 and says so). The build runs as a MiScusi job, one heavy job at a time.
@@ -349,7 +361,7 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 All made 2026-10-06, before any pin and before any EXP-016 code exists:
 1. Manager decisions applied (§11) (7b3d766).
 2. After `quant-proof` returned CHANGES, and after the V investigation:
-   - the V rule is pinned to V0 per pool, with pending ignored (§2.2);
+   - the V rule is pinned to V0 per pool, with pending ignored (§2.2); superseded by item 3;
    - no outcome-linked removal; closed and parse-fail pools are priced by a rule and gated on a total-loss sensitivity (§4, S6, §8 (g));
    - the P1 and P4 adapter path; disclosure of the change to the frozen book;
    - lab-wide Bonferroni at 0.0125 (§8); the inner pick is pressure-only; the L5/L10 quantile is over filled trades;
@@ -358,6 +370,14 @@ All made 2026-10-06, before any pin and before any EXP-016 code exists:
    - label edge cases (§2.2): own wallet, endpoints, fee fallback, None cases, B by source, censored rows;
    - feature cutoff details (§3): d2/d3 windows and V0, c1 and e2 at the slot cutoff;
    - S5 date sets, the pre-lock checks, P2's likely refusal, no-pool mints, and the few-dates bootstrap caveat.
+
+3. Quant-proof round 2:
+   - **Pricing field:** stored V with v ≤ 0 meaning vault-only, for the label and the simulator; V0 dropped as the pricing field (§2.2).
+   - **Censored cells:** dropped from both books (EXP-015's rule); a time-cap exit with no print follows the same rule.
+   - **Live wording:** the new DEC for a third walk.
+   - **P1:** a constancy check.
+   - **No-pool mints:** excluded from both books.
+   - **Multiplicity:** #382 cited.
 
 ## Sources
 
