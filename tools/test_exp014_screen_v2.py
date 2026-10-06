@@ -409,6 +409,84 @@ class BothExitLegsTests(unittest.TestCase):
         self.assertEqual(ev["bars_pinned_d"]["holm"]["p"], h["p"])
 
 
+class MainEndToEndTests(unittest.TestCase):
+    """main() on a tiny fixture: guards, view pins and the V-map pin are stubbed; the tape pass and the model are replaced by a synthetic table."""
+
+    def run_main(self, td: str, tape_raises: BaseException | None = None) -> tuple[int | None, BaseException | None, Path, Path, Path]:
+        out, ops, canon = Path(td) / "out", Path(td) / "ops.jsonl", Path(td) / "canon.jsonl"
+        rows, selected = EvaluateTests().synth()
+        table = []
+        for r in rows:
+            for lag in sorted({sv.EXIT_LAG, r["entry_land_k"]}):
+                table.append({**r, "exit_lag": lag, "mig_ms": 0, "amm_pool": None, "excluded_by_time": False, "features": {}})
+        dates = sorted({r["day"] for r in rows})
+        stats = {"rows_after_scored_within_bound": 0, "v_counts": {"no_v": 0, "pumpswap_prints": 100}, "no_v_pools": []}
+
+        def fake_tape(*_a, **_k):
+            if tape_raises is not None:
+                raise tape_raises
+            return table, stats
+
+        g = {"layout": {}, "hours_present": {}, "vmap_sha256": "v", "view_sha256": {}}
+        patches = [
+            mock.patch.object(sv, "run_guards", lambda *_a, **_k: g),
+            mock.patch.object(sv, "layout_digest", lambda _g: "digest"),
+            mock.patch.object(sv, "check_precount", lambda *_a, **_k: {"counts": {}, "layout_digest": "digest"}),
+            mock.patch.object(sv, "frozen_selected_mints", lambda *_a, **_k: (set(), set())),
+            mock.patch.object(sv, "tape_pass", fake_tape),
+            mock.patch.object(sv.mm, "nested_lodo_select", lambda *_a, **_k: (selected, [], {})),
+            mock.patch.object(sv, "transfer_selection", lambda *_a, **_k: {"threshold_p90": 0.5, "selected": []}),
+            mock.patch.object(sv.e17, "check_canonical_tries", lambda *_a, **_k: None),
+            mock.patch.object(sv.e15, "non_p1_dates", lambda *_a, **_k: dates),
+            mock.patch.object(sv.e15, "in_block_window", lambda *_a, **_k: True),
+            mock.patch.object(sv.e15, "git_state", lambda: {"head": "deadbeef", "dirty_tools": False}),
+        ]
+        for pt in patches:
+            pt.start()
+            self.addCleanup(pt.stop)
+        canon.write_text("", encoding="utf-8")
+        argv = ["--out-dir", str(out), "--tries-log", str(ops), "--canonical-tries", str(canon), "--p2-view-dir", "x", "--p4-view-dir", "y", "--max-workers", "1"]
+        rc, exc = None, None
+        try:
+            rc = sv.main(argv)
+        except BaseException as e:  # noqa: BLE001
+            exc = e
+        return rc, exc, out, ops, canon
+
+    @staticmethod
+    def statuses(log: Path) -> list[str]:
+        return [json.loads(x)["config"]["status"] for x in log.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+    def test_full_run_started_to_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rc, exc, out, ops, canon = self.run_main(td)
+            self.assertIsNone(exc)
+            self.assertEqual(rc, 0)
+            self.assertEqual(self.statuses(ops), ["started", "completed"])
+            self.assertEqual(self.statuses(canon), ["started", "completed"])
+            rep = json.loads((out / sv.OUT_SCREEN).read_text(encoding="utf-8"))
+            self.assertIn("bars_pinned_d", rep["evaluation"])
+            self.assertIn("passes_by_leg", rep["evaluation"])
+            self.assertTrue((out / sv.OUT_MD).is_file())
+            self.assertEqual(json.loads((out / e15.OUT_RECORD).read_text(encoding="utf-8"))["status"], "completed")
+
+    def test_failure_after_started_writes_aborted_in_both_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rc, exc, out, ops, canon = self.run_main(td, RuntimeError("boom"))
+            self.assertIsNone(exc)
+            self.assertEqual(rc, 3)
+            self.assertEqual(self.statuses(ops), ["started", "aborted"])
+            self.assertEqual(self.statuses(canon), ["started", "aborted"])
+            self.assertFalse((out / sv.OUT_SCREEN).exists())
+
+    def test_systemexit_after_started_writes_aborted_and_reraises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rc, exc, out, ops, canon = self.run_main(td, SystemExit(9))
+            self.assertIsInstance(exc, SystemExit)
+            self.assertEqual(self.statuses(ops), ["started", "aborted"])
+            self.assertEqual(self.statuses(canon), ["started", "aborted"])
+
+
 class OutcomeTests(unittest.TestCase):
     def test_outcome_lines(self) -> None:
         self.assertIn("never 'has an edge'", sv.outcome_line({"passes": True, "bars": {}}))

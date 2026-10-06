@@ -10,7 +10,7 @@ Modes
                  Counts rows, bad lines, rows without a clock, PumpSwap rows with no pool or no V, migrations (tape order) per T day, creates.
                  Refuses (exit 2) on any missing hour, a zstd stream that does not end rc 0, or V coverage below the pins. Writes precount.json.
   (screen)       refuses unless precount.json is clean and was made by the same code and layout; takes RUN.lock (O_EXCL); writes a `started` line to BOTH
-                 tries logs; runs the tape pass (V-priced, exit lag 2, stakes 0.05 and 0.5 SOL), the nested LODO, the bars and the Holm test (k = 1);
+                 tries logs; runs the tape pass (V-priced, exit lag 2 and the pinned lag = d, stakes 0.05 and 0.5 SOL), the nested LODO, the bars on BOTH exit legs and the Holm test (k = 1, larger p of the two legs);
                  writes screen.json and screen.md and the `completed` lines. A second run is refused, before and after `started`.
 
 Run (research host, one heavy job at a time, as a MiScusi job; see the PR body for the exact lines):
@@ -72,6 +72,9 @@ DEFAULT_OUT = Path("/data/mal/exp014-screen-v2")
 CODE_FILES = ("tools/exp014_screen_v2.py", "tools/exp014_m15_trigger.py", "tools/exp014_m15_model.py", "tools/exp015_screen.py", "tools/exp017_screen.py", "tools/pumpswap_virtual_adapter.py", "tools/pumpswap_virtual.py")
 BANNER = (
     "EXPLORATION, NO EDGE CLAIM. EXP-014 screen v2. Prior odds about 10 % (plan). One try, Holm k = 1. P1 is not read. "
+    "Family count: this is the 7th family scoped to these 27 non-P1 dates (EXP-015, EXP-016, EXP-017, EXP-018, EXP-019, EXP-020 report-only, EXP-014 v2); "
+    "by data/tries.jsonl 3 have spent their try (EXP-015, EXP-018, EXP-019, all failed) and 3 others have not read an outcome yet (EXP-016, EXP-017, EXP-020); "
+    "the Holm k = 1 here does not correct for them. PASS needs every bar on BOTH the lag-2 and the pinned lag = d exit legs. "
     "Post-read disclosures: the explore-0814 days were read by DEC-017 (a) and by the EXP-012 backcheck; fresh-0903 was spent by EXP-012; exp011-0909 by EXP-011/015."
 )
 
