@@ -297,7 +297,7 @@ def _hour_task(task: tuple[str, str, dict[str, int]]) -> tuple[str, dict[str, li
     for r in read_trade_file(path, h, counters, needle=b'"pumpswap"'):
         m = r.get("mint")
         mig = wanted.get(m) if isinstance(m, str) else None
-        if mig is None or not _is_swap_wsol(r):
+        if mig is None or not _is_swap_wsol_any(r):  # rows lacking side or pool are kept so features_from_rows can count them (O1)
             continue
         ms = row_ms(r)
         if ms is not None and mig <= ms <= mig + FETCH_MS:

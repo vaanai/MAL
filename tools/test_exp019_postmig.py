@@ -236,7 +236,8 @@ class TestMissDriven(unittest.TestCase):
             self.assertGreater(bd[leg]["positive_sum_from_miss_sol"], 0)
         self.assertIn("paired_without_k8_miss_rows", bd)
         self.assertEqual(bd["paired_without_k8_miss_rows"]["n_migrations"], 2)
-        self.assertTrue(res["cells"]["A"]["miss_driven"] in (True, False))
+        self.assertAlmostEqual(bd["flat"]["positive_sum_share_from_miss"], 0.3641657, places=6)  # 0.00145 of 0.00399 SOL: under the 50 % rule
+        self.assertFalse(res["cells"]["A"]["miss_driven"])
 
     def test_k6_cell_refusal(self):
         uni = [urow(i, i, 1, 1) for i in range(2)]
@@ -266,6 +267,25 @@ class TestPrecountExtras(unittest.TestCase):
         rep = x19.share_report(uni, list(range(6)), {f"m{i}": (OKF if i % 3 == 0 else BADF) for i in range(6)})
         self.assertEqual(rep["dates_with_entered_row_A"]["n"], 1)
         self.assertEqual(rep["dates_with_entered_row_A"]["of"], 3)
+
+    def test_lacking_side_or_pool_counted_through_build_features(self):
+        tt = TestTape()
+        tt.setUp()
+        try:
+            h0 = x19._hour_key(MIG_MS)
+            hours = e15.block_hours("P2")[:12]
+            nopool = {k: v for k, v in prow("M", 1000, "buy", 5, MIG_BT, "d").items() if k != "pool"}
+            write_zst(tt.fn(h0)["trade"], base_rows() + [nopool])
+            for h in hours:
+                if h != h0:
+                    write_zst(tt.fn(h)["trade"], [])
+            feats, _ = x19.build_features({"M": MIG_MS}, hours, tt.fn, VMAP, workers=1)
+            self.assertEqual(feats["M"]["n_candidates_lacking_side_or_pool"], 1)
+            ref = x19.features_from_rows(base_rows(), "M", MIG_MS, VMAP)
+            got = {k: v for k, v in feats["M"].items() if k != "n_candidates_lacking_side_or_pool"}
+            self.assertEqual(got, {k: v for k, v in ref.items() if k != "n_candidates_lacking_side_or_pool"})
+        finally:
+            tt.tearDown()
 
     def test_prev_hour_needed(self):
         h = x19._hour_key(MIG_MS - 60_000)
