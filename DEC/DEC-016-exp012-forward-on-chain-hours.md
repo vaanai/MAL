@@ -202,3 +202,36 @@ This is fixed before any runner row exists and before any forward P&L is opened 
    - Buy implied-fee residual: at least 90% within 1 bps.
 6. **Runner rows.** Amendment 3 (b) rows 4–5 compare the runner's spot with the scorer's **V-corrected** state price. A runner that prices on the vault alone fails rows 4–5 by construction, and must be fixed before any live request.
 7. **Not changed:** the model, threshold, features, execution, size, both fail models, the window, the read date, the no-peek seal and the trial terms.
+
+## Amendment 5 (2026-10-06, pre-read): how the book (B) V map is built, and the (B) tools
+
+Written before any forward P&L file was opened, and before 2026-10-16T00Z. It tightens Amendment 4 §3 and names the (B) tools. No bar, threshold, model, window, read date, fail model, trial term or seal changes.
+
+**Why.**
+- The EXP-012 back-check on explore-0814 (job #207) refused after its read because 1 primary trade sat on a pool with no V. 29 pools were absent from the map and 1 was a closed account.
+- Job #235 (pool and mint fields only) found the cause. The map was built by `tools/exp012_virtual_rescore.py pools`, which keeps only the pools of mints with a `complete` row in the same view. Every one of the 29 absent pools belonged to a mint that traded in the view but had not migrated in it.
+- Amendment 4 §3's wording ("every PumpSwap pool of every migrated mint in the window") invites the same gap.
+- Also, a pool closed by 10-16 reads null, while V is constant per pool. Evidence: #197 checked 10 pools over 08-14..08-25. Across the `pool_v_0814` → `pool_v_0909` refetch two days apart, all 34,892 non-null values were unchanged.
+
+**1. Pool set.** The (B) map covers **every PumpSwap pool printed in any trade file of the hours (B) scores**: the FINAL run's pool hours, buffer hours included, from the walk start. It is collected by `tools/exp012_forward_vmap.py pools`, which uses a real JSON parse and no migration filter, and only on hours that pass `exp012_forward.hour_problems`, with each file's sha checked while it is read. This is a superset of Amendment 4 §3's set.
+
+**2. Early snapshots (outcome-blind).** Before 2026-10-16T00Z the manager may:
+- run `pools` and `fetch` over sealed forward hours;
+- freeze the result with `snapshot`, which writes a read-only copy and a line in `snapshots.jsonl` (utc, sha256, n, n_null).
+
+Only trade-file pool ids and on-chain pool accounts are read; no row, report or scratch file under Amendment 2 is opened. Snapshot shas go in the run log and the FINAL report.
+
+**3. The FINAL map.**
+- After 2026-10-16T00Z, V is fetched into a **new, empty** map file for the §1 pool set. This is Amendment 4 §3's fetch and stays primary.
+- Then `merge` fills only pools that are null or absent in that map from the snapshots. It refuses if two non-null values for a pool ever differ; a refusal makes (B) NOT_DECIDABLE.
+- The FINAL report gives: n pools, nulls before the merge, pools filled from a snapshot (with ids), nulls after, and every input and output sha.
+- A pool still null after the merge is never V = 0. Amendment 4 §3's rule (top 3, or > 1% of entered trades) applies to it unchanged.
+
+**4. (B) tools.** These are recorded here before 2026-10-16T00Z, at the commits that merge:
+- `tools/exp012_forward_vbook.py`: book (B) on the FINAL's own entered set. It refuses without the FINAL (A) marker. It reproduces (A) byte for byte under frozen pricing before computing (B), asserts the entered set equal at v and vault, applies the null-V rule, and uses `exp012_forward.build_report`'s gate.
+- `tools/exp012_forward_vmap.py`: §1–§3, plus §5 validation through `validate`.
+- The Amendment 3(a) sensitivity re-score on (B): `tools/exp012_forward_sensitivity.py` with V pricing.
+
+Commits: _filled in when each merges_.
+
+**5. Effect.** This can only lower the number of null-V pools. It never adds a priced pool that the chain did not price, and it never moves (B) toward support: Amendment 4 §2 still needs both (A) and (B).
