@@ -552,6 +552,7 @@ class LiveExecutor(pe.Executor):
         row = dict(landed=False, fail_class="expired", **self._timing(p), pool=p.get("pool"))
         if p["kind"] == "buy":
             self._log("buy", mint, spend_lamports=p["spend"], expected_tokens=p["q_tokens"], **row)
+            pe.dec020_note_buy(self.limits, self.state, False)
         else:
             pos = self.state.open[mint]
             self._sell_failed(pos)
@@ -623,6 +624,7 @@ class LiveExecutor(pe.Executor):
             cls = classify_failure(m["err"], m["logs"], self.slip_codes)
             del self.state.pending[mint]
             self.state.realized_lamports += m["sol_delta"]  # the fee actually paid
+            pe.dec020_note_buy(self.limits, self.state, False)
             self._log("buy", mint, landed=False, fail_class=cls, err=m["err"], cost_lamports=-m["sol_delta"], **row)
             self.save()
             return
@@ -655,6 +657,9 @@ class LiveExecutor(pe.Executor):
                 "base_ata": p["base_ata"], "base_mint": p["base_mint"], "base_tp": p["base_tp"], "sell_attempts": 0,
                 "ata_pre_amount": m.get("ata_pre_amount"), "extra_cost": 0, "stuck": False, "abandoned": False, "exit_reason": None, "balance_pending": balance_pending, "q_tokens": p["q_tokens"], "buy_slot": m["slot"],
             }
+        # dec020 stops: after all bookkeeping, guarded (never raises). Entry bps counted at landing, not at close.
+        pe.dec020_note_buy(self.limits, self.state, True, entry_bps=row.get("entry_vs_quote_bps"), entry_estimated=balance_pending,
+                           zero_tokens=tokens <= 0)
         self.save()
 
     # -- exit
@@ -796,6 +801,7 @@ class LiveExecutor(pe.Executor):
         )
         self.state.realized_lamports += pnl + pos.get("extra_cost", 0)  # failed-sell fees were booked as they landed
         del self.state.open[mint]
+        pe.dec020_note_close(self.limits, self.state, bps(proceeds, p["q_out"]))  # after the close bookkeeping; guarded
         self.save()
 
     # -- loop

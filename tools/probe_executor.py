@@ -137,6 +137,14 @@ DEC020_MAX = {
     "size_lamports": 250_000_000,
     "priority_lamports": 500_000,
 }
+# DEC-018 Amendment 1 / DEC-020 section 7 item 8: two automatic halts of NEW buys, dec020 profile only. Config may make
+# them stricter (fewer trades/attempts before the check, a threshold closer to 0, a smaller fail fraction), never looser.
+#   min_closed:     closed (landed-sell) trades before the divergence check runs
+#   entry_bps:      halt when the mean entry_vs_quote_bps of those trades is BELOW this (more negative = worse)
+#   exit_bps:       halt when the mean exit_vs_quote_bps of their landed sells is BELOW this
+#   min_attempts:   resolved buy attempts (landed or failed) before the landing check runs
+#   max_fail_frac:  halt when failed / resolved buy attempts is ABOVE this
+DEC020_STOPS: dict[str, float] = {"min_closed": 10, "entry_bps": -200.0, "exit_bps": -200.0, "min_attempts": 10, "max_fail_frac": 0.30}
 DEC020_END_MS: int | None = None  # owner end instant, ms epoch UTC; None = dec020 refuses (DEC-020 section 3 and 7)
 
 LIVE_DIR = Path("/var/lib/mal-live")  # FIXED. Handover and cross-profile checks read state only from here, never from cfg.
@@ -156,6 +164,29 @@ def profile_spec(name: Any) -> tuple[dict[str, int], int]:
     return DEC020_MAX, DEC020_END_MS
 
 
+def clamp_stops(raw: Any) -> tuple:
+    """DEC020_STOPS with an optional config override that can only be stricter. Unknown key, bool, NaN/inf or a
+    non-number refuses. Returns the sorted items tuple (hashable, frozen-dataclass friendly)."""
+    if raw is not None and not isinstance(raw, (dict, tuple)):
+        raise ValueError("dec020_stops must be an object")
+    raw = dict(raw) if raw else {}
+    unknown = set(raw) - set(DEC020_STOPS)
+    if unknown:
+        raise ValueError(f"unknown dec020_stops keys {sorted(unknown)}")
+    out: dict[str, float] = dict(DEC020_STOPS)
+    for k, v in raw.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            raise ValueError(f"dec020_stops {k} must be a finite number")
+        base = DEC020_STOPS[k]
+        if k in ("min_closed", "min_attempts"):
+            out[k] = min(max(int(v), 1), int(base))  # fewer trades first: 1..10
+        elif k in ("entry_bps", "exit_bps"):
+            out[k] = min(max(float(v), base), 0.0)  # closer to 0 is stricter: [-200, 0]
+        else:
+            out[k] = min(max(float(v), 0.0), base)  # smaller fraction is stricter: [0, 0.30]
+    return tuple(sorted(out.items()))
+
+
 @dataclass(frozen=True)
 class Limits:
     max_attempts: int = DEC019_MAX["max_attempts"]
@@ -168,6 +199,7 @@ class Limits:
     stop_file: str = "/var/lib/mal-live/STOP"  # no new buys; exits and in-flight sells continue
     halt_file: str = "/var/lib/mal-live/HALT"  # freezes everything: no buys, no sells, no rebroadcasts
     profile: str = DEFAULT_PROFILE
+    stops: tuple | None = field(default=None, repr=False, compare=False)  # dec020 only: sorted DEC020_STOPS items; None for dec019
 
     def __post_init__(self) -> None:
         """Clamp to the profile's maxima on EVERY construction path, and reject NaN/inf/non-positive.
@@ -186,6 +218,11 @@ class Limits:
         if isinstance(e, bool) or not isinstance(e, (int, float)) or not math.isfinite(e) or e <= 0:
             raise ValueError("limit end_ms must be a finite positive number")
         object.__setattr__(self, "end_ms", min(int(e), end_ceiling))
+        if self.profile == DEFAULT_PROFILE:
+            if self.stops is not None:
+                raise ValueError("stops exist only for the dec020 profile")
+        else:
+            object.__setattr__(self, "stops", clamp_stops(self.stops))
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "Limits":
@@ -198,6 +235,8 @@ class Limits:
             kw["stop_file"] = str(cfg["stop_file"])
         if cfg.get("halt_file"):
             kw["halt_file"] = str(cfg["halt_file"])
+        if profile != DEFAULT_PROFILE:
+            kw["stops"] = clamp_stops(cfg.get("dec020_stops"))
         return cls(**kw, profile=profile)
 
 
@@ -217,13 +256,15 @@ class State:
     pending: dict[str, dict[str, Any]] = field(default_factory=dict)  # live: in-flight signed txs by mint (buy or sell)
     bought: list[str] = field(default_factory=list)  # live: every mint ever attempted; never re-bought (<= max_attempts entries, 90 under Amendment 1)
     max_seen_ms: int = 0  # live: highest clock reading seen; a clock stepping back fails closed
+    dec020: dict[str, Any] = field(default_factory=dict)  # dec020 only: divergence/landing counters and latched stops; {} (and unwritten) for dec019
 
     def save(self, path: Path) -> None:
         """Atomic and durable (fsync file, rename, fsync dir). Called write-ahead of any attempt."""
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         with tmp.open("w") as fh:
-            fh.write(json.dumps(self.__dict__, separators=(",", ":")))
+            body = self.__dict__ if self.dec020 else {k: v for k, v in self.__dict__.items() if k != "dec020"}  # dec019 file unchanged
+            fh.write(json.dumps(body, separators=(",", ":")))
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
@@ -241,6 +282,8 @@ class State:
         st = cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
         if st.mode != mode:
             raise SystemExit(f"state file mode {st.mode!r} does not match run mode {mode!r}")
+        if "dec020" in raw:  # a malformed dec020 object latches dec020_state_invalid instead of crashing every tick; absent stays {}
+            st.dec020 = dec020_normalise(st.dec020)
         return st
 
 
@@ -451,6 +494,128 @@ def check_halt_file(limits: Limits) -> bool:
     return Path(limits.halt_file).exists()
 
 
+def _mean(total: float, n: int) -> float | None:
+    return total / n if n else None
+
+
+DEC020_INVALID = "dec020_state_invalid"
+_D20_NAMES = ("divergence_entry", "divergence_exit", "landing_fail", DEC020_INVALID)
+_D20_COUNTS = ("closed", "entry_n", "exit_n", "buy_resolved", "buy_failed", "zero_token_buys", "entry_excluded")
+_D20_SUMS = ("entry_sum", "exit_sum")
+
+
+def dec020_valid(d: Any) -> bool:
+    """True when a persisted/in-memory dec020 stats object has exactly the expected shape: a dict, known keys only,
+    non-negative int counters (no bool), finite number sums (no bool), `tripped` a list of known stop names."""
+    if not isinstance(d, dict) or set(d) - set(_D20_COUNTS) - set(_D20_SUMS) - {"tripped"}:
+        return False
+    for k in _D20_COUNTS:
+        if k in d and (isinstance(d[k], bool) or not isinstance(d[k], int) or d[k] < 0):
+            return False
+    for k in _D20_SUMS:
+        if k in d and (isinstance(d[k], bool) or not isinstance(d[k], (int, float)) or not math.isfinite(d[k])):
+            return False
+    t = d.get("tripped", [])
+    return isinstance(t, list) and all(isinstance(x, str) and x in _D20_NAMES for x in t)
+
+
+def dec020_invalid_state() -> dict[str, Any]:
+    """The latched replacement for an unusable dec020 object: counters zeroed, new buys halted, exits unaffected."""
+    return {**{k: 0 for k in _D20_COUNTS}, **{k: 0.0 for k in _D20_SUMS}, "tripped": [DEC020_INVALID]}
+
+
+def dec020_normalise(d: Any) -> dict[str, Any]:
+    """Never raises. A valid object is returned as is; anything else becomes the latched invalid state, logged."""
+    if dec020_valid(d):
+        return d
+    print(f"probe_executor ALERT {DEC020_INVALID} (state file dec020 object unusable; new buys halted, exits continue)", flush=True)
+    return dec020_invalid_state()
+
+
+def dec020_stop_names(limits: Limits, st: State) -> list[str]:
+    """Never raises. The dec020 stops that currently hold: the latched ones plus any the counters trip now. Empty for
+    dec019. Any malformed state, or any exception, gives [DEC020_INVALID] (which halts new buys).
+    "Worse" is a NEGATIVE bps: entry_vs_quote_bps = (tokens received - quoted tokens) / quoted tokens, so fewer tokens
+    than quoted is negative; exit_vs_quote_bps = (SOL proceeds - quoted SOL out) / quoted SOL out, so less SOL than
+    quoted is negative. The checks are strictly below the threshold."""
+    if limits.stops is None:
+        return []
+    try:
+        cfg, d = dict(limits.stops), st.dec020
+        if not dec020_valid(d):
+            return [DEC020_INVALID]
+        out = list(d.get("tripped", []))
+        if d.get("closed", 0) >= cfg["min_closed"]:
+            m_in, m_out = _mean(d.get("entry_sum", 0.0), d.get("entry_n", 0)), _mean(d.get("exit_sum", 0.0), d.get("exit_n", 0))
+            if m_in is not None and m_in < cfg["entry_bps"] and "divergence_entry" not in out:
+                out.append("divergence_entry")
+            if m_out is not None and m_out < cfg["exit_bps"] and "divergence_exit" not in out:
+                out.append("divergence_exit")
+        res = d.get("buy_resolved", 0)
+        if res >= cfg["min_attempts"] and d.get("buy_failed", 0) / res > cfg["max_fail_frac"] and "landing_fail" not in out:
+            out.append("landing_fail")
+        return out
+    except Exception:
+        return [DEC020_INVALID]
+
+
+def _dec020_guarded(fn):
+    """The note_* calls run AFTER the open/close/pending bookkeeping. They are no-ops for dec019 and never propagate:
+    any exception latches DEC020_INVALID (new buys halt; exits and the bookkeeping already done are untouched)."""
+    def wrapper(limits: Limits, st: State, *a: Any, **kw: Any) -> None:
+        if limits.stops is None:
+            return
+        try:
+            if not dec020_valid(st.dec020):
+                raise ValueError("dec020 state invalid")
+            fn(limits, st, *a, **kw)
+            st.dec020["tripped"] = dec020_stop_names(limits, st)
+        except Exception:
+            st.dec020 = dec020_invalid_state()
+            print(f"probe_executor ALERT {DEC020_INVALID} (note failed; new buys halted, exits continue)", flush=True)
+    wrapper.__name__ = fn.__name__
+    return wrapper
+
+
+@_dec020_guarded
+def dec020_note_buy(limits: Limits, st: State, landed: bool, entry_bps: float | None = None, entry_estimated: bool = False,
+                    zero_tokens: bool = False) -> None:
+    """A buy attempt resolved. Call it once, after the pending/open bookkeeping. The caller saves.
+    - failed (landed=False: on-chain error, or expired unlanded): counts as a failed attempt.
+    - landed with zero tokens (zero_tokens=True): a FAILED attempt, a closed trade (the loss is realized now, there is no
+      sell) and -10000 bps in the entry mean at once.
+    - landed with a pending token balance (entry_estimated=True: tokens are the quote estimate, bps would be a fake 0):
+      kept out of the entry mean and counted in entry_excluded.
+    - otherwise landed: entry_bps (entry_vs_quote_bps) enters the entry mean AT LANDING, so a stuck or abandoned position
+      counts too."""
+    d = st.dec020
+    d["buy_resolved"] = d.get("buy_resolved", 0) + 1
+    if zero_tokens:
+        d["buy_failed"] = d.get("buy_failed", 0) + 1
+        d["closed"] = d.get("closed", 0) + 1
+        d["entry_n"] = d.get("entry_n", 0) + 1
+        d["entry_sum"] = d.get("entry_sum", 0.0) - 10_000.0
+        d["zero_token_buys"] = d.get("zero_token_buys", 0) + 1
+    elif not landed:
+        d["buy_failed"] = d.get("buy_failed", 0) + 1
+    elif entry_estimated:
+        d["entry_excluded"] = d.get("entry_excluded", 0) + 1
+    elif entry_bps is not None:
+        d["entry_n"] = d.get("entry_n", 0) + 1
+        d["entry_sum"] = d.get("entry_sum", 0.0) + float(entry_bps)
+
+
+@_dec020_guarded
+def dec020_note_close(limits: Limits, st: State, exit_bps: float | None) -> None:
+    """A position closed on a landed sell. Call it after the position is removed. The caller saves. A None bps (zero
+    quote) is not averaged. The entry side was recorded at buy landing."""
+    d = st.dec020
+    d["closed"] = d.get("closed", 0) + 1
+    if exit_bps is not None:
+        d["exit_n"] = d.get("exit_n", 0) + 1
+        d["exit_sum"] = d.get("exit_sum", 0.0) + float(exit_bps)
+
+
 def soft_stops(limits: Limits, st: State, now_ms: int) -> list[str]:
     """The budget stops (attempts, realized loss, days). Live halts on these; dry run only records them."""
     out = []
@@ -462,6 +627,7 @@ def soft_stops(limits: Limits, st: State, now_ms: int) -> list[str]:
         out.append("max_days")
     if now_ms >= limits.end_ms:
         out.append("end_instant")
+    out.extend(dec020_stop_names(limits, st))  # [] for dec019
     return out
 
 
@@ -1213,6 +1379,14 @@ def status_report(cfg: dict[str, Any]) -> str:
             f"[{mode}] attempts={st.attempts}/{lim.max_attempts} realized_sol={st.realized_lamports / LAMPORTS:.6f} "
             f"loss_cap_sol={lim.loss_cap_lamports / LAMPORTS:.3f} open={len(st.open)}/{lim.max_open} pending={len(st.pending)} "
             f"first_attempt_ms={st.first_attempt_ms} would_halt={st.would_halt}")
+        if lim.stops is not None:
+            d = st.dec020
+            lines.append(
+                f"  dec020_stops closed={d.get('closed', 0)} mean_entry_vs_quote_bps={_mean(d.get('entry_sum', 0.0), d.get('entry_n', 0))} "
+                f"mean_exit_vs_quote_bps={_mean(d.get('exit_sum', 0.0), d.get('exit_n', 0))} buys_resolved={d.get('buy_resolved', 0)} "
+                f"buys_failed={d.get('buy_failed', 0)} zero_token_buys={d.get('zero_token_buys', 0)} "
+                f"entry_excluded_balance_pending={d.get('entry_excluded', 0)} limits={dict(lim.stops)} tripped={d.get('tripped', [])} "
+                f"would_halt_now={dec020_stop_names(lim, st)}")
         exposure = sum(int(p.get("spend") or 0) for p in st.open.values()) + sum(
             int(p.get("spend") or 0) for p in st.pending.values() if p.get("kind") == "buy")
         lines.append(f"  open_exposure_sol={exposure / LAMPORTS:.6f} (cost of open + in-flight buys; the loss cap counts realized loss only)")
