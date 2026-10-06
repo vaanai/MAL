@@ -810,6 +810,47 @@ def fake_canon(m: str) -> str:
     return "CANON_" + m
 
 
+def p1b_source(*, with_creates=True):
+    """A P1B source through the REAL resolver shape: `_hour_info_b` returns {"hour", "day", "end", "trade"} (no `create` key), Oracle trade rows
+    have no `block_time` and PumpSwap rows no `quote_is_wsol`, and creates come from the adapter's observe day files (slot 0 placeholders)."""
+    from functools import partial
+
+    from tools.oracle_live_adapter import POOL_B_CREATE_DAYS, _hour_info_b
+
+    cr_b, tr_b = mint_tape("MINTB", T0)
+    cr_c, tr_c = mint_tape("MINTC", T0 + 100)
+    cr_d, tr_d = mint_tape("MINTD", T0 + 200)
+    for t in tr_b:
+        if t["venue"] == "pumpswap":
+            t["pool"] = "CANON_MINTB"
+    for t in tr_c:
+        if t["venue"] == "pumpswap":
+            t["pool"] = "SOME_OTHER_POOL"  # only foreign-pool prints
+    for t in tr_d:
+        if t["venue"] == "pumpswap":
+            t["pool"] = "CANON_MINTD"
+    tr_d = [t for t in tr_d if t["venue"] == "pumpswap"]  # MINTD: a migration but no bonding print on the tape
+    tz = [dict(t, mint="MINTZ", pool="CANON_MINTZ") for t in tr_b if t["venue"] == "pumpswap"]  # PumpSwap token that was never a pump.fun create
+    trades = []
+    for t in tr_b + tr_c + tr_d + tz:
+        t = dict(t)
+        t.pop("block_time", None)  # the Oracle tape has t_recv_ms only
+        if t["venue"] == "pumpswap":
+            t.pop("quote_is_wsol", None)
+        trades.append(t)
+    d = Path(tempfile.mkdtemp())
+    (d / "trades").mkdir()
+    (d / "creates").mkdir()
+    (d / "trades" / "trades-2026-09-25T07.jsonl").write_text("".join(json.dumps(t) + "\n" for t in trades))
+    obs = [{"stream": "subscribeNewToken", "txType": "create", "mint": c["mint"], "t_ws": c["block_time"] * 1000 - 5000, "traderPublicKey": "creatorZ",
+            "signature": c["signature"]} for c in (cr_b + cr_c + cr_d)]
+    for day in POOL_B_CREATE_DAYS:
+        (d / "creates" / f"observe-{day}.jsonl").write_text("".join(json.dumps(o) + "\n" for o in obs) if (with_creates and day == POOL_B_CREATE_DAYS[0]) else "")
+    hours_fn = partial(_hour_info_b, root=d)
+    assert "create" not in hours_fn("2026-09-25T07")  # the real shape
+    return x.load_source_data("P1B", "P1", hours_fn, ["2026-09-25T07"], [d], canonical_fn=fake_canon)
+
+
 class P1BCanonicalPoolTests(unittest.TestCase):
     def test_real_canonical_pool_is_the_executors_pool(self):
         from solders.pubkey import Pubkey
@@ -834,21 +875,12 @@ class P1BCanonicalPoolTests(unittest.TestCase):
         self.assertEqual(rug.count_no_pool_mints(mg.values()), ["A"])
 
     def test_loader_p1b_derives_pools_and_counts_zero_print_mints(self):
-        creates, trades = mint_tape("MINTB", T0)
-        for t in trades:
-            if t["venue"] == "pumpswap":
-                t["pool"] = "CANON_MINTB"
-        other = [dict(t, mint="MINTC", pool="SOME_OTHER_POOL") for t in trades if t["venue"] == "pumpswap"]  # only foreign-pool prints
-        with tempfile.TemporaryDirectory() as d:
-            tp, cp = Path(d) / "trades.jsonl", Path(d) / "creates.jsonl"
-            tp.write_text("".join(json.dumps(t) + "\n" for t in trades + other))
-            cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
-            src = x.load_source_data("P1B", "P1", lambda h: {"trade": tp, "create": cp}, ["h0"], [Path(d) / "no-migrations-here"], canonical_fn=fake_canon)
+        src = p1b_source()
         self.assertTrue(src.derived_pools)
         pmap = rug.migration_pool_map(src.migrations.values())
-        self.assertEqual(pmap, {"MINTB": "CANON_MINTB"})
-        self.assertEqual(rug.count_no_pool_mints(src.migrations.values()), ["MINTC"])
-        self.assertEqual(len(src.rows_by_mint["MINTB"]), len(trades))  # full rows kept for the derived-migrated mint
+        self.assertEqual(pmap, {"MINTB": "CANON_MINTB", "MINTD": "CANON_MINTD"})
+        self.assertEqual(rug.count_no_pool_mints(src.migrations.values()), ["MINTC"])  # pump.fun mint, prints only on a foreign pool
+        self.assertNotIn("MINTZ", src.migrations)  # a PumpSwap token with no pump.fun create is not a migration
         self.assertTrue(x.pool_print_times(src, pmap)["CANON_MINTB"])
 
     def test_other_sources_keep_the_migration_row_pool(self):
@@ -1251,6 +1283,200 @@ class MainExceptionHygieneTests(unittest.TestCase):
         statuses = [c.args[3] for c in lg.call_args_list]
         self.assertEqual(statuses[0], "started")
         self.assertEqual(statuses[-1], "aborted_after_read")
+
+
+# --- PR preread-fixes: P1B creates, create-slot rule, refusal limits, --precount --------------------------------------------------------------
+
+
+class P1BCreatesTests(unittest.TestCase):
+    def test_creates_are_loaded_from_the_adapter_and_slots_come_from_the_first_bonding_print(self):
+        src = p1b_source()
+        self.assertEqual(set(src.creates), {"MINTB", "MINTC"})
+        self.assertEqual(src.creates["MINTB"]["slot"], 1001)  # slot0 + 1: the first pump_bonding print, never the adapter's slot 0
+        self.assertEqual(src.excluded_no_bonding, ["MINTD"])
+        self.assertEqual(src.create_stats["n_creates_loaded"], 3)
+        self.assertEqual((src.create_stats["n_with_bonding"], src.create_stats["n_excluded_no_bonding"]), (2, 1))
+        self.assertEqual(src.create_stats["gap_s"], {"n": 2, "p50": 6, "p90": 6, "max": 6})  # first bonding block_time - create block_time, seconds
+
+    def test_rows_are_adapted_so_admission_keeps_them(self):
+        src = p1b_source()
+        rows = src.rows_by_mint["MINTB"]
+        self.assertTrue(rows)
+        self.assertTrue(all(isinstance(r.get("block_time"), int) for r in rows))  # `adapt_trade_row` stamped it
+        self.assertEqual(len(x.admit_rows(rows)), len(rows))
+        self.assertTrue(all(r.get("quote_is_wsol") is True for r in rows if r["venue"] == "pumpswap"))
+
+    def test_process_source_counts_no_bonding_separately_and_builds_the_cell(self):
+        src = p1b_source()
+        r = x.process_source(src, {"CANON_MINTB": 17_584_000_000, "CANON_MINTD": 17_584_000_000}, fake_canon)
+        self.assertEqual(r["no_bonding_excluded"], ["MINTD"])
+        self.assertEqual(r["no_create_row"], [])  # not double counted
+        self.assertEqual(r["no_pool_mints"], ["MINTC"])
+        self.assertEqual([c["mint"] for c in r["cells"]], ["MINTB"])
+        self.assertEqual(r["n_creates"], 3)
+        self.assertEqual(r["n_creates_with_migration"], 3)
+
+    def test_no_creates_means_no_migrations(self):
+        src = p1b_source(with_creates=False)
+        self.assertEqual((src.creates, src.migrations), ({}, {}))
+
+    def test_create_slot_rule_keeps_real_slots_and_derives_placeholders(self):
+        creates = {"R": {"mint": "R", "slot": 500, "block_time": 10}, "P": {"mint": "P", "slot": 0, "block_time": 10}, "N": {"mint": "N", "slot": None, "block_time": 10}}
+        rows = {"P": [{"venue": "pump_bonding", "slot": 90, "block_time": 20}, {"venue": "pump_bonding", "slot": 80, "block_time": 18}, {"venue": "pumpswap", "slot": 1}],
+                "R": [{"venue": "pump_bonding", "slot": 7, "block_time": 12}]}
+        out, excl, st = x.apply_create_slot_rule(creates, rows)
+        self.assertEqual((out["R"]["slot"], out["P"]["slot"], excl), (500, 80, ["N"]))  # a real slot is kept; the first (lowest-slot) bonding print wins
+        self.assertEqual(st["gap_s"]["max"], 8)
+        self.assertEqual((st["n_placeholder_slot"], st["n_with_bonding"]), (2, 1))
+
+    def test_precount_style_counts_for_p1c_real_slots_report_zero_placeholders(self):
+        creates, trades = mint_tape("MINTB", T0)
+        with tempfile.TemporaryDirectory() as d:
+            tp, cp = Path(d) / "trades.jsonl", Path(d) / "creates.jsonl"
+            tp.write_text("".join(json.dumps(t) + "\n" for t in trades))
+            cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
+            src = x.load_source_data("P1C", "P1", lambda h: {"trade": tp, "create": cp}, ["h0"], [])
+        self.assertEqual(src.create_stats["n_placeholder_slot"], 0)
+        self.assertEqual(src.creates["MINTB"]["slot"], 1000)
+
+
+def _res(tag, *, cells=1, n_mig=100, no_create=0, no_pool=0, no_bonding=0, with_mig=100, foreign=0):
+    return {"tag": tag, "cells": [{"status": "FILLED", "pool": f"p{i}", "mint": f"m{i}", "block": "P1"} for i in range(cells)], "n_migrations": n_mig,
+            "no_create_row": ["a"] * no_create, "no_pool_mints": ["b"] * no_pool, "no_migration_slot": [], "no_bonding_excluded": ["c"] * no_bonding,
+            "n_creates_with_migration": with_mig, "n_creates": with_mig, "create_stats": None, "p1b_gap_slots": None,
+            "gate": {"foreign_first_mints": ["f"] * foreign, "mints_with_foreign_pool_prints": 0}, "slot_inversions": 0, "pool_vs_canonical": None}
+
+
+class RefusalLimitTests(unittest.TestCase):
+    def test_limits_pass_at_the_boundary(self):
+        self.assertEqual(x.check_limits([_res("P1A", no_create=2, no_pool=2), _res("P1B", no_bonding=5, with_mig=100)]), [])
+
+    def test_zero_cells_refuses(self):
+        self.assertEqual(len(x.check_limits([_res("P2", cells=0)])), 1)
+
+    def test_no_create_row_share_over_two_percent_refuses(self):
+        (why,) = x.check_limits([_res("P3", no_create=3)])
+        self.assertIn("P3", why)
+        self.assertIn("no-create-row", why)
+
+    def test_no_pool_share_over_two_percent_refuses(self):
+        (why,) = x.check_limits([_res("P4", no_pool=3)])
+        self.assertIn("no-pool", why)
+
+    def test_p1b_no_bonding_over_five_percent_refuses_and_only_p1b(self):
+        (why,) = x.check_limits([_res("P1B", no_bonding=6, with_mig=100)])
+        self.assertIn("no bonding", why)
+        self.assertEqual(x.check_limits([_res("P1A", no_bonding=6, with_mig=100)]), [])
+
+    def test_raise_variant_is_a_refusal(self):
+        with self.assertRaises(x.Refused):
+            x.enforce_limits([_res("P3", no_create=3)])
+        x.enforce_limits([_res("P3")])
+
+
+class PrecountTests(unittest.TestCase):
+    def _args(self, d):
+        return SimpleNamespace(vmap=str(Path(d) / "map.json"), out_dir=Path(d) / "out", v_fallback_json=None, closed_pools_json=None, artifact_dir=Path(d),
+                               p1_fast_dir="/x1", p1_oracle_insample_dir="/x2", p1_oracle_live_dir="/x3", p3_root="/x4", p2_view_dir=["/x5"], p4_view_dir=None)
+
+    def _run(self, d, sources, extra=()):
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.ExitStack() as st:
+            st.enter_context(mock.patch.object(x, "run_guards", return_value={"with_p4": False}))
+            st.enter_context(mock.patch("tools.pumpswap_virtual.load_map", return_value=dict(VMAP)))
+            st.enter_context(mock.patch("tools.exp012_forward_vmap.load_detail", return_value={"POOL1": {"v_base": 17_584_505_300}}))
+            st.enter_context(mock.patch.object(x, "build_sources", return_value=[(t, "P1", None, [], []) for t in sources]))
+            st.enter_context(mock.patch.object(x, "load_source_data", side_effect=lambda tag, *a, **k: fixture_source()))
+            st.enter_context(mock.patch.object(x, "load_oof", return_value=({}, None)))
+            st.enter_context(mock.patch.object(x, "frozen_flags", side_effect=lambda cells, *a, **k: [True] * len(cells)))
+            st.enter_context(mock.patch.object(x, "log_all"))
+            st.enter_context(mock.patch.object(e15, "take_lock"))
+            for e in extra:
+                st.enter_context(e)
+            st.enter_context(contextlib.redirect_stdout(out))
+            rc = x.precount(self._args(d))
+        return rc, out.getvalue()
+
+    def test_precount_prints_only_counts_and_writes_no_tries_or_lock(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, text = self._run(d, ["P1A"])
+            files = sorted(p.name for p in (Path(d) / "out").iterdir())
+            self.assertEqual(files, ["precount.json"])  # no lock, no report, no tries
+            self.assertFalse(Path(d, "tries.jsonl").exists())
+            rec = json.loads(text)
+        self.assertEqual(rc, 0)
+        src = rec["sources"]["P1A"]
+        for k in ("creates", "migrations", "cells", "no_create_row", "no_pool", "no_migration_slot", "foreign_first", "censored", "no_sim_by_reason", "v_coverage", "pool_vs_canonical", "p1b_gap_slots"):
+            self.assertIn(k, src)
+        self.assertEqual((src["creates"], src["migrations"], src["cells"]), (1, 1, 1))
+        for banned in ("net", "press", "flat", "rug", "label", "pnl", "exit_kind", "deadline_ms", "mig_ms"):
+            self.assertNotIn(banned, text.lower().replace("foreign_pool_prints", ""))
+        self.assertNotIn("MINTA", text)  # counts, never ids
+        self.assertEqual(rec["would_refuse"], [])
+        self.assertEqual(rec["pre_started"]["lp_active_proxy"]["by_source"]["P1A"], {"selected": 1, "outside": 0, "no_v_base": 0})
+
+    def test_precount_reports_would_refuse_instead_of_refusing(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, text = self._run(d, ["P1A"], extra=[mock.patch.object(x, "process_source", side_effect=lambda src, v, c=None: _res("P1A", cells=0))])
+            rec = json.loads(text)
+        self.assertEqual(rc, 0)
+        self.assertEqual(rec["would_refuse"], ["P1A: 0 cells"])
+
+    def test_precount_runs_with_the_map_unpinned(self):
+        self.assertEqual(x.VMAP_EXP016_SHA256, "PENDING")  # the pin is the manager's; the precount must not need it
+        with tempfile.TemporaryDirectory() as d:
+            rc, text = self._run(d, ["P1A"])
+        self.assertIn("UNPINNED", text)
+
+    def test_real_run_enforces_the_limits_before_started(self):
+        import inspect
+
+        src = inspect.getsource(x.main)
+        self.assertLess(src.index("enforce_limits(results)"), src.index("e15.take_lock"))
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "check_limits", return_value=["P1A: 0 cells"]), mock.patch.object(x, "log_all") as lg:
+            rc, exc, text = MainExceptionHygieneTests()._run(d, [])
+            lg.assert_not_called()
+        self.assertEqual((rc, exc), (2, None))
+        self.assertIn("plan 13 item 9", text)
+
+
+class TiesAndCountsTests(unittest.TestCase):
+    def test_all_tied_probabilities_veto_nothing(self):
+        tb = good_book()
+        with mock.patch.object(x.eem, "predict_setting", side_effect=lambda fit, X: [0.5] * len(X)):
+            f = x.outer_fold(tb, NON_P1[0])
+        for cid in ("l5", "l10"):
+            self.assertEqual(f["thresholds"][cid], 0.5)
+            self.assertFalse(any(f["per_candidate"][cid].values()))  # rows tied AT the threshold are not vetoed
+            self.assertEqual(f["inner"][cid]["n_vetoed_filled"], 0)
+            self.assertFalse(f["inner"][cid]["eligible"])  # under the 30 vetoed-fills floor
+
+    def test_only_strictly_greater_probabilities_are_vetoed(self):
+        tb = good_book()
+        with mock.patch.object(x.eem, "predict_setting", side_effect=lambda fit, X: [0.9 if i < 3 else 0.5 for i in range(len(X))]):
+            f = x.outer_fold(tb, NON_P1[0])
+        veto = [m for m, v in f["per_candidate"]["l10"].items() if v]
+        self.assertTrue(len(veto) <= 3)
+        self.assertTrue(all(f["per_candidate"]["l10"][r["mint"]] is False for r in tb if r["date"] == NON_P1[0] and r["mint"] not in veto))
+
+    def test_p1_frozen_selected_foreign_first_count(self):
+        r = _res("P1A", cells=3, foreign=2)
+        r["gate"]["foreign_first_mints"] = ["m0", "m1"]
+        for c in r["cells"]:
+            c.update(source="P1A", status="NO_SIM")
+        pc = x.pre_started_counts([r], {"m0": True, "m1": False, "m2": True}, {}, closed=[])
+        self.assertEqual(pc["p1_frozen_selected_foreign_first"], {"P1A": 1})  # m0 only: selected and foreign-first
+
+    def test_lp_active_proxy_counts_pools_outside_the_cluster_by_more_than_1000(self):
+        lo, hi = x.LP_V_CLUSTER
+        detail = {"a": {"v_base": lo}, "b": {"v_base": hi + 1000}, "c": {"v_base": hi + 1001}, "d": {"v_base": lo - 1001}, "e": {"v_base": None}}
+        cells = [{"mint": k, "pool": k, "source": "P2"} for k in "abcde"] + [{"mint": "z", "pool": "a", "source": "P2"}]
+        out = x.lp_active_proxy(cells, {k: True for k in "abcde"}, detail)
+        self.assertEqual(out["by_source"]["P2"], {"selected": 5, "outside": 2, "no_v_base": 1})
+        self.assertEqual(x.lp_active_proxy(cells, {}, None), {"available": False})
 
 
 if __name__ == "__main__":
