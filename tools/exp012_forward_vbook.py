@@ -273,6 +273,8 @@ def check_merge_meta(meta: Path, vmap_sha: str) -> dict[str, Any]:
         doc = json.loads(meta.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise Refused([f"--vmap-merge-meta {meta} is unreadable: {type(exc).__name__}"])
+    if isinstance(doc, dict) and (doc.get("dry_run") is True or meta.name.endswith(vm.DRYRUN_SUFFIX + ".merge.json")):
+        raise Refused([f"--vmap-merge-meta {meta}: a dry-run merge record cannot be used for the FINAL"])
     out = doc.get("sha256", {}).get("out") if isinstance(doc, dict) and isinstance(doc.get("sha256"), dict) else None
     if out != vmap_sha.strip().lower():
         raise Refused([f"--vmap-merge-meta {meta}: sha256.out {out!r} does not equal --vmap-sha256 {vmap_sha}"])
@@ -446,9 +448,9 @@ def gate_block(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]]) -
 # --- LP-law pricing (DEC-016 Amendment 5 section 7) ----------------------------------------
 
 LPHIST_RUNS_NAME = "LPHIST_RUNS.jsonl"
+TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 SCHEMA_LPHIST_RUN = "exp012_forward_vbook_lphist_run_v1"
 LPHIST_PAD_S = 3600  # the lphist range starts one hour before the window
-SUPPLY_SLOT_KEYS = ("supply_slot", "lp_supply_slot")  # the slot of the supply read that closes a pool's history
 NO_MERGE_META_BAD: dict[str, str] = {}
 
 
@@ -475,38 +477,28 @@ def pool_values(e: int, x: int, anchor_v0: int, pending: int, events: Sequence[d
     """Section 7(c) for one pool and one trade. ("ok", sorted stored-V candidates, flags) or ("unresolved", reason, {}).
 
     V0 at the entry fill slot `e` is the anchor V0 moved across the LP events by `v0_at` (inverted for later events, applied
-    for earlier ones). An ambiguous placement of an event inside the anchor fetch's own span is checked with the two
-    half-slot calls (e - 0.5: every event of slot e after the fill; e + 0.5: every one before it): more than one value
-    means the pool is unresolved. Same-slot events (slot e, or slot x with a hold event) are priced both ways: the candidate
+    for earlier ones). An ambiguous placement of an event inside the anchor fetch's own span (`v0_at`'s anchor_ambiguous) makes
+    the pool unresolved. Same-slot events (slot e, or slot x with a hold event) are priced both ways: the candidate
     set holds every cut. A hold event is an LP event with e < slot <= x (x = exit fill slot, or the last priced slot with no
     exit fill): then the candidates are the entry-slot values and the exit-slot values, and the caller takes the lower P&L
     of them per leg. Stored V = V0 - pending. k enters only through (e, x)."""
     if any(not isinstance(ev.get("slot"), int) for ev in events):
         return "unresolved", "event_slot_missing", {}
-    sp = anchor_span_slots(events, span)
+    lo_s, hi_s = getattr(span, "slot_min", None), getattr(span, "slot_max", None)
+    sp = (lo_s, hi_s) if isinstance(lo_s, int) and isinstance(hi_s, int) else anchor_span_slots(events, (span[0], span[1]))
     x = max(x, e)
     hold = any(e < ev["slot"] <= x for ev in events)
     slots = (e, x) if hold else (e,)
-
-    def at(s: float) -> set[int] | None:
-        return lph.v0_at(s, anchor_v0, sp, events)  # type: ignore[arg-type]
-
-    for s in slots:
-        lo_s, hi_s = at(s - 0.5), at(s + 0.5)
-        if lo_s is None or hi_s is None:
-            return "unresolved", "too_many_ambiguous_events", {}
-        if not lo_s or not hi_s:
-            return "unresolved", "no_consistent_v0", {}
-        if len(lo_s) != 1 or len(hi_s) != 1:
-            return "unresolved", "ambiguous_anchor_placement", {}
     cands: set[int] = set()
-    for s in slots:
-        r = at(s)
+    for s_ in slots:
+        r = lph.v0_at(s_, anchor_v0, sp, events)
         if r is None:
             return "unresolved", "too_many_ambiguous_events", {}
-        if not r:
+        if not r["values"]:
             return "unresolved", "no_consistent_v0", {}
-        cands |= r
+        if r["anchor_ambiguous"]:  # an event inside the anchor fetch's span: the placements disagree about this V0
+            return "unresolved", "ambiguous_anchor_placement", {}
+        cands |= r["values"]  # target_ambiguous (same-slot placements): every value is a candidate, the lower P&L is taken
     same = any(ev["slot"] == e for ev in events) or (hold and any(ev["slot"] == x for ev in events))
     return "ok", sorted(v - pending for v in cands), {"hold": hold, "same_slot": same}
 
@@ -526,9 +518,11 @@ class LpContext:
             return "not_in_lphist"
         if not ent.get("resolved"):
             return f"lphist_unresolved:{ent.get('reason')}"
-        for k in SUPPLY_SLOT_KEYS:
-            sl = ent.get(k)
-            if sl is not None and self.fetch_slot_max is not None and sl < self.fetch_slot_max:
+        if self.fetch_slot_max is not None:  # the history must be complete up to the final fetch
+            sl = ent.get("supply_slot")
+            if not isinstance(sl, int):
+                return "lphist_supply_slot_missing"
+            if sl < self.fetch_slot_max:
                 return "supply_read_before_final_fetch_end"
         a = self.anchors.get(pool)
         if not isinstance(a, tuple):
@@ -548,13 +542,17 @@ def load_anchors(vmap_path: Path, merged: dict[str, int | None], meta: dict[str,
     fj = vm.side(vmap_path, ".fetch.json")
     fdoc = vm.load_json_dict(fj, "fetch file") if fj.is_file() else {}
     spans = (meta or {}).get("lp_moves", {}).get("fetch_spans_unix") if meta else None
-    final_span = tuple(spans[-1]) if spans and spans[-1] else None
-    if final_span is None:
-        sp = vm.span_of(fdoc) if fdoc else None
-        final_span = tuple(sp) if sp else None
+    final_span = vm.span_of(fdoc) if fdoc else None  # carries fetch_slot_min/max when recorded
+    if final_span is None and spans and spans[-1]:
+        final_span = tuple(spans[-1])
     snaps: list[tuple[dict[str, int | None], dict[str, Any], tuple[int, int] | None]] = []
     for i, sp_path in enumerate(snapshots):
-        sspan = tuple(spans[i]) if spans and i < len(spans) and spans[i] else None
+        try:
+            sspan = vm.snapshot_span(sp_path)
+        except Refused:
+            sspan = None
+        if sspan is None and spans and i < len(spans) and spans[i]:
+            sspan = tuple(spans[i])
         snaps.append((pv.load_map(sp_path), vm.load_detail(sp_path), sspan))
     filled = set((meta or {}).get("filled_pools", []))
     out: dict[str, Any] = {}
@@ -575,7 +573,7 @@ def load_anchors(vmap_path: Path, merged: dict[str, int | None], meta: dict[str,
         elif span is None:
             out[p] = "no_fetch_span"
         else:
-            out[p] = (b, b - v, (span[0], span[1]))
+            out[p] = (b, b - v, span)
     return out, fdoc.get("fetch_slot_max") if isinstance(fdoc.get("fetch_slot_max"), int) else None
 
 
@@ -665,8 +663,10 @@ def plan_lp(rows: Sequence[dict[str, Any]], ctx: LpContext, merged: dict[str, in
         if x is None:
             x = r["last_slot"]
         for pool in r["pumpswap_pools"]:
-            if pool == NO_POOL_FIELD or merged.get(pool) is None:
+            if pool == NO_POOL_FIELD:
                 continue
+            if merged.get(pool) is None and pool not in ctx.static_bad:
+                continue  # null in the map: the existing null-V tags already cover it
             why = ctx.problem(pool)
             if why:
                 rec["bad"][pool] = why
@@ -810,6 +810,7 @@ def run_lphist_entered(walk_dir: Path, final_out_dir: Path, final_ledger: Path, 
     if span is None:
         raise Refused([f"{fj} is missing or has no usable fetch span: the lphist range ends at the final fetch's end"])
     t_from, t_to = int(cc.timestamp()) - LPHIST_PAD_S, span[1]
+    run_start = datetime.now(timezone.utc)
     errors = s12.check_frozen(artifact_dir, frozen_manifest_md5, freeze_commit)
     if errors:
         raise Refused(errors)
@@ -843,7 +844,7 @@ def run_lphist_entered(walk_dir: Path, final_out_dir: Path, final_ledger: Path, 
     n_unres = sum(1 for e in hist.values() if not e["resolved"])
     sha = fw._sha256_file(out)
     utc = _utc()
-    meta = {"sha256": sha, "n_pools": len(hist), "n_unresolved": n_unres, "n_events": sum(len(e["events"]) for e in hist.values()), "calls": calls, "utc": utc, "t_from_unix": t_from, "t_to_unix": t_to, "pools_sha256": fw._sha256_file(pools_path), "vmap_sha256": vinfo["sha256"], "attempts": attempts, "kind": "entered_touch_pools", "reasons": {r: sum(1 for e in hist.values() if e["reason"] == r) for r in sorted({e["reason"] for e in hist.values() if e["reason"]})}}
+    meta = {"sha256": sha, "n_pools": len(hist), "n_unresolved": n_unres, "n_events": sum(len(e["events"]) for e in hist.values()), "calls": calls, "utc": utc, "t_from_unix": t_from, "t_to_unix": t_to, "pools_sha256": fw._sha256_file(pools_path), "vmap_sha256": vinfo["sha256"], "run_start_utc": run_start.strftime(TS_FMT), "run_start_unix": int(run_start.timestamp()), "attempts": attempts, "kind": "entered_touch_pools", "reasons": {r: sum(1 for e in hist.values() if e["reason"] == r) for r in sorted({e["reason"] for e in hist.values() if e["reason"]})}}
     vm._write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n", readonly=True)
     line = {"schema": SCHEMA_LPHIST_RUN, "state": "COMPLETED", "clean_clock": marker["clean_clock"], "read_end": marker["read_end"], "test_window": bool(test_window), "sha256": sha, "meta_sha256": fw._sha256_file(meta_path), "utc_time": utc, "n_pools": len(hist), "n_unresolved": n_unres, "attempts": attempts, "out": str(out.resolve())}
     fw.ledger_append(final_out_dir.resolve().parent / LPHIST_RUNS_NAME, line)

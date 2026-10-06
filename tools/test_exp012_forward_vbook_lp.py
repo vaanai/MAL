@@ -140,6 +140,16 @@ def test_min_is_taken_separately_per_leg_and_only_for_affected_trades() -> None:
     assert all(m["sha256"] == fw._sha256_file(d / m["file"]) for m in rep["maps"])
 
 
+def test_slots_recorded_in_the_fetch_are_used_for_the_anchor_span() -> None:
+    sp = vm.Span((T0, T1))
+    sp.slot_min, sp.slot_max = 4060, 4080  # an event at slot 4070 is inside the final fetch's slots whatever its block time
+    evs = chain_events([dep(4070)])
+    v0_read = lph.replay_forward(X0, evs)
+    assert vb.pool_values(4050, 4060, v0_read, PEND, evs, sp)[:2] == ("unresolved", "ambiguous_anchor_placement")
+    sp.slot_min, sp.slot_max = 4071, 4080  # the event is before the fetch: definite
+    assert vb.pool_values(4050, 4060, v0_read, PEND, evs, sp)[0] == "ok"
+
+
 def test_a_slot_shift_under_the_candidate_map_marks_the_trade() -> None:
     base = [row("a", 5.0, 5.0)]
     info = {("a", 1): {"changed": {"p"}, "bad": {}, "hold": True, "same_slot": False}}
@@ -186,10 +196,12 @@ class LpBase(VBase):
             evs = chain_events(events.get(p, []))
             v0 = lph.replay_forward(X0, evs)
             vmap[p], detail[p] = v0 - PEND, {"pending": PEND, "v_base": v0}
+            if p in unexplained or p in (merge_unresolved or {}):
+                vmap[p] = None  # the merge writes held pools as null in OUT
         path = d / "pool_v.json"
         sha = write_vmap(path, vmap)
         vm.side(path, ".detail.json").write_text(json.dumps(detail) + "\n")
-        fj = {"fetch_started_utc": "2026-10-16T01:00:00Z", "fetch_ended_utc": "2026-10-16T01:10:00Z", "fetch_slot_min": 900, "fetch_slot_max": 910, "new": True}
+        fj = {"fetch_started_utc": "2026-10-16T01:00:00Z", "fetch_ended_utc": "2026-10-16T01:10:00Z", "fetch_slot_min": 9000, "fetch_slot_max": 9010, "new": True}
         vm.side(path, ".fetch.json").write_text(json.dumps(fj) + "\n")
         marker = vb.find_final_marker(out, d / "ledger.jsonl", True)
         t_from = int(fw.parse_clock(marker["clean_clock"]).timestamp()) - 3600
@@ -198,7 +210,7 @@ class LpBase(VBase):
             if p in (unresolved or {}):
                 hist[p] = {"lp_mint": pk(9), "events": [], "resolved": False, "reason": unresolved[p], "lp_supply": None, "attempts": 1}
             else:
-                hist[p] = {"lp_mint": pk(9), "events": chain_events(events.get(p, [])), "resolved": True, "reason": None, "lp_supply": 1, "attempts": 1, **ent_extra}
+                hist[p] = {"lp_mint": pk(9), "events": chain_events(events.get(p, [])), "resolved": True, "reason": None, "lp_supply": 1, "supply_slot": 10000, "attempts": 1, **ent_extra}
         lh = self.write_lphist(out, hist, t_from, name="lph1.json")
         res = {"vpath": path, "sha": sha, "lphist": lh, "t_from": t_from, "meta": None}
         if meta:
@@ -316,7 +328,7 @@ class TestEndToEnd(LpBase):
 
     def test_ambiguous_anchor_placement_is_unresolved_and_not_decidable(self) -> None:
         walk, art, out = self.final()
-        p = self.prep(out, {"pool-mC": [dep(4070, bt=T0 + 100)]})
+        p = self.prep(out, {"pool-mC": [dep(9005)]})  # inside the final fetch's slots
         rc, err, rep = self.go(walk, art, out, p)
         self.assertEqual(rc, 0, err)
         self.assertEqual(rep["lp_pricing"]["counts"]["n_entered_touching_ambiguous_or_inconsistent"], 1)
@@ -353,9 +365,27 @@ class TestEndToEnd(LpBase):
         self.assertIn("no lp_moves", err)
         self.assertEqual(self.ledger_lines(out), [])
 
+    def test_dry_run_merge_meta_is_refused(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out, meta=True)
+        doc = json.loads(p["meta"].read_text())
+        doc["dry_run"] = True
+        p["meta"].write_text(json.dumps(doc))
+        rc, err, rep = self.go(walk, art, out, p)
+        self.assertEqual(rc, 2)
+        self.assertIn("dry-run", err)
+        self.assertEqual(self.ledger_lines(out), [])
+
+    def test_missing_supply_slot_is_unresolved(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out, supply_slot=None)
+        rc, err, rep = self.go(walk, art, out, p)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(rep["b_verdict"], vb.NOT_DECIDABLE)
+
     def test_supply_read_before_the_final_fetch_is_unresolved(self) -> None:
         walk, art, out = self.final()
-        p = self.prep(out, supply_slot=5)  # fetch_slot_max is 910
+        p = self.prep(out, supply_slot=5)  # fetch_slot_max is 9010
         rc, err, rep = self.go(walk, art, out, p)
         self.assertEqual(rc, 0, err)
         self.assertEqual(rep["b_verdict"], vb.NOT_DECIDABLE)
