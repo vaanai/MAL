@@ -7,6 +7,7 @@ not by regex. Only the pool field is ever kept. Subcommands:
   pools     --walk-dir D --from HOUR --to HOUR --out pools.json   (writes pools.meta.json)
   fetch     --pools pools.json --vmap MAP --rps R                 (Helius via pumpswap_virtual)
   snapshot  --vmap MAP --out DIR                                  (read-only copy + snapshots.jsonl)
+  validate  --walk-dir D --from H --to H --vmap M --vmap-sha256 S --out validation.json (Amendment 4 s5; never fetches)
   merge     --final MAP --snapshot SNAP [--snapshot SNAP2] --out OUT
 
 V is constant per pool and a closed pool reads null later, so an early snapshot fills
@@ -237,6 +238,117 @@ def cmd_merge(a: argparse.Namespace) -> int:
     return 0
 
 
+def sample_hours(hours: Sequence[str], n: int) -> list[str]:
+    """n hours spread evenly over the window (all of them if n >= len)."""
+    if n <= 0:
+        raise Refused("--hours must be positive")
+    if n >= len(hours):
+        return list(hours)
+    return [hours[(2 * i + 1) * len(hours) // (2 * n)] for i in range(n)]
+
+
+def _sample_rows(args: tuple[str, int]) -> dict[str, Any]:
+    path_str, cap = args
+    path = Path(path_str)
+    rows: list[dict[str, Any]] = []
+    bad = 0
+    for line in _open_lines(path):
+        if len(rows) >= cap:
+            break
+        if b"pumpswap" not in line:
+            continue
+        try:
+            rec = json.loads(line.decode("utf-8", errors="replace"), strict=False)
+        except (ValueError, RecursionError):
+            bad += 1
+            continue
+        if isinstance(rec, dict) and rec.get("venue") == "pumpswap":
+            rows.append(rec)
+    return {"path": path_str, "rows": rows, "unparseable": bad, "sha256": sha256_file(path)}
+
+
+def verdict(res: dict[str, Any]) -> dict[str, Any]:
+    """DEC-016 Amendment 4 section 5, read off validate_rows' output.
+
+    sell: dist_bps.v_pos.sell_pre_V (V-corrected, the row's own pre-trade reserves). validate_rows gives the
+      SIGNED median, not the median of |error|, so that number is derived here: median|e| < 1 bps holds when
+      more than half the errors have |e| < 1 (share_abs_lt_1bps > 0.5). The 75% share test implies it.
+    buy: dist_bps.v_pos.buy_fee_resid_V share_abs_lt_1bps (implied-fee residual to the nearest convention).
+    An empty group (n == 0) is not ok."""
+    d = res["dist_bps"]["v_pos"]
+    sell, buy = d["sell_pre_V"], d["buy_fee_resid_V"]
+    sell_share = sell.get("share_abs_lt_1bps")
+    buy_share = buy.get("share_abs_lt_1bps")
+    median_abs_lt_1 = sell_share is not None and sell_share > 0.5
+    sell_ok = bool(median_abs_lt_1 and sell_share >= 0.75)
+    buy_ok = bool(buy_share is not None and buy_share >= 0.90)
+    return {
+        "sell_n": sell.get("n", 0), "sell_share_within_1bps": sell_share, "sell_median_abs_lt_1bps": median_abs_lt_1,
+        "buy_n": buy.get("n", 0), "buy_share_within_1bps": buy_share,
+        "sell_ok": sell_ok, "buy_ok": buy_ok, "ok": sell_ok and buy_ok,
+        "source_keys": {"sell": "dist_bps.v_pos.sell_pre_V", "buy": "dist_bps.v_pos.buy_fee_resid_V"},
+    }
+
+
+def validate_window(walk_dir: Path, start: str, end: str, vmap_path: Path, vmap_sha: str, n_hours: int = 12, rows_per_hour: int = 60000, workers: int = 8) -> dict[str, Any]:
+    from tools.exp012_virtual_rescore import validate_rows
+
+    if sha256_file(vmap_path) != vmap_sha:
+        raise Refused(f"vmap sha256 {sha256_file(vmap_path)} != --vmap-sha256 {vmap_sha}")
+    hours = hours_in(start, end)
+    if not hours:
+        raise Refused(f"empty window [{start}, {end})")
+    problems = fw.hour_problems(walk_dir, hours)
+    if problems:
+        raise Refused("; ".join(problems))
+    ok = fw.verified_hours(walk_dir)
+    used = sample_hours(hours, n_hours)
+    files = []
+    for h in used:
+        f = _hour_file(walk_dir / "trades", "trades", h)
+        if f is None:
+            raise Refused(f"hour {h}: no trades file")
+        files.append(f)
+    jobs = [(str(f), rows_per_hour) for f in files]
+    if workers <= 1:
+        results = [_sample_rows(j) for j in jobs]
+    else:
+        with mp.get_context("spawn").Pool(processes=min(workers, len(jobs))) as pool:
+            results = pool.map(_sample_rows, jobs)
+    rows: list[dict[str, Any]] = []
+    for h, r in zip(used, results):
+        if r["sha256"] != ok[h]["sha256"].get("trades"):
+            raise Refused(f"hour {h}: trades sha256 changed while reading")
+        rows.extend(r["rows"])
+    vmap = pv.load_map(vmap_path)  # never fetched: an absent pool is counted and skipped
+    pools = {r["pool"] for r in rows if isinstance(r.get("pool"), str)}
+    res = validate_rows(rows, vmap)
+    return {
+        "result": res,
+        "verdict": verdict(res),
+        "hours_used": used,
+        "window": {"from": start, "to": end, "n_hours": len(hours)},
+        "rows_per_hour_cap": rows_per_hour,
+        "n_rows": len(rows),
+        "n_pools": len(pools),
+        "n_pools_absent_from_map": sum(1 for p in pools if p not in vmap),
+        "n_unparseable_lines": sum(r["unparseable"] for r in results),
+        "vmap_sha256": vmap_sha,
+        "trade_file_sha256": {Path(r["path"]).name: r["sha256"] for r in results},
+    }
+
+
+def cmd_validate(a: argparse.Namespace) -> int:
+    out = Path(a.out)
+    if out.exists():
+        raise Refused(f"{out} exists; refusing to overwrite")
+    doc = validate_window(Path(a.walk_dir), a.from_hour, a.to_hour, Path(a.vmap), a.vmap_sha256, a.hours, a.rows_per_hour, a.workers)
+    _write_new(out, json.dumps(doc, indent=1, sort_keys=True) + "\n")
+    v = doc["verdict"]
+    print(f"validate: rows={doc['n_rows']} pools={doc['n_pools']} absent={doc['n_pools_absent_from_map']} sell_ok={v['sell_ok']} buy_ok={v['buy_ok']} ok={v['ok']} -> {out}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -261,6 +373,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--snapshot", action="append", required=True)
     p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_merge)
+    p = sub.add_parser("validate")
+    p.add_argument("--walk-dir", required=True)
+    p.add_argument("--from", dest="from_hour", required=True)
+    p.add_argument("--to", dest="to_hour", required=True)
+    p.add_argument("--vmap", required=True)
+    p.add_argument("--vmap-sha256", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--hours", type=int, default=12)
+    p.add_argument("--rows-per-hour", type=int, default=60000)
+    p.add_argument("--workers", type=int, default=8)
+    p.set_defaults(fn=cmd_validate)
     a = ap.parse_args(argv)
     try:
         return a.fn(a)

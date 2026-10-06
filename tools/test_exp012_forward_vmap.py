@@ -51,12 +51,13 @@ def sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
-def make_walk(root: Path, verified=(H1, H2)) -> None:
+def make_walk(root: Path, verified=(H1, H2), lines=None) -> None:
+    lines = lines or LINES
     cp: dict = {"hours": {}}
     vlines = []
     for h in (H1, H2, H3):
         t, c = root / "trades" / f"trades-{h}.jsonl.zst", root / "creates" / f"creates-{h}.jsonl.zst"
-        zst(t, LINES[h])
+        zst(t, lines[h])
         zst(c, ['{"mint":"x"}'])
         cp["hours"][h] = {"status": "sealed"}
         if h in verified:
@@ -114,6 +115,92 @@ class PoolsTests(unittest.TestCase):
         rc, _, err = run(["pools", "--walk-dir", str(self.walk), "--from", H1, "--to", H3, "--out", str(self.tmp / "p.json"), "--workers", "1"])
         self.assertEqual(rc, 2)
         self.assertIn("sha256", err)
+
+
+Q, B, V = 50_000_000_000, 1_000_000_000_000, 17_580_000_000
+
+
+def sell_row(pool: str, bias: float) -> str:
+    from tools import paper_curve_math as pcm
+
+    tok = 1_000_000_000
+    mc = (Q + V) / (B * 1000) * 1e9
+    o = pcm.quote_sell(venue="pumpswap", tokens_raw=tok, quote_lamports=Q + V, base_raw=B, market_cap=mc, portal_fee_ppm=0)
+    return json.dumps({"venue": "pumpswap", "quote_is_wsol": True, "pool": pool, "mint": "m", "side": "sell", "quote_reserve": Q, "base_reserve": B, "token_raw": tok, "sol_lamports": int(o * (1 + bias)), "t_recv_ms": 1, "price_sol": 1e-9})
+
+
+def buy_row(pool: str, bias: float) -> str:
+    tok = 1_000_000_000
+    net = tok * (Q + V) / (B - tok)
+    return json.dumps({"venue": "pumpswap", "quote_is_wsol": True, "pool": pool, "mint": "m", "side": "buy", "quote_reserve": Q, "base_reserve": B, "token_raw": tok, "sol_lamports": int(net * (1 + bias)), "t_recv_ms": 1, "price_sol": 1e-9})
+
+
+class ValidateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._td.name)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def go(self, sell_bias: float, buy_bias: float, absent: bool = False, **kw):
+        rows = [sell_row("PV", sell_bias) for _ in range(8)] + [buy_row("PV", buy_bias) for _ in range(8)]
+        if absent:
+            rows.append(sell_row("GONE", 0.0))
+        walk = self.tmp / "walk"
+        make_walk(walk, lines={H1: rows, H2: rows, H3: rows})
+        vmap = self.tmp / "v.json"
+        write_map(vmap, {"PV": V})
+        out = self.tmp / "validation.json"
+        sha_arg = kw.pop("sha", sha(vmap))
+        rc, stdout, err = run(["validate", "--walk-dir", str(walk), "--from", H1, "--to", H3, "--vmap", str(vmap), "--vmap-sha256", sha_arg, "--out", str(out), "--hours", "2", "--workers", "1"] + kw.pop("extra", []))
+        return rc, err, out
+
+    def test_sell_ok_and_buy_ok(self) -> None:
+        rc, err, out = self.go(0.0, 0.0, absent=True)
+        self.assertEqual(rc, 0, err)
+        doc = json.loads(out.read_text())
+        v = doc["verdict"]
+        self.assertTrue(v["sell_ok"] and v["buy_ok"] and v["ok"], v)
+        self.assertEqual(doc["hours_used"], [H1, H2])  # 2 of 3 hours, evenly spread
+        self.assertEqual(doc["n_pools"], 2)
+        self.assertEqual(doc["n_pools_absent_from_map"], 1)
+        self.assertEqual(doc["result"]["n_missing_v"], 2)  # the absent pool's row, in 2 sampled hours
+        self.assertEqual(doc["vmap_sha256"], sha(self.tmp / "v.json"))
+
+    def test_sell_not_ok(self) -> None:
+        rc, err, out = self.go(0.01, 0.0)
+        v = json.loads(out.read_text())["verdict"]
+        self.assertFalse(v["sell_ok"])
+        self.assertTrue(v["buy_ok"])
+        self.assertFalse(v["ok"])
+
+    def test_buy_not_ok(self) -> None:
+        rc, err, out = self.go(0.0, 0.0063)
+        v = json.loads(out.read_text())["verdict"]
+        self.assertTrue(v["sell_ok"])
+        self.assertFalse(v["buy_ok"])
+        self.assertFalse(v["ok"])
+
+    def test_wrong_vmap_sha_refused(self) -> None:
+        rc, err, out = self.go(0.0, 0.0, sha="0" * 64)
+        self.assertEqual(rc, 2)
+        self.assertIn("vmap sha256", err)
+        self.assertFalse(out.exists())
+
+    def test_unverified_hour_refused(self) -> None:
+        walk = self.tmp / "walk"
+        make_walk(walk)  # H3 has no verify line
+        vmap = self.tmp / "v.json"
+        write_map(vmap, {"P1": 1})
+        rc, _, err = run(["validate", "--walk-dir", str(walk), "--from", H1, "--to", "2026-10-05T08", "--vmap", str(vmap), "--vmap-sha256", sha(vmap), "--out", str(self.tmp / "o.json"), "--workers", "1"])
+        self.assertEqual(rc, 2)
+        self.assertIn(H3, err)
+
+    def test_sample_hours_even(self) -> None:
+        hrs = [f"h{i}" for i in range(24)]
+        self.assertEqual(vm.sample_hours(hrs, 4), ["h3", "h9", "h15", "h21"])
+        self.assertEqual(vm.sample_hours(hrs, 99), hrs)
 
 
 class FetchTests(unittest.TestCase):
