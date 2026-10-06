@@ -51,6 +51,12 @@ BUILTIN_POOLS = ("A", "B", "C")
 VIEW_CUTOFF = gm.REAL_DATA_CUTOFF
 E12_DAYS = tuple(f"2026-09-{d}" for d in range(19, 28))
 ITEM_ORDER = ("1", "2", "3", "4a", "4b", "5", "6")
+V_SHA256 = "2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8"  # pool_v_0814.json (Amendment 7)
+AM7_DISCLOSURE = (
+    "Amendment 7 disclosure: PumpSwap legs are priced on vault + V (tools.pumpswap_virtual_adapter, mcap_mode v). The EXP-012 backcheck read migrate-entry "
+    "outcomes on the explore-0814 days before this screen, so the August bars (items 4a and 4b) are no longer on unread data, in addition to the w1 "
+    "disclosure in Amendment 5. No bar is relaxed; every item still gates."
+)
 _UTC = timezone.utc
 
 
@@ -135,6 +141,23 @@ def assert_view_manifest(
                 raise SystemExit(f"{f} no longer hashes to the pinned sha256")
             if datetime.fromtimestamp(mt(f), _UTC) > cutoff:
                 raise SystemExit(f"{f} was written after {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')}: a view built after the cutoff is not allowed")
+
+
+def assert_v_adapter(table_manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Amendment 7: a real table must have been priced through the V adapter on the pinned map, with the pre-pass
+    inside the limit. Refuses before the try is spent."""
+    v = table_manifest.get("v_adapter")
+    if not isinstance(v, dict):
+        raise SystemExit("table manifest has no v_adapter record: the table was not priced through the V adapter (Amendment 7)")
+    if v.get("vmap_sha256") != V_SHA256 or v.get("mcap_mode") != "v":
+        raise SystemExit(f"table manifest v_adapter is not the pinned map in mode v (sha {v.get('vmap_sha256')}, mode {v.get('mcap_mode')})")
+    cov = v.get("prepass") or {}
+    frac = cov.get("missing_fraction")
+    if not cov.get("prints") or frac is None or frac > cov.get("max_missing_fraction", 0.01):
+        raise SystemExit(f"table manifest v_adapter pre-pass is outside the limit ({cov.get('missing')} of {cov.get('prints')} PumpSwap prints without V)")
+    if not (v.get("adapter_counts") or {}).get("corrected"):
+        raise SystemExit("table manifest v_adapter records no corrected PumpSwap print")
+    return v
 
 
 def assert_out_dir_fresh(out_dir: Path | str) -> Path:
@@ -627,7 +650,7 @@ def _f(v: Any) -> str:
 
 
 def to_markdown(doc: Mapping[str, Any]) -> str:
-    lines = ["# EXP-013 graduation screen (exploration, no edge claim)", "", f"**Verdict: {doc['verdict']}**", "", doc["note"], "", "## Items", "", "| Item | Pass | Detail |", "| --- | --- | --- |"]
+    lines = ["# EXP-013 graduation screen (exploration, no edge claim)", "", f"**Verdict: {doc['verdict']}**", "", doc["note"], "", f"> {doc.get('am7_disclosure', AM7_DISCLOSURE)}", "", "## Items", "", "| Item | Pass | Detail |", "| --- | --- | --- |"]
     for it in doc["items"]:
         detail = ""
         if "legs" in it:
@@ -734,6 +757,8 @@ def run(
     vm_bytes = Path(view_manifest_path).read_bytes()
     view_manifest = json.loads(vm_bytes.decode("utf-8"))
     assert_view_manifest(view_manifest, tmanifest, check_files=is_real if check_view_files is None else check_view_files, mtime_fn=mtime_fn, cutoff=view_cutoff)
+    if is_real:
+        assert_v_adapter(tmanifest)
     tries_path = resolved_tries_log(tries_log)
     assert_no_prior_try(tries_path)
     assert_ledger_empty(ledger_dir)
@@ -759,6 +784,8 @@ def run(
     doc["trigger_time_exclusion"] = exclusion
     doc["table_censored"] = censored
     doc["table_md5"] = tmanifest.get("table_md5")
+    doc["v_adapter"] = tmanifest.get("v_adapter")
+    doc["am7_disclosure"] = AM7_DISCLOSURE
     doc["view_manifest_sha256"] = manifest_sha
     doc["tries_log"] = tries_path
     doc["exp012"] = {"threshold": e12_thr, "oof_days": sorted(e12_days)}

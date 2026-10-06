@@ -43,6 +43,7 @@ Run (see the PR body for the full MiScusi command):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import multiprocessing as mp
@@ -58,6 +59,7 @@ from typing import Any, Sequence
 
 import tools.exp011_freeze as fz
 import tools.exp013_grad_trigger as gt
+import tools.pumpswap_virtual_adapter as ad
 from tools.exp011_build_table import FORCED_BUFFER_HOURS, FORCED_MAX_HOME_HOURS, FORCED_MAX_WORKERS, _md5_of_file, _sha256_of_file
 from tools.exp013_pool import _LINE, _is_forbidden, assert_no_unlisted_data_files
 from tools.exp012_latency_sensitivity import EXTRA_FORBIDDEN_DIRS, EXTRA_FORBIDDEN_STR, guarded_roots
@@ -70,6 +72,12 @@ from tools.oracle_insample_adapter import POOL_C_HOURS, _hour_info_c
 from tools.oracle_live_adapter import POOL_B_HOURS, _hour_info_b, iter_trade_rows_sorted, load_creates_b
 
 DEFAULT_OUT_ROOT = Path("/data/mal/exp013-grad")
+# Amendment 7: PumpSwap legs are priced on vault + V through tools.pumpswap_virtual_adapter (mcap_mode "v").
+DEFAULT_VMAP = "/data/mal/pumpswap-virtual/pool_v_0814.json"
+VMAP_SHA256 = "2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8"  # pool_v_0814.json (job #196)
+V_MAX_MISSING_FRACTION = 0.01
+V_MCAP_MODE = "v"
+COUNTS_SUBDIR = "counts_virtual"
 SCHEMA = "exp013_grad_table_v1"
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
 
@@ -164,11 +172,149 @@ def assert_recipe_settings(max_workers: int, buffer_hours: int, max_home_hours: 
         )
 
 
+# --- V pricing (Amendment 7) ----------------------------------------------------------
+
+
+class VRefused(Exception):
+    """The V map is not the pinned one, or too many PumpSwap prints of triggered mints lack V. Exit 2, before any outcome."""
+
+
+def check_vmap_sha(path: str | Path) -> str:
+    try:
+        got = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError as exc:
+        raise VRefused(f"--vmap {path}: {exc}") from exc
+    if got != VMAP_SHA256:
+        raise VRefused(f"--vmap {path}: sha256 {got} != the pinned {VMAP_SHA256} (pool_v_0814.json)")
+    return got
+
+
+@contextlib.contextmanager
+def v_env(vmap_path: str | Path, counts_dir: Path) -> Any:
+    """Spawned workers inherit the environment; they read the map and mode from it (tools.pumpswap_virtual_adapter).
+    Restored on exit, and the in-process map cache dropped, so nothing leaks into a later call."""
+    counts_dir.mkdir(parents=True, exist_ok=True)
+    vals = {ad.ENV_MAP: str(vmap_path), ad.ENV_MCAP: V_MCAP_MODE, ad.ENV_COUNTS: str(counts_dir), ad.ENV_CAPTURE: "0", ad.ENV_FROZEN: "0"}
+    saved = {k: os.environ.get(k) for k in vals}
+    os.environ.update(vals)
+    ad._VMAP_CACHE.clear()
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        ad._VMAP_CACHE.clear()
+
+
+@contextlib.contextmanager
+def v_pricing_patch(vmap: Any, mode: str = V_MCAP_MODE) -> Any:
+    """Wrap the `print_from_trade_row` that `run_worker_grad` calls (imported into tools.exp013_grad_trigger);
+    restored on exit. Every PumpSwap print the table prices leaves it on vault + V; bonding prints are untouched."""
+    orig = gt.print_from_trade_row
+    gt.print_from_trade_row = ad.make_wrapper(orig, vmap, mode)
+    try:
+        yield
+    finally:
+        gt.print_from_trade_row = orig
+
+
+def v_prepass(specs: Sequence[dict[str, Any]], vmap: Any) -> dict[str, Any]:
+    """Pool-field-only coverage over the PumpSwap prints of triggered mints, read before any outcome is computed.
+    A mint is triggered if any of its bonding prints is at progress >= the trigger (a superset of the table's own
+    triggers: it ignores which chunk created the mint). Each (pool tag, hour) is read once. A pool is COVERED iff it
+    is a key of the map with a non-null value (an explicit 0 is covered); absent or null is MISSING, never V = 0."""
+    import tools.exploration_entry_model as eem
+
+    seen: set[tuple[str, str]] = set()
+    triggered: set[str] = set()
+    per: dict[str, dict[Any, int]] = {}
+    for spec in specs:
+        for key in list(spec["home"]) + list(spec["buf"]):
+            if (spec["tag"], key) in seen:
+                continue
+            seen.add((spec["tag"], key))
+            for row in spec["row_iter_fn"](spec["hour_info_fn"](key)["trade"]):
+                mint = row.get("mint")
+                if not isinstance(mint, str) or mint == eem.WSOL:
+                    continue
+                venue = row.get("venue")
+                if venue == "pump_bonding":
+                    try:
+                        base = int(row["base_reserve"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if base > 0 and gt.progress_of_base(base) >= gt.TRIGGER_PROGRESS:
+                        triggered.add(mint)
+                elif venue == "pumpswap":
+                    pool = row.get("pool") if isinstance(row.get("pool"), str) else None
+                    d = per.setdefault(mint, {})
+                    d[pool] = d.get(pool, 0) + 1
+    n_prints = covered = 0
+    missing_pools: set[Any] = set()
+    n_mints = 0
+    for mint in triggered & set(per):
+        n_mints += 1
+        for pool, n in per[mint].items():
+            n_prints += n
+            if pool is not None and vmap.get(pool) is not None:
+                covered += n
+            else:
+                missing_pools.add(pool)
+    missing = n_prints - covered
+    return {
+        "population": "PumpSwap prints of mints with a bonding print at progress >= the trigger, in every hour the table reads",
+        "n_triggered_mints": len(triggered), "n_triggered_mints_with_pumpswap": n_mints, "prints": n_prints, "covered": covered, "missing": missing,
+        "missing_fraction": (missing / n_prints) if n_prints else None, "missing_pools": len(missing_pools),
+        "missing_pool_examples": sorted(str(x) for x in missing_pools)[:5], "max_missing_fraction": V_MAX_MISSING_FRACTION,
+    }
+
+
+def check_v_coverage(cov: dict[str, Any]) -> None:
+    if not cov["prints"]:
+        raise VRefused("V coverage: no PumpSwap prints for the triggered mints")
+    if cov["missing_fraction"] > cov["max_missing_fraction"]:
+        raise VRefused(
+            f"V coverage: {cov['missing']} of {cov['prints']} PumpSwap prints ({cov['missing_fraction']:.2%}, {cov['missing_pools']} pools) of triggered mints "
+            f"have no V in the map; limit {cov['max_missing_fraction']:.0%}. Extend the map first; no outcome was computed"
+        )
+
+
+def adapter_counts(counts_dir: Path) -> dict[str, Any]:
+    tot = {"pumpswap_prints": 0, "corrected": 0, "no_v": 0, "bonding_untouched": 0}
+    pools: set[str] = set()
+    n_files = 0
+    if counts_dir.is_dir():
+        for p in sorted(counts_dir.glob("counts-*.json")):
+            d = json.loads(p.read_text(encoding="utf-8"))
+            n_files += 1
+            for k in tot:
+                tot[k] += int(d.get(k, 0))
+            pools.update(d.get("no_v_pools", []))
+    return {**tot, "no_v_pools": len(pools), "no_v_fraction": (tot["no_v"] / tot["pumpswap_prints"]) if tot["pumpswap_prints"] else None, "n_worker_files": n_files}
+
+
 # --- worker plumbing --------------------------------------------------------------
 
 
 def _worker(spec: dict[str, Any]) -> dict[str, Any]:
-    """Pickle-friendly wrapper (Pool.map takes one argument)."""
+    """Pickle-friendly wrapper (Pool.map takes one argument). When the V environment is set (always, in `main`) the
+    chunk runs under the V adapter: map and mode come from the environment, so spawned workers need no parent-side
+    monkeypatch."""
+    if not os.environ.get(ad.ENV_MAP):
+        return _worker_plain(spec)
+    vmap, mode = ad._cached_vmap()
+    ad.reset_counts()
+    try:
+        with v_pricing_patch(vmap, mode):
+            return _worker_plain(spec)
+    finally:
+        ad._flush_counts(f"t-{spec['tag']}-{spec['worker_id']}")
+
+
+def _worker_plain(spec: dict[str, Any]) -> dict[str, Any]:
     out = gt.run_worker_grad(
         spec["worker_id"],
         spec["home"],
@@ -344,7 +490,7 @@ def edge_report(
 
 def _code_shas() -> dict[str, str]:
     here = Path(__file__).resolve().parent
-    names = ("exp013_grad_trigger.py", "exp013_grad_table.py", "latency_curve.py", "paper_curve_math.py", "exploration_exits.py", "exploration_entry_model.py")
+    names = ("exp013_grad_trigger.py", "exp013_grad_table.py", "latency_curve.py", "paper_curve_math.py", "exploration_exits.py", "exploration_entry_model.py", "pumpswap_virtual_adapter.py")
     return {n: _sha256_of_file(here / n) for n in names}
 
 
@@ -372,22 +518,42 @@ def build_table(
     ks: Sequence[int] = gt.KS,
     run_id: str = "",
     sha_of_roots: dict[str, str | None] | None = None,
+    vmap_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """The heavy pass. Call only after the guards (main does)."""
+    """The heavy pass. Call only after the guards (main does). `vmap_path` (main always passes it) turns on the V
+    adapter in every worker after the sha pin and the coverage pre-pass; None is frozen pricing, for tests only."""
     assert_recipe_settings(max_workers, FORCED_BUFFER_HOURS, FORCED_MAX_HOME_HOURS)
     n_hours = assert_hour_fence(pools_hours(extra_views))
-    out_dir.mkdir(parents=True, exist_ok=True)
     scratch = out_dir / "scratch"
-    scratch.mkdir(exist_ok=True)
     t0 = time.time()
-    specs = plan_pools(roots, extra_views, scratch, ks)
+    v_doc: dict[str, Any] | None = None
+    sha = check_vmap_sha(vmap_path) if vmap_path is not None else None  # before any row is read (plan_pools reads creates)
+    specs = plan_pools(roots, extra_views, scratch, ks)  # creates scratch/ (empty)
+    if vmap_path is not None:
+        from tools.pumpswap_virtual import load_map
+
+        vmap = load_map(Path(vmap_path))
+        cov = v_prepass(specs, vmap)  # pool field only; before any outcome
+        print(f"V coverage (pre-pass): prints={cov['prints']} covered={cov['covered']} missing={cov['missing']} missing_pools={cov['missing_pools']} (limit {cov['max_missing_fraction']:.0%})", file=sys.stderr, flush=True)
+        try:
+            check_v_coverage(cov)
+        except VRefused:
+            for d in (scratch, out_dir):  # empty dirs only, so a rerun can reuse the run id; no data is deleted
+                with contextlib.suppress(OSError):
+                    d.rmdir()
+            raise
+        v_doc = {"vmap_path": str(vmap_path), "vmap_sha256": sha, "mcap_mode": V_MCAP_MODE, "prepass": cov}
+    out_dir.mkdir(parents=True, exist_ok=True)
     print(f"EXP-013 grad: {n_hours} hours, {len(specs)} chunks, max_workers={max_workers}", file=sys.stderr, flush=True)
     results: list[dict[str, Any]] = []
-    if max_workers <= 1 or len(specs) <= 1:
-        results = [_worker(s) for s in specs]
-    else:
-        with mp.get_context("spawn").Pool(processes=min(max_workers, len(specs))) as pool:
-            results = pool.map(_worker, specs, chunksize=1)
+    with contextlib.ExitStack() as stack:
+        if vmap_path is not None:
+            stack.enter_context(v_env(vmap_path, scratch / COUNTS_SUBDIR))
+        if max_workers <= 1 or len(specs) <= 1:
+            results = [_worker(s) for s in specs]
+        else:
+            with mp.get_context("spawn").Pool(processes=min(max_workers, len(specs))) as pool:
+                results = pool.map(_worker, specs, chunksize=1)
     triggers_by_day: dict[str, int] = {}
     triggers_by_tag: dict[str, dict[str, int]] = {}
     untriggered: dict[str, dict[str, dict[str, int]]] = {}
@@ -399,6 +565,8 @@ def build_table(
             cell = untriggered.setdefault(r["tag"], {}).setdefault(d, {"n": 0, "near": 0})
             cell["n"] += u["n"]
             cell["near"] += u["near"]
+    if v_doc is not None:
+        v_doc["adapter_counts"] = adapter_counts(scratch / COUNTS_SUBDIR)
     runs = pool_runs(extra_views)
     rows: list[dict[str, Any]] = []
     censored: list[dict[str, Any]] = []
@@ -436,7 +604,7 @@ def build_table(
         "extra_views": [v.describe() for v in (extra_views or [])],
         "n_hours": n_hours, "n_rows": len(rows), "n_censored": len(censored), "n_triggers": counts["triggers_total"],
         "table_md5": md5, "wall_s": time.time() - t0, "tape_through_ms_by_chunk": [{"pool": r["tag"], "tape_through_ms": r["tape_through_ms"]} for r in results],
-        "edge_days": edges, "pool_runs": {t: [list(x) for x in v] for t, v in runs.items()},
+        "v_adapter": v_doc, "edge_days": edges, "pool_runs": {t: [list(x) for x in v] for t, v in runs.items()},
         "n_gap_hours_in_chunks": sum(r.get("gap_hours", 0) for r in results),
         "label": "1{press > 0}; the primary row is k=4 (rows carry entry_land_k)",
         "censoring_note": (
@@ -456,6 +624,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     ap.add_argument("--max-workers", type=int, default=FORCED_MAX_WORKERS)
+    ap.add_argument("--vmap", default=DEFAULT_VMAP, help="pool -> V map; sha256 is asserted against the pinned pool_v_0814.json")
     ap.add_argument("--dry-run", action="store_true", help="run every guard and print the plan, read no tape")
     args = ap.parse_args(argv)
     assert_recipe_settings(args.max_workers, FORCED_BUFFER_HOURS, FORCED_MAX_HOME_HOURS)
@@ -469,11 +638,20 @@ def main(argv: list[str] | None = None) -> int:
 
         extra_views = load_extra_views(args.extra_fast_view, fz.DAYS_ALL, allow_gap=args.allow_gap)
     n_hours = assert_hour_fence(pools_hours(extra_views))
+    try:
+        check_vmap_sha(args.vmap)  # before any row is read
+    except VRefused as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 2
     shas = {k: (_sha256_of_file(r / "VIEW.sha256") if r is not None else None) for k, r in roots.items()}
     if args.dry_run:
         print(json.dumps({"out_dir": str(out), "n_hours": n_hours, "roots": {k: str(v) for k, v in roots.items()}, "view_sha256_file_sha256": shas, "extra_views": [v.describe() for v in (extra_views or [])]}, indent=2))
         return 0
-    build_table(out, roots, extra_views, max_workers=args.max_workers, run_id=args.run_id, sha_of_roots=shas)
+    try:
+        build_table(out, roots, extra_views, max_workers=args.max_workers, run_id=args.run_id, sha_of_roots=shas, vmap_path=args.vmap)
+    except VRefused as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 
