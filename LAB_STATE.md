@@ -93,6 +93,7 @@ As of 2026-10-05 ~09:45Z.
 
 ## Current research state
 
+- **10-06 evening (manager8):** EXP-019 (post-migration flow confirmation at k8) FAILED its one-shot screen (job #328): SCREEN NONE, family closed. Cell A paired vs frozen k6: flat mean x -0.0005277499177288448 SOL, p 0.9715028497150285; A book flat mean -0.0013183461738122827 SOL/trade over 1,726 trades, 9 of 27 dates positive; not MISS-driven; B1 to B6 all FAIL. Exploration, no edge claim. See [exp019-screen-2026-10-06.md](ARTIFACTS/lab/exp019-screen-2026-10-06.md).
 - **10-06 evening (manager8):** EXP-018 (causal wallet skill at migration) FAILED its one-shot screen (job #325): SCREEN NONE, family closed. W2 paired vs frozen EXP-012: flat mean x +0.000004146408 SOL, p 0.46275; W2 book flat mean -0.0010193 SOL/trade, 6 of 22 dates positive; B1 to B6 all FAIL. Exploration, no edge claim. See [exp018-screen-2026-10-06.md](ARTIFACTS/lab/exp018-screen-2026-10-06.md).
 - **10-06 afternoon (manager8):**
   - **V0 LP law.** V0 changes only on PumpSwap Deposit/Withdraw: V0 ← floor(V0·S_after/S_before) (#400). The 10-16 (B) rules are in DEC-016 Am.5 §7, and the tools are merged (#402, #405, #411).
