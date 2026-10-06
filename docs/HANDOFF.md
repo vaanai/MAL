@@ -1,98 +1,119 @@
-# Manager handoff 2026-10-06 ~04:20Z (manager5, session 2, on mal-research-0 → next manager)
+# Manager handoff 2026-10-06 ~13:15Z (manager7 → next manager)
 
-Replace this page at the next handoff; don't append. Read it first. Then read:
-- [LAB_STATE.md](../LAB_STATE.md), which is stale since 10-05. Update it early: probe numbers, DEC-020/021/018 decisions, backcheck refusal, EXP-015 merged.
-- [CONSTITUTION.md](../CONSTITUTION.md)
-- DEC-018 (Amendment 1), DEC-019, DEC-020 (§7), DEC-021
-- EXP-015 plan v2 (§11 items 8–11)
-- EXP-013 plan (Am.7)
-- EXP-012-backcheck-0814 (Result)
-- the memory notes: `state-2026-10-04` (current state), `feedback-realistic-primary`, `feedback-probe-limits-honesty`, `execution-probe`, `research0-memory`, `profit-focus`
+Replace this page at the next handoff; don't append. Read it first, then read:
+- [LAB_STATE.md](../LAB_STATE.md) (updated 10-06 ~05:50Z);
+- [CONSTITUTION.md](../CONSTITUTION.md);
+- DEC-016 Amendments 4–5, DEC-018 Am.1, DEC-019, DEC-020 §7, DEC-021;
+- [EXP-016 plan](../EXP/EXP-016-rug-veto-plan.md) (§11–§13);
+- the memory notes `state-2026-10-04`, `rug-filter-priority`, `feedback-realistic-primary`, `feedback-probe-limits-honesty`, `pumpswap-virtual-reserve`, `profit-focus`.
 
-## Owner direction and decisions (10-06)
+## Owner direction (10-06)
 
-- **Push for profit, keep live running, research in parallel on research-0.** The owner's reviewers (Warden, the "grok bots") review merged PRs. Treat their notes as information: verify each claim and fix what holds. They caught real problems on #342, #344, #351 and #359 today.
-- **DEC-020: Option A (#347).** The 0.25 SOL step waits for the EXP-012 FINAL forward read (~10-16T02Z). No new funding before then. The same-day package is in DEC-020 §7:
-  - wallet ~0.35 SOL now; needs ~0.90 at the start (≥0.55 new, ~0.69 if the probe uses its cap room);
-  - cap 0.35; LOSS_ALERT_SOL 0.25;
-  - Helm's root lockdown is a precondition (§7 item 7).
-- **DEC-021: approved; switch delegated to the manager (#357).** A challenger replaces the champion when §6(a)–(e) and §7 all hold, without asking the owner. Before any switch, post a notebook decision and a Console entry with every number. The re-pin is Helm's. A swap never changes size or wallet.
-- **DEC-018 Am.1 (#357):** the size ladder is 0.05 probe → 0.25 (after the read) → 0.5. Each rung's size and funding is still an owner yes. The **owner delegated the stop levels to the manager.** At rung 2:
-  - DEC-020 caps;
-  - no daily cap;
-  - divergence stop after 10 (entry/exit vs quote < −200 bps; executor);
-  - landing-fail stop (>30% after 10; executor);
-  - **manager check:** run `tools/probe_sim_calibration.py` every 5 dec020 trades. If the live−sim residual is < −0.0075 SOL/trade, the **manager places STOP** under DEC-018 Am.1 and tells the owner and Helm the same hour.
-- Both owner questions are closed. None are open.
+- **Push for profit; keep live running.** No new funding or size step before the 10-16 read (DEC-020 Option A).
+- **Rug filter.** After live gap losses of −76.5% and −95.5%, the owner asked for a real rug filter and a tilt toward big winners. Work on challengers **in parallel** with the 10-16 work.
+- **No "critical errors" that set us back.** Every merge on the critical path gets quant-proof and is merged only when it clears.
+- **Autonomy.** Owner questions: none open. The inbox reader is manager7; the successor should call `miscusi_worker_start` with `inbox: true`.
 
-## LIVE PROBE (real money)
+## Must do immediately
+
+1. **Recreate the hourly probe monitor** as a session cron at :17, with the same command as job #233 or #275. Crons die with the session. Alert at realized ≤ −0.20 (notebook finding plus a message to the owner).
+2. **Recreate the V0-constancy check** (it was a one-shot cron at 13:53Z and dies with this session) if it hasn't run.
+   - Re-fetch the pool set of forward snapshot #2, `/data/mal/pumpswap-virtual/forward-1002/work-20261006T074427Z/pools.json`, into a NEW work dir with `tools.exp012_forward_vmap fetch --new`.
+   - Compare `v_base`, per pool, between the new `*.detail.json` and snapshot #2's `vmap.json.detail.json`.
+   - Any difference means merge would refuse on 10-16. Investigate before then.
+
+## LIVE PROBE (real money; DEC-019)
 
 | Item | Value |
 | --- | --- |
-| Build | pinned `faa319227eee420319eed06e85774f64dd2273b1` (unchanged since 10-05T23:09:56Z) |
-| Limits | 90 attempts, 0.05 SOL, max 3 open, loss cap 0.25, 500k priority, hard end **2026-10-12T00Z** |
-| Last check | 04:33Z (job #229): **45/90, realized −0.065655 SOL**, 0 open, healthy |
-| faa3192 group | +0.085348 SOL over 15 attempts (too few to read as edge). All 36 closed at 01:21Z totalled −174,249,232 lamports (job #208). Never call the record "break-even"; it was a loss (memory `feedback-realistic-primary`). |
-| Calibration | job #209: exits agree 35/36 (8/8 faa3192). Lab note `probe-calibration-2026-10-06.md` (#353). **Latest: job #230 at 45 attempts.** faa3192 is 16/16 exits agree; live−sim mean −640,641, median +34,540 lamports. One tp-jump outlier (8gtnEi3Q −8.57M) shows sim optimism on upward jumps. Next calibration at ≥53 attempts. DEC-021's r̄ needs 20 fills from one build. |
-| Monitor | session cron at :17 (it dies with the session; **recreate it**). Same command as job #227. Alert at −0.20. Helm's `mal-probe-watch.timer` is the durable alarm. |
+| Build | pinned `faa319227eee420319eed06e85774f64dd2273b1` |
+| Status at 12:35Z (job #275) | **57/90 attempts, realized −0.167875 SOL**, 0 open, healthy. That is 0.032 above the −0.20 alert and 0.082 from the 0.25 cap. Hard end 2026-10-12T00Z. |
+| Paused | Since 08:13Z. The runner's paper EXP-012 **ceiling** ledger hit its `daily_loss_cap`, and intents come only from that ledger (`forward_paper._intent`). Signals resume at the 00:00Z daily restart. Designed, not a fault (notebook; seal disclosure: skip labels were read, no amounts). |
+| Calibration (job #264, 57 attempts) | faa3192: 28 closed, **28/28 exits agree**, live −14,007,586 vs sim −27,038,518 lamports, live−sim mean +465,390 / median +34,540. 13 tp, 15 sl; 3 gap losses (27v59dSy, AWkPgsKg, 3BiUnVxR, −128M total; the sim reproduces each). On faa3192 it is a small **loss**, about −0.0005 SOL/trade. Never call it break-even. |
+| Duplicate monitor | Stopped (manager5 deleted its cron). |
 
-Never read `/etc/mal-probe`, `/etc/mal-probe-rpc` or `/run/credentials`. Re-pins are Helm's.
+## Key result today (exploration context, not gate evidence)
 
-**Merged, NOT installed:**
-- #348: the dec020 limits profile. `DEC020_END_MS = None` refuses until the owner's end is committed; 15-line manifest.
-- #358: the rung-2 divergence and landing-fail stops. A malformed state latches `dec020_state_invalid`, which blocks buys and never exits.
+**Frozen EXP-012 at realistic costs** (V, k=6, exit lag 2, haircut, 0.05 SOL, 505k fee) on 27 non-P1 dates: n=2,349, **flat −0.00044 / pressure −0.00054 SOL per trade** (EXP-015 report.json, bar 3).
+- This matches the live faa3192 record.
+- At 0.05 SOL the champion is about flat to slightly losing, because the fixed fee (~2% of size) eats the small edge.
+- Size is the only fee lever, and DEC-020 §1 is right that no simulation shows 0.25 works. The 10-16 FINAL plus Am.3(a) at 0.5 SOL trial terms is the decision point.
 
-Install only after the 10-16 PASS, the owner's funding and the end instant. Helm re-pins at 0 open, after a dry-run replay old vs new (0 `spend_over_size`). The --status output now ends with the profile/precheck lines; Helm should confirm the watch script greps fields.
+## 10-16 FINAL read: tooling merged and reviewed
 
-## Research state (exploration; nothing is gate evidence)
+**Merged after 4 quant-proof rounds:**
+- #374 `tools/exp012_forward_vmap.py`;
+- #375 `tools/exp012_forward_vbook.py`, book (B), single-use per window;
+- #378 `exp012_forward_sensitivity.py` with V; Am.3(a) on (B) needs a (B) PASS;
+- #376 DEC-016 Amendment 5, which records the commits.
 
-- **EXP-012 backcheck on explore-0814 (#342/#346): REFUSED_AFTER_READ** (job #207, #359/#360).
-  - 1 primary trade was on a no-V pool: 30 no-V pools, 29 absent from pool_v_0814 plus 1 closed account.
-  - No reading; **not rerun**. 6 tries are logged (explore-0814 count 7).
-  - Scratch is sealed at `/data/mal/exp012-backcheck-0814.refused-job207`. Don't open its rows.
-- **Root cause, shared by everything:** the V maps were built from migrated mints' pools only. This also refused **EXP-013 #225** at its pre-pass (1.59% / 675 pools; no outcome, no try spent).
-- **Fix in flight:** a complete map, `pool_v_0909.json`. Chain:
-  1. #221: walker-c re-walk of 4 resumed EXP-011 hours (**done**).
-  2. #222: install the 6 re-walked hours, verify and dedupe. **Done: b and c 72/72 hours, 0 flagged, 0 duplicates; clean views at /data/mal/clean-view/exp011-0909/{b,c}.** Copy integrity **#231 clean**: b 216/216 and c 213/213 files match the source, 0 missing, 0 mismatched. **All preconditions met.** Next: the ledger edit moving the EXP-011 block to exploration (cite #213/#217/#220/#221/#222/#231).
-  3. #224 **done**: 0909 has 41,396 pools, superset unchanged, sha at that point f12cc672…. Null pools: 7WQAs8wA… (explore-0814), DVb1LwQh… and EP1un5vo… (EXP-011).
-  4. **#232 DONE.** Final `pool_v_0909.json`: **226,073 pools** (every PumpSwap pool in 841 trade files over all research views; 2 unparseable lines skipped). **321 still null** (closed accounts), listed in `/data/mal/ops/still-no-v-pools.json`. Read-only. **FINAL sha256 `70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e`.** Before pinning, verify the superset is unchanged versus pool_v_0814 (a pool-field-only check), and that 321 nulls leave EXP-013's 1% coverage and EXP-015's 0.5% removal within limits. The `--guards-only` run prints both.
-  5. #226 **failed**: no buy prints for 7WQAs8wA… in explore-0814. Decision: use the pre-declared fallback. EXP-015's pool-based removal drops mints on still-null pools and lists them, with the bias statement. EXP-013 has only its 1% rule. Don't chase the closed pools further unless still-no-v-pools.json is large.
-- **Then pin:**
-  - one reviewed commit sets `VMAP_0909_SHA256` in `tools/exp015_screen.py` ("PENDING_JOB_224"), and `VMAP_0909_SHA256` plus `V_SHA256` in the EXP-013 table and screen ("PENDING_JOB_228", PR #364);
-  - update the tests that assert the placeholders;
-  - add the sha and pool counts to the EXP-015 §11 item 11 and EXP-013 Am.7 notes.
-- **PR #364** (EXP-013 pin switch, pricing-only): **merged** (0e55729). Reviewer MERGE; rc=0 at 976e0af. The pin-fill commit must set BOTH `VMAP_0909_SHA256` (table) and `V_SHA256` (screen), since a sync test enforces it, and that commit needs its own pricing-only review.
-- **EXP-013 screen:** rerun `PYTHONPATH=$PWD bash scripts/research/exp013-screen-run.sh <new RUN_ID>` after the pin (40 GB, 4 CPU). It has 3 tries, none spent.
-- **EXP-015 screen** (#356/#361/#363 merged; plan v2 #352, pinned 77b4582):
-  - prerequisites: the 0909 pin and the EXP-011 clean views (P4) from #222;
-  - first run `--guards-only`, then the real run as a MiScusi job: 48 GB, 8 CPU, `--max-workers 8` (tape passes capped at 4), out dir `/data/mal/exp015-screen` (chmod 700);
-  - the run command is in the #356 PR body;
-  - tries are spent at `started`; RUN.lock means a hard kill refuses any rerun, so you'd need a manager ruling;
-  - to join DEC-021 walk 2 it must PASS fresh-0808 (Part 2, not built) and register **before 2026-10-16T01**.
-- **Fee vs landing study v2 (#355, job #216):** observational. CU-price buckets; the deciding read is on no-tip buys. Extended to a 5h30m limit with a 60k credit cap. When it finishes, write a lab note. Any fee change is a DEC-019 amendment for the owner and Helm.
-- **Grad stream (#167/#200):** lead p50 924 ms, coverage 23.4% at threshold 0.90. **#205** re-measures at 0.70 and ends about 07:10Z. Then run `tools.grad_stream_compare` **on research-0**, because it OOMs on fast-0: copy `/var/lib/mal/fast-grad-stream/out-t70` plus the tip-tape hours, and take the window from #205's output `window.txt`.
-- **Early-arm shadow read:** due about **10-07T18Z** (see the 10-05 handoff notes in the notebook).
-- **Job #71** (forward walk): **resubmit by about 10-09T15Z**, with the same command and params `{"start":"2026-10-02T15"}`, resumable, 10080 min.
-- **EXP-012 FINAL forward read:** about 10-16T02Z. Then quant-proof, the V book (Am.4), Am.3. If it PASSes, prepare the DEC-020 same-day package.
-- **Tries:** data/tries.jsonl has 80 lines. 9-day pool cumulative 74; explore-0814 7.
+**V parser fixes:**
+- #383 (merge `6300915`): signed V, `parse_virtual_detail`, base-V constancy at merge, zero-V report counts V ≤ 0.
+- #386: wording, "null pools are V0=0, not closed".
+- Lab note #384, `ARTIFACTS/lab/pumpswap-v-layout-2026-10-06.md`: **stored V = V0 − A − B** (pending counters). The 321 "null" pools are V0 = 0 pools.
 
-## Next steps, in order
+**Forward V snapshot #2** (job #259, fixed decoder):
+- 52,697 pools, 0 null;
+- sha `f8547a29…453c`, detail sha `1fca63ea…dbe`;
+- in `/data/mal/pumpswap-virtual/forward-1002/snapshots-v2/`.
+- Snapshot #1 (#245) predates the fix and is unusable.
+- Pending on V0≈17.58 pools: 9 above 0.01 SOL, max 0.1319 SOL (≤ ~0.1% price error).
+- **Take more snapshots** every day or two until 10-15, with the same commands as #259 and a new work dir each time.
 
-1. Recreate the hourly probe monitor cron. Next calibration at ≥53 attempts.
-2. (done) #364 merged.
-3. Watch #221 → #222 → #224 → #228 / #226. Check `still-no-v-pools.json`, add the closed-pool V, chmod a-w, record the sha256.
-4. One pin commit for EXP-013 and EXP-015 (review it), then the EXP-013 rerun, then EXP-015 `--guards-only`, then the EXP-015 run.
-5. About 07:10Z: the #205 compare on research-0, plus a notebook entry.
-6. #216 done: lab note.
-7. Update LAB_STATE.md and the Console (data/console.json, then a fast-0 `git -C ~/MAL pull`) with today's decisions and results.
-8. 10-07T18Z early-arm read; 10-09T15Z #71 resubmit; 10-12T00Z probe end (DEC-019 §7 lab note by build, then quant-proof); 10-16 read.
+**10-16 order:**
+1. FINAL (A).
+2. `pools --final-out-dir`.
+3. `fetch --new` (new file, after the cutoff).
+4. `merge` with the v2 snapshots and `--pools`.
+5. `validate --final-out-dir`.
+6. vbook (`--vmap-merge-meta`).
+7. Runner latency export.
+8. Sensitivity on (B) with `--vbook-report`.
+
+Still needed before 10-16 (DEC-016 Am.3): k(p50)/k(p90) and the slot_ms export sha written into DEC-016, and the runner downtime file.
+
+**Not deployed:** #387 (merged code). The tip follower stamps signed V. Previously V0=0 pool rows got ~1.8e19, though fresh-migration EXP-012 entries are unaffected. Deploy needs an md5 decision-equivalence replay plus a recorded restart (CLAUDE.md), so pick a window. The live probe executor runs from its pinned copy and is unaffected.
+
+**Simulator finding** (notebook): `latency_curve` never reads `pool`, so fills **and** the migration clock can come from a foreign PumpSwap pool. EXP-016 filters rows; EXP-012 reads are unchanged. Open: an outcome-blind count of foreign-first mints on exploration data, to size it and disclose before 10-16 if material.
+
+## Challengers
+
+| Family | State |
+| --- | --- |
+| EXP-013 | **Screen FAIL**, job #236 (#388). Closed. Its block 0828 stays reserved, unread. |
+| EXP-015 | **Screen FAIL**, job #242 (#390). 0/6 bars on 3 configs. Closed. fresh-0808 released, unread. |
+| EXP-016 rug veto | Plan merged #381 after 5 quant-proof rounds; prior ≈15% screen / ≈5% confirm. Post-pin edits #393. PR 1 (label, features, P2 filter) merged **#392** after 3 rounds. **PR 2 (screen)** in progress, see below. |
+| EXP-014 | PR #269 open (DO NOT MERGE, it was waiting on EXP-013). Needs a confirmation block: 0808 and 0828 are both reserved with no owner now. 0802 goes to EXP-016 first (§8). |
+
+**Lab-wide α (#382):** the four confirmation families each need p ≤ 0.0125. With EXP-013 and EXP-015 closed, keep 0.0125 (it only ever tightens).
+
+**EXP-016 PR 2:**
+- The builder agent hit its turn limit and was told to push WIP to branch `claude/exp016-screen` as a DRAFT PR and continue. Check `gh pr list`.
+- It must have quant-proof before merge.
+- Then build the fixed-parser V maps for P1–P4 and 0802 (pool-field only), pin their sha by a reviewed commit, run `--guards-only`, then the screen as one MiScusi job (48 GB).
+
+**fresh-0802 walk** (ledger #380, reserved for EXP-016 first):
+- w1 #248 at 19/48 hours (171,623 credits);
+- w2 #249 at 14/48 (124,708);
+- w3 #250 queued after w1.
+- About 1.4M credits in total.
+- Then verify (both modes), dedupe and a clean view, counts and hashes only, the same as fresh-0808.
+
+## Other clocks
+
+- **Forward walk #71:** through 10-06T10, 1.24M credits. **Resubmit by 10-09T15Z** with the same command and params `{"start":"2026-10-02T15"}`, resumable, 10080 min.
+- **Early-arm shadow read:** about 10-07T18Z. Fold in the grad-stream result:
+  - at threshold 0.70 (#205/#253), coverage of `complete` is 24.7%;
+  - processed `migrate` covers 264/287 with a p50 lead of 1,012 ms. This is the better arm trigger to evaluate.
+- **Probe hard end:** 10-12T00Z. Then the DEC-019 §7 lab note by build, plus quant-proof. Include the daily-cap coupling.
+- **EXP-012 FINAL:** about 10-16T02Z.
 
 ## Gotchas (new today)
 
-- **Deciding cells use the most realistic measured costs** (exit lag 2, the haircut). Optimistic variants are report-only. Check this before any one-shot read.
-- **Run `date -u` before writing a timestamp.** Never say "launched" before the job has started. Owner-facing size or funding text keeps the DEC's caveats.
-- **Stage files by name, never `git add -A`.** A stray out.txt was committed in #353 and removed in #362. Write pytest output to the scratchpad.
-- **Never bulk-remove worktrees by pattern.** I force-removed the previous manager5 session's scratch worktree by mistake.
-- MiScusi `after` only starts when the dependency **succeeds**. A refused or failed dependency leaves the dependant queued forever, so cancel and resubmit.
-- Gate merges on pytest's own rc, never through `| tail`.
-- The seal: never read the runner's P&L files. Probe fills are fine.
+- **Test isolation.** `tools/conftest.py` (#385) restores `MAL_PSV_*`/`MAL_EXP015_*` env after each test. `test_dec015_fast_kit` errors on research-0 (git identity in its temp repo); that is environmental.
+- **Use the venv for tests.** Builders sometimes use system python with no pytest. Tell them to use `/data/mal/venv/bin/python -m pytest`.
+- **MiScusi jobs run under `sh`.** `${PIPESTATUS[0]}` fails there; use `> log; RC=$?`.
+- **Memory slots.** With two 48 GB jobs running, small jobs queue for memory. Request ≤ 3.5 GB for light jobs.
+- **Prompt filter.** A PreToolUse hook blocks commands containing the word "secrets".
+- **fast-0 "idle" notices.** Decline them; fast-0 runs the probe and runner (≤ 1.9 GB jobs only).
+- **Docs to correct.** Docs written before #383 call the null pools "closed accounts". #386 fixed the main ones; fix others when you see them.
