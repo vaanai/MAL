@@ -817,9 +817,20 @@ def p1b_source(*, with_creates=True):
 
     from tools.oracle_live_adapter import POOL_B_CREATE_DAYS, _hour_info_b
 
-    cr_b, tr_b = mint_tape("MINTB", T0)
-    cr_c, tr_c = mint_tape("MINTC", T0 + 100)
-    cr_d, tr_d = mint_tape("MINTD", T0 + 200)
+    from datetime import datetime, timezone
+
+    from tools.oracle_live_adapter import POOL_B_START
+
+    start_s = int(datetime.strptime(POOL_B_START, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp())
+    b0 = start_s + 3600
+    cr_b, tr_b = mint_tape("MINTB", b0)
+    cr_c, tr_c = mint_tape("MINTC", b0 + 100)
+    cr_d, tr_d = mint_tape("MINTD", b0 + 200)
+    cr_e, tr_e = mint_tape("MINTE", b0 + 300)  # created before the tape starts (see the t_ws override below)
+    cr_f, tr_f = mint_tape("MINTF", b0 + 400)  # its first bonding print is 700 s after its create
+    for t in tr_e + tr_f:
+        if t["venue"] == "pumpswap":
+            t["pool"] = "CANON_" + t["mint"]
     for t in tr_b:
         if t["venue"] == "pumpswap":
             t["pool"] = "CANON_MINTB"
@@ -832,7 +843,8 @@ def p1b_source(*, with_creates=True):
     tr_d = [t for t in tr_d if t["venue"] == "pumpswap"]  # MINTD: a migration but no bonding print on the tape
     tz = [dict(t, mint="MINTZ", pool="CANON_MINTZ") for t in tr_b if t["venue"] == "pumpswap"]  # PumpSwap token that was never a pump.fun create
     trades = []
-    for t in tr_b + tr_c + tr_d + tz:
+    ty = [dict(t, mint="MINTY", pool="SOME_FOREIGN") for t in tr_b if t["venue"] == "pumpswap"]  # an unrelated PumpSwap token: foreign pool, no create
+    for t in tr_b + tr_c + tr_d + tr_e + tr_f + tz + ty:
         t = dict(t)
         t.pop("block_time", None)  # the Oracle tape has t_recv_ms only
         if t["venue"] == "pumpswap":
@@ -842,8 +854,9 @@ def p1b_source(*, with_creates=True):
     (d / "trades").mkdir()
     (d / "creates").mkdir()
     (d / "trades" / "trades-2026-09-25T07.jsonl").write_text("".join(json.dumps(t) + "\n" for t in trades))
-    obs = [{"stream": "subscribeNewToken", "txType": "create", "mint": c["mint"], "t_ws": c["block_time"] * 1000 - 5000, "traderPublicKey": "creatorZ",
-            "signature": c["signature"]} for c in (cr_b + cr_c + cr_d)]
+    t_ws = {"MINTE": (start_s - 100) * 1000, "MINTF": (b0 + 400) * 1000 - 700_000}
+    obs = [{"stream": "subscribeNewToken", "txType": "create", "mint": c["mint"], "t_ws": t_ws.get(c["mint"], c["block_time"] * 1000 - 5000), "traderPublicKey": "creatorZ",
+            "signature": c["signature"]} for c in (cr_b + cr_c + cr_d + cr_e + cr_f)]
     for day in POOL_B_CREATE_DAYS:
         (d / "creates" / f"observe-{day}.jsonl").write_text("".join(json.dumps(o) + "\n" for o in obs) if (with_creates and day == POOL_B_CREATE_DAYS[0]) else "")
     hours_fn = partial(_hour_info_b, root=d)
@@ -878,9 +891,10 @@ class P1BCanonicalPoolTests(unittest.TestCase):
         src = p1b_source()
         self.assertTrue(src.derived_pools)
         pmap = rug.migration_pool_map(src.migrations.values())
-        self.assertEqual(pmap, {"MINTB": "CANON_MINTB", "MINTD": "CANON_MINTD"})
+        self.assertEqual(set(pmap), {"MINTB", "MINTD", "MINTE", "MINTF", "MINTZ"})
+        self.assertEqual(pmap["MINTB"], "CANON_MINTB")
         self.assertEqual(rug.count_no_pool_mints(src.migrations.values()), ["MINTC"])  # pump.fun mint, prints only on a foreign pool
-        self.assertNotIn("MINTZ", src.migrations)  # a PumpSwap token with no pump.fun create is not a migration
+        self.assertEqual(src.canonical_no_create, ["MINTZ"])  # canonical-pool prints but no create row: kept, counted (plan 13 item 12)
         self.assertTrue(x.pool_print_times(src, pmap)["CANON_MINTB"])
 
     def test_other_sources_keep_the_migration_row_pool(self):
@@ -1222,7 +1236,7 @@ class DeadlineBandTests(unittest.TestCase):
 
 
 class MainExceptionHygieneTests(unittest.TestCase):
-    def _run(self, d, patches):
+    def _run(self, d, patches, limits=()):
         import contextlib
         import io
 
@@ -1237,6 +1251,7 @@ class MainExceptionHygieneTests(unittest.TestCase):
             st.enter_context(mock.patch.object(x, "load_pinned_vmap", return_value=dict(VMAP)))
             st.enter_context(mock.patch.object(x, "check_v_constancy", return_value={}))
             st.enter_context(mock.patch.object(x, "check_constancy_sample"))
+            st.enter_context(mock.patch.object(x, "check_limits", return_value=list(limits)))  # the fixture source has 1 in-book cell: the floor is tested on its own
             st.enter_context(mock.patch.object(x, "build_sources", return_value=[("P1A", "P1", None, [], [])]))
             st.enter_context(mock.patch.object(x, "load_source_data", side_effect=lambda *a, **k: fixture_source()))
             st.enter_context(mock.patch.object(x, "load_oof", return_value=({}, None)))
@@ -1293,10 +1308,22 @@ class P1BCreatesTests(unittest.TestCase):
         src = p1b_source()
         self.assertEqual(set(src.creates), {"MINTB", "MINTC"})
         self.assertEqual(src.creates["MINTB"]["slot"], 1001)  # slot0 + 1: the first pump_bonding print, never the adapter's slot 0
-        self.assertEqual(src.excluded_no_bonding, ["MINTD"])
-        self.assertEqual(src.create_stats["n_creates_loaded"], 3)
-        self.assertEqual((src.create_stats["n_with_bonding"], src.create_stats["n_excluded_no_bonding"]), (2, 1))
-        self.assertEqual(src.create_stats["gap_s"], {"n": 2, "p50": 6, "p90": 6, "max": 6})  # first bonding block_time - create block_time, seconds
+        self.assertEqual(src.excluded_no_bonding, [])
+        self.assertEqual(src.excluded_other, {"pre_tape_create": ["MINTE"], "pre_tape_migration": ["MINTD"], "gap_over": ["MINTF"]})
+        self.assertEqual(src.create_stats["n_creates_loaded"], 5)
+        self.assertEqual(src.create_stats["gap_s"], {"n": 2, "p50": 6, "p90": 6, "max": 6})  # the REMAINING first bonding block_time - create block_time, seconds
+
+    def test_pre_tape_create_pre_tape_migration_and_gap_rules(self):
+        creates = {k: {"mint": k, "slot": 0, "block_time": bt} for k, bt in (("A", 1000), ("B", 50), ("C", 1000), ("D", 1000), ("E", 1000))}
+        rows = {"A": [{"venue": "pump_bonding", "slot": 10, "block_time": 1005}], "B": [{"venue": "pump_bonding", "slot": 10, "block_time": 60}],
+                "C": [{"venue": "pump_bonding", "slot": 90, "block_time": 1005}],  # bonding only AFTER the first canonical print (slot 80)
+                "D": [{"venue": "pump_bonding", "slot": 10, "block_time": 1700}], "E": []}
+        mig = {"A": {"pool": "p", "slot": 20}, "B": {"pool": "p", "slot": 20}, "C": {"pool": "p", "slot": 80}, "D": {"pool": "p", "slot": 20}}
+        out, nb, st = x.apply_create_slot_rule(creates, rows, migrations=mig, tape_start_s=100, max_gap_s=600)
+        self.assertEqual(set(out), {"A"})
+        self.assertEqual(st["excluded"], {"no_bonding": ["E"], "pre_tape_create": ["B"], "pre_tape_migration": ["C"], "gap_over": ["D"]})
+        self.assertEqual(nb, ["E"])  # a pre-tape migration is NOT in the no-bonding list
+        self.assertEqual(st["gap_s"]["max"], 5)
 
     def test_rows_are_adapted_so_admission_keeps_them(self):
         src = p1b_source()
@@ -1306,19 +1333,32 @@ class P1BCreatesTests(unittest.TestCase):
         self.assertEqual(len(x.admit_rows(rows)), len(rows))
         self.assertTrue(all(r.get("quote_is_wsol") is True for r in rows if r["venue"] == "pumpswap"))
 
-    def test_process_source_counts_no_bonding_separately_and_builds_the_cell(self):
+    def test_process_source_counts_exclusions_separately_and_builds_the_cell(self):
         src = p1b_source()
-        r = x.process_source(src, {"CANON_MINTB": 17_584_000_000, "CANON_MINTD": 17_584_000_000}, fake_canon)
-        self.assertEqual(r["no_bonding_excluded"], ["MINTD"])
-        self.assertEqual(r["no_create_row"], [])  # not double counted
+        r = x.process_source(src, {"CANON_MINTB": 17_584_000_000}, fake_canon)
+        self.assertEqual(r["no_bonding_excluded"], [])  # pre-tape migrations are not in the no-bonding numerator
+        self.assertEqual((r["pre_tape_migration_excluded"], r["pre_tape_create_excluded"], r["gap_excluded"]), (["MINTD"], ["MINTE"], ["MINTF"]))
+        self.assertEqual(r["no_create_row"], ["MINTZ"])  # canonical prints but no create: inside the no-create limit
+        self.assertEqual(r["p1b_canonical_no_create"], ["MINTZ"])
         self.assertEqual(r["no_pool_mints"], ["MINTC"])
         self.assertEqual([c["mint"] for c in r["cells"]], ["MINTB"])
-        self.assertEqual(r["n_creates"], 3)
-        self.assertEqual(r["n_creates_with_migration"], 3)
+        self.assertEqual(r["n_creates"], 5)
+        self.assertEqual(r["n_creates_with_migration"], 5)
+
+    def test_creator_history_uses_all_creates_before_exclusion(self):
+        src = p1b_source()
+        self.assertEqual(len(src.creator_hist["creatorZ"]), 5)  # B, C, D, E, F: the excluded ones still count as the creator's earlier creates
+        self.assertEqual(len(x.creator_history(src.creates)["creatorZ"]), 2)
+
+    def test_p1b_rows_of_unrelated_pumpswap_mints_are_not_kept(self):
+        src = p1b_source()
+        self.assertNotIn("MINTY", src.rows_by_mint)
+        self.assertIn("MINTZ", src.rows_by_mint)  # canonical prints: kept (counted as no-create)
 
     def test_no_creates_means_no_migrations(self):
         src = p1b_source(with_creates=False)
-        self.assertEqual((src.creates, src.migrations), ({}, {}))
+        self.assertEqual(src.creates, {})
+        self.assertEqual(sorted(src.migrations), src.canonical_no_create)  # only canonical-print mints remain, all counted as no-create
 
     def test_create_slot_rule_keeps_real_slots_and_derives_placeholders(self):
         creates = {"R": {"mint": "R", "slot": 500, "block_time": 10}, "P": {"mint": "P", "slot": 0, "block_time": 10}, "N": {"mint": "N", "slot": None, "block_time": 10}}
@@ -1340,8 +1380,8 @@ class P1BCreatesTests(unittest.TestCase):
         self.assertEqual(src.creates["MINTB"]["slot"], 1000)
 
 
-def _res(tag, *, cells=1, n_mig=100, no_create=0, no_pool=0, no_bonding=0, with_mig=100, foreign=0):
-    return {"tag": tag, "cells": [{"status": "FILLED", "pool": f"p{i}", "mint": f"m{i}", "block": "P1"} for i in range(cells)], "n_migrations": n_mig,
+def _res(tag, *, cells=30, n_mig=100, no_create=0, no_pool=0, no_bonding=0, with_mig=100, foreign=0):
+    return {"tag": tag, "cells": [{"status": "FILLED", "pool": f"p{i}", "mint": f"m{i}", "block": "P1", "mig_ms": e15.date_start_ms(P1[0]) + 12 * 3_600_000} for i in range(cells)], "n_migrations": n_mig,
             "no_create_row": ["a"] * no_create, "no_pool_mints": ["b"] * no_pool, "no_migration_slot": [], "no_bonding_excluded": ["c"] * no_bonding,
             "n_creates_with_migration": with_mig, "n_creates": with_mig, "create_stats": None, "p1b_gap_slots": None,
             "gate": {"foreign_first_mints": ["f"] * foreign, "mints_with_foreign_pool_prints": 0}, "slot_inversions": 0, "pool_vs_canonical": None}
@@ -1352,7 +1392,7 @@ class RefusalLimitTests(unittest.TestCase):
         self.assertEqual(x.check_limits([_res("P1A", no_create=2, no_pool=2), _res("P1B", no_bonding=5, with_mig=100)]), [])
 
     def test_zero_cells_refuses(self):
-        self.assertEqual(len(x.check_limits([_res("P2", cells=0)])), 1)
+        self.assertIn("P2: 0 cells", x.check_limits([_res("P2", cells=0)]))
 
     def test_no_create_row_share_over_two_percent_refuses(self):
         (why,) = x.check_limits([_res("P3", no_create=3)])
@@ -1376,7 +1416,7 @@ class RefusalLimitTests(unittest.TestCase):
 
 class PrecountTests(unittest.TestCase):
     def _args(self, d):
-        return SimpleNamespace(vmap=str(Path(d) / "map.json"), out_dir=Path(d) / "out", v_fallback_json=None, closed_pools_json=None, artifact_dir=Path(d),
+        return SimpleNamespace(vmap=str(Path(d) / "map.json"), out_dir=Path(d) / "out", v_fallback_json=None, closed_pools_json=None, artifact_dir=Path(d), v_constancy_json=None,
                                p1_fast_dir="/x1", p1_oracle_insample_dir="/x2", p1_oracle_live_dir="/x3", p3_root="/x4", p2_view_dir=["/x5"], p4_view_dir=None)
 
     def _run(self, d, sources, extra=()):
@@ -1415,7 +1455,10 @@ class PrecountTests(unittest.TestCase):
         for banned in ("net", "press", "flat", "rug", "label", "pnl", "exit_kind", "deadline_ms", "mig_ms"):
             self.assertNotIn(banned, text.lower().replace("foreign_pool_prints", ""))
         self.assertNotIn("MINTA", text)  # counts, never ids
-        self.assertEqual(rec["would_refuse"], [])
+        self.assertTrue(any("1 in-book cells" in w for w in rec["would_refuse"]))  # the in-book floor (30) is reported, not raised
+        self.assertTrue(any("OOF" in w for w in rec["would_refuse"]))  # the mocked OOF map is empty: no stored score on the one P1 cell
+        self.assertIn("p1_oof_score_counts", rec["pre_started"])
+        self.assertIn("v_coverage", rec["pre_started"])
         self.assertEqual(rec["pre_started"]["lp_active_proxy"]["by_source"]["P1A"], {"selected": 1, "outside": 0, "no_v_base": 0})
 
     def test_precount_reports_would_refuse_instead_of_refusing(self):
@@ -1423,7 +1466,8 @@ class PrecountTests(unittest.TestCase):
             rc, text = self._run(d, ["P1A"], extra=[mock.patch.object(x, "process_source", side_effect=lambda src, v, c=None: _res("P1A", cells=0))])
             rec = json.loads(text)
         self.assertEqual(rc, 0)
-        self.assertEqual(rec["would_refuse"], ["P1A: 0 cells"])
+        self.assertIn("P1A: 0 cells", rec["would_refuse"])
+        self.assertTrue(any("0 in-book cells" in w for w in rec["would_refuse"]))
 
     def test_precount_runs_with_the_map_unpinned(self):
         self.assertEqual(x.VMAP_EXP016_SHA256, "PENDING")  # the pin is the manager's; the precount must not need it
@@ -1435,9 +1479,9 @@ class PrecountTests(unittest.TestCase):
         import inspect
 
         src = inspect.getsource(x.main)
-        self.assertLess(src.index("enforce_limits(results)"), src.index("e15.take_lock"))
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "check_limits", return_value=["P1A: 0 cells"]), mock.patch.object(x, "log_all") as lg:
-            rc, exc, text = MainExceptionHygieneTests()._run(d, [])
+        self.assertLess(src.index("enforce_limits(results, oof)"), src.index("e15.take_lock"))
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "log_all") as lg:
+            rc, exc, text = MainExceptionHygieneTests()._run(d, [], limits=["P1A: 0 cells"])
             lg.assert_not_called()
         self.assertEqual((rc, exc), (2, None))
         self.assertIn("plan 13 item 9", text)
@@ -1496,6 +1540,85 @@ class PriorTriesPerExperimentTests(unittest.TestCase):
         import inspect
 
         self.assertIn("prior_tries_per_experiment(canonical, with_p4)", inspect.getsource(x.main))
+
+
+class DataQualityGuardTests(unittest.TestCase):
+    def _cells(self, n_in_book, n_no_sim=0):
+        base = e15.date_start_ms(P1[0]) + 12 * 3_600_000
+        cs = [{"status": "FILLED", "pool": f"p{i}", "mint": f"m{i}", "block": "P1", "mig_ms": base} for i in range(n_in_book)]
+        cs += [{"status": "NO_SIM", "why": "x", "pool": f"q{i}", "mint": f"n{i}", "block": "P1"} for i in range(n_no_sim)]
+        return cs
+
+    def test_a_source_with_all_no_sim_cells_refuses(self):
+        r = _res("P1B", cells=0)
+        r["cells"] = self._cells(0, n_no_sim=100)
+        why = x.check_limits([r])
+        self.assertTrue(any("0 in-book cells" in w for w in why))
+        self.assertTrue(any("NO_SIM 100 of 100" in w for w in why))
+        with self.assertRaises(x.Refused):
+            x.enforce_limits([r])
+
+    def test_named_constants_and_boundaries(self):
+        self.assertEqual((x.LIMIT_MIN_IN_BOOK, x.LIMIT_NO_SIM_SHARE, x.LIMIT_P1_NO_OOF), (30, 0.25, 0.02))
+        r = _res("P2", cells=0)
+        r["cells"] = self._cells(30, n_no_sim=10)  # 30 in book; 10 of 40 = 25% is not over
+        self.assertEqual(x.check_limits([r]), [])
+        r["cells"] = self._cells(29)
+        self.assertEqual(len(x.check_limits([r])), 1)
+        r["cells"] = self._cells(30, n_no_sim=11)  # 11 of 41 > 25%
+        (why,) = x.check_limits([r])
+        self.assertIn("NO_SIM", why)
+
+    def test_censored_cells_do_not_count_in_book(self):
+        r = _res("P3", cells=0)
+        r["cells"] = self._cells(29) + [{"status": "CENSORED", "pool": "pc", "mint": "mc", "block": "P1", "mig_ms": e15.date_start_ms(P1[0]) + 12 * 3_600_000}]
+        self.assertEqual(len(x.in_book_cells(r["cells"])), 29)
+        self.assertEqual(len(x.check_limits([r])), 1)
+
+    def test_p1_oof_score_match(self):
+        r = _res("P1A", cells=100)
+        oof = {f"m{i}": 0.9 for i in range(100)}
+        self.assertEqual(x.check_limits([r], oof), [])
+        self.assertEqual(x.oof_counts([r], oof), {"P1A": {"in_book": 100, "with_score": 100, "without_score": 0}})
+        for i in range(2):
+            del oof[f"m{i}"]
+        self.assertEqual(x.check_limits([r], oof), [])  # 2% is not over
+        del oof["m2"]
+        (why,) = x.check_limits([r], oof)
+        self.assertIn("OOF", why)
+        with self.assertRaises(x.Refused):
+            x.enforce_limits([r], oof)
+        self.assertEqual(x.check_limits([r]), [])  # no OOF map given: that limit is not evaluated here (main always passes it)
+
+    def test_oof_counts_only_cover_p1_sources(self):
+        r = _res("P2", cells=40)
+        for c in r["cells"]:
+            c["block"] = "P2"
+        self.assertEqual(x.oof_counts([r], {}), {})
+
+    def test_main_passes_oof_to_the_limits_and_prior_experiment_is_before_the_lock(self):
+        import inspect
+
+        src = inspect.getsource(x.main)
+        self.assertIn("enforce_limits(results, oof)", src)
+        self.assertLess(src.index("prior_exp = prior_tries_per_experiment"), src.index("e15.take_lock"))
+
+    def test_migration_rows_outside_the_pool_hours_are_dropped_and_counted(self):
+        creates, trades = mint_tape("MINTB", T0)
+        from datetime import datetime, timezone
+
+        hour = datetime.fromtimestamp(T0, timezone.utc).strftime("%Y-%m-%dT%H")
+        with tempfile.TemporaryDirectory() as d:
+            tp, cp = Path(d) / "trades.jsonl", Path(d) / "creates.jsonl"
+            (Path(d) / "migrations").mkdir()
+            tp.write_text("".join(json.dumps(t) + "\n" for t in trades))
+            cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
+            rows = [{"type": "migration", "mint": "MINTB", "slot": 1050, "pool": "P", "block_time": T0 + 10}, {"type": "migration", "mint": "OLD", "slot": 5, "pool": "Q", "block_time": T0 - 90 * 86400}]
+            with mock.patch("tools.exp012_virtual_rescore._zcat_lines", return_value=[json.dumps(r) for r in rows]):
+                (Path(d) / "migrations" / "migrations-x.jsonl.zst").write_bytes(b"")
+                src = x.load_source_data("P3", "P3", lambda h: {"trade": tp, "create": cp}, [hour], [Path(d)])
+        self.assertEqual(sorted(src.migrations), ["MINTB"])
+        self.assertEqual(src.migrations_outside_window, 1)
 
 
 if __name__ == "__main__":
