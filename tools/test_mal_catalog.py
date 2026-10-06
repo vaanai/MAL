@@ -53,7 +53,7 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     assert by_name["Backup confirmation block"].owner == "reserved"
     assert by_name["Backup confirmation block"].host == "research"
     second = by_name["Second backup confirmation block"]
-    assert second.owner == "reserved"  # EXP-015 is named only by its Part 1 pre-registration
+    assert second.owner == "reserved"  # released unread after EXP-015 failed its screen (2026-10-06)
     assert second.host == "research"
     assert (second.start_hour, second.end_hour_exclusive) == ("2026-08-08T12", "2026-08-14T12")
     third = by_name["Third backup confirmation block"]
