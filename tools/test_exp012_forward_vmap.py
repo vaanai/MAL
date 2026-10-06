@@ -499,7 +499,7 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(rc, 2)
 
     def test_snapshot_disagreement_refused(self) -> None:
-        final = self.final({"B": None})
+        final = self.final({"B": None}, {"B": "closed"})  # B is filled, so its snapshots must agree
         s1, s2 = self.snap({"B": 1}), self.snap({"B": 2})
         out = self.tmp / "out.json"
         rc, _, err = self.merge(final, [s1, s2], self.pools(["B"]), out)
@@ -507,14 +507,19 @@ class MergeTests(unittest.TestCase):
         self.assertIn("disagree", err)
         self.assertFalse(out.exists())
 
-    def test_final_vs_snapshot_conflict_refused(self) -> None:
+    def test_final_vs_snapshot_difference_is_reported_not_refused(self) -> None:
+        # DEC-016 Am.5 §3 (2026-10-06 edit, job #278): the post-cutoff map is authoritative for pools it prices
         final = self.final({"A": 5})
         s1 = self.snap({"A": 6})
         out = self.tmp / "out.json"
-        rc, _, err = self.merge(final, [s1], self.pools(["A"]), out)
-        self.assertEqual(rc, 2)
-        self.assertIn("post-cutoff", err)
-        self.assertFalse(out.exists())
+        rc, stdout, err = self.merge(final, [s1], self.pools(["A"]), out)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(pv.load_map(out)["A"], 5)  # the final's value, never the snapshot's
+        meta = json.loads((self.tmp / "out.json.merge.json").read_text())
+        disc = meta["v_base_discrepancies"]
+        self.assertEqual(disc["n_final_vs_snapshot"], 1)
+        self.assertEqual(disc["final_vs_snapshot"][0][0], "A")
+        self.assertNotIn("A", stdout.replace("v_base_discrepancies", ""))  # ids go to the file, not stdout
 
     def test_out_exists_refused(self) -> None:
         final = self.final({"A": 5})
@@ -573,13 +578,32 @@ class DetailMergeTests(MergeTests):
         self.assertEqual(meta["n_pending_gt_0.01SOL"], 0)
         self.assertEqual(meta["sha256"]["final_detail"], sha(self.tmp / "final.json.detail.json"))
         self.assertEqual(meta["sha256"]["snapshot_details"], [sha(Path(s1 + ".detail.json"))])
-        # now V0 itself differs
+        # now V0 itself differs on a pool the final prices: reported, not refused (job #278 found real V0 moves)
         final2 = self.final({"A": 960}, detail={"A": {"pending": 40, "v_base": 1001}})
         out2 = self.tmp / "out2.json"
         rc, _, err = self.merge(final2, [s1], self.pools(["A"]), out2)
+        self.assertEqual(rc, 0, err)
+        meta2 = json.loads((self.tmp / "out2.json.merge.json").read_text())
+        self.assertEqual(meta2["v_base_discrepancies"]["final_vs_snapshot"], [["A", 1000, 1001]])
+        self.assertEqual(meta2["v_base_discrepancies"]["max_abs_final_vs_snapshot"], 1)
+        self.assertEqual(pv.load_map(out2)["A"], 960)
+
+    def test_filled_pool_with_snapshots_missing_v_base_refused(self) -> None:
+        final = self.final({"B": None}, {"B": "closed"})
+        s1 = self.snap({"B": 100}, detail={"B": {"pending": 5, "v_base": 105}})
+        s2 = self.snap({"B": 100}, detail={})
+        rc, _, err = self.merge(final, [s1, s2], self.pools(["B"]), self.tmp / "out.json")
         self.assertEqual(rc, 2)
         self.assertIn("v_base", err)
-        self.assertFalse(out2.exists())
+
+    def test_snapshot_vs_snapshot_difference_on_a_priced_pool_is_reported(self) -> None:
+        final = self.final({"A": 50}, detail={"A": {"pending": 0, "v_base": 50}})
+        s1 = self.snap({"A": 49}, detail={"A": {"pending": 0, "v_base": 49}})
+        s2 = self.snap({"A": 50}, detail={"A": {"pending": 0, "v_base": 50}})
+        rc, _, err = self.merge(final, [s1, s2], self.pools(["A"]), self.tmp / "out.json")
+        self.assertEqual(rc, 0, err)
+        disc = json.loads((self.tmp / "out.json.merge.json").read_text())["v_base_discrepancies"]
+        self.assertEqual((disc["n_snapshot_vs_snapshot"], disc["n_final_vs_snapshot"]), (1, 0))
 
     def test_snapshots_disagreeing_on_v_base_refused_and_agreeing_with_moving_v_passes(self) -> None:
         final = self.final({"B": None}, {"B": "closed"})

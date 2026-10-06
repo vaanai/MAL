@@ -361,30 +361,30 @@ def _same_base(p: str, b1: int | None, b2: int | None, what: str) -> None:
         raise Refused(f"{what}: v_base for {p} differs ({b1} vs {b2}); V0 is constant per pool")
 
 
-def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | None]], pool_set: set[str], reasons: dict[str, str] | None = None, final_detail: dict[str, Any] | None = None, snap_details: Sequence[dict[str, Any]] | None = None) -> tuple[dict[str, int | None], list[str], list[str]]:
-    """(merged, filled, ignored_outside_set). Stored V moves with pending fees (V = V0 - A - B), so constancy is
-    checked on v_base = V0, not on V: any v_base difference (snapshot vs snapshot, or snapshot vs final) refuses,
-    and so does a missing v_base where two values must be compared. Only pools in pool_set are filled; only
-    closed-null or absent pools are filled; a null with reason "unreadable" or with no reason refuses.
-    A fill copies the v of the LAST snapshot given (list them oldest first)."""
+def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | None]], pool_set: set[str], reasons: dict[str, str] | None = None, final_detail: dict[str, Any] | None = None, snap_details: Sequence[dict[str, Any]] | None = None) -> tuple[dict[str, int | None], list[str], list[str], dict[str, Any]]:
+    """(merged, filled, ignored_outside_set, discrepancies).
+
+    The post-cutoff map is authoritative for every pool it prices (non-null). Snapshots only FILL pools of the set that
+    are closed-null or absent in it, copying the v of the LAST snapshot given (list them oldest first).
+
+    Constancy (DEC-016 Am.5 §3, 2026-10-06 edit after job #278): v_base = V + A + B was found to move on a few pools
+    (6 of 52,643 in ~6 h), so it is NOT checked for pools the post-cutoff map prices; those differences are reported
+    only (`discrepancies`). It IS checked for every pool that is filled: if two snapshots carry that pool, their v_base
+    must be equal and present, else refuse (a filled value must not be ambiguous). A null with reason "unreadable" or
+    with no reason refuses, as before."""
     reasons = reasons or {}
     final_detail = final_detail or {}
     snap_details = snap_details if snap_details is not None else [{} for _ in snaps]
     snap_v: dict[str, int] = {}
-    snap_base: dict[str, int | None] = {}
-    for i, (sm, sd) in enumerate(zip(snaps, snap_details)):
+    snap_bases: dict[str, list[int | None]] = {}
+    for sm, sd in zip(snaps, snap_details):
         for p, v in sm.items():
             if v is None:
                 continue
-            if p in snap_base:
-                _same_base(p, snap_base[p], _b(sd, p), "snapshots disagree")
-            snap_base[p] = _b(sd, p)
             snap_v[p] = v
-    for p, v in final.items():
-        if v is not None and p in snap_v:
-            _same_base(p, _b(final_detail, p), snap_base[p], "post-cutoff map vs snapshot")
+            snap_bases.setdefault(p, []).append(_b(sd, p))
     out = dict(final)
-    want = sorted(p for p, v in snap_v.items() if out.get(p) is None)
+    want = sorted(p for p in snap_v if out.get(p) is None)
     ignored = [p for p in want if p not in pool_set]
     filled = [p for p in want if p in pool_set]
     no_reason = sorted(p for p in pool_set if p in final and final[p] is None and reasons.get(p) not in ("closed", "unreadable"))
@@ -394,8 +394,34 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
     if bad:
         raise Refused(f"{len(bad)} pool(s) are null in the final map as unreadable but non-null in a snapshot: not filled; resolve first")
     for p in filled:
+        bases = snap_bases[p]
+        for b in bases[1:]:
+            _same_base(p, bases[0], b, "snapshots disagree on a pool being filled")
+    final_vs_snap: list[list[Any]] = []
+    snap_vs_snap: list[str] = []
+    filled_set = set(filled)
+    for p, bases in snap_bases.items():
+        if p in filled_set:
+            continue
+        known = [b for b in bases if b is not None]
+        if len(set(known)) > 1:
+            snap_vs_snap.append(p)
+        if final.get(p) is not None:
+            fb = _b(final_detail, p)
+            if fb is not None and known and fb != known[-1]:
+                final_vs_snap.append([p, known[-1], fb])
+    final_vs_snap.sort()
+    disc = {
+        "n_final_vs_snapshot": len(final_vs_snap),
+        "final_vs_snapshot": final_vs_snap,
+        "max_abs_final_vs_snapshot": max((abs(b - a) for _, a, b in final_vs_snap), default=0),
+        "n_snapshot_vs_snapshot": len(snap_vs_snap),
+        "snapshot_vs_snapshot": sorted(snap_vs_snap),
+        "note": "report-only: the post-cutoff map prices these pools (DEC-016 Am.5 §3, 2026-10-06 edit)",
+    }
+    for p in filled:
         out[p] = snap_v[p]
-    return out, filled, ignored
+    return out, filled, ignored, disc
 
 
 def final_fetch_block(final_path: Path, pools_path: Path) -> dict[str, Any]:
@@ -440,7 +466,7 @@ def cmd_merge(a: argparse.Namespace) -> int:
     if final_fetch["detail_sha256"] != sha256_file(side(final_path, ".detail.json")):
         raise Refused(f"{side(final_path, '.detail.json')} does not match detail_sha256 in the fetch file")
     snap_details = [load_detail(sp) for sp in snap_paths]
-    merged, filled, ignored = merge_maps(final, [pv.load_map(s) for s in snap_paths], pool_set, reasons, final_detail, snap_details)
+    merged, filled, ignored, disc = merge_maps(final, [pv.load_map(s) for s in snap_paths], pool_set, reasons, final_detail, snap_details)
     pending_after: dict[str, int] = {}
     for p in pool_set:
         d = final_detail.get(p) if merged.get(p) is not None and p in final and final[p] is not None else None
@@ -467,11 +493,12 @@ def cmd_merge(a: argparse.Namespace) -> int:
         "n_pending_gt_0.01SOL": n_pending,
         "n_with_pending_detail": len(pending_after),
         "n_unreadable": len(unreadable),
+        "v_base_discrepancies": disc,
         "unreadable_pools": unreadable,
         "sha256": {"final": sha256_file(final_path), "pools": sha256_file(Path(a.pools)), "reasons": sha256_file(side(final_path, ".reasons.json")), "final_detail": sha256_file(side(final_path, ".detail.json")), "snapshot_details": [sha256_file(side(sp, ".detail.json")) for sp in snap_paths], "fetch": sha256_file(side(final_path, ".fetch.json")), "snapshots": [sha256_file(s) for s in snap_paths], "out": sha256_file(out)},
     }
     _write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n", readonly=True)
-    print(f"merge: n={meta['n']} filled={len(filled)} ignored={len(ignored)} n_null_after={meta['n_null_after']} n_absent_after={meta['n_absent_after']} n_unreadable={len(unreadable)} -> {out}")
+    print(f"merge: n={meta['n']} v_base_discrepancies={disc['n_final_vs_snapshot']} filled={len(filled)} ignored={len(ignored)} n_null_after={meta['n_null_after']} n_absent_after={meta['n_absent_after']} n_unreadable={len(unreadable)} -> {out}")
     return 0
 
 
