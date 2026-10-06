@@ -61,7 +61,7 @@ Install only after the 10-16 PASS, the owner's funding and the end instant. Helm
   - one reviewed commit sets `VMAP_0909_SHA256` in `tools/exp015_screen.py` ("PENDING_JOB_224"), and `VMAP_0909_SHA256` plus `V_SHA256` in the EXP-013 table and screen ("PENDING_JOB_228", PR #364);
   - update the tests that assert the placeholders;
   - add the sha and pool counts to the EXP-015 §11 item 11 and EXP-013 Am.7 notes.
-- **PR #364** (EXP-013 pin switch, pricing-only): a reviewer is checking it. Merge on MERGE plus your own rc=0 at the reviewed sha.
+- **PR #364** (EXP-013 pin switch, pricing-only): **merged** (0e55729). Reviewer MERGE; rc=0 at 976e0af. The pin-fill commit must set BOTH `VMAP_0909_SHA256` (table) and `V_SHA256` (screen), since a sync test enforces it, and that commit needs its own pricing-only review.
 - **EXP-013 screen:** rerun `PYTHONPATH=$PWD bash scripts/research/exp013-screen-run.sh <new RUN_ID>` after the pin (40 GB, 4 CPU). It has 3 tries, none spent.
 - **EXP-015 screen** (#356/#361/#363 merged; plan v2 #352, pinned 77b4582):
   - prerequisites: the 0909 pin and the EXP-011 clean views (P4) from #222;
@@ -79,7 +79,7 @@ Install only after the 10-16 PASS, the owner's funding and the end instant. Helm
 ## Next steps, in order
 
 1. Recreate the hourly probe monitor cron, and run the probe calibration at ≥45 attempts.
-2. Read the #364 review, then merge.
+2. (done) #364 merged.
 3. Watch #221 → #222 → #224 → #228 / #226. Check `still-no-v-pools.json`, add the closed-pool V, chmod a-w, record the sha256.
 4. One pin commit for EXP-013 and EXP-015 (review it), then the EXP-013 rerun, then EXP-015 `--guards-only`, then the EXP-015 run.
 5. About 07:10Z: the #205 compare on research-0, plus a notebook entry.
