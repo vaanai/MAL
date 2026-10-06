@@ -45,6 +45,12 @@ def row(pool, sig, slot, side="buy", venue="pumpswap", **kw):
     return {"venue": venue, "side": side, "pool": pool, "signature": sig, "slot": slot, **kw}
 
 
+def setUpModule():
+    patcher = mock.patch.object(c, "BACKOFF_S", (0.0, 0.0, 0.0))
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 class Fake:
     def __init__(self, table):
         self.table, self.seen = table, []
@@ -82,16 +88,40 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(r["quote_reserve"], 10 * SOL)
         self.assertIsInstance(r["v_implied"], int)
 
-    def test_fallback_to_next_print(self):
-        f = Fake({"b": tx_for(POOL_A)})  # "a" is missing
+    def test_fallback_to_next_print_on_decode_reasons_only(self):
+        f = Fake({"a": tx_for(POOL_B), "b": tx_for(POOL_A)})  # "a" decodes to another pool
         r = c.resolve_pool(POOL_A, [(1, "a"), (2, "b")], f, 5)
         self.assertEqual((r["sig"], r["slot"], f.seen), ("b", 2, ["a", "b"]))
 
+    def test_rpc_failure_retries_same_signature_then_stops_without_fallback(self):
+        calls, naps = [], []
+
+        def flaky(sig):
+            calls.append(sig)
+            return tx_for(POOL_A) if len(calls) == 3 else None  # fails twice, then reads
+
+        r = c.resolve_pool(POOL_A, [(1, "a"), (2, "b")], flaky, 5, naps.append)
+        self.assertEqual((r["sig"], calls, naps), ("a", ["a", "a", "a"], [0.0, 0.0]))
+        f = Fake({"b": tx_for(POOL_A)})  # "a" never reads
+        naps.clear()
+        r = c.resolve_pool(POOL_A, [(1, "a"), (2, "b")], f, 5, naps.append)
+        self.assertEqual((r["v_implied"], r["reason"], f.seen, naps), (None, "rpc_error", ["a"] * 4, [0.0, 0.0, 0.0]))
+
+    def test_dust_is_skipped_and_the_next_print_tried(self):
+        self.assertEqual(c.decode_sample(tx_for(POOL_A, out=999_999), POOL_A)[1], "dust")
+        self.assertIsNotNone(c.decode_sample(tx_for(POOL_A, out=1_000_000), POOL_A)[0])
+        tiny = tx_for(POOL_A, net_extra=-(SOL // 10 - 4_999_999))  # net 4,999,999 lamports
+        self.assertEqual(c.decode_sample(tiny, POOL_A)[1], "dust")
+        ok = tx_for(POOL_A, net_extra=-(SOL // 10 - 5_000_000))
+        self.assertIsNotNone(c.decode_sample(ok, POOL_A)[0])
+        f = Fake({"a": tiny, "b": tx_for(POOL_A)})
+        self.assertEqual(c.resolve_pool(POOL_A, [(1, "a"), (2, "b")], f, 5)["sig"], "b")
+
     def test_null_with_reason_and_try_cap(self):
-        f = Fake({})
+        f = Fake({s: tx_for(POOL_B) for s in (f"s{i}" for i in range(9))})
         r = c.resolve_pool(POOL_A, [(i, f"s{i}") for i in range(9)], f, 3)
         self.assertIsNone(r["v_implied"])
-        self.assertEqual((r["reason"], len(f.seen)), ("tx_missing", 3))
+        self.assertEqual((r["reason"], len(f.seen)), ("event_pool_mismatch", 3))
         self.assertEqual(c.resolve_pool(POOL_A, [], f, 3)["reason"], "no_buy_print_on_tape")
 
     def test_event_pool_mismatch_is_not_used(self):
@@ -118,6 +148,37 @@ class OutputTests(unittest.TestCase):
         self.assertEqual((rec["n_checked"], rec["n_disagree"]), (200, 0))
         # null rows carry no v_implied, so they are filtered here as the screen only counts readable ones
         self.assertEqual(rec["n_sample"], 200)
+
+
+class ReserveTests(unittest.TestCase):
+    def test_nulls_replaced_from_reserve_in_order(self):
+        prim = [str(Pubkey.new_unique()) for _ in range(4)]
+        res = [str(Pubkey.new_unique()) for _ in range(3)]
+        rows = [row(p, f"sig-{p}", 1) for p in prim + res]
+        table = {f"sig-{p}": tx_for(p) for p in prim + res}
+        del table[f"sig-{prim[0]}"], table[f"sig-{prim[2]}"]  # two primary pools unreadable
+        out = c.build(prim, rows, Fake(table), 5, res, lambda s: None)
+        self.assertEqual([r["pool"] for r in out], sorted(prim) + res[:2])
+        self.assertEqual(sum(1 for r in out if r["v_implied"] is None), 2)
+        self.assertTrue(all(r["v_implied"] is not None for r in out[-2:]))
+        none = c.build(prim, rows, Fake({f"sig-{p}": tx_for(p) for p in prim}), 5, res, lambda s: None)
+        self.assertEqual(len(none), 4)
+
+    def test_load_sample_reads_both_formats(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b = Path(tmp, "a.json"), Path(tmp, "b.json")
+            a.write_text(json.dumps(["x", "y"]))
+            b.write_text(json.dumps({"primary": ["x"], "reserve": ["y"]}))
+            self.assertEqual(c.load_sample(a), (["x", "y"], []))
+            self.assertEqual(c.load_sample(b), (["x"], ["y"]))
+            a.write_text(json.dumps({"primary": "x"}))
+            with self.assertRaises(x.Refused):
+                c.load_sample(a)
+
+    def test_v_counts(self):
+        out = [{"pool": "a", "v_implied": 1}, {"pool": "b", "v_implied": 2}, {"pool": "c", "v_implied": None}, {"pool": "d", "v_implied": 3}]
+        self.assertEqual(c.v_counts(out, {"a": 17, "b": 0, "c": 5, "d": None}), {"n_checked": 2, "n_checked_v_gt0": 1, "n_checked_v_le0": 1})
+        self.assertEqual(c.v_counts(out, None), {})
 
 
 class ConstancyNullTests(unittest.TestCase):
@@ -168,6 +229,8 @@ class MainTests(unittest.TestCase):
             import hashlib
             self.assertEqual(meta["out_sha256"], hashlib.sha256(out.read_bytes()).hexdigest())
             self.assertEqual((meta["n"], meta["n_null"]), (2, 1))
+            self.assertEqual(meta["null_reasons"], {"rpc_error": 1})
+            self.assertIn("git_head", meta)
             self.assertIn("sample_sha256", meta)
             self.assertEqual(so.strip(), "pools=2 readable=1 null=1 rpc_calls=0")
             for p in (POOL_A, POOL_B):

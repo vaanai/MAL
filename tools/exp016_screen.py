@@ -88,6 +88,7 @@ G1_MAX_RATE = 0.15  # G1: LABEL_TOO_BROAD above this, all pool dates
 G2_MIN_RUGS = 30  # G2: LABEL_TOO_RARE below this, non-P1 dates
 LIFT_MIN = 2.0  # S3
 TOP_AVOIDED = 3  # S4
+V_RESERVE_SIZE = 20  # pre-declared reserve draw (plan 13 item 8): replaces primary pools whose constancy transaction is unreadable
 V_SAMPLE_SIZE = 200  # P1 constancy sample (section 11 P1; "200 of 200" in the V investigation)
 V_TOL_BPS = 1.0  # a pool disagrees if |V_implied - V_map| > max(1 bp of that print's quote reserve, 0.002 SOL)
 V_TOL_LAMPORTS = 2_000_000
@@ -250,6 +251,14 @@ def sample_pools(pools: Iterable[str], n: int = V_SAMPLE_SIZE, seed: int = SEED)
     return sorted(random.Random(seed).sample(ps, n))
 
 
+def reserve_pools(pools: Iterable[str], primary: Iterable[str], n: int = V_RESERVE_SIZE, seed: int = SEED + 1) -> list[str]:
+    """Ordered reserve: a seeded draw (seed SEED+1, draw order kept) of `n` pools from the readable pools minus the primary sample."""
+    import random
+
+    pop = sorted(set(pools) - set(primary))
+    return random.Random(seed).sample(pop, min(n, len(pop)))
+
+
 def check_v_constancy(samples: Sequence[Mapping[str, Any]], vmap: Mapping[str, int | None], *, min_sample: int = V_SAMPLE_SIZE) -> dict[str, Any]:
     """P1's check. Each sample: {pool, v_implied (lamports, from the pool's own swaps, `tools.pumpswap_virtual_history`), quote_reserve (that
     print's vault quote)}. A pool DISAGREES if |v_implied - stored V| > max(1 bp of the quote reserve, 0.002 SOL); a pool with no readable stored V
@@ -310,18 +319,25 @@ def emit_constancy_sample(args: argparse.Namespace) -> int:
     for tag, block, hours_fn, pool_hours, mig_roots in build_sources(g):
         if tag == "P2":
             pools = p2_eligible_pools(load_source_data(tag, block, hours_fn, pool_hours, mig_roots))
-    sample = sample_pools(readable_pools(pools, vmap_raw))
-    Path(args.emit_constancy_sample).write_text(json.dumps(sample) + "\n", encoding="utf-8")
-    print(f"wrote {len(sample)} sampled pool id(s) of {len(pools)} P2 pools ({len(readable_pools(pools, vmap_raw))} with a readable V); pool ids only", file=sys.stderr)
+    readable = readable_pools(pools, vmap_raw)
+    sample = sample_pools(readable)
+    reserve = reserve_pools(readable, sample)
+    Path(args.emit_constancy_sample).write_text(json.dumps({"primary": sample, "reserve": reserve}) + "\n", encoding="utf-8")
+    print(f"wrote {len(sample)} sampled + {len(reserve)} reserve pool id(s) of {len(pools)} P2 pools ({len(readable_pools(pools, vmap_raw))} with a readable V); pool ids only", file=sys.stderr)
     return 0
 
 
 def check_constancy_sample(samples: Sequence[Mapping[str, Any]], p2_pools: Iterable[str]) -> None:
-    """After the tape pass, before `started`: the constancy file must hold exactly the seeded `sample_pools()` draw from the P2 pools."""
+    """After the tape pass, before `started`: the constancy file must hold exactly the seeded `sample_pools()` draw (primary) plus the first k pools of
+    the pre-declared `reserve_pools()` order, where k = the number of primary rows with a null `v_implied` (every row present, nulls included)."""
+    pools = list(p2_pools)
     got = [s.get("pool") for s in samples]
-    want = sample_pools(p2_pools)
+    primary = sample_pools(pools)
+    reserve = reserve_pools(pools, primary)
+    k = sum(1 for s in samples if s.get("pool") in set(primary) and s.get("v_implied") is None)
+    want = primary + reserve[:k]
     if len(got) != len(set(got)) or set(got) != set(want):
-        raise Refused(f"the --v-constancy-json pools ({len(set(got))}) are not the seeded sample_pools() draw from the {len(set(p2_pools))} P2 pools ({len(want)}); refusing")
+        raise Refused(f"the --v-constancy-json pools ({len(set(got))}) are not the seeded sample_pools() draw plus its first {k} reserve pool(s) from the {len(set(pools))} P2 pools ({len(want)}); refusing")
 
 
 def v_coverage(pools: Iterable[str], vmap: Mapping[str, int | None]) -> dict[str, Any]:

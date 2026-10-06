@@ -208,14 +208,31 @@ class GuardTests(unittest.TestCase):
 
     def test_constancy_file_must_be_the_seeded_p2_sample(self):
         p2 = [f"pool{i}" for i in range(1000)]
-        good = [{"pool": p} for p in x.sample_pools(p2)]
+        good = [{"pool": p, "v_implied": 1} for p in x.sample_pools(p2)]
         x.check_constancy_sample(good, p2)
         with self.assertRaises(x.Refused):
-            x.check_constancy_sample(good[:-1] + [{"pool": "pool_not_in_the_draw"}], p2)
+            x.check_constancy_sample(good[:-1] + [{"pool": "pool_not_in_the_draw", "v_implied": 1}], p2)
         with self.assertRaises(x.Refused):
             x.check_constancy_sample(good[:-1], p2)
         with self.assertRaises(x.Refused):
             x.check_constancy_sample(good + good[:1], p2)  # duplicates
+
+    def test_sample_accepts_exactly_primary_plus_first_k_reserve(self):
+        pop = [f"pool{i}" for i in range(1000)]
+        prim, res = x.sample_pools(pop), x.reserve_pools(pop, x.sample_pools(pop))
+        self.assertEqual((len(res), len(set(res) & set(prim))), (20, 0))
+        self.assertEqual(res, x.reserve_pools(pop, prim))
+        rows = [{"pool": p, "v_implied": 1} for p in prim]
+        for k in (0, 1, 3):
+            rs = [dict(r, v_implied=None) if i < k else r for i, r in enumerate(rows)] + [{"pool": p, "v_implied": 1} for p in res[:k]]
+            x.check_constancy_sample(rs, pop)
+            with self.assertRaises(x.Refused):  # one reserve too many
+                x.check_constancy_sample(rs + [{"pool": res[k], "v_implied": 1}], pop)
+            if k:
+                with self.assertRaises(x.Refused):  # one reserve too few
+                    x.check_constancy_sample(rs[:-1], pop)
+                with self.assertRaises(x.Refused):  # a reserve out of order
+                    x.check_constancy_sample(rs[:-k] + [{"pool": p, "v_implied": 1} for p in res[1:k + 1]], pop)
 
     def test_v_coverage_counts_only_readable_pools(self):
         vmap = {f"p{i}": (0 if i % 2 else -5) for i in range(200)}  # <= 0 is readable (vault-only)
@@ -1071,12 +1088,12 @@ class ConstancyPopulationTests(unittest.TestCase):
         sample = x.sample_pools(pop)
         self.assertEqual(len(sample), x.V_SAMPLE_SIZE)
         self.assertTrue(all(vmap[p] is not None for p in sample))
-        x.check_constancy_sample([{"pool": p} for p in sample], pop)
+        x.check_constancy_sample([{"pool": p, "v_implied": 1} for p in sample], pop)
         # the old rule (draw from ALL pools) is what the file must not be
         old = x.sample_pools(pools)
         if any(vmap[p] is None for p in old):
             with self.assertRaises(x.Refused):
-                x.check_constancy_sample([{"pool": p} for p in old], pop)
+                x.check_constancy_sample([{"pool": p, "v_implied": 1} for p in old], pop)
         samples = [{"pool": p, "v_implied": 17_584_000_000, "quote_reserve": 10 * SOL} for p in sample]
         self.assertEqual(x.check_v_constancy(samples, vmap)["n_checked"], x.V_SAMPLE_SIZE)  # both checks agree
 
@@ -1102,14 +1119,18 @@ class ConstancyPopulationTests(unittest.TestCase):
                 self.assertEqual(x.emit_constancy_sample(self._args(out)), 0)
                 self.assertEqual(lsd.call_count, 1)  # only the P2 source is read
                 lg.assert_not_called()  # no tries line
-            got = json.loads(out.read_text())
+            obj = json.loads(out.read_text())
+            got = obj["primary"]
             self.assertFalse(Path(d, "tries.jsonl").exists())
         elig = [f"pool{i}" for i in range(n) if i not in (0, 1, 2)]
         self.assertEqual(got, x.sample_pools(elig))
         self.assertTrue(all(isinstance(p, str) and p.startswith("pool") for p in got))
         # the same set process_source would make cells for, and main's population rule accepts it
         self.assertEqual(x.p2_eligible_pools(src), sorted(f"pool{i}" for i in range(n) if i not in (0, 1)))
-        x.check_constancy_sample([{"pool": p} for p in got], x.readable_pools(x.p2_eligible_pools(src), vmap))
+        pop = x.readable_pools(x.p2_eligible_pools(src), vmap)
+        self.assertEqual(obj["reserve"], x.reserve_pools(pop, got))
+        self.assertEqual((len(obj["reserve"]), set(obj["reserve"]) & set(got)), (20, set()))
+        x.check_constancy_sample([{"pool": p, "v_implied": 1} for p in got], pop)
 
     def test_emit_refuses_when_guards_refuse(self):
         with mock.patch.object(x, "run_guards", side_effect=x.Refused("no")):
