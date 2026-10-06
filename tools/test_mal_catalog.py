@@ -50,10 +50,10 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     assert unassigned.end_hour_exclusive == "2026-08-08T12"
     assert by_name["Fresh confirmation block"].owner == "exploration-pool"  # spent by EXP-012 read, moved by ledger edit
     assert by_name["Fresh confirmation block"].host == "research"
-    assert by_name["Backup confirmation block"].owner == "EXP-015"
+    assert by_name["Backup confirmation block"].owner == "reserved"
     assert by_name["Backup confirmation block"].host == "research"
     second = by_name["Second backup confirmation block"]
-    assert second.owner == "reserved"
+    assert second.owner == "EXP-015"
     assert second.host == "research"
     assert (second.start_hour, second.end_hour_exclusive) == ("2026-08-08T12", "2026-08-14T12")
     assert by_name["Exploration expansion"].owner == "exploration-pool"
@@ -299,10 +299,13 @@ def test_research_exploration_expansion_allowed_and_exp012_block_needs_its_id(bl
     assert ok, reasons
     ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-09-05T00", "2026-09-05T01", exp_id="EXP-012")
     assert not ok
-    # fresh-0828 is the EXP-015 confirmation block: closed to exploration and to other ids
+    # fresh-0828 stays reserved (EXP-013's confirmation): denied to exploration
     ok, _ = _check(blocks, "exploration", "research", "2026-08-30T00", "2026-08-30T01")
     assert not ok
-    ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-08-30T00", "2026-08-30T01", exp_id="EXP-013")
+    # fresh-0808 is the EXP-015 confirmation block: closed to exploration and to other ids
+    ok, _ = _check(blocks, "exploration", "research", "2026-08-10T00", "2026-08-10T01")
+    assert not ok
+    ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-08-10T00", "2026-08-10T01", exp_id="EXP-013")
     assert not ok
 
 
