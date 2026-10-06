@@ -120,6 +120,29 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(rec["n_sample"], 200)
 
 
+class ConstancyNullTests(unittest.TestCase):
+    def rows(self, n=200, nulls=0):
+        r = [{"pool": f"p{i}", "v_implied": 17_584_000_000, "quote_reserve": 10 * SOL, "sig": "s", "slot": 1, "reason": ""} for i in range(n)]
+        for q in r[:nulls]:
+            q.update(v_implied=None, quote_reserve=None, sig=None, slot=None, reason="tx_missing")
+        return r
+
+    def test_nulls_never_raise_and_one_null_refuses_on_the_floor(self):
+        vmap = {f"p{i}": 17_584_000_000 for i in range(200)}
+        self.assertEqual(x.check_v_constancy(self.rows(), vmap)["n_unreadable_implied"], 0)
+        with self.assertRaises(x.Refused) as cm:
+            x.check_v_constancy(self.rows(nulls=1), vmap)
+        self.assertIn("only 199", str(cm.exception))
+        self.assertIn("1 unreadable implied", str(cm.exception))
+        rec = x.check_v_constancy(self.rows(201, nulls=1), {**vmap, "p200": 17_584_000_000})  # a larger file with a null still passes the floor
+        self.assertEqual((rec["n_checked"], rec["n_unreadable_implied"], rec["n_sample"]), (200, 1, 201))
+        x.check_v_constancy([{"pool": "p0"}] + self.rows(201)[1:], {**vmap, "p200": 1})  # a missing v_implied key is not indexed
+
+    def test_full_file_with_nulls_still_matches_the_sample(self):
+        pools = [f"p{i}" for i in range(200)]
+        x.check_constancy_sample(self.rows(nulls=3), pools)
+
+
 class MainTests(unittest.TestCase):
     def run_main(self, tmp, view_dir, fetch, extra=()):
         sample = Path(tmp) / "sample.json"
@@ -149,6 +172,17 @@ class MainTests(unittest.TestCase):
             self.assertEqual(so.strip(), "pools=2 readable=1 null=1 rpc_calls=0")
             for p in (POOL_A, POOL_B):
                 self.assertNotIn(p, so + se)
+
+    def test_rps_above_five_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Fake({})
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = c.main(["--sample", "s", "--p2-view-dir", "/x", "--out", str(Path(tmp) / "o"), "--rps", "5.5"], fetch=f)
+            self.assertEqual(rc, 2)
+            self.assertIn("refusing", err.getvalue())
+            rc2, *_ = self.run_main(tmp, None, Fake({}), ("--rps", "5"))
+            self.assertEqual(rc2, 0)
 
     def test_url_never_printed(self):
         secret = "SECRETKEY123"

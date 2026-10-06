@@ -30,6 +30,7 @@ from tools import pumpswap_simulate as sim
 from tools import pumpswap_virtual_history as pvh
 
 DEFAULT_RPS = 4.0
+MAX_RPS = 5.0  # the walkers share the Helius plan
 DEFAULT_MAX_TRIES = 5
 GET_TX_CONFIG = {"encoding": "json", "maxSupportedTransactionVersion": 1}
 Fetch = Callable[[str], "Mapping[str, Any] | None"]
@@ -157,8 +158,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None, fetch: Fetch | None = None) -> int:
     a = _parser().parse_args(argv)
-    if not a.rps > 0 or a.max_tries_per_pool < 1:
-        print(f"refusing: --rps must be > 0 and --max-tries-per-pool >= 1", file=sys.stderr)
+    if not 0 < a.rps <= MAX_RPS or a.max_tries_per_pool < 1:
+        print(f"refusing: --rps must be in (0, {MAX_RPS:g}] and --max-tries-per-pool >= 1", file=sys.stderr)
         return 2
     try:
         g2 = guard_views(a.p2_view_dir)

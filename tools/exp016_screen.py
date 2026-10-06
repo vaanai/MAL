@@ -254,10 +254,16 @@ def check_v_constancy(samples: Sequence[Mapping[str, Any]], vmap: Mapping[str, i
     """P1's check. Each sample: {pool, v_implied (lamports, from the pool's own swaps, `tools.pumpswap_virtual_history`), quote_reserve (that
     print's vault quote)}. A pool DISAGREES if |v_implied - stored V| > max(1 bp of the quote reserve, 0.002 SOL); a pool with no readable stored V
     (None, or absent) is not a disagreement (it is priced by the section 4 rule). Refuses if the sample is smaller than `min_sample` or more than 1% disagree.
-    Reports pool ids and differences only."""
+    A sample row whose `v_implied` is null or missing (the constancy tool could not read that pool's transaction) is NOT CHECKED: it is counted in
+    `n_unreadable_implied`, never indexed, and does not count toward n_checked. Consequence, pinned and deliberate: with any such row among exactly
+    200 sampled pools, n_checked < 200 and the floor refuses. The floor is not lowered. Reports pool ids and differences only."""
     bad: list[dict[str, Any]] = []
     n_checked = 0
+    n_unreadable_implied = 0
     for s in samples:
+        if s.get("v_implied") is None:
+            n_unreadable_implied += 1
+            continue
         v = vmap.get(s["pool"])
         if v is None:
             continue
@@ -267,9 +273,9 @@ def check_v_constancy(samples: Sequence[Mapping[str, Any]], vmap: Mapping[str, i
         if abs(diff) > tol:
             bad.append({"pool": s["pool"], "diff_lamports": diff, "tolerance_lamports": tol})
     if n_checked < min_sample:  # the floor and the rate both use the pools actually CHECKED (a readable stored V), never the sample size
-        raise Refused(f"V-constancy check: only {n_checked} sampled pool(s) have a readable stored V, fewer than the pinned {min_sample}")
+        raise Refused(f"V-constancy check: only {n_checked} sampled pool(s) were checked (readable stored V and readable implied V; {n_unreadable_implied} unreadable implied), fewer than the pinned {min_sample}")
     rate = len(bad) / n_checked
-    rec = {"n_sample": len(samples), "n_checked": n_checked, "n_disagree": len(bad), "rate": rate, "max_rate": V_DISAGREE_MAX, "disagreeing": bad}
+    rec = {"n_sample": len(samples), "n_checked": n_checked, "n_unreadable_implied": n_unreadable_implied, "n_disagree": len(bad), "rate": rate, "max_rate": V_DISAGREE_MAX, "disagreeing": bad}
     if rate > V_DISAGREE_MAX:
         raise Refused(f"V-constancy check: {len(bad)} of {n_checked} checked pools disagree ({rate:.2%} of {n_checked} checked > {V_DISAGREE_MAX:.0%}); pools: {bad[:5]}")
     return rec
