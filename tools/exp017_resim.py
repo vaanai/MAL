@@ -35,7 +35,7 @@ import tools.exp015_screen as e15
 import tools.exp017_screen as x17
 
 SIZES_SOL = (0.10, 0.25, 0.50)
-COMBOS = tuple((6, s, 2) for s in SIZES_SOL)
+COMBOS = x17.SIZED_COMBOS  # (6, 0.05, 2) first: the decision-equivalence proof against the EXP-015 cache
 SIZED_DIR = "sized_cache"
 SELECTED_FILE = "selected_mints.json"
 MANIFEST_FILE = "SIZED.manifest.sha256"
@@ -116,7 +116,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     status = "aborted"
     try:
         run_pass(args, g, sel_path, out_dir, head)
-        lines, sha = x17.manifest(out_dir / SIZED_DIR, ("v_P*.rows.jsonl",))
+        for f in sorted((out_dir / SIZED_DIR).glob("v_P*")):
+            os.chmod(f, 0o400)  # the seal is read-only files plus a convention: it relies on people not looking
+        lines, sha = x17.manifest(out_dir / SIZED_DIR, x17.SIZED_PATTERNS)
         (out_dir / MANIFEST_FILE).write_text(sha + "\n", encoding="utf-8")
         print(json.dumps({"sized_manifest_sha256": sha, "n_files": len(lines), "note": "pin it with a plan amendment line; nets are never printed"}))
         status = "completed"

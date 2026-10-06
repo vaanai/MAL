@@ -1873,6 +1873,9 @@ def make_report(base: Mapping[str, Any], screen: Mapping[str, Any], with_p4: boo
 def main(argv: Sequence[str] | None = None) -> int:
     from tools.exp012_exit_sensitivity import resolve_tries_path
 
+    if os.environ.get(ENV_COMBOS) or os.environ.get(ENV_SELECTED):  # the EXP-017 re-sim overrides must never reach a real EXP-015 run
+        print(f"refusing: {ENV_COMBOS} / {ENV_SELECTED} is set", file=sys.stderr)
+        return 2
     args = _parser().parse_args(argv)
     tries_path = resolve_tries_path(args.tries_log)
     canonical = Path(args.canonical_tries).resolve()

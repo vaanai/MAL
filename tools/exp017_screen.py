@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EXP-017 batch 1: four cheap screens (H1-H4) and a report-only cost check (C0) on the cached EXP-015 per-migration cells.
+"""EXP-017 batch 1: two cheap screens (H3, H4; H1 and H2 were dropped before any outcome read, plan section 11) and a report-only cost check (C0) on the cached EXP-015 per-migration cells.
 
 **EXPLORATION ONLY. NO EDGE CLAIM.** Plan (follow it exactly): EXP/EXP-017-batch1-cheap-screens-plan.md. A pass earns only a one-shot
 confirmation read on an unread reserved block under a later pre-registration.
@@ -55,7 +55,7 @@ THR90 = e15.FROZEN_THRESHOLD  # 0.8030766588450794 = p90 of ARTIFACTS/exp012/oof
 THR95 = 0.8352960347743753  # p95 of the same 8,801 OOF scores, index round(0.95 * (n - 1)) (asserted by a test against the artifact)
 V_CANON_LO, V_CANON_HI = 16_700_000_000, 18_460_000_000  # V0 class "canonical": 17.58 SOL +/- 5 %
 H3_WINDOW_MS = 6 * 3_600_000
-H3_MIN_AGE_MS = 30 * 60_000
+H3_MIN_AGE_MS = 35 * 60_000  # = EXP-015 PURGE_MIN: hold capped at landing + 30 min, landing ~2.4 s after the first print, plus the exit lag
 H3_MIN_WINDOW_N = 30
 H3_LEFT_CENSOR_MS = 24 * 3_600_000
 H3_LEVEL = 0.0
@@ -66,9 +66,11 @@ FAMILY_ALPHA = 0.05
 SIZE_1X = 50_000_000
 SIZE_2X = 100_000_000
 C0_SIZES = (250_000_000, 500_000_000)
+SIZED_COMBOS = ((6, 0.05, 2), (6, 0.10, 2), (6, 0.25, 2), (6, 0.5, 2))  # the re-sim's cells; 0.05 is the decision-equivalence proof against the cache
+SIZED_PATTERNS = ("v_P*.rows.jsonl", "v_P*.manifest.json")
 PRIMARY = e15.PRIMARY_CELL  # (6, 2)
 LEGS = e15.LEGS
-HCELLS = ("H3", "H4")  # H1 / H2 were dropped before any outcome read (plan section 8); they stay as report-only counts
+HCELLS = ("H3", "H4")  # H1 / H2 were dropped before any outcome read (plan section 11); they stay as report-only counts
 REPORT_ONLY_CELLS = ("H1", "H2")
 NET_KEYS = frozenset({"net0", "status", "sides", "p_press"})
 BLIND_CELL_KEYS = ("k", "lag", "size", "censored")
@@ -161,18 +163,94 @@ def load_universe(scratch: str | Path, blind: bool) -> tuple[list[dict[str, Any]
     return e15.build_universe(v_rows, {}, True)
 
 
-def load_sized_cells(sized_dir: str | Path) -> dict[str, dict[int, dict[str, Any]]]:
-    """mint -> {size_lamports: the (k=6, lag=2) cell}, from a re-simulated cache with the same row schema (v_P*.rows.jsonl)."""
-    out: dict[str, dict[int, dict[str, Any]]] = {}
+def selected_text(universe: Sequence[Mapping[str, Any]], scores: Sequence[float]) -> str:
+    """The selected-mints file the re-sim writes and the screen re-derives: sorted mints with frozen score >= THR90, one JSON list plus newline."""
+    return json.dumps(sorted(u["mint"] for u, s in zip(universe, scores) if s >= THR90)) + "\n"
+
+
+def selected_sha256(universe: Sequence[Mapping[str, Any]], scores: Sequence[float]) -> str:
+    return hashlib.sha256(selected_text(universe, scores).encode("utf-8")).hexdigest()
+
+
+def check_sized_meta(sized_dir: str | Path, sel_sha: str) -> dict[str, Any]:
+    """Per-source manifest meta of the sized cache: V map sha, combos, selected_sha256, one common 40-hex head; the rows file hashes to its manifest."""
+    heads = set()
+    for src in SOURCES:
+        mp = Path(sized_dir) / f"v_{src}.manifest.json"
+        rp = Path(sized_dir) / f"v_{src}.rows.jsonl"
+        try:
+            man = json.loads(mp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise Refused(f"sized manifest {mp} unreadable") from None
+        meta = man.get("meta") or {}
+        if meta.get("vmap_sha256") != e15.VMAP_0909_SHA256:
+            raise Refused(f"{mp}: V map sha differs from the pin")
+        if [list(c) for c in meta.get("combos", [])] != [list(c) for c in SIZED_COMBOS]:
+            raise Refused(f"{mp}: combos differ from SIZED_COMBOS")
+        if meta.get("selected_sha256") != sel_sha:
+            raise Refused(f"{mp}: selected_sha256 differs from the frozen selection re-derived from the pinned cache")
+        if man.get("rows_sha256") != _file_sha256(rp):
+            raise Refused(f"{rp}: rows sha256 differs from its manifest")
+        h = str(meta.get("head", ""))
+        if len(h) != 40:
+            raise Refused(f"{mp}: head is not a 40-hex sha")
+        heads.add(h)
+    if len(heads) != 1:
+        raise Refused(f"sized cache sources were built at {len(heads)} different heads")
+    return {"head": next(iter(heads))}
+
+
+def load_sized_rows(sized_dir: str | Path) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
     for src in SOURCES:
         p = Path(sized_dir) / f"v_{src}.rows.jsonl"
         if not p.is_file():
             raise Refused(f"sized cache {p} missing")
         for r in read_cache_rows(p, blind=False):
-            for c in r["cells"]:
-                if (int(c["k"]), int(c.get("lag", 0))) == PRIMARY:
-                    out.setdefault(r["mint"], {})[int(c["size"])] = {**c, "lag": int(c.get("lag", 0))}
+            out[r["mint"]] = r
     return out
+
+
+def load_sized_cells(sized_dir: str | Path, rows: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, dict[int, dict[str, Any]]]:
+    """mint -> {size_lamports: the (k=6, lag=2) cell}, from a re-simulated cache with the same row schema (v_P*.rows.jsonl)."""
+    out: dict[str, dict[int, dict[str, Any]]] = {}
+    for r in (load_sized_rows(sized_dir) if rows is None else rows).values():
+        for c in r["cells"]:
+            if (int(c["k"]), int(c.get("lag", 0))) == PRIMARY:
+                out.setdefault(r["mint"], {})[int(c["size"])] = {**c, "lag": int(c.get("lag", 0))}
+    return out
+
+
+def _digest(row: Mapping[str, Any]) -> str | None:
+    cell = [c for c in row["cells"] if (int(c["k"]), int(c.get("lag", 0)), int(c["size"])) == (6, 2, SIZE_1X)]
+    if len(cell) != 1:
+        return None
+    return hashlib.sha256(json.dumps([row["mint"], row["mig_ms"], row["features"], cell[0]], sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def equivalence_check(cache_rows: Mapping[str, Mapping[str, Any]], sized_rows: Mapping[str, Mapping[str, Any]]) -> dict[str, int]:
+    """Decision-equivalence proof (before `started`): per mint, sha256 of [mint, mig_ms, features, the (6, 2, 0.05 SOL) cell] in the re-sim equals
+    the same digest in the EXP-015 cache (code cc366d4). Counts only are returned or printed; any mismatch or an empty comparison refuses."""
+    match = bad = 0
+    for m, r in sized_rows.items():
+        a, b = _digest(r), (_digest(cache_rows[m]) if m in cache_rows else None)
+        if a is not None and a == b:
+            match += 1
+        else:
+            bad += 1
+    if bad or not match:
+        raise Refused(f"decision-equivalence proof failed: {match} matched, {bad} mismatched (re-sim 0.05 SOL cell vs the EXP-015 cache)")
+    return {"matched": match, "mismatched": bad}
+
+
+def h4_missing_cells(universe: Sequence[Mapping[str, Any]], scores: Sequence[float]) -> int:
+    """Blind keys only (presence and `censored`): H4 2x-tier rows lacking an uncensored (6, 2, 0.10 SOL) cell. A missing cell would score x = -frozen net."""
+    n = 0
+    for u, s in zip(universe, scores):
+        if s >= THR95:
+            c = (u.get("sized") or {}).get(SIZE_2X)
+            n += int(c is None or bool(c.get("censored")))
+    return n
 
 
 def attach_sized(universe: Sequence[dict[str, Any]], sized: Mapping[str, Mapping[int, Mapping[str, Any]]]) -> None:
@@ -302,7 +380,7 @@ def left_censored(universe: Sequence[Mapping[str, Any]]) -> list[bool]:
 
 def h3_gate(universe: Sequence[Mapping[str, Any]], level: float = H3_LEVEL) -> tuple[list[bool], list[int]]:
     """OUTCOME-READING (flat leg, haircut net of the unfiltered migrations). Gate for row m: the mean flat net of every unfiltered row j with
-    mig_ms_j in (t_m - 6 h, t_m - 30 min] (the tp50_sl30 hold is capped well inside 30 min, so those holds have closed) is > `level` AND the
+    mig_ms_j in (t_m - 6 h, t_m - 35 min] (hold capped at landing + 30 min, landing ~2.4 s after the first print, plus the exit lag: closed inside 35 min) is > `level` AND the
     window holds at least H3_MIN_WINDOW_N rows. Returns (gate, window_n); the left-censored rows are excluded by the caller."""
     order = sorted(range(len(universe)), key=lambda i: (universe[i]["mig_ms"], universe[i]["mint"]))
     ts = [universe[i]["mig_ms"] for i in order]
@@ -314,7 +392,7 @@ def h3_gate(universe: Sequence[Mapping[str, Any]], level: float = H3_LEVEL) -> t
     for pos, i in enumerate(order):
         t = ts[pos]
         lo = bisect.bisect_right(ts, t - H3_WINDOW_MS)  # first j with ts > t - 6 h
-        hi = bisect.bisect_right(ts, t - H3_MIN_AGE_MS)  # one past the last j with ts <= t - 30 min
+        hi = bisect.bisect_right(ts, t - H3_MIN_AGE_MS)  # one past the last j with ts <= t - 35 min
         n = hi - lo
         wn[i] = max(n, 0)
         gate[i] = n >= H3_MIN_WINDOW_N and (pref[hi] - pref[lo]) / n > level
@@ -345,7 +423,7 @@ def trades_of(universe: Sequence[Mapping[str, Any]], nets: Sequence[Mapping[str,
         if n is None:
             continue
         u = universe[i]
-        c = u["cells"][PRIMARY]
+        c = (u.get("sized") or {}).get(SIZE_2X) if (mult is not None and mult[i] == 2) else u["cells"][PRIMARY]
         out.append({"mint": u["mint"], "day": u["date"], "filled": bool(c.get("filled")), "flat": n["flat"], "press": n["press"], "source": u["source"], "block": u["block"],
                     "stake": SIZE_1X * (1 if mult is None or mult[i] < 1 else mult[i])})
     return out
@@ -420,8 +498,8 @@ def evaluate_cell(universe: Sequence[Mapping[str, Any]], nets: Sequence[Mapping[
     B4 P2 + P4 only: mean > 0 both legs (EXP-015 bar 5 analog).
     B5 August (P2) replication, no level fit on August: mean > 0 and a majority of P2 dates positive, both legs (EXP-015 bar 6 analog for level-free cells).
     B6 September-only (P3 + P4) mean > 0 both legs (the block the frozen model's selection was tuned near; stability across the two Septembers)."""
-    n_non = len(e15.non_p1_dates(True))
     non_rows = [i for i in scope if universe[i]["block"] != "P1"]
+    n_non = len({universe[i]["date"] for i in non_rows})  # majority of days is over dates with >= 1 eligible row ("of those days")
     tr_non = trades_of(universe, nets, non_rows)
     rep = scope_stats(tr_non, n_non)
     pr = paired(universe, nets, fnets, non_rows)
@@ -437,7 +515,7 @@ def evaluate_cell(universe: Sequence[Mapping[str, Any]], nets: Sequence[Mapping[
         ok = True
         for leg in LEGS:
             st = e15.leg_stats(tr, leg)
-            nd = len([d for d in e15.non_p1_dates(True) if any(d in e15.block_dates(b) for b in blocks)])
+            nd = len({universe[i]["date"] for i in non_rows if universe[i]["block"] in blocks})
             leg_ok = st["mean_sol"] is not None and st["mean_sol"] > 0 and (not majority or st["dates_positive"] * 2 > nd)
             ok = ok and leg_ok
             res[leg] = {"n": st["n"], "mean_sol": st["mean_sol"], "dates_positive": st["dates_positive"], "n_dates": nd, "pass": bool(leg_ok)}
@@ -454,10 +532,10 @@ def evaluate_cell(universe: Sequence[Mapping[str, Any]], nets: Sequence[Mapping[
 def c0_report(universe: Sequence[Mapping[str, Any]], frozen: Sequence[bool], with_sized: bool) -> dict[str, Any]:
     """Report-only, outside the Holm family: the frozen EXP-012 selection at 0.25 / 0.5 SOL (re-simulated cells), non-P1 dates."""
     if not with_sized:
-        return {"status": "NOT_RUN: needs the re-simulated sized cache (TODO, follow-up PR)"}
+        return {"status": "NOT_RUN: needs the re-simulated sized cache (tools/exp017_resim.py)"}
     non = [i for i, u in enumerate(universe) if u["block"] != "P1"]
     out: dict[str, Any] = {"status": "report-only"}
-    for size in (SIZE_1X, *C0_SIZES):
+    for size in (SIZE_1X, SIZE_2X, *C0_SIZES):  # SIZE_2X = "uniform 0.10 on all frozen-selected": separates a score-tier effect (H4) from stake size
         nets = [row_net(u, size) if f else None for u, f in zip(universe, frozen)]
         miss = sum(1 for i in non if frozen[i] and nets[i] is None)
         out[str(size / LAMPORTS)] = {"n_without_cell": miss, "report": scope_stats(trades_of(universe, nets, non), len(e15.non_p1_dates(True)))}
@@ -565,11 +643,14 @@ def log_cell_tries(log: Path, out_dir: Path, cells: Sequence[str], status: str) 
     groups = {"universe": e15.UNIVERSE_BLOCKS} if status == "started" else e15.pool_group_blocks(True)
     info: dict[str, dict[str, Any]] = {}
     for c in cells:
+        info[c] = {"groups": {}}
         for g, blocks in groups.items():
-            info[c] = mal_result.append_try(
+            ret = mal_result.append_try(
                 log, tool=TOOL,
                 config={"key": f"exp017_{c.lower()}", "experiment": "EXP-017 batch 1", "cell": c, "status": status, "pool_group": g, "desc": CELL_DESC[c], "k": 6, "exit_lag": 2, "fee_lamports": e15.FEE, "pricing": "V"},
                 data_blocks=list(blocks), result_path=out_dir / OUT_SCREEN, role="exploration")
+            info[c]["groups"][g] = ret
+            info[c].update(ret)  # the last group's data_key / variant_n at top level; every group's is under "groups"
     return info
 
 
@@ -732,13 +813,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             pin = sized_pin()
             if pin is None:
                 raise Refused("no SIZED_MANIFEST_SHA256 pin in the plan: an amendment must pin the re-simulated cache before the full run")
-            _, sha = manifest(args.sized_cache, ("v_P*.rows.jsonl",))
+            _, sha = manifest(args.sized_cache, SIZED_PATTERNS)
             if sha != pin:
                 raise Refused(f"sized cache manifest {sha} != pinned {pin}")
-            attach_sized(universe, load_sized_cells(args.sized_cache))
+            meta = check_sized_meta(args.sized_cache, selected_sha256(universe, scores))
+            sized_rows = load_sized_rows(args.sized_cache)
+            cache_rows = {r["mint"]: r for src in SOURCES for r in read_cache_rows(Path(args.scratch) / "cache" / f"v_{src}.rows.jsonl", blind=False)}
+            eq = equivalence_check(cache_rows, sized_rows)
+            del cache_rows
+            attach_sized(universe, load_sized_cells(args.sized_cache, sized_rows))
+            miss = h4_missing_cells(universe, scores)
+            if miss:
+                raise Refused(f"{miss} H4 2x-tier row(s) lack an uncensored (6, 2, 0.10 SOL) cell: a missing cell would score x = -frozen net")
+            print(f"sized cache ok: equivalence matched={eq['matched']} head={meta['head'][:8]}", file=sys.stderr)
             with_sized = True
         else:
-            raise Refused("H4 (2x stake) needs --sized-cache; the re-simulation is tools/exp017_resim.py (TODO)")
+            raise Refused("H4 (2x stake) needs --sized-cache; the re-simulation is tools/exp017_resim.py")
         head = e15.git_state()["head"]
         e15.take_lock(out_dir, head, hashlib.sha256(json.dumps(sorted(vars(args).items(), key=lambda kv: kv[0]), default=str).encode()).hexdigest())
     except (Refused, e15.Refused) as exc:
@@ -778,12 +868,12 @@ def write_results(out_dir: Path, trades: Mapping[str, Sequence[Mapping[str, Any]
         t = trades.get(c)
         if t is None:
             continue
-        tries = {**info[c], **{"of_m": mal_result.tries_summary(log, info[c]["data_key"])["of_m"]}}
+        tries = {"data_key": info[c]["data_key"], "variant_n": info[c]["variant_n"], **{"of_m": mal_result.tries_summary(log, info[c]["data_key"])["of_m"]}}
         res = mal_result.build_result(
             tool=TOOL, git_sha=head, command="python -m tools.exp017_screen", config={"cell": c, "desc": CELL_DESC[c]}, role="exploration",
-            data_blocks=e15.pool_group_blocks(True)["P2"], stage="screen",
+            data_blocks=[b for g in ("P2", "P3", "P4") for b in e15.pool_group_blocks(True)[g]], stage="screen",
             trades_flat=[_rv1(x, "flat") for x in t], trades_pressure_s1=[_rv1(x, "press") for x in t],
-            tries=tries, runtime_s=runtime_s, notes="EXP-017 exploration screen; no edge claim")
+            tries=tries, runtime_s=runtime_s, notes="EXP-017 exploration screen; no edge claim; tries per pool group: " + json.dumps(info[c].get("groups", {}), sort_keys=True))
         mal_result.write_result(out_dir / f"result_{c}.json", res)
 
 

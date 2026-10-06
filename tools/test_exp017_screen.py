@@ -267,7 +267,7 @@ class TestResim(unittest.TestCase):
                     # a non-selected mint returns before any scoring (base score_one is never reached with these None arguments)
                     self.assertEqual(eem.score_one("other", None, None, None, 0, None), [])
             self.assertIs(eem.score_one, before)
-        self.assertEqual(rs.COMBOS, ((6, 0.10, 2), (6, 0.25, 2), (6, 0.5, 2)))
+        self.assertEqual(rs.COMBOS, ((6, 0.05, 2), (6, 0.10, 2), (6, 0.25, 2), (6, 0.5, 2)))
         self.assertEqual([x17.SIZE_2X, *x17.C0_SIZES], [int(round(s * 1e9)) for s in rs.SIZES_SOL])
 
     def test_precount_mode_reads_no_net_and_no_tape(self):
@@ -298,9 +298,101 @@ class TestResim(unittest.TestCase):
             self.assertEqual(rc, 0)
             out = json.loads(buf.getvalue())
             self.assertEqual(out["n_selected"], 2)
-            self.assertEqual(out["n_cells_to_simulate"], 6)
+            self.assertEqual(out["n_cells_to_simulate"], 8)
             self.assertTrue(out["outcome_blind"])
             self.assertFalse((Path(d) / "o").exists())
+
+
+class TestQuantProofFixes(unittest.TestCase):
+    def test_h3_min_age_is_35_minutes(self):
+        self.assertEqual(x17.H3_MIN_AGE_MS, 35 * 60_000)
+        base = P3_START + 30 * 3_600_000
+        old = [urow(f"w{i}", base - 7_200_000 + i, "P3", net0=2_000_000) for i in range(30)]
+        mid = [urow(f"m{i}", base - 32 * 60_000 + i, "P3", net0=-1_000_000_000) for i in range(30)]  # 32 min old: still inside the purge, must not count
+        uni = old + mid + [urow("t", base, "P3")]
+        gate, wn = x17.h3_gate(uni)
+        self.assertEqual(wn[-1], 30)
+        self.assertTrue(gate[-1])
+
+    def test_h4_missing_2x_cells_refuse_blind(self):
+        uni = [urow(f"a{i}", P2_START + 3_600_000 * (i + 1)) for i in range(3)]
+        scores = [0.9, 0.9, 0.82]  # two rows in the 2x tier (>= THR95), one in 1x
+        for u in uni:
+            u["sized"] = {x17.SIZE_2X: {"censored": False}}  # blind keys only: no net field is needed
+        self.assertEqual(x17.h4_missing_cells(uni, scores), 0)
+        uni[1]["sized"] = {}
+        self.assertEqual(x17.h4_missing_cells(uni, scores), 1)
+        uni[0]["sized"] = {x17.SIZE_2X: {"censored": True}}
+        self.assertEqual(x17.h4_missing_cells(uni, scores), 2)
+        uni[2]["sized"] = {}  # a 1x row never needs the 0.10 cell
+        self.assertEqual(x17.h4_missing_cells(uni, scores), 2)
+
+    def test_equivalence_check(self):
+        cache = {"m": cache_row("m", P2_START + 3_600_000)}
+        same = {"m": json.loads(json.dumps(cache["m"]))}
+        self.assertEqual(x17.equivalence_check(cache, same), {"matched": 1, "mismatched": 0})
+        diff = json.loads(json.dumps(cache["m"]))
+        diff["cells"][0]["net0"] += 1
+        with self.assertRaises(x17.Refused):
+            x17.equivalence_check(cache, {"m": diff})
+        feat = json.loads(json.dumps(cache["m"]))
+        feat["features"][0] = 1.5
+        with self.assertRaises(x17.Refused):
+            x17.equivalence_check(cache, {"m": feat})
+        with self.assertRaises(x17.Refused):
+            x17.equivalence_check(cache, {"zz": same["m"]})
+        with self.assertRaises(x17.Refused):
+            x17.equivalence_check(cache, {})
+
+    def test_sized_meta_checks(self):
+        sel = "ab" * 32
+        with tempfile.TemporaryDirectory() as d:
+            def write(meta_over=None):
+                for src in x17.SOURCES:
+                    rp = Path(d) / f"v_{src}.rows.jsonl"
+                    rp.write_text("", encoding="utf-8")
+                    meta = {"tag": src, "head": "c" * 40, "combos": [list(c) for c in x17.SIZED_COMBOS], "selected_sha256": sel, "vmap_sha256": e15.VMAP_0909_SHA256}
+                    meta.update(meta_over or {})
+                    (Path(d) / f"v_{src}.manifest.json").write_text(json.dumps({"meta": meta, "rows_sha256": x17._file_sha256(rp)}), encoding="utf-8")
+
+            write()
+            self.assertEqual(x17.check_sized_meta(d, sel)["head"], "c" * 40)
+            for over in ({"vmap_sha256": "0" * 64}, {"combos": [[6, 0.1, 2]]}, {"selected_sha256": "0" * 64}, {"head": "short"}):
+                write(over)
+                with self.assertRaises(x17.Refused):
+                    x17.check_sized_meta(d, sel)
+
+    def test_selected_text_matches_resim_file_format(self):
+        uni = [urow("b", P2_START), urow("a", P2_START), urow("c", P2_START)]
+        self.assertEqual(x17.selected_text(uni, [0.9, 0.95, 0.1]), json.dumps(["a", "b"]) + "\n")
+
+    def test_h4_trade_uses_0p10_cell_filled_flag(self):
+        u = urow("m", P2_START + 3_600_000)
+        u["cells"][(6, 2)]["filled"] = True
+        u["sized"] = {x17.SIZE_2X: {**e15._slim_cell(sim_cell(x17.SIZE_2X, 1_000_000)), "filled": False}}
+        nets = [{"flat": 1.0, "press": 1.0}]
+        self.assertFalse(x17.trades_of([u], nets, [0], [2])[0]["filled"])
+        self.assertTrue(x17.trades_of([u], nets, [0], [1])[0]["filled"])
+
+    def test_majority_denominator_is_dates_with_eligible_rows(self):
+        uni = [urow("a", P3_START + 3_600_000, "P3"), urow("b", P3_START + 30 * 3_600_000, "P3")]  # day 09-03 row is left-censored
+        scope = [i for i, c in enumerate(x17.left_censored(uni)) if not c]
+        self.assertEqual(scope, [1])
+        self.assertEqual(len({uni[i]["date"] for i in scope}), 1)
+
+    def test_c0_has_uniform_0p10_row(self):
+        uni = [urow("m", P2_START + 3_600_000)]
+        uni[0]["sized"] = {sz: e15._slim_cell(sim_cell(sz, 1_000_000)) for sz in (x17.SIZE_2X, *x17.C0_SIZES)}
+        out = x17.c0_report(uni, [True], True)
+        self.assertIn("0.1", out)
+
+    def test_e15_main_refuses_resim_env(self):
+        import os
+
+        with mock.patch.dict(os.environ, {e15.ENV_SELECTED: "/x"}):
+            self.assertEqual(e15.main(["--out-dir", "/nonexistent"]), 2)
+        with mock.patch.dict(os.environ, {e15.ENV_COMBOS: "[]"}):
+            self.assertEqual(e15.main(["--out-dir", "/nonexistent"]), 2)
 
 
 class TestFullRunSynthetic(unittest.TestCase):
