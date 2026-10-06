@@ -48,9 +48,13 @@ Withdraw is **root-only**. It refuses unless euid is 0, and refuses unless the k
 Preconditions: the owner has named the destination address; `mal-probe-executor` is stopped (`systemctl stop mal-probe-executor`); no open positions.
 
 ```
-sudo /usr/local/lib/mal-probe/probe-withdraw.sh --to <OWNER_ADDRESS> --dry-run
-sudo /usr/local/lib/mal-probe/probe-withdraw.sh --to <OWNER_ADDRESS>
+sudo /usr/local/lib/mal-probe/probe-withdraw.sh --to 5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi --dry-run
+sudo /usr/local/lib/mal-probe/probe-withdraw.sh --to 5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi
 ```
+
+OWNER_DEST = `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi`
+
+Never copy a withdraw address from transaction history (address-poisoning dust exists on this wallet); the tool only sends to OWNER_DEST.  `--to` is required and is compared to OWNER_DEST with exact string equality (no flag abbreviations, no override, same in `--dry-run` and with `--yes`). Any other value, including a lookalike with the same first and last 4 characters, is refused before the key is read.
 
 - It refuses if the executor is active, if `state-live.json` shows open positions, or if `state-live.json` is missing/unreadable while `probe-fills.jsonl` has live rows. `--force` overrides; only use it if you understand why.
 - It refuses if any non-zero token balance (other than wrapped SOL) remains, because draining SOL would leave no fee to move it. Sell or move those tokens first. `--allow-stranded` overrides.

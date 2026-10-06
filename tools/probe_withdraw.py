@@ -11,6 +11,10 @@ pinned root-owned copy (see docs/runbooks/probe-wallet.md and install-probe-tool
 2. Close zero-balance token accounts and native-mint (WSOL) accounts, rent/SOL back to the wallet.
 3. Transfer every remaining lamport (balance - fee) to --to, leaving 0.
 
+DESTINATION LOCK: --to is REQUIRED and must be EXACTLY OWNER_DEST (full-string ==, no
+normalisation, no override flag, every mode including --dry-run and --yes). It is checked
+before the key file is touched. Never copy an address from transaction history.
+
 The keypair is loaded in-process only and is never printed or logged. The RPC URL is never
 printed; every error text goes through redact().
 """
@@ -36,6 +40,8 @@ from solders.system_program import ID as SYSTEM_PROGRAM
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
+# The only address this tool will ever send to. Changing it is a code change + new pinned manifest.
+OWNER_DEST = "5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi"
 DEFAULT_KEYFILE = "/etc/mal-probe/probe-wallet.json"
 DEFAULT_RPC_ENV = "/etc/mal-probe-rpc/helius.env"
 DEFAULT_STATE = "/var/lib/mal-live/state-live.json"
@@ -147,6 +153,16 @@ def load_keypair(path: str) -> Keypair:
         raise Refuse(f"cannot load keyfile {path} (expected a 64-int JSON array)") from None
 
 
+def check_owner_dest(text: str) -> None:
+    """Refuse unless `text` is exactly OWNER_DEST. Pure string equality, nothing else."""
+    if isinstance(text, str) and text == OWNER_DEST:
+        return
+    shown = f"{text[:4]}...{text[-4:]}" if isinstance(text, str) and len(text) > 8 else "(too short to show)"
+    raise Refuse(
+        f"refusing: --to {shown} does not match the owner address; never copy addresses from transaction history"
+    )
+
+
 def parse_destination(text: str, wallet: Pubkey) -> Pubkey:
     try:
         dest = Pubkey.from_string(text)
@@ -242,6 +258,7 @@ def _blockhash(rpc) -> Hash:
 
 
 def build_tx(kp: Keypair, ixs: list[Instruction], blockhash: Hash) -> Transaction:
+    # only call via run(), which enforces check_owner_dest
     msg = Message.new_with_blockhash(ixs, kp.pubkey(), blockhash)
     return Transaction([kp], msg, blockhash)
 
@@ -289,6 +306,7 @@ def _close_tx(kp, batch, bh):
 
 
 def _transfer_tx(kp, dest, amount, bh):
+    # only call via run(), which enforces check_owner_dest
     return build_tx(kp, [transfer(TransferParams(from_pubkey=kp.pubkey(), to_pubkey=dest, lamports=amount))], bh)
 
 
@@ -308,6 +326,7 @@ def warn_destination(rpc, dest: Pubkey, out) -> None:
 
 
 def run(args, rpc, *, is_active=executor_active, input_fn=input, out=print, sleep=time.sleep, check_location=True) -> int:
+    check_owner_dest(args.to)  # first, before any key or network access
     if check_location:
         check_key_location(args.keyfile)
     kp = load_keypair(args.keyfile)
@@ -398,8 +417,8 @@ def main(argv: list[str] | None = None) -> int:
         print("MAL_LIVE_TEST is not allowed as root", file=sys.stderr)
         return 1
     harden_process()
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--to", required=True, help="destination base58 address")
+    ap = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    ap.add_argument("--to", required=True, help="REQUIRED; must be exactly OWNER_DEST")
     ap.add_argument("--keyfile", default=DEFAULT_KEYFILE)
     ap.add_argument("--rpc-env", default=DEFAULT_RPC_ENV)
     ap.add_argument("--state-file", default=DEFAULT_STATE)
@@ -410,6 +429,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--allow-stranded", action="store_true", help="proceed even though non-zero tokens remain")
     ap.add_argument("--skip-close", action="store_true", help="do not close token accounts; just move SOL")
     args = ap.parse_args(argv)
+    try:
+        check_owner_dest(args.to)  # before the root check and every mode, incl. --dry-run/--yes
+    except SystemExit as e:
+        print(e.code, file=sys.stderr)
+        return 1
     if os.geteuid() != 0 and os.environ.get("MAL_LIVE_TEST") != "1":
         print("refusing: withdraw is root-only", file=sys.stderr)
         return 1
