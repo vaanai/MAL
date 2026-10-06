@@ -29,8 +29,9 @@ SIG_PAGE = 1000
 BATCH = 100
 MAX_PAGES_DEFAULT = 200
 MAX_AMBIGUOUS = 10  # 2^10 placements at most; more is unresolved
-MAX_PASSES = 3  # retry passes over transiently unresolved pools
-TRANSIENT_PREFIXES = ("accounts_fetch_failed", "signatures_fetch_failed", "signatures_bad_response", "tx_fetch_failed", "supply_read_failed")
+RETRY_PASSES = 3  # further passes, after the first, over pools unresolved by a failed tx fetch or failed signature paging
+MAX_PASSES = 1 + RETRY_PASSES
+TRANSIENT_PREFIXES = ("signatures_fetch_failed", "signatures_bad_response", "tx_fetch_failed")  # chain, truncation, supply and account failures are never retried
 SUPPLY_CHANGE_MARKERS = ("Instruction: Burn", "Instruction: MintTo")  # SPL token ops that move LP supply outside Deposit/Withdraw
 _U64 = ("lp_token_amount", "max_or_min_base", "max_or_min_quote", "user_base_token_reserves", "user_quote_token_reserves", "pool_base_token_reserves", "pool_quote_token_reserves", "base_amount", "quote_amount", "lp_mint_supply")
 _KEYS = ("pool", "user", "user_base_token_account", "user_quote_token_account", "user_pool_token_account")
@@ -163,6 +164,34 @@ def possible_values(v0: int, events_definite: Sequence[dict[str, Any]], events_a
     return out
 
 
+def v0_at(slot: int, anchor_v0: int, anchor_slot_span: tuple[int, int], events: Sequence[dict[str, Any]]) -> set[int] | None:
+    """Every V0 the pool could have had at `slot`, given V0 = anchor_v0 read at some slot in anchor_slot_span = (lo, hi)
+    (the fetch's context-slot range) and the pool's LP events. The anchor reflects the events before its read; the
+    target reflects the events before `slot`. Both are chronological prefixes, so the answer is the anchor moved across the
+    events between the two cuts: forward (replay_forward) if the target cut is later, backward (v0_before, smallest
+    preimage; a cut with no preimage contributes nothing) if earlier. An event in [lo, hi] may be on either side of the
+    anchor read; an event in `slot` itself may be on either side of the trade. More than one value in the result means the
+    placements disagree (vbook takes the worse of them); an empty set means no placement is consistent. None when more
+    than MAX_AMBIGUOUS events are ambiguous on either side."""
+    lo, hi = anchor_slot_span
+    ev = _order(events)
+    sl = [e.get("slot", 0) for e in ev]
+    ca_min, ca_max = sum(1 for x in sl if x < lo), sum(1 for x in sl if x <= hi)
+    ct_min, ct_max = sum(1 for x in sl if x < slot), sum(1 for x in sl if x <= slot)
+    if ca_max - ca_min > MAX_AMBIGUOUS or ct_max - ct_min > MAX_AMBIGUOUS:
+        return None
+    out: set[int] = set()
+    for ca in range(ca_min, ca_max + 1):
+        for ct in range(ct_min, ct_max + 1):
+            try:
+                v = replay_forward(anchor_v0, ev[ca:ct]) if ct >= ca else v0_before(anchor_v0, ev[ct:ca])
+            except ValueError:
+                continue
+            if v is not None:
+                out.add(v)
+    return out
+
+
 class _Limiter:
     def __init__(self, rps: float, sleep: Callable[[float], None], clock: Callable[[], float]):
         self.gap = 1.0 / rps
@@ -224,8 +253,8 @@ def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_fr
     implemented); a non-failed transaction in the LP mint's signature list has no event for the pool but burns or mints
     the LP token; the S sequence does not chain (S_after = s_before + lp_delta of each event must equal the next
     s_before); or the last S_after differs from the pool account's lp_supply, read again after the history (recorded as
-    "lp_supply"). Up to `passes` passes retry pools whose reason is transient (RPC errors, not chain or truncation
-    failures); every pass is appended to `attempts` if given."""
+    "lp_supply"). Up to RETRY_PASSES further passes retry pools unresolved by a failed tx fetch or failed signature paging (never chain,
+    truncation, supply or account failures); every pass is appended to `attempts` if given."""
     if rps > 5.0:
         raise ValueError("rps must be <= 5: walkers share Helius")
     lim = _Limiter(rps, sleep, clock)

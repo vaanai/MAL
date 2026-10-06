@@ -148,6 +148,24 @@ def test_possible_values_helper() -> None:
     assert back == {lph.v0_before(17_100_000_000, [e1])}
 
 
+def test_v0_at_slot_relative_to_anchor_and_trade() -> None:
+    a = 17_000_000_000
+    e = ev(1000, 100, slot=50)
+    fwd = lph.replay_forward(a, [e])
+    # anchor read in slots 60..61 (after the event), trade at slot 70: the event is before both: one value, no move
+    assert lph.v0_at(70, a, (60, 61), [e]) == {a}
+    # anchor read at slots 10..11 (before the event), trade at 70: one value, moved forward
+    assert lph.v0_at(70, a, (10, 11), [e]) == {fwd}
+    # trade at slot 40, anchor after the event: invert, one value (the smallest preimage)
+    assert lph.v0_at(40, fwd, (60, 61), [e]) == {lph.v0_before(fwd, [e])}
+    # the event sits inside the anchor's slot span: either side, so two values at a later slot
+    assert lph.v0_at(70, a, (49, 51), [e]) == {a, fwd}
+    # the event sits in the trade's own slot: ambiguous against the trade
+    assert lph.v0_at(50, a, (10, 11), [e]) == {a, fwd}
+    assert lph.v0_at(70, a, (10, 11), []) == {a}
+    assert lph.v0_at(5, a, (10, 11), [ev(10_000 + i, 1, slot=10) for i in range(11)]) is None
+
+
 # ---- fetch_lp_history with a fake chain --------------------------------------------------------------------------
 
 
@@ -270,14 +288,14 @@ def test_fetch_history_paging_cannot_reach_t_from_is_unresolved(monkeypatch) -> 
     assert len(att) == 1
 
 
-def test_fetch_history_tx_failure_unresolved_after_three_passes_and_url_not_leaked() -> None:
+def test_fetch_history_tx_failure_unresolved_after_first_pass_plus_three_retries_and_url_not_leaked() -> None:
     pool, mint = pk(1), pk(50)
     rows = [("s1", 1, 100, None, [event_bytes("deposit", pool, 1, 10)])]
     chain = FakeChain({pool: mint}, {mint: rows}, fail_tx={"s1"})
     att: list = []
     out, _ = run_hist(chain, [pool], 0, 1000, attempts=att)
-    assert out[pool]["resolved"] is False and out[pool]["reason"].startswith("tx_fetch_failed") and out[pool]["attempts"] == 3
-    assert [(a["pass"], a["n_pools"], a["n_resolved"]) for a in att] == [(1, 1, 0), (2, 1, 0), (3, 1, 0)]
+    assert out[pool]["resolved"] is False and out[pool]["reason"].startswith("tx_fetch_failed") and out[pool]["attempts"] == 4
+    assert [(a["pass"], a["n_pools"], a["n_resolved"]) for a in att] == [(1, 1, 0), (2, 1, 0), (3, 1, 0), (4, 1, 0)]
     chain = FakeChain({pool: mint}, {mint: rows}, fail_sigs=99)
     out, _ = run_hist(chain, [pool], 0, 1000)
     assert out[pool]["reason"].startswith("signatures_fetch_failed")
