@@ -541,6 +541,19 @@ def _b(detail: dict[str, Any], p: str) -> int | None:
     return b if isinstance(b, int) and not isinstance(b, bool) else None
 
 
+def _v0(detail: dict[str, Any], p: str, v: int | None) -> int | None:
+    """V0 of a pool from its detail entry and stored V. v_base when present. An account with no pending counters
+    (entry present, pending None and v_base None: shorter than 287 bytes) has V0 = its stored V (DEC-016 Amendment 5
+    clarification); never applied when pending is an int."""
+    b = _b(detail, p)
+    if b is not None:
+        return b
+    d = detail.get(p)
+    if isinstance(d, dict) and d.get("pending") is None and d.get("v_base") is None and isinstance(v, int) and not isinstance(v, bool):
+        return v
+    return None
+
+
 def classify_pool(p: str, reads: Sequence[tuple[int | None, tuple[int, int] | None]], lphists: Sequence[LpHistory], tally: dict[str, int] | None = None) -> tuple[str, str]:
     """('ok'|'explained'|'unexplained'|'unresolved', reason) for one pool's V0 reads, oldest first. Consecutive reads
     that differ must be explained by the pool's LP events (DEC-016 Amendment 5 section 7(b))."""
@@ -601,9 +614,9 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
         reads: list[tuple[int | None, tuple[int, int] | None]] = []
         for i, (sm, sd) in enumerate(zip(snaps, snap_details)):
             if sm.get(p) is not None:
-                reads.append((_b(sd, p), spans[i]))
+                reads.append((_v0(sd, p, sm[p]), spans[i]))
         if final.get(p) is not None:
-            reads.append((_b(final_detail, p), spans[len(snaps)]))
+            reads.append((_v0(final_detail, p, final[p]), spans[len(snaps)]))
         if len(reads) < 2:
             continue
         status, why = classify_pool(p, reads, lphists, tally)
