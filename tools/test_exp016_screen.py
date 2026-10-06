@@ -810,6 +810,9 @@ def fake_canon(m: str) -> str:
     return "CANON_" + m
 
 
+PRE_PERIOD_MINTS = 300  # realistic scale: many migrated-before-the-tape tokens trade on PumpSwap with canonical pools and have no create row
+
+
 def p1b_source(*, with_creates=True):
     """A P1B source through the REAL resolver shape: `_hour_info_b` returns {"hour", "day", "end", "trade"} (no `create` key), Oracle trade rows
     have no `block_time` and PumpSwap rows no `quote_is_wsol`, and creates come from the adapter's observe day files (slot 0 placeholders)."""
@@ -841,10 +844,12 @@ def p1b_source(*, with_creates=True):
         if t["venue"] == "pumpswap":
             t["pool"] = "CANON_MINTD"
     tr_d = [t for t in tr_d if t["venue"] == "pumpswap"]  # MINTD: a migration but no bonding print on the tape
+    pre = [{"type": "trade", "venue": "pumpswap", "mint": f"PRE{i}", "pool": f"CANON_PRE{i}", "slot": 5000 + i, "t_recv_ms": (b0 + i) * 1000, "side": "buy",
+            "event_index": 1, "trader": "w", "sol_lamports": 1, "token_raw": 1, "quote_reserve": 1, "base_reserve": 1, "signature": f"s{i}"} for i in range(PRE_PERIOD_MINTS)]
     tz = [dict(t, mint="MINTZ", pool="CANON_MINTZ") for t in tr_b if t["venue"] == "pumpswap"]  # PumpSwap token that was never a pump.fun create
     trades = []
     ty = [dict(t, mint="MINTY", pool="SOME_FOREIGN") for t in tr_b if t["venue"] == "pumpswap"]  # an unrelated PumpSwap token: foreign pool, no create
-    for t in tr_b + tr_c + tr_d + tr_e + tr_f + tz + ty:
+    for t in tr_b + tr_c + tr_d + tr_e + tr_f + tz + ty + pre:
         t = dict(t)
         t.pop("block_time", None)  # the Oracle tape has t_recv_ms only
         if t["venue"] == "pumpswap":
@@ -891,10 +896,11 @@ class P1BCanonicalPoolTests(unittest.TestCase):
         src = p1b_source()
         self.assertTrue(src.derived_pools)
         pmap = rug.migration_pool_map(src.migrations.values())
-        self.assertEqual(set(pmap), {"MINTB", "MINTD", "MINTE", "MINTF", "MINTZ"})
+        self.assertEqual(set(pmap), {"MINTB", "MINTD", "MINTE", "MINTF"})  # only mints WITH a create row
         self.assertEqual(pmap["MINTB"], "CANON_MINTB")
         self.assertEqual(rug.count_no_pool_mints(src.migrations.values()), ["MINTC"])  # pump.fun mint, prints only on a foreign pool
-        self.assertEqual(src.canonical_no_create, ["MINTZ"])  # canonical-pool prints but no create row: kept, counted (plan 13 item 12)
+        self.assertEqual(src.canonical_no_create, 1 + PRE_PERIOD_MINTS)  # canonical prints but no create: a COUNT only (pre-period tokens)
+        self.assertFalse([m for m in src.rows_by_mint if m == "MINTZ" or m.startswith("PRE")])  # no rows retained for them
         self.assertTrue(x.pool_print_times(src, pmap)["CANON_MINTB"])
 
     def test_other_sources_keep_the_migration_row_pool(self):
@@ -1338,8 +1344,8 @@ class P1BCreatesTests(unittest.TestCase):
         r = x.process_source(src, {"CANON_MINTB": 17_584_000_000}, fake_canon)
         self.assertEqual(r["no_bonding_excluded"], [])  # pre-tape migrations are not in the no-bonding numerator
         self.assertEqual((r["pre_tape_migration_excluded"], r["pre_tape_create_excluded"], r["gap_excluded"]), (["MINTD"], ["MINTE"], ["MINTF"]))
-        self.assertEqual(r["no_create_row"], ["MINTZ"])  # canonical prints but no create: inside the no-create limit
-        self.assertEqual(r["p1b_canonical_no_create"], ["MINTZ"])
+        self.assertEqual(r["no_create_row"], [])  # canonical prints but no create: a count outside every limit
+        self.assertEqual(r["p1b_canonical_no_create"], 1 + PRE_PERIOD_MINTS)
         self.assertEqual(r["no_pool_mints"], ["MINTC"])
         self.assertEqual([c["mint"] for c in r["cells"]], ["MINTB"])
         self.assertEqual(r["n_creates"], 5)
@@ -1353,12 +1359,22 @@ class P1BCreatesTests(unittest.TestCase):
     def test_p1b_rows_of_unrelated_pumpswap_mints_are_not_kept(self):
         src = p1b_source()
         self.assertNotIn("MINTY", src.rows_by_mint)
-        self.assertIn("MINTZ", src.rows_by_mint)  # canonical prints: kept (counted as no-create)
+        self.assertNotIn("MINTZ", src.rows_by_mint)  # canonical prints but no create: counted, no rows kept
+        self.assertNotIn("MINTZ", src.migrations)
+
+    def test_pre_period_mints_fire_no_limit_and_are_outside_the_no_create_share(self):
+        src = p1b_source()
+        r = x.process_source(src, {"CANON_MINTB": 17_584_000_000}, fake_canon)
+        self.assertEqual(r["no_create_row"], [])
+        self.assertEqual(r["p1b_canonical_no_create"], 1 + PRE_PERIOD_MINTS)
+        self.assertEqual(r["no_create_window"], 0)
+        self.assertFalse([w for w in x.check_limits([r]) if "no-create" in w])
+        self.assertEqual(r["p1b_cap_denominator"], 3)  # B, D, F: post-start creates with a migration (E is a pre-tape create, C has no pool)
 
     def test_no_creates_means_no_migrations(self):
         src = p1b_source(with_creates=False)
         self.assertEqual(src.creates, {})
-        self.assertEqual(sorted(src.migrations), src.canonical_no_create)  # only canonical-print mints remain, all counted as no-create
+        self.assertEqual(src.migrations, {})  # no create row: no migration kept, and the canonical-print mints are only counted
 
     def test_create_slot_rule_keeps_real_slots_and_derives_placeholders(self):
         creates = {"R": {"mint": "R", "slot": 500, "block_time": 10}, "P": {"mint": "P", "slot": 0, "block_time": 10}, "N": {"mint": "N", "slot": None, "block_time": 10}}
@@ -1380,16 +1396,18 @@ class P1BCreatesTests(unittest.TestCase):
         self.assertEqual(src.creates["MINTB"]["slot"], 1000)
 
 
-def _res(tag, *, cells=30, n_mig=100, no_create=0, no_pool=0, no_bonding=0, with_mig=100, foreign=0):
+def _res(tag, *, cells=30, n_mig=100, no_create=0, no_pool=0, no_bonding=0, with_mig=100, foreign=0, pre_tape_mig=0, gap=0, den=100, n_win=None):
     return {"tag": tag, "cells": [{"status": "FILLED", "pool": f"p{i}", "mint": f"m{i}", "block": "P1", "mig_ms": e15.date_start_ms(P1[0]) + 12 * 3_600_000} for i in range(cells)], "n_migrations": n_mig,
             "no_create_row": ["a"] * no_create, "no_pool_mints": ["b"] * no_pool, "no_migration_slot": [], "no_bonding_excluded": ["c"] * no_bonding,
             "n_creates_with_migration": with_mig, "n_creates": with_mig, "create_stats": None, "p1b_gap_slots": None,
-            "gate": {"foreign_first_mints": ["f"] * foreign, "mints_with_foreign_pool_prints": 0}, "slot_inversions": 0, "pool_vs_canonical": None}
+            "gate": {"foreign_first_mints": ["f"] * foreign, "mints_with_foreign_pool_prints": 0}, "slot_inversions": 0, "pool_vs_canonical": None,
+            "pre_tape_migration_excluded": ["d"] * pre_tape_mig, "gap_excluded": ["g"] * gap, "p1b_cap_denominator": den, "p1b_canonical_no_create": 0,
+            **({"n_migrations_window": n_win, "no_create_window": no_create, "no_pool_window": no_pool} if n_win is not None else {})}
 
 
 class RefusalLimitTests(unittest.TestCase):
     def test_limits_pass_at_the_boundary(self):
-        self.assertEqual(x.check_limits([_res("P1A", no_create=2, no_pool=2), _res("P1B", no_bonding=5, with_mig=100)]), [])
+        self.assertEqual(x.check_limits([_res("P1A", no_create=2, no_pool=2), _res("P1B", pre_tape_mig=5, gap=5, den=100)]), [])
 
     def test_zero_cells_refuses(self):
         self.assertIn("P2: 0 cells", x.check_limits([_res("P2", cells=0)]))
@@ -1403,10 +1421,23 @@ class RefusalLimitTests(unittest.TestCase):
         (why,) = x.check_limits([_res("P4", no_pool=3)])
         self.assertIn("no-pool", why)
 
-    def test_p1b_no_bonding_over_five_percent_refuses_and_only_p1b(self):
-        (why,) = x.check_limits([_res("P1B", no_bonding=6, with_mig=100)])
-        self.assertIn("no bonding", why)
-        self.assertEqual(x.check_limits([_res("P1A", no_bonding=6, with_mig=100)]), [])
+    def test_p1b_pre_tape_migration_cap(self):
+        (why,) = x.check_limits([_res("P1B", pre_tape_mig=6, den=100)])
+        self.assertIn("pre-tape migrations", why)
+        self.assertEqual(x.check_limits([_res("P1A", pre_tape_mig=6, den=100)]), [])  # P1B only
+
+    def test_p1b_gap_over_cap(self):
+        (why,) = x.check_limits([_res("P1B", gap=6, den=100)])
+        self.assertIn("gap over 600 s", why)
+
+    def test_pre_tape_creates_and_no_bonding_have_no_cap(self):
+        r = _res("P1B", no_bonding=90, den=100)
+        r["pre_tape_create_excluded"] = ["e"] * 90
+        self.assertEqual(x.check_limits([r]), [])  # reported only
+
+    def test_denominators_are_the_windowed_migrations(self):
+        self.assertEqual(x.check_limits([_res("P2", no_create=2, n_win=100, n_mig=10_000)]), [])  # 2 of the 100 in window, not 2 of 10,000
+        self.assertEqual(len(x.check_limits([_res("P2", no_create=3, n_win=100, n_mig=10_000)])), 1)
 
     def test_raise_variant_is_a_refusal(self):
         with self.assertRaises(x.Refused):
@@ -1621,7 +1652,7 @@ class DataQualityGuardTests(unittest.TestCase):
         self.assertIn("enforce_limits(results, oof)", src)
         self.assertLess(src.index("prior_exp = prior_tries_per_experiment"), src.index("e15.take_lock"))
 
-    def test_migration_rows_outside_the_pool_hours_are_dropped_and_counted(self):
+    def test_every_migration_row_is_kept_and_the_window_is_only_for_the_denominators(self):
         creates, trades = mint_tape("MINTB", T0)
         from datetime import datetime, timezone
 
@@ -1635,8 +1666,39 @@ class DataQualityGuardTests(unittest.TestCase):
             with mock.patch("tools.exp012_virtual_rescore._zcat_lines", return_value=[json.dumps(r) for r in rows]):
                 (Path(d) / "migrations" / "migrations-x.jsonl.zst").write_bytes(b"")
                 src = x.load_source_data("P3", "P3", lambda h: {"trade": tp, "create": cp}, [hour], [Path(d)])
-        self.assertEqual(sorted(src.migrations), ["MINTB"])
-        self.assertEqual(src.migrations_outside_window, 1)
+        self.assertEqual(sorted(src.migrations), ["MINTB", "OLD"])  # nothing dropped at read: d-group features and dump steps are unchanged
+        a, z = e15.BLOCKS["P2"]
+        inside = {"block_time": e15.hour_ms(a) // 1000 + 3600}
+        self.assertTrue(x.in_counted_window("P2", inside))  # exactly e15.in_block_window
+        self.assertFalse(x.in_counted_window("P2", {"block_time": e15.hour_ms(z) // 1000}))  # the end is exclusive
+        self.assertFalse(x.in_counted_window("P2", {"block_time": e15.hour_ms(a) // 1000 - 1}))
+        self.assertTrue(x.in_counted_window("P2", {}))  # no time (P1B derived rows): counted inside
+
+    def test_hours_are_read_in_time_order_so_a_create_precedes_its_trades(self):
+        creates, trades = mint_tape("MINTB", T0)
+        with tempfile.TemporaryDirectory() as d:
+            ct, cc = Path(d) / "ct.jsonl", Path(d) / "cc.jsonl"
+            e, ec = Path(d) / "empty_t.jsonl", Path(d) / "empty_c.jsonl"
+            cc.write_text("".join(json.dumps(c) + "\n" for c in creates))
+            ct.write_text("")
+            e.write_text("".join(json.dumps(t) + "\n" for t in trades))
+            ec.write_text("")
+            files = {"2026-09-01T01": {"trade": ct, "create": cc}, "2026-09-01T02": {"trade": e, "create": ec}}
+            src = x.load_source_data("P3", "P3", lambda h: files[h], ["2026-09-01T02", "2026-09-01T01"], [])  # given out of order
+        self.assertEqual(len(src.rows_by_mint["MINTB"]), len([t for t in trades if t["venue"] == "pump_bonding"]))
+
+    def test_a_create_after_its_trades_refuses_with_counts_only(self):
+        creates, trades = mint_tape("MINTB", T0)
+        with tempfile.TemporaryDirectory() as d:
+            tp, cp = Path(d) / "t.jsonl", Path(d) / "c.jsonl"
+            tp.write_text("".join(json.dumps(t) + "\n" for t in trades))
+            cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
+            files = {"2026-09-01T01": {"trade": tp, "create": None}, "2026-09-01T02": {"trade": Path(d) / "none.jsonl", "create": cp}}
+            (Path(d) / "none.jsonl").write_text("")
+            with self.assertRaises(x.Refused) as cm:
+                x.load_source_data("P3", "P3", lambda h: files[h], ["2026-09-01T01", "2026-09-01T02"], [])
+        self.assertIn("1 create row(s) appear after their mint's trades", str(cm.exception))
+        self.assertNotIn("MINTB", str(cm.exception))
 
 
 class MemoryRegressionTests(unittest.TestCase):

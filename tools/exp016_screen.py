@@ -575,8 +575,7 @@ class SourceData:
     pool_print_ms: dict[str, list[int]] = field(default_factory=dict)  # canonical pool -> print times (ints only; for the silent-pool count)
     excluded_other: dict[str, list[str]] = field(default_factory=dict)  # P1B: pre_tape_create / pre_tape_migration / gap_over (plan 13 item 9)
     creator_hist: dict[str, list[int]] | None = None  # built from ALL creates before any exclusion (as EXP-015's build_creator_history_b)
-    migrations_outside_window: int = 0  # migration rows whose time is outside the source's counted pool hours (dropped, counted)
-    canonical_no_create: list[str] = field(default_factory=list)  # P1B: mints with canonical-pool prints but no create row
+    canonical_no_create: int = 0  # P1B: COUNT of mints with canonical-pool prints but no create row (pre-period tokens; no rows kept, outside every limit)
     excluded_no_bonding: list[str] = field(default_factory=list)  # creates with a placeholder slot and no pump_bonding print on the tape (plan 13 item 9)
     create_stats: dict[str, Any] | None = None  # outcome-blind counts from `apply_create_slot_rule`
     derived_pools: bool = False  # P1B only: no migrations/ dir, so `migrations` is derived from the tape with pool = canonical_pool(mint) (plan 13 item 6)
@@ -652,7 +651,9 @@ def apply_create_slot_rule(creates: Mapping[str, Mapping[str, Any]], rows_by_min
         if gap is not None:
             gaps.append(gap)
     n_ex = sum(len(v) for v in excl.values())
-    stats = {"n_creates_loaded": len(creates), "n_placeholder_slot": n_placeholder, "n_with_bonding": n_placeholder - n_ex, "n_excluded_no_bonding": len(excl["no_bonding"]),
+    n_den = sum(1 for m, cr in creates.items() if not _real_slot(cr.get("slot")) and (tape_start_s is None or not isinstance(cr.get("block_time"), int) or cr["block_time"] >= tape_start_s)
+                and mig.get(m) and mig[m].get("pool"))
+    stats = {"n_post_start_with_migration": n_den, "n_creates_loaded": len(creates), "n_placeholder_slot": n_placeholder, "n_with_bonding": n_placeholder - n_ex, "n_excluded_no_bonding": len(excl["no_bonding"]),
              "excluded": {k: sorted(v) for k, v in excl.items()},
              "gap_s": ({"n": len(gaps), "p50": _pctile(gaps, 0.5), "p90": _pctile(gaps, 0.9), "max": max(gaps)} if gaps else {"n": 0, "p50": None, "p90": None, "max": None})}
     return out, sorted(excl["no_bonding"]), stats
@@ -732,6 +733,13 @@ def p1b_gap_slots(src: SourceData) -> dict[str, Any]:
     return {"n": len(gaps), "n_no_bonding": n_none, "p50": _pctile(gaps, 0.5), "p90": _pctile(gaps, 0.9), "max": max(gaps)}
 
 
+def in_counted_window(block: str, migration_row: Mapping[str, Any]) -> bool:
+    """The limit denominators' window is exactly `e15.in_block_window` (the counted window, not the read set with its buffer). A migration row with no
+    time (P1B's derived rows: the tape read IS the counted hours) counts as inside."""
+    bt = migration_row.get("block_time")
+    return True if not isinstance(bt, int) else e15.in_block_window(block, bt * 1000)
+
+
 def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn: Callable[[str], str] | None = None) -> dict[str, Any]:
     """The tape pass for one source: P2 gate, block history, one cell per migrated mint. Outcome-blind counters are returned beside the cells.
     `canonical_fn` (production: `canonical_pool_str`) adds the report-only pool-vs-canonical count for sources with migration rows."""
@@ -777,11 +785,14 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
         cell.update({"source": src.tag, "block": src.block})
         cells.append(cell)
     progress(f"{src.tag}: cells built cells={len(cells)}")
+    win = {m for m, mr in src.migrations.items() if in_counted_window(src.block, mr)}
     pool_vs_canonical = count_pool_vs_canonical(src.migrations, canonical_fn) if (canonical_fn is not None and not src.derived_pools) else None
     return {"tag": src.tag, "cells": cells, "no_pool_mints": no_pool, "no_create_row": no_create_row, "no_migration_slot": no_migration_slot,
             "no_bonding_excluded": no_bonding, "pre_tape_create_excluded": other.get("pre_tape_create", []),
             "pre_tape_migration_excluded": other.get("pre_tape_migration", []), "gap_excluded": other.get("gap_over", []),
-            "p1b_canonical_no_create": list(src.canonical_no_create), "migrations_outside_window": src.migrations_outside_window,
+            "p1b_canonical_no_create": src.canonical_no_create,
+            "n_migrations_window": len(win), "no_create_window": len([m for m in no_create_row if m in win]), "no_pool_window": len([m for m in no_pool if m in win]),
+            "p1b_cap_denominator": (src.create_stats or {}).get("n_post_start_with_migration"),
             "n_creates": len(src.creates) + len(excluded_set), "create_stats": src.create_stats,
             "n_creates_with_migration": len([m for m in src.migrations if m in src.creates or m in excluded_set]),
             "p1b_gap_slots": p1b_gap_slots(src) if src.derived_pools else None, "pool_vs_canonical": pool_vs_canonical, "gate": {k: v for k, v in gate.items() if k != "pools"}, "n_migrations": len(src.migrations),
@@ -797,9 +808,9 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
     migrations: dict[str, Mapping[str, Any]] = {}
     creates: dict[str, Mapping[str, Any]] = {}
     adapt = (lambda r: r)
-    canonical_no_create: list[str] = []
-    outside = 0
-    hour_set = set(pool_hours)
+    canonical_no_create = 0
+    pool_hours = sorted(pool_hours)  # time order: a create (read per hour, before that hour's trades) must precede its mint's trades
+    dropped_no_create: set[str] = set()
     progress(f"{tag}: load start, {len(pool_hours)} hours")
     if tag == "P1B":
         # The Oracle live tape has no migrations/ dir, and `_hour_info_b` has no `create` key: creates come from the adapter's day files (with its
@@ -818,9 +829,11 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
             canonical_fn,
         )
         # a mint stays if it has a create (pool "" = no-pool) or canonical-pool prints (no create: counted); a PumpSwap token with neither is not ours
-        migrations = {m: r for m, r in everything.items() if m in creates or r["pool"]}
+        # RULING: only mints with a create row. A mint with canonical prints but no create is a pre-period token: counted, no row kept, outside every limit.
+        canonical_no_create = sum(1 for m, r in everything.items() if r["pool"] and m not in creates)
+        migrations = {m: r for m, r in everything.items() if m in creates}
+        del everything
         progress(f"{tag}: P1B creates={len(creates)} migrations_derived={len(migrations)} (pass 1 over the tape done)")
-        canonical_no_create = sorted(m for m, r in migrations.items() if m not in creates)
         migration_roots = []
     for root in migration_roots:
         for f in sorted((Path(root) / "migrations").glob("migrations-*.jsonl.zst")):
@@ -830,14 +843,10 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
                 except ValueError:
                     continue
                 if r.get("type") == "migration" and isinstance(r.get("mint"), str):
-                    bt = r.get("block_time")
-                    if isinstance(bt, int) and datetime.fromtimestamp(bt, timezone.utc).strftime("%Y-%m-%dT%H") not in hour_set:
-                        outside += 1  # the denominators count migrations inside the source's counted pool hours only
-                        continue
                     migrations.setdefault(r["mint"], r)
     rows_by_mint: dict[str, list[Mapping[str, Any]]] = {}
     through = 0
-    n_read = n_kept = 0
+    n_read = n_kept = late_creates = 0
     keep = ("venue", "side", "trader", "slot", "token_raw", "sol_lamports", "quote_reserve", "base_reserve", "signature", "event_index", "tx_index", "block_time", "t_recv_ms", "mint", "pool", "quote_is_wsol")
     for h in pool_hours:
         info = hours_fn(h)
@@ -845,6 +854,8 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
             for r in eem._iter_trades(info["create"]):
                 if r.get("type") == "create" and isinstance(r.get("mint"), str):
                     prev = creates.get(r["mint"])
+                    if prev is None and r["mint"] in dropped_no_create:
+                        late_creates += 1  # its trades were already read (and dropped): the ordering assumption failed
                     if prev is None or (isinstance(r.get("block_time"), int) and r["block_time"] < prev.get("block_time", 1 << 62)):
                         creates[r["mint"]] = r
         if progress_every_hour:
@@ -854,8 +865,10 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
             if not isinstance(m, str) or r.get("venue") not in ("pump_bonding", "pumpswap"):
                 continue
             n_read += 1
-            if m not in creates and m not in migrations:
-                continue  # memory, every source: only mints with a create or a migration / canonical-pool print are kept
+            if m not in creates:
+                if tag != "P1B":
+                    dropped_no_create.add(m)
+                continue  # memory, every source: rows only for mints with a create row (a migration row alone does not keep rows)
             r = adapt(r)
             t = r.get("t_recv_ms") if r.get("t_recv_ms") is not None else (r["block_time"] * 1000 if isinstance(r.get("block_time"), int) else None)
             if isinstance(t, int) and t > through:
@@ -866,6 +879,8 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
                 r = {k: r[k] for k in keep if k in r}
             n_kept += 1
             rows_by_mint.setdefault(m, []).append(r)
+    if late_creates:
+        raise Refused(f"{tag}: {late_creates} create row(s) appear after their mint's trades (hours out of order, or a create outside the read set); counts only, refusing")
     progress(f"{tag}: tape pass done rows_read={n_read} rows_kept={n_kept} mints_kept={len(rows_by_mint)} creates={len(creates)} migrations={len(migrations)}")
     hist = creator_history(creates)  # ALL creates, before any exclusion (EXP-015's build_creator_history_b does the same)
     kw: dict[str, Any] = {}
@@ -876,7 +891,7 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
               "tape_start_s": int(datetime.strptime(POOL_B_START, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp())}
     creates, excluded, stats = apply_create_slot_rule(creates, rows_by_mint, **kw)
     return SourceData(tag, block, creates, migrations, rows_by_mint, through, excluded_no_bonding=excluded, create_stats=stats, derived_pools=(tag == "P1B"),
-                      excluded_other={k: v for k, v in stats["excluded"].items() if k != "no_bonding"}, creator_hist=hist, migrations_outside_window=outside,
+                      excluded_other={k: v for k, v in stats["excluded"].items() if k != "no_bonding"}, creator_hist=hist,
                       canonical_no_create=canonical_no_create)
 
 
@@ -949,7 +964,8 @@ def pre_started_counts(results: Sequence[Mapping[str, Any]], sel_by_mint: Mappin
 
 LIMIT_NO_CREATE = 0.02
 LIMIT_NO_POOL = 0.02
-LIMIT_P1B_NO_BONDING = 0.05
+LIMIT_P1B_PRE_TAPE_MIG = 0.05  # pre-tape migrations / P1B creates at or after POOL_B_START that have a migration (the honest rate is about 0)
+LIMIT_P1B_GAP_OVER = 0.05  # gap_over (> P1B_MAX_GAP_S) / the same denominator
 LIMIT_MIN_IN_BOOK = 30  # in-book cells (FILLED or MISS inside the window) per source
 LIMIT_NO_SIM_SHARE = 0.25  # NO_SIM cells / all cells per source
 LIMIT_P1_NO_OOF = 0.02  # in-book P1 cells with no stored OOF score / in-book P1 cells, per P1 source
@@ -1002,14 +1018,19 @@ def check_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] 
         n_ns = sum(1 for c in r["cells"] if c.get("status") == "NO_SIM")
         if r["cells"] and n_ns / len(r["cells"]) > LIMIT_NO_SIM_SHARE:
             why.append(f"{tag}: NO_SIM {n_ns} of {len(r['cells'])} cells (> {LIMIT_NO_SIM_SHARE:.0%})")
-        if n_mig and len(r.get("no_create_row", [])) / n_mig > LIMIT_NO_CREATE:
-            why.append(f"{tag}: no-create-row {len(r['no_create_row'])} of {n_mig} migrated mints (> {LIMIT_NO_CREATE:.0%})")
-        if n_mig and len(r.get("no_pool_mints", [])) / n_mig > LIMIT_NO_POOL:
-            why.append(f"{tag}: no-pool {len(r['no_pool_mints'])} of {n_mig} migrated mints (> {LIMIT_NO_POOL:.0%})")
+        n_mig = int(r.get("n_migrations_window", n_mig))  # migrations inside the counted window only
+        n_nc = int(r.get("no_create_window", len(r.get("no_create_row", []))))
+        n_np = int(r.get("no_pool_window", len(r.get("no_pool_mints", []))))
+        if n_mig and n_nc / n_mig > LIMIT_NO_CREATE:
+            why.append(f"{tag}: no-create-row {n_nc} of {n_mig} migrated mints in the counted window (> {LIMIT_NO_CREATE:.0%})")
+        if n_mig and n_np / n_mig > LIMIT_NO_POOL:
+            why.append(f"{tag}: no-pool {n_np} of {n_mig} migrated mints in the counted window (> {LIMIT_NO_POOL:.0%})")
         if tag == "P1B":
-            den = int(r.get("n_creates_with_migration") or 0)
-            if den and len(r.get("no_bonding_excluded", [])) / den > LIMIT_P1B_NO_BONDING:
-                why.append(f"P1B: {len(r['no_bonding_excluded'])} of {den} creates with a migration have no bonding print on the tape (> {LIMIT_P1B_NO_BONDING:.0%})")
+            den = int(r.get("p1b_cap_denominator") or 0)
+            for key, lim, name in (("pre_tape_migration_excluded", LIMIT_P1B_PRE_TAPE_MIG, "pre-tape migrations"), ("gap_excluded", LIMIT_P1B_GAP_OVER, f"gap over {P1B_MAX_GAP_S} s")):
+                k = len(r.get(key, []))
+                if den and k / den > lim:
+                    why.append(f"P1B: {k} of {den} creates at or after the tape start with a migration are {name} (> {lim:.0%})")
     if oof is not None:
         for tag, d in oof_counts(results, oof).items():
             if d["without_score"] / d["in_book"] > LIMIT_P1_NO_OOF:
@@ -1592,8 +1613,8 @@ def source_counts(r: Mapping[str, Any], vmap: Mapping[str, int | None]) -> dict[
         "no_create_row": len(r.get("no_create_row", [])), "no_pool": len(r.get("no_pool_mints", [])), "no_migration_slot": len(r.get("no_migration_slot", [])),
         "no_bonding_excluded": len(r.get("no_bonding_excluded", [])), "foreign_first": len(r["gate"]["foreign_first_mints"]),
         "pre_tape_create_excluded": len(r.get("pre_tape_create_excluded", [])), "pre_tape_migration_excluded": len(r.get("pre_tape_migration_excluded", [])),
-        "gap_excluded": len(r.get("gap_excluded", [])), "p1b_canonical_no_create": len(r.get("p1b_canonical_no_create", [])),
-        "migrations_outside_window": r.get("migrations_outside_window", 0), "in_book": len(in_book_cells(cells)),
+        "gap_excluded": len(r.get("gap_excluded", [])), "p1b_canonical_no_create": r.get("p1b_canonical_no_create", 0),
+        "n_migrations_window": r.get("n_migrations_window"), "p1b_cap_denominator": r.get("p1b_cap_denominator"), "in_book": len(in_book_cells(cells)),
         "create_stats": r.get("create_stats"), "p1b_gap_slots": r.get("p1b_gap_slots"),
         "censored": sum(1 for c in cells if c.get("status") == "CENSORED"),  # the deadline rule (plan 13 item 7): a status, not an outcome
         "no_sim_by_reason": dict(sorted(collections.Counter(str(c.get("why")) for c in cells if c.get("status") == "NO_SIM").items())),
