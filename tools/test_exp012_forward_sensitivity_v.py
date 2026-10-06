@@ -216,9 +216,10 @@ class VRefusals(VFx):
         doc["vmap"] = {"sha256": sha}
         doc["clean_clock"], doc["read_end"] = tsens.CLEAN_CLOCK, tsens.READ_END
         rp.write_text(json.dumps(doc))
+        (out.parent / vb.RUNS_LEDGER_NAME).write_text(led.read_text())  # the derived path: beside the FINAL out dir
         with mock.patch.object(fw, "PINNED_CLEAN_CLOCK", tsens.CLEAN_CLOCK), mock.patch.object(fw, "PINNED_READ_END", tsens.READ_END), mock.patch.object(fw, "DEFAULT_LEDGER", ledger), mock.patch.object(sens, "check_sealed", return_value={"rows_sha256": "r"}), mock.patch.object(sens, "final_verdict", return_value="PASS"):
             with self.assertRaises(fw.Refused) as cm:
-                self.run_sens(out, ledger, test_window=False, vmap=vmap, vmap_sha256=sha, mcap_mode="v", vbook_report=rp, vbook_runs_ledger=led)
+                self.run_sens(out, ledger, test_window=False, vmap=vmap, vmap_sha256=sha, mcap_mode="v", vbook_report=rp)
         self.assertIn("not PASS", str(cm.exception))
         self.assertEqual(self.lines(sens.runs_ledger_path(ledger)), [])
 
@@ -234,6 +235,22 @@ class VRefusals(VFx):
         self.assertEqual(bind["sha256"], fw._sha256_file(report))
         self.assertEqual(bind["ledger_line"]["state"], "DONE")
         self.assertEqual(bind["b_verdict"], json.loads(report.read_text())["b_verdict"])
+
+    def test_vbook_runs_ledger_override_is_refused_on_the_pinned_window(self) -> None:
+        out, ledger = self.sealed()
+        vmap, sha = self.vmap()
+        rp, led = self.vbook_files("PASS", line_vmap=sha)
+        with mock.patch.object(fw, "PINNED_CLEAN_CLOCK", tsens.CLEAN_CLOCK), mock.patch.object(fw, "PINNED_READ_END", tsens.READ_END), mock.patch.object(fw, "DEFAULT_LEDGER", ledger):
+            with self.assertRaises(fw.Refused) as cm:
+                self.run_sens(out, ledger, test_window=False, vmap=vmap, vmap_sha256=sha, mcap_mode="v", vbook_report=rp, vbook_runs_ledger=led)
+        self.assertIn("--vbook-runs-ledger is refused", str(cm.exception))
+        self.assertEqual(self.lines(sens.runs_ledger_path(ledger)), [])
+
+    def test_compare_rows_treats_int_and_float_of_equal_value_as_equal(self) -> None:
+        a = [{"mint": "m", "mig_ms": 1, "flat": 5, "press": 2.0}]
+        b = [{"mint": "m", "mig_ms": 1, "flat": 5.0, "press": 2}]
+        self.assertEqual(sens.compare_rows(a, b), [])
+        self.assertTrue(sens.compare_rows(a, [{"mint": "m", "mig_ms": 1, "flat": 5.0000001, "press": 2}]))
 
     def test_exit_past_tape_in_b_refuses_before_the_claim(self) -> None:
         out, ledger = self.sealed()

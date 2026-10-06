@@ -148,6 +148,9 @@ def check_sealed(out_dir: Path, ledger: Path | None, clean_clock: datetime, read
 
 
 def _fl(x: Any) -> str:
+    """Numbers compare after float() (an int and a float of equal value are not a mismatch); anything else by its JSON text."""
+    if isinstance(x, (int, float)) and not isinstance(x, bool):
+        return json.dumps(float(x))
     return json.dumps(x)
 
 
@@ -677,6 +680,8 @@ def run(
     pinned = (fw._wins(cc, re_) == (fw.PINNED_CLEAN_CLOCK, fw.PINNED_READ_END)) and not test_window
     if pinned and (final_ledger is None or final_ledger.resolve() != fw.DEFAULT_LEDGER.resolve()):
         raise fw.Refused([f"on the real window --final-ledger must be {fw.DEFAULT_LEDGER}"])
+    if pinned and vbook_runs_ledger is not None:
+        raise fw.Refused(["--vbook-runs-ledger is refused on the pinned window: the ledger is always <FINAL out dir>/../VBOOK_RUNS.jsonl"])
     if REQUIRE_V_ON_PINNED and pinned and (vmap is None or vmap_sha256 is None or mcap_mode is None or vbook_report is None):
         raise fw.Refused(["on the pinned window --vmap, --vmap-sha256, --mcap-mode v and --vbook-report are all required (Amendment 4 section 2: Amendment 3 (a) is evaluated on (B))"])
     result_dir = result_dir if result_dir is not None else out_dir / "sensitivity"
