@@ -50,6 +50,9 @@ class EarlyArm:
     # --- intake (rows from migrations-<hour>.jsonl; nothing else) -------------
     def note_row(self, row: dict[str, Any], now_ms: int | None = None) -> bool:
         """Queue a `complete` row. Returns True if queued."""
+        if row.get("type") == "migration":  # the migrate tx's own slot, for the intent's migration_slot only
+            self.engine.note_migrate_tx_slot(row.get("mint"), row.get("slot"))
+            return False
         if row.get("type") != "complete":
             return False
         mint = row.get("mint")

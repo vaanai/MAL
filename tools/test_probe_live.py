@@ -2025,5 +2025,31 @@ class SpendValidatorTests(unittest.TestCase):
             self._check(tx.build_buy(self.snap.ps, self.ex.user, 250_000_001, 1500, 1000, priority_total_lamports=500_000), cap=250_000_000)
 
 
+class EntryKGuardLiveTests(unittest.TestCase):
+    """The live path: same guard, refused signal is not an attempt, nothing signed or sent."""
+
+    def _run(self, mig, **cfg):
+        with tempfile.TemporaryDirectory() as d:
+            ex, rpc, clock, kp, conf = make_live(Path(d), **cfg)
+            row = pe.parse_intent(json.dumps({"schema": "forward_paper_intent_v1", "book": ex.book, "ledger": "ceiling", "mint": MINT,
+                                              "creator": "C", "decision_t_ms": clock(), "written_ms": clock(), "trigger": "migrate",
+                                              "score": 0.9, "runner_kill": False, "migration_slot": mig, "migration_slot_src": "migrate_tx"}), ex.book, "ceiling")
+            ex.handle_signal(row)
+            return ex, rpc, fills(conf)
+
+    def test_off_by_default(self):
+        ex, rpc, rows = self._run(1)
+        self.assertEqual(ex.state.attempts, 1)
+        self.assertEqual(len(rpc.sent), 1)
+
+    def test_k9_refused_k8_passes(self):
+        ex, rpc, rows = self._run(68, max_entry_k_slots=8)  # snapshot slot is FakeRpc's 77
+        self.assertEqual((ex.state.attempts, rpc.sent, ex.state.pending), (0, [], {}))
+        self.assertEqual(rows[0]["reason"], "refused: entry_k k_now=9 max=8")
+        ex, rpc, rows = self._run(69, max_entry_k_slots=8)
+        self.assertEqual(ex.state.attempts, 1)
+        self.assertEqual(len(rpc.sent), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1841,10 +1841,12 @@ class IntentsFileTests(unittest.TestCase):
             self.assertTrue({r["book"] for r in rows} <= {"migrate_hold_30s", "migrate_tp50_sl30"})
             for r in rows:
                 self.assertEqual(
-                    set(r), {"schema", "book", "ledger", "mint", "creator", "decision_t_ms", "written_ms", "trigger", "score", "runner_kill"}
+                    set(r), {"schema", "book", "ledger", "mint", "creator", "decision_t_ms", "written_ms", "trigger", "score", "runner_kill", "migration_slot", "migration_slot_src"}
                 )
                 self.assertIs(r["runner_kill"], False)
                 self.assertIsInstance(r["written_ms"], int)
+                self.assertEqual(r["migration_slot_src"], "first_print")
+                self.assertIsInstance(r["migration_slot"], int)  # no migration row in this replay: first-print slot, labelled
             decs = [json.loads(x) for x in dec_b.decode().splitlines()]
             for r in rows:
                 self.assertTrue(
@@ -2147,3 +2149,53 @@ class EarlyArmTests(unittest.TestCase):
     def test_shipped_fast_config_early_arm_flag_is_boolean(self) -> None:
         cfg = json.loads((Path(__file__).resolve().parents[1] / "scripts/mal-fast/fast-forward-paper.json").read_text())
         self.assertIsInstance(cfg.get("early_arm", False), bool)
+
+
+class IntentMigrationSlotTests(IntentsFileTests):
+    """migration_slot on the intent: the migrate tx's slot when a `migration` row was seen, else the first PumpSwap print's
+    (labelled so the executor can refuse it). Fixture: the first PumpSwap print (slot 20) is 3 slots after the migrate tx (17)."""
+
+    def _rows(self, preset):
+        from unittest import mock
+
+        from tools.forward_paper import ForwardEngine
+
+        orig = ForwardEngine.__init__
+
+        def init(self_, *a, **kw):
+            orig(self_, *a, **kw)
+            for m, s in (preset or {}).items():
+                self_.note_migrate_tx_slot(m, s)
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(ForwardEngine, "__init__", init):
+            _dec, _pos, path = self._run(Path(d), True)
+            return [json.loads(x) for x in path.read_text().splitlines()]
+
+    def test_migrate_tx_slot_wins_over_first_print(self) -> None:
+        rows = self._rows({"MintA": 17})
+        self.assertTrue(rows)
+        for r in rows:
+            self.assertEqual((r["migration_slot"], r["migration_slot_src"]), (17, "migrate_tx"))
+
+    def test_first_print_is_labelled_when_no_migration_row(self) -> None:
+        rows = self._rows(None)
+        self.assertTrue(rows)
+        for r in rows:
+            self.assertEqual((r["migration_slot"], r["migration_slot_src"]), (20, "first_print"))
+
+    def test_early_arm_note_row_records_migration_row_slot(self) -> None:
+        from tools.forward_early_arm import EarlyArm
+
+        class Eng:
+            logs: dict = {}
+
+            def __init__(self):
+                self.migrate_tx_slot = {}
+
+            def note_migrate_tx_slot(self, mint, slot):
+                self.migrate_tx_slot[mint] = slot
+
+        eng = Eng()
+        arm = EarlyArm(eng)
+        self.assertFalse(arm.note_row({"type": "migration", "mint": "MintA", "slot": 17}))
+        self.assertEqual(eng.migrate_tx_slot, {"MintA": 17})

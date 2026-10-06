@@ -99,6 +99,32 @@ def clamp_signal_poll_ms(value: Any) -> int:
     return int(min(SIGNAL_POLL_MS_MAX, max(SIGNAL_POLL_MS_MIN, value)))
 
 
+def validate_max_entry_k(value: Any) -> int | None:
+    """DEC-020 entry guard `max_entry_k_slots`: absent/None = off (None). Otherwise an integer >= 1.
+    Anything else (bool, str, NaN/inf, fractional, < 1) refuses at startup rather than silently disabling."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value != int(value) or value < 1:
+        raise ValueError("max_entry_k_slots must be an integer >= 1 (or absent/null to turn the guard off)")
+    return int(value)
+
+
+def entry_k_refusal(sig: dict[str, Any], snap_slot: int, max_k: int | None) -> str | None:
+    """None = pass (or guard off). k_now = freshest pool-state slot - the signal's migration slot. A signal with no
+    migrate-tx migration slot (src must be "migrate_tx"), or a state with no slot, cannot be bounded and is refused while the guard is on."""
+    if max_k is None:
+        return None
+    mig = sig.get("migration_slot")
+    if sig.get("migration_slot_src") != "migrate_tx":  # a first-print slot can trail the migrate tx: it understates k
+        mig = None
+    if not isinstance(mig, int) or isinstance(mig, bool) or not isinstance(snap_slot, int) or snap_slot <= 0:
+        return f"refused: entry_k unknown migration_slot={mig} state_slot={snap_slot} max={max_k}"
+    k_now = snap_slot - mig
+    if k_now > max_k:
+        return f"refused: entry_k k_now={k_now} max={max_k}"
+    return None
+
+
 def clamp_exit_poll_ms(value: Any, poll_ms: int) -> int:
     """Open-position poll period: default (absent or unparseable) = `poll_ms`; otherwise clamped to [200, poll_ms]."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -812,6 +838,11 @@ def parse_intent(line: str, book: str, ledger: str) -> dict[str, Any] | None:
     if not isinstance(w, int) or isinstance(w, bool):
         return None
     sig["written_ms"] = w
+    ms = row.get("migration_slot")
+    if isinstance(ms, int) and not isinstance(ms, bool) and ms > 0:  # optional; absent on old runners
+        sig["migration_slot"] = ms
+        if row.get("migration_slot_src") in ("migrate_tx", "first_print"):
+            sig["migration_slot_src"] = row["migration_slot_src"]
     if row.get("runner_kill") is True:  # absent (old runner) or false: unchanged behaviour
         sig["runner_kill"] = True
     return sig
@@ -1039,6 +1070,7 @@ class Executor:
             raise ValueError("slippage_cap must be finite and positive")
         self.slip_bps = int(round(min(cap, DEFAULT_SLIPPAGE_CAP) * 10_000))  # config can lower, never raise
         self.max_signal_age_ms = int(float(cfg.get("max_signal_age_s", 120)) * 1000)
+        self.max_entry_k = validate_max_entry_k(cfg.get("max_entry_k_slots"))  # None = off: byte-identical to before
         self.signal_poll_ms = clamp_signal_poll_ms(cfg.get("signal_poll_ms", SIGNAL_POLL_MS_DEFAULT))
         self.poll_ms = int(max(1.0, float(cfg.get("poll_s", 5.0))) * 1000)  # slow loop: positions, exits, pre-warm
         self.fast_exit = "exit_poll_ms" in cfg  # the exit fast path (batched vault read, buy-meta sell amount, priority) is opt-in
@@ -1172,6 +1204,9 @@ class Executor:
             return self._skip(sig, err or "no_pool", pool=pool)
         if snap.quote_priced is None:
             return self._skip(sig, "no_v", pool=pool, pool_slot=snap.slot)  # null-V guard: never price on vault alone
+        why_k = entry_k_refusal(sig, snap.slot, self.max_entry_k)  # before the write-ahead: a refusal is not an attempt
+        if why_k:
+            return self._skip(sig, why_k, pool=pool, pool_slot=snap.slot)
         drift = drift_vs_seed(snap)  # logged only; never a reason to skip
         spend = self.limits.size_lamports
         q = entry_quote(snap, spend)
