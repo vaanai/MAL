@@ -1,0 +1,186 @@
+"""Tests for tools/exp016_constancy.py. Fixtures only; nothing here opens a real data path (no /data/mal read, no network)."""
+
+from __future__ import annotations
+
+import base64
+import contextlib
+import io
+import json
+import struct
+import tempfile
+import unittest
+import warnings
+from pathlib import Path
+from unittest import mock
+
+from solders.pubkey import Pubkey
+
+import tools.exp016_constancy as c
+import tools.exp016_screen as x
+from tools import pumpswap_decompose as dec
+from tools import pumpswap_virtual_history as pvh
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+SOL = 1_000_000_000
+POOL_A, POOL_B = str(Pubkey.new_unique()), str(Pubkey.new_unique())
+
+
+def event_bytes(pool: str, *, out=1_000_000_000, pq=10 * SOL, pb=80_000_000_000_000, net_extra=0) -> bytes:
+    vals = {n: 0 for n in dec.EVENT_FIELDS_U64}
+    lp = 2_000_000
+    vals.update(base_amount_out=out, pool_base_token_reserves=pb, pool_quote_token_reserves=pq, quote_amount_in_with_lp_fee=SOL // 10 + lp + net_extra, lp_fee=lp)
+    raw = dec.BUY_EVENT_DISC
+    for n in dec.EVENT_FIELDS_U64:
+        raw += struct.pack("<q" if n == "timestamp" else "<Q", vals[n])
+    for n in dec.EVENT_PUBKEYS:
+        raw += bytes(Pubkey.from_string(pool)) if n == "pool" else bytes(Pubkey.new_unique())
+    return raw + struct.pack("<QQ", 1, 2)
+
+
+def tx_for(pool: str, **kw) -> dict:
+    return {"meta": {"err": None, "logMessages": ["Program log: x", "Program data: " + base64.b64encode(event_bytes(pool, **kw)).decode()]}}
+
+
+def row(pool, sig, slot, side="buy", venue="pumpswap", **kw):
+    return {"venue": venue, "side": side, "pool": pool, "signature": sig, "slot": slot, **kw}
+
+
+class Fake:
+    def __init__(self, table):
+        self.table, self.seen = table, []
+
+    def __call__(self, sig):
+        self.seen.append(sig)
+        return self.table.get(sig)
+
+
+class CandidateTests(unittest.TestCase):
+    def test_earliest_buy_ignores_sells_other_pools_and_venues_and_ties_by_signature(self):
+        rows = [
+            row(POOL_A, "zzz", 105), row(POOL_A, "bbb", 100), row(POOL_A, "aaa", 100),
+            row(POOL_A, "sell0", 90, side="sell"), row(POOL_B, "other", 80), row(POOL_A, "bond", 70, venue="pump_bonding"),
+            row(POOL_A, "failed", 60, err={"x": 1}), {**row(POOL_A, "nosig", 50), "signature": None},
+            row(POOL_A, "bbb", 100),  # duplicate print
+        ]
+        got = c.collect_candidates(rows, [POOL_A, POOL_B], 5)
+        self.assertEqual(got[POOL_A], [(100, "aaa"), (100, "bbb"), (105, "zzz")])
+        self.assertEqual(got[POOL_B], [(80, "other")])
+        self.assertEqual(c.collect_candidates(rows, [POOL_A], 2)[POOL_A], [(100, "aaa"), (100, "bbb")])
+
+    def test_earliest_is_the_one_fetched(self):
+        rows = [row(POOL_A, "late", 200), row(POOL_A, "early", 100)]
+        f = Fake({"early": tx_for(POOL_A), "late": tx_for(POOL_A)})
+        out = c.build([POOL_A], rows, f, 5)
+        self.assertEqual((out[0]["sig"], out[0]["slot"], f.seen), ("early", 100, ["early"]))
+
+
+class ResolveTests(unittest.TestCase):
+    def test_value_matches_implied_virtual(self):
+        ev = dec.find_buy_event(tx_for(POOL_A)["meta"]["logMessages"])
+        r = c.resolve_pool(POOL_A, [(1, "s")], Fake({"s": tx_for(POOL_A)}), 5)
+        self.assertEqual(r["v_implied"], round(pvh.implied_virtual(ev)))
+        self.assertEqual(r["quote_reserve"], 10 * SOL)
+        self.assertIsInstance(r["v_implied"], int)
+
+    def test_fallback_to_next_print(self):
+        f = Fake({"b": tx_for(POOL_A)})  # "a" is missing
+        r = c.resolve_pool(POOL_A, [(1, "a"), (2, "b")], f, 5)
+        self.assertEqual((r["sig"], r["slot"], f.seen), ("b", 2, ["a", "b"]))
+
+    def test_null_with_reason_and_try_cap(self):
+        f = Fake({})
+        r = c.resolve_pool(POOL_A, [(i, f"s{i}") for i in range(9)], f, 3)
+        self.assertIsNone(r["v_implied"])
+        self.assertEqual((r["reason"], len(f.seen)), ("tx_missing", 3))
+        self.assertEqual(c.resolve_pool(POOL_A, [], f, 3)["reason"], "no_buy_print_on_tape")
+
+    def test_event_pool_mismatch_is_not_used(self):
+        r = c.resolve_pool(POOL_A, [(1, "s")], Fake({"s": tx_for(POOL_B)}), 5)
+        self.assertEqual((r["v_implied"], r["reason"]), (None, "event_pool_mismatch"))
+
+    def test_zero_base_out_failed_tx_and_no_event(self):
+        self.assertEqual(c.decode_sample(tx_for(POOL_A, out=0), POOL_A)[1], "event_base_out_zero")
+        bad = tx_for(POOL_A)
+        bad["meta"]["err"] = {"InstructionError": [0, "x"]}
+        self.assertEqual(c.decode_sample(bad, POOL_A)[1], "tx_failed")
+        self.assertEqual(c.decode_sample({"meta": {"err": None, "logMessages": []}}, POOL_A)[1], "event_missing")
+
+
+class OutputTests(unittest.TestCase):
+    def test_output_feeds_check_v_constancy(self):
+        pools = [str(Pubkey.new_unique()) for _ in range(210)]
+        rows = [row(p, f"sig-{p}", 10) for p in pools]
+        out = c.build(pools[:200] + [pools[200]], rows, Fake({f"sig-{p}": tx_for(p) for p in pools[:200]}), 5)
+        self.assertEqual(sum(1 for r in out if r["v_implied"] is None), 1)
+        self.assertEqual(set(out[0]), {"pool", "v_implied", "quote_reserve", "sig", "slot", "reason"})
+        v = round(pvh.implied_virtual(dec.find_buy_event(tx_for(pools[0])["meta"]["logMessages"])))
+        rec = x.check_v_constancy([r for r in out if r["v_implied"] is not None], {p: v for p in pools})
+        self.assertEqual((rec["n_checked"], rec["n_disagree"]), (200, 0))
+        # null rows carry no v_implied, so they are filtered here as the screen only counts readable ones
+        self.assertEqual(rec["n_sample"], 200)
+
+
+class MainTests(unittest.TestCase):
+    def run_main(self, tmp, view_dir, fetch, extra=()):
+        sample = Path(tmp) / "sample.json"
+        sample.write_text(json.dumps([POOL_A, POOL_B]))
+        out = Path(tmp) / "out.json"
+        buf, err = io.StringIO(), io.StringIO()
+        g2 = {"roots": {}, "pool": []}
+        rows = [row(POOL_A, "s1", 5), row(POOL_B, "s2", 6)]
+        with mock.patch.object(c, "guard_views", return_value=g2) if view_dir is None else contextlib.nullcontext(), \
+                mock.patch.object(c, "iter_view_rows", return_value=rows), contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = c.main(["--sample", str(sample), "--p2-view-dir", str(view_dir or "/x/view"), "--out", str(out), *extra], fetch=fetch)
+        return rc, buf.getvalue(), err.getvalue(), out
+
+    def test_writes_out_meta_and_prints_counts_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Fake({"s1": tx_for(POOL_A)})
+            f.calls = 0
+            rc, so, se, out = self.run_main(tmp, None, f)
+            self.assertEqual(rc, 0)
+            rows = json.loads(out.read_text())
+            self.assertEqual([r["pool"] for r in rows], sorted([POOL_A, POOL_B]))
+            meta = json.loads(Path(str(out) + ".meta.json").read_text())
+            import hashlib
+            self.assertEqual(meta["out_sha256"], hashlib.sha256(out.read_bytes()).hexdigest())
+            self.assertEqual((meta["n"], meta["n_null"]), (2, 1))
+            self.assertIn("sample_sha256", meta)
+            self.assertEqual(so.strip(), "pools=2 readable=1 null=1 rpc_calls=0")
+            for p in (POOL_A, POOL_B):
+                self.assertNotIn(p, so + se)
+
+    def test_url_never_printed(self):
+        secret = "SECRETKEY123"
+        url = f"https://mainnet.helius-rpc.com/?api-key={secret}"
+        h = c.HttpFetch(url, 1000.0)
+        with mock.patch("urllib.request.urlopen", side_effect=OSError(f"boom {url}")):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()) as so:
+                self.assertIsNone(h("sig"))
+        self.assertNotIn(secret, err.getvalue() + so.getvalue())
+        self.assertEqual(h.calls, 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(c.sim, "load_rpc_url", return_value=url):
+                _rc, so2, se2, _o = self.run_main(tmp, None, Fake({}))
+            self.assertNotIn(secret, so2 + se2)
+
+    def test_reserved_view_dir_refused_before_any_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Fake({})
+            with mock.patch.object(c, "iter_view_rows") as it:
+                for bad in ("/data/mal/explore-0814/fresh-0802/view", "/data/mal/raw/view"):
+                    sample = Path(tmp) / "s.json"
+                    sample.write_text("[]")
+                    err = io.StringIO()
+                    with contextlib.redirect_stderr(err):
+                        rc = c.main(["--sample", str(sample), "--p2-view-dir", bad, "--out", str(Path(tmp) / "o.json")], fetch=f)
+                    self.assertEqual(rc, 2, bad)
+                    self.assertIn("refusing", err.getvalue())
+                it.assert_not_called()
+            self.assertEqual(f.seen, [])
+            self.assertFalse((Path(tmp) / "o.json").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
