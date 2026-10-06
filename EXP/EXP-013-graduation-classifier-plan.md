@@ -159,3 +159,17 @@ Written by the manager before the screen code (PR3) exists. Revised after a `qua
 - **Scope.** No EXP-013 model, LODO or screen output existed when this was found. The single screen run (Amendment 5 §7) builds its table with the fixed code. Debug build #88 used the old code; its table is never opened and is deleted before the run. No design item or bar changes.
 
 **Amendment 6, addendum (2026-10-03, before the run): output order.** In the single run, `screen.json` and `screen.md` are now written before the result tries line and before result.v1 (#271). If result.v1 fails its schema check, the run writes `result_error.txt`, keeps `screen.json` as the record, and still spends the try. No computed value, item or bar changes: the fixture output is byte-identical apart from a hash of temporary paths.
+
+## Amendment 7 (2026-10-06, before any real-data model run and before the EXP-012 backcheck read): V pricing; August bars no longer on unread data
+
+- **V pricing.** PumpSwap pools price on quote vault + V, the virtual quote reserve ([pumpswap-virtual note](../ARTIFACTS/lab/exp012-virtual-rescore-r2-2026-10-04.md)). Job #197 shows that V = 17.5845 SOL was already in effect from 2026-08-14. This plan's PumpSwap legs are the sell at migration + 4 slots, the reference sell at slot + 1, and every PumpSwap mark before the exit. In the screen they are priced through `tools.pumpswap_virtual_adapter` with `mcap_mode="v"`.
+  - The map is `/data/mal/pumpswap-virtual/pool_v_0814.json`, sha256 `__VMAP_SHA__`. It is a superset of `pool_v.json`, extended to the August pools by job #196, with existing entries unchanged.
+  - The screen refuses before any outcome is computed if more than 1% of the triggered mints' PumpSwap prints have no V. A pool whose account fetch returned null counts as missing, never as V = 0.
+  - The run records the adapter counts.
+  - Bonding-curve prints are unchanged.
+- **Code.** The adapter goes in as its own PR before the single screen run, with a test that it is active inside the spawned table workers. Nothing else in the design changes.
+- **Disclosure: August outcomes read before this screen.** The EXP-012 backcheck ([EXP-012-backcheck-0814](EXP-012-backcheck-0814.md), PR #342) reads migrate-entry outcomes on the `explore-0814` days once. Its entries are 4, 6 and 8 slots after the first PumpSwap print, with 30-minute holds, on the frozen EXP-012 set. That run will happen before this screen.
+  - Items 4 (getBlock-only days) and its August-only restriction are therefore **no longer on unread data**. That is in addition to the `w1` disclosure in Amendment 5.
+  - No bar is relaxed, and every item still gates.
+  - `screen.md` must carry this disclosure in its banner.
+- **Tries.** Unchanged: at most 3, and none has been spent.

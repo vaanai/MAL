@@ -166,3 +166,16 @@ The screen's `screen.json` also reports:
 - Jaccard variants (B restricted to eligible d = 4 mints; unrestricted B; overlap / min).
 
 These are report only.
+
+## Amendment 4 (2026-10-06, before any real-data run and before the EXP-012 backcheck read): V pricing; August bars no longer on unread data
+
+- **V pricing.** Every leg of this plan is on PumpSwap, so every fill, mark and exit is mispriced unless V is added. V is the virtual quote reserve, 17.5845 SOL, already in effect from 2026-08-14 per job #197.
+  - The screen prices every PumpSwap print through `tools.pumpswap_virtual_adapter` with `mcap_mode="v"`.
+  - The map is `/data/mal/pumpswap-virtual/pool_v_0814.json`, sha256 `__VMAP_SHA__`. It is a superset of `pool_v.json`, extended to the August pools by job #196.
+  - The screen refuses before any outcome is computed if more than 1% of the relevant PumpSwap prints have no V. A null account fetch counts as missing.
+  - The run records the adapter counts.
+- **Code.** #269 is not merged. The adapter is added there, or in a follow-up PR before the single run, with a test that it is active in the spawned workers. Nothing else in the design changes.
+- **Disclosure: August outcomes read before this screen.** The EXP-012 backcheck ([EXP-012-backcheck-0814](EXP-012-backcheck-0814.md), PR #342) reads migrate-entry outcomes on the `explore-0814` days once: 30-minute holds from 4–8 slots after the first PumpSwap print. They overlap this plan's mig+15 entry window on shared mints.
+  - Bars 4a and 4b are therefore **no longer on unread data**. That is in addition to the `w1` disclosure in item 4b.
+  - No bar is relaxed, and the precondition and every item still gate.
+  - `screen.md` must carry this disclosure in its banner.
