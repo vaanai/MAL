@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Proposed 2026-10-06, rev 4.** Quant-proof asked for 9 edits on rev 1, 5 on rev 2 (E1–E5) and 2 on rev 3 (E6–E7); all are applied here. It needs the owner's yes, because §6 decides what may replace the live strategy. |
+| **Status** | **Decided 2026-10-06** (owner, in the manager session): approved as written, and the owner **delegates §6(f) to the manager**. A challenger that meets every condition in §6(a)–(e) and §7 replaces the champion without waiting for the owner. The owner's own reviewers check the work in parallel. Rev 4 passed quant-proof as sound. |
 | **Decider** | Vaan (owner) for §6. The Claude manager runs the rest. |
 | **Builds on** | DEC-014, DEC-016 (Am.1–4), DEC-017, DEC-019, DEC-020 (Option A). |
 | **Amends** | **DEC-016 Am.1 §5** and **DEC-018 §1**, only in this respect: a challenger that clears §6 may replace the live strategy, after the same pre-live checks the champion had to pass (§7). |
@@ -63,7 +63,7 @@ This uses per-trade SD about 0.02 SOL at 0.05 SOL size, n = 100, a normal approx
    - (c) its own book, after the §4 residual subtraction, has its mean > 0 test at or below its Holm threshold and clears the full promotion gate;
    - (d) the drift monitor is clean;
    - (e) quant-proof agrees;
-   - (f) the owner says yes.
+   - (f) ~~the owner says yes~~ **delegated to the manager (owner, 2026-10-06).** Before any switch, the manager posts a notebook decision and a Console entry with every §6 number. The re-pin is still Helm's: full sha, manifest and steps, at 0 open positions.
 7. **Serial gatekeeping and pre-live checks.**
    - The switch family opens only if EXP-012's FINAL read passes on both book (A) and book (B) (DEC-016 Am.4) and quant-proof agrees.
    - Otherwise there is no gated champion, and the challengers are read as a **primary promotion family** (Holm at k, full gate, both fail models). A pass then leads to the normal DEC-018 path, not a "switch".
@@ -73,7 +73,11 @@ This uses per-trade SD about 0.02 SOL at 0.05 SOL size, n = 100, a normal approx
 8. **Cumulative error.** This DEC covers at most **2** walks. Each walk's family, whichever opens (switch or primary promotion), is tested at α = 0.025, Bonferroni across walks, so the overall false-switch-or-promotion rate is ≤ 0.05. A third walk needs a new DEC.
 9. **Not live evidence.** A paper win is not live evidence. Size stays governed by DEC-020.
 
-## Open for the owner
+## Owner decision (2026-10-06)
+
+§6 and §8 are approved as written, and §6(f) is delegated to the manager. Size and funding stay governed by DEC-020 and the owner: a challenger swap never changes size or wallet.
+
+## Open for the owner (historical)
 
 - Approve §6 (the switch rule) and §8 (two walks at α = 0.025 each), or change them.
 - The first candidates are EXP-015 (pooled retrain, PR #352) and EXP-013 (curve entry), but only if their screens and confirmation reads pass.

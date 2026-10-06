@@ -150,4 +150,6 @@ At 0.25 SOL the fee drag falls to about 0.4%. If the exploration edge holds out-
 
 7. **Host lockdown before the step.** On 2026-10-06 Helm found that the Claude account on `mal-fast-0` has passwordless root, so it could read the probe key. Claude has never read it, and key reads and code changes raise alerts. Helm's plan, which the manager agrees with, is to leave this alone during the 0.05 probe and **lock it down before any bigger wallet**. That makes the lockdown a precondition of the 0.25 step: Helm confirms it is done before the step's wallet is funded.
 
+8. **Stops added by the manager (owner-delegated, 2026-10-06; DEC-018 Amendment 1):** after 10 closed trades, a divergence stop at entry vs quote < −200 bps mean or live−sim residual < −0.0075 SOL per trade; after 10 attempts, a landing-fail stop at >30% failed. Both halt new buys only. They need new executor code, reviewed and security-reviewed, in the same re-pin as the step limits.
+
 Nothing in this section changes the gate, DEC-016, or DEC-018 §1.

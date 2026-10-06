@@ -56,3 +56,34 @@ Items 1–4 are reviewed (`reviewer`, with a security review for anything that l
 ## 5. Honest expectations
 
 The replay read (n = 451) showed +0.0205 SOL/trade under the pressure model. The forward read decides whether that holds. The trial size and the 3-concurrent cap may lower trade count and per-trade net (the re-score measures both). Real landing failures are measured for the first time live. The trial exists to find out whether paper matches reality cheaply, not to make the owner's target in week one.
+
+## Amendment 1 (2026-10-06): owner answers; size ladder; stops set by the manager
+
+**Owner (2026-10-06, manager session):** "lets step up through 0.25 first. Incremental as we improve the system. I don't know about the stop levels, I'll let you decide on that."
+
+**§3 decisions, as they now stand:**
+1. **Keys on the host:** in place for one dedicated wallet on `mal-fast-0`, under the DEC-019 custody Helm set up. The key is root-only, reaches the executor only through systemd `LoadCredential`, and is never read by Claude. Helm's root lockdown comes before any bigger wallet (DEC-020 §7 item 7).
+2. **Custody:** as DEC-019 (Helm-generated, root-owned 0400, never in git or MiScusi).
+3. **Funding:** the owner's, per rung. There is no new funding before the 10-16 read (DEC-020 Option A).
+4. **Send path:** as the probe uses it: Helius `sendTransaction`, 500,000 lamports priority per side, no tip.
+5. **Stops:** delegated to the manager. They are set per rung, below.
+
+**Size ladder.** §2's 0.5 SOL per entry is the **third** rung, not the first:
+- **Rung 1:** the 0.05 SOL execution probe (DEC-019), live until 2026-10-12T00Z at the latest.
+- **Rung 2:** 0.25 SOL per entry (DEC-020), after EXP-012's FINAL forward read PASSes and quant-proof agrees.
+- **Rung 3:** 0.5 SOL per entry (§2), only after rung 2 has run its course without hitting a stop, and live−sim calibration at 0.25 is within the DEC-021 drift limit. Each rung's size and funding is a separate owner yes.
+
+**Stops, set by the manager per the owner's delegation, all enforced in executor code:**
+- **Rung 2 (0.25 SOL):**
+  - **Already in DEC-020 §3:** loss cap 0.35 SOL realized on the step's own counter; 40 attempts; max 2 open; Helm watchdog alert at 0.25 SOL.
+  - **No daily cap at this rung.** One stop costs about 0.075–0.10 SOL, so the 0.35 total cap almost always fires first.
+  - **Added, new executor code before 10-16 (review plus security review):**
+    - **Divergence stop:** after 10 closed step trades, halt new buys if the mean realized entry vs quote is worse than −200 bps, or the mean live−sim P&L residual is below −0.0075 SOL per trade (3% of 0.25).
+    - **Landing-fail stop:** after 10 attempts, halt new buys if more than 30% failed to land.
+    - Exits continue under either halt.
+- **Rung 3 (0.5 SOL):** §2's proposed stops: daily 0.75, total 1.5, plus the landing-fail and divergence stops at 30. They are re-checked against rung 2's measured costs before that rung is proposed.
+
+**Why the manager chose these levels.**
+- The total caps bound the money at risk.
+- The two new stops cover the risk the caps don't: live trading quietly running worse than the simulator. Only real fills at size can show it.
+- The 10-trade trigger is early enough to act within the 40-attempt rung, and late enough not to fire on a single bad fill.
