@@ -551,6 +551,7 @@ class LiveExecutor(pe.Executor):
         del self.state.pending[mint]
         row = dict(landed=False, fail_class="expired", **self._timing(p), pool=p.get("pool"))
         if p["kind"] == "buy":
+            pe.dec020_note_buy(self.limits, self.state, False)
             self._log("buy", mint, spend_lamports=p["spend"], expected_tokens=p["q_tokens"], **row)
         else:
             pos = self.state.open[mint]
@@ -623,6 +624,7 @@ class LiveExecutor(pe.Executor):
             cls = classify_failure(m["err"], m["logs"], self.slip_codes)
             del self.state.pending[mint]
             self.state.realized_lamports += m["sol_delta"]  # the fee actually paid
+            pe.dec020_note_buy(self.limits, self.state, False)
             self._log("buy", mint, landed=False, fail_class=cls, err=m["err"], cost_lamports=-m["sol_delta"], **row)
             self.save()
             return
@@ -641,6 +643,7 @@ class LiveExecutor(pe.Executor):
             price_vs_quote_bps=bps(p["q_tokens"], tokens) if tokens else None,  # cost per token vs quoted, + = we paid more
         )
         del self.state.pending[mint]
+        pe.dec020_note_buy(self.limits, self.state, True)
         mark, mark_source = buy_tx_mark(p, tokens, m.get("vault_post"))
         mark_shift = bps(mark, p["q_mark"])
         row.update(mark_send=p["q_mark"], mark=mark, mark_source=mark_source, mark_shift_bps=mark_shift)
@@ -795,6 +798,8 @@ class LiveExecutor(pe.Executor):
             ret_exit_vs_entry_actual=bps(proceeds, pos["spend"]), **row,
         )
         self.state.realized_lamports += pnl + pos.get("extra_cost", 0)  # failed-sell fees were booked as they landed
+        pe.dec020_note_close(self.limits, self.state, bps(pos["tokens"], pos["q_tokens"]) if pos.get("q_tokens") else None,
+                             bps(proceeds, p["q_out"]))
         del self.state.open[mint]
         self.save()
 

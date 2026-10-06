@@ -1632,6 +1632,192 @@ class Dec020LiveTests(unittest.TestCase):
         self.assertEqual(pe.soft_stops(ex.limits, ex.state, 1), [])
 
 
+class Dec020StopsTests(unittest.TestCase):
+    """DEC-018 Amendment 1 / DEC-020 7 item 8: divergence and landing-fail stops, dec020 only. They halt NEW buys."""
+
+    END = {"limits_profile": "dec020", "end_ms": 4_000_000_000_000}
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name).resolve()
+        for target, val in ((pe, "LIVE_DIR"), (pe, "DEC020_END_MS")):
+            p = mock.patch.object(target, val, self.tmp if val == "LIVE_DIR" else 4_000_000_000_000)
+            p.start()
+            self.addCleanup(p.stop)
+        pe.State(mode="live").save(self.tmp / "state-live.json")  # the dec019 state a dec020 start needs
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def lim(self, **stops):
+        return pe.Limits.from_config({**self.END, **({"dec020_stops": stops} if stops else {})})
+
+    def st(self, **d):
+        return pe.State(mode="live", dec020=d)
+
+    # -- pure triggers and the not-before-10 rule
+    def test_constants(self):
+        self.assertEqual(pe.DEC020_STOPS, {"min_closed": 10, "entry_bps": -200.0, "exit_bps": -200.0, "min_attempts": 10, "max_fail_frac": 0.30})
+        self.assertEqual(dict(self.lim().stops), pe.DEC020_STOPS)
+
+    def test_entry_divergence_trips_at_10_closed_not_before(self):
+        lim = self.lim()
+        self.assertEqual(pe.soft_stops(lim, self.st(closed=9, entry_n=9, entry_sum=-9 * 500.0), T0), [])
+        self.assertEqual(pe.soft_stops(lim, self.st(closed=10, entry_n=10, entry_sum=-10 * 500.0), T0), ["divergence_entry"])
+        self.assertEqual(pe.soft_stops(lim, self.st(closed=10, entry_n=10, entry_sum=-10 * 200.0), T0), [])  # exactly -200 is not below
+        self.assertEqual(pe.soft_stops(lim, self.st(closed=10, entry_n=10, entry_sum=-10 * 199.0), T0), [])
+        self.assertEqual(pe.soft_stops(lim, self.st(closed=10, entry_n=10, entry_sum=10 * 500.0), T0), [])  # better than quote never trips
+
+    def test_exit_divergence_trips_at_10_closed_not_before(self):
+        lim = self.lim()
+        self.assertEqual(pe.soft_stops(lim, self.st(closed=9, exit_n=9, exit_sum=-9 * 500.0), T0), [])
+        self.assertEqual(pe.soft_stops(lim, self.st(closed=10, exit_n=10, exit_sum=-10 * 201.0), T0), ["divergence_exit"])
+        self.assertEqual(pe.soft_stops(lim, self.st(closed=10, exit_n=10, exit_sum=-10 * 200.0), T0), [])
+
+    def test_landing_fail_trips_above_30_pct_after_10_not_before(self):
+        lim = self.lim()
+        self.assertEqual(pe.soft_stops(lim, self.st(buy_resolved=9, buy_failed=9), T0), [])
+        self.assertEqual(pe.soft_stops(lim, self.st(buy_resolved=10, buy_failed=3), T0), [])  # exactly 30% is not more than 30%
+        self.assertEqual(pe.soft_stops(lim, self.st(buy_resolved=10, buy_failed=4), T0), ["landing_fail"])
+        self.assertEqual(pe.soft_stops(lim, self.st(buy_resolved=20, buy_failed=6), T0), [])
+        self.assertEqual(pe.soft_stops(lim, self.st(buy_resolved=20, buy_failed=7), T0), ["landing_fail"])
+
+    def test_check_buy_halts_new_buys_with_the_reason(self):
+        lim, st = self.lim(), self.st(buy_resolved=10, buy_failed=10)
+        self.assertEqual(pe.check_buy(lim, st, T0, False, "live"), "landing_fail")
+
+    # -- clamps: stricter only
+    def test_config_can_be_stricter_never_looser(self):
+        s = dict(self.lim(min_closed=5, entry_bps=-100, exit_bps=-50, min_attempts=3, max_fail_frac=0.1).stops)
+        self.assertEqual(s, {"min_closed": 5, "entry_bps": -100.0, "exit_bps": -50.0, "min_attempts": 3, "max_fail_frac": 0.1})
+        s = dict(self.lim(min_closed=50, entry_bps=-900, exit_bps=-900, min_attempts=50, max_fail_frac=0.9).stops)
+        self.assertEqual(s, pe.DEC020_STOPS)
+        s = dict(self.lim(min_closed=0, entry_bps=50, exit_bps=50, min_attempts=-4, max_fail_frac=-1).stops)
+        self.assertEqual(s, {"min_closed": 1, "entry_bps": 0.0, "exit_bps": 0.0, "min_attempts": 1, "max_fail_frac": 0.0})
+
+    def test_bad_stop_config_refuses(self):
+        for bad in ({"nope": 1}, {"min_closed": True}, {"entry_bps": float("nan")}, {"exit_bps": "x"}, {"max_fail_frac": float("inf")}):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                self.lim(**bad)
+        with self.assertRaises(ValueError):
+            pe.Limits.from_config({**self.END, "dec020_stops": [1]})
+
+    # -- live flow
+    def _first_closed(self, ex, rpc, clock, proceeds):
+        open_position(ex, rpc, clock)
+        clock.t += 31 * 60_000
+        ex.poll_positions()
+        land_sell(ex, rpc, proceeds=proceeds)
+
+    def test_closed_trade_records_the_fill_row_bps_and_trips_and_persists(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END, dec020_stops={"min_closed": 1})
+        self._first_closed(ex, rpc, clock, proceeds=1_000_000)
+        row = [r for r in fills(conf) if r["kind"] == "sell"][-1]
+        d = ex.state.dec020
+        self.assertEqual((d["closed"], d["exit_sum"]), (1, row["exit_vs_quote_bps"]))
+        self.assertLess(row["exit_vs_quote_bps"], -200)
+        self.assertEqual(d["tripped"], ["divergence_exit"])
+        # persisted, and survives a restart
+        self.assertEqual(json.loads((self.tmp / "state-live-dec020.json").read_text())["dec020"]["tripped"], ["divergence_exit"])
+        ex2 = pl.LiveExecutor(rpc, conf, kp, now_ms=clock)
+        self.assertEqual(ex2.state.dec020["tripped"], ["divergence_exit"])
+        ex2.state.bought.clear()
+        ex2.handle_signal(mk_sig(ex2, t=clock()))
+        self.assertNotIn(MINT, ex2.state.pending)
+        self.assertEqual(fills(conf)[-1]["reason"], "limit:divergence_exit")
+
+    def test_entry_bps_is_tokens_vs_quote_negative_is_worse(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END, dec020_stops={"min_closed": 1})
+        signal_buy(ex, clock)
+        q = ex.state.pending[MINT]["q_tokens"]
+        land_buy(ex, rpc, tok=q * 90 // 100)  # 10% fewer tokens than quoted
+        clock.t += 31 * 60_000
+        ex.poll_positions()
+        land_sell(ex, rpc, proceeds=ex.state.pending[MINT]["q_out"])  # exactly the quote
+        buy = [r for r in fills(conf) if r["kind"] == "buy"][-1]
+        self.assertLess(buy["entry_vs_quote_bps"], -900)
+        self.assertEqual(ex.state.dec020["entry_sum"], buy["entry_vs_quote_bps"])
+        self.assertEqual(ex.state.dec020["tripped"], ["divergence_entry"])
+
+    def test_failed_buy_and_expired_buy_count_and_trip_landing_fail(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END, dec020_stops={"min_attempts": 1})
+        p = signal_buy(ex, clock)
+        err = {"InstructionError": [3, {"Custom": 6004}]}
+        rpc.statuses[p["signature"]] = {"slot": 2_000, "confirmationStatus": "confirmed", "err": err}
+        rpc.txs[p["signature"]] = meta_result(ex, MINT, delta=-505_000, fee=505_000, err=err)
+        ex.advance_pending()
+        self.assertEqual((ex.state.dec020["buy_resolved"], ex.state.dec020["buy_failed"]), (1, 1))
+        self.assertEqual(ex.state.dec020["tripped"], ["landing_fail"])
+
+    def test_expired_buy_counts_as_failed(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END, dec020_stops={"min_attempts": 1})
+        p = signal_buy(ex, clock)
+        ex._resolve_expired(MINT, p)
+        self.assertEqual((ex.state.dec020["buy_resolved"], ex.state.dec020["buy_failed"]), (1, 1))
+        self.assertEqual(ex.state.dec020["tripped"], ["landing_fail"])
+
+    def test_landed_buy_counts_as_resolved_not_failed(self):
+        ex, rpc, clock, *_ = make_live(self.tmp, **self.END)
+        open_position(ex, rpc, clock)
+        self.assertEqual((ex.state.dec020["buy_resolved"], ex.state.dec020["buy_failed"]), (1, 0))
+        self.assertEqual(ex.state.dec020.get("tripped", []), [])
+
+    def test_exits_and_inflight_sells_still_run_under_a_tripped_stop(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END)
+        open_position(ex, rpc, clock)
+        ex.state.dec020["tripped"] = ["landing_fail", "divergence_entry", "divergence_exit"]
+        clock.t += 31 * 60_000
+        ex.poll_positions()
+        self.assertEqual(ex.state.pending[MINT]["kind"], "sell")  # the exit starts under the stops
+        land_sell(ex, rpc, proceeds=49_000_000)  # and lands
+        self.assertNotIn(MINT, ex.state.open)
+        self.assertIsNone(pe.check_sell(False))
+        self.assertEqual(pe.check_buy(ex.limits, ex.state, clock(), False, "live"), "landing_fail")  # new buys stay halted
+
+    def test_status_shows_the_stops(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END, dec020_stops={"min_closed": 1})
+        self._first_closed(ex, rpc, clock, proceeds=1_000_000)
+        out = pe.status_report(conf)
+        self.assertIn("dec020_stops closed=1", out)
+        self.assertIn("tripped=['divergence_exit']", out)
+        self.assertIn("would_halt_now=['divergence_exit']", out)
+
+    # -- dec019 is untouched
+    def test_dec019_limits_state_status_and_rows_unchanged(self):
+        lim = pe.Limits()
+        self.assertIsNone(lim.stops)
+        self.assertEqual(repr(lim), "Limits(max_attempts=90, max_open=3, loss_cap_lamports=350000000, max_days=7, size_lamports=50000000, "
+                                    "priority_lamports=500000, end_ms=1791763200000, stop_file='/var/lib/mal-live/STOP', "
+                                    "halt_file='/var/lib/mal-live/HALT', profile='dec019')")
+        self.assertIsNone(pe.Limits.from_config({}).stops)
+        self.assertIsNone(pe.Limits.from_config({"dec020_stops": {"min_closed": 1}}).stops)  # ignored for dec019
+        with self.assertRaises(ValueError):
+            pe.Limits(stops=(("min_closed", 1),))
+        # bad stats under dec019 limits never halt and are never recorded
+        bad = self.st(closed=99, entry_n=99, entry_sum=-1e6, exit_n=99, exit_sum=-1e6, buy_resolved=99, buy_failed=99)
+        self.assertEqual(pe.soft_stops(lim, bad, T0), [])
+        st = pe.State(mode="live")
+        pe.dec020_note_buy(lim, st, False)
+        pe.dec020_note_close(lim, st, -9999.0, -9999.0)
+        self.assertEqual(st.dec020, {})
+        # the dec019 state file has exactly the old keys
+        p = self.tmp / "s19.json"
+        st.save(p)
+        self.assertEqual(set(json.loads(p.read_text())), {"attempts", "first_attempt_ms", "realized_lamports", "open", "offset", "inode",
+                                                           "started", "mode", "would_halt", "pending", "bought", "max_seen_ms"})
+        # a full dec019 buy/sell flow records nothing and its status has no dec020 line
+        d = Path(tempfile.mkdtemp())
+        ex, rpc, clock, kp, conf = make_live(d)
+        open_position(ex, rpc, clock)
+        clock.t += 31 * 60_000
+        ex.poll_positions()
+        land_sell(ex, rpc, proceeds=1_000_000)
+        self.assertEqual(ex.state.dec020, {})
+        self.assertNotIn("dec020", (d / "state-live.json").read_text())
+        self.assertNotIn("dec020_stops", pe.status_report(conf))
+        self.assertTrue(all("dec020" not in k for r in fills(conf) for k in r))
+
+
 class SpendValidatorTests(unittest.TestCase):
     """L8: the pre-sign whitelist refuses a buy that moves more SOL than limits.size_lamports (margin 0, derived in
     probe_live.SPEND_MARGIN_LAMPORTS: the wrap transfer is exactly the spend in the only shape the executor builds)."""
