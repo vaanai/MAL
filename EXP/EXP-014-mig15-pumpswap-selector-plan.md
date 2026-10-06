@@ -200,12 +200,12 @@ EXP-013 is closed (it failed), so the "do not merge before the EXP-013 screen" c
 
 ### What does not change
 
-The trigger (mig + 15 min on the block clock), the 27 features (the list is closed), the pool restriction, the entry at slot S_T + d, the tp50 / sl30 / 30 minute exit, the two fail models, the model recipe (S2 `lgb_medium`, seed 1), the p90 threshold of the pooled OOF scores, `excluded_by_time` and the 4b/6 disclosures above. d = 4 is primary and d = 8 is item 5. d = 1 (reference only) is dropped from the screen.
+The trigger (mig + 15 min on the block clock), the 27 features (the list is closed), the pool restriction, the entry at slot S_T + d, the tp50 / sl30 thresholds and the 30 minute cap (the exit's sell offset does change, see below), the two fail models, the model recipe (S2 `lgb_medium`, seed 1), the p90 threshold of the pooled OOF scores, `excluded_by_time` and the 4b/6 disclosures above. d = 4 is primary and d = 8 is item 5. d = 1 (reference only) is dropped from the screen.
 
 ### Deciding costs (replace item 5's 0.5 SOL / 500,000 and the exit offset)
 
 - **V pricing.** Every PumpSwap print is priced through `tools.pumpswap_virtual_adapter` with `mcap_mode="v"` and the map `/data/mal/pumpswap-virtual/pool_v_0909.json`, sha256 `70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e` (the pin `e15.VMAP_0909_SHA256`; it supersedes `pool_v_0814.json` of Amendment 4). The sha is checked in the parent and again in every worker. The adapter wraps the trigger module's `print_from_trade_row`, the binding the m15 worker uses, and a test asserts it is active in the worker and restored after.
-- **Exit lag 2.** A tp / sl sell lands at the start of slot (trigger slot + 2); a cap sell at the start of slot S_cap + 2. The entry offset d stays 4 (and 8 for item 5).
+- **Exit lag 2.** A tp / sl sell lands at the start of slot (trigger slot + 2); a cap sell at the start of slot S_cap + 2. The entry offset d stays 4 (and 8 for item 5). **This is a post-read loosening of the pinned exit**: the plan's item 6 sells at trigger + d (4, or 8 for item 5), and lag 2 is shorter. Lag 2 is the lab's realistic standard (EXP-015), but it is optimistic next to the measured live exit leak (5 s exit poll plus a 1 s sell build). A report-only leg with the pinned lag = d is scored in the same pass and printed next to it.
 - **Haircut.** The EXP-012 backcheck haircut: net0 is reduced by P x 0.0042038 on a filled trade (sell shortfall 16 bps, entry gap 26.08 bps), through `e15.cell_nets`. A MISS pays one fee.
 - **Fee.** 505,000 lamports per side, both fail models (flat 15 %, and the pressure curve at scale 1). The table's own `flat` / `press` (500,000, no haircut) are replaced by these before the label `1{press > 0}` is formed.
 - **Stake.** **0.05 SOL decides**, to match the EXP-015 cache bars. 0.5 SOL is simulated in the same pass on the same trigger and the same selected mints and is **reported, not gating** (the model trains and selects on the 0.05 SOL label).
@@ -220,7 +220,8 @@ All under **both** fail models, at 0.05 SOL, on the nested-LODO selected rows, w
 
 1. **Bar 1.** All 27 dates: n >= 100, >= 5 dates with trades, a majority of the 27 dates positive (a date with no trade is not positive), CI lower bound > 0, ex-top-3 > 0.
 2. **Bar 2.** The same gate on the 13 September dates (P3 + P4) alone.
-3. **Bar 3.** Paired against entering every eligible mig+15 trigger at the same costs: x = (selected - 1) x net per trigger; mean > 0, date-cluster CI lower bound > 0, ex-top-3 of x > 0. (EXP-015's bar 3 was paired against the frozen EXP-012 book; that book enters at migration, a different trigger, so the baseline here is the unselected mig+15 book the plan says loses. EXP-012 overlap is item 6.)
+2b. **Item 4b (restored as gating; Amendment 4 said no bar is relaxed).** The gate on the 14 August dates (P2) alone, on the nested-LODO selected rows: mean > 0, CI lower bound > 0 under both resamplers, ex-top-3 > 0, more than 7 of the 14 dates positive, both fail models. n >= 100 is waived, as in the original 4b.
+3. **Bar 3.** Paired against entering every eligible mig+15 trigger at the same costs: x = (selected - 1) x net per trigger; mean > 0, date-cluster CI lower bound > 0, ex-top-3 of x > 0. It tests that **the unselected book loses**, not that the selector has skill. (EXP-015's bar 3 was paired against the frozen EXP-012 book; that book enters at migration, a different trigger, so the baseline here is the unselected mig+15 book the plan says loses. EXP-012 overlap is item 6.)
 4. **Bar 4.** Concentration: no date above 20 % of the positive-date total, and total excluding the best date > 0.
 5. **Bar 5.** P2 + P4 only: mean > 0.
 6. **Bar 6.** Transfer: fit on the September dates only, threshold = p90 of the pooled inner LODO scores of those dates, score the August (P2) rows: mean > 0 and more than half of the 14 August dates positive.
@@ -228,11 +229,11 @@ All under **both** fail models, at 0.05 SOL, on the nested-LODO selected rows, w
 8. **Item 6 (adapted).** EXP-012's 9 OOF days are P1, which is not read, so the overlap is taken against the frozen EXP-012 selection on the 27 dates (the cached EXP-015 rows, features only; net fields are dropped at parse time). A = EXP-014 selected mints; B = the frozen selection restricted to mints with an EXP-014 d = 4 row. (a) J(A, B) <= 0.5, an empty union fails; (b) the selected trades on mints not in B have a pooled mean > 0 under both fail models. Overlap over min size and the correlations are not computed.
 9. **Holm, k = 1.** The one-sided date-cluster bootstrap p of mean > 0 (max over the two legs; 10,000 draws, seed 1) must be <= 0.05. This is the screen's own test. Amendment 6's 0.0125 applies to the later confirmation read, not here.
 
-PASS requires every one of bars 1-6, item 5, item 6 and Holm. Anything else is a FAIL and closes the family. The 0.5 SOL stake, the enter-all mean and the bars without edge days are reported only.
+PASS requires every one of bars 1, 2, 2b, 3-6, item 5, item 6 and Holm. Anything else is a FAIL and closes the family. The 0.5 SOL stake, the enter-all mean, the lag = d leg and the bars without the edge days (the first and last date of each source's block; plan item 12) are reported only. For item 6 the count of eligible EXP-014 mints missing from the EXP-015 cache is reported.
 
 ### Tries (replace the cap text)
 
-One try, key `exp014_m15`. The tool refuses if either log (the ops log given by `--tries-log` and the canonical `data/tries.jsonl`) already holds a line with that key, takes an O_EXCL `RUN.lock`, and writes a `started` line to both logs before any tape pass (the pass computes outcomes), so a crash still spends the try. A second run is refused before and after `started`. Holm k = 1.
+One try, key `exp014_m15`. The tool refuses if either log (the ops log given by `--tries-log` and the canonical `data/tries.jsonl`) already holds a line with that key, takes an O_EXCL `RUN.lock`, and writes a `started` line to both logs before any tape pass (the pass computes outcomes), so a crash still spends the try. A failure after `started` writes an `aborted` line to both logs. A second run is refused before and after `started`. Holm k = 1.
 
 ### Pre-declared refusals (before `started`: no try spent)
 
@@ -240,10 +241,12 @@ One try, key `exp014_m15`. The tool refuses if either log (the ops log given by 
 - **Any hour with no trades file** in P2, P3 or P4 on the real layout. More than 5 % of hours with no creates file.
 - A `zstd -dc` that does not end rc 0 on any file (truncated or corrupt): the pass raises, it never returns a short hour.
 - More than 0.01 % of lines not parseable JSON; any PumpSwap row without a `pool`; no clock on a row is counted per day and reported.
-- **V coverage:** more than 1 % of PumpSwap prints on a pool with no V; more than 0.5 % of the migrating mints with a create on a pool with no V (below that, those mints are removed and counted, and the bias may run upward; they could be rugs).
+- **V coverage:** more than 1 % of PumpSwap prints on a pool with no V; more than 0.5 % of the migrating mints with a create on a pool with no V (the precount list is report-only). In the screen, a row is removed and counted when its real migration pool (`amm_pool`, the migration print's pool id kept by the worker) is in the adapter's set of pools with no V; the bias of removing them may run upward (they could be rugs).
 - Zero migrations with a create in a block.
 - Screen mode without a clean `precount.json` made by the same code, views and V map (a digest of both).
 - After `started` (the try is spent, the status goes to the logs): V missing above 1 % in the tape pass, or `rows_after_scored_within_bound` above 0.
+
+There is **no midnight purge**: no row is dropped for its position relative to a UTC midnight; the only time exclusions are `excluded_by_time` (item 11) and the block's counted window. Rows with no clock are dropped and counted per day.
 
 ### Precount first
 
@@ -252,4 +255,4 @@ One try, key `exp014_m15`. The tool refuses if either log (the ops log given by 
 ### Disclosures
 
 - The `explore-0814` days were read by DEC-017 (a) and by the EXP-012 backcheck (migrate-entry outcomes on shared mints, overlapping windows); `fresh-0903` was spent by EXP-012's one read; `exp011-0909` by EXP-011 and EXP-015. None of these bars is on unread data. All sources are exploration pool; a pass earns a pre-registration on a new block older than 2026-08-02T12 that is entered in the ledger first (Amendment 5), never a book.
-- Nothing is changed in the trigger, features, model or exit rule after the EXP-012 backcheck read other than the sizes / exit-lag parameters (defaults unchanged, so EXP-013's and the table builder's outputs are byte-identical) and the V binding. Under Amendment 4 this is post-read and needs a `quant-proof` pass before the run.
+- Nothing is changed in the trigger, features, model or exit rule after the EXP-012 backcheck read other than the sizes / exit-lag parameters (defaults unchanged, so the sizing and the old exit are unchanged. Rows gain `size`, `exit_lag`, `sides`, `p_press` and `amm_pool`, and the duplicate key is (mint, d, size, exit_lag); the table builder's rows therefore gain fields, they are not byte-identical) and the V binding. Under Amendment 4 this is post-read and needs a `quant-proof` pass before the run.
