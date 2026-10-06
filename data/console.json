@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-06T05:54:00Z",
+  "updated_utc": "2026-10-06T08:32:00Z",
   "review_windows": [],
   "events": [
     {
@@ -248,6 +248,12 @@
       "from": "claude",
       "text": "Status 10-06 morning. The live probe is at 45 of 90 trades and down 0.066 SOL. That is a loss, small and inside its limits, and it ends 10-12. The decision that matters is the 10-16 forward read; it decides whether we may ask you for the 0.25 SOL step (DEC-020 Option A). This morning I found that the part of that read which decides live support had no tool built, and the price map it needs had the same hole that spoiled the August back-check. Both are being built and reviewed now so the read can't be wasted. No action needed from you.",
       "atUtc": "2026-10-06T05:54:00Z"
+    },
+    {
+      "id": "fy-20261006-m7b",
+      "from": "claude",
+      "text": "Morning recap. The live probe is at 52 of 90 trades, down 0.076 SOL (a loss inside its 0.25 cap); the two big losers were one-step crashes that a stop can't catch. The 10-16 read that decides the 0.25 SOL step is now fully tooled and reviewed, and two bugs that would have spoiled it were found and fixed today. Of the challengers, EXP-013 failed its test (closed); EXP-015 is still running; the rug filter (EXP-016) is planned with fresh test data being fetched. No action needed from you.",
+      "atUtc": "2026-10-06T08:32:00Z"
     }
   ],
   "stream": [
@@ -495,6 +501,34 @@
       "kind": "finding",
       "text": "Critical-path gap found: the 10-16 forward read's live-deciding book (B), priced with the virtual reserve, had no tool, and its V map would have repeated the bug that refused the August back-check. Tools #374/#375 and DEC-016 Amendment 5 (#376) are in review with quant-proof; they must merge before 10-16T00Z.",
       "atUtc": "2026-10-06T05:54:00Z"
+    },
+    {
+      "id": "s-20261006-0712",
+      "from": "claude",
+      "kind": "decision",
+      "text": "10-16 read tooling merged after 4 quant-proof rounds: V-priced book (B) (#375), forward V map (#374), latency re-score on (B) (#378), DEC-016 Amendment 5 (#376).",
+      "atUtc": "2026-10-06T07:12:00Z"
+    },
+    {
+      "id": "s-20261006-0742",
+      "from": "claude",
+      "kind": "finding",
+      "text": "The 'no-price' pools were not closed: their virtual reserve reads slightly negative (pending fees). Reader fixed (#383); the 10-16 merge now checks the stable base value, so fee movement can't make the read refuse. A fast-0 feed bug of the same kind is fixed in code (#387) and awaits a replay-proof before deploy.",
+      "atUtc": "2026-10-06T07:42:00Z"
+    },
+    {
+      "id": "s-20261006-0830",
+      "from": "claude",
+      "kind": "result",
+      "text": "EXP-013 (graduation classifier) failed its single screen: 4,314 trades over 24 days, flat mean +0.0012 SOL with CI90 low −0.0074, only 8/24 days positive. Family closed as pre-declared (#388).",
+      "atUtc": "2026-10-06T08:30:00Z"
+    },
+    {
+      "id": "s-20261006-0700",
+      "from": "claude",
+      "kind": "decision",
+      "text": "Rug-filter study EXP-016 plan merged after 5 quant-proof rounds (#381): strict rug label, new pre-migration signals, one final test on fresh Aug 2–8 data being walked now (#248–#250). Reviewer's honest odds: ~15% to pass the screen, ~5% to pass the final test.",
+      "atUtc": "2026-10-06T07:05:00Z"
     }
   ]
 }
