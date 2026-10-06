@@ -236,6 +236,33 @@ class LabelResult:
     v_source: str | None = None
 
 
+def _last_within(slots: Sequence[int], limit: int) -> int:
+    """Index of the LAST print, in stamped order, whose slot is <= `limit` (-1 if none). Stamped order is by receive
+    time first, so slots are NOT monotone (Oracle rows can invert across slots) and a plain bisect on the slot list is
+    wrong. Exact: everything after the answer has slot > limit, so the suffix minimum is non-decreasing and can be
+    bisected."""
+    n = len(slots)
+    suffix_min = [0] * n
+    cur = 1 << 62
+    for i in range(n - 1, -1, -1):
+        cur = min(cur, slots[i])
+        suffix_min[i] = cur
+    return bisect.bisect_right(suffix_min, limit) - 1
+
+
+def count_slot_inversions(rows: Iterable[Mapping[str, Any]]) -> int:
+    """Outcome-blind, for the pre-`started` report. One mint's rows in READ order: the number of prints that, in
+    stamped order (`stamp_rows`), have a slot below the highest slot already seen. Zero on a getBlock tape. The
+    count is of ordering only; it reads no price or outcome. Sum it over mints."""
+    top = -1
+    n = 0
+    for _r, k in stamp_rows(rows):
+        if k[1] < top:
+            n += 1
+        top = max(top, k[1])
+    return n
+
+
 def _window_ratios(win: Sequence[Priced], slots: int) -> tuple[float | None, float | None]:
     """(lowest A ratio, lowest B ratio) over the window prints."""
     a_min: float | None = None
@@ -243,9 +270,9 @@ def _window_ratios(win: Sequence[Priced], slots: int) -> tuple[float | None, flo
     slot_first: dict[int, Priced] = {}
     for p in win:
         slot_first.setdefault(p.slot, p)
-    slot_list = [p.slot for p in win]  # non-decreasing
+    slot_list = [p.slot for p in win]  # NOT monotone: stamped order is receive-time first
     for s, first in slot_first.items():
-        j = bisect.bisect_right(slot_list, s + slots) - 1
+        j = _last_within(slot_list, s + slots)  # last print in stamped order with slot <= s + slots
         if first.e_before > 0:
             r = win[j].e_after / first.e_before
             a_min = r if a_min is None else min(a_min, r)
@@ -593,7 +620,7 @@ def find_dump_steps(series: Sequence[Priced], ratio: float = RUG_RATIO) -> list[
         if p.slot in seen:
             continue
         seen.add(p.slot)
-        j = bisect.bisect_right(slots, p.slot + WINDOW_SLOTS) - 1
+        j = _last_within(slots, p.slot + WINDOW_SLOTS)
         if p.e_before > 0 and series[j].e_after / p.e_before <= ratio:
             sellers = frozenset(q.trader for q in series if p.slot <= q.slot <= p.slot + WINDOW_SLOTS and q.side == "sell" and q.trader)
             steps.append(DumpStep(p.slot, sellers))

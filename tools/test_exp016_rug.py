@@ -499,6 +499,52 @@ class IntraSlotOrderTests(unittest.TestCase):
             rg.stamp_rows([r, dict(r, quote_reserve=r["quote_reserve"] + 1)])
 
 
+class SlotInversionTests(unittest.TestCase):
+    """Oracle rows sort by receive time first, so slots can invert across the window; the window end is the last
+    print in stamped order with slot <= s + 2, not a bisect on the slot list."""
+
+    def rows(self):
+        ch = Chain(q=100_000_000_000, v=0)
+        entry = oracle_row(ch, 9, "e", 0, 999, "buy", 10**8)
+        ch.q = 100_000_000_000
+        oracle_row(ch, 10, "X", 4, 1000, "sell", 30_000_000_000)  # E 100 -> ~70
+        oracle_row(ch, 14, "Z", 0, 1001, "buy", 10**8)  # slot 14, read early
+        oracle_row(ch, 11, "Y", 0, 1002, "sell", 25_000_000_000)  # E ~70 -> ~45
+        last = oracle_row(ch, 20, "L", 0, 1003, "buy", 10**8)
+        return ch.rows, entry, last
+
+    def test_label_sees_the_dump_across_a_slot_inversion(self):
+        rows, entry, last = self.rows()
+        pr = rg.price_rows(rows, POOL, {POOL: 0})
+        self.assertEqual([p.slot for p in pr], [9, 10, 14, 11, 20])
+        res = rg.label_trade(rows, migration_pool=POOL, entry_key=pr[0].key, exit_key=pr[-1].key, vmap={POOL: 0})
+        self.assertTrue(res.rug)
+        self.assertEqual(res.event, "A")
+        self.assertAlmostEqual(res.worst_ratio, 0.45, delta=0.02)
+
+    def test_dump_steps_across_a_slot_inversion(self):
+        rows, _e, _l = self.rows()
+        steps = rg.find_dump_steps(rg.price_rows(rows, POOL, {POOL: 0}))
+        self.assertIn(10, [st.slot for st in steps])
+        self.assertIn("W", next(st for st in steps if st.slot == 10).sellers)
+
+    def test_last_within_matches_a_scan(self):
+        rng = random.Random(3)
+        for _ in range(200):
+            sl = [rng.randint(0, 12) for _ in range(rng.randint(0, 9))]
+            for lim in range(-1, 14):
+                want = max((i for i, v in enumerate(sl) if v <= lim), default=-1)
+                self.assertEqual(rg._last_within(sl, lim), want)
+
+    def test_count_slot_inversions(self):
+        rows, _e, _l = self.rows()
+        self.assertEqual(rg.count_slot_inversions(rows), 1)  # slot 11 after slot 14
+        ch = Chain()
+        for s in (5, 6, 7):
+            ch.trade(s)
+        self.assertEqual(rg.count_slot_inversions(ch.rows), 0)
+
+
 class CreateFieldTests(unittest.TestCase):
     def test_dump_step_starting_at_the_first_curve_print_fires(self):
         cr = dict(CREATE, quote_reserve=30_000_000_000)
