@@ -693,7 +693,11 @@ def build_mint_record(
 
 class BlockHistory:
     """The causal per-block pass for d1-d4. `query` only reads events whose slot is strictly before the asking
-    mint's migration slot, and dump steps only if s + 2 < that slot."""
+    mint's migration slot, and dump steps only if s + 2 < that slot.
+
+    Performance only (PR: exp016 parallel cells): the window scan per query was O(records in 24 h) per migrated mint. The per-wallet, per-creator
+    and dump-step inverted indexes below give the same sets (hence the same sums) by touching only the entries that can match. Every returned
+    value is an exact int-sum ratio or count, independent of iteration order, so the result is identical to the full scan."""
 
     def __init__(self, records: Iterable[MintRecord]) -> None:
         self.records = list(records)
@@ -702,11 +706,24 @@ class BlockHistory:
         self._slots: list[int] = []
 
     def _index(self) -> None:
-        """Order of record indexes by create_slot, so a query is O(log n + k): the window is a contiguous slice. Rebuilt if `records` grew."""
+        """Order of record indexes by create_slot, so a query window is a contiguous rank slice; plus inverted indexes keyed to the rank.
+        Rebuilt if `records` grew."""
         if self._indexed != len(self.records):
             self._order = sorted(range(len(self.records)), key=lambda i: self.records[i].create_slot)
             self._slots = [self.records[i].create_slot for i in self._order]
             self._indexed = len(self.records)
+            wallet: dict[str, list[tuple[int, int]]] = {}  # wallet -> [(rank, launch-buy slot)] ascending rank
+            creator: dict[str, list[int]] = {}  # creator -> [rank] ascending
+            dumps: list[int] = []  # ranks of records with at least one dump step
+            for rank, i in enumerate(self._order):
+                r = self.records[i]
+                for sl, w in r.launch_buys:
+                    wallet.setdefault(w, []).append((rank, sl))
+                for c in r.creators:
+                    creator.setdefault(c, []).append(rank)
+                if r.dump_steps:
+                    dumps.append(rank)
+            self._wallet, self._creator, self._dumps = wallet, creator, dumps
 
     def query(
         self, mint: str, creators: frozenset[str], create_slot: int, cutoff: int, my_launch: set[str], held: Mapping[str, int]
@@ -714,22 +731,53 @@ class BlockHistory:
         self._index()
         lo = bisect.bisect_left(self._slots, create_slot - SLOTS_24H)
         hi = bisect.bisect_left(self._slots, cutoff)
-        # original record order is kept (byte-identical to the full scan)
-        win = [self.records[i] for i in sorted(self._order[lo:hi]) if self.records[i].mint != mint]
+        recs, order = self.records, self._order
         # d1: this mint's launch buyers that were launch buyers on >= 3 other mints (events before the cutoff)
-        n_other: dict[str, set[str]] = {}
-        for r in win:
-            for s, w in r.launch_buys:
-                if s < cutoff and w in my_launch:
-                    n_other.setdefault(w, set()).add(r.mint)
-        serial = [w for w, ms in n_other.items() if len(ms) >= 3]
-        earlier = [r for r in win if r.create_slot < create_slot and r.creators & creators]
+        serial: list[str] = []
+        for w in my_launch:
+            ents = self._wallet.get(w)
+            if not ents:
+                continue
+            ms: set[str] = set()
+            for k in range(bisect.bisect_left(ents, (lo, -(1 << 62))), len(ents)):
+                rank, s = ents[k]
+                if rank >= hi:
+                    break
+                m2 = recs[order[rank]].mint
+                if s < cutoff and m2 != mint:
+                    ms.add(m2)
+                    if len(ms) >= 3:
+                        break  # only "at least 3 other mints" is read
+            if len(ms) >= 3:
+                serial.append(w)
+        # records of the creator set, in the window, created strictly earlier
+        er: set[int] = set()
+        for c in creators:
+            ents_c = self._creator.get(c)
+            if not ents_c:
+                continue
+            for k in range(bisect.bisect_left(ents_c, lo), len(ents_c)):
+                rank = ents_c[k]
+                if rank >= hi:
+                    break
+                r = recs[order[rank]]
+                if r.mint != mint and r.create_slot < create_slot:
+                    er.add(rank)
+        earlier = [recs[order[rk]] for rk in sorted(er)]
 
         def valid(r: MintRecord) -> list[DumpStep]:
             return [st for st in r.dump_steps if st.slot + WINDOW_SLOTS < cutoff]
 
         d2 = sum(1 for r in earlier if valid(r))  # creator-set's earlier mints with a causal dump step
-        dumpers = {w for r in win for st in valid(r) for w in st.sellers}  # d3
+        dumpers: set[str] = set()  # d3
+        for k in range(bisect.bisect_left(self._dumps, lo), len(self._dumps)):
+            rank = self._dumps[k]
+            if rank >= hi:
+                break
+            r = recs[order[rank]]
+            if r.mint != mint:
+                for st in valid(r):
+                    dumpers.update(st.sellers)
         prior_buyers = {w for r in earlier for s, w in r.launch_buys if s < cutoff}  # d4
         return {
             "serial_launch_held": sum(held.get(w, 0) for w in serial) / SUPPLY_RAW,
