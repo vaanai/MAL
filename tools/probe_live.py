@@ -650,6 +650,7 @@ class LiveExecutor(pe.Executor):
         self._log("buy", mint, **row)
         if tokens <= 0:
             self.state.realized_lamports -= cost  # SOL is spent and nothing came back: a realized loss now
+            pe.dec020_note_zero_token_buy(self.limits, self.state)
             self._alert("buy_landed_zero_tokens", mint, signature=p["signature"], cost_lamports=cost)
         else:
             self.state.open[mint] = {
@@ -799,7 +800,7 @@ class LiveExecutor(pe.Executor):
         )
         self.state.realized_lamports += pnl + pos.get("extra_cost", 0)  # failed-sell fees were booked as they landed
         pe.dec020_note_close(self.limits, self.state, bps(pos["tokens"], pos["q_tokens"]) if pos.get("q_tokens") else None,
-                             bps(proceeds, p["q_out"]))
+                             bps(proceeds, p["q_out"]), entry_estimated=bool(pos.get("balance_pending")))
         del self.state.open[mint]
         self.save()
 

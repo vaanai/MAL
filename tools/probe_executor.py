@@ -527,12 +527,34 @@ def dec020_note_buy(limits: Limits, st: State, landed: bool) -> None:
     d["tripped"] = dec020_stop_names(limits, st)
 
 
-def dec020_note_close(limits: Limits, st: State, entry_bps: float | None, exit_bps: float | None) -> None:
-    """A position closed on a landed sell. No-op for dec019. The caller saves. A None bps (zero quote) is not averaged."""
+def dec020_note_zero_token_buy(limits: Limits, st: State) -> None:
+    """A buy landed but delivered zero tokens (SOL spent, nothing back). Called right after dec020_note_buy(landed=True).
+    No-op for dec019. It counts as a FAILED attempt for landing-fail (the success just booked is reversed), enters the entry
+    mean at once as -10000 bps (the full spend lost), and counts as a closed trade (the loss is realized now; there will be
+    no sell). The caller saves."""
+    if limits.stops is None:
+        return
+    d = st.dec020
+    d["buy_failed"] = d.get("buy_failed", 0) + 1
+    d["closed"] = d.get("closed", 0) + 1
+    d["entry_n"] = d.get("entry_n", 0) + 1
+    d["entry_sum"] = d.get("entry_sum", 0.0) - 10_000.0
+    d["zero_token_buys"] = d.get("zero_token_buys", 0) + 1
+    d["tripped"] = dec020_stop_names(limits, st)
+
+
+def dec020_note_close(limits: Limits, st: State, entry_bps: float | None, exit_bps: float | None,
+                      entry_estimated: bool = False) -> None:
+    """A position closed on a landed sell. No-op for dec019. The caller saves. A None bps (zero quote) is not averaged.
+    entry_estimated=True (the buy's token balance was pending, so tokens are the quote estimate and the bps is a fake 0)
+    keeps that entry out of the entry mean; it is counted in entry_excluded instead."""
     if limits.stops is None:
         return
     d = st.dec020
     d["closed"] = d.get("closed", 0) + 1
+    if entry_estimated:
+        entry_bps = None
+        d["entry_excluded"] = d.get("entry_excluded", 0) + 1
     for key, val in (("entry", entry_bps), ("exit", exit_bps)):
         if val is not None:
             d[key + "_n"] = d.get(key + "_n", 0) + 1
@@ -1308,7 +1330,8 @@ def status_report(cfg: dict[str, Any]) -> str:
             lines.append(
                 f"  dec020_stops closed={d.get('closed', 0)} mean_entry_vs_quote_bps={_mean(d.get('entry_sum', 0.0), d.get('entry_n', 0))} "
                 f"mean_exit_vs_quote_bps={_mean(d.get('exit_sum', 0.0), d.get('exit_n', 0))} buys_resolved={d.get('buy_resolved', 0)} "
-                f"buys_failed={d.get('buy_failed', 0)} limits={dict(lim.stops)} tripped={d.get('tripped', [])} "
+                f"buys_failed={d.get('buy_failed', 0)} zero_token_buys={d.get('zero_token_buys', 0)} "
+                f"entry_excluded_balance_pending={d.get('entry_excluded', 0)} limits={dict(lim.stops)} tripped={d.get('tripped', [])} "
                 f"would_halt_now={dec020_stop_names(lim, st)}")
         exposure = sum(int(p.get("spend") or 0) for p in st.open.values()) + sum(
             int(p.get("spend") or 0) for p in st.pending.values() if p.get("kind") == "buy")

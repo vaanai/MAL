@@ -1782,6 +1782,65 @@ class Dec020StopsTests(unittest.TestCase):
         self.assertIn("tripped=['divergence_exit']", out)
         self.assertIn("would_halt_now=['divergence_exit']", out)
 
+    def _land_zero_token_buy(self, ex, rpc):
+        p = signal_buy(ex, ex.now_ms)
+        spend, fee = p["spend"], 500_000
+        rpc.statuses[p["signature"]] = {"slot": 5, "confirmationStatus": "confirmed", "err": None}
+        res = meta_result(ex, MINT, delta=-(spend + fee + RENT), fee=fee, tok_delta=1, ata_post=RENT)
+        res["meta"]["postTokenBalances"][0]["uiTokenAmount"]["amount"] = "0"
+        rpc.txs[p["signature"]] = res
+        ex.advance_pending()
+
+    def test_zero_token_buy_is_a_failed_attempt_and_minus_10000_entry_at_once(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END, dec020_stops={"min_closed": 1, "min_attempts": 1})
+        self._land_zero_token_buy(ex, rpc)
+        d = ex.state.dec020
+        self.assertEqual(ex.state.open, {})
+        self.assertEqual((d["buy_resolved"], d["buy_failed"], d["zero_token_buys"]), (1, 1, 1))
+        self.assertEqual((d["entry_n"], d["entry_sum"], d["closed"]), (1, -10_000.0, 1))
+        self.assertEqual(d["tripped"], ["divergence_entry", "landing_fail"])
+        # status shows it, and default levels: one zero-token buy among 9 landed ones moves the mean to -1000/10... checked purely
+        self.assertIn("zero_token_buys=1", pe.status_report(conf))
+
+    def test_zero_token_buy_counts_toward_the_default_ten(self):
+        lim = self.lim()
+        st = self.st(buy_resolved=9, buy_failed=0, closed=9, entry_n=9, entry_sum=0.0)
+        pe.dec020_note_buy(lim, st, True)
+        pe.dec020_note_zero_token_buy(lim, st)
+        self.assertEqual((st.dec020["buy_failed"], st.dec020["closed"]), (1, 10))
+        self.assertEqual(pe.dec020_stop_names(lim, st), ["divergence_entry"])  # mean -10000/10 = -1000 < -200; fail 10% is fine
+
+    def test_balance_pending_entry_is_excluded_from_the_entry_mean_and_counted(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END, dec020_stops={"min_closed": 1})
+        p = signal_buy(ex, clock)
+        spend, fee = p["spend"], 500_000
+        rpc.statuses[p["signature"]] = {"slot": 5, "confirmationStatus": "confirmed", "err": None}
+        res = meta_result(ex, MINT, delta=-(spend + fee + RENT), fee=fee, tok_delta=1234, ata_post=RENT)
+        del res["meta"]["postTokenBalances"]
+        rpc.txs[p["signature"]] = res
+        with mock.patch.object(ex, "_ata_balance", return_value=None):
+            ex.advance_pending()
+        self.assertTrue(ex.state.open[MINT]["balance_pending"])
+        rpc.token_balance = 10**9
+        clock.t += 31 * 60_000
+        ex.poll_positions()
+        land_sell(ex, rpc, proceeds=ex.state.pending[MINT]["q_out"])
+        d = ex.state.dec020
+        self.assertEqual((d["closed"], d.get("entry_n", 0), d["entry_excluded"], d["exit_n"]), (1, 0, 1, 1))
+        self.assertIn("entry_excluded_balance_pending=1", pe.status_report(conf))
+
+    def test_dec019_zero_token_and_pending_paths_record_nothing(self):
+        lim = pe.Limits()
+        st = pe.State(mode="live")
+        pe.dec020_note_zero_token_buy(lim, st)
+        pe.dec020_note_close(lim, st, 0.0, 0.0, entry_estimated=True)
+        self.assertEqual(st.dec020, {})
+        d = Path(tempfile.mkdtemp())
+        ex, rpc, clock, kp, conf = make_live(d)
+        self._land_zero_token_buy(ex, rpc)
+        self.assertEqual(ex.state.dec020, {})
+        self.assertNotIn("dec020", (d / "state-live.json").read_text())
+
     # -- dec019 is untouched
     def test_dec019_limits_state_status_and_rows_unchanged(self):
         lim = pe.Limits()
