@@ -35,8 +35,9 @@ Run (mal-research-0; one heavy job at a time; as a MiScusi job; under nice):
     --p1-oracle-insample-dir /data/mal/clean-view/oracle-insample-2026-09-22_25 \\
     --p1-oracle-live-dir /data/mal/clean-view/oracle-live-2026-09-25_27 \\
     --p2-view-dir /data/mal/clean-view/explore-0814/w1 ... --p2-view-dir /data/mal/clean-view/explore-0814/w7 \\
-    --p3-root /data/mal/blocks-clean/fresh-0903 --vmap-p3 <pool V map for P3> \\
-    [--p4-view-dir <EXP-011 clean view> ... --vmap-p4 <pool V map for P4>] \\
+    --p3-root /data/mal/blocks-clean/fresh-0903 \\
+    [--p4-view-dir <EXP-011 clean view> ...] \\
+    (every --vmap-pN defaults to the pinned /data/mal/pumpswap-virtual/pool_v_0909.json) \\
     --out-dir /data/mal/exp015-screen --tries-log /data/mal/ops/tries-exp015-screen.jsonl --max-workers 8
 """
 
@@ -49,6 +50,7 @@ import json
 import multiprocessing as mp
 import os
 import random
+import re
 import signal
 import sys
 import time
@@ -91,7 +93,15 @@ BANNER = (
 
 FROZEN_THRESHOLD = op.FROZEN_THRESHOLD  # 0.8030766588450794
 MODEL_MD5 = bc.MODEL_MD5  # a1810d219ed61db64a396f40dc302ce5
-VMAP_SHA256 = bc.VMAP_SHA256  # 2506f7d2...d2f8, pool_v_0814.json
+# ONE pool -> V map for every block (P1-P4): pool_v_0909.json (job #224: a superset of pool_v_0814, the EXP-011 block pools and the 30 pools
+# the back-check #207 found without V). The pin replaces the P2 pin on pool_v_0814. The sha is filled by the manager, after #224, in a
+# reviewed one-line commit; while it is the placeholder the tool refuses at startup (check_pin_ready).
+VMAP_0909_SHA256 = "PENDING_JOB_224"
+VMAP_0909_PATH = "/data/mal/pumpswap-virtual/pool_v_0909.json"
+SCENARIO_WORDING = "one scenario (both sides' selected removed mints at total loss), not a worst-case bound"
+BIAS_STATEMENT = ("Removal of unpriceable mints may bias the gate bars UPWARD (the removed mints could be rugs; a closed account is the likely class). "
+                  "The direction for bar 3 is unknown. Report-only sensitivity below; the bars themselves are unchanged.")
+UNPRICEABLE_MAX_FRACTION = 0.005  # refuse (before `started`) if more than 0.5% of the universe's mints sit on a pool with no V
 V_MAX_MISSING_FRACTION = 0.01
 K = 6
 SIZE_SOL = 0.05
@@ -150,8 +160,7 @@ RESERVED_FRAGMENTS = (
 P2_BASE = "/data/mal/clean-view/explore-0814"
 P3_BASE = "/data/mal/blocks-clean/fresh-0903"
 P3_RANGES = s12.DEFAULT_RANGES
-VMAP_DEFAULT_P1 = DEFAULT_VMAP
-VMAP_DEFAULT_P2 = bc.DEFAULT_VMAP_0814
+VMAP_DEFAULT = VMAP_0909_PATH
 
 # Configs: the entire try budget (plan section 7).
 CONFIGS: dict[str, dict[str, Any]] = {
@@ -360,6 +369,12 @@ def guard_p3(root: Path | str, verify: bool = True, enforce_base: bool = True) -
     return {"walkers": walkers, "pin_sha256": {k: v for k, v in pin.items() if k.endswith("manifest.json")}}
 
 
+def check_pin_ready() -> None:
+    """Refuses at startup while the map pin is the placeholder (so the tool cannot run before the real sha256 is filled in)."""
+    if not re.fullmatch(r"[0-9a-f]{64}", VMAP_0909_SHA256):
+        raise Refused(f"VMAP_0909_SHA256 is {VMAP_0909_SHA256!r}, not a sha256: the manager fills it in after job #224 in a reviewed one-line commit. Refusing to run")
+
+
 def check_vmap(path: str | Path, pinned: str | None = None, label: str = "vmap") -> str:
     p = Path(path)
     if not p.is_file():
@@ -525,6 +540,7 @@ def patched_p1_workers() -> Any:
 def set_pass_env(vmap: str, counts: Path, mode: str) -> None:
     from tools import pumpswap_virtual_adapter as ad
 
+    check_vmap(vmap, VMAP_0909_SHA256, "V map for a tape pass")  # the adapter reads this path: re-check the pin before every pass
     set_env(vmap, counts)
     os.environ[ad.ENV_FROZEN] = "1" if mode == "nv" else "0"  # frozen = no V (EXP-012 section 3.1 pricing)
     os.environ[ENV_MODE] = mode
@@ -596,10 +612,21 @@ def run_holdout_pass(tag: str, hours: Any, pool_hours: Sequence[str], mode: str,
 # --- V pre-pass (pool fields only, before any scoring) ---------------------------------------------------------------
 
 
-def prepass(hours: Any, pool_hours: Sequence[str], vmap_path: str | Path, count_start: str, count_end: str, migrated: set[str] | None) -> tuple[dict[str, Any], dict[str, set[str]]]:
-    from tools.pumpswap_virtual import load_map
+def _tee_pools(prints: Any, sink: dict[str, set[Any]]) -> Any:
+    """Pass the prints through unchanged while recording every pool each mint printed on, over EVERY scanned hour (the 24 h feature buffer and
+    the trailing hours included, not only the counted window)."""
+    for r in prints:
+        if r.get("venue") == "pumpswap" and r.get("mint") and r.get("mint") != eem.WSOL:
+            sink.setdefault(r["mint"], set()).add(r.get("pool") if isinstance(r.get("pool"), str) else None)
+        yield r
 
-    return bc.vmap_coverage(bc._iter_pool_prints(hours, pool_hours), load_map(Path(vmap_path)), bc.hour_ms(count_start), bc.hour_ms(count_end), migrated, return_mint_pools=True)
+
+def prepass(hours: Any, pool_hours: Sequence[str], vmap_path: str | Path, count_start: str, count_end: str, migrated: set[str] | None) -> tuple[dict[str, Any], dict[str, set[str]]]:
+    """(coverage over the counted window, mint -> pools over ALL scanned hours). Pool fields only."""
+    vmap = load_pinned_vmap(vmap_path)
+    sink: dict[str, set[Any]] = {}
+    cov, _window_pools = bc.vmap_coverage(_tee_pools(bc._iter_pool_prints(hours, pool_hours), sink), vmap, bc.hour_ms(count_start), bc.hour_ms(count_end), migrated, return_mint_pools=True)
+    return cov, sink
 
 
 def p1_hour_resolvers(roots: Mapping[str, Path]) -> dict[str, tuple[Any, list[str], set[str] | None]]:
@@ -618,6 +645,10 @@ def p1_hour_resolvers(roots: Mapping[str, Path]) -> dict[str, tuple[Any, list[st
 
 
 class Integrity(Exception):
+    pass
+
+
+class NoVInUniverse(RuntimeError):
     pass
 
 
@@ -698,6 +729,8 @@ def cell_nets(cell: Mapping[str, Any] | None, haircut: bool = True) -> dict[str,
     """{"flat", "press"} net lamports at fee 505,000 per side, or None for a censored / absent cell. A MISS pays one fee."""
     if cell is None or cell.get("censored"):
         return None
+    if "fixed_nets" in cell:  # report-only sensitivity: a removed mint scored at -(SIZE + fees) on both legs
+        return dict(cell["fixed_nets"])
     net0 = cell["net0"] + (haircut_delta(cell) if haircut else 0.0)
     return {"flat": mixed_net(net0, cell["sides"], cell["status"], FEE, FLAT_FAIL), "press": mixed_net(net0, cell["sides"], cell["status"], FEE, cell["p_press"])}
 
@@ -731,9 +764,14 @@ def _init_fit(npz_path: str | None, arrays: Mapping[str, Any] | None = None) -> 
             _FIT.update({k: z[k] for k in z.files})
 
 
-def fit_arrays(universe: Sequence[Mapping[str, Any]], lab: Mapping[str, Sequence[int]], dates: Sequence[str]) -> dict[str, Any]:
+def fit_arrays(universe: Sequence[Mapping[str, Any]], lab: Mapping[str, Sequence[int]], dates: Sequence[str], removed: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+    """`removed` rows are appended flagged `extra`: they are NEVER in any training or inner-OOF set; the outer fold of their date only scores them
+    (report-only sensitivity of the unpriceable-mint removal)."""
     import numpy as np
 
+    n_real = len(universe)
+    universe = list(universe) + list(removed)
+    lab = {k: list(v) + [0] * len(removed) for k, v in lab.items()}
     didx = {d: i for i, d in enumerate(dates)}
     blk = np.asarray([["P1", "P2", "P3", "P4"].index(u["block"]) for u in universe], dtype=np.int8)
     src = np.asarray([SOURCES.index(u["source"]) for u in universe], dtype=np.int8)
@@ -746,6 +784,7 @@ def fit_arrays(universe: Sequence[Mapping[str, Any]], lab: Mapping[str, Sequence
         "source": src,
         "y_c1": np.asarray(lab["c1"], dtype=np.int8),
         "y_c2": np.asarray(lab["c2"], dtype=np.int8),
+        "extra": np.asarray([False] * n_real + [True] * len(removed), dtype=bool),
     }
 
 
@@ -763,12 +802,13 @@ def _scope(name: str) -> Any:
     import numpy as np
 
     blk, src = _FIT["block"], _FIT["source"]
+    real = ~_FIT["extra"]  # a removed (extra) row is in no scope: never trained on, never an inner-OOF row
     if name == "all":
-        return np.ones(len(blk), dtype=bool)
+        return real
     if name == "p1a":
-        return src == SOURCES.index("P1A")
+        return (src == SOURCES.index("P1A")) & real
     if name == "sept":  # P1 + P3 + P4: the September dates
-        return blk != 1
+        return (blk != 1) & real
     raise ValueError(name)
 
 
@@ -805,13 +845,16 @@ def task_outer(spec: Mapping[str, Any]) -> dict[str, Any]:
         res = inner_fold(train_mask, int(e), y, mdl)
         if res is not None:
             inner.extend(res[1])
-    out: dict[str, Any] = {"spec": dict(spec), "idx": te.tolist(), "scores": None, "thr": {}, "n_inner": len(inner), "trained": False}
+    xe = np.where(_FIT["extra"] & (di == d))[0] if spec["scope"] == "all" else np.zeros(0, dtype=int)
+    out: dict[str, Any] = {"spec": dict(spec), "idx": te.tolist(), "scores": None, "thr": {}, "n_inner": len(inner), "trained": False, "x_idx": xe.tolist(), "x_scores": None}
     if inner:
         out["thr"] = {"p90": percentile(inner, THRESHOLD_PCT), **{f"p{int(p * 100)}": percentile(inner, p) for p in REPORT_PCTS}}
     if len(te) and train_mask.sum() >= 20 and len(set(y[train_mask].tolist())) >= 2:
         m = fit_cfg(X[train_mask], y[train_mask], mdl)
         out["scores"] = fz._predict(m, X[te])
         out["trained"] = True
+        if len(xe):
+            out["x_scores"] = fz._predict(m, X[xe])
     return out
 
 
@@ -829,7 +872,7 @@ def task_sept_final(spec: Mapping[str, Any]) -> dict[str, Any]:
     y = _FIT["y_c1" if cfg["label"] == "c1" else "y_c2"]
     X = _FIT["X"]
     tr = _scope("sept")
-    te = np.where(_FIT["block"] == 1)[0]  # P2
+    te = np.where((_FIT["block"] == 1) & ~_FIT["extra"])[0]  # P2
     if tr.sum() < 20 or len(te) == 0 or len(set(y[tr].tolist())) < 2:
         return {"spec": dict(spec), "idx": te.tolist(), "scores": None}
     m = fit_cfg(X[tr], y[tr], int(cfg["min_data_in_leaf"]))
@@ -877,6 +920,8 @@ def nested_oof(runner: Runner, cfg_id: str, n_rows: int, date_ids: Sequence[int]
     thr = {k: [nan] * n_rows for k in ("p90", "p80", "p95")}
     folds = []
     pooled: list[float] = []
+    x_score: dict[int, float] = {}
+    x_thr: dict[int, float] = {}
     for r in sorted(res, key=lambda x: x["spec"]["date"]):
         folds.append({"date_idx": r["spec"]["date"], "trained": r["trained"], "n_test": len(r["idx"]), "n_inner_oof": r["n_inner"], "thr_p90": r["thr"].get("p90")})
         if not r["trained"] or r["scores"] is None or not r["thr"]:
@@ -886,7 +931,10 @@ def nested_oof(runner: Runner, cfg_id: str, n_rows: int, date_ids: Sequence[int]
             pooled.append(s)
             for k in thr:
                 thr[k][i] = r["thr"][k]
-    return {"score": score, "thr": thr, "folds": folds, "final_threshold_p90": percentile(pooled, THRESHOLD_PCT), "n_pooled_oof": len(pooled)}
+        for i, s in zip(r.get("x_idx", []), r.get("x_scores") or []):  # removed mints: scored by this outer fold's model, never pooled
+            x_score[i - n_rows] = s
+            x_thr[i - n_rows] = r["thr"]["p90"]
+    return {"x_score": x_score, "x_thr": x_thr, "score": score, "thr": thr, "folds": folds, "final_threshold_p90": percentile(pooled, THRESHOLD_PCT), "n_pooled_oof": len(pooled)}
 
 
 def transfer_selection(runner: Runner, cfg_id: str, n_rows: int, sept_dates: Sequence[int]) -> dict[str, Any]:
@@ -1179,8 +1227,39 @@ def decide_outcome(results: Mapping[str, Mapping[str, Any]], statuses: Mapping[s
     return {"passing": [], "selected_for_confirmation": None, "family_closed": True, "outcome": OUTCOME_NONE, "knife_edge": False}
 
 
+def removed_bias(universe: Sequence[Mapping[str, Any]], removed: Sequence[Mapping[str, Any]], nested: Mapping[str, Any], transfer: Mapping[str, Any], frozen_sel: Sequence[bool],
+                 frozen_removed_sel: Sequence[bool], ev: Mapping[str, Any], with_p4: bool) -> dict[str, Any]:
+    """Report-only, after `started`. How many removed mints this config (and the frozen model) would have selected, and bars 1-5 recomputed with every
+    such selected removed mint scored at -(SIZE + 2 fees) on both legs. The bars themselves are unchanged (bar 6's transfer selection never touches them)."""
+    m = len(removed)
+    loss = -float(op.size_lamports(SIZE_SOL) + 2 * FEE)
+    out: dict[str, Any] = {"statement": BIAS_STATEMENT, "scenario": SCENARIO_WORDING, "n_removed": m, "loss_per_selected_removed_trade_lamports": loss}
+    if not m:
+        return {**out, "n_removed_selected_by_config": 0, "n_removed_selected_by_frozen": 0, "note": "nothing was removed"}
+    nan = float("nan")
+    xs = [nested["x_score"].get(j, nan) for j in range(m)]
+    xt = [nested["x_thr"].get(j, nan) for j in range(m)]
+    sel_x = [(a == a and b == b and a >= b) for a, b in zip(xs, xt)]
+    aug_rows = []
+    for r in removed:
+        cell = {"censored": False, "filled": True, "status": 1, "size": op.size_lamports(SIZE_SOL), "fixed_nets": {"flat": loss, "press": loss}}
+        aug_rows.append({**r, "cells": {PRIMARY_CELL: cell}})
+    aug = list(universe) + aug_rows
+    aug_nested = {"score": list(nested["score"]) + xs, "thr": {"p90": list(nested["thr"]["p90"]) + xt}}
+    aug_transfer = {"selected": list(transfer["selected"]) + [False] * m, "threshold_p90": transfer["threshold_p90"]}
+    ev2 = evaluate_config(aug, aug_nested, aug_transfer, list(frozen_sel) + list(frozen_removed_sel), with_p4)
+    out.update({
+        "n_removed_selected_by_config": int(sum(sel_x)), "n_removed_selected_by_frozen": int(sum(frozen_removed_sel)),
+        "bars_pass_with_removed_at_total_loss": {f"bar{i}": ev2["bars"][f"bar{i}"]["pass"] for i in range(1, 7)},
+        "bars_pass_as_reported": {f"bar{i}": ev["bars"][f"bar{i}"]["pass"] for i in range(1, 7)},
+        "passes_with_removed_at_total_loss": ev2["passes"], "passes_as_reported": ev["passes"],
+    })
+    return out
+
+
 def run_screen(universe: Sequence[Mapping[str, Any]], frozen_sel: Sequence[bool], runner: Runner, with_p4: bool, on_config_done: Callable[[str, dict[str, Any]], None] | None = None,
-               on_config_refused: Callable[[str, str], None] | None = None, no_v_mints: set[str] | None = None, configs: Sequence[str] = tuple(CONFIGS)) -> dict[str, Any]:
+               on_config_refused: Callable[[str, str], None] | None = None, no_v_mints: set[str] | None = None, configs: Sequence[str] = tuple(CONFIGS),
+               removed: Sequence[Mapping[str, Any]] = (), frozen_removed_sel: Sequence[bool] = ()) -> dict[str, Any]:
     """All configs, sequentially (each config's folds run in parallel). `no_v_mints`: mints on pools the adapter priced without V; a
     selected trade on one refuses that config (as the back-check's primary-cell rule). Returns {cfg: result, ...} plus statuses."""
     dates = pool_dates(with_p4)
@@ -1198,12 +1277,8 @@ def run_screen(universe: Sequence[Mapping[str, Any]], frozen_sel: Sequence[bool]
         ev = evaluate_config(universe, nested, transfer, frozen_sel, with_p4)
         nv_sel = sorted(universe[i]["mint"] for i in range(n) if no_v_mints and universe[i]["mint"] in no_v_mints and (ev["selected"][i] or (frozen_sel[i] and universe[i]["block"] != "P1")))
         transfer_nv = sorted(universe[i]["mint"] for i in range(n) if transfer["selected"][i] and no_v_mints and universe[i]["mint"] in no_v_mints)
-        if nv_sel or transfer_nv:
-            statuses[cid] = "refused_after_read"
-            results[cid] = {"passes": False, "refused": f"{len(nv_sel)} nested-OOF selected (nested-OOF or frozen non-P1) and {len(transfer_nv)} transfer-selected trade(s) are on pools the adapter priced without V; the V-priced number is not defined", "no_v_mints": (nv_sel + transfer_nv)[:20]}
-            if on_config_refused:
-                on_config_refused(cid, results[cid]["refused"])
-            continue
+        if nv_sel or transfer_nv:  # defensive: the unpriceable mints were removed before `started`, so this should never fire. If it does, abort (logged aborted_after_read)
+            raise NoVInUniverse(f"{len(nv_sel)} nested-OOF or frozen non-P1 selected and {len(transfer_nv)} transfer-selected trade(s) are on pools priced without V although the unpriceable-pool rule removed them: {(nv_sel + transfer_nv)[:5]}")
         ro = report_only(universe, nested, ev["selected"], with_p4)
         fast = fast_only_report(universe, runner, cid, dates)
         res = {
@@ -1211,8 +1286,13 @@ def run_screen(universe: Sequence[Mapping[str, Any]], frozen_sel: Sequence[bool]
             "passes": ev["passes"], "bars": ev["bars"], "pooled_press_mean_non_p1_sol": ev["pooled_press_mean_non_p1_sol"],
             "n_selected": int(sum(ev["selected"])), "n_rows": n, "final_threshold_p90": nested["final_threshold_p90"], "n_pooled_oof": nested["n_pooled_oof"],
             "folds": nested["folds"], "report_only": ro, "fast_only": fast,
-            "label_counts": {"positive": int(sum(lab["c1" if CONFIGS[cid]["label"] == "c1" else "c2"])), "n": n, "c1_missing_label_0": sum(1 for u in universe if u["c1_missing"])},
+                        "label_counts": {"positive": int(sum(lab["c1" if CONFIGS[cid]["label"] == "c1" else "c2"])), "n": n, "c1_missing_label_0": sum(1 for u in universe if u["c1_missing"])},
         }
+        try:  # report-only: an error here is recorded and NEVER aborts the config or spends tries
+            res["removed_bias"] = removed_bias(universe, removed, nested, transfer, frozen_sel, frozen_removed_sel, ev, with_p4)
+        except Exception as exc:  # noqa: BLE001
+            res["removed_bias"] = {}
+            res["sensitivity_error"] = str(exc)
         res["knife_edge"] = knife_edge(res)
         results[cid] = res
         statuses[cid] = "completed"
@@ -1245,8 +1325,12 @@ def render_md(rep: Mapping[str, Any]) -> str:
         L += ["**KNIFE-EDGE: the k = 6 cell passes and both k = 4 and k = 8 are negative.**", ""]
     L += [rep["first_line"], "", rep["banner"], "", f"## Matched outcome", "", f"**{rep['decision']['outcome']}**", ""]
     u = rep["universe"]
+    ur = u.get("unpriceable_removed") or {}
+    if ur:
+        L += [f"- **Unpriceable mints removed (pool-based, outcome-blind, before `started`): {ur['count']} of {ur['n_universe_before']} ({ur['fraction']:.3%}; non-P1 {ur['non_p1_count']} = {ur['non_p1_fraction']:.3%}; limit {ur['max_fraction']:.1%} each).** Per block: {ur['per_block']}. Mint ids: {', '.join(ur['mints']) or 'none'}.",
+              f"- **{ur['bias_statement']}**", ""]
     L += [f"- Universe: {u['n']} migrations (k = 6, exit lag 2, filled and MISS), sha256 `{u['sha256']}` (written before any fit). By source: {u['stats']['by_source']}. Dropped: {u['stats']['dropped_outside_window']} outside the counted window, {u['stats']['dropped_no_primary_cell']} with no primary cell, {u['stats']['dropped_censored_primary']} censored. C1 label 0 because no EXP-012-pricing row: {u['stats']['c1_missing_label_0']}.",
-          f"- Costs: V pricing (map sha256 pinned for P2 {rep['costs']['vmap_p2_pinned']}), k = {K} from the first PumpSwap print, {SIZE_SOL} SOL, fee {FEE} per side (a MISS pays it), exit lag {EXIT_LAG}, haircut {HAIRCUT_FACTOR:.7f} x proceeds on filled trades, both fail models.",
+          f"- Costs: V pricing (ONE map for every block, sha256 pinned {rep['costs']['vmap_0909_pinned']}), k = {K} from the first PumpSwap print, {SIZE_SOL} SOL, fee {FEE} per side (a MISS pays it), exit lag {EXIT_LAG}, haircut {HAIRCUT_FACTOR:.7f} x proceeds on filled trades, both fail models.",
           f"- Code {rep.get('git_head', 'n/a')}; wall {rep.get('wall_s', 0):.0f} s; workers {rep.get('max_workers')}.", ""]
     for cid, r in rep["configs"].items():
         L += [f"## {CONFIGS[cid]['name']}: {CONFIGS[cid]['desc']} (min_data_in_leaf {CONFIGS[cid]['min_data_in_leaf']}); status {rep['statuses'].get(cid)}", ""]
@@ -1268,6 +1352,11 @@ def render_md(rep: Mapping[str, Any]) -> str:
         L.append(f"| 4 | {c['scope']} | {c['pass']} | {det} |")
         L.append(f"| 5 | {b['bar5']['scope']} | {b['bar5']['pass']} | n {b['bar5']['n']}, mean {b['bar5']['mean_sol']} |")
         L.append(f"| 6 | {b['bar6']['scope']} | {b['bar6']['pass']} | n {b['bar6']['n']}, mean {b['bar6']['mean_sol']}, dates+ {b['bar6']['dates_positive']} of {b['bar6']['majority_needed_of']} |")
+        rb = r.get("removed_bias") or {}
+        if rb:
+            L += ["", f"- Report-only, removed mints: this config would have selected {rb.get('n_removed_selected_by_config')} of {rb['n_removed']}, the frozen model {rb.get('n_removed_selected_by_frozen')}; bars with those scored at -(SIZE + fees), {SCENARIO_WORDING}: {rb.get('bars_pass_with_removed_at_total_loss')} (as reported: {rb.get('bars_pass_as_reported')})."]
+        if r.get("sensitivity_error"):
+            L += ["", f"- Report-only removed-mint sensitivity FAILED and was skipped (the config is unaffected): {r['sensitivity_error']}"]
         fo = r["fast_only"]
         L += ["", f"- Report-only fast-only (pool A, dates {fo['dates']}): n entered {fo['n_entered']}; flat {_f(fo['flat']['mean_sol'])} {_ci(fo['flat']['ci90_sol'])}, pressure {_f(fo['press']['mean_sol'])} {_ci(fo['press']['ci90_sol'])}. **{FAST_ONLY_LINE}**", ""]
         ro = r["report_only"]
@@ -1292,7 +1381,9 @@ CAVEATS = (
     "Purge: rows within 35 minutes before the start or after the end of a UTC calendar date held out are dropped from that fold's training, in the outer and in every inner fold.",
     "Migrations inside a block's edge hours whose creation lies in the neighbouring block (the P3/P4 seam) are not counted; counts are in the universe stats.",
     "The V pre-pass for P1's Oracle live pool has no migrations/ directory: its population is every mint with a first PumpSwap print in the window.",
-    "No Helius credits are used. Pool V maps for P1, P3 and P4 are recorded by sha256 but only the P2 map (pool_v_0814.json) is pinned in the plan.",
+    "No Helius credits are used. ONE V map (pool_v_0909.json, built by job #224) prices every block; its sha256 is pinned in VMAP_0909_SHA256 (post-pin item 11).",
+    BIAS_STATEMENT,
+    "Mints on a PumpSwap pool with no V in the pinned map are removed from the universe before `started`, for all configs and the frozen side (pool-based, outcome-blind); the count and mint ids are in report.json.",
     "Statuses in the tries log: completed (the config's fits and bars ran), refused_after_read (a selected trade on a no-V pool, or an integrity failure), aborted_after_read (an exception or SIGTERM).",
 )
 
@@ -1404,10 +1495,8 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--p2-view-dir", type=Path, action="append", default=None, help="repeatable: explore-0814 clean views w1..w7")
     ap.add_argument("--p3-root", type=Path, default=Path(P3_BASE), help="fresh-0903 deduplicated copies (w1..w3 + manifests)")
     ap.add_argument("--p4-view-dir", type=Path, action="append", default=None, help="repeatable: EXP-011 block clean view(s) with VIEW.sha256, tiling [2026-09-09T12, 2026-09-15T12); omit to run the 30-date pool")
-    ap.add_argument("--vmap-p1", default=VMAP_DEFAULT_P1)
-    ap.add_argument("--vmap-p2", default=VMAP_DEFAULT_P2, help="sha256 asserted against the pinned pool_v_0814.json")
-    ap.add_argument("--vmap-p3", default=None, help="pool -> V map covering fresh-0903 (required)")
-    ap.add_argument("--vmap-p4", default=None, help="pool -> V map covering the EXP-011 block (required with --p4-view-dir)")
+    for blk in ("p1", "p2", "p3", "p4"):
+        ap.add_argument(f"--vmap-{blk}", default=VMAP_DEFAULT, help="pool -> V map; ONE map for every block, its sha256 asserted against VMAP_0909_SHA256 (pool_v_0909.json)")
     ap.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR, help="frozen EXP-012 artifacts (read-only; the paired bar's reference)")
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--tries-log", default=None)
@@ -1418,6 +1507,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def run_guards(args: argparse.Namespace, enforce_base: bool = True, verify: bool = True) -> dict[str, Any]:
+    check_pin_ready()
     check_workers(args.max_workers)
     g1 = guard_p1(args.p1_fast_dir, args.p1_oracle_insample_dir, args.p1_oracle_live_dir, verify)
     if not args.p2_view_dir:
@@ -1425,25 +1515,25 @@ def run_guards(args: argparse.Namespace, enforce_base: bool = True, verify: bool
     g2 = guard_p2(args.p2_view_dir, verify, enforce_base)
     g3 = guard_p3(args.p3_root, verify, enforce_base)
     g4 = guard_p4(args.p4_view_dir or [], verify)
-    if args.vmap_p3 is None:
-        raise Refused("--vmap-p3 is required (a pool V map covering fresh-0903)")
-    if g4 is not None and args.vmap_p4 is None:
-        raise Refused("--vmap-p4 is required with --p4-view-dir")
-    shas = {"P1": check_vmap(args.vmap_p1, label="--vmap-p1"), "P2": check_vmap(args.vmap_p2, VMAP_SHA256, "--vmap-p2"), "P3": check_vmap(args.vmap_p3, label="--vmap-p3")}
+    shas = {"P1": check_vmap(args.vmap_p1, VMAP_0909_SHA256, "--vmap-p1"), "P2": check_vmap(args.vmap_p2, VMAP_0909_SHA256, "--vmap-p2"), "P3": check_vmap(args.vmap_p3, VMAP_0909_SHA256, "--vmap-p3")}
     if g4 is not None:
-        shas["P4"] = check_vmap(args.vmap_p4, label="--vmap-p4")
+        shas["P4"] = check_vmap(args.vmap_p4, VMAP_0909_SHA256, "--vmap-p4")
     frozen = check_frozen_model(args.artifact_dir)
     p3_hours = [h for w in g3["walkers"] for h in w.hours]
     assert_hours_allowed(list(g2["pool"]) + list(g4["pool"] if g4 else []) + p3_hours, with_p4=g4 is not None)
     return {"g1": g1, "g2": g2, "g3": g3, "g4": g4, "vmap_sha256": shas, "frozen": frozen, "with_p4": g4 is not None}
 
 
-def vprepass_all(g: Mapping[str, Any], args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, set[str]]]:
+def vprepass_all(g: Mapping[str, Any], args: argparse.Namespace, only: Sequence[str] | None = None) -> tuple[dict[str, Any], dict[str, set[str]]]:
     """Pool-field-only coverage per source. Refuses (before any scoring) if more than 1% of a source's migrating mints' prints lack V."""
     covs: dict[str, Any] = {}
     mint_pools: dict[str, set[str]] = {}
 
-    def one(tag: str, hours: Any, pool: Sequence[str], vmap: str, a: str, b: str, migrated: set[str] | None) -> None:
+    def one(tag: str, hours: Any, pool: Sequence[str], vmap: str, a: str, b: str, migrated: Any) -> None:
+        if only is not None and tag not in only:
+            return
+        if callable(migrated):
+            migrated = migrated()
         cov, mp_ = prepass(hours, pool, vmap, a, b, migrated)
         print(f"{tag}: {bc.coverage_line(cov)}", file=sys.stderr, flush=True)
         try:
@@ -1451,24 +1541,29 @@ def vprepass_all(g: Mapping[str, Any], args: argparse.Namespace) -> tuple[dict[s
         except bc.Refused as exc:
             raise Refused(f"{tag}: {exc}") from None
         covs[tag] = cov
-        mint_pools.update(mp_)
+        for m, ps in mp_.items():  # merge per mint: a mint seen in two sources keeps every pool
+            mint_pools.setdefault(m, set()).update(ps)
 
     res = p1_hour_resolvers(g["g1"]["roots"])
     for tag in ("P1A", "P1C", "P1B"):
         hours, pool, mig = res[tag]
         one(tag, hours, pool, args.vmap_p1, BLOCKS["P1"][0], BLOCKS["P1"][1], mig)
     r2 = g["g2"]
-    one("P2", bc.MultiViewHours(dict(r2["roots"])), r2["pool"], args.vmap_p2, BLOCKS["P2"][0], BLOCKS["P2"][1], bc.migrated_mints(sorted(set(r2["roots"].values()))))
+    one("P2", bc.MultiViewHours(dict(r2["roots"])), r2["pool"], args.vmap_p2, BLOCKS["P2"][0], BLOCKS["P2"][1], lambda: bc.migrated_mints(sorted(set(r2["roots"].values()))))
     h3 = make_p3_hours(g["g3"]["walkers"])
-    mig3: set[str] = set()
-    from tools.exp012_virtual_rescore import _migrated_mints
 
-    for w in g["g3"]["walkers"]:
-        mig3 |= _migrated_mints(w.clean_dir, True)
+    def mig3() -> set[str]:
+        from tools.exp012_virtual_rescore import _migrated_mints
+
+        out: set[str] = set()
+        for w in g["g3"]["walkers"]:
+            out |= _migrated_mints(w.clean_dir, True)
+        return out
+
     one("P3", h3, sorted(h3.allowed), args.vmap_p3, BLOCKS["P3"][0], BLOCKS["P3"][1], mig3)
     if g["g4"] is not None:
         r4 = g["g4"]
-        one("P4", bc.MultiViewHours(dict(r4["roots"])), r4["pool"], args.vmap_p4, BLOCKS["P4"][0], BLOCKS["P4"][1], bc.migrated_mints(sorted(set(r4["roots"].values()))))
+        one("P4", bc.MultiViewHours(dict(r4["roots"])), r4["pool"], args.vmap_p4, BLOCKS["P4"][0], BLOCKS["P4"][1], lambda: bc.migrated_mints(sorted(set(r4["roots"].values()))))
     return covs, mint_pools
 
 
@@ -1587,6 +1682,61 @@ def collect_all(g: Mapping[str, Any], args: argparse.Namespace, scratch: Path, h
     return v_rows, nv_rows, no_v_pools
 
 
+def unpriceable_mints(mint_pools: Mapping[str, set[str]], vmap: Mapping[str, int | None]) -> set[str]:
+    """Pool-based and outcome-blind: a mint is unpriceable if any PumpSwap pool it printed on in the counted window has no V in the pinned map
+    (absent, or present with null). An explicit V of 0 is a real V and is priceable."""
+    return {m for m, ps in mint_pools.items() if any(vmap.get(p) is None for p in ps)}
+
+
+def remove_unpriceable(universe: Sequence[Mapping[str, Any]], unpriceable: set[str]) -> tuple[list[Mapping[str, Any]], dict[str, Any], list[Mapping[str, Any]]]:
+    """Remove the unpriceable mints from the universe for every config and the frozen side alike. Refuses (Refused) if more than 0.5% of the
+    universe's mints, or more than 0.5% of its non-P1 rows, would go. Returns (kept universe, record for the report, the removed rows)."""
+    removed_rows = [u for u in universe if u["mint"] in unpriceable]
+    removed = sorted(u["mint"] for u in removed_rows)
+    frac = (len(removed) / len(universe)) if universe else 0.0
+    non_p1 = [u for u in universe if u["block"] != "P1"]
+    n_non_removed = sum(1 for u in removed_rows if u["block"] != "P1")
+    frac_non = (n_non_removed / len(non_p1)) if non_p1 else 0.0
+    per_block = {}
+    for blk in ("P1", "P2", "P3", "P4"):
+        tot = sum(1 for u in universe if u["block"] == blk)
+        if tot:
+            n = sum(1 for u in removed_rows if u["block"] == blk)
+            per_block[blk] = {"removed": n, "rows": tot, "fraction": n / tot}
+    rec = {"rule": "pool-based, outcome-blind: a mint on a PumpSwap pool with no V (null or absent) in the pinned map is removed for all configs and the frozen side", "count": len(removed), "fraction": frac,
+           "non_p1_count": n_non_removed, "non_p1_fraction": frac_non, "per_block": per_block, "max_fraction": UNPRICEABLE_MAX_FRACTION, "n_universe_before": len(universe), "mints": removed,
+           "bias_statement": BIAS_STATEMENT}
+    if frac > UNPRICEABLE_MAX_FRACTION or frac_non > UNPRICEABLE_MAX_FRACTION:
+        raise Refused(f"{len(removed)} of {len(universe)} universe mints ({frac:.3%}; non-P1 {n_non_removed} of {len(non_p1)} = {frac_non:.3%}) sit on pools with no V in the pinned map; the limit is {UNPRICEABLE_MAX_FRACTION:.1%} "
+                      f"overall and on the non-P1 rows. Extend the map first; no tries line was written")
+    gone = set(removed)
+    return [u for u in universe if u["mint"] not in gone], rec, removed_rows
+
+
+def check_no_v_consistency(no_v_pools: set[str], mint_pools: Mapping[str, set[str]], unpriceable: set[str], universe_mints: set[str] | None = None) -> dict[str, Any]:
+    """Every pool the adapter priced without V must be a pool of some scanned unpriceable mint, else the run refuses before `started`. Why the
+    relaxed rule (any scanned unpriceable mint, not only a removed one) is sound: the adapter and the pre-pass attribute a pool to a mint by the same
+    row-level pool and mint fields, and the pre-pass hours include the adapter's hours. So a pool the adapter saw without V was seen by the pre-pass on
+    some mint; if that mint is not in the universe (buffer or edge hours, a dropped migration) no universe row touches the pool. Returns the counts
+    for the report, including how many pools were accepted ONLY because of mints outside the universe."""
+    explained = {p for m in unpriceable for p in mint_pools.get(m, ())}
+    stray = sorted(p for p in no_v_pools if p not in explained)
+    if stray:
+        raise Refused(f"{len(stray)} pool(s) the adapter priced without V are on no unpriceable mint the pre-pass scanned (e.g. {stray[:3]}); the removal rule would miss them. Refusing before `started`")
+    in_universe = unpriceable if universe_mints is None else (unpriceable & universe_mints)
+    by_removed = {p for m in in_universe for p in mint_pools.get(m, ())}
+    only_outside = sorted(p for p in no_v_pools if p not in by_removed)
+    return {"n_adapter_no_v_pools": len(no_v_pools), "n_accepted_only_because_of_mints_outside_the_universe": len(only_outside), "pools_accepted_only_outside_the_universe": only_outside[:50]}
+
+
+def load_pinned_vmap(path: str | Path) -> dict[str, int | None]:
+    """The map is re-checked against the pin every time it is loaded."""
+    from tools.pumpswap_virtual import load_map
+
+    check_vmap(path, VMAP_0909_SHA256, "V map")
+    return load_map(Path(path))
+
+
 def no_v_mints_from(no_v_pools: set[str], mint_pools: Mapping[str, set[str]]) -> set[str]:
     return {m for m, ps in mint_pools.items() if ps & set(no_v_pools)}
 
@@ -1655,7 +1805,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if gs["dirty_tools"]:
             raise Refused("tools/ is dirty (uncommitted change): the run records one clean head and refuses otherwise")
         if args.guards_only:
-            print("guards OK (no row was read)", file=sys.stderr)
+            vprepass_all(g, args, only=("P1A", "P1C", "P1B", "P3"))  # the pinned map's coverage of P1 and P3 pools (pool fields only), printed for the manager
+            print("guards OK (no outcome row was read; pool-field coverage of P1 and P3 above)", file=sys.stderr)
             return 0
         covs, mint_pools = vprepass_all(g, args)
     except Refused as exc:
@@ -1684,8 +1835,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Integrity as exc:  # before `started`: nothing is logged
             print(f"refusing after read (before started, no tries line): {exc}", file=sys.stderr)
             return 2
+        try:  # the unpriceable-pool rule: decided BEFORE `started` and before any fit
+            unpr = unpriceable_mints(mint_pools, load_pinned_vmap(args.vmap_p1))
+            consistency = check_no_v_consistency(no_v_pools, mint_pools, unpr, {u["mint"] for u in universe})
+            universe, unpriceable_rec, removed_rows = remove_unpriceable(universe, unpr)
+            unpriceable_rec["adapter_no_v_pools"] = consistency
+        except Refused as exc:
+            print(f"refusing (before started, no tries line): {exc}", file=sys.stderr)
+            return 2
         no_v = no_v_mints_from(no_v_pools, mint_pools)
         frozen_sel = frozen_selection(universe, args.artifact_dir)
+        frozen_removed_sel = frozen_selection(removed_rows, args.artifact_dir) if removed_rows else []  # features and frozen scores only; before `started`
         bad = [u["mint"] for u, f in zip(universe, frozen_sel) if f and u["block"] != "P1" and u["mint"] in no_v]
         if bad:  # the frozen selection on the non-P1 rows is priced without V on a no-V pool: refuse before `started`
             print(f"refusing (before started, no tries line): {len(bad)} frozen-selected non-P1 migration(s) are on pools priced without V", file=sys.stderr)
@@ -1704,14 +1864,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         started = True
         base = {
             "schema": SCHEMA, "banner": BANNER, "first_line": first_line(with_p4), "with_p4": with_p4, "n_dates": len(pool_dates(with_p4)), "n_non_p1_dates": len(non_p1_dates(with_p4)), "dates": pool_dates(with_p4),
-            "universe": {"n": len(universe), "sha256": universe_sha, "stats": ustats, "path": str(out_dir / OUT_UNIVERSE)},
-            "costs": {"vmap_p2_pinned": VMAP_SHA256, "vmap_sha256": g["vmap_sha256"], "k": K, "size_sol": SIZE_SOL, "fee_lamports": FEE, "exit_lag": EXIT_LAG, "haircut_factor": HAIRCUT_FACTOR},
+            "universe": {"n": len(universe), "sha256": universe_sha, "stats": ustats, "path": str(out_dir / OUT_UNIVERSE), "unpriceable_removed": unpriceable_rec},
+            "costs": {"vmap_0909_pinned": VMAP_0909_SHA256, "vmap_sha256": g["vmap_sha256"], "k": K, "size_sol": SIZE_SOL, "fee_lamports": FEE, "exit_lag": EXIT_LAG, "haircut_factor": HAIRCUT_FACTOR},
             "guards": {"view_sha256": {"P1": g["g1"]["view_sha256"], "P2": g["g2"]["view_sha256"], "P3_manifests": g["g3"]["pin_sha256"], "P4": (g["g4"] or {}).get("view_sha256")}, "frozen": g["frozen"]},
             "v_prepass": covs, "no_v_mints_in_universe": len(no_v & {u["mint"] for u in universe}), "caveats": list(CAVEATS), "max_workers": args.max_workers, "git_head": head, "git_dirty_tools": False, "args_hash": ahash,
         }
         lab = labels(universe)
         dates = pool_dates(with_p4)
-        arrays = fit_arrays(universe, lab, dates)
+        arrays = fit_arrays(universe, lab, dates, removed_rows)
         runner = Runner(arrays, out_dir / "fit_arrays.npz", args.max_workers)
         partial_screen: dict[str, Any] = {"results": {}, "statuses": {}}
 
@@ -1733,7 +1893,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             cfg_status[cid] = "refused_after_read"
 
         try:
-            screen = run_screen(universe, frozen_sel, runner, with_p4, on_done, on_refused, no_v)
+            screen = run_screen(universe, frozen_sel, runner, with_p4, on_done, on_refused, no_v, removed=removed_rows, frozen_removed_sel=frozen_removed_sel)
         finally:
             runner.close()
         rep = make_report(base, screen, with_p4)
