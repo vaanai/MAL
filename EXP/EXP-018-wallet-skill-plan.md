@@ -153,3 +153,46 @@ cd ~/MAL && /data/mal/venv/bin/python -m tools.exp018_wallet_skill \
 **Pins.** `features_sha256 = 6bf938f05097d4acd55b1a6c7be799c11f00c72b9841ef64ce628899ad68e0c1`; precount dir `/data/mal/exp018-precount-20261006T1929Z` (`features.jsonl` inside it). The screen refuses unless `--features` is that file and hashes to that sha. The `w2_degenerate` cross-check stays. If `w2_degenerate` were True, no cell would remain and the screen refuses.
 
 **Code since the precount.** Between `e0e9103` and this amendment only screen-mode code changed (tries logs, guards, the family and the pin). The feature builder, `--precount` branch and its output are unchanged, so the precount stands without a rerun.
+
+## Result (2026-10-06, job #325)
+
+**SCREEN NONE, family closed.** One try (W2 alone, Holm k = 1) at head `4d3bb5b`, MiScusi job #325 on research-0. Outputs: `/data/mal/exp018-precount-20261006T1929Z/` (`screen.md`, `screen.json`, `result_W2.json`). Exploration only, no edge claim; nothing goes to confirmation. W1 was dropped before any read (Amendment 1, section 11) and was never evaluated or logged.
+
+Scored scope: 22 dates, 1,979 frozen-selected rows, W2 keeps 988. Numbers below are copied from `screen.json`.
+
+**W2 paired vs frozen (B2), `x_m = W2 net - frozen net` per migration, 20,186 migrations**
+
+| Leg | mean x (SOL) | CI90 (date-cluster) | p (one-sided) | ex-top-3 of sum (SOL) |
+|---|---|---|---|---|
+| flat | +0.000004146408 | [-0.0000990669, +0.0000954628] | 0.46275 | -0.040916 |
+| pressure s1 | +0.000019667344 | [-0.0000418084, +0.0000770370] | 0.28807 | +0.292376 |
+
+Holm input p = max over legs = 0.46275 against threshold 0.0500: not rejected.
+
+**W2 book (B1)**
+
+| Leg | n | mean (SOL) | CI lo (book) | CI lo (date-cluster) | total (SOL) | ex-top-3 (SOL) | dates positive / with trades |
+|---|---|---|---|---|---|---|---|
+| flat | 988 | -0.0010193 | -0.0020446 | -0.0020148 | -1.007055 | -1.141286 | 6 / 22 |
+| pressure s1 | 988 | -0.00085521 | -0.0014852 | -0.0014651 | -0.844948 | -0.936807 | 6 / 22 |
+
+**Bars**
+
+| Bar | Pass | Note |
+|---|---|---|
+| B1 gate | FAIL | CI lo below 0, ex-top-3 below 0, 6 of 22 dates positive, both legs |
+| B2 paired + Holm | FAIL | flat CI90 spans 0, p 0.46275 |
+| B3 concentration | FAIL | max date share of positive total 0.306 (flat) / 0.470 (pressure); ex-best-date total -1.207927 / -0.944639 |
+| B4 P2 + P4 | FAIL | n 908, 19 dates; mean -0.0013115 (flat) / -0.00096222 (pressure) |
+| B5 P2 | FAIL | n 757, 12 dates; mean -0.0013006 / -0.00092990; dates positive 3 / 2 |
+| B6 P3 + P4 | FAIL | n 231, 10 dates; mean -0.0000973186 / -0.00061046; dates positive 3 / 4 |
+
+**Caveats (from `screen.md`)**
+- Exploration. The cells reuse the non-P1 dates EXP-015 already read; the frozen cell is itself best-of-many (winner's curse).
+- The first 72 h of each series are excluded from scoring; the dates that remain are fewer than 27 and the majority-of-days rules use that count.
+- Skill is a trade-flow statistic: SPL transfers are not on the tape, and a wallet's other addresses are not linked.
+- The date-cluster bootstrap seed (1) is shared with EXP-015 / EXP-017, so p-values are not independent across screens.
+- Bonding fees (1.25% per side) are charged to wallet cash flow; priority fees and tips are not on the tape and are excluded.
+- P1 dates are not scored here (their cutoff clock is derived, and P1 is report-only in EXP-015).
+
+Result record: `/data/mal/exp018-precount-20261006T1929Z/result_W2.json` (result.v1). Tries: one `started` and four `completed` lines (P1-P4), synced to `data/tries.jsonl`. Lab note: [exp018-screen-2026-10-06.md](../ARTIFACTS/lab/exp018-screen-2026-10-06.md).

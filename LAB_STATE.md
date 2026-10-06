@@ -93,6 +93,7 @@ As of 2026-10-05 ~09:45Z.
 
 ## Current research state
 
+- **10-06 evening (manager8):** EXP-018 (causal wallet skill at migration) FAILED its one-shot screen (job #325): SCREEN NONE, family closed. W2 paired vs frozen EXP-012: flat mean x +0.000004146408 SOL, p 0.46275; W2 book flat mean -0.0010193 SOL/trade, 6 of 22 dates positive; B1 to B6 all FAIL. Exploration, no edge claim. See [exp018-screen-2026-10-06.md](ARTIFACTS/lab/exp018-screen-2026-10-06.md).
 - **10-06 afternoon (manager8):**
   - **V0 LP law.** V0 changes only on PumpSwap Deposit/Withdraw: V0 ← floor(V0·S_after/S_before) (#400). The 10-16 (B) rules are in DEC-016 Am.5 §7, and the tools are merged (#402, #405, #411).
   - **EXP-016.** Pre-read fixes merged (#406, #414). The real-layout `--precount` exposed two memory problems: an OOM at 48 GB, then whole-row fallback. Both are fixed; the V-map pin waits on a clean precount.
