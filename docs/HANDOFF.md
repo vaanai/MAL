@@ -27,7 +27,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read, i
 | Watchdog | **Helm's durable `mal-probe-watch.timer`** (root, :07/:22/:37/:52) posts to Discord on: unit down, NRestarts rising, HALT, stuck/abandoned sell, loss ≥ 0.20 SOL, `current` ≠ EXPECTED_SHA (faa3192), or a status failure |
 | Manager monitor | Session cron. **Recreate it now.** Hourly read-only job, pinned `--status`, expects `current` = faa3192, alerts at 0.20. Every ~8–10 new faa3192 buys, run `tools/probe_sim_calibration.py` (as in job #187) and report the faa3192 group. |
 
-**Never** read `/etc/mal-probe`, the contents of `/etc/mal-probe-rpc`, or `/run/credentials`. Re-pins are Helm's job: send him the full sha, the 13-line manifest, and the steps. Every executor change needs:
+**Never** read `/etc/mal-probe`, the contents of `/etc/mal-probe-rpc`, or `/run/credentials`. Re-pins are Helm's job: send him the full sha, the manifest (13 lines for the current pin; 15 for a build that includes #348, see the runbook section 2b-dec020), and the steps. Every executor change needs:
 - a review;
 - a security review if it touches keys or units;
 - a calibration replay of closed trades if it changes exits;
