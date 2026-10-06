@@ -261,7 +261,7 @@ The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded 
     - a transaction has truncated logs, unless its event can be decoded from the program's self-CPI event instruction;
     - the S sequence does not chain, meaning an event's S_after differs from the next event's S_before;
     - the last S_after differs from the LP supply read in the same run, at or after the latest fetch.
-  - **Retries.** Every pool unresolved by a failed RPC read (account, LP supply, signature paging or transaction) gets the same up to 3 further passes. *(Wording widened 2026-10-06, pre-read, after quant-proof on #402: account and supply reads are RPC reads like the others.)* Pools unresolved by a chain, truncation or supply mismatch get none. Every attempt is logged.
+  - **Retries.** Every pool unresolved by a failed RPC read (an error or no response on the account, LP supply, signature-paging or transaction call) gets the same up to 3 further passes. *(Wording widened 2026-10-06, pre-read, after quant-proof on #402: account and supply reads are RPC reads like the others.)* A read that succeeds but returns a missing or unparseable account is not a failed read. Pools unresolved by it, or by a chain, truncation or supply mismatch, get no retry. Every attempt is logged per pool, with its pass number and reason.
   - **Output.** The output file's sha256 is recorded wherever it is used.
   - **For (B):** one run over the pools of all entered trades. The first completed run for the window is the one used, and its sha256 goes into the vbook STARTED line. A later run for the same window is not used.
 - **(b) Merge.**
@@ -280,8 +280,13 @@ The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded 
 - **(d) Sensitivity lines.**
   - (B) is recomputed with every LP-moved entered pool priced at its final-map V0 instead of (c). **If the verdict differs from (c)'s, this is listed in `live_blockers`** (the Am.4 §4 pattern); (B)'s verdict stays (c)'s.
   - (B) is also recomputed with pending = 0, report only.
-- **(e′) Dry run before the read (added 2026-10-06, pre-read).** Before 2026-10-15T23:00Z, `merge` is dry-run on the ledgered snapshots (pool fields and LP histories only, no FINAL map, no decision file). It must show that every snapshot's fetch span binds through its ledger `detail_sha256`, and that unexplained plus unresolved pools are under the 0.1% ceiling. A failed dry run is fixed before the read; it changes no rule.
 - **(e) Recorded from now on:** every fetch, the FINAL map included, records each pool's LP supply and the fetch's context slots. Snapshots #2 (job #259) and #3 (job #286) lack them; (b) covers them through LP history.
+- **(e′) Dry run before the read (added 2026-10-06, pre-read).** Before 2026-10-15T23:00Z, `merge` is dry-run on the ledgered snapshots, with the latest snapshot standing in for the final map. The dry run uses a mode that cannot write a FINAL-usable output. Its inputs are pool fields and LP histories only: no FINAL map, decision, entered-mint, forward-tape outcome or P&L file. Pool ids stay in files.
+  - **What it must show:** every snapshot's fetch span binds through its ledger `detail_sha256`, and unexplained plus unresolved pools are at or under the 0.1% ceiling.
+  - **What may be fixed if it fails:** only tool or binding defects, and re-running RPC reads that failed under (a)'s retry rule. The rule, the ceiling, the pool set and the snapshots used do not change. An lphist run whose pools were judged and found unexplained is not re-run to change that result.
+  - **If it still fails at 10-15T23:00Z:** the failure and its counts are recorded here, and the read proceeds under the rules as written.
+  - **Not the (B) run:** the dry run's lphist output is not the (B) run of (a) and is not used by vbook.
+  - **Recorded here:** the dry run's merge meta sha256 and its commit.
 - **Effect.** No bar, threshold, model, window, fail model or trial term changes.
   - (c) moves (B) by the V0 the chain used. Where an LP event falls inside a hold, it takes the worse case.
   - Unexplained or unresolved moves can only make (B) NOT_DECIDABLE.
