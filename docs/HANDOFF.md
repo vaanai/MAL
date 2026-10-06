@@ -16,14 +16,29 @@ Replace this page at the next handoff; don't append. Read it first, then read:
 
 ## Must do immediately
 
-0. **CRITICAL, 10-16 path (job #278, notebook finding):** v_base (V+A+B) is **not** perfectly constant. 6 of 52,643 forward pools changed within ~6 h: 3 of them by +0.0003 to +0.129 SOL on V0≈17.58 pools, plus 2 non-canonical pools. As merged (#383), `exp012_forward_vmap merge` refuses on any v_base difference, so on 10-16 book (B) would be NOT_DECIDABLE. **Fix before 10-16** with a pre-read DEC-016 Am.5 edit plus a code PR, both with quant-proof:
-   - the constancy check applies only to pools actually filled from a snapshot (null or absent in the final map); with the fixed decoder there are 0 nulls, so that is rare;
-   - for every other pool the post-cutoff fetch is authoritative;
-   - every v_base difference is reported as a count (report-only);
-   - never loosen the null-V rule.
-   Optionally find the missing field (bytes 261..270 or the 0/1 byte at 270).
+0. **CRITICAL, 10-16 path: the V map's constancy across the forward window** (job #278; owner review 10-06 ~14:50Z). Draft PR **#398** is WIP and must **NOT** be merged as is.
+   - **Finding.** v_base (V + pending counters A+B) changed on **6 of 52,643** forward pools in about 6 h (07:52Z → 13:53Z). Every move, in lamports (before → after, Δ):
+     - **canonical V0 ≈ 17.58 SOL pools (4):**
+       - 8ewuF2o8: 17,584,505,649 → 17,584,847,247 (+341,598)
+       - AgcjmdfX: 17,607,267,834 → 17,584,505,306 (−22,762,528)
+       - BaiHzFqn: 17,584,505,443 → 17,618,246,195 (+33,740,752)
+       - CyJwKnLi: 17,670,729,486 → 17,800,041,063 (+129,311,577, about 0.7% of V)
+     - **non-canonical (2):**
+       - 6X2DJ4sA: 438,152,246,087 → 434,791,942,471 (−3,360,303,616)
+       - 6ejg4aYJ: 219,722,151 → 219,980,561 (+258,410)
+
+     The earlier "3 + 2" count was a miscount; it is 4 canonical + 2 non-canonical. As merged (#383), merge refuses on any v_base difference, so (B) would be NOT_DECIDABLE on 10-16. This also breaks DEC-016's assumption that one V per pool holds for the whole window.
+   - **Owner's required plan, in this order:**
+     1. **Fix the data before changing the rule.** Chase the unparsed pool fields: bytes 261..270, the 0/1 flag at 270, and anything after 287. Re-run the #278 comparison with them included. If the 6 moves are explained by a counter we don't read yet, v_base is still constant and the strict #383 rule can stay.
+     2. **If real moves remain,** do NOT make constancy report-only with no limit. In a pre-read DEC-016 Am.5 edit, before any outcome is seen, declare:
+        - how moved pools are handled: drop their trades from (B), or price them from the nearest snapshot, with the count disclosed;
+        - a **ceiling** that refuses the merge if too many pools move, e.g. the EXP-016 tolerance max(1 bp, 0.002 SOL) plus a refusal above 1% of pools;
+        - a **sensitivity line** in the (B) report that prices moved pools with both values and says whether the verdict flips.
+        Quant-proof before merge.
+     3. Every move's direction and size is recorded (above, and in the notebook).
+   - **#398 contains** a code draft that may be reused: vmap reports in-set discrepancies, uncomparable counts and pools outside the set; vbook and sensitivity treat discrepancy pools like null-V pools (top-3 union or >1% gives NOT_DECIDABLE). It lacks the ceiling, the tolerance, the sensitivity line, the field investigation and updated tests. Its DEC text edit is superseded by the plan above.
 1. **Recreate the hourly probe monitor** as a session cron at :17, with the same command as job #233 or #275. Crons die with the session. Alert at realized ≤ −0.20 (notebook finding plus a message to the owner).
-2. **V0-constancy check: DONE** as job #278 (see item 0). Rerun it after the merge fix to confirm the new rule passes.
+2. **V0-constancy check.** Job #278 is done (item 0). After the fix, re-run it on fresh fetches and **report the count and size of moves against the new ceiling and tolerance**, not just pass/fail. Repeat it about daily until 10-15, so the move rate over the window is measured.
    - Re-fetch the pool set of forward snapshot #2, `/data/mal/pumpswap-virtual/forward-1002/work-20261006T074427Z/pools.json`, into a NEW work dir with `tools.exp012_forward_vmap fetch --new`.
    - Compare `v_base`, per pool, between the new `*.detail.json` and snapshot #2's `vmap.json.detail.json`.
    - Any difference means merge would refuse on 10-16. Investigate before then.
