@@ -188,7 +188,16 @@ def row_ms(r: Mapping[str, Any]) -> int | None:
 
 
 def _is_swap_wsol(r: Mapping[str, Any]) -> bool:
+    bt = r.get("block_time")
+    if not isinstance(bt, int) or isinstance(bt, bool):  # rows whose block_time is not an int are dropped
+        return False
     return r.get("venue") == "pumpswap" and r.get("quote_is_wsol") is True and r.get("side") in ("buy", "sell") and isinstance(r.get("pool"), str)
+
+
+def _is_swap_wsol_any(r: Mapping[str, Any]) -> bool:
+    """A PumpSwap wSOL row with an int block_time, whether or not it carries side and pool (O1 counts the ones that lack them)."""
+    bt = r.get("block_time")
+    return r.get("venue") == "pumpswap" and r.get("quote_is_wsol") is True and isinstance(bt, int) and not isinstance(bt, bool)
 
 
 def _key(r: Mapping[str, Any]) -> tuple[int, int, int, int]:
@@ -204,17 +213,23 @@ def features_from_rows(rows: Iterable[Mapping[str, Any]], mint: str, mig_ms: int
     from tools.pumpswap_virtual_adapter import make_wrapper
 
     cand = []
+    n_lacking = 0
     for r in rows:
-        if r.get("mint") != mint or not _is_swap_wsol(r):
+        if r.get("mint") != mint or not _is_swap_wsol_any(r):
             continue
         ms = row_ms(r)
         if ms is None or ms < mig_ms:
             continue
+        if not _is_swap_wsol(r):  # lacks side or pool: counted, never used
+            n_lacking += int(ms == mig_ms)
+            continue
         cand.append({**r, "_ms": ms})
     first = [r for r in cand if r["_ms"] == mig_ms]
     if not first:
-        return {"status": "no_mig_print"}
+        return {"status": "no_mig_print", "n_candidates_lacking_side_or_pool": n_lacking}
     mig = min(first, key=_key)
+    multi_slot = len({int(r.get("slot") or 0) for r in first}) > 1
+    multi_pool = len({r["pool"] for r in first}) > 1
     mig_slot, pool = int(mig["slot"]), mig["pool"]
     seen: set[tuple[Any, Any]] = set()
     use = []
@@ -255,9 +270,10 @@ def features_from_rows(rows: Iterable[Mapping[str, Any]], mint: str, mig_ms: int
             if den > 0:
                 max_sell = max(max_sell, sol / den)
     if not prices or prices[0] <= 0:
-        return {"status": "no_price"}
+        return {"status": "no_price", "n_candidates_lacking_side_or_pool": n_lacking}
     return {"status": "ok", "mig_slot": mig_slot, "pool": pool, "n_prints": n_used, "net_flow_lamports": flow, "n_buyers": len(buyers),
-            "price_change": prices[-1] / prices[0] - 1.0, "max_sell_share": max_sell, "pool_has_v": bool(v is not None and v > 0)}
+            "price_change": prices[-1] / prices[0] - 1.0, "max_sell_share": max_sell, "pool_has_v": bool(v is not None and v > 0),
+            "mig_ms_multi_slot": multi_slot, "mig_ms_multi_pool": multi_pool, "n_candidates_lacking_side_or_pool": n_lacking}
 
 
 def confirm_a(f: Mapping[str, Any] | None) -> bool:
@@ -297,7 +313,7 @@ def build_features(wanted: Mapping[str, int], series_hours: Sequence[str], fn: C
     per_hour: dict[str, dict[str, int]] = defaultdict(dict)
     status: dict[str, dict[str, Any]] = {}
     for m, mig in wanted.items():
-        need = {_hour_key(mig), _hour_key(mig + FETCH_MS)}
+        need = {_hour_key(mig - 60_000), _hour_key(mig), _hour_key(mig + FETCH_MS)}
         if not need <= hours:
             status[m] = {"status": "truncated_window"}
             continue
@@ -352,6 +368,15 @@ def k8_missing(universe: Sequence[Mapping[str, Any]], rows: Sequence[int]) -> in
     return n
 
 
+def k6_missing(universe: Sequence[Mapping[str, Any]], rows: Sequence[int]) -> int:
+    """Selected rows lacking an uncensored (6, lag 2) cell. The universe is built from uncensored primary cells, so this must be 0 (O6)."""
+    n = 0
+    for i in rows:
+        c = universe[i]["cells"].get(K6_CELL)
+        n += int(c is None or bool(c.get("censored")))
+    return n
+
+
 def share_report(universe: Sequence[Mapping[str, Any]], rows: Sequence[int], feats: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {"n_selected_non_p1": len(rows), "by_source": {}}
     for s in NON_P1:
@@ -373,9 +398,15 @@ def share_report(universe: Sequence[Mapping[str, Any]], rows: Sequence[int], fea
         out[f"pass_{c}"] = n
         out[f"share_{c}"] = n / len(rows) if rows else None
     out["n_without_k8_cell"] = k8_missing(universe, rows)
+    out["n_without_k6_cell"] = k6_missing(universe, rows)
+    for c, fn in (("A", confirm_a), ("B", confirm_b)):
+        ds = sorted({universe[i]["date"] for i in rows if fn(feats.get(universe[i]["mint"]))})
+        out[f"dates_with_entered_row_{c}"] = {"n": len(ds), "of": len({universe[i]["date"] for i in rows}), "dates": ds}
     ok = [f for f in fs_all if f and f.get("status") == "ok"]
     out["feature_summary"] = {"n_ok": len(ok), "n_pool_without_v": sum(1 for f in ok if not f["pool_has_v"]),
                               "n_one_print_only": sum(1 for f in ok if f["n_prints"] <= 1), "n_with_a_sell": sum(1 for f in ok if f["max_sell_share"] > 0),
+                              "n_mig_ms_multi_slot": sum(1 for f in ok if f.get("mig_ms_multi_slot")), "n_mig_ms_multi_pool": sum(1 for f in ok if f.get("mig_ms_multi_pool")),
+                              "n_candidates_lacking_side_or_pool": sum(int((f or {}).get("n_candidates_lacking_side_or_pool", 0)) for f in fs_all),
                               "median_n_buyers": sorted(f["n_buyers"] for f in ok)[len(ok) // 2] if ok else None}
     return out
 
@@ -391,6 +422,8 @@ def check_shares(rep: Mapping[str, Any]) -> None:
 
 def check_screen_ready(rep: Mapping[str, Any]) -> None:
     check_shares(rep)
+    if rep["n_without_k6_cell"]:
+        raise Refused(f"{rep['n_without_k6_cell']} frozen-selected row(s) lack an uncensored (6, lag 2) cell")
     if rep["n_without_k8_cell"]:
         raise Refused(f"{rep['n_without_k8_cell']} frozen-selected row(s) lack an uncensored (8, lag 2) cell: a missing cell would score x = -frozen net")
     if (rep["coverage"] or 0.0) < MIN_FEATURE_COVERAGE:
@@ -409,6 +442,56 @@ def cell_nets_k8(universe: Sequence[Mapping[str, Any]], enter: Sequence[bool]) -
     return [e15.cell_nets(u["cells"].get(K8_CELL)) if en else None for u, en in zip(universe, enter)]
 
 
+MISS_SHARE_MAX = 0.5  # reading rule: > 50 % of the positive paired sum from k8-MISS rows on either leg => MISS-driven
+
+
+def k8_filled(u: Mapping[str, Any]) -> bool:
+    c = u["cells"].get(K8_CELL)
+    return bool(c is not None and not c.get("censored") and c.get("filled"))
+
+
+def miss_breakdown(universe: Sequence[Mapping[str, Any]], v8: Sequence[Mapping[str, Any]], nets: Sequence[Mapping[str, float] | None], fnets: Sequence[Mapping[str, float] | None],
+                   rows: Sequence[int]) -> dict[str, Any]:
+    """Report-only per cell and leg (the reading rule below uses `positive_sum_share_from_miss`). Entered rows whose k8 cell is a MISS book -fee, so x > 0
+    wherever frozen k6 lost: that is not confirmation information. Per leg: n entered k8-MISS rows; sum of x on rows with k8 MISS and k6 filled; the
+    positive paired sum (sum of x over rows with x > 0) and its share from entered k8-MISS rows; paired stats on the rows left after removing the
+    entered k8-MISS rows (k8-filled entered rows plus the rows the cell skips)."""
+    miss_rows = [i for i in rows if nets[i] is not None and not k8_filled(universe[i])]
+    miss_set = set(miss_rows)
+    out: dict[str, Any] = {"n_entered_k8_miss": len(miss_rows), "n_entered": sum(1 for i in rows if nets[i] is not None)}
+    for leg in e15.LEGS:
+        x = {i: (nets[i][leg] if nets[i] is not None else 0.0) - (fnets[i][leg] if fnets[i] is not None else 0.0) for i in rows}
+        pos = sum(v for v in x.values() if v > 0)
+        pos_miss = sum(v for i, v in x.items() if i in miss_set and v > 0)
+        out[leg] = {"sum_x_k8_miss_k6_filled_sol": sum(x[i] for i in miss_rows if bool(universe[i]["cells"][K6_CELL].get("filled"))) / LAMPORTS,
+                    "sum_x_k8_miss_sol": sum(x[i] for i in miss_rows) / LAMPORTS,
+                    "positive_sum_sol": pos / LAMPORTS, "positive_sum_from_miss_sol": pos_miss / LAMPORTS,
+                    "positive_sum_share_from_miss": (pos_miss / pos) if pos > 0 else None}
+    rest = [i for i in rows if i not in miss_set]
+    out["paired_without_k8_miss_rows"] = e17.paired(v8, nets, fnets, rest)
+    return out
+
+
+def miss_driven(bd: Mapping[str, Any]) -> bool:
+    """Pre-declared rule: on either leg, more than 50 % of the positive paired sum comes from k8-MISS rows."""
+    return any((bd[leg]["positive_sum_share_from_miss"] or 0.0) > MISS_SHARE_MAX for leg in e15.LEGS)
+
+
+def decide(res: Mapping[str, Mapping[str, Any]], hm: Mapping[str, Mapping[str, Any]]) -> str:
+    passing = [c for c in CELLS if hm[c]["reject"] and res[c]["bars_all"]]
+    notes = []
+    wins = []
+    for c in passing:
+        if miss_driven(res[c]["miss_breakdown"]):
+            notes.append(f"{c}: MISS-driven -- earns nothing")
+        else:
+            wins.append(c)
+    tail = (" " + "; ".join(notes) + ".") if notes else ""
+    if not wins:
+        return "SCREEN NONE: no cell is Holm-significant with bars 1-6 passing and not MISS-driven. Nothing goes to confirmation." + tail
+    return f"SCREEN PASS: {', '.join(wins)} clear Holm and bars 1-6. This means 'worth one confirmation read', never 'has an edge'." + tail
+
+
 def run_screen(universe: Sequence[Mapping[str, Any]], scores: Sequence[float], feats: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     rows = selected_rows(universe, scores)
     sel = set(rows)
@@ -419,24 +502,26 @@ def run_screen(universe: Sequence[Mapping[str, Any]], scores: Sequence[float], f
              "ref_k8_all": [i in sel for i in range(len(universe))]}
     res: dict[str, Any] = {}
     for c in (*CELLS, "ref_k8_all"):
-        res[c] = e17.evaluate_cell(v8, cell_nets_k8(universe, enter[c]), frozen_nets, rows)
+        nets = cell_nets_k8(universe, enter[c])
+        res[c] = e17.evaluate_cell(v8, nets, frozen_nets, rows)
         res[c]["n_entered"] = sum(enter[c])
+        res[c]["miss_breakdown"] = miss_breakdown(universe, v8, nets, frozen_nets, rows)
     hm = e17.holm({c: res[c]["p"] for c in CELLS}, FAMILY_ALPHA)
     for c in CELLS:
         res[c]["bars"]["B2"]["pass"] = bool(res[c]["bars"]["B2"]["pass"] and hm[c]["reject"])  # B2 includes Holm significance
         res[c]["bars_all"] = all(b["pass"] for b in res[c]["bars"].values())
+        res[c]["miss_driven"] = miss_driven(res[c]["miss_breakdown"])
     frozen_all = e17.evaluate_cell(universe, frozen_nets, frozen_nets, rows)  # the k6 comparator book (paired with itself: x = 0)
-    wins = [c for c in CELLS if hm[c]["reject"] and res[c]["bars_all"]]
-    outcome = ("SCREEN NONE: no cell is Holm-significant with bars 1-6 passing. Nothing goes to confirmation." if not wins else
-               f"SCREEN PASS: {', '.join(wins)} clear Holm and bars 1-6. This means 'worth one confirmation read', never 'has an edge'.")
-    return {"cells": {c: res[c] for c in CELLS}, "holm": hm, "report_only": {"frozen_k6_book": frozen_all["bars"]["B1"]["report"], "frozen_all_at_k8": res["ref_k8_all"]["bars"]["B1"]["report"]},
-            "n_scope_rows": len(rows), "outcome": outcome, "caveats": list(CAVEATS)}
+    return {"cells": {c: res[c] for c in CELLS}, "holm": hm, "report_only": {"frozen_k6_book": frozen_all["bars"]["B1"]["report"], "frozen_all_at_k8": res["ref_k8_all"]["bars"]["B1"]["report"],
+                                                                         "frozen_all_at_k8_miss_breakdown": res["ref_k8_all"]["miss_breakdown"]},
+            "n_scope_rows": len(rows), "outcome": decide(res, hm), "caveats": list(CAVEATS)}
 
 
 CAVEATS = (
     "Exploration. Cells reuse the 27 non-P1 dates EXP-015, EXP-017 and EXP-018 already looked at; Holm covers only A and B.",
     "The paired mean x is per frozen-selected migration (x = cell net at k8 - frozen net at k6; a row the cell does not enter scores -frozen net).",
-    "Features use slots up to mig_slot + 2 and the entry lands at mig_slot + 8: this assumes a decision-to-landing latency of 4 slots, against the 6 slots the frozen k6 cell assumes. Optimistic by 2 slots.",
+    "Features use slots up to mig_slot + 2 and the entry lands at mig_slot + 8: a decision-to-landing budget of 8 - 2 = 6 slots, the same as the frozen k6 cell (decision at the migration, landing 6 slots later).",
+    "A k8 MISS is booked as -fee (cell_nets). On a row where k8 MISSes and frozen k6 lost, x is positive without any confirmation information. The report-only MISS breakdown and the MISS-driven rule (plan section 7) guard against passing on that.",
     "The k8 cells are the cached EXP-015 cells (V pin, lag 2, haircut, 505k per side, 0.05 SOL, both fail models); SLIPPAGE_CAP 0.15 against the migration-slot price still applies and can turn a later entry into a MISS.",
     "P1 dates are neither featured nor scored.",
 )

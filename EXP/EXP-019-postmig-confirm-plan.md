@@ -18,7 +18,7 @@
 [exp012-exit-veto-2026-10-05.md](../ARTIFACTS/lab/exp012-exit-veto-2026-10-05.md): the entry-veto screen's best rule, `drift_gt_25`, was paired +0.00006 over 9/9 days but failed quant-proof. 40 of its 46 vetoes were simulator MISSes (`latency_curve._try_buy`, SLIPPAGE_CAP 0.15 against the migration-slot price), scored as saved fees; on filled trades only it rested on 6 trades and 3/9 days. The exit re-check also found nothing beyond the frozen exit. EXP-019 differs on three counts:
 
 1. **Entry-side confirm at k8, not a veto at k6.** The feature window (slots [mig, mig + 2]) lies after the k6 trigger information and before the k8 landing. The drift veto read the migration-slot price to skip a k6 entry; here the entry itself moves to k8.
-2. **Priced at a k8 entry.** Every cell's trade is the cached (k = 8, lag 2) cell: its fill or MISS is simulated at the k8 state, with the same cap. A MISS at k8 is booked as a MISS (one fee), never as a saved trade. A row that a cell does not enter scores x = -(frozen k6 net), so a skipped winner is a loss to the cell and a skipped loser a gain; no skip is ever "free".
+2. **Priced at a k8 entry, and the MISS mechanism is guarded, not removed.** Every cell's trade is the cached (k = 8, lag 2) cell: its fill or MISS is simulated at the k8 state, with the same cap. `cell_nets` books a k8 MISS as -fee (one fee). On a row where k8 MISSes and frozen k6 lost, x = cell - frozen is therefore **positive without any information from the confirm**: this is the same mechanism that sank `drift_gt_25` (40 of 46 vetoes were MISSes). A skipped row scores x = -(frozen k6 net), so a skipped winner is a loss and a skipped loser a gain, but an entered k8 MISS can also be a gain. Section 7 pre-declares a report-only MISS breakdown and a reading rule that removes a MISS-driven pass from the winners.
 3. **Both tries are judged against the realistic comparator.** The paired bar is cell at k8 minus frozen at k6, per frozen-selected migration, and also reports "all frozen-selected rows at k8" (report-only) so the latency cost alone is visible next to the confirm gain.
 
 What does not differ: the simulator cap can still turn a k8 entry into a MISS where k6 would have filled. That cost stays inside the cell, as it should.
@@ -38,7 +38,7 @@ The slot is known from the tape, per mint: `_Mint.add` (`tools/latency_curve.py`
 
 ## 5. Features (tape only; nothing from outcomes)
 
-Rows: PumpSwap, `quote_is_wsol` true, on the migration pool, slot in [mig_slot, mig_slot + 2]. A row at mig_slot + 3 or later is ignored (test). Duplicate `(signature, event_index)` rows are dropped. Loading is exactly as PR #424 (`tools/exp018_wallet_skill.py` at b38f541): `e15.guard_p2/p3/p4`, `MultiViewHours`, `make_p3_hours` (P3 files are `trades-<hour>.deduped.jsonl.zst`); the resolver is copied from there and marked `# from exp018 (#424)`. Refusals: any hour without a trades file; a non-zero zstd exit. A mint whose needed hours (the hour of `mig_ms` and of `mig_ms + 10 s`) are not all inside its series is `truncated_window` and has no features.
+Rows: PumpSwap, `quote_is_wsol` true, on the migration pool, slot in [mig_slot, mig_slot + 2]. A row at mig_slot + 3 or later is ignored (test). Duplicate `(signature, event_index)` rows are dropped. Loading is exactly as PR #424 (`tools/exp018_wallet_skill.py` at b38f541): `e15.guard_p2/p3/p4`, `MultiViewHours`, `make_p3_hours` (P3 files are `trades-<hour>.deduped.jsonl.zst`); the resolver is copied from there and marked `# from exp018 (#424)`. Refusals: any hour without a trades file; a non-zero zstd exit. Rows whose `block_time` is not an integer are dropped. A mint whose needed hours (the hours of `mig_ms - 60 s`, `mig_ms` and `mig_ms + 10 s`) are not all inside its series is `truncated_window` and has no features.
 
 - **Net SOL buy flow:** sum of buy `sol_lamports` minus sum of sell `sol_lamports`.
 - **Distinct buyer count:** distinct `trader` among buys. Reported, used by no cell.
@@ -58,6 +58,10 @@ Missing features (no migration print, truncated window, no price) never confirm.
 
 Bars 1-6 under both fail models, through `e17.evaluate_cell` on a view of the universe whose primary cell is the (8, 2) cell. B2 paired is over the frozen-selected rows (x = cell net at k8 minus frozen net at k6, 0 where neither enters), Holm over {A, B} at alpha 0.05 (thresholds 0.025, 0.05; one-sided date-cluster bootstrap p, 10,000 draws, seed 1, max over legs). B1 majority of days is over dates with at least one eligible row, eligible = frozen-selected. P1 is not scored. Note the paired mean is per frozen-selected migration, not per all migrations.
 
+**MISS breakdown (report-only, per cell and per leg, in screen.json).** Number of entered rows whose k8 cell is a MISS; sum of x on rows with k8 MISS and k6 filled (and on all k8-MISS rows); the positive paired sum (sum of x over rows with x > 0) and its share from entered k8-MISS rows; paired stats (mean x, date-cluster CI90, p, ex-top-3) on the rows left after removing the entered k8-MISS rows (the k8-filled entered rows plus the rows the cell skips). The same breakdown for "all frozen-selected at k8" is report-only.
+
+**Reading rule (pre-declared, mirrors EXP-017's size-effect rule).** If, on either leg, more than 50 % of the positive paired sum on the non-P1 rows comes from entered k8-MISS rows, a cell that otherwise passes (Holm and bars 1-6) prints "<cell>: MISS-driven -- earns nothing" and is removed from the winners. Exactly 50 % is not MISS-driven. Tests cover each branch.
+
 ## 8. Refusals (before `started`; no try is spent)
 
 - Cache or raw manifest differs from the pin; a cache head or V map differs; a view path in a reserved fragment (via the exp015 guards).
@@ -65,6 +69,7 @@ Bars 1-6 under both fail models, through `e17.evaluate_cell` on a view of the un
 - A cell keeps 0 % or 100 % of the frozen selection (in `--precount`, after the report is printed and written).
 - **Any frozen-selected row lacks an uncensored (8, lag 2) cell** (a missing cell would score x = -frozen net).
 - Feature coverage of the frozen-selected rows below 99 %.
+- Any frozen-selected row lacks an uncensored (6, lag 2) cell (must be 0 by construction of the universe).
 - `--features` missing or its sha256 differs from `precount.json`; `--tries-log` missing or relative; the canonical log missing or without an `exp015_` line; any earlier exp019 line in either log; `RUN.lock`.
 
 ## 9. Multiplicity and disclosures
@@ -81,3 +86,5 @@ Both run on mal-research-0 as MiScusi jobs, one heavy job at a time, from a chec
 2. `nice -n 19 /data/mal/venv/bin/python -m tools.exp019_postmig --features /data/mal/exp019-screen/features.jsonl --out-dir /data/mal/exp019-screen --tries-log /data/mal/ops/tries-exp019-screen.jsonl` (screen; `started` and `completed` lines go to both logs).
 
 **Estimate (not measured):** one pass over 28 + 12 = 40 days of hourly tape, but only lines containing `"pumpswap"` are parsed and only the frozen-selected mints (about 2,349 non-P1) are kept; dominated by zstd and line scanning, roughly the cost of the EXP-018 precount, 0.5-1.5 h at 4 workers. Memory: workers hold one hour of candidate rows for a few hundred mints; expect under 4 GB total. The screen itself runs in seconds to a minute (10,000-draw date bootstraps).
+
+**Precount extras (outcome-blind).** Mints whose candidates at `t == mig_ms` span more than one slot or more than one pool; candidate rows lacking side or pool; per cell, the dates with at least one entered row.

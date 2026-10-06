@@ -50,7 +50,7 @@ class TestFeatures(unittest.TestCase):
         self.assertAlmostEqual(f["max_sell_share"], 500_000_000 / (Q0 + 3_000_000_000 + V))
         self.assertTrue(f["pool_has_v"])
 
-    def test_causality_row_at_mig_slot_plus_5_ignored(self):
+    def test_causality_row_at_mig_slot_plus_3_ignored(self):
         a = x19.features_from_rows(base_rows(), "M", MIG_MS, VMAP)
         late = base_rows() + [prow("M", 1003, "sell", 40_000_000_000, MIG_BT + 2, "z", q=Q0 + 4_000_000_000), prow("M", 1004, "buy", 9_000_000_000, MIG_BT + 3, "y")]
         b = x19.features_from_rows(late, "M", MIG_MS, VMAP)
@@ -60,7 +60,10 @@ class TestFeatures(unittest.TestCase):
 
     def test_other_pool_and_non_wsol_ignored(self):
         extra = base_rows() + [prow("M", 1001, "sell", 30_000_000_000, MIG_BT, "q", pool="OtherPool"), prow("M", 1001, "sell", 30_000_000_000, MIG_BT, "q", wsol=False)]
-        self.assertEqual(x19.features_from_rows(extra, "M", MIG_MS, VMAP), x19.features_from_rows(base_rows(), "M", MIG_MS, VMAP))
+        a, b = x19.features_from_rows(extra, "M", MIG_MS, VMAP), x19.features_from_rows(base_rows(), "M", MIG_MS, VMAP)
+        self.assertTrue(a.pop("mig_ms_multi_pool"))  # the other pool is reported, never used
+        b.pop("mig_ms_multi_pool")
+        self.assertEqual(a, b)
 
     def test_no_mig_print_and_duplicates(self):
         self.assertEqual(x19.features_from_rows(base_rows(), "M", MIG_MS + 500, VMAP)["status"], "no_mig_print")
@@ -132,14 +135,15 @@ class TestTape(unittest.TestCase):
             list(x19.read_trade_file(p, h0, {}))
 
 
-def cell(k, net0, censored=False, lag=2):
-    return e15._slim_cell({"k": k, "exit_lag": lag, "size": e17.SIZE_1X, "censored": censored, "filled": True, "status": 1, "net0": net0, "sides": 2, "p_press": 0.15})
+def cell(k, net0, censored=False, lag=2, miss=False):
+    return e15._slim_cell({"k": k, "exit_lag": lag, "size": e17.SIZE_1X, "censored": censored, "filled": not miss, "status": 0 if miss else 1,
+                           "net0": 0 if miss else net0, "sides": 1 if miss else 2, "p_press": 0.0 if miss else 0.15})
 
 
-def urow(i, date_off, n6, n8, k8_censored=False):
+def urow(i, date_off, n6, n8, k8_censored=False, k8_miss=False):
     ms = P2_START + date_off * 86_400_000 + 3_600_000 * 13
     return {"mint": f"m{i}", "date": e15.utc_date(ms), "mig_ms": ms, "source": "P2", "block": "P2", "features": [0.0] * NF,
-            "cells": {(6, 2): cell(6, n6), (8, 2): cell(8, n8, k8_censored)}, "c1": 0, "c1_missing": True}
+            "cells": {(6, 2): cell(6, n6), (8, 2): cell(8, n8, k8_censored, miss=k8_miss)}, "c1": 0, "c1_missing": True}
 
 
 OKF = {"status": "ok", "price_change": 0.1, "net_flow_lamports": 5, "max_sell_share": 0.0, "n_prints": 3, "n_buyers": 2, "pool_has_v": True}
@@ -199,6 +203,81 @@ class TestScreen(unittest.TestCase):
             self.assertIsNone(x19.check_no_prior_tries(Path(d) / "absent.jsonl"))
             with self.assertRaises(x19.Refused):
                 x19.load_features(Path(d) / "features.jsonl", Path(d))
+
+
+def breakdown(share_flat, share_press):
+    return {"flat": {"positive_sum_share_from_miss": share_flat}, "press": {"positive_sum_share_from_miss": share_press}}
+
+
+class TestMissDriven(unittest.TestCase):
+    def test_decide_branches(self):
+        hm = {"A": {"reject": True}, "B": {"reject": True}}
+        res = {"A": {"bars_all": True, "miss_breakdown": breakdown(0.2, 0.9)}, "B": {"bars_all": True, "miss_breakdown": breakdown(0.5, 0.1)}}
+        out = x19.decide(res, hm)  # A: press leg > 50 % from MISS rows -> removed; B: exactly 50 % is not "more than 50 %"
+        self.assertIn("A: MISS-driven -- earns nothing", out)
+        self.assertTrue(out.startswith("SCREEN PASS: B "))
+        res["B"]["miss_breakdown"] = breakdown(0.51, 0.0)  # either leg
+        out = x19.decide(res, hm)
+        self.assertTrue(out.startswith("SCREEN NONE"))
+        self.assertIn("B: MISS-driven -- earns nothing", out)
+        res["B"]["miss_breakdown"] = breakdown(None, 0.0)
+        res["A"]["bars_all"] = False
+        self.assertTrue(x19.decide(res, hm).startswith("SCREEN PASS: B"))
+        self.assertNotIn("MISS-driven", x19.decide(res, hm))  # a failing cell earns nothing anyway and is not annotated
+
+    def test_breakdown_counts_miss_rows(self):
+        uni = [urow(0, 0, -1_000_000, 0, k8_miss=True), urow(1, 1, 1_000_000, 2_000_000), urow(2, 2, -500_000, 1_500_000)]
+        res = x19.run_screen(uni, [0.9, 0.9, 0.9], {f"m{i}": OKF for i in range(3)} | {"m2": OKF})
+        bd = res["cells"]["A"]["miss_breakdown"]
+        self.assertEqual(bd["n_entered_k8_miss"], 1)
+        self.assertEqual(bd["n_entered"], 3)
+        for leg in ("flat", "press"):
+            self.assertGreater(bd[leg]["sum_x_k8_miss_k6_filled_sol"], 0)  # the MISS row paid one fee where k6 lost more
+            self.assertGreater(bd[leg]["positive_sum_from_miss_sol"], 0)
+        self.assertIn("paired_without_k8_miss_rows", bd)
+        self.assertEqual(bd["paired_without_k8_miss_rows"]["n_migrations"], 2)
+        self.assertTrue(res["cells"]["A"]["miss_driven"] in (True, False))
+
+    def test_k6_cell_refusal(self):
+        uni = [urow(i, i, 1, 1) for i in range(2)]
+        uni[1]["cells"][(6, 2)] = cell(6, 1, censored=True)
+        rep = x19.share_report(uni, [0, 1], {"m0": OKF, "m1": BADF})
+        self.assertEqual(rep["n_without_k6_cell"], 1)
+        with self.assertRaises(x19.Refused):
+            x19.check_screen_ready({**rep, "coverage": 1.0})
+
+
+class TestPrecountExtras(unittest.TestCase):
+    def test_multi_slot_pool_and_lacking_fields(self):
+        rows = base_rows() + [prow("M", 1001, "buy", 5, MIG_BT, "c", pool="Other2"), {**prow("M", 1000, "buy", 5, MIG_BT, "d"), "side": None}]
+        f = x19.features_from_rows(rows, "M", MIG_MS, VMAP)
+        self.assertTrue(f["mig_ms_multi_slot"] and f["mig_ms_multi_pool"])
+        self.assertEqual(f["n_candidates_lacking_side_or_pool"], 1)
+        g = x19.features_from_rows(base_rows(), "M", MIG_MS, VMAP)
+        self.assertFalse(g["mig_ms_multi_pool"])
+        self.assertTrue(g["mig_ms_multi_slot"])  # base rows hold slots 1000 and 1001 at the migration second
+
+    def test_non_int_block_time_dropped(self):
+        bad = [{**r, "block_time": str(r["block_time"])} for r in base_rows()]
+        self.assertEqual(x19.features_from_rows(bad, "M", MIG_MS, VMAP)["status"], "no_mig_print")
+
+    def test_dates_with_entered_row(self):
+        uni = [urow(i, i % 3, 1, 1) for i in range(6)]
+        rep = x19.share_report(uni, list(range(6)), {f"m{i}": (OKF if i % 3 == 0 else BADF) for i in range(6)})
+        self.assertEqual(rep["dates_with_entered_row_A"]["n"], 1)
+        self.assertEqual(rep["dates_with_entered_row_A"]["of"], 3)
+
+    def test_prev_hour_needed(self):
+        h = x19._hour_key(MIG_MS - 60_000)
+        write = TestTape()
+        write.setUp()
+        try:
+            late = MIG_MS - (MIG_MS % 3_600_000) + 30_000  # 30 s into the hour: mig - 60 s is in the previous hour
+            feats, _ = x19.build_features({"M": late}, [x19._hour_key(late)], write.fn, VMAP)
+            self.assertEqual(feats["M"]["status"], "truncated_window")
+        finally:
+            write.tearDown()
+        self.assertIsInstance(h, str)
 
 
 class TestPins(unittest.TestCase):
