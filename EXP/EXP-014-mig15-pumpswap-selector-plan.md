@@ -186,3 +186,8 @@ These are report only.
 - **Displacement.** `[2026-08-08T12, 2026-08-14T12)` (the second backup block, sealed and verified 2026-10-04, never read) was this plan's only target confirmation block. The manager reserved it for EXP-015's confirmation instead ([EXP-015 plan v2](EXP-015-pooled-retrain-plan-v2.md) §6, [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md)). It is **no longer EXP-014's target**, in either plan text or ledger.
 - **What EXP-014 does now.** It waits for a new block older than 2026-08-08T12 that is walked later (the ledger's "Future fast backfill" row), entered in the ledger before it is sealed, read once with m = 1. It still never takes the 2026-08-28 block, which stays reserved for EXP-013.
 - **Nothing else changes.** No screen bar, try cap or design item is edited. The screen itself reads exploration data only and does not need the block.
+
+
+## Amendment 6 (2026-10-06, before any real-data run): lab-wide α for the confirmation
+
+In addition to the gate, all four unread confirmation families (EXP-013, EXP-014, EXP-015 and the planned EXP-016 rug veto, #381) share the lab's α = 0.05 by Bonferroni, so each confirmation read must also have a one-sided bootstrap p-value of mean > 0 ≤ **0.0125** (= 0.05/4), under both fail models, with the `book_stats` resampler and the date-cluster resampler, 10,000 draws, seed 1, both passing (share of bootstrap means ≤ 0). The reads happen separately on different blocks, so this is per-family Bonferroni, not a Holm step-down. EXP-012's holdout already spent its α. This tightens the confirmation and never loosens it; no screen bar, try or block changes. Written before any of these confirmation blocks was read.
