@@ -1,91 +1,98 @@
-# Manager handoff 2026-10-05 ~23:45Z (manager5 on mal-research-0 → next manager)
+# Manager handoff 2026-10-06 ~04:20Z (manager5, session 2, on mal-research-0 → next manager)
 
-Replace this page at the next handoff; don't append. Read it first. Then read, in this order:
-- [LAB_STATE.md](../LAB_STATE.md)
+Replace this page at the next handoff; don't append. Read it first. Then read:
+- [LAB_STATE.md](../LAB_STATE.md), which is stale since 10-05. Update it early: probe numbers, DEC-020/021/018 decisions, backcheck refusal, EXP-015 merged.
 - [CONSTITUTION.md](../CONSTITUTION.md)
-- DEC-016 (Amendments 1–4), DEC-018, DEC-019 (with Amendments 1/1a and the notes "Mark source" and "Entry drift logging"), DEC-020
-- the memory notes `state-2026-10-04` (current state), `feedback-probe-limits-honesty`, `probe-exit-leak`, `execution-probe`, `exp012-latency-binding`, `research0-memory`, `profit-focus`
+- DEC-018 (Amendment 1), DEC-019, DEC-020 (§7), DEC-021
+- EXP-015 plan v2 (§11 items 8–11)
+- EXP-013 plan (Am.7)
+- EXP-012-backcheck-0814 (Result)
+- the memory notes: `state-2026-10-04` (current state), `feedback-realistic-primary`, `feedback-probe-limits-honesty`, `execution-probe`, `research0-memory`, `profit-focus`
 
-## Owner direction (10-05)
+## Owner direction and decisions (10-06)
 
-- Keep live trading and learn from it. Push for profit. Run research in parallel.
-- Research-0 has plenty of memory, so request 32–64 GB for tape jobs.
-- The owner plans to add **1 SOL** (timing unknown) for a 0.25 SOL size step. That step needs DEC-020 and the owner's explicit choice.
-- The owner's external reviewer (Warden/Helm side) reviews merged PRs and sends findings. Treat them as recommendations. They have caught real problems on #307, #321, #330 and #333. **Fix before relying on a change.**
+- **Push for profit, keep live running, research in parallel on research-0.** The owner's reviewers (Warden, the "grok bots") review merged PRs. Treat their notes as information: verify each claim and fix what holds. They caught real problems on #342, #344, #351 and #359 today.
+- **DEC-020: Option A (#347).** The 0.25 SOL step waits for the EXP-012 FINAL forward read (~10-16T02Z). No new funding before then. The same-day package is in DEC-020 §7:
+  - wallet ~0.35 SOL now; needs ~0.90 at the start (≥0.55 new, ~0.69 if the probe uses its cap room);
+  - cap 0.35; LOSS_ALERT_SOL 0.25;
+  - Helm's root lockdown is a precondition (§7 item 7).
+- **DEC-021: approved; switch delegated to the manager (#357).** A challenger replaces the champion when §6(a)–(e) and §7 all hold, without asking the owner. Before any switch, post a notebook decision and a Console entry with every number. The re-pin is Helm's. A swap never changes size or wallet.
+- **DEC-018 Am.1 (#357):** the size ladder is 0.05 probe → 0.25 (after the read) → 0.5. Each rung's size and funding is still an owner yes. The **owner delegated the stop levels to the manager.** At rung 2:
+  - DEC-020 caps;
+  - no daily cap;
+  - divergence stop after 10 (entry/exit vs quote < −200 bps; executor);
+  - landing-fail stop (>30% after 10; executor);
+  - **manager check:** run `tools/probe_sim_calibration.py` every 5 dec020 trades. If the live−sim residual is < −0.0075 SOL/trade, the **manager places STOP** under DEC-018 Am.1 and tells the owner and Helm the same hour.
+- Both owner questions are closed. None are open.
 
-## LIVE PROBE (real money): state
+## LIVE PROBE (real money)
 
 | Item | Value |
 | --- | --- |
-| Unit | `mal-probe-executor` on fast-0, user `mal-live`, **pinned `faa319227eee420319eed06e85774f64dd2273b1`** (root-owned `/usr/local/lib/mal-probe-exec`), live since **2026-10-05T23:09:56Z**, STOP removed 23:10:32Z |
-| Contents | #331: the tp/sl mark is the post-buy V-priced spot from our own buy tx's `postTokenBalances`, falling back to the fill price. #332: log-only `drift_vs_seed`, with no skip. Plus everything earlier: #307 intents, #314 fence/allowlist/root RPC env, #315 fast exits, #324 no own-buy double count. |
-| Limits | 90 attempts, 0.05 SOL, max 3 open, **loss cap 0.25 SOL** realized, priority 500k/side, **hard end 2026-10-12T00:00Z** (DEC-019 Am.1 + 1a) |
-| At resume | 28/90 attempts, **−0.153362 SOL**, 0 open; about 0.097 SOL of cap room |
-| By build, never pooled | 8a6849b: 6 trades, −100,536,289 lamports. a25eb17: 15 closed, +27,606,913. 7004b16: 7 closed, −80,432,850, including the C71Lk8Ko rug at −47,168,631. faa3192: new. |
-| Rollback | `7004b16` dir kept. Pointer swap per the runbook. Helm does it. |
-| Never installed | a0bea86 (#330 snapshot mark), 64d4a97 (#331 alone), f87eb48 (150k / 0.35) |
-| Watchdog | **Helm's durable `mal-probe-watch.timer`** (root, :07/:22/:37/:52) posts to Discord on: unit down, NRestarts rising, HALT, stuck/abandoned sell, loss ≥ 0.20 SOL, `current` ≠ EXPECTED_SHA (faa3192), or a status failure |
-| Manager monitor | Session cron. **Recreate it now.** Hourly read-only job, pinned `--status`, expects `current` = faa3192, alerts at 0.20. Every ~8–10 new faa3192 buys, run `tools/probe_sim_calibration.py` (as in job #187) and report the faa3192 group. |
+| Build | pinned `faa319227eee420319eed06e85774f64dd2273b1` (unchanged since 10-05T23:09:56Z) |
+| Limits | 90 attempts, 0.05 SOL, max 3 open, loss cap 0.25, 500k priority, hard end **2026-10-12T00Z** |
+| Last check | 03:33Z (job #227): **43/90, realized −0.068014 SOL**, 0 open, healthy |
+| faa3192 group | +0.085348 SOL over 15 attempts (too few to read as edge). All 36 closed at 01:21Z totalled −174,249,232 lamports (job #208). Never call the record "break-even"; it was a loss (memory `feedback-realistic-primary`). |
+| Calibration | job #209: exits agree 35/36 (8/8 faa3192). Lab note `probe-calibration-2026-10-06.md` (#353). **Next calibration is due at ≥45 attempts.** |
+| Monitor | session cron at :17 (it dies with the session; **recreate it**). Same command as job #227. Alert at −0.20. Helm's `mal-probe-watch.timer` is the durable alarm. |
 
-**Never** read `/etc/mal-probe`, the contents of `/etc/mal-probe-rpc`, or `/run/credentials`. Re-pins are Helm's job: send him the full sha, the manifest (13 lines for the current pin; 15 for a build that includes #348, see the runbook section 2b-dec020), and the steps. Every executor change needs:
-- a review;
-- a security review if it touches keys or units;
-- a calibration replay of closed trades if it changes exits;
-- a DEC-019 note;
-- **merging only on pytest's own exit code**. #334 merged with a failing test through a `| tail` pipe; #335 fixed it.
+Never read `/etc/mal-probe`, `/etc/mal-probe-rpc` or `/run/credentials`. Re-pins are Helm's.
 
-## What 10-05 established (numbers in the notebook and lab notes)
+**Merged, NOT installed:**
+- #348: the dec020 limits profile. `DEC020_END_MS = None` refuses until the owner's end is committed; 15-line manifest.
+- #358: the rung-2 divergence and landing-fail stops. A malformed state latches `dec020_state_invalid`, which blocks buys and never exits.
 
-**Execution fixes, measured live:**
-- Entry now lands 5–6 slots after migration, down from 11–15.
-- Sell decision→send is about 30 ms, down from about 1 s.
-- Sell fills land about −11 to −16 bps vs quote, down from −326 to −780.
+Install only after the 10-16 PASS, the owner's funding and the end instant. Helm re-pins at 0 open, after a dry-run replay old vs new (0 `spend_over_size`). The --status output now ends with the profile/precheck lines; Helm should confirm the watch script greps fields.
 
-**Live vs sim** ([probe-calibration-2026-10-05.md](../ARTIFACTS/lab/probe-calibration-2026-10-05.md)): exit decisions match 27/28. The one miss is the old 5 s-poll bug. The buy-tx mark agrees best. This is an execution check, not edge evidence.
+## Research state (exploration; nothing is gate evidence)
 
-**Operating point** (#327, exploration):
-- Keep threshold 0.8031.
-- At k=6, 0.05 SOL and 505k, the pressure mean is 0.00058, CI90 [−0.00012, 0.00131]: about break-even.
-- At a 155k fee it is 0.00110, CI90 [0.00040, 0.00182].
-- Fees are about 2% of a 0.05 SOL round trip, the probe's binding cost.
-- No simulation can support a size above 0.05 (quant-proof).
-
-**Exit re-check** under V, k=6, exit lag 2 ([exp012-exit-veto-2026-10-05.md](../ARTIFACTS/lab/exp012-exit-veto-2026-10-05.md)): keep tp50/sl30. The nested advantage is 0.00000.
-
-**Entry veto drift_gt_25:** quant-proof **FAIL**. 40/46 vetoes were sim misses, scored as fee refunds. It is now log-only.
-
-**Sim 15% migration-price cap vs live:** 5/28 live trades fall outside the cap and made money. No guard.
-
-**Cumulative tries on the 9 exploration days:** **68** in data/tries.jsonl. The running rug study (#336) adds 6, for 74.
-
-## In flight
-
-| Item | State / next action |
-| --- | --- |
-| **Job #167**: grad-stream 6 h measurement (fast-0, `/var/lib/mal/fast-grad-stream/out`, code 07e07c0) | Ends about 00:30Z, then runs `grad_stream_compare`. Read coverage, lead_ms and rollback. This decides step B (processed near-graduation curve stream → arm earlier). Plan: notebook "Entry-latency plan". |
-| **Job #191**: rug-risk exploration (PR #336 @ acad400, `/data/mal/exp012-rug`) | Running on research-0. It counts filled trades only, so misses are never a gain. When done: lab note, append its 6 tries to data/tries.jsonl, then **quant-proof before any live use**. Merge #336 after review. |
-| **Early-arm shadow** (runner `arm-audit.jsonl`, on since 10-05T17:44Z) | Read the 48 h agreement and `skipped_migrated` about 10-07T18Z. Early sign: 3/7 too late on confirmed tape. Next step PR-A2 (the executor buys when the pool PDA appears) needs a re-pin plus Helm. Use the per-candidate pass flags and choose the candidate second from when the pool appears (notebook). |
-| **DEC-020** (size step 0.25 SOL, proposal, corrected in #337) | Owner question **`q_ZXcPehfeVHPG3w`** (A: after a forward-read PASS, recommended; B: 20 attempts now; neither). Replay job #190: about 16 trades before the 0.35 cap at the median, about 7 before 0.20. The 0.05 probe stops during the step. Nothing trades until the owner answers **and** funds. |
-| **DEC-018** owner question `q_YBNB8Qi1lR_WjQ` | Five live-trial decisions, due about 10-14. Still open. |
-| **Job #71** (DEC-016 forward walk forward-1002, research-0) | **Resubmit by about 10-09T15Z.** Same command, params `{"start":"2026-10-02T15"}`, resumable, 10080 min. |
-| **EXP-012 FINAL forward read** | About **2026-10-16T02Z**. Then quant-proof, then the V book (Am.4), then Am.3 at the measured live k. Then DEC-020 option A, if the owner chose it. |
-| Old PRs | #278 (EXP-015 plan, draft), #269 (EXP-014, do not merge before EXP-013's screen), #90 (old draft). Untouched. |
+- **EXP-012 backcheck on explore-0814 (#342/#346): REFUSED_AFTER_READ** (job #207, #359/#360).
+  - 1 primary trade was on a no-V pool: 30 no-V pools, 29 absent from pool_v_0814 plus 1 closed account.
+  - No reading; **not rerun**. 6 tries are logged (explore-0814 count 7).
+  - Scratch is sealed at `/data/mal/exp012-backcheck-0814.refused-job207`. Don't open its rows.
+- **Root cause, shared by everything:** the V maps were built from migrated mints' pools only. This also refused **EXP-013 #225** at its pre-pass (1.59% / 675 pools; no outcome, no try spent).
+- **Fix in flight:** a complete map, `pool_v_0909.json`. Chain:
+  1. #221: walker-c re-walk of 4 resumed EXP-011 hours (running).
+  2. #222: install the 6 re-walked hours, verify and dedupe; expect 0 flagged.
+  3. #224: 0909 = 0814 + EXP-011 pools + 30 pools.
+  4. **#228**: every PumpSwap pool printed in all research views, fetched into 0909. It writes `/data/mal/ops/still-no-v-pools.json`.
+  5. **#226**: the closed-account pool `7WQAs8wA…`'s implied V from its own buys, via pumpswap_virtual_history. Add it to 0909 by hand, outcome-blind, BEFORE pinning.
+- **Then pin:**
+  - one reviewed commit sets `VMAP_0909_SHA256` in `tools/exp015_screen.py` ("PENDING_JOB_224"), and `VMAP_0909_SHA256` plus `V_SHA256` in the EXP-013 table and screen ("PENDING_JOB_228", PR #364);
+  - update the tests that assert the placeholders;
+  - add the sha and pool counts to the EXP-015 §11 item 11 and EXP-013 Am.7 notes.
+- **PR #364** (EXP-013 pin switch, pricing-only): a reviewer is checking it. Merge on MERGE plus your own rc=0 at the reviewed sha.
+- **EXP-013 screen:** rerun `PYTHONPATH=$PWD bash scripts/research/exp013-screen-run.sh <new RUN_ID>` after the pin (40 GB, 4 CPU). It has 3 tries, none spent.
+- **EXP-015 screen** (#356/#361/#363 merged; plan v2 #352, pinned 77b4582):
+  - prerequisites: the 0909 pin and the EXP-011 clean views (P4) from #222;
+  - first run `--guards-only`, then the real run as a MiScusi job: 48 GB, 8 CPU, `--max-workers 8` (tape passes capped at 4), out dir `/data/mal/exp015-screen` (chmod 700);
+  - the run command is in the #356 PR body;
+  - tries are spent at `started`; RUN.lock means a hard kill refuses any rerun, so you'd need a manager ruling;
+  - to join DEC-021 walk 2 it must PASS fresh-0808 (Part 2, not built) and register **before 2026-10-16T01**.
+- **Fee vs landing study v2 (#355, job #216):** observational. CU-price buckets; the deciding read is on no-tip buys. Extended to a 5h30m limit with a 60k credit cap. When it finishes, write a lab note. Any fee change is a DEC-019 amendment for the owner and Helm.
+- **Grad stream (#167/#200):** lead p50 924 ms, coverage 23.4% at threshold 0.90. **#205** re-measures at 0.70 and ends about 07:10Z. Then run `tools.grad_stream_compare` **on research-0**, because it OOMs on fast-0: copy `/var/lib/mal/fast-grad-stream/out-t70` plus the tip-tape hours, and take the window from #205's output `window.txt`.
+- **Early-arm shadow read:** due about **10-07T18Z** (see the 10-05 handoff notes in the notebook).
+- **Job #71** (forward walk): **resubmit by about 10-09T15Z**, with the same command and params `{"start":"2026-10-02T15"}`, resumable, 10080 min.
+- **EXP-012 FINAL forward read:** about 10-16T02Z. Then quant-proof, the V book (Am.4), Am.3. If it PASSes, prepare the DEC-020 same-day package.
+- **Tries:** data/tries.jsonl has 80 lines. 9-day pool cumulative 74; explore-0814 7.
 
 ## Next steps, in order
 
-1. Recreate the hourly probe monitor (the cron above).
-2. About 00:30Z: read job #167. Write the result to the notebook. If lead_ms is material and coverage high, plan B2 (the runner arm reads grad rows), paper first, with md5 replay proof.
-3. Job #191 done: lab note, tries, quant-proof.
-4. After about 8–10 faa3192 buys: run the calibration on the faa3192 group (mark_source, mark_shift_bps, drift_vs_seed, exit agreement).
-5. About 10-07T18Z: read the early-arm shadow, then decide on PR-A2.
-6. About 10-09T15Z: resubmit job #71.
-7. When the probe ends (90 attempts, the cap, or 10-12T00Z): the DEC-019 §7 lab note, grouped by build, then quant-proof. Withdrawal is Helm's.
+1. Recreate the hourly probe monitor cron, and run the probe calibration at ≥45 attempts.
+2. Read the #364 review, then merge.
+3. Watch #221 → #222 → #224 → #228 / #226. Check `still-no-v-pools.json`, add the closed-pool V, chmod a-w, record the sha256.
+4. One pin commit for EXP-013 and EXP-015 (review it), then the EXP-013 rerun, then EXP-015 `--guards-only`, then the EXP-015 run.
+5. About 07:10Z: the #205 compare on research-0, plus a notebook entry.
+6. #216 done: lab note.
+7. Update LAB_STATE.md and the Console (data/console.json, then a fast-0 `git -C ~/MAL pull`) with today's decisions and results.
+8. 10-07T18Z early-arm read; 10-09T15Z #71 resubmit; 10-12T00Z probe end (DEC-019 §7 lab note by build, then quant-proof); 10-16 read.
 
-## Gotchas
+## Gotchas (new today)
 
-- MiScusi job shells are `sh`: no `~-`, no `${s:0:N}`. Job #164 printed false MISMATCHes for this reason.
-- Gate merges on `rc=$?` from pytest, never on `| tail`.
-- `tools/test_dec015_fast_kit.py` has 22 fixture errors in this checkout, on main too (fixture "nothing to commit"). This is pre-existing and environmental.
-- The Console reads a mirror of fast-0 `~/MAL` (memory `console-sync`).
-- Builders stop at about 40 turns. Resume them with SendMessage. Reviewers stop at 20–30 turns; ask them to write their report.
-- The seal: never read the runner's P&L files (`positions.jsonl`, `runner-status*`, `pnl-daily`). Probe fills are fine. For forward-window tape, simulate only mints the probe traded.
+- **Deciding cells use the most realistic measured costs** (exit lag 2, the haircut). Optimistic variants are report-only. Check this before any one-shot read.
+- **Run `date -u` before writing a timestamp.** Never say "launched" before the job has started. Owner-facing size or funding text keeps the DEC's caveats.
+- **Stage files by name, never `git add -A`.** A stray out.txt was committed in #353 and removed in #362. Write pytest output to the scratchpad.
+- **Never bulk-remove worktrees by pattern.** I force-removed the previous manager5 session's scratch worktree by mistake.
+- MiScusi `after` only starts when the dependency **succeeds**. A refused or failed dependency leaves the dependant queued forever, so cancel and resubmit.
+- Gate merges on pytest's own rc, never through `| tail`.
+- The seal: never read the runner's P&L files. Probe fills are fine.
