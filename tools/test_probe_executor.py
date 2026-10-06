@@ -1441,3 +1441,29 @@ class Dec020ProfileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _pool_with_v(v: int, n: int) -> str:
+    """The fixture pool with V rewritten (i128 sign-extended when n >= 261) and padded to n bytes."""
+    raw = bytearray(base64.b64decode(POOL_B64))
+    raw.extend(b"\x00" * max(0, n - len(raw)))
+    raw[245:261] = v.to_bytes(16, "little", signed=True) if n >= 261 else (v & (2**64 - 1)).to_bytes(8, "little") + raw[253:261]
+    return base64.b64encode(bytes(raw[:n])).decode()
+
+
+def _old_probe_v(pool_b64: str):
+    """probe_executor's V handling before the signed decode: unsigned u64 at 245..253, then the same guard."""
+    raw = base64.b64decode(pool_b64)
+    v = int.from_bytes(raw[245:253], "little") if len(raw) >= 253 else None
+    return None if not isinstance(v, int) or v <= 0 or v >= 2**63 else v
+
+
+def test_probe_v_handling_identical_for_positive_zero_negative():
+    user = tx.Pubkey.from_string(str(POOL["creator"]))
+    pool_addr = FX["pamm_ix"]["accounts"][0]["pubkey"]
+    for n in (253, 300, 301):
+        for v, want in ((17_584_000_000, 17_584_000_000), (0, None), (-1, None), (-5_000_000_000, None), (-(2**63), None)):
+            b64 = _pool_with_v(v, n)
+            snap = pe.fetch_snapshot(FakeRpc(pool_b64=b64), pool_addr, "confirmed", user)
+            assert not isinstance(snap, str), snap
+            assert snap.v == want == _old_probe_v(b64), (n, v)

@@ -150,6 +150,24 @@ class PoolState:
     quote_token_program: Pubkey = TOKEN_PROGRAM
 
 
+V_OFFSET = 245  # pool account tail: flags at 243..245, then the stored virtual quote reserve V
+_I64_MIN, _I64_MAX = -(2**63), 2**63 - 1
+
+
+def parse_virtual_signed(data: bytes) -> int | None:
+    """Stored V as a SIGNED value: i128 LE at 245..261 when the account has those bytes, else i64 LE at 245..253.
+    None when the account is too short or the value does not fit in i64. Same semantics as
+    `tools.pumpswap_virtual.parse_virtual`. Stored V = V0 - A - B, so it is negative on V0 = 0 pools with
+    pending counters; reading it unsigned gives about 1.8e19 (ARTIFACTS/lab/pumpswap-v-layout-2026-10-06.md)."""
+    if len(data) >= V_OFFSET + 16:
+        v = int.from_bytes(data[V_OFFSET : V_OFFSET + 16], "little", signed=True)
+    elif len(data) >= V_OFFSET + 8:
+        v = int.from_bytes(data[V_OFFSET : V_OFFSET + 8], "little", signed=True)
+    else:
+        return None
+    return v if _I64_MIN <= v <= _I64_MAX else None
+
+
 def parse_pool_account(data: bytes) -> dict[str, Pubkey | int]:
     """Pool account layout: disc8, bump u8, index u16, creator, base_mint, quote_mint,
     lp_mint, pool_base_vault, pool_quote_vault (32 each), lp_supply u64, coin_creator."""
@@ -164,11 +182,14 @@ def parse_pool_account(data: bytes) -> dict[str, Pubkey | int]:
     o += 8
     out["coin_creator"] = Pubkey.from_bytes(data[o : o + 32])
     o += 32
-    # Tail: two flag bytes, then a u64 that is ~17.58 SOL (17.58e9 lamports) on every pool seen.
+    # Tail: two flag bytes, then V, a SIGNED value (~17.58 SOL = 17.58e9 lamports on fresh migrations).
     # The sim-vs-paper decomposition shows the swap math adds it to the quote reserve.
+    # Key omitted when V is not representable in i64 (callers treat a missing key as no V).
     if len(data) >= o + 10:
         out["flags"] = data[o : o + 2].hex()
-        out["virtual_quote_reserves"] = int.from_bytes(data[o + 2 : o + 10], "little")
+        v = parse_virtual_signed(data)
+        if v is not None:
+            out["virtual_quote_reserves"] = v
     return out
 
 

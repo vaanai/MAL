@@ -855,3 +855,34 @@ def test_parallel_workers_clamped_and_defaults():
     assert ftf.MAX_FETCH_WORKERS == 16
     ap_src = Path(ftf.__file__).read_text()
     assert "--fetch-workers" in ap_src and "default=15.0" in ap_src and "default=150" in ap_src
+
+
+def _signed_pool_account(v: int, n: int) -> bytes:
+    base = _pool_account(V_LAMPORTS)  # 253 bytes, V at 245..253
+    raw = bytearray(base) + b"\x00" * max(0, n - len(base))
+    raw[245:261] = v.to_bytes(16, "little", signed=True) if n >= 261 else (v & (2**64 - 1)).to_bytes(8, "little") + raw[253:261]
+    return bytes(raw[:n])
+
+
+def test_decode_pool_virtual_is_signed_and_never_above_i64():
+    for n in (300, 301):
+        for v in (V_LAMPORTS, 0, -1, -5_000_000_000):
+            assert ftf.decode_pool_virtual(_signed_pool_account(v, n)) == v
+    big = bytearray(_signed_pool_account(0, 301))
+    big[245:261] = (2**63).to_bytes(16, "little")
+    assert ftf.decode_pool_virtual(bytes(big)) is None
+
+
+def test_stamp_writes_true_signed_v_and_nothing_above_2_63(tmp_path):
+    f = _follower(tmp_path, Rpc(tip=4))
+    for n in (300, 301):
+        for v in (V_LAMPORTS, 0, -5_000_000_000):
+            f.v_cache.clear()
+            f._v_retry_at.clear()
+            got = ftf.decode_pool_virtual(_signed_pool_account(v, n))
+            f.v_lookup = lambda pools, got=got: {pools[0]: got}
+            rows = [{"venue": "pumpswap", "pool": "P"}, {"venue": "bonding", "pool": "P"}]
+            f._stamp_virtual(rows)
+            assert rows[0]["virtual_quote_reserve"] == v and type(v) is int
+            assert abs(rows[0]["virtual_quote_reserve"]) < 2**63
+            assert "virtual_quote_reserve" not in rows[1]
