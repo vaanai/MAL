@@ -1,4 +1,4 @@
-# EXP-017 batch 1: four cheap screens (H1-H4) and a cost check (C0) on the cached EXP-015 per-migration cells
+# EXP-017 batch 1: two cheap screens (H3, H4; H1 and H2 dropped, section 11) and a cost check (C0) on the cached EXP-015 per-migration cells
 
 | Field | Value |
 | --- | --- |
@@ -24,13 +24,13 @@ k = 6 slots from the first PumpSwap print; exit lag 2; fee 505,000 lamports per 
 
 ## 3. Cells
 
-- **C0 (report-only, outside the Holm family, no try).** Frozen selection at 0.25 and 0.5 SOL on the 27 non-P1 dates. Needs cells re-simulated at those sizes (V impact grows with size). **Deferred**: the cache has 0.05 SOL cells only. The screen contains the C0 reporting code, which runs only on a re-simulated sized cache; the re-simulation pass (`tools/exp017_resim.py`, reusing `exp015_screen.e15_v_patch` with other `COMBOS`) is a follow-up PR.
-- **H1, mayhem veto.** Frozen selection minus mints whose create row has `is_mayhem_mode == True`. A row's field counts only if it is a boolean on a create row whose `block_time * 1000 <= mig_ms` (the entry cutoff is later still, so the field is pre-cutoff). Otherwise the field is missing and the mint is not vetoed. Coverage is reported per source.
-- **H2, V0-class veto.** Frozen selection restricted to mints whose canonical pool (`canonical_pool(mint)`, deterministic from the mint) has V0 in [16.70, 18.46] SOL (17.58 SOL +/- 5%) in the pinned map. V0 = 0, null/absent and any other value are vetoed.
+- **C0 (report-only, outside the Holm family, no try).** Frozen selection at 0.25 and 0.5 SOL on the 27 non-P1 dates. Needs cells re-simulated at those sizes (V impact grows with size). The cache has 0.05 SOL cells only, so the sized cells come from `tools/exp017_resim.py` (section 12), which reuses `exp015_screen.e15_v_patch` with the same deciding costs.
+- **H1, mayhem veto. DROPPED before any outcome read (section 11); report-only counts remain.** Frozen selection minus mints whose create row has `is_mayhem_mode == True`. A row's field counts only if it is a boolean on a create row whose `block_time * 1000 <= mig_ms` (the entry cutoff is later still, so the field is pre-cutoff). Otherwise the field is missing and the mint is not vetoed. Coverage is reported per source.
+- **H2, V0-class veto. DROPPED before any outcome read (section 11); report-only counts remain.** Frozen selection restricted to mints whose canonical pool (`canonical_pool(mint)`, deterministic from the mint) has V0 in [16.70, 18.46] SOL (17.58 SOL +/- 5%) in the pinned map. V0 = 0, null/absent and any other value are vetoed.
 - **H3, regime gate.** Trade the frozen selection only when the mean flat-leg haircut net of **all** unfiltered migrations with `mig_ms` in (t - 6 h, t - 30 min] is above 0 (level 0, single level, no tuning), with at least 30 rows in the window (else the gate is closed). t = the row's `mig_ms`. Causal: the tp50_sl30 hold is capped at 30 minutes, so migrations at least 30 minutes old have closed holds. The first 24 h of each block's counted window are left-censored and leave both H3 and its paired comparison; the effect on n is reported (§7). The gate uses the flat leg for both legs' books (declared, not tuned).
-- **H4, size by score.** Stake 2x (0.10 SOL, re-simulated cells) for frozen score >= THR95 = 0.8352960347743753, 1x in [THR90, THR95). THR95 is the p95 (index round(0.95 (n-1))) of the 8,801 out-of-fold scores in `ARTIFACTS/exp012/oof_scores.json`, whose p90 is THR90 (a test asserts both). Uses the frozen score; no level is fit on these dates. **Blocked** until the 0.10 SOL re-simulation exists (same follow-up).
+- **H4, size by score.** Stake 2x (0.10 SOL, re-simulated cells) for frozen score >= THR95 = 0.8352960347743753, 1x in [THR90, THR95). THR95 is the p95 (index round(0.95 (n-1))) of the 8,801 out-of-fold scores in `ARTIFACTS/exp012/oof_scores.json`, whose p90 is THR90 (a test asserts both). Uses the frozen score; no level is fit on these dates. Uses the 0.10 SOL cells from the sealed sized cache (section 12).
 
-Each H cell is **1 try**, logged in `data/tries.jsonl` (`exp017_h1..h4`), one `started` line each at the spend point and one `completed` line per pool group.
+Each remaining H cell (H3, H4) is **1 try**, logged in `data/tries.jsonl` (`exp017_h3`, `exp017_h4`), one `started` line each at the spend point and one `completed` line per pool group.
 
 ## 4. Bars (27 non-P1 dates; adapted from EXP-015 bars 1-6)
 
@@ -47,15 +47,14 @@ P1 numbers are reported, never gating.
 
 ## 5. Multiplicity
 
-Holm across H1-H4 at family alpha 0.05 on the one-sided paired date-cluster bootstrap p of mean x (10,000 draws, seed 1, p = (1 + #{draw mean <= 0}) / (1 + draws), max over the two legs). C0 is outside the family.
+Holm across H3 and H4 (k = 2) at family alpha 0.05 on the one-sided paired date-cluster bootstrap p of mean x (10,000 draws, seed 1, p = (1 + #{draw mean <= 0}) / (1 + draws), max over the two legs). C0 is outside the family.
 
 ## 6. Refusals (checked before the `started` line; no try is spent)
 
 - Cache manifest or raw manifest sha256 differs from §1; any `v_P*.manifest.json` head differs from the pinned code sha, or its V map sha differs from the pin.
 - V map sha differs from the pin; any view path in a reserved fragment (fresh-0808, fresh-0828, forward, raw walkers).
-- `is_mayhem_mode` coverage below 90% on any non-P1 source (H1's coverage rule; applies to the whole run because the cells share one data load).
-- Zero non-P1 trades in H1, H2 or H4 (outcome-blind cells). H3's gate reads outcomes, so an empty H3 is detected after `started` and reported as a failed cell, try spent.
-- `--sized-cache` absent, or its manifest differs from `SIZED_MANIFEST_SHA256` (to be pinned by an amendment after the re-simulation).
+- Zero non-P1 trades in H4 (the outcome-blind cell). Mayhem coverage is report-only now (H1 is dropped). H3's gate reads outcomes, so an empty H3 is detected after `started` and reported as a failed cell, try spent.
+- `--sized-cache` absent, or its manifest differs from the plan's `SIZED_MANIFEST_SHA256 = <sha>` line (added by an amendment after the outcome-blind re-sim build, section 12).
 - Any earlier `exp017` line in the tries log, or `RUN.lock`: a second run is refused.
 
 **Open before the run:** the sized cache (H4, C0) does not exist yet; see §3 and §8.
@@ -73,7 +72,7 @@ Holm across H1-H4 at family alpha 0.05 on the one-sided paired date-cluster boot
 
 - V0 = 0 pools and mayhem mints are almost the same set (e.g. P3: 1,459 V0 = 0 pools, 1,459 mayhem mints). H1 and H2 are therefore nearly one hypothesis tested twice; Holm pays for both.
 - Both vetoes remove about 2 of the 2,349 frozen-selected non-P1 rows. A filter that removes 2 rows cannot move a mean of this size: H1 and H2 are expected to fail B2 by construction. They stay in the family because they were asked for; the manager may drop them by amendment before the run.
-- Create-row coverage of `is_mayhem_mode`: in the first precount, with a strict `create < migration` rule, coverage was 51-65% (P1B 0%: ingest_hot rows carry no field). The cause is that the cache `mig_ms` equals the create second for most non-mayhem mints (median gap 0 s), so a strict test drops them. The rule above is `<=`. Post-fix coverage (outcome-blind precount): P2, P3, P4 and P1A, P1C 100%; P1B 0% (report-only). The 90% refusal is therefore not triggered. The `<=` rule is a precount-time ruling made before any outcome was read; the strict rule would have refused the run.
+- Create-row coverage of `is_mayhem_mode`: in the first precount, with a strict `create < migration` rule, coverage was 51-65% (P1B 0%: ingest_hot rows carry no field). The cause is not a cache bug (the cache agrees with the view's `complete` rows): 43.9% of non-mayhem mints graduate in the same slot as their create (in explore-0814 w1, 612 of 813 do it inside the create tx itself, bundled launches), so their migration second equals the create second; the non-mayhem median gap is 10 s and mayhem gaps are never 0. A strict test drops the same-slot mints. The rule above is `<=`. Post-fix coverage (outcome-blind precount): P2, P3, P4 and P1A, P1C 100%; P1B 0% (report-only). The 90% refusal is therefore not triggered. The `<=` rule is a precount-time ruling made before any outcome was read; the strict rule would have refused the run.
 
 ## 9. What is already known (so nobody reads this as a blind test)
 
@@ -82,3 +81,19 @@ The frozen EXP-012 book on these 27 non-P1 dates at the deciding costs was repor
 ## 10. What a pass earns
 
 Nothing but a pre-registered one-shot read of fresh-0828 or fresh-0808. Not the promotion gate, not a live trial.
+
+## 11. Pre-read change, 2026-10-06: H1 and H2 dropped (manager ruling, before any outcome read)
+
+By the outcome-blind selected-set counts of section 7, each of H1 (2,347) and H2 (2,345) keeps all but about 2 of the 2,349 frozen-selected non-P1 rows (V0 = 0 pools and mayhem mints are almost the same set). A filter that removes 2 rows cannot move the paired bar, so testing it would only spend tries and Holm power. The family is now **H3 and H4 (k = 2)**; Holm thresholds are 0.025 and 0.05. The mayhem and V0-class coverage and veto counts stay in `--precount` and in `screen.json` as report-only. No H1 or H2 try is logged. No outcome of any cell was read before this change.
+
+## 12. Sized cache (C0, H4): `tools/exp017_resim.py`
+
+- **What:** the frozen-EXP-012-selected mints (score >= THR90, 3,322 outcome-blind rows over all sources; selection from the pinned cache's features with the net fields dropped at parse time) re-simulated at 0.10, 0.25 and 0.50 SOL, k = 6, exit lag 2, V pin 0909. Haircut, 505k fee per side and both fail models are applied by the screen exactly as for the 0.05 SOL cells. H3 needs no sized cells (its gate uses the unfiltered 0.05 SOL cache).
+- **Design (sealed dir):** the re-sim writes `<out-dir>/sized_cache/v_P*.rows.jsonl` (same schema as the EXP-015 cache) and `SIZED.manifest.sha256`, and prints only counts and hashes. It is outcome-producing but is not a try and not a read; nobody opens the files. The screen consumes the directory only after an amendment adds a single line `SIZED_MANIFEST_SHA256 = <64 hex>` to this file, and re-hashes before use.
+- **Commands (mal-research-0, as a MiScusi job, <= 48 GB, 4 workers):**
+  1. `python -m tools.exp017_resim --precount --p1-fast-dir ... --out-dir /data/mal/exp017-resim` (count-only, seconds).
+  2. The full re-sim command in the module docstring (same view arguments as the EXP-015 screen, `--max-workers 4`).
+  3. Amendment line with the printed manifest sha.
+  4. `python -m tools.exp017_screen --sized-cache /data/mal/exp017-resim/sized_cache --out-dir /data/mal/exp017-screen`.
+- **Runtime estimate (not measured):** one V pass over six sources at 4 workers, only the 3,322 selected mints simulated at three sizes. The EXP-015 V pass (all migrations, five cells each) took about 2.4 h wall time; this is expected at roughly 1-2 h, dominated by tape loading. The screen itself runs in minutes (10,000-draw bootstraps on 27 dates).
+- **Memory:** tape workers capped at 4 (`WORKERS_CAP`), the same ceiling as the EXP-015 passes. One heavy job at a time.

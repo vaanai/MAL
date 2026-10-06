@@ -224,9 +224,83 @@ class TestManifestAndPins(unittest.TestCase):
     def test_zero_cell_refusal(self):
         counts = {"n_selected": {c: {"non_p1": 5} for c in ("H1", "H2", "H4")}}
         x17.zero_cell_check(counts)
-        counts["n_selected"]["H2"]["non_p1"] = 0
+        counts["n_selected"]["H1"]["non_p1"] = 0  # H1 / H2 are report-only: never a refusal
+        x17.zero_cell_check(counts)
+        counts["n_selected"]["H4"]["non_p1"] = 0
         with self.assertRaises(x17.Refused):
             x17.zero_cell_check(counts)
+
+
+class TestDroppedAndPin(unittest.TestCase):
+    def test_family_is_h3_h4_and_holm_k2(self):
+        self.assertEqual(x17.HCELLS, ("H3", "H4"))
+        h = x17.holm({"H3": 0.02, "H4": 0.9})
+        self.assertEqual(h["H3"]["threshold"], 0.025)  # alpha / 2
+
+    def test_sized_pin_from_plan_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = Path(d) / "plan.md"
+            plan.write_text("text\n", encoding="utf-8")
+            self.assertIsNone(x17.sized_pin(plan))
+            sha = "ab" * 32
+            plan.write_text(f"## Amendment\nSIZED_MANIFEST_SHA256 = {sha}\n", encoding="utf-8")
+            self.assertEqual(x17.sized_pin(plan), sha)
+            plan.write_text(f"SIZED_MANIFEST_SHA256 = {sha}\nSIZED_MANIFEST_SHA256 = {'cd' * 32}\n", encoding="utf-8")
+            with self.assertRaises(x17.Refused):
+                x17.sized_pin(plan)
+
+
+class TestResim(unittest.TestCase):
+    def test_v_patch_env_selects_and_overrides_combos(self):
+        import os
+
+        import tools.exploration_entry_model as eem
+        import tools.exp017_resim as rs
+
+        with tempfile.TemporaryDirectory() as d:
+            sel = Path(d) / "sel.json"
+            sel.write_text(json.dumps(["keep"]))
+            env = {e15.ENV_COMBOS: json.dumps([[k, s, lag] for k, s, lag in rs.COMBOS]), e15.ENV_SELECTED: str(sel)}
+            before = eem.score_one
+            with mock.patch.dict(os.environ, env):
+                with e15.e15_v_patch():
+                    # a non-selected mint returns before any scoring (base score_one is never reached with these None arguments)
+                    self.assertEqual(eem.score_one("other", None, None, None, 0, None), [])
+            self.assertIs(eem.score_one, before)
+        self.assertEqual(rs.COMBOS, ((6, 0.10, 2), (6, 0.25, 2), (6, 0.5, 2)))
+        self.assertEqual([x17.SIZE_2X, *x17.C0_SIZES], [int(round(s * 1e9)) for s in rs.SIZES_SOL])
+
+    def test_precount_mode_reads_no_net_and_no_tape(self):
+        import io
+        from contextlib import redirect_stdout
+
+        import tools.exp017_resim as rs
+
+        with tempfile.TemporaryDirectory() as d:
+            cache = Path(d) / "cache"
+            cache.mkdir()
+            for src in x17.SOURCES:
+                rows = [cache_row(f"{src}{i}", P2_START + (30 + i) * 3_600_000) for i in range(4)] if src == "P2" else []
+                for r in rows:
+                    for c in r["cells"]:
+                        for k in x17.NET_KEYS:
+                            c[k] = "POISON"
+                (cache / f"v_{src}.rows.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+            def boom(*a, **k):
+                raise AssertionError("touched")
+
+            buf = io.StringIO()
+            with mock.patch.object(x17, "check_manifests", lambda *a, **k: {}), mock.patch.object(x17, "check_cache_heads", lambda *a, **k: {}), \
+                    mock.patch.object(x17, "frozen_scores", lambda u, a=None: [0.9, 0.5, 0.9, 0.5][: len(u)]), mock.patch.object(e15, "run_guards", boom), \
+                    mock.patch.object(e15, "cell_nets", boom), mock.patch.object(rs, "run_pass", boom), redirect_stdout(buf):
+                rc = rs.main(["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--p1-oracle-live-dir", "c", "--out-dir", str(Path(d) / "o"), "--scratch", d, "--precount"])
+            self.assertEqual(rc, 0)
+            out = json.loads(buf.getvalue())
+            self.assertEqual(out["n_selected"], 2)
+            self.assertEqual(out["n_cells_to_simulate"], 6)
+            self.assertTrue(out["outcome_blind"])
+            self.assertFalse((Path(d) / "o").exists())
 
 
 class TestFullRunSynthetic(unittest.TestCase):
@@ -259,8 +333,8 @@ class TestFullRunSynthetic(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             log = Path(d) / "tries.jsonl"
             info = x17.log_cell_tries(log, Path(d), x17.HCELLS, "started")
-            self.assertEqual(len(log.read_text().splitlines()), 4)  # one started try per H cell
-            self.assertEqual(len(x17.prior_exp017_lines(log)), 4)  # a second run is refused on these
+            self.assertEqual(len(log.read_text().splitlines()), len(x17.HCELLS))  # one started try per H cell
+            self.assertEqual(len(x17.prior_exp017_lines(log)), len(x17.HCELLS))  # a second run is refused on these
             x17.write_results(Path(d), rep["trades"], info, log, "abc", 1.0)
             r = json.loads((Path(d) / "result_H4.json").read_text())
             self.assertEqual(mal_result.validate_result(r), [])

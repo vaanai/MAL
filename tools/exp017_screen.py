@@ -13,9 +13,9 @@ Modes
 
 Data: the cached V-pass rows of the EXP-015 screen (/data/mal/exp015-screen/scratch/cache/v_P*.rows.jsonl, schema exp015_tape_cache_v1).
 Each row: mint, spec, day, mig_ms, gap_ms, features (frozen order), cells [{k, lag, size, censored, filled, status, net0, sides, p_press}].
-The cache has size 0.05 SOL cells only. H4 (2x stake) and C0 (0.25 / 0.5 SOL) need cells re-simulated at those sizes; that pass is NOT in this
-module (TODO, follow-up PR: `tools/exp017_resim.py`). The full run refuses until `--sized-cache` is given and its manifest is pinned by a plan
-amendment (SIZED_MANIFEST_SHA256).
+The cache has size 0.05 SOL cells only. H4 (2x stake) and C0 (0.25 / 0.5 SOL) use cells re-simulated at those sizes by `tools/exp017_resim.py`
+(a sealed sized cache). The full run refuses until `--sized-cache` is given and its manifest matches the `SIZED_MANIFEST_SHA256 = <sha>` line
+a plan amendment adds after the outcome-blind build. H1 / H2 are report-only counts (dropped from the family before any outcome read).
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -49,7 +50,7 @@ RAW_MANIFEST_SHA256 = "0b7c9afae44678a3b8d54451d4be79aad847ad76290f8cd8ff7d478dc
 CACHE_MANIFEST_SHA256 = "72b9bd1a355953c114835a77fd7ea2f2273e75b21393cf5be2d48a16523ba31b"  # 12 files, scratch/cache/v_P*.{rows.jsonl,manifest.json}
 RAW_MANIFEST_FILES, CACHE_MANIFEST_FILES = 71, 12
 CACHE_CODE_SHA = "cc366d4c7d8597d6429575c165f164cce35ce39d"  # head recorded in every v_P*.manifest.json (EXP-015 screen, job #242)
-SIZED_MANIFEST_SHA256: str | None = None  # pinned by a plan amendment after the re-sim exists; None = H4 / C0 cannot run
+SIZED_MANIFEST_SHA256: str | None = None  # None: read the pin from the plan (see sized_pin); no pin = H4 / C0 cannot run
 THR90 = e15.FROZEN_THRESHOLD  # 0.8030766588450794 = p90 of ARTIFACTS/exp012/oof_scores.json
 THR95 = 0.8352960347743753  # p95 of the same 8,801 OOF scores, index round(0.95 * (n - 1)) (asserted by a test against the artifact)
 V_CANON_LO, V_CANON_HI = 16_700_000_000, 18_460_000_000  # V0 class "canonical": 17.58 SOL +/- 5 %
@@ -67,7 +68,8 @@ SIZE_2X = 100_000_000
 C0_SIZES = (250_000_000, 500_000_000)
 PRIMARY = e15.PRIMARY_CELL  # (6, 2)
 LEGS = e15.LEGS
-HCELLS = ("H1", "H2", "H3", "H4")
+HCELLS = ("H3", "H4")  # H1 / H2 were dropped before any outcome read (plan section 8); they stay as report-only counts
+REPORT_ONLY_CELLS = ("H1", "H2")
 NET_KEYS = frozenset({"net0", "status", "sides", "p_press"})
 BLIND_CELL_KEYS = ("k", "lag", "size", "censored")
 SOURCES = e15.SOURCES
@@ -224,7 +226,7 @@ def scan_creates(view_dirs: Mapping[str, Sequence[str | Path]], wanted: Mapping[
 
 
 def mayhem_flags(universe: Sequence[Mapping[str, Any]], creates: Mapping[str, Mapping[str, Any]]) -> list[bool | None]:
-    """True / False when a create row carries a boolean is_mayhem_mode and block_time at or before the migration time (the entry cutoff is later still, so the field is pre-cutoff; the cache mig_ms equals the create second for most non-mayhem mints, so strict < would drop them);
+    """True / False when a create row carries a boolean is_mayhem_mode and block_time at or before the migration time (the entry cutoff is later still, so the field is pre-cutoff; 43.9% of non-mayhem mints graduate in the same slot as their create (bundled launches, many inside the create tx), so their cache mig_ms equals the create second and a strict < would drop them);
     None otherwise (no create row, no field, or a create not strictly earlier than the migration)."""
     out: list[bool | None] = []
     for u in universe:
@@ -512,9 +514,9 @@ def precount(universe: Sequence[Mapping[str, Any]], stats: Mapping[str, Any], sc
 def zero_cell_check(counts: Mapping[str, Any]) -> None:
     """Refuse before `started` when a cell whose selection is outcome-blind (H1, H2, H4) has zero non-P1 trades. H3's gate reads outcomes, so a
     zero H3 cell is detected after `started` and reported as a failed cell (try spent), never as a refusal."""
-    zero = [c for c in ("H1", "H2", "H4") if counts["n_selected"][c]["non_p1"] == 0]
+    zero = [c for c in ("H4",) if counts["n_selected"][c]["non_p1"] == 0]
     if zero:
-        raise Refused(f"zero-cell refusal: {zero} select no non-P1 migration")
+        raise Refused(f"zero-cell refusal: {zero} select no non-P1 migration (H3 is outcome-gated and is checked after `started`)")
 
 
 # --- tries, lock, outputs ---------------------------------------------------------------------------------------------
@@ -576,6 +578,23 @@ def write_json(path: Path, obj: Any) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2, default=str, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+SIZED_PIN_RE = re.compile(r"^SIZED_MANIFEST_SHA256 = ([0-9a-f]{64})\s*$", re.MULTILINE)
+
+
+def sized_pin(plan: Path = PLAN) -> str | None:
+    """The sized-cache manifest pin: the constant, else the single `SIZED_MANIFEST_SHA256 = <sha>` line a plan amendment adds after the
+    outcome-blind re-sim build. Two different pins in the plan refuse."""
+    if SIZED_MANIFEST_SHA256 is not None:
+        return SIZED_MANIFEST_SHA256
+    try:
+        found = set(SIZED_PIN_RE.findall(Path(plan).read_text(encoding="utf-8")))
+    except OSError:
+        return None
+    if len(found) > 1:
+        raise Refused(f"{plan} carries {len(found)} different SIZED_MANIFEST_SHA256 lines")
+    return next(iter(found), None)
 
 
 def _fmt(v: Any) -> str:
@@ -707,19 +726,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         if blind:
             print(json.dumps({"mode": "precount", "counts": counts, "outcome_blind": True}, indent=2, default=str))
             return 0
-        check_coverage(cov)
         zero_cell_check(counts)
         with_sized = False
         if args.sized_cache:
-            if SIZED_MANIFEST_SHA256 is None:
-                raise Refused("SIZED_MANIFEST_SHA256 is not pinned: a plan amendment must pin the re-simulated cache before the full run")
+            pin = sized_pin()
+            if pin is None:
+                raise Refused("no SIZED_MANIFEST_SHA256 pin in the plan: an amendment must pin the re-simulated cache before the full run")
             _, sha = manifest(args.sized_cache, ("v_P*.rows.jsonl",))
-            if sha != SIZED_MANIFEST_SHA256:
-                raise Refused(f"sized cache manifest {sha} != pinned {SIZED_MANIFEST_SHA256}")
+            if sha != pin:
+                raise Refused(f"sized cache manifest {sha} != pinned {pin}")
             attach_sized(universe, load_sized_cells(args.sized_cache))
             with_sized = True
         else:
-            raise Refused("H4 (2x stake) needs --sized-cache; the re-simulation pass is a follow-up (TODO)")
+            raise Refused("H4 (2x stake) needs --sized-cache; the re-simulation is tools/exp017_resim.py (TODO)")
         head = e15.git_state()["head"]
         e15.take_lock(out_dir, head, hashlib.sha256(json.dumps(sorted(vars(args).items(), key=lambda kv: kv[0]), default=str).encode()).hexdigest())
     except (Refused, e15.Refused) as exc:
