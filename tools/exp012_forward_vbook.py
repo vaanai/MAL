@@ -286,6 +286,17 @@ def _utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def disc_pools_of(merge_doc: dict[str, Any] | None) -> frozenset[str]:
+    """In-set pools whose v_base differs between the latest pre-cutoff snapshot and the post-cutoff fetch (merge record,
+    `v_base_discrepancies.final_vs_snapshot`). A merge record without that block is refused (fail closed)."""
+    if merge_doc is None:
+        return frozenset()
+    d = merge_doc.get("v_base_discrepancies")
+    if not isinstance(d, dict) or not isinstance(d.get("final_vs_snapshot"), list):
+        raise Refused(["--vmap-merge-meta has no v_base_discrepancies.final_vs_snapshot (merge from before the 2026-10-06 rule); re-run merge"])
+    return frozenset(str(x[0]) for x in d["final_vs_snapshot"])
+
+
 def live_blockers(agreement: dict[str, Any], vault_bad: Sequence[str], null_v: dict[str, Any], b_verdict_if_decidable: str) -> list[str]:
     out = []
     if not agreement["agree_on_every_gate_condition"] and agreement["disagreements"]:
@@ -293,7 +304,9 @@ def live_blockers(agreement: dict[str, Any], vault_bad: Sequence[str], null_v: d
     if vault_bad:
         out.append("vault-mode entered set differs from (A)'s: " + "; ".join(vault_bad))
     if null_v["not_decidable"]:
-        out.append("null-V rule: (B) is NOT_DECIDABLE")
+        out.append("null-V rule (null-V or v_base-discrepancy pools): (B) is NOT_DECIDABLE")
+    elif null_v.get("n_entered_touching_v_base_discrepancy"):
+        out.append(f"{null_v['n_entered_touching_v_base_discrepancy']} entered trade(s) touch a v_base-discrepancy pool (below the Amendment 4 §3 limits; disclosed)")
     if b_verdict_if_decidable != "PASS":
         out.append("(B) at mcap_mode v does not PASS the gate")
     out.append(VALIDATION_REMINDER)
@@ -341,7 +354,7 @@ def check_entered_set(a_rows: Sequence[dict[str, Any]], b_rows: Sequence[dict[st
     return [f"{label}: entered set differs from (A)'s: {len(a - b)} only in (A), {len(b - a)} only in (B); first mints {sorted(m for m, _ in (a ^ b))[:5]}"]
 
 
-def null_v_assessment(b_rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+def null_v_assessment(b_rows: Sequence[dict[str, Any]], disc_pools: frozenset[str] | set[str] = frozenset()) -> dict[str, Any]:
     """Amendment 4 section 3. A pool with no readable V is never V = 0: if any trade in the union of (B)'s top 3 entered
     trades by flat and top 3 by press (each leg drops its own top 3), or more than 1% of entered trades, touch one, (B) is
     not decidable. A row without `no_v_pools` or `zero_v_pools` is refused (fail closed). V = 0 pools are
@@ -351,7 +364,16 @@ def null_v_assessment(b_rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         absent = [t for t in ("no_v_pools", "zero_v_pools") if t not in r]
         if absent:
             raise Refused([f"entered row {r.get('mint')} has no {absent} tag(s); refusing (fail closed)"])
-    touching = [r for r in entered if r["no_v_pools"]]
+    if disc_pools:
+        for r in entered:
+            if "pumpswap_pools" not in r:
+                raise Refused([f"entered row {r.get('mint')} has no pumpswap_pools tag; the v_base-discrepancy rule cannot be applied (fail closed)"])
+    # DEC-016 Am.5 §3 (2026-10-06 edit): a pool whose v_base differs between a pre-cutoff snapshot and the post-cutoff
+    # fetch has an ambiguous V at trade time; it counts exactly like a null-V pool here.
+    disc_hit = {id(r): sorted(set(r["pumpswap_pools"]) & set(disc_pools)) for r in entered} if disc_pools else {}
+    uncertain = lambda r: bool(r["no_v_pools"]) or bool(disc_hit.get(id(r)))  # noqa: E731
+    touching = [r for r in entered if uncertain(r)]
+    touching_disc = [r for r in entered if disc_hit.get(id(r))]
     zero = [r for r in entered if r["zero_v_pools"]]
     top_flat = sorted(entered, key=lambda r: r["flat"], reverse=True)[:TOP_N]
     top_press = sorted(entered, key=lambda r: r["press"], reverse=True)[:TOP_N]
@@ -359,7 +381,7 @@ def null_v_assessment(b_rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
     for r in top_flat + top_press:
         if not any(r is u for u in union):
             union.append(r)
-    top_hit = [r for r in union if r["no_v_pools"]]
+    top_hit = [r for r in union if uncertain(r)]
     n = len(entered)
     over = len(touching) > NULL_V_SHARE_LIMIT * n  # exactly 1% is allowed
     return {
@@ -374,6 +396,11 @@ def null_v_assessment(b_rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "top3_touches_null_v": bool(top_hit),
         "not_decidable": bool(over or top_hit),
         "null_v_pool_ids": sorted({p for r in touching for p in r["no_v_pools"]}),
+        "n_v_base_discrepancy_pools": len(disc_pools),
+        "n_entered_touching_v_base_discrepancy": len(touching_disc),
+        "top3_union_touches_v_base_discrepancy": any(disc_hit.get(id(r)) for r in union),
+        "v_base_discrepancy_pool_ids_touched": sorted({p for r in touching_disc for p in disc_hit[id(r)]}),
+        "uncertain_v_note": "touching = a null-V pool OR a v_base-discrepancy pool (DEC-016 Am.5 §3 edit 2026-10-06)",
         "n_entered_touching_zero_v": len(zero),
         "n_top3_union_touching_zero_v": sum(1 for r in union if r["zero_v_pools"]),
         "zero_v_pool_ids": sorted({p for r in zero for p in r["zero_v_pools"]}),
@@ -477,7 +504,7 @@ def run_vbook(
         vault_rows, vault_counts, _ = one("vault", "vault", False)
         vault_bad = check_entered_set(a_rows, vault_rows, "mcap_mode vault")
 
-        null_v = null_v_assessment(v_rows)
+        null_v = null_v_assessment(v_rows, disc_pools_of(merge_doc))
         b_gate = gate_block(v_rows, runs)
         vault_gate = gate_block(vault_rows, runs)
         agreement = compare_modes(b_gate, vault_gate)

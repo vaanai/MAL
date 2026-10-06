@@ -626,7 +626,8 @@ def check_vbook_report(path: Path, vmap_sha256: str, window: tuple[str, str], te
         raise fw.Refused([f"{runs_ledger}: the DONE line does not match the report's V map sha256 or b_verdict"])
     if final_rows_sha256 is not None and line.get("final_rows_sha256") != final_rows_sha256:
         raise fw.Refused([f"{runs_ledger}: the DONE line's final_rows_sha256 differs from the FINAL lock's rows_sha256"])
-    return {"path": str(path.resolve()), "sha256": sha, "b_verdict": doc["b_verdict"], "runs_ledger": str(runs_ledger), "ledger_line": line}
+    disc = sorted(vb.disc_pools_of(doc.get("vmap_merge")))
+    return {"path": str(path.resolve()), "sha256": sha, "b_verdict": doc["b_verdict"], "runs_ledger": str(runs_ledger), "ledger_line": line, "v_base_discrepancy_pools": disc}
 
 
 def run(
@@ -818,7 +819,7 @@ def _b_block(vpass: dict[str, Any], entered: set[tuple[str, int]], k_p50: float,
     books, detail, kept = _books(_group(vpass["rows"], entered), entered, k_p50, k_p90, max_concurrent)
     null_v: dict[str, Any] = {}
     for name, rows_ in kept.items():
-        null_v[name] = vb.null_v_assessment([{"mint": r["mint"], "entered": True, "flat": r["flat"], "press": r["press"], "flat_sol": r["flat"] / LAMPORTS, "no_v_pools": r["no_v_pools"], "zero_v_pools": r["zero_v_pools"]} for r in rows_])
+        null_v[name] = vb.null_v_assessment([{"mint": r["mint"], "entered": True, "flat": r["flat"], "press": r["press"], "flat_sol": r["flat"] / LAMPORTS, "no_v_pools": r["no_v_pools"], "zero_v_pools": r["zero_v_pools"], "pumpswap_pools": r.get("pumpswap_pools", [])} for r in rows_], disc)
     rule = decide(books["p50"], books["p90"])
     undecidable = any(x["not_decidable"] for x in null_v.values())
     return {

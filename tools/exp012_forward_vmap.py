@@ -399,15 +399,22 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
             _same_base(p, bases[0], b, "snapshots disagree on a pool being filled")
     final_vs_snap: list[list[Any]] = []
     snap_vs_snap: list[str] = []
+    n_out_of_set = 0
+    n_uncomparable = 0
     filled_set = set(filled)
     for p, bases in snap_bases.items():
         if p in filled_set:
+            continue
+        if p not in pool_set:
+            n_out_of_set += 1
             continue
         known = [b for b in bases if b is not None]
         if len(set(known)) > 1:
             snap_vs_snap.append(p)
         if final.get(p) is not None:
             fb = _b(final_detail, p)
+            if fb is None or not known or len(known) < len(bases):
+                n_uncomparable += 1
             if fb is not None and known and fb != known[-1]:
                 final_vs_snap.append([p, known[-1], fb])
     final_vs_snap.sort()
@@ -417,7 +424,9 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
         "max_abs_final_vs_snapshot": max((abs(b - a) for _, a, b in final_vs_snap), default=0),
         "n_snapshot_vs_snapshot": len(snap_vs_snap),
         "snapshot_vs_snapshot": sorted(snap_vs_snap),
-        "note": "report-only: the post-cutoff map prices these pools (DEC-016 Am.5 §3, 2026-10-06 edit)",
+        "n_uncomparable": n_uncomparable,
+        "n_snapshot_pools_outside_set": n_out_of_set,
+        "note": "pools of the §1 set only. The post-cutoff map prices these pools; vbook treats final_vs_snapshot pools like null-V pools under Amendment 4 §3 (DEC-016 Am.5 §3, 2026-10-06 edit)",
     }
     for p in filled:
         out[p] = snap_v[p]
