@@ -703,12 +703,32 @@ CAVEATS = (
 )
 
 
-def decide(cells: Mapping[str, Mapping[str, Any]], hm: Mapping[str, Mapping[str, Any]]) -> str:
+def h4_vs_uniform(cells: Mapping[str, Mapping[str, Any]], c0: Mapping[str, Any]) -> dict[str, Any]:
+    """H4 is a SCORE effect only if its non-P1 total SOL exceeds the non-P1 total SOL of uniform 0.10 SOL on every frozen-selected row, under BOTH
+    fail models (equivalently: the [THR90, THR95) tier's sum of (0.10 net - 0.05 net) is < 0 on both legs). Otherwise it is a size effect."""
+    key = str(SIZE_2X / LAMPORTS)
+    try:
+        ref = c0[key]["report"]
+        out = {leg: {"h4_total_sol": cells["H4"]["bars"]["B1"]["report"][leg]["total_sol"], "uniform_0p10_total_sol": ref[leg]["total_sol"]} for leg in LEGS}
+    except (KeyError, TypeError):
+        return {"score_effect": False, "reason": "uniform-0.10 reference unavailable"}
+    for leg in LEGS:
+        out[leg]["h4_beats_uniform"] = bool(out[leg]["h4_total_sol"] is not None and out[leg]["uniform_0p10_total_sol"] is not None and out[leg]["h4_total_sol"] > out[leg]["uniform_0p10_total_sol"])
+    out["score_effect"] = all(out[leg]["h4_beats_uniform"] for leg in LEGS)
+    return out
+
+
+def decide(cells: Mapping[str, Mapping[str, Any]], hm: Mapping[str, Mapping[str, Any]], uniform: Mapping[str, Any] | None = None) -> str:
     wins = [c for c in HCELLS if hm[c]["reject"] and cells[c]["bars_all"]]
+    if "H4" in wins and not (uniform or {}).get("score_effect", False):
+        wins.remove("H4")
+        note = " H4: size effect, not score -- earns nothing."
+    else:
+        note = ""
     if not wins:
-        return "SCREEN NONE: no cell is Holm-significant with bars 1-6 passing. Nothing goes to confirmation."
+        return "SCREEN NONE: no cell is Holm-significant with bars 1-6 passing. Nothing goes to confirmation." + note
     best = max(wins, key=lambda c: cells[c]["bars"]["B1"]["report"]["press"]["mean_sol"] or float("-inf"))
-    return f"SCREEN PASS: {', '.join(wins)} clear Holm and bars 1-6; {best} has the largest pressure mean. This means 'worth one confirmation read', never 'has an edge'."
+    return f"SCREEN PASS: {', '.join(wins)} clear Holm and bars 1-6; {best} has the largest pressure mean. This means 'worth one confirmation read', never 'has an edge'." + note
 
 
 def run_full(universe: Sequence[Mapping[str, Any]], scores: Sequence[float], flags: Sequence[bool | None], klass: Sequence[str], with_sized: bool) -> dict[str, Any]:
@@ -733,9 +753,11 @@ def run_full(universe: Sequence[Mapping[str, Any]], scores: Sequence[float], fla
     for c in HCELLS:
         res[c]["bars"]["B2"]["pass"] = bool(res[c]["bars"]["B2"]["pass"] and hm[c]["reject"])  # B2 includes Holm significance
         res[c]["bars_all"] = all(b["pass"] for b in res[c]["bars"].values())
-    return {"trades": trades, "cells": res, "holm": hm, "c0": c0_report(universe, [bool(m) for m in cells["frozen"]["mult"]], with_sized),
+    c0 = c0_report(universe, [bool(m) for m in cells["frozen"]["mult"]], with_sized)
+    uniform = h4_vs_uniform(res, c0)
+    return {"trades": trades, "cells": res, "holm": hm, "c0": c0, "h4_vs_uniform_0p10": uniform,
             "h3_window": {"left_censored_rows": sum(lc), "gate_open_rows": sum(1 for g, c in zip(gate, lc) if g and not c), "rows_with_window_n_lt_min": sum(1 for n in wn if n < H3_MIN_WINDOW_N)},
-            "outcome": decide(res, hm), "caveats": list(CAVEATS)}
+            "outcome": decide(res, hm, uniform), "caveats": list(CAVEATS)}
 
 
 # --- CLI --------------------------------------------------------------------------------------------------------------

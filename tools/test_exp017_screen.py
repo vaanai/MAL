@@ -395,6 +395,38 @@ class TestQuantProofFixes(unittest.TestCase):
             self.assertEqual(e15.main(["--out-dir", "/nonexistent"]), 2)
 
 
+class TestH4VsUniform(unittest.TestCase):
+    def _cells(self, h4_flat, h4_press):
+        b1 = {"report": {"flat": {"total_sol": h4_flat, "mean_sol": 0.0}, "press": {"total_sol": h4_press, "mean_sol": 0.0}}}
+        return {"H3": {"bars_all": False, "bars": {"B1": b1}}, "H4": {"bars_all": True, "bars": {"B1": b1}}}
+
+    def _c0(self, flat, press):
+        return {str(x17.SIZE_2X / x17.LAMPORTS): {"report": {"flat": {"total_sol": flat}, "press": {"total_sol": press}}}}
+
+    HM = {"H3": {"reject": False}, "H4": {"reject": True}}
+
+    def test_score_effect_branch_passes(self):
+        cells = self._cells(1.0, 1.0)
+        u = x17.h4_vs_uniform(cells, self._c0(0.5, 0.5))
+        self.assertTrue(u["score_effect"])
+        self.assertTrue(x17.decide(cells, self.HM, u).startswith("SCREEN PASS: H4"))
+
+    def test_size_effect_branch_earns_nothing(self):
+        cells = self._cells(1.0, 1.0)
+        for c0 in (self._c0(2.0, 2.0), self._c0(0.5, 2.0), self._c0(2.0, 0.5), self._c0(1.0, 1.0)):  # not beating uniform on either leg (ties fail)
+            u = x17.h4_vs_uniform(cells, c0)
+            self.assertFalse(u["score_effect"])
+            out = x17.decide(cells, self.HM, u)
+            self.assertNotIn("SCREEN PASS", out)
+            self.assertIn("H4: size effect, not score -- earns nothing", out)
+
+    def test_missing_reference_is_not_a_score_effect(self):
+        cells = self._cells(1.0, 1.0)
+        u = x17.h4_vs_uniform(cells, {"status": "NOT_RUN"})
+        self.assertFalse(u["score_effect"])
+        self.assertNotIn("SCREEN PASS", x17.decide(cells, self.HM, u))
+
+
 class TestFullRunSynthetic(unittest.TestCase):
     def _universe(self):
         rng = random.Random(3)
