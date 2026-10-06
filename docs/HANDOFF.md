@@ -31,9 +31,9 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 | --- | --- |
 | Build | pinned `faa319227eee420319eed06e85774f64dd2273b1` (unchanged since 10-05T23:09:56Z) |
 | Limits | 90 attempts, 0.05 SOL, max 3 open, loss cap 0.25, 500k priority, hard end **2026-10-12T00Z** |
-| Last check | 03:33Z (job #227): **43/90, realized −0.068014 SOL**, 0 open, healthy |
+| Last check | 04:33Z (job #229): **45/90, realized −0.065655 SOL**, 0 open, healthy |
 | faa3192 group | +0.085348 SOL over 15 attempts (too few to read as edge). All 36 closed at 01:21Z totalled −174,249,232 lamports (job #208). Never call the record "break-even"; it was a loss (memory `feedback-realistic-primary`). |
-| Calibration | job #209: exits agree 35/36 (8/8 faa3192). Lab note `probe-calibration-2026-10-06.md` (#353). **Next calibration is due at ≥45 attempts.** |
+| Calibration | job #209: exits agree 35/36 (8/8 faa3192). Lab note `probe-calibration-2026-10-06.md` (#353). **Latest: job #230 at 45 attempts.** faa3192 is 16/16 exits agree; live−sim mean −640,641, median +34,540 lamports. One tp-jump outlier (8gtnEi3Q −8.57M) shows sim optimism on upward jumps. Next calibration at ≥53 attempts. DEC-021's r̄ needs 20 fills from one build. |
 | Monitor | session cron at :17 (it dies with the session; **recreate it**). Same command as job #227. Alert at −0.20. Helm's `mal-probe-watch.timer` is the durable alarm. |
 
 Never read `/etc/mal-probe`, `/etc/mal-probe-rpc` or `/run/credentials`. Re-pins are Helm's.
@@ -52,7 +52,7 @@ Install only after the 10-16 PASS, the owner's funding and the end instant. Helm
   - Scratch is sealed at `/data/mal/exp012-backcheck-0814.refused-job207`. Don't open its rows.
 - **Root cause, shared by everything:** the V maps were built from migrated mints' pools only. This also refused **EXP-013 #225** at its pre-pass (1.59% / 675 pools; no outcome, no try spent).
 - **Fix in flight:** a complete map, `pool_v_0909.json`. Chain:
-  1. #221: walker-c re-walk of 4 resumed EXP-011 hours (running).
+  1. #221: walker-c re-walk of 4 resumed EXP-011 hours (**done**).
   2. #222: install the 6 re-walked hours, verify and dedupe; expect 0 flagged.
   3. #224: 0909 = 0814 + EXP-011 pools + 30 pools.
   4. **#228**: every PumpSwap pool printed in all research views, fetched into 0909. It writes `/data/mal/ops/still-no-v-pools.json`.
@@ -78,7 +78,7 @@ Install only after the 10-16 PASS, the owner's funding and the end instant. Helm
 
 ## Next steps, in order
 
-1. Recreate the hourly probe monitor cron, and run the probe calibration at ≥45 attempts.
+1. Recreate the hourly probe monitor cron. Next calibration at ≥53 attempts.
 2. (done) #364 merged.
 3. Watch #221 → #222 → #224 → #228 / #226. Check `still-no-v-pools.json`, add the closed-pool V, chmod a-w, record the sha256.
 4. One pin commit for EXP-013 and EXP-015 (review it), then the EXP-013 rerun, then EXP-015 `--guards-only`, then the EXP-015 run.
