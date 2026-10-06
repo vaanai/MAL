@@ -35,7 +35,7 @@ class Chain:
             if post:
                 self.q, self.b = post
         self.rows.append(row)
-        return rg.row_key(row)
+        return row
 
     def gap(self, frac):
         """An untaped drain: the vault falls by `frac` with no print."""
@@ -45,9 +45,16 @@ class Chain:
 VMAP = {POOL: V}
 
 
+def keyof(rows, row):
+    for r, k in rg.stamp_rows(rows):
+        if r is row:
+            return k
+    raise KeyError
+
+
 def label(ch, entry, exit_, **kw):
     kw.setdefault("vmap", VMAP)
-    return rg.label_trade(ch.rows, migration_pool=POOL, entry_key=entry, exit_key=exit_, **kw)
+    return rg.label_trade(ch.rows, migration_pool=POOL, entry_key=keyof(ch.rows, entry), exit_key=keyof(ch.rows, exit_), **kw)
 
 
 class LabelTests(unittest.TestCase):
@@ -245,14 +252,33 @@ class PoolAttributionTests(unittest.TestCase):
     def test_no_pool_mint_has_no_pumpswap_rows_after_restriction(self):
         self.assertEqual(list(rg.restrict_rows_to_migration_pool(self._mixed(), None)), [])
 
-    def test_gate_refuses_before_any_try_unless_restricted(self):
-        rows = {"M": self._mixed(), "N": Chain(mint="N").rows}
-        with self.assertRaises(rg.PoolAttributionRefusal):
-            rg.pool_attribution_gate(rows, {"M": POOL, "N": POOL}, restricted=False)
-        rep = rg.pool_attribution_gate(rows, {"M": POOL, "N": POOL}, restricted=True)
+    def test_gate_verifies_the_fed_rows_not_a_flag(self):
+        nch = Chain(mint="N")
+        nch.trade(30)
+        raw = {"M": self._mixed(), "N": nch.rows}
+        pools = {"M": POOL, "N": POOL}
+        with self.assertRaises(rg.PoolAttributionRefusal):  # fed unrestricted
+            rg.pool_attribution_gate(raw, raw, pools)
+        fed = {m: list(rg.restrict_rows_to_migration_pool(r, pools[m])) for m, r in raw.items()}
+        rep = rg.pool_attribution_gate(raw, fed, pools)
         self.assertEqual((rep["mints_with_foreign_pool_prints"], rep["pools"]), (1, {"M": ["OTHER"]}))
-        clean = rg.pool_attribution_gate({"N": Chain(mint="N").rows}, {"N": POOL}, restricted=False)
+        clean = rg.pool_attribution_gate({"N": raw["N"]}, {"N": raw["N"]}, {"N": POOL})
         self.assertEqual(clean["mints_with_foreign_pool_prints"], 0)
+        # a mint with no migration pool must be fed no PumpSwap rows at all
+        with self.assertRaises(rg.PoolAttributionRefusal):
+            rg.pool_attribution_gate(raw, {"N": raw["N"]}, {})
+
+    def test_ambiguous_fill_key_is_refused(self):
+        ch = Chain()
+        ch.trade(10)
+        ch.trade(10, pool="OTHER")
+        a, b = ch.rows
+        b.update(slot=10, tx_index=0, event_index=a["event_index"], t_recv_ms=a["t_recv_ms"] + 5, signature="other-sig")
+        fill = {"t_recv_ms": 1, "slot": 10, "tx_index": 0, "event_index": a["event_index"]}  # collapsed-time fill
+        with self.assertRaises(rg.PoolAttributionRefusal):
+            rg.check_migration_pool_only(ch.rows, POOL, [fill])
+        exact = dict(fill, t_recv_ms=a["t_recv_ms"])
+        self.assertEqual(rg.check_migration_pool_only(ch.rows, POOL, [exact])["fills_checked"], 1)
 
 
 class CountingTests(unittest.TestCase):
@@ -261,6 +287,8 @@ class CountingTests(unittest.TestCase):
         self.assertEqual(rg.count_no_pool_mints(mig), ["B", "C"])
         self.assertEqual(rg.migration_pool_map(mig), {"A": "p1", "D": "p4"})
         vmap = {"p1": 5, "p2": None, "p3": -7, "p4": None, "p5": 0}
+        with self.assertRaises(TypeError):
+            rg.count_unpriced_pools(["p1"], vmap)  # closed is required
         res = rg.count_unpriced_pools(["p1", "p2", "p3", "p4", "p5", "p6"], vmap, closed=["p4"])
         self.assertEqual(res, {"closed": ["p4"], "parse_fail": ["p2"], "unmapped": ["p6"]})
         cells = [{"id": 1, "deadline_ms": 10, "tape_through_ms": 9}, {"id": 2, "deadline_ms": 9, "tape_through_ms": 9},
@@ -343,7 +371,7 @@ class FeatureTests(unittest.TestCase):
 
 def other_mint(name, create_slot, launch_wallets, *, creators=("X",), dump_slot=None, sellers=("S",)):
     cr = {"type": "create", "mint": name, "creator": creators[0], "trader": creators[-1], "slot": create_slot, "signature": f"{name}cs",
-          "virtual_sol_reserves": 30_000_000_000}
+          "quote_reserve": 30_000_000_000}  # the backfill stores the starting virtual SOL as quote_reserve
     rows = []
     q = 30_000_000_000
     for i, w in enumerate(launch_wallets):
@@ -410,6 +438,157 @@ class ClusterFeatureTests(unittest.TestCase):
     def test_history_without_block_pass_zeroes_d(self):
         f = rg.features("M", create_row=CREATE, rows=base_rows(), migration_slot=MIG)
         self.assertEqual([f[k] for k in rg.FEATURE_NAMES[12:16]], [0.0] * 4)
+
+
+def oracle_row(ch, slot, sig, ev, t, side, sol, tok=10**11):
+    """A PumpSwap row as the Oracle tape has it: no tx_index, receive time, read order = list order."""
+    row = {"venue": "pumpswap", "mint": "M", "trader": "W", "side": side, "sol_lamports": sol, "token_raw": tok, "quote_reserve": ch.q,
+           "base_reserve": ch.b, "pool": POOL, "slot": slot, "event_index": ev, "t_recv_ms": t, "quote_is_wsol": True, "signature": sig}
+    post = pumpswap_post_trade_reserves(side=side, quote_reserve=ch.q, base_reserve=ch.b, sol_lamports=sol, token_raw=tok,
+                                        fee_ppm=venue_fee_ppm("pumpswap", ch.q / (ch.b * 1000) * 1e9))
+    ch.q, ch.b = post
+    ch.rows.append(row)
+    return row
+
+
+class IntraSlotOrderTests(unittest.TestCase):
+    def test_oracle_two_sells_in_one_slot_order_by_read_not_event_index(self):
+        # quant-proof's case: X (event_index 4) is read first, E 100 -> ~69.6; Y (event_index 0) second, E ~70 -> ~44.7.
+        ch = Chain(q=100_000_000_000, v=0)
+        entry = oracle_row(ch, 9, "e", 0, 999, "buy", 10**8)
+        ch.q = 100_000_000_000  # restart the pool at E = 100 for the slot under test
+        x = oracle_row(ch, 10, "X", 4, 1000, "sell", 30_000_000_000)
+        y = oracle_row(ch, 10, "Y", 0, 1000, "sell", 25_000_000_000)
+        pr = rg.price_rows(ch.rows, POOL, {POOL: 0})
+        self.assertEqual([p.side for p in pr], ["buy", "sell", "sell"])
+        self.assertEqual(len({p.key for p in pr}), 3)  # unique keys
+        self.assertEqual([p.e_before for p in pr[1:]][0], x["quote_reserve"])  # X first, then Y
+        self.assertLess(abs(pr[1].e_after / 1e9 - 69.7), 0.2)
+        self.assertLess(abs(pr[2].e_after / 1e9 - 44.7), 0.5)
+        res = rg.label_trade(ch.rows, migration_pool=POOL, entry_key=pr[0].key, exit_key=pr[2].key, vmap={POOL: 0})
+        self.assertTrue(res.rug)
+        self.assertEqual(res.event, "A")
+        self.assertAlmostEqual(res.drop, 0.553, delta=0.01)
+
+    def test_order_follows_t_recv_then_first_read_for_oracle_rows(self):
+        ch = Chain(q=100_000_000_000, v=0)
+        a = oracle_row(ch, 10, "A", 7, 1000, "buy", 10**8)
+        b = oracle_row(ch, 10, "B", 0, 1000, "buy", 10**8)
+        c = oracle_row(ch, 10, "C", 3, 1001, "buy", 10**8)
+        order = [r["signature"] for r, _ in rg.stamp_rows([c, b, a])]
+        self.assertEqual(order, ["B", "A", "C"])  # t first, then first read (b before a)
+
+    def test_rows_without_receive_time_are_dropped_and_counted(self):
+        ch = Chain()
+        ch.trade(9)
+        bad = dict(ch.rows[0], t_recv_ms=None, block_time=None, event_index=99)
+        gb = dict(ch.rows[0], t_recv_ms=None, block_time=7, event_index=98, signature="gb")
+        pc = rg.PriceCounts()
+        out = rg.stamp_rows([ch.rows[0], bad, gb], pc)
+        self.assertEqual((pc.no_t, len(out)), (1, 2))
+        self.assertEqual(out[1][1][0], 7000)  # block_time * 1000, as latency_curve.run_holdout
+
+    def test_repeated_key_raises_and_exact_duplicate_is_dropped(self):
+        ch = Chain()
+        ch.trade(9)
+        r = ch.rows[0]
+        pc = rg.PriceCounts()
+        self.assertEqual(len(rg.stamp_rows([r, dict(r)], pc)), 1)
+        self.assertEqual(pc.dup, 1)
+        with self.assertRaises(ValueError):
+            rg.stamp_rows([r, dict(r, quote_reserve=r["quote_reserve"] + 1)])
+
+
+class CreateFieldTests(unittest.TestCase):
+    def test_dump_step_starting_at_the_first_curve_print_fires(self):
+        cr = dict(CREATE, quote_reserve=30_000_000_000)
+        first = curve(101, "sell", "S", T, 0, "f1", 0, q=18_000_000_000)  # 18/30 = 0.6 <= 0.6325 against the create row's start
+        first.update(t_recv_ms=5, event_index=0)
+        rec = rg.build_mint_record("M", cr, [first])
+        self.assertEqual([st.slot for st in rec.dump_steps], [101])
+        # without the starting reserve the first print has no "before" and cannot fire
+        self.assertEqual(rg.build_mint_record("M", dict(CREATE), [first]).dump_steps, [])
+        # the old, wrong field name is not read
+        self.assertEqual(rg.build_mint_record("M", dict(CREATE, virtual_sol_reserves=30_000_000_000), [first]).dump_steps, [])
+
+
+class MigrationClockTests(unittest.TestCase):
+    def rows(self):
+        bond = {"venue": "pump_bonding", "mint": "M", "trader": "A", "side": "buy", "sol_lamports": 10**9, "token_raw": T, "quote_reserve": 80 * 10**9,
+                "base_reserve": 10**14, "slot": 100, "event_index": 0, "tx_index": 0, "t_recv_ms": 1000, "signature": "b0"}
+        ch = Chain()
+        ch.trade(110, pool="OTHER")  # foreign-pool print first
+        ch.trade(115)  # then the migration pool
+        return [bond] + ch.rows
+
+    def clock(self, rows):
+        mint = lc._Mint(1, 0, 0, None)
+        for r in rows:
+            got = print_from_trade_row(r)
+            if got:
+                mint.add(got[1])
+        return mint.mig_slot, mint.mig_ms
+
+    def test_restriction_shifts_the_migration_clock_when_a_foreign_print_comes_first(self):
+        rows = self.rows()
+        self.assertEqual(self.clock(rows)[0], 110)  # latency_curve takes the first PumpSwap print of ANY pool
+        kept = list(rg.restrict_rows_to_migration_pool(rows, POOL))
+        self.assertEqual(self.clock(kept)[0], 115)
+        self.assertGreater(self.clock(kept)[1], self.clock(rows)[1])
+
+    def test_counter_of_foreign_first_mints(self):
+        good = Chain(mint="N")
+        good.trade(120)
+        bond = dict(self.rows()[0], mint="N")
+        raw = {"M": self.rows(), "N": [bond] + good.rows}
+        self.assertEqual(rg.count_foreign_first_mints(raw, {"M": POOL, "N": POOL}), ["M"])
+        rep = rg.pool_attribution_gate(raw, {m: list(rg.restrict_rows_to_migration_pool(r, POOL)) for m, r in raw.items()}, {"M": POOL, "N": POOL})
+        self.assertEqual(rep["foreign_first_mints"], ["M"])
+
+
+class D1LookAheadTests(unittest.TestCase):
+    def test_launch_buys_at_or_after_the_cutoff_cannot_complete_a_serial_launch_buyer(self):
+        recs = []
+        for nm, s in (("N1", 50), ("N2", 60)):
+            cr, rows = other_mint(nm, s, ["A1"])
+            recs.append(rg.build_mint_record(nm, cr, rows))
+        base = rg.BlockHistory(recs)
+        f0 = rg.features("M", create_row=CREATE, rows=base_rows(), migration_slot=MIG, history=base)
+        self.assertEqual(f0["serial_launch_held"], 0.0)  # A1 launch-bought on only 2 other mints
+        # N3 is created before the cutoff, but its launch buy is at the cutoff slot: it must not count
+        cr, rows = other_mint("N3", MIG - 1, ["A1"])
+        self.assertEqual(rows[0]["slot"], MIG)
+        leaked = rg.BlockHistory(recs + [rg.build_mint_record("N3", cr, rows)])
+        f1 = rg.features("M", create_row=CREATE, rows=base_rows(), migration_slot=MIG, history=leaked)
+        self.assertEqual(f1["serial_launch_held"], 0.0)
+        # and one slot earlier it does count (the test can fail)
+        cr, rows = other_mint("N3", MIG - 2, ["A1"])
+        early = rg.BlockHistory(recs + [rg.build_mint_record("N3", cr, rows)])
+        f2 = rg.features("M", create_row=CREATE, rows=base_rows(), migration_slot=MIG, history=early)
+        self.assertAlmostEqual(f2["serial_launch_held"], 0.02)
+
+
+class ParityScopeTests(unittest.TestCase):
+    def test_noop_print_label_equals_simulator(self):
+        ch = Chain(v=V)
+        ch.trade(5, "sell", sol=10**8, tok=0)  # malformed amount: the post-trade helper returns None
+        row = ch.rows[0]
+        _, pr = ad.make_wrapper(print_from_trade_row, {POOL: V})(row)
+        p = rg.price_row(row, V)
+        self.assertEqual(p.outcome, "noop")
+        self.assertEqual(p.e_after, pr.quote_reserve)
+
+    def test_one_merged_map_gives_label_and_simulator_the_same_v(self):
+        ch = Chain(v=0)
+        ch.trade(5, "buy", sol=2_000_000_000, tok=10**12)
+        row = ch.rows[0]
+        fb = {POOL: 12_000_000_000}
+        merged = rg.merge_v_map({POOL: None}, fb)
+        self.assertEqual(merged, {POOL: 12_000_000_000})
+        vp, src = rg.vp_of(POOL, merged)
+        _, pr = ad.make_wrapper(print_from_trade_row, merged)(row)
+        self.assertEqual(rg.price_row(row, vp).e_after, pr.quote_reserve)
+        self.assertEqual(rg.merge_v_map({POOL: -5}, fb), {POOL: -5})  # a readable stored V <= 0 stays vault-only
 
 
 if __name__ == "__main__":
