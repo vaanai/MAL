@@ -1165,5 +1165,72 @@ class DeadlineBandTests(unittest.TestCase):
         self.assertEqual(run(edge - 1)["landing_ms"], base["landing_ms"])
 
 
+# --- quant-proof round 3: no traceback or message text before `started` --------------------------------------------------------------------
+
+
+class MainExceptionHygieneTests(unittest.TestCase):
+    def _run(self, d, patches):
+        import contextlib
+        import io
+
+        d = Path(d)
+        (d / "c.json").write_text("[]")
+        argv = ["--p1-fast-dir", "/x1", "--p1-oracle-insample-dir", "/x2", "--p1-oracle-live-dir", "/x3", "--out-dir", str(d / "out"),
+                "--tries-log", str(d / "t.jsonl"), "--canonical-tries", str(d / "canon.jsonl"), "--v-constancy-json", str(d / "c.json"), "--p2-view-dir", "/x4"]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.ExitStack() as st:
+            st.enter_context(mock.patch.object(x, "run_guards", return_value={"with_p4": False, "vmap_sha256": "v"}))
+            st.enter_context(mock.patch.object(x, "git_state", return_value={"dirty_tools": False, "head": "h"}))
+            st.enter_context(mock.patch.object(x, "load_pinned_vmap", return_value=dict(VMAP)))
+            st.enter_context(mock.patch.object(x, "check_v_constancy", return_value={}))
+            st.enter_context(mock.patch.object(x, "check_constancy_sample"))
+            st.enter_context(mock.patch.object(x, "build_sources", return_value=[("P1A", "P1", None, [], [])]))
+            st.enter_context(mock.patch.object(x, "load_source_data", side_effect=lambda *a, **k: fixture_source()))
+            st.enter_context(mock.patch.object(x, "load_oof", return_value=({}, None)))
+            st.enter_context(mock.patch.object(x, "frozen_flags", side_effect=lambda cells, *a, **k: [False] * len(cells)))
+            st.enter_context(mock.patch.object(e15, "check_run_lock"))
+            for p in patches:
+                st.enter_context(p)
+            st.enter_context(contextlib.redirect_stderr(err))
+            st.enter_context(contextlib.redirect_stdout(out))
+            try:
+                rc = x.main(argv)
+                exc = None
+            except Exception as e:  # noqa: BLE001
+                rc, exc = None, e
+        return rc, exc, out.getvalue() + err.getvalue()
+
+    def test_unexpected_error_in_the_simulation_before_started_prints_type_only(self):
+        boom = mock.patch.object(x.eem, "score_one", side_effect=RuntimeError("x 12345 net=-0.0042"))
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "log_all") as lg:
+            rc, exc, text = self._run(d, [boom])
+            lg.assert_not_called()  # `started` was never written
+        self.assertIsNone(exc)  # no traceback escapes
+        self.assertEqual(rc, 2)
+        for banned in ("12345", "0042", "net="):
+            self.assertNotIn(banned, text)
+        self.assertIn("RuntimeError", text)
+        self.assertIn("MINTA", text)
+
+    def test_unexpected_error_outside_the_simulation_before_started_prints_type_only(self):
+        boom = mock.patch.object(x, "pre_started_counts", side_effect=ValueError("net=-0.0042 12345"))
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "log_all") as lg:
+            rc, exc, text = self._run(d, [boom])
+            lg.assert_not_called()
+        self.assertEqual((exc, rc), (None, 2))
+        self.assertNotIn("12345", text)
+        self.assertIn("ValueError", text)
+
+    def test_after_started_the_exception_still_propagates_and_the_status_is_logged(self):
+        boom = mock.patch.object(x, "run_screen", side_effect=RuntimeError("after started 777"))
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "log_all") as lg:
+            rc, exc, text = self._run(d, [boom])
+        self.assertIsInstance(exc, RuntimeError)
+        self.assertIsNone(rc)
+        statuses = [c.args[3] for c in lg.call_args_list]
+        self.assertEqual(statuses[0], "started")
+        self.assertEqual(statuses[-1], "aborted_after_read")
+
+
 if __name__ == "__main__":
     unittest.main()

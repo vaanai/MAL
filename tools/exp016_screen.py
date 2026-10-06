@@ -134,6 +134,11 @@ class Refused(Exception):
     code = 2
 
 
+class SimulationError(Exception):
+    """Any unexpected failure inside one mint's simulation, re-raised with the mint id and the exception TYPE only: the frozen helpers' messages can
+    carry nets, and nothing outcome-derived may be printed before `started`."""
+
+
 class SimulatorDrift(Refused):
     """The exit print this tool derived does not reproduce the frozen simulator's net: refuse rather than label the wrong window. A Refused (caught
     by `main` like any other), and its message names the mint id only: no net, no outcome number."""
@@ -633,8 +638,13 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
         if not isinstance(mslot, int) or isinstance(mslot, bool) or mslot <= 0:
             no_migration_slot.append(m)  # never defaulted to 0 (that would open the d-group cutoff to everything): counted, excluded
             continue
-        cell = simulate_mint(m, cr, src.rows_by_mint.get(m, ()), pool=pool, migration_slot=mslot, vmap=vmap,
-                             tape_through_ms=src.through_ms, creator_hist=hist, history=history)
+        try:
+            cell = simulate_mint(m, cr, src.rows_by_mint.get(m, ()), pool=pool, migration_slot=mslot, vmap=vmap,
+                                 tape_through_ms=src.through_ms, creator_hist=hist, history=history)
+        except (Refused, rug.PoolAttributionRefusal):
+            raise
+        except Exception as exc:  # noqa: BLE001 - the message may hold a net; name the mint and the type only
+            raise SimulationError(f"{m}: unexpected {type(exc).__name__} in the simulation (message withheld: it may carry outcome numbers)") from None
         cell.update({"source": src.tag, "block": src.block})
         cells.append(cell)
     pool_vs_canonical = count_pool_vs_canonical(src.migrations, canonical_fn) if (canonical_fn is not None and not src.derived_pools) else None
@@ -1315,6 +1325,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (Refused, rug.PoolAttributionRefusal) as exc:
         print(f"refusing: {exc}", file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001 - before any row: type only, no traceback
+        print(f"refusing: unexpected {type(exc).__name__} in the guards (message withheld)", file=sys.stderr)
+        return 2
     with_p4 = g["with_p4"]
     head, ahash = gs["head"], e15.args_hash(args)
     t0 = time.time()
@@ -1373,9 +1386,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         status = "guard_stop" if res["decision"].get("outcome") in (OUTCOME_G1, OUTCOME_G2) else "completed"
         print(render_md(rep))
         return 0
-    except (Refused, rug.PoolAttributionRefusal) as exc:
+    except (Refused, rug.PoolAttributionRefusal, SimulationError) as exc:
         status = "refused_after_read" if started else "aborted_after_read"
         print(f"refusing: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001
+        if started:
+            raise  # after `started` the traceback is allowed; the finally block logs the failure status as before
+        print(f"refusing: unexpected {type(exc).__name__} before `started` (message withheld: it may carry outcome numbers)", file=sys.stderr)
         return 2
     finally:
         signal.signal(signal.SIGTERM, prev)
