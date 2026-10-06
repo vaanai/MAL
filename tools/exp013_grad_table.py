@@ -73,8 +73,11 @@ from tools.oracle_live_adapter import POOL_B_HOURS, _hour_info_b, iter_trade_row
 
 DEFAULT_OUT_ROOT = Path("/data/mal/exp013-grad")
 # Amendment 7: PumpSwap legs are priced on vault + V through tools.pumpswap_virtual_adapter (mcap_mode "v").
-DEFAULT_VMAP = "/data/mal/pumpswap-virtual/pool_v_0814.json"
-VMAP_SHA256 = "2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8"  # pool_v_0814.json (job #196)
+# One pool -> V map from every PumpSwap pool printed in all research views (job #228). It replaces pool_v_0814.json
+# (2506f7d2...), whose pre-pass refused job #225 at 1.59% / 675 pools. The sha is filled by the manager after #228 in a
+# reviewed one-line commit; while it is the placeholder the tool refuses at startup (check_pin_ready).
+DEFAULT_VMAP = "/data/mal/pumpswap-virtual/pool_v_0909.json"
+VMAP_0909_SHA256 = "PENDING_JOB_228"
 V_MAX_MISSING_FRACTION = 0.01
 V_MCAP_MODE = "v"
 COUNTS_SUBDIR = "counts_virtual"
@@ -179,13 +182,20 @@ class VRefused(Exception):
     """The V map is not the pinned one, or too many PumpSwap prints of triggered mints lack V. Exit 2, before any outcome."""
 
 
+def check_pin_ready() -> None:
+    """Refuses at startup while the map pin is the placeholder."""
+    if not re.fullmatch(r"[0-9a-f]{64}", VMAP_0909_SHA256):
+        raise VRefused(f"VMAP_0909_SHA256 is {VMAP_0909_SHA256!r}, not a sha256: the manager fills it in after job #228 in a reviewed one-line commit. Refusing to run")
+
+
 def check_vmap_sha(path: str | Path) -> str:
+    check_pin_ready()
     try:
         got = hashlib.sha256(Path(path).read_bytes()).hexdigest()
     except OSError as exc:
         raise VRefused(f"--vmap {path}: {exc}") from exc
-    if got != VMAP_SHA256:
-        raise VRefused(f"--vmap {path}: sha256 {got} != the pinned {VMAP_SHA256} (pool_v_0814.json)")
+    if got != VMAP_0909_SHA256:
+        raise VRefused(f"--vmap {path}: sha256 {got} != the pinned {VMAP_0909_SHA256} (pool_v_0909.json)")
     return got
 
 
@@ -624,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     ap.add_argument("--max-workers", type=int, default=FORCED_MAX_WORKERS)
-    ap.add_argument("--vmap", default=DEFAULT_VMAP, help="pool -> V map; sha256 is asserted against the pinned pool_v_0814.json")
+    ap.add_argument("--vmap", default=DEFAULT_VMAP, help="pool -> V map; sha256 is asserted against the pinned pool_v_0909.json")
     ap.add_argument("--dry-run", action="store_true", help="run every guard and print the plan, read no tape")
     args = ap.parse_args(argv)
     assert_recipe_settings(args.max_workers, FORCED_BUFFER_HOURS, FORCED_MAX_HOME_HOURS)

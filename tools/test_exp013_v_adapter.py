@@ -137,15 +137,17 @@ class RefusalTests(FixtureBase):
         p = self.td / "null_map.json"
         sha = _write_map(p, {"PoolG": None})  # account fetch returned null: missing, never V = 0
         argv = argv_for(self.td, "refuse-1", "--vmap", str(p))
-        with mock.patch.object(gtab, "VMAP_SHA256", sha), mock.patch.object(gt, "run_worker_grad", side_effect=AssertionError("no worker may run")):
-            self.assertEqual(run_main(argv), 2)
+        with mock.patch.object(gt, "run_worker_grad", side_effect=AssertionError("no worker may run")), mock.patch.object(gtab, "v_prepass", wraps=gtab.v_prepass) as pp:
+            self.assertEqual(run_main(argv, pin=sha), 2)
+        pp.assert_called_once()  # refused by the 1% pre-pass, not by the pin
         self.assertFalse((self.td / "out" / "refuse-1").exists())  # no table, no manifest, empty dirs removed
 
     def test_absent_pool_refuses_too(self) -> None:
         p = self.td / "absent_map.json"
         sha = _write_map(p, {"SomeOtherPool": V_FIX})
-        with mock.patch.object(gtab, "VMAP_SHA256", sha):
-            self.assertEqual(run_main(argv_for(self.td, "refuse-2", "--vmap", str(p))), 2)
+        with mock.patch.object(gtab, "v_prepass", wraps=gtab.v_prepass) as pp:
+            self.assertEqual(run_main(argv_for(self.td, "refuse-2", "--vmap", str(p)), pin=sha), 2)
+        pp.assert_called_once()
 
     def test_wrong_sha_refuses_before_any_row_is_read(self) -> None:
         p = self.td / "other_map.json"
@@ -155,17 +157,42 @@ class RefusalTests(FixtureBase):
         with mock.patch.object(gtab, "plan_pools", side_effect=AssertionError("no row may be read")):
             self.assertEqual(run_main(argv_for(self.td, "refuse-4", "--vmap", str(self.td / "nope.json"))), 2)
 
-    def test_default_pin_is_the_amendment_7_sha(self) -> None:
-        self.assertEqual(gtab.VMAP_SHA256, "2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8")
-        self.assertEqual(sc.V_SHA256, gtab.VMAP_SHA256)
-        self.assertEqual(gtab.DEFAULT_VMAP, "/data/mal/pumpswap-virtual/pool_v_0814.json")
+    def test_default_pin_is_pending_and_refuses_at_startup(self) -> None:
+        self.assertEqual(gtab.VMAP_0909_SHA256, "PENDING_JOB_228")  # the manager's reviewed one-line commit fills it in after #228
+        self.assertEqual(sc.V_SHA256, gtab.VMAP_0909_SHA256)
+        self.assertEqual(gtab.DEFAULT_VMAP, "/data/mal/pumpswap-virtual/pool_v_0909.json")
         self.assertEqual(gtab.V_MAX_MISSING_FRACTION, 0.01)
-        self.assertTrue(V_PATH.is_file())
+        with self.assertRaisesRegex(gtab.VRefused, "PENDING_JOB_228"):
+            gtab.check_pin_ready()
+        with mock.patch.object(gtab, "plan_pools", side_effect=AssertionError("no row may be read")):
+            self.assertEqual(run_main(argv_for(self.td, "pend-1"), pin=gtab.VMAP_0909_SHA256), 2)  # the real default pin, a valid fixture map
+            self.assertEqual(run_main(argv_for(self.td, "pend-2", "--dry-run"), pin=gtab.VMAP_0909_SHA256), 2)
+        with self.assertRaises(gtab.VRefused):
+            gtab.check_vmap_sha(V_PATH)
+
+    def test_a_filled_pin_accepts_only_that_map(self) -> None:
+        with mock.patch.object(gtab, "VMAP_0909_SHA256", V_SHA):
+            self.assertEqual(gtab.check_vmap_sha(V_PATH), V_SHA)
+        other = self.td / "other_pin.json"
+        _write_map(other, {"PoolG": 1})
+        with mock.patch.object(gtab, "VMAP_0909_SHA256", V_SHA), self.assertRaisesRegex(gtab.VRefused, "!= the pinned"):
+            gtab.check_vmap_sha(other)
+        with mock.patch.object(gtab, "VMAP_0909_SHA256", "2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8"), self.assertRaisesRegex(gtab.VRefused, "!= the pinned"):
+            gtab.check_vmap_sha(V_PATH)  # the retired 0814 pin does not match the fixture map
 
 
 class ScreenGuardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        p = mock.patch.object(sc, "V_SHA256", V_SHA)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_pending_screen_pin_refuses(self) -> None:
+        with mock.patch.object(sc, "V_SHA256", "PENDING_JOB_228"), self.assertRaisesRegex(SystemExit, "not a sha256"):
+            sc.assert_v_adapter(self.good())
+
     def good(self) -> dict:
-        return {"v_adapter": {"vmap_sha256": sc.V_SHA256, "mcap_mode": "v", "prepass": {"prints": 100, "missing": 1, "missing_fraction": 0.01, "max_missing_fraction": 0.01},
+        return {"v_adapter": {"vmap_sha256": V_SHA, "mcap_mode": "v", "prepass": {"prints": 100, "missing": 1, "missing_fraction": 0.01, "max_missing_fraction": 0.01},
                               "adapter_counts": {"corrected": 99}}}
 
     def test_a_table_priced_through_the_adapter_passes(self) -> None:
