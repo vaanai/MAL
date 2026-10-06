@@ -76,5 +76,11 @@ Rules, applied in this order by the tool (first match wins). The tool computes t
 - **Record.** 6 tries lines with `status: refused_after_read` are in `data/tries.jsonl`; the explore-0814 tries count is 1 + 6 = 7. No report was written. No one read any outcome. The scratch directory is sealed (0700) at `/data/mal/exp012-backcheck-0814.refused-job207`.
 - **Reading.** Rule 0 says a refused run has no reading.
 - **Not rerun.** A rerun would be a second set of tries on the same days. EXP-015's pre-registered bar 3 already compares frozen EXP-012, paired, on these days at the same costs, so little is lost.
-- **Lesson carried forward.** The next V map (`pool_v_0909.json`, job #224) adds those 30 pools, so EXP-015's per-trade no-V rule doesn't refuse the same way.
+- **Coverage was overstated earlier.** This doc and the ledger said `pool_v_0814.json` had "1 null of the 16,346 August pools". The run found **29 pools missing from the map entirely** plus that 1 closed account. The map was built only from the pools of mints migrating in the views, but trades in the window also hit other pools.
+- **Lesson carried forward, corrected.** The next map (`pool_v_0909.json`, job #224) adds those 30 pools. It only helps EXP-015 if:
+  - (a) EXP-015 pins it for P2 through a dated pre-read plan amendment, with its sha256 updated in `tools/exp015_screen.py`, since today it hard-pins pool_v_0814;
+  - (b) the closed-account pool gets its V from its own historical swaps;
+  - (c) a pool-only, outcome-blind rule for any pool still unpriceable is written before EXP-015's run.
+  - Until all three hold, EXP-015's screen refuses: before `started` for frozen picks, but after `started` for new-model picks.
+- **What "nobody read" and "sealed" mean.** No report exists, and the manager has not opened the row files; the only scratch read was the adapter's pool-id counts. These are statements by the manager, not checks anyone else can run. The 0700 permission keeps out other users, not the owning account.
 
