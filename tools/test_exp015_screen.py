@@ -1524,6 +1524,131 @@ class QuantProofFixesTests(unittest.TestCase):
         self.assertIn(x.BIAS_STATEMENT, x.CAVEATS)
 
 
+class SensitivityIsolationTests(unittest.TestCase):
+    def test_a_raising_removed_bias_leaves_the_config_completed_with_sensitivity_error(self):
+        u = mk_universe(False, n_good=3, n_bad=3, seed=11)
+        arrays = x.fit_arrays(u, x.labels(u), x.pool_dates(False))
+        done = []
+        with mock.patch.object(x, "removed_bias", side_effect=ValueError("sensitivity blew up")):
+            out = x.run_screen(u, [False] * len(u), x.Runner(arrays, None, 1), False, on_config_done=lambda c, r: done.append(c), configs=("c2",))
+        self.assertEqual(out["statuses"], {"c2": "completed"})  # never aborts the config
+        self.assertEqual(done, ["c2"])
+        res = out["results"]["c2"]
+        self.assertEqual(res["sensitivity_error"], "sensitivity blew up")
+        self.assertEqual(res["removed_bias"], {})
+        self.assertIn("bars", res)
+        base = {"schema": x.SCHEMA, "banner": x.BANNER, "first_line": x.first_line(False), "caveats": list(x.CAVEATS), "costs": {"vmap_0909_pinned": "p"},
+                "universe": {"n": len(u), "sha256": "ab", "stats": {"by_source": {}, "dropped_outside_window": 0, "dropped_no_primary_cell": 0, "dropped_censored_primary": 0, "c1_missing_label_0": 0}}}
+        self.assertIn("sensitivity FAILED and was skipped", x.render_md(x.make_report(base, out, False)))
+
+    def test_main_a_raising_sensitivity_spends_no_extra_try_and_the_run_completes(self):
+        t = MainTests()
+        t.setUp()
+        self.addCleanup(t.doCleanups)
+        u, v_rows, nv_rows = t._synthetic_rows(2, 2)
+        real = x.removed_bias
+        calls = []
+
+        def fake_screen(universe, frozen_sel, runner, with_p4, on_done, on_refused, no_v, **kw):
+            res = dict(RES0, sensitivity_error="boom", removed_bias={})
+            for c in x.CONFIGS:
+                on_done(c, dict(res))
+            return {"results": {c: dict(res) for c in x.CONFIGS}, "statuses": {c: "completed" for c in x.CONFIGS}}
+
+        import contextlib
+
+        with tempfile.TemporaryDirectory() as d, contextlib.ExitStack() as st:
+            for pt in t._patches({"return_value": (v_rows, nv_rows, set())}, frozen=[False] * len(u), screen=fake_screen):
+                st.enter_context(pt)
+            self.assertEqual(x.main(t._args(d)), 0)
+            ls = lines(Path(d) / "t.jsonl")
+            self.assertEqual(sum(1 for l in ls if l["config"]["status"] == "completed"), 9)
+            self.assertEqual(sum(1 for l in ls if l["config"]["status"] == "aborted_after_read"), 0)
+        self.assertIs(x.removed_bias, real)
+
+    def test_frozen_selection_of_the_removed_mints_is_computed_before_started(self):
+        t = MainTests()
+        t.setUp()
+        self.addCleanup(t.doCleanups)
+        u, v_rows, nv_rows = t._synthetic_rows(8, 8)
+        target = u[7]["mint"]
+        mint_pools = {target: {NO_V_POOLS_207[3]}, **{v["mint"]: {f"pool-{i}"} for i, v in enumerate(u) if v["mint"] != target}}
+        seen = {}
+        helper = UnpriceablePoolTests()
+        with tempfile.TemporaryDirectory() as d:
+            order = []
+
+            def frozen(universe, artifact_dir=None, scorer=None):
+                order.append(((Path(d) / "t.jsonl").exists(), (Path(d) / "out" / "RUN.lock").exists(), [r["mint"] for r in universe][:1]))
+                return [False] * len(universe)
+
+            def fake_screen(universe, frozen_sel, runner, with_p4, on_done, on_refused, no_v, **kw):
+                for c in x.CONFIGS:
+                    on_done(c, dict(RES0))
+                return {"results": {c: dict(RES0) for c in x.CONFIGS}, "statuses": {c: "completed" for c in x.CONFIGS}}
+
+            import contextlib
+
+            vmap = {p: 1 for ps in mint_pools.values() for p in ps if p != NO_V_POOLS_207[3]}
+            with contextlib.ExitStack() as st:
+                st.enter_context(mock.patch.object(x, "run_guards", return_value=t._guards()))
+                st.enter_context(mock.patch.object(x, "vprepass_all", return_value=({}, mint_pools)))
+                st.enter_context(mock.patch.object(x, "collect_all", return_value=(v_rows, nv_rows, set())))
+                st.enter_context(mock.patch.object(x, "load_pinned_vmap", return_value=vmap))
+                st.enter_context(mock.patch.object(x, "frozen_selection", frozen))
+                st.enter_context(mock.patch.object(x, "run_screen", fake_screen))
+                st.enter_context(mock.patch.object(x, "render_md", return_value="md"))
+                self.assertEqual(x.main(t._args(d)), 0)
+            self.assertEqual(len(order), 2)
+            self.assertEqual(order[1][2], [target])  # the second call is on the removed mints
+            self.assertEqual([(a, b) for a, b, _ in order], [(False, False), (False, False)])  # both before any tries line or lock
+
+    def test_consistency_reports_pools_accepted_only_through_mints_outside_the_universe(self):
+        mp_ = {"in": {"p1"}, "out": {"p2"}, "both": {"p3"}}
+        r = x.check_no_v_consistency({"p1", "p2"}, mp_, {"in", "out"}, {"in"})
+        self.assertEqual((r["n_adapter_no_v_pools"], r["n_accepted_only_because_of_mints_outside_the_universe"], r["pools_accepted_only_outside_the_universe"]), (2, 1, ["p2"]))
+        r = x.check_no_v_consistency({"p1"}, mp_, {"in"}, {"in"})
+        self.assertEqual(r["n_accepted_only_because_of_mints_outside_the_universe"], 0)
+        self.assertEqual(x.check_no_v_consistency({"p3"}, mp_, {"both"})["n_accepted_only_because_of_mints_outside_the_universe"], 0)  # no universe given: all count as inside
+
+    def test_report_records_the_count_and_the_scenario_wording(self):
+        t = MainTests()
+        t.setUp()
+        self.addCleanup(t.doCleanups)
+        u, v_rows, nv_rows = t._synthetic_rows(8, 8)
+        out_of_u = "zz-out-of-universe"
+        mint_pools = {v["mint"]: {f"pool-{i}"} for i, v in enumerate(u)}
+        mint_pools[out_of_u] = {"pool-out"}
+        vmap = {p: 1 for ps in mint_pools.values() for p in ps if p != "pool-out"}
+
+        def fake_screen(universe, frozen_sel, runner, with_p4, on_done, on_refused, no_v, **kw):
+            for c in x.CONFIGS:
+                on_done(c, dict(RES0))
+            return {"results": {c: dict(RES0) for c in x.CONFIGS}, "statuses": {c: "completed" for c in x.CONFIGS}}
+
+        import contextlib
+
+        with tempfile.TemporaryDirectory() as d, contextlib.ExitStack() as st:
+            st.enter_context(mock.patch.object(x, "run_guards", return_value=t._guards()))
+            st.enter_context(mock.patch.object(x, "vprepass_all", return_value=({}, mint_pools)))
+            st.enter_context(mock.patch.object(x, "collect_all", return_value=(v_rows, nv_rows, {"pool-out"})))
+            st.enter_context(mock.patch.object(x, "load_pinned_vmap", return_value=vmap))
+            st.enter_context(mock.patch.object(x, "frozen_selection", lambda universe, artifact_dir=None, scorer=None: [False] * len(universe)))
+            st.enter_context(mock.patch.object(x, "run_screen", fake_screen))
+            st.enter_context(mock.patch.object(x, "render_md", return_value="md"))
+            self.assertEqual(x.main(t._args(d)), 0)
+            rep = json.loads((Path(d) / "out" / "report.json").read_text())
+        adapter = rep["universe"]["unpriceable_removed"]["adapter_no_v_pools"]
+        self.assertEqual(adapter["n_adapter_no_v_pools"], 1)
+        self.assertEqual(adapter["n_accepted_only_because_of_mints_outside_the_universe"], 1)
+        self.assertEqual(x.SCENARIO_WORDING, "one scenario (both sides' selected removed mints at total loss), not a worst-case bound")
+        plan = x.PLAN.read_text(encoding="utf-8")
+        for phrase in (x.SCENARIO_WORDING, "same row-level pool-to-mint attribution", "the pre-pass hours include the adapter's hours", "`sensitivity_error`"):
+            self.assertIn(phrase, plan)
+        b = x.removed_bias(mk_universe(), [], {"x_score": {}, "x_thr": {}, "score": [], "thr": {"p90": []}}, {"selected": [], "threshold_p90": 0}, [], [], {}, True)
+        self.assertEqual(b["scenario"], x.SCENARIO_WORDING)
+
+
 # --- tape cache, worker cap, report-only stats, E1/E2 -------------------------------------------------------------------------
 
 

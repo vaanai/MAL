@@ -98,6 +98,7 @@ MODEL_MD5 = bc.MODEL_MD5  # a1810d219ed61db64a396f40dc302ce5
 # reviewed one-line commit; while it is the placeholder the tool refuses at startup (check_pin_ready).
 VMAP_0909_SHA256 = "PENDING_JOB_224"
 VMAP_0909_PATH = "/data/mal/pumpswap-virtual/pool_v_0909.json"
+SCENARIO_WORDING = "one scenario (both sides' selected removed mints at total loss), not a worst-case bound"
 BIAS_STATEMENT = ("Removal of unpriceable mints may bias the gate bars UPWARD (the removed mints could be rugs; a closed account is the likely class). "
                   "The direction for bar 3 is unknown. Report-only sensitivity below; the bars themselves are unchanged.")
 UNPRICEABLE_MAX_FRACTION = 0.005  # refuse (before `started`) if more than 0.5% of the universe's mints sit on a pool with no V
@@ -1232,7 +1233,7 @@ def removed_bias(universe: Sequence[Mapping[str, Any]], removed: Sequence[Mappin
     such selected removed mint scored at -(SIZE + 2 fees) on both legs. The bars themselves are unchanged (bar 6's transfer selection never touches them)."""
     m = len(removed)
     loss = -float(op.size_lamports(SIZE_SOL) + 2 * FEE)
-    out: dict[str, Any] = {"statement": BIAS_STATEMENT, "n_removed": m, "loss_per_selected_removed_trade_lamports": loss}
+    out: dict[str, Any] = {"statement": BIAS_STATEMENT, "scenario": SCENARIO_WORDING, "n_removed": m, "loss_per_selected_removed_trade_lamports": loss}
     if not m:
         return {**out, "n_removed_selected_by_config": 0, "n_removed_selected_by_frozen": 0, "note": "nothing was removed"}
     nan = float("nan")
@@ -1285,9 +1286,13 @@ def run_screen(universe: Sequence[Mapping[str, Any]], frozen_sel: Sequence[bool]
             "passes": ev["passes"], "bars": ev["bars"], "pooled_press_mean_non_p1_sol": ev["pooled_press_mean_non_p1_sol"],
             "n_selected": int(sum(ev["selected"])), "n_rows": n, "final_threshold_p90": nested["final_threshold_p90"], "n_pooled_oof": nested["n_pooled_oof"],
             "folds": nested["folds"], "report_only": ro, "fast_only": fast,
-            "removed_bias": removed_bias(universe, removed, nested, transfer, frozen_sel, frozen_removed_sel, ev, with_p4),
-            "label_counts": {"positive": int(sum(lab["c1" if CONFIGS[cid]["label"] == "c1" else "c2"])), "n": n, "c1_missing_label_0": sum(1 for u in universe if u["c1_missing"])},
+                        "label_counts": {"positive": int(sum(lab["c1" if CONFIGS[cid]["label"] == "c1" else "c2"])), "n": n, "c1_missing_label_0": sum(1 for u in universe if u["c1_missing"])},
         }
+        try:  # report-only: an error here is recorded and NEVER aborts the config or spends tries
+            res["removed_bias"] = removed_bias(universe, removed, nested, transfer, frozen_sel, frozen_removed_sel, ev, with_p4)
+        except Exception as exc:  # noqa: BLE001
+            res["removed_bias"] = {}
+            res["sensitivity_error"] = str(exc)
         res["knife_edge"] = knife_edge(res)
         results[cid] = res
         statuses[cid] = "completed"
@@ -1349,7 +1354,9 @@ def render_md(rep: Mapping[str, Any]) -> str:
         L.append(f"| 6 | {b['bar6']['scope']} | {b['bar6']['pass']} | n {b['bar6']['n']}, mean {b['bar6']['mean_sol']}, dates+ {b['bar6']['dates_positive']} of {b['bar6']['majority_needed_of']} |")
         rb = r.get("removed_bias") or {}
         if rb:
-            L += ["", f"- Report-only, removed mints: this config would have selected {rb.get('n_removed_selected_by_config')} of {rb['n_removed']}, the frozen model {rb.get('n_removed_selected_by_frozen')}; bars with those scored at -(SIZE + fees): {rb.get('bars_pass_with_removed_at_total_loss')} (as reported: {rb.get('bars_pass_as_reported')})."]
+            L += ["", f"- Report-only, removed mints: this config would have selected {rb.get('n_removed_selected_by_config')} of {rb['n_removed']}, the frozen model {rb.get('n_removed_selected_by_frozen')}; bars with those scored at -(SIZE + fees), {SCENARIO_WORDING}: {rb.get('bars_pass_with_removed_at_total_loss')} (as reported: {rb.get('bars_pass_as_reported')})."]
+        if r.get("sensitivity_error"):
+            L += ["", f"- Report-only removed-mint sensitivity FAILED and was skipped (the config is unaffected): {r['sensitivity_error']}"]
         fo = r["fast_only"]
         L += ["", f"- Report-only fast-only (pool A, dates {fo['dates']}): n entered {fo['n_entered']}; flat {_f(fo['flat']['mean_sol'])} {_ci(fo['flat']['ci90_sol'])}, pressure {_f(fo['press']['mean_sol'])} {_ci(fo['press']['ci90_sol'])}. **{FAST_ONLY_LINE}**", ""]
         ro = r["report_only"]
@@ -1706,13 +1713,20 @@ def remove_unpriceable(universe: Sequence[Mapping[str, Any]], unpriceable: set[s
     return [u for u in universe if u["mint"] not in gone], rec, removed_rows
 
 
-def check_no_v_consistency(no_v_pools: set[str], mint_pools: Mapping[str, set[str]], unpriceable: set[str]) -> None:
-    """Every pool the adapter priced without V must be a pool of some scanned unpriceable mint. Otherwise (a silent case: an adapter no-V pool
-    the pre-pass never attributed to a mint) the run refuses before `started`. This makes the defensive NoVInUniverse unreachable."""
+def check_no_v_consistency(no_v_pools: set[str], mint_pools: Mapping[str, set[str]], unpriceable: set[str], universe_mints: set[str] | None = None) -> dict[str, Any]:
+    """Every pool the adapter priced without V must be a pool of some scanned unpriceable mint, else the run refuses before `started`. Why the
+    relaxed rule (any scanned unpriceable mint, not only a removed one) is sound: the adapter and the pre-pass attribute a pool to a mint by the same
+    row-level pool and mint fields, and the pre-pass hours include the adapter's hours. So a pool the adapter saw without V was seen by the pre-pass on
+    some mint; if that mint is not in the universe (buffer or edge hours, a dropped migration) no universe row touches the pool. Returns the counts
+    for the report, including how many pools were accepted ONLY because of mints outside the universe."""
     explained = {p for m in unpriceable for p in mint_pools.get(m, ())}
     stray = sorted(p for p in no_v_pools if p not in explained)
     if stray:
         raise Refused(f"{len(stray)} pool(s) the adapter priced without V are on no unpriceable mint the pre-pass scanned (e.g. {stray[:3]}); the removal rule would miss them. Refusing before `started`")
+    in_universe = unpriceable if universe_mints is None else (unpriceable & universe_mints)
+    by_removed = {p for m in in_universe for p in mint_pools.get(m, ())}
+    only_outside = sorted(p for p in no_v_pools if p not in by_removed)
+    return {"n_adapter_no_v_pools": len(no_v_pools), "n_accepted_only_because_of_mints_outside_the_universe": len(only_outside), "pools_accepted_only_outside_the_universe": only_outside[:50]}
 
 
 def load_pinned_vmap(path: str | Path) -> dict[str, int | None]:
@@ -1823,13 +1837,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         try:  # the unpriceable-pool rule: decided BEFORE `started` and before any fit
             unpr = unpriceable_mints(mint_pools, load_pinned_vmap(args.vmap_p1))
-            check_no_v_consistency(no_v_pools, mint_pools, unpr)
+            consistency = check_no_v_consistency(no_v_pools, mint_pools, unpr, {u["mint"] for u in universe})
             universe, unpriceable_rec, removed_rows = remove_unpriceable(universe, unpr)
+            unpriceable_rec["adapter_no_v_pools"] = consistency
         except Refused as exc:
             print(f"refusing (before started, no tries line): {exc}", file=sys.stderr)
             return 2
         no_v = no_v_mints_from(no_v_pools, mint_pools)
         frozen_sel = frozen_selection(universe, args.artifact_dir)
+        frozen_removed_sel = frozen_selection(removed_rows, args.artifact_dir) if removed_rows else []  # features and frozen scores only; before `started`
         bad = [u["mint"] for u, f in zip(universe, frozen_sel) if f and u["block"] != "P1" and u["mint"] in no_v]
         if bad:  # the frozen selection on the non-P1 rows is priced without V on a no-V pool: refuse before `started`
             print(f"refusing (before started, no tries line): {len(bad)} frozen-selected non-P1 migration(s) are on pools priced without V", file=sys.stderr)
@@ -1855,7 +1871,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         lab = labels(universe)
         dates = pool_dates(with_p4)
-        frozen_removed_sel = frozen_selection(removed_rows, args.artifact_dir) if removed_rows else []  # report-only, after `started`
         arrays = fit_arrays(universe, lab, dates, removed_rows)
         runner = Runner(arrays, out_dir / "fit_arrays.npz", args.max_workers)
         partial_screen: dict[str, Any] = {"results": {}, "statuses": {}}
