@@ -725,9 +725,21 @@ class EndToEndTests(unittest.TestCase):
     def test_screen_files_byte_identical_to_pre_reorder_code(self) -> None:
         # md5s of screen.json / screen.md (tmp dir name normalised) computed on origin/main before the write-order change
         # view_manifest_sha256 hashes tmp paths, so that one line is dropped from the json comparison
-        norm = lambda name: "".join(x for x in (self.fx.out / name).read_text().replace(self.td.name, "TD").splitlines(True) if "view_manifest_sha256" not in x).encode()  # noqa: E731
+        # Amendment 7 added the disclosure banner and the v_adapter / am7_disclosure keys; they are dropped here so the rest stays byte-identical
+        norm = lambda name: "".join(  # noqa: E731
+            x for x in (self.fx.out / name).read_text().replace(f"> {sc.AM7_DISCLOSURE}\n\n", "").replace(self.td.name, "TD").splitlines(True)
+            if "view_manifest_sha256" not in x and '"am7_disclosure"' not in x and '"v_adapter"' not in x
+        ).encode()
         self.assertEqual(hashlib.md5(norm("screen.json")).hexdigest(), "e01f6e4b9d86bc8b4201ddcd29373134")
         self.assertEqual(hashlib.md5(norm("screen.md")).hexdigest(), "859dfe07e4be02751b9e0ae7587ad29a")
+
+    def test_banner_carries_the_am7_disclosure(self) -> None:
+        md = (self.fx.out / "screen.md").read_text()
+        self.assertIn(sc.AM7_DISCLOSURE, md.split("## Items")[0])
+        self.assertIn("no longer on unread data", sc.AM7_DISCLOSURE)
+        self.assertIn("No bar is relaxed", sc.AM7_DISCLOSURE)
+        self.assertEqual(self.doc["am7_disclosure"], sc.AM7_DISCLOSURE)
+        self.assertIn("v_adapter", self.doc)
 
     def test_items_and_extras(self) -> None:
         self.assertEqual([i["item"] for i in self.doc["items"]], list(sc.ITEM_ORDER))

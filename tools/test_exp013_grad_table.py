@@ -3,6 +3,7 @@ synthetic fixture roots (no host path is read)."""
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import tempfile
@@ -30,6 +31,7 @@ def _trade(mint: str, slot: int, t_s: int, venue: str, side: str, q: int, b: int
     }
     if venue == "pumpswap":
         r["quote_is_wsol"] = True
+        r["pool"] = "PoolG"
     return r
 
 
@@ -78,6 +80,12 @@ def argv_for(td: Path, run_id: str, *extra: str) -> list[str]:
 _REAL_VERIFY = fz.verify_view_sha256
 
 
+V_TD = tempfile.TemporaryDirectory()
+V_PATH = Path(V_TD.name) / "pool_v_test.json"
+V_PATH.write_text(json.dumps({"v": {"PoolG": 17_584_269_263}}), encoding="utf-8")
+V_SHA = hashlib.sha256(V_PATH.read_bytes()).hexdigest()
+
+
 def run_main(argv: list[str]) -> int:
     """The three built-in roots' VIEW.sha256 pins belong to the real data, so they are mocked;
     an extra view (a directory named xview) is verified for real."""
@@ -85,7 +93,9 @@ def run_main(argv: list[str]) -> int:
     def verify(root: Path) -> int:
         return _REAL_VERIFY(root) if Path(root).name == "xview" else 1
 
-    with mock.patch.object(fz, "verify_view_sha256", side_effect=verify), mock.patch.object(fz, "check_view_pin", return_value="x"):
+    if "--vmap" not in argv:
+        argv = [*argv, "--vmap", str(V_PATH)]
+    with mock.patch.object(fz, "verify_view_sha256", side_effect=verify), mock.patch.object(fz, "check_view_pin", return_value="x"), mock.patch.object(gtab, "VMAP_SHA256", V_SHA):
         with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
             return gtab.main(argv)
 
@@ -339,7 +349,8 @@ class EndToEndTests(unittest.TestCase):
             write_view_sha256(t2 / "fast")
             write_pool_c(t2 / "ins")
             write_pool_b(t2 / "live")
-            self.assertEqual(run_main(argv_for(t2, "run-001")), 0)
+            with mock.patch.object(gtab, "check_v_coverage"):  # no PumpSwap print at all here; the V refusal has its own tests
+                self.assertEqual(run_main(argv_for(t2, "run-001")), 0)
             out = t2 / "out" / "run-001"
             self.assertEqual((out / "table.jsonl").read_text(), "")
             cens = [json.loads(line) for line in (out / "censored.jsonl").read_text().splitlines()]
