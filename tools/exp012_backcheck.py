@@ -3,9 +3,9 @@
 EVIDENCE.** Pre-declaration: EXP/EXP-012-backcheck-0814.md.
 
 Question: the frozen EXP-012 entry model (threshold 0.8031, never refit) was frozen on a 9-day pool. What does the
-frozen strategy earn, at the LIVE operating point (V-priced, k = 6 slots after migration, 0.05 SOL, per-side fee
-505,000 lamports, tp50_sl30, 30-minute exit cap), on 14 days of tape the model never saw and whose migrate-entry
-outcomes were never read? Exploration evidence only; it informs the live probe's size step (DEC-020), nothing else.
+frozen strategy earn, at the LIVE operating point (V-priced, k = 6 slots counted from the first PumpSwap print, 0.05 SOL, per-side fee
+505,000 lamports, tp50_sl30, 30-minute exit cap), on 14 days of tape the model never trained on? NOT unread:
+explore-0814/w1 [2026-08-26T12, 2026-08-28T12) was outcome-read by DEC-017 candidate (a). Exploration evidence only; it informs the live probe's size step (DEC-020), nothing else.
 
 Data: the seven clean views /data/mal/clean-view/explore-0814/w1..w7 (pool [2026-08-14T12, 2026-08-28T12), 336 h).
 The first 24 h of the pool (to 2026-08-15T12) are FEATURE BUFFER ONLY: migrations before 2026-08-15T12 are scored but
@@ -79,7 +79,22 @@ HOUR_FMT = "%Y-%m-%dT%H"
 FROZEN_THRESHOLD = op.FROZEN_THRESHOLD
 PRIMARY_FEE = op.PRIMARY_FEE  # 505,000 = priority 2 x 250k + base, the operating-point convention
 LAMPORTS = 1_000_000_000
-BANNER = "EXPLORATION, frozen EXP-012 on explore-0814 (never trained on, never outcome-read before). Not gate evidence."
+MODEL_MD5 = "a1810d219ed61db64a396f40dc302ce5"  # ARTIFACTS/exp012/train_manifest.json
+EXISTING_TRIES_ON_POOL = 1  # DEC-017 candidate (a) read explore-0814/w1
+W1_START = "2026-08-26T12"  # w1 = [2026-08-26T12, 2026-08-28T12): outcome-read by DEC-017 candidate (a)
+BANNER = (
+    "EXPLORATION, best-of-N context, not a promote, not gate evidence. Frozen EXP-012 (model md5 a1810d21…, thr 0.8031) on explore-0814 "
+    "[2026-08-14T12, 2026-08-28T12), counted from 2026-08-15T12. Model never trained on these days. Not unread: w1 days were outcome-read by "
+    "DEC-017 candidate (a), and EXP-013/EXP-014 August bars are no longer on unread data after this run. k counts from the first PumpSwap print, "
+    "not migration. Exit lag 0/2 slots is optimistic versus the measured live exit leak. Sizes above 0.05 SOL add only fee arithmetic and modelled "
+    "AMM impact; they cannot support any live size (DEC-020 §1). Sell shortfall (−11..−16 bps), entry noise (±300 bps) and MEV are not "
+    "added. The only evidence for EXP-012 is the 10-16 forward read and the promotion gate on a fresh holdout."
+)
+SIZE_NOTE = "mechanical (fee arithmetic + modelled AMM impact), not evidence; cannot support any live size (DEC-020 §1)"
+LAG_NOTE = "optimistic lower bound on exit cost vs the measured live exit leak"
+V_MAX_MISSING_FRACTION = 0.01
+CANONICAL_TRIES = Path(__file__).resolve().parent.parent / "data" / "tries.jsonl"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 MARKER = "tries_logged.marker"
 RESULT_NAME = "report.json"
 ROWS_NAME = "backcheck_rows.jsonl"
@@ -332,6 +347,95 @@ def collect_rows(roots: Mapping[str, str], pool: Sequence[str], artifact_dir: Pa
     return s12.load_rows(hours, max_workers, s12.BUFFER_HOURS, s12.MAX_HOME_HOURS, scratch, pool_hours=list(pool), worker_fn=_bc_worker, plan=plan)
 
 
+def vmap_coverage(prints: Any, vmap: Mapping[str, int | None], count_ms: int) -> dict[str, Any]:
+    """Pool-field-only coverage over the PumpSwap prints of the counted migrated mints. `prints` yields trade-row dicts
+    (anything not PumpSwap is ignored). A mint is counted when its first PumpSwap print is at or after `count_ms`.
+    A pool is COVERED iff it is a key of the map with a non-null value (an explicit 0 is a real V = 0 and is covered).
+    A pool absent from the map, or present with null (account missing), is MISSING; never V-less, never V = 0."""
+    first: dict[str, int] = {}
+    counts: dict[str, dict[Any, int]] = {}
+    for row in prints:
+        if row.get("venue") != "pumpswap":
+            continue
+        mint = row.get("mint")
+        t = row.get("t_recv_ms")
+        if t is None and isinstance(row.get("block_time"), int):
+            t = row["block_time"] * 1000
+        if mint is None or t is None:
+            continue
+        t = int(t)
+        first[mint] = t if mint not in first else min(first[mint], t)
+        pool = row.get("pool") if isinstance(row.get("pool"), str) else None
+        per = counts.setdefault(mint, {})
+        per[pool] = per.get(pool, 0) + 1
+    n_prints = covered = 0
+    missing_pools: set[Any] = set()
+    n_mints = 0
+    for mint, t in first.items():
+        if t < count_ms:
+            continue
+        n_mints += 1
+        for pool, n in counts[mint].items():
+            n_prints += n
+            if pool is not None and vmap.get(pool) is not None:
+                covered += n
+            else:
+                missing_pools.add(pool)
+    missing = n_prints - covered
+    return {
+        "n_counted_mints": n_mints,
+        "prints": n_prints,
+        "covered": covered,
+        "missing": missing,
+        "missing_fraction": (missing / n_prints) if n_prints else None,
+        "missing_pools": len(missing_pools),
+        "missing_pool_examples": sorted(str(x) for x in missing_pools)[:5],
+        "max_missing_fraction": V_MAX_MISSING_FRACTION,
+    }
+
+
+def check_v_coverage(cov: Mapping[str, Any]) -> None:
+    if not cov["prints"]:
+        raise Refused("V coverage: no PumpSwap prints for the counted migrated mints")
+    if cov["missing_fraction"] > V_MAX_MISSING_FRACTION:
+        raise Refused(f"V coverage: {cov['missing']} of {cov['prints']} PumpSwap prints ({cov['missing_fraction']:.2%}, {cov['missing_pools']} pools) have no V in the map; limit {V_MAX_MISSING_FRACTION:.0%}. Extend the map first; no P&L was computed")
+
+
+def coverage_line(cov: Mapping[str, Any]) -> str:
+    return f"V coverage (pre-pass, counted window): prints={cov['prints']} covered={cov['covered']} missing={cov['missing']} missing_pools={cov['missing_pools']} (limit {cov['max_missing_fraction']:.0%})"
+
+
+def _iter_pool_prints(hours: Any, pool: Sequence[str]) -> Iterator[dict[str, Any]]:
+    from tools.exploration_entry_model import _iter_trades
+
+    for h in pool:
+        for row in _iter_trades(hours(h)["trade"]):
+            if row.get("venue") == "pumpswap":
+                yield {"venue": "pumpswap", "mint": row.get("mint"), "pool": row.get("pool"), "t_recv_ms": row.get("t_recv_ms"), "block_time": row.get("block_time")}
+
+
+def v_prepass(roots: Mapping[str, str], pool: Sequence[str], vmap_path: str | Path, count_start: str = COUNT_START) -> dict[str, Any]:
+    from tools.pumpswap_virtual import load_map
+
+    return vmap_coverage(_iter_pool_prints(MultiViewHours(dict(roots)), pool), load_map(Path(vmap_path)), hour_ms(count_start))
+
+
+def check_model_md5(artifact_dir: Path) -> str:
+    got = fz._md5_of_file(artifact_dir / "model.txt")
+    if got != MODEL_MD5:
+        raise Refused(f"model.txt md5 {got} != the frozen {MODEL_MD5} (ARTIFACTS/exp012/train_manifest.json)")
+    return got
+
+
+def git_head() -> str:
+    import subprocess
+
+    try:
+        return subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
 def v_coverage(counts_dir: Path) -> dict[str, Any]:
     tot = {"pumpswap_prints": 0, "corrected": 0, "no_v": 0}
     pools: set[str] = set()
@@ -375,11 +479,28 @@ def cell_trades(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any]) -> tupl
     if len(by_mint) != len(sel):
         raise SystemExit("integrity: duplicate (mint, cell) rows")
     trades, cen = op.cell_trades({(c["k"], op.size_lamports(c["size_sol"])): sel}, c)
+    for t in trades:  # the counted day: a 24 h window anchored at the count start (12:00Z), labelled by its start date
+        t["day"] = day_label(int(by_mint[t["mint"]]["mig_ms"]))
     return trades, cen, by_mint
 
 
+DAY_MS = 86_400_000
+
+
+def day_label(mig_ms: int, count_start: str = COUNT_START) -> str:
+    """Counted day = the 24 h window [count_start + i d, count_start + (i+1) d), labelled by its start date. There are 13 of
+    them from 2026-08-15T12 to 2026-08-28T12; UTC calendar dates would make 14 partial days, so no partial date is counted."""
+    t0 = hour_ms(count_start)
+    start = t0 + ((int(mig_ms) - t0) // DAY_MS) * DAY_MS
+    return time.strftime("%Y-%m-%d", time.gmtime(start / 1000.0))
+
+
+def n_counted_days(count_start: str = COUNT_START, pool_end: str = POOL_END) -> int:
+    return (hour_ms(pool_end) - hour_ms(count_start)) // DAY_MS
+
+
 def day_labels(rows: Sequence[Mapping[str, Any]]) -> list[str]:
-    return sorted({time.strftime("%Y-%m-%d", time.gmtime(int(r["mig_ms"]) / 1000.0)) for r in rows})
+    return sorted({day_label(int(r["mig_ms"])) for r in rows})
 
 
 def cell_report(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any], n_days: int) -> dict[str, Any]:
@@ -402,6 +523,9 @@ def cell_report(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any], n_days:
             "sl": n_sl,
             "time_stop": n_time,
             "tp_rate_filled": (n_tp / n_filled) if n_filled else None,
+            "flat_mean_pct_of_size": None if not st["flat"] else st["flat"]["mean_sol"] / c["size_sol"] * 100.0,
+            "press_mean_pct_of_size": None if not st["press"] else st["press"]["mean_sol"] / c["size_sol"] * 100.0,
+            "note": " ; ".join(x for x in (SIZE_NOTE if c["size_sol"] != PRIMARY["size_sol"] else "", LAG_NOTE if c["exit_lag"] else "") if x),
         }
     )
     st.pop("axis", None)
@@ -435,6 +559,15 @@ def week_split(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any], split: s
     return out
 
 
+def primary_without_w1(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any] = PRIMARY, w1_start: str = W1_START) -> dict[str, Any]:
+    """Report-only: the primary cell without w1's hours (migrations at or after w1's start), because w1 was outcome-read
+    by DEC-017 candidate (a)."""
+    trades, _cen, by_mint = cell_trades(rows, c)
+    cut = hour_ms(w1_start)
+    s = side([t for t in trades if int(by_mint[t["mint"]]["mig_ms"]) < cut])
+    return {"excluded_from": w1_start, "n": s["n"], "filled": s["filled"], "flat": _leg(s["flat"]), "press": _leg(s["press"])}
+
+
 def sharp_drop_context(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any] = PRIMARY) -> dict[str, Any]:
     trades, _cen, by_mint = cell_trades(rows, c)
     filled = [by_mint[t["mint"]] for t in trades if t["filled"]]
@@ -454,14 +587,17 @@ def analyze(rows: Sequence[Mapping[str, Any]], cells: Sequence[Mapping[str, Any]
     cr = counted(rows, count_start)
     days = day_labels(cr)
     selected = {r["mint"] for r in cr if not r.get("unselected")}
-    cell_reports = [cell_report(cr, c, len(days)) for c in cells]
+    n_days = n_counted_days(count_start)
+    cell_reports = [cell_report(cr, c, n_days) for c in cells]
     p = cells[0]
     ptrades, _cen, _bm = cell_trades(cr, p)
     return {
         "schema": "exp012_backcheck_v1",
         "status": BANNER,
-        "banner": f"{BANNER} N cells = {len(cells)}.",
+        "banner": BANNER,
         "n_cells": len(cells),
+        "existing_tries_on_pool": EXISTING_TRIES_ON_POOL,
+        "cumulative_tries_on_pool": EXISTING_TRIES_ON_POOL + len(cells),
         "pool": POOL_NAME,
         "pool_window": [POOL_START, POOL_END],
         "counted_from": count_start,
@@ -469,18 +605,23 @@ def analyze(rows: Sequence[Mapping[str, Any]], cells: Sequence[Mapping[str, Any]
         "n_selected_counted": len(selected),
         "n_migrations_buffer_only": len({r["mint"] for r in rows if int(r["mig_ms"]) < hour_ms(count_start)}),
         "days": days,
-        "n_days": len(days),
+        "n_days": n_days,
+        "n_days_with_counted_migrations": len(days),
+        "day_definition": "counted day = 24 h window from 2026-08-15T12Z labelled by its start date; 13 windows, no partial UTC dates (calendar dates would give 14 partial days)",
         "ci": "gate cluster bootstrap, 1000 draws, seed 1 (tools.paper_attention_promote.book_stats), 5th-95th percentile of the mean",
         "primary": cell_label(p),
         "cells": cell_reports,
         "primary_per_day": per_day_table(ptrades),
         "primary_week_split": week_split(cr, p),
+        "primary_without_w1": primary_without_w1(cr, p),
         "sharp_drop_context": sharp_drop_context(cr, p),
         "caveats": [
-            "exploration pool, never trained on and never outcome-read before this run; not a confirmation holdout, not gate evidence",
-            "EXP-013 and EXP-014 planned screens on the same days; this read opens migrate-entry outcomes on them (their frozen screens are unchanged)",
-            "V pricing needs a pool -> V map covering these pools; see v_coverage",
-            "sizes above 0.05 miss size-proportional costs (sell shortfall, MEV) and do not by themselves support a larger live size",
+            "exploration pool, never trained on; NOT unread (w1 [2026-08-26T12, 2026-08-28T12) was outcome-read by DEC-017 candidate (a)); not a confirmation holdout, not gate evidence",
+            "EXP-013 and EXP-014 August bars are no longer on unread data after this run (their frozen screens are unchanged)",
+            "V pricing needs a pool -> V map covering these pools; the run refuses (exit 2) if more than 1% of counted PumpSwap prints lack V; see v_coverage",
+            "k counts from the first PumpSwap print, not migration",
+            "sizes above 0.05: " + SIZE_NOTE,
+            "exit lag 2: " + LAG_NOTE,
             "the live probe's -11..-16 bps sell shortfall and +-300 bps entry noise are not added",
         ],
     }
@@ -505,32 +646,38 @@ def _leg_cols(g: Mapping[str, Any] | None) -> str:
 
 def render_md(rep: Mapping[str, Any]) -> str:
     L = [rep["banner"], "", "# EXP-012 back-check on explore-0814 (frozen model, live operating point)", ""]
-    if rep.get("v_coverage", {}).get("incomplete"):
-        L += [f"**WARNING: V pricing incomplete** ({rep['v_coverage']['no_v']} of {rep['v_coverage']['pumpswap_prints']} PumpSwap prints had no V). P&L below is NOT V-priced for those pools.", ""]
+    L += [f"N cells = {rep['n_cells']} (existing tries on explore-0814: {rep['existing_tries_on_pool']}).", ""]
+    if rep.get("v_adapter_counts", {}).get("incomplete"):
+        L += [f"**WARNING: V adapter saw prints with no V** ({rep['v_adapter_counts']['no_v']} of {rep['v_adapter_counts']['pumpswap_prints']}). P&L below is NOT V-priced for those pools.", ""]
     L += [
         f"- Counted from {rep['counted_from']} (first 24 h of the pool are feature buffer only). {rep['n_selected_counted']} of {rep['n_migrations_scored_counted']} counted migrations scored at or above 0.8031; {rep['n_migrations_buffer_only']} buffer-only migrations not counted.",
-        f"- UTC days with counted migrations: {rep['n_days']} (first and last are partial). CI: {rep['ci']}.",
+        f"- Counted days: {rep['n_days']} ({rep['day_definition']}). CI: {rep['ci']}.",
+        f"- Tries on this pool: {rep['existing_tries_on_pool']} existing (DEC-017 candidate (a) on w1) + {rep['n_cells']} new = {rep['cumulative_tries_on_pool']}. Code {rep.get('git_head', 'n/a')}.",
+        f"- {rep['v_prepass_line']}" if "v_prepass_line" in rep else "- V pre-pass: not run",
         "",
         "## Cells (both fail models; sensitivity cells are report-only, never selected among)",
         "",
-        "| role | cell | n entered | filled | miss | tp | sl | time | tp rate | flat mean | flat CI90 | flat total | flat ex-top3 | flat days+ | press mean | press CI90 | press total | press ex-top3 | press days+ |",
-        "| " + " | ".join(["---"] * 19) + " |",
+        "| role | cell | note | n entered | filled | miss | tp | sl | time | tp rate | flat mean % size | press mean % size | flat mean | flat CI90 | flat total | flat ex-top3 | flat days+ | press mean | press CI90 | press total | press ex-top3 | press days+ |",
+        "| " + " | ".join(["---"] * 22) + " |",
     ]
     for s in rep["cells"]:
-        L.append(f"| {s['role']} | {s['label']} | {s['n_entered']} | {s['n_filled']} | {s['n_miss']} | {s['tp']} | {s['sl']} | {s['time_stop']} | {_f(s['tp_rate_filled'], 3)} | {_leg_cols(s['flat'])} | {_leg_cols(s['press'])} |")
-    L += ["", "## Primary cell per UTC day (SOL)", "", "| day | n | flat mean | flat total | press mean | press total |", "| --- | --- | --- | --- | --- | --- |"]
+        L.append(f"| {s['role']} | {s['label']} | {s['note']} | {s['n_entered']} | {s['n_filled']} | {s['n_miss']} | {s['tp']} | {s['sl']} | {s['time_stop']} | {_f(s['tp_rate_filled'], 3)} | {_f(s['flat_mean_pct_of_size'], 3)} | {_f(s['press_mean_pct_of_size'], 3)} | {_leg_cols(s['flat'])} | {_leg_cols(s['press'])} |")
+    L += ["", "## Primary cell per counted day (SOL; day = 24 h window from 12:00Z, labelled by start date)", "", "| day | n | flat mean | flat total | press mean | press total |", "| --- | --- | --- | --- | --- | --- |"]
     for d in rep["primary_per_day"]:
         L.append(f"| {d['day']} | {d['n']} | {_f(d['flat_mean_sol'])} | {_f(d['flat_total_sol'], 4)} | {_f(d['press_mean_sol'])} | {_f(d['press_total_sol'], 4)} |")
     L += ["", "## Primary cell, first 7 days vs last 6 days (report-only)", "", "| half | n | filled | flat mean | flat CI90 | press mean | press CI90 |", "| --- | --- | --- | --- | --- | --- | --- |"]
     for name, h in rep["primary_week_split"].items():
         fl, pr = h["flat"], h["press"]
         L.append(f"| {name} | {h['n']} | {h['filled']} | {_f(fl and fl['mean_sol'])} | {_ci(fl and fl['ci90_sol'])} | {_f(pr and pr['mean_sol'])} | {_ci(pr and pr['ci90_sol'])} |")
+    w1 = rep["primary_without_w1"]
+    fl, pr = w1["flat"], w1["press"]
+    L += ["", f"## Primary cell without w1's hours (report-only; migrations before {w1['excluded_from']})", "", f"- n {w1['n']}, filled {w1['filled']}; flat mean {_f(fl and fl['mean_sol'])} CI90 {_ci(fl and fl['ci90_sol'])}; pressure mean {_f(pr and pr['mean_sol'])} CI90 {_ci(pr and pr['ci90_sol'])}."]
     rc = rep["sharp_drop_context"]
     L += ["", "## Sharp-drop rate (#336 label; report-only, primary filled trades)", "", f"- labelled {rc['n_labelled']} of {rc['n_filled']} filled; sharp-drop rate {_f(rc['sharp_drop_fraction'], 3)}, one-step drop {_f(rc['one_step_fraction'], 3)}, crash below 0.5x before 1.5x {_f(rc['crash50_fraction'], 3)}. {rc['note']}.", "", "## Caveats", ""]
     L += [f"- {c}" for c in rep["caveats"]]
-    if "v_coverage" in rep:
-        v = rep["v_coverage"]
-        L += ["", f"V coverage: {v['corrected']} corrected, {v['no_v']} no-V of {v['pumpswap_prints']} PumpSwap prints ({v['no_v_pools']} pools without V)."]
+    if "v_adapter_counts" in rep:
+        v = rep["v_adapter_counts"]
+        L += ["", f"V adapter during the pass: {v['corrected']} corrected, {v['no_v']} no-V of {v['pumpswap_prints']} PumpSwap prints ({v['no_v_pools']} pools without V)."]
     return "\n".join(L) + "\n"
 
 
@@ -554,13 +701,13 @@ def _already_in_log(log: Path, cell: str, result_path: Path) -> bool:
     return False
 
 
-def log_tries(rep: Mapping[str, Any], out_dir: Path, tries_log: str | Path) -> int:
+def log_tries(rep: Mapping[str, Any], out_dir: Path, tries_log: str | Path, marker_name: str = MARKER) -> int:
     """One result.v1 tries line per cell, tagged pool=explore-0814 (its own pool, separate from the 9-day count). Idempotent
     on re-run: a marker in out_dir plus a scan of the log for (tool, cell, result_path)."""
     from tools import mal_result
     from tools.exp012_exit_sensitivity import _read_marker, _write_marker
 
-    marker = out_dir / MARKER
+    marker = out_dir / marker_name
     done = _read_marker(marker)
     result_path = out_dir / RESULT_NAME
     n = 0
@@ -571,7 +718,7 @@ def log_tries(rep: Mapping[str, Any], out_dir: Path, tries_log: str | Path) -> i
             mal_result.append_try(
                 tries_log,
                 tool=TOOL,
-                config={"experiment": "EXP-012 backcheck", "pool": POOL_NAME, "cell": s["id"], "role": s["role"], "threshold": s["threshold"], "k": s["k"], "size_sol": s["size_sol"], "fee_lamports": s["fee"], "exit_lag": s["exit_lag"], "selection": "frozen model", "pricing": "V", "n_cells": rep["n_cells"]},
+                config={"experiment": "EXP-012 backcheck", "pool": POOL_NAME, "cell": s["id"], "role": s["role"], "threshold": s["threshold"], "k": s["k"], "size_sol": s["size_sol"], "fee_lamports": s["fee"], "exit_lag": s["exit_lag"], "selection": "frozen model", "pricing": "V", "n_cells": rep["n_cells"], "existing_tries_on_pool": rep["existing_tries_on_pool"]},
                 data_blocks=pool_blocks(),
                 result_path=result_path,
                 role="exploration",
@@ -602,6 +749,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--tries-log", default=None, help="absolute tries-log path (default: MAL_TRIES_LOG, else data/tries.jsonl)")
     ap.add_argument("--max-workers", type=int, default=2)
     ap.add_argument("--vmap", default=DEFAULT_VMAP)
+    ap.add_argument("--canonical-tries", type=Path, default=CANONICAL_TRIES, help="the repo's data/tries.jsonl; the run's lines are appended here too (the manager commits them)")
     args = ap.parse_args(argv)
     try:
         if args.max_workers > 2:
@@ -609,6 +757,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         g = guard_views(args.view_dir or [])  # before any row is read
         _model, threshold, _names = e11.load_frozen_spec(args.artifact_dir)
         check_frozen_threshold(threshold)
+        model_md5 = check_model_md5(args.artifact_dir)  # before any row is read
+        cov = v_prepass(g["roots"], g["pool"], args.vmap)  # pool field only; before any scoring or P&L
+        print(coverage_line(cov), file=sys.stderr, flush=True)
+        check_v_coverage(cov)
     except Refused as exc:
         print(f"refusing: {exc}", file=sys.stderr)
         return 2
@@ -617,11 +769,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     rows = collect_rows(g["roots"], g["pool"], args.artifact_dir, args.vmap, args.out_dir / "scratch", args.max_workers)
     write_rows(args.out_dir / ROWS_NAME, rows)
     rep = analyze(rows)
-    rep["v_coverage"] = v_coverage(args.out_dir / "scratch" / "counts_virtual")
+    rep["v_coverage"] = cov
+    rep["v_prepass_line"] = coverage_line(cov)
+    rep["v_adapter_counts"] = v_coverage(args.out_dir / "scratch" / "counts_virtual")
+    rep["git_head"] = git_head()
     rep["view_sha256"] = g["view_sha256"]
-    rep["model_md5"] = fz._md5_of_file(args.artifact_dir / "model.txt")
+    rep["model_md5"] = model_md5
     rep["wall_s"] = time.time() - t0
     rep["tries"] = {"logged": log_tries(rep, args.out_dir, tries_path), "log_path": str(tries_path)}
+    if Path(args.canonical_tries).resolve() != Path(tries_path).resolve():
+        rep["tries"]["canonical_logged"] = log_tries(rep, args.out_dir, args.canonical_tries, "tries_logged_canonical.marker")
+        rep["tries"]["canonical_path"] = str(args.canonical_tries)
     (args.out_dir / RESULT_NAME).write_text(json.dumps(rep, indent=2) + "\n", encoding="utf-8")
     md = render_md(rep)
     (args.out_dir / "report.md").write_text(md, encoding="utf-8")

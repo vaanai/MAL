@@ -151,11 +151,89 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(halves["first_7_days"]["n"] + halves["last_6_days"]["n"], rep["cells"][0]["n_entered"])
         self.assertTrue(rep["primary_per_day"])
 
-    def test_banner_and_wording(self):
+    def test_banner_exact_and_wording(self):
         rep = bc.analyze(self._rows())
         md = bc.render_md(rep)
-        self.assertTrue(md.startswith("EXPLORATION, frozen EXP-012 on explore-0814 (never trained on, never outcome-read before). Not gate evidence. N cells = 6."))
+        self.assertTrue(md.startswith(bc.BANNER))
+        self.assertTrue(bc.BANNER.startswith("EXPLORATION, best-of-N context, not a promote, not gate evidence. Frozen EXP-012 (model md5 a1810d21…, thr 0.8031)"))
+        self.assertTrue(bc.BANNER.endswith("the promotion gate on a fresh holdout."))
+        self.assertIn("Not unread: w1 days were outcome-read by DEC-017 candidate (a)", bc.BANNER)
+        self.assertIn("N cells = 6", md)
         self.assertIn("Sharp-drop rate (#336 label", md)
+        self.assertEqual(rep["cumulative_tries_on_pool"], 7)
+
+    def test_thirteen_counted_days_and_window_labels(self):
+        self.assertEqual(bc.n_counted_days(), 13)
+        self.assertEqual(bc.analyze(self._rows())["n_days"], 13)
+        t0 = self.T0
+        self.assertEqual(bc.day_label(t0), "2026-08-15")
+        self.assertEqual(bc.day_label(t0 + 86_400_000 - 1), "2026-08-15")
+        self.assertEqual(bc.day_label(t0 + 86_400_000), "2026-08-16")
+        self.assertEqual(bc.day_label(bc.hour_ms(bc.POOL_END) - 1), "2026-08-27")
+
+    def test_without_w1_and_size_notes_and_pct(self):
+        w1 = bc.hour_ms(bc.W1_START)
+        rows = self._rows() + [_row("inw1", w1 + 5, net0=SOL // 10)]
+        rep = bc.analyze(rows)
+        self.assertEqual(rep["primary_without_w1"]["n"], rep["cells"][0]["n_entered"] - 1)
+        by = {c["label"]: c for c in rep["cells"]}
+        self.assertIn("cannot support any live size (DEC-020", by[bc.cell_label(bc.SENSITIVITY[0])]["note"])
+        self.assertIn("optimistic lower bound on exit cost", by[bc.cell_label(bc.SENSITIVITY[-1])]["note"])
+        self.assertEqual(rep["cells"][0]["note"], "")
+        md = bc.render_md(rep)
+        self.assertIn("without w1's hours", md)
+        self.assertIn("% size", md)
+
+
+class VCoverageTests(unittest.TestCase):
+    T0 = bc.hour_ms(bc.COUNT_START)
+
+    def _prints(self, n_mints, missing_every, vmap):
+        rows = []
+        for i in range(n_mints):
+            pool = f"pool{i}"
+            vmap[pool] = None if (missing_every and i % missing_every == 0) else 17_000_000_000
+            for j in range(5):
+                rows.append({"venue": "pumpswap", "mint": f"m{i}", "pool": pool, "t_recv_ms": self.T0 + 1000 + j})
+        return rows
+
+    def test_null_is_missing_zero_is_covered_and_buffer_mints_ignored(self):
+        vmap = {"pa": 0, "pb": None, "pc": 5}
+        rows = [{"venue": "pumpswap", "mint": "a", "pool": "pa", "t_recv_ms": self.T0 + 1}, {"venue": "pumpswap", "mint": "b", "pool": "pb", "t_recv_ms": self.T0 + 1},
+                {"venue": "pumpswap", "mint": "c", "pool": "pzz", "t_recv_ms": self.T0 + 1},
+                {"venue": "pumpswap", "mint": "buf", "pool": "pb", "t_recv_ms": self.T0 - 5},
+                {"venue": "pump_bonding", "mint": "d", "pool": "pb", "t_recv_ms": self.T0 + 1}]
+        cov = bc.vmap_coverage(rows, vmap, self.T0)
+        self.assertEqual((cov["prints"], cov["covered"], cov["missing"], cov["missing_pools"]), (3, 1, 2, 2))
+
+    def test_two_percent_missing_refuses_before_analyze(self):
+        vmap = {}
+        cov = bc.vmap_coverage(self._prints(100, 50, vmap), vmap, self.T0)  # 2 of 100 mints missing = 2% of prints
+        self.assertAlmostEqual(cov["missing_fraction"], 0.02)
+        with self.assertRaises(bc.Refused):
+            bc.check_v_coverage(cov)
+        vmap2 = {}
+        bc.check_v_coverage(bc.vmap_coverage(self._prints(200, 200, vmap2), vmap2, self.T0))  # 1 of 200 = 0.5%
+        self.assertIn("prints=", bc.coverage_line(cov))
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(bc, "guard_views", return_value={"roots": {}, "pool": [], "view_sha256": {}}), \
+                mock.patch.object(bc, "check_frozen_threshold"), mock.patch.object(bc, "check_model_md5", return_value="x"), \
+                mock.patch.object(bc.e11, "load_frozen_spec", return_value=(None, bc.FROZEN_THRESHOLD, [])), \
+                mock.patch.object(bc, "v_prepass", return_value=cov), mock.patch.object(bc, "collect_rows") as collect, mock.patch.object(bc, "analyze") as analyze:
+            self.assertEqual(bc.main(["--view-dir", "/x", "--out-dir", d]), 2)
+            collect.assert_not_called()
+            analyze.assert_not_called()
+
+
+class Md5Tests(unittest.TestCase):
+    def test_model_md5(self):
+        self.assertEqual(bc.check_model_md5(bc.DEFAULT_ARTIFACT_DIR), "a1810d219ed61db64a396f40dc302ce5")
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "model.txt").write_text("not the model")
+            with self.assertRaises(bc.Refused):
+                bc.check_model_md5(Path(d))
+
+    def test_head_recorded(self):
+        self.assertRegex(bc.git_head(), r"^[0-9a-f]{40}$")
 
 
 class PatchTests(unittest.TestCase):
