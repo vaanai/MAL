@@ -284,18 +284,33 @@ class TestRefusals(unittest.TestCase):
                 with self.assertRaises(w.Refused):
                     list(w.read_trade_file(bad, h, {}))
 
-    def test_canonical_tries_log_and_w2_flag(self):
+    def test_tries_guards(self):
         import tempfile
 
+        with self.assertRaises(w.Refused):
+            w.check_ops_tries_log(None)
+        with self.assertRaises(w.Refused):
+            w.check_ops_tries_log("rel/tries.jsonl")
+        self.assertEqual(w.check_ops_tries_log("/data/mal/ops/tries-exp018-screen.jsonl"), Path("/data/mal/ops/tries-exp018-screen.jsonl"))
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "t.jsonl"
+            can, ops = Path(d) / "tries.jsonl", Path(d) / "ops.jsonl"
             with self.assertRaises(w.Refused):
-                w.check_canonical_tries_log(p)  # missing
-            p.write_text(json.dumps({"config": {"key": "exp013_x"}}) + "\n")
+                w.check_canonical_tries(can)  # missing
+            can.write_text(json.dumps({"config": {"key": "exp013_x"}}) + "\n")
             with self.assertRaises(w.Refused):
-                w.check_canonical_tries_log(p)  # no exp015 line
-            p.write_text(json.dumps({"config": {"key": "exp015_a"}}) + "\n")
-            w.check_canonical_tries_log(p)
+                w.check_canonical_tries(can)  # no exp015 line
+            can.write_text(json.dumps({"config": {"key": "exp015_a"}}) + "\n")
+            w.check_canonical_tries(can)
+            w.check_no_prior_tries(ops, can)  # neither holds exp018
+            ops.write_text(json.dumps({"tool": w.TOOL, "config": {"key": "exp018_w1"}}) + "\n")
+            with self.assertRaises(w.Refused):
+                w.check_no_prior_tries(ops, can)  # prior in the ops log
+            ops.unlink()
+            can.write_text(can.read_text() + json.dumps({"config": {"key": "exp018_w2"}}) + "\n")
+            with self.assertRaises(w.Refused):
+                w.check_no_prior_tries(ops, can)  # prior in the canonical log
+
+    def test_w2_flag_recomputed(self):
         uni = [{"mint": "A"}]
         feats = {"A": {"skilled_holder_lamports": 1, "skilled_share": 0.0}}
         m = {"scope": [0], "frozen": [True], "taus": {"d": 0.0}}
@@ -303,11 +318,9 @@ class TestRefusals(unittest.TestCase):
         with self.assertRaises(w.Refused):
             w.check_w2_flag({"selection": {"w2_degenerate": False}}, uni, m, feats)
 
-    def test_tries_log_arg(self):
-        w.check_tries_log_arg(None, Path("/x/tries.jsonl"))
-        w.check_tries_log_arg("/x/tries.jsonl", Path("/x/tries.jsonl"))
-        with self.assertRaises(w.Refused):
-            w.check_tries_log_arg("/y/other.jsonl", Path("/x/tries.jsonl"))
+    def test_canonical_default_is_repo_data_file(self):
+        self.assertEqual(w.CANONICAL_TRIES, w.REPO_ROOT / "data" / "tries.jsonl")
+        self.assertFalse(hasattr(w, "CANONICAL_TRIES_LOG"))
 
     def test_w2_degenerate_and_selection_report(self):
         uni = [{"mint": "A"}, {"mint": "B"}]

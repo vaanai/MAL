@@ -70,7 +70,7 @@ SERIES: dict[str, dict[str, Any]] = {
 }
 DEFAULT_P2_VIEWS = [f"{e15.P2_BASE}/w{i}" for i in range(1, 8)]
 DEFAULT_P4_VIEWS = ["/data/mal/clean-view/exp011-0909/b", "/data/mal/clean-view/exp011-0909/c"]
-CANONICAL_TRIES_LOG = "/data/mal/ops/tries/tries.jsonl"  # as scripts/research/exp013-screen-run.sh sets MAL_TRIES_LOG
+CANONICAL_TRIES = REPO_ROOT / "data" / "tries.jsonl"  # the lab's canonical log, as EXP-016 (the job checkout's copy)
 BONDING_FEE_PPM = 12_500  # tools/paper_curve_math.BONDING_FEE_PPM (1.25%), each side; bonding rows' sol_lamports is PRE-fee
 BANNER = "EXP-018 wallet skill: EXPLORATION ONLY, NO EDGE CLAIM. A pass earns one confirmation read on an unread reserved block under a later pre-registration."
 
@@ -688,6 +688,19 @@ def prior_exp018_lines(log: Path) -> list[dict[str, Any]]:
     return out
 
 
+def log_cell_tries_all(logs: Sequence[Path], out_dir: Path, status: str) -> dict[str, dict[str, Any]]:
+    """Write to the ops log and the canonical log (when they differ); returns the first (ops) log's info."""
+    info: dict[str, dict[str, Any]] = {}
+    seen: set[Path] = set()
+    for lg in logs:
+        if Path(lg).resolve() in seen:
+            continue
+        seen.add(Path(lg).resolve())
+        r = log_cell_tries(lg, out_dir, status)
+        info = info or r
+    return info
+
+
 def log_cell_tries(log: Path, out_dir: Path, status: str) -> dict[str, dict[str, Any]]:
     groups = {"universe": e15.UNIVERSE_BLOCKS} if status == "started" else e15.pool_group_blocks(True)
     info: dict[str, dict[str, Any]] = {}
@@ -739,18 +752,34 @@ COVERAGE_MIN = 0.90
 MIN_FROZEN_SCORED = 100
 
 
-def check_tries_log_arg(arg: str | None, canonical: Path) -> None:
-    if arg is not None and Path(arg).resolve() != Path(canonical).resolve():
-        raise Refused(f"--tries-log {arg} is not the canonical {canonical}")
+def check_ops_tries_log(arg: str | None) -> Path:
+    """Screen mode writes an absolute ops log (--tries-log) as well as the canonical repo log."""
+    if not arg:
+        raise Refused("screen mode needs an absolute --tries-log (e.g. /data/mal/ops/tries-exp018-screen.jsonl)")
+    if not Path(arg).is_absolute():
+        raise Refused(f"--tries-log {arg} is relative: give an absolute path")
+    return Path(arg)
 
 
-def check_canonical_tries_log(path: Path) -> None:
-    """Guards a wrong MAL_TRIES_LOG: the canonical log must exist and already hold exp015 lines."""
+def check_canonical_tries(path: Path) -> None:
+    """The canonical repo data/tries.jsonl must exist and hold exp015_ lines (it is the repo file, so it does)."""
     p = Path(path)
     if not p.is_file():
-        raise Refused(f"tries log {p} does not exist: set MAL_TRIES_LOG to the canonical {CANONICAL_TRIES_LOG}")
+        raise Refused(f"canonical tries log {p} does not exist")
     if not e15.prior_exp015_lines(p):
-        raise Refused(f"tries log {p} has no exp015 lines: not the canonical log ({CANONICAL_TRIES_LOG}); check MAL_TRIES_LOG")
+        raise Refused(f"canonical tries log {p} has no exp015_ lines: not the lab's canonical log")
+
+
+def check_no_prior_tries(*logs: Path) -> None:
+    seen: set[Path] = set()
+    for lg in logs:
+        r = Path(lg).resolve()
+        if r in seen:
+            continue
+        seen.add(r)
+        prior = prior_exp018_lines(r)
+        if prior:
+            raise Refused(f"{len(prior)} earlier exp018 line(s) in {r}: a second run is refused")
 
 
 def check_w2_flag(pre: Mapping[str, Any], universe: Sequence[Mapping[str, Any]], masks: Mapping[str, Any], feats: Mapping[str, Mapping[str, Any]]) -> None:
@@ -857,7 +886,8 @@ def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--scratch", default=DEFAULT_SCRATCH)
     ap.add_argument("--out-dir", type=Path, default=Path("/data/mal/exp018-screen"))
-    ap.add_argument("--tries-log", default=None)
+    ap.add_argument("--tries-log", default=None, help="screen mode: absolute ops log, e.g. /data/mal/ops/tries-exp018-screen.jsonl")
+    ap.add_argument("--canonical-tries", type=Path, default=CANONICAL_TRIES)
     ap.add_argument("--vmap", default=e15.VMAP_0909_PATH)
     ap.add_argument("--artifact-dir", type=Path, default=None)
     ap.add_argument("--features", type=Path, default=None, help="features.jsonl written by --precount (screen mode)")
@@ -870,11 +900,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    from tools.exp012_exit_sensitivity import resolve_tries_path
-
     args = _parser().parse_args(argv)
     out_dir: Path = args.out_dir
     tries_path: Path | None = None
+    canonical: Path | None = None
     try:
         cache = check_cache(args.scratch)
         e15.check_vmap(args.vmap, e15.VMAP_0909_SHA256, "V map")
@@ -901,12 +930,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_json(out_dir / OUT_PRECOUNT, {**rep, "features_sha256": sha, "cache": cache})
             print(json.dumps({"mode": "precount", **rep, "features_sha256": sha}, indent=2, default=str))
             return 0
-        tries_path = Path(resolve_tries_path(None))
-        check_tries_log_arg(args.tries_log, tries_path)
-        check_canonical_tries_log(tries_path)
-        prior = prior_exp018_lines(tries_path)
-        if prior:
-            raise Refused(f"{len(prior)} earlier exp018 line(s) in {tries_path}: a second run is refused")
+        tries_path = check_ops_tries_log(args.tries_log)
+        canonical = Path(args.canonical_tries).resolve()
+        check_canonical_tries(canonical)
+        check_no_prior_tries(tries_path, canonical)
         if args.features is None:
             raise Refused("screen mode needs --features (run --precount first)")
         check_features_file(args.features, out_dir)
@@ -922,21 +949,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         check_w2_flag(pre, universe, masks, feats)
         check_precount(pre, masks)
         head = e15.git_state()["head"]
+        check_no_prior_tries(tries_path, canonical)  # re-checked right before the spend point
         e15.take_lock(out_dir, head, hashlib.sha256(json.dumps(sorted(vars(args).items(), key=lambda kv: kv[0]), default=str).encode()).hexdigest())
     except (Refused, e15.Refused) as exc:
         print(f"refusing (before started, no tries line): {exc}", file=sys.stderr)
         return 2
-    assert tries_path is not None
+    assert tries_path is not None and canonical is not None
     t0, started, status = time.time(), False, "aborted_after_read"
     try:
-        log_cell_tries(tries_path, out_dir, "started")
+        log_cell_tries_all([tries_path, canonical], out_dir, "started")
         started = True
         rep = run_screen(universe, masks)
         rep.update({"schema": SCHEMA, "head": head, "cache": cache, "min_trips": MIN_TRIPS, "warmup_hours": WARMUP_HOURS})
         trades = rep.pop("trades")
         write_json(out_dir / OUT_SCREEN, rep)
         (out_dir / OUT_MD).write_text(render_md(rep), encoding="utf-8")
-        info = log_cell_tries(tries_path, out_dir, "completed")
+        info = log_cell_tries_all([tries_path, canonical], out_dir, "completed")
         write_results(out_dir, trades, info, tries_path, head, time.time() - t0)
         status = "completed"
         print(rep["outcome"])

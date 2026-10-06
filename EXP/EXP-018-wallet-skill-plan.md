@@ -90,7 +90,7 @@ Scope: the non-P1 rows (P2, P3, P4) with a feature row and past warm-up. The fro
 9. **Missing tape (R1).** Any hour of a series has no trades file, or a series' guard (VIEW.sha256, tiling, dedupe manifest) fails: refuses in `--precount` and in screen mode. Coverage counts a snapshot only when the series had at least one row before the cutoff.
 10. **Tries log.** `--precount` neither resolves nor reads a tries log. Screen mode refuses any `--tries-log` other than the canonical one (`resolve_tries_path(None)`).
 11. **W2 degenerate (stated before it runs).** `--precount` reports, blind on outcomes, `tau_d` per scored date. If `tau_d` is 0 (or undefined) on **every** date, `skilled_share >= tau_d` is always true and W2 equals the frozen book: W2 is **dropped before the read**, the family is W1 alone (Holm k = 1, one `started` try).
-12. **Tries log guard.** Screen mode refuses if the resolved tries log does not exist or holds no `exp015_` line. The screen job must set `MAL_TRIES_LOG=/data/mal/ops/tries/tries.jsonl`, the canonical log (as `scripts/research/exp013-screen-run.sh` sets it).
+12. **Tries logs (as EXP-016).** Screen mode writes two logs: an absolute ops log `--tries-log /data/mal/ops/tries-exp018-screen.jsonl` (refused if missing or relative) and the canonical repo `data/tries.jsonl` of the job checkout (`--canonical-tries`, default that path). It refuses if the canonical log does not exist or holds no `exp015_` line, and if **either** log already holds an `exp018` line (checked at the start and again right before the lock). A later sync PR copies the ops lines into the repo, as #408 did for EXP-015.
 13. **W2 flag.** Screen mode recomputes `w2_degenerate` from its own masks and refuses if it disagrees with `precount.json`.
 
 After `started`, a failure is reported as `aborted_after_read`; the tries are spent.
@@ -112,6 +112,15 @@ cd ~/MAL && /data/mal/venv/bin/python -m tools.exp018_wallet_skill --precount --
 ```
 
 Views are the defaults in `SERIES` (`explore-0814/w1..w7`; `blocks-clean/fresh-0903/w1..w3`; `clean-view/exp011-0909/b,c`). `--workers 2` is one process per series (the tool caps it at 2). The precount writes `features.jsonl` and `precount.json` into the out-dir; the screen run then takes `--features /data/mal/exp018-precount-$TS/features.jsonl --out-dir /data/mal/exp018-precount-$TS`.
+
+**Screen command** (after the precount, run from the job checkout so `data/tries.jsonl` is the repo's):
+
+```
+cd ~/MAL && /data/mal/venv/bin/python -m tools.exp018_wallet_skill \
+  --scratch /data/mal/exp015-screen/scratch --vmap /data/mal/pumpswap-virtual/pool_v_0909.json \
+  --features /data/mal/exp018-precount-<TS>/features.jsonl --out-dir /data/mal/exp018-precount-<TS> \
+  --tries-log /data/mal/ops/tries-exp018-screen.jsonl
+```
 
 ## 9. What it cannot show, and the honest prior
 
