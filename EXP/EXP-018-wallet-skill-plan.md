@@ -135,3 +135,21 @@ cd ~/MAL && /data/mal/venv/bin/python -m tools.exp018_wallet_skill \
 
 2. 2026-10-06, quant-proof on #424 at f5e0dae: P3/P4 hours now resolve through EXP-015's guards and loaders (the first draft's `trades-<h>.jsonl.zst` lookup missed P3's `.deduped` names); bonding fee charged per side (R2); missing-hour, tries-log and W2-degenerate refusals added; precount prints the skilled-holder and skilled-share shares and `tau_d` per date; zstd failure refuses; out-of-hour rows dropped.
 1. 2026-10-06, manager ruling on #424: the cutoff is EXP-012's `causal_events(feat.events, mig_ms)` boundary (time based, strict `<` on `t_recv_ms`), replacing an earlier draft that used migration slot + 1. The 60 s window is 60,000 ms.
+
+## 11. Amendment 1 (2026-10-06, manager ruling, made before any outcome was read)
+
+**Precount #3** (job #315, head `e0e9103`, out-dir `/data/mal/exp018-precount-20261006T1929Z`, rc 0) is outcome-blind. Its counts:
+
+| | P2 | P3 | P4 |
+|---|---|---|---|
+| coverage | 1.0 | 1.0 | 1.0 |
+| scored after warm-up | 11,700 | 2,810 | 5,676 |
+| scored with a skilled holder | 7,268 | 1,255 | 2,616 |
+
+22 scored dates. Frozen-selected scored rows: 1,979; with `skilled_holder > 0`: 1,963 (99.19%); with `skilled_share > 0`: 1,912. `tau_d` ranges from 0.149 to 0.175; `w2_degenerate` is False. 116,950 skilled wallets in S_P2 at its end.
+
+**Ruling.** W1 (veto when `skilled_holder == 0`) would remove 16 of 1,979 frozen-selected scored rows, so it cannot move the paired bar. W1 is **dropped from the family before any read**, as H1/H2 were in EXP-017. **Sections 4, 6 and 7 are superseded where they name W1 or a family of 2**: the family is **W2 alone, Holm k = 1, one try** (one `started` line, one `completed` line per pool group). W1 is never evaluated and never logged.
+
+**Pins.** `features_sha256 = 6bf938f05097d4acd55b1a6c7be799c11f00c72b9841ef64ce628899ad68e0c1`; precount dir `/data/mal/exp018-precount-20261006T1929Z` (`features.jsonl` inside it). The screen refuses unless `--features` is that file and hashes to that sha. The `w2_degenerate` cross-check stays. If `w2_degenerate` were True, no cell would remain and the screen refuses.
+
+**Code since the precount.** Between `e0e9103` and this amendment only screen-mode code changed (tries logs, guards, the family and the pin). The feature builder, `--precount` branch and its output are unchanged, so the precount stands without a rerun.

@@ -9,7 +9,7 @@ Modes
                rows, wallets, mints with >= 1 skilled holder, coverage, warm-up effect on n). It never opens a net: the EXP-015 cache rows are
                parsed with an object hook that DROPS net0 / status / sides / p_press at parse time.
   (screen)     needs --features (the file --precount wrote; its sha256 is checked against precount.json). Refuses before `started` on any pin,
-               coverage or zero-cell failure; then takes RUN.lock (O_EXCL), logs two `started` tries (W1, W2), evaluates, writes screen.json,
+               coverage or zero-cell failure; then takes RUN.lock (O_EXCL), logs one `started` try (W2 alone, amendment 1), evaluates, writes screen.json,
                screen.md, result.v1 files and the `completed` tries. A second run is refused.
 
 Reuse. This module imports tools.exp015_screen (on main) and COPIES the cache-reading, pin, paired / Holm / bootstrap code from
@@ -51,7 +51,11 @@ WARMUP_HOURS = 72
 WINDOW_MS = 60_000  # the last 60 s before the cutoff
 IDLE_EVICT_HOURS = 24  # positions of a mint idle this long are dropped (counted); a mint with a pending snapshot is never evicted
 PURGE_MIN = e15.PURGE_MIN  # 35 min around a held-out date for the nested median
-CELLS = ("W1", "W2")
+# Amendment 1 (2026-10-06, manager ruling before any read): W1 is dropped from the family (it would veto 16 of 1,979 frozen-selected scored rows after
+# precount #3). The family is W2 alone: Holm k = 1, one try. W1's mask code and CELL_DESC stay for reference; it is never evaluated or logged.
+CELLS = ("W2",)
+PINNED_FEATURES_SHA256 = "6bf938f05097d4acd55b1a6c7be799c11f00c72b9841ef64ce628899ad68e0c1"  # precount #3 (job #315, head e0e9103)
+PINNED_PRECOUNT_DIR = "/data/mal/exp018-precount-20261006T1929Z"
 FAMILY_ALPHA = 0.05
 BOOT_DRAWS_P, BOOT_SEED = 10_000, 1
 LEGS = e15.LEGS
@@ -720,6 +724,17 @@ def write_json(path: Path, obj: Any) -> None:
     os.replace(tmp, path)
 
 
+def check_features_pin(features: Path, pin_sha: str = PINNED_FEATURES_SHA256, pin_dir: str = PINNED_PRECOUNT_DIR) -> str:
+    """The screen refuses unless --features is the pinned precount's file, by location and by sha256."""
+    f = Path(features)
+    if f.resolve() != (Path(pin_dir) / OUT_FEATURES).resolve():
+        raise Refused(f"--features {f} is not the pinned {Path(pin_dir) / OUT_FEATURES}")
+    got = _file_sha256(f)
+    if got != pin_sha:
+        raise Refused(f"features sha256 {got} != pinned {pin_sha}")
+    return got
+
+
 def check_features_file(features: Path, out_dir: Path) -> str:
     pc = out_dir / OUT_PRECOUNT
     if not pc.is_file():
@@ -936,10 +951,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         check_no_prior_tries(tries_path, canonical)
         if args.features is None:
             raise Refused("screen mode needs --features (run --precount first)")
+        check_features_pin(args.features)
         check_features_file(args.features, out_dir)
         pre = json.loads((out_dir / OUT_PRECOUNT).read_text(encoding="utf-8"))
         if (pre.get("selection") or {}).get("w2_degenerate"):
-            set_cells(("W1",))  # pre-declared: tau_d is 0 on every date, W2 would equal the frozen book; dropped before the read, one try
+            raise Refused("w2_degenerate: tau_d is 0 on every date, W2 equals the frozen book and W1 was dropped (amendment 1): no cell is left")
         e15.check_run_lock(out_dir)
         universe, _stats = load_universe(args.scratch, blind=False)
         feats = load_features(args.features)

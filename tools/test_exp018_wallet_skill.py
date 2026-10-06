@@ -310,6 +310,26 @@ class TestRefusals(unittest.TestCase):
             with self.assertRaises(w.Refused):
                 w.check_no_prior_tries(ops, can)  # prior in the canonical log
 
+    def test_family_is_w2_alone_and_features_pin(self):
+        import tempfile
+
+        self.assertEqual(w.CELLS, ("W2",))
+        self.assertEqual(len(w.holm({"W2": 0.04})), 1)
+        self.assertTrue(w.holm({"W2": 0.04})["W2"]["reject"])  # k = 1: threshold 0.05
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / w.OUT_FEATURES
+            f.write_text("x\n")
+            sha = w._file_sha256(f)
+            w.check_features_pin(f, sha, d)
+            with self.assertRaises(w.Refused):
+                w.check_features_pin(f, "0" * 64, d)  # wrong sha
+            other = Path(d) / "other.jsonl"
+            other.write_text("x\n")
+            with self.assertRaises(w.Refused):
+                w.check_features_pin(other, sha, d)  # wrong location
+        with self.assertRaises(w.Refused):
+            w.check_features_pin(Path("/nonexistent/features.jsonl"))
+
     def test_w2_flag_recomputed(self):
         uni = [{"mint": "A"}]
         feats = {"A": {"skilled_holder_lamports": 1, "skilled_share": 0.0}}
