@@ -45,6 +45,16 @@ refusal (their lines are logged). `prior_vbook_runs` counts STARTED lines for th
 window always uses `<final-out-dir>/../VBOOK_RUNS.jsonl`; `--runs-ledger` is refused there. A STARTED line with no
 terminal line (SIGKILL, OOM) also means the window is spent and (B) is NOT_DECIDABLE.
 
+LP LAW (DEC-016 Amendment 5 section 7(a), (c), (d)). `lphist-entered` (first argument) runs after the FINAL (A) read: it takes the
+pools every entered trade touched (frozen tape pass, so no V-priced result is opened), fetches their LP history over
+[window start - 1 h, final fetch end] (key read inside Python, never printed, <= 5 rps), writes a read-only file + meta, and
+appends a COMPLETED line to LPHIST_RUNS.jsonl beside the FINAL out dir. `--lphist FILE` (required unless --test-window) must be the
+FIRST completed line for the window (later runs are never used); its sha256 goes into the STARTED line. The merge meta must carry
+`lp_moves` (sidecars sha-checked) and `--snapshot` files must hash to it. Each entered trade is priced at V0 at its entry fill
+slot (`pool_values`, `lp_min_rows`): same-slot events both ways, events inside the hold at entry-slot and exit-slot V0, the lower
+P&L per leg; unresolved, unexplained or ambiguous pools are null-V. Sensitivity (d)(i) (final-map V0) goes to `live_blockers` if its
+verdict differs; (d)(ii) pending = 0 is report only. Every V map used is written under OUT/vmaps/ with its sha256 in the report.
+
 Outputs, in a new `--out-dir` (refused if it exists): vbook_report.json, vbook_report.md. Scratch row files
 (P&L at rest) live in a temp directory next to it and are deleted.
 """
@@ -1033,6 +1043,7 @@ def run_vbook(
         done = True
         out_dir.mkdir(parents=True)
         fw.atomic_write(out_dir / REPORT_JSON, json_bytes)
+        (out_dir / "vmaps").mkdir(exist_ok=True)
         for name, data in sorted(map_bytes.items()):  # every V map used, whose sha256 the report lists
             fw.atomic_write(out_dir / "vmaps" / name, data)
         fw.atomic_write(out_dir / REPORT_MD, render_markdown(rep).encode("utf-8"))
