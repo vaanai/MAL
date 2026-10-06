@@ -53,7 +53,7 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     assert by_name["Backup confirmation block"].owner == "reserved"
     assert by_name["Backup confirmation block"].host == "research"
     second = by_name["Second backup confirmation block"]
-    assert second.owner == "EXP-015"
+    assert second.owner == "reserved"  # EXP-015 is named only by its Part 1 pre-registration
     assert second.host == "research"
     assert (second.start_hour, second.end_hour_exclusive) == ("2026-08-08T12", "2026-08-14T12")
     assert by_name["Exploration expansion"].owner == "exploration-pool"
@@ -302,11 +302,13 @@ def test_research_exploration_expansion_allowed_and_exp012_block_needs_its_id(bl
     # fresh-0828 stays reserved (EXP-013's confirmation): denied to exploration
     ok, _ = _check(blocks, "exploration", "research", "2026-08-30T00", "2026-08-30T01")
     assert not ok
-    # fresh-0808 is the EXP-015 confirmation block: closed to exploration and to other ids
+    # fresh-0808 is reserved as EXP-015's confirmation target, not owned: every role is denied,
+    # including a confirmation-oneshot read by EXP-015 itself, until its Part 1 names it
     ok, _ = _check(blocks, "exploration", "research", "2026-08-10T00", "2026-08-10T01")
     assert not ok
-    ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-08-10T00", "2026-08-10T01", exp_id="EXP-013")
-    assert not ok
+    for exp in ("EXP-015", "EXP-014", "EXP-013"):
+        ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-08-10T00", "2026-08-10T01", exp_id=exp)
+        assert not ok
 
 
 def test_normalize_owner_and_host_synthetic_cells() -> None:
