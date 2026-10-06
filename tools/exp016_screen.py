@@ -270,6 +270,41 @@ def check_v_constancy(samples: Sequence[Mapping[str, Any]], vmap: Mapping[str, i
     return rec
 
 
+def readable_pools(pools: Iterable[str], vmap: Mapping[str, int | None]) -> list[str]:
+    """The constancy population: P2 pools with a READABLE stored V (a pool without one cannot be checked, so it is not sampled)."""
+    return sorted({p for p in pools if vmap.get(p) is not None})
+
+
+def p2_eligible_pools(src: SourceData) -> list[str]:
+    """Outcome-blind: the P2 pools the screen keeps (a migration pool, a create row and a usable migration slot), the same set process_source makes cells for."""
+    pool_by_mint = rug.migration_pool_map(src.migrations.values())
+    out = set()
+    for m, p in pool_by_mint.items():
+        ms = src.migrations[m].get("slot")
+        if src.creates.get(m) is not None and isinstance(ms, int) and not isinstance(ms, bool) and ms > 0:
+            out.add(p)
+    return sorted(out)
+
+
+def emit_constancy_sample(args: argparse.Namespace) -> int:
+    """`--emit-constancy-sample OUT.json`: the exact seeded P2 sample for the separate constancy job. Runs the guards and reads only the P2 source to
+    find its eligible pools (no simulation, no label, no price). Writes pool ids only. No lock, no tries line."""
+    try:
+        g = run_guards(args)
+        vmap_raw = load_pinned_vmap(args.vmap)
+    except (Refused, rug.PoolAttributionRefusal) as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 2
+    pools: list[str] = []
+    for tag, block, hours_fn, pool_hours, mig_roots in build_sources(g):
+        if tag == "P2":
+            pools = p2_eligible_pools(load_source_data(tag, block, hours_fn, pool_hours, mig_roots))
+    sample = sample_pools(readable_pools(pools, vmap_raw))
+    Path(args.emit_constancy_sample).write_text(json.dumps(sample) + "\n", encoding="utf-8")
+    print(f"wrote {len(sample)} sampled pool id(s) of {len(pools)} P2 pools ({len(readable_pools(pools, vmap_raw))} with a readable V); pool ids only", file=sys.stderr)
+    return 0
+
+
 def check_constancy_sample(samples: Sequence[Mapping[str, Any]], p2_pools: Iterable[str]) -> None:
     """After the tape pass, before `started`: the constancy file must hold exactly the seeded `sample_pools()` draw from the P2 pools."""
     got = [s.get("pool") for s in samples]
@@ -307,7 +342,7 @@ def admit_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def resolve_key(stamped: Sequence[tuple[Mapping[str, Any], rug.Key]], fill: Any) -> rug.Key:
+def resolve_key(stamped: Sequence[tuple[Mapping[str, Any], rug.Key]], fill: Any, *, mint: str = "mint", endpoint: str = "fill") -> rug.Key:
     """Map a simulator fill (a collapsed `TapePrint`) to the label's stamp key. Exact (t, slot, position, event_index) if present, else the unique
     (slot, position, event_index) match (the simulator collapses a signature to its last event at the latest receive time, plan note 5 of #392)."""
     fk = (int(fill.t_recv_ms), int(fill.slot), int(fill.tx_index), int(fill.event_index))
@@ -316,7 +351,7 @@ def resolve_key(stamped: Sequence[tuple[Mapping[str, Any], rug.Key]], fill: Any)
         return fk
     hit = [k for k in keys if k[1:] == fk[1:]]
     if len(hit) != 1:
-        raise rug.PoolAttributionRefusal(f"fill {fk} matches {len(hit)} migration-pool rows, not exactly one")
+        raise rug.PoolAttributionRefusal(f"{mint}: the {endpoint} fill does not match exactly one migration-pool row (no time, slot or price is printed)")
     return hit[0]
 
 
@@ -433,7 +468,7 @@ def simulate_mint(
         rec["why"] = "no primary cell"
         return rec
     # plan 2.2 (manager ruling 2026-10-06): a cell is censored iff its exit deadline is beyond the block edge, whether or not tp/sl would hit first
-    if prim["censored"] or landing_ms + int(_target_spec()["cap_ms"]) > tape_through_ms:
+    if prim["censored"] or landing_ms + int(_target_spec()["cap_ms"]) + EXIT_LAG * xx.SLOT_MS > tape_through_ms:
         rec["status"] = "CENSORED"
         return rec
     if not prim["filled"]:
@@ -443,16 +478,16 @@ def simulate_mint(
         buy = eem._try_buy(state, size, xx.ENTRY_PORTAL_PPM, ref)
         spec = _target_spec()
         ex = tpsl_exit(fills, idx, buy, state.venue, landing_ms, tape_through_ms, EXIT_LAG, spec)
-        if ex is None:
-            rec["status"] = "CENSORED"  # the exit lands past the tape end: censored (plan 2.2), never a drift
-            return rec
+        if ex is None:  # reachable only on a mirror/simulator disagreement: the deadline rule above already censored every edge case
+            raise SimulatorDrift(f"{mint_id}: the simulator filled the primary cell but the mirrored exit is censored (no outcome value is printed)")
         closed = xx._one_sell_close(fills, ex["state_idx"], buy, state.venue, size, xx.ENTRY_PORTAL_PPM)
         if closed is None or int(closed[0]) != int(prim["net0"]):
             raise SimulatorDrift(f"{mint_id}: the mirrored exit does not reproduce the simulator's close (no outcome value is printed)")
         exit_fill = fills[ex["state_idx"]] if ex["state_idx"] >= 0 else state
-        rug.check_migration_pool_only(fed, pool, [state, exit_fill])  # P2: both endpoints are canonical-pool prints, or refuse
+        rug.check_migration_pool_only(fed, pool, [state, exit_fill], mint=mint_id, names=("entry", "exit"))  # P2: both endpoints are canonical-pool prints, or refuse
         stamped = rug.stamp_rows([r for r in fed if r.get("trader") != rug.PROBE_WALLET])  # the label drops our own wallet before stamping
-        lab = rug.label_trade(admitted, migration_pool=pool, entry_key=resolve_key(stamped, state), exit_key=resolve_key(stamped, exit_fill), vmap=vmap)
+        lab = rug.label_trade(admitted, migration_pool=pool, entry_key=resolve_key(stamped, state, mint=mint_id, endpoint="entry"),
+                              exit_key=resolve_key(stamped, exit_fill, mint=mint_id, endpoint="exit"), vmap=vmap, mint=mint_id)
         rec.update({"exit_kind": ex["kind"], "deadline_ms": ex["deadline_ms"], "label": _label_dict(lab)})
         rec["label191"] = _label191(fills, idx, landing_ms)
     rec["features"] = rug.features(mint_id, create_row=create_row, rows=admitted, migration_slot=migration_slot, history=history)
@@ -1211,13 +1246,14 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--vmap", default=VMAP_EXP016_PATH, help="ONE merged-source V map for P1-P4, sha256 asserted against VMAP_EXP016_SHA256")
     ap.add_argument("--v-fallback-json", type=Path, default=None, help="pool -> V for closed/parse-fail pools (section 4 rule: from pumpswap_virtual_history), optional")
     ap.add_argument("--closed-pools-json", type=Path, default=None, help="list of pool ids known closed; every other None-V pool counts as parse-fail")
-    ap.add_argument("--v-constancy-json", type=Path, required=True, help=f"P1 check input: >= {V_SAMPLE_SIZE} sampled P2 pools with v_implied and quote_reserve (built by a separate job; needs getTransaction)")
+    ap.add_argument("--v-constancy-json", type=Path, default=None, help=f"required unless --emit-constancy-sample. P1 check input: >= {V_SAMPLE_SIZE} sampled P2 pools with v_implied and quote_reserve (built by a separate job; needs getTransaction)")
     ap.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--tries-log", default=None)
     ap.add_argument("--canonical-tries", type=Path, default=CANONICAL_TRIES)
     ap.add_argument("--max-workers", type=int, default=4)
     ap.add_argument("--guards-only", action="store_true")
+    ap.add_argument("--emit-constancy-sample", type=Path, default=None, metavar="OUT.json", help="write the seeded P2 constancy sample (pool ids only) and exit; no tries, no lock")
     return ap
 
 
@@ -1246,6 +1282,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     from tools.exp012_exit_sensitivity import resolve_tries_path
 
     args = _parser().parse_args(argv)
+    if args.emit_constancy_sample:
+        return emit_constancy_sample(args)
+    if args.v_constancy_json is None:
+        print("refusing: --v-constancy-json is required (or use --emit-constancy-sample)", file=sys.stderr)
+        return 2
     tries_path = resolve_tries_path(args.tries_log)
     canonical = Path(args.canonical_tries).resolve()
     out_dir = args.out_dir
@@ -1300,7 +1341,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pre = pre_started_counts(results, {c["mint"]: s for c, s in zip(cells, sel)}, vmap_raw, closed)
         pre["v_coverage"] = v_coverage([c["pool"] for c in cells if c.get("pool")], vmap_raw)
         pre["v_constancy"] = constancy
-        check_constancy_sample(constancy_samples, [c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")])  # before `started`
+        check_constancy_sample(constancy_samples, readable_pools([c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")], vmap_raw))  # before `started`
         table = build_table(cells, sel)
         usha, fsha = universe_sha256(table), feature_table_sha256(table)
         prior = prior_tries_per_pool(canonical, with_p4)  # the canonical data/tries.jsonl, not an alternate --tries-log
