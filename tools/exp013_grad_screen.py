@@ -52,7 +52,7 @@ BUILTIN_POOLS = ("A", "B", "C")
 VIEW_CUTOFF = gm.REAL_DATA_CUTOFF
 E12_DAYS = tuple(f"2026-09-{d}" for d in range(19, 28))
 ITEM_ORDER = ("1", "2", "3", "4a", "4b", "5", "6")
-V_SHA256 = "PENDING_JOB_228"  # pool_v_0909.json (Amendment 7, 2026-10-06 note); must equal tools.exp013_grad_table.VMAP_0909_SHA256
+V_SHA256 = "70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e"  # pool_v_0909.json (Amendment 7, 2026-10-06 note); must equal tools.exp013_grad_table.VMAP_0909_SHA256
 AM7_DISCLOSURE = (
     "Amendment 7 disclosure: PumpSwap legs are priced on vault + V (tools.pumpswap_virtual_adapter, mcap_mode v). The EXP-012 backcheck read migrate-entry "
     "outcomes on the explore-0814 days before this screen, so the August bars (items 4a and 4b) are no longer on unread data, in addition to the w1 "

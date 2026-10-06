@@ -96,7 +96,7 @@ MODEL_MD5 = bc.MODEL_MD5  # a1810d219ed61db64a396f40dc302ce5
 # ONE pool -> V map for every block (P1-P4): pool_v_0909.json (job #224: a superset of pool_v_0814, the EXP-011 block pools and the 30 pools
 # the back-check #207 found without V). The pin replaces the P2 pin on pool_v_0814. The sha is filled by the manager, after #224, in a
 # reviewed one-line commit; while it is the placeholder the tool refuses at startup (check_pin_ready).
-VMAP_0909_SHA256 = "PENDING_JOB_224"
+VMAP_0909_SHA256 = "70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e"  # job #232 final (226,073 pools, 321 null), pinned 2026-10-06
 VMAP_0909_PATH = "/data/mal/pumpswap-virtual/pool_v_0909.json"
 SCENARIO_WORDING = "one scenario (both sides' selected removed mints at total loss), not a worst-case bound"
 BIAS_STATEMENT = ("Removal of unpriceable mints may bias the gate bars UPWARD (the removed mints could be rugs; a closed account is the likely class). "

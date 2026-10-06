@@ -77,7 +77,7 @@ DEFAULT_OUT_ROOT = Path("/data/mal/exp013-grad")
 # (2506f7d2...), whose pre-pass refused job #225 at 1.59% / 675 pools. The sha is filled by the manager after #228 in a
 # reviewed one-line commit; while it is the placeholder the tool refuses at startup (check_pin_ready).
 DEFAULT_VMAP = "/data/mal/pumpswap-virtual/pool_v_0909.json"
-VMAP_0909_SHA256 = "PENDING_JOB_228"
+VMAP_0909_SHA256 = "70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e"  # job #232 final (226,073 pools, 321 null), pinned 2026-10-06
 V_MAX_MISSING_FRACTION = 0.01
 V_MCAP_MODE = "v"
 COUNTS_SUBDIR = "counts_virtual"
