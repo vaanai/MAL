@@ -53,7 +53,7 @@ Install only after the 10-16 PASS, the owner's funding and the end instant. Helm
 - **Root cause, shared by everything:** the V maps were built from migrated mints' pools only. This also refused **EXP-013 #225** at its pre-pass (1.59% / 675 pools; no outcome, no try spent).
 - **Fix in flight:** a complete map, `pool_v_0909.json`. Chain:
   1. #221: walker-c re-walk of 4 resumed EXP-011 hours (**done**).
-  2. #222: install the 6 re-walked hours, verify and dedupe; expect 0 flagged.
+  2. #222: install the 6 re-walked hours, verify and dedupe. **Done: b and c 72/72 hours, 0 flagged, 0 duplicates; clean views at /data/mal/clean-view/exp011-0909/{b,c}.** Copy-integrity sha256 check fast-0 vs research-0 is **job #231**. When it is clean, make the ledger edit that moves the EXP-011 block to exploration (preconditions met: both verify modes, re-walks, sha check).
   3. #224: 0909 = 0814 + EXP-011 pools + 30 pools.
   4. **#228**: every PumpSwap pool printed in all research views, fetched into 0909. It writes `/data/mal/ops/still-no-v-pools.json`.
   5. **#226**: the closed-account pool `7WQAs8wA…`'s implied V from its own buys, via pumpswap_virtual_history. Add it to 0909 by hand, outcome-blind, BEFORE pinning.
