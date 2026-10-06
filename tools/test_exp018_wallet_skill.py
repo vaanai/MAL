@@ -13,16 +13,25 @@ from tools.wallet_leaderboard import Lot, match_sell
 def row(slot, mint, trader, side, sol, tok, venue="pump_bonding", tx=0, ev=0):
     """The real trade-row shape (bonding v1 / PumpSwap v2 keys the loaders read)."""
     r = {"type": "trade", "venue": venue, "mint": mint, "trader": trader, "side": side, "sol_lamports": sol, "token_raw": tok, "slot": slot,
-         "tx_index": tx, "event_index": ev, "signature": f"sig{slot}{tx}{ev}", "block_time": 1_790_000_000 + slot // 2, "t_recv_ms": 1_790_000_000_000 + slot * 400,
+         "tx_index": tx, "event_index": ev, "signature": f"sig{slot}{tx}{ev}", "block_time": 1_790_000_000 + slot // 2, "t_recv_ms": T0 + slot * 400,
          "pool": None if venue == "pump_bonding" else "P", "quote_reserve": 1, "base_reserve": 1, "price_sol": 1e-7, "market_cap_sol": 30.0}
     if venue == "pumpswap":
         r["quote_is_wsol"] = True
     return r
 
 
+T0 = 1_790_000_000_000
+
+
+def T(slot):
+    """t_recv_ms of a row at `slot` (see row())."""
+    return T0 + slot * 400
+
+
 def run(rows_by_hour, cutoffs, min_trips=1):
+    """`cutoffs` are given as slots and converted to mig_ms: the cutoff is TIME based (t_recv_ms < mig_ms), as causal_events does."""
     hours = sorted(rows_by_hour)
-    return w.run_series(hours, lambda h: rows_by_hour.get(h, ()), cutoffs, min_trips=min_trips)
+    return w.run_series(hours, lambda h: rows_by_hour.get(h, ()), {m: T(c) for m, c in cutoffs.items()}, min_trips=min_trips)
 
 
 def trip(slot0, mint, who, pnl_sign=1):
@@ -51,7 +60,7 @@ class TestEngine(unittest.TestCase):
             held = sum(r[2] for r in rows)
             rows.append(("sell", rnd.randrange(10**8, 10**10), held))  # sells everything (one close)
             for i, (side, sol, tok) in enumerate(rows):
-                st.feed(100 + i, "M", "A", side, sol, tok, True, 0)
+                st.feed(T(100 + i), 100 + i, "M", "A", side, sol, tok, True, 0)
                 if side == "buy":
                     lots.append(Lot(token_raw=tok, cost_lamports=sol, t_ms=i, slot=100 + i))
                 else:
@@ -63,16 +72,16 @@ class TestEngine(unittest.TestCase):
 
     def test_partial_sells_do_not_close(self):
         st = w.SkillState(1)
-        st.feed(1, "M", "A", "buy", 10**9, 1000, True, 0)
-        st.feed(2, "M", "A", "sell", 10**9, 500, True, 0)
+        st.feed(T(1), 1, "M", "A", "buy", 10**9, 1000, True, 0)
+        st.feed(T(2), 2, "M", "A", "sell", 10**9, 500, True, 0)
         self.assertEqual(st.trips[0], 0)
-        st.feed(3, "M", "A", "sell", 10**9, 500, True, 0)
+        st.feed(T(3), 3, "M", "A", "sell", 10**9, 500, True, 0)
         self.assertEqual(st.trips[0], 1)
         self.assertEqual(st.pnl[0], 10**9 + 10**9 - 10**9 - 3 * w.TX_FEE_LAMPORTS)
 
     def test_sell_without_inventory_is_unmatched(self):
         st = w.SkillState(1)
-        st.feed(1, "M", "A", "sell", 10**9, 500, True, 0)
+        st.feed(T(1), 1, "M", "A", "sell", 10**9, 500, True, 0)
         self.assertEqual(st.trips[0], 0)
         self.assertEqual(st.stats["unmatched_sells"], 1)
 
@@ -106,6 +115,14 @@ class TestCausality(unittest.TestCase):
         self.assertEqual(f2["skilled_holder_lamports"], 3 * 10**9)
         self.assertEqual(f2["skilled_buyer_count"], 2)
 
+    def test_cutoff_is_time_based_strictly_before_mig_ms(self):
+        # same slot as the cutoff slot but one ms earlier counts; exactly mig_ms does not (causal_events: t_recv_ms < t_cutoff_ms)
+        early = {**row(70, "M", "B", "buy", 10**9, 100), "t_recv_ms": T(100) - 1}
+        late = {**row(70, "M", "C", "buy", 10**9, 100), "t_recv_ms": T(100)}
+        out, _ = run({"h0": self.base + [early, late, row(100, "Z", "Q", "buy", 1, 1)]}, self.cut)
+        self.assertEqual(out["M"]["n_buyers"], 2)  # A and B, not C
+        self.assertEqual(out["M"]["cutoff_ms"], T(100))
+
     def test_future_rows_do_not_change_features(self):
         rnd = random.Random(9)
         a = self.feats([row(100, "Z", "Q", "buy", 1, 1)])
@@ -133,9 +150,9 @@ class TestCausality(unittest.TestCase):
 
     def test_idle_eviction_spares_pending_mints(self):
         st = w.SkillState(1)
-        st.track("M", 10**9)
-        st.feed(1, "M", "A", "buy", 10, 10, True, 0)
-        st.feed(1, "N", "A", "buy", 10, 10, True, 0)
+        st.track("M", T(10**9))
+        st.feed(T(1), 1, "M", "A", "buy", 10, 10, True, 0)
+        st.feed(T(1), 1, "N", "A", "buy", 10, 10, True, 0)
         st.evict_idle(w.IDLE_EVICT_HOURS + 5)
         self.assertIn(st.mid["M"], st.pos)
         self.assertNotIn(st.mid["N"], st.pos)

@@ -48,7 +48,7 @@ CACHE_MANIFEST_SHA256 = "72b9bd1a355953c114835a77fd7ea2f2273e75b21393cf5be2d48a1
 CACHE_CODE_SHA = "cc366d4c7d8597d6429575c165f164cce35ce39d"
 MIN_TRIPS = 5  # N: closed round trips before a wallet counts as skilled
 WARMUP_HOURS = 72
-WINDOW_SLOTS = 150  # 60 s at 0.4 s per slot
+WINDOW_MS = 60_000  # the last 60 s before the cutoff
 IDLE_EVICT_HOURS = 24  # positions of a mint idle this long are dropped (counted); a mint with a pending snapshot is never evicted
 PURGE_MIN = e15.PURGE_MIN  # 35 min around a held-out date for the nested median
 CELLS = ("W1", "W2")
@@ -79,8 +79,8 @@ class Refused(Exception):
 # --- tape rows --------------------------------------------------------------------------------------------------------
 
 
-def parse_row(r: Mapping[str, Any]) -> tuple[int, int, int, str, str, str, int, int, bool] | None:
-    """(slot, tx_index, event_index, mint, trader, side, sol_lamports, token_raw, is_bonding) or None. Same admission rules as
+def parse_row(r: Mapping[str, Any]) -> tuple[int, int, int, int, str, str, str, int, int, bool] | None:
+    """(t_ms, slot, tx_index, event_index, mint, trader, side, sol_lamports, token_raw, is_bonding) or None. Same admission rules as
     tools.wallet_leaderboard.parse_trade: a trade row, buy or sell, a pump_bonding row or a PumpSwap row with quote_is_wsol True, resolved mint,
     positive integer amounts."""
     if r.get("type") not in (None, "trade"):
@@ -99,20 +99,25 @@ def parse_row(r: Mapping[str, Any]) -> tuple[int, int, int, str, str, str, int, 
         return None
     try:
         slot, sol, tok = int(r["slot"]), int(r["sol_lamports"]), int(r["token_raw"])
+        t = r.get("t_recv_ms")
+        if t is None and isinstance(r.get("block_time"), int):
+            t = r["block_time"] * 1000  # as the EXP-015/016 loaders do for getBlock rows
+        t = int(t)
         tx, ev = int(r.get("tx_index") or 0), int(r.get("event_index") or 0)
     except (KeyError, TypeError, ValueError):
         return None
     if sol <= 0 or tok <= 0:
         return None
-    return slot, tx, ev, mint, trader, side, sol, tok, venue == "pump_bonding"
+    return t, slot, tx, ev, mint, trader, side, sol, tok, venue == "pump_bonding"
 
 
 # --- the causal skill engine ------------------------------------------------------------------------------------------
 
 
 class SkillState:
-    """Streaming wallet skill. Rows must be fed in (slot, tx_index, event_index) order within an hour; `snapshot` calls are made by the caller
-    when the first row with slot >= cutoff arrives, so a snapshot sees exactly the rows with slot < cutoff.
+    """Streaming wallet skill. Rows are fed in (t_recv_ms, slot, tx_index, event_index) order within an hour; `snapshot` calls are made by the caller
+    when the first row with t_recv_ms >= cutoff arrives, so a snapshot sees exactly the rows with t_recv_ms < cutoff (the boundary of
+    tools.exploration_entry_model.causal_events(feat.events, mig_ms), which the frozen EXP-012 model's features use).
 
     Position per (mint, wallet): [tokens, open_cost, realized, n_trades, bought]. Buy: tokens += t, open_cost += sol. Sell: clamp to inventory (the
     unmatched part is dropped, as match_sell does), realized += proceeds - cost of the matched share; when the inventory falls to dust the trip
@@ -146,15 +151,15 @@ class SkillState:
             i = self.mid[m] = len(self.mid)
         return i
 
-    def track(self, mint: str, cutoff_slot: int) -> None:
+    def track(self, mint: str, cutoff_ms: int) -> None:
         mi = self._m(mint)
-        self.track_cutoff[mi] = cutoff_slot
+        self.track_cutoff[mi] = cutoff_ms
         self.buys.setdefault(mi, [])
 
     def skilled(self, w: int) -> bool:
         return self.trips[w] >= self.min_trips and self.pnl[w] > 0
 
-    def feed(self, slot: int, mint: str, trader: str, side: str, sol: int, tok: int, bonding: bool, hour_idx: int) -> None:
+    def feed(self, t_ms: int, slot: int, mint: str, trader: str, side: str, sol: int, tok: int, bonding: bool, hour_idx: int) -> None:
         self.stats["rows"] += 1
         mi, wi = self._m(mint), self._w(trader)
         self.last_hour[mi] = hour_idx
@@ -166,8 +171,8 @@ class SkillState:
             p[0] += tok
             p[1] += sol
             p[3] += 1
-            if bonding and mi in self.track_cutoff and self.track_cutoff[mi] - WINDOW_SLOTS <= slot < self.track_cutoff[mi]:
-                self.buys[mi].append((slot, wi, sol))
+            if bonding and mi in self.track_cutoff and self.track_cutoff[mi] - WINDOW_MS <= t_ms < self.track_cutoff[mi]:
+                self.buys[mi].append((t_ms, wi, sol))
             if bonding:
                 p[4] = 1
             return
@@ -200,7 +205,7 @@ class SkillState:
         self.stats["evicted_mints"] += len(dead)
 
     def snapshot(self, mint: str) -> dict[str, Any]:
-        """Features of `mint` at its cutoff, from the state as it stands (the caller guarantees: rows with slot < cutoff only)."""
+        """Features of `mint` at its cutoff, from the state as it stands (the caller guarantees: rows with t_recv_ms < cutoff only)."""
         mi = self.mid[mint]
         book = self.pos.get(mi, {})
         held = n_holders = n_buyers = sk_buyers = sk_holders = 0
@@ -229,8 +234,8 @@ class SkillState:
 
 def run_series(hours: Sequence[str], rows_of_hour: Callable[[str], Iterable[Mapping[str, Any]]], cutoffs: Mapping[str, int], min_trips: int = MIN_TRIPS,
                progress: Callable[[str], None] | None = None) -> tuple[dict[str, dict[str, Any]], SkillState]:
-    """Feed the series' hours in time order. `cutoffs` = mint -> cutoff slot (migration slot + 1). Returns mint -> features (mints whose cutoff the
-    tape reached) and the final state. A row with slot < the largest cutoff already snapshotted is counted as late and still applied (it cannot
+    """Feed the series' hours in time order. `cutoffs` = mint -> cutoff in ms (the universe row's mig_ms). Returns mint -> features (mints whose cutoff the
+    tape reached) and the final state. A row with t_recv_ms < the largest cutoff already snapshotted is counted as late and still applied (it cannot
     have been seen by any earlier snapshot, so it cannot leak)."""
     st = SkillState(min_trips)
     for m, c in cutoffs.items():
@@ -246,16 +251,16 @@ def run_series(hours: Sequence[str], rows_of_hour: Callable[[str], Iterable[Mapp
             t = parse_row(r)
             if t is not None:
                 buf.append(t)
-        buf.sort(key=lambda t: (t[0], t[1], t[2]))
-        for slot, _tx, _ev, mint, trader, side, sol, tok, bonding in buf:
-            while ptr < len(pending) and pending[ptr][0] <= slot:
+        buf.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
+        for t_ms, slot, _tx, _ev, mint, trader, side, sol, tok, bonding in buf:
+            while ptr < len(pending) and pending[ptr][0] <= t_ms:
                 c, m = pending[ptr]
-                out[m] = {**st.snapshot(m), "cutoff_slot": c}
+                out[m] = {**st.snapshot(m), "cutoff_ms": c}
                 max_flushed = max(max_flushed, c)
                 ptr += 1
-            if slot < max_flushed:
+            if t_ms < max_flushed:
                 st.stats["late_rows"] += 1
-            st.feed(slot, mint, trader, side, sol, tok, bonding, hi)
+            st.feed(t_ms, slot, mint, trader, side, sol, tok, bonding, hi)
         if progress:
             progress(f"{h} rows={st.stats['rows']} wallets={len(st.pnl)} snapshots={len(out)}")
     return out, st
@@ -287,26 +292,9 @@ def make_rows_of_hour(files: Mapping[str, Path]) -> Callable[[str], Iterable[Map
     return rows_of_hour
 
 
-def read_cutoffs(views: Sequence[str], wanted: set[str]) -> tuple[dict[str, int], dict[str, int]]:
-    """mint -> migration slot + 1, from `migration` rows, else the `complete` row's slot + 1 (the earliest slot if a mint has several rows)."""
-    from tools.exp012_virtual_rescore import _zcat_lines
-
-    mig: dict[str, int] = {}
-    comp: dict[str, int] = {}
-    for v in views:
-        for f in sorted((Path(v) / "migrations").glob("migrations-*.jsonl.zst")):
-            for needle, typ, dst in (('"migration"', "migration", mig), ('"complete"', "complete", comp)):
-                for line in _zcat_lines(f, needle):
-                    try:
-                        r = json.loads(line)
-                    except ValueError:
-                        continue
-                    m, s = r.get("mint"), r.get("slot")
-                    if r.get("type") == typ and m in wanted and isinstance(s, int) and not isinstance(s, bool):
-                        dst[m] = min(dst.get(m, s), s)
-    out = {m: s + 1 for m, s in comp.items()}
-    out.update({m: s + 1 for m, s in mig.items()})
-    return out, {"from_migration_row": len(mig), "from_complete_only": len([m for m in comp if m not in mig]), "wanted_without_slot": len(wanted - set(out))}
+def cutoffs_from_universe(universe: Sequence[Mapping[str, Any]], sources: Sequence[str]) -> dict[str, int]:
+    """mint -> mig_ms of the EXP-015 universe row: the `mint.mig_ms` EXP-012's features cut at (`causal_events(feat.events, mig_ms)`)."""
+    return {u["mint"]: int(u["mig_ms"]) for u in universe if u["source"] in sources}
 
 
 # --- cache (from exp017) ----------------------------------------------------------------------------------------------
@@ -393,7 +381,7 @@ def scored_flag(u: Mapping[str, Any]) -> bool:
     return u["mig_ms"] >= series_start_ms(series_of(u["source"])) + WARMUP_HOURS * 3_600_000
 
 
-def build_series_features(series: str, wanted: set[str], views: Mapping[str, Sequence[str]] | None = None, progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+def build_series_features(series: str, cutoffs: Mapping[str, int], views: Mapping[str, Sequence[str]] | None = None, progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     import tools.exp012_backcheck as bc
 
     spec = SERIES[series]
@@ -403,15 +391,14 @@ def build_series_features(series: str, wanted: set[str], views: Mapping[str, Seq
         e15.refuse_reserved(v, f"view {series}")
     hours = bc.hours_range(spec["start"], spec["end"])
     files = hour_files(all_views, hours)
-    cutoffs, cstats = read_cutoffs(all_views, wanted)
     feats, st = run_series(hours, make_rows_of_hour(files), cutoffs, progress=progress)
-    return {"series": series, "features": feats, "hours": len(hours), "hours_with_file": len(files), "cutoff_stats": cstats, "state": st.stats,
+    return {"series": series, "features": feats, "hours": len(hours), "hours_with_file": len(files), "state": st.stats,
             "n_wallets": len(st.pnl), "n_skilled_wallets_final": sum(1 for w in range(len(st.pnl)) if st.skilled(w))}
 
 
-def _series_worker(args: tuple[str, list[str]]) -> dict[str, Any]:
-    series, wanted = args
-    return build_series_features(series, set(wanted), progress=lambda m: print(f"[{series}] {m}", file=sys.stderr, flush=True))
+def _series_worker(args: tuple[str, dict[str, int]]) -> dict[str, Any]:
+    series, cutoffs = args
+    return build_series_features(series, cutoffs, progress=lambda m: print(f"[{series}] {m}", file=sys.stderr, flush=True))
 
 
 def precount_report(universe: Sequence[Mapping[str, Any]], built: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -435,7 +422,7 @@ def precount_report(universe: Sequence[Mapping[str, Any]], built: Sequence[Mappi
     for d in by_source.values():
         d["coverage"] = d["with_features"] / d["n"] if d["n"] else None
     dates = sorted({u["date"] for u in universe if u["source"] in SCORED_SOURCES and scored_flag(u)})
-    return {"by_source": by_source, "series": {b["series"]: {k: b[k] for k in ("hours", "hours_with_file", "cutoff_stats", "state", "n_wallets", "n_skilled_wallets_final")} for b in built},
+    return {"by_source": by_source, "series": {b["series"]: {k: b[k] for k in ("hours", "hours_with_file", "state", "n_wallets", "n_skilled_wallets_final")} for b in built},
             "scored_dates": dates, "n_scored_dates": len(dates), "min_trips": MIN_TRIPS, "warmup_hours": WARMUP_HOURS, "outcome_blind": True}
 
 
@@ -761,7 +748,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise Refused(f"{len(prior)} earlier exp018 line(s) in {tries_path}: a second run is refused")
         if args.precount:
             universe, _stats = load_universe(args.scratch, blind=True)
-            wanted: dict[str, list[str]] = {k: sorted(u["mint"] for u in universe if u["source"] in s["sources"]) for k, s in SERIES.items()}
+            wanted = {k: cutoffs_from_universe(universe, s["sources"]) for k, s in SERIES.items()}
             if min(args.workers, 2) > 1:
                 from concurrent.futures import ProcessPoolExecutor
 

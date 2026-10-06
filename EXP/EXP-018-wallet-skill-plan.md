@@ -4,7 +4,7 @@
 | --- | --- |
 | **Status** | **Exploration pre-registration of a screen.** It fixes the definitions, the two cells, the costs, the bars and the refusals before any EXP-018 feature or net is read. It is not an edge claim and not a confirmation plan. |
 | **Date** | 2026-10-06 |
-| **Hypothesis** | At the EXP-012 decision time (cutoff = migration slot + 1), the curve SOL held by wallets with a profitable realized track record **before that cutoff** predicts migrate-entry P&L. A veto of low-skill entries, or a filter requiring skill above a level, improves the frozen EXP-012 book, paired per migration. |
+| **Hypothesis** | At the EXP-012 decision time (cutoff = the universe row's `mig_ms`, the boundary of EXP-012's own features), the curve SOL held by wallets with a profitable realized track record **before that cutoff** predicts migrate-entry P&L. A veto of low-skill entries, or a filter requiring skill above a level, improves the frozen EXP-012 book, paired per migration. |
 | **Frozen book it is layered on** | EXP-012 as frozen: model md5 `a1810d219ed61db64a396f40dc302ce5`, threshold 0.8030766588450794, `migrate` trigger, `tp50_sl30`. Nothing frozen is edited. Each cell can only remove entries. |
 | **Tool** | `tools/exp018_wallet_skill.py`, tests `tools/test_exp018_wallet_skill.py` |
 | **Measured by this file** | Nothing. No row under `/data/mal` was opened. Only repo code and docs were read, and directory listings of the views to confirm the file layout. |
@@ -19,11 +19,11 @@
 
 ## 2. Skill score (fixed now)
 
-Per wallet, from the clean-view trade tape, in event order `(slot, tx_index, event_index)`:
+Per wallet, from the clean-view trade tape, in event order `(t_recv_ms, slot, tx_index, event_index)` (`block_time * 1000` when a row has no `t_recv_ms`, as the EXP-015/016 loaders do):
 
 - A **trade row** is admitted by `tools.wallet_leaderboard.parse_trade`'s rules: a trade row, `buy` or `sell`, venue `pump_bonding`, or `pumpswap` with `quote_is_wsol == True`, a resolved mint, positive integer `sol_lamports` and `token_raw`. Both venues count for skill, so a wallet that exits on PumpSwap closes its trip.
 - A **position** is one wallet on one mint. Buys add tokens and cost. A sell is clamped to the inventory (the unmatched part is dropped, as `match_sell` does). Realized P&L accrues per sell. The position **closes** when its inventory falls to dust (`DUST_TOKEN_RAW`). The closed trip's **net** is `realized - 5,000 * trades_in_trip` lamports. Open positions never count (no mark-to-market).
-- **Skill state** of wallet w at a cutoff C: `trips(w)` = trips closed with the closing sell at slot **< C**, and `pnl(w)` = their summed net.
+- **Skill state** of wallet w at a cutoff C: `trips(w)` = trips closed with the closing sell at `t_recv_ms` **< C**, and `pnl(w)` = their summed net.
 - **Skilled** at C: `trips(w) >= N` **and** `pnl(w) > 0`, with **N = 5**. No other threshold, no rank, no percentile, no win-rate filter.
 - **Series and carry.** State carries across the walkers of one contiguous series in time order. Two series are scored:
   - `S_P2`: `explore-0814/w1..w7`, `[2026-08-14T12, 2026-08-28T12)`, 14 contiguous days (`w7` first, as the hour list orders them).
@@ -32,20 +32,20 @@ Per wallet, from the clean-view trade tape, in event order `(slot, tx_index, eve
   - P1 sources (the P1A/P1C/P1B tapes, which also carry a derived migration clock for P1B) are **not scored**. They are report-only in EXP-015's bars, and the cache's P1 rows are not used here.
 - **Warm-up.** The first **72 h** of each series (to `2026-08-17T12` and `2026-09-06T12`) is excluded from scoring: a migration with `mig_ms` before that is dropped from the frozen book and from both cells. The state is still built during the warm-up.
 - **Eviction (memory).** A mint's positions are dropped after 24 tape hours without a row, unless that mint still has a pending snapshot. A trip that would have closed after that is lost. The count of dropped mints and open positions is reported by `--precount`.
-- **Late rows.** A row with slot below an already-taken snapshot's cutoff (hour files out of slot order across an hour edge) is applied and counted. It cannot leak: the snapshot was already taken.
+- **Late rows.** A row with `t_recv_ms` below an already-taken snapshot's cutoff (hour files out of time order across an hour edge) is applied and counted. It cannot leak: the snapshot was already taken.
 - **Own-mint trips.** A wallet's closed trips on the migrating mint itself, before the cutoff, count in its skill. This is causal, and rare (a wallet must buy, fully sell and buy again). It is disclosed, not removed.
 
 ## 3. Mint features at the cutoff
 
-Cutoff slot `C` = the mint's `migration` row slot + 1, else its `complete` row slot + 1 (the earliest slot if a mint has several rows). This is EXP-012's slot + 1 boundary. **EXP-016 used a strict `< migration slot` cutoff** (migration rows). The one-slot difference here brings in the completing bonding buy and the migration slot's other rows. Skill uses rows with slot `< C`. The holder and window features count **bonding-venue rows only**.
+Cutoff `C` = the universe row's **`mig_ms`** (milliseconds). This is EXP-012's actual feature cutoff: `tools/exploration_entry_model.py` computes `causal_events(feat.events, mint.mig_ms)`, which keeps events with `t_recv_ms` **strictly before** `mig_ms` (see its docstring: "the single causal boundary a decision-time feature must respect"). The wallet feature copies that boundary exactly (time based, strict `<`, no slot arithmetic), so it sees the same information the frozen model sees. Skill uses all rows with `t_recv_ms < C`. The holder and window features count **bonding-venue rows only**. (EXP-016 cut by slot, strictly before the migration slot; EXP-018 does not.) No migration-row file is read: `mig_ms` comes from the EXP-015 cache rows.
 
-For each mint, at the snapshot (the state after all rows with slot `< C`):
+For each mint, at the snapshot (the state after all rows with `t_recv_ms < C`):
 
 | Feature | Definition |
 | --- | --- |
 | `skilled_holder_lamports` | Sum, over wallets that bought the mint on the curve, are skilled at C and still hold more than dust, of the position's **open cost basis** (SOL bought and still held, at average cost). |
 | `skilled_buyer_count` | Distinct wallets that bought the mint on the curve before C and are skilled at C (held or not). |
-| `skilled_share` | Skilled wallets' bonding **buy volume** in `[C - 150, C)` slots (60 s at 0.4 s) divided by all bonding buy volume in the same window. 0 when the window has no buy. |
+| `skilled_share` | Skilled wallets' bonding **buy volume** in `[C - 60,000 ms, C)` divided by all bonding buy volume in the same window. 0 when the window has no buy. |
 | Reported only | `skilled_holder_count`, `n_buyers`, `n_holders`, `n_wallets`, `n_skilled_wallets`. |
 
 Skill is the wallet's state **at C**, including for the window buys (a wallet that was skilled at C counts for the whole window).
@@ -94,6 +94,17 @@ After `started`, a failure is reported as `aborted_after_read`; the tries are sp
 - **Expected cost (an estimate; the real layout has not been read).** The pass is Python JSON parsing of about 53 GB of compressed explore-0814 plus the September series. At an assumed 40k to 80k rows per second per process this is hours, with the two series in parallel; the longer series sets the wall time. Memory is small by design: one hour of compact tuples (about 150 B per row), plus per-wallet arrays (16 B per wallet, plus about 120 B per interned wallet string) and positions of mints active in the last 24 h. The target is at most 40 GB RSS at 4 workers; this tool uses 2 processes, so the budget is generous. `systemctl show user-1002.slice -p MemoryCurrent` is checked before a run. It runs as a MiScusi job on a host with the clean views.
 - **The first real `--precount` is the first test against the real layout.** Fixtures cover the row shape and causality, not the loader. The precount may refuse for reasons the tests cannot see; that is the point of it.
 
+## 8b. The exact precount command (run by the manager as a MiScusi job; the worker does not run it)
+
+```
+TS=$(date -u +%Y%m%dT%H%MZ)
+cd ~/MAL && /data/mal/venv/bin/python -m tools.exp018_wallet_skill --precount --workers 2 \
+  --scratch /data/mal/exp015-screen/scratch --vmap /data/mal/pumpswap-virtual/pool_v_0909.json \
+  --out-dir /data/mal/exp018-precount-$TS
+```
+
+Views are the defaults in `SERIES` (`explore-0814/w1..w7`; `blocks-clean/fresh-0903/w1..w3`; `clean-view/exp011-0909/b,c`). `--workers 2` is one process per series (the tool caps it at 2). The precount writes `features.jsonl` and `precount.json` into the out-dir; the screen run then takes `--features /data/mal/exp018-precount-$TS/features.jsonl --out-dir /data/mal/exp018-precount-$TS`.
+
 ## 9. What it cannot show, and the honest prior
 
 - Skill is trade-flow on one address. SPL transfers and wallet rotation are not on the tape, and skilled wallets can be sniper bots whose realized P&L is a latency edge that is not copyable at slot + 6.
@@ -104,4 +115,4 @@ After `started`, a failure is reported as `aborted_after_read`; the tries are sp
 
 ## 10. Revisions before the pin
 
-None yet.
+1. 2026-10-06, manager ruling on #424: the cutoff is EXP-012's `causal_events(feat.events, mig_ms)` boundary (time based, strict `<` on `t_recv_ms`), replacing an earlier draft that used migration slot + 1. The 60 s window is 60,000 ms.
