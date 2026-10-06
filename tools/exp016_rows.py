@@ -8,7 +8,7 @@ What is and is not preserved, exactly:
   * A row whose keys are ALL in `STORED_KEYS` (the fields the consumers read, reviewed against `print_from_trade_row`, `make_wrapper`,
     `latency_curve`, `exploration_exits`, `exp016_rug`, `_Feat.record`, the admission gates and `adapt_trade_row`) and whose values fit the columns
     comes back with the same keys and values.
-  * The only key allowed to be dropped is in the reviewed `IGNORABLE_KEYS` (`event_ts`: no consumer reads it).
+  * The only keys allowed to be dropped are the reviewed `IGNORABLE` ones (each carries its reason): no consumer of a trade row reads them.
   * ANY other key forces the whole row into `_fallback`, stored and returned as a dict copy. A key is never dropped silently, and the unknown key
     names are counted (`RowStore.unknown_keys`), so a real layout shows what to review. The same fallback holds a row whose value does not fit
     (a non-int in an int field, an out-of-range int, an unexpected categorical).
@@ -30,7 +30,23 @@ STR_FIELDS = ("trader", "pool")  # interned (a wallet or pool repeats across row
 SIG_MAX = 255  # `signature` (unique per row, skipped for slim rows) is kept as ascii bytes in one blob per mint, not as a str object
 FIELDS = INT_FIELDS + FLOAT_FIELDS + CAT_FIELDS + STR_FIELDS + ("signature", "quote_is_wsol", "mint")
 STORED_KEYS = frozenset(FIELDS)
-IGNORABLE_KEYS = frozenset({"event_ts"})  # reviewed: read by no consumer (see `oracle_live_adapter.adapt_trade_row`)
+# Reviewed (job #299 key sample of every source, then a grep of every consumer of a TRADE row: `print_from_trade_row` / `_Feat.record` /
+# `make_wrapper` / `latency_curve` / `exploration_exits` / `exp016_rug` / admission / `adapt_trade_row`). None of these is read there; each reason is the grep result.
+IGNORABLE = {
+    "event_ts": "Oracle receive timestamp string; adapt_trade_row derives block_time from t_recv_ms and nothing reads event_ts",
+    "v": "the listener's schema version tag; no consumer of a trade row reads it (`\"v\"` elsewhere is the V-map document and mcap_mode, not a row key)",
+    "quote_mint": "read only on CREATE rows (latency_curve, exploration_exits, exploration_entry_model, oracle_live_adapter); trade rows are gated on quote_is_wsol, which is stored",
+    "source": "listener provenance label; the `source` keys that are read belong to result rows (exp015/exp016 tables), not tape rows",
+    "t_recv": "second-resolution duplicate of t_recv_ms (read only by fast_helius_pre / pump_history_backfill writers); every consumer uses t_recv_ms",
+    "sol": "bonding-row alias of sol_lamports (the stored field is the one read); `sol` reads elsewhere are result/PnL rows",
+    "token": "bonding-row alias of token_raw (the stored field is the one read)",
+    "feed": "listener feed name; read only by the backfill writer (pump_history_backfill)",
+    "commitment": "RPC commitment tag of the capture; no tape consumer reads it",
+    "market_cap_supply_ui": "bonding-row display field; the pricing path reads market_cap_sol (stored) and recomputes the rest",
+    "mint_source": "read only by the paper tape scan (paper_price_path stats / laya / signal core), not by print_from_trade_row or any screen consumer",
+    "zero_sol": "backfill diagnostic flag on rare rows; read by no consumer (pump_history_backfill writes it)",
+}
+IGNORABLE_KEYS = frozenset(IGNORABLE)
 
 
 UNKNOWN_KEY_CAP = 64  # distinct unknown key names remembered (counts only)
