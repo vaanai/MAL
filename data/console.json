@@ -1,8 +1,15 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-06T20:38:00Z",
+  "updated_utc": "2026-10-06T20:58:43Z",
   "review_windows": [],
   "events": [
+    {
+      "id": "exp019-screen-result",
+      "kind": "result",
+      "title": "EXP-019 post-migration confirmation screen: SCREEN NONE, family closed",
+      "detail": "Job #328, one try (cell A). Paired vs frozen k6: flat mean x -0.0005277499177288448 SOL, p 0.9715028497150285. A book flat mean -0.0013183461738122827 SOL/trade over 1,726 trades, 9 of 27 dates positive. 289 of 1,726 entered were k8 MISS (about 5 percent of the positive paired sum); not MISS-driven. B1 to B6 all fail. Exploration, no edge claim.",
+      "atUtc": "2026-10-06T20:58:43Z"
+    },
     {
       "id": "exp018-screen-result",
       "kind": "result",
@@ -142,6 +149,17 @@
         "tone": "muted"
       },
       "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-009-migrate-creator-gate-prereg.md"
+    },
+    {
+      "id": "EXP-019",
+      "title": "EXP-019 post-migration confirmation at k8",
+      "stage": "retired",
+      "note": "Screen NONE (job #328): paired vs frozen k6 p 0.9715028497150285, A book flat -0.0013183461738122827 SOL/trade, 9/27 dates positive. Exploration, no edge claim.",
+      "tag": {
+        "text": "screen failed",
+        "tone": "muted"
+      },
+      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp019-screen-2026-10-06.md"
     },
     {
       "id": "EXP-018",
@@ -587,6 +605,13 @@
       "kind": "result",
       "text": "10-16 blocker solved at the data level: the 6 pools whose virtual reserve 'moved' all had liquidity deposits or withdrawals. PumpSwap rescales the reserve by the LP-supply ratio, and that rule reproduces all 16 operations to the lamport (jobs #282–#284, pool fields and transaction logs only; quant-proof re-derived it). Snapshot #3 (job #286): over about 7 h only those same 6 pools moved.",
       "atUtc": "2026-10-06T15:05:00Z"
+    },
+    {
+      "id": "s-20261006-2058",
+      "from": "claude",
+      "kind": "result",
+      "text": "EXP-019 (post-migration flow confirmation at k8) failed its one screen: no cell passed, family closed. Cell A vs frozen k6: flat mean difference -0.0005277499177288448 SOL per migration, p 0.9715028497150285. A book: 1,726 trades, flat mean -0.0013183461738122827 SOL, 9 of 27 dates positive, B1 to B6 all fail. Waiting 2 slots for early momentum costs more than the information is worth. Exploration, no edge claim.",
+      "atUtc": "2026-10-06T20:58:43Z"
     },
     {
       "id": "s-20261006-2038",
