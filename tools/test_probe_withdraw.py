@@ -97,3 +97,9 @@ def test_to_is_required(monkeypatch):
     with pytest.raises(SystemExit) as e:
         pw.main(["--dry-run"])
     assert e.value.code == 2
+
+
+def test_repeated_to_last_wins_and_is_checked(monkeypatch):
+    called = _stub_main(monkeypatch)
+    assert pw.main(["--to", OWNER, "--to", LOOKALIKE]) == 1 and called == []
+    assert pw.main(["--to", LOOKALIKE, "--to", OWNER]) == 0 and called == [OWNER]

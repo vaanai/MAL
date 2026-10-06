@@ -258,6 +258,7 @@ def _blockhash(rpc) -> Hash:
 
 
 def build_tx(kp: Keypair, ixs: list[Instruction], blockhash: Hash) -> Transaction:
+    # only call via run(), which enforces check_owner_dest
     msg = Message.new_with_blockhash(ixs, kp.pubkey(), blockhash)
     return Transaction([kp], msg, blockhash)
 
@@ -305,6 +306,7 @@ def _close_tx(kp, batch, bh):
 
 
 def _transfer_tx(kp, dest, amount, bh):
+    # only call via run(), which enforces check_owner_dest
     return build_tx(kp, [transfer(TransferParams(from_pubkey=kp.pubkey(), to_pubkey=dest, lamports=amount))], bh)
 
 
