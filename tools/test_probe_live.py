@@ -1464,5 +1464,105 @@ class MarkFromBuyTxTests(unittest.TestCase):
         self.assertNotIn("mark_source", inspect.getsource(pe))
 
 
+class Dec020LiveTests(unittest.TestCase):
+    """DEC-020 3 / 3b: own state file, never-re-buy seed, refusal while the 0.05 probe has anything open."""
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    END = {"limits_profile": "dec020", "end_ms": 4_000_000_000_000}
+
+    def _dec019_state(self, **kw):
+        pe.State(mode="live", **kw).save(pe.state_path_for(self.tmp, "live"))
+        return (self.tmp / "state-live.json").read_bytes()
+
+    def test_dec020_first_start_seeds_bought_from_dec019_read_only(self):
+        before = self._dec019_state(attempts=57, bought=["M1", "M2"], realized_lamports=-120_000_000)
+        ex, *_ = make_live(self.tmp, **self.END)
+        self.assertEqual(ex.limits.profile, "dec020")
+        self.assertEqual(ex.limits.size_lamports, 250_000_000)
+        self.assertEqual(ex.state_path, self.tmp / "state-live-dec020.json")
+        self.assertEqual(ex.state.bought, ["M1", "M2"])
+        self.assertEqual((ex.state.attempts, ex.state.realized_lamports), (0, 0))  # counters never pool
+        self.assertEqual(json.loads((self.tmp / "state-live-dec020.json").read_text())["bought"], ["M1", "M2"])  # persisted
+        self.assertEqual((self.tmp / "state-live.json").read_bytes(), before)  # dec019 file untouched
+
+    def test_seeded_mint_is_never_re_bought(self):
+        self._dec019_state(bought=[MINT])
+        ex, rpc, clock, *_ = make_live(self.tmp, **self.END)
+        ex.handle_signal(mk_sig(ex, t=clock()))
+        self.assertNotIn(MINT, ex.state.pending)
+        self.assertEqual(ex.state.attempts, 0)
+        self.assertEqual(rpc.sent, [])
+
+    def test_seed_is_first_start_only_and_counters_survive_restart(self):
+        self._dec019_state(bought=["M1"])
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END)
+        ex.state.attempts = 5
+        ex.state.bought.append("M3")
+        ex.save()
+        self._dec019_state(bought=["M1", "LATE"])
+        ex2 = pl.LiveExecutor(rpc, conf, kp, now_ms=clock)
+        self.assertEqual((ex2.state.attempts, ex2.state.bought), (5, ["M1", "M3"]))
+
+    def test_no_dec019_state_starts_empty(self):
+        ex, *_ = make_live(self.tmp, **self.END)
+        self.assertEqual((ex.state.bought, ex.state.attempts), ([], 0))
+
+    def test_refuses_when_dec019_has_open_or_pending_position(self):
+        for kw in ({"open": {"M1": {"spend": 50_000_000}}}, {"pending": {"M2": {"kind": "buy", "spend": 50_000_000}}}):
+            self._dec019_state(**kw)
+            before = (self.tmp / "state-live.json").read_bytes()
+            with self.assertRaises(SystemExit) as cm:
+                make_live(self.tmp, **self.END)
+            self.assertIn("section 3b", str(cm.exception))
+            self.assertFalse((self.tmp / "state-live-dec020.json").exists())
+            self.assertEqual((self.tmp / "state-live.json").read_bytes(), before)
+
+    def test_refusal_also_applies_after_first_start(self):
+        ex, rpc, clock, kp, conf = make_live(self.tmp, **self.END)
+        ex.save()
+        self._dec019_state(open={"M1": {"spend": 1}})
+        with self.assertRaises(SystemExit):
+            pl.LiveExecutor(rpc, conf, kp, now_ms=clock)
+
+    def test_refuses_the_dec019_fill_log(self):
+        with self.assertRaises(SystemExit):
+            make_live(self.tmp, fill_log=str(self.tmp / "probe-fills.jsonl"), **self.END)
+
+    def test_dec020_buy_uses_its_size_and_tags_rows_dec019_unchanged(self):
+        ex, rpc, clock, *_ = make_live(self.tmp, **self.END)
+        p = signal_buy(ex, clock)
+        self.assertEqual(p["spend"], 250_000_000)
+        land_buy(ex, rpc)
+        rows = fills({"fill_log": str(self.tmp / "fills.jsonl")})
+        self.assertTrue(rows and all(r["limits_profile"] == "dec020" for r in rows))
+        self.assertEqual(json.loads((self.tmp / "state-live-dec020.json").read_text())["attempts"], 1)
+        self.assertFalse((self.tmp / "state-live.json").exists())
+        # the default profile: 0.05 SOL, original state file name, rows without the new key
+        d2 = self.tmp / "d19"
+        d2.mkdir()
+        ex19, rpc19, clock19, *_ = make_live(d2)
+        p19 = signal_buy(ex19, clock19)
+        self.assertEqual(p19["spend"], 50_000_000)
+        land_buy(ex19, rpc19)
+        rows19 = fills({"fill_log": str(d2 / "fills.jsonl")})
+        self.assertTrue(rows19 and all("limits_profile" not in r for r in rows19))
+        self.assertEqual(json.loads((d2 / "state-live.json").read_text())["attempts"], 1)
+        self.assertFalse((d2 / "state-live-dec020.json").exists())
+
+    def test_dec020_stops_at_its_own_attempt_cap_without_touching_dec019_counters(self):
+        self._dec019_state(attempts=10)
+        ex, *_ = make_live(self.tmp, **self.END)
+        ex.state.attempts = 40
+        self.assertEqual(pe.soft_stops(ex.limits, ex.state, 1), ["max_attempts"])
+        ex.state.attempts = 39
+        self.assertEqual(pe.soft_stops(ex.limits, ex.state, 1), [])
+
+
 if __name__ == "__main__":
     unittest.main()

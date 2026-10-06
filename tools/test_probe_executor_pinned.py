@@ -657,3 +657,20 @@ def test_withdraw_default_rpc_env_is_the_root_only_file():
     from tools import probe_withdraw
 
     assert probe_withdraw.DEFAULT_RPC_ENV == "/etc/mal-probe-rpc/helius.env"
+
+
+def test_dec020_pinned_set_and_drop_in():
+    """DEC-020 re-pin: the manifest grows from 13 to 14 lines (one added file); the dec020 drop-in differs from the
+    current pinned drop-in only in the --config path (and its header comment)."""
+    extra = [e.split(":")[0] for e in installer_var("EXTRA").split()]
+    assert "scripts/mal-fast/probe-executor-live-dec020.json" in extra
+    assert "scripts/mal-fast/probe-executor-live.json" in extra  # the current config is still pinned unchanged
+    assert len(closure_files()) + len(extra) + 2 == 14  # + BASE_UNIT and CHECKER
+    d20 = FAST / "mal-probe-executor-live-pinned-dec020.conf"
+    a = [l for l in CONF.read_text().splitlines() if not l.startswith("#")]
+    b = [l for l in d20.read_text().splitlines() if not l.startswith("#")]
+    assert len(a) == len(b)
+    diff = [(x, y) for x, y in zip(a, b) if x != y]
+    assert len(diff) == 1 and diff[0][0].startswith("ExecStart=/usr/local/lib/mal-probe-exec/venv/bin/python")
+    assert diff[0][1] == diff[0][0].replace("current/probe-executor-live.json", "current/probe-executor-live-dec020.json")
+    assert d20.read_text().count("--live") >= 1 and "probe-executor-live-dec020.json --live" in b[-2]
