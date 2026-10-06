@@ -269,6 +269,49 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(sv.jaccard_vs_frozen({"a"}, {"a"}, {"a"})["pass"])  # J = 1
 
 
+class ModelPathTests(unittest.TestCase):
+    def rows(self) -> list[dict]:
+        import random
+
+        rng = random.Random(1)
+        out = []
+        for di in range(8):
+            day = f"2026-09-{3 + di:02d}"
+            for j in range(40):
+                f = {n: rng.random() for n in mt.FEATURE_NAMES}
+                win = f[mt.FEATURE_NAMES[0]] > 0.7
+                r = {"mint": f"{day}-{j}", "entry_land_k": 4, "size": sv.DECIDING_SIZE, "day": day, "source": "P3", "filled": True, "status": 1, "net0": 30_000_000 if win else -8_000_000,
+                     "sides": 2, "p_press": 0.2, "excluded_by_time": False, "features": f, "pool": "P3"}
+                n = sv.row_nets(r)
+                r["flat"], r["press"] = n["flat"], n["press"]
+                out.append(r)
+        return out
+
+    def test_nested_lodo_and_transfer_run_on_deciding_cost_labels(self) -> None:
+        import tools.exp014_m15_model as mm
+
+        rows = self.rows()
+        days = sorted({r["day"] for r in rows})
+        selected, folds, counts = mm.nested_lodo_select(rows, days, n_jobs=1)
+        self.assertEqual(len(folds), len(days))
+        self.assertTrue(selected)
+        self.assertTrue(all(mm.label(r) == (1 if r["press"] > 0 else 0) for r in rows))
+        tr = sv.transfer_selection(rows, days[:5], days[5:])
+        self.assertEqual(tr["n_test"], 3 * 40)
+        self.assertIsNotNone(tr["threshold_p90"])
+
+
+class LockTests(unittest.TestCase):
+    def test_a_spent_run_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            e15.check_run_lock(out)  # nothing there: fine
+            e15.take_lock(out, "head", "h")
+            e15.write_record(out, "completed", True, {sv.TRIES_KEY: "completed"})
+            with self.assertRaises(e15.Refused):
+                e15.check_run_lock(out)
+
+
 class OutcomeTests(unittest.TestCase):
     def test_outcome_lines(self) -> None:
         self.assertIn("never 'has an edge'", sv.outcome_line({"passes": True, "bars": {}}))

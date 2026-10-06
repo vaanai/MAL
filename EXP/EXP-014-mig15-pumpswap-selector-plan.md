@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Exploration plan.** It fixes the trigger, the features, the exit, the screen, the tries cap and the target block before any EXP-014 code or result exists. It is not a pre-registration. A confirmation pre-registration follows only if this screen passes. Revised after a `quant-proof` review of #263. |
+| **Status** | **Exploration plan; the screen is redefined by [Amendment 7](#amendment-7-2026-10-06-before-any-real-data-run-and-before-any-exp-014-outcome-is-read-the-screen-at-the-labs-current-standard-supersedes-the-data-cost-and-bar-lines).**  It fixes the trigger, the features, the exit, the screen, the tries cap and the target block before any EXP-014 code or result exists. It is not a pre-registration. A confirmation pre-registration follows only if this screen passes. Revised after a `quant-proof` review of #263. |
 | **Date** | 2026-10-03 |
 | **Target confirmation block** | `[2026-08-08T12, 2026-08-14T12)` **only** (the second backup block, #261), read once with m = 1, whatever happens to EXP-013. If it is owned or not clean when the pre-registration opens, EXP-014 waits for a new block that is entered in the ledger before it is sealed. **It never takes the 0828 backup block.** **Superseded by [Amendment 5](#amendment-5-2026-10-06-before-any-real-data-run-target-block-reassigned-to-exp-015): this block is no longer EXP-014's target.** |
 | **Prior odds (manager's honest estimate)** | **About 10%.** See "Prior evidence" below. |
@@ -191,3 +191,65 @@ These are report only.
 ## Amendment 6 (2026-10-06, before any real-data run): lab-wide α for the confirmation
 
 In addition to the gate, all four unread confirmation families (EXP-013, EXP-014, EXP-015 and the planned EXP-016 rug veto, #381) share the lab's α = 0.05 by Bonferroni, so each confirmation read must also have a one-sided bootstrap p-value of mean > 0 ≤ **0.0125** (= 0.05/4), under both fail models, with the `book_stats` resampler and the date-cluster resampler, 10,000 draws, seed 1, both passing (share of bootstrap means ≤ 0). The reads happen separately on different blocks, so this is per-family Bonferroni, not a Holm step-down. EXP-012's holdout already spent its α. This tightens the confirmation and never loosens it; no screen bar, try or block changes. Written before any of these confirmation blocks was read.
+
+## Amendment 7 (2026-10-06, before any real-data run and before any EXP-014 outcome is read): the screen at the lab's current standard (supersedes the data, cost and bar lines)
+
+EXP-013 is closed (it failed), so the "do not merge before the EXP-013 screen" condition on #269 is gone. #269 predates the PumpSwap V correction, the realistic deciding costs, the EXP-015/016/017 loader lessons and the two-log tries pattern. It is closed and replaced by `tools/exp014_screen_v2.py` (PR linked from #269). Nothing below reads an outcome; the tool's `--precount` and `--guards-only` modes are outcome-blind. No EXP-014 table, model, LODO or screen output exists.
+
+**Prior odds, stated again: about 10 %.** Nothing since the plan raised them. The 15-minute offset was picked from data twice (see "Prior evidence"). The V correction removed most of the PumpSwap edge that EXP-012 appeared to have, and unselected waiting after migration lost in every other band. Expect a FAIL. A FAIL closes the family (item 14).
+
+### What does not change
+
+The trigger (mig + 15 min on the block clock), the 27 features (the list is closed), the pool restriction, the entry at slot S_T + d, the tp50 / sl30 / 30 minute exit, the two fail models, the model recipe (S2 `lgb_medium`, seed 1), the p90 threshold of the pooled OOF scores, `excluded_by_time` and the 4b/6 disclosures above. d = 4 is primary and d = 8 is item 5. d = 1 (reference only) is dropped from the screen.
+
+### Deciding costs (replace item 5's 0.5 SOL / 500,000 and the exit offset)
+
+- **V pricing.** Every PumpSwap print is priced through `tools.pumpswap_virtual_adapter` with `mcap_mode="v"` and the map `/data/mal/pumpswap-virtual/pool_v_0909.json`, sha256 `70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e` (the pin `e15.VMAP_0909_SHA256`; it supersedes `pool_v_0814.json` of Amendment 4). The sha is checked in the parent and again in every worker. The adapter wraps the trigger module's `print_from_trade_row`, the binding the m15 worker uses, and a test asserts it is active in the worker and restored after.
+- **Exit lag 2.** A tp / sl sell lands at the start of slot (trigger slot + 2); a cap sell at the start of slot S_cap + 2. The entry offset d stays 4 (and 8 for item 5).
+- **Haircut.** The EXP-012 backcheck haircut: net0 is reduced by P x 0.0042038 on a filled trade (sell shortfall 16 bps, entry gap 26.08 bps), through `e15.cell_nets`. A MISS pays one fee.
+- **Fee.** 505,000 lamports per side, both fail models (flat 15 %, and the pressure curve at scale 1). The table's own `flat` / `press` (500,000, no haircut) are replaced by these before the label `1{press > 0}` is formed.
+- **Stake.** **0.05 SOL decides**, to match the EXP-015 cache bars. 0.5 SOL is simulated in the same pass on the same trigger and the same selected mints and is **reported, not gating** (the model trains and selects on the 0.05 SOL label).
+
+### Views (replace item 13)
+
+The 27 non-P1 dates, as EXP-015 / EXP-017: P2 `explore-0814` (w1..w7, 2026-08-15..08-28, 14 dates, 24 h feature buffer from 08-14T12), P3 `fresh-0903` (the `.deduped.jsonl.zst` copies through `e15.guard_p3` / `make_p3_hours`, 7 dates) and P4 `exp011-0909` (b, c; 2026-09-09..09-15, 7 dates, 09-09 shared with P3 = 13 September dates). Rows are those whose migration is inside the block's counted window; a row's day is the UTC day of T. **P1 is not read at all** (report-only means a printed "not read"). Pool B is irrelevant (P1). No reserved block, the EXP-012 holdout, the 0808 / 0828 blocks or the forward walk is opened (`e15.refuse_reserved`, `e15.assert_hours_allowed`). The old "9-day pool plus August views by mtime" rule and Amendments 1 and 2 (pool B clock) no longer apply because none of those sources is read.
+
+### Bars (replace the Screen's items 1-4b; item 5 and item 6 adapted)
+
+All under **both** fail models, at 0.05 SOL, on the nested-LODO selected rows, with the gate's own `book_stats` and the date-cluster resampler both passing (CI lower bound > 0; 1,000 draws, seed 1):
+
+1. **Bar 1.** All 27 dates: n >= 100, >= 5 dates with trades, a majority of the 27 dates positive (a date with no trade is not positive), CI lower bound > 0, ex-top-3 > 0.
+2. **Bar 2.** The same gate on the 13 September dates (P3 + P4) alone.
+3. **Bar 3.** Paired against entering every eligible mig+15 trigger at the same costs: x = (selected - 1) x net per trigger; mean > 0, date-cluster CI lower bound > 0, ex-top-3 of x > 0. (EXP-015's bar 3 was paired against the frozen EXP-012 book; that book enters at migration, a different trigger, so the baseline here is the unselected mig+15 book the plan says loses. EXP-012 overlap is item 6.)
+4. **Bar 4.** Concentration: no date above 20 % of the positive-date total, and total excluding the best date > 0.
+5. **Bar 5.** P2 + P4 only: mean > 0.
+6. **Bar 6.** Transfer: fit on the September dates only, threshold = p90 of the pooled inner LODO scores of those dates, score the August (P2) rows: mean > 0 and more than half of the 14 August dates positive.
+7. **Item 5.** The same selected mints at d = 8, pooled mean > 0.
+8. **Item 6 (adapted).** EXP-012's 9 OOF days are P1, which is not read, so the overlap is taken against the frozen EXP-012 selection on the 27 dates (the cached EXP-015 rows, features only; net fields are dropped at parse time). A = EXP-014 selected mints; B = the frozen selection restricted to mints with an EXP-014 d = 4 row. (a) J(A, B) <= 0.5, an empty union fails; (b) the selected trades on mints not in B have a pooled mean > 0 under both fail models. Overlap over min size and the correlations are not computed.
+9. **Holm, k = 1.** The one-sided date-cluster bootstrap p of mean > 0 (max over the two legs; 10,000 draws, seed 1) must be <= 0.05. This is the screen's own test. Amendment 6's 0.0125 applies to the later confirmation read, not here.
+
+PASS requires every one of bars 1-6, item 5, item 6 and Holm. Anything else is a FAIL and closes the family. The 0.5 SOL stake, the enter-all mean and the bars without edge days are reported only.
+
+### Tries (replace the cap text)
+
+One try, key `exp014_m15`. The tool refuses if either log (the ops log given by `--tries-log` and the canonical `data/tries.jsonl`) already holds a line with that key, takes an O_EXCL `RUN.lock`, and writes a `started` line to both logs before any tape pass (the pass computes outcomes), so a crash still spends the try. A second run is refused before and after `started`. Holm k = 1.
+
+### Pre-declared refusals (before `started`: no try spent)
+
+- Any pin, VIEW.sha256, P3 dedupe manifest or tiling failure; a reserved path; a V map whose sha is not the pin.
+- **Any hour with no trades file** in P2, P3 or P4 on the real layout. More than 5 % of hours with no creates file.
+- A `zstd -dc` that does not end rc 0 on any file (truncated or corrupt): the pass raises, it never returns a short hour.
+- More than 0.01 % of lines not parseable JSON; any PumpSwap row without a `pool`; no clock on a row is counted per day and reported.
+- **V coverage:** more than 1 % of PumpSwap prints on a pool with no V; more than 0.5 % of the migrating mints with a create on a pool with no V (below that, those mints are removed and counted, and the bias may run upward; they could be rugs).
+- Zero migrations with a create in a block.
+- Screen mode without a clean `precount.json` made by the same code, views and V map (a digest of both).
+- After `started` (the try is spent, the status goes to the logs): V missing above 1 % in the tape pass, or `rows_after_scored_within_bound` above 0.
+
+### Precount first
+
+`--precount` runs before the screen, on the real layout, outcome-blind. It reads every hour once and counts rows, bad lines, rows without a clock, PumpSwap rows with no pool or no V, migrations in tape order per T day, creates, and the row ceiling (migrations x 2 d x 2 sizes). It computes no price, fill or net. The tape-order migration count is an approximation of the worker's own; the worker's count in `screen.json` is authoritative. The lesson is EXP-016/017's: fixtures miss loader bugs, and a count on the real layout is cheap next to a spent try.
+
+### Disclosures
+
+- The `explore-0814` days were read by DEC-017 (a) and by the EXP-012 backcheck (migrate-entry outcomes on shared mints, overlapping windows); `fresh-0903` was spent by EXP-012's one read; `exp011-0909` by EXP-011 and EXP-015. None of these bars is on unread data. All sources are exploration pool; a pass earns a pre-registration on a new block older than 2026-08-02T12 that is entered in the ledger first (Amendment 5), never a book.
+- Nothing is changed in the trigger, features, model or exit rule after the EXP-012 backcheck read other than the sizes / exit-lag parameters (defaults unchanged, so EXP-013's and the table builder's outputs are byte-identical) and the V binding. Under Amendment 4 this is post-read and needs a `quant-proof` pass before the run.
