@@ -161,7 +161,10 @@ class AnalysisTests(unittest.TestCase):
         self.assertTrue(md.startswith(bc.BANNER))
         self.assertTrue(bc.BANNER.startswith("EXPLORATION, best-of-N context, not a promote, not gate evidence. Frozen EXP-012 (model md5 a1810d21…, thr 0.8031)"))
         self.assertTrue(bc.BANNER.endswith("the promotion gate on a fresh holdout."))
-        self.assertIn("Primary exit lag 2 slots; still optimistic versus the measured live exit leak; the lag-0 cell is an upper bound.", bc.BANNER)
+        self.assertIn("Cumulative tries on explore-0814: 7.", bc.BANNER)
+        self.assertIn("Primary exit lag 2 slots; still optimistic versus the measured live exit leak (a25eb17 stops \u22120.3039 to \u22120.4338); the lag-0 cell is an upper bound.", bc.BANNER)
+        self.assertIn("Outcome rules are read net of the measured sell shortfall (\u221216 bps) and sim-vs-live entry gap (+26.08 bps, job #175); MEV is not added.", bc.BANNER)
+        self.assertIn("Context only for DEC-020; Option A remains the recommendation.", bc.BANNER)
         self.assertNotIn("Exit lag 0/2 slots", bc.BANNER)
         self.assertIn("Not unread: w1 days were outcome-read by DEC-017 candidate (a)", bc.BANNER)
         self.assertIn("N cells = 6", md)
@@ -322,6 +325,160 @@ class VPopulationTests(unittest.TestCase):
         self.assertEqual(bc.CANONICAL_TRIES.name, "tries.jsonl")
         rep = bc.analyze([_row("a", self.T0 + 1)])
         self.assertEqual(rep["day_definition"], "counted day = 24 h window from 12:00Z, not the gate's UTC day; bar 2 is gate-shaped, not the gate")
+
+
+
+def _leg(mean, lo=0.001, ex3=0.5, dpos=9, dtot=13):
+    return {"mean_sol": mean, "ci90_sol": [lo, mean + 0.01], "ex_top3_sol": ex3, "days_positive": dpos, "days_with_trades": dtot, "total_sol": mean * 100}
+
+
+def _prim(n=150, flat=None, press=None):
+    return {"n_entered": n, "flat": flat if flat is not None else _leg(0.002), "press": press if press is not None else _leg(0.002)}
+
+
+def _halves(a=(0.001, 0.001), b=(0.001, 0.001)):
+    h = lambda m: {"flat": {"mean_sol": m[0]}, "press": {"mean_sol": m[1]}}
+    return {"first_7_days": h(a), "last_6_days": h(b)}
+
+
+def _wo(flat=0.001, press=0.001):
+    return {"flat": {"mean_sol": flat}, "press": {"mean_sol": press}}
+
+
+class HaircutTests(unittest.TestCase):
+    T0 = bc.hour_ms(bc.COUNT_START)
+
+    def test_formula_on_a_filled_trade(self):
+        r = _row("a", self.T0 + 1, net0=int(0.02 * SOL))  # size 0.05 SOL, proceeds 0.07 SOL
+        want = -70_000_000 * (1 - (1 - 0.002608) * (1 - 0.0016))
+        self.assertAlmostEqual(bc.haircut_delta(r), want, places=3)
+        self.assertAlmostEqual(bc.haircut_delta(r), -294_267.9, places=0)
+        self.assertEqual(bc.haircut_row(r)["net0"], r["net0"] + bc.haircut_delta(r))
+
+    def test_misses_unquotable_sells_and_censored_untouched(self):
+        self.assertEqual(bc.haircut_delta(_row("m", self.T0, filled=False, exit="none", status=0, net0=0)), 0.0)
+        self.assertEqual(bc.haircut_delta(_row("f", self.T0, net0=-(op.size_lamports(0.05) + 2_039_280))), 0.0)  # sell could not be quoted: no proceeds
+        self.assertEqual(bc.haircut_delta({"censored": True, "mint": "c"}), 0.0)
+
+    def test_both_fail_models_get_the_haircut_and_raw_is_unchanged(self):
+        rows = [_row("a", self.T0 + 1, net0=int(0.02 * SOL), p=0.3)]
+        raw, _c, _b = bc.cell_trades(rows, bc.PRIMARY, haircut=False)
+        net, _c2, _b2 = bc.cell_trades(rows, bc.PRIMARY)
+        d = bc.haircut_delta(rows[0])
+        self.assertAlmostEqual(net[0]["flat"] - raw[0]["flat"], 0.85 * d, places=3)
+        self.assertAlmostEqual(net[0]["press"] - raw[0]["press"], 0.70 * d, places=3)
+        rep = bc.analyze(rows)
+        self.assertLess(rep["cells"][0]["flat"]["mean_sol"], rep["cells_raw"][0]["flat"]["mean_sol"])
+        self.assertEqual(rep["cells_raw"][0]["flat"]["mean_sol"], raw[0]["flat"] / SOL)
+        self.assertIn("RAW", bc.render_md(rep))
+
+
+class ReadingTests(unittest.TestCase):
+    def read(self, prim=None, halves=None, wo=None, status="completed"):
+        return bc.read_outcome(prim or _prim(), halves or _halves(), wo or _wo(), status)
+
+    def test_rule0_refused_or_aborted_gives_no_reading(self):
+        for st in ("refused_after_read", "aborted_after_read"):
+            r = self.read(status=st)
+            self.assertEqual((r["matched_rule"], r["final_reading"]), (0, bc.RULES[0]))
+
+    def test_rule1_n_below_100_is_inconclusive_even_with_negative_means(self):
+        r = self.read(_prim(n=99, flat=_leg(-0.01), press=_leg(-0.01)))
+        self.assertEqual(r["matched_rule"], 1)
+        self.assertIn("inconclusive", r["final_reading"])
+
+    def test_rule2_either_leg_mean_negative_is_strong_caution(self):
+        self.assertEqual(self.read(_prim(flat=_leg(-0.0001), press=_leg(0.002)))["matched_rule"], 2)
+        self.assertEqual(self.read(_prim(flat=_leg(0.002), press=_leg(-0.0001)))["matched_rule"], 2)
+        self.assertIn("strong caution against any size step", self.read(_prim(flat=_leg(-1), press=_leg(-1)))["final_reading"])
+
+    def test_rule3_all_bars_both_legs_and_wording(self):
+        r = self.read()
+        self.assertEqual(r["matched_rule"], 3)
+        self.assertFalse(r["modifier"]["fired"])
+        self.assertIn("consistent with EXP-012 still working on older days at a 2-slot exit lag", r["final_reading"])
+        self.assertNotIn("realistic exit", r["final_reading"])
+        self.assertIn("Option A (after the 10-16 forward read) remains the recommendation", r["final_reading"])
+        self.assertTrue(r["bars"]["flat"]["all"] and r["bars"]["press"]["all"])
+
+    def test_rule4_every_failing_bar_is_reachable(self):
+        cases = {
+            "flat ci lower <= 0 (pressure passes)": _prim(flat=_leg(0.002, lo=-0.001)),
+            "press ci lower <= 0": _prim(press=_leg(0.002, lo=0.0)),
+            "ex-top3 <= 0": _prim(flat=_leg(0.002, ex3=0.0)),
+            "fewer than 5 days": _prim(press=_leg(0.002, dpos=3, dtot=4)),
+            "minority of days positive": _prim(flat=_leg(0.002, dpos=6, dtot=13)),
+        }
+        for name, prim in cases.items():
+            r = self.read(prim)
+            self.assertEqual((r["matched_rule"], r["final_reading"]), (4, "does not support"), name)
+
+    def test_modifier_downgrades_only_a_rule3_match(self):
+        r = self.read(halves=_halves(a=(0.001, 0.001), b=(-0.001, 0.001)))
+        self.assertEqual(r["matched_rule"], 3)
+        self.assertTrue(r["modifier"]["fired"])
+        self.assertEqual(r["final_reading"], "does not support")
+        self.assertTrue(any("halves disagree" in x for x in r["modifier"]["reasons"]))
+        r = self.read(wo=_wo(flat=-0.001))
+        self.assertTrue(r["modifier"]["fired"] and r["final_reading"] == "does not support")
+        self.assertTrue(any("without w1" in x for x in r["modifier"]["reasons"]))
+        r = self.read(halves={"first_7_days": {"flat": None, "press": None}, "last_6_days": _halves()["last_6_days"]})  # an empty half cannot confirm the sign
+        self.assertTrue(r["modifier"]["fired"])
+        r = self.read(_prim(flat=_leg(-0.1)), halves=_halves(b=(-0.001, 0.001)))  # rule 2 stays rule 2
+        self.assertEqual((r["matched_rule"], r["final_reading"]), (2, bc.RULES[2]))
+        r = self.read(_prim(n=10), halves=_halves(b=(-0.001, 0.001)))
+        self.assertEqual(r["matched_rule"], 1)
+
+    def test_analyze_writes_the_matched_rule_into_report_and_markdown(self):
+        rep = bc.analyze(AnalysisTests()._rows())
+        self.assertEqual(rep["reading"]["matched_rule"], 1)  # 12 trades
+        md = bc.render_md(rep)
+        self.assertIn("Matched rule 1", md)
+        self.assertIn("Final reading", md)
+        self.assertIn("Modifier (rule 5", md)
+        json.dumps(rep)
+
+
+class CancelTests(unittest.TestCase):
+    T0 = bc.hour_ms(bc.COUNT_START)
+
+    def test_sigterm_after_rows_start_logs_aborted_and_restores_handler(self):
+        import os
+        import signal
+
+        before = signal.getsignal(signal.SIGTERM)
+
+        def cancel(*a, **k):
+            os.kill(os.getpid(), signal.SIGTERM)
+            raise AssertionError("handler should have unwound")
+
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SystemExit) as cm:
+                VPopulationTests()._run_main(d, {"side_effect": cancel}, set())
+            self.assertEqual(cm.exception.code, 128 + signal.SIGTERM)
+            self.assertEqual(VPopulationTests()._statuses(d), [{"aborted_after_read"}, {"aborted_after_read"}])
+            self.assertFalse((Path(d) / "out" / "report.json").exists())
+        self.assertEqual(signal.getsignal(signal.SIGTERM), before)
+
+    def test_completed_only_after_report_files_are_written(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(bc, "render_md", side_effect=RuntimeError("md failed")), mock.patch.object(bc, "git_head", return_value="h"), \
+                    mock.patch.object(bc, "v_coverage", return_value={"corrected": 0, "no_v": 0, "pumpswap_prints": 0, "no_v_pools": 0}):
+                with self.assertRaises(RuntimeError):
+                    VPopulationTests()._run_main(d, {"return_value": [_row("a", self.T0 + 1)]}, set())
+            self.assertEqual(VPopulationTests()._statuses(d), [{"aborted_after_read"}, {"aborted_after_read"}])  # no "completed" line was written
+
+    def test_per_log_guard_no_aborted_line_for_a_cell_already_completed(self):
+        with tempfile.TemporaryDirectory() as d:
+            out, log = Path(d) / "out", Path(d) / "t.jsonl"
+            full = bc.planned_report()
+            part = dict(full, cells=full["cells"][:3])
+            self.assertEqual(bc.log_tries(part, out, log, status="completed"), 3)
+            self.assertEqual(bc.log_tries(full, out, log, status="aborted_after_read"), 3)
+            lines = [json.loads(x)["config"] for x in log.read_text().splitlines()]
+            self.assertEqual(len(lines), 6)
+            by = {c["cell"]: c["status"] for c in lines}
+            self.assertEqual([by[c["id"]] for c in full["cells"]], ["completed"] * 3 + ["aborted_after_read"] * 3)
 
 
 class Md5Tests(unittest.TestCase):
