@@ -754,13 +754,14 @@ def lp_min_rows(base_rows: Sequence[dict[str, Any]], plan: tuple[dict[str, set[i
         else:
             groups.append([key])
     base_entered = {fw.key_of(r) for r in base_rows if r["entered"]}
-    by_key: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    by_key: dict[tuple[str, int], dict[tuple, dict[str, Any]]] = {}  # trade -> {its combination: its row in that pass}
     would_add: set[tuple[str, int]] = set()
-    seen: set[tuple] = set()
+    cache: dict[tuple, dict[tuple[str, int], dict[str, Any]]] = {}  # map signature -> that pass's rows, shared by every group
     for gi, g in enumerate(groups):
         for j in range(max(sched[k][1] for k in g)):
             m = dict(merged)
             sig = []
+            combo: dict[tuple[str, int], tuple] = {}
             for key in g:
                 pools, n = sched[key]
                 stride = 1
@@ -769,31 +770,35 @@ def lp_min_rows(base_rows: Sequence[dict[str, Any]], plan: tuple[dict[str, set[i
                     m[q] = c[((j % n) // stride) % len(c)]
                     sig.append((q, m[q]))
                     stride *= len(c)
+                combo[key] = tuple(m[q] for q in pools)
             sig_t = tuple(sorted(sig))
-            if sig_t in seen:
-                continue
-            seen.add(sig_t)
-            path = map_dir / f"vmap-{tag}-{gi}-{j}.json"
-            sha = write_vmap_file(path, m)
-            rows_j = run_pass(path, f"{tag}{gi}-{j}")
-            for r in rows_j:
-                k = fw.key_of(r)
-                if r["entered"] and k not in base_entered:
-                    would_add.add(k)  # not added: the entered set is (A)'s
-                if k in g:
-                    by_key.setdefault(k, []).append(r)
-            maps.append({"tag": f"{tag}-{gi}-{j}", "file": path.name, "sha256": sha, "n_overridden_pools": len({q for k in g for q in sched[k][0]})})
+            if sig_t not in cache:
+                path = map_dir / f"vmap-{tag}-{gi}-{j}.json"
+                sha = write_vmap_file(path, m)
+                rows_j = run_pass(path, f"{tag}{gi}-{j}")
+                cache[sig_t] = {fw.key_of(r): r for r in rows_j}
+                for k, r in cache[sig_t].items():
+                    if r["entered"] and k not in base_entered:
+                        would_add.add(k)  # not added: the entered set is (A)'s
+                maps.append({"tag": f"{tag}-{gi}-{j}", "file": path.name, "sha256": sha, "n_overridden_pools": len({q for k in g for q in sched[k][0]})})
+            for key in g:  # a repeated map hands its cached rows to this group too
+                if key in cache[sig_t]:
+                    by_key.setdefault(key, {})[combo[key]] = cache[sig_t][key]
     out: list[dict[str, Any]] = []
     for r in base_rows:
         key = fw.key_of(r)
-        if key in sched and by_key.get(key):
-            rr = by_key[key]
-            if any(not q["entered"] for q in rr):
-                shifted.setdefault(key, set()).add("entry_dropped_in_candidate_pass")
-            if any((q.get("entry_slot"), q.get("exit_slot")) != (r.get("entry_slot"), r.get("exit_slot")) for q in rr):
-                shifted.setdefault(key, set()).add("entry_or_exit_slot_moved_with_v")
-            flat, press = min(q["flat"] for q in rr), min(q["press"] for q in rr)
-            r = {**r, "flat": flat, "press": press, "flat_sol": flat / fw.LAMPORTS, "press_sol": press / fw.LAMPORTS}
+        if key in sched:
+            got = by_key.get(key, {})
+            if len(got) < sched[key][1]:  # fail closed: never fall back to the base row's final-map price
+                shifted.setdefault(key, set()).add("candidate_rows_missing")
+            if got:
+                rr = list(got.values())
+                if any(not q["entered"] for q in rr):
+                    shifted.setdefault(key, set()).add("entry_dropped_in_candidate_pass")
+                if any((q.get("entry_slot"), q.get("exit_slot")) != (r.get("entry_slot"), r.get("exit_slot")) for q in rr):
+                    shifted.setdefault(key, set()).add("entry_or_exit_slot_moved_with_v")
+                flat, press = min(q["flat"] for q in rr), min(q["press"] for q in rr)
+                r = {**r, "flat": flat, "press": press, "flat_sol": flat / fw.LAMPORTS, "press_sol": press / fw.LAMPORTS}
         out.append(r)
     return out, {"n_passes": len(maps), "n_groups": len(groups), "maps": maps, "shifted": shifted, "n_would_add": len(would_add)}
 
@@ -831,6 +836,7 @@ def lp_counts(info: dict[tuple[str, int], dict[str, Any]], shifted: dict[tuple[s
         "n_entered_touching_any_unresolved": n(lambda r: bool(r["bad"])),
         "n_entered_slot_moved_in_candidate_pass": sum(1 for v in shifted.values() if "entry_or_exit_slot_moved_with_v" in v),
         "n_entered_dropped_in_candidate_pass": sum(1 for v in shifted.values() if "entry_dropped_in_candidate_pass" in v),
+        "n_entered_candidate_rows_missing": sum(1 for v in shifted.values() if "candidate_rows_missing" in v),
         "n_entered_over_combo_cap": sum(1 for v in shifted.values() if "too_many_candidate_combinations" in v),
         "n_entered_multi_pool_product": n(lambda r: len(r["changed"]) >= 2),
         "n_mints_candidate_pass_would_add_not_added": n_would_add,

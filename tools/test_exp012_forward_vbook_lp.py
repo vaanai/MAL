@@ -167,6 +167,28 @@ def test_full_product_over_a_trades_changed_pools_finds_the_cross_combination() 
     assert not rep["shifted"]
 
 
+def test_trades_sharing_a_pool_with_the_same_candidates_both_get_candidate_rows() -> None:
+    info = {**info_of(("m1", 1), {"p": [50, 60]}), **info_of(("m2", 2), {"p": [50, 60]})}
+    base = [row("m1", 100.0, 100.0), {**row("m2", 100.0, 100.0), "mig_ms": 2}]  # priced at the final-map value 70
+
+    def run_pass(path, tag):
+        v = -1000.0 if load_map(path)["p"] == 50 else 100.0
+        return [row("m1", v, v), {**row("m2", v, v), "mig_ms": 2}]
+
+    out, rep = vb.lp_min_rows(base, ({}, info), {"p": 70}, run_pass, tmpdir(), "c")
+    assert rep["n_groups"] == 2
+    assert [(r["flat"], r["press"]) for r in out] == [(-1000.0, -1000.0), (-1000.0, -1000.0)]  # the second group's repeated maps reuse the cached rows
+    assert not rep["shifted"]
+
+
+def test_a_trade_with_missing_candidate_rows_is_null_v_not_the_base_row() -> None:
+    info = info_of(("m1", 1), {"p": [50, 60]})
+    out, rep = vb.lp_min_rows([row("m1", 100.0, 100.0)], ({}, info), {"p": 70}, lambda path, tag: [], tmpdir(), "c")
+    assert rep["shifted"] == {("m1", 1): {"candidate_rows_missing"}}
+    assert vb.lp_counts(info, rep["shifted"])["n_entered_candidate_rows_missing"] == 1
+    assert vb.with_lp_bad([{**out[0], "no_v_pools": []}], info, rep["shifted"])[0]["no_v_pools"] == ["p"]
+
+
 def test_over_the_combo_cap_the_trade_is_null_v_and_no_pass_is_run() -> None:
     cands = {f"p{i}": [1, 2] for i in range(7)}  # 128 > 64
     calls = []
@@ -278,7 +300,7 @@ class LpBase(VBase):
             target.start()
             self.addCleanup(target.stop)
 
-    def prep(self, out: Path, events: dict[str, list[dict]] | None = None, unresolved: dict[str, str] | None = None, meta_edit=None, unexplained: tuple = (), merge_unresolved: dict | None = None, **ent_extra) -> dict:
+    def prep(self, out: Path, events: dict[str, list[dict]] | None = None, unresolved: dict[str, str] | None = None, meta_edit=None, unexplained: tuple = (), merge_unresolved: dict | None = None, strip_slots: bool = False, **ent_extra) -> dict:
         """A REAL merge: `fetch` (snapshot), `snapshot`, `fetch --new` (the FINAL fetch map) and `merge` through exp012_forward_vmap, so the
         V map vbook gets is a real merge OUT (no .detail.json / .fetch.json beside it). Then an lphist file with meta and its ledger line."""
         events = events or {}
@@ -300,6 +322,10 @@ class LpBase(VBase):
         snap = [x for x in (d / "snaps").glob("vmap-snapshot-*.json") if ".json." not in x.name][0]
         ffm = d / "ffm.json"
         do_fetch(ffm, True, 9005)  # the FINAL fetch map (fetch --new)
+        if strip_slots:  # a final fetch record with no slots (before the merge, so the meta binds the stripped file)
+            fj0 = vm.side(ffm, ".fetch.json")
+            fdoc0 = json.loads(fj0.read_text())
+            fj0.write_text(json.dumps({k: v for k, v in fdoc0.items() if not k.startswith("fetch_slot_")}))
         out_map = d / "pool_v.json"
         ns = argparse.Namespace(final=str(ffm), pools=str(d / "pools.json"), snapshot=[str(snap)], snapshot_fetch=[], dry_run=False, lphist=[], out=str(out_map))
         with redirect_stdout(io.StringIO()):
@@ -777,3 +803,18 @@ class TestBindingAndCandidatePasses(LpBase):
         self.assertEqual(rep["b_verdict"], vb.NOT_DECIDABLE)
         self.assertEqual(rep["lp_pricing"]["sensitivity_final_map_v0"]["verdict"], vb.NOT_DECIDABLE)  # only the pricing differs
         self.assertFalse(any("sensitivity" in b for b in rep["live_blockers"]))
+
+
+class TestSlotMaxRefusal(LpBase):
+    def test_a_final_fetch_without_fetch_slot_max_refuses_outside_a_test_window(self) -> None:
+        walk, art, out = self.final()
+        p = self.prep(out, strip_slots=True)
+        marker = vb.find_final_marker(out, out.parent / "ledger.jsonl", True)
+        ledger = out.parent / "REAL_LPHIST_RUNS.jsonl"
+        line = json.loads((out.parent / vb.LPHIST_RUNS_NAME).read_text().splitlines()[0])
+        fw.ledger_append(ledger, {**line, "test_window": False})
+        meta = json.loads(p["meta"].read_text())
+        args = (p["lphist"], ledger, {"clean_clock": marker["clean_clock"], "read_end": marker["read_end"]})
+        with self.assertRaises(fw.Refused) as cm:
+            vb.build_lp_context(*args, False, load_map(p["vpath"]), meta, p["meta"], [p["snap"]], p["ffm"])
+        self.assertIn("fetch_slot_max", str(cm.exception))
