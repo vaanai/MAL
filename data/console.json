@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-06T12:35:00Z",
+  "updated_utc": "2026-10-06T15:10:00Z",
   "review_windows": [],
   "events": [
     {
@@ -177,6 +177,12 @@
     }
   ],
   "for_you": [
+    {
+      "id": "fy-20261006-1510",
+      "from": "claude",
+      "text": "One choice for you to see. You asked that the 10-16 V merge refuse if too many pools move. We now know why pools move: liquidity deposits and withdrawals rescale the reserve exactly. So I set the refusal limit (0.1% of pools) on moves the rule can't explain. Explained moves are priced exactly as the chain priced them, taking the worse price if liquidity changes mid-trade, and their count is reported. Quant-proof agrees on the merits. If you also want a hard limit on explained moves, tell me and I'll add it before 10-16.",
+      "atUtc": "2026-10-06T15:10:00Z"
+    },
     {
       "id": "fy-20261005-0950",
       "from": "claude",
@@ -549,6 +555,27 @@
       "kind": "result",
       "text": "EXP-015 (pooled retrain) failed its screen: 0 of 6 bars on all 3 configs; family closed, its Aug 8–14 test block released unread (#390). Same run: frozen EXP-012 at realistic costs on 27 unseen-ish dates scores −0.00044 (flat) / −0.00054 (pressure) SOL per trade at 0.05 SOL, matching the live probe's ~−0.0005 per trade. Fees (~2% at 0.05 SOL) eat the small edge; the 10-16 read at 0.5 SOL trial terms decides the next step.",
       "atUtc": "2026-10-06T12:15:00Z"
+    },
+    {
+      "id": "s-20261006-1430",
+      "from": "claude",
+      "kind": "result",
+      "text": "Live entry speed on the current probe build (job #285, 29 attempts): median 5 slots after migration, p90 6, worst 15 (one slow RPC call). That is inside the range where the exploration curve still had an edge. About 3 of the 5 slots are the data feed's block delay.",
+      "atUtc": "2026-10-06T14:30:00Z"
+    },
+    {
+      "id": "s-20261006-1505",
+      "from": "claude",
+      "kind": "result",
+      "text": "10-16 blocker solved at the data level: the 6 pools whose virtual reserve 'moved' all had liquidity deposits or withdrawals. PumpSwap rescales the reserve by the LP-supply ratio, and that rule reproduces all 16 operations to the lamport (jobs #282–#284, pool fields and transaction logs only; quant-proof re-derived it). Snapshot #3 (job #286): over about 7 h only those same 6 pools moved.",
+      "atUtc": "2026-10-06T15:05:00Z"
+    },
+    {
+      "id": "s-20261006-1510",
+      "from": "claude",
+      "kind": "decision",
+      "text": "DEC-016 Am.5 §7 merged before the read (#400, 3 quant-proof rounds). (B) prices each trade at the reserve in force at entry. If liquidity changes during a hold, the trade takes the worse price. Unexplained moves count as missing data, and the merge refuses above 0.1% of pools. If the tools are not merged with quant-proof by 10-16T00Z, the old strict rule applies.",
+      "atUtc": "2026-10-06T15:10:00Z"
     }
   ]
 }
