@@ -181,3 +181,22 @@ Written by the manager before the screen code (PR3) exists. Revised after a `qua
 ## Amendment 8 (2026-10-06, before any confirmation read): lab-wide α for the confirmation
 
 In addition to the gate, all four unread confirmation families (EXP-013, EXP-014, EXP-015 and the planned EXP-016 rug veto, #381) share the lab's α = 0.05 by Bonferroni, so each confirmation read must also have a one-sided bootstrap p-value of mean > 0 ≤ **0.0125** (= 0.05/4), under both fail models, with the `book_stats` resampler and the date-cluster resampler, 10,000 draws, seed 1, both passing (share of bootstrap means ≤ 0). The reads happen separately on different blocks, so this is per-family Bonferroni, not a Holm step-down. EXP-012's holdout already spent its α. This tightens the confirmation and never loosens it; no screen bar, try or block changes. Written before any of these confirmation blocks was read.
+
+
+## Result (2026-10-06): screen FAIL, family closed
+
+**Exploration screen, no edge claim.** The single screen ran as job #236 at `3c401c8`, V-priced (Amendment 7, `pool_v_0909` pin `70914a16…b42e`): table md5 `8e3ab709…`, view manifest sha256 `921ca675…a5ee8`, screen started 08:28:36Z and finished 08:30:41Z (SCREEN_RUNS.jsonl). This was the first and only real screen run (no earlier run computed an outcome: #225 refused at its V pre-pass).
+
+| Item | Result | Numbers |
+| --- | --- | --- |
+| 1 mean > 0 and CI90 lower bound > 0 | FAIL | flat n=4314, mean +0.0012, CI90 lo −0.0074; press mean +0.0014, CI90 lo −0.0044 |
+| 2 ex-top-3 total > 0 | FAIL | flat −2.0225 SOL; press +1.6212 SOL |
+| 3 majority of days positive | FAIL | flat 8/24, press 9/24 |
+| 4a pools A+X | FAIL | n=3457; flat mean +0.0055, CI90 lo −0.0051; 7/18 days |
+| 4b pool X | FAIL | n=2993; flat mean +0.0055, CI90 lo −0.0055; 5/15 days |
+| 5 slot+8 pooled mean > 0 | FAIL | flat −0.0060, press −0.0042 |
+| 6 Jaccard vs EXP-012 ≤ 0.5 | PASS | J = 0.1076 |
+
+**Reading.** The graduation classifier selects a book that is roughly flat to slightly positive on average but is not distinguishable from zero on any leg, loses on most days, and loses outright at an 8-slot entry delay. As pre-declared, a FAIL closes the family: no re-tune, no second screen, no new threshold. The remaining 2 tries are not used.
+
+**Holdout.** The backup block `[2026-08-28T12, 2026-09-03T12)` that this plan named as its confirmation target stays **unread and reserved** for a future pre-registration (ledger, 2026-10-06). The lab-wide α of #382 now counts three open families (EXP-014, EXP-015, EXP-016); the 0.0125 per-family bar stays (tightening, never loosening).
