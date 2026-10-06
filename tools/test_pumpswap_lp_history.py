@@ -220,6 +220,8 @@ class FakeChain:
                 raise SystemExit("rpc failed")
             for rows in self.sigs.values():
                 for r in rows:
+                    if r[0] == params[0] and isinstance(r[4], dict):
+                        return {"slot": r[1], "blockTime": r[2], **r[4]}
                     if r[0] == params[0]:
                         logs = [log_line(x) if isinstance(x, bytes) else x for x in r[4]]
                         return {"slot": r[1], "blockTime": r[2], "meta": {"err": None, "logMessages": logs}}
@@ -322,14 +324,103 @@ def test_fetch_history_supply_chain_break_unresolved_not_retried() -> None:
     assert len(att) == 1
 
 
-def test_fetch_history_truncated_logs_unresolved() -> None:
+B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def b58e(raw: bytes) -> str:
+    n = int.from_bytes(raw, "big")
+    out = ""
+    while n:
+        n, r = divmod(n, 58)
+        out = B58[r] + out
+    return "1" * (len(raw) - len(raw.lstrip(b"\x00"))) + out
+
+
+CREATE_IX = bytes.fromhex("e992d18ecf6840bc")
+CREATE_POOL_EVENT = bytes.fromhex("b1310cd2a076a774")
+UNKNOWN_EVENT = bytes.fromhex("ae7c4af90451f611")
+
+
+def mk_tx(pool: str, outer: list, inner: list, logs: list, loaded: list | None = None) -> dict:
+    """keys: 0 payer, 1 PumpSwap program, 2 this pool, 3 another pool, 4 pump program (+ loaded). Instruction specs are
+    (program index, [account indexes], data bytes); `inner` hangs off outer instruction 0."""
+    keys = [pk(90), lph.PROGRAM_ID, pool, pk(3), pk(91)]
+    mkix = lambda spec: {"programIdIndex": spec[0], "accounts": spec[1], "data": b58e(spec[2])}  # noqa: E731
+    la = {"writable": loaded or [], "readonly": []}
+    return {"transaction": {"message": {"accountKeys": keys, "instructions": [mkix(x) for x in outer]}}, "meta": {"err": None, "logMessages": logs, "loadedAddresses": la, "innerInstructions": [{"index": 0, "instructions": [mkix(x) for x in inner]}]}}
+
+
+def cpi_event(raw_event: bytes) -> tuple:
+    return (1, [], lph.EVENT_IX_TAG + raw_event)
+
+
+def resolve_tx(tx: dict, pool: str, mint: str, supply: int = 1) -> dict:
+    rows = [("s1", 1, 100, None, tx)]
+    chain = FakeChain({pool: mint}, {mint: rows}, supply={mint: supply})
+    out, _ = run_hist(chain, [pool], 0, 1000)
+    return out[pool]
+
+
+def test_truncated_migration_tx_with_create_pool_only_resolves_with_no_events() -> None:
+    pool, mint = pk(1), pk(50)
+    tx = mk_tx(pool, [(4, [], b"migrate")], [(1, [2, 3], CREATE_IX + b"\x00" * 16), cpi_event(CREATE_POOL_EVENT + b"\x07" * 300), cpi_event(UNKNOWN_EVENT + b"\x01" * 50)], ["Program log: x", "Log truncated"])
+    e = resolve_tx(tx, pool, mint, supply=555)
+    assert e["resolved"] is True and e["events"] == [] and e["lp_supply"] == 555
+
+
+def test_truncated_tx_with_deposit_ix_and_matching_self_cpi_event_resolves() -> None:
+    pool, mint = pk(1), pk(50)
+    dep = event_bytes("deposit", pool, 100, 1000)
+    other = event_bytes("deposit", pk(3), 5, 9)  # another pool's deposit in the same tx
+    tx = mk_tx(pool, [(4, [], b"x")], [(1, [2], lph.DEPOSIT_IX + b"\x00" * 24), cpi_event(dep), (1, [3], lph.DEPOSIT_IX + b"\x00" * 24), cpi_event(other)], ["Log truncated"])
+    e = resolve_tx(tx, pool, mint, supply=1100)
+    assert e["resolved"] is True
+    assert [(x["sig"], x["kind"], x["s_before"], x["lp_delta"]) for x in e["events"]] == [("s1", "deposit", 1000, 100)]
+
+
+def test_truncated_tx_with_deposit_ix_and_no_decodable_event_is_unrecoverable() -> None:
+    pool, mint = pk(1), pk(50)
+    tx = mk_tx(pool, [(4, [], b"x")], [(1, [2], lph.DEPOSIT_IX + b"\x00" * 24)], ["Log truncated"])
+    e = resolve_tx(tx, pool, mint)
+    assert e["resolved"] is False and e["reason"] == "logs_truncated_unrecoverable"
+    # a withdraw instruction is not satisfied by a deposit event either
+    tx = mk_tx(pool, [(4, [], b"x")], [(1, [2], lph.WITHDRAW_IX + b"\x00" * 24), cpi_event(event_bytes("deposit", pool, 1, 10))], ["Log truncated"])
+    assert resolve_tx(tx, pool, mint)["reason"] == "logs_truncated_unrecoverable"
+
+
+def test_log_and_self_cpi_events_must_match_when_logs_are_complete() -> None:
+    pool, mint = pk(1), pk(50)
+    logs = [log_line(event_bytes("deposit", pool, 100, 1000))]
+    same = mk_tx(pool, [(4, [], b"x")], [(1, [2], lph.DEPOSIT_IX + b"\x00" * 24), cpi_event(event_bytes("deposit", pool, 100, 1000))], logs)
+    e = resolve_tx(same, pool, mint, supply=1100)
+    assert e["resolved"] and len(e["events"]) == 1
+    diff = mk_tx(pool, [(4, [], b"x")], [(1, [2], lph.DEPOSIT_IX + b"\x00" * 24), cpi_event(event_bytes("deposit", pool, 101, 1000))], logs)
+    e = resolve_tx(diff, pool, mint, supply=1100)
+    assert e["resolved"] is False and e["reason"] == "event_source_mismatch"
+    assert e["attempts"] == 1  # not a transient reason
+
+
+def test_truncated_tx_with_loaded_address_pool_and_unknown_pool_index() -> None:
+    pool, mint = pk(1), pk(50)
+    # the pool account arrives through a lookup table: index 5 = loadedAddresses.writable[0]
+    tx = mk_tx(pool, [(4, [], b"x")], [(1, [5], lph.DEPOSIT_IX + b"\x00" * 24), cpi_event(event_bytes("deposit", pool, 100, 1000))], ["Log truncated"], loaded=[pool])
+    tx["transaction"]["message"]["accountKeys"][2] = pk(77)  # slot 2 is no longer the pool
+    assert resolve_tx(tx, pool, mint, supply=1100)["resolved"] is True
+    # an invocation whose pool account cannot be read: every invocation must have an event, whichever pool
+    tx = mk_tx(pool, [(4, [], b"x")], [(1, [], lph.DEPOSIT_IX + b"\x00" * 24), cpi_event(event_bytes("deposit", pool, 100, 1000))], ["Log truncated"])
+    assert resolve_tx(tx, pool, mint, supply=1100)["resolved"] is True
+    tx = mk_tx(pool, [(4, [], b"x")], [(1, [], lph.DEPOSIT_IX + b"\x00" * 24), (1, [], lph.DEPOSIT_IX + b"\x00" * 24), cpi_event(event_bytes("deposit", pool, 100, 1000))], ["Log truncated"])
+    assert resolve_tx(tx, pool, mint, supply=1100)["reason"] == "logs_truncated_unrecoverable"
+
+
+def test_truncated_plain_log_only_tx_without_instructions_is_not_recoverable_with_events_missing() -> None:
+    # logs truncated, no transaction body at all: nothing to count, nothing decoded: no events, resolved only by the supply check
     pool, mint = pk(1), pk(50)
     rows = [("s1", 1, 100, None, [event_bytes("deposit", pool, 10, 1000), "Log truncated"])]
-    chain = FakeChain({pool: mint}, {mint: rows})
-    att: list = []
-    out, _ = run_hist(chain, [pool], 0, 1000, attempts=att)
-    assert out[pool]["reason"] == "logs_truncated" and not out[pool]["resolved"]
-    assert len(att) == 1  # not a transient reason
+    out, _ = run_hist(FakeChain({pool: mint}, {mint: rows}, supply={mint: 1000}), [pool], 0, 1000)
+    assert out[pool]["resolved"] is True and out[pool]["events"] == []  # the log event is NOT used when logs are truncated
+    out, _ = run_hist(FakeChain({pool: mint}, {mint: rows}, supply={mint: 1010}), [pool], 0, 1000)
+    assert out[pool]["resolved"] is True  # zero events: nothing to chain against; completeness is the instruction count
 
 
 def test_fetch_history_creation_tx_with_mint_logs_is_ignored() -> None:

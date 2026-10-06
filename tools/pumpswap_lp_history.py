@@ -82,6 +82,93 @@ def events_from_logs(logs: Sequence[str], pool: str) -> list[dict[str, Any]]:
     return out
 
 
+EVENT_IX_TAG = bytes.fromhex("e445a52e51cb9a1d")  # self-CPI event instruction: tag + 8-byte event disc + payload
+DEPOSIT_IX = bytes.fromhex("f223c68952e1f2b6")
+WITHDRAW_IX = bytes.fromhex("b712469c946da122")
+# deposit / withdraw instructions put the pool account FIRST (IDL: pool, global_config, user, ...). If an invocation has no
+# readable accounts[0], tx_events falls back to counting every deposit/withdraw invocation in the tx.
+
+
+def _account_keys(tr: dict[str, Any]) -> list[str]:
+    msg = (tr.get("transaction") or {}).get("message") or {}
+    keys = [k for k in (msg.get("accountKeys") or []) if isinstance(k, str)]
+    la = (tr.get("meta") or {}).get("loadedAddresses") or {}
+    return keys + [k for k in (la.get("writable") or []) if isinstance(k, str)] + [k for k in (la.get("readonly") or []) if isinstance(k, str)]
+
+
+def _all_instructions(tr: dict[str, Any]) -> list[dict[str, Any]]:
+    """Outer instructions with their inner instructions after each, in execution order."""
+    msg = (tr.get("transaction") or {}).get("message") or {}
+    inner: dict[int, list] = {}
+    for grp in (tr.get("meta") or {}).get("innerInstructions") or []:
+        if isinstance(grp, dict) and isinstance(grp.get("index"), int):
+            inner.setdefault(grp["index"], []).extend(grp.get("instructions") or [])
+    out: list[dict[str, Any]] = []
+    for i, ix in enumerate(msg.get("instructions") or []):
+        out.append(ix)
+        out.extend(inner.get(i, []))
+    return out
+
+
+def tx_events(tr: dict[str, Any], pool: str) -> tuple[list[dict[str, Any]], str | None]:
+    """(events of `pool` in this transaction, error reason or None).
+
+    Events come from `Program data:` logs and from PumpSwap self-CPI inner instructions (program PROGRAM_ID, data =
+    EVENT_IX_TAG + event disc + payload; inner instructions are never truncated). Logs not truncated: the log events are
+    used, and if self-CPI events exist they must be identical (else "event_source_mismatch"). Logs truncated: the self-CPI
+    events are used, and they must be complete: the number of PumpSwap deposit / withdraw instruction invocations (outer or
+    inner) on this pool must equal the decoded Deposit / Withdraw events of that kind, else "logs_truncated_unrecoverable".
+    A truncated migration transaction with only create_pool resolves with no events."""
+    from tools.exp003_rpc_backfill import _b58decode
+
+    logs = (tr.get("meta") or {}).get("logMessages") or []
+    truncated = any(isinstance(x, str) and "Log truncated" in x for x in logs)
+    keys = _account_keys(tr)
+    cpi_all: list[dict[str, Any]] = []
+    n_dep = n_wd = 0
+    n_dep_all = n_wd_all = 0
+    pool_unknown = False
+    for ix in _all_instructions(tr):
+        pi = ix.get("programIdIndex")
+        if not isinstance(pi, int) or pi >= len(keys) or keys[pi] != PROGRAM_ID:
+            continue
+        data = _b58decode(ix.get("data") or "") or b""
+        if data[:8] == EVENT_IX_TAG:
+            ev = decode_event(data[8:])
+            if ev is not None:
+                cpi_all.append(ev)
+        elif data[:8] in (DEPOSIT_IX, WITHDRAW_IX):
+            is_dep = data[:8] == DEPOSIT_IX
+            n_dep_all += is_dep
+            n_wd_all += not is_dep
+            accts = ix.get("accounts") or []
+            if not accts or not isinstance(accts[0], int) or accts[0] >= len(keys):
+                pool_unknown = True
+            elif keys[accts[0]] == pool:
+                n_dep += is_dep
+                n_wd += not is_dep
+
+    def conv(ev: dict[str, Any]) -> dict[str, Any]:
+        lp = ev["lp_token_amount"]
+        return {"kind": ev["kind"], "s_before": ev["lp_mint_supply"], "lp_delta": lp if ev["kind"] == "deposit" else -lp, "event_ts": ev["timestamp"]}
+
+    cpi = [conv(e) for e in cpi_all if e["pool"] == pool]
+    key = lambda e: (e["kind"], e["s_before"], e["lp_delta"])  # noqa: E731
+    if not truncated:
+        evs = events_from_logs(logs, pool)
+        if cpi and [key(e) for e in cpi] != [key(e) for e in evs]:
+            return [], "event_source_mismatch"
+        return evs, None
+    if pool_unknown:  # cannot tell whose invocation it is: every deposit/withdraw in the tx must have a decoded event
+        ok = len(cpi_all) and sum(e["kind"] == "deposit" for e in cpi_all) == n_dep_all and sum(e["kind"] == "withdraw" for e in cpi_all) == n_wd_all
+        ok = ok or (n_dep_all + n_wd_all == 0)
+    else:
+        ok = sum(e["kind"] == "deposit" for e in cpi) == n_dep and sum(e["kind"] == "withdraw" for e in cpi) == n_wd
+    if not ok:
+        return [], "logs_truncated_unrecoverable"
+    return cpi, None
+
+
 def replay_forward(v0: int, events: Sequence[dict[str, Any]]) -> int:
     """floor(v0 * (s + d) / s) per event, in order. Exact integers. s_before <= 0 raises ValueError."""
     v = v0
@@ -252,8 +339,9 @@ def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_fr
     index; getSignaturesForAddress lists a slot's transactions in block order), recorded as "idx".
 
     A pool is UNRESOLVED (reason recorded) if: its account is missing/unparseable; paging stopped before t_from;
-    a transaction fetch failed; a transaction's logs are truncated ("Log truncated"; the self-CPI event path is not
-    implemented); the S sequence does not chain (S_after = s_before + lp_delta of each event must equal the next
+    a transaction fetch failed; a transaction's logs are truncated and its self-CPI events do not account for every
+    deposit/withdraw invocation on the pool ("logs_truncated_unrecoverable"), or its log and self-CPI events disagree
+    ("event_source_mismatch") (see tx_events); the S sequence does not chain (S_after = s_before + lp_delta of each event must equal the next
     s_before); or the last S_after differs from the pool account's lp_supply, read again after the history (recorded as
     "lp_supply" with its context slot "supply_slot", for every resolved pool; with zero events there is nothing to chain).
     A creation transaction (no event for the pool) is ignored. Up to RETRY_PASSES further passes retry pools unresolved by
@@ -358,10 +446,9 @@ def _history_one(rpc: Callable[[str, list], Any], lim: _Limiter, pool: str, lp_m
         block_time = tr.get("blockTime", bt)
         if block_time is not None and block_time < t_from:
             continue
-        logs = (tr.get("meta") or {}).get("logMessages") or []
-        if any(isinstance(x, str) and "Log truncated" in x for x in logs):
-            return fail("logs_truncated")
-        evs = events_from_logs(logs, pool)
+        evs, why = tx_events(tr, pool)
+        if why:
+            return fail(why)
         # a transaction with no Deposit/Withdraw event for this pool (pool creation, SPL token logs) is ignored
         for j, ev in enumerate(evs):
             events.append({"slot": tr.get("slot", s.get("slot")), "block_time": block_time, "sig": sig, "kind": ev["kind"], "s_before": ev["s_before"], "lp_delta": ev["lp_delta"], "_k": (n - pos, j)})
