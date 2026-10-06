@@ -127,7 +127,7 @@ class DocCodeTests(unittest.TestCase):
         self.assertEqual((x.BOOT_DRAWS, x.BOOT_SEED), (1000, 1))
         self.assertEqual(x.FROZEN_THRESHOLD, 0.8030766588450794)
         self.assertEqual(x.MODEL_MD5, "a1810d219ed61db64a396f40dc302ce5")
-        self.assertEqual(x.VMAP_0909_SHA256, "PENDING_JOB_224")  # the manager fills the sha in after job #224; a test change then belongs in the same reviewed commit
+        self.assertEqual(x.VMAP_0909_SHA256, "70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e")  # job #232 final map, pinned 2026-10-06 in a reviewed commit
         self.assertEqual(x.VMAP_0909_PATH, "/data/mal/pumpswap-virtual/pool_v_0909.json")
         self.assertFalse(hasattr(x, "VMAP_SHA256"))  # the P2 pin on pool_v_0814 is gone
         self.assertEqual(x.UNPRICEABLE_MAX_FRACTION, 0.005)
@@ -759,7 +759,7 @@ class PatchTests(unittest.TestCase):
     def test_pass_env_modes(self):
         from tools import pumpswap_virtual_adapter as ad
 
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "check_vmap"):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "check_vmap"), mock.patch.dict(os.environ):  # restore env: later test files read MAL_PSV_*
             x.set_pass_env("/m.json", Path(d), "nv")
             self.assertEqual((os.environ[ad.ENV_FROZEN], os.environ[x.ENV_MODE], os.environ[ad.ENV_MAP]), ("1", "nv", "/m.json"))
             x.set_pass_env("/v.json", Path(d), "v")
@@ -1206,13 +1206,10 @@ NO_V_POOLS_207 = [
 class UnpriceablePoolTests(unittest.TestCase):
     """Post-pin item 11: one pinned map, and the pool-based removal rule decided before `started`."""
 
-    def test_the_pin_is_pending_so_the_tool_refuses_at_startup(self):
-        with self.assertRaises(x.Refused):
-            x.check_pin_ready()
-        with self.assertRaises(x.Refused):
+    def test_a_placeholder_pin_refuses_at_startup(self):
+        x.check_pin_ready()  # the filled pin (job #232) is a sha256
+        with mock.patch.object(x, "VMAP_0909_SHA256", "PENDING_JOB_224"), self.assertRaises(x.Refused):
             x.run_guards(SimpleNamespace(max_workers=4))  # refuses before anything else
-        with mock.patch.object(x, "VMAP_0909_SHA256", "ab" * 32):
-            x.check_pin_ready()
         with mock.patch.object(x, "VMAP_0909_SHA256", "PENDING_JOB_224"), self.assertRaises(x.Refused):
             x.check_pin_ready()
 

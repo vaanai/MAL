@@ -157,18 +157,20 @@ class RefusalTests(FixtureBase):
         with mock.patch.object(gtab, "plan_pools", side_effect=AssertionError("no row may be read")):
             self.assertEqual(run_main(argv_for(self.td, "refuse-4", "--vmap", str(self.td / "nope.json"))), 2)
 
-    def test_default_pin_is_pending_and_refuses_at_startup(self) -> None:
-        self.assertEqual(gtab.VMAP_0909_SHA256, "PENDING_JOB_228")  # the manager's reviewed one-line commit fills it in after #228
+    def test_default_pin_is_filled_and_a_placeholder_refuses_at_startup(self) -> None:
+        self.assertEqual(gtab.VMAP_0909_SHA256, "70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e")  # job #232 final map, pinned 2026-10-06 in a reviewed commit
         self.assertEqual(sc.V_SHA256, gtab.VMAP_0909_SHA256)
         self.assertEqual(gtab.DEFAULT_VMAP, "/data/mal/pumpswap-virtual/pool_v_0909.json")
         self.assertEqual(gtab.V_MAX_MISSING_FRACTION, 0.01)
-        with self.assertRaisesRegex(gtab.VRefused, "PENDING_JOB_228"):
-            gtab.check_pin_ready()
-        with mock.patch.object(gtab, "plan_pools", side_effect=AssertionError("no row may be read")):
-            self.assertEqual(run_main(argv_for(self.td, "pend-1"), pin=gtab.VMAP_0909_SHA256), 2)  # the real default pin, a valid fixture map
-            self.assertEqual(run_main(argv_for(self.td, "pend-2", "--dry-run"), pin=gtab.VMAP_0909_SHA256), 2)
+        gtab.check_pin_ready()
+        with mock.patch.object(gtab, "VMAP_0909_SHA256", "PENDING_JOB_228"):
+            with self.assertRaisesRegex(gtab.VRefused, "PENDING_JOB_228"):
+                gtab.check_pin_ready()
+            with mock.patch.object(gtab, "plan_pools", side_effect=AssertionError("no row may be read")):
+                self.assertEqual(run_main(argv_for(self.td, "pend-1"), pin="PENDING_JOB_228"), 2)  # a placeholder pin, a valid fixture map
+                self.assertEqual(run_main(argv_for(self.td, "pend-2", "--dry-run"), pin="PENDING_JOB_228"), 2)
         with self.assertRaises(gtab.VRefused):
-            gtab.check_vmap_sha(V_PATH)
+            gtab.check_vmap_sha(V_PATH)  # the fixture map is not the pinned file
 
     def test_a_filled_pin_accepts_only_that_map(self) -> None:
         with mock.patch.object(gtab, "VMAP_0909_SHA256", V_SHA):
