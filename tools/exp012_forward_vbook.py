@@ -93,8 +93,8 @@ VALIDATION_REMINDER = "Am.4 s5 validation must also pass (`exp012_forward_vmap v
 # --- the V-patched worker ---------------------------------------------------------------
 
 
-def _tracked_tagged(*args: Any, **kw: Any) -> Any:
-    """`exp012_forward._tagged_worker`, with each row also carrying the PumpSwap pools its mint printed on
+def tracked_call(inner: Callable[..., Any], *args: Any, **kw: Any) -> Any:
+    """Run the worker `inner`, with each row it scores also carrying the PumpSwap pools its mint printed on
     (`pumpswap_pools`), which of those have no V (`no_v_pools`) and which have V = 0 (`zero_v_pools`). Runs inside the adapter's patch, so
     `eem.print_from_trade_row` is already the V wrapper; both wrappers here are restored on exit."""
     vmap, _mode = ad._cached_vmap()
@@ -124,9 +124,14 @@ def _tracked_tagged(*args: Any, **kw: Any) -> Any:
 
     eem.print_from_trade_row, eem.score_one = tracked_print, tracked_score
     try:
-        return fw._tagged_worker(*args, **kw)
+        return inner(*args, **kw)
     finally:
         eem.print_from_trade_row, eem.score_one = inner_print, inner_score
+
+
+def _tracked_tagged(*args: Any, **kw: Any) -> Any:
+    """`exp012_forward._tagged_worker` under `tracked_call`."""
+    return tracked_call(fw._tagged_worker, *args, **kw)
 
 
 def vbook_worker(*args: Any, **kw: Any) -> Any:
