@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Proposed 2026-10-06, rev 2** after the quant-proof review of rev 1, which asked for 9 edits, all applied here. It needs the owner's yes, because §6 decides what may replace the live strategy. |
+| **Status** | **Proposed 2026-10-06, rev 3.** Quant-proof asked for 9 edits on rev 1 and 5 more (E1–E5) on rev 2; all are applied here. It needs the owner's yes, because §6 decides what may replace the live strategy. |
 | **Decider** | Vaan (owner) for §6. The Claude manager runs the rest. |
 | **Builds on** | DEC-014, DEC-016 (Am.1–4), DEC-017, DEC-019, DEC-020 (Option A). |
 | **Amends** | **DEC-016 Am.1 §5** and **DEC-018 §1**, only in this respect: a challenger that clears §6 may replace the live strategy, after the same pre-live checks the champion had to pass (§7). |
@@ -18,19 +18,18 @@
 
 ## What this can and cannot detect (read first)
 
-With per-trade SD about 0.02 SOL at 0.05 SOL size (normal approximation, one-sided, Holm rank 1 at α/3):
+This uses per-trade SD about 0.02 SOL at 0.05 SOL size, n = 100, a normal approximation, one-sided, and **Holm rank 1 at the per-walk family α = 0.025 (0.025/3 = 0.00833)**. ρ is the per-migration correlation between the arms. It is near 0 for a different selector and high for a variant that shares most entries.
 
-| true improvement per trade | power at n = 100, ρ = 0.5 | power at n = 100, ρ = 0.9 | trades for 80% power (ρ = 0.5 / 0.9) |
-| --- | ---: | ---: | ---: |
-| +0.001 SOL | 0.052 | 0.156 | 3,528 / 706 |
-| +0.003 SOL | 0.265 | 0.89 | 392 / 78 |
-| +0.006 SOL | 0.808 | 1.0 | 98 / 20 |
+| true improvement per trade | power ρ=0 | power ρ=0.5 | power ρ=0.9 | trades for 80% power (ρ = 0 / 0.5 / 0.9) |
+| --- | ---: | ---: | ---: | ---: |
+| +0.001 SOL | 0.021 | 0.029 | 0.101 | 8,375 / 4,188 / 838 |
+| +0.003 SOL | 0.091 | 0.186 | 0.832 | 931 / 465 / 93 |
+| +0.006 SOL | 0.393 | 0.728 | 1.000 | 233 / 116 / 23 |
 
-ρ is the per-migration correlation between the two arms. It is high when they share most entries, as an exit variant does, and low for a different selector.
-
-- **At our flow** (DEC-016 Am.1: about 75 trades a day), a one-week window reliably detects only **large** improvements: about +0.006 SOL per 0.05 SOL trade for a different selector, or about +0.003 for a variant that shares most entries.
-- A challenger that passes will usually **overstate** its gain (winner's curse).
-- Small improvements need either far more forward data or a mechanism that doesn't need a statistical win, such as a fee or latency change measured directly.
+- **A different selector** (ρ ≈ 0): a one-week window does **not** reliably detect even +0.006 SOL per 0.05 SOL trade (power 0.393), and it needs about 233 trades for 80%.
+- **A close variant** (ρ ≈ 0.9) is detectable from about +0.003.
+- **Winner's curse floors at n = 100.** To pass, the observed difference must be at least 0.0068 (ρ = 0), 0.0048 (ρ = 0.5) or 0.0021 (ρ = 0.9) SOL per trade. A reported winning margin will usually overstate the true one.
+- Small improvements need either far more forward data or a mechanism measured directly, such as a fee or latency change on live fills.
 
 ## Decision (proposed)
 
@@ -41,21 +40,27 @@ With per-trade SD about 0.02 SOL at 0.05 SOL size (normal approximation, one-sid
 2. **Confirmation before registration.** A challenger must PASS a one-shot read on a reserved, unread block under the promotion gate before it can be registered for a walk. This is the same bar EXP-012 met. A derivation screen alone is not enough.
 3. **Registration.**
    - At most **3** challengers per walk. Each is frozen by md5 with its own `EXP-###`.
-   - Each is merged before the first hour of the walk. The second forward walk, `[2026-10-16T01, …)`, is reserved by its own ledger row (PR #352) before any hour is sealed.
+   - Each is merged before the first hour of the walk. The second forward walk, `[2026-10-16T01, …)`, is reserved by its own ledger row (PR #352), which must merge before 2026-10-16T01, with the owner named as "DEC-021 walk-2 family: the champion sim arm plus the registered challengers", before any hour is sealed.
    - Its 48 h feature buffer reads first-walk hours `[2026-10-14T01, 2026-10-16T01)` for features only. Under DEC-014(a) that is disclosed here as a non-owner read: no outcome from those hours is used.
 4. **Shadow and the paired arm.**
    - Both arms are **simulated** on the walk's chain-complete hours on research-0, with the same scorer, size, k, haircut and both fail models.
    - The paired unit is per-migration P&L over every migration in the window, with 0 where an arm does not enter.
    - The live runner and executor on fast-0 do not change.
-   - **Drift monitor:** the champion's sim is compared with its own live fills on the same mints. If the median live−sim residual is below −0.002 SOL per 0.05 SOL trade, or exit agreement is below 90%, the read is **NOT_DECIDABLE**.
+   - **Pre-declared minimum effect δmin:** +0.003 SOL per 0.05 SOL trade, scaled linearly with size (+0.015 at 0.25 SOL).
+   - **Drift monitor (switch family):**
+     - The champion's sim is compared with its own live fills on the same mints in the window.
+     - It needs at least **20** live champion fills, otherwise the read is **NOT_DECIDABLE**.
+     - If the **mean** live−sim residual is below −δmin/2 (−0.0015 per 0.05 SOL, scaled with size), or exit agreement is below 90%, the read is NOT_DECIDABLE.
+   - **Sim optimism in (c):** the challenger's own book has the measured mean live−sim residual subtracted per trade. In the switch family that is the window's. Otherwise it is the latest calibration with at least 20 fills. Today that is all fixed-build fills: faa3192 mean −384,022 lamports, median −209,670 lamports per trade (probe-calibration-2026-10-06).
 5. **Read.**
    - One pre-registered read per walk. The window length is set before the walk by a power calculation using the ρ and SD measured on exploration data. It is never shorter than 7 days, and the DEC states the power at the pre-declared minimum effect, even if it is below 0.5.
-   - **Holm–Bonferroni across the k challengers** applies both to the paired test (b) and to each challenger's own full-book mean > 0 test (c). One-sided bootstrap, 10,000 draws, seed 1, both fail models. Days and ex-top-3 are reported per arm.
+   - **Holm–Bonferroni across the k challengers at the per-walk family α = 0.025** applies both to the paired test (b) and to each challenger's own full-book mean > 0 test (c). Each test is a one-sided bootstrap p-value (10,000 draws, seed 1, both fail models) at or below its Holm threshold. At rank 1 that is 0.00833, a one-sided 99.17% bound. The base gate (CI90, 1,000 draws, seed 1) applies on top. Days and ex-top-3 are reported per arm.
+   - The window is sized in **migrations**, because the paired unit is per migration.
    - No interim peeking.
 6. **Switch rule (owner).** A challenger replaces the champion only if all hold:
    - (a) at least **100** closed challenger trades in the window;
-   - (b) the paired challenger − champion CI90 lower bound is > 0 under both fail models, Holm-adjusted;
-   - (c) its own book clears the full promotion gate, Holm-adjusted;
+   - (b) the paired challenger − champion one-sided bootstrap p-value is at or below its Holm threshold at family α = 0.025, under both fail models;
+   - (c) its own book, after the §4 residual subtraction, has its mean > 0 test at or below its Holm threshold and clears the full promotion gate;
    - (d) the drift monitor is clean;
    - (e) quant-proof agrees;
    - (f) the owner says yes.
@@ -65,7 +70,7 @@ With per-trade SD about 0.02 SOL at 0.05 SOL size (normal approximation, one-sid
    - Before any swap, the challenger passes DEC-016 Am.1 §5, Am.3(a)/(b) and Am.4 at its own operating point.
    - A challenger that changes priority fee or entry k first needs a live calibration at that setting, which is a DEC-019 amendment for the owner and Helm.
    - Swaps are pinned re-pins at 0 open positions, at a planned boundary. Never mid-probe.
-8. **Cumulative error.** This DEC covers at most **2** walks, each at α = 0.025 (Bonferroni across walks), so the overall false-switch rate is ≤ 0.05. A third walk needs a new DEC.
+8. **Cumulative error.** This DEC covers at most **2** walks. Each walk's family, whichever opens (switch or primary promotion), is tested at α = 0.025, Bonferroni across walks, so the overall false-switch-or-promotion rate is ≤ 0.05. A third walk needs a new DEC.
 9. **Not live evidence.** A paper win is not live evidence. Size stays governed by DEC-020.
 
 ## Open for the owner
