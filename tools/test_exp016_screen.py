@@ -1416,7 +1416,7 @@ class RefusalLimitTests(unittest.TestCase):
 
 class PrecountTests(unittest.TestCase):
     def _args(self, d):
-        return SimpleNamespace(vmap=str(Path(d) / "map.json"), out_dir=Path(d) / "out", v_fallback_json=None, closed_pools_json=None, artifact_dir=Path(d), v_constancy_json=None,
+        return SimpleNamespace(vmap=str(Path(d) / "map.json"), out_dir=Path(d) / "out", v_fallback_json=None, closed_pools_json=None, artifact_dir=Path(d), v_constancy_json=getattr(self, "cfile", None),
                                p1_fast_dir="/x1", p1_oracle_insample_dir="/x2", p1_oracle_live_dir="/x3", p3_root="/x4", p2_view_dir=["/x5"], p4_view_dir=None)
 
     def _run(self, d, sources, extra=()):
@@ -1468,6 +1468,24 @@ class PrecountTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("P1A: 0 cells", rec["would_refuse"])
         self.assertTrue(any("0 in-book cells" in w for w in rec["would_refuse"]))
+
+    def test_precount_predicts_the_real_run_v_coverage_and_constancy(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, text = self._run(d, ["P1A"], extra=[mock.patch("tools.pumpswap_virtual.load_map", return_value={})])  # no pool has a readable V
+            rec = json.loads(text)
+        self.assertTrue(any(w.startswith("V coverage") for w in rec["would_refuse"]))
+        self.assertTrue(rec["pre_started"]["v_coverage"]["would_refuse"])
+        with tempfile.TemporaryDirectory() as d:
+            c = Path(d) / "c.json"
+            c.write_text(json.dumps([{"pool": "POOL1", "v_implied": 17_584_000_000, "quote_reserve": 10 * SOL}]))
+            self.cfile = c  # one sampled pool: far below the pinned sample size, and not the seeded P2 draw
+            try:
+                rc, text = self._run(d, ["P1A"])
+            finally:
+                del self.cfile
+            rec = json.loads(text)
+        self.assertEqual(rc, 0)
+        self.assertTrue(any(w.startswith("constancy:") for w in rec["would_refuse"]))
 
     def test_precount_runs_with_the_map_unpinned(self):
         self.assertEqual(x.VMAP_EXP016_SHA256, "PENDING")  # the pin is the manager's; the precount must not need it
