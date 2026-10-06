@@ -1396,6 +1396,10 @@ class P1BCreatesTests(unittest.TestCase):
         self.assertEqual(src.creates["MINTB"]["slot"], 1000)
 
 
+def _with(r, cells):
+    return {**r, "cells": r["cells"][:0] + _res("X", cells=cells)["cells"]}
+
+
 def _res(tag, *, cells=30, n_mig=100, no_create=0, no_pool=0, no_bonding=0, with_mig=100, foreign=0, pre_tape_mig=0, gap=0, den=100, n_win=None):
     return {"tag": tag, "cells": [{"status": "FILLED", "pool": f"p{i}", "mint": f"m{i}", "block": "P1", "mig_ms": e15.date_start_ms(P1[0]) + 12 * 3_600_000} for i in range(cells)], "n_migrations": n_mig,
             "no_create_row": ["a"] * no_create, "no_pool_mints": ["b"] * no_pool, "no_migration_slot": [], "no_bonding_excluded": ["c"] * no_bonding,
@@ -1847,6 +1851,54 @@ class MigrationRowShapesTests(unittest.TestCase):
         src = fixture_source()
         r = x.process_source(src, VMAP)
         self.assertEqual((r["n_migrations_window"], r["n_window_with_create"]), (1, 1))
+
+
+class YieldAndSlotConsistencyTests(unittest.TestCase):
+    def test_yield_limit_refuses_200_migrated_mints_with_8_cells(self):
+        r = _res("P1A", cells=8, n_win=200)
+        r["n_cells_window"] = 8
+        r["n_window_with_create"] = 200
+        why = x.check_limits([r])
+        self.assertTrue(any("yield failure" in w for w in why))
+        with self.assertRaises(x.Refused):
+            x.enforce_limits([r])
+        r["n_cells_window"] = 180  # exactly 90%
+        self.assertFalse(any("yield failure" in w for w in x.check_limits([_with(r, cells=180)])))
+        self.assertEqual(x.LIMIT_MIN_CELLS_OF_MIGRATED, 0.90)
+
+    def test_process_source_reports_cells_in_window(self):
+        r = x.process_source(fixture_source(), VMAP)
+        self.assertEqual((r["n_migrations_window"], r["n_cells_window"]), (1, 1))
+
+    def _src_with_complete_slot(self, slot, extra_row=True):
+        src = fixture_source()
+        src.migrations["MINTA"] = {"type": "migration", "mint": "MINTA", "pool": "POOL1", "slot": slot, "from_complete": True}
+        if extra_row:
+            bond = [r for r in src.rows_by_mint["MINTA"] if r["venue"] == "pump_bonding"]
+            last = bond[-1]
+            # a launch-slot-irrelevant but cutoff-relevant buy: after the complete slot, before the first canonical print (slot 1050)
+            src.rows_by_mint["MINTA"].insert(len(bond), dict(last, side="buy", slot=1045, trader="lateBuyer", signature="sig-late", event_index=9, t_recv_ms=last["t_recv_ms"] + 1,
+                                                              block_time=last["block_time"]))
+        return src
+
+    def test_features_cut_at_the_complete_slot_while_entry_is_timed_from_the_first_canonical_print(self):
+        at_complete = x.process_source(self._src_with_complete_slot(1040), VMAP)["cells"][0]
+        at_print = x.process_source(self._src_with_complete_slot(1050), VMAP)["cells"][0]
+        without = x.process_source(self._src_with_complete_slot(1040, extra_row=False), VMAP)["cells"][0]
+        self.assertEqual((at_complete["cutoff_slot"], at_complete["clock_slot"]), (1040, 1050))  # the cutoff is the complete slot; the clock is the first canonical print
+        self.assertEqual(at_complete["features"], without["features"])  # the 1045 buy is at/after the complete slot: not seen
+        self.assertNotEqual(at_complete["features"], at_print["features"])  # with the cutoff at the first print it is seen
+        self.assertEqual(at_complete["mig_ms"], at_print["mig_ms"])  # entry timing is the first canonical print either way
+        self.assertEqual(at_complete["landing_ms"], at_print["landing_ms"])
+        self.assertEqual(at_complete["label"], at_print["label"])
+        self.assertFalse(at_complete["cutoff_clamped"])
+
+    def test_a_cutoff_after_the_simulator_clock_is_clamped_and_counted(self):
+        r = x.process_source(self._src_with_complete_slot(1060), VMAP)
+        c = r["cells"][0]
+        self.assertEqual((c["cutoff_slot"], c["clock_slot"], c["cutoff_clamped"]), (1050, 1050, True))
+        self.assertEqual(r["cutoff_clamped"], 1)
+        self.assertEqual(c["features"], x.process_source(self._src_with_complete_slot(1050), VMAP)["cells"][0]["features"])
 
 
 if __name__ == "__main__":

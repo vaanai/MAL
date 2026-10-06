@@ -497,6 +497,14 @@ def simulate_mint(
         mint.add(parsed[1])
     if mint.mig_slot is None or mint.mig_ms is None:
         return {"mint": mint_id, "pool": pool, "status": "NO_SIM", "why": "no canonical-pool print after a bonding print"}
+    # SLOTS (plan 13 item 13). Two clocks, never mixed: the DECISION cutoff of the features and of the d-group block history is the migration row's slot
+    # (a `complete` event's slot for a complete-only mint; the first canonical print for P1B, which has no migration rows). The SIMULATOR clock (mint.mig_slot,
+    # entry k, landing, the label's window) is the first print on the migration pool. A cutoff past the simulator clock would see events after the
+    # first tradable print, so it is clamped to it (counted as `cutoff_clamped`).
+    cutoff_slot = int(migration_slot)
+    cutoff_clamped = bool(isinstance(mint.mig_slot, int) and mint.mig_slot > 0 and cutoff_slot > mint.mig_slot)
+    if cutoff_clamped:
+        cutoff_slot = int(mint.mig_slot)
     # the report cells under the multi-cell capture (as exp015), then the frozen k=1 row for the EXP-012 features (unedited score_one)
     with op.multi_cell_patch(e15._AllScores(), 0.0, combos=COMBOS):
         raw_cells = eem.score_one(mint_id, mint, feat, curve, tape_through_ms, creator_hist)
@@ -509,6 +517,7 @@ def simulate_mint(
     rec: dict[str, Any] = {
         "mint": mint_id, "pool": pool, "mig_ms": int(mint.mig_ms), "date": e15.utc_date(int(mint.mig_ms)), "exp012_features": exp12, "cells": cells,
         "slot_inversions": rug.count_slot_inversions(rows), "label191": None,
+        "cutoff_slot": cutoff_slot, "clock_slot": int(mint.mig_slot), "cutoff_clamped": cutoff_clamped,
     }
     fills, trigger_slot, _tb, ref = eem._fills_for(mint, migrate=True)
     size = op.size_lamports(SIZE_SOL)
@@ -545,7 +554,7 @@ def simulate_mint(
                               exit_key=resolve_key(stamped, exit_fill, mint=mint_id, endpoint="exit"), vmap=vmap, mint=mint_id)
         rec.update({"exit_kind": ex["kind"], "deadline_ms": ex["deadline_ms"], "label": _label_dict(lab)})
         rec["label191"] = _label191(fills, idx, landing_ms)
-    rec["features"] = rug.features(mint_id, create_row=create_row, rows=admitted, migration_slot=migration_slot, history=history)
+    rec["features"] = rug.features(mint_id, create_row=create_row, rows=admitted, migration_slot=cutoff_slot, history=history)
     return rec
 
 
@@ -811,7 +820,8 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
             "no_bonding_excluded": no_bonding, "pre_tape_create_excluded": other.get("pre_tape_create", []),
             "pre_tape_migration_excluded": other.get("pre_tape_migration", []), "gap_excluded": other.get("gap_over", []),
             "p1b_canonical_no_create": src.canonical_no_create,
-            "n_migrations_window": len(win), "n_window_with_create": len([m for m in win if m in src.creates or m in excluded_set]),
+            "n_migrations_window": len(win), "n_cells_window": len([c for c in cells if c["mint"] in win]),
+            "cutoff_clamped": len([c for c in cells if c.get("cutoff_clamped")]), "n_window_with_create": len([m for m in win if m in src.creates or m in excluded_set]),
             "n_migrations_complete_only": sum(1 for mr in src.migrations.values() if mr.get("from_complete")), "no_create_window": len([m for m in no_create_row if m in win]), "no_pool_window": len([m for m in no_pool if m in win]),
             "p1b_cap_denominator": (src.create_stats or {}).get("n_post_start_with_migration"),
             "n_creates": len(src.creates) + len(excluded_set), "create_stats": src.create_stats,
@@ -1019,6 +1029,7 @@ LIMIT_P1B_GAP_OVER = 0.05  # gap_over (> P1B_MAX_GAP_S) / the same denominator
 LIMIT_MIN_IN_BOOK = 30  # in-book cells (FILLED or MISS inside the window) per source
 LIMIT_NO_SIM_SHARE = 0.25  # NO_SIM cells / all cells per source
 LIMIT_MIN_WITH_CREATE = 0.80  # in-window migrations that have a create row / all in-window migrations, per source: a join failure refuses before `started`
+LIMIT_MIN_CELLS_OF_MIGRATED = 0.90  # cells built (any status) / in-window migrated mints, per source: a yield failure refuses before `started`
 LIMIT_P1_NO_OOF = 0.02  # in-book P1 cells with no stored OOF score / in-book P1 cells, per P1 source
 LP_V_CLUSTER = (17_584_505_200, 17_584_505_699)  # the canonical creation cluster of v_base (V0); plan 13 item 10(c)
 LP_V_MARGIN = 1_000
@@ -1073,6 +1084,9 @@ def check_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] 
         n_nc = int(r.get("no_create_window", len(r.get("no_create_row", []))))
         n_np = int(r.get("no_pool_window", len(r.get("no_pool_mints", []))))
         n_wc = r.get("n_window_with_create")
+        n_cw = r.get("n_cells_window")
+        if n_cw is not None and n_mig and n_cw / n_mig < LIMIT_MIN_CELLS_OF_MIGRATED:
+            why.append(f"{tag}: only {n_cw} cells built for {n_mig} in-window migrated mints (< {LIMIT_MIN_CELLS_OF_MIGRATED:.0%}): a yield failure")
         if n_wc is not None and n_mig and n_wc / n_mig < LIMIT_MIN_WITH_CREATE:
             why.append(f"{tag}: only {n_wc} of {n_mig} in-window migrations have a create row (< {LIMIT_MIN_WITH_CREATE:.0%}): a join failure")
         if n_mig and n_nc / n_mig > LIMIT_NO_CREATE:
@@ -1668,7 +1682,7 @@ def source_counts(r: Mapping[str, Any], vmap: Mapping[str, int | None]) -> dict[
         "no_bonding_excluded": len(r.get("no_bonding_excluded", [])), "foreign_first": len(r["gate"]["foreign_first_mints"]),
         "pre_tape_create_excluded": len(r.get("pre_tape_create_excluded", [])), "pre_tape_migration_excluded": len(r.get("pre_tape_migration_excluded", [])),
         "gap_excluded": len(r.get("gap_excluded", [])), "p1b_canonical_no_create": r.get("p1b_canonical_no_create", 0),
-        "n_migrations_window": r.get("n_migrations_window"), "n_window_with_create": r.get("n_window_with_create"), "n_migrations_complete_only": r.get("n_migrations_complete_only"), "p1b_cap_denominator": r.get("p1b_cap_denominator"), "in_book": len(in_book_cells(cells)),
+        "n_migrations_window": r.get("n_migrations_window"), "n_cells_window": r.get("n_cells_window"), "cutoff_clamped": r.get("cutoff_clamped"), "n_window_with_create": r.get("n_window_with_create"), "n_migrations_complete_only": r.get("n_migrations_complete_only"), "p1b_cap_denominator": r.get("p1b_cap_denominator"), "in_book": len(in_book_cells(cells)),
         "create_stats": r.get("create_stats"), "p1b_gap_slots": r.get("p1b_gap_slots"),
         "censored": sum(1 for c in cells if c.get("status") == "CENSORED"),  # the deadline rule (plan 13 item 7): a status, not an outcome
         "no_sim_by_reason": dict(sorted(collections.Counter(str(c.get("why")) for c in cells if c.get("status") == "NO_SIM").items())),
