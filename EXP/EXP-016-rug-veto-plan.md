@@ -52,7 +52,7 @@ For a migrated mint m:
 - **Hold window `H_m`.** This is defined only for a FILLED frozen-cell trade. It runs from the entry-state print the frozen simulator fills against at the deciding cell (k = 6, §6) to the print its `tp50_sl30` exit fills against, with exit lag 2, inclusive. **Both endpoints are canonical-pool prints** (§11, P2). A MISS has no hold window and no label.
 - **Censored cells (EXP-015's rule, kept).** A cell is censored when the tape ends before its exit deadline. That is a block-edge effect, not an outcome.
   - Censored cells are **dropped from both books** and get no label. Their count is taken before `started`, outcome-blind (status counts only, no nets).
-  - Only that block-edge case is censored (as in `tools/latency_curve.py`: `deadline > tape_through_ms`). A **time-cap exit** is priced, as the code does, at the last print at or before the deadline and stays in both books. Cells whose last print before the deadline is more than 60 s before it (a pool gone silent after entry) are counted before `started` (status and timestamps only) and included in the total-loss sensitivity of S6 and §8 (g).
+  - Only that block-edge case is censored (as in `tools/latency_curve.py`: `deadline > tape_through_ms`). A **time-cap exit** is priced, as the code does, at the last print at or before the deadline and stays in both books. Silent-pool cells are defined from pool print timestamps alone, with no exit status: the cell's own pool has no print in the last 60 s before its deadline. They are counted **after** the `started` line, printed with the G1/G2 guards before any candidate is scored (a count before `started` would read outcome-derived status, as EXP-015 §11 item 9 forbids), and they enter the total-loss sensitivity of S6 and §8 (g).
 - **Drains at the end of the window.** A drain that is itself the dump step is caught through `E⁺` of the print that does it, even when that print is the last in `H_m`: event A uses `E⁺`, not a later print. An **untaped** drain needs a later print (event B). Without one it is invisible (§10).
 
 **RUG(m) = 1 iff event A or event B occurs inside `H_m`:**
@@ -223,14 +223,14 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
   - **Always reported:** the number of vetoed trades that exited at the tp, their total SOL, the vetoed trades' mean and CI90, and RUG precision and recall.
 - **S4, concentration.** The non-P1 paired total stays > 0 after removing the **3 vetoed trades with the largest avoided losses**, and again after removing the best date. A veto whose gain is three rugs is not reliable.
 - **S5, veto size.** The outer veto removes at most 20% of frozen-selected filled trades on every pinned date set.
-- **S6, the kept book is not a loser.** On the non-P1 dates, the kept book's mean SOL per trade is > 0. It must also stay > 0 when every kept trade on a closed or parse-fail pool (§4) is scored at total loss, −(size + both fees).
+- **S6, the kept book is not a loser.** On the non-P1 dates, the kept book's mean SOL per trade is > 0. It must also stay > 0 when every kept trade on a closed or parse-fail pool (§4), or in a silent-pool cell (§2.2), is scored at total loss, −(size + both fees).
 
 **Report-only, never gating:**
 - the kept book's full gate shape (n, days, CI, ex-top-3) on all dates and on the non-P1 dates;
 - per-candidate and per-source tables;
 - k = 4 and k = 8, lag 0, the raw simulator;
 - RUG70-1 and #191's label;
-- the S1 paired mean, recomputed with closed and parse-fail pool trades scored at total loss;
+- the S1 paired mean, recomputed with closed and parse-fail pool trades and silent-pool cells (§2.2) scored at total loss;
 - first-half vs second-half signs;
 - which candidate each outer fold chose.
 
@@ -267,7 +267,7 @@ Raw simulator rows, k = 4/8 and lag 0 are report-only.
 - (d) the kept book's total SOL is > 0 after removing its top 3 trades;
 - (e) the **paired** improvement mean x > 0, with a CI90 lower bound > 0 under both resamplers;
 - (f) the one-sided bootstrap p-values of the kept-book mean > 0 and of the paired mean > 0 are each ≤ **0.0125**, 10,000 draws, seed 1, both resamplers;
-- (g) (a)-(d) still hold when every kept trade on a closed or parse-fail pool (§4) is scored at total loss, −(size + both fees).
+- (g) (a)-(d) still hold when every kept trade on a closed or parse-fail pool (§4), or in a silent-pool cell (§2.2), is scored at total loss, −(size + both fees).
 
 **Multiplicity: lab-wide Bonferroni.** α = 0.05 is split equally across the four confirmation families EXP-013, EXP-014, EXP-015 and EXP-016: **α/4 = 0.0125 per family**. The other three were tightened to 0.0125 by pre-read amendments in #382 (merged). (f) only tightens the CLAUDE.md gate.
 
