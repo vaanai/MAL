@@ -760,5 +760,125 @@ class ReportTests(unittest.TestCase):
         self.assertNotEqual(u1, x.universe_sha256(tb3))
 
 
+# --- P1B canonical pool (plan 13 item 6) and the single `started` line (plan 5.4) ---------------------------------------------------------------
+
+
+def fake_canon(m: str) -> str:
+    return "CANON_" + m
+
+
+class P1BCanonicalPoolTests(unittest.TestCase):
+    def test_real_canonical_pool_is_the_executors_pool(self):
+        from solders.pubkey import Pubkey
+
+        from tools.pumpswap_tx import canonical_pool
+
+        mint = "So11111111111111111111111111111111111111112"
+        self.assertEqual(x.canonical_pool_str(mint), str(canonical_pool(Pubkey.from_string(mint))))
+
+    def test_derive_uses_canonical_pool_not_the_row_pool_and_first_canonical_print_slot(self):
+        prints = [("A", "FOREIGN", 90), ("A", "CANON_A", 120), ("A", "CANON_A", 110), ("B", "FOREIGN", 50), ("C", None, 5)]
+        mg = x.derive_p1b_migrations(prints, fake_canon)
+        self.assertEqual((mg["A"]["pool"], mg["A"]["slot"]), ("CANON_A", 110))  # the foreign print at 90 does not date the migration
+        self.assertEqual(rug.count_no_pool_mints(mg.values()), ["B", "C"])  # no print on the canonical pool: no-pool
+        self.assertEqual(rug.migration_pool_map(mg.values()), {"A": "CANON_A"})
+
+    def test_underivable_mint_is_no_pool(self):
+        def boom(m):
+            raise ValueError("bad pubkey")
+
+        mg = x.derive_p1b_migrations([("A", "P", 1)], boom)
+        self.assertEqual(rug.count_no_pool_mints(mg.values()), ["A"])
+
+    def test_loader_p1b_derives_pools_and_counts_zero_print_mints(self):
+        creates, trades = mint_tape("MINTB", T0)
+        for t in trades:
+            if t["venue"] == "pumpswap":
+                t["pool"] = "CANON_MINTB"
+        other = [dict(t, mint="MINTC", pool="SOME_OTHER_POOL") for t in trades if t["venue"] == "pumpswap"]  # only foreign-pool prints
+        with tempfile.TemporaryDirectory() as d:
+            tp, cp = Path(d) / "trades.jsonl", Path(d) / "creates.jsonl"
+            tp.write_text("".join(json.dumps(t) + "\n" for t in trades + other))
+            cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
+            src = x.load_source_data("P1B", "P1", lambda h: {"trade": tp, "create": cp}, ["h0"], [Path(d) / "no-migrations-here"], canonical_fn=fake_canon)
+        self.assertTrue(src.derived_pools)
+        pmap = rug.migration_pool_map(src.migrations.values())
+        self.assertEqual(pmap, {"MINTB": "CANON_MINTB"})
+        self.assertEqual(rug.count_no_pool_mints(src.migrations.values()), ["MINTC"])
+        self.assertEqual(len(src.rows_by_mint["MINTB"]), len(trades))  # full rows kept for the derived-migrated mint
+        self.assertTrue(x.pool_print_times(src, pmap)["CANON_MINTB"])
+
+    def test_other_sources_keep_the_migration_row_pool(self):
+        creates, trades = mint_tape("MINTB", T0)
+        with tempfile.TemporaryDirectory() as d:
+            tp, cp = Path(d) / "trades.jsonl", Path(d) / "creates.jsonl"
+            tp.write_text("".join(json.dumps(t) + "\n" for t in trades))
+            cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
+            src = x.load_source_data("P3", "P3", lambda h: {"trade": tp, "create": cp}, ["h0"], [], canonical_fn=fake_canon)
+        self.assertFalse(src.derived_pools)
+        self.assertEqual(src.migrations, {})
+
+    def test_p1b_zero_print_canonical_mint_is_excluded_from_both_books_and_counted(self):
+        src = fixture_source(pool_of_prints="OTHER_POOL")  # every print is on a pool that is not the mint's canonical pool
+        src.tag, src.derived_pools = "P1B", True
+        src.migrations = x.derive_p1b_migrations(
+            ((t["mint"], t.get("pool"), t["slot"]) for t in src.rows_by_mint["MINTA"] if t["venue"] == "pumpswap"), fake_canon
+        )
+        r = x.process_source(src, VMAP, fake_canon)
+        self.assertEqual((r["cells"], r["no_pool_mints"]), ([], ["MINTA"]))
+        self.assertIsNone(r["pool_vs_canonical"])  # derived sources have no migration-row pools to compare
+        pc = x.pre_started_counts([r], {}, {}, closed=[])
+        self.assertEqual(pc["no_pool_mints"], {"P1B": 1})
+
+    def test_pool_vs_canonical_counts_are_report_only_and_outcome_blind(self):
+        src = fixture_source()
+        src.migrations["MINTX"] = {"type": "migration", "mint": "MINTX", "pool": "CANON_MINTX", "slot": 5}
+        src.migrations["MINTY"] = {"type": "migration", "mint": "MINTY", "pool": "ELSEWHERE", "slot": 5}
+        r = x.process_source(src, VMAP, fake_canon)
+        self.assertEqual(r["pool_vs_canonical"], {"equal": 1, "not_equal": 2, "underivable": 0})  # MINTA's POOL1 != CANON_MINTA
+        pc = x.pre_started_counts([r], {}, {}, closed=[])
+        self.assertEqual(pc["migration_pool_vs_canonical"], {"P1A": {"equal": 1, "not_equal": 2, "underivable": 0}})
+        self.assertEqual([c["mint"] for c in r["cells"]], ["MINTA"])  # the migration-row pool still drives the cells
+
+    def test_plan_item_6_is_recorded(self):
+        text = (Path(__file__).resolve().parent.parent / "EXP" / "EXP-016-rug-veto-plan.md").read_text()
+        self.assertRegex(text, r"\n6\. 2026-10-06[^\n]*canonical_pool")
+
+
+class SingleStartedLineTests(unittest.TestCase):
+    def test_started_precedes_every_candidate_line_and_is_written_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            out, log = Path(d) / "out", Path(d) / "t.jsonl"
+            x.log_all(out, log, log, "started", True, {"universe_sha256": "u", "feature_table_sha256": "f", "prior_tries_per_pool": {}})
+            x.log_all(out, log, log, "completed", True, {})
+            x.log_all(out, log, log, "started", True, {})  # same out dir: dedupe keeps it at one
+            cfg = [json.loads(line)["config"] for line in log.read_text().splitlines()]
+            self.assertEqual(cfg[0]["key"], x.STARTED_KEY)
+            self.assertEqual(sum(c["key"] == x.STARTED_KEY for c in cfg), 1)
+            cand = {v["key"] for v in x.CANDIDATES.values()}
+            self.assertTrue(all(c["key"] in cand for c in cfg[1:]))
+            self.assertEqual(len(cfg), 1 + 6 * 4)
+            self.assertEqual(set(cfg[0]["keys"]), cand)
+
+    def test_a_second_run_refuses_before_any_started_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "t.jsonl"
+            x.log_all(Path(d) / "out", log, log, "started", True, {})
+            before = log.read_text()
+            with self.assertRaises(x.Refused):
+                x.check_no_prior_tries(log)  # main() calls this first, before reading any row
+            self.assertEqual(log.read_text(), before)
+
+    def test_main_orders_the_spend_point_before_scoring(self):
+        import inspect
+
+        src = inspect.getsource(x.main)
+        i_check, i_started, i_screen = src.index("check_no_prior_tries"), src.index('"started"'), src.index("run_screen(")
+        self.assertLess(i_check, i_started)
+        self.assertLess(i_started, i_screen)
+        self.assertEqual(src.count('"started"'), 1)
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -461,6 +461,7 @@ class SourceData:
     rows_by_mint: dict[str, list[Mapping[str, Any]]]
     through_ms: int
     pool_print_ms: dict[str, list[int]] = field(default_factory=dict)  # canonical pool -> print times (ints only; for the silent-pool count)
+    derived_pools: bool = False  # P1B only: no migrations/ dir, so `migrations` is derived from the tape with pool = canonical_pool(mint) (plan 13 item 6)
 
 
 def creator_history(creates: Mapping[str, Mapping[str, Any]]) -> dict[str, list[int]]:
@@ -474,8 +475,58 @@ def creator_history(creates: Mapping[str, Mapping[str, Any]]) -> dict[str, list[
     return hist
 
 
-def process_source(src: SourceData, vmap: Mapping[str, int | None]) -> dict[str, Any]:
-    """The tape pass for one source: P2 gate, block history, one cell per migrated mint. Outcome-blind counters are returned beside the cells."""
+def canonical_pool_str(mint: str) -> str:
+    """`tools.pumpswap_tx.canonical_pool` on a mint string: deterministic from the mint alone (outcome-blind); the pool the live probe executor trades."""
+    from solders.pubkey import Pubkey
+
+    from tools.pumpswap_tx import canonical_pool
+
+    return str(canonical_pool(Pubkey.from_string(mint)))
+
+
+def derive_p1b_migrations(prints: Iterable[tuple[str, Any, Any]], canonical_fn: Callable[[str], str] = canonical_pool_str) -> dict[str, Mapping[str, Any]]:
+    """P1B (the Oracle live tape has no migrations/ dir; manager decision 2026-10-06, plan 13 item 6). `prints` = (mint, pool, slot) per PumpSwap
+    print. Every mint with a PumpSwap print gets a migration row whose pool is `canonical_pool(mint)` (never the pool a row happens to name) and whose
+    slot is the first print on THAT pool. A mint with no print on its canonical pool (or an un-derivable pool) gets pool "" and counts as no-pool, in
+    neither book. Outcome-blind: only pool ids and slots are read."""
+    seen: dict[str, Any] = {}
+    first: dict[str, int] = {}
+    for m, pool, slot in prints:
+        if not isinstance(m, str):
+            continue
+        if m not in seen:
+            try:
+                seen[m] = canonical_fn(m)
+            except Exception:  # noqa: BLE001 - an un-derivable pool is a no-pool mint
+                seen[m] = ""
+        if seen[m] and pool == seen[m] and isinstance(slot, int):
+            first[m] = min(first.get(m, slot), slot)
+    return {m: {"type": "migration", "mint": m, "slot": first[m], "pool": seen[m]} if m in first else {"type": "migration", "mint": m, "slot": 0, "pool": ""} for m in seen}
+
+
+def count_pool_vs_canonical(migrations: Mapping[str, Mapping[str, Any]], canonical_fn: Callable[[str], str] = canonical_pool_str) -> dict[str, int]:
+    """Report-only, before `started`, counts only: migration-row pools equal to canonical_pool(mint) vs not (rows with a pool). `underivable` = the
+    canonical pool could not be computed from the mint string."""
+    eq = ne = bad = 0
+    for m, r in migrations.items():
+        p = r.get("pool")
+        if not p:
+            continue
+        try:
+            c = canonical_fn(m)
+        except Exception:  # noqa: BLE001
+            bad += 1
+            continue
+        if c == p:
+            eq += 1
+        else:
+            ne += 1
+    return {"equal": eq, "not_equal": ne, "underivable": bad}
+
+
+def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn: Callable[[str], str] | None = None) -> dict[str, Any]:
+    """The tape pass for one source: P2 gate, block history, one cell per migrated mint. Outcome-blind counters are returned beside the cells.
+    `canonical_fn` (production: `canonical_pool_str`) adds the report-only pool-vs-canonical count for sources with migration rows."""
     pool_by_mint = rug.migration_pool_map(src.migrations.values())
     no_pool = rug.count_no_pool_mints(src.migrations.values())
     fed = {m: list(rug.restrict_rows_to_migration_pool(admit_rows(rs), pool_by_mint.get(m))) for m, rs in src.rows_by_mint.items() if m in src.migrations}
@@ -496,16 +547,24 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None]) -> dict[str,
                              tape_through_ms=src.through_ms, creator_hist=hist, history=history)
         cell.update({"source": src.tag, "block": src.block})
         cells.append(cell)
-    return {"tag": src.tag, "cells": cells, "no_pool_mints": no_pool, "gate": {k: v for k, v in gate.items() if k != "pools"}, "n_migrations": len(src.migrations),
+    pool_vs_canonical = count_pool_vs_canonical(src.migrations, canonical_fn) if (canonical_fn is not None and not src.derived_pools) else None
+    return {"tag": src.tag, "cells": cells, "no_pool_mints": no_pool, "pool_vs_canonical": pool_vs_canonical, "gate": {k: v for k, v in gate.items() if k != "pools"}, "n_migrations": len(src.migrations),
             "slot_inversions": sum(c.get("slot_inversions", 0) for c in cells)}
 
 
-def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str, Any]], pool_hours: Sequence[str], migration_roots: Sequence[Path]) -> SourceData:
+def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str, Any]], pool_hours: Sequence[str], migration_roots: Sequence[Path],
+                     canonical_fn: Callable[[str], str] = canonical_pool_str) -> SourceData:
     """Production reader over the same hour resolvers EXP-015 uses. NOT exercised against a real layout by this PR's tests (no real data read);
     the first `--guards-only` run on the host shows whether it matches. Full rows for migrated mints, slimmed rows for the rest."""
     from tools.exp012_virtual_rescore import _zcat_lines
 
     migrations: dict[str, Mapping[str, Any]] = {}
+    if tag == "P1B":  # no migrations/ dir: pass 1 over the tape derives the migrations with the canonical pool (plan 13 item 6)
+        migrations = derive_p1b_migrations(
+            ((r.get("mint"), r.get("pool"), r.get("slot")) for h in pool_hours for r in eem._iter_trades(hours_fn(h)["trade"]) if r.get("venue") == "pumpswap"),
+            canonical_fn,
+        )
+        migration_roots = []
     for root in migration_roots:
         for f in sorted((Path(root) / "migrations").glob("migrations-*.jsonl.zst")):
             for line in _zcat_lines(f, '"migration"'):
@@ -535,7 +594,7 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
             if isinstance(t, int) and t > through:
                 through = t
             rows_by_mint.setdefault(m, []).append(r if m in migrations else {k: r[k] for k in keep if k in r})
-    return SourceData(tag, block, creates, migrations, rows_by_mint, through)
+    return SourceData(tag, block, creates, migrations, rows_by_mint, through, derived_pools=(tag == "P1B"))
 
 
 def pool_print_times(src: SourceData, pool_by_mint: Mapping[str, str]) -> dict[str, list[int]]:
@@ -585,6 +644,7 @@ def pre_started_counts(results: Sequence[Mapping[str, Any]], sel_by_mint: Mappin
     return {
         "no_pool_mints": {r["tag"]: len(r["no_pool_mints"]) for r in results},
         "no_pool_mint_ids": {r["tag"]: r["no_pool_mints"] for r in results},
+        "migration_pool_vs_canonical": {r["tag"]: r.get("pool_vs_canonical") for r in results if r.get("pool_vs_canonical") is not None},
         "closed_pools_frozen_selected": unp["closed"], "parse_fail_pools_frozen_selected": unp["parse_fail"], "unmapped_pools_frozen_selected": unp["unmapped"],
         "censored_cells": len(n_cens), "censored_mints": sorted(n_cens)[:200],
         "foreign_first_mints": {r["tag"]: len(r["gate"]["foreign_first_mints"]) for r in results},
@@ -1162,7 +1222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         results, pool_print_ms = [], {}
         for tag, block, hours_fn, pool_hours, mig_roots in build_sources(g):
             src = load_source_data(tag, block, hours_fn, pool_hours, mig_roots)
-            results.append(process_source(src, vmap))
+            results.append(process_source(src, vmap, canonical_pool_str))
             pool_print_ms.update(pool_print_times(src, rug.migration_pool_map(src.migrations.values())))
             del src
         cells = [c for r in results for c in r["cells"]]
