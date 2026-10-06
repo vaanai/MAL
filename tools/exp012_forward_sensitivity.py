@@ -598,8 +598,9 @@ def check_vbook_report(path: Path, vmap_sha256: str, window: tuple[str, str], te
         raise fw.Refused([f"--vbook-report {path} is not a {vb.SCHEMA_REPORT} document"])
     if (doc.get("vmap") or {}).get("sha256") != vmap_sha256.strip().lower():
         raise fw.Refused([f"--vbook-report {path}: vmap.sha256 does not equal --vmap-sha256"])
-    if doc.get("b_verdict") not in ("PASS", "FAIL", vb.NOT_DECIDABLE):
-        raise fw.Refused([f"--vbook-report {path}: b_verdict {doc.get('b_verdict')!r} is not a finished verdict"])
+    decided = ("PASS", "FAIL") if not test_window else ("PASS", "FAIL", vb.NOT_DECIDABLE)
+    if doc.get("b_verdict") not in decided:
+        raise fw.Refused([f"--vbook-report {path}: b_verdict {doc.get('b_verdict')!r} is not a decided PASS or FAIL; the sensitivity window is single-use, so it is not claimed until (B) is decidable"])
     if (doc.get("clean_clock"), doc.get("read_end")) != window or bool(doc.get("test_window")) != test_window:
         raise fw.Refused([f"--vbook-report {path} is for another window or test_window flag"])
     return doc

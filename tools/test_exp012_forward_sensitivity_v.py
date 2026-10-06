@@ -172,8 +172,28 @@ class VRefusals(VFx):
         for bad, sha in (({**good, "vmap": {"sha256": "b" * 64}}, "a" * 64), ({**good, "b_verdict": None}, "a" * 64), ({**good, "schema": "x"}, "a" * 64), ({**good, "read_end": "z"}, "a" * 64), (good, "c" * 64)):
             with self.assertRaises(fw.Refused):
                 check(bad, sha)
+        with self.assertRaises(fw.Refused) as cm:
+            check({**good, "b_verdict": vb.NOT_DECIDABLE})  # pinned: the single-use window stays unspent
+        self.assertIn("single-use", str(cm.exception))
+        f = d / "nd.json"
+        f.write_text(json.dumps({**good, "b_verdict": vb.NOT_DECIDABLE, "test_window": True}))
+        self.assertEqual(sens.check_vbook_report(f, "a" * 64, win, True)["b_verdict"], vb.NOT_DECIDABLE)  # test windows only
         with self.assertRaises(fw.Refused):
             sens.check_vbook_report(d / "missing.json", "a" * 64, win, False)
+
+    def test_pinned_not_decidable_vbook_report_refuses_before_the_claim(self) -> None:
+        out, ledger = self.sealed()
+        vmap, sha = self.vmap()
+        rep = {"schema": vb.SCHEMA_REPORT, "vmap": {"sha256": sha}, "b_verdict": vb.NOT_DECIDABLE, "clean_clock": fw.PINNED_CLEAN_CLOCK, "read_end": fw.PINNED_READ_END, "test_window": False}
+        f = Path(tempfile.mkdtemp(dir=self._td.name)) / "vbook_report.json"
+        f.write_text(json.dumps(rep))
+        with mock.patch.object(fw, "PINNED_CLEAN_CLOCK", tsens.CLEAN_CLOCK), mock.patch.object(fw, "PINNED_READ_END", tsens.READ_END), mock.patch.object(fw, "DEFAULT_LEDGER", ledger), mock.patch.object(sens, "check_sealed", return_value={}), mock.patch.object(sens, "final_verdict", return_value="PASS"):
+            rep["clean_clock"], rep["read_end"] = tsens.CLEAN_CLOCK, tsens.READ_END
+            f.write_text(json.dumps(rep))
+            with self.assertRaises(fw.Refused) as cm:
+                self.run_sens(out, ledger, test_window=False, vmap=vmap, vmap_sha256=sha, mcap_mode="v", vbook_report=f)
+        self.assertIn("single-use", str(cm.exception))
+        self.assertEqual(self.lines(sens.runs_ledger_path(ledger)), [])
     def test_wrong_sha_refuses_and_records_nothing(self) -> None:
         out, ledger = self.sealed()
         vmap, _sha = self.vmap()
