@@ -250,14 +250,38 @@ The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded 
 
 **6. Effect.** This changes no bar, threshold, model, window or fail model. Filling nulls can make a NOT_DECIDABLE (B) decidable, in either direction. Every filled value is a pool the chain priced, checked for constancy against the post-cutoff fetch wherever both are non-null. Amendment 4 §2 still needs both (A) and (B).
 
-**7. V0 moves with LP supply (added 2026-10-06 ~15:30Z, pre-read).** Written before any forward P&L, decision or entered-mint file was opened, and before 2026-10-16T00Z. Evidence: [pumpswap-v0-lp-law-2026-10-06.md](../ARTIFACTS/lab/pumpswap-v0-lp-law-2026-10-06.md) (jobs #278, #282–#284; pool fields and transaction logs only).
-- **Finding.** V0 (`v_base` = V + A + B) is not constant per pool. At each PumpSwap `Deposit` or `Withdraw` it becomes `floor(V0 × S_after / S_before)`, where S is the pool's LP mint supply, read from the event's `lp_mint_supply` (supply before the operation) and the LP amount. This reproduced all 6 V0 moves in job #278, 24 LP operations in total, with 0 lamports residual. §3's "any v_base difference refuses" (#383) would make (B) NOT_DECIDABLE on ordinary LP activity, so it is replaced as follows. Nothing else in §1–§6 changes.
-- **(a) LP history.** For any set of pools and a slot or time range, the tool reads each pool's LP mint from its account and lists the PumpSwap `Deposit`/`Withdraw` events on that pool, from the LP mint's signatures, with `getTransaction` at `maxSupportedTransactionVersion` 1. Each event records slot, block time, signature, kind, S_before and the signed LP delta. A pool whose history cannot be read in full is **unresolved**. The output file's sha256 is recorded wherever it is used.
-- **(b) Merge.** Two V0 values of a pool, from a snapshot and a later snapshot or the final map, are **consistent** if they are equal, or if replaying the pool's LP events between the two fetches by the rule above reproduces the later value within 1 lamport per event. An event inside a fetch's own time span may be placed on either side. Other pools are **unexplained** (rule fails) or **unresolved** (history unreadable). `merge` writes their ids to files, their counts to the merge record, and binds the LP-history sha. **It refuses if unexplained plus unresolved pools exceed 0.1% of the §1 pool set.** It never fills a null from an unexplained or unresolved pool.
-- **(c) Pricing in (B).** Each entered trade's pool is priced at its V0 at the **entry fill slot**: the final map's V0 with the pool's LP events after that slot, up to the final fetch, inverted by the same rule (≤ 1 lamport per event). Stored V = that V0 − (final-map pending), the same pending treatment as before. One V per trade, as the adapter takes one V per pool.
-  - The report gives the number of entered trades with an LP event between entry and exit.
-  - LP histories are read for every entered trade's pools after the FINAL (A) read. That run is pool fields and logs only, and its sha is in the (B) report.
-  - A trade whose pool is unexplained or unresolved is treated as a **null-V pool** under Amendment 4 §3 (top-3 union, or > 1% of entered trades, gives NOT_DECIDABLE).
-- **(d) Sensitivity line (report only).** (B) is recomputed with every LP-moved entered pool priced at its final-map V0 instead of its entry-slot V0, and the report says whether the (B) verdict differs. The primary is (c), because it is the price the chain used.
-- **(e) Snapshots** also record each pool's LP supply and the fetch's context slots from now on. Snapshots #2 (job #259) and #3 (job #286) lack them; (b) covers them through LP history.
-- **Effect.** No bar, threshold, model, window, fail model or trial term changes. (c) can move (B) either way, by the price the chain actually used. Unexplained moves can only make (B) NOT_DECIDABLE. Quant-proof reviews the tool PRs before merge; their merge commits are recorded here.
+**7. V0 moves with LP supply (added 2026-10-06, pre-read; revised after quant-proof the same day).** Written before any forward P&L, decision or entered-mint file was opened, and before 2026-10-16T00Z. Evidence: [pumpswap-v0-lp-law-2026-10-06.md](../ARTIFACTS/lab/pumpswap-v0-lp-law-2026-10-06.md) (jobs #278, #282–#284; pool fields and transaction logs only), re-derived independently by quant-proof.
+- **Finding.** V0 (`v_base` = V + A + B) is not constant per pool. At each PumpSwap `Deposit` or `Withdraw` it becomes `floor(V0 × S_after / S_before)`, where S is the pool's LP mint supply. S_before is the event's `lp_mint_supply`, and S_after = S_before ± the LP amount. This reproduced all 6 V0 moves in job #278, 16 LP operations, with 0 lamports residual; 3 later operations checked against #282 also matched. §3's "any v_base difference refuses" (#383) would make (B) NOT_DECIDABLE on ordinary LP activity, so it is replaced below. Nothing else in §1–§6 changes.
+- **(0) Deadline.** The §7 tools must be merged, with quant-proof OK and their merge commits recorded here, **before 2026-10-16T00:00Z**. If they are not, §3's strict rule (#383) applies unchanged.
+- **(a) LP history.**
+  - **What is read.** For a set of pools and a time range, the tool reads each pool's LP mint and current LP supply from its account. It then lists the PumpSwap `Deposit`/`Withdraw` events on that pool, using the LP mint's signatures and `getTransaction` at `maxSupportedTransactionVersion` 1. Each event records slot, block time, signature, kind, S_before and the signed LP delta.
+  - **When a pool is unresolved.** Any of these makes a pool **unresolved**:
+    - the account is missing, or the signature paging does not reach the start of the range;
+    - a transaction fetch fails;
+    - a transaction has truncated logs, unless its event can be decoded from the program's self-CPI event instruction;
+    - the S sequence does not chain, meaning an event's S_after differs from the next event's S_before;
+    - the last S_after differs from the LP supply read in the same run, at or after the latest fetch.
+  - **Retries.** Up to 3 passes over pools unresolved for transient RPC reasons. Every attempt is logged.
+  - **Output.** The output file's sha256 is recorded wherever it is used.
+  - **For (B):** one run over the pools of all entered trades, completed before the vbook STARTED line.
+- **(b) Merge.**
+  - **Consistent pools.** Two V0 values of a pool (a snapshot and a later snapshot, or a snapshot and the final map) are **consistent** if they are equal. They are also consistent if replaying the pool's LP events between the two fetches reproduces the later value within 1 lamport per event. An event inside a fetch's own time span may be placed on either side, and any placement that reproduces the value counts.
+  - **Other pools.** The rest are **unexplained** (the rule fails) or **unresolved** (per (a)).
+  - **Ceiling.** **Merge refuses if unexplained plus unresolved pools exceed 0.1% of the §1 pool set.** It never fills a null from such a pool.
+  - **What the ceiling covers.** It applies to moves the rule does not explain, not to all moves. The owner asked for a refusal when "too many pools move". The cause of the moves is now known and they are priced exactly, so only unexplained moves can corrupt (B). The merge record still reports the count of explained moved pools. The (B) report gives the count of entered trades on LP-moved pools.
+  - **Ids.** The ids of moved, unexplained and unresolved pools go to files only. They are never printed, and never joined with decisions or entered mints before the read (§2).
+- **(c) Pricing in (B).** Each entered trade's pool is priced at its **V0 at the entry fill slot, with pending from the final map**: stored V = V0(entry) − final-map pending.
+  - V0(entry) is the final map's V0 with the pool's LP events after the entry fill slot, up to the final fetch, inverted. The inversion takes the smallest V0_before with floor(V0_before × S_after / S_before) = V0_after.
+  - For a pool filled from a snapshot, the anchor is that snapshot's fetch, and events between that fetch and the entry slot are applied forward.
+  - An event in the entry fill slot is placed by its order within the slot.
+  - An event inside the final fetch's span is computed both ways. If the two results differ, the pool is unresolved.
+  - **LP event inside the hold.** A trade with a PumpSwap LP event after its entry fill slot and at or before its exit fill slot is priced at both its entry-slot V0 and its exit-slot V0. **The primary uses the lower P&L of the two.** The count of such trades is reported.
+  - A trade whose pool is unexplained or unresolved is treated as a **null-V pool** under Amendment 4 §3: the top-3 union, or > 1% of entered trades, gives NOT_DECIDABLE.
+- **(d) Sensitivity lines.**
+  - (B) is recomputed with every LP-moved entered pool priced at its final-map V0 instead of (c). **If the verdict differs from (c)'s, this is listed in `live_blockers`** (the Am.4 §4 pattern); (B)'s verdict stays (c)'s.
+  - (B) is also recomputed with pending = 0, report only.
+- **(e) Recorded from now on:** every fetch, the FINAL map included, records each pool's LP supply and the fetch's context slots. Snapshots #2 (job #259) and #3 (job #286) lack them; (b) covers them through LP history.
+- **Effect.** No bar, threshold, model, window, fail model or trial term changes.
+  - (c) moves (B) by the V0 the chain used. Where an LP event falls inside a hold, it takes the worse case.
+  - Unexplained or unresolved moves can only make (B) NOT_DECIDABLE.
+  - The tool PRs get quant-proof before merge, and their merge commits are recorded here.
