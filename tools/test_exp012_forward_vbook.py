@@ -87,6 +87,29 @@ class BindingTests(VBase):
             vb.run_vbook(walk, out, out.parent / "ledger.jsonl", vpath, sha, out.parent / "vb", art, FREEZE_COMMIT, None, False)
         self.assertIn("--vmap-merge-meta", str(cm.exception))
 
+    def test_runs_ledger_override_is_refused_on_a_non_test_window(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out)
+        with self.assertRaises(fw.Refused) as cm:
+            vb.run_vbook(walk, out, out.parent / "ledger.jsonl", vpath, sha, out.parent / "vb", art, FREEZE_COMMIT, None, False, vmap_merge_meta=out.parent / "m.json", runs_ledger=out.parent / "elsewhere.jsonl")
+        self.assertIn("--runs-ledger is refused", str(cm.exception))
+        self.assertFalse((out.parent / "elsewhere.jsonl").exists())
+
+    def test_fetch_time_is_parsed_as_utc_and_malformed_is_a_clean_refusal(self) -> None:
+        sha = "a" * 64
+        d = Path(tempfile.mkdtemp())
+
+        def meta(started):
+            f = d / "m.json"
+            f.write_text(json.dumps({"sha256": {"out": sha}, "final_fetch": {"new": True, "fetch_started_utc": started}}))
+            return f
+
+        vb.check_merge_meta(meta("2026-10-16T00:00:00Z"), sha)
+        vb.check_merge_meta(meta("2026-10-16T00:00:01"), sha)
+        for bad in ("2026-10-15T23:59:59Z", "not a time", "", None, 5, "2026-10-9T1:2:3Z"):
+            with self.assertRaises(fw.Refused):
+                vb.check_merge_meta(meta(bad), sha)
+
     def test_merge_meta_sha_must_equal_the_vmap_sha_and_is_embedded(self) -> None:
         walk, art, out = self.final()
         vpath, sha = self.vmap(out)

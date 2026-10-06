@@ -41,7 +41,9 @@ pass a STARTED line is appended under flock (window, FINAL rows sha256, vmap sha
 commit); a STARTED line for the same non-test window already there refuses the run. After it, every exit appends
 a terminal line: DONE (b_verdict, report sha256) or REFUSED_AFTER_READ (reason), including the entered-set
 refusal and SIGTERM. The DONE line is written before the report files. `--test-window` runs are exempt from the
-refusal (their lines are logged). `prior_vbook_runs` counts STARTED lines for the same window.
+refusal (their lines are logged). `prior_vbook_runs` counts STARTED lines for the same window. A non-test
+window always uses `<final-out-dir>/../VBOOK_RUNS.jsonl`; `--runs-ledger` is refused there. A STARTED line with no
+terminal line (SIGKILL, OOM) also means the window is spent and (B) is NOT_DECIDABLE.
 
 Outputs, in a new `--out-dir` (refused if it exists): vbook_report.json, vbook_report.md. Scratch row files
 (P&L at rest) live in a temp directory next to it and are deleted.
@@ -232,7 +234,11 @@ def check_merge_meta(meta: Path, vmap_sha: str) -> dict[str, Any]:
     if not isinstance(ff, dict) or ff.get("new") is not True:
         raise Refused([f"--vmap-merge-meta {meta}: final_fetch.new is not true (the map was not fetched fresh for this read)"])
     started = ff.get("fetch_started_utc")
-    if not isinstance(started, str) or started < CUTOFF:
+    try:
+        t_start, t_cut = fw.parse_clock(started), fw.parse_clock(CUTOFF)
+    except Exception:  # noqa: BLE001 -- any malformed value is a clean refusal
+        raise Refused([f"--vmap-merge-meta {meta}: final_fetch.fetch_started_utc {started!r} is not a UTC timestamp"])
+    if t_start < t_cut:
         raise Refused([f"--vmap-merge-meta {meta}: final_fetch.fetch_started_utc {started!r} is before {CUTOFF}"])
     return doc
 
@@ -410,6 +416,8 @@ def run_vbook(
 ) -> dict[str, Any]:
     if test_window and str(walk_dir.resolve()).startswith(REAL_BLOCKS_PREFIX):
         raise Refused([f"--test-window is refused on a walk dir under {REAL_BLOCKS_PREFIX}"])
+    if runs_ledger is not None and not test_window:
+        raise Refused(["--runs-ledger is refused on a non-test window: the ledger is always <final-out-dir>/../VBOOK_RUNS.jsonl"])
     if vmap_merge_meta is None and not test_window:
         raise Refused(["--vmap-merge-meta (the V map merge's OUT.merge.json) is required unless --test-window"])
     marker = find_final_marker(final_out_dir, final_ledger, test_window)  # 0. before any row is opened
