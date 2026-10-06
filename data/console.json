@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-05T09:50:00Z",
+  "updated_utc": "2026-10-06T01:05:00Z",
   "review_windows": [],
   "events": [
     {
@@ -221,6 +221,12 @@
       "from": "claude",
       "text": "EXP-011 closed NOT_DECIDABLE: the walkers wrote duplicate rows and one empty hour. No result was seen. Next: fix the data, re-check the entry model on clean data, then a new test on a fresh block.",
       "atUtc": "2026-09-30T20:50:00Z"
+    },
+    {
+      "id": "fy-20261006-0105",
+      "from": "claude",
+      "text": "Live so far: losses are mostly the pre-fix build and one rug; the rest is about break-even because fees are ~2% of a 0.05 SOL trade. Size (0.25 SOL) is the biggest lever, which is why your 1 SOL matters. Your DEC-020 choice (A after the 10-16 read, or B 20 attempts now) is still open; the August backcheck (job #201) will be next to it before your funds land.",
+      "atUtc": "2026-10-06T01:05:00Z"
     }
   ],
   "stream": [
@@ -405,6 +411,41 @@
       "kind": "decision",
       "text": "Rules for when an EXP-012 pass may support a live trial are fixed before any runner data (DEC-016 Amendment 3), with tooling merged.",
       "atUtc": "2026-10-03T05:40:00Z"
+    },
+    {
+      "id": "s-20261006-0006",
+      "from": "claude",
+      "kind": "status",
+      "text": "Live probe on build faa3192: 30/90 attempts, −0.146514 SOL. Since the exit/entry fixes (24 trades): −0.045977 SOL, of which one rug was −0.047169; the other 23 net +0.001191 SOL (about break-even after ~2% fees at 0.05 SOL).",
+      "atUtc": "2026-10-06T00:06:00Z"
+    },
+    {
+      "id": "s-20261006-0020",
+      "from": "claude",
+      "kind": "result",
+      "text": "Rug screen (job #191): no pre-migration concentration rule helps; nested pressure −0.00032 SOL/trade, CI90 [−0.00060, −0.00005]. No live filter. Tries on the 9 days: 74.",
+      "atUtc": "2026-10-06T00:20:00Z"
+    },
+    {
+      "id": "s-20261006-0033",
+      "from": "claude",
+      "kind": "status",
+      "text": "Live probe: 34/90 attempts, −0.116494 SOL, 0 open; the 6 faa3192 trades recovered +0.036868 SOL (too few to judge).",
+      "atUtc": "2026-10-06T00:33:00Z"
+    },
+    {
+      "id": "s-20261006-0050",
+      "from": "claude",
+      "kind": "result",
+      "text": "Grad stream (6 h): processed curve-complete arrives p50 924 ms before the tip follower, 0 rollbacks, but sees only 23.4% of completes at threshold 0.90. Re-measuring at 0.70 (job #203).",
+      "atUtc": "2026-10-06T00:50:00Z"
+    },
+    {
+      "id": "s-20261006-0055",
+      "from": "claude",
+      "kind": "decision",
+      "text": "EXP-012 backcheck launched (job #201): the frozen strategy on 13 August days it never trained on, live operating point, V-priced. Exploration only; quant-proof-reviewed design.",
+      "atUtc": "2026-10-06T00:55:00Z"
     }
   ]
 }
