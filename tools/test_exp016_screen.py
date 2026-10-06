@@ -1260,7 +1260,7 @@ class MainExceptionHygieneTests(unittest.TestCase):
             st.enter_context(mock.patch.object(x, "check_limits", return_value=list(limits)))  # the fixture source has 1 in-book cell: the floor is tested on its own
             st.enter_context(mock.patch.object(x, "build_sources", return_value=[("P1A", "P1", None, [], [])]))
             st.enter_context(mock.patch.object(x, "load_source_data", side_effect=lambda *a, **k: fixture_source()))
-            st.enter_context(mock.patch.object(x, "load_oof", return_value=({}, None)))
+            st.enter_context(mock.patch.object(x, "load_oof", return_value=({}, 0.8, {}, {})))
             st.enter_context(mock.patch.object(x, "frozen_flags", side_effect=lambda cells, *a, **k: [False] * len(cells)))
             st.enter_context(mock.patch.object(e15, "check_run_lock"))
             for p in patches:
@@ -1465,7 +1465,7 @@ class PrecountTests(unittest.TestCase):
             st.enter_context(mock.patch("tools.exp012_forward_vmap.load_detail", return_value={"POOL1": {"v_base": 17_584_505_300}}))
             st.enter_context(mock.patch.object(x, "build_sources", return_value=[(t, "P1", None, [], []) for t in sources]))
             st.enter_context(mock.patch.object(x, "load_source_data", side_effect=lambda tag, *a, **k: fixture_source()))
-            st.enter_context(mock.patch.object(x, "load_oof", return_value=({}, None)))
+            st.enter_context(mock.patch.object(x, "load_oof", return_value=({}, 0.8, {}, {})))
             st.enter_context(mock.patch.object(x, "frozen_flags", side_effect=lambda cells, *a, **k: [True] * len(cells)))
             st.enter_context(mock.patch.object(x, "log_all"))
             st.enter_context(mock.patch.object(e15, "take_lock"))
@@ -1532,7 +1532,7 @@ class PrecountTests(unittest.TestCase):
         import inspect
 
         src = inspect.getsource(x.main)
-        self.assertLess(src.index("enforce_limits(results, oof)"), src.index("e15.take_lock"))
+        self.assertLess(src.index("enforce_limits(results, oof, oof_cover)"), src.index("e15.take_lock"))
         with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "log_all") as lg:
             rc, exc, text = MainExceptionHygieneTests()._run(d, [], limits=["P1A: 0 cells"])
             lg.assert_not_called()
@@ -1653,7 +1653,7 @@ class DataQualityGuardTests(unittest.TestCase):
         import inspect
 
         src = inspect.getsource(x.main)
-        self.assertIn("enforce_limits(results, oof)", src)
+        self.assertIn("enforce_limits(results, oof, oof_cover)", src)
         self.assertLess(src.index("prior_exp = prior_tries_per_experiment"), src.index("e15.take_lock"))
 
     def test_every_migration_row_is_kept_and_the_window_is_only_for_the_denominators(self):
@@ -1885,7 +1885,7 @@ class YieldAndSlotConsistencyTests(unittest.TestCase):
         at_complete = x.process_source(self._src_with_complete_slot(1040), VMAP)["cells"][0]
         at_print = x.process_source(self._src_with_complete_slot(1050), VMAP)["cells"][0]
         without = x.process_source(self._src_with_complete_slot(1040, extra_row=False), VMAP)["cells"][0]
-        self.assertEqual((at_complete["cutoff_slot"], at_complete["clock_slot"]), (1040, 1050))  # the cutoff is the complete slot; the clock is the first canonical print
+        self.assertEqual((at_complete["cutoff_slot"], at_complete["clock_slot"]), (1041, 1050))  # the cutoff is complete slot + 1; the clock is the first canonical print
         self.assertEqual(at_complete["features"], without["features"])  # the 1045 buy is at/after the complete slot: not seen
         self.assertNotEqual(at_complete["features"], at_print["features"])  # with the cutoff at the first print it is seen
         self.assertEqual(at_complete["mig_ms"], at_print["mig_ms"])  # entry timing is the first canonical print either way
@@ -1899,6 +1899,85 @@ class YieldAndSlotConsistencyTests(unittest.TestCase):
         self.assertEqual((c["cutoff_slot"], c["clock_slot"], c["cutoff_clamped"]), (1050, 1050, True))
         self.assertEqual(r["cutoff_clamped"], 1)
         self.assertEqual(c["features"], x.process_source(self._src_with_complete_slot(1050), VMAP)["cells"][0]["features"])
+
+
+class CompleteSlotPlusOneTests(unittest.TestCase):
+    def _cell(self, slots):
+        """A complete-only mint (complete slot 1040, first canonical print at 1050) with extra bonding buys at `slots`."""
+        src = fixture_source()
+        src.migrations["MINTA"] = {"type": "migration", "mint": "MINTA", "pool": "POOL1", "slot": 1040, "from_complete": True}
+        bond = [r for r in src.rows_by_mint["MINTA"] if r["venue"] == "pump_bonding"]
+        last = bond[-1]
+        for i, sl in enumerate(slots):
+            src.rows_by_mint["MINTA"].insert(len(bond) + i, dict(last, side="buy", slot=sl, trader=f"extra{sl}", signature=f"sig-extra{sl}", event_index=9 + i,
+                                                                  t_recv_ms=last["t_recv_ms"] + 1 + i, block_time=last["block_time"]))
+        return x.process_source(src, VMAP)["cells"][0]
+
+    def test_the_completing_buy_is_in_the_features_and_a_later_slot_is_not(self):
+        none = self._cell([])
+        completing = self._cell([1040])
+        both = self._cell([1040, 1041])
+        only_after = self._cell([1041])
+        self.assertEqual(completing["cutoff_slot"], 1041)
+        self.assertNotEqual(completing["features"], none["features"])  # the buy AT the complete slot is included (slot < complete + 1)
+        self.assertEqual(both["features"], completing["features"])  # a print at complete + 1 is not
+        self.assertEqual(only_after["features"], none["features"])
+        self.assertEqual(completing["mig_ms"], none["mig_ms"])  # entry still timed from the first canonical print
+        self.assertEqual(completing["clock_slot"], 1050)
+
+    def test_migration_row_mints_keep_their_slot_as_the_cutoff(self):
+        src = fixture_source()  # a real migration row, slot 1050, no from_complete
+        c = x.process_source(src, VMAP)["cells"][0]
+        self.assertEqual((c["cutoff_slot"], c["origin"]), (1050, "migration_row"))
+
+
+class CoverageCountsTests(unittest.TestCase):
+    def test_oof_scored_mints_without_a_cell_and_the_limit(self):
+        p1 = e15.block_dates("P1")
+        res = [{"tag": "P1A", "cells": [{"mint": f"m{i}", "block": "P1"} for i in range(100)]}]
+        oof = {f"m{i}": 0.9 for i in range(100)}
+        days = {f"m{i}": p1[0] for i in range(100)}
+        cov = x.oof_without_cell(res, oof, days, p1)
+        self.assertEqual((cov["n_scored_in_window"], cov["n_without_cell"]), (100, 0))
+        for i in range(100, 105):
+            oof[f"m{i}"], days[f"m{i}"] = 0.9, p1[0]
+        oof["outside"], days["outside"] = 0.9, "2000-01-01"  # not in the P1 window: not counted
+        cov = x.oof_without_cell(res, oof, days, p1)
+        self.assertEqual((cov["n_scored_in_window"], cov["n_without_cell"], cov["by_day"]), (105, 5, {p1[0]: 5}))
+        self.assertEqual([w for w in x.check_limits([_res("P1A", cells=100)], oof_cover=cov) if "OOF-scored" in w], [])  # 5 of 105 is under 5%
+        oof["m106"], days["m106"] = 0.9, p1[0]
+        oof["m107"], days["m107"] = 0.9, p1[0]
+        cov = x.oof_without_cell(res, oof, days, p1)  # 7 of 107
+        (why,) = [w for w in x.check_limits([_res("P1A", cells=100)], oof_cover=cov) if "OOF-scored" in w]
+        self.assertIn("have no cell", why)
+        with self.assertRaises(x.Refused):
+            x.enforce_limits([_res("P1A", cells=100)], oof_cover=cov)
+        self.assertEqual(x.oof_without_cell(res, None, None, p1), {"available": False})
+
+    def test_migration_row_without_complete_row_and_origin_split(self):
+        rows = [MigrationRowShapesTests._row(MigrationRowShapesTests(), "complete", "C1", 100, T0), MigrationRowShapesTests._row(MigrationRowShapesTests(), "migration", "M1", 101, T0),
+                MigrationRowShapesTests._row(MigrationRowShapesTests(), "migration", "C1", 100, T0)]
+        src = MigrationRowShapesTests()._load(rows, ["MINTA"])
+        self.assertEqual(src.migration_no_complete, 1)  # M1 has a migration row but no complete row
+        self.assertEqual(sorted(src.migrations), ["C1", "M1"])
+
+    def test_no_sim_and_foreign_first_are_split_by_origin(self):
+        src = fixture_source()
+        src.migrations["MINTX"] = {"type": "migration", "mint": "MINTX", "pool": "PX", "slot": 5, "from_complete": True}
+        src.creates["MINTX"] = dict(src.creates["MINTA"], mint="MINTX", signature="sx")
+        r = x.process_source(src, VMAP)
+        self.assertEqual(set(r["no_sim_by_origin"]), {"complete_only", "migration_row"})
+        self.assertEqual(r["no_sim_by_origin"]["complete_only"], {"no canonical-pool print after a bonding print": 1})
+        self.assertEqual(r["no_sim_by_origin"]["migration_row"], {})
+        self.assertEqual(r["foreign_first_by_origin"], {"complete_only": 0, "migration_row": 0})
+        self.assertEqual({c["mint"]: c["origin"] for c in r["cells"]}, {"MINTA": "migration_row", "MINTX": "complete_only"})
+
+    def test_guards_progress_lines_come_first(self):
+        import inspect
+
+        self.assertLess(inspect.getsource(x.precount).index('progress("precount: guards start")'), inspect.getsource(x.precount).index("run_guards("))
+        m = inspect.getsource(x.main)
+        self.assertLess(m.index('progress("guards start")'), m.index("run_guards(args)"))
 
 
 if __name__ == "__main__":
