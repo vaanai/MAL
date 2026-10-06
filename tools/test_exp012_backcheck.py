@@ -218,10 +218,76 @@ class VCoverageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(bc, "guard_views", return_value={"roots": {}, "pool": [], "view_sha256": {}}), \
                 mock.patch.object(bc, "check_frozen_threshold"), mock.patch.object(bc, "check_model_md5", return_value="x"), \
                 mock.patch.object(bc.e11, "load_frozen_spec", return_value=(None, bc.FROZEN_THRESHOLD, [])), \
-                mock.patch.object(bc, "v_prepass", return_value=cov), mock.patch.object(bc, "collect_rows") as collect, mock.patch.object(bc, "analyze") as analyze:
+                mock.patch.object(bc, "check_vmap_sha", return_value="s"), mock.patch.object(bc, "v_prepass", return_value=(cov, {})), mock.patch.object(bc, "collect_rows") as collect, mock.patch.object(bc, "analyze") as analyze:
             self.assertEqual(bc.main(["--view-dir", "/x", "--out-dir", d]), 2)
             collect.assert_not_called()
             analyze.assert_not_called()
+
+
+class VPopulationTests(unittest.TestCase):
+    T0 = bc.hour_ms(bc.COUNT_START)
+    END = bc.hour_ms(bc.POOL_END)
+
+    def _migrating(self, n, bad, vmap):
+        rows = []
+        for i in range(n):
+            pool = f"mp{i}"
+            vmap[pool] = None if i < bad else 17_000_000_000
+            rows += [{"venue": "pumpswap", "mint": f"mig{i}", "pool": pool, "t_recv_ms": self.T0 + 10 + j} for j in range(5)]
+        return rows
+
+    def test_non_migrating_and_excluded_pools_without_v_still_pass(self):
+        vmap = {}
+        rows = self._migrating(100, 0, vmap)
+        rows += [{"venue": "pumpswap", "mint": f"never{i}", "pool": f"np{i}", "t_recv_ms": self.T0 + 10} for i in range(50)]  # not in migrations/
+        rows += [{"venue": "pumpswap", "mint": f"old{i}", "pool": f"op{i}", "t_recv_ms": self.T0 - 10} for i in range(50)]  # migrated before the window
+        rows += [{"venue": "pumpswap", "mint": f"late{i}", "pool": f"lp{i}", "t_recv_ms": self.END + 10} for i in range(5)]  # after the pool
+        rows += [{"venue": "pumpswap", "mint": bc.eem.WSOL, "pool": "wsolpool", "t_recv_ms": self.T0 + 10}]  # wSOL-mint pool
+        migrated = {f"mig{i}" for i in range(100)} | {f"old{i}" for i in range(50)} | {f"late{i}" for i in range(5)}
+        cov = bc.vmap_coverage(rows, vmap, self.T0, self.END, migrated)
+        self.assertEqual((cov["n_counted_mints"], cov["prints"], cov["missing"]), (100, 500, 0))
+        bc.check_v_coverage(cov)
+
+    def test_two_percent_of_migrating_pool_prints_missing_refuses(self):
+        vmap = {}
+        rows = self._migrating(100, 2, vmap)
+        migrated = {f"mig{i}" for i in range(100)}
+        cov = bc.vmap_coverage(rows, vmap, self.T0, self.END, migrated)
+        self.assertAlmostEqual(cov["missing_fraction"], 0.02)
+        with self.assertRaises(bc.Refused):
+            bc.check_v_coverage(cov)
+
+    def test_null_pool_of_migrating_mint_is_missing(self):
+        cov = bc.vmap_coverage([{"venue": "pumpswap", "mint": "m", "pool": "p", "t_recv_ms": self.T0 + 1}], {"p": None}, self.T0, self.END, {"m"})
+        self.assertEqual(cov["missing"], 1)
+
+    def test_primary_trades_on_no_v_pools_counted(self):
+        rows = [_row("a", self.T0 + 1), _row("b", self.T0 + 2)]
+        self.assertEqual(bc.primary_no_v_trades(rows, {"a": {"p1"}, "b": {"p2"}}, {"p1"}), 1)
+        self.assertEqual(bc.primary_no_v_trades(rows, {"a": {"p1"}, "b": {"p2"}}, set()), 0)
+
+    def test_main_refuses_when_a_primary_trade_is_on_a_no_v_pool(self):
+        cov = {"prints": 10, "covered": 10, "missing": 0, "missing_fraction": 0.0, "missing_pools": 0, "max_missing_fraction": 0.01}
+        rows = [_row("a", self.T0 + 1)]
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(bc, "guard_views", return_value={"roots": {}, "pool": [], "view_sha256": {}}), \
+                mock.patch.object(bc, "check_frozen_threshold"), mock.patch.object(bc, "check_model_md5", return_value="x"), mock.patch.object(bc, "check_vmap_sha", return_value="s"), \
+                mock.patch.object(bc.e11, "load_frozen_spec", return_value=(None, bc.FROZEN_THRESHOLD, [])), \
+                mock.patch.object(bc, "v_prepass", return_value=(cov, {"a": {"p1"}})), mock.patch.object(bc, "collect_rows", return_value=rows), \
+                mock.patch.object(bc, "adapter_no_v_pools", return_value={"p1"}), mock.patch.object(bc, "log_tries") as lt:
+            self.assertEqual(bc.main(["--view-dir", "/x", "--out-dir", d, "--tries-log", str(Path(d) / "t.jsonl")]), 2)
+            lt.assert_not_called()
+            self.assertFalse((Path(d) / "report.json").exists())
+
+    def test_vmap_sha_pinned_and_canonical_path_absolute(self):
+        self.assertEqual(bc.VMAP_SHA256, "2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8")
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "m.json").write_text("{}")
+            with self.assertRaises(bc.Refused):
+                bc.check_vmap_sha(Path(d) / "m.json")
+        self.assertTrue(bc.CANONICAL_TRIES.is_absolute())
+        self.assertEqual(bc.CANONICAL_TRIES.name, "tries.jsonl")
+        rep = bc.analyze([_row("a", self.T0 + 1)])
+        self.assertEqual(rep["day_definition"], "counted day = 24 h window from 12:00Z, not the gate's UTC day; bar 2 is gate-shaped, not the gate")
 
 
 class Md5Tests(unittest.TestCase):
