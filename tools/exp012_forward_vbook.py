@@ -87,6 +87,7 @@ RUNS_LEDGER_NAME = "VBOOK_RUNS.jsonl"
 SCHEMA_RUN = "exp012_forward_vbook_run_v1"
 CUTOFF = "2026-10-16T00:00:00Z"  # a V fetch for the read must start at or after this (module constant only; tests patch it)
 TAGS = ("pumpswap_pools", "no_v_pools", "zero_v_pools")
+LP_TAGS = ("entry_slot", "exit_slot", "last_slot")  # optional on a row; required once --lphist is given
 VALIDATION_REMINDER = "Am.4 s5 validation must also pass (`exp012_forward_vmap validate`)"
 
 
@@ -96,12 +97,21 @@ VALIDATION_REMINDER = "Am.4 s5 validation must also pass (`exp012_forward_vmap v
 def tracked_call(inner: Callable[..., Any], *args: Any, **kw: Any) -> Any:
     """Run the worker `inner`, with each row it scores also carrying the PumpSwap pools its mint printed on
     (`pumpswap_pools`), which of those have no V (`no_v_pools`) and which have V <= 0 (`zero_v_pools`; the name is kept, it means V <= 0: parse_virtual is signed, and the V0 = 0 pools carry a small negative V that the adapter prices on the vault). Runs inside the adapter's patch, so
-    `eem.print_from_trade_row` is already the V wrapper; both wrappers here are restored on exit."""
+    `eem.print_from_trade_row` is already the V wrapper; both wrappers here are restored on exit.
+
+    LP tags (Amendment 5 s7(c)): `entry_slot` (slot of the tape row the entry fill is priced from, None if no entry fill),
+    `exit_slot` (same for the exit fill, None if none) and `last_slot` (the last slot the mint printed in the worker's tape,
+    the exit slot of a trade with no exit fill)."""
+    import tools.exploration_exits as ee
+
     vmap, _mode = ad._cached_vmap()
     seen: dict[str, set[str]] = {}
     no_v: dict[str, set[str]] = {}
     zero_v: dict[str, set[str]] = {}
+    last_slot: dict[str, int] = {}
+    ctx: dict[str, Any] = {"cur": None, "specs": {}}
     inner_print, inner_score = eem.print_from_trade_row, eem.score_one
+    inner_eval, inner_sell = eem.eval_spec, ee._one_sell_close
 
     def tracked_print(row: dict[str, Any]) -> Any:
         if row.get("venue") == "pumpswap":
@@ -112,21 +122,39 @@ def tracked_call(inner: Callable[..., Any], *args: Any, **kw: Any) -> Any:
                 no_v.setdefault(mint, set()).add(pid)
             elif vmap.get(pool) <= 0:  # V <= 0, not == 0: signed decode, same test as the adapter's vault-only branch
                 zero_v.setdefault(mint, set()).add(pid)
-        return inner_print(row)
+        res = inner_print(row)
+        if res is not None and isinstance(row.get("mint"), str):
+            sl = int(res[1].slot)
+            if sl > last_slot.get(row["mint"], -1):
+                last_slot[row["mint"]] = sl
+        return res
+
+    def tracked_eval(spec: Any, fills: Any, idx: int, *a: Any, **k: Any) -> Any:
+        rec = {"entry": fills[idx].slot if idx >= 0 else None, "exit": None}
+        ctx["cur"] = ctx["specs"][spec["id"]] = rec
+        return inner_eval(spec, fills, idx, *a, **k)
+
+    def tracked_sell(fills: Any, state_idx: int, *a: Any, **k: Any) -> Any:
+        if ctx["cur"] is not None and state_idx >= 0:
+            ctx["cur"]["exit"] = fills[state_idx].slot
+        return inner_sell(fills, state_idx, *a, **k)
 
     def tracked_score(mint_id: str, *a: Any, **k: Any) -> list[dict[str, Any]]:
+        ctx["cur"], ctx["specs"] = None, {}
         rows = inner_score(mint_id, *a, **k)
         for r in rows:
             r["pumpswap_pools"] = sorted(seen.get(mint_id, ()))
             r["no_v_pools"] = sorted(no_v.get(mint_id, ()))
             r["zero_v_pools"] = sorted(zero_v.get(mint_id, ()))
+            rec = ctx["specs"].get(r["spec"], {})
+            r["entry_slot"], r["exit_slot"], r["last_slot"] = rec.get("entry"), rec.get("exit"), last_slot.get(mint_id)
         return rows
 
-    eem.print_from_trade_row, eem.score_one = tracked_print, tracked_score
+    eem.print_from_trade_row, eem.score_one, eem.eval_spec, ee._one_sell_close = tracked_print, tracked_score, tracked_eval, tracked_sell
     try:
         return inner(*args, **kw)
     finally:
-        eem.print_from_trade_row, eem.score_one = inner_print, inner_score
+        eem.print_from_trade_row, eem.score_one, eem.eval_spec, ee._one_sell_close = inner_print, inner_score, inner_eval, inner_sell
 
 
 def _tracked_tagged(*args: Any, **kw: Any) -> Any:
@@ -314,6 +342,9 @@ def window_rows(rows: Sequence[dict[str, Any]], threshold: float, lo: int, hi: i
                 raise Refused([f"row mint {r['mint']} mig_ms {r['mig_ms']} has no {missing} tag(s): the V-contact tracking did not run; refusing (fail closed)"])
             for t in TAGS:
                 row[t] = list(r[t])
+            for t in LP_TAGS:
+                if t in r:
+                    row[t] = r[t]
             out.append(row)
     return sorted(out, key=lambda x: (x["mig_ms"], x["mint"]))
 
@@ -396,7 +427,7 @@ def compare_modes(v: dict[str, Any], vault: dict[str, Any]) -> dict[str, Any]:
 
 def gate_block(rows: Sequence[dict[str, Any]], runs: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """(A)'s own `build_report` on these rows, without the per-run clocks that only describe (A)."""
-    return fw.build_report([{k: v for k, v in r.items() if k not in TAGS} for r in rows], runs)
+    return fw.build_report([{k: v for k, v in r.items() if k not in TAGS and k not in LP_TAGS} for r in rows], runs)
 
 
 # --- the run ----------------------------------------------------------------------------
