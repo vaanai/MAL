@@ -1,0 +1,585 @@
+{
+ "observational_only": true,
+ "caveat": "Observational only. Only a live A/B can answer whether a lower fee lands us as early. Any fee change needs a DEC-019 amendment signed off by Vaan and Helm.",
+ "definitions": {
+  "k": "landing slot minus the slot of the 'complete' event (migration slot m); fetched k = 0..16",
+  "our_equiv_lamports": "ceil(cu_price * 250000 / 1e6), 250000 = DEFAULT_BUY_CU_LIMIT of the probe; leaders order by fee per CU, so (b) and (c) bucket on this. Raw priority lamports are report-only (a)",
+  "raw_priority": "ceil(cu_price * cu_limit / 1e6); limit defaults to 200k per non-ComputeBudget instruction when unset",
+  "has_tip": "the buy's signer sent a transfer to a known tip account in ANY successful tx of the same slot",
+  "scope": "successful top-level PumpSwap buy / buy_exact_quote_in instructions on the migrated mint; buys via a router/CPI are not seen",
+  "p_land": "P(k <= 6) among each wallet's first buy per mint, conditional on that buy landing within k <= 16; wallets that never landed in the window are not in the denominator. Late landers (k 9..16) are counted per bucket",
+  "first_buy_tip_status": "a wallet's tip status is that of its first buy",
+  "no_price": "buys with no ComputeBudget price (cu_price 0) are excluded from the fee buckets in (a), (b), (c) and from the (d) ordering; they are reported on their own in (e)",
+  "tip_data": "per-slot tip map holds signer -> tipped and service names only; no lamport amounts are stored"
+ },
+ "tip_detection": {
+  "services_listed": {
+   "jito": {
+    "n_accounts": 8,
+    "source": "https://docs.jito.wtf/lowlatencytxnsend/"
+   },
+   "helius_sender": {
+    "n_accounts": 10,
+    "source": "https://www.helius.dev/docs/sending-transactions/sender"
+   }
+  },
+  "services_NOT_listed_no_sourced_address": [
+   "nozomi_temporal",
+   "bloxroute",
+   "0slot",
+   "nextblock"
+  ],
+  "consequence": "a tip paid through an unlisted service is not detected, so no-tip is an upper bound on truly tip-free buys"
+ },
+ "counts": {
+  "migrations": 2367,
+  "buys": 28623,
+  "first_buys": 26983,
+  "first_buys_no_tip": 20591,
+  "slots_fetched": 37912,
+  "slots_missing": 0,
+  "slots_skipped": 40
+ },
+ "a_fee_by_k": {
+  "0": {
+   "n": 989,
+   "n_no_price_excluded": 291,
+   "n_with_tip": 152,
+   "our_equiv_p10": 1640.0,
+   "our_equiv_p50": 10000.0,
+   "our_equiv_p90": 1021937.200000005,
+   "no_tip_our_equiv_p10": 1083.400000000012,
+   "no_tip_our_equiv_p50": 10000.0,
+   "no_tip_our_equiv_p90": 332414.8,
+   "raw_priority_p10": 1001.0,
+   "raw_priority_p50": 4600.0,
+   "raw_priority_p90": 1100000.0
+  },
+  "1": {
+   "n": 1711,
+   "n_no_price_excluded": 455,
+   "n_with_tip": 222,
+   "our_equiv_p10": 10000.0,
+   "our_equiv_p50": 56170.0,
+   "our_equiv_p90": 1388889.0,
+   "no_tip_our_equiv_p10": 10000.0,
+   "no_tip_our_equiv_p50": 56170.0,
+   "no_tip_our_equiv_p90": 375000.0,
+   "raw_priority_p10": 4600.0,
+   "raw_priority_p50": 50778.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "2": {
+   "n": 1884,
+   "n_no_price_excluded": 364,
+   "n_with_tip": 278,
+   "our_equiv_p10": 12500.0,
+   "our_equiv_p50": 56170.0,
+   "our_equiv_p90": 375000.0,
+   "no_tip_our_equiv_p10": 22984.0,
+   "no_tip_our_equiv_p50": 56170.0,
+   "no_tip_our_equiv_p90": 291383.5,
+   "raw_priority_p10": 20778.0,
+   "raw_priority_p50": 50778.0,
+   "raw_priority_p90": 309912.00000000064
+  },
+  "3": {
+   "n": 1783,
+   "n_no_price_excluded": 359,
+   "n_with_tip": 308,
+   "our_equiv_p10": 10000.0,
+   "our_equiv_p50": 56170.0,
+   "our_equiv_p90": 625000.0,
+   "no_tip_our_equiv_p10": 10000.0,
+   "no_tip_our_equiv_p50": 56170.0,
+   "no_tip_our_equiv_p90": 375000.0,
+   "raw_priority_p10": 4600.0,
+   "raw_priority_p50": 50778.0,
+   "raw_priority_p90": 636000.0
+  },
+  "4": {
+   "n": 2050,
+   "n_no_price_excluded": 358,
+   "n_with_tip": 527,
+   "our_equiv_p10": 10000.0,
+   "our_equiv_p50": 56170.0,
+   "our_equiv_p90": 1000000.0,
+   "no_tip_our_equiv_p10": 10000.0,
+   "no_tip_our_equiv_p50": 56170.0,
+   "no_tip_our_equiv_p90": 500000.0,
+   "raw_priority_p10": 4600.0,
+   "raw_priority_p50": 50778.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "5": {
+   "n": 2007,
+   "n_no_price_excluded": 211,
+   "n_with_tip": 475,
+   "our_equiv_p10": 10000.0,
+   "our_equiv_p50": 56170.0,
+   "our_equiv_p90": 641387.200000002,
+   "no_tip_our_equiv_p10": 10000.0,
+   "no_tip_our_equiv_p50": 50000.0,
+   "no_tip_our_equiv_p90": 500000.0,
+   "raw_priority_p10": 5000.0,
+   "raw_priority_p50": 50778.0,
+   "raw_priority_p90": 599999.0
+  },
+  "6": {
+   "n": 1883,
+   "n_no_price_excluded": 149,
+   "n_with_tip": 414,
+   "our_equiv_p10": 10000.0,
+   "our_equiv_p50": 52500.0,
+   "our_equiv_p90": 833334.0,
+   "no_tip_our_equiv_p10": 10000.0,
+   "no_tip_our_equiv_p50": 29167.0,
+   "no_tip_our_equiv_p90": 625000.0,
+   "raw_priority_p10": 5909.600000000045,
+   "raw_priority_p50": 50000.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "7": {
+   "n": 1696,
+   "n_no_price_excluded": 88,
+   "n_with_tip": 414,
+   "our_equiv_p10": 10000.0,
+   "our_equiv_p50": 41667.0,
+   "our_equiv_p90": 833334.0,
+   "no_tip_our_equiv_p10": 10000.0,
+   "no_tip_our_equiv_p50": 25000.0,
+   "no_tip_our_equiv_p90": 833334.0,
+   "raw_priority_p10": 10000.0,
+   "raw_priority_p50": 45000.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "8": {
+   "n": 1767,
+   "n_no_price_excluded": 91,
+   "n_with_tip": 625,
+   "our_equiv_p10": 10000.0,
+   "our_equiv_p50": 37500.0,
+   "our_equiv_p90": 833334.0,
+   "no_tip_our_equiv_p10": 10000.0,
+   "no_tip_our_equiv_p50": 41667.0,
+   "no_tip_our_equiv_p90": 833334.0,
+   "raw_priority_p10": 10000.0,
+   "raw_priority_p50": 30000.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "9": {
+   "n": 1326,
+   "n_no_price_excluded": 75,
+   "n_with_tip": 372,
+   "our_equiv_p10": 10000.0,
+   "our_equiv_p50": 83334.0,
+   "our_equiv_p90": 960577.0,
+   "no_tip_our_equiv_p10": 10000.0,
+   "no_tip_our_equiv_p50": 83334.0,
+   "no_tip_our_equiv_p90": 1091475.4,
+   "raw_priority_p10": 10000.0,
+   "raw_priority_p50": 100000.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "10": {
+   "n": 1205,
+   "n_no_price_excluded": 75,
+   "n_with_tip": 394,
+   "our_equiv_p10": 8334.0,
+   "our_equiv_p50": 109148.0,
+   "our_equiv_p90": 1091382.2,
+   "no_tip_our_equiv_p10": 8654.0,
+   "no_tip_our_equiv_p50": 109145.0,
+   "no_tip_our_equiv_p90": 1666667.0,
+   "raw_priority_p10": 10000.0,
+   "raw_priority_p50": 100000.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "11": {
+   "n": 1168,
+   "n_no_price_excluded": 67,
+   "n_with_tip": 377,
+   "our_equiv_p10": 8334.0,
+   "our_equiv_p50": 109150.5,
+   "our_equiv_p90": 1091303.1,
+   "no_tip_our_equiv_p10": 8334.0,
+   "no_tip_our_equiv_p50": 109141.0,
+   "no_tip_our_equiv_p90": 1091536.0,
+   "raw_priority_p10": 5000.0,
+   "raw_priority_p50": 100000.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "12": {
+   "n": 1192,
+   "n_no_price_excluded": 54,
+   "n_with_tip": 404,
+   "our_equiv_p10": 8334.0,
+   "our_equiv_p50": 109148.5,
+   "our_equiv_p90": 963385.0000000072,
+   "no_tip_our_equiv_p10": 8334.0,
+   "no_tip_our_equiv_p50": 109126.5,
+   "no_tip_our_equiv_p90": 1545334.3,
+   "raw_priority_p10": 10000.0,
+   "raw_priority_p50": 100000.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "13": {
+   "n": 1240,
+   "n_no_price_excluded": 63,
+   "n_with_tip": 404,
+   "our_equiv_p10": 8334.0,
+   "our_equiv_p50": 109149.5,
+   "our_equiv_p90": 973323.9000000025,
+   "no_tip_our_equiv_p10": 8334.0,
+   "no_tip_our_equiv_p50": 109143.0,
+   "no_tip_our_equiv_p90": 1091525.0,
+   "raw_priority_p10": 10000.0,
+   "raw_priority_p50": 100000.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "14": {
+   "n": 1246,
+   "n_no_price_excluded": 78,
+   "n_with_tip": 360,
+   "our_equiv_p10": 5682.0,
+   "our_equiv_p50": 83334.0,
+   "our_equiv_p90": 833334.0,
+   "no_tip_our_equiv_p10": 5682.0,
+   "no_tip_our_equiv_p50": 83334.0,
+   "no_tip_our_equiv_p90": 833334.0,
+   "raw_priority_p10": 5000.0,
+   "raw_priority_p50": 100000.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "15": {
+   "n": 1234,
+   "n_no_price_excluded": 91,
+   "n_with_tip": 348,
+   "our_equiv_p10": 8334.0,
+   "our_equiv_p50": 83334.0,
+   "our_equiv_p90": 833334.0,
+   "no_tip_our_equiv_p10": 8334.0,
+   "no_tip_our_equiv_p50": 83334.0,
+   "no_tip_our_equiv_p90": 1091189.0,
+   "raw_priority_p10": 10000.0,
+   "raw_priority_p50": 100000.0,
+   "raw_priority_p90": 1000000.0
+  },
+  "16": {
+   "n": 1268,
+   "n_no_price_excluded": 105,
+   "n_with_tip": 353,
+   "our_equiv_p10": 7397.000000000005,
+   "our_equiv_p50": 109150.5,
+   "our_equiv_p90": 861110.0,
+   "no_tip_our_equiv_p10": 5682.0,
+   "no_tip_our_equiv_p50": 109156.0,
+   "no_tip_our_equiv_p90": 1091377.4,
+   "raw_priority_p10": 5000.0,
+   "raw_priority_p50": 100000.0,
+   "raw_priority_p90": 1000000.0
+  }
+ },
+ "b_early_buyer_fee_shares": {
+  "no_tip": {
+   "role": "DECIDING",
+   "n": 9931,
+   "le150k": 0.8021347296344778,
+   "le250k": 0.8289195448595308,
+   "le500k": 0.9166247105024671
+  },
+  "with_tip": {
+   "role": "context only",
+   "n": 2376,
+   "le150k": 0.6106902356902357,
+   "le250k": 0.6948653198653199,
+   "le500k": 0.7445286195286195
+  },
+  "all": {
+   "role": "context only",
+   "n": 12307,
+   "le150k": 0.7651742910538718,
+   "le250k": 0.8030389209393028,
+   "le500k": 0.8833996912326318
+  }
+ },
+ "c_p_land_by_fee_bucket": {
+  "no_tip": {
+   "role": "DECIDING",
+   "buckets": {
+    "le150k": {
+     "n": 13049,
+     "n_k_le6": 7838,
+     "n_k_7_8": 1618,
+     "n_late_k_9_16": 3593,
+     "p": 0.6006590543336654,
+     "share_late": 0.2753467698674228,
+     "ci90": [
+      0.5872821937443806,
+      0.6130056827094705
+     ],
+     "share_late_ci90": [
+      0.26404590617958373,
+      0.2886325811333921
+     ],
+     "boot_draws_defined": 1000
+    },
+    "150k_250k": {
+     "n": 982,
+     "n_k_le6": 247,
+     "n_k_7_8": 114,
+     "n_late_k_9_16": 621,
+     "p": 0.2515274949083503,
+     "share_late": 0.6323828920570265,
+     "ci90": [
+      0.2245912236120458,
+      0.2788706166626727
+     ],
+     "share_late_ci90": [
+      0.6024892400415858,
+      0.6616795072738912
+     ],
+     "boot_draws_defined": 1000
+    },
+    "250k_500k": {
+     "n": 1725,
+     "n_k_le6": 851,
+     "n_k_7_8": 251,
+     "n_late_k_9_16": 623,
+     "p": 0.49333333333333335,
+     "share_late": 0.3611594202898551,
+     "ci90": [
+      0.47003587746271797,
+      0.5181880023038051
+     ],
+     "share_late_ci90": [
+      0.336725462199355,
+      0.3834642012833502
+     ],
+     "boot_draws_defined": 1000
+    },
+    "gt500k": {
+     "n": 2332,
+     "n_k_le6": 796,
+     "n_k_7_8": 308,
+     "n_late_k_9_16": 1228,
+     "p": 0.34133790737564323,
+     "share_late": 0.5265866209262435,
+     "ci90": [
+      0.3172308629141949,
+      0.3641629694510039
+     ],
+     "share_late_ci90": [
+      0.5033105305290736,
+      0.5505362070804244
+     ],
+     "boot_draws_defined": 1000
+    }
+   }
+  },
+  "with_tip": {
+   "role": "context only",
+   "buckets": {
+    "le150k": {
+     "n": 3813,
+     "n_k_le6": 1435,
+     "n_k_7_8": 685,
+     "n_late_k_9_16": 1693,
+     "p": 0.3763440860215054,
+     "share_late": 0.44400734329923947,
+     "ci90": [
+      0.35828540204108666,
+      0.3936327215101256
+     ],
+     "share_late_ci90": [
+      0.4276953343576831,
+      0.46189028228954193
+     ],
+     "boot_draws_defined": 1000
+    },
+    "150k_250k": {
+     "n": 482,
+     "n_k_le6": 200,
+     "n_k_7_8": 107,
+     "n_late_k_9_16": 175,
+     "p": 0.4149377593360996,
+     "share_late": 0.3630705394190871,
+     "ci90": [
+      0.3773177056105058,
+      0.45420699622026234
+     ],
+     "share_late_ci90": [
+      0.32758433689879574,
+      0.398387716985278
+     ],
+     "boot_draws_defined": 1000
+    },
+    "250k_500k": {
+     "n": 236,
+     "n_k_le6": 111,
+     "n_k_7_8": 11,
+     "n_late_k_9_16": 114,
+     "p": 0.4703389830508475,
+     "share_late": 0.4830508474576271,
+     "ci90": [
+      0.41452991452991456,
+      0.5252945184600764
+     ],
+     "share_late_ci90": [
+      0.43081320122653716,
+      0.5377538185085354
+     ],
+     "boot_draws_defined": 1000
+    },
+    "gt500k": {
+     "n": 1445,
+     "n_k_le6": 599,
+     "n_k_7_8": 198,
+     "n_late_k_9_16": 648,
+     "p": 0.41453287197231836,
+     "share_late": 0.44844290657439445,
+     "ci90": [
+      0.38580278689223163,
+      0.4434536749482401
+     ],
+     "share_late_ci90": [
+      0.4197047705943691,
+      0.47494825708061
+     ],
+     "boot_draws_defined": 1000
+    }
+   }
+  },
+  "all": {
+   "role": "context only",
+   "buckets": {
+    "le150k": {
+     "n": 16862,
+     "n_k_le6": 9273,
+     "n_k_7_8": 2303,
+     "n_late_k_9_16": 5286,
+     "p": 0.5499347645593643,
+     "share_late": 0.3134859447277903,
+     "ci90": [
+      0.5372043055319098,
+      0.5627636374581955
+     ],
+     "share_late_ci90": [
+      0.30136577041011825,
+      0.3255096944666225
+     ],
+     "boot_draws_defined": 1000
+    },
+    "150k_250k": {
+     "n": 1464,
+     "n_k_le6": 447,
+     "n_k_7_8": 221,
+     "n_late_k_9_16": 796,
+     "p": 0.305327868852459,
+     "share_late": 0.5437158469945356,
+     "ci90": [
+      0.2818955695008063,
+      0.328400034307128
+     ],
+     "share_late_ci90": [
+      0.5202473193846445,
+      0.5688887627712318
+     ],
+     "boot_draws_defined": 1000
+    },
+    "250k_500k": {
+     "n": 1961,
+     "n_k_le6": 962,
+     "n_k_7_8": 262,
+     "n_late_k_9_16": 737,
+     "p": 0.49056603773584906,
+     "share_late": 0.37582865884752675,
+     "ci90": [
+      0.4688364036884222,
+      0.5127238621363773
+     ],
+     "share_late_ci90": [
+      0.3547530373212308,
+      0.39703740719588804
+     ],
+     "boot_draws_defined": 1000
+    },
+    "gt500k": {
+     "n": 3777,
+     "n_k_le6": 1395,
+     "n_k_7_8": 506,
+     "n_late_k_9_16": 1876,
+     "p": 0.369340746624305,
+     "share_late": 0.49669049510193275,
+     "ci90": [
+      0.35013375316881207,
+      0.3905362902409063
+     ],
+     "share_late_ci90": [
+      0.477164360003193,
+      0.5166407707944548
+     ],
+     "boot_draws_defined": 1000
+    }
+   }
+  }
+ },
+ "c_bootstrap": {
+  "draws": 1000,
+  "seed": 1,
+  "unit": "migration (mint)",
+  "interval": "5th-95th percentile"
+ },
+ "d_within_slot_fee_order": {
+  "no_tip": {
+   "slots_with_2plus_buys": 4541,
+   "pairs_unequal_fee": 11083,
+   "share_higher_fee_earlier": 0.6135522872868356,
+   "mean_spearman_fee_rank_vs_position": 0.20594027377381804,
+   "slots_spearman_defined": 3361
+  },
+  "all": {
+   "slots_with_2plus_buys": 6316,
+   "pairs_unequal_fee": 20961,
+   "share_higher_fee_earlier": 0.6018319736653786,
+   "mean_spearman_fee_rank_vs_position": 0.19821623867924626,
+   "slots_spearman_defined": 5084
+  }
+ },
+ "e_no_price": {
+  "buys": 2974,
+  "first_buys": 2919,
+  "k_distribution_buys": {
+   "0": 291,
+   "1": 455,
+   "2": 364,
+   "3": 359,
+   "4": 358,
+   "5": 211,
+   "6": 149,
+   "7": 88,
+   "8": 91,
+   "9": 75,
+   "10": 75,
+   "11": 67,
+   "12": 54,
+   "13": 63,
+   "14": 78,
+   "15": 91,
+   "16": 105
+  },
+  "first_buys_k_le6": 2177,
+  "first_buys_late_k_9_16": 568,
+  "tipped_share_buys": 0.1452589105581708,
+  "tipped_share_first_buys": 0.14251455978074684
+ },
+ "fetch_status": {
+  "state": "complete",
+  "torn_bytes_removed": 0,
+  "fetched": 37912,
+  "resumed": 0,
+  "skipped_slots": 40,
+  "errors": 0,
+  "credits_used": 37912
+ }
+}
