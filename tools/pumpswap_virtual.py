@@ -6,7 +6,7 @@ Every PumpSwap pool carries V (about 17.58 SOL on migrated pump.fun pools) in it
 pool -> V map. It never prints the RPC URL (`redact_rpc_url`); the key is read inside Python from the
 walker env file.
 
-A pool whose account is closed, unreadable, or too short has V = None in the map and is listed by
+A pool whose account is closed, too short, or has a V outside i64 has V = None in the map and is listed by
 `missing_pools`. It is never silently 0.
 
 The map file is JSON: {"fetched_utc": ..., "n_pools": ..., "calls": ..., "v": {pool: int|null}}.
@@ -29,17 +29,39 @@ BATCH = 100  # getMultipleAccounts limit
 MAX_RPS = 5.0
 
 
-def parse_virtual(data: bytes) -> int | None:
-    """V from raw pool-account bytes, or None when the account is not a readable PumpSwap pool."""
-    from tools import pumpswap_tx as tx
+V_OFFSET = 245  # pool account: V is a signed value at 245..261 (i128 LE); equals i64 at 245..253 today
+PENDING_A_OFFSET, PENDING_B_OFFSET, DETAIL_MIN_LEN = 271, 279, 287  # two u64 counters A, B (meaning is a guess: pending fees / cashback)
+_I64_MIN, _I64_MAX = -(2**63), 2**63 - 1
 
-    try:
-        v = tx.parse_pool_account(data).get("virtual_quote_reserves")
-    except ValueError:
-        return None
-    if not isinstance(v, int) or v >= 2**63:  # a u64 near 2**64 is a negative i64 / a different layout: unreadable, not a V
-        return None
-    return int(v)
+
+def parse_virtual_detail(data: bytes) -> dict[str, int | None]:
+    """{"v", "pending", "v_base"} from raw pool-account bytes.
+
+    v is the stored signed V: i128 LE at 245..261 when the account has those bytes, else i64 at 245..253;
+    None only when the account is too short or the value does not fit in i64. A and B (u64 at 271..279 and
+    279..287) are read only when the account is at least 287 bytes; pending = A + B and v_base = v + A + B.
+    On every account seen (561), stored V = V0 - A - B: V0 (= v_base) is constant per pool, v is not.
+    Negative V is a real value (the 321 'null' pools are V ~ 0 pools), not an unreadable account."""
+    out: dict[str, int | None] = {"v": None, "pending": None, "v_base": None}
+    if len(data) >= V_OFFSET + 16:
+        v = int.from_bytes(data[V_OFFSET : V_OFFSET + 16], "little", signed=True)
+    elif len(data) >= V_OFFSET + 8:
+        v = int.from_bytes(data[V_OFFSET : V_OFFSET + 8], "little", signed=True)
+    else:
+        return out
+    if not _I64_MIN <= v <= _I64_MAX:
+        return out
+    out["v"] = v
+    if len(data) >= DETAIL_MIN_LEN:
+        pending = int.from_bytes(data[PENDING_A_OFFSET : PENDING_A_OFFSET + 8], "little") + int.from_bytes(data[PENDING_B_OFFSET : PENDING_B_OFFSET + 8], "little")
+        out["pending"] = pending
+        out["v_base"] = v + pending
+    return out
+
+
+def parse_virtual(data: bytes) -> int | None:
+    """Signed V from raw pool-account bytes (see `parse_virtual_detail`), or None when too short / out of i64."""
+    return parse_virtual_detail(data)["v"]
 
 
 def _rpc_url(env_file: str = DEFAULT_ENV_FILE) -> str:

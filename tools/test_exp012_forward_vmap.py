@@ -73,8 +73,12 @@ def run(argv: list[str]) -> tuple[int, str, str]:
     return rc, out.getvalue(), err.getvalue()
 
 
-def write_map(path: Path, v: dict) -> None:
+def write_map(path: Path, v: dict, detail: dict | None = None) -> None:
+    """A map plus its detail sidecar (default: no pending, v_base == v)."""
     pv.save_map(path, v, 0)
+    if detail is None:
+        detail = {p: {"pending": 0, "v_base": x} for p, x in v.items() if x is not None}
+    path.with_name(path.name + ".detail.json").write_text(json.dumps(detail))
 
 
 class PoolsTests(unittest.TestCase):
@@ -268,6 +272,18 @@ class FetchTests(unittest.TestCase):
         self.assertRegex(fj["fetch_started_utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(pv.load_map(self.td / "v.json"), {"A": 9, "B": None, "C": None, "D": 4})
 
+    def test_detail_sidecar_and_sha(self) -> None:
+        def fetch(chunk):
+            res = {"A": (-5, None, {"pending": 12, "v_base": 7}), "B": (None, "closed", {}), "C": (None, "unreadable"), "D": (4, None, {"pending": 0, "v_base": 4})}
+            return [res[p] for p in chunk]
+
+        rc, _, _ = self.do(True, fetch)
+        self.assertEqual(rc, 0)
+        det = json.loads((self.td / "v.json.detail.json").read_text())
+        self.assertEqual(det, {"A": {"pending": 12, "v_base": 7}, "D": {"pending": 0, "v_base": 4}})
+        self.assertEqual(json.loads((self.td / "v.json.fetch.json").read_text())["detail_sha256"], sha(self.td / "v.json.detail.json"))
+        self.assertEqual(pv.load_map(self.td / "v.json")["A"], -5)
+
     def test_new_refuses_existing_map(self) -> None:
         write_map(self.td / "v.json", {"A": 1})
         with self.assertRaises(vm.Refused):
@@ -324,18 +340,18 @@ class MergeTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._td.cleanup()
 
-    def final(self, v: dict, reasons: dict | None = None, fetch_doc: dict | None = None) -> str:
-        write_map(self.tmp / "final.json", v)
+    def final(self, v: dict, reasons: dict | None = None, fetch_doc: dict | None = None, detail: dict | None = None) -> str:
+        write_map(self.tmp / "final.json", v, detail)
         (self.tmp / "final.json.reasons.json").write_text(json.dumps(reasons or {}))
         doc = {"new": True, "fetch_started_utc": "2026-10-11T00:00:00Z"} if fetch_doc is None else fetch_doc
         (self.tmp / "final.json.fetch.json").write_text(json.dumps(doc))
         return str(self.tmp / "final.json")
 
-    def snap(self, v: dict, ledger: bool = True) -> str:
+    def snap(self, v: dict, ledger: bool = True, detail: dict | None = None) -> str:
         """A snapshot made with the real snapshot command (so it is in snapshots.jsonl)."""
         self.n_snap += 1
         src = self.tmp / f"src{self.n_snap}.json"
-        write_map(src, v)
+        write_map(src, v, detail)
         ns = argparse.Namespace(vmap=str(src), out=str(self.tmp / "snaps"))
         with redirect_stdout(StringIO()):
             vm.cmd_snapshot(ns, now=datetime(2026, 10, 6, 0, 0, self.n_snap, tzinfo=timezone.utc))
@@ -353,8 +369,14 @@ class MergeTests(unittest.TestCase):
         if fj.is_file():  # stand in for a fetch over exactly this pool set, unless the test set its own
             try:
                 doc = json.loads(fj.read_text())
-                if isinstance(doc, dict) and "pools_sha256" not in doc:
-                    fj.write_text(json.dumps({**doc, "pools_sha256": sha(Path(pools))}))
+                if isinstance(doc, dict):
+                    add = {}
+                    if "pools_sha256" not in doc:
+                        add["pools_sha256"] = sha(Path(pools))
+                    dj = Path(final + ".detail.json")
+                    if "detail_sha256" not in doc and dj.is_file():
+                        add["detail_sha256"] = sha(dj)
+                    fj.write_text(json.dumps({**doc, **add}))
             except ValueError:
                 pass
         argv = ["merge", "--final", final, "--pools", pools, "--out", str(out)]
@@ -441,7 +463,7 @@ class MergeTests(unittest.TestCase):
         self.assertFalse(out.exists())
 
     def test_corrupt_sidecars_are_clean_refusals(self) -> None:
-        for name, content in (("fetch.json", "not json{"), ("fetch.json", "[1]"), ("reasons.json", "oops"), ("reasons.json", "[]")):
+        for name, content in (("fetch.json", "not json{"), ("fetch.json", "[1]"), ("reasons.json", "oops"), ("reasons.json", "[]"), ("detail.json", "oops")):
             with self.subTest(name=name, content=content):
                 final = self.final({"A": 1})
                 s1 = self.snap({"A": 1})
@@ -502,6 +524,118 @@ class MergeTests(unittest.TestCase):
         rc, _, _ = self.merge(final, [s1], self.pools(["A"]), out)
         self.assertEqual(rc, 2)
         self.assertEqual(out.read_text(), "keep")
+
+
+class SignedVTests(unittest.TestCase):
+    @staticmethod
+    def account(v: int, a: int = 0, b: int = 0, n: int = 300, wide: bool = True) -> bytes:
+        raw = bytearray(n)
+        raw[245:261] = v.to_bytes(16, "little", signed=True) if wide else v.to_bytes(8, "little", signed=True) + bytes(8)
+        raw[271:279] = a.to_bytes(8, "little")
+        raw[279:287] = b.to_bytes(8, "little")
+        return bytes(raw)
+
+    def test_signed_detail_300_and_301_bytes(self) -> None:
+        for n in (300, 301):
+            d = pv.parse_virtual_detail(self.account(-172_362, 4_659, 167_703, n=n))
+            self.assertEqual(d, {"v": -172_362, "pending": 172_362, "v_base": 0}, n)
+            self.assertEqual(pv.parse_virtual(self.account(-172_362, 4_659, 167_703, n=n)), -172_362)
+        d = pv.parse_virtual_detail(self.account(17_584_441_196, 3_146, 61_346))
+        self.assertEqual((d["v"], d["pending"], d["v_base"]), (17_584_441_196, 64_492, 17_584_505_688))
+
+    def test_i64_only_account_and_short_accounts(self) -> None:
+        raw = self.account(-5, wide=False)[:253]
+        self.assertEqual(pv.parse_virtual_detail(raw), {"v": -5, "pending": None, "v_base": None})
+        self.assertEqual(pv.parse_virtual_detail(self.account(7)[:270])["pending"], None)  # < 287: A and B not read
+        self.assertEqual(pv.parse_virtual_detail(self.account(7)[:252]), {"v": None, "pending": None, "v_base": None})
+        self.assertIsNone(pv.parse_virtual(b"short"))
+
+    def test_value_outside_i64_is_none_and_i64_min_is_signed(self) -> None:
+        raw = bytearray(self.account(0))
+        raw[245:261] = (2**70).to_bytes(16, "little")
+        self.assertIsNone(pv.parse_virtual(bytes(raw)))
+        self.assertEqual(pv.parse_virtual(self.account(-(2**63), wide=True)), -(2**63))
+
+
+class DetailMergeTests(MergeTests):
+    """Reuses MergeTests' helpers (and so re-runs its tests with detail sidecars); adds the detail behaviour."""
+
+    def test_pending_only_change_passes_and_v_base_change_refuses(self) -> None:
+        # same V0 = 1_000: the snapshot saw pending 0 (V 1000), the final fetch saw pending 40 (V 960)
+        final = self.final({"A": 960, "B": None}, {"B": "closed"}, detail={"A": {"pending": 40, "v_base": 1000}})
+        s1 = self.snap({"A": 1000, "B": 777}, detail={"A": {"pending": 0, "v_base": 1000}, "B": {"pending": 3, "v_base": 780}})
+        out = self.tmp / "out.json"
+        rc, stdout, err = self.merge(final, [s1], self.pools(["A", "B"]), out)
+        self.assertEqual(rc, 0, err)
+        got = pv.load_map(out)
+        self.assertEqual((got["A"], got["B"]), (960, 777))  # A keeps the final's v; B copies the snapshot's v
+        meta = json.loads((self.tmp / "out.json.merge.json").read_text())
+        self.assertEqual(meta["n_pending_gt_0.01SOL"], 0)
+        self.assertEqual(meta["sha256"]["final_detail"], sha(self.tmp / "final.json.detail.json"))
+        self.assertEqual(meta["sha256"]["snapshot_details"], [sha(Path(s1 + ".detail.json"))])
+        # now V0 itself differs
+        final2 = self.final({"A": 960}, detail={"A": {"pending": 40, "v_base": 1001}})
+        out2 = self.tmp / "out2.json"
+        rc, _, err = self.merge(final2, [s1], self.pools(["A"]), out2)
+        self.assertEqual(rc, 2)
+        self.assertIn("v_base", err)
+        self.assertFalse(out2.exists())
+
+    def test_snapshots_disagreeing_on_v_base_refused_and_agreeing_with_moving_v_passes(self) -> None:
+        final = self.final({"B": None}, {"B": "closed"})
+        s1 = self.snap({"B": 100}, detail={"B": {"pending": 5, "v_base": 105}})
+        s2 = self.snap({"B": 90}, detail={"B": {"pending": 15, "v_base": 105}})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1, s2], self.pools(["B"]), out)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(pv.load_map(out)["B"], 90)  # the latest snapshot's v
+        s3 = self.snap({"B": 90}, detail={"B": {"pending": 15, "v_base": 106}})
+        rc, _, err = self.merge(final, [s1, s3], self.pools(["B"]), self.tmp / "out3.json")
+        self.assertEqual(rc, 2)
+        self.assertIn("v_base", err)
+
+    def test_pending_guard_counted(self) -> None:
+        big = {"A": {"pending": 10_000_001, "v_base": 20_000_000}, "C": {"pending": 10_000_000, "v_base": 5}}
+        final = self.final({"A": 10_000_000, "C": -9_999_995}, detail=big)
+        s1 = self.snap({"A": 10_000_000, "C": -9_999_995}, detail=big)
+        rc, _, err = self.merge(final, [s1], self.pools(["A", "C"]), self.tmp / "out.json")
+        self.assertEqual(rc, 0, err)
+        meta = json.loads((self.tmp / "out.json.merge.json").read_text())
+        self.assertEqual((meta["n_pending_gt_0.01SOL"], meta["n_with_pending_detail"]), (1, 2))
+
+    def test_missing_detail_sidecars_refuse(self) -> None:
+        final = self.final({"A": 1})
+        s1 = self.snap({"A": 1})
+        (self.tmp / "final.json.detail.json").unlink()
+        rc, _, err = self.merge(final, [s1], self.pools(["A"]), self.tmp / "o1.json")
+        self.assertEqual(rc, 2)
+        self.assertIn("detail", err)
+        final = self.final({"A": 1})
+        os.chmod(s1 + ".detail.json", 0o644)
+        os.unlink(s1 + ".detail.json")
+        rc, _, err = self.merge(final, [s1], self.pools(["A"]), self.tmp / "o2.json")
+        self.assertEqual(rc, 2)
+        self.assertIn("detail", err)
+
+    def test_snapshot_without_source_detail_refused(self) -> None:
+        write_map(self.tmp / "v.json", {"A": 1})
+        (self.tmp / "v.json.detail.json").unlink()
+        with self.assertRaises(vm.Refused):
+            vm.cmd_snapshot(argparse.Namespace(vmap=str(self.tmp / "v.json"), out=str(self.tmp / "s")), now=datetime(2026, 10, 6, tzinfo=timezone.utc))
+
+    def test_ledger_records_detail_sha(self) -> None:
+        s1 = self.snap({"A": 1})
+        rec = json.loads((self.tmp / "snaps" / "snapshots.jsonl").read_text().splitlines()[0])
+        self.assertEqual(rec["detail_sha256"], sha(Path(s1 + ".detail.json")))
+        self.assertEqual(stat.S_IMODE(os.stat(s1 + ".detail.json").st_mode), 0o444)
+
+    def test_tampered_snapshot_detail_refused(self) -> None:
+        final = self.final({"A": 1})
+        s1 = self.snap({"A": 1})
+        os.chmod(s1 + ".detail.json", 0o644)
+        Path(s1 + ".detail.json").write_text(json.dumps({"A": {"pending": 0, "v_base": 2}}))
+        rc, _, err = self.merge(final, [s1], self.pools(["A"]), self.tmp / "o.json")
+        self.assertEqual(rc, 2)
 
 
 class FinalOutDirTests(unittest.TestCase):
