@@ -113,6 +113,15 @@ class VBook(VFx):
         self.assertEqual(done[0]["verdict"], vb.NOT_DECIDABLE)
         self.assertTrue(any("pool-mC" in nv["null_v_pool_ids"] for nv in rep["b_v"]["null_v"].values()))
 
+    def test_negative_v_pool_is_zero_v_in_the_sensitivity_run_too(self) -> None:
+        out, ledger = self.sealed()
+        vmap, sha = self.vmap({**{p: V for p in POOLS}, "pool-mC": -172_362})
+        rep = self.run_v(out, ledger, vmap, sha)
+        nvs = list(rep["b_v"]["null_v"].values())
+        self.assertTrue(any("pool-mC" in nv["zero_v_pool_ids"] for nv in nvs))
+        self.assertTrue(all("pool-mC" not in nv["null_v_pool_ids"] for nv in nvs))
+        self.assertNotEqual(rep["b_v"]["verdict"], vb.NOT_DECIDABLE)
+
     def test_absent_pool_is_not_v_zero(self) -> None:
         out, ledger = self.sealed()
         vmap, sha = self.vmap({p: V for p in POOLS if p != "pool-mE"})
