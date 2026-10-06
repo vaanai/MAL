@@ -965,7 +965,7 @@ class MainTests(unittest.TestCase):
         return u, v_rows, nv_rows
 
     def _guards(self):
-        return {"g1": {"roots": {"fast": Path("/x/a"), "insample": Path("/x/b"), "live": Path("/x/c")}, "view_sha256": {}}, "g2": {"roots": {}, "pool": [], "view_sha256": {}}, "g3": {"walkers": [], "pin_sha256": {}},
+        return {"g1": {"roots": {"fast": Path("/x/a"), "insample": Path("/x/b"), "live": Path("/x/c")}, "view_sha256": {}}, "g2": {"roots": {}, "pool": bc.hours_range(*x.P2_SEALED), "view_sha256": {}}, "g3": {"walkers": x.p3_walkers("/nonexistent-p3"), "pin_sha256": {}},
                 "g4": None, "vmap_sha256": {}, "frozen": {"model_md5": x.MODEL_MD5, "threshold": x.FROZEN_THRESHOLD}, "with_p4": False}
 
     def _patches(self, collect, frozen=None, screen=None, n=None):
@@ -1647,6 +1647,127 @@ class SensitivityIsolationTests(unittest.TestCase):
             self.assertIn(phrase, plan)
         b = x.removed_bias(mk_universe(), [], {"x_score": {}, "x_thr": {}, "score": [], "thr": {"p90": []}}, {"selected": [], "threshold_p90": 0}, [], [], {}, True)
         self.assertEqual(b["scenario"], x.SCENARIO_WORDING)
+
+
+class HardeningTests(unittest.TestCase):
+    def _g(self, p4=False):
+        g = {"g2": {"pool": bc.hours_range(*x.P2_SEALED)}, "g3": {"walkers": x.p3_walkers("/nonexistent-p3")}, "g4": None}
+        if p4:
+            g["g4"] = {"pool": x.block_hours("P4")}
+        return g
+
+    def test_the_real_plans_pass_the_subset_check_for_every_source_with_and_without_p4(self):
+        for p4 in (False, True):
+            counts = x.check_adapter_hours_subset(self._g(p4), 8)
+            self.assertEqual(set(counts), {"P1A", "P1C", "P1B", "P2", "P3"} | ({"P4"} if p4 else set()))
+            ad, pre = x.adapter_hours(self._g(p4), 8), x.prepass_hours(self._g(p4))
+            for tag in ad:
+                self.assertTrue(ad[tag] <= set(pre[tag]), tag)
+        # buffer hours are part of the adapter's hours: P2's first-chunk buffer reads past its home hours
+        self.assertIn("2026-08-15T11", x.adapter_hours(self._g(), 4)["P2"])
+
+    def test_an_adapter_hour_outside_the_scanned_hours_refuses_per_source(self):
+        for tag in ("P1A", "P1C", "P1B", "P2", "P3"):
+            ad = x.adapter_hours(self._g(), 4)
+            ad[tag] = ad[tag] | {"2026-10-02T00"}
+            with mock.patch.object(x, "adapter_hours", return_value=ad), self.assertRaises(x.Refused, msg=tag) as cm:
+                x.check_adapter_hours_subset(self._g(), 4)
+            self.assertIn(tag, str(cm.exception))
+        pre = x.prepass_hours(self._g())
+        pre["P3"] = pre["P3"][:-1]  # the pre-pass drops the last hour the adapter will read
+        with mock.patch.object(x, "prepass_hours", return_value=pre), self.assertRaises(x.Refused):
+            x.check_adapter_hours_subset(self._g(), 4)
+
+    def test_vprepass_scans_exactly_prepass_hours(self):
+        cov = {"n": 1, "prints": 1, "missing_fraction": 0.0, "covered": 1, "missing": 0, "missing_pools": 0, "max_missing_fraction": 0.01}
+        seen = {}
+        g = {"g1": {"roots": {"fast": Path("/a"), "insample": Path("/b"), "live": Path("/c")}}, **self._g(False)}
+        g["g2"]["roots"] = {}
+        args = SimpleNamespace(vmap_p1="/m", vmap_p2="/m", vmap_p3="/m", vmap_p4="/m")
+        fake = {t: (object(), ["WRONG"], set()) for t in ("P1A", "P1C", "P1B")}
+
+        def fake_prepass(hours, pool_hours, *a, **k):
+            seen[len(seen)] = list(pool_hours)
+            return cov, {}
+
+        with mock.patch.object(x, "prepass", fake_prepass), mock.patch.object(x, "p1_hour_resolvers", return_value=fake), mock.patch.object(bc, "migrated_mints", return_value=set()):
+            x.vprepass_all(g, args)
+        ph = x.prepass_hours(g)
+        self.assertEqual([seen[i] for i in range(5)], [ph["P1A"], ph["P1C"], ph["P1B"], ph["P2"], ph["P3"]])
+
+    def test_main_refuses_before_started_when_the_adapter_reads_an_unscanned_hour(self):
+        t = MainTests()
+        t.setUp()
+        self.addCleanup(t.doCleanups)
+        ad = x.adapter_hours(t._guards(), 1)
+        ad["P2"] = ad["P2"] | {"2026-08-14T11"}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "run_guards", return_value=t._guards()), mock.patch.object(x, "adapter_hours", return_value=ad), \
+                mock.patch.object(x, "vprepass_all") as pp, mock.patch.object(x, "collect_all") as ca:
+            self.assertEqual(x.main(t._args(d)), 2)
+            pp.assert_not_called()
+            ca.assert_not_called()
+            self.assertFalse((Path(d) / "t.jsonl").exists())
+            self.assertFalse((Path(d) / "canon.jsonl").exists())
+            self.assertFalse((Path(d) / "out" / "RUN.lock").exists())
+
+    def test_removed_row_scoring_error_in_task_outer_drops_the_sensitivity_and_the_config_completes(self):
+        u = mk_universe(False, n_good=2, n_bad=2, seed=5)
+        removed = [mk_urow(900 + i, "2026-09-20", True, random.Random(i)) for i in range(2)]
+        dates = x.pool_dates(False)
+        arrays = x.fit_arrays(u, x.labels(u), dates, removed)
+        real = fz._predict
+
+        def flaky(m, xm):
+            if len(xm) == 2:  # the removed rows only (every real date has 4 rows)
+                raise ValueError("cannot score removed rows")
+            return real(m, xm)
+
+        done = []
+        with mock.patch.object(fz, "_predict", flaky):
+            out = x.run_screen(u, [False] * len(u), x.Runner(arrays, None, 1), False, on_config_done=lambda c, r: done.append(c), configs=("c2",), removed=removed, frozen_removed_sel=[False, False])
+        self.assertEqual(out["statuses"], {"c2": "completed"})
+        self.assertEqual(done, ["c2"])
+        res = out["results"]["c2"]
+        self.assertIn("cannot score removed rows", res["sensitivity_error"])
+        self.assertEqual(res["removed_bias"], {})
+        self.assertIn("bars", res)  # the real config result is intact
+        self.assertEqual(len(res["folds"]), 30)
+
+    def test_removed_row_loop_error_in_nested_oof_is_recorded_not_raised(self):
+        class FakeRunner:
+            def map(self, tasks):
+                return [{"spec": {"date": 0}, "idx": [0, 1], "scores": [0.9, 0.1], "thr": {"p90": 0.5, "p80": 0.4, "p95": 0.6}, "n_inner": 5, "trained": True, "x_idx": ["not-an-int"], "x_scores": [0.7]}]
+
+        n = x.nested_oof(FakeRunner(), "c2", 2, [0])
+        self.assertIn("TypeError", n["x_error"])
+        self.assertEqual((n["x_score"], n["x_thr"]), ({}, {}))  # dropped for this config
+        self.assertEqual(n["score"], [0.9, 0.1])  # the OOF scores are untouched
+        self.assertEqual(n["final_threshold_p90"], 0.9)
+        class OkRunner(FakeRunner):
+            def map(self, tasks):
+                r = super().map(tasks)
+                r[0]["x_idx"] = [2]
+                return r
+
+        ok = x.nested_oof(OkRunner(), "c2", 2, [0])
+        self.assertIsNone(ok["x_error"])
+        self.assertEqual(ok["x_score"], {0: 0.7})
+
+    def test_run_screen_with_a_nested_x_error_never_aborts_and_label_counts_line_is_in_the_result(self):
+        u = mk_universe(False, n_good=3, n_bad=3, seed=11)
+        arrays = x.fit_arrays(u, x.labels(u), x.pool_dates(False))
+        real = x.nested_oof
+
+        def with_error(*a, **k):
+            r = real(*a, **k)
+            r["x_error"] = "ValueError: injected"
+            return r
+
+        with mock.patch.object(x, "nested_oof", with_error):
+            out = x.run_screen(u, [False] * len(u), x.Runner(arrays, None, 1), False, configs=("c2",))
+        self.assertEqual(out["statuses"], {"c2": "completed"})
+        self.assertIn("injected", out["results"]["c2"]["sensitivity_error"])
+        self.assertEqual(out["results"]["c2"]["label_counts"]["n"], len(u))
 
 
 # --- tape cache, worker cap, report-only stats, E1/E2 -------------------------------------------------------------------------

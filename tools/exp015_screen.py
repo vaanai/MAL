@@ -854,7 +854,10 @@ def task_outer(spec: Mapping[str, Any]) -> dict[str, Any]:
         out["scores"] = fz._predict(m, X[te])
         out["trained"] = True
         if len(xe):
-            out["x_scores"] = fz._predict(m, X[xe])
+            try:  # report-only: scoring the removed mints must never abort the config
+                out["x_scores"] = fz._predict(m, X[xe])
+            except Exception as exc:  # noqa: BLE001
+                out["x_error"] = f"{type(exc).__name__}: {exc}"
     return out
 
 
@@ -922,6 +925,7 @@ def nested_oof(runner: Runner, cfg_id: str, n_rows: int, date_ids: Sequence[int]
     pooled: list[float] = []
     x_score: dict[int, float] = {}
     x_thr: dict[int, float] = {}
+    x_errors: list[str] = []
     for r in sorted(res, key=lambda x: x["spec"]["date"]):
         folds.append({"date_idx": r["spec"]["date"], "trained": r["trained"], "n_test": len(r["idx"]), "n_inner_oof": r["n_inner"], "thr_p90": r["thr"].get("p90")})
         if not r["trained"] or r["scores"] is None or not r["thr"]:
@@ -931,10 +935,17 @@ def nested_oof(runner: Runner, cfg_id: str, n_rows: int, date_ids: Sequence[int]
             pooled.append(s)
             for k in thr:
                 thr[k][i] = r["thr"][k]
-        for i, s in zip(r.get("x_idx", []), r.get("x_scores") or []):  # removed mints: scored by this outer fold's model, never pooled
-            x_score[i - n_rows] = s
-            x_thr[i - n_rows] = r["thr"]["p90"]
-    return {"x_score": x_score, "x_thr": x_thr, "score": score, "thr": thr, "folds": folds, "final_threshold_p90": percentile(pooled, THRESHOLD_PCT), "n_pooled_oof": len(pooled)}
+        if r.get("x_error"):
+            x_errors.append(r["x_error"])
+        try:
+            for i, s in zip(r.get("x_idx", []), r.get("x_scores") or []):  # removed mints: scored by this outer fold's model, never pooled
+                x_score[i - n_rows] = s
+                x_thr[i - n_rows] = r["thr"]["p90"]
+        except Exception as exc:  # noqa: BLE001
+            x_errors.append(f"{type(exc).__name__}: {exc}")
+    if x_errors:  # the sensitivity is dropped for this config; the OOF scores above are untouched
+        x_score, x_thr = {}, {}
+    return {"x_error": "; ".join(sorted(set(x_errors))) or None, "x_score": x_score, "x_thr": x_thr, "score": score, "thr": thr, "folds": folds, "final_threshold_p90": percentile(pooled, THRESHOLD_PCT), "n_pooled_oof": len(pooled)}
 
 
 def transfer_selection(runner: Runner, cfg_id: str, n_rows: int, sept_dates: Sequence[int]) -> dict[str, Any]:
@@ -1286,9 +1297,11 @@ def run_screen(universe: Sequence[Mapping[str, Any]], frozen_sel: Sequence[bool]
             "passes": ev["passes"], "bars": ev["bars"], "pooled_press_mean_non_p1_sol": ev["pooled_press_mean_non_p1_sol"],
             "n_selected": int(sum(ev["selected"])), "n_rows": n, "final_threshold_p90": nested["final_threshold_p90"], "n_pooled_oof": nested["n_pooled_oof"],
             "folds": nested["folds"], "report_only": ro, "fast_only": fast,
-                        "label_counts": {"positive": int(sum(lab["c1" if CONFIGS[cid]["label"] == "c1" else "c2"])), "n": n, "c1_missing_label_0": sum(1 for u in universe if u["c1_missing"])},
+            "label_counts": {"positive": int(sum(lab["c1" if CONFIGS[cid]["label"] == "c1" else "c2"])), "n": n, "c1_missing_label_0": sum(1 for u in universe if u["c1_missing"])},
         }
         try:  # report-only: an error here is recorded and NEVER aborts the config or spends tries
+            if nested.get("x_error"):
+                raise RuntimeError(f"removed-row scoring failed: {nested['x_error']}")
             res["removed_bias"] = removed_bias(universe, removed, nested, transfer, frozen_sel, frozen_removed_sel, ev, with_p4)
         except Exception as exc:  # noqa: BLE001
             res["removed_bias"] = {}
@@ -1524,6 +1537,53 @@ def run_guards(args: argparse.Namespace, enforce_base: bool = True, verify: bool
     return {"g1": g1, "g2": g2, "g3": g3, "g4": g4, "vmap_sha256": shas, "frozen": frozen, "with_p4": g4 is not None}
 
 
+def prepass_hours(g: Mapping[str, Any]) -> dict[str, list[str]]:
+    """The hours the V pre-pass scans, per source (vprepass_all uses exactly these lists)."""
+    from tools.exploration_exits import POOL_HOURS as A_HOURS
+    from tools.oracle_insample_adapter import POOL_C_HOURS
+    from tools.oracle_live_adapter import POOL_B_HOURS
+
+    out: dict[str, list[str]] = {"P1A": list(A_HOURS), "P1C": list(POOL_C_HOURS), "P1B": list(POOL_B_HOURS), "P2": list(g["g2"]["pool"]), "P3": sorted(make_p3_hours(g["g3"]["walkers"]).allowed)}
+    if g["g4"] is not None:
+        out["P4"] = list(g["g4"]["pool"])
+    return out
+
+
+def adapter_hours(g: Mapping[str, Any], max_workers: int) -> dict[str, set[str]]:
+    """The hours each tape pass will read through the adapter, buffer hours included: the union of the home and buffer hours of the SAME chunk
+    plans the passes use (P1: the loaders' plan_workers*, P2-P4: anchored_plan over the pass's pool hours)."""
+    from tools.exploration_entry_model_b2 import plan_workers_b
+    from tools.exploration_entry_model_b3 import plan_workers_c
+
+    mw = min(max_workers, TAPE_WORKERS_CAP)
+
+    def union(plan: Sequence[tuple[int, list[str], list[str]]]) -> set[str]:
+        return {h for _i, home, buf in plan for h in (*home, *buf)}
+
+    out = {
+        "P1A": union(eem.plan_workers(mw, BUFFER_HOURS, MAX_HOME_HOURS)),
+        "P1C": union(plan_workers_c(mw, BUFFER_HOURS, MAX_HOME_HOURS)),
+        "P1B": union(plan_workers_b(mw, BUFFER_HOURS, MAX_HOME_HOURS)),
+        "P2": union(ff12.anchored_plan(list(g["g2"]["pool"]), MAX_HOME_HOURS, BUFFER_HOURS)),
+        "P3": union(ff12.anchored_plan(bc.hours_range(*BLOCKS["P3"]), MAX_HOME_HOURS, BUFFER_HOURS)),
+    }
+    if g["g4"] is not None:
+        out["P4"] = union(ff12.anchored_plan(list(g["g4"]["pool"]), MAX_HOME_HOURS, BUFFER_HOURS))
+    return out
+
+
+def check_adapter_hours_subset(g: Mapping[str, Any], max_workers: int) -> dict[str, int]:
+    """Item 11(f)'s argument as a check, before `started`: per source, every hour the adapter reads (buffer included) must be a scanned pre-pass
+    hour. Refuses (Refused) otherwise. Returns {source: n adapter hours}."""
+    pre = prepass_hours(g)
+    ad = adapter_hours(g, max_workers)
+    for tag, hrs in ad.items():
+        missing = sorted(hrs - set(pre.get(tag, ())))
+        if missing:
+            raise Refused(f"{tag}: {len(missing)} hour(s) the adapter reads (buffer included) are not scanned by the V pre-pass (first {missing[0]}); the pool-to-mint attribution argument needs the pre-pass hours to include the adapter's. Refusing before `started`")
+    return {tag: len(h) for tag, h in ad.items()}
+
+
 def vprepass_all(g: Mapping[str, Any], args: argparse.Namespace, only: Sequence[str] | None = None) -> tuple[dict[str, Any], dict[str, set[str]]]:
     """Pool-field-only coverage per source. Refuses (before any scoring) if more than 1% of a source's migrating mints' prints lack V."""
     covs: dict[str, Any] = {}
@@ -1544,12 +1604,13 @@ def vprepass_all(g: Mapping[str, Any], args: argparse.Namespace, only: Sequence[
         for m, ps in mp_.items():  # merge per mint: a mint seen in two sources keeps every pool
             mint_pools.setdefault(m, set()).update(ps)
 
+    ph = prepass_hours(g)
     res = p1_hour_resolvers(g["g1"]["roots"])
     for tag in ("P1A", "P1C", "P1B"):
-        hours, pool, mig = res[tag]
-        one(tag, hours, pool, args.vmap_p1, BLOCKS["P1"][0], BLOCKS["P1"][1], mig)
+        hours, _pool, mig = res[tag]
+        one(tag, hours, ph[tag], args.vmap_p1, BLOCKS["P1"][0], BLOCKS["P1"][1], mig)
     r2 = g["g2"]
-    one("P2", bc.MultiViewHours(dict(r2["roots"])), r2["pool"], args.vmap_p2, BLOCKS["P2"][0], BLOCKS["P2"][1], lambda: bc.migrated_mints(sorted(set(r2["roots"].values()))))
+    one("P2", bc.MultiViewHours(dict(r2["roots"])), ph["P2"], args.vmap_p2, BLOCKS["P2"][0], BLOCKS["P2"][1], lambda: bc.migrated_mints(sorted(set(r2["roots"].values()))))
     h3 = make_p3_hours(g["g3"]["walkers"])
 
     def mig3() -> set[str]:
@@ -1560,10 +1621,10 @@ def vprepass_all(g: Mapping[str, Any], args: argparse.Namespace, only: Sequence[
             out |= _migrated_mints(w.clean_dir, True)
         return out
 
-    one("P3", h3, sorted(h3.allowed), args.vmap_p3, BLOCKS["P3"][0], BLOCKS["P3"][1], mig3)
+    one("P3", h3, ph["P3"], args.vmap_p3, BLOCKS["P3"][0], BLOCKS["P3"][1], mig3)
     if g["g4"] is not None:
         r4 = g["g4"]
-        one("P4", bc.MultiViewHours(dict(r4["roots"])), r4["pool"], args.vmap_p4, BLOCKS["P4"][0], BLOCKS["P4"][1], lambda: bc.migrated_mints(sorted(set(r4["roots"].values()))))
+        one("P4", bc.MultiViewHours(dict(r4["roots"])), ph["P4"], args.vmap_p4, BLOCKS["P4"][0], BLOCKS["P4"][1], lambda: bc.migrated_mints(sorted(set(r4["roots"].values()))))
     return covs, mint_pools
 
 
@@ -1808,6 +1869,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             vprepass_all(g, args, only=("P1A", "P1C", "P1B", "P3"))  # the pinned map's coverage of P1 and P3 pools (pool fields only), printed for the manager
             print("guards OK (no outcome row was read; pool-field coverage of P1 and P3 above)", file=sys.stderr)
             return 0
+        if not args.guards_only:
+            check_adapter_hours_subset(g, args.max_workers)  # before any read and before `started`
         covs, mint_pools = vprepass_all(g, args)
     except Refused as exc:
         print(f"refusing: {exc}", file=sys.stderr)
