@@ -203,6 +203,15 @@ def prior_tries_per_pool(log: Path, with_p4: bool) -> dict[str, int]:
     return out
 
 
+def refuse_extra_reserved(args: argparse.Namespace) -> None:
+    """EXP-015's fragment list does not carry the confirmation block fresh-0802; refuse it here, in every root argument (raw and resolved)."""
+    for label, v in (("P1 fast", args.p1_fast_dir), ("P1 insample", args.p1_oracle_insample_dir), ("P1 live", args.p1_oracle_live_dir), ("P3", args.p3_root),
+                     *[("P2 view", q) for q in (args.p2_view_dir or [])], *[("P4 view", q) for q in (args.p4_view_dir or [])]):
+        for raw in (str(v), os.path.realpath(str(v))):
+            if any(f in raw for f in EXTRA_RESERVED):
+                raise Refused(f"{label} path {str(v)!r} is the confirmation block ({EXTRA_RESERVED}); EXP-016 never reads it before its lock")
+
+
 def run_guards(args: argparse.Namespace, enforce_base: bool = True, verify: bool = True) -> dict[str, Any]:
     check_pin_ready()
     try:
@@ -218,11 +227,7 @@ def run_guards(args: argparse.Namespace, enforce_base: bool = True, verify: bool
         e15.assert_hours_allowed(list(g2["pool"]) + list(g4["pool"] if g4 else []) + p3_hours, with_p4=g4 is not None)
     except e15.Refused as exc:
         raise Refused(str(exc)) from None
-    for label, v in (("P1 fast", args.p1_fast_dir), ("P1 insample", args.p1_oracle_insample_dir), ("P1 live", args.p1_oracle_live_dir), ("P3", args.p3_root),
-                     *[("P2 view", q) for q in (args.p2_view_dir or [])], *[("P4 view", q) for q in (args.p4_view_dir or [])]):
-        for raw in (str(v), os.path.realpath(str(v))):
-            if any(f in raw for f in EXTRA_RESERVED):
-                raise Refused(f"{label} path {str(v)!r} is the confirmation block ({EXTRA_RESERVED}); EXP-016 never reads it before its lock")
+    refuse_extra_reserved(args)
     sha = check_vmap(args.vmap)
     return {"g1": g1, "g2": g2, "g3": g3, "g4": g4, "vmap_sha256": sha, "frozen": frozen, "with_p4": g4 is not None}
 

@@ -905,6 +905,153 @@ class SingleStartedLineTests(unittest.TestCase):
         self.assertEqual(src.count('"started"'), 1)
 
 
+# --- quant-proof round: crash safety, censoring rule, refusals, inputs ---------------------------------------------------------------------
+
+
+def _cells_with_no_sim_and_censored():
+    nf = len(x.fz.FROZEN_FEATURE_NAMES)
+    filled = {"mint": "OK", "pool": "PO", "block": "P2", "status": "FILLED", "mig_ms": 1, "exp012_features": [0.0] * nf}
+    no_sim_early = {"mint": "NS1", "pool": "PN", "block": "P2", "status": "NO_SIM", "why": "no frozen row"}  # no mig_ms, no features key
+    no_sim_bare = {"mint": "NS2", "block": "P2", "status": "NO_SIM", "why": "bad create row"}  # an old-style record: no pool at all
+    censored = {"mint": "CE", "pool": "PC", "block": "P2", "status": "CENSORED", "mig_ms": 2, "exp012_features": None}
+    return [filled, no_sim_early, no_sim_bare, censored]
+
+
+class NoSimAndCensoredConsumerTests(unittest.TestCase):
+    def test_simulate_mint_no_sim_record_carries_pool_and_reason(self):
+        creates, trades = mint_tape("MINTA", T0)
+        bad = dict(creates[0], slot=None)
+        rec = x.simulate_mint("MINTA", bad, trades, pool="POOL1", migration_slot=1050, vmap=VMAP, tape_through_ms=(T0 + 4000) * 1000, creator_hist={})
+        self.assertEqual((rec["status"], rec["pool"], rec["why"]), ("NO_SIM", "POOL1", "bad create row"))
+
+    def test_frozen_flags_scores_only_cells_with_features(self):
+        cells = _cells_with_no_sim_and_censored()
+        seen = []
+
+        def scorer(rows):
+            seen.append(len(rows))
+            return [1.0] * len(rows)
+
+        flags = x.frozen_flags(cells, {}, scorer=scorer)
+        self.assertEqual(flags, [True, False, False, False])
+        self.assertEqual(seen, [1])
+
+    def test_pre_started_counts_and_v_coverage_survive_them(self):
+        cells = _cells_with_no_sim_and_censored()
+        res = {"tag": "P2", "cells": cells, "no_pool_mints": [], "gate": {"foreign_first_mints": [], "mints_with_foreign_pool_prints": 0}, "slot_inversions": 0,
+               "no_create_row": ["X"], "no_migration_slot": ["Y"]}
+        pc = x.pre_started_counts([res], {"OK": True, "NS1": True}, {"PO": 5, "PC": 5}, closed=[])
+        self.assertEqual(pc["no_sim"], 2)
+        self.assertEqual(pc["no_sim_by_reason"], {"bad create row": 1, "no frozen row": 1})
+        self.assertEqual(pc["n_canonical_pools"], 3)
+        self.assertEqual(pc["migrated_mints_without_create_row"], {"P2": 1})
+        self.assertEqual(pc["no_migration_slot_mints"], {"P2": ["Y"]})
+        self.assertEqual(x.v_coverage([c["pool"] for c in cells if c.get("pool")], {"PO": 5, "PN": 5, "PC": 5})["n_pools"], 3)
+        self.assertEqual(x.total_loss_flags(cells, {"PO"}, set())["NS2"], False)
+
+    def test_unmapped_pools_join_the_total_loss_set(self):
+        import inspect
+
+        src = inspect.getsource(x.main)
+        self.assertIn('pre["unmapped_pools_frozen_selected"]', src)
+        cells = [{"mint": "A", "pool": "PU", "block": "P2", "status": "FILLED", "mig_ms": 1}]
+        self.assertTrue(x.total_loss_flags(cells, {"PU"}, set())["A"])
+
+
+class PlanCensoringTests(unittest.TestCase):
+    def test_deadline_past_the_edge_censors_even_if_an_early_exit_would_hit(self):
+        base = x.simulate_mint("MINTA", fixture_source().creates["MINTA"], fixture_source().rows_by_mint["MINTA"], pool="POOL1", migration_slot=1050, vmap=VMAP,
+                               tape_through_ms=(T0 + 4000) * 1000, creator_hist={})
+        self.assertEqual(base["status"], "FILLED")
+        cap = int(x._target_spec()["cap_ms"])
+        edge = base["landing_ms"] + cap
+        src = fixture_source()
+
+        def run(through):
+            with mock.patch.object(x, "tpsl_exit", side_effect=AssertionError("censoring must not depend on the exit")):
+                return x.simulate_mint("MINTA", src.creates["MINTA"], src.rows_by_mint["MINTA"], pool="POOL1", migration_slot=1050, vmap=VMAP,
+                                       tape_through_ms=through, creator_hist={})
+
+        r = run(edge - 1)
+        self.assertEqual(r["status"], "CENSORED")  # deadline one ms past the block edge; no exit logic ran
+        self.assertNotIn("features", r)
+
+    def test_censored_cell_is_in_no_book(self):
+        c = {"mint": "C", "pool": "P", "block": "P1", "status": "CENSORED", "mig_ms": 5}
+        self.assertFalse(x.in_book(c))
+
+
+class RefusalTests(unittest.TestCase):
+    def test_simulator_drift_is_a_refusal_naming_only_the_mint(self):
+        src = fixture_source()
+        real = x.tpsl_exit
+
+        def bad(*a, **kw):
+            return {**real(*a, **kw), "state_idx": 0}
+
+        with mock.patch.object(x, "tpsl_exit", bad):
+            with self.assertRaises(x.Refused) as cm:
+                x.process_source(src, VMAP)
+        self.assertIsInstance(cm.exception, x.SimulatorDrift)
+        msg = str(cm.exception)
+        self.assertTrue(msg.startswith("MINTA:"))
+        self.assertIsNone(re.search(r"-?\d", msg))  # no number at all: no net, no outcome value
+        self.assertNotIn("net", msg.lower().replace("no net", ""))
+
+    def test_reserved_0802_path_is_refused_by_the_guard(self):
+        ns = SimpleNamespace(p1_fast_dir="/x/fresh-0802/a", p1_oracle_insample_dir="/y", p1_oracle_live_dir="/z", p3_root="/w", p2_view_dir=[], p4_view_dir=None)
+        with self.assertRaises(x.Refused):
+            x.refuse_extra_reserved(ns)
+        ok = SimpleNamespace(p1_fast_dir="/x/a", p1_oracle_insample_dir="/y", p1_oracle_live_dir="/z", p3_root="/w", p2_view_dir=["/v/fresh-0802"], p4_view_dir=None)
+        with self.assertRaises(x.Refused):
+            x.refuse_extra_reserved(ok)
+        ok.p2_view_dir = ["/v/explore-0814"]
+        x.refuse_extra_reserved(ok)
+
+
+class SourceCountersTests(unittest.TestCase):
+    def test_missing_migration_slot_and_missing_create_are_counted_and_excluded(self):
+        src = fixture_source()
+        src.migrations["MINTA"] = {"type": "migration", "mint": "MINTA", "pool": "POOL1"}  # no slot
+        src.migrations["GHOST"] = {"type": "migration", "mint": "GHOST", "pool": "PG", "slot": 7}  # no create row
+        r = x.process_source(src, VMAP)
+        self.assertEqual((r["cells"], r["no_migration_slot"], r["no_create_row"]), ([], ["MINTA"], ["GHOST"]))
+
+    def test_slimmed_rows_keep_quote_is_wsol(self):
+        creates, trades = mint_tape("MINTB", T0)
+        for t in trades:
+            t["quote_is_wsol"] = True
+        with tempfile.TemporaryDirectory() as d:
+            tp, cp = Path(d) / "trades.jsonl", Path(d) / "creates.jsonl"
+            tp.write_text("".join(json.dumps(t) + "\n" for t in trades))
+            cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
+            src = x.load_source_data("P3", "P3", lambda h: {"trade": tp, "create": cp}, ["h0"], [])  # not migrated: slimmed rows
+        self.assertTrue(all(r.get("quote_is_wsol") is True for r in src.rows_by_mint["MINTB"]))
+
+    def test_p1b_gap_slots_are_slots_only(self):
+        rows = [{"venue": "pump_bonding", "slot": 100}, {"venue": "pump_bonding", "slot": 108}, {"venue": "pumpswap", "slot": 120, "pool": "CP"}]
+        src = x.SourceData("P1B", "P1", {}, {"M": {"pool": "CP", "slot": 120, "mint": "M"}, "N": {"pool": "CN", "slot": 50, "mint": "N"}}, {"M": rows, "N": []}, 0, derived_pools=True)
+        self.assertEqual(x.p1b_gap_slots(src), {"n": 1, "n_no_bonding": 1, "p50": 12, "p90": 12, "max": 12})
+        self.assertEqual(x._pctile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0.9), 9)
+        self.assertEqual(x._pctile([1, 2, 3, 4], 0.5), 2)
+
+    def test_started_blocks_are_listed_separately(self):
+        bl = x.started_blocks(True)
+        self.assertEqual([(b["start_hour"], b["end_hour_exclusive"]) for b in bl], [e15.BLOCKS[k] for k in ("P2", "P3", "P4")])
+        self.assertEqual(len(x.started_blocks(False)), 2)
+
+    def test_started_line_carries_the_input_shas_and_main_orders_the_checks(self):
+        import inspect
+
+        src = inspect.getsource(x.main)
+        self.assertIn("**input_shas", src)
+        self.assertIn("prior_tries_per_pool(canonical", src)
+        self.assertLess(src.index("e15.take_lock"), src.index("check_no_prior_tries(tries_path, canonical)  # re-checked"))
+        self.assertLess(src.index("check_no_prior_tries(tries_path, canonical)  # re-checked"), src.index('log_all(out_dir, tries_path, canonical, "started"'))
+        self.assertLess(src.index("input files:"), src.index("load_source_data("))
+        self.assertLess(src.index("check_constancy_sample("), src.index('"started"'))
+        self.assertIn("setdefault(p_, []).extend", src)
+
 
 if __name__ == "__main__":
     unittest.main()
