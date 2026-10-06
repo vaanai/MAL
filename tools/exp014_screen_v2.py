@@ -308,7 +308,7 @@ def merge_counts(tag: str, parts: Sequence[Mapping[str, Any]], vmap: Mapping[str
     for m, v in in_block.items():
         d = mt._utc_day(v[1] + mt.OFFSET_MS)
         by_t_day[d] = by_t_day.get(d, 0) + 1
-    homed = {m for m in in_block if m in created}
+    homed = {m: v for m, v in in_block.items() if m in created}
     unpriceable = sorted(m for m, v in homed.items() if v[2] is None or vmap.get(v[2]) is None)
     return {
         "tag": tag, "hours_found": len(parts), "hours_expected": expected_hours, **tot, "creates_distinct": len(created),
@@ -382,7 +382,7 @@ def worker_v(spec: Mapping[str, Any]) -> dict[str, Any]:
     from tools import pumpswap_virtual_adapter as ad
     from tools.pumpswap_virtual import load_map
 
-    e15.check_vmap(spec["vmap"], e15.VMAP_0909_SHA256, "worker V map")
+    e15.check_vmap(spec["vmap"], spec.get("vmap_sha256", e15.VMAP_0909_SHA256), "worker V map")
     vmap = load_map(Path(spec["vmap"]))
     ad.reset_counts()
     orig = mt.print_from_trade_row
