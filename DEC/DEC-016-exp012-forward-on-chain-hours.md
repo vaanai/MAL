@@ -213,25 +213,32 @@ Written before any forward P&L file was opened, and before 2026-10-16T00Z. It ti
 - Amendment 4 §3's wording ("every PumpSwap pool of every migrated mint in the window") invites the same gap.
 - Also, a pool closed by 10-16 reads null, while V is constant per pool. Evidence: #197 checked 10 pools over 08-14..08-25. Across the `pool_v_0814` → `pool_v_0909` refetch two days apart, all 34,892 non-null values were unchanged.
 
-**1. Pool set.** The (B) map covers **every PumpSwap pool printed in any trade file of the hours (B) scores**: the FINAL run's pool hours, buffer hours included, from the walk start. It is collected by `tools/exp012_forward_vmap.py pools`, which uses a real JSON parse and no migration filter, and only on hours that pass `exp012_forward.hour_problems`, with each file's sha checked while it is read. This is a superset of Amendment 4 §3's set.
+**1. Pool set.** The (B) map covers **every PumpSwap pool printed in any trade file of the hours (B) scores**: the FINAL run's pool hours, buffer hours included, from the walk start. It is collected by `tools/exp012_forward_vmap.py pools`, which uses a real JSON parse and no migration filter, and only on hours that pass `exp012_forward.hour_problems`; each file's sha256 is re-checked against its verify line after the scan. For the FINAL map the hours are taken from the FINAL run's `runs.jsonl` (`pool_from`, `to_exclusive`), not typed by hand. This is a superset of Amendment 4 §3's set.
 
 **2. Early snapshots (outcome-blind).** Before 2026-10-16T00Z the manager may:
 - run `pools` and `fetch` over sealed forward hours;
 - freeze the result with `snapshot`, which writes a read-only copy and a line in `snapshots.jsonl` (utc, sha256, n, n_null).
 
-Only trade-file pool ids and on-chain pool accounts are read; no row, report or scratch file under Amendment 2 is opened. Snapshot shas go in the run log and the FINAL report.
+Only trade-file pool ids and on-chain pool accounts are read; no row, report or scratch file under Amendment 2 is opened. Snapshot shas go in the run log and the FINAL report. **No join before the read:** null-V pool ids are written to files only, never printed, and are never matched against decisions, exported decisions or entered mints before the FINAL read (a pool that closed early is outcome information).
 
 **3. The FINAL map.**
-- After 2026-10-16T00Z, V is fetched into a **new, empty** map file for the §1 pool set. This is Amendment 4 §3's fetch and stays primary.
-- Then `merge` fills only pools that are null or absent in that map from the snapshots. It refuses if two non-null values for a pool ever differ; a refusal makes (B) NOT_DECIDABLE.
+- After 2026-10-16T00Z, V is fetched into a **new, empty** map file for the §1 pool set (`fetch --new`, which refuses an existing file). This is Amendment 4 §3's fetch and stays primary. Each null is recorded as `closed` (no account) or `unreadable` (account present, V not parseable).
+- Then `merge` fills only pools of the §1 set that are `closed` or absent in that map from snapshots listed in `snapshots.jsonl` with a matching sha. It never fills an `unreadable` pool (that may be a program or layout change, a real pricing problem). It refuses if two non-null values for a pool ever differ; a refusal makes (B) NOT_DECIDABLE.
 - The FINAL report gives: n pools, nulls before the merge, pools filled from a snapshot (with ids), nulls after, and every input and output sha.
 - A pool still null after the merge is never V = 0. Amendment 4 §3's rule (top 3, or > 1% of entered trades) applies to it unchanged.
 
 **4. (B) tools.** These are recorded here before 2026-10-16T00Z, at the commits that merge:
-- `tools/exp012_forward_vbook.py`: book (B) on the FINAL's own entered set. It refuses without the FINAL (A) marker. It reproduces (A) byte for byte under frozen pricing before computing (B), asserts the entered set equal at v and vault, applies the null-V rule, and uses `exp012_forward.build_report`'s gate.
+- `tools/exp012_forward_vbook.py`: book (B) on the FINAL's own entered set. It refuses without the FINAL (A) marker, and binds to the merge record of §3 (its output sha must equal the map's). It reproduces (A) byte for byte under frozen pricing before computing (B), refuses if the mode-v entered set differs from (A)'s, applies the null-V rule, and uses `exp012_forward.build_report`'s gate. A vault-mode entered-set difference or any vault/v gate disagreement does not refuse; it is listed in `live_blockers` (Amendment 4 §4 already blocks live on it). Every run is appended to a run ledger.
 - `tools/exp012_forward_vmap.py`: §1–§3, plus §5 validation through `validate`.
 - The Amendment 3(a) sensitivity re-score on (B): `tools/exp012_forward_sensitivity.py` with V pricing.
 
 Commits: _filled in when each merges_.
 
-**5. Effect.** This can only lower the number of null-V pools. It never adds a priced pool that the chain did not price, and it never moves (B) toward support: Amendment 4 §2 still needs both (A) and (B).
+**5. Definitions fixed before the read.**
+- **Top 3 (Amendment 4 §3):** the union of the top 3 entered trades by `flat` and the top 3 by `press`, since each gate leg drops its own top 3.
+- **Touch:** a trade touches a pool if its mint printed on that pool anywhere in the scoring worker's tape, after the exit included. This over-counts contact; it can only make (B) NOT_DECIDABLE, never PASS.
+- **V = 0:** a pool whose chain account reads V = 0 is priced on the vault alone, which is what the chain does. It is not null. The count of entered trades touching a V = 0 pool is reported, but it is not a blocker.
+- **Amendment 4 §5 sample:** `exp012_forward_vmap validate`, 12 hours evenly spaced over the FINAL window's sealed hours, the first 60,000 PumpSwap rows of each hour, with the §5 thresholds as written.
+- **Amendment 3(a) on (B):** the sensitivity re-score on the pinned window refuses unless it is given the V map and a finished vbook report on the same map sha; its headline verdict is (B)'s, and (A)'s is report-only. The vault/v agreement of Amendment 4 §4 is assessed by vbook at k = 1; at k(p50) and k(p90) only mode v is computed.
+
+**6. Effect.** This changes no bar, threshold, model, window or fail model. Filling nulls can make a NOT_DECIDABLE (B) decidable, in either direction. Every filled value is a pool the chain priced, checked for constancy against the post-cutoff fetch wherever both are non-null. Amendment 4 §2 still needs both (A) and (B).
