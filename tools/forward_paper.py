@@ -1441,6 +1441,7 @@ class ForwardEngine:
         self.by_creator: dict[str, list[MintBook]] = defaultdict(list)
         self.library: dict[str, MintBook] = {}
         self.tracks: dict[str, _Track] = {}
+        self.migrate_tx_slot: dict[str, int] = {}  # mint -> slot of the migrate tx (intent side file only)
         self.mint_order: dict[str, int] = {}
         self.seen: dict[str, set[tuple[Any, ...]]] = defaultdict(set)
         self.grids: list[tuple[int, int, str]] = []
@@ -2113,10 +2114,24 @@ class ForwardEngine:
         if pending.t_entry_ms <= self._clock_ms:
             self._fill_one(run, ledger, pending)
 
-    def _migration_slot(self, mint: str) -> int | None:
-        track = self.tracks.get(mint)
-        slot = getattr(track, "migration_slot", None)
-        return slot if isinstance(slot, int) and not isinstance(slot, bool) and slot > 0 else None
+    def note_migrate_tx_slot(self, mint: str, slot: Any) -> None:
+        """Slot of the migrate tx itself, from a tip-follower `migration` row (fed by the early arm only).
+        Read by `_migration_slot` for the intent side file; nothing else uses it."""
+        if isinstance(slot, int) and not isinstance(slot, bool) and slot > 0 and isinstance(mint, str):
+            self.migrate_tx_slot.setdefault(mint, slot)
+            while len(self.migrate_tx_slot) > 50_000:
+                self.migrate_tx_slot.pop(next(iter(self.migrate_tx_slot)))
+
+    def _migration_slot(self, mint: str) -> tuple[int | None, str | None]:
+        """(slot, src). Prefer the migrate tx's own slot; else the first PumpSwap print's (can be slots later,
+        so it understates k and the executor's guard refuses it)."""
+        tx = self.migrate_tx_slot.get(mint)
+        if tx is not None:
+            return tx, "migrate_tx"
+        slot = getattr(self.tracks.get(mint), "migration_slot", None)
+        if isinstance(slot, int) and not isinstance(slot, bool) and slot > 0:
+            return slot, "first_print"
+        return None, None
 
     def _intent(self, book_id: str, pending: "_Pending", book: MintBook) -> None:
         """DEC-019: tell the probe executor about a ceiling migrate decision NOW, not after the simulated
@@ -2141,7 +2156,7 @@ class ForwardEngine:
                     # the executor cannot see the KILL file; it refuses buys on rows written while it exists
                     "runner_kill": bool(self.kill_file.is_file()),
                     # slot of the migration print (the executor's optional max_entry_k_slots guard reads it)
-                    "migration_slot": self._migration_slot(pending.mint),
+                    **dict(zip(("migration_slot", "migration_slot_src"), self._migration_slot(pending.mint))),
                 }
             )
         except Exception as exc:  # noqa: BLE001  a side file must never stop the paper runner or change its decisions

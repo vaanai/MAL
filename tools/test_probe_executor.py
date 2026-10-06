@@ -423,8 +423,8 @@ def intent_row(**kw):
 class EntryKGuardTests(unittest.TestCase):
     """max_entry_k_slots: k_now = pool-state slot (FakeRpc serves 77) - the intent's migration_slot."""
 
-    def _intent(self, ex, mig):
-        extra = {} if mig is None else {"migration_slot": mig}
+    def _intent(self, ex, mig, src="migrate_tx"):
+        extra = {} if mig is None else {"migration_slot": mig, "migration_slot_src": src}
         s = pe.parse_intent(intent_row(mint=MINT, decision_t_ms=T0, written_ms=T0, **extra), pe.DEFAULT_BOOK, "ceiling")
         self.assertIsNotNone(s)
         return s
@@ -464,6 +464,17 @@ class EntryKGuardTests(unittest.TestCase):
             self.assertEqual(ex.state.open, {})
             ex.handle_signal(self._intent(ex, 69))  # k=8
             self.assertEqual([r["kind"] for r in fills(conf)], ["skip", "buy"])
+            self.assertEqual(ex.state.attempts, 1)
+
+    def test_first_print_slot_refused_when_on_accepted_when_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf = make(Path(d), max_entry_k_slots=8)
+            ex.handle_signal(self._intent(ex, 77, src="first_print"))  # k=0 would pass, but the source understates k
+            self.assertTrue(fills(conf)[0]["reason"].startswith("refused: entry_k unknown"))
+            self.assertEqual(ex.state.attempts, 0)
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf = make(Path(d))
+            ex.handle_signal(self._intent(ex, 77, src="first_print"))
             self.assertEqual(ex.state.attempts, 1)
 
     def test_missing_migration_slot_refused_when_on(self):

@@ -111,10 +111,12 @@ def validate_max_entry_k(value: Any) -> int | None:
 
 def entry_k_refusal(sig: dict[str, Any], snap_slot: int, max_k: int | None) -> str | None:
     """None = pass (or guard off). k_now = freshest pool-state slot - the signal's migration slot. A signal with no
-    migration slot, or a state with no slot, cannot be bounded and is refused while the guard is on."""
+    migrate-tx migration slot (src must be "migrate_tx"), or a state with no slot, cannot be bounded and is refused while the guard is on."""
     if max_k is None:
         return None
     mig = sig.get("migration_slot")
+    if sig.get("migration_slot_src") != "migrate_tx":  # a first-print slot can trail the migrate tx: it understates k
+        mig = None
     if not isinstance(mig, int) or isinstance(mig, bool) or not isinstance(snap_slot, int) or snap_slot <= 0:
         return f"refused: entry_k unknown migration_slot={mig} state_slot={snap_slot} max={max_k}"
     k_now = snap_slot - mig
@@ -839,6 +841,8 @@ def parse_intent(line: str, book: str, ledger: str) -> dict[str, Any] | None:
     ms = row.get("migration_slot")
     if isinstance(ms, int) and not isinstance(ms, bool) and ms > 0:  # optional; absent on old runners
         sig["migration_slot"] = ms
+        if row.get("migration_slot_src") in ("migrate_tx", "first_print"):
+            sig["migration_slot_src"] = row["migration_slot_src"]
     if row.get("runner_kill") is True:  # absent (old runner) or false: unchanged behaviour
         sig["runner_kill"] = True
     return sig

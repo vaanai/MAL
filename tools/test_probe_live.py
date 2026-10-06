@@ -2033,7 +2033,7 @@ class EntryKGuardLiveTests(unittest.TestCase):
             ex, rpc, clock, kp, conf = make_live(Path(d), **cfg)
             row = pe.parse_intent(json.dumps({"schema": "forward_paper_intent_v1", "book": ex.book, "ledger": "ceiling", "mint": MINT,
                                               "creator": "C", "decision_t_ms": clock(), "written_ms": clock(), "trigger": "migrate",
-                                              "score": 0.9, "runner_kill": False, "migration_slot": mig}), ex.book, "ceiling")
+                                              "score": 0.9, "runner_kill": False, "migration_slot": mig, "migration_slot_src": "migrate_tx"}), ex.book, "ceiling")
             ex.handle_signal(row)
             return ex, rpc, fills(conf)
 
