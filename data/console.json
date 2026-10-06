@@ -1,8 +1,15 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-06T15:10:00Z",
+  "updated_utc": "2026-10-06T20:38:00Z",
   "review_windows": [],
   "events": [
+    {
+      "id": "exp018-screen-result",
+      "kind": "result",
+      "title": "EXP-018 wallet-skill screen: SCREEN NONE, family closed",
+      "detail": "Job #325, one try (W2). Paired vs frozen EXP-012: flat mean x +0.000004146408 SOL, p 0.46275. W2 book flat mean -0.0010193 SOL/trade over 988 trades, 6 of 22 dates positive. B1 to B6 all fail. Exploration, no edge claim.",
+      "atUtc": "2026-10-06T20:38:00Z"
+    },
     {
       "id": "fast0-runner-probe-dryrun",
       "kind": "job",
@@ -135,6 +142,17 @@
         "tone": "muted"
       },
       "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-009-migrate-creator-gate-prereg.md"
+    },
+    {
+      "id": "EXP-018",
+      "title": "EXP-018 wallet skill at migration",
+      "stage": "retired",
+      "note": "Screen NONE (job #325): paired vs frozen EXP-012 p 0.46275, W2 book flat -0.0010193 SOL/trade, 6/22 dates positive. Exploration, no edge claim.",
+      "tag": {
+        "text": "screen failed",
+        "tone": "muted"
+      },
+      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp018-screen-2026-10-06.md"
     },
     {
       "id": "EXP-011",
@@ -569,6 +587,13 @@
       "kind": "result",
       "text": "10-16 blocker solved at the data level: the 6 pools whose virtual reserve 'moved' all had liquidity deposits or withdrawals. PumpSwap rescales the reserve by the LP-supply ratio, and that rule reproduces all 16 operations to the lamport (jobs #282–#284, pool fields and transaction logs only; quant-proof re-derived it). Snapshot #3 (job #286): over about 7 h only those same 6 pools moved.",
       "atUtc": "2026-10-06T15:05:00Z"
+    },
+    {
+      "id": "s-20261006-2038",
+      "from": "claude",
+      "kind": "result",
+      "text": "EXP-018 (wallet skill at migration) failed its one screen: no cell passed, family closed. W2 vs frozen EXP-012: flat mean difference +0.000004146408 SOL per migration, p 0.46275. W2 book: 988 trades, flat mean -0.0010193 SOL, 6 of 22 dates positive, B1 to B6 all fail. Causal wallet skill adds nothing beyond frozen EXP-012 at realistic costs. Exploration, no edge claim.",
+      "atUtc": "2026-10-06T20:38:00Z"
     },
     {
       "id": "s-20261006-1510",
