@@ -87,10 +87,13 @@ Still needed before 10-16 (DEC-016 Am.3): k(p50)/k(p90) and the slot_ms export s
 
 **Lab-wide α (#382):** the four confirmation families each need p ≤ 0.0125. With EXP-013 and EXP-015 closed, keep 0.0125 (it only ever tightens).
 
-**EXP-016 PR 2:**
-- The builder agent hit its turn limit and was told to push WIP to branch `claude/exp016-screen` as a DRAFT PR and continue. Check `gh pr list`.
-- It must have quant-proof before merge.
-- Then build the fixed-parser V maps for P1–P4 and 0802 (pool-field only), pin their sha by a reviewed commit, run `--guards-only`, then the screen as one MiScusi job (48 GB).
+**EXP-016 PR 2 is draft PR #395** (`claude/exp016-screen`; the builder's venv pytest run gave rc 0, 104 passed; fixtures only). It still needs a quant-proof review before merge.
+- **Open manager decisions the builder raised:**
+  - (a) **P1B (Oracle live) has no `migrations/` dir.** Under the literal "migration-row pool" rule every P1B mint is excluded as having no pool. Decide: derive the pool from the mint's first canonical PumpSwap pool (pool-field only, like EXP-015's P1B pre-pass), or exclude P1B and disclose it. Record the choice as a post-pin edit.
+  - (b) `BlockHistory.query` from #392 scans all records per mint, which is likely too slow at block scale. Needs a perf fix.
+  - (c) "One `started` line" was read as one line with 6 keys, plus per-pool result lines. Confirm.
+- **Unverified:** `load_source_data` and `build_sources` were never run on a real layout, and memory was not measured. The P1 constancy check reads `--v-constancy-json` from a separate job that is not built yet. `VMAP_EXP016_SHA256` is `PENDING` until the fixed-parser maps are built and pinned.
+- **Order:** quant-proof → fix (a)/(b) → build the maps (pool-field only) → pin → `--guards-only` → screen as one 48 GB MiScusi job.
 
 **fresh-0802 walk** (ledger #380, reserved for EXP-016 first):
 - w1 #248 at 19/48 hours (171,623 credits);
