@@ -35,8 +35,9 @@ Run (mal-research-0; one heavy job at a time; as a MiScusi job; under nice):
     --p1-oracle-insample-dir /data/mal/clean-view/oracle-insample-2026-09-22_25 \\
     --p1-oracle-live-dir /data/mal/clean-view/oracle-live-2026-09-25_27 \\
     --p2-view-dir /data/mal/clean-view/explore-0814/w1 ... --p2-view-dir /data/mal/clean-view/explore-0814/w7 \\
-    --p3-root /data/mal/blocks-clean/fresh-0903 --vmap-p3 <pool V map for P3> \\
-    [--p4-view-dir <EXP-011 clean view> ... --vmap-p4 <pool V map for P4>] \\
+    --p3-root /data/mal/blocks-clean/fresh-0903 \\
+    [--p4-view-dir <EXP-011 clean view> ...] \\
+    (every --vmap-pN defaults to the pinned /data/mal/pumpswap-virtual/pool_v_0909.json) \\
     --out-dir /data/mal/exp015-screen --tries-log /data/mal/ops/tries-exp015-screen.jsonl --max-workers 8
 """
 
@@ -49,6 +50,7 @@ import json
 import multiprocessing as mp
 import os
 import random
+import re
 import signal
 import sys
 import time
@@ -91,7 +93,12 @@ BANNER = (
 
 FROZEN_THRESHOLD = op.FROZEN_THRESHOLD  # 0.8030766588450794
 MODEL_MD5 = bc.MODEL_MD5  # a1810d219ed61db64a396f40dc302ce5
-VMAP_SHA256 = bc.VMAP_SHA256  # 2506f7d2...d2f8, pool_v_0814.json
+# ONE pool -> V map for every block (P1-P4): pool_v_0909.json (job #224: a superset of pool_v_0814, the EXP-011 block pools and the 30 pools
+# the back-check #207 found without V). The pin replaces the P2 pin on pool_v_0814. The sha is filled by the manager, after #224, in a
+# reviewed one-line commit; while it is the placeholder the tool refuses at startup (check_pin_ready).
+VMAP_0909_SHA256 = "PENDING_JOB_224"
+VMAP_0909_PATH = "/data/mal/pumpswap-virtual/pool_v_0909.json"
+UNPRICEABLE_MAX_FRACTION = 0.005  # refuse (before `started`) if more than 0.5% of the universe's mints sit on a pool with no V
 V_MAX_MISSING_FRACTION = 0.01
 K = 6
 SIZE_SOL = 0.05
@@ -150,8 +157,7 @@ RESERVED_FRAGMENTS = (
 P2_BASE = "/data/mal/clean-view/explore-0814"
 P3_BASE = "/data/mal/blocks-clean/fresh-0903"
 P3_RANGES = s12.DEFAULT_RANGES
-VMAP_DEFAULT_P1 = DEFAULT_VMAP
-VMAP_DEFAULT_P2 = bc.DEFAULT_VMAP_0814
+VMAP_DEFAULT = VMAP_0909_PATH
 
 # Configs: the entire try budget (plan section 7).
 CONFIGS: dict[str, dict[str, Any]] = {
@@ -358,6 +364,12 @@ def guard_p3(root: Path | str, verify: bool = True, enforce_base: bool = True) -
     if errs:
         raise Refused("P3 (fresh-0903) refused: " + "; ".join(errs[:5]))
     return {"walkers": walkers, "pin_sha256": {k: v for k, v in pin.items() if k.endswith("manifest.json")}}
+
+
+def check_pin_ready() -> None:
+    """Refuses at startup while the map pin is the placeholder (so the tool cannot run before the real sha256 is filled in)."""
+    if not re.fullmatch(r"[0-9a-f]{64}", VMAP_0909_SHA256):
+        raise Refused(f"VMAP_0909_SHA256 is {VMAP_0909_SHA256!r}, not a sha256: the manager fills it in after job #224 in a reviewed one-line commit. Refusing to run")
 
 
 def check_vmap(path: str | Path, pinned: str | None = None, label: str = "vmap") -> str:
@@ -618,6 +630,10 @@ def p1_hour_resolvers(roots: Mapping[str, Path]) -> dict[str, tuple[Any, list[st
 
 
 class Integrity(Exception):
+    pass
+
+
+class NoVInUniverse(RuntimeError):
     pass
 
 
@@ -1198,12 +1214,8 @@ def run_screen(universe: Sequence[Mapping[str, Any]], frozen_sel: Sequence[bool]
         ev = evaluate_config(universe, nested, transfer, frozen_sel, with_p4)
         nv_sel = sorted(universe[i]["mint"] for i in range(n) if no_v_mints and universe[i]["mint"] in no_v_mints and (ev["selected"][i] or (frozen_sel[i] and universe[i]["block"] != "P1")))
         transfer_nv = sorted(universe[i]["mint"] for i in range(n) if transfer["selected"][i] and no_v_mints and universe[i]["mint"] in no_v_mints)
-        if nv_sel or transfer_nv:
-            statuses[cid] = "refused_after_read"
-            results[cid] = {"passes": False, "refused": f"{len(nv_sel)} nested-OOF selected (nested-OOF or frozen non-P1) and {len(transfer_nv)} transfer-selected trade(s) are on pools the adapter priced without V; the V-priced number is not defined", "no_v_mints": (nv_sel + transfer_nv)[:20]}
-            if on_config_refused:
-                on_config_refused(cid, results[cid]["refused"])
-            continue
+        if nv_sel or transfer_nv:  # defensive: the unpriceable mints were removed before `started`, so this should never fire. If it does, abort (logged aborted_after_read)
+            raise NoVInUniverse(f"{len(nv_sel)} nested-OOF or frozen non-P1 selected and {len(transfer_nv)} transfer-selected trade(s) are on pools priced without V although the unpriceable-pool rule removed them: {(nv_sel + transfer_nv)[:5]}")
         ro = report_only(universe, nested, ev["selected"], with_p4)
         fast = fast_only_report(universe, runner, cid, dates)
         res = {
@@ -1245,8 +1257,11 @@ def render_md(rep: Mapping[str, Any]) -> str:
         L += ["**KNIFE-EDGE: the k = 6 cell passes and both k = 4 and k = 8 are negative.**", ""]
     L += [rep["first_line"], "", rep["banner"], "", f"## Matched outcome", "", f"**{rep['decision']['outcome']}**", ""]
     u = rep["universe"]
+    ur = u.get("unpriceable_removed") or {}
+    if ur:
+        L += [f"- **Unpriceable mints removed (pool-based, outcome-blind, before `started`): {ur['count']} of {ur['n_universe_before']} ({ur['fraction']:.3%}; limit {ur['max_fraction']:.1%}).** Mint ids: {', '.join(ur['mints']) or 'none'}.", ""]
     L += [f"- Universe: {u['n']} migrations (k = 6, exit lag 2, filled and MISS), sha256 `{u['sha256']}` (written before any fit). By source: {u['stats']['by_source']}. Dropped: {u['stats']['dropped_outside_window']} outside the counted window, {u['stats']['dropped_no_primary_cell']} with no primary cell, {u['stats']['dropped_censored_primary']} censored. C1 label 0 because no EXP-012-pricing row: {u['stats']['c1_missing_label_0']}.",
-          f"- Costs: V pricing (map sha256 pinned for P2 {rep['costs']['vmap_p2_pinned']}), k = {K} from the first PumpSwap print, {SIZE_SOL} SOL, fee {FEE} per side (a MISS pays it), exit lag {EXIT_LAG}, haircut {HAIRCUT_FACTOR:.7f} x proceeds on filled trades, both fail models.",
+          f"- Costs: V pricing (ONE map for every block, sha256 pinned {rep['costs']['vmap_0909_pinned']}), k = {K} from the first PumpSwap print, {SIZE_SOL} SOL, fee {FEE} per side (a MISS pays it), exit lag {EXIT_LAG}, haircut {HAIRCUT_FACTOR:.7f} x proceeds on filled trades, both fail models.",
           f"- Code {rep.get('git_head', 'n/a')}; wall {rep.get('wall_s', 0):.0f} s; workers {rep.get('max_workers')}.", ""]
     for cid, r in rep["configs"].items():
         L += [f"## {CONFIGS[cid]['name']}: {CONFIGS[cid]['desc']} (min_data_in_leaf {CONFIGS[cid]['min_data_in_leaf']}); status {rep['statuses'].get(cid)}", ""]
@@ -1292,7 +1307,8 @@ CAVEATS = (
     "Purge: rows within 35 minutes before the start or after the end of a UTC calendar date held out are dropped from that fold's training, in the outer and in every inner fold.",
     "Migrations inside a block's edge hours whose creation lies in the neighbouring block (the P3/P4 seam) are not counted; counts are in the universe stats.",
     "The V pre-pass for P1's Oracle live pool has no migrations/ directory: its population is every mint with a first PumpSwap print in the window.",
-    "No Helius credits are used. Pool V maps for P1, P3 and P4 are recorded by sha256 but only the P2 map (pool_v_0814.json) is pinned in the plan.",
+    "No Helius credits are used. ONE V map (pool_v_0909.json, built by job #224) prices every block; its sha256 is pinned in VMAP_0909_SHA256 (post-pin item 11).",
+    "Mints on a PumpSwap pool with no V in the pinned map are removed from the universe before `started`, for all configs and the frozen side (pool-based, outcome-blind); the count and mint ids are in report.json.",
     "Statuses in the tries log: completed (the config's fits and bars ran), refused_after_read (a selected trade on a no-V pool, or an integrity failure), aborted_after_read (an exception or SIGTERM).",
 )
 
@@ -1404,10 +1420,8 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--p2-view-dir", type=Path, action="append", default=None, help="repeatable: explore-0814 clean views w1..w7")
     ap.add_argument("--p3-root", type=Path, default=Path(P3_BASE), help="fresh-0903 deduplicated copies (w1..w3 + manifests)")
     ap.add_argument("--p4-view-dir", type=Path, action="append", default=None, help="repeatable: EXP-011 block clean view(s) with VIEW.sha256, tiling [2026-09-09T12, 2026-09-15T12); omit to run the 30-date pool")
-    ap.add_argument("--vmap-p1", default=VMAP_DEFAULT_P1)
-    ap.add_argument("--vmap-p2", default=VMAP_DEFAULT_P2, help="sha256 asserted against the pinned pool_v_0814.json")
-    ap.add_argument("--vmap-p3", default=None, help="pool -> V map covering fresh-0903 (required)")
-    ap.add_argument("--vmap-p4", default=None, help="pool -> V map covering the EXP-011 block (required with --p4-view-dir)")
+    for blk in ("p1", "p2", "p3", "p4"):
+        ap.add_argument(f"--vmap-{blk}", default=VMAP_DEFAULT, help="pool -> V map; ONE map for every block, its sha256 asserted against VMAP_0909_SHA256 (pool_v_0909.json)")
     ap.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR, help="frozen EXP-012 artifacts (read-only; the paired bar's reference)")
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--tries-log", default=None)
@@ -1418,6 +1432,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def run_guards(args: argparse.Namespace, enforce_base: bool = True, verify: bool = True) -> dict[str, Any]:
+    check_pin_ready()
     check_workers(args.max_workers)
     g1 = guard_p1(args.p1_fast_dir, args.p1_oracle_insample_dir, args.p1_oracle_live_dir, verify)
     if not args.p2_view_dir:
@@ -1425,13 +1440,9 @@ def run_guards(args: argparse.Namespace, enforce_base: bool = True, verify: bool
     g2 = guard_p2(args.p2_view_dir, verify, enforce_base)
     g3 = guard_p3(args.p3_root, verify, enforce_base)
     g4 = guard_p4(args.p4_view_dir or [], verify)
-    if args.vmap_p3 is None:
-        raise Refused("--vmap-p3 is required (a pool V map covering fresh-0903)")
-    if g4 is not None and args.vmap_p4 is None:
-        raise Refused("--vmap-p4 is required with --p4-view-dir")
-    shas = {"P1": check_vmap(args.vmap_p1, label="--vmap-p1"), "P2": check_vmap(args.vmap_p2, VMAP_SHA256, "--vmap-p2"), "P3": check_vmap(args.vmap_p3, label="--vmap-p3")}
+    shas = {"P1": check_vmap(args.vmap_p1, VMAP_0909_SHA256, "--vmap-p1"), "P2": check_vmap(args.vmap_p2, VMAP_0909_SHA256, "--vmap-p2"), "P3": check_vmap(args.vmap_p3, VMAP_0909_SHA256, "--vmap-p3")}
     if g4 is not None:
-        shas["P4"] = check_vmap(args.vmap_p4, label="--vmap-p4")
+        shas["P4"] = check_vmap(args.vmap_p4, VMAP_0909_SHA256, "--vmap-p4")
     frozen = check_frozen_model(args.artifact_dir)
     p3_hours = [h for w in g3["walkers"] for h in w.hours]
     assert_hours_allowed(list(g2["pool"]) + list(g4["pool"] if g4 else []) + p3_hours, with_p4=g4 is not None)
@@ -1587,6 +1598,31 @@ def collect_all(g: Mapping[str, Any], args: argparse.Namespace, scratch: Path, h
     return v_rows, nv_rows, no_v_pools
 
 
+def unpriceable_mints(mint_pools: Mapping[str, set[str]], vmap: Mapping[str, int | None]) -> set[str]:
+    """Pool-based and outcome-blind: a mint is unpriceable if any PumpSwap pool it printed on in the counted window has no V in the pinned map
+    (absent, or present with null). An explicit V of 0 is a real V and is priceable."""
+    return {m for m, ps in mint_pools.items() if any(vmap.get(p) is None for p in ps)}
+
+
+def remove_unpriceable(universe: Sequence[Mapping[str, Any]], unpriceable: set[str]) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """Remove the unpriceable mints from the universe for every config and the frozen side alike. Refuses (Refused) if more than 0.5% of the
+    universe's mints would go. Returns (kept universe, record for the report: count, fraction, mint ids)."""
+    removed = sorted(u["mint"] for u in universe if u["mint"] in unpriceable)
+    frac = (len(removed) / len(universe)) if universe else 0.0
+    rec = {"rule": "pool-based, outcome-blind: a mint on a PumpSwap pool with no V (null or absent) in the pinned map is removed for all configs and the frozen side", "count": len(removed), "fraction": frac,
+           "max_fraction": UNPRICEABLE_MAX_FRACTION, "n_universe_before": len(universe), "mints": removed}
+    if frac > UNPRICEABLE_MAX_FRACTION:
+        raise Refused(f"{len(removed)} of {len(universe)} universe mints ({frac:.3%}) sit on pools with no V in the pinned map; the limit is {UNPRICEABLE_MAX_FRACTION:.1%}. Extend the map first; no tries line was written")
+    gone = set(removed)
+    return [u for u in universe if u["mint"] not in gone], rec
+
+
+def load_pinned_vmap(path: str | Path) -> dict[str, int | None]:
+    from tools.pumpswap_virtual import load_map
+
+    return load_map(Path(path))
+
+
 def no_v_mints_from(no_v_pools: set[str], mint_pools: Mapping[str, set[str]]) -> set[str]:
     return {m for m, ps in mint_pools.items() if ps & set(no_v_pools)}
 
@@ -1684,6 +1720,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Integrity as exc:  # before `started`: nothing is logged
             print(f"refusing after read (before started, no tries line): {exc}", file=sys.stderr)
             return 2
+        try:  # the unpriceable-pool rule: decided BEFORE `started` and before any fit
+            universe, unpriceable_rec = remove_unpriceable(universe, unpriceable_mints(mint_pools, load_pinned_vmap(args.vmap_p1)))
+        except Refused as exc:
+            print(f"refusing (before started, no tries line): {exc}", file=sys.stderr)
+            return 2
         no_v = no_v_mints_from(no_v_pools, mint_pools)
         frozen_sel = frozen_selection(universe, args.artifact_dir)
         bad = [u["mint"] for u, f in zip(universe, frozen_sel) if f and u["block"] != "P1" and u["mint"] in no_v]
@@ -1704,8 +1745,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         started = True
         base = {
             "schema": SCHEMA, "banner": BANNER, "first_line": first_line(with_p4), "with_p4": with_p4, "n_dates": len(pool_dates(with_p4)), "n_non_p1_dates": len(non_p1_dates(with_p4)), "dates": pool_dates(with_p4),
-            "universe": {"n": len(universe), "sha256": universe_sha, "stats": ustats, "path": str(out_dir / OUT_UNIVERSE)},
-            "costs": {"vmap_p2_pinned": VMAP_SHA256, "vmap_sha256": g["vmap_sha256"], "k": K, "size_sol": SIZE_SOL, "fee_lamports": FEE, "exit_lag": EXIT_LAG, "haircut_factor": HAIRCUT_FACTOR},
+            "universe": {"n": len(universe), "sha256": universe_sha, "stats": ustats, "path": str(out_dir / OUT_UNIVERSE), "unpriceable_removed": unpriceable_rec},
+            "costs": {"vmap_0909_pinned": VMAP_0909_SHA256, "vmap_sha256": g["vmap_sha256"], "k": K, "size_sol": SIZE_SOL, "fee_lamports": FEE, "exit_lag": EXIT_LAG, "haircut_factor": HAIRCUT_FACTOR},
             "guards": {"view_sha256": {"P1": g["g1"]["view_sha256"], "P2": g["g2"]["view_sha256"], "P3_manifests": g["g3"]["pin_sha256"], "P4": (g["g4"] or {}).get("view_sha256")}, "frozen": g["frozen"]},
             "v_prepass": covs, "no_v_mints_in_universe": len(no_v & {u["mint"] for u in universe}), "caveats": list(CAVEATS), "max_workers": args.max_workers, "git_head": head, "git_dirty_tools": False, "args_hash": ahash,
         }
