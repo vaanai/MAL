@@ -32,6 +32,8 @@ import gc
 import hashlib
 import json
 import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 import os
 import re
 import signal
@@ -610,7 +612,18 @@ def progress(msg: str) -> None:
         rss = xx._rss_mb()
     except Exception:  # noqa: BLE001
         rss = -1
-    print(f"[exp016] {msg} rss_mb={rss}", file=sys.stderr, flush=True)
+    print(f"[exp016] {msg} rss_mb={rss} cg_mb={_cgroup_mb()}", file=sys.stderr, flush=True)
+
+
+def _cgroup_mb() -> int:
+    """This process's cgroup `memory.current` in MB (workers included), -1 if it cannot be read."""
+    try:
+        for line in Path("/proc/self/cgroup").read_text().splitlines():
+            if line.startswith("0::"):
+                return int(Path("/sys/fs/cgroup" + line[3:].strip() + "/memory.current").read_text()) // (1024 * 1024)
+    except Exception:  # noqa: BLE001
+        pass
+    return -1
 
 
 def _real_slot(v: Any) -> bool:
@@ -789,11 +802,12 @@ def _one_cell(src: SourceData, item: tuple[str, str, Mapping[str, Any], int, str
 
 
 def _cell_task(i: int) -> tuple[bool, Any]:
-    """Worker body: (True, cell) or (False, the exception). Never raises, so the parent re-raises in mint order."""
+    """Worker body: (True, cell) or (False, the exception). Catches BaseException (a SystemExit must not kill the worker silently), so the parent
+    re-raises the first one in mint order with its original type."""
     src, work, vmap, hist, history = _CELL_CTX  # type: ignore[misc]
     try:
         return True, _one_cell(src, work[i], vmap, hist, history)
-    except (Refused, rug.PoolAttributionRefusal, SimulationError) as exc:
+    except BaseException as exc:  # noqa: BLE001
         return False, exc
 
 
@@ -809,17 +823,24 @@ def _run_cells(src: SourceData, work: Sequence[tuple[str, str, Mapping[str, Any]
                 progress(f"{src.tag}: cells {i + 1}/{n}")
         return cells
     _CELL_CTX = (src, work, vmap, hist, history)
+    if hasattr(history, "_index"):
+        history._index()  # built once in the parent, shared copy-on-write
+    gc.collect()
+    gc.freeze()  # the parent heap is not scanned (and its pages not dirtied) by the workers' collections
+    ex = ProcessPoolExecutor(max_workers=min(workers, n), mp_context=multiprocessing.get_context("fork"))
     try:
-        with multiprocessing.get_context("fork").Pool(min(workers, n)) as pool:
-            # imap yields in submission order, so the cell list and the first error are those of the serial loop
-            for i, (ok, res) in enumerate(pool.imap(_cell_task, range(n), chunksize=4)):
-                if not ok:
-                    pool.terminate()
-                    raise res
-                cells.append(res)
-                if (i + 1) % PROGRESS_EVERY == 0:
-                    progress(f"{src.tag}: cells {i + 1}/{n}")
+        # map yields in submission order, so the cell list and the first error are those of the serial loop
+        for i, (ok, res) in enumerate(ex.map(_cell_task, range(n), chunksize=4)):
+            if not ok:
+                raise res
+            cells.append(res)
+            if (i + 1) % PROGRESS_EVERY == 0:
+                progress(f"{src.tag}: cells {i + 1}/{n}")
+    except BrokenProcessPool:
+        raise SimulationError("a cell worker died (killed or exited); the run refuses (no outcome value is printed)") from None
     finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+        gc.unfreeze()
         _CELL_CTX = None
     return cells
 

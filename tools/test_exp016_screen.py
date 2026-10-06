@@ -2036,6 +2036,63 @@ class ParallelCellsTests(unittest.TestCase):
             self.assertIn("MINT0007", str(cm.exception))
             self.assertNotIn("123456", str(cm.exception))
 
+    def test_exception_type_and_mint_parity_serial_and_parallel(self):
+        real = x.simulate_mint
+        for exc_type in (x.Refused, x.SimulatorDrift, rug.PoolAttributionRefusal):
+            def boom(mint_id, *a, _t=exc_type, **k):
+                if mint_id in ("MINT0009", "MINT0027"):
+                    raise _t(f"bad {mint_id}")
+                return real(mint_id, *a, **k)
+
+            for workers in (1, 3):
+                with mock.patch.object(x, "simulate_mint", side_effect=boom):
+                    with self.assertRaises(exc_type) as cm:
+                        self._run(workers)
+                self.assertIs(type(cm.exception), exc_type)
+                self.assertIn("MINT0009", str(cm.exception))
+
+    def _bounded(self, fn, seconds=60):
+        import signal
+
+        def _alarm(*_a):
+            raise AssertionError("process_source did not finish in bounded time (hang)")
+
+        prev = signal.signal(signal.SIGALRM, _alarm)
+        signal.alarm(seconds)
+        try:
+            return fn()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, prev)
+
+    def test_worker_systemexit_fails_bounded_with_the_original_type(self):
+        real = x.simulate_mint
+
+        def boom(mint_id, *a, **k):
+            if mint_id == "MINT0012":
+                raise SystemExit("worker exit")
+            return real(mint_id, *a, **k)
+
+        with mock.patch.object(x, "simulate_mint", side_effect=boom):
+            with self.assertRaises(SystemExit):
+                self._bounded(lambda: self._run(3))
+
+    def test_worker_hard_death_is_a_refusal_not_a_hang(self):
+        real = x.simulate_mint
+
+        def boom(mint_id, *a, **k):
+            if mint_id == "MINT0012":
+                os._exit(9)
+            return real(mint_id, *a, **k)
+
+        with mock.patch.object(x, "simulate_mint", side_effect=boom):
+            with self.assertRaises(x.SimulationError) as cm:
+                self._bounded(lambda: self._run(3))
+        self.assertIn("worker died", str(cm.exception))
+
+    def test_cgroup_mb_is_an_int(self):
+        self.assertIsInstance(x._cgroup_mb(), int)
+
     def test_progress_lines_are_counts_only(self):
         import io
         from contextlib import redirect_stderr
@@ -2045,7 +2102,7 @@ class ParallelCellsTests(unittest.TestCase):
             self._run(2)
         lines = [ln for ln in buf.getvalue().splitlines() if " cells " in ln and "/" in ln]
         self.assertEqual(len(lines), 4)
-        self.assertTrue(all(re.fullmatch(r"\[exp016\] P1A: cells \d+/40 rss_mb=-?\d+", ln) for ln in lines), lines)
+        self.assertTrue(all(re.fullmatch(r"\[exp016\] P1A: cells \d+/40 rss_mb=-?\d+ cg_mb=-?\d+", ln) for ln in lines), lines)
 
 
 if __name__ == "__main__":
