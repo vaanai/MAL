@@ -658,6 +658,22 @@ def zero_cell_check(masks: Mapping[str, Any]) -> None:
         raise Refused("the frozen book selects no scored migration")
 
 
+COVERAGE_MIN = 0.90
+MIN_FROZEN_SCORED = 100
+
+
+def check_precount(precount: Mapping[str, Any], masks: Mapping[str, Any]) -> None:
+    """Plan section 7 item 8: coverage below 90% on a scored source, fewer than 100 frozen-selected scored migrations, or no skilled holder at all."""
+    by = precount.get("by_source") or {}
+    bad = [s for s in SCORED_SOURCES if s in by and (by[s]["coverage"] or 0.0) < COVERAGE_MIN]
+    if bad:
+        raise Refused(f"feature coverage below {COVERAGE_MIN:.0%} on {bad}: {[by[s]['coverage'] for s in bad]}")
+    if sum(masks["frozen"]) < MIN_FROZEN_SCORED:
+        raise Refused(f"only {sum(masks['frozen'])} frozen-selected scored migrations (< {MIN_FROZEN_SCORED})")
+    if not any(d["with_skilled_holder"] for d in by.values()):
+        raise Refused("no mint with a skilled holder in any scored source")
+
+
 def decide(cells: Mapping[str, Mapping[str, Any]], hm: Mapping[str, Mapping[str, Any]]) -> str:
     wins = [c for c in CELLS if hm[c]["reject"] and cells[c]["bars_all"]]
     if not wins:
@@ -767,6 +783,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         scores = frozen_scores(universe, args.artifact_dir)
         masks = build_masks(universe, scores, feats)
         zero_cell_check(masks)
+        check_precount(json.loads((out_dir / OUT_PRECOUNT).read_text(encoding="utf-8")), masks)
         head = e15.git_state()["head"]
         e15.take_lock(out_dir, head, hashlib.sha256(json.dumps(sorted(vars(args).items(), key=lambda kv: kv[0]), default=str).encode()).hexdigest())
     except (Refused, e15.Refused) as exc:

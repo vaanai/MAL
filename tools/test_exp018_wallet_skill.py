@@ -203,6 +203,16 @@ class TestRefusals(unittest.TestCase):
             with self.assertRaises(w.Refused):
                 w.hour_files([str(Path(d) / "a"), str(Path(d) / "b")], ["2026-08-20T00"])
 
+    def test_precount_refusals(self):
+        pc = {"by_source": {"P2": {"coverage": 0.95, "with_skilled_holder": 3}}}
+        with self.assertRaises(w.Refused):
+            w.check_precount(pc, {"frozen": [True] * 99})
+        with self.assertRaises(w.Refused):
+            w.check_precount({"by_source": {"P2": {"coverage": 0.5, "with_skilled_holder": 3}}}, {"frozen": [True] * 200})
+        with self.assertRaises(w.Refused):
+            w.check_precount({"by_source": {"P2": {"coverage": 1.0, "with_skilled_holder": 0}}}, {"frozen": [True] * 200})
+        w.check_precount(pc, {"frozen": [True] * 100})
+
     def test_cache_pin_refuses_wrong_manifest(self):
         import tempfile
 
