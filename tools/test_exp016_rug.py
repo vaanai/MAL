@@ -701,6 +701,43 @@ class BlockHistoryIndexTests(unittest.TestCase):
         self.assertGreater(checked, 1000)
         self.assertGreater(nonzero, 100)  # the oracle is not vacuous
 
+    def test_indexed_query_equals_full_scan_boundaries_duplicates_growth(self):
+        """Many seeds: boundary records at create_slot - SLOTS_24H (+-1) and cutoff +-1, duplicate mint names with the query mint present,
+        creators that are also launch wallets / dump sellers, launch-buy slots below create_slot, records appended between queries."""
+        import random
+
+        H = rg.SLOTS_24H
+        checked = nonzero = 0
+        for seed in range(150):
+            rnd = random.Random(seed)
+            W = [f"W{i}" for i in range(rnd.randrange(2, 10))]
+            C = [f"C{i}" for i in range(rnd.randrange(1, 5))] + W[:2]
+            names = [f"R{i}" for i in range(rnd.randrange(5, 60))]
+            base = rnd.randrange(H, 2 * H)
+            recs = []
+            for _ in range(rnd.randrange(1, 120)):
+                cs = rnd.choice([base, base - H, base - H - 1, base - H + 1, base - 1, base + 1, rnd.randrange(base - H - 50, base + 50)])
+                lb = [(cs + rnd.randrange(-2, 6), rnd.choice(W)) for _ in range(rnd.randrange(0, 6))]
+                ds = [rg.DumpStep(cs + rnd.randrange(-3, 60), frozenset(rnd.sample(W + C, rnd.randrange(0, 4)))) for _ in range(rnd.randrange(0, 3))]
+                recs.append(rg.MintRecord(rnd.choice(names + ["Q"]), frozenset(rnd.sample(C, rnd.randrange(0, 3))), cs, lb, ds))
+            h = rg.BlockHistory(list(recs))
+            for q in range(40):
+                if q == 20:  # records appended after earlier queries
+                    extra = [rg.MintRecord("Q" if rnd.random() < .3 else rnd.choice(names), frozenset({rnd.choice(C)}), rnd.choice([base, base - H]),
+                                           [(base - 1, rnd.choice(W))], []) for _ in range(3)]
+                    h.records.extend(extra)
+                    recs.extend(extra)
+                mint = rnd.choice(["Q", "Z"] + names)
+                cutoff = rnd.choice([base, base + 1, base - 1, base + rnd.randrange(-5, 60)])
+                args = (mint, frozenset(rnd.sample(C, rnd.randrange(0, len(C) + 1))), base, cutoff, set(rnd.sample(W, rnd.randrange(0, len(W) + 1))),
+                        {w: rnd.randrange(0, 10**15) for w in W + C})
+                got, want = h.query(*args), _reference_query(recs, *args)
+                self.assertEqual(repr(got), repr(want), (seed, q))
+                checked += 1
+                nonzero += any(want.values())
+        self.assertGreater(checked, 5000)
+        self.assertGreater(nonzero, 500)
+
     def test_empty_history_and_cutoff_before_everything(self):
         args = ("M", frozenset({"C"}), 100, 50, {"W"}, {})
         self.assertEqual(rg.BlockHistory([]).query(*args), _reference_query([], *args))

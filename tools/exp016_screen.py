@@ -31,6 +31,9 @@ import collections
 import gc
 import hashlib
 import json
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 import os
 import re
 import signal
@@ -609,7 +612,18 @@ def progress(msg: str) -> None:
         rss = xx._rss_mb()
     except Exception:  # noqa: BLE001
         rss = -1
-    print(f"[exp016] {msg} rss_mb={rss}", file=sys.stderr, flush=True)
+    print(f"[exp016] {msg} rss_mb={rss} cg_mb={_cgroup_mb()}", file=sys.stderr, flush=True)
+
+
+def _cgroup_mb() -> int:
+    """This process's cgroup `memory.current` in MB (workers included), -1 if it cannot be read."""
+    try:
+        for line in Path("/proc/self/cgroup").read_text().splitlines():
+            if line.startswith("0::"):
+                return int(Path("/sys/fs/cgroup" + line[3:].strip() + "/memory.current").read_text()) // (1024 * 1024)
+    except Exception:  # noqa: BLE001
+        pass
+    return -1
 
 
 def _real_slot(v: Any) -> bool:
@@ -767,6 +781,77 @@ def in_counted_window(block: str, migration_row: Mapping[str, Any]) -> bool:
     return True if not isinstance(bt, int) else e15.in_block_window(block, bt * 1000)
 
 
+PROCESS_WORKERS = 1  # set from `--max-workers` by `precount` / `main`; 1 = the serial loop
+PROGRESS_EVERY = 500  # mints between counts-only progress lines
+PARALLEL_MIN_ITEMS = 8  # below this the Pool start-up is not worth it
+_CELL_CTX: tuple[Any, ...] | None = None  # (src, work, vmap, hist, history), set BEFORE the Pool is created so forked workers share it copy-on-write
+
+
+def _one_cell(src: SourceData, item: tuple[str, str, Mapping[str, Any], int, str], vmap: Mapping[str, int | None], hist: Mapping[str, list[int]],
+              history: Any) -> dict[str, Any]:
+    m, pool, cr, mslot_eff, origin = item
+    try:
+        cell = simulate_mint(m, cr, src.rows_by_mint.get(m, ()), pool=pool, migration_slot=mslot_eff, vmap=vmap,
+                             tape_through_ms=src.through_ms, creator_hist=hist, history=history)
+    except (Refused, rug.PoolAttributionRefusal):
+        raise
+    except Exception as exc:  # noqa: BLE001 - the message may hold a net; name the mint and the type only
+        raise SimulationError(f"{m}: unexpected {type(exc).__name__} in the simulation (message withheld: it may carry outcome numbers)") from None
+    cell.update({"source": src.tag, "block": src.block, "origin": origin})
+    return cell
+
+
+def _cell_task(i: int) -> tuple[bool, Any]:
+    """Worker body: (True, cell) or (False, the exception). Catches BaseException (a SystemExit must not kill the worker silently), so the parent
+    re-raises the first one in mint order with its original type."""
+    src, work, vmap, hist, history = _CELL_CTX  # type: ignore[misc]
+    try:
+        return True, _one_cell(src, work[i], vmap, hist, history)
+    except BaseException as exc:  # noqa: BLE001
+        return False, exc
+
+
+def _run_cells(src: SourceData, work: Sequence[tuple[str, str, Mapping[str, Any], int, str]], vmap: Mapping[str, int | None],
+               hist: Mapping[str, list[int]], history: Any, workers: int) -> list[dict[str, Any]]:
+    global _CELL_CTX
+    n = len(work)
+    cells: list[dict[str, Any]] = []
+    if workers <= 1 or n < PARALLEL_MIN_ITEMS or "fork" not in multiprocessing.get_all_start_methods():
+        for i, item in enumerate(work):
+            cells.append(_one_cell(src, item, vmap, hist, history))
+            if (i + 1) % PROGRESS_EVERY == 0:
+                progress(f"{src.tag}: cells {i + 1}/{n}")
+        return cells
+    _CELL_CTX = (src, work, vmap, hist, history)
+    if hasattr(history, "_index"):
+        history._index()  # built once in the parent, shared copy-on-write
+    gc.collect()
+    gc.freeze()  # the parent heap is not scanned (and its pages not dirtied) by the workers' collections
+    ex = ProcessPoolExecutor(max_workers=min(workers, n), mp_context=multiprocessing.get_context("fork"))
+    try:
+        # map yields in submission order, so the cell list and the first error are those of the serial loop
+        for i, (ok, res) in enumerate(ex.map(_cell_task, range(n), chunksize=4)):
+            if not ok:
+                raise res
+            cells.append(res)
+            if (i + 1) % PROGRESS_EVERY == 0:
+                progress(f"{src.tag}: cells {i + 1}/{n}")
+    except BrokenProcessPool:
+        raise SimulationError("a cell worker died (killed or exited); the run refuses (no outcome value is printed)") from None
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+        gc.unfreeze()
+        _CELL_CTX = None
+    return cells
+
+
+def set_process_workers(args: argparse.Namespace) -> None:
+    """The per-mint cell loop uses the validated `--max-workers`, capped at the tape-pass cap (4). Performance only."""
+    global PROCESS_WORKERS
+    PROCESS_WORKERS = max(1, min(int(getattr(args, "max_workers", 1) or 1), e15.TAPE_WORKERS_CAP))
+    progress(f"cell workers={PROCESS_WORKERS}")
+
+
 def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn: Callable[[str], str] | None = None) -> dict[str, Any]:
     """The tape pass for one source: P2 gate, block history, one cell per migrated mint. Outcome-blind counters are returned beside the cells.
     `canonical_fn` (production: `canonical_pool_str`) adds the report-only pool-vs-canonical count for sources with migration rows."""
@@ -787,7 +872,7 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
         del src.rows_by_mint[m]  # the records hold what the block pass needs; only migrated mints' rows are needed from here
     progress(f"{src.tag}: block history built records={len(records)} migrated_mints_with_rows={len(src.rows_by_mint)}")
     hist = src.creator_hist if src.creator_hist is not None else creator_history(src.creates)  # ALL creates, before any exclusion
-    cells: list[dict[str, Any]] = []
+    work: list[tuple[str, str, Mapping[str, Any], int, str]] = []
     no_create_row: list[str] = []
     no_migration_slot: list[str] = []
     no_bonding = sorted(m for m in src.excluded_no_bonding if m in src.migrations)
@@ -809,15 +894,10 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
         # A complete-only mint's slot is the slot of the transaction that COMPLETES the curve, which also holds the completing bonding buy: the cutoff is
         # complete slot + 1 (plan 13 item 13), so that buy is in the features like every migration-row mint's curve; simulate_mint still clamps it to the
         # first print on the pool, so every feature stays strictly before any pool print.
-        try:
-            cell = simulate_mint(m, cr, src.rows_by_mint.get(m, ()), pool=pool, migration_slot=mslot + (1 if origin == "complete_only" else 0), vmap=vmap,
-                                 tape_through_ms=src.through_ms, creator_hist=hist, history=history)
-        except (Refused, rug.PoolAttributionRefusal):
-            raise
-        except Exception as exc:  # noqa: BLE001 - the message may hold a net; name the mint and the type only
-            raise SimulationError(f"{m}: unexpected {type(exc).__name__} in the simulation (message withheld: it may carry outcome numbers)") from None
-        cell.update({"source": src.tag, "block": src.block, "origin": origin})
-        cells.append(cell)
+        work.append((m, pool, cr, mslot + (1 if origin == "complete_only" else 0), origin))
+    # One cell per work item, in `work` order (sorted mint). Items are independent (read-only shared state), so the loop may run on forked
+    # workers (PROCESS_WORKERS > 1); the cells and the first raised error are the same as the serial loop's, in the same order.
+    cells = _run_cells(src, work, vmap, hist, history, PROCESS_WORKERS)
     progress(f"{src.tag}: cells built cells={len(cells)}")
     win = {m for m, mr in src.migrations.items() if in_counted_window(src.block, mr)}
     pool_vs_canonical = count_pool_vs_canonical(src.migrations, canonical_fn) if (canonical_fn is not None and not src.derived_pools) else None
@@ -1727,6 +1807,7 @@ def precount(args: argparse.Namespace) -> int:
         progress("precount: guards start")
         refuse_extra_reserved(args)
         g = run_guards(args, pin_required=False)
+        set_process_workers(args)
         progress("precount: guards done")
         if args.vmap and re.fullmatch(r"[0-9a-f]{64}", VMAP_EXP016_SHA256):
             vmap_raw = load_pinned_vmap(args.vmap)
@@ -1815,6 +1896,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         progress("guards start")
         g = run_guards(args)
+        set_process_workers(args)
         progress("guards done")
         check_no_prior_tries(tries_path, canonical)
         try:
