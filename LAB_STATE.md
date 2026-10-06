@@ -1,6 +1,6 @@
 # MAL Lab State
 
-Compact reload for managers. **As-of:** 2026-10-06 ~05:50Z (manager7). `main` through [#370](https://github.com/vaanai/MAL/pull/370) (`ee9e09a`). **Paper research. One live execution probe (DEC-019, 0.05 SOL) runs on fast-0 under owner approval; it never counts toward any gate.** Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
+Compact reload for managers. **As-of:** 2026-10-06 ~17:15Z (manager8). `main` through [#414](https://github.com/vaanai/MAL/pull/414) (`d6220e7`). **Read [docs/HANDOFF.md](docs/HANDOFF.md) first:** it holds the current 10-16 FINAL procedure (DEC-016 Am.5 §7, all tools merged) and the EXP-016 next steps. **Paper research. One live execution probe (DEC-019, 0.05 SOL) runs on fast-0 under owner approval; it never counts toward any gate.** Probe: 57/90, realized −0.167875 SOL (a loss); faa3192 alone −0.014008 SOL over 28 trips (−0.0005/trip; +0.0143 before tx fees). Two hosts: Oracle `mal-core-0` and OVH `mal-fast-0`. How to reach them: [docs/HOSTS.md](docs/HOSTS.md). History that used to live here is in [ARTIFACTS/daily/2026-09-28-manager-session.md](ARTIFACTS/daily/2026-09-28-manager-session.md) and [ARTIFACTS/daily/2026-09-28.md](ARTIFACTS/daily/2026-09-28.md).
 
 ## Objective
 
@@ -92,6 +92,12 @@ As of 2026-10-05 ~09:45Z.
 | Healthcheck | Oracle `mal-healthcheck.timer` every 5 min | `/var/lib/mal/eng/healthcheck.sh` |
 
 ## Current research state
+
+- **10-06 afternoon (manager8):**
+  - **V0 LP law.** V0 changes only on PumpSwap Deposit/Withdraw: V0 ← floor(V0·S_after/S_before) (#400). The 10-16 (B) rules are in DEC-016 Am.5 §7, and the tools are merged (#402, #405, #411).
+  - **EXP-016.** Pre-read fixes merged (#406, #414). The real-layout `--precount` exposed two memory problems: an OOM at 48 GB, then whole-row fallback. Both are fixed; the V-map pin waits on a clean precount.
+  - **Stale wording.** The "first positive" cell in older docs is the migrate-direct cell: best of 972 in-sample, and it FAILED out of sample ([migrate-direct-oos.md](ARTIFACTS/lab/migrate-direct-oos.md)).
+  - **Frozen EXP-012 at realistic costs.** At 0.05 SOL it is −0.000439 SOL/trade flat on 27 non-P1 dates (exploration). The threshold is not moved before the FINAL.
 
 - **10-06 update (exploration; nothing here is gate evidence):**
   - **EXP-012 back-check on explore-0814 (#342/#346): REFUSED_AFTER_READ** (job #207). 1 primary trade was on a pool with no V: 30 no-V pools, 29 absent from `pool_v_0814` plus 1 closed account. No reading and no rerun; 6 tries logged (explore-0814 count 7). [Result](EXP/EXP-012-backcheck-0814.md).
