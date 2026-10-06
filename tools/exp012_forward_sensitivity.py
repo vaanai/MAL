@@ -36,8 +36,10 @@ its own books, rule, null-V assessment on every scored book (top-3 union by flat
 reported only) and the V pass's adapter counts. With V on, the top-level `verdict`, the DONE marker and the printed
 VERDICT are (B)'s; (A)'s is kept as `a_priced_verdict`, report-only. The V pass keeps the `repro` variant: its flat and
 press must equal the k = 1 V rows of the forward worker byte for byte, and every row must carry its null-V tags (else
-refuse); all of this runs before the window claim. On the pinned window all of --vmap, --vmap-sha256, --mcap-mode and
---vbook-report are required, and that vbook report must be finished, for the same V map sha256 and window.
+refuse); the exit-past-tape check (`_group`) also runs there; all of this runs before the window claim. The null-V
+assessment needs the capped book's P&L (top 3 by flat and press), so it stays after the claim. On the pinned window all of --vmap, --vmap-sha256, --mcap-mode and
+--vbook-report are required, and that vbook report must be PASS, for the same V map sha256 and window, and match the one STARTED and one DONE line of
+VBOOK_RUNS.jsonl (same V map sha256, FINAL rows sha256, report sha256); it is embedded as `vbook_binding`.
 
 How the delay is applied: the frozen exit logic is not edited. In the worker process only, restored after,
 `exploration_exits.ENTRY_LAND_K` is set to k and `ENTRY_BOUND` to the variant's bound (end for the re-score, so
@@ -146,7 +148,7 @@ def check_sealed(out_dir: Path, ledger: Path | None, clean_clock: datetime, read
 
 
 def _fl(x: Any) -> str:
-    return json.dumps(float(x))
+    return json.dumps(x)
 
 
 def compare_rows(stored: Sequence[dict[str, Any]], fresh: Sequence[dict[str, Any]]) -> list[str]:
@@ -586,24 +588,42 @@ def _kstr(k: float) -> Any:
     return "inf" if math.isinf(k) else int(k)
 
 
-def check_vbook_report(path: Path, vmap_sha256: str, window: tuple[str, str], test_window: bool) -> dict[str, Any]:
-    """The finished `vbook_report.json` of tools/exp012_forward_vbook.py for this V map and window. A refused vbook run writes none."""
+def check_vbook_report(path: Path, vmap_sha256: str, window: tuple[str, str], test_window: bool, runs_ledger: Path | None = None, final_rows_sha256: str | None = None) -> dict[str, Any]:
+    """The finished `vbook_report.json` of tools/exp012_forward_vbook.py for this V map and window, tied to its
+    VBOOK_RUNS.jsonl DONE line. On the pinned window `b_verdict` must be PASS (Amendment 3 (a) only matters if (B) passed,
+    as (A) must have PASSed), and the ledger must hold exactly one STARTED and one DONE line for the window, the DONE line
+    carrying this report's sha256, the same V map sha256 and the FINAL rows sha256. Returns the binding that is embedded
+    in the report."""
     import tools.exp012_forward_vbook as vb
 
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        doc = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise fw.Refused([f"--vbook-report {path} is unreadable: {type(exc).__name__}"])
     if not isinstance(doc, dict) or doc.get("schema") != vb.SCHEMA_REPORT:
         raise fw.Refused([f"--vbook-report {path} is not a {vb.SCHEMA_REPORT} document"])
     if (doc.get("vmap") or {}).get("sha256") != vmap_sha256.strip().lower():
         raise fw.Refused([f"--vbook-report {path}: vmap.sha256 does not equal --vmap-sha256"])
-    decided = ("PASS", "FAIL") if not test_window else ("PASS", "FAIL", vb.NOT_DECIDABLE)
-    if doc.get("b_verdict") not in decided:
-        raise fw.Refused([f"--vbook-report {path}: b_verdict {doc.get('b_verdict')!r} is not a decided PASS or FAIL; the sensitivity window is single-use, so it is not claimed until (B) is decidable"])
+    ok = ("PASS",) if not test_window else ("PASS", "FAIL", vb.NOT_DECIDABLE)
+    if doc.get("b_verdict") not in ok:
+        raise fw.Refused([f"--vbook-report {path}: b_verdict {doc.get('b_verdict')!r} is not PASS; Amendment 3 (a) is evaluated only if (B) passed, and the sensitivity window is single-use, so it is not claimed otherwise"])
     if (doc.get("clean_clock"), doc.get("read_end")) != window or bool(doc.get("test_window")) != test_window:
         raise fw.Refused([f"--vbook-report {path} is for another window or test_window flag"])
-    return doc
+    sha = hashlib.sha256(raw).hexdigest()
+    lines = [m for m in fw.ledger_markers(runs_ledger) if (m.get("clean_clock"), m.get("read_end")) == window and bool(m.get("test_window")) == test_window] if runs_ledger is not None else []
+    started = [m for m in lines if m.get("state") == "STARTED"]
+    done = [m for m in lines if m.get("state") == "DONE" and m.get("report_sha256") == sha]
+    if runs_ledger is None or not done:
+        raise fw.Refused([f"--vbook-report {path} (sha256 {sha}) has no DONE line in {runs_ledger}"])
+    if not test_window and (len(started) != 1 or len([m for m in lines if m.get("state") == "DONE"]) != 1):
+        raise fw.Refused([f"{runs_ledger} must hold exactly one STARTED and one DONE line for the window, found {len(started)} STARTED"])
+    line = done[-1]
+    if line.get("vmap_sha256") != vmap_sha256.strip().lower() or line.get("b_verdict") != doc.get("b_verdict"):
+        raise fw.Refused([f"{runs_ledger}: the DONE line does not match the report's V map sha256 or b_verdict"])
+    if final_rows_sha256 is not None and line.get("final_rows_sha256") != final_rows_sha256:
+        raise fw.Refused([f"{runs_ledger}: the DONE line's final_rows_sha256 differs from the FINAL lock's rows_sha256"])
+    return {"path": str(path.resolve()), "sha256": sha, "b_verdict": doc["b_verdict"], "runs_ledger": str(runs_ledger), "ledger_line": line}
 
 
 def run(
@@ -633,6 +653,7 @@ def run(
     vmap_sha256: str | None = None,
     mcap_mode: str | None = None,
     vbook_report: Path | None = None,
+    vbook_runs_ledger: Path | None = None,
 ) -> dict[str, Any]:
     cc = clean_clock if clean_clock is not None else fw.parse_clock(fw.PINNED_CLEAN_CLOCK)
     re_ = read_end if read_end is not None else fw.parse_clock(fw.PINNED_READ_END)
@@ -659,7 +680,7 @@ def run(
     if REQUIRE_V_ON_PINNED and pinned and (vmap is None or vmap_sha256 is None or mcap_mode is None or vbook_report is None):
         raise fw.Refused(["on the pinned window --vmap, --vmap-sha256, --mcap-mode v and --vbook-report are all required (Amendment 4 section 2: Amendment 3 (a) is evaluated on (B))"])
     result_dir = result_dir if result_dir is not None else out_dir / "sensitivity"
-    check_sealed(out_dir, final_ledger, cc, re_, test_window)
+    sealed_lock = check_sealed(out_dir, final_ledger, cc, re_, test_window)
     assert final_ledger is not None
     ledger = runs_ledger_path(final_ledger)
     if (result_dir / RESULT_JSON).exists():
@@ -678,6 +699,7 @@ def run(
         raise fw.Refused(["the FINAL read was not a PASS: there is nothing for the sensitivity check to support; no re-score is run"])
     vset: VSettings | None = None
     vinfo: dict[str, Any] | None = None
+    vbind: dict[str, Any] | None = None
     if vmap is not None or vmap_sha256 is not None or mcap_mode is not None or vbook_report is not None:
         import tools.exp012_forward_vbook as vb
 
@@ -688,7 +710,7 @@ def run(
         vinfo = vb.check_vmap(vmap, vmap_sha256)
         vset = VSettings(vmap, mcap_mode)
         if vbook_report is not None:
-            check_vbook_report(vbook_report, vmap_sha256, fw._wins(cc, re_), test_window)
+            vbind = check_vbook_report(vbook_report, vmap_sha256, fw._wins(cc, re_), test_window, vbook_runs_ledger if vbook_runs_ledger is not None else out_dir.resolve().parent / vb.RUNS_LEDGER_NAME, sealed_lock.get("rows_sha256"))
     # --- reproduction through the forward scorer's own path (a refusal here records nothing and writes nothing)
     with tempfile.TemporaryDirectory(prefix="exp012-sens-repro-") as td:
         repro = reproduce(walk_dir, stored, artifact_dir, pool, to, cc, re_, Path(td))
@@ -697,6 +719,7 @@ def run(
     vpass: dict[str, Any] | None = None
     if vset is not None:  # everything about (B) that can refuse runs here, before the claim, and records nothing
         vpass = v_pass(walk_dir, pool, artifact_dir, variants, slot_ms, vset, stored, cc, re_, to)
+        vpass["vbook_binding"] = vbind
         repro = {**repro, "entered_set_under_v_equals_a": True, "v_repro_variant_equals_forward_v_rows": True}
     # --- from here the window is claimed: one run per window, whatever happens next
     cc_s, re_s = fw._wins(cc, re_)
@@ -779,6 +802,7 @@ def v_pass(walk_dir: Path, pool: Sequence[str], artifact_dir: Path, variants: Se
     problems = compare_rows(fwd, got)
     if problems:
         raise fw.Refused(["V re-score worker's repro variant does not equal the forward worker's V rows at k = 1; no verdict: " + "; ".join(problems[:5])])
+    _group(srows, {fw.key_of(r) for r in stored if r["entered"]})  # a (B)-only exit past the tape refuses here, before the claim
     return {"rows": srows, "counts": counts}
 
 
@@ -845,6 +869,7 @@ def _rescore(walk_dir: Path, out_dir: Path, pool: Sequence[str], stored: Sequenc
         rep["window_note"] = fw.TEST_WINDOW_BANNER
     if vpass is not None:
         rep["b_v"], detail_v = _b_block(vpass, entered, k_p50, k_p90, terms["max_concurrent"], VSettings(Path(vinfo["path"]), "v"), vinfo)
+        rep["vbook_binding"] = vpass.get("vbook_binding")
         rep["a_priced_verdict"] = rep["verdict"]  # report-only once V is on
         rep["verdict"] = rep["b_v"]["verdict"]
         fw.atomic_write(result_dir / DETAIL_V_NAME, "".join(json.dumps(d, sort_keys=True) + "\n" for d in sorted(detail_v, key=lambda d: (d["book"], d["mig_ms"], d["mint"]))).encode("utf-8"))
@@ -884,6 +909,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--vmap", default=None, help="Amendment 4: also evaluate book (B) on vault + V with this pool V map")
     ap.add_argument("--vmap-sha256", default=None, help="the V map's sha256; the run refuses if the file differs")
     ap.add_argument("--mcap-mode", default=None, help="with --vmap: 'v' (the Amendment 4 rule)")
+    ap.add_argument("--vbook-runs-ledger", default=None, help="the vbook run ledger (default: VBOOK_RUNS.jsonl beside --out-dir)")
     ap.add_argument("--vbook-report", default=None, help="the finished vbook_report.json for this V map and window; required on the pinned window")
     a = ap.parse_args(argv)
     try:
@@ -896,7 +922,7 @@ def main(argv: list[str] | None = None) -> int:
             read_end=fw.parse_clock(a.read_end) if a.read_end else None,
             test_window=a.test_window, final_ledger=Path(a.final_ledger), freeze_commit=a.freeze_commit, frozen_manifest_md5=a.frozen_manifest_md5,
             vmap=Path(a.vmap) if a.vmap else None, vmap_sha256=a.vmap_sha256, mcap_mode=a.mcap_mode,
-            vbook_report=Path(a.vbook_report) if a.vbook_report else None,
+            vbook_report=Path(a.vbook_report) if a.vbook_report else None, vbook_runs_ledger=Path(a.vbook_runs_ledger) if a.vbook_runs_ledger else None,
         )
     except fw.Refused as exc:
         return fw._refuse(exc)

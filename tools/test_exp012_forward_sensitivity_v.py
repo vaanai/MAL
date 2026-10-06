@@ -6,6 +6,7 @@ Run: PYTHONPATH=$PWD /data/mal/venv/bin/python -m pytest -q tools/test_exp012_fo
 
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 from pathlib import Path
@@ -27,6 +28,10 @@ def _pooled_tape(mint, block_s, **kw):
     return creates, [{**t, "pool": f"pool-{mint}"} if t.get("venue") == "pumpswap" else t for t in trades]
 
 
+def ledger_of(out: Path) -> Path:
+    return out.parent / "ledger.jsonl"
+
+
 class VFx(tsens.Fx):
     @classmethod
     def setUpClass(cls) -> None:
@@ -37,6 +42,10 @@ class VFx(tsens.Fx):
         path = Path(tempfile.mkdtemp(dir=self._td.name)) / "pool_v.json"
         save_map(path, {p: V for p in POOLS} if vmap is None else vmap, 0)
         return path, fw._sha256_file(path)
+
+    def final_for_vbook(self):
+        out, ledger = self.sealed()
+        return self.walk, self.art, out
 
     def run_v(self, out, ledger, vmap, sha, **kw):
         return self.run_sens(out, ledger, vmap=vmap, vmap_sha256=sha, mcap_mode="v", **kw)
@@ -158,42 +167,82 @@ class VRefusals(VFx):
                 self.assertIn("--vbook-report", str(cm.exception))
         self.assertEqual(self.lines(sens.runs_ledger_path(ledger)), [])
 
-    def test_vbook_report_must_be_finished_for_this_map_and_window(self) -> None:
-        win = ("2026-10-06T00:00:00Z", "2026-10-16T00:00:00Z")
-        good = {"schema": vb.SCHEMA_REPORT, "vmap": {"sha256": "a" * 64}, "b_verdict": "FAIL", "clean_clock": win[0], "read_end": win[1], "test_window": False}
+    WIN = ("2026-10-06T00:00:00Z", "2026-10-16T00:00:00Z")
+
+    def vbook_files(self, verdict="PASS", *, extra_started=0, rows_sha="r" * 64, line_vmap="a" * 64, test_window=False, with_done=True):
+        win = self.WIN
         d = Path(tempfile.mkdtemp(dir=self._td.name))
+        doc = {"schema": vb.SCHEMA_REPORT, "vmap": {"sha256": "a" * 64}, "b_verdict": verdict, "clean_clock": win[0], "read_end": win[1], "test_window": test_window}
+        rp = d / "vbook_report.json"
+        rp.write_text(json.dumps(doc))
+        base = {"clean_clock": win[0], "read_end": win[1], "test_window": test_window}
+        lines = [{**base, "state": "STARTED"}] * (1 + extra_started)
+        if with_done:
+            lines.append({**base, "state": "DONE", "vmap_sha256": line_vmap, "final_rows_sha256": rows_sha, "b_verdict": verdict, "report_sha256": fw._sha256_file(rp)})
+        led = d / "VBOOK_RUNS.jsonl"
+        led.write_text("".join(json.dumps(x) + "\n" for x in lines))
+        return rp, led
 
-        def check(doc, sha="a" * 64):
-            f = d / "r.json"
-            f.write_text(json.dumps(doc))
-            return sens.check_vbook_report(f, sha, win, False)
+    def check(self, rp, led, *, sha="a" * 64, rows="r" * 64, test_window=False):
+        return sens.check_vbook_report(rp, sha, self.WIN, test_window, led, rows)
 
-        self.assertEqual(check(good)["b_verdict"], "FAIL")
-        for bad, sha in (({**good, "vmap": {"sha256": "b" * 64}}, "a" * 64), ({**good, "b_verdict": None}, "a" * 64), ({**good, "schema": "x"}, "a" * 64), ({**good, "read_end": "z"}, "a" * 64), (good, "c" * 64)):
-            with self.assertRaises(fw.Refused):
-                check(bad, sha)
-        with self.assertRaises(fw.Refused) as cm:
-            check({**good, "b_verdict": vb.NOT_DECIDABLE})  # pinned: the single-use window stays unspent
-        self.assertIn("single-use", str(cm.exception))
-        f = d / "nd.json"
-        f.write_text(json.dumps({**good, "b_verdict": vb.NOT_DECIDABLE, "test_window": True}))
-        self.assertEqual(sens.check_vbook_report(f, "a" * 64, win, True)["b_verdict"], vb.NOT_DECIDABLE)  # test windows only
+    def test_vbook_report_must_be_a_pass_bound_to_its_done_line(self) -> None:
+        rp, led = self.vbook_files()
+        got = self.check(rp, led)
+        self.assertEqual((got["b_verdict"], got["sha256"], got["ledger_line"]["state"]), ("PASS", fw._sha256_file(rp), "DONE"))
         with self.assertRaises(fw.Refused):
-            sens.check_vbook_report(d / "missing.json", "a" * 64, win, False)
+            self.check(rp, led, sha="c" * 64)
+        with self.assertRaises(fw.Refused):
+            self.check(rp, led, rows="x" * 64)  # not the FINAL marker's rows
+        for verdict in ("FAIL", vb.NOT_DECIDABLE, None):
+            rp2, led2 = self.vbook_files(verdict)
+            with self.assertRaises(fw.Refused) as cm:
+                self.check(rp2, led2)
+            self.assertIn("not PASS", str(cm.exception))
+        for kw in ({"extra_started": 1}, {"with_done": False}, {"line_vmap": "b" * 64}):
+            rp2, led2 = self.vbook_files(**kw)
+            with self.assertRaises(fw.Refused):
+                self.check(rp2, led2)
+        with self.assertRaises(fw.Refused):
+            self.check(rp, led.with_name("none.jsonl"))
+        rp3, led3 = self.vbook_files(vb.NOT_DECIDABLE, test_window=True)
+        self.assertEqual(self.check(rp3, led3, test_window=True)["b_verdict"], vb.NOT_DECIDABLE)  # fixture windows only
 
-    def test_pinned_not_decidable_vbook_report_refuses_before_the_claim(self) -> None:
+    def test_pinned_vbook_report_that_is_not_a_pass_refuses_before_the_claim(self) -> None:
         out, ledger = self.sealed()
         vmap, sha = self.vmap()
-        rep = {"schema": vb.SCHEMA_REPORT, "vmap": {"sha256": sha}, "b_verdict": vb.NOT_DECIDABLE, "clean_clock": fw.PINNED_CLEAN_CLOCK, "read_end": fw.PINNED_READ_END, "test_window": False}
-        f = Path(tempfile.mkdtemp(dir=self._td.name)) / "vbook_report.json"
-        f.write_text(json.dumps(rep))
-        with mock.patch.object(fw, "PINNED_CLEAN_CLOCK", tsens.CLEAN_CLOCK), mock.patch.object(fw, "PINNED_READ_END", tsens.READ_END), mock.patch.object(fw, "DEFAULT_LEDGER", ledger), mock.patch.object(sens, "check_sealed", return_value={}), mock.patch.object(sens, "final_verdict", return_value="PASS"):
-            rep["clean_clock"], rep["read_end"] = tsens.CLEAN_CLOCK, tsens.READ_END
-            f.write_text(json.dumps(rep))
+        rp, led = self.vbook_files("FAIL", line_vmap=sha)
+        doc = json.loads(rp.read_text())
+        doc["vmap"] = {"sha256": sha}
+        doc["clean_clock"], doc["read_end"] = tsens.CLEAN_CLOCK, tsens.READ_END
+        rp.write_text(json.dumps(doc))
+        with mock.patch.object(fw, "PINNED_CLEAN_CLOCK", tsens.CLEAN_CLOCK), mock.patch.object(fw, "PINNED_READ_END", tsens.READ_END), mock.patch.object(fw, "DEFAULT_LEDGER", ledger), mock.patch.object(sens, "check_sealed", return_value={"rows_sha256": "r"}), mock.patch.object(sens, "final_verdict", return_value="PASS"):
             with self.assertRaises(fw.Refused) as cm:
-                self.run_sens(out, ledger, test_window=False, vmap=vmap, vmap_sha256=sha, mcap_mode="v", vbook_report=f)
-        self.assertIn("single-use", str(cm.exception))
+                self.run_sens(out, ledger, test_window=False, vmap=vmap, vmap_sha256=sha, mcap_mode="v", vbook_report=rp, vbook_runs_ledger=led)
+        self.assertIn("not PASS", str(cm.exception))
         self.assertEqual(self.lines(sens.runs_ledger_path(ledger)), [])
+
+    def test_vbook_binding_is_embedded_end_to_end_on_a_test_window(self) -> None:
+        walk, art, out = self.final_for_vbook()
+        vmap, sha = self.vmap()
+        with tsens.patched(), mock.patch("sys.stderr", io.StringIO()) as err:
+            rc = vb.main(["--walk-dir", str(walk), "--final-out-dir", str(out), "--final-ledger", str(ledger_of(out)), "--vmap", str(vmap), "--vmap-sha256", sha, "--out-dir", str(out.parent / "vb"), "--artifact-dir", str(art), "--freeze-commit", tsens.FREEZE_COMMIT, "--test-window"])
+        self.assertEqual(rc, 0, err.getvalue())
+        report = out.parent / "vb" / "vbook_report.json"
+        rep = self.run_sens(out, ledger_of(out), vmap=vmap, vmap_sha256=sha, mcap_mode="v", vbook_report=report)
+        bind = rep["vbook_binding"]
+        self.assertEqual(bind["sha256"], fw._sha256_file(report))
+        self.assertEqual(bind["ledger_line"]["state"], "DONE")
+        self.assertEqual(bind["b_verdict"], json.loads(report.read_text())["b_verdict"])
+
+    def test_exit_past_tape_in_b_refuses_before_the_claim(self) -> None:
+        out, ledger = self.sealed()
+        vmap, sha = self.vmap()
+        with mock.patch.object(sens, "_group", side_effect=fw.Refused(["1 FINAL entered mint(s) have no row at k3"])):
+            with self.assertRaises(fw.Refused):
+                self.run_v(out, ledger, vmap, sha)
+        self.assertEqual(self.lines(sens.runs_ledger_path(ledger)), [])
+
     def test_wrong_sha_refuses_and_records_nothing(self) -> None:
         out, ledger = self.sealed()
         vmap, _sha = self.vmap()
