@@ -8,10 +8,14 @@ not by regex. Only the pool field is ever kept. Subcommands:
   fetch     --pools pools.json --vmap MAP --rps R [--new]  (Helius; MAP.reasons.json closed/unreadable)
   snapshot  --vmap MAP --out DIR                                  (read-only copy + snapshots.jsonl)
   validate  --walk-dir D --from H --to H --vmap M --vmap-sha256 S --out validation.json (Amendment 4 s5; never fetches)
-  merge     --final MAP --pools pools.json --snapshot SNAP [--snapshot SNAP2] --out OUT
+  diffs     --a DETAIL --b DETAIL --pools pools.json --out OUT.json   (pools whose V0 differs; ids + both values)
+  lphist    --pools P.json --from ISO --to ISO --out OUT.json [--rps 5]  (LP Deposit/Withdraw events; read-only file + .meta.json)
+  merge     --final MAP --pools pools.json --snapshot SNAP [--snapshot SNAP2] [--lphist FILE ...] --out OUT
 
-V is constant per pool and a closed pool reads null later, so an early snapshot fills
-pools that are null (or absent) after the cutoff. Disagreeing non-null values refuse.
+V0 (= V + A + B) is constant per pool except at LP Deposit/Withdraw, where it becomes floor(V0 * S_after / S_before)
+(DEC-016 Amendment 5 section 7). A closed pool reads null later, so an early snapshot fills pools that are null (or
+absent) after the cutoff. Two differing V0 values must be explained by the pool's LP events (--lphist) or the pool is
+unexplained / unresolved: listed in side files, never filled, and capped at 0.1% of the pool set.
 Run: PYTHONPATH=. python -m tools.exp012_forward_vmap <cmd> ...
 """
 
@@ -24,11 +28,13 @@ import multiprocessing as mp
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 import tools.exp012_forward as fw
+import tools.pumpswap_lp_history as lph
 import tools.pumpswap_virtual as pv
 from tools.latency_curve import _hour_file
 
@@ -36,6 +42,8 @@ LEDGER_NAME = "snapshots.jsonl"
 CUTOFF = "2026-10-16T00:00:00Z"  # the FINAL fetch must start at or after this; tests patch it, no CLI flag or env var
 FINAL_HOURS, FINAL_ROWS_PER_HOUR = 12, 60000  # validate sampling when the window comes from --final-out-dir
 TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
+MOVED_CEILING = 0.001  # unexplained + unresolved pools may not exceed this share of the pool set
+SPAN_END_MARGIN_S = 1800  # fetch end when the fetch file has no fetch_ended_utc (last_fetch_utc is a START time)
 PENDING_GUARD_LAMPORTS = 10_000_000  # 0.01 SOL: flag pools whose pending counters (A + B) exceed it
 
 
@@ -191,6 +199,17 @@ def cmd_pools(a: argparse.Namespace) -> int:
     return 0
 
 
+def lp_supply_of(raw: bytes) -> int | None:
+    """LP mint supply stored in the pool account (parse_pool_account's lp_supply), or None if the account is too short."""
+    from tools import pumpswap_tx as tx
+
+    try:
+        v = tx.parse_pool_account(raw).get("lp_supply")
+    except ValueError:
+        return None
+    return v if isinstance(v, int) else None
+
+
 def fetch_batch_reasons(url: str, pools: list[str]) -> list[tuple[int | None, str | None, dict[str, int | None]]]:
     """getMultipleAccounts. (V, None), or (None, "closed") for a null account, or
     (None, "unreadable") for an account that is present but parse_virtual cannot read; plus {"pending", "v_base"}."""
@@ -209,12 +228,14 @@ def fetch_batch_reasons(url: str, pools: list[str]) -> list[tuple[int | None, st
             if "error" in resp:
                 raise RuntimeError(str(resp["error"])[:200])
             out: list[tuple[int | None, str | None, dict[str, int | None]]] = []
+            slot = (resp["result"].get("context") or {}).get("slot")
             for acc in resp["result"]["value"]:
                 if not acc:
-                    out.append((None, "closed", {}))
+                    out.append((None, "closed", {"slot": slot}))
                     continue
-                d = pv.parse_virtual_detail(base64.b64decode(acc["data"][0]))
-                out.append((d["v"], None, {"pending": d["pending"], "v_base": d["v_base"]}) if d["v"] is not None else (None, "unreadable", {}))
+                raw = base64.b64decode(acc["data"][0])
+                d = pv.parse_virtual_detail(raw)
+                out.append((d["v"], None, {"pending": d["pending"], "v_base": d["v_base"], "lp_supply": lp_supply_of(raw), "slot": slot}) if d["v"] is not None else (None, "unreadable", {"slot": slot}))
             return out
         except Exception as exc:  # noqa: BLE001 -- the URL must never leak
             last = exc
@@ -271,13 +292,18 @@ def cmd_fetch(a: argparse.Namespace, fetch: Callable[[list[str]], list[tuple]] |
         fetch = lambda chunk: fetch_batch_reasons(url, chunk)  # noqa: E731
     got_reason: dict[str, str | None] = {}
     got_detail: dict[str, dict[str, int | None]] = {}
+    slots: list[int] = []
 
     def wrapped(chunk: list[str]) -> list[int | None]:
         res = fetch(chunk)
         for p, r in zip(chunk, res):
             got_reason[p] = r[1]
+            if len(r) > 2 and isinstance(r[2].get("slot"), int):
+                slots.append(r[2]["slot"])
             if r[0] is not None and len(r) > 2:
                 got_detail[p] = {"pending": r[2].get("pending"), "v_base": r[2].get("v_base")}
+                if "lp_supply" in r[2]:  # no key = None: old detail files and fakes that do not give it
+                    got_detail[p]["lp_supply"] = r[2]["lp_supply"]
             else:
                 got_detail.setdefault(p, {})
         return [r[0] for r in res]
@@ -298,7 +324,10 @@ def cmd_fetch(a: argparse.Namespace, fetch: Callable[[list[str]], list[tuple]] |
     sidecars[".reasons.json"].write_text(json.dumps(dict(sorted(reasons.items()))) + "\n", encoding="utf-8")
     fj = sidecars[".fetch.json"]
     prior = json.loads(fj.read_text()) if fj.is_file() else {}
-    doc = {**prior, "fetch_started_utc": prior.get("fetch_started_utc", started), "new": prior.get("new", bool(a.new)), "last_fetch_utc": started, "n_pools_requested": len(pools), "pools_sha256": sha256_file(Path(a.pools)), "detail_sha256": sha256_file(sidecars[".detail.json"])}
+    ended = datetime.now(timezone.utc).strftime(TS_FMT)
+    smin = min([x for x in (prior.get("fetch_slot_min"), *slots) if isinstance(x, int)], default=None)
+    smax = max([x for x in (prior.get("fetch_slot_max"), *slots) if isinstance(x, int)], default=None)
+    doc = {**prior, "fetch_started_utc": prior.get("fetch_started_utc", started), "new": prior.get("new", bool(a.new)), "last_fetch_utc": started, "fetch_ended_utc": ended, "fetch_slot_min": smin, "fetch_slot_max": smax, "n_pools_requested": len(pools), "pools_sha256": sha256_file(Path(a.pools)), "detail_sha256": sha256_file(sidecars[".detail.json"])}
     fj.write_text(json.dumps(doc, sort_keys=True) + "\n", encoding="utf-8")
     nulls = sorted(p for p in pools if vmap.get(p) is None)
     sidecars[".null_pools.json"].write_text(json.dumps(nulls) + "\n", encoding="utf-8")  # ids stay in a file, not in logs
@@ -323,6 +352,15 @@ def cmd_snapshot(a: argparse.Namespace, now: datetime | None = None) -> int:
     _write_new(dest_detail, src_detail.read_text(encoding="utf-8"), readonly=True)
     vmap = pv.load_map(dest)  # counts come from the copy, not the source
     rec = {"utc": utc, "file": dest.name, "sha256": sha256_file(dest), "detail_sha256": sha256_file(dest_detail), "n": len(vmap), "n_null": sum(v is None for v in vmap.values())}
+    src_fetch = side(src, ".fetch.json")
+    if src_fetch.is_file():  # the fetch span and context slots: what lets `merge` place LP events against this snapshot
+        try:
+            fd = json.loads(src_fetch.read_text(encoding="utf-8"))
+        except ValueError:
+            fd = {}
+        for k in ("fetch_started_utc", "last_fetch_utc", "fetch_ended_utc", "fetch_slot_min", "fetch_slot_max"):
+            if isinstance(fd, dict) and fd.get(k) is not None:
+                rec[k] = fd[k]
     with (outdir / LEDGER_NAME).open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, sort_keys=True) + "\n")
     print(f"snapshot: {dest} n={rec['n']} n_null={rec['n_null']} sha256={rec['sha256']}")
@@ -346,6 +384,94 @@ def check_in_ledger(snap: Path) -> None:
         if isinstance(r, dict) and r.get("file") == snap.name and r.get("sha256") == want and r.get("detail_sha256") == want_d:
             return
     raise Refused(f"{snap} is not in {ledger} with a matching sha256 and detail_sha256")
+def _unix(ts: Any) -> int | None:
+    try:
+        return int(datetime.strptime(ts, TS_FMT).replace(tzinfo=timezone.utc).timestamp())
+    except (TypeError, ValueError):
+        return None
+
+
+def span_of(doc: dict[str, Any] | None) -> tuple[int, int] | None:
+    """(start, end) unix seconds of a fetch from a fetch record: fetch_started_utc .. fetch_ended_utc, or
+    last_fetch_utc (a START time) plus SPAN_END_MARGIN_S when the record predates fetch_ended_utc. None if unusable."""
+    if not isinstance(doc, dict):
+        return None
+    t0 = _unix(doc.get("fetch_started_utc"))
+    t1 = _unix(doc.get("fetch_ended_utc"))
+    if t1 is None:
+        last = _unix(doc.get("last_fetch_utc"))
+        t1 = None if last is None else last + SPAN_END_MARGIN_S
+    if t0 is None or t1 is None or t1 < t0:
+        return None
+    return t0, t1
+
+
+def snapshot_span(snap: Path) -> tuple[int, int] | None:
+    """A snapshot's fetch span: its .fetch.json sidecar if present, else the ledger line's fetch fields."""
+    fj = side(snap, ".fetch.json")
+    if fj.is_file():
+        try:
+            return span_of(json.loads(fj.read_text(encoding="utf-8")))
+        except ValueError:
+            return None
+    ledger = snap.parent / LEDGER_NAME
+    want = sha256_file(snap)
+    if ledger.is_file():
+        for line in ledger.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("file") == snap.name and r.get("sha256") == want:
+                return span_of(r)
+    return None
+
+
+class LpHistory:
+    """An lphist file with its meta (coverage window) after the meta sha256 check."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        mp = path.with_name(path.name + ".meta.json")
+        if not mp.is_file():
+            raise Refused(f"{mp} missing: an lphist file needs its meta")
+        self.meta = load_json_dict(mp, "lphist meta")
+        self.sha256 = sha256_file(path)
+        self.meta_sha256 = sha256_file(mp)
+        if self.meta.get("sha256") != self.sha256:
+            raise Refused(f"{path}: sha256 {self.sha256} != the meta's {self.meta.get('sha256')}")
+        self.data = load_json_dict(path, "lphist file")
+        self.t_from, self.t_to = self.meta.get("t_from_unix"), self.meta.get("t_to_unix")
+
+    def entry(self, pool: str, t0: int, t1: int) -> tuple[dict[str, Any] | None, str]:
+        """(entry, "") when this file has the pool resolved over [t0, t1]; else (None, reason)."""
+        e = self.data.get(pool)
+        if not isinstance(e, dict):
+            return None, "not_in_lphist"
+        if not e.get("resolved"):
+            return None, f"lphist_unresolved:{e.get('reason')}"
+        if not (isinstance(self.t_from, int) and isinstance(self.t_to, int) and self.t_from <= t0 and self.t_to >= t1):
+            return None, "lphist_window_does_not_cover_fetches"
+        return e, ""
+
+
+def classify_events(events: Sequence[dict[str, Any]], a: tuple[int, int], b: tuple[int, int]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(between, ambiguous) for two fetches a (earlier) and b (later), by block time (1 s of slack). Events before a's
+    start or after b's end are outside; events inside either fetch's span may fall on either side of that fetch's read
+    (unknown block time counts as ambiguous); the rest, between the fetches, are definite."""
+    between: list[dict[str, Any]] = []
+    ambiguous: list[dict[str, Any]] = []
+    for e in events:
+        t = e.get("block_time")
+        if t is None:
+            ambiguous.append(e)
+        elif t < a[0] - 1 or t > b[1] + 1:
+            continue
+        elif a[0] - 1 <= t <= a[1] + 1 or b[0] - 1 <= t <= b[1] + 1:
+            ambiguous.append(e)
+        else:
+            between.append(e)
+    return between, ambiguous
 
 
 def _b(detail: dict[str, Any], p: str) -> int | None:
@@ -354,39 +480,77 @@ def _b(detail: dict[str, Any], p: str) -> int | None:
     return b if isinstance(b, int) and not isinstance(b, bool) else None
 
 
-def _same_base(p: str, b1: int | None, b2: int | None, what: str) -> None:
-    if b1 is None or b2 is None:
-        raise Refused(f"{what}: no v_base for {p}; constancy cannot be checked")
-    if b1 != b2:
-        raise Refused(f"{what}: v_base for {p} differs ({b1} vs {b2}); V0 is constant per pool")
+def classify_pool(p: str, reads: Sequence[tuple[int | None, tuple[int, int] | None]], lphists: Sequence[LpHistory]) -> tuple[str, str]:
+    """('ok'|'explained'|'unexplained'|'unresolved', reason) for one pool's V0 reads, oldest first. Consecutive reads
+    that differ must be explained by the pool's LP events (DEC-016 Amendment 5 section 7(b))."""
+    status = "ok"
+    for (v_a, sp_a), (v_b, sp_b) in zip(reads, reads[1:]):
+        if v_a is None or v_b is None:
+            return "unresolved", "no_v_base"
+        if v_a == v_b:
+            continue
+        if sp_a is None or sp_b is None:
+            return "unresolved", "no_fetch_span"
+        t0, t1 = sp_a[0], sp_b[1]
+        entry, why = None, "not_in_lphist"
+        for h in lphists:
+            entry, w = h.entry(p, t0, t1)
+            if entry is not None:
+                break
+            if w != "not_in_lphist":
+                why = w
+        if entry is None:
+            return "unresolved", why
+        between, ambiguous = classify_events(entry["events"], sp_a, sp_b)
+        ok = lph.consistent(v_a, v_b, between, ambiguous)
+        if ok is None:
+            return "unresolved", "too_many_ambiguous_events"
+        if not ok:
+            return "unexplained", "lp_rule_fails"
+        status = "explained"
+    return status, ""
 
 
-def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | None]], pool_set: set[str], reasons: dict[str, str] | None = None, final_detail: dict[str, Any] | None = None, snap_details: Sequence[dict[str, Any]] | None = None) -> tuple[dict[str, int | None], list[str], list[str]]:
-    """(merged, filled, ignored_outside_set). Stored V moves with pending fees (V = V0 - A - B), so constancy is
-    checked on v_base = V0, not on V: any v_base difference (snapshot vs snapshot, or snapshot vs final) refuses,
-    and so does a missing v_base where two values must be compared. Only pools in pool_set are filled; only
-    closed-null or absent pools are filled; a null with reason "unreadable" or with no reason refuses.
-    A fill copies the v of the LAST snapshot given (list them oldest first)."""
+def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | None]], pool_set: set[str], reasons: dict[str, str] | None = None, final_detail: dict[str, Any] | None = None, snap_details: Sequence[dict[str, Any]] | None = None, spans: Sequence[tuple[int, int] | None] | None = None, lphists: Sequence[LpHistory] = ()) -> tuple[dict[str, int | None], list[str], list[str], dict[str, Any]]:
+    """(merged, filled, ignored_outside_set, classes).
+
+    V0 (= v_base) moves only at LP events. For each pool of pool_set with two or more non-null reads (snapshots oldest
+    first, then the final map; `spans` gives each fetch's (start, end) unix seconds, snapshots then final), consecutive
+    differing V0 values are checked against the LP history (classify_pool). classes = {"explained": [ids],
+    "unexplained": [ids], "unresolved": {id: reason}}. Only pools in pool_set are filled; only closed-null or absent pools
+    are filled; a null with reason "unreadable" or with no reason refuses; a pool that is unexplained or unresolved is
+    never filled. A fill copies the v of the LAST snapshot given."""
     reasons = reasons or {}
     final_detail = final_detail or {}
     snap_details = snap_details if snap_details is not None else [{} for _ in snaps]
+    spans = list(spans) if spans is not None else [None] * (len(snaps) + 1)
     snap_v: dict[str, int] = {}
-    snap_base: dict[str, int | None] = {}
-    for i, (sm, sd) in enumerate(zip(snaps, snap_details)):
+    for sm in snaps:
         for p, v in sm.items():
-            if v is None:
-                continue
-            if p in snap_base:
-                _same_base(p, snap_base[p], _b(sd, p), "snapshots disagree")
-            snap_base[p] = _b(sd, p)
-            snap_v[p] = v
-    for p, v in final.items():
-        if v is not None and p in snap_v:
-            _same_base(p, _b(final_detail, p), snap_base[p], "post-cutoff map vs snapshot")
+            if v is not None:
+                snap_v[p] = v
+    classes: dict[str, Any] = {"explained": [], "unexplained": [], "unresolved": {}}
+    for p in sorted(pool_set):
+        reads: list[tuple[int | None, tuple[int, int] | None]] = []
+        for i, (sm, sd) in enumerate(zip(snaps, snap_details)):
+            if sm.get(p) is not None:
+                reads.append((_b(sd, p), spans[i]))
+        if final.get(p) is not None:
+            reads.append((_b(final_detail, p), spans[len(snaps)]))
+        if len(reads) < 2:
+            continue
+        status, why = classify_pool(p, reads, lphists)
+        if status == "explained":
+            classes["explained"].append(p)
+        elif status == "unexplained":
+            classes["unexplained"].append(p)
+        elif status == "unresolved":
+            classes["unresolved"][p] = why
+    held = set(classes["unexplained"]) | set(classes["unresolved"])
     out = dict(final)
     want = sorted(p for p, v in snap_v.items() if out.get(p) is None)
     ignored = [p for p in want if p not in pool_set]
-    filled = [p for p in want if p in pool_set]
+    filled = [p for p in want if p in pool_set and p not in held]
     no_reason = sorted(p for p in pool_set if p in final and final[p] is None and reasons.get(p) not in ("closed", "unreadable"))
     if no_reason:
         raise Refused(f"{len(no_reason)} pool(s) in the set are null in the final map with no recorded reason: never filled; refetch with this tool")
@@ -395,7 +559,8 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
         raise Refused(f"{len(bad)} pool(s) are null in the final map as unreadable but non-null in a snapshot: not filled; resolve first")
     for p in filled:
         out[p] = snap_v[p]
-    return out, filled, ignored
+    return out, filled, ignored, classes
+
 
 
 def final_fetch_block(final_path: Path, pools_path: Path) -> dict[str, Any]:
@@ -440,7 +605,18 @@ def cmd_merge(a: argparse.Namespace) -> int:
     if final_fetch["detail_sha256"] != sha256_file(side(final_path, ".detail.json")):
         raise Refused(f"{side(final_path, '.detail.json')} does not match detail_sha256 in the fetch file")
     snap_details = [load_detail(sp) for sp in snap_paths]
-    merged, filled, ignored = merge_maps(final, [pv.load_map(s) for s in snap_paths], pool_set, reasons, final_detail, snap_details)
+    lphists = [LpHistory(Path(x)) for x in (a.lphist or [])]
+    spans = [snapshot_span(sp) for sp in snap_paths] + [span_of(load_json_dict(side(final_path, ".fetch.json"), "fetch file"))]
+    side_paths = {"unexplained": side(out, ".unexplained.json"), "unresolved": side(out, ".unresolved.json")}
+    merged, filled, ignored, classes = merge_maps(final, [pv.load_map(s) for s in snap_paths], pool_set, reasons, final_detail, snap_details, spans, lphists)
+    for k, sp in side_paths.items():  # ids stay in files; diagnostics, so a refused run may rewrite them
+        if sp.exists():
+            os.chmod(sp, 0o644)
+            sp.unlink()
+        _write_new(sp, json.dumps(classes[k], sort_keys=True) + "\n", readonly=True)
+    n_moved_bad = len(classes["unexplained"]) + len(classes["unresolved"])
+    if n_moved_bad > MOVED_CEILING * len(pool_set):
+        raise Refused(f"{len(classes['unexplained'])} unexplained + {len(classes['unresolved'])} unresolved V0 moves exceed {MOVED_CEILING:.1%} of {len(pool_set)} pools (ids in {side_paths['unexplained'].name}, {side_paths['unresolved'].name}); (B) NOT_DECIDABLE until resolved")
     pending_after: dict[str, int] = {}
     for p in pool_set:
         d = final_detail.get(p) if merged.get(p) is not None and p in final and final[p] is not None else None
@@ -468,10 +644,78 @@ def cmd_merge(a: argparse.Namespace) -> int:
         "n_with_pending_detail": len(pending_after),
         "n_unreadable": len(unreadable),
         "unreadable_pools": unreadable,
+        # DEC-016 Amendment 5 section 7(b): vbook treats the unexplained and unresolved pools as null-V; ids only in the files.
+        "lp_moves": {
+            "n_explained": len(classes["explained"]),
+            "n_unexplained": len(classes["unexplained"]),
+            "n_unresolved": len(classes["unresolved"]),
+            "ceiling": MOVED_CEILING,
+            "unexplained_file": side_paths["unexplained"].name,
+            "unexplained_sha256": sha256_file(side_paths["unexplained"]),
+            "unresolved_file": side_paths["unresolved"].name,
+            "unresolved_sha256": sha256_file(side_paths["unresolved"]),
+            "lphist": [{"file": h.path.name, "sha256": h.sha256, "meta_sha256": h.meta_sha256, "t_from_unix": h.t_from, "t_to_unix": h.t_to, "n_pools": h.meta.get("n_pools"), "n_unresolved": h.meta.get("n_unresolved")} for h in lphists],
+            "fetch_spans_unix": [list(s) if s else None for s in spans],
+        },
         "sha256": {"final": sha256_file(final_path), "pools": sha256_file(Path(a.pools)), "reasons": sha256_file(side(final_path, ".reasons.json")), "final_detail": sha256_file(side(final_path, ".detail.json")), "snapshot_details": [sha256_file(side(sp, ".detail.json")) for sp in snap_paths], "fetch": sha256_file(side(final_path, ".fetch.json")), "snapshots": [sha256_file(s) for s in snap_paths], "out": sha256_file(out)},
     }
     _write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n", readonly=True)
     print(f"merge: n={meta['n']} filled={len(filled)} ignored={len(ignored)} n_null_after={meta['n_null_after']} n_absent_after={meta['n_absent_after']} n_unreadable={len(unreadable)} -> {out}")
+    return 0
+
+
+def load_pool_ids(path: Path) -> list[str]:
+    """A pools file: a JSON list of ids, or a `diffs` output ({"diffs": [{"pool": id, ...}]})."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(doc, dict) and isinstance(doc.get("diffs"), list):
+        doc = [d.get("pool") for d in doc["diffs"] if isinstance(d, dict)]
+    if not isinstance(doc, list) or not all(isinstance(x, str) for x in doc):
+        raise Refused(f"{path} is not a list of pool ids")
+    return doc
+
+
+def cmd_diffs(a: argparse.Namespace) -> int:
+    """Pools of --pools whose V0 (v_base) differs between two detail files; ids and both values go to --out only."""
+    out = Path(a.out)
+    if out.exists():
+        raise Refused(f"{out} exists; refusing to overwrite")
+    da = load_json_dict(Path(a.a), "detail file a")
+    db = load_json_dict(Path(a.b), "detail file b")
+    diffs = []
+    for p in sorted(set(load_pool_ids(Path(a.pools)))):
+        x, y = _b(da, p), _b(db, p)
+        if x is not None and y is not None and x != y:
+            diffs.append({"pool": p, "a": x, "b": y})
+    _write_new(out, json.dumps({"a_sha256": sha256_file(Path(a.a)), "b_sha256": sha256_file(Path(a.b)), "diffs": diffs}, indent=1) + "\n")
+    print(f"diffs: n={len(diffs)} -> {out}")
+    return 0
+
+
+def cmd_lphist(a: argparse.Namespace, rpc: Callable[[str, list], Any] | None = None) -> int:
+    """LP Deposit/Withdraw events of --pools over [--from, --to]. `rpc` (tests) replaces the real Helius client;
+    the key is read inside Python from the env file and the URL is never printed."""
+    if a.rps > pv.MAX_RPS:
+        raise Refused(f"rps {a.rps} > {pv.MAX_RPS}: walkers share Helius")
+    out = Path(a.out)
+    meta_path = side(out, ".meta.json")
+    for p in (out, meta_path):
+        if p.exists():
+            raise Refused(f"{p} exists; refusing to overwrite")
+    t0, t1 = _unix(a.t_from), _unix(a.t_to)
+    if t0 is None or t1 is None or t1 < t0:
+        raise Refused("--from/--to must be ISO UTC like 2026-10-05T00:00:00Z, with from <= to")
+    pools = sorted(set(load_pool_ids(Path(a.pools))))
+    if rpc is None:
+        from tools.pumpswap_simulate import Rpc
+
+        rpc = Rpc(pv._rpc_url())
+    kw = {"sleep": time.sleep} if a.rps else {}
+    hist, calls = lph.fetch_lp_history(rpc, pools, t0, t1, rps=a.rps, **kw)
+    _write_new(out, json.dumps(hist, sort_keys=True) + "\n", readonly=True)
+    n_unres = sum(1 for e in hist.values() if not e["resolved"])
+    meta = {"sha256": sha256_file(out), "n_pools": len(hist), "n_unresolved": n_unres, "n_events": sum(len(e["events"]) for e in hist.values()), "calls": calls, "utc": datetime.now(timezone.utc).strftime(TS_FMT), "t_from_unix": t0, "t_to_unix": t1, "from": a.t_from, "to": a.t_to, "pools_sha256": sha256_file(Path(a.pools))}
+    _write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n", readonly=True)
+    print(f"lphist: n={len(hist)} n_unresolved={n_unres} calls={calls} -> {out}")
     return 0
 
 
@@ -617,6 +861,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--rps", type=float, default=pv.MAX_RPS)
     p.add_argument("--new", action="store_true", help="refuse if the map exists; the FINAL fetch always uses this")
     p.set_defaults(fn=cmd_fetch)
+    p = sub.add_parser("diffs")
+    p.add_argument("--a", required=True, help="older MAP.detail.json")
+    p.add_argument("--b", required=True, help="newer MAP.detail.json")
+    p.add_argument("--pools", required=True)
+    p.add_argument("--out", required=True)
+    p.set_defaults(fn=cmd_diffs)
+    p = sub.add_parser("lphist")
+    p.add_argument("--pools", required=True, help="a pools file, or a `diffs` output")
+    p.add_argument("--from", dest="t_from", required=True)
+    p.add_argument("--to", dest="t_to", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--rps", type=float, default=pv.MAX_RPS)
+    p.set_defaults(fn=cmd_lphist)
     p = sub.add_parser("snapshot")
     p.add_argument("--vmap", required=True)
     p.add_argument("--out", required=True, help="directory; file is vmap-snapshot-<UTC>.json, ledger is snapshots.jsonl")
@@ -625,6 +882,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--final", required=True)
     p.add_argument("--pools", required=True, help="the section 1 pool set (pools.json)")
     p.add_argument("--snapshot", action="append", required=True)
+    p.add_argument("--lphist", action="append", default=[], help="an lphist output (its .meta.json sha256 is checked); repeatable")
     p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_merge)
     p = sub.add_parser("validate")
