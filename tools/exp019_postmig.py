@@ -51,10 +51,14 @@ K6_CELL = e15.PRIMARY_CELL  # (6, 2)
 NO_DUMP_MAX_SHARE = 0.05  # cell B: the largest single sell < 5 % of the pool quote reserve (vault + V)
 FETCH_MS = 10_000  # tape rows with t in [mig_ms, mig_ms + 10 s] are kept per mint (>> 5 slots); the slot filter decides
 MIN_FEATURE_COVERAGE = 0.99  # screen refuses if fewer frozen-selected non-P1 rows have features
-CELLS = ("A", "B")
+CELLS = ("A",)  # Amendment 1: B is dropped (never evaluated, never logged); Holm k = 1
+REPORT_CELLS = ("A", "B")  # the precount keeps reporting both shares (outcome-blind, unchanged)
+MAX_K8_CENSORED = 5  # Amendment 1: refuse if more than this many frozen-selected rows lack an uncensored k8 cell; they leave BOTH arms
+PINNED_FEATURES_SHA256 = "2a9a89743515291cf7a83ffaefa6b6fbd663998fb5070a166d7d59b7606bc769"  # precount #3 (job #322, head bf5776c)
+PINNED_PRECOUNT_DIR = "/data/mal/exp019-screen"
 CELL_DESC = {
     "A": "frozen EXP-012 selection, entered at k8 (lag 2) only if the first-to-last print price change is > 0 and the net SOL buy flow is > 0 in slots [mig, mig+2]; paired vs frozen at k6",
-    "B": "frozen EXP-012 selection, entered at k8 (lag 2) only if the largest single sell in slots [mig, mig+2] is < 5 % of the pool quote reserve (vault + V); paired vs frozen at k6",
+    "B": "SUPERSEDED by Amendment 1, never evaluated or logged: frozen EXP-012 selection, entered at k8 (lag 2) only if the largest single sell in slots [mig, mig+2] is < 5 % of the pool quote reserve (vault + V); paired vs frozen at k6",
 }
 FAMILY_ALPHA = 0.05
 WORKERS_CAP = 4
@@ -393,13 +397,13 @@ def share_report(universe: Sequence[Mapping[str, Any]], rows: Sequence[int], fea
     fs_all = [feats.get(universe[i]["mint"]) for i in rows]
     out["with_features"] = sum(1 for f in fs_all if f and f.get("status") == "ok")
     out["coverage"] = out["with_features"] / len(rows) if rows else None
-    for c, fn in (("A", confirm_a), ("B", confirm_b)):
+    for c, fn in ((c, {"A": confirm_a, "B": confirm_b}[c]) for c in REPORT_CELLS):
         n = sum(fn(f) for f in fs_all)
         out[f"pass_{c}"] = n
         out[f"share_{c}"] = n / len(rows) if rows else None
     out["n_without_k8_cell"] = k8_missing(universe, rows)
     out["n_without_k6_cell"] = k6_missing(universe, rows)
-    for c, fn in (("A", confirm_a), ("B", confirm_b)):
+    for c, fn in ((c, {"A": confirm_a, "B": confirm_b}[c]) for c in REPORT_CELLS):
         ds = sorted({universe[i]["date"] for i in rows if fn(feats.get(universe[i]["mint"]))})
         out[f"dates_with_entered_row_{c}"] = {"n": len(ds), "of": len({universe[i]["date"] for i in rows}), "dates": ds}
     ok = [f for f in fs_all if f and f.get("status") == "ok"]
@@ -424,8 +428,8 @@ def check_screen_ready(rep: Mapping[str, Any]) -> None:
     check_shares(rep)
     if rep["n_without_k6_cell"]:
         raise Refused(f"{rep['n_without_k6_cell']} frozen-selected row(s) lack an uncensored (6, lag 2) cell")
-    if rep["n_without_k8_cell"]:
-        raise Refused(f"{rep['n_without_k8_cell']} frozen-selected row(s) lack an uncensored (8, lag 2) cell: a missing cell would score x = -frozen net")
+    if rep["n_without_k8_cell"] > MAX_K8_CENSORED:
+        raise Refused(f"{rep['n_without_k8_cell']} frozen-selected row(s) lack an uncensored (8, lag 2) cell (more than {MAX_K8_CENSORED}); up to {MAX_K8_CENSORED} leave both arms (Amendment 1)")
     if (rep["coverage"] or 0.0) < MIN_FEATURE_COVERAGE:
         raise Refused(f"feature coverage {rep['coverage']} of the frozen-selected non-P1 rows is below {MIN_FEATURE_COVERAGE}")
 
@@ -478,7 +482,7 @@ def miss_driven(bd: Mapping[str, Any]) -> bool:
 
 
 def decide(res: Mapping[str, Mapping[str, Any]], hm: Mapping[str, Mapping[str, Any]]) -> str:
-    passing = [c for c in CELLS if hm[c]["reject"] and res[c]["bars_all"]]
+    passing = [c for c in hm if hm[c]["reject"] and res[c]["bars_all"]]
     notes = []
     wins = []
     for c in passing:
@@ -493,12 +497,15 @@ def decide(res: Mapping[str, Mapping[str, Any]], hm: Mapping[str, Mapping[str, A
 
 
 def run_screen(universe: Sequence[Mapping[str, Any]], scores: Sequence[float], feats: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-    rows = selected_rows(universe, scores)
+    all_sel = selected_rows(universe, scores)
+    # Amendment 1: rows lacking an uncensored k8 cell (a tape-end timing property, outcome-blind) leave BOTH arms: x is computed only where both are defined.
+    excluded = [i for i in all_sel if universe[i]["cells"].get(K8_CELL) is None or universe[i]["cells"][K8_CELL].get("censored")]
+    ex = set(excluded)
+    rows = [i for i in all_sel if i not in ex]
     sel = set(rows)
     frozen_nets = [e15.cell_nets(u["cells"].get(K6_CELL)) if i in sel else None for i, u in enumerate(universe)]
     v8 = view_k8(universe)
     enter = {"A": [i in sel and confirm_a(feats.get(u["mint"])) for i, u in enumerate(universe)],
-             "B": [i in sel and confirm_b(feats.get(u["mint"])) for i, u in enumerate(universe)],
              "ref_k8_all": [i in sel for i in range(len(universe))]}
     res: dict[str, Any] = {}
     for c in (*CELLS, "ref_k8_all"):
@@ -514,12 +521,13 @@ def run_screen(universe: Sequence[Mapping[str, Any]], scores: Sequence[float], f
     frozen_all = e17.evaluate_cell(universe, frozen_nets, frozen_nets, rows)  # the k6 comparator book (paired with itself: x = 0)
     return {"cells": {c: res[c] for c in CELLS}, "holm": hm, "report_only": {"frozen_k6_book": frozen_all["bars"]["B1"]["report"], "frozen_all_at_k8": res["ref_k8_all"]["bars"]["B1"]["report"],
                                                                          "frozen_all_at_k8_miss_breakdown": res["ref_k8_all"]["miss_breakdown"]},
-            "n_scope_rows": len(rows), "outcome": decide(res, hm), "caveats": list(CAVEATS)}
+            "n_scope_rows": len(rows), "n_selected_before_exclusion": len(all_sel),
+            "excluded_k8_censored": {"n": len(excluded), "by_source": {sc: sum(1 for i in excluded if universe[i]["source"] == sc) for sc in NON_P1}}, "outcome": decide(res, hm), "caveats": list(CAVEATS)}
 
 
 CAVEATS = (
-    "Exploration. Cells reuse the 27 non-P1 dates EXP-015, EXP-017 and EXP-018 already looked at; Holm covers only A and B.",
-    "The paired mean x is per frozen-selected migration (x = cell net at k8 - frozen net at k6; a row the cell does not enter scores -frozen net).",
+    "Exploration. Cells reuse the 27 non-P1 dates EXP-015, EXP-017 and EXP-018 already looked at; Holm k = 1 (cell A alone; B was dropped by Amendment 1).",
+    "The paired mean x is per frozen-selected migration with an uncensored k8 cell (x = cell net at k8 - frozen net at k6; a row the cell does not enter scores -frozen net).",
     "Features use slots up to mig_slot + 2 and the entry lands at mig_slot + 8: a decision-to-landing budget of 8 - 2 = 6 slots, the same as the frozen k6 cell (decision at the migration, landing 6 slots later).",
     "A k8 MISS is booked as -fee (cell_nets). On a row where k8 MISSes and frozen k6 lost, x is positive without any confirmation information. The report-only MISS breakdown and the MISS-driven rule (plan section 7) guard against passing on that.",
     "The k8 cells are the cached EXP-015 cells (V pin, lag 2, haircut, 505k per side, 0.05 SOL, both fail models); SLIPPAGE_CAP 0.15 against the migration-slot price still applies and can turn a later entry into a MISS.",
@@ -593,6 +601,17 @@ def write_features(path: Path, feats: Mapping[str, Mapping[str, Any]]) -> str:
     lines = [json.dumps({"mint": m, **f}, sort_keys=True) for m, f in sorted(feats.items())]
     Path(path).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return features_sha256(path)
+
+
+def check_features_pin(features: Path, pin_sha: str = PINNED_FEATURES_SHA256, pin_dir: str = PINNED_PRECOUNT_DIR) -> str:  # as exp018's check_features_pin
+    """The screen refuses unless --features is the pinned precount's file, by location and by sha256."""
+    f = Path(features)
+    if f.resolve() != (Path(pin_dir) / OUT_FEATURES).resolve():
+        raise Refused(f"--features {f} is not the pinned {Path(pin_dir) / OUT_FEATURES}")
+    got = features_sha256(f)
+    if got != pin_sha:
+        raise Refused(f"features sha256 {got} != pinned {pin_sha}")
+    return got
 
 
 def load_features(features: Path, out_dir: Path) -> dict[str, dict[str, Any]]:
@@ -689,6 +708,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         check_no_prior_tries(*logs)
         if args.features is None:
             raise Refused("screen mode needs --features (the file --precount wrote)")
+        check_features_pin(args.features)
         feats = load_features(args.features, out_dir)
         rep = share_report(universe, rows, feats)
         check_screen_ready(rep)  # includes: every frozen-selected row has an uncensored (8, 2) cell

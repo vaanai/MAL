@@ -169,25 +169,64 @@ class TestScreen(unittest.TestCase):
             with self.assertRaises(x19.Refused):
                 x19.check_shares(x19.share_report(self.uni, rows, feats))
 
-    def test_k8_cell_refusal(self):
+    def test_k8_censored_rows_leave_both_arms_up_to_five(self):
         self.uni[3] = urow(3, 3, 1_000_000, 2_000_000, k8_censored=True)
         rows = x19.selected_rows(self.uni, self.scores)
         rep = x19.share_report(self.uni, rows, self.feats)
         self.assertEqual(rep["n_without_k8_cell"], 1)
+        x19.check_screen_ready({**rep, "coverage": 1.0})  # 1 <= 5: allowed, reported
+        res = x19.run_screen(self.uni, self.scores, self.feats)
+        self.assertEqual(res["n_scope_rows"], 7)
+        self.assertEqual(res["n_selected_before_exclusion"], 8)
+        self.assertEqual(res["excluded_k8_censored"], {"n": 1, "by_source": {"P2": 1, "P3": 0, "P4": 0}})
+        self.assertEqual(res["cells"]["A"]["n_entered"], 4)  # the censored row m3 is a BADF row, so A still enters the four even rows
+        # the excluded row is in neither arm: removing it from the universe gives the same result
+        uni2 = [u for u in self.uni if u["mint"] != "m3"]
+        sc2 = [sc for u, sc in zip(self.uni, self.scores) if u["mint"] != "m3"]
+        res2 = x19.run_screen(uni2, sc2, self.feats)
+        self.assertEqual(res["cells"]["A"]["p"], res2["cells"]["A"]["p"])
+        self.assertEqual(res["cells"]["A"]["n_trades_non_p1"], res2["cells"]["A"]["n_trades_non_p1"])
+
+    def test_k8_censored_more_than_five_refused(self):
+        for i in range(6):
+            self.uni[i] = urow(i, i % 5, 1_000_000, 2_000_000, k8_censored=True)
+        rows = x19.selected_rows(self.uni, self.scores)
+        rep = x19.share_report(self.uni, rows, self.feats)
+        self.assertEqual(rep["n_without_k8_cell"], 6)
         with self.assertRaises(x19.Refused):
             x19.check_screen_ready({**rep, "coverage": 1.0})
         del self.uni[3]["cells"][(8, 2)]
         self.assertEqual(x19.k8_missing(self.uni, [3]), 1)
+
+    def test_features_pin(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "features.jsonl"
+            p.write_text("x\n")
+            with self.assertRaises(x19.Refused):  # wrong hash at the right place
+                x19.check_features_pin(p, pin_dir=d)
+            sha = x19.features_sha256(p)
+            self.assertEqual(x19.check_features_pin(p, pin_sha=sha, pin_dir=d), sha)
+            q = Path(d) / "sub" / "features.jsonl"
+            q.parent.mkdir()
+            q.write_text("x\n")
+            with self.assertRaises(x19.Refused):  # right hash, wrong place
+                x19.check_features_pin(q, pin_sha=sha, pin_dir=d)
+        self.assertEqual(x19.PINNED_FEATURES_SHA256, "2a9a89743515291cf7a83ffaefa6b6fbd663998fb5070a166d7d59b7606bc769")
+        self.assertEqual(x19.PINNED_PRECOUNT_DIR, "/data/mal/exp019-screen")
+
+    def test_family_is_a_alone(self):
+        self.assertEqual(x19.CELLS, ("A",))
+        res = x19.run_screen(self.uni, self.scores, self.feats)
+        self.assertEqual(set(res["cells"]), {"A"})
+        self.assertEqual(set(res["holm"]), {"A"})
+        self.assertAlmostEqual(res["holm"]["A"]["threshold"], 0.05)
 
     def test_run_screen_enters_only_confirmed_at_k8(self):
         res = x19.run_screen(self.uni, self.scores, self.feats)
         self.assertEqual(res["n_scope_rows"], 8)
         self.assertEqual(res["cells"]["A"]["n_entered"], 4)
         self.assertEqual(res["cells"]["A"]["n_trades_non_p1"], 4)
-        self.assertEqual(res["cells"]["B"]["n_trades_non_p1"], 4)
         self.assertEqual(res["report_only"]["frozen_all_at_k8"]["flat"]["n"], 8)
-        self.assertEqual(set(res["holm"]), {"A", "B"})
-        self.assertAlmostEqual(res["holm"]["A"]["threshold"] + res["holm"]["B"]["threshold"], 0.025 + 0.05)
         self.assertTrue(res["outcome"].startswith("SCREEN NONE"))  # n < 100: B1 fails
 
     def test_missing_features_never_enter(self):

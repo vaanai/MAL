@@ -50,7 +50,7 @@ Rows: PumpSwap, `quote_is_wsol` true, on the migration pool, slot in [mig_slot, 
 Each layers on frozen selection, enters at (k = 8, lag 2), and is paired per migration against frozen at (k = 6, lag 2). Thresholds are fixed here; none is tuned, so no nested leave-one-day-out is needed.
 
 - **A, momentum confirm:** price change > 0 **and** net flow > 0.
-- **B, no-dump confirm:** largest single sell share < 0.05.
+- **B, no-dump confirm (SUPERSEDED by Amendment 1: never evaluated, never logged):** largest single sell share < 0.05.
 
 Missing features (no migration print, truncated window, no price) never confirm. A cell that keeps 0 % or 100 % of the selection is refused.
 
@@ -88,3 +88,16 @@ Both run on mal-research-0 as MiScusi jobs, one heavy job at a time, from a chec
 **Estimate (not measured):** one pass over 28 + 12 = 40 days of hourly tape, but only lines containing `"pumpswap"` are parsed and only the frozen-selected mints (about 2,349 non-P1) are kept; dominated by zstd and line scanning, roughly the cost of the EXP-018 precount, 0.5-1.5 h at 4 workers. Memory: workers hold one hour of candidate rows for a few hundred mints; expect under 4 GB total. The screen itself runs in seconds to a minute (10,000-draw date bootstraps).
 
 **Precount extras (outcome-blind).** Mints whose candidates at `t == mig_ms` span more than one slot or more than one pool; candidate rows lacking side or pool; per cell, the dates with at least one entered row.
+
+## Amendment 1 (2026-10-06, manager rulings, made before any outcome was read)
+
+Precount #3 (job #322 at bf5776c) refused as designed. Facts it reported (outcome-blind): feature coverage 1.0 on every source; frozen-selected non-P1 rows 2,349 (P2 1,485; P3 451; P4 413); pass_A 1,727 (73.5 %); pass_B 2,202 (93.7 %); frozen-selected rows without an uncensored (6, 2) cell 0; without an uncensored (8, 2) cell 2 (1 in P2, 1 in P4). `features_sha256 = 2a9a89743515291cf7a83ffaefa6b6fbd663998fb5070a166d7d59b7606bc769`, file `/data/mal/exp019-screen/features.jsonl`.
+
+1. **Censored k8 rows.** Frozen-selected rows lacking an uncensored (8, lag 2) cell leave the scored scope of **both** arms (the cell and frozen), so x is computed only where both arms are defined. Censoring is a tape-end timing property and is outcome-blind. They are counted and reported (`excluded_k8_censored` in screen.json, by source). The screen refuses if more than 5 rows are excluded. Today's count is 2. This replaces the section 8 refusal "any frozen-selected row lacks an uncensored (8, lag 2) cell" and the scoring "x = -frozen net" for such rows.
+2. **Cell B is dropped.** It keeps 93.7 % of the selection, so its test would be dominated by the k6 to k8 shift itself, which the latency curve already prices as costly. The family is **A alone: Holm k = 1 (threshold 0.05), 1 try**. B is never evaluated and never logged (`exp019_b` is never written). Where sections 1 to 9 say "two tries", "Holm k = 2" or "A and B", read "one try, Holm k = 1, A".
+3. **Features pinned.** The screen refuses unless `--features` is exactly `/data/mal/exp019-screen/features.jsonl` with sha256 `2a9a89743515291cf7a83ffaefa6b6fbd663998fb5070a166d7d59b7606bc769` (as EXP-018's `check_features_pin`).
+4. **No feature or precount change.** `features_from_rows`, the tape pass, the confirm functions and the precount report are byte-for-byte as at bf5776c, so precount #3 stands. The precount still reports B's share (report only).
+
+Screen command (mal-research-0, MiScusi job, from a checkout of the merged branch):
+
+`nice -n 19 /data/mal/venv/bin/python -m tools.exp019_postmig --features /data/mal/exp019-screen/features.jsonl --out-dir /data/mal/exp019-screen --tries-log /data/mal/ops/tries-exp019-screen.jsonl`
