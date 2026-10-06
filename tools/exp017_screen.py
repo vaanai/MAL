@@ -42,6 +42,7 @@ TOOL = "tools.exp017_screen"
 SCHEMA = "exp017_screen_v1"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLAN = REPO_ROOT / "EXP" / "EXP-017-batch1-cheap-screens-plan.md"
+CANONICAL_TRIES = REPO_ROOT / "data" / "tries.jsonl"  # the lab's canonical log, as EXP-016 (the job checkout's copy)
 LAMPORTS = 1_000_000_000
 
 # --- pins (see the plan; every number here is fixed before any outcome is read) ---------------------------------------
@@ -638,6 +639,49 @@ def prior_tries_per_pool(log: Path) -> dict[str, int]:
     return out
 
 
+def log_cell_tries_all(logs: Sequence[Path], out_dir: Path, cells: Sequence[str], status: str) -> dict[str, dict[str, Any]]:
+    """Write to the ops log and the canonical log (when they differ); returns the first (ops) log's info."""
+    info: dict[str, dict[str, Any]] = {}
+    seen: set[Path] = set()
+    for lg in logs:
+        if Path(lg).resolve() in seen:
+            continue
+        seen.add(Path(lg).resolve())
+        r = log_cell_tries(lg, out_dir, cells, status)
+        info = info or r
+    return info
+
+
+def check_ops_tries_log(arg: str | None) -> Path:
+    """Screen mode writes an absolute ops log (--tries-log) as well as the canonical repo log."""
+    if not arg:
+        raise Refused("screen mode needs an absolute --tries-log (e.g. /data/mal/ops/tries-exp017-screen.jsonl)")
+    if not Path(arg).is_absolute():
+        raise Refused(f"--tries-log {arg} is relative: give an absolute path")
+    return Path(arg)
+
+
+def check_canonical_tries(path: Path) -> None:
+    """The canonical repo data/tries.jsonl must exist and hold exp015_ lines."""
+    p = Path(path)
+    if not p.is_file():
+        raise Refused(f"canonical tries log {p} does not exist")
+    if not e15.prior_exp015_lines(p):
+        raise Refused(f"canonical tries log {p} has no exp015_ lines: not the lab's canonical log")
+
+
+def check_no_prior_tries(*logs: Path) -> None:
+    seen: set[Path] = set()
+    for lg in logs:
+        r = Path(lg).resolve()
+        if r in seen:
+            continue
+        seen.add(r)
+        prior = prior_exp017_lines(r)
+        if prior:
+            raise Refused(f"{len(prior)} earlier exp017 line(s) in {r}: a second run is refused")
+
+
 def log_cell_tries(log: Path, out_dir: Path, cells: Sequence[str], status: str) -> dict[str, dict[str, Any]]:
     """`started`: one line per cell on the bookkeeping block. Other statuses: one line per (cell, pool group), so each pool counts the try."""
     groups = {"universe": e15.UNIVERSE_BLOCKS} if status == "started" else e15.pool_group_blocks(True)
@@ -767,7 +811,8 @@ def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--scratch", default=DEFAULT_SCRATCH)
     ap.add_argument("--out-dir", type=Path, default=Path("/data/mal/exp017-screen"))
-    ap.add_argument("--tries-log", default=None)
+    ap.add_argument("--tries-log", default=None, help="screen mode: absolute ops log, e.g. /data/mal/ops/tries-exp017-screen.jsonl")
+    ap.add_argument("--canonical-tries", type=Path, default=CANONICAL_TRIES)
     ap.add_argument("--sized-cache", default=None)
     ap.add_argument("--vmap", default=e15.VMAP_0909_PATH)
     ap.add_argument("--artifact-dir", type=Path, default=None)
@@ -788,7 +833,7 @@ def view_dirs(args: argparse.Namespace) -> dict[str, list[str]]:
     return out
 
 
-def run_guards(args: argparse.Namespace, tries_path: Path) -> dict[str, Any]:
+def run_guards(args: argparse.Namespace, logs: Sequence[Path]) -> dict[str, Any]:
     g: dict[str, Any] = {}
     g["manifests"] = check_manifests(args.scratch)
     g["cache_heads"] = check_cache_heads(args.scratch)
@@ -796,20 +841,26 @@ def run_guards(args: argparse.Namespace, tries_path: Path) -> dict[str, Any]:
     g["views"] = view_dirs(args)
     if args.sized_cache:
         e15.refuse_reserved(args.sized_cache, "sized cache")
-    prior = prior_exp017_lines(tries_path)
-    if prior:
-        raise Refused(f"{len(prior)} earlier exp017 line(s) in {tries_path}: a second run is refused")
+    check_no_prior_tries(*logs)
     return g
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    from tools.exp012_exit_sensitivity import resolve_tries_path
-
     args = _parser().parse_args(argv)
-    tries_path = resolve_tries_path(args.tries_log)
     out_dir: Path = args.out_dir
+    tries_path: Path | None = None
+    canonical: Path | None = None
     try:
-        g = run_guards(args, tries_path)
+        if args.precount:
+            if args.tries_log is not None:
+                raise Refused("--precount reads no tries log; do not pass --tries-log")
+            logs: list[Path] = []
+        else:
+            tries_path = check_ops_tries_log(args.tries_log)
+            canonical = Path(args.canonical_tries).resolve()
+            check_canonical_tries(canonical)
+            logs = [tries_path, canonical]
+        g = run_guards(args, logs)
         if args.guards_only:
             print(json.dumps({"guards": "ok", **{k: g[k] for k in ("manifests", "vmap_sha256")}}, default=str))
             return 0
@@ -851,23 +902,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             with_sized = True
         else:
             raise Refused("H4 (2x stake) needs --sized-cache; the re-simulation is tools/exp017_resim.py")
+        check_no_prior_tries(*logs)  # re-checked right before the spend point
         head = e15.git_state()["head"]
         e15.take_lock(out_dir, head, hashlib.sha256(json.dumps(sorted(vars(args).items(), key=lambda kv: kv[0]), default=str).encode()).hexdigest())
     except (Refused, e15.Refused) as exc:
         print(f"refusing (before started, no tries line): {exc}", file=sys.stderr)
         return 2
+    assert tries_path is not None and canonical is not None
     t0 = time.time()
     started = False
     status = "aborted_after_read"
     try:
-        log_cell_tries(tries_path, out_dir, HCELLS, "started")
+        log_cell_tries_all([tries_path, canonical], out_dir, HCELLS, "started")
         started = True
         rep = run_full(universe, scores, flags, klass, with_sized)
-        rep.update({"schema": SCHEMA, "head": head, "counts": counts, "disclosures": {"cache_code_sha": CACHE_CODE_SHA, "prior_tries_per_pool": prior_tries_per_pool(tries_path)}})
+        rep.update({"schema": SCHEMA, "head": head, "counts": counts, "disclosures": {"cache_code_sha": CACHE_CODE_SHA, "prior_tries_per_pool": prior_tries_per_pool(canonical)}})
         trades = rep.pop("trades")
         write_json(out_dir / OUT_SCREEN, rep)
         (out_dir / OUT_MD).write_text(render_md(rep), encoding="utf-8")
-        info = log_cell_tries(tries_path, out_dir, HCELLS, "completed")
+        info = log_cell_tries_all([tries_path, canonical], out_dir, HCELLS, "completed")
         write_results(out_dir, trades, info, tries_path, head, time.time() - t0)
         status = "completed"
         print(rep["outcome"])

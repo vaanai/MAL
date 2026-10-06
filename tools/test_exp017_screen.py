@@ -427,6 +427,54 @@ class TestH4VsUniform(unittest.TestCase):
         self.assertNotIn("SCREEN PASS", x17.decide(cells, self.HM, u))
 
 
+class TestTriesLogs(unittest.TestCase):
+    def test_ops_log_must_be_absolute_and_given(self):
+        with self.assertRaises(x17.Refused):
+            x17.check_ops_tries_log(None)
+        with self.assertRaises(x17.Refused):
+            x17.check_ops_tries_log("tries.jsonl")
+        self.assertEqual(x17.check_ops_tries_log("/data/mal/ops/tries-exp017-screen.jsonl"), Path("/data/mal/ops/tries-exp017-screen.jsonl"))
+
+    def test_canonical_must_exist_and_hold_exp015_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "tries.jsonl"
+            with self.assertRaises(x17.Refused):
+                x17.check_canonical_tries(p)
+            p.write_text(json.dumps({"tool": "x", "config": {"key": "other"}}) + "\n")
+            with self.assertRaises(x17.Refused):
+                x17.check_canonical_tries(p)
+            p.write_text(json.dumps({"tool": e15.TOOL, "config": {"key": "exp015_c1"}}) + "\n")
+            x17.check_canonical_tries(p)
+        x17.check_canonical_tries(x17.CANONICAL_TRIES)  # the repo's own data/tries.jsonl qualifies
+
+    def test_second_run_refused_on_either_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            ops, canon = Path(d) / "ops.jsonl", Path(d) / "canon.jsonl"
+            ops.write_text("")
+            canon.write_text("")
+            x17.check_no_prior_tries(ops, canon)
+            for bad in (ops, canon):
+                bad.write_text(json.dumps({"tool": x17.TOOL, "config": {"key": "exp017_h3"}}) + "\n")
+                with self.assertRaises(x17.Refused):
+                    x17.check_no_prior_tries(ops, canon)
+                bad.write_text("")
+
+    def test_started_and_completed_lines_go_to_both_logs(self):
+        with tempfile.TemporaryDirectory() as d:
+            ops, canon = Path(d) / "ops.jsonl", Path(d) / "canon.jsonl"
+            x17.log_cell_tries_all([ops, canon], Path(d), x17.HCELLS, "started")
+            self.assertEqual(len(ops.read_text().splitlines()), len(x17.HCELLS))
+            self.assertEqual(len(canon.read_text().splitlines()), len(x17.HCELLS))
+            info = x17.log_cell_tries_all([ops, ops, canon], Path(d), x17.HCELLS, "completed")  # a duplicate path is written once
+            self.assertEqual(len(ops.read_text().splitlines()), len(x17.HCELLS) * (1 + 4))  # started + one per pool group P1..P4
+            self.assertIn("H3", info)
+
+    def test_precount_refuses_tries_log_and_screen_mode_needs_one(self):
+        self.assertEqual(x17.main(["--precount", "--tries-log", "/tmp/x.jsonl"]), 2)
+        self.assertEqual(x17.main(["--guards-only"]), 2)  # no --tries-log
+        self.assertEqual(x17.main(["--guards-only", "--tries-log", "rel.jsonl"]), 2)
+
+
 class TestFullRunSynthetic(unittest.TestCase):
     def _universe(self):
         rng = random.Random(3)
