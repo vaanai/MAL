@@ -551,8 +551,8 @@ class LiveExecutor(pe.Executor):
         del self.state.pending[mint]
         row = dict(landed=False, fail_class="expired", **self._timing(p), pool=p.get("pool"))
         if p["kind"] == "buy":
-            pe.dec020_note_buy(self.limits, self.state, False)
             self._log("buy", mint, spend_lamports=p["spend"], expected_tokens=p["q_tokens"], **row)
+            pe.dec020_note_buy(self.limits, self.state, False)
         else:
             pos = self.state.open[mint]
             self._sell_failed(pos)
@@ -643,14 +643,12 @@ class LiveExecutor(pe.Executor):
             price_vs_quote_bps=bps(p["q_tokens"], tokens) if tokens else None,  # cost per token vs quoted, + = we paid more
         )
         del self.state.pending[mint]
-        pe.dec020_note_buy(self.limits, self.state, True)
         mark, mark_source = buy_tx_mark(p, tokens, m.get("vault_post"))
         mark_shift = bps(mark, p["q_mark"])
         row.update(mark_send=p["q_mark"], mark=mark, mark_source=mark_source, mark_shift_bps=mark_shift)
         self._log("buy", mint, **row)
         if tokens <= 0:
             self.state.realized_lamports -= cost  # SOL is spent and nothing came back: a realized loss now
-            pe.dec020_note_zero_token_buy(self.limits, self.state)
             self._alert("buy_landed_zero_tokens", mint, signature=p["signature"], cost_lamports=cost)
         else:
             self.state.open[mint] = {
@@ -659,6 +657,9 @@ class LiveExecutor(pe.Executor):
                 "base_ata": p["base_ata"], "base_mint": p["base_mint"], "base_tp": p["base_tp"], "sell_attempts": 0,
                 "ata_pre_amount": m.get("ata_pre_amount"), "extra_cost": 0, "stuck": False, "abandoned": False, "exit_reason": None, "balance_pending": balance_pending, "q_tokens": p["q_tokens"], "buy_slot": m["slot"],
             }
+        # dec020 stops: after all bookkeeping, guarded (never raises). Entry bps counted at landing, not at close.
+        pe.dec020_note_buy(self.limits, self.state, True, entry_bps=row.get("entry_vs_quote_bps"), entry_estimated=balance_pending,
+                           zero_tokens=tokens <= 0)
         self.save()
 
     # -- exit
@@ -799,9 +800,8 @@ class LiveExecutor(pe.Executor):
             ret_exit_vs_entry_actual=bps(proceeds, pos["spend"]), **row,
         )
         self.state.realized_lamports += pnl + pos.get("extra_cost", 0)  # failed-sell fees were booked as they landed
-        pe.dec020_note_close(self.limits, self.state, bps(pos["tokens"], pos["q_tokens"]) if pos.get("q_tokens") else None,
-                             bps(proceeds, p["q_out"]), entry_estimated=bool(pos.get("balance_pending")))
         del self.state.open[mint]
+        pe.dec020_note_close(self.limits, self.state, bps(proceeds, p["q_out"]))  # after the close bookkeeping; guarded
         self.save()
 
     # -- loop
