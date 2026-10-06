@@ -20,6 +20,15 @@ What it does
   6. Bars 1-6 of section 5 under both fail models at the deciding costs (V, k = 6, 0.05 SOL, fee 505,000 per side, exit lag 2,
      haircut 0.0042038 x proceeds on filled trades); the matched outcome is written into report.json / report.md.
 
+Try-spend point (post-pin item 9): the `started` tries line is where tries are spent. Before it, tape rows are cached per (mode, source) under
+scratch/cache with a sha256 manifest written when the source completes; a re-run with no `started` line reuses a cache only if its rows sha,
+the clean repository head, the view shas, the V-map shas and the args all match (else that source's cache is discarded; old and new rows are
+never mixed). Nothing derived from outcomes is printed or written outside scratch/ before `started` (row counts and hashes only); nobody inspects
+scratch/ between a crash and a resume. `RUN.lock` (O_EXCL, head + args hash) is written with the `started` lines; a lock without a record refuses.
+After `started` there is no resume.
+
+MiScusi request: 48 GB memory, 8 CPUs. Tape passes use at most 4 workers (TAPE_WORKERS_CAP, until measured); the fits use up to --max-workers (8).
+
 Run (mal-research-0; one heavy job at a time; as a MiScusi job; under nice):
   nice -n 19 /data/mal/venv/bin/python -m tools.exp015_screen \\
     --p1-fast-dir /data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00 \\
@@ -103,6 +112,7 @@ BOOT_SEED = 1
 SEED = 1
 TRIES_CAP = 3
 MAX_WORKERS_CAP = 8
+TAPE_WORKERS_CAP = 4  # tape passes stay at 4 workers until measured; fits may use up to MAX_WORKERS_CAP
 DEFAULT_WORKERS = 4
 MDL_DEFAULT = 20
 MDL_C3 = 75
@@ -164,6 +174,10 @@ OUT_MD = "report.md"
 OUT_UNIVERSE = "universe.jsonl"
 OUT_UNIVERSE_SHA = "universe.sha256"
 MARKER = "tries_logged.marker"
+OUT_LOCK = "RUN.lock"
+OUT_RECORD = "RUN.record.json"
+CACHE_DIR = "cache"
+CACHE_SCHEMA = "exp015_tape_cache_v1"
 ENV_MODE = "MAL_EXP015_MODE"
 
 OUTCOME_PASS = "SCREEN PASS: {name} goes to confirmation (largest pooled pressure mean on the non-P1 dates; no discretion). This means 'worth one confirmation read of fresh-0808', never 'has an edge'."
@@ -429,8 +443,10 @@ def e15_v_patch() -> Any:
                 return []
             row = frozen[0]
             cells = inner(mint_id, mint, feat, curve, through_ms, creator_hist)
+            fills = eem._fills_for(mint, migrate=True)[0]
+            gap = (int(fills[0].t_recv_ms) - int(mint.mig_ms)) if fills else None  # migration to the first PumpSwap print (report-only)
             return [{
-                "mint": mint_id, "spec": TARGET, "day": row["day"], "mig_ms": int(mint.mig_ms),
+                "mint": mint_id, "spec": TARGET, "day": row["day"], "mig_ms": int(mint.mig_ms), "gap_ms": gap,
                 "features": [float(row["features"].get(n, 0.0)) for n in fz.FROZEN_FEATURE_NAMES],
                 "cells": [_slim_cell(c) for c in cells],
             }]
@@ -518,6 +534,7 @@ def run_p1_pass(tag: str, root: Path, mode: str, scratch: Path, vmap: str, max_w
     from tools.exploration_entry_model_b2 import run_all_features_b
     from tools.exploration_entry_model_b3 import run_all_features_c
 
+    max_workers = min(max_workers, TAPE_WORKERS_CAP)
     set_pass_env(vmap, scratch / f"counts_{mode}_{tag}", mode)
     common = dict(max_workers=max_workers, buffer_hours=BUFFER_HOURS, max_home_hours=MAX_HOME_HOURS)
     out_dir = scratch / f"{mode}_{tag}"
@@ -567,6 +584,7 @@ def make_p3_hours(walkers: Sequence[s12.Walker]) -> DedupedHours:
 
 
 def run_holdout_pass(tag: str, hours: Any, pool_hours: Sequence[str], mode: str, scratch: Path, vmap: str, max_workers: int) -> list[dict[str, Any]]:
+    max_workers = min(max_workers, TAPE_WORKERS_CAP)
     set_pass_env(vmap, scratch / f"counts_{mode}_{tag}", mode)
     plan = ff12.anchored_plan(list(pool_hours), MAX_HOME_HOURS, BUFFER_HOURS)
     rows = s12.load_rows(hours, max_workers, BUFFER_HOURS, MAX_HOME_HOURS, scratch / f"{mode}_{tag}", pool_hours=list(pool_hours), worker_fn=e15_holdout_worker, plan=plan)
@@ -614,7 +632,8 @@ def build_universe(v_rows: Mapping[str, Sequence[Mapping[str, Any]]], nv_rows: M
             nv[r["mint"]] = r
     universe: list[dict[str, Any]] = []
     seen: dict[str, str] = {}
-    stats: dict[str, Any] = {"n_v_records": 0, "dropped_outside_window": 0, "dropped_no_primary_cell": 0, "dropped_censored_primary": 0, "c1_missing_label_0": 0, "by_source": {}}
+    stats: dict[str, Any] = {"n_v_records": 0, "dropped_outside_window": 0, "dropped_no_primary_cell": 0, "dropped_censored_primary": 0, "c1_missing_label_0": 0, "by_source": {},
+             "censored_primary_by_block": {}, "max_first_print_gap_ms_by_block": {}, "max_first_print_gap_ms": None}
     for src in SOURCES:
         if src == "P4" and not with_p4:
             continue
@@ -633,7 +652,13 @@ def build_universe(v_rows: Mapping[str, Sequence[Mapping[str, Any]]], nv_rows: M
                 continue
             if prim["censored"]:
                 stats["dropped_censored_primary"] += 1
+                stats["censored_primary_by_block"][blk] = stats["censored_primary_by_block"].get(blk, 0) + 1
                 continue
+            gap = r.get("gap_ms")
+            if gap is not None:
+                cur = stats["max_first_print_gap_ms_by_block"].get(blk)
+                stats["max_first_print_gap_ms_by_block"][blk] = gap if cur is None else max(cur, gap)
+                stats["max_first_print_gap_ms"] = gap if stats["max_first_print_gap_ms"] is None else max(stats["max_first_print_gap_ms"], gap)
             if mint in seen:
                 raise Integrity(f"integrity: mint {mint} is in both {seen[mint]} and {src}")
             seen[mint] = src
@@ -889,9 +914,14 @@ def book_trades(trades: Sequence[Mapping[str, Any]], leg: str) -> list[BookTrade
 def leg_stats(trades: Sequence[Mapping[str, Any]], leg: str) -> dict[str, Any]:
     st = book_stats(book_trades(trades, leg))
     ci = st["mean_ci90_sol"]
+    by_date: dict[str, list[float]] = {}
+    for t in trades:
+        by_date.setdefault(t["day"], []).append(float(int(round(t[leg]))))
+    dci = date_cluster_ci(by_date)  # book_stats resamples tokens; the date-cluster CI resamples whole UTC dates
     return {
         "n": st["n"], "filled": sum(1 for t in trades if t["filled"]),
         "mean_sol": st["mean_sol"], "ci90_sol": ci, "ci_lo": None if not ci else ci[0],
+        "ci90_date_sol": dci, "ci_lo_date": None if not dci else dci[0],
         "total_sol": st["total_sol"], "ex_top3_sol": st["total_ex_top3_sol"],
         "dates": [{"day": d["day"], "n": d["n"], "total_sol": d["total_sol"], "mean_sol": d["mean_sol"]} for d in st["days"]],
         "dates_with_trades": st["n_days"], "dates_positive": st["days_positive"],
@@ -899,16 +929,18 @@ def leg_stats(trades: Sequence[Mapping[str, Any]], leg: str) -> dict[str, Any]:
 
 
 def gate_bars(st: Mapping[str, Any], n_scope_dates: int) -> dict[str, Any]:
-    """The four gate bars with the screen's date rule: a UTC date with no trade is NOT positive, so the majority is over all the
+    """The gate bars with the screen's date rule: a UTC date with no trade is NOT positive, so the majority is over all the
     dates in scope, not only the dates with trades."""
     b = {
         "n_ge_100": st["n"] >= MIN_N,
         "dates_ge_5": st["dates_with_trades"] >= MIN_DATES,
         "majority_dates_positive": st["dates_positive"] * 2 > n_scope_dates,
-        "ci_lower_gt_0": st["ci_lo"] is not None and st["ci_lo"] > 0,
+        "ci_lower_gt_0_book_stats": st["ci_lo"] is not None and st["ci_lo"] > 0,
+        "ci_lower_gt_0_date_cluster": st.get("ci_lo_date") is not None and st["ci_lo_date"] > 0,
         "ex_top3_gt_0": st["ex_top3_sol"] is not None and st["ex_top3_sol"] > 0,
     }
-    b["all"] = all(b.values())
+    b["ci_lower_gt_0"] = b["ci_lower_gt_0_book_stats"] and b["ci_lower_gt_0_date_cluster"]  # both resamplers must pass (post-pin item 8)
+    b["all"] = all(v for k, v in b.items() if k not in ("ci_lower_gt_0_book_stats", "ci_lower_gt_0_date_cluster", "all"))
     return b
 
 
@@ -1132,21 +1164,19 @@ def knife_edge(cfg_result: Mapping[str, Any]) -> bool:
 
 
 def decide_outcome(results: Mapping[str, Mapping[str, Any]], statuses: Mapping[str, str]) -> dict[str, Any]:
-    """The matched outcome (section 5). If more than one configuration passes, the largest pooled pressure mean on the non-P1 dates goes
-    to confirmation; no discretion. None passes: the family is closed."""
-    passing = [c for c, r in results.items() if r.get("passes") and statuses.get(c) == "completed"]
-    all_completed = all(statuses.get(c) == "completed" for c in CONFIGS)
+    """The matched outcome (section 5, post-pin item 10). INCOMPLETE unless all three configurations completed (no pass is claimed).
+    If more than one passes, the largest pooled pressure mean on the non-P1 dates goes to confirmation; no discretion; a tie goes to the
+    lowest config index. None passes: the family is closed."""
+    if not all(statuses.get(c) == "completed" for c in CONFIGS):
+        return {"passing": [], "selected_for_confirmation": None, "family_closed": False, "outcome": OUTCOME_INCOMPLETE, "knife_edge": False}
+    passing = [c for c, r in results.items() if r.get("passes")]
     if passing:
         winner = max(passing, key=lambda c: (results[c]["pooled_press_mean_non_p1_sol"], -list(CONFIGS).index(c)))
         text = OUTCOME_PASS.format(name=CONFIGS[winner]["name"])
         if len(passing) > 1:
-            text += f" (passing: {', '.join(CONFIGS[c]['name'] for c in passing)}; chosen by the largest pooled pressure mean on the non-P1 dates.)"
-        if not all_completed:
-            text += " NOTE: not every configuration completed."
+            text += f" (passing: {', '.join(CONFIGS[c]['name'] for c in passing)}; chosen by the largest pooled pressure mean on the non-P1 dates, a tie to the lowest config index.)"
         return {"passing": passing, "selected_for_confirmation": winner, "family_closed": False, "outcome": text, "knife_edge": bool(knife_edge(results[winner]))}
-    if all_completed:
-        return {"passing": [], "selected_for_confirmation": None, "family_closed": True, "outcome": OUTCOME_NONE, "knife_edge": False}
-    return {"passing": [], "selected_for_confirmation": None, "family_closed": False, "outcome": OUTCOME_INCOMPLETE, "knife_edge": False}
+    return {"passing": [], "selected_for_confirmation": None, "family_closed": True, "outcome": OUTCOME_NONE, "knife_edge": False}
 
 
 def run_screen(universe: Sequence[Mapping[str, Any]], frozen_sel: Sequence[bool], runner: Runner, with_p4: bool, on_config_done: Callable[[str, dict[str, Any]], None] | None = None,
@@ -1166,11 +1196,11 @@ def run_screen(universe: Sequence[Mapping[str, Any]], frozen_sel: Sequence[bool]
         nested = nested_oof(runner, cid, n, date_ids)
         transfer = transfer_selection(runner, cid, n, sept)
         ev = evaluate_config(universe, nested, transfer, frozen_sel, with_p4)
-        nv_sel = sorted(universe[i]["mint"] for i in range(n) if ev["selected"][i] and no_v_mints and universe[i]["mint"] in no_v_mints)
+        nv_sel = sorted(universe[i]["mint"] for i in range(n) if no_v_mints and universe[i]["mint"] in no_v_mints and (ev["selected"][i] or (frozen_sel[i] and universe[i]["block"] != "P1")))
         transfer_nv = sorted(universe[i]["mint"] for i in range(n) if transfer["selected"][i] and no_v_mints and universe[i]["mint"] in no_v_mints)
         if nv_sel or transfer_nv:
             statuses[cid] = "refused_after_read"
-            results[cid] = {"passes": False, "refused": f"{len(nv_sel)} nested-OOF selected and {len(transfer_nv)} transfer-selected trade(s) are on pools the adapter priced without V; the V-priced number is not defined", "no_v_mints": (nv_sel + transfer_nv)[:20]}
+            results[cid] = {"passes": False, "refused": f"{len(nv_sel)} nested-OOF selected (nested-OOF or frozen non-P1) and {len(transfer_nv)} transfer-selected trade(s) are on pools the adapter priced without V; the V-priced number is not defined", "no_v_mints": (nv_sel + transfer_nv)[:20]}
             if on_config_refused:
                 on_config_refused(cid, results[cid]["refused"])
             continue
@@ -1228,7 +1258,7 @@ def render_md(rep: Mapping[str, Any]) -> str:
         b = r["bars"]
         for i in (1, 2):
             rp = b[f"bar{i}"]["report"]
-            det = "; ".join(f"{leg}: n {rp[leg]['n']}, mean {_f(rp[leg]['mean_sol'])}, CI90 {_ci(rp[leg]['ci90_sol'])}, ex-top3 {_f(rp[leg]['ex_top3_sol'], 3)}, dates+ {rp[leg]['dates_positive']}/{rp['n_scope_dates']} (with trades {rp[leg]['dates_with_trades']})" for leg in LEGS)
+            det = "; ".join(f"{leg}: n {rp[leg]['n']}, mean {_f(rp[leg]['mean_sol'])}, CI90 book_stats {_ci(rp[leg]['ci90_sol'])} date-cluster {_ci(rp[leg]['ci90_date_sol'])}, ex-top3 {_f(rp[leg]['ex_top3_sol'], 3)}, dates+ {rp[leg]['dates_positive']}/{rp['n_scope_dates']} (with trades {rp[leg]['dates_with_trades']})" for leg in LEGS)
             L.append(f"| {i} | {b[f'bar{i}']['scope']} | {b[f'bar{i}']['pass']} | {det} |")
         p = b["bar3"]["report"]
         det = "; ".join(f"{leg}: mean x {_f(p[leg]['mean_x_sol'], 6)}, CI90 {_ci(p[leg]['ci90_sol'])}, per-trade diff {_f(p[leg]['per_trade_difference_sol'], 6)}" for leg in LEGS) + f"; Jaccard {_f(p['jaccard'], 4)}; n new {p['n_new']}, n frozen {p['n_frozen']}"
@@ -1442,33 +1472,154 @@ def vprepass_all(g: Mapping[str, Any], args: argparse.Namespace) -> tuple[dict[s
     return covs, mint_pools
 
 
-def collect_all(g: Mapping[str, Any], args: argparse.Namespace, scratch: Path) -> tuple[dict[str, list], dict[str, list]]:
+def args_hash(args: argparse.Namespace) -> str:
+    """sha256 over the args that decide the rows (not the worker count, the out dir or the log paths)."""
+    skip = {"max_workers", "guards_only", "out_dir", "tries_log", "canonical_tries"}
+    d = {k: str(v) for k, v in sorted(vars(args).items()) if k not in skip}
+    return hashlib.sha256(json.dumps(d, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def source_meta(g: Mapping[str, Any], args: argparse.Namespace, tag: str, head: str) -> dict[str, Any]:
+    """What a cached source must still match to be reused: head, args, the source's view shas and its V-map sha."""
+    if tag.startswith("P1"):
+        label = {"P1A": "fast", "P1C": "insample", "P1B": "live"}[tag]
+        views, vk = {label: g["g1"]["view_sha256"].get(label)}, "P1"
+    elif tag == "P2":
+        views, vk = dict(g["g2"]["view_sha256"]), "P2"
+    elif tag == "P3":
+        views, vk = dict(g["g3"]["pin_sha256"]), "P3"
+    else:
+        views, vk = dict((g["g4"] or {}).get("view_sha256", {})), "P4"
+    return {"tag": tag, "head": head, "args_hash": args_hash(args), "view_sha256": views, "vmap_sha256": g["vmap_sha256"].get(vk)}
+
+
+def _cache_paths(cache: Path, mode: str, tag: str) -> tuple[Path, Path]:
+    return cache / f"{mode}_{tag}.rows.jsonl", cache / f"{mode}_{tag}.manifest.json"
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 22), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def discard_cache(cache: Path, mode: str, tag: str) -> None:
+    for pth in _cache_paths(cache, mode, tag):
+        pth.unlink(missing_ok=True)
+
+
+def write_cache(cache: Path, mode: str, tag: str, rows: Sequence[Mapping[str, Any]], meta: Mapping[str, Any], extra: Mapping[str, Any]) -> str:
+    """Rows first (atomic), then the manifest: a source without a manifest is incomplete and never reused. Returns the rows sha256."""
+    cache.mkdir(parents=True, exist_ok=True)
+    rp, mp_ = _cache_paths(cache, mode, tag)
+    tmp = rp.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, sort_keys=True) + "\n")
+    os.replace(tmp, rp)
+    sha = _file_sha256(rp)
+    mtmp = mp_.with_suffix(".tmp")
+    mtmp.write_text(json.dumps({"schema": CACHE_SCHEMA, "meta": dict(meta), "rows_sha256": sha, "n_rows": len(rows), "extra": dict(extra)}, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(mtmp, mp_)
+    return sha
+
+
+def load_cache(cache: Path, mode: str, tag: str, meta: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any], str] | None:
+    """Reuse a source's rows only if the manifest's meta equals `meta` and the rows file still hashes to the manifest. Any mismatch (or a
+    missing/unreadable half) discards this source's cache and returns None: old and new rows are never mixed."""
+    rp, mp_ = _cache_paths(cache, mode, tag)
+    if not rp.exists() and not mp_.exists():
+        return None
+    try:
+        man = json.loads(mp_.read_text(encoding="utf-8"))
+        ok = man.get("schema") == CACHE_SCHEMA and man.get("meta") == json.loads(json.dumps(dict(meta))) and rp.is_file() and _file_sha256(rp) == man.get("rows_sha256")
+        rows = [json.loads(line) for line in rp.read_text(encoding="utf-8").splitlines() if line.strip()] if ok else []
+        ok = ok and len(rows) == man.get("n_rows")
+    except (OSError, ValueError, KeyError, AttributeError):
+        ok = False
+    if not ok:
+        discard_cache(cache, mode, tag)
+        return None
+    return rows, man.get("extra", {}), man["rows_sha256"]
+
+
+def collect_all(g: Mapping[str, Any], args: argparse.Namespace, scratch: Path, head: str = "unknown") -> tuple[dict[str, list], dict[str, list], set[str]]:
+    """The tape passes, cached per (mode, source). Prints only row counts and hashes."""
+    import shutil
+
     v_rows: dict[str, list] = {}
     nv_rows: dict[str, list] = {}
-    mw = args.max_workers
-    for mode, store in (("nv", nv_rows), ("v", v_rows)):
-        for tag in ("P1A", "P1C", "P1B"):
-            root = {"P1A": g["g1"]["roots"]["fast"], "P1C": g["g1"]["roots"]["insample"], "P1B": g["g1"]["roots"]["live"]}[tag]
+    no_v_pools: set[str] = set()
+    mw = min(args.max_workers, TAPE_WORKERS_CAP)
+    cache = scratch / CACHE_DIR
+    p1_roots = {"P1A": g["g1"]["roots"]["fast"], "P1C": g["g1"]["roots"]["insample"], "P1B": g["g1"]["roots"]["live"]}
+
+    def run_source(mode: str, tag: str, fn: Callable[[], list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        meta = source_meta(g, args, tag, head)
+        hit = load_cache(cache, mode, tag, meta)
+        if hit is not None:
+            rows, extra, sha = hit
+            print(f"EXP-015 pass {mode} {tag}: cache reused rows={len(rows)} sha256={sha[:16]}", file=sys.stderr, flush=True)
+        else:
+            shutil.rmtree(scratch / f"{mode}_{tag}", ignore_errors=True)  # a discarded cache never leaves rows behind to mix in
+            shutil.rmtree(scratch / f"counts_{mode}_{tag}", ignore_errors=True)
             print(f"EXP-015 pass {mode} {tag}...", file=sys.stderr, flush=True)
-            store[tag] = run_p1_pass(tag, root, mode, scratch, args.vmap_p1, mw)
+            rows = fn()
+            extra = {"no_v_pools": sorted(bc.adapter_no_v_pools(scratch / f"counts_{mode}_{tag}"))}
+            sha = write_cache(cache, mode, tag, rows, meta, extra)
+            print(f"EXP-015 pass {mode} {tag}: cached rows={len(rows)} sha256={sha[:16]}", file=sys.stderr, flush=True)
+        if mode == "v":
+            no_v_pools.update(extra.get("no_v_pools", []))
+        return rows
+
+    for mode, store in (("nv", nv_rows), ("v", v_rows)):
+        vm = args.vmap_p1
+        for tag in ("P1A", "P1C", "P1B"):
+            store[tag] = run_source(mode, tag, lambda tag=tag: run_p1_pass(tag, p1_roots[tag], mode, scratch, vm, mw))
         r2 = g["g2"]
-        print(f"EXP-015 pass {mode} P2...", file=sys.stderr, flush=True)
-        store["P2"] = run_holdout_pass("P2", bc.MultiViewHours(dict(r2["roots"])), r2["pool"], mode, scratch, args.vmap_p2, mw)
-        h3 = make_p3_hours(g["g3"]["walkers"])
-        print(f"EXP-015 pass {mode} P3...", file=sys.stderr, flush=True)
-        store["P3"] = run_holdout_pass("P3", h3, bc.hours_range(*BLOCKS["P3"]), mode, scratch, args.vmap_p3, mw)
+        store["P2"] = run_source(mode, "P2", lambda: run_holdout_pass("P2", bc.MultiViewHours(dict(r2["roots"])), r2["pool"], mode, scratch, args.vmap_p2, mw))
+        store["P3"] = run_source(mode, "P3", lambda: run_holdout_pass("P3", make_p3_hours(g["g3"]["walkers"]), bc.hours_range(*BLOCKS["P3"]), mode, scratch, args.vmap_p3, mw))
         if g["g4"] is not None:
             r4 = g["g4"]
-            print(f"EXP-015 pass {mode} P4...", file=sys.stderr, flush=True)
-            store["P4"] = run_holdout_pass("P4", bc.MultiViewHours(dict(r4["roots"])), r4["pool"], mode, scratch, args.vmap_p4, mw)
-    return v_rows, nv_rows
+            store["P4"] = run_source(mode, "P4", lambda: run_holdout_pass("P4", bc.MultiViewHours(dict(r4["roots"])), r4["pool"], mode, scratch, args.vmap_p4, mw))
+    return v_rows, nv_rows, no_v_pools
 
 
-def no_v_mints_from(scratch: Path, mint_pools: Mapping[str, set[str]]) -> set[str]:
-    pools: set[str] = set()
-    for d in sorted(scratch.glob("counts_v_*")):
-        pools |= bc.adapter_no_v_pools(d)
-    return {m for m, ps in mint_pools.items() if ps & pools}
+def no_v_mints_from(no_v_pools: set[str], mint_pools: Mapping[str, set[str]]) -> set[str]:
+    return {m for m, ps in mint_pools.items() if ps & set(no_v_pools)}
+
+
+def check_run_lock(out_dir: Path) -> None:
+    """A RUN.lock with no record means a run was hard-killed after `started` (tries spent, state unknown): refuse. A lock whose record says
+    the tries were never started is stale and is cleared."""
+    lock, rec = out_dir / OUT_LOCK, out_dir / OUT_RECORD
+    if not lock.exists():
+        return
+    if not rec.exists():
+        raise Refused(f"{lock} exists with no completed/aborted/refused record in {out_dir}: a run was killed after taking the lock. Needs a manager ruling; no rerun")
+    try:
+        started = bool(json.loads(rec.read_text(encoding="utf-8")).get("started"))
+    except (OSError, ValueError):
+        started = True
+    if started:
+        raise Refused(f"{lock}: a run already spent its tries here (see {rec})")
+    lock.unlink()
+    rec.unlink()
+
+
+def take_lock(out_dir: Path, head: str, ahash: str) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(out_dir / OUT_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"head": head, "args_hash": ahash, "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}) + "\n")
+
+
+def write_record(out_dir: Path, status: str, started: bool, statuses: Mapping[str, str]) -> None:
+    tmp = out_dir / (OUT_RECORD + ".tmp")
+    tmp.write_text(json.dumps({"status": status, "started": started, "config_statuses": dict(statuses), "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}) + "\n", encoding="utf-8")
+    os.replace(tmp, out_dir / OUT_RECORD)
 
 
 def write_report(out_dir: Path, rep: Mapping[str, Any]) -> None:
@@ -1495,9 +1646,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     tries_path = resolve_tries_path(args.tries_log)
     canonical = Path(args.canonical_tries).resolve()
+    out_dir = args.out_dir
     try:
         g = run_guards(args)
         check_no_prior_tries(tries_path, canonical)
+        check_run_lock(out_dir)
+        gs = git_state()
+        if gs["dirty_tools"]:
+            raise Refused("tools/ is dirty (uncommitted change): the run records one clean head and refuses otherwise")
         if args.guards_only:
             print("guards OK (no row was read)", file=sys.stderr)
             return 0
@@ -1505,42 +1661,54 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Refused as exc:
         print(f"refusing: {exc}", file=sys.stderr)
         return 2
+    head = gs["head"]
+    ahash = args_hash(args)
     with_p4 = g["with_p4"]
-    out_dir = args.out_dir
     scratch = out_dir / "scratch"
     t0 = time.time()
-    status = "aborted_after_read"  # any exception or exit from here on leaves an honest tries record (finally below)
-    started_logged = False
+    status = "aborted_after_read"
+    locked = started = False
     universe_sha: str | None = None
     done_cfgs: set[str] = set()
+    cfg_status: dict[str, str] = {}
+
     def _on_sigterm(signum: int, frame: Any) -> None:  # a MiScusi cancel: unwind through the finally below
         raise SystemExit(128 + signum)
 
     prev = signal.signal(signal.SIGTERM, _on_sigterm)
     base: dict[str, Any] = {}
     try:
-        v_rows, nv_rows = collect_all(g, args, scratch)
+        v_rows, nv_rows, no_v_pools = collect_all(g, args, scratch, head)
         try:
             universe, ustats = build_universe(v_rows, nv_rows, with_p4)
-        except Integrity as exc:
-            status = "refused_after_read"
-            print(f"refusing after read: {exc}", file=sys.stderr)
+        except Integrity as exc:  # before `started`: nothing is logged
+            print(f"refusing after read (before started, no tries line): {exc}", file=sys.stderr)
+            return 2
+        no_v = no_v_mints_from(no_v_pools, mint_pools)
+        frozen_sel = frozen_selection(universe, args.artifact_dir)
+        bad = [u["mint"] for u, f in zip(universe, frozen_sel) if f and u["block"] != "P1" and u["mint"] in no_v]
+        if bad:  # the frozen selection on the non-P1 rows is priced without V on a no-V pool: refuse before `started`
+            print(f"refusing (before started, no tries line): {len(bad)} frozen-selected non-P1 migration(s) are on pools priced without V", file=sys.stderr)
             return 2
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / OUT_UNIVERSE).write_bytes(universe_bytes(universe))
         universe_sha = universe_sha256(universe)
         (out_dir / OUT_UNIVERSE_SHA).write_text(universe_sha + "\n", encoding="utf-8")
-        log_all(out_dir, tries_path, canonical, list(CONFIGS), "started", with_p4, universe_sha)  # BEFORE any fit
-        started_logged = True
-        no_v = no_v_mints_from(scratch, mint_pools)
+        try:
+            take_lock(out_dir, head, ahash)
+        except FileExistsError:
+            print(f"refusing: {out_dir / OUT_LOCK} appeared (concurrent run)", file=sys.stderr)
+            return 2
+        locked = True
+        log_all(out_dir, tries_path, canonical, list(CONFIGS), "started", with_p4, universe_sha)  # the spend point, BEFORE any fit
+        started = True
         base = {
             "schema": SCHEMA, "banner": BANNER, "first_line": first_line(with_p4), "with_p4": with_p4, "n_dates": len(pool_dates(with_p4)), "n_non_p1_dates": len(non_p1_dates(with_p4)), "dates": pool_dates(with_p4),
             "universe": {"n": len(universe), "sha256": universe_sha, "stats": ustats, "path": str(out_dir / OUT_UNIVERSE)},
             "costs": {"vmap_p2_pinned": VMAP_SHA256, "vmap_sha256": g["vmap_sha256"], "k": K, "size_sol": SIZE_SOL, "fee_lamports": FEE, "exit_lag": EXIT_LAG, "haircut_factor": HAIRCUT_FACTOR},
             "guards": {"view_sha256": {"P1": g["g1"]["view_sha256"], "P2": g["g2"]["view_sha256"], "P3_manifests": g["g3"]["pin_sha256"], "P4": (g["g4"] or {}).get("view_sha256")}, "frozen": g["frozen"]},
-            "v_prepass": covs, "no_v_mints_in_universe": len(no_v & {u["mint"] for u in universe}), "caveats": list(CAVEATS), "max_workers": args.max_workers, "git_head": git_state()["head"], "git_dirty_tools": git_state()["dirty_tools"],
+            "v_prepass": covs, "no_v_mints_in_universe": len(no_v & {u["mint"] for u in universe}), "caveats": list(CAVEATS), "max_workers": args.max_workers, "git_head": head, "git_dirty_tools": False, "args_hash": ahash,
         }
-        frozen_sel = frozen_selection(universe, args.artifact_dir)
         lab = labels(universe)
         dates = pool_dates(with_p4)
         arrays = fit_arrays(universe, lab, dates)
@@ -1555,12 +1723,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_report(out_dir, rep)
             log_all(out_dir, tries_path, canonical, [cid], "completed", with_p4, universe_sha)
             done_cfgs.add(cid)
+            cfg_status[cid] = "completed"
 
         def on_refused(cid: str, why: str) -> None:
             partial_screen["results"][cid] = {"passes": False, "refused": why}
             partial_screen["statuses"][cid] = "refused_after_read"
             log_all(out_dir, tries_path, canonical, [cid], "refused_after_read", with_p4, universe_sha)
             done_cfgs.add(cid)
+            cfg_status[cid] = "refused_after_read"
 
         try:
             screen = run_screen(universe, frozen_sel, runner, with_p4, on_done, on_refused, no_v)
@@ -1575,9 +1745,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     finally:
         signal.signal(signal.SIGTERM, prev)
-        if status != "completed":
+        if started and status != "completed":
             pending = [c for c in CONFIGS if c not in done_cfgs]
             log_all(out_dir, tries_path, canonical, pending, status, with_p4, universe_sha)
+            for c in pending:
+                cfg_status[c] = status
+        if locked:
+            write_record(out_dir, status, started, cfg_status)
+        # before `started`, nothing is logged: the tape rows stay cached (checked on a re-run) and no try is spent
 
 
 if __name__ == "__main__":

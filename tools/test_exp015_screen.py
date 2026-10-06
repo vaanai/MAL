@@ -937,8 +937,16 @@ class TriesTests(unittest.TestCase):
 
 # --- main orchestration --------------------------------------------------------------------------------------------------
 
+CLEAN = {"head": "h" * 40, "dirty_tools": False}
+RES0 = {"passes": False, "bars": {}, "pooled_press_mean_non_p1_sol": None, "n_selected": 0, "n_rows": 0, "final_threshold_p90": None, "folds": [], "report_only": {}, "fast_only": {}, "knife_edge": False, "name": "C", "desc": "", "min_data_in_leaf": 20, "label_counts": {}}
+
 
 class MainTests(unittest.TestCase):
+    def setUp(self):
+        p = mock.patch.object(x, "git_state", return_value=dict(CLEAN))
+        p.start()
+        self.addCleanup(p.stop)
+
     def _args(self, d, extra=()):
         return ["--p1-fast-dir", "/x/a", "--p1-oracle-insample-dir", "/x/b", "--p1-oracle-live-dir", "/x/c", "--p2-view-dir", "/x/p2", "--vmap-p3", "/x/v3",
                 "--out-dir", str(Path(d) / "out"), "--tries-log", str(Path(d) / "t.jsonl"), "--canonical-tries", str(Path(d) / "canon.jsonl"), "--max-workers", "1", *extra]
@@ -957,6 +965,23 @@ class MainTests(unittest.TestCase):
     def _guards(self):
         return {"g1": {"roots": {"fast": Path("/x/a"), "insample": Path("/x/b"), "live": Path("/x/c")}, "view_sha256": {}}, "g2": {"roots": {}, "pool": [], "view_sha256": {}}, "g3": {"walkers": [], "pin_sha256": {}},
                 "g4": None, "vmap_sha256": {}, "frozen": {"model_md5": x.MODEL_MD5, "threshold": x.FROZEN_THRESHOLD}, "with_p4": False}
+
+    def _patches(self, collect, frozen=None, screen=None, n=None):
+        ps = [mock.patch.object(x, "run_guards", return_value=self._guards()), mock.patch.object(x, "vprepass_all", return_value=({}, {})), mock.patch.object(x, "collect_all", **collect),
+              mock.patch.object(x, "render_md", return_value="md")]
+        if frozen is not None:
+            ps.append(mock.patch.object(x, "frozen_selection", return_value=frozen))
+        if screen is not None:
+            ps.append(mock.patch.object(x, "run_screen", screen))
+        return ps
+
+    def _run(self, d, collect, extra=(), **kw):
+        import contextlib
+
+        with contextlib.ExitStack() as st:
+            for p in self._patches(collect, **kw):
+                st.enter_context(p)
+            return x.main(self._args(d, extra))
 
     def test_guard_refusal_exits_2_and_logs_nothing(self):
         with tempfile.TemporaryDirectory() as d:
@@ -979,6 +1004,14 @@ class MainTests(unittest.TestCase):
             pp.assert_not_called()
             self.assertFalse((Path(d) / "t.jsonl").exists())
 
+    def test_dirty_tools_refuses_before_any_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(x, "run_guards", return_value=self._guards()), mock.patch.object(x, "vprepass_all") as pp, \
+                    mock.patch.object(x, "git_state", return_value={"head": "h", "dirty_tools": True}):
+                self.assertEqual(x.main(self._args(d)), 2)
+            pp.assert_not_called()
+            self.assertFalse((Path(d) / "t.jsonl").exists())
+
     def test_v_coverage_refusal_before_reading_logs_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(x, "run_guards", return_value=self._guards()), mock.patch.object(x, "vprepass_all", side_effect=x.Refused("P2: V coverage 2%")), mock.patch.object(x, "collect_all") as ca:
@@ -986,7 +1019,7 @@ class MainTests(unittest.TestCase):
             ca.assert_not_called()
             self.assertFalse((Path(d) / "t.jsonl").exists())
 
-    def test_sigterm_during_the_tape_logs_aborted_for_all_configs_and_restores_the_handler(self):
+    def test_sigterm_before_started_leaves_no_tries_line_no_lock_and_restores_the_handler(self):
         before = signal.getsignal(signal.SIGTERM)
 
         def cancel(*a, **k):
@@ -994,19 +1027,64 @@ class MainTests(unittest.TestCase):
             raise AssertionError("handler should have unwound")
 
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(x, "run_guards", return_value=self._guards()), mock.patch.object(x, "vprepass_all", return_value=({}, {})), mock.patch.object(x, "collect_all", side_effect=cancel):
-                with self.assertRaises(SystemExit) as cm:
-                    x.main(self._args(d))
+            with self.assertRaises(SystemExit) as cm:
+                self._run(d, {"side_effect": cancel})
             self.assertEqual(cm.exception.code, 128 + signal.SIGTERM)
-            ls = lines(Path(d) / "t.jsonl")
-            self.assertEqual({l["config"]["status"] for l in ls}, {"aborted_after_read"})
-            self.assertEqual({l["config"]["key"] for l in ls}, {"exp015_c1", "exp015_c2", "exp015_c3"})
-            self.assertEqual(len(ls), 9)  # 3 configs x P1, P2, P3
-            self.assertEqual(len(lines(Path(d) / "canon.jsonl")), 9)
+            self.assertFalse((Path(d) / "t.jsonl").exists())  # a crash before `started` spends no try
+            self.assertFalse((Path(d) / "canon.jsonl").exists())
+            self.assertFalse((Path(d) / "out" / "RUN.lock").exists())
             self.assertFalse((Path(d) / "out" / "report.json").exists())
             self.assertEqual(signal.getsignal(signal.SIGTERM), before)
 
-    def test_started_lines_and_the_universe_sha_precede_any_fit_then_completed_and_aborted_statuses(self):
+    def test_any_exception_before_started_logs_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(RuntimeError):
+                self._run(d, {"side_effect": RuntimeError("tape crashed")})
+            self.assertFalse((Path(d) / "t.jsonl").exists())
+            self.assertFalse((Path(d) / "out" / "RUN.lock").exists())
+
+    def test_integrity_failure_before_started_logs_nothing(self):
+        u, v_rows, nv_rows = self._synthetic_rows()
+        v_rows["P2"].append(dict(v_rows["P3"][0]))  # a mint in two sources
+        v_rows["P2"][-1]["mig_ms"] = x.hour_ms("2026-08-20T00")
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(self._run(d, {"return_value": (v_rows, nv_rows, set())}), 2)
+            self.assertFalse((Path(d) / "t.jsonl").exists())
+            self.assertFalse((Path(d) / "out" / "RUN.lock").exists())
+
+    def test_frozen_selected_non_p1_mint_on_a_no_v_pool_refuses_before_started(self):
+        u, v_rows, nv_rows = self._synthetic_rows()
+        target = next(v["mint"] for v in u if v["block"] != "P1")
+        sel = [v["mint"] == target for v in u]
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(x, "no_v_mints_from", return_value={target}):
+                self.assertEqual(self._run(d, {"return_value": (v_rows, nv_rows, {"poolX"})}, frozen=sel), 2)
+            self.assertFalse((Path(d) / "t.jsonl").exists())
+            self.assertFalse((Path(d) / "out" / "RUN.lock").exists())
+            # a frozen-selected P1 mint on a no-V pool does not trip the pre-started check
+            p1 = next(v["mint"] for v in u if v["block"] == "P1")
+            sel1 = [v["mint"] == p1 for v in u]
+
+            def fake_screen(universe, frozen_sel, runner, with_p4, on_done, on_refused, no_v):
+                for c in x.CONFIGS:
+                    on_done(c, dict(RES0))
+                return {"results": {c: dict(RES0) for c in x.CONFIGS}, "statuses": {c: "completed" for c in x.CONFIGS}}
+
+            with mock.patch.object(x, "no_v_mints_from", return_value={p1}):
+                self.assertEqual(self._run(d, {"return_value": (v_rows, nv_rows, {"poolX"})}, frozen=sel1, screen=fake_screen), 0)
+
+    def test_run_screen_refuses_a_config_whose_frozen_non_p1_selection_is_on_a_no_v_pool(self):
+        u = mk_universe(False, n_good=3, n_bad=3, seed=11)
+        arrays = x.fit_arrays(u, x.labels(u), x.pool_dates(False))
+        target = next(v["mint"] for v in u if v["block"] == "P2")
+        frozen = [v["mint"] == target for v in u]
+        # the new model selects nothing on that mint (it is not "good" informatively), so only the frozen selection can trip the check
+        out = x.run_screen(u, frozen, x.Runner(arrays, None, 1), False, no_v_mints={target}, configs=("c2",))
+        self.assertEqual(out["statuses"], {"c2": "refused_after_read"})
+        out = x.run_screen(u, [v["mint"] == next(w["mint"] for w in u if w["block"] == "P1") for v in u], x.Runner(arrays, None, 1), False, no_v_mints={target}, configs=("c2",))
+        self.assertIn(out["statuses"]["c2"], ("completed", "refused_after_read"))  # a P1 frozen pick alone never trips it
+
+    def test_started_lines_lock_and_the_universe_sha_precede_any_fit_then_completed_and_aborted_statuses(self):
         u, v_rows, nv_rows = self._synthetic_rows()
         order = {}
 
@@ -1016,19 +1094,20 @@ class MainTests(unittest.TestCase):
             order["sha_at_first_fit"] = {l["config"]["universe_sha256"] for l in ls}
             order["universe_file"] = (Path(self.d) / "out" / "universe.jsonl").read_bytes()
             order["sha_file"] = (Path(self.d) / "out" / "universe.sha256").read_text().strip()
-            on_done("c1", {"passes": False, "bars": {}, "pooled_press_mean_non_p1_sol": None, "n_selected": 0, "n_rows": 0, "final_threshold_p90": None, "folds": [], "report_only": {}, "fast_only": {}, "knife_edge": False, "name": "C1", "desc": "", "min_data_in_leaf": 20, "label_counts": {}})
+            order["lock"] = json.loads((Path(self.d) / "out" / "RUN.lock").read_text())
+            on_done("c1", dict(RES0))
             raise RuntimeError("fit crashed")
 
         with tempfile.TemporaryDirectory() as d:
             self.d = d
-            with mock.patch.object(x, "run_guards", return_value=self._guards()), mock.patch.object(x, "vprepass_all", return_value=({}, {})), mock.patch.object(x, "collect_all", return_value=(v_rows, nv_rows)), \
-                    mock.patch.object(x, "frozen_selection", return_value=[False] * len(u)), mock.patch.object(x, "run_screen", fake_screen), mock.patch.object(x, "render_md", return_value="md"):
-                with self.assertRaises(RuntimeError):
-                    x.main(self._args(d))
+            with self.assertRaises(RuntimeError):
+                self._run(d, {"return_value": (v_rows, nv_rows, set())}, frozen=[False] * len(u), screen=fake_screen)
             self.assertEqual(order["started_at_first_fit"], ["started"] * 3)
             sha = hashlib.sha256(order["universe_file"]).hexdigest()
             self.assertEqual(order["sha_file"], sha)
             self.assertEqual(order["sha_at_first_fit"], {sha})
+            self.assertEqual(order["lock"]["head"], CLEAN["head"])
+            self.assertEqual(len(order["lock"]["args_hash"]), 64)
             ls = lines(Path(d) / "t.jsonl")
             st = {}
             for l in ls:
@@ -1039,31 +1118,44 @@ class MainTests(unittest.TestCase):
             rep = json.loads((Path(d) / "out" / "report.json").read_text())
             self.assertTrue(rep["partial"])
             self.assertEqual(rep["universe"]["sha256"], sha)
+            rec = json.loads((Path(d) / "out" / "RUN.record.json").read_text())
+            self.assertEqual((rec["status"], rec["started"]), ("aborted_after_read", True))
+            # after `started` there is no resume: the prior-tries check and the lock both refuse a second run
+            self.assertEqual(self._run(d, {"return_value": (v_rows, nv_rows, set())}), 2)
 
-    def test_integrity_failure_after_reading_is_refused_after_read(self):
-        u, v_rows, nv_rows = self._synthetic_rows()
-        v_rows["P2"].append(dict(v_rows["P3"][0]))  # a mint in two sources
-        v_rows["P2"][-1]["mig_ms"] = x.hour_ms("2026-08-20T00")
+    def test_run_lock_without_a_record_refuses(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(x, "run_guards", return_value=self._guards()), mock.patch.object(x, "vprepass_all", return_value=({}, {})), mock.patch.object(x, "collect_all", return_value=(v_rows, nv_rows)):
+            out = Path(d) / "out"
+            out.mkdir()
+            (out / "RUN.lock").write_text("{}")
+            with mock.patch.object(x, "run_guards", return_value=self._guards()), mock.patch.object(x, "vprepass_all") as pp:
                 self.assertEqual(x.main(self._args(d)), 2)
-            ls = lines(Path(d) / "t.jsonl")
-            self.assertEqual({l["config"]["status"] for l in ls}, {"refused_after_read"})
-            self.assertEqual(len(ls), 9)
+            pp.assert_not_called()
+            with self.assertRaises(x.Refused):
+                x.check_run_lock(out)
+            (out / "RUN.record.json").write_text(json.dumps({"status": "aborted_after_read", "started": True}))
+            with self.assertRaises(x.Refused):  # a record, but the tries were spent
+                x.check_run_lock(out)
+            (out / "RUN.record.json").write_text(json.dumps({"status": "aborted_after_read", "started": False}))
+            x.check_run_lock(out)  # stale lock from a run that never reached `started`: cleared
+            self.assertFalse((out / "RUN.lock").exists())
+
+    def test_lock_is_exclusive(self):
+        with tempfile.TemporaryDirectory() as d:
+            x.take_lock(Path(d), "h", "a")
+            with self.assertRaises(FileExistsError):
+                x.take_lock(Path(d), "h", "a")
 
     def test_a_completed_run_writes_report_and_completed_lines_once(self):
         u, v_rows, nv_rows = self._synthetic_rows()
-        res = {"passes": False, "bars": {}, "pooled_press_mean_non_p1_sol": None, "n_selected": 0, "n_rows": 0, "final_threshold_p90": None, "folds": [], "report_only": {}, "fast_only": {}, "knife_edge": False, "name": "C", "desc": "", "min_data_in_leaf": 20, "label_counts": {}}
 
         def fake_screen(universe, frozen_sel, runner, with_p4, on_done, on_refused, no_v):
             for c in x.CONFIGS:
-                on_done(c, dict(res))
-            return {"results": {c: dict(res) for c in x.CONFIGS}, "statuses": {c: "completed" for c in x.CONFIGS}}
+                on_done(c, dict(RES0))
+            return {"results": {c: dict(RES0) for c in x.CONFIGS}, "statuses": {c: "completed" for c in x.CONFIGS}}
 
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(x, "run_guards", return_value=self._guards()), mock.patch.object(x, "vprepass_all", return_value=({}, {})), mock.patch.object(x, "collect_all", return_value=(v_rows, nv_rows)), \
-                    mock.patch.object(x, "frozen_selection", return_value=[False] * len(u)), mock.patch.object(x, "run_screen", fake_screen), mock.patch.object(x, "render_md", return_value="md"):
-                self.assertEqual(x.main(self._args(d)), 0)
+            self.assertEqual(self._run(d, {"return_value": (v_rows, nv_rows, set())}, frozen=[False] * len(u), screen=fake_screen), 0)
             rep = json.loads((Path(d) / "out" / "report.json").read_text())
             self.assertFalse(rep["partial"])
             self.assertTrue(rep["decision"]["family_closed"])
@@ -1072,6 +1164,174 @@ class MainTests(unittest.TestCase):
             self.assertEqual(sum(1 for l in ls if l["config"]["status"] == "completed"), 9)
             self.assertEqual(sum(1 for l in ls if l["config"]["status"] == "started"), 3)
             self.assertEqual(sum(1 for l in ls if l["config"]["status"] == "aborted_after_read"), 0)
+            self.assertEqual(json.loads((Path(d) / "out" / "RUN.record.json").read_text())["status"], "completed")
+
+
+# --- tape cache, worker cap, report-only stats, E1/E2 -------------------------------------------------------------------------
+
+
+class CacheTests(unittest.TestCase):
+    META = {"tag": "P2", "head": "h", "args_hash": "a", "view_sha256": {"w1": "v"}, "vmap_sha256": "m"}
+
+    def test_reuse_only_when_every_part_matches_else_discard(self):
+        rows = [{"mint": "a", "net": 1}, {"mint": "b", "net": 2}]
+        with tempfile.TemporaryDirectory() as d:
+            c = Path(d)
+            sha = x.write_cache(c, "v", "P2", rows, self.META, {"no_v_pools": ["p"]})
+            got = x.load_cache(c, "v", "P2", self.META)
+            self.assertEqual((got[0], got[1], got[2]), (rows, {"no_v_pools": ["p"]}, sha))
+            for key, val in (("head", "h2"), ("args_hash", "a2"), ("view_sha256", {"w1": "other"}), ("vmap_sha256", "m2")):
+                x.write_cache(c, "v", "P2", rows, self.META, {})
+                self.assertIsNone(x.load_cache(c, "v", "P2", {**self.META, key: val}), key)
+                for pth in x._cache_paths(c, "v", "P2"):
+                    self.assertFalse(pth.exists(), key)  # a mismatch discards the source's cache
+            x.write_cache(c, "v", "P2", rows, self.META, {})
+            rp, mp_ = x._cache_paths(c, "v", "P2")
+            rp.write_text(rp.read_text() + '{"mint": "c"}\n')  # rows changed after the manifest
+            self.assertIsNone(x.load_cache(c, "v", "P2", self.META))
+            self.assertFalse(rp.exists() or mp_.exists())
+            x.write_cache(c, "v", "P2", rows, self.META, {})
+            mp_.unlink()  # rows without a manifest = an incomplete source
+            self.assertIsNone(x.load_cache(c, "v", "P2", self.META))
+            self.assertFalse(rp.exists())
+            self.assertIsNone(x.load_cache(c, "v", "P2", self.META))  # nothing cached
+
+    def _g(self, sha="s1", vm="m1"):
+        return {"g1": {"roots": {"fast": Path("/x/a"), "insample": Path("/x/b"), "live": Path("/x/c")}, "view_sha256": {"fast": sha, "insample": "i", "live": "l"}}, "g2": {"roots": {}, "pool": [], "view_sha256": {"w1": "p2"}},
+                "g3": {"walkers": [], "pin_sha256": {"w1/manifest.json": "p3"}}, "g4": None, "vmap_sha256": {"P1": vm, "P2": "m2", "P3": "m3"}}
+
+    def _args(self, **kw):
+        ns = dict(p1_fast_dir="a", vmap_p1="/v1", vmap_p2="/v2", vmap_p3="/v3", p2_view_dir=["w"], max_workers=4, out_dir="o", tries_log=None, canonical_tries="c", guards_only=False)
+        ns.update(kw)
+        return SimpleNamespace(**ns)
+
+    def test_collect_all_resumes_from_cache_and_never_mixes_old_and_new_rows(self):
+        import itertools
+
+        ctr = itertools.count()
+        calls = []
+
+        def fake_p1(tag, root, mode, scratch, vmap, mw):
+            calls.append((mode, tag, mw))
+            (scratch / f"counts_{mode}_{tag}").mkdir(parents=True, exist_ok=True)
+            return [{"mint": f"{tag}-{next(ctr)}", "mode": mode}]
+
+        def fake_hold(tag, hours, pool, mode, scratch, vmap, mw):
+            calls.append((mode, tag, mw))
+            return [{"mint": f"{tag}-{next(ctr)}", "mode": mode}]
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "run_p1_pass", fake_p1), mock.patch.object(x, "run_holdout_pass", fake_hold):
+            scratch = Path(d)
+            v1, nv1, _ = x.collect_all(self._g(), self._args(), scratch, "head1")
+            self.assertEqual(len(calls), 10)  # 5 sources x 2 modes
+            self.assertTrue(all(mw <= x.TAPE_WORKERS_CAP for _m, _t, mw in calls))  # max_workers 4 -> tape workers 4
+            calls.clear()
+            v2, nv2, _ = x.collect_all(self._g(), self._args(max_workers=8), scratch, "head1")  # same head, shas, args: reused
+            self.assertEqual(calls, [])
+            self.assertEqual((v2, nv2), (v1, nv1))
+            # a different head discards everything and re-runs it; no old row survives
+            v3, nv3, _ = x.collect_all(self._g(), self._args(), scratch, "head2")
+            self.assertEqual(len(calls), 10)
+            self.assertTrue(all(r["mint"] not in {q["mint"] for rs in v1.values() for q in rs} for rs in v3.values() for r in rs))
+            calls.clear()
+            # a changed view sha for pool A only discards P1A's cache (both modes)
+            x.collect_all(self._g(sha="s2"), self._args(), scratch, "head2")
+            self.assertEqual(sorted((m, t) for m, t, _ in calls), [("nv", "P1A"), ("v", "P1A")])
+            calls.clear()
+            x.collect_all(self._g(), self._args(vmap_p1="/other"), scratch, "head2")  # args differ: all discarded
+            self.assertEqual(len(calls), 10)
+
+    def test_tape_passes_are_capped_at_4_workers(self):
+        seen = {}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "set_pass_env"), mock.patch.object(x, "patched_p1_workers"), \
+                mock.patch.object(eem, "run_all_features", side_effect=lambda **kw: seen.setdefault("p1", kw["max_workers"]) and []):
+            x.run_p1_pass("P1A", Path("/x"), "v", Path(d), "/m", 8)
+        self.assertEqual(seen["p1"], 4)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "set_pass_env"), mock.patch.object(x.s12, "load_rows", side_effect=lambda *a, **kw: seen.setdefault("h", a[1]) and []):
+            x.run_holdout_pass("P2", object(), ["2026-08-15T12"], "v", Path(d), "/m", 8)
+        self.assertEqual(seen["h"], 4)
+        self.assertEqual((x.TAPE_WORKERS_CAP, x.MAX_WORKERS_CAP), (4, 8))
+        self.assertIn("48 GB", x.__doc__)
+        self.assertIn("8 CPUs", x.__doc__)
+
+    def test_args_hash_ignores_workers_and_paths_but_not_the_inputs(self):
+        a = x.args_hash(self._args())
+        self.assertEqual(a, x.args_hash(self._args(max_workers=8, out_dir="zzz", tries_log="q")))
+        self.assertNotEqual(a, x.args_hash(self._args(vmap_p3="/other")))
+
+
+class ReportOnlyStatsTests(unittest.TestCase):
+    def test_gap_and_censored_by_block(self):
+        def rec(mint, mig, gap, censored=False):
+            cell = {"k": 6, "lag": 2, "size": 50_000_000, "censored": True} if censored else {"k": 6, "lag": 2, "size": 50_000_000, "censored": False, "filled": False, "status": MISS, "net0": 0, "sides": 1, "p_press": 0.0}
+            return {"mint": mint, "mig_ms": mig, "gap_ms": gap, "features": [0.0] * NF, "cells": [cell]}
+
+        h = x.hour_ms
+        v = {"P2": [rec("a", h("2026-08-20T00"), 4000), rec("b", h("2026-08-20T01"), 9000), rec("c", h("2026-08-20T02"), 100, censored=True)],
+             "P3": [rec("d", h("2026-09-04T00"), 12000), rec("e", h("2026-09-04T01"), None), rec("f", h("2026-09-04T02"), 1, censored=True)]}
+        _u, st = x.build_universe(v, {}, True)
+        self.assertEqual(st["max_first_print_gap_ms_by_block"], {"P2": 9000, "P3": 12000})
+        self.assertEqual(st["max_first_print_gap_ms"], 12000)
+        self.assertEqual(st["censored_primary_by_block"], {"P2": 1, "P3": 1})
+
+    def test_v_patch_records_the_gap_from_migration_to_the_first_pumpswap_print(self):
+        t = PatchTests()
+        fills, mint, seen, fake_score = t._fixture()
+        mint.mig_ms = 400
+        saved = (eem.score_one, eem._fills_for, eem.mixed_net)
+        try:
+            eem.score_one, eem._fills_for = fake_score, lambda m, migrate=True: (fills, 0, 0, None)
+            with mock.patch.object(eem, "_state_index", lambda f, tt, b: 0), mock.patch.object(eem, "_slot_time", lambda f, tt, fb: 1000):
+                with x.e15_v_patch():
+                    rows = eem.score_one("m1", mint, object(), None, 0, {})
+        finally:
+            eem.score_one, eem._fills_for, eem.mixed_net = saved
+        self.assertEqual(rows[0]["gap_ms"], 1000 - 400)
+
+
+class DateClusterBarTests(unittest.TestCase):
+    def test_both_resamplers_must_have_a_positive_lower_bound(self):
+        days = x.p2_dates()[:10]
+        trades = []
+        for i, d in enumerate(days):
+            v = (1.1 if i < 5 else -0.9) * SOL / 1000  # big date effects, small token noise: mean +0.1 per unit
+            for j in range(100):
+                trades.append({"mint": f"{d}-{j}", "day": d, "filled": True, "flat": v, "press": v, "source": "P2", "block": "P2"})
+        st = x.leg_stats(trades, "flat")
+        self.assertGreater(st["ci_lo"], 0)  # book_stats resamples tokens
+        self.assertLessEqual(st["ci_lo_date"], 0)  # whole dates: no edge
+        b = x.gate_bars(st, 10)
+        self.assertTrue(b["ci_lower_gt_0_book_stats"])
+        self.assertFalse(b["ci_lower_gt_0_date_cluster"])
+        self.assertFalse(b["ci_lower_gt_0"])
+        self.assertFalse(b["all"])
+        # reported both ways
+        self.assertIsNotNone(st["ci90_date_sol"])
+        good = x.leg_stats(trades_on({d: 0.01 for d in days}, per_date=12), "flat")
+        self.assertTrue(x.gate_bars(good, 10)["ci_lower_gt_0"])
+
+    def test_report_shows_both_cis(self):
+        u = mk_universe(False, n_good=3, n_bad=3, seed=11)
+        arrays = x.fit_arrays(u, x.labels(u), x.pool_dates(False))
+        screen = x.run_screen(u, [False] * len(u), x.Runner(arrays, None, 1), False, configs=("c2",))
+        rp = screen["results"]["c2"]["bars"]["bar1"]["report"]["flat"]
+        self.assertIn("ci90_sol", rp)
+        self.assertIn("ci90_date_sol", rp)
+        self.assertIn("ci_lower_gt_0_date_cluster", rp["gate"])
+
+
+class IncompleteOutcomeTests(unittest.TestCase):
+    def test_a_pass_is_not_claimed_unless_all_three_completed(self):
+        res = {c: fake_result(True, 0.01) for c in x.CONFIGS}
+        for bad in ("refused_after_read", "aborted_after_read"):
+            st = {"c1": "completed", "c2": "completed", "c3": bad}
+            d = x.decide_outcome(res, st)
+            self.assertEqual(d["outcome"], x.OUTCOME_INCOMPLETE)
+            self.assertIsNone(d["selected_for_confirmation"])
+            self.assertFalse(d["family_closed"])
+        d = x.decide_outcome(res, {"c1": "completed", "c2": "completed"})  # c3 missing
+        self.assertEqual(d["outcome"], x.OUTCOME_INCOMPLETE)
+        self.assertEqual(x.decide_outcome(res, {c: "completed" for c in x.CONFIGS})["selected_for_confirmation"], "c1")  # tie: lowest config index
 
 
 if __name__ == "__main__":
