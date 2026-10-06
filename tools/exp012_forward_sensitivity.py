@@ -864,7 +864,7 @@ def v_pass(walk_dir: Path, pool: Sequence[str], artifact_dir: Path, variants: Se
     return out
 
 
-LP_K_NAMES = {"repro": "k1"}
+LP_K_NAMES = {"repro": "k1_bound_start"}  # the (A)/(B) k = 1 fills; "k1" is the end-bound re-score variant when k(p50) = 1
 
 
 def lp_price(vpass: dict[str, Any], result_dir: Path, vinfo: dict[str, Any] | None) -> tuple[dict[str, dict[tuple[str, int], dict[str, Any]]], dict[str, Any]]:
