@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Proposed. Nothing trades at 0.25 SOL until the owner says yes in writing to one option below.** |
+| **Status** | **Decided 2026-10-06: Option A** (owner, relayed with Helm's note in the manager session). The 0.25 SOL step waits for the EXP-012 FINAL forward read (~2026-10-16) and a quant-proof agreement. **No new funding before then.** The 0.05 probe keeps running on faa3192 until its own stops (90 attempts, 0.25 SOL cap, 2026-10-12T00:00Z). See §7. |
 | **Decider** | Vaan (owner). The manager prepares; Helm installs. |
 | **Date** | 2026-10-05 |
 | **Builds on** | DEC-018 (live-trial readiness, proposed) and DEC-019 (the 0.05 SOL execution probe, Amendments 1 and 1a). |
@@ -113,3 +113,37 @@ If both ran at once, the hard worst case would include the 0.05 probe's remainin
 ## 6. Honest expectations
 
 At 0.25 SOL the fee drag falls to about 0.4%. If the exploration edge holds out-of-sample, that is where it can show up net of fees. The 22 trades on the two fixed builds total −52,825,937 lamports, about −0.0024 SOL per trade. That is within noise for heavy-tailed trades, but it does not support the edge either. The size step exists to measure size costs and, with Option A, to trade only after the held-out forward read supports it.
+
+## 7. Decision (2026-10-06): Option A, and the same-day package
+
+**Decision.** The owner chose **Option A** on 2026-10-06, relayed together with Helm's note:
+- The 0.25 SOL step starts only after the FINAL forward read (~2026-10-16T02Z) is a PASS and quant-proof agrees.
+- There is no new funding before then.
+- Option B is not taken.
+- The 0.05 probe continues on `faa319227eee420319eed06e85774f64dd2273b1` at 0.05 SOL under DEC-019 Amendments 1/1a. It ends at its own stops, at the latest 2026-10-12T00:00Z.
+- DEC-018's trial details are still due about 2026-10-14.
+
+**If the read passes, the owner gets a same-day proposal. The manager prepares it before 10-16, and it contains:**
+
+1. **State at the time.** Probe final attempts and realized loss, by build. Wallet balance from Helm's read. Wallet when this was recorded: **about 0.35 SOL** (Helm, 2026-10-06).
+2. **Funding needed.** The hard worst case is the loss cap plus 2 open positions at zero: 0.35 + 2 × 0.252 = **0.854 SOL**, plus about 0.05 SOL kept for transaction fees and rent.
+   - The wallet must hold about **0.90 SOL** at the start, so the floor never goes negative.
+   - At about 0.35 SOL today that means at least **about 0.55 SOL** of new funding.
+   - The 0.05 probe can still lose up to its remaining cap room before 10-12. At 10-06T00:33Z that room was 0.25 − 0.116494 = 0.133506 SOL. In that worst case the need rises to about **0.69 SOL**.
+   - The owner's planned 1 SOL covers both. The figure is recomputed from the real wallet on the day.
+3. **Worst case.**
+   - Hard: the cap is hit and both open positions go to zero, leaving the wallet minus 0.854 SOL.
+   - Realistic bad case: the cap is hit and the open positions stop near −40%.
+   - Both are recomputed on the day, along with the job #190 replay's attempts-before-cap (p50 16 at the 0.35 cap, P(cap hit) about 0.74).
+4. **Loss cap and watchdog.** The step's realized loss cap stays **0.35 SOL**, counted separately from the 0.05 probe.
+   - Proposed `LOSS_ALERT_SOL` for Helm's `mal-probe-watch.timer`: **0.25 SOL**, about 71% of the cap, roughly 2.5–3 full stops at 0.25.
+   - The watchdog must read the step's own counter, not the probe's.
+5. **Pinned sha and manifest.** The DEC-020 limits are in executor code, not only in config:
+   - a separate limit set (size 0.25, max_open 2, 40 attempts, cap 0.35, an end instant the owner sets);
+   - a separate state file and fill-log tag, so the 0.05 and 0.25 counters never pool;
+   - the never-re-buy list carried over.
+
+   The change is built and reviewed before 10-16, including a security review. It is **not installed**. The proposal gives Helm the full sha, the 13-line manifest and the steps. The install is a re-pin at 0 open positions, after the probe has ended.
+6. **The read itself.** The FINAL verdict, quant-proof's note, and the V book under DEC-016 Am.4 at the measured live k.
+
+Nothing in this section changes the gate, DEC-016, or DEC-018 §1.
