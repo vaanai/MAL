@@ -57,7 +57,11 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - complete-only mints get `canonical_pool(mint)` as their pool;
   - two new limits: cells ≥ 90% of migrated mints, and with-create ≥ 80%;
   - the slot rule is explicit (feature cutoff = migration-row/complete slot; simulator clock = first print on the pool).
-  - The quant-proof reviewer was this session's subagent, so its verdict may be lost when this session ends. **Rerun quant-proof on #417 if no verdict is posted.**
+  - **Quant-proof at 880797e: CHANGES.** Sent to the builder at ~17:50Z.
+    - **Required:** for complete-only mints, cutoff = complete slot + 1, clamped to the simulator clock. Otherwise the curve-completing buy is dropped, against plan §3. Disclose it in item 13.
+    - **New counts:** mints with a `migration` row but no `complete` row; OOF-scored P1 mints with no EXP-016 cell, as a limit (more than 5% → refuse).
+    - **Optional:** NO_SIM and foreign-first split by complete-only vs migration-row.
+    - Then re-run quant-proof. The builder and reviewer were this session's subagents, so **if the branch has no new commit after 880797e, do these fixes yourself or with a new builder.**
 - **Job #307: `--precount` at 880797e (#417 head).** Real layout, all sources, no lock and no tries. Log: `/data/mal/ops/exp016-precount7.log`. Counts land in `/data/mal/exp016-precount-*/precount.json`.
   - Memory is now about 3–3.5 GB per P1 source: compact rows at 245 B per row, 0 rows stored whole.
   - Check every per-source count and `would_refuse`. Where a data-quality limit doesn't fit honest counts, record a dated §13 note before the pin.
