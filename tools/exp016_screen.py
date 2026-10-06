@@ -189,6 +189,31 @@ def check_no_prior_tries(*logs: Path) -> None:
             raise Refused(f"{log} already holds {len(found)} exp016_* line(s); the try budget (6 candidates) is spent or started. The run refuses (plan section 5.4)")
 
 
+def prior_tries_per_experiment(log: Path, with_p4: bool) -> dict[str, dict[str, int]]:
+    """Per-experiment prior-try counts from the canonical log (plan 5.4), recorded in the `started` line: experiment -> {"total", pool: n}. The
+    experiment is `config.experiment`, else the line's `tool`. EXP-016's own lines are excluded. A line counts on a pool as in `prior_tries_per_pool`."""
+    pools = list(e15.active_blocks(with_p4))
+    out: dict[str, dict[str, int]] = {}
+    if not Path(log).is_file():
+        return out
+    for line in Path(log).read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        cfg = rec.get("config") or {}
+        if str(cfg.get("key", "")).startswith("exp016_"):
+            continue
+        name = str(cfg.get("experiment") or rec.get("tool") or "unknown")
+        d = out.setdefault(name, {"total": 0, **{b: 0 for b in pools}})
+        d["total"] += 1
+        for b in pools:
+            a, z = e15.BLOCKS[b]
+            if any(str(x.get("start_hour", "")) < z and str(x.get("end_hour_exclusive", "")) > a for x in rec.get("data_blocks") or []):
+                d[b] += 1
+    return dict(sorted(out.items()))
+
+
 def prior_tries_per_pool(log: Path, with_p4: bool) -> dict[str, int]:
     """Lines already in the tries log per pool, read at the `started` line (plan 5.4): a line counts on a pool if one of its data blocks
     overlaps the pool's counted window. EXP-016's own lines are excluded. A line that touches two pools counts on both."""
@@ -1604,7 +1629,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         locked = True
         check_no_prior_tries(tries_path, canonical)  # re-checked under the lock, right before the spend point
-        extra = {"universe_sha256": usha, "feature_table_sha256": fsha, "prior_tries_per_pool": prior, "with_p4": with_p4, "vmap_sha256": g["vmap_sha256"], **input_shas}
+        extra = {"universe_sha256": usha, "feature_table_sha256": fsha, "prior_tries_per_pool": prior,
+                 "prior_tries_per_experiment": prior_tries_per_experiment(canonical, with_p4), "with_p4": with_p4, "vmap_sha256": g["vmap_sha256"], **input_shas}
         log_all(out_dir, tries_path, canonical, "started", with_p4, extra)  # the spend point
         started = True
         base = {"schema": SCHEMA, "banner": BANNER, "first_line": first_line(with_p4), "with_p4": with_p4, "pre_started": pre, "prior_tries": prior, "universe_sha256": usha,

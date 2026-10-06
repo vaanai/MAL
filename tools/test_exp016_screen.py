@@ -1479,5 +1479,24 @@ class TiesAndCountsTests(unittest.TestCase):
         self.assertEqual(x.lp_active_proxy(cells, {}, None), {"available": False})
 
 
+class PriorTriesPerExperimentTests(unittest.TestCase):
+    def test_counts_by_experiment_from_the_given_log_and_excludes_exp016(self):
+        blk = [{"start_hour": e15.BLOCKS["P2"][0], "end_hour_exclusive": e15.BLOCKS["P2"][1]}]
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "t.jsonl"
+            lines = [{"config": {"experiment": "EXP-015 screen"}, "data_blocks": blk, "tool": "a"}, {"config": {"experiment": "EXP-015 screen"}, "data_blocks": [], "tool": "a"},
+                     {"config": {"event": "started"}, "data_blocks": blk, "tool": "exp013_grad"}, {"config": {"key": "exp016_started"}, "data_blocks": blk, "tool": "x"}]
+            log.write_text("".join(json.dumps(r) + "\n" for r in lines))
+            got = x.prior_tries_per_experiment(log, True)
+        self.assertEqual(set(got), {"EXP-015 screen", "exp013_grad"})
+        self.assertEqual((got["EXP-015 screen"]["total"], got["EXP-015 screen"]["P2"]), (2, 1))
+        self.assertEqual(got["exp013_grad"]["P2"], 1)
+
+    def test_started_extra_records_it_from_the_canonical_path(self):
+        import inspect
+
+        self.assertIn("prior_tries_per_experiment(canonical, with_p4)", inspect.getsource(x.main))
+
+
 if __name__ == "__main__":
     unittest.main()
