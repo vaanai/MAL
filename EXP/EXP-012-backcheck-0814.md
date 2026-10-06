@@ -67,3 +67,14 @@ Rules, applied in this order by the tool (first match wins). The tool computes t
 
 - Exploration pool, best-of-N: all six cells are logged under pool `explore-0814` (count starts at 1 for DEC-017 (a)) in `--tries-log` and the repo's `data/tries.jsonl`, including when a run stops after reading rows (status field).
 - V map: `/data/mal/pumpswap-virtual/pool_v_0814.json`, sha256 `2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8` (job #196: 34,945 pools, 1 null of the 16,346 August pools). The pre-pass and the no-V trade count still guard against that one null pool.
+
+## Result (2026-10-06): refused_after_read, no reading
+
+- **What happened.** Job #207 at c946a12 (#346) computed every cell's rows. Then the pre-declared refusal fired: **1 primary-cell trade** was on a pool the V adapter had priced without V.
+  - Across the run, the adapter reported 30 no-V pools: 29 were absent from `pool_v_0814.json` and 1 was a closed account.
+  - The pool-field pre-pass had passed under 1% missing prints, so this was the per-trade rule catching what the coverage rule allows.
+- **Record.** 6 tries lines with `status: refused_after_read` are in `data/tries.jsonl`; the explore-0814 tries count is 1 + 6 = 7. No report was written. No one read any outcome. The scratch directory is sealed (0700) at `/data/mal/exp012-backcheck-0814.refused-job207`.
+- **Reading.** Rule 0 says a refused run has no reading.
+- **Not rerun.** A rerun would be a second set of tries on the same days. EXP-015's pre-registered bar 3 already compares frozen EXP-012, paired, on these days at the same costs, so little is lost.
+- **Lesson carried forward.** The next V map (`pool_v_0909.json`, job #224) adds those 30 pools, so EXP-015's per-trade no-V rule doesn't refuse the same way.
+
