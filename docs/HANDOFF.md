@@ -47,7 +47,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 - **The 10-16 order is in DEC-016 Am.5 §7** and in the previous version of this file (#413).
   - lphist-entered runs once; only the first completed run counts.
   - vbook and sensitivity both take `--vmap-merge-meta --final-fetch-map --snapshot … --lphist …`.
-- **One decision is the owner's** (in the Console's for_you). The ceiling counts only *unexplained* V0 moves. The owner had asked for a refusal "if too many move". The owner may add a ceiling on explained moves before 10-16.
+- **Settled (Helm and owner, 10-06):** the ceiling stays as merged. It counts only *unexplained* V0 moves; there is no ceiling on explained LP-rescale moves.
 
 ## EXP-016 rug veto (the owner's priority): in flight
 
@@ -87,14 +87,14 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - faa3192 is −0.014 SOL over 28 trips, which is +0.0143 before tx fees;
   - the true round-trip cost is ≈4.5% of size at 0.05 SOL, ≈2.9% at 0.25 and ≈2.65% at 0.5. Pool fees of about 2.4–2.5% are the floor. The 1,513,840 per buy is refundable ATA rent (jobs #305 and #306).
 - **For the trial config (DEC-020 package):** `max_signal_age_s` is 120. Tighten it, and add a maximum-k guard. A signal decided 6.2 s late was traded.
-- **Security: #415 is merged (`fd85b2f`).** `probe_withdraw` only sends to the owner-confirmed `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi`. **Helm must reinstall the pinned tool with a new manifest.** An address-poisoning dust transfer hit the wallet at 10-06T03:01:52Z.
+- **Security: #415 is merged (`fd85b2f`) and INSTALLED by Helm on fast-0** (`probe_withdraw.py` sha 78ef8670…; the lookalike smoke test was refused). `probe_withdraw` only sends to the owner-confirmed `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi`. An address-poisoning dust transfer hit the wallet at 10-06T03:01:52Z.
 
 ## Ops (10-06)
 
 - **fast-0 tip follower:** MemoryMax raised from 1G to 2G with `set-property`. The drop-in is persistent and the service did not restart (job #303).
 - **Requests waiting on the owner/Helm** (notebook, ~17:20Z):
   - stop the Oracle attn book and observe.attention, and retire the V-less books;
-  - a research-0 retention plan that frees about 135 G: kill-review snap, raw copies of spent blocks, `raw/` P1. Delete nothing without the owner/Helm OK.
+  - research-0 cleanup: **DONE by Helm.** Disk went from 57% to 43%, about 126 G freed. Helm removed `kill-review-1005/snap`, `blocks/explore-0814`, `blocks/fresh-0903` and `raw/`, all verified against restic c7a5758b. The clean copies remain. **Anything that pointed at those raw paths must use `blocks-clean/` or `clean-view/` instead.**
 - **Heavy jobs go on research-0 only.** fast-0 takes ≤1.9 GB. Decline fast-0 "idle" notices.
 - **GitHub hiccups.** `gh pr merge` and `git fetch` hung twice today. Use `timeout 60 … </dev/null` and retry.
 
