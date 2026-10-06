@@ -152,17 +152,17 @@ def test_v0_at_slot_relative_to_anchor_and_trade() -> None:
     a = 17_000_000_000
     e = ev(1000, 100, slot=50)
     fwd = lph.replay_forward(a, [e])
-    # anchor read in slots 60..61 (after the event), trade at slot 70: the event is before both: one value, no move
-    assert lph.v0_at(70, a, (60, 61), [e]) == {a}
-    # anchor read at slots 10..11 (before the event), trade at 70: one value, moved forward
-    assert lph.v0_at(70, a, (10, 11), [e]) == {fwd}
-    # trade at slot 40, anchor after the event: invert, one value (the smallest preimage)
-    assert lph.v0_at(40, fwd, (60, 61), [e]) == {lph.v0_before(fwd, [e])}
-    # the event sits inside the anchor's slot span: either side, so two values at a later slot
-    assert lph.v0_at(70, a, (49, 51), [e]) == {a, fwd}
-    # the event sits in the trade's own slot: ambiguous against the trade
-    assert lph.v0_at(50, a, (10, 11), [e]) == {a, fwd}
-    assert lph.v0_at(70, a, (10, 11), []) == {a}
+    r = lph.v0_at(70, a, (60, 61), [e])  # anchor read after the event, trade after it: one value, no move
+    assert r == {"values": {a}, "anchor_ambiguous": False, "target_ambiguous": False}
+    r = lph.v0_at(70, a, (10, 11), [e])  # anchor before the event: moved forward
+    assert r == {"values": {fwd}, "anchor_ambiguous": False, "target_ambiguous": False}
+    r = lph.v0_at(40, fwd, (60, 61), [e])  # trade before the event, anchor after: invert (smallest preimage)
+    assert r["values"] == {lph.v0_before(fwd, [e])} and not r["anchor_ambiguous"] and not r["target_ambiguous"]
+    r = lph.v0_at(70, a, (49, 51), [e])  # the event sits inside the anchor's slot span: anchor ambiguity only
+    assert r == {"values": {a, fwd}, "anchor_ambiguous": True, "target_ambiguous": False}
+    r = lph.v0_at(50, a, (10, 11), [e])  # the event sits in the trade's own slot: target ambiguity only
+    assert r == {"values": {a, fwd}, "anchor_ambiguous": False, "target_ambiguous": True}
+    assert lph.v0_at(70, a, (10, 11), [])["values"] == {a}
     assert lph.v0_at(5, a, (10, 11), [ev(10_000 + i, 1, slot=10) for i in range(11)]) is None
 
 
@@ -332,12 +332,38 @@ def test_fetch_history_truncated_logs_unresolved() -> None:
     assert len(att) == 1  # not a transient reason
 
 
-def test_fetch_history_burn_outside_pumpswap_unresolved() -> None:
+def test_fetch_history_creation_tx_with_mint_logs_is_ignored() -> None:
     pool, mint = pk(1), pk(50)
-    rows = [("s2", 2, 200, None, ["Program log: Instruction: Burn"]), ("s1", 1, 100, None, [event_bytes("deposit", pool, 10, 1000)])]
-    chain = FakeChain({pool: mint}, {mint: rows})
+    creation = ["Program log: Instruction: InitializeMint2", "Program log: Instruction: MintTo", "Program log: Instruction: Burn"]  # no Deposit/Withdraw event
+    rows = [("s2", 2, 200, None, creation), ("s1", 1, 100, None, creation)]
+    chain = FakeChain({pool: mint}, {mint: rows}, supply={mint: 777})
     out, _ = run_hist(chain, [pool], 0, 1000)
-    assert out[pool]["reason"] == "lp_supply_change_outside_pumpswap"
+    assert out[pool]["resolved"] is True and out[pool]["events"] == []
+    assert out[pool]["lp_supply"] == 777 and out[pool]["supply_slot"] == 5  # zero events: the supply and its slot are still recorded
+
+
+def test_fetch_history_account_and_supply_read_failures_are_retried() -> None:
+    pool, mint = pk(1), pk(50)
+    rows = [("s1", 1, 100, None, [event_bytes("deposit", pool, 10, 1000)])]
+
+    class Flaky(FakeChain):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.acct_calls = 0
+
+        def __call__(self, method, params):
+            if method == "getMultipleAccounts":
+                self.acct_calls += 1
+                if self.acct_calls in (1, 3):  # the first account read, and the first supply read after it recovers
+                    self.calls.append((method, 0))
+                    raise SystemExit("rpc failed")
+            return super().__call__(method, params)
+
+    chain = Flaky({pool: mint}, {mint: rows})
+    att: list = []
+    out, _ = run_hist(chain, [pool], 0, 1000, attempts=att)
+    assert out[pool]["resolved"] is True and out[pool]["attempts"] == 3
+    assert [(a["pass"], a["n_resolved"]) for a in att] == [(1, 0), (2, 0), (3, 1)]
 
 
 def test_fetch_history_last_supply_must_equal_account_supply() -> None:

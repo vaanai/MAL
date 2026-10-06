@@ -31,8 +31,7 @@ MAX_PAGES_DEFAULT = 200
 MAX_AMBIGUOUS = 10  # 2^10 placements at most; more is unresolved
 RETRY_PASSES = 3  # further passes, after the first, over pools unresolved by a failed tx fetch or failed signature paging
 MAX_PASSES = 1 + RETRY_PASSES
-TRANSIENT_PREFIXES = ("signatures_fetch_failed", "signatures_bad_response", "tx_fetch_failed")  # chain, truncation, supply and account failures are never retried
-SUPPLY_CHANGE_MARKERS = ("Instruction: Burn", "Instruction: MintTo")  # SPL token ops that move LP supply outside Deposit/Withdraw
+TRANSIENT_PREFIXES = ("accounts_fetch_failed", "supply_read_failed", "signatures_fetch_failed", "signatures_bad_response", "tx_fetch_failed")  # failed RPC reads; chain, truncation and supply mismatches are never retried
 _U64 = ("lp_token_amount", "max_or_min_base", "max_or_min_quote", "user_base_token_reserves", "user_quote_token_reserves", "pool_base_token_reserves", "pool_quote_token_reserves", "base_amount", "quote_amount", "lp_mint_supply")
 _KEYS = ("pool", "user", "user_base_token_account", "user_quote_token_account", "user_pool_token_account")
 
@@ -164,15 +163,18 @@ def possible_values(v0: int, events_definite: Sequence[dict[str, Any]], events_a
     return out
 
 
-def v0_at(slot: int, anchor_v0: int, anchor_slot_span: tuple[int, int], events: Sequence[dict[str, Any]]) -> set[int] | None:
-    """Every V0 the pool could have had at `slot`, given V0 = anchor_v0 read at some slot in anchor_slot_span = (lo, hi)
+def v0_at(slot: int, anchor_v0: int, anchor_slot_span: tuple[int, int], events: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+    """The V0 values the pool could have had at `slot`, given V0 = anchor_v0 read at some slot in anchor_slot_span = (lo, hi)
     (the fetch's context-slot range) and the pool's LP events. The anchor reflects the events before its read; the
     target reflects the events before `slot`. Both are chronological prefixes, so the answer is the anchor moved across the
     events between the two cuts: forward (replay_forward) if the target cut is later, backward (v0_before, smallest
     preimage; a cut with no preimage contributes nothing) if earlier. An event in [lo, hi] may be on either side of the
-    anchor read; an event in `slot` itself may be on either side of the trade. More than one value in the result means the
-    placements disagree (vbook takes the worse of them); an empty set means no placement is consistent. None when more
-    than MAX_AMBIGUOUS events are ambiguous on either side."""
+    anchor read; an event in `slot` itself may be on either side of the trade.
+
+    Returns {"values": set, "anchor_ambiguous": bool, "target_ambiguous": bool} or None (more than MAX_AMBIGUOUS events
+    ambiguous on one side). anchor_ambiguous: for some target placement, the anchor-span placements give different values
+    (vbook: unresolved). target_ambiguous: for some anchor placement, the target-slot placements differ (vbook: worse-of).
+    An empty `values` means no placement is consistent."""
     lo, hi = anchor_slot_span
     ev = _order(events)
     sl = [e.get("slot", 0) for e in ev]
@@ -180,16 +182,17 @@ def v0_at(slot: int, anchor_v0: int, anchor_slot_span: tuple[int, int], events: 
     ct_min, ct_max = sum(1 for x in sl if x < slot), sum(1 for x in sl if x <= slot)
     if ca_max - ca_min > MAX_AMBIGUOUS or ct_max - ct_min > MAX_AMBIGUOUS:
         return None
-    out: set[int] = set()
+    grid: dict[tuple[int, int], int | None] = {}
     for ca in range(ca_min, ca_max + 1):
         for ct in range(ct_min, ct_max + 1):
             try:
-                v = replay_forward(anchor_v0, ev[ca:ct]) if ct >= ca else v0_before(anchor_v0, ev[ct:ca])
+                grid[(ca, ct)] = replay_forward(anchor_v0, ev[ca:ct]) if ct >= ca else v0_before(anchor_v0, ev[ct:ca])
             except ValueError:
-                continue
-            if v is not None:
-                out.add(v)
-    return out
+                grid[(ca, ct)] = None
+    values = {v for v in grid.values() if v is not None}
+    anchor_amb = any(len({grid[(ca, ct)] for ca in range(ca_min, ca_max + 1)}) > 1 for ct in range(ct_min, ct_max + 1))
+    target_amb = any(len({grid[(ca, ct)] for ct in range(ct_min, ct_max + 1)}) > 1 for ca in range(ca_min, ca_max + 1))
+    return {"values": values, "anchor_ambiguous": anchor_amb, "target_ambiguous": target_amb}
 
 
 class _Limiter:
@@ -250,11 +253,11 @@ def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_fr
 
     A pool is UNRESOLVED (reason recorded) if: its account is missing/unparseable; paging stopped before t_from;
     a transaction fetch failed; a transaction's logs are truncated ("Log truncated"; the self-CPI event path is not
-    implemented); a non-failed transaction in the LP mint's signature list has no event for the pool but burns or mints
-    the LP token; the S sequence does not chain (S_after = s_before + lp_delta of each event must equal the next
+    implemented); the S sequence does not chain (S_after = s_before + lp_delta of each event must equal the next
     s_before); or the last S_after differs from the pool account's lp_supply, read again after the history (recorded as
-    "lp_supply"). Up to RETRY_PASSES further passes retry pools unresolved by a failed tx fetch or failed signature paging (never chain,
-    truncation, supply or account failures); every pass is appended to `attempts` if given."""
+    "lp_supply" with its context slot "supply_slot", for every resolved pool; with zero events there is nothing to chain).
+    A creation transaction (no event for the pool) is ignored. Up to RETRY_PASSES further passes retry pools unresolved by
+    a failed RPC read (account, supply, signature paging or transaction; never chain, truncation or supply mismatch); every pass is appended to `attempts` if given."""
     if rps > 5.0:
         raise ValueError("rps must be <= 5: walkers share Helius")
     lim = _Limiter(rps, sleep, clock)
@@ -268,21 +271,22 @@ def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_fr
         for p in todo:
             a = accts[p]
             if "error" in a:
-                res[p] = {"lp_mint": None, "events": [], "resolved": False, "reason": a["error"], "lp_supply": None}
+                res[p] = {"lp_mint": None, "events": [], "resolved": False, "reason": a["error"], "lp_supply": None, "supply_slot": None}
             else:
                 res[p] = _history_one(rpc, lim, p, a["lp_mint"], t_from_unix, max_pages)
             res[p]["attempts"] = n
-        ok_ids = [p for p in todo if res[p]["resolved"] and res[p]["events"]]
-        end = _read_accounts(rpc, lim, ok_ids) if ok_ids else {}  # the supply AFTER the history, for the chain's last S_after
+        ok_ids = [p for p in todo if res[p]["resolved"]]
+        end = _read_accounts(rpc, lim, ok_ids) if ok_ids else {}  # the supply AFTER the history (every resolved pool, zero events included)
         for p in ok_ids:
             e, a = res[p], end[p]
             if "error" in a:
                 e["resolved"], e["reason"] = False, "supply_read_failed:" + a["error"]
                 continue
-            e["lp_supply"] = a["lp_supply"]
-            last = e["events"][-1]
-            if last["s_before"] + last["lp_delta"] != a["lp_supply"]:
-                e["resolved"], e["reason"] = False, "last_supply_mismatch"
+            e["lp_supply"], e["supply_slot"] = a["lp_supply"], a["slot"]  # the history is complete up to this slot
+            if e["events"]:
+                last = e["events"][-1]
+                if last["s_before"] + last["lp_delta"] != a["lp_supply"]:
+                    e["resolved"], e["reason"] = False, "last_supply_mismatch"
         if attempts is not None:
             attempts.append({"pass": n, "n_pools": len(todo), "n_resolved": sum(1 for p in todo if res[p]["resolved"])})
         todo = [p for p in todo if not res[p]["resolved"] and _is_transient(res[p]["reason"])]
@@ -290,7 +294,7 @@ def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_fr
 
 
 def _history_one(rpc: Callable[[str, list], Any], lim: _Limiter, pool: str, lp_mint: str, t_from: int, max_pages: int) -> dict[str, Any]:
-    ent: dict[str, Any] = {"lp_mint": lp_mint, "events": [], "resolved": True, "reason": None, "lp_supply": None}
+    ent: dict[str, Any] = {"lp_mint": lp_mint, "events": [], "resolved": True, "reason": None, "lp_supply": None, "supply_slot": None}
 
     def fail(reason: str) -> dict[str, Any]:
         ent["resolved"], ent["reason"] = False, reason
@@ -352,8 +356,7 @@ def _history_one(rpc: Callable[[str, list], Any], lim: _Limiter, pool: str, lp_m
         if any(isinstance(x, str) and "Log truncated" in x for x in logs):
             return fail("logs_truncated")
         evs = events_from_logs(logs, pool)
-        if not evs and any(isinstance(x, str) and any(m in x for m in SUPPLY_CHANGE_MARKERS) for x in logs):
-            return fail("lp_supply_change_outside_pumpswap")
+        # a transaction with no Deposit/Withdraw event for this pool (pool creation, SPL token logs) is ignored
         for j, ev in enumerate(evs):
             events.append({"slot": tr.get("slot", s.get("slot")), "block_time": block_time, "sig": sig, "kind": ev["kind"], "s_before": ev["s_before"], "lp_delta": ev["lp_delta"], "_k": (n - pos, j)})
     events.sort(key=lambda e: (e["slot"] if e["slot"] is not None else 0, e["_k"]))
