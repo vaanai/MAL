@@ -420,6 +420,60 @@ def intent_row(**kw):
     return json.dumps(row) + "\n"
 
 
+class EntryKGuardTests(unittest.TestCase):
+    """max_entry_k_slots: k_now = pool-state slot (FakeRpc serves 77) - the intent's migration_slot."""
+
+    def _intent(self, ex, mig):
+        extra = {} if mig is None else {"migration_slot": mig}
+        s = pe.parse_intent(intent_row(mint=MINT, decision_t_ms=T0, written_ms=T0, **extra), pe.DEFAULT_BOOK, "ceiling")
+        self.assertIsNotNone(s)
+        return s
+
+    def test_validation(self):
+        for good, want in ((None, None), (1, 1), (8, 8), (8.0, 8)):
+            self.assertEqual(pe.validate_max_entry_k(good), want)
+        for bad in (0, -1, 2.5, True, "8", float("nan"), float("inf"), [8]):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                pe.validate_max_entry_k(bad)
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                make(Path(d), max_entry_k_slots=0)
+
+    def test_parse_intent_keeps_valid_migration_slot_only(self):
+        self.assertEqual(pe.parse_intent(intent_row(migration_slot=68), pe.DEFAULT_BOOK, "ceiling")["migration_slot"], 68)
+        for bad in (None, True, "68", 0, -3):
+            self.assertNotIn("migration_slot", pe.parse_intent(intent_row(migration_slot=bad), pe.DEFAULT_BOOK, "ceiling"))
+
+    def test_off_by_default_same_decision(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf = make(Path(d))
+            self.assertIsNone(ex.max_entry_k)
+            ex.handle_signal(self._intent(ex, 1))  # k=76 and no guard: buys exactly as before
+            self.assertEqual([r["kind"] for r in fills(conf)], ["buy"])
+            self.assertEqual(ex.state.attempts, 1)
+
+    def test_pass_at_max_skip_above_and_not_an_attempt(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf = make(Path(d), max_entry_k_slots=8)
+            rpc = ex.rpc
+            ex.handle_signal(self._intent(ex, 68))  # k=9
+            self.assertEqual(ex.state.attempts, 0)
+            self.assertNotIn("simulateTransaction", rpc.calls)
+            row = fills(conf)[0]
+            self.assertEqual((row["kind"], row["reason"]), ("skip", "refused: entry_k k_now=9 max=8"))
+            self.assertEqual(ex.state.open, {})
+            ex.handle_signal(self._intent(ex, 69))  # k=8
+            self.assertEqual([r["kind"] for r in fills(conf)], ["skip", "buy"])
+            self.assertEqual(ex.state.attempts, 1)
+
+    def test_missing_migration_slot_refused_when_on(self):
+        with tempfile.TemporaryDirectory() as d:
+            ex, conf = make(Path(d), max_entry_k_slots=8)
+            ex.handle_signal(self._intent(ex, None))
+            self.assertTrue(fills(conf)[0]["reason"].startswith("refused: entry_k unknown"))
+            self.assertEqual(ex.state.attempts, 0)
+
+
 class RpcEnvDirTests(unittest.TestCase):
     """The key holder's EnvironmentFile dir /etc/mal-probe-rpc must be root:root 0700; checked before the key loads."""
 
@@ -1426,8 +1480,11 @@ class Dec020ProfileTests(unittest.TestCase):
         self.assertEqual(dec["state_dir"], live["state_dir"])  # same dir, different state file by profile
         # every other key is the dec019 config's, unchanged
         changed = {k for k in live if dec.get(k) != live[k]}
-        self.assertEqual(changed, {"size_lamports", "max_attempts", "max_open", "loss_cap_lamports", "fill_log", "end_ms"})
-        self.assertEqual(set(dec) - set(live), {"limits_profile"})
+        self.assertEqual(changed, {"size_lamports", "max_attempts", "max_open", "loss_cap_lamports", "fill_log", "end_ms", "max_signal_age_s"})
+        self.assertEqual(set(dec) - set(live), {"limits_profile", "max_entry_k_slots"})
+        self.assertEqual((dec["max_entry_k_slots"], dec["max_signal_age_s"]), (8, 5))
+        self.assertNotIn("max_entry_k_slots", live)  # the pinned probe's config is untouched
+        self.assertEqual(live["max_signal_age_s"], 120)
         with self.assertRaises(ValueError):  # the placeholder end instant refuses: it cannot run until the owner's is written in
             pe.Limits.from_config(dec)
 

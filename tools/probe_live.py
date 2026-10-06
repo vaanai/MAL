@@ -441,6 +441,9 @@ class LiveExecutor(pe.Executor):
             return self._skip(sig, err or "no_pool", pool=pool)
         if snap.quote_priced is None:
             return self._skip(sig, "no_v", pool=pool, pool_slot=snap.slot)
+        why_k = pe.entry_k_refusal(sig, snap.slot, self.max_entry_k)  # before balance/sign/write-ahead: not an attempt
+        if why_k:
+            return self._skip(sig, why_k, pool=pool, pool_slot=snap.slot)
         drift = pe.drift_vs_seed(snap)  # logged only; never a reason to skip
         spend = self.limits.size_lamports
         q = pe.entry_quote(snap, spend)

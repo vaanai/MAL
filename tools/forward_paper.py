@@ -1129,6 +1129,7 @@ class _Track:
     nv_fired: set[int] = field(default_factory=set)
     curve_crossed: set[int] = field(default_factory=set)
     migration_t_ms: int | None = None
+    migration_slot: int | None = None  # slot of the first PumpSwap print (intent side file only; decides nothing)
     attn_fired: set[str] = field(default_factory=set)
 
 
@@ -1728,6 +1729,7 @@ class ForwardEngine:
         if not track.migrate_done and pr.venue == "pumpswap" and pr.t_recv_ms >= t0:
             track.migrate_done = True
             track.migration_t_ms = pr.t_recv_ms
+            track.migration_slot = pr.slot
             if self.exp012 is not None:
                 self.exp012.mark_migrated(mint, self._last_event_ts, pr.t_recv_ms)
             self._triggers.append((mint, pr.t_recv_ms, "migrate"))
@@ -2111,6 +2113,11 @@ class ForwardEngine:
         if pending.t_entry_ms <= self._clock_ms:
             self._fill_one(run, ledger, pending)
 
+    def _migration_slot(self, mint: str) -> int | None:
+        track = self.tracks.get(mint)
+        slot = getattr(track, "migration_slot", None)
+        return slot if isinstance(slot, int) and not isinstance(slot, bool) and slot > 0 else None
+
     def _intent(self, book_id: str, pending: "_Pending", book: MintBook) -> None:
         """DEC-019: tell the probe executor about a ceiling migrate decision NOW, not after the simulated
         latency has elapsed (`enter` is only written in _fill_one). Carries no P&L or fill field. Written
@@ -2133,6 +2140,8 @@ class ForwardEngine:
                     "score": pending.score,
                     # the executor cannot see the KILL file; it refuses buys on rows written while it exists
                     "runner_kill": bool(self.kill_file.is_file()),
+                    # slot of the migration print (the executor's optional max_entry_k_slots guard reads it)
+                    "migration_slot": self._migration_slot(pending.mint),
                 }
             )
         except Exception as exc:  # noqa: BLE001  a side file must never stop the paper runner or change its decisions

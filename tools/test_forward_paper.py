@@ -1841,10 +1841,11 @@ class IntentsFileTests(unittest.TestCase):
             self.assertTrue({r["book"] for r in rows} <= {"migrate_hold_30s", "migrate_tp50_sl30"})
             for r in rows:
                 self.assertEqual(
-                    set(r), {"schema", "book", "ledger", "mint", "creator", "decision_t_ms", "written_ms", "trigger", "score", "runner_kill"}
+                    set(r), {"schema", "book", "ledger", "mint", "creator", "decision_t_ms", "written_ms", "trigger", "score", "runner_kill", "migration_slot"}
                 )
                 self.assertIs(r["runner_kill"], False)
                 self.assertIsInstance(r["written_ms"], int)
+                self.assertIsInstance(r["migration_slot"], int)  # slot of the first PumpSwap print; side file only
             decs = [json.loads(x) for x in dec_b.decode().splitlines()]
             for r in rows:
                 self.assertTrue(
