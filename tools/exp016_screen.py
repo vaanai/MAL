@@ -264,8 +264,8 @@ def check_v_constancy(samples: Sequence[Mapping[str, Any]], vmap: Mapping[str, i
     print's vault quote)}. A pool DISAGREES if |v_implied - stored V| > max(1 bp of the quote reserve, 0.002 SOL); a pool with no readable stored V
     (None, or absent) is not a disagreement (it is priced by the section 4 rule). Refuses if the sample is smaller than `min_sample` or more than 1% disagree.
     A sample row whose `v_implied` is null or missing (the constancy tool could not read that pool's transaction) is NOT CHECKED: it is counted in
-    `n_unreadable_implied`, never indexed, and does not count toward n_checked. Consequence, pinned and deliberate: with any such row among exactly
-    200 sampled pools, n_checked < 200 and the floor refuses. The floor is not lowered. Reports pool ids and differences only."""
+    `n_unreadable_implied`, never indexed, and does not count toward n_checked. Consequence, pinned and deliberate: the pre-declared reserve
+    (plan 13 item 8(c)) replaces such a row first; the floor (n_checked < 200) refuses only when no replacement is possible. The floor is not lowered. Reports pool ids and differences only."""
     bad: list[dict[str, Any]] = []
     n_checked = 0
     n_unreadable_implied = 0
