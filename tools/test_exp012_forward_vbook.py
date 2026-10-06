@@ -22,6 +22,7 @@ from tools.pumpswap_virtual import save_map
 from tools.test_exp012_score import FREEZE_COMMIT
 
 V = 17_584_269_263
+FRESH = {"new": True, "fetch_started_utc": "2026-10-16T01:00:00Z"}
 POOLS = tuple(f"pool-{m}" for m in ("mA", "mB", "mB2", "mC", "mD", "mE", "mF"))
 
 
@@ -90,41 +91,99 @@ class BindingTests(VBase):
         walk, art, out = self.final()
         vpath, sha = self.vmap(out)
         bad = out.parent / "bad.merge.json"
-        bad.write_text(json.dumps({"sha256": {"out": "0" * 64}}))
+        bad.write_text(json.dumps({"sha256": {"out": "0" * 64}, "final_fetch": FRESH}))
         rc, err = self.run_vbook(walk, art, out, vpath, sha, "--vmap-merge-meta", str(bad))
         self.assertEqual(rc, 2, err)
         self.assertIn("sha256.out", err)
         good = out.parent / "good.merge.json"
-        good.write_text(json.dumps({"sha256": {"out": sha, "final": "f"}, "n": 3}))
+        good.write_text(json.dumps({"sha256": {"out": sha, "final": "f"}, "n": 3, "final_fetch": FRESH}))
         rc, err = self.run_vbook(walk, art, out, vpath, sha, "--vmap-merge-meta", str(good))
         self.assertEqual(rc, 0, err)
         rep = json.loads((out.parent / "vb" / "vbook_report.json").read_text())
-        self.assertEqual(rep["vmap_merge"], {"sha256": {"out": sha, "final": "f"}, "n": 3})
+        self.assertEqual(rep["vmap_merge"], {"sha256": {"out": sha, "final": "f"}, "n": 3, "final_fetch": FRESH})
 
-    def test_every_run_is_appended_and_prior_runs_are_counted(self) -> None:
+    def test_merge_meta_must_be_a_fresh_fetch_at_or_after_the_cutoff(self) -> None:
+        sha = "a" * 64
+        d = Path(tempfile.mkdtemp())
+
+        def meta(ff):
+            f = d / "m.json"
+            f.write_text(json.dumps({"sha256": {"out": sha}, **({"final_fetch": ff} if ff is not None else {})}))
+            return f
+
+        self.assertEqual(vb.check_merge_meta(meta(FRESH), sha)["final_fetch"], FRESH)
+        for bad in (None, {"new": False, "fetch_started_utc": "2026-10-16T01:00:00Z"}, {"new": True}, {"new": True, "fetch_started_utc": "2026-10-15T23:59:59Z"}):
+            with self.assertRaises(fw.Refused):
+                vb.check_merge_meta(meta(bad), sha)
+        with mock.patch.object(vb, "CUTOFF", "2026-10-01T00:00:00Z"):  # the constant, not a flag, is the override
+            vb.check_merge_meta(meta({"new": True, "fetch_started_utc": "2026-10-02T00:00:00Z"}), sha)
+
+    def ledger(self, out, name=None):
+        f = out.parent / (name or vb.RUNS_LEDGER_NAME)
+        return [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []
+
+    def test_every_run_logs_started_then_done_and_prior_runs_count_the_window(self) -> None:
         walk, art, out = self.final()
         vpath, sha = self.vmap(out)
-        for i in range(2):
+        for i in range(2):  # test windows are exempt from the single-use refusal
             rc, err = self.run_vbook(walk, art, out, vpath, sha, vb_out=out.parent / f"vb{i}")
             self.assertEqual(rc, 0, err)
             rep = json.loads((out.parent / f"vb{i}" / "vbook_report.json").read_text())
             self.assertEqual(rep["prior_vbook_runs"], i)
-        runs = [json.loads(x) for x in (out.parent / vb.RUNS_LEDGER_NAME).read_text().splitlines()]
-        self.assertEqual(len(runs), 2)
-        self.assertEqual(runs[1]["vmap_sha256"], sha)
-        self.assertIn(runs[1]["verdict"], ("PASS", "FAIL", vb.NOT_DECIDABLE))
-        self.assertIn("git_commit", runs[1])
+        runs = self.ledger(out)
+        self.assertEqual([r["state"] for r in runs], ["STARTED", "DONE", "STARTED", "DONE"])
+        st, dn = runs[2], runs[3]
+        self.assertEqual(st["vmap_sha256"], sha)
+        self.assertEqual(st["final_rows_sha256"], fw._sha256_file(out / "rows.jsonl"))
+        for k in ("git_commit", "utc_time", "clean_clock", "read_end", "merge_meta_sha256"):
+            self.assertIn(k, st)
+        self.assertIn(dn["b_verdict"], ("PASS", "FAIL", vb.NOT_DECIDABLE))
+        self.assertEqual(dn["report_sha256"], fw._sha256_file(out.parent / "vb1" / "vbook_report.json"))
         ledger2 = out.parent / "other_runs.jsonl"
         rc, err = self.run_vbook(walk, art, out, vpath, sha, "--runs-ledger", str(ledger2), vb_out=out.parent / "vb9")
         self.assertEqual(rc, 0, err)
-        self.assertEqual(len(ledger2.read_text().splitlines()), 1)
+        self.assertEqual(len(ledger2.read_text().splitlines()), 2)
 
-    def test_a_refused_run_is_not_logged(self) -> None:
+    def test_refusal_before_started_is_not_logged(self) -> None:
         walk, art, out = self.final()
         vpath, sha = self.vmap(out)
         rc, _ = self.run_vbook(walk, art, out, vpath, "0" * 64)
         self.assertEqual(rc, 2)
-        self.assertFalse((out.parent / vb.RUNS_LEDGER_NAME).exists())
+        self.assertEqual(self.ledger(out), [])
+
+    def test_a_crash_after_started_is_logged_and_the_ledger_line_precedes_the_files(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out)
+
+        def boom(*a, **k):
+            if a[5] == "v" and not a[7]:
+                raise RuntimeError("disk gone")
+            return vb.score_hours_v(*a, **k)
+
+        with self.assertRaises(RuntimeError), tfw.patched():
+            vb.run_vbook(walk, out, out.parent / "ledger.jsonl", vpath, sha, out.parent / "vb", art, FREEZE_COMMIT, None, True, score_fn=boom)
+        self.assertEqual([r["state"] for r in self.ledger(out)], ["STARTED", "REFUSED_AFTER_READ"])
+        self.assertIn("disk gone", self.ledger(out)[1]["reason"])
+        self.assertFalse((out.parent / "vb").exists())
+
+    def test_done_is_written_before_the_report_files(self) -> None:
+        walk, art, out = self.final()
+        vpath, sha = self.vmap(out)
+        with mock.patch.object(fw, "atomic_write", side_effect=OSError("no space")), tfw.patched():
+            with self.assertRaises(OSError):
+                vb.run_vbook(walk, out, out.parent / "ledger.jsonl", vpath, sha, out.parent / "vb", art, FREEZE_COMMIT, None, True)
+        self.assertEqual([r["state"] for r in self.ledger(out)], ["STARTED", "DONE"])  # entry exists even though no report was written
+
+    def test_claim_window_is_single_use_for_a_real_window_only(self) -> None:
+        d = Path(tempfile.mkdtemp()) / "L.jsonl"
+        doc = {"state": "STARTED", "clean_clock": "c", "read_end": "r", "test_window": False}
+        self.assertEqual(vb.claim_window(d, doc, False), 0)
+        with self.assertRaises(fw.Refused) as cm:
+            vb.claim_window(d, doc, False)
+        self.assertIn("already read", str(cm.exception))
+        self.assertEqual(vb.claim_window(d, {**doc, "read_end": "r2"}, False), 0)  # another window
+        self.assertEqual(vb.claim_window(d, {**doc, "test_window": True}, True), 0)  # test lines are logged, never block
+        self.assertEqual(vb.claim_window(d, {**doc, "test_window": True}, True), 1)
 
     def test_test_window_is_refused_under_real_data(self) -> None:
         walk, art, out = self.final()
@@ -149,7 +208,7 @@ class SealTests(VBase):
         walk, art, out = self.final()
         vpath, sha = self.vmap(out)
         meta = out.parent / "m.merge.json"
-        meta.write_text(json.dumps({"sha256": {"out": sha}}))
+        meta.write_text(json.dumps({"sha256": {"out": sha}, "final_fetch": FRESH}))
         rc, err = self.run_vbook(walk, art, out, vpath, sha, "--vmap-merge-meta", str(meta), test_window=False)
         self.assertEqual(rc, 2, err)
         self.assertIn("no FINAL read", err)
@@ -278,6 +337,7 @@ class RefusalBranchTests(VBase):
             rc = exc.code
             err.write("; ".join(exc.reasons))
         self.last_vb = out.parent / "vb"
+        self.last_ledger = [json.loads(x) for x in (out.parent / vb.RUNS_LEDGER_NAME).read_text().splitlines()] if (out.parent / vb.RUNS_LEDGER_NAME).exists() else []
         return rc, err.getvalue()
 
     def test_reproduction_mismatch_refuses_before_b(self) -> None:
@@ -290,6 +350,7 @@ class RefusalBranchTests(VBase):
         self.assertEqual(rc, 2, err)
         self.assertIn("does not reproduce (A)", err)
         self.assertFalse(self.last_vb.exists())
+        self.assertEqual(self.last_ledger, [])  # the frozen pass spends nothing
 
     def test_entered_set_mismatch_refuses(self) -> None:
         def tweak(rows, thr):
@@ -301,6 +362,8 @@ class RefusalBranchTests(VBase):
         self.assertEqual(rc, 2, err)
         self.assertIn("entered set differs", err)
         self.assertFalse(self.last_vb.exists())
+        self.assertEqual([r["state"] for r in self.last_ledger], ["STARTED", "REFUSED_AFTER_READ"])
+        self.assertIn("entered set differs", self.last_ledger[1]["reason"])
 
 
 class SpawnTests(VBase):

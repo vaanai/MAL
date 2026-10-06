@@ -34,6 +34,15 @@ set, never miss one).
 Vault-mode (report only) disagreements, a vault entered-set mismatch, a NOT_DECIDABLE (B) and the Am.4 s5
 validation are listed in the top-level `live_blockers`; none of them is decided here.
 
+SINGLE USE (non-test windows). VBOOK_RUNS.jsonl is a claim ledger, like the sensitivity tool's. Everything that
+does not read a V-priced result runs first and spends nothing: FINAL marker, merge-meta binding, vmap sha,
+frozen checks, hour checks, and the frozen (no V) reproduction pass. Immediately before the first V-priced
+pass a STARTED line is appended under flock (window, FINAL rows sha256, vmap sha256, merge-meta sha256, utc, git
+commit); a STARTED line for the same non-test window already there refuses the run. After it, every exit appends
+a terminal line: DONE (b_verdict, report sha256) or REFUSED_AFTER_READ (reason), including the entered-set
+refusal and SIGTERM. The DONE line is written before the report files. `--test-window` runs are exempt from the
+refusal (their lines are logged). `prior_vbook_runs` counts STARTED lines for the same window.
+
 Outputs, in a new `--out-dir` (refused if it exists): vbook_report.json, vbook_report.md. Scratch row files
 (P&L at rest) live in a temp directory next to it and are deleted.
 """
@@ -42,6 +51,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
+import signal
+import threading
 import hashlib
 import json
 import os
@@ -71,6 +83,7 @@ LABEL = "forward simulated paper re-priced on vault + V, not money made"
 REAL_BLOCKS_PREFIX = "/data/mal/blocks/"
 RUNS_LEDGER_NAME = "VBOOK_RUNS.jsonl"
 SCHEMA_RUN = "exp012_forward_vbook_run_v1"
+CUTOFF = "2026-10-16T00:00:00Z"  # a V fetch for the read must start at or after this (module constant only; tests patch it)
 TAGS = ("pumpswap_pools", "no_v_pools", "zero_v_pools")
 VALIDATION_REMINDER = "Am.4 s5 validation must also pass (`exp012_forward_vmap validate`)"
 
@@ -205,7 +218,9 @@ def check_vmap(vmap: Path, want_sha: str) -> dict[str, Any]:
 
 
 def check_merge_meta(meta: Path, vmap_sha: str) -> dict[str, Any]:
-    """#374's `OUT.merge.json`: its `sha256.out` must be the V map's sha256 (`--vmap-sha256`). Returned whole, embedded as `vmap_merge`."""
+    """#374's `OUT.merge.json`: `sha256.out` must be the V map's sha256 (`--vmap-sha256`), and the map must come from a
+    fresh fetch: `final_fetch.new` is true and `final_fetch.fetch_started_utc` is at or after `CUTOFF`. Returned whole,
+    embedded as `vmap_merge`."""
     try:
         doc = json.loads(meta.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -213,11 +228,50 @@ def check_merge_meta(meta: Path, vmap_sha: str) -> dict[str, Any]:
     out = doc.get("sha256", {}).get("out") if isinstance(doc, dict) and isinstance(doc.get("sha256"), dict) else None
     if out != vmap_sha.strip().lower():
         raise Refused([f"--vmap-merge-meta {meta}: sha256.out {out!r} does not equal --vmap-sha256 {vmap_sha}"])
+    ff = doc.get("final_fetch")
+    if not isinstance(ff, dict) or ff.get("new") is not True:
+        raise Refused([f"--vmap-merge-meta {meta}: final_fetch.new is not true (the map was not fetched fresh for this read)"])
+    started = ff.get("fetch_started_utc")
+    if not isinstance(started, str) or started < CUTOFF:
+        raise Refused([f"--vmap-merge-meta {meta}: final_fetch.fetch_started_utc {started!r} is before {CUTOFF}"])
     return doc
 
 
-def prior_runs(ledger: Path) -> int:
-    return len(fw.ledger_markers(ledger))
+def _same_window(m: dict[str, Any], cc_s: str, re_s: str, test_window: bool) -> bool:
+    return (m.get("clean_clock"), m.get("read_end")) == (cc_s, re_s) and bool(m.get("test_window")) == test_window
+
+
+def claim_window(path: Path, doc: dict[str, Any], test_window: bool) -> int:
+    """Append the STARTED line under an exclusive flock. A non-test window that already has a STARTED line is refused
+    (check and append are one critical section). Returns the count of earlier STARTED lines for this window."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.lseek(fd, 0, os.SEEK_SET)
+        text = b"".join(iter(lambda: os.read(fd, 1 << 20), b"")).decode("utf-8")
+        prior = []
+        for n, line in enumerate(text.splitlines(), 1):
+            if line.strip():
+                try:
+                    prior.append(json.loads(line))
+                except ValueError:
+                    raise Refused([f"{path} line {n} is not valid JSON; repair it before any run"])
+        started = [m for m in prior if m.get("state") == "STARTED" and _same_window(m, doc["clean_clock"], doc["read_end"], test_window)]
+        if started and not test_window:
+            raise Refused([f"(B) was already read for [{doc['clean_clock']}, {doc['read_end']}): {path} has a STARTED line (utc {started[0].get('utc_time')}); the V-priced book is read once per window"])
+        os.write(fd, (json.dumps(doc, sort_keys=True) + "\n").encode("utf-8"))
+        os.fsync(fd)
+        return len(started)
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def live_blockers(agreement: dict[str, Any], vault_bad: Sequence[str], null_v: dict[str, Any], b_verdict_if_decidable: str) -> list[str]:
@@ -364,7 +418,6 @@ def run_vbook(
     vinfo = check_vmap(vmap, vmap_sha256)
     merge_doc = check_merge_meta(vmap_merge_meta, vmap_sha256) if vmap_merge_meta is not None else None
     ledger_path = runs_ledger if runs_ledger is not None else final_out_dir.resolve().parent / RUNS_LEDGER_NAME
-    n_prior = prior_runs(ledger_path)
     if out_dir.exists():
         raise Refused([f"{out_dir} exists; every run needs a new --out-dir"])
     errors = s12.check_frozen(artifact_dir, frozen_manifest_md5, freeze_commit)
@@ -383,65 +436,85 @@ def run_vbook(
     lo, hi = fw.ms(cc), min(fw.ms(fw.hour_dt(last["to_exclusive"])), fw.ms(re_))
 
     scratch_root = Path(tempfile.mkdtemp(prefix="vbook-scratch-", dir=str(out_dir.resolve().parent)))
+    claimed = False
+    done = False
+    base = {"schema": SCHEMA_RUN, "clean_clock": marker["clean_clock"], "read_end": marker["read_end"], "test_window": bool(test_window), "final_rows_sha256": marker.get("rows_sha256"), "vmap_sha256": vinfo["sha256"], "merge_meta_sha256": fw._sha256_file(vmap_merge_meta) if vmap_merge_meta is not None else None, "out_dir": str(out_dir.resolve())}
+    old_handler = None
     try:
         def one(tag: str, mode: str, frozen: bool) -> tuple[list[dict[str, Any]], dict[str, Any], float]:
             rows, thr = score_fn(walk_dir, pool, artifact_dir, scratch_root / tag, vmap, mode, scratch_root / f"counts-{tag}", frozen)
             return window_rows(rows, thr, lo, hi), read_counts(scratch_root / f"counts-{tag}"), thr
 
+        # the frozen pass reveals nothing about (B) and (A) is already read: it spends nothing
         repro_rows, _c, thr = one("unpatched", "v", True)
         if last.get("threshold") is not None and thr != last["threshold"]:
             raise Refused([f"frozen threshold {thr!r} differs from the FINAL run's {last['threshold']!r}"])
-        repro = check_reproduction(a_rows, repro_rows)  # 2. before (B) is read
+        repro = check_reproduction(a_rows, repro_rows)  # before (B) is read
+        commit = fw._git_commit()
+        # the claim: immediately before the first V-priced pass
+        n_prior = claim_window(ledger_path, {**base, "state": "STARTED", "utc_time": _utc(), "git_commit": commit}, test_window)
+        claimed = True
+        if threading.current_thread() is threading.main_thread():
+            old_handler = signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(SystemExit("SIGTERM")))
         v_rows, v_counts, _ = one("v", "v", False)
         bad = check_entered_set(a_rows, v_rows, "mcap_mode v")
         if bad:
             raise Refused(bad)
         vault_rows, vault_counts, _ = one("vault", "vault", False)
         vault_bad = check_entered_set(a_rows, vault_rows, "mcap_mode vault")
-    finally:
-        shutil.rmtree(scratch_root, ignore_errors=True)
 
-    null_v = null_v_assessment(v_rows)
-    b_gate = gate_block(v_rows, runs)
-    vault_gate = gate_block(vault_rows, runs)
-    agreement = compare_modes(b_gate, vault_gate)
-    if vault_bad:
-        agreement = {**agreement, "agree_on_every_gate_condition": False, "vault_entered_set_problems": vault_bad}
-    a_gate = gate_block(a_rows, runs)
-    verdict = NOT_DECIDABLE if null_v["not_decidable"] else b_gate["verdict"]
-    commit = fw._git_commit()
-    adapter_file = Path(ad.__file__)
-    rep: dict[str, Any] = {
-        "schema": SCHEMA_REPORT,
-        "label": LABEL,
-        "test_window": test_window,
-        "clean_clock": marker["clean_clock"],
-        "read_end": marker["read_end"],
-        "scored_through_exclusive": last["to_exclusive"],
-        "threshold": thr,
-        "a_reproduction": {**repro, "frozen_pricing_pass": "identical flat and press, keyed by (mint, mig_ms)"},
-        "a_final_marker": {"rows_sha256": marker.get("rows_sha256"), "lock_sha256": marker.get("lock_sha256"), "utc_time": marker.get("utc_time")},
-        "a_verdict_recomputed_from_stored_rows": a_gate["verdict"],
-        "b_verdict": verdict,
-        "b_verdict_if_decidable": b_gate["verdict"],
-        "b_mcap_mode_v": {k: b_gate[k] for k in ("n_entered", "flat_15", "pressure_scale_1", "gate", "verdict")},
-        "vault_mode_report_only": {k: vault_gate[k] for k in ("n_entered", "flat_15", "pressure_scale_1", "gate", "verdict")},
-        "vault_vs_v": agreement,
-        "null_v": null_v,
-        "adapter_counts": {"mcap_mode_v": v_counts, "mcap_mode_vault": vault_counts},
-        "vmap": vinfo,
-        "vmap_merge": merge_doc,
-        "prior_vbook_runs": n_prior,
-        "live_blockers": live_blockers(agreement, vault_bad, null_v, b_gate["verdict"]),
-        "adapter_file_sha256": hashlib.sha256(adapter_file.read_bytes()).hexdigest(),
-        "git_commit": commit,
-        "live_support_note": "Amendment 4 section 2: live needs (A) PASS and (B) at mcap_mode v PASS; V-correction can only remove support. This report does not decide live.",
-    }
-    out_dir.mkdir(parents=True)
-    fw.atomic_write(out_dir / REPORT_JSON, (json.dumps(rep, indent=2, default=str) + "\n").encode("utf-8"))
-    fw.atomic_write(out_dir / REPORT_MD, render_markdown(rep).encode("utf-8"))
-    fw.ledger_append(ledger_path, {"schema": SCHEMA_RUN, "utc_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "git_commit": commit, "vmap_sha256": vinfo["sha256"], "verdict": verdict, "test_window": test_window, "out_dir": str(out_dir.resolve())})
-    return rep
+        null_v = null_v_assessment(v_rows)
+        b_gate = gate_block(v_rows, runs)
+        vault_gate = gate_block(vault_rows, runs)
+        agreement = compare_modes(b_gate, vault_gate)
+        if vault_bad:
+            agreement = {**agreement, "agree_on_every_gate_condition": False, "vault_entered_set_problems": vault_bad}
+        a_gate = gate_block(a_rows, runs)
+        verdict = NOT_DECIDABLE if null_v["not_decidable"] else b_gate["verdict"]
+        adapter_file = Path(ad.__file__)
+        rep: dict[str, Any] = {
+            "schema": SCHEMA_REPORT,
+            "label": LABEL,
+            "test_window": test_window,
+            "clean_clock": marker["clean_clock"],
+            "read_end": marker["read_end"],
+            "scored_through_exclusive": last["to_exclusive"],
+            "threshold": thr,
+            "a_reproduction": {**repro, "frozen_pricing_pass": "identical flat and press, keyed by (mint, mig_ms)"},
+            "a_final_marker": {"rows_sha256": marker.get("rows_sha256"), "lock_sha256": marker.get("lock_sha256"), "utc_time": marker.get("utc_time")},
+            "a_verdict_recomputed_from_stored_rows": a_gate["verdict"],
+            "b_verdict": verdict,
+            "b_verdict_if_decidable": b_gate["verdict"],
+            "b_mcap_mode_v": {k: b_gate[k] for k in ("n_entered", "flat_15", "pressure_scale_1", "gate", "verdict")},
+            "vault_mode_report_only": {k: vault_gate[k] for k in ("n_entered", "flat_15", "pressure_scale_1", "gate", "verdict")},
+            "vault_vs_v": agreement,
+            "null_v": null_v,
+            "adapter_counts": {"mcap_mode_v": v_counts, "mcap_mode_vault": vault_counts},
+            "vmap": vinfo,
+            "vmap_merge": merge_doc,
+            "prior_vbook_runs": n_prior,
+            "live_blockers": live_blockers(agreement, vault_bad, null_v, b_gate["verdict"]),
+            "adapter_file_sha256": hashlib.sha256(adapter_file.read_bytes()).hexdigest(),
+            "git_commit": commit,
+            "live_support_note": "Amendment 4 section 2: live needs (A) PASS and (B) at mcap_mode v PASS; V-correction can only remove support. This report does not decide live.",
+        }
+        json_bytes = (json.dumps(rep, indent=2, default=str) + "\n").encode("utf-8")
+        # the ledger line first: a crash can never leave a report without its entry
+        fw.ledger_append(ledger_path, {**base, "state": "DONE", "utc_time": _utc(), "git_commit": commit, "b_verdict": verdict, "report_sha256": hashlib.sha256(json_bytes).hexdigest()})
+        done = True
+        out_dir.mkdir(parents=True)
+        fw.atomic_write(out_dir / REPORT_JSON, json_bytes)
+        fw.atomic_write(out_dir / REPORT_MD, render_markdown(rep).encode("utf-8"))
+        return rep
+    except BaseException as exc:  # noqa: BLE001 -- after STARTED the window is spent whatever happens
+        if claimed and not done:
+            reason = "; ".join(exc.reasons) if isinstance(exc, Refused) else f"{type(exc).__name__}: {exc}"
+            fw.ledger_append(ledger_path, {**base, "state": "REFUSED_AFTER_READ", "utc_time": _utc(), "reason": reason[:2000]})
+        raise
+    finally:
+        if old_handler is not None:
+            signal.signal(signal.SIGTERM, old_handler)
+        shutil.rmtree(scratch_root, ignore_errors=True)
 
 
 def render_markdown(rep: dict[str, Any]) -> str:
