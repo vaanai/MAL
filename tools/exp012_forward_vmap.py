@@ -710,10 +710,11 @@ def cmd_lphist(a: argparse.Namespace, rpc: Callable[[str, list], Any] | None = N
 
         rpc = Rpc(pv._rpc_url())
     kw = {"sleep": time.sleep} if a.rps else {}
-    hist, calls = lph.fetch_lp_history(rpc, pools, t0, t1, rps=a.rps, **kw)
+    attempts: list[dict[str, Any]] = []
+    hist, calls = lph.fetch_lp_history(rpc, pools, t0, t1, rps=a.rps, attempts=attempts, **kw)
     _write_new(out, json.dumps(hist, sort_keys=True) + "\n", readonly=True)
     n_unres = sum(1 for e in hist.values() if not e["resolved"])
-    meta = {"sha256": sha256_file(out), "n_pools": len(hist), "n_unresolved": n_unres, "n_events": sum(len(e["events"]) for e in hist.values()), "calls": calls, "utc": datetime.now(timezone.utc).strftime(TS_FMT), "t_from_unix": t0, "t_to_unix": t1, "from": a.t_from, "to": a.t_to, "pools_sha256": sha256_file(Path(a.pools))}
+    meta = {"sha256": sha256_file(out), "n_pools": len(hist), "n_unresolved": n_unres, "n_events": sum(len(e["events"]) for e in hist.values()), "calls": calls, "utc": datetime.now(timezone.utc).strftime(TS_FMT), "t_from_unix": t0, "t_to_unix": t1, "from": a.t_from, "to": a.t_to, "pools_sha256": sha256_file(Path(a.pools)), "attempts": attempts, "reasons": {r: sum(1 for e in hist.values() if e["reason"] == r) for r in sorted({e["reason"] for e in hist.values() if e["reason"]})}}
     _write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n", readonly=True)
     print(f"lphist: n={len(hist)} n_unresolved={n_unres} calls={calls} -> {out}")
     return 0

@@ -4,9 +4,10 @@ A pool's V0 (`v_base` = V + A + B) changes only at a liquidity Deposit or Withdr
 `floor(V0 * S_after / S_before)` where S is the LP mint supply. This module:
 
   - decodes `DepositEvent` / `WithdrawEvent` from `Program data:` log lines,
-  - lists a pool set's LP events over a time range (`fetch_lp_history`, RPC injected),
-  - replays V0 forward (`replay_forward`, exact ints) and backward (`v0_before`, nearest, <= 1 lamport per event),
-  - decides whether two V0 reads are explained by the events between them (`consistent`).
+  - lists a pool set's LP events from a start time to the chain tip (`fetch_lp_history`, RPC injected),
+  - replays V0 forward (`replay_forward`, exact ints) and backward (`v0_before`: the smallest preimage),
+  - decides whether two V0 reads are explained by the events between them (`consistent`),
+  - lists every V0 a pool could have under the ambiguous placements (`possible_values`).
 
 No network call is made unless the caller passes a real `rpc`; the RPC URL is never printed or stored.
 `rpc(method, params) -> result` is `tools.pumpswap_simulate.Rpc`'s call shape.
@@ -28,6 +29,9 @@ SIG_PAGE = 1000
 BATCH = 100
 MAX_PAGES_DEFAULT = 200
 MAX_AMBIGUOUS = 10  # 2^10 placements at most; more is unresolved
+MAX_PASSES = 3  # retry passes over transiently unresolved pools
+TRANSIENT_PREFIXES = ("accounts_fetch_failed", "signatures_fetch_failed", "signatures_bad_response", "tx_fetch_failed", "supply_read_failed")
+SUPPLY_CHANGE_MARKERS = ("Instruction: Burn", "Instruction: MintTo")  # SPL token ops that move LP supply outside Deposit/Withdraw
 _U64 = ("lp_token_amount", "max_or_min_base", "max_or_min_quote", "user_base_token_reserves", "user_quote_token_reserves", "pool_base_token_reserves", "pool_quote_token_reserves", "base_amount", "quote_amount", "lp_mint_supply")
 _KEYS = ("pool", "user", "user_base_token_account", "user_quote_token_account", "user_pool_token_account")
 
@@ -79,7 +83,7 @@ def events_from_logs(logs: Sequence[str], pool: str) -> list[dict[str, Any]]:
 
 
 def replay_forward(v0: int, events: Sequence[dict[str, Any]]) -> int:
-    """floor(v0 * (s + d) / s) per event, in order. Exact integers. s_before == 0 raises ValueError."""
+    """floor(v0 * (s + d) / s) per event, in order. Exact integers. s_before <= 0 raises ValueError."""
     v = v0
     for e in events:
         s, d = e["s_before"], e["lp_delta"]
@@ -89,37 +93,48 @@ def replay_forward(v0: int, events: Sequence[dict[str, Any]]) -> int:
     return v
 
 
-def v0_before(v0_after: int, events: Sequence[dict[str, Any]]) -> int:
-    """Inverse of replay_forward, events given in forward order. Each step is v * s / (s + d) rounded to
-    nearest (half up), so the result is within 1 lamport per event of a V0 that replays to v0_after
-    (floor loses < 1 lamport per event forward; the inverse is not unique, and is exact only to that)."""
-    v = v0_after
+def v0_before_interval(v0_after: int, events: Sequence[dict[str, Any]]) -> tuple[int, int] | None:
+    """The exact set of integers v with replay_forward(v, events) == v0_after, as (smallest, largest), or None when no
+    integer maps to v0_after. Each step is monotone, so its preimage of an interval is an interval:
+    [ceil(lo*s/t), floor(((hi+1)*s - 1)/t)] with s = S_before, t = S_after. A step with t <= 0 raises ValueError."""
+    lo = hi = v0_after
     for e in reversed(list(events)):
-        s, d = e["s_before"], e["lp_delta"]
-        t = s + d
+        s, t = e["s_before"], e["s_before"] + e["lp_delta"]
         if s <= 0 or t <= 0:
             raise ValueError("supply must stay positive")
-        v = (2 * v * s + t) // (2 * t)
-    return v
+        lo, hi = -((-lo * s) // t), ((hi + 1) * s - 1) // t
+        if lo > hi:
+            return None
+    return lo, hi
+
+
+def v0_before(v0_after: int, events: Sequence[dict[str, Any]]) -> int | None:
+    """The SMALLEST integer V0_before with replay_forward(V0_before, events) == v0_after (events in forward order), or
+    None (inconsistent: no integer replays to v0_after). The true value lies in v0_before_interval's (smallest, largest);
+    the width is about S_before/S_after per event, so it is the smallest member, not an estimate, that is returned."""
+    r = v0_before_interval(v0_after, events)
+    return None if r is None else r[0]
 
 
 def _order(events: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    # idx is the chronological position fetch_lp_history assigns: slot, then the signature listing's block order within a slot
     return sorted(events, key=lambda e: (e.get("slot", 0), e.get("idx", 0)))
 
 
+def _placements(between: Sequence[dict[str, Any]], ambiguous: Sequence[dict[str, Any]]):
+    for mask in itertools.product((False, True), repeat=len(ambiguous)):
+        yield _order(list(between) + [e for e, m in zip(ambiguous, mask) if m])
+
+
 def consistent(v0_a: int, v0_b: int, events_between: Sequence[dict[str, Any]], events_ambiguous: Sequence[dict[str, Any]]) -> bool | None:
-    """True iff v0_a == v0_b, or some placement of the ambiguous events (each before the first read, or after it) lets
+    """True iff v0_a == v0_b, or ANY placement of the ambiguous events (each before the first read, or after it) lets
     the definite events plus the chosen ambiguous ones, replayed in order from v0_a, reproduce v0_b within 1 lamport
-    per applied event. False when no placement does. None (unresolved) when more than MAX_AMBIGUOUS are ambiguous.
-    Events carry slot and (optionally) idx for ordering."""
+    per applied event. False when no placement does. None (unresolved) when more than MAX_AMBIGUOUS are ambiguous."""
     if v0_a == v0_b:
         return True
-    k = len(events_ambiguous)
-    if k > MAX_AMBIGUOUS:
+    if len(events_ambiguous) > MAX_AMBIGUOUS:
         return None
-    for mask in itertools.product((False, True), repeat=k):
-        chosen = [e for e, m in zip(events_ambiguous, mask) if m]
-        applied = _order(list(events_between) + chosen)
+    for applied in _placements(events_between, events_ambiguous):
         if not applied:
             continue
         try:
@@ -129,6 +144,23 @@ def consistent(v0_a: int, v0_b: int, events_between: Sequence[dict[str, Any]], e
         if abs(got - v0_b) <= len(applied):
             return True
     return False
+
+
+def possible_values(v0: int, events_definite: Sequence[dict[str, Any]], events_ambiguous: Sequence[dict[str, Any]], direction: str = "forward") -> set[int] | None:
+    """Every V0 reachable from `v0` under the placements of the ambiguous events: forward = replay_forward, backward =
+    v0_before (smallest preimage; a placement with no preimage contributes nothing). None when too many are ambiguous.
+    For pricing, a pool is resolved only if the set has one member; more than one means the placements disagree."""
+    if len(events_ambiguous) > MAX_AMBIGUOUS:
+        return None
+    out: set[int] = set()
+    for applied in _placements(events_definite, events_ambiguous):
+        try:
+            v = replay_forward(v0, applied) if direction == "forward" else v0_before(v0, applied)
+        except ValueError:
+            continue
+        if v is not None:
+            out.add(v)
+    return out
 
 
 class _Limiter:
@@ -146,49 +178,90 @@ class _Limiter:
         self.calls += 1
 
 
-def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_from_unix: int, t_to_unix: int, *, rps: float = 5.0, max_pages: int = MAX_PAGES_DEFAULT, sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic) -> tuple[dict[str, dict[str, Any]], int]:
-    """({pool: {"lp_mint", "events", "resolved", "reason"}}, n_rpc_calls).
+def _is_transient(reason: str | None) -> bool:
+    return bool(reason) and reason.startswith(TRANSIENT_PREFIXES)
 
-    Events are those of the pool with t_from <= block_time <= t_to, chronological (slot, then position in the
-    signature listing, which is block order). A pool is unresolved (reason set) if its account is missing or
-    unparseable, the signature paging stopped (max_pages, or an RPC error) before reaching t_from, any transaction
-    in range could not be fetched, or the events do not chain (s_before + lp_delta == next s_before)."""
+
+def _read_accounts(rpc: Callable[[str, list], Any], lim: _Limiter, pools: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """pool -> {"lp_mint", "lp_supply", "slot"} or {"error": reason}."""
     from tools import pumpswap_tx as tx
 
+    out: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(pools), BATCH):
+        chunk = list(pools[i : i + BATCH])
+        lim.wait()
+        try:
+            r = rpc("getMultipleAccounts", [chunk, {"encoding": "base64"}])
+            vals = r["value"]
+            slot = (r.get("context") or {}).get("slot")
+        except BaseException as exc:  # noqa: BLE001 -- Rpc raises SystemExit; its message may hold a URL, keep the type only
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            for p in chunk:
+                out[p] = {"error": f"accounts_fetch_failed:{type(exc).__name__}"}
+            continue
+        for p, acc in zip(chunk, vals):
+            if not acc:
+                out[p] = {"error": "account_missing"}
+                continue
+            try:
+                parsed = tx.parse_pool_account(base64.b64decode(acc["data"][0]))
+                out[p] = {"lp_mint": str(parsed["lp_mint"]), "lp_supply": int(parsed["lp_supply"]), "slot": slot}
+            except (ValueError, KeyError, TypeError, IndexError):
+                out[p] = {"error": "account_unparseable"}
+    return out
+
+
+def fetch_lp_history(rpc: Callable[[str, list], Any], pools: Sequence[str], t_from_unix: int, t_to_unix: int, *, rps: float = 5.0, max_pages: int = MAX_PAGES_DEFAULT, sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic, passes: int = MAX_PASSES, attempts: list[dict[str, Any]] | None = None) -> tuple[dict[str, dict[str, Any]], int]:
+    """({pool: {"lp_mint", "events", "resolved", "reason", "lp_supply", "attempts"}}, n_rpc_calls).
+
+    Events are those of the pool from t_from to the chain tip (events after t_to are kept: the end-supply check needs
+    them), chronological: by slot, then by position in the signature listing (getTransaction gives no transaction
+    index; getSignaturesForAddress lists a slot's transactions in block order), recorded as "idx".
+
+    A pool is UNRESOLVED (reason recorded) if: its account is missing/unparseable; paging stopped before t_from;
+    a transaction fetch failed; a transaction's logs are truncated ("Log truncated"; the self-CPI event path is not
+    implemented); a non-failed transaction in the LP mint's signature list has no event for the pool but burns or mints
+    the LP token; the S sequence does not chain (S_after = s_before + lp_delta of each event must equal the next
+    s_before); or the last S_after differs from the pool account's lp_supply, read again after the history (recorded as
+    "lp_supply"). Up to `passes` passes retry pools whose reason is transient (RPC errors, not chain or truncation
+    failures); every pass is appended to `attempts` if given."""
     if rps > 5.0:
         raise ValueError("rps must be <= 5: walkers share Helius")
     lim = _Limiter(rps, sleep, clock)
     uniq = sorted({p for p in pools if p})
     res: dict[str, dict[str, Any]] = {}
-    mints: dict[str, str] = {}
-    for i in range(0, len(uniq), BATCH):
-        chunk = uniq[i : i + BATCH]
-        lim.wait()
-        try:
-            vals = rpc("getMultipleAccounts", [chunk, {"encoding": "base64"}])["value"]
-        except BaseException as exc:  # noqa: BLE001 -- Rpc raises SystemExit; the message may hold a URL, keep the type only
-            if isinstance(exc, KeyboardInterrupt):
-                raise
-            for p in chunk:
-                res[p] = {"lp_mint": None, "events": [], "resolved": False, "reason": f"accounts_fetch_failed:{type(exc).__name__}"}
-            continue
-        for p, acc in zip(chunk, vals):
-            if not acc:
-                res[p] = {"lp_mint": None, "events": [], "resolved": False, "reason": "account_missing"}
+    todo = list(uniq)
+    for n in range(1, passes + 1):
+        if not todo:
+            break
+        accts = _read_accounts(rpc, lim, todo)
+        for p in todo:
+            a = accts[p]
+            if "error" in a:
+                res[p] = {"lp_mint": None, "events": [], "resolved": False, "reason": a["error"], "lp_supply": None}
+            else:
+                res[p] = _history_one(rpc, lim, p, a["lp_mint"], t_from_unix, max_pages)
+            res[p]["attempts"] = n
+        ok_ids = [p for p in todo if res[p]["resolved"] and res[p]["events"]]
+        end = _read_accounts(rpc, lim, ok_ids) if ok_ids else {}  # the supply AFTER the history, for the chain's last S_after
+        for p in ok_ids:
+            e, a = res[p], end[p]
+            if "error" in a:
+                e["resolved"], e["reason"] = False, "supply_read_failed:" + a["error"]
                 continue
-            try:
-                mints[p] = str(tx.parse_pool_account(base64.b64decode(acc["data"][0]))["lp_mint"])
-            except (ValueError, KeyError, TypeError, IndexError):
-                res[p] = {"lp_mint": None, "events": [], "resolved": False, "reason": "account_unparseable"}
-    for p in uniq:
-        if p in res:
-            continue
-        res[p] = _history_one(rpc, lim, p, mints[p], t_from_unix, t_to_unix, max_pages)
+            e["lp_supply"] = a["lp_supply"]
+            last = e["events"][-1]
+            if last["s_before"] + last["lp_delta"] != a["lp_supply"]:
+                e["resolved"], e["reason"] = False, "last_supply_mismatch"
+        if attempts is not None:
+            attempts.append({"pass": n, "n_pools": len(todo), "n_resolved": sum(1 for p in todo if res[p]["resolved"])})
+        todo = [p for p in todo if not res[p]["resolved"] and _is_transient(res[p]["reason"])]
     return {p: res[p] for p in uniq}, lim.calls
 
 
-def _history_one(rpc: Callable[[str, list], Any], lim: _Limiter, pool: str, lp_mint: str, t_from: int, t_to: int, max_pages: int) -> dict[str, Any]:
-    ent: dict[str, Any] = {"lp_mint": lp_mint, "events": [], "resolved": True, "reason": None}
+def _history_one(rpc: Callable[[str, list], Any], lim: _Limiter, pool: str, lp_mint: str, t_from: int, max_pages: int) -> dict[str, Any]:
+    ent: dict[str, Any] = {"lp_mint": lp_mint, "events": [], "resolved": True, "reason": None, "lp_supply": None}
 
     def fail(reason: str) -> dict[str, Any]:
         ent["resolved"], ent["reason"] = False, reason
@@ -229,7 +302,7 @@ def _history_one(rpc: Callable[[str, list], Any], lim: _Limiter, pool: str, lp_m
         if s.get("err") is not None:
             continue
         bt = s.get("blockTime")
-        if bt is not None and (bt < t_from or bt > t_to):
+        if bt is not None and bt < t_from:
             continue
         sig = s.get("signature")
         lim.wait()
@@ -244,18 +317,22 @@ def _history_one(rpc: Callable[[str, list], Any], lim: _Limiter, pool: str, lp_m
         if (tr.get("meta") or {}).get("err") is not None:
             continue
         block_time = tr.get("blockTime", bt)
-        if block_time is not None and (block_time < t_from or block_time > t_to):
+        if block_time is not None and block_time < t_from:
             continue
         logs = (tr.get("meta") or {}).get("logMessages") or []
-        for j, ev in enumerate(events_from_logs(logs, pool)):
+        if any(isinstance(x, str) and "Log truncated" in x for x in logs):
+            return fail("logs_truncated")
+        evs = events_from_logs(logs, pool)
+        if not evs and any(isinstance(x, str) and any(m in x for m in SUPPLY_CHANGE_MARKERS) for x in logs):
+            return fail("lp_supply_change_outside_pumpswap")
+        for j, ev in enumerate(evs):
             events.append({"slot": tr.get("slot", s.get("slot")), "block_time": block_time, "sig": sig, "kind": ev["kind"], "s_before": ev["s_before"], "lp_delta": ev["lp_delta"], "_k": (n - pos, j)})
     events.sort(key=lambda e: (e["slot"] if e["slot"] is not None else 0, e["_k"]))
     for i, e in enumerate(events):
         e.pop("_k")
         e["idx"] = i
+    ent["events"] = events
     for a, b in zip(events, events[1:]):
         if a["s_before"] + a["lp_delta"] != b["s_before"]:
-            ent["events"] = events
             return fail("supply_chain_break")
-    ent["events"] = events
     return ent

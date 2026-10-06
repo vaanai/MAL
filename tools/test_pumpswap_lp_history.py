@@ -64,6 +64,8 @@ def test_events_from_logs_filters_pool_and_signs_delta() -> None:
     assert [(e["kind"], e["s_before"], e["lp_delta"]) for e in got] == [("deposit", 1000, 100), ("withdraw", 1100, -40)]
 
 
+
+
 # ---- replay -----------------------------------------------------------------------------------------------------
 
 
@@ -78,18 +80,27 @@ CYJW = [(4213950216455, 11302677139), (4225252893594, 4519406819), (422977230041
 def test_replay_cyjwkn_eight_op_chain() -> None:
     events = [ev(s, d, slot=i) for i, (s, d) in enumerate(CYJW)]
     assert lph.replay_forward(17670729486, events) == 17800041063
-    # supplies chain, as the real event stream does
-    for (s, d), (s2, _) in zip(CYJW, CYJW[1:]):
+    for (s, d), (s2, _) in zip(CYJW, CYJW[1:]):  # supplies chain, as the real event stream does
         assert s + d == s2
 
 
-def test_inverse_within_one_lamport_per_event() -> None:
+def test_inverse_is_smallest_preimage() -> None:
     events = [ev(s, d, slot=i) for i, (s, d) in enumerate(CYJW)]
     back = lph.v0_before(17800041063, events)
-    assert abs(back - 17670729486) <= len(events)
-    assert abs(lph.replay_forward(back, events) - 17800041063) <= len(events)
+    assert back is not None
+    assert lph.replay_forward(back, events) == 17800041063  # a true preimage
+    assert lph.replay_forward(back - 1, events) < 17800041063  # and the smallest one
+    assert back <= 17670729486 <= lph.v0_before_interval(17800041063, events)[1]  # the real value is inside the preimage interval
     one = [ev(4193388325949, 81461253)]
-    assert abs(lph.v0_before(17584847247, one) - 17584505649) <= 1
+    b1 = lph.v0_before(17584847247, one)
+    assert lph.replay_forward(b1, one) == 17584847247 and lph.replay_forward(b1 - 1, one) < 17584847247
+    assert b1 <= 17584505649
+
+
+def test_inverse_none_when_no_preimage() -> None:
+    # a 3x expansion skips integers: floor(x * 3) never equals 4
+    assert lph.v0_before(4, [ev(10, 20)]) is None
+    assert lph.v0_before(3, [ev(10, 20)]) == 1
 
 
 def test_replay_zero_supply_raises() -> None:
@@ -113,12 +124,10 @@ def test_consistent_equal_and_definite_event() -> None:
 def test_consistent_ambiguous_placement_either_side() -> None:
     e1, e2 = ev(1000, 100, slot=1), ev(1100, -50, slot=2)
     a = 17_000_000_000
-    only_e2 = lph.replay_forward(a, [e2])  # e1 fell before the first read: chain value is only used partly
-    assert lph.consistent(a, only_e2, [], [e1, e2]) is True  # some placement (apply e2 only) reproduces it
+    assert lph.consistent(a, lph.replay_forward(a, [e2]), [], [e1, e2]) is True  # e1 fell before the first read
     both = lph.replay_forward(a, [e1, e2])
     assert lph.consistent(a, both, [], [e1, e2]) is True
     assert lph.consistent(a, both + 10_000, [], [e1, e2]) is False
-    # a definite event plus an ambiguous one
     assert lph.consistent(a, both, [e1], [e2]) is True
     assert lph.consistent(a, lph.replay_forward(a, [e1]), [e1], [e2]) is True
 
@@ -127,6 +136,16 @@ def test_consistent_too_many_ambiguous_is_none() -> None:
     evs = [ev(10_000 + i, 1, slot=i) for i in range(11)]
     assert lph.consistent(5, 6, [], evs) is None
     assert lph.consistent(5, 5, [], evs) is True  # equal needs no events
+
+
+def test_possible_values_helper() -> None:
+    e1 = ev(1000, 100, slot=1)
+    a = 17_000_000_000
+    assert lph.possible_values(a, [], [e1]) == {a, lph.replay_forward(a, [e1])}  # placements disagree: more than one value
+    assert lph.possible_values(a, [e1], []) == {lph.replay_forward(a, [e1])}  # nothing ambiguous: one value
+    assert lph.possible_values(a, [], [ev(10_000 + i, 1, slot=i) for i in range(11)]) is None
+    back = lph.possible_values(17_100_000_000, [e1], [], direction="backward")
+    assert back == {lph.v0_before(17_100_000_000, [e1])}
 
 
 # ---- fetch_lp_history with a fake chain --------------------------------------------------------------------------
@@ -140,19 +159,32 @@ def pool_account(lp_mint: str, lp_supply: int = 1) -> dict:
 
 
 class FakeChain:
-    """accounts: pool -> lp_mint or None; sigs: lp_mint -> [(sig, slot, blockTime, err, [events])] newest first."""
+    """accounts: pool -> lp_mint or None; sigs: lp_mint -> [(sig, slot, blockTime, err, [events or raw log strings])]
+    newest first; supply: lp_mint -> lp_supply the pool account shows (default: the newest event's S_after)."""
 
-    def __init__(self, accounts: dict, sigs: dict, fail_tx: set | None = None, fail_sigs: bool = False):
-        self.accounts, self.sigs, self.fail_tx, self.fail_sigs = accounts, sigs, fail_tx or set(), fail_sigs
+    def __init__(self, accounts: dict, sigs: dict, fail_tx: set | None = None, fail_sigs: int | bool = 0, supply: dict | None = None, tx_fail_times: int = 0):
+        self.accounts, self.sigs, self.fail_tx, self.fail_sigs, self.supply = accounts, sigs, fail_tx or set(), int(fail_sigs), supply or {}
+        self.tx_fail_times = tx_fail_times
         self.calls: list[tuple[str, int]] = []
         self.sleeps: list[float] = []
+
+    def _supply(self, mint: str) -> int:
+        if mint in self.supply:
+            return self.supply[mint]
+        for r in self.sigs.get(mint, []):
+            for x in r[4]:
+                if isinstance(x, bytes):
+                    d = lph.decode_event(x)
+                    return d["lp_mint_supply"] + (d["lp_token_amount"] if d["kind"] == "deposit" else -d["lp_token_amount"])
+        return 1
 
     def __call__(self, method: str, params: list):
         self.calls.append((method, 0))
         if method == "getMultipleAccounts":
-            return {"context": {"slot": 5}, "value": [None if self.accounts.get(p) is None else pool_account(self.accounts[p]) for p in params[0]]}
+            return {"context": {"slot": 5}, "value": [None if self.accounts.get(p) is None else pool_account(self.accounts[p], self._supply(self.accounts[p])) for p in params[0]]}
         if method == "getSignaturesForAddress":
-            if self.fail_sigs:
+            if self.fail_sigs > 0:
+                self.fail_sigs -= 1
                 raise SystemExit("rpc failed https://x/?api-key=SECRET")
             rows = self.sigs[params[0]]
             opts = params[1]
@@ -165,10 +197,14 @@ class FakeChain:
             assert params[1] == {"encoding": "json", "maxSupportedTransactionVersion": 1}
             if params[0] in self.fail_tx:
                 raise SystemExit("rpc failed")
+            if self.tx_fail_times > 0:
+                self.tx_fail_times -= 1
+                raise SystemExit("rpc failed")
             for rows in self.sigs.values():
                 for r in rows:
                     if r[0] == params[0]:
-                        return {"slot": r[1], "blockTime": r[2], "meta": {"err": None, "logMessages": [log_line(x) for x in r[4]]}}
+                        logs = [log_line(x) if isinstance(x, bytes) else x for x in r[4]]
+                        return {"slot": r[1], "blockTime": r[2], "meta": {"err": None, "logMessages": logs}}
         raise AssertionError(method)
 
 
@@ -191,9 +227,9 @@ def test_fetch_history_events_sorted_resolved_and_err_skipped() -> None:
     out, calls = run_hist(chain, [pool], 1500, 5000)
     e = out[pool]
     assert e["resolved"] and e["reason"] is None and e["lp_mint"] == mint
-    assert [(x["sig"], x["slot"], x["block_time"], x["kind"], x["s_before"], x["lp_delta"]) for x in e["events"]] == [("s2", 20, 2000, "deposit", 1000, 100), ("s2", 20, 2000, "deposit", 1100, 0), ("s4", 40, 4000, "withdraw", 1100, -30)]
-    assert calls == len(chain.calls) == 1 + 1 + 2  # accounts, one signature page, two transactions
-    assert ("getTransaction", 0) in chain.calls
+    assert [(x["sig"], x["slot"], x["block_time"], x["kind"], x["s_before"], x["lp_delta"], x["idx"]) for x in e["events"]] == [("s2", 20, 2000, "deposit", 1000, 100, 0), ("s2", 20, 2000, "deposit", 1100, 0, 1), ("s4", 40, 4000, "withdraw", 1100, -30, 2)]
+    assert e["lp_supply"] == 1070 and e["attempts"] == 1  # the end supply was read and matches the last S_after
+    assert calls == len(chain.calls) == 1 + 1 + 2 + 1  # accounts, one signature page, two transactions, end-supply read
 
 
 def test_fetch_history_rate_limit_gap() -> None:
@@ -205,10 +241,12 @@ def test_fetch_history_rate_limit_gap() -> None:
         lph.fetch_lp_history(chain, [pool], 0, 1, rps=50)
 
 
-def test_fetch_history_account_missing_unresolved() -> None:
+def test_fetch_history_account_missing_unresolved_and_not_retried() -> None:
     chain = FakeChain({pk(1): None}, {})
-    out, _ = run_hist(chain, [pk(1)], 0, 10)
+    att: list = []
+    out, _ = run_hist(chain, [pk(1)], 0, 10, attempts=att)
     assert out[pk(1)]["resolved"] is False and out[pk(1)]["reason"] == "account_missing"
+    assert len(att) == 1  # deterministic: no retry pass
 
 
 def test_fetch_history_pagination_reaches_t_from(monkeypatch) -> None:
@@ -218,8 +256,7 @@ def test_fetch_history_pagination_reaches_t_from(monkeypatch) -> None:
     chain = FakeChain({pool: mint}, {mint: rows})
     out, _ = run_hist(chain, [pool], 975, 2000)
     assert out[pool]["resolved"] is True
-    pages = [c for c in chain.calls if c[0] == "getSignaturesForAddress"]
-    assert len(pages) == 2  # [1000,990] [980,970]: the oldest 970 < 975, so paging stops
+    assert len([c for c in chain.calls if c[0] == "getSignaturesForAddress"]) == 2  # [1000,990] [980,970]: 970 < 975, stop
 
 
 def test_fetch_history_paging_cannot_reach_t_from_is_unresolved(monkeypatch) -> None:
@@ -227,25 +264,70 @@ def test_fetch_history_paging_cannot_reach_t_from_is_unresolved(monkeypatch) -> 
     pool, mint = pk(1), pk(50)
     rows = [(f"s{i}", 100 - i, 1000 - i * 10, None, []) for i in range(10)]
     chain = FakeChain({pool: mint}, {mint: rows})
-    out, _ = run_hist(chain, [pool], 0, 2000, max_pages=2)
+    att: list = []
+    out, _ = run_hist(chain, [pool], 0, 2000, max_pages=2, attempts=att)
     assert out[pool]["resolved"] is False and out[pool]["reason"] == "paging_did_not_reach_t_from"
+    assert len(att) == 1
 
 
-def test_fetch_history_tx_failure_unresolved_and_url_not_leaked() -> None:
+def test_fetch_history_tx_failure_unresolved_after_three_passes_and_url_not_leaked() -> None:
     pool, mint = pk(1), pk(50)
     rows = [("s1", 1, 100, None, [event_bytes("deposit", pool, 1, 10)])]
     chain = FakeChain({pool: mint}, {mint: rows}, fail_tx={"s1"})
-    out, _ = run_hist(chain, [pool], 0, 1000)
-    assert out[pool]["resolved"] is False and out[pool]["reason"].startswith("tx_fetch_failed")
-    chain = FakeChain({pool: mint}, {mint: rows}, fail_sigs=True)
+    att: list = []
+    out, _ = run_hist(chain, [pool], 0, 1000, attempts=att)
+    assert out[pool]["resolved"] is False and out[pool]["reason"].startswith("tx_fetch_failed") and out[pool]["attempts"] == 3
+    assert [(a["pass"], a["n_pools"], a["n_resolved"]) for a in att] == [(1, 1, 0), (2, 1, 0), (3, 1, 0)]
+    chain = FakeChain({pool: mint}, {mint: rows}, fail_sigs=99)
     out, _ = run_hist(chain, [pool], 0, 1000)
     assert out[pool]["reason"].startswith("signatures_fetch_failed")
     assert "SECRET" not in repr(out) and "api-key" not in repr(out)
 
 
-def test_fetch_history_supply_chain_break_unresolved() -> None:
+def test_fetch_history_transient_failure_recovers_on_retry_pass() -> None:
+    pool, mint = pk(1), pk(50)
+    rows = [("s1", 1, 100, None, [event_bytes("deposit", pool, 1, 10)])]
+    chain = FakeChain({pool: mint}, {mint: rows}, tx_fail_times=1)
+    att: list = []
+    out, _ = run_hist(chain, [pool], 0, 1000, attempts=att)
+    assert out[pool]["resolved"] is True and out[pool]["attempts"] == 2
+    assert [(a["pass"], a["n_resolved"]) for a in att] == [(1, 0), (2, 1)]
+
+
+def test_fetch_history_supply_chain_break_unresolved_not_retried() -> None:
     pool, mint = pk(1), pk(50)
     rows = [("s2", 2, 200, None, [event_bytes("deposit", pool, 5, 777)]), ("s1", 1, 100, None, [event_bytes("deposit", pool, 10, 1000)])]
     chain = FakeChain({pool: mint}, {mint: rows})
-    out, _ = run_hist(chain, [pool], 0, 1000)
+    att: list = []
+    out, _ = run_hist(chain, [pool], 0, 1000, attempts=att)
     assert out[pool]["resolved"] is False and out[pool]["reason"] == "supply_chain_break"
+    assert len(att) == 1
+
+
+def test_fetch_history_truncated_logs_unresolved() -> None:
+    pool, mint = pk(1), pk(50)
+    rows = [("s1", 1, 100, None, [event_bytes("deposit", pool, 10, 1000), "Log truncated"])]
+    chain = FakeChain({pool: mint}, {mint: rows})
+    att: list = []
+    out, _ = run_hist(chain, [pool], 0, 1000, attempts=att)
+    assert out[pool]["reason"] == "logs_truncated" and not out[pool]["resolved"]
+    assert len(att) == 1  # not a transient reason
+
+
+def test_fetch_history_burn_outside_pumpswap_unresolved() -> None:
+    pool, mint = pk(1), pk(50)
+    rows = [("s2", 2, 200, None, ["Program log: Instruction: Burn"]), ("s1", 1, 100, None, [event_bytes("deposit", pool, 10, 1000)])]
+    chain = FakeChain({pool: mint}, {mint: rows})
+    out, _ = run_hist(chain, [pool], 0, 1000)
+    assert out[pool]["reason"] == "lp_supply_change_outside_pumpswap"
+
+
+def test_fetch_history_last_supply_must_equal_account_supply() -> None:
+    pool, mint = pk(1), pk(50)
+    rows = [("s1", 1, 100, None, [event_bytes("deposit", pool, 10, 1000)])]
+    chain = FakeChain({pool: mint}, {mint: rows}, supply={mint: 1011})  # 1000 + 10 = 1010 expected
+    out, _ = run_hist(chain, [pool], 0, 1000)
+    assert out[pool]["reason"] == "last_supply_mismatch" and out[pool]["lp_supply"] == 1011
+    chain = FakeChain({pool: mint}, {mint: rows}, supply={mint: 1010})
+    out, _ = run_hist(chain, [pool], 0, 1000)
+    assert out[pool]["resolved"] and out[pool]["lp_supply"] == 1010
