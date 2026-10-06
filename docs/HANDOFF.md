@@ -61,7 +61,10 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
     - **Required:** for complete-only mints, cutoff = complete slot + 1, clamped to the simulator clock. Otherwise the curve-completing buy is dropped, against plan §3. Disclose it in item 13.
     - **New counts:** mints with a `migration` row but no `complete` row; OOF-scored P1 mints with no EXP-016 cell, as a limit (more than 5% → refuse).
     - **Optional:** NO_SIM and foreign-first split by complete-only vs migration-row.
-    - **Fixed at `1f9ae8f`** (~18:00Z, 232 tests passed): cutoff = complete slot + 1, `migration_no_complete`, LIMIT_OOF_NO_CELL 5% pooled over P1, origin split, and guards progress lines. Quant-proof re-review was requested. **If there's no OK verdict on the PR, rerun quant-proof on 1f9ae8f, then merge.** Job #307's precount runs on 880797e. It has the old cutoff, but the counts are still valid. Rerun the precount on the merged head before the pin.
+    - **MERGED** after quant-proof OK at 1f9ae8f. Real data confirms it: job #307 shows P1A complete_rows=3468, previously 134.
+    - **Quant-proof recommendation (not yet done):** split LIMIT_OOF_NO_CELL's numerator into "excluded under a pre-declared ruling" (P1B pre-tape creates, pre-tape migrations, gap-over, no-create, no-pool) and "unexplained", and apply the 5% only to the unexplained part. Otherwise an honest run may refuse. Make this change, with a dated §13 note, after seeing the precount's `oof_without_cell` and before the pin.
+    - Also add "unless clamped" to item 13's sentence "the completing slot is included". Watch `cutoff_clamped`.
+    - **Next:** rerun `--precount` on main, which now includes #417. Job #307 ran on 880797e.
 - **Job #307: `--precount` at 880797e (#417 head).** Real layout, all sources, no lock and no tries. Log: `/data/mal/ops/exp016-precount7.log`. Counts land in `/data/mal/exp016-precount-*/precount.json`.
   - Memory is now about 3–3.5 GB per P1 source: compact rows at 245 B per row, 0 rows stored whole.
   - Check every per-source count and `would_refuse`. Where a data-quality limit doesn't fit honest counts, record a dated §13 note before the pin.
