@@ -81,7 +81,7 @@ class Decoding(unittest.TestCase):
         blk = {"transactions": [make_tx("S1", "M", price=1_000_000, limit=150_000, tip=10_000)]}
         (b,) = f.extract_buys(blk, 100)
         self.assertEqual((b["slot"], b["idx"], b["mint"], b["pool"], b["signer"]), (100, 0, "M", "POOL", "S1"))
-        self.assertEqual((b["cu_price"], b["cu_limit"], b["priority_lamports"], b["tip_lamports"]), (1_000_000, 150_000, 150_000, 10_000))
+        self.assertEqual((b["cu_price"], b["cu_limit"], b["priority_lamports"], b["tip_in_tx"]), (1_000_000, 150_000, 150_000, True))
         self.assertNotIn("amount", json.dumps(b))
 
     def test_failed_and_non_buy_skipped(self):
@@ -93,9 +93,9 @@ class Decoding(unittest.TestCase):
 
     def test_jito_tip_only_to_tip_accounts(self):
         t = make_tx("S", "M", tip=777)
-        self.assertEqual(f.jito_tip_lamports(t, f._account_keys(t)), 777)
+        self.assertTrue(f.tipped_in_tx(t, f._account_keys(t)))
         t["transaction"]["message"]["accountKeys"][6] = "NotATipAccount"
-        self.assertEqual(f.jito_tip_lamports(t, f._account_keys(t)), 0)
+        self.assertFalse(f.tipped_in_tx(t, f._account_keys(t)))
         self.assertEqual(len(f.JITO_TIP_ACCOUNTS), 8)
 
     def test_loaded_addresses_extend_keys(self):
@@ -133,7 +133,7 @@ def row(slot, idx, price, signer="a", mint="M", m=100, tip=0):
     return {
         "slot": slot, "idx": idx, "mint": mint, "signer": signer, "cu_price": price,
         "priority_lamports": price * 10, "our_equiv_lamports": f.our_equiv_lamports(price),
-        "tip_lamports": tip, "has_tip": tip > 0, "k": slot - m, "mig_slot": m,
+        "tip_in_tx": tip > 0, "has_tip": tip > 0, "no_price": price == 0, "k": slot - m, "mig_slot": m,
     }
 
 
@@ -174,15 +174,16 @@ class TipDetection(unittest.TestCase):
     def test_helius_sender_tip_detected(self):
         helius = sorted(f.HELIUS_SENDER_TIP_ACCOUNTS)[0]
         blk = {"transactions": [tip_tx("S", 5_000, dest=helius)]}
-        self.assertEqual(f.slot_tips(blk), {"S": {"lamports": 5_000, "services": ["helius_sender"]}})
+        self.assertEqual(f.slot_tips(blk), {"S": {"tipped": True, "services": ["helius_sender"]}})
 
     def test_tip_in_a_separate_tx_same_slot_counts(self):
         blk = {"transactions": [tip_tx("BOT", 100_000), make_tx("BOT", "M", price=5), make_tx("OTHER", "M", price=5)]}
         tips = f.slot_tips(blk)
-        self.assertEqual(tips["BOT"]["lamports"], 100_000)
+        self.assertTrue(tips["BOT"]["tipped"])
+        self.assertNotIn("lamports", tips["BOT"])  # no amounts stored
         self.assertNotIn("OTHER", tips)
         buys = f.extract_buys(blk, 100)
-        self.assertEqual([b["tip_lamports"] for b in buys], [0, 0])  # not in the buy tx itself
+        self.assertEqual([b["tip_in_tx"] for b in buys], [False, False])  # not in the buy tx itself
         done = {100: {"status": "ok", "buys": buys, "tips": tips}}
         rows = f.join_buys([{"mint": "M", "slot": 100, "day": "d"}], done)
         self.assertEqual({r["signer"]: r["has_tip"] for r in rows}, {"BOT": True, "OTHER": False})
@@ -193,8 +194,8 @@ class TipDetection(unittest.TestCase):
 
     def test_tip_in_a_different_slot_does_not_count(self):
         done = {
-            100: {"status": "ok", "buys": [], "tips": {"BOT": {"lamports": 5, "services": ["jito"]}}},
-            101: {"status": "ok", "buys": [{"mint": "M", "slot": 101, "idx": 0, "signer": "BOT", "cu_price": 1, "tip_lamports": 0}], "tips": {}},
+            100: {"status": "ok", "buys": [], "tips": {"BOT": {"tipped": True, "services": ["jito"]}}},
+            101: {"status": "ok", "buys": [{"mint": "M", "slot": 101, "idx": 0, "signer": "BOT", "cu_price": 1, "tip_in_tx": False}], "tips": {}},
         }
         (r,) = f.join_buys([{"mint": "M", "slot": 100, "day": "d"}], done)
         self.assertFalse(r["has_tip"])
@@ -210,6 +211,50 @@ class TipDetection(unittest.TestCase):
         md = f.render_md(rep, None, ["d"])
         self.assertIn("DECIDING", md)
         self.assertIn("nozomi_temporal", md)
+
+
+class NoPrice(unittest.TestCase):
+    MIG = [{"mint": "M", "slot": 100, "day": "d"}]
+
+    def _done(self, buys_by_slot):
+        return {s: {"status": "ok", "buys": bs, "tips": {}} for s, bs in buys_by_slot.items()}
+
+    def _buy(self, slot, signer, price, tip=False):
+        return {"mint": "M", "slot": slot, "idx": 0, "signer": signer, "cu_price": price, "priority_lamports": 0 if not price else 5, "tip_in_tx": tip}
+
+    def test_extracted_no_price_buy_has_zero_price(self):
+        (b,) = f.extract_buys({"transactions": [make_tx("S", "M")]}, 1)
+        self.assertEqual((b["cu_price"], b["our_equiv_lamports"]), (0, 0))
+
+    def test_excluded_from_buckets_a_b_c_and_reported_alone(self):
+        done = self._done({
+            101: [self._buy(101, "np1", 0, tip=True), self._buy(101, "cheap", price_for(100_000))],
+            103: [self._buy(103, "np2", 0)],
+            112: [self._buy(112, "np3", 0, tip=True)],
+        })
+        rep = f.analyze(self.MIG, done, n_boot=5)
+        c = rep["c_p_land_by_fee_bucket"]["all"]["buckets"]
+        self.assertEqual(c["le150k"]["n"], 1)  # only the priced buy; no_price is not in the cheap bucket
+        self.assertEqual(sum(v["n"] for v in c.values()), 1)
+        self.assertEqual(rep["b_early_buyer_fee_shares"]["all"]["n"], 1)
+        self.assertEqual(rep["a_fee_by_k"]["1"]["n"], 1)
+        self.assertEqual(rep["a_fee_by_k"]["1"]["n_no_price_excluded"], 1)
+        e = rep["e_no_price"]
+        self.assertEqual((e["buys"], e["first_buys"], e["first_buys_k_le6"], e["first_buys_late_k_9_16"]), (3, 3, 2, 1))
+        self.assertEqual(e["k_distribution_buys"]["1"], 1)
+        self.assertEqual(e["k_distribution_buys"]["12"], 1)
+        self.assertAlmostEqual(e["tipped_share_buys"], 2 / 3)
+        self.assertIn("(e)", f.render_md(rep, None, ["d"]))
+
+    def test_excluded_from_within_slot_ordering(self):
+        rows = [row(101, 1, 0, "a"), row(101, 2, 500, "b"), row(101, 3, 100, "c")]
+        r = f.within_slot_order(rows)["all"]
+        self.assertEqual(r["pairs_unequal_fee"], 1)  # only b vs c; the unpriced buy is not ordered
+        self.assertEqual(r["share_higher_fee_earlier"], 1.0)
+        self.assertEqual(r["slots_with_2plus_buys"], 1)
+        only_np = f.within_slot_order([row(101, 1, 0, "a"), row(101, 2, 0, "b")])["all"]
+        self.assertEqual(only_np["pairs_unequal_fee"], 0)
+        self.assertEqual(only_np["slots_with_2plus_buys"], 0)
 
 
 class Analysis(unittest.TestCase):
@@ -250,7 +295,7 @@ class Analysis(unittest.TestCase):
     def test_shares_and_percentiles(self):
         mig = [{"mint": "M", "slot": 100, "day": "d"}]
         done = {
-            101 + i: {"status": "ok", "buys": [{"mint": "M", "slot": 101 + i, "idx": 0, "signer": f"s{i}", "cu_price": price_for(100_000 * (i + 1)), "priority_lamports": 7, "tip_lamports": 0}]}
+            101 + i: {"status": "ok", "buys": [{"mint": "M", "slot": 101 + i, "idx": 0, "signer": f"s{i}", "cu_price": price_for(100_000 * (i + 1)), "priority_lamports": 7, "tip_in_tx": False}]}
             for i in range(8)
         }
         rep = f.analyze(mig, done, n_boot=20)
@@ -330,7 +375,7 @@ class Fetching(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.run_it(d, 1000)
             done = f.load_checkpoint(Path(d) / "slots.jsonl")
-            self.assertEqual(done[103]["tips"], {"S103": {"lamports": 77, "services": ["jito"]}})
+            self.assertEqual(done[103]["tips"], {"S103": {"tipped": True, "services": ["jito"]}})
 
     def test_cap_stops_cleanly_and_resume(self):
         with tempfile.TemporaryDirectory() as d:

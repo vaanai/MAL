@@ -224,21 +224,20 @@ def tx_tips(tx: dict, keys: list[str]) -> list[tuple[str, int, str]]:
     return out
 
 
-def jito_tip_lamports(tx: dict, keys: list[str]) -> int:
-    """Tip lamports inside this one tx, any listed service (kept name; same-tx only)."""
-    return sum(t[1] for t in tx_tips(tx, keys))
+def tipped_in_tx(tx: dict, keys: list[str]) -> bool:
+    """True if this one tx has a transfer to a listed tip account. No amount is kept."""
+    return bool(tx_tips(tx, keys))
 
 
 def slot_tips(block: dict) -> dict[str, dict]:
-    """signer -> {"lamports": total tipped in successful txs of this slot, "services": [...]}. A bundle tips
-    in a separate tx, so the buy's tx is not enough."""
+    """signer -> {"tipped": True, "services": [...]} for successful txs of this slot. No lamport amounts are
+    kept (minimal data). A bundle tips in a separate tx, so the buy's tx is not enough."""
     acc: dict[str, dict] = {}
     for tx in block.get("transactions") or []:
         if (tx.get("meta") or {}).get("err") is not None:
             continue
         for src, lam, svc in tx_tips(tx, _account_keys(tx)):
-            d = acc.setdefault(src, {"lamports": 0, "services": []})
-            d["lamports"] += lam
+            d = acc.setdefault(src, {"tipped": True, "services": []})
             if svc not in d["services"]:
                 d["services"].append(svc)
     return acc
@@ -281,7 +280,7 @@ def extract_buys(block: dict, slot: int) -> list[dict]:
                 "limit_explicit": explicit,
                 "priority_lamports": lam,
                 "our_equiv_lamports": our_equiv_lamports(price or 0),
-                "tip_lamports": jito_tip_lamports(tx, keys),
+                "tip_in_tx": tipped_in_tx(tx, keys),
             }
         )
     return out
@@ -461,16 +460,16 @@ def join_buys(migrations: list[dict], done: dict[int, dict]) -> list[dict]:
             for b in rec.get("buys", []):
                 if b["mint"] == mg["mint"]:
                     t = tips.get(b["signer"]) or {}
-                    tip_slot = max(int(t.get("lamports", 0)), int(b.get("tip_lamports", 0)))
+                    tipped = bool(t.get("tipped")) or bool(b.get("tip_in_tx"))
                     rows.append(
                         {
                             **b,
                             "k": slot - mg["slot"],
                             "mig_slot": mg["slot"],
                             "our_equiv_lamports": b["our_equiv_lamports"] if "our_equiv_lamports" in b else our_equiv_lamports(b["cu_price"]),
-                            "tip_slot_lamports": tip_slot,
                             "tip_services": list(t.get("services", [])),
-                            "has_tip": tip_slot > 0,
+                            "has_tip": tipped,
+                            "no_price": not b["cu_price"],
                         }
                     )
     return rows
@@ -487,7 +486,7 @@ def first_buys(rows: list[dict]) -> list[dict]:
 def _p_land(firsts: list[dict]) -> dict[str, dict]:
     out = {}
     for name, _, _ in BUCKETS:
-        sub = [r for r in firsts if bucket_of(r["our_equiv_lamports"]) == name]
+        sub = [r for r in firsts if not r["no_price"] and bucket_of(r["our_equiv_lamports"]) == name]
         n = len(sub)
         late = sum(1 for r in sub if r["k"] > K_MID)
         out[name] = {
@@ -558,6 +557,8 @@ def within_slot_order(rows: list[dict]) -> dict[str, Any]:
     def run(sub: list[dict]) -> dict[str, Any]:
         by_slot: dict[int, list[dict]] = defaultdict(list)
         for r in sub:
+            if r["no_price"]:
+                continue  # no ComputeBudget price: no fee-per-CU to order by
             by_slot[r["slot"]].append(r)
         conc = disc = 0
         rhos = []
@@ -589,6 +590,22 @@ def within_slot_order(rows: list[dict]) -> dict[str, Any]:
     return {"no_tip": run([r for r in rows if not r["has_tip"]]), "all": run(rows)}
 
 
+def no_price_report(rows: list[dict], firsts: list[dict]) -> dict[str, Any]:
+    """Buys with no ComputeBudget price (cu_price 0). Kept out of every fee bucket and out of the (d) ordering."""
+    np_rows = [r for r in rows if r["no_price"]]
+    np_first = [r for r in firsts if r["no_price"]]
+    kd = {str(k): sum(1 for r in np_rows if r["k"] == k) for k in range(K_MAX + 1)}
+    return {
+        "buys": len(np_rows),
+        "first_buys": len(np_first),
+        "k_distribution_buys": kd,
+        "first_buys_k_le6": sum(1 for r in np_first if r["k"] <= K_LAND),
+        "first_buys_late_k_9_16": sum(1 for r in np_first if r["k"] > K_MID),
+        "tipped_share_buys": (sum(1 for r in np_rows if r["has_tip"]) / len(np_rows)) if np_rows else None,
+        "tipped_share_first_buys": (sum(1 for r in np_first if r["has_tip"]) / len(np_first)) if np_first else None,
+    }
+
+
 SUBSETS = (
     ("no_tip", "DECIDING", lambda r: not r["has_tip"]),
     ("with_tip", "context only", lambda r: r["has_tip"]),
@@ -605,12 +622,14 @@ def analyze(migrations: list[dict], done: dict[int, dict], n_boot: int = 1000, s
     rows = join_buys(migrations, done)
     by_k = {}
     for k in range(0, K_MAX + 1):
-        at = [r for r in rows if r["k"] == k]
+        at_all = [r for r in rows if r["k"] == k]
+        at = [r for r in at_all if not r["no_price"]]
         eq = [r["our_equiv_lamports"] for r in at]
         eq_nt = [r["our_equiv_lamports"] for r in at if not r["has_tip"]]
         raw = [r["priority_lamports"] for r in at]
         by_k[str(k)] = {
             "n": len(at),
+            "n_no_price_excluded": len(at_all) - len(at),
             "n_with_tip": sum(1 for r in at if r["has_tip"]),
             "our_equiv_p10": pct(eq, 0.1), "our_equiv_p50": pct(eq, 0.5), "our_equiv_p90": pct(eq, 0.9),
             "no_tip_our_equiv_p10": pct(eq_nt, 0.1), "no_tip_our_equiv_p50": pct(eq_nt, 0.5), "no_tip_our_equiv_p90": pct(eq_nt, 0.9),
@@ -620,7 +639,7 @@ def analyze(migrations: list[dict], done: dict[int, dict], n_boot: int = 1000, s
     shares: dict[str, dict] = {}
     cdict: dict[str, dict] = {}
     for name, role, pred in SUBSETS:
-        early = [r for r in rows if r["k"] <= K_LAND and pred(r)]
+        early = [r for r in rows if r["k"] <= K_LAND and pred(r) and not r["no_price"]]
         sh: dict[str, Any] = {"role": role, "n": len(early)}
         for cap in (150_000, 250_000, 500_000):
             sh[f"le{cap // 1000}k"] = (sum(1 for r in early if r["our_equiv_lamports"] <= cap) / len(early)) if early else None
@@ -638,6 +657,8 @@ def analyze(migrations: list[dict], done: dict[int, dict], n_boot: int = 1000, s
             "scope": "successful top-level PumpSwap buy / buy_exact_quote_in instructions on the migrated mint; buys via a router/CPI are not seen",
             "p_land": f"P(k <= {K_LAND}) among each wallet's first buy per mint, conditional on that buy landing within k <= {K_MAX}; wallets that never landed in the window are not in the denominator. Late landers (k 9..16) are counted per bucket",
             "first_buy_tip_status": "a wallet's tip status is that of its first buy",
+            "no_price": "buys with no ComputeBudget price (cu_price 0) are excluded from the fee buckets in (a), (b), (c) and from the (d) ordering; they are reported on their own in (e)",
+            "tip_data": "per-slot tip map holds signer -> tipped and service names only; no lamport amounts are stored",
         },
         "tip_detection": {
             "services_listed": {svc: {"n_accounts": len(a), "source": TIP_SOURCES[svc]} for svc, a in TIP_SERVICES.items()},
@@ -655,6 +676,7 @@ def analyze(migrations: list[dict], done: dict[int, dict], n_boot: int = 1000, s
         "c_p_land_by_fee_bucket": cdict,
         "c_bootstrap": {"draws": n_boot, "seed": seed, "unit": "migration (mint)", "interval": "5th-95th percentile"},
         "d_within_slot_fee_order": within_slot_order(rows),
+        "e_no_price": no_price_report(rows, firsts_all),
     }
 
 
@@ -686,6 +708,10 @@ def render_md(rep: dict, status: dict | None, days: list[str]) -> str:
     L += ["## (d) Fee per CU vs position inside a slot", ""]
     for name, v in rep["d_within_slot_fee_order"].items():
         L.append(f"- {name}: slots with 2+ buys {v['slots_with_2plus_buys']}, unequal-price pairs {v['pairs_unequal_fee']}, share with higher cu_price earlier {f(v['share_higher_fee_earlier'])}, mean Spearman {f(v['mean_spearman_fee_rank_vs_position'])}")
+    e = rep["e_no_price"]
+    L += ["", "## (e) Buys with no ComputeBudget price (excluded from the fee buckets and from (d))", "",
+          f"buys {e['buys']}, first buys {e['first_buys']} (k<=6: {e['first_buys_k_le6']}, late k 9-16: {e['first_buys_late_k_9_16']}), "
+          f"tipped share (buys) {f(e['tipped_share_buys'])}, (first buys) {f(e['tipped_share_first_buys'])}. k distribution of buys: {json.dumps(e['k_distribution_buys'])}"]
     return "\n".join(L) + "\n"
 
 
