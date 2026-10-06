@@ -156,6 +156,35 @@ class ValidateTests(unittest.TestCase):
         rc, stdout, err = run(["validate", "--walk-dir", str(walk), "--from", H1, "--to", H3, "--vmap", str(vmap), "--vmap-sha256", sha_arg, "--out", str(out), "--hours", "2", "--workers", "1"] + kw.pop("extra", []))
         return rc, err, out
 
+    def final_dir(self, rows: list[dict]) -> Path:
+        od = self.tmp / "O"
+        od.mkdir(exist_ok=True)
+        (od / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return od
+
+    def test_final_out_dir_window_and_fixed_sample(self) -> None:
+        rows = [sell_row("PV", 0.0), buy_row("PV", 0.0)]
+        walk = self.tmp / "walk"
+        make_walk(walk, lines={H1: rows, H2: rows, H3: rows})
+        vmap = self.tmp / "v.json"
+        write_map(vmap, {"PV": V})
+        od = self.final_dir([{"pool_from": H1, "to_exclusive": H2}, {"pool_from": H1, "to_exclusive": H3}])
+        base = ["validate", "--walk-dir", str(walk), "--final-out-dir", str(od), "--vmap", str(vmap), "--vmap-sha256", sha(vmap), "--workers", "1"]
+        out = self.tmp / "v.out.json"
+        rc, _, err = run(base + ["--out", str(out)])
+        self.assertEqual(rc, 0, err)
+        doc = json.loads(out.read_text())
+        self.assertEqual((doc["window_source"], doc["hours_used"], doc["rows_per_hour_cap"]), ("final_out_dir", [H1, H2], 60000))
+        for extra in (["--hours", "3"], ["--rows-per-hour", "10"], ["--from", H1]):
+            rc, _, err = run(base + ["--out", str(self.tmp / "x.json")] + extra)
+            self.assertEqual(rc, 2, extra)
+            self.assertFalse((self.tmp / "x.json").exists())
+
+    def test_manual_window_source(self) -> None:
+        rc, err, out = self.go(0.0, 0.0)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out.read_text())["window_source"], "manual")
+
     def test_sell_ok_and_buy_ok(self) -> None:
         rc, err, out = self.go(0.0, 0.0, absent=True)
         self.assertEqual(rc, 0, err)
@@ -287,13 +316,18 @@ class MergeTests(unittest.TestCase):
         self._td = tempfile.TemporaryDirectory()
         self.tmp = Path(self._td.name)
         self.n_snap = 0
+        patcher = mock.patch.object(vm, "CUTOFF", "2026-10-10T00:00:00Z")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
         self._td.cleanup()
 
-    def final(self, v: dict, reasons: dict | None = None) -> str:
+    def final(self, v: dict, reasons: dict | None = None, fetch_doc: dict | None = None) -> str:
         write_map(self.tmp / "final.json", v)
         (self.tmp / "final.json.reasons.json").write_text(json.dumps(reasons or {}))
+        doc = {"new": True, "fetch_started_utc": "2026-10-11T00:00:00Z"} if fetch_doc is None else fetch_doc
+        (self.tmp / "final.json.fetch.json").write_text(json.dumps(doc))
         return str(self.tmp / "final.json")
 
     def snap(self, v: dict, ledger: bool = True) -> str:
@@ -339,6 +373,9 @@ class MergeTests(unittest.TestCase):
         self.assertEqual((meta["n_null_after"], meta["n_absent_after"]), (1, 1))
         self.assertEqual(meta["unreadable_pools"], [])
         self.assertEqual(meta["sha256"]["out"], sha(out))
+        self.assertEqual(meta["sha256"]["reasons"], sha(self.tmp / "final.json.reasons.json"))
+        self.assertEqual(meta["sha256"]["fetch"], sha(self.tmp / "final.json.fetch.json"))
+        self.assertEqual((meta["final_fetch"]["new"], meta["final_fetch"]["fetch_started_utc"]), (True, "2026-10-11T00:00:00Z"))
         self.assertEqual(meta["sha256"]["snapshots"], [sha(Path(s1)), sha(Path(s2))])
 
     def test_unreadable_filled_from_snapshot_refused(self) -> None:
@@ -358,6 +395,30 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         meta = json.loads((self.tmp / "out.json.merge.json").read_text())
         self.assertEqual((meta["n_unreadable"], meta["unreadable_pools"], meta["n_null_after"]), (1, ["B"], 1))
+
+    def test_null_without_reason_refused_even_with_snapshot_value(self) -> None:
+        final = self.final({"B": None, "C": None}, {"C": "closed"})
+        s1 = self.snap({"B": 5, "C": 6})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1], self.pools(["B", "C"]), out)
+        self.assertEqual(rc, 2)
+        self.assertIn("no recorded reason", err)
+        self.assertFalse(out.exists())
+
+    def test_final_fetch_checks(self) -> None:
+        for bad in ({"new": False, "fetch_started_utc": "2026-10-11T00:00:00Z"}, {"new": True, "fetch_started_utc": "2026-10-09T23:59:59Z"}, {"new": True}, {"fetch_started_utc": "2026-10-11T00:00:00Z"}):
+            with self.subTest(bad=bad):
+                final = self.final({"A": 1}, fetch_doc=bad)
+                s1 = self.snap({"A": 1})
+                out = self.tmp / "out.json"
+                rc, _, err = self.merge(final, [s1], self.pools(["A"]), out)
+                self.assertEqual(rc, 2, err)
+                self.assertFalse(out.exists())
+        final = self.final({"A": 1})
+        (self.tmp / "final.json.fetch.json").unlink()
+        rc, _, err = self.merge(final, [self.snap({"A": 1})], self.pools(["A"]), self.tmp / "out.json")
+        self.assertEqual(rc, 2)
+        self.assertIn("fetch.json", err)
 
     def test_missing_reasons_sidecar_refused(self) -> None:
         final = self.final({"B": None})

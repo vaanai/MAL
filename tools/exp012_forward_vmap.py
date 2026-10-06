@@ -33,6 +33,9 @@ import tools.pumpswap_virtual as pv
 from tools.latency_curve import _hour_file
 
 LEDGER_NAME = "snapshots.jsonl"
+CUTOFF = "2026-10-16T00:00:00Z"  # the FINAL fetch must start at or after this; tests patch it, no CLI flag or env var
+FINAL_HOURS, FINAL_ROWS_PER_HOUR = 12, 60000  # validate sampling when the window comes from --final-out-dir
+TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 class Refused(Exception):
@@ -304,7 +307,7 @@ def check_in_ledger(snap: Path) -> None:
 
 def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | None]], pool_set: set[str], reasons: dict[str, str] | None = None) -> tuple[dict[str, int | None], list[str], list[str]]:
     """(merged, filled, ignored_outside_set). Conflicts are checked over every pool; only pools in
-    pool_set are filled; a pool null in `final` with reason "unreadable" is never filled (refused)."""
+    pool_set are filled; only closed-null or absent pools are filled; a null with reason "unreadable" or with no reason refuses."""
     reasons = reasons or {}
     snap_v: dict[str, int] = {}
     for s in snaps:
@@ -321,12 +324,33 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
     want = sorted(p for p, v in snap_v.items() if out.get(p) is None)
     ignored = [p for p in want if p not in pool_set]
     filled = [p for p in want if p in pool_set]
+    no_reason = sorted(p for p in pool_set if p in final and final[p] is None and reasons.get(p) not in ("closed", "unreadable"))
+    if no_reason:
+        raise Refused(f"{len(no_reason)} pool(s) in the set are null in the final map with no recorded reason: never filled; refetch with this tool")
     bad = [p for p in filled if p in final and reasons.get(p) == "unreadable"]
     if bad:
         raise Refused(f"{len(bad)} pool(s) are null in the final map as unreadable but non-null in a snapshot: not filled; resolve first")
     for p in filled:
         out[p] = snap_v[p]
     return out, filled, ignored
+
+
+def final_fetch_block(final_path: Path) -> dict[str, Any]:
+    """MAP.fetch.json must say this map came from a fresh `fetch --new` that started at or after CUTOFF."""
+    fj = side(final_path, ".fetch.json")
+    if not fj.is_file():
+        raise Refused(f"{fj} missing: the FINAL map must come from `fetch --new`")
+    doc = json.loads(fj.read_text(encoding="utf-8"))
+    started = doc.get("fetch_started_utc")
+    if doc.get("new") is not True:
+        raise Refused(f"{fj}: new is not true; the FINAL map must come from `fetch --new`")
+    try:
+        t0 = datetime.strptime(started, TS_FMT)
+    except (TypeError, ValueError):
+        raise Refused(f"{fj}: fetch_started_utc is missing or malformed")
+    if t0 < datetime.strptime(CUTOFF, TS_FMT):
+        raise Refused(f"{fj}: fetch_started_utc {started} is before the cutoff {CUTOFF}")
+    return {"new": True, "fetch_started_utc": started, "cutoff": CUTOFF}
 
 
 def cmd_merge(a: argparse.Namespace) -> int:
@@ -337,6 +361,7 @@ def cmd_merge(a: argparse.Namespace) -> int:
             raise Refused(f"{p} exists; refusing to overwrite")
     final_path = Path(a.final)
     snap_paths = [Path(s) for s in a.snapshot]
+    final_fetch = final_fetch_block(final_path)
     for sp in snap_paths:
         check_in_ledger(sp)
     pool_set = set(json.loads(Path(a.pools).read_text(encoding="utf-8")))
@@ -349,6 +374,7 @@ def cmd_merge(a: argparse.Namespace) -> int:
     os.chmod(out, 0o444)
     unreadable = sorted(p for p in pool_set if p in merged and merged[p] is None and reasons.get(p) == "unreadable")
     meta = {
+        "final_fetch": final_fetch,
         "n": len(merged),
         "n_pools_set": len(pool_set),
         "n_null_before": sum(1 for p in pool_set if p in final and final[p] is None),
@@ -361,7 +387,7 @@ def cmd_merge(a: argparse.Namespace) -> int:
         "n_absent_after": sum(p not in merged for p in pool_set),
         "n_unreadable": len(unreadable),
         "unreadable_pools": unreadable,
-        "sha256": {"final": sha256_file(final_path), "pools": sha256_file(Path(a.pools)), "snapshots": [sha256_file(s) for s in snap_paths], "out": sha256_file(out)},
+        "sha256": {"final": sha256_file(final_path), "pools": sha256_file(Path(a.pools)), "reasons": sha256_file(side(final_path, ".reasons.json")), "fetch": sha256_file(side(final_path, ".fetch.json")), "snapshots": [sha256_file(s) for s in snap_paths], "out": sha256_file(out)},
     }
     _write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n", readonly=True)
     print(f"merge: n={meta['n']} filled={len(filled)} ignored={len(ignored)} n_null_after={meta['n_null_after']} n_absent_after={meta['n_absent_after']} n_unreadable={len(unreadable)} -> {out}")
@@ -472,7 +498,21 @@ def cmd_validate(a: argparse.Namespace) -> int:
     out = Path(a.out)
     if out.exists():
         raise Refused(f"{out} exists; refusing to overwrite")
-    doc = validate_window(Path(a.walk_dir), a.from_hour, a.to_hour, Path(a.vmap), a.vmap_sha256, a.hours, a.rows_per_hour, a.workers)
+    if a.final_out_dir:
+        if a.from_hour or a.to_hour:
+            raise Refused("--final-out-dir takes the window from runs.jsonl; refusing --from/--to alongside it")
+        if a.hours is not None or a.rows_per_hour is not None:
+            raise Refused(f"--final-out-dir fixes the sample at {FINAL_HOURS} hours and {FINAL_ROWS_PER_HOUR} rows per hour; refusing --hours/--rows-per-hour")
+        start, end = final_window(Path(a.final_out_dir))
+        n_hours, rows_per_hour, source = FINAL_HOURS, FINAL_ROWS_PER_HOUR, "final_out_dir"
+    else:
+        if not (a.from_hour and a.to_hour):
+            raise Refused("give --final-out-dir, or --from and --to (pre-read dry run)")
+        start, end, source = a.from_hour, a.to_hour, "manual"
+        n_hours = FINAL_HOURS if a.hours is None else a.hours
+        rows_per_hour = FINAL_ROWS_PER_HOUR if a.rows_per_hour is None else a.rows_per_hour
+    doc = validate_window(Path(a.walk_dir), start, end, Path(a.vmap), a.vmap_sha256, n_hours, rows_per_hour, a.workers)
+    doc["window_source"] = source
     _write_new(out, json.dumps(doc, indent=1, sort_keys=True) + "\n")
     v = doc["verdict"]
     print(f"validate: rows={doc['n_rows']} pools={doc['n_pools']} absent={doc['n_pools_absent_from_map']} sell_ok={v['sell_ok']} buy_ok={v['buy_ok']} ok={v['ok']} -> {out}")
@@ -508,13 +548,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.set_defaults(fn=cmd_merge)
     p = sub.add_parser("validate")
     p.add_argument("--walk-dir", required=True)
-    p.add_argument("--from", dest="from_hour", required=True)
-    p.add_argument("--to", dest="to_hour", required=True)
+    p.add_argument("--from", dest="from_hour")
+    p.add_argument("--to", dest="to_hour")
+    p.add_argument("--final-out-dir", help="forward OUT dir: window from runs.jsonl; sample fixed at 12 hours x 60000 rows")
     p.add_argument("--vmap", required=True)
     p.add_argument("--vmap-sha256", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--hours", type=int, default=12)
-    p.add_argument("--rows-per-hour", type=int, default=60000)
+    p.add_argument("--hours", type=int, default=None, help=f"manual windows only (default {FINAL_HOURS})")
+    p.add_argument("--rows-per-hour", type=int, default=None, help=f"manual windows only (default {FINAL_ROWS_PER_HOUR})")
     p.add_argument("--workers", type=int, default=8)
     p.set_defaults(fn=cmd_validate)
     a = ap.parse_args(argv)
