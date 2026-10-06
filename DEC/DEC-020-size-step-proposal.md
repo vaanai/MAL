@@ -148,4 +148,6 @@ At 0.25 SOL the fee drag falls to about 0.4%. If the exploration edge holds out-
    **Code status:** the limits profile is in [#348](https://github.com/vaanai/MAL/pull/348). It is **not installed**. `DEC020_END_MS` is `None` in code, so dec020 refuses to start until the owner's end instant is written there in a reviewed one-line commit (a new sha).
 6. **The read itself.** The FINAL verdict, quant-proof's note, and the V book under DEC-016 Am.4 at the measured live k.
 
+7. **Host lockdown before the step.** On 2026-10-06 Helm found that the Claude account on `mal-fast-0` has passwordless root, so it could read the probe key. Claude has never read it, and key reads and code changes raise alerts. Helm's plan, which the manager agrees with, is to leave this alone during the 0.05 probe and **lock it down before any bigger wallet**. That makes the lockdown a precondition of the 0.25 step: Helm confirms it is done before the step's wallet is funded.
+
 Nothing in this section changes the gate, DEC-016, or DEC-018 §1.
