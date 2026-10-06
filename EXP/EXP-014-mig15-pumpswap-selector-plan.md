@@ -4,7 +4,7 @@
 | --- | --- |
 | **Status** | **Exploration plan.** It fixes the trigger, the features, the exit, the screen, the tries cap and the target block before any EXP-014 code or result exists. It is not a pre-registration. A confirmation pre-registration follows only if this screen passes. Revised after a `quant-proof` review of #263. |
 | **Date** | 2026-10-03 |
-| **Target confirmation block** | `[2026-08-08T12, 2026-08-14T12)` **only** (the second backup block, #261), read once with m = 1, whatever happens to EXP-013. If it is owned or not clean when the pre-registration opens, EXP-014 waits for a new block that is entered in the ledger before it is sealed. **It never takes the 0828 backup block.** |
+| **Target confirmation block** | `[2026-08-08T12, 2026-08-14T12)` **only** (the second backup block, #261), read once with m = 1, whatever happens to EXP-013. If it is owned or not clean when the pre-registration opens, EXP-014 waits for a new block that is entered in the ledger before it is sealed. **It never takes the 0828 backup block.** **Superseded by [Amendment 5](#amendment-5-2026-10-06-before-any-real-data-run-target-block-reassigned-to-exp-015): this block is no longer EXP-014's target.** |
 | **Prior odds (manager's honest estimate)** | **About 10%.** See "Prior evidence" below. |
 
 ## Prior evidence, stated before any computation
@@ -180,3 +180,9 @@ These are report only.
   - No bar is relaxed, and the precondition and every item still gate.
   - `screen.md` must carry this disclosure in its banner.
 - **Post-read changes.** Any change to EXP-014 beyond V pricing that merges after the EXP-012 backcheck read counts as post-read. It must be disclosed as post-read in `screen.md` and needs a `quant-proof` pass. The reviewer of the adapter PR checks that its diff is pricing-only.
+
+## Amendment 5 (2026-10-06, before any real-data run): target block reassigned to EXP-015
+
+- **Displacement.** `[2026-08-08T12, 2026-08-14T12)` (the second backup block, sealed and verified 2026-10-04, never read) was this plan's only target confirmation block. The manager reserved it for EXP-015's confirmation instead ([EXP-015 plan v2](EXP-015-pooled-retrain-plan-v2.md) §6, [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md)). It is **no longer EXP-014's target**, in either plan text or ledger.
+- **What EXP-014 does now.** It waits for a new block older than 2026-08-08T12 that is walked later (the ledger's "Future fast backfill" row), entered in the ledger before it is sealed, read once with m = 1. It still never takes the 2026-08-28 block, which stays reserved for EXP-013.
+- **Nothing else changes.** No screen bar, try cap or design item is edited. The screen itself reads exploration data only and does not need the block.
