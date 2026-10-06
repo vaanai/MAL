@@ -202,3 +202,49 @@ This is fixed before any runner row exists and before any forward P&L is opened 
    - Buy implied-fee residual: at least 90% within 1 bps.
 6. **Runner rows.** Amendment 3 (b) rows 4–5 compare the runner's spot with the scorer's **V-corrected** state price. A runner that prices on the vault alone fails rows 4–5 by construction, and must be fixed before any live request.
 7. **Not changed:** the model, threshold, features, execution, size, both fail models, the window, the read date, the no-peek seal and the trial terms.
+
+## Amendment 5 (2026-10-06, pre-read): how the book (B) V map is built, and the (B) tools
+
+Written before any forward P&L file was opened, and before 2026-10-16T00Z. It tightens Amendment 4 §3 and names the (B) tools. No bar, threshold, model, window, read date, fail model, trial term or seal changes.
+
+**Why.**
+- The EXP-012 back-check on explore-0814 (job #207) refused after its read because 1 primary trade sat on a pool with no V. 29 pools were absent from the map and 1 was a closed account.
+- Job #235 (pool and mint fields only) found the cause. The map was built by `tools/exp012_virtual_rescore.py pools`, which keeps only the pools of mints with a `complete` row in the same view. Every one of the 29 absent pools belonged to a mint that traded in the view but had not migrated in it.
+- Amendment 4 §3's wording ("every PumpSwap pool of every migrated mint in the window") invites the same gap.
+- Also, a pool closed by 10-16 reads null, while V is constant per pool. Evidence: #197 checked 10 pools over 08-14..08-25. Across the `pool_v_0814` → `pool_v_0909` refetch two days apart, all 34,892 non-null values were unchanged.
+
+**1. Pool set.** The (B) map covers **every PumpSwap pool printed in any trade file of the hours (B) scores**: the FINAL run's pool hours, buffer hours included, from the walk start. It is collected by `tools/exp012_forward_vmap.py pools`, which uses a real JSON parse and no migration filter, and only on hours that pass `exp012_forward.hour_problems`; each file's sha256 is re-checked against its verify line after the scan. For the FINAL map the hours are taken from the FINAL run's `runs.jsonl` (`pool_from`, `to_exclusive`), not typed by hand. This is a superset of Amendment 4 §3's set.
+
+**2. Early snapshots (outcome-blind).** Before 2026-10-16T00Z the manager may:
+- run `pools` and `fetch` over sealed forward hours;
+- freeze the result with `snapshot`, which writes a read-only copy and a line in `snapshots.jsonl` (utc, sha256, n, n_null).
+
+Only trade-file pool ids and on-chain pool accounts are read; no row, report or scratch file under Amendment 2 is opened. Snapshot shas go in the run log and the FINAL report. **No join before the read:** null-V pool ids are written to files only, never printed, and are never matched against decisions, exported decisions or entered mints before the FINAL read (a pool that closed early is outcome information).
+
+**3. The FINAL map.**
+- After 2026-10-16T00Z, V is fetched into a **new, empty** map file for the §1 pool set (`fetch --new`, which refuses an existing file). This is Amendment 4 §3's fetch and stays primary. Each null is recorded as `closed` (no account) or `unreadable` (account present, V not parseable).
+- Then `merge` fills only pools of the §1 set that are `closed` or absent in that map, from snapshots listed in `snapshots.jsonl` with a matching sha. It refuses unless the final map's `fetch.json` shows `new = true`, a fetch start at or after 2026-10-16T00:00Z, and a pool-set sha equal to the §1 set given to merge (so every pool in the set went through the post-cutoff fetch). It refuses any null pool with no recorded reason. It never fills an `unreadable` pool (that may be a program or layout change, a real pricing problem). It refuses if two non-null values for a pool ever differ; a refusal makes (B) NOT_DECIDABLE.
+- The merge record, embedded in the (B) report, gives: n pools, nulls before the merge, pools filled from a snapshot (with ids, in files only), nulls after, the fresh-fetch fields, and every input and output sha (snapshots, final map, reasons file, fetch record, pool set, output).
+- A pool still null after the merge is never V = 0. Amendment 4 §3's rule (top 3, or > 1% of entered trades) applies to it unchanged.
+
+**4. (B) tools.** These are recorded here before 2026-10-16T00Z, at the commits that merge:
+- `tools/exp012_forward_vbook.py`: book (B) on the FINAL's own entered set. It refuses without the FINAL (A) marker, and binds to the merge record of §3 (its output sha must equal the map's). It reproduces (A) byte for byte under frozen pricing before computing (B), refuses if the mode-v entered set differs from (A)'s, applies the null-V rule, and uses `exp012_forward.build_report`'s gate. A vault-mode entered-set difference or any vault/v gate disagreement does not refuse; it is listed in `live_blockers` (Amendment 4 §4 already blocks live on it).
+  - **(B) is single-use per window.** Checks that read no V-priced row (seal, merge binding, map sha, frozen checks, hours, and the frozen reproduction, which shows only (A)) do not spend the window. Immediately before the first V-priced pass, a STARTED line goes into `VBOOK_RUNS.jsonl` beside the FINAL out dir (window, FINAL rows sha, map sha, merge-record sha). On the pinned window that path cannot be overridden, in vbook or in the sensitivity re-score. A second STARTED line for the same window is refused. After STARTED, every orderly exit writes a terminal line (DONE with the verdict, or REFUSED_AFTER_READ) before any report file. A refusal after STARTED, or a STARTED line with no terminal line (a hard kill), makes (B) NOT_DECIDABLE.
+- `tools/exp012_forward_vmap.py`: §1–§3, plus §5 validation through `validate`.
+- The Amendment 3(a) sensitivity re-score on (B): `tools/exp012_forward_sensitivity.py` with V pricing.
+
+Commits (merged 2026-10-06, after four quant-proof rounds; the last round was OK on every PR):
+- `tools/exp012_forward_vmap.py`: #374, merge `5aaeb700a2bf49d8c258817a37963a323a541ad9`.
+- `tools/exp012_forward_vbook.py`: #375, merge `fe8f6dde78829b8e8e7cffd1000551e9d9f0b8b1`.
+- `tools/exp012_forward_sensitivity.py` with V pricing (and vbook's `tracked_call` refactor): #378, merge `7253e0700255080ff28bb400db8f95b39420fc11`.
+
+The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded in each report.
+
+**5. Definitions fixed before the read.**
+- **Top 3 (Amendment 4 §3):** the union of the top 3 entered trades by `flat` and the top 3 by `press`, since each gate leg drops its own top 3.
+- **Touch:** a trade touches a pool if its mint printed on that pool anywhere in the scoring worker's tape, after the exit included. This over-counts contact; it can only make (B) NOT_DECIDABLE, never PASS.
+- **V = 0:** a pool whose chain account reads V = 0 is priced on the vault alone, which is what the chain does. It is not null. The count of entered trades touching a V = 0 pool is reported, but it is not a blocker.
+- **Amendment 4 §5 sample:** `exp012_forward_vmap validate --final-out-dir`, which takes the window from the FINAL run and fixes the sample (no override): 12 hours evenly spaced over the window's sealed hours, the first 60,000 PumpSwap rows of each hour, with the §5 thresholds as written.
+- **Amendment 3(a) on (B):** the sensitivity re-score on the pinned window refuses before its claim unless it is given the V map and the window's single DONE vbook run on the same map sha and FINAL rows, with (B) = PASS (a NOT_DECIDABLE or FAIL (B) already means no live support, and the single-use window is kept). Every (B)-only refusal it can compute without P&L runs before the claim. Its headline verdict is (B)'s, and (A)'s is report-only. The vault/v agreement of Amendment 4 §4 is assessed by vbook at k = 1; at k(p50) and k(p90) only mode v is computed.
+
+**6. Effect.** This changes no bar, threshold, model, window or fail model. Filling nulls can make a NOT_DECIDABLE (B) decidable, in either direction. Every filled value is a pool the chain priced, checked for constancy against the post-cutoff fetch wherever both are non-null. Amendment 4 §2 still needs both (A) and (B).
