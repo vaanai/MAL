@@ -540,6 +540,12 @@ def render_markdown(rep: dict[str, Any]) -> str:
             b = bv["books"][name]
             f, p = b["flat_15"], b["pressure_scale_1"]
             L.append(f"B {name}: k {b['k']}, n {f['n']}, flat mean {f['mean_sol']}, CI90 {f['mean_ci90_sol']}, ex-top-3 {f['total_ex_top3_sol']}; press mean {p['mean_sol']}, ex-top-3 {p['total_ex_top3_sol']}")
+    lpr = (bv or {}).get("lp_pricing")
+    if lpr:
+        L += ["", "## LP pricing (DEC-016 Amendment 5 s7(c), (c')), per k", f"V maps used (sha256): {lpr['all_vmap_sha256']}"]
+        for kname, kb in lpr["per_k"].items():
+            c = kb["counts"]
+            L.append(f"{kname}{' (report only)' if kb['reported_only'] else ''}: LP-moved {c['n_entered_on_lp_moved_pools']}, inside hold {c['n_entered_with_lp_event_inside_hold']}, same-slot both ways {c['n_entered_same_slot_both_ways']}, unresolved {c['n_entered_touching_any_unresolved']}, candidate rows missing {c['n_entered_candidate_rows_missing']}, would-add (not added) {c['n_mints_candidate_pass_would_add_not_added']}, slot moved {c['n_entered_slot_moved_in_candidate_pass']}, dropped {c['n_entered_dropped_in_candidate_pass']}, over combo cap {c['n_entered_over_combo_cap']}")
     L += ["", "Blockers at k(p50): flat " + str(rep["books"]["p50"]["flat_15"]["blockers"]) + "; pressure " + str(rep["books"]["p50"]["pressure_scale_1"]["blockers"]), ""]
     return "\n".join(L)
 
@@ -591,12 +597,13 @@ def _kstr(k: float) -> Any:
     return "inf" if math.isinf(k) else int(k)
 
 
-def check_vbook_report(path: Path, vmap_sha256: str, window: tuple[str, str], test_window: bool, runs_ledger: Path | None = None, final_rows_sha256: str | None = None) -> dict[str, Any]:
+def check_vbook_report(path: Path, vmap_sha256: str, window: tuple[str, str], test_window: bool, runs_ledger: Path | None = None, final_rows_sha256: str | None = None, lphist_sha256: str | None = None, merge_meta_sha256: str | None = None) -> dict[str, Any]:
     """The finished `vbook_report.json` of tools/exp012_forward_vbook.py for this V map and window, tied to its
     VBOOK_RUNS.jsonl DONE line. On the pinned window `b_verdict` must be PASS (Amendment 3 (a) only matters if (B) passed,
     as (A) must have PASSed), and the ledger must hold exactly one STARTED and one DONE line for the window, the DONE line
-    carrying this report's sha256, the same V map sha256 and the FINAL rows sha256. Returns the binding that is embedded
-    in the report."""
+    carrying this report's sha256, the same V map sha256 and the FINAL rows sha256. Amendment 5 s7: the STARTED and the DONE
+    line must carry the same lphist sha256 and merge-meta sha256 that this run was given (None on both sides for a vbook run
+    without LP inputs; any difference refuses). Returns the binding that is embedded in the report."""
     import tools.exp012_forward_vbook as vb
 
     try:
@@ -626,7 +633,13 @@ def check_vbook_report(path: Path, vmap_sha256: str, window: tuple[str, str], te
         raise fw.Refused([f"{runs_ledger}: the DONE line does not match the report's V map sha256 or b_verdict"])
     if final_rows_sha256 is not None and line.get("final_rows_sha256") != final_rows_sha256:
         raise fw.Refused([f"{runs_ledger}: the DONE line's final_rows_sha256 differs from the FINAL lock's rows_sha256"])
-    return {"path": str(path.resolve()), "sha256": sha, "b_verdict": doc["b_verdict"], "runs_ledger": str(runs_ledger), "ledger_line": line}
+    for m in started + [line]:
+        if m.get("lphist_sha256") != lphist_sha256 or m.get("merge_meta_sha256") != merge_meta_sha256:
+            raise fw.Refused([f"{runs_ledger}: the vbook run's {m.get('state')} line records lphist sha256 {m.get('lphist_sha256')!r} and merge-meta sha256 {m.get('merge_meta_sha256')!r}, not the --lphist and --vmap-merge-meta given here; (B) and its sensitivity must use the same LP inputs"])
+    lp_rep = doc.get("lp_pricing") if isinstance(doc.get("lp_pricing"), dict) else None
+    if lphist_sha256 is not None and (lp_rep is None or (lp_rep.get("lphist") or {}).get("lphist_sha256") != lphist_sha256):
+        raise fw.Refused([f"--vbook-report {path}: its lp_pricing.lphist.lphist_sha256 is not the --lphist sha256"])
+    return {"path": str(path.resolve()), "sha256": sha, "b_verdict": doc["b_verdict"], "runs_ledger": str(runs_ledger), "ledger_line": line, "lp_counts": (lp_rep or {}).get("counts")}
 
 
 def run(
@@ -657,6 +670,10 @@ def run(
     mcap_mode: str | None = None,
     vbook_report: Path | None = None,
     vbook_runs_ledger: Path | None = None,
+    vmap_merge_meta: Path | None = None,
+    final_fetch_map: Path | None = None,
+    snapshots: Sequence[Path] = (),
+    lphist: Path | None = None,
 ) -> dict[str, Any]:
     cc = clean_clock if clean_clock is not None else fw.parse_clock(fw.PINNED_CLEAN_CLOCK)
     re_ = read_end if read_end is not None else fw.parse_clock(fw.PINNED_READ_END)
@@ -684,6 +701,11 @@ def run(
         raise fw.Refused(["--vbook-runs-ledger is refused on the pinned window: the ledger is always <FINAL out dir>/../VBOOK_RUNS.jsonl"])
     if REQUIRE_V_ON_PINNED and pinned and (vmap is None or vmap_sha256 is None or mcap_mode is None or vbook_report is None):
         raise fw.Refused(["on the pinned window --vmap, --vmap-sha256, --mcap-mode v and --vbook-report are all required (Amendment 4 section 2: Amendment 3 (a) is evaluated on (B))"])
+    lp_given = lphist is not None or vmap_merge_meta is not None or final_fetch_map is not None or bool(snapshots)
+    if lp_given and not (lphist is not None and vmap_merge_meta is not None and final_fetch_map is not None):
+        raise fw.Refused(["--lphist, --vmap-merge-meta and --final-fetch-map go together (and the --snapshot files the merge used)"])
+    if lp_given and vmap is None:
+        raise fw.Refused(["the LP inputs need --vmap, --vmap-sha256 and --mcap-mode v"])
     result_dir = result_dir if result_dir is not None else out_dir / "sensitivity"
     sealed_lock = check_sealed(out_dir, final_ledger, cc, re_, test_window)
     assert final_ledger is not None
@@ -705,6 +727,7 @@ def run(
     vset: VSettings | None = None
     vinfo: dict[str, Any] | None = None
     vbind: dict[str, Any] | None = None
+    lp_in: dict[str, Any] | None = None
     if vmap is not None or vmap_sha256 is not None or mcap_mode is not None or vbook_report is not None:
         import tools.exp012_forward_vbook as vb
 
@@ -714,8 +737,24 @@ def run(
             raise fw.Refused([f"--mcap-mode must be 'v' (the Amendment 4 rule), got {mcap_mode!r}"])
         vinfo = vb.check_vmap(vmap, vmap_sha256)
         vset = VSettings(vmap, mcap_mode)
+        lp_sha = meta_sha = None
+        merge_doc = None
+        if lp_given:  # the same checks as vbook's, in the same functions; all of them refuse before the claim
+            assert lphist is not None and vmap_merge_meta is not None and final_fetch_map is not None
+            merge_doc = vb.check_merge_meta(vmap_merge_meta, vmap_sha256)
+            if not lphist.is_file():
+                raise fw.Refused([f"--lphist {lphist} does not exist"])
+            lp_sha, meta_sha = fw._sha256_file(lphist), fw._sha256_file(vmap_merge_meta)
         if vbook_report is not None:
-            vbind = check_vbook_report(vbook_report, vmap_sha256, fw._wins(cc, re_), test_window, vbook_runs_ledger if vbook_runs_ledger is not None else out_dir.resolve().parent / vb.RUNS_LEDGER_NAME, sealed_lock.get("rows_sha256"))
+            vbind = check_vbook_report(vbook_report, vmap_sha256, fw._wins(cc, re_), test_window, vbook_runs_ledger if vbook_runs_ledger is not None else out_dir.resolve().parent / vb.RUNS_LEDGER_NAME, sealed_lock.get("rows_sha256"), lp_sha, meta_sha)
+        if REQUIRE_V_ON_PINNED and pinned and not (lphist is not None and vmap_merge_meta is not None and final_fetch_map is not None and snapshots):
+            raise fw.Refused(["on the pinned window --lphist, --vmap-merge-meta, --final-fetch-map and --snapshot are all required (Amendment 5 s7(c'): the sensitivity re-score uses the same LP pricing as (B))"])
+        if lp_given:
+            from tools.pumpswap_virtual import load_map
+
+            cc_w, re_w = fw._wins(cc, re_)
+            lpctx, lpinfo = vb.build_lp_context(lphist, out_dir.resolve().parent / vb.LPHIST_RUNS_NAME, {"clean_clock": cc_w, "read_end": re_w}, test_window, load_map(vmap), merge_doc, vmap_merge_meta, list(snapshots), final_fetch_map)
+            lp_in = {"ctx": lpctx, "merged": load_map(vmap), "info": lpinfo}
     # --- reproduction through the forward scorer's own path (a refusal here records nothing and writes nothing)
     with tempfile.TemporaryDirectory(prefix="exp012-sens-repro-") as td:
         repro = reproduce(walk_dir, stored, artifact_dir, pool, to, cc, re_, Path(td))
@@ -723,7 +762,7 @@ def run(
     variants = make_variants(terms, k_p50, k_p90)
     vpass: dict[str, Any] | None = None
     if vset is not None:  # everything about (B) that can refuse runs here, before the claim, and records nothing
-        vpass = v_pass(walk_dir, pool, artifact_dir, variants, slot_ms, vset, stored, cc, re_, to)
+        vpass = v_pass(walk_dir, pool, artifact_dir, variants, slot_ms, vset, stored, cc, re_, to, lp_in)
         vpass["vbook_binding"] = vbind
         repro = {**repro, "entered_set_under_v_equals_a": True, "v_repro_variant_equals_forward_v_rows": True}
     # --- from here the window is claimed: one run per window, whatever happens next
@@ -782,7 +821,7 @@ def make_variants(terms: dict[str, Any], k_p50: float, k_p90: float) -> list[Var
 V_TAGS = ("pumpswap_pools", "no_v_pools", "zero_v_pools")
 
 
-def v_pass(walk_dir: Path, pool: Sequence[str], artifact_dir: Path, variants: Sequence[Variant], slot_ms: float, vset: VSettings, stored: Sequence[dict[str, Any]], cc: datetime, re_: datetime, to: datetime) -> dict[str, Any]:
+def v_pass(walk_dir: Path, pool: Sequence[str], artifact_dir: Path, variants: Sequence[Variant], slot_ms: float, vset: VSettings, stored: Sequence[dict[str, Any]], cc: datetime, re_: datetime, to: datetime, lp_in: dict[str, Any] | None = None) -> dict[str, Any]:
     """All of (B)'s tape work, before the window claim; any refusal here records nothing and writes nothing.
     1. the forward worker under V at k = 1 (`score_hours_v`): its entered set must equal (A)'s;
     2. the re-score worker under V over every variant, including `repro`: every row must carry the null-V tags, and the
@@ -807,15 +846,76 @@ def v_pass(walk_dir: Path, pool: Sequence[str], artifact_dir: Path, variants: Se
     problems = compare_rows(fwd, got)
     if problems:
         raise fw.Refused(["V re-score worker's repro variant does not equal the forward worker's V rows at k = 1; no verdict: " + "; ".join(problems[:5])])
-    _group(srows, {fw.key_of(r) for r in stored if r["entered"]})  # a (B)-only exit past the tape refuses here, before the claim
-    return {"rows": srows, "counts": counts}
+    entered = {fw.key_of(r) for r in stored if r["entered"]}
+    _group(srows, entered)  # a (B)-only exit past the tape refuses here, before the claim
+    out: dict[str, Any] = {"rows": srows, "counts": counts}
+    if lp_in is not None:  # Am.5 s7(c'): per k, the tags and the lphist only (no P&L is read); a missing LP tag refuses here, before the claim
+        for r in srows:
+            missing = [t for t in vb.LP_TAGS if t not in r]
+            if missing:
+                raise fw.Refused([f"V pass row mint {r['mint']} variant {r['variant']} has no {missing} tag(s): the LP tracking did not run; refusing (fail closed)"])
+        lp_rows: dict[str, list[dict[str, Any]]] = {}
+        plans: dict[str, Any] = {}
+        for v in variants:
+            rows_v = sorted((r for r in srows if r["variant"] == v[0] and fw.key_of(r) in entered), key=fw.key_of)
+            lp_rows[v[0]] = [{**r, "entered": True} for r in rows_v]  # the entered set is (A)'s, imposed at every k
+            plans[v[0]] = vb.plan_lp(lp_rows[v[0]], lp_in["ctx"], lp_in["merged"], True)
+        out["lp"] = {**lp_in, "rows": lp_rows, "plans": plans, "variants": {v[0]: v for v in variants}, "walk_dir": walk_dir, "pool": list(pool), "slot_ms": slot_ms, "entered": entered}
+    return out
 
 
-def _b_block(vpass: dict[str, Any], entered: set[tuple[str, int]], k_p50: float, k_p90: float, max_concurrent: int | None, vset: VSettings, vinfo: dict[str, Any] | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+LP_K_NAMES = {"repro": "k1_bound_start"}  # the (A)/(B) k = 1 fills; "k1" is the end-bound re-score variant when k(p50) = 1
+
+
+def lp_price(vpass: dict[str, Any], result_dir: Path, vinfo: dict[str, Any] | None) -> tuple[dict[str, dict[tuple[str, int], dict[str, Any]]], dict[str, Any]]:
+    """Am.5 s7(c) and (c'), at every k the tool computes: k = 1 (the `repro` variant, report only: the same fills as (B)'s
+    book) and each finite k(p50), k(p90). For each variant: entry-slot V0 at THAT k's fill slots, the worse of entry and exit V0
+    when an LP event falls inside the hold, same-slot events both ways, per-trade candidates over the full product (<= 64), the
+    lower P&L per leg, per k. These run AFTER the claim: an entered-set change, a moved slot or a missing candidate row makes the
+    trade null-V (`with_lp_bad`) and never refuses. Returns ({label: {key: priced row}} for the finite ks, the report)."""
+    import tools.exp012_forward_vbook as vb
+
+    lp = vpass["lp"]
+    merged, entered, walk_dir, pool, slot_ms = lp["merged"], lp["entered"], lp["walk_dir"], lp["pool"], lp["slot_ms"]
+    priced: dict[str, dict[tuple[str, int], dict[str, Any]]] = {}
+    rep: dict[str, Any] = {}
+    for label, variant in lp["variants"].items():
+        rows, plan = lp["rows"][label], lp["plans"][label]
+
+        def run_pass(path: Path, tag: str, variant: tuple = variant) -> list[dict[str, Any]]:
+            with tempfile.TemporaryDirectory(prefix="exp012-sens-lp-") as td:
+                got = sensitivity_rows(walk_dir, pool, [variant], slot_ms, Path(td) / "s", VSettings(path, "v"))
+            return [{**r, "entered": True} for r in got if r["variant"] == variant[0] and fw.key_of(r) in entered]  # never raises on a missing row
+
+        min_rows, minfo = vb.lp_min_rows(rows, plan, merged, run_pass, result_dir / "vmaps", f"{LP_K_NAMES.get(label, label)}c")
+        out_rows = vb.with_lp_bad(min_rows, plan[1], minfo["shifted"])
+        if label != "repro":
+            priced[label] = {fw.key_of(r): r for r in out_rows}
+        rep[LP_K_NAMES.get(label, label)] = {
+            "entry_land_k": variant[1],
+            "entry_bound": variant[2],
+            "reported_only": label == "repro",
+            "counts": vb.lp_counts(plan[1], minfo["shifted"], minfo["n_would_add"]),
+            "n_passes": minfo["n_passes"],
+            "n_groups": minfo["n_groups"],
+            "vmaps": minfo["maps"],
+            "base_map_sha256": (vinfo or {}).get("sha256"),
+            "entered_set": "(A)'s FINAL entered set, imposed at every k; a candidate-pass row that is missing or whose fill slots move makes the trade null-V",
+        }
+    return priced, {"lphist": lp["info"], "per_k": rep, "all_vmap_sha256": sorted({(vinfo or {}).get("sha256")} | {m["sha256"] for k in rep.values() for m in k["vmaps"]})}
+
+
+def _b_block(vpass: dict[str, Any], entered: set[tuple[str, int]], k_p50: float, k_p90: float, max_concurrent: int | None, vset: VSettings, vinfo: dict[str, Any] | None, result_dir: Path | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Amendment 4 section 2: Amendment 3 (a) on the V-priced book (B), with section 3's null-V rule on every scored book."""
     import tools.exp012_forward_vbook as vb
 
-    books, detail, kept = _books(_group(vpass["rows"], entered), entered, k_p50, k_p90, max_concurrent)
+    lp_rep: dict[str, Any] | None = None
+    if vpass.get("lp") is not None:
+        assert result_dir is not None
+        by_label, lp_rep = lp_price(vpass, result_dir, vinfo)
+    else:
+        by_label = _group(vpass["rows"], entered)
+    books, detail, kept = _books(by_label, entered, k_p50, k_p90, max_concurrent)
     null_v: dict[str, Any] = {}
     for name, rows_ in kept.items():
         null_v[name] = vb.null_v_assessment([{"mint": r["mint"], "entered": True, "flat": r["flat"], "press": r["press"], "flat_sol": r["flat"] / LAMPORTS, "no_v_pools": r["no_v_pools"], "zero_v_pools": r["zero_v_pools"]} for r in rows_])
@@ -830,6 +930,7 @@ def _b_block(vpass: dict[str, Any], entered: set[tuple[str, int]], k_p50: float,
         "rule": rule,
         "null_v": null_v,
         "adapter_counts": vpass["counts"],
+        "lp_pricing": lp_rep,
         "books": books,
     }, detail
 
@@ -873,7 +974,7 @@ def _rescore(walk_dir: Path, out_dir: Path, pool: Sequence[str], stored: Sequenc
     if test_window:
         rep["window_note"] = fw.TEST_WINDOW_BANNER
     if vpass is not None:
-        rep["b_v"], detail_v = _b_block(vpass, entered, k_p50, k_p90, terms["max_concurrent"], VSettings(Path(vinfo["path"]), "v"), vinfo)
+        rep["b_v"], detail_v = _b_block(vpass, entered, k_p50, k_p90, terms["max_concurrent"], VSettings(Path(vinfo["path"]), "v"), vinfo, result_dir)
         rep["vbook_binding"] = vpass.get("vbook_binding")
         rep["a_priced_verdict"] = rep["verdict"]  # report-only once V is on
         rep["verdict"] = rep["b_v"]["verdict"]
@@ -916,6 +1017,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mcap-mode", default=None, help="with --vmap: 'v' (the Amendment 4 rule)")
     ap.add_argument("--vbook-runs-ledger", default=None, help="the vbook run ledger (default: VBOOK_RUNS.jsonl beside --out-dir)")
     ap.add_argument("--vbook-report", default=None, help="the finished vbook_report.json for this V map and window; required on the pinned window")
+    ap.add_argument("--vmap-merge-meta", default=None, help="the V map merge's OUT.merge.json (the same file vbook was given)")
+    ap.add_argument("--final-fetch-map", default=None, help="the FINAL fetch map whose .fetch.json and .detail.json the merge meta binds")
+    ap.add_argument("--snapshot", action="append", default=[], help="a snapshot the merge used (repeat; the same files vbook was given)")
+    ap.add_argument("--lphist", default=None, help="the FIRST completed lphist-entered run for the window (the one vbook used)")
     a = ap.parse_args(argv)
     try:
         rep = run(
@@ -928,6 +1033,8 @@ def main(argv: list[str] | None = None) -> int:
             test_window=a.test_window, final_ledger=Path(a.final_ledger), freeze_commit=a.freeze_commit, frozen_manifest_md5=a.frozen_manifest_md5,
             vmap=Path(a.vmap) if a.vmap else None, vmap_sha256=a.vmap_sha256, mcap_mode=a.mcap_mode,
             vbook_report=Path(a.vbook_report) if a.vbook_report else None, vbook_runs_ledger=Path(a.vbook_runs_ledger) if a.vbook_runs_ledger else None,
+            vmap_merge_meta=Path(a.vmap_merge_meta) if a.vmap_merge_meta else None, final_fetch_map=Path(a.final_fetch_map) if a.final_fetch_map else None,
+            snapshots=[Path(x) for x in a.snapshot], lphist=Path(a.lphist) if a.lphist else None,
         )
     except fw.Refused as exc:
         return fw._refuse(exc)
