@@ -1,143 +1,105 @@
-# Manager handoff 2026-10-06 ~13:15Z (manager7 → next manager)
+# Manager handoff 2026-10-06 ~16:30Z (manager8)
 
-Replace this page at the next handoff; don't append. Read it first, then read:
-- [LAB_STATE.md](../LAB_STATE.md) (updated 10-06 ~05:50Z);
+Replace this page at the next handoff; don't append. Read it first. Then read:
+- [LAB_STATE.md](../LAB_STATE.md);
 - [CONSTITUTION.md](../CONSTITUTION.md);
-- DEC-016 Amendments 4–5, DEC-018 Am.1, DEC-019, DEC-020 §7, DEC-021;
-- [EXP-016 plan](../EXP/EXP-016-rug-veto-plan.md) (§11–§13);
-- the memory notes `state-2026-10-04`, `rug-filter-priority`, `feedback-realistic-primary`, `feedback-probe-limits-honesty`, `pumpswap-virtual-reserve`, `profit-focus`.
+- DEC-016 Amendments 4–5, **especially Am.5 §7**;
+- DEC-019, DEC-020 §7 and DEC-021;
+- the [EXP-016 plan](../EXP/EXP-016-rug-veto-plan.md) §11–§13 (items 1–12);
+- the memory notes `state-2026-10-04`, `feedback-real-layout-precount`, `feedback-realistic-primary`, `rug-filter-priority` and `pumpswap-virtual-reserve`.
 
 ## Owner direction (10-06)
 
-- **Push for profit; keep live running.** No new funding or size step before the 10-16 read (DEC-020 Option A).
-- **Rug filter.** After live gap losses of −76.5% and −95.5%, the owner asked for a real rug filter and a tilt toward big winners. Work on challengers **in parallel** with the 10-16 work.
-- **No "critical errors" that set us back.** Every merge on the critical path gets quant-proof and is merged only when it clears.
-- **Autonomy.** Owner questions: none open. The inbox reader is manager7; the successor should call `miscusi_worker_start` with `inbox: true`.
+- **Push for profit; no setbacks.**
+  - Every critical-path merge gets quant-proof.
+  - Every try-spending run first gets a real-layout count-only pass (owner's reviewer, 10-06).
+- **Rug filter (EXP-016)** in parallel with the 10-16 work.
+- **Challengers.** The owner asked whether to run more than 3 at a time. Manager's answer (to the owner, 10-06):
+  - widen the cheap exploration-screen stage to 6–10 ideas per batch;
+  - keep confirmation one-shot and narrow, with the α split only over the confirmed ones;
+  - keep forward races at 3 or fewer (DEC-021 power table);
+  - add fresh confirmation blocks with the Helius credits, about 1.4M per 6-day block;
+  - draw new edge from new information (rug signals, creator funding, speed, size), not more retrains.
+- **Open for the owner** (Console for_you): the 10-16 merge ceiling caps only *unexplained* V0 moves. The owner asked to "refuse if too many pools move". Quant-proof accepts this on technical grounds. If the owner wants a hard ceiling on explained moves as well, add it before 10-16.
 
-## Must do immediately
+## 10-16 FINAL read: all tools are in place
 
-0. **CRITICAL, 10-16 path: the V map's constancy across the forward window** (job #278; owner review 10-06 ~14:50Z). Draft PR **#398** is WIP and must **NOT** be merged as is.
-   - **Finding.** v_base (V + pending counters A+B) changed on **6 of 52,643** forward pools in about 6 h (07:52Z → 13:53Z). Every move, in lamports (before → after, Δ):
-     - **canonical V0 ≈ 17.58 SOL pools (4):**
-       - 8ewuF2o8: 17,584,505,649 → 17,584,847,247 (+341,598)
-       - AgcjmdfX: 17,607,267,834 → 17,584,505,306 (−22,762,528)
-       - BaiHzFqn: 17,584,505,443 → 17,618,246,195 (+33,740,752)
-       - CyJwKnLi: 17,670,729,486 → 17,800,041,063 (+129,311,577, about 0.7% of V)
-     - **non-canonical (2):**
-       - 6X2DJ4sA: 438,152,246,087 → 434,791,942,471 (−3,360,303,616)
-       - 6ejg4aYJ: 219,722,151 → 219,980,561 (+258,410)
+- **Finding (#400).** V0 = V + A + B changes only on PumpSwap Deposit/Withdraw: `V0 ← floor(V0·S_after/S_before)`, where S is the LP supply. That is exact on 6/6 pools and 24 ops. Lab note: `ARTIFACTS/lab/pumpswap-v0-lp-law-2026-10-06.md`.
+- **DEC-016 Am.5 §7, final** (#400, #403, #407, #409, plus records #410 and #412):
+  - (0) deadline: met;
+  - (a) LP history with completeness checks and retries;
+  - (b) LP-law merge: unexplained or unresolved pools above 0.1% → refuse, and such pools are written null;
+  - (c) entry-slot V0, worse-of across the hold, per leg and per k;
+  - (c′) the entered set is (A)'s, candidates are per trade, up to 64 combinations, every k;
+  - (d) sensitivity lines, with any flip going to `live_blockers`;
+  - (e) LP supply and slots recorded on fetch;
+  - (e′) a **dry-run merge before 10-15T23:00Z**.
+- **Tools merged with quant-proof OK:**
+  - #402 `tools/pumpswap_lp_history.py` + vmap `lphist`/`diffs`/`merge --dry-run` (merge `4c5da8c`);
+  - #405 vbook (`5da3349`);
+  - #411 sensitivity (`3355ad1`).
+- **Live smokes** (pool fields and tx logs only; **none is the (B) run**; every lphist run is logged in the notebook):
+  - #288, #290, #294: 100/100 fresh pools resolved and 6/6 LP-active pools resolved;
+  - the dry-run merge from #2 to #3 had 0 unexplained and 0 unresolved pools.
+  - Two blockers were caught only by the smokes, and both are fixed: truncated MigrateV2 logs (fixed by self-CPI decode) and short accounts.
+- **Snapshots v2:** #2 (job #259) and #3 (job #286, `f07bdffb…bbca`, 54,666 pools). Over 7 h only the 6 LP-active pools moved.
+  - **Take more snapshots every day or two** until 10-15, using the same command as #286. New snapshots now carry a `.fetch.json` sidecar.
+- **10-16 order:**
+  1. FINAL (A).
+  2. `pools --final-out-dir`.
+  3. `fetch --new`.
+  4. `diffs` and `lphist` on moved pools.
+  5. `merge` with the snapshots, `--snapshot-fetch` and `--lphist`.
+  6. `validate`.
+  7. `vbook lphist-entered` (one run only; the first completed run counts).
+  8. vbook with `--final-fetch-map`, `--snapshot` and `--lphist`.
+  9. Runner latency export.
+  10. Sensitivity with the same LP inputs.
+  - Still needed by DEC-016 Am.3: the k(p50)/k(p90) values and the slot_ms export sha written into the DEC, and the runner downtime file.
 
-     The earlier "3 + 2" count was a miscount; it is 4 canonical + 2 non-canonical. As merged (#383), merge refuses on any v_base difference, so (B) would be NOT_DECIDABLE on 10-16. This also breaks DEC-016's assumption that one V per pool holds for the whole window.
-   - **Owner's required plan, in this order:**
-     1. **Fix the data before changing the rule.** Chase the unparsed pool fields: bytes 261..270, the 0/1 flag at 270, and anything after 287. Re-run the #278 comparison with them included. If the 6 moves are explained by a counter we don't read yet, v_base is still constant and the strict #383 rule can stay.
-     2. **If real moves remain,** do NOT make constancy report-only with no limit. In a pre-read DEC-016 Am.5 edit, before any outcome is seen, declare:
-        - how moved pools are handled: drop their trades from (B), or price them from the nearest snapshot, with the count disclosed;
-        - a **ceiling** that refuses the merge if too many pools move, e.g. the EXP-016 tolerance max(1 bp, 0.002 SOL) plus a refusal above 1% of pools;
-        - a **sensitivity line** in the (B) report that prices moved pools with both values and says whether the verdict flips.
-        Quant-proof before merge.
-     3. Every move's direction and size is recorded (above, and in the notebook).
-   - **#398 contains** a code draft that may be reused: vmap reports in-set discrepancies, uncomparable counts and pools outside the set; vbook and sensitivity treat discrepancy pools like null-V pools (top-3 union or >1% gives NOT_DECIDABLE). It lacks the ceiling, the tolerance, the sensitivity line, the field investigation and updated tests. Its DEC text edit is superseded by the plan above.
-1. **Recreate the hourly probe monitor** as a session cron at :17, with the same command as job #233 or #275. Crons die with the session. Alert at realized ≤ −0.20 (notebook finding plus a message to the owner).
-2. **V0-constancy check.** Job #278 is done (item 0). After the fix, re-run it on fresh fetches and **report the count and size of moves against the new ceiling and tolerance**, not just pass/fail. Repeat it about daily until 10-15, so the move rate over the window is measured.
-   - Re-fetch the pool set of forward snapshot #2, `/data/mal/pumpswap-virtual/forward-1002/work-20261006T074427Z/pools.json`, into a NEW work dir with `tools.exp012_forward_vmap fetch --new`.
-   - Compare `v_base`, per pool, between the new `*.detail.json` and snapshot #2's `vmap.json.detail.json`.
-   - Any difference means merge would refuse on 10-16. Investigate before then.
+## EXP-016 rug veto (the owner's priority)
 
-## LIVE PROBE (real money; DEC-019)
+- **Merged:** #395 (screen), #404 (constancy tool with reserve, dust rule and retries), #406 (pre-read fixes), #408 (`data/tries.jsonl` now has EXP-013's and EXP-015's tries, 97 lines).
+- #406 contains:
+  - P1B creates loaded from day files, with create slot = first bonding print;
+  - pre-tape and gap caps;
+  - `--precount`;
+  - data-quality limits checked before `started`;
+  - a compact, fail-safe row store at 245 B/row.
+- **Real layout:**
+  - `--precount` at 8779aee **ran out of memory at 48 GB** (job #295).
+  - The compact store measured 3.14M rows in 812 MB (job #298, cancelled).
+  - **Job #299 (`--precount` at f8e3e7e) is running.** Log: `/data/mal/ops/exp016-precount5.log`; counts go to `/data/mal/exp016-precount-*/precount.json`.
+  - Watch `rows_stored_whole` and `unknown_row_keys`.
+- **Next, in order:**
+  1. Review the #299 counts. Adjust the data-quality limits only with a dated §13 note, before the pin.
+  2. Pin `VMAP_EXP016_SHA256` = sha of `/data/mal/pumpswap-virtual/pool_v_exp016.json`, `1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec` (job #289: 226,073 pools, 0 null). Do it in a reviewed commit.
+  3. `--emit-constancy-sample`.
+  4. `tools.exp016_constancy` job (≤5 rps).
+  5. `--guards-only`, then a full `--precount` with the constancy file.
+  6. The screen itself, as one 48 GB MiScusi job (6 tries).
+- **Expected constancy refusal on honest data:** about 0.1%. 0.24% of band pools are LP-active, and 9 pools have pending above 0.002 SOL.
+- **Confirmation block fresh-0802** (walkers #248 and #249 running, #250 queued) is reserved for EXP-016.
 
-| Item | Value |
-| --- | --- |
-| Build | pinned `faa319227eee420319eed06e85774f64dd2273b1` |
-| Status at 12:35Z (job #275) | **57/90 attempts, realized −0.167875 SOL**, 0 open, healthy. That is 0.032 above the −0.20 alert and 0.082 from the 0.25 cap. Hard end 2026-10-12T00Z. |
-| Paused | Since 08:13Z. The runner's paper EXP-012 **ceiling** ledger hit its `daily_loss_cap`, and intents come only from that ledger (`forward_paper._intent`). Signals resume at the 00:00Z daily restart. Designed, not a fault (notebook; seal disclosure: skip labels were read, no amounts). |
-| Calibration (job #264, 57 attempts) | faa3192: 28 closed, **28/28 exits agree**, live −14,007,586 vs sim −27,038,518 lamports, live−sim mean +465,390 / median +34,540. 13 tp, 15 sl; 3 gap losses (27v59dSy, AWkPgsKg, 3BiUnVxR, −128M total; the sim reproduces each). On faa3192 it is a small **loss**, about −0.0005 SOL/trade. Never call it break-even. |
-| Duplicate monitor | Stopped (manager5 deleted its cron). |
+## Live probe (real money; DEC-019)
 
-## Key result today (exploration context, not gate evidence)
+- 57/90 attempts, realized −0.167875 SOL, on faa3192.
+- **Paused by the runner's daily cap since 08:13Z**; it resumes at 00:00Z.
+- Hard end 10-12T00Z.
+- Hourly monitor: a session cron at :17 (command in job #293). Recreate it if this session ends. manager7's cron is deleted.
+- **Live entry latency on faa3192** (job #285): k_mig p50 5, p90 6, max 15. About 3 of those slots are tip-follower block lag.
 
-**Frozen EXP-012 at realistic costs** (V, k=6, exit lag 2, haircut, 0.05 SOL, 505k fee) on 27 non-P1 dates: n=2,349, **flat −0.00044 / pressure −0.00054 SOL per trade** (EXP-015 report.json, bar 3).
-- This matches the live faa3192 record.
-- At 0.05 SOL the champion is about flat to slightly losing, because the fixed fee (~2% of size) eats the small edge.
-- Size is the only fee lever, and DEC-020 §1 is right that no simulation shows 0.25 works. The 10-16 FINAL plus Am.3(a) at 0.5 SOL trial terms is the decision point.
+## Gotchas found today
 
-## 10-16 FINAL read: tooling merged and reviewed
+- Solana **tx version 1** exists. `migration_stream_probe` and `fast_grad_stream` request v0 and may miss events. The tape tools use v1.
+- `fast_tip_follower` caches V per pool once, so paper rows on LP-active pools carry a stale V. Live is unaffected.
+- Builders hit about 40 turns; resume them with SendMessage. Precount and screen jobs need real-layout memory checks.
+- fast-0 "idle" notices: decline them, because the probe and runner live there.
 
-**Merged after 4 quant-proof rounds:**
-- #374 `tools/exp012_forward_vmap.py`;
-- #375 `tools/exp012_forward_vbook.py`, book (B), single-use per window;
-- #378 `exp012_forward_sensitivity.py` with V; Am.3(a) on (B) needs a (B) PASS;
-- #376 DEC-016 Amendment 5, which records the commits.
+## Clocks
 
-**V parser fixes:**
-- #383 (merge `6300915`): signed V, `parse_virtual_detail`, base-V constancy at merge, zero-V report counts V ≤ 0.
-- #386: wording, "null pools are V0=0, not closed".
-- Lab note #384, `ARTIFACTS/lab/pumpswap-v-layout-2026-10-06.md`: **stored V = V0 − A − B** (pending counters). The 321 "null" pools are V0 = 0 pools.
-
-**Forward V snapshot #2** (job #259, fixed decoder):
-- 52,697 pools, 0 null;
-- sha `f8547a29…453c`, detail sha `1fca63ea…dbe`;
-- in `/data/mal/pumpswap-virtual/forward-1002/snapshots-v2/`.
-- Snapshot #1 (#245) predates the fix and is unusable.
-- Pending on V0≈17.58 pools: 9 above 0.01 SOL, max 0.1319 SOL (≤ ~0.1% price error).
-- **Take more snapshots** every day or two until 10-15, with the same commands as #259 and a new work dir each time.
-
-**10-16 order:**
-1. FINAL (A).
-2. `pools --final-out-dir`.
-3. `fetch --new` (new file, after the cutoff).
-4. `merge` with the v2 snapshots and `--pools`.
-5. `validate --final-out-dir`.
-6. vbook (`--vmap-merge-meta`).
-7. Runner latency export.
-8. Sensitivity on (B) with `--vbook-report`.
-
-Still needed before 10-16 (DEC-016 Am.3): k(p50)/k(p90) and the slot_ms export sha written into DEC-016, and the runner downtime file.
-
-**Not deployed:** #387 (merged code). The tip follower stamps signed V. Previously V0=0 pool rows got ~1.8e19, though fresh-migration EXP-012 entries are unaffected. Deploy needs an md5 decision-equivalence replay plus a recorded restart (CLAUDE.md), so pick a window. The live probe executor runs from its pinned copy and is unaffected.
-
-**Simulator finding** (notebook): `latency_curve` never reads `pool`, so fills **and** the migration clock can come from a foreign PumpSwap pool. EXP-016 filters rows; EXP-012 reads are unchanged. Open: an outcome-blind count of foreign-first mints on exploration data, to size it and disclose before 10-16 if material.
-
-## Challengers
-
-| Family | State |
-| --- | --- |
-| EXP-013 | **Screen FAIL**, job #236 (#388). Closed. Its block 0828 stays reserved, unread. |
-| EXP-015 | **Screen FAIL**, job #242 (#390). 0/6 bars on 3 configs. Closed. fresh-0808 released, unread. |
-| EXP-016 rug veto | Plan merged #381 after 5 quant-proof rounds; prior ≈15% screen / ≈5% confirm. Post-pin edits #393. PR 1 (label, features, P2 filter) merged **#392** after 3 rounds. **PR 2 (screen)** in progress, see below. |
-| EXP-014 | PR #269 open (DO NOT MERGE, it was waiting on EXP-013). Needs a confirmation block: 0808 and 0828 are both reserved with no owner now. 0802 goes to EXP-016 first (§8). |
-
-**Lab-wide α (#382):** the four confirmation families each need p ≤ 0.0125. With EXP-013 and EXP-015 closed, keep 0.0125 (it only ever tightens).
-
-**EXP-016 PR 2 is draft PR #395** (`claude/exp016-screen`; the builder's venv pytest run gave rc 0, 104 passed; fixtures only). It still needs a quant-proof review before merge.
-- **Open manager decisions the builder raised:**
-  - (a) **P1B (Oracle live) has no `migrations/` dir.** Under the literal "migration-row pool" rule every P1B mint is excluded as having no pool. Decide: derive the pool from the mint's first canonical PumpSwap pool (pool-field only, like EXP-015's P1B pre-pass), or exclude P1B and disclose it. Record the choice as a post-pin edit.
-  - (b) `BlockHistory.query` from #392 scans all records per mint, which is likely too slow at block scale. Needs a perf fix.
-  - (c) "One `started` line" was read as one line with 6 keys, plus per-pool result lines. Confirm.
-- **Unverified:** `load_source_data` and `build_sources` were never run on a real layout, and memory was not measured. The P1 constancy check reads `--v-constancy-json` from a separate job that is not built yet. `VMAP_EXP016_SHA256` is `PENDING` until the fixed-parser maps are built and pinned.
-- **Order:** quant-proof → fix (a)/(b) → build the maps (pool-field only) → pin → `--guards-only` → screen as one 48 GB MiScusi job.
-
-**fresh-0802 walk** (ledger #380, reserved for EXP-016 first):
-- w1 #248 at 19/48 hours (171,623 credits);
-- w2 #249 at 14/48 (124,708);
-- w3 #250 queued after w1.
-- About 1.4M credits in total.
-- Then verify (both modes), dedupe and a clean view, counts and hashes only, the same as fresh-0808.
-
-## Other clocks
-
-- **Forward walk #71:** through 10-06T10, 1.24M credits. **Resubmit by 10-09T15Z** with the same command and params `{"start":"2026-10-02T15"}`, resumable, 10080 min.
-- **Early-arm shadow read:** about 10-07T18Z. Fold in the grad-stream result:
-  - at threshold 0.70 (#205/#253), coverage of `complete` is 24.7%;
-  - processed `migrate` covers 264/287 with a p50 lead of 1,012 ms. This is the better arm trigger to evaluate.
-- **Probe hard end:** 10-12T00Z. Then the DEC-019 §7 lab note by build, plus quant-proof. Include the daily-cap coupling.
-- **EXP-012 FINAL:** about 10-16T02Z.
-
-## Gotchas (new today)
-
-- **Test isolation.** `tools/conftest.py` (#385) restores `MAL_PSV_*`/`MAL_EXP015_*` env after each test. `test_dec015_fast_kit` errors on research-0 (git identity in its temp repo); that is environmental.
-- **Use the venv for tests.** Builders sometimes use system python with no pytest. Tell them to use `/data/mal/venv/bin/python -m pytest`.
-- **MiScusi jobs run under `sh`.** `${PIPESTATUS[0]}` fails there; use `> log; RC=$?`.
-- **Memory slots.** With two 48 GB jobs running, small jobs queue for memory. Request ≤ 3.5 GB for light jobs.
-- **Prompt filter.** A PreToolUse hook blocks commands containing the word "secrets".
-- **fast-0 "idle" notices.** Decline them; fast-0 runs the probe and runner (≤ 1.9 GB jobs only).
-- **Docs to correct.** Docs written before #383 call the null pools "closed accounts". #386 fixed the main ones; fix others when you see them.
+- Forward walk #71: **resubmit by 10-09T15Z** with params `{"start":"2026-10-02T15"}`, resumable, 10080 min.
+- Early-arm shadow read: about 10-07T18Z. Also evaluate the processed `migrate` trigger: 264/287 covered, about 1 s lead. Fix its v0 tx request.
+- Probe end 10-12T00Z, followed by the DEC-019 §7 lab note.
+- (e′) dry run before 10-15T23Z.
+- FINAL read about 10-16T02Z.
