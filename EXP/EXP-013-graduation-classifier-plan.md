@@ -163,7 +163,7 @@ Written by the manager before the screen code (PR3) exists. Revised after a `qua
 ## Amendment 7 (2026-10-06, before any real-data model run and before the EXP-012 backcheck read): V pricing; August bars no longer on unread data
 
 - **V pricing.** PumpSwap pools price on quote vault + V, the virtual quote reserve ([pumpswap-virtual note](../ARTIFACTS/lab/exp012-virtual-rescore-r2-2026-10-04.md)). Job #197 shows that V = 17.5845 SOL was already in effect from 2026-08-14. This plan's PumpSwap legs are the sell at migration + 4 slots, the reference sell at slot + 1, and every PumpSwap mark before the exit. In the screen they are priced through `tools.pumpswap_virtual_adapter` with `mcap_mode="v"`.
-  - The map is `/data/mal/pumpswap-virtual/pool_v_0814.json`, sha256 `__VMAP_SHA__`. It is a superset of `pool_v.json`, extended to the August pools by job #196, with existing entries unchanged.
+  - The map is `/data/mal/pumpswap-virtual/pool_v_0814.json`, sha256 `2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8`. It is a superset of `pool_v.json`, extended to the August pools by job #196: 34,945 pools, all 20,057 existing entries unchanged, 1 null of the 16,346 August pools, read-only since 2026-10-06T00:30Z.
   - The screen refuses before any outcome is computed if more than 1% of the triggered mints' PumpSwap prints have no V. A pool whose account fetch returned null counts as missing, never as V = 0.
   - The run records the adapter counts.
   - Bonding-curve prints are unchanged.

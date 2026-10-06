@@ -171,7 +171,7 @@ These are report only.
 
 - **V pricing.** Every leg of this plan is on PumpSwap, so every fill, mark and exit is mispriced unless V is added. V is the virtual quote reserve, 17.5845 SOL, already in effect from 2026-08-14 per job #197.
   - The screen prices every PumpSwap print through `tools.pumpswap_virtual_adapter` with `mcap_mode="v"`.
-  - The map is `/data/mal/pumpswap-virtual/pool_v_0814.json`, sha256 `__VMAP_SHA__`. It is a superset of `pool_v.json`, extended to the August pools by job #196.
+  - The map is `/data/mal/pumpswap-virtual/pool_v_0814.json`, sha256 `2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8`. It is a superset of `pool_v.json`, extended to the August pools by job #196: 34,945 pools, all 20,057 existing entries unchanged, 1 null of the 16,346 August pools, read-only since 2026-10-06T00:30Z.
   - The screen refuses before any outcome is computed if more than 1% of the relevant PumpSwap prints have no V. A null account fetch counts as missing.
   - The run records the adapter counts.
 - **Code.** #269 is not merged. The adapter is added there, or in a follow-up PR before the single run, with a test that it is active in the spawned workers. Nothing else in the design changes.
