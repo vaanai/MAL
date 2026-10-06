@@ -284,6 +284,25 @@ class TestRefusals(unittest.TestCase):
                 with self.assertRaises(w.Refused):
                     list(w.read_trade_file(bad, h, {}))
 
+    def test_canonical_tries_log_and_w2_flag(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "t.jsonl"
+            with self.assertRaises(w.Refused):
+                w.check_canonical_tries_log(p)  # missing
+            p.write_text(json.dumps({"config": {"key": "exp013_x"}}) + "\n")
+            with self.assertRaises(w.Refused):
+                w.check_canonical_tries_log(p)  # no exp015 line
+            p.write_text(json.dumps({"config": {"key": "exp015_a"}}) + "\n")
+            w.check_canonical_tries_log(p)
+        uni = [{"mint": "A"}]
+        feats = {"A": {"skilled_holder_lamports": 1, "skilled_share": 0.0}}
+        m = {"scope": [0], "frozen": [True], "taus": {"d": 0.0}}
+        w.check_w2_flag({"selection": {"w2_degenerate": True}}, uni, m, feats)
+        with self.assertRaises(w.Refused):
+            w.check_w2_flag({"selection": {"w2_degenerate": False}}, uni, m, feats)
+
     def test_tries_log_arg(self):
         w.check_tries_log_arg(None, Path("/x/tries.jsonl"))
         w.check_tries_log_arg("/x/tries.jsonl", Path("/x/tries.jsonl"))

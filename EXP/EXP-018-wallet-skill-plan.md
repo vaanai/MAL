@@ -90,6 +90,8 @@ Scope: the non-P1 rows (P2, P3, P4) with a feature row and past warm-up. The fro
 9. **Missing tape (R1).** Any hour of a series has no trades file, or a series' guard (VIEW.sha256, tiling, dedupe manifest) fails: refuses in `--precount` and in screen mode. Coverage counts a snapshot only when the series had at least one row before the cutoff.
 10. **Tries log.** `--precount` neither resolves nor reads a tries log. Screen mode refuses any `--tries-log` other than the canonical one (`resolve_tries_path(None)`).
 11. **W2 degenerate (stated before it runs).** `--precount` reports, blind on outcomes, `tau_d` per scored date. If `tau_d` is 0 (or undefined) on **every** date, `skilled_share >= tau_d` is always true and W2 equals the frozen book: W2 is **dropped before the read**, the family is W1 alone (Holm k = 1, one `started` try).
+12. **Tries log guard.** Screen mode refuses if the resolved tries log does not exist or holds no `exp015_` line. The screen job must set `MAL_TRIES_LOG=/data/mal/ops/tries/tries.jsonl`, the canonical log (as `scripts/research/exp013-screen-run.sh` sets it).
+13. **W2 flag.** Screen mode recomputes `w2_degenerate` from its own masks and refuses if it disagrees with `precount.json`.
 
 After `started`, a failure is reported as `aborted_after_read`; the tries are spent.
 

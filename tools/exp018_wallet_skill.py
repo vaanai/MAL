@@ -70,6 +70,7 @@ SERIES: dict[str, dict[str, Any]] = {
 }
 DEFAULT_P2_VIEWS = [f"{e15.P2_BASE}/w{i}" for i in range(1, 8)]
 DEFAULT_P4_VIEWS = ["/data/mal/clean-view/exp011-0909/b", "/data/mal/clean-view/exp011-0909/c"]
+CANONICAL_TRIES_LOG = "/data/mal/ops/tries/tries.jsonl"  # as scripts/research/exp013-screen-run.sh sets MAL_TRIES_LOG
 BONDING_FEE_PPM = 12_500  # tools/paper_curve_math.BONDING_FEE_PPM (1.25%), each side; bonding rows' sol_lamports is PRE-fee
 BANNER = "EXP-018 wallet skill: EXPLORATION ONLY, NO EDGE CLAIM. A pass earns one confirmation read on an unread reserved block under a later pre-registration."
 
@@ -276,7 +277,7 @@ def run_series(hours: Sequence[str], rows_of_hour: Callable[[str], Iterable[Mapp
     return out, st
 
 
-# --- loaders (real layout: <view>/trades/trades-<hour>.jsonl.zst, <view>/migrations/migrations-*.jsonl.zst) -----------
+# --- loaders (real layout: P2/P4 <view>/trades/trades-<hour>.jsonl.zst; P3 <walker>/trades/trades-<hour>.deduped.jsonl.zst; resolved by EXP-015's loaders) ---
 
 
 import subprocess
@@ -743,6 +744,23 @@ def check_tries_log_arg(arg: str | None, canonical: Path) -> None:
         raise Refused(f"--tries-log {arg} is not the canonical {canonical}")
 
 
+def check_canonical_tries_log(path: Path) -> None:
+    """Guards a wrong MAL_TRIES_LOG: the canonical log must exist and already hold exp015 lines."""
+    p = Path(path)
+    if not p.is_file():
+        raise Refused(f"tries log {p} does not exist: set MAL_TRIES_LOG to the canonical {CANONICAL_TRIES_LOG}")
+    if not e15.prior_exp015_lines(p):
+        raise Refused(f"tries log {p} has no exp015 lines: not the canonical log ({CANONICAL_TRIES_LOG}); check MAL_TRIES_LOG")
+
+
+def check_w2_flag(pre: Mapping[str, Any], universe: Sequence[Mapping[str, Any]], masks: Mapping[str, Any], feats: Mapping[str, Mapping[str, Any]]) -> None:
+    """Recompute selection_report from the screen's own masks; refuse if its w2_degenerate disagrees with precount.json."""
+    mine = selection_report(universe, masks, feats)["w2_degenerate"]
+    theirs = (pre.get("selection") or {}).get("w2_degenerate")
+    if bool(mine) != bool(theirs):
+        raise Refused(f"w2_degenerate recomputed {mine} != precount.json {theirs}")
+
+
 def set_cells(cells: Sequence[str]) -> None:
     global CELLS
     CELLS = tuple(cells)
@@ -885,6 +903,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         tries_path = Path(resolve_tries_path(None))
         check_tries_log_arg(args.tries_log, tries_path)
+        check_canonical_tries_log(tries_path)
         prior = prior_exp018_lines(tries_path)
         if prior:
             raise Refused(f"{len(prior)} earlier exp018 line(s) in {tries_path}: a second run is refused")
@@ -900,6 +919,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         scores = frozen_scores(universe, args.artifact_dir)
         masks = build_masks(universe, scores, feats)
         zero_cell_check(masks)
+        check_w2_flag(pre, universe, masks, feats)
         check_precount(pre, masks)
         head = e15.git_state()["head"]
         e15.take_lock(out_dir, head, hashlib.sha256(json.dumps(sorted(vars(args).items(), key=lambda kv: kv[0]), default=str).encode()).hexdigest())
