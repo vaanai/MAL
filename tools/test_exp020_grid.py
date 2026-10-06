@@ -47,8 +47,9 @@ def make(rows_spec):
 
 class TestGrid(unittest.TestCase):
     def test_combos(self):
-        self.assertEqual(len(g20.COMBOS), 13)
+        self.assertEqual(len(g20.COMBOS), 14)
         self.assertEqual(g20.COMBOS[0], (6, 0.05, 2))
+        self.assertEqual(g20.COMBOS[1], (4, 0.05, 2))
         self.assertEqual({(k, s) for k, s, _ in g20.GRID_COMBOS}, {(k, s) for k in (2, 3, 4, 6) for s in (0.25, 0.5, 1.0)})
         self.assertTrue(all(lag == 2 for _, _, lag in g20.COMBOS))
 
@@ -100,7 +101,7 @@ class TestGrid(unittest.TestCase):
     def test_build_grid_shape_and_missing_refusal(self):
         rows, cells, _ = make([(f"m{i}", P2_START + i * 86_400_000, {}) for i in range(4)])
         out = g20.build_grid(rows, cells, 27)
-        self.assertEqual(len(out["cells"]), 13)
+        self.assertEqual(len(out["cells"]), 14)
         self.assertEqual(len(out["paired_vs_k6"]), 9)  # k in (2, 3, 4) x 3 sizes
         self.assertNotIn("k6_s0.5", out["paired_vs_k6"])
         cache = {r["mint"]: grid_row(r["mint"], r["mig_ms"], {}, censored={(2, 1.0)}) for r in rows}
@@ -124,6 +125,33 @@ class TestEquivalenceAndPins(unittest.TestCase):
         c["net0"] += 1
         with self.assertRaises(x17.Refused):
             x17.equivalence_check(cache, {"m0": bad})
+
+    def test_k4_control_equivalence(self):
+        _, _, sized = make([("m0", P2_START, {})])
+        cache = {"m0": json.loads(json.dumps(sized["m0"]))}
+        self.assertEqual(g20.equivalence_check_k(cache, sized, 4), {"matched": 1, "mismatched": 0})
+        for c in cache["m0"]["cells"]:
+            if (c["k"], c["size"]) == (4, g20.lam(0.05)):
+                c["net0"] += 1
+        with self.assertRaises(g20.Refused):
+            g20.equivalence_check_k(cache, sized, 4)
+
+    def test_blind_missing_refuses_before_any_try(self):
+        rows, cells, _ = make([(f"m{i}", P2_START + i * 1000, {}) for i in range(4)])
+        self.assertTrue(all(v == 0 for v in g20.check_blind_missing(rows, cells).values()))
+        cache = {r["mint"]: grid_row(r["mint"], r["mig_ms"], {}, censored={(3, 0.5)}) for r in rows}
+        with mock.patch.object(e15, "cell_nets", side_effect=AssertionError("net read")):
+            with self.assertRaises(g20.Refused):
+                g20.check_blind_missing(rows, g20.load_grid_cells(cache))
+        with self.assertRaises(g20.Refused):
+            g20.check_blind_missing([], cells)
+
+    def test_md_header_and_miss_next_to_pct(self):
+        rows, cells, _ = make([(f"m{i}", P2_START + i * 86_400_000, {}) for i in range(4)])
+        md = g20.render_md({"head": "h", "equivalence": {}, "n_rows": 4, "n_dates": 27, "grid": g20.build_grid(rows, cells, 27)})
+        self.assertIn("REPORT-ONLY. Not gate evidence; no row is a promotion read.", md)
+        self.assertIn("mean % stake | MISS share", md)
+        self.assertIn("ENTRY_BOUND=start", md)
 
     def test_pin_from_plan_line(self):
         with tempfile.TemporaryDirectory() as d:
@@ -191,8 +219,8 @@ class TestPrecountBlind(unittest.TestCase):
             self.assertTrue(out["outcome_blind"])
             self.assertEqual(out["n_selected"], 4)
             self.assertEqual(out["n_selected_non_p1"], 4)
-            self.assertEqual(out["n_combos"], 13)
-            self.assertEqual(out["n_cells_to_simulate"], 4 * 13)
+            self.assertEqual(out["n_combos"], 14)
+            self.assertEqual(out["n_cells_to_simulate"], 4 * 14)
             self.assertFalse((Path(d) / "o").exists())
 
 

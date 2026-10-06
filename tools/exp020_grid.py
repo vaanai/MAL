@@ -40,7 +40,8 @@ KS = (2, 3, 4, 6)
 SIZES_SOL = (0.25, 0.5, 1.0)
 CONTROL = (6, 0.05, LAG)
 GRID_COMBOS = tuple((k, s, LAG) for s in SIZES_SOL for k in KS)
-COMBOS = (CONTROL, *GRID_COMBOS)  # the control first, as EXP-017's R3
+CONTROL_K4 = (4, 0.05, LAG)  # second equivalence control, against the EXP-015 cache's (k=4, lag 2) cell
+COMBOS = (CONTROL, CONTROL_K4, *GRID_COMBOS)  # the controls first, as EXP-017's R3
 BASE_K = 6
 GRID_DIR = "grid_cache"
 MANIFEST_FILE = "GRID.manifest.sha256"
@@ -100,6 +101,50 @@ def check_grid_meta(grid_dir: str | Path, sel_sha: str) -> dict[str, Any]:
     if len(heads) != 1:
         raise Refused(f"grid cache sources were built at {len(heads)} different heads")
     return {"head": next(iter(heads))}
+
+
+def equivalence_check_k(cache_rows: Mapping[str, Mapping[str, Any]], sized_rows: Mapping[str, Mapping[str, Any]], k: int) -> dict[str, int]:
+    """As x17.equivalence_check but for the (k, lag 2, 0.05 SOL) cell: per mint, sha256 of [mint, mig_ms, features, cell] equals the EXP-015 cache's."""
+    def dig(row: Mapping[str, Any]) -> str | None:
+        cell = [c for c in row["cells"] if (int(c["k"]), int(c.get("lag", 0)), int(c["size"])) == (k, LAG, x17.SIZE_1X)]
+        if len(cell) != 1:
+            return None
+        return hashlib.sha256(json.dumps([row["mint"], row["mig_ms"], row["features"], cell[0]], sort_keys=True).encode("utf-8")).hexdigest()
+
+    match = bad = 0
+    for m, r in sized_rows.items():
+        a, b = dig(r), (dig(cache_rows[m]) if m in cache_rows else None)
+        if a is not None and a == b:
+            match += 1
+        else:
+            bad += 1
+    if bad or not match:
+        raise Refused(f"decision-equivalence proof (k={k}) failed: {match} matched, {bad} mismatched (re-sim 0.05 SOL cell vs the EXP-015 cache)")
+    return {"matched": match, "mismatched": bad}
+
+
+def blind_missing_by_combo(rows: Sequence[Mapping[str, Any]], cells: Mapping[str, Mapping[tuple[int, int], Mapping[str, Any]]]) -> dict[str, int]:
+    """Outcome-blind: per combo, selected non-P1 rows whose cell is absent or censored (presence and the `censored` flag only; no net field is read)."""
+    out: dict[str, int] = {}
+    for k, sol, _ in COMBOS:
+        c = lam(sol)
+        n = 0
+        for u in rows:
+            cell = (cells.get(u["mint"]) or {}).get((k, c))
+            n += int(cell is None or bool(cell.get("censored")))
+        out[cell_key(k, sol)] = n
+    return out
+
+
+def check_blind_missing(rows: Sequence[Mapping[str, Any]], cells: Mapping[str, Mapping[tuple[int, int], Mapping[str, Any]]]) -> dict[str, int]:
+    """Refuse (before the tries line, so no try is burned) when any combo lacks an uncensored cell on more than 1 % of the rows."""
+    if not rows:
+        raise Refused("no selected non-P1 rows")
+    miss = blind_missing_by_combo(rows, cells)
+    bad = {k: v for k, v in miss.items() if v / len(rows) > MAX_MISSING_FRACTION}
+    if bad:
+        raise Refused(f"cells absent or censored on > {MAX_MISSING_FRACTION:.0%} of {len(rows)} rows (blind status only): {bad}")
+    return miss
 
 
 def load_grid_cells(rows: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[tuple[int, int], dict[str, Any]]]:
@@ -207,15 +252,16 @@ def _r(v: Sequence[float] | None) -> str:
 
 
 def render_md(rep: Mapping[str, Any]) -> str:
-    L = ["# EXP-020 size x entry-slot grid (REPORT-ONLY)", "",
+    L = ["# EXP-020 size x entry-slot grid (REPORT-ONLY)", "", "REPORT-ONLY. Not gate evidence; no row is a promotion read.", "",
          "No edge claim, no decision. The 27 non-P1 dates have had 100+ tries: the base book is tuned (winner's curse). k < 6 cells assume landing at k is achievable (live k p50 today is 5).",
+         "Entry is bounded at the START of the landing slot (ENTRY_BOUND=start, the most optimistic point): every cell, and every paired x vs k6, is an upper bound. A larger stake fills a different set of trades (see MISS share).",
          "A change of operating point needs a fresh-block confirmation and live calibration (DEC-021 section 7).", "",
          f"Head `{rep['head']}`; equivalence control: {rep['equivalence']}; selected non-P1 rows {rep['n_rows']}, dates {rep['n_dates']}.", ""]
     for leg in LEGS:
-        L += [f"## Cells, {leg} fail model", "", "| k | size SOL | n | filled | MISS share | mean SOL | mean % stake | CI90 trade (%) | CI90 date (%) | total SOL | ex-top3 SOL | dates + |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        L += [f"## Cells, {leg} fail model", "", "| k | size SOL | n | filled | mean SOL | mean % stake | MISS share | CI90 trade (%) | CI90 date (%) | total SOL | ex-top3 SOL | dates + |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for c in rep["grid"]["cells"].values():
             s = c[leg]
-            L.append(f"| {c['k']} | {c['size_sol']:g} | {c['n']} | {s['filled']} | {_f(c['miss_share'], 3)} | {_f(s['mean_sol'], 6)} | {_f(s['mean_pct_of_stake'], 3)} | {_r(s['ci90_trade_pct'])} | "
+            L.append(f"| {c['k']} | {c['size_sol']:g} | {c['n']} | {s['filled']} | {_f(s['mean_sol'], 6)} | {_f(s['mean_pct_of_stake'], 3)} | {_f(c['miss_share'], 3)} | {_r(s['ci90_trade_pct'])} | "
                      f"{_r(s['ci90_date_pct'])} | {_f(s['total_sol'], 4)} | {_f(s['ex_top3_sol'], 4)} | {s['dates_positive']}/{s['n_scope_dates']} |")
         L += ["", f"## Paired x = net(k) - net(6), same size, per migration, {leg}", "", "| k | size SOL | pairs | mean x SOL | mean x % stake | CI90 date (%) | CI90 trade (%) |", "|---|---|---|---|---|---|---|"]
         for p in rep["grid"]["paired_vs_k6"].values():
@@ -375,9 +421,11 @@ def report(args: Any, out_dir: Path, art: Path | None) -> int:
     sized_rows = x17.load_sized_rows(grid_dir)
     cache_rows = {r["mint"]: r for src in x17.SOURCES for r in x17.read_cache_rows(Path(args.scratch) / "cache" / f"v_{src}.rows.jsonl", blind=False)}
     eq = x17.equivalence_check(cache_rows, sized_rows)
+    eq["k4"] = equivalence_check_k(cache_rows, sized_rows, 4)
     del cache_rows
     rows = non_p1_selected(uni, scores)
     cells = load_grid_cells(sized_rows)
+    blind_missing = check_blind_missing(rows, cells)  # before the tries line: a refusal here burns no try
     report_dir = args.report_dir or (out_dir / "report")
     head = e15.git_state()["head"]
     check_no_prior(ops, canonical)
@@ -388,7 +436,7 @@ def report(args: Any, out_dir: Path, art: Path | None) -> int:
         info = log_try([ops, canonical], report_dir)  # the one tries line, written at the spend point (before any net is evaluated)
         started = True
         n_dates = len(e15.non_p1_dates(True))
-        rep = {"schema": SCHEMA, "head": head, "grid_head": meta["head"], "equivalence": eq, "n_rows": len(rows), "n_dates": n_dates, "grid": build_grid(rows, cells, n_dates),
+        rep = {"schema": SCHEMA, "head": head, "grid_head": meta["head"], "equivalence": eq, "blind_missing_by_combo": blind_missing, "n_rows": len(rows), "n_dates": n_dates, "grid": build_grid(rows, cells, n_dates),
                "try": info, "report_only": True, "runtime_s": time.time() - t0}
         write_json(report_dir / "grid.json", rep)
         (report_dir / "grid.md").write_text(render_md(rep), encoding="utf-8")
