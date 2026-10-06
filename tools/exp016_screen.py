@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import gc
 import hashlib
 import json
 import os
@@ -592,6 +593,15 @@ def creator_history(creates: Mapping[str, Mapping[str, Any]]) -> dict[str, list[
     return hist
 
 
+def progress(msg: str) -> None:
+    """Counts-only progress line on stderr (rows read, mints kept, RSS MB): where memory goes if a run dies. No price, label or outcome."""
+    try:
+        rss = xx._rss_mb()
+    except Exception:  # noqa: BLE001
+        rss = -1
+    print(f"[exp016] {msg} rss_mb={rss}", file=sys.stderr, flush=True)
+
+
 def _real_slot(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v > 0
 
@@ -735,6 +745,9 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
         for m, cr in src.creates.items()
     ]
     history = rug.BlockHistory(records)
+    for m in [m for m in src.rows_by_mint if m not in src.migrations]:
+        del src.rows_by_mint[m]  # the records hold what the block pass needs; only migrated mints' rows are needed from here
+    progress(f"{src.tag}: block history built records={len(records)} migrated_mints_with_rows={len(src.rows_by_mint)}")
     hist = src.creator_hist if src.creator_hist is not None else creator_history(src.creates)  # ALL creates, before any exclusion
     cells: list[dict[str, Any]] = []
     no_create_row: list[str] = []
@@ -763,6 +776,7 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
             raise SimulationError(f"{m}: unexpected {type(exc).__name__} in the simulation (message withheld: it may carry outcome numbers)") from None
         cell.update({"source": src.tag, "block": src.block})
         cells.append(cell)
+    progress(f"{src.tag}: cells built cells={len(cells)}")
     pool_vs_canonical = count_pool_vs_canonical(src.migrations, canonical_fn) if (canonical_fn is not None and not src.derived_pools) else None
     return {"tag": src.tag, "cells": cells, "no_pool_mints": no_pool, "no_create_row": no_create_row, "no_migration_slot": no_migration_slot,
             "no_bonding_excluded": no_bonding, "pre_tape_create_excluded": other.get("pre_tape_create", []),
@@ -775,7 +789,7 @@ def process_source(src: SourceData, vmap: Mapping[str, int | None], canonical_fn
 
 
 def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str, Any]], pool_hours: Sequence[str], migration_roots: Sequence[Path],
-                     canonical_fn: Callable[[str], str] = canonical_pool_str, p1b_creates: Callable[[Path], Iterable[Mapping[str, Any]]] | None = None) -> SourceData:
+                     canonical_fn: Callable[[str], str] = canonical_pool_str, progress_every_hour: bool = False, p1b_creates: Callable[[Path], Iterable[Mapping[str, Any]]] | None = None) -> SourceData:
     """Production reader over the same hour resolvers EXP-015 uses. NOT exercised against a real layout by this PR's tests (no real data read);
     the first `--precount` run on the host shows whether it matches. Full rows for migrated mints, slimmed rows for the rest."""
     from tools.exp012_virtual_rescore import _zcat_lines
@@ -786,6 +800,7 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
     canonical_no_create: list[str] = []
     outside = 0
     hour_set = set(pool_hours)
+    progress(f"{tag}: load start, {len(pool_hours)} hours")
     if tag == "P1B":
         # The Oracle live tape has no migrations/ dir, and `_hour_info_b` has no `create` key: creates come from the adapter's day files (with its
         # hard cutoff), rows get `block_time` and `quote_is_wsol` from `adapt_trade_row`, and pass 1 derives the migrations (plan 13 items 6, 9).
@@ -804,6 +819,7 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
         )
         # a mint stays if it has a create (pool "" = no-pool) or canonical-pool prints (no create: counted); a PumpSwap token with neither is not ours
         migrations = {m: r for m, r in everything.items() if m in creates or r["pool"]}
+        progress(f"{tag}: P1B creates={len(creates)} migrations_derived={len(migrations)} (pass 1 over the tape done)")
         canonical_no_create = sorted(m for m, r in migrations.items() if m not in creates)
         migration_roots = []
     for root in migration_roots:
@@ -821,6 +837,7 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
                     migrations.setdefault(r["mint"], r)
     rows_by_mint: dict[str, list[Mapping[str, Any]]] = {}
     through = 0
+    n_read = n_kept = 0
     keep = ("venue", "side", "trader", "slot", "token_raw", "sol_lamports", "quote_reserve", "base_reserve", "signature", "event_index", "tx_index", "block_time", "t_recv_ms", "mint", "pool", "quote_is_wsol")
     for h in pool_hours:
         info = hours_fn(h)
@@ -830,17 +847,26 @@ def load_source_data(tag: str, block: str, hours_fn: Callable[[str], Mapping[str
                     prev = creates.get(r["mint"])
                     if prev is None or (isinstance(r.get("block_time"), int) and r["block_time"] < prev.get("block_time", 1 << 62)):
                         creates[r["mint"]] = r
+        if progress_every_hour:
+            progress(f"{tag}: hour {h} rows_read={n_read} rows_kept={n_kept} mints_kept={len(rows_by_mint)} creates={len(creates)}")
         for r in eem._iter_trades(info["trade"]):
             m = r.get("mint")
             if not isinstance(m, str) or r.get("venue") not in ("pump_bonding", "pumpswap"):
                 continue
-            if tag == "P1B" and m not in creates and m not in migrations:
-                continue  # memory: only mints with a create or canonical-pool prints are kept (not every PumpSwap mint on the tap)
+            n_read += 1
+            if m not in creates and m not in migrations:
+                continue  # memory, every source: only mints with a create or a migration / canonical-pool print are kept
             r = adapt(r)
             t = r.get("t_recv_ms") if r.get("t_recv_ms") is not None else (r["block_time"] * 1000 if isinstance(r.get("block_time"), int) else None)
             if isinstance(t, int) and t > through:
                 through = t
-            rows_by_mint.setdefault(m, []).append(r if m in migrations else {k: r[k] for k in keep if k in r})
+            if m not in migrations:
+                if r.get("venue") != "pump_bonding":
+                    continue  # a never-migrated mint has no pool: its PumpSwap rows feed nothing (the block pass prices only its curve)
+                r = {k: r[k] for k in keep if k in r}
+            n_kept += 1
+            rows_by_mint.setdefault(m, []).append(r)
+    progress(f"{tag}: tape pass done rows_read={n_read} rows_kept={n_kept} mints_kept={len(rows_by_mint)} creates={len(creates)} migrations={len(migrations)}")
     hist = creator_history(creates)  # ALL creates, before any exclusion (EXP-015's build_creator_history_b does the same)
     kw: dict[str, Any] = {}
     if tag == "P1B":
@@ -1600,9 +1626,11 @@ def precount(args: argparse.Namespace) -> int:
         vmap = rug.merge_v_map(vmap_raw, fallback)
         results = []
         for tag, block, hours_fn, pool_hours, mig_roots in build_sources(g):
-            src = load_source_data(tag, block, hours_fn, pool_hours, mig_roots)
+            src = load_source_data(tag, block, hours_fn, pool_hours, mig_roots, progress_every_hour=True)
             results.append(process_source(src, vmap, canonical_pool_str))
             del src
+            gc.collect()
+            progress(f"{tag}: source done, rows freed, cells kept={len(results[-1]['cells'])}")
     except (Refused, rug.PoolAttributionRefusal, SimulationError) as exc:
         print(f"refusing: {exc}", file=sys.stderr)
         return 2
@@ -1699,11 +1727,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         results, pool_print_ms = [], {}
         for tag, block, hours_fn, pool_hours, mig_roots in build_sources(g):
-            src = load_source_data(tag, block, hours_fn, pool_hours, mig_roots)
+            src = load_source_data(tag, block, hours_fn, pool_hours, mig_roots, progress_every_hour=True)
             results.append(process_source(src, vmap, canonical_pool_str))
             for p_, ts_ in pool_print_times(src, rug.migration_pool_map(src.migrations.values())).items():
                 pool_print_ms.setdefault(p_, []).extend(ts_)  # merge, never overwrite (a pool can appear in two sources)
             del src
+            gc.collect()
+            progress(f"{tag}: source done, rows freed, cells kept={len(results[-1]['cells'])}")
         cells = [c for r in results for c in r["cells"]]
         try:
             oof = load_oof(args.artifact_dir)[0]

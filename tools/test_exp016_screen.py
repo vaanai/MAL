@@ -462,7 +462,7 @@ class TapeTests(unittest.TestCase):
             cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
             src = x.load_source_data("P3", "P3", lambda h: {"trade": tp, "create": cp}, ["h0"], [])
         self.assertEqual(set(src.creates), {"MINTB"})
-        self.assertEqual(len(src.rows_by_mint["MINTB"]), len(trades))
+        self.assertEqual(len(src.rows_by_mint["MINTB"]), len([t for t in trades if t["venue"] == "pump_bonding"]))  # never migrated here: only its curve rows are kept
         self.assertEqual(src.through_ms, max(t["t_recv_ms"] for t in trades))
 
 
@@ -1637,6 +1637,61 @@ class DataQualityGuardTests(unittest.TestCase):
                 src = x.load_source_data("P3", "P3", lambda h: {"trade": tp, "create": cp}, [hour], [Path(d)])
         self.assertEqual(sorted(src.migrations), ["MINTB"])
         self.assertEqual(src.migrations_outside_window, 1)
+
+
+class MemoryRegressionTests(unittest.TestCase):
+    def _tape(self, d):
+        creates, trades = mint_tape("MINTB", T0)  # create + bonding + pumpswap
+        _c2, other = mint_tape("MINTU", T0 + 5)  # no create row and no migration: irrelevant to this source
+        tp, cp, mp = Path(d) / "trades.jsonl", Path(d) / "creates.jsonl", Path(d)
+        tp.write_text("".join(json.dumps(t) + "\n" for t in trades + other))
+        cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
+        return tp, cp, trades, other
+
+    def test_rows_of_mints_without_a_create_or_migration_are_not_retained(self):
+        with tempfile.TemporaryDirectory() as d:
+            tp, cp, trades, other = self._tape(d)
+            src = x.load_source_data("P3", "P3", lambda h: {"trade": tp, "create": cp}, ["h0"], [])
+        self.assertEqual(set(src.rows_by_mint), {"MINTB"})  # MINTU's rows were dropped at read time
+        self.assertNotIn("MINTU", src.rows_by_mint)
+
+    def test_migrated_mints_keep_all_rows_and_others_keep_curve_rows_only(self):
+        creates, trades = mint_tape("MINTB", T0)
+        with tempfile.TemporaryDirectory() as d:
+            tp, cp = Path(d) / "trades.jsonl", Path(d) / "creates.jsonl"
+            (Path(d) / "migrations").mkdir()
+            (Path(d) / "migrations" / "migrations-x.jsonl.zst").write_bytes(b"")
+            tp.write_text("".join(json.dumps(t) + "\n" for t in trades))
+            cp.write_text("".join(json.dumps(c) + "\n" for c in creates))
+            row = {"type": "migration", "mint": "MINTB", "slot": 1050, "pool": "P", "block_time": T0 + 10}
+            from datetime import datetime, timezone
+
+            hour = datetime.fromtimestamp(T0, timezone.utc).strftime("%Y-%m-%dT%H")
+            with mock.patch("tools.exp012_virtual_rescore._zcat_lines", return_value=[json.dumps(row)]):
+                src = x.load_source_data("P3", "P3", lambda h: {"trade": tp, "create": cp}, [hour], [Path(d)])
+        self.assertEqual(len(src.rows_by_mint["MINTB"]), len(trades))  # migrated: every row
+
+    def test_process_source_frees_the_rows_of_never_migrated_mints(self):
+        src = fixture_source()
+        creates, trades = mint_tape("MINTQ", T0 + 3)
+        src.creates["MINTQ"] = creates[0]
+        src.rows_by_mint["MINTQ"] = [t for t in trades if t["venue"] == "pump_bonding"]
+        x.process_source(src, VMAP)
+        self.assertEqual(set(src.rows_by_mint), {"MINTA"})
+
+    def test_progress_lines_are_counts_only_and_carry_rss(self):
+        import contextlib
+        import io
+
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(err):
+            tp, cp, trades, other = self._tape(d)
+            x.load_source_data("P3", "P3", lambda h: {"trade": tp, "create": cp}, ["h0"], [], progress_every_hour=True)
+        text = err.getvalue()
+        for needle in ("P3: load start", "hour h0 rows_read=", "tape pass done rows_read=", "mints_kept=1", "rss_mb="):
+            self.assertIn(needle, text)
+        for banned in ("net", "press", "flat", "label", "pnl"):
+            self.assertNotIn(banned, text.lower())
 
 
 if __name__ == "__main__":

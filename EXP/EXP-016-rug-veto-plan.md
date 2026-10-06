@@ -411,6 +411,7 @@ All made 2026-10-06, before any pin and before any EXP-016 code exists:
    - **P1 OOF match (`LIMIT_P1_NO_OOF` = 2%).** The in-book P1 cells with and without a stored OOF score are counted per P1 source; no score on more than 2% of a source's in-book cells refuses.
    - **Denominators** are the windowed migration counts of item 9; the no-create limit covers P1B mints with canonical prints and no create.
    - **`--precount` predicts the real run:** V coverage is computed as the real run does (over all cells, on the raw map), and the V coverage result and the constancy file check (when given) are in `would_refuse`.
+   - **Memory (job #295 ran out of memory at 48 GB in `--precount`).** Rows are filtered at read time, for every source, to mints with a create row or a migration / canonical-pool print; a never-migrated mint keeps only its bonding rows; the block pass drops those rows once the records are built; sources are processed one at a time and only compact cells are kept. Progress lines (counts and RSS MB only) go to stderr at each stage. The tool is a single process: `--max-workers` does not multiply its footprint, and the peak is roughly the retained rows of the largest single source (P2, 7 views).
    - The manager may adjust a numeric limit after the outcome-blind `--precount`, before the V map pin, with a dated note here.
 
 ## Sources
