@@ -637,5 +637,75 @@ class ParityScopeTests(unittest.TestCase):
         self.assertEqual(rg.merge_v_map({POOL: -5}, fb), {POOL: -5})  # a readable stored V <= 0 stays vault-only
 
 
+def _reference_query(records, mint, creators, create_slot, cutoff, my_launch, held):
+    """The pre-index implementation of BlockHistory.query (full scan), kept verbatim as the byte-identity oracle."""
+    win = [r for r in records if r.mint != mint and create_slot - rg.SLOTS_24H <= r.create_slot < cutoff]
+    n_other: dict = {}
+    for r in win:
+        for s, w in r.launch_buys:
+            if s < cutoff and w in my_launch:
+                n_other.setdefault(w, set()).add(r.mint)
+    serial = [w for w, ms in n_other.items() if len(ms) >= 3]
+    earlier = [r for r in win if r.create_slot < create_slot and r.creators & creators]
+
+    def valid(r):
+        return [st for st in r.dump_steps if st.slot + rg.WINDOW_SLOTS < cutoff]
+
+    d2 = sum(1 for r in earlier if valid(r))
+    dumpers = {w for r in win for st in valid(r) for w in st.sellers}
+    prior_buyers = {w for r in earlier for s, w in r.launch_buys if s < cutoff}
+    return {
+        "serial_launch_held": sum(held.get(w, 0) for w in serial) / rg.SUPPLY_RAW,
+        "creator_prior_dumps": float(d2),
+        "prior_dumper_held": sum(held.get(w, 0) for w in dumpers) / rg.SUPPLY_RAW,
+        "creator_buyer_recurrence": float(len(my_launch & prior_buyers)),
+    }
+
+
+class BlockHistoryIndexTests(unittest.TestCase):
+    def test_indexed_query_equals_full_scan_on_random_fixtures(self):
+        import random
+
+        rnd = random.Random(16)
+        wallets = [f"W{i}" for i in range(12)]
+        creators_pool = [f"C{i}" for i in range(6)]
+        n_mints = 400
+        span = 3 * rg.SLOTS_24H
+        recs = []
+        for i in range(n_mints):
+            cs = rnd.randrange(0, span)
+            if i % 7 == 0 and recs:
+                cs = recs[-1].create_slot  # duplicate create slots
+            lb = [(cs + rnd.randrange(0, 4), rnd.choice(wallets)) for _ in range(rnd.randrange(0, 5))]
+            ds = [rg.DumpStep(cs + rnd.randrange(1, 200), frozenset(rnd.sample(wallets, rnd.randrange(0, 4)))) for _ in range(rnd.randrange(0, 3))]
+            recs.append(rg.MintRecord(f"R{i}", frozenset(rnd.sample(creators_pool, rnd.randrange(1, 3))), cs, lb, ds))
+        hist = rg.BlockHistory(recs)
+        checked = nonzero = 0
+        for r in recs:
+            mig = r.create_slot + rnd.randrange(1, 300)
+            cutoffs = [mig]
+            # edge cases: cutoffs at s + 2 and s + 3 of dump steps (s + 2 < cutoff flips), and at launch-buy slots (events in the migration slot itself)
+            for other in rnd.sample(recs, 5):
+                for st in other.dump_steps:
+                    cutoffs += [st.slot + rg.WINDOW_SLOTS, st.slot + rg.WINDOW_SLOTS + 1]
+                for s, _w in other.launch_buys:
+                    cutoffs += [s, s + 1]
+            for cutoff in cutoffs[:12]:
+                my_launch = set(rnd.sample(wallets, rnd.randrange(0, 8)))
+                held = {w: rnd.randrange(0, 10**15) for w in wallets}
+                args = (r.mint, r.creators, r.create_slot, cutoff, my_launch, held)
+                got, want = hist.query(*args), _reference_query(recs, *args)
+                self.assertEqual(repr(got), repr(want))
+                checked += 1
+                nonzero += any(want.values())
+        self.assertGreater(checked, 1000)
+        self.assertGreater(nonzero, 100)  # the oracle is not vacuous
+
+    def test_empty_history_and_cutoff_before_everything(self):
+        args = ("M", frozenset({"C"}), 100, 50, {"W"}, {})
+        self.assertEqual(rg.BlockHistory([]).query(*args), _reference_query([], *args))
+
+
+
 if __name__ == "__main__":
     unittest.main()

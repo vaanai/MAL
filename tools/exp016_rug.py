@@ -685,11 +685,25 @@ class BlockHistory:
 
     def __init__(self, records: Iterable[MintRecord]) -> None:
         self.records = list(records)
+        self._indexed = -1
+        self._order: list[int] = []
+        self._slots: list[int] = []
+
+    def _index(self) -> None:
+        """Order of record indexes by create_slot, so a query is O(log n + k): the window is a contiguous slice. Rebuilt if `records` grew."""
+        if self._indexed != len(self.records):
+            self._order = sorted(range(len(self.records)), key=lambda i: self.records[i].create_slot)
+            self._slots = [self.records[i].create_slot for i in self._order]
+            self._indexed = len(self.records)
 
     def query(
         self, mint: str, creators: frozenset[str], create_slot: int, cutoff: int, my_launch: set[str], held: Mapping[str, int]
     ) -> dict[str, float]:
-        win = [r for r in self.records if r.mint != mint and create_slot - SLOTS_24H <= r.create_slot < cutoff]
+        self._index()
+        lo = bisect.bisect_left(self._slots, create_slot - SLOTS_24H)
+        hi = bisect.bisect_left(self._slots, cutoff)
+        # original record order is kept (byte-identical to the full scan)
+        win = [self.records[i] for i in sorted(self._order[lo:hi]) if self.records[i].mint != mint]
         # d1: this mint's launch buyers that were launch buyers on >= 3 other mints (events before the cutoff)
         n_other: dict[str, set[str]] = {}
         for r in win:
