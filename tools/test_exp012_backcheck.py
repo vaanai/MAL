@@ -31,7 +31,7 @@ def _view(root: Path, hours, sha=True):
         (root / "VIEW.sha256").write_text("\n".join(lines) + "\n")
 
 
-def _row(mint, mig_ms, k=6, size=0.05, net0=int(0.01 * SOL), day="2026-08-16", filled=True, exit="trigger", gross=1, lag=0, p=0.3, status=1):
+def _row(mint, mig_ms, k=6, size=0.05, net0=int(0.01 * SOL), day="2026-08-16", filled=True, exit="trigger", gross=1, lag=2, p=0.3, status=1):
     r = {"mint": mint, "spec": TARGET_SPEC_ID, "day": day, "score": 0.9, "k": k, "size": op.size_lamports(size), "censored": False, "filled": filled,
          "status": status, "gross": gross, "net0": net0, "sides": 2, "p_press": p, "exit": exit, "mig_ms": mig_ms, "rug": {"one_step": False, "crash50": False, "rug": False}}
     if lag:
@@ -91,7 +91,10 @@ class ConstantsTests(unittest.TestCase):
         self.assertEqual(len(bc.CELLS), 6)
         for c in bc.CELLS:
             self.assertIn(bc.cell_label(c), bc.__doc__)
-        self.assertEqual(bc.cell_label(bc.PRIMARY), "thr 0.8031 k=6 size=0.05 fee=505000 exit_lag=0")
+        self.assertEqual(bc.cell_label(bc.PRIMARY), "thr 0.8031 k=6 size=0.05 fee=505000 exit_lag=2")
+        self.assertEqual(bc.PRIMARY["exit_lag"], 2)
+        self.assertEqual([c["exit_lag"] for c in bc.CELLS].count(0), 1)  # lag 0 only for the one optimistic cell
+        self.assertEqual(bc.SENSITIVITY[0], {**bc.PRIMARY, "exit_lag": 0})
         self.assertEqual(len({bc.cell_id(c) for c in bc.CELLS}), 6)
         self.assertEqual(bc.PRIMARY["fee"], op.PRIMARY_FEE)
 
@@ -136,12 +139,13 @@ class AnalysisTests(unittest.TestCase):
         flat = book_stats(_book_trades(trades, "flat"))
         self.assertEqual(prim["flat"]["ci90_sol"], flat["mean_ci90_sol"])
 
-    def test_exit_lag_cell_is_separate(self):
-        rows = self._rows() + [_row("x", self.T0 + 1, k=6, size=0.25, lag=2, net0=SOL // 100), _row("y", self.T0 + 1, k=6, size=0.25, net0=SOL // 50)]
+    def test_exit_lag_cells_are_separate(self):
+        rows = self._rows() + [_row("x", self.T0 + 1, k=6, size=0.05, lag=0, net0=SOL // 100), _row("y", self.T0 + 1, k=6, size=0.25, lag=2, net0=SOL // 50)]
         rep = bc.analyze(rows)
         by = {c["label"]: c for c in rep["cells"]}
-        self.assertEqual(by[bc.cell_label(bc.SENSITIVITY[0])]["n_entered"], 1)
-        self.assertEqual(by[bc.cell_label(bc.SENSITIVITY[-1])]["n_entered"], 1)
+        self.assertEqual(by[bc.cell_label(bc.SENSITIVITY[0])]["n_entered"], 1)  # the lag-0 cell sees only the lag-0 row
+        self.assertEqual(by[bc.cell_label(bc.PRIMARY)]["n_entered"], 12)
+        self.assertEqual(by[bc.cell_label(bc.SENSITIVITY[1])]["n_entered"], 1)
 
     def test_miss_and_week_split_and_per_day(self):
         rows = self._rows() + [_row("miss", self.T0 + 7, filled=False, exit="none", status=0, net0=0)]
@@ -157,10 +161,12 @@ class AnalysisTests(unittest.TestCase):
         self.assertTrue(md.startswith(bc.BANNER))
         self.assertTrue(bc.BANNER.startswith("EXPLORATION, best-of-N context, not a promote, not gate evidence. Frozen EXP-012 (model md5 a1810d21…, thr 0.8031)"))
         self.assertTrue(bc.BANNER.endswith("the promotion gate on a fresh holdout."))
+        self.assertIn("Primary exit lag 2 slots; still optimistic versus the measured live exit leak; the lag-0 cell is an upper bound.", bc.BANNER)
+        self.assertNotIn("Exit lag 0/2 slots", bc.BANNER)
         self.assertIn("Not unread: w1 days were outcome-read by DEC-017 candidate (a)", bc.BANNER)
         self.assertIn("N cells = 6", md)
         self.assertIn("Sharp-drop rate (#336 label", md)
-        self.assertEqual(rep["cumulative_tries_on_pool"], 7)
+        self.assertEqual(rep["cumulative_tries_on_pool"], 1 + len(bc.CELLS))
 
     def test_thirteen_counted_days_and_window_labels(self):
         self.assertEqual(bc.n_counted_days(), 13)
@@ -177,8 +183,9 @@ class AnalysisTests(unittest.TestCase):
         rep = bc.analyze(rows)
         self.assertEqual(rep["primary_without_w1"]["n"], rep["cells"][0]["n_entered"] - 1)
         by = {c["label"]: c for c in rep["cells"]}
-        self.assertIn("cannot support any live size (DEC-020", by[bc.cell_label(bc.SENSITIVITY[0])]["note"])
-        self.assertIn("optimistic lower bound on exit cost", by[bc.cell_label(bc.SENSITIVITY[-1])]["note"])
+        self.assertIn("cannot support any live size (DEC-020", by[bc.cell_label(bc.SENSITIVITY[1])]["note"])
+        self.assertIn("optimistic exit (upper bound)", by[bc.cell_label(bc.SENSITIVITY[0])]["note"])
+        self.assertNotIn("optimistic exit (upper bound)", by[bc.cell_label(bc.SENSITIVITY[-1])]["note"])
         self.assertEqual(rep["cells"][0]["note"], "")
         md = bc.render_md(rep)
         self.assertIn("without w1's hours", md)
@@ -266,17 +273,44 @@ class VPopulationTests(unittest.TestCase):
         self.assertEqual(bc.primary_no_v_trades(rows, {"a": {"p1"}, "b": {"p2"}}, {"p1"}), 1)
         self.assertEqual(bc.primary_no_v_trades(rows, {"a": {"p1"}, "b": {"p2"}}, set()), 0)
 
-    def test_main_refuses_when_a_primary_trade_is_on_a_no_v_pool(self):
+    def _run_main(self, d, collect, no_v):
         cov = {"prints": 10, "covered": 10, "missing": 0, "missing_fraction": 0.0, "missing_pools": 0, "max_missing_fraction": 0.01}
-        rows = [_row("a", self.T0 + 1)]
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(bc, "guard_views", return_value={"roots": {}, "pool": [], "view_sha256": {}}), \
+        with mock.patch.object(bc, "guard_views", return_value={"roots": {}, "pool": [], "view_sha256": {}}), \
                 mock.patch.object(bc, "check_frozen_threshold"), mock.patch.object(bc, "check_model_md5", return_value="x"), mock.patch.object(bc, "check_vmap_sha", return_value="s"), \
                 mock.patch.object(bc.e11, "load_frozen_spec", return_value=(None, bc.FROZEN_THRESHOLD, [])), \
-                mock.patch.object(bc, "v_prepass", return_value=(cov, {"a": {"p1"}})), mock.patch.object(bc, "collect_rows", return_value=rows), \
-                mock.patch.object(bc, "adapter_no_v_pools", return_value={"p1"}), mock.patch.object(bc, "log_tries") as lt:
-            self.assertEqual(bc.main(["--view-dir", "/x", "--out-dir", d, "--tries-log", str(Path(d) / "t.jsonl")]), 2)
-            lt.assert_not_called()
-            self.assertFalse((Path(d) / "report.json").exists())
+                mock.patch.object(bc, "v_prepass", return_value=(cov, {"a": {"p1"}})), mock.patch.object(bc, "collect_rows", **collect), \
+                mock.patch.object(bc, "adapter_no_v_pools", return_value=no_v):
+            return bc.main(["--view-dir", "/x", "--out-dir", str(Path(d) / "out"), "--tries-log", str(Path(d) / "t.jsonl"), "--canonical-tries", str(Path(d) / "canon.jsonl")])
+
+    def _statuses(self, d):
+        out = []
+        for name in ("t.jsonl", "canon.jsonl"):
+            lines = [json.loads(x) for x in (Path(d) / name).read_text().splitlines()]
+            self.assertEqual(len(lines), len(bc.CELLS))
+            self.assertTrue(all(x["config"]["pool"] == "explore-0814" and x["role"] == "exploration" for x in lines))
+            out.append({x["config"]["status"] for x in lines})
+        return out
+
+    def test_main_refuses_when_a_primary_trade_is_on_a_no_v_pool_and_logs_tries(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(self._run_main(d, {"return_value": [_row("a", self.T0 + 1)]}, {"p1"}), 2)
+            self.assertEqual(self._statuses(d), [{"refused_after_read"}, {"refused_after_read"}])
+            self.assertFalse((Path(d) / "out" / "report.json").exists())
+            self.assertFalse((Path(d) / "out" / "report.md").exists())
+
+    def test_exception_after_rows_start_logs_aborted_after_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(RuntimeError):
+                self._run_main(d, {"side_effect": RuntimeError("boom")}, set())
+            self.assertEqual(self._statuses(d), [{"aborted_after_read"}, {"aborted_after_read"}])
+            self.assertFalse((Path(d) / "out" / "report.json").exists())
+
+    def test_completed_run_logs_completed_and_writes_report(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(bc, "git_head", return_value="h"), mock.patch.object(bc, "v_coverage", return_value={"corrected": 0, "no_v": 0, "pumpswap_prints": 0, "no_v_pools": 0}):
+                self.assertEqual(self._run_main(d, {"return_value": [_row("a", self.T0 + 1)]}, set()), 0)
+            self.assertEqual(self._statuses(d), [{"completed"}, {"completed"}])
+            self.assertTrue((Path(d) / "out" / "report.json").exists())
 
     def test_vmap_sha_pinned_and_canonical_path_absolute(self):
         self.assertEqual(bc.VMAP_SHA256, "2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8")
@@ -347,20 +381,21 @@ class PatchTests(unittest.TestCase):
 
 
 class RugLabelTests(unittest.TestCase):
-    def _p(self, t, price, side="sell"):
-        return SimpleNamespace(venue="pumpswap", t_recv_ms=t, price_sol=price, side=side)
+    def _p(self, t, price, side="sell", venue="pumpswap"):
+        return SimpleNamespace(venue=venue, t_recv_ms=t, price_sol=price, side=side)
 
-    def test_one_step_crash_and_none(self):
-        fills = [self._p(0, 1.0, "buy"), self._p(1000, 0.65)]
-        self.assertTrue(bc.rug_label(fills, 0, 0)["one_step"])
-        fills = [self._p(0, 1.0, "buy"), self._p(1000, 0.9, "buy"), self._p(2000, 0.45, "buy")]
-        lab = bc.rug_label(fills, 0, 0)
-        self.assertTrue(lab["crash50"] and not lab["one_step"])
-        fills = [self._p(0, 1.0, "buy"), self._p(1000, 1.6, "buy"), self._p(2000, 0.4, "buy")]
-        self.assertFalse(bc.rug_label(fills, 0, 0)["rug"])  # tp first
-        self.assertIsNone(bc.rug_label(fills, -1, 0))
-        late = [self._p(0, 1.0, "buy"), self._p(bc.RUG_WINDOW_MS + 1, 0.1)]
-        self.assertFalse(bc.rug_label(late, 0, 0)["rug"])
+    def test_label_is_the_imported_336_label_on_a_shared_fixture(self):
+        import tools.exp012_rug_risk as rr
+
+        self.assertIs(bc.rug_label, rr.rug_label)
+        self.assertFalse(hasattr(bc, "RUG_ONE_STEP"))  # the local copy is gone
+        shared = [[self._p(0, 1.0, "buy"), self._p(1000, 0.95), self._p(2000, 0.60)], [self._p(0, 1.0), self._p(1, 0.8), self._p(2, 0.65), self._p(3, 0.49)],
+                  [self._p(0, 1.0), self._p(rr.WINDOW_MS + 1, 0.1), self._p(5, 0.1, venue="bonding")]]
+        got = [bc.rug_label(f, 0, 0) for f in shared]
+        self.assertEqual(got, [rr.rug_label(f, 0, 0) for f in shared])
+        self.assertEqual([x["rug"] for x in got], [True, True, False])
+        self.assertIsNone(bc.rug_label([], -1, 0))
+        self.assertEqual(bc.RUG_K, rr.K)
 
 
 class TriesTests(unittest.TestCase):
