@@ -295,6 +295,7 @@ def label_trade(
     deadline_ms: int | None = None,
     tape_through_ms: int | None = None,
     probe_wallet: str | None = PROBE_WALLET,
+    mint: str | None = None,
 ) -> LabelResult:
     """RUG(m) for one EXP-012 trade. `rows` are the mint's rows (PumpSwap of any pool, optionally bonding); only `migration_pool` prints
     are used. `entry_key`/`exit_key` are (slot, tx_index, event_index) of the entry-state print and the exit-fill
@@ -316,7 +317,7 @@ def label_trade(
     keys = {p.key for p in canon}
     for name, k in (("entry", entry_key), ("exit", exit_key)):
         if k not in keys:
-            raise PoolAttributionRefusal(f"{name} endpoint {k} is not a canonical-pool print of pool {migration_pool}")
+            raise PoolAttributionRefusal(f"{mint or 'mint'}: the {name} endpoint is not a canonical-pool print (no time, slot or price is printed)")
     if exit_key < entry_key:
         raise ValueError("exit before entry")
     win = [p for p in canon if entry_key <= p.key <= exit_key]
@@ -386,7 +387,8 @@ def count_unpriced_pools(
 
 def count_censored(cells: Iterable[Mapping[str, Any]]) -> list[Any]:
     """Censored cells (block edge only): `deadline_ms > tape_through_ms`. Status counts only, no nets.
-    Each cell needs `deadline_ms` and `tape_through_ms` (and optionally `filled`; a MISS is never censored)."""
+    Each cell needs `deadline_ms` and `tape_through_ms`. This helper skips a cell with `filled` False, but the EXP-016 screen (plan 13 item 7)
+    applies the edge rule to MISS cells too: a MISS near a block edge is censored there, and dropped from both books."""
     return [c.get("id") for c in cells if c.get("filled", True) and c["deadline_ms"] > c["tape_through_ms"]]
 
 
@@ -479,7 +481,7 @@ def count_foreign_first_mints(
 
 
 def check_migration_pool_only(
-    rows: Iterable[Mapping[str, Any]], migration_pool: str | None, fills: Iterable[Any]
+    rows: Iterable[Mapping[str, Any]], migration_pool: str | None, fills: Iterable[Any], *, mint: str | None = None, names: Sequence[str] | None = None
 ) -> dict[str, Any]:
     """Every PumpSwap fill (a `TapePrint`, or a dict with t_recv_ms/slot/tx_index/event_index) must trace to a row of
     the mint's migration pool. `rows` are the rows the simulator was FED, in read order. Raises PoolAttributionRefusal
@@ -506,7 +508,7 @@ def check_migration_pool_only(
                 foreign_pools.add(r["pool"])
     bad: list[Any] = []
     n = 0
-    for f in fills:
+    for i, f in enumerate(fills):
         get = (lambda k, f=f: f.get(k)) if isinstance(f, Mapping) else (lambda k, f=f: getattr(f, k, None))
         if get("venue") == "pump_bonding":
             continue
@@ -515,9 +517,9 @@ def check_migration_pool_only(
         fk: Key = (int(get("t_recv_ms") or 0), int(get("slot") or 0), int(tx) if tx is not None else -1, int(get("event_index") or 0))
         pools = {by_key[fk]} if fk in by_key else by_spe.get(fk[1:], set())
         if not migration_pool or len(pools) != 1 or next(iter(pools)) != migration_pool:
-            bad.append((fk, sorted(p for p in pools if isinstance(p, str))))
+            bad.append(names[i] if names is not None and i < len(names) else "fill")
     if bad:
-        raise PoolAttributionRefusal(f"{len(bad)} fill(s) not (uniquely) from migration pool {migration_pool}: {bad[:5]}")
+        raise PoolAttributionRefusal(f"{mint or 'mint'}: the {'/'.join(sorted(set(bad)))} fill is not uniquely from the migration pool (no time, slot or price is printed)")
     return {"fills_checked": n, "foreign_pools": sorted(foreign_pools), "n_foreign_pool_rows": n_foreign}
 
 
@@ -685,11 +687,25 @@ class BlockHistory:
 
     def __init__(self, records: Iterable[MintRecord]) -> None:
         self.records = list(records)
+        self._indexed = -1
+        self._order: list[int] = []
+        self._slots: list[int] = []
+
+    def _index(self) -> None:
+        """Order of record indexes by create_slot, so a query is O(log n + k): the window is a contiguous slice. Rebuilt if `records` grew."""
+        if self._indexed != len(self.records):
+            self._order = sorted(range(len(self.records)), key=lambda i: self.records[i].create_slot)
+            self._slots = [self.records[i].create_slot for i in self._order]
+            self._indexed = len(self.records)
 
     def query(
         self, mint: str, creators: frozenset[str], create_slot: int, cutoff: int, my_launch: set[str], held: Mapping[str, int]
     ) -> dict[str, float]:
-        win = [r for r in self.records if r.mint != mint and create_slot - SLOTS_24H <= r.create_slot < cutoff]
+        self._index()
+        lo = bisect.bisect_left(self._slots, create_slot - SLOTS_24H)
+        hi = bisect.bisect_left(self._slots, cutoff)
+        # original record order is kept (byte-identical to the full scan)
+        win = [self.records[i] for i in sorted(self._order[lo:hi]) if self.records[i].mint != mint]
         # d1: this mint's launch buyers that were launch buyers on >= 3 other mints (events before the cutoff)
         n_other: dict[str, set[str]] = {}
         for r in win:
