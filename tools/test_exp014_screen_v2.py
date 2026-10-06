@@ -162,13 +162,16 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(out_n["v_counts"]["corrected"], 0)
             self.assertGreater(out_n["v_counts"]["no_v"], 0)
             self.assertTrue(rows_v and rows_n)
+            self.assertEqual({r["exit_lag"] for r in rows_v if r["entry_land_k"] == 4}, {sv.EXIT_LAG, 4})  # the deciding lag 2 and the report-only lag = d
+            self.assertEqual({r["exit_lag"] for r in rows_v if r["entry_land_k"] == 8}, {sv.EXIT_LAG, 8})
+            self.assertEqual({r["amm_pool"] for r in rows_v}, {"P1"})  # R2: the real migration pool, not the source tag
+            self.assertEqual({r["pool"] for r in rows_v}, {"P3"})
             for r in rows_v:
-                self.assertEqual(r["exit_lag"], sv.EXIT_LAG)
                 self.assertIn(r["size"], sv.SIZES)
                 self.assertIn(r["entry_land_k"], sv.KS)
                 self.assertIn("p_press", r)
                 self.assertIn("sides", r)
-            self.assertEqual({(r["entry_land_k"], r["size"]) for r in rows_v}, {(d, s) for d in sv.KS for s in sv.SIZES})
+            self.assertEqual({(r["entry_land_k"], r["size"], r["exit_lag"]) for r in rows_v}, {(d, s, lg) for d in sv.KS for s in sv.SIZES for lg in (sv.EXIT_LAG, d)})
             self.assertNotEqual(json.dumps(rows_v, sort_keys=True), json.dumps(rows_n, sort_keys=True))  # V changes the pricing
 
 
@@ -205,10 +208,10 @@ class CostTests(unittest.TestCase):
 
     def test_prepare_rows_removals_are_counted(self) -> None:
         dates = ["2026-09-10"]
-        rows = [self.row(), self.row(mint="X", excluded_by_time=True), self.row(mint="U"), self.row(mint="D", day="2026-09-30"), self.row(mint="O", mig_ms=0)]
-        out, drop = sv.prepare_rows(rows, dates, {"U"})
+        rows = [self.row(amm_pool="ok"), self.row(mint="X", excluded_by_time=True), self.row(mint="U", amm_pool="NOV"), self.row(mint="D", day="2026-09-30"), self.row(mint="O", mig_ms=0)]
+        out, drop = sv.prepare_rows(rows, dates, {"NOV"})
         self.assertEqual([r["mint"] for r in out], ["M"])
-        self.assertEqual(drop, {"excluded_by_time": 1, "out_of_block_window": 1, "day_not_in_scope": 1, "unpriceable_mint": 1})
+        self.assertEqual(drop, {"excluded_by_time": 1, "out_of_block_window": 1, "day_not_in_scope": 1, "no_v_amm_pool": 1})
         self.assertEqual(out[0]["press"], sv.row_nets(rows[0])["press"])  # the model label uses the deciding-cost press
 
 
@@ -254,7 +257,7 @@ class EvaluateTests(unittest.TestCase):
         main = [r for r in rows if r["size"] == sv.DECIDING_SIZE]
         transfer = {"threshold_p90": 0.5, "selected": [r for r in main if r["entry_land_k"] == 4 and r["day"] < "2026-09" and r["mint"].endswith(("-0", "-1", "-2", "-3"))]}
         ev = sv.evaluate(rows, selected, transfer, frozen_mints=set(), dates=dates)
-        self.assertEqual(list(ev["bars"]), ["bar1", "bar2", "bar3", "bar4", "bar5", "bar6", "item5_d8", "item6", "holm"])
+        self.assertEqual(list(ev["bars"]), ["bar1", "bar2", "bar3", "bar2b", "bar4", "bar5", "bar6", "item5_d8", "item6", "holm"])
         self.assertEqual(len(ev["bars"]["holm"]["report"]), sv.HOLM_K)
         self.assertEqual(ev["bars"]["holm"]["alpha"], 0.05)
         self.assertEqual(ev["n_selected"], len(selected))
@@ -310,6 +313,49 @@ class LockTests(unittest.TestCase):
             e15.write_record(out, "completed", True, {sv.TRIES_KEY: "completed"})
             with self.assertRaises(e15.Refused):
                 e15.check_run_lock(out)
+
+
+class Item4bTests(unittest.TestCase):
+    """R1: item 4b is a gating bar on the 14 August dates, n >= 100 waived."""
+
+    def rows_for(self, aug_win: bool) -> tuple[list[dict], list[dict], list[str]]:
+        dates = [f"2026-08-{d:02d}" for d in range(15, 29)] + [f"2026-09-{d:02d}" for d in range(3, 16)]
+        rows, selected = [], []
+        for day in dates:
+            for j in range(12):
+                k = 4 if day < "2026-09" else 8  # 4 a day in August (56 < 100), 8 a day in September (104 >= 100)
+                good = j < k and (aug_win or day >= "2026-09")
+                r = {"mint": f"{day}-{j}", "entry_land_k": 4, "size": sv.DECIDING_SIZE, "day": day, "source": "P2" if day < "2026-09" else "P3", "filled": True, "status": 1,
+                     "net0": 40_000_000 if good else -9_000_000, "sides": 2, "p_press": 0.2}
+                n = sv.row_nets(r)
+                r["flat"], r["press"] = n["flat"], n["press"]
+                rows.append(r)
+                if j < k:
+                    selected.append({"day": day, "mint": r["mint"], "score": 1.0})
+        return rows, selected, dates
+
+    def run_ev(self, aug_win: bool) -> dict:
+        rows, selected, dates = self.rows_for(aug_win)
+        return sv.evaluate(rows, selected, {"threshold_p90": 0.5, "selected": []}, set(), dates)
+
+    def test_august_losers_fail_4b_even_when_september_passes(self) -> None:
+        ev = self.run_ev(False)
+        self.assertIn("bar2b", ev["bars"])
+        self.assertTrue(ev["bars"]["bar2"]["pass"])  # the September gate passes
+        self.assertFalse(ev["bars"]["bar2b"]["pass"])  # the August gate does not
+        self.assertFalse(ev["passes"])
+
+    def test_august_winners_pass_4b_without_n_100(self) -> None:
+        ev = self.run_ev(True)
+        rep = ev["bars"]["bar2b"]["report"]
+        self.assertLess(rep["flat"]["n"], 100)  # 14 dates x 4 selected = 56: the n >= 100 bar is waived
+        self.assertFalse(rep["flat"]["gate"]["n_ge_100"])
+        self.assertTrue(ev["bars"]["bar2b"]["pass"])
+
+    def test_report_only_legs_exist(self) -> None:
+        ro = self.run_ev(True)["report_only"]
+        self.assertIn("bars_without_edge_days", ro)
+        self.assertIn("lag_equals_d", ro)
 
 
 class OutcomeTests(unittest.TestCase):

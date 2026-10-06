@@ -69,7 +69,7 @@ SOURCES = ("P2", "P3", "P4")
 LEGS = e15.LEGS
 OUT_PRECOUNT, OUT_SCREEN, OUT_MD = "precount.json", "screen.json", "screen.md"
 DEFAULT_OUT = Path("/data/mal/exp014-screen-v2")
-CODE_FILES = ("tools/exp014_screen_v2.py", "tools/exp014_m15_trigger.py", "tools/exp014_m15_model.py")
+CODE_FILES = ("tools/exp014_screen_v2.py", "tools/exp014_m15_trigger.py", "tools/exp014_m15_model.py", "tools/exp015_screen.py", "tools/exp017_screen.py", "tools/pumpswap_virtual_adapter.py", "tools/pumpswap_virtual.py")
 BANNER = (
     "EXPLORATION, NO EDGE CLAIM. EXP-014 screen v2. Prior odds about 10 % (plan). One try, Holm k = 1. P1 is not read. "
     "Post-read disclosures: the explore-0814 days were read by DEC-017 (a) and by the EXP-012 backcheck; fresh-0903 was spent by EXP-012; exp011-0909 by EXP-011/015."
@@ -390,7 +390,7 @@ def worker_v(spec: Mapping[str, Any]) -> dict[str, Any]:
     try:
         out = mt.run_worker_m15(
             spec["worker_id"], spec["home"], spec["buf"], spec["creator_hist"], spec["rows_path"], spec["cens_path"], spec["hours"], row_iter_fn=CheckedTrades(),
-            ks=spec["ks"], pool_tag=spec["tag"], pool_end_ms=spec["pool_end_ms"], pool_gap_starts_ms=spec["pool_gap_starts_ms"], sizes=spec["sizes"], exit_lag=spec["exit_lag"],
+            ks=spec["ks"], pool_tag=spec["tag"], pool_end_ms=spec["pool_end_ms"], pool_gap_starts_ms=spec["pool_gap_starts_ms"], sizes=spec["sizes"], exit_lag=spec["exit_lag"], extra_exit_lags=(None,),  # None = lag d, a report-only leg
         )
     finally:
         mt.print_from_trade_row = orig
@@ -422,6 +422,14 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in fh if line.strip()]
 
 
+def _sum_days(results: Sequence[Mapping[str, Any]], name: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for r in results:
+        for d, n in r["counters"]["by_day"][name].items():
+            out[d] = out.get(d, 0) + n
+    return dict(sorted(out.items()))
+
+
 def tape_pass(g: Mapping[str, Any], scratch: Path, vmap: str, max_workers: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     scratch.mkdir(parents=True, exist_ok=True)
     specs = plan_chunks(g, scratch, vmap)
@@ -435,9 +443,9 @@ def tape_pass(g: Mapping[str, Any], scratch: Path, vmap: str, max_workers: int) 
     seen: set[tuple[Any, ...]] = set()
     for s in specs:
         for r in read_jsonl(s["rows_path"]):
-            ident = (r["mint"], r["entry_land_k"], r["size"])
+            ident = (r["mint"], r["entry_land_k"], r["size"], r["exit_lag"])
             if ident in seen:
-                raise SystemExit(f"duplicate (mint, d, size) {ident}")
+                raise SystemExit(f"duplicate (mint, d, size, exit_lag) {ident}")
             seen.add(ident)
             r["source"] = s["tag"]
             rows.append(r)
@@ -447,6 +455,7 @@ def tape_pass(g: Mapping[str, Any], scratch: Path, vmap: str, max_workers: int) 
         "no_v_pools": sorted({p for r in results for p in r["no_v_pools"]}),
         "rows_after_scored_within_bound": sum(sum(r["counters"]["by_day"]["rows_after_scored_within_bound"].values()) for r in results),
         "n_censored": sum(r["n_censored"] for r in results),
+        "no_clock_rows_by_day": _sum_days(results, "no_clock_rows"),
     }
     return rows, stats
 
@@ -461,12 +470,13 @@ def row_nets(r: Mapping[str, Any]) -> dict[str, float]:
     return nets
 
 
-def prepare_rows(rows: Sequence[Mapping[str, Any]], dates: Sequence[str], unpriceable: set[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def prepare_rows(rows: Sequence[Mapping[str, Any]], dates: Sequence[str], no_v_pools: set[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Table rows -> screen rows: the deciding-cost `flat` / `press` replace the table's (the model label is 1{press > 0} on them); `excluded_by_time`,
-    out-of-block-window, out-of-scope-day and no-V mints are removed and counted."""
+    out-of-block-window, out-of-scope-day and rows whose real migration pool (`amm_pool`, from the worker) is in the adapter's no-V pool set are removed and counted. The precount's
+    unpriceable-mint list is report-only."""
     dset = set(dates)
     out: list[dict[str, Any]] = []
-    drop = {"excluded_by_time": 0, "out_of_block_window": 0, "day_not_in_scope": 0, "unpriceable_mint": 0}
+    drop = {"excluded_by_time": 0, "out_of_block_window": 0, "day_not_in_scope": 0, "no_v_amm_pool": 0}
     for r in rows:
         if r["excluded_by_time"]:
             drop["excluded_by_time"] += 1
@@ -474,8 +484,8 @@ def prepare_rows(rows: Sequence[Mapping[str, Any]], dates: Sequence[str], unpric
             drop["out_of_block_window"] += 1
         elif r["day"] not in dset:
             drop["day_not_in_scope"] += 1
-        elif r["mint"] in unpriceable:
-            drop["unpriceable_mint"] += 1
+        elif r.get("amm_pool") in no_v_pools:
+            drop["no_v_amm_pool"] += 1
         else:
             n = row_nets(r)
             out.append({**r, "flat": n["flat"], "press": n["press"], "pool": r["source"]})
@@ -523,12 +533,12 @@ def jaccard_vs_frozen(sel_mints: set[str], eligible_mints: set[str], frozen_mint
     return {"n_a": len(sel_mints), "n_b": len(b), "n_overlap": len(sel_mints & b), "jaccard": j, "overlap_over_min": (len(sel_mints & b) / min(len(sel_mints), len(b))) if sel_mints and b else None, "pass": j is not None and j <= JACCARD_MAX}
 
 
-def frozen_selected_mints(scratch: str) -> set[str]:
+def frozen_selected_mints(scratch: str) -> tuple[set[str], set[str]]:
     """The frozen EXP-012 model's selected mints on the P2/P3/P4 cached EXP-015 rows (features only; the net fields are dropped at parse time)."""
     universe, _ = e17.load_universe(scratch, blind=True)
     scores = e17.frozen_scores(universe)
     mask = e17.frozen_mask(scores)
-    return {u["mint"] for u, m in zip(universe, mask) if m and u["source"] in SOURCES}
+    return {u["mint"] for u, m in zip(universe, mask) if m and u["source"] in SOURCES}, {u["mint"] for u in universe if u["source"] in SOURCES}
 
 
 def mean_pass(trades: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -542,7 +552,27 @@ def mean_pass(trades: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def evaluate(rows: Sequence[dict[str, Any]], selected: Sequence[Mapping[str, Any]], transfer: Mapping[str, Any], frozen_mints: set[str], dates: Sequence[str]) -> dict[str, Any]:
+def gate_4b(rep: Mapping[str, Any]) -> bool:
+    """Item 4b (restored as gating): the gate on the August dates, n >= 100 waived as in the original 4b. mean > 0, CI lower bound > 0 under both
+    resamplers, ex-top-3 > 0, more than half the dates positive (a date with no trade is not positive), both fail models."""
+    ok = True
+    for leg in LEGS:
+        g = rep[leg]["gate"]
+        ok = ok and rep[leg]["mean_sol"] is not None and rep[leg]["mean_sol"] > 0 and g["dates_ge_5"] and g["majority_dates_positive"] and g["ci_lower_gt_0"] and g["ex_top3_gt_0"]
+    return bool(ok)
+
+
+def edge_dates() -> set[tuple[str, str]]:
+    """(source, date) of the first and last UTC date of each source's block (plan item 12: report-only edge days)."""
+    out: set[tuple[str, str]] = set()
+    for tag in SOURCES:
+        bd = e15.block_dates(tag)
+        out |= {(tag, bd[0]), (tag, bd[-1])}
+    return out
+
+
+def evaluate(rows: Sequence[dict[str, Any]], selected: Sequence[Mapping[str, Any]], transfer: Mapping[str, Any], frozen_mints: set[str], dates: Sequence[str],
+             lag_d_rows: Sequence[dict[str, Any]] = (), cached_mints: set[str] | None = None) -> dict[str, Any]:
     """Bars 1-6 (EXP-015 bars adapted; P1 is out of scope), item 5 (d = 8), item 6 (Jaccard, non-B mean), Holm k = 1."""
     idx = index_rows(rows)
     n_dates = len(dates)
@@ -559,7 +589,10 @@ def evaluate(rows: Sequence[dict[str, Any]], selected: Sequence[Mapping[str, Any
     nets = [(row_nets(r) if r["mint"] in sel_keys else None) for r in elig]
     allnets = [row_nets(r) for r in elig]
     paired = e17.paired(uni, nets, allnets, list(range(len(elig))))
-    bars["bar3"] = {"scope": "paired vs entering every mig+15 trigger (same costs), all dates", "report": paired, "pass": paired["pass_bar"]}
+    bars["bar3"] = {"scope": "paired vs entering every mig+15 trigger (same costs), all dates: tests that the unselected book loses, not selection skill", "report": paired, "pass": paired["pass_bar"]}
+    august_set = {d for d in dates if d < "2026-09-01"}
+    rep_aug = e15.scope_report(sel_trades([r for r in main if r["day"] in august_set]), len(august_set))
+    bars["bar2b"] = {"scope": f"item 4b: August only (P2), {len(august_set)} dates, n >= 100 waived", "report": rep_aug, "pass": gate_4b(rep_aug)}
     bars["bar4"] = {"scope": "concentration, all dates", "report": {leg: rep_all[leg]["concentration"] for leg in LEGS}, "pass": bool(rep_all["concentration_all"])}
     p2p4 = mean_pass(sel_trades([r for r in main if r["source"] in ("P2", "P4")]))
     bars["bar5"] = {"scope": "P2 + P4 only", "report": p2p4, "pass": p2p4["pass"]}
@@ -589,7 +622,7 @@ def evaluate(rows: Sequence[dict[str, Any]], selected: Sequence[Mapping[str, Any
     hm = e17.holm({TRIES_KEY: p}, HOLM_ALPHA)
     assert len(hm) == HOLM_K
     bars["holm"] = {"scope": "date-cluster one-sided bootstrap p of mean > 0, max over legs, 10,000 draws, seed 1, Holm k = 1", "p": p, "alpha": HOLM_ALPHA, "report": hm, "pass": bool(hm[TRIES_KEY]["reject"])}
-    order = ("bar1", "bar2", "bar3", "bar4", "bar5", "bar6", "item5_d8", "item6", "holm")
+    order = ("bar1", "bar2", "bar2b", "bar3", "bar4", "bar5", "bar6", "item5_d8", "item6", "holm")
     passes = all(bars[k]["pass"] for k in order)
     big, _ = selected_rows(selected, idx, PRIMARY_K, SIZES[1])
     report_only = {
@@ -597,6 +630,15 @@ def evaluate(rows: Sequence[dict[str, Any]], selected: Sequence[Mapping[str, Any
         "enter_all_mig15": {leg: (sum(n[leg] for n in allnets) / len(allnets) / LAMPORTS) if allnets else None for leg in LEGS},
         "p1": "not read",
     }
+    edges = edge_dates()
+    ne = [r for r in main if (r["source"], r["day"]) not in edges]
+    edge_days = {d for (_t, d) in edges}
+    ne_dates = [d for d in dates if d not in edge_days]
+    report_only["bars_without_edge_days"] = {"edge_dates": sorted(f"{t}:{d}" for t, d in edges), "report": e15.scope_report(sel_trades(ne), len(ne_dates)) if ne else None}
+    ld = selected_rows(selected, index_rows(lag_d_rows), PRIMARY_K, DECIDING_SIZE)[0] if lag_d_rows else []
+    report_only["lag_equals_d"] = {"note": "report-only: sell offset = d (4) instead of the deciding lag 2", "n": len(ld), "report": e15.scope_report(sel_trades(ld), n_dates) if ld else None}
+    if cached_mints is not None:
+        report_only["item6_eligible_mints_missing_from_exp015_cache"] = {"missing": len(eligible_mints - cached_mints), "eligible": len(eligible_mints)}
     return {"bars": bars, "passes": bool(passes), "n_selected": len(selected), "n_eligible_rows": len(elig), "report_only": report_only}
 
 
@@ -675,7 +717,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2 if rec["refused"] else 0
         pre = check_precount(out_dir, g)
         dates = e15.non_p1_dates(True)
-        frozen_mints = frozen_selected_mints(args.exp015_scratch)
+        frozen_mints, cached_mints = frozen_selected_mints(args.exp015_scratch)
         head = e15.git_state()["head"]
         e15.take_lock(out_dir, head, layout_digest(g))
     except (Refused, e15.Refused) as exc:
@@ -692,15 +734,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         nopr = stats["v_counts"]["no_v"] / max(1, stats["v_counts"]["pumpswap_prints"])
         if nopr > V_MAX_MISSING_FRACTION:
             raise RuntimeError(f"{nopr:.2%} of PumpSwap prints had no V in the tape pass (> {V_MAX_MISSING_FRACTION:.0%})")
-        unpriceable = {m for c in pre["counts"].values() for m in c["unpriceable_mints"]}
-        srows, dropped = prepare_rows(rows, dates, unpriceable)
+        no_v_pools = set(stats["no_v_pools"])  # the adapter's own set: pools whose V was missing in this pass (the worker's real migration pool, `amm_pool`)
+        unpriceable_report = sorted({m for c in pre["counts"].values() for m in c["unpriceable_mints"]})  # report-only
+        deciding = [r for r in rows if r["exit_lag"] == EXIT_LAG]
+        srows, dropped = prepare_rows(deciding, dates, no_v_pools)
+        lag_d_rows, _ = prepare_rows([r for r in rows if r["exit_lag"] == r["entry_land_k"]], dates, no_v_pools)
         main_rows = [r for r in srows if r["size"] == DECIDING_SIZE]
         selected, folds, row_counts = mm.nested_lodo_select(main_rows, dates, n_jobs=min(args.max_workers, e15.MAX_WORKERS_CAP))
         sept = [d for d in dates if d >= "2026-09-01"]
         transfer = transfer_selection(main_rows, sept, [d for d in dates if d < "2026-09-01"])
-        ev = evaluate(srows, selected, transfer, frozen_mints, dates)
+        ev = evaluate(srows, selected, transfer, frozen_mints, dates, lag_d_rows, cached_mints)
         rep = {"schema": SCHEMA, "head": head, "banner": BANNER, "evaluation": ev, "tape_stats": stats, "dropped_rows": dropped, "row_counts": row_counts, "folds": folds,
-               "precount_digest": pre["layout_digest"], "wall_s": time.time() - t0}
+               "precount_digest": pre["layout_digest"], "wall_s": time.time() - t0,
+               "precount_unpriceable_mints_report_only": len(unpriceable_report)}
         rep["outcome"] = outcome_line(ev)
         (out_dir / OUT_SCREEN).write_text(json.dumps(rep, indent=2, default=str) + "\n", encoding="utf-8")
         (out_dir / OUT_MD).write_text(render_md(rep), encoding="utf-8")
@@ -710,6 +756,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     except Exception as exc:  # noqa: BLE001 - the try is spent after `started`; record and stop
         print(f"aborted after started: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if started:
+            try:
+                log_try(logs, out_dir, "aborted")  # both logs, so the spent try is on record
+            except Exception as exc2:  # noqa: BLE001
+                print(f"could not write the aborted line: {exc2}", file=sys.stderr)
         return 3
     finally:
         e15.write_record(out_dir, status, started, {TRIES_KEY: status})

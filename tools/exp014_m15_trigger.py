@@ -425,7 +425,7 @@ def score_entry(
     lag = d if exit_lag is None else exit_lag
 
     def cens(reason: str) -> tuple[None, dict[str, Any]]:
-        return None, {"mint": mint_id, "day": trig.day, "mig_day": trig.mig_day, "trigger_ms": T, "entry_land_k": d, "size": size, "reason": reason}
+        return None, {"mint": mint_id, "day": trig.day, "mig_day": trig.mig_day, "trigger_ms": T, "entry_land_k": d, "size": size, "exit_lag": lag, "reason": reason}
 
     def gap_hit(end_ms: int) -> bool:
         # E2: a missing hour that starts anywhere in (mig_t, exit] leaves the pool state (the window, the spot
@@ -615,6 +615,7 @@ def run_worker_m15(
     pool_gap_starts_ms: Sequence[int] | None = None,
     sizes: Sequence[int] | None = None,
     exit_lag: int | None = None,
+    extra_exit_lags: Sequence[int | None] = (),
 ) -> dict[str, Any]:
     """One chunk: creates from the home hours, tape through the home + buffer hours. Rows and
     censored records stream to disk (paths) or, with a None path, come back under "rows" /
@@ -652,16 +653,21 @@ def run_worker_m15(
         trk = pending.pop(mint_id)
         assert trk.mig_t is not None and trk.T is not None and trk.mig_slot is not None
         trig = Trigger(trk.T, trk.mig_t, trk.mig_slot, trk.features(creator_hist))
-        rows, cens = score_trigger(
-            mint_id, trig, trk.mint, curve, gs, through_ms, ks, sizes, gap_starts_ms=gap_starts, pool_end_ms=pool_end_ms, pool_gap_starts_ms=pool_gap_starts_ms, exit_lag=exit_lag
-        )
+        rows, cens = [], []
+        for lag in (exit_lag, *extra_exit_lags):  # extra lags (None = lag d) are report-only legs scored in the same pass
+            r_, c_ = score_trigger(
+                mint_id, trig, trk.mint, curve, gs, through_ms, ks, sizes, gap_starts_ms=gap_starts, pool_end_ms=pool_end_ms, pool_gap_starts_ms=pool_gap_starts_ms, exit_lag=lag
+            )
+            rows += r_
+            cens += c_
         for it in rows + cens:
-            ident = (it["mint"], it["entry_land_k"], it.get("size"))
+            ident = (it["mint"], it["entry_land_k"], it.get("size"), it.get("exit_lag"))
             if ident in seen_keys:
                 raise SystemExit(f"duplicate (mint, d) {ident} in worker {worker_id}")
             seen_keys.add(ident)
             if pool_tag is not None:
                 it["pool"] = pool_tag
+            it["amm_pool"] = trk.pool  # the migration print's real pool id (V is keyed on it)
         for fh, target_list, items in ((rows_fh, out_rows, rows), (cens_fh, out_cens, cens)):
             if fh is not None:
                 for it in items:
