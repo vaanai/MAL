@@ -78,9 +78,10 @@ The replay read (n = 451) showed +0.0205 SOL/trade under the pressure model. The
   - **Already in DEC-020 §3:** loss cap 0.35 SOL realized on the step's own counter; 40 attempts; max 2 open; Helm watchdog alert at 0.25 SOL.
   - **No daily cap at this rung.** One stop costs about 0.075–0.10 SOL, so the 0.35 total cap almost always fires first.
   - **Added, new executor code before 10-16 (review plus security review):**
-    - **Divergence stop:** after 10 closed step trades, halt new buys if the mean realized entry vs quote is worse than −200 bps, or the mean live−sim P&L residual is below −0.0075 SOL per trade (3% of 0.25).
-    - **Landing-fail stop:** after 10 attempts, halt new buys if more than 30% failed to land.
-    - Exits continue under either halt.
+    - **Divergence stop (executor, `DEC020_STOPS`):** after 10 closed step trades, halt new buys if the mean `entry_vs_quote_bps` is below −200, or the mean `exit_vs_quote_bps` on landed sells is below −200. Both fields are (actual − quote) / quote, so a negative value is worse (fewer tokens than quoted on entry, less SOL than quoted on exit).
+    - **Landing-fail stop (executor):** after 10 resolved buy attempts, halt new buys if more than 30% did not land (on-chain failure or expired unlanded).
+    - **Live−sim residual (manager, not executor):** the manager's calibration (`tools/probe_sim_calibration.py`) runs every 5 step trades. If the mean live−sim P&L residual is below −0.0075 SOL per trade (3% of 0.25) after 10 closed trades, the manager places the STOP file under this amendment's owner-delegated authority and tells the owner and Helm the same hour.
+    - The executor stops are latched in the dec020 state, survive restarts, and halt new buys only. Exits continue under every halt. Config may make them stricter, never looser.
 - **Rung 3 (0.5 SOL):** §2's proposed stops: daily 0.75, total 1.5, plus the landing-fail and divergence stops at 30. They are re-checked against rung 2's measured costs before that rung is proposed.
 
 **Why the manager chose these levels.**
