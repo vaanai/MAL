@@ -297,7 +297,7 @@ The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded 
   - #402: LP history, `lphist`/`diffs`, LP-law merge with the ceiling, dry-run mode, LP supply and slots on fetch. Merge `4c5da8c`. Quant-proof OK at `957ea1f`.
   - #405: vbook (c), (c′) and (d), plus `lphist-entered`. Merge `5da3349`. Quant-proof OK at `e9ea702`.
   - DEC text: #400 (`8879b37`), #403 (`2269ad2`), #407 (`49c1033`), #409 (`304dded`).
-  - **Still required by (c′):** the Amendment 3(a) sensitivity tool's candidate pricing at k(p50) and k(p90), merged to `main` with quant-proof OK, with its commit recorded here, before 2026-10-16T00:00Z.
+  - #411: Amendment 3(a) sensitivity on (B), with the §7(c)/(c′) candidate pricing at k(p50) and k(p90), bound to vbook's LP inputs. Merge `3355ad1`. Quant-proof OK at `5601f2f`. **All §7 tool requirements are now met, before 2026-10-16T00:00Z.**
 - **Effect.** No bar, threshold, model, window, fail model or trial term changes.
   - (c) moves (B) by the V0 the chain used. Where an LP event falls inside a hold, it takes the worse case.
   - Unexplained or unresolved moves can only make (B) NOT_DECIDABLE.
