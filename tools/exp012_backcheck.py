@@ -15,23 +15,26 @@ migration is scored with the FROZEN model (ARTIFACTS/exp012/model.txt, tools.exp
 
 PRE-DECLARED CELLS (6; constants CELLS in this module; the labels below are asserted equal to the code by a test).
 All at the frozen threshold, fee 505000, exit tp50_sl30. Fail models: flat 15% and pressure (slope scale 1).
-  PRIMARY
-    thr 0.8031 k=6 size=0.05 fee=505000 exit_lag=0
+  PRIMARY (Amendment 1, 2026-10-06, before any outcome was computed: moved to exit lag 2, the realistic exit of the #329/#339
+  exit re-check, job #180; still optimistic versus the measured live exit leak)
+    thr 0.8031 k=6 size=0.05 fee=505000 exit_lag=2
   SENSITIVITY (report-only, never selected among, none can change the primary)
-    thr 0.8031 k=6 size=0.25 fee=505000 exit_lag=0
-    thr 0.8031 k=6 size=0.5 fee=505000 exit_lag=0
-    thr 0.8031 k=4 size=0.05 fee=505000 exit_lag=0
-    thr 0.8031 k=8 size=0.05 fee=505000 exit_lag=0
+    thr 0.8031 k=6 size=0.05 fee=505000 exit_lag=0
     thr 0.8031 k=6 size=0.25 fee=505000 exit_lag=2
-The exit-lag cell uses exploration_exits' exit_land_k = 2 (slots the sell lands after the trigger; score_one exposes it).
-Sizes above 0.05 miss size-proportional costs (sell shortfall, MEV) and do not by themselves support a larger live size.
+    thr 0.8031 k=6 size=0.5 fee=505000 exit_lag=2
+    thr 0.8031 k=4 size=0.05 fee=505000 exit_lag=2
+    thr 0.8031 k=8 size=0.05 fee=505000 exit_lag=2
+The lag-0 cell is labelled "optimistic exit (upper bound)"; it is the only cell reported at lag 0. exit_lag uses
+exploration_exits' exit_land_k (slots the sell lands after the trigger; score_one exposes it).
+Sizes above 0.05 are mechanical (fee arithmetic + modelled AMM impact) and cannot support any live size (DEC-020 section 1).
 
 Simulation is tools.exp012_operating_point's, by import (multi_cell_patch with explicit combos): V pricing through the
 PumpSwap virtual-reserve adapter, latency_curve buy at k slots with its 15% cap (a MISS pays the per-side fee), the
-frozen tp50_sl30 exit, 30-minute exit cap. CIs: the gate's cluster bootstrap (tools.paper_attention_promote.book_stats,
+frozen tp50_sl30 exit, 30-minute exit cap. The deciding read nets the measured live costs out of every filled trade (sell
+shortfall 16 bps of proceeds, sim-vs-live entry gap 26.08 bps in tokens received; haircut_delta); the raw result is
+report-only (cells_raw). The pre-declared outcome rules (read_outcome) are computed and written into the report. CIs: the gate's cluster bootstrap (tools.paper_attention_promote.book_stats,
 1,000 draws, seed 1; 5th-95th percentile of the mean). Sharp-drop rate (report-only; NOT a rug rate, it measures post-migration volatility) is the #336 label (one-step drop >= 30%
-vs the previous print, or a print < 0.5x entry before 1.5x, within 15 min); tools/exp012_rug_risk.py is not on main, so
-the same definition is implemented here and tested.
+vs the previous print, or a print < 0.5x entry before 1.5x, within 15 min), imported from tools.exp012_rug_risk.
 
 Refuses (exit 2, before reading any row): a view under a holdout/reserved root (fresh-0903, fresh-0828, fresh-0808,
 forward-1002, /data/mal/blocks*, the EXP-011 spent walkers), a view with no VIEW.sha256 or a hash mismatch, a view with
@@ -51,6 +54,7 @@ import contextlib
 import hashlib
 import json
 import os
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -67,7 +71,8 @@ import tools.exp012_score as s12
 from tools.exp012_exit_sensitivity import side
 from tools.exp012_latency_sensitivity import DEFAULT_ARTIFACT_DIR, _forbidden_hit
 from tools.exp012_latency_virtual import DEFAULT_VMAP, set_env
-from tools.latency_curve import _hour_file
+from tools.exp012_rug_risk import K as RUG_K, rug_label  # the #336 label and its entry k (6)
+from tools.latency_curve import MISS, _hour_file
 
 TOOL = "tools.exp012_backcheck"
 POOL_NAME = "explore-0814"
@@ -77,21 +82,25 @@ COUNT_START = "2026-08-15T12"  # first 24 h of the pool are feature buffer only
 WEEK_SPLIT = "2026-08-22T12"  # first 7 counted days | last 6
 HOUR_FMT = "%Y-%m-%dT%H"
 FROZEN_THRESHOLD = op.FROZEN_THRESHOLD
-PRIMARY_FEE = op.PRIMARY_FEE  # 505,000 = priority 2 x 250k + base, the operating-point convention
+PRIMARY_FEE = op.PRIMARY_FEE  # 505,000 = 500,000 priority + 5,000 base per side (DEC-019 Am.1), the operating-point convention
 LAMPORTS = 1_000_000_000
 MODEL_MD5 = "a1810d219ed61db64a396f40dc302ce5"  # ARTIFACTS/exp012/train_manifest.json
 EXISTING_TRIES_ON_POOL = 1  # DEC-017 candidate (a) read explore-0814/w1
 W1_START = "2026-08-26T12"  # w1 = [2026-08-26T12, 2026-08-28T12): outcome-read by DEC-017 candidate (a)
 BANNER = (
-    "EXPLORATION, best-of-N context, not a promote, not gate evidence. Frozen EXP-012 (model md5 a1810d21…, thr 0.8031) on explore-0814 "
+    "EXPLORATION, best-of-N context, not a promote, not gate evidence. Frozen EXP-012 (model md5 a1810d21\u2026, thr 0.8031) on explore-0814 "
     "[2026-08-14T12, 2026-08-28T12), counted from 2026-08-15T12. Model never trained on these days. Not unread: w1 days were outcome-read by "
-    "DEC-017 candidate (a), and EXP-013/EXP-014 August bars are no longer on unread data after this run. k counts from the first PumpSwap print, "
-    "not migration. Exit lag 0/2 slots is optimistic versus the measured live exit leak. Sizes above 0.05 SOL add only fee arithmetic and modelled "
-    "AMM impact; they cannot support any live size (DEC-020 §1). Sell shortfall (−11..−16 bps), entry noise (±300 bps) and MEV are not "
-    "added. The only evidence for EXP-012 is the 10-16 forward read and the promotion gate on a fresh holdout."
+    "DEC-017 candidate (a), and EXP-013/EXP-014 August bars are no longer on unread data after this run. Cumulative tries on explore-0814: 7. "
+    "k counts from the first PumpSwap print, not migration (live a25eb17 k(migrate) = 5\u20136). Primary exit lag 2 slots; still optimistic versus "
+    "the measured live exit leak (a25eb17 stops \u22120.3039 to \u22120.4338); the lag-0 cell is an upper bound. Outcome rules are read net of the "
+    "measured sell shortfall (\u221216 bps) and sim-vs-live entry gap (+26.08 bps, job #175); MEV is not added. Sizes above 0.05 SOL add only fee "
+    "arithmetic and modelled AMM impact; they cannot support any live size (DEC-020 \u00a71). Context only for DEC-020; Option A remains the "
+    "recommendation. The only evidence for EXP-012 is the 10-16 forward read and the promotion gate on a fresh holdout."
 )
+SELL_SHORTFALL_BPS = 16.0  # worst of a25eb17's -11..-16 bps, taken on the sell proceeds
+ENTRY_GAP_BPS = 26.08  # mean sim-vs-live entry gap, job #175: the sim got more tokens than live; a cut in tokens received
 SIZE_NOTE = "mechanical (fee arithmetic + modelled AMM impact), not evidence; cannot support any live size (DEC-020 §1)"
-LAG_NOTE = "optimistic lower bound on exit cost vs the measured live exit leak"
+LAG_NOTE = "optimistic exit (upper bound)"
 V_MAX_MISSING_FRACTION = 0.01
 VMAP_SHA256 = "2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8"  # pool_v_0814.json (job #196: 34,945 pools, 1 null of the 16,346 August pools)
 DEFAULT_VMAP_0814 = "/data/mal/pumpswap-virtual/pool_v_0814.json"
@@ -102,11 +111,6 @@ MARKER = "tries_logged.marker"
 RESULT_NAME = "report.json"
 ROWS_NAME = "backcheck_rows.jsonl"
 ENV_ARTIFACT = "MAL_BACKCHECK_ARTIFACT"
-RUG_WINDOW_MS = 15 * 60 * 1000
-RUG_ONE_STEP = -0.30
-RUG_CRASH = 0.5
-RUG_TP = 1.5
-RUG_K = 6
 V_INCOMPLETE_FRACTION = 0.01
 
 # Extra holdout / reserved name fragments refused anywhere in a resolved view path (beyond op's guarded prefixes).
@@ -117,8 +121,8 @@ def _c(k: int, size_sol: float, exit_lag: int = 0) -> dict[str, Any]:
     return {"threshold": FROZEN_THRESHOLD, "k": k, "size_sol": size_sol, "fee": PRIMARY_FEE, "exit_lag": exit_lag}
 
 
-PRIMARY = _c(6, 0.05)
-SENSITIVITY = (_c(6, 0.25), _c(6, 0.5), _c(4, 0.05), _c(8, 0.05), _c(6, 0.25, 2))
+PRIMARY = _c(6, 0.05, 2)
+SENSITIVITY = (_c(6, 0.05, 0), _c(6, 0.25, 2), _c(6, 0.5, 2), _c(4, 0.05, 2), _c(8, 0.05, 2))
 CELLS = (PRIMARY, *SENSITIVITY)
 
 
@@ -245,33 +249,6 @@ class MultiViewHours:
             raise SystemExit(f"missing trades file for hour {key} under {root}")
         create = _hour_file(root / "creates", "creates", key)
         return {"hour": key, "day": key[:10], "end": int(hour_dt(key).timestamp()) + 3600, "trade": trade, "create": create}
-
-
-# --- rug label (the #336 definition; tools/exp012_rug_risk.py is not on main) -----------------------------------------
-
-
-def rug_label(fills: Sequence[Any], idx: int, landing_ms: int, window_ms: int = RUG_WINDOW_MS) -> dict[str, Any] | None:
-    """None when there is no entry state. PumpSwap prints after the entry state within the window: one_step = a SELL print at
-    <= -30% of the immediately preceding print (the first preceding is the entry state's price); crash50 = a print below
-    0.5x the entry price before any print >= 1.5x. rug = one_step or crash50."""
-    if idx < 0:
-        return None
-    p0 = fills[idx].price_sol
-    prev = p0
-    one_step = crash = tp_seen = False
-    for p in fills[idx + 1 :]:
-        if p.venue != "pumpswap" or p.t_recv_ms <= landing_ms:
-            continue
-        if p.t_recv_ms > landing_ms + window_ms:
-            break
-        if prev > 0 and p.side == "sell" and p.price_sol / prev - 1.0 <= RUG_ONE_STEP:
-            one_step = True
-        if p.price_sol >= RUG_TP * p0:
-            tp_seen = True
-        if not tp_seen and p.price_sol < RUG_CRASH * p0:
-            crash = True
-        prev = p.price_sol
-    return {"one_step": one_step, "crash50": crash, "rug": one_step or crash}
 
 
 # --- tape pass (worker side) ---------------------------------------------------------------------------------------------
@@ -515,13 +492,36 @@ def cell_rows(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any]) -> list[M
     return [r for r in rows if not r.get("unselected") and int(r["k"]) == c["k"] and int(r["size"]) == size and int(r.get("exit_lag", 0)) == lag]
 
 
-def cell_trades(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any]) -> tuple[list[dict[str, Any]], int, dict[str, Mapping[str, Any]]]:
-    """(trades at the cell's fee, n_censored, {mint: cached row}); the operating point's cell_trades does the pricing."""
+def haircut_delta(r: Mapping[str, Any]) -> float:
+    """Change to a FILLED trade's net0 (lamports, before the per-side fee) for the measured live costs. Exit proceeds are
+    P = max(net0 + size, 0) (a sell that could not be quoted has no proceeds and is left alone). Entry gap: g = 26.08 bps fewer
+    tokens received, so the proceeds scale by (1 - g). Sell shortfall: s = 16 bps off the sell proceeds, so by (1 - s).
+    net0' = net0 - P * (1 - (1 - g)(1 - s)). Misses and censored rows are unchanged. The fee, the fail models and every
+    other term are applied afterwards by the operating point's own pricing."""
+    if r.get("censored") or not r.get("filled") or int(r.get("status", 0)) == MISS:
+        return 0.0
+    proceeds = max(int(r["net0"]) + int(r["size"]), 0)
+    g, sh = ENTRY_GAP_BPS / 1e4, SELL_SHORTFALL_BPS / 1e4
+    return -proceeds * (1.0 - (1.0 - g) * (1.0 - sh))
+
+
+def haircut_row(r: Mapping[str, Any]) -> dict[str, Any]:
+    out = dict(r)
+    if not r.get("censored") and "net0" in r:
+        out["net0"] = r["net0"] + haircut_delta(r)
+    return out
+
+
+def cell_trades(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any], haircut: bool = True) -> tuple[list[dict[str, Any]], int, dict[str, Mapping[str, Any]]]:
+    """(trades at the cell's fee, n_censored, {mint: cached row}); the operating point's cell_trades does the pricing.
+    haircut=True (default, the deciding read) nets the measured live costs out of each filled trade first; False is the raw
+    simulator result (report-only)."""
     sel = cell_rows(rows, c)
     by_mint = {r["mint"]: r for r in sel}
     if len(by_mint) != len(sel):
         raise SystemExit("integrity: duplicate (mint, cell) rows")
-    trades, cen = op.cell_trades({(c["k"], op.size_lamports(c["size_sol"])): sel}, c)
+    priced = [haircut_row(r) for r in sel] if haircut else sel
+    trades, cen = op.cell_trades({(c["k"], op.size_lamports(c["size_sol"])): priced}, c)
     for t in trades:  # the counted day: a 24 h window anchored at the count start (12:00Z), labelled by its start date
         t["day"] = day_label(int(by_mint[t["mint"]]["mig_ms"]))
     return trades, cen, by_mint
@@ -546,8 +546,8 @@ def day_labels(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     return sorted({day_label(int(r["mig_ms"])) for r in rows})
 
 
-def cell_report(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any], n_days: int) -> dict[str, Any]:
-    trades, cen, by_mint = cell_trades(rows, c)
+def cell_report(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any], n_days: int, haircut: bool = True) -> dict[str, Any]:
+    trades, cen, by_mint = cell_trades(rows, c, haircut)
     st = op.cell_stats(trades, c, n_days, cen)
     classes = [exit_class(by_mint[t["mint"]]) for t in trades]
     n_filled = sum(1 for t in trades if t["filled"])
@@ -568,7 +568,7 @@ def cell_report(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any], n_days:
             "tp_rate_filled": (n_tp / n_filled) if n_filled else None,
             "flat_mean_pct_of_size": None if not st["flat"] else st["flat"]["mean_sol"] / c["size_sol"] * 100.0,
             "press_mean_pct_of_size": None if not st["press"] else st["press"]["mean_sol"] / c["size_sol"] * 100.0,
-            "note": " ; ".join(x for x in (SIZE_NOTE if c["size_sol"] != PRIMARY["size_sol"] else "", LAG_NOTE if c["exit_lag"] else "") if x),
+            "note": " ; ".join(x for x in (SIZE_NOTE if c["size_sol"] != PRIMARY["size_sol"] else "", LAG_NOTE if c["exit_lag"] == 0 else "") if x),
         }
     )
     st.pop("axis", None)
@@ -617,7 +617,7 @@ def sharp_drop_context(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any] =
     labelled = [r["rug"] for r in filled if r.get("rug")]
     n = len(labelled)
     return {
-        "note": "report-only; measures post-migration volatility, NOT rugs (label base rate 0.5664 in #191); the #336 label (tools/exp012_rug_risk.py is not on main, same definition implemented here)",
+        "note": "report-only; measures post-migration volatility, NOT rugs (label base rate 0.5664 in #191); the #336 label (tools.exp012_rug_risk.rug_label, imported)",
         "n_filled": len(filled),
         "n_labelled": n,
         "sharp_drop_fraction": (sum(1 for x in labelled if x["rug"]) / n) if n else None,
@@ -626,14 +626,82 @@ def sharp_drop_context(rows: Sequence[Mapping[str, Any]], c: Mapping[str, Any] =
     }
 
 
+RULES = {
+    0: "no reading (the run was refused or aborted)",
+    1: "inconclusive (n entered < 100)",
+    2: "strong caution against any size step (either leg's mean < 0)",
+    3: "consistent with EXP-012 still working on older days at a 2-slot exit lag. Context only for DEC-020: no simulation can say whether 0.25 SOL works (DEC-020 \u00a71), and Option A (after the 10-16 forward read) remains the recommendation",
+    4: "does not support",
+}
+MIN_N = 100
+MIN_DAYS = 5
+
+
+def leg_bars(leg: Mapping[str, Any] | None, n_entered: int) -> dict[str, bool]:
+    if not leg:
+        return {"n": n_entered >= MIN_N, "days": False, "ci_lower_gt_0": False, "ex_top3_gt_0": False, "all": False}
+    days_ok = leg["days_with_trades"] >= MIN_DAYS and leg["days_positive"] * 2 > leg["days_with_trades"]
+    ci_ok = bool(leg["ci90_sol"]) and leg["ci90_sol"][0] > 0
+    top_ok = leg["ex_top3_sol"] is not None and leg["ex_top3_sol"] > 0
+    b = {"n": n_entered >= MIN_N, "days": bool(days_ok), "ci_lower_gt_0": bool(ci_ok), "ex_top3_gt_0": bool(top_ok)}
+    b["all"] = all(b.values())
+    return b
+
+
+def _pos(x: float | None) -> bool | None:
+    return None if x is None else x > 0
+
+
+def modifier_reasons(primary: Mapping[str, Any], halves: Mapping[str, Any], without_w1: Mapping[str, Any]) -> list[str]:
+    """Modifier (rule 5): the first-7 and last-6 halves disagree in sign, or the primary without w1 flips sign, on either leg.
+    A half or a without-w1 book with no trades counts as a disagreement (the sign cannot be confirmed)."""
+    out = []
+    for leg in ("flat", "press"):
+        a, b = halves["first_7_days"][leg], halves["last_6_days"][leg]
+        sa, sb = _pos(a and a["mean_sol"]), _pos(b and b["mean_sol"])
+        if sa is None or sb is None or sa != sb:
+            out.append(f"{leg}: halves disagree in sign")
+        w = without_w1[leg]
+        sw, sf = _pos(w and w["mean_sol"]), _pos(primary[leg] and primary[leg]["mean_sol"])
+        if sw is None or sf is None or sw != sf:
+            out.append(f"{leg}: primary without w1 flips sign")
+    return out
+
+
+def read_outcome(primary: Mapping[str, Any], halves: Mapping[str, Any], without_w1: Mapping[str, Any], run_status: str = "completed") -> dict[str, Any]:
+    """The pre-declared outcome rules on the HAIRCUT primary, applied in order (first match wins):
+    0 a refused or aborted run: no reading; 1 n < 100: inconclusive; 2 either leg's mean < 0: strong caution against any size
+    step; 3 every bar under BOTH legs: consistent with ...; 4 anything else: does not support. Modifier (rule 5): if it fires on a
+    rule-3 match, the reading is downgraded to rule 4's."""
+    if run_status != "completed":
+        return {"matched_rule": 0, "matched": RULES[0], "modifier": None, "final_reading": RULES[0], "bars": None}
+    n = primary["n_entered"]
+    bars = {leg: leg_bars(primary[leg], n) for leg in ("flat", "press")}
+    mods = modifier_reasons(primary, halves, without_w1)
+    if n < MIN_N:
+        rule = 1
+    elif any(primary[leg] is not None and primary[leg]["mean_sol"] < 0 for leg in ("flat", "press")):
+        rule = 2
+    elif bars["flat"]["all"] and bars["press"]["all"]:
+        rule = 3
+    else:
+        rule = 4
+    final, fired = RULES[rule], False
+    if rule == 3 and mods:
+        final, fired = RULES[4], True
+    return {"matched_rule": rule, "matched": RULES[rule], "modifier": {"rule": 5, "fired": fired, "reasons": mods, "applied_to": "rule 3 only"}, "final_reading": final, "bars": bars}
+
+
 def analyze(rows: Sequence[Mapping[str, Any]], cells: Sequence[Mapping[str, Any]] = CELLS, count_start: str = COUNT_START) -> dict[str, Any]:
     cr = counted(rows, count_start)
     days = day_labels(cr)
     selected = {r["mint"] for r in cr if not r.get("unselected")}
     n_days = n_counted_days(count_start)
     cell_reports = [cell_report(cr, c, n_days) for c in cells]
+    raw_reports = [cell_report(cr, c, n_days, haircut=False) for c in cells]
     p = cells[0]
     ptrades, _cen, _bm = cell_trades(cr, p)
+    halves, wo_w1 = week_split(cr, p), primary_without_w1(cr, p)
     return {
         "schema": "exp012_backcheck_v1",
         "status": BANNER,
@@ -653,10 +721,18 @@ def analyze(rows: Sequence[Mapping[str, Any]], cells: Sequence[Mapping[str, Any]
         "day_definition": DAY_DEFINITION,
         "ci": "gate cluster bootstrap, 1000 draws, seed 1 (tools.paper_attention_promote.book_stats), 5th-95th percentile of the mean",
         "primary": cell_label(p),
+        "haircut": {
+            "applies_to": "every cell in `cells` and the primary tables below (the deciding read); `cells_raw` is the unadjusted simulator result, report-only",
+            "sell_shortfall_bps": SELL_SHORTFALL_BPS,
+            "entry_gap_bps": ENTRY_GAP_BPS,
+            "formula": "net0' = net0 - P * (1 - (1 - 0.002608)(1 - 0.0016)), P = max(net0 + size, 0), filled trades only; then fee and both fail models as usual",
+        },
         "cells": cell_reports,
+        "cells_raw": raw_reports,
+        "reading": read_outcome(cell_reports[0], halves, wo_w1),
         "primary_per_day": per_day_table(ptrades),
-        "primary_week_split": week_split(cr, p),
-        "primary_without_w1": primary_without_w1(cr, p),
+        "primary_week_split": halves,
+        "primary_without_w1": wo_w1,
         "sharp_drop_context": sharp_drop_context(cr, p),
         "caveats": [
             "exploration pool, never trained on; NOT unread (w1 [2026-08-26T12, 2026-08-28T12) was outcome-read by DEC-017 candidate (a)); not a confirmation holdout, not gate evidence",
@@ -664,8 +740,8 @@ def analyze(rows: Sequence[Mapping[str, Any]], cells: Sequence[Mapping[str, Any]
             "V pricing needs a pool -> V map covering these pools; the run refuses (exit 2) if more than 1% of counted PumpSwap prints lack V; see v_coverage",
             "k counts from the first PumpSwap print, not migration",
             "sizes above 0.05: " + SIZE_NOTE,
-            "exit lag 2: " + LAG_NOTE,
-            "the live probe's -11..-16 bps sell shortfall and +-300 bps entry noise are not added",
+            "primary exit lag 2 slots is still optimistic versus the measured live exit leak; the lag-0 cell is an upper bound (" + LAG_NOTE + ")",
+            "the deciding read nets the sell shortfall (-16 bps of proceeds) and the sim-vs-live entry gap (+26.08 bps, job #175) out of every filled trade; entry noise and MEV are not added; the unadjusted result is `cells_raw`, report-only",
         ],
     }
 
@@ -690,6 +766,8 @@ def _leg_cols(g: Mapping[str, Any] | None) -> str:
 def render_md(rep: Mapping[str, Any]) -> str:
     L = [rep["banner"], "", "# EXP-012 back-check on explore-0814 (frozen model, live operating point)", ""]
     L += [f"N cells = {rep['n_cells']} (existing tries on explore-0814: {rep['existing_tries_on_pool']}).", ""]
+    rd = rep["reading"]
+    L += ["## Reading (pre-declared rules, applied to the haircut primary)", "", f"- Matched rule {rd['matched_rule']}: {rd['matched']}.", f"- Modifier (rule 5, applies to rule 3 only): " + ("none" if rd["modifier"] is None else f"fired={rd['modifier']['fired']}; reasons: {'; '.join(rd['modifier']['reasons']) or 'none'}") + ".", f"- **Final reading: {rd['final_reading']}.**", f"- Haircut: {rep['haircut']['formula']} (sell shortfall {rep['haircut']['sell_shortfall_bps']} bps, entry gap {rep['haircut']['entry_gap_bps']} bps).", ""]
     if rep.get("v_adapter_counts", {}).get("incomplete"):
         L += [f"**WARNING: V adapter saw prints with no V** ({rep['v_adapter_counts']['no_v']} of {rep['v_adapter_counts']['pumpswap_prints']}). P&L below is NOT V-priced for those pools.", ""]
     L += [
@@ -699,12 +777,12 @@ def render_md(rep: Mapping[str, Any]) -> str:
         f"- {rep['v_prepass_line']}" if "v_prepass_line" in rep else "- V pre-pass: not run",
         f"- V map {rep.get('vmap_path', 'n/a')} sha256 {rep.get('vmap_sha256', 'n/a')}; primary-cell trades on no-V pools: {rep.get('primary_trades_on_no_v_pools', 'n/a')}.",
         "",
-        "## Cells (both fail models; sensitivity cells are report-only, never selected among)",
+        "## Cells, net of the measured live costs (haircut); RAW rows are the unadjusted simulator result, report-only. Both fail models; sensitivity cells are report-only, never selected among",
         "",
         "| role | cell | note | n entered | filled | miss | tp | sl | time | tp rate | flat mean % size | press mean % size | flat mean | flat CI90 | flat total | flat ex-top3 | flat days+ | press mean | press CI90 | press total | press ex-top3 | press days+ |",
         "| " + " | ".join(["---"] * 22) + " |",
     ]
-    for s in rep["cells"]:
+    for s in rep["cells"] + [dict(x, role="RAW " + x["role"]) for x in rep["cells_raw"]]:
         L.append(f"| {s['role']} | {s['label']} | {s['note']} | {s['n_entered']} | {s['n_filled']} | {s['n_miss']} | {s['tp']} | {s['sl']} | {s['time_stop']} | {_f(s['tp_rate_filled'], 3)} | {_f(s['flat_mean_pct_of_size'], 3)} | {_f(s['press_mean_pct_of_size'], 3)} | {_leg_cols(s['flat'])} | {_leg_cols(s['press'])} |")
     L += ["", "## Primary cell per counted day (SOL)", "", "| day | n | flat mean | flat total | press mean | press total |", "| --- | --- | --- | --- | --- | --- |"]
     for d in rep["primary_per_day"]:
@@ -732,7 +810,7 @@ def pool_blocks() -> list[dict[str, str]]:
     return [{"start_hour": POOL_START, "end_hour_exclusive": POOL_END, "host": "mal-research-0", "ledger_owner": "exploration pool"}]
 
 
-def _already_in_log(log: Path, cell: str, result_path: Path) -> bool:
+def _already_in_log(log: Path, cell: str, result_path: Path, status: str = "completed") -> bool:
     if not log.is_file():
         return False
     for line in log.read_text(encoding="utf-8").splitlines():
@@ -740,14 +818,21 @@ def _already_in_log(log: Path, cell: str, result_path: Path) -> bool:
             rec = json.loads(line)
         except ValueError:
             continue
-        if rec.get("tool") == TOOL and rec.get("config", {}).get("cell") == cell and rec.get("result_path") == str(result_path):
+        cfg = rec.get("config", {})
+        if rec.get("tool") == TOOL and cfg.get("cell") == cell and rec.get("result_path") == str(result_path) and cfg.get("status", "completed") == status:
             return True
     return False
 
 
-def log_tries(rep: Mapping[str, Any], out_dir: Path, tries_log: str | Path, marker_name: str = MARKER) -> int:
-    """One result.v1 tries line per cell, tagged pool=explore-0814 (its own pool, separate from the 9-day count). Idempotent
-    on re-run: a marker in out_dir plus a scan of the log for (tool, cell, result_path)."""
+def planned_report() -> dict[str, Any]:
+    """The cell list as a report skeleton, for logging tries when a run stops before analyze() produced a report."""
+    return {"n_cells": len(CELLS), "existing_tries_on_pool": EXISTING_TRIES_ON_POOL, "cells": [{"id": cell_id(c), "role": cell_role(c), **{k: c[k] for k in ("threshold", "k", "size_sol", "fee", "exit_lag")}} for c in CELLS]}
+
+
+def log_tries(rep: Mapping[str, Any], out_dir: Path, tries_log: str | Path, marker_name: str = MARKER, status: str = "completed") -> int:
+    """One result.v1 tries line per cell, tagged pool=explore-0814 (its own pool, separate from the 9-day count) and with
+    config.status (completed, refused_after_read, aborted_after_read). Idempotent on re-run per status: a marker in out_dir plus
+    a scan of the log for (tool, cell, result_path, status)."""
     from tools import mal_result
     from tools.exp012_exit_sensitivity import _read_marker, _write_marker
 
@@ -756,21 +841,34 @@ def log_tries(rep: Mapping[str, Any], out_dir: Path, tries_log: str | Path, mark
     result_path = out_dir / RESULT_NAME
     n = 0
     for s in rep["cells"]:
-        if s["id"] in done or "*" in done:
+        key = s["id"] if status == "completed" else f"{s['id']}@{status}"
+        if key in done or "*" in done:
             continue
-        if not _already_in_log(Path(tries_log), s["id"], result_path):
+        if status != "completed" and (s["id"] in done or _already_in_log(Path(tries_log), s["id"], result_path, "completed")):
+            continue  # per-log guard: a cell already logged completed in this log never gets an aborted/refused line
+        if not _already_in_log(Path(tries_log), s["id"], result_path, status):
             mal_result.append_try(
                 tries_log,
                 tool=TOOL,
-                config={"experiment": "EXP-012 backcheck", "pool": POOL_NAME, "cell": s["id"], "role": s["role"], "threshold": s["threshold"], "k": s["k"], "size_sol": s["size_sol"], "fee_lamports": s["fee"], "exit_lag": s["exit_lag"], "selection": "frozen model", "pricing": "V", "n_cells": rep["n_cells"], "existing_tries_on_pool": rep["existing_tries_on_pool"]},
+                config={"experiment": "EXP-012 backcheck", "pool": POOL_NAME, "status": status, "cell": s["id"], "role": s["role"], "threshold": s["threshold"], "k": s["k"], "size_sol": s["size_sol"], "fee_lamports": s["fee"], "exit_lag": s["exit_lag"], "selection": "frozen model", "pricing": "V", "n_cells": rep["n_cells"], "existing_tries_on_pool": rep["existing_tries_on_pool"]},
                 data_blocks=pool_blocks(),
                 result_path=result_path,
                 role="exploration",
             )
             n += 1
-        done.add(s["id"])
+        done.add(key)
+    out_dir.mkdir(parents=True, exist_ok=True)
     _write_marker(marker, done)
     return n
+
+
+def log_all(rep: Mapping[str, Any], out_dir: Path, tries_path: Path, canonical: Path, status: str) -> dict[str, Any]:
+    """Log the cells to --tries-log and to the canonical log (once each if they are the same file)."""
+    out = {"logged": log_tries(rep, out_dir, tries_path, MARKER, status), "log_path": str(tries_path), "status": status}
+    if canonical.resolve() != Path(tries_path).resolve():
+        out["canonical_logged"] = log_tries(rep, out_dir, canonical, "tries_logged_canonical.marker", status)
+        out["canonical_path"] = str(canonical)
+    return out
 
 
 # --- CLI -------------------------------------------------------------------------------------------------------------------
@@ -810,35 +908,46 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"refusing: {exc}", file=sys.stderr)
         return 2
     tries_path = resolve_tries_path(args.tries_log)
-    t0 = time.time()
-    rows = collect_rows(g["roots"], g["pool"], args.artifact_dir, args.vmap, args.out_dir / "scratch", args.max_workers)
-    write_rows(args.out_dir / ROWS_NAME, rows)
-    rep = analyze(rows)
-    n_no_v = primary_no_v_trades(rows, mint_pools, adapter_no_v_pools(args.out_dir / "scratch" / "counts_virtual"))
-    print(f"primary-cell trades whose pool the adapter priced without V: {n_no_v}", file=sys.stderr, flush=True)
-    if n_no_v > 0:
-        print(f"refusing: {n_no_v} primary-cell trades are on pools with no V; no report written", file=sys.stderr)
-        return 2
-    rep["primary_trades_on_no_v_pools"] = n_no_v
-    rep["vmap_sha256"] = vmap_sha
-    rep["vmap_path"] = str(args.vmap)
-    rep["v_coverage"] = cov
-    rep["v_prepass_line"] = coverage_line(cov)
-    rep["v_adapter_counts"] = v_coverage(args.out_dir / "scratch" / "counts_virtual")
-    rep["git_head"] = git_head()
-    rep["view_sha256"] = g["view_sha256"]
-    rep["model_md5"] = model_md5
-    rep["wall_s"] = time.time() - t0
-    rep["tries"] = {"logged": log_tries(rep, args.out_dir, tries_path), "log_path": str(tries_path)}
     canonical = Path(args.canonical_tries).resolve()
-    if canonical != Path(tries_path).resolve():
-        rep["tries"]["canonical_logged"] = log_tries(rep, args.out_dir, canonical, "tries_logged_canonical.marker")
-        rep["tries"]["canonical_path"] = str(canonical)
-    (args.out_dir / RESULT_NAME).write_text(json.dumps(rep, indent=2) + "\n", encoding="utf-8")
-    md = render_md(rep)
-    (args.out_dir / "report.md").write_text(md, encoding="utf-8")
-    print(md)
-    return 0
+    t0 = time.time()
+    status = "aborted_after_read"  # any exception or exit from here on leaves an honest tries record (finally below)
+
+    def _on_sigterm(signum: int, frame: Any) -> None:  # a MiScusi cancel: unwind through the finally below
+        raise SystemExit(128 + signum)
+
+    prev_handler = signal.signal(signal.SIGTERM, _on_sigterm)
+    try:
+        rows = collect_rows(g["roots"], g["pool"], args.artifact_dir, args.vmap, args.out_dir / "scratch", args.max_workers)
+        write_rows(args.out_dir / ROWS_NAME, rows)
+        rep = analyze(rows)
+        n_no_v = primary_no_v_trades(rows, mint_pools, adapter_no_v_pools(args.out_dir / "scratch" / "counts_virtual"))
+        print(f"primary-cell trades whose pool the adapter priced without V: {n_no_v}", file=sys.stderr, flush=True)
+        if n_no_v > 0:
+            status = "refused_after_read"
+            print(f"refusing: {n_no_v} primary-cell trades are on pools with no V; tries logged as refused_after_read, no report written", file=sys.stderr)
+            return 2
+        rep["primary_trades_on_no_v_pools"] = n_no_v
+        rep["vmap_sha256"] = vmap_sha
+        rep["vmap_path"] = str(args.vmap)
+        rep["v_coverage"] = cov
+        rep["v_prepass_line"] = coverage_line(cov)
+        rep["v_adapter_counts"] = v_coverage(args.out_dir / "scratch" / "counts_virtual")
+        rep["git_head"] = git_head()
+        rep["view_sha256"] = g["view_sha256"]
+        rep["model_md5"] = model_md5
+        rep["wall_s"] = time.time() - t0
+        rep["tries"] = {"to_log": "completed", "log_path": str(tries_path), "canonical_path": str(canonical)}
+        (args.out_dir / RESULT_NAME).write_text(json.dumps(rep, indent=2) + "\n", encoding="utf-8")
+        md = render_md(rep)
+        (args.out_dir / "report.md").write_text(md, encoding="utf-8")
+        log_all(rep, args.out_dir, tries_path, canonical, "completed")  # the report is on disk first; "completed" is set only after
+        status = "completed"
+        print(md)
+        return 0
+    finally:
+        signal.signal(signal.SIGTERM, prev_handler)
+        if status != "completed":
+            log_all(planned_report(), args.out_dir, tries_path, canonical, status)
 
 
 if __name__ == "__main__":
