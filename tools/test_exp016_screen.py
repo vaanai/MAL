@@ -1053,5 +1053,117 @@ class SourceCountersTests(unittest.TestCase):
         self.assertIn("setdefault(p_, []).extend", src)
 
 
+# --- quant-proof round 2 ---------------------------------------------------------------------------------------------------------------
+
+
+def _digits_outside(msg: str, mint: str) -> bool:
+    return re.search(r"\d", msg.replace(mint, "")) is not None
+
+
+class ConstancyPopulationTests(unittest.TestCase):
+    def test_sample_is_drawn_from_readable_pools_only(self):
+        pools = [f"pool{i}" for i in range(600)]
+        vmap = {p: 17_584_000_000 for p in pools}
+        vmap["pool0"] = None  # an unreadable pool in the population
+        vmap["pool1"] = None
+        pop = x.readable_pools(pools, vmap)
+        self.assertEqual(len(pop), 598)
+        sample = x.sample_pools(pop)
+        self.assertEqual(len(sample), x.V_SAMPLE_SIZE)
+        self.assertTrue(all(vmap[p] is not None for p in sample))
+        x.check_constancy_sample([{"pool": p} for p in sample], pop)
+        # the old rule (draw from ALL pools) is what the file must not be
+        old = x.sample_pools(pools)
+        if any(vmap[p] is None for p in old):
+            with self.assertRaises(x.Refused):
+                x.check_constancy_sample([{"pool": p} for p in old], pop)
+        samples = [{"pool": p, "v_implied": 17_584_000_000, "quote_reserve": 10 * SOL} for p in sample]
+        self.assertEqual(x.check_v_constancy(samples, vmap)["n_checked"], x.V_SAMPLE_SIZE)  # both checks agree
+
+    def _args(self, out):
+        return SimpleNamespace(vmap="unused", emit_constancy_sample=out)
+
+    def test_emit_constancy_sample_writes_pool_ids_only_and_matches_main_population(self):
+        n = 500
+        migs = {f"M{i}": {"type": "migration", "mint": f"M{i}", "pool": f"pool{i}", "slot": 100 + i} for i in range(n)}
+        migs["M0"]["slot"] = None  # no migration slot: excluded
+        creates = {f"M{i}": {"mint": f"M{i}"} for i in range(n)}
+        del creates["M1"]  # no create row: excluded
+        migs["NOPOOL"] = {"type": "migration", "mint": "NOPOOL", "slot": 5}
+        creates["NOPOOL"] = {"mint": "NOPOOL"}
+        src = x.SourceData("P2", "P2", creates, migs, {}, 0)
+        vmap = {f"pool{i}": 17_584_000_000 for i in range(n)}
+        vmap["pool2"] = None
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "sample.json"
+            with mock.patch.object(x, "run_guards", return_value={}), mock.patch.object(x, "load_pinned_vmap", return_value=vmap), \
+                    mock.patch.object(x, "build_sources", return_value=[("P1A", "P1", None, [], []), ("P2", "P2", None, [], [])]), \
+                    mock.patch.object(x, "load_source_data", return_value=src) as lsd, mock.patch.object(x, "log_all") as lg:
+                self.assertEqual(x.emit_constancy_sample(self._args(out)), 0)
+                self.assertEqual(lsd.call_count, 1)  # only the P2 source is read
+                lg.assert_not_called()  # no tries line
+            got = json.loads(out.read_text())
+            self.assertFalse(Path(d, "tries.jsonl").exists())
+        elig = [f"pool{i}" for i in range(n) if i not in (0, 1, 2)]
+        self.assertEqual(got, x.sample_pools(elig))
+        self.assertTrue(all(isinstance(p, str) and p.startswith("pool") for p in got))
+        # the same set process_source would make cells for, and main's population rule accepts it
+        self.assertEqual(x.p2_eligible_pools(src), sorted(f"pool{i}" for i in range(n) if i not in (0, 1)))
+        x.check_constancy_sample([{"pool": p} for p in got], x.readable_pools(x.p2_eligible_pools(src), vmap))
+
+    def test_emit_refuses_when_guards_refuse(self):
+        with mock.patch.object(x, "run_guards", side_effect=x.Refused("no")):
+            self.assertEqual(x.emit_constancy_sample(self._args(Path("/nonexistent/x.json"))), 2)
+
+
+class OutcomeFreeMessageTests(unittest.TestCase):
+    def test_resolve_key_message(self):
+        fill = SimpleNamespace(t_recv_ms=1_790_000_123_456, slot=987_654, tx_index=3, event_index=4)
+        with self.assertRaises(rug.PoolAttributionRefusal) as cm:
+            x.resolve_key([], fill, mint="MINTA", endpoint="exit")
+        self.assertIn("MINTA", str(cm.exception))
+        self.assertIn("exit", str(cm.exception))
+        self.assertFalse(_digits_outside(str(cm.exception), "MINTA"))
+
+    def test_check_migration_pool_only_message(self):
+        fill = {"venue": "pumpswap", "t_recv_ms": 1_790_000_123_456, "slot": 987_654, "tx_index": 3, "event_index": 4}
+        with self.assertRaises(rug.PoolAttributionRefusal) as cm:
+            rug.check_migration_pool_only([], "POOL_X", [fill], mint="MINTA", names=("entry",))
+        self.assertIn("entry", str(cm.exception))
+        self.assertFalse(_digits_outside(str(cm.exception), "MINTA"))
+        self.assertNotIn("POOL_X", str(cm.exception))
+
+    def test_label_trade_endpoint_message(self):
+        with self.assertRaises(rug.PoolAttributionRefusal) as cm:
+            rug.label_trade([], migration_pool="POOL_X", entry_key=(1_790_000_123_456, 987_654, 3, 4), exit_key=(1_790_000_123_457, 987_655, 3, 4), vmap={}, mint="MINTA")
+        self.assertIn("MINTA", str(cm.exception))
+        self.assertIn("entry", str(cm.exception))
+        self.assertFalse(_digits_outside(str(cm.exception), "MINTA"))
+
+    def test_mirrored_exit_censored_is_a_drift_not_a_censor(self):
+        src = fixture_source()
+        with mock.patch.object(x, "tpsl_exit", return_value=None):
+            with self.assertRaises(x.SimulatorDrift) as cm:
+                x.process_source(src, VMAP)
+        self.assertFalse(_digits_outside(str(cm.exception), "MINTA"))
+
+
+class DeadlineBandTests(unittest.TestCase):
+    def test_exit_lag_band_is_censored(self):
+        src = fixture_source()
+        base = x.simulate_mint("MINTA", src.creates["MINTA"], src.rows_by_mint["MINTA"], pool="POOL1", migration_slot=1050, vmap=VMAP,
+                               tape_through_ms=(T0 + 4000) * 1000, creator_hist={})
+        edge = base["landing_ms"] + int(x._target_spec()["cap_ms"]) + x.EXIT_LAG * x.xx.SLOT_MS
+
+        def run(through):
+            with mock.patch.object(x, "tpsl_exit", side_effect=AssertionError("no exit logic")):
+                return x.simulate_mint("MINTA", src.creates["MINTA"], src.rows_by_mint["MINTA"], pool="POOL1", migration_slot=1050, vmap=VMAP,
+                                       tape_through_ms=through, creator_hist={})
+
+        self.assertEqual(run(edge - 1)["status"], "CENSORED")  # inside the two-slot band after the cap deadline
+        self.assertEqual(run(edge - x.xx.SLOT_MS)["status"], "CENSORED")
+        self.assertEqual(run(edge - 1)["landing_ms"], base["landing_ms"])
+
+
 if __name__ == "__main__":
     unittest.main()
