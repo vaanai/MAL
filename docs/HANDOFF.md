@@ -1,20 +1,25 @@
-# Manager handoff 2026-10-06 ~17:45Z (manager8 → next manager)
+# Manager handoff 2026-10-06 ~21:40Z (manager9 → next manager)
 
 Replace this page at the next handoff; don't append. Read it first. Then read:
-- [LAB_STATE.md](../LAB_STATE.md), as of 17:15Z;
+- [LAB_STATE.md](../LAB_STATE.md);
 - DEC-016 Amendment 5 **§7** (the 10-16 (B) rules);
 - DEC-019 (with the 10-06 §7 note);
 - DEC-020 §7 and DEC-021;
-- the [EXP-016 plan](../EXP/EXP-016-rug-veto-plan.md) §13, items 1–13;
-- these memory notes: `state-2026-10-04`, `feedback-real-layout-precount`, `feedback-realistic-primary`, `rug-filter-priority`, `pumpswap-virtual-reserve`.
+- the [EXP-016 plan](../EXP/EXP-016-rug-veto-plan.md) §13;
+- the EXP-017 and EXP-020 plans (sized re-sims in flight);
+- these memory notes: `state-2026-10-04`, `feedback-real-layout-precount`, `feedback-realistic-primary`, `rug-filter-priority`, `pumpswap-virtual-reserve`, `profit-focus`.
+
+manager8 stood down at about 19:40Z. Its crons are deleted.
 
 ## First things to do
 
 1. **Become the inbox reader:** `miscusi_worker_start` with `inbox: true`.
 2. **Recreate two session crons.** Crons die with the session.
-   - **Hourly probe monitor at :17.** Job on `mal-fast-0`, role ops, 200 MB, 3 min. Use the same command as job #300. Alert if realized ≤ −0.20, the executor isn't active, the build is not faa3192, a halt/stop file exists, a position is stuck or abandoned, or there are errors.
-   - **Daily tip-tape archive at 03:23Z.** Job on `mal-fast-0`, 800 MB, 240 min. Use the same command as job #304. It zstd-compresses each closed hour, sha256-verifies it, and copies it to research-0 `/data/mal/tip-tape-archive/`. It deletes nothing. This must keep running: fast-0 retention starts deleting tape at 10-08 06Z, and the DEC-019 §7 lab note needs every probe hour.
-3. **Check #417 and job #307** (EXP-016, below).
+   - **Hourly probe monitor at :17.** Job on `mal-fast-0`, role ops, 200 MB, 3 min. Use the same command as job #331 (or #300). Alert if realized ≤ −0.20, the executor isn't active, the build is not faa3192, a halt/stop file exists, a position is stuck or abandoned, or there are errors.
+   - **Daily tip-tape archive at 03:23Z.** Job on `mal-fast-0`, 800 MB, 240 min. Use the same command as job #304. It zstd-compresses each closed hour, sha256-verifies it, and copies it to research-0 `/data/mal/tip-tape-archive/`. It deletes nothing. This must keep running: fast-0 retention starts deleting tape at 10-08 06Z.
+3. **Check the jobs in flight** (below).
+4. **Watch MiScusi memory on research-0.** It schedules on declared memory, not on use. Ollama is off (Helm, 10-06) and stays off as long as we need. Restart command: `cd /opt/miscusi && sudo docker compose start ollama`.
+
 
 ## Owner direction (10-06)
 
@@ -49,35 +54,40 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - vbook and sensitivity both take `--vmap-merge-meta --final-fetch-map --snapshot … --lphist …`.
 - **Settled (Helm and owner, 10-06):** the ceiling stays as merged. It counts only *unexplained* V0 moves; there is no ceiling on explained LP-rescale moves.
 
-## EXP-016 rug veto (the owner's priority): in flight
+## Research state (10-06 evening, manager9)
 
-- **Merged:** #395, #404, #406, #408 (tries sync), #414 (ignorable listener keys).
-- **PR #417 (open, under quant-proof).** The loader read only `migration` rows: P1A kept 134 of 3,468 migrated mints. #417 changes it:
-  - the migrated set is now the `complete` rows, as in EXP-015;
-  - complete-only mints get `canonical_pool(mint)` as their pool;
-  - two new limits: cells ≥ 90% of migrated mints, and with-create ≥ 80%;
-  - the slot rule is explicit (feature cutoff = migration-row/complete slot; simulator clock = first print on the pool).
-  - **Quant-proof at 880797e: CHANGES.** Sent to the builder at ~17:50Z.
-    - **Required:** for complete-only mints, cutoff = complete slot + 1, clamped to the simulator clock. Otherwise the curve-completing buy is dropped, against plan §3. Disclose it in item 13.
-    - **New counts:** mints with a `migration` row but no `complete` row; OOF-scored P1 mints with no EXP-016 cell, as a limit (more than 5% → refuse).
-    - **Optional:** NO_SIM and foreign-first split by complete-only vs migration-row.
-    - **MERGED** after quant-proof OK at 1f9ae8f. Real data confirms it: job #307 shows P1A complete_rows=3468, previously 134.
-    - **Quant-proof recommendation (not yet done):** split LIMIT_OOF_NO_CELL's numerator into "excluded under a pre-declared ruling" (P1B pre-tape creates, pre-tape migrations, gap-over, no-create, no-pool) and "unexplained", and apply the 5% only to the unexplained part. Otherwise an honest run may refuse. Make this change, with a dated §13 note, after seeing the precount's `oof_without_cell` and before the pin.
-    - Also add "unless clamped" to item 13's sentence "the completing slot is included". Watch `cutoff_clamped`.
-    - **Next:** rerun `--precount` on main, which now includes #417. Job #307 ran on 880797e.
-- **Job #307: `--precount` at 880797e (#417 head).** Real layout, all sources, no lock and no tries. Log: `/data/mal/ops/exp016-precount7.log`. Counts land in `/data/mal/exp016-precount-*/precount.json`.
-  - Memory is now about 3–3.5 GB per P1 source: compact rows at 245 B per row, 0 rows stored whole.
-  - Check every per-source count and `would_refuse`. Where a data-quality limit doesn't fit honest counts, record a dated §13 note before the pin.
-- **Next steps, in order:**
-  1. Merge #417 after quant-proof OK.
-  2. Get a clean precount (no would-refuse, counts plausible against EXP-015's per-source universe).
-  3. Pin `VMAP_EXP016_SHA256` = `1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec` (`/data/mal/pumpswap-virtual/pool_v_exp016.json`, job #289) in a reviewed commit.
-  4. Run `--emit-constancy-sample`.
-  5. Run the `tools.exp016_constancy` job at 5 rps or less.
-  6. Run `--guards-only`, then a precount with the constancy file.
-  7. Run the screen as one 48 GB job (6 tries).
-- **Expected constancy refusal on honest data:** about 0.1%.
-- **Confirmation block fresh-0802:** walkers #248 and #249 are running and #250 is queued. It is reserved for EXP-016.
+**Reading so far.** Five filters on frozen EXP-012's picks have now failed at realistic costs:
+- EXP-013;
+- EXP-015;
+- #191;
+- **EXP-018**, causal wallet skill: job #325, paired p 0.46, W2 book flat −0.00102 SOL/trade (lab note `exp018-screen-2026-10-06.md`);
+- **EXP-019**, post-migration momentum confirm at k8: job #328, paired −0.00053, p 0.97 (lab note `exp019-screen-2026-10-06.md`).
+
+The wave-3 planner (notebook, about 21Z) says the most realistic profit path is **size and entry speed on the existing book**. At 0.05 SOL the book is about +1.1% of stake before fixed fees and −0.88% after. Fixed fees are 2.02% of stake at 0.05 SOL and 0.20% at 0.5. Capacity is about 87 trades/day. New families have priors ≤10%.
+
+**In flight, in order of importance:**
+1. **EXP-017** (#423 merged, 218dac9). Cells: H3 regime gate and H4 score sizing (Holm k=2), plus C0, report-only, at 0.10/0.25/0.5 SOL.
+   - Re-sim **job #319** at f7d0ac1 writes a sealed 0400 cache to `/data/mal/exp017-resim-20261006T2004Z/sized_cache` and is unread. Its pre-`started` check compares the 0.05 control's hash with the EXP-015 cache.
+   - Next: a plan amendment line `SIZED_MANIFEST_SHA256 = <sha from the job log>`, merged. Then run the screen once: `python -m tools.exp017_screen --sized-cache <dir>/sized_cache --out-dir /data/mal/exp017-screen --tries-log /data/mal/ops/tries-exp017-screen.jsonl`.
+   - H4 counts only if it beats uniform 0.10 on both legs.
+2. **EXP-020**, the report-only grid, k {2,3,4,6} × stake {0.25,0.5,1.0} (#429 merged, c27d9ef).
+   - **Job #330** is queued after #319: precount, guards, then re-sim into `/data/mal/exp020-grid`.
+   - Next: a plan line `GRID_MANIFEST_SHA256 = …`, then `--report`.
+   - The entry bound is start-of-slot, so small-k gains are upper bounds.
+3. **EXP-016 rug veto.**
+   - #426 merged (9afa747): indexed BlockHistory plus forked cells. P1A cells used to take more than 60 min; they now finish in under 20.
+   - **Precount #10 is job #326** at 5cb4e17.
+   - Next, from the HANDOFF of 17:45Z, which still applies:
+     - check `oof_without_cell` and `cutoff_clamped`;
+     - the quant-proof LIMIT_OOF_NO_CELL split, with a §13 note;
+     - pin `VMAP_EXP016_SHA256` = `1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec`;
+     - constancy sample, then the constancy job, guards-only, and precount with constancy;
+     - the screen as one 56 GB job.
+4. **EXP-014 v2**, the mig+15 selector (PR #430; #269 closed). Quant-proof review is in progress, with the builder's open questions on bars 2/3/6. Then precount, then screen (1 try).
+5. **Entry guard #422 merged** (e93731e): `max_entry_k_slots` 8 plus signal age 5 s, in the DEC-020 trial config only. Before deploy: md5 replay; intents/arm-audit identical after stripping `migration_slot` and `migration_slot_src`; measure the `first_print` share.
+
+**Unread confirmation blocks with no owner:** fresh-0828 and fresh-0808. fresh-0802 is being walked for EXP-016 (#248, #249, #250). The next likely use is a size-only confirmation if C0 at 0.5 SOL is positive.
+
 
 ## Live probe (real money; DEC-019)
 
