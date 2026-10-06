@@ -36,7 +36,7 @@ def _check(blocks: list[Block], role: str, host: str, start: str, end: str, exp_
 
 def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     by_name = {b.name: b for b in blocks}
-    assert len(blocks) == 13
+    assert len(blocks) == 14
     assert by_name["Fast EXP-009 block"].owner == "EXP-009"
     assert by_name["Fast EXP-009 exclusion"].explicit_hours == ("2026-09-18T23", "2026-09-19T00")
     assert by_name["Forward paper, kill review"].host == "oracle-forward"
@@ -48,9 +48,9 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     assert unassigned.owner == "unassigned"
     assert unassigned.start_hour is None
     assert unassigned.end_hour_exclusive == "2026-08-08T12"
-    assert by_name["Fresh confirmation block"].owner == "EXP-012"
+    assert by_name["Fresh confirmation block"].owner == "exploration-pool"  # spent by EXP-012 read, moved by ledger edit
     assert by_name["Fresh confirmation block"].host == "research"
-    assert by_name["Backup confirmation block"].owner == "reserved"
+    assert by_name["Backup confirmation block"].owner == "EXP-015"
     assert by_name["Backup confirmation block"].host == "research"
     second = by_name["Second backup confirmation block"]
     assert second.owner == "reserved"
@@ -63,6 +63,10 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     assert fwd.owner == "EXP-012"
     assert fwd.owner != "exploration-pool"
     assert (fwd.start_hour, fwd.end_hour_exclusive) == ("2026-10-02T10", "2026-10-16T01")
+    fwd2 = by_name["Forward walk 2"]
+    assert fwd2.owner == "reserved"
+    assert (fwd2.start_hour, fwd2.end_hour_exclusive) == ("2026-10-16T01", "2026-11-16T01")
+    assert fwd2.start_hour == fwd.end_hour_exclusive
 
 
 # --- check_read against the real ledger -----------------------------------
@@ -232,7 +236,7 @@ def test_build_catalog_validates_and_is_deterministic() -> None:
     assert doc1["schema_version"] == "catalog.v1"
     assert doc1["ledger_sha256"] == doc2["ledger_sha256"]
     assert len(doc1["ledger_sha256"]) == 64
-    assert len(doc1["blocks"]) == 13
+    assert len(doc1["blocks"]) == 14
     assert doc1["walkers"] == []
 
     def _stable(d: dict) -> dict:
@@ -290,7 +294,15 @@ def test_reserved_block_denied_for_every_role_even_the_exp_its_text_mentions(blo
 def test_research_exploration_expansion_allowed_and_exp012_block_needs_its_id(blocks: list[Block]) -> None:
     ok, reasons = _check(blocks, "exploration", "research", "2026-08-20T00", "2026-08-20T01")
     assert ok, reasons
-    ok, _ = _check(blocks, "exploration", "research", "2026-09-05T00", "2026-09-05T01")
+    # fresh-0903 was spent by EXP-012's one read and moved to the exploration pool
+    ok, reasons = _check(blocks, "exploration", "research", "2026-09-05T00", "2026-09-05T01")
+    assert ok, reasons
+    ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-09-05T00", "2026-09-05T01", exp_id="EXP-012")
+    assert not ok
+    # fresh-0828 is the EXP-015 confirmation block: closed to exploration and to other ids
+    ok, _ = _check(blocks, "exploration", "research", "2026-08-30T00", "2026-08-30T01")
+    assert not ok
+    ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-08-30T00", "2026-08-30T01", exp_id="EXP-013")
     assert not ok
 
 
