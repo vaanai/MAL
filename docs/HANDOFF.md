@@ -16,8 +16,14 @@ Replace this page at the next handoff; don't append. Read it first, then read:
 
 ## Must do immediately
 
+0. **CRITICAL, 10-16 path (job #278, notebook finding):** v_base (V+A+B) is **not** perfectly constant. 6 of 52,643 forward pools changed within ~6 h: 3 of them by +0.0003 to +0.129 SOL on V0≈17.58 pools, plus 2 non-canonical pools. As merged (#383), `exp012_forward_vmap merge` refuses on any v_base difference, so on 10-16 book (B) would be NOT_DECIDABLE. **Fix before 10-16** with a pre-read DEC-016 Am.5 edit plus a code PR, both with quant-proof:
+   - the constancy check applies only to pools actually filled from a snapshot (null or absent in the final map); with the fixed decoder there are 0 nulls, so that is rare;
+   - for every other pool the post-cutoff fetch is authoritative;
+   - every v_base difference is reported as a count (report-only);
+   - never loosen the null-V rule.
+   Optionally find the missing field (bytes 261..270 or the 0/1 byte at 270).
 1. **Recreate the hourly probe monitor** as a session cron at :17, with the same command as job #233 or #275. Crons die with the session. Alert at realized ≤ −0.20 (notebook finding plus a message to the owner).
-2. **Recreate the V0-constancy check** (it was a one-shot cron at 13:53Z and dies with this session) if it hasn't run.
+2. **V0-constancy check: DONE** as job #278 (see item 0). Rerun it after the merge fix to confirm the new rule passes.
    - Re-fetch the pool set of forward snapshot #2, `/data/mal/pumpswap-virtual/forward-1002/work-20261006T074427Z/pools.json`, into a NEW work dir with `tools.exp012_forward_vmap fetch --new`.
    - Compare `v_base`, per pool, between the new `*.detail.json` and snapshot #2's `vmap.json.detail.json`.
    - Any difference means merge would refuse on 10-16. Investigate before then.
