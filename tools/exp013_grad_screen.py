@@ -23,6 +23,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -51,7 +52,7 @@ BUILTIN_POOLS = ("A", "B", "C")
 VIEW_CUTOFF = gm.REAL_DATA_CUTOFF
 E12_DAYS = tuple(f"2026-09-{d}" for d in range(19, 28))
 ITEM_ORDER = ("1", "2", "3", "4a", "4b", "5", "6")
-V_SHA256 = "2506f7d2d8475e44ca70a8c536dbb7405930b1092edca331dbbe611236b4d2f8"  # pool_v_0814.json (Amendment 7)
+V_SHA256 = "PENDING_JOB_228"  # pool_v_0909.json (Amendment 7, 2026-10-06 note); must equal tools.exp013_grad_table.VMAP_0909_SHA256
 AM7_DISCLOSURE = (
     "Amendment 7 disclosure: PumpSwap legs are priced on vault + V (tools.pumpswap_virtual_adapter, mcap_mode v). The EXP-012 backcheck read migrate-entry "
     "outcomes on the explore-0814 days before this screen, so the August bars (items 4a and 4b) are no longer on unread data, in addition to the w1 "
@@ -146,6 +147,8 @@ def assert_view_manifest(
 def assert_v_adapter(table_manifest: Mapping[str, Any]) -> dict[str, Any]:
     """Amendment 7: a real table must have been priced through the V adapter on the pinned map, with the pre-pass
     inside the limit. Refuses before the try is spent."""
+    if not re.fullmatch(r"[0-9a-f]{64}", V_SHA256):
+        raise SystemExit(f"V_SHA256 is {V_SHA256!r}, not a sha256: the manager fills it in after job #228. Refusing to run")
     v = table_manifest.get("v_adapter")
     if not isinstance(v, dict):
         raise SystemExit("table manifest has no v_adapter record: the table was not priced through the V adapter (Amendment 7)")

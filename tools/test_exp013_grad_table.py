@@ -86,7 +86,7 @@ V_PATH.write_text(json.dumps({"v": {"PoolG": 17_584_269_263}}), encoding="utf-8"
 V_SHA = hashlib.sha256(V_PATH.read_bytes()).hexdigest()
 
 
-def run_main(argv: list[str]) -> int:
+def run_main(argv: list[str], pin: str | None = V_SHA) -> int:
     """The three built-in roots' VIEW.sha256 pins belong to the real data, so they are mocked;
     an extra view (a directory named xview) is verified for real."""
 
@@ -95,7 +95,7 @@ def run_main(argv: list[str]) -> int:
 
     if "--vmap" not in argv:
         argv = [*argv, "--vmap", str(V_PATH)]
-    with mock.patch.object(fz, "verify_view_sha256", side_effect=verify), mock.patch.object(fz, "check_view_pin", return_value="x"), mock.patch.object(gtab, "VMAP_SHA256", V_SHA):
+    with mock.patch.object(fz, "verify_view_sha256", side_effect=verify), mock.patch.object(fz, "check_view_pin", return_value="x"), mock.patch.object(gtab, "VMAP_0909_SHA256", V_SHA if pin is None else pin):
         with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
             return gtab.main(argv)
 
