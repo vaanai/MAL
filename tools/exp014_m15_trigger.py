@@ -698,6 +698,8 @@ def run_worker_m15(
     counting = row_iter_fn is _iter_trades
     if counting:
         row_iter_fn = CountingTrades()
+    elif isinstance(row_iter_fn, CountingTrades):  # a CountingTrades subclass (e.g. the zstd-rc-checked reader) counts its own bad lines
+        counting = True
     lines = 0
     for hour in hours:
         print(f"[w{worker_id}] hour={hour['hour']} hot={len(hot)} pending={len(pending)} rows={n_rows} rss_mb={_rss_mb()}", file=sys.stderr, flush=True)
