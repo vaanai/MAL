@@ -224,12 +224,12 @@ def scan_creates(view_dirs: Mapping[str, Sequence[str | Path]], wanted: Mapping[
 
 
 def mayhem_flags(universe: Sequence[Mapping[str, Any]], creates: Mapping[str, Mapping[str, Any]]) -> list[bool | None]:
-    """True / False when a create row carries a boolean is_mayhem_mode and block_time strictly before the migration (pre-cutoff by construction);
+    """True / False when a create row carries a boolean is_mayhem_mode and block_time at or before the migration time (the entry cutoff is later still, so the field is pre-cutoff; the cache mig_ms equals the create second for most non-mayhem mints, so strict < would drop them);
     None otherwise (no create row, no field, or a create not strictly earlier than the migration)."""
     out: list[bool | None] = []
     for u in universe:
         c = creates.get(u["mint"])
-        ok = c is not None and c["mayhem"] is not None and c["block_time"] is not None and c["block_time"] * 1000 < u["mig_ms"]
+        ok = c is not None and c["mayhem"] is not None and c["block_time"] is not None and c["block_time"] * 1000 <= u["mig_ms"]
         out.append(c["mayhem"] if ok else None)
     return out
 

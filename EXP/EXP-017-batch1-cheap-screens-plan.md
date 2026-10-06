@@ -1,0 +1,84 @@
+# EXP-017 batch 1: four cheap screens (H1-H4) and a cost check (C0) on the cached EXP-015 per-migration cells
+
+| Field | Value |
+| --- | --- |
+| **Status** | **Pre-registration of an exploration screen. No H-cell outcome has been read.** Written before `tools/exp017_screen.py` is run on outcomes. No edge claim, ever, from this file. A pass earns only one confirmation read of an unread reserved block (fresh-0828 or fresh-0808) under a later pre-registration. |
+| **Date** | 2026-10-06 |
+| **Tool** | `tools/exp017_screen.py`, tests `tools/test_exp017_screen.py` |
+| **Prior (mine, an estimate)** | Low, under 10% that any cell passes all bars. The base book is already known to lose on these dates (see §9). A filter must turn a negative book positive, not just improve it. |
+
+## 1. Data
+
+The cached V-pass rows of the EXP-015 screen: `/data/mal/exp015-screen/scratch/cache/v_P*.rows.jsonl` (schema `exp015_tape_cache_v1`; one record per migration: `mint, spec, day, mig_ms, gap_ms, features, cells`). Cells are k = 6, exit lag 2, size 0.05 SOL, plus report-only k = 4, 8 and lag 0. Universe 33,518 rows (P1A 3,092; P1C 3,372; P1B 2,337; P2 13,494; P3 5,547; P4 5,676), built by `exp015_screen.build_universe`. Dates: 36 UTC dates, 27 non-P1 (P2, P3, P4). **P1 dates are report-only.**
+
+Provenance: job #242 at code sha `cc366d4c7d8597d6429575c165f164cce35ce39d` (recorded in every `v_P*.manifest.json`), V map pin `70914a16…b42e` (`pool_v_0909`, sha256 `70914a1619e4cf6adbb1d1981cbd8a49483f559b230e7dcfc224335a0635b42e`).
+
+**Pinned manifests** (sha256 over lines `<file sha256>  <path relative to scratch>`, sorted by path, joined by newline plus a final newline; computed from file bytes only, no field read):
+
+- Cache (what the screen reads): `72b9bd1a355953c114835a77fd7ea2f2273e75b21393cf5be2d48a16523ba31b`, 12 files (`cache/v_P*.rows.jsonl` and `cache/v_P*.manifest.json`).
+- Raw worker output: `0b7c9afae44678a3b8d54451d4be79aad847ad76290f8cd8ff7d478dcc3562ae`, 71 files (`v_P*/*.jsonl`).
+
+## 2. Deciding costs (every cell, all bars)
+
+k = 6 slots from the first PumpSwap print; exit lag 2; fee 505,000 lamports per side; V pricing at the pin; haircut at its conservative end (sell shortfall 16 bps, entry gap 26.08 bps, factor 0.0042038 x proceeds on filled trades); `tp50_sl30`; both fail models (flat 15% and pressure slope scale 1) must pass. Stake 0.05 SOL unless a cell says otherwise. The frozen EXP-012 model is never refit: selection is score >= THR90 = 0.8030766588450794.
+
+## 3. Cells
+
+- **C0 (report-only, outside the Holm family, no try).** Frozen selection at 0.25 and 0.5 SOL on the 27 non-P1 dates. Needs cells re-simulated at those sizes (V impact grows with size). **Deferred**: the cache has 0.05 SOL cells only. The screen contains the C0 reporting code, which runs only on a re-simulated sized cache; the re-simulation pass (`tools/exp017_resim.py`, reusing `exp015_screen.e15_v_patch` with other `COMBOS`) is a follow-up PR.
+- **H1, mayhem veto.** Frozen selection minus mints whose create row has `is_mayhem_mode == True`. A row's field counts only if it is a boolean on a create row whose `block_time * 1000 <= mig_ms` (the entry cutoff is later still, so the field is pre-cutoff). Otherwise the field is missing and the mint is not vetoed. Coverage is reported per source.
+- **H2, V0-class veto.** Frozen selection restricted to mints whose canonical pool (`canonical_pool(mint)`, deterministic from the mint) has V0 in [16.70, 18.46] SOL (17.58 SOL +/- 5%) in the pinned map. V0 = 0, null/absent and any other value are vetoed.
+- **H3, regime gate.** Trade the frozen selection only when the mean flat-leg haircut net of **all** unfiltered migrations with `mig_ms` in (t - 6 h, t - 30 min] is above 0 (level 0, single level, no tuning), with at least 30 rows in the window (else the gate is closed). t = the row's `mig_ms`. Causal: the tp50_sl30 hold is capped at 30 minutes, so migrations at least 30 minutes old have closed holds. The first 24 h of each block's counted window are left-censored and leave both H3 and its paired comparison; the effect on n is reported (§7). The gate uses the flat leg for both legs' books (declared, not tuned).
+- **H4, size by score.** Stake 2x (0.10 SOL, re-simulated cells) for frozen score >= THR95 = 0.8352960347743753, 1x in [THR90, THR95). THR95 is the p95 (index round(0.95 (n-1))) of the 8,801 out-of-fold scores in `ARTIFACTS/exp012/oof_scores.json`, whose p90 is THR90 (a test asserts both). Uses the frozen score; no level is fit on these dates. **Blocked** until the 0.10 SOL re-simulation exists (same follow-up).
+
+Each H cell is **1 try**, logged in `data/tries.jsonl` (`exp017_h1..h4`), one `started` line each at the spend point and one `completed` line per pool group.
+
+## 4. Bars (27 non-P1 dates; adapted from EXP-015 bars 1-6)
+
+A cell passes only if all hold, under both fail models:
+
+1. **B1 gate:** n >= 100 trades, >= 5 dates with trades, majority of the 27 dates positive, CI lower bound of mean SOL per trade > 0 (book-stats bootstrap, 1,000 draws, seed 1, 5th percentile, and the date-cluster bootstrap), total ex-top-3 > 0.
+2. **B2 paired vs frozen EXP-012:** x_m = (cell net - frozen net) per migration over every row in scope: mean > 0, date-cluster CI90 lower bound > 0, x total ex-top-3 > 0, **and Holm-significant** (§5).
+3. **B3 concentration:** no date above 20% of the positive-date total; total excluding the best date > 0.
+4. **B4:** P2 + P4 only, mean > 0.
+5. **B5 August replication:** P2 only, mean > 0 and a majority of P2 dates positive. No level is fit on any block (H3's level is 0, H4's thresholds come from the EXP-012 freeze), so this replaces "train September, score August"; if a level were fit it would be train-on-September, score-on-August.
+6. **B6 September stability:** P3 + P4 only, mean > 0.
+
+P1 numbers are reported, never gating.
+
+## 5. Multiplicity
+
+Holm across H1-H4 at family alpha 0.05 on the one-sided paired date-cluster bootstrap p of mean x (10,000 draws, seed 1, p = (1 + #{draw mean <= 0}) / (1 + draws), max over the two legs). C0 is outside the family.
+
+## 6. Refusals (checked before the `started` line; no try is spent)
+
+- Cache manifest or raw manifest sha256 differs from §1; any `v_P*.manifest.json` head differs from the pinned code sha, or its V map sha differs from the pin.
+- V map sha differs from the pin; any view path in a reserved fragment (fresh-0808, fresh-0828, forward, raw walkers).
+- `is_mayhem_mode` coverage below 90% on any non-P1 source (H1's coverage rule; applies to the whole run because the cells share one data load).
+- Zero non-P1 trades in H1, H2 or H4 (outcome-blind cells). H3's gate reads outcomes, so an empty H3 is detected after `started` and reported as a failed cell, try spent.
+- `--sized-cache` absent, or its manifest differs from `SIZED_MANIFEST_SHA256` (to be pinned by an amendment after the re-simulation).
+- Any earlier `exp017` line in the tries log, or `RUN.lock`: a second run is refused.
+
+**Open before the run:** the sized cache (H4, C0) does not exist yet; see §3 and §8.
+
+## 7. Disclosures
+
+- **Cache origin:** EXP-015 screen, job #242, code `cc366d4`.
+- **Tries already on these views** (`data/tries.jsonl`, 97 lines on 2026-10-06; lines touching each pool's counted window, this tool excluded): P1 79, P2 14, P3 6, P4 6. EXP-017 adds 4 on each.
+- **Lab-wide alpha dilution:** the 97 logged tries are not corrected for here; Holm covers only these four. Treat any p as optimistic by the number of earlier looks at the same 27 dates.
+- **Timing:** DEC-021 walk 2 registers before 2026-10-16T01. A pass here needs a separate pre-registration and a confirmation read of an unread block, so it cannot join walk 2 unless that pre-registration also lands before the deadline. This plan does not claim it will.
+- **H3 left-censor effect on n (outcome-blind, rows of the universe):** P1 962, P2 951, P3 905, P4 1,013 rows removed; of the frozen-selected rows 99 (P1), 74, 85, 71 (non-P1: 230 of 2,349).
+- **Outcome-blind counts (precount):** frozen-selected non-P1 2,349 (P2 1,485; P3 451; P4 413). H1 2,347; H2 2,345; H4 tiers on non-P1: 1x 1,194, 2x 1,155 (before any re-simulation).
+
+## 8. Precount findings
+
+- V0 = 0 pools and mayhem mints are almost the same set (e.g. P3: 1,459 V0 = 0 pools, 1,459 mayhem mints). H1 and H2 are therefore nearly one hypothesis tested twice; Holm pays for both.
+- Both vetoes remove about 2 of the 2,349 frozen-selected non-P1 rows. A filter that removes 2 rows cannot move a mean of this size: H1 and H2 are expected to fail B2 by construction. They stay in the family because they were asked for; the manager may drop them by amendment before the run.
+- Create-row coverage of `is_mayhem_mode`: in the first precount, with a strict `create < migration` rule, coverage was 51-65% (P1B 0%: ingest_hot rows carry no field). The cause is that the cache `mig_ms` equals the create second for most non-mayhem mints (median gap 0 s), so a strict test drops them. The rule above is `<=`. Post-fix coverage (outcome-blind precount): P2, P3, P4 and P1A, P1C 100%; P1B 0% (report-only). The 90% refusal is therefore not triggered. The `<=` rule is a precount-time ruling made before any outcome was read; the strict rule would have refused the run.
+
+## 9. What is already known (so nobody reads this as a blind test)
+
+The frozen EXP-012 book on these 27 non-P1 dates at the deciding costs was reported in the EXP-015 result: n = 2,349, per-trade flat -0.00044 SOL, pressure -0.00054 SOL. No H-cell outcome has been read. B1 requires the filtered book to be positive in absolute terms.
+
+## 10. What a pass earns
+
+Nothing but a pre-registered one-shot read of fresh-0828 or fresh-0808. Not the promotion gate, not a live trial.
