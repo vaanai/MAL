@@ -233,7 +233,12 @@ Only trade-file pool ids and on-chain pool accounts are read; no row, report or 
 - `tools/exp012_forward_vmap.py`: §1–§3, plus §5 validation through `validate`.
 - The Amendment 3(a) sensitivity re-score on (B): `tools/exp012_forward_sensitivity.py` with V pricing.
 
-Commits: _filled in when each merges_.
+Commits (merged 2026-10-06, after four quant-proof rounds; the last round was OK on every PR):
+- `tools/exp012_forward_vmap.py`: #374, merge `5aaeb700a2bf49d8c258817a37963a323a541ad9`.
+- `tools/exp012_forward_vbook.py`: #375, merge `fe8f6dde78829b8e8e7cffd1000551e9d9f0b8b1`.
+- `tools/exp012_forward_sensitivity.py` with V pricing (and vbook's `tracked_call` refactor): #378, merge `7253e0700255080ff28bb400db8f95b39420fc11`.
+
+The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded in each report.
 
 **5. Definitions fixed before the read.**
 - **Top 3 (Amendment 4 §3):** the union of the top 3 entered trades by `flat` and the top 3 by `press`, since each gate leg drops its own top 3.
