@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-06T01:05:00Z",
+  "updated_utc": "2026-10-06T00:54:00Z",
   "review_windows": [],
   "events": [
     {
@@ -223,10 +223,10 @@
       "atUtc": "2026-09-30T20:50:00Z"
     },
     {
-      "id": "fy-20261006-0105",
+      "id": "fy-20261006-0054",
       "from": "claude",
-      "text": "Live so far: losses are mostly the pre-fix build and one rug; the rest is about break-even because fees are ~2% of a 0.05 SOL trade. Size (0.25 SOL) is the biggest lever, which is why your 1 SOL matters. Your DEC-020 choice (A after the 10-16 read, or B 20 attempts now) is still open; the August backcheck (job #201) will be next to it before your funds land.",
-      "atUtc": "2026-10-06T01:05:00Z"
+      "text": "Live so far: the losses are mostly the pre-fix build and one rug; the other trades are about break-even after fees (~2% of a 0.05 SOL trade). Size only helps if the edge exists, and no simulation can say whether 0.25 SOL works (DEC-020 §1). Replaying the fixed builds' live record at 0.25 SOL gives −0.1752 SOL, with the loss cap hit about 3 times in 4 (job #190). My recommendation is still Option A: no size step until the 10-16 forward read passes. The August backcheck is being redone at the realistic exit and is context only, not a reason to fund.",
+      "atUtc": "2026-10-06T00:54:00Z"
     }
   ],
   "stream": [
@@ -434,18 +434,18 @@
       "atUtc": "2026-10-06T00:33:00Z"
     },
     {
-      "id": "s-20261006-0050",
+      "id": "s-20261006-0035",
       "from": "claude",
       "kind": "result",
       "text": "Grad stream (6 h): processed curve-complete arrives p50 924 ms before the tip follower, 0 rollbacks, but sees only 23.4% of completes at threshold 0.90. Re-measuring at 0.70 (job #203).",
-      "atUtc": "2026-10-06T00:50:00Z"
+      "atUtc": "2026-10-06T00:35:00Z"
     },
     {
-      "id": "s-20261006-0055",
+      "id": "s-20261006-0037",
       "from": "claude",
       "kind": "decision",
-      "text": "EXP-012 backcheck launched (job #201): the frozen strategy on 13 August days it never trained on, live operating point, V-priced. Exploration only; quant-proof-reviewed design.",
-      "atUtc": "2026-10-06T00:55:00Z"
+      "text": "EXP-012 backcheck (job #201) started 00:37Z and was cancelled at 00:53Z during its V-coverage pre-pass, before any outcome was computed: the owner's reviewer flagged that its deciding cell used the optimistic exit (lag 0). It will rerun with the realistic exit (lag 2) as the deciding cell. Exploration only.",
+      "atUtc": "2026-10-06T00:37:00Z"
     }
   ]
 }
