@@ -264,6 +264,7 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(json.loads((self.td / "v.json.null_pools.json").read_text()), ["B", "C"])
         fj = json.loads((self.td / "v.json.fetch.json").read_text())
         self.assertTrue(fj["new"])
+        self.assertEqual(fj["pools_sha256"], sha(self.td / "pools.json"))
         self.assertRegex(fj["fetch_started_utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(pv.load_map(self.td / "v.json"), {"A": 9, "B": None, "C": None, "D": 4})
 
@@ -348,6 +349,14 @@ class MergeTests(unittest.TestCase):
         return str(self.tmp / "pools.json")
 
     def merge(self, final: str, snaps: list[str], pools: str, out: Path):
+        fj = Path(final + ".fetch.json")
+        if fj.is_file():  # stand in for a fetch over exactly this pool set, unless the test set its own
+            try:
+                doc = json.loads(fj.read_text())
+                if isinstance(doc, dict) and "pools_sha256" not in doc:
+                    fj.write_text(json.dumps({**doc, "pools_sha256": sha(Path(pools))}))
+            except ValueError:
+                pass
         argv = ["merge", "--final", final, "--pools", pools, "--out", str(out)]
         for s in snaps:
             argv += ["--snapshot", s]
@@ -419,6 +428,30 @@ class MergeTests(unittest.TestCase):
         rc, _, err = self.merge(final, [self.snap({"A": 1})], self.pools(["A"]), self.tmp / "out.json")
         self.assertEqual(rc, 2)
         self.assertIn("fetch.json", err)
+
+    def test_fetch_over_a_subset_refused(self) -> None:
+        sub = self.tmp / "subset.json"
+        sub.write_text(json.dumps(["A"]))
+        final = self.final({"A": 1}, fetch_doc={"new": True, "fetch_started_utc": "2026-10-11T00:00:00Z", "pools_sha256": sha(sub)})
+        s1 = self.snap({"A": 1})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1], self.pools(["A", "B"]), out)
+        self.assertEqual(rc, 2)
+        self.assertIn("pools_sha256", err)
+        self.assertFalse(out.exists())
+
+    def test_corrupt_sidecars_are_clean_refusals(self) -> None:
+        for name, content in (("fetch.json", "not json{"), ("fetch.json", "[1]"), ("reasons.json", "oops"), ("reasons.json", "[]")):
+            with self.subTest(name=name, content=content):
+                final = self.final({"A": 1})
+                s1 = self.snap({"A": 1})
+                pools = self.pools(["A"])
+                (self.tmp / f"final.json.{name}").write_text(content)
+                out = self.tmp / "out.json"
+                rc, _, err = self.merge(final, [s1], pools, out)
+                self.assertEqual(rc, 2, err)
+                self.assertIn("REFUSED", err)
+                self.assertFalse(out.exists())
 
     def test_missing_reasons_sidecar_refused(self) -> None:
         final = self.final({"B": None})

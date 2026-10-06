@@ -221,9 +221,20 @@ def fetch_batch_reasons(url: str, pools: list[str]) -> list[tuple[int | None, st
     raise SystemExit(redact_rpc_url(f"getMultipleAccounts failed: {type(last).__name__}: {last}"))
 
 
+def load_json_dict(path: Path, what: str) -> dict[str, Any]:
+    """A clean Refused for a missing, unreadable, non-JSON or non-object file."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refused(f"{what} {path} is missing or not valid JSON ({type(exc).__name__})")
+    if not isinstance(doc, dict):
+        raise Refused(f"{what} {path} is not a JSON object")
+    return doc
+
+
 def load_reasons(map_path: Path) -> dict[str, str]:
     rp = side(map_path, ".reasons.json")
-    return json.loads(rp.read_text(encoding="utf-8")) if rp.is_file() else {}
+    return load_json_dict(rp, "reasons file") if rp.is_file() else {}
 
 
 def cmd_fetch(a: argparse.Namespace, fetch: Callable[[list[str]], list[tuple[int | None, str | None]]] | None = None) -> int:
@@ -266,7 +277,7 @@ def cmd_fetch(a: argparse.Namespace, fetch: Callable[[list[str]], list[tuple[int
     sidecars[".reasons.json"].write_text(json.dumps(dict(sorted(reasons.items()))) + "\n", encoding="utf-8")
     fj = sidecars[".fetch.json"]
     prior = json.loads(fj.read_text()) if fj.is_file() else {}
-    doc = {**prior, "fetch_started_utc": prior.get("fetch_started_utc", started), "new": prior.get("new", bool(a.new)), "last_fetch_utc": started, "n_pools_requested": len(pools)}
+    doc = {**prior, "fetch_started_utc": prior.get("fetch_started_utc", started), "new": prior.get("new", bool(a.new)), "last_fetch_utc": started, "n_pools_requested": len(pools), "pools_sha256": sha256_file(Path(a.pools))}
     fj.write_text(json.dumps(doc, sort_keys=True) + "\n", encoding="utf-8")
     nulls = sorted(p for p in pools if vmap.get(p) is None)
     sidecars[".null_pools.json"].write_text(json.dumps(nulls) + "\n", encoding="utf-8")  # ids stay in a file, not in logs
@@ -335,12 +346,12 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
     return out, filled, ignored
 
 
-def final_fetch_block(final_path: Path) -> dict[str, Any]:
+def final_fetch_block(final_path: Path, pools_path: Path) -> dict[str, Any]:
     """MAP.fetch.json must say this map came from a fresh `fetch --new` that started at or after CUTOFF."""
     fj = side(final_path, ".fetch.json")
     if not fj.is_file():
         raise Refused(f"{fj} missing: the FINAL map must come from `fetch --new`")
-    doc = json.loads(fj.read_text(encoding="utf-8"))
+    doc = load_json_dict(fj, "fetch file")
     started = doc.get("fetch_started_utc")
     if doc.get("new") is not True:
         raise Refused(f"{fj}: new is not true; the FINAL map must come from `fetch --new`")
@@ -350,7 +361,10 @@ def final_fetch_block(final_path: Path) -> dict[str, Any]:
         raise Refused(f"{fj}: fetch_started_utc is missing or malformed")
     if t0 < datetime.strptime(CUTOFF, TS_FMT):
         raise Refused(f"{fj}: fetch_started_utc {started} is before the cutoff {CUTOFF}")
-    return {"new": True, "fetch_started_utc": started, "cutoff": CUTOFF}
+    want = sha256_file(pools_path)
+    if doc.get("pools_sha256") != want:
+        raise Refused(f"{fj}: pools_sha256 {doc.get('pools_sha256')} != sha256 of --pools {want}: the whole set must go through the post-cutoff fetch")
+    return {"new": True, "fetch_started_utc": started, "cutoff": CUTOFF, "pools_sha256": want}
 
 
 def cmd_merge(a: argparse.Namespace) -> int:
@@ -361,7 +375,7 @@ def cmd_merge(a: argparse.Namespace) -> int:
             raise Refused(f"{p} exists; refusing to overwrite")
     final_path = Path(a.final)
     snap_paths = [Path(s) for s in a.snapshot]
-    final_fetch = final_fetch_block(final_path)
+    final_fetch = final_fetch_block(final_path, Path(a.pools))
     for sp in snap_paths:
         check_in_ledger(sp)
     pool_set = set(json.loads(Path(a.pools).read_text(encoding="utf-8")))
