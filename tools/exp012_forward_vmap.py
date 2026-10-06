@@ -4,11 +4,11 @@ Collects EVERY PumpSwap pool printed in the window's trade files (strict=False J
 parse, venue == "pumpswap", pool is a str), not only mints with a migration row and
 not by regex. Only the pool field is ever kept. Subcommands:
 
-  pools     --walk-dir D --from HOUR --to HOUR --out pools.json   (writes pools.meta.json)
-  fetch     --pools pools.json --vmap MAP --rps R                 (Helius via pumpswap_virtual)
+  pools     --walk-dir D (--from H --to H | --final-out-dir O) --out pools.json   (writes pools.meta.json)
+  fetch     --pools pools.json --vmap MAP --rps R [--new]  (Helius; MAP.reasons.json closed/unreadable)
   snapshot  --vmap MAP --out DIR                                  (read-only copy + snapshots.jsonl)
   validate  --walk-dir D --from H --to H --vmap M --vmap-sha256 S --out validation.json (Amendment 4 s5; never fetches)
-  merge     --final MAP --snapshot SNAP [--snapshot SNAP2] --out OUT
+  merge     --final MAP --pools pools.json --snapshot SNAP [--snapshot SNAP2] --out OUT
 
 V is constant per pool and a closed pool reads null later, so an early snapshot fills
 pools that are null (or absent) after the cutoff. Disagreeing non-null values refuse.
@@ -149,44 +149,137 @@ def _write_new(path: Path, text: str, readonly: bool = False) -> None:
         fh.write(text)
 
 
+def side(path: Path, suffix: str) -> Path:
+    return path.with_name(path.name + suffix)
+
+
+def final_window(out_dir: Path) -> tuple[str, str]:
+    """(pool_from, to_exclusive) of the last score run in O/runs.jsonl. Counts and hours only."""
+    runs = fw.score_runs(fw.read_rows(out_dir / fw.RUNS_NAME))
+    if not runs:
+        raise Refused(f"no score run in {out_dir / fw.RUNS_NAME}")
+    last = runs[-1]
+    pf, te = last.get("pool_from"), last.get("to_exclusive")
+    if not isinstance(pf, str) or not isinstance(te, str):
+        raise Refused(f"last score run in {out_dir / fw.RUNS_NAME} has no pool_from / to_exclusive")
+    return pf, te
+
+
 def cmd_pools(a: argparse.Namespace) -> int:
+    if a.final_out_dir:
+        if a.from_hour or a.to_hour:
+            raise Refused("--final-out-dir takes the window from runs.jsonl; refusing --from/--to alongside it")
+        start, end = final_window(Path(a.final_out_dir))
+    else:
+        if not (a.from_hour and a.to_hour):
+            raise Refused("give --final-out-dir, or --from and --to (snapshots before the FINAL exists)")
+        start, end = a.from_hour, a.to_hour
     out = Path(a.out)
     meta_path = out.with_name(out.stem + ".meta.json")
     for p in (out, meta_path):
         if p.exists():
             raise Refused(f"{p} exists; refusing to overwrite")
-    pools, meta = collect(Path(a.walk_dir), a.from_hour, a.to_hour, workers=a.workers)
+    pools, meta = collect(Path(a.walk_dir), start, end, workers=a.workers)
+    meta["window_source"] = "final_out_dir" if a.final_out_dir else "from_to"
     _write_new(out, json.dumps(pools) + "\n")
     _write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n")
     print(f"pools: {len(pools)} from {meta['n_files']} files, {meta['n_unparseable_lines']} unparseable lines -> {out}")
     return 0
 
 
-def cmd_fetch(a: argparse.Namespace, fetch: Callable[[list[str]], list[int | None]] | None = None) -> int:
+def fetch_batch_reasons(url: str, pools: list[str]) -> list[tuple[int | None, str | None]]:
+    """getMultipleAccounts. (V, None), or (None, "closed") for a null account, or
+    (None, "unreadable") for an account that is present but parse_virtual cannot read."""
+    import base64
+    import time
+    import urllib.request
+
+    from tools.pump_history_backfill import redact_rpc_url
+
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getMultipleAccounts", "params": [pools, {"encoding": "base64"}]}).encode()
+    last: Exception | None = None
+    for attempt in range(5):
+        try:
+            req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
+            resp = json.load(urllib.request.urlopen(req, timeout=60))
+            if "error" in resp:
+                raise RuntimeError(str(resp["error"])[:200])
+            out: list[tuple[int | None, str | None]] = []
+            for acc in resp["result"]["value"]:
+                if not acc:
+                    out.append((None, "closed"))
+                    continue
+                v = pv.parse_virtual(base64.b64decode(acc["data"][0]))
+                out.append((v, None) if v is not None else (None, "unreadable"))
+            return out
+        except Exception as exc:  # noqa: BLE001 -- the URL must never leak
+            last = exc
+            time.sleep(2 * (attempt + 1))
+    raise SystemExit(redact_rpc_url(f"getMultipleAccounts failed: {type(last).__name__}: {last}"))
+
+
+def load_reasons(map_path: Path) -> dict[str, str]:
+    rp = side(map_path, ".reasons.json")
+    return json.loads(rp.read_text(encoding="utf-8")) if rp.is_file() else {}
+
+
+def cmd_fetch(a: argparse.Namespace, fetch: Callable[[list[str]], list[tuple[int | None, str | None]]] | None = None) -> int:
+    """`fetch` (tests) returns (V, null_reason) per pool, like fetch_batch_reasons."""
     if a.rps > pv.MAX_RPS:
         raise Refused(f"rps {a.rps} > {pv.MAX_RPS}: walkers share Helius")
     pools = json.loads(Path(a.pools).read_text(encoding="utf-8"))
     if not isinstance(pools, list) or not all(isinstance(p, str) for p in pools):
         raise Refused("pools file is not a list of strings")
     vmap_path = Path(a.vmap)
-    existing = pv.load_map(vmap_path) if vmap_path.is_file() else None
-    vmap, calls = pv.build_map(pools, existing=existing, fetch=fetch, rps=a.rps, log=lambda m: print(m, file=sys.stderr))
+    sidecars = {k: side(vmap_path, k) for k in (".reasons.json", ".fetch.json", ".null_pools.json")}
+    existing = None
+    if a.new:
+        for p in (vmap_path, *sidecars.values()):
+            if p.exists():
+                raise Refused(f"--new: {p} exists; refusing to reuse or overwrite")
+    elif vmap_path.is_file():
+        existing = pv.load_map(vmap_path)
+        print(f"WARNING: reusing {sum(v is not None for v in existing.values())} existing non-null values from {vmap_path}; only nulls and new pools are fetched", file=sys.stderr)
+    started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    reasons = {} if a.new else load_reasons(vmap_path)
+    if fetch is None:
+        url = pv._rpc_url()
+        fetch = lambda chunk: fetch_batch_reasons(url, chunk)  # noqa: E731
+    got_reason: dict[str, str | None] = {}
+
+    def wrapped(chunk: list[str]) -> list[int | None]:
+        res = fetch(chunk)
+        for p, (_, r) in zip(chunk, res):
+            got_reason[p] = r
+        return [v for v, _ in res]
+
+    vmap, calls = pv.build_map(pools, existing=existing, fetch=wrapped, rps=a.rps, log=lambda m: print(m, file=sys.stderr))
+    for p, r in got_reason.items():
+        if r is None:
+            reasons.pop(p, None)
+        else:
+            reasons[p] = r
     pv.save_map(vmap_path, vmap, calls)
+    sidecars[".reasons.json"].write_text(json.dumps(dict(sorted(reasons.items()))) + "\n", encoding="utf-8")
+    fj = sidecars[".fetch.json"]
+    prior = json.loads(fj.read_text()) if fj.is_file() else {}
+    doc = {**prior, "fetch_started_utc": prior.get("fetch_started_utc", started), "new": prior.get("new", bool(a.new)), "last_fetch_utc": started, "n_pools_requested": len(pools)}
+    fj.write_text(json.dumps(doc, sort_keys=True) + "\n", encoding="utf-8")
     nulls = sorted(p for p in pools if vmap.get(p) is None)
-    print(f"fetch: n={len(vmap)} null={len(nulls)} calls={calls} -> {vmap_path}")
-    for p in nulls:
-        print(f"null {p}")
+    sidecars[".null_pools.json"].write_text(json.dumps(nulls) + "\n", encoding="utf-8")  # ids stay in a file, not in logs
+    n_unread = sum(1 for p in nulls if reasons.get(p) == "unreadable")
+    print(f"fetch: n={len(vmap)} n_null={len(nulls)} n_unreadable={n_unread} calls={calls} -> {vmap_path}")
     return 0
 
 
 def cmd_snapshot(a: argparse.Namespace, now: datetime | None = None) -> int:
     src, outdir = Path(a.vmap), Path(a.out)
-    vmap = pv.load_map(src)
     utc = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
     dest = outdir / f"vmap-snapshot-{utc}.json"
     if dest.exists():
         raise Refused(f"{dest} exists; refusing to overwrite")
     _write_new(dest, src.read_text(encoding="utf-8"), readonly=True)
+    vmap = pv.load_map(dest)  # counts come from the copy, not the source
     rec = {"utc": utc, "file": dest.name, "sha256": sha256_file(dest), "n": len(vmap), "n_null": sum(v is None for v in vmap.values())}
     with (outdir / LEDGER_NAME).open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, sort_keys=True) + "\n")
@@ -194,7 +287,25 @@ def cmd_snapshot(a: argparse.Namespace, now: datetime | None = None) -> int:
     return 0
 
 
-def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | None]]) -> tuple[dict[str, int | None], list[str]]:
+def check_in_ledger(snap: Path) -> None:
+    ledger = snap.parent / LEDGER_NAME
+    if not ledger.is_file():
+        raise Refused(f"{snap}: no {LEDGER_NAME} next to it")
+    want = sha256_file(snap)
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict) and r.get("file") == snap.name and r.get("sha256") == want:
+            return
+    raise Refused(f"{snap} is not in {ledger} with a matching sha256")
+
+
+def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | None]], pool_set: set[str], reasons: dict[str, str] | None = None) -> tuple[dict[str, int | None], list[str], list[str]]:
+    """(merged, filled, ignored_outside_set). Conflicts are checked over every pool; only pools in
+    pool_set are filled; a pool null in `final` with reason "unreadable" is never filled (refused)."""
+    reasons = reasons or {}
     snap_v: dict[str, int] = {}
     for s in snaps:
         for p, v in s.items():
@@ -207,34 +318,53 @@ def merge_maps(final: dict[str, int | None], snaps: Sequence[dict[str, int | Non
         if v is not None and p in snap_v and snap_v[p] != v:
             raise Refused(f"post-cutoff V for {p} is {v}, snapshot has {snap_v[p]}")
     out = dict(final)
-    filled = sorted(p for p, v in snap_v.items() if out.get(p) is None)
+    want = sorted(p for p, v in snap_v.items() if out.get(p) is None)
+    ignored = [p for p in want if p not in pool_set]
+    filled = [p for p in want if p in pool_set]
+    bad = [p for p in filled if p in final and reasons.get(p) == "unreadable"]
+    if bad:
+        raise Refused(f"{len(bad)} pool(s) are null in the final map as unreadable but non-null in a snapshot: not filled; resolve first")
     for p in filled:
         out[p] = snap_v[p]
-    return out, filled
+    return out, filled, ignored
 
 
 def cmd_merge(a: argparse.Namespace) -> int:
     out = Path(a.out)
-    meta_path = out.with_name(out.name + ".merge.json")
+    meta_path = side(out, ".merge.json")
     for p in (out, meta_path):
         if p.exists():
             raise Refused(f"{p} exists; refusing to overwrite")
     final_path = Path(a.final)
     snap_paths = [Path(s) for s in a.snapshot]
+    for sp in snap_paths:
+        check_in_ledger(sp)
+    pool_set = set(json.loads(Path(a.pools).read_text(encoding="utf-8")))
+    if not side(final_path, ".reasons.json").is_file():
+        raise Refused(f"{side(final_path, '.reasons.json')} missing: run the final fetch with this tool so null reasons are recorded")
+    reasons = load_reasons(final_path)
     final = pv.load_map(final_path)
-    merged, filled = merge_maps(final, [pv.load_map(s) for s in snap_paths])
+    merged, filled, ignored = merge_maps(final, [pv.load_map(s) for s in snap_paths], pool_set, reasons)
     pv.save_map(out, merged, 0)
     os.chmod(out, 0o444)
+    unreadable = sorted(p for p in pool_set if p in merged and merged[p] is None and reasons.get(p) == "unreadable")
     meta = {
         "n": len(merged),
-        "n_null_before": sum(v is None for v in final.values()),
+        "n_pools_set": len(pool_set),
+        "n_null_before": sum(1 for p in pool_set if p in final and final[p] is None),
+        "n_absent_before": sum(p not in final for p in pool_set),
         "n_filled_from_snapshot": len(filled),
         "filled_pools": filled,
-        "n_null_after": sum(v is None for v in merged.values()),
-        "sha256": {"final": sha256_file(final_path), "snapshots": [sha256_file(s) for s in snap_paths], "out": sha256_file(out)},
+        "n_ignored_outside_set": len(ignored),
+        "ignored_pools": ignored,
+        "n_null_after": sum(1 for p in pool_set if p in merged and merged[p] is None),
+        "n_absent_after": sum(p not in merged for p in pool_set),
+        "n_unreadable": len(unreadable),
+        "unreadable_pools": unreadable,
+        "sha256": {"final": sha256_file(final_path), "pools": sha256_file(Path(a.pools)), "snapshots": [sha256_file(s) for s in snap_paths], "out": sha256_file(out)},
     }
     _write_new(meta_path, json.dumps(meta, indent=1, sort_keys=True) + "\n", readonly=True)
-    print(f"merge: n={meta['n']} null_before={meta['n_null_before']} filled={len(filled)} null_after={meta['n_null_after']} -> {out}")
+    print(f"merge: n={meta['n']} filled={len(filled)} ignored={len(ignored)} n_null_after={meta['n_null_after']} n_absent_after={meta['n_absent_after']} n_unreadable={len(unreadable)} -> {out}")
     return 0
 
 
@@ -354,8 +484,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("pools")
     p.add_argument("--walk-dir", required=True)
-    p.add_argument("--from", dest="from_hour", required=True)
-    p.add_argument("--to", dest="to_hour", required=True)
+    p.add_argument("--from", dest="from_hour")
+    p.add_argument("--to", dest="to_hour")
+    p.add_argument("--final-out-dir", help="forward OUT dir: window = last score run's pool_from .. to_exclusive in runs.jsonl")
     p.add_argument("--out", required=True)
     p.add_argument("--workers", type=int, default=8)
     p.set_defaults(fn=cmd_pools)
@@ -363,6 +494,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--pools", required=True)
     p.add_argument("--vmap", required=True)
     p.add_argument("--rps", type=float, default=pv.MAX_RPS)
+    p.add_argument("--new", action="store_true", help="refuse if the map exists; the FINAL fetch always uses this")
     p.set_defaults(fn=cmd_fetch)
     p = sub.add_parser("snapshot")
     p.add_argument("--vmap", required=True)
@@ -370,6 +502,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.set_defaults(fn=cmd_snapshot)
     p = sub.add_parser("merge")
     p.add_argument("--final", required=True)
+    p.add_argument("--pools", required=True, help="the section 1 pool set (pools.json)")
     p.add_argument("--snapshot", action="append", required=True)
     p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_merge)

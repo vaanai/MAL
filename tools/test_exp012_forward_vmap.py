@@ -204,31 +204,62 @@ class ValidateTests(unittest.TestCase):
 
 
 class FetchTests(unittest.TestCase):
-    def test_fetch_retries_nulls_and_reports(self) -> None:
-        with tempfile.TemporaryDirectory() as td_s:
-            td = Path(td_s)
-            (td / "pools.json").write_text(json.dumps(["A", "B", "C"]))
-            write_map(td / "v.json", {"A": 7, "B": None})
-            asked: list[list[str]] = []
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.td = Path(self._td.name)
+        (self.td / "pools.json").write_text(json.dumps(["A", "B", "C", "D"]))
 
-            def fetch(chunk):
-                asked.append(chunk)
-                return [None if p == "C" else 9 for p in chunk]
+    def tearDown(self) -> None:
+        self._td.cleanup()
 
-            ns = argparse.Namespace(pools=str(td / "pools.json"), vmap=str(td / "v.json"), rps=5.0)
-            out = StringIO()
-            with mock.patch.object(time, "sleep"), redirect_stdout(out), redirect_stderr(StringIO()):
-                self.assertEqual(vm.cmd_fetch(ns, fetch=fetch), 0)
-            self.assertEqual(asked, [["B", "C"]])
-            self.assertEqual(pv.load_map(td / "v.json"), {"A": 7, "B": 9, "C": None})
-            self.assertIn("n=3 null=1", out.getvalue())
-            self.assertIn("null C", out.getvalue())
+    def ns(self, new: bool) -> argparse.Namespace:
+        return argparse.Namespace(pools=str(self.td / "pools.json"), vmap=str(self.td / "v.json"), rps=5.0, new=new)
+
+    def do(self, new: bool, fetch):
+        out, err = StringIO(), StringIO()
+        with mock.patch.object(time, "sleep"), redirect_stdout(out), redirect_stderr(err):
+            rc = vm.cmd_fetch(self.ns(new), fetch=fetch)
+        return rc, out.getvalue(), err.getvalue()
+
+    @staticmethod
+    def fake(chunk):
+        res = {"A": (9, None), "B": (None, "closed"), "C": (None, "unreadable"), "D": (4, None)}
+        return [res[p] for p in chunk]
+
+    def test_new_records_reasons_and_keeps_ids_out_of_stdout(self) -> None:
+        rc, out, err = self.do(True, self.fake)
+        self.assertEqual(rc, 0)
+        self.assertIn("n=4 n_null=2 n_unreadable=1", out)
+        self.assertNotIn("B", out.replace("n_null", "").replace("n_unreadable", ""))
+        self.assertEqual(json.loads((self.td / "v.json.reasons.json").read_text()), {"B": "closed", "C": "unreadable"})
+        self.assertEqual(json.loads((self.td / "v.json.null_pools.json").read_text()), ["B", "C"])
+        fj = json.loads((self.td / "v.json.fetch.json").read_text())
+        self.assertTrue(fj["new"])
+        self.assertRegex(fj["fetch_started_utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(pv.load_map(self.td / "v.json"), {"A": 9, "B": None, "C": None, "D": 4})
+
+    def test_new_refuses_existing_map(self) -> None:
+        write_map(self.td / "v.json", {"A": 1})
+        with self.assertRaises(vm.Refused):
+            self.do(True, self.fake)
+        self.assertEqual(pv.load_map(self.td / "v.json"), {"A": 1})
+
+    def test_without_new_warns_and_reuses(self) -> None:
+        write_map(self.td / "v.json", {"A": 7, "B": None})
+        asked: list[list[str]] = []
+
+        def fetch(chunk):
+            asked.append(chunk)
+            return self.fake(chunk)
+
+        rc, out, err = self.do(False, fetch)
+        self.assertIn("WARNING", err)
+        self.assertEqual(asked, [["B", "C", "D"]])
+        self.assertEqual(pv.load_map(self.td / "v.json")["A"], 7)
 
     def test_rps_over_cap_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            (Path(td) / "p.json").write_text("[]")
-            rc, _, _ = run(["fetch", "--pools", f"{td}/p.json", "--vmap", f"{td}/v.json", "--rps", "50"])
-            self.assertEqual(rc, 2)
+        rc, _, _ = run(["fetch", "--pools", str(self.td / "pools.json"), "--vmap", str(self.td / "v.json"), "--rps", "50"])
+        self.assertEqual(rc, 2)
 
 
 class SnapshotTests(unittest.TestCase):
@@ -255,56 +286,164 @@ class MergeTests(unittest.TestCase):
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
         self.tmp = Path(self._td.name)
+        self.n_snap = 0
 
     def tearDown(self) -> None:
         self._td.cleanup()
 
-    def m(self, name: str, v: dict) -> str:
-        write_map(self.tmp / name, v)
-        return str(self.tmp / name)
+    def final(self, v: dict, reasons: dict | None = None) -> str:
+        write_map(self.tmp / "final.json", v)
+        (self.tmp / "final.json.reasons.json").write_text(json.dumps(reasons or {}))
+        return str(self.tmp / "final.json")
 
-    def test_fill_from_snapshot_and_meta(self) -> None:
-        final = self.m("final.json", {"A": 1, "B": None, "C": None})
-        s1 = self.m("s1.json", {"B": 22, "D": 4, "E": None})
-        s2 = self.m("s2.json", {"B": 22, "A": 1})
+    def snap(self, v: dict, ledger: bool = True) -> str:
+        """A snapshot made with the real snapshot command (so it is in snapshots.jsonl)."""
+        self.n_snap += 1
+        src = self.tmp / f"src{self.n_snap}.json"
+        write_map(src, v)
+        ns = argparse.Namespace(vmap=str(src), out=str(self.tmp / "snaps"))
+        with redirect_stdout(StringIO()):
+            vm.cmd_snapshot(ns, now=datetime(2026, 10, 6, 0, 0, self.n_snap, tzinfo=timezone.utc))
+        path = self.tmp / "snaps" / f"vmap-snapshot-20261006T0000{self.n_snap:02d}Z.json"
+        if not ledger:
+            (self.tmp / "snaps" / "snapshots.jsonl").write_text("")
+        return str(path)
+
+    def pools(self, ids: list[str]) -> str:
+        (self.tmp / "pools.json").write_text(json.dumps(ids))
+        return str(self.tmp / "pools.json")
+
+    def merge(self, final: str, snaps: list[str], pools: str, out: Path):
+        argv = ["merge", "--final", final, "--pools", pools, "--out", str(out)]
+        for s in snaps:
+            argv += ["--snapshot", s]
+        return run(argv)
+
+    def test_fill_ignore_and_meta(self) -> None:
+        final = self.final({"A": 1, "B": None, "C": None, "X": None}, {"B": "closed", "C": "closed"})
+        s1 = self.snap({"B": 22, "D": 4, "E": None, "Y": 8})
+        s2 = self.snap({"B": 22, "A": 1})
+        pools = self.pools(["A", "B", "C", "D", "Z"])  # Z absent everywhere; Y, X outside the set
         out = self.tmp / "out.json"
-        rc, _, err = run(["merge", "--final", final, "--snapshot", s1, "--snapshot", s2, "--out", str(out)])
+        rc, stdout, err = self.merge(final, [s1, s2], pools, out)
         self.assertEqual(rc, 0, err)
-        self.assertEqual(pv.load_map(out), {"A": 1, "B": 22, "C": None, "D": 4})  # C stays null; E null in snapshot only is not added
+        got = pv.load_map(out)
+        self.assertEqual((got["A"], got["B"], got["C"], got["D"]), (1, 22, None, 4))
+        self.assertIsNone(got["X"])
+        self.assertNotIn("Y", got)  # outside the set: not filled
         self.assertEqual(stat.S_IMODE(os.stat(out).st_mode), 0o444)
         meta = json.loads((self.tmp / "out.json.merge.json").read_text())
-        self.assertEqual((meta["n"], meta["n_null_before"], meta["n_filled_from_snapshot"], meta["n_null_after"]), (4, 2, 2, 1))
-        self.assertEqual(meta["filled_pools"], ["B", "D"])
+        self.assertEqual((meta["n_pools_set"], meta["n_null_before"], meta["n_absent_before"]), (5, 2, 2))
+        self.assertEqual((meta["n_filled_from_snapshot"], meta["filled_pools"]), (2, ["B", "D"]))
+        self.assertEqual((meta["n_ignored_outside_set"], meta["ignored_pools"]), (1, ["Y"]))
+        self.assertEqual((meta["n_null_after"], meta["n_absent_after"]), (1, 1))
+        self.assertEqual(meta["unreadable_pools"], [])
         self.assertEqual(meta["sha256"]["out"], sha(out))
-        self.assertEqual(meta["sha256"]["final"], sha(Path(final)))
         self.assertEqual(meta["sha256"]["snapshots"], [sha(Path(s1)), sha(Path(s2))])
 
-    def test_snapshot_disagreement_refused(self) -> None:
-        final = self.m("final.json", {"B": None})
-        s1, s2 = self.m("s1.json", {"B": 1}), self.m("s2.json", {"B": 2})
+    def test_unreadable_filled_from_snapshot_refused(self) -> None:
+        final = self.final({"B": None}, {"B": "unreadable"})
+        s1 = self.snap({"B": 5})
         out = self.tmp / "out.json"
-        rc, _, err = run(["merge", "--final", final, "--snapshot", s1, "--snapshot", s2, "--out", str(out)])
+        rc, _, err = self.merge(final, [s1], self.pools(["B"]), out)
+        self.assertEqual(rc, 2)
+        self.assertIn("unreadable", err)
+        self.assertFalse(out.exists())
+
+    def test_unreadable_without_snapshot_value_listed(self) -> None:
+        final = self.final({"B": None, "C": 1}, {"B": "unreadable"})
+        s1 = self.snap({"C": 1})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1], self.pools(["B", "C"]), out)
+        self.assertEqual(rc, 0, err)
+        meta = json.loads((self.tmp / "out.json.merge.json").read_text())
+        self.assertEqual((meta["n_unreadable"], meta["unreadable_pools"], meta["n_null_after"]), (1, ["B"], 1))
+
+    def test_missing_reasons_sidecar_refused(self) -> None:
+        final = self.final({"B": None})
+        (self.tmp / "final.json.reasons.json").unlink()
+        s1 = self.snap({"B": 5})
+        rc, _, err = self.merge(final, [s1], self.pools(["B"]), self.tmp / "out.json")
+        self.assertEqual(rc, 2)
+        self.assertIn("reasons", err)
+
+    def test_snapshot_not_in_ledger_refused(self) -> None:
+        final = self.final({"B": None})
+        s1 = self.snap({"B": 5}, ledger=False)
+        rc, _, err = self.merge(final, [s1], self.pools(["B"]), self.tmp / "out.json")
+        self.assertEqual(rc, 2)
+        self.assertIn("snapshots.jsonl", err)
+
+    def test_snapshot_tampered_sha_refused(self) -> None:
+        final = self.final({"B": None})
+        s1 = self.snap({"B": 5})
+        os.chmod(s1, 0o644)
+        Path(s1).write_text(Path(s1).read_text().replace("5", "6"))
+        rc, _, err = self.merge(final, [s1], self.pools(["B"]), self.tmp / "out.json")
+        self.assertEqual(rc, 2)
+
+    def test_snapshot_disagreement_refused(self) -> None:
+        final = self.final({"B": None})
+        s1, s2 = self.snap({"B": 1}), self.snap({"B": 2})
+        out = self.tmp / "out.json"
+        rc, _, err = self.merge(final, [s1, s2], self.pools(["B"]), out)
         self.assertEqual(rc, 2)
         self.assertIn("disagree", err)
         self.assertFalse(out.exists())
 
     def test_final_vs_snapshot_conflict_refused(self) -> None:
-        final = self.m("final.json", {"A": 5})
-        s1 = self.m("s1.json", {"A": 6})
+        final = self.final({"A": 5})
+        s1 = self.snap({"A": 6})
         out = self.tmp / "out.json"
-        rc, _, err = run(["merge", "--final", final, "--snapshot", s1, "--out", str(out)])
+        rc, _, err = self.merge(final, [s1], self.pools(["A"]), out)
         self.assertEqual(rc, 2)
         self.assertIn("post-cutoff", err)
         self.assertFalse(out.exists())
 
     def test_out_exists_refused(self) -> None:
-        final = self.m("final.json", {"A": 5})
-        s1 = self.m("s1.json", {"A": 5})
+        final = self.final({"A": 5})
+        s1 = self.snap({"A": 5})
         out = self.tmp / "out.json"
         out.write_text("keep")
-        rc, _, _ = run(["merge", "--final", final, "--snapshot", s1, "--out", str(out)])
+        rc, _, _ = self.merge(final, [s1], self.pools(["A"]), out)
         self.assertEqual(rc, 2)
         self.assertEqual(out.read_text(), "keep")
+
+
+class FinalOutDirTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._td.name)
+        self.walk = self.tmp / "walk"
+        make_walk(self.walk)
+        self.od = self.tmp / "O"
+        self.od.mkdir()
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def runs(self, rows: list[dict]) -> None:
+        (self.od / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    def test_window_from_last_score_run(self) -> None:
+        self.runs([{"pool_from": H2, "to_exclusive": H3}, {"pool_from": H1, "to_exclusive": H3}, {"final": True, "pool_from": H3, "to_exclusive": "2026-10-05T09"}])
+        out = self.tmp / "pools.json"
+        rc, _, err = run(["pools", "--walk-dir", str(self.walk), "--final-out-dir", str(self.od), "--out", str(out), "--workers", "1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads((self.tmp / "pools.meta.json").read_text())["hours"], [H1, H2])
+        self.assertEqual(json.loads((self.tmp / "pools.meta.json").read_text())["window_source"], "final_out_dir")
+
+    def test_from_to_alongside_refused(self) -> None:
+        self.runs([{"pool_from": H1, "to_exclusive": H3}])
+        rc, _, err = run(["pools", "--walk-dir", str(self.walk), "--final-out-dir", str(self.od), "--from", H1, "--out", str(self.tmp / "p.json")])
+        self.assertEqual(rc, 2)
+        self.assertIn("--from/--to", err)
+
+    def test_no_runs_refused_and_neither_option_refused(self) -> None:
+        rc, _, _ = run(["pools", "--walk-dir", str(self.walk), "--final-out-dir", str(self.od), "--out", str(self.tmp / "p.json")])
+        self.assertEqual(rc, 2)
+        rc, _, _ = run(["pools", "--walk-dir", str(self.walk), "--out", str(self.tmp / "p.json")])
+        self.assertEqual(rc, 2)
 
 
 if __name__ == "__main__":
