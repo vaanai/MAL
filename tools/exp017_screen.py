@@ -758,7 +758,9 @@ def h4_vs_uniform(cells: Mapping[str, Mapping[str, Any]], c0: Mapping[str, Any])
         return {"score_effect": False, "reason": "uniform-0.10 reference unavailable"}
     for leg in LEGS:
         out[leg]["h4_beats_uniform"] = bool(out[leg]["h4_total_sol"] is not None and out[leg]["uniform_0p10_total_sol"] is not None and out[leg]["h4_total_sol"] > out[leg]["uniform_0p10_total_sol"])
-    out["score_effect"] = all(out[leg]["h4_beats_uniform"] for leg in LEGS)
+    out["uniform_n_without_cell"] = c0[key].get("n_without_cell")
+    # a frozen-selected row without a 0.10 cell makes the uniform reference incomplete: never a score effect
+    out["score_effect"] = all(out[leg]["h4_beats_uniform"] for leg in LEGS) and out["uniform_n_without_cell"] == 0
     return out
 
 

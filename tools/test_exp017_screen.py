@@ -401,7 +401,7 @@ class TestH4VsUniform(unittest.TestCase):
         return {"H3": {"bars_all": False, "bars": {"B1": b1}}, "H4": {"bars_all": True, "bars": {"B1": b1}}}
 
     def _c0(self, flat, press):
-        return {str(x17.SIZE_2X / x17.LAMPORTS): {"report": {"flat": {"total_sol": flat}, "press": {"total_sol": press}}}}
+        return {str(x17.SIZE_2X / x17.LAMPORTS): {"n_without_cell": 0, "report": {"flat": {"total_sol": flat}, "press": {"total_sol": press}}}}
 
     HM = {"H3": {"reject": False}, "H4": {"reject": True}}
 
@@ -419,6 +419,14 @@ class TestH4VsUniform(unittest.TestCase):
             out = x17.decide(cells, self.HM, u)
             self.assertNotIn("SCREEN PASS", out)
             self.assertIn("H4: size effect, not score -- earns nothing", out)
+
+    def test_uniform_reference_with_missing_cells_is_not_a_score_effect(self):
+        cells = self._cells(1.0, 1.0)
+        c0 = self._c0(0.5, 0.5)
+        c0[str(x17.SIZE_2X / x17.LAMPORTS)]["n_without_cell"] = 1
+        u = x17.h4_vs_uniform(cells, c0)
+        self.assertFalse(u["score_effect"])
+        self.assertIn("size effect", x17.decide(cells, self.HM, u))
 
     def test_missing_reference_is_not_a_score_effect(self):
         cells = self._cells(1.0, 1.0)
