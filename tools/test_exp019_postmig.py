@@ -52,10 +52,10 @@ class TestFeatures(unittest.TestCase):
 
     def test_causality_row_at_mig_slot_plus_5_ignored(self):
         a = x19.features_from_rows(base_rows(), "M", MIG_MS, VMAP)
-        late = base_rows() + [prow("M", 1005, "sell", 40_000_000_000, MIG_BT + 2, "z", q=Q0 + 4_000_000_000), prow("M", 1006, "buy", 9_000_000_000, MIG_BT + 3, "y")]
+        late = base_rows() + [prow("M", 1003, "sell", 40_000_000_000, MIG_BT + 2, "z", q=Q0 + 4_000_000_000), prow("M", 1004, "buy", 9_000_000_000, MIG_BT + 3, "y")]
         b = x19.features_from_rows(late, "M", MIG_MS, VMAP)
         self.assertEqual(a, b)
-        edge = base_rows() + [prow("M", 1004, "sell", 1_000_000_000, MIG_BT + 2, "z", q=Q0 + 4_000_000_000)]  # slot mig + 4 is inside
+        edge = base_rows() + [prow("M", 1002, "sell", 1_000_000_000, MIG_BT + 2, "z2", q=Q0 + 4_000_000_000)]  # slot mig + 2 is inside; mig + 3 is not
         self.assertNotEqual(x19.features_from_rows(edge, "M", MIG_MS, VMAP), a)
 
     def test_other_pool_and_non_wsol_ignored(self):
@@ -207,7 +207,7 @@ class TestPins(unittest.TestCase):
         self.assertIn((8, 2), e15.CELL_KEYS)
         self.assertIn((8, e15.SIZE_SOL, 2), e15.COMBOS)
         self.assertEqual(e17.CACHE_MANIFEST_SHA256[:8], "72b9bd1a")
-        self.assertEqual(x19.FEATURE_SLOTS, 4)
+        self.assertEqual(x19.FEATURE_SLOTS, 2)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ Plan (follow it exactly): EXP/EXP-019-postmig-confirm-plan.md.
 
 Modes
   --precount   OUTCOME-BLIND. Loads the EXP-015 cache rows with an object hook that DROPS the net fields (net0, status, sides, p_press) at parse
-               time, streams the clean-view tape (PumpSwap rows of the frozen-selected mints, slots [mig_slot, mig_slot + 4] on the migration pool),
+               time, streams the clean-view tape (PumpSwap rows of the frozen-selected mints, slots [mig_slot, mig_slot + 2] on the migration pool),
                writes features.jsonl and precount.json (coverage, share passing each cell, share with a cached uncensored k8 cell). Refuses (rc 2,
                after writing the report) when a cell keeps 0 % or 100 % of the frozen selection, or any pin / hour check fails.
   (screen)     needs --features (the file --precount wrote; sha256 checked against precount.json) and --tries-log (absolute). Refuses before
@@ -43,7 +43,7 @@ LAMPORTS = 1_000_000_000
 
 # --- pins and thresholds (fixed in the plan before any outcome is read; no level is fit) -------------------------------
 DEFAULT_SCRATCH = e17.DEFAULT_SCRATCH
-FEATURE_SLOTS = 4  # features use PumpSwap rows with slot in [mig_slot, mig_slot + 4]
+FEATURE_SLOTS = 2  # features use PumpSwap rows with slot in [mig_slot, mig_slot + 2] (manager ruling: same 6-slot decision-to-landing budget as the k6 cell)
 ENTRY_K = 8  # the cells enter at k = 8 (cached cell (8, lag 2)); the frozen comparator is (6, lag 2)
 EXIT_LAG = 2
 K8_CELL = (ENTRY_K, EXIT_LAG)
@@ -53,8 +53,8 @@ FETCH_MS = 10_000  # tape rows with t in [mig_ms, mig_ms + 10 s] are kept per mi
 MIN_FEATURE_COVERAGE = 0.99  # screen refuses if fewer frozen-selected non-P1 rows have features
 CELLS = ("A", "B")
 CELL_DESC = {
-    "A": "frozen EXP-012 selection, entered at k8 (lag 2) only if the first-to-last print price change is > 0 and the net SOL buy flow is > 0 in slots [mig, mig+4]; paired vs frozen at k6",
-    "B": "frozen EXP-012 selection, entered at k8 (lag 2) only if the largest single sell in slots [mig, mig+4] is < 5 % of the pool quote reserve (vault + V); paired vs frozen at k6",
+    "A": "frozen EXP-012 selection, entered at k8 (lag 2) only if the first-to-last print price change is > 0 and the net SOL buy flow is > 0 in slots [mig, mig+2]; paired vs frozen at k6",
+    "B": "frozen EXP-012 selection, entered at k8 (lag 2) only if the largest single sell in slots [mig, mig+2] is < 5 % of the pool quote reserve (vault + V); paired vs frozen at k6",
 }
 FAMILY_ALPHA = 0.05
 WORKERS_CAP = 4
@@ -173,7 +173,7 @@ def read_trade_file(path: Path | str, hour: str, counters: dict[str, int], needl
         raise Refused(f"zstd exited {rc} on {path}")
 
 
-# --- features: strictly tape rows on the migration pool, slots [mig_slot, mig_slot + 4] -----------------------------------
+# --- features: strictly tape rows on the migration pool, slots [mig_slot, mig_slot + 2] -----------------------------------
 
 
 def row_ms(r: Mapping[str, Any]) -> int | None:
@@ -198,7 +198,7 @@ def _key(r: Mapping[str, Any]) -> tuple[int, int, int, int]:
 def features_from_rows(rows: Iterable[Mapping[str, Any]], mint: str, mig_ms: int, vmap: Mapping[str, int | None]) -> dict[str, Any]:
     """Features of one mint from its tape rows. The migration print is the first PumpSwap (wSOL) print of the mint at t == the universe row's mig_ms
     (`_Mint.add`, latency_curve.py:732-734, stamps mig_slot / mig_ms on the first PumpSwap print after a bonding print); its slot is mig_slot and its
-    pool is the migration pool. Only rows of that pool with slot in [mig_slot, mig_slot + FEATURE_SLOTS] are used: a row at mig_slot + 5 is ignored.
+    pool is the migration pool. Only rows of that pool with slot in [mig_slot, mig_slot + FEATURE_SLOTS] are used: a row at mig_slot + 3 is ignored.
     Pricing is the simulator's own: print_from_trade_row wrapped by the V adapter (post-trade vault + V price), as the cached cells use."""
     from tools.paper_price_path import print_from_trade_row
     from tools.pumpswap_virtual_adapter import make_wrapper
@@ -436,7 +436,7 @@ def run_screen(universe: Sequence[Mapping[str, Any]], scores: Sequence[float], f
 CAVEATS = (
     "Exploration. Cells reuse the 27 non-P1 dates EXP-015, EXP-017 and EXP-018 already looked at; Holm covers only A and B.",
     "The paired mean x is per frozen-selected migration (x = cell net at k8 - frozen net at k6; a row the cell does not enter scores -frozen net).",
-    "Features use slots up to mig_slot + 4 and the entry lands at mig_slot + 8: this assumes a decision-to-landing latency of 4 slots, against the 6 slots the frozen k6 cell assumes. Optimistic by 2 slots.",
+    "Features use slots up to mig_slot + 2 and the entry lands at mig_slot + 8: this assumes a decision-to-landing latency of 4 slots, against the 6 slots the frozen k6 cell assumes. Optimistic by 2 slots.",
     "The k8 cells are the cached EXP-015 cells (V pin, lag 2, haircut, 505k per side, 0.05 SOL, both fail models); SLIPPAGE_CAP 0.15 against the migration-slot price still applies and can turn a later entry into a MISS.",
     "P1 dates are neither featured nor scored.",
 )
