@@ -105,3 +105,20 @@ By the outcome-blind selected-set counts of section 7, each of H1 (2,347) and H2
 - **Seal (honest limit):** the sized files are written mode 0400. That stops accidents, not people; the seal relies on nobody looking at the files before the screen runs.
 - **H4 versus uniform 0.10 (decision rule):** C0 also reports the frozen selection at a uniform 0.10 SOL on every frozen-selected row. H4 counts as a score effect only if its non-P1 total SOL is greater than uniform-0.10's non-P1 total SOL under BOTH fail models (equivalently, the [THR90, THR95) tier's sum of (0.10 net - 0.05 net) is < 0 on both legs). Otherwise `decide()` prints "H4: size effect, not score -- earns nothing" and H4 gets no SCREEN PASS, whatever its bars.
 - **Memory:** tape workers capped at 4 (`WORKERS_CAP`), the same ceiling as the EXP-015 passes. One heavy job at a time.
+
+## 13. Amendment: sized-cache pin (2026-10-06, before any outcome read)
+
+The outcome-blind re-sim ran as MiScusi job #319, at code f7d0ac1, with 3 workers and 22 GB. It wrote `/data/mal/exp017-resim-20261006T2004Z/sized_cache`: 12 files, mode 0400.
+
+| Source | Rows |
+|---|---|
+| P1A | 315 |
+| P1C | 404 |
+| P1B | 254 |
+| P2 | 1,485 |
+| P3 | 451 |
+| P4 | 413 |
+
+The run printed only counts and hashes. No net was printed or opened. The manifest sha below was copied from `SIZED.manifest.sha256`. The screen re-hashes the files and runs the R3 equivalence check before `started`.
+
+SIZED_MANIFEST_SHA256 = 8ca333e5cfe81ce7868c8995a47c6468284c8ced67f138812b43842c98afc89b
