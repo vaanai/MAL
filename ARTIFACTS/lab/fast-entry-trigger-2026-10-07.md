@@ -71,4 +71,7 @@ This is also recorded in DEC-016 under Amendment 2, and in LAB_STATE.
 - **Why it matters.** The risk reasons include `daily_loss_cap`, which the DEC-016 Am.2 seal extension covers. A per-day change in that lumped count, or in armed counts, can hint at a day's P&L sign inside the sealed window.
 - **What was not exposed.** No P&L, cost or exit field was read. Job #368 lumped the risk reasons before printing, so no loss-cap-specific count was printed.
 - **Where the counts went:** PR #451's first head `a59ff80` (still readable in the PR's commit list), the PR body's edit history, MiScusi notebook n_6W8jWsyz1d8aXw, and the first quant-proof review of `a59ff80`, which restated them. They are not on `main`, and later notes do not repeat them.
-- **Effect:** the 10-16 FINAL computation is fully pre-registered, so the counts cannot change its result. The FINAL report carries this disclosure. Whether the read is labelled compromised is the owner's call, not this note's.
+- **Effect:** under the Amendment 2 rule, the 10-16 FINAL read **will be reported as compromised**.
+  - Its result cannot, by itself, support a live request. A PASS first needs confirmation on a later fresh sealed window or block under DEC-014.
+  - The pre-registered computation is unchanged and still runs as written. The FINAL report carries this disclosure.
+  - *Corrected 2026-10-07 after a review by the owner's reviewer: an earlier wording left the label to the owner, which relaxed a fixed consequence after the breach. Any different consequence needs a new dated amendment that gives its reason.*

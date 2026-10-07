@@ -57,13 +57,25 @@
   - It logs no price or reserve for entered EXP-012 mints.
   - It reads no runner outcome.
   - If the gate is computed inside the runner, that is a runner change and carries the md5 decision-equivalence replay proof.
-- **Exit criteria:**
+- **Exit criteria.** These are **engineering acceptance**, chosen after the 6 h test. They are not evidence, and they are set with a margin below the 6 h figures so ordinary noise does not decide them:
   - at least 24 h of stream data;
   - reconnects handled;
-  - stream `migrate` coverage ≥ 92% of tip graduations;
-  - the share of graduations with would-send lead > 0 is ≥ 90%;
-  - would-send lead p50 ≥ 600 ms;
+  - stream `migrate` coverage ≥ 88% of tip graduations (6 h: 92.3%);
+  - the share of graduations with would-send lead > 0 is ≥ 88% (6 h: 94.0%);
+  - would-send lead p50 ≥ 600 ms (6 h: 996 ms);
   - decode error rate ≤ 0.1%.
+- **Runner non-interference (DEC-016 Am.3 measures the runner's timing).** The sidecar shares fast-0 with the sealed paper runner, so the runner's lag is read from `heartbeat.jsonl`, using its allowlisted fields only.
+  - **Baseline, job #377:**
+
+    | Window | Lag p50 / p90 (ms) | `ok` false |
+    |---|---|---|
+    | 10-07 12:28–18:28Z, before the sidecar | 200 / 536 | 0 |
+    | 10-07 18:28–23:39Z, sidecar running | 206 / 592 | 0 |
+    | 10-06, same evening hours, no sidecar | 220 / 716 | 0 |
+    | 10-05, same evening hours, no sidecar | 202 / 562 | 0 |
+
+    So far the sidecar has not moved the runner's timing.
+  - **Stop rule:** the sidecar stops, and the reason is recorded, if in any 6 h window while it runs the runner's lag p90 exceeds 900 ms (25% above the highest no-sidecar evening control, 716 ms), or any heartbeat shows `ok` false.
 
 **Phase B (live calibration, owner's go only).**
 - **Preconditions:**
@@ -72,7 +84,9 @@
   - the 1 SOL;
   - a book that has cleared a fresh-block confirmation, so the trades are worth paying for.
 - **Measure:** landing k = landed slot − migrate tx slot. This is the simulator's anchor, `_migration_slot`, not the trigger slot.
-- **Pass:** landing k p50 ≤ 3 over at least 30 attempts. Otherwise stop and report.
+- **Pass:** landing k **p50 ≤ 2 and p90 ≤ 4**, over at least 30 attempts. Report the full distribution. Otherwise stop and report.
+  - EXP-020's only paired support for speed is k2: the flat-leg k3 cells have CI90 lower bounds below 0.
+  - A result with p50 of 3 does **not** support the EXP-020 speed result, and no book may then assume k2 in its simulation.
 - **Size** stays 0.05 SOL until a confirmed book and DEC-020's conditions allow 0.25.
 
 ## 4. Costs and risks

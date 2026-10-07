@@ -88,8 +88,11 @@ This follows a `quant-proof` review of the design. It is fixed before any forwar
 - The job lumped the risk reasons in-process before printing, so no `daily_loss_cap`-specific count was printed. The lumped count still includes `daily_loss_cap`, so it falls under the Amendment 3 seal extension ("daily_loss_cap reasons and counts").
 - No P&L, cost or exit field was read.
 - **Where the counts went:** PR #451's first head `a59ff80` (still readable in the PR's commit list), the PR body's edit history, MiScusi notebook n_6W8jWsyz1d8aXw, and the first quant-proof review of `a59ff80`, which restated them. They are not on `main`, and later notes do not repeat them.
-- **Effect:** the FINAL computation is fully pre-registered, so the counts cannot change its result. The FINAL report carries this disclosure. Whether the read is labelled compromised is the owner's call.
-- **From now until the read,** runner-side reads report timing only.
+- **Effect:** under the Amendment 2 rule, the 10-16 FINAL read **will be reported as compromised**.
+  - Its result cannot, by itself, support a live request. A PASS first needs confirmation on a later fresh sealed window or block under DEC-014.
+  - The pre-registered computation is unchanged and still runs as written. The FINAL report carries this disclosure.
+  - *Corrected 2026-10-07 after a review by the owner's reviewer: an earlier wording left the label to the owner, which relaxed a fixed consequence after the breach. Any different consequence needs a new dated amendment that gives its reason.*
+- **From now until the read,** runner-side reads go only through `tools/runner_timing_read.py`, which allowlists timing fields and refuses per-day counts. This is enforced in code.
 
 ## Amendment 3 (2026-10-03): the latency/size rule, the runner-vs-scorer tolerances, the runner seal, and live preconditions, fixed before any runner row exists
 
