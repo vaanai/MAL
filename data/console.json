@@ -1,8 +1,29 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-07T00:08:15Z",
+  "updated_utc": "2026-10-07T03:47:14Z",
   "review_windows": [],
   "events": [
+    {
+      "id": "exp020-grid-end-result",
+      "kind": "result",
+      "title": "EXP-020 grid, END bound (report-only): k2 - k6 gain holds, books do not",
+      "detail": "Job #350 at a51000c. Paired k2 - k6 at 0.5 SOL: flat +1.023 % of stake, CI90-date [0.109, 1.851]; pressure +0.747 %, [0.183, 1.276]. Every k2 kept book has ex-best-date < 0 (flat 0.25 -2.0312, 0.5 -1.3473; pressure 0.25 -2.0854, 0.5 -2.2641). Faster entry is a robust relative lever, not profit on its own; real fills land between the two bounds. 27 dates with 100+ tries. Next: EXP-021 combined pre-registration with an END-bound co-primary, and live k2 landing calibration. No edge claim.",
+      "atUtc": "2026-10-07T03:47:14Z"
+    },
+    {
+      "id": "exp020-grid-start-result",
+      "kind": "result",
+      "title": "EXP-020 grid, start bound (report-only): k2 looked positive",
+      "detail": "Job #347 at 8bce9ed. k2 at 0.25 SOL and above looked positive with ex-best-date > 0 (flat 0.5 SOL k2 mean 0.010803 SOL, total 25.3754, ex-best-date +15.1177). The start bound flatters fills; 2026-08-21 carries 40 to 43 % of the k2 flat totals. Quant-proof: the selector is causal at k2 (all 18 features from before migration). Not gate evidence, no edge claim.",
+      "atUtc": "2026-10-07T03:47:14Z"
+    },
+    {
+      "id": "exp014v2-screen-result",
+      "kind": "result",
+      "title": "EXP-014 v2 screen (mig+15 PumpSwap selector): SCREEN NONE",
+      "detail": "Job #338. Every gating bar fails on both exit legs, Holm p 1.0, family closed (plan item 14). Bar 1 flat n 2,496, mean -0.0012437746370192308 SOL/trade, CI90 [-0.0017183903787860576, -0.0007326262378004808], total -3.104461494, 9 of 27 dates positive. Report-only at 0.5 SOL: mean -0.004047897272035256. Exploration, no edge claim.",
+      "atUtc": "2026-10-07T03:47:14Z"
+    },
     {
       "id": "exp017-screen-result",
       "kind": "result",
@@ -156,6 +177,28 @@
         "tone": "muted"
       },
       "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-009-migrate-creator-gate-prereg.md"
+    },
+    {
+      "id": "EXP-014v2",
+      "title": "EXP-014 v2 mig+15 PumpSwap selector",
+      "stage": "retired",
+      "note": "Screen NONE (job #338): every gating bar fails on both exit legs, Holm p 1.0, family closed. Bar 1 flat n 2,496, mean -0.0012437746370192308 SOL/trade, CI90 [-0.0017183903787860576, -0.0007326262378004808]. Exploration, no edge claim.",
+      "tag": {
+        "text": "screen failed",
+        "tone": "muted"
+      },
+      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp014-v2-screen-2026-10-07.md"
+    },
+    {
+      "id": "EXP-020",
+      "title": "EXP-020 size x entry-slot grid (report-only)",
+      "stage": "exploring",
+      "note": "Start bound: k2 at 0.25 SOL and above looked positive, ex-best-date > 0. END bound: paired k2 - k6 gain stays positive (0.5 SOL flat +1.023 %, CI90-date [0.109, 1.851]; pressure +0.747 %, [0.183, 1.276]) but every k2 kept book has ex-best-date < 0. Faster entry is a relative lever, not profit on its own. Not gate evidence, no edge claim.",
+      "tag": {
+        "text": "report-only",
+        "tone": "muted"
+      },
+      "link": "https://github.com/vaanai/MAL/blob/main/ARTIFACTS/lab/exp020-grid-2026-10-07.md"
     },
     {
       "id": "EXP-017",
@@ -323,6 +366,27 @@
     }
   ],
   "stream": [
+    {
+      "id": "s-20261007-034714-a",
+      "from": "claude",
+      "kind": "result",
+      "text": "EXP-020 grid, END bound (report-only, job #350): the paired k2 - k6 gain stays positive (0.5 SOL flat +1.023 % of stake, CI90-date [0.109, 1.851]; pressure +0.747 %, [0.183, 1.276]), but every k2 kept book has ex-best-date < 0. Faster entry is a robust relative lever, not profit on its own; real fills land between the two bounds. These 27 dates have had 100+ tries. No edge claim. Next: one pre-registration with EXP-021 and an END-bound co-primary, and live k2 landing calibration.",
+      "atUtc": "2026-10-07T03:47:14Z"
+    },
+    {
+      "id": "s-20261007-034714-b",
+      "from": "claude",
+      "kind": "result",
+      "text": "EXP-020 grid, start bound (report-only, job #347): k2 at 0.25 SOL and above looked positive with ex-best-date > 0. The start bound flatters fills and 2026-08-21 carries 40 to 43 % of the k2 flat totals. Not gate evidence.",
+      "atUtc": "2026-10-07T03:47:14Z"
+    },
+    {
+      "id": "s-20261007-034714-c",
+      "from": "claude",
+      "kind": "result",
+      "text": "EXP-014 v2 (mig+15 PumpSwap selector) failed its screen: every gating bar fails on both exit legs, Holm p 1.0, family closed. Bar 1 flat: 2,496 trades, mean -0.0012437746370192308 SOL per trade, CI90 [-0.0017183903787860576, -0.0007326262378004808], total -3.104461494, 9 of 27 dates positive. Report-only at 0.5 SOL the mean is -0.004047897272035256. Exploration, no edge claim.",
+      "atUtc": "2026-10-07T03:47:14Z"
+    },
     {
       "id": "s-20260930-1604",
       "from": "claude",
