@@ -63,3 +63,11 @@ Selection: only the frozen-selected mints (3,322 over all six sources; about 2,3
 4. Report: `... -m tools.exp020_grid --report --scratch /data/mal/exp015-screen/scratch --out-dir /data/mal/exp020-grid --report-dir /data/mal/exp020-grid/report --tries-log /data/mal/ops/tries-exp020-grid.jsonl` (job checkout of the merged branch, so `data/tries.jsonl` is the canonical log). Minutes.
 
 **Runtime (estimate, not measured):** the EXP-015 V pass (all 33,518 migrations, 5 cells each) took about 2.4 h. The EXP-017 re-sim at 4 combos is job #319, running now; this grid has 14 combos on the same mints. Expected roughly 1.5 to 3 h wall time, tape-load dominated, with per-cell simulation about 3x the 4-combo cost. I will rescale from job #319's wall time when it finishes. Do not start this while #319 or another heavy replay runs (one heavy job at a time; check `systemctl show user-1002.slice -p MemoryCurrent`).
+
+## Amendment 2026-10-07: ex-best-date column (report-only, before any outcome read)
+
+Added 2026-10-07, before any outcome was read: the grid re-sim (job #330) is still running and `--report` has not been run. This is a stricter report-only column, not a loosening. It changes no gate, bar, existing column or pin.
+
+Why: on the EXP-017 C0 size report the positive 0.25 and 0.5 SOL totals turned negative once the single best UTC date (2026-08-21) was dropped. Ex-top-3 trades did not catch that. EXP-020 must show the same check.
+
+Added to each cell, on both legs (flat and pressure), next to `ex_top3_sol`, and to the markdown tables: `best_date` and `best_date_sol` (the UTC date with the largest total, ties to the earliest date, and that total), `ex_best_date_sol` (total minus that date's total) and `ex_best_date_dates_positive` (positive-date count without that date). It mirrors the best-date logic of `concentration_bar` in EXP-015/EXP-017. It is report-only and gates nothing.

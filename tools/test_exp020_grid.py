@@ -67,6 +67,33 @@ class TestGrid(unittest.TestCase):
         self.assertIsNotNone(rep["flat"]["ci90_date_sol"])
         self.assertIsNotNone(rep["press"]["ci90_trade_sol"])
 
+    def test_best_date_stats(self):
+        d = lambda day, v: {"day": day, "total_sol": v}
+        # ties go to the earliest date; ex-best removes exactly one date
+        r = g20.best_date_stats([d("2026-08-22", 2.0), d("2026-08-21", 2.0), d("2026-08-23", -1.0)])
+        self.assertEqual((r["best_date"], r["best_date_sol"], r["ex_best_date_sol"], r["ex_best_date_dates_positive"]), ("2026-08-21", 2.0, 1.0, 1))
+        # single date
+        r = g20.best_date_stats([d("2026-08-21", 3.0)])
+        self.assertEqual((r["best_date"], r["ex_best_date_sol"], r["ex_best_date_dates_positive"]), ("2026-08-21", 0.0, 0))
+        # negative-only: best is the least negative; no positive day is dropped
+        r = g20.best_date_stats([d("a", -3.0), d("b", -1.0), d("c", -2.0)])
+        self.assertEqual((r["best_date"], r["best_date_sol"], r["ex_best_date_sol"], r["ex_best_date_dates_positive"]), ("b", -1.0, -5.0, 0))
+        # the EXP-017 C0 shape: positive total, negative without the best date
+        r = g20.best_date_stats([d("2026-08-21", 5.0), d("x", -1.0), d("y", 0.5), d("z", -2.0)])
+        self.assertLess(r["ex_best_date_sol"], 0)
+        self.assertEqual(r["ex_best_date_dates_positive"], 1)
+        self.assertIsNone(g20.best_date_stats([])["best_date"])
+
+    def test_cell_report_best_date_both_legs_and_md(self):
+        t = [P2_START + i * 86_400_000 for i in range(3)]
+        rows, cells, _ = make([(f"m{i}", t[i], {(6, 0.5): 2_000_000 * (i + 1)}) for i in range(3)])
+        rep = g20.cell_report(rows, cells, 6, 0.5, 27)
+        for leg in ("flat", "press"):
+            s = rep[leg]
+            self.assertAlmostEqual(s["best_date_sol"] + s["ex_best_date_sol"], s["total_sol"])
+            self.assertIsNotNone(s["best_date"])
+            self.assertLessEqual(s["ex_best_date_dates_positive"], s["dates_positive"])
+
     def test_miss_share_and_missing_cells(self):
         t = P2_START
         rows = [urow("a", t), urow("b", t + 1000), urow("c", t + 2000)]
