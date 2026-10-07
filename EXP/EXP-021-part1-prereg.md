@@ -5,7 +5,7 @@
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-021-part1-prereg` |
-| **Status** | **planned**. Inert unless the screen PASSES and the block-budget rule (section 9) is met. |
+| **Status** | **planned**. Order: this file merges, then `--freeze`, then a merged amendment records the md5s (section 2), then the screen. The block claim is inert unless the screen PASSES and the block-budget rule (section 9) is met. |
 | **Declared (UTC)** | 2026-10-07 |
 | **Parent** | [EXP-021 plan](EXP-021-rug-signals-in-selector-plan.md) with Amendments 1 to 3 (the screen); [EXP-012 re-freeze pre-registration](EXP-012-migrate-entry-model-refreeze-prereg.md) (format and the frozen selector); [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md); [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md) |
 | **Hypothesis** | The 16 rug features, added to EXP-012's 18, select migrate entries whose net after realistic costs is higher than the same learner without them, on a block nobody has read. |
@@ -38,7 +38,14 @@ plus `train-manifest.json` (universe sha256, feature-table sha256, row counts pe
 - **Label:** `1` iff the trade FILLED and its pressure net at the primary cell is > 0 (`label_row`; a MISS is 0), the screen's label.
 - **Reproducibility:** nothing in the written files depends on the clock, host or thread count. `tools/test_exp021_screen.py` shows two runs on a fixture give byte-identical files and the same md5s. A real re-run is allowed only if it reproduces both md5s.
 - **Code sha:** the freeze runs from a clean checkout whose `tools/` equals the Part 1 merge commit's (the tool refuses a dirty `tools/` and records `code_head`). The V map is the pinned `VMAP_EXP016_SHA256`; the freeze refuses unless the pin is set.
-- **Order:** this file merges; the screen runs once; only on a PASS and a granted claim does the freeze run (it does not depend on the screen output, so the order cannot shape the models); then a **merged amendment records both model md5s, the manifest md5 and the freeze commit BEFORE the block is read.** `--confirm` refuses without that amendment.
+- **Order (the freeze comes BEFORE the screen):** (1) this file merges; (2) `--freeze` runs once; (3) a **merged amendment records the RUG md5, the CONTROL md5, the sha256 of `train-manifest.json` and the freeze commit**, and sets the three pin lines below; (4) the screen runs once; (5) only on a PASS and a granted claim is the block read. The md5 freeze is visible before any scoring.
+- **Guard in the tool:** `tools/exp021_screen.py` refuses the screen (rc 2, before any guard or row) unless these three lines in this file are set to hex values (`PENDING` refuses). `--precount`, `--freeze` and `--confirm` are exempt from this check. `--confirm` also refuses without them (it is a stub).
+
+```
+EXP021_FROZEN_MD5: PENDING
+EXP021_CONTROL_MD5: PENDING
+EXP021_TRAIN_MANIFEST_SHA256: PENDING
+```
 
 ## 3. Arms on the block, and the pick count
 
@@ -67,7 +74,7 @@ Power note, stated now: the block has 7 date clusters, two of them half days. A 
 
 ## 6. Secondary (report-only, never gating)
 
-The RUG kept book against the **full CLAUDE.md promotion gate** at **0.05, 0.25 and 0.5 SOL**: at least 100 trades, at least 5 distinct UTC days with a majority positive, lower 90% CI bound of mean SOL per trade > 0 (1,000 draws, seed 1), total positive after removing the top 3, under both fail models. **Size projection caveat:** the simulator at 0.05 SOL does not price impact at the larger sizes. The 0.25 and 0.5 SOL rows are projections, not measurements; entry impact of +22.9 and +51.6 bps from #445 is not applied inside them, and a larger size shrinks the edge by at least that. A positive paired gain does not make the kept book a promote. Also report-only: the rug-label rate among picks per arm, the four EXP-016 veto rules on RUG's picks (no separate try), the exit-lag-5 leg, and the per-date table.
+The RUG kept book against the **full CLAUDE.md promotion gate** at **0.05, 0.25 and 0.5 SOL**: at least 100 trades, at least 5 distinct UTC days with a majority positive, lower 90% CI bound of mean SOL per trade > 0 (1,000 draws, seed 1), total positive after removing the top 3, under both fail models. **Size projection caveat:** the simulator at 0.05 SOL does not price impact at the larger sizes. The 0.25 and 0.5 SOL rows are projections, not measurements; entry impact is +22.9 bps at 0.25 SOL and +51.6 bps at 0.5 SOL, entry leg only, over 0.05 SOL, as differences of p50s (#445); it is not applied inside them, and a larger size shrinks the edge by at least that. A positive paired gain does not make the kept book a promote. Also report-only: the rug-label rate among picks per arm, the four EXP-016 veto rules on RUG's picks (no separate try), the exit-lag-5 leg, and the per-date table.
 
 ## 7. Refusals before `started` (counts only, no outcome)
 
@@ -94,7 +101,9 @@ Mirrors the screen: guards, then ONE tape pass, then the section 7 counts, then 
 
 A screen PASS may claim a sealed block only if all three hold:
 
-1. **Multiplicity.** The screen's **B1 p < 0.025 / m** on both legs, where **m is the number of families that have read outcomes on the 27 non-P1 dates**, counted from `data/tries.jsonl` **at claim time** (a family is the experiment id in the lines' `config.experiment`; the claim amendment lists them), **including EXP-021 itself**. The plan's own count calls EXP-021 the eighth family, which would give p < 0.003125; the manager's recount at claim time governs.
+1. **Multiplicity.** The screen's **B1 p < 0.025 / m** on both legs, where **m = max(the listed count below, the manager's recount at claim time)**. The recount is from `data/tries.jsonl` (a family is the experiment id in the lines' `config.experiment`), includes EXP-021 itself, and the claim amendment lists the families.
+
+   Families that have read outcomes on the 27 non-P1 dates (listed now): **EXP-015, EXP-017, EXP-018, EXP-019, EXP-020 (report-only, but it read outcomes), EXP-014 v2, and EXP-021 itself: m = 7**, so the threshold is **p < 0.025 / 7 = 0.003571**. EXP-016 is excluded: it was shelved with no outcome read. This is consistent with the plan's "8th family" wording: 8 families are scoped on these dates, 7 have read outcomes.
 2. **One block per family.** A family that has claimed a block claims no second one, whatever its result.
 3. **One in reserve.** At most 2 of the 3 sealed blocks (fresh-0828, fresh-0808, fresh-0802) are claimed before a new block is walked, sealed and verified, so one is always unread. A claim counts as spent from its merge.
 
@@ -107,11 +116,11 @@ Failing any section 5 bar on either leg kills the RUG selector. There is no seco
 ## 11. Honest prior and disclosures
 
 - **Prior (estimates, not measurements):** screen pass about 15 to 20%; confirmation about 5 to 8%.
-- EXP-021 is the eighth family on the 27 dates; the base book is best-of-many; the strict rug events are few; five earlier filters on this book failed.
+- 8 families are scoped on the 27 dates (EXP-021 is the eighth) and 7 have read outcomes (section 9); the base book is best-of-many; the strict rug events are few; five earlier filters on this book failed.
 - fresh-0802 is August data, further from the September training pools than the screen's dates; drift against the September-heavy pool is expected to cost, not help.
 - The control is retrained on the same rows, so the paired gain isolates the 16 features. It does not show the selector beats the frozen EXP-012 model; that comparison is report-only.
 - Exit lag 2 is optimistic against the live exit leak; the lag-5 leg is the check.
-- Credits: 0 (the block is already walked). Pending the manager's amendments: model md5s, the claim, the constancy sample.
+- Credits: 0 (the block is already walked). Pending the manager's amendments: the freeze md5 pins (section 2), the claim, the constancy sample.
 
 ## Sources
 

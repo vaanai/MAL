@@ -457,6 +457,11 @@ class TriesTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def setUp(self):
+        p = mock.patch.object(x, "check_freeze_pins")  # the freeze-pin guard has its own test (PreregTests)
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_parser_has_the_modes_and_max_workers(self):
         a = x._parser().parse_args(["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--out-dir", "o", "--max-workers", "2", "--precount"])
         self.assertEqual((a.max_workers, a.precount, a.guards_only), (2, True, False))
@@ -798,7 +803,7 @@ class PreregTests(unittest.TestCase):
 
     def test_pins_match_the_code(self):
         for sv in ("fresh-0802", "[2026-08-02T12, 2026-08-08T12)", "10,000 draws, seed 1", "p < 0.025", "exit lag 2", "0.05, 0.25 and 0.5 SOL", "tp50_sl30",
-                   "0.8030766588450794", "0.025 / m", "8%", "100 frozen picks", "refusing stub", "No k2 cell", "+22.9 and +51.6 bps"):
+                   "0.8030766588450794", "0.025 / m", "8%", "100 frozen picks", "refusing stub", "No k2 cell", "+22.9 bps at 0.25 SOL and +51.6 bps at 0.5 SOL", "m = 7", "0.003571", "EXP021_FROZEN_MD5: PENDING"):
             self.assertIn(sv, self.TEXT)
         self.assertEqual(x.FAMILY_ALPHA, 0.025)
         self.assertEqual(x.LIMIT_NO_CREATE_021, 0.08)
@@ -807,6 +812,19 @@ class PreregTests(unittest.TestCase):
             self.assertIn(f, self.TEXT)
         thr = json.loads((x.REPO_ROOT / "ARTIFACTS" / "exp012" / "threshold.json").read_text())
         self.assertIn(repr(float(next(v for k, v in thr.items() if "threshold" in k and isinstance(v, float)))), self.TEXT)
+
+
+    def test_screen_refuses_until_pins_are_set(self):
+        with self.assertRaises(x.Refused):
+            x.check_freeze_pins(self.TEXT)  # shipped with PENDING
+        ok = "EXP021_FROZEN_MD5: " + "a" * 32 + "\nEXP021_CONTROL_MD5: " + "b" * 32 + "\nEXP021_TRAIN_MANIFEST_SHA256: " + "c" * 64 + "\n"
+        x.check_freeze_pins(ok)
+        with self.assertRaises(x.Refused):
+            x.check_freeze_pins(ok.replace("a" * 32, "PENDING"))
+        with mock.patch.object(x, "run_guards") as gd:
+            rc = x.main(["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--p2-view-dir", "c", "--out-dir", "o", "--v-constancy-json", "v"])
+            self.assertEqual(rc, 2)
+            gd.assert_not_called()
 
 
 if __name__ == "__main__":
