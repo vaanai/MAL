@@ -208,7 +208,7 @@ Clean clock: **2026-09-28T00:00:00Z**. Kill review: **2026-10-05T05:00:00Z**.
 
 ## Next work
 
-As of 2026-10-06 ~05:50Z. The critical path is EXP-012 FINAL (about 10-16T02Z) → book (B) → Am.3 at measured k → DEC-020 package → owner.
+As of 2026-10-06 ~05:50Z. The critical path is EXP-012 FINAL (about 10-16T02Z; reported compromised, DEC-016 Am.2) → fresh sealed-block confirmation under DEC-014 → book (B) → Am.3 at measured k → DEC-020 package → owner.
 
 1. **Book (B) tooling, critical path.** No code computed DEC-016 Am.4's V-priced forward book. Two builders started 10-06:
    - `claude/exp012-forward-vbook`: book (B) from the FINAL's own entered set; frozen reproduction, null-V rule, vault report;

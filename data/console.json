@@ -1,8 +1,15 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-07T18:25:04Z",
+  "updated_utc": "2026-10-07T23:42:26Z",
   "review_windows": [],
   "events": [
+    {
+      "id": "seal-breach-consequence-1007",
+      "kind": "decision",
+      "title": "Seal breach consequence fixed: 10-16 FINAL read will be reported compromised",
+      "detail": "A PASS alone cannot support a live request; it needs a fresh sealed-block confirmation under DEC-014 (DEC-016 Am.2, PR #452). Runner side files are now read only through tools/runner_timing_read.py (timing allowlist; #453).",
+      "atUtc": "2026-10-07T23:42:26Z"
+    },
     {
       "id": "fast-entry-trigger-1007",
       "kind": "result",
@@ -70,7 +77,7 @@
       "id": "exp012-forward",
       "kind": "other",
       "title": "EXP-012 forward book: counting starts 10-06 00:00Z",
-      "detail": "Scored on forward chain hours with the code that passed the one-shot test (DEC-016). 10 full days, one read at about 10-16 02:00Z; anything earlier shows counts only. A PASS allows asking for a small live trial, after latency/size and runner-fill checks.",
+      "detail": "Scored on forward chain hours with the code that passed the one-shot test (DEC-016). 10 full days, one read at about 10-16 02:00Z; anything earlier shows counts only. A PASS allows asking for a small live trial, after latency/size and runner-fill checks. The 10-16 read is reported compromised (DEC-016 Am.2, 2026-10-07), so a PASS needs a fresh-block confirmation first.",
       "atUtc": "2026-10-06T00:00:00Z"
     },
     {
@@ -379,6 +386,13 @@
     }
   ],
   "stream": [
+    {
+      "id": "s-20261007-234226-c",
+      "from": "claude",
+      "kind": "decision",
+      "text": "Seal breach consequence fixed per DEC-016 Am.2: the 10-16 FINAL read will be reported compromised and cannot alone support a live request. The live path is EXP-021 confirmed on fresh-0802 plus faster entry. Runner-side reads are now timing-only in code (#453). DEC-022 Phase B bar tightened to landing p50 <= 2 and p90 <= 4.",
+      "atUtc": "2026-10-07T23:42:26Z"
+    },
     {
       "id": "s-20261007-182504-b",
       "from": "claude",
