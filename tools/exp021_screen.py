@@ -708,12 +708,13 @@ def check_constancy_sample_cascade(samples: Sequence[Mapping[str, Any]], p2_pool
 
 
 def check_extend_pin(constancy_json: Path | str) -> None:
-    """When the constancy meta file exists beside the JSON and records `extended_from_sha256`, it must equal `EXTEND_INPUT_SHA256`."""
+    """Amendment 4 item 5: the constancy file is the pinned extension, so its meta file must exist beside the JSON and record
+    `extended_from_sha256` equal to `EXTEND_INPUT_SHA256`. A missing meta, or a meta without that key (a fresh build), refuses."""
     meta = Path(str(constancy_json) + ".meta.json")
     if not meta.exists():
-        return
+        raise Refused(f"no constancy meta file {meta.name} beside the constancy JSON: the pinned extension (Amendment 4 item 5) records extended_from_sha256 there")
     got = json.loads(meta.read_text()).get("extended_from_sha256")
-    if got is not None and got != EXTEND_INPUT_SHA256:
+    if got != EXTEND_INPUT_SHA256:
         raise Refused(f"the constancy meta records extended_from_sha256 {got}, not the pinned {EXTEND_INPUT_SHA256}")
 
 

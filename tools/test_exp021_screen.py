@@ -16,6 +16,12 @@ import tools.exp016_rug as rug
 import tools.exp016_screen as e16
 import tools.exp021_screen as x
 
+def write_pinned_constancy(path: Path) -> None:
+    """An empty constancy fixture plus the meta the extend pin requires (Amendment 4 item 5)."""
+    Path(path).write_text("[]")
+    Path(str(path) + ".meta.json").write_text(json.dumps({"extended_from_sha256": x.EXTEND_INPUT_SHA256}))
+
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 NON_P1 = e15.non_p1_dates(True)
 P1 = e15.block_dates("P1")
@@ -490,7 +496,7 @@ class CliTests(unittest.TestCase):
     def test_guards_only_reads_no_row_and_spends_nothing(self):
         with tempfile.TemporaryDirectory() as td:
             samples = Path(td) / "c.json"
-            samples.write_text("[]")
+            write_pinned_constancy(samples)
             g = {"with_p4": True, "vmap_sha256": "x", "g1": {}, "g2": {}, "g3": {}, "g4": {}}
             with mock.patch.object(x, "run_guards", return_value=g), mock.patch.object(e16, "load_pinned_vmap", return_value={}), \
                     mock.patch.object(e16, "check_v_constancy", return_value={}), mock.patch.object(e16, "git_state", return_value={"head": "h", "dirty_tools": False}), \
@@ -513,7 +519,7 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             samples = td / "c.json"
-            samples.write_text("[]")
+            write_pinned_constancy(samples)
             cells = []
             for d in NON_P1 + P1:
                 for i in range(8):
@@ -554,7 +560,7 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             samples = td / "c.json"
-            samples.write_text("[]")
+            write_pinned_constancy(samples)
             cells = [cell_rec(i, d, status="FILLED") for d in NON_P1 for i in range(6)]  # P1 dates missing: the screen runs; force the refusal in run_screen
             g = {"with_p4": True, "vmap_sha256": "v", "g1": {}, "g2": {}, "g3": {}, "g4": {}}
             with mock.patch.object(x, "run_guards", return_value=g), mock.patch.object(e16, "load_pinned_vmap", return_value={}), mock.patch.object(e16, "check_v_constancy", return_value={}), \
@@ -1004,7 +1010,7 @@ class PrecountVTests(unittest.TestCase):
         res = {"tag": "P2", "cells": cells}
         g = {"with_p4": True, "vmap_sha256": None, "g1": {}, "g2": {}, "g3": {}, "g4": {}}
         cj = td / "c.json"
-        cj.write_text("[]")
+        write_pinned_constancy(cj)
         args = SimpleNamespace(vmap=str(td / "v.json"), v_fallback_json=None, closed_pools_json=None, artifact_dir=td, out_dir=td / "o", v_constancy_json=cj if with_constancy else None,
                                max_workers=2, p1_fast_dir="a", p1_oracle_insample_dir="b", p1_oracle_live_dir=None, p3_root="d", p2_view_dir=["e"], p4_view_dir=None)
         def _raise(samples, vmap, min_sample=200):
@@ -1098,12 +1104,14 @@ class CascadeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / "c.json"
             f.write_text("[]")
-            x.check_extend_pin(f)  # no meta: nothing to check
+            with self.assertRaises(x.Refused):
+                x.check_extend_pin(f)  # no meta: refuses (the pin must hold as written)
             meta = Path(str(f) + ".meta.json")
             meta.write_text(json.dumps({"extended_from_sha256": x.EXTEND_INPUT_SHA256}))
             x.check_extend_pin(f)
             meta.write_text(json.dumps({"extended_from_sha256": "0" * 64}))
             with self.assertRaises(x.Refused):
                 x.check_extend_pin(f)
-            meta.write_text(json.dumps({"n": 1}))  # not an extended file
-            x.check_extend_pin(f)
+            meta.write_text(json.dumps({"n": 1}))  # not an extended file (a fresh build): refuses
+            with self.assertRaises(x.Refused):
+                x.check_extend_pin(f)
