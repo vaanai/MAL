@@ -65,7 +65,7 @@ class Rpc:
         raise SystemExit(f"{method} failed")
 
 
-def delta_of(tx: dict[str, Any]) -> tuple[int, int, list[str]]:
+def delta_of(tx: dict[str, Any]) -> tuple[int, int, list[str], int]:
     """(wallet lamport delta, fee, other signers/accounts that gained or lost) for one getTransaction result."""
     keys = [k if isinstance(k, str) else k["pubkey"] for k in tx["transaction"]["message"]["accountKeys"]]
     meta = tx["meta"]
@@ -73,7 +73,7 @@ def delta_of(tx: dict[str, Any]) -> tuple[int, int, list[str]]:
     d = meta["postBalances"][i] - meta["preBalances"][i]
     others = [keys[j] for j in range(len(keys)) if j != i and meta["postBalances"][j] != meta["preBalances"][j]
               and abs(meta["postBalances"][j] - meta["preBalances"][j]) >= 1_000_000]
-    return d, meta["fee"], others
+    return d, meta["fee"], others, meta["preBalances"][i]
 
 
 def main() -> int:
@@ -111,13 +111,15 @@ def main() -> int:
         if t is None:
             txs.append({"sig": s["signature"], "slot": s["slot"], "missing": True})
             continue
-        d, fee, others = delta_of(t)
+        d, fee, others, pre = delta_of(t)
         txs.append({"sig": s["signature"], "slot": s["slot"], "time": datetime.fromtimestamp(s["blockTime"], tz=timezone.utc).isoformat() if s.get("blockTime") else None,
-                    "failed": bool(t["meta"].get("err")), "delta": d, "fee": fee, "ledger_kind": ledger_sigs.get(s["signature"]), "others": others})
+                    "failed": bool(t["meta"].get("err")), "delta": d, "fee": fee, "pre_balance": pre, "ledger_kind": ledger_sigs.get(s["signature"]), "others": others})
     out["n_signatures"] = len(sigs)
     out["n_missing_tx"] = sum(1 for t in txs if t.get("missing"))
     good = [t for t in txs if not t.get("missing")]
     out["sum_all_deltas_lamports"] = sum(t["delta"] for t in good)
+    out["balance_minus_sum_deltas_lamports"] = out["balance_now_lamports"] - out["sum_all_deltas_lamports"]
+    out["first_tx_pre_balance_lamports"] = good[0]["pre_balance"] if good else None
     trade = [t for t in good if t["ledger_kind"]]
     other = [t for t in good if not t["ledger_kind"]]
     out["trade_txs"] = len(trade)
@@ -136,6 +138,7 @@ def main() -> int:
         out["token_accounts_context_slot"] = r["context"]["slot"]
     out["token_accounts"] = accts
     out["rpc_calls"] = rpc.calls
+    out["tie_out_ok"] = out["balance_minus_sum_deltas_lamports"] == 0 and out["first_tx_pre_balance_lamports"] == 0 and out["n_missing_tx"] == 0
     out["txs"] = [{k: t.get(k) for k in ("sig", "slot", "time", "delta", "fee", "failed", "ledger_kind")} for t in txs]
     if a.out_json:
         Path(a.out_json).write_text(json.dumps(out, indent=1))
@@ -143,6 +146,9 @@ def main() -> int:
     print(json.dumps(summary, indent=1))
     for t in out["non_trade_txs"]:
         print(t)
+    if not out["tie_out_ok"]:
+        print("TIE-OUT FAILED: balance - sum(deltas) != 0, or first pre-balance != 0, or a tx is missing", file=sys.stderr)
+        return 1
     return 0
 
 
