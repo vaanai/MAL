@@ -1,14 +1,14 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-07T00:00:00Z",
+  "updated_utc": "2026-10-07T00:08:15Z",
   "review_windows": [],
   "events": [
     {
       "id": "exp017-screen-result",
       "kind": "result",
       "title": "EXP-017 batch-1 screen (regime gate, score sizing): SCREEN NONE",
-      "detail": "Job #337, H3 and H4. H3 n 621, paired p 0.48605139486051396; H4 n 2,349, paired p 0.3955604439556044; no bars passed; H4 did not beat uniform 0.10 SOL (flat -0.757406444 vs +0.208016013, pressure -1.104652902 vs -0.725846069). C0 report-only, frozen book on 27 already-read dates: 0.5 SOL flat mean +0.0036088916219667944 SOL, total +8.47728642, ex-top-3 +5.635029087, 13 of 27 dates positive, CI90 [-0.002717209018454662, +0.010848846253746275]; pressure mean +0.001149852399318859, total +2.701003286, ex-top-3 +0.969480593. No stake clears the gate. Size improves the per-trade sign from fixed-fee dilution; not evidence of edge. Exploration, no edge claim.",
-      "atUtc": "2026-10-07T00:00:00Z"
+      "detail": "Job #337, H3 and H4. H3 n 621, paired p 0.48605139486051396; H4 n 2,349, paired p 0.3955604439556044; no cell passed all bars (H4 B6 passed on the flat leg only); H4 did not beat uniform 0.10 SOL (flat -0.757406444 vs +0.208016013, pressure -1.104652902 vs -0.725846069). C0 report-only, frozen book on 27 already-read dates: 0.5 SOL flat mean +0.0036088916219667944 SOL, total +8.47728642, ex-top-3 +5.635029087, 13 of 27 dates positive, CI90 [-0.002717209018454662, +0.010848846253746275]; pressure mean +0.001149852399318859, total +2.701003286, ex-top-3 +0.969480593. No stake clears the gate. The C0 size result rests on one date: dropping 2026-08-21 turns every positive C0 total negative (0.5 flat total +8.47728642, that date alone +9.187248662, without it -0.7099622419999996; 0.5 pressure +2.701003286, +5.534053771, -2.833050485; 0.25 flat without it -0.9453552730000001; 0.25 pressure without it -2.013247782). Size improves the per-trade sign from fixed-fee dilution; not evidence of edge. Exploration, no edge claim.",
+      "atUtc": "2026-10-07T00:08:15Z"
     },
     {
       "id": "exp019-screen-result",
@@ -161,7 +161,7 @@
       "id": "EXP-017",
       "title": "EXP-017 batch 1 cheap screens (H3 regime gate, H4 score sizing)",
       "stage": "retired",
-      "note": "Screen NONE (job #337): H3 p 0.48605139486051396, H4 p 0.3955604439556044, no bars passed; H4 did not beat uniform 0.10 SOL. C0 report-only: no stake clears the gate; 0.5 SOL flat mean +0.0036088916219667944, 13/27 dates positive. Exploration, no edge claim.",
+      "note": "Screen NONE (job #337): H3 p 0.48605139486051396, H4 p 0.3955604439556044, no cell passed all bars; H4 did not beat uniform 0.10 SOL. C0 report-only: no stake clears the gate; 0.5 SOL flat mean +0.0036088916219667944, 13/27 dates positive. The C0 size result rests on one date (2026-08-21); without it every positive C0 total is negative. Exploration, no edge claim.",
       "tag": {
         "text": "screen failed",
         "tone": "muted"
@@ -625,11 +625,11 @@
       "atUtc": "2026-10-06T15:05:00Z"
     },
     {
-      "id": "s-20261007-0000",
+      "id": "s-20261007-0008",
       "from": "claude",
       "kind": "result",
-      "text": "EXP-017 batch 1 (a regime gate and score-based sizing on the frozen EXP-012 selection) failed its screen: no cell passed. H3 p 0.48605139486051396 (621 trades), H4 p 0.3955604439556044 (2,349 trades); H4 did not beat a uniform 0.10 SOL stake. The report-only stake table on 27 already-read dates: at 0.5 SOL the flat mean is +0.0036088916219667944 SOL per trade (total +8.47728642, ex-top-3 +5.635029087, 13 of 27 dates positive, CI90 [-0.002717209018454662, +0.010848846253746275]); pressure +0.001149852399318859. No stake clears the gate. Size improves the per-trade sign from fixed-fee dilution; it is not evidence of edge. Exploration, no edge claim.",
-      "atUtc": "2026-10-07T00:00:00Z"
+      "text": "EXP-017 batch 1 (a regime gate and score-based sizing on the frozen EXP-012 selection) failed its screen: no cell passed. H3 p 0.48605139486051396 (621 trades), H4 p 0.3955604439556044 (2,349 trades); H4 did not beat a uniform 0.10 SOL stake. The report-only stake table on 27 already-read dates: at 0.5 SOL the flat mean is +0.0036088916219667944 SOL per trade (total +8.47728642, ex-top-3 +5.635029087, 13 of 27 dates positive, CI90 [-0.002717209018454662, +0.010848846253746275]); pressure +0.001149852399318859. No stake clears the gate. The C0 size result rests on one date: dropping 2026-08-21 turns every positive C0 total negative (0.5 flat total +8.47728642, that date alone +9.187248662, without it -0.7099622419999996; 0.5 pressure +2.701003286, +5.534053771, -2.833050485; 0.25 flat without it -0.9453552730000001; 0.25 pressure without it -2.013247782). Size improves the per-trade sign from fixed-fee dilution; it is not evidence of edge. Exploration, no edge claim.",
+      "atUtc": "2026-10-07T00:08:15Z"
     },
     {
       "id": "s-20261006-2058",
