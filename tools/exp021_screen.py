@@ -13,8 +13,9 @@ Folds    leave-one-UTC-date-out over every pool date, with EXP-015's 35-minute p
 Count    on each held-out date both arms keep exactly the number of rows the frozen EXP-012 selection kept on that date (the frozen model's
          out-of-fold rate, not a tuned threshold): the top-n_d scores, ties broken by mint id. No inner loop exists, so nothing is chosen per fold.
 Bars     (both legs, flat and pressure; plan section 4) 1 paired mean > 0 with a one-sided date-cluster bootstrap p < 0.025 (DEC-021 family alpha);
-         2 the RUG book's CI90 lower bound > 0 (both resamplers); 3 a majority of the non-P1 dates positive; 4 ex-top-3 > 0; 5 ex-best-date > 0;
-         6 no date above 20% of the paired gain. Report only: the four EXP-016 veto rules on RUG's picks, rug-label rate among picks per arm, k2.
+         3 a majority of the non-P1 dates with a positive paired gain; 4 paired ex-top-3 > 0; 5 paired ex-best-date > 0; 6 no date above 20% of the
+         paired gain (Amendment 1: bars 3-6 judge the paired gain RUG minus CONTROL; bar 2, the kept-book CI90 lower bound, and the kept-book ex-top-3 and
+         ex-best-date are report-only). Report only: the four EXP-016 veto rules on RUG's picks, rug-label rate among picks per arm, k2.
 
 Order of a run (as EXP-016's): guards -> ONE tape pass per source -> outcome-blind pre-`started` counts and refusals -> `started` (RUN.lock,
 ops tries log AND canonical data/tries.jsonl) -> fit and report. After `started` there is no resume. `--precount` stops after the counts; `--guards-only`
@@ -298,7 +299,7 @@ def paired_stats(by_date: Mapping[str, Sequence[float]], n_dates: int) -> dict[s
 
 
 def bars(table: Sequence[Mapping[str, Any]], sel: Mapping[str, Mapping[str, bool]], with_p4: bool) -> dict[str, Any]:
-    """Plan section 4 bars 1-6 on the non-P1 dates, both legs. Bars 2-5 are on the RUG book (its picks, filled and MISS); bar 1 and 6 on the paired gain."""
+    """Plan section 4 as amended (Amendment 1) on the non-P1 dates, both legs. Bars 1, 3, 4, 5, 6 all judge the PAIRED gain (RUG minus CONTROL). Bar 2 and the kept-book ex-top-3 and ex-best-date are report-only (`kept_book_report_only`)."""
     non = _scope(table, True)
     n_non = len(e15.non_p1_dates(with_p4))
     out: dict[str, Any] = {"n_non_p1_dates": n_non, "n_rows": len(non)}
@@ -310,16 +311,19 @@ def bars(table: Sequence[Mapping[str, Any]], sel: Mapping[str, Mapping[str, bool
         b = {
             "B1_paired_mean_p": {"pass": bool(pr["mean_x_sol"] is not None and pr["mean_x_sol"] > 0 and pr["p_one_sided"] is not None and pr["p_one_sided"] < FAMILY_ALPHA),
                                  "mean_x_sol": pr["mean_x_sol"], "p_one_sided": pr["p_one_sided"], "alpha": FAMILY_ALPHA, "ci90_date_sol": pr["ci90_date_sol"]},
-            "B2_kept_ci_lo": {"pass": bool(st["ci_lo"] is not None and st["ci_lo"] > 0 and st["ci_lo_date"] is not None and st["ci_lo_date"] > 0),
-                              "ci90_book_stats": st["ci90_sol"], "ci90_date_cluster": st["ci90_date_sol"], "mean_sol": st["mean_sol"], "n": st["n"]},
-            "B3_majority_dates_positive": {"pass": bool(st["dates_positive"] * 2 > n_non), "dates_positive": st["dates_positive"], "of_dates": n_non},
-            "B4_ex_top3": {"pass": bool(st["ex_top3_sol"] is not None and st["ex_top3_sol"] > 0), "ex_top3_sol": st["ex_top3_sol"], "total_sol": st["total_sol"]},
-            "B5_ex_best_date": {"pass": bool(best is not None and st["total_sol"] - best > 0), "ex_best_date_sol": None if best is None else st["total_sol"] - best},
+            "B3_majority_dates_positive": {"pass": bool(pr["dates_positive"] * 2 > n_non), "dates_positive": pr["dates_positive"], "of_dates": n_non},
+            "B4_ex_top3": {"pass": bool(pr["ex_top3_sol"] is not None and pr["ex_top3_sol"] > 0), "ex_top3_sol": pr["ex_top3_sol"], "paired_total_sol": pr["total_sol"]},
+            "B5_ex_best_date": {"pass": bool(pr["n"] and pr["ex_best_date_sol"] > 0), "ex_best_date_sol": pr["ex_best_date_sol"]},
             "B6_paired_concentration": {"pass": bool(pr["total_sol"] > 0 and pr["max_date_share_of_positive_total"] is not None and pr["max_date_share_of_positive_total"] <= CONCENTRATION_MAX),
                                         "max_date_share_of_positive_total": pr["max_date_share_of_positive_total"], "paired_total_sol": pr["total_sol"], "limit": CONCENTRATION_MAX},
         }
         b["all"] = all(v["pass"] for v in b.values() if isinstance(v, dict))
         b["paired_report"] = pr
+        # Amendment 1: REPORT-ONLY (never gating). At 0.05 SOL fixed fees dominate the kept book, so a selection gain cannot show on it.
+        b["kept_book_report_only"] = {"ci90_book_stats": st["ci90_sol"], "ci90_date_cluster": st["ci90_date_sol"], "ci_lo_gt_0": bool(
+            st["ci_lo"] is not None and st["ci_lo"] > 0 and st["ci_lo_date"] is not None and st["ci_lo_date"] > 0), "mean_sol": st["mean_sol"], "n": st["n"],
+            "total_sol": st["total_sol"], "ex_top3_sol": st["ex_top3_sol"], "ex_best_date_sol": None if best is None else st["total_sol"] - best,
+            "dates_positive": st["dates_positive"], "of_dates": n_non}
         out[leg] = b
     out["passes"] = bool(all(out[leg]["all"] for leg in LEGS))
     return out
@@ -412,8 +416,8 @@ CAVEATS = (
     "Exploration. A pass is not evidence for an edge: one family, eight on these 27 dates, a best-of-many base book, a few dozen strict rug events.",
     "Both arms are retrained on the same folds by the same learner (EXP-015 C2: LightGBM, min_data_in_leaf 20); the RUG arm has 34 columns, so feature_fraction 0.9 samples a different number of columns than the control's 18. That is part of the feature-set change, not a tuned difference.",
     "The count per held-out date is the frozen model's own selection count that date (top-n by score, ties by mint id). It is not a score threshold, so a date with no frozen pick has no pick in either arm.",
-    "Bars 2-5 judge the RUG book alone on the non-P1 dates (picks, filled and MISS); bars 1 and 6 judge the paired gain over the control. The paired ex-top-3 and ex-best-date are reported, not gating.",
-    "A UTC date with no pick counts as NOT positive. The date-cluster CI resamples whole dates; the book_stats CI resamples tokens. Both must pass bar 2.",
+    "Bars 1 and 3-6 judge the paired gain (RUG minus CONTROL) on the non-P1 dates (Amendment 1). The RUG kept book's CI90 lower bound, ex-top-3 and ex-best-date are report-only: at 0.05 SOL fixed fees dominate the kept book, so a selection gain cannot show on it; the confirmation pre-registration sets the stake and the full gate.",
+    "A UTC date with a zero paired gain counts as NOT positive. The date-cluster CI resamples whole dates.",
     "Exit lag 2 is optimistic against the live exit leak. k2 was not simulated (see the alt-cell block).",
     "Purge: rows within 35 minutes before the start or after the end of the held-out date are dropped from that fold's training set.",
 )
@@ -436,6 +440,7 @@ def render_md(rep: Mapping[str, Any]) -> str:
         ro = rep.get("report_only") or {}
         L += ["## Report-only", "", f"- Rug-label rate among picks: {json.dumps(ro.get('rug_label_rate'), default=str)}",
               f"- EXP-016 veto rules on RUG's picks: {json.dumps(ro.get('veto_on_rug_picks'), default=str)}",
+              f"- Kept RUG book (report-only): {json.dumps({leg: b[leg].get('kept_book_report_only') for leg in LEGS}, default=str)}",
               f"- Alt cells (RUG minus control): {json.dumps(ro.get('alt_cells_rug_minus_control'), default=str)}", ""]
     L += ["## Disclosures", "", *[f"- {c}" for c in CAVEATS], ""]
     return "\n".join(L) + "\n"

@@ -246,10 +246,33 @@ class BarTests(unittest.TestCase):
         # vary the gain by date so no date is above 20%: same gain per date (6 mSOL x 1 swapped pick) -> each date is 1/27
         b = x.bars(rows, self.sels(rows), True)
         for leg in x.LEGS:
-            for k in ("B1_paired_mean_p", "B2_kept_ci_lo", "B3_majority_dates_positive", "B4_ex_top3", "B5_ex_best_date", "B6_paired_concentration"):
+            for k in ("B1_paired_mean_p", "B3_majority_dates_positive", "B4_ex_top3", "B5_ex_best_date", "B6_paired_concentration"):
                 self.assertTrue(b[leg][k]["pass"], (leg, k, b[leg][k]))
         self.assertTrue(b["passes"])
         self.assertLess(b["flat"]["B1_paired_mean_p"]["p_one_sided"], 0.025)
+
+    def test_kept_book_is_report_only_and_never_gates(self):
+        """Amendment 1: a negative kept book (fixed fees dominate) does not fail a clean paired gain, and the kept-book numbers are still reported."""
+        rows = self.book()
+        for r in rows:  # the RUG kept book loses on its own (the fee-dominated case), yet RUG beats CONTROL by a clean margin on every date
+            n = int(r["mint"][-3:])
+            r["flat"] = r["press"] = {0: -1_000_000.0, 2: -100_000.0, 1: -3_000_000.0}.get(n, -1.0)
+        b = x.bars(rows, self.sels(rows), True)
+        for leg in x.LEGS:
+            self.assertNotIn("B2_kept_ci_lo", b[leg])
+            self.assertFalse(b[leg]["kept_book_report_only"]["ci_lo_gt_0"])
+            self.assertLess(b[leg]["kept_book_report_only"]["total_sol"], 0)
+            self.assertLess(b[leg]["kept_book_report_only"]["ex_top3_sol"], 0)
+            self.assertTrue(b[leg]["all"], b[leg])
+        self.assertTrue(b["passes"])
+
+    def test_bars_3_to_5_are_paired_not_kept_book(self):
+        rows = self.book()
+        b = x.bars(rows, self.sels(rows), True)
+        pr = b["flat"]["paired_report"]
+        self.assertEqual(b["flat"]["B3_majority_dates_positive"]["dates_positive"], pr["dates_positive"])
+        self.assertEqual(b["flat"]["B4_ex_top3"]["ex_top3_sol"], pr["ex_top3_sol"])
+        self.assertEqual(b["flat"]["B5_ex_best_date"]["ex_best_date_sol"], pr["ex_best_date_sol"])
 
     def test_equal_arms_fail_the_paired_bars(self):
         rows = self.book()
@@ -364,7 +387,7 @@ class RunScreenTests(unittest.TestCase):
         dates = NON_P1[:3]
         res = x.run_screen(FoldTests.signal_table(None, dates), True, dates)
         md = x.render_md({"first_line": x.first_line(True), "banner": x.BANNER, "decision": res["decision"], "bars": res["bars"], "report_only": res["report_only"], "table_counts": {}})
-        for k in ("B1_paired_mean_p", "B2_kept_ci_lo", "B3_majority_dates_positive", "B4_ex_top3", "B5_ex_best_date", "B6_paired_concentration"):
+        for k in ("B1_paired_mean_p", "B3_majority_dates_positive", "B4_ex_top3", "B5_ex_best_date", "B6_paired_concentration"):
             self.assertIn(k, md)
 
 
