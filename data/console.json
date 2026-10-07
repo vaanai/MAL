@@ -733,7 +733,7 @@
       "id": "s-20261007-1605-wd",
       "from": "claude",
       "kind": "decision",
-      "text": "Probe decommissioned. Helm withdrew the remaining 298,768,781 lamports to your Phantom at 15:48Z; the executor and watch timer are disabled and STOP is in place. Block budget clarified before any EXP-021 read: a paired test of a new component (EXP-021's rug features, or a k-speed test) is a new family and may claim a sealed block, while re-confirming the unchanged EXP-012 book (size only) may not. m is frozen at 11, so a claim needs p < 0.00227.",
+      "text": "Probe decommissioned. Helm withdrew the remaining balance (298,768,781 lamports plus a 5,000 fee) to the owner's address 5ANM…eufi at 15:48Z. The wallet is 0 on chain (job #363), the executor and watch timer are disabled, and STOP is in place. Block budget clarified before any EXP-021 read: EXP-021's new rug features, tested as a pair against a retrained control, may claim a sealed block. Retunes of the EXP-012 book (size, k, threshold) may not, and a k-speed test belongs to EXP-020. m is frozen at 12, so a claim needs p < 0.00208.",
       "atUtc": "2026-10-07T16:05:21Z"
     }
   ]

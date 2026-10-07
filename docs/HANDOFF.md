@@ -13,7 +13,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 
 1. **Become the inbox reader:** `miscusi_worker_start` with `inbox: true`.
 2. **Recreate the session crons.** Crons die with the session.
-   - **Daily decommissioned-probe check at 12:17Z.** Job on `mal-fast-0`, role ops, 200 MB, 3 min. Use the same command as job #362. Alert if the executor or the watch timer is active or enabled, the STOP file is missing, attempts > 62, or realized ≠ −0.210755.
+   - **Daily decommissioned-probe check at 12:17Z.** Job on `mal-fast-0`, role ops, 200 MB, 3 min. Use the same command as job #362. Alert if the executor or the watch timer is active or enabled, the STOP file is missing, attempts > 62, or realized ≠ −0.210755. **Weekly, also run a research-0 job:** `tools.probe_rent_audit` (the command from job #363); alert if `balance_now_lamports` ≠ 0.
    - **Daily tip-tape archive at 03:23Z.** Job on `mal-fast-0`, 800 MB, 240 min. Use the same command as job #352. Expect `mismatched=0`. fast-0 retention starts deleting tape at 10-08 06Z.
 3. **Heavy jobs go on research-0 only.**
    - research-0 has about 96 GB schedulable; MiScusi schedules on declared memory.
@@ -89,7 +89,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 ## Live probe (DEC-019): STOPPED and decommissioned
 
 - **Stopped:** 2026-10-07T01:10:50Z, by Helm on the owner's decision. Final: 62/90 attempts, −0.210755 SOL, 0 open, faa3192. The wallet tied to the lamport at 0.298774 SOL (#445).
-- **Withdrawn:** 2026-10-07T15:48Z. Helm sent 298,768,781 lamports to the owner's `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi`, tx `3h1Fw9SpZ1H4YQZJhTiY38w9ZdBeVycomw7AWLmywRRwZu2UxC6ef8bGViooq9v8aXRww454HyyCb4ELN2BGiMDg`. The wallet is now about 0 (5,000 lamports went to the tx fee).
+- **Withdrawn:** 2026-10-07T15:48Z. Helm sent 298,768,781 lamports to the owner's `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi`, tx `3h1Fw9SpZ1H4YQZJhTiY38w9ZdBeVycomw7AWLmywRRwZu2UxC6ef8bGViooq9v8aXRww454HyyCb4ELN2BGiMDg`. The wallet is now **0 lamports on chain**, with no token accounts (job #363): 298,768,781 sent + 5,000 fee.
 - **Current state:** `mal-probe-executor` is inactive and disabled, `mal-probe-watch.timer` is disabled, and the STOP file stays in place (job #362).
 - **Restart:** Helm does every step, and only after the owner approves a new reviewed build and a gated book:
   1. fund the wallet;

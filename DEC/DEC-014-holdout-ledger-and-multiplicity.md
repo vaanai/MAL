@@ -98,32 +98,37 @@ For the 2026-10-05 kill review, the pressure-fail leg is scored over the full UT
 
 Nothing here lowers the promotion gate. It only makes spending a block harder.
 
-### Clarification (2026-10-07 ~16Z, before any EXP-021 outcome is read; Warden's review of #446)
+### Clarification (2026-10-07 ~16Z, before any EXP-021 outcome is read; Warden's review of #446, tightened after quant-proof on #449)
 
 **Family lineage (rule 2).** A *family* is a primary hypothesis, not a code lineage.
-- **Successor.** An experiment whose primary test re-tests a book already tested, or a retune of it, is that book's successor. Examples: the same selector, threshold, or entry/exit cell, re-confirmed at a new size or on new dates.
-- **New family.** An experiment whose primary test is a **paired** comparison that isolates a new component against a control built from an earlier book is a new family. Examples: new features vs the same features retrained, or a new entry timing vs the old timing on the same picks. Reusing the earlier book's features, learner, label or cell as the control or base does not make it a successor.
-- **EXP-012's block.** fresh-0903 (job #32) is EXP-012's one block. EXP-012 itself, and any re-confirmation of the unchanged EXP-012 book (for example a size-only confirmation), can claim no further block. This matches DEC-020 §9.
-- **Eligible.** EXP-021 (RUG vs a same-fold retrained 18-feature CONTROL, paired) is a new family and may claim a block under this amendment. So may a paired k-speed test (k vs k6 on the same picks). Each still needs p < 0.025 / m, Part 1 first, and the reserve rule.
-- **Why.** Rule 2 stops one hypothesis from buying a second block by re-badging. The paired designs answer a different question: does the new component add value? Their primary statistic does not depend on whether the base book is positive.
 
-**m is frozen now and can only go up.** The families that have read outcomes on the 27 non-P1 dates (P2 explore-0814, P3 fresh-0903, P4 exp011-0909), from `data/tries.jsonl`, the ledger and DEC-014's own text:
+- **New component.** New information the base book never used: a new feature set, data source or label.
+- **Retune.** A change to a numeric parameter of an existing book: threshold, exit, tp/sl, hold, size, entry delay k, or veto fraction. A retune is a **successor**, even when it is tested as a pair.
+- **What a new family needs.** Its primary statistic is only the paired difference (treatment − control) on the same rows and the same folds, with the control frozen in its Part 1. Its block read is never gate evidence for the base book or for any retune of it. The treatment book must still pass the promotion gate on its own.
+- **One control, one block.** An earlier book may serve as the control for at most **one** block claim.
+- **EXP-012's block.** fresh-0903 (job #32) was EXP-012's one block. EXP-012 itself, and any retune or re-confirmation of it (size, k, threshold, exit), can claim no further block. This matches DEC-020 §9.
+- **Entry speed.** A paired k-speed test is a retune of EXP-012's entry cell. EXP-020 has already read latency outcomes on P2–P4, so the hypothesis belongs to EXP-020. Whether it can use EXP-020's one block is decided at its own Part 1, under these rules.
+- **EXP-021 is eligible.** Its rug features are a new feature set: launch-bundle holdings, creator curve behaviour, serial dumpers and slot sniping. It is tested as RUG vs a same-fold retrained 18-feature CONTROL, with the paired gain as its primary statistic, so it is a new family. It is the one claim that uses the EXP-012 features as a control. It still needs p < 0.025 / m, Part 1 first, and the reserve rule.
+- **Why.** Rule 2 stops one hypothesis from buying a second block by re-badging or retuning. A new-information paired test answers a different question: does the new information add value? Its statistic does not depend on whether the base book is positive.
+
+**m is frozen now and can only go up.** These are the families that have read outcomes on the 27 non-P1 dates: P2 explore-0814 [08-14T12, 08-28T12), P3 fresh-0903, P4 exp011-0909.
 
 | Family | Dates read |
 |---|---|
-| EXP-011 | P4, its one-shot holdout |
-| EXP-012 | P3 confirmation (job #32) and the P2 backcheck |
-| EXP-013 | P2 |
+| EXP-011 | P4 one-shot attempted, aborted NOT_DECIDABLE, no outcome observed; counted conservatively |
+| EXP-012 | P3 confirmation (job #32), P2 backcheck |
+| EXP-013 | P2 (tries rows have `experiment: "?"`, tool `exp013_grad`, ledger_owner EXP-013; listed by name because an automatic count misses them) |
+| DEC-017 candidate (a), job #75, 2026-10-02 | P2 (explore-0814/w1, getblock_only); not in tries.jsonl; counted as its own family |
 | #191 | P1 only; counted because this amendment names it |
-| EXP-014 | |
-| EXP-015 | |
-| EXP-017 | |
-| EXP-018 | |
-| EXP-019 | |
-| EXP-020 | report-only, but it read outcomes |
+| EXP-014 v2 | P2, P3, P4 (tries.jsonl) |
+| EXP-015 | P2, P3, P4 (tries.jsonl) |
+| EXP-017 | P2, P3, P4 (tries.jsonl) |
+| EXP-018 | P2, P3, P4 (tries.jsonl) |
+| EXP-019 | P2, P3, P4 (tries.jsonl) |
+| EXP-020 | P2, P3, P4 (tries.jsonl; report-only, but outcomes were read) |
 | EXP-021 | the claimant |
+| EXP-016 | **excluded**: shelved after outcome-blind precounts only, no outcome read |
 
-- **Today m = 11**, so the threshold is p < 0.025 / 11 = 0.00227.
-- At claim time, m = max(11, the count by these rules at claim time).
-- m counts **distinct EXP numbers**, plus #191 as named. Successor merging under rule 2 never lowers m.
-
+- **Today m = 12**, so the threshold is p < 0.025 / 12 = 0.00208.
+- At claim time, m = max(12, the count by these rules at claim time). The claim needs p < 0.025 / m.
+- m counts distinct families as listed: distinct EXP numbers, plus named untracked readers. Merging a successor under rule 2 never lowers m.
