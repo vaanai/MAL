@@ -84,6 +84,13 @@ This follows a `quant-proof` review of the design. It is fixed before any forwar
 
 **Rule:** before the FINAL read, no person, agent or job opens or prints these files, or any `flat`, `press`, `*_sol` or `gross` field from them. Only `tools/exp012_forward.py score`, `report` and `export-decisions` read them. `export-decisions` writes only the allowlisted keys `mint, mig_ms, score, entered, day`, never a net, SOL, gross, status or fill field, and that export may be used before the read for the runner-vs-scorer comparison (§3; added 2026-10-02 with #228). Monitoring uses INTERIM `report` output and the `runs.jsonl` counts only. A breach is recorded here, dated, and the read is reported as compromised.
 
+**Recorded seal exposure, 2026-10-07 (manager9).** Job #368 read the fast-0 runner's early-arm `arm-audit.jsonl` and printed per-day early-arm outcome counts for 10-05 to 10-07: armed, fail, skipped_migrated, and a risk/kill skip count.
+- The job lumped the risk reasons in-process before printing, so no `daily_loss_cap`-specific count was printed. The lumped count still includes `daily_loss_cap`, so it falls under the Amendment 3 seal extension ("daily_loss_cap reasons and counts").
+- No P&L, cost or exit field was read.
+- **Where the counts went:** PR #451's first head `a59ff80` (still readable in the PR's commit list), the PR body's edit history, MiScusi notebook n_6W8jWsyz1d8aXw, and the first quant-proof review of `a59ff80`, which restated them. They are not on `main`, and later notes do not repeat them.
+- **Effect:** the FINAL computation is fully pre-registered, so the counts cannot change its result. The FINAL report carries this disclosure. Whether the read is labelled compromised is the owner's call.
+- **From now until the read,** runner-side reads report timing only.
+
 ## Amendment 3 (2026-10-03): the latency/size rule, the runner-vs-scorer tolerances, the runner seal, and live preconditions, fixed before any runner row exists
 
 Written before the fast-0 runner is installed. The installer refuses before 2026-10-05T05:00Z, so no runner row exists yet. No forward P&L has been opened (Amendment 2).
