@@ -181,6 +181,17 @@ def _pct_of(sol: float, v: float | None) -> float | None:
     return None if v is None else v / sol * 100.0
 
 
+def best_date_stats(dates: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Report-only robustness (added 2026-10-07 before any outcome read): drop the single best UTC date.
+    Mirrors EXP-017 `concentration_bar` (best = max per-date total). Ties go to the earliest date. No dates: all None."""
+    if not dates:
+        return {"best_date": None, "best_date_sol": None, "ex_best_date_sol": None, "ex_best_date_dates_positive": None}
+    best = min(dates, key=lambda d: (-d["total_sol"], d["day"]))
+    total = sum(d["total_sol"] for d in dates)
+    pos = sum(1 for d in dates if d["total_sol"] > 0) - (1 if best["total_sol"] > 0 else 0)
+    return {"best_date": best["day"], "best_date_sol": best["total_sol"], "ex_best_date_sol": total - best["total_sol"], "ex_best_date_dates_positive": pos}
+
+
 def cell_report(rows: Sequence[Mapping[str, Any]], cells: Mapping[str, Mapping[tuple[int, int], Mapping[str, Any]]], k: int, sol: float, n_dates: int) -> dict[str, Any]:
     """One grid cell on the selected non-P1 rows: n, filled, MISS share, mean SOL, mean % of stake, CI90 (trade and date-cluster), total, ex-top-3, dates positive."""
     size_l = lam(sol)
@@ -201,6 +212,7 @@ def cell_report(rows: Sequence[Mapping[str, Any]], cells: Mapping[str, Mapping[t
             "ci90_trade_pct": None if not st["ci90_sol"] else [_pct_of(sol, v) for v in st["ci90_sol"]],
             "ci90_date_pct": None if not st["ci90_date_sol"] else [_pct_of(sol, v) for v in st["ci90_date_sol"]],
             "total_sol": st["total_sol"], "ex_top3_sol": st["ex_top3_sol"],
+            **best_date_stats(st["dates"]),
             "dates_positive": st["dates_positive"], "dates_with_trades": st["dates_with_trades"], "n_scope_dates": n_dates,
         }
     return out
@@ -258,11 +270,12 @@ def render_md(rep: Mapping[str, Any]) -> str:
          "A change of operating point needs a fresh-block confirmation and live calibration (DEC-021 section 7).", "",
          f"Head `{rep['head']}`; equivalence control: {rep['equivalence']}; selected non-P1 rows {rep['n_rows']}, dates {rep['n_dates']}.", ""]
     for leg in LEGS:
-        L += [f"## Cells, {leg} fail model", "", "| k | size SOL | n | filled | mean SOL | mean % stake | MISS share | CI90 trade (%) | CI90 date (%) | total SOL | ex-top3 SOL | dates + |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        L += [f"## Cells, {leg} fail model", "", "| k | size SOL | n | filled | mean SOL | mean % stake | MISS share | CI90 trade (%) | CI90 date (%) | total SOL | ex-top3 SOL | dates + | best date | best date SOL | ex-best-date SOL | dates + ex-best |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for c in rep["grid"]["cells"].values():
             s = c[leg]
             L.append(f"| {c['k']} | {c['size_sol']:g} | {c['n']} | {s['filled']} | {_f(s['mean_sol'], 6)} | {_f(s['mean_pct_of_stake'], 3)} | {_f(c['miss_share'], 3)} | {_r(s['ci90_trade_pct'])} | "
-                     f"{_r(s['ci90_date_pct'])} | {_f(s['total_sol'], 4)} | {_f(s['ex_top3_sol'], 4)} | {s['dates_positive']}/{s['n_scope_dates']} |")
+                     f"{_r(s['ci90_date_pct'])} | {_f(s['total_sol'], 4)} | {_f(s['ex_top3_sol'], 4)} | {s['dates_positive']}/{s['n_scope_dates']} | "
+                     f"{_f(s['best_date'])} | {_f(s['best_date_sol'], 4)} | {_f(s['ex_best_date_sol'], 4)} | {_f(s['ex_best_date_dates_positive'])}/{s['n_scope_dates']} |")
         L += ["", f"## Paired x = net(k) - net(6), same size, per migration, {leg}", "", "| k | size SOL | pairs | mean x SOL | mean x % stake | CI90 date (%) | CI90 trade (%) |", "|---|---|---|---|---|---|---|"]
         for p in rep["grid"]["paired_vs_k6"].values():
             s = p[leg]
