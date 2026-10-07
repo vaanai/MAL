@@ -457,6 +457,12 @@ class TriesTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def setUp(self):
+        for name, kw in (("part1_pins", {"return_value": "b" * 40}), ("check_fallback_pin", {}), ("check_manifest_inputs", {})):  # the guards have their own tests (PreregTests)
+            p = mock.patch.object(x, name, **kw)
+            p.start()
+            self.addCleanup(p.stop)
+
     def test_parser_has_the_modes_and_max_workers(self):
         a = x._parser().parse_args(["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--out-dir", "o", "--max-workers", "2", "--precount"])
         self.assertEqual((a.max_workers, a.precount, a.guards_only), (2, True, False))
@@ -465,7 +471,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(a.max_workers, 4)
 
     def argv(self, td, *extra):
-        return ["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--p2-view-dir", "d", "--out-dir", str(Path(td) / "o"),
+        return ["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--p2-view-dir", "d", "--out-dir", str(Path(td) / "o"), "--frozen-dir", "fd",
                 "--tries-log", str(Path(td) / "ops.jsonl"), "--canonical-tries", str(Path(td) / "canon.jsonl"), *extra]
 
     def test_screen_refuses_before_any_row_while_the_pin_is_pending(self):
@@ -699,6 +705,275 @@ class Amendment3Tests(unittest.TestCase):
 
     def test_real_vmap_pin_is_in_the_code(self):
         self.assertEqual(e16.VMAP_EXP016_SHA256, "1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec")
+
+
+class FreezeTests(unittest.TestCase):
+    HEAD = "a" * 40
+    VSHA = "1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec"
+
+    @staticmethod
+    def fixture():
+        rows = []
+        dates = NON_P1[:6] + P1[:2]
+        for di, d in enumerate(dates):
+            for i in range(12):
+                r = mk_row(i, d, net=(1_000_000 if (i + di) % 3 else -1_000_000), filled=(i % 5 != 0), held=(i % 4) / 4, dumps=float(i % 2), ef0=float(i))
+                r["source"] = "P1A" if d in P1 else "P2"
+                rows.append(r)
+        return rows
+
+    INPUTS = {"v_fallback_json_sha256": "none", "args_hash": "d" * 64, "oof_scores_sha256": "e" * 64, "view_sha256": {"P1": {"fast": "f" * 64}}}
+
+    def freeze(self, d, **kw):
+        a = dict(head=self.HEAD, vmap_sha256=self.VSHA, with_p4=True, inputs=self.INPUTS)
+        a.update(kw)
+        return x.freeze_models(self.fixture(), Path(d), **a)
+
+    def test_two_runs_are_bit_identical(self):
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            ma, mb = self.freeze(a), self.freeze(b)
+            self.assertEqual(ma, mb)
+            for n in ("model.txt", "control-model.txt", "model.md5", "control-model.md5", "features.json", "control-features.json", x.FREEZE_MANIFEST):
+                self.assertEqual((Path(a) / n).read_bytes(), (Path(b) / n).read_bytes(), n)
+            for arm, f in (("rug", "model.txt"), ("control", "control-model.txt")):
+                md5 = __import__("hashlib").md5((Path(a) / f).read_bytes()).hexdigest()
+                self.assertEqual(ma["models"][arm]["model_md5"], md5)
+            self.assertNotEqual(ma["models"]["rug"]["model_md5"], ma["models"]["control"]["model_md5"])
+
+    def test_artifacts_describe_the_recipe(self):
+        with tempfile.TemporaryDirectory() as a:
+            m = self.freeze(a)
+            self.assertEqual(json.loads((Path(a) / "features.json").read_text())["feature_names"], x.FEATURES_RUG)
+            self.assertEqual(json.loads((Path(a) / "control-features.json").read_text())["feature_names"], x.FEATURES_CONTROL)
+            self.assertEqual((m["code_head"], m["vmap_sha256"]), (self.HEAD, self.VSHA))
+            self.assertEqual(m["n_rows_total"], 96)
+            self.assertEqual(m["n_rows_by_source"], {"P1A": 24, "P2": 72})
+            self.assertEqual((m["learner"]["seed"], m["learner"]["deterministic"]), (1, True))
+            self.assertEqual(len(m["universe_sha256"]), 64)
+            self.assertIn("num_features=34", (Path(a) / "model.txt").read_text().replace("max_feature_idx=33", "num_features=34"))
+            self.assertIn("max_feature_idx=17", (Path(a) / "control-model.txt").read_text())
+
+    def test_manifest_records_inputs_and_environment(self):
+        import platform
+
+        with tempfile.TemporaryDirectory() as a:
+            m = self.freeze(a)
+            for k in ("v_fallback_json_sha256", "args_hash", "oof_scores_sha256", "view_sha256", "lightgbm_version", "numpy_version", "machine", "python_version"):
+                self.assertIn(k, m)
+            self.assertEqual(m["v_fallback_json_sha256"], "none")
+            self.assertEqual(m["machine"], platform.machine())
+            self.assertNotIn("n_positive_label", m)
+        with tempfile.TemporaryDirectory() as a:
+            with self.assertRaises(x.Refused):
+                self.freeze(a, inputs=None)
+            with self.assertRaises(x.Refused):
+                self.freeze(a, inputs={"args_hash": "x"})
+
+    def test_refuses_without_the_pin(self):
+        with tempfile.TemporaryDirectory() as a, mock.patch.object(e16, "VMAP_EXP016_SHA256", "PENDING"):
+            with self.assertRaises(x.Refused):
+                self.freeze(a)
+            self.assertFalse((Path(a) / "model.txt").exists())
+
+    def test_refuses_overwrite_missing_p4_bad_source_and_one_class(self):
+        with tempfile.TemporaryDirectory() as a:
+            self.freeze(a)
+            with self.assertRaises(x.Refused):
+                self.freeze(a)
+        with tempfile.TemporaryDirectory() as a:
+            with self.assertRaises(x.Refused):
+                self.freeze(a, with_p4=False)
+            with self.assertRaises(x.Refused):
+                self.freeze(a, vmap_sha256=None)
+            bad = self.fixture()
+            bad[0]["source"] = "P1B"
+            with self.assertRaises(x.Refused):
+                x.freeze_models(bad, Path(a), head=self.HEAD, vmap_sha256=self.VSHA, inputs=self.INPUTS)
+            one = [dict(r, press=1.0, filled=True) for r in self.fixture()]
+            with self.assertRaises(x.Refused):
+                x.freeze_models(one, Path(a), head=self.HEAD, vmap_sha256=self.VSHA, inputs=self.INPUTS)
+
+    def test_writes_no_tries_line(self):
+        with tempfile.TemporaryDirectory() as a, mock.patch("tools.mal_result.append_try") as ap:
+            self.freeze(a)
+            ap.assert_not_called()
+
+    def test_confirm_is_a_refusing_stub(self):
+        with mock.patch.object(x, "collect") as col, mock.patch.object(x, "run_guards") as gd:
+            self.assertEqual(x.main(["--confirm"]), 2)
+            col.assert_not_called()
+            gd.assert_not_called()
+
+    def test_freeze_main_refuses_p1b_argument(self):
+        with tempfile.TemporaryDirectory() as a:
+            rc = x.main(["--freeze", a, "--p1-fast-dir", "x", "--p1-oracle-insample-dir", "y", "--p1-oracle-live-dir", "z", "--p2-view-dir", "w"])
+            self.assertEqual(rc, 2)
+            self.assertEqual(list(Path(a).iterdir()), [])
+
+    def test_freeze_source_has_no_data_path_or_tries_call(self):
+        src = Path(x.__file__).read_text(encoding="utf-8")
+        body = src[src.index("def freeze_models"):src.index("def confirm_main")]
+        self.assertNotIn("log_all", body)
+        self.assertNotIn("append_try", body)
+
+
+class PreregTests(unittest.TestCase):
+    TEXT = (x.REPO_ROOT / "EXP" / "EXP-021-part1-prereg.md").read_text(encoding="utf-8")
+
+    def test_pins_match_the_code(self):
+        for sv in ("fresh-0802", "[2026-08-02T12, 2026-08-08T12)", "10,000 draws, seed 1", "p < 0.025", "exit lag 2", "0.05, 0.25 and 0.5 SOL", "tp50_sl30",
+                   "0.8030766588450794", "8%", "100 frozen picks", "refusing stub", "No k2 cell", "+22.9 bps at 0.25 SOL and +51.6 bps at 0.5 SOL", "p < 0.025 / m", "0.00208", "DEC-017", "DEC-014", "EXP021_V_FALLBACK_SHA256: none", "mal-research-0", "x86_64", "1/128", "EXP021_FROZEN_MD5: PENDING"):
+            self.assertIn(sv, self.TEXT)
+        self.assertEqual(x.FAMILY_ALPHA, 0.025)
+        self.assertEqual(x.LIMIT_NO_CREATE_021, 0.08)
+        self.assertEqual(x.MIN_FROZEN_NON_P1, 100)
+        for f in sum(x.FREEZE_FILES.values(), ()) + (x.FREEZE_MANIFEST,):
+            self.assertIn(f, self.TEXT)
+        thr = json.loads((x.REPO_ROOT / "ARTIFACTS" / "exp012" / "threshold.json").read_text())
+        self.assertIn(repr(float(next(v for k, v in thr.items() if "threshold" in k and isinstance(v, float)))), self.TEXT)
+
+
+    @staticmethod
+    def pin_text(m5r, m5c, msha, fb="none"):
+        return f"EXP021_FROZEN_MD5: {m5r}\nEXP021_CONTROL_MD5: {m5c}\nEXP021_TRAIN_MANIFEST_SHA256: {msha}\n{x.FALLBACK_KEY}: {fb}\n"
+
+    def frozen(self, d):
+        FreezeTests().freeze(d)
+        h = __import__("hashlib")
+        return (h.md5((Path(d) / "model.txt").read_bytes()).hexdigest(), h.md5((Path(d) / "control-model.txt").read_bytes()).hexdigest(),
+                h.sha256((Path(d) / x.FREEZE_MANIFEST).read_bytes()).hexdigest())
+
+    def test_shipped_pins_are_pending_and_refuse(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.frozen(d)
+            with self.assertRaises(x.Refused):
+                x.check_freeze_pins(self.TEXT, d)
+
+    def test_each_pin_refusal(self):
+        with tempfile.TemporaryDirectory() as d:
+            r, c, m = self.frozen(d)
+            ok = self.pin_text(r, c, m)
+            self.assertEqual(x.check_freeze_pins(ok, d)["EXP021_FROZEN_MD5"], r)
+            for bad in (ok.replace(r, "PENDING"), ok + f"EXP021_FROZEN_MD5: {r}\n", ok.replace(c, c.upper()), ok.replace(f"EXP021_CONTROL_MD5: {c}\n", ""),
+                        self.pin_text("0" * 32, c, m), self.pin_text(r, "0" * 32, m), self.pin_text(r, c, "0" * 64)):
+                with self.assertRaises(x.Refused, msg=bad):
+                    x.check_freeze_pins(bad, d)
+            with self.assertRaises(x.Refused):
+                x.check_freeze_pins(ok, None)
+            with self.assertRaises(x.Refused):
+                x.check_freeze_pins(ok, Path(d) / "nope")
+            # a manifest edited after its pin was taken
+            (Path(d) / x.FREEZE_MANIFEST).write_text("{}\n")
+            with self.assertRaises(x.Refused):
+                x.check_freeze_pins(ok, d)
+
+    def test_manifest_with_wrong_recorded_md5_refuses(self):
+        with tempfile.TemporaryDirectory() as d:
+            r, c, _m = self.frozen(d)
+            mp = Path(d) / x.FREEZE_MANIFEST
+            man = json.loads(mp.read_text())
+            man["models"]["rug"]["model_md5"] = "0" * 32
+            mp.write_text(json.dumps(man, indent=2, sort_keys=True) + "\n")
+            msha = __import__("hashlib").sha256(mp.read_bytes()).hexdigest()
+            with self.assertRaises(x.Refused):
+                x.check_freeze_pins(self.pin_text(r, c, msha), d)
+
+    def test_part1_must_be_clean_against_head(self):
+        fake = lambda out: mock.Mock(stdout=out)  # noqa: E731
+        with mock.patch("subprocess.run", return_value=fake(" M EXP/EXP-021-part1-prereg.md\n")):
+            with self.assertRaises(x.Refused):
+                x.part1_git_blob()
+        with mock.patch("subprocess.run", side_effect=[fake(""), fake("EXP/EXP-021-part1-prereg.md"), fake("c" * 40)]):
+            self.assertEqual(x.part1_git_blob(), "c" * 40)
+        with mock.patch("subprocess.run", side_effect=[fake(""), fake("")]):  # not tracked
+            with self.assertRaises(x.Refused):
+                x.part1_git_blob()
+
+    def test_fallback_pin(self):
+        t = f"{x.FALLBACK_KEY}: none\n"
+        x.check_fallback_pin(None, t)
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "fb.json"
+            f.write_text("{}")
+            with self.assertRaises(x.Refused):
+                x.check_fallback_pin(f, t)
+            sha = __import__("hashlib").sha256(b"{}").hexdigest()
+            x.check_fallback_pin(f, f"{x.FALLBACK_KEY}: {sha}\n")
+            with self.assertRaises(x.Refused):
+                x.check_fallback_pin(None, f"{x.FALLBACK_KEY}: {sha}\n")
+        for bad in ("", t + t, f"{x.FALLBACK_KEY}: PENDING\n"):
+            with self.assertRaises(x.Refused):
+                x.check_fallback_pin(None, bad)
+        x.check_fallback_pin(None, self.TEXT)  # Part 1 ships `none`
+
+    def manifest_dir(self, d, fallback="none"):
+        FreezeTests().freeze(d, inputs={**FreezeTests.INPUTS, "v_fallback_json_sha256": fallback})
+
+    def test_manifest_none_but_pin_changed_to_a_sha_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.manifest_dir(d)
+            x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: none\n", None, FreezeTests.VSHA)
+            with self.assertRaises(x.Refused):
+                x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: {'a' * 64}\n", None, FreezeTests.VSHA)
+
+    def test_manifest_sha_but_a_different_file_is_refused(self):
+        h = __import__("hashlib")
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as e:
+            f, g = Path(e) / "f.json", Path(e) / "g.json"
+            f.write_text("{}")
+            g.write_text('{"x": 1}')
+            sha = h.sha256(b"{}").hexdigest()
+            self.manifest_dir(d, sha)
+            x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: {sha}\n", f, FreezeTests.VSHA)
+            with self.assertRaises(x.Refused):
+                x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: {sha}\n", g, FreezeTests.VSHA)
+            with self.assertRaises(x.Refused):
+                x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: {sha}\n", None, FreezeTests.VSHA)
+
+    def test_manifest_vmap_sha_mismatch_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.manifest_dir(d)
+            with self.assertRaises(x.Refused):
+                x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: none\n", None, "0" * 64)
+            with self.assertRaises(x.Refused):
+                x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: none\n", None, None)
+
+    def test_head_must_be_merged(self):
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as r:
+            x.check_head_merged()
+            self.assertEqual(r.call_args[0][0][-4:], ["merge-base", "--is-ancestor", "HEAD", "origin/main"])
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=1)):
+            with self.assertRaises(x.Refused):
+                x.check_head_merged()
+        with mock.patch("subprocess.run", side_effect=OSError):
+            with self.assertRaises(x.Refused):
+                x.check_head_merged()
+        with mock.patch.object(x, "check_head_merged", side_effect=x.Refused("unmerged")), mock.patch.object(x, "part1_git_blob") as gb:
+            with self.assertRaises(x.Refused):
+                x.part1_pins("fd")
+            gb.assert_not_called()
+
+    def test_screen_main_refuses_before_guards_without_pins(self):
+        with mock.patch.object(x, "run_guards") as gd:
+            rc = x.main(["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--p2-view-dir", "c", "--out-dir", "o", "--v-constancy-json", "v"])
+            self.assertEqual(rc, 2)
+            gd.assert_not_called()
+
+    def test_power_figures_in_the_text_are_what_boot_p_gives(self):
+        import tools.exp017_screen as e17
+
+        def p(vals):
+            return e17.boot_p({f"d{i}": [v] for i, v in enumerate(vals)})
+
+        for vals, want in (([1] * 7, 0.0001), ([1] * 6 + [-1], 0.0119), ([1] * 6 + [-2], 0.0657), ([1] * 5 + [-0.5] * 2, 0.0207)):
+            self.assertAlmostEqual(p(vals), want, places=4)
+            self.assertIn(f"{want}", self.TEXT)
+
+    def test_signflip_p_is_exact(self):
+        self.assertEqual(x.signflip_p([1.0] * 7), 1 / 128)
+        self.assertEqual(x.signflip_p([1.0, -1.0]), 3 / 4)  # totals 2, 0, 0, -2: three are >= 0
+        self.assertIsNone(x.signflip_p([1.0] * 21))
+        self.assertIn("signflip_p_one_sided", x.paired_stats({"d1": [1.0], "d2": [2.0]}, 2))
 
 
 if __name__ == "__main__":

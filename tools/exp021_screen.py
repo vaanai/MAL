@@ -51,6 +51,7 @@ SCHEMA = "exp021_screen_v1"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CANONICAL_TRIES = e16.CANONICAL_TRIES
 PLAN = REPO_ROOT / "EXP" / "EXP-021-rug-signals-in-selector-plan.md"
+PART1 = REPO_ROOT / "EXP" / "EXP-021-part1-prereg.md"
 LAMPORTS = e16.LAMPORTS
 Refused = e16.Refused
 
@@ -287,6 +288,19 @@ def paired_by_date(rows: Sequence[Mapping[str, Any]], a: Mapping[str, bool], b: 
     return out
 
 
+def signflip_p(sums: Sequence[float], max_n: int = 20) -> float | None:
+    """REPORT-ONLY exact one-sided sign-flip p over the per-date sums: the share of the 2^n sign patterns whose total is >= the observed total
+    (the minimum is 1/2^n: 1/128 = 0.0078 at 7 dates). None above `max_n` dates. The date-cluster bootstrap is optimistic with few clusters; this changes no bar."""
+    import itertools
+
+    n = len(sums)
+    if n == 0 or n > max_n:
+        return None
+    obs = sum(sums)
+    hit = sum(1 for sg in itertools.product((1, -1), repeat=n) if sum(a * v for a, v in zip(sg, sums)) >= obs - 1e-12)
+    return hit / (2 ** n)
+
+
 def paired_stats(by_date: Mapping[str, Sequence[float]], n_dates: int) -> dict[str, Any]:
     """Mean, date-cluster CI90 and one-sided p (10,000 draws, seed 1), the per-date sums, ex-top-3 and ex-best-date of the paired gain."""
     xs = sorted((v for vs in by_date.values() for v in vs), reverse=True)
@@ -299,7 +313,7 @@ def paired_stats(by_date: Mapping[str, Sequence[float]], n_dates: int) -> dict[s
     share = (max(pos) / sum(pos)) if pos and sum(pos) > 0 else None  # report-only: share of the positive-date total
     net_share = (max(sums.values()) / total) if sums and total > 0 else None  # B6 (Amendment 2): share of the NET paired total
     return {"n": len(xs), "mean_x_sol": mean, "ci90_date_sol": ci, "p_one_sided": p, "total_sol": total, "dates_positive": len(pos), "of_dates": n_dates,
-            "max_date_share_of_positive_total": share, "max_date_share_of_net_total": net_share, "ex_top3_sol": (sum(xs[3:]) / LAMPORTS) if len(xs) > 3 else None,
+            "signflip_p_one_sided": signflip_p(list(sums.values())), "max_date_share_of_positive_total": share, "max_date_share_of_net_total": net_share, "ex_top3_sol": (sum(xs[3:]) / LAMPORTS) if len(xs) > 3 else None,
             "ex_best_date_sol": total - max(sums.values(), default=0.0), "by_date_sol": dict(sorted(sums.items()))}
 
 
@@ -691,6 +705,246 @@ def build_sources(g: Mapping[str, Any]) -> list[tuple[str, str, Any, list[str], 
     return [s for s in e16.build_sources({**g, "g1": g1}) if s[0] != "P1B"]
 
 
+# --- freeze mode (Part 1): train the two arms once on ALL exploration rows ------------------------------------------------------------
+
+
+FREEZE_FILES = {"rug": ("model.txt", "model.md5", "features.json"), "control": ("control-model.txt", "control-model.md5", "control-features.json")}
+FREEZE_MANIFEST = "train-manifest.json"
+FREEZE_SCHEMA = "exp021_freeze_v1"
+FREEZE_SOURCES = ("P1A", "P1C", "P2", "P3", "P4")  # P1B is excluded (Amendment 3(b)); every pool is training, there is no held-out date
+
+
+FREEZE_INPUT_KEYS = ("v_fallback_json_sha256", "args_hash", "oof_scores_sha256", "view_sha256")
+
+
+def freeze_environment() -> dict[str, str]:
+    import platform
+
+    import lightgbm
+    import numpy
+
+    return {"lightgbm_version": lightgbm.__version__, "numpy_version": numpy.__version__, "machine": platform.machine(), "python_version": platform.python_version()}
+
+
+def freeze_models(table: Sequence[Mapping[str, Any]], out_dir: Path, *, head: str, vmap_sha256: str | None, with_p4: bool = True,
+                  inputs: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Train RUG (34 columns) and CONTROL (18) once on every table row and write the artifacts. Same learner as the screen (`e15.fit_cfg(x, y, MDL)`:
+    EXP-015 C2, seed 1, deterministic, num_threads 1), same label (`label_row`), same column names. Bit-reproducible: nothing in the files depends on
+    the clock, the host or the thread count. Reads no outcome path and no held-out date (there is none); appends NO tries line (training on
+    already-read exploration labels spends no try). Refuses unless the V-map pin is set, the pool is complete, and OUT_DIR holds no frozen file."""
+    e16.check_pin_ready()
+    if not vmap_sha256 or not re.fullmatch(r"[0-9a-f]{64}", vmap_sha256):
+        raise Refused("freeze needs the V map sha256 the guards verified")
+    if not with_p4:
+        raise Refused("freeze trains on P1A, P1C, P2, P3 and P4: P4 is not in the pool")
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise Refused("freeze needs a code head (40 hex)")
+    if inputs is None or any(k not in inputs for k in FREEZE_INPUT_KEYS):
+        raise Refused(f"freeze needs its recorded inputs: {list(FREEZE_INPUT_KEYS)}")
+    out_dir = Path(out_dir)
+    if any((out_dir / n).exists() for names in FREEZE_FILES.values() for n in names) or (out_dir / FREEZE_MANIFEST).exists():
+        raise Refused(f"{out_dir} already holds a frozen artifact: the freeze refuses to overwrite")
+    rows = sorted(table, key=lambda r: (r["date"], r["mint"]))
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["source"]] = counts.get(r["source"], 0) + 1
+    unknown = sorted(set(counts) - set(FREEZE_SOURCES))
+    if unknown:
+        raise Refused(f"freeze rows from a source outside {list(FREEZE_SOURCES)}: {unknown}")
+    if any(r["ef"] is None or r["rf"] is None for r in rows):
+        raise Refused("a row lacks its feature vector")
+    y = [label_row(r) for r in rows]
+    if len(y) < MIN_FIT_ROWS or len(set(y)) < 2:
+        raise Refused("the freeze set cannot train: too few rows or one class")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, Any] = {
+        "schema": FREEZE_SCHEMA, "experiment": "EXP-021 Part 1", "code_head": head, "vmap_sha256": vmap_sha256, "with_p4": with_p4,
+        "universe_sha256": universe_sha256(rows), "feature_table_sha256": feature_table_sha256(rows),
+        "n_rows_total": len(rows), "n_rows_by_source": dict(sorted(counts.items())), "p1b": P1B_EXCLUDED,
+        "label": "1 iff FILLED and pressure net (haircut, both fees) > 0, else 0 (MISS = 0); cell k6 tp50_sl30 exit lag 2, 0.05 SOL",
+        "learner": {"fn": "tools.exp015_screen.fit_cfg", "min_data_in_leaf": MDL, "num_leaves": fz.LGB_PARAMS["num_leaves"], "learning_rate": fz.LGB_PARAMS["learning_rate"],
+                    "rounds": fz.LGB_PARAMS["rounds"], "feature_fraction": 0.9, "bagging_fraction": 0.9, "bagging_freq": 1, "scale_pos_weight": "neg/pos",
+                    "seed": fz.SEED, "deterministic": True, "num_threads": 1, "force_row_wise": True},
+        **{k: inputs[k] for k in FREEZE_INPUT_KEYS}, **freeze_environment(),
+        "models": {},
+    }
+    for arm, names in (("rug", FEATURES_RUG), ("control", FEATURES_CONTROL)):
+        mf, md5f, ff = FREEZE_FILES[arm]
+        with feature_names(names):
+            model = e15.fit_cfg([arm_vector(r, arm) for r in rows], y, MDL)
+        model.save_model(str(out_dir / mf))
+        md5 = hashlib.md5((out_dir / mf).read_bytes()).hexdigest()
+        (out_dir / md5f).write_text(md5 + "\n", encoding="utf-8")
+        (out_dir / ff).write_text(json.dumps({"schema": "exp021_features_v1", "arm": arm, "n_features": len(names), "feature_names": list(names),
+                                              "rug_extra": RUG_EXTRA if arm == "rug" else []}, indent=2) + "\n", encoding="utf-8")
+        manifest["models"][arm] = {"model_file": mf, "model_md5": md5, "n_features": len(names)}
+    (out_dir / FREEZE_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return manifest
+
+
+def freeze_main(args: argparse.Namespace) -> int:
+    """`--freeze OUT_DIR`: guards (V-map pin required), the tape pass, the screen's own loader and table limits, then `freeze_models`. No lock, no
+    tries line. The V constancy file is not needed to train; it gates the block read (Part 1 pre-registration section 7)."""
+    out_dir = args.freeze
+    try:
+        e16.refuse_extra_reserved(args)
+        g = run_guards(args)
+        e16.set_process_workers(args)
+        gs = e16.git_state()
+        if gs["dirty_tools"]:
+            raise Refused("tools/ is dirty (uncommitted change): the freeze records one clean head and refuses otherwise")
+        check_head_merged()
+        check_fallback_pin(args.v_fallback_json)
+        vmap_raw = e16.load_pinned_vmap(args.vmap)
+        fallback = {k: int(v) for k, v in json.loads(args.v_fallback_json.read_text()).items()} if args.v_fallback_json else {}
+        vmap = rug.merge_v_map(vmap_raw, fallback)
+        results, _pp = collect(args, g, vmap)
+        cells = [c for r in results for c in r["cells"]]
+        try:
+            oof_all = load_oof(args.artifact_dir)
+            oof, oof_days = oof_all[0], oof_all[3]
+        except SystemExit as exc:
+            raise Refused(str(exc)) from None
+        sel = e16.frozen_flags(cells, oof, args.artifact_dir)
+        enforce_limits(results, oof, e16.oof_without_cell(results, oof, oof_days, p1_kept_dates()))
+        table = build_table(cells, sel)
+        enforce_table_limits(table_counts(table, g["with_p4"]), g["with_p4"])
+        fa = argparse.Namespace(**{**vars(args), "freeze": None, "confirm": False, "frozen_dir": None})  # the freeze path is not an input
+        inputs = {"v_fallback_json_sha256": hashlib.sha256(args.v_fallback_json.read_bytes()).hexdigest() if args.v_fallback_json else "none",
+                  "args_hash": e15.args_hash(fa),
+                  "oof_scores_sha256": hashlib.sha256((Path(args.artifact_dir) / "oof_scores.json").read_bytes()).hexdigest(),
+                  "view_sha256": {"P1": g["g1"]["view_sha256"], "P2": g["g2"]["view_sha256"], "P3_manifests": g["g3"]["pin_sha256"], "P4": (g["g4"] or {}).get("view_sha256")}}
+        m = freeze_models(table, out_dir, head=gs["head"], vmap_sha256=g["vmap_sha256"], with_p4=g["with_p4"], inputs=inputs)
+    except (Refused, rug.PoolAttributionRefusal, e16.SimulationError) as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001
+        print(f"refusing: unexpected {type(exc).__name__} in the freeze (message withheld)", file=sys.stderr)
+        return 2
+    print(json.dumps({"frozen": str(out_dir), "models": m["models"], "n_rows_by_source": m["n_rows_by_source"]}, indent=2))
+    return 0
+
+
+def confirm_main(args: argparse.Namespace | None) -> int:
+    """`--confirm`: the one fresh-block read. NOT IMPLEMENTED in this PR (Part 1 ships the freeze and the pre-registration).
+    TODO (separate PR, after the model-md5 amendment and the Part 1 merge): implement per EXP/EXP-021-part1-prereg.md section 9. Until then it refuses
+    unconditionally, before any path is opened, so no outcome row can be read and no tries line can be written."""
+    print("refusing: --confirm is a stub. The block read is not implemented: it needs the merged model-md5 amendment and the merged Part 1 "
+          "(EXP/EXP-021-part1-prereg.md section 9). No path was opened.", file=sys.stderr)
+    return 2
+
+
+PIN_LINES = (("EXP021_FROZEN_MD5", 32), ("EXP021_CONTROL_MD5", 32), ("EXP021_TRAIN_MANIFEST_SHA256", 64))
+PART1_REL = "EXP/EXP-021-part1-prereg.md"
+FALLBACK_KEY = "EXP021_V_FALLBACK_SHA256"  # `none` (no fallback file) unless a merged amendment pins a named sha
+
+
+def _pin_values(text: str, key: str) -> list[str]:
+    return re.findall(rf"^{key}: (\S*)[ \t]*$", text, re.M)
+
+
+def check_freeze_pins(text: str, frozen_dir: Path | str | None) -> dict[str, str]:
+    """The screen runs only AFTER the freeze is visible. Each pin key appears EXACTLY ONCE in Part 1, as hex (`PENDING` refuses), and the frozen
+    artifacts in `frozen_dir` must match: sha256(train-manifest.json) == the manifest pin, md5(model.txt) == the RUG pin, md5(control-model.txt) == the
+    CONTROL pin, and the manifest's own recorded md5s agree."""
+    pins: dict[str, str] = {}
+    bad: list[str] = []
+    for k, n in PIN_LINES:
+        v = _pin_values(text, k)
+        if len(v) != 1 or not re.fullmatch(rf"[0-9a-f]{{{n}}}", v[0]):
+            bad.append(k)
+        else:
+            pins[k] = v[0]
+    if bad:
+        raise Refused(f"freeze pin line(s) missing, repeated or not hex in {PART1_REL}: {bad}. The screen runs only after --freeze and a merged amendment recording the md5s")
+    if frozen_dir is None:
+        raise Refused("--frozen-dir is required: the frozen artifacts are checked against the pins")
+    d = Path(frozen_dir)
+    try:
+        man_b = (d / FREEZE_MANIFEST).read_bytes()
+        mf = hashlib.md5((d / FREEZE_FILES["rug"][0]).read_bytes()).hexdigest()
+        mc = hashlib.md5((d / FREEZE_FILES["control"][0]).read_bytes()).hexdigest()
+    except OSError:
+        raise Refused(f"--frozen-dir {d}: a frozen artifact is missing") from None
+    if hashlib.sha256(man_b).hexdigest() != pins["EXP021_TRAIN_MANIFEST_SHA256"]:
+        raise Refused("sha256(train-manifest.json) does not equal EXP021_TRAIN_MANIFEST_SHA256")
+    if mf != pins["EXP021_FROZEN_MD5"]:
+        raise Refused("md5(model.txt) does not equal EXP021_FROZEN_MD5")
+    if mc != pins["EXP021_CONTROL_MD5"]:
+        raise Refused("md5(control-model.txt) does not equal EXP021_CONTROL_MD5")
+    rec = json.loads(man_b.decode("utf-8")).get("models", {})
+    if (rec.get("rug") or {}).get("model_md5") != mf or (rec.get("control") or {}).get("model_md5") != mc:
+        raise Refused("train-manifest.json records model md5s that differ from the files")
+    return pins
+
+
+def part1_git_blob() -> str:
+    """Part 1 must be CLEAN against HEAD (no edit, staged or not, no untracked copy); returns its git blob sha."""
+    import subprocess
+
+    def run(*a: str) -> str:
+        try:
+            return subprocess.run(["git", "-C", str(REPO_ROOT), *a], capture_output=True, text=True, check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return ""
+
+    if run("status", "--porcelain", "--", PART1_REL) != "" or not run("ls-files", "--error-unmatch", PART1_REL):
+        raise Refused(f"{PART1_REL} is modified, untracked or not in git: the pins are read only from a clean, committed file")
+    blob = run("rev-parse", f"HEAD:{PART1_REL}")
+    if not re.fullmatch(r"[0-9a-f]{40}", blob):
+        raise Refused(f"cannot read the git blob sha of {PART1_REL}")
+    return blob
+
+
+def check_head_merged() -> None:
+    """Pins may only come from merged commits: HEAD must be an ancestor of origin/main (`git merge-base --is-ancestor HEAD origin/main`)."""
+    import subprocess
+
+    try:
+        rc = subprocess.run(["git", "-C", str(REPO_ROOT), "merge-base", "--is-ancestor", "HEAD", "origin/main"], capture_output=True, text=True).returncode
+    except OSError:
+        rc = 2
+    if rc != 0:
+        raise Refused("HEAD is not an ancestor of origin/main: the pins are read only from merged commits (fetch origin/main, or merge first)")
+
+
+def check_manifest_inputs(frozen_dir: Path | str, pin_text: str, fallback: Path | str | None, vmap_sha256: str | None) -> None:
+    """After the manifest is loaded: its recorded fallback sha (`none` if there was none, never null) must equal the Part 1 pin AND the sha of the
+    `--v-fallback-json` passed now (or both `none`), and its `vmap_sha256` must equal the V map the guards verified. The fallback pin may be set only
+    before the freeze, so a swap after the freeze is refused here."""
+    man = json.loads((Path(frozen_dir) / FREEZE_MANIFEST).read_text(encoding="utf-8"))
+    rec = man.get("v_fallback_json_sha256")
+    rec = "none" if rec is None else rec
+    pin = _pin_values(pin_text, FALLBACK_KEY)
+    now = "none" if not fallback else hashlib.sha256(Path(fallback).read_bytes()).hexdigest()
+    if len(pin) != 1 or rec != pin[0]:
+        raise Refused(f"train-manifest.json records the V fallback {rec!r}, which does not equal {FALLBACK_KEY} ({pin[:1]}): the pin may be set only before --freeze")
+    if rec != now:
+        raise Refused(f"the V fallback file passed now ({now}) differs from the manifest's recorded {rec}")
+    if man.get("vmap_sha256") != vmap_sha256:
+        raise Refused("train-manifest.json vmap_sha256 differs from the V map the guards verified")
+
+
+def part1_pins(frozen_dir: Path | str | None) -> str:
+    """Screen pre-check: Part 1 clean vs HEAD, pins set, frozen artifacts match. Returns the Part 1 git blob sha (recorded in the started line and report)."""
+    check_head_merged()
+    blob = part1_git_blob()
+    check_freeze_pins(PART1.read_text(encoding="utf-8"), frozen_dir)
+    return blob
+
+
+def check_fallback_pin(fallback: Path | str | None, text: str | None = None) -> None:
+    """The V fallback file is `none` unless a merged amendment pins a named sha (`EXP021_V_FALLBACK_SHA256`). The freeze, the screen and `--confirm`
+    all use the same one."""
+    t = PART1.read_text(encoding="utf-8") if text is None else text
+    v = _pin_values(t, FALLBACK_KEY)
+    if len(v) != 1 or not (v[0] == "none" or re.fullmatch(r"[0-9a-f]{64}", v[0])):
+        raise Refused(f"{FALLBACK_KEY} must appear exactly once as `none` or a sha256 in {PART1_REL}")
+    got = "none" if not fallback else hashlib.sha256(Path(fallback).read_bytes()).hexdigest()
+    if got != v[0]:
+        raise Refused(f"the V fallback file ({got}) does not equal {FALLBACK_KEY} ({v[0]})")
+
+
 # --- CLI ----------------------------------------------------------------------------------------------------------------------------
 
 
@@ -703,6 +957,12 @@ def _parser() -> argparse.ArgumentParser:
         if a.dest == "p1_oracle_live_dir":  # P1B: required in EXP-016, REFUSED here (Amendment 3(b))
             a.required, a.default = False, None
             a.help = "not accepted: P1B (the Oracle live tape) is excluded from EXP-021 (Amendment 3). The tool refuses it if given."
+    for a in ap._actions:
+        if a.dest == "out_dir":  # required for the screen and --precount; --freeze carries its own OUT_DIR
+            a.required, a.default = False, None
+    ap.add_argument("--freeze", type=Path, default=None, metavar="OUT_DIR", help="Part 1: train RUG and CONTROL once on ALL exploration rows (P1A, P1C, P2, P3, P4) and write the artifacts. No tries line, no lock. Needs the V-map pin.")
+    ap.add_argument("--frozen-dir", type=Path, default=None, help="the --freeze output directory; the screen checks it against the pin lines in Part 1")
+    ap.add_argument("--confirm", action="store_true", help="the one fresh-block read: NOT IMPLEMENTED (refuses; see the Part 1 pre-registration)")
     for a in ap._actions:
         if a.dest == "max_workers":
             a.help = "fork count of the tape pass (EXP-016 design: indexed history, forked cells; ~57 GB at P2 with 4). Default 4, cap 8. The fits are serial."
@@ -776,12 +1036,27 @@ def precount(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     from tools.exp012_exit_sensitivity import resolve_tries_path
 
+    if "--confirm" in (sys.argv[1:] if argv is None else list(argv)):  # the stub refuses before argparse, so it needs no path argument
+        return confirm_main(None)
     args = _parser().parse_args(argv)
     if args.emit_constancy_sample:
         print("refusing: --emit-constancy-sample is not offered here (EXP-016's constancy file is the input; its guards read P1B)", file=sys.stderr)
         return 2
+    if args.confirm:
+        return confirm_main(args)
+    if args.freeze is not None:
+        return freeze_main(args)
+    if args.out_dir is None:
+        print("refusing: --out-dir is required", file=sys.stderr)
+        return 2
     if args.precount:
         return precount(args)
+    try:
+        part1_blob = part1_pins(args.frozen_dir)
+        check_fallback_pin(args.v_fallback_json)
+    except Refused as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 2
     if args.v_constancy_json is None:
         print("refusing: --v-constancy-json is required (or use --emit-constancy-sample)", file=sys.stderr)
         return 2
@@ -791,6 +1066,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         e16.progress("exp021 guards start")
         g = run_guards(args)
+        check_manifest_inputs(args.frozen_dir, PART1.read_text(encoding="utf-8"), args.v_fallback_json, g["vmap_sha256"])
         e16.set_process_workers(args)
         check_no_prior_tries(tries_path, canonical)
         try:
@@ -860,11 +1136,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         locked = True
         check_no_prior_tries(tries_path, canonical)  # re-checked under the lock, right before the spend point
         extra = {"universe_sha256": usha, "feature_table_sha256": fsha, "prior_tries_per_pool": prior, "prior_tries_per_experiment": prior_exp,
-                 "with_p4": with_p4, "vmap_sha256": g["vmap_sha256"], **input_shas}
+                 "with_p4": with_p4, "vmap_sha256": g["vmap_sha256"], "part1_blob_sha": part1_blob, **input_shas}
         log_all(out_dir, tries_path, canonical, "started", with_p4, extra)  # the spend point
         started = True
         base = {"schema": SCHEMA, "banner": BANNER, "first_line": first_line(with_p4), "with_p4": with_p4, "p1b": P1B_EXCLUDED, "censoring": {r_["tag"]: r_.get("censoring") for r_ in results}, "pre_started": pre, "table_counts": counts, "prior_tries": prior,
-                "universe_sha256": usha, "feature_table_sha256": fsha, "git_head": head, "args_hash": ahash}
+                "universe_sha256": usha, "feature_table_sha256": fsha, "git_head": head, "args_hash": ahash, "part1_blob_sha": part1_blob}
         write_report(out_dir, {**base, "decision": {"outcome": "table written; folds not yet scored"}, "partial": True})
         res = run_screen(table, with_p4)
         rep = {**base, "folds": res["folds"], "bars": res["bars"], "decision": res["decision"], "report_only": res["report_only"], "wall_s": time.time() - t0, "partial": False}
