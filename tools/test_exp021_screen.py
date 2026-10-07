@@ -458,14 +458,14 @@ class TriesTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
     def test_parser_has_the_modes_and_max_workers(self):
-        a = x._parser().parse_args(["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--p1-oracle-live-dir", "c", "--out-dir", "o", "--max-workers", "2", "--precount"])
+        a = x._parser().parse_args(["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--out-dir", "o", "--max-workers", "2", "--precount"])
         self.assertEqual((a.max_workers, a.precount, a.guards_only), (2, True, False))
-        a = x._parser().parse_args(["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--p1-oracle-live-dir", "c", "--out-dir", "o", "--guards-only"])
+        a = x._parser().parse_args(["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--out-dir", "o", "--guards-only"])
         self.assertTrue(a.guards_only)
         self.assertEqual(a.max_workers, 4)
 
     def argv(self, td, *extra):
-        return ["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--p1-oracle-live-dir", "c", "--p2-view-dir", "d", "--out-dir", str(Path(td) / "o"),
+        return ["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--p2-view-dir", "d", "--out-dir", str(Path(td) / "o"),
                 "--tries-log", str(Path(td) / "ops.jsonl"), "--canonical-tries", str(Path(td) / "canon.jsonl"), *extra]
 
     def test_screen_refuses_before_any_row_while_the_pin_is_pending(self):
@@ -486,7 +486,7 @@ class CliTests(unittest.TestCase):
             samples = Path(td) / "c.json"
             samples.write_text("[]")
             g = {"with_p4": True, "vmap_sha256": "x", "g1": {}, "g2": {}, "g3": {}, "g4": {}}
-            with mock.patch.object(e16, "run_guards", return_value=g), mock.patch.object(e16, "load_pinned_vmap", return_value={}), \
+            with mock.patch.object(x, "run_guards", return_value=g), mock.patch.object(e16, "load_pinned_vmap", return_value={}), \
                     mock.patch.object(e16, "check_v_constancy", return_value={}), mock.patch.object(e16, "git_state", return_value={"head": "h", "dirty_tools": False}), \
                     mock.patch.object(x, "collect") as col:
                 rc = x.main(self.argv(td, "--v-constancy-json", str(samples), "--guards-only"))
@@ -497,7 +497,7 @@ class CliTests(unittest.TestCase):
     def test_guards_refuse_when_a_prior_exp021_line_exists(self):
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "canon.jsonl").write_text(json.dumps({"config": {"key": "exp021_started"}}) + "\n")
-            with mock.patch.object(e16, "run_guards", return_value={"with_p4": True}), mock.patch.object(x, "collect") as col:
+            with mock.patch.object(x, "run_guards", return_value={"with_p4": True}), mock.patch.object(x, "collect") as col:
                 rc = x.main(self.argv(td, "--v-constancy-json", str(Path(td) / "c.json")))
             self.assertEqual(rc, 2)
             col.assert_not_called()
@@ -517,11 +517,11 @@ class CliTests(unittest.TestCase):
             g = {"with_p4": True, "vmap_sha256": "v", "g1": {}, "g2": {}, "g3": {}, "g4": {}}
             sel = [i % 2 == 0 for i in range(len(cells))]
             patches = [
-                mock.patch.object(e16, "run_guards", return_value=g), mock.patch.object(e16, "load_pinned_vmap", return_value={}),
+                mock.patch.object(x, "run_guards", return_value=g), mock.patch.object(e16, "load_pinned_vmap", return_value={}),
                 mock.patch.object(e16, "check_v_constancy", return_value={}), mock.patch.object(e16, "git_state", return_value={"head": "h", "dirty_tools": False}),
                 mock.patch.object(x, "collect", return_value=(results, {})), mock.patch.object(x, "load_oof", return_value=({}, 0, 0, {})),
                 mock.patch.object(e16, "frozen_flags", return_value=sel), mock.patch.object(e16, "pre_started_counts", return_value={}),
-                mock.patch.object(e16, "oof_without_cell", return_value={}), mock.patch.object(e16, "enforce_limits"),
+                mock.patch.object(e16, "oof_without_cell", return_value={}), mock.patch.object(x, "enforce_limits"),
                 mock.patch.object(e16, "v_coverage", return_value={}), mock.patch.object(e16, "check_constancy_sample"),
                 mock.patch.object(e16, "set_process_workers"),
             ]
@@ -551,10 +551,10 @@ class CliTests(unittest.TestCase):
             samples.write_text("[]")
             cells = [cell_rec(i, d, status="FILLED") for d in NON_P1 for i in range(6)]  # P1 dates missing: the screen runs; force the refusal in run_screen
             g = {"with_p4": True, "vmap_sha256": "v", "g1": {}, "g2": {}, "g3": {}, "g4": {}}
-            with mock.patch.object(e16, "run_guards", return_value=g), mock.patch.object(e16, "load_pinned_vmap", return_value={}), mock.patch.object(e16, "check_v_constancy", return_value={}), \
+            with mock.patch.object(x, "run_guards", return_value=g), mock.patch.object(e16, "load_pinned_vmap", return_value={}), mock.patch.object(e16, "check_v_constancy", return_value={}), \
                     mock.patch.object(e16, "git_state", return_value={"head": "h", "dirty_tools": False}), mock.patch.object(x, "collect", return_value=([{"tag": "S", "cells": cells}], {})), \
                     mock.patch.object(x, "load_oof", return_value=({}, 0, 0, {})), mock.patch.object(e16, "frozen_flags", return_value=[True] * len(cells)), \
-                    mock.patch.object(e16, "pre_started_counts", return_value={}), mock.patch.object(e16, "oof_without_cell", return_value={}), mock.patch.object(e16, "enforce_limits"), \
+                    mock.patch.object(e16, "pre_started_counts", return_value={}), mock.patch.object(e16, "oof_without_cell", return_value={}), mock.patch.object(x, "enforce_limits"), \
                     mock.patch.object(e16, "v_coverage", return_value={}), mock.patch.object(e16, "check_constancy_sample"), mock.patch.object(e16, "set_process_workers"), \
                     mock.patch.object(x, "run_screen", side_effect=x.Refused("fold cannot train")):
                 rc = x.main(self.argv(td, "--v-constancy-json", str(samples)))
@@ -575,15 +575,15 @@ class PrecountTests(unittest.TestCase):
                    "pre_tape_migration_excluded": [], "gap_excluded": [], "create_stats": None, "p1b_gap_slots": None}
             g = {"with_p4": True, "vmap_sha256": None, "g1": {}, "g2": {}, "g3": {}, "g4": {}}
             args = SimpleNamespace(vmap=str(td / "v.json"), v_fallback_json=None, closed_pools_json=None, artifact_dir=td, out_dir=td / "o", v_constancy_json=None, max_workers=2,
-                                   p1_fast_dir="a", p1_oracle_insample_dir="b", p1_oracle_live_dir="c", p3_root="d", p2_view_dir=["e"], p4_view_dir=None)
+                                   p1_fast_dir="a", p1_oracle_insample_dir="b", p1_oracle_live_dir=None, p3_root="d", p2_view_dir=["e"], p4_view_dir=None)
             import io
             from contextlib import redirect_stdout
 
             buf = io.StringIO()
-            with mock.patch.object(e16, "run_guards", return_value=g), mock.patch.object(e16, "set_process_workers"), mock.patch.object(x, "collect", return_value=([res], {})), \
+            with mock.patch.object(e16, "VMAP_EXP016_SHA256", "PENDING"), mock.patch.object(x, "run_guards", return_value=g), mock.patch.object(e16, "set_process_workers"), mock.patch.object(x, "collect", return_value=([res], {})), \
                     mock.patch("tools.pumpswap_virtual.load_map", return_value={}), mock.patch.object(x, "load_oof", return_value=({}, 0, 0, {})), \
                     mock.patch.object(e16, "frozen_flags", return_value=[i % 2 == 0 for i in range(len(cells))]), mock.patch.object(e16, "oof_without_cell", return_value={}), \
-                    mock.patch.object(e16, "check_limits", return_value=[]), mock.patch.object(e16, "source_counts", return_value={}), \
+                    mock.patch.object(x, "check_limits", return_value=[]), mock.patch.object(e16, "source_counts", return_value={}), \
                     mock.patch.object(e16, "pre_started_counts", return_value={"n_cells": len(cells)}), redirect_stdout(buf):
                 rc = x.precount(args)
             self.assertEqual(rc, 0)
@@ -600,6 +600,105 @@ class PrecountTests(unittest.TestCase):
             self.assertTrue((td / "o" / "precount.json").exists())
             self.assertFalse((td / "o" / "RUN.lock").exists())
             self.assertEqual([p.name for p in td.iterdir() if p.suffix == ".jsonl"], [])
+
+
+def _res(tag, *, n_mig=100, no_create=0, first=(100, 10), after=(100, 1), span_h=72, cells=40):
+    """A source result in the shape `check_limits` reads: windowed counts and the censoring profile ((n, no_create) per side)."""
+    mig_ms = e15.date_start_ms(P1[0]) + 12 * HOUR
+    return {"tag": tag, "cells": [{"status": "FILLED", "pool": f"p{i}", "mint": f"m{tag}{i}", "block": "P1", "mig_ms": mig_ms} for i in range(cells)], "n_migrations": n_mig,
+            "n_migrations_window": n_mig, "no_create_row": ["a"] * no_create, "no_create_window": no_create, "no_pool_mints": [], "no_pool_window": 0, "no_migration_slot": [],
+            "no_bonding_excluded": [], "n_creates_with_migration": n_mig, "n_creates": n_mig, "create_stats": None, "p1b_gap_slots": None,
+            "gate": {"foreign_first_mints": [], "mints_with_foreign_pool_prints": 0}, "slot_inversions": 0, "pool_vs_canonical": None, "pre_tape_migration_excluded": [],
+            "gap_excluded": [], "p1b_cap_denominator": 100, "p1b_canonical_no_create": 0, "n_cells_window": n_mig, "n_window_with_create": n_mig - no_create,
+            "censoring": {"start_ms": 0, "span_h": span_h, "first": {"n": first[0], "no_create": first[1]}, "after": {"n": after[0], "no_create": after[1]}}}
+
+
+class Amendment3Tests(unittest.TestCase):
+    def test_no_create_limit_is_8_percent_for_exp021_only(self):
+        self.assertEqual(x.LIMIT_NO_CREATE_021, 0.08)
+        self.assertEqual(x.check_limits([_res("P3", no_create=8)]), [])  # 8% is at the limit
+        (why,) = x.check_limits([_res("P3", no_create=9)])
+        self.assertIn("no-create-row 9 of 100", why)
+        self.assertIn("8%", why)
+
+    def test_job_349_shares_pass(self):
+        for tag, k, n in (("P1A", 194, 3415), ("P1C", 104, 3590), ("P2", 408, 15278), ("P3", 414, 6423), ("P4", 312, 6588)):
+            self.assertEqual([w for w in x.check_limits([_res(tag, n_mig=n, no_create=k)]) if "no-create" in w], [], tag)
+
+    def test_exp016_limit_is_unchanged(self):
+        self.assertEqual(e16.LIMIT_NO_CREATE, 0.02)
+        x.check_limits([_res("P3", no_create=5)])
+        self.assertEqual(e16.LIMIT_NO_CREATE, 0.02)  # restored after the call
+        (why,) = e16.check_limits([_res("P3", no_create=3)])  # EXP-016's own check still refuses at 3%
+        self.assertIn("no-create-row", why)
+        with self.assertRaises(RuntimeError), x.no_create_limit(0.5):
+            raise RuntimeError
+        self.assertEqual(e16.LIMIT_NO_CREATE, 0.02)
+
+    def test_signature_passes_when_the_first_day_is_higher(self):
+        self.assertEqual(x.check_censoring_signature([_res("P3", first=(100, 16), after=(500, 25))]), [])
+
+    def test_signature_refuses_when_not_above(self):
+        (w,) = x.check_censoring_signature([_res("P3", first=(100, 5), after=(500, 25))])  # 5% vs 5%
+        self.assertIn("not a censoring signature", w)
+        self.assertTrue(x.check_censoring_signature([_res("P2", first=(100, 2), after=(500, 25))]))
+
+    def test_signature_is_wired_into_check_limits(self):
+        why = x.check_limits([_res("P3", no_create=4, first=(100, 1), after=(100, 9))])
+        self.assertEqual(len(why), 1)
+        self.assertIn("P3", why[0])
+
+    def test_short_p1_source_is_exempt_from_the_signature_only(self):
+        short = _res("P1C", first=(50, 0), after=(0, 0), span_h=40)
+        self.assertEqual(x.check_censoring_signature([short]), [])
+        self.assertTrue(x.check_censoring_signature([_res("P1C", first=(50, 0), after=(50, 5), span_h=72)]))  # long enough: checked
+        self.assertTrue(x.check_censoring_signature([_res("P2", first=(0, 0), after=(0, 0), span_h=40)]))  # not P1: never exempt
+        self.assertTrue(any("no-create-row" in w for w in x.check_limits([dict(short, no_create_window=20, no_create_row=["a"] * 20)])))  # the 8% limit still applies
+
+    def test_censoring_profile_counts_first_24h_and_after(self):
+        a = e15.hour_ms(e15.BLOCKS["P3"][0])
+        bt = lambda h: (a + h * HOUR) // 1000 + 5
+        migs = {f"m{i}": {"mint": f"m{i}", "pool": "p", "block_time": bt(h)} for i, h in enumerate((1, 2, 3, 30, 31, 40, 50, 60))}
+        src = SimpleNamespace(block="P3", migrations=migs, creates={"m3": {}, "m4": {}, "m5": {}, "m6": {}, "m7": {}}, excluded_no_bonding=[], excluded_other={})
+        pr = x.censoring_profile(src, [e15.BLOCKS["P3"][0], e15.BLOCKS["P3"][1]])
+        self.assertEqual((pr["first"], pr["after"]), ({"n": 3, "no_create": 3}, {"n": 5, "no_create": 0}))
+        src.excluded_other = {"pre_tape_create": ["m0"]}
+        self.assertEqual(x.censoring_profile(src, [e15.BLOCKS["P3"][0]])["first"]["no_create"], 2)  # an excluded mint is not a no-create
+
+    def test_p1b_is_refused_and_not_a_source(self):
+        args = SimpleNamespace(p1_oracle_live_dir="/x/oracle-live-2026-09-25_27", max_workers=4)
+        with self.assertRaises(x.Refused) as cm:
+            x.run_guards(args)
+        self.assertIn("P1B excluded (Amendment 3)", str(cm.exception))
+        a = x._parser().parse_args(["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--out-dir", "o"])  # no live dir needed
+        self.assertIsNone(a.p1_oracle_live_dir)
+
+    def test_main_refuses_a_given_live_dir_before_any_row(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(x, "collect") as col:
+            argv = ["--p1-fast-dir", "a", "--p1-oracle-insample-dir", "b", "--p1-oracle-live-dir", "c", "--p2-view-dir", "d", "--out-dir", str(Path(td) / "o"),
+                    "--tries-log", str(Path(td) / "ops.jsonl"), "--canonical-tries", str(Path(td) / "canon.jsonl"), "--v-constancy-json", str(Path(td) / "c.json")]
+            self.assertEqual(x.main(argv), 2)
+            self.assertEqual(x.main(argv + ["--precount"]), 2)
+            col.assert_not_called()
+            self.assertFalse((Path(td) / "ops.jsonl").exists())
+
+    def test_build_sources_has_no_p1b(self):
+        g1 = {"roots": {"fast": Path("/f"), "insample": Path("/i")}}
+        with mock.patch.object(e16, "build_sources", side_effect=lambda g: [(t, "P1", None, [], []) for t in ("P1A", "P1C", "P1B")] if "live" in g["g1"]["roots"] else []):
+            self.assertEqual([s[0] for s in x.build_sources({"g1": g1})], ["P1A", "P1C"])
+
+    def test_kept_oof_dates_exclude_p1b_only_dates(self):
+        d = x.p1_kept_dates()
+        self.assertTrue(set(d) <= set(P1))
+        self.assertIn(P1[0], d)
+        self.assertNotIn(P1[-1], d)  # the last P1 date is P1B's (oracle-live-2026-09-25_27)
+
+    def test_report_records_the_exclusion(self):
+        md = x.render_md({"first_line": "f", "banner": "b", "decision": {"outcome": "o"}, "p1b": x.P1B_EXCLUDED})
+        self.assertIn("P1B excluded (Amendment 3)", md)
+
+    def test_real_vmap_pin_is_in_the_code(self):
+        self.assertEqual(e16.VMAP_EXP016_SHA256, "1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec")
 
 
 if __name__ == "__main__":

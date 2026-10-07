@@ -72,8 +72,9 @@ BANNER = (
 
 # --- pinned numbers (each tied to the plan by tools/test_exp016_screen.py) -------------------------------------------------------
 # ONE pool -> V map for P1-P4 (fixed parser, #383), pinned by sha256 in a reviewed commit BEFORE the first row is read (plan section 11 P1).
-# While it is the placeholder the tool refuses at startup (check_pin_ready), as EXP-015's PENDING pattern.
-VMAP_EXP016_SHA256 = "PENDING"
+# While it is the placeholder ("PENDING") the tool refuses at startup (check_pin_ready), as EXP-015's PENDING pattern.
+# Pinned by the manager on 2026-10-07: sha256 of pool_v_exp016.json (the fixed-parser merged map built 2026-10-06), verified on disk; shared with EXP-021.
+VMAP_EXP016_SHA256 = "1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec"
 VMAP_EXP016_PATH = "/data/mal/pumpswap-virtual/pool_v_exp016.json"
 K = e15.K  # 6
 SIZE_SOL = e15.SIZE_SOL  # 0.05
