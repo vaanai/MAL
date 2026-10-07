@@ -78,6 +78,8 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 4. Then the screen, once (1 try), with V-map pin 1f3e772d…62ec and `--v-constancy-json /data/mal/exp021-constancy/constancy.json`, P1B excluded.
 5. A block claim needs DEC-014's budget, p < 0.025 / m.
 
+Before the 10-16 FINAL read, runner side files (arm-audit, heartbeat) are read only through tools/runner_timing_read.py (timing allowlist; per-day counts refused).
+
 **Sealed, unread confirmation blocks:** fresh-0828, fresh-0808 and fresh-0802 (all verified 144/144 h). One stays in reserve.
 
 **Later (Lyra 10-07):**
