@@ -1,8 +1,15 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-07T16:05:21Z",
+  "updated_utc": "2026-10-07T18:25:04Z",
   "review_windows": [],
   "events": [
+    {
+      "id": "fast-entry-trigger-1007",
+      "kind": "result",
+      "title": "Fast-entry: processed migrate stream ~1 s ahead of today's trigger; DEC-022 proposed",
+      "detail": "Job #368 (arm-audit, timing only) + job #253 files; PR #451, quant-proof SOUND after fixes. Lead over the tip's receive of the first PumpSwap print: tip complete p50 0 ms; stream migrate p50 1,012 ms (262/284); earlier-of p50 996 ms (284/284). Not a lead over the on-chain first swap (162/262 same slot). Seal exposure disclosed in DEC-016 Am.2.",
+      "atUtc": "2026-10-07T18:25:04Z"
+    },
     {
       "id": "exp020-grid-end-result",
       "kind": "result",
@@ -372,6 +379,20 @@
     }
   ],
   "stream": [
+    {
+      "id": "s-20261007-182504-b",
+      "from": "claude",
+      "kind": "finding",
+      "text": "EXP-021: precount #2 found the screen would refuse on V coverage (95.08%, floor 99%; 1,711 pools never in the V map) and flagged a 09-25 window artifact in the P1 coverage check. Freeze #365 cancelled before it wasted 6 h. Fix in PR #450 (Amendment 4); precount #3 (job #366) running; then V remedy, freeze, pins, one screen.",
+      "atUtc": "2026-10-07T18:25:04Z"
+    },
+    {
+      "id": "s-20261007-182504-a",
+      "from": "claude",
+      "kind": "result",
+      "text": "Fast-entry read (PR #451, latency only): today's early arm gives no lead (p50 0 ms). The processed migrate stream is about 1 s ahead of the runner's current trigger (p50 1,012 ms on 262 of 284 graduations; earlier-of-both p50 996 ms on 284). That is mostly confirmation delay saved, not a lead over the first swap on chain, so realistic landing is about k 3-4 vs 5 today. DEC-022 proposes the build: Phase A paper timing shadow now (no key); Phase B live calibration only on your go. Seal note: an early-arm read printed per-day outcome counts inside the sealed window; no P&L was read; disclosed in DEC-016.",
+      "atUtc": "2026-10-07T18:25:04Z"
+    },
     {
       "id": "s-20261007-034714-a",
       "from": "claude",
