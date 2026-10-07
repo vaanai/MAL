@@ -68,7 +68,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 
 **Probe close (#443, corrected by #445):**
 - Exit lag 2 is a fair primary and 5 the pessimistic leg.
-- 16% of trades show sim-entry vs live-fill drift (price fell 10–15% between read and landing). That is an entry-model calibration item.
+- 9 of 55 fixed-build trades (16%) show sim-entry vs live-fill drift (price fell 10–15% between read and landing). That is an entry-model calibration item.
 - True round-trip cost is about 4.44% / 2.79% / 2.59% at 0.05 / 0.25 / 0.5 SOL, before price impact (+22.9 / +51.6 bps on entry at 0.25 / 0.5).
 
 **EXP-021 (main bet), in order:**
