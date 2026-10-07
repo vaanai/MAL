@@ -71,3 +71,9 @@ Added 2026-10-07, before any outcome was read: the grid re-sim (job #330) is sti
 Why: on the EXP-017 C0 size report the positive 0.25 and 0.5 SOL totals turned negative once the single best UTC date (2026-08-21) was dropped. Ex-top-3 trades did not catch that. EXP-020 must show the same check.
 
 Added to each cell, on both legs (flat and pressure), next to `ex_top3_sol`, and to the markdown tables: `best_date` and `best_date_sol` (the UTC date with the largest total, ties to the earliest date, and that total), `ex_best_date_sol` (total minus that date's total) and `ex_best_date_dates_positive` (positive-date count without that date). It mirrors the best-date logic of `concentration_bar` in EXP-015/EXP-017. It is report-only and gates nothing.
+
+## Amendment 2026-10-07: grid-cache pin (before any outcome read)
+
+The outcome-blind `--resim` ran as job #330 (code c27d9ef, 4 workers, 22 GB, 2 h 21 m, rc 0). Precount and `--guards-only` passed (`n_selected` 3,322). Per-source row counts match the EXP-017 sized pin (§13 there): P1A 315, P1C 404, P1B 254, P2 1,485, P3 451, P4 413. The resim prints only counts and short hashes; no net, mean or total was printed or opened. `--report` runs once, after this line is merged, at the merged head.
+
+GRID_MANIFEST_SHA256 = fe3eea656e14b8f3a92d47bd04c60563bc1157cab04d962076a883e6ac266b24
