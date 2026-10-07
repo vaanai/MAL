@@ -57,13 +57,25 @@
   - It logs no price or reserve for entered EXP-012 mints.
   - It reads no runner outcome.
   - If the gate is computed inside the runner, that is a runner change and carries the md5 decision-equivalence replay proof.
-- **Exit criteria:**
+- **Exit criteria.** These are **engineering acceptance**, chosen after the 6 h test. They are not evidence, and they are set with a margin below the 6 h figures so ordinary noise does not decide them:
   - at least 24 h of stream data;
   - reconnects handled;
-  - stream `migrate` coverage ≥ 92% of tip graduations;
-  - the share of graduations with would-send lead > 0 is ≥ 90%;
-  - would-send lead p50 ≥ 600 ms;
-  - decode error rate ≤ 0.1%.
+  - stream `migrate` coverage ≥ 88% of tip graduations (6 h: 92.3%);
+  - the share of graduations with would-send lead > 0 is ≥ 88% (6 h: 94.0%);
+  - would-send lead p50 ≥ 600 ms (6 h: 996 ms);
+  - decode error rate ≤ 0.1% (6 h: 0 decode errors in 214,004 messages).
+- **Runner non-interference (DEC-016 Am.3 measures the runner's timing).** The sidecar shares fast-0 with the sealed paper runner, so the runner's lag is read from `heartbeat.jsonl`, using its allowlisted fields only.
+  - **Baseline, job #377:**
+
+    | Window | Lag p50 / p90 (ms) | `ok` false |
+    |---|---|---|
+    | 10-07 12:28–18:28Z, before the sidecar | 200 / 536 | 0 |
+    | 10-07 18:28–23:39Z, sidecar running | 206 / 592 | 0 |
+    | 10-06 18:28–24:00Z, no sidecar | 220 / 716 | 0 |
+    | 10-05 18:28–24:00Z, no sidecar | 202 / 562 | 0 |
+
+    So far the sidecar has not moved the runner's timing.
+  - **Stop rule:** the sidecar stops, and the reason is recorded, if in any fixed 6 h window counted from the sidecar's start the runner's lag p90 exceeds 900 ms, or any heartbeat shows `ok` false. 900 ms is 716 × 1.25 = 895, rounded up; it is about 26% above the highest no-sidecar evening control, 716 ms.
 
 **Phase B (live calibration, owner's go only).**
 - **Preconditions:**
@@ -72,7 +84,13 @@
   - the 1 SOL;
   - a book that has cleared a fresh-block confirmation, so the trades are worth paying for.
 - **Measure:** landing k = landed slot − migrate tx slot. This is the simulator's anchor, `_migration_slot`, not the trigger slot.
-- **Pass:** landing k p50 ≤ 3 over at least 30 attempts. Otherwise stop and report.
+- **Pass:** landing k **p50 ≤ 2 and p90 ≤ 4**, over at least 30 attempts. Report the full distribution. Otherwise stop and report.
+  - **EXP-020** (END-bound grid, report-only) has paired speed support only at k2 and 0.5 SOL, under both fail models: flat CI90 date/trade lower bounds 0.109 / 0.233.
+    - Flat k2 at 0.25 SOL (−0.161 / −0.125) and flat k3 at both sizes (−0.541 / −0.445 and −0.402 / −0.252) are below 0.
+    - These are differences against k6, not an edge: every cell's CI90 trade lower bound is below 0, and every cell's total is negative without 2026-08-21.
+    - There is no 0.05 SOL cell for k < 6, so Phase B at 0.05 SOL measures landing only. It has no paired P&L support.
+  - A result with p50 of 3 does **not** support the EXP-020 speed result, and no book may then assume k2 in its simulation.
+  - A pass does not let a book assume k2 on every trade either. Books are re-scored at the measured p50 and p90 (DEC-016 Am.3 (a)).
 - **Size** stays 0.05 SOL until a confirmed book and DEC-020's conditions allow 0.25.
 
 ## 4. Costs and risks
