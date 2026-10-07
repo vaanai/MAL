@@ -148,3 +148,7 @@ Failing any section 5 bar on either leg kills the RUG selector. There is no seco
 ## Sources
 
 [EXP-021 plan and Amendments 1 to 3](EXP-021-rug-signals-in-selector-plan.md); [EXP-012 pre-registration](EXP-012-migrate-entry-model-refreeze-prereg.md); `tools/exp021_screen.py`; `tools/test_exp021_screen.py`; [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md) (fresh-0802, fresh-0808, fresh-0828 rows); [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md); CLAUDE.md promotion gate; #445 (exit-lag and entry-impact measurements, as cited by the manager).
+
+## Amendment 4 note (2026-10-07, before any outcome read)
+
+See [plan Amendment 4](EXP-021-rug-signals-in-selector-plan.md). The OOF-without-cell check excludes 2026-09-25 (P1C covers 00-06Z only; the rest was dropped P1B): precount #356 showed 844 OOF mints against 263 rows on that date, 569 of 7023 without a cell overall. The precount now also reports V coverage (33,098 of 34,809 = 95.08% on the pinned map, 1,711 pools absent from it) and the constancy check in `would_refuse`, and records V coverage in the train manifest. No bar, threshold, try count, block or deciding cell changes. V coverage remedy: TBD by manager after precount #3.

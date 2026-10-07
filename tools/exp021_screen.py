@@ -26,6 +26,7 @@ stops after the guards. Memory is EXP-016's (measured about 57 GB at P2 with 4 f
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import gc
 import hashlib
@@ -652,6 +653,45 @@ def p1_kept_dates() -> list[str]:
     return sorted({h[:10] for h in list(A_HOURS) + list(POOL_C_HOURS)} & set(e15.block_dates("P1")))
 
 
+def p1_oof_check_excluded() -> dict[str, str]:
+    """P1 dates (among the retained-source dates) the OOF-without-cell check must NOT count (Amendment 4): a date that a DROPPED source covers.
+    The stored OOF scores include mints from every UTC hour of that date, but only the retained sources' hours have cells. 2026-09-25 is P1C 00-06Z
+    only; 07-23Z was P1B (`oracle_live_adapter.POOL_B_HOURS`, dropped by Amendment 3). Training is unaffected (P1C cells on that date stay in training)."""
+    from tools.oracle_live_adapter import POOL_B_HOURS
+
+    dropped = {h[:10] for h in POOL_B_HOURS}
+    return {d: "partly covered by a dropped source (P1B, Amendment 3): OOF mints exist for hours with no retained cell (Amendment 4)" for d in p1_kept_dates() if d in dropped}
+
+
+def p1_oof_check_dates() -> list[str]:
+    """The P1 dates the OOF-without-cell check counts: `p1_kept_dates()` minus `p1_oof_check_excluded()` (Amendment 4)."""
+    ex = p1_oof_check_excluded()
+    return [d for d in p1_kept_dates() if d not in ex]
+
+
+def unreadable_v_split(cells: Sequence[Mapping[str, Any]], sel: Sequence[bool], vmap_raw: Mapping[str, int | None]) -> dict[str, Any]:
+    """Outcome-blind split of the cells whose pool has NO readable stored V on the raw map, per block: NO_SIM (by reason), in the feature table
+    (`build_table`'s `e16.in_book`), frozen-selected (in the table and selected), and other (censored or outside the counted window). Counts only."""
+    out: dict[str, dict[str, Any]] = {}
+    for c, s in zip(cells, sel):
+        p = c.get("pool")
+        if not p or vmap_raw.get(p) is not None:
+            continue
+        b = out.setdefault(str(c.get("block")), {"cells": 0, "no_sim": 0, "no_sim_by_reason": collections.Counter(), "in_table": 0, "frozen_selected": 0, "other": 0})
+        b["cells"] += 1
+        if c.get("status") == "NO_SIM":
+            b["no_sim"] += 1
+            b["no_sim_by_reason"][str(c.get("why"))] += 1
+        elif e16.in_book(c):
+            b["in_table"] += 1
+            b["frozen_selected"] += 1 if s else 0
+        else:
+            b["other"] += 1
+    for b in out.values():
+        b["no_sim_by_reason"] = dict(sorted(b["no_sim_by_reason"].items()))
+    return dict(sorted(out.items()))
+
+
 def guard_p1_no_live(fast: Path | str, insample: Path | str, verify: bool = True) -> dict[str, Any]:
     """EXP-015's `guard_p1` for the two retained P1 views (same pinned names, VIEW.sha256 and view pin); P1B (live) is not read."""
     want = {"fast": "fast-pool-2026-09-18T23_2026-09-22T00", "insample": "oracle-insample-2026-09-22_25"}
@@ -765,7 +805,7 @@ def freeze_models(table: Sequence[Mapping[str, Any]], out_dir: Path, *, head: st
         "learner": {"fn": "tools.exp015_screen.fit_cfg", "min_data_in_leaf": MDL, "num_leaves": fz.LGB_PARAMS["num_leaves"], "learning_rate": fz.LGB_PARAMS["learning_rate"],
                     "rounds": fz.LGB_PARAMS["rounds"], "feature_fraction": 0.9, "bagging_fraction": 0.9, "bagging_freq": 1, "scale_pos_weight": "neg/pos",
                     "seed": fz.SEED, "deterministic": True, "num_threads": 1, "force_row_wise": True},
-        **{k: inputs[k] for k in FREEZE_INPUT_KEYS}, **freeze_environment(),
+        **{k: inputs[k] for k in FREEZE_INPUT_KEYS}, "v_coverage": inputs.get("v_coverage"), **freeze_environment(),
         "models": {},
     }
     for arm, names in (("rug", FEATURES_RUG), ("control", FEATURES_CONTROL)):
@@ -806,7 +846,7 @@ def freeze_main(args: argparse.Namespace) -> int:
         except SystemExit as exc:
             raise Refused(str(exc)) from None
         sel = e16.frozen_flags(cells, oof, args.artifact_dir)
-        enforce_limits(results, oof, e16.oof_without_cell(results, oof, oof_days, p1_kept_dates()))
+        enforce_limits(results, oof, e16.oof_without_cell(results, oof, oof_days, p1_oof_check_dates()))
         table = build_table(cells, sel)
         enforce_table_limits(table_counts(table, g["with_p4"]), g["with_p4"])
         fa = argparse.Namespace(**{**vars(args), "freeze": None, "confirm": False, "frozen_dir": None})  # the freeze path is not an input
@@ -814,6 +854,8 @@ def freeze_main(args: argparse.Namespace) -> int:
                   "args_hash": e15.args_hash(fa),
                   "oof_scores_sha256": hashlib.sha256((Path(args.artifact_dir) / "oof_scores.json").read_bytes()).hexdigest(),
                   "view_sha256": {"P1": g["g1"]["view_sha256"], "P2": g["g2"]["view_sha256"], "P3_manifests": g["g3"]["pin_sha256"], "P4": (g["g4"] or {}).get("view_sha256")}}
+        # the freeze DOES read V: the simulation labels of the training rows use the merged map, so its coverage is recorded in the manifest (no refusal here)
+        inputs["v_coverage"] = {k: v for k, v in e16.v_coverage_report([c["pool"] for c in cells if c.get("pool")], vmap_raw).items() if k != "unreadable"}
         m = freeze_models(table, out_dir, head=gs["head"], vmap_sha256=g["vmap_sha256"], with_p4=g["with_p4"], inputs=inputs)
     except (Refused, rug.PoolAttributionRefusal, e16.SimulationError) as exc:
         print(f"refusing: {exc}", file=sys.stderr)
@@ -1019,16 +1061,38 @@ def precount(args: argparse.Namespace) -> int:
         oof = None
     table = build_table(cells, sel)
     counts = table_counts(table, g["with_p4"])
-    oof_cover = e16.oof_without_cell(results, oof, oof_days, p1_kept_dates())
+    oof_cover = e16.oof_without_cell(results, oof, oof_days, p1_oof_check_dates())
     would = check_limits(results, oof, oof_cover) + check_table_limits(counts, g["with_p4"])
     if oof is None:
         would.append("P1: stored OOF scores could not be loaded")
-    rec = {"mode": "precount", "tool": TOOL, "p1b": P1B_EXCLUDED, "censoring": {r_["tag"]: r_.get("censoring") for r_ in results}, "vmap": vmap_note, "sources": {r["tag"]: e16.source_counts(r, vmap) for r in results}, "table_counts": counts,
+    # the same V checks the real run makes before `started`, recorded and reported as would-refuse instead of raised (Amendment 4)
+    cov = e16.v_coverage_report([c["pool"] for c in cells if c.get("pool")], vmap_raw)
+    unreadable = sorted({c["pool"] for c in cells if c.get("pool") and vmap_raw.get(c["pool"]) is None})
+    if cov["would_refuse"]:
+        would.append(f"V coverage {cov['coverage']:.3%} of {cov['n_pools']} canonical pools is not over {e16.V_COVERAGE_MIN:.0%}")
+    cov = {k: v for k, v in cov.items() if k != "unreadable"}
+    cov["n_unreadable"] = len(unreadable)
+    cov["unreadable_cells_by_block"] = unreadable_v_split(cells, sel, vmap_raw)
+    constancy_rec: dict[str, Any] | None = None
+    if args.v_constancy_json is not None:
+        try:
+            samples = json.loads(Path(args.v_constancy_json).read_text())
+            res_c = e16.check_v_constancy(samples, vmap_raw)
+            constancy_rec = {"n_sample": res_c.get("n_sample"), "n_checked": res_c.get("n_checked"), "n_unreadable_implied": res_c.get("n_unreadable_implied"),
+                             "n_disagree": res_c.get("n_disagree"), "rate": res_c.get("rate"), "floor": e16.V_SAMPLE_SIZE}
+            e16.check_constancy_sample(samples, e16.readable_pools([c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")], vmap_raw))
+        except Refused as exc:
+            would.append(f"constancy: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            would.append(f"constancy: unreadable file ({type(exc).__name__})")
+    rec = {"mode": "precount", "p1_oof_without_cell": oof_cover, "p1_oof_check_dates": p1_oof_check_dates(), "p1_oof_check_excluded": p1_oof_check_excluded(),
+           "v_coverage": cov, "v_constancy": constancy_rec, "tool": TOOL, "p1b": P1B_EXCLUDED, "censoring": {r_["tag"]: r_.get("censoring") for r_ in results}, "vmap": vmap_note, "sources": {r["tag"]: e16.source_counts(r, vmap) for r in results}, "table_counts": counts,
            "universe_sha256": universe_sha256(table), "feature_table_sha256": feature_table_sha256(table), "frozen_selection_available": oof is not None, "would_refuse": would,
            "pre_started": e16._counts_only(e16.pre_started_counts(results, {c["mint"]: s for c, s in zip(cells, sel)}, vmap_raw, closed))}
     text = json.dumps(rec, indent=2, default=str, sort_keys=True)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "precount.json").write_text(text + "\n", encoding="utf-8")
+    (args.out_dir / "unreadable_pools.json").write_text(json.dumps(unreadable) + "\n", encoding="utf-8")  # pool ids only, no outcome
     print(text)
     return 0
 
@@ -1113,7 +1177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise Refused(str(exc)) from None
         sel = e16.frozen_flags(cells, oof, args.artifact_dir)
         pre = e16.pre_started_counts(results, {c["mint"]: s for c, s in zip(cells, sel)}, vmap_raw, closed)
-        oof_cover = e16.oof_without_cell(results, oof, oof_days, p1_kept_dates())
+        oof_cover = e16.oof_without_cell(results, oof, oof_days, p1_oof_check_dates())
         pre["p1_oof_without_cell"] = oof_cover
         enforce_limits(results, oof, oof_cover)
         pre["v_coverage"] = e16.v_coverage([c["pool"] for c in cells if c.get("pool")], vmap_raw)

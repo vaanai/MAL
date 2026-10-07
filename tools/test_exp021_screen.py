@@ -699,6 +699,14 @@ class Amendment3Tests(unittest.TestCase):
         self.assertIn(P1[0], d)
         self.assertNotIn(P1[-1], d)  # the last P1 date is P1B's (oracle-live-2026-09-25_27)
 
+    def test_oof_check_dates_exclude_the_p1b_partial_date(self):
+        d = x.p1_oof_check_dates()
+        self.assertNotIn("2026-09-25", d)  # P1C covers 00-06Z only; 07-23Z was P1B (Amendment 4)
+        self.assertIn("2026-09-25", x.p1_oof_check_excluded())
+        self.assertIn("2026-09-25", x.p1_kept_dates())  # training dates are unchanged
+        self.assertIn("2026-09-19", d)  # 23 of 24 h covered by P1A
+        self.assertEqual(set(d) | set(x.p1_oof_check_excluded()), set(x.p1_kept_dates()))
+
     def test_report_records_the_exclusion(self):
         md = x.render_md({"first_line": "f", "banner": "b", "decision": {"outcome": "o"}, "p1b": x.P1B_EXCLUDED})
         self.assertIn("P1B excluded (Amendment 3)", md)
@@ -978,3 +986,66 @@ class PreregTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrecountVTests(unittest.TestCase):
+    def run_precount(self, td, vmap, constancy_exc=None, with_constancy=True):
+        import io
+        from contextlib import redirect_stdout
+
+        cells = []
+        for d in NON_P1 + P1:
+            for i in range(6):
+                c = cell_rec(i, d, status="FILLED" if i % 2 == 0 else "MISS")
+                c["pool"] = f"pool-{d}-{i}"
+                cells.append(c)
+        cells[0]["status"] = "NO_SIM"
+        cells[0]["why"] = "no_v"
+        res = {"tag": "P2", "cells": cells}
+        g = {"with_p4": True, "vmap_sha256": None, "g1": {}, "g2": {}, "g3": {}, "g4": {}}
+        cj = td / "c.json"
+        cj.write_text("[]")
+        args = SimpleNamespace(vmap=str(td / "v.json"), v_fallback_json=None, closed_pools_json=None, artifact_dir=td, out_dir=td / "o", v_constancy_json=cj if with_constancy else None,
+                               max_workers=2, p1_fast_dir="a", p1_oracle_insample_dir="b", p1_oracle_live_dir=None, p3_root="d", p2_view_dir=["e"], p4_view_dir=None)
+        cons = mock.patch.object(e16, "check_v_constancy", side_effect=constancy_exc) if constancy_exc else mock.patch.object(e16, "check_v_constancy", return_value={"n_sample": 200, "n_checked": 200})
+        with mock.patch.object(e16, "VMAP_EXP016_SHA256", "PENDING"), mock.patch.object(x, "run_guards", return_value=g), mock.patch.object(e16, "set_process_workers"), \
+                mock.patch.object(x, "collect", return_value=([res], {})), mock.patch("tools.pumpswap_virtual.load_map", return_value=vmap), \
+                mock.patch.object(x, "load_oof", return_value=({}, 0, 0, {})), mock.patch.object(e16, "frozen_flags", return_value=[i % 2 == 0 for i in range(len(cells))]), \
+                mock.patch.object(e16, "oof_without_cell", return_value={"available": True, "n_without_cell": 0}), mock.patch.object(x, "check_limits", return_value=[]), \
+                mock.patch.object(e16, "source_counts", return_value={}), mock.patch.object(e16, "pre_started_counts", return_value={}), \
+                mock.patch.object(e16, "check_constancy_sample"), cons, redirect_stdout(io.StringIO()):
+            rc = x.precount(args)
+        self.assertEqual(rc, 0)
+        return cells, json.loads((td / "o" / "precount.json").read_text())
+
+    def test_v_coverage_and_constancy_in_would_refuse_and_unreadable_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            vmap = {f"pool-{d}-{i}": 1 for d in NON_P1 + P1 for i in range(6)}
+            gone = [f"pool-{NON_P1[0]}-0", f"pool-{NON_P1[0]}-1", f"pool-{P1[0]}-2"]  # one NO_SIM cell, one table cell, one more
+            for q in gone:
+                vmap[q] = None
+            cells, rec = self.run_precount(td, vmap, constancy_exc=x.Refused("V-constancy check: only 3 sampled pool(s) were checked"))
+            w = rec["would_refuse"]
+            self.assertTrue(any(m.startswith("V coverage") and "canonical pools" in m for m in w), w)
+            self.assertTrue(any(m.startswith("constancy:") for m in w), w)
+            self.assertEqual(rec["v_coverage"]["n_pools"], len(cells))
+            self.assertEqual(rec["v_coverage"]["n_readable"], len(cells) - 3)
+            sp = rec["v_coverage"]["unreadable_cells_by_block"]
+            self.assertEqual(sum(b["cells"] for b in sp.values()), 3)
+            self.assertEqual(sum(b["no_sim"] for b in sp.values()), 1)
+            self.assertEqual(sum(b["in_table"] for b in sp.values()), 2)
+            self.assertEqual(sum(sum(b["no_sim_by_reason"].values()) for b in sp.values()), 1)
+            self.assertIn("p1_oof_without_cell", rec)
+            self.assertNotIn("2026-09-25", rec["p1_oof_check_dates"])
+            self.assertEqual(json.loads((td / "o" / "unreadable_pools.json").read_text()), sorted(gone))
+
+    def test_clean_precount_has_no_v_refusal_and_records_constancy(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            vmap = {f"pool-{d}-{i}": 1 for d in NON_P1 + P1 for i in range(6)}
+            _, rec = self.run_precount(td, vmap)
+            self.assertFalse([m for m in rec["would_refuse"] if m.startswith(("V coverage", "constancy"))])
+            self.assertEqual(rec["v_constancy"]["n_checked"], 200)
+            self.assertEqual(rec["v_constancy"]["floor"], e16.V_SAMPLE_SIZE)
+            self.assertEqual(json.loads((td / "o" / "unreadable_pools.json").read_text()), [])
