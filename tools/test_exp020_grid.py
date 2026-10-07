@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -16,6 +17,8 @@ import tools.exp015_screen as e15
 import tools.exp017_resim as r17
 import tools.exp017_screen as x17
 import tools.exp020_grid as g20
+import tools.exploration_entry_model as eem
+import tools.exploration_exits as ee
 
 NF = len(fz.FROZEN_FEATURE_NAMES)
 P2_START = e15.hour_ms(e15.BLOCKS["P2"][0])
@@ -218,6 +221,152 @@ class TestEquivalenceAndPins(unittest.TestCase):
     def test_resim_run_pass_default_is_exp017_combos(self):
         self.assertIs(inspect.signature(r17.run_pass).parameters["combos"].default, r17.COMBOS)
         self.assertEqual(r17.COMBOS, x17.SIZED_COMBOS)
+
+
+class TestEndBound(unittest.TestCase):
+    def setUp(self):
+        self._saved = (ee.ENTRY_BOUND, eem.ENTRY_BOUND, os.environ.get(e15.ENV_BOUND))
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        ee.ENTRY_BOUND, eem.ENTRY_BOUND = self._saved[0], self._saved[1]
+        if self._saved[2] is None:
+            os.environ.pop(e15.ENV_BOUND, None)
+        else:
+            os.environ[e15.ENV_BOUND] = self._saved[2]
+
+    def test_default_bound_is_start_and_apply_start_is_a_noop(self):
+        os.environ.pop(e15.ENV_BOUND, None)
+        self.assertEqual(g20._parser().parse_args(["--resim", *VIEWS, "--out-dir", "/tmp/x"]).bound, "start")
+        self.assertEqual(g20._parser().parse_args(["--resim", *VIEWS, "--out-dir", "/tmp/x"]).combos, "all")
+        g20.apply_bound("start")
+        self.assertEqual((ee.ENTRY_BOUND, eem.ENTRY_BOUND), self._saved[:2])
+        self.assertNotIn(e15.ENV_BOUND, os.environ)
+        with self.assertRaises(g20.Refused):
+            g20.apply_bound("middle")
+
+    def test_apply_end_sets_both_module_globals_and_env(self):
+        g20.apply_bound("end")
+        self.assertEqual((ee.ENTRY_BOUND, eem.ENTRY_BOUND, os.environ[e15.ENV_BOUND]), ("end", "end", "end"))
+
+    def test_worker_patch_sets_and_restores(self):
+        ee.ENTRY_BOUND = eem.ENTRY_BOUND = "start"
+        with e15._entry_bound_patch("end"):
+            self.assertEqual((ee.ENTRY_BOUND, eem.ENTRY_BOUND), ("end", "end"))
+        self.assertEqual((ee.ENTRY_BOUND, eem.ENTRY_BOUND), ("start", "start"))
+        with e15._entry_bound_patch(None):
+            self.assertEqual((ee.ENTRY_BOUND, eem.ENTRY_BOUND), ("start", "start"))
+        with self.assertRaises(e15.Refused):
+            with e15._entry_bound_patch("mid"):
+                pass
+
+    def test_resim_sets_bound_before_run_pass_and_records_meta(self):
+        ee.ENTRY_BOUND = eem.ENTRY_BOUND = "start"
+        os.environ.pop(e15.ENV_BOUND, None)
+        seen: dict = {}
+
+        def spy(args, g, sel_path, out_dir, head, combos=None, extra_meta=None):
+            seen.update(bound=(ee.ENTRY_BOUND, eem.ENTRY_BOUND, os.environ.get(e15.ENV_BOUND)), extra=extra_meta, combos=tuple(combos))
+            (Path(out_dir) / r17.SIZED_DIR).mkdir()
+            (Path(out_dir) / r17.SIZED_DIR / "v_P1A.rows.jsonl").write_text("x\n")
+            return {}
+
+        with tempfile.TemporaryDirectory() as d:
+            args = g20._parser().parse_args(["--resim", *VIEWS, "--out-dir", d, "--bound", "end", "--combos", "reduced"])
+            with mock.patch.object(r17, "selected_mints", lambda *a: (["m"], {})), mock.patch.object(e15, "run_guards", lambda a: {"g4": 1}), \
+                    mock.patch.object(e15, "git_state", lambda: {"head": "a" * 40}), mock.patch.object(e15, "check_run_lock", lambda *a: None), \
+                    mock.patch.object(e15, "take_lock", lambda *a: None), mock.patch.object(e15, "write_record", lambda *a: None), \
+                    mock.patch.object(r17, "run_pass", spy), mock.patch.object(x17, "manifest", lambda *a: ([], "s" * 64)), \
+                    redirect_stdout(io.StringIO()) as out:
+                rc = g20.resim(args, Path(d), None)
+            self.assertEqual(rc, 0)
+            self.assertEqual(seen["bound"], ("end", "end", "end"))  # set before run_pass forks any worker
+            self.assertEqual(seen["extra"], {"bound": "end"})
+            self.assertEqual(seen["combos"], g20.REDUCED_COMBOS)
+            self.assertIn("GRID_END_MANIFEST_SHA256", out.getvalue())
+
+    def test_run_pass_default_extra_meta_is_none(self):
+        self.assertIsNone(inspect.signature(r17.run_pass).parameters["extra_meta"].default)
+
+    def test_end_try_is_a_separate_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            ops = Path(d) / "ops.jsonl"
+            g20.log_try([ops], Path(d))  # the start report's line
+            g20.check_no_prior(ops, bound="end")  # does not block the end report
+            g20.log_try([ops], Path(d), "end")
+            with self.assertRaises(g20.Refused):
+                g20.check_no_prior(ops, bound="end")
+            with self.assertRaises(g20.Refused):
+                g20.check_no_prior(ops)
+            ops2 = Path(d) / "ops2.jsonl"
+            g20.log_try([ops2], Path(d), "end")
+            g20.check_no_prior(ops2)  # an end line alone never blocks a start report
+
+    def test_reduced_combos(self):
+        self.assertEqual(g20.REDUCED_COMBOS[0], g20.CONTROL)
+        self.assertEqual({(k, s) for k, s, _ in g20.REDUCED_COMBOS[1:]}, {(k, s) for k in (2, 3, 6) for s in (0.25, 0.5)})
+        for c in g20.REDUCED_COMBOS:
+            self.assertIn(c, g20.COMBOS)
+        rows, cells, _ = make([(f"m{i}", P2_START + i * 86_400_000, {}) for i in range(4)])
+        grid = g20.build_grid(rows, cells, 27, g20.REDUCED_COMBOS)
+        self.assertEqual(len(grid["cells"]), 7)
+        self.assertEqual(set(grid["paired_vs_k6"]), {g20.cell_key(k, s) for k in (2, 3) for s in (0.25, 0.5)})
+
+    def test_pin_regex_separation(self):
+        sa, sb = "a" * 64, "b" * 64
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "plan.md"
+            p.write_text(f"GRID_MANIFEST_SHA256 = {sa}\n")
+            self.assertEqual(g20.grid_pin(p, "start"), sa)
+            self.assertIsNone(g20.grid_pin(p, "end"))  # the start pin is not accepted for end mode
+            p.write_text(f"GRID_MANIFEST_SHA256 = {sa}\nGRID_END_MANIFEST_SHA256 = {sb}\n")
+            self.assertEqual(g20.grid_pin(p, "start"), sa)
+            self.assertEqual(g20.grid_pin(p, "end"), sb)
+            p.write_text(f"GRID_END_MANIFEST_SHA256 = {sa}\nGRID_END_MANIFEST_SHA256 = {sb}\n")
+            with self.assertRaises(g20.Refused):
+                g20.grid_pin(p, "end")
+            self.assertIsNone(g20.grid_pin(p, "start"))
+            with self.assertRaises(g20.Refused):
+                g20.grid_pin(p, "mid")
+
+    def _write_grid(self, d, bounds, sel_sha="s" * 64):
+        for src, b in zip(x17.SOURCES, bounds):
+            rp = Path(d) / f"v_{src}.rows.jsonl"
+            rp.write_text("row\n")
+            meta = {"vmap_sha256": e15.VMAP_0909_SHA256, "combos": [list(c) for c in g20.COMBOS], "selected_sha256": sel_sha, "head": "a" * 40}
+            if b is not None:
+                meta["bound"] = b
+            (Path(d) / f"v_{src}.manifest.json").write_text(json.dumps({"meta": meta, "rows_sha256": x17._file_sha256(rp)}))
+
+    def test_check_meta_refuses_mixed_and_wrong_bounds(self):
+        n = len(x17.SOURCES)
+        with tempfile.TemporaryDirectory() as d:
+            self._write_grid(d, ["end"] * n)
+            self.assertEqual(g20.check_grid_meta(d, "s" * 64, "end")["head"], "a" * 40)
+            with self.assertRaises(g20.Refused):
+                g20.check_grid_meta(d, "s" * 64, "start")
+            self._write_grid(d, ["end"] * (n - 1) + ["start"])
+            with self.assertRaises(g20.Refused):
+                g20.check_grid_meta(d, "s" * 64, "end")
+            self._write_grid(d, ["end"] * (n - 1) + [None])  # absent bound is the legacy start cache, never an end cache
+            with self.assertRaises(g20.Refused):
+                g20.check_grid_meta(d, "s" * 64, "end")
+            self._write_grid(d, [None] * n)  # the pinned legacy start grid still passes in start mode
+            self.assertEqual(g20.check_grid_meta(d, "s" * 64, "start")["head"], "a" * 40)
+
+    def test_end_consistency_and_md_header(self):
+        rows = {"m1": {}, "m2": {}}
+        eq = g20.end_consistency(rows, {"m1", "m2"}, "s" * 64)
+        self.assertEqual(eq["n"], 2)
+        self.assertIn("internal-consistency", eq["kind"])
+        with self.assertRaises(g20.Refused):
+            g20.end_consistency(rows, {"m1", "m3"}, "s" * 64)
+        rows_, cells, _ = make([(f"m{i}", P2_START + i * 86_400_000, {}) for i in range(4)])
+        rep = {"head": "h", "equivalence": eq, "n_rows": 4, "n_dates": 27, "grid": g20.build_grid(rows_, cells, 27), "bound": "end"}
+        md = g20.render_md(rep)
+        self.assertIn("END-of-slot bound (pessimistic): entry and exit fill after every trade in the slot", md)
+        self.assertNotIn("ENTRY_BOUND=start", md)
+        self.assertIn("ENTRY_BOUND=start", g20.render_md({**rep, "bound": "start"}))
 
 
 class TestPrecountBlind(unittest.TestCase):

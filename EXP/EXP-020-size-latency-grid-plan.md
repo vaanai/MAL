@@ -77,3 +77,14 @@ Added to each cell, on both legs (flat and pressure), next to `ex_top3_sol`, and
 The outcome-blind `--resim` ran as job #330 (code c27d9ef, 4 workers, 22 GB, 2 h 21 m, rc 0). Precount and `--guards-only` passed (`n_selected` 3,322). Per-source row counts match the EXP-017 sized pin (§13 there): P1A 315, P1C 404, P1B 254, P2 1,485, P3 451, P4 413. The resim prints only counts and short hashes; no net, mean or total was printed or opened. `--report` runs once, after this line is merged, at the merged head.
 
 GRID_MANIFEST_SHA256 = fe3eea656e14b8f3a92d47bd04c60563bc1157cab04d962076a883e6ac266b24
+
+## Amendment 2026-10-07: END-of-slot bound re-run (report-only, before any outcome of it is read)
+
+Quant-proof asked for this after the start-bound report. The start-bound grid fills entry and exit at the state before any trade in the landing slot (`ENTRY_BOUND = "start"`, the most optimistic point). The question is whether the k2 - k6 paired gain survives the pessimistic bound, with entry and exit both filling after every trade in the slot (`ENTRY_BOUND = "end"`; `exploration_exits.py` uses the same global for the exit fill, as `tools/exp012_forward_sensitivity.py` does with `ENTRY_BOUND_SENS = "end"`).
+
+- This is **report-only**. It is not a gate and not a decision. It changes no bar, column or pin of the start-bound grid; the start report stands as written.
+- A k2 confirmation pre-registration will declare the end bound as **co-primary**.
+- Tool: `tools.exp020_grid --bound end` (default `start`: nothing changes when the flag is absent). It sets `ENTRY_BOUND = "end"` in `exploration_exits` and in `exploration_entry_model` (a by-value import) before any worker starts, and passes it to the spawned workers by `MAL_EXP020_BOUND`. Every manifest meta records `bound`. `--combos reduced` runs k {2,3,6} x {0.25, 0.5} SOL plus the (6, 0.05) control.
+- The end cache has its own pin line, `GRID_END_MANIFEST_SHA256 = <sha>`, added by a later amendment after the resim. The start pin is never accepted for end mode, and `--report --bound end` refuses unless every source's meta says `end`.
+- Equivalence: the EXP-015 cache is start-bound, so the cell equivalence cannot hold at `end`. End mode instead checks internal consistency (the re-simulated mint set and n equal the frozen selection, same `selected_sha256` as the start grid) and prints it as that. The report header says: "END-of-slot bound (pessimistic): entry and exit fill after every trade in the slot".
+- One tries line for the end report, key `exp020_grid_end` (the start `exp020_grid` line neither blocks nor is blocked by it); use a separate `--tries-log`. The winner's-curse and tuned-pool caveats of section 5 apply unchanged.
