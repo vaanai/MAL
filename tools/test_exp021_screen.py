@@ -458,7 +458,7 @@ class TriesTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
     def setUp(self):
-        for name, kw in (("part1_pins", {"return_value": "b" * 40}), ("check_fallback_pin", {})):  # the guards have their own tests (PreregTests)
+        for name, kw in (("part1_pins", {"return_value": "b" * 40}), ("check_fallback_pin", {}), ("check_manifest_inputs", {})):  # the guards have their own tests (PreregTests)
             p = mock.patch.object(x, name, **kw)
             p.start()
             self.addCleanup(p.stop)
@@ -722,7 +722,7 @@ class FreezeTests(unittest.TestCase):
                 rows.append(r)
         return rows
 
-    INPUTS = {"v_fallback_json_sha256": None, "args_hash": "d" * 64, "oof_scores_sha256": "e" * 64, "view_sha256": {"P1": {"fast": "f" * 64}}}
+    INPUTS = {"v_fallback_json_sha256": "none", "args_hash": "d" * 64, "oof_scores_sha256": "e" * 64, "view_sha256": {"P1": {"fast": "f" * 64}}}
 
     def freeze(self, d, **kw):
         a = dict(head=self.HEAD, vmap_sha256=self.VSHA, with_p4=True, inputs=self.INPUTS)
@@ -760,7 +760,7 @@ class FreezeTests(unittest.TestCase):
             m = self.freeze(a)
             for k in ("v_fallback_json_sha256", "args_hash", "oof_scores_sha256", "view_sha256", "lightgbm_version", "numpy_version", "machine", "python_version"):
                 self.assertIn(k, m)
-            self.assertIsNone(m["v_fallback_json_sha256"])
+            self.assertEqual(m["v_fallback_json_sha256"], "none")
             self.assertEqual(m["machine"], platform.machine())
             self.assertNotIn("n_positive_label", m)
         with tempfile.TemporaryDirectory() as a:
@@ -822,7 +822,7 @@ class PreregTests(unittest.TestCase):
 
     def test_pins_match_the_code(self):
         for sv in ("fresh-0802", "[2026-08-02T12, 2026-08-08T12)", "10,000 draws, seed 1", "p < 0.025", "exit lag 2", "0.05, 0.25 and 0.5 SOL", "tp50_sl30",
-                   "0.8030766588450794", "8%", "100 frozen picks", "refusing stub", "No k2 cell", "+22.9 bps at 0.25 SOL and +51.6 bps at 0.5 SOL", "p < 0.025 / 11", "0.00227", "DEC-014", "EXP021_V_FALLBACK_SHA256: none", "mal-research-0", "x86_64", "1/128", "EXP021_FROZEN_MD5: PENDING"):
+                   "0.8030766588450794", "8%", "100 frozen picks", "refusing stub", "No k2 cell", "+22.9 bps at 0.25 SOL and +51.6 bps at 0.5 SOL", "p < 0.025 / m", "0.00208", "DEC-017", "DEC-014", "EXP021_V_FALLBACK_SHA256: none", "mal-research-0", "x86_64", "1/128", "EXP021_FROZEN_MD5: PENDING"):
             self.assertIn(sv, self.TEXT)
         self.assertEqual(x.FAMILY_ALPHA, 0.025)
         self.assertEqual(x.LIMIT_NO_CREATE_021, 0.08)
@@ -905,6 +905,53 @@ class PreregTests(unittest.TestCase):
             with self.assertRaises(x.Refused):
                 x.check_fallback_pin(None, bad)
         x.check_fallback_pin(None, self.TEXT)  # Part 1 ships `none`
+
+    def manifest_dir(self, d, fallback="none"):
+        FreezeTests().freeze(d, inputs={**FreezeTests.INPUTS, "v_fallback_json_sha256": fallback})
+
+    def test_manifest_none_but_pin_changed_to_a_sha_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.manifest_dir(d)
+            x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: none\n", None, FreezeTests.VSHA)
+            with self.assertRaises(x.Refused):
+                x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: {'a' * 64}\n", None, FreezeTests.VSHA)
+
+    def test_manifest_sha_but_a_different_file_is_refused(self):
+        h = __import__("hashlib")
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as e:
+            f, g = Path(e) / "f.json", Path(e) / "g.json"
+            f.write_text("{}")
+            g.write_text('{"x": 1}')
+            sha = h.sha256(b"{}").hexdigest()
+            self.manifest_dir(d, sha)
+            x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: {sha}\n", f, FreezeTests.VSHA)
+            with self.assertRaises(x.Refused):
+                x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: {sha}\n", g, FreezeTests.VSHA)
+            with self.assertRaises(x.Refused):
+                x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: {sha}\n", None, FreezeTests.VSHA)
+
+    def test_manifest_vmap_sha_mismatch_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.manifest_dir(d)
+            with self.assertRaises(x.Refused):
+                x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: none\n", None, "0" * 64)
+            with self.assertRaises(x.Refused):
+                x.check_manifest_inputs(d, f"{x.FALLBACK_KEY}: none\n", None, None)
+
+    def test_head_must_be_merged(self):
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as r:
+            x.check_head_merged()
+            self.assertEqual(r.call_args[0][0][-4:], ["merge-base", "--is-ancestor", "HEAD", "origin/main"])
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=1)):
+            with self.assertRaises(x.Refused):
+                x.check_head_merged()
+        with mock.patch("subprocess.run", side_effect=OSError):
+            with self.assertRaises(x.Refused):
+                x.check_head_merged()
+        with mock.patch.object(x, "check_head_merged", side_effect=x.Refused("unmerged")), mock.patch.object(x, "part1_git_blob") as gb:
+            with self.assertRaises(x.Refused):
+                x.part1_pins("fd")
+            gb.assert_not_called()
 
     def test_screen_main_refuses_before_guards_without_pins(self):
         with mock.patch.object(x, "run_guards") as gd:

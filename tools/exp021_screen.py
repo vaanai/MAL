@@ -793,6 +793,7 @@ def freeze_main(args: argparse.Namespace) -> int:
         gs = e16.git_state()
         if gs["dirty_tools"]:
             raise Refused("tools/ is dirty (uncommitted change): the freeze records one clean head and refuses otherwise")
+        check_head_merged()
         check_fallback_pin(args.v_fallback_json)
         vmap_raw = e16.load_pinned_vmap(args.vmap)
         fallback = {k: int(v) for k, v in json.loads(args.v_fallback_json.read_text()).items()} if args.v_fallback_json else {}
@@ -809,7 +810,7 @@ def freeze_main(args: argparse.Namespace) -> int:
         table = build_table(cells, sel)
         enforce_table_limits(table_counts(table, g["with_p4"]), g["with_p4"])
         fa = argparse.Namespace(**{**vars(args), "freeze": None, "confirm": False, "frozen_dir": None})  # the freeze path is not an input
-        inputs = {"v_fallback_json_sha256": hashlib.sha256(args.v_fallback_json.read_bytes()).hexdigest() if args.v_fallback_json else None,
+        inputs = {"v_fallback_json_sha256": hashlib.sha256(args.v_fallback_json.read_bytes()).hexdigest() if args.v_fallback_json else "none",
                   "args_hash": e15.args_hash(fa),
                   "oof_scores_sha256": hashlib.sha256((Path(args.artifact_dir) / "oof_scores.json").read_bytes()).hexdigest(),
                   "view_sha256": {"P1": g["g1"]["view_sha256"], "P2": g["g2"]["view_sha256"], "P3_manifests": g["g3"]["pin_sha256"], "P4": (g["g4"] or {}).get("view_sha256")}}
@@ -895,8 +896,38 @@ def part1_git_blob() -> str:
     return blob
 
 
+def check_head_merged() -> None:
+    """Pins may only come from merged commits: HEAD must be an ancestor of origin/main (`git merge-base --is-ancestor HEAD origin/main`)."""
+    import subprocess
+
+    try:
+        rc = subprocess.run(["git", "-C", str(REPO_ROOT), "merge-base", "--is-ancestor", "HEAD", "origin/main"], capture_output=True, text=True).returncode
+    except OSError:
+        rc = 2
+    if rc != 0:
+        raise Refused("HEAD is not an ancestor of origin/main: the pins are read only from merged commits (fetch origin/main, or merge first)")
+
+
+def check_manifest_inputs(frozen_dir: Path | str, pin_text: str, fallback: Path | str | None, vmap_sha256: str | None) -> None:
+    """After the manifest is loaded: its recorded fallback sha (`none` if there was none, never null) must equal the Part 1 pin AND the sha of the
+    `--v-fallback-json` passed now (or both `none`), and its `vmap_sha256` must equal the V map the guards verified. The fallback pin may be set only
+    before the freeze, so a swap after the freeze is refused here."""
+    man = json.loads((Path(frozen_dir) / FREEZE_MANIFEST).read_text(encoding="utf-8"))
+    rec = man.get("v_fallback_json_sha256")
+    rec = "none" if rec is None else rec
+    pin = _pin_values(pin_text, FALLBACK_KEY)
+    now = "none" if not fallback else hashlib.sha256(Path(fallback).read_bytes()).hexdigest()
+    if len(pin) != 1 or rec != pin[0]:
+        raise Refused(f"train-manifest.json records the V fallback {rec!r}, which does not equal {FALLBACK_KEY} ({pin[:1]}): the pin may be set only before --freeze")
+    if rec != now:
+        raise Refused(f"the V fallback file passed now ({now}) differs from the manifest's recorded {rec}")
+    if man.get("vmap_sha256") != vmap_sha256:
+        raise Refused("train-manifest.json vmap_sha256 differs from the V map the guards verified")
+
+
 def part1_pins(frozen_dir: Path | str | None) -> str:
     """Screen pre-check: Part 1 clean vs HEAD, pins set, frozen artifacts match. Returns the Part 1 git blob sha (recorded in the started line and report)."""
+    check_head_merged()
     blob = part1_git_blob()
     check_freeze_pins(PART1.read_text(encoding="utf-8"), frozen_dir)
     return blob
@@ -1035,6 +1066,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         e16.progress("exp021 guards start")
         g = run_guards(args)
+        check_manifest_inputs(args.frozen_dir, PART1.read_text(encoding="utf-8"), args.v_fallback_json, g["vmap_sha256"])
         e16.set_process_workers(args)
         check_no_prior_tries(tries_path, canonical)
         try:

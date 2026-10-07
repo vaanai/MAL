@@ -39,7 +39,7 @@ plus `train-manifest.json` (universe sha256, feature-table sha256, row counts pe
 - **Reproducibility:** nothing in the written files depends on the clock, host or thread count. `tools/test_exp021_screen.py` shows two runs on a fixture give byte-identical files and the same md5s. A real re-run is allowed only if it reproduces both md5s, on the **same CPU architecture and the same LightGBM version** as the recorded freeze.
 - **Freeze host:** `mal-research-0`, x86_64. The manifest records `lightgbm.__version__`, `numpy.__version__`, `platform.machine()` and the Python version.
 - **Recorded inputs (`train-manifest.json`):** universe and feature-table sha256, row counts per source, code head, V-map sha256, `v_fallback_json_sha256` (null if none), `args_hash` (`e15.args_hash`, with the freeze path removed), the sha256 of `oof_scores.json` in `--artifact-dir`, each source's clean-view `VIEW.sha256` (P1 fast and insample, P2, P3 manifests, P4), the learner and the md5 of each model. There is no label count.
-- **V fallback file: none**, unless a named sha is pinned in a merged amendment (`EXP021_V_FALLBACK_SHA256` below). The freeze, the screen and `--confirm` must all use the same one; the tool refuses a fallback file that does not equal the pin.
+- **V fallback file: none**, unless a named sha is pinned in a merged amendment (`EXP021_V_FALLBACK_SHA256` below). The freeze, the screen and `--confirm` must all use the same one; the tool refuses a fallback file that does not equal the pin. **The fallback pin may be set only before `--freeze`. After the freeze it equals the manifest's recorded value and is never amended. `--confirm` checks it against the manifest.** The screen refuses unless the manifest's `v_fallback_json_sha256` (the string `none` when there was none, never null) equals the pin and the sha of `--v-fallback-json` passed now, and the manifest's `vmap_sha256` equals the V map the guards verified. **Pins come only from merged commits:** the screen, and the freeze for the fallback pin, refuse unless HEAD is an ancestor of `origin/main`.
 - **Code sha:** the freeze runs from a clean checkout whose `tools/` equals the Part 1 merge commit's (the tool refuses a dirty `tools/` and records `code_head`). The V map is the pinned `VMAP_EXP016_SHA256`; the freeze refuses unless the pin is set.
 - **Order (the freeze comes BEFORE the screen):** (1) this file merges; (2) `--freeze` runs once; (3) a **merged amendment records the RUG md5, the CONTROL md5, the sha256 of `train-manifest.json` and the freeze commit**, and sets the three pin lines below; (4) the screen runs once; (5) only on a PASS and a granted claim is the block read. The md5 freeze is visible before any scoring.
 - **Guard in the tool:** `tools/exp021_screen.py` refuses the screen (rc 2, before any guard or row) unless: this file is clean against HEAD (no modification, staged or not; tracked); each of the three keys appears exactly once, as hex (`PENDING` refuses); and `--frozen-dir` is given and `sha256(train-manifest.json)`, the md5 of `model.txt` and the md5 of `control-model.txt` equal their pins and the md5s the manifest records. The file's git blob sha is recorded in the `started` tries line and in `report.json`. `--precount`, `--freeze` and `--confirm` are exempt (`--confirm` is a stub that refuses).
@@ -116,15 +116,16 @@ Mirrors the screen: guards, then ONE tape pass, then the section 7 counts, then 
 Governed by the **DEC-014 amendment "block budget for the sealed confirmation blocks" (2026-10-07, merged in #446)**. It is cited, not restated: the rule there controls, including the one-block-per-family and one-in-reserve clauses. What this file fixes for EXP-021:
 
 - **Decision p:** the larger of the flat and pressure p-values from the screen's `report.json` (10,000 seed-1 draws).
-- **m = max(11, the DEC-014 count at claim time)**, frozen in the claim's ledger row. With m = 11 the threshold is **p < 0.025 / 11 = 0.00227**.
-- **Families, as the manager freezes the list now (11):**
-  - EXP-011: its holdout was P4 (2026-09-09 to 09-15); it is not in `tries.jsonl`.
+- **Threshold: p < 0.025 / m.** **m = max(12, the DEC-014 count at claim time)**, frozen in the claim's ledger row. With m = 12 the threshold is 0.025 / 12 = **0.00208**.
+- **Families, as the manager freezes the list now (12):**
+  - DEC-017 candidate (a): job #75 read outcomes on explore-0814/w1 (P2) on 2026-10-02; counted as a separate family.
+  - EXP-011: P4 one-shot attempted, aborted NOT_DECIDABLE, no outcome observed; counted conservatively. It is not in `tries.jsonl`.
   - EXP-012: the fresh-0903 confirmation is P3; the backcheck is P2.
   - EXP-013: tracked, with `tries.jsonl` lines whose `ledger_owner` is EXP-013 (P2).
   - #191: P1 only, but named in DEC-014, so counted.
   - EXP-014, EXP-015, EXP-017, EXP-018, EXP-019, EXP-020 (report-only, but it read outcomes).
   - EXP-021 itself.
-  - EXP-016 is not listed: shelved with no outcome read.
+  - EXP-016: excluded, shelved after outcome-blind precounts only.
 - DEC-014 will be amended to match in a separate manager PR. That PR also says the EXP-021 paired design is eligible: a new component tested against an EXP-012-based control is a new family.
 - The recount at claim time is the manager's; the claim amendment records the final list and m.
 - Consistent with the plan's wording: EXP-021 is the eighth family scoped in the plan; the DEC-014 count is larger because it also counts untracked, P1-only and report-only readers.
@@ -138,7 +139,7 @@ Failing any section 5 bar on either leg kills the RUG selector. There is no seco
 ## 11. Honest prior and disclosures
 
 - **Prior (estimates, not measurements):** screen pass about 15 to 20%; confirmation about 5 to 8%.
-- EXP-021 is the eighth family scoped on the 27 dates; the DEC-014 count (section 9) is 11 today; the base book is best-of-many; the strict rug events are few; five earlier filters on this book failed.
+- EXP-021 is the eighth family scoped on the 27 dates; the DEC-014 count (section 9) is 12 today; the base book is best-of-many; the strict rug events are few; five earlier filters on this book failed.
 - fresh-0802 is August data, further from the September training pools than the screen's dates; drift against the September-heavy pool is expected to cost, not help.
 - The control is retrained on the same rows, so the paired gain isolates the 16 features. It does not show the selector beats the frozen EXP-012 model; that comparison is report-only.
 - Exit lag 2 is optimistic against the live exit leak; the lag-5 leg is the check.
