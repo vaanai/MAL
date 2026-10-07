@@ -128,6 +128,17 @@ class TableTests(unittest.TestCase):
         with self.assertRaises(x.Refused):
             x.enforce_table_limits(c, True)
 
+    def test_refuses_when_fewer_than_14_dates_have_a_frozen_pick(self):
+        def rows_with(k):  # 27 non-P1 dates, 8 rows each; the first k dates carry frozen picks (enough rows overall: 8 per date)
+            return [mk_row(i, d, frozen=(j < k)) for j, d in enumerate(NON_P1) for i in range(8)]
+
+        c13, c14 = x.table_counts(rows_with(13), True), x.table_counts(rows_with(14), True)
+        self.assertEqual((c13["non_p1_dates_with_frozen_pick"], c14["non_p1_dates_with_frozen_pick"]), (13, 14))
+        self.assertTrue(any("13 of 27" in w and "B3" in w for w in x.check_table_limits(c13, True)))
+        self.assertFalse(any("B3" in w for w in x.check_table_limits(c14, True)))
+        with self.assertRaises(x.Refused):
+            x.enforce_table_limits(c13, True)
+
     def test_limits_refuse_bad_features_duplicates_and_missing_dates(self):
         rows = [mk_row(i, d, frozen=True) for d in NON_P1[:-1] for i in range(6)]
         rows[0]["ef"][2] = float("nan")
@@ -265,6 +276,27 @@ class BarTests(unittest.TestCase):
             self.assertLess(b[leg]["kept_book_report_only"]["ex_top3_sol"], 0)
             self.assertTrue(b[leg]["all"], b[leg])
         self.assertTrue(b["passes"])
+
+    def test_b6_divides_by_the_net_paired_total(self):
+        """Amendment 2: 20 dates at +1 and 7 at -2.5 net to 2.5; the best date is 40% of it, so B6 fails (share of the positive total would be 5%)."""
+        rows = [mk_row(0, d, net=(1_000_000_000 if i < 20 else -2_500_000_000)) for i, d in enumerate(NON_P1)]
+        s = {"control": sel_of(rows, lambda r: False), "rug": sel_of(rows, lambda r: True)}
+        b = x.bars(rows, s, True)
+        for leg in x.LEGS:
+            b6 = b[leg]["B6_paired_concentration"]
+            self.assertAlmostEqual(b6["paired_total_sol"], 2.5)
+            self.assertAlmostEqual(b6["max_date_share_of_net_total"], 0.4)
+            self.assertAlmostEqual(b6["max_date_share_of_positive_total"], 0.05)
+            self.assertFalse(b6["pass"])
+            self.assertTrue(b[leg]["B5_ex_best_date"]["pass"])  # B5 is unchanged: 1.5 > 0
+        self.assertFalse(b["passes"])
+
+    def test_b6_fails_on_a_non_positive_net_total(self):
+        rows = [mk_row(0, d, net=(1_000_000_000 if i < 10 else -1_000_000_000)) for i, d in enumerate(NON_P1)]
+        s = {"control": sel_of(rows, lambda r: False), "rug": sel_of(rows, lambda r: True)}
+        b6 = x.bars(rows, s, True)["flat"]["B6_paired_concentration"]
+        self.assertFalse(b6["pass"])
+        self.assertIsNone(b6["max_date_share_of_net_total"])
 
     def test_bars_3_to_5_are_paired_not_kept_book(self):
         rows = self.book()
@@ -560,6 +592,7 @@ class PrecountTests(unittest.TestCase):
             self.assertEqual(rec["mode"], "precount")
             self.assertEqual(rec["table_counts"]["n_rows"], len(cells))
             self.assertEqual(rec["table_counts"]["frozen_selected_non_p1"], 27 * 3)
+            self.assertEqual(rec["table_counts"]["non_p1_dates_with_frozen_pick"], 27)
             self.assertTrue(any("frozen-selected" in w for w in rec["would_refuse"]))  # 81 < 100, pre-declared
             self.assertNotIn("777", out)  # no net value is printed
             for banned in ('"press"', '"flat"', '"rug"', '"net'):

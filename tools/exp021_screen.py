@@ -89,6 +89,7 @@ VETO_RULES = ("r1", "r2", "r3", "r4")
 
 # Pre-declared refusals of the table (outcome-blind, builder-proposed; the manager pins them before the real run).
 MIN_FROZEN_NON_P1 = 100  # frozen-selected rows on the non-P1 dates (the gate's own 100-trade floor)
+MIN_NON_P1_DATES_WITH_A_FROZEN_PICK = 14  # Amendment 2: fewer and the majority bar B3 (14 of 27) could never pass
 MIN_ROWS_PER_NON_P1_DATE = 1  # every non-P1 date must have at least one universe row
 
 OUT_REPORT, OUT_MD = "report.json", "report.md"
@@ -171,6 +172,7 @@ def table_counts(table: Sequence[Mapping[str, Any]], with_p4: bool) -> dict[str,
         "n_missing_features": sum(1 for r in table if r["ef"] is None or r["rf"] is None),
         "n_nonfinite_features": sum(1 for r in table if r["ef"] is not None and r["rf"] is not None and not (_finite(r["ef"]) and _finite(r["rf"]))),
         "n_duplicate_mints": dup, "non_p1_dates_expected": len(non_dates), "non_p1_dates_without_rows": [d for d in non_dates if by_date.get(d, {}).get("rows", 0) < MIN_ROWS_PER_NON_P1_DATE],
+        "non_p1_dates_with_frozen_pick": sum(1 for d in non_dates if by_date.get(d, {}).get("frozen", 0) >= 1),
         "frozen_selected_non_p1": sum(v["frozen"] for k, v in by_block.items() if k != "P1"),
         "k2_cells_available": any(k.startswith("2_") for r in table for k in r["alt"]),
         "alt_cell_keys": sorted({k for r in table for k in r["alt"]}),
@@ -192,6 +194,8 @@ def check_table_limits(counts: Mapping[str, Any], with_p4: bool) -> list[str]:
         why.append(f"{counts['n_duplicate_mints']} mints are in the universe twice")
     if counts["non_p1_dates_without_rows"]:
         why.append(f"{len(counts['non_p1_dates_without_rows'])} non-P1 dates have no universe row: {counts['non_p1_dates_without_rows'][:5]}")
+    if counts["non_p1_dates_with_frozen_pick"] < MIN_NON_P1_DATES_WITH_A_FROZEN_PICK:
+        why.append(f"only {counts['non_p1_dates_with_frozen_pick']} of {counts['non_p1_dates_expected']} non-P1 dates have a frozen pick (< {MIN_NON_P1_DATES_WITH_A_FROZEN_PICK}): bar B3 could never pass")
     if counts["frozen_selected_non_p1"] < MIN_FROZEN_NON_P1:
         why.append(f"{counts['frozen_selected_non_p1']} frozen-selected rows on the non-P1 dates (< {MIN_FROZEN_NON_P1})")
     return why
@@ -292,9 +296,10 @@ def paired_stats(by_date: Mapping[str, Sequence[float]], n_dates: int) -> dict[s
     sums = {d: sum(v) / LAMPORTS for d, v in by_date.items()}
     total = sum(sums.values())
     pos = [v for v in sums.values() if v > 0]
-    share = (max(pos) / sum(pos)) if pos and sum(pos) > 0 else None
+    share = (max(pos) / sum(pos)) if pos and sum(pos) > 0 else None  # report-only: share of the positive-date total
+    net_share = (max(sums.values()) / total) if sums and total > 0 else None  # B6 (Amendment 2): share of the NET paired total
     return {"n": len(xs), "mean_x_sol": mean, "ci90_date_sol": ci, "p_one_sided": p, "total_sol": total, "dates_positive": len(pos), "of_dates": n_dates,
-            "max_date_share_of_positive_total": share, "ex_top3_sol": (sum(xs[3:]) / LAMPORTS) if len(xs) > 3 else None,
+            "max_date_share_of_positive_total": share, "max_date_share_of_net_total": net_share, "ex_top3_sol": (sum(xs[3:]) / LAMPORTS) if len(xs) > 3 else None,
             "ex_best_date_sol": total - max(sums.values(), default=0.0), "by_date_sol": dict(sorted(sums.items()))}
 
 
@@ -314,8 +319,8 @@ def bars(table: Sequence[Mapping[str, Any]], sel: Mapping[str, Mapping[str, bool
             "B3_majority_dates_positive": {"pass": bool(pr["dates_positive"] * 2 > n_non), "dates_positive": pr["dates_positive"], "of_dates": n_non},
             "B4_ex_top3": {"pass": bool(pr["ex_top3_sol"] is not None and pr["ex_top3_sol"] > 0), "ex_top3_sol": pr["ex_top3_sol"], "paired_total_sol": pr["total_sol"]},
             "B5_ex_best_date": {"pass": bool(pr["n"] and pr["ex_best_date_sol"] > 0), "ex_best_date_sol": pr["ex_best_date_sol"]},
-            "B6_paired_concentration": {"pass": bool(pr["total_sol"] > 0 and pr["max_date_share_of_positive_total"] is not None and pr["max_date_share_of_positive_total"] <= CONCENTRATION_MAX),
-                                        "max_date_share_of_positive_total": pr["max_date_share_of_positive_total"], "paired_total_sol": pr["total_sol"], "limit": CONCENTRATION_MAX},
+            "B6_paired_concentration": {"pass": bool(pr["total_sol"] > 0 and pr["max_date_share_of_net_total"] is not None and pr["max_date_share_of_net_total"] <= CONCENTRATION_MAX),
+                                        "max_date_share_of_net_total": pr["max_date_share_of_net_total"], "max_date_share_of_positive_total": pr["max_date_share_of_positive_total"], "paired_total_sol": pr["total_sol"], "limit": CONCENTRATION_MAX},
         }
         b["all"] = all(v["pass"] for v in b.values() if isinstance(v, dict))
         b["paired_report"] = pr
