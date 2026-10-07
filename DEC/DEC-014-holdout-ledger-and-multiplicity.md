@@ -80,3 +80,15 @@ If the pressure stamp cannot cover a book by 2026-10-05T05:00:00Z, that book is 
 For the 2026-10-05 kill review, the pressure-fail leg is scored over the full UTC days that begin at or after the first 00:00:00Z runner restart running code ≥ d7485d2 (#145). The flat leg is scored from the 2026-09-28T00:00:00Z clean clock as before. Each leg must independently meet the gate (≥5 UTC days etc.). Days before that restart are excluded from the pressure leg, and that exclusion is not a pass. If the pressure leg has <5 eligible days, the book is NOT_DECIDABLE.
 
 `tools/kill_review.py --pressure-from-ms` implements exactly that: the pressure leg only uses trades whose `decision_t_ms` ≥ that instant; the flat leg is unchanged. A book whose pressure leg has fewer than 5 eligible UTC days after that cut is NOT_DECIDABLE, same status as incomplete pressure coverage — never PROMOTE, never a plain KILL.
+
+## Amendment (2026-10-07): block budget for the sealed confirmation blocks
+
+**Why.** Lyra's 10-07 review raised this, and the manager adopts it. Seven or more families have now read outcomes on the same 27 non-P1 dates, with no correction across families. The owner has also asked for wider screen batches (6–10 ideas). Three sealed, unread 6-day blocks remain: fresh-0828, fresh-0808 and fresh-0802. A screen PASS alone must not be enough to spend one.
+
+**Rule (effective now, before any further screen result is read):**
+1. **Multiplicity threshold.** A screen PASS may claim a sealed block only if its primary one-sided p < 0.025 / m. Here m is the number of families that have read outcomes on the 27 non-P1 dates, counted from `data/tries.jsonl` at claim time, including the claimant. A family that screens several cells uses its own Holm-adjusted p.
+2. **One block per family.** No family claims more than one block.
+3. **One block in reserve.** At most 2 of the 3 sealed blocks are spent before a new block is walked, sealed and entered in the ledger.
+4. **Pre-registration first.** The claimant's Part 1 pre-registration, which fixes the model recipe, md5 freeze, cells, costs and gate, is merged before its screen is scored wherever possible. EXP-021 is the first to follow this.
+
+Nothing here lowers the promotion gate. It only makes spending a block harder.

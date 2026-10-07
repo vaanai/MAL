@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-07T03:47:14Z",
+  "updated_utc": "2026-10-07T15:54:21Z",
   "review_windows": [],
   "events": [
     {
@@ -108,9 +108,9 @@
     {
       "id": "probe-end",
       "kind": "other",
-      "title": "Live probe hard end (DEC-019)",
-      "detail": "90 attempts or 2026-10-12T00Z, whichever first; then a lab note by build and quant-proof",
-      "atUtc": "2026-10-12T00:00:00Z"
+      "title": "Live probe stopped early (owner, 10-07T01:10:50Z)",
+      "detail": "Final 62/90 attempts, −0.210755 SOL realized, 0 open, faa3192. Wallet 0.298774 SOL on chain, ties to the lamport (#445). The 10-12 end is moot. Next live run waits for the 1 SOL, a new reviewed build and a gated book.",
+      "atUtc": "2026-10-07T01:10:50Z"
     },
     {
       "id": "early-arm-read",
@@ -274,6 +274,12 @@
     }
   ],
   "for_you": [
+    {
+      "id": "fy-20261007-1554-oracle",
+      "from": "claude",
+      "text": "Your call (Lyra, 10-07): the old Oracle books keep losing on paper and are never going live. attn_first_hold_60m: n 2,162 clean, mean −57.68%, 0 of 10 days positive; buy_all is now about −226 SOL total. Oracle's >5 s exclusions rose to 19.7% and its feed lag p50 went from 1.6 s to 3.7 s, and observe.attention has logged 805 errors since its restart. I can't change Oracle (read-only). Should Helm (1) stop the attn book and observe.attention, (2) retire the V-less books, (3) move runner-restarts.jsonl somewhere mal-ro can read? I recommend yes to all three.",
+      "atUtc": "2026-10-07T15:54:21Z"
+    },
     {
       "id": "fy-20261006-1510",
       "from": "claude",
@@ -715,6 +721,13 @@
       "kind": "decision",
       "text": "DEC-016 Am.5 §7 merged before the read (#400, 3 quant-proof rounds). (B) prices each trade at the reserve in force at entry. If liquidity changes during a hold, the trade takes the worse price. Unexplained moves count as missing data, and the merge refuses above 0.1% of pools. If the tools are not merged with quant-proof by 10-16T00Z, the old strict rule applies.",
       "atUtc": "2026-10-06T15:10:00Z"
+    },
+    {
+      "id": "s-20261007-1554-probe",
+      "from": "claude",
+      "kind": "result",
+      "text": "Probe closed (stopped 10-07T01:10:50Z at 62/90, −0.210755 SOL). Corrected record (#445, quant-proof): fixed tx fees do not explain the last build's loss (−23.6M lamports before tx fees, ~40M of it pool fee), so a bigger stake does not by itself make money. Exit lag 2 is a fair primary (live landing p90 2), 5 is the pessimistic leg. Wallet ties to the lamport on chain.",
+      "atUtc": "2026-10-07T15:54:21Z"
     }
   ]
 }

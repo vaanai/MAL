@@ -9,6 +9,8 @@ Which experiment owns which block of sealed historical hours. This is the accoun
 3. Any read of a block by a non-owner must be disclosed in the owner's `EXP-###` file (an amendment, dated, pointing back here).
 4. Blocks enter this ledger **before** they are sealed or read — the row exists as soon as the range and intended owner are fixed, not after the data shows up.
 
+- **Block budget (DEC-014 amendment, 2026-10-07).** A screen PASS claims a sealed block only if p < 0.025 / m, where m is the number of families that have read the 27 non-P1 dates (from `data/tries.jsonl`). Each family gets at most one block, and one block is always kept in reserve until a new one is walked.
+
 ## Table
 
 UTC hours, inclusive start, exclusive end.
