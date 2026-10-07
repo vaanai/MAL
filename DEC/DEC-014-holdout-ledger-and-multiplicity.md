@@ -97,3 +97,33 @@ For the 2026-10-05 kill review, the pressure-fail leg is scored over the full UT
 4. **Pre-registration first.** A block claim requires the claimant's Part 1 pre-registration to be merged before its screen is scored. Part 1 fixes the model recipe, md5 freeze, cells, costs and gate. Otherwise the family cannot claim a block. EXP-021 is the first under this rule.
 
 Nothing here lowers the promotion gate. It only makes spending a block harder.
+
+### Clarification (2026-10-07 ~16Z, before any EXP-021 outcome is read; Warden's review of #446)
+
+**Family lineage (rule 2).** A *family* is a primary hypothesis, not a code lineage.
+- **Successor.** An experiment whose primary test re-tests a book already tested, or a retune of it, is that book's successor. Examples: the same selector, threshold, or entry/exit cell, re-confirmed at a new size or on new dates.
+- **New family.** An experiment whose primary test is a **paired** comparison that isolates a new component against a control built from an earlier book is a new family. Examples: new features vs the same features retrained, or a new entry timing vs the old timing on the same picks. Reusing the earlier book's features, learner, label or cell as the control or base does not make it a successor.
+- **EXP-012's block.** fresh-0903 (job #32) is EXP-012's one block. EXP-012 itself, and any re-confirmation of the unchanged EXP-012 book (for example a size-only confirmation), can claim no further block. This matches DEC-020 §9.
+- **Eligible.** EXP-021 (RUG vs a same-fold retrained 18-feature CONTROL, paired) is a new family and may claim a block under this amendment. So may a paired k-speed test (k vs k6 on the same picks). Each still needs p < 0.025 / m, Part 1 first, and the reserve rule.
+- **Why.** Rule 2 stops one hypothesis from buying a second block by re-badging. The paired designs answer a different question: does the new component add value? Their primary statistic does not depend on whether the base book is positive.
+
+**m is frozen now and can only go up.** The families that have read outcomes on the 27 non-P1 dates (P2 explore-0814, P3 fresh-0903, P4 exp011-0909), from `data/tries.jsonl`, the ledger and DEC-014's own text:
+
+| Family | Dates read |
+|---|---|
+| EXP-011 | P4, its one-shot holdout |
+| EXP-012 | P3 confirmation (job #32) and the P2 backcheck |
+| EXP-013 | P2 |
+| #191 | P1 only; counted because this amendment names it |
+| EXP-014 | |
+| EXP-015 | |
+| EXP-017 | |
+| EXP-018 | |
+| EXP-019 | |
+| EXP-020 | report-only, but it read outcomes |
+| EXP-021 | the claimant |
+
+- **Today m = 11**, so the threshold is p < 0.025 / 11 = 0.00227.
+- At claim time, m = max(11, the count by these rules at claim time).
+- m counts **distinct EXP numbers**, plus #191 as named. Successor merging under rule 2 never lowers m.
+

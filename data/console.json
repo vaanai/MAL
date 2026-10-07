@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-07T15:54:21Z",
+  "updated_utc": "2026-10-07T16:05:21Z",
   "review_windows": [],
   "events": [
     {
@@ -109,7 +109,7 @@
       "id": "probe-end",
       "kind": "other",
       "title": "Live probe stopped early (owner, 10-07T01:10:50Z)",
-      "detail": "Final 62/90 attempts, −0.210755 SOL realized, 0 open, faa3192. Wallet 0.298774 SOL on chain, ties to the lamport (#445). The 10-12 end is moot. Next live run waits for the 1 SOL, a new reviewed build and a gated book.",
+      "detail": "Final 62/90 attempts, −0.210755 SOL. Helm withdrew 298,768,781 lamports to the owner's address at 2026-10-07T15:48Z, so the wallet is now about 0. The executor and watch timer are disabled and STOP stays in place. The next live run waits for the 1 SOL, a new reviewed build and a gated book.",
       "atUtc": "2026-10-07T01:10:50Z"
     },
     {
@@ -728,6 +728,13 @@
       "kind": "result",
       "text": "Probe closed (stopped 10-07T01:10:50Z at 62/90, −0.210755 SOL). Corrected record (#445, quant-proof): fixed tx fees do not explain the last build's loss (−23.6M lamports before tx fees, ~40M of it pool fee), so a bigger stake does not by itself make money. Exit lag 2 is a fair primary (live landing p90 2), 5 is the pessimistic leg. Wallet ties to the lamport on chain.",
       "atUtc": "2026-10-07T15:54:21Z"
+    },
+    {
+      "id": "s-20261007-1605-wd",
+      "from": "claude",
+      "kind": "decision",
+      "text": "Probe decommissioned. Helm withdrew the remaining 298,768,781 lamports to your Phantom at 15:48Z; the executor and watch timer are disabled and STOP is in place. Block budget clarified before any EXP-021 read: a paired test of a new component (EXP-021's rug features, or a k-speed test) is a new family and may claim a sealed block, while re-confirming the unchanged EXP-012 book (size only) may not. m is frozen at 11, so a claim needs p < 0.00227.",
+      "atUtc": "2026-10-07T16:05:21Z"
     }
   ]
 }
