@@ -701,5 +701,97 @@ class Amendment3Tests(unittest.TestCase):
         self.assertEqual(e16.VMAP_EXP016_SHA256, "1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec")
 
 
+class FreezeTests(unittest.TestCase):
+    HEAD = "a" * 40
+    VSHA = "1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec"
+
+    @staticmethod
+    def fixture():
+        rows = []
+        dates = NON_P1[:6] + P1[:2]
+        for di, d in enumerate(dates):
+            for i in range(12):
+                r = mk_row(i, d, net=(1_000_000 if (i + di) % 3 else -1_000_000), filled=(i % 5 != 0), held=(i % 4) / 4, dumps=float(i % 2), ef0=float(i))
+                r["source"] = "P1A" if d in P1 else "P2"
+                rows.append(r)
+        return rows
+
+    def freeze(self, d, **kw):
+        a = dict(head=self.HEAD, vmap_sha256=self.VSHA, with_p4=True)
+        a.update(kw)
+        return x.freeze_models(self.fixture(), Path(d), **a)
+
+    def test_two_runs_are_bit_identical(self):
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            ma, mb = self.freeze(a), self.freeze(b)
+            self.assertEqual(ma, mb)
+            for n in ("model.txt", "control-model.txt", "model.md5", "control-model.md5", "features.json", "control-features.json", x.FREEZE_MANIFEST):
+                self.assertEqual((Path(a) / n).read_bytes(), (Path(b) / n).read_bytes(), n)
+            for arm, f in (("rug", "model.txt"), ("control", "control-model.txt")):
+                md5 = __import__("hashlib").md5((Path(a) / f).read_bytes()).hexdigest()
+                self.assertEqual(ma["models"][arm]["model_md5"], md5)
+            self.assertNotEqual(ma["models"]["rug"]["model_md5"], ma["models"]["control"]["model_md5"])
+
+    def test_artifacts_describe_the_recipe(self):
+        with tempfile.TemporaryDirectory() as a:
+            m = self.freeze(a)
+            self.assertEqual(json.loads((Path(a) / "features.json").read_text())["feature_names"], x.FEATURES_RUG)
+            self.assertEqual(json.loads((Path(a) / "control-features.json").read_text())["feature_names"], x.FEATURES_CONTROL)
+            self.assertEqual((m["code_head"], m["vmap_sha256"]), (self.HEAD, self.VSHA))
+            self.assertEqual(m["n_rows_total"], 96)
+            self.assertEqual(m["n_rows_by_source"], {"P1A": 24, "P2": 72})
+            self.assertEqual((m["learner"]["seed"], m["learner"]["deterministic"]), (1, True))
+            self.assertEqual(len(m["universe_sha256"]), 64)
+            self.assertIn("num_features=34", (Path(a) / "model.txt").read_text().replace("max_feature_idx=33", "num_features=34"))
+            self.assertIn("max_feature_idx=17", (Path(a) / "control-model.txt").read_text())
+
+    def test_refuses_without_the_pin(self):
+        with tempfile.TemporaryDirectory() as a, mock.patch.object(e16, "VMAP_EXP016_SHA256", "PENDING"):
+            with self.assertRaises(x.Refused):
+                self.freeze(a)
+            self.assertFalse((Path(a) / "model.txt").exists())
+
+    def test_refuses_overwrite_missing_p4_bad_source_and_one_class(self):
+        with tempfile.TemporaryDirectory() as a:
+            self.freeze(a)
+            with self.assertRaises(x.Refused):
+                self.freeze(a)
+        with tempfile.TemporaryDirectory() as a:
+            with self.assertRaises(x.Refused):
+                self.freeze(a, with_p4=False)
+            with self.assertRaises(x.Refused):
+                self.freeze(a, vmap_sha256=None)
+            bad = self.fixture()
+            bad[0]["source"] = "P1B"
+            with self.assertRaises(x.Refused):
+                x.freeze_models(bad, Path(a), head=self.HEAD, vmap_sha256=self.VSHA)
+            one = [dict(r, press=1.0, filled=True) for r in self.fixture()]
+            with self.assertRaises(x.Refused):
+                x.freeze_models(one, Path(a), head=self.HEAD, vmap_sha256=self.VSHA)
+
+    def test_writes_no_tries_line(self):
+        with tempfile.TemporaryDirectory() as a, mock.patch("tools.mal_result.append_try") as ap:
+            self.freeze(a)
+            ap.assert_not_called()
+
+    def test_confirm_is_a_refusing_stub(self):
+        with mock.patch.object(x, "collect") as col, mock.patch.object(x, "run_guards") as gd:
+            self.assertEqual(x.main(["--confirm"]), 2)
+            col.assert_not_called()
+            gd.assert_not_called()
+
+    def test_freeze_main_refuses_p1b_argument(self):
+        with tempfile.TemporaryDirectory() as a:
+            rc = x.main(["--freeze", a, "--p1-fast-dir", "x", "--p1-oracle-insample-dir", "y", "--p1-oracle-live-dir", "z", "--p2-view-dir", "w"])
+            self.assertEqual(rc, 2)
+            self.assertEqual(list(Path(a).iterdir()), [])
+
+    def test_freeze_source_has_no_data_path_or_tries_call(self):
+        src = Path(x.__file__).read_text(encoding="utf-8")
+        body = src[src.index("def freeze_models"):src.index("def confirm_main")]
+        self.assertNotIn("log_all", body)
+        self.assertNotIn("append_try", body)
+
+
 if __name__ == "__main__":
     unittest.main()

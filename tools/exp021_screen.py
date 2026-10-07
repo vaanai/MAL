@@ -691,6 +691,112 @@ def build_sources(g: Mapping[str, Any]) -> list[tuple[str, str, Any, list[str], 
     return [s for s in e16.build_sources({**g, "g1": g1}) if s[0] != "P1B"]
 
 
+# --- freeze mode (Part 1): train the two arms once on ALL exploration rows ------------------------------------------------------------
+
+
+FREEZE_FILES = {"rug": ("model.txt", "model.md5", "features.json"), "control": ("control-model.txt", "control-model.md5", "control-features.json")}
+FREEZE_MANIFEST = "train-manifest.json"
+FREEZE_SCHEMA = "exp021_freeze_v1"
+FREEZE_SOURCES = ("P1A", "P1C", "P2", "P3", "P4")  # P1B is excluded (Amendment 3(b)); every pool is training, there is no held-out date
+
+
+def freeze_models(table: Sequence[Mapping[str, Any]], out_dir: Path, *, head: str, vmap_sha256: str | None, with_p4: bool = True) -> dict[str, Any]:
+    """Train RUG (34 columns) and CONTROL (18) once on every table row and write the artifacts. Same learner as the screen (`e15.fit_cfg(x, y, MDL)`:
+    EXP-015 C2, seed 1, deterministic, num_threads 1), same label (`label_row`), same column names. Bit-reproducible: nothing in the files depends on
+    the clock, the host or the thread count. Reads no outcome path and no held-out date (there is none); appends NO tries line (training on
+    already-read exploration labels spends no try). Refuses unless the V-map pin is set, the pool is complete, and OUT_DIR holds no frozen file."""
+    e16.check_pin_ready()
+    if not vmap_sha256 or not re.fullmatch(r"[0-9a-f]{64}", vmap_sha256):
+        raise Refused("freeze needs the V map sha256 the guards verified")
+    if not with_p4:
+        raise Refused("freeze trains on P1A, P1C, P2, P3 and P4: P4 is not in the pool")
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise Refused("freeze needs a code head (40 hex)")
+    out_dir = Path(out_dir)
+    if any((out_dir / n).exists() for names in FREEZE_FILES.values() for n in names) or (out_dir / FREEZE_MANIFEST).exists():
+        raise Refused(f"{out_dir} already holds a frozen artifact: the freeze refuses to overwrite")
+    rows = sorted(table, key=lambda r: (r["date"], r["mint"]))
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["source"]] = counts.get(r["source"], 0) + 1
+    unknown = sorted(set(counts) - set(FREEZE_SOURCES))
+    if unknown:
+        raise Refused(f"freeze rows from a source outside {list(FREEZE_SOURCES)}: {unknown}")
+    if any(r["ef"] is None or r["rf"] is None for r in rows):
+        raise Refused("a row lacks its feature vector")
+    y = [label_row(r) for r in rows]
+    if len(y) < MIN_FIT_ROWS or len(set(y)) < 2:
+        raise Refused("the freeze set cannot train: too few rows or one class")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, Any] = {
+        "schema": FREEZE_SCHEMA, "experiment": "EXP-021 Part 1", "code_head": head, "vmap_sha256": vmap_sha256, "with_p4": with_p4,
+        "universe_sha256": universe_sha256(rows), "feature_table_sha256": feature_table_sha256(rows),
+        "n_rows_total": len(rows), "n_rows_by_source": dict(sorted(counts.items())), "n_positive_label": sum(y), "p1b": P1B_EXCLUDED,
+        "label": "1 iff FILLED and pressure net (haircut, both fees) > 0, else 0 (MISS = 0); cell k6 tp50_sl30 exit lag 2, 0.05 SOL",
+        "learner": {"fn": "tools.exp015_screen.fit_cfg", "min_data_in_leaf": MDL, "num_leaves": fz.LGB_PARAMS["num_leaves"], "learning_rate": fz.LGB_PARAMS["learning_rate"],
+                    "rounds": fz.LGB_PARAMS["rounds"], "feature_fraction": 0.9, "bagging_fraction": 0.9, "bagging_freq": 1, "scale_pos_weight": "neg/pos",
+                    "seed": fz.SEED, "deterministic": True, "num_threads": 1, "force_row_wise": True},
+        "models": {},
+    }
+    for arm, names in (("rug", FEATURES_RUG), ("control", FEATURES_CONTROL)):
+        mf, md5f, ff = FREEZE_FILES[arm]
+        with feature_names(names):
+            model = e15.fit_cfg([arm_vector(r, arm) for r in rows], y, MDL)
+        model.save_model(str(out_dir / mf))
+        md5 = hashlib.md5((out_dir / mf).read_bytes()).hexdigest()
+        (out_dir / md5f).write_text(md5 + "\n", encoding="utf-8")
+        (out_dir / ff).write_text(json.dumps({"schema": "exp021_features_v1", "arm": arm, "n_features": len(names), "feature_names": list(names),
+                                              "rug_extra": RUG_EXTRA if arm == "rug" else []}, indent=2) + "\n", encoding="utf-8")
+        manifest["models"][arm] = {"model_file": mf, "model_md5": md5, "n_features": len(names)}
+    (out_dir / FREEZE_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return manifest
+
+
+def freeze_main(args: argparse.Namespace) -> int:
+    """`--freeze OUT_DIR`: guards (V-map pin required), the tape pass, the screen's own loader and table limits, then `freeze_models`. No lock, no
+    tries line. The V constancy file is not needed to train; it gates the block read (Part 1 pre-registration section 7)."""
+    out_dir = args.freeze
+    try:
+        e16.refuse_extra_reserved(args)
+        g = run_guards(args)
+        e16.set_process_workers(args)
+        gs = e16.git_state()
+        if gs["dirty_tools"]:
+            raise Refused("tools/ is dirty (uncommitted change): the freeze records one clean head and refuses otherwise")
+        vmap_raw = e16.load_pinned_vmap(args.vmap)
+        fallback = {k: int(v) for k, v in json.loads(args.v_fallback_json.read_text()).items()} if args.v_fallback_json else {}
+        vmap = rug.merge_v_map(vmap_raw, fallback)
+        results, _pp = collect(args, g, vmap)
+        cells = [c for r in results for c in r["cells"]]
+        try:
+            oof_all = load_oof(args.artifact_dir)
+            oof, oof_days = oof_all[0], oof_all[3]
+        except SystemExit as exc:
+            raise Refused(str(exc)) from None
+        sel = e16.frozen_flags(cells, oof, args.artifact_dir)
+        enforce_limits(results, oof, e16.oof_without_cell(results, oof, oof_days, p1_kept_dates()))
+        table = build_table(cells, sel)
+        enforce_table_limits(table_counts(table, g["with_p4"]), g["with_p4"])
+        m = freeze_models(table, out_dir, head=gs["head"], vmap_sha256=g["vmap_sha256"], with_p4=g["with_p4"])
+    except (Refused, rug.PoolAttributionRefusal, e16.SimulationError) as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001
+        print(f"refusing: unexpected {type(exc).__name__} in the freeze (message withheld)", file=sys.stderr)
+        return 2
+    print(json.dumps({"frozen": str(out_dir), "models": m["models"], "n_rows_by_source": m["n_rows_by_source"]}, indent=2))
+    return 0
+
+
+def confirm_main(args: argparse.Namespace | None) -> int:
+    """`--confirm`: the one fresh-block read. NOT IMPLEMENTED in this PR (Part 1 ships the freeze and the pre-registration).
+    TODO (separate PR, after the model-md5 amendment and the Part 1 merge): implement per EXP/EXP-021-part1-prereg.md section 9. Until then it refuses
+    unconditionally, before any path is opened, so no outcome row can be read and no tries line can be written."""
+    print("refusing: --confirm is a stub. The block read is not implemented: it needs the merged model-md5 amendment and the merged Part 1 "
+          "(EXP/EXP-021-part1-prereg.md section 9). No path was opened.", file=sys.stderr)
+    return 2
+
+
 # --- CLI ----------------------------------------------------------------------------------------------------------------------------
 
 
@@ -703,6 +809,11 @@ def _parser() -> argparse.ArgumentParser:
         if a.dest == "p1_oracle_live_dir":  # P1B: required in EXP-016, REFUSED here (Amendment 3(b))
             a.required, a.default = False, None
             a.help = "not accepted: P1B (the Oracle live tape) is excluded from EXP-021 (Amendment 3). The tool refuses it if given."
+    for a in ap._actions:
+        if a.dest == "out_dir":  # required for the screen and --precount; --freeze carries its own OUT_DIR
+            a.required, a.default = False, None
+    ap.add_argument("--freeze", type=Path, default=None, metavar="OUT_DIR", help="Part 1: train RUG and CONTROL once on ALL exploration rows (P1A, P1C, P2, P3, P4) and write the artifacts. No tries line, no lock. Needs the V-map pin.")
+    ap.add_argument("--confirm", action="store_true", help="the one fresh-block read: NOT IMPLEMENTED (refuses; see the Part 1 pre-registration)")
     for a in ap._actions:
         if a.dest == "max_workers":
             a.help = "fork count of the tape pass (EXP-016 design: indexed history, forked cells; ~57 GB at P2 with 4). Default 4, cap 8. The fits are serial."
@@ -776,9 +887,18 @@ def precount(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     from tools.exp012_exit_sensitivity import resolve_tries_path
 
+    if "--confirm" in (sys.argv[1:] if argv is None else list(argv)):  # the stub refuses before argparse, so it needs no path argument
+        return confirm_main(None)
     args = _parser().parse_args(argv)
     if args.emit_constancy_sample:
         print("refusing: --emit-constancy-sample is not offered here (EXP-016's constancy file is the input; its guards read P1B)", file=sys.stderr)
+        return 2
+    if args.confirm:
+        return confirm_main(args)
+    if args.freeze is not None:
+        return freeze_main(args)
+    if args.out_dir is None:
+        print("refusing: --out-dir is required", file=sys.stderr)
         return 2
     if args.precount:
         return precount(args)
