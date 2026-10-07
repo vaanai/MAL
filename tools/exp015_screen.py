@@ -190,6 +190,7 @@ CACHE_SCHEMA = "exp015_tape_cache_v1"
 ENV_MODE = "MAL_EXP015_MODE"
 ENV_COMBOS = "MAL_EXP015_COMBOS"  # EXP-017 re-sim: JSON [[k, size_sol, lag], ...]
 ENV_SELECTED = "MAL_EXP015_SELECTED"  # EXP-017 re-sim: path of a JSON list of mints to simulate
+ENV_BOUND = "MAL_EXP020_BOUND"  # EXP-020 end-bound re-sim: "end" sets ENTRY_BOUND in every (spawned) worker; unset = "start", unchanged
 
 OUTCOME_PASS = "SCREEN PASS: {name} goes to confirmation (largest pooled pressure mean on the non-P1 dates; no discretion). This means 'worth one confirmation read of fresh-0808', never 'has an edge'."
 OUTCOME_NONE = (
@@ -455,6 +456,24 @@ def _slim_cell(c: Mapping[str, Any]) -> dict[str, Any]:
 
 
 @contextlib.contextmanager
+def _entry_bound_patch(bound: str | None) -> Any:
+    """EXP-020 end-bound mode: set ENTRY_BOUND in BOTH modules that hold it (eem imported it by value; ee reads it for the exit fill). None = no-op."""
+    if not bound:
+        yield
+        return
+    if bound not in ("start", "end"):
+        raise Refused(f"{ENV_BOUND}={bound!r}: expected start or end")
+    import tools.exploration_exits as ee
+
+    saved = (ee.ENTRY_BOUND, eem.ENTRY_BOUND)
+    ee.ENTRY_BOUND = eem.ENTRY_BOUND = bound
+    try:
+        yield
+    finally:
+        ee.ENTRY_BOUND, eem.ENTRY_BOUND = saved
+
+
+@contextlib.contextmanager
 def e15_v_patch() -> Any:
     """V-priced pass: wrap eem.score_one. Per migration: the frozen k=1 row gives the features; the operating point's multi_cell_patch
     simulates every report cell (k, size 0.05, exit lag) with NO selection; ONE record per migration is emitted. Restores on exit."""
@@ -464,7 +483,7 @@ def e15_v_patch() -> Any:
         combos = tuple((int(k), float(sz), int(lag)) for k, sz, lag in json.loads(os.environ[ENV_COMBOS]))
     if os.environ.get(ENV_SELECTED):
         sel = frozenset(json.loads(Path(os.environ[ENV_SELECTED]).read_text(encoding="utf-8")))
-    with op.multi_cell_patch(_AllScores() if sel is None else _SelScores(sel), 0.0, combos=combos):
+    with _entry_bound_patch(os.environ.get(ENV_BOUND)), op.multi_cell_patch(_AllScores() if sel is None else _SelScores(sel), 0.0, combos=combos):
         inner = eem.score_one
 
         def v_score(mint_id: str, mint: Any, feat: Any, curve: Any, through_ms: int, creator_hist: Any, **kw: Any) -> list[dict[str, Any]]:
@@ -1873,8 +1892,8 @@ def make_report(base: Mapping[str, Any], screen: Mapping[str, Any], with_p4: boo
 def main(argv: Sequence[str] | None = None) -> int:
     from tools.exp012_exit_sensitivity import resolve_tries_path
 
-    if os.environ.get(ENV_COMBOS) or os.environ.get(ENV_SELECTED):  # the EXP-017 re-sim overrides must never reach a real EXP-015 run
-        print(f"refusing: {ENV_COMBOS} / {ENV_SELECTED} is set", file=sys.stderr)
+    if os.environ.get(ENV_COMBOS) or os.environ.get(ENV_SELECTED) or os.environ.get(ENV_BOUND):  # the re-sim overrides must never reach a real EXP-015 run
+        print(f"refusing: {ENV_COMBOS} / {ENV_SELECTED} / {ENV_BOUND} is set", file=sys.stderr)
         return 2
     args = _parser().parse_args(argv)
     tries_path = resolve_tries_path(args.tries_log)
