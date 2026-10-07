@@ -1,4 +1,4 @@
-# Manager handoff 2026-10-07 ~16Z (manager9 → next manager)
+# Manager handoff 2026-10-07 ~16:10Z (manager9 → next manager)
 
 Replace this page at the next handoff; don't append. Read it first. Then read:
 - [LAB_STATE.md](../LAB_STATE.md);
@@ -13,7 +13,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 
 1. **Become the inbox reader:** `miscusi_worker_start` with `inbox: true`.
 2. **Recreate the session crons.** Crons die with the session.
-   - **Daily stopped-probe check at 12:17Z.** Job on `mal-fast-0`, role ops, 200 MB, 3 min. Use the same command as job #358. Alert if attempts > 62, realized ≠ −0.210755, open > 0, the stop file is missing, a position is stuck or abandoned, or there are errors.
+   - **Daily decommissioned-probe check at 12:17Z.** Job on `mal-fast-0`, role ops, 200 MB, 3 min. Use the same command as job #362. Alert if the executor or the watch timer is active or enabled, the STOP file is missing, attempts > 62, or realized ≠ −0.210755. **Weekly, also run a research-0 job:** `tools.probe_rent_audit` (the command from job #363); alert if `balance_now_lamports` ≠ 0.
    - **Daily tip-tape archive at 03:23Z.** Job on `mal-fast-0`, 800 MB, 240 min. Use the same command as job #352. Expect `mismatched=0`. fast-0 retention starts deleting tape at 10-08 06Z.
 3. **Heavy jobs go on research-0 only.**
    - research-0 has about 96 GB schedulable; MiScusi schedules on declared memory.
@@ -67,7 +67,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 - Speed is a real relative lever but not profit on its own. Live k p50 is 5 on the current build, so k2 is not reachable yet.
 
 **Probe close (#443, corrected by #445):**
-- Exit lag 2 is a fair primary and 5 the pessimistic leg.
+- Exit lag 2 is a fair primary and 5 the pessimistic leg. The 5 comes from a 500 bps entry-gap cutoff chosen after seeing the tail, so also report the all-trade stop p90 of **10** as a labelled stress leg.
 - 9 of 55 fixed-build trades (16%) show sim-entry vs live-fill drift (price fell 10–15% between read and landing). That is an entry-model calibration item.
 - True round-trip cost is about 4.44% / 2.79% / 2.59% at 0.05 / 0.25 / 0.5 SOL, before price impact (+22.9 / +51.6 bps on entry at 0.25 / 0.5).
 
@@ -86,14 +86,18 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 - **The dead fast pre-create listener** (since 10-02).
 - **Owed labels:** the 1,346,200-lamport transfer, the first-N-after-migration cut, and the token-fee line.
 
-## Live probe (DEC-019): STOPPED
+## Live probe (DEC-019): STOPPED and decommissioned
 
-Stopped at 2026-10-07T01:10:50Z (Helm, owner's decision):
-- 62/90 attempts, −0.210755 SOL, 0 open, faa3192;
-- the unit runs under STOP;
-- the wallet is 0.298774 SOL on chain, with no withdrawals.
-
-The next live run waits for the 1 SOL, a new reviewed build and a gated book. `probe_withdraw` only sends to `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi` (#415, installed by Helm).
+- **Stopped:** 2026-10-07T01:10:50Z, by Helm on the owner's decision. Final: 62/90 attempts, −0.210755 SOL, 0 open, faa3192. The wallet tied to the lamport at 0.298774 SOL (#445).
+- **Withdrawn:** 2026-10-07T15:48Z. Helm sent 298,768,781 lamports to the owner's `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi`, tx `3h1Fw9SpZ1H4YQZJhTiY38w9ZdBeVycomw7AWLmywRRwZu2UxC6ef8bGViooq9v8aXRww454HyyCb4ELN2BGiMDg`. The wallet is now **0 lamports on chain**, with no token accounts (job #363): 298,768,781 sent + 5,000 fee.
+- **Current state:** `mal-probe-executor` is inactive and disabled, `mal-probe-watch.timer` is disabled, and the STOP file stays in place (job #362).
+- **Restart:** Helm does every step, and only after the owner approves a new reviewed build and a gated book:
+  1. fund the wallet;
+  2. install the reviewed build with an md5 replay proof;
+  3. enable and start `mal-probe-executor`;
+  4. re-enable `mal-probe-watch.timer`;
+  5. remove STOP last.
+- **Withdrawal guard:** `probe_withdraw` only sends to `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi` (#415).
 
 ## Ops
 
