@@ -9,15 +9,25 @@
 
 ## 1. Why
 
-- **Entry latency is the measured constraint on live.**
-  - On the decommissioned probe, live landing k had p50 5.
-  - Under V pricing, EXP-012's edge is gone by k ≥ 12 ([exp012-latency-virtual-2026-10-04.md](../ARTIFACTS/lab/exp012-latency-virtual-2026-10-04.md)).
-  - EXP-020's END-bound grid, report-only, puts the paired k2 − k6 at 0.5 SOL at +1.023% of stake on the flat leg and +0.747% on the pressure leg, with both CI90-date lower bounds above 0. No kept book is positive without 2026-08-21.
-- **Speed is a relative lever, not a profit path on its own** (DEC-020 §9). It is worth building because every later candidate needs it, EXP-021 included.
-- **The lead is measured:** [fast-entry-trigger-2026-10-07.md](../ARTIFACTS/lab/fast-entry-trigger-2026-10-07.md).
-  - The processed `migrate` stream leads the tip's first PumpSwap print by p50 1,012 ms (p10 715, p90 1,504), on 262 of 284 graduations.
-  - The earlier of stream and tip `complete` covers 284 of 284, with p50 996 ms.
-  - Today's early arm, at tip `complete`, has p50 lead 0.
+**Entry latency is one measured constraint on live. Round-trip cost is the other** (DEC-020 §9).
+- On the decommissioned probe, live landing k had p50 5. That figure is from job #285; the probe's final note did not re-verify it.
+- Under V pricing, EXP-012's CI90 lower bounds fall below 0 at k ≥ 12. The mean stays positive but small ([exp012-latency-virtual-2026-10-04.md](../ARTIFACTS/lab/exp012-latency-virtual-2026-10-04.md)).
+
+**What EXP-020's END-bound grid says (report-only).** The paired k2 − k6 at 0.5 SOL is +1.023% of stake on the flat leg (CI90-date [0.109, 1.851]) and +0.747% on the pressure leg ([0.183, 1.276]).
+- This is the best of 4 paired cells per leg.
+- It was measured on 27 dates that have had 100+ tries.
+- On the flat leg, k2 at 0.25 SOL and both k3 cells have lower bounds below 0.
+- It assumes landing at k2 is achievable.
+- No kept book is positive without 2026-08-21.
+
+**Speed is a relative lever, not a profit path on its own** (DEC-020 §9). It is worth building because every later candidate needs it, EXP-021 included.
+
+**What was measured** ([fast-entry-trigger-2026-10-07.md](../ARTIFACTS/lab/fast-entry-trigger-2026-10-07.md)).
+- **Current trigger:** today's early arm, at tip `complete`, has p50 lead 0 over the runner's current trigger time (the tip's receive of the first PumpSwap print).
+- **Processed `migrate` stream:** p50 1,012 ms lead on 262 of 284 graduations.
+- **Earlier of the two:** p50 996 ms, on all 284.
+
+**What the lead is not.** It is not a lead over the first swap on chain. It is mostly confirmation and getBlock delay, and it does not lower landing k one for one. The probe note infers a best case of k ≈ 3–4 with a processed trigger.
 
 ## 2. What the build is
 
@@ -25,37 +35,53 @@
    - a decoded `migrate` from the processed stream (`tools/fast_grad_stream.py`, its watch-set logic unchanged);
    - the tip `complete`.
    A migrate seen first on the stream never waits for the tip.
-2. **Gate.** Answer the EXP gate at the trigger, as the early arm already does (evaluation delay p50 0 ms, job #368). Use the same frozen model, threshold and features as the book being traded. A stream row must name the mint, and its canonical pool must equal the derived PDA, or the mint is skipped.
+2. **Gate.** Answer the EXP gate at the trigger, as the early arm already does (evaluation delay p50 0 ms, job #368).
+   - Use the same frozen model, threshold and features as the book being traded.
+   - A stream row must name the mint, and its canonical pool must equal the derived PDA, or the mint is skipped.
 3. **Send path.** Pre-build the buy:
    - cached blockhash;
    - ATA creation in the same tx;
    - the PDA computed from the mint, not read from RPC.
    Send at the trigger. Keep every DEC-019 code-level clamp: whitelist before signing, no re-buy, loss cap.
-4. **Price guard.** At the probe, 9 of 55 fixed-build trades had the price fall 10–15% between read and landing (entry-model item). The buy carries a max-price bound computed from the trigger-time reserves. If the bound is not met, the trade is skipped and logged.
-5. **Exit.** Unchanged from the last reviewed build, except that exit lag is measured, not assumed. The primary is lag 2, with lag 5 as the pessimistic leg (DEC-019 §7).
+4. **Price guard.** The buy carries a max-price bound computed from the trigger-time reserves, against the price rising between trigger and landing. If the bound is not met, the trade is skipped and logged.
+   - This is not motivated by the probe's 9 of 55 trades with |entry gap| > 500 bps. Those were price falls that filled better than quoted, which is a simulator calibration item.
+5. **Exit.** Unchanged from the last reviewed build, except that exit lag is measured, not assumed. The primary is lag 2, with lag 5 as the pessimistic leg and the all-trade stop p90 of 10 as a labelled stress leg ([probe-final-2026-10-07.md](../ARTIFACTS/lab/probe-final-2026-10-07.md); HANDOFF).
 
 ## 3. Phases
 
-- **Phase A (paper, no key, now).**
-  - Run the stream as a MiScusi job on fast-0, ≤ 1.9 GB.
-  - Log per mint: trigger source, trigger time, gate answer, and the would-send time.
-  - Compare against the tip's first PumpSwap print and the paper runner's entry slot. This is timing only, and the DEC-016 seal still holds.
-  - Exit criteria for Phase A:
-    - at least 24 h of stream data;
-    - reconnects handled;
-    - would-send lead p50 ≥ 600 ms over the first-print receive time;
-    - coverage ≥ 95% with the tip fallback;
-    - no decode error rate above 0.1%.
-- **Phase B (live calibration, owner's go only).**
-  - It needs the reviewed build, Helm's custody, and the 1 SOL.
-  - It also needs a book that has cleared a fresh-block confirmation, so the trades are worth paying for.
-  - It measures landing k against the trigger slot. **Pass:** landing k p50 ≤ 3 over at least 30 attempts. Otherwise stop and report.
-  - Size stays 0.05 SOL until a confirmed book and DEC-020's conditions allow 0.25.
+**Phase A (paper, no key, now).** Run the stream as a MiScusi job on fast-0, ≤ 1.9 GB, as a sidecar.
+- **What it logs** per mint: trigger source, trigger time, and the would-send time.
+- **Comparison:** against the tip's receive of the first PumpSwap print, and the migrate tx slot.
+- **Seal rules** (DEC-016 Am.2), which hold until the 10-16 read:
+  - It reads only allowlisted fields.
+  - It logs no price or reserve for entered EXP-012 mints.
+  - It reads no runner outcome.
+  - If the gate is computed inside the runner, that is a runner change and carries the md5 decision-equivalence replay proof.
+- **Exit criteria:**
+  - at least 24 h of stream data;
+  - reconnects handled;
+  - stream `migrate` coverage ≥ 92% of tip graduations;
+  - the share of graduations with would-send lead > 0 is ≥ 90%;
+  - would-send lead p50 ≥ 600 ms;
+  - decode error rate ≤ 0.1%.
+
+**Phase B (live calibration, owner's go only).**
+- **Preconditions:**
+  - the reviewed build;
+  - Helm's custody;
+  - the 1 SOL;
+  - a book that has cleared a fresh-block confirmation, so the trades are worth paying for.
+- **Measure:** landing k = landed slot − migrate tx slot. This is the simulator's anchor, `_migration_slot`, not the trigger slot.
+- **Pass:** landing k p50 ≤ 3 over at least 30 attempts. Otherwise stop and report.
+- **Size** stays 0.05 SOL until a confirmed book and DEC-020's conditions allow 0.25.
 
 ## 4. Costs and risks
 
-- **Credits.** The 6 h test used about 33k credits by the stream's own estimate (assumed 3 per 100 KB). A permanent stream, about 130k/day, is reported per day under the owner's credit rule.
-- **Misses.** About 8% of graduations reach the first swap within 0–1 slot of `complete` and give no lead from either signal. The build does not chase them.
+- **Credits.** The 6 h test used 32,923 credits by the stream's own estimate (assumed 3 per 100 KB). A permanent stream, about 130k/day, is reported per day under the owner's credit rule.
+- **Misses.** About 8% of graduations (22 of 284) get no stream `migrate`.
+  - All 22 reach the first swap within 0–1 slot of `complete`.
+  - The tip `complete` gives no lead on 17 of them (6.0% of all graduations) and 94–836 ms on the other 5.
+  - The build does not chase them.
 - **Fast-0 memory.** The stream and the runner share fast-0, so the stream job keeps the 1.9 GB cap.
 
 ## 5. Asked of the owner
