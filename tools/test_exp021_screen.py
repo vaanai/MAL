@@ -1022,19 +1022,20 @@ class PrecountVTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             vmap = {f"pool-{d}-{i}": 1 for d in NON_P1 + P1 for i in range(6)}
-            gone = [f"pool-{NON_P1[0]}-0", f"pool-{NON_P1[0]}-1", f"pool-{P1[0]}-2"]  # one NO_SIM cell, one table cell, one more
+            gone = [f"pool-{NON_P1[0]}-0"] + [f"pool-{d}-1" for d in (NON_P1 + P1)[:6]]  # one NO_SIM cell (cells[0]) and six table cells
             for q in gone:
                 vmap[q] = None
             cells, rec = self.run_precount(td, vmap, constancy_exc=x.Refused("V-constancy check: only 3 sampled pool(s) were checked"))
             w = rec["would_refuse"]
-            self.assertTrue(any(m.startswith("V coverage") and "canonical pools" in m for m in w), w)
+            self.assertTrue(any(m.startswith("V coverage") and "simulated-cell pools" in m for m in w), w)
             self.assertTrue(any(m.startswith("constancy:") for m in w), w)
-            self.assertEqual(rec["v_coverage"]["n_pools"], len(cells))
-            self.assertEqual(rec["v_coverage"]["n_readable"], len(cells) - 3)
+            self.assertEqual(rec["v_coverage"]["n_pools"], len(cells) - 1)  # the NO_SIM cell's pool is not counted
+            self.assertEqual(rec["v_coverage"]["n_readable"], len(cells) - 1 - 6)
+            self.assertEqual(rec["v_coverage"]["v_coverage_all_cells"]["n_pools"], len(cells))  # report-only
             sp = rec["v_coverage"]["unreadable_cells_by_block"]
-            self.assertEqual(sum(b["cells"] for b in sp.values()), 3)
+            self.assertEqual(sum(b["cells"] for b in sp.values()), 7)
             self.assertEqual(sum(b["no_sim"] for b in sp.values()), 1)
-            self.assertEqual(sum(b["in_table"] for b in sp.values()), 2)
+            self.assertEqual(sum(b["in_table"] for b in sp.values()), 6)
             self.assertEqual(sum(sum(b["no_sim_by_reason"].values()) for b in sp.values()), 1)
             self.assertIn("p1_oof_without_cell", rec)
             self.assertNotIn("2026-09-25", rec["p1_oof_check_dates"])
@@ -1049,3 +1050,17 @@ class PrecountVTests(unittest.TestCase):
             self.assertEqual(rec["v_constancy"]["n_checked"], 200)
             self.assertEqual(rec["v_constancy"]["floor"], e16.V_SAMPLE_SIZE)
             self.assertEqual(json.loads((td / "o" / "unreadable_pools.json").read_text()), [])
+
+    def test_no_sim_unreadable_pools_do_not_lower_coverage_but_simulated_do(self):
+        cells = [{"pool": f"p{i}", "status": "FILLED"} for i in range(200)] + [{"pool": f"n{i}", "status": "NO_SIM"} for i in range(50)]
+        vmap = {c["pool"]: 1 for c in cells}
+        for i in range(50):
+            vmap[f"n{i}"] = None  # every NO_SIM pool unreadable
+        rec = x.v_coverage_simulated(cells, vmap)
+        self.assertEqual((rec["n_pools"], rec["coverage"]), (200, 1.0))
+        self.assertEqual(rec["v_coverage_all_cells"]["n_pools"], 250)
+        self.assertAlmostEqual(rec["v_coverage_all_cells"]["coverage"], 0.8)
+        vmap["p0"] = vmap["p1"] = vmap["p2"] = None  # 197/200 = 98.5%: a simulated cell with unreadable V lowers it
+        with self.assertRaises(x.Refused):
+            x.v_coverage_simulated(cells, vmap)
+        self.assertTrue(x.v_coverage_simulated(cells, vmap, enforce=False)["would_refuse"])

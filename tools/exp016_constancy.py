@@ -179,8 +179,45 @@ def build(primary: Sequence[str], rows: Iterable[Mapping[str, Any]], fetch: Fetc
     res = [p for p in reserve if p not in set(prim)]
     cands = collect_candidates(rows, prim + res, max_tries)
     out = [resolve_pool(p, cands.get(p, []), fetch, max_tries, sleep) for p in prim]
-    k = sum(1 for r in out if r["v_implied"] is None)
-    out += [resolve_pool(p, cands.get(p, []), fetch, max_tries, sleep) for p in res[:k]]
+    nulls = sum(1 for r in out if r["v_implied"] is None)
+    i = 0
+    while i < nulls and i < len(res):  # the reserve walk: a null reserve row is itself replaced by the next reserve row
+        row_ = resolve_pool(res[i], cands.get(res[i], []), fetch, max_tries, sleep)
+        out.append(row_)
+        nulls += 1 if row_["v_implied"] is None else 0
+        i += 1
+    return out
+
+
+def extend(primary: Sequence[str], reserve: Sequence[str], old: Sequence[Mapping[str, Any]], rows: Iterable[Mapping[str, Any]], fetch: Fetch, max_tries: int,
+           sleep: Callable[[float], None] = time.sleep) -> list[dict[str, Any]]:
+    """`--extend`: the old rows unchanged (never re-fetched), then only the missing reserve pools, in order, until every null row (old or new) has one
+    more reserve row. Refuses unless the old file is exactly primary + a prefix of the reserve, in order."""
+    prim = sorted(set(primary))
+    res = [p for p in reserve if p not in set(prim)]
+    pools = [r["pool"] for r in old]
+    if pools[:len(prim)] != prim or pools[len(prim):] != res[:len(pools) - len(prim)] or len(pools) < len(prim):
+        raise x.Refused("--extend: the existing file is not the sample's primary pools followed by a prefix of its reserve, in order")
+    done = {r["pool"]: r for r in old}
+    nulls = sum(1 for p in prim if done[p]["v_implied"] is None)
+    need: list[str] = []
+    i = 0
+    while i < nulls and i < len(res):
+        if res[i] in done:
+            nulls += 1 if done[res[i]]["v_implied"] is None else 0
+        else:
+            need.append(res[i])
+            break
+        i += 1
+    out = [dict(r) for r in old]
+    if not need:
+        return out
+    cands = collect_candidates(rows, res[i:], max_tries)
+    while i < nulls and i < len(res):
+        row_ = resolve_pool(res[i], cands.get(res[i], []), fetch, max_tries, sleep)
+        out.append(row_)
+        nulls += 1 if row_["v_implied"] is None else 0
+        i += 1
     return out
 
 
@@ -197,6 +234,7 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--sample", type=Path, required=True)
     ap.add_argument("--p2-view-dir", type=Path, action="append", required=True)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--extend", type=Path, default=None, help="an existing constancy.json: keep its rows unchanged and fetch only the missing reserve pools, in order; --out is a NEW file")
     ap.add_argument("--rps", type=float, default=DEFAULT_RPS)
     ap.add_argument("--max-tries-per-pool", type=int, default=DEFAULT_MAX_TRIES)
     ap.add_argument("--env-file", default=sim.DEFAULT_ENV_FILE)
@@ -218,12 +256,23 @@ def main(argv: Sequence[str] | None = None, fetch: Fetch | None = None) -> int:
         return 2
     if fetch is None:
         fetch = HttpFetch(sim.load_rpc_url(None, a.env_file), a.rps)
-    out = build(primary, iter_view_rows(g2), fetch, a.max_tries_per_pool, reserve)
+    if a.extend is not None:
+        try:
+            if a.out.exists() or a.out.resolve() == a.extend.resolve():
+                raise x.Refused("--extend writes a NEW --out file; it exists or is the input")
+            old = json.loads(a.extend.read_text())
+            out = extend(primary, reserve, old, iter_view_rows(g2), fetch, a.max_tries_per_pool)
+        except (x.Refused, OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"refusing: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+    else:
+        out = build(primary, iter_view_rows(g2), fetch, a.max_tries_per_pool, reserve)
     a.out.write_text(json.dumps(out) + "\n", encoding="utf-8")
     n_null = sum(1 for r in out if r["v_implied"] is None)
     meta = {"out_sha256": sha256_file(a.out), "sample_sha256": sha256_file(a.sample), "view_dirs": [str(p) for p in a.p2_view_dir], "n": len(out),
             "n_null": n_null, "null_reasons": dict(sorted(collections.Counter(r["reason"] for r in out if r["v_implied"] is None).items())),
             "n_primary": len(set(primary)), "n_reserve_used": len(out) - len(set(primary)), **v_counts(out, vmap), "git_head": e15.git_state()["head"], "rpc_calls": getattr(fetch, "calls", None), "max_tries_per_pool": a.max_tries_per_pool, "rps": a.rps,
+            **({"extended_from_sha256": sha256_file(a.extend), "n_rows_kept": len(old)} if a.extend is not None else {}),
             "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     a.out.with_name(a.out.name + ".meta.json").write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")
     print(f"pools={len(out)} readable={len(out) - n_null} null={n_null} rpc_calls={meta['rpc_calls']}")

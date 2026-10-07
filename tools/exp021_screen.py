@@ -669,6 +669,19 @@ def p1_oof_check_dates() -> list[str]:
     return [d for d in p1_kept_dates() if d not in ex]
 
 
+def simulated_pools(cells: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Pools of the cells that are simulated (status != NO_SIM): a NO_SIM cell is never priced, so its V is never read (Amendment 4 item 4)."""
+    return sorted({c["pool"] for c in cells if c.get("pool") and c.get("status") != "NO_SIM"})
+
+
+def v_coverage_simulated(cells: Sequence[Mapping[str, Any]], vmap: Mapping[str, int | None], enforce: bool = True) -> dict[str, Any]:
+    """V coverage (floor unchanged, `e16.V_COVERAGE_MIN`) over the simulated cells' pools only; refuses at or below the floor when `enforce`. The
+    all-cells coverage is report-only (`v_coverage_all_cells`). `e16.v_coverage` itself is unchanged."""
+    allc = {k: v for k, v in e16.v_coverage_report([c["pool"] for c in cells if c.get("pool")], vmap).items() if k != "unreadable"}
+    rec = e16.v_coverage(simulated_pools(cells), vmap) if enforce else e16.v_coverage_report(simulated_pools(cells), vmap)
+    return {**rec, "basis": "simulated cells (status != NO_SIM)", "v_coverage_all_cells": allc}
+
+
 def unreadable_v_split(cells: Sequence[Mapping[str, Any]], sel: Sequence[bool], vmap_raw: Mapping[str, int | None]) -> dict[str, Any]:
     """Outcome-blind split of the cells whose pool has NO readable stored V on the raw map, per block: NO_SIM (by reason), in the feature table
     (`build_table`'s `e16.in_book`), frozen-selected (in the table and selected), and other (censored or outside the counted window). Counts only."""
@@ -855,7 +868,7 @@ def freeze_main(args: argparse.Namespace) -> int:
                   "oof_scores_sha256": hashlib.sha256((Path(args.artifact_dir) / "oof_scores.json").read_bytes()).hexdigest(),
                   "view_sha256": {"P1": g["g1"]["view_sha256"], "P2": g["g2"]["view_sha256"], "P3_manifests": g["g3"]["pin_sha256"], "P4": (g["g4"] or {}).get("view_sha256")}}
         # the freeze DOES read V: the simulation labels of the training rows use the merged map, so its coverage is recorded in the manifest (no refusal here)
-        inputs["v_coverage"] = {k: v for k, v in e16.v_coverage_report([c["pool"] for c in cells if c.get("pool")], vmap_raw).items() if k != "unreadable"}
+        inputs["v_coverage"] = {k: v for k, v in v_coverage_simulated(cells, vmap_raw, enforce=False).items() if k != "unreadable"}
         m = freeze_models(table, out_dir, head=gs["head"], vmap_sha256=g["vmap_sha256"], with_p4=g["with_p4"], inputs=inputs)
     except (Refused, rug.PoolAttributionRefusal, e16.SimulationError) as exc:
         print(f"refusing: {exc}", file=sys.stderr)
@@ -1066,10 +1079,10 @@ def precount(args: argparse.Namespace) -> int:
     if oof is None:
         would.append("P1: stored OOF scores could not be loaded")
     # the same V checks the real run makes before `started`, recorded and reported as would-refuse instead of raised (Amendment 4)
-    cov = e16.v_coverage_report([c["pool"] for c in cells if c.get("pool")], vmap_raw)
+    cov = v_coverage_simulated(cells, vmap_raw, enforce=False)
     unreadable = sorted({c["pool"] for c in cells if c.get("pool") and vmap_raw.get(c["pool"]) is None})
     if cov["would_refuse"]:
-        would.append(f"V coverage {cov['coverage']:.3%} of {cov['n_pools']} canonical pools is not over {e16.V_COVERAGE_MIN:.0%}")
+        would.append(f"V coverage {cov['coverage']:.3%} of {cov['n_pools']} simulated-cell pools is not over {e16.V_COVERAGE_MIN:.0%}")
     cov = {k: v for k, v in cov.items() if k != "unreadable"}
     cov["n_unreadable"] = len(unreadable)
     cov["unreadable_cells_by_block"] = unreadable_v_split(cells, sel, vmap_raw)
@@ -1180,7 +1193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         oof_cover = e16.oof_without_cell(results, oof, oof_days, p1_oof_check_dates())
         pre["p1_oof_without_cell"] = oof_cover
         enforce_limits(results, oof, oof_cover)
-        pre["v_coverage"] = e16.v_coverage([c["pool"] for c in cells if c.get("pool")], vmap_raw)
+        pre["v_coverage"] = v_coverage_simulated(cells, vmap_raw)
         pre["v_constancy"] = constancy
         e16.check_constancy_sample(constancy_samples, e16.readable_pools([c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")], vmap_raw))
         table = build_table(cells, sel)
