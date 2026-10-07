@@ -122,3 +122,38 @@ The outcome-blind re-sim ran as MiScusi job #319, at code f7d0ac1, with 3 worker
 The run printed only counts and hashes. No net was printed or opened. The manifest sha below was copied from `SIZED.manifest.sha256`. The screen re-hashes the files and runs the R3 equivalence check before `started`.
 
 SIZED_MANIFEST_SHA256 = 8ca333e5cfe81ce7868c8995a47c6468284c8ced67f138812b43842c98afc89b
+
+## 14. Result (2026-10-06, job #337)
+
+**SCREEN NONE.** One run at code `200cad0`, MiScusi job #337 on research-0, 2026-10-06T23:05Z. Outputs: `/data/mal/exp017-screen/` (`screen.md`, `screen.json`, `result_H3.json`, `result_H4.json`, `RUN.record.json`). Exploration only, no edge claim; nothing goes to confirmation. Numbers are copied from `screen.json`.
+
+| Cell | n non-P1 | paired p | Holm threshold | Holm reject | bars |
+|---|---|---|---|---|---|
+| H3 | 621 | 0.48605139486051396 | 0.05 | no | B1 to B6 all FAIL |
+| H4 | 2,349 | 0.3955604439556044 | 0.025 | no | B6 passed on the flat leg only (mean +0.000609639238425926, n 864, 7 of 13 dates); every other bar failed |
+
+H4 did not beat uniform 0.10 SOL: total flat -0.757406444 vs +0.208016013, pressure -1.104652902 vs -0.725846069 (`score_effect` false), so by the section 12 rule it is not a score effect.
+
+**C0 (report-only, outside Holm).** Frozen EXP-012 book at four stakes, 27 non-P1 dates, n 2,349. Mean SOL per trade / total SOL / ex-top-3 SOL / positive dates:
+
+| Stake | flat | pressure |
+|---|---|---|
+| 0.05 | -0.00043900046232439333 / -1.031212086 / -1.315291576 / 9 of 27 | -0.0005415036211153682 / -1.271992006 / -1.444805007 / 10 of 27 |
+| 0.10 | +0.00008855513537675606 / +0.208016013 / -0.362406732 / 12 of 27 | -0.0003090021579395487 / -0.725846069 / -1.073418096 / 12 of 27 |
+| 0.25 | +0.0015317216045125585 / +3.598014049 / +2.171753817 / 13 of 27 | +0.00030207653214133677 / +0.709577774 / -0.159884712 / 13 of 27 |
+| 0.5 | +0.0036088916219667944 / +8.47728642 / +5.635029087 / 13 of 27 | +0.001149852399318859 / +2.701003286 / +0.969480593 / 13 of 27 |
+
+CI90 at 0.5 SOL: flat [-0.002717209018454662, +0.010848846253746275], pressure [-0.0029114594565134095, +0.005465274088761175]. No stake clears the gate: every CI lower bound is below 0 and positive days are never a majority. 0.5 SOL is the only stake with ex-top-3 positive on both legs, but the C0 totals rest on one date (2026-08-21; table below). These are 27 already-read dates (7 families have scoped them; EXP-017 is the 4th to read outcomes, after EXP-015, EXP-018 and EXP-019; per-pool prior tries P1 81, P2 18, P3 10, P4 10). CIs are the `screen.json` book-level mint-clustered recipe; the per-trade CIs in `result_H3.json` / `result_H4.json` differ slightly and are also below 0. Holm gives H4 (lower p) 0.025 and H3 0.05 by p rank; no ordering rejects either, so this is exploration. Input to DEC-020 sizing: size improves the per-trade sign from fixed-fee dilution; not evidence of edge.
+
+**C0 totals rest on one date.** Dropping the single best date (2026-08-21 in every row; `screen.json` `c0.<stake>.report.concentration`) turns every positive C0 total negative:
+
+| Stake | Leg | Total (SOL) | Best date alone (SOL) | Total without best date (SOL) |
+|---|---|---|---|---|
+| 0.25 | flat | +3.598014049 | +4.543369322 (derived: total minus without) | -0.9453552730000001 |
+| 0.25 | pressure | +0.709577774 | +2.722825556 (derived: total minus without) | -2.013247782 |
+| 0.5 | flat | +8.47728642 | +9.187248662 | -0.7099622419999996 |
+| 0.5 | pressure | +2.701003286 | +5.534053771 | -2.833050485 |
+
+The C0 size result rests on one date. 
+
+Tries: two `started` and eight `completed` lines, synced to `data/tries.jsonl`. Lab note: [exp017-screen-2026-10-06.md](../ARTIFACTS/lab/exp017-screen-2026-10-06.md).
