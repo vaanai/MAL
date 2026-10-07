@@ -1,38 +1,38 @@
-# Manager handoff 2026-10-06 ~21:40Z (manager9 → next manager)
+# Manager handoff 2026-10-07 ~16Z (manager9 → next manager)
 
 Replace this page at the next handoff; don't append. Read it first. Then read:
 - [LAB_STATE.md](../LAB_STATE.md);
 - DEC-016 Amendment 5 **§7** (the 10-16 (B) rules);
-- DEC-019 (with the 10-06 §7 note);
-- DEC-020 §7 and DEC-021;
-- the [EXP-016 plan](../EXP/EXP-016-rug-veto-plan.md) §13;
-- the EXP-017 and EXP-020 plans (sized re-sims in flight);
-- these memory notes: `state-2026-10-04`, `feedback-real-layout-precount`, `feedback-realistic-primary`, `rug-filter-priority`, `pumpswap-virtual-reserve`, `profit-focus`.
-
-manager8 stood down at about 19:40Z. Its crons are deleted.
+- DEC-014's 2026-10-07 block-budget amendment;
+- DEC-020 §9 (size alone is not a profit path);
+- the [EXP-021 plan](../EXP/EXP-021-rug-signals-in-selector-plan.md), Amendments 1–3, and its Part 1 pre-registration once merged;
+- the probe closing note `ARTIFACTS/lab/probe-final-2026-10-07.md`, as corrected in #445;
+- memory notes `probe-stopped-next-live`, `feedback-top-day-concentration`, `feedback-pinned-exit-gates`, `feedback-real-layout-precount`.
 
 ## First things to do
 
 1. **Become the inbox reader:** `miscusi_worker_start` with `inbox: true`.
-2. **Recreate two session crons.** Crons die with the session.
-   - **Hourly probe monitor at :17.** Job on `mal-fast-0`, role ops, 200 MB, 3 min. Use the same command as job #331 (or #300). Alert if realized ≤ −0.20, the executor isn't active, the build is not faa3192, a halt/stop file exists, a position is stuck or abandoned, or there are errors.
-   - **Daily tip-tape archive at 03:23Z.** Job on `mal-fast-0`, 800 MB, 240 min. Use the same command as job #304. It zstd-compresses each closed hour, sha256-verifies it, and copies it to research-0 `/data/mal/tip-tape-archive/`. It deletes nothing. This must keep running: fast-0 retention starts deleting tape at 10-08 06Z.
-3. **Check the jobs in flight** (below).
-4. **Watch MiScusi memory on research-0.** It schedules on declared memory, not on use. Ollama is off (Helm, 10-06) and stays off as long as we need. Restart command: `cd /opt/miscusi && sudo docker compose start ollama`.
+2. **Recreate the session crons.** Crons die with the session.
+   - **Daily stopped-probe check at 12:17Z.** Job on `mal-fast-0`, role ops, 200 MB, 3 min. Use the same command as job #358. Alert if attempts > 62, realized ≠ −0.210755, open > 0, the stop file is missing, a position is stuck or abandoned, or there are errors.
+   - **Daily tip-tape archive at 03:23Z.** Job on `mal-fast-0`, 800 MB, 240 min. Use the same command as job #352. Expect `mismatched=0`. fast-0 retention starts deleting tape at 10-08 06Z.
+3. **Heavy jobs go on research-0 only.**
+   - research-0 has about 96 GB schedulable; MiScusi schedules on declared memory.
+   - EXP-016/021 tape passes need **72 GB with 3 workers** (#326 hit OOM at 56).
+   - fast-0 jobs stay ≤1.9 GB. Decline fast-0 idle notices.
+4. **Ollama on research-0 is off** (Helm). Restart with `cd /opt/miscusi && sudo docker compose start ollama` only when research is idle.
 
+## Owner direction (10-06 / 10-07)
 
-## Owner direction (10-06)
-
-- **Push to profit fast, with no setbacks.**
-  - Every critical-path merge goes through quant-proof.
-  - **Every try-spending run first gets a count-only pass on the real data layout.** Today that pass caught 4 loader bugs that fixtures missed.
-- **Challengers: the manager's answer, given to the owner.**
-  - Widen the cheap screen stage to 6–10 ideas per batch.
-  - Keep confirmation one-shot.
-  - Keep forward races at 3 or fewer.
-  - Buy more fresh confirmation blocks with Helius credits.
-  - New edge comes from new information, not retrains.
-- **The owner's external reviewers are Helm, Lyra and Warden.** Their reports have been right. Verify their claims, then act.
+- **Push to profit.** Run more ideas and challengers, but no setbacks.
+- **Quant-proof on every critical-path merge, including lab notes whose conclusions feed a decision.** #443 merged without it and had to be corrected in #445.
+- **Rug signals go into the model as inputs** (EXP-021), not as a separate veto layer.
+- **"Tell me when we're ready to go live."** That needs four things:
+  - a book that clears a fresh-block confirmation;
+  - a new reviewed build;
+  - the owner's 1 SOL;
+  - the gate.
+- **Owner usage was ~75% of weekly on 10-07.** Run one or two builders at a time, with targeted reviews.
+- **External reviewers are Helm, Lyra and Warden.** Verify their claims, then act.
 
 ## 10-16 FINAL read: every tool is merged
 
@@ -54,66 +54,59 @@ manager8 stood down at about 19:40Z. Its crons are deleted.
   - vbook and sensitivity both take `--vmap-merge-meta --final-fetch-map --snapshot … --lphist …`.
 - **Settled (Helm and owner, 10-06):** the ceiling stays as merged. It counts only *unexplained* V0 moves; there is no ceiling on explained LP-rescale moves.
 
-## Research state (10-06 evening, manager9)
+## Research state (10-07 ~16Z)
 
-**Reading so far.** Five filters on frozen EXP-012's picks have now failed at realistic costs:
-- EXP-013;
-- EXP-015;
-- #191;
-- **EXP-018**, causal wallet skill: job #325, paired p 0.46, W2 book flat −0.00102 SOL/trade (lab note `exp018-screen-2026-10-06.md`);
-- **EXP-019**, post-migration momentum confirm at k8: job #328, paired −0.00053, p 0.97 (lab note `exp019-screen-2026-10-06.md`).
+**Closed or failed at realistic costs:**
+- the earlier filters on EXP-012's picks: EXP-013, EXP-015, #191, EXP-018 and EXP-019;
+- **EXP-017** (regime gate and score sizing). Its C0 size totals came from one date, 2026-08-21;
+- **EXP-014 v2**: SCREEN NONE, family closed.
 
-The wave-3 planner (notebook, about 21Z) says the most realistic profit path is **size and entry speed on the existing book**. At 0.05 SOL the book is about +1.1% of stake before fixed fees and −0.88% after. Fixed fees are 2.02% of stake at 0.05 SOL and 0.20% at 0.5. Capacity is about 87 trades/day. New families have priors ≤10%.
+**EXP-020 (report-only), k × stake:**
+- Paired k2 − k6 stays positive under both slot bounds: end-of-slot +0.75 to +1.02% of stake at 0.5 SOL, with the CI90-date lower bound above 0.
+- Every kept book is negative once the best date is dropped under the end bound.
+- Speed is a real relative lever but not profit on its own. Live k p50 is 5 on the current build, so k2 is not reachable yet.
 
-**In flight, in order of importance:**
-1. **EXP-017** (#423 merged, 218dac9). Cells: H3 regime gate and H4 score sizing (Holm k=2), plus C0, report-only, at 0.10/0.25/0.5 SOL.
-   - Re-sim **job #319** at f7d0ac1 writes a sealed 0400 cache to `/data/mal/exp017-resim-20261006T2004Z/sized_cache` and is unread. Its pre-`started` check compares the 0.05 control's hash with the EXP-015 cache.
-   - Next: a plan amendment line `SIZED_MANIFEST_SHA256 = <sha from the job log>`, merged. Then run the screen once: `python -m tools.exp017_screen --sized-cache <dir>/sized_cache --out-dir /data/mal/exp017-screen --tries-log /data/mal/ops/tries-exp017-screen.jsonl`.
-   - H4 counts only if it beats uniform 0.10 on both legs.
-2. **EXP-020**, the report-only grid, k {2,3,4,6} × stake {0.25,0.5,1.0} (#429 merged, c27d9ef).
-   - **Job #330** is queued after #319: precount, guards, then re-sim into `/data/mal/exp020-grid`.
-   - Next: a plan line `GRID_MANIFEST_SHA256 = …`, then `--report`.
-   - The entry bound is start-of-slot, so small-k gains are upper bounds.
-3. **EXP-016 rug veto.**
-   - #426 merged (9afa747): indexed BlockHistory plus forked cells. P1A cells used to take more than 60 min; they now finish in under 20.
-   - **Precount #10 is job #326** at 5cb4e17.
-   - Next, from the HANDOFF of 17:45Z, which still applies:
-     - check `oof_without_cell` and `cutoff_clamped`;
-     - the quant-proof LIMIT_OOF_NO_CELL split, with a §13 note;
-     - pin `VMAP_EXP016_SHA256` = `1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec`;
-     - constancy sample, then the constancy job, guards-only, and precount with constancy;
-     - the screen as one 56 GB job.
-4. **EXP-014 v2**, the mig+15 selector (PR #430; #269 closed). Quant-proof review is in progress, with the builder's open questions on bars 2/3/6. Then precount, then screen (1 try).
-5. **Entry guard #422 merged** (e93731e): `max_entry_k_slots` 8 plus signal age 5 s, in the DEC-020 trial config only. Before deploy: md5 replay; intents/arm-audit identical after stripping `migration_slot` and `migration_slot_src`; measure the `first_print` share.
+**Probe close (#443, corrected by #445):**
+- Exit lag 2 is a fair primary and 5 the pessimistic leg.
+- 9 of 55 fixed-build trades (16%) show sim-entry vs live-fill drift (price fell 10–15% between read and landing). That is an entry-model calibration item.
+- True round-trip cost is about 4.44% / 2.79% / 2.59% at 0.05 / 0.25 / 0.5 SOL, before price impact (+22.9 / +51.6 bps on entry at 0.25 / 0.5).
 
-**Unread confirmation blocks with no owner:** fresh-0828 and fresh-0808. fresh-0802 is being walked for EXP-016 (#248, #249, #250). The next likely use is a size-only confirmation if C0 at 0.5 SOL is positive.
+**EXP-021 (main bet), in order:**
+1. Done: tool #438, Amendment 3 + V-map pin #442, constancy sample #354, constancy fetch #355 (199 of 208 readable).
+2. Final precount **#356** (72 GB) is running. Check its `would_refuse`. The constancy floor is 200 checked pools; if 199 trips it, extend the reserve and refetch.
+3. The **Part 1 pre-registration + `--freeze` mode** is being written by a builder (branch `claude/exp021-part1`). Merge it with quant-proof **before** the screen.
+4. Then the screen, once (1 try), with V-map pin 1f3e772d…62ec and `--v-constancy-json /data/mal/exp021-constancy/constancy.json`, P1B excluded.
+5. A block claim needs DEC-014's budget, p < 0.025 / m.
 
+**Sealed, unread confirmation blocks:** fresh-0828, fresh-0808 and fresh-0802 (all verified 144/144 h). One stays in reserve.
 
-## Live probe (real money; DEC-019)
+**Later (Lyra 10-07):**
+- **The paper/live selection gap.** 13 of 61 live trips were mints that paper skipped. The paper twin needs paper decisions from 10-02 onward, which are sealed, so do it right after the 10-16 read unless the owner grants a probe-mints-only exception. The k of the live buys can be done now from the tip tape.
+- **fast-0 latency drift.** All over-5 s decisions came 18–24 h after the 00:00Z restart.
+- **The dead fast pre-create listener** (since 10-02).
+- **Owed labels:** the 1,346,200-lamport transfer, the first-N-after-migration cut, and the token-fee line.
 
-- **Status:** 57/90 attempts, realized −0.167875 SOL, faa3192. Paused by the paper ledger's daily cap since 08:13Z; it resumes at 00:00Z. Hard end 10-12T00Z.
-- **Measured today (notebook):**
-  - live k_mig p50 5, p90 6 (job #285);
-  - faa3192 is −0.014 SOL over 28 trips, which is +0.0143 before tx fees;
-  - the true round-trip cost is ≈4.5% of size at 0.05 SOL, ≈2.9% at 0.25 and ≈2.65% at 0.5. Pool fees of about 2.4–2.5% are the floor. The 1,513,840 per buy is refundable ATA rent (jobs #305 and #306).
-- **For the trial config (DEC-020 package):** `max_signal_age_s` is 120. Tighten it, and add a maximum-k guard. A signal decided 6.2 s late was traded.
-- **Security: #415 is merged (`fd85b2f`) and INSTALLED by Helm on fast-0** (`probe_withdraw.py` sha 78ef8670…; the lookalike smoke test was refused). `probe_withdraw` only sends to the owner-confirmed `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi`. An address-poisoning dust transfer hit the wallet at 10-06T03:01:52Z.
+## Live probe (DEC-019): STOPPED
 
-## Ops (10-06)
+Stopped at 2026-10-07T01:10:50Z (Helm, owner's decision):
+- 62/90 attempts, −0.210755 SOL, 0 open, faa3192;
+- the unit runs under STOP;
+- the wallet is 0.298774 SOL on chain, with no withdrawals.
 
-- **fast-0 tip follower:** MemoryMax raised from 1G to 2G with `set-property`. The drop-in is persistent and the service did not restart (job #303).
-- **Requests waiting on the owner/Helm** (notebook, ~17:20Z):
-  - stop the Oracle attn book and observe.attention, and retire the V-less books;
-  - research-0 cleanup: **DONE by Helm.** Disk went from 57% to 43%, about 126 G freed. Helm removed `kill-review-1005/snap`, `blocks/explore-0814`, `blocks/fresh-0903` and `raw/`, all verified against restic c7a5758b. The clean copies remain. **Anything that pointed at those raw paths must use `blocks-clean/` or `clean-view/` instead.**
-- **Heavy jobs go on research-0 only.** fast-0 takes ≤1.9 GB. Decline fast-0 "idle" notices.
-- **GitHub hiccups.** `gh pr merge` and `git fetch` hung twice today. Use `timeout 60 … </dev/null` and retry.
+The next live run waits for the 1 SOL, a new reviewed build and a gated book. `probe_withdraw` only sends to `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi` (#415, installed by Helm).
+
+## Ops
+
+- **Waiting on the owner/Helm** (console for_you, 10-07): stop the Oracle attn book and observe.attention, retire the V-less books, and move runner-restarts.jsonl so mal-ro can read it.
+- **research-0 cleanup:** done by Helm. Use `blocks-clean/` or `clean-view/` paths.
+- **GitHub hiccups:** use `timeout 60 … </dev/null` and retry.
 
 ## Clocks
 
 | When | What |
 |---|---|
+| ~10-07T18:07Z | Early-arm shadow read (session cron). Evaluate the processed `migrate` trigger and the tx-v0 request fix. Read labels and timing only. |
 | By 10-09T15Z | Resubmit forward walk #71 with params `{"start":"2026-10-02T15"}`, resumable, 10080 min. |
-| ~10-07T18Z | Early-arm shadow read. Also evaluate the processed `migrate` trigger (264/287, about 1 s lead), and fix its tx-v0 request. |
-| 10-12T00Z | Probe end, then the DEC-019 §7 lab note. Group by build, flag the hour-of-day bias, include the fee split. |
+| Every 1–2 days until 10-15 | V snapshots (job #286 command). |
 | Before 10-15T23Z | (e′) dry run. |
 | ~10-16T02Z | FINAL. |

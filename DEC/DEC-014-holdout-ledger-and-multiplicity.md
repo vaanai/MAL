@@ -80,3 +80,20 @@ If the pressure stamp cannot cover a book by 2026-10-05T05:00:00Z, that book is 
 For the 2026-10-05 kill review, the pressure-fail leg is scored over the full UTC days that begin at or after the first 00:00:00Z runner restart running code ≥ d7485d2 (#145). The flat leg is scored from the 2026-09-28T00:00:00Z clean clock as before. Each leg must independently meet the gate (≥5 UTC days etc.). Days before that restart are excluded from the pressure leg, and that exclusion is not a pass. If the pressure leg has <5 eligible days, the book is NOT_DECIDABLE.
 
 `tools/kill_review.py --pressure-from-ms` implements exactly that: the pressure leg only uses trades whose `decision_t_ms` ≥ that instant; the flat leg is unchanged. A book whose pressure leg has fewer than 5 eligible UTC days after that cut is NOT_DECIDABLE, same status as incomplete pressure coverage — never PROMOTE, never a plain KILL.
+
+## Amendment (2026-10-07): block budget for the sealed confirmation blocks
+
+**Why.** Lyra's 10-07 review raised this, and the manager adopts it. Seven or more families have now read outcomes on the same 27 non-P1 dates, with no correction across families. The owner has also asked for wider screen batches (6–10 ideas). Three sealed, unread 6-day blocks remain: fresh-0828, fresh-0808 and fresh-0802. A screen PASS alone must not be enough to spend one.
+
+**Rule (effective now, before any further screen result is read; tightened after quant-proof on #446):**
+1. **Multiplicity threshold, any route.** Any claim on a sealed block needs the claimant's primary one-sided p < 0.025 / m. That covers every route: screen, report-only grid, size-only or speed-only confirmation, or amendment.
+   - **p:** the larger of the flat-15% and pressure-scale-1 p-values, from 10,000 seed-1 bootstrap draws.
+   - **Holm:** a family's Holm adjustment covers every cell it has scored across all its tries.
+   - **m:** the number of distinct `EXP-###` numbers whose `data_blocks` overlap the 27 non-P1 dates (suffixes such as "batch N", "v2" or "backcheck" normalise to the number), plus untracked readers listed here (EXP-013, #191).
+   - Report-only and SCREEN NONE families count, and so does the claimant. **Floor m ≥ 8.**
+   - m and the family list are frozen in the claim's ledger row at claim time.
+2. **One block per family.** No family claims more than one block. A successor experiment that reuses a prior family's selector, features or base book counts as the same family for this rule.
+3. **Always one block in reserve.** At least one sealed, unread block stays unspent at all times. A new block is walked, sealed and entered in the ledger before the last one is spent.
+4. **Pre-registration first.** A block claim requires the claimant's Part 1 pre-registration to be merged before its screen is scored. Part 1 fixes the model recipe, md5 freeze, cells, costs and gate. Otherwise the family cannot claim a block. EXP-021 is the first under this rule.
+
+Nothing here lowers the promotion gate. It only makes spending a block harder.
