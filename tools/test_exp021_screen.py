@@ -793,5 +793,21 @@ class FreezeTests(unittest.TestCase):
         self.assertNotIn("append_try", body)
 
 
+class PreregTests(unittest.TestCase):
+    TEXT = (x.REPO_ROOT / "EXP" / "EXP-021-part1-prereg.md").read_text(encoding="utf-8")
+
+    def test_pins_match_the_code(self):
+        for sv in ("fresh-0802", "[2026-08-02T12, 2026-08-08T12)", "10,000 draws, seed 1", "p < 0.025", "exit lag 2", "0.05, 0.25 and 0.5 SOL", "tp50_sl30",
+                   "0.8030766588450794", "0.025 / m", "8%", "100 frozen picks", "refusing stub", "No k2 cell", "+22.9 and +51.6 bps"):
+            self.assertIn(sv, self.TEXT)
+        self.assertEqual(x.FAMILY_ALPHA, 0.025)
+        self.assertEqual(x.LIMIT_NO_CREATE_021, 0.08)
+        self.assertEqual(x.MIN_FROZEN_NON_P1, 100)
+        for f in sum(x.FREEZE_FILES.values(), ()) + (x.FREEZE_MANIFEST,):
+            self.assertIn(f, self.TEXT)
+        thr = json.loads((x.REPO_ROOT / "ARTIFACTS" / "exp012" / "threshold.json").read_text())
+        self.assertIn(repr(float(next(v for k, v in thr.items() if "threshold" in k and isinstance(v, float)))), self.TEXT)
+
+
 if __name__ == "__main__":
     unittest.main()
