@@ -23,6 +23,7 @@ from tools import pumpswap_virtual_history as pvh
 warnings.filterwarnings("ignore", category=FutureWarning)
 SOL = 1_000_000_000
 POOL_A, POOL_B = str(Pubkey.new_unique()), str(Pubkey.new_unique())
+POOL_C = str(Pubkey.new_unique())
 
 
 def event_bytes(pool: str, *, out=1_000_000_000, pq=10 * SOL, pb=80_000_000_000_000, net_extra=0) -> bytes:
@@ -164,6 +165,35 @@ class ReserveTests(unittest.TestCase):
         none = c.build(prim, rows, Fake({f"sig-{p}": tx_for(p) for p in prim}), 5, res, lambda s: None)
         self.assertEqual(len(none), 4)
 
+    def test_build_walks_past_a_null_reserve_row(self):
+        prim = [str(Pubkey.new_unique()) for _ in range(2)]
+        res = [str(Pubkey.new_unique()) for _ in range(5)]
+        rows = [row(p, f"sig-{p}", 1) for p in prim + res]
+        table = {f"sig-{p}": tx_for(p) for p in prim + res}
+        del table[f"sig-{prim[0]}"], table[f"sig-{res[0]}"]  # one primary null, then the first reserve is null too
+        out = c.build(prim, rows, Fake(table), 5, res, lambda s: None, cascade=True)
+        self.assertEqual([r["pool"] for r in out], sorted(prim) + res[:2])
+        out = c.build(prim, rows, Fake(table), 5, res, lambda s: None)  # EXP-016 default: one reserve row per null primary row, no cascade
+        self.assertEqual([r["pool"] for r in out], sorted(prim) + res[:1])
+
+    def test_extend_keeps_old_rows_and_fetches_only_missing_reserve(self):
+        prim = [str(Pubkey.new_unique()) for _ in range(2)]
+        res = [str(Pubkey.new_unique()) for _ in range(5)]
+        rows = [row(p, f"sig-{p}", 1) for p in prim + res]
+        table = {f"sig-{p}": tx_for(p) for p in prim + res}
+        del table[f"sig-{prim[0]}"], table[f"sig-{res[0]}"], table[f"sig-{res[1]}"]
+        old = c.build(prim, rows, Fake({k: v for k, v in table.items() if k != f"sig-{res[1]}"}), 5, res, lambda s: None)  # an old walk that stopped one reserve short
+        old = old[:len(prim) + 1]  # primary + res[0] (null): needs res[1] (null) and res[2]
+        f = Fake(table)
+        out = c.extend(prim, res, old, rows, f, 5, lambda s: None)
+        self.assertEqual(out[:len(old)], old)
+        self.assertEqual([r["pool"] for r in out[len(old):]], res[1:3])
+        self.assertNotIn(f"sig-{res[0]}", getattr(f, "seen", []))
+        # nothing missing: unchanged and no fetch
+        self.assertEqual(c.extend(prim, res, out, rows, Fake({}), 5, lambda s: None), out)
+        with self.assertRaises(x.Refused):
+            c.extend(prim, res, list(reversed(old)), rows, f, 5, lambda s: None)
+
     def test_load_sample_reads_both_formats(self):
         with tempfile.TemporaryDirectory() as tmp:
             a, b = Path(tmp, "a.json"), Path(tmp, "b.json")
@@ -235,6 +265,29 @@ class MainTests(unittest.TestCase):
             self.assertEqual(so.strip(), "pools=2 readable=1 null=1 rpc_calls=0")
             for p in (POOL_A, POOL_B):
                 self.assertNotIn(p, so + se)
+
+    def test_extend_writes_a_new_file_with_meta_and_refuses_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = Path(tmp) / "old.json"
+            sample = Path(tmp) / "sample.json"
+            sample.write_text(json.dumps({"primary": [POOL_A, POOL_B], "reserve": [POOL_C]}))
+            oldrows = [{"pool": p, "v_implied": None, "quote_reserve": None, "sig": None, "slot": None, "reason": "dust"} for p in sorted([POOL_A, POOL_B])]
+            old.write_text(json.dumps(oldrows))
+            out = Path(tmp) / "new.json"
+            rows = [row(POOL_C, "s3", 7)]
+            args = ["--sample", str(sample), "--p2-view-dir", "/x/view", "--out", str(out), "--extend", str(old), "--cascade"]
+            with mock.patch.object(c, "guard_views", return_value={"roots": {}, "pool": []}), mock.patch.object(c, "iter_view_rows", return_value=rows), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(c.main(args, fetch=Fake({"s3": tx_for(POOL_C)})), 0)
+                new = json.loads(out.read_text())
+                self.assertEqual(new[:2], oldrows)
+                self.assertEqual(new[2]["pool"], POOL_C)
+                meta = json.loads(Path(str(out) + ".meta.json").read_text())
+                import hashlib
+                self.assertEqual(meta["extended_from_sha256"], hashlib.sha256(old.read_bytes()).hexdigest())
+                self.assertEqual(c.main(args, fetch=Fake({})), 2)  # --out exists: refused
+                out.unlink()
+                self.assertEqual(c.main(args[:-1], fetch=Fake({})), 2)  # --extend without --cascade: refused
 
     def test_rps_above_five_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

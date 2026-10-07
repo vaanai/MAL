@@ -16,6 +16,12 @@ import tools.exp016_rug as rug
 import tools.exp016_screen as e16
 import tools.exp021_screen as x
 
+def write_pinned_constancy(path: Path) -> None:
+    """An empty constancy fixture plus the meta the extend pin requires (Amendment 4 item 5)."""
+    Path(path).write_text("[]")
+    Path(str(path) + ".meta.json").write_text(json.dumps({"extended_from_sha256": x.EXTEND_INPUT_SHA256}))
+
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 NON_P1 = e15.non_p1_dates(True)
 P1 = e15.block_dates("P1")
@@ -490,7 +496,7 @@ class CliTests(unittest.TestCase):
     def test_guards_only_reads_no_row_and_spends_nothing(self):
         with tempfile.TemporaryDirectory() as td:
             samples = Path(td) / "c.json"
-            samples.write_text("[]")
+            write_pinned_constancy(samples)
             g = {"with_p4": True, "vmap_sha256": "x", "g1": {}, "g2": {}, "g3": {}, "g4": {}}
             with mock.patch.object(x, "run_guards", return_value=g), mock.patch.object(e16, "load_pinned_vmap", return_value={}), \
                     mock.patch.object(e16, "check_v_constancy", return_value={}), mock.patch.object(e16, "git_state", return_value={"head": "h", "dirty_tools": False}), \
@@ -513,7 +519,7 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             samples = td / "c.json"
-            samples.write_text("[]")
+            write_pinned_constancy(samples)
             cells = []
             for d in NON_P1 + P1:
                 for i in range(8):
@@ -528,7 +534,7 @@ class CliTests(unittest.TestCase):
                 mock.patch.object(x, "collect", return_value=(results, {})), mock.patch.object(x, "load_oof", return_value=({}, 0, 0, {})),
                 mock.patch.object(e16, "frozen_flags", return_value=sel), mock.patch.object(e16, "pre_started_counts", return_value={}),
                 mock.patch.object(e16, "oof_without_cell", return_value={}), mock.patch.object(x, "enforce_limits"),
-                mock.patch.object(e16, "v_coverage", return_value={}), mock.patch.object(e16, "check_constancy_sample"),
+                mock.patch.object(e16, "v_coverage", return_value={}), mock.patch.object(x, "check_constancy_sample_cascade"),
                 mock.patch.object(e16, "set_process_workers"),
             ]
             for p in patches:
@@ -554,14 +560,14 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             samples = td / "c.json"
-            samples.write_text("[]")
+            write_pinned_constancy(samples)
             cells = [cell_rec(i, d, status="FILLED") for d in NON_P1 for i in range(6)]  # P1 dates missing: the screen runs; force the refusal in run_screen
             g = {"with_p4": True, "vmap_sha256": "v", "g1": {}, "g2": {}, "g3": {}, "g4": {}}
             with mock.patch.object(x, "run_guards", return_value=g), mock.patch.object(e16, "load_pinned_vmap", return_value={}), mock.patch.object(e16, "check_v_constancy", return_value={}), \
                     mock.patch.object(e16, "git_state", return_value={"head": "h", "dirty_tools": False}), mock.patch.object(x, "collect", return_value=([{"tag": "S", "cells": cells}], {})), \
                     mock.patch.object(x, "load_oof", return_value=({}, 0, 0, {})), mock.patch.object(e16, "frozen_flags", return_value=[True] * len(cells)), \
                     mock.patch.object(e16, "pre_started_counts", return_value={}), mock.patch.object(e16, "oof_without_cell", return_value={}), mock.patch.object(x, "enforce_limits"), \
-                    mock.patch.object(e16, "v_coverage", return_value={}), mock.patch.object(e16, "check_constancy_sample"), mock.patch.object(e16, "set_process_workers"), \
+                    mock.patch.object(e16, "v_coverage", return_value={}), mock.patch.object(x, "check_constancy_sample_cascade"), mock.patch.object(e16, "set_process_workers"), \
                     mock.patch.object(x, "run_screen", side_effect=x.Refused("fold cannot train")):
                 rc = x.main(self.argv(td, "--v-constancy-json", str(samples)))
             self.assertEqual(rc, 2)
@@ -698,6 +704,14 @@ class Amendment3Tests(unittest.TestCase):
         self.assertTrue(set(d) <= set(P1))
         self.assertIn(P1[0], d)
         self.assertNotIn(P1[-1], d)  # the last P1 date is P1B's (oracle-live-2026-09-25_27)
+
+    def test_oof_check_dates_exclude_the_p1b_partial_date(self):
+        d = x.p1_oof_check_dates()
+        self.assertNotIn("2026-09-25", d)  # P1C covers 00-06Z only; 07-23Z was P1B (Amendment 4)
+        self.assertIn("2026-09-25", x.p1_oof_check_excluded())
+        self.assertIn("2026-09-25", x.p1_kept_dates())  # training dates are unchanged
+        self.assertIn("2026-09-19", d)  # 23 of 24 h covered by P1A
+        self.assertEqual(set(d) | set(x.p1_oof_check_excluded()), set(x.p1_kept_dates()))
 
     def test_report_records_the_exclusion(self):
         md = x.render_md({"first_line": "f", "banner": "b", "decision": {"outcome": "o"}, "p1b": x.P1B_EXCLUDED})
@@ -978,3 +992,126 @@ class PreregTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrecountVTests(unittest.TestCase):
+    def run_precount(self, td, vmap, constancy_exc=None, with_constancy=True):
+        import io
+        from contextlib import redirect_stdout
+
+        cells = []
+        for d in NON_P1 + P1:
+            for i in range(6):
+                c = cell_rec(i, d, status="FILLED" if i % 2 == 0 else "MISS")
+                c["pool"] = f"pool-{d}-{i}"
+                cells.append(c)
+        cells[0]["status"] = "NO_SIM"
+        cells[0]["why"] = "bad create row"
+        res = {"tag": "P2", "cells": cells}
+        g = {"with_p4": True, "vmap_sha256": None, "g1": {}, "g2": {}, "g3": {}, "g4": {}}
+        cj = td / "c.json"
+        write_pinned_constancy(cj)
+        args = SimpleNamespace(vmap=str(td / "v.json"), v_fallback_json=None, closed_pools_json=None, artifact_dir=td, out_dir=td / "o", v_constancy_json=cj if with_constancy else None,
+                               max_workers=2, p1_fast_dir="a", p1_oracle_insample_dir="b", p1_oracle_live_dir=None, p3_root="d", p2_view_dir=["e"], p4_view_dir=None)
+        def _raise(samples, vmap, min_sample=200):
+            if min_sample:
+                raise constancy_exc
+
+            return {"n_sample": 3, "n_checked": 1, "n_unreadable_implied": 2, "n_disagree": 0, "rate": 0.0}
+
+        cons = mock.patch.object(e16, "check_v_constancy", side_effect=_raise) if constancy_exc else mock.patch.object(e16, "check_v_constancy", return_value={"n_sample": 200, "n_checked": 200})
+        with mock.patch.object(e16, "VMAP_EXP016_SHA256", "PENDING"), mock.patch.object(x, "run_guards", return_value=g), mock.patch.object(e16, "set_process_workers"), \
+                mock.patch.object(x, "collect", return_value=([res], {})), mock.patch("tools.pumpswap_virtual.load_map", return_value=vmap), \
+                mock.patch.object(x, "load_oof", return_value=({}, 0, 0, {})), mock.patch.object(e16, "frozen_flags", return_value=[i % 2 == 0 for i in range(len(cells))]), \
+                mock.patch.object(e16, "oof_without_cell", return_value={"available": True, "n_without_cell": 0}), mock.patch.object(x, "check_limits", return_value=[]), \
+                mock.patch.object(e16, "source_counts", return_value={}), mock.patch.object(e16, "pre_started_counts", return_value={}), \
+                mock.patch.object(x, "check_constancy_sample_cascade"), cons, redirect_stdout(io.StringIO()):
+            rc = x.precount(args)
+        self.assertEqual(rc, 0)
+        return cells, json.loads((td / "o" / "precount.json").read_text())
+
+    def test_v_coverage_and_constancy_in_would_refuse_and_unreadable_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            vmap = {f"pool-{d}-{i}": 1 for d in NON_P1 + P1 for i in range(6)}
+            gone = [f"pool-{NON_P1[0]}-0"] + [f"pool-{d}-1" for d in (NON_P1 + P1)[:6]]  # one NO_SIM cell (cells[0]) and six table cells
+            for q in gone:
+                vmap[q] = None
+            cells, rec = self.run_precount(td, vmap, constancy_exc=x.Refused("V-constancy check: only 3 sampled pool(s) were checked"))
+            w = rec["would_refuse"]
+            self.assertTrue(any(m.startswith("V coverage") and "simulated-cell pools" in m for m in w), w)
+            self.assertTrue(any(m.startswith("constancy (floor and rate)") for m in w), w)
+            self.assertEqual(rec["v_constancy"]["n_checked"], 1)  # counts are recorded even when the floor refuses (never null)
+            self.assertEqual(rec["v_coverage"]["n_pools"], len(cells) - 1)  # the NO_SIM cell's pool is not counted
+            self.assertEqual(rec["v_coverage"]["n_readable"], len(cells) - 1 - 6)
+            self.assertEqual(rec["v_coverage"]["v_coverage_all_cells"]["n_pools"], len(cells))  # report-only
+            sp = rec["v_coverage"]["unreadable_cells_by_block"]
+            self.assertEqual(sum(b["cells"] for b in sp.values()), 7)
+            self.assertEqual(sum(b["no_sim"] for b in sp.values()), 1)
+            self.assertEqual(sum(b["in_table"] for b in sp.values()), 6)
+            self.assertEqual(sum(sum(b["no_sim_by_reason"].values()) for b in sp.values()), 1)
+            self.assertIn("p1_oof_without_cell", rec)
+            self.assertNotIn("2026-09-25", rec["p1_oof_check_dates"])
+            self.assertEqual(json.loads((td / "o" / "unreadable_pools.json").read_text()), sorted(gone))
+
+    def test_clean_precount_has_no_v_refusal_and_records_constancy(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            vmap = {f"pool-{d}-{i}": 1 for d in NON_P1 + P1 for i in range(6)}
+            _, rec = self.run_precount(td, vmap)
+            self.assertFalse([m for m in rec["would_refuse"] if m.startswith(("V coverage", "constancy"))])
+            self.assertEqual(rec["v_constancy"]["n_checked"], 200)
+            self.assertEqual(rec["v_constancy"]["floor"], e16.V_SAMPLE_SIZE)
+            self.assertEqual(json.loads((td / "o" / "unreadable_pools.json").read_text()), [])
+
+    def test_bad_create_row_unreadable_pools_do_not_lower_coverage_but_other_cells_do(self):
+        cells = [{"pool": f"p{i}", "status": "FILLED"} for i in range(200)] + [{"pool": f"n{i}", "status": "NO_SIM", "why": "bad create row"} for i in range(50)]
+        vmap = {c["pool"]: 1 for c in cells}
+        for i in range(50):
+            vmap[f"n{i}"] = None  # every bad-create-row pool unreadable
+        rec = x.v_coverage_simulated(cells, vmap)
+        self.assertEqual((rec["n_pools"], rec["coverage"]), (200, 1.0))
+        self.assertEqual(rec["v_coverage_all_cells"]["n_pools"], 250)
+        self.assertAlmostEqual(rec["v_coverage_all_cells"]["coverage"], 0.8)
+        other = cells + [{"pool": f"o{i}", "status": "NO_SIM", "why": "other reason"} for i in range(3)]
+        vm2 = dict(vmap, **{f"o{i}": None for i in range(3)})  # 200/203 = 98.5%: another NO_SIM reason is V-priced, so it lowers coverage
+        with self.assertRaises(x.Refused):
+            x.v_coverage_simulated(other, vm2)
+        vmap["p0"] = vmap["p1"] = vmap["p2"] = None  # a FILLED cell with unreadable V lowers it
+        with self.assertRaises(x.Refused):
+            x.v_coverage_simulated(cells, vmap)
+        self.assertTrue(x.v_coverage_simulated(cells, vmap, enforce=False)["would_refuse"])
+
+
+class CascadeTests(unittest.TestCase):
+    def test_wrapper_accepts_the_cascade_and_exp016_does_not(self):
+        pop = [f"pool{i}" for i in range(1000)]
+        prim, res = e16.sample_pools(pop), e16.reserve_pools(pop, e16.sample_pools(pop))
+        rows = [{"pool": p, "v_implied": None if i < 2 else 1} for i, p in enumerate(prim)]
+        rs = rows + [{"pool": res[0], "v_implied": 1}, {"pool": res[1], "v_implied": None}, {"pool": res[2], "v_implied": 1}]
+        x.check_constancy_sample_cascade(rs, pop)
+        with self.assertRaises(x.Refused):
+            e16.check_constancy_sample(rs, pop)  # EXP-016 (plan 13 item 8(c)): a null reserve row is not replaced
+        with self.assertRaises(x.Refused):
+            x.check_constancy_sample_cascade(rs[:-1], pop)
+        with self.assertRaises(x.Refused):
+            x.check_constancy_sample_cascade(rs + [{"pool": res[3], "v_implied": 1}], pop)
+        self.assertEqual(x.constancy_reserve_count(["a", "b"], ["r0", "r1", "r2", "r3"], lambda p: p in ("a", "b", "r1")), 3)
+        self.assertEqual(x.constancy_reserve_count(["a"], ["r0"], lambda p: True), 1)
+        self.assertEqual(x.constancy_reserve_count(["a"], ["r0"], lambda p: False), 0)
+
+    def test_extend_pin(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "c.json"
+            f.write_text("[]")
+            with self.assertRaises(x.Refused):
+                x.check_extend_pin(f)  # no meta: refuses (the pin must hold as written)
+            meta = Path(str(f) + ".meta.json")
+            meta.write_text(json.dumps({"extended_from_sha256": x.EXTEND_INPUT_SHA256}))
+            x.check_extend_pin(f)
+            meta.write_text(json.dumps({"extended_from_sha256": "0" * 64}))
+            with self.assertRaises(x.Refused):
+                x.check_extend_pin(f)
+            meta.write_text(json.dumps({"n": 1}))  # not an extended file (a fresh build): refuses
+            with self.assertRaises(x.Refused):
+                x.check_extend_pin(f)
