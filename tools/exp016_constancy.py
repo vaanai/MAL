@@ -173,15 +173,17 @@ def load_sample(path: Path) -> tuple[list[str], list[str]]:
 
 
 def build(primary: Sequence[str], rows: Iterable[Mapping[str, Any]], fetch: Fetch, max_tries: int, reserve: Sequence[str] = (),
-          sleep: Callable[[float], None] = time.sleep) -> list[dict[str, Any]]:
+          sleep: Callable[[float], None] = time.sleep, cascade: bool = False) -> list[dict[str, Any]]:
     """Primary pools first (sorted); then, in the pre-declared reserve order, one reserve pool per null primary row. Every row is written, nulls included."""
     prim = sorted(set(primary))
     res = [p for p in reserve if p not in set(prim)]
     cands = collect_candidates(rows, prim + res, max_tries)
     out = [resolve_pool(p, cands.get(p, []), fetch, max_tries, sleep) for p in prim]
     nulls = sum(1 for r in out if r["v_implied"] is None)
+    if not cascade:  # EXP-016's rule (plan 13 item 8(c)): one reserve row per null PRIMARY row; a null reserve row is not replaced
+        return out + [resolve_pool(p, cands.get(p, []), fetch, max_tries, sleep) for p in res[:nulls]]
     i = 0
-    while i < nulls and i < len(res):  # the reserve walk: a null reserve row is itself replaced by the next reserve row
+    while i < nulls and i < len(res):  # `--cascade` (EXP-021 only): a null reserve row is itself replaced by the next reserve row
         row_ = resolve_pool(res[i], cands.get(res[i], []), fetch, max_tries, sleep)
         out.append(row_)
         nulls += 1 if row_["v_implied"] is None else 0
@@ -235,6 +237,7 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--p2-view-dir", type=Path, action="append", required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--extend", type=Path, default=None, help="an existing constancy.json: keep its rows unchanged and fetch only the missing reserve pools, in order; --out is a NEW file")
+    ap.add_argument("--cascade", action="store_true", help="EXP-021 only: a null reserve row is itself replaced by the next reserve row (departs from EXP-016 plan 13 item 8(c)); the default is EXP-016's no-cascade rule")
     ap.add_argument("--rps", type=float, default=DEFAULT_RPS)
     ap.add_argument("--max-tries-per-pool", type=int, default=DEFAULT_MAX_TRIES)
     ap.add_argument("--env-file", default=sim.DEFAULT_ENV_FILE)
@@ -254,6 +257,9 @@ def main(argv: Sequence[str] | None = None, fetch: Fetch | None = None) -> int:
     except (x.Refused, OSError, ValueError) as exc:
         print(f"refusing: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
+    if a.extend is not None and not a.cascade:
+        print("refusing: --extend is a cascading walk (EXP-021 only) and requires --cascade", file=sys.stderr)
+        return 2
     if fetch is None:
         fetch = HttpFetch(sim.load_rpc_url(None, a.env_file), a.rps)
     if a.extend is not None:
@@ -266,7 +272,7 @@ def main(argv: Sequence[str] | None = None, fetch: Fetch | None = None) -> int:
             print(f"refusing: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 2
     else:
-        out = build(primary, iter_view_rows(g2), fetch, a.max_tries_per_pool, reserve)
+        out = build(primary, iter_view_rows(g2), fetch, a.max_tries_per_pool, reserve, cascade=a.cascade)
     a.out.write_text(json.dumps(out) + "\n", encoding="utf-8")
     n_null = sum(1 for r in out if r["v_implied"] is None)
     meta = {"out_sha256": sha256_file(a.out), "sample_sha256": sha256_file(a.sample), "view_dirs": [str(p) for p in a.p2_view_dir], "n": len(out),

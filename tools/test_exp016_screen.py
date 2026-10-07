@@ -238,21 +238,6 @@ class GuardTests(unittest.TestCase):
                 with self.assertRaises(x.Refused):  # a reserve out of order
                     x.check_constancy_sample(rs[:-k] + [{"pool": p, "v_implied": 1} for p in res[1:k + 1]], pop)
 
-    def test_reserve_walk_replaces_null_reserve_rows(self):
-        pop = [f"pool{i}" for i in range(1000)]
-        prim, res = x.sample_pools(pop), x.reserve_pools(pop, x.sample_pools(pop))
-        rows = [{"pool": p, "v_implied": None if i < 2 else 1} for i, p in enumerate(prim)]
-        # two primary nulls, reserve[1] is null too: walk to r = 3
-        rs = rows + [{"pool": res[0], "v_implied": 1}, {"pool": res[1], "v_implied": None}, {"pool": res[2], "v_implied": 1}]
-        x.check_constancy_sample(rs, pop)
-        with self.assertRaises(x.Refused):
-            x.check_constancy_sample(rs[:-1], pop)  # the null reserve row was not replaced
-        with self.assertRaises(x.Refused):
-            x.check_constancy_sample(rs + [{"pool": res[3], "v_implied": 1}], pop)
-        self.assertEqual(x.constancy_reserve_count(["a", "b"], ["r0", "r1", "r2", "r3"], lambda p: p in ("a", "b", "r1")), 3)
-        self.assertEqual(x.constancy_reserve_count(["a"], ["r0"], lambda p: True), 1)  # capped at the reserve length
-        self.assertEqual(x.constancy_reserve_count(["a"], ["r0"], lambda p: False), 0)
-
     def test_v_coverage_counts_only_readable_pools(self):
         vmap = {f"p{i}": (0 if i % 2 else -5) for i in range(200)}  # <= 0 is readable (vault-only)
         self.assertEqual(x.v_coverage(vmap, vmap)["coverage"], 1.0)

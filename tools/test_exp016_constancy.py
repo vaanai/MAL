@@ -171,8 +171,10 @@ class ReserveTests(unittest.TestCase):
         rows = [row(p, f"sig-{p}", 1) for p in prim + res]
         table = {f"sig-{p}": tx_for(p) for p in prim + res}
         del table[f"sig-{prim[0]}"], table[f"sig-{res[0]}"]  # one primary null, then the first reserve is null too
-        out = c.build(prim, rows, Fake(table), 5, res, lambda s: None)
+        out = c.build(prim, rows, Fake(table), 5, res, lambda s: None, cascade=True)
         self.assertEqual([r["pool"] for r in out], sorted(prim) + res[:2])
+        out = c.build(prim, rows, Fake(table), 5, res, lambda s: None)  # EXP-016 default: one reserve row per null primary row, no cascade
+        self.assertEqual([r["pool"] for r in out], sorted(prim) + res[:1])
 
     def test_extend_keeps_old_rows_and_fetches_only_missing_reserve(self):
         prim = [str(Pubkey.new_unique()) for _ in range(2)]
@@ -273,7 +275,7 @@ class MainTests(unittest.TestCase):
             old.write_text(json.dumps(oldrows))
             out = Path(tmp) / "new.json"
             rows = [row(POOL_C, "s3", 7)]
-            args = ["--sample", str(sample), "--p2-view-dir", "/x/view", "--out", str(out), "--extend", str(old)]
+            args = ["--sample", str(sample), "--p2-view-dir", "/x/view", "--out", str(out), "--extend", str(old), "--cascade"]
             with mock.patch.object(c, "guard_views", return_value={"roots": {}, "pool": []}), mock.patch.object(c, "iter_view_rows", return_value=rows), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(c.main(args, fetch=Fake({"s3": tx_for(POOL_C)})), 0)
@@ -284,6 +286,8 @@ class MainTests(unittest.TestCase):
                 import hashlib
                 self.assertEqual(meta["extended_from_sha256"], hashlib.sha256(old.read_bytes()).hexdigest())
                 self.assertEqual(c.main(args, fetch=Fake({})), 2)  # --out exists: refused
+                out.unlink()
+                self.assertEqual(c.main(args[:-1], fetch=Fake({})), 2)  # --extend without --cascade: refused
 
     def test_rps_above_five_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

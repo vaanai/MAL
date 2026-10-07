@@ -366,22 +366,10 @@ def check_constancy_sample(samples: Sequence[Mapping[str, Any]], p2_pools: Itera
     got = [s.get("pool") for s in samples]
     primary = sample_pools(pools)
     reserve = reserve_pools(pools, primary)
-    null_of = {s.get("pool"): s.get("v_implied") is None for s in samples}
-    r = constancy_reserve_count(primary, reserve, lambda p: null_of.get(p, False))
-    want = primary + reserve[:r]
+    k = sum(1 for s in samples if s.get("pool") in set(primary) and s.get("v_implied") is None)
+    want = primary + reserve[:k]
     if len(got) != len(set(got)) or set(got) != set(want):
-        raise Refused(f"the --v-constancy-json pools ({len(set(got))}) are not the seeded sample_pools() draw plus its first {r} reserve pool(s) (each null row replaced by one more reserve row, in order) from the {len(set(pools))} P2 pools ({len(want)}); refusing")
-
-
-def constancy_reserve_count(primary: Sequence[str], reserve: Sequence[str], is_null: Callable[[str], bool]) -> int:
-    """The reserve walk (EXP-016 plan: a null row is replaced from the pre-declared reserve, in order): the smallest r >= 0 with
-    r >= (null rows among primary + reserve[:r]), capped at len(reserve). All-non-null reserve rows give r = (null primary rows)."""
-    nulls = sum(1 for p in primary if is_null(p))
-    r = 0
-    while r < nulls and r < len(reserve):
-        nulls += 1 if is_null(reserve[r]) else 0
-        r += 1
-    return r
+        raise Refused(f"the --v-constancy-json pools ({len(set(got))}) are not the seeded sample_pools() draw plus its first {k} reserve pool(s) from the {len(set(pools))} P2 pools ({len(want)}); refusing")
 
 
 def v_coverage(pools: Iterable[str], vmap: Mapping[str, int | None]) -> dict[str, Any]:

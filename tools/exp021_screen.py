@@ -669,17 +669,60 @@ def p1_oof_check_dates() -> list[str]:
     return [d for d in p1_kept_dates() if d not in ex]
 
 
+EXTEND_INPUT_SHA256 = "dd7e701fa6003bd7f62aa2c74f839ad8c1355c7c217115535496935d30359442"  # the pinned `--extend` input (Amendment 4 item 5)
+
+
+def v_unpriced(c: Mapping[str, Any]) -> bool:
+    """A NO_SIM 'bad create row' cell returns before any print is V-priced (`e16` cell builder), so its V is never read (Amendment 4 item 4).
+    Other NO_SIM reasons do pass prints through `make_wrapper`, so they stay in the coverage basis."""
+    return c.get("status") == "NO_SIM" and c.get("why") == "bad create row"
+
+
 def simulated_pools(cells: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Pools of the cells that are simulated (status != NO_SIM): a NO_SIM cell is never priced, so its V is never read (Amendment 4 item 4)."""
-    return sorted({c["pool"] for c in cells if c.get("pool") and c.get("status") != "NO_SIM"})
+    """Pools of every cell except NO_SIM 'bad create row' cells (Amendment 4 item 4)."""
+    return sorted({c["pool"] for c in cells if c.get("pool") and not v_unpriced(c)})
+
+
+def constancy_reserve_count(primary: Sequence[str], reserve: Sequence[str], is_null: Callable[[str], bool]) -> int:
+    """EXP-021 only (a departure from EXP-016 plan 13 item 8(c), which forbids cascading): the smallest r >= 0 with r >= (null rows among
+    primary + reserve[:r]), capped at len(reserve). With all-non-null reserve rows r = (null primary rows), EXP-016's count."""
+    nulls = sum(1 for p in primary if is_null(p))
+    r = 0
+    while r < nulls and r < len(reserve):
+        nulls += 1 if is_null(reserve[r]) else 0
+        r += 1
+    return r
+
+
+def check_constancy_sample_cascade(samples: Sequence[Mapping[str, Any]], p2_pools: Any) -> None:
+    """EXP-021's `e16.check_constancy_sample` with the cascade: the file must be the seeded primary plus reserve[:r] (`constancy_reserve_count`)."""
+    pools = list(p2_pools)
+    got = [s.get("pool") for s in samples]
+    primary = e16.sample_pools(pools)
+    reserve = e16.reserve_pools(pools, primary)
+    null_of = {s.get("pool"): s.get("v_implied") is None for s in samples}
+    r = constancy_reserve_count(primary, reserve, lambda p: null_of.get(p, False))
+    want = primary + reserve[:r]
+    if len(got) != len(set(got)) or set(got) != set(want):
+        raise Refused(f"the --v-constancy-json pools ({len(set(got))}) are not the seeded sample_pools() draw plus its first {r} reserve pool(s) (cascading walk, EXP-021 only) from the {len(set(pools))} P2 pools ({len(want)}); refusing")
+
+
+def check_extend_pin(constancy_json: Path | str) -> None:
+    """When the constancy meta file exists beside the JSON and records `extended_from_sha256`, it must equal `EXTEND_INPUT_SHA256`."""
+    meta = Path(str(constancy_json) + ".meta.json")
+    if not meta.exists():
+        return
+    got = json.loads(meta.read_text()).get("extended_from_sha256")
+    if got is not None and got != EXTEND_INPUT_SHA256:
+        raise Refused(f"the constancy meta records extended_from_sha256 {got}, not the pinned {EXTEND_INPUT_SHA256}")
 
 
 def v_coverage_simulated(cells: Sequence[Mapping[str, Any]], vmap: Mapping[str, int | None], enforce: bool = True) -> dict[str, Any]:
-    """V coverage (floor unchanged, `e16.V_COVERAGE_MIN`) over the simulated cells' pools only; refuses at or below the floor when `enforce`. The
+    """V coverage (floor unchanged, `e16.V_COVERAGE_MIN`) over every cell's pool except NO_SIM 'bad create row' cells; refuses at or below the floor when `enforce`. The
     all-cells coverage is report-only (`v_coverage_all_cells`). `e16.v_coverage` itself is unchanged."""
     allc = {k: v for k, v in e16.v_coverage_report([c["pool"] for c in cells if c.get("pool")], vmap).items() if k != "unreadable"}
     rec = e16.v_coverage(simulated_pools(cells), vmap) if enforce else e16.v_coverage_report(simulated_pools(cells), vmap)
-    return {**rec, "basis": "simulated cells (status != NO_SIM)", "v_coverage_all_cells": allc}
+    return {**rec, "basis": "all cells except NO_SIM bad-create-row cells (never V-priced)", "v_coverage_all_cells": allc}
 
 
 def unreadable_v_split(cells: Sequence[Mapping[str, Any]], sel: Sequence[bool], vmap_raw: Mapping[str, int | None]) -> dict[str, Any]:
@@ -1088,16 +1131,25 @@ def precount(args: argparse.Namespace) -> int:
     cov["unreadable_cells_by_block"] = unreadable_v_split(cells, sel, vmap_raw)
     constancy_rec: dict[str, Any] | None = None
     if args.v_constancy_json is not None:
+        p2_readable = e16.readable_pools([c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")], vmap_raw)
+        samples: Any = None
         try:
             samples = json.loads(Path(args.v_constancy_json).read_text())
-            res_c = e16.check_v_constancy(samples, vmap_raw)
+            res_c = e16.check_v_constancy(samples, vmap_raw, min_sample=0)  # counts only: never null; the floor is enforced separately below
             constancy_rec = {"n_sample": res_c.get("n_sample"), "n_checked": res_c.get("n_checked"), "n_unreadable_implied": res_c.get("n_unreadable_implied"),
                              "n_disagree": res_c.get("n_disagree"), "rate": res_c.get("rate"), "floor": e16.V_SAMPLE_SIZE}
-            e16.check_constancy_sample(samples, e16.readable_pools([c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")], vmap_raw))
-        except Refused as exc:
-            would.append(f"constancy: {exc}")
         except Exception as exc:  # noqa: BLE001
             would.append(f"constancy: unreadable file ({type(exc).__name__})")
+        if samples is not None:
+            for name, fn in (("floor and rate", lambda: e16.check_v_constancy(samples, vmap_raw)),
+                             ("sample set", lambda: check_constancy_sample_cascade(samples, p2_readable)),
+                             ("extend pin", lambda: check_extend_pin(args.v_constancy_json))):
+                try:
+                    fn()
+                except Refused as exc:
+                    would.append(f"constancy ({name}): {exc}")
+                except Exception as exc:  # noqa: BLE001
+                    would.append(f"constancy ({name}): unreadable ({type(exc).__name__})")
     rec = {"mode": "precount", "p1_oof_without_cell": oof_cover, "p1_oof_check_dates": p1_oof_check_dates(), "p1_oof_check_excluded": p1_oof_check_excluded(),
            "v_coverage": cov, "v_constancy": constancy_rec, "tool": TOOL, "p1b": P1B_EXCLUDED, "censoring": {r_["tag"]: r_.get("censoring") for r_ in results}, "vmap": vmap_note, "sources": {r["tag"]: e16.source_counts(r, vmap) for r in results}, "table_counts": counts,
            "universe_sha256": universe_sha256(table), "feature_table_sha256": feature_table_sha256(table), "frozen_selection_available": oof is not None, "would_refuse": would,
@@ -1158,6 +1210,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         closed = set(json.loads(args.closed_pools_json.read_text())) if args.closed_pools_json else set()
         vmap = rug.merge_v_map(vmap_raw, fallback)
         constancy_samples = json.loads(args.v_constancy_json.read_text())
+        check_extend_pin(args.v_constancy_json)
         constancy = e16.check_v_constancy(constancy_samples, vmap_raw)
         input_shas = {k: (hashlib.sha256(Path(f).read_bytes()).hexdigest() if f else None)
                       for k, f in (("v_fallback_json_sha256", args.v_fallback_json), ("v_constancy_json_sha256", args.v_constancy_json), ("closed_pools_json_sha256", args.closed_pools_json))}
@@ -1195,7 +1248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         enforce_limits(results, oof, oof_cover)
         pre["v_coverage"] = v_coverage_simulated(cells, vmap_raw)
         pre["v_constancy"] = constancy
-        e16.check_constancy_sample(constancy_samples, e16.readable_pools([c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")], vmap_raw))
+        check_constancy_sample_cascade(constancy_samples, e16.readable_pools([c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")], vmap_raw))
         table = build_table(cells, sel)
         counts = table_counts(table, with_p4)
         enforce_table_limits(counts, with_p4)  # before `started`
