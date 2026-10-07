@@ -72,3 +72,28 @@ def test_percentile_nearest_rank():
 
 def test_build_of():
     assert pf.build_of(0) == "8a6849b" and pf.build_of(1791241796000) == "faa3192"
+
+
+def test_boundary_a25eb17_is_1753_utc():
+    assert pf.build_of(1791222783000 - 1) == "8a6849b" and pf.build_of(1791222783000) == "a25eb17"
+
+
+def test_fee_vs_price_and_true_lag():
+    rows = [dict(r) for r in ROWS]
+    for r in rows:
+        if r["kind"] == "buy" and r.get("landed"):
+            r["fee_lamports"] = 505_000
+        if r["kind"] == "sell":
+            r["fee_lamports"] = 505_000
+    trips, _, _ = pf.pair_trips(rows)
+    fp = pf.fee_vs_price(trips, pf.BUILDS, cut=1)
+    assert fp["faa3192"]["realized_lamports"] == -5_000_000 and fp["faa3192"]["tx_fees_lamports"] == 2_020_000
+    assert fp["faa3192"]["before_tx_fees_lamports"] == -2_980_000
+    assert fp["faa3192 first 1"]["n"] == 1 and fp["faa3192 after the first 1"]["n"] == 1
+    cal = {"trades": [{"mint": "B", "buy_ts_ms": T1, "build": "faa3192",
+                       "variants": {"sim_correct": {"trigger_slot": 299, "reason_agree": True},
+                                    "live_correct": {"trigger_slot": 300, "reason_agree": True}}}]}
+    tl = pf.true_exit_lag(cal, rows)
+    assert tl["sim_correct"]["faa3192"]["lag_all"]["p50"] == 2     # landed 301 - 299
+    assert tl["live_mark"]["faa3192"]["lag_all"]["p50"] == 1
+    assert tl["live_mark"]["faa3192"]["trigger_slot_diff"]["p50"] == 0

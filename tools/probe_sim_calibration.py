@@ -42,12 +42,12 @@ from tools import pumpswap_tx as tx
 # Override on the CLI with repeated --build START_MS:SHA (the override replaces this list).
 BUILDS: tuple[tuple[int, str], ...] = (
     (0, "8a6849b"),               # before 2026-10-05T17:53:03Z
-    (1791223983000, "a25eb17"),   # from 2026-10-05T17:53:03Z
+    (1791222783000, "a25eb17"),   # from 2026-10-05T17:53:03Z
     (1791232766000, "7004b16"),   # from 2026-10-05T20:39:26Z
     (1791241796000, "faa3192"),   # from 2026-10-05T23:09:56Z: mark from our own buy tx (#331) + log-only drift (#332)
     # (<start_ms>, "<next build sha>"),  # add the next build's boundary here
 )
-SIZES_SOL = (0.1, 0.25)
+SIZES_SOL = (0.05, 0.1, 0.25, 0.5)
 PRIORITY_ALT = 150_000
 EXIT_MARGIN_MS = 5 * 60_000
 LAMPORTS = 1_000_000_000
@@ -539,7 +539,7 @@ def aggregate(results: list[dict[str, Any]], builds: Iterable[tuple[int, str]] |
         paired = [r for r in ok if "reason_agree" in r]
         both = [r for r in paired if r["sim_exit_reason"] in ("tp", "sl") and r["live_exit_reason"] in ("tp", "sl")]
         sens: dict[str, Any] = {}
-        for k in ("priority_150k", "size_0.1", "size_0.25"):
+        for k in ("priority_150k", *(f"size_{z}" for z in SIZES_SOL)):
             vals = [r["sensitivity"][k] for r in ok if r.get("sensitivity", {}).get(k)]
             sens[k] = _stats([v.get("sim_pnl_lamports") for v in vals])
         dis = sum(1 for r in both if r["tp_sl_disagree"])

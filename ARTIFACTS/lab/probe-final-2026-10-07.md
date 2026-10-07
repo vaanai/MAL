@@ -4,7 +4,7 @@
 
 **Final state.** The owner stopped the probe early; Helm placed STOP at 2026-10-07T01:10:50Z. 62 of 90 live attempts, realized −0.210755 SOL (−210,754,990 lamports), 0 open, last build `faa3192`. Live since 2026-10-05T14:46:17Z.
 
-**Source.** Read-only copy of the fills ledger `/data/mal/probe-final/probe-fills-20261007.jsonl`, sha256 `8c0567ff872e2e62e79d53f8eb4adce88e236cdfa8b8e7d8674a7cd3dd78fdbc`, 196 rows (live buy 62, live sell 62, live skip 31, dryrun buy 21, dryrun sell 20). Only `mode == "live"` rows are used. Tool: `tools/probe_final_report.py` (this PR), which prints every table below; rerun it on that file to reproduce them. No key, no tape, no forward-paper file was read.
+**Source.** Read-only copy of the fills ledger `/data/mal/probe-final/probe-fills-20261007.jsonl`, sha256 `8c0567ff872e2e62e79d53f8eb4adce88e236cdfa8b8e7d8674a7cd3dd78fdbc`, 196 rows (live buy 62, live sell 62, live skip 31, dryrun buy 21, dryrun sell 20). Only `mode == "live"` rows are used. Calibration input: `/data/mal/probe-final/calibration-20261007.json`, sha256 `e1b592c1a023816ae9b8141450d81c5ea1405a4750dd27fbf4b675cf4b0089a0`, produced by `PYTHONPATH=. /data/mal/venv/bin/python -m tools.probe_sim_calibration --fills /data/mal/probe-final/probe-fills-20261007.jsonl --tape-dir /data/mal/tip-tape-archive/fast-trades-tip --out-dir <dir>` (at this PR's head, `SIZES_SOL` 0.05/0.1/0.25/0.5). Tables: `python3 -I tools/probe_final_report.py --fills /data/mal/probe-final/probe-fills-20261007.jsonl --calibration /data/mal/probe-final/calibration-20261007.json`. Tool: `tools/probe_final_report.py` (this PR), which prints every table below; rerun it on that file to reproduce them. No key, no tape, no forward-paper file was read.
 
 **Reconciliation.** The 61 round-trip `pnl_lamports` sum to −210,249,990. One buy failed (`slippage_exceeded`, custom error 6040, tx fee 505,000, no tokens). Together: −210,754,990, which equals the executor's −0.210755 SOL exactly. A sell on 7004b16 failed once (`slippage_exceeded`, 6004) and was retried; its 505,000 fee is carried in the retried sell's `failed_attempt_cost_lamports` and so is already inside that trip's P&L.
 
@@ -119,6 +119,41 @@ The first three use the send-state mark; only `faa3192` uses the buy-tx mark. Th
 | 21 | 6 | -72,647,156 | -12,107,859 |
 | 23 | 2 | 6,848,497 | 3,424,248 |
 
+### Realized P&L against actual tx fees (price vs fees)
+
+| group | n | realized | tx fees | before tx fees | tx fees per trip |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 8a6849b | 6 | -100,536,289 | 6,060,000 | -94,476,289 | 1,010,000 |
+| a25eb17 | 15 | 27,606,913 | 15,150,000 | 42,756,913 | 1,010,000 |
+| 7004b16 | 7 | -80,432,850 | 7,575,000 | -72,857,850 | 1,082,143 |
+| faa3192 | 33 | -56,887,764 | 33,330,000 | -23,557,764 | 1,010,000 |
+| all (pooled, not a result) | 61 | -210,249,990 | 62,115,000 | -148,134,990 | 1,018,279 |
+| faa3192 first 28 | 28 | -14,007,586 | 28,280,000 | 14,272,414 | 1,010,000 |
+| faa3192 after the first 28 | 5 | -42,880,178 | 5,050,000 | -37,830,178 | 1,010,000 |
+
+### True exit lag, tape crossing to sell landing (slots), variant `sim_correct`
+
+| build | n | trigger_slot_diff min/p50/p90/max | lag all min/p50/p90/max | lag sl min/p50/p90/max | lag < 0 | lag > 10 | reason disagree |
+| --- | ---: | --- | --- | --- | ---: | ---: | ---: |
+| 8a6849b | 6 | -524 / -3 / 0 / 0 | 3 / 6 / 528 / 528 | 3 / 7 / 528 / 528 | 0 | 2 | 1 |
+| a25eb17 | 15 | -5 / 1 / 2 / 125 | -124 / 1 / 6 / 7 | 0 / 1 / 6 / 6 | 1 | 0 | 0 |
+| 7004b16 | 7 | -6 / 1 / 425 / 425 | -424 / 0 / 8 / 8 | -424 / 0 / 8 / 8 | 3 | 0 | 0 |
+| faa3192 | 33 | -149 / 0 / 1 / 48 | -46 / 1 / 10 / 151 | -46 / 1 / 44 / 151 | 2 | 3 | 0 |
+| fixed builds | 55 | -149 / 0 / 5 / 425 | -424 / 1 / 8 / 151 | -424 / 1 / 10 / 151 | 6 | 3 | 0 |
+
+Trades with no tape or no sim trigger: 0.
+
+### True exit lag, tape crossing to sell landing (slots), variant `live_mark`
+
+| build | n | trigger_slot_diff min/p50/p90/max | lag all min/p50/p90/max | lag sl min/p50/p90/max | lag < 0 | lag > 10 | reason disagree |
+| --- | ---: | --- | --- | --- | ---: | ---: | ---: |
+| 8a6849b | 6 | -524 / -3 / 0 / 0 | 3 / 6 / 528 / 528 | 3 / 7 / 528 / 528 | 0 | 2 | 1 |
+| a25eb17 | 15 | -11 / 0 / 1 / 2 | 0 / 1 / 7 / 13 | 0 / 1 / 5 / 5 | 0 | 1 | 1 |
+| 7004b16 | 7 | -6 / 0 / 1 / 1 | 0 / 2 / 8 / 8 | 0 / 1 / 8 / 8 | 0 | 0 | 0 |
+| faa3192 | 33 | -149 / 0 / 1 / 48 | -46 / 1 / 10 / 151 | -46 / 1 / 44 / 151 | 2 | 3 | 0 |
+| fixed builds | 55 | -149 / 0 / 1 / 48 | -46 / 1 / 8 / 151 | -46 / 1 / 10 / 151 | 2 | 4 | 1 |
+
+Trades with no tape or no sim trigger: 0.
 
 Notes on the tables:
 - **Entry slots.** `pool_slot`, `state_slot` and `snapshot_slot` on a buy are all the slot of the executor's own pool-state read (on all 34 rows that carry `pool_slot`, state_slot − pool_slot = 0). They are **not** the migration slot. The ledger therefore holds no k against the migration. The slot column above is `landed_slot − snapshot_slot` (= `slots_between`).
@@ -136,25 +171,41 @@ Round-trip cost at 0.05 SOL is 4.44% of stake pooled (4.07% to 4.53% by build, t
 - failed attempts 0.03% (two failed attempts, 1,010,000 lamports in total over 61 trips);
 - rent 0% net.
 
-Projection (fixed tx and failed-attempt costs scale with 0.05/stake; the pool fee percentage does not): **4.44% at 0.05, 2.79% at 0.25, 2.59% at 0.5** pooled; faa3192 alone 4.47 / 2.83 / 2.63. The earlier finding was about 4.5 / 2.9 / 2.65. The new numbers agree to within the pool-fee estimate (about 0.1 point). The fee, not price, is what kept faa3192 below zero before: +14.3M lamports before tx fees on 28 trips at the 10-06 cut (DEC-019 §7 note).
+Projection (fixed tx and failed-attempt costs scale with 0.05/stake; the pool fee percentage does not): **4.44% at 0.05, 2.79% at 0.25, 2.59% at 0.5** pooled; faa3192 alone 4.47 / 2.83 / 2.63. The earlier finding was about 4.5 / 2.9 / 2.65. The new numbers agree to within the pool-fee estimate (about 0.1 point). **Fixed tx fees do not explain the faa3192 loss: before tx fees it is −23,557,764. That remainder includes about 40.0M of estimated pool fee (33 × 1,212,195), which scales with stake like price does, so a bigger stake does not by itself fix it. The sign turns on 5 trips (4 stops).** faa3192, 33 trips: realized −56,887,764 lamports; actual tx fees from the ledger 33 × 1,010,000 = 33,330,000 (every trip paid exactly 1,010,000); before tx fees −56,887,764 + 33,330,000 = −23,557,764, still negative. The first 28 trips (the 10-06 cut) were −14,007,586 realized and +14,272,414 before fees; the 5 trips after them were −42,880,178 realized and −37,830,178 before fees (5 × 1,010,000 = 5,050,000). Those 5 trips took the build from near break-even to −56.9M. Per-build rows are in the table "Realized P&L against actual tx fees" above.
+
+**Price impact is not in the projection above.** The projection scales only the fixed tx fees. `tools/probe_sim_calibration.py` re-simulates each entry at other sizes against the same pool state (V-priced; now 0.05, 0.1, 0.25, 0.5 SOL, over the 61 trips). Entry price versus spot, bps, p50 (p90): 0.05 SOL 127.2 (132.8); 0.1 SOL 132.9 (139.1); 0.25 SOL 150.1 (157.8); 0.5 SOL 178.8 (188.9). The roughly 125 bps floor is the pool fee already in the cost above. The size-driven part, relative to 0.05 SOL, is +22.9 bps at 0.25 and +51.6 bps at 0.5, on the entry only. The sell leg's impact was not simulated; if it is similar (inference; the figures are differences of medians, not per-trade paired differences), the round trip adds about 0.46% of stake at 0.25 and about 1.03% at 0.5, which would put the all-in round trip at about 3.25% and 3.62% rather than 2.79% and 2.59%. So a larger stake does not lower the cost per trade monotonically: the fixed fee shrinks, impact grows. "Similar" is likely the optimistic case: a stop sells into a pool already down 30–40%, where the same size moves the price more.
 
 ## Calibration for the simulator
 
-**Exit lag.**
-- All 55 round trips on the fixed builds (a25eb17, 7004b16, faa3192): lag of 1 slot on 28, 2 slots on 27, never more. p50 1, p90 2, max 2.
-- Stop-loss exits only (the leg that matters): p50 2, p90 2, max 2 on faa3192 (n = 19) and on all fixed builds (n = 32: 14 at 1 slot, 18 at 2). Take-profit exits: 14 at 1 slot, 8 at 2 (n = 22).
-- The pre-fix build 8a6849b, with its 5 s poll, was 4 slots (n = 6). It is not representative of any current or planned build.
-- **Recommendation:** keep the lab's "exit lag 2" as the primary realistic setting. It is now measured (p50 for stops 2, p90 for everything 2), not assumed. For a conservative leg use 2 as the measured p90; run 3 only as a labelled stress test, since no fixed-build trade exceeded 2. This does not test 1; tp exits at lag 1 are not a reason to lower stops.
+**Exit lag, measured from the price crossing.** The first draft of this note counted lag from the snapshot the live exit fired on (sell `landed_slot` − `snapshot_slot`). That is not what the simulator counts from; the simulator counts from the tape row where price first crosses. I ran `tools/probe_sim_calibration.py` on the final fills against the archived tip tape (`fast-trades-tip`, 45 hourly files 2026-10-05T05 to 2026-10-07T01, each verified against its `.sha256` after decompression, 0 mismatches; the run's hours are all present). All 61 trades have tape and a sim trigger (0 missing). Seal: it simulates only the 61 live-traded mints.
+- True lag = sell `landed_slot` − sim trigger slot. `trigger_slot_diff` = sim trigger slot − live `snapshot_slot` (tables above, both variants: `sim_correct` is the tool's primary, `live_mark` applies the live mark rule to the sim's own entry fill, not to live's actual fill).
+- **Fixed builds (a25eb17, 7004b16, faa3192; n = 55), `live_mark`:** all exits p50 1, p90 8, max 151; stops (n = 32) p50 1, p90 10, max 151. Primary variant `sim_correct`: all exits p50 1, p90 8, max 151; stops p50 1, p90 10, max 151 (6 of 55 negative, min −424, where the sim crossed after the live sell).
+- `trigger_slot_diff` on fixed builds, `live_mark`: p50 0, p90 1, max 48, min −149. On most trades the live exit fires on the same snapshot the sim crosses on. The tail is an entry-gap effect: 9 of the 55 fixed-build trades have |entry_gap_bps| > 500. On those, the pool fell about 10–15% between the executor's read and the buy landing. Live filled 11–18% better than its quote and marked from its own fill, while the sim entry stayed at the pre-drop price, so the sim's stop fired earlier (negative trigger_slot_diff). Example rows (lag / diff / entry gap bps): 7tsWZfjg 151 / −149 / −1,102; E2ye1pnG 44 / −42 / −1,518; AnhJsXto 10 / −9 / −1,175; 3Y4FQ9Q2 −37 / +38 / −908. 5AbVQzLZ (−46 / +48) and FKcuvH3E (15 / −14) also sit in the tail.
+- True lag on the fixed builds by how far the sim entry is from live's fill (`live_mark`, slots from crossing to landing):
+
+  | entries kept | exits | n | p50 | p90 | max |
+  | --- | --- | ---: | ---: | ---: | ---: |
+  | all | all | 55 | 1 | 8 | 151 |
+  | all | stops | 32 | 1 | 10 | 151 |
+  | ≤500 bps | all | 46 | 1 | 5 | 15 |
+  | ≤500 bps | stops | 27 | 1 | 5 | 15 |
+  | ≤200 bps | all | 34 | 1 | 3 | 15 |
+  | ≤200 bps | stops | 20 | 1 | 2 | 15 |
+
+  Landing lag from the live trigger (sell `landed_slot` − the live `snapshot_slot`): p50 1, p90 2, max 2 (n = 55).
+- 8a6849b, with its 5 s poll, is 6 / 528 for p50 / p90 (n = 6). It is not representative of any later build.
+- The snapshot-based lag from the first draft (p50 1, p90 2, max 2 on 55) is a different quantity: the landing delay after the executor decided. It stays true as the landing lag, but it is not the simulator's exit lag.
+- **Recommendation:** exit-lag primary **2** (landing p90 2; mark-consistent crossing-to-landing p90 2–5). Pessimistic leg **5**, or resample the empirical distribution of the 46 mark-consistent trades (|entry gap| ≤ 500 bps). The 151 and 44 tail comes from a sim entry more than 900 bps away from the live fill: it is an entry-model calibration item, not exit latency. These are rough values from n = 55 (46 after the filter).
 - **Gap-through on stops.** 37 stops over all builds; 7 had already crashed past −40% in the snapshot that fired them (trigger ret min −0.955), and 5 filled worse than −50% against entry. On faa3192, 19 stops, 3 triggered below −40% and filled below −50% (worst −0.955). Fill versus the quote at the trigger is small (faa3192 p50 −0.05 bps; the worst, −171.5 bps, is far smaller than the gap). So the damage is the price already gone between two polls (a 400 ms poll plus a 1-2 slot landing), not slippage at send. A faster exit lag does not fix a single-block rug; at most a stop before the collapse would.
 
 **Entry k.**
-- From the ledger alone, the landing is 2 slots after the executor's pool-state read at p50, 3 at p90, 4 at max on faa3192 (n = 33); across all builds 2 / 3 / 5. Landed at read +1 on 4 of 62, +2 on 44, +3 on 11, +4 on 2, +5 on 1.
+- From the ledger alone, the landing is 2 slots after the executor's pool-state read at p50, 3 at p90, 4 at max on faa3192 (n = 33); across all builds 2 / 3 / 5. Landed at read +1 on 4 of 61 round trips, +2 on 43, +3 on 11, +4 on 2, +5 on 1 (faa3192: 3 / 26 / 3 / 1 at +1 / +2 / +3 / +4, of 33).
 - k against the migration slot is not in the ledger (see the note above). The measured values from the tip tape in earlier notes: 8a6849b was 11–15 slots from the migration tx (17–22 from the `complete` event; [probe-live-2026-10-05.md](probe-live-2026-10-05.md)); faa3192 was p50 5, p90 6, max 15 (job #285, quoted in the DEC-019 §7 note of 2026-10-06). I did not recompute these here: the tape was out of scope and I have not re-verified them.
 - Against the simulator: the k6 deciding cell is near the current p90 (6) and above the current p50 (5). The EXP-020 k2 lead is not reachable by the current build: nothing below 5 was observed at p50.
 - **Can live land at k2 to k3?** Not on this build, and the ledger does not show that it can on any. What the numbers say:
   - Of the entry time, decision → send is already small (faa3192 p50 221 ms, p90 453 ms, max 1,937 ms), and the landing after the read is 2 slots (about 800 ms) at p50. Those two parts are about 1 s. The rest of k comes before the executor sees the signal.
   - That part is the trigger. The runner trigger is the `complete` event from the tip follower. The migration-stream probe (job #127) saw the processed migrate tx about 0.7–1.5 s earlier on the same slot (3 events only, per LAB_STATE). One to three slots is the most a processed-migrate trigger can buy, so a trigger at processed commitment is necessary. I infer, not measure, that even with that the best case is k of about 3 to 4: about 1 slot to see the event, then read, build and send, then 1 to 2 slots to land.
-  - Priority fee or a Jito tip addresses only the landing slots (the 2 → 1 part: landed at +1 on only 4 of 62 buys). 500,000 lamports priority did not make +1 the normal case. A tip is untested here, so its value is unknown.
+  - Priority fee or a Jito tip addresses only the landing slots (the 2 → 1 part: landed at +1 on only 4 of 61 round trips). 500,000 lamports priority did not make +1 the normal case. A tip is untested here, so its value is unknown.
   - So k2 needs a trigger earlier than anything the probe ran, and k3 needs it plus a landing at +1. Neither was observed. A trial should not assume them.
 
 ## What the next live build must change
@@ -165,7 +216,23 @@ Projection (fixed tx and failed-attempt costs scale with 0.05/stake; the pool fe
 4. **Log the sell-side pool fee** and the send slot, so the fee split needs no estimate.
 5. **Retry and failure handling.** Two attempts failed on slippage (one buy, error 6040; one sell, error 6004). The failed sell was a stop on a crash (trigger ret −0.69; min_sol_out 11,965,405 against a 14,076,948 quote) and was retried once. Review the min-out margin and the retry on a falling pool.
 6. **Test a priority fee or Jito tip against the landing slot** as its own measured change, one at a time. Not mid-build (DEC-021 §7).
-7. **Size.** Fixed costs fall to 0.4% of stake at 0.25 SOL and 0.2% at 0.5; the pool fee (about 2.4%) does not. At 0.25 the round trip still costs about 2.8%. A trial's book must beat that, on top of the gate.
+7. **The sim's entry fill and mark under price drift between read and landing.** 16% of fixed-build trades (9 of 55) are more than 500 bps off live's fill. This drives the exit-lag tail above and the stop timing in the sim.
+8. **Size.** Fixed costs fall to 0.4% of stake at 0.25 SOL and 0.2% at 0.5; the pool fee (about 2.4%) does not. At 0.25 the round trip still costs about 2.8% before price impact, and about 3.25% with the entry impact doubled for the sell leg (inference, section above). Fixed tx fees do not explain the faa3192 loss: before tx fees it is −23,557,764. That remainder includes about 40.0M of estimated pool fee (33 × 1,212,195), which scales with stake like price does, so a bigger stake does not by itself fix it. The sign turns on 5 trips (4 stops). Size alone does not fix it. A trial's book must beat the all-in cost, on top of the gate.
+
+## Build boundary
+
+The `a25eb17` boundary is 1791222783000 (2026-10-05T17:53:03Z, Helm's 10:53 AM PT switch). The first draft used 1791223983000 (18:13:03Z) in `tools/probe_final_report.py` and `tools/probe_sim_calibration.py`, 20 minutes late. No trade moved between builds on the correction: 6 / 15 / 7 / 33 trips per build before and after (no buy fell in the 17:53:03Z to 18:13:03Z window).
+
+## Probe wallet on chain
+
+`tools/probe_rent_audit.py` (this PR) reads only the public address `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk` (from the DEC-019 notes; no key file was opened) through the research-0 Helius env file at 4 rps (130 RPC calls; key read in Python, never printed), finalized commitment.
+- **Balance now:** 298,773,781 lamports (0.298773781 SOL), context slot 454261347.
+- **Funding deposit:** one transfer in, +509,528,770 lamports, the wallet's own delta (the 79,934 fee was paid by the sender) (slot 453609941, 2026-10-05T14:45:10Z), from `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi`. The deposit tx is the wallet's first of 126; the first tx's pre-balance for the wallet is 0.
+- **Other transfers in:** the address-poisoning dust, +1 lamport at 2026-10-06T03:01:52Z (slot 453774457; the 5,000-lamport tx fee was paid by the sender). **Transfers out: none** (0 withdrawals).
+- **Ledger signatures:** all 124 live buy and sell signatures (62 + 62) found on chain; their wallet deltas sum to −210,754,990 lamports, which is the executor's −0.210755 SOL exactly (61 round trips −210,249,990 plus the failed buy's −505,000).
+- **Tie-out:** 509,528,770 + 1 − 210,754,990 = 298,773,781 = the balance now. The tool asserts `balance_now − sum_all_deltas == 0` (it is 0, rerun at slot 454263134 with the same balance) and first-tx pre-balance 0 (it is 0); it exits non-zero otherwise. It ties to the lamport, over 126 signatures, 0 missing. The sum of all per-tx wallet deltas is also 298,773,781.
+- **Token accounts:** none remain (getTokenAccountsByOwner, Token and Token-2022, context slot 454261472). Rent is therefore fully refunded on chain, not just in the ledger: no rent is sitting in open ATAs.
+- The deposit tx's own delta (509,528,770) and the 509,528,771 total inflow differ by the 1-lamport dust.
 
 ## Hour-of-day sampling
 
@@ -175,8 +242,8 @@ See the hour table. Daily-loss-cap gating (DEC-019 §7 note) made attempts clust
 
 - **n = 61 round trips, one failed buy.** A measurement, not edge evidence, and not part of any gate.
 - **Build mixing.** 6, 15, 7 and 33 trips per build, with different latency, exit poll and mark rules. P&L is shown per build; the pooled row is for tie-out only. Do not quote the pooled mean or the 23/37/1 split as a book result.
-- **Exit-lag headline.** The slot lag is 55 fixed-build trips, 2 distinct values; the p90 equals the max, so it says "never above 2 in 55", not that 3 cannot happen.
+- **Exit-lag headline.** The true lag (crossing to landing) is 55 fixed-build trips with a heavy tail (max 151); the all-trade p90 8 (stops 10) comes from 9 trades whose sim entry is more than 500 bps from live's fill (entry-model gap, not exit latency); on the 46 trades within 500 bps the p90 is 5 (max 15). Live poll misses are not separated from these differences.
 - **k against the migration** is quoted from earlier notes and the DEC, not recomputed here, and not in the ledger.
-- **Fees.** The pool fee is an estimate; the rent split uses logged amounts.
+- **Fees.** The pool fee is an estimate; the rent split uses logged amounts and is confirmed on chain (next section). The size projection includes entry price impact only, with the sell leg's impact inferred.
 - **Quant-proof** has not reviewed this note. It makes no claim that a book made money; any sentence comparing live to paper needs that review first (DEC-019 §7).
 - Mark source and exit decisions: the sim reproduced 35 of 36 live exits at the 10-06 cut (see [probe-calibration-2026-10-06.md](probe-calibration-2026-10-06.md)); this note does not rerun that check on the 61.
