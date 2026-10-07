@@ -33,18 +33,22 @@ plus `train-manifest.json` (universe sha256, feature-table sha256, row counts pe
 
 **Recipe, fixed now.**
 
-- **Training rows:** ALL exploration rows, P1A, P1C, P2, P3 and P4, in the screen's own table (the same loader, the same limits, the 8% no-create limit and the censoring signature of Amendment 3). **P1B is excluded** (Amendment 3(b)). The freeze reads no held-out date, because there is none; both models are trained on pools whose labels the screen has already read, so the freeze spends no try and writes no tries line.
+- **Training rows:** ALL exploration rows, P1A, P1C, P2, P3 and P4, in the screen's own table (the same loader, the same limits, the 8% no-create limit and the censoring signature of Amendment 3). **P1B is excluded** (Amendment 3(b)). The freeze reads no held-out date, because there is none. The training labels were already read by EXP-014, EXP-015 and EXP-017 to EXP-020; the screen has not scored them; the freeze writes model files, not a scored book. So it spends no try and writes no tries line.
 - **Learner:** `tools.exp015_screen.fit_cfg(x, y, 20)`, which is `tools.exp011_freeze._fit`: LightGBM binary, `num_leaves 15`, `min_data_in_leaf 20`, `learning_rate 0.05`, 100 rounds, `feature_fraction 0.9`, `bagging_fraction 0.9`, `bagging_freq 1`, `scale_pos_weight = neg/pos`, **seed 1**, `deterministic=True`, `num_threads 1`, `force_row_wise`.
 - **Label:** `1` iff the trade FILLED and its pressure net at the primary cell is > 0 (`label_row`; a MISS is 0), the screen's label.
-- **Reproducibility:** nothing in the written files depends on the clock, host or thread count. `tools/test_exp021_screen.py` shows two runs on a fixture give byte-identical files and the same md5s. A real re-run is allowed only if it reproduces both md5s.
+- **Reproducibility:** nothing in the written files depends on the clock, host or thread count. `tools/test_exp021_screen.py` shows two runs on a fixture give byte-identical files and the same md5s. A real re-run is allowed only if it reproduces both md5s, on the **same CPU architecture and the same LightGBM version** as the recorded freeze.
+- **Freeze host:** `mal-research-0`, x86_64. The manifest records `lightgbm.__version__`, `numpy.__version__`, `platform.machine()` and the Python version.
+- **Recorded inputs (`train-manifest.json`):** universe and feature-table sha256, row counts per source, code head, V-map sha256, `v_fallback_json_sha256` (null if none), `args_hash` (`e15.args_hash`, with the freeze path removed), the sha256 of `oof_scores.json` in `--artifact-dir`, each source's clean-view `VIEW.sha256` (P1 fast and insample, P2, P3 manifests, P4), the learner and the md5 of each model. There is no label count.
+- **V fallback file: none**, unless a named sha is pinned in a merged amendment (`EXP021_V_FALLBACK_SHA256` below). The freeze, the screen and `--confirm` must all use the same one; the tool refuses a fallback file that does not equal the pin.
 - **Code sha:** the freeze runs from a clean checkout whose `tools/` equals the Part 1 merge commit's (the tool refuses a dirty `tools/` and records `code_head`). The V map is the pinned `VMAP_EXP016_SHA256`; the freeze refuses unless the pin is set.
 - **Order (the freeze comes BEFORE the screen):** (1) this file merges; (2) `--freeze` runs once; (3) a **merged amendment records the RUG md5, the CONTROL md5, the sha256 of `train-manifest.json` and the freeze commit**, and sets the three pin lines below; (4) the screen runs once; (5) only on a PASS and a granted claim is the block read. The md5 freeze is visible before any scoring.
-- **Guard in the tool:** `tools/exp021_screen.py` refuses the screen (rc 2, before any guard or row) unless these three lines in this file are set to hex values (`PENDING` refuses). `--precount`, `--freeze` and `--confirm` are exempt from this check. `--confirm` also refuses without them (it is a stub).
+- **Guard in the tool:** `tools/exp021_screen.py` refuses the screen (rc 2, before any guard or row) unless: this file is clean against HEAD (no modification, staged or not; tracked); each of the three keys appears exactly once, as hex (`PENDING` refuses); and `--frozen-dir` is given and `sha256(train-manifest.json)`, the md5 of `model.txt` and the md5 of `control-model.txt` equal their pins and the md5s the manifest records. The file's git blob sha is recorded in the `started` tries line and in `report.json`. `--precount`, `--freeze` and `--confirm` are exempt (`--confirm` is a stub that refuses).
 
 ```
 EXP021_FROZEN_MD5: PENDING
 EXP021_CONTROL_MD5: PENDING
 EXP021_TRAIN_MANIFEST_SHA256: PENDING
+EXP021_V_FALLBACK_SHA256: none
 ```
 
 ## 3. Arms on the block, and the pick count
@@ -65,12 +69,21 @@ One cell, on both legs (flat 15% fail model and the pressure model at slope scal
 On the block's dates, with the paired gain `x_m = (s_RUG - s_CONTROL) * net_m` over every counted row:
 
 1. **B1:** mean paired gain > 0 and a one-sided **date-cluster bootstrap p < 0.025** (10,000 draws, seed 1; the screen's `paired_stats`).
-2. **B3:** a strict majority of the block's dates have a positive paired gain (a zero is not positive).
+2. **B3:** at least **4 of the 7 UTC dates** have a positive paired sum. The half days 08-02 and 08-08 count as dates. A date with no frozen pick counts as a date and is not positive (a zero is not positive).
 3. **B4:** paired ex-top-3 > 0.
 4. **B5:** paired ex-best-date > 0.
 5. **B6:** net paired total > 0 and no date exceeds 20% of it (Amendment 2: the max date's sum divided by the NET total).
 
-Power note, stated now: the block has 7 date clusters, two of them half days. A date-cluster bootstrap on 7 clusters is coarse and one half-day outlier can move B1. That is accepted; the bars are not relaxed.
+Power note, stated now. The block has 7 date clusters, two of them half days. Computed with `tools.exp017_screen.boot_p` (10,000 draws, seed 1), one value per date:
+
+| Paired date sums | B1 p |
+| --- | ---: |
+| 7 of 7 dates positive | 0.0001 (the minimum) |
+| 6 at +1, 1 at -1 | 0.0119 |
+| 6 at +1, 1 at -2 | 0.0657 |
+| 5 at +1, 2 at -0.5 | 0.0207 |
+
+B6's floor is 1/7 = 14.3% of the net total (all dates positive and equal). With one negative date and six equal positive dates, B6 needs the negative date's magnitude to be at most 1 date-unit. The bars are not relaxed. **Report-only:** the exact one-sided sign-flip p over the 7 date sums (its minimum is 1/128 = 0.0078). The date-cluster bootstrap is optimistic with few clusters; the sign-flip p changes no bar.
 
 ## 6. Secondary (report-only, never gating)
 
@@ -83,9 +96,10 @@ Each is a refusal that does not spend the block:
 - **V coverage** of the block's pools against the pinned map, and the **V constancy check on the 0802 pools**. The constancy sample (pool ids only) is built from the 0802 pools. **That part runs only after this Part 1 merges**; it is outcome-blind.
 - **No-create limit: 8%** per source with the **censoring signature** (the share in the first 24 h of the block above the share after it), exactly Amendment 3(a).
 - **At least 100 frozen picks** (the frozen EXP-012 model's picks on the block).
+- **A re-check may not change the V map, the fallback, the models, the pick rule or any input.** Only a data-integrity fix, recorded in a merged amendment, is allowed.
 - The screen's other pre-declared table refusals that apply (every feature finite and present, no duplicate mint, at least one universe row on every date), the clean-view `VIEW.sha256` verification, and the model md5s matching the amendment.
 
-If any refuses, the block may be re-checked once outcome-blind; a refusal after `started` spends it (section 10).
+If any refuses, the block may be re-checked once outcome-blind, under the rule above; a refusal after `started` spends it (section 10).
 
 ## 8. One read, locks and tries
 
@@ -101,11 +115,19 @@ Mirrors the screen: guards, then ONE tape pass, then the section 7 counts, then 
 
 Governed by the **DEC-014 amendment "block budget for the sealed confirmation blocks" (2026-10-07, merged in #446)**. It is cited, not restated: the rule there controls, including the one-block-per-family and one-in-reserve clauses. What this file fixes for EXP-021:
 
-- **Decision p:** the larger of the flat and pressure p-values from the screen's `report.json` (10,000 seed-1 draws). The claim needs it below 0.025 / m.
-- **m** has a floor of 8 and is **frozen in the claim's ledger row at claim time**.
-- **Families as they stand today (not yet confirmed):** EXP-012 (the backcheck read these dates), EXP-013, #191, EXP-014 v2, EXP-015, EXP-017, EXP-018, EXP-019, EXP-020 (report-only, but it read outcomes) and EXP-021 itself. If the list holds, **m = 10 and the threshold is p < 0.0025**. EXP-016 is not listed: shelved with no outcome read.
-- **Open item for the manager:** confirm which of these have `data_blocks` overlapping the 27 non-P1 dates (EXP-013 and #191 are DEC-014's untracked readers); the claim amendment records the final list and m.
-- This is consistent with the plan's wording: EXP-021 is the eighth family scoped; the DEC-014 count is larger because it includes untracked and report-only readers.
+- **Decision p:** the larger of the flat and pressure p-values from the screen's `report.json` (10,000 seed-1 draws).
+- **m = max(11, the DEC-014 count at claim time)**, frozen in the claim's ledger row. With m = 11 the threshold is **p < 0.025 / 11 = 0.00227**.
+- **Families, as the manager freezes the list now (11):**
+  - EXP-011: its holdout was P4 (2026-09-09 to 09-15); it is not in `tries.jsonl`.
+  - EXP-012: the fresh-0903 confirmation is P3; the backcheck is P2.
+  - EXP-013: tracked, with `tries.jsonl` lines whose `ledger_owner` is EXP-013 (P2).
+  - #191: P1 only, but named in DEC-014, so counted.
+  - EXP-014, EXP-015, EXP-017, EXP-018, EXP-019, EXP-020 (report-only, but it read outcomes).
+  - EXP-021 itself.
+  - EXP-016 is not listed: shelved with no outcome read.
+- DEC-014 will be amended to match in a separate manager PR. That PR also says the EXP-021 paired design is eligible: a new component tested against an EXP-012-based control is a new family.
+- The recount at claim time is the manager's; the claim amendment records the final list and m.
+- Consistent with the plan's wording: EXP-021 is the eighth family scoped in the plan; the DEC-014 count is larger because it also counts untracked, P1-only and report-only readers.
 
 The screen's own bar (B1 p < 0.025 on both legs) is unchanged; the stricter threshold is applied by the claim amendment.
 
@@ -116,7 +138,7 @@ Failing any section 5 bar on either leg kills the RUG selector. There is no seco
 ## 11. Honest prior and disclosures
 
 - **Prior (estimates, not measurements):** screen pass about 15 to 20%; confirmation about 5 to 8%.
-- EXP-021 is the eighth family scoped on the 27 dates; the DEC-014 count (section 9) is about 10; the base book is best-of-many; the strict rug events are few; five earlier filters on this book failed.
+- EXP-021 is the eighth family scoped on the 27 dates; the DEC-014 count (section 9) is 11 today; the base book is best-of-many; the strict rug events are few; five earlier filters on this book failed.
 - fresh-0802 is August data, further from the September training pools than the screen's dates; drift against the September-heavy pool is expected to cost, not help.
 - The control is retrained on the same rows, so the paired gain isolates the 16 features. It does not show the selector beats the frozen EXP-012 model; that comparison is report-only.
 - Exit lag 2 is optimistic against the live exit leak; the lag-5 leg is the check.
