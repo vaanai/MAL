@@ -132,16 +132,20 @@ class PlanPinTests(unittest.TestCase):
 
 
 class GuardTests(unittest.TestCase):
+    def test_the_real_pin_is_in_the_code(self):
+        self.assertEqual(x.VMAP_EXP016_SHA256, "1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec")  # pinned by the manager 2026-10-07
+        x.check_pin_ready()
+
     def test_placeholder_pin_refuses_at_startup(self):
-        self.assertEqual(x.VMAP_EXP016_SHA256, "PENDING")
-        with self.assertRaises(x.Refused):
-            x.check_pin_ready()
+        with mock.patch.object(x, "VMAP_EXP016_SHA256", "PENDING"):
+            with self.assertRaises(x.Refused):
+                x.check_pin_ready()
         with mock.patch.object(x, "VMAP_EXP016_SHA256", "a" * 64):
             x.check_pin_ready()  # a real sha passes
 
     def test_run_guards_refuses_before_reading_anything_while_pending(self):
         args = SimpleNamespace(max_workers=4)
-        with self.assertRaises(x.Refused):
+        with mock.patch.object(x, "VMAP_EXP016_SHA256", "PENDING"), self.assertRaises(x.Refused):
             x.run_guards(args)
 
     def test_vmap_sha_mismatch_refuses(self):
@@ -1460,6 +1464,7 @@ class PrecountTests(unittest.TestCase):
 
         out = io.StringIO()
         with contextlib.ExitStack() as st:
+            st.enter_context(mock.patch.object(x, "VMAP_EXP016_SHA256", "PENDING"))  # these tests read a fixture map: the real pin is for the real map
             st.enter_context(mock.patch.object(x, "run_guards", return_value={"with_p4": False}))
             st.enter_context(mock.patch("tools.pumpswap_virtual.load_map", return_value=dict(VMAP)))
             st.enter_context(mock.patch("tools.exp012_forward_vmap.load_detail", return_value={"POOL1": {"v_base": 17_584_505_300}}))
@@ -1523,8 +1528,7 @@ class PrecountTests(unittest.TestCase):
         self.assertTrue(any(w.startswith("constancy:") for w in rec["would_refuse"]))
 
     def test_precount_runs_with_the_map_unpinned(self):
-        self.assertEqual(x.VMAP_EXP016_SHA256, "PENDING")  # the pin is the manager's; the precount must not need it
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(x, "VMAP_EXP016_SHA256", "PENDING"):  # the precount must not need the pin
             rc, text = self._run(d, ["P1A"])
         self.assertIn("UNPINNED", text)
 

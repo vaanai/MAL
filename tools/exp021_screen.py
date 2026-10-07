@@ -429,7 +429,7 @@ CAVEATS = (
 
 
 def render_md(rep: Mapping[str, Any]) -> str:
-    L = [rep["first_line"], "", rep["banner"], "", "## Matched outcome", "", f"**{rep['decision']['outcome']}**", ""]
+    L = [rep["first_line"], "", f"**{rep.get('p1b', P1B_EXCLUDED)}**: no P1B row is read, trained on or reported.", "", rep["banner"], "", "## Matched outcome", "", f"**{rep['decision']['outcome']}**", ""]
     pc = rep.get("pre_started") or {}
     L += [f"- Pre-`started` counts (ids and counts only): {json.dumps({k: v for k, v in pc.items() if k not in ('no_pool_mint_ids', 'censored_mints')}, default=str)}",
           f"- Table counts: {json.dumps(rep.get('table_counts'), default=str)}",
@@ -553,6 +553,144 @@ def log_all(out_dir: Path, tries_path: Path, canonical: Path, status: str, with_
     return out
 
 
+# --- Amendment 3: loader limits sized for EXP-021, a censoring signature, and P1B dropped ----------------------------------------------
+
+
+LIMIT_NO_CREATE_021 = 0.08  # Amendment 3(a): no-create-row share per source. EXP-016's own `e16.LIMIT_NO_CREATE` (2%) is NOT changed.
+SIG_WINDOW_H = 24  # the censoring signature compares the first 24 h of a source's counted window with the rest
+SIG_MIN_SPAN_H = 48  # a P1 source with a shorter counted span is too short for the comparison (exempt from the signature check only)
+P1B_EXCLUDED = "P1B excluded (Amendment 3)"
+
+
+@contextlib.contextmanager
+def no_create_limit(limit: float) -> Iterator[None]:
+    """`e16.check_limits` reads the module constant `LIMIT_NO_CREATE`. The limit is swapped for the call and restored (as `feature_names` does), so
+    EXP-016's value is never changed."""
+    old = e16.LIMIT_NO_CREATE
+    e16.LIMIT_NO_CREATE = limit
+    try:
+        yield
+    finally:
+        e16.LIMIT_NO_CREATE = old
+
+
+def censoring_profile(src: Any, pool_hours: Sequence[str]) -> dict[str, Any]:
+    """Outcome-blind: of the migrations in the source's counted window that have a pool, how many have no create row, split into the first
+    SIG_WINDOW_H hours of the counted window and the rest. Left-censoring (a token created before the tape that graduates late) shows as a higher share
+    early. The counted window starts at the block start, or at the first pool hour read for a P1 source that begins later."""
+    blk_a, blk_b = e15.hour_ms(e15.BLOCKS[src.block][0]), e15.hour_ms(e15.BLOCKS[src.block][1])
+    hours = sorted(pool_hours)
+    start = max(blk_a, e15.hour_ms(hours[0])) if hours else blk_a
+    end = min(blk_b, e15.hour_ms(hours[-1]) + e15.HOUR_MS) if hours else blk_b
+    pool_by_mint = rug.migration_pool_map(src.migrations.values())
+    excluded = set(src.excluded_no_bonding).union(*[set(v) for v in src.excluded_other.values()])
+    cut = start + SIG_WINDOW_H * e15.HOUR_MS
+    out: dict[str, Any] = {"start_ms": start, "span_h": max(0, (end - start) // e15.HOUR_MS), "first": {"n": 0, "no_create": 0}, "after": {"n": 0, "no_create": 0}}
+    for m, mr in src.migrations.items():
+        bt = mr.get("block_time")
+        if not isinstance(bt, int) or isinstance(bt, bool) or not e16.in_counted_window(src.block, mr) or not pool_by_mint.get(m):
+            continue
+        side = out["first" if bt * 1000 < cut else "after"]
+        side["n"] += 1
+        side["no_create"] += int(m not in src.creates and m not in excluded)
+    return out
+
+
+def check_censoring_signature(results: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Amendment 3(a): a source's no-create share must be ABOVE in its first 24 h what it is after (a left-censoring signature, not a missing-hours
+    loader bug). Refuse when it is not. A P1 source shorter than SIG_MIN_SPAN_H, or with no migration on one side, is exempt from this check only."""
+    why: list[str] = []
+    for r in results:
+        prof = r.get("censoring")
+        if prof is None:
+            why.append(f"{r['tag']}: no censoring profile (the signature check cannot run)")
+            continue
+        f, a = prof["first"], prof["after"]
+        if str(r["tag"]).startswith("P1") and (prof["span_h"] < SIG_MIN_SPAN_H or not f["n"] or not a["n"]):
+            continue
+        if not f["n"] or not a["n"]:
+            why.append(f"{r['tag']}: no migrations in the first {SIG_WINDOW_H} h or after it: the censoring signature cannot be read")
+            continue
+        sf, sa = f["no_create"] / f["n"], a["no_create"] / a["n"]
+        if not sf > sa:
+            why.append(f"{r['tag']}: no-create share {f['no_create']}/{f['n']} in the first {SIG_WINDOW_H} h is not above {a['no_create']}/{a['n']} after it: not a censoring signature")
+    return why
+
+
+def check_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] | None = None, oof_cover: Mapping[str, Any] | None = None) -> list[str]:
+    """EXP-016's pre-declared limits with the no-create limit at 8% (Amendment 3), plus the censoring-signature check. P1B is not a source here."""
+    with no_create_limit(LIMIT_NO_CREATE_021):
+        why = e16.check_limits(results, oof, oof_cover)
+    return why + check_censoring_signature(results)
+
+
+def enforce_limits(results: Sequence[Mapping[str, Any]], oof: Mapping[str, float] | None = None, oof_cover: Mapping[str, Any] | None = None) -> None:
+    why = check_limits(results, oof, oof_cover)
+    if why:
+        raise Refused("pre-declared limit(s) exceeded (plan 13 item 9, Amendment 3): " + "; ".join(why))
+
+
+def p1_kept_dates() -> list[str]:
+    """The P1 dates covered by the retained P1 sources (P1A and P1C): the OOF-without-cell check must not count P1B-only dates as missing cells."""
+    from tools.exploration_exits import POOL_HOURS as A_HOURS
+    from tools.oracle_insample_adapter import POOL_C_HOURS
+
+    return sorted({h[:10] for h in list(A_HOURS) + list(POOL_C_HOURS)} & set(e15.block_dates("P1")))
+
+
+def guard_p1_no_live(fast: Path | str, insample: Path | str, verify: bool = True) -> dict[str, Any]:
+    """EXP-015's `guard_p1` for the two retained P1 views (same pinned names, VIEW.sha256 and view pin); P1B (live) is not read."""
+    want = {"fast": "fast-pool-2026-09-18T23_2026-09-22T00", "insample": "oracle-insample-2026-09-22_25"}
+    roots: dict[str, Path] = {}
+    shas: dict[str, str] = {}
+    for label, p in (("fast", fast), ("insample", insample)):
+        rp = e15.refuse_reserved(p, f"P1 {label} root")
+        if Path(rp).name != want[label]:
+            raise e15.Refused(f"P1 {label} root {str(p)!r}: directory name {Path(rp).name!r} is not the pinned {want[label]!r}")
+        if not (Path(rp) / "VIEW.sha256").is_file():
+            raise e15.Refused(f"P1 {label} root {rp}: VIEW.sha256 not found")
+        roots[label] = Path(rp)
+        if verify:
+            try:
+                fz.verify_view_sha256(Path(rp))
+                fz.check_view_pin(Path(rp))
+            except SystemExit as exc:
+                raise e15.Refused(str(exc)) from None
+            shas[label] = hashlib.sha256((Path(rp) / "VIEW.sha256").read_bytes()).hexdigest()
+    return {"roots": roots, "view_sha256": shas}
+
+
+def run_guards(args: argparse.Namespace, enforce_base: bool = True, verify: bool = True, pin_required: bool = True) -> dict[str, Any]:
+    """`e16.run_guards` without P1B: refuses if `--p1-oracle-live-dir` is given (Amendment 3(b))."""
+    if getattr(args, "p1_oracle_live_dir", None) is not None:
+        raise Refused(f"--p1-oracle-live-dir (P1B, the Oracle live tape) is given: {P1B_EXCLUDED}; the tool refuses it")
+    if pin_required:
+        e16.check_pin_ready()
+    try:
+        e15.check_workers(args.max_workers)
+        g1 = guard_p1_no_live(args.p1_fast_dir, args.p1_oracle_insample_dir, verify)
+        if not args.p2_view_dir:
+            raise Refused("--p2-view-dir is required (explore-0814 w1..w7)")
+        g2 = e15.guard_p2(args.p2_view_dir, verify, enforce_base)
+        g3 = e15.guard_p3(args.p3_root, verify, enforce_base)
+        g4 = e15.guard_p4(args.p4_view_dir or [], verify)
+        frozen = e15.check_frozen_model(args.artifact_dir)
+        p3_hours = [h for w in g3["walkers"] for h in w.hours]
+        e15.assert_hours_allowed(list(g2["pool"]) + list(g4["pool"] if g4 else []) + p3_hours, with_p4=g4 is not None)
+    except e15.Refused as exc:
+        raise Refused(str(exc)) from None
+    e16.refuse_extra_reserved(args)
+    sha = e16.check_vmap(args.vmap) if pin_required else None
+    return {"g1": g1, "g2": g2, "g3": g3, "g4": g4, "vmap_sha256": sha, "frozen": frozen, "with_p4": g4 is not None, "p1b": P1B_EXCLUDED}
+
+
+def build_sources(g: Mapping[str, Any]) -> list[tuple[str, str, Any, list[str], list[Path]]]:
+    """EXP-016's sources without P1B. `e16.build_sources` wants a `live` root for the resolver table; the fast root stands in and is never read, because
+    the P1B entry is dropped before anything is loaded."""
+    g1 = {**g["g1"], "roots": {**g["g1"]["roots"], "live": g["g1"]["roots"]["fast"]}}
+    return [s for s in e16.build_sources({**g, "g1": g1}) if s[0] != "P1B"]
+
+
 # --- CLI ----------------------------------------------------------------------------------------------------------------------------
 
 
@@ -561,6 +699,10 @@ def _parser() -> argparse.ArgumentParser:
     ap = e16._parser()
     ap.description = __doc__
     ap.formatter_class = argparse.RawDescriptionHelpFormatter
+    for a in ap._actions:
+        if a.dest == "p1_oracle_live_dir":  # P1B: required in EXP-016, REFUSED here (Amendment 3(b))
+            a.required, a.default = False, None
+            a.help = "not accepted: P1B (the Oracle live tape) is excluded from EXP-021 (Amendment 3). The tool refuses it if given."
     for a in ap._actions:
         if a.dest == "max_workers":
             a.help = "fork count of the tape pass (EXP-016 design: indexed history, forked cells; ~57 GB at P2 with 4). Default 4, cap 8. The fits are serial."
@@ -571,9 +713,10 @@ def collect(args: argparse.Namespace, g: Mapping[str, Any], vmap: Mapping[str, i
     """ONE tape pass per source, exactly EXP-016's (`e16.process_source`), rows freed after each source."""
     results: list[dict[str, Any]] = []
     pool_print_ms: dict[str, list[int]] = {}
-    for tag, block, hours_fn, pool_hours, mig_roots in e16.build_sources(dict(g)):
+    for tag, block, hours_fn, pool_hours, mig_roots in build_sources(g):
         src = e16.load_source_data(tag, block, hours_fn, pool_hours, mig_roots, progress_every_hour=True)
-        results.append(e16.process_source(src, vmap, e16.canonical_pool_str))
+        prof = censoring_profile(src, pool_hours)  # outcome-blind counts, taken before the source is processed and freed
+        results.append({**e16.process_source(src, vmap, e16.canonical_pool_str), "censoring": prof})
         for p_, ts_ in e16.pool_print_times(src, rug.migration_pool_map(src.migrations.values())).items():
             pool_print_ms.setdefault(p_, []).extend(ts_)
         del src
@@ -588,7 +731,7 @@ def precount(args: argparse.Namespace) -> int:
     try:
         e16.progress("exp021 precount: guards start")
         e16.refuse_extra_reserved(args)
-        g = e16.run_guards(args, pin_required=False)
+        g = run_guards(args, pin_required=False)
         e16.set_process_workers(args)
         if args.vmap and re.fullmatch(r"[0-9a-f]{64}", e16.VMAP_EXP016_SHA256):
             vmap_raw, vmap_note = e16.load_pinned_vmap(args.vmap), "pinned"
@@ -616,11 +759,11 @@ def precount(args: argparse.Namespace) -> int:
         oof = None
     table = build_table(cells, sel)
     counts = table_counts(table, g["with_p4"])
-    oof_cover = e16.oof_without_cell(results, oof, oof_days, e15.block_dates("P1"))
-    would = e16.check_limits(results, oof, oof_cover) + check_table_limits(counts, g["with_p4"])
+    oof_cover = e16.oof_without_cell(results, oof, oof_days, p1_kept_dates())
+    would = check_limits(results, oof, oof_cover) + check_table_limits(counts, g["with_p4"])
     if oof is None:
         would.append("P1: stored OOF scores could not be loaded")
-    rec = {"mode": "precount", "tool": TOOL, "vmap": vmap_note, "sources": {r["tag"]: e16.source_counts(r, vmap) for r in results}, "table_counts": counts,
+    rec = {"mode": "precount", "tool": TOOL, "p1b": P1B_EXCLUDED, "censoring": {r_["tag"]: r_.get("censoring") for r_ in results}, "vmap": vmap_note, "sources": {r["tag"]: e16.source_counts(r, vmap) for r in results}, "table_counts": counts,
            "universe_sha256": universe_sha256(table), "feature_table_sha256": feature_table_sha256(table), "frozen_selection_available": oof is not None, "would_refuse": would,
            "pre_started": e16._counts_only(e16.pre_started_counts(results, {c["mint"]: s for c, s in zip(cells, sel)}, vmap_raw, closed))}
     text = json.dumps(rec, indent=2, default=str, sort_keys=True)
@@ -635,7 +778,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = _parser().parse_args(argv)
     if args.emit_constancy_sample:
-        return e16.emit_constancy_sample(args)
+        print("refusing: --emit-constancy-sample is not offered here (EXP-016's constancy file is the input; its guards read P1B)", file=sys.stderr)
+        return 2
     if args.precount:
         return precount(args)
     if args.v_constancy_json is None:
@@ -646,7 +790,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     out_dir = args.out_dir
     try:
         e16.progress("exp021 guards start")
-        g = e16.run_guards(args)
+        g = run_guards(args)
         e16.set_process_workers(args)
         check_no_prior_tries(tries_path, canonical)
         try:
@@ -693,9 +837,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise Refused(str(exc)) from None
         sel = e16.frozen_flags(cells, oof, args.artifact_dir)
         pre = e16.pre_started_counts(results, {c["mint"]: s for c, s in zip(cells, sel)}, vmap_raw, closed)
-        oof_cover = e16.oof_without_cell(results, oof, oof_days, e15.block_dates("P1"))
+        oof_cover = e16.oof_without_cell(results, oof, oof_days, p1_kept_dates())
         pre["p1_oof_without_cell"] = oof_cover
-        e16.enforce_limits(results, oof, oof_cover)
+        enforce_limits(results, oof, oof_cover)
         pre["v_coverage"] = e16.v_coverage([c["pool"] for c in cells if c.get("pool")], vmap_raw)
         pre["v_constancy"] = constancy
         e16.check_constancy_sample(constancy_samples, e16.readable_pools([c["pool"] for c in cells if c.get("block") == "P2" and c.get("pool")], vmap_raw))
@@ -719,7 +863,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                  "with_p4": with_p4, "vmap_sha256": g["vmap_sha256"], **input_shas}
         log_all(out_dir, tries_path, canonical, "started", with_p4, extra)  # the spend point
         started = True
-        base = {"schema": SCHEMA, "banner": BANNER, "first_line": first_line(with_p4), "with_p4": with_p4, "pre_started": pre, "table_counts": counts, "prior_tries": prior,
+        base = {"schema": SCHEMA, "banner": BANNER, "first_line": first_line(with_p4), "with_p4": with_p4, "p1b": P1B_EXCLUDED, "censoring": {r_["tag"]: r_.get("censoring") for r_ in results}, "pre_started": pre, "table_counts": counts, "prior_tries": prior,
                 "universe_sha256": usha, "feature_table_sha256": fsha, "git_head": head, "args_hash": ahash}
         write_report(out_dir, {**base, "decision": {"outcome": "table written; folds not yet scored"}, "partial": True})
         res = run_screen(table, with_p4)
