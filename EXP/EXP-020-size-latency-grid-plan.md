@@ -88,3 +88,9 @@ Quant-proof asked for this after the start-bound report. The start-bound grid fi
 - The end cache has its own pin line, `GRID_END_MANIFEST_SHA256 = <sha>`, added by a later amendment after the resim. The start pin is never accepted for end mode, and `--report --bound end` refuses unless every source's meta says `end`.
 - Equivalence: the EXP-015 cache is start-bound, so the cell equivalence cannot hold at `end`. End mode instead checks internal consistency (the re-simulated mint set and n equal the frozen selection, same `selected_sha256` as the start grid) and prints it as that. The report header says: "END-of-slot bound (pessimistic): entry and exit fill after every trade in the slot".
 - One tries line for the end report, key `exp020_grid_end` (the start `exp020_grid` line neither blocks nor is blocked by it); use a separate `--tries-log`. The winner's-curse and tuned-pool caveats of section 5 apply unchanged.
+
+## Amendment 2026-10-07: END-bound grid-cache pin (before any outcome read)
+
+The END-bound resim ran as job #348 (code b4b4ed0, `--bound end --combos reduced`, 4 workers, 22 GB, rc 0). Precount and `--guards-only` passed: `n_selected` 3,322 (2,349 non-P1), bound `end`. Per-source row counts match the start grid: P1A 315, P1C 404, P1B 254, P2 1,485, P3 451, P4 413. Only counts and short hashes were printed. No net, mean or total was printed or opened.
+
+GRID_END_MANIFEST_SHA256 = e4ac09efe1bdf04ffdc504e0e08ec208327c0b04c4848a46163b92a55949dd65
