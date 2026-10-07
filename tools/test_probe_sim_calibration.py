@@ -65,8 +65,8 @@ def make(t=T_AFTER, mint=M1):
 
 
 def test_build_split():
-    assert psc.build_of(1791223983000 - 1) == "8a6849b"
-    assert psc.build_of(1791223983000) == "a25eb17"
+    assert psc.build_of(1791222783000 - 1) == "8a6849b"
+    assert psc.build_of(1791222783000) == "a25eb17"
     assert psc.build_of(1791232766000 - 1) == "a25eb17"
     assert psc.build_of(1791232766000) == "7004b16"
     assert psc.build_of(5, [(10, "x")]) == "unknown"

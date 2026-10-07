@@ -25,7 +25,7 @@ SLOT_MS = 400
 # Same boundaries as tools/probe_sim_calibration.BUILDS (a trade belongs to the last boundary at or before its buy ts).
 BUILDS: tuple[tuple[int, str], ...] = (
     (0, "8a6849b"),
-    (1791223983000, "a25eb17"),
+    (1791222783000, "a25eb17"),
     (1791232766000, "7004b16"),
     (1791241796000, "faa3192"),
 )
@@ -221,6 +221,64 @@ def exit_latency(trips: list[dict[str, Any]], builds) -> dict[str, Any]:
     return out
 
 
+def fee_vs_price(trips: list[dict[str, Any]], builds, cut: int = 28, cut_build: str = "faa3192") -> dict[str, Any]:
+    """Realized P&L against the actual tx fees in the ledger: before_tx_fees = realized + tx fees, where tx fees are
+    buy.fee_lamports + sell.fee_lamports + the retried sell's failed_attempt_cost_lamports (all of it is inside pnl).
+    For `cut_build` also split by the first `cut` trips (the 2026-10-06 cut, 28 trips) and the rest."""
+    def agg(g: list[dict[str, Any]]) -> dict[str, Any]:
+        realized = sum(t["sell"]["pnl_lamports"] for t in g)
+        fees = sum((t["buy"].get("fee_lamports") or 0) + (t["sell"].get("fee_lamports") or 0)
+                   + (t["sell"].get("failed_attempt_cost_lamports") or 0) for t in g)
+        return {"n": len(g), "realized_lamports": realized, "tx_fees_lamports": fees, "before_tx_fees_lamports": realized + fees,
+                "tx_fees_per_trip_lamports": fees / len(g) if g else None}
+    out: dict[str, Any] = {}
+    for name in [sha for _, sha in sorted(builds)] + [ALL]:
+        g = trips if name == ALL else [t for t in trips if build_of(t["buy"]["ts_ms"], builds) == name]
+        out[name] = agg(g)
+    g = sorted((t for t in trips if build_of(t["buy"]["ts_ms"], builds) == cut_build), key=lambda t: t["buy"]["ts_ms"])
+    out[f"{cut_build} first {cut}"] = agg(g[:cut])
+    out[f"{cut_build} after the first {cut}"] = agg(g[cut:])
+    return out
+
+
+def true_exit_lag(cal: dict[str, Any], rows: list[dict[str, Any]], builds=BUILDS,
+                  fixed: tuple[str, ...] = ("a25eb17", "7004b16", "faa3192")) -> dict[str, Any]:
+    """Lag from the tape crossing to the sell landing: sell landed_slot - the sim trigger slot, for two variants:
+    `sim_correct` (the tool's primary: sim entry) and `live_mark` (the mark the live build used: live_correct for
+    faa3192, live_legacy_correct for the earlier builds). Also trigger_slot_diff = sim trigger slot - live snapshot_slot.
+    Source: tools/probe_sim_calibration.py JSON (`trades`)."""
+    sells: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        if r.get("mode") == "live" and r.get("kind") == "sell" and r.get("landed") and r.get("pnl_lamports") is not None:
+            sells[r["mint"]].append(r)
+    out: dict[str, Any] = {}
+    for vname in ("sim_correct", "live_mark"):
+        per: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        n_no_tape = 0
+        for t in cal["trades"]:
+            cands = [x for x in sells[t["mint"]] if x["ts_ms"] > t["buy_ts_ms"]]
+            if not cands:
+                continue
+            sl = min(cands, key=lambda x: x["ts_ms"])
+            key = vname if vname == "sim_correct" else ("live_correct" if t["build"] == "faa3192" else "live_legacy_correct")
+            v = (t.get("variants") or {}).get(key) or {}
+            if v.get("trigger_slot") is None:
+                n_no_tape += 1
+                continue
+            per[t["build"]].append({"reason": sl["exit_reason"], "diff": v["trigger_slot"] - sl["snapshot_slot"],
+                                    "lag": sl["landed_slot"] - v["trigger_slot"], "agree": v.get("reason_agree")})
+        def block(g: list[dict[str, Any]]) -> dict[str, Any]:
+            sl_ = [x for x in g if x["reason"] == "sl"]
+            return {"n": len(g), "trigger_slot_diff": dist([x["diff"] for x in g]), "lag_all": dist([x["lag"] for x in g]),
+                    "lag_sl": dist([x["lag"] for x in sl_]), "n_lag_negative": sum(1 for x in g if x["lag"] < 0),
+                    "n_lag_gt_10": sum(1 for x in g if x["lag"] > 10), "n_reason_disagree": sum(1 for x in g if x["agree"] is False)}
+        res = {b: block(per[b]) for b in [sha for _, sha in sorted(builds)]}
+        res["fixed builds"] = block([x for b in fixed for x in per[b]])
+        res["n_no_tape_or_no_trigger"] = n_no_tape
+        out[vname] = res
+    return out
+
+
 def skips(rows: list[dict[str, Any]]) -> dict[str, int]:
     return dict(Counter(r.get("reason") for r in rows if r.get("mode") == "live" and r.get("kind") == "skip"))
 
@@ -232,7 +290,7 @@ def hour_of_day(trips: list[dict[str, Any]]) -> dict[str, Any]:
     return {f"{k:02d}": {"n": len(v), "pnl_lamports": sum(v), "mean_lamports": statistics.fmean(v)} for k, v in sorted(h.items())}
 
 
-def build_report(rows: list[dict[str, Any]], builds=BUILDS, sha256: str | None = None) -> dict[str, Any]:
+def build_report(rows: list[dict[str, Any]], builds=BUILDS, sha256: str | None = None, cal: dict[str, Any] | None = None) -> dict[str, Any]:
     trips, fbuys, fsells = pair_trips(rows)
     live = [r for r in rows if r.get("mode") == "live"]
     return {
@@ -242,6 +300,8 @@ def build_report(rows: list[dict[str, Any]], builds=BUILDS, sha256: str | None =
         "per_build": per_build(trips, fbuys, builds), "fee_split": fee_split(trips, fbuys, fsells, builds),
         "entry_latency": entry_latency(trips, fbuys, builds), "exit_latency": exit_latency(trips, builds),
         "skips": skips(rows), "hour_of_day": hour_of_day(trips),
+        "fee_vs_price": fee_vs_price(trips, builds),
+        "true_exit_lag": true_exit_lag(cal, rows, builds) if cal else None,
     }
 
 
@@ -303,6 +363,21 @@ def markdown(rep: dict[str, Any]) -> str:
     L += ["", "### Hour of day (UTC hour of the buy; small n per bucket, a sampling picture only)", "",
           "| UTC hour | trips | P&L lamports | mean |", "| --- | ---: | ---: | ---: |"]
     L += [f"| {k} | {v['n']} | {_f(v['pnl_lamports'])} | {_f(v['mean_lamports'], 0)} |" for k, v in rep["hour_of_day"].items()]
+    L += ["", "### Realized P&L against actual tx fees (price vs fees)", "",
+          "| group | n | realized | tx fees | before tx fees | tx fees per trip |", "| --- | ---: | ---: | ---: | ---: | ---: |"]
+    for k, v in rep["fee_vs_price"].items():
+        L.append(f"| {k} | {v['n']} | {_f(v['realized_lamports'])} | {_f(v['tx_fees_lamports'])} | {_f(v['before_tx_fees_lamports'])} | {_f(v['tx_fees_per_trip_lamports'], 0)} |")
+    if rep.get("true_exit_lag"):
+        tri2 = lambda d: f"{_f(d['min'], 0)} / {_f(d['p50'], 0)} / {_f(d['p90'], 0)} / {_f(d['max'], 0)}"
+        for vname, res in rep["true_exit_lag"].items():
+            L += ["", f"### True exit lag, tape crossing to sell landing (slots), variant `{vname}`", "",
+                  "| build | n | trigger_slot_diff min/p50/p90/max | lag all min/p50/p90/max | lag sl min/p50/p90/max | lag < 0 | lag > 10 | reason disagree |",
+                  "| --- | ---: | --- | --- | --- | ---: | ---: | ---: |"]
+            for b, v in res.items():
+                if b == "n_no_tape_or_no_trigger":
+                    continue
+                L.append(f"| {b} | {v['n']} | {tri2(v['trigger_slot_diff'])} | {tri2(v['lag_all'])} | {tri2(v['lag_sl'])} | {v['n_lag_negative']} | {v['n_lag_gt_10']} | {v['n_reason_disagree']} |")
+            L.append(f"\nTrades with no tape or no sim trigger: {res['n_no_tape_or_no_trigger']}.")
     return "\n".join(L) + "\n"
 
 
@@ -316,9 +391,11 @@ def main() -> int:
     ap.add_argument("--out-json")
     ap.add_argument("--out-md")
     ap.add_argument("--build", action="append", default=[], metavar="START_MS:SHA")
+    ap.add_argument("--calibration", help="calibration.json from tools/probe_sim_calibration.py (adds the true exit lag tables)")
     a = ap.parse_args()
     rows, sha = load(a.fills)
-    rep = build_report(rows, parse_builds(a.build) if a.build else BUILDS, sha)
+    cal = json.load(open(a.calibration)) if a.calibration else None
+    rep = build_report(rows, parse_builds(a.build) if a.build else BUILDS, sha, cal)
     md = markdown(rep)
     if a.out_json:
         with open(a.out_json, "w") as f:
