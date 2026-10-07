@@ -51,6 +51,7 @@ SCHEMA = "exp021_screen_v1"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CANONICAL_TRIES = e16.CANONICAL_TRIES
 PLAN = REPO_ROOT / "EXP" / "EXP-021-rug-signals-in-selector-plan.md"
+PART1 = REPO_ROOT / "EXP" / "EXP-021-part1-prereg.md"
 LAMPORTS = e16.LAMPORTS
 Refused = e16.Refused
 
@@ -797,6 +798,18 @@ def confirm_main(args: argparse.Namespace | None) -> int:
     return 2
 
 
+PIN_LINES = (("EXP021_FROZEN_MD5", 32), ("EXP021_CONTROL_MD5", 32), ("EXP021_TRAIN_MANIFEST_SHA256", 64))
+
+
+def check_freeze_pins(text: str | None = None) -> None:
+    """The screen runs only AFTER the freeze is visible: Part 1 (or a merged amendment copy in it) must carry a pin line
+    `EXP021_FROZEN_MD5: <32 hex>`, `EXP021_CONTROL_MD5: <32 hex>` and `EXP021_TRAIN_MANIFEST_SHA256: <64 hex>`. PENDING means not frozen: refuse."""
+    t = PART1.read_text(encoding="utf-8") if text is None else text
+    bad = [k for k, n in PIN_LINES if not re.search(rf"^{k}: [0-9a-f]{{{n}}}\s*$", t, re.M)]
+    if bad:
+        raise Refused(f"freeze pin line(s) not set in EXP/EXP-021-part1-prereg.md: {bad}. The screen runs only after --freeze and a merged amendment recording the md5s")
+
+
 # --- CLI ----------------------------------------------------------------------------------------------------------------------------
 
 
@@ -902,6 +915,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.precount:
         return precount(args)
+    try:
+        check_freeze_pins()
+    except Refused as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 2
     if args.v_constancy_json is None:
         print("refusing: --v-constancy-json is required (or use --emit-constancy-sample)", file=sys.stderr)
         return 2
