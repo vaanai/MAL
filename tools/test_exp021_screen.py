@@ -803,7 +803,7 @@ class PreregTests(unittest.TestCase):
 
     def test_pins_match_the_code(self):
         for sv in ("fresh-0802", "[2026-08-02T12, 2026-08-08T12)", "10,000 draws, seed 1", "p < 0.025", "exit lag 2", "0.05, 0.25 and 0.5 SOL", "tp50_sl30",
-                   "0.8030766588450794", "0.025 / m", "8%", "100 frozen picks", "refusing stub", "No k2 cell", "+22.9 bps at 0.25 SOL and +51.6 bps at 0.5 SOL", "m = 7", "0.003571", "EXP021_FROZEN_MD5: PENDING"):
+                   "0.8030766588450794", "0.025 / m", "8%", "100 frozen picks", "refusing stub", "No k2 cell", "+22.9 bps at 0.25 SOL and +51.6 bps at 0.5 SOL", "p < 0.0025", "DEC-014", "EXP021_FROZEN_MD5: PENDING"):
             self.assertIn(sv, self.TEXT)
         self.assertEqual(x.FAMILY_ALPHA, 0.025)
         self.assertEqual(x.LIMIT_NO_CREATE_021, 0.08)

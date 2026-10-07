@@ -97,17 +97,17 @@ Mirrors the screen: guards, then ONE tape pass, then the section 7 counts, then 
 
 **Implementation status.** This PR ships `--freeze` and this file. **`--confirm` is a refusing stub** (TODO: a separate PR, after the md5 amendment and this file's merge). It opens no path, takes no lock and writes no line. The confirm implementation needs its own review before the block is touched; nothing may read the block with any other tool.
 
-## 9. Block-budget gate (the manager adds this to DEC-014 and the ledger)
+## 9. Block-budget gate
 
-A screen PASS may claim a sealed block only if all three hold:
+Governed by the **DEC-014 amendment "block budget for the sealed confirmation blocks" (2026-10-07, merged in #446)**. It is cited, not restated: the rule there controls, including the one-block-per-family and one-in-reserve clauses. What this file fixes for EXP-021:
 
-1. **Multiplicity.** The screen's **B1 p < 0.025 / m** on both legs, where **m = max(the listed count below, the manager's recount at claim time)**. The recount is from `data/tries.jsonl` (a family is the experiment id in the lines' `config.experiment`), includes EXP-021 itself, and the claim amendment lists the families.
+- **Decision p:** the larger of the flat and pressure p-values from the screen's `report.json` (10,000 seed-1 draws). The claim needs it below 0.025 / m.
+- **m** has a floor of 8 and is **frozen in the claim's ledger row at claim time**.
+- **Families as they stand today (not yet confirmed):** EXP-012 (the backcheck read these dates), EXP-013, #191, EXP-014 v2, EXP-015, EXP-017, EXP-018, EXP-019, EXP-020 (report-only, but it read outcomes) and EXP-021 itself. If the list holds, **m = 10 and the threshold is p < 0.0025**. EXP-016 is not listed: shelved with no outcome read.
+- **Open item for the manager:** confirm which of these have `data_blocks` overlapping the 27 non-P1 dates (EXP-013 and #191 are DEC-014's untracked readers); the claim amendment records the final list and m.
+- This is consistent with the plan's wording: EXP-021 is the eighth family scoped; the DEC-014 count is larger because it includes untracked and report-only readers.
 
-   Families that have read outcomes on the 27 non-P1 dates (listed now): **EXP-015, EXP-017, EXP-018, EXP-019, EXP-020 (report-only, but it read outcomes), EXP-014 v2, and EXP-021 itself: m = 7**, so the threshold is **p < 0.025 / 7 = 0.003571**. EXP-016 is excluded: it was shelved with no outcome read. This is consistent with the plan's "8th family" wording: 8 families are scoped on these dates, 7 have read outcomes.
-2. **One block per family.** A family that has claimed a block claims no second one, whatever its result.
-3. **One in reserve.** At most 2 of the 3 sealed blocks (fresh-0828, fresh-0808, fresh-0802) are claimed before a new block is walked, sealed and verified, so one is always unread. A claim counts as spent from its merge.
-
-The screen's own bar (B1 p < 0.025) is unchanged; this rule is applied by the claim amendment from the report's `p_one_sided` on both legs.
+The screen's own bar (B1 p < 0.025 on both legs) is unchanged; the stricter threshold is applied by the claim amendment.
 
 ## 10. Kill and no second read
 
@@ -116,7 +116,7 @@ Failing any section 5 bar on either leg kills the RUG selector. There is no seco
 ## 11. Honest prior and disclosures
 
 - **Prior (estimates, not measurements):** screen pass about 15 to 20%; confirmation about 5 to 8%.
-- 8 families are scoped on the 27 dates (EXP-021 is the eighth) and 7 have read outcomes (section 9); the base book is best-of-many; the strict rug events are few; five earlier filters on this book failed.
+- EXP-021 is the eighth family scoped on the 27 dates; the DEC-014 count (section 9) is about 10; the base book is best-of-many; the strict rug events are few; five earlier filters on this book failed.
 - fresh-0802 is August data, further from the September training pools than the screen's dates; drift against the September-heavy pool is expected to cost, not help.
 - The control is retrained on the same rows, so the paired gain isolates the 16 features. It does not show the selector beats the frozen EXP-012 model; that comparison is report-only.
 - Exit lag 2 is optimistic against the live exit leak; the lag-5 leg is the check.
