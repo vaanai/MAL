@@ -102,3 +102,28 @@ This runs in parallel with the 10-16 FINAL read and the DEC-020 0.25 SOL step. N
 - five filters on this book have failed;
 - the strict rug event may be rare among EXP-012's picks;
 - the 27 dates have been read heavily.
+
+## Amendment 1 (2026-10-07, before any data read)
+
+Decided by the coordinator on the builder PR (#438). No row was read. Earlier sections are not edited; where this amendment differs, it governs.
+
+1. **Column-name swap.** `fz._fit` names the LightGBM columns from `fz.FROZEN_FEATURE_NAMES` (18). The RUG arm has 34 columns, so the tool swaps that name list in a context manager for the call and restores it. The hyperparameters are unchanged. Disclosed: `feature_fraction` 0.9 samples a different number of columns in the two arms (34 vs 18). This belongs to the feature-set change and is not a tuned difference.
+2. **Count matching.** "Threshold fixed at the frozen model's out-of-fold selection rate" is implemented per held-out date: both arms keep the top-n scores (ties by mint id), where n is the frozen EXP-012 selection's count on that date. There is no inner loop and nothing is tuned. A date with no frozen pick has no pick in either arm.
+3. **Bars (replaces the bar list in section 4).** All on both legs (flat and pressure), on the 27 non-P1 dates:
+   1. Paired test: mean of RUG minus CONTROL > 0 with a one-sided date-cluster bootstrap p < 0.025 (10,000 draws, seed 1).
+   2. Majority of the 27 dates with a positive paired gain.
+   3. Paired ex-top-3 > 0.
+   4. Paired ex-best-date > 0.
+   5. No date contributes more than 20% of the paired gain.
+
+   **Report-only** (never gating): the RUG kept book's CI90 lower bound (both resamplers), its ex-top-3 and its ex-best-date. Reason: at 0.05 SOL fixed fees dominate the kept book (EXP-017 C0), so a selection improvement cannot show on it. The confirmation pre-registration will set the stake and the full gate. (In the tool the bar ids stay B1, B3, B4, B5 and B6; there is no gating B2.)
+4. **Alpha.** 0.025 (the DEC-021 per-walk family alpha) is the tool's own constant. It is not borrowed from `tools/exp017_screen.py`, whose `FAMILY_ALPHA` is 0.05.
+5. **Pre-declared refusals** (counts only, before `started`): at least 100 frozen-selected rows on the non-P1 dates; at least one universe row on every non-P1 date; every feature finite and present; no duplicate mint; P4 in the pool (the 27 dates need it).
+6. **k2.** Not available from the cached cells, which are (6,2), (6,0), (4,2) and (8,2). It is reported as n/a. The k2 upper bound in section 4 would need a new tape pass and is not part of this screen.
+
+## Amendment 2 (2026-10-07, before any data read)
+
+Decided by the coordinator after the quant-proof pass on the tool at 9013460. No row was read. Earlier sections and Amendment 1 are not edited; where this amendment differs, it governs.
+
+1. **B6 is made precise.** "No single date contributes more than 20% of the paired gain" means: the net paired total (the sum over the 27 dates of the paired gain, RUG minus CONTROL) must be > 0, and max over dates of the per-date paired sum, divided by that net total, must be <= 0.20. The tool previously divided by the sum of the positive dates only, which is the weaker reading: 20 dates at +1 and 7 dates at -2.5 net to 2.5, so the best date is 40% of the gain, yet it is 5% of the positive total. Under this amendment B6 fails on that case. The reading is stricter. B5 (paired ex-best-date > 0) is unchanged. The share of the positive-date total is still reported, as report-only.
+2. **New pre-declared refusal (counts only, before `started`).** Refuse if fewer than 14 of the 27 non-P1 dates have at least one frozen pick, because the majority bar B3 (14 of 27 dates with a positive paired gain) could then never pass. The count (`non_p1_dates_with_frozen_pick`) is in the precount output and its would-refuse list.
