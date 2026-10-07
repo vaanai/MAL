@@ -65,8 +65,10 @@ The handoff's figure (264/287, p50 about 1 s) is consistent with this. It is not
 
 ## Disclosure: seal exposure (2026-10-07)
 
+This is also recorded in DEC-016 under Amendment 2, and in LAB_STATE.
+
 - **What was exposed.** The first version of this note (head `a59ff80`), the PR #451 body and MiScusi notebook entry n_6W8jWsyz1d8aXw gave per-day early-arm outcome counts for 10-05 to 10-07: armed, fail, skipped_migrated, and a lumped `skipped_risk_or_kill`.
 - **Why it matters.** The risk reasons include `daily_loss_cap`, which the DEC-016 Am.2 seal extension covers. A per-day change in that lumped count, or in armed counts, can hint at a day's P&L sign inside the sealed window.
-- **What was not exposed.** No P&L, cost, exit or loss-cap-specific count was read or printed. The read lumped all risk reasons by design.
-- **Effect on the read.** The 10-16 FINAL read is fully pre-registered (model, threshold, window, fail models, tools), so this cannot change it. It is recorded here and in LAB_STATE so the reader can weigh it.
-- **Clean-up.** The counts were removed from this note and from the PR body. The squash merge keeps them off `main`. The notebook entry is superseded by a correction entry.
+- **What was not exposed.** No P&L, cost or exit field was read. Job #368 lumped the risk reasons before printing, so no loss-cap-specific count was printed.
+- **Where the counts went:** PR #451's first head `a59ff80` (still readable in the PR's commit list), the PR body's edit history, MiScusi notebook n_6W8jWsyz1d8aXw, and the first quant-proof review of `a59ff80`, which restated them. They are not on `main`, and later notes do not repeat them.
+- **Effect:** the 10-16 FINAL computation is fully pre-registered, so the counts cannot change its result. The FINAL report carries this disclosure. Whether the read is labelled compromised is the owner's call, not this note's.

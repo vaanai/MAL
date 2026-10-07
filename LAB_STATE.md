@@ -193,10 +193,10 @@ Rows with a decision time in **2026-09-25T19:00:00Z → 2026-09-27T06:58:12Z** d
 
 Clean clock: **2026-09-28T00:00:00Z**. Kill review: **2026-10-05T05:00:00Z**.
 
-**Seal exposure disclosed (2026-10-07, manager9).** The early-arm latency read (job #368) printed per-day early-arm outcome counts for 10-05 to 10-07: armed, fail, skipped_migrated, and a lumped risk/kill skip count. The risk reasons include `daily_loss_cap`, which the DEC-016 Am.2 seal extension covers.
-- **Not exposed:** no P&L, cost, exit, or loss-cap-specific count was read.
-- **Where the counts went:** they were in PR #451's first head and body and in MiScusi notebook n_6W8jWsyz1d8aXw. They were removed before merge.
-- **Effect:** the 10-16 FINAL read is fully pre-registered, so this cannot change it.
+**Seal exposure disclosed (2026-10-07, manager9; recorded in DEC-016 under Amendment 2).** The early-arm latency read (job #368) printed per-day early-arm outcome counts for 10-05 to 10-07: armed, fail, skipped_migrated, and a lumped risk/kill skip count. The risk reasons include `daily_loss_cap`, which the DEC-016 Am.2 seal extension covers.
+- **Not exposed:** no P&L, cost or exit field was read. Job #368 lumped the risk reasons before printing, so no loss-cap-specific count was printed.
+- **Where the counts went:** PR #451's first head `a59ff80` (still readable in the PR's commit list), the PR body's edit history, MiScusi notebook n_6W8jWsyz1d8aXw, and the first quant-proof review of `a59ff80`, which restated them. They are not on `main`, and later notes do not repeat them.
+- **Effect:** the 10-16 FINAL computation is fully pre-registered, so the counts cannot change its result. The FINAL report carries this disclosure. Whether the read is labelled compromised is the owner's call.
 - **Rule from here:** early-arm reads report timing only, with no per-day outcome counts, until the read. See [fast-entry-trigger-2026-10-07.md](ARTIFACTS/lab/fast-entry-trigger-2026-10-07.md).
 
 ## Open PRs
