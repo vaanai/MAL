@@ -94,3 +94,15 @@ Quant-proof asked for this after the start-bound report. The start-bound grid fi
 The END-bound resim ran as job #348 (code b4b4ed0, `--bound end --combos reduced`, 4 workers, 22 GB, rc 0). Precount and `--guards-only` passed: `n_selected` 3,322 (2,349 non-P1), bound `end`. Per-source row counts match the start grid: P1A 315, P1C 404, P1B 254, P2 1,485, P3 451, P4 413. Only counts and short hashes were printed. No net, mean or total was printed or opened.
 
 GRID_END_MANIFEST_SHA256 = e4ac09efe1bdf04ffdc504e0e08ec208327c0b04c4848a46163b92a55949dd65
+
+## Result (2026-10-07, jobs #347 start bound and #350 END bound; report-only)
+
+Not gate evidence. No edge claim, no decision. Start bound: job #347 at `8bce9ed`, `/data/mal/exp020-grid/report/`. END bound: job #350 at `a51000c`, `/data/mal/exp020-grid-end/report/`. Neither `grid.json` has a `schema_version` (not `result.v1`). Numbers are copied from the two `grid.md` files.
+
+- **Start bound:** k2 at 0.25 SOL and above looked positive, with ex-best-date > 0 on both legs (flat 0.5 SOL k2 mean 0.010803 SOL, total 25.3754, ex-best-date +15.1177; pressure total 15.8760, ex-best-date +8.7915).
+- **Quant-proof (as relayed by the manager):** the selector is causal at k2 (all 18 features come from before migration). The start bound flatters fills, and 2026-08-21 carries 40 to 43 % of the k2 flat totals (derived: 43.4 %, 40.4 %, 42.0 % at 0.25, 0.5, 1 SOL).
+- **END bound:** the paired k2 - k6 gain stays positive (0.5 SOL: flat +1.023 % of stake, CI90-date [0.109, 1.851]; pressure +0.747 %, [0.183, 1.276]), but every k2 kept book has ex-best-date < 0 (flat 0.25 -2.0312, 0.5 -1.3473; pressure 0.25 -2.0854, 0.5 -2.2641).
+- **Conclusion:** faster entry is a robust relative lever, not profit on its own. Real fills land between the two bounds, depending on slot position. Not gate evidence: these 27 dates have had 100+ tries. No edge claim.
+- **Next:** combine with EXP-021 in one pre-registration with an END-bound co-primary, and calibrate live k2 landing.
+
+Tries: one `report` line per bound (`exp020_grid`, `exp020_grid_end`) synced to `data/tries.jsonl`. Lab note: [exp020-grid-2026-10-07.md](../ARTIFACTS/lab/exp020-grid-2026-10-07.md).
