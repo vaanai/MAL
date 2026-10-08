@@ -91,21 +91,22 @@ Any of these halts new buys at once (`STOP`). Open positions exit on the timer u
 ## 7. Scale-up to 1 SOL
 
 The scale-up needs **the owner's OK (the override line below) and all** of these:
-- live execution is consistent with the sim: the canary's landing p50 is at most 3.0 s, and the live−twin per-trade CI90 upper bound is not below −1 pp;
+- live execution is consistent with the sim: the canary's landing p50 is at most 3.0 s, measured over at least 20 landed buys, and the live−twin per-trade CI90 upper bound is not below −1 pp, after at least 100 fills;
 - the shadow run (the paper twin of the canary's decisions, priced by the frozen sim at 0.02 SOL) is not negative, meaning its mean per trade is not below zero;
-- EXP-024 Look 1, if it has been read, is not negative: its deciding-cell flat and pressure means are not below zero;
+- EXP-024 Look 1, if it has been read, is not negative: its deciding-cell flat and pressure means are not below zero. **Plainly: Look 1 cannot be read before about 10-16, so this condition cannot bind before then, and it does not apply to a scale-up made in 10-12 to 10-14.** It applies only to a scale-up made after Look 1 has been read;
 - the canary's own realized result, after fees, is not negative: its mean per closed trade is not below zero;
-- no live-halt rule (section 5) and no stop that ends the canary has fired and is unresolved. These rules, and the daily and total stops, stay in force at every size.
+- no live-halt rule (section 5) and no stop that ends the canary has fired and is unresolved. These rules, and the daily and total stops, stay in force at every size;
+- the owner states the 1 SOL stake, open-position cap and stops in writing (a dated line in this file).
 
 **These are necessary and not sufficient.** The twin is observed in real time for Look 1's window pools (section 6), and Look 1, if it is read, is read as written. Neither clears the promotion gate. CLAUDE.md and the 10-08 mandate say that nothing goes live before a book clears the gate on both fail models. **This DEC does not waive that on its own.**
 
 **A scale-up to 1 SOL before a gate pass is an owner override of the CLAUDE.md promotion rule for H5's live trial. It requires the owner's explicit written confirmation, recorded in this file by a dated line before any scale-up.** The override applies to **H5's live trial only**. The promotion gate is unchanged for every other book, and EXP-024's formal read stays binding as written. The scale-up decision is a separate business decision and is not EXP-024 evidence. It is labeled an unpromoted trial in every report, and no report of it says the book passed or is positive. The line below holds the owner's confirmation. Nothing else fills it, and until a line is there, there is no scale-up.
 
 ```
-OWNER_OVERRIDE_CONFIRMED: 2026-10-08 (owner, in session, asked by manager9). Question: "Can H5 scale from the 0.25 SOL test to 1 SOL before the formal October test (about 10-16/17) has passed? That would mean trading real money without the lab's profit gate, for this one strategy." Answer: "Yes, full 1 SOL" (scale to 1 SOL as soon as live execution matches the simulation and the live and shadow results aren't negative, about 10-12 to 10-14).
+OWNER_OVERRIDE_CONFIRMED: 2026-10-08 (owner, in session, asked by manager9). Question: "Can H5 scale from the 0.25 SOL test to 1 SOL before the formal October test (about 10-16/17) has passed? That would mean trading real money without the lab's profit gate, for this one strategy." Answer: "Yes, full 1 SOL" (manager's paraphrase of the option the owner chose: scale to 1 SOL as soon as live execution matches the simulation and the live and shadow results aren't negative, about 10-12 to 10-14). Verbatim question, options and answer are in MiScusi notebook n_v3FFb1ibpGKmRQ (manager-verified 10-08).
 ```
 
-**Provenance of that line.** 2026-10-08T20:16Z (`date -u`): the builder recorded it from the coordinator's relay of the manager's record. The owner's own message is not in the builder's context, and the builder did not check it. Quant-proof and the manager check it against the MiScusi notebook entry before any scale-up. The line records a decision. It starts no trade. The owner's funding of the wallet, Helm's `LIVE_OK` and the rules in section 5 stay separate acts and rules. The owner's answer names the target (1 SOL) and the timing, and not the trial's stake or stops; those are still the owner's to state in writing (next paragraph).
+**Provenance of that line.** 2026-10-08T20:16Z (`date -u`): the builder recorded it from the coordinator's relay of the manager's record. The owner's own message is not in the builder's context, and the builder did not check it. The manager states that the entry was verified on 2026-10-08; the builder did not open it. Quant-proof can check it there. The line records a decision. It starts no trade. The owner's funding of the wallet, Helm's `LIVE_OK` and the rules in section 5 stay separate acts and rules. The owner's answer names the target (1 SOL) and the timing, and not the trial's stake or stops; those are still the owner's to state in writing (next paragraph).
 
 Size above the canary is governed by DEC-018, DEC-019 and DEC-020, and by the owner. A scale-up to 1 SOL would use LIVE-PLAN's L1 terms as a starting proposal (0.05 SOL, 3 open, stops 0.25 daily and 0.5 total), which the owner must state in writing.
 

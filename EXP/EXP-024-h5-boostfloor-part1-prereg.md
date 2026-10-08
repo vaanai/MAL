@@ -156,7 +156,7 @@ The rule's exit is `H == 'end'`, with `DS=40 TMIN=0 TMAX=300 TEND=330 NOBOOSTREQ
 - **What this does not cover.**
   - The read tool's own computation of H5 outcomes from forward-1002 or walk-2 rows stays unopened until the look (section 3).
   - Pools with s0 at or after 2026-10-16T00 are Look 2's added window. The section 3 seal applies to their canary and shadow outcomes until Look 2 is read.
-  - **EXP-022 and CAP-PICK are not touched.** From 2026-10-16T01 the CAP-PICK seal holds exactly as before (EXP-022 section 9): the pick exclusion, the pick-feed seal guard, and fail closed.
+  - **EXP-022 and CAP-PICK are not touched.** From 2026-10-16T01 the CAP-PICK seal holds exactly as before (EXP-022 section 9). The pick exclusion and the fail-closed rule (the pick feed missing or stale for more than 60 s halts H5 buys) are in EXP-022 Am.2 item 2 and DEC-024:80.
 - **Provenance.** This subsection records a decision relayed by the manager on 2026-10-08. The sentences in quotation marks are the manager's wording. The owner's own words are not quoted here.
 
 ## 4. Universe and pricing on the walk tape (an operational translation, fixed now)
@@ -295,9 +295,13 @@ Look 2 re-derives Look 1's trades from the same hours and the same V files (by s
 - **P1.** Every section 17 item marked "before 10-10T00Z" is merged (DEC-023, DEC-024, DEC-021 Am.2, DEC-016 Am.7, EXP-012 Am.3, EXP-022 Am.2 and the ledger edit, which ship with this file).
 - **P2.** The last A3 run before 10-10T00Z shows no halt, and no core rule went unevaluated on two consecutive days.
 
+**Pinned now (2026-10-08, before the window opens and before any observation):**
+- **E0-H5 day:** 2026-09-20 (fast-pool-0918), as P4 says below.
+- **A3 monitor:** `tools/pump_structure_monitor.py` is the blob `1ca0a88cecf0853d94336ea046ba1a910b79f198`, the blob at origin/main `16855f2f55c7e7916c7fc8932809279b04b06504` fetched on 2026-10-08 (`git rev-parse origin/main:tools/pump_structure_monitor.py`). The A3 halt flags, the last-slice median in section 11, and "core rule unevaluated" mean what that blob computes. Any other monitor blob needs a dated, outcome-blind amendment before it is used in a look.
+
 **Before 2026-10-16T00:00Z:**
 - **P3. Tools.** The read tool and the forward extractor are merged with quant-proof OK, and their merge commits are recorded in a dated amendment. The read tool includes forward mode, V(t) pricing, the correction, the day-level t, the B1 and B2 legs and the lock. If they miss this deadline, H5 is withdrawn before reading any forward hour.
-- **P4. E0-H5.** Recorded in the same amendment, all on one exploration day pinned by its `VIEW.sha256` (proposed: 2026-09-20, fast-pool-0918):
+- **P4. E0-H5.** Recorded in the same amendment, all on one exploration day pinned by its `VIEW.sha256` (**pinned 2026-10-08:** 2026-09-20, fast-pool-0918; its `VIEW.sha256` is recorded in the P3 amendment):
   1. The extractor, run on the raw walker files, gives meta and paths equal by md5 to `g_reachable_cap_book_rescore/{meta,paths}/<day>.parquet` (canonical rows).
   2. The read tool reproduces that day's `boostdip_frozen_conf.parquet` rows (`H == 'end'`) by md5 on (mint, leg, stake, pnl rounded to the lamport).
   3. The blob shas of the extractor, the read tool, `tools/latency_curve.py`, `tools/paper_curve_math.py` and #476's module are recorded. Each look runs in a worktree where they match.
@@ -318,7 +322,7 @@ Look 2 re-derives Look 1's trades from the same hours and the same V files (by s
 - V is missing on more than 1% of the look's trades, or on a trade in the top 3 of D or of a binding leg (section 4);
 - E1's n is below 20 (section 5);
 - any A3 halt flag (below);
-- the BOOST last-slice median is below 330 s. It is the median over the look's window of the A3 monitor's daily median last-slice time (PDA-derived), as the monitor commit pinned in the P3 amendment defines it;
+- the BOOST last-slice median is below 330 s. It is the median over the look's window of the A3 monitor's daily median last-slice time (PDA-derived), as the monitor blob pinned in section 10 defines it;
 - more than 5% of the look's window hours are bad (section 4).
 
 **A3 halt.** Any of the A3 monitor's six halt flags (`pins_changed`, `boost_disabled`, `boost_share_low`, `boost_last_slice_early`, `boost_budget_or_slices_changed`, `synthetic_share_high`), or a core rule unevaluated on two consecutive daily runs.
@@ -331,7 +335,8 @@ Look 2 re-derives Look 1's trades from the same hours and the same V files (by s
 
 **Spending.**
 - NOT_DECIDABLE after any outcome is computed spends that look's window.
-- NOT_DECIDABLE before any outcome is computed (a P3–P7 refusal) does not. The family may then be filed again only on hours that begin after a new filing.
+- NOT_DECIDABLE before any outcome is computed (a P3–P7 refusal) does not, except as the next bullet says for Look 1. The family may then be filed again only on hours that begin after a new filing.
+- From 2026-10-10T00Z, because of §3.1, any refusal or non-run of Look 1 spends Look 1's window and α_1, and v1 is not re-filed.
 
 **Seal.** No H5 trade on, or join to, a CAP-PICK pick, and no per-pool H5 P&L before each CAP-PICK look (section 3). A breach is compromised: the read cannot support live. The section 3.1 observation is declared, so it is not a breach.
 
@@ -453,7 +458,7 @@ Look 2 re-derives Look 1's trades from the same hours and the same V files (by s
   - Block means fell from +26.7% to about +5–6%.
   - October BOOST ends earlier: median last slice 337 s after the migrate tx (n = 8, JUDGE.md:20), against September's 342.9–347.4 s. That pushes the 330 s exit toward September's 335–340 s cells (oracle-0922: +4.619% at 335 s, +0.764% at 340 s).
   - The first A3 run (job #383) had a median of 341.5 s.
-  - **A central October flat mean of about +2–4% before the correction is plausible.** At that mean, Look 1 passes about 1–5% of the time, and both looks about 2–20%. JUDGE.md gives H5 an October prior of 0.35.
+  - **A central October flat mean of about +2–4% before the correction is plausible.** At +2–4% (`h5_power5.py`, the pre-registered design), Look 1 passes 0.00–0.04 of the time and either look 0.00–0.09. The Track A figures for the earlier design, 1–5% and 2–20%, are in the table above. JUDGE.md gives H5 an October prior of 0.35.
 
 **The judge's honest odds** (PLAN.md §6, 2026-10-08T20Z) [est]:
 - **Prior** that October's mean is > 0: 0.35.
