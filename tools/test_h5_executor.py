@@ -38,8 +38,11 @@ class H5Rpc(LiveRpc):
         super().__init__(clock, **kw)
         self.slot = TRIG_SLOT + 8
         self.slot_fails = False
+        self.state_fails = False
 
     def __call__(self, method, params):
+        if self.state_fails and method in ("getAccountInfo", "getMultipleAccounts"):
+            raise pe.RpcError("timeout")
         if method == "getSlot":
             self.calls.append(method)
             if self.slot_fails:

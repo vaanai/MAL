@@ -531,6 +531,8 @@ class H5Executor(pl.LiveExecutor):
         self._slot_fail_ms: int | None = None
         self._seal_logged = self.counters.seal_skips
         self._seal_logged_ms = 0
+        self.save()  # state and counters exist on disk before the first ledger row, so the anti-reset guards hold from the first start
+        self.counters.save(self.counters_path)
         self._log("start", "", rule=RULE_ID, run_mode=self.run_mode, limits=asdict(self.h5), user=str(self.user),
                   code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), seal_end_ms=self.seal_end_ms)
 
