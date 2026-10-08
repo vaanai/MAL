@@ -198,15 +198,17 @@ def strict_enabled() -> bool:
 
 @contextmanager
 def strict_env(on: bool = True) -> Iterator[None]:
-    """Set MAL_STRICT_LINES for the duration (spawned workers inherit it), then restore it."""
+    """Set (on) or clear (off) MAL_STRICT_LINES for the duration, then restore it. Spawned workers inherit it.
+    Off clears an externally set variable on purpose: a caller that says "not strict" gets exactly that."""
     old = os.environ.get(STRICT_ENV)
     if on:
         os.environ[STRICT_ENV] = "1"
+    else:
+        os.environ.pop(STRICT_ENV, None)
     try:
         yield
     finally:
-        if on:
-            if old is None:
-                os.environ.pop(STRICT_ENV, None)
-            else:
-                os.environ[STRICT_ENV] = old
+        if old is None:
+            os.environ.pop(STRICT_ENV, None)
+        else:
+            os.environ[STRICT_ENV] = old

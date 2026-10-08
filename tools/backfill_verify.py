@@ -204,7 +204,7 @@ class ZstdStreamError(RuntimeError):
     """zstdcat did not finish with rc 0: the sealed file is truncated or corrupt, so its rows are not all here."""
 
 
-def _stream_lines(path: Path) -> Iterator[str]:
+def _stream_lines(path: Path, check_rc: bool = True) -> Iterator[str]:
     if path.suffix == ".zst":
         proc = subprocess.Popen(["zstdcat", str(path)], stdout=subprocess.PIPE, text=True)
         assert proc.stdout is not None
@@ -217,7 +217,7 @@ def _stream_lines(path: Path) -> Iterator[str]:
         finally:
             proc.stdout.close()
             rc = proc.wait()
-        if finished and rc != 0:
+        if check_rc and finished and rc != 0:
             raise ZstdStreamError(f"{path}: zstdcat exited {rc}")
         return
     with path.open(encoding="utf-8") as fh:
@@ -226,14 +226,14 @@ def _stream_lines(path: Path) -> Iterator[str]:
                 yield line
 
 
-def scan_content(path: Path) -> tuple[int, int, LineCounts]:
+def scan_content(path: Path, check_rc: bool = True) -> tuple[int, int, LineCounts]:
     """Row count, unique-line count and the bad-line counts (NUL / not JSON / not an object).
     A line that parses only with strict=False (a raw control character in a string) is `lenient`, not bad.
     Only counts leave this function."""
     rows = 0
     seen: set[str] = set()
     counts = LineCounts()
-    for line in _stream_lines(path):
+    for line in _stream_lines(path, check_rc):
         rows += 1
         seen.add(line)
         counts.add(line)
@@ -246,7 +246,10 @@ def count_rows_and_unique(path: Path) -> tuple[int, int]:
     return rows, unique
 
 
-def verify_content(report: dict[str, Any]) -> dict[str, Any]:
+BAD_LINES_ISSUE_MARK = " bad lines ("  # in the issue text verify_content adds for a hole
+
+
+def verify_content(report: dict[str, Any], check_zstd_rc: bool = True) -> dict[str, Any]:
     for hour_report in report["hours"]:
         content: dict[str, Any] = {}
         bad_total = 0
@@ -255,7 +258,7 @@ def verify_content(report: dict[str, Any]) -> dict[str, Any]:
             if not raw:
                 continue
             try:
-                rows, unique, counts = scan_content(Path(raw))
+                rows, unique, counts = scan_content(Path(raw), check_zstd_rc)
             except ZstdStreamError as exc:
                 hour_report["issues"].append(f"{sub}: zstd stream failed ({exc}); the sealed file is truncated or corrupt")
                 continue
@@ -274,7 +277,7 @@ def verify_content(report: dict[str, Any]) -> dict[str, Any]:
                 hour_report["issues"].append(f"{sub}: {rows - unique} duplicate rows")
             if counts.bad:
                 hour_report["issues"].append(
-                    f"{sub}: {counts.bad} bad lines (nul={counts.nul}, not_json={counts.not_json}, "
+                    f"{sub}: {counts.bad}" + BAD_LINES_ISSUE_MARK + f"nul={counts.nul}, not_json={counts.not_json}, "
                     f"non_object={counts.non_object}; first at line {counts.first_bad_line})"
                 )
         hour_report["content"] = content
@@ -344,6 +347,7 @@ def build_report(
     dedupe_out: Path | None,
     min_slots_per_hour: int,
     max_slots_per_hour: int,
+    check_zstd_rc: bool = True,
 ) -> dict[str, Any]:
     hours = hour_range(from_hour, to_hour)
     report = verify_metadata(
@@ -353,7 +357,7 @@ def build_report(
         max_slots_per_hour=max_slots_per_hour,
     )
     if content or dedupe_out is not None:
-        report = verify_content(report)
+        report = verify_content(report, check_zstd_rc)
     if dedupe_out is not None:
         report["dedupe"] = run_dedupe(report, dedupe_out)
     return report

@@ -188,15 +188,20 @@ class RefusalTests(Base):
             rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
             self.assert_refused(out, rc, err, "hour 2026-10-05T06 has no OK line")
 
-    def test_a_verify_line_with_bad_lines_is_not_ok(self) -> None:
-        good = {"issues": [], "content": {"trades": {"rows": 3, "unique": 3, "duplicates": 0, "bad_lines": 0}}, "sha256": {"trades": "a", "creates": "b"}}
-        self.assertTrue(fw._line_ok(dict(good, bad_lines=0)))
-        self.assertTrue(fw._line_ok(dict(good)))  # a pre-A8 line has no bad_lines key and stays OK
-        self.assertFalse(fw._line_ok(dict(good, bad_lines=1)))
-        worse = {**good, "content": {"trades": {"rows": 3, "unique": 3, "duplicates": 0, "bad_lines": 2}}}
-        self.assertFalse(fw._line_ok(worse))
+    # --- A8 integrity checks are opt-in: with no flag the DEC-016 FINAL tooling decides exactly as on main -------------
 
-    def _plant_nul_line(self, walk: Path, hour: str, legacy_verify: bool) -> None:
+    def test_a_verify_line_with_bad_lines_is_not_ok_only_when_strict(self) -> None:
+        good = {"issues": [], "content": {"trades": {"rows": 3, "unique": 3, "duplicates": 0, "bad_lines": 0}}, "sha256": {"trades": "a", "creates": "b"}}
+        worse = {**good, "content": {"trades": {"rows": 3, "unique": 3, "duplicates": 0, "bad_lines": 2}}}
+        for strict in (False, True):
+            self.assertTrue(fw._line_ok(dict(good), strict))  # a pre-A8 line has no bad_lines key and is OK either way
+            self.assertTrue(fw._line_ok(dict(good, bad_lines=0), strict))
+        self.assertTrue(fw._line_ok(dict(good, bad_lines=1)))  # default: reported only
+        self.assertTrue(fw._line_ok(worse))
+        self.assertFalse(fw._line_ok(dict(good, bad_lines=1), True))
+        self.assertFalse(fw._line_ok(worse, True))
+
+    def _plant_nul_line(self, walk: Path, hour: str, strict_verify: bool = False, legacy_verify: bool = False) -> dict:
         """Append a NUL-hole line to the hour's sealed trades file and make verify.jsonl match its new bytes."""
         z = walk / "trades" / f"trades-{hour}.jsonl.zst"
         raw = subprocess.run(["zstd", "-dc", "-q", str(z)], check=True, capture_output=True).stdout
@@ -204,7 +209,7 @@ class RefusalTests(Base):
         plain = z.with_suffix("")
         plain.write_bytes(raw + b"\x00" * 2048 + b"\n")
         subprocess.run(["zstd", "-q", "--rm", "-f", str(plain)], check=True)
-        rec = fw.verify_line(walk, hour)
+        rec = fw.verify_line(walk, hour, strict_verify)
         self.assertEqual(rec["bad_lines"], 1)
         if legacy_verify:  # what a verify line from before A8 would say about the same bytes
             rec["issues"] = []
@@ -214,17 +219,60 @@ class RefusalTests(Base):
                     st.pop(k, None)
         lines = [x for x in (walk / "verify.jsonl").read_text().splitlines() if json.loads(x)["hour"] != hour]
         (walk / "verify.jsonl").write_text("".join(x + "\n" for x in lines) + json.dumps(rec, sort_keys=True) + "\n")
+        return rec
 
-    def test_new_verify_flags_a_nul_hole_hour_and_score_names_it(self) -> None:
+    def _verify_cli(self, walk: Path, hour: str, *extra: str) -> tuple[int, str]:
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            rc = fw.main(["verify", "--walk-dir", str(walk), "--hour", hour, *extra])
+        return rc, err.getvalue()
+
+    def test_default_verify_on_a_nul_line_decides_as_before_and_only_reports_bad_lines(self) -> None:
+        walk, _art, _out = self.fresh()
+        self._plant_nul_line(walk, "2026-10-05T07")
+        rec = fw.verify_line(walk, "2026-10-05T07")
+        self.assertEqual(rec["issues"], [])  # exactly what main reports for this file
+        self.assertTrue(fw._line_ok(rec))
+        self.assertEqual((rec["bad_lines"], rec["content"]["trades"]["nul"]), (1, 1))  # the report
+        rc, err = self._verify_cli(walk, "2026-10-05T07")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("OK", err)
+        self.assertNotIn("NOT OK", err)
+
+    def test_default_score_on_a_nul_line_is_identical_to_the_skip_behaviour_of_main(self) -> None:
+        clean_walk, art, clean_out = self.fresh()
+        rc0, err0 = self.run_score(clean_walk, art, clean_out, "--to", "2026-10-05T09")
+        self.assertEqual(rc0, 0, err0)
+        for env in ({}, {tape_lines.STRICT_ENV: "1"}):  # an inherited MAL_STRICT_LINES must not change the FINAL either
+            walk, art2, out = self.fresh()
+            self._plant_nul_line(walk, "2026-10-05T07")
+            with mock.patch.dict(os.environ, env):
+                rc, err = self.run_score(walk, art2, out, "--to", "2026-10-05T09")
+            self.assertEqual(rc, 0, err)
+            self.assertNotIn("bad tape lines", err)
+            # main drops the NUL line without a count, so the rows are byte-identical to the clean walk's
+            self.assertEqual((out / "rows.jsonl").read_bytes(), (clean_out / "rows.jsonl").read_bytes())
+
+    def test_strict_verify_flag_makes_the_hour_not_ok(self) -> None:
+        walk, _art, _out = self.fresh()
+        self._plant_nul_line(walk, "2026-10-05T07")
+        rc, err = self._verify_cli(walk, "2026-10-05T07", "--strict-lines")
+        self.assertEqual(rc, 1, err)
+        self.assertIn("NOT OK", err)
+        self.assertIn("bad lines (nul=1", err)
+        rec = fw.verify_line(walk, "2026-10-05T07", True)
+        self.assertFalse(fw._line_ok(rec, True))
+
+    def test_strict_score_names_an_hour_whose_strict_verify_line_is_not_ok(self) -> None:
         walk, art, out = self.fresh()
-        self._plant_nul_line(walk, "2026-10-05T07", legacy_verify=False)
-        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self._plant_nul_line(walk, "2026-10-05T07", strict_verify=True)
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09", "--strict-lines")
         self.assert_refused(out, rc, err, "hour 2026-10-05T07 has no OK line")
 
-    def test_score_reads_walk_tape_strict_and_refuses_a_nul_hole_even_with_a_legacy_verify_line(self) -> None:
+    def test_strict_score_reads_the_tape_and_refuses_a_nul_hole_even_with_a_pre_a8_verify_line(self) -> None:
         walk, art, out = self.fresh()
         self._plant_nul_line(walk, "2026-10-05T07", legacy_verify=True)
-        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09", "--strict-lines")
         self.assertEqual(rc, 2, err)
         self.assertIn("REFUSED: bad tape lines, hour not decidable:", err)
         self.assertIn("trades-2026-10-05T07.jsonl.zst: 1 bad line(s)", err)

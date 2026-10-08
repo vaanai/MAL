@@ -343,3 +343,6 @@ class BadLinesVerifyTests(unittest.TestCase):
             _write_checkpoint(walker, {self.HOUR: {"status": "sealed"}})
             rec = build_report(walker, self.HOUR, self.NEXT, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=MAX_SLOTS_PER_HOUR)["hours"][0]
             self.assertTrue(any("zstd stream failed" in i for i in rec["issues"]), rec["issues"])
+            # the DEC-016 verify step (exp012_forward.verify_line) turns the rc check off by default: no new issue
+            quiet = build_report(walker, self.HOUR, self.NEXT, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=MAX_SLOTS_PER_HOUR, check_zstd_rc=False)["hours"][0]
+            self.assertFalse(any("zstd stream failed" in i for i in quiet["issues"]), quiet["issues"])

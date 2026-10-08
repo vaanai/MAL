@@ -15,6 +15,11 @@ refuses unless EXP-012's FINAL is in EXP-012's ledger (`--primary-ledger`). If E
 bootstrap p-values (10,000 draws, seed 1, both fail models). `family_holm` applies Holm across every
 secondary in ARTIFACTS/forward-family/registry.json (fixed k). INTERIM hides P&L for every experiment.
 
+Walk 2 (EXP-022) uses --strict-lines; the DEC-016 forward-1002 FINAL runs as written, without it.
+`score --strict-lines` reads the walk tape strict (a raw NUL, non-JSON or non-object line in any hour refuses the
+run, nothing appended); `verify --strict-lines` counts such lines as a verify issue. Without the flags `score` and
+`verify` decide exactly as before (the verify line only reports `bad_lines`; the OK status does not change).
+
 This is NOT a one-shot read and writes no HOLDOUT lock. It runs the code path
 `tools/exp012_score.py` used for the read, by import and not by copy:
   - the table build is `exp012_score.load_rows` (same `chunk_plan`, same
@@ -245,16 +250,17 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _line_ok(rec: dict[str, Any]) -> bool:
+def _line_ok(rec: dict[str, Any], strict_bad_lines: bool = False) -> bool:
     if rec.get("issues") != [] or not isinstance(rec.get("content"), dict):
         return False
-    # A line written by the A8 verify carries bad_lines (NUL / not JSON / not an object). A line from before
-    # it has no such key and stays OK here; the score run's strict reader (run_score) still checks the bytes.
-    if rec.get("bad_lines") not in (None, 0):
-        return False
-    for stats in rec["content"].values():
-        if isinstance(stats, dict) and stats.get("bad_lines") not in (None, 0):
+    if strict_bad_lines:
+        # Opt-in (walk 2). A line with no bad_lines key predates the A8 verify and stays OK here;
+        # the strict reader in run_score still checks the bytes.
+        if rec.get("bad_lines") not in (None, 0):
             return False
+        for stats in rec["content"].values():
+            if isinstance(stats, dict) and stats.get("bad_lines") not in (None, 0):
+                return False
     sha = rec.get("sha256")
     if not isinstance(sha, dict) or not all(isinstance(sha.get(sub), str) for sub in ("trades", "creates")):
         return False
@@ -264,7 +270,7 @@ def _line_ok(rec: dict[str, Any]) -> bool:
     return True
 
 
-def verified_hours(walk_dir: Path) -> dict[str, dict[str, Any]]:
+def verified_hours(walk_dir: Path, strict_bad_lines: bool = False) -> dict[str, dict[str, Any]]:
     """{hour: last verify line} for hours whose LAST line is OK."""
     path = walk_dir / VERIFY_NAME
     last: dict[str, dict[str, Any]] = {}
@@ -279,11 +285,11 @@ def verified_hours(walk_dir: Path) -> dict[str, dict[str, Any]]:
             continue
         if isinstance(rec, dict) and isinstance(rec.get("hour"), str):
             last[rec["hour"]] = rec
-    return {h: r for h, r in last.items() if _line_ok(r)}
+    return {h: r for h, r in last.items() if _line_ok(r, strict_bad_lines)}
 
 
-def hour_problems(walk_dir: Path, hours: Sequence[str]) -> list[str]:
-    sealed, ok = _sealed_hours(walk_dir), verified_hours(walk_dir)
+def hour_problems(walk_dir: Path, hours: Sequence[str], strict_bad_lines: bool = False) -> list[str]:
+    sealed, ok = _sealed_hours(walk_dir), verified_hours(walk_dir, strict_bad_lines)
     out: list[str] = []
     for h in hours:
         if h not in sealed:
@@ -308,11 +314,18 @@ def hour_problems(walk_dir: Path, hours: Sequence[str]) -> list[str]:
     return out
 
 
-def verify_line(walk_dir: Path, hour: str) -> dict[str, Any]:
-    """`tools.backfill_verify` with --content for [hour, hour+1), plus the sha256 of each sealed file."""
+def verify_line(walk_dir: Path, hour: str, strict_bad_lines: bool = False) -> dict[str, Any]:
+    """`tools.backfill_verify` with --content for [hour, hour+1), plus the sha256 of each sealed file.
+
+    The line always reports `bad_lines` (raw NUL / not JSON / not an object; per file too). By default that is
+    only a report: `issues`, and so the OK status, are exactly what they were before it existed (a truncated
+    zstd stream is not checked either). `strict_bad_lines=True` (walk 2) makes bad lines and a failed zstd
+    stream issues, so the hour is not OK."""
     nxt = hour_key(hour_dt(hour) + timedelta(hours=1))
-    report = bv.build_report(walk_dir, hour, nxt, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=bv.MAX_SLOTS_PER_HOUR)
+    report = bv.build_report(walk_dir, hour, nxt, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=bv.MAX_SLOTS_PER_HOUR, check_zstd_rc=strict_bad_lines)
     rec = report["hours"][0]
+    if not strict_bad_lines:
+        rec["issues"] = [i for i in rec["issues"] if bv.BAD_LINES_ISSUE_MARK not in i]
     if rec["files"].get("trades") is None and "sealed_with_no_trades_file" not in rec["issues"]:
         rec["issues"].append("no_trades_file")
     if rec["files"].get("creates") is None:
@@ -329,9 +342,9 @@ def verify_line(walk_dir: Path, hour: str) -> dict[str, Any]:
     return rec
 
 
-def run_verify(walk_dir: Path, hour: str) -> tuple[dict[str, Any], bool]:
+def run_verify(walk_dir: Path, hour: str, strict_bad_lines: bool = False) -> tuple[dict[str, Any], bool]:
     """(line, appended). Appends to D/verify.jsonl unless the hour's last line is identical."""
-    rec = verify_line(walk_dir, hour)
+    rec = verify_line(walk_dir, hour, strict_bad_lines)
     path = walk_dir / VERIFY_NAME
     text = json.dumps(rec, sort_keys=True)
     last = None
@@ -350,9 +363,9 @@ def run_verify(walk_dir: Path, hour: str) -> tuple[dict[str, Any], bool]:
     return rec, True
 
 
-def default_to(walk_dir: Path, start: datetime) -> datetime:
+def default_to(walk_dir: Path, start: datetime, strict_bad_lines: bool = False) -> datetime:
     """End (exclusive) of the longest sealed+verified run beginning at `start`."""
-    sealed, ok = _sealed_hours(walk_dir), verified_hours(walk_dir)
+    sealed, ok = _sealed_hours(walk_dir), verified_hours(walk_dir, strict_bad_lines)
     cur = start
     while hour_key(cur) in sealed and hour_key(cur) in ok:
         cur += timedelta(hours=1)
@@ -631,7 +644,7 @@ def secondary_binding(spec: ff.ForwardSpec, registry_path: Path | None, artifact
     }
 
 
-def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None, read_end: datetime | None = None, test_window: bool = False, final_ledger: Path | None = None, spec: ff.ForwardSpec | None = None, registry_path: Path | None = None, primary_ledger: Path | None = None) -> dict[str, Any]:
+def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None, read_end: datetime | None = None, test_window: bool = False, final_ledger: Path | None = None, spec: ff.ForwardSpec | None = None, registry_path: Path | None = None, primary_ledger: Path | None = None, strict_lines: bool = False) -> dict[str, Any]:
     read_end = read_end if read_end is not None else parse_clock(PINNED_READ_END)
     experiment = spec.experiment if spec is not None else ff.PRIMARY_EXPERIMENT
     secondary = spec is not None and spec.is_secondary
@@ -652,15 +665,15 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
     if start.minute or start.second or start.microsecond:
         raise Refused([f"--pool-start {start.isoformat()} is not hour-aligned"])
     if to is None:
-        to = default_to(walk_dir, start)
+        to = default_to(walk_dir, start, strict_lines)
         if to <= start:
-            raise Refused(hour_problems(walk_dir, [hour_key(start)]) or [f"no sealed+verified hour at the pool start {hour_key(start)}"])
+            raise Refused(hour_problems(walk_dir, [hour_key(start)], strict_lines) or [f"no sealed+verified hour at the pool start {hour_key(start)}"])
     if to.minute or to.second or to.microsecond:
         raise Refused([f"--to {to.isoformat()} is not hour-aligned"])
     if to <= clean_clock:
         raise Refused([f"--to {hour_key(to)} is not after the clean clock {clean_clock.strftime('%Y-%m-%dT%H:%M:%SZ')}: nothing could count"])
     pool = e11._hours_range(hour_key(start), hour_key(to))
-    errors = hour_problems(walk_dir, pool)
+    errors = hour_problems(walk_dir, pool, strict_lines)
     if errors:
         raise Refused(errors)
 
@@ -678,10 +691,12 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
         raise Refused([f"{runs_path} belongs to another experiment than {experiment}; every experiment has its own --out-dir"])
 
     t0 = time.time()
-    # Walk tape is read strict: a NUL / non-JSON line in any hour is a data hole, so the run refuses (nothing
-    # appended) instead of scoring around it. MAL_STRICT_LINES is inherited by the spawned scorer workers.
+    # strict_lines (walk 2, --strict-lines): the walk tape is read strict, so a NUL / non-JSON line in any hour is
+    # a data hole and the run refuses (nothing appended). Off (the DEC-016 FINAL as written): the reader is the
+    # lenient one it always was; strict_env(False) also clears an externally set MAL_STRICT_LINES so the
+    # setting is exactly this argument. Spawned scorer workers inherit the env var.
     try:
-        with tape_lines.strict_env(True):
+        with tape_lines.strict_env(strict_lines):
             rows, threshold = score_hours(walk_dir, pool, artifact_dir, out_dir / "scratch", spec.exit_spec_id if secondary else None)
     except tape_lines.BadLinesError as exc:
         raise Refused([f"bad tape lines, hour not decidable: {exc}"])
@@ -1423,10 +1438,12 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--registry", default=str(ff.REGISTRY_PATH), help="secondaries: the family registry whose sha256 the runs record")
     sc.add_argument("--primary-ledger", default=str(ff.PRIMARY_LEDGER), help="secondaries: EXP-012's ledger (a secondary's own ledger may never be it)")
     sc.add_argument("--freeze-commit", default=None, help="default: the spec's freeze commit")
+    sc.add_argument("--strict-lines", action="store_true", help="walk 2 (EXP-022): read the walk tape strict and refuse on a NUL / non-JSON line; default off, the DEC-016 forward-1002 FINAL runs without it")
     sc.add_argument("--frozen-manifest-md5", default=None, help="default: the spec's pin, unless --artifact-dir overrides the dir")
     vf = sub.add_parser("verify", help="backfill_verify --content for one hour, append its line to D/verify.jsonl")
     vf.add_argument("--walk-dir", required=True)
     vf.add_argument("--hour", required=True, help="YYYY-MM-DDTHH")
+    vf.add_argument("--strict-lines", action="store_true", help="walk 2 (EXP-022): a NUL / non-JSON line or a truncated zstd stream makes the hour NOT OK; default off, bad_lines is only reported")
     ex = sub.add_parser("export-decisions", help="write decisions.jsonl (mint, mig_ms, score, entered, day only) for the live-readiness comparison")
     ex.add_argument("--experiment", default=ff.PRIMARY_EXPERIMENT)
     ex.add_argument("--out-dir", required=True)
@@ -1516,8 +1533,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FINAL written ({LABEL}); n_entered={rep['n_entered']}", file=sys.stderr)
         return 0
     if args.cmd == "verify":
-        rec, appended = run_verify(Path(args.walk_dir), args.hour)
-        ok = _line_ok(rec)
+        rec, appended = run_verify(Path(args.walk_dir), args.hour, args.strict_lines)
+        ok = _line_ok(rec, args.strict_lines)
         print(f"hour {args.hour}: {'OK' if ok else 'NOT OK ' + str(rec['issues'])}; {'appended' if appended else 'identical line already present'}", file=sys.stderr)
         return 0 if ok else 1
     overridden = args.artifact_dir is not None
@@ -1537,6 +1554,7 @@ def main(argv: list[str] | None = None) -> int:
             spec,
             Path(args.registry),
             Path(args.primary_ledger),
+            args.strict_lines,
         )
     except Refused as exc:
         return _refuse(exc)
