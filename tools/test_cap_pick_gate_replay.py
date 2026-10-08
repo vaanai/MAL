@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import io
 import json
 import math
+import shutil
+import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 from tools import cap_pick_gate_replay as cp
 from tools.forward_paper import replay_rows
@@ -368,6 +373,138 @@ class CompareTests(unittest.TestCase):
         self.assertAlmostEqual(s["ex_best_day_sol"], 0.05)  # best day is d1 (0.2 SOL)
         self.assertAlmostEqual(s["mean_pct"], 100 * 0.0625 / 0.5)
         self.assertEqual(s, cp.leg_stats(x, ["d1", "d1", "d2", "d3"], 500e6))  # seed 1: repeatable
+
+
+# ---- strict lines (audit A8): a NUL, a truncated final line or a non-JSON line is a refusal, never a skip ----------
+BAD_PIECES = {  # name -> (bytes of the third line, kind tape_lines gives it)
+    "nul": (b'{"type":"trade","mint":"M\x00M"}\n', "nul"),
+    "truncated_final_line": (b'{"type":"trade","mint":"M","side":"bu', "not_json"),
+    "garbage": (b"this is not json\n", "not_json"),
+    "array": (b"[1,2,3]\n", "non_object"),
+}
+
+
+def _write_hour(root: Path, kind: str, hour: str, chunks: list[bytes], *, zst: bool) -> Path:
+    d = root / kind
+    d.mkdir(exist_ok=True)
+    raw = d / f"{kind}-{hour}.jsonl"
+    raw.write_bytes(b"".join(chunks))
+    if zst:
+        subprocess.run(["zstd", "-q", "--rm", str(raw)], check=True)
+        return d / f"{kind}-{hour}.jsonl.zst"
+    return raw
+
+
+def _lines(rows: list[dict]) -> list[bytes]:
+    return [(_dump(r) + "\n").encode() for r in rows]
+
+
+class StrictLinesTests(_Base):
+    def _case(self, zst: bool):
+        if zst and shutil.which("zstd") is None:
+            self.skipTest("zstd binary not available")
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        return Path(td.name), cp.Block("t", (td.name,), ".jsonl.zst" if zst else ".jsonl", False)
+
+    def _assert_refused(self, ctx, path: Path, line: int, kind: str) -> None:
+        msg = str(ctx.exception)
+        self.assertIn(str(path), msg)
+        self.assertIn(f"physical line {line}", msg)
+        self.assertIn(f"kind {kind}", msg)
+        self.assertIsInstance(ctx.exception, cp.BadLineRefused)
+        self.assertEqual((ctx.exception.line, ctx.exception.kind), (line, kind))
+
+    def test_bad_trades_line_refuses_plain_and_zst(self) -> None:
+        t = DAY0 + 2 * HOUR
+        hour = cp._hour_of_ms(t)
+        for zst in (False, True):
+            for name, (bad, kind) in BAD_PIECES.items():
+                with self.subTest(zst=zst, case=name):
+                    root, blk = self._case(zst)
+                    _write_hour(root, "creates", hour, _lines([_crow("M", t)]), zst=zst)
+                    good = _lines([dict(_trade("M", t + 1_000, trader="a"), tx_index=1), dict(_trade("M", t + 2_000, trader="b"), tx_index=2)])
+                    path = _write_hour(root, "trades", hour, good + [bad], zst=zst)
+                    with self.assertRaises(cp.Refused) as ctx:
+                        cp.replay_view(blk, [cp._day_of_ms(DAY0)], engine=self.engine(), roots=[str(root)])
+                    self._assert_refused(ctx, path, 3, kind)
+
+    def test_bad_creates_line_refuses_plain_and_zst(self) -> None:
+        t = DAY0 + 2 * HOUR
+        hour = cp._hour_of_ms(t)
+        for zst in (False, True):
+            for name, (bad, kind) in BAD_PIECES.items():
+                with self.subTest(zst=zst, case=name):
+                    root, blk = self._case(zst)
+                    good = _lines([_crow("M", t), _crow("N", t + 500, "CN")])
+                    path = _write_hour(root, "creates", hour, good + [bad], zst=zst)
+                    _write_hour(root, "trades", hour, _lines([dict(_trade("M", t + 1_000), tx_index=1)]), zst=zst)
+                    with self.assertRaises(cp.Refused) as ctx:
+                        cp.replay_view(blk, [cp._day_of_ms(DAY0)], engine=self.engine(), roots=[str(root)])
+                    self._assert_refused(ctx, path, 3, kind)
+
+    def test_bad_line_in_boot_staging_refuses_plain_and_zst(self) -> None:
+        """preload swallows every error, so staging must scan each creates file it copies."""
+        t = DAY0 - 2 * HOUR  # history hour: staged for the 00:00Z boot of DAY0, never fed
+        hour = cp._hour_of_ms(t)
+        for zst in (False, True):
+            for name, (bad, kind) in BAD_PIECES.items():
+                with self.subTest(zst=zst, case=name):
+                    root, blk = self._case(zst)
+                    good = _lines([_crow("OLD", t, "CO"), _crow("OLD2", t + 500, "CO2")])
+                    path = _write_hour(root, "creates", hour, good + [bad], zst=zst)
+                    files = cp.hour_files(blk, [str(root)])
+                    with tempfile.TemporaryDirectory() as dest, self.assertRaises(cp.Refused) as ctx:
+                        cp.stage_creates(files, DAY0, Path(dest), [str(root)])
+                    self._assert_refused(ctx, path, 3, kind)
+                    # and through replay_view, where the refusal must not be swallowed by preload
+                    with self.assertRaises(cp.Refused):
+                        cp.replay_view(blk, [cp._day_of_ms(DAY0)], engine=self.engine(), roots=[str(root)])
+
+    def test_truncated_zst_stream_refuses(self) -> None:
+        root, blk = self._case(True)
+        t = DAY0 + 2 * HOUR
+        hour = cp._hour_of_ms(t)
+        _write_hour(root, "creates", hour, _lines([_crow("M", t)]), zst=True)
+        rows = [dict(_trade("M", t + 1_000 + i, trader=f"w{i}", slot=i), tx_index=i) for i in range(4000)]
+        path = _write_hour(root, "trades", hour, _lines(rows), zst=True)
+        data = path.read_bytes()
+        path.write_bytes(data[: len(data) // 2])
+        with self.assertRaises(cp.Refused) as ctx:
+            cp.replay_view(blk, [cp._day_of_ms(DAY0)], engine=self.engine(), roots=[str(root)])
+        self.assertIn(str(path), str(ctx.exception))
+
+    def test_clean_files_are_untouched(self) -> None:
+        """Blank lines are not bad; a clean file yields exactly the lines it holds."""
+        for zst in (False, True):
+            with self.subTest(zst=zst):
+                root, _blk = self._case(zst)
+                t = DAY0 + 2 * HOUR
+                hour = cp._hour_of_ms(t)
+                body = _lines([_crow("M", t)]) + [b"\n"] + _lines([_crow("N", t + 1_000, "CN")])
+                path = _write_hour(root, "creates", hour, body, zst=zst)
+                self.assertEqual([r["mint"] for r in cp.iter_json_rows(path, [str(root)])], ["M", "N"])
+                self.assertEqual(len(list(cp.iter_lines(path, [str(root)]))), 3)
+
+    def test_main_exits_3_on_refused(self) -> None:
+        root, blk = self._case(False)
+        t = DAY0 + 2 * HOUR
+        hour = cp._hour_of_ms(t)
+        _write_hour(root, "creates", hour, _lines([_crow("M", t)]), zst=False)
+        _write_hour(root, "trades", hour, _lines([dict(_trade("M", t + 1_000), tx_index=1)]) + [b"not json\n"], zst=False)
+        out = root / "out.jsonl"
+        argv = ["replay", "--view", "fix", "--from-day", cp._day_of_ms(DAY0), "--out", str(out)]
+        err = io.StringIO()
+        engine = self.engine()
+        with mock.patch.dict(cp.BLOCKS, {"fix": blk}), mock.patch.object(cp, "build_engine", lambda *a, **k: engine), redirect_stderr(err):
+            self.assertEqual(cp.main(argv), 3)
+        self.assertIn("REFUSED", err.getvalue())
+        self.assertIn("physical line 2", err.getvalue())
+        self.assertFalse(out.exists())  # nothing is written after a refusal
+        # every other Refused is 3 too (a sealed day), and the exploration refusals are unchanged
+        err = io.StringIO()
+        with mock.patch.dict(cp.BLOCKS, {"fix": blk}), redirect_stderr(err):
+            self.assertEqual(cp.main(["replay", "--view", "fix", "--from-day", "2026-10-03", "--out", str(out)]), 3)
 
 
 class WiringTests(unittest.TestCase):

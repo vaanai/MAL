@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
+from tools.tape_lines import BadLinesError, scan_file, strict_lines
+
 REPO = Path(__file__).resolve().parent.parent
 MODEL = REPO / "ARTIFACTS" / "exp012" / "model.txt"
 FEATURES = REPO / "ARTIFACTS" / "exp012" / "features.json"
@@ -77,6 +79,75 @@ _HOUR_RE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2})")
 
 class Refused(Exception):
     pass
+
+
+class BadLineRefused(Refused):
+    """A tape file held a NUL, a truncated or a non-JSON line (audit A8). Names the file, the first bad physical
+    line (1-based, blank lines counted) and its kind: `nul`, `not_json` or `non_object`."""
+
+    def __init__(self, label: str, line: int | None, kind: str | None, counts: dict[str, Any]) -> None:
+        super().__init__(
+            f"{label}: refused (bad tape line: kind {kind} at physical line {line}; {counts.get('bad_lines')} bad of "
+            f"{counts.get('lines')} lines: nul={counts.get('nul')}, not_json={counts.get('not_json')}, "
+            f"non_object={counts.get('non_object')}; a data hole, not a row)")
+        self.label, self.line, self.kind, self.counts = label, line, kind, counts
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (BadLineRefused, (self.label, self.line, self.kind, self.counts))
+
+
+def _bad_lines_refusal(read_path: str | Path, label: str | Path, exc: BadLinesError) -> Refused:
+    """Name the first bad line and its kind. `strict_lines` only carries counts, so this re-scans the file once,
+    on the failure path only (`scan_file` keeps the first bad line's kind)."""
+    try:
+        c = scan_file(read_path)
+    except (RuntimeError, OSError):
+        c = None
+    if c is not None and c.bad:
+        return BadLineRefused(str(label), c.first_bad_line, c.first_bad_kind, {**c.as_dict(), "first_bad_kind": c.first_bad_kind})
+    return BadLineRefused(str(label), exc.counts.get("first_bad_line"), None, exc.counts)
+
+
+def _strict_text_lines(read_path: Path, label: str | Path | None = None) -> Iterator[str]:
+    """Every line of `read_path` (plain, .gz or .zst), unchanged. After the last line, `Refused` if the file held a
+    NUL, a truncated final line or any line that is not a JSON object; also `Refused` for a truncated or corrupt
+    zstd stream or bytes that are not UTF-8. Strict is the only mode: there is no switch that skips bad lines."""
+    from tools.paper_price_path import open_text
+
+    name = str(label if label is not None else read_path)
+    try:
+        with open_text(read_path) as fh:
+            yield from strict_lines(fh, name)
+    except BadLinesError as exc:
+        raise _bad_lines_refusal(read_path, name, exc) from None
+    except UnicodeDecodeError as exc:
+        raise Refused(f"{name}: refused (bad tape line: kind not_utf8; {exc.reason} at byte {exc.start})") from None
+    except RuntimeError as exc:
+        raise Refused(f"{name}: refused (truncated or corrupt compressed stream: {exc})") from None
+
+
+def _json_rows(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:  # only a `lenient` line gets here (strict_lines already counted every bad one)
+            continue
+        if isinstance(row, dict):
+            yield row
+
+
+def _require_clean(copy: Path, label: str | Path) -> None:
+    """Refuse unless the staged copy holds only rows. `Exp012Online.preload` swallows every error, so an unscanned
+    bad creates file would silently shrink the creator history."""
+    try:
+        c = scan_file(copy)
+    except RuntimeError as exc:
+        raise Refused(f"{label}: refused (truncated or corrupt compressed stream: {exc})") from None
+    if c.bad:
+        raise BadLineRefused(str(label), c.first_bad_line, c.first_bad_kind, {**c.as_dict(), "first_bad_kind": c.first_bad_kind})
 
 
 def refuse_name(path: str | Path) -> None:
@@ -183,6 +254,7 @@ def stage_creates(files: dict[str, dict[str, Path]], boot_ms: int, dest: Path, r
         link = dest / (f"creates-{hour}.jsonl.zst" if src.name.endswith(".zst") else f"creates-{hour}.jsonl")
         if not link.exists():
             shutil.copyfile(src, link)
+            _require_clean(link, src)  # the copy is what preload reads, so the copy is what is scanned
         n += 1
     return n
 
@@ -467,28 +539,16 @@ class Replayer:
 
 # ---- driver over files --------------------------------------------------------------------------------
 def iter_json_rows(path: Path, roots: Sequence[str | Path] | None) -> Iterator[dict[str, Any]]:
-    from tools.paper_price_path import open_text
-
+    """The object rows of one hour file. Strict: a NUL, a truncated or a non-JSON line raises `Refused` after the
+    last line (audit A8); it is never skipped."""
     refuse_path(path, roots)
-    with open_text(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict):
-                yield row
+    yield from _json_rows(_strict_text_lines(Path(path)))
 
 
 def iter_lines(path: Path, roots: Sequence[str | Path] | None) -> Iterator[str]:
-    from tools.paper_price_path import open_text
-
+    """The raw lines of one hour file, with the same strict refusal as `iter_json_rows`."""
     refuse_path(path, roots)
-    with open_text(path) as fh:
-        yield from fh
+    yield from _strict_text_lines(Path(path))
 
 
 def days_between(a: str, b: str) -> list[str]:
@@ -877,7 +937,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return args.fn(args)
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
-        return 2
+        return 3  # the walker's fatal code; argparse keeps 2 for usage errors
 
 
 if __name__ == "__main__":
