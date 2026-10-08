@@ -77,6 +77,16 @@ RESERVE CONVENTIONS (this broke the audit once)
     kept so the reproduction can separate that one difference.
   * Within-slot order: (slot, tx_index, event_index). A row with a null tx_index (oracle-insample-0922) is ordered by file order instead.
 
+T2: REPORT-ONLY BOOST-PROGRESS EXIT (--exit-mode, --boost-cut, --paired; ARTIFACTS/lab/cap-pick-t2-boost-exit-predeclare-2026-10-08.md)
+  --exit-mode cap (default) is the book above, byte for byte. --exit-mode boost90 adds rule B90: exit at the first print where one wallet's cumulative buys on this
+  pool reach 0.9 x 17.585 SOL (G's causal detector on the tape's `trader` field: no sell so far, every buy <= 2 SOL, >= 8 buys, prints with slot <= s0 + 2,500), or
+  at the same 300 s cap, whichever comes first; a tp / sl at the same print or earlier wins. The keeper address HTVZVEQ... is NOT on the tape (it signs the crank; the
+  swap's account is a per-pool PDA), so the detector is behavioural. --paired simulates the other exit mode on the same path and adds `summary.paired`: B90 minus cap
+  per attempt in pp of stake, with the date-cluster CI90 (1,000 UTC-date resamples, seed 1), per scope and leg. --boost-cut f (0 < f <= 1) is a STRESS REPLAY: the
+  detected keeper's buys are kept while its cumulative buy SOL <= f x 17.585 SOL and the later ones are removed; the constant-product path is re-simulated from the
+  remaining prints' amounts (buys keep SOL in, sells keep tokens in; PRE-trade convention, V on the quote) from the first removed print on. Approximations are in
+  `cut_boost_path`. For f < 0.9 B90 cannot fire on a cut path (declared in the pre-declaration). None of this is gate evidence and none of it touches EXP-022.
+
 Hard limits (asserted; see `check_path_allowed` / `check_inputs_allowed` / `check_hour_allowed`): exploration pools only. Never fresh-0802, fresh-0808, fresh-0828,
 any forward or oracle-live path, the EXP-009 hours [2026-09-15T12, 2026-09-18T23), or any hour at or after 2026-10-02T10. Oracle in-sample hours stop at 2026-09-25T06.
 INPUT PATHS (--picks, --hour-sph-json, --sph-json, --vmap, and every tape source dir) are checked first in `run()`, before anything is opened, listed or read. A path
@@ -99,7 +109,7 @@ import subprocess
 import sys
 import time
 from array import array
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
@@ -127,6 +137,12 @@ V_LO, V_HI = 17_500_000_000, 17_700_000_000
 TARGET_FAIL_RATE = 0.289
 BOOT_P_DRAWS = 10_000  # DEC-021 section 5: the trade-level bootstrap p (10,000 draws, seed 1). Report-only; the CI90 keeps the gate's 1,000 draws
 PICK_THRESHOLD = 0.8030766588450794  # EXP-012 frozen threshold (G's strata.py)
+BOOST_BUDGET_LAMPORTS = 17_585_000_000  # pump.fun's BOOST buyer spends 17.585 SOL per pool (pre-declaration section 1; a constant, not a flag)
+B90_FRAC = 0.9  # rule B90 fires when one wallet's cumulative buys reach this share of the budget (pinned; not a flag)
+BOOST_WINDOW_SLOTS = 2500  # the detector looks at prints with slot <= s0 + 2,500 (G's sim.py)
+BOOST_MAX_BUY_LAMPORTS = 2_000_000_000  # G: every buy of the BOOST wallet so far is <= 2 SOL
+BOOST_MIN_BUYS = 8  # G: at least 8 buys
+EXIT_MODES = ("cap", "boost90")
 DEFAULT_VMAP = "/data/mal/pumpswap-virtual/pool_v_0909.json"
 SLOT_TOL = 1e-9  # ceil(x - SLOT_TOL): a float that is an integer to 1e-9 slot is that integer
 HOUR_HEAD_LINES = 2000  # per-hour ms/slot measurement: lowest slot among the first rows ...
@@ -253,6 +269,9 @@ class Config:
     window_slots: int = WINDOW_SLOTS
     pick_threshold: float = PICK_THRESHOLD
     boot_p_draws: int = BOOT_P_DRAWS  # report-only p_trade_boot; the CI90 draws stay at BOOT_DRAWS (the gate)
+    exit_mode: str = "cap"  # "cap" (G: the 300 s cap) | "boost90" (T2 rule B90, report-only)
+    boost_cut: float | None = None  # T2 stress replay: keep the keeper's buys up to this share of the BOOST budget; None = the tape as it is
+    paired: bool = False  # T2: also simulate the other exit mode on the same path and report B90 minus cap
 
     def validate(self) -> None:
         if self.bound not in ("END", "START"):
@@ -274,8 +293,17 @@ class Config:
             raise Refused("rent-lamports must be non-negative")
         if isinstance(self.boot_p_draws, bool) or not isinstance(self.boot_p_draws, int) or self.boot_p_draws < 1:
             raise Refused(f"boot-p-draws must be a positive integer, got {self.boot_p_draws!r}")
+        if self.exit_mode not in EXIT_MODES:
+            raise Refused(f"exit-mode must be one of {EXIT_MODES}, got {self.exit_mode}")
+        if self.boost_cut is not None and not (isinstance(self.boost_cut, (int, float)) and not isinstance(self.boost_cut, bool) and 0.0 < self.boost_cut <= 1.0):
+            raise Refused(f"boost-cut must be in (0, 1], got {self.boost_cut!r}")
         if (self.rent_mode == "always") != (self.rent_lamports > 0):  # a rent amount without the mode (or the mode without an amount) would silently charge nothing
             raise Refused("--rent-mode always needs --rent-lamports > 0, and --rent-lamports > 0 needs --rent-mode always (default: none, 0)")
+
+    @property
+    def needs_trader(self) -> bool:
+        """The T2 switches read the tape's `trader` field. With none of them set the field is not read at all, so the default run is the phase-1 run."""
+        return self.exit_mode != "cap" or self.boost_cut is not None or self.paired
 
     @property
     def needs_hour_sph(self) -> bool:
@@ -415,13 +443,98 @@ def bt_deadline_index(slot: np.ndarray, bt: np.ndarray | None, x: int, cap_secon
     return int(np.searchsorted(run, run[il] + cap_seconds, "left"))
 
 
+def trader_id(trader: Any) -> int:
+    """Stable 64-bit id of a trader string (blake2b); 0 means 'no trader' and is never a wallet."""
+    if not isinstance(trader, str) or not trader:
+        return 0
+    return int.from_bytes(hashlib.blake2b(trader.encode(), digest_size=8).digest(), "little", signed=True) or 1
+
+
+def boost_scan(trader: np.ndarray, isbuy: np.ndarray, sol: np.ndarray, slot: np.ndarray, s0: int, frac: float = B90_FRAC) -> tuple[int, int] | None:
+    """G's causal BOOST-progress detector (`sim.py` `boost_cross`). Over the prints with slot <= s0 + 2,500, a wallet qualifies at a print of its own when, counting
+    that print: its cumulative buy lamports >= frac x 17.585 SOL, it has made no sell, every buy so far is <= 2 SOL, and it has made >= 8 buys. Returns
+    (index of the first print, in path order, at which any wallet qualifies, that wallet's id), or None. Only prints up to the trigger are needed to decide it, so it
+    is a causal rule even though this function reads the whole path."""
+    m = int(np.searchsorted(slot, s0 + BOOST_WINDOW_SLOTS, "right"))
+    if m == 0:
+        return None
+    tr, ib, amt = trader[:m], isbuy[:m].astype(bool), sol[:m]
+    thr = frac * BOOST_BUDGET_LAMPORTS
+    bm = ib & (tr != 0)
+    if not bm.any():
+        return None
+    wallets, inv = np.unique(tr[bm], return_inverse=True)
+    tot, cnt = np.bincount(inv, weights=amt[bm]), np.bincount(inv)
+    best: tuple[int, int] | None = None
+    for wid in wallets[(tot >= thr) & (cnt >= BOOST_MIN_BUYS)]:
+        idx = np.flatnonzero(tr == wid)
+        b = ib[idx]
+        a = np.where(b, amt[idx], 0.0)
+        ok = (np.cumsum(a) >= thr) & (np.cumsum(~b) == 0) & (np.maximum.accumulate(a) <= BOOST_MAX_BUY_LAMPORTS) & (np.cumsum(b) >= BOOST_MIN_BUYS)
+        if ok.any():
+            first = int(idx[int(np.argmax(ok))])
+            if best is None or first < best[0]:
+                best = (first, int(wid))
+    return best
+
+
+def cut_boost_path(f: float, *, trader: np.ndarray, slot: np.ndarray, isbuy: np.ndarray, sol: np.ndarray, tok: np.ndarray, qpre: np.ndarray, bpre: np.ndarray,
+                   bt: np.ndarray, s0: int) -> dict[str, Any]:
+    """T2 stress replay (--boost-cut f). The keeper is the wallet `boost_scan` finds on the ORIGINAL path (the whole path is used: this builds a counterfactual and is
+    not a trading rule). Its buys are kept while its cumulative buy lamports, including that buy, are <= f x 17.585 SOL; every later buy of it is removed. Every other print
+    is kept at its slot and in its order. The state before the first removed print is the tape's; from there each kept print is applied in order to the running state
+    (X = quote + V, B = base; `qpre` / `bpre` already carry V), with the fee tier from `fee_ppm(X, B)` as for our own buy:
+        buy  keeps its SOL S in:    net = S x (1 - fee); tokens = B x net / (X + net); X += net; B -= tokens           (the whole fee leaves the pool, as
+                                                                                                                           `pumpswap_pool_quote_delta` does on tape rows)
+        sell keeps its tokens T in: gross = X x T / (B + T); SOL out = gross x (1 - fee); X -= gross; B += T
+    Both leave X x B unchanged. APPROXIMATIONS: other traders do not react to the missing flow; the LP share of a real fee that stays in the pool is ignored; no integer
+    rounding or slippage limit; after the first removal the path drifts from what the chain would have done by an unknown amount. A mint with no detected keeper, or
+    with nothing past the cut, is returned unchanged (same arrays)."""
+    out: dict[str, Any] = dict(trader=trader, slot=slot, isbuy=isbuy, sol=sol, tok=tok, qpre=qpre, bpre=bpre, bt=bt, dropped=0, keeper=0)
+    hit = boost_scan(trader, isbuy, sol, slot, s0)
+    if hit is None:
+        return out
+    wid = hit[1]
+    out["keeper"] = wid
+    kb = np.flatnonzero((trader == wid) & isbuy.astype(bool))
+    drop_idx = kb[np.cumsum(sol[kb]) > f * BOOST_BUDGET_LAMPORTS]
+    if drop_idx.size == 0:
+        return out
+    n = len(slot)
+    drop = np.zeros(n, bool)
+    drop[drop_idx] = True
+    i0 = int(drop_idx[0])
+    kept = np.flatnonzero(~drop)
+    sol2, tok2 = sol[kept].astype(float).copy(), tok[kept].astype(float).copy()
+    q2, b2 = np.empty(len(kept) + 1), np.empty(len(kept) + 1)
+    x, b = float(qpre[i0]), float(bpre[i0])
+    for pos, j in enumerate(kept):
+        if j < i0:  # before the first removal the observed state stands
+            q2[pos], b2[pos] = qpre[j], bpre[j]
+            continue
+        q2[pos], b2[pos] = x, b
+        fee = float(fee_ppm(x, b)) / 1e6
+        if isbuy[j]:
+            net = sol2[pos] * (1 - fee)
+            t = b * net / (x + net)
+            tok2[pos] = t
+            x, b = x + net, b - t
+        else:
+            gross = x * tok2[pos] / (b + tok2[pos])
+            sol2[pos] = gross * (1 - fee)
+            x, b = x - gross, b + tok2[pos]
+    q2[-1], b2[-1] = x, b
+    out.update(trader=trader[kept], slot=slot[kept], isbuy=isbuy[kept], sol=sol2, tok=tok2, qpre=q2, bpre=b2, bt=bt[kept], dropped=int(drop_idx.size))
+    return out
+
+
 def simulate_attempt(
     cfg: Config, *, day: str, sph: Mapping[str, float], v: float, s0: int, slot: np.ndarray, isbuy: np.ndarray, sol: np.ndarray, qpre: np.ndarray, bpre: np.ndarray,
-    hour: str | None = None, hour_s: float | None = None, bt: np.ndarray | None = None,
+    hour: str | None = None, hour_s: float | None = None, bt: np.ndarray | None = None, boost_idx: int | None = None,
 ) -> dict[str, Any]:
     """One attempt on one mint's ordered path. Mirrors G's `run_day` inner loop for `tpsl_wall` exits and the `min_out` / `none` guards.
     `hour_s` = seconds per slot of the attempt's UTC hour (needed by --k-mode hour and --exit-lag-ms); `bt` = block_time per print, -1 if null (needed by
-    --cap-anchor block-time)."""
+    --cap-anchor block-time). `boost_idx` = index of the print at which `boost_scan` fires on THIS path (T2; used only when cfg.exit_mode == "boost90")."""
     s_day = sec_per_slot(day, sph) if (cfg.k_mode == "day" or cfg.cap_anchor == "day-mean") else None
     if (cfg.k_mode == "hour" or cfg.exit_lag_ms is not None) and hour_s is None:
         raise Refused(f"no measured seconds-per-slot for the hour of this {day} attempt (hour={hour})")
@@ -486,6 +599,10 @@ def simulate_attempt(
         if cond[i]:
             hit = je + i
             exit_type = "tp" if ret[i] >= cfg.tp else "sl"
+    if cfg.exit_mode == "boost90" and boost_idx is not None and boost_idx < icap:  # B90: strictly before the deadline print; a tp / sl at the same print or earlier wins
+        bh = max(boost_idx, je)
+        if hit < 0 or bh < hit:
+            hit, exit_type = bh, "boost"
     if hit >= 0:
         fi = int(np.searchsorted(slot, slot[hit] + lag + off, "left"))
         xs = int(slot[hit])
@@ -519,6 +636,18 @@ def apply_legs(rows: list[dict[str, Any]], cfg: Config) -> dict[str, Any]:
         r["pnl_live"] = (1 - cfg.live_fail) * pnl + cfg.live_fail * (-fee)
         r["pnl_flat"] = (1 - cfg.flat_fail) * pnl + cfg.flat_fail * (-fee)
         r["pnl_press"] = (1 - pp) * pnl + pp * (-fee)
+    for r in rows:  # T2 --paired: the other exit mode on the same attempt (same fill set, so the same pressure curve)
+        pa = r.get("pnl_alt")
+        if pa is None:
+            continue
+        fee = float(r["fee"])
+        r["pnl_alt_nofail"] = pa
+        if r["status"] != "filled":
+            r["pnl_alt_live"] = r["pnl_alt_flat"] = r["pnl_alt_press"] = pa
+            continue
+        r["pnl_alt_live"] = (1 - cfg.live_fail) * pa + cfg.live_fail * (-fee)
+        r["pnl_alt_flat"] = (1 - cfg.flat_fail) * pa + cfg.flat_fail * (-fee)
+        r["pnl_alt_press"] = (1 - r["p_press"]) * pa + r["p_press"] * (-fee)
     return {"pressure_intercept": None if curve is None else curve.intercept, "pressure_mean_p": (sum(r["p_press"] for r in fills) / len(fills)) if fills else None}
 
 
@@ -680,6 +809,50 @@ def book_stats(rows: Sequence[Mapping[str, Any]], size: float, p_draws: int = BO
     return out
 
 
+def paired_stats(diff_lamports: Sequence[float], dates: Sequence[str], size: float, fires: int) -> dict[str, Any]:
+    """T2: B90 minus cap per attempt. Mean in pp of stake; date-cluster CI90 = 5th and 95th percentile of 1,000 UTC-date resamples (seed 1, the gate's resample)."""
+    x = np.asarray(diff_lamports, float) / 1e9
+    n = len(x)
+    sz = size / 1e9
+    ud, inv = np.unique(np.asarray(dates), return_inverse=True)
+    dsum, dn = np.bincount(inv, weights=x), np.bincount(inv)
+    w = len(ud)
+    boot = None
+    if w:
+        di = np.random.default_rng(BOOT_SEED).integers(0, w, size=(BOOT_DRAWS, w))
+        boot = dsum[di].sum(1) / dn[di].sum(1)
+    return {"n_attempts": n, "n_differ": int((x != 0).sum()), "b90_fires": int(fires), "mean_pp": 100 * float(x.mean()) / sz, "total_sol": float(x.sum()),
+            "ci90_date_lo_pp": None if boot is None else 100 * float(np.percentile(boot, 5)) / sz, "ci90_date_hi_pp": None if boot is None else 100 * float(np.percentile(boot, 95)) / sz,
+            "dates": w, "dates_b90_better": int((dsum > 0).sum()), "dates_b90_worse": int((dsum < 0).sum())}
+
+
+def paired_report(rows: Sequence[Mapping[str, Any]], cfg: Config, have_picks: bool) -> dict[str, Any]:
+    """summary.paired[book][scope][leg] = paired_stats of (B90 pnl - cap pnl) over the attempts of that scope. books: `all` (when --book all) and `picks` (the pick
+    subset, when --picks is given; P1 pick scores from cache_table are in-sample and are not used for a decision: pre-declaration section 2)."""
+    b90_is_primary = cfg.exit_mode == "boost90"
+    size = float(cfg.size_lamports)
+    scopes: list[tuple[str, tuple[str, ...] | None]] = [(b, (b,)) for b in (BLOCK_P2, BLOCK_P3, BLOCK_P4, BLOCK_P1A, BLOCK_P1C)]
+    scopes += [(g, blocks) for g, blocks in GROUPS.items()] + [("all", None)]
+    books: list[tuple[str, list[Mapping[str, Any]]]] = [("all", list(rows))] if cfg.book == "all" else []
+    if have_picks:
+        books.append(("picks", [r for r in rows if r["pick"] == "pick"]))
+    out: dict[str, Any] = {"definition": "B90 minus the 300 s cap, per attempt, pp of stake; same (date, mint), same entry, guard and price path", "books": {}}
+    for bname, brows in books:
+        cells: dict[str, Any] = {}
+        for name, blocks in scopes:
+            sel = [r for r in brows if blocks is None or r["block"] in blocks]
+            if not sel:
+                continue
+            fires = sum(1 for r in sel if (r["exit_type"] if b90_is_primary else r["alt_exit_type"]) == "boost")
+            cell: dict[str, Any] = {"attempts": len(sel), "b90_fires": fires}
+            for leg in LEGS:
+                diff = [(r["pnl_" + leg] - r["pnl_alt_" + leg]) if b90_is_primary else (r["pnl_alt_" + leg] - r["pnl_" + leg]) for r in sel]
+                cell[leg] = {"role": GATE_ROLE[leg], **paired_stats(diff, [r["day"] for r in sel], size, fires)}
+            cells[name] = cell
+        out["books"][bname] = cells
+    return out
+
+
 # --- hour files ----------------------------------------------------------------------------------------------------------------------
 
 HOUR_RE = re.compile(r"^(trades|creates|migrations)-(\d{4}-\d{2}-\d{2}T\d{2})(\.deduped)?\.jsonl\.zst$")
@@ -788,14 +961,18 @@ def order_key(slot: int, tx_index: int | None, event_index: int, seq: int) -> tu
 class _Rows:
     """One mint's kept PumpSwap rows as typed arrays (about 70 bytes a row; a day holds millions, so no per-row tuples)."""
 
-    __slots__ = ("slot", "tx", "ev", "seq", "pid", "bt", "buy", "sol", "tok", "q", "b")
+    __slots__ = ("slot", "tx", "ev", "seq", "pid", "bt", "buy", "sol", "tok", "q", "b", "tr", "track")
 
-    def __init__(self) -> None:
+    def __init__(self, track: bool = False) -> None:
+        self.track = track  # T2: keep a hashed trader id per row (only when a T2 switch is on, so the default run holds the same arrays as phase 1)
+        self.tr = array("q")
         self.slot, self.tx, self.ev, self.seq, self.pid, self.bt = (array("q") for _ in range(6))
         self.buy = array("b")
         self.sol, self.tok, self.q, self.b = (array("d") for _ in range(4))
 
-    def add(self, slot: int, tx: int, ev: int, seq: int, pid: int, buy: bool, sol: float, tok: float, q: float, b: float, bt: int = -1) -> None:
+    def add(self, slot: int, tx: int, ev: int, seq: int, pid: int, buy: bool, sol: float, tok: float, q: float, b: float, bt: int = -1, tr: int = 0) -> None:
+        if self.track:
+            self.tr.append(tr)
         self.bt.append(bt)
         self.slot.append(slot)
         self.tx.append(tx)
@@ -810,6 +987,8 @@ class _Rows:
 
     def arrays(self) -> dict[str, np.ndarray]:
         out = {k: np.frombuffer(getattr(self, k), dtype=np.int64) for k in ("slot", "tx", "ev", "seq", "pid", "bt")}
+        if self.track:
+            out["tr"] = np.frombuffer(self.tr, dtype=np.int64)
         out["buy"] = np.frombuffer(self.buy, dtype=np.int8).astype(bool)
         out.update({k: np.frombuffer(getattr(self, k), dtype=np.float64) for k in ("sol", "tok", "q", "b")})
         return out
@@ -891,12 +1070,13 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
             seq += 1
             rows = by_mint.get(m)
             if rows is None:
-                rows = by_mint[m] = _Rows()
+                rows = by_mint[m] = _Rows(cfg.needs_trader)
             tx = r.get("tx_index")
             btv = r.get("block_time")
             rows.add(slot, -1 if tx is None else int(tx), int(r.get("event_index") or 0), seq, pool_ids.setdefault(pool, len(pool_ids)), r.get("side") == "buy",
                      _num(r.get("sol_lamports")), _num(r.get("token_raw")), _num(r.get("quote_reserve")), _num(r.get("base_reserve")),
-                     btv if isinstance(btv, int) and not isinstance(btv, bool) and btv > 0 else -1)
+                     btv if isinstance(btv, int) and not isinstance(btv, bool) and btv > 0 else -1,
+                     trader_id(r.get("trader")) if cfg.needs_trader else 0)
         log(f"{day} {h} pumpswap rows kept so far={seq} ({time.time() - t0:.0f}s)")
     max_slot = max([s for s in (tail_max_slot(idx["trades"][h][0]) for h in tf[-2:]) if s is not None] or [0])
     pool_names = {i: p for p, i in pool_ids.items()}
@@ -916,7 +1096,7 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
         keep = np.flatnonzero(a["pid"] == pid)
         perm = keep[order_perm(a["slot"][keep], a["tx"][keep], a["ev"][keep], a["seq"][keep])]
         out[m] = {"pool": pool, "v": float(vband[pool]), "s0": s0, "mslot": mslot, "block": mig[m][2], "hour": mig[m][3],
-                  **{c: a[c][perm] for c in ("slot", "bt", "buy", "sol", "tok", "q", "b")}}
+                  **{c: a[c][perm] for c in ("slot", "bt", "buy", "sol", "tok", "q", "b")}, **({"tr": a["tr"][perm]} if cfg.needs_trader else {})}
     return out, diag
 
 
@@ -1046,8 +1226,23 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
                 continue
             tot["final_state_fallback"] += st[2]
             hs = hour_seconds(md["hour"], day) if cfg.needs_hour_sph else None
-            r = simulate_attempt(cfg, day=day, sph=sph, v=md["v"], s0=md["s0"], slot=slot, isbuy=isbuy, sol=sol, qpre=st[0], bpre=st[1],
-                                 hour=md["hour"], hour_s=hs, bt=md["bt"])
+            qpre, bpre, bt_, boost_idx = st[0], st[1], md["bt"], None
+            t2: dict[str, Any] = {}
+            if cfg.needs_trader:  # T2: stress cut, then the causal detector on the path the book actually trades
+                trd = md["tr"]
+                if cfg.boost_cut is not None:
+                    c = cut_boost_path(cfg.boost_cut, trader=trd, slot=slot, isbuy=isbuy, sol=sol, tok=tok, qpre=qpre, bpre=bpre, bt=bt_, s0=md["s0"])
+                    trd, slot, isbuy, sol, qpre, bpre, bt_ = (c[k_] for k_ in ("trader", "slot", "isbuy", "sol", "qpre", "bpre", "bt"))
+                    t2.update(boost_cut_dropped=c["dropped"], boost_cut_keeper=int(c["keeper"] != 0))
+                scan = boost_scan(trd, isbuy, sol, slot, md["s0"])
+                boost_idx = None if scan is None else scan[0]
+                t2.update(boost_found=int(scan is not None), boost_trigger_slot="" if scan is None else int(slot[scan[0]]))
+            common = dict(day=day, sph=sph, v=md["v"], s0=md["s0"], slot=slot, isbuy=isbuy, sol=sol, qpre=qpre, bpre=bpre, hour=md["hour"], hour_s=hs, bt=bt_, boost_idx=boost_idx)
+            r = simulate_attempt(cfg, **common)
+            if cfg.paired:
+                ra = simulate_attempt(replace(cfg, exit_mode="cap" if cfg.exit_mode == "boost90" else "boost90"), **common)
+                r.update(alt_exit_type=ra["exit_type"], alt_hold_slots=ra["hold_slots"], pnl_alt=ra["pnl"])
+            r.update(t2)
             tot["cap_bt_fallback"] += int(r["cap_anchor_used"] == "day-mean-fallback")
             r.update(day=day, block=md["block"], mint=m, pool=md["pool"], v=int(md["v"]), mslot=md["mslot"], s0=md["s0"], s0_minus_mslot=md["s0"] - md["mslot"],
                      hour=md["hour"], ms_per_slot_hour="" if hs is None else hs * 1000.0)
@@ -1075,7 +1270,7 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
                    "attempts_before_book_filter": n_before, "pick_attempts": n_picks, "non_pick_attempts": n_non, "unscored_attempts": n_unscored},
         "hour_sph": {h: {**v_, "ms_per_slot": 3.6e6 / v_["slots_per_hour"]} for h, v_ in sorted(hour_sph.items())},
         "fail_legs": {"live": cfg.live_fail, "flat": cfg.flat_fail, "pressure_target_mean_p": cfg.target_fail, **leg_info},
-        "exit_types": {t: sum(1 for r in rows if r["exit_type"] == t) for t in ("tp", "sl", "deadline", "guard")},
+        "exit_types": {t: sum(1 for r in rows if r["exit_type"] == t) for t in ("tp", "sl", "deadline", "guard") + (("boost",) if cfg.exit_mode == "boost90" else ())},
         "books": {},
     }
     if cfg.book == "all":
@@ -1084,6 +1279,15 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
         summary["books"]["picks"] = book_stats([r for r in rows if r["pick"] == "pick"], size, cfg.boot_p_draws)
         if cfg.book == "all":
             summary["books"]["non_picks"] = book_stats([r for r in rows if r["pick"] == "non_pick"], size, cfg.boot_p_draws)
+    if cfg.needs_trader:
+        summary["t2"] = {
+            "banner": "REPORT-ONLY, EXPLORATION ONLY. Not gate evidence; does not touch EXP-022.", "exit_mode": cfg.exit_mode, "boost_cut": cfg.boost_cut, "paired": cfg.paired,
+            "budget_lamports": BOOST_BUDGET_LAMPORTS, "b90_frac": B90_FRAC, "window_slots": BOOST_WINDOW_SLOTS, "detector": "G's causal behavioural detector on the tape `trader` field",
+            "counts": {"attempts": len(rows), "boost_found": sum(int(r.get("boost_found", 0)) for r in rows), "keepers_cut": sum(int(r.get("boost_cut_keeper", 0)) for r in rows),
+                       "mints_with_prints_removed": sum(1 for r in rows if r.get("boost_cut_dropped", 0)), "prints_removed": sum(int(r.get("boost_cut_dropped", 0)) for r in rows)},
+        }
+        if cfg.paired:
+            summary["paired"] = paired_report(rows, cfg, picks is not None)
     summary["_rows"] = rows
     return summary
 
@@ -1096,14 +1300,20 @@ ROW_COLUMNS = (
 )
 
 
+# T2 columns, appended only when a T2 switch is on (so the default rows.csv header is the phase-2 header)
+ROW_COLUMNS_T2 = ("boost_found", "boost_trigger_slot", "boost_cut_dropped", "boost_cut_keeper", "alt_exit_type", "alt_hold_slots", "pnl_alt_nofail", "pnl_alt_live", "pnl_alt_flat", "pnl_alt_press")
+
+
 def write_outputs(summary: dict[str, Any], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = summary.pop("_rows")
+    cf = summary.get("config", {})
+    cols = ROW_COLUMNS + (ROW_COLUMNS_T2 if (cf.get("exit_mode", "cap") != "cap" or cf.get("boost_cut") is not None or cf.get("paired")) else ())
     with open(out_dir / "rows.csv", "w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=ROW_COLUMNS, extrasaction="ignore")
+        w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         for r in sorted(rows, key=lambda r: (r["day"], r["mint"])):
-            w.writerow({c: (repr(r[c]) if isinstance(r.get(c), float) else r.get(c, "")) for c in ROW_COLUMNS})
+            w.writerow({c: (repr(r[c]) if isinstance(r.get(c), float) else r.get(c, "")) for c in cols})
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -1148,6 +1358,9 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--live-fail", type=float, default=d.live_fail)
     ap.add_argument("--flat-fail", type=float, default=d.flat_fail)
     ap.add_argument("--boot-p-draws", type=int, default=d.boot_p_draws, help="bootstrap draws (seed 1) for the REPORT-ONLY trade-level p_trade_boot (DEC-021 section 5: 10,000); the CI90 lower bounds keep the gate's 1,000 draws")
+    ap.add_argument("--exit-mode", choices=EXIT_MODES, default=d.exit_mode, help="cap = G's 300 s cap (default, byte-identical to phase 1); boost90 = T2 rule B90, report-only")
+    ap.add_argument("--boost-cut", type=float, default=None, help="T2 stress replay: keep the keeper's buys up to this share (0 < f <= 1) of the 17.585 SOL budget and re-simulate the path (default: the tape as it is)")
+    ap.add_argument("--paired", action="store_true", help="T2: also simulate the other exit mode on the same path; adds summary.paired (B90 minus cap, pp of stake, date-cluster CI90) and the alt_* / boost_* row columns")
     ap.add_argument("--final-state", choices=("lab", "g"), default=d.final_state, help="state after the last print: lab = pumpswap_post_trade_reserves; g = the audit's 1.25%% constant")
     return ap
 
@@ -1164,6 +1377,7 @@ def config_from_args(a: argparse.Namespace) -> Config:
         tp=a.tp, sl=a.sl, size_lamports=a.size_lamports, fee_lamports=a.fee_lamports, live_fail=a.live_fail, flat_fail=a.flat_fail, final_state=a.final_state,
         pick_threshold=a.pick_threshold, k_mode=a.k_mode, k_rounding=a.k_rounding, exit_lag_ms=a.exit_lag_ms, guard_basis=a.guard_basis, cap_anchor=a.cap_anchor,
         rent_lamports=a.rent_lamports, rent_mode=a.rent_mode, book=a.book, boot_p_draws=a.boot_p_draws,
+        exit_mode=getattr(a, "exit_mode", d.exit_mode), boost_cut=getattr(a, "boost_cut", None), paired=bool(getattr(a, "paired", False)),
     )
 
 
