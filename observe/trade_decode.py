@@ -34,6 +34,29 @@ _CREATE_POOL_DISC = bytes.fromhex("b1310cd2a076a774")
 # sha256("account:Pool")[:8]
 _POOL_ACCOUNT_DISC = bytes.fromhex("f19a6d0411b16dbc")
 
+# New events and instruction tags (pump / pump_amm IDL published 2026-10-07, pump-public-docs 8cda1fa).
+# sha256("event:<Name>")[:8]
+_POST_COMPLETE_BUY_DISC = bytes.fromhex("6fb06d8b316cd5fb")  # pump, synthetic migration
+_BOOST_BUY_AND_BURN_DISC = bytes.fromhex("3f451c16305cc2b9")  # pump_amm
+_SWEEP_POOL_FEE_DISC = bytes.fromhex("82a42461e48287a5")  # pump_amm
+_SWEEP_CURVE_FEE_DISC = bytes.fromhex("742b4dbd117a482b")  # pump
+_INIT_BOOST_EVENT_DISC = bytes.fromhex("ae7c4af90451f611")  # pump_amm
+# sha256("global:init_boost")[:8], the pump_amm instruction CPI'd inside the migrate tx
+PUMPSWAP_INIT_BOOST_IX = bytes.fromhex("8ce9215e845ac28f")
+# Anchor emit_cpi! self-CPI tag: event data = tag + event discriminator + payload
+ANCHOR_EVENT_IX_TAG = bytes.fromhex("e445a52e51cb9a1d")
+_ZERO_KEY = b"\x00" * 32
+
+# Keys that decode_program_data / seal_trade add only when event_v=True. Every other key is the
+# legacy schema and is byte-identical with or without the flag.
+EVENT_V_KEYS = (
+    "virtual_quote_reserves",
+    "ix_name",
+    "creator_fee_unclaimed",
+    "buyback_fee",
+    "fee_recipient_zero",
+)
+
 LAMPORTS_PER_SOL = 1_000_000_000
 TOKEN_DECIMALS = 6
 # Reject program-data blobs that reuse an event discriminator but are not this layout.
@@ -79,8 +102,42 @@ def _i64(raw: bytes, off: int) -> int:
     return int.from_bytes(raw[off : off + 8], "little", signed=True)
 
 
+def _i128(raw: bytes, off: int) -> int:
+    return int.from_bytes(raw[off : off + 16], "little", signed=True)
+
+
 def _pubkey(raw: bytes, off: int) -> str:
     return b58encode(raw[off : off + 32])
+
+
+def b58decode(text: str) -> bytes | None:
+    """Base58 to bytes. None on an invalid character."""
+    val = 0
+    for ch in text:
+        idx = _B58.find(ch.encode("ascii", "replace"))
+        if idx < 0:
+            return None
+        val = val * 58 + idx
+    body = val.to_bytes((val.bit_length() + 7) // 8, "big") if val else b""
+    n_zeros = len(text) - len(text.lstrip("1"))
+    return b"\x00" * n_zeros + body
+
+
+def _ix_name(raw: bytes, off: int) -> tuple[str | None, int]:
+    """Borsh string (u32 length + bytes) at off, accepted only as 1-64 printable ASCII characters.
+
+    Instruction names (`buy`, `buy_exact_quote_in_v2`, ...) are ASCII. Anything else means the offset is
+    wrong for this blob, so the caller gets (None, off) and the tail is not decoded from a bad position.
+    """
+    if off + 4 > len(raw):
+        return None, off
+    size = int.from_bytes(raw[off : off + 4], "little")
+    if size < 1 or size > 64 or off + 4 + size > len(raw):
+        return None, off
+    body = raw[off + 4 : off + 4 + size]
+    if not all(0x20 <= b <= 0x7E for b in body):
+        return None, off
+    return body.decode("ascii"), off + 4 + size
 
 
 def price_sol_per_token(quote_lamports: int, base_raw: int) -> float | None:
@@ -95,20 +152,192 @@ def market_cap_sol(quote_lamports: int, base_raw: int, supply_raw: int = PUMP_SU
     return (quote_lamports * supply_raw / base_raw) / LAMPORTS_PER_SOL
 
 
-def decode_program_data(raw: bytes) -> dict[str, Any] | None:
-    """Return a trade or create-pool dict, or None if this blob is not one."""
+def decode_program_data(raw: bytes, *, event_v: bool = False) -> dict[str, Any] | None:
+    """Return a trade or create-pool dict, or None if this blob is not one.
+
+    event_v=False (default) is the legacy decoder, unchanged. event_v=True adds EVENT_V_KEYS
+    to trade dicts (see event_v_fields). It never changes or removes a legacy key.
+    """
     if len(raw) < 8:
         return None
     disc = raw[:8]
     if disc == _TRADE_DISC:
-        return _decode_trade(raw)
-    if disc == _BUY_DISC:
-        return _decode_buy(raw)
-    if disc == _SELL_DISC:
-        return _decode_sell(raw)
-    if disc == _CREATE_POOL_DISC:
+        row = _decode_trade(raw)
+    elif disc == _BUY_DISC:
+        row = _decode_buy(raw)
+    elif disc == _SELL_DISC:
+        row = _decode_sell(raw)
+    elif disc == _CREATE_POOL_DISC:
         return _decode_create_pool(raw)
+    else:
+        return None
+    if row is not None and event_v:
+        row.update(event_v_fields(raw))
+    return row
+
+
+def event_v_fields(raw: bytes) -> dict[str, Any]:
+    """Post-redeploy tail of a trade event, or {} when the blob is too short to carry it.
+
+    Offsets count the 8-byte discriminator, like the rest of this module.
+      PumpSwap BuyEvent : ix_name string at 401, then cashback_bps, cashback, buyback_bps,
+                          buyback_fee (4 x u64), then virtual_quote_reserves i128, can_boost,
+                          base_supply, holder_rewards_bps, holder_rewards, creator_fee_unclaimed.
+      PumpSwap SellEvent: no ix_name; cashback_bps 360, cashback 368, buyback_bps 376,
+                          buyback_fee 384, virtual_quote_reserves 392..408 ... creator_fee_unclaimed 433.
+      Bonding TradeEvent: ix_name string at 258 only (the rest of its tail follows a vec).
+    virtual_quote_reserves is the stored V BEFORE the trade (signed; negative is legal).
+    """
+    disc = raw[:8]
+    out: dict[str, Any] = {}
+    if disc == _TRADE_DISC:
+        name, _ = _ix_name(raw, 258)
+        if name is not None:
+            out["ix_name"] = name
+        return out
+    if disc == _BUY_DISC:
+        name, off = _ix_name(raw, 401)
+        if name is None or len(raw) < off + 32 + 16:
+            return out
+        out["ix_name"] = name
+        out["buyback_fee"] = _u64(raw, off + 24)
+        v_off = off + 32
+    elif disc == _SELL_DISC:
+        if len(raw) < 408:
+            return out
+        out["buyback_fee"] = _u64(raw, 384)
+        v_off = 392
+    else:
+        return out
+    out["virtual_quote_reserves"] = _i128(raw, v_off)
+    # creator_fee_unclaimed is the last field: can_boost(1) base_supply(8) rewards_bps(8) rewards(8) unclaimed(8)
+    if len(raw) >= v_off + 16 + 33:
+        out["creator_fee_unclaimed"] = _u64(raw, v_off + 16 + 25)
+    out["fee_recipient_zero"] = raw[248:280] == _ZERO_KEY
+    return out
+
+
+def decode_extra_event(raw: bytes) -> dict[str, Any] | None:
+    """New pump / pump_amm events that are not trades. None when the disc is not one of them, the blob is
+    short, or its timestamp is outside the window the legacy decoders accept (a wrong-layout blob).
+
+    type is one of post_complete_buy, boost_buy_and_burn, sweep_pool_fee, sweep_curve_fee, init_boost.
+    Reserve fields are copied as the event states them. No price is computed here.
+    """
+    ev = _decode_extra_event_raw(raw)
+    if ev is not None and not _sane_ts(int(ev["event_ts"])):
+        return None
+    return ev
+
+
+def _decode_extra_event_raw(raw: bytes) -> dict[str, Any] | None:
+    if len(raw) < 8:
+        return None
+    disc = raw[:8]
+    if disc == _POST_COMPLETE_BUY_DISC:
+        if len(raw) < 232:
+            return None
+        return {
+            "type": "post_complete_buy",
+            "venue": VENUE_BONDING,
+            "trader": _pubkey(raw, 8),
+            "mint": _pubkey(raw, 40),
+            "bonding_curve": _pubkey(raw, 72),
+            "quote_mint": _pubkey(raw, 104),
+            "event_ts": _i64(raw, 136),
+            "base_out": _u64(raw, 144),
+            "quote_in": _u64(raw, 152),
+            "fee": _u64(raw, 168),
+            "creator_fee": _u64(raw, 184),
+            "buyback_fee": _u64(raw, 192),
+            "pool_base_reserves_before": _u64(raw, 200),
+            "pool_quote_reserves_before": _u64(raw, 208),
+            "pool_base_reserves_after": _u64(raw, 216),
+            "pool_quote_reserves_after": _u64(raw, 224),
+        }
+    if disc == _BOOST_BUY_AND_BURN_DISC:
+        if len(raw) < 208:
+            return None
+        return {
+            "type": "boost_buy_and_burn",
+            "venue": VENUE_PUMPSWAP,
+            "event_ts": _i64(raw, 8),
+            "mint": _pubkey(raw, 16),
+            "bonding_curve": _pubkey(raw, 48),
+            "pool": _pubkey(raw, 80),
+            "authority": _pubkey(raw, 112),
+            "quote_amount_in_requested": _u64(raw, 144),
+            "quote_amount_in_used": _u64(raw, 152),
+            "base_amount_burned": _u64(raw, 160),
+            "virtual_quote_reserves": _i128(raw, 168),
+            "real_quote_reserves_after": _u64(raw, 184),
+            "base_reserves_after": _u64(raw, 192),
+            "boost_vault_remaining": _u64(raw, 200),
+        }
+    if disc == _SWEEP_POOL_FEE_DISC:
+        if len(raw) < 185:
+            return None
+        return {
+            "type": "sweep_pool_fee",
+            "venue": VENUE_PUMPSWAP,
+            "event_ts": _i64(raw, 8),
+            "pool": _pubkey(raw, 16),
+            "base_mint": _pubkey(raw, 48),
+            "quote_mint": _pubkey(raw, 80),
+            "recipient": _pubkey(raw, 112),
+            "payer": _pubkey(raw, 144),
+            "amount": _u64(raw, 176),
+            "bucket": raw[184],
+        }
+    if disc == _SWEEP_CURVE_FEE_DISC:
+        if len(raw) < 153:
+            return None
+        return {
+            "type": "sweep_curve_fee",
+            "venue": VENUE_BONDING,
+            "event_ts": _i64(raw, 8),
+            "mint": _pubkey(raw, 16),
+            "bonding_curve": _pubkey(raw, 48),
+            "quote_mint": _pubkey(raw, 80),
+            "recipient": _pubkey(raw, 112),
+            "amount": _u64(raw, 144),
+            "bucket": raw[152],
+        }
+    if disc == _INIT_BOOST_EVENT_DISC:
+        if len(raw) < 136:
+            return None
+        return {
+            "type": "init_boost",
+            "venue": VENUE_PUMPSWAP,
+            "event_ts": _i64(raw, 8),
+            "mint": _pubkey(raw, 16),
+            "bonding_curve": _pubkey(raw, 48),
+            "pool": _pubkey(raw, 80),
+            "virtual_quote_reserves": _i128(raw, 112),
+            "real_quote_reserves_after": _u64(raw, 128),
+        }
     return None
+
+
+# Discriminators some decoder in this repo already handles. Anything else on a `Program data:` line is
+# counted by the walker (unknown_disc), not dropped silently.
+KNOWN_DISCS = frozenset(
+    d.hex()
+    for d in (
+        _TRADE_DISC,
+        _BUY_DISC,
+        _SELL_DISC,
+        _CREATE_POOL_DISC,
+        _POST_COMPLETE_BUY_DISC,
+        _BOOST_BUY_AND_BURN_DISC,
+        _SWEEP_POOL_FEE_DISC,
+        _SWEEP_CURVE_FEE_DISC,
+        _INIT_BOOST_EVENT_DISC,
+        bytes.fromhex("1b72a94ddeeb6376"),  # CreateEvent
+        bytes.fromhex("5f72619cd42e9808"),  # CompleteEvent
+        bytes.fromhex("bde95db95c94ea94"),  # CompletePumpAmmMigrationEvent
+    )
+)
 
 
 def decode_pool_account(data: bytes) -> dict[str, str] | None:
@@ -317,6 +546,9 @@ def seal_trade(
     }
     if zero_sol:
         row["zero_sol"] = True
+    for key in EVENT_V_KEYS:
+        if key in decoded:
+            row[key] = decoded[key]
     return row
 
 
@@ -329,8 +561,12 @@ def records_from_logs(
     commitment: str,
     feed: str,
     pool_mints: dict[str, tuple[str, str]] | None = None,
+    event_v: bool = False,
 ) -> list[dict[str, Any]]:
-    """Decode every trade in one transaction's logs. CreatePool fills pool_mints."""
+    """Decode every trade in one transaction's logs. CreatePool fills pool_mints.
+
+    event_v=True also stamps EVENT_V_KEYS on each trade row (default off: rows are unchanged).
+    """
     cache = pool_mints if pool_mints is not None else {}
     decoded_trades: list[dict[str, Any]] = []
     for line in logs:
@@ -339,7 +575,7 @@ def records_from_logs(
         raw = _program_data_bytes(line)
         if raw is None:
             continue
-        ev = decode_program_data(raw)
+        ev = decode_program_data(raw, event_v=event_v)
         if ev is None:
             continue
         if ev["kind"] == "create_pool":

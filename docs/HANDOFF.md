@@ -1,124 +1,138 @@
-# Manager handoff 2026-10-07 ~16:10Z (manager9 → next manager)
+# Manager handoff 2026-10-08 ~16:00Z (manager9 → next manager, or manager9 after compaction)
 
 Replace this page at the next handoff; don't append. Read it first. Then read:
+- [EXP-022 CAP-PICK Part 1](../EXP/EXP-022-cap-pick-part1-prereg.md), §0, §9, §12 and §17, plus [DEC-021](../DEC/DEC-021-champion-challenger.md) Amendment 1;
+- the 10-08 audit note [ARTIFACTS/lab/audit-2026-10-08/](../ARTIFACTS/lab/audit-2026-10-08/README.md), the judge (`capv_JUDGE.md`) first;
 - [LAB_STATE.md](../LAB_STATE.md);
-- DEC-016 Amendment 5 **§7** (the 10-16 (B) rules);
+- DEC-016 Amendments 2, 5 §7 and 6;
 - DEC-014's 2026-10-07 block-budget amendment;
-- DEC-020 §9 (size alone is not a profit path);
-- the [EXP-021 plan](../EXP/EXP-021-rug-signals-in-selector-plan.md), Amendments 1–3, and its Part 1 pre-registration once merged;
-- the probe closing note `ARTIFACTS/lab/probe-final-2026-10-07.md`, as corrected in #445;
-- memory notes `probe-stopped-next-live`, `feedback-top-day-concentration`, `feedback-pinned-exit-gates`, `feedback-real-layout-precount`.
+- memory notes `audit-2026-10-08`, `exp022-cap-pick`, `owner-plan-1008`, `feedback-reserve-convention-brief`, `feedback-pinned-exit-gates`, `feedback-seal-outcome-counts`;
+- MiScusi notebook entries from 10-08: n_yBVJLKQFcVuUTg, n_20cYMHbO0UyGzA, n_1fzsuRLAhvkgqg, n_6FKDVJWrbaoGYg, n_vS9qHGmF7-jinQ.
 
-## First things to do
+## Where things stand (owner decisions made 10-08)
 
-1. **Become the inbox reader:** `miscusi_worker_start` with `inbox: true`.
-2. **Recreate the session crons.** Crons die with the session.
-   - **Daily decommissioned-probe check at 12:17Z.** Job on `mal-fast-0`, role ops, 200 MB, 3 min. Use the same command as job #362. Alert if the executor or the watch timer is active or enabled, the STOP file is missing, attempts > 62, or realized ≠ −0.210755. **Weekly, also run a research-0 job:** `tools.probe_rent_audit` (the command from job #363); alert if `balance_now_lamports` ≠ 0.
-   - **Daily tip-tape archive at 03:23Z.** Job on `mal-fast-0`, 800 MB, 240 min. Use the same command as job #352. Expect `mismatched=0`. fast-0 retention starts deleting tape at 10-08 06Z.
-3. **Heavy jobs go on research-0 only.**
-   - research-0 has about 96 GB schedulable; MiScusi schedules on declared memory.
-   - EXP-016/021 tape passes need **72 GB with 3 workers** (#326 hit OOM at 56).
-   - fast-0 jobs stay ≤1.9 GB. Decline fast-0 idle notices.
-4. **Ollama on research-0 is off** (Helm). Restart with `cd /opt/miscusi && sudo docker compose start ollama` only when research is idle.
-5. **Daily monitors: pump structure monitor.** Run it as a daily MiScusi job on `mal-research-0`, role ops, 300 MB, 20 min, from the repo root.
-   - Command: `/data/mal/venv/bin/python -m tools.pump_structure_monitor --out /data/mal/structure-monitor/daily.jsonl`.
-   - Public RPC only, 0 Helius credits, about 150–250 calls. It appends one JSON line per run. It exits 0 even on a HALT, 2 only when the RPC is unreachable, and 1 if the line cannot be written (the summary, with any HALT, is printed first).
-   - Read `halt.flags` and `warn.flags` in the newest line. A HALT means a pinned config or program changed, BOOST is off or changed, or the synthetic-migration share is high. Re-pin with `--write-pins tools/pump_structure_pins.json` only after reviewing the change.
-   - **"HALT: none" is not an all-clear when rules were not evaluated.** The summary says `HALT: none (N rules not evaluated)` and the line carries `halt.n_not_evaluated` / `halt.all_evaluated`. The `rules_not_evaluated` and `stage_errors` WARNs are not an all-clear either. If a core rule (`boost_share_low` or `boost_last_slice_early`) is not evaluated on two consecutive days, treat that as a halt until someone has checked BOOST by hand.
-   - Expect the `ms_per_slot_moved` WARN at epoch 1053 (about 2026-10-09T14:30Z, the 200 ms step).
+- **Audit delivered.** It is the claude.ai artifact "MAL Profit Audit". The fast-entry retail thesis is refuted at MAL's ~1.3–1.6 s landing.
+- **Owner approved the recommendations**, notebook n_vS9qHGmF7-jinQ:
+  - O1: the EXP-021 screen is paused. The freeze pins are in #458; fresh-0802 stays unread.
+  - O2: DEC-021 Amendment 1.
+  - O3: taken with its fallback. **CAP-PICK counts from 2026-10-16T01 (Option Y).**
+  - O6: the cost wind-down is pre-agreed if CAP-PICK fails.
+  - O4/O5: deferred.
+- **CAP-PICK is EXP-022, pre-registered** (#464, 30aafef; quant-proof OK on the final head).
+  - Counted window: walk-2 hours `[2026-10-16T01, 2026-11-06T01)`. Looks at 10-23T01, 10-30T01 and 11-06T01.
+  - Deciding rule: day-level t on 24 h blocks at p ≤ 0.005 / 0.008 / 0.012, plus the full gate on both legs, plus ex-best-day > 0, plus the binding 1.9 s leg.
+  - P(pass) about 5–7% [inferred]. **A fail is the expected outcome** and leads to the wind-down.
+- **Owner, later on 10-08** (memory `owner-plan-1008`):
+  - The sniper / same-slot route is **closed for now**.
+  - **$0 extra budget for two weeks.**
+  - Start T1 (pump.fun change watch) and T2 (BOOST-timing insurance test).
+  - The owner then asked to compact.
+- **Research results** (notebook n_1fzsuRLAhvkgqg):
+  - 16 alternative meme strategies: 11 killed, 5 weakened, none survives.
+  - Same-slot: 94.5% / 97.5% of first-follower value sits in the token's creation slot. Outside it: first follower +2.10% / +0.29% (bundle-like co-landing excluded) [measured, Aug/Sep exploration, first seat only], second −1.21% / −2.11%. MAL lands a median 5–6 slots late; break-even needs the first seat on 36.6–68.9% (Aug) / 87.9–93.9% (Sep) of tries.
+  - Reports: `/data/mal/audit-1008/work/edge-scan-1008/REPORT.md` and `/data/mal/audit-1008/work/speed-recon-1008/PLAN.md`.
+- **Data finding** (notebook n_6FKDVJWrbaoGYg): 95.35% of canonical migrations have no `migration` row on the walker tape, because migrate-tx logs go over the 10 KB cap. 24,224 of 24,272 have a `complete` row (99.80%), and 23,099 of the 23,143 missing a migration row do (99.81%). So the CAP-PICK and EXP-012 universes are fine [inferred]. #467 recovers the rows under `--event-v`.
+- **Still with the owner:** O8 (the monthly bill split) and O9 (Helm excluding `/data/mal/audit-1008` from the nightly backup).
 
-## Owner direction (10-06 / 10-07)
+## EXP-022 deadlines (withdrawn if a P1–P3 item is missed)
 
-- **Push to profit.** Run more ideas and challengers, but no setbacks.
-- **Quant-proof on every critical-path merge, including lab notes whose conclusions feed a decision.** #443 merged without it and had to be corrected in #445.
-- **Rug signals go into the model as inputs** (EXP-021), not as a separate veto layer.
-- **"Tell me when we're ready to go live."** That needs four things:
-  - a book that clears a fresh-block confirmation;
-  - a new reviewed build;
-  - the owner's 1 SOL;
-  - the gate.
-- **Owner usage was ~75% of weekly on 10-07.** Run one or two builders at a time, with targeted reviews.
-- **External reviewers are Helm, Lyra and Warden.** Verify their claims, then act.
+| By | What | State at handoff |
+|---|---|---|
+| Before 2026-10-16T00Z | A11 October report-only check: a DEC-016 amendment. Optional; decide whether to use it, and #465 only if A11 reads through `check_read` | Not written |
+| Before 2026-10-16T01Z | **P1 E0** (EXP-022 §2.1, all four items, recorded in a dated amendment): (1) one exploration UTC day pinned by `VIEW.sha256`, both sides booting at 00:00Z; (2) runner equivalence, md5 of `forward_paper.replay_rows` = md5 of the **read-ready** gate replay (#462 plus strict lines); (3) scorer equivalence, the read-ready `cap_pick_score.py --book picks` attempt list = B's picks inside the universe, by md5. **So a read-ready scorer is needed before 10-16T01, not only by 10-23.** (4) code pins: the blob shas of `forward_exp012_gate.py`, `forward_paper.py`, `exploration_entry_model.py` and `cap_pick_gate_replay.py`, plus `FROZEN.md5` = `a01f05dfb1e622f78b2bba55d174be09` | Not started; #461 and #462 are still drafts |
+| Before 2026-10-16T01Z | **P2:** a clean A3 monitor run | Daily cron |
+| Before 2026-10-16T01Z | **P3:** A8: decoder, sink resume guard, gate readers that refuse bad lines, per-hour slot_ms in the scorer. Walk 2 must start on a commit that has all four | **Partly done**: #466 (sink resume guard; opt-in strict lines) and #467 (decoder) are merged. Still open: the gate replay refusing bad lines (#462) and per-hour slot_ms in the scorer (#461 has `--k-mode hour`; it must merge) |
+| Job must START before 2026-10-16T01:00Z (submit about 00:30Z) | **Walk 2**: `scripts/research/forward-walk2.sh` (PR #469, `claude/forward-walk2-wrapper`, 28 tests; needs a reviewer). MiScusi job on research-0, command `bash scripts/research/forward-walk2.sh`, params `{"start":"2026-10-16T01"}`, resumable, 10080 min, about 6 GB. It uses `--event-v` and `--strict-lines`, the dir `/data/mal/blocks/forward-1016` (as EXP-022 §9 and the ledger name it), and treats walker exit 3 as fatal. Credit cap 11,825,000 = 430,000 × 22 × 1.25 | PR open |
+| Before 2026-10-23T01Z | **P4:** the read tool (sealed read mode of `tools/cap_pick_score.py`: lock, `LOOK_READS.jsonl`, look schedule, strict lines, refusals) merged with quant-proof | Not started |
+| Before 2026-10-23T01Z | **P5:** E1 recorded (after the FINAL and the A11 read; cron 3d374658 at 10-16 06:13Z), with n ≥ 20; otherwise condition (c) is NOT_DECIDABLE and no look runs (EXP-022:288). It is recorded in a dated amendment before the first look. **P6:** the A2 check, after E1 | Patched tool merged (#463) |
 
-## 10-16 FINAL read: every tool is merged
+## Open PRs
 
-- **The rule.** DEC-016 Am.5 §7 is complete: #400, #403, #407, #409, plus the records #410 and #412.
-  - V0 changes only on LP Deposit/Withdraw: V0 ← floor(V0·S_after/S_before).
-  - Each trade is priced at its entry-slot V0, taking the worse of entry and exit when an LP event falls inside the hold.
-  - Candidates are per trade. The entered set is (A)'s. This applies at every k.
-  - Unexplained or unresolved pools above 0.1% → refuse.
-- **The tools.**
-  - #402 LP history and merge (`4c5da8c`);
-  - #405 vbook (`5da3349`);
-  - #411 sensitivity at k(p50)/k(p90) (`3355ad1`).
-- **Still to do before 10-16:**
-  - **(e′) dry-run merge before 10-15T23:00Z.** Use `merge --dry-run` with the latest snapshot standing in for the final; it needs `--snapshot-fetch` for snapshots #2 and #3.
-  - **More V snapshots** every 1–2 days until 10-15. Use the same command as job #286. New snapshots carry `.fetch.json` sidecars.
-  - **DEC-016 Am.3 inputs:** write in k(p50)/k(p90) and the slot_ms export sha, and the runner downtime file.
-- **The 10-16 order is in DEC-016 Am.5 §7** and in the previous version of this file (#413).
-  - lphist-entered runs once; only the first completed run counts.
-  - vbook and sensitivity both take `--vmap-merge-meta --final-fetch-map --snapshot … --lphist …`.
-- **Settled (Helm and owner, 10-06):** the ceiling stays as merged. It counts only *unexplained* V0 moves; there is no ceiling on explained LP-rescale moves.
+- **#461 `claude/cap-pick-score`** (draft). The CAP-PICK scorer; phases 1 and 2 are done, head 2bab07b.
+  - Phase-1 reproduction #386: 24,272 attempts, P2–P4 exact to the lamport.
+  - The phase-2 review was OK, and the hardening (path guard, 10,000-draw p) is done.
+  - Merge it once job **#389** (full-book phase-2 regression at 04d2d1f) passes. #389 runs after #387. rows.csv is unchanged by 2bab07b.
+  - EXP-022 pins it at `ebb77f4`. The read tool builds on it.
+- **#462 `claude/cap-pick-gate-replay`** (draft). The live-gate replay. Job **#387** runs it over all 5 exploration pools, output in `/data/mal/cap-pick-score/gate-replay/`.
+  - Smoke day 08-15: identical scores at ≤ 32 min to migrate, but jaccard 0.516, with 21 online-only picks the offline table never scored.
+  - **Read #387's compare.md.** The judge's kill rule: if the CAP-PICK scorer cannot match the live gate's pick set (E0 md5), CAP-PICK is withdrawn. The known 60-min skip is not a kill.
+  - It needs a reviewer, then the strict-lines adoption (see #466's notes), before E0.
+- **#465 `claude/catalog-second-owner`**: parked. Merge it only if A11 or the read tool guard their reads through `check_read`, and adapt it to a non-owner read allowance (EXP-022 §12).
+- **#469 `claude/forward-walk2-wrapper`:** the walk-2 wrapper. Review it, then merge before 10-16.
+- **Builders running at handoff:**
+  - `claude/pump-change-watch` (T1: monitor extensions plus `EXP/EXP-023-usdc-boost-tripwire-plan.md`);
+  - `claude/cap-pick-t2-boost-exit` (T2: B90 exit and BOOST-cut stress in the scorer). Its pre-declaration must be committed before any scoring; run the full job after review.
+- **#90**: old Cursor draft, keep.
 
-## Research state (10-07 ~16Z)
+## First things to do after a compaction or new session
 
-**Closed or failed at realistic costs:**
-- the earlier filters on EXP-012's picks: EXP-013, EXP-015, #191, EXP-018 and EXP-019;
-- **EXP-017** (regime gate and score sizing). Its C0 size totals came from one date, 2026-08-21;
-- **EXP-014 v2**: SCREEN NONE, family closed.
+1. **Become the inbox reader:** `miscusi_worker_start` with `inbox: true`, name `manager9`.
+2. **Check the crons with CronList.** Recreate any that are missing (they die with the session, not with a compaction).
+   - **Daily structure monitor, 06:41Z.** Research-0, ops, 300 MB, 20 min: `/data/mal/venv/bin/python -m tools.pump_structure_monitor --out /data/mal/structure-monitor/daily.jsonl`.
+     - Read `halt.flags`, `warn.flags` and `halt.all_evaluated`.
+     - A halt before counting means withdraw EXP-022. During counting it suspends counting the same day.
+     - Two days with a core rule not evaluated count as a halt.
+     - Expect `ms_per_slot_moved` around 10-09T14:30Z.
+   - **Daily decommissioned-probe check, 12:17Z.** Fast-0, the job #385 command. Alert on: executor or timer active or enabled, STOP missing, attempts > 62, or realized ≠ −0.210755.
+   - **Daily tip-tape archive, 03:23Z.** Fast-0, the job #352 command; expect `mismatched=0`.
+   - **One-shots:**
+     - 10-09 15:13Z: slot step;
+     - 10-13 09:17Z: EXP-022 readiness;
+     - 10-14 10:07Z: (e′) dry run;
+     - 10-14 12:41Z: probe rent audit, job #363 command;
+     - 10-16 06:13Z: E1.
+3. **Forward walk #382 has a 7-day limit and ends about 10-15T11Z.** Resubmit it, or `miscusi_job_extend` it, **before then**, so forward-1002 reaches 10-16T01 for the FINAL. Use the same command and params `{"start":"2026-10-02T15"}`; it is idempotent. It runs on a pinned jobtree at 2bd45f1.
+4. **Heavy jobs go on research-0 only**, one at a time. fast-0 jobs stay ≤ 1.9 GB.
 
-**EXP-020 (report-only), k × stake:**
-- Paired k2 − k6 stays positive under both slot bounds: end-of-slot +0.75 to +1.02% of stake at 0.5 SOL, with the CI90-date lower bound above 0.
-- Every kept book is negative once the best date is dropped under the end bound.
-- Speed is a real relative lever but not profit on its own. Live k p50 is 5 on the current build, so k2 is not reachable yet.
+## Running jobs at handoff
 
-**Probe close (#443, corrected by #445):**
-- Exit lag 2 is a fair primary and 5 the pessimistic leg. The 5 comes from a 500 bps entry-gap cutoff chosen after seeing the tail, so also report the all-trade stop p90 of **10** as a labelled stress leg.
-- 9 of 55 fixed-build trades (16%) show sim-entry vs live-fill drift (price fell 10–15% between read and landing). That is an entry-model calibration item.
-- True round-trip cost is about 4.44% / 2.79% / 2.59% at 0.05 / 0.25 / 0.5 SOL, before price impact (+22.9 / +51.6 bps on entry at 0.25 / 0.5).
+| Job | What | Notes |
+|---|---|---|
+| #382 | Forward walk 1 (forward-1002) from 10-02T15, on 2bd45f1 | Through 10-08T13; 1,926,575 credits cumulative. Never open its outputs before the FINAL. **Extend or resubmit before about 10-15T11Z.** |
+| #387 | Gate-replay kill check (#462 at 8fd49e5) | Output in `/data/mal/cap-pick-score/gate-replay/` (compare.md, compare.json). Exploration only. |
+| #389 | Phase-2 full-book regression of the scorer (04d2d1f) | Queued after #387. Pass = P2–P4 exact, like #386. |
+| #371 | DEC-022 Phase A stream | Ends about 10-08T20:30Z. Do not extend it; Phase B is stopped. |
 
-**EXP-021 (main bet), in order:**
-1. Done: tool #438, Amendment 3 + V-map pin #442, constancy sample #354, constancy fetch #355 (199 of 208 readable).
-2. Final precount **#356** (72 GB) is running. Check its `would_refuse`. The constancy floor is 200 checked pools; if 199 trips it, extend the reserve and refetch.
-3. The **Part 1 pre-registration + `--freeze` mode** is being written by a builder (branch `claude/exp021-part1`). Merge it with quant-proof **before** the screen.
-4. Then the screen, once (1 try), with V-map pin 1f3e772d…62ec and `--v-constancy-json /data/mal/exp021-constancy/constancy.json`, P1B excluded.
-5. A block claim needs DEC-014's budget, p < 0.025 / m.
+## Rules that bite
 
-Before the 10-16 FINAL read, runner side files (arm-audit, heartbeat) are read only through tools/runner_timing_read.py (timing allowlist; per-day counts refused).
+- **The 10-16 FINAL** runs as written at about 10-16T02Z (DEC-016 Am.5 §7).
+  - It will be reported compromised (Am.2).
+  - There is no live support through Am.3 (a) (Am.6 (g) D).
+  - Run `exp012_forward` score and verify **without** `--strict-lines`. #466 kept them byte-identical to main by default.
+  - The (e′) dry run is required before 10-15T23:00Z. Record its merge meta sha256 and commit in DEC-016. If it still fails at 10-15T23:00Z, record the failure and the counts; the read proceeds as written (DEC-016:300-305).
+- **Seal.**
+  - Before the FINAL, runner side files are read only through `tools/runner_timing_read.py`.
+  - Never open forward-walk or forward-paper P&L, positions, decisions or intents.
+  - For EXP-022 (§9): no person, agent or job opens, prints or prices a CAP-PICK outcome of a counted hour, from any source, except the sealed look itself run by the merged read tool. This holds before day 7 and between looks. Monitoring prints only hour counts and gate decision counts. No CAP-PICK process reads any forward-1002 hour, buffer included, before the FINAL is written. The fast-0 paper twin's CAP-PICK P&L fields stay sealed until the read ends.
+- **Sealed blocks:** fresh-0802, fresh-0808 and fresh-0828.
+- **Reserve convention:** PumpSwap rows are PRE-trade; bonding rows are POST-trade.
+- **BOOST:** pump.fun's keeper `HTVZ…S2r` buys 17.585 SOL in about 29 slices, ending about 337–345 s after migrate. CAP-PICK depends on it.
+- **Multiplicity:** EXP-022 makes the DEC-014 family count m ≥ 13.
 
-**Sealed, unread confirmation blocks:** fresh-0828, fresh-0808 and fresh-0802 (all verified 144/144 h). One stays in reserve.
+## Live probe (DEC-019): stopped and decommissioned
 
-**Later (Lyra 10-07):**
-- **The paper/live selection gap.** 13 of 61 live trips were mints that paper skipped. The paper twin needs paper decisions from 10-02 onward, which are sealed, so do it right after the 10-16 read unless the owner grants a probe-mints-only exception. The k of the live buys can be done now from the tip tape.
-- **fast-0 latency drift.** All over-5 s decisions came 18–24 h after the 00:00Z restart.
-- **The dead fast pre-create listener** (since 10-02).
-- **Owed labels:** the 1,346,200-lamport transfer, the first-N-after-migration cut, and the token-fee line.
-
-## Live probe (DEC-019): STOPPED and decommissioned
-
-- **Stopped:** 2026-10-07T01:10:50Z, by Helm on the owner's decision. Final: 62/90 attempts, −0.210755 SOL, 0 open, faa3192. The wallet tied to the lamport at 0.298774 SOL (#445).
-- **Withdrawn:** 2026-10-07T15:48Z. Helm sent 298,768,781 lamports to the owner's `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi`, tx `3h1Fw9SpZ1H4YQZJhTiY38w9ZdBeVycomw7AWLmywRRwZu2UxC6ef8bGViooq9v8aXRww454HyyCb4ELN2BGiMDg`. The wallet is now **0 lamports on chain**, with no token accounts (job #363): 298,768,781 sent + 5,000 fee.
-- **Current state:** `mal-probe-executor` is inactive and disabled, `mal-probe-watch.timer` is disabled, and the STOP file stays in place (job #362).
-- **Restart:** Helm does every step, and only after the owner approves a new reviewed build and a gated book:
-  1. fund the wallet;
-  2. install the reviewed build with an md5 replay proof;
-  3. enable and start `mal-probe-executor`;
-  4. re-enable `mal-probe-watch.timer`;
-  5. remove STOP last.
-- **Withdrawal guard:** `probe_withdraw` only sends to `5ANMBJ8iun8MJvjDgJqVRgz4EsUFSUUQ8MpRXbk2eufi` (#415).
-
-## Ops
-
-- **Waiting on the owner/Helm** (console for_you, 10-07): stop the Oracle attn book and observe.attention, retire the V-less books, and move runner-restarts.jsonl so mal-ro can read it.
-- **research-0 cleanup:** done by Helm. Use `blocks-clean/` or `clean-view/` paths.
-- **GitHub hiccups:** use `timeout 60 … </dev/null` and retry.
+The final result was 62/90 attempts, −0.210755 SOL. The wallet is at 0 lamports (withdrawn to the owner on 10-07). Helm does every restart step, and only after a gated book, a reviewed build and the owner's yes.
+- **Canary wallet** (explained to the owner on 10-08): a Helm-held key, funded with ≤ 0.05 SOL, under DEC-019-style limits. It is only relevant after a CAP-PICK pass (O4).
 
 ## Clocks
 
 | When | What |
 |---|---|
-| ~10-07T18:07Z | Early-arm shadow read (session cron). Evaluate the processed `migrate` trigger and the tx-v0 request fix. Read labels and timing only. |
-| Before 10-09T14Z | Resubmit forward walk #71 on main with #454 merged (params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
-| Every 1–2 days until 10-15 | V snapshots (job #286 command). |
-| Before 10-15T23Z | (e′) dry run. |
-| ~10-16T02Z | FINAL. |
+| ~10-08T20:30Z | #371 ends |
+| ~10-09T14:30Z | 200 ms step (epoch 1053) |
+| 10-13 | EXP-022 readiness check |
+| before ~10-15T11Z | Extend or resubmit #382 |
+| before 10-15T23:00Z | (e′) dry run |
+| before 10-16T00Z | A11 DEC-016 amendment, if wanted |
+| before 10-16T01Z | E0, a clean monitor run, walk 2 submitted |
+| ~10-16T02Z | FINAL (compromised, as written) |
+| after the FINAL (and A11) | E1 |
+| before 10-23T01Z | Read tool merged; E1; A2 |
+| 10-23T01 / 10-30T01 / 11-06T01 | EXP-022 looks |
+| 2026-12-08 | T1 tripwire kill date if nothing fires |
+
+## Ops
+
+- **Waiting on the owner or Helm:** O8, O9; the Oracle attn book and observe.attention stop; retiring the V-less books; runner-restarts.jsonl access.
+- **GitHub hiccups:** use `timeout 60 … </dev/null` and retry. Pushes sometimes fail transiently.
+- **Subagent turn limits:** builders stop at about 40 turns, reviewers at about 20. Resume them with SendMessage and ask for "verdict now". Workflow `agent()` calls with a schema can fail on a turn limit, so wrap them in try/catch.
