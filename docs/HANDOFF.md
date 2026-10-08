@@ -29,9 +29,9 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - The owner then asked to compact.
 - **Research results** (notebook n_1fzsuRLAhvkgqg):
   - 16 alternative meme strategies: 11 killed, 5 weakened, none survives.
-  - Same-slot: 94.5% / 97.5% of first-follower value sits in the token's creation slot. Outside it: first follower +2.10% / +0.29% (bundle-like co-landing excluded), second −1.21% / −2.11%.
+  - Same-slot: 94.5% / 97.5% of first-follower value sits in the token's creation slot. Outside it: first follower +2.10% / +0.29% (bundle-like co-landing excluded) [measured, Aug/Sep exploration, first seat only], second −1.21% / −2.11%. MAL lands a median 5–6 slots late; break-even needs the first seat on 36.6–68.9% (Aug) / 87.9–93.9% (Sep) of tries.
   - Reports: `/data/mal/audit-1008/work/edge-scan-1008/REPORT.md` and `/data/mal/audit-1008/work/speed-recon-1008/PLAN.md`.
-- **Data finding** (notebook n_6FKDVJWrbaoGYg): 95.35% of canonical migrations have no `migration` row on the walker tape, because migrate-tx logs go over the 10 KB cap. `complete` rows are 99.81% present, so the CAP-PICK and EXP-012 universes are fine. #467 recovers the rows under `--event-v`.
+- **Data finding** (notebook n_6FKDVJWrbaoGYg): 95.35% of canonical migrations have no `migration` row on the walker tape, because migrate-tx logs go over the 10 KB cap. 24,224 of 24,272 have a `complete` row (99.80%), and 23,099 of the 23,143 missing a migration row do (99.81%). So the CAP-PICK and EXP-012 universes are fine [inferred]. #467 recovers the rows under `--event-v`.
 - **Still with the owner:** O8 (the monthly bill split) and O9 (Helm excluding `/data/mal/audit-1008` from the nightly backup).
 
 ## EXP-022 deadlines (withdrawn if a P1–P3 item is missed)
@@ -39,12 +39,12 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 | By | What | State at handoff |
 |---|---|---|
 | Before 2026-10-16T00Z | A11 October report-only check: a DEC-016 amendment. Optional; decide whether to use it, and #465 only if A11 reads through `check_read` | Not written |
-| Before 2026-10-16T01Z | **P1 E0:** md5 decision-equivalence between `forward_paper.replay_rows` and the read-ready gate replay (#462 + strict lines from #466) on one exploration UTC day, both booting at 00:00Z | Not started; #462 is still a draft |
+| Before 2026-10-16T01Z | **P1 E0** (EXP-022 §2.1, all four items, recorded in a dated amendment): (1) one exploration UTC day pinned by `VIEW.sha256`, both sides booting at 00:00Z; (2) runner equivalence, md5 of `forward_paper.replay_rows` = md5 of the **read-ready** gate replay (#462 plus strict lines); (3) scorer equivalence, the read-ready `cap_pick_score.py --book picks` attempt list = B's picks inside the universe, by md5. **So a read-ready scorer is needed before 10-16T01, not only by 10-23.** (4) code pins: the blob shas of `forward_exp012_gate.py`, `forward_paper.py`, `exploration_entry_model.py` and `cap_pick_gate_replay.py`, plus `FROZEN.md5` = `a01f05dfb1e622f78b2bba55d174be09` | Not started; #461 and #462 are still drafts |
 | Before 2026-10-16T01Z | **P2:** a clean A3 monitor run | Daily cron |
-| Before 2026-10-16T01Z | **P3:** A8 merged | **Done**: #466 integrity, #467 event-V decoder |
+| Before 2026-10-16T01Z | **P3:** A8: decoder, sink resume guard, gate readers that refuse bad lines, per-hour slot_ms in the scorer. Walk 2 must start on a commit that has all four | **Partly done**: #466 (sink resume guard; opt-in strict lines) and #467 (decoder) are merged. Still open: the gate replay refusing bad lines (#462) and per-hour slot_ms in the scorer (#461 has `--k-mode hour`; it must merge) |
 | Job must START before 2026-10-16T01:00Z (submit about 00:30Z) | **Walk 2**: `scripts/research/forward-walk2.sh` (PR #469, `claude/forward-walk2-wrapper`, 28 tests; needs a reviewer). MiScusi job on research-0, command `bash scripts/research/forward-walk2.sh`, params `{"start":"2026-10-16T01"}`, resumable, 10080 min, about 6 GB. It uses `--event-v` and `--strict-lines`, the dir `/data/mal/blocks/forward-1016` (as EXP-022 §9 and the ledger name it), and treats walker exit 3 as fatal. Credit cap 11,825,000 = 430,000 × 22 × 1.25 | PR open |
 | Before 2026-10-23T01Z | **P4:** the read tool (sealed read mode of `tools/cap_pick_score.py`: lock, `LOOK_READS.jsonl`, look schedule, strict lines, refusals) merged with quant-proof | Not started |
-| Before 2026-10-23T01Z | **P5:** E1 recorded (after the FINAL and the A11 read; cron 3d374658 at 10-16 06:13Z). **P6:** the A2 check, after E1 | Patched tool merged (#463) |
+| Before 2026-10-23T01Z | **P5:** E1 recorded (after the FINAL and the A11 read; cron 3d374658 at 10-16 06:13Z), with n ≥ 20; otherwise condition (c) is NOT_DECIDABLE and no look runs (EXP-022:288). It is recorded in a dated amendment before the first look. **P6:** the A2 check, after E1 | Patched tool merged (#463) |
 
 ## Open PRs
 
@@ -99,11 +99,11 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - It will be reported compromised (Am.2).
   - There is no live support through Am.3 (a) (Am.6 (g) D).
   - Run `exp012_forward` score and verify **without** `--strict-lines`. #466 kept them byte-identical to main by default.
-  - The (e′) dry run is required before 10-15T23:00Z.
+  - The (e′) dry run is required before 10-15T23:00Z. Record its merge meta sha256 and commit in DEC-016. If it still fails at 10-15T23:00Z, record the failure and the counts; the read proceeds as written (DEC-016:300-305).
 - **Seal.**
   - Before the FINAL, runner side files are read only through `tools/runner_timing_read.py`.
   - Never open forward-walk or forward-paper P&L, positions, decisions or intents.
-  - For EXP-022: no CAP-PICK outcome is read before the day-7 look, and only by the merged read tool. The fast-0 paper twin's CAP-PICK P&L fields stay sealed until the read ends.
+  - For EXP-022 (§9): no person, agent or job opens, prints or prices a CAP-PICK outcome of a counted hour, from any source, except the sealed look itself run by the merged read tool. This holds before day 7 and between looks. Monitoring prints only hour counts and gate decision counts. No CAP-PICK process reads any forward-1002 hour, buffer included, before the FINAL is written. The fast-0 paper twin's CAP-PICK P&L fields stay sealed until the read ends.
 - **Sealed blocks:** fresh-0802, fresh-0808 and fresh-0828.
 - **Reserve convention:** PumpSwap rows are PRE-trade; bonding rows are POST-trade.
 - **BOOST:** pump.fun's keeper `HTVZ…S2r` buys 17.585 SOL in about 29 slices, ending about 337–345 s after migrate. CAP-PICK depends on it.

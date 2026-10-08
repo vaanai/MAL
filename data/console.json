@@ -14,7 +14,7 @@
       "id": "edge-scan-1008",
       "kind": "finding",
       "title": "Searched for other meme-coin edges: 16 strategies, 11 killed and 5 weakened by a red team; none works at MAL's latency and cost",
-      "detail": "Killed: LaunchLab and Meteora launchpads, LP on meme pools, backruns and cross-pool arbitrage, copying TWAP/DCA buyers, shorting young tokens, BSC and Robinhood Chain, and others. Weakened: Hyperliquid meme funding carry (about 8% a year in USD, a risk premium not an edge), shorting new exchange listings (2-3 a month), CAP-PICK exit overlays, USDC BOOST (gone since mid-September), a pump.fun change watch. Same-slot speed route: 94.5% (Aug) / 97.5% (Sep) of same-slot follower value is in the token's own creation slot; outside it the first follower makes +2.10% / +0.29% (bundle co-landing excluded) and the second loses -1.21% / -2.11%; estimated chance of profit about 1% in 3 weeks, at most 5% in 2-3 months (inferred), at +$500-3,250/month. Owner decision: sniper route closed for now; $0 extra budget for two weeks; start the change watch (T1) and the BOOST-timing insurance test (T2).",
+      "detail": "Killed: LaunchLab and Meteora launchpads, LP on meme pools, backruns and cross-pool arbitrage, copying TWAP/DCA buyers, shorting young tokens, BSC and Robinhood Chain, and others. Weakened: Hyperliquid meme funding carry (about 8% a year in USD, a risk premium not an edge), shorting new exchange listings (2-3 a month), CAP-PICK exit overlays, USDC BOOST (gone since mid-September), a pump.fun change watch. Same-slot speed route: 94.5% (Aug) / 97.5% (Sep) of first-follower value is in the token's own creation slot; outside it the first follower makes +2.10% / +0.29% (bundle co-landing excluded) and the second loses -1.21% / -2.11%; estimated chance of profit about 1% in 3 weeks, at most 5% in 2-3 months (inferred), and it would cost an extra $500-3,250/month. Owner decision: sniper route closed for now; $0 extra budget for two weeks; start the change watch (T1) and the BOOST-timing insurance test (T2).",
       "atUtc": "2026-10-08T16:00:00Z"
     },
     {
@@ -161,7 +161,7 @@
       "id": "EXP-022",
       "title": "EXP-022 CAP-PICK (EXP-012 picks + seed guard + 300 s cap)",
       "stage": "pre-registered",
-      "note": "Counts walk-2 hours [2026-10-16T01, 11-06T01); looks 10-23, 10-30, 11-06. Exploration figure +3.492% (P2-P4, picks the live gate can trade) is not out-of-sample for the book; honest October estimate about +0.3 to +0.5% per attempt (inferred), P(pass) about 5-7%. Before 10-16T01: replay equivalence (E0), clean structure monitor, walk 2 started, else withdrawn.",
+      "note": "Counts walk-2 hours [2026-10-16T01, 11-06T01); looks 10-23, 10-30, 11-06. Exploration figure +3.492% (P2-P4, picks the live gate can trade) is not out-of-sample for the book; honest October estimate about +0.3 to +0.5% per attempt (inferred), P(pass) about 5-7%; P(<=0) about 40%; below running cost (break-even about 1.4% at 0.1 SOL). Before 10-16T01: replay equivalence (E0), clean structure monitor, walk 2 started, else withdrawn.",
       "tag": {
         "text": "kill test",
         "tone": "muted"
@@ -434,7 +434,7 @@
       "id": "s-20261008-1600-plan",
       "from": "claude",
       "kind": "decision",
-      "text": "Afternoon 10-08: CAP-PICK pre-registered as EXP-022 (#464; counts from 10-16T01; expected fail, P(pass) about 5-7%). Walk-2 data integrity merged (#466 refuses silent holes; #467 records per-trade V and BOOST events and recovers migration rows: 95.35% of canonical migrations had no migration row on the old tape because migrate-tx logs exceed the 10 KB cap; complete rows were 99.81% present, so universes were unaffected). Scorer port reproduces the audit book exactly (24,272 attempts; P2-P4 exact to the lamport). Edge search: none of 16 alternatives survives; same-slot route not worth buying. Next: live-gate pick-set check (#387), walk-2 launcher, change watch (T1), BOOST-timing insurance (T2).",
+      "text": "Afternoon 10-08: CAP-PICK pre-registered as EXP-022 (#464; counts from 10-16T01; expected fail, P(pass) about 5-7%). Walk-2 data integrity merged (#466 refuses silent holes; #467 records per-trade V and BOOST events and recovers migration rows: 95.35% of canonical migrations had no migration row on the old tape because migrate-tx logs exceed the 10 KB cap; complete rows: 24,224 of 24,272 (99.80%), so universes were unaffected [inferred]). Scorer port matches all 24,272 audit attempts within the 0.01 pp target; P2-P4 exact to the lamport (19,234 of 19,234); 6 P1 attempts differ. Edge search: none of 16 alternatives survives; same-slot route not worth buying. Next: live-gate pick-set check (#387), walk-2 launcher, change watch (T1), BOOST-timing insurance (T2).",
       "atUtc": "2026-10-08T16:00:00Z"
     },
     {
