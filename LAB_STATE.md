@@ -103,7 +103,7 @@ As of 2026-10-05 ~09:45Z.
   - **CAP-PICK** (EXP-012 picks + seed×1.15 min_out + 300 s cap + 55k per send):
     - the judge's verdict is HOLDS_WEAKER; judge's inferred estimate: Aug–Sep ≈ +1.5% per attempt, live leg (≈ +1.3 flat / ≈ +1.1 pressure at 0.1 SOL); October ≈ +0.3 to +0.5% (flat ≈ +0.3), P(≤0) about 40%, below running cost at 0.1–0.25 SOL;
     - P(pass) about 10% (5–20%) with DEC-021's trade-level p; about 5–7% with the day-level p proposed in O2 [inferred, judge §2.5];
-    - Top-day concentration: per-block top-day shares are 63–78%. On P1, the latest pre-October out-of-sample block, ex-best-day is −0.29 SOL (live leg, tradable picks) and −0.034 SOL at the deciding cell; oracle is −0.985%;
+    - Top-day concentration: per-block top-day shares are 63–78%. On P1, the latest pre-October block (out-of-fold on adjacent days, its threshold cut on the same scores), ex-best-day is −0.29 SOL (live leg, tradable picks) and −0.034 SOL at the deciding cell; oracle is −0.985%;
     - it is the only candidate; the plan is a kill test whose read costs 0 credits (the walk-2 tape is expected at about 18k credits per hour).
   - **Merged:** #454 (slot-span bound), #455 (v1 transactions), #456 (daily pump structure monitor), #457 (Console), #458 (EXP-021 freeze pins), #459 (DEC-016 Am.6 record).
   - **EXP-021 freeze #376 done:** RUG md5 `3a0e9e76d94fb6c0b1a9cd22be00970a`, CONTROL `98472502dfbc448fbecb6115f8f62ab1`. The screen is **not run**; owner decision O1 (pause) is pending.

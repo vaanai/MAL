@@ -27,6 +27,6 @@ The 25 reports, scripts and outputs stay at `/data/mal/audit-1008/` (reports in 
 - **CAP-PICK is the only candidate with positive exploration evidence at a reachable operating point.** It is EXP-012 picks + seed×1.15 min_out + 300 s wall-clock cap + 55k per send. Judge verdict: HOLDS_WEAKER.
   - +3.819% reproduces exactly, but it is out of sample only for the model's weights. On the picks the live gate can actually trade, it is +3.492%.
   - The judge's honest estimates are the ones above.
-  - Top-day concentration: per-block top-day shares are 63–78%. On P1, the latest pre-October out-of-sample block, ex-best-day is −0.29 SOL (live leg, tradable picks) and −0.034 SOL at the deciding cell; oracle is −0.985% (judge lines 59, 92, 213).
+  - Top-day concentration: per-block top-day shares are 63–78%. On P1, the latest pre-October block (out-of-fold on adjacent days, its threshold cut on the same scores), ex-best-day is −0.29 SOL (live leg, tradable picks) and −0.034 SOL at the deciding cell; oracle is −0.985% (judge lines 59, 92, 213).
 
 **Owner decisions pending (Console for_you `fy-20261008-1029-audit`): O1–O9.** Numbering: Console O1–O5 = SYNTHESIS O1–O5; Console O6 (wind-down) = SYNTHESIS/judge O7; SYNTHESIS O6 (close EXP-009) is not in the Console list; Console O7–O9 are new. No CAP-PICK pre-registration merges, and the EXP-021 screen does not run, before the owner answers O1–O3.
