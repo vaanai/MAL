@@ -92,7 +92,10 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - `--hour-sph-json` must be absent (tape-only hours; an unmeasurable hour refuses);
   - bad-reserves picks stay `status=attempt` with `priced=false`.
   **Next: a quant-proof re-check of 86355b3..be7cdb2, then merge.** The read-tool (P4) items are listed in the PR body. |
-| `claude/cap-pick-e0-exp022` (PR pending) | E0 harness switched to `--exp022 --exp022-source exploration --book picks`, U from universe.csv | Builder also fixes a broken test and runs the **real-layout count-only precount on 08-20** (booleans only) |
+| **#480** `claude/cap-pick-e0-exp022` | E0 harness on `--exp022 --exp022-source exploration --book picks`, U from universe.csv | Head **8de674d**, 51 tests.
+  - **08-20 dry-run precount PASSED:** equal_decide (889) and equal_C (n_C 98, U 772) true; no picks outside the universe; layout checks all true; 16.8 GiB peak.
+  - **Running at compaction:** reviewer `a70139af1577132a7`; quant-proof `a4efdfa6397dca01f`; the #479 re-check by `ad2e39687ffc72eeb`.
+  - **Then:** merge #479, then merge #480, then the official E0 on main (28 GB MiScusi job, no `--dry-run`), then the E0 record amendment. |
 
 **MiScusi jobs**
 
