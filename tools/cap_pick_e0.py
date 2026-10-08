@@ -17,7 +17,9 @@ THE THREE LISTS (all for the same day; both sides boot at 00:00Z of that day)
      reason it is not); C must equal, by md5, B's `pick` mints inside U. `--exp022`, `--exp022-source exploration` and `--book picks` are module constants
      (`SCORER_FLAGS`), never CLI-overridable: a `--scorer-arg` that names or abbreviates one of them (or `--picks`, `--only-day`, `--out-dir`) is refused even in a
      dry run. The scorer's `summary.json` constants, source and adapter, universe counts, `picks_in_input` and `picks_not_attempts` (by reason) are copied into
-     `e0.json` (`scorer_summary`); nothing of its P&L is read or copied (the harness reads only the `mint`, `status` and `reason` columns of its CSVs).
+     `e0.json` (`scorer_summary`), with the bad-reserves count, the skipped days and the B picks absent from `universe.csv` (reason from `picks_not_attempts`);
+     U keeps every `status=attempt` row, so a pick the scorer drops after the universe (bad reserves) is IN U but not in `rows.csv`, and the C md5 differs
+     (fail-closed; listed in `U_pick_attempts_missing_from_rows`). Nothing of its P&L is read or copied (the harness reads only the `mint`, `status` and `reason` columns of its CSVs).
   Canonical decision list: one line per mint, sorted by mint, `mint<TAB>decision<TAB>mig_ms<TAB>repr(score)`, an empty field when the score is null.
   Both canonical files are built by `canon_lines`. Two versions of the A and B lists are written and hashed:
     full    every decided mint (`A.canon`, `B.canon`; `md5_A_full`, `md5_B_full`, `equal_full`). REPORT ONLY.
@@ -572,19 +574,21 @@ def read_rows_mints(path: Path) -> list[str]:
         return [r["mint"] for r in csv.DictReader(fh)]
 
 
-def read_universe_csv(path: Path) -> tuple[list[str], dict[str, int]]:
-    """(attempt mints, excluded count by reason) from universe.csv: only `mint`, `status` and `reason` are read."""
+def read_universe_csv(path: Path) -> tuple[list[str], dict[str, int], list[str]]:
+    """(attempt mints, excluded count by reason, every mint in the file) from universe.csv: only `mint`, `status` and `reason` are read."""
     attempts: list[str] = []
     excluded: dict[str, int] = {}
+    seen: list[str] = []
     with path.open(newline="", encoding="utf-8") as fh:
         for r in csv.DictReader(fh):
+            seen.append(r["mint"])
             if r["status"] == "attempt":
                 attempts.append(r["mint"])
             elif r["status"] == "excluded":
                 excluded[r["reason"]] = excluded.get(r["reason"], 0) + 1
             else:
                 raise E0Error(f"{path}: unknown status {r['status']!r} for mint {r['mint']}")
-    return attempts, dict(sorted(excluded.items()))
+    return attempts, dict(sorted(excluded.items())), seen
 
 
 def scorer_summary_record(summary: dict[str, Any]) -> dict[str, Any]:
@@ -602,6 +606,7 @@ def scorer_summary_record(summary: dict[str, Any]) -> dict[str, Any]:
                          "n_missing_v0": (uni.get("missing_v0") or {}).get("n_missing_v0")},
             "picks_in_input": summary.get("picks_in_input"), "picks_not_attempts": summary.get("picks_not_attempts"),
             "picks_sha256": (summary.get("picks") or {}).get("sha256"), "vmap": summary.get("vmap"), "sources": summary.get("sources"), "days": summary.get("days"),
+            "days_skipped_incomplete_migrations": summary.get("days_skipped_incomplete_migrations"),
             "counts": {k: counts.get(k) for k in SUMMARY_COUNT_KEYS}}
 
 
@@ -617,9 +622,9 @@ def subprocess_scorer(scorer_repo: Path, view: str, roots: Sequence[str], day: s
     for name in ("rows.csv", "universe.csv", "summary.json"):
         if not (out_dir / name).is_file():
             raise E0Error(f"scorer wrote no {name} in {out_dir}")
-    universe, excluded = read_universe_csv(out_dir / "universe.csv")
+    universe, excluded, seen = read_universe_csv(out_dir / "universe.csv")
     summary = scorer_summary_record(json.loads((out_dir / "summary.json").read_text(encoding="utf-8")))
-    return {"attempts": read_rows_mints(out_dir / "rows.csv"), "universe": universe, "excluded": excluded, "summary": summary, "cmd": cmd}
+    return {"attempts": read_rows_mints(out_dir / "rows.csv"), "universe": universe, "universe_seen": seen, "excluded": excluded, "summary": summary, "cmd": cmd}
 
 
 Scorer = Callable[[Path, Path], "dict[str, Any]"]  # (picks file, out dir) -> subprocess_scorer's result
@@ -731,6 +736,8 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
     c: dict[str, Any] = {"skipped": True}
     scorer_root: Path = Path(repo)
     bpicks_missing: list[str] = []
+    bpicks_absent: dict[str, str] = {}
+    u_missing_from_rows: list[str] = []
     scorer_summary: dict[str, Any] = {}
     not_attempts_by_reason: dict[str, int] = {}
     n_c = n_universe = 0
@@ -752,6 +759,10 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
         n_c = len(c_list)
         c_text, bu_text = "".join(m + "\n" for m in c_list), "".join(m + "\n" for m in bu)
         bpicks_missing = sorted(m for m in b_picks if m not in universe)
+        seen = set(res.get("universe_seen", res["universe"]))
+        reason_of = {m: r for r, ms in ((res["summary"].get("picks_not_attempts") or {}).items()) for m in ms}
+        bpicks_absent = {m: reason_of.get(m, "no_reason_recorded") for m in b_picks if m not in seen}
+        u_missing_from_rows = sorted(set(bu) - set(c_list))
         _write(out / "Bpicks_not_in_U.list", "".join(m + "\n" for m in bpicks_missing))
         _write(out / "C.list", c_text)
         _write(out / "Bpicks_in_U.list", bu_text)
@@ -804,6 +815,9 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
         "md5_A_full": md5_a, "md5_B_full": md5_b, "equal_full": equal_full,
         "md5_C": md5_c, "md5_Bpicks_U": md5_bu, "equal_C": equal_c, "n_C": n_c, "n_universe": n_universe,
         "scorer_flags": list(SCORER_FLAGS), "scorer_summary": scorer_summary, "picks_not_attempts_by_reason": not_attempts_by_reason,
+        "scorer_bad_reserves": (scorer_summary.get("counts") or {}).get("bad_reserves"),
+        "scorer_days_skipped": scorer_summary.get("days_skipped_incomplete_migrations"),
+        "Bpicks_absent_from_universe_csv": bpicks_absent, "U_pick_attempts_missing_from_rows": u_missing_from_rows,
         "n_A_full": len(a_lines), "n_B_full": len(b_lines), "n_decide_set": cmpd["n_decide_set"], "n_A_decide": len(cmpd["a_decide"]), "n_B_decide": len(cmpd["b_decide"]),
         "n_gt60": len(cmpd["gt60"]), "n_gt60_in_decide": sum(1 for r in cmpd["gt60"] if r[5] == "yes"), "crosstab_gt60": cmpd["crosstab_gt60"],
         "n_diff_decide": len(cmpd["diff_decide"]),

@@ -128,7 +128,8 @@ summary = {"mode": "exp022", "exp022": {"source": a.exp022_source, "adapter": "f
            "universe": {"attempts_in_universe": len(universe), "pick_attempts": len(attempts), "excluded_by_reason": {"mayhem": len(excluded)},
                         "report_only": {"tape_coverage_short": []}, "missing_v0": {"n_missing_v0": 0, "mints": [], "in_top3": {"x": True}}}},
            "picks_in_input": len(picks), "picks_not_attempts": {"mayhem": lost} if lost else {}, "picks": {"sha256": "x"}, "vmap": {"sha256": "y"},
-           "sources": {}, "days": [a.only_day], "counts": {"hours": 24, "attempts": len(attempts), "pick_attempts": len(attempts), "fills": 7, "guarded": 1},
+           "sources": {}, "days": [a.only_day], "days_skipped_incomplete_migrations": [],
+           "counts": {"hours": 24, "attempts": len(attempts), "pick_attempts": len(attempts), "bad_reserves": 0, "fills": 7, "guarded": 1},
            "books": {"picks": "SECRET_PNL"}, "fail_legs": "SECRET_PNL"}
 (o / "summary.json").write_text(json.dumps(summary))
 """
@@ -139,7 +140,7 @@ def stub_summary(n_picks: int, lost: dict | None = None) -> dict:
     return {"mode": "exp022", "source": "exploration", "adapter": "fake", "constants": {"entry_latency_ms": 1300}, "flags_pinned": {"book": "picks"},
             "universe": {"attempts_in_universe": 0, "pick_attempts": 0, "excluded_by_reason": {}, "tape_coverage_short": 0, "n_missing_v0": 0},
             "picks_in_input": n_picks, "picks_not_attempts": lost or {}, "picks_sha256": "x", "vmap": {}, "sources": {}, "days": [],
-            "counts": {"hours": 24, "attempts": 0, "pick_attempts": 0}}
+            "days_skipped_incomplete_migrations": [], "counts": {"hours": 24, "attempts": 0, "pick_attempts": 0, "bad_reserves": 0}}
 
 
 def make_scorer_tree(root: Path) -> Path:
@@ -310,6 +311,9 @@ class RunTests(_Fix):
         self.assertEqual((res["C"]["n_Bpicks_not_in_U"], res["C"]["n_universe"]), (1, 4))
         self.assertEqual(res["Bpicks_not_in_U"], ["Hi2"])  # the mints, not only the count; report only
         self.assertEqual(res["picks_not_attempts_by_reason"], {"mayhem": 1})
+        # the callable fake gives no universe_seen, so the dropped pick is absent from universe.csv, with the scorer's reason
+        self.assertEqual(res["Bpicks_absent_from_universe_csv"], {"Hi2": "mayhem"})
+        self.assertEqual((res["scorer_bad_reserves"], res["scorer_days_skipped"], res["U_pick_attempts_missing_from_rows"]), (0, [], []))
         self.assertEqual((res["n_universe"], res["scorer_flags"]), (4, ["--exp022", "--exp022-source", "exploration", "--book", "picks"]))
         self.assertEqual((res["scorer_summary"]["mode"], res["scorer_summary"]["source"]), ("exp022", "exploration"))
         self.assertEqual((out / "Bpicks_not_in_U.list").read_text(), "Hi2\n")
@@ -868,6 +872,8 @@ class Exp022ModeTests(_Fix):
         self.assertEqual((out / "C.list").read_text(), "Hi2\nMid\n")
         self.assertEqual((out / "Bpicks_in_U.list").read_text(), "Hi2\nMid\n")
         self.assertEqual(res["Bpicks_not_in_U"], ["Hi"])
+        self.assertEqual(res["Bpicks_absent_from_universe_csv"], {})  # "Hi" is in universe.csv, as an excluded row
+        self.assertEqual(res["scorer_bad_reserves"], 0)
         self.assertEqual(res["picks_not_attempts_by_reason"], {"mayhem": 1})
         self.assertEqual(res["C"]["excluded_by_reason"], {"mayhem": 1})
         self.assertTrue(res["equal_C"] and res["checks"]["scorer_picks_in_input"])
@@ -879,6 +885,25 @@ class Exp022ModeTests(_Fix):
         self.assertNotIn("SECRET", text)  # nothing of the scorer's P&L was read or copied
         self.assertNotIn('"fills"', text)
         self.assertEqual(sum(1 for c in res["C"]["cmd"] if c == "--book"), 1)
+
+    def test_a_pick_in_u_but_missing_from_rows_makes_c_differ_fail_closed(self) -> None:
+        """A bad-reserves pick shows status=attempt in universe.csv but is absent from rows.csv: it stays in U, so the C md5 differs."""
+        def bad_reserves(picks, odir):
+            r = self.fake_scorer()(picks, odir)
+            r["attempts"] = [m for m in r["attempts"] if m != "Mid"]  # still in r["universe"]
+            r["summary"] = {**r["summary"], "counts": {**r["summary"]["counts"], "bad_reserves": 1}}
+            return r
+        res = self.run_e0(scorer=bad_reserves)
+        self.assertEqual(res["U_pick_attempts_missing_from_rows"], ["Mid"])
+        self.assertEqual(res["scorer_bad_reserves"], 1)
+        self.assertFalse(res["equal_C"])
+        self.assertFalse(res["ok"])
+        self.assertEqual((self.dir / "out" / "Bpicks_in_U.list").read_text(), "Hi\nHi2\nMid\n")
+        self.assertEqual((self.dir / "out" / "C.list").read_text(), "Hi\nHi2\n")
+
+    def test_summary_record_keeps_the_skipped_days(self) -> None:
+        rec = e0.scorer_summary_record({"mode": "exp022", "exp022": {"source": "exploration"}, "days_skipped_incomplete_migrations": ["2026-08-20"], "counts": {"bad_reserves": 2}})
+        self.assertEqual((rec["days_skipped_incomplete_migrations"], rec["counts"]["bad_reserves"]), (["2026-08-20"], 2))
 
     def test_a_scorer_that_read_a_different_pick_count_fails_the_sanity_check(self) -> None:
         def short(picks, odir):
