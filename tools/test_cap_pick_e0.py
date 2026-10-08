@@ -164,7 +164,8 @@ def good_record(repo: Path, **over) -> dict:
     rec = {"schema": e0.SCHEMA, "view": e0.E0_VIEW, "day": e0.E0_DAY, "dry_run": False, "e0_criterion": e0.E0_CRITERION, "ok": True,
            "blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "commit": _git(repo, "rev-parse", "HEAD"),
            "md5_A_decide": "aa", "md5_B_decide": "aa", "n_create_ms_disagree": 0, "md5_C": "cc", "md5_Bpicks_U": "cc", "n_C": 5,
-           "scorer_flags": list(e0.SCORER_FLAGS), "scorer_summary": {"mode": "exp022", "source": "exploration"},
+           "scorer_flags": list(e0.SCORER_FLAGS), "scorer_summary": {"mode": "exp022", "source": "exploration", "picks_not_attempts": {}},
+           "picks_not_attempt_allowlist": [], "excluded_picks_by_reason": {},
            "checks": {k: True for k in e0.SANITY_KEYS}, "imported_module_mismatches": [], "imported_module_blobs": mods["blobs"]}
     rec.update(over)
     return rec
@@ -210,7 +211,7 @@ class _Fix(unittest.TestCase):
         return lambda: cp.build_engine(self.model, self.md5, self.feats, THR, kill_dir=self.dir)
 
     @staticmethod
-    def fake_scorer(drop: str | None = None):
+    def fake_scorer(drop: str | None = None, reason: str = "mayhem", excluded_mints: dict | None = None):
         """What the real scorer's EXP-022 mode does with a JSONL pick file: U = every decided mint but `drop`; C = the picks inside U."""
         def run(picks: Path, odir: Path):
             dec = {}
@@ -220,10 +221,16 @@ class _Fix(unittest.TestCase):
                     dec[r["mint"]] = r["decision"]
             universe = [m for m in sorted(dec) if m != drop]
             n_picks = sum(1 for d in dec.values() if d == "pick")
-            lost = {"mayhem": [drop]} if drop and dec.get(drop) == "pick" else {}
+            lost = {reason: [drop]} if drop and dec.get(drop) == "pick" else {}
             return {"attempts": [m for m in universe if dec[m] == "pick"], "universe": universe, "excluded": {"mayhem": 1} if drop else {},
-                    "summary": stub_summary(n_picks, lost), "cmd": ["fake", "--exp022"]}
+                    "summary": stub_summary(n_picks, lost), "excluded_mints": excluded_mints or {}, "cmd": ["fake", "--exp022"]}
         return run
+
+    def allow(self, *reasons: str) -> None:
+        """Allow these reasons for a B pick that is not an attempt (the constant is empty)."""
+        p = mock.patch.object(e0, "PICKS_NOT_ATTEMPT_ALLOWLIST", tuple(reasons))
+        p.start()
+        self.addCleanup(p.stop)
 
     def run_e0(self, out: str = "out", **kw):
         kw.setdefault("dry_run", True)
@@ -287,6 +294,7 @@ class HookTests(_Fix):
 
 class RunTests(_Fix):
     def test_a_equals_b_with_boot_history_and_c_equals_b_picks_in_universe(self) -> None:
+        self.allow("mayhem")  # this test drops a B pick on purpose, to see the reporting
         res = self.run_e0(scorer=self.fake_scorer(drop="Hi2"))
         out = self.dir / "out"
         self.assertTrue(res["equal_full"] and res["equal_decide"], (out / "diff.tsv").read_text() if (out / "diff.tsv").exists() else "")
@@ -574,6 +582,7 @@ class PinTests(_Fix):
             "equal_C": {"md5_Bpicks_U": "dd"},
             "n_C_positive": {"n_C": 0},
             "scorer_mode": {"scorer_summary": {"mode": "exp022", "source": "walk2"}},
+            "no_unexpected_pick_exclusions": {"scorer_summary": {"mode": "exp022", "source": "exploration", "picks_not_attempts": {"mayhem_unknown_no_create_event": ["M"]}}},
             "sanity": {"checks": {"boot_history_equal": True, "A_log_rows_equal_engine_rows": True, "nonempty": False}},
             "scope": {"day": "2026-08-17"},
             "criterion": {"e0_criterion": "le60"},
@@ -681,6 +690,7 @@ class ScopeTests(_Fix):
             self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "w2"), "--scorer-repo", str(tree)]), 2)
 
     def test_non_dry_run_needs_the_scorer_at_head(self) -> None:
+        self.allow("mayhem")
         self.pinned()
         # our own scorer-less repo: the template carries the real scorer now, so remove it and commit
         _git(self.repo, "rm", "-q", "tools/cap_pick_score.py")
@@ -696,7 +706,10 @@ class ScopeTests(_Fix):
         _git(self.repo, "add", "-A")
         _git(self.repo, "commit", "-q", "-m", "scorer at HEAD")
         _git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
-        with mock.patch.object(e0, "E0_VIEW", "explore-0814"):  # the real scorer command needs a view it knows
+        real = e0.loaded_tools_modules
+        # another test module in the same pytest session may have imported the real tools.cap_pick_score in this process; a fresh E0 process has not, so leave it out
+        without_scorer = lambda: {n: f for n, f in real().items() if n != "tools.cap_pick_score"}  # noqa: E731
+        with mock.patch.object(e0, "E0_VIEW", "explore-0814"), mock.patch.object(e0, "loaded_tools_modules", without_scorer):  # a view the scorer command knows
             res = e0.run_e0("explore-0814", DAY, self.dir / "n2", block=self.block, engine_factory=self.factory(), repo=self.repo, log=open("/dev/null", "w"))
         self.assertIs(res["dry_run"], False)
         self.assertTrue(res["equal_C"], res["C"])
@@ -721,6 +734,59 @@ class ScopeTests(_Fix):
         self.assertIs(res["dry_run"], True)
         self.assertTrue(json.loads((self.dir / "out" / "e0.json").read_text())["dry_run"])
         self.assertEqual(e0.main(["check", str(self.dir / "out" / "e0.json"), "--worktree", str(self.repo)]), 2)
+
+
+class PickExclusionGuardTests(_Fix):
+    R = "mayhem_unknown_no_create_event"
+
+    def test_the_constants(self) -> None:
+        self.assertEqual(e0.PICKS_NOT_ATTEMPT_ALLOWLIST, ())
+        self.assertIn(self.R, e0.FORBIDDEN_PICK_REASONS)
+        self.assertEqual(e0.unexpected_pick_exclusions({}, {}), {})
+        self.assertEqual(e0.unexpected_pick_exclusions({"a": ["m1"]}, {"a": ["m2"], "b": ["m3"]}), {"a": ["m1", "m2"], "b": ["m3"]})
+
+    def test_mayhem_unknown_no_create_event_fails_even_when_allowlisted(self) -> None:
+        for i, allowed in enumerate(((), (self.R,))):
+            self.allow(*allowed)
+            res = self.run_e0(f"o{i}", scorer=self.fake_scorer(drop="Hi2", reason=self.R))
+            self.assertEqual(res["unexpected_pick_exclusions"], {self.R: ["Hi2"]})
+            self.assertEqual(res["picks_not_attempt_allowlist"], list(allowed))
+            self.assertEqual(res["forbidden_pick_reasons"], [self.R])
+            self.assertFalse(res["checks"]["no_unexpected_pick_exclusions"])
+            self.assertFalse(res["ok"])
+            self.assertTrue(res["equal_decide"] and res["equal_C"])  # the md5s alone would have passed
+            self.assertFalse(e0.recompute_ok(json.loads((self.dir / f"o{i}" / "e0.json").read_text()))["parts"]["no_unexpected_pick_exclusions"])
+
+    def test_an_unexpected_reason_fails_and_an_allowlisted_one_passes(self) -> None:
+        res = self.run_e0("a", scorer=self.fake_scorer(drop="Hi2", reason="some_reason"))  # the allowlist is empty
+        self.assertEqual(res["unexpected_pick_exclusions"], {"some_reason": ["Hi2"]})
+        self.assertFalse(res["ok"])
+        self.allow("some_reason")
+        res = self.run_e0("b", scorer=self.fake_scorer(drop="Hi2", reason="some_reason"))
+        self.assertEqual((res["unexpected_pick_exclusions"], res["picks_not_attempt_allowlist"]), ({}, ["some_reason"]))
+        self.assertTrue(res["ok"], res["checks"])
+
+    def test_universe_csv_exclusion_of_a_b_pick_is_caught_even_if_the_summary_is_silent(self) -> None:
+        res = self.run_e0(scorer=self.fake_scorer(excluded_mints={"Mid": self.R, "Lo": self.R}))  # Lo is not a B pick: ignored
+        self.assertEqual(res["excluded_picks_by_reason"], {self.R: ["Mid"]})
+        self.assertEqual(res["unexpected_pick_exclusions"], {self.R: ["Mid"]})
+        self.assertFalse(res["ok"])
+
+    def test_no_exclusions_passes_and_check_recomputes_the_guard(self) -> None:
+        res = self.run_e0(scorer=self.fake_scorer())
+        self.assertTrue(res["checks"]["no_unexpected_pick_exclusions"])
+        self.assertTrue(res["ok"], res["checks"])
+        self.assertTrue(e0.recompute_ok(good_record(self.repo))["parts"]["no_unexpected_pick_exclusions"])
+        for over in ({"scorer_summary": {"mode": "exp022", "source": "exploration", "picks_not_attempts": {"x": ["M"]}}},
+                     {"excluded_picks_by_reason": {"x": ["M"]}},
+                     {"excluded_picks_by_reason": {self.R: ["M"]}, "picks_not_attempt_allowlist": [self.R]},
+                     {"picks_not_attempt_allowlist": ["x"]}):
+            rec = good_record(self.repo, ok=True, **over)
+            self.assertFalse(e0.recompute_ok(rec)["parts"]["no_unexpected_pick_exclusions"], over)
+            self.assertFalse(e0.verify_pins(rec, self.repo)["ok"], over)
+        for missing in ("excluded_picks_by_reason", "picks_not_attempt_allowlist"):
+            rec = {k: v for k, v in good_record(self.repo).items() if k != missing}
+            self.assertFalse(e0.recompute_ok(rec)["parts"]["no_unexpected_pick_exclusions"], missing)
 
 
 class ImportedModuleTests(_Fix):
@@ -754,6 +820,7 @@ class ImportedModuleTests(_Fix):
         self.assertNotEqual(m["head_blob"], m["file_blob"])
 
     def test_scorer_modules_come_from_importtime_and_are_recorded_apart_for_another_tree(self) -> None:
+        self.allow("mayhem")
         tree = make_scorer_tree(self.dir)
         res = e0.run_e0("explore-0814", DAY, self.dir / "sc", block=self.block, engine_factory=self.factory(), repo=self.repo, scorer_repo=tree,
                         log=open("/dev/null", "w"), dry_run=True)
@@ -863,6 +930,7 @@ class ScorerTests(unittest.TestCase):
 
 class Exp022ModeTests(_Fix):
     def test_c_is_rows_u_is_universe_csv_and_no_pnl_reaches_e0_json(self) -> None:
+        self.allow("mayhem")  # the fake scorer excludes one B pick as "mayhem"; allowed here only to see the reporting
         tree = make_scorer_tree(self.dir)
         res = e0.run_e0("explore-0814", DAY, self.dir / "x22", block=self.block, engine_factory=self.factory(), repo=self.repo, scorer_repo=tree,
                         log=open("/dev/null", "w"), dry_run=True)
