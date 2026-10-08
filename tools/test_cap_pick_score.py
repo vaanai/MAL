@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -495,3 +496,400 @@ def test_the_deadline_sell_lands_at_cap_plus_the_exit_lag():
     assert r0["pnl"] == pytest.approx(buy_and_sell(factors, 1, 5))
     r1 = attempt(slot, factors, cfg=cps.Config(exit_lag=0))  # lag 0 in slots: same
     assert r1["pnl"] == pytest.approx(buy_and_sell(factors, 1, 5))
+
+
+# =====================================================================================================================================
+# A multi-mint, two-day fixture on the lab layout. Used by the defaults-are-phase-1 golden test and the switch tests below.
+# =====================================================================================================================================
+
+FIX_DAYS = ("2026-08-15", "2026-08-16")  # both in the day table: 8657.5 / 8657.0 slots per hour -> 0.416 s per slot, k = 3, 300 s = 721 slots
+FIX_BASE_SLOT = {"2026-08-15": 1_000_000, "2026-08-16": 1_400_000}
+FIX_BT0 = 1_786_000_000
+FIX_BT_S_PER_SLOT = 0.4  # the fixture's chain clock: 300 s = 750 slots here against 721 in the day table
+
+
+def _fixture_paths():
+    """{mint: (day, pool, v, [(slot, side, factor, sol, tok)])}: a seeded random walk of the price factor against the seed price, per mint."""
+    import random
+
+    rng = random.Random(20261008)
+    out = {}
+    n = 0
+    for day in FIX_DAYS:
+        for _i in range(8):
+            n += 1
+            mint, pool = f"Mint{n:02d}", f"Pool{n:02d}"
+            v = 17_550_000_000 + 10_000_000 * ((n * 7) % 10)
+            base = FIX_BASE_SLOT[day]
+            slot = base + 1 + rng.randrange(0, 3)  # s0: the first PumpSwap print
+            f = 0.95 + 0.25 * rng.random()
+            sigma = 0.02 + 0.05 * rng.random()
+            drift = rng.choice((-0.004, 0.0, 0.004, 0.01))
+            prints = []
+            while slot < base + 1100:
+                side = rng.choice(("buy", "buy", "sell"))
+                prints.append((slot, side, f, int((0.05 + 3.0 * rng.random()) * 1e9), int((1.0 + 400.0 * rng.random()) * 1e9)))
+                f = max(0.2, f * (1.0 + drift + sigma * rng.gauss(0, 1)))
+                slot += rng.choice((0, 0, 1, 2, 5, 11, 19))
+            prints.append((base + 7500, "buy", f, 10**9, 10**9))  # a late print: s0 + 6900 <= the day's max slot, so the mint is uncensored
+            out[mint] = (day, pool, v, prints)
+    return out
+
+
+def write_fixture(tmp_path, with_bt=True):
+    """The lab layout under tmp_path/viewA: migrations + trades hour files for 2026-08-15 and 08-16 (hours 00 and 01; hour 01 only sets the day's max slot).
+    Returns (view dir, v-map path)."""
+    view = tmp_path / "viewA"
+    paths = _fixture_paths()
+    vmap = {}
+    for day in FIX_DAYS:
+        base = FIX_BASE_SLOT[day]
+        mig, trades = [], []
+        for mint, (d, pool, v, prints) in paths.items():
+            if d != day:
+                continue
+            vmap[pool] = v
+            mig.append({"type": "complete", "mint": mint, "slot": base, "block_time": FIX_BT0 + int(base * FIX_BT_S_PER_SLOT)})
+            for tx, (slot, side, f, sol, tok) in enumerate(prints, 1):
+                q = (cps.SEED_Q + v) * f - v  # quote reserve without V; the price factor f is against the seed price
+                bt = FIX_BT0 + int(slot * FIX_BT_S_PER_SLOT) if with_bt else None
+                trades.append(_trade(mint, pool, slot, side, int(q), cps.SEED_B, sol, tok, tx=tx, bt=bt))
+        _write_zst(view / "migrations" / f"migrations-{day}T00.jsonl.zst", mig)
+        _write_zst(view / "migrations" / f"migrations-{day}T01.jsonl.zst", [{"type": "create", "mint": "Other", "slot": 1}])
+        _write_zst(view / "trades" / f"trades-{day}T00.jsonl.zst", trades)
+        _write_zst(view / "trades" / f"trades-{day}T01.jsonl.zst", [_trade("Other", "X", base + 7600, "buy", 1, 1, 1, 1, tx=1, venue="pump_bonding")])
+    vpath = tmp_path / "v.json"
+    vpath.write_text(json.dumps({"v": vmap}))
+    return view, vpath
+
+
+def fix_args(view, vpath, **kw):
+    d = dict(p1_fast_dir=None, p1_oracle_insample_dir=None, p2_view_dir=[str(view)], p3_root=None, p4_view_dir=None, vmap=str(vpath), picks=None, only_day=None,
+             sph_json=None, hour_sph_json=None)
+    d.update(kw)
+    return argparse.Namespace(**d)
+
+
+def run_fix(view, vpath, cfg=None, **kw):
+    s = cps.run(fix_args(view, vpath, **kw), cfg or cps.Config(), lambda m: None)
+    return s, s.pop("_rows")
+
+
+# --- P2-3: guard basis -----------------------------------------------------------------------------------------------------------------
+
+GROSS = cps.Config(guard_basis="gross")
+
+
+def _tokens_out(f):
+    """tokens out of the landing buy at price factor f (the same state before and after the one print), computed independently of simulate_attempt."""
+    qpre, bpre = states([f, f])
+    fee = float(cps.fee_ppm(qpre[0], bpre[0])) / 1e6
+    net = CFG.size_lamports * (1 - fee)
+    return float(bpre[0] * net / (qpre[0] + net)), fee
+
+
+def test_guard_basis_defaults_to_net_and_gross_is_stricter_by_the_pool_fee():
+    assert cps.Config().guard_basis == "net"
+    band = []
+    for i in range(0, 120):
+        f = 1.100 + 0.0005 * i
+        a, b = attempt([100], [f, f]), attempt([100], [f, f], cfg=GROSS)
+        assert a["exec_ratio"] == b["exec_ratio"] and a["exec_ratio_gross"] == b["exec_ratio_gross"]
+        fee = _tokens_out(f)[1]
+        assert fee > 0 and a["exec_ratio_gross"] == pytest.approx(a["exec_ratio"] / (1 - fee), rel=1e-12)
+        assert (a["status"] == "guarded") == (a["exec_ratio"] > 1.15)  # net: G's test
+        if a["status"] == "filled" and b["status"] == "guarded":
+            band.append(f)
+        assert not (a["status"] == "guarded" and b["status"] == "filled")  # gross rejects everything net rejects
+    assert len(band) > 5 and min(band) < 1.14 and max(band) > 1.14  # a visible band the net guard passes and the executor's gross min_out refuses
+    # the band is exactly where  exec_ratio * (1 - 0) <= 1.15 < exec_ratio_gross
+    for f in band:
+        r = attempt([100], [f, f])
+        assert r["exec_ratio"] <= 1.15 < r["exec_ratio_gross"]
+
+
+def test_gross_guard_is_the_integer_min_out_test():
+    seed_p = SEED_P
+    for i in range(0, 120):
+        f = 1.100 + 0.0005 * i
+        tokens, _fee = _tokens_out(f)
+        min_out = math.ceil(CFG.size_lamports / (1.15 * seed_p))  # base units, rounded UP: the executor never accepts fewer than the ratio allows
+        filled = math.floor(tokens) >= min_out  # tokens out are rounded DOWN
+        r = attempt([100], [f, f], cfg=GROSS)
+        assert (r["status"] == "filled") == filled
+        assert filled == (CFG.size_lamports / math.floor(tokens) <= 1.15 * seed_p)  # the same test as size / floor(tokens) <= ratio x seed price
+
+
+def test_guarded_out_buys_pay_one_send_fee_in_both_bases_and_a_synthetic_migration_pool_is_a_reject():
+    for cfg in (cps.Config(), GROSS):
+        r = attempt([100, 700], [1.5, 1.5, 1.5], cfg=cfg)  # a pool already 50% above the seed at landing: a synthetic migration
+        assert r["status"] == "guarded" and r["exit_type"] == "guard" and r["hold_slots"] == 0
+        assert r["pnl"] == -float(CFG.fee_lamports) and r["rent"] == 0
+        ok = attempt([100, 700], [1.0, 1.0, 1.0], cfg=cfg)
+        assert ok["status"] == "filled"
+        # guard none: nothing is rejected in either basis
+        assert attempt([100, 700], [1.5, 1.5, 1.5], cfg=cps.Config(guard="none", guard_basis=cfg.guard_basis))["status"] == "filled"
+    with pytest.raises(cps.Refused):
+        cps.Config(guard_basis="gross-ish").validate()
+
+
+def test_the_seed_price_in_the_guard_uses_the_pool_v():
+    # V0 is the pool's own V: a pool with a larger V has a higher seed price, so the same landing price is a smaller ratio against it
+    lo, hi = 17_500_000_000.0, 17_700_000_000.0
+    assert (cps.SEED_Q + hi) / cps.SEED_B > (cps.SEED_Q + lo) / cps.SEED_B
+    a = attempt([100], [1.0, 1.0], v=lo)
+    b = attempt([100], [1.0, 1.0], v=hi)
+    assert a["exec_ratio"] != b["exec_ratio"]
+    assert a["exec_ratio"] / b["exec_ratio"] == pytest.approx(((cps.SEED_Q + hi) / (cps.SEED_Q + lo)), rel=1e-6)
+
+
+# --- P2-4: cap anchor ------------------------------------------------------------------------------------------------------------------
+
+CAP_SLOTS = [100, 110, 400, 700, 760, 850, 900]
+CAP_BT = [1000, 1004, 1120, 1240, 1264, 1300, 1320]  # 0.4 s per slot from slot 100: 300 s = 750 slots (the day table of this test is 0.5 s: 600 slots)
+BTC = cps.Config(cap_anchor="block-time")
+
+
+def test_cap_anchor_defaults_to_the_day_mean_and_is_recorded():
+    f = [1.0, 1.0, 1.0, 1.01, 1.02, 1.03, 1.04, 1.05]
+    r = attempt(CAP_SLOTS, f, bt=CAP_BT)
+    assert cps.Config().cap_anchor == "day-mean" and r["cap_anchor_used"] == "day-mean"
+    # X = 103, D = 103 + round(300 / 0.5) = 703; the deadline fill is the first print with slot >= 703 + 2 + 1 = 706 (idx 4, slot 760)
+    assert r["exit_type"] == "deadline" and r["hold_slots"] == 600 and r["pnl"] == pytest.approx(buy_and_sell(f, 1, 4))
+    assert attempt(CAP_SLOTS, f)["pnl"] == r["pnl"]  # block_time is never read in day-mean mode
+
+
+def test_block_time_anchor_puts_the_deadline_on_the_chain_clock():
+    f = [1.0, 1.0, 1.0, 1.01, 1.02, 1.03, 1.04, 1.05]
+    r = attempt(CAP_SLOTS, f, cfg=BTC, bt=CAP_BT)
+    # landing print = the last print at slot <= 103 = slot 100 (block_time 1000); deadline = first print with block_time >= 1300 = idx 5 (slot 850);
+    # the deadline sell lands at slot 850 + lag 2 + 1 -> the first print with slot >= 853 = idx 6
+    assert r["cap_anchor_used"] == "block-time" and r["exit_type"] == "deadline"
+    assert r["hold_slots"] == 850 - 103 and r["pnl"] == pytest.approx(buy_and_sell(f, 1, 6))
+    # the exit lag applies to the timer-fired deadline sell too
+    r0 = attempt(CAP_SLOTS, f, cfg=cps.Config(cap_anchor="block-time", exit_lag=0), bt=CAP_BT)
+    assert r0["pnl"] == pytest.approx(buy_and_sell(f, 1, 6))  # first print with slot >= 851 is still idx 6
+    r9 = attempt(CAP_SLOTS, f, cfg=cps.Config(cap_anchor="block-time", exit_lag=60), bt=CAP_BT)
+    assert r9["pnl"] == pytest.approx(buy_and_sell(f, 1, 7))  # >= 911: past the last print -> the state after it
+
+
+def test_block_time_anchor_scans_triggers_up_to_its_own_deadline():
+    # a +70% spot after the print at slot 760: after the day-mean deadline (703), before the chain-clock deadline (850)
+    f = [1.0, 1.0, 1.0, 1.01, 1.02, 1.7, 1.04, 1.05]
+    dm = attempt(CAP_SLOTS, f, bt=CAP_BT)
+    assert dm["exit_type"] == "deadline" and dm["pnl"] == pytest.approx(buy_and_sell(f, 1, 4))
+    bt = attempt(CAP_SLOTS, f, cfg=BTC, bt=CAP_BT)
+    # trigger on the print at slot 760 (idx 4, post-state 1.7); fill = first print with slot >= 760 + 2 + 1 = idx 5
+    assert bt["exit_type"] == "tp" and bt["hold_slots"] == 760 - 103 and bt["pnl"] == pytest.approx(buy_and_sell(f, 1, 5))
+
+
+def test_block_time_anchor_without_a_print_at_the_deadline_fills_at_the_last_state():
+    slot, bt = [100, 110, 400, 700], [1000, 1004, 1120, 1240]  # the 300 s deadline (block_time 1300) is never printed
+    f = [1.0, 1.0, 1.0, 1.01, 1.02]
+    r = attempt(slot, f, cfg=BTC, bt=bt)
+    assert r["cap_anchor_used"] == "block-time" and r["exit_type"] == "deadline" and r["pnl"] == pytest.approx(buy_and_sell(f, 1, 4))
+    assert r["hold_slots"] == 700 - 103
+
+
+def test_block_time_anchor_falls_back_to_the_day_mean_when_block_time_is_unusable():
+    f = [1.0, 1.0, 1.0, 1.01, 1.02, 1.03, 1.04, 1.05]
+    day = attempt(CAP_SLOTS, f)
+    for bt in (None, [-1] * 7, [-1, -1, 1120, 1240, 1264, 1300, 1320]):  # none; all null; null on the landing print (and every print before it)
+        r = attempt(CAP_SLOTS, f, cfg=BTC, bt=bt)
+        assert r["cap_anchor_used"] == "day-mean-fallback"
+        assert r["pnl"] == day["pnl"] and r["hold_slots"] == day["hold_slots"]
+    # the day-mean fallback needs the day table
+    with pytest.raises(cps.Refused):
+        attempt(CAP_SLOTS, f, cfg=cps.Config(cap_anchor="block-time", k_mode="hour"), sph={}, hour_s=0.5, bt=None)
+    with pytest.raises(cps.Refused):
+        cps.Config(cap_anchor="wall").validate()
+
+
+def test_bt_deadline_index_carries_nulls_forward_and_reports_unusable_landings():
+    slot = np.array([10, 20, 30, 40, 50], np.int64)
+    bt = np.array([100, -1, 130, 200, 210], np.int64)
+    assert cps.bt_deadline_index(slot, bt, 25, 30.0) == 2  # landing print idx 1 (null) -> carried 100; first >= 130 is idx 2
+    assert cps.bt_deadline_index(slot, bt, 25, 95.0) == 3  # first >= 195 is idx 3
+    assert cps.bt_deadline_index(slot, bt, 25, 500.0) == 5  # never reached: len(slot)
+    assert cps.bt_deadline_index(slot, bt, 5, 30.0) is None  # no print at or before the landing slot
+    assert cps.bt_deadline_index(slot, np.array([-1, -1, 130, 200, 210], np.int64), 25, 30.0) is None  # no valid block_time at the landing print
+    assert cps.bt_deadline_index(slot, None, 25, 30.0) is None
+
+
+# --- P2-5: rent and dust ---------------------------------------------------------------------------------------------------------------
+
+RENT = 2_039_280
+
+
+def test_rent_none_is_g_and_always_charges_every_filled_trip_before_the_fail_mix():
+    f = [1.0, 1.0, 1.0, 1.01, 1.02, 1.03, 1.04, 1.05]
+    base = attempt(CAP_SLOTS, f)
+    stress = attempt(CAP_SLOTS, f, cfg=cps.Config(rent_mode="always", rent_lamports=RENT))
+    assert cps.Config().rent_mode == "none" and cps.Config().rent_lamports == 0
+    assert base["rent"] == 0 and stress["rent"] == RENT
+    assert stress["pnl"] == pytest.approx(base["pnl"] - RENT) and stress["status"] == base["status"] == "filled"
+    # a guarded-out buy creates no token account: no rent, one send fee
+    g = attempt([100, 700], [1.5, 1.5, 1.5], cfg=cps.Config(rent_mode="always", rent_lamports=RENT))
+    assert g["status"] == "guarded" and g["rent"] == 0 and g["pnl"] == -float(CFG.fee_lamports)
+    # the rent is part of the filled trip's pnl, so it passes through the fail mix like the rest of the pnl
+    rows = [dict(base, mint="a"), dict(stress, mint="a")]
+    cps.apply_legs(rows[:1], CFG)
+    cps.apply_legs(rows[1:], CFG)
+    assert rows[1]["pnl_nofail"] - rows[0]["pnl_nofail"] == pytest.approx(-RENT)
+    assert rows[1]["pnl_flat"] - rows[0]["pnl_flat"] == pytest.approx(-(1 - CFG.flat_fail) * RENT)
+
+
+def test_rent_flags_must_agree():
+    cps.Config(rent_mode="always", rent_lamports=RENT).validate()
+    cps.Config().validate()
+    for bad in (cps.Config(rent_mode="always"), cps.Config(rent_lamports=RENT), cps.Config(rent_mode="sometimes"), cps.Config(rent_mode="always", rent_lamports=-1)):
+        with pytest.raises(cps.Refused):
+            bad.validate()
+
+
+# --- P2-6: gate statistics -------------------------------------------------------------------------------------------------------------
+
+SCIPY_T_SF = [(2.0, 4, 0.05805826175840778), (-1.3, 7, 0.8826160823038114), (0.0, 3, 0.5), (3.1, 1, 0.09932609219911853), (0.5, 30, 0.3103615024425636),
+              (-4.0, 2, 0.9714045207910317), (12.0, 9, 3.8499431114928265e-07), (1.0, 100, 0.15986207789206167)]  # scipy.stats.t.sf, 1.18.1
+
+
+def test_t_sf_matches_scipy_reference_values():
+    for t, df, ref in SCIPY_T_SF:
+        assert cps.t_sf(t, df) == pytest.approx(ref, rel=1e-9, abs=1e-15)
+    assert cps.t_sf(float("inf"), 5) == 0.0 and cps.t_sf(float("-inf"), 5) == 1.0
+
+
+def _boot_lo_and_p(x):
+    rng = np.random.default_rng(1)
+    boot = x[rng.integers(0, len(x), size=(1000, len(x)))].mean(1)
+    return float(np.percentile(boot, 5)), float((boot <= 0).mean())
+
+
+def test_gate_stats_hand_case():
+    sol = np.array([0.2, -0.1, 0.3, 0.1, -0.2, -0.1])
+    dates = ["d1", "d1", "d2", "d2", "d3", "d3"]  # date sums: 0.1, 0.4, -0.3
+    fills = [True, True, True, True, False, False]
+    g = cps.gate_stats(sol * 1e9, fills, dates, 5e8)
+    assert (g["n_attempts"], g["n_fills"], g["dates"], g["dates_pos"]) == (6, 4, 3, 2)
+    assert g["total_sol"] == pytest.approx(0.2) and g["mean_per_attempt_sol"] == pytest.approx(0.2 / 6) and g["mean_per_attempt_pct"] == pytest.approx(100 * 0.2 / 6 / 0.5)
+    assert g["mean_per_fill_sol"] == pytest.approx(0.125) and g["mean_per_fill_pct"] == pytest.approx(25.0)  # (0.2 - 0.1 + 0.3 + 0.1) / 4 fills
+    assert g["ex_top3_sol"] == pytest.approx(0.2 - (0.3 + 0.2 + 0.1))  # the three best attempts removed
+    assert g["ex_best_day_sol"] == pytest.approx(0.2 - 0.4)
+    # day means 0.05, 0.2, -0.15: t = 0.3287979746107146 on 2 df, one-sided p from scipy
+    assert g["t_date"] == pytest.approx(0.3287979746107146, rel=1e-12) and g["p_date_t"] == pytest.approx(0.3867722965855404, rel=1e-9)
+    lo, p = _boot_lo_and_p(sol)  # 1,000 draws, seed 1, 5th percentile; p = share of bootstrap means <= 0
+    assert g["ci_trade_lo_sol"] == pytest.approx(lo, rel=1e-12) and g["p_trade_boot"] == p
+    assert g["ci_trade_lo_pct"] == pytest.approx(100 * lo / 0.5)
+    # date cluster: resample the 3 dates (seed 1), pooled mean of the resampled dates
+    dsum, dn = np.array([0.1, 0.4, -0.3]), np.array([2, 2, 2])
+    di = np.random.default_rng(1).integers(0, 3, size=(1000, 3))
+    assert g["ci_date_lo_sol"] == pytest.approx(float(np.percentile(dsum[di].sum(1) / dn[di].sum(1), 5)), rel=1e-12)
+    assert g["ci_date_lo_sol"] <= g["mean_per_attempt_sol"]
+
+
+def test_gate_stats_second_hand_case_p_date():
+    day_means = [0.2, 0.1, 0.3, -0.05, 0.15]  # one attempt per date
+    g = cps.gate_stats(np.array(day_means) * 1e9, [True] * 5, [f"d{i}" for i in range(5)], 5e8)
+    assert g["t_date"] == pytest.approx(2.4188315916278085, rel=1e-12) and g["p_date_t"] == pytest.approx(0.03642752980512784, rel=1e-9)
+    assert g["dates"] == 5 and g["dates_pos"] == 4 and g["ex_best_day_sol"] == pytest.approx(0.7 - 0.3)
+
+
+def test_gate_stats_edges():
+    assert cps.gate_stats([], [], [], 5e8) == {"n_attempts": 0, "n_fills": 0}
+    one = cps.gate_stats(np.array([1e8, 2e8]), [True, False], ["d", "d"], 5e8)  # a single date: no t statistic
+    assert one["dates"] == 1 and one["p_date_t"] is None and one["t_date"] is None
+    assert cps.gate_stats(np.array([-1e8, -2e8]), [False, False], ["a", "b"], 5e8)["mean_per_fill_sol"] is None  # no fills
+    flat = cps.gate_stats(np.array([1e8, 1e8, 1e8, 1e8]), [True] * 4, ["a", "a", "b", "b"], 5e8)  # equal date means: sd = 0
+    assert flat["p_date_t"] == 0.0 and flat["p_trade_boot"] == 0.0 and flat["ci_trade_lo_sol"] == pytest.approx(0.1)
+    neg = cps.gate_stats(np.array([-1e8, -1e8, -1e8, -1e8]), [True] * 4, ["a", "a", "b", "b"], 5e8)
+    assert neg["p_date_t"] == 1.0 and neg["p_trade_boot"] == 1.0
+    few = cps.gate_stats(np.array([1e8, 2e8]), [True, True], ["a", "b"], 5e8)  # fewer than 3 attempts: ex-top-3 removes everything
+    assert few["ex_top3_sol"] == pytest.approx(0.0)
+
+
+def _row(block, day, pnl, status="filled"):
+    d = {"block": block, "day": day, "status": status}
+    d.update({"pnl_" + leg: pnl for leg in cps.LEGS})
+    return d
+
+
+def test_book_stats_has_a_gate_block_per_scope_and_leg():
+    rows = [_row(cps.BLOCK_P2, "2026-08-15", 1e8), _row(cps.BLOCK_P2, "2026-08-16", -5e7), _row(cps.BLOCK_P4, "2026-09-09", 2e8, "guarded"),
+            _row(cps.BLOCK_P1A, "2026-09-19", 3e8), _row(cps.BLOCK_P1C, "2026-09-23", -1e8)]
+    out = cps.book_stats(rows, 5e8)
+    assert set(out) == {cps.BLOCK_P2, cps.BLOCK_P4, cps.BLOCK_P1A, cps.BLOCK_P1C, "P2-P4", "P1", "all"}  # a scope with no rows is not reported
+    for scope, cell in out.items():
+        assert set(cell["gate"]) == set(cps.LEGS)
+        assert {leg: cell["gate"][leg]["role"] for leg in cps.LEGS} == {"flat": "binding", "press": "binding", "live": "report-only", "nofail": "report-only"}
+    a = out["all"]["gate"]["flat"]
+    assert a["n_attempts"] == 5 and a["n_fills"] == 4 and a["dates"] == 5
+    assert out["P2-P4"]["gate"]["flat"]["n_attempts"] == 3 and out["P2-P4"]["gate"]["flat"]["n_fills"] == 2
+    assert out["P1"]["gate"]["flat"]["n_attempts"] == 2 and out[cps.BLOCK_P2]["gate"]["flat"]["dates"] == 2
+    # the date cluster is the UTC date alone: two blocks on one date are one cluster
+    two = cps.book_stats([_row(cps.BLOCK_P2, "2026-09-09", 1e8), _row(cps.BLOCK_P4, "2026-09-09", -3e8)], 5e8)
+    assert two["all"]["gate"]["flat"]["dates"] == 1
+
+
+# --- P2-7: pick-set input --------------------------------------------------------------------------------------------------------------
+
+
+def test_load_picks_csv(tmp_path):
+    p = tmp_path / "scores.csv"
+    p.write_text("mint,score\nA,0.9\nB,0.5\nC,0.8030766588450794\n")
+    ps = cps.load_picks(p)
+    assert ps.kind == "csv" and len(ps) == 3
+    assert [ps.label(m, cps.PICK_THRESHOLD)[0] for m in "ABCD"] == ["pick", "non_pick", "pick", "unscored"]  # a pick is score >= threshold
+    assert ps.label("A", 0.95)[0] == "non_pick"
+    bad = tmp_path / "bad.csv"
+    bad.write_text("mint,prob\nA,0.9\n")
+    with pytest.raises(cps.Refused):
+        cps.load_picks(bad)
+
+
+def _gate_replay_jsonl(tmp_path, lines):
+    p = tmp_path / "decisions.jsonl"
+    p.write_text("".join((json.dumps(x) if not isinstance(x, str) else x) + "\n" for x in lines))
+    return p
+
+
+def test_load_picks_jsonl_in_the_gate_replay_format(tmp_path):
+    # the output of tools/cap_pick_gate_replay.py (claude/cap-pick-gate-replay): a meta line, `kind: decision` rows (decision = pick | below | <reason>),
+    # `kind: dead` rows (decision = pre_restart)
+    S = "cap_pick_gate_replay_v1"
+    p = _gate_replay_jsonl(tmp_path, [
+        {"schema": S, "kind": "meta", "view": "v1", "days": ["2026-08-15"]},
+        {"schema": S, "kind": "decision", "view": "v1", "mint": "A", "score": 0.91, "decision": "pick", "entered": True},
+        {"schema": S, "kind": "decision", "view": "v1", "mint": "B", "score": 0.40, "decision": "below", "entered": False},
+        {"schema": S, "kind": "decision", "view": "v1", "mint": "C", "score": None, "decision": "no_features", "entered": False},
+        {"schema": S, "kind": "dead", "view": "v1", "mint": "D", "decision": "pre_restart"},
+        {"schema": S, "kind": "dead", "view": "v1", "mint": "A", "decision": "pre_restart"},  # a dead row never overrides a decision
+        {"schema": S, "kind": "dead", "view": "v1", "mint": "E", "decision": "pre_restart"},
+        {"schema": S, "kind": "decision", "view": "v1", "mint": "E", "score": 0.95, "decision": "pick", "entered": True},  # a decision row replaces an earlier dead row
+        {"schema": S, "kind": "decision", "view": "v2", "mint": "B", "score": 0.99, "decision": "pick", "entered": True},  # the first decision row of a mint wins
+        "",
+    ])
+    ps = cps.load_picks(p)
+    assert ps.kind == "jsonl" and len(ps) == 5  # A B C D E (the meta line has no mint)
+    lab = {m: ps.label(m, 0.5)[0] for m in "ABCDEF"}
+    assert lab == {"A": "pick", "B": "non_pick", "C": "non_pick", "D": "non_pick", "E": "pick", "F": "unscored"}
+    assert ps.label("C", 0.5) == ("non_pick", "", "no_features") and ps.label("D", 0.5)[2] == "pre_restart"
+    assert ps.label("A", 0.0)[0] == "pick" and ps.label("A", 0.999)[0] == "pick"  # the JSONL decision ignores the CSV threshold
+    assert ps.label("A", 0.5)[1] == repr(0.91)
+
+
+def test_load_picks_jsonl_refuses_bad_lines(tmp_path):
+    with pytest.raises(cps.Refused):
+        cps.load_picks(_gate_replay_jsonl(tmp_path, [{"mint": "A", "decision": "pick"}, "{not json"]))
+    with pytest.raises(cps.Refused):
+        cps.load_picks(_gate_replay_jsonl(tmp_path, [{"mint": "A", "decision": 1}]))
+    with pytest.raises(cps.Refused):
+        cps.load_picks(_gate_replay_jsonl(tmp_path, [{"mint": 7, "decision": "pick"}]))
+    ps = cps.load_picks(_gate_replay_jsonl(tmp_path, [{"mint": "A", "decision": "pick"}]))  # a bare {mint, decision} line is enough
+    assert ps.label("A", 0.5)[0] == "pick"
+
+
+def test_book_must_be_all_or_picks():
+    assert cps.Config().book == "all"
+    cps.Config(book="picks").validate()
+    with pytest.raises(cps.Refused):
+        cps.Config(book="pickz").validate()

@@ -220,6 +220,8 @@ class Config:
             raise Refused("exit-lag-ms must be non-negative")
         if self.rent_lamports < 0:
             raise Refused("rent-lamports must be non-negative")
+        if (self.rent_mode == "always") != (self.rent_lamports > 0):  # a rent amount without the mode (or the mode without an amount) would silently charge nothing
+            raise Refused("--rent-mode always needs --rent-lamports > 0, and --rent-lamports > 0 needs --rent-mode always (default: none, 0)")
 
     @property
     def needs_hour_sph(self) -> bool:
