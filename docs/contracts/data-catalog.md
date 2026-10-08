@@ -33,7 +33,7 @@ python3 -m tools.mal_catalog check --role exploration --host fast --start 2026-0
 | Role | May read |
 | --- | --- |
 | `exploration` | owner == `exploration-pool` only |
-| `confirmation-oneshot` | owner == the job's own `exp_id` (e.g. `EXP-011`), passed explicitly -- never guessed |
+| `confirmation-oneshot` | owner == the job's own `exp_id` (e.g. `EXP-011`), passed explicitly -- never guessed; or, for the hours of its range only, a [second owner](#second-owners) of the block |
 | `ops` | nothing historical -- ops jobs don't read research data |
 
 `unassigned` and `kill-review` blocks deny every role. An unrecognized role
@@ -45,6 +45,35 @@ An explicit single-hour row (a disclosed exception, e.g. the "Fast EXP-009
 exclusion" row) overrides the broader block that contains it for exactly
 those hours. Two ranged blocks may never overlap on the same host --
 `parse_ledger` raises if the ledger ever implies one hour has two owners.
+
+## Second owners
+
+A ledger row's Status cell may carry machine markers that disclose a second
+reader of part of an `EXP-###`-owned block (ledger rule 3):
+
+```
+SECOND-OWNER: EXP-022 [2026-10-09T00, 2026-10-16T01)
+```
+
+The form is exact: one space after the colon and after the id, a half-open
+UTC-hour range. Several markers per cell are allowed. The block's `owner`
+does not change; the owner of record keeps its access. For
+`role=confirmation-oneshot` with exactly that `exp_id`, the hours of the range
+(and only those, and only on that block) pass `check_read`. `exploration`,
+`ops`, every other `exp_id` and every hour outside the range are denied as
+before. An explicit single-hour row inside the range still overrides the block,
+so the marker does not apply to that hour.
+
+`parse_ledger` raises, and the ledger is refused, if the token `SECOND-OWNER`
+(any case) appears anywhere in a Status cell without being a well-formed
+marker, if a range is empty or outside the block's own Hours, if the block is
+not owned by an `EXP-###`, or if the second owner is the owner itself. Keep the
+token out of Status prose.
+
+The guard is by hour only. It does not model "sealed until X's FINAL is
+written" or "one read": the tool that opens the hours enforces those.
+`data/catalog.json` gets a `second_owners` list on a block only when the block
+has one.
 
 ## What the catalog is for
 

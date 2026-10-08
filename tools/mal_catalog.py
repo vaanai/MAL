@@ -30,6 +30,22 @@ contains it. Two ranged (non-explicit) blocks may never overlap on the
 same host -- that would mean the ledger gave one hour two owners, which
 rule 5 in HOLDOUT_LEDGER.md forbids -- and `parse_ledger` raises if it
 finds that.
+
+Second owners. A ledger Status cell may carry one or more machine markers,
+
+    SECOND-OWNER: EXP-022 [2026-10-09T00, 2026-10-16T01)
+
+naming an experiment that the ledger discloses as a second reader of part of
+a block that another EXP-### owns (ledger rule 3). The block's `owner` does
+not change: it stays the owner of record. A marker only lets
+role=confirmation-oneshot with exactly that exp_id read exactly those hours
+of that block. It never widens `exploration`, `ops`, or any other exp_id, and
+it never overrides an explicit single-hour row. The token `SECOND-OWNER`
+(any case) is reserved for the marker: any occurrence that is not a
+well-formed marker, a marker whose range leaves the block's own Hours, and a
+marker on a block that no EXP-### owns, make `parse_ledger` raise. The guard
+is by hour only; it does not model "sealed until X is written". The tool that
+reads the hours enforces that.
 """
 
 from __future__ import annotations
@@ -52,6 +68,13 @@ _BRACKET_RE = re.compile(rf"\[\s*({HOUR_TOKEN})\s*,\s*({HOUR_TOKEN})\s*\)")
 _ARROW_RE = re.compile(rf"({HOUR_TOKEN})(?::(\d{{2}}))?Z?\s*(?:→|->)\s*({HOUR_TOKEN})(?::(\d{{2}}))?Z?")
 _OLDER_THAN_RE = re.compile(rf"older than\s+({HOUR_TOKEN})", re.IGNORECASE)
 _EXP_OWNER_RE = re.compile(r"EXP-(\d+)")
+# Second-owner marker: strict, single spaces, half-open bracket range. The
+# token regex is deliberately looser (any case) so a typo cannot be silently
+# ignored: every token must be part of a strict match or the ledger is refused.
+_SECOND_OWNER_TOKEN_RE = re.compile(r"SECOND-OWNER", re.IGNORECASE)
+_SECOND_OWNER_RE = re.compile(
+    rf"(?<![A-Za-z0-9_-])SECOND-OWNER: (EXP-\d{{3,}}) \[({HOUR_TOKEN}), ({HOUR_TOKEN})\)"
+)
 
 ROLES = ("exploration", "confirmation-oneshot", "ops")
 
@@ -77,6 +100,10 @@ class Block:
     set (a normal half-open range; `None` on either end means unbounded in
     that direction -- only the "Future fast backfill / Older than ..." row
     currently uses an open start).
+
+    `second_owners` holds `(exp_id, start_hour, end_hour_exclusive)` triples
+    parsed from `SECOND-OWNER:` markers in the Status cell. `owner` is never
+    changed by them (see the module docstring).
     """
 
     name: str
@@ -86,6 +113,7 @@ class Block:
     start_hour: str | None = None
     end_hour_exclusive: str | None = None
     explicit_hours: tuple[str, ...] | None = None
+    second_owners: tuple[tuple[str, str, str], ...] = ()
     _explicit_set: frozenset[str] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -195,6 +223,58 @@ def _normalize_host(cell: str, *, row_name: str) -> str:
     return m.group(1).lower()
 
 
+def _parse_second_owners(
+    status_cell: str,
+    *,
+    row_name: str,
+    owner: str,
+    start: str | None,
+    end: str | None,
+    explicit: tuple[str, ...] | None,
+) -> tuple[tuple[str, str, str], ...]:
+    """Read the `SECOND-OWNER:` markers out of a Status cell. Raises
+    `ValueError` for a malformed marker, an empty or reversed range, a range
+    outside the block's own Hours, a block that is not owned by an EXP-###,
+    or a second owner that is the owner itself."""
+    text = status_cell.replace("`", "")
+    n_tokens = len(_SECOND_OWNER_TOKEN_RE.findall(text))
+    if n_tokens == 0:
+        return ()
+    matches = list(_SECOND_OWNER_RE.finditer(text))
+    if len(matches) != n_tokens:
+        raise ValueError(
+            f"row {row_name!r}: malformed SECOND-OWNER marker in Status cell ({n_tokens} token(s), {len(matches)} well-formed); "
+            "the form is 'SECOND-OWNER: EXP-### [YYYY-MM-DDTHH, YYYY-MM-DDTHH)', and the token SECOND-OWNER is reserved for it"
+        )
+    if not owner.startswith("EXP-"):
+        raise ValueError(f"row {row_name!r}: SECOND-OWNER marker on a block whose owner is {owner!r}; only an EXP-### owned block can have a second owner")
+
+    found: list[tuple[str, str, str]] = []
+    for m in matches:
+        exp_id, s_hour, e_hour = m.groups()
+        label = f"row {row_name!r}: SECOND-OWNER {exp_id} [{s_hour}, {e_hour})"
+        try:
+            s_dt, e_dt = _parse_hour(s_hour), _parse_hour(e_hour)
+        except ValueError as exc:
+            raise ValueError(f"{label}: not a valid UTC hour ({exc})") from exc
+        if exp_id == owner:
+            raise ValueError(f"{label}: the second owner is the block's own owner")
+        if e_dt <= s_dt:
+            raise ValueError(f"{label}: the range is empty or reversed")
+        if explicit is None:
+            block_start = _parse_hour(start) if start else _NEG_INF
+            block_end = _parse_hour(end) if end else _POS_INF
+            if s_dt < block_start or e_dt > block_end:
+                raise ValueError(f"{label}: the range is outside the block's own Hours [{start}, {end})")
+        else:
+            n_hours = (e_dt - s_dt) // timedelta(hours=1)
+            hours = {_fmt_hour(s_dt + timedelta(hours=i)) for i in range(n_hours)} if n_hours <= len(explicit) else None
+            if hours is None or not hours <= set(explicit):
+                raise ValueError(f"{label}: the range is outside the block's explicit hours {list(explicit)}")
+        found.append((exp_id, s_hour, e_hour))
+    return tuple(found)
+
+
 def _ranges_overlap(a: Block, b: Block) -> bool:
     a_start = _parse_hour(a.start_hour) if a.start_hour else _NEG_INF
     a_end = _parse_hour(a.end_hour_exclusive) if a.end_hour_exclusive else _POS_INF
@@ -238,6 +318,7 @@ def parse_ledger(md_text: str) -> list[Block]:
         start, end, explicit = _parse_hours_cell(hours_cell, row_name=name)
         owner = _normalize_owner(owner_cell, row_name=name)
         host = _normalize_host(host_cell, row_name=name)
+        second_owners = _parse_second_owners(status_cell, row_name=name, owner=owner, start=start, end=end, explicit=explicit)
         blocks.append(
             Block(
                 name=name,
@@ -247,6 +328,7 @@ def parse_ledger(md_text: str) -> list[Block]:
                 start_hour=start,
                 end_hour_exclusive=end,
                 explicit_hours=explicit,
+                second_owners=second_owners,
             )
         )
     _validate_no_bad_overlaps(blocks)
@@ -276,15 +358,34 @@ def allowed(role: str, owner: str, exp_id: str | None = None) -> bool:
     return False
 
 
-def _owner_for_hour(blocks: list[Block], host: str, dt: datetime) -> str | None:
+def second_owner_allows(block: Block, role: str, exp_id: str | None, dt: datetime) -> bool:
+    """True only for role=confirmation-oneshot, with an exp_id that `block`
+    lists as a second owner of a range containing `dt`. `block` must be the
+    block that covers `dt` (see `_block_for_hour`). Deny by default."""
+    if role != "confirmation-oneshot":
+        return False
+    if exp_id is None or _EXP_ID_RE.fullmatch(exp_id) is None:
+        return False
+    return any(
+        sid == exp_id and _parse_hour(s) <= dt < _parse_hour(e)
+        for sid, s, e in block.second_owners
+    )
+
+
+def _block_for_hour(blocks: list[Block], host: str, dt: datetime) -> Block | None:
     host_blocks = [b for b in blocks if b.host == host]
     for b in host_blocks:
         if b._explicit_set is not None and _fmt_hour(dt) in b._explicit_set:
-            return b.owner  # explicit single-hour rows override broader blocks
+            return b  # explicit single-hour rows override broader blocks
     for b in host_blocks:
         if b._explicit_set is None and b.covers_hour(dt):
-            return b.owner
+            return b
     return None
+
+
+def _owner_for_hour(blocks: list[Block], host: str, dt: datetime) -> str | None:
+    b = _block_for_hour(blocks, host, dt)
+    return b.owner if b is not None else None
 
 
 def _is_next_hour(a: str, b: str) -> bool:
@@ -318,7 +419,11 @@ def check_read(
     """Every hour in `[start_hour, end_hour_exclusive)` on `host` must be
     covered by a ledger block AND allowed for `role` (see `allowed`).
     Returns `(True, [])` on ALLOW, or `(False, reasons)` listing which
-    hours (grouped into contiguous spans) were denied and why."""
+    hours (grouped into contiguous spans) were denied and why.
+
+    An hour that `allowed` denies is still allowed for role=confirmation-oneshot
+    when the block covering that hour lists `exp_id` as a second owner of a
+    range containing the hour (`second_owner_allows`). Nothing else changes."""
     start_dt = _parse_hour(start_hour)
     end_dt = _parse_hour(end_hour_exclusive)
     if end_dt <= start_dt:
@@ -328,12 +433,12 @@ def check_read(
     cur = start_dt
     while cur < end_dt:
         hstr = _fmt_hour(cur)
-        owner = _owner_for_hour(blocks, host, cur)
-        if owner is None:
+        block = _block_for_hour(blocks, host, cur)
+        if block is None:
             denied.append((hstr, "not in ledger"))
-        elif not allowed(role, owner, exp_id):
+        elif not allowed(role, block.owner, exp_id) and not second_owner_allows(block, role, exp_id, cur):
             suffix = f" exp_id={exp_id}" if exp_id is not None else ""
-            denied.append((hstr, f"owner={owner} not allowed for role={role}{suffix}"))
+            denied.append((hstr, f"owner={block.owner} not allowed for role={role}{suffix}"))
         cur += timedelta(hours=1)
 
     if not denied:
@@ -349,7 +454,7 @@ def _block_to_doc(b: Block) -> dict[str, Any]:
         hours: dict[str, Any] = {"explicit": list(b.explicit_hours or ())}
     else:
         hours = {"start": b.start_hour, "end_exclusive": b.end_hour_exclusive}
-    return {
+    doc: dict[str, Any] = {
         "name": b.name,
         "host": b.host,
         "owner": b.owner,
@@ -360,6 +465,9 @@ def _block_to_doc(b: Block) -> dict[str, Any]:
             "confirmation_oneshot_exp": b.owner if b.owner.startswith("EXP-") else None,
         },
     }
+    if b.second_owners:  # additive; absent for every block without a marker, so existing output is unchanged
+        doc["second_owners"] = [{"exp_id": e, "start": s, "end_exclusive": x} for e, s, x in b.second_owners]
+    return doc
 
 
 def _walker_doc(name: str, dir_or_file: str) -> dict[str, Any]:
