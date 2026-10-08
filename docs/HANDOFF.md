@@ -42,7 +42,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 | Before 2026-10-16T01Z | **P1 E0:** md5 decision-equivalence between `forward_paper.replay_rows` and the read-ready gate replay (#462 + strict lines from #466) on one exploration UTC day, both booting at 00:00Z | Not started; #462 is still a draft |
 | Before 2026-10-16T01Z | **P2:** a clean A3 monitor run | Daily cron |
 | Before 2026-10-16T01Z | **P3:** A8 merged | **Done**: #466 integrity, #467 event-V decoder |
-| Submit before 2026-10-16T01:05Z | **Walk 2**: `scripts/research/forward-walk2.sh` (PR from builder branch `claude/forward-walk2-wrapper`, open), MiScusi job on research-0, params `{"start":"2026-10-16T01"}`, resumable, 10080 min, about 6 GB. It uses `--event-v` and `--strict-lines`, its own dir `/data/mal/blocks/forward-walk2`, and treats exit 3 as fatal | Builder running |
+| Job must START before 2026-10-16T01:00Z (submit about 00:30Z) | **Walk 2**: `scripts/research/forward-walk2.sh` (PR #469, `claude/forward-walk2-wrapper`, 28 tests; needs a reviewer). MiScusi job on research-0, command `bash scripts/research/forward-walk2.sh`, params `{"start":"2026-10-16T01"}`, resumable, 10080 min, about 6 GB. It uses `--event-v` and `--strict-lines`, the dir `/data/mal/blocks/forward-1016` (as EXP-022 §9 and the ledger name it), and treats walker exit 3 as fatal. Credit cap 11,825,000 = 430,000 × 22 × 1.25 | PR open |
 | Before 2026-10-23T01Z | **P4:** the read tool (sealed read mode of `tools/cap_pick_score.py`: lock, `LOOK_READS.jsonl`, look schedule, strict lines, refusals) merged with quant-proof | Not started |
 | Before 2026-10-23T01Z | **P5:** E1 recorded (after the FINAL and the A11 read; cron 3d374658 at 10-16 06:13Z). **P6:** the A2 check, after E1 | Patched tool merged (#463) |
 
@@ -58,8 +58,8 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - **Read #387's compare.md.** The judge's kill rule: if the CAP-PICK scorer cannot match the live gate's pick set (E0 md5), CAP-PICK is withdrawn. The known 60-min skip is not a kill.
   - It needs a reviewer, then the strict-lines adoption (see #466's notes), before E0.
 - **#465 `claude/catalog-second-owner`**: parked. Merge it only if A11 or the read tool guard their reads through `check_read`, and adapt it to a non-owner read allowance (EXP-022 §12).
+- **#469 `claude/forward-walk2-wrapper`:** the walk-2 wrapper. Review it, then merge before 10-16.
 - **Builders running at handoff:**
-  - `claude/forward-walk2-wrapper` (walk-2 script);
   - `claude/pump-change-watch` (T1: monitor extensions plus `EXP/EXP-023-usdc-boost-tripwire-plan.md`);
   - `claude/cap-pick-t2-boost-exit` (T2: B90 exit and BOOST-cut stress in the scorer). Its pre-declaration must be committed before any scoring; run the full job after review.
 - **#90**: old Cursor draft, keep.
