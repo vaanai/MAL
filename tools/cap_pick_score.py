@@ -37,7 +37,9 @@ GUARD FORMULA (--guard-basis net|gross)
   gross (as the executor sends it): min_out = ceil(size / (ratio x seed_p)) base units; the buy executes iff floor(tokens_out) >= min_out. size is the
         SOL input including the pool fee, so this is the same test as  size / floor(tokens_out) <= ratio x seed_p  and is stricter than `net` by 1/(1-f).
   A pool already above seed x ratio at landing (a synthetic-migration pool) is a reject in either basis. `exec_ratio` (net) and `exec_ratio_gross` are
-  both recorded per attempt.
+  both recorded per attempt. A guarded-out buy is a failed tx and pays ONE send fee (-fee on every leg), in both bases.
+  Caveat: `gross` is the PROPOSED executor rule. `tools/probe_executor.py` today takes min_out from the fresh quote (judge item 6), so the replacement needs
+  an md5 decision-equivalence replay against this rule before any live use. The tool prices min_out with V0 from the V map and never re-reads the pool.
 
 CAP ANCHOR (--cap-anchor day-mean|block-time)
   day-mean (G): deadline slot D = X + round(300 / day seconds-per-slot).

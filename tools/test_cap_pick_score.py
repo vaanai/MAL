@@ -1061,6 +1061,18 @@ def test_picks_book_all_reports_the_pick_subset_and_picks_book_keeps_only_the_pi
 
 
 @needs_zstd
+def test_picks_book_with_no_pick_is_an_empty_book_not_a_crash(tmp_path):
+    view, vpath = write_fixture(tmp_path)
+    p = tmp_path / "nopick.jsonl"
+    p.write_text(json.dumps({"mint": "Mint01", "decision": "below"}) + "\n")
+    s, rows = run_fix(view, vpath, cps.Config(book="picks"), picks=str(p))
+    assert rows == [] and s["counts"]["attempts"] == 0 and s["counts"]["attempts_before_book_filter"] == 16 and s["counts"]["pick_attempts"] == 0
+    assert s["books"]["picks"] == {} and s["fail_legs"]["pressure_intercept"] is None and s["fail_legs"]["pressure_mean_p"] is None
+    out, summary, new_rows = write_out(tmp_path, s, rows)  # the empty book still writes both outputs
+    assert new_rows == [] and summary["books"] == {"picks": {}}
+
+
+@needs_zstd
 def test_cli_flags_reach_the_config_and_the_outputs(tmp_path, capsys):
     view, vpath = write_fixture(tmp_path)
     hj = tmp_path / "hours.json"
