@@ -1,6 +1,6 @@
 # EXP-024 Part 1: H5-BOOSTFLOOR forward read, pre-registration
 
-**Written and merged before the first counted hour.** Written 2026-10-08. To write it, no row of a sealed block (fresh-0802, fresh-0808, fresh-0828) was opened, and neither was any forward-1002 or forward-1016 file, any forward-paper or runner output, or any key. Its inputs are RULE/REPORT/VERIFY under `/data/mal/hunt-1008/h5-flows/`, the hunt-1 judge (`/data/mal/hunt-1008/JUDGE.md`), the Track A draft, the synthesis judge's plan (`PLAN.md`), the live plan, the robustness study, the repo docs, and one exploration-grade power simulation on September rows that were already read (section 15). This file is docs only. The read tool, the extractor and the live canary build are separate PRs (sections 12 and 18). Nothing in this file says or implies that any book is positive. **A fail is the likely outcome** (section 15).
+**Written and merged before the first counted hour.** Written 2026-10-08. To write it, no row of a sealed block (fresh-0802, fresh-0808, fresh-0828) was opened, and neither was any forward-1002 or forward-1016 file, any forward-paper or runner output, or any key. Its inputs are RULE/REPORT/VERIFY under `/data/mal/hunt-1008/h5-flows/`, the hunt-1 judge (`/data/mal/hunt-1008/JUDGE.md`), the Track A draft, the synthesis judge's plan (`PLAN.md`), the live plan, the robustness study, the repo docs, and exploration-grade power simulations on September rows that were already read (section 15). This file is docs only. The read tool, the extractor and the live canary build are separate PRs (sections 12 and 18). Nothing in this file says or implies that any book is positive. **A fail is the likely outcome** (section 15).
 
 | Field | Value |
 | --- | --- |
@@ -397,7 +397,7 @@ Look 2 re-derives Look 1's trades from the same hours and the same V files (by s
 | pressure | +4.719% | — | 0.0345 |
 | 1.9 s, flat / pressure | — | — | 0.0087 / 0.0130 |
 
-**So Look 1's rule would not have passed on September's latest six days**: the pressure p is 0.0345, above 0.020.
+**On the earlier design's 1.3 s cell, Look 1's rule would not have passed on September's latest six days**: the pressure p is 0.0345, above 0.020. That is the judge's "late September would fail Look 1" line below. The pre-registered deciding cell is the 1.9 s entry, and the same rows do better there before the correction; see the rerun below.
 
 **Simulated power** [measured, simulation; `h5-work/h5_power4.py`, sha256 `8f30647ea094b79ed62a61bd88d4a7f6dd02647ecbbbd4b57fac0589f8710234`]. Method:
 - trades drawn i.i.d. from those six dates, shifted to a true pre-correction flat mean μ, then −0.8 pp for section 5;
@@ -410,7 +410,20 @@ Look 2 re-derives Look 1's trades from the same hours and the same V files (by s
 | P(pass at Look 1) | 0.00 | 0.01 | 0.02 | 0.05 | 0.10 | 0.15 | 0.35 |
 | P(pass at either look) | 0.00 | 0.02 | 0.05 | 0.20 | 0.49 | 0.76 | 0.99 |
 
-- **These figures are for the earlier design.** The simulation used the 1.3 s cell as the deciding cell and a 1.9 s / 0.55 s robustness leg. It did not model the 3 s / 1.35 s leg or the 15% guard. The judge's changes (deciding cell at 1.9 s, plus B1 and B2) make the pass condition stricter and the deciding mean lower (about 0.75 pp in September), so these figures are upper bounds for this design [inferred]. A rerun of `h5_power4.py` on the new legs is requested by the judge (PLAN §1); if it is made, it is added by a dated amendment with its script sha256. It does not change any rule here.
+- **These figures are for the earlier design.** The simulation used the 1.3 s cell as the deciding cell and a 1.9 s / 0.55 s robustness leg. It did not model the 3 s / 1.35 s leg or the 15% guard. The judge's changes (deciding cell at 1.9 s, plus B1 and B2) make the pass condition stricter and the deciding mean lower (about 0.75 pp in September), so these figures are upper bounds for this design [inferred]. The rerun the judge asked for (PLAN §1) is the block below. It does not change any rule here.
+**Rerun on the pre-registered legs** [measured, exploration arithmetic; `/data/mal/hunt-1008/h5-work/h5_power5.py`, sha256 `168f3a40e0ecf1fc7103ddf2be2e5c24c59641d837c0ecb330b7075afdd49722`; written by the author of this file because PLAN.md §1 asks for the rerun]. It reads only the September confirmation rows already read (`boostdip_frozen_conf`, `latency_conf` and `capguard_conf` under `h5-flows/out/`).
+- **Legs.** D is the 1.9 s entry with a 0.55 s lag. The B1 stand-in is the 3 s entry with a 0.55 s lag, because **no 1.35 s exit-lag data exists**, so B1 is optimistic here. B2 is the 1.9 s leg with the 15% guard: a trade whose landing price is above 1.15 × the trigger price is rejected and costs −55,000 lamports under both fail legs. That rejects 23.13% of the 1,124 confirmation trades at the 1.9 s entry (21.53% at 1.3 s, which reproduces `s18_capguard.py`'s 0.215).
+- **The six dates 09-19..09-24 (n = 510), pre-correction leg means.** D: flat +4.576%, pressure +3.862%. B1 stand-in: flat +2.997%, pressure +1.779%. B2: flat +4.406%, pressure +3.529%. The rule's 1.3 s cell: flat +5.592%.
+- **Would the pre-registered rule have passed on those six dates?** Before the correction, **yes on every item** at α 0.020, including the B1 and B2 stand-ins (day-level p 0.0087 flat, 0.0130 pressure). With a flat −0.8 pp stand-in for the section 5 correction, **no**: the day-level p is 0.0178 flat and 0.0291 pressure, and the pressure side fails item 6. Neither run is evidence: these dates are in the rule's own confirmation set.
+- **Power**, same method as the table above (i.i.d. draws of 60 trades per date from those six dates, one constant shift for every leg, date effect N(0, 3 pp), a flat −0.8 pp stand-in for the correction, binding futility, 1,500 runs, seed 5). The μ axis is still the 1.3 s cell's pre-correction flat mean, so the columns compare with the table above:
+
+  | μ (flat, pre-correction) | 0 | +2% | +3% | +4% | +5% | +6% | +8% |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | P(pass at Look 1) | 0.00 | 0.00 | 0.01 | 0.04 | 0.07 | 0.12 | 0.33 |
+  | P(pass at either look) | 0.00 | 0.00 | 0.01 | 0.09 | 0.32 | 0.63 | 0.97 |
+
+- **Reading.** The rerun is at or below the earlier table at every μ, and well below it at +5% and +6% for either look (0.32 and 0.63 against 0.49 and 0.76). The judge's odds below were **not** recomputed from it and are, if anything, high [inferred]. The stand-ins are optimistic (no 1.35 s lag, a flat correction). The copied table and odds are left as the judge and Track A gave them.
+
 - **Other α splits** (no correction, no futility, `h5_power3.py`, sha256 `14f07a7332009c0f7bce299ff5e990cc37928372187695c3088c41ffcff20ce7`):
 
   | Split (Look 1 / Look 2) | Look 1 at +6% | Both looks at +4% |
@@ -523,4 +536,4 @@ All items marked "before 10-10T00Z" ship in the same PR as this file.
 - `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`
 - DEC-014, DEC-016, DEC-017, DEC-019, DEC-021, EXP-022, HOLDOUT_LEDGER and `docs/HANDOFF.md` on `main` at `57c0de3`
 - PR #476
-- Power scripts: `/data/mal/hunt-1008/h5-work/h5_power{,2,3,4}.py` (read only `h5-flows/out/boostdip_frozen_conf.parquet`)
+- Power scripts: `/data/mal/hunt-1008/h5-work/h5_power{,2,3,4}.py` (read only `h5-flows/out/boostdip_frozen_conf.parquet`) and `h5_power5.py` (the rerun on the pre-registered legs; also reads `latency_conf.parquet` and `capguard_conf.parquet`)

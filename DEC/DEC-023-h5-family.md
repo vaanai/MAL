@@ -29,7 +29,7 @@
 - DEC-021 §8 allows at most two walks, each family at α = 0.025, Bonferroni across them, so the overall rate is ≤ 0.05. **EXP-022 holds the first slot. EXP-024 takes the second** (DEC-021 Amendment 2). With that, §8's slots are used. A third needs a new DEC.
 - Inside EXP-024's slot, α = 0.025 is split over two looks: **0.020 at Look 1** and **0.005 at Look 2** (Bonferroni over looks, no Holm because k = 1).
 - **Why 0.020 / 0.005.** In the author's exploration power simulation, the split keeps most of Look 1's power (0.22 at a true +6%) and still gives a backstop (0.41 for both looks at +4%). 0.015 / 0.010 gives 0.16 and 0.53; 0.025 / 0 gives 0.26 and 0.08 [measured, simulation; EXP-024 §15, `h5_power3.py`]. Look 1 serves the owner's 10-31 date.
-- The powers above are exploration arithmetic and are not evidence. They are for the earlier design (a 1.3 s deciding cell); the pre-registered design is stricter, so they are upper bounds [inferred].
+- The powers above are exploration arithmetic and are not evidence. They are for the earlier design (a 1.3 s deciding cell). EXP-024 §15 has a rerun on the pre-registered legs, which is lower at every μ (at +4%: 0.04 at Look 1 and 0.09 for either look).
 
 ### 3. The ledger second-reader exception
 
@@ -41,7 +41,7 @@
   - EXP-024 has no EXP-012 component, so the FINAL's picks do not select H5's trades and H5's outcomes do not change the FINAL.
   - The read is disclosed in EXP-012 Amendment 3 (DEC-014(a)) and in the ledger row.
 - **Why this is not the rejected Option X.** Option X would have made EXP-022 a second owner counting `[2026-10-10T00, 2026-10-16T01)` with CAP-PICK's picks priced by the FINAL before look 1. H5 has no selector, and its trades are not the FINAL's picks. The ordering "after the FINAL" removes the same-pool problem for the FINAL.
-- **The call.** This is the Option X / O3 pattern, which the owner approved for EXP-022 in the fallback form ("count from 10-16T01"). It is recorded as an owner decision, or as the manager's decision under the 10-08 mandate if the owner has not answered by 2026-10-09T20:00Z, and written to the notebook.
+- **The call.** This is the Option X / O3 pattern (a second counted reader of owned forward hours). For EXP-022 the owner approved O3 conditionally on 2026-10-08 ("Yes, if the Part 1 can merge before 10-10T00Z; otherwise count from 10-16T01"), and the manager then rejected Option X for EXP-022 (EXP-022 §0). For EXP-024 the exception needs its own decision: the owner's, or the manager's under the 10-08 mandate if the owner has not answered by 2026-10-09T20:00Z. It is written to the notebook.
 - **No new overlapping ledger row.** `tools/mal_catalog.py` rejects two ranged rows over one hour. The exception is recorded in the Status cells of the Forward walk and Forward walk 2 rows, in a ledger changelog line, and here.
 
 ### 4. The block budget: m ≥ 14
@@ -59,7 +59,7 @@
 
 ### 6. What a PASS leads to
 
-- Only the DEC-018 / DEC-019 / DEC-020 path at H5's own operating point, plus the owner's yes. No backward-block PASS is required, as in DEC-021 Amendment 1 for CAP-PICK, because DEC-014 bars a fresh sealed block for a book that already has more than 12 readers and every block predates the 2026-10-02 program upgrade.
+- Only the DEC-018 / DEC-019 / DEC-020 path at H5's own operating point, plus the owner's yes. No backward-block PASS is required, as in DEC-021 Amendment 1 for CAP-PICK. Every sealed block predates the 2026-10-02 program upgrade. Under the block budget (p < 0.025 / m, m ≥ 14), a 6-day sealed block would have power of about 0.15–0.19 even if H5 held (JUDGE.md:105), and reading one would spend a reserve block (EXP-024 §16 item 14).
 - A paper pass is not live evidence. The [DEC-024](DEC-024-h5-live-canary.md) canary is measurement, never gate evidence, and it does not change this section.
 
 ## Owner decisions
