@@ -28,15 +28,16 @@ def states(factors):
     return np.full(f.size, Q0), cps.SEED_B / f
 
 
-def attempt(slot, factors, cfg=CFG, sph=SPH_HALF, s0=100, isbuy=None, sol=None):
+def attempt(slot, factors, cfg=CFG, sph=SPH_HALF, s0=100, isbuy=None, sol=None, hour_s=None, bt=None, v=V):
     qpre, bpre = states(factors)
     slot = np.asarray(slot, np.int64)
     n = slot.size
     assert qpre.size == n + 1
     return cps.simulate_attempt(
-        cfg, day="d", sph=sph, v=V, s0=s0, slot=slot,
+        cfg, day="d", sph=sph, v=v, s0=s0, slot=slot,
         isbuy=np.ones(n, bool) if isbuy is None else np.asarray(isbuy, bool),
         sol=np.full(n, 1e9) if sol is None else np.asarray(sol, float), qpre=qpre, bpre=bpre,
+        hour="d-hour", hour_s=hour_s, bt=None if bt is None else np.asarray(bt, np.int64),
     )
 
 
@@ -300,9 +301,9 @@ def test_oracle_insample_hours_stop_at_0925t06(tmp_path):
 # --- end to end on a tiny lab-layout tree ----------------------------------------------------------------------------------------------
 
 
-def _trade(mint, pool, slot, side, q, b, sol, tok, tx, ev=0, venue="pumpswap"):
+def _trade(mint, pool, slot, side, q, b, sol, tok, tx, ev=0, venue="pumpswap", bt=1):
     return {"v": 2, "venue": venue, "mint": mint, "trader": "t", "side": side, "sol_lamports": sol, "token_raw": tok, "quote_reserve": q, "base_reserve": b,
-            "pool": pool, "slot": slot, "event_index": ev, "block_time": 1, "tx_index": tx}
+            "pool": pool, "slot": slot, "event_index": ev, "block_time": bt, "tx_index": tx}
 
 
 @needs_zstd
@@ -361,3 +362,136 @@ def test_config_defaults_are_g_p_primary():
     assert (c.k_seconds, c.bound, c.exit_lag, c.guard, c.guard_ratio, c.cap_seconds) == (1.3, "END", 2, "min_out", 1.15, 300.0)
     assert (c.tp, c.sl, c.size_lamports, c.fee_lamports, c.target_fail) == (0.5, 0.3, 500_000_000, 55_000, 0.289)
     assert c.live_fail == 1 / 62 and c.flat_fail == 0.15 and c.final_state == "lab"
+
+
+# =====================================================================================================================================
+# Phase 2: the judge's spec switches (capv_JUDGE.md section 4). Every switch defaults to G.
+# =====================================================================================================================================
+
+# --- P2-1: per-hour ms/slot, rounding rule, k mode ---------------------------------------------------------------------------------------
+
+
+def test_slots_for_round_is_python_round_and_ceil_is_explicit():
+    assert cps.slots_for(1.3, 0.2, "round") == 6  # 6.5 slots: Python round is half to even, G's rule
+    assert cps.slots_for(1.3, 0.2, "ceil") == 7
+    assert cps.slots_for(1.3, 0.4, "round") == 3 and cps.slots_for(1.3, 0.4, "ceil") == 4  # 3.25
+    assert cps.slots_for(1.2, 0.4, "ceil") == 3  # 3.0000000000000004 in floats: the 1e-9 tolerance keeps it at 3
+    assert cps.slots_for(1.3, 0.26, "round") == 5 and cps.slots_for(1.3, 0.26, "ceil") == 5  # exactly 5
+    assert cps.slots_for(0.0, 0.4, "ceil") == 0
+    with pytest.raises(cps.Refused):
+        cps.slots_for(1.3, 0.4, "floor")
+    # the day-mode k is G's k_for, bit for bit
+    for day in ("2026-08-15", "2026-09-03", "2026-09-23"):
+        assert cps.slots_for(1.3, cps.sec_per_slot(day, cps.SLOTS_PER_HOUR)) == cps.k_for(day, 1.3, cps.SLOTS_PER_HOUR)
+
+
+def test_k_mode_hour_uses_the_hours_clock_and_day_mode_ignores_it():
+    slot, factors = [100, 110, 700], [1.0, 1.0, 1.0, 1.0]
+    day = attempt(slot, factors)  # SPH_HALF: 0.5 s/slot -> k = round(2.6) = 3
+    assert day["k"] == 3 and day["landing_slot"] == 103
+    assert attempt(slot, factors, hour_s=0.2)["k"] == 3  # --k-mode day never looks at the hour
+    hr = attempt(slot, factors, cfg=cps.Config(k_mode="hour"), hour_s=0.2)  # 1.3 / 0.2 = 6.5 -> round -> 6
+    assert hr["k"] == 6 and hr["landing_slot"] == 106
+    hc = attempt(slot, factors, cfg=cps.Config(k_mode="hour", k_rounding="ceil"), hour_s=0.2)
+    assert hc["k"] == 7 and hc["landing_slot"] == 107
+    # day mode with ceil: 2.6 -> 3, and 1.3 s at 0.4 s/slot is 3.25 -> 4
+    assert attempt(slot, factors, cfg=cps.Config(k_rounding="ceil"))["k"] == 3
+    assert attempt(slot, factors, cfg=cps.Config(k_rounding="ceil"), sph={"d": 9000.0})["k"] == 4
+    # hour mode needs a measured hour
+    with pytest.raises(cps.Refused):
+        attempt(slot, factors, cfg=cps.Config(k_mode="hour"))
+    # hour mode does not need the day table (the cap is day-mean, so only that day entry is read)
+    with pytest.raises(cps.Refused):
+        attempt(slot, factors, cfg=cps.Config(k_mode="hour"), sph={}, hour_s=0.2)
+    ok = attempt(slot, factors, cfg=cps.Config(k_mode="hour", cap_anchor="block-time"), sph={}, hour_s=0.2, bt=[1000, 1010, 1300])
+    assert ok["k"] == 6 and ok["cap_anchor_used"] == "block-time"
+
+
+def test_the_entry_anchor_is_s0_not_the_migrate_slot():
+    r = attempt([100, 110, 700], [1.0] * 4, s0=100)
+    assert r["landing_slot"] == 103  # s0 + k; the migrate slot (mslot) never enters the landing slot
+    r2 = attempt([100, 110, 700], [1.0] * 4, s0=99)
+    assert r2["landing_slot"] == 102
+
+
+def test_hour_sph_from_points_and_sanity_bounds():
+    assert cps.hour_sph_from_points(1000, 5000, 1000 + 9000 * 3550 // 3600, 5000 + 3550) == pytest.approx(9000.0, rel=1e-3)
+    assert cps.hour_sph_from_points(1000, 5000, 2000, 5000 + 1799) is None  # under 1,800 s of block_time between the points
+    assert cps.hour_sph_from_points(1000, 5000, 1000, 8000) is None
+    assert cps.hour_sph_from_points(1000, 5000, 2000, 8600) is None  # 1,000 slots in 3,600 s is not a slot clock
+
+
+def _hour_rows(n, s_per_s=2.5, t0=1_786_791_600, s0=439_420_961, with_bt=True, pad=100):
+    rows = []
+    for i in range(n):
+        dt = i * 3599.0 / (n - 1)
+        r = {"venue": "pumpswap", "mint": "M", "slot": s0 + int(s_per_s * dt), "pad": "x" * pad}
+        if with_bt:
+            r["block_time"] = t0 + int(dt)
+        rows.append(r)
+    return rows
+
+
+@needs_zstd
+def test_measure_hour_sph_reads_the_head_and_the_tail_of_the_hour_file(tmp_path):
+    f = tmp_path / "trades-2026-08-15T11.jsonl.zst"
+    _write_zst(f, _hour_rows(3500))  # about 500 kB: the tail window cuts a row in half
+    assert f.exists() and cps.HOUR_TAIL_BYTES < 3500 * 140
+    m = cps.measure_hour_sph(f)
+    assert m == pytest.approx(9000.0, rel=0.002)
+    # 200 ms slots: 5 slots a second
+    g = tmp_path / "trades-2026-08-15T12.jsonl.zst"
+    _write_zst(g, _hour_rows(800, s_per_s=5.0))
+    assert cps.measure_hour_sph(g) == pytest.approx(18000.0, rel=0.002)
+    # no block_time on the rows, or a file that spans too little of the hour: not measurable
+    h = tmp_path / "trades-2026-08-15T13.jsonl.zst"
+    _write_zst(h, _hour_rows(300, with_bt=False))
+    assert cps.measure_hour_sph(h) is None
+    i = tmp_path / "trades-2026-08-15T14.jsonl.zst"
+    _write_zst(i, [dict(r, block_time=1_786_791_600 + (j % 60)) for j, r in enumerate(_hour_rows(300))])
+    assert cps.measure_hour_sph(i) is None
+
+
+# --- P2-2: exit lag in ms ----------------------------------------------------------------------------------------------------------------
+
+LAG_SLOTS = [100, 110, 600, 603, 604, 700]
+LAG_FACTORS = [1.0, 1.0, 1.0, 1.7, 1.8, 1.9, 2.0]  # the tp triggers on the print at 600 (its post-state is the pre-state of the print at 603: +70%)
+
+
+def test_exit_lag_ms_maps_to_slots_with_ceil_per_hour():
+    def lag(ms, hour_s, **kw):
+        return attempt(LAG_SLOTS, LAG_FACTORS, cfg=cps.Config(exit_lag_ms=ms, **kw), hour_s=hour_s)
+
+    assert lag(550, 0.2)["exit_lag_slots"] == 3  # 2.75 -> 3
+    assert lag(550, 0.4)["exit_lag_slots"] == 2  # 1.375 -> 2
+    assert lag(550, 0.55)["exit_lag_slots"] == 1  # exactly 1.0: the tolerance keeps it at 1
+    assert lag(1350, 0.2)["exit_lag_slots"] == 7  # 6.75 -> 7
+    assert lag(0, 0.2)["exit_lag_slots"] == 0
+    # the fill state moves with the lag: tp at slot 600, fill = first print with slot >= 600 + lag + 1
+    for ms, hour_s, fi in ((550, 0.4, 3), (550, 0.2, 4), (1350, 0.2, 5)):  # lag 2 -> slot 603 (idx 3), lag 3 -> 604 (idx 4), lag 7 -> 608 -> slot 700 (idx 5)
+        r = lag(ms, hour_s)
+        assert r["exit_type"] == "tp" and r["pnl"] == pytest.approx(buy_and_sell(LAG_FACTORS, 1, fi))
+    assert lag(550, 0.4)["pnl"] < lag(550, 0.2)["pnl"] < lag(1350, 0.2)["pnl"]  # the price keeps rising in this path
+
+
+def test_exit_lag_in_slots_is_kept_when_ms_is_not_given():
+    base = attempt(LAG_SLOTS, LAG_FACTORS)
+    assert base["exit_lag_slots"] == 2 and base["pnl"] == pytest.approx(buy_and_sell(LAG_FACTORS, 1, 3))
+    assert attempt(LAG_SLOTS, LAG_FACTORS, cfg=cps.Config(exit_lag=3))["exit_lag_slots"] == 3
+    # with --exit-lag-ms the slot lag is ignored, and the hour clock is required (day mode k does not need it otherwise)
+    assert attempt(LAG_SLOTS, LAG_FACTORS, cfg=cps.Config(exit_lag=9, exit_lag_ms=550), hour_s=0.2)["exit_lag_slots"] == 3
+    with pytest.raises(cps.Refused):
+        attempt(LAG_SLOTS, LAG_FACTORS, cfg=cps.Config(exit_lag_ms=550))
+
+
+def test_the_deadline_sell_lands_at_cap_plus_the_exit_lag():
+    slot = [100, 110, 400, 700, 703, 704, 900]
+    factors = [1.0, 1.0, 1.0, 1.01, 1.02, 1.03, 1.04, 1.05]
+    # day 0.5 s/slot: X = 103, D = 103 + 600 = 703; lag 3 (550 ms at 0.2 s) -> first print with slot >= 703 + 3 + 1 = 707 -> idx 6; lag 2 -> >= 706 -> idx 6
+    r = attempt(slot, factors, cfg=cps.Config(exit_lag_ms=550), hour_s=0.2)
+    assert r["exit_type"] == "deadline" and r["exit_lag_slots"] == 3 and r["hold_slots"] == 600
+    assert r["pnl"] == pytest.approx(buy_and_sell(factors, 1, 6))
+    r0 = attempt(slot, factors, cfg=cps.Config(exit_lag_ms=0), hour_s=0.2)  # lag 0 -> >= 704 -> idx 5
+    assert r0["pnl"] == pytest.approx(buy_and_sell(factors, 1, 5))
+    r1 = attempt(slot, factors, cfg=cps.Config(exit_lag=0))  # lag 0 in slots: same
+    assert r1["pnl"] == pytest.approx(buy_and_sell(factors, 1, 5))

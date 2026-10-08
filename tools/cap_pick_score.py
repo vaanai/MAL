@@ -1,22 +1,66 @@
 #!/usr/bin/env python3
-"""CAP-PICK scorer, phase 1 (reproduction of the audit's `P_primary`). LAB SCORER. NOT A PROMOTE, NOT GATE EVIDENCE.
+"""CAP-PICK scorer, phase 2 (G's `P_primary` plus the judge's spec switches). LAB SCORER. NOT A PROMOTE, NOT GATE EVIDENCE.
 
 Port of the audit simulator `g_reachable_cap_book_rescore/sim.py` (audit 2026-10-08, G) onto the lab's own block layout. The audit read an
 audit-only Parquet copy of the tape; this tool reads the lab's `trades/`, `migrations/` hour files (`*.jsonl.zst`) directly, one UTC day at a time.
-It must not merge before the owner decides O2/O3. Phase 1 scores G's `P_primary` and nothing else; the judge's variants (per-hour ms/slot, exit lag in
-ms, the gross guard, the block_time cap anchor, rent/dust) are phase 2 and are NOT here (`capv_JUDGE.md` section 4).
+It must not merge before the owner decides O2/O3. Phase 1 reproduced G's `P_primary` (job #386: 24,272 attempts, P2-P4 exact to the lamport). Phase 2
+adds the CAP-PICK judge's spec items (`capv_JUDGE.md` section 4) as switches. EVERY SWITCH DEFAULTS TO G's `P_primary`, so a run with no new flag is the
+phase-1 book.
 
 Book (every parameter is a `Config` field and a CLI flag; the defaults are G's `P_primary`)
   Universe  every canonical PumpSwap migration pool with V in [17.5e9, 17.7e9] (`pool_v_0909.json`), uncensored, one attempt per mint.
-  Entry     landing slot X = s0 + k, k = round(1.3 s / that UTC day's seconds-per-slot), END bound (state after every print in slot X).
-            s0 = the first PumpSwap print of the canonical pool; mslot = the `complete` slot.
-  Guard     min_out at seed x 1.15, net: the buy executes only if net_in / tokens_out <= 1.15 x (67,405,853,863 + V) / 206.9e12 on the landing state.
-            A guarded-out buy is a failed tx that pays ONE send fee.
-  Exit      tp50 / sl30 on post-trade spot against the post-buy mark, a 300 s wall-clock cap from the landing slot (D = X + round(300 / sec-per-slot)),
-            exit lag 2 slots on the END bound (fill = state before the first print with slot >= trigger + lag + 1).
+  Entry     landing slot X = s0 + k, END bound (state after every print in slot X). s0 = the first PumpSwap print of the canonical pool (the pool-create
+            slot; the anchor is NOT the migrate slot, and `s0_minus_mslot` is recorded per attempt); mslot = the `complete` slot.
+            k = entry latency (--k-seconds 1.3, or --entry-latency-ms) / seconds-per-slot, rounded (--k-rounding round|ceil), with seconds-per-slot from
+            --k-mode day (G: that UTC day's table, `SLOTS_PER_HOUR`) or --k-mode hour (the attempt's UTC hour measured on the tape, see below).
+  Guard     min_out at seed x 1.15 (see GUARD FORMULA). A guarded-out buy is a failed tx that pays ONE send fee.
+  Exit      tp50 / sl30 on post-trade spot against the post-buy mark. 300 s cap (see CAP ANCHOR). Exit lag on the END bound: fill = state before the first
+            print with slot >= trigger + lag + 1; the deadline sell lands at the deadline + lag. lag = --exit-lag slots (G: 2), or --exit-lag-ms.
   Size/fee  0.5 SOL, 55,000 lamports per send; the pool fee tier is `tools.paper_curve_math.PUMPSWAP_SOL_FEE_TIERS` on (quote + V, base).
-  Fail legs live 1/62 and flat 15% (a fill pays (1-p) pnl + p (-fee)); pressure = `tools.latency_curve.fit_curve` (slopes at scale 1, intercept so the mean
-            p over this run's guard-passed sends is 0.289). A guarded-out row is -fee on every leg.
+  Fail legs live 1/62 (report-only) and flat 15% (a fill pays (1-p) pnl + p (-fee)); pressure = `tools.latency_curve.fit_curve` (slopes at scale 1, intercept
+            so the mean p over this run's guard-passed sends is 0.289). A guarded-out row is -fee on every leg.
+
+PER-HOUR MS/SLOT (--k-mode hour, --exit-lag-ms)
+  An attempt's hour is the UTC hour file that holds its `complete` event. That hour's slots-per-hour is MEASURED on the tape: the lowest slot among the
+  first 2,000 rows and the highest slot among the last 400 kB of the hour's trade file, each with its own `block_time`:
+      slots_per_hour = (slot_hi - slot_lo) / (block_time_hi - block_time_lo) x 3600        (needs >= 1,800 s of block_time between them)
+  ms/slot = 3.6e6 / slots_per_hour. An hour that cannot be measured falls back to the day table (counted in `counts.hour_sph_fallback`, and listed in
+  `hour_sph` in summary.json) and is refused if the day has no table either. --hour-sph-json (hour -> slots per hour) overrides the measurement.
+  Mapping ms -> slots. Entry: x = latency_s / (ms_per_slot / 1000); k = round(x) (Python round, half to even, G's rule) or ceil(x - 1e-9)
+  (--k-rounding). 1.3 s is 6.5 slots at 200 ms: round -> 6, ceil -> 7. Exit lag: ALWAYS ceil(lag_ms / ms_per_slot - 1e-9), with the attempt's hour.
+  The 2 s pressure look-back uses the same seconds-per-slot as k. The day-mean cap (G) always uses the day table.
+
+GUARD FORMULA (--guard-basis net|gross)
+  seed price  seed_p = (67,405,853,863 + V0) / 206.9e12, V0 = the V-map value of the canonical pool (a pool-account read at decision time in the live system).
+  landing state (Q incl. V, B); pool fee tier f from (Q, B); net_in = size x (1 - f); tokens_out = B x net_in / (Q + net_in).
+  net   (G, default): the buy executes iff  net_in / tokens_out <= ratio x seed_p            (ratio 1.15; no integer rounding; this is G's sim.py).
+  gross (as the executor sends it): min_out = ceil(size / (ratio x seed_p)) base units; the buy executes iff floor(tokens_out) >= min_out. size is the
+        SOL input including the pool fee, so this is the same test as  size / floor(tokens_out) <= ratio x seed_p  and is stricter than `net` by 1/(1-f).
+  A pool already above seed x ratio at landing (a synthetic-migration pool) is a reject in either basis. `exec_ratio` (net) and `exec_ratio_gross` are
+  both recorded per attempt.
+
+CAP ANCHOR (--cap-anchor day-mean|block-time)
+  day-mean (G): deadline slot D = X + round(300 / day seconds-per-slot).
+  block-time: the deadline is the first print whose block_time >= block_time(landing) + 300 s, where block_time(landing) is that of the last print at slot
+  <= X (prints are the only slot clock on the tape). D = the slot of that print; triggers are scanned over prints before it; the deadline sell fills at the
+  first print with slot >= D + lag + 1. If no print reaches the deadline the fill is the state after the last print. A block_time that is null on the
+  landing print (or all prints) falls back to day-mean for that attempt (`cap_anchor_used` per row, `counts.cap_bt_fallback`).
+
+RENT (--rent-lamports, --rent-mode none|always)
+  none (G, default): no rent. always: rent_lamports is charged on every FILLED trip, before the fail mix (a stress leg: the real executor refunds the
+  token-account rent when the sell closes the account; the lab constant is 2,039,280). A guarded-out buy creates no account and pays no rent.
+
+GATE STATISTICS (`books.<scope>.gate.<leg>` in summary.json; flat and press are the binding legs, live and nofail are report-only)
+  Per scope (each block, P1, P2-P4, all; and `picks` / `non_picks` when --picks is given) and leg: n attempts, n fills, mean per attempt and per fill (% of
+  the stake and SOL), trade-level CI90 lower bound (attempts; 1,000 bootstrap draws, seed 1, 5th percentile), date-cluster CI90 lower bound (1,000 date
+  resamples, seed 1; a cluster is the UTC date alone), total SOL ex the top 3 attempts, total SOL ex the best date, dates positive / dates, the trade-level
+  one-sided bootstrap p (share of the same 1,000 bootstrap means <= 0), and the date-level one-sided t p (t = mean of date means / (sd / sqrt(W)), W - 1 df).
+
+PICKS (--picks, --book all|picks)
+  --picks takes the EXP-012 score CSV (header mint,score; a pick is score >= --pick-threshold) or a JSONL of live-gate decisions (one object per mint with
+  `mint` and `decision`; `decision == "pick"` is a pick, any other decision is a non-pick; lines without `mint` are skipped; the replay's `kind: "decision"` rows
+  win over `kind: "dead"` rows). --book all (G, default) scores every attempt and reports the pick subset beside it; --book picks keeps ONLY the picks as
+  attempts (unscored and non-pick mints are not attempts), refits the pressure intercept on the picks' own fills, and reports `books.picks`.
 
 RESERVE CONVENTIONS (this broke the audit once)
   * PumpSwap tape rows carry PRE-trade reserves. Bonding-curve rows carry POST-trade reserves (this scorer never prices a bonding row).
@@ -71,6 +115,11 @@ V_LO, V_HI = 17_500_000_000, 17_700_000_000
 TARGET_FAIL_RATE = 0.289
 PICK_THRESHOLD = 0.8030766588450794  # EXP-012 frozen threshold (G's strata.py)
 DEFAULT_VMAP = "/data/mal/pumpswap-virtual/pool_v_0909.json"
+SLOT_TOL = 1e-9  # ceil(x - SLOT_TOL): a float that is an integer to 1e-9 slot is that integer
+HOUR_HEAD_LINES = 2000  # per-hour ms/slot measurement: lowest slot among the first rows ...
+HOUR_TAIL_BYTES = 400_000  # ... and highest slot among the last bytes of the hour file
+HOUR_MIN_SPAN_S = 1800  # the two sample points must be this many block_time seconds apart
+HOUR_SPH_RANGE = (6000.0, 20000.0)  # a measured slots-per-hour outside this is not a slot clock (the lab sees 8,650 to 13,600; 200 ms slots are 18,000)
 
 # Slots per hour by UTC day, copied from G's sim.py (itself from verify/d07_exits-d07-F4/indep_wall.py). 2026-09-18 (one hour, 09-18T23) uses 09-19's.
 SLOTS_PER_HOUR: dict[str, float] = {
@@ -140,6 +189,14 @@ class Config:
     flat_fail: float = 0.15
     target_fail: float = TARGET_FAIL_RATE
     final_state: str = "lab"  # "lab" | "g"
+    k_mode: str = "day"  # "day" (G: the SPH day table) | "hour" (the attempt's UTC hour measured on the tape)
+    k_rounding: str = "round"  # "round" (G: Python round) | "ceil"
+    exit_lag_ms: float | None = None  # None = exit_lag slots (G); else ceil(ms / hour ms-per-slot)
+    guard_basis: str = "net"  # "net" (G) | "gross" (as the executor sends min_out)
+    cap_anchor: str = "day-mean"  # "day-mean" (G) | "block-time"
+    rent_lamports: int = 0
+    rent_mode: str = "none"  # "none" (G) | "always" (stress leg)
+    book: str = "all"  # "all" (G) | "picks"
     v_lo: int = V_LO
     v_hi: int = V_HI
     window_slots: int = WINDOW_SLOTS
@@ -154,6 +211,19 @@ class Config:
             raise Refused(f"final-state must be lab or g, got {self.final_state}")
         if self.k_seconds <= 0 or self.cap_seconds <= 0 or self.exit_lag < 0 or self.size_lamports <= 0 or self.fee_lamports < 0:
             raise Refused("k, cap, size must be positive and lag, fee non-negative")
+        for name, val, ok in (("k-mode", self.k_mode, ("day", "hour")), ("k-rounding", self.k_rounding, ("round", "ceil")),
+                              ("guard-basis", self.guard_basis, ("net", "gross")), ("cap-anchor", self.cap_anchor, ("day-mean", "block-time")),
+                              ("rent-mode", self.rent_mode, ("none", "always")), ("book", self.book, ("all", "picks"))):
+            if val not in ok:
+                raise Refused(f"{name} must be one of {ok}, got {val}")
+        if self.exit_lag_ms is not None and not self.exit_lag_ms >= 0:
+            raise Refused("exit-lag-ms must be non-negative")
+        if self.rent_lamports < 0:
+            raise Refused("rent-lamports must be non-negative")
+
+    @property
+    def needs_hour_sph(self) -> bool:
+        return self.k_mode == "hour" or self.exit_lag_ms is not None
 
 
 # --- pricing -------------------------------------------------------------------------------------------------------------------------
@@ -175,6 +245,59 @@ def sec_per_slot(day: str, sph: Mapping[str, float]) -> float:
 def k_for(day: str, seconds: float, sph: Mapping[str, float]) -> int:
     """k = round(seconds / that UTC day's measured seconds-per-slot) (Python round, as G)."""
     return int(round(seconds / sec_per_slot(day, sph)))
+
+
+def slots_for(seconds: float, sec_slot: float, rounding: str = "round") -> int:
+    """Seconds -> whole slots at `sec_slot` seconds per slot. round = Python round (half to even), G's rule; ceil = smallest integer >= x (x - 1e-9, so
+    1.2 s at 400 ms is 3, not 4)."""
+    x = seconds / sec_slot
+    if rounding == "ceil":
+        return max(0, math.ceil(x - SLOT_TOL))
+    if rounding == "round":
+        return int(round(x))
+    raise Refused(f"rounding must be round or ceil, got {rounding}")
+
+
+def hour_sph_from_points(slot_lo: int, bt_lo: int, slot_hi: int, bt_hi: int) -> float | None:
+    """Slots per hour from two (slot, block_time) points of one hour file; None if the points are too close in block_time to say."""
+    if bt_hi - bt_lo < HOUR_MIN_SPAN_S or slot_hi <= slot_lo:
+        return None
+    sph = (slot_hi - slot_lo) / (bt_hi - bt_lo) * 3600.0
+    return sph if HOUR_SPH_RANGE[0] <= sph <= HOUR_SPH_RANGE[1] else None
+
+
+_ROW_SLOT_RE = re.compile(rb'"slot":(\d+)')
+_ROW_BT_RE = re.compile(rb'"block_time":(\d+)')
+
+
+def _slot_bt(line: bytes) -> tuple[int, int] | None:
+    ms, mb = _ROW_SLOT_RE.search(line), _ROW_BT_RE.search(line)
+    return (int(ms.group(1)), int(mb.group(1))) if ms and mb else None
+
+
+def measure_hour_sph(path: Path) -> float | None:
+    """One UTC hour file's slots-per-hour on the tape: (lowest slot among the first HOUR_HEAD_LINES rows, highest slot among the last HOUR_TAIL_BYTES bytes),
+    each with its own block_time (the span is taken from block_time, so it does not need the file to start and end on the hour). None if unmeasurable."""
+    p1 = subprocess.Popen(["zstdcat", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    p2 = subprocess.Popen(["head", "-n", str(HOUR_HEAD_LINES)], stdin=p1.stdout, stdout=subprocess.PIPE)
+    assert p1.stdout is not None and p2.stdout is not None
+    p1.stdout.close()
+    head = p2.stdout.read()
+    p2.wait()
+    p1.wait()
+    p3 = subprocess.Popen(["zstdcat", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    p4 = subprocess.Popen(["tail", "-c", str(HOUR_TAIL_BYTES)], stdin=p3.stdout, stdout=subprocess.PIPE)
+    assert p3.stdout is not None and p4.stdout is not None
+    p3.stdout.close()
+    tail = p4.stdout.read()
+    p4.wait()
+    p3.wait()
+    lo = [pt for pt in map(_slot_bt, head.split(b"\n")) if pt is not None]
+    hi = [pt for pt in map(_slot_bt, tail.split(b"\n")[1:]) if pt is not None]  # [0] may be cut mid-row
+    if not lo or not hi:
+        return None
+    (slot_lo, bt_lo), (slot_hi, bt_hi) = min(lo), max(hi)
+    return hour_sph_from_points(slot_lo, bt_lo, slot_hi, bt_hi)
 
 
 def final_state(is_buy: bool, q: float, b: float, sol: float, tok: float, mode: str) -> tuple[float, float] | None:
@@ -221,12 +344,35 @@ def build_states(
 # --- the book ------------------------------------------------------------------------------------------------------------------------
 
 
+def bt_deadline_index(slot: np.ndarray, bt: np.ndarray | None, x: int, cap_seconds: float) -> int | None:
+    """Index of the first print whose block_time >= block_time(landing) + cap_seconds, where block_time(landing) is that of the last print at slot <= X.
+    A null block_time is -1 and is carried forward from the earlier prints (running maximum), so the series is non-decreasing. Returns len(slot) when no
+    print reaches the deadline, and None when the landing block_time is unusable (no print at or before X, or no valid block_time yet)."""
+    if bt is None:
+        return None
+    il = int(np.searchsorted(slot, x, "right")) - 1
+    if il < 0:
+        return None
+    run = np.maximum.accumulate(bt)
+    if run[il] <= 0:
+        return None
+    return int(np.searchsorted(run, run[il] + cap_seconds, "left"))
+
+
 def simulate_attempt(
-    cfg: Config, *, day: str, sph: Mapping[str, float], v: float, s0: int, slot: np.ndarray, isbuy: np.ndarray, sol: np.ndarray, qpre: np.ndarray, bpre: np.ndarray
+    cfg: Config, *, day: str, sph: Mapping[str, float], v: float, s0: int, slot: np.ndarray, isbuy: np.ndarray, sol: np.ndarray, qpre: np.ndarray, bpre: np.ndarray,
+    hour: str | None = None, hour_s: float | None = None, bt: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    """One attempt on one mint's ordered path. Mirrors G's `run_day` inner loop for `tpsl_wall` exits and the `min_out` / `none` guards."""
-    s_ = sec_per_slot(day, sph)
-    k = k_for(day, cfg.k_seconds, sph)
+    """One attempt on one mint's ordered path. Mirrors G's `run_day` inner loop for `tpsl_wall` exits and the `min_out` / `none` guards.
+    `hour_s` = seconds per slot of the attempt's UTC hour (needed by --k-mode hour and --exit-lag-ms); `bt` = block_time per print, -1 if null (needed by
+    --cap-anchor block-time)."""
+    s_day = sec_per_slot(day, sph) if (cfg.k_mode == "day" or cfg.cap_anchor == "day-mean") else None
+    if (cfg.k_mode == "hour" or cfg.exit_lag_ms is not None) and hour_s is None:
+        raise Refused(f"no measured seconds-per-slot for the hour of this {day} attempt (hour={hour})")
+    s_ = s_day if cfg.k_mode == "day" else hour_s
+    assert s_ is not None
+    k = slots_for(cfg.k_seconds, s_, cfg.k_rounding)
+    lag = cfg.exit_lag if cfg.exit_lag_ms is None else max(0, math.ceil(cfg.exit_lag_ms / 1000.0 / hour_s - SLOT_TOL))  # type: ignore[operator]
     x = s0 + k  # landing slot
     off = 1 if cfg.bound == "END" else 0
     je = int(np.searchsorted(slot, x + off, "left"))
@@ -239,6 +385,7 @@ def simulate_attempt(
     seed_p = (SEED_Q + v) / SEED_B
     spot_drift = (qe / be) / seed_p - 1
     exec_ratio = (net / tokens) / seed_p
+    exec_ratio_gross = (size / tokens) / seed_p
     # pressure inputs: buys in the landing slot; buy lamports in the 2 s up to and including the landing slot
     signed_buy = np.where(isbuy, sol, 0.0)
     lo2 = int(np.searchsorted(slot, x - int(round(2.0 / s_)), "left"))
@@ -246,11 +393,32 @@ def simulate_attempt(
     ix = int(np.searchsorted(slot, x, "left"))
     ssb = int(isbuy[ix:hi2].sum())
     nearby = float(signed_buy[lo2:hi2].sum())
-    base = dict(k=k, landing_slot=int(x), spot_drift=float(spot_drift), exec_ratio=float(exec_ratio), ssb=ssb, nearby_lamports=nearby, size=size, fee=fee)
-    if cfg.guard == "min_out" and exec_ratio > cfg.guard_ratio:
-        return dict(base, status="guarded", exit_type="guard", hold_slots=0, pnl=-float(fee))
-    d = x + int(round(cfg.cap_seconds / s_))
-    icap = int(np.searchsorted(slot, d, "left"))
+    base = dict(k=k, landing_slot=int(x), spot_drift=float(spot_drift), exec_ratio=float(exec_ratio), exec_ratio_gross=float(exec_ratio_gross), ssb=ssb,
+                nearby_lamports=nearby, size=size, fee=fee, exit_lag_slots=lag, cap_anchor_used="", rent=0)
+    if cfg.guard == "min_out":
+        if cfg.guard_basis == "net":
+            rejected = exec_ratio > cfg.guard_ratio
+        else:  # gross: the executor's integer min_out against the floored tokens out
+            rejected = math.floor(tokens) < math.ceil(size / (cfg.guard_ratio * seed_p))
+        if rejected:
+            return dict(base, status="guarded", exit_type="guard", hold_slots=0, pnl=-float(fee))
+    n = len(slot)
+    icap_bt = bt_deadline_index(slot, bt, x, cfg.cap_seconds) if cfg.cap_anchor == "block-time" else None
+    observed = True
+    if icap_bt is not None:  # block-time anchor
+        icap = icap_bt
+        observed = icap < n
+        d = max(int(slot[icap]) if observed else int(slot[-1]), x)
+        base["cap_anchor_used"] = "block-time"
+    else:
+        if cfg.cap_anchor == "block-time":  # block_time unusable on this path: G's day-mean slots
+            s_cap = sec_per_slot(day, sph)
+            base["cap_anchor_used"] = "day-mean-fallback"
+        else:
+            s_cap = s_day
+            base["cap_anchor_used"] = "day-mean"
+        d = x + int(round(cfg.cap_seconds / s_cap))
+        icap = int(np.searchsorted(slot, d, "left"))
     hit = -1
     exit_type = "deadline"
     if icap > je:
@@ -263,15 +431,18 @@ def simulate_attempt(
             hit = je + i
             exit_type = "tp" if ret[i] >= cfg.tp else "sl"
     if hit >= 0:
-        fi = int(np.searchsorted(slot, slot[hit] + cfg.exit_lag + off, "left"))
+        fi = int(np.searchsorted(slot, slot[hit] + lag + off, "left"))
         xs = int(slot[hit])
     else:
-        fi = int(np.searchsorted(slot, d + cfg.exit_lag + off, "left"))
+        fi = int(np.searchsorted(slot, d + lag + off, "left")) if observed else n
         xs = d
     qa_f, ba_f = qpre[fi] + net, bpre[fi] - tokens
     gross = tokens * qa_f / (ba_f + tokens)
     sellval = gross * (1 - fee_ppm(qa_f, ba_f) / 1e6)
     pnl = float(sellval) - size - 2 * fee
+    if cfg.rent_mode == "always" and cfg.rent_lamports:
+        pnl -= cfg.rent_lamports
+        base["rent"] = cfg.rent_lamports
     return dict(base, status="filled", exit_type=exit_type, hold_slots=xs - int(x), pnl=pnl)
 
 
@@ -298,9 +469,105 @@ def apply_legs(rows: list[dict[str, Any]], cfg: Config) -> dict[str, Any]:
 # --- statistics (G's analyze.py) -----------------------------------------------------------------------------------------------------
 
 
+LEGS = ("live", "flat", "press", "nofail")
+GATE_ROLE = {"flat": "binding", "press": "binding", "live": "report-only", "nofail": "report-only"}
+BOOT_DRAWS, BOOT_SEED = 1000, 1
+
+
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction of the incomplete beta function (modified Lentz)."""
+    tiny = 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    h = d
+    for m in range(1, 400):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        c = 1.0 + aa / c
+        c = c if abs(c) > tiny else tiny
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        c = 1.0 + aa / c
+        c = c if abs(c) > tiny else tiny
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < 3e-16:
+            break
+    return h
+
+
+def betainc(a: float, b: float, x: float) -> float:
+    """Regularised incomplete beta function I_x(a, b)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    lead = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x))
+    if x < (a + 1.0) / (a + b + 2.0):
+        return lead * _betacf(a, b, x) / a
+    return 1.0 - lead * _betacf(b, a, 1.0 - x) / b
+
+
+def t_sf(t: float, df: float) -> float:
+    """P(T > t) for Student's t with `df` degrees of freedom (numpy/math only: scipy is not a lab dependency)."""
+    if math.isinf(t):
+        return 0.0 if t > 0 else 1.0
+    p = 0.5 * betainc(df / 2.0, 0.5, df / (df + t * t))
+    return p if t >= 0 else 1.0 - p
+
+
+def gate_stats(pnl_lamports: Sequence[float], fills: Sequence[bool], dates: Sequence[str], size: float) -> dict[str, Any]:
+    """The promotion-gate statistics of one leg on one scope (judge items 8 and 3). `pnl_lamports` is one entry per ATTEMPT (guard rejects and failed sends at
+    -fee); `fills` marks the filled ones. A cluster is the UTC date alone."""
+    x = np.asarray(pnl_lamports, float) / 1e9
+    fl = np.asarray(fills, bool)
+    n = len(x)
+    if n == 0:
+        return {"n_attempts": 0, "n_fills": 0}
+    sz = size / 1e9
+    rng = np.random.default_rng(BOOT_SEED)
+    boot = x[rng.integers(0, n, size=(BOOT_DRAWS, n))].mean(1)
+    lo_t = float(np.percentile(boot, 5))
+    ud, inv = np.unique(np.asarray(dates), return_inverse=True)
+    dsum = np.bincount(inv, weights=x)
+    dn = np.bincount(inv)
+    w = len(ud)
+    rng2 = np.random.default_rng(BOOT_SEED)
+    di = rng2.integers(0, w, size=(BOOT_DRAWS, w))
+    lo_d = float(np.percentile(dsum[di].sum(1) / dn[di].sum(1), 5))
+    dmean = dsum / dn
+    p_day: float | None = None
+    t_day: float | None = None
+    if w >= 2:
+        sd = float(dmean.std(ddof=1))
+        if sd > 0:
+            t_day = float(dmean.mean() / (sd / math.sqrt(w)))
+            p_day = t_sf(t_day, w - 1)
+        else:
+            p_day = 0.0 if dmean.mean() > 0 else 1.0
+    mean = float(x.mean())
+    nf = int(fl.sum())
+    mean_fill = float(x[fl].mean()) if nf else None
+    return {
+        "n_attempts": n, "n_fills": nf,
+        "mean_per_attempt_pct": 100 * mean / sz, "mean_per_attempt_sol": mean,
+        "mean_per_fill_pct": None if mean_fill is None else 100 * mean_fill / sz, "mean_per_fill_sol": mean_fill,
+        "ci_trade_lo_pct": 100 * lo_t / sz, "ci_trade_lo_sol": lo_t,
+        "ci_date_lo_pct": 100 * lo_d / sz, "ci_date_lo_sol": lo_d,
+        "total_sol": float(x.sum()), "ex_top3_sol": float(x.sum() - np.sort(x)[-3:].sum()), "ex_best_day_sol": float(x.sum() - dsum.max()),
+        "dates": w, "dates_pos": int((dsum > 0).sum()),
+        "p_trade_boot": float((boot <= 0).mean()), "t_date": t_day, "p_date_t": p_day,
+    }
+
+
 def stats(x_lamports: Sequence[float], days: Sequence[str], size: float) -> dict[str, Any]:
     """Mean per attempt as % of stake; gate trade-level CI90 (1,000 draws, seed 1, 5th pct); date-cluster CI90 (1,000 day resamples, seed 1);
-    ex-top-3 SOL, ex-best-day SOL, days positive."""
+    ex-top-3 SOL, ex-best-day SOL, days positive. (G's analyze.py; a cluster here is `day|block`. `gate_stats` clusters on the date alone.)"""
     x = np.asarray(x_lamports, float) / 1e9
     n = len(x)
     if n == 0:
@@ -322,9 +589,6 @@ def stats(x_lamports: Sequence[float], days: Sequence[str], size: float) -> dict
     }
 
 
-LEGS = ("live", "flat", "press", "nofail")
-
-
 def book_stats(rows: Sequence[Mapping[str, Any]], size: float) -> dict[str, Any]:
     out: dict[str, Any] = {}
     scopes: list[tuple[str, tuple[str, ...] | None]] = [(b, (b,)) for b in (BLOCK_P2, BLOCK_P3, BLOCK_P4, BLOCK_P1A, BLOCK_P1C)]
@@ -334,9 +598,11 @@ def book_stats(rows: Sequence[Mapping[str, Any]], size: float) -> dict[str, Any]
         if not sel:
             continue
         days = [r["day"] + "|" + r["block"] for r in sel]
-        cell: dict[str, Any] = {"fills": sum(1 for r in sel if r["status"] == "filled"), "guarded": sum(1 for r in sel if r["status"] == "guarded")}
+        fills = [r["status"] == "filled" for r in sel]
+        cell: dict[str, Any] = {"fills": sum(fills), "guarded": sum(1 for r in sel if r["status"] == "guarded")}
         for leg in LEGS:
             cell[leg] = stats([r["pnl_" + leg] for r in sel], days, size)
+        cell["gate"] = {leg: {"role": GATE_ROLE[leg], **gate_stats([r["pnl_" + leg] for r in sel], fills, [r["day"] for r in sel], size)} for leg in LEGS}
         out[name] = cell
     return out
 
@@ -449,14 +715,15 @@ def order_key(slot: int, tx_index: int | None, event_index: int, seq: int) -> tu
 class _Rows:
     """One mint's kept PumpSwap rows as typed arrays (about 70 bytes a row; a day holds millions, so no per-row tuples)."""
 
-    __slots__ = ("slot", "tx", "ev", "seq", "pid", "buy", "sol", "tok", "q", "b")
+    __slots__ = ("slot", "tx", "ev", "seq", "pid", "bt", "buy", "sol", "tok", "q", "b")
 
     def __init__(self) -> None:
-        self.slot, self.tx, self.ev, self.seq, self.pid = (array("q") for _ in range(5))
+        self.slot, self.tx, self.ev, self.seq, self.pid, self.bt = (array("q") for _ in range(6))
         self.buy = array("b")
         self.sol, self.tok, self.q, self.b = (array("d") for _ in range(4))
 
-    def add(self, slot: int, tx: int, ev: int, seq: int, pid: int, buy: bool, sol: float, tok: float, q: float, b: float) -> None:
+    def add(self, slot: int, tx: int, ev: int, seq: int, pid: int, buy: bool, sol: float, tok: float, q: float, b: float, bt: int = -1) -> None:
+        self.bt.append(bt)
         self.slot.append(slot)
         self.tx.append(tx)
         self.ev.append(ev)
@@ -469,7 +736,7 @@ class _Rows:
         self.b.append(b)
 
     def arrays(self) -> dict[str, np.ndarray]:
-        out = {k: np.frombuffer(getattr(self, k), dtype=np.int64) for k in ("slot", "tx", "ev", "seq", "pid")}
+        out = {k: np.frombuffer(getattr(self, k), dtype=np.int64) for k in ("slot", "tx", "ev", "seq", "pid", "bt")}
         out["buy"] = np.frombuffer(self.buy, dtype=np.int8).astype(bool)
         out.update({k: np.frombuffer(getattr(self, k), dtype=np.float64) for k in ("sol", "tok", "q", "b")})
         return out
@@ -499,7 +766,7 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
         diag["skipped_incomplete_migrations"] = 1
         return {}, diag
     diag["hours"] = len(dh)
-    mig: dict[str, list[Any]] = {}  # mint -> [mslot, mbt, block]
+    mig: dict[str, list[Any]] = {}  # mint -> [mslot, mbt, block, hour of the file holding the earliest `complete`]
     for h in dh:
         path, block = idx["migrations"][h]
         for line in zcat_grep(path, '"complete"'):
@@ -514,10 +781,10 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
             cur = mig.get(m)
             bt = r.get("block_time")
             if cur is None:
-                mig[m] = [r["slot"], bt, block]
+                mig[m] = [r["slot"], bt, block, h]
             else:
                 if r["slot"] < cur[0]:
-                    cur[0], cur[2] = r["slot"], block
+                    cur[0], cur[2], cur[3] = r["slot"], block, h
                 if isinstance(bt, int) and (cur[1] is None or bt < cur[1]):
                     cur[1] = bt
     diag["migrations"] = len(mig)
@@ -553,8 +820,10 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
             if rows is None:
                 rows = by_mint[m] = _Rows()
             tx = r.get("tx_index")
+            btv = r.get("block_time")
             rows.add(slot, -1 if tx is None else int(tx), int(r.get("event_index") or 0), seq, pool_ids.setdefault(pool, len(pool_ids)), r.get("side") == "buy",
-                     _num(r.get("sol_lamports")), _num(r.get("token_raw")), _num(r.get("quote_reserve")), _num(r.get("base_reserve")))
+                     _num(r.get("sol_lamports")), _num(r.get("token_raw")), _num(r.get("quote_reserve")), _num(r.get("base_reserve")),
+                     btv if isinstance(btv, int) and not isinstance(btv, bool) and btv > 0 else -1)
         log(f"{day} {h} pumpswap rows kept so far={seq} ({time.time() - t0:.0f}s)")
     max_slot = max([s for s in (tail_max_slot(idx["trades"][h][0]) for h in tf[-2:]) if s is not None] or [0])
     pool_names = {i: p for p, i in pool_ids.items()}
@@ -573,14 +842,79 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
             continue
         keep = np.flatnonzero(a["pid"] == pid)
         perm = keep[order_perm(a["slot"][keep], a["tx"][keep], a["ev"][keep], a["seq"][keep])]
-        out[m] = {"pool": pool, "v": float(vband[pool]), "s0": s0, "mslot": mslot, "block": mig[m][2],
-                  **{c: a[c][perm] for c in ("slot", "buy", "sol", "tok", "q", "b")}}
+        out[m] = {"pool": pool, "v": float(vband[pool]), "s0": s0, "mslot": mslot, "block": mig[m][2], "hour": mig[m][3],
+                  **{c: a[c][perm] for c in ("slot", "bt", "buy", "sol", "tok", "q", "b")}}
     return out, diag
 
 
 def load_vband(path: str | Path, lo: int, hi: int) -> dict[str, int]:
     v = json.loads(Path(path).read_text())["v"]
     return {k: int(x) for k, x in v.items() if x is not None and lo <= x <= hi}
+
+
+@dataclass(frozen=True)
+class PickSet:
+    """A pick set: the EXP-012 score CSV (`kind == "csv"`, a pick is score >= threshold) or a JSONL of live-gate decisions (`kind == "jsonl"`, a pick is
+    decision == "pick")."""
+
+    kind: str
+    score: Mapping[str, float]
+    decision: Mapping[str, str]
+
+    def __len__(self) -> int:
+        return len(self.decision) if self.kind == "jsonl" else len(self.score)
+
+    def label(self, mint: str, threshold: float) -> tuple[str, str, str]:
+        """(pick | non_pick | unscored, score as text, raw decision)."""
+        sc = self.score.get(mint)
+        score = "" if sc is None else repr(sc)
+        if self.kind == "jsonl":
+            dec = self.decision.get(mint)
+            return ("unscored", score, "") if dec is None else (("pick" if dec == "pick" else "non_pick"), score, dec)
+        return ("unscored", "", "") if sc is None else (("pick" if sc >= threshold else "non_pick"), score, "")
+
+
+def load_picks(path: str | Path) -> PickSet:
+    """Read --picks: sniffed by the first non-blank character (`{` = JSONL of decisions, else the mint,score CSV).
+    JSONL: one object per line with `mint` and `decision` (the format of the gate replay's `replay` output: a meta line, then `kind: "decision"` rows and
+    `kind: "dead"` rows). A line without `mint` is skipped (the meta line). `decision == "pick"` is a pick, anything else is a non-pick. The first
+    `decision` row of a mint wins; a `dead` row only counts when the mint has no decision row. An optional numeric `score` is kept."""
+    text = Path(path).read_text(encoding="utf-8")
+    if text.lstrip()[:1] == "{":
+        decision: dict[str, str] = {}
+        is_dead: set[str] = set()
+        score: dict[str, float] = {}
+        for no, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError as e:
+                raise Refused(f"--picks JSONL line {no} is not JSON") from e
+            if not isinstance(r, dict) or "mint" not in r:
+                continue
+            m, dec = r["mint"], r.get("decision")
+            if not isinstance(m, str) or not isinstance(dec, str):
+                raise Refused(f"--picks JSONL line {no}: `mint` and `decision` must be strings")
+            dead = r.get("kind") == "dead"
+            if m in decision and (dead or m not in is_dead):
+                continue  # the first decision row stays; a dead row never overrides
+            decision[m] = dec
+            if dead:
+                is_dead.add(m)
+            else:
+                is_dead.discard(m)
+                sc = r.get("score")
+                if isinstance(sc, (int, float)) and not isinstance(sc, bool):
+                    score[m] = float(sc)
+        return PickSet("jsonl", score, decision)
+    out: dict[str, float] = {}
+    rd = csv.DictReader(text.splitlines())
+    if not rd.fieldnames or "mint" not in rd.fieldnames or "score" not in rd.fieldnames:
+        raise Refused("--picks CSV needs a header with columns mint,score")
+    for r in rd:
+        out[r["mint"]] = float(r["score"])
+    return PickSet("csv", out, {})
 
 
 def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
@@ -591,17 +925,36 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
     sph = dict(SLOTS_PER_HOUR)
     if args.sph_json:
         sph = {k: float(x) for k, x in json.loads(Path(args.sph_json).read_text()).items()}
+    hour_sph: dict[str, dict[str, Any]] = {}  # hour -> {slots_per_hour, source}
+    if getattr(args, "hour_sph_json", None):
+        hour_sph = {h: {"slots_per_hour": float(x), "source": "json"} for h, x in json.loads(Path(args.hour_sph_json).read_text()).items()}
     days = sorted({h[:10] for h in idx["trades"]})
     if args.only_day:
         unknown = sorted(set(args.only_day) - set(days))
         if unknown:
             raise Refused(f"no trade hours for --only-day {unknown}")
         days = [d for d in days if d in args.only_day]
+    if cfg.book == "picks" and not args.picks:
+        raise Refused("--book picks needs --picks")
     picks = load_picks(args.picks) if args.picks else None
     rows: list[dict[str, Any]] = []
     tot = {"hours": 0, "migrations": 0, "mints_with_canonical_pool": 0, "censored": 0, "multipool": 0, "bad_json": 0, "skipped_incomplete_migrations": 0,
-           "bad_reserves": 0, "final_state_fallback": 0}
+           "bad_reserves": 0, "final_state_fallback": 0, "hour_sph_fallback": 0, "cap_bt_fallback": 0}
     days_done: list[str] = []
+
+    def hour_seconds(h: str, day: str) -> float:
+        if h not in hour_sph:
+            m = measure_hour_sph(idx["trades"][h][0])
+            if m is not None:
+                hour_sph[h] = {"slots_per_hour": m, "source": "tape"}
+            elif day in sph:
+                hour_sph[h] = {"slots_per_hour": sph[day], "source": "day-table-fallback"}
+                tot["hour_sph_fallback"] += 1
+                log(f"{h}: ms/slot not measurable on the tape; using the day table")
+            else:
+                raise Refused(f"cannot measure ms/slot for hour {h} and {day} has no day table (use --hour-sph-json)")
+        return 3600.0 / hour_sph[h]["slots_per_hour"]
+
     for day in days:
         meta, diag = read_day(day, idx, vband, cfg, log)
         for k_, v_ in diag.items():
@@ -618,50 +971,53 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
                 tot["bad_reserves"] += 1
                 continue
             tot["final_state_fallback"] += st[2]
-            r = simulate_attempt(cfg, day=day, sph=sph, v=md["v"], s0=md["s0"], slot=slot, isbuy=isbuy, sol=sol, qpre=st[0], bpre=st[1])
-            r.update(day=day, block=md["block"], mint=m, pool=md["pool"], v=int(md["v"]), mslot=md["mslot"], s0=md["s0"])
+            hs = hour_seconds(md["hour"], day) if cfg.needs_hour_sph else None
+            r = simulate_attempt(cfg, day=day, sph=sph, v=md["v"], s0=md["s0"], slot=slot, isbuy=isbuy, sol=sol, qpre=st[0], bpre=st[1],
+                                 hour=md["hour"], hour_s=hs, bt=md["bt"])
+            tot["cap_bt_fallback"] += int(r["cap_anchor_used"] == "day-mean-fallback")
+            r.update(day=day, block=md["block"], mint=m, pool=md["pool"], v=int(md["v"]), mslot=md["mslot"], s0=md["s0"], s0_minus_mslot=md["s0"] - md["mslot"],
+                     hour=md["hour"], ms_per_slot_hour="" if hs is None else hs * 1000.0)
             if picks is None:
-                r["pick"] = ""
+                r["pick"], r["score"], r["pick_decision"] = "", "", ""
             else:
-                sc = picks.get(m)
-                r["pick"] = "unscored" if sc is None else ("pick" if sc >= cfg.pick_threshold else "non_pick")
-                r["score"] = "" if sc is None else repr(sc)
+                r["pick"], r["score"], r["pick_decision"] = picks.label(m, cfg.pick_threshold)
             rows.append(r)
         log(f"{day}: attempts so far {len(rows)}")
+    n_before = len(rows)
+    n_picks, n_non, n_unscored = (sum(1 for r in rows if r["pick"] == lab) for lab in ("pick", "non_pick", "unscored"))
+    if cfg.book == "picks":  # the pick-only book: unscored and non-pick mints are not attempts; the pressure intercept refits on the picks' own fills
+        rows = [r for r in rows if r["pick"] == "pick"]
     leg_info = apply_legs(rows, cfg)
     size = float(cfg.size_lamports)
     summary: dict[str, Any] = {
-        "schema": SCHEMA, "tool": TOOL, "phase": 1, "banner": "LAB SCORER. NOT A PROMOTE, NOT GATE EVIDENCE. Reproduction of the audit's P_primary; must not merge before owner O2/O3.",
+        "schema": SCHEMA, "tool": TOOL, "phase": 2, "banner": "LAB SCORER. NOT A PROMOTE, NOT GATE EVIDENCE. G's P_primary plus the judge's spec switches (all default to G); must not merge before owner O2/O3.",
         "config": asdict(cfg), "sources": {s.block: [str(d) for d in s.dirs] for s in sources}, "days": days_done,
         "vmap": {"path": str(args.vmap), "sha256": hashlib.sha256(Path(args.vmap).read_bytes()).hexdigest(), "pools_in_band": len(vband)},
-        "picks": None if picks is None else {"path": str(args.picks), "sha256": hashlib.sha256(Path(args.picks).read_bytes()).hexdigest(), "scored": len(picks), "threshold": cfg.pick_threshold},
+        "picks": None if picks is None else {"path": str(args.picks), "sha256": hashlib.sha256(Path(args.picks).read_bytes()).hexdigest(), "format": picks.kind,
+                                             "scored": len(picks), "threshold": cfg.pick_threshold if picks.kind == "csv" else None},
         "forbidden": {"path_parts": list(FORBIDDEN_PATH_PARTS), "exp009_hours": list(EXP009_HOURS), "cutoff_hour": CUTOFF_HOUR, "oracle_insample_last_hour": ORACLE_INSAMPLE_LAST_HOUR},
-        "counts": {**tot, "attempts": len(rows), "fills": sum(1 for r in rows if r["status"] == "filled"), "guarded": sum(1 for r in rows if r["status"] == "guarded")},
+        "counts": {**tot, "attempts": len(rows), "fills": sum(1 for r in rows if r["status"] == "filled"), "guarded": sum(1 for r in rows if r["status"] == "guarded"),
+                   "attempts_before_book_filter": n_before, "pick_attempts": n_picks, "non_pick_attempts": n_non, "unscored_attempts": n_unscored},
+        "hour_sph": {h: {**v_, "ms_per_slot": 3.6e6 / v_["slots_per_hour"]} for h, v_ in sorted(hour_sph.items())},
         "fail_legs": {"live": cfg.live_fail, "flat": cfg.flat_fail, "pressure_target_mean_p": cfg.target_fail, **leg_info},
         "exit_types": {t: sum(1 for r in rows if r["exit_type"] == t) for t in ("tp", "sl", "deadline", "guard")},
-        "books": {"all": book_stats(rows, size)},
+        "books": {},
     }
+    if cfg.book == "all":
+        summary["books"]["all"] = book_stats(rows, size)
     if picks is not None:
         summary["books"]["picks"] = book_stats([r for r in rows if r["pick"] == "pick"], size)
-        summary["books"]["non_picks"] = book_stats([r for r in rows if r["pick"] == "non_pick"], size)
+        if cfg.book == "all":
+            summary["books"]["non_picks"] = book_stats([r for r in rows if r["pick"] == "non_pick"], size)
     summary["_rows"] = rows
     return summary
-
-
-def load_picks(path: str | Path) -> dict[str, float]:
-    out: dict[str, float] = {}
-    with open(path, newline="", encoding="utf-8") as fh:
-        rd = csv.DictReader(fh)
-        if not rd.fieldnames or "mint" not in rd.fieldnames or "score" not in rd.fieldnames:
-            raise Refused("--picks CSV needs a header with columns mint,score")
-        for r in rd:
-            out[r["mint"]] = float(r["score"])
-    return out
 
 
 ROW_COLUMNS = (
     "day", "block", "mint", "pool", "v", "mslot", "s0", "k", "landing_slot", "status", "exit_type", "hold_slots", "spot_drift", "exec_ratio", "ssb",
     "nearby_lamports", "size", "fee", "pnl_nofail", "pnl_live", "pnl_flat", "pnl_press", "p_press", "pick", "score",
+    # phase 2 (appended: the 25 columns above are byte-identical to phase 1 under the defaults)
+    "s0_minus_mslot", "hour", "ms_per_slot_hour", "exit_lag_slots", "exec_ratio_gross", "cap_anchor_used", "rent", "pick_decision",
 )
 
 
@@ -688,22 +1044,32 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--p4-view-dir", action="append", default=None, help="P4 exp011-0909 view dir, or its parent holding b and c")
     ap.add_argument("--default-roots", action="store_true", help="fill every omitted source flag with its canonical exploration path")
     ap.add_argument("--vmap", default=DEFAULT_VMAP, help="pool -> V map (json with a `v` object)")
-    ap.add_argument("--picks", default=None, help="CSV with header mint,score (EXP-012 scores); adds a pick column and pick-only books")
-    ap.add_argument("--pick-threshold", type=float, default=PICK_THRESHOLD)
+    ap.add_argument("--picks", default=None, help="pick set: CSV with header mint,score (EXP-012 scores) or a JSONL of live-gate decisions (mint, decision); adds a pick column and pick-only books")
+    ap.add_argument("--pick-threshold", type=float, default=PICK_THRESHOLD, help="CSV scores only")
+    ap.add_argument("--book", choices=("all", "picks"), default="all", help="all = G's book (every attempt); picks = only the picks are attempts (needs --picks)")
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--only-day", action="append", default=None, help="UTC day YYYY-MM-DD (repeatable); default every day with trade hours")
     ap.add_argument("--sph-json", default=None, help="day -> slots per hour override (default: G's table)")
+    ap.add_argument("--hour-sph-json", default=None, help="hour (YYYY-MM-DDTHH) -> slots per hour override for --k-mode hour / --exit-lag-ms (default: measured on the tape)")
     d = Config()
-    ap.add_argument("--k-seconds", type=float, default=d.k_seconds)
+    ap.add_argument("--k-seconds", type=float, default=None, help=f"entry latency in seconds (default {d.k_seconds})")
+    ap.add_argument("--entry-latency-ms", type=float, default=None, help="entry latency in ms (alternative to --k-seconds)")
+    ap.add_argument("--k-mode", choices=("day", "hour"), default=d.k_mode, help="seconds-per-slot for k: day = G's day table; hour = the attempt's UTC hour measured on the tape")
+    ap.add_argument("--k-rounding", choices=("round", "ceil"), default=d.k_rounding, help="latency / ms-per-slot -> slots: round = Python round (G); ceil")
     ap.add_argument("--bound", choices=("END", "START"), default=d.bound)
-    ap.add_argument("--exit-lag", type=int, default=d.exit_lag, help="slots")
+    ap.add_argument("--exit-lag", type=int, default=None, help=f"exit lag in slots (default {d.exit_lag}; not with --exit-lag-ms)")
+    ap.add_argument("--exit-lag-ms", type=float, default=None, help="exit lag in ms, mapped to slots with the attempt's hour ms/slot, ceil (e.g. 550 primary, 1350 pessimistic)")
     ap.add_argument("--guard", choices=("min_out", "none"), default=d.guard)
     ap.add_argument("--guard-ratio", type=float, default=d.guard_ratio)
+    ap.add_argument("--guard-basis", choices=("net", "gross"), default=d.guard_basis, help="net = G (net_in / tokens_out); gross = size incl. the pool fee, with integer min_out")
     ap.add_argument("--cap-seconds", type=float, default=d.cap_seconds)
+    ap.add_argument("--cap-anchor", choices=("day-mean", "block-time"), default=d.cap_anchor, help="day-mean = G (day SPH slots); block-time = first print with block_time >= landing + cap")
     ap.add_argument("--tp", type=float, default=d.tp)
     ap.add_argument("--sl", type=float, default=d.sl)
     ap.add_argument("--size-lamports", type=int, default=d.size_lamports)
     ap.add_argument("--fee-lamports", type=int, default=d.fee_lamports)
+    ap.add_argument("--rent-lamports", type=int, default=d.rent_lamports, help="token-account rent per filled trip when --rent-mode always (lab constant 2039280)")
+    ap.add_argument("--rent-mode", choices=("none", "always"), default=d.rent_mode, help="none = G; always = charge the rent on every filled trip (stress leg)")
     ap.add_argument("--live-fail", type=float, default=d.live_fail)
     ap.add_argument("--flat-fail", type=float, default=d.flat_fail)
     ap.add_argument("--final-state", choices=("lab", "g"), default=d.final_state, help="state after the last print: lab = pumpswap_post_trade_reserves; g = the audit's 1.25%% constant")
@@ -711,9 +1077,17 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def config_from_args(a: argparse.Namespace) -> Config:
+    d = Config()
+    if a.k_seconds is not None and a.entry_latency_ms is not None:
+        raise Refused("give --k-seconds or --entry-latency-ms, not both")
+    if a.exit_lag is not None and a.exit_lag_ms is not None:
+        raise Refused("give --exit-lag (slots) or --exit-lag-ms, not both")
+    k_seconds = a.k_seconds if a.k_seconds is not None else (a.entry_latency_ms / 1000.0 if a.entry_latency_ms is not None else d.k_seconds)
     return Config(
-        k_seconds=a.k_seconds, bound=a.bound, exit_lag=a.exit_lag, guard=a.guard, guard_ratio=a.guard_ratio, cap_seconds=a.cap_seconds, tp=a.tp, sl=a.sl,
-        size_lamports=a.size_lamports, fee_lamports=a.fee_lamports, live_fail=a.live_fail, flat_fail=a.flat_fail, final_state=a.final_state, pick_threshold=a.pick_threshold,
+        k_seconds=k_seconds, bound=a.bound, exit_lag=d.exit_lag if a.exit_lag is None else a.exit_lag, guard=a.guard, guard_ratio=a.guard_ratio, cap_seconds=a.cap_seconds,
+        tp=a.tp, sl=a.sl, size_lamports=a.size_lamports, fee_lamports=a.fee_lamports, live_fail=a.live_fail, flat_fail=a.flat_fail, final_state=a.final_state,
+        pick_threshold=a.pick_threshold, k_mode=a.k_mode, k_rounding=a.k_rounding, exit_lag_ms=a.exit_lag_ms, guard_basis=a.guard_basis, cap_anchor=a.cap_anchor,
+        rent_lamports=a.rent_lamports, rent_mode=a.rent_mode, book=a.book,
     )
 
 
