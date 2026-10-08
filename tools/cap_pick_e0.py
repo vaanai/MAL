@@ -47,9 +47,10 @@ hour_files, stage_creates, iter_json_rows, iter_lines, quick_mint, create_signal
 SANITY CHECKS (also required for exit 0, so an equal result cannot be vacuous or built on different inputs): A's preload row count and staged file count
 equal B's; A's gate log rows equal the engine's rows; the deciding set D and B's picks are not empty.
 
-MEMORY (--mem-note): A needs about 9-10 GB RSS for one explore-0814 day (9.07 GB observed while loading 2026-08-17; 2 h of it took 781 MB and 5 h took
-2.1 GB), because `replay_rows` queues every print in the engine inbox before it drains. The official run is a MiScusi job with mem 16 GB. It does not
-fit in 3 GB. B needs about 2 GB; the scorer is a subprocess in the same cgroup.
+MEMORY (--mem-note): A needs about 9-10 GB RSS for one explore-0814 day by the early estimate, and the sampled peak of the 2026-08-17 dry run was 13.3 GB
+(`ps` every 10 s, so a lower bound; 2 h of the day took 781 MB and 5 h took 2.1 GB), because `replay_rows` queues every print in the engine inbox before
+it drains. The official run is a MiScusi job with mem 16 GB; that leaves about 20% over the sampled peak, so a busier day wants more. It does not fit in
+3 GB. B needs about 2 GB; the scorer is a subprocess in the same cgroup.
 
 Exit codes: 0 the criterion and the sanity checks hold; 1 a check failed (A != B on D, C != B picks in U, ...); 2 refused or a step could not run.
 """
