@@ -129,14 +129,14 @@ The rule's exit is `H == 'end'`, with `DS=40 TMIN=0 TMAX=300 TEND=330 NOBOOSTREQ
 - **Counted trade.** A trade counts in a look if the block_time of its canonical pool's first print (s0) falls in the look's counted window.
 - **Hour 2026-10-09T23** is read only for `complete` events of pools whose s0 falls in the window (universe membership). No outcome from it is used.
 - **Walk boundary.** Paths that cross the forward-1002 / walk-2 boundary (10-16T01) are joined in (slot, tx_index, event_index) order.
-- **Seal (from merge until the look that reads them, and for Look 2 hours until EXP-022's read has ended).** No person, agent or job does any of these on any October hour of a V-range pool in its first 360 s, from any source (forward-1002, walk 2, the fast-0 tip tape, the live listener, RPC, a paper runner or a live wallet):
+- **Seal (from merge until the look that reads them, and for Look 2 hours until EXP-022's read has ended).** No person, agent or job does any of these on any October hour of a V-range pool in its first 360 s, from any source (forward-1002, walk 2, the fast-0 tip tape, the live listener, RPC, a paper runner or a live wallet), **except the real-time observation declared in section 3.1**:
   - computes, opens or prints an H5 trigger outcome, fill, exit, P&L, mean, CI or day sign;
   - prices the H5 trade set.
 - **What stays allowed:**
   - the A3 monitor's flags and its listed values;
   - hour counts (sealed, verified, bad);
   - the section 10 precount, which is counts only;
-  - the DEC-024 canary's timing, landing and failure counts (never fills, exits, P&L or wallet deltas), under DEC-024's own seal.
+  - the real-time observation of the live canary's and the shadow detector's outcomes for pools in Look 1's window (section 3.1).
 - **No early forward-1002 read.** No H5 process reads any forward-1002 hour before the EXP-012 FINAL (A) report is written. This is the EXP-022 §9 / DEC-021 Am.1 rule, now also DEC-016 Am.7.
 - **Walk-2 hours wait for EXP-022.** No H5 process reads any walk-2 hour before EXP-022's read has ended. EXP-022's looks are cumulative, and H5 rows price CAP-PICK picks wherever the mints overlap. Reading earlier would breach EXP-022 §9 ("prices the counted picks from any source"). See EXP-022 Amendment 2.
 - **CAP-PICK seal, both ways.** From 2026-10-16T01 to the end of EXP-022's read:
@@ -144,6 +144,20 @@ The rule's exit is `H == 'end'`, with `DS=40 TMIN=0 TMAX=300 TEND=330 NOBOOSTREQ
   - no per-pool H5 P&L is produced before each CAP-PICK look.
 - **The live canary.** The DEC-024 canary may trade inside the counted window. Its buys and sells are real chain trades by one participant at 0.02 SOL, about 0.05% of a pool with Q of about 40 SOL. They appear in the tape as ordinary rows. The read tool does not remove them, because filtering the tape would be an edit of chain truth. Its sells fall at s0 + 330 s or later, outside the rule's trigger window [0, 300] s, so they cannot trigger a pool. This is disclosed, not corrected.
 - **A breach** is recorded here, dated, and the read is reported compromised. A compromised read cannot support a live request.
+
+### 3.1 Declared observation (the owner's decision, 10-08)
+
+- "By the owner's decision (10-08), the live canary's and the shadow detector's outcomes for pools inside Look 1's window are observed in real time. This is declared before the window opens and before any canary trade."
+- **Scope.** Pools whose s0 falls in Look 1's counted window `[2026-10-10T00, 2026-10-16T00)`. The canary is the [DEC-024](../DEC/DEC-024-h5-live-canary.md) executor. The shadow detector is the same detector run keyless on live triggers, with no orders.
+- "Look 1's rule, data, analysis and pass bar are fixed by this file. Look 1 is always read and always reported as written. It is never skipped, delayed, re-scoped or re-thresholded because of anything the canary or shadow shows. Nothing the canary shows may change any EXP-024 parameter."
+  - Look 1 still runs only under the section 8.1 and section 11 conditions (hours, tools, E1, the A3 monitor). None of them depends on the canary. A canary halt (DEC-024 section 5) stops the canary only. It does not stop, delay or change Look 1.
+- "The canary's scale-up decision is a separate business decision, not EXP-024 evidence." DEC-024 section 7 governs it, including the owner's recorded override for H5's live trial. The override changes nothing in this file's rule, looks, bar or report.
+- "Disclosure: concurrent observation lets canary results influence later choices (for example an owner scale-up). That never changes the formal read, and the read reports it." (Section 12: the read's report carries this disclosure.)
+- **What this does not cover.**
+  - The read tool's own computation of H5 outcomes from forward-1002 or walk-2 rows stays unopened until the look (section 3).
+  - Pools with s0 at or after 2026-10-16T00 are Look 2's added window. The section 3 seal applies to their canary and shadow outcomes until Look 2 is read.
+  - **EXP-022 and CAP-PICK are not touched.** From 2026-10-16T01 the CAP-PICK seal holds exactly as before (EXP-022 section 9): the pick exclusion, the pick-feed seal guard, and fail closed.
+- **Provenance.** This subsection records a decision relayed by the manager on 2026-10-08. The sentences in quotation marks are the manager's wording. The owner's own words are not quoted here.
 
 ## 4. Universe and pricing on the walk tape (an operational translation, fixed now)
 
@@ -319,9 +333,9 @@ Look 2 re-derives Look 1's trades from the same hours and the same V files (by s
 - NOT_DECIDABLE after any outcome is computed spends that look's window.
 - NOT_DECIDABLE before any outcome is computed (a P3–P7 refusal) does not. The family may then be filed again only on hours that begin after a new filing.
 
-**Seal.** No H5 trade on, or join to, a CAP-PICK pick, and no per-pool H5 P&L before each CAP-PICK look (section 3). A breach is compromised: the read cannot support live.
+**Seal.** No H5 trade on, or join to, a CAP-PICK pick, and no per-pool H5 P&L before each CAP-PICK look (section 3). A breach is compromised: the read cannot support live. The section 3.1 observation is declared, so it is not a breach.
 
-**No live.** Independent of PASS or FAIL, no live support (beyond the DEC-024 measurement canary) if any of these holds. The conditions can only remove support:
+**No live.** Independent of PASS or FAIL, no live support from this read (the DEC-024 canary and any trial under DEC-024 section 7's owner override are separate decisions) if any of these holds. The conditions can only remove support:
 - the 340 s exit leg (section 13) has a mean ≤ 0 under either fail model;
 - the guard leg B2 fails (it is binding, so this is a look that did not pass);
 - BOOST had ended before our exit landed on more than 15% of the traded pools (section 13, mechanism);
@@ -344,6 +358,7 @@ Look 2 re-derives Look 1's trades from the same hours and the same V files (by s
 - **Lock and ledger.** It takes an O_EXCL lock per look before the first outcome row. It appends `started`, `completed` or `aborted` to `/data/mal/exp024/LOOK_READS.jsonl`. It refuses a second run of a look, a look before its conditions, and any look after a PASS, a futility stop or a halt.
 - **No overrides.** Sections 4–8 are constants, with no CLI override.
 - **Order.** It prints the verdict and the report to stderr before writing any file.
+- **Disclosure.** Its report carries the section 3.1 disclosure: the live canary's and the shadow detector's outcomes for Look 1's window were observed in real time, and that can have influenced later choices such as an owner scale-up. The disclosure does not change the verdict.
 - **Fixes.** After Look 1, the tool may change only to fix a defect, by a dated amendment. The fixed tool must reproduce Look 1's rows sha256 on every binding leg. A fix never changes a parameter.
 - **Catalog.** If reads go through `mal_catalog.check_read`, a disclosed non-owner allowance (#465, adapted) must merge first. Otherwise the tool allowlists exactly the section 3 hours.
 
@@ -382,6 +397,7 @@ Look 2 re-derives Look 1's trades from the same hours and the same V files (by s
   - the owner's yes.
   - A paper pass is not live evidence.
 - **No-live conditions** are fixed in section 11.
+- **The DEC-024 section 7 override** covers H5's live trial only. It is not a pass of this read. Nothing in this file's rule, looks, bar or report changes because of it, and no report of that trial says the book passed.
 - **Size.** The 0.25 SOL leg (report-only) with a mean ≤ 0 or an ex-top-3 total ≤ 0 caps live at 0.1 SOL. The rule is not validated above about 0.5 SOL.
 - **EXP-022 protection during live.** Until EXP-022's read ends, no H5 live or paper trade may be taken on a mint the EXP-022 gate picked. The live gate's decisions are online, so that set is known in real time. Without this, live H5 P&L would price CAP-PICK's counted picks and compromise EXP-022.
 
@@ -500,7 +516,7 @@ Look 2 re-derives Look 1's trades from the same hours and the same V files (by s
     - the block budget (p < 0.025/m, m ≥ 14, about 37 honestly) leaves power of about 0.15–0.19 even if H5 is real (JUDGE.md:105);
     - it spends a reserve block;
     - fresh-0828 is adjacent to the strongest block, fresh-0903.
-15. **The live canary reads the same pools.** DEC-024 may trade the rule at 0.02 SOL inside the counted window. It is measurement, not evidence; its outcomes are sealed (DEC-024 §6); and it starts only after this file is merged, so it cannot influence the frozen rule or the read tool.
+15. **The live canary reads the same pools.** DEC-024 may trade the rule at 0.02 SOL inside the counted window. It is measurement, not evidence. Its outcomes and the shadow detector's, for pools in Look 1's window, are observed in real time by the declared decision in section 3.1 (DEC-024 §6). It starts only after this file is merged, so it cannot change the frozen rule or the read tool, and Look 1 is read and reported as written whatever it shows.
 
 ## 17. Companion texts and dates
 
