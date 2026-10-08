@@ -708,17 +708,28 @@ def leg_stats(x: Any, units: Sequence[str], size: float) -> dict[str, Any]:
             "days_pos": f"{int((dsum > 0).sum())}/{len(ud)}", "total_sol": float(x.sum()), "ex_best_day_sol": float(x.sum() - dsum.max())}
 
 
-def restate(rows: Sequence[dict[str, Any]], picks: set[str], views: Sequence[str], days: dict[str, set[str]] | None = None) -> dict[str, Any]:
-    """Book on `picks` over G's attempt rows for `views` (and, if given, only the replayed `days` per view)."""
-    sel = [r for r in rows if r["blk"] in views and r["mint"] in picks and (days is None or r["day"] in days.get(r["blk"], set()))]
+def restate(rows: Sequence[dict[str, Any]], picks: set[str], groups: dict[str, Sequence[str]], days: dict[str, set[str]] | None = None) -> dict[str, Any]:
+    """Book on `picks` over G's attempt rows. The legs are built once on the whole pick book (all views in `groups`,
+    replayed days only), so the pressure intercept is fitted on the pooled pick book's fills as the audit's
+    pickbook.py does; each group is then a slice of that book."""
+    every = {v for vs in groups.values() for v in vs}
+    sel = [r for r in rows if r["blk"] in every and r["mint"] in picks and (days is None or r["day"] in days.get(r["blk"], set()))]
+    out: dict[str, Any] = {g: {"n": 0} for g in groups}
     if not sel:
-        return {"n": 0}
+        return out
     sizes = {r["size"] for r in sel}
     if len(sizes) != 1:
-        return {"n": len(sel), "error": f"mixed stake sizes {sorted(sizes)}"}
+        return {g: {"n": len(sel), "error": f"mixed stake sizes {sorted(sizes)}"} for g in groups}
+    import numpy as np
+
     lg = legs(sel)
-    units = [r["day"] + "|" + r["blk"] for r in sel]
-    return {leg: leg_stats(lg[leg], units, float(next(iter(sizes)))) for leg in ("live", "flat", "press")}
+    units = np.array([r["day"] + "|" + r["blk"] for r in sel])
+    blk = np.array([r["blk"] for r in sel])
+    for g, vs in groups.items():
+        m = np.isin(blk, list(vs))
+        if m.any():
+            out[g] = {leg: leg_stats(lg[leg][m], units[m], float(next(iter(sizes)))) for leg in ("live", "flat", "press")}
+    return out
 
 
 def load_g_rows(path: str | Path = G_ROWS) -> list[dict[str, Any]]:
@@ -742,10 +753,12 @@ def restatement_report(online: dict[str, dict[str, Any]], offline: dict[str, dic
     groups["P2-P4"] = tuple(v for v in P2P4 if v in meta)
     groups["P1"] = tuple(v for v in P1_VIEWS if v in meta)
     groups["ALL"] = tuple(meta)
-    out: dict[str, Any] = {"label": "exploration only; not gate evidence", "reference": {"offline_all_P2-P4_live": 3.819, "offline_le60_P2-P4_live": 3.492}}
-    for g, vs in groups.items():
-        if vs:
-            out[g] = {name: restate(rows, s, vs, days) for name, s in sets.items()}
+    groups = {g: vs for g, vs in groups.items() if vs}
+    out: dict[str, Any] = {"label": "exploration only; not gate evidence", "reference": {"offline_all_P2-P4_live": 3.819, "offline_le60_P2-P4_live": 3.492},
+                           "pressure_intercept": "fitted on the pooled pick book of the replayed views (audit pickbook.py)"}
+    per_set = {name: restate(rows, s, groups, days) for name, s in sets.items()}
+    for g in groups:
+        out[g] = {name: per_set[name][g] for name in sets}
     return out
 
 
@@ -766,7 +779,7 @@ def render(cmp: dict[str, Any], rest: dict[str, Any] | None) -> str:
         L += ["## Book restatement (mean % of stake per attempt [date-cluster CI90 lower] days positive, ex-best-day SOL)",
               f"_{rest['label']}_; reference offline P2-P4 live: +3.819 all picks, +3.492 <=60 min", ""]
         for g, sets in rest.items():
-            if g in ("label", "reference"):
+            if g in ("label", "reference", "pressure_intercept"):
                 continue
             for name, lg in sets.items():
                 if not lg.get("live"):
