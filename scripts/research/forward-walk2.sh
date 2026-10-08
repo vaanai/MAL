@@ -141,7 +141,7 @@ helius_env_refuse() {
   exit 6
 }
 if [ ! -f "$HELIUS_ENV" ] || [ ! -r "$HELIUS_ENV" ]; then helius_env_refuse "Helius env file missing or unreadable"; fi
-set -a; . "$HELIUS_ENV" 2>/dev/null; set +a
+set +u; set -a; . "$HELIUS_ENV" 2>/dev/null; set +a; set -u   # +u: under set -u an unset $VAR in the file would exit 1 silently
 KEYCHK=${HELIUS_API_KEY-}; KEYCHK=${KEYCHK//[[:space:]]/}
 if [ -z "$KEYCHK" ]; then helius_env_refuse "Helius env file gave no key (unset or empty)"; fi
 unset KEYCHK

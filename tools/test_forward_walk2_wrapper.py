@@ -317,6 +317,12 @@ class HeliusEnvGuardTests(WrapperCase):
         r = self.run_w(helius_env=f"HELIUS_API_KEY={SENTINEL}(\n")
         self.assert_refused_for_env(r)
 
+    def test_env_file_that_references_an_unset_variable_gets_the_normal_refusal(self) -> None:
+        # Under set -u, $FW2_NEVER_DEFINED in the sourced file would exit 1 with stderr off and no alert.
+        r = self.run_w(helius_env=f"OTHER_VALUE={SENTINEL}\nHELIUS_API_KEY=$FW2_NEVER_DEFINED\n")
+        self.assert_refused_for_env(r)
+        self.assertNotIn("FW2_NEVER_DEFINED", r.every_text())
+
     def test_a_good_key_still_walks(self) -> None:
         r = self.run_w(helius_env=f"HELIUS_API_KEY={SENTINEL}\n")
         self.assertEqual(r.rc, 0, r.err)
