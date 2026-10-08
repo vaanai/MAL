@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
 import json
 import os
 import random
@@ -24,6 +26,8 @@ from tools.pump_history_backfill import (
     SOURCE,
     CreditBudget,
     JsonlSink,
+    SinkResumeRefused,
+    check_resume_file,
     RateLimiter,
     backfill_trade_row,
     budget_bytes,
@@ -346,6 +350,84 @@ class HeliusPrepTests(unittest.TestCase):
             resumed.close(seal=False)
             rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         self.assertEqual(rows, [{"a": 1}, {"a": 2}, {"a": 4}])
+
+    # --- A8: a resume refuses a data hole instead of padding it with NUL bytes -------------------
+
+    def _sink_file(self, tmp: str, rows: int = 3) -> tuple[Path, int]:
+        path = Path(tmp) / "trades.jsonl"
+        sink = JsonlSink(path)
+        for i in range(rows):
+            sink.write({"a": i})
+        offset = sink.offset()
+        sink.close(seal=False)
+        return path, offset
+
+    def test_resume_refuses_file_shorter_than_checkpoint_and_leaves_it_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, offset = self._sink_file(tmp)
+            path.write_bytes(path.read_bytes()[: offset - 9])  # the crash lost the tail
+            before = path.read_bytes()
+            with self.assertRaises(SinkResumeRefused) as ctx:
+                JsonlSink(path, resume_bytes=offset)
+            self.assertIn("shorter than the checkpoint offset", str(ctx.exception))
+            self.assertEqual(path.read_bytes(), before)  # not extended with NULs, not truncated
+            self.assertNotIn(b"\x00", path.read_bytes())
+
+    def test_resume_refuses_nul_in_kept_region(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, offset = self._sink_file(tmp)
+            raw = bytearray(path.read_bytes())
+            raw[5:9] = b"\x00\x00\x00\x00"
+            path.write_bytes(bytes(raw))
+            with self.assertRaises(SinkResumeRefused) as ctx:
+                JsonlSink(path, resume_bytes=offset)
+            self.assertIn("NUL byte at offset 5", str(ctx.exception))
+            self.assertEqual(path.read_bytes(), bytes(raw))
+
+    def test_resume_refuses_missing_file_with_offset_but_not_without(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "creates.jsonl"
+            with self.assertRaises(SinkResumeRefused):
+                JsonlSink(path, resume_bytes=40)
+            self.assertFalse(path.exists())
+            with self.assertRaises(SinkResumeRefused):
+                JsonlSink(path, resume_bytes=0, resume_lines=2)
+            ok = JsonlSink(path, resume_bytes=0, resume_lines=0)  # nothing was ever written: fine
+            ok.close(seal=False)
+
+    def test_resume_refuses_torn_last_line_and_line_count_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, offset = self._sink_file(tmp, rows=3)
+            self.assertEqual(check_resume_file(path, offset, 3)["kept"], offset)
+            for lines in (2, 4):
+                with self.assertRaises(SinkResumeRefused, msg=f"lines={lines}"):
+                    check_resume_file(path, offset, lines)
+            with self.assertRaises(SinkResumeRefused) as ctx:
+                check_resume_file(path, offset - 1)  # an offset inside the last line
+            self.assertIn("do not end on a newline", str(ctx.exception))
+
+    def test_resume_ignores_nul_past_the_offset_and_reports_the_drop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, offset = self._sink_file(tmp)
+            with path.open("ab") as fh:
+                fh.write(b"\x00" * 50)  # post-checkpoint garbage: re-walked, so dropped
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                resumed = JsonlSink(path, resume_bytes=offset, resume_lines=3)
+            resumed.write({"a": 9})
+            resumed.close(seal=False)
+            self.assertIn("dropping 50 post-checkpoint bytes", err.getvalue())
+            self.assertEqual([json.loads(x)["a"] for x in path.read_text().splitlines()], [0, 1, 2, 9])
+
+    def test_offset_fsyncs_before_the_checkpoint_records_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sink = JsonlSink(Path(tmp) / "t.jsonl")
+            sink.write({"a": 1})
+            with patch.object(backfill_mod.os, "fsync") as fsync:
+                off = sink.offset()
+            fsync.assert_called_once()
+            self.assertGreater(off, 0)
+            sink.close(seal=False)
 
     def test_concurrent_fetch_stays_ordered_and_stops_on_budget(self) -> None:
         current = 0
@@ -828,6 +910,136 @@ class RunHourCrashResumeTests(_TimeBoundedTestCase):
                 )
                 self.assertEqual(len(sigs), len(set(sigs)), f"crash at call {raise_at} duplicated rows")
 
+    def _crash_and_damage(self, damage) -> tuple[Path, dict, str]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out_dir = Path(tmp.name)
+        checkpoint_path = out_dir / "checkpoint.json"
+        checkpoint = empty_checkpoint()
+        backfill_mod.rows_from_block = self._fake_rows_from_block(raise_at=26)
+        with self.assertRaises(RuntimeError):
+            run_hour(budget=CreditBudget(10**9, 0), checkpoint=checkpoint, checkpoint_path=checkpoint_path, **self._kwargs(out_dir))
+        trades = out_dir / "trades" / f"trades-{self.START_KEY}.jsonl"
+        self.assertGreater(checkpoint["hours"][self.START_KEY]["offsets"]["trades"], 0)
+        damage(trades, checkpoint["hours"][self.START_KEY]["offsets"]["trades"])
+        return out_dir, checkpoint, checkpoint_path
+
+    def test_forced_short_file_resume_refuses_and_changes_nothing(self) -> None:
+        def cut(trades: Path, offset: int) -> None:
+            trades.write_bytes(trades.read_bytes()[: offset - 20])
+
+        out_dir, checkpoint, checkpoint_path = self._crash_and_damage(cut)
+        trades = out_dir / "trades" / f"trades-{self.START_KEY}.jsonl"
+        before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+        backfill_mod.rows_from_block = self._fake_rows_from_block(raise_at=None)
+        with self.assertRaises(SinkResumeRefused):
+            run_hour(budget=CreditBudget(10**9, 0), checkpoint=checkpoint, checkpoint_path=checkpoint_path, **self._kwargs(out_dir))
+        after = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+        self.assertEqual(before, after)  # trades, creates, migrations and checkpoint.json as found
+        self.assertNotIn(b"\x00", trades.read_bytes())
+        self.assertFalse((out_dir / f"stats-{self.START_KEY}.json").exists())
+
+    def _main_refusal(self, out_dir: Path, *extra: str) -> tuple[int, str, list[int]]:
+        """Run main() on `out_dir` with the fixture slots; the locate step spends 7 credits. Returns (exit code, stderr, calls)."""
+        calls = []
+        real = backfill_mod.run_hour
+
+        def run_hour_with_fixture(**kw):
+            calls.append(kw["start_ts"])
+            kw.update(slot_start=0, slot_end=self.N_SLOTS, min_slots_per_hour=1, max_slots_per_hour=1000)
+            return real(**kw)
+
+        def locate_and_spend(*a, **k):  # slots_between is given the budget
+            a[4].used += 7
+            return list(range(self.N_SLOTS))
+
+        err = io.StringIO()
+        until = datetime.fromtimestamp(self.end_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with patch.dict(os.environ, {"HELIUS_API_KEY": ""}, clear=True), patch.object(backfill_mod, "run_hour", run_hour_with_fixture), \
+                patch.object(backfill_mod, "slots_between", locate_and_spend), \
+                patch.object(backfill_mod, "skip_hour_for_live_tape", lambda *a, **k: False), \
+                contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            backfill_mod.main(["--until", until, "--hours", "1", "--out", str(out_dir), "--rpc", "http://x", *extra])
+        return cm.exception.code, err.getvalue(), calls
+
+    def _assert_refusal_left_everything(self, out_dir: Path, checkpoint_path: Path, files_before: dict, kind: str) -> None:
+        # checkpoint.json is byte-identical, even with a nonzero credit spend; so is every other file that existed
+        for path, data in files_before.items():
+            self.assertEqual(path.read_bytes(), data, path)
+        log = [json.loads(x) for x in (out_dir / "refusals.jsonl").read_text().splitlines()]
+        self.assertEqual(len(log), 1)
+        self.assertEqual((log[0]["hour"], log[0]["kind"], log[0]["credits_spent_in_hour_before_refusal"]), (self.START_KEY, kind, 7))
+
+    def test_forced_nul_hole_resume_refuses_via_main_without_touching_the_checkpoint(self) -> None:
+        def hole(trades: Path, offset: int) -> None:
+            raw = bytearray(trades.read_bytes())
+            raw[10:60] = b"\x00" * 50
+            trades.write_bytes(bytes(raw))
+
+        out_dir, _checkpoint, checkpoint_path = self._crash_and_damage(hole)
+        files_before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+        code, err, calls = self._main_refusal(out_dir)
+        self.assertEqual((code, calls), (3, [self.start_ts]))
+        self.assertIn("REFUSED (data hole)", err)
+        self.assertIn("NUL byte at offset 10", err)
+        self.assertIn("7 credits were spent in this hour before the refusal", err)
+        self.assertEqual(checkpoint_path.read_bytes(), files_before[checkpoint_path])
+        self._assert_refusal_left_everything(out_dir, checkpoint_path, files_before, "sink_resume")
+
+    def test_event_v_toggle_refusal_uses_the_same_exit_path_and_leaves_the_checkpoint(self) -> None:
+        out_dir, _checkpoint, checkpoint_path = self._crash_and_damage(lambda trades, offset: None)  # partial hour written flag-off
+        files_before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+        code, err, calls = self._main_refusal(out_dir, "--event-v")  # resumed with --event-v on
+        self.assertEqual((code, calls), (3, [self.start_ts]))
+        self.assertIn("event_v", err)
+        self.assertIn("7 credits were spent in this hour before the refusal", err)
+        self.assertEqual(checkpoint_path.read_bytes(), files_before[checkpoint_path])
+        self._assert_refusal_left_everything(out_dir, checkpoint_path, files_before, "event_v_mismatch")
+
+    # --- A8 x event-V: the resume check covers the events stream too ---------------------------------------------
+
+    def _event_v_fake(self, raise_at: int | None):
+        base = self._fake_rows_from_block(raise_at=raise_at)
+
+        def fake(block, pool_mints, feed=backfill_mod.FEED, event_v=False):
+            out = base(block, pool_mints, feed)
+            if event_v:
+                out.update(events=[{"type": "boost", "slot": block["slot"]}], unknown_disc={}, bad_disc={}, cpi_disc={}, cpi_only_disc={})
+            return out
+
+        return fake
+
+    def _event_v_crash(self) -> tuple[Path, dict, Path]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out_dir = Path(tmp.name)
+        checkpoint_path = out_dir / "checkpoint.json"
+        checkpoint = empty_checkpoint()
+        backfill_mod.rows_from_block = self._event_v_fake(raise_at=26)
+        with self.assertRaises(RuntimeError):
+            run_hour(budget=CreditBudget(10**9, 0), checkpoint=checkpoint, checkpoint_path=checkpoint_path, event_v=True, **self._kwargs(out_dir))
+        self.assertGreater(checkpoint["hours"][self.START_KEY]["offsets"]["events"], 0)
+        return out_dir, checkpoint, checkpoint_path
+
+    def test_event_v_crash_and_resume_writes_every_event_once(self) -> None:
+        out_dir, checkpoint, checkpoint_path = self._event_v_crash()
+        backfill_mod.rows_from_block = self._event_v_fake(raise_at=None)
+        summary = run_hour(budget=CreditBudget(10**9, 0), checkpoint=checkpoint, checkpoint_path=checkpoint_path, event_v=True, **self._kwargs(out_dir))
+        self.assertIsNone(summary.get("stop_reason"))
+        events = [row["slot"] for row in iter_jsonl(out_dir / "events" / f"events-{self.START_KEY}.jsonl.zst")]
+        self.assertEqual(sorted(events), list(range(self.N_SLOTS)))
+
+    def test_event_v_resume_refuses_a_short_events_file(self) -> None:
+        out_dir, checkpoint, checkpoint_path = self._event_v_crash()
+        events = out_dir / "events" / f"events-{self.START_KEY}.jsonl"
+        events.write_bytes(events.read_bytes()[:-15])
+        before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+        backfill_mod.rows_from_block = self._event_v_fake(raise_at=None)
+        with self.assertRaises(SinkResumeRefused) as ctx:
+            run_hour(budget=CreditBudget(10**9, 0), checkpoint=checkpoint, checkpoint_path=checkpoint_path, event_v=True, **self._kwargs(out_dir))
+        self.assertIn("events-", str(ctx.exception))
+        self.assertEqual(before, {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()})
+
     def test_crash_with_held_rows_pending_is_recovered(self) -> None:
         # Odd slots go through the held (unresolved pool lookup) path. Crash
         # right after several have accumulated but before the 250-item or
@@ -928,6 +1140,52 @@ class SealedButPartialCheckpointHealsTests(_TimeBoundedTestCase):
             self.assertNotEqual(resealed.read_bytes(), b"truncated")
             self.assertFalse(plain_migr.exists())
             self.assertEqual(fetched, [])
+
+
+    # --- A8: the heal path seals a leftover plain file only after the same hole / NUL check -----------------------
+
+    def _heal_refusal(self, creates_bytes: bytes, creates_offset: int, creates_count: int = 0) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            key = "2026-09-11T09"
+            for sub in ("trades", "creates", "migrations"):
+                (out_dir / sub).mkdir(parents=True)
+            sealed_trades = out_dir / "trades" / f"trades-{key}.jsonl.zst"
+            sealed_trades.write_bytes(b"sealed-trades-bytes")
+            plain_creates = out_dir / "creates" / f"creates-{key}.jsonl"
+            plain_creates.write_bytes(creates_bytes)
+            stale_zst = out_dir / "creates" / f"creates-{key}.jsonl.zst"
+            stale_zst.write_bytes(b"truncated")
+            start_ts, end_ts = _hour_bounds(key)
+            checkpoint = empty_checkpoint()
+            checkpoint["hours"][key] = {
+                "status": "partial", "start_slot": 100, "end_slot": 12100, "next_slot": None, "stop_reason": None,
+                "counts": {"slots_done": 12000, "creates": creates_count},
+                "offsets": {"trades": 0, "creates": creates_offset, "migrations": 0},
+            }
+            before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+            limiter = RateLimiter(1000)
+            with patch.object(backfill_mod, "slots_between", lambda *a, **k: list(range(100, 12100))):
+                with self.assertRaises(SinkResumeRefused):
+                    run_hour(
+                        url="http://x", start_ts=start_ts, end_ts=end_ts, out_dir=out_dir,
+                        limiter=limiter, lookup_limiter=limiter, pool_mints={}, workers=1,
+                        max_bytes=10**9, anchor_slot=450278777, anchor_time=1790319576,
+                        budget=CreditBudget(10**9, 0), checkpoint=checkpoint,
+                        checkpoint_path=out_dir / "checkpoint.json", slot_start=100, slot_end=12100,
+                    )
+            after = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+            self.assertEqual(before, after)  # the stale .zst was not dropped, nothing sealed, nothing unlinked
+            self.assertEqual(checkpoint["hours"][key]["status"], "partial")
+
+    def test_heal_refuses_to_seal_a_plain_leftover_with_a_nul_hole(self) -> None:
+        self._heal_refusal(b'{"a":1}\n' + b"\x00" * 40 + b'\n{"a":2}\n', 0)
+
+    def test_heal_refuses_to_seal_a_plain_leftover_shorter_than_the_checkpoint_offset(self) -> None:
+        self._heal_refusal(b'{"a":1}\n', 64, 2)
+
+    def test_heal_refuses_to_seal_a_torn_last_line(self) -> None:
+        self._heal_refusal(b'{"a":1}\n{"a":', 0)
 
 
 if __name__ == "__main__":

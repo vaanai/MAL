@@ -30,7 +30,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, NoReturn, Sequence
 
 from observe.trade_decode import (
     ANCHOR_EVENT_IX_TAG,
@@ -771,14 +771,118 @@ def resolve_unresolved(
     return ready, dropped
 
 
+class SinkResumeRefused(RuntimeError):
+    """A resume would hide a data hole. Nothing on disk was changed. `main` exits 3."""
+
+    def __init__(self, path: Path | str, reason: str) -> None:
+        super().__init__(f"{path}: {reason}")
+        self.path = str(path)
+        self.reason = reason
+
+
+RESUME_SCAN_CHUNK = 8 << 20
+
+
+def _scan_region(path: Path, limit: int | None) -> tuple[int, bytes, int | None, int]:
+    """(newlines, last byte, offset of the first NUL or None, bytes read) over the first `limit` bytes (None: all)."""
+    lines, last, done, nul_at = 0, b"", 0, None
+    with path.open("rb") as fh:
+        while limit is None or done < limit:
+            chunk = fh.read(RESUME_SCAN_CHUNK if limit is None else min(RESUME_SCAN_CHUNK, limit - done))
+            if not chunk:
+                break
+            nul = chunk.find(b"\x00")
+            if nul >= 0:
+                nul_at = done + nul
+                break
+            lines += chunk.count(b"\n")
+            last = chunk[-1:]
+            done += len(chunk)
+    return lines, last, nul_at, done
+
+
+def check_resume_file(path: Path, resume_bytes: int, resume_lines: int | None = None) -> dict[str, int]:
+    """Read-only. Raise SinkResumeRefused unless `path` holds the checkpoint's first `resume_bytes` intact.
+
+    The bytes before the offset are rows already counted in the checkpoint and never re-walked, so they must
+    be there, whole, and free of NUL. Refused when the file is missing or shorter than the offset (a later
+    truncate() would extend it with NUL bytes: the exp011-0909 holes), the kept region has a NUL byte, does
+    not end on a newline, or its line count differs from `resume_lines` (the checkpoint's own row count for
+    this file; None skips that check). Bytes past the offset are post-checkpoint rows that the resume
+    re-walks; they are not inspected. Returns {"kept": n, "size": n, "dropped": size - kept}.
+    """
+    keep = max(0, int(resume_bytes))
+    want_lines = None if resume_lines is None else max(0, int(resume_lines))
+    if not path.is_file():
+        if keep > 0 or (want_lines or 0) > 0:
+            raise SinkResumeRefused(
+                path, f"file is missing but the checkpoint records {keep} bytes / {want_lines} lines; "
+                "refusing to resume over a hole"
+            )
+        return {"kept": 0, "size": 0, "dropped": 0}
+    size = path.stat().st_size
+    if size < keep:
+        raise SinkResumeRefused(
+            path, f"file is {size} bytes, shorter than the checkpoint offset {keep} (short by {keep - size}); "
+            "truncate would pad it with NUL bytes. The rows of those slots are not on disk"
+        )
+    lines, last, nul_at, done = _scan_region(path, keep)
+    if nul_at is not None:
+        raise SinkResumeRefused(
+            path, f"NUL byte at offset {nul_at} (before the checkpoint offset {keep}); the kept region has a hole"
+        )
+    if done < keep:
+        raise SinkResumeRefused(path, f"read ended at {done} bytes, before the checkpoint offset {keep}")
+    if keep > 0 and last != b"\n":
+        raise SinkResumeRefused(path, f"the {keep} checkpoint bytes do not end on a newline")
+    if want_lines is not None and lines != want_lines:
+        raise SinkResumeRefused(
+            path, f"the first {keep} bytes hold {lines} lines but the checkpoint counts {want_lines} rows for this file"
+        )
+    return {"kept": keep, "size": size, "dropped": size - keep}
+
+
+def check_complete_file(path: Path, min_bytes: int = 0, min_lines: int = 0) -> None:
+    """Read-only, for a plain file that is about to be sealed to .zst (the heal path: every slot was consumed, so
+    the whole file is the hour). Refused when it is shorter than the checkpoint's last offset, has fewer lines than
+    the checkpoint's last row count, has any NUL byte, or does not end on a newline."""
+    if not path.is_file():
+        return
+    size = path.stat().st_size
+    if size < max(0, int(min_bytes)):
+        raise SinkResumeRefused(path, f"file is {size} bytes, shorter than the checkpoint offset {min_bytes}; refusing to seal a hole")
+    lines, last, nul_at, _done = _scan_region(path, None)
+    if nul_at is not None:
+        raise SinkResumeRefused(path, f"NUL byte at offset {nul_at}; refusing to seal a hole")
+    if size > 0 and last != b"\n":
+        raise SinkResumeRefused(path, "the file does not end on a newline; refusing to seal a torn last line")
+    if lines < max(0, int(min_lines)):
+        raise SinkResumeRefused(path, f"the file holds {lines} lines, fewer than the checkpoint's {min_lines}; refusing to seal a hole")
+
+
+def _checkpoint_row_counts(counts: Mapping[str, Any]) -> dict[str, int]:
+    """Rows the checkpoint's counts say each output file holds (one line per counted row)."""
+    return {
+        "trades": int(counts.get("trades") or 0),
+        "creates": int(counts.get("creates") or 0),
+        "migrations": int(counts.get("migrations") or 0) + int(counts.get("completes") or 0),
+        "events": int(counts.get("event_rows") or 0),  # only written under --event-v
+    }
+
+
 class JsonlSink:
     """Append compact JSONL and zstd-seal it on close. Empty files are removed.
 
     resume_bytes truncates to a checkpoint offset and appends. A partial hour
-    stays plain JSONL until the hour is fully consumed.
+    stays plain JSONL until the hour is fully consumed. Before it touches the
+    file a resume runs check_resume_file: a file that is shorter than the offset,
+    or whose kept region has a NUL byte, a torn last line or the wrong line count,
+    raises SinkResumeRefused and is left exactly as found. The only truncation left
+    is the designed one: rows written after the last checkpoint, which the resume
+    re-walks (reported on stderr).
     """
 
-    def __init__(self, path: Path, resume_bytes: int | None = None) -> None:
+    def __init__(self, path: Path, resume_bytes: int | None = None, resume_lines: int | None = None) -> None:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._base = 0
@@ -786,6 +890,13 @@ class JsonlSink:
             self._fh = path.open("w", encoding="utf-8")
         else:
             keep = max(0, int(resume_bytes))
+            info = check_resume_file(path, keep, resume_lines)
+            if info["dropped"]:
+                print(
+                    f"resume {path.name}: dropping {info['dropped']} post-checkpoint bytes (rows re-walked)",
+                    file=sys.stderr,
+                    flush=True,
+                )
             if path.is_file():
                 with path.open("r+b") as raw:
                     raw.truncate(keep)
@@ -804,6 +915,9 @@ class JsonlSink:
 
     def offset(self) -> int:
         self._fh.flush()
+        # The checkpoint that records this offset is written next. Make the bytes durable first, so a
+        # host crash cannot leave the checkpoint ahead of the file (the source of the NUL holes).
+        os.fsync(self._fh.fileno())
         return self._fh.tell()
 
     def close(self, *, seal: bool = True) -> Path | None:
@@ -1461,6 +1575,19 @@ def run_hour(
     # A trades .zst (complete, or truncated mid-zstd) only exists once sealing began,
     # i.e. after the whole hour was consumed.
     if resume and sealed_trades.is_file():
+        # Seal a leftover plain file only if it passes the same hole and NUL check as a resume. All of them are
+        # checked before any .zst is dropped or any file sealed, so a refusal leaves the hour as found.
+        heal_off = partial.get("offsets") if isinstance(partial.get("offsets"), dict) else {}
+        heal_cnt = partial.get("counts") if isinstance(partial.get("counts"), dict) else {}
+        heal_lines = _checkpoint_row_counts(heal_cnt)
+        for sub, prefix in subs:
+            off = heal_off.get(sub, 0)
+            check_complete_file(
+                out_dir / sub / f"{prefix}-{key}.jsonl",
+                int(off) if isinstance(off, int) and not isinstance(off, bool) else 0,
+                heal_lines[sub],
+            )
+    if resume and sealed_trades.is_file():
         for sub, prefix in subs:
             plain = out_dir / sub / f"{prefix}-{key}.jsonl"
             if plain.is_file():
@@ -1497,18 +1624,29 @@ def run_hour(
                 stale.unlink()
     offsets = partial.get("offsets") if resume and isinstance(partial.get("offsets"), dict) else {}
 
+    prior = partial.get("counts") if resume and isinstance(partial.get("counts"), dict) else {}
+    # Rows the checkpoint says each file holds up to its offset (one line per counted row).
+    prior_lines = _checkpoint_row_counts(prior)
+
+    def _resume_bytes(sub: str) -> int:
+        raw = offsets.get(sub, 0)
+        return int(raw) if isinstance(raw, int) and not isinstance(raw, bool) else 0
+
+    if resume:
+        # Check all three files before any of them is opened or truncated: a refusal must leave the hour as found.
+        for sub, prefix in subs:
+            check_resume_file(out_dir / sub / f"{prefix}-{key}.jsonl", _resume_bytes(sub), prior_lines[sub])
+
     def _sink(sub: str, prefix: str) -> JsonlSink:
         path = out_dir / sub / f"{prefix}-{key}.jsonl"
         if resume:
-            raw = offsets.get(sub, 0)
-            return JsonlSink(path, resume_bytes=int(raw) if isinstance(raw, int) else 0)
+            return JsonlSink(path, resume_bytes=_resume_bytes(sub), resume_lines=prior_lines[sub])
         return JsonlSink(path)
 
     trades = _sink("trades", "trades")
     creates = _sink("creates", "creates")
     migrations = _sink("migrations", "migrations")
     events = _sink("events", "events") if event_v else None
-    prior = partial.get("counts") if resume and isinstance(partial.get("counts"), dict) else {}
     counts: dict[str, Any] = {
         "hour": key,
         "block_time_start": start_ts,
@@ -1920,13 +2058,63 @@ def parse_utc(text: str) -> int:
     return int(dt.timestamp())
 
 
+REFUSALS_NAME = "refusals.jsonl"
+REFUSAL_EXIT = 3
+
+
+def _refuse_exit3(exc: Exception, kwargs: Mapping[str, Any], used_at_call: int | None) -> NoReturn:
+    """The one exit path of every refusal that protects the tape: a resume that would hide a hole
+    (SinkResumeRefused) or mix decoder modes (EventVResumeMismatch). Prints the message, records the credits spent
+    before the refusal in refusals.jsonl next to the checkpoint, and ends the process with exit code 3.
+    checkpoint.json is never written here, not even credits_used, and no data file is touched."""
+    if isinstance(exc, SinkResumeRefused):
+        print(
+            f"REFUSED (data hole): {exc}\n"
+            "The hour's files and checkpoint were left as found. Do not delete either to get past this: "
+            "name the hour as not decidable, or re-walk it from a fresh output directory.",
+            file=sys.stderr,
+            flush=True,
+        )
+        kind, file = "sink_resume", exc.path
+    else:
+        print(f"error: {exc}", file=sys.stderr, flush=True)
+        kind, file = "event_v_mismatch", None
+    budget = kwargs.get("budget")
+    checkpoint = kwargs.get("checkpoint")
+    cp_path = kwargs.get("checkpoint_path")
+    log_dir = Path(cp_path).parent if cp_path is not None else (Path(kwargs["out_dir"]) if kwargs.get("out_dir") is not None else None)
+    if log_dir is not None and used_at_call is not None and budget is not None:
+        spent = budget.used - used_at_call
+        rec = {
+            "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "hour": hour_key(int(kwargs["start_ts"])),
+            "kind": kind,
+            "file": file,
+            "reason": str(exc),
+            "credits_spent_in_hour_before_refusal": spent,
+            "credits_used_in_checkpoint": checkpoint.get("credits_used") if isinstance(checkpoint, Mapping) else None,
+        }
+        print(
+            f"refusal: {spent} credits were spent in this hour before the refusal; checkpoint.json is untouched; "
+            f"recorded in {log_dir / REFUSALS_NAME}",
+            file=sys.stderr,
+            flush=True,
+        )
+        with (log_dir / REFUSALS_NAME).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, sort_keys=True) + "\n")
+    raise SystemExit(REFUSAL_EXIT) from exc
+
+
 def _run_hour_exit3(**kwargs: Any) -> dict[str, Any]:
-    """run_hour, but a --event-v toggle on resume ends the process with exit code 3 and a clear message."""
+    """run_hour, but a refusal (a --event-v toggle on resume, or a resume/heal over a data hole) ends the process
+    with exit code 3, a clear message and no checkpoint write. Flag-off output of a run that is not refused is
+    exactly run_hour's."""
+    budget = kwargs.get("budget")
+    used_at_call = budget.used if budget is not None else None
     try:
         return run_hour(**kwargs)
-    except EventVResumeMismatch as exc:
-        print(f"error: {exc}", file=sys.stderr, flush=True)
-        raise SystemExit(3) from exc
+    except (EventVResumeMismatch, SinkResumeRefused) as exc:
+        _refuse_exit3(exc, kwargs, used_at_call)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

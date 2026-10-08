@@ -15,7 +15,11 @@ exceeds the resolved slot span -- the signature of the duplicate-row
 resume bug this tool exists to catch.
 
 --content additionally streams each hour's files (zstdcat for sealed
-ones) and counts rows vs unique lines. Memory use scales with the
+ones) and counts rows vs unique lines. With --report-bad-lines it also reports
+bad lines (a raw NUL, not JSON, not an object; a line that parses only with
+strict=False is `lenient` and not bad); with --strict-lines it flags an hour
+with bad_lines > 0, or whose zstd stream does not end rc 0. Without either
+flag the report has none of those keys. Memory use scales with the
 number of distinct lines in the largest file being checked, since exact
 dedup detection needs to remember every line seen so far.
 
@@ -35,6 +39,8 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
+
+from tools.tape_lines import LineCounts
 
 SUBS = ("trades", "creates", "migrations")
 
@@ -195,22 +201,44 @@ def verify_metadata(
     }
 
 
-def _stream_lines(path: Path) -> Iterator[str]:
+class ZstdStreamError(RuntimeError):
+    """zstdcat did not finish with rc 0: the sealed file is truncated or corrupt, so its rows are not all here."""
+
+
+def _stream_lines(path: Path, check_rc: bool = False) -> Iterator[str]:
     if path.suffix == ".zst":
         proc = subprocess.Popen(["zstdcat", str(path)], stdout=subprocess.PIPE, text=True)
         assert proc.stdout is not None
+        finished = False
         try:
             for line in proc.stdout:
                 if line.strip():
                     yield line
+            finished = True
         finally:
             proc.stdout.close()
-            proc.wait()
+            rc = proc.wait()
+        if check_rc and finished and rc != 0:
+            raise ZstdStreamError(f"{path}: zstdcat exited {rc}")
         return
     with path.open(encoding="utf-8") as fh:
         for line in fh:
             if line.strip():
                 yield line
+
+
+def scan_content(path: Path, check_rc: bool = False) -> tuple[int, int, LineCounts]:
+    """Row count, unique-line count and the bad-line counts (NUL / not JSON / not an object).
+    A line that parses only with strict=False (a raw control character in a string) is `lenient`, not bad.
+    Only counts leave this function."""
+    rows = 0
+    seen: set[str] = set()
+    counts = LineCounts()
+    for line in _stream_lines(path, check_rc):
+        rows += 1
+        seen.add(line)
+        counts.add(line)
+    return rows, len(seen), counts
 
 
 def count_rows_and_unique(path: Path) -> tuple[int, int]:
@@ -223,18 +251,56 @@ def count_rows_and_unique(path: Path) -> tuple[int, int]:
     return rows, len(seen)
 
 
-def verify_content(report: dict[str, Any]) -> dict[str, Any]:
+BAD_LINES_ISSUE_MARK = " bad lines ("  # in the issue text verify_content adds for a hole
+BAD_LINES_MODES = ("off", "report", "strict")
+
+
+def verify_content(report: dict[str, Any], bad_lines: str = "off") -> dict[str, Any]:
+    """`bad_lines`: "off" (default) is the pre-A8 behaviour, byte for byte: rows / unique / duplicates only, no line
+    classified, no new key, zstd exit code not checked. "report" adds `bad_lines` (per hour) and per file `bad_lines`,
+    `nul`, `not_json`, `non_object`, `lenient`, without changing `issues`. "strict" does that, and also makes bad
+    lines and a failed zstd stream issues, so the hour is flagged."""
+    if bad_lines not in BAD_LINES_MODES:
+        raise ValueError(f"bad_lines must be one of {BAD_LINES_MODES}")
     for hour_report in report["hours"]:
         content: dict[str, Any] = {}
+        bad_total = 0
         for sub in SUBS:
             raw = hour_report["files"].get(sub)
             if not raw:
                 continue
-            rows, unique = count_rows_and_unique(Path(raw))
-            content[sub] = {"rows": rows, "unique": unique, "duplicates": rows - unique}
+            if bad_lines == "off":
+                rows, unique = count_rows_and_unique(Path(raw))
+                content[sub] = {"rows": rows, "unique": unique, "duplicates": rows - unique}
+                if rows != unique:
+                    hour_report["issues"].append(f"{sub}: {rows - unique} duplicate rows")
+                continue
+            try:
+                rows, unique, counts = scan_content(Path(raw), check_rc=(bad_lines == "strict"))
+            except ZstdStreamError as exc:
+                hour_report["issues"].append(f"{sub}: zstd stream failed ({exc}); the sealed file is truncated or corrupt")
+                continue
+            content[sub] = {
+                "rows": rows,
+                "unique": unique,
+                "duplicates": rows - unique,
+                "bad_lines": counts.bad,
+                "nul": counts.nul,
+                "not_json": counts.not_json,
+                "non_object": counts.non_object,
+                "lenient": counts.lenient,
+            }
+            bad_total += counts.bad
             if rows != unique:
                 hour_report["issues"].append(f"{sub}: {rows - unique} duplicate rows")
+            if bad_lines == "strict" and counts.bad:
+                hour_report["issues"].append(
+                    f"{sub}: {counts.bad}" + BAD_LINES_ISSUE_MARK + f"nul={counts.nul}, not_json={counts.not_json}, "
+                    f"non_object={counts.non_object}; first at line {counts.first_bad_line})"
+                )
         hour_report["content"] = content
+        if bad_lines != "off":
+            hour_report["bad_lines"] = bad_total
     report["hours_flagged"] = len([h for h in report["hours"] if h["issues"]])
     return report
 
@@ -300,6 +366,7 @@ def build_report(
     dedupe_out: Path | None,
     min_slots_per_hour: int,
     max_slots_per_hour: int,
+    bad_lines: str = "off",
 ) -> dict[str, Any]:
     hours = hour_range(from_hour, to_hour)
     report = verify_metadata(
@@ -309,7 +376,7 @@ def build_report(
         max_slots_per_hour=max_slots_per_hour,
     )
     if content or dedupe_out is not None:
-        report = verify_content(report)
+        report = verify_content(report, bad_lines)
     if dedupe_out is not None:
         report["dedupe"] = run_dedupe(report, dedupe_out)
     return report
@@ -322,6 +389,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--to", dest="to_hour", required=True, metavar="YYYY-MM-DDTHH", help="Exclusive")
     parser.add_argument("--content", action="store_true", help="Stream files, count rows vs unique lines")
     parser.add_argument("--dedupe-out", type=Path, default=None, help="Write deduplicated copies here")
+    parser.add_argument("--report-bad-lines", action="store_true", help="--content: add bad_lines counts (NUL / not JSON / not an object) to the report; does not flag the hour")
+    parser.add_argument("--strict-lines", action="store_true", help="--content: report bad_lines and flag the hour (exit 1) when any, or when a zstd stream is truncated")
     parser.add_argument("--min-slots-per-hour", type=int, default=9_000)
     parser.add_argument("--max-slots-per-hour", type=int, default=MAX_SLOTS_PER_HOUR)
     args = parser.parse_args(argv)
@@ -334,6 +403,7 @@ def main(argv: list[str] | None = None) -> int:
         dedupe_out=args.dedupe_out,
         min_slots_per_hour=args.min_slots_per_hour,
         max_slots_per_hour=args.max_slots_per_hour,
+        bad_lines="strict" if args.strict_lines else "report" if args.report_bad_lines else "off",
     )
     print(json.dumps(report, indent=2))
     return 1 if report["hours_flagged"] else 0
