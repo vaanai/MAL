@@ -329,3 +329,268 @@ def test_normalize_owner_and_host_synthetic_cells() -> None:
         _normalize_host("mal-research-01 new box", row_name="x")
     with pytest.raises(ValueError):
         _normalize_host("mal-gpu-0", row_name="x")
+
+
+# --- Second owners (SECOND-OWNER marker in a Status cell) ---------------------
+#
+# All on a fixture ledger, never the real one: the marker is added to the real
+# ledger by the manager, and these tests must not depend on that edit.
+
+_SO_MARKER_22 = "SECOND-OWNER: EXP-022 [2026-10-09T00, 2026-10-12T00)"
+_SO_MARKER_23 = "SECOND-OWNER: EXP-023 [2026-10-14T00, 2026-10-15T00)"
+_SO_BLOCK = "[2026-10-02T10, 2026-10-16T01)"
+
+
+def _so_row(status: str, *, name: str = "Walk A", hours: str = _SO_BLOCK, owner: str = "**EXP-012 forward book**") -> str:
+    return f"| {name} | `{hours}` | mal-research-0 | {owner} | {status} |\n"
+
+
+_SO_POOL_ROW = "| Pool next | `[2026-10-16T01, 2026-10-17T00)` | mal-research-0 | exploration pool | pool |\n"
+
+
+@pytest.fixture(scope="module")
+def so_blocks() -> list[Block]:
+    # Prose brackets and a stray range in the Status cell must not be read as markers.
+    status = f"Buffer `[2026-10-14T01, 2026-10-16T01)` is features only. `{_SO_MARKER_22}`. **{_SO_MARKER_23}**"
+    return parse_ledger(_LEDGER_HEADER + _so_row(status) + _SO_POOL_ROW)
+
+
+def _so(blocks: list[Block], role: str, start: str, end: str, exp_id: str | None):
+    return check_read(blocks, role, "research", start, end, exp_id=exp_id)
+
+
+def test_second_owner_markers_parse_and_leave_owner_of_record_alone(so_blocks: list[Block]) -> None:
+    walk, pool = so_blocks
+    assert walk.owner == "EXP-012"
+    assert walk.second_owners == (
+        ("EXP-022", "2026-10-09T00", "2026-10-12T00"),
+        ("EXP-023", "2026-10-14T00", "2026-10-15T00"),
+    )
+    assert pool.second_owners == ()
+    assert pool.owner == "exploration-pool"
+
+
+def test_block_without_marker_has_no_second_owners() -> None:
+    (b,) = parse_ledger(_LEDGER_HEADER + _so_row("Assigned before any hour is sealed. Mentions [2026-10-14T01, 2026-10-16T01) only."))
+    assert b.second_owners == ()
+
+
+def test_second_owner_allowed_inside_its_range(so_blocks: list[Block]) -> None:
+    for start, end in [
+        ("2026-10-09T00", "2026-10-09T01"),  # first hour
+        ("2026-10-11T23", "2026-10-12T00"),  # last hour
+        ("2026-10-09T00", "2026-10-12T00"),  # the whole range
+    ]:
+        ok, reasons = _so(so_blocks, "confirmation-oneshot", start, end, "EXP-022")
+        assert ok, (start, end, reasons)
+
+
+def test_second_owner_denied_one_hour_before_and_one_hour_after(so_blocks: list[Block]) -> None:
+    ok, reasons = _so(so_blocks, "confirmation-oneshot", "2026-10-08T23", "2026-10-09T00", "EXP-022")
+    assert not ok
+    assert reasons == ["2026-10-08T23: owner=EXP-012 not allowed for role=confirmation-oneshot exp_id=EXP-022"]
+
+    # Same block, one hour past the marker's end: the block still runs to 2026-10-16T01.
+    ok, reasons = _so(so_blocks, "confirmation-oneshot", "2026-10-12T00", "2026-10-12T01", "EXP-022")
+    assert not ok
+    assert reasons == ["2026-10-12T00: owner=EXP-012 not allowed for role=confirmation-oneshot exp_id=EXP-022"]
+
+
+def test_second_owner_straddling_the_edges_reports_only_the_denied_hours(so_blocks: list[Block]) -> None:
+    ok, reasons = _so(so_blocks, "confirmation-oneshot", "2026-10-08T23", "2026-10-12T01", "EXP-022")
+    assert not ok
+    assert len(reasons) == 2
+    assert reasons[0].startswith("2026-10-08T23:")
+    assert reasons[1].startswith("2026-10-12T00:")
+
+
+def test_second_owner_does_not_unlock_the_next_block(so_blocks: list[Block]) -> None:
+    ok, reasons = _so(so_blocks, "confirmation-oneshot", "2026-10-16T01", "2026-10-16T02", "EXP-022")
+    assert not ok
+    assert "owner=exploration-pool" in reasons[0]
+
+
+def test_second_owner_marker_never_widens_exploration_or_ops(so_blocks: list[Block]) -> None:
+    for exp in (None, "EXP-022"):
+        ok, reasons = _so(so_blocks, "exploration", "2026-10-09T00", "2026-10-09T01", exp)
+        assert not ok and reasons, exp
+    for exp in (None, "EXP-022", "EXP-012"):
+        ok, reasons = _so(so_blocks, "ops", "2026-10-09T00", "2026-10-09T01", exp)
+        assert not ok and reasons, exp
+    ok, _ = _so(so_blocks, "some-unknown-role", "2026-10-09T00", "2026-10-09T01", "EXP-022")
+    assert not ok
+
+
+def test_second_owner_marker_does_not_unlock_any_other_exp_id(so_blocks: list[Block]) -> None:
+    for exp in (None, "EXP-021", "EXP-023", "EXP-099", "EXP-0220", "EXP-022 ", "exp-022", "EXP-22", "exploration-pool", "kill-review"):
+        ok, reasons = _so(so_blocks, "confirmation-oneshot", "2026-10-09T00", "2026-10-09T01", exp)
+        assert not ok and reasons, exp
+
+
+def test_owner_of_record_still_allowed_everywhere_in_its_block(so_blocks: list[Block]) -> None:
+    ok, reasons = _so(so_blocks, "confirmation-oneshot", "2026-10-02T10", "2026-10-16T01", "EXP-012")
+    assert ok, reasons
+    # ... and a second owner does not get the owner's hours outside its own range.
+    ok, _ = _so(so_blocks, "confirmation-oneshot", "2026-10-02T10", "2026-10-16T01", "EXP-022")
+    assert not ok
+
+
+def test_several_markers_each_grant_only_their_own_range(so_blocks: list[Block]) -> None:
+    ok, reasons = _so(so_blocks, "confirmation-oneshot", "2026-10-14T00", "2026-10-15T00", "EXP-023")
+    assert ok, reasons
+    ok, _ = _so(so_blocks, "confirmation-oneshot", "2026-10-14T00", "2026-10-15T00", "EXP-022")
+    assert not ok
+    ok, _ = _so(so_blocks, "confirmation-oneshot", "2026-10-09T00", "2026-10-09T01", "EXP-023")
+    assert not ok
+
+
+def test_explicit_single_hour_row_overrides_a_second_owner_range() -> None:
+    # The covering block decides: an explicit exclusion row inside the marker's range is a
+    # different block (pool-owned), so the marker on the ranged block does not apply to it.
+    text = (
+        _LEDGER_HEADER
+        + _so_row(f"{_SO_MARKER_22}")
+        + "| Walk A exclusion | 2026-10-10T05 | mal-research-0 | exploration pool | disclosed hour |\n"
+    )
+    blocks = parse_ledger(text)
+    ok, reasons = check_read(blocks, "confirmation-oneshot", "research", "2026-10-10T04", "2026-10-10T05", exp_id="EXP-022")
+    assert ok, reasons
+    ok, reasons = check_read(blocks, "confirmation-oneshot", "research", "2026-10-10T05", "2026-10-10T06", exp_id="EXP-022")
+    assert not ok
+    assert "owner=exploration-pool" in reasons[0]
+
+
+def test_second_owner_marker_on_other_host_block_does_not_apply() -> None:
+    blocks = parse_ledger(_LEDGER_HEADER + _so_row(_SO_MARKER_22))
+    ok, reasons = check_read(blocks, "confirmation-oneshot", "fast", "2026-10-09T00", "2026-10-09T01", exp_id="EXP-022")
+    assert not ok
+    assert reasons == ["2026-10-09T00: not in ledger"]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "SECOND-OWNER EXP-022 [2026-10-09T00, 2026-10-12T00)",  # no colon
+        "SECOND-OWNER:EXP-022 [2026-10-09T00, 2026-10-12T00)",  # no space after colon
+        "SECOND-OWNER: EXP-022  [2026-10-09T00, 2026-10-12T00)",  # two spaces
+        "SECOND-OWNER: EXP-22 [2026-10-09T00, 2026-10-12T00)",  # short id
+        "SECOND-OWNER: exp-022 [2026-10-09T00, 2026-10-12T00)",  # lower-case id
+        "SECOND-OWNER: EXP-022 [2026-10-09T00, 2026-10-12T00]",  # closed on the right
+        "SECOND-OWNER: EXP-022 (2026-10-09T00, 2026-10-12T00)",  # open on the left
+        "SECOND-OWNER: EXP-022 [2026-10-09T00 2026-10-12T00)",  # no comma
+        "SECOND-OWNER: EXP-022 [2026-10-09T00:30, 2026-10-12T00)",  # not hour aligned
+        "SECOND-OWNER: EXP-022 [2026-10-09, 2026-10-12)",  # dates only
+        "SECOND-OWNER: EXP-022",  # no range
+        "SECOND-OWNER: EXP-022 -> 2026-10-12T00",  # wrong range form
+        "SECOND-OWNER: [2026-10-09T00, 2026-10-12T00)",  # no exp id
+        "second-owner: EXP-022 [2026-10-09T00, 2026-10-12T00)",  # lower-case token
+        "NOT-SECOND-OWNER: EXP-022 [2026-10-09T00, 2026-10-12T00)",  # token glued to a longer word
+        "SECOND-OWNERS: EXP-022 [2026-10-09T00, 2026-10-12T00)",  # plural
+        "SECOND-OWNER: EXP-022 [2026-13-09T00, 2026-10-12T00)",  # month 13
+        "SECOND-OWNER: EXP-022 [2026-10-09T24, 2026-10-12T00)",  # hour 24
+        "SECOND-OWNER: EXP-022 [2026-10-12T00, 2026-10-09T00)",  # reversed
+        "SECOND-OWNER: EXP-022 [2026-10-09T00, 2026-10-09T00)",  # empty
+    ],
+)
+def test_malformed_second_owner_marker_refuses_to_parse(marker: str) -> None:
+    with pytest.raises(ValueError, match="SECOND-OWNER|not a valid UTC hour|empty or reversed"):
+        parse_ledger(_LEDGER_HEADER + _so_row(f"ok text. {marker}"))
+
+
+def test_one_bad_marker_among_good_ones_refuses_the_whole_ledger() -> None:
+    status = f"{_SO_MARKER_22} {_SO_MARKER_23} SECOND-OWNER: EXP-024 [2026-10-09T00, 2026-10-10T00"  # unclosed
+    with pytest.raises(ValueError, match="malformed SECOND-OWNER marker"):
+        parse_ledger(_LEDGER_HEADER + _so_row(status))
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "SECOND-OWNER: EXP-022 [2026-10-02T09, 2026-10-09T00)",  # starts one hour before the block
+        "SECOND-OWNER: EXP-022 [2026-10-09T00, 2026-10-16T02)",  # ends one hour after the block
+        "SECOND-OWNER: EXP-022 [2026-10-01T00, 2026-10-20T00)",  # contains the block
+        "SECOND-OWNER: EXP-022 [2026-10-16T01, 2026-10-17T00)",  # entirely in the next block
+        "SECOND-OWNER: EXP-022 [2026-09-01T00, 2026-09-02T00)",  # entirely before it
+    ],
+)
+def test_second_owner_range_outside_the_block_refuses_to_parse(marker: str) -> None:
+    with pytest.raises(ValueError, match="outside the block's own Hours"):
+        parse_ledger(_LEDGER_HEADER + _so_row(marker) + _SO_POOL_ROW)
+
+
+def test_second_owner_range_exactly_the_block_is_accepted() -> None:
+    (b,) = parse_ledger(_LEDGER_HEADER + _so_row("SECOND-OWNER: EXP-022 [2026-10-02T10, 2026-10-16T01)"))
+    assert b.second_owners == (("EXP-022", "2026-10-02T10", "2026-10-16T01"),)
+
+
+def test_second_owner_range_against_open_start_and_explicit_hour_blocks() -> None:
+    # "older than X" rows have no start: any start is inside, the end must not pass X.
+    open_row = "| Old | Older than 2026-08-02T12 | fast | EXP-100 | SECOND-OWNER: EXP-022 [2026-07-01T00, 2026-08-02T12) |\n"
+    (b,) = parse_ledger(_LEDGER_HEADER + open_row)
+    assert b.second_owners == (("EXP-022", "2026-07-01T00", "2026-08-02T12"),)
+    with pytest.raises(ValueError, match="outside the block's own Hours"):
+        parse_ledger(_LEDGER_HEADER + open_row.replace("2026-08-02T12) |", "2026-08-02T13) |"))
+
+    # An explicit-hour block: every hour of the range must be one of its hours.
+    explicit = "| Two hours | 2026-09-18T23, 2026-09-19T00 | fast | EXP-100 | {m} |\n"
+    (b,) = parse_ledger(_LEDGER_HEADER + explicit.format(m="SECOND-OWNER: EXP-022 [2026-09-18T23, 2026-09-19T01)"))
+    assert b.second_owners == (("EXP-022", "2026-09-18T23", "2026-09-19T01"),)
+    for bad in (
+        "SECOND-OWNER: EXP-022 [2026-09-18T22, 2026-09-19T00)",
+        "SECOND-OWNER: EXP-022 [2026-09-18T23, 2026-09-19T02)",
+        "SECOND-OWNER: EXP-022 [2026-01-01T00, 2036-01-01T00)",  # huge range must not be enumerated
+    ):
+        with pytest.raises(ValueError, match="outside the block's explicit hours"):
+            parse_ledger(_LEDGER_HEADER + explicit.format(m=bad))
+
+
+@pytest.mark.parametrize("owner", ["exploration pool", "**reserved: the confirmation test after EXP-012**", "unassigned", "kill review"])
+def test_second_owner_marker_on_a_block_no_exp_owns_refuses_to_parse(owner: str) -> None:
+    with pytest.raises(ValueError, match="only an EXP-### owned block can have a second owner"):
+        parse_ledger(_LEDGER_HEADER + _so_row(_SO_MARKER_22, owner=owner))
+
+
+def test_second_owner_equal_to_the_owner_refuses_to_parse() -> None:
+    with pytest.raises(ValueError, match="the second owner is the block's own owner"):
+        parse_ledger(_LEDGER_HEADER + _so_row("SECOND-OWNER: EXP-012 [2026-10-09T00, 2026-10-12T00)"))
+
+
+def test_build_catalog_lists_second_owners_only_when_present(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(_LEDGER_HEADER + _so_row(_SO_MARKER_22) + _SO_POOL_ROW, encoding="utf-8")
+    walk, pool = build_catalog(ledger)["blocks"]
+    assert walk["second_owners"] == [{"exp_id": "EXP-022", "start": "2026-10-09T00", "end_exclusive": "2026-10-12T00"}]
+    assert walk["owner"] == "EXP-012"
+    assert walk["access"] == {"exploration": False, "confirmation_oneshot_exp": "EXP-012"}
+    assert "second_owners" not in pool
+
+
+def test_cli_check_honours_second_owner(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from tools.mal_catalog import main
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(_LEDGER_HEADER + _so_row(_SO_MARKER_22), encoding="utf-8")
+    base = ["check", "--ledger", str(ledger), "--host", "research", "--start", "2026-10-09T00", "--end", "2026-10-12T00"]
+    assert main(base + ["--role", "confirmation-oneshot", "--exp", "EXP-022"]) == 0
+    assert capsys.readouterr().out.strip() == "ALLOW"
+    assert main(base + ["--role", "confirmation-oneshot", "--exp", "EXP-021"]) == 2
+    assert main(base + ["--role", "exploration"]) == 2
+
+
+# --- Real ledger: independent of whether the manager has added a marker yet ----
+
+
+def test_real_ledger_forward_walk_owner_of_record_stays_exp012(blocks: list[Block]) -> None:
+    fwd = {b.name: b for b in blocks}["Forward walk"]
+    assert fwd.owner == "EXP-012"
+    assert all(sid != "EXP-012" for sid, _, _ in fwd.second_owners)
+    ok, reasons = check_read(blocks, "confirmation-oneshot", "research", fwd.start_hour, fwd.end_hour_exclusive, exp_id="EXP-012")
+    assert ok, reasons
+    ok, _ = check_read(blocks, "exploration", "research", fwd.start_hour, fwd.end_hour_exclusive)
+    assert not ok
+
+
+def test_real_ledger_second_owners_are_only_on_exp_owned_blocks(blocks: list[Block]) -> None:
+    for b in blocks:
+        for sid, _, _ in b.second_owners:
+            assert b.owner.startswith("EXP-") and sid != b.owner, (b.name, sid)
