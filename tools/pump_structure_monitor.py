@@ -6,7 +6,7 @@ silently before: the BOOST TWAP buy after each graduation, the fee config, the p
 binaries, the synthetic migration, and slot time. This tool reads that structure from PUBLIC
 mainnet RPC, appends ONE JSON line per run, and prints a short summary with HALT flags.
 
-What it reads (about 150-250 RPC calls per run at the defaults, hard cap 400):
+What it reads (about 150-250 RPC calls per run at the defaults, plus about 45-55 for the change watch below, hard cap 400):
   - getRecentPerformanceSamples / getEpochInfo: ms per slot, epoch, the 200 ms feature gate.
   - Config accounts: pump bonding-curve FeeConfig, PumpSwap FeeConfig, PumpSwap GlobalConfig
     (sha256 vs tools/pump_structure_pins.json) and pump Global (sha256, informational).
@@ -16,6 +16,17 @@ What it reads (about 150-250 RPC calls per run at the defaults, hard cap 400):
     InitBoost, synthetic migration (PostCompleteBuyEvent), and for BOOST pools the keeper
     slice count / SOL / timing from the boost vault authority's signature list.
   - A fixed sample of recent PumpSwap txs, reading ONLY instruction names (v2 trade share).
+
+Change watch (T1 of the 2026-10-08 edge scan; plan and trigger in EXP/EXP-023-usdc-boost-tripwire-plan.md). All WARN, none halts:
+  - program_changed: sha256 of the whole programdata account of the pump, PumpSwap and fee programs (3 getAccountInfo calls)
+    vs the pins. A changed deploy slot already HALTs through pins_changed; that is not duplicated here.
+  - docs_changed: newest commits of the public pump.fun docs repo (github.com/pump-fun/pump-public-docs), 1 unauthenticated
+    GitHub API call (at most 2 with one retry), no token. Unreachable = not evaluated.
+  - usdc_boost_regime: BOOST (InitBoost) graduations by quote mint (WSOL / USDC / other), from the graduation sample plus up to
+    --quote-mix-extra older migrate txs (about 40 more getTransaction calls, parsed for quote mint and InitBoost only). The
+    tripwire fires on 5 consecutive daily runs at >= 10 USDC BOOST graduations per day (rate estimated from the sample span).
+  Not recorded: slot-0 buy relative to V and the distinct traders in the first 300 s per quote class. Neither is in the migrate-tx
+    sample (they need each pool's own tape: a signature list plus transactions per pool, and trade sizes this monitor never reads).
 
 What it never reads or writes: prices, reserves, returns, P&L, per-mint or per-wallet values,
 non-BOOST trade amounts, the lab tape, forward-1002 files, any API key or .env (it refuses
@@ -55,7 +66,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
@@ -118,6 +129,20 @@ MS_PER_SLOT_WARN = 0.10  # ms/slot moved > 10% from the last run -> WARN
 MIN_EVAL_N_DEFAULT = 5  # share rules need at least this many graduations to be evaluated
 MIN_BOOST_POOLS = 3  # BOOST timing/size rules need at least this many profiled pools
 SETTLE_S_DEFAULT = 480  # BOOST last slice was 329-351 s after migrate in the 10-08 sample
+
+# ---- change watch (EXP-023 plan; the trigger is pre-registered there) ---------------------------
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # canonical Solana USDC mint (public constant)
+DOCS_REPO = "pump-fun/pump-public-docs"
+DOCS_API = "https://api.github.com/repos/{repo}/commits?per_page={n}"
+DOCS_PER_PAGE = 30
+DOCS_MAX_CALLS = 2  # one try plus one retry on a network error or 5xx; 403/404/429 are not retried
+DOCS_TITLES_SHOWN = 10
+QUOTE_MIX_EXTRA_DEFAULT = 40  # older migrate txs read beyond the graduation sample, for the quote mix only
+QUOTE_MIX_MIN_N = 20  # the USDC-BOOST rate is estimated only from a sample of at least this many graduations ...
+QUOTE_MIX_MIN_SPAN_S = 300  # ... spanning at least this many seconds
+USDC_BOOST_PER_DAY_MIN = 10.0  # tripwire: estimated USDC-quoted BOOST graduations per day, per daily run
+USDC_BOOST_STREAK_DAYS = 5  # ... on this many consecutive UTC days
+WATCH_RULES = ("program_changed", "docs_changed", "usdc_boost_regime")  # WARN rules counted in n_not_evaluated / all_evaluated
 
 V1_TRADE_IX = frozenset({"Buy", "Sell", "BuyExactQuoteIn"})
 V2_TRADE_IX = frozenset({"BuyV2", "SellV2", "BuyExactQuoteInV2"})
@@ -488,6 +513,7 @@ def parse_migrate_tx(tx: Mapping[str, Any]) -> dict[str, Any] | None:
         "pool": ev["pool"],
         "curve": ev["curve"],
         "quote_wsol": wsol,
+        "quote_mint": ev["quote_mint"],  # used for counts only; never written to the record
         "init_boost": "InitBoost" in amm_ix,
         "migrate_ix": next((n for n in pump_ix if n.startswith("Migrate")), None),
         "slot": int(tx["slot"]),
@@ -716,16 +742,19 @@ def _skip(errs: Counter, stage: str, exc: Exception) -> bool:
     return capped or errs[f"{stage}: RpcUnreachable"] >= MAX_UNREACHABLE_PER_STAGE
 
 
-def sample_graduations(client: RpcClient, n: int, cutoff_bt: int, errs: Counter | None = None, *, max_pages: int = 3) -> list[dict[str, Any]]:
+def sample_graduations(
+    client: RpcClient, n: int, cutoff_bt: int, errs: Counter | None = None, *, max_pages: int = 3,
+    before: str | None = None, seen: set[str] | None = None, stage: str = "graduations",
+) -> list[dict[str, Any]]:
     """The N newest successful migrate txs on the migration fee account with blockTime <= cutoff_bt (fixed rule).
 
     Each candidate is one getTransaction; txs without a CompletePumpAmmMigrationEvent are skipped. A candidate whose
     fetch fails is skipped and counted in `errs`; a failed page or the call cap returns what was sampled so far.
+    `before` / `seen` continue an earlier sample (older signatures, mints already counted); `stage` labels the errors.
     """
     errs = Counter() if errs is None else errs
     grads: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    before: str | None = None
+    seen = set() if seen is None else seen
     for _ in range(max_pages):
         opts: dict[str, Any] = {"limit": 100, "commitment": "finalized"}
         if before:
@@ -733,7 +762,7 @@ def sample_graduations(client: RpcClient, n: int, cutoff_bt: int, errs: Counter 
         try:
             sigs = client.call("getSignaturesForAddress", [MIGRATION_FEE_ACCOUNT, opts]) or []
         except ITEM_ERRORS as exc:
-            _skip(errs, "graduations", exc)
+            _skip(errs, stage, exc)
             return grads
         if not sigs:
             break
@@ -745,7 +774,7 @@ def sample_graduations(client: RpcClient, n: int, cutoff_bt: int, errs: Counter 
             try:
                 tx = fetch_tx(client, s["signature"])
             except ITEM_ERRORS as exc:
-                if _skip(errs, "graduations", exc):
+                if _skip(errs, stage, exc):
                     return grads
                 continue
             if tx is None:
@@ -974,6 +1003,280 @@ def stage_pumpswap_mix(client: RpcClient, n_txs: int, errs: Counter | None = Non
 
 
 # =============================================================================================
+# change watch: program fingerprints, docs repo, BOOST quote mix (all WARN-only)
+# =============================================================================================
+def stage_program_hashes(client: RpcClient, program_accounts: Mapping[str, str | None], errs: Counter | None = None) -> dict[str, dict[str, Any]]:
+    """sha256 and length of each program's whole programdata account (3 getAccountInfo calls). A read that fails is skipped
+    and counted in `errs`; a program without a hash stays 'unread', which is never a change."""
+    errs = Counter() if errs is None else errs
+    out: dict[str, dict[str, Any]] = {}
+    for p in PROGRAMS:
+        addr = program_accounts.get(p)
+        if not addr:
+            continue
+        try:
+            res = client.call("getAccountInfo", [addr, {"encoding": "base64", "commitment": "finalized"}])
+        except ITEM_ERRORS as exc:
+            if _skip(errs, "program_hashes", exc):
+                break
+            continue
+        data = _account_bytes((res or {}).get("value"))
+        if data is not None:
+            out[p] = {"sha256": sha256_hex(data), "data_len": len(data)}
+    return out
+
+
+def compare_program_hashes(rec: Mapping[str, Any], pins: Mapping[str, Any]) -> dict[str, Any]:
+    """Observed programdata sha256 vs the pins. A null pin or an unread hash is not a change."""
+    changed: list[dict[str, Any]] = []
+    unpinned: list[str] = []
+    unread: list[str] = []
+    ok: list[str] = []
+    pin_prog = pins.get("programs") or {}
+    for name, obs in (rec.get("programs") or {}).items():
+        pin = pin_prog.get(name) or {}
+        want, got = pin.get("sha256"), obs.get("sha256")
+        if want is None:
+            unpinned.append(name)
+        elif got is None:
+            unread.append(name)
+        elif got != want:
+            changed.append({
+                "program": name, "old_sha256": want, "new_sha256": got, "old_data_len": pin.get("data_len"), "new_data_len": obs.get("data_len"),
+                "old_deploy_slot": pin.get("deploy_slot"), "new_deploy_slot": obs.get("deploy_slot"),
+            })
+        else:
+            ok.append(name)
+    return {"changed": changed, "unpinned": unpinned, "unread": unread, "ok": ok}
+
+
+HttpGet = Callable[[str, float], "tuple[int, Mapping[str, str], bytes]"]
+
+
+def urllib_get(url: str, timeout: float) -> tuple[int, Mapping[str, str], bytes]:
+    """Unauthenticated GET. There is no Authorization header and no token read, by design."""
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "mal-pump-structure-monitor/1"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, dict(resp.headers), resp.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = exc.read()
+        except Exception:
+            payload = b""
+        return exc.code, dict(exc.headers or {}), payload
+
+
+_SHA40 = re.compile(r"^[0-9a-f]{40}$")
+
+
+def parse_docs_commits(body: bytes) -> list[dict[str, str]]:
+    """GitHub 'list commits' JSON (newest first) -> [{sha, date, title}]. Raises ValueError on anything else."""
+    obj = json.loads(body)
+    if not isinstance(obj, list) or not obj:
+        raise ValueError("no commit list")
+    out = []
+    for c in obj:
+        sha = c.get("sha") if isinstance(c, dict) else None
+        if not isinstance(sha, str) or not _SHA40.match(sha):
+            raise ValueError("bad commit entry")
+        commit = c.get("commit") or {}
+        stamp = ((commit.get("committer") or {}).get("date")) or ((commit.get("author") or {}).get("date")) or ""
+        message = str(commit.get("message") or "").strip()
+        out.append({"sha": sha, "date": str(stamp)[:20], "title": message.splitlines()[0][:120] if message else ""})
+    return out
+
+
+def new_docs_commits(commits: Sequence[Mapping[str, str]], prev_sha: str | None) -> tuple[list[Mapping[str, str]], bool]:
+    """(commits newer than prev_sha, overflow). Overflow: prev_sha is not in the fetched window, so at least len(commits) are new."""
+    if prev_sha is None or not commits or commits[0]["sha"] == prev_sha:
+        return [], False
+    shas = [c["sha"] for c in commits]
+    if prev_sha in shas:
+        return list(commits[: shas.index(prev_sha)]), False
+    return list(commits), True
+
+
+def stage_docs(http_get: HttpGet, prev_sha: str | None, *, repo: str = DOCS_REPO, sleep: Callable[[float], None] | None = None) -> dict[str, Any]:
+    """Newest commits of the public docs repo: one GET, a second only after a network error or 5xx. Never raises."""
+    out: dict[str, Any] = {"repo": repo, "ok": False, "calls": 0, "http_status": None, "error": None, "latest_sha": None, "latest_date": None, "latest_title": None,
+                           "prev_sha": prev_sha, "n_new": 0, "window_overflow": False, "new_commits": []}
+    url = DOCS_API.format(repo=repo, n=DOCS_PER_PAGE)
+    pause = sleep or time.sleep  # resolved at call time
+    commits = None
+    for attempt in range(DOCS_MAX_CALLS):
+        out["calls"] += 1
+        try:
+            status, _headers, body = http_get(url, 20.0)
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            out["error"] = f"network {type(exc).__name__}"
+            if attempt + 1 < DOCS_MAX_CALLS:
+                pause(5.0)
+            continue
+        out["http_status"] = status
+        if status >= 500:
+            out["error"] = f"http {status}"
+            if attempt + 1 < DOCS_MAX_CALLS:
+                pause(5.0)
+            continue
+        if status != 200:
+            out["error"] = f"http {status}" + (" (rate limited?)" if status in (403, 429) else "")
+            break
+        try:
+            commits = parse_docs_commits(body)
+            out["error"] = None
+        except ValueError as exc:
+            out["error"] = f"undecodable body: {str(exc)[:60]}"
+        break
+    if commits:
+        new, overflow = new_docs_commits(commits, prev_sha)
+        out.update(ok=True, latest_sha=commits[0]["sha"], latest_date=commits[0]["date"], latest_title=commits[0]["title"], n_new=len(new), window_overflow=overflow,
+                   new_commits=[{"sha": c["sha"][:7], "date": c["date"], "title": c["title"]} for c in new[:DOCS_TITLES_SHOWN]])
+    return out
+
+
+def summarize_quote_mix(sample: Sequence[Mapping[str, Any]], n_main: int, n_extra_requested: int) -> dict[str, Any]:
+    """BOOST (InitBoost) graduations by quote class over the graduation sample plus the older extension. Counts only."""
+    def cls(g: Mapping[str, Any]) -> str:
+        mint = g.get("quote_mint") or (WSOL_MINT if g.get("quote_wsol") else None)
+        return "wsol" if mint == WSOL_MINT else "usdc" if mint == USDC_MINT else "other"
+
+    by_quote = {c: {"n": 0, "n_init_boost": 0} for c in ("wsol", "usdc", "other")}
+    other_mints: set[str] = set()
+    for g in sample:
+        c = cls(g)
+        by_quote[c]["n"] += 1
+        by_quote[c]["n_init_boost"] += 1 if g["init_boost"] else 0
+        if c == "other" and g.get("quote_mint"):
+            other_mints.add(g["quote_mint"])
+    bts = [g["block_time"] for g in sample if g.get("block_time")]
+    span = (max(bts) - min(bts)) if len(bts) >= 2 else None
+    n = len(sample)
+    est = None
+    if n >= QUOTE_MIX_MIN_N and span is not None and span >= QUOTE_MIX_MIN_SPAN_S:
+        est = round(by_quote["usdc"]["n_init_boost"] * 86400.0 / span, 1)
+    return {
+        "rule": f"graduation sample ({n_main}) plus up to {n_extra_requested} older migrate txs; quote mint and InitBoost only",
+        "n": n, "n_main": n_main, "n_extra": n - n_main, "n_extra_requested": n_extra_requested,
+        "block_time_min": min(bts, default=None), "block_time_max": max(bts, default=None), "span_s": span,
+        "by_quote": by_quote, "n_other_quote_mints": len(other_mints),
+        "usdc_boost_per_day_est": est,
+        "est_note": f"usdc_boost n x 86400 / span_s; null below {QUOTE_MIX_MIN_N} graduations or {QUOTE_MIX_MIN_SPAN_S} s. A rate at run time, not a UTC-day count",
+        "not_recorded": "slot-0 buy/V and distinct traders in the first 300 s by quote class: not in the migrate-tx sample (per-pool tape reads, trade sizes)",
+    }
+
+
+def read_tail_records(path: Path, max_bytes: int = 524_288) -> list[dict[str, Any]]:
+    """Parsed records from the tail of the output file, oldest first. Garbage lines and a cut first line are skipped."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            fh.seek(max(0, size - max_bytes))
+            tail = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in tail:
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
+
+
+def last_docs_sha(history: Sequence[Mapping[str, Any]]) -> str | None:
+    for obj in reversed(list(history)):
+        sha = (obj.get("docs_watch") or {}).get("latest_sha")
+        if isinstance(sha, str) and _SHA40.match(sha):
+            return sha
+    return None
+
+
+def _run_date(rec: Mapping[str, Any]) -> date | None:
+    try:
+        return date.fromisoformat(str(rec.get("run_utc") or "")[:10])
+    except ValueError:
+        return None
+
+
+def usdc_boost_streak(history: Sequence[Mapping[str, Any]], today: date, current: float) -> tuple[int, list[tuple[str, float | None]]]:
+    """Consecutive UTC days ending today whose daily run estimated >= USDC_BOOST_PER_DAY_MIN USDC-quoted BOOST graduations.
+
+    One value per UTC date (the newest record of that date; today's value is `current`). A date with no record, or with a
+    record whose estimate is missing or below the bar, ends the streak: that is the reset on a gap."""
+    by_day: dict[date, float | None] = {}
+    for obj in history:
+        d = _run_date(obj)
+        if d is None or d >= today:  # today's earlier run (a re-run) is replaced by `current`; the future is ignored
+            continue
+        v = (obj.get("quote_mix") or {}).get("usdc_boost_per_day_est")
+        by_day[d] = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None  # later lines of the same date win
+    by_day[today] = current
+    streak, days = 0, []
+    d = today
+    while d in by_day:
+        v = by_day[d]
+        days.append((d.isoformat(), v))
+        if v is None or v < USDC_BOOST_PER_DAY_MIN:
+            break
+        streak += 1
+        d -= timedelta(days=1)
+    return streak, days
+
+
+def compute_watch_flags(rec: Mapping[str, Any], pins: Mapping[str, Any], history: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The three change-watch WARN rules, each {warn, evaluated, reason}. None of them halts."""
+    out: dict[str, Any] = {}
+
+    # program_changed: programdata sha256 vs pins. A deploy-slot change halts in pins_changed and is only quoted here.
+    ph = compare_program_hashes(rec, pins)
+    if ph["changed"]:
+        parts = []
+        for c in ph["changed"]:
+            slot = "" if c["old_deploy_slot"] == c["new_deploy_slot"] else f"; deploy_slot {c['old_deploy_slot']} -> {c['new_deploy_slot']} (halts in pins_changed)"
+            parts.append(f"program_{c['program']} sha256 {c['old_sha256'][:16]} -> {c['new_sha256'][:16]}, len {c['old_data_len']} -> {c['new_data_len']}{slot}")
+        out["program_changed"] = {"warn": True, "evaluated": True, "reason": "; ".join(parts), "changes": ph["changed"]}
+    elif ph["ok"]:
+        extra = [f"{k}: {ph[k]}" for k in ("unpinned", "unread") if ph[k]]
+        out["program_changed"] = {"warn": False, "evaluated": True, "reason": f"{len(ph['ok'])} programdata hashes unchanged" + (f" ({'; '.join(extra)})" if extra else "")}
+    else:
+        out["program_changed"] = {"warn": False, "evaluated": False, "reason": f"no programdata hash comparable (unpinned: {ph['unpinned']}, unread: {ph['unread']})"}
+
+    # docs_changed: newest commits of the public docs repo vs the last head on record.
+    dw = rec.get("docs_watch")
+    if not dw or not dw.get("ok"):
+        why = (dw or {}).get("error") or "docs watch not run"
+        out["docs_changed"] = {"warn": False, "evaluated": False, "reason": f"docs repo not read: {why}"}
+    elif dw.get("prev_sha") is None:
+        out["docs_changed"] = {"warn": False, "evaluated": False, "reason": f"no earlier docs head on record; baseline {dw['latest_sha'][:7]} {dw.get('latest_date')}"}
+    elif dw.get("n_new"):
+        titles = " | ".join(f"{c['sha']} {c['title']}" for c in dw["new_commits"])
+        more = "" if dw["n_new"] <= len(dw["new_commits"]) else f" (+{dw['n_new'] - len(dw['new_commits'])} more)"
+        lead = f"at least {dw['n_new']}" if dw.get("window_overflow") else str(dw["n_new"])
+        out["docs_changed"] = {"warn": True, "evaluated": True, "reason": f"{lead} new commit(s) since {dw['prev_sha'][:7]}, head {dw['latest_sha'][:7]} {dw.get('latest_date')}: {titles}{more}"}
+    else:
+        out["docs_changed"] = {"warn": False, "evaluated": True, "reason": f"docs head {dw['latest_sha'][:7]} {dw.get('latest_date')} unchanged"}
+
+    # usdc_boost_regime: >= 10 USDC-quoted BOOST graduations a day on 5 consecutive daily runs (EXP-023).
+    qm = rec.get("quote_mix") or {}
+    cur = qm.get("usdc_boost_per_day_est")
+    if cur is None or _run_date(rec) is None:
+        out["usdc_boost_regime"] = {"warn": False, "evaluated": False,
+                                    "reason": f"quote mix not evaluable this run (sample {qm.get('n', 0)} of >= {QUOTE_MIX_MIN_N}, span {qm.get('span_s')} s of >= {QUOTE_MIX_MIN_SPAN_S})"}
+    else:
+        streak, days = usdc_boost_streak(history, _run_date(rec), float(cur))
+        fire = streak >= USDC_BOOST_STREAK_DAYS
+        n_usdc = qm["by_quote"]["usdc"]["n_init_boost"]
+        out["usdc_boost_regime"] = {
+            "warn": fire, "evaluated": True, "streak_days": streak, "estimates_newest_first": days,
+            "reason": f"USDC-quoted BOOST graduations: {n_usdc} in {qm['n']} sampled over {qm['span_s']} s = est {cur}/day; {streak} of {USDC_BOOST_STREAK_DAYS} consecutive daily runs at >= {USDC_BOOST_PER_DAY_MIN:g}/day",
+        }
+    return out
+
+
+# =============================================================================================
 # pins, halt and warn flags (pure functions of the record)
 # =============================================================================================
 def load_pins(path: Path) -> dict[str, Any]:
@@ -1024,9 +1327,12 @@ def _flag(halt: bool, reason: str, evaluated: bool = True) -> dict[str, Any]:
     return {"halt": bool(halt), "evaluated": evaluated, "reason": reason}
 
 
-def compute_flags(rec: Mapping[str, Any], pins: Mapping[str, Any], prev_ms_per_slot: float | None, *, min_eval_n: int = MIN_EVAL_N_DEFAULT) -> tuple[dict[str, Any], dict[str, Any]]:
+def compute_flags(
+    rec: Mapping[str, Any], pins: Mapping[str, Any], prev_ms_per_slot: float | None, *, min_eval_n: int = MIN_EVAL_N_DEFAULT, history: Sequence[Mapping[str, Any]] = (),
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """HALT flags (six) and WARN flags. Each is {halt|warn, evaluated, reason}. A rule whose inputs are missing is
-    not evaluated (halt false) and listed in warn.rules_not_evaluated."""
+    not evaluated (halt false) and listed in warn.rules_not_evaluated (halt rules only). The change-watch WARN rules
+    (WATCH_RULES) carry their own `evaluated`; `history` is the earlier records of the output file, oldest first."""
     halt: dict[str, Any] = {}
 
     # 1. config / fee / program changed vs pins
@@ -1127,6 +1433,7 @@ def compute_flags(rec: Mapping[str, Any], pins: Mapping[str, Any], prev_ms_per_s
     warn["rules_not_evaluated"] = {"warn": bool(not_eval), "evaluated": True, "reason": ", ".join(not_eval) if not_eval else "all halt rules evaluated"}
     if rec.get("errors"):
         warn["stage_errors"] = {"warn": True, "evaluated": True, "reason": f"{len(rec['errors'])} stage error(s), see errors"}
+    warn.update(compute_watch_flags(rec, pins, history))
     return halt, warn
 
 
@@ -1157,6 +1464,9 @@ def build_record(
     prev_ms_per_slot: float | None,
     rpc_host: str,
     pins_error: str | None = None,
+    history: Sequence[Mapping[str, Any]] = (),
+    docs_get: HttpGet | None = None,
+    quote_mix_extra: int = 0,
 ) -> dict[str, Any]:
     errors: list[str] = []
     if pins_error:
@@ -1187,6 +1497,20 @@ def build_record(
     rec["graduations"] = summarize_graduations(grads, n_grads, cutoff_bt) if n_grads > 0 else {}
     rec["pumpswap_trade_mix"] = _stage(errors, "pumpswap_trade_mix", lambda: stage_pumpswap_mix(client, v2_sample, item_errs), None) if v2_sample > 0 else None
 
+    # change watch: programdata fingerprints (also read for --write-pins), docs head, BOOST quote mix. Runs after the halt-rule stages so
+    # a tight call cap starves the watch, never a halt rule.
+    for p, h in (_stage(errors, "program_hashes", lambda: stage_program_hashes(client, acc.get("program_accounts", {}), item_errs), {}) or {}).items():
+        if p in rec["programs"]:
+            rec["programs"][p].update(h)
+    if n_grads > 0:
+        sample = list(grads)
+        if grads and quote_mix_extra > 0:
+            more = _stage(errors, "quote_mix", lambda: sample_graduations(client, quote_mix_extra, cutoff_bt, item_errs, max_pages=2, before=grads[-1]["sig"], seen={g["mint"] for g in grads}, stage="quote_mix"), []) or []
+            sample += more
+        rec["quote_mix"] = summarize_quote_mix(sample, len(grads), quote_mix_extra)
+    if docs_get is not None:
+        rec["docs_watch"] = _stage(errors, "docs_watch", lambda: stage_docs(docs_get, last_docs_sha(history)), None)
+
     errors.extend(f"{k}: {v} item(s) skipped" for k, v in sorted(item_errs.items()))
     rec["item_errors"] = dict(sorted(item_errs.items()))
     rec["errors"] = errors
@@ -1197,11 +1521,15 @@ def build_record(
             obs["pinned_sha256"] = ((pins.get("accounts") or {}).get(name) or {}).get("sha256")
     for name, obs in (rec.get("programs") or {}).items():
         obs["pinned_deploy_slot"] = ((pins.get("programs") or {}).get(name) or {}).get("deploy_slot")
-    halt, warn = compute_flags(rec, pins, prev_ms_per_slot, min_eval_n=min_eval_n)
+    halt, warn = compute_flags(rec, pins, prev_ms_per_slot, min_eval_n=min_eval_n, history=history)
     rec["prev_ms_per_slot"] = prev_ms_per_slot
-    n_not_eval = sum(1 for v in halt.values() if not v["evaluated"])
-    # "no halt" is only an all-clear when every rule was evaluated: n_not_evaluated / all_evaluated say which it is.
-    rec["halt"] = {"any": any(v["halt"] for v in halt.values()), "n_not_evaluated": n_not_eval, "all_evaluated": n_not_eval == 0, "flags": halt}
+    n_halt_ne = sum(1 for v in halt.values() if not v["evaluated"])
+    watch_ne = sorted(k for k in WATCH_RULES if not warn[k]["evaluated"])
+    n_not_eval = n_halt_ne + len(watch_ne)
+    # "no halt" is only an all-clear when every rule was evaluated: n_not_evaluated / all_evaluated say which it is. They count the six halt
+    # rules plus the three change-watch WARN rules; n_halt_not_evaluated / all_halt_evaluated keep the halt-only meaning of the earlier records.
+    rec["halt"] = {"any": any(v["halt"] for v in halt.values()), "n_not_evaluated": n_not_eval, "all_evaluated": n_not_eval == 0,
+                   "n_halt_not_evaluated": n_halt_ne, "all_halt_evaluated": n_halt_ne == 0, "watch_rules_not_evaluated": watch_ne, "flags": halt}
     rec["warn"] = {"any": any(v["warn"] for v in warn.values()), "flags": warn}
     rec["status"] = "ok" if not errors else "partial"
     return rec
@@ -1269,6 +1597,19 @@ def format_summary(rec: Mapping[str, Any]) -> str:
         )
     if mix:
         lines.append(f"pumpswap trade ix sample: {mix.get('n_txs')} txs, v2 {mix.get('trade_ix_v2')} / v1 {mix.get('trade_ix_v1')} (v2 share {mix.get('v2_share')})")
+    progs = rec.get("programs") or {}
+    if any(o.get("sha256") for o in progs.values()):
+        lines.append("program fingerprints: " + ", ".join(f"{n} {str(o.get('sha256') or 'unread')[:12]} len {o.get('data_len')} slot {o.get('deploy_slot')}" for n, o in progs.items()))
+    qm = rec.get("quote_mix")
+    if qm:
+        bq = qm["by_quote"]
+        lines.append(
+            f"quote mix: {qm['n']} graduations ({qm['n_main']} + {qm['n_extra']} older) over {qm['span_s']} s; InitBoost/total wsol {bq['wsol']['n_init_boost']}/{bq['wsol']['n']}, "
+            f"usdc {bq['usdc']['n_init_boost']}/{bq['usdc']['n']}, other {bq['other']['n_init_boost']}/{bq['other']['n']} ({qm['n_other_quote_mints']} quote mints); usdc BOOST est {qm['usdc_boost_per_day_est']}/day"
+        )
+    dw = rec.get("docs_watch")
+    if dw:
+        lines.append(f"docs {dw['repo']}: " + (f"head {dw['latest_sha'][:7]} {dw.get('latest_date')} '{dw.get('latest_title')}', {dw['n_new']} new since last run" if dw.get("ok") else f"not read ({dw.get('error')})") + f", {dw['calls']} http call(s)")
     halts = [(k, v) for k, v in rec["halt"]["flags"].items() if v["halt"]]
     n_ne = rec["halt"].get("n_not_evaluated", 0)
     suffix = f" ({n_ne} rules not evaluated)" if n_ne else ""  # not an all-clear: see the HANDOFF note
@@ -1282,6 +1623,8 @@ def format_summary(rec: Mapping[str, Any]) -> str:
     for k, v in rec["warn"]["flags"].items():
         if v["warn"]:
             lines.append(f"WARN {k}: {v['reason']}")
+    for k in rec["halt"].get("watch_rules_not_evaluated", []):
+        lines.append(f"NOT EVALUATED {k}: {rec['warn']['flags'][k]['reason']}")
     for e in rec.get("errors", []):
         lines.append(f"ERROR {e}")
     return "\n".join(lines)
@@ -1299,7 +1642,7 @@ def build_pins(rec: Mapping[str, Any], previous: Mapping[str, Any] | None) -> di
         "pinned_utc": rec["run_utc"],
         "pinned_at_slot": rec.get("accounts_context_slot"),
         "accounts": {n: {"address": o["address"], "len": o["len"], "sha256": o["sha256"]} for n, o in rec["accounts"].items() if o.get("pinned")},
-        "programs": {n: {"program_id": o["program_id"], "deploy_slot": o["deploy_slot"], "deploy_utc": o["deploy_utc"]} for n, o in rec["programs"].items()},
+        "programs": {n: {"program_id": o["program_id"], "deploy_slot": o["deploy_slot"], "deploy_utc": o["deploy_utc"], "sha256": o.get("sha256"), "data_len": o.get("data_len")} for n, o in rec["programs"].items()},
         "boost": {"budget_sol": prev_boost.get("budget_sol", 17.585), "slices": prev_boost.get("slices", 29)},
     }
 
@@ -1315,6 +1658,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--min-eval-n", type=int, default=MIN_EVAL_N_DEFAULT, help="minimum sample for the share-based halt rules")
     p.add_argument("--min-interval", type=float, default=0.5, help="seconds between RPC calls")
     p.add_argument("--max-calls", type=int, default=400, help="hard cap on RPC calls per run, retries included")
+    p.add_argument("--quote-mix-extra", type=int, default=QUOTE_MIX_EXTRA_DEFAULT, help="older migrate txs read beyond the graduation sample for the BOOST quote mix (0 = sample only; default %(default)s)")
+    p.add_argument("--no-docs", action="store_true", help="skip the docs-repo watch (1 unauthenticated GitHub API call)")
     p.add_argument("--write-pins", metavar="PATH", help="read config/program state only, write a pins file to PATH, append nothing")
     return p.parse_args(argv)
 
@@ -1329,7 +1674,7 @@ def rpc_host(url: str) -> str:
     return f"{host}:{port}" if port else host
 
 
-def main(argv: Sequence[str] | None = None, *, client: RpcClient | None = None, now: float | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, client: RpcClient | None = None, now: float | None = None, docs_get: HttpGet | None = None) -> int:
     args = parse_args(argv)
     host = rpc_host(args.rpc_url)
     if "helius" in args.rpc_url.lower():
@@ -1366,6 +1711,7 @@ def main(argv: Sequence[str] | None = None, *, client: RpcClient | None = None, 
     rec = build_record(
         client, epoch_info, pins, now=t_now, n_grads=args.n, settle_s=args.settle_s, v2_sample=args.v2_sample, min_eval_n=args.min_eval_n,
         prev_ms_per_slot=last_ms_per_slot(out_path), rpc_host=host, pins_error=pins_error,
+        history=read_tail_records(out_path), docs_get=None if args.no_docs else (docs_get or urllib_get), quote_mix_extra=max(0, args.quote_mix_extra),
     )
     print(format_summary(rec), flush=True)  # first: a HALT must reach the log even when the file write fails
     try:
