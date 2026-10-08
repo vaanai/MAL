@@ -69,7 +69,11 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - **Ingredients:** the G7 R' veto and the O4 regime overlay.
   - **Nine frozen v1s failed;** they go to the post-H5 iterate loops. |
 | w9b4m533o (wf_0d1a560e-ebe) | Hunt-4: LAYA-filter cascades, analog trader, 9 strategy-tree leaves | /data/mal/hunt-1008/JUDGE-4.md, STRATEGY-TREE.md |
-| wo1wq4khh (wf_f304b5f5-877) | LAYA after-graduation consistency optimization: walk-forward harness, 4 rounds, freeze top 2 | /data/mal/hunt-1008/laya-opt/REPORT.md, FROZEN-*.md |
+| wo1wq4khh (wf_f304b5f5-877) | LAYA-opt (DONE) | /data/mal/hunt-1008/laya-opt/REPORT.md; backup in /data/mal/hunt-reports/laya-opt; notebook n_51ukuyOnjwHmOA.
+  - The development path is smooth, but the October central is ≈ 0 after selection.
+  - **r4-a** is a migration race (closed route).
+  - **r4-b** (l3 hourly top-10, no race, October central about +0.57%) is the only background-book candidate.
+  - **AFTER H5:** decide whether to pre-register r4-b for a forward-1002 read before 10-16 (l3 VERIFY, event-V precount). Iterate-path idea: stack the G7 R' veto and the O4 regime overlay. |
 
 **Builder agents.** If one is gone, check its branch; resume it or start a fresh builder.
 
