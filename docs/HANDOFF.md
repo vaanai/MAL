@@ -63,15 +63,15 @@ Protocol for every hunt: Aug discovery → `RULE.md` sha256 → one Sep confirma
 | hunt-3 LAYA (L1–L3) | wf_4f61363d-351 | Running |
 | LLM-trader test: Claude agents as the trader | wf_3b8d9808-907 | Running |
 | LLM-trader OpenRouter arm | `/data/mal/hunt-1008/llm-trader/openrouter` | Ready. Free model `nvidia/nemotron-3-ultra-550b-a55b:free`, paid `deepseek/deepseek-chat`. **Budget hard stop $1.50.** Key at `/var/lib/mal/openrouter/openrouter.env`, never printed. |
-| hunt-2 (12 theses) | wf_84831245-793 | **STOPPED for disk** |
-| hunt-4 (cascades + strategy tree) | wf_0d1a560e-ebe | **STOPPED for disk** |
+| hunt-2 (12 theses) | wf_84831245-793 (task w9v7nomhy) | **RESUMED at about 18:05Z** under the new disk rules, at most 4 at once, same run id. Each investigation continues from its existing files. It uses the shared layer if `/data/mal/hunt-shared/README.md` exists, and otherwise queries the tape directly with no copies. |
+| hunt-4 (cascades + strategy tree) | wf_0d1a560e-ebe | **STOPPED for disk.** Resumes after hunt-1 and hunt-3 finish. |
 
-Resume hunt-2 and hunt-4 with the disk rules below, once `/data/mal/hunt-shared` is ready. That is the shared zstd data layer, built as a MiScusi job. Check that it is ready first.
+`/data/mal/hunt-shared` is the shared zstd data layer, built as a MiScusi job. Hunt-2 uses it once `/data/mal/hunt-shared/README.md` exists and queries the tape directly (no copies) until then. Resume hunt-4 under the disk rules below after hunt-1 and hunt-3 finish.
 
 ### Disk incident 10-08
 
 - research-0 reached **81%** at about +100 GB/h, from the hunts' per-branch extracts.
-- **Fixed by:** stopping 2 hunts (hunt-2, hunt-4); Helm's cleanup, which freed 56 GB (now **74%**); and `.nobackup` on `hunt-1008` and `audit-1008/{tape,work,tmp}`.
+- **Fixed by:** stopping 2 hunts (hunt-2, hunt-4; hunt-2 was resumed at about 18:05Z, see above); Helm's cleanup, which freed 56 GB (now **74%**); and `.nobackup` on `hunt-1008` and `audit-1008/{tape,work,tmp}`.
 - **New rules for all hunts:**
   - use the shared layer only, with no per-branch tape copies;
   - zstd Parquet or `savez_compressed`;
@@ -130,7 +130,7 @@ Resume hunt-2 and hunt-4 with the disk rules below, once `/data/mal/hunt-shared`
      - 10-16 06:13Z: E1.
 3. **Forward walk #382 has a 7-day limit and ends about 10-15T11Z.** Resubmit it, or `miscusi_job_extend` it, **before then**, so forward-1002 reaches 10-16T01 for the FINAL. Use the same command and params `{"start":"2026-10-02T15"}`; it is idempotent. It runs on a pinned jobtree at 2bd45f1.
 4. **Heavy jobs go on research-0 only**, one at a time (hunts: at most 4–5 at once, under the disk rules above). fast-0 jobs stay ≤ 1.9 GB.
-5. **Check the hunts' watchdogs and `df` on research-0** before starting anything heavy. Resume hunt-2 and hunt-4 only after `/data/mal/hunt-shared` is ready.
+5. **Check the hunts' watchdogs and `df` on research-0** before starting anything heavy. Hunt-2 is running (resumed about 18:05Z); resume hunt-4 only after hunt-1 and hunt-3 finish.
 
 ## Running jobs at handoff
 
@@ -140,7 +140,7 @@ Resume hunt-2 and hunt-4 with the disk rules below, once `/data/mal/hunt-shared`
 | #389 | Phase-2 full-book regression of the scorer (04d2d1f) | Pass = P2–P4 exact, like #386. Then #461 merges. |
 | #391 | T2 B90 exit full run (#471) | Queued after #389. |
 | #371 | DEC-022 Phase A stream | Ends about 10-08T20:30Z. Do not extend it; Phase B is stopped. |
-| shared-layer build | `/data/mal/hunt-shared`, the shared zstd data layer for the hunts | MiScusi job; hunt-2 and hunt-4 wait on it. |
+| shared-layer build | `/data/mal/hunt-shared`, the shared zstd data layer for the hunts | MiScusi job. Hunt-2 uses it once `/data/mal/hunt-shared/README.md` exists; hunt-4 waits on hunt-1 and hunt-3 as well. |
 
 #387 is done (see above).
 

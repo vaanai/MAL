@@ -1,21 +1,21 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-08T18:04:46Z",
+  "updated_utc": "2026-10-08T18:06:13Z",
   "review_windows": [],
   "events": [
     {
       "id": "disk-incident-1008",
       "kind": "other",
       "title": "Research-0 disk reached 81% from the hunts; fixed, now 74%, with new rules for every hunt",
-      "detail": "Growth was about +100 GB/h from the hunts' per-branch extracts. Fixed by stopping 2 hunts (hunt-2, hunt-4), Helm's cleanup (freed 56 GB, now 74%) and .nobackup on hunt-1008 and audit-1008/{tape,work,tmp}. New rules for all hunts: shared data layer only, no per-branch tape copies, zstd Parquet or savez_compressed, a 5 GB disk budget each, heavy steps as MiScusi jobs, at most 4-5 at once. Watchdogs: the disk watchdog warns at 86% and stops (SIGSTOP) hunt processes at 90%; the CPU watchdog renices hunt processes above load 52. Time is approximate.",
+      "detail": "Growth was about +100 GB/h from the hunts' per-branch extracts. Fixed by stopping 2 hunts (hunt-2, hunt-4; hunt-2 was resumed at about 18:05Z), Helm's cleanup (freed 56 GB, now 74%) and .nobackup on hunt-1008 and audit-1008/{tape,work,tmp}. New rules for all hunts: shared data layer only, no per-branch tape copies, zstd Parquet or savez_compressed, a 5 GB disk budget each, heavy steps as MiScusi jobs, at most 4-5 at once. Watchdogs: the disk watchdog warns at 86% and stops (SIGSTOP) hunt processes at 90%; the CPU watchdog renices hunt processes above load 52. Time is approximate.",
       "atUtc": "2026-10-08T18:00:00Z",
       "approx": true
     },
     {
       "id": "hunts-1008",
       "kind": "job",
-      "title": "Strategy hunts launched on the exploration tape: hunt-1, hunt-3 (LAYA) and an LLM-trader test running; hunt-2 and hunt-4 stopped for disk",
-      "detail": "Protocol for every hunt: August discovery, RULE.md sha256, one September confirmation, adversarial verify, judge. Exploration tape only, so a survivor is still not gate evidence. Running: hunt-1 (H1-H6, wf_1b74c222-805), hunt-3 LAYA (L1-L3, wf_4f61363d-351), and the LLM-trader test with Claude agents as the trader (wf_3b8d9808-907); an OpenRouter arm is ready (free nemotron-3-ultra-550b-a55b, paid deepseek-chat, hard stop $1.50). Stopped for disk: hunt-2 (12 theses, wf_84831245-793) and hunt-4 (cascades + strategy tree, wf_0d1a560e-ebe); they resume on the shared zstd data layer /data/mal/hunt-shared once it is built. Results go to /data/mal/hunt-1008/JUDGE*.md. No hunt result yet. Time is approximate.",
+      "title": "Strategy hunts launched on the exploration tape: hunt-1, hunt-3 (LAYA), an LLM-trader test and hunt-2 (resumed) running; hunt-4 still stopped for disk",
+      "detail": "Protocol for every hunt: August discovery, RULE.md sha256, one September confirmation, adversarial verify, judge. Exploration tape only, so a survivor is still not gate evidence. Running: hunt-1 (H1-H6, wf_1b74c222-805), hunt-3 LAYA (L1-L3, wf_4f61363d-351), the LLM-trader test with Claude agents as the trader (wf_3b8d9808-907), and hunt-2 (12 theses, wf_84831245-793), which was stopped for disk and resumed at about 18:05Z under the new disk rules (at most 4 at once, each investigation continuing from its existing files; it uses the shared zstd layer /data/mal/hunt-shared if /data/mal/hunt-shared/README.md exists, otherwise it queries the tape directly with no copies). An OpenRouter arm is ready (free nemotron-3-ultra-550b-a55b, paid deepseek-chat, hard stop $1.50). Still stopped for disk: hunt-4 (cascades + strategy tree, wf_0d1a560e-ebe), which resumes after hunt-1 and hunt-3 finish. Results go to /data/mal/hunt-1008/JUDGE*.md. No hunt result yet. Time is approximate.",
       "atUtc": "2026-10-08T18:00:00Z",
       "approx": true
     },
@@ -362,7 +362,7 @@
     {
       "id": "fy-20261008-1804-goal",
       "from": "claude",
-      "text": "Recorded your goal: $1000 real income by 10-31, $400 minimum, the wallet at 7 SOL from a 1 SOL start once a book clears the gate. Honest odds, as I told you: about 5-10% for $400 or more real by 10-31, and about 1-2% for 7 SOL, without gambling. They rise if one of the strategy hunts survives its confirmation and verification; none has yet. Tonight: three hunts and the LLM-trader test are running, two hunts are paused until the shared data layer is built (research-0 disk hit 81%, fixed, now 74%), the walk-2 wrapper guards and the E0 comparison-set amendment merged, and the live-gate replay (job #387) was not a kill for CAP-PICK. No new action needed from you tonight; O8 and O9 from the 16:00 note are still open.",
+      "text": "Recorded your goal: $1000 real income by 10-31, $400 minimum, the wallet at 7 SOL from a 1 SOL start once a book clears the gate. Honest odds, as I told you: about 5-10% for $400 or more real by 10-31, and about 1-2% for 7 SOL, without gambling. They rise if one of the strategy hunts survives its confirmation and verification; none has yet. Tonight: hunt-1, hunt-3, hunt-2 (resumed at about 18:05Z) and the LLM-trader test are running, and hunt-4 is paused until hunt-1 and hunt-3 finish (research-0 disk hit 81%, fixed, now 74%), the walk-2 wrapper guards and the E0 comparison-set amendment merged, and the live-gate replay (job #387) was not a kill for CAP-PICK. No new action needed from you tonight; O8 and O9 from the 16:00 note are still open.",
       "atUtc": "2026-10-08T18:04:46Z"
     },
     {
@@ -479,7 +479,7 @@
       "id": "s-20261008-1804-evening",
       "from": "claude",
       "kind": "status",
-      "text": "Evening 10-08: owner goal recorded ($1000 real by 10-31, $400 minimum; the gate is kept). Merged #470 (change watch + EXP-023 tripwire), #472 (walk-2 wrapper guards) and #474 (EXP-022 Amendment 1, the E0 deciding set). Job #387 is not a kill: the pick sets match at <= 32 min; the P2-P4 online-pick book is +3.278% live [CI lo +1.17], +2.334% press, 19 of 29 days (exploration, in-sample). A11 not adopted. Strategy hunts launched on the exploration tape (hunt-1, hunt-3 LAYA, LLM-trader test running; hunt-2 and hunt-4 stopped for disk). Research-0 disk reached 81%, now 74% after Helm's cleanup and new rules for every hunt. Still open: #461 (after job #389), #462 (reviewer CHANGES), #471 and #473 drafts, and the E0 record amendment before 10-16T01Z.",
+      "text": "Evening 10-08: owner goal recorded ($1000 real by 10-31, $400 minimum; the gate is kept). Merged #470 (change watch + EXP-023 tripwire), #472 (walk-2 wrapper guards) and #474 (EXP-022 Amendment 1, the E0 deciding set). Job #387 is not a kill: the pick sets match at <= 32 min; the P2-P4 online-pick book is +3.278% live [CI lo +1.17], +2.334% press, 19 of 29 days (exploration, in-sample). A11 not adopted. Strategy hunts launched on the exploration tape (hunt-1, hunt-3 LAYA, the LLM-trader test and hunt-2, resumed at about 18:05Z, running; hunt-4 still stopped for disk until hunt-1 and hunt-3 finish). Research-0 disk reached 81%, now 74% after Helm's cleanup and new rules for every hunt. Still open: #461 (after job #389), #462 (reviewer CHANGES), #471 and #473 drafts, and the E0 record amendment before 10-16T01Z.",
       "atUtc": "2026-10-08T18:04:46Z"
     },
     {
