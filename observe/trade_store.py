@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from observe.trade_decode import VENUE_BONDING, VENUE_PUMPSWAP, WSOL_MINT
+from observe.trade_decode import EVENT_V_KEYS, VENUE_BONDING, VENUE_PUMPSWAP, WSOL_MINT
 
 log = logging.getLogger("mal.trade_tape")
 
@@ -73,6 +73,11 @@ def stored_trade(record: Mapping[str, Any]) -> dict[str, Any]:
     }
     if record.get("zero_sol"):
         slim["zero_sol"] = True
+    # Optional event-V keys exist only on rows decoded with event_v=True. Absent keys are not written,
+    # so a default-mode row is byte-identical to the pre-change row.
+    for key in EVENT_V_KEYS:
+        if key in record:
+            slim[key] = record[key]
     quote_mint = record.get("quote_mint")
     quote_is_wsol = record.get("quote_is_wsol")
     if quote_is_wsol is None and isinstance(quote_mint, str) and quote_mint:
