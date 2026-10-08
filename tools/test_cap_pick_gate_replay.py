@@ -307,7 +307,8 @@ class CompareTests(unittest.TestCase):
             "z": self._off("z", 0.99, 700.0, date="2026-08-16"),
         }
         out = cp.compare(on, {"e": {"mint": "e"}}, off, {"v": {"days": ["2026-08-15"]}}, th)["views"]["v"]
-        self.assertEqual(out["picks"], {"online": 2, "offline": 3, "both": 1, "online_only": 1, "offline_only": 2, "jaccard": 0.25})
+        self.assertEqual(out["picks"], {"online": 2, "offline": 3, "both": 1, "online_only": 1, "online_only_absent_from_offline_table": 0,
+                                        "offline_only": 2, "jaccard": 0.25})
         self.assertEqual((out["n_online_decisions"], out["n_online_scored"], out["n_offline_scored"]), (4, 3, 6))
         self.assertEqual(out["abs_score_delta"]["n"], 3)
         self.assertAlmostEqual(out["abs_score_delta"]["max"], 0.55)
@@ -353,6 +354,8 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(g["offline_picks_le60min"]["live"]["days_pos"], "1/1")
         self.assertEqual(rep["P2-P4"]["online_pick"]["live"]["n"], 2)
         self.assertNotIn("P1", rep)
+        self.assertEqual(rep["coverage"]["online_pick"], {"picks": 2, "with_a_G_attempt_row": 2})
+        self.assertEqual(rep["coverage"]["offline_all_picks"], {"picks": 2, "with_a_G_attempt_row": 2})
 
     def test_leg_stats_date_cluster(self) -> None:
         x = [100e6, 100e6, -50e6, 100e6]  # lamports

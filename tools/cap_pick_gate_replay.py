@@ -658,6 +658,7 @@ def compare(online: dict[str, dict[str, Any]], dead: dict[str, dict[str, Any]], 
             "offline_not_online_scored": sum(1 for k in off if k not in on_scored),
             "picks": {"online": len(on_pick), "offline": len(off_pick), "both": len(both),
                       "online_only": len(on_pick - off_pick), "offline_only": len(off_pick - on_pick),
+                      "online_only_absent_from_offline_table": sum(1 for k in on_pick - off_pick if k not in off),
                       "jaccard": (len(both) / len(on_pick | off_pick)) if (on_pick | off_pick) else None},
             "abs_score_delta": {"n": len(deltas), "max": max(deltas) if deltas else None, "p99": _pct(deltas, 0.99),
                                 "p95": _pct(deltas, 0.95), "median": _pct(deltas, 0.5)},
@@ -761,6 +762,8 @@ def restatement_report(online: dict[str, dict[str, Any]], offline: dict[str, dic
     groups = {g: vs for g, vs in groups.items() if vs}
     out: dict[str, Any] = {"label": "exploration only; not gate evidence", "reference": {"offline_all_P2-P4_live": 3.819, "offline_le60_P2-P4_live": 3.492},
                            "pressure_intercept": "fitted on the pooled pick book of the replayed views (audit pickbook.py)"}
+    g_mints = {r["mint"] for r in rows}
+    out["coverage"] = {name: {"picks": len(s), "with_a_G_attempt_row": len(s & g_mints)} for name, s in sets.items()}
     per_set = {name: restate(rows, s, groups, days) for name, s in sets.items()}
     for g in groups:
         out[g] = {name: per_set[name][g] for name in sets}
@@ -773,7 +776,7 @@ def render(cmp: dict[str, Any], rest: dict[str, Any] | None) -> str:
         p, d = v["picks"], v["abs_score_delta"]
         L += [f"## {view}  days {v['days'][0]}..{v['days'][-1]} ({len(v['days'])})" + ("  [tx_index null: file order]" if v["tx_index_null"] else ""),
               f"- migrating mints: online decisions {v['n_online_decisions']} (scored {v['n_online_scored']}), offline scored {v['n_offline_scored']}",
-              f"- picks: both {p['both']}, online-only {p['online_only']}, offline-only {p['offline_only']} (jaccard {p['jaccard']})",
+              f"- picks: both {p['both']}, online-only {p['online_only']} ({p['online_only_absent_from_offline_table']} of them absent from the offline table), offline-only {p['offline_only']} (jaccard {p['jaccard']})",
               f"- |score delta| on {d['n']} mints scored on both sides: max {d['max']}, p99 {d['p99']}, p95 {d['p95']}, median {d['median']}",
               "- decision labels by time-to-migrate band (le32m / 32_60m / gt60m / all):"]
         for lab, b in sorted(v["labels_by_ttm_band"].items()):
@@ -782,9 +785,10 @@ def render(cmp: dict[str, Any], rest: dict[str, Any] | None) -> str:
         L.append("")
     if rest:
         L += ["## Book restatement (mean % of stake per attempt [date-cluster CI90 lower] days positive, ex-best-day SOL)",
-              f"_{rest['label']}_; reference offline P2-P4 live: +3.819 all picks, +3.492 <=60 min", ""]
+              f"_{rest['label']}_; reference offline P2-P4 live: +3.819 all picks, +3.492 <=60 min",
+              "coverage (picks / picks with a G attempt row): " + "; ".join(f"{k} {v['picks']}/{v['with_a_G_attempt_row']}" for k, v in rest["coverage"].items()), ""]
         for g, sets in rest.items():
-            if g in ("label", "reference", "pressure_intercept"):
+            if g in ("label", "reference", "pressure_intercept", "coverage"):
                 continue
             for name, lg in sets.items():
                 if not lg.get("live"):
