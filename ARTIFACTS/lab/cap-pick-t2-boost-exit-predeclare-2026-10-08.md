@@ -56,6 +56,8 @@ Pump.fun shortens BOOST: the keeper's buys stop after a fraction f of the 17.585
 
 Keep B90 only if (i) it is not worse than the cap under today's timing (paired date-cluster CI90 lower bound > -0.25 pp on the picks, P2-P4, on **both** binding legs) AND (ii) it beats the cap in both stress replays (paired mean > 0 on the picks, P2-P4). Otherwise close with no retune. B90 never decides a gate on its own.
 
+(ii) amended in section 7.
+
 **Consequence of section 3, declared now.** Condition (ii) cannot be met by B90 as defined: the paired mean is exactly 0 in both replays, which is not > 0. Read literally, B90 is closed. I do not change the rule. If the manager wants (ii) to be non-vacuous, `REPORT.md` section T2 pre-specified a different replay, BOOST slice times shifted -20% and -40% (same budget, earlier schedule), under which a 90% trigger does fire earlier. That replay is **not built or run here**. It would need its own pre-declared amendment and a builder step before any full run.
 
 ## 5. Limits
@@ -80,6 +82,7 @@ Section 3 says B90 "never fires" on a cut path. That is true of the **keeper**: 
 - Moved prints are re-inserted in path order: by new slot, and within a slot **after** that slot's non-keeper prints. Keeper prints keep their relative order. Non-keeper prints keep their slots and their order.
 - Re-simulation is the section 3 constant-product rule and approximations (1) to (4), from the first position at which the shifted path differs from the tape. Approximation (5) is replaced by: the entry state is **re-simulated too**. The attempt's entry is taken from the shifted path (no attempt is excluded). An attempt **overlaps** when the first position at which the shifted path differs from the tape has a slot (the tape's or the new one, whichever is smaller) at or before the landing slot. Overlaps are counted per attempt (`boost_shift_entry_overlap`) and in `t2.counts.shift_entry_overlap`, and reported next to the result.
 - New approximation (6): other traders keep their slots, so the keeper's price impact arrives earlier relative to them, and they do not react to it.
+- New approximation (7): the "keeper after the non-keeper prints of its slot" rule is applied to **every** keeper print, including one whose offset from s0 is 0 and whose slot therefore does not change. Such a print also goes behind the non-keeper prints of its own slot, so it can be re-ordered even though it is not moved.
 - `--boost-shift 0` is a no-op (the default run, byte for byte). `--boost-shift` and `--boost-cut` are mutually exclusive.
 
 **Kill rule (d)(ii), amended [pinned].** B90 minus cap, paired mean **> 0** on the picks, P2-P4, on **both** binding legs (flat and pressure), in **both** shifted replays (s = 0.2 and s = 0.4). Condition (i) is unchanged. Otherwise close with no retune. B90 never decides a gate on its own.
