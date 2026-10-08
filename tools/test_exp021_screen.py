@@ -836,7 +836,8 @@ class PreregTests(unittest.TestCase):
 
     def test_pins_match_the_code(self):
         for sv in ("fresh-0802", "[2026-08-02T12, 2026-08-08T12)", "10,000 draws, seed 1", "p < 0.025", "exit lag 2", "0.05, 0.25 and 0.5 SOL", "tp50_sl30",
-                   "0.8030766588450794", "8%", "100 frozen picks", "refusing stub", "No k2 cell", "+22.9 bps at 0.25 SOL and +51.6 bps at 0.5 SOL", "p < 0.025 / m", "0.00208", "DEC-017", "DEC-014", "EXP021_V_FALLBACK_SHA256: none", "mal-research-0", "x86_64", "1/128", "EXP021_FROZEN_MD5: PENDING"):
+                   "0.8030766588450794", "8%", "100 frozen picks", "refusing stub", "No k2 cell", "+22.9 bps at 0.25 SOL and +51.6 bps at 0.5 SOL", "p < 0.025 / m", "0.00208", "DEC-017", "DEC-014", "EXP021_V_FALLBACK_SHA256: none", "mal-research-0", "x86_64", "1/128", "EXP021_FROZEN_MD5: 3a0e9e76d94fb6c0b1a9cd22be00970a", "EXP021_CONTROL_MD5: 98472502dfbc448fbecb6115f8f62ab1",
+                   "EXP021_TRAIN_MANIFEST_SHA256: 6e5cbe7fc4fc8ffba9066d192f209846ea9e942c702dca7c271fe73fae3bcbc0"):
             self.assertIn(sv, self.TEXT)
         self.assertEqual(x.FAMILY_ALPHA, 0.025)
         self.assertEqual(x.LIMIT_NO_CREATE_021, 0.08)

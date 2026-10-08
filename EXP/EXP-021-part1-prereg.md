@@ -45,9 +45,9 @@ plus `train-manifest.json` (universe sha256, feature-table sha256, row counts pe
 - **Guard in the tool:** `tools/exp021_screen.py` refuses the screen (rc 2, before any guard or row) unless: this file is clean against HEAD (no modification, staged or not; tracked); each of the three keys appears exactly once, as hex (`PENDING` refuses); and `--frozen-dir` is given and `sha256(train-manifest.json)`, the md5 of `model.txt` and the md5 of `control-model.txt` equal their pins and the md5s the manifest records. The file's git blob sha is recorded in the `started` tries line and in `report.json`. `--precount`, `--freeze` and `--confirm` are exempt (`--confirm` is a stub that refuses).
 
 ```
-EXP021_FROZEN_MD5: PENDING
-EXP021_CONTROL_MD5: PENDING
-EXP021_TRAIN_MANIFEST_SHA256: PENDING
+EXP021_FROZEN_MD5: 3a0e9e76d94fb6c0b1a9cd22be00970a
+EXP021_CONTROL_MD5: 98472502dfbc448fbecb6115f8f62ab1
+EXP021_TRAIN_MANIFEST_SHA256: 6e5cbe7fc4fc8ffba9066d192f209846ea9e942c702dca7c271fe73fae3bcbc0
 EXP021_V_FALLBACK_SHA256: none
 ```
 
@@ -152,3 +152,17 @@ Failing any section 5 bar on either leg kills the RUG selector. There is no seco
 ## Amendment 4 note (2026-10-07, before any outcome read)
 
 See [plan Amendment 4](EXP-021-rug-signals-in-selector-plan.md). The OOF-without-cell check excludes 2026-09-25 (P1C covers 00-06Z only; the rest was dropped P1B): precount #356 showed 844 OOF mints against 263 rows on that date, 569 of 7023 without a cell overall. The precount now also reports V coverage (33,098 of 34,809 = 95.08% on the pinned map, 1,711 pools absent from it) and the constancy check in `would_refuse`, and records V coverage in the train manifest. No bar, threshold, try count, block or deciding cell changes. **V coverage remedy (decided after precount #3):** all 1,711 unreadable pools (of 34,809; 95.085% overall) belong to NO_SIM "bad create row" cells (P1 206, P2 682, P3 358, P4 465; 0 in the table, 0 frozen-selected), so coverage is computed over all cells except NO_SIM "bad create row" cells, which return before any print is V-priced, with the 99% floor unchanged, and the all-cells figure is report-only. **Constancy reserve walk:** a null reserve row is replaced by the next reserve row, in order (a departure from EXP-016 plan 13 item 8(c), which forbids cascading; EXP-021 only); the constancy file is extended (`exp016_constancy.py --extend`), so its sha256 changes and `v_constancy_json_sha256` records the new one. Both decisions are outcome-blind (counts and V-map facts only); no bar, threshold, try, block or deciding cell changes.
+
+## Freeze-pin amendment (2026-10-08, before any screen row)
+
+`--freeze` ran once, as MiScusi job #376 on `mal-research-0` (x86_64), from main `c6f5117152a2730d8c3a767f08c0b99b49d13db7`, out dir `/data/mal/exp021-freeze`, rc 0. This amendment records the outputs and sets the three pin lines in section 2:
+
+- RUG `model.txt` md5 `3a0e9e76d94fb6c0b1a9cd22be00970a` (34 features)
+- CONTROL `control-model.txt` md5 `98472502dfbc448fbecb6115f8f62ab1` (18 features)
+- `train-manifest.json` sha256 `6e5cbe7fc4fc8ffba9066d192f209846ea9e942c702dca7c271fe73fae3bcbc0`
+- Freeze commit (`code_head` in the manifest): `c6f5117152a2730d8c3a767f08c0b99b49d13db7`
+
+The manifest also records: LightGBM 4.7.0, numpy 2.5.3, Python 3.12.3, `v_fallback_json_sha256` `none` (equal to the pin), `vmap_sha256` `1f3e772d12cedbdb2dd860f619361fc0fdc88872fd5fa68639a11f91945162ec` (the pinned V map), rows P1A 3070, P1C 3361, P2 14168, P3 5632, P4 5798 (32029 in all), and V coverage 1.0 on the Amendment 4 basis (the all-cells figure, 0.9508, is report-only). The md5s of both files were rechecked against the manifest after the run. The freeze wrote model files only: no scored book, no tries line.
+
+**The screen is not run by this amendment.** The 2026-10-08 profitability audit asked the owner to pause the EXP-021 screen (decision O1, pending). The screen runs only after the owner's answer. If it runs, the audit's 10-08 exploration-pool reads of P2–P4 outcomes are disclosed with its result as earlier tries on those pools. No bar, threshold, try, block or deciding cell changes.
+
