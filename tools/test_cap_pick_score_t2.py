@@ -337,3 +337,33 @@ def test_cli_t2_flags_write_the_extra_columns_and_the_paired_summary(tmp_path):
     row = read_rows_csv(out / "rows.csv")[0]
     assert set(cps.ROW_COLUMNS_T2) <= set(row) and row["boost_cut_dropped"] == "6" and row["exit_type"] == row["alt_exit_type"]
     assert cps.main(["--p2-view-dir", str(view), "--vmap", str(vpath), "--out-dir", str(tmp_path / "bad"), "--boost-cut", "1.5"]) == 2
+
+
+def test_paired_report_leaves_p1_out_of_the_picks_book_but_not_out_of_the_full_book():
+    cfg = dataclasses.replace(cps.Config(), paired=True)
+    rows = [_prow(cps.BLOCK_P2, "d1", 100.0, 5e7 + 100.0, "boost", pick="pick"), _prow(cps.BLOCK_P1A, "d3", 100.0, 100.0 - 2.5e7, "boost", pick="pick"),
+            _prow(cps.BLOCK_P1C, "d4", 100.0, 100.0 + 1e7, "boost", pick="pick"), _prow(cps.BLOCK_P1C, "d5", 100.0, 100.0, "deadline", pick="non_pick")]
+    rep = cps.paired_report(rows, cfg, have_picks=True)
+    assert set(rep["books"]["picks"]) == {cps.BLOCK_P2, "P2-P4"}  # no P1, no fast-pool, no oracle, and no `all` (it would pool the P1 picks)
+    text = json.dumps(rep["books"]["picks"])
+    assert "fast-pool" not in text and "oracle" not in text and rep["books"]["picks"]["P2-P4"]["flat"]["n_attempts"] == 1
+    assert {"P1", cps.BLOCK_P1A, cps.BLOCK_P1C, "all"} <= set(rep["books"]["all"]) and rep["books"]["all"]["P1"]["flat"]["n_attempts"] == 3
+
+
+def test_boost_shift_is_refused_with_the_block_time_cap_anchor():
+    with pytest.raises(cps.Refused, match="block_time"):
+        dataclasses.replace(cps.Config(), boost_shift=0.2, cap_anchor="block-time").validate()
+    with pytest.raises(cps.Refused, match="block_time"):
+        dataclasses.replace(cps.Config(), boost_shift=0.0, cap_anchor="block-time").validate()
+    for ok in (dict(boost_shift=0.2), dict(boost_cut=0.8, cap_anchor="block-time"), dict(cap_anchor="block-time")):  # the cut moves no time; the anchor alone is G's phase-2 switch
+        dataclasses.replace(cps.Config(), **ok).validate()
+
+
+@needs_zstd
+def test_cli_refuses_shift_with_the_block_time_anchor_and_writes_nothing(tmp_path, capsys):
+    view, vpath = write_keeper_fixture(tmp_path, cadence=29)
+    bad = tmp_path / "bad"
+    capsys.readouterr()
+    assert cps.main(["--p2-view-dir", str(view), "--vmap", str(vpath), "--out-dir", str(bad), "--boost-shift", "0.2", "--cap-anchor", "block-time"]) == 2
+    err = capsys.readouterr().err
+    assert "REFUSED" in err and "block_time" in err and not bad.exists()

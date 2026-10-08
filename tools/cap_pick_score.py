@@ -306,6 +306,8 @@ class Config:
             raise Refused(f"boost-shift must be in [0, 1), got {self.boost_shift!r}")
         if self.boost_cut is not None and self.boost_shift is not None:
             raise Refused("--boost-cut and --boost-shift are mutually exclusive")
+        if self.boost_shift is not None and self.cap_anchor == "block-time":
+            raise Refused("--boost-shift cannot be combined with --cap-anchor block-time (the shift does not move block_time)")
         if (self.rent_mode == "always") != (self.rent_lamports > 0):  # a rent amount without the mode (or the mode without an amount) would silently charge nothing
             raise Refused("--rent-mode always needs --rent-lamports > 0, and --rent-lamports > 0 needs --rent-mode always (default: none, 0)")
 
@@ -890,7 +892,8 @@ def paired_stats(diff_lamports: Sequence[float], dates: Sequence[str], size: flo
 
 def paired_report(rows: Sequence[Mapping[str, Any]], cfg: Config, have_picks: bool) -> dict[str, Any]:
     """summary.paired[book][scope][leg] = paired_stats of (B90 pnl - cap pnl) over the attempts of that scope. books: `all` (when --book all) and `picks` (the pick
-    subset, when --picks is given; P1 pick scores from cache_table are in-sample and are not used for a decision: pre-declaration section 2)."""
+    subset, when --picks is given). The picks book carries the P2, P3, P4 and P2-P4 scopes only: P1 pick scores from cache_table are in-sample, so no P1 pick cell is written
+    (pre-declaration section 2)."""
     b90_is_primary = cfg.exit_mode == "boost90"
     size = float(cfg.size_lamports)
     scopes: list[tuple[str, tuple[str, ...] | None]] = [(b, (b,)) for b in (BLOCK_P2, BLOCK_P3, BLOCK_P4, BLOCK_P1A, BLOCK_P1C)]
@@ -899,9 +902,12 @@ def paired_report(rows: Sequence[Mapping[str, Any]], cfg: Config, have_picks: bo
     if have_picks:
         books.append(("picks", [r for r in rows if r["pick"] == "pick"]))
     out: dict[str, Any] = {"definition": "B90 minus the 300 s cap, per attempt, pp of stake; same (date, mint), same entry, guard and price path", "books": {}}
+    p234 = set(GROUPS["P2-P4"])
     for bname, brows in books:
         cells: dict[str, Any] = {}
         for name, blocks in scopes:
+            if bname == "picks" and (blocks is None or not set(blocks) <= p234):  # pre-declaration section 2: no P1 pick subset (cache_table P1 scores are in-sample), and not `all`, which pools P1
+                continue
             sel = [r for r in brows if blocks is None or r["block"] in blocks]
             if not sel:
                 continue
