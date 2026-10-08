@@ -15,6 +15,12 @@ refuses unless EXP-012's FINAL is in EXP-012's ledger (`--primary-ledger`). If E
 bootstrap p-values (10,000 draws, seed 1, both fail models). `family_holm` applies Holm across every
 secondary in ARTIFACTS/forward-family/registry.json (fixed k). INTERIM hides P&L for every experiment.
 
+Walk 2 (EXP-022) uses --strict-lines; the DEC-016 forward-1002 FINAL runs as written, without it.
+`score --strict-lines` reads the walk tape strict (a raw NUL, non-JSON or non-object line in any hour refuses the
+run, nothing appended); `verify --strict-lines` counts such lines as a verify issue. Without the flags `score` and
+`verify` are exactly what they were: the verify line has none of the bad-line keys (`--report-bad-lines` adds them
+without changing the OK status). Nothing in the environment switches either mode.
+
 This is NOT a one-shot read and writes no HOLDOUT lock. It runs the code path
 `tools/exp012_score.py` used for the read, by import and not by copy:
   - the table build is `exp012_score.load_rows` (same `chunk_plan`, same
@@ -117,15 +123,16 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, ClassVar, Sequence
 
 import tools.exp011_score as e11
 import tools.exploration_entry_model as eem
 import tools.exp012_score as s12
 from tools.exp011_freeze import FROZEN_MANIFEST_NAME, _git_commit, _md5_of_file
 import tools.backfill_verify as bv
+import tools.tape_lines as tape_lines
 import tools.forward_family as ff
-from tools.latency_curve import _hour_file
+from tools.latency_curve import _hour_file, _iter_trades
 
 SCHEMA_ROW = "exp012_forward_row_v1"
 SCHEMA_REPORT = "exp012_forward_report_v1"
@@ -244,9 +251,17 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _line_ok(rec: dict[str, Any]) -> bool:
+def _line_ok(rec: dict[str, Any], strict_bad_lines: bool = False) -> bool:
     if rec.get("issues") != [] or not isinstance(rec.get("content"), dict):
         return False
+    if strict_bad_lines:
+        # Opt-in (walk 2). A line with no bad_lines key predates the A8 verify and stays OK here;
+        # the strict reader in run_score still checks the bytes.
+        if rec.get("bad_lines") not in (None, 0):
+            return False
+        for stats in rec["content"].values():
+            if isinstance(stats, dict) and stats.get("bad_lines") not in (None, 0):
+                return False
     sha = rec.get("sha256")
     if not isinstance(sha, dict) or not all(isinstance(sha.get(sub), str) for sub in ("trades", "creates")):
         return False
@@ -256,7 +271,7 @@ def _line_ok(rec: dict[str, Any]) -> bool:
     return True
 
 
-def verified_hours(walk_dir: Path) -> dict[str, dict[str, Any]]:
+def verified_hours(walk_dir: Path, strict_bad_lines: bool = False) -> dict[str, dict[str, Any]]:
     """{hour: last verify line} for hours whose LAST line is OK."""
     path = walk_dir / VERIFY_NAME
     last: dict[str, dict[str, Any]] = {}
@@ -271,11 +286,11 @@ def verified_hours(walk_dir: Path) -> dict[str, dict[str, Any]]:
             continue
         if isinstance(rec, dict) and isinstance(rec.get("hour"), str):
             last[rec["hour"]] = rec
-    return {h: r for h, r in last.items() if _line_ok(r)}
+    return {h: r for h, r in last.items() if _line_ok(r, strict_bad_lines)}
 
 
-def hour_problems(walk_dir: Path, hours: Sequence[str]) -> list[str]:
-    sealed, ok = _sealed_hours(walk_dir), verified_hours(walk_dir)
+def hour_problems(walk_dir: Path, hours: Sequence[str], strict_bad_lines: bool = False) -> list[str]:
+    sealed, ok = _sealed_hours(walk_dir), verified_hours(walk_dir, strict_bad_lines)
     out: list[str] = []
     for h in hours:
         if h not in sealed:
@@ -300,10 +315,16 @@ def hour_problems(walk_dir: Path, hours: Sequence[str]) -> list[str]:
     return out
 
 
-def verify_line(walk_dir: Path, hour: str) -> dict[str, Any]:
-    """`tools.backfill_verify` with --content for [hour, hour+1), plus the sha256 of each sealed file."""
+def verify_line(walk_dir: Path, hour: str, strict_bad_lines: bool = False, report_bad_lines: bool = False) -> dict[str, Any]:
+    """`tools.backfill_verify` with --content for [hour, hour+1), plus the sha256 of each sealed file.
+
+    By default the line is exactly what it was before the A8 bad-line count existed: no `bad_lines`, `nul`,
+    `not_json`, `non_object` or `lenient` key, and the zstd exit code is not checked. `report_bad_lines=True` adds
+    those keys and changes nothing else (`issues` and the OK status are as before). `strict_bad_lines=True`
+    (walk 2) also reports them, and makes a bad line or a failed zstd stream an issue, so the hour is not OK."""
     nxt = hour_key(hour_dt(hour) + timedelta(hours=1))
-    report = bv.build_report(walk_dir, hour, nxt, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=bv.MAX_SLOTS_PER_HOUR)
+    mode = "strict" if strict_bad_lines else "report" if report_bad_lines else "off"
+    report = bv.build_report(walk_dir, hour, nxt, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=bv.MAX_SLOTS_PER_HOUR, bad_lines=mode)
     rec = report["hours"][0]
     if rec["files"].get("trades") is None and "sealed_with_no_trades_file" not in rec["issues"]:
         rec["issues"].append("no_trades_file")
@@ -321,9 +342,9 @@ def verify_line(walk_dir: Path, hour: str) -> dict[str, Any]:
     return rec
 
 
-def run_verify(walk_dir: Path, hour: str) -> tuple[dict[str, Any], bool]:
+def run_verify(walk_dir: Path, hour: str, strict_bad_lines: bool = False, report_bad_lines: bool = False) -> tuple[dict[str, Any], bool]:
     """(line, appended). Appends to D/verify.jsonl unless the hour's last line is identical."""
-    rec = verify_line(walk_dir, hour)
+    rec = verify_line(walk_dir, hour, strict_bad_lines, report_bad_lines)
     path = walk_dir / VERIFY_NAME
     text = json.dumps(rec, sort_keys=True)
     last = None
@@ -342,9 +363,9 @@ def run_verify(walk_dir: Path, hour: str) -> tuple[dict[str, Any], bool]:
     return rec, True
 
 
-def default_to(walk_dir: Path, start: datetime) -> datetime:
+def default_to(walk_dir: Path, start: datetime, strict_bad_lines: bool = False) -> datetime:
     """End (exclusive) of the longest sealed+verified run beginning at `start`."""
-    sealed, ok = _sealed_hours(walk_dir), verified_hours(walk_dir)
+    sealed, ok = _sealed_hours(walk_dir), verified_hours(walk_dir, strict_bad_lines)
     cur = start
     while hour_key(cur) in sealed and hour_key(cur) in ok:
         cur += timedelta(hours=1)
@@ -359,6 +380,7 @@ class ForwardHours:
     root: str
     allowed: frozenset[str]
     exit_spec_id: str | None = None  # None: the read's own exit (tp50_sl30), nothing injected
+    strict_lines: ClassVar[bool] = False  # not a field: see StrictForwardHours
 
     def __call__(self, key: str) -> dict[str, Any]:
         assert key in self.allowed, f"hour {key!r} is outside the sealed+verified forward range"
@@ -370,11 +392,23 @@ class ForwardHours:
         return {"hour": key, "day": key[:10], "end": int(hour_dt(key).timestamp()) + 3600, "trade": trade, "create": create}
 
 
+@dataclass(frozen=True)
+class StrictForwardHours(ForwardHours):
+    """Walk 2 (`score --strict-lines`): the same resolver; `_tagged_worker` reads its trades and creates strict."""
+
+    strict_lines: ClassVar[bool] = True
+
+
+def _strict_iter(path: Path) -> Any:
+    return _iter_trades(path, strict=True)
+
+
 def _tagged_worker(worker_id: int, home: list[str], buf: list[str], creator_hist: dict[str, list[int]], rows_out_path: Path | None, hours: ForwardHours) -> list[dict[str, Any]]:
     """`exp012_score._run_worker` with one addition: each scored row also carries the
     migration time (`mig_ms`), which `score_one` has but does not put in the row.
     Nothing else about a row changes. `score_one` is wrapped for the duration of the call only."""
     orig = eem.score_one
+    orig_iter = eem._iter_trades
     exit_spec = None
     if hours.exit_spec_id is not None and hours.exit_spec_id != e11.TARGET_SPEC_ID:
         exit_spec = [s for s in eem.build_specs() if s["id"] == hours.exit_spec_id]  # DEC-017: a secondary's exit
@@ -391,25 +425,35 @@ def _tagged_worker(worker_id: int, home: list[str], buf: list[str], creator_hist
 
     eem.score_one = tagged
     try:
+        if getattr(hours, "strict_lines", False):  # the same call as s12._run_worker, with the strict reader on the trades and the creates
+            eem._iter_trades = _strict_iter
+            return s12.run_worker_features(worker_id, home, buf, creator_hist, hour_info_fn=hours, rows_out_path=rows_out_path, row_iter_fn=_strict_iter)
         return s12._run_worker(worker_id, home, buf, creator_hist, rows_out_path, hours)
     finally:
         eem.score_one = orig
+        eem._iter_trades = orig_iter
 
 
 # --- scoring ----------------------------------------------------------------------------
 
 
-def score_hours(walk_dir: Path, pool: Sequence[str], artifact_dir: Path, scratch: Path, exit_spec_id: str | None = None) -> tuple[list[dict[str, Any]], float]:
+def score_hours(walk_dir: Path, pool: Sequence[str], artifact_dir: Path, scratch: Path, exit_spec_id: str | None = None, strict_lines: bool = False) -> tuple[list[dict[str, Any]], float]:
     """Rows of the read's pipeline on `pool`, scored by the frozen model. Every row has mig_ms and score.
     `exit_spec_id` None or tp50_sl30 is the read's exit and calls load_rows exactly as before."""
     model, threshold, names = e11.load_frozen_spec(artifact_dir)
     plan = anchored_plan(pool, s12.MAX_HOME_HOURS, s12.BUFFER_HOURS)
-    if exit_spec_id is None or exit_spec_id == e11.TARGET_SPEC_ID:
-        hours = ForwardHours(str(walk_dir), frozenset(pool))
-        rows = s12.load_rows(hours, s12.MAX_WORKERS, s12.BUFFER_HOURS, s12.MAX_HOME_HOURS, scratch, pool_hours=list(pool), worker_fn=_tagged_worker, plan=plan)
-    else:
-        hours = ForwardHours(str(walk_dir), frozenset(pool), exit_spec_id)
-        rows = s12.load_rows(hours, s12.MAX_WORKERS, s12.BUFFER_HOURS, s12.MAX_HOME_HOURS, scratch, pool_hours=list(pool), worker_fn=_tagged_worker, plan=plan, spec_id=exit_spec_id)
+    orig_iter = s12._iter_trades
+    if strict_lines:  # build_creator_history (this process) reads the creates; the workers get it from StrictForwardHours
+        s12._iter_trades = _strict_iter
+    try:
+        if exit_spec_id is None or exit_spec_id == e11.TARGET_SPEC_ID:
+            hours = (StrictForwardHours if strict_lines else ForwardHours)(str(walk_dir), frozenset(pool))
+            rows = s12.load_rows(hours, s12.MAX_WORKERS, s12.BUFFER_HOURS, s12.MAX_HOME_HOURS, scratch, pool_hours=list(pool), worker_fn=_tagged_worker, plan=plan)
+        else:
+            hours = (StrictForwardHours if strict_lines else ForwardHours)(str(walk_dir), frozenset(pool), exit_spec_id)
+            rows = s12.load_rows(hours, s12.MAX_WORKERS, s12.BUFFER_HOURS, s12.MAX_HOME_HOURS, scratch, pool_hours=list(pool), worker_fn=_tagged_worker, plan=plan, spec_id=exit_spec_id)
+    finally:
+        s12._iter_trades = orig_iter
     e11.score_rows(model, rows, names)
     return rows, threshold
 
@@ -623,7 +667,7 @@ def secondary_binding(spec: ff.ForwardSpec, registry_path: Path | None, artifact
     }
 
 
-def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None, read_end: datetime | None = None, test_window: bool = False, final_ledger: Path | None = None, spec: ff.ForwardSpec | None = None, registry_path: Path | None = None, primary_ledger: Path | None = None) -> dict[str, Any]:
+def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: datetime, to: datetime | None, freeze_commit: str, frozen_manifest_md5: str | None = None, pool_start: datetime | None = None, read_end: datetime | None = None, test_window: bool = False, final_ledger: Path | None = None, spec: ff.ForwardSpec | None = None, registry_path: Path | None = None, primary_ledger: Path | None = None, strict_lines: bool = False) -> dict[str, Any]:
     read_end = read_end if read_end is not None else parse_clock(PINNED_READ_END)
     experiment = spec.experiment if spec is not None else ff.PRIMARY_EXPERIMENT
     secondary = spec is not None and spec.is_secondary
@@ -644,15 +688,15 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
     if start.minute or start.second or start.microsecond:
         raise Refused([f"--pool-start {start.isoformat()} is not hour-aligned"])
     if to is None:
-        to = default_to(walk_dir, start)
+        to = default_to(walk_dir, start, strict_lines)
         if to <= start:
-            raise Refused(hour_problems(walk_dir, [hour_key(start)]) or [f"no sealed+verified hour at the pool start {hour_key(start)}"])
+            raise Refused(hour_problems(walk_dir, [hour_key(start)], strict_lines) or [f"no sealed+verified hour at the pool start {hour_key(start)}"])
     if to.minute or to.second or to.microsecond:
         raise Refused([f"--to {to.isoformat()} is not hour-aligned"])
     if to <= clean_clock:
         raise Refused([f"--to {hour_key(to)} is not after the clean clock {clean_clock.strftime('%Y-%m-%dT%H:%M:%SZ')}: nothing could count"])
     pool = e11._hours_range(hour_key(start), hour_key(to))
-    errors = hour_problems(walk_dir, pool)
+    errors = hour_problems(walk_dir, pool, strict_lines)
     if errors:
         raise Refused(errors)
 
@@ -670,7 +714,13 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
         raise Refused([f"{runs_path} belongs to another experiment than {experiment}; every experiment has its own --out-dir"])
 
     t0 = time.time()
-    rows, threshold = score_hours(walk_dir, pool, artifact_dir, out_dir / "scratch", spec.exit_spec_id if secondary else None)
+    # strict_lines (walk 2, --strict-lines): the walk tape is read strict, so a NUL / non-JSON line in any hour is
+    # a data hole and the run refuses (nothing appended). Off (the DEC-016 FINAL as written): the reader is the
+    # lenient one it always was. The flag travels in StrictForwardHours; no environment variable switches it.
+    try:
+        rows, threshold = score_hours(walk_dir, pool, artifact_dir, out_dir / "scratch", spec.exit_spec_id if secondary else None, strict_lines)
+    except tape_lines.BadLinesError as exc:
+        raise Refused([f"bad tape lines, hour not decidable: {exc}"])
     lo, hi = ms(clean_clock), min(ms(to), ms(read_end))
     band = spec.band if secondary else None
     fresh = [make_row(r, threshold, band) for r in rows if lo <= int(r["mig_ms"]) < hi]
@@ -1409,10 +1459,13 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--registry", default=str(ff.REGISTRY_PATH), help="secondaries: the family registry whose sha256 the runs record")
     sc.add_argument("--primary-ledger", default=str(ff.PRIMARY_LEDGER), help="secondaries: EXP-012's ledger (a secondary's own ledger may never be it)")
     sc.add_argument("--freeze-commit", default=None, help="default: the spec's freeze commit")
+    sc.add_argument("--strict-lines", action="store_true", help="walk 2 (EXP-022): read the walk tape strict and refuse on a NUL / non-JSON line; default off, the DEC-016 forward-1002 FINAL runs without it")
     sc.add_argument("--frozen-manifest-md5", default=None, help="default: the spec's pin, unless --artifact-dir overrides the dir")
     vf = sub.add_parser("verify", help="backfill_verify --content for one hour, append its line to D/verify.jsonl")
     vf.add_argument("--walk-dir", required=True)
     vf.add_argument("--hour", required=True, help="YYYY-MM-DDTHH")
+    vf.add_argument("--strict-lines", action="store_true", help="walk 2 (EXP-022): report bad_lines, and a NUL / non-JSON line or a truncated zstd stream makes the hour NOT OK; default off, the verify line is exactly the pre-A8 one")
+    vf.add_argument("--report-bad-lines", action="store_true", help="add bad_lines / nul / not_json / non_object / lenient to the verify line without changing its OK status; default off")
     ex = sub.add_parser("export-decisions", help="write decisions.jsonl (mint, mig_ms, score, entered, day only) for the live-readiness comparison")
     ex.add_argument("--experiment", default=ff.PRIMARY_EXPERIMENT)
     ex.add_argument("--out-dir", required=True)
@@ -1502,8 +1555,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FINAL written ({LABEL}); n_entered={rep['n_entered']}", file=sys.stderr)
         return 0
     if args.cmd == "verify":
-        rec, appended = run_verify(Path(args.walk_dir), args.hour)
-        ok = _line_ok(rec)
+        rec, appended = run_verify(Path(args.walk_dir), args.hour, args.strict_lines, args.report_bad_lines)
+        ok = _line_ok(rec, args.strict_lines)
         print(f"hour {args.hour}: {'OK' if ok else 'NOT OK ' + str(rec['issues'])}; {'appended' if appended else 'identical line already present'}", file=sys.stderr)
         return 0 if ok else 1
     overridden = args.artifact_dir is not None
@@ -1523,6 +1576,7 @@ def main(argv: list[str] | None = None) -> int:
             spec,
             Path(args.registry),
             Path(args.primary_ledger),
+            args.strict_lines,
         )
     except Refused as exc:
         return _refuse(exc)

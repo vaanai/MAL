@@ -1,8 +1,61 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-08T10:29:20Z",
+  "updated_utc": "2026-10-08T18:09:43Z",
   "review_windows": [],
   "events": [
+    {
+      "id": "disk-incident-1008",
+      "kind": "other",
+      "title": "Research-0 disk reached 81% from the hunts; fixed, now 74%, with new rules for every hunt",
+      "detail": "Growth was about +100 GB/h from the hunts' per-branch extracts. Fixed by stopping 2 hunts (hunt-2, hunt-4; hunt-2 was resumed at about 18:05Z), Helm's cleanup (freed 56 GB, now 74%) and .nobackup on hunt-1008 and audit-1008/{tape,work,tmp}. New rules for all hunts: shared data layer only, no per-branch tape copies, zstd Parquet or savez_compressed, a 5 GB disk budget each, heavy steps as MiScusi jobs, at most 4-5 at once. Watchdogs: the disk watchdog warns at 86% and stops (SIGSTOP) hunt processes at 90%; the CPU watchdog renices hunt processes above load 52. Time is approximate.",
+      "atUtc": "2026-10-08T18:00:00Z",
+      "approx": true
+    },
+    {
+      "id": "hunts-1008",
+      "kind": "job",
+      "title": "Strategy hunts launched on the exploration tape: hunt-1, hunt-3 (LAYA), an LLM-trader test and hunt-2 (resumed) running; hunt-4 still stopped for disk",
+      "detail": "Protocol for every hunt: August discovery, RULE.md sha256, one September confirmation, adversarial verify, judge. Exploration tape only, so a survivor is still not gate evidence. Running: hunt-1 (H1-H6, wf_1b74c222-805), hunt-3 LAYA (L1-L3, wf_4f61363d-351), the LLM-trader test with Claude agents as the trader (wf_3b8d9808-907), and hunt-2 (12 theses, wf_84831245-793), which was stopped for disk and resumed at about 18:05Z under the new disk rules (at most 4 at once, each investigation continuing from its existing files; it uses the shared zstd layer /data/mal/hunt-shared if /data/mal/hunt-shared/README.md exists, otherwise it queries the tape directly with no copies). An OpenRouter arm is ready (free nemotron-3-ultra-550b-a55b, paid deepseek-chat, hard stop $1.50). Still stopped for disk: hunt-4 (cascades + strategy tree, wf_0d1a560e-ebe), which resumes after hunt-1 and hunt-3 finish. Results go to /data/mal/hunt-1008/JUDGE*.md. No hunt result yet. Time is approximate.",
+      "atUtc": "2026-10-08T18:00:00Z",
+      "approx": true
+    },
+    {
+      "id": "exp022-gate-replay-387",
+      "kind": "result",
+      "title": "Job #387 (live-gate replay): not a kill for CAP-PICK",
+      "detail": "At ≤ 32 min the pick sets nearly match on P2–P4 (both 381/1289/415 of offline 382/1294/415) but not on P1 (fast-pool-0918 213 shared of 261/289; oracle-insample-0922 282 of 349/356). The P2-P4 online-pick book is +3.278% live [date-cluster CI90 lo +1.17], +2.334% press, positive on 19 of 29 days. Exploration, in-sample; not gate evidence. The known 60-min skip is not a kill and EXP-022 Amendment 1 (#474) sets the E0 comparison set at <= 60 min. A11 is not adopted. Time is approximate.",
+      "atUtc": "2026-10-08T18:00:00Z",
+      "approx": true
+    },
+    {
+      "id": "exp022-amendment1-merged",
+      "kind": "decision",
+      "title": "Merged: #470 change watch + EXP-023 tripwire, #472 walk-2 wrapper guards, #474 EXP-022 Amendment 1 (E0 deciding set)",
+      "detail": "#470: pump.fun change watch (T1) and the EXP-023 USDC-BOOST tripwire plan; quant-proof OK on a8ab1c3. #472: the walk-2 wrapper refuses an empty Helius key (exit 6) and the test hook inside a job (exit 2). #474: E0 deciding set = mints with mig - create <= 60 min on either side plus every B pick, on E0 day explore-0814 2026-08-20; quant-proof OK on 3ece9c0. Still to write before 2026-10-16T01Z: the E0 record amendment. Time is the last merge (#474).",
+      "atUtc": "2026-10-08T17:24:35Z"
+    },
+    {
+      "id": "owner-goal-1008",
+      "kind": "decision",
+      "title": "Owner goal: $1000 real income by 10-31 ($400 minimum), the gate kept, full autonomy to fan out strategy tests",
+      "detail": "Owner mandate, about 2026-10-08T17:00Z. The wallet goes to 7 SOL from a 1 SOL start, funded once a book clears the gate. Many strategy tests run in parallel. These are the owner's targets, not measurements; nothing goes live until a book clears the promotion gate on both fail models and the owner approves. Time is approximate.",
+      "atUtc": "2026-10-08T17:00:00Z",
+      "approx": true
+    },
+    {
+      "id": "exp022-registered",
+      "kind": "decision",
+      "title": "CAP-PICK registered as EXP-022: counts on walk 2 from 2026-10-16T01; expected outcome is fail",
+      "detail": "Owner approved the audit plan (O1 pause EXP-021 screen; O2 DEC-021 Amendment 1; O3 with its fallback). Counting starts 2026-10-16T01 (Option Y), not 10-10: under the early start the 10-16 FINAL would have priced most of CAP-PICK's counted picks. Pre-registration #464 (quant-proof OK on the final head): frozen EXP-012 picks exactly as the live gate makes them, entry 1.3 s (binding 1.9 s leg), on-chain min_out at seed x1.15, 300 s exit cap, 0.1 SOL, 55k per send, full promotion gate on both fail models plus ex-best-day > 0 and a day-level p at looks 10-23T01 / 10-30T01 / 11-06T01 (p <= 0.005 / 0.008 / 0.012). Estimated P(pass) about 5-7% (inferred). A fail triggers the pre-agreed cost wind-down. Also merged: #458 EXP-021 freeze pins (screen paused), #463 probe calibration reserve fix, #466/#467 walk-2 integrity and event-V decoder.",
+      "atUtc": "2026-10-08T16:00:00Z"
+    },
+    {
+      "id": "edge-scan-1008",
+      "kind": "finding",
+      "title": "Searched for other meme-coin edges: 16 strategies, 11 killed and 5 weakened by a red team; none works at MAL's latency and cost",
+      "detail": "Killed: LaunchLab and Meteora launchpads, LP on meme pools, backruns and cross-pool arbitrage, copying TWAP/DCA buyers, shorting young tokens, BSC and Robinhood Chain, and others. Weakened: Hyperliquid meme funding carry (about 8% a year in USD, a risk premium not an edge), shorting new exchange listings (2-3 a month), CAP-PICK exit overlays, USDC BOOST (gone since mid-September), a pump.fun change watch. Same-slot speed route: 94.5% (Aug) / 97.5% (Sep) of first-follower value is in the token's own creation slot; outside it the first follower makes +2.10% / +0.29% (bundle co-landing excluded) and the second loses -1.21% / -2.11%; estimated chance of profit about 1% in 3 weeks, at most 5% in 2-3 months (inferred), and it would cost an extra $500-3,250/month. Owner decision: sniper route closed for now; $0 extra budget for two weeks; start the change watch (T1) and the BOOST-timing insurance test (T2).",
+      "atUtc": "2026-10-08T16:00:00Z"
+    },
     {
       "id": "audit-1008",
       "kind": "finding",
@@ -143,6 +196,17 @@
     }
   ],
   "ladder": [
+    {
+      "id": "EXP-022",
+      "title": "EXP-022 CAP-PICK (EXP-012 picks + seed guard + 300 s cap)",
+      "stage": "pre-registered",
+      "note": "Counts walk-2 hours [2026-10-16T01, 11-06T01); looks 10-23, 10-30, 11-06. Exploration figure +3.492% (P2-P4, picks the live gate can trade) is not out-of-sample for the book; honest October estimate about +0.3 to +0.5% per attempt (inferred), P(pass) about 5-7%; P(<=0) about 40%; below running cost (break-even about 1.4% at 0.1 SOL). Before 10-16T01: replay equivalence (E0), clean structure monitor, walk 2 started, else withdrawn.",
+      "tag": {
+        "text": "kill test",
+        "tone": "muted"
+      },
+      "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-022-cap-pick-part1-prereg.md"
+    },
     {
       "id": "EXP-012",
       "title": "EXP-012 entry model (re-freeze)",
@@ -296,6 +360,18 @@
   ],
   "for_you": [
     {
+      "id": "fy-20261008-1804-goal",
+      "from": "claude",
+      "text": "Recorded your goal: $1000 real income by 10-31, $400 minimum, the wallet at 7 SOL from a 1 SOL start once a book clears the gate. Honest odds, as I told you: about 5-10% for $400 or more real by 10-31, and about 1-2% for 7 SOL, without gambling. They rise if one of the strategy hunts survives its confirmation and verification; none has yet. Tonight: hunt-1, hunt-3, hunt-2 (resumed at about 18:05Z) and the LLM-trader test are running, and hunt-4 is paused until hunt-1 and hunt-3 finish (research-0 disk hit 81%, fixed, now 74%), the walk-2 wrapper guards and the E0 comparison-set amendment merged, and the live-gate replay (job #387) was not a kill for CAP-PICK. No new action needed from you tonight; O8 and O9 from the 16:00 note are still open.",
+      "atUtc": "2026-10-08T18:04:46Z"
+    },
+    {
+      "id": "fy-20261008-1600-plan",
+      "from": "claude",
+      "text": "Recorded your decisions: EXP-021 screen paused; CAP-PICK registered (counts from 10-16, first look 10-23); cost wind-down pre-agreed if it fails; sniper route closed for now; $0 extra budget for two weeks; change watch and BOOST-timing insurance test started. Still open for you: O8 send the monthly bill split; O9 ask Helm to exclude /data/mal/audit-1008 from the nightly backup.",
+      "atUtc": "2026-10-08T16:00:00Z"
+    },
+    {
       "id": "fy-20261008-1029-audit",
       "from": "claude",
       "text": "Your decisions from the audit (https://claude.ai/artifact/Ngo8HbFVTAtWiHn5M2VrZk; numbering as in that report): O1 pause the EXP-021 screen (recommend yes); O2 amend DEC-021 so CAP-PICK can register on walk 2 as a zero-credit kill test with a day-level p (yes, if you want the test); O3 start counting 10-10 (yes if the Part 1 merges in time); O4/O5 live canaries and trial terms (defer until a look is not futile, per the CAP-PICK judge); O6 pre-agree a cost wind-down if CAP-PICK fails (yes); O7 the same-slot sniper arena (not now); O8 share the monthly bill split; O9 ask Helm to exclude /data/mal/audit-1008 from the nightly backup.",
@@ -399,6 +475,20 @@
     }
   ],
   "stream": [
+    {
+      "id": "s-20261008-1804-evening",
+      "from": "claude",
+      "kind": "status",
+      "text": "Evening 10-08: owner goal recorded ($1000 real by 10-31, $400 minimum; the gate is kept). Merged #470 (change watch + EXP-023 tripwire), #472 (walk-2 wrapper guards) and #474 (EXP-022 Amendment 1, the E0 deciding set). Job #387 is not a kill: the pick sets nearly match at <= 32 min on P2-P4, not on P1; the P2-P4 online-pick book is +3.278% live [date-cluster CI90 lo +1.17], +2.334% press, 19 of 29 days (exploration, in-sample, not gate evidence). A11 not adopted. Strategy hunts launched on the exploration tape (hunt-1, hunt-3 LAYA, the LLM-trader test and hunt-2, resumed at about 18:05Z, running; hunt-4 still stopped for disk until hunt-1 and hunt-3 finish). Research-0 disk reached 81%, now 74% after Helm's cleanup and new rules for every hunt. Still open: #461 (after job #389), #462 (reviewer CHANGES), #471 and #473 drafts, and the E0 record amendment before 10-16T01Z.",
+      "atUtc": "2026-10-08T18:04:46Z"
+    },
+    {
+      "id": "s-20261008-1600-plan",
+      "from": "claude",
+      "kind": "decision",
+      "text": "Afternoon 10-08: CAP-PICK pre-registered as EXP-022 (#464; counts from 10-16T01; expected fail, P(pass) about 5-7%). Walk-2 data integrity merged (#466 refuses silent holes; #467 records per-trade V and BOOST events and recovers migration rows: 95.35% of canonical migrations had no migration row on the old tape because migrate-tx logs exceed the 10 KB cap; complete rows: 24,224 of 24,272 (99.80%), so universes were unaffected [inferred]). Scorer port matches all 24,272 audit attempts within the 0.01 pp target; P2-P4 exact to the lamport (19,234 of 19,234); 6 P1 attempts differ. Edge search: none of 16 alternatives survives; same-slot route not worth buying. Next: live-gate pick-set check (#387), walk-2 launcher, change watch (T1), BOOST-timing insurance (T2).",
+      "atUtc": "2026-10-08T16:00:00Z"
+    },
     {
       "id": "s-20261008-1029-audit",
       "from": "claude",

@@ -347,6 +347,8 @@ Outcome-blind, written before 2026-10-16T00Z. No forward outcome was read to mak
 - **G. Not affected,** all in milliseconds: the runner's 5 s stale cap (`tools/forward_paper.py:502`), the export's 500 ms block-time offset, the 30-minute exit cap and the 2 s nearby window.
 - **H. Report-only, cannot change the verdict.** After the read, report each gate leg split by migrations before versus after the first 200 ms-era slot.
 
-**Tool PR:** `claude/slot-span-200ms`. Its merge commit is recorded here by the manager on merge.
+**Tool PR:** `claude/slot-span-200ms`, merged as #454, merge commit `2bd45f1981551693463f370c87438bc4e0874ff8` (2026-10-08). The forward walk was resubmitted on that commit as MiScusi job #382.
+
+**(g) D tool: not planned (manager, 2026-10-08).** No merged tool computes the conservative variant, and the manager does not plan one. If no variant tool is merged and its commit recorded here before 2026-10-16T00:00Z, the variant is not computed and Amendment 3 (a) gives no live support for this window. This only removes support. The read still runs as written, and it will be reported as compromised under Amendment 2.
 
 The 10-16 FINAL remains reported compromised under Amendment 2, and this amendment does not change that.

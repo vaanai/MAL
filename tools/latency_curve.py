@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from tools import tape_lines
 from tools.paper_curve_math import (
     DEFAULT_SLIPPAGE_CAP,
     LAMPORTS_PER_SOL,
@@ -941,8 +942,16 @@ def _load_creates(hours: Sequence[dict[str, Any]]) -> dict[str, _Mint]:
     return found
 
 
-def _iter_trades(path: Path) -> Iterable[dict[str, Any]]:
-    for line in _open_text(path):
+def _iter_trades(path: Path, strict: bool = False) -> Iterable[dict[str, Any]]:
+    """Rows of one tape file. A line that is not JSON is skipped, as always.
+
+    `strict=True` (an explicit parameter; nothing in the environment switches it) makes the reader count lines
+    that contain NUL, are not JSON even with strict=False, or are not objects, and raise
+    tools.tape_lines.BadLinesError (file and count) once the file is exhausted. Rows yielded are unchanged."""
+    lines: Iterable[str] = _open_text(path)
+    if strict:
+        lines = tape_lines.strict_lines(lines, path)  # type: ignore[assignment]
+    for line in lines:
         line = line.strip()
         if not line:
             continue
