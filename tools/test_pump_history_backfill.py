@@ -643,7 +643,9 @@ class RunHourGuardTests(_TimeBoundedTestCase):
                     self.assertFalse((out / f"stats-{key}.json").exists())
 
     def test_30000_slot_hour_is_still_refused_with_default_bounds(self) -> None:
-        # The 20-30k values a slot_for_time bug or resume-inflated counter produced.
+        # A span this wild is a slot_for_time boundary error, which the upper bound guards against.
+        # (The 20-30k values seen in 2026-09 were resume-inflated slots_done counters, not spans;
+        # the slots_done > span check in backfill_verify catches those, not this bound.)
         key = "2026-10-10T05"
         summary, out = self._run_default_bounds(30_000, key)
         self.assertTrue(summary["skipped"])

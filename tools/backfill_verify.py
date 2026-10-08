@@ -45,8 +45,9 @@ SUBS = ("trades", "creates", "migrations")
 # (200 ms slots) activated at the start of epoch 1052, and slot time has changed one epoch
 # after activation on past steps, so expect about 200-215 ms from epoch 1053 (slot 454,896,000,
 # about 2026-10-09T14:30Z): 16,700-18,000 slots per hour. 19,500 is 18,000 plus margin (it
-# covers slots down to about 185 ms). It stays below the 20-30k values that slot_for_time
-# resolution bugs and resume-inflated counters produced, which this bound exists to catch.
+# covers slots down to about 185 ms). The bound guards against slot_for_time boundary errors.
+# The 20-30k values seen in the 2026-09 stats were resume-inflated slots_done counters, not
+# spans; the unchanged slots_done > span check ("resumed: duplicate risk") catches those.
 MAX_SLOTS_PER_HOUR = 19_500
 
 

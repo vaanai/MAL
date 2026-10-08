@@ -112,8 +112,7 @@ Before the 10-16 FINAL read, runner side files (arm-audit, heartbeat) are read o
 | When | What |
 |---|---|
 | ~10-07T18:07Z | Early-arm shadow read (session cron). Evaluate the processed `migrate` trigger and the tx-v0 request fix. Read labels and timing only. |
-| Before 10-09T14Z | Resubmit forward walk #71 on the merged slot-span fix (DEC-016 Amendment 6, `claude/slot-span-200ms`): epoch 1053 (200 ms slots) starts ~10-09T14:30Z and the old 14,000 bound would refuse or flag every hour after it. Params are in the next row. |
-| By 10-09T15Z | Resubmit forward walk #71 with params `{"start":"2026-10-02T15"}`, resumable, 10080 min. |
+| Before 10-09T14Z | Resubmit forward walk #71 on main with #454 merged (params `{"start":"2026-10-02T15"}`, resumable, 10080 min). |
 | Every 1–2 days until 10-15 | V snapshots (job #286 command). |
 | Before 10-15T23Z | (e′) dry run. |
 | ~10-16T02Z | FINAL. |
