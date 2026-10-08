@@ -14,7 +14,18 @@ THE THREE LISTS (all for the same day; both sides boot at 00:00Z of that day)
      same scorer run with `--book all` (same flags, same --picks, only --book differs). The scorer is run with `--only-day D` and the narrowest source
      flags that cover the view (its roots, from `cap_pick_gate_replay.BLOCKS`), so it reads D's trade hours plus its own two look-ahead hours.
   Canonical decision list: one line per mint, sorted by mint, `mint<TAB>decision<TAB>mig_ms<TAB>repr(score)`, an empty field when the score is null.
-  md5(A) must equal md5(B); md5(C list) must equal md5(B pick mints in U). Both canonical files are built by `canon_lines`.
+  Both canonical files are built by `canon_lines`. Two versions of the A and B lists are written and hashed:
+    full   every decided mint (`A.canon`, `B.canon`; `md5_A_full`, `md5_B_full`, `equal_full`). REPORT ONLY.
+    le60   only mints with `mig_ms - create_ms <= DROP_AFTER_CREATE_MS` (60 min, imported from `forward_exp012_gate`), each side using the create time it
+           used: B's decision record `create_ms`, A's CreateSignal `t_signal_ms` (`A.le60.canon`, `B.le60.canon`; `md5_A_le60`, `md5_B_le60`, `equal_le60`).
+           A mint on which the two sides disagree about the create time is a mismatch: it goes to `diff.tsv` and `equal_le60` is false.
+  Mints older than 60 min at migration (on either side): a crosstab of A label x B label in `e0.json` (`crosstab_gt60`) and their lines in `diff_gt60.tsv`.
+  Why two lists: the 60-minute skip (gate note 5) is done by `Exp012Online.prune`, which the engine calls from `_at_time` when `_prints % every == 0` at a
+  step end, `every` = 5,000 with a live clock (the live runner: ms steps, so within about a minute of the 60-minute mark; B does the same) and 50,000
+  without one (`replay_rows`: second steps, so it almost never fires). A scoring a mint older than 60 min is therefore a replay artifact, not live behaviour.
+  Dry run 2026-08-17 on explore-0814 (commit 71d03c2): all 56 full-list differences were such mints.
+  E0_CRITERION = "le60" (a module constant, not a flag; it follows the EXP-022 E0 amendment recorded by the manager). Exit 0 iff `equal_le60` AND `equal_C`
+  AND the pins check pass (and the sanity checks below). `equal_full` decides nothing. md5(C list) must equal md5(B pick mints in U).
 
 LABEL MAPPING (A's gate rows carry `entered` and `reason`, not a label; B's records carry `decision`). Applied to A only, and 1:1:
   entered true                       -> pick
@@ -45,7 +56,14 @@ PINS (EXP-022 2.1 item 4)
 SURFACE USED FROM tools/cap_pick_gate_replay (nothing else): Block, BLOCKS, SCHEMA, Refused, build_engine, replay_view(block, days, engine=, roots=, log=),
 hour_files, stage_creates, iter_json_rows, iter_lines, quick_mint, create_signal_from_row, check_days; load_online in the tests only.
 
-Exit codes: 0 every check holds; 1 a check failed (A != B, C != B picks in U, ...); 2 refused or a step could not run.
+SANITY CHECKS (also required for exit 0, so an equal result cannot be vacuous or built on different inputs): A's preload row count and staged file count
+equal B's; A's gate log rows equal the engine's rows; A's le60 list and B's picks are not empty.
+
+MEMORY (--mem-note): A needs about 9-10 GB RSS for one explore-0814 day (9.07 GB observed while loading 2026-08-17; 2 h of it took 781 MB and 5 h took
+2.1 GB), because `replay_rows` queues every print in the engine inbox before it drains. The official run is a MiScusi job with mem 16 GB. It does not
+fit in 3 GB. B needs about 2 GB; the scorer is a subprocess in the same cgroup.
+
+Exit codes: 0 the criterion and the sanity checks hold; 1 a check failed (A != B on le60, C != B picks in U, ...); 2 refused or a step could not run.
 """
 
 from __future__ import annotations
@@ -66,9 +84,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from tools import cap_pick_gate_replay as cp
+from tools.forward_exp012_gate import DROP_AFTER_CREATE_MS
 
 REPO = Path(__file__).resolve().parent.parent
 SCHEMA = "cap_pick_e0_v1"
+E0_CRITERION = "le60"  # the A-vs-B list that decides exit 0; "full" is report only (module note, EXP-022 E0 amendment)
 DAY_MS = 86_400_000
 PINNED_MODULES = ("tools/forward_exp012_gate.py", "tools/forward_paper.py", "tools/exploration_entry_model.py", "tools/cap_pick_gate_replay.py")
 FROZEN_MD5_PATH = "ARTIFACTS/exp012/FROZEN.md5"
@@ -199,20 +219,61 @@ def md5_text(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
-def canon_from_gate_rows(rows: Iterable[dict[str, Any]]) -> list[str]:
-    return canon_lines(((r["mint"], label_from_gate_row(r), r["mig_ms"], r["score"]) for r in rows), "A")
 
 
-def canon_from_b_records(records: Iterable[dict[str, Any]]) -> tuple[list[str], int]:
-    """B's `kind: decision` rows. `dead` rows are dropped (returned as a count); the meta line and anything else is not a decision."""
+def a_side_rows(gate_rows: Iterable[dict[str, Any]], create_ms: dict[str, int]) -> list[Any]:
+    """A's decisions with A's CreateSignal time (`t_signal_ms`) for each mint."""
+    out = []
+    for r in gate_rows:
+        if r["mint"] not in create_ms:
+            raise E0Error(f"A decided mint {r['mint']} that has no CreateSignal")
+        out.append((r["mint"], label_from_gate_row(r), r["mig_ms"], r["score"], create_ms[r["mint"]]))
+    return out
+
+
+def b_side_rows(records: Iterable[dict[str, Any]]) -> tuple[list[Any], int]:
+    """B's `kind: decision` rows with B's `create_ms`. `dead` rows are dropped (returned as a count); the meta line is not a decision."""
     keep, dead = [], 0
     for r in records:
         k = r.get("kind")
         if k == "decision":
-            keep.append((r["mint"], r["decision"], r["mig_ms"], r["score"]))
+            keep.append((r["mint"], r["decision"], r["mig_ms"], r["score"], r.get("create_ms")))
         elif k == "dead":
             dead += 1
-    return canon_lines(keep, "B"), dead
+    return keep, dead
+
+
+def is_le60(row: Any, side: str) -> bool:
+    """`mig_ms - create_ms <= DROP_AFTER_CREATE_MS`, the gate's own edge (`prune` drops a mint when the age is strictly greater)."""
+    if row[4] is None:
+        raise E0Error(f"side {side} has no create time for mint {row[0]}")
+    return row[2] - row[4] <= DROP_AFTER_CREATE_MS
+
+
+def _lines(rows: Iterable[Any], side: str) -> list[str]:
+    return canon_lines(((m, lab, mig, sc) for m, lab, mig, sc, _c in rows), side)
+
+
+def compare_sides(a_rows: Sequence[Any], b_rows: Sequence[Any]) -> dict[str, Any]:
+    """Full and le60 canonical lists of both sides, the create-time disagreements, and the mints older than 60 min with their label crosstab."""
+    a_full, b_full = _lines(a_rows, "A"), _lines(b_rows, "B")
+    a_le = _lines([r for r in a_rows if is_le60(r, "A")], "A")
+    b_le = _lines([r for r in b_rows if is_le60(r, "B")], "B")
+    by_a, by_b = {r[0]: r for r in a_rows}, {r[0]: r for r in b_rows}
+    disagree = sorted(m for m in by_a.keys() & by_b.keys() if by_a[m][4] != by_b[m][4])
+    gt = sorted({r[0] for r in a_rows if not is_le60(r, "A")} | {r[0] for r in b_rows if not is_le60(r, "B")})
+    cross: dict[str, dict[str, int]] = {}
+    for m in gt:
+        la = by_a[m][1] if m in by_a else "<absent>"
+        lb = by_b[m][1] if m in by_b else "<absent>"
+        cross.setdefault(la, {})
+        cross[la][lb] = cross[la].get(lb, 0) + 1
+    ln_a = {x.split("\t", 1)[0]: x for x in a_full}
+    ln_b = {x.split("\t", 1)[0]: x for x in b_full}
+    gt_rows = [(m, ln_a.get(m, "<absent>").replace("\t", "|"), ln_b.get(m, "<absent>").replace("\t", "|"),
+                by_a[m][4] if m in by_a else "", by_b[m][4] if m in by_b else "") for m in gt]
+    return {"a_full": a_full, "b_full": b_full, "a_le60": a_le, "b_le60": b_le, "diff_le60": diff_rows(a_le, b_le),
+            "create_disagree": [(m, by_a[m][4], by_b[m][4]) for m in disagree], "gt60": gt_rows, "crosstab_gt60": cross}
 
 
 def diff_rows(a: Sequence[str], b: Sequence[str]) -> list[tuple[str, str, str]]:
@@ -304,8 +365,9 @@ def a_trade_rows(files: dict[str, dict[str, Path]], hours: Sequence[str], roots:
 
 
 def run_side_a(block: cp.Block, files: dict[str, dict[str, Path]], roots: Sequence[str], day: str, specs: Sequence[Any], out_dir: Path,
-               *, boot: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """A: the runner's `replay_rows` on the day. Returns the gate rows read back from its `exp012_gate` JsonlLog and a stats dict."""
+               *, boot: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int]]:
+    """A: the runner's `replay_rows` on the day. Returns the gate rows read back from its `exp012_gate` JsonlLog, a stats dict and the
+    CreateSignal time (`t_signal_ms`) of every mint A was given."""
     from tools.forward_paper import JsonlLog, replay_rows
 
     boot_ms = _day_start_ms(day)
@@ -331,7 +393,7 @@ def run_side_a(block: cp.Block, files: dict[str, dict[str, Path]], roots: Sequen
     stats["engine_gate_rows"] = len(engine.exp012_rows)
     stats["dead_prints_dropped"] = engine.dead_prints_dropped
     stats["early_prints_buffered"] = sum(len(v) for v in engine.early.values())
-    return rows, stats
+    return rows, stats, {c.mint: c.t_signal_ms for c in creates}
 
 
 # ---- side C: the scorer -------------------------------------------------------------------------------
@@ -427,28 +489,37 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
     bmeta = {**bmeta, "wall_s": wall["B"]}
     b_path = out / "B.jsonl"
     write_b_file(b_path, recs, bmeta)
-    b_lines, n_dead = canon_from_b_records(recs)
+    b_rows, n_dead = b_side_rows(recs)
     del recs
 
     # A
     t = time.monotonic()
     files = cp.hour_files(block, roots)
     specs = [run.spec for run in engine_factory().books]
-    a_rows, astats = run_side_a(block, files, roots, day, specs, out)
+    a_gate_rows, astats, a_create_ms = run_side_a(block, files, roots, day, specs, out)
     wall["A"] = round(time.monotonic() - t, 1)
-    a_lines = canon_from_gate_rows(a_rows)
+    a_rows = a_side_rows(a_gate_rows, a_create_ms)
+    del a_create_ms
 
-    a_text, b_text = canon_text(a_lines), canon_text(b_lines)
-    _write(out / "A.canon", a_text)
-    _write(out / "B.canon", b_text)
-    md5_a, md5_b = md5_text(a_text), md5_text(b_text)
-    _write(out / "A.md5", f"{md5_a}  A.canon\n")
-    _write(out / "B.md5", f"{md5_b}  B.canon\n")
-    diff = diff_rows(a_lines, b_lines)
+    cmpd = compare_sides(a_rows, b_rows)
+    a_lines, b_lines = cmpd["a_full"], cmpd["b_full"]
+    texts = {"A.canon": canon_text(a_lines), "B.canon": canon_text(b_lines),
+             "A.le60.canon": canon_text(cmpd["a_le60"]), "B.le60.canon": canon_text(cmpd["b_le60"])}
+    md5s = {}
+    for name, text in texts.items():
+        _write(out / name, text)
+        md5s[name] = md5_text(text)
+        _write(out / (name[: -len("canon")] + "md5"), f"{md5s[name]}  {name}\n")
+    md5_a, md5_b, md5_a60, md5_b60 = md5s["A.canon"], md5s["B.canon"], md5s["A.le60.canon"], md5s["B.le60.canon"]
+    diff = [(m, x, y) for m, x, y in cmpd["diff_le60"]] + [(m, f"create_ms={x}", f"create_ms={y}") for m, x, y in cmpd["create_disagree"]]
     if diff:
         _write(out / "diff.tsv", "mint\tA_line\tB_line\n" + "".join(f"{m}\t{x}\t{y}\n" for m, x, y in diff))
-    b_picks = sorted(ln.split("\t", 1)[0] for ln in b_lines if ln.split("\t")[1] == "pick")
-    a_picks = sorted(ln.split("\t", 1)[0] for ln in a_lines if ln.split("\t")[1] == "pick")
+    if cmpd["gt60"]:
+        _write(out / "diff_gt60.tsv", "mint\tA_line\tB_line\tA_create_ms\tB_create_ms\n" + "".join("\t".join(str(v) for v in row) + "\n" for row in cmpd["gt60"]))
+    equal_full = md5_a == md5_b
+    equal_le60 = md5_a60 == md5_b60 and not cmpd["create_disagree"]
+    b_picks = sorted(r[0] for r in b_rows if r[1] == "pick")
+    a_picks = sorted(r[0] for r in a_rows if r[1] == "pick")
 
     # C
     c: dict[str, Any] = {"skipped": True}
@@ -487,20 +558,27 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
                 c["scorer_blob"] = None
 
     boots = bmeta.get("boots") or [{}]
-    checks = {
-        "pinned_blobs_are_the_imported_modules": all(imported[m]["blob"] == pins["blobs"][m] for m in PINNED_MODULES),
-        "frozen_md5": pins["frozen_md5"]["ok"],
-        "equal_AB": md5_a == md5_b,
-        "boot_history_equal": astats["history_rows"] == boots[0].get("history_rows") and astats["staged_files"] == boots[0].get("staged_files"),
-        "A_log_rows_equal_engine_rows": len(a_rows) == astats["engine_gate_rows"],
-        "nonempty": bool(a_lines) and bool(b_picks),
+    pins_ok = all(imported[m]["blob"] == pins["blobs"][m] for m in PINNED_MODULES) and pins["frozen_md5"]["ok"]
+    checks = {  # every one is required for exit 0; `equal_full` is report only
+        "equal_le60": equal_le60,
         "equal_C": equal_c if equal_c is not None else False,
+        "pins": pins_ok,
+        "boot_history_equal": astats["history_rows"] == boots[0].get("history_rows") and astats["staged_files"] == boots[0].get("staged_files"),
+        "A_log_rows_equal_engine_rows": len(a_gate_rows) == astats["engine_gate_rows"],
+        "nonempty": bool(cmpd["a_le60"]) and bool(b_picks),
     }
     wall["total"] = round(time.monotonic() - t_start, 1)
     e0: dict[str, Any] = {
         "schema": SCHEMA, "view": view, "day": day, "commit": state["head"], "origin_branches": state["origin_branches"],
-        "view_sha256": view_sha, "md5_A": md5_a, "md5_B": md5_b, "equal_AB": md5_a == md5_b, "md5_C": md5_c, "md5_Bpicks_U": md5_bu, "equal_C": equal_c,
-        "n_A": len(a_lines), "n_B": len(b_lines), "n_picks": len(b_picks), "n_picks_A": len(a_picks), "n_dead_B": n_dead, "n_diff": len(diff),
+        "e0_criterion": E0_CRITERION, "drop_after_create_ms": DROP_AFTER_CREATE_MS,
+        "view_sha256": view_sha,
+        "md5_A_le60": md5_a60, "md5_B_le60": md5_b60, "equal_le60": equal_le60,
+        "md5_A_full": md5_a, "md5_B_full": md5_b, "equal_full": equal_full,
+        "md5_C": md5_c, "md5_Bpicks_U": md5_bu, "equal_C": equal_c,
+        "n_A_full": len(a_lines), "n_B_full": len(b_lines), "n_A_le60": len(cmpd["a_le60"]), "n_B_le60": len(cmpd["b_le60"]),
+        "n_gt60": len(cmpd["gt60"]), "crosstab_gt60": cmpd["crosstab_gt60"], "n_diff_le60": len(cmpd["diff_le60"]),
+        "n_create_ms_disagree": len(cmpd["create_disagree"]), "n_diff": len(diff),
+        "n_picks": len(b_picks), "n_picks_A": len(a_picks), "n_dead_B": n_dead,
         "blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "imported": imported,
         "A": astats, "B": {k: bmeta.get(k) for k in ("wall_s", "boots", "create_rows_t_recv_imputed", "trade_rows_t_recv_imputed", "tx_index_null_view",
                                                       "daily_restart", "prune_every", "create_time")},
@@ -515,7 +593,8 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
 def cmd_run(args: argparse.Namespace) -> int:
     e0 = run_e0(args.view, args.day, Path(args.out), scorer_repo=Path(args.scorer_repo) if args.scorer_repo else None,
                 scorer_extra=args.scorer_arg or (), skip_c=args.skip_c)
-    keys = ("view", "day", "commit", "md5_A", "md5_B", "equal_AB", "md5_C", "md5_Bpicks_U", "equal_C", "n_A", "n_B", "n_picks", "n_diff", "checks", "wall_s", "ok")
+    keys = ("view", "day", "commit", "e0_criterion", "md5_A_le60", "md5_B_le60", "equal_le60", "md5_A_full", "md5_B_full", "equal_full", "md5_C", "md5_Bpicks_U",
+            "equal_C", "n_A_full", "n_B_full", "n_A_le60", "n_B_le60", "n_gt60", "crosstab_gt60", "n_create_ms_disagree", "n_picks", "n_diff", "checks", "wall_s", "ok")
     print(json.dumps({k: e0[k] for k in keys}, indent=2, sort_keys=True))
     return 0 if e0["ok"] else 1
 

@@ -149,8 +149,9 @@ class CanonTests(unittest.TestCase):
         recs = [{"kind": "meta"}, {"kind": "decision", "mint": "B", "decision": "pick", "mig_ms": 2, "score": 0.9},
                 {"kind": "dead", "mint": "A", "decision": "pre_restart", "first_pumpswap_ms": 1},
                 {"kind": "decision", "mint": "C", "decision": "no_features", "mig_ms": 3, "score": None}]
-        lines, dead = e0.canon_from_b_records(recs)
-        self.assertEqual(lines, ["B\tpick\t2\t0.9", "C\tno_features\t3\t"])
+        rows, dead = e0.b_side_rows(recs)
+        self.assertEqual(e0._lines(rows, "B"), ["B\tpick\t2\t0.9", "C\tno_features\t3\t"])
+        self.assertEqual([r[:4] for r in rows], [("B", "pick", 2, 0.9), ("C", "no_features", 3, None)])
         self.assertEqual(dead, 1)
 
     def test_label_mapping_is_one_to_one(self) -> None:
@@ -193,13 +194,18 @@ class RunTests(_Fix):
     def test_a_equals_b_with_boot_history_and_c_equals_b_picks_in_universe(self) -> None:
         res = self.run_e0(scorer=self.fake_scorer(drop="Hi2"))
         out = self.dir / "out"
-        self.assertTrue(res["equal_AB"], (out / "diff.tsv").read_text() if (out / "diff.tsv").exists() else "")
+        self.assertTrue(res["equal_full"] and res["equal_le60"], (out / "diff.tsv").read_text() if (out / "diff.tsv").exists() else "")
         self.assertFalse((out / "diff.tsv").exists())
-        self.assertEqual(res["md5_A"], res["md5_B"])
+        self.assertFalse((out / "diff_gt60.tsv").exists())  # no mint is older than 60 min here
+        self.assertEqual(res["e0_criterion"], "le60")
+        self.assertEqual(res["md5_A_full"], res["md5_B_full"])
+        self.assertEqual(res["md5_A_le60"], res["md5_B_le60"])
         self.assertEqual((out / "A.canon").read_bytes(), (out / "B.canon").read_bytes())
+        self.assertEqual((out / "A.le60.canon").read_bytes(), (out / "A.canon").read_bytes())
+        self.assertEqual((out / "A.le60.md5").read_text(), f"{res['md5_A_le60']}  A.le60.canon\n")
         dec = {ln.split("\t")[0]: ln.split("\t")[1] for ln in (out / "A.canon").read_text().splitlines()}
         self.assertEqual(dec, {"Hi": "pick", "Lo": "below", "Mid": "pick", "HiH": "below", "Hi2": "pick"})  # HiH is below only because of the preloaded history
-        self.assertEqual((res["n_A"], res["n_B"], res["n_picks"], res["n_picks_A"], res["n_dead_B"]), (5, 5, 3, 3, 1))
+        self.assertEqual((res["n_A_full"], res["n_B_full"], res["n_A_le60"], res["n_B_le60"], res["n_gt60"], res["n_picks"], res["n_picks_A"], res["n_dead_B"]), (5, 5, 5, 5, 0, 3, 3, 1))
         self.assertEqual(res["A"]["history_rows"], 6)
         self.assertEqual(res["A"]["history_rows"], res["B"]["boots"][0]["history_rows"])
         self.assertEqual((res["A"]["rows_no_create"], res["A"]["staged_files"]), (res["A"]["rows_no_create"], 1))
@@ -223,7 +229,7 @@ class RunTests(_Fix):
         """The reason the hook exists: without preload A has no creator history and calls HiH a pick."""
         files = cp.hour_files(self.block, [str(self.view)])
         specs = [r.spec for r in self.factory()().books]
-        rows, _st = e0.run_side_a(self.block, files, [str(self.view)], DAY, specs, self.dir, boot=False)
+        rows, _st, _cr = e0.run_side_a(self.block, files, [str(self.view)], DAY, specs, self.dir, boot=False)
         self.assertEqual({r["mint"]: e0.label_from_gate_row(r) for r in rows}["HiH"], "pick")
 
     def test_forced_mismatch_writes_diff_and_exits_1(self) -> None:
@@ -235,9 +241,10 @@ class RunTests(_Fix):
 
         res = e0.run_e0("fix", DAY, self.dir / "bad", block=self.block, engine_factory=factory, repo=self.repo, scorer=self.fake_scorer(), log=open("/dev/null", "w"))
         out = self.dir / "bad"
-        self.assertFalse(res["equal_AB"])
+        self.assertFalse(res["equal_full"])
+        self.assertFalse(res["equal_le60"])
         self.assertFalse(res["ok"])
-        self.assertNotEqual(res["md5_A"], res["md5_B"])
+        self.assertNotEqual(res["md5_A_le60"], res["md5_B_le60"])
         diff = (out / "diff.tsv").read_text().splitlines()
         self.assertEqual(diff[0], "mint\tA_line\tB_line")
         self.assertEqual(len(diff) - 1, res["n_diff"])
@@ -255,6 +262,80 @@ class RunTests(_Fix):
         self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "ok")]), 2)  # not empty
         self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "skip"), "--skip-c"]), 1)  # no C: not ok
         self.assertEqual(e0.main(["check", str(self.dir / "ok" / "e0.json"), "--worktree", str(self.repo)]), 0)
+
+
+class CompareTests(unittest.TestCase):
+    LIMIT = 3_600_000
+
+    def test_le60_edge_crosstab_and_gt60_lines(self) -> None:
+        a = [("E", "pick", 5_000 + self.LIMIT, 0.9, 5_000), ("L", "below", 6_001 + self.LIMIT, 0.2, 6_000), ("S", "pick", 100, 0.9, 0), ("G", "pick", 9 + self.LIMIT, 0.8, 8)]
+        b = [("E", "pick", 5_000 + self.LIMIT, 0.9, 5_000), ("L", "no_features", 6_001 + self.LIMIT, None, 6_000), ("S", "pick", 100, 0.9, 0), ("G", "no_features", 9 + self.LIMIT, None, 8)]
+        r = e0.compare_sides(a, b)
+        self.assertEqual(r["a_le60"], ["E\tpick\t3605000\t0.9", "S\tpick\t100\t0.9"])  # exactly 60 min is kept, 1 ms over is not
+        self.assertEqual(r["a_le60"], r["b_le60"])
+        self.assertEqual(r["diff_le60"], [])
+        self.assertEqual(r["crosstab_gt60"], {"below": {"no_features": 1}, "pick": {"no_features": 1}})
+        self.assertEqual([x[0] for x in r["gt60"]], ["G", "L"])
+        self.assertEqual(r["gt60"][1][1:3], ("L|below|3606001|0.2", "L|no_features|3606001|"))
+        self.assertNotEqual(r["a_full"], r["b_full"])
+
+    def test_create_time_disagreement_is_a_mismatch(self) -> None:
+        a = [("M", "pick", 100, 0.9, 0)]
+        b = [("M", "pick", 100, 0.9, 1_000)]  # same line, different create time
+        r = e0.compare_sides(a, b)
+        self.assertEqual(r["a_le60"], r["b_le60"])
+        self.assertEqual(r["create_disagree"], [("M", 0, 1_000)])
+
+    def test_mint_on_one_side_only_and_missing_create_time(self) -> None:
+        r = e0.compare_sides([("X", "pick", self.LIMIT + 10, 0.9, 0)], [])
+        self.assertEqual(r["crosstab_gt60"], {"pick": {"<absent>": 1}})
+        with self.assertRaises(e0.E0Error):
+            e0.compare_sides([], [("Y", "pick", 1, 0.9, None)])
+
+
+class LateMigratorTests(_Fix):
+    """A mint that migrates 61.7 min after its create: A (no prune at second steps / 50,000 prints) scores it, B (prune per 5,000 prints) drops it."""
+
+    def build(self) -> None:
+        super().build()
+        t3, t4 = DAY0 + 3 * HOUR, DAY0 + 4 * HOUR
+        h3, h4 = cp._hour_of_ms(t3), cp._hour_of_ms(t4)
+        self.put("creates", h3, [_crow("SLOW", t3, "C5"), _crow("TICK", t3, "C6")])
+        slow = _mint_rows("SLOW", 7, t0=t3, mig_after_ms=3_700_000)
+        self.put("trades", h3, [r for r in slow if r["t_recv_ms"] < t4])
+        tick_t0 = t3 + 3_630_000  # 5,001 bonding prints of TICK, 6 ms apart, drive B's print counter past 5,000 at about 60.99 min
+        tick = [dict(_trade("TICK", tick_t0 + 6 * i, trader=f"w{i % 50}", slot=300 + i // 5, event_index=1 + i % 5), tx_index=i % 7) for i in range(5_001)]
+        self.put("trades", h4, sorted([r for r in slow if r["t_recv_ms"] >= t4] + tick, key=lambda r: r["t_recv_ms"]))
+
+    def test_a_scores_it_b_drops_it_and_the_criterion_passes(self) -> None:
+        res = self.run_e0(scorer=self.fake_scorer())
+        out = self.dir / "out"
+        self.assertFalse(res["equal_full"])
+        self.assertTrue(res["equal_le60"])
+        self.assertNotEqual(res["md5_A_full"], res["md5_B_full"])
+        self.assertEqual(res["md5_A_le60"], res["md5_B_le60"])
+        self.assertEqual((res["n_A_full"], res["n_B_full"], res["n_A_le60"], res["n_B_le60"], res["n_gt60"]), (6, 6, 5, 5, 1))
+        self.assertEqual(res["crosstab_gt60"], {"pick": {"no_features": 1}})
+        self.assertEqual(res["n_create_ms_disagree"], 0)
+        self.assertTrue(res["equal_C"])
+        self.assertTrue(res["ok"], res["checks"])
+        gt = (out / "diff_gt60.tsv").read_text().splitlines()
+        self.assertEqual(len(gt), 2)
+        self.assertTrue(gt[1].startswith("SLOW\tSLOW|pick|") and "\tSLOW|no_features|" in gt[1], gt)
+        self.assertFalse((out / "diff.tsv").exists())  # diff.tsv holds the criterion's differences only
+        self.assertNotIn("SLOW", (out / "B.le60.canon").read_text())
+        self.assertIn("SLOW\tpick", (out / "A.canon").read_text())
+        self.assertNotIn("SLOW", (out / "A.le60.canon").read_text())
+
+    def test_main_exits_0_on_the_le60_criterion(self) -> None:
+        patches = [mock.patch.object(cp, "BLOCKS", {"fix": self.block}), mock.patch.object(e0, "REPO", self.repo),
+                   mock.patch.object(e0, "default_engine_factory", self.factory()),
+                   mock.patch.object(e0, "subprocess_scorer", lambda *a, **k: self.fake_scorer()(a[6], a[4], a[5]))]
+        for p_ in patches:
+            p_.start()
+            self.addCleanup(p_.stop)
+        self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "late")]), 0)
+        self.assertEqual(json.loads((self.dir / "late" / "e0.json").read_text())["e0_criterion"], "le60")
 
 
 class RefusalTests(_Fix):
