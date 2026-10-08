@@ -281,3 +281,65 @@ class DedupeOutTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BadLinesVerifyTests(unittest.TestCase):
+    """A8: --content reports bad_lines per hour (raw NUL, not JSON, not an object) and flags the hour."""
+
+    HOUR = "2026-10-16T01"
+    NEXT = "2026-10-16T02"
+    GOOD = ['{"a":1}', '{"a":2}']
+
+    def _verify(self, trades: list[str], creates: list[str] | None = None) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            walker = Path(tmp)
+            _write_jsonl_zst(walker / "trades" / f"trades-{self.HOUR}.jsonl.zst", trades)
+            _write_jsonl_zst(walker / "creates" / f"creates-{self.HOUR}.jsonl.zst", creates or self.GOOD)
+            _write_checkpoint(walker, {self.HOUR: {"status": "sealed"}})
+            _write_stats(walker, self.HOUR)
+            return build_report(walker, self.HOUR, self.NEXT, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=MAX_SLOTS_PER_HOUR)["hours"][0]
+
+    def test_clean_hour_has_bad_lines_zero_and_is_not_flagged(self) -> None:
+        rec = self._verify(self.GOOD)
+        self.assertEqual(rec["bad_lines"], 0)
+        self.assertEqual(rec["content"]["trades"]["bad_lines"], 0)
+        self.assertEqual(rec["issues"], [])
+
+    def test_lenient_control_character_line_is_ok(self) -> None:
+        rec = self._verify(self.GOOD + ['{"sig":"ab\x01cd"}'])
+        self.assertEqual(rec["bad_lines"], 0)
+        self.assertEqual(rec["content"]["trades"]["lenient"], 1)
+        self.assertEqual(rec["issues"], [])
+
+    def test_nul_hole_line_flags_the_hour(self) -> None:
+        rec = self._verify(self.GOOD + ["\x00" * 5000])
+        self.assertEqual(rec["bad_lines"], 1)
+        self.assertEqual(rec["content"]["trades"]["nul"], 1)
+        self.assertTrue(any(i.startswith("trades: 1 bad lines (nul=1") for i in rec["issues"]), rec["issues"])
+
+    def test_not_json_and_non_object_lines_count_in_both_files(self) -> None:
+        rec = self._verify(self.GOOD + ['{"torn":"x'], creates=self.GOOD + ["[1,2]"])
+        self.assertEqual(rec["bad_lines"], 2)
+        self.assertEqual(rec["content"]["trades"]["not_json"], 1)
+        self.assertEqual(rec["content"]["creates"]["non_object"], 1)
+
+    def test_main_exits_1_on_a_bad_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            walker = Path(tmp)
+            _write_jsonl_zst(walker / "trades" / f"trades-{self.HOUR}.jsonl.zst", self.GOOD + ["\x00\x00"])
+            _write_checkpoint(walker, {self.HOUR: {"status": "sealed"}})
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = main(["--dir", str(walker), "--from", self.HOUR, "--to", self.NEXT, "--content"])
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(buf.getvalue())["hours"][0]["bad_lines"], 1)
+
+    def test_truncated_zst_is_flagged_not_silently_short(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            walker = Path(tmp)
+            path = walker / "trades" / f"trades-{self.HOUR}.jsonl.zst"
+            _write_jsonl_zst(path, ['{"a":%d,"pad":"%s"}' % (i, "x" * 40) for i in range(20000)])
+            path.write_bytes(path.read_bytes()[:-8])
+            _write_checkpoint(walker, {self.HOUR: {"status": "sealed"}})
+            rec = build_report(walker, self.HOUR, self.NEXT, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=MAX_SLOTS_PER_HOUR)["hours"][0]
+            self.assertTrue(any("zstd stream failed" in i for i in rec["issues"]), rec["issues"])
