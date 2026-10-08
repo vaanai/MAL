@@ -61,3 +61,7 @@ Keep B90 only if (i) it is not worse than the cap under today's timing (paired d
 ## 5. Limits
 
 Exploration pools only. The scorer's refusals are unchanged and not loosened. No sealed block, no forward or walk-2 data, no hour at or after 2026-10-02T10Z, no network, no key. The smoke run is one day (explore-0814, 2026-08-15). The full run (all exploration blocks, three configs) is the manager's, as a MiScusi job. Every cell in sections 2 and 3 is reported whatever the outcome.
+
+## 6. Erratum, 2026-10-08, after the one-day smoke and before any full run (no rule, threshold or kill-rule change)
+
+Section 3 says B90 "never fires" on a cut path. That is true of the **keeper**: its cumulative buys stop at f x 17.585 SOL, below 0.9 x 17.585 SOL. The detector is behavioural, though, so any other wallet that looks like BOOST (no sell, every buy <= 2 SOL, >= 8 buys, >= 15.8265 SOL of buys by s0 + 2,500 slots) can trigger it. On the smoke day (explore-0814, 2026-08-15, 644 attempts) the detector found such a wallet on the cut path for 11 attempts at both f = 0.8 and f = 0.6. None fired before the cap (b90_fires 0), so the paired difference was exactly 0 there. On a full run it need not be exactly 0. Condition (d)(ii) is read on the numbers as produced; "paired mean > 0" is not relaxed or tightened. Section 4's note that the keeper-only argument makes (ii) unreachable stands as a statement about the keeper, and the full run shows how far the other-wallet effect moves it.
