@@ -136,7 +136,7 @@ def good_record(repo: Path, **over) -> dict:
     mods = e0.collect_imported_modules(repo, e0.loaded_tools_modules())
     rec = {"schema": e0.SCHEMA, "view": e0.E0_VIEW, "day": e0.E0_DAY, "dry_run": False, "e0_criterion": e0.E0_CRITERION, "ok": True,
            "blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "commit": _git(repo, "rev-parse", "HEAD"),
-           "md5_A_decide": "aa", "md5_B_decide": "aa", "n_create_ms_disagree": 0, "md5_C": "cc", "md5_Bpicks_U": "cc",
+           "md5_A_decide": "aa", "md5_B_decide": "aa", "n_create_ms_disagree": 0, "md5_C": "cc", "md5_Bpicks_U": "cc", "n_C": 5,
            "checks": {k: True for k in e0.SANITY_KEYS}, "imported_module_mismatches": [], "imported_module_blobs": mods["blobs"]}
     rec.update(over)
     return rec
@@ -535,6 +535,7 @@ class PinTests(_Fix):
             "equal_decide": {"md5_B_decide": "bb"},
             "create_ms_disagreement": {"n_create_ms_disagree": 1},
             "equal_C": {"md5_Bpicks_U": "dd"},
+            "n_C_positive": {"n_C": 0},
             "sanity": {"checks": {"boot_history_equal": True, "A_log_rows_equal_engine_rows": True, "nonempty": False}},
             "scope": {"day": "2026-08-17"},
             "criterion": {"e0_criterion": "le60"},
@@ -598,6 +599,27 @@ class ScopeTests(_Fix):
         doc["md5_B_decide"] = "tampered"
         path.write_text(json.dumps(doc), encoding="utf-8")
         self.assertEqual(e0.main(["check", str(path), "--worktree", str(self.repo)]), 1)
+
+    def test_empty_scorer_universe_is_not_ok_in_run_or_check(self) -> None:
+        """Empty C and empty B picks in U have equal md5s; that is not an equality."""
+        self.pinned()
+        empty = lambda book, picks, odir: ([], ["fake", book])  # noqa: E731
+        res = e0.run_e0("fix", DAY, self.dir / "emp", block=self.block, engine_factory=self.factory(), repo=self.repo, scorer=empty, log=open("/dev/null", "w"))
+        self.assertTrue(res["equal_C"])
+        self.assertEqual(res["md5_C"], hashlib.md5(b"").hexdigest())
+        self.assertEqual(res["n_C"], 0)
+        self.assertTrue(res["equal_decide"])
+        self.assertFalse(res["checks"]["nonempty"])
+        self.assertFalse(res["ok"])
+        path = self.dir / "emp" / "e0.json"
+        doc = json.loads(path.read_text())
+        self.assertFalse(e0.recompute_ok(doc)["parts"]["n_C_positive"])
+        self.assertEqual(e0.main(["check", str(path), "--worktree", str(self.repo)]), 1)
+        forged = {**doc, "ok": True, "checks": {**doc["checks"], "nonempty": True}}  # a doctored record: stored ok and the sanity flag say True
+        self.assertFalse(e0.recompute_ok(forged)["ok"])
+        path.write_text(json.dumps(forged), encoding="utf-8")
+        self.assertEqual(e0.main(["check", str(path), "--worktree", str(self.repo)]), 1)
+        self.assertFalse(e0.recompute_ok({k: v for k, v in doc.items() if k != "n_C"})["parts"]["n_C_positive"])  # no n_C recorded: not ok
 
     def test_scorer_arg_needs_dry_run(self) -> None:
         self.pinned()

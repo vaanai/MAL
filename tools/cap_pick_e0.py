@@ -56,7 +56,8 @@ imported each. If the scorer runs from another tree (`--scorer-repo`, dry runs o
 too, with `--scorer-worktree`), not only the four pinned ones. `Bpicks_not_in_U` lists the B pick mints the scorer's universe lacks (report only).
 
 SANITY CHECKS (also required for exit 0, so an equal result cannot be vacuous or built on different inputs): A's preload row count and staged file count
-equal B's; A's gate log rows equal the engine's rows; the deciding set D and B's picks are not empty.
+equal B's; A's gate log rows equal the engine's rows; the deciding set D and B's picks are not empty; and the scorer's `--book picks` list C has at
+least one mint (`n_C >= 1`: with an empty scorer universe C and B's picks in U are both empty, and their md5s match). `check` requires the recorded `n_C > 0`.
 
 MEMORY: A peaked at 13.3 GB (sampled, lower bound) on 08-17; run E0 as a MiScusi job with mem 28 GB. `replay_rows` queues every print in the engine inbox
 before it drains (2 h of that day took 781 MB, 5 h took 2.1 GB), so A does not fit in 3 GB. B needs about 2 GB; the scorer is a subprocess in the same cgroup.
@@ -273,6 +274,7 @@ def recompute_ok(e0: dict[str, Any]) -> dict[str, Any]:
         "equal_decide": e0.get("md5_A_decide") is not None and e0.get("md5_A_decide") == e0.get("md5_B_decide") and e0.get("n_create_ms_disagree") == 0,
         "equal_C": e0.get("md5_C") is not None and e0.get("md5_C") == e0.get("md5_Bpicks_U"),
         "sanity": all(chk.get(k) is True for k in SANITY_KEYS),
+        "n_C_positive": isinstance(e0.get("n_C"), int) and not isinstance(e0.get("n_C"), bool) and e0["n_C"] >= 1,
         "scope": e0.get("view") == E0_VIEW and e0.get("day") == E0_DAY,
         "not_a_dry_run": e0.get("dry_run") is False,
         "criterion": e0.get("e0_criterion") == E0_CRITERION,
@@ -667,6 +669,7 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
     c: dict[str, Any] = {"skipped": True}
     scorer_root: Path = Path(repo)
     bpicks_missing: list[str] = []
+    n_c = 0
     md5_c = md5_bu = None
     equal_c: bool | None = None
     if not skip_c:
@@ -683,6 +686,7 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
         universe = set(all_mints)
         c_list = sorted(pick_mints)
         bu = sorted(m for m in b_picks if m in universe)
+        n_c = len(c_list)
         c_text, bu_text = "".join(m + "\n" for m in c_list), "".join(m + "\n" for m in bu)
         bpicks_missing = sorted(m for m in b_picks if m not in universe)
         _write(out / "Bpicks_not_in_U.list", "".join(m + "\n" for m in bpicks_missing))
@@ -721,7 +725,7 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
         "imported_modules": not mods["mismatches"],
         "boot_history_equal": astats["history_rows"] == boots[0].get("history_rows") and astats["staged_files"] == boots[0].get("staged_files"),
         "A_log_rows_equal_engine_rows": len(a_gate_rows) == astats["engine_gate_rows"],
-        "nonempty": bool(cmpd["a_decide"]) and bool(b_picks),
+        "nonempty": bool(cmpd["a_decide"]) and bool(b_picks) and n_c >= 1,
     }
     wall["total"] = round(time.monotonic() - t_start, 1)
     e0: dict[str, Any] = {
@@ -731,7 +735,7 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
         "view_sha256": view_sha,
         "md5_A_decide": md5_ad, "md5_B_decide": md5_bd, "equal_decide": equal_decide,
         "md5_A_full": md5_a, "md5_B_full": md5_b, "equal_full": equal_full,
-        "md5_C": md5_c, "md5_Bpicks_U": md5_bu, "equal_C": equal_c,
+        "md5_C": md5_c, "md5_Bpicks_U": md5_bu, "equal_C": equal_c, "n_C": n_c,
         "n_A_full": len(a_lines), "n_B_full": len(b_lines), "n_decide_set": cmpd["n_decide_set"], "n_A_decide": len(cmpd["a_decide"]), "n_B_decide": len(cmpd["b_decide"]),
         "n_gt60": len(cmpd["gt60"]), "n_gt60_in_decide": sum(1 for r in cmpd["gt60"] if r[5] == "yes"), "crosstab_gt60": cmpd["crosstab_gt60"],
         "n_diff_decide": len(cmpd["diff_decide"]),
@@ -755,7 +759,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     e0 = run_e0(args.view, args.day, Path(args.out), scorer_repo=Path(args.scorer_repo) if args.scorer_repo else None,
                 scorer_extra=args.scorer_arg or (), skip_c=args.skip_c, dry_run=args.dry_run)
     keys = ("view", "day", "commit", "e0_criterion", "md5_A_decide", "md5_B_decide", "equal_decide", "md5_A_full", "md5_B_full", "equal_full", "md5_C", "md5_Bpicks_U",
-            "equal_C", "n_A_full", "n_B_full", "n_decide_set", "n_gt60", "n_gt60_in_decide", "crosstab_gt60", "n_create_ms_disagree", "n_picks", "n_diff", "checks", "wall_s", "ok")
+            "equal_C", "n_C", "n_A_full", "n_B_full", "n_decide_set", "n_gt60", "n_gt60_in_decide", "crosstab_gt60", "n_create_ms_disagree", "n_picks", "n_diff", "checks", "wall_s", "ok")
     print(json.dumps({k: e0[k] for k in keys}, indent=2, sort_keys=True))
     return 0 if e0["ok"] else 1
 
