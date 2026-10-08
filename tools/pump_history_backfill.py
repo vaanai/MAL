@@ -30,12 +30,19 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, NoReturn, Sequence
 
 from observe.trade_decode import (
+    ANCHOR_EVENT_IX_TAG,
+    KNOWN_DISCS,
+    PUMP_BONDING_PROGRAM,
+    PUMPSWAP_INIT_BOOST_IX,
+    PUMPSWAP_PROGRAM,
     WSOL_MINT,
     apply_pool_mints,
+    b58decode,
     b58encode,
+    decode_extra_event,
     decode_pool_account,
     decode_program_data,
     records_from_logs,
@@ -61,6 +68,22 @@ _CREATE_DISC = bytes.fromhex("1b72a94ddeeb6376")
 _COMPLETE_DISC = bytes.fromhex("5f72619cd42e9808")
 _MIGRATE_DISC = bytes.fromhex("bde95db95c94ea94")
 _SKIP_CODES = frozenset({-32007, -32009, -32004})
+_TRADE_DISC_BYTES = bytes.fromhex("bddb7fd34ee661ee")
+_BUY_DISC_BYTES = bytes.fromhex("67f4521f2cf57777")
+_SELL_DISC_BYTES = bytes.fromhex("3e2f370aa503dc2a")
+_TRADE_DISCS = frozenset({_TRADE_DISC_BYTES, _BUY_DISC_BYTES, _SELL_DISC_BYTES})
+_INIT_BOOST_EVENT_DISC_BYTES = bytes.fromhex("ae7c4af90451f611")
+# Event discriminators decode_extra_event handles: a known disc whose blob is too short is counted as bad_disc.
+_EXTRA_DISCS = frozenset(
+    bytes.fromhex(h)
+    for h in (
+        "6fb06d8b316cd5fb",  # PostCompleteBuyEvent
+        "3f451c16305cc2b9",  # BoostBuyAndBurnEvent
+        "82a42461e48287a5",  # SweepPoolFeeEvent
+        "742b4dbd117a482b",  # SweepBondingCurveFeeEvent
+        "ae7c4af90451f611",  # InitBoostEvent
+    )
+)
 # Create/complete/migration events store native SOL as the zero pubkey.
 _NATIVE_SOL = "11111111111111111111111111111111"
 DEFAULT_MAX_BYTES = 40 * 1024**3
@@ -389,24 +412,202 @@ def tx_signature(tx: Mapping[str, Any]) -> str | None:
     return None
 
 
+def tx_account_keys(tx: Mapping[str, Any]) -> list[str]:
+    """Static account keys plus address-table loads, in instruction-index order (v0/v1 txs)."""
+    body = tx.get("transaction")
+    message = body.get("message") if isinstance(body, dict) else None
+    keys: list[str] = []
+    if isinstance(message, dict):
+        raw_keys = message.get("accountKeys")
+        if isinstance(raw_keys, list):
+            keys = [k if isinstance(k, str) else str(k.get("pubkey")) for k in raw_keys]
+    meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
+    loaded = meta.get("loadedAddresses")
+    if isinstance(loaded, dict):
+        keys += [k for k in loaded.get("writable") or [] if isinstance(k, str)]
+        keys += [k for k in loaded.get("readonly") or [] if isinstance(k, str)]
+    return keys
+
+
+def _instructions_of(tx: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
+    body = tx.get("transaction")
+    message = body.get("message") if isinstance(body, dict) else None
+    if isinstance(message, dict):
+        for ins in message.get("instructions") or []:
+            if isinstance(ins, dict):
+                yield ins
+    meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
+    for group in meta.get("innerInstructions") or []:
+        if isinstance(group, dict):
+            for ins in group.get("instructions") or []:
+                if isinstance(ins, dict):
+                    yield ins
+
+
+def init_boost_from_tx(tx: Mapping[str, Any], logs: Sequence[str]) -> dict[str, Any] | None:
+    """Evidence that the pump_amm InitBoost instruction ran in this tx (the migrate tx).
+
+    getBlock's logMessages are cut at 10 KB ("Log truncated"), and the migrate tx is long, so a log
+    line or Program data blob can be missing. Instructions are not cut. Order of preference:
+    (1) the InitBoostEvent self-CPI (Anchor emit_cpi!) among the inner instructions: full event;
+    (2) the init_boost instruction itself: pool (account 0 per the IDL), nothing else;
+    (3) the `Instruction: InitBoost` log line: boolean only.
+    """
+    keys = tx_account_keys(tx)
+    found: dict[str, Any] | None = None
+    for ins in _instructions_of(tx):
+        pid_idx = ins.get("programIdIndex")
+        if not isinstance(pid_idx, int) or pid_idx >= len(keys) or keys[pid_idx] != PUMPSWAP_PROGRAM:
+            continue
+        data = b58decode(ins.get("data")) if isinstance(ins.get("data"), str) else None
+        if not data:
+            continue
+        if data[:8] == ANCHOR_EVENT_IX_TAG:
+            ev = decode_extra_event(data[8:])
+            if ev is not None and ev["type"] == "init_boost":
+                ev["event_source"] = "inner_event"
+                return ev
+        elif data[:8] == PUMPSWAP_INIT_BOOST_IX and found is None:
+            accts = ins.get("accounts")
+            pool = None
+            if isinstance(accts, list) and accts and isinstance(accts[0], int) and accts[0] < len(keys):
+                pool = keys[accts[0]]
+            found = {"type": "init_boost", "venue": "pumpswap", "pool": pool, "event_source": "instruction"}
+    if found is not None:
+        return found
+    if any(isinstance(line, str) and "Program log: Instruction: InitBoost" in line for line in logs):
+        return {"type": "init_boost", "venue": "pumpswap", "pool": None, "event_source": "log_line"}
+    return None
+
+
+_CPI_PROGRAMS = frozenset({PUMP_BONDING_PROGRAM, PUMPSWAP_PROGRAM})
+POST_COMPLETE_BUY_DISC_HEX = "6fb06d8b316cd5fb"
+
+
+class EventVResumeMismatch(RuntimeError):
+    """A partial-hour checkpoint and the resume disagree on --event-v. main() exits 3 on this."""
+
+
+def cpi_events_from_tx(tx: Mapping[str, Any]) -> list[bytes]:
+    """Anchor emit_cpi! events of pump / pump_amm from the inner instructions: discriminator + payload.
+
+    The instruction data is the 8-byte tag e445a52e51cb9a1d, then the event discriminator and payload (the
+    same bytes a `Program data:` log line carries). Inner instructions are not cut at 10 KB like logMessages.
+    """
+    keys = tx_account_keys(tx)
+    meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
+    out: list[bytes] = []
+    for group in meta.get("innerInstructions") or []:
+        if not isinstance(group, dict):
+            continue
+        for ins in group.get("instructions") or []:
+            if not isinstance(ins, dict):
+                continue
+            pid = ins.get("programIdIndex")
+            if not isinstance(pid, int) or pid >= len(keys) or keys[pid] not in _CPI_PROGRAMS:
+                continue
+            data = b58decode(ins["data"]) if isinstance(ins.get("data"), str) else None
+            if data and len(data) >= 16 and data[:8] == ANCHOR_EVENT_IX_TAG:
+                out.append(data[8:])
+    return out
+
+
+def post_complete_buy_missing(stats: Mapping[str, Any]) -> bool:
+    """Detector: PostCompleteBuyEvent was seen as a self-CPI this hour, yet events/ holds no post_complete_buy row.
+
+    stats is an hour's stats dict (cpi_disc and event_types as run_hour writes them under event_v).
+    True means the walker is missing the event (decode failed or the row was not written).
+    """
+    seen = int((stats.get("cpi_disc") or {}).get(POST_COMPLETE_BUY_DISC_HEX, 0))
+    rows = int((stats.get("event_types") or {}).get("post_complete_buy", 0))
+    return seen > 0 and rows == 0
+
+
+def _event_v_complete(disc: bytes, row: Mapping[str, Any]) -> bool:
+    """Did event_v decoding recover what this trade event type should carry (V, or ix_name on a bonding trade)?"""
+    if disc == _TRADE_DISC_BYTES:
+        return "ix_name" in row
+    if disc == _BUY_DISC_BYTES:
+        return "ix_name" in row and "virtual_quote_reserves" in row
+    return "virtual_quote_reserves" in row
+
+
+def _stamp_event(
+    ev: Mapping[str, Any],
+    *,
+    slot: int,
+    signature: str,
+    event_index: int,
+    tx_index: int,
+    block_time: int,
+    feed: str,
+) -> dict[str, Any]:
+    row = dict(ev)
+    row["v"] = 1
+    row["source"] = SOURCE
+    row["feed"] = feed
+    row["slot"] = int(slot)
+    row["signature"] = signature
+    row["event_index"] = int(event_index)
+    row["tx_index"] = tx_index
+    row["block_time"] = int(block_time)
+    return row
+
+
+def count_unknown_discs(logs: Sequence[str], unknown: dict[str, int]) -> None:
+    """Count `Program data:` blobs whose discriminator no decoder here handles (by hex discriminator)."""
+    for line in logs:
+        if not isinstance(line, str):
+            continue
+        raw = _program_data(line)
+        if raw is None:
+            continue
+        if len(raw) < 8:
+            unknown["short"] = unknown.get("short", 0) + 1
+        elif raw[:8].hex() not in KNOWN_DISCS:
+            key = raw[:8].hex()
+            unknown[key] = unknown.get(key, 0) + 1
+
+
 def rows_from_block(
     block: Mapping[str, Any],
     pool_mints: dict[str, tuple[str, str]],
     feed: str = FEED,
-) -> dict[str, list[dict[str, Any]]]:
-    """Decode one getBlock result. Mutates pool_mints with CreatePool events."""
+    *,
+    event_v: bool = False,
+) -> dict[str, Any]:
+    """Decode one getBlock result. Mutates pool_mints with CreatePool events.
+
+    event_v=False (default): the four legacy buckets, byte-identical to before.
+    event_v=True: trade rows also carry the optional EVENT_V_KEYS; migration/complete rows carry a
+    boolean `init_boost` and `event_source` ("log" or "inner_event"); the result gains `events`
+    (post_complete_buy, boost_buy_and_burn, sweep_pool_fee, sweep_curve_fee, init_boost rows),
+    `unknown_disc`, `bad_disc`, `cpi_disc` (self-CPI events seen, by discriminator) and `cpi_only_disc`
+    (txs where a discriminator is in the CPIs but not in that tx's Program data), each hex -> count.
+    A CompletePumpAmmMigrationEvent that only the inner instructions carry (logs cut at 10 KB) becomes a
+    migration row with event_source "inner_event"; so do post_complete_buy, boost and sweep events.
+    The legacy `source` key ("backfill") is never changed; no legacy key changes value.
+    """
     block_time = block.get("blockTime")
     slot = block.get("slot")
     parent = block.get("parentSlot")
     # getBlock puts slot on the request, not always in the body. Caller may set it.
     if not isinstance(block_time, int):
-        return {"trades": [], "creates": [], "migrations": [], "unresolved": []}
+        empty: dict[str, Any] = {"trades": [], "creates": [], "migrations": [], "unresolved": []}
+        if event_v:
+            empty.update({"events": [], "unknown_disc": {}, "bad_disc": {}, "cpi_disc": {}, "cpi_only_disc": {}})
+        return empty
     if not isinstance(slot, int):
         slot = int(parent) + 1 if isinstance(parent, int) else 0
     trades: list[dict[str, Any]] = []
     creates: list[dict[str, Any]] = []
     migrations: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    unknown: dict[str, int] = {}
+    bad: dict[str, int] = {}
+    cpi_disc: dict[str, int] = {}
+    cpi_only: dict[str, int] = {}
     txs = block.get("transactions") or []
     for tx_index, tx in enumerate(txs):
         if not isinstance(tx, dict):
@@ -420,6 +621,74 @@ def rows_from_block(
             continue
         prime_pool_cache(logs, pool_mints)
         made, moved = lifecycle_from_logs(logs)
+        if event_v:
+            count_unknown_discs(logs, unknown)
+            tx_events: list[dict[str, Any]] = []
+            log_blobs: list[bytes] = []
+            for line in logs:
+                raw = _program_data(line) if isinstance(line, str) else None
+                if raw is None or len(raw) < 8:
+                    continue
+                log_blobs.append(raw)
+                ev = decode_extra_event(raw)
+                if ev is not None:
+                    ev["event_source"] = "log"
+                    tx_events.append(ev)
+                elif raw[:8] in _EXTRA_DISCS:
+                    # a known event the decoder rejected (short blob, or timestamp outside the sanity window)
+                    bad[raw[:8].hex()] = bad.get(raw[:8].hex(), 0) + 1
+                elif raw[:8] in _TRADE_DISCS:
+                    # Trade/Buy/Sell: rejected by the legacy sanity window, or no event-V tail / bad ix_name
+                    row_v = decode_program_data(raw, event_v=True)
+                    if row_v is None or not _event_v_complete(raw[:8], row_v):
+                        bad[raw[:8].hex()] = bad.get(raw[:8].hex(), 0) + 1
+            for ev in moved:
+                ev["event_source"] = "log"
+            # Anchor emit_cpi! self-CPIs: counted per discriminator; the ones the logs lack are decoded.
+            cpi_blobs = cpi_events_from_tx(tx)
+            log_discs = {b[:8] for b in log_blobs}
+            for blob in cpi_blobs:
+                key = blob[:8].hex()
+                cpi_disc[key] = cpi_disc.get(key, 0) + 1
+            for disc in {b[:8] for b in cpi_blobs} - log_discs:
+                cpi_only[disc.hex()] = cpi_only.get(disc.hex(), 0) + 1
+            unseen: dict[bytes, int] = {}
+            for blob in log_blobs:
+                unseen[blob] = unseen.get(blob, 0) + 1
+            for blob in cpi_blobs:
+                if unseen.get(blob, 0) > 0:  # the same event is in the logs: one row per tx, from the log
+                    unseen[blob] -= 1
+                    continue
+                disc = blob[:8]
+                if disc == _MIGRATE_DISC:
+                    if any(m.get("type") == "migration" for m in moved):
+                        continue  # the logs already gave this tx's migration row
+                    mig = decode_migration_event(blob)
+                    if mig is None:
+                        bad[disc.hex()] = bad.get(disc.hex(), 0) + 1
+                    else:
+                        mig["event_source"] = "inner_event"
+                        moved.append(mig)
+                elif disc in _EXTRA_DISCS and disc != _INIT_BOOST_EVENT_DISC_BYTES:
+                    ev = decode_extra_event(blob)
+                    if ev is None:
+                        bad[disc.hex()] = bad.get(disc.hex(), 0) + 1
+                    else:
+                        ev["event_source"] = "inner_event"
+                        tx_events.append(ev)
+            ib = init_boost_from_tx(tx, logs)
+            if ib is not None and not any(e["type"] == "init_boost" for e in tx_events):
+                tx_events.append(ib)
+            has_ib = any(e["type"] == "init_boost" for e in tx_events)
+            for index, ev in enumerate(tx_events):
+                events.append(
+                    _stamp_event(
+                        ev, slot=slot, signature=sig, event_index=index, tx_index=tx_index,
+                        block_time=block_time, feed=feed,
+                    )
+                )
+            for ev in moved:
+                ev["init_boost"] = has_ib
         for index, ev in enumerate(made):
             row = _stamp_lifecycle(
                 ev, slot=slot, signature=sig, event_index=index, block_time=block_time, feed=feed
@@ -432,6 +701,7 @@ def rows_from_block(
             )
             row["tx_index"] = tx_index
             migrations.append(row)
+        extra_kwargs: dict[str, Any] = {"event_v": True} if event_v else {}
         decoded = records_from_logs(
             logs,
             slot=slot,
@@ -440,6 +710,7 @@ def rows_from_block(
             commitment="confirmed",
             feed=feed,
             pool_mints=pool_mints,
+            **extra_kwargs,
         )
         for rec in decoded:
             if rec.get("venue") == "pumpswap" and not rec.get("quote_mint"):
@@ -448,12 +719,19 @@ def rows_from_block(
             row = backfill_trade_row(rec, block_time)
             row["tx_index"] = tx_index
             trades.append(row)
-    return {
+    out: dict[str, Any] = {
         "trades": trades,
         "creates": creates,
         "migrations": migrations,
         "unresolved": unresolved,
     }
+    if event_v:
+        out["events"] = events
+        out["unknown_disc"] = unknown
+        out["bad_disc"] = bad
+        out["cpi_disc"] = cpi_disc
+        out["cpi_only_disc"] = cpi_only
+    return out
 
 
 def resolve_unresolved(
@@ -580,6 +858,16 @@ def check_complete_file(path: Path, min_bytes: int = 0, min_lines: int = 0) -> N
         raise SinkResumeRefused(path, "the file does not end on a newline; refusing to seal a torn last line")
     if lines < max(0, int(min_lines)):
         raise SinkResumeRefused(path, f"the file holds {lines} lines, fewer than the checkpoint's {min_lines}; refusing to seal a hole")
+
+
+def _checkpoint_row_counts(counts: Mapping[str, Any]) -> dict[str, int]:
+    """Rows the checkpoint's counts say each output file holds (one line per counted row)."""
+    return {
+        "trades": int(counts.get("trades") or 0),
+        "creates": int(counts.get("creates") or 0),
+        "migrations": int(counts.get("migrations") or 0) + int(counts.get("completes") or 0),
+        "events": int(counts.get("event_rows") or 0),  # only written under --event-v
+    }
 
 
 class JsonlSink:
@@ -1197,8 +1485,17 @@ def run_hour(
     slot_end: int | None = None,
     min_slots_per_hour: int = DEFAULT_MIN_SLOTS_PER_HOUR,
     max_slots_per_hour: int = DEFAULT_MAX_SLOTS_PER_HOUR,
+    event_v: bool = False,
 ) -> dict[str, Any]:
-    """Fetch [start_ts, end_ts), newest hours first at the caller. Resume from checkpoint."""
+    """Fetch [start_ts, end_ts), newest hours first at the caller. Resume from checkpoint.
+
+    event_v=True (walk 2, --event-v) adds the optional trade keys, the migration `init_boost` flag and a
+    fourth output stream events/events-<hour>.jsonl.zst. With event_v=False the three legacy streams,
+    stats and checkpoint are byte-identical to before this flag existed.
+    """
+    subs: tuple[tuple[str, str], ...] = (("trades", "trades"), ("creates", "creates"), ("migrations", "migrations"))
+    if event_v:
+        subs += (("events", "events"),)
     if budget is None:
         budget = CreditBudget(DEFAULT_CREDIT_CAP, 0)
     key = hour_key(start_ts)
@@ -1216,6 +1513,18 @@ def run_hour(
     if located is None:
         return {"hour": key, "skipped": True, "stop_reason": "credit", "credits_used": budget.used}
     start_slot, end_slot, slots, resume, partial = located
+
+    # A partial hour written with one decoder mode must not be finished with the other: the hour would mix
+    # rows with and without the event-V keys and the events stream would miss the first part. Refuse before
+    # any file is opened, truncated or unlinked.
+    if resume and isinstance(partial, dict):
+        prior_flag = bool((partial.get("counts") or {}).get("event_v"))
+        if prior_flag != bool(event_v):
+            raise EventVResumeMismatch(
+                f"backfill {key}: the partial-hour checkpoint was written with event_v={prior_flag} but this "
+                f"run has event_v={bool(event_v)}. Resume with the same --event-v setting, or delete this "
+                f"hour's partial files and its checkpoint entry first. No file was touched."
+            )
 
     # A backwards or wildly-sized range means slot_for_time resolved this
     # hour's boundary wrong (see the docstring on slot_for_time). Refuse to
@@ -1266,16 +1575,12 @@ def run_hour(
     # A trades .zst (complete, or truncated mid-zstd) only exists once sealing began,
     # i.e. after the whole hour was consumed.
     if resume and sealed_trades.is_file():
-        # Seal a leftover plain file only if it passes the same hole and NUL check as a resume. All three are
+        # Seal a leftover plain file only if it passes the same hole and NUL check as a resume. All of them are
         # checked before any .zst is dropped or any file sealed, so a refusal leaves the hour as found.
         heal_off = partial.get("offsets") if isinstance(partial.get("offsets"), dict) else {}
         heal_cnt = partial.get("counts") if isinstance(partial.get("counts"), dict) else {}
-        heal_lines = {
-            "trades": int(heal_cnt.get("trades") or 0),
-            "creates": int(heal_cnt.get("creates") or 0),
-            "migrations": int(heal_cnt.get("migrations") or 0) + int(heal_cnt.get("completes") or 0),
-        }
-        for sub, prefix in (("trades", "trades"), ("creates", "creates"), ("migrations", "migrations")):
+        heal_lines = _checkpoint_row_counts(heal_cnt)
+        for sub, prefix in subs:
             off = heal_off.get(sub, 0)
             check_complete_file(
                 out_dir / sub / f"{prefix}-{key}.jsonl",
@@ -1283,7 +1588,7 @@ def run_hour(
                 heal_lines[sub],
             )
     if resume and sealed_trades.is_file():
-        for sub, prefix in (("trades", "trades"), ("creates", "creates"), ("migrations", "migrations")):
+        for sub, prefix in subs:
             plain = out_dir / sub / f"{prefix}-{key}.jsonl"
             if plain.is_file():
                 (out_dir / sub / f"{prefix}-{key}.jsonl.zst").unlink(missing_ok=True)
@@ -1312,7 +1617,7 @@ def run_hour(
 
     t0 = time.time()
 
-    for sub, prefix in (("trades", "trades"), ("creates", "creates"), ("migrations", "migrations")):
+    for sub, prefix in subs:
         folder = out_dir / sub
         if folder.is_dir() and not resume:
             for stale in folder.glob(f"{prefix}-{key}.jsonl*"):
@@ -1321,11 +1626,7 @@ def run_hour(
 
     prior = partial.get("counts") if resume and isinstance(partial.get("counts"), dict) else {}
     # Rows the checkpoint says each file holds up to its offset (one line per counted row).
-    prior_lines = {
-        "trades": int(prior.get("trades") or 0),
-        "creates": int(prior.get("creates") or 0),
-        "migrations": int(prior.get("migrations") or 0) + int(prior.get("completes") or 0),
-    }
+    prior_lines = _checkpoint_row_counts(prior)
 
     def _resume_bytes(sub: str) -> int:
         raw = offsets.get(sub, 0)
@@ -1333,7 +1634,7 @@ def run_hour(
 
     if resume:
         # Check all three files before any of them is opened or truncated: a refusal must leave the hour as found.
-        for sub, prefix in (("trades", "trades"), ("creates", "creates"), ("migrations", "migrations")):
+        for sub, prefix in subs:
             check_resume_file(out_dir / sub / f"{prefix}-{key}.jsonl", _resume_bytes(sub), prior_lines[sub])
 
     def _sink(sub: str, prefix: str) -> JsonlSink:
@@ -1345,6 +1646,7 @@ def run_hour(
     trades = _sink("trades", "trades")
     creates = _sink("creates", "creates")
     migrations = _sink("migrations", "migrations")
+    events = _sink("events", "events") if event_v else None
     counts: dict[str, Any] = {
         "hour": key,
         "block_time_start": start_ts,
@@ -1364,6 +1666,14 @@ def run_hour(
         "errors": int(prior.get("errors") or 0),
         "slots_done": int(prior.get("slots_done") or 0),
     }
+    if event_v:
+        counts["event_v"] = True
+        counts["event_rows"] = int(prior.get("event_rows") or 0)
+        counts["unknown_disc"] = dict(prior.get("unknown_disc") or {})
+        counts["bad_disc"] = dict(prior.get("bad_disc") or {})
+        counts["cpi_disc"] = dict(prior.get("cpi_disc") or {})
+        counts["cpi_only_disc"] = dict(prior.get("cpi_only_disc") or {})
+        counts["event_types"] = dict(prior.get("event_types") or {})
     # Records pending a pool-account lookup (PumpSwap venue resolution) live
     # only in this list until they hit the 250-item flush threshold or the
     # hour ends. A checkpoint that does not carry them is a checkpoint that
@@ -1395,6 +1705,8 @@ def run_hour(
                 "creates": creates.offset(),
                 "migrations": migrations.offset(),
             }
+            if events is not None:
+                entry["offsets"]["events"] = events.offset()
             entry["held"] = list(held)
         checkpoint.setdefault("hours", {})[key] = entry
         checkpoint["credits_used"] = budget.used
@@ -1444,7 +1756,12 @@ def run_hour(
             if code not in _SKIP_CODES and code is not None:
                 counts["errors"] += 1
         else:
-            decoded = rows_from_block(block, pool_mints, feed)
+            # Legacy call shape when the flag is off (tests and tools patch rows_from_block(block, cache, feed)).
+            decoded = (
+                rows_from_block(block, pool_mints, feed, event_v=True)
+                if event_v
+                else rows_from_block(block, pool_mints, feed)
+            )
             bt = int(block.get("blockTime") or 0)
             for rec in decoded["unresolved"]:
                 rec["_block_time"] = bt
@@ -1463,6 +1780,14 @@ def run_hour(
                         counts["completes"] += 1
                     else:
                         counts["migrations"] += 1
+                if events is not None:
+                    for row in decoded["events"]:
+                        events.write(row)
+                        counts["event_rows"] += 1
+                        counts["event_types"][row["type"]] = counts["event_types"].get(row["type"], 0) + 1
+                    for name in ("unknown_disc", "bad_disc", "cpi_disc", "cpi_only_disc"):
+                        for disc, n in decoded[name].items():
+                            counts[name][disc] = counts[name].get(disc, 0) + n
         # Count a slot as done only once it is fully handled. Incrementing
         # this earlier (before decoding could raise) let a slot that failed
         # partway through still be counted "done" in the persisted
@@ -1489,7 +1814,7 @@ def run_hour(
     def _stop_before() -> str | None:
         if credit_hit or not budget.can_afford():
             return "credit"
-        if trades.bytes + creates.bytes + migrations.bytes >= room:
+        if trades.bytes + creates.bytes + migrations.bytes + (events.bytes if events is not None else 0) >= room:
             return "disk"
         return None
 
@@ -1529,6 +1854,17 @@ def run_hour(
             "creates": creates.close(seal=finished),
             "migrations": migrations.close(seal=finished),
         }
+        if events is not None:
+            sealed["events"] = events.close(seal=finished)
+    if event_v and finished:
+        counts["post_complete_buy_missing"] = post_complete_buy_missing(counts)
+        if counts["post_complete_buy_missing"]:
+            print(
+                f"backfill {key}: PostCompleteBuyEvent seen in self-CPIs but events/ has no post_complete_buy "
+                "row -- the walker is missing it",
+                file=sys.stderr,
+                flush=True,
+            )
     counts["elapsed_s"] = round(time.time() - t0, 1)
     counts["credits_used"] = budget.used
     counts["stop_reason"] = stop_reason
@@ -1722,7 +2058,66 @@ def parse_utc(text: str) -> int:
     return int(dt.timestamp())
 
 
-def _main(argv: Sequence[str] | None = None) -> int:
+REFUSALS_NAME = "refusals.jsonl"
+REFUSAL_EXIT = 3
+
+
+def _refuse_exit3(exc: Exception, kwargs: Mapping[str, Any], used_at_call: int | None) -> NoReturn:
+    """The one exit path of every refusal that protects the tape: a resume that would hide a hole
+    (SinkResumeRefused) or mix decoder modes (EventVResumeMismatch). Prints the message, records the credits spent
+    before the refusal in refusals.jsonl next to the checkpoint, and ends the process with exit code 3.
+    checkpoint.json is never written here, not even credits_used, and no data file is touched."""
+    if isinstance(exc, SinkResumeRefused):
+        print(
+            f"REFUSED (data hole): {exc}\n"
+            "The hour's files and checkpoint were left as found. Do not delete either to get past this: "
+            "name the hour as not decidable, or re-walk it from a fresh output directory.",
+            file=sys.stderr,
+            flush=True,
+        )
+        kind, file = "sink_resume", exc.path
+    else:
+        print(f"error: {exc}", file=sys.stderr, flush=True)
+        kind, file = "event_v_mismatch", None
+    budget = kwargs.get("budget")
+    checkpoint = kwargs.get("checkpoint")
+    cp_path = kwargs.get("checkpoint_path")
+    log_dir = Path(cp_path).parent if cp_path is not None else (Path(kwargs["out_dir"]) if kwargs.get("out_dir") is not None else None)
+    if log_dir is not None and used_at_call is not None and budget is not None:
+        spent = budget.used - used_at_call
+        rec = {
+            "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "hour": hour_key(int(kwargs["start_ts"])),
+            "kind": kind,
+            "file": file,
+            "reason": str(exc),
+            "credits_spent_in_hour_before_refusal": spent,
+            "credits_used_in_checkpoint": checkpoint.get("credits_used") if isinstance(checkpoint, Mapping) else None,
+        }
+        print(
+            f"refusal: {spent} credits were spent in this hour before the refusal; checkpoint.json is untouched; "
+            f"recorded in {log_dir / REFUSALS_NAME}",
+            file=sys.stderr,
+            flush=True,
+        )
+        with (log_dir / REFUSALS_NAME).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, sort_keys=True) + "\n")
+    raise SystemExit(REFUSAL_EXIT) from exc
+
+
+def _run_hour_exit3(**kwargs: Any) -> dict[str, Any]:
+    """run_hour, but a refusal (a --event-v toggle on resume, or a resume/heal over a data hole) ends the process
+    with exit code 3, a clear message and no checkpoint write. Flag-off output of a run that is not refused is
+    exactly run_hour's."""
+    budget = kwargs.get("budget")
+    used_at_call = budget.used if budget is not None else None
+    try:
+        return run_hour(**kwargs)
+    except (EventVResumeMismatch, SinkResumeRefused) as exc:
+        _refuse_exit3(exc, kwargs, used_at_call)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Backfill pump.fun history from getBlock")
     parser.add_argument("--until", help="Exclusive UTC end, ISO-8601 (newest edge)")
     parser.add_argument("--hours", type=int, default=1)
@@ -1770,6 +2165,16 @@ def _main(argv: Sequence[str] | None = None) -> int:
         type=int,
         default=DEFAULT_MAX_SLOTS_PER_HOUR,
         help="Refuse to seal an hour whose resolved slot span is above this",
+    )
+    parser.add_argument(
+        "--event-v",
+        action="store_true",
+        help=(
+            "Walk-2 decoder: optional trade keys (virtual_quote_reserves, ix_name, creator_fee_unclaimed, "
+            "buyback_fee, fee_recipient_zero), migration init_boost flag, and an events/ stream "
+            "(post_complete_buy, boost_buy_and_burn, sweep_pool_fee, sweep_curve_fee, init_boost). "
+            "Off by default: output is byte-identical to the legacy decoder."
+        ),
     )
     args = parser.parse_args(argv)
     if args.hours < 1:
@@ -1819,33 +2224,6 @@ def _main(argv: Sequence[str] | None = None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     proof_hours = set(args.live_tape_proof_hour or ["2026-09-25T07"])
     gap_end_ts = parse_utc(args.live_tape_gap_end) if args.live_tape_gap_end else None
-    credits_at_start = budget.used
-
-    def _guarded_run_hour(**kw: Any) -> dict[str, Any]:
-        try:
-            return run_hour(**kw)
-        except SinkResumeRefused as exc:
-            # checkpoint.json is NOT touched on a refusal (not even credits_used). The credits this process spent
-            # before it refused go to stderr and to refusals.jsonl next to the checkpoint.
-            spent = budget.used - credits_at_start
-            rec = {
-                "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "hour": hour_key(int(kw["start_ts"])),
-                "file": exc.path,
-                "reason": exc.reason,
-                "credits_spent_this_run": spent,
-                "credits_used_in_checkpoint": credits_at_start,
-            }
-            print(
-                f"refusal: {spent} credits were spent this run before the refusal; checkpoint.json is untouched "
-                f"(credits_used stays {credits_at_start}); recorded in {checkpoint_path.parent / REFUSALS_NAME}",
-                file=sys.stderr,
-                flush=True,
-            )
-            with (checkpoint_path.parent / REFUSALS_NAME).open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(rec, sort_keys=True) + "\n")
-            raise
-
     for index, (start_ts, plan_end_ts) in enumerate(plan_hours(until, args.hours)):
         end_ts = hour_end_with_gap(start_ts, plan_end_ts, gap_end_ts)
         key = hour_key(start_ts)
@@ -1876,7 +2254,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
             flush=True,
         )
-        summary = _guarded_run_hour(
+        summary = _run_hour_exit3(
             url=url,
             start_ts=start_ts,
             end_ts=end_ts,
@@ -1897,6 +2275,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
             slot_end=args.slot_end if index == 0 else None,
             min_slots_per_hour=args.min_slots_per_hour,
             max_slots_per_hour=args.max_slots_per_hour,
+            event_v=args.event_v,
         )
         save_pool_cache(cache_path, pool_mints)
         safe = {k: v for k, v in summary.items() if k != "files"}
@@ -1908,25 +2287,6 @@ def _main(argv: Sequence[str] | None = None) -> int:
     checkpoint["credits_used"] = budget.used
     save_checkpoint(checkpoint_path, checkpoint)
     return 0
-
-
-SINK_REFUSED_EXIT = 3
-REFUSALS_NAME = "refusals.jsonl"
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Exit SINK_REFUSED_EXIT (3) when a resume was refused to avoid a silent data hole; no file was changed."""
-    try:
-        return _main(argv)
-    except SinkResumeRefused as exc:
-        print(
-            f"REFUSED (data hole): {exc}\n"
-            "The hour's files and checkpoint were left as found. Do not delete either to get past this: "
-            "name the hour as not decidable, or re-walk it from a fresh output directory.",
-            file=sys.stderr,
-            flush=True,
-        )
-        return SINK_REFUSED_EXIT
 
 
 if __name__ == "__main__":

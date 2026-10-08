@@ -68,7 +68,7 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     assert fwd.owner != "exploration-pool"
     assert (fwd.start_hour, fwd.end_hour_exclusive) == ("2026-10-02T10", "2026-10-16T01")
     fwd2 = by_name["Forward walk 2"]
-    assert fwd2.owner == "reserved"
+    assert fwd2.owner == "EXP-022"  # named by the EXP-022 Part 1 pre-registration (CAP-PICK, DEC-021 Am.1), 2026-10-08
     assert (fwd2.start_hour, fwd2.end_hour_exclusive) == ("2026-10-16T01", "2026-11-16T01")
     assert fwd2.start_hour == fwd.end_hour_exclusive
 

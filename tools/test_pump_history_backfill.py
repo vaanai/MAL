@@ -939,15 +939,8 @@ class RunHourCrashResumeTests(_TimeBoundedTestCase):
         self.assertNotIn(b"\x00", trades.read_bytes())
         self.assertFalse((out_dir / f"stats-{self.START_KEY}.json").exists())
 
-    def test_forced_nul_hole_resume_refuses_via_main_without_touching_the_checkpoint(self) -> None:
-        def hole(trades: Path, offset: int) -> None:
-            raw = bytearray(trades.read_bytes())
-            raw[10:60] = b"\x00" * 50
-            trades.write_bytes(bytes(raw))
-
-        out_dir, checkpoint, checkpoint_path = self._crash_and_damage(hole)
-        checkpoint_before = checkpoint_path.read_bytes()
-        files_before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+    def _main_refusal(self, out_dir: Path, *extra: str) -> tuple[int, str, list[int]]:
+        """Run main() on `out_dir` with the fixture slots; the locate step spends 7 credits. Returns (exit code, stderr, calls)."""
         calls = []
         real = backfill_mod.run_hour
 
@@ -956,7 +949,7 @@ class RunHourCrashResumeTests(_TimeBoundedTestCase):
             kw.update(slot_start=0, slot_end=self.N_SLOTS, min_slots_per_hour=1, max_slots_per_hour=1000)
             return real(**kw)
 
-        def locate_and_spend(*a, **k):  # the locate step spends 7 credits (slots_between is given the budget)
+        def locate_and_spend(*a, **k):  # slots_between is given the budget
             a[4].used += 7
             return list(range(self.N_SLOTS))
 
@@ -965,22 +958,87 @@ class RunHourCrashResumeTests(_TimeBoundedTestCase):
         with patch.dict(os.environ, {"HELIUS_API_KEY": ""}, clear=True), patch.object(backfill_mod, "run_hour", run_hour_with_fixture), \
                 patch.object(backfill_mod, "slots_between", locate_and_spend), \
                 patch.object(backfill_mod, "skip_hour_for_live_tape", lambda *a, **k: False), \
-                contextlib.redirect_stderr(err):
-            rc = backfill_mod.main(["--until", until, "--hours", "1", "--out", str(out_dir), "--rpc", "http://x"])
-        self.assertEqual(rc, 3)
-        self.assertEqual(calls, [self.start_ts])
-        self.assertIn("REFUSED (data hole)", err.getvalue())
-        self.assertIn("NUL byte at offset 10", err.getvalue())
-        self.assertIn("7 credits were spent this run", err.getvalue())
+                contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            backfill_mod.main(["--until", until, "--hours", "1", "--out", str(out_dir), "--rpc", "http://x", *extra])
+        return cm.exception.code, err.getvalue(), calls
+
+    def _assert_refusal_left_everything(self, out_dir: Path, checkpoint_path: Path, files_before: dict, kind: str) -> None:
         # checkpoint.json is byte-identical, even with a nonzero credit spend; so is every other file that existed
-        self.assertEqual(checkpoint_path.read_bytes(), checkpoint_before)
         for path, data in files_before.items():
             self.assertEqual(path.read_bytes(), data, path)
-        # the spend is recorded next to it, in a separate log
         log = [json.loads(x) for x in (out_dir / "refusals.jsonl").read_text().splitlines()]
         self.assertEqual(len(log), 1)
-        self.assertEqual((log[0]["hour"], log[0]["credits_spent_this_run"]), (self.START_KEY, 7))
-        self.assertIn("NUL byte at offset 10", log[0]["reason"])
+        self.assertEqual((log[0]["hour"], log[0]["kind"], log[0]["credits_spent_in_hour_before_refusal"]), (self.START_KEY, kind, 7))
+
+    def test_forced_nul_hole_resume_refuses_via_main_without_touching_the_checkpoint(self) -> None:
+        def hole(trades: Path, offset: int) -> None:
+            raw = bytearray(trades.read_bytes())
+            raw[10:60] = b"\x00" * 50
+            trades.write_bytes(bytes(raw))
+
+        out_dir, _checkpoint, checkpoint_path = self._crash_and_damage(hole)
+        files_before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+        code, err, calls = self._main_refusal(out_dir)
+        self.assertEqual((code, calls), (3, [self.start_ts]))
+        self.assertIn("REFUSED (data hole)", err)
+        self.assertIn("NUL byte at offset 10", err)
+        self.assertIn("7 credits were spent in this hour before the refusal", err)
+        self.assertEqual(checkpoint_path.read_bytes(), files_before[checkpoint_path])
+        self._assert_refusal_left_everything(out_dir, checkpoint_path, files_before, "sink_resume")
+
+    def test_event_v_toggle_refusal_uses_the_same_exit_path_and_leaves_the_checkpoint(self) -> None:
+        out_dir, _checkpoint, checkpoint_path = self._crash_and_damage(lambda trades, offset: None)  # partial hour written flag-off
+        files_before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+        code, err, calls = self._main_refusal(out_dir, "--event-v")  # resumed with --event-v on
+        self.assertEqual((code, calls), (3, [self.start_ts]))
+        self.assertIn("event_v", err)
+        self.assertIn("7 credits were spent in this hour before the refusal", err)
+        self.assertEqual(checkpoint_path.read_bytes(), files_before[checkpoint_path])
+        self._assert_refusal_left_everything(out_dir, checkpoint_path, files_before, "event_v_mismatch")
+
+    # --- A8 x event-V: the resume check covers the events stream too ---------------------------------------------
+
+    def _event_v_fake(self, raise_at: int | None):
+        base = self._fake_rows_from_block(raise_at=raise_at)
+
+        def fake(block, pool_mints, feed=backfill_mod.FEED, event_v=False):
+            out = base(block, pool_mints, feed)
+            if event_v:
+                out.update(events=[{"type": "boost", "slot": block["slot"]}], unknown_disc={}, bad_disc={}, cpi_disc={}, cpi_only_disc={})
+            return out
+
+        return fake
+
+    def _event_v_crash(self) -> tuple[Path, dict, Path]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out_dir = Path(tmp.name)
+        checkpoint_path = out_dir / "checkpoint.json"
+        checkpoint = empty_checkpoint()
+        backfill_mod.rows_from_block = self._event_v_fake(raise_at=26)
+        with self.assertRaises(RuntimeError):
+            run_hour(budget=CreditBudget(10**9, 0), checkpoint=checkpoint, checkpoint_path=checkpoint_path, event_v=True, **self._kwargs(out_dir))
+        self.assertGreater(checkpoint["hours"][self.START_KEY]["offsets"]["events"], 0)
+        return out_dir, checkpoint, checkpoint_path
+
+    def test_event_v_crash_and_resume_writes_every_event_once(self) -> None:
+        out_dir, checkpoint, checkpoint_path = self._event_v_crash()
+        backfill_mod.rows_from_block = self._event_v_fake(raise_at=None)
+        summary = run_hour(budget=CreditBudget(10**9, 0), checkpoint=checkpoint, checkpoint_path=checkpoint_path, event_v=True, **self._kwargs(out_dir))
+        self.assertIsNone(summary.get("stop_reason"))
+        events = [row["slot"] for row in iter_jsonl(out_dir / "events" / f"events-{self.START_KEY}.jsonl.zst")]
+        self.assertEqual(sorted(events), list(range(self.N_SLOTS)))
+
+    def test_event_v_resume_refuses_a_short_events_file(self) -> None:
+        out_dir, checkpoint, checkpoint_path = self._event_v_crash()
+        events = out_dir / "events" / f"events-{self.START_KEY}.jsonl"
+        events.write_bytes(events.read_bytes()[:-15])
+        before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+        backfill_mod.rows_from_block = self._event_v_fake(raise_at=None)
+        with self.assertRaises(SinkResumeRefused) as ctx:
+            run_hour(budget=CreditBudget(10**9, 0), checkpoint=checkpoint, checkpoint_path=checkpoint_path, event_v=True, **self._kwargs(out_dir))
+        self.assertIn("events-", str(ctx.exception))
+        self.assertEqual(before, {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()})
 
     def test_crash_with_held_rows_pending_is_recovered(self) -> None:
         # Odd slots go through the held (unresolved pool lookup) path. Crash

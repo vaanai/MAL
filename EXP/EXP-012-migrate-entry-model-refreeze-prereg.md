@@ -221,6 +221,21 @@ Run `--dry-run-preconditions` with the same arguments first. Any refusal there s
 
 Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3. Nothing frozen above changes. `[2026-10-14T01, 2026-10-16T01)` is also read for features only as walk 2's buffer (DEC-021 §3); no outcome is used. That read runs only after EXP-012's FINAL is written.
 
+## Amendment 2 (2026-10-08): EXP-022 (CAP-PICK) reads of the forward walk's hours
+
+Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3 and DEC-014(a). Nothing frozen above changes. Nothing in DEC-016 changes here.
+
+[EXP-022](EXP-022-cap-pick-part1-prereg.md) counts from 2026-10-16T01, on walk 2 (Option Y). It counts no hour of this block. It reads this block in two ways, both only after EXP-012's FINAL is written.
+
+1. **Walk-2 feature buffer.** This is already covered by Amendment 1 and DEC-021 §3. The gate replay's first boot reads the creates of `[2026-10-15T00, 2026-10-16T01)` and the prints of hour 2026-10-16T00, for features only. Both sit inside `[2026-10-14T01, 2026-10-16T01)`. No outcome is used.
+2. **A11 October check** (SYNTHESIS A11), report-only, on `[2026-10-06T00, 2026-10-16T00)`. It reads CAP-PICK outcomes on this block's FINAL window, plus its own creator-history preload from this block's creates.
+   - It runs only if a **separate DEC-016 amendment**, a manager PR, registers it before 2026-10-16T00:00Z.
+   - It decides nothing in EXP-012 or EXP-022, and it is never gate evidence.
+   - Its only effect is a spending pause (EXP-022 §7.5).
+   - The FINAL's window, read and verdict, and the DEC-016 Am.2 and Am.3 seal, are unchanged.
+
+**Option X rejected.** Option X, under which EXP-022 would have been a second owner counting `[2026-10-10T00, 2026-10-16T01)`, was considered and rejected on 2026-10-08 (EXP-022 §0).
+
 ## Sources
 
 [EXP-011](EXP-011-migrate-entry-model-prereg.md) §1, §1a, §3, §4, §6–§8, §10 and Result; `tools/exp011_freeze.py`, `tools/exp011_build_table.py`, `tools/exp011_score.py`; [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md); [dedupe note](../ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md); [clean B3 re-run](../ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md); [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md).
