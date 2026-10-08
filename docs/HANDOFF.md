@@ -20,6 +20,11 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
    - EXP-016/021 tape passes need **72 GB with 3 workers** (#326 hit OOM at 56).
    - fast-0 jobs stay ≤1.9 GB. Decline fast-0 idle notices.
 4. **Ollama on research-0 is off** (Helm). Restart with `cd /opt/miscusi && sudo docker compose start ollama` only when research is idle.
+5. **Daily monitors: pump structure monitor.** Run it as a daily MiScusi job on `mal-research-0`, role ops, 300 MB, 20 min, from the repo root.
+   - Command: `/data/mal/venv/bin/python -m tools.pump_structure_monitor --out /data/mal/structure-monitor/daily.jsonl`.
+   - Public RPC only, 0 Helius credits, about 150–250 calls. It appends one JSON line per run. It exits 0 even on a HALT, and 2 only when the RPC is unreachable.
+   - Read `halt.flags` and `warn.flags` in the newest line. A HALT means a pinned config or program changed, BOOST is off or changed, or the synthetic-migration share is high. Re-pin with `--write-pins tools/pump_structure_pins.json` only after reviewing the change.
+   - Expect the `ms_per_slot_moved` WARN at epoch 1053 (about 2026-10-09T14:30Z, the 200 ms step).
 
 ## Owner direction (10-06 / 10-07)
 
