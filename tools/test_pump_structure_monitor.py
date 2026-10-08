@@ -12,6 +12,7 @@ import base64
 import copy
 import json
 import struct
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -120,8 +121,9 @@ def mini_tx(slot, bt, logs, keys=None, pre=None, post=None, signers=1) -> dict:
 class Chain:
     """A tiny constructed chain: graduations (migrate tx + completing tx + BOOST slices + Pool account) plus the recorded config."""
 
-    def __init__(self, n=10, mayhem=(0, 1), no_boost=(), synthetic=(), config=None, slices=29, last_slice_s=342, fail_pools=False):
+    def __init__(self, n=10, mayhem=(0, 1), no_boost=(), synthetic=(), config=None, slices=29, last_slice_s=342, fail_pools=False, bad_txs=(), slice_signer=KEEPER):
         self.fail_pools = fail_pools
+        self.bad_txs = set(bad_txs)  # signatures whose getTransaction answers with a JSON-RPC error
         self.sigs: dict[str, list] = {m.MIGRATION_FEE_ACCOUNT: []}
         self.txs: dict[str, dict] = {}
         self.pools: dict[str, dict] = {}
@@ -156,7 +158,7 @@ class Chain:
                     t = bt + (last_slice_s - 12 * (slices - 1 - s))
                     sig = f"bst{i}_{s}"
                     lst.append({"signature": sig, "slot": slot + 5 + s * 40, "blockTime": t, "err": None, "transactionIndex": 3})
-                    self.txs[sig] = mini_tx(slot + 5 + s * 40, t, [f"Program {m.PUMPSWAP_PROGRAM} invoke [1]", "Program log: Instruction: BoostBuyAndBurn", f"Program {m.PUMPSWAP_PROGRAM} success"], [KEEPER])
+                    self.txs[sig] = mini_tx(slot + 5 + s * 40, t, [f"Program {m.PUMPSWAP_PROGRAM} invoke [1]", "Program log: Instruction: BoostBuyAndBurn", f"Program {m.PUMPSWAP_PROGRAM} success"], [slice_signer])
                 self.sigs[auth] = list(reversed(lst)) + [{"signature": f"mig{i}", "slot": slot, "blockTime": bt, "err": None}]
             self.all_ids += [smint, scurve, spool, f"mig{i}", f"cmp{i}"]
         # noise the sampler must skip: a failed tx, a too-young graduation, a non-migrate success
@@ -183,13 +185,18 @@ class Chain:
             return self.config
         return {"context": {"slot": 1}, "value": [None for _ in keys]}  # boost vaults: drained
 
+    def get_tx(self, params):
+        if params[0] in self.bad_txs:
+            raise NodeError()
+        return self.txs[params[0]]
+
     def node(self) -> Node:
         return Node({
             "getEpochInfo": lambda p: fx("epoch_info.json"),
             "getRecentPerformanceSamples": lambda p: fx("perf_samples.json"),
             "getMultipleAccounts": self.multi,
             "getSignaturesForAddress": lambda p: self.sigs.get(p[0], []),
-            "getTransaction": lambda p: self.txs[p[0]],
+            "getTransaction": self.get_tx,
             "getBlockTime": lambda p: 1_790_000_000,
         })
 
@@ -333,6 +340,60 @@ def test_boost_profile_on_recorded_signature_list():
     # the audit's s20 test read this pool as "29 slices, 327 s" = first-to-last span; the last slice is 329 s after the migrate tx
     assert (prof["first_slice_after_migrate_s"]["median"], prof["last_slice_after_migrate_s"]["median"], prof["first_to_last_span_s"]["median"]) == (2, 329, 327)
     assert prof["budget_sol"]["median"] == 17.586 and prof["sol_total"]["median"] == 17.586  # 17,585,993,728 lamports funded, vault drained (dist rounds to 4 dp)
+
+
+def fixture_pool(sigs):
+    g = m.parse_migrate_tx(fx("migrate_tx_sep20.json"))
+    g.update(sig=sigs[-1]["signature"], init_boost=True)
+    return g
+
+
+def slice_node(sigs, keeper_from: int | None, fetch_log: list | None = None):
+    """Recorded BOOST signature list; getTransaction answers keeper-signed from index `keeper_from` on, non-keeper before it."""
+    order = {s["signature"]: i for i, s in enumerate(sigs)}  # 0 = newest
+
+    def tx_for(p):
+        s = sigs[order[p[0]]]
+        ok = keeper_from is not None and order[p[0]] >= keeper_from
+        logs = [f"Program {m.PUMPSWAP_PROGRAM} invoke [1]", "Program log: Instruction: BoostBuyAndBurn" if ok else "Program log: Instruction: Transfer"]
+        return mini_tx(s["slot"], s["blockTime"], logs, [KEEPER if ok else m.b58encode(k(7))])
+
+    return Node({"getSignaturesForAddress": lambda p: sigs, "getTransaction": tx_for, "getMultipleAccounts": lambda p: {"value": [None]}})
+
+
+def test_last_slice_walks_back_past_non_keeper_txs():
+    sigs = fx("boost_sigs_sep20.json")  # newest first
+    g, node = fixture_pool(sigs), slice_node(sigs, keeper_from=3)  # the 3 newest signatures are not keeper txs
+    prof = m.profile_boost(client_for(node), [g], KEEPER)
+    assert g["boost"]["last_verified"] and g["boost"]["last_after_s"] == sigs[3]["blockTime"] - g["block_time"]
+    assert node.methods.count("getTransaction") == 4 and prof["last_slice_verified"] == 1 and prof["last_slice_unverified"] == 0
+
+
+def test_last_slice_is_unverified_not_guessed_when_no_keeper_tx_is_found():
+    sigs = fx("boost_sigs_sep20.json")
+    g, node = fixture_pool(sigs), slice_node(sigs, keeper_from=None)
+    prof = m.profile_boost(client_for(node), [g], KEEPER, max_verify_fetches=5)
+    assert node.methods.count("getTransaction") == 5  # bounded walk
+    assert g["boost"]["last_verified"] is False and g["boost"]["last_after_s"] is None and g["boost"]["span_s"] is None
+    assert prof["last_slice_after_migrate_s"] is None and prof["last_slice_unverified"] == 1 and prof["slices"]["median"] == 29
+    g2, node2 = fixture_pool(sigs), slice_node(sigs, keeper_from=0)  # GlobalConfig unread: no keeper to check against, so no guess either
+    prof2 = m.profile_boost(client_for(node2), [g2], None)
+    assert "getTransaction" not in node2.methods and g2["boost"]["last_after_s"] is None and prof2["last_slice_unverified"] == 1
+
+
+def test_pool_with_no_slices_counts_as_ended_at_zero_seconds():
+    sigs = fx("boost_sigs_sep20.json")
+    g, node = fixture_pool(sigs), slice_node(sigs[-1:], keeper_from=0)  # only the funding migrate tx
+    prof = m.profile_boost(client_for(node), [g], KEEPER)
+    assert prof["n_zero_slices"] == 1 and prof["last_slice_after_migrate_s"]["median"] == 0 and prof["last_slice_verified"] == 1
+
+
+def test_skip_counts_and_stops_on_call_cap_or_dead_rpc():
+    errs = Counter()
+    assert m._skip(errs, "x", m.RpcError("a")) is False and m._skip(errs, "x", m.RpcUnreachable("b")) is False
+    assert m._skip(errs, "x", m.RpcUnreachable("b")) is False and m._skip(errs, "x", m.RpcUnreachable("b")) is True  # third unreachable item
+    assert m._skip(Counter(), "x", m.CallBudgetExceeded("cap")) is True
+    assert errs == {"x: RpcError": 1, "x: RpcUnreachable": 3}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -496,7 +557,7 @@ def test_last_slice_300s_halts():
     rec["boost"]["last_slice_after_migrate_s"]["median"] = 315
     assert not flags(rec)[0]["boost_last_slice_early"]["halt"]
     few = healthy()
-    few["boost"]["n_profiled"] = 2
+    few["boost"]["last_slice_after_migrate_s"]["n"] = 2  # only 2 pools with a keeper-verified last slice
     assert not flags(few)[0]["boost_last_slice_early"]["evaluated"]
 
 
@@ -632,6 +693,46 @@ def test_end_to_end_early_last_slice_halts(tmp_path):
     rc, out = run_main(tmp_path, chain)
     rec = json.loads(out.read_text())
     assert rc == 0 and rec["boost"]["last_slice_after_migrate_s"]["median"] == 300 and rec["halt"]["flags"]["boost_last_slice_early"]["halt"]
+
+
+def test_one_failing_item_does_not_drop_its_stage(tmp_path):
+    # graduation 3's migrate tx, graduation 2's completing tx and pool 4's newest BOOST slice each fail once
+    chain = Chain(n=10, bad_txs={"mig3", "cmp2", "bst4_28"})
+    rc, out = run_main(tmp_path, chain)
+    rec = json.loads(out.read_text())
+    assert rc == 0 and rec["status"] == "partial"
+    assert rec["item_errors"] == {"boost: RpcError": 1, "completion: RpcError": 1, "graduations: RpcError": 1}
+    g = rec["graduations"]
+    assert g["n"] == 9 and g["synthetic"]["n_checked"] == 8 and g["synthetic"]["n_completion_not_found"] == 1  # graduation 3 never sampled; graduation 2 has no completion
+    b = rec["boost"]
+    assert b["n_profiled"] == 6 and b["n_pools_skipped"] == 1 and b["slices"]["median"] == 29 and b["last_slice_verified"] == 6
+    assert rec["pumpswap_trade_mix"]["n_txs"] == 40 and rec["warn"]["flags"]["stage_errors"]["warn"]
+    assert "boost: RpcError: 1 item(s) skipped" in rec["errors"]
+
+
+def test_call_cap_mid_stage_keeps_the_partial_results(tmp_path, capsys):
+    chain = Chain(n=10)
+    out = tmp_path / "d.jsonl"
+    # 4 setup calls + sample page + 11 fetches + 1 mayhem = 17, then 2 calls per completion lookup: the cap lands inside that stage
+    rc = m.main(["--out", str(out), "--n", "10", "--min-interval", "0"], client=client_for(chain.node(), max_calls=24), now=NOW)
+    rec = json.loads(out.read_text())
+    assert rc == 0 and rec["rpc"]["calls"] == 24 and rec["rpc"]["cap"] == 24
+    assert rec["graduations"]["n"] == 10 and rec["graduations"]["mayhem"]["false"] + rec["graduations"]["mayhem"]["true"] == 10
+    assert 0 < rec["graduations"]["synthetic"]["n_checked"] < 10  # completions annotated before the cap are kept
+    assert rec["item_errors"]["completion: call cap"] == 1 and rec["item_errors"]["boost: call cap"] == 1
+    assert any(e.startswith("pumpswap_trade_mix") for e in rec["errors"])  # the stage that never got a call
+    assert rec["status"] == "partial" and rec["accounts"] and rec["programs"]  # the cheap early stages are intact
+    assert "pins: 6 unchanged" in capsys.readouterr().out
+
+
+def test_end_to_end_unverified_last_slices_leave_the_timing_rule_not_evaluated(tmp_path):
+    chain = Chain(n=10, slice_signer=m.b58encode(k(7)))  # every slice tx is signed by someone other than boost_authority
+    rc, out = run_main(tmp_path, chain)
+    rec = json.loads(out.read_text())
+    f = rec["halt"]["flags"]["boost_last_slice_early"]
+    assert rc == 0 and rec["boost"]["n_profiled"] == 8 and rec["boost"]["last_slice_unverified"] == 8 and rec["boost"]["last_slice_after_migrate_s"] is None
+    assert f["halt"] is False and f["evaluated"] is False and "0 of 8" in f["reason"]
+    assert rec["rpc"]["calls"] < 400
 
 
 def test_stage_failure_is_data_not_a_crash(tmp_path):

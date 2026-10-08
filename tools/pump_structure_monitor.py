@@ -704,11 +704,25 @@ def fetch_tx(client: RpcClient, sig: str) -> dict[str, Any] | None:
     return None
 
 
-def sample_graduations(client: RpcClient, n: int, cutoff_bt: int, *, max_pages: int = 3) -> list[dict[str, Any]]:
+ITEM_ERRORS = (RpcError, RpcUnreachable, CallBudgetExceeded)
+MAX_UNREACHABLE_PER_STAGE = 3
+
+
+def _skip(errs: Counter, stage: str, exc: Exception) -> bool:
+    """Count one failed item under `stage`. Returns True when the stage should stop: the call cap was hit (the
+    partial results are kept) or the RPC looks down (3 unreachable items). Anything else: skip the item, carry on."""
+    capped = isinstance(exc, CallBudgetExceeded)
+    errs[f"{stage}: {'call cap' if capped else type(exc).__name__}"] += 1
+    return capped or errs[f"{stage}: RpcUnreachable"] >= MAX_UNREACHABLE_PER_STAGE
+
+
+def sample_graduations(client: RpcClient, n: int, cutoff_bt: int, errs: Counter | None = None, *, max_pages: int = 3) -> list[dict[str, Any]]:
     """The N newest successful migrate txs on the migration fee account with blockTime <= cutoff_bt (fixed rule).
 
-    Each candidate is one getTransaction; txs without a CompletePumpAmmMigrationEvent are skipped.
+    Each candidate is one getTransaction; txs without a CompletePumpAmmMigrationEvent are skipped. A candidate whose
+    fetch fails is skipped and counted in `errs`; a failed page or the call cap returns what was sampled so far.
     """
+    errs = Counter() if errs is None else errs
     grads: list[dict[str, Any]] = []
     seen: set[str] = set()
     before: str | None = None
@@ -716,7 +730,11 @@ def sample_graduations(client: RpcClient, n: int, cutoff_bt: int, *, max_pages: 
         opts: dict[str, Any] = {"limit": 100, "commitment": "finalized"}
         if before:
             opts["before"] = before
-        sigs = client.call("getSignaturesForAddress", [MIGRATION_FEE_ACCOUNT, opts]) or []
+        try:
+            sigs = client.call("getSignaturesForAddress", [MIGRATION_FEE_ACCOUNT, opts]) or []
+        except ITEM_ERRORS as exc:
+            _skip(errs, "graduations", exc)
+            return grads
         if not sigs:
             break
         for s in sigs:
@@ -724,7 +742,12 @@ def sample_graduations(client: RpcClient, n: int, cutoff_bt: int, *, max_pages: 
             bt = s.get("blockTime")
             if s.get("err") is not None or bt is None or bt > cutoff_bt:
                 continue
-            tx = fetch_tx(client, s["signature"])
+            try:
+                tx = fetch_tx(client, s["signature"])
+            except ITEM_ERRORS as exc:
+                if _skip(errs, "graduations", exc):
+                    return grads
+                continue
             if tx is None:
                 continue
             g = parse_migrate_tx(tx)
@@ -749,72 +772,108 @@ def annotate_mayhem(client: RpcClient, grads: list[dict[str, Any]]) -> None:
             g["mayhem"] = decode_pool_mayhem(_account_bytes(entry))
 
 
-def annotate_completion(client: RpcClient, grads: list[dict[str, Any]], *, max_txs: int = 4) -> None:
-    """Find the completing curve tx (newest successful curve tx before the migrate tx with a CompleteEvent)."""
+def _find_completion(client: RpcClient, g: dict[str, Any], max_txs: int) -> None:
+    sigs = client.call("getSignaturesForAddress", [g["curve"], {"limit": 10, "before": g["sig"], "commitment": "finalized"}]) or []
+    tried = 0
+    for s in sigs:
+        if s.get("err") is not None:
+            continue
+        if tried >= max_txs:
+            break
+        tried += 1
+        tx = fetch_tx(client, s["signature"])
+        info = completion_info(tx, g["mint"]) if tx else None
+        if info:
+            g["synthetic"] = info["synthetic"] or g["post_complete_in_tx"]
+            g["synthetic_mint_match"] = info["synthetic_mint_match"] if info["synthetic"] else g["post_complete_mint_match_in_tx"]
+            g["complete_to_migrate_slots"] = g["slot"] - info["slot"]
+            break
+
+
+def annotate_completion(client: RpcClient, grads: list[dict[str, Any]], errs: Counter | None = None, *, max_txs: int = 4) -> None:
+    """Find the completing curve tx (newest successful curve tx before the migrate tx with a CompleteEvent).
+
+    A graduation whose lookup fails keeps synthetic=None (counted as completion-not-found) and is counted in `errs`;
+    the call cap stops the loop and keeps everything annotated so far.
+    """
+    errs = Counter() if errs is None else errs
     for g in grads:
-        g["synthetic"] = None
-        g["synthetic_mint_match"] = None
-        g["complete_to_migrate_slots"] = None
+        g["synthetic"], g["synthetic_mint_match"], g["complete_to_migrate_slots"] = None, None, None
         if g["complete_in_tx"]:  # CompleteEvent rode in the migrate tx itself
             g["synthetic"] = g["post_complete_in_tx"]
             g["synthetic_mint_match"] = g["post_complete_mint_match_in_tx"]
             g["complete_to_migrate_slots"] = 0
+    for g in grads:
+        if g["complete_in_tx"]:
             continue
-        sigs = client.call("getSignaturesForAddress", [g["curve"], {"limit": 10, "before": g["sig"], "commitment": "finalized"}]) or []
-        tried = 0
-        for s in sigs:
-            if s.get("err") is not None:
-                continue
-            if tried >= max_txs:
+        try:
+            _find_completion(client, g, max_txs)
+        except ITEM_ERRORS as exc:
+            if _skip(errs, "completion", exc):
                 break
-            tried += 1
+
+
+def _profile_pool(client: RpcClient, g: dict[str, Any], authority_key: str | None, max_verify_fetches: int) -> None:
+    sigs = client.call("getSignaturesForAddress", [boost_vault_authority(g["pool"]), {"limit": 100, "commitment": "finalized"}]) or []
+    slices = [s for s in sigs if s.get("err") is None and s["signature"] != g["sig"] and s.get("blockTime") is not None]
+    slices.sort(key=lambda s: (s["slot"], s.get("transactionIndex") or 0), reverse=True)  # newest first
+    times = sorted(s["blockTime"] for s in slices)
+    last_t, verified = None, False
+    if not times:
+        verified = True  # no slice at all is not a verification failure: BOOST ended at 0 s, and the median halt rule must see that
+        last_t = g["block_time"]
+    elif authority_key:
+        # Walk back from the newest signature until one is signed by GlobalConfig.boost_authority and runs
+        # BoostBuyAndBurn. Non-keeper txs sit among the signatures (10-08: 0-2 per pool), so the newest one may not count.
+        for s in slices[:max_verify_fetches]:
             tx = fetch_tx(client, s["signature"])
-            info = completion_info(tx, g["mint"]) if tx else None
-            if info:
-                g["synthetic"] = info["synthetic"] or g["post_complete_in_tx"]
-                g["synthetic_mint_match"] = info["synthetic_mint_match"] if info["synthetic"] else g["post_complete_mint_match_in_tx"]
-                g["complete_to_migrate_slots"] = g["slot"] - info["slot"]
+            if tx and authority_key in tx_signers(tx) and "BoostBuyAndBurn" in program_instructions(tx_logs(tx), PUMPSWAP_PROGRAM):
+                last_t, verified = s["blockTime"], True
                 break
+    # Never fall back to an unverified signature: last_after_s stays None and this pool is left out of the last-slice rule.
+    g["boost"] = {
+        "n_slices": len(times),
+        "first_after_s": times[0] - g["block_time"] if times else None,
+        "last_after_s": last_t - g["block_time"] if verified else None,
+        "last_verified": verified,
+        "span_s": (last_t - times[0]) if verified and times else None,
+        "truncated": len(sigs) >= 100,
+    }
 
 
-def profile_boost(client: RpcClient, grads: list[dict[str, Any]], boost_authority_key: str | None, *, max_verify_fetches: int = 3) -> dict[str, Any]:
+def profile_boost(
+    client: RpcClient, grads: list[dict[str, Any]], boost_authority_key: str | None, errs: Counter | None = None, *, max_verify_fetches: int = 8,
+) -> dict[str, Any]:
     """BOOST keeper slices for graduations that carry InitBoost on a WSOL pool.
 
     Slice count and first/span timing come from the vault authority PDA's signature list minus the funding migrate
     tx. That count is an UPPER BOUND: the 10-08 check found 0-2 non-keeper txs per pool in the list (they touch the
-    boost vault too, so its list is no cleaner). The last-slice time is exact: the newest signatures are fetched (at
-    most `max_verify_fetches`) until one is signed by GlobalConfig.boost_authority and runs BoostBuyAndBurn. The SOL
+    boost vault too, so its list is no cleaner). The last-slice time is exact or absent: see _profile_pool. The SOL
     total is derived: lamports funded in the migrate tx minus the vault's lamports now (one getMultipleAccounts).
+    A pool whose reads fail is skipped and counted in `errs`; the call cap keeps the pools profiled so far.
     """
-    pools = [g for g in grads if g["init_boost"] and g["quote_wsol"] and g.get("block_time")]
-    for g in pools:
-        sigs = client.call("getSignaturesForAddress", [boost_vault_authority(g["pool"]), {"limit": 100, "commitment": "finalized"}]) or []
-        slices = [s for s in sigs if s.get("err") is None and s["signature"] != g["sig"] and s.get("blockTime") is not None]
-        slices.sort(key=lambda s: (s["slot"], s.get("transactionIndex") or 0), reverse=True)  # newest first
-        times = sorted(s["blockTime"] for s in slices)
-        last_t, verified = (times[-1] if times else None), False
-        if boost_authority_key:
-            for s in slices[:max_verify_fetches]:
-                tx = fetch_tx(client, s["signature"])
-                if tx and boost_authority_key in tx_signers(tx) and "BoostBuyAndBurn" in program_instructions(tx_logs(tx), PUMPSWAP_PROGRAM):
-                    last_t, verified = s["blockTime"], True
-                    break
-        g["boost"] = {
-            "n_slices": len(times),
-            "first_after_s": times[0] - g["block_time"] if times else None,
-            # Zero slices count as "BOOST ended at 0 s": the median halt rule then fires, which is the right outcome.
-            "last_after_s": last_t - g["block_time"] if last_t is not None else 0,
-            "last_verified": verified,
-            "span_s": (last_t - times[0]) if times and last_t is not None else None,
-            "truncated": len(sigs) >= 100,
-        }
+    errs = Counter() if errs is None else errs
+    candidates = [g for g in grads if g["init_boost"] and g["quote_wsol"] and g.get("block_time")]
+    pools: list[dict[str, Any]] = []
+    for g in candidates:
+        try:
+            _profile_pool(client, g, boost_authority_key, max_verify_fetches)
+        except ITEM_ERRORS as exc:
+            g.pop("boost", None)
+            if _skip(errs, "boost", exc):
+                break
+            continue
+        pools.append(g)
     if pools:  # remaining vault lamports -> total spent
-        res = client.call("getMultipleAccounts", [[boost_vault(g["pool"]) for g in pools], {"encoding": "base64", "dataSlice": {"offset": 0, "length": 0}, "commitment": "finalized"}])
-        for g, entry in zip(pools, (res or {}).get("value") or []):
-            left = int(entry["lamports"]) if entry else 0
-            g["boost"]["vault_left_lamports"] = left
-            if g["budget_lamports"] is not None:
-                g["boost"]["spent_lamports"] = g["budget_lamports"] - left
+        try:
+            res = client.call("getMultipleAccounts", [[boost_vault(g["pool"]) for g in pools], {"encoding": "base64", "dataSlice": {"offset": 0, "length": 0}, "commitment": "finalized"}])
+            for g, entry in zip(pools, (res or {}).get("value") or []):
+                left = int(entry["lamports"]) if entry else 0
+                g["boost"]["vault_left_lamports"] = left
+                if g["budget_lamports"] is not None:
+                    g["boost"]["spent_lamports"] = g["budget_lamports"] - left
+        except ITEM_ERRORS as exc:
+            _skip(errs, "boost.vault_balance", exc)
     lam = 1e9
     return {
         "n_profiled": len(pools),
@@ -823,12 +882,14 @@ def profile_boost(client: RpcClient, grads: list[dict[str, Any]], boost_authorit
         "budget_sol": dist(g["budget_lamports"] / lam for g in pools if g["budget_lamports"] is not None),
         "sol_total": dist(g["boost"]["spent_lamports"] / lam for g in pools if g["boost"].get("spent_lamports") is not None),
         "first_slice_after_migrate_s": dist(g["boost"]["first_after_s"] for g in pools),
-        "last_slice_after_migrate_s": dist(g["boost"]["last_after_s"] for g in pools),
+        "last_slice_after_migrate_s": dist(g["boost"]["last_after_s"] for g in pools),  # keeper-verified pools only (n = how many)
         "first_to_last_span_s": dist(g["boost"]["span_s"] for g in pools),
         "n_zero_slices": sum(1 for g in pools if g["boost"]["n_slices"] == 0),
         "n_truncated_at_100": sum(1 for g in pools if g["boost"]["truncated"]),
         "n_vault_drained": sum(1 for g in pools if g["boost"].get("vault_left_lamports") == 0),
         "last_slice_verified": sum(1 for g in pools if g["boost"]["last_verified"]),
+        "last_slice_unverified": sum(1 for g in pools if not g["boost"]["last_verified"]),
+        "n_pools_skipped": len(candidates) - len(pools),
     }
 
 
@@ -877,14 +938,23 @@ def summarize_graduations(grads: Sequence[Mapping[str, Any]], n_requested: int, 
     }
 
 
-def stage_pumpswap_mix(client: RpcClient, n_txs: int) -> dict[str, Any]:
-    """Instruction names only, over the first `n_txs` successful txs of the newest 100 on the PumpSwap program."""
+def stage_pumpswap_mix(client: RpcClient, n_txs: int, errs: Counter | None = None) -> dict[str, Any]:
+    """Instruction names only, over the first `n_txs` successful txs of the newest 100 on the PumpSwap program.
+
+    A tx that fails to fetch is skipped and counted in `errs`; the call cap keeps the counts gathered so far.
+    """
+    errs = Counter() if errs is None else errs
     sigs = client.call("getSignaturesForAddress", [PUMPSWAP_PROGRAM, {"limit": 100, "commitment": "finalized"}]) or []
     picked = [s for s in sigs if s.get("err") is None][:n_txs]
     names: Counter[str] = Counter()
     times: list[int] = []
     for s in picked:
-        tx = fetch_tx(client, s["signature"])
+        try:
+            tx = fetch_tx(client, s["signature"])
+        except ITEM_ERRORS as exc:
+            if _skip(errs, "pumpswap_trade_mix", exc):
+                break
+            continue
         if not tx:
             continue
         names.update(program_instructions(tx_logs(tx), PUMPSWAP_PROGRAM))
@@ -1005,11 +1075,18 @@ def compute_flags(rec: Mapping[str, Any], pins: Mapping[str, Any], prev_ms_per_s
     n_pools = boost.get("n_profiled", 0)
     last = boost.get("last_slice_after_migrate_s")
 
-    # 4. median BOOST last-slice time < 315 s after the migrate tx
-    if n_pools < MIN_BOOST_POOLS or not last:
-        halt["boost_last_slice_early"] = _flag(False, f"only {n_pools} BOOST pools profiled, need >= {MIN_BOOST_POOLS}", evaluated=False)
+    # 4. median BOOST last-slice time < 315 s after the migrate tx. Only pools whose last slice is keeper-verified
+    # (or that have no slice at all) are in `last`; a pool with an unverified last slice is left out, never guessed.
+    n_last = last["n"] if last else 0
+    if n_last < MIN_BOOST_POOLS:
+        halt["boost_last_slice_early"] = _flag(
+            False, f"only {n_last} of {n_pools} profiled BOOST pools have a keeper-verified last slice ({boost.get('last_slice_unverified', 0)} unverified), need >= {MIN_BOOST_POOLS}", evaluated=False
+        )
     else:
-        halt["boost_last_slice_early"] = _flag(last["median"] < LAST_SLICE_MIN_S, f"median last slice {last['median']} s after migrate over {last['n']} pools (halt below {LAST_SLICE_MIN_S} s)")
+        halt["boost_last_slice_early"] = _flag(
+            last["median"] < LAST_SLICE_MIN_S,
+            f"median last slice {last['median']} s after migrate over {n_last} verified pools of {n_pools} (halt below {LAST_SLICE_MIN_S} s)",
+        )
 
     # 5. BOOST budget or slice count changed > 20% vs pins
     pin_boost = pins.get("boost") or {}
@@ -1098,17 +1175,20 @@ def build_record(
     rec["programs"] = _stage(errors, "programs", lambda: stage_programs(client, acc.get("program_accounts", {}), pins), {})
 
     cutoff_bt = int(now) - settle_s
+    item_errs: Counter[str] = Counter()  # per-item failures (one graduation, one pool, one tx): skipped and counted, never a dropped stage
     grads: list[dict[str, Any]] = []
     if n_grads > 0:
-        grads = _stage(errors, "graduations", lambda: sample_graduations(client, n_grads, cutoff_bt), []) or []
+        grads = _stage(errors, "graduations", lambda: sample_graduations(client, n_grads, cutoff_bt, item_errs), []) or []
     if grads:
         _stage(errors, "graduations.mayhem", lambda: annotate_mayhem(client, grads))
-        _stage(errors, "graduations.completion", lambda: annotate_completion(client, grads))
+        _stage(errors, "graduations.completion", lambda: annotate_completion(client, grads, item_errs))
         authority = (rec.get("global_config") or {}).get("boost_authority")
-        rec["boost"] = _stage(errors, "boost", lambda: profile_boost(client, grads, authority), {})
+        rec["boost"] = _stage(errors, "boost", lambda: profile_boost(client, grads, authority, item_errs), {})
     rec["graduations"] = summarize_graduations(grads, n_grads, cutoff_bt) if n_grads > 0 else {}
-    rec["pumpswap_trade_mix"] = _stage(errors, "pumpswap_trade_mix", lambda: stage_pumpswap_mix(client, v2_sample), None) if v2_sample > 0 else None
+    rec["pumpswap_trade_mix"] = _stage(errors, "pumpswap_trade_mix", lambda: stage_pumpswap_mix(client, v2_sample, item_errs), None) if v2_sample > 0 else None
 
+    errors.extend(f"{k}: {v} item(s) skipped" for k, v in sorted(item_errs.items()))
+    rec["item_errors"] = dict(sorted(item_errs.items()))
     rec["errors"] = errors
     rec["rpc"] = {"calls": client.total_calls, "ok": client.ok_calls, "retries": client.retries, "by_method": dict(client.calls), "cap": client.max_calls}
     rec["pins_check"] = compare_pins(rec, pins)
