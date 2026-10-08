@@ -56,9 +56,12 @@ RENT (--rent-lamports, --rent-mode none|always)
 
 GATE STATISTICS (`books.<scope>.gate.<leg>` in summary.json; flat and press are the binding legs, live and nofail are report-only)
   Per scope (each block, P1, P2-P4, all; and `picks` / `non_picks` when --picks is given) and leg: n attempts, n fills, mean per attempt and per fill (% of
-  the stake and SOL), trade-level CI90 lower bound (attempts; 1,000 bootstrap draws, seed 1, 5th percentile), date-cluster CI90 lower bound (1,000 date
-  resamples, seed 1; a cluster is the UTC date alone), total SOL ex the top 3 attempts, total SOL ex the best date, dates positive / dates, the trade-level
-  one-sided bootstrap p (share of the same 1,000 bootstrap means <= 0), and the date-level one-sided t p (t = mean of date means / (sd / sqrt(W)), W - 1 df).
+  the stake and SOL), trade-level CI90 lower bound (attempts; 1,000 bootstrap draws, seed 1, 5th percentile: the promotion gate), date-cluster CI90 lower bound
+  (1,000 date resamples, seed 1; a cluster is the UTC date alone), total SOL ex the top 3 attempts, total SOL ex the best date, dates positive / dates, the
+  date-level one-sided t p (`p_date_t`; t = mean of date means / (sd / sqrt(W)), W - 1 df), and the trade-level one-sided bootstrap p (`p_trade_boot`).
+  `p_trade_boot` is REPORT-ONLY. It is the share of --boot-p-draws bootstrap means <= 0 (default 10,000, seed 1: DEC-021 section 5), its own draws, not the
+  CI90's 1,000; the first 1,000 are the same resamples. The deciding p is the day-level t (`p_date_t`). --boot-p-draws touches only `p_trade_boot`: `rows.csv`
+  and every other statistic are unchanged by it. summary.json `bootstrap` records the draw counts.
 
 PICKS (--picks, --book all|picks)
   --picks takes the EXP-012 score CSV (header mint,score; a pick is score >= --pick-threshold) or a JSONL of live-gate decisions (one object per mint with
@@ -74,8 +77,12 @@ RESERVE CONVENTIONS (this broke the audit once)
     kept so the reproduction can separate that one difference.
   * Within-slot order: (slot, tx_index, event_index). A row with a null tx_index (oracle-insample-0922) is ordered by file order instead.
 
-Hard limits (asserted; see `check_path_allowed` / `check_hour_allowed`): exploration pools only. Never fresh-0802, fresh-0808, fresh-0828, any forward or
-oracle-live path, the EXP-009 hours [2026-09-15T12, 2026-09-18T23), or any hour at or after 2026-10-02T10. Oracle in-sample hours stop at 2026-09-25T06.
+Hard limits (asserted; see `check_path_allowed` / `check_inputs_allowed` / `check_hour_allowed`): exploration pools only. Never fresh-0802, fresh-0808, fresh-0828,
+any forward or oracle-live path, the EXP-009 hours [2026-09-15T12, 2026-09-18T23), or any hour at or after 2026-10-02T10. Oracle in-sample hours stop at 2026-09-25T06.
+INPUT PATHS (--picks, --hour-sph-json, --sph-json, --vmap, and every tape source dir) are checked first in `run()`, before anything is opened, listed or read. A path
+is refused if it, its normalised form or its symlink-resolved form contains (case-insensitive) fresh-0802, fresh-0808, fresh-0828, forward (so also forward-paper and
+exp012-forward), oracle-live, arm-audit, exp012-gate, positions, heartbeat or runner, or starts with /data/mal/exp012-forward or /var/lib/mal-live. The legitimate
+inputs are the V map (/data/mal/pumpswap-virtual/pool_v_0909.json), the audit's /data/mal/audit-1008/... files and the gate-replay outputs under /data/mal/cap-pick-score/.
 No network, no key, no Helius call. Output: `rows.csv` (one row per attempt) and `summary.json`.
 """
 
@@ -86,6 +93,7 @@ import csv
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -117,6 +125,7 @@ UNCENSORED_HORIZON = 6900  # uncensored: s0 + 6900 <= max slot on the loaded tra
 MAX_S0_GAP = 400  # and s0 - mslot <= 400
 V_LO, V_HI = 17_500_000_000, 17_700_000_000
 TARGET_FAIL_RATE = 0.289
+BOOT_P_DRAWS = 10_000  # DEC-021 section 5: the trade-level bootstrap p (10,000 draws, seed 1). Report-only; the CI90 keeps the gate's 1,000 draws
 PICK_THRESHOLD = 0.8030766588450794  # EXP-012 frozen threshold (G's strata.py)
 DEFAULT_VMAP = "/data/mal/pumpswap-virtual/pool_v_0909.json"
 SLOT_TOL = 1e-9  # ceil(x - SLOT_TOL): a float that is an integer to 1e-9 slot is that integer
@@ -148,7 +157,19 @@ DEFAULT_ROOTS = {
 }
 
 # --- hard limits ---------------------------------------------------------------------------------------------------------------------
-FORBIDDEN_PATH_PARTS = ("fresh-0802", "fresh-0808", "fresh-0828", "forward", "oracle-live")
+# A path is refused when ANY of these appears in it (case-insensitive substring, on the path as given, normalised, and with symlinks resolved).
+FORBIDDEN_PATH_PARTS = (
+    "fresh-0802", "fresh-0808", "fresh-0828",  # sealed blocks
+    "forward", "oracle-live",  # forward walks (includes exp012-forward and forward-paper) and the live oracle tape
+    "forward-paper", "arm-audit", "exp012-gate", "positions", "heartbeat", "runner",  # forward-paper / runner / gate-runner files
+)
+# ... or when it starts with one of these (normalised, and with symlinks resolved).
+FORBIDDEN_PATH_PREFIXES = ("/data/mal/exp012-forward", "/var/lib/mal-live")
+# The input files the scorer reads, as `run()` receives them. The legitimate ones are the V map (/data/mal/pumpswap-virtual/pool_v_0909.json), the audit's
+# /data/mal/audit-1008/... files and the gate-replay outputs under /data/mal/cap-pick-score/.
+INPUT_FILE_ARGS = ("picks", "hour_sph_json", "sph_json", "vmap")
+INPUT_DIR_ARGS = ("p1_fast_dir", "p1_oracle_insample_dir", "p3_root")
+INPUT_DIR_LIST_ARGS = ("p2_view_dir", "p4_view_dir")
 EXP009_HOURS = ("2026-09-15T12", "2026-09-18T23")  # [lo, hi)
 CUTOFF_HOUR = "2026-10-02T10"  # nothing at or after this
 ORACLE_INSAMPLE_LAST_HOUR = "2026-09-25T06"  # later oracle hours belong to the live-tape row
@@ -158,11 +179,37 @@ class Refused(Exception):
     """The tool will not run: a forbidden path, hour or argument."""
 
 
+def _path_forms(path: str | Path) -> list[str]:
+    """The path as given, normalised, and with symlinks resolved (lower case). Only `lstat` / `readlink` run here: nothing is opened or read.
+    A relative path that resolves under the working directory is tested relative to it, so the name of the caller's own checkout cannot refuse it."""
+    s = os.fspath(path)
+    real = os.path.realpath(s)
+    cwd = os.path.realpath(os.getcwd())
+    if not os.path.isabs(s) and (real == cwd or real.startswith(cwd + os.sep)):
+        real = os.path.relpath(real, cwd)
+    return [f.lower() for f in (s, os.path.normpath(s), real)]
+
+
 def check_path_allowed(path: str | Path) -> None:
-    s = str(path)
+    s = os.fspath(path)
+    forms = _path_forms(s)
     for part in FORBIDDEN_PATH_PARTS:
-        if part in s:
+        if any(part in f for f in forms):
             raise Refused(f"forbidden path ({part}): {s}")
+    for prefix in FORBIDDEN_PATH_PREFIXES:
+        if any(f.startswith(prefix) for f in forms):
+            raise Refused(f"forbidden path (under {prefix}): {s}")
+
+
+def check_inputs_allowed(args: argparse.Namespace) -> None:
+    """Every input path of a run, checked BEFORE anything is opened: the pick set, the two slots-per-hour overrides, the V map and the tape source dirs."""
+    for name in INPUT_FILE_ARGS + INPUT_DIR_ARGS:
+        v = getattr(args, name, None)
+        if v:
+            check_path_allowed(v)
+    for name in INPUT_DIR_LIST_ARGS:
+        for v in getattr(args, name, None) or []:
+            check_path_allowed(v)
 
 
 def check_hour_allowed(hour: str) -> None:
@@ -205,6 +252,7 @@ class Config:
     v_hi: int = V_HI
     window_slots: int = WINDOW_SLOTS
     pick_threshold: float = PICK_THRESHOLD
+    boot_p_draws: int = BOOT_P_DRAWS  # report-only p_trade_boot; the CI90 draws stay at BOOT_DRAWS (the gate)
 
     def validate(self) -> None:
         if self.bound not in ("END", "START"):
@@ -224,6 +272,8 @@ class Config:
             raise Refused("exit-lag-ms must be non-negative")
         if self.rent_lamports < 0:
             raise Refused("rent-lamports must be non-negative")
+        if isinstance(self.boot_p_draws, bool) or not isinstance(self.boot_p_draws, int) or self.boot_p_draws < 1:
+            raise Refused(f"boot-p-draws must be a positive integer, got {self.boot_p_draws!r}")
         if (self.rent_mode == "always") != (self.rent_lamports > 0):  # a rent amount without the mode (or the mode without an amount) would silently charge nothing
             raise Refused("--rent-mode always needs --rent-lamports > 0, and --rent-lamports > 0 needs --rent-mode always (default: none, 0)")
 
@@ -527,9 +577,25 @@ def t_sf(t: float, df: float) -> float:
     return p if t >= 0 else 1.0 - p
 
 
-def gate_stats(pnl_lamports: Sequence[float], fills: Sequence[bool], dates: Sequence[str], size: float) -> dict[str, Any]:
+def boot_means(x: np.ndarray, draws: int, seed: int = BOOT_SEED, chunk_cells: int = 4_000_000) -> np.ndarray:
+    """Means of `draws` bootstrap resamples of `x` (n draws of n, with replacement), seed `seed`. The draws come in chunks so that 10,000 x 24,000 attempts is not
+    one 2 GB index array; the generator is read in the same order, so the result equals one `rng.integers(0, n, size=(draws, n))` call, and the first 1,000 draws
+    are the gate's 1,000 draws."""
+    n = len(x)
+    rng = np.random.default_rng(seed)
+    out = np.empty(draws)
+    step = max(1, chunk_cells // n)
+    for lo in range(0, draws, step):
+        hi = min(draws, lo + step)
+        out[lo:hi] = x[rng.integers(0, n, size=(hi - lo, n))].mean(1)
+    return out
+
+
+def gate_stats(pnl_lamports: Sequence[float], fills: Sequence[bool], dates: Sequence[str], size: float, p_draws: int = BOOT_P_DRAWS) -> dict[str, Any]:
     """The promotion-gate statistics of one leg on one scope (judge items 8 and 3). `pnl_lamports` is one entry per ATTEMPT (guard rejects and failed sends at
-    -fee); `fills` marks the filled ones. A cluster is the UTC date alone."""
+    -fee); `fills` marks the filled ones. A cluster is the UTC date alone.
+    The CI90 lower bounds are the gate's: 1,000 draws, seed 1, 5th percentile. `p_trade_boot` is REPORT-ONLY: the share of `p_draws` (default 10,000, seed 1;
+    DEC-021 section 5) bootstrap means <= 0. The deciding p is the day-level t (`p_date_t`)."""
     x = np.asarray(pnl_lamports, float) / 1e9
     fl = np.asarray(fills, bool)
     n = len(x)
@@ -539,6 +605,7 @@ def gate_stats(pnl_lamports: Sequence[float], fills: Sequence[bool], dates: Sequ
     rng = np.random.default_rng(BOOT_SEED)
     boot = x[rng.integers(0, n, size=(BOOT_DRAWS, n))].mean(1)
     lo_t = float(np.percentile(boot, 5))
+    p_boot = boot if p_draws == BOOT_DRAWS else boot_means(x, p_draws)  # the first BOOT_DRAWS of p_boot are `boot`
     ud, inv = np.unique(np.asarray(dates), return_inverse=True)
     dsum = np.bincount(inv, weights=x)
     dn = np.bincount(inv)
@@ -567,7 +634,7 @@ def gate_stats(pnl_lamports: Sequence[float], fills: Sequence[bool], dates: Sequ
         "ci_date_lo_pct": 100 * lo_d / sz, "ci_date_lo_sol": lo_d,
         "total_sol": float(x.sum()), "ex_top3_sol": float(x.sum() - np.sort(x)[-3:].sum()), "ex_best_day_sol": float(x.sum() - dsum.max()),
         "dates": w, "dates_pos": int((dsum > 0).sum()),
-        "p_trade_boot": float((boot <= 0).mean()), "t_date": t_day, "p_date_t": p_day,
+        "p_trade_boot": float((p_boot <= 0).mean()), "p_trade_boot_draws": int(p_draws), "t_date": t_day, "p_date_t": p_day,
     }
 
 
@@ -595,7 +662,7 @@ def stats(x_lamports: Sequence[float], days: Sequence[str], size: float) -> dict
     }
 
 
-def book_stats(rows: Sequence[Mapping[str, Any]], size: float) -> dict[str, Any]:
+def book_stats(rows: Sequence[Mapping[str, Any]], size: float, p_draws: int = BOOT_P_DRAWS) -> dict[str, Any]:
     out: dict[str, Any] = {}
     scopes: list[tuple[str, tuple[str, ...] | None]] = [(b, (b,)) for b in (BLOCK_P2, BLOCK_P3, BLOCK_P4, BLOCK_P1A, BLOCK_P1C)]
     scopes += [(g, blocks) for g, blocks in GROUPS.items()] + [("all", None)]
@@ -608,7 +675,7 @@ def book_stats(rows: Sequence[Mapping[str, Any]], size: float) -> dict[str, Any]
         cell: dict[str, Any] = {"fills": sum(fills), "guarded": sum(1 for r in sel if r["status"] == "guarded")}
         for leg in LEGS:
             cell[leg] = stats([r["pnl_" + leg] for r in sel], days, size)
-        cell["gate"] = {leg: {"role": GATE_ROLE[leg], **gate_stats([r["pnl_" + leg] for r in sel], fills, [r["day"] for r in sel], size)} for leg in LEGS}
+        cell["gate"] = {leg: {"role": GATE_ROLE[leg], **gate_stats([r["pnl_" + leg] for r in sel], fills, [r["day"] for r in sel], size, p_draws)} for leg in LEGS}
         out[name] = cell
     return out
 
@@ -924,6 +991,7 @@ def load_picks(path: str | Path) -> PickSet:
 
 
 def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
+    check_inputs_allowed(args)  # first: a refused input path is never opened, listed or read
     cfg.validate()
     sources = build_sources(args)
     idx = index_hours(sources)
@@ -1001,7 +1069,8 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
         "vmap": {"path": str(args.vmap), "sha256": hashlib.sha256(Path(args.vmap).read_bytes()).hexdigest(), "pools_in_band": len(vband)},
         "picks": None if picks is None else {"path": str(args.picks), "sha256": hashlib.sha256(Path(args.picks).read_bytes()).hexdigest(), "format": picks.kind,
                                              "scored": len(picks), "threshold": cfg.pick_threshold if picks.kind == "csv" else None},
-        "forbidden": {"path_parts": list(FORBIDDEN_PATH_PARTS), "exp009_hours": list(EXP009_HOURS), "cutoff_hour": CUTOFF_HOUR, "oracle_insample_last_hour": ORACLE_INSAMPLE_LAST_HOUR},
+        "bootstrap": {"ci90_draws": BOOT_DRAWS, "ci90_seed": BOOT_SEED, "p_trade_boot_draws": cfg.boot_p_draws, "p_trade_boot_seed": BOOT_SEED, "p_trade_boot_role": "report-only"},
+        "forbidden": {"path_parts": list(FORBIDDEN_PATH_PARTS), "path_prefixes": list(FORBIDDEN_PATH_PREFIXES), "exp009_hours": list(EXP009_HOURS), "cutoff_hour": CUTOFF_HOUR, "oracle_insample_last_hour": ORACLE_INSAMPLE_LAST_HOUR},
         "counts": {**tot, "attempts": len(rows), "fills": sum(1 for r in rows if r["status"] == "filled"), "guarded": sum(1 for r in rows if r["status"] == "guarded"),
                    "attempts_before_book_filter": n_before, "pick_attempts": n_picks, "non_pick_attempts": n_non, "unscored_attempts": n_unscored},
         "hour_sph": {h: {**v_, "ms_per_slot": 3.6e6 / v_["slots_per_hour"]} for h, v_ in sorted(hour_sph.items())},
@@ -1010,11 +1079,11 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
         "books": {},
     }
     if cfg.book == "all":
-        summary["books"]["all"] = book_stats(rows, size)
+        summary["books"]["all"] = book_stats(rows, size, cfg.boot_p_draws)
     if picks is not None:
-        summary["books"]["picks"] = book_stats([r for r in rows if r["pick"] == "pick"], size)
+        summary["books"]["picks"] = book_stats([r for r in rows if r["pick"] == "pick"], size, cfg.boot_p_draws)
         if cfg.book == "all":
-            summary["books"]["non_picks"] = book_stats([r for r in rows if r["pick"] == "non_pick"], size)
+            summary["books"]["non_picks"] = book_stats([r for r in rows if r["pick"] == "non_pick"], size, cfg.boot_p_draws)
     summary["_rows"] = rows
     return summary
 
@@ -1078,6 +1147,7 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--rent-mode", choices=("none", "always"), default=d.rent_mode, help="none = G; always = charge the rent on every filled trip (stress leg)")
     ap.add_argument("--live-fail", type=float, default=d.live_fail)
     ap.add_argument("--flat-fail", type=float, default=d.flat_fail)
+    ap.add_argument("--boot-p-draws", type=int, default=d.boot_p_draws, help="bootstrap draws (seed 1) for the REPORT-ONLY trade-level p_trade_boot (DEC-021 section 5: 10,000); the CI90 lower bounds keep the gate's 1,000 draws")
     ap.add_argument("--final-state", choices=("lab", "g"), default=d.final_state, help="state after the last print: lab = pumpswap_post_trade_reserves; g = the audit's 1.25%% constant")
     return ap
 
@@ -1093,7 +1163,7 @@ def config_from_args(a: argparse.Namespace) -> Config:
         k_seconds=k_seconds, bound=a.bound, exit_lag=d.exit_lag if a.exit_lag is None else a.exit_lag, guard=a.guard, guard_ratio=a.guard_ratio, cap_seconds=a.cap_seconds,
         tp=a.tp, sl=a.sl, size_lamports=a.size_lamports, fee_lamports=a.fee_lamports, live_fail=a.live_fail, flat_fail=a.flat_fail, final_state=a.final_state,
         pick_threshold=a.pick_threshold, k_mode=a.k_mode, k_rounding=a.k_rounding, exit_lag_ms=a.exit_lag_ms, guard_basis=a.guard_basis, cap_anchor=a.cap_anchor,
-        rent_lamports=a.rent_lamports, rent_mode=a.rent_mode, book=a.book,
+        rent_lamports=a.rent_lamports, rent_mode=a.rent_mode, book=a.book, boot_p_draws=a.boot_p_draws,
     )
 
 

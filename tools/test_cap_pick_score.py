@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import builtins
+import contextlib
 import csv
 import dataclasses
+import io
 import json
 import math
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -761,10 +765,13 @@ def test_t_sf_matches_scipy_reference_values():
     assert cps.t_sf(float("inf"), 5) == 0.0 and cps.t_sf(float("-inf"), 5) == 1.0
 
 
-def _boot_lo_and_p(x):
+def _boot_lo_and_p(x, p_draws=10_000):
+    """Independent reference, one `integers` call per statistic: the CI90 lower bound on 1,000 draws (the gate) and p on `p_draws` draws (DEC-021 section 5), seed 1."""
     rng = np.random.default_rng(1)
     boot = x[rng.integers(0, len(x), size=(1000, len(x)))].mean(1)
-    return float(np.percentile(boot, 5)), float((boot <= 0).mean())
+    rng_p = np.random.default_rng(1)
+    boot_p = x[rng_p.integers(0, len(x), size=(p_draws, len(x)))].mean(1)
+    return float(np.percentile(boot, 5)), float((boot_p <= 0).mean())
 
 
 def test_gate_stats_hand_case():
@@ -779,8 +786,8 @@ def test_gate_stats_hand_case():
     assert g["ex_best_day_sol"] == pytest.approx(0.2 - 0.4)
     # day means 0.05, 0.2, -0.15: t = 0.3287979746107146 on 2 df, one-sided p from scipy
     assert g["t_date"] == pytest.approx(0.3287979746107146, rel=1e-12) and g["p_date_t"] == pytest.approx(0.3867722965855404, rel=1e-9)
-    lo, p = _boot_lo_and_p(sol)  # 1,000 draws, seed 1, 5th percentile; p = share of bootstrap means <= 0
-    assert g["ci_trade_lo_sol"] == pytest.approx(lo, rel=1e-12) and g["p_trade_boot"] == p
+    lo, p = _boot_lo_and_p(sol)  # CI: 1,000 draws, seed 1, 5th percentile; p: share of 10,000 bootstrap means <= 0 (report-only)
+    assert g["ci_trade_lo_sol"] == pytest.approx(lo, rel=1e-12) and g["p_trade_boot"] == p and g["p_trade_boot_draws"] == 10_000
     assert g["ci_trade_lo_pct"] == pytest.approx(100 * lo / 0.5)
     # date cluster: resample the 3 dates (seed 1), pooled mean of the resampled dates
     dsum, dn = np.array([0.1, 0.4, -0.3]), np.array([2, 2, 2])
@@ -1114,3 +1121,246 @@ def test_config_from_args_maps_every_flag():
     assert c.exit_lag_ms is None
     d = cps.config_from_args(cps._parser().parse_args(["--out-dir", "o"]))
     assert d == cps.Config()
+
+
+# =====================================================================================================================================
+# Input path guard (PR #461 follow-up): --picks, --hour-sph-json, --sph-json, --vmap and the source dirs are checked before anything is opened.
+# =====================================================================================================================================
+
+LEGIT_INPUTS = (
+    "/data/mal/pumpswap-virtual/pool_v_0909.json",  # the V map
+    "/data/mal/audit-1008/work/capv/judge/p_primary_picks.jsonl",  # the audit's files
+    "/data/mal/audit-1008/reports/capv_JUDGE.md",
+    "/data/mal/cap-pick-score/gate-replay/replay_explore-0814.jsonl",  # gate-replay outputs
+    "/data/mal/cap-pick-score/phase1-repro/rows.csv",
+)
+# one refused path per class (the class is the key)
+REFUSED_INPUTS = {
+    "sealed block fresh-0802": "/data/mal/clean-view/fresh-0802/scores.csv",
+    "sealed block fresh-0808": "/data/mal/blocks-clean/fresh-0808/scores.csv",
+    "sealed block fresh-0828": "/x/fresh-0828/scores.csv",
+    "forward walk dir": "/data/mal/exp012-forward/decisions.jsonl",
+    "forward walk dir, sibling": "/data/mal/exp012-forward-1016/decisions.jsonl",
+    "forward walk block": "/data/mal/blocks/forward-1002/hours.json",
+    "forward-paper name": "/data/mal/cap-pick-score/gate-replay/forward-paper-picks.jsonl",
+    "oracle live": "/data/mal/clean-view/oracle-live-2026-09-25_27/scores.csv",
+    "arm-audit name": "/data/mal/audit-1008/arm-audit.jsonl",
+    "exp012-gate name": "/data/mal/cap-pick-score/exp012-gate-decisions.jsonl",
+    "positions name": "/data/mal/cap-pick-score/positions.jsonl",
+    "heartbeat name": "/data/mal/cap-pick-score/heartbeat.jsonl",
+    "runner name": "/data/mal/cap-pick-score/runner-decisions.jsonl",
+    "runner dir": "/var/lib/mal/exp012-runner/decisions.jsonl",
+    "mal-live": "/var/lib/mal-live/state.json",
+    "mal-live, nested": "/var/lib/mal-live/x/y.json",
+    "upper case": "/data/mal/cap-pick-score/Forward-Paper-Picks.JSONL",
+    "dot-dot into a forward dir": "/data/mal/cap-pick-score/../exp012-forward/decisions.jsonl",
+}
+
+
+def test_the_legitimate_inputs_are_allowed():
+    roots = [v for v in cps.DEFAULT_ROOTS.values() if isinstance(v, str)] + cps.DEFAULT_ROOTS["p2_view_dir"] + cps.DEFAULT_ROOTS["p4_view_dir"]
+    for p in (*LEGIT_INPUTS, cps.DEFAULT_VMAP, *roots):
+        cps.check_path_allowed(p)
+    cps.check_path_allowed(Path("/data/mal/pumpswap-virtual/pool_v_0909.json"))
+
+
+@pytest.mark.parametrize("why", sorted(REFUSED_INPUTS))
+def test_each_refusal_class_is_refused(why):
+    with pytest.raises(cps.Refused):
+        cps.check_path_allowed(REFUSED_INPUTS[why])
+
+
+def test_the_refusal_list_only_grew():
+    assert {"fresh-0802", "fresh-0808", "fresh-0828", "forward", "oracle-live"} <= set(cps.FORBIDDEN_PATH_PARTS)  # phase 1's list is still there
+    assert {"forward-paper", "arm-audit", "exp012-gate", "positions", "heartbeat", "runner"} <= set(cps.FORBIDDEN_PATH_PARTS)
+    assert set(cps.FORBIDDEN_PATH_PREFIXES) == {"/data/mal/exp012-forward", "/var/lib/mal-live"}
+    assert set(cps.INPUT_FILE_ARGS) == {"picks", "hour_sph_json", "sph_json", "vmap"}
+
+
+def test_a_symlink_cannot_hide_a_refused_target(tmp_path):
+    hidden = tmp_path / "arm-audit"
+    hidden.mkdir()
+    (hidden / "scores.csv").write_text("mint,score\n")
+    link = tmp_path / "innocent.csv"
+    link.symlink_to(hidden / "scores.csv")
+    assert "arm-audit" not in str(link)  # the given name is clean; only the target is not
+    with pytest.raises(cps.Refused):
+        cps.check_path_allowed(link)
+    dirlink = tmp_path / "view"
+    dirlink.symlink_to(hidden, target_is_directory=True)
+    with pytest.raises(cps.Refused):
+        cps.check_path_allowed(dirlink)
+    ok = tmp_path / "scores.csv"
+    ok.write_text("mint,score\n")
+    cps.check_path_allowed(ok)
+
+
+def test_a_relative_path_is_judged_by_its_own_name_not_the_checkout_dir(tmp_path, monkeypatch):
+    cwd = tmp_path / "runner-checkout"  # a working directory whose own name would be refused
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    cps.check_path_allowed("scores.csv")
+    cps.check_path_allowed("data/picks.jsonl")
+    with pytest.raises(cps.Refused):
+        cps.check_path_allowed("data/positions.jsonl")
+    with pytest.raises(cps.Refused):
+        cps.check_path_allowed("../heartbeat.jsonl")
+
+
+@contextlib.contextmanager
+def no_file_access(monkeypatch):
+    """Every way the scorer could open, list or read a file raises; `calls` records which was tried. Undone on exit (before pytest's own tmp cleanup)."""
+    calls: list[str] = []
+
+    def deny(name):
+        def f(*a, **k):
+            calls.append(name)
+            raise AssertionError(f"{name} called with {a[:1]}")
+        return f
+
+    with monkeypatch.context() as m:
+        m.setattr(builtins, "open", deny("builtins.open"))
+        m.setattr(io, "open", deny("io.open"))
+        m.setattr(os, "open", deny("os.open"))
+        m.setattr(os, "scandir", deny("os.scandir"))
+        m.setattr(os, "listdir", deny("os.listdir"))
+        m.setattr(subprocess, "Popen", deny("subprocess.Popen"))
+        for n in ("open", "read_text", "read_bytes", "iterdir", "glob"):
+            m.setattr(Path, n, deny(f"Path.{n}"))
+        yield calls
+
+
+def _guard_args(tmp_path, **kw):
+    """Valid inputs that WOULD be opened (a view dir with a trades/ dir, a V map), so a late check would show up as a call."""
+    view = tmp_path / "view"
+    (view / "trades").mkdir(parents=True)
+    vpath = tmp_path / "v.json"
+    vpath.write_text(json.dumps({"v": {}}))
+    return fix_args(view, vpath, **kw)
+
+
+def test_the_detector_sees_a_real_open(tmp_path, monkeypatch):  # positive control for the next tests
+    args = _guard_args(tmp_path)
+    with no_file_access(monkeypatch) as calls:
+        with pytest.raises(AssertionError):
+            cps.run(args, cps.Config(), lambda m: None)
+    assert calls  # without a refusal the run does try to open something
+
+
+@pytest.mark.parametrize("flag", cps.INPUT_FILE_ARGS)
+@pytest.mark.parametrize("why", ["sealed block fresh-0828", "forward walk dir", "forward-paper name", "arm-audit name", "exp012-gate name", "positions name",
+                                 "heartbeat name", "runner name", "mal-live"])
+def test_a_refused_input_is_refused_before_anything_is_opened(tmp_path, monkeypatch, flag, why):
+    args = _guard_args(tmp_path, **{flag: REFUSED_INPUTS[why]})
+    with no_file_access(monkeypatch) as calls:
+        with pytest.raises(cps.Refused):
+            cps.run(args, cps.Config(), lambda m: None)
+    assert calls == []
+
+
+@pytest.mark.parametrize("flag,val", [("p1_fast_dir", "/data/mal/blocks/forward-1002"), ("p3_root", "/x/fresh-0808"), ("p1_oracle_insample_dir", "/var/lib/mal-live/tape"),
+                                      ("p2_view_dir", ["/ok/view", "/data/mal/exp012-forward/tape"]), ("p4_view_dir", ["/x/runner-view"])])
+def test_a_refused_source_dir_is_refused_before_anything_is_opened(tmp_path, monkeypatch, flag, val):
+    args = _guard_args(tmp_path, **{flag: val})
+    with no_file_access(monkeypatch) as calls:
+        with pytest.raises(cps.Refused):
+            cps.run(args, cps.Config(), lambda m: None)
+    assert calls == []
+
+
+def test_main_exits_2_on_a_refused_input_and_writes_nothing(tmp_path, capsys):
+    view = tmp_path / "view"
+    (view / "trades").mkdir(parents=True)
+    out = tmp_path / "out"
+    assert cps.main(["--p2-view-dir", str(view), "--picks", REFUSED_INPUTS["forward-paper name"], "--out-dir", str(out)]) == 2
+    assert "REFUSED" in capsys.readouterr().err and not out.exists()
+
+
+# =====================================================================================================================================
+# Bootstrap p draws (DEC-021 section 5): 10,000 draws, seed 1, report-only. The CI90 keeps the gate's 1,000 draws.
+# =====================================================================================================================================
+
+
+class _RngSpy:
+    """np.random.default_rng, logging (seed, size) of every `integers` call."""
+
+    def __init__(self, log, real, seed):
+        self.log, self.seed, self.g = log, seed, real(seed)
+
+    def integers(self, lo, hi, size=None, **kw):
+        self.log.append((self.seed, tuple(size)))
+        return self.g.integers(lo, hi, size=size, **kw)
+
+
+def test_boot_p_draws_default_is_10000_seed_1_and_the_ci_stays_at_1000(monkeypatch):
+    assert cps.Config().boot_p_draws == cps.BOOT_P_DRAWS == 10_000 and (cps.BOOT_DRAWS, cps.BOOT_SEED) == (1000, 1)
+    assert cps._parser().parse_args(["--out-dir", "o"]).boot_p_draws == 10_000
+    sol = np.array([0.2, -0.1, 0.3, 0.1, -0.2, -0.1, 0.05, -0.05])
+    dates = ["d1", "d1", "d2", "d2", "d3", "d3", "d4", "d4"]
+    log, real = [], np.random.default_rng
+    with monkeypatch.context() as m:
+        m.setattr(np.random, "default_rng", lambda seed=None: _RngSpy(log, real, seed))
+        g = cps.gate_stats(sol * 1e9, [True] * 8, dates, 5e8)
+    assert {seed for seed, _ in log} == {1}  # every stream is seeded 1
+    n, w = len(sol), 4
+    assert sum(size[0] for _, size in log if size[1] == n) == 1000 + 10_000  # the CI90's 1,000 resamples of n, plus the p's 10,000
+    assert sum(size[0] for _, size in log if size[1] == w) == 1000  # the date-cluster CI90: 1,000 resamples of the 4 dates
+    assert g["p_trade_boot_draws"] == 10_000
+    lo, p = _boot_lo_and_p(sol)
+    assert g["p_trade_boot"] == p and g["ci_trade_lo_sol"] == pytest.approx(lo, rel=1e-12)
+
+
+def test_boot_p_draws_changes_only_p_trade_boot():
+    sol = np.array([0.2, -0.1, 0.3, 0.1, -0.2, -0.1, 0.05, -0.05]) * 1e9
+    dates = ["d1", "d1", "d2", "d2", "d3", "d3", "d4", "d4"]
+    skip = ("p_trade_boot", "p_trade_boot_draws")
+    base = cps.gate_stats(sol, [True] * 8, dates, 5e8, p_draws=cps.BOOT_DRAWS)
+    for draws in (200, 2500, 10_000):
+        g = cps.gate_stats(sol, [True] * 8, dates, 5e8, p_draws=draws)
+        assert g["p_trade_boot_draws"] == draws
+        assert {k: v for k, v in g.items() if k not in skip} == {k: v for k, v in base.items() if k not in skip}
+    x = sol / 1e9
+    ref = np.random.default_rng(1).integers(0, len(x), size=(2500, len(x)))
+    assert cps.gate_stats(sol, [True] * 8, dates, 5e8, p_draws=2500)["p_trade_boot"] == float((x[ref].mean(1) <= 0).mean())
+
+
+def test_boot_means_chunks_read_the_generator_in_one_pass_order():
+    x = np.random.default_rng(7).normal(size=37)
+    one = x[np.random.default_rng(1).integers(0, 37, size=(1234, 37))].mean(1)
+    for chunk_cells in (1, 36, 37, 38, 500, 10**9):  # odd and tiny chunk sizes: PCG64 keeps a half-used 64-bit word across calls
+        assert np.array_equal(cps.boot_means(x, 1234, chunk_cells=chunk_cells), one)
+    assert np.array_equal(cps.boot_means(x, 10_000)[:1000], cps.boot_means(x, 1000))  # the first 1,000 of the p's draws are the CI's draws
+
+
+def test_boot_p_draws_must_be_a_positive_integer():
+    for bad in (0, -1, 2.5, True, None):
+        with pytest.raises(cps.Refused):
+            cps.Config(boot_p_draws=bad).validate()
+    cps.Config(boot_p_draws=1).validate()
+
+
+@needs_zstd
+def test_boot_p_draws_flows_through_the_cli_and_leaves_rows_csv_unchanged(tmp_path):
+    view, vpath = write_fixture(tmp_path)
+    base = ["--p2-view-dir", str(view), "--vmap", str(vpath)]
+    outs = {}
+    for name, extra in (("default", []), ("p1000", ["--boot-p-draws", "1000"]), ("p3000", ["--boot-p-draws", "3000"])):
+        out = tmp_path / name
+        assert cps.main(base + ["--out-dir", str(out)] + extra) == 0
+        outs[name] = (out / "rows.csv").read_bytes(), json.loads((out / "summary.json").read_text())
+    assert outs["default"][0] == outs["p1000"][0] == outs["p3000"][0]  # rows.csv: byte for byte
+    sd, s1, s3 = (outs[k][1] for k in ("default", "p1000", "p3000"))
+    assert (sd["config"]["boot_p_draws"], s1["config"]["boot_p_draws"], s3["config"]["boot_p_draws"]) == (10_000, 1000, 3000)
+    assert sd["bootstrap"] == {"ci90_draws": 1000, "ci90_seed": 1, "p_trade_boot_draws": 10_000, "p_trade_boot_seed": 1, "p_trade_boot_role": "report-only"}
+    assert s3["bootstrap"]["p_trade_boot_draws"] == 3000 and s3["bootstrap"]["ci90_draws"] == 1000
+    skip = ("p_trade_boot", "p_trade_boot_draws")
+
+    def cells(s):
+        return [(scope, leg, c) for scope, cell in s["books"]["all"].items() for leg, c in cell["gate"].items()]
+
+    assert cells(sd) and {c["p_trade_boot_draws"] for _, _, c in cells(sd) if "p_trade_boot_draws" in c} == {10_000}
+    assert {c["p_trade_boot_draws"] for _, _, c in cells(s3) if "p_trade_boot_draws" in c} == {3000}
+    for (sc, lg, a), (_, _, b) in zip(cells(sd), cells(s3)):  # every gate statistic except the p and its draw count is the same
+        assert {k: v for k, v in a.items() if k not in skip} == {k: v for k, v in b.items() if k not in skip}, (sc, lg)
+    assert sd["books"]["all"]["all"]["live"] == s3["books"]["all"]["all"]["live"]  # the older per-leg stats too
+    assert cps.main(base + ["--out-dir", str(tmp_path / "bad"), "--boot-p-draws", "0"]) == 2
