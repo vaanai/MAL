@@ -49,6 +49,7 @@ from observe.trade_decode import records_from_logs
 from tools.migration_stream_probe import (
     DATA_TIMEOUT_S,
     HELIUS_WSS,
+    MAX_SUPPORTED_TX_VERSION,
     MIGRATION_ACCOUNT,
     PUMP_PROGRAM,
     hour_of_ms,
@@ -233,7 +234,7 @@ def subscribe_request(accounts: Sequence[str], req_id: int, encoding: str = "jso
         "params": [
             {"accountInclude": list(accounts), "failed": False, "vote": False},
             {"commitment": "processed", "encoding": encoding, "transactionDetails": "full",
-             "maxSupportedTransactionVersion": 0, "showRewards": False},
+             "maxSupportedTransactionVersion": MAX_SUPPORTED_TX_VERSION, "showRewards": False},
         ],
     }
 
