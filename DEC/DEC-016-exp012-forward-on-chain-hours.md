@@ -349,6 +349,6 @@ Outcome-blind, written before 2026-10-16T00Z. No forward outcome was read to mak
 
 **Tool PR:** `claude/slot-span-200ms`, merged as #454, merge commit `2bd45f1981551693463f370c87438bc4e0874ff8` (2026-10-08). The forward walk was resubmitted on that commit as MiScusi job #382.
 
-**(g) D tool: not planned (manager, 2026-10-08).** No tool computes the conservative variant, and the manager does not plan one before 2026-10-16T00Z. The 2026-10-08 profitability audit retired the EXP-012 book, and the FINAL is already reported compromised. Under the pinned rule, live support needs the conservative variant to pass, so without it the 10-16 read gives no live support through Amendment 3. The read still runs as written.
+**(g) D tool: not planned (manager, 2026-10-08).** No merged tool computes the conservative variant, and the manager does not plan one. If no variant tool is merged and its commit recorded here before 2026-10-16T00:00Z, the variant is not computed and Amendment 3 (a) gives no live support for this window. This only removes support. The read still runs as written, and it will be reported as compromised under Amendment 2.
 
 The 10-16 FINAL remains reported compromised under Amendment 2, and this amendment does not change that.
