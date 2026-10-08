@@ -84,7 +84,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 | --- | --- | --- |
 | #382 | Forward walk 1 (forward-1002) | **Extend or resubmit before ~10-15T11Z** (cron a676221a). Never open its outputs before the FINAL. |
 | #391 | T2 B90 full run (#471), 5 configs | Report-only. Read the picks P2–P4 scopes against the §7 kill rule in `ARTIFACTS/lab/cap-pick-t2-boost-exit-predeclare-2026-10-08.md` |
-| #394 | OpenRouter arm of the LLM trader: Nemotron-3-Ultra free (anonymized and named) plus DeepSeek paid | Expect no change to the LLM verdict. The score is in `/data/mal/hunt-1008/llm-trader/openrouter/out_conf/` |
+| #394 | OpenRouter arm of the LLM trader | **Done, dead** (notebook n_o6OGSKeiRBB5Rg). Nemotron free −6.64% flat (n 90). DeepSeek paid −6.28% flat (n 40). Both FAIL. The named arm produced no file. Spend $0.08. The LLM-trader line is closed. |
 
 ## EXP-022 (CAP-PICK) path to 10-16T01Z
 
