@@ -2,16 +2,16 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Plan and pre-registered trigger. Nothing has been read and no edge is claimed.** The tripwire is a monitor rule. The paper check below does not exist as code and runs only if the tripwire fires. |
+| **Status** | **Plan and pre-registered trigger. Nothing has been read and no edge is claimed.** The tripwire is a monitor rule. The paper-net scorer below does not exist as code; it is built, and runs on the streak days, only while the WARN is up. |
 | **Date** | 2026-10-08 |
 | **Approval** | Owner-approved 2026-10-08 as task T1 of the edge scan. |
-| **Source** | Judge report `/data/mal/audit-1008/work/edge-scan-1008/REPORT.md`, section T1 and candidates 4 and 5 (merged into T1). The figures come from that report's candidate-4 evidence and the red-team reviews. |
+| **Source** | Judge report `/data/mal/audit-1008/work/edge-scan-1008/REPORT.md`, section T1 and candidates 4 and 5 (merged into T1). REPORT.md has no candidate-4 detail: the figures come from the candidate-4 evidence and the red-team reviews in `/data/mal/audit-1008/work/edge-scan-1008/workflow-result.json`. |
 | **Where it runs** | `tools/pump_structure_monitor.py` (the daily structure monitor, #456), rule `usdc_boost_regime`. Tests: `tools/test_pump_structure_monitor.py`. |
 | **Prior (judge, an estimate)** | 0.03 for candidate 4 and 0.03 for candidate 5 [inferred]. The judge says to keep it as a zero-cost monitor field and not to build USDC execution until the trigger fires. |
 
 ## 1. What this is for
 
-Both positive books MAL has found ride pump.fun's own BOOST buyer. In USDC-quoted pools, during Aug to mid-Sep, almost nobody else traded in the first 5 minutes, so the BOOST push came through. That regime was gone by 09-19 and none was seen in October. This plan watches for it coming back, cheaply, and says in advance what happens if it does. It is **not** a claim that the regime is profitable.
+Both in-sample-positive results (CAP-PICK, not yet read on walk 2; USDC, where U1 failed confirmation) ride pump.fun's own BOOST buyer. In USDC-quoted pools, during Aug to mid-Sep, almost nobody else traded in the first 5 minutes, so the BOOST push came through [inferred]. That regime was gone by 09-19, and there was 0 USDC in the 109 + 40 crank txs sampled on 10-08, the only October samples. This plan watches for it coming back, cheaply, and says in advance what happens if it does. It is **not** a claim that the regime is profitable.
 
 ## 2. The judge's figures, copied with their labels
 
@@ -22,10 +22,12 @@ All are [measured: usd.py/an5.py; exploration pool only] unless marked. Book: en
 | Block | n | Net | Days | Result |
 | --- | --- | --- | --- | --- |
 | Discovery, 09-04..09-14 | 246 (24.6/day) | mean +12.16%, trimmed +5.60%, day-CI90 lo +4.44% | 9/10 days positive | discovery |
-| Confirmation, Aug 15-27 | 127 (9.8/day) | mean +73.1% (one pool +8,350%), trimmed +3.68%, day lo +0.35% | 10/13 days, ex-top-3 total +3.11 SOL | PASS |
+| Confirmation, Aug 15-27 | 127 (9.8/day) | mean +73.1% (one pool +8,350%), trimmed +3.68%, day lo +0.35% | 10/13 days, ex-top-3 total +3.11 SOL | PASS on U1's own bar (no fail model; not the promotion gate) |
 | Confirmation, 09-19..09-24 | 13 (2.6/day) | mean -31.0%, day lo -48% | **0/5 days** | **FAIL** |
 
 **U1 is therefore NOT confirmed.**
+
+- U1 all-USDC, 09-04..14 discovery block only (in-sample), trimmed = returns clipped to [-90%, +100%]: net k2 +5.60%, k5 +5.60%, k10 +5.37%, k20 +5.40%, k40 +5.35% [measured]. Latency does not bind in that block.
 
 **Post-hoc split** (WHALE50-equivalent slot-0 buy >= 2.84 V). **It was chosen after U1 failed.** Treat it as a description of what the split did, not as evidence for this plan.
 
@@ -36,14 +38,13 @@ All are [measured: usd.py/an5.py; exploration pool only] unless marked. Book: en
 | 09-19..24 | 5 | +0.94% | 1/3 days |
 
 - Per-pool net in the split is tight (p25 +4.0%, p50 +5.1%, p75 +6.1%) [measured].
-- Latency does not bind: 09-04..14 trimmed net k2 +5.60%, k5 +5.60%, k10 +5.37%, k20 +5.40%, k40 +5.35% [measured].
 - The late block's 5 pools are "mostly a different animal" (slot-0/V of 1,976, 1,960 and 57.6; 94-1,923 traders in the first 300 s against 8-10 before). Only one pool in 6 days matched the old pattern (B58nWY, 09-21, 18 traders, +8.8%) [measured: u_all.parquet, red team].
-- Custom-quote pools ("other" V class): 09-05..14 n 156, trimmed +8.9%; 09-19..24 n 89, trimmed -5.8%, ex-top-3 mean -6.7%. "Not robust."
+- Custom-quote pools ("other" V class): 09-05..14 n 156, trimmed +8.9%; 09-19..24 n 89, trimmed -5.8%, ex-top-3 mean -6.7% [measured: bq.py; quote-token units]. "Not robust."
 - The USDC flow was one operator family's self-dealing bundle that "appears and vanishes on their schedule" [measured, red team]. It did not start or stop with a program upgrade (USDC pairs live since 05-21, BOOST since 07-21), so a program-diff watch would not have fired on it.
 
 **October** [measured: public RPC, 0 Helius]:
 
-- 10-08 12:29 to 15:41Z: 4,000 crank signatures, every 35th taken, 109 transactions, about 77 distinct pools: 73 WSOL, 4 other-quote, **0 USDC**. At the 09-04..14 share (about 3.6% of BOOST pools) about 2.7 would be expected, so P(0 | regime present) is about 0.06.
+- 10-08 12:29 to 15:41Z: 4,000 crank signatures, every 35th taken, 109 transactions, about 77 distinct pools: 73 WSOL, 4 other-quote, **0 USDC**. At the 09-04..14 share (about 3.6% of BOOST pools) about 2.7 would be expected, so P(0 | regime present) is about 0.06 [inferred].
 - Earlier sample, 10-08 14:45-15:29Z: 40 sampled: 37 WSOL, 3 pump-token-quoted, 0 USDC.
 
 ## 3. What the monitor measures
@@ -58,7 +59,7 @@ and is null unless the sample has at least 20 graduations spanning at least 300 
 
 Limits, stated up front:
 
-- **It is a rate at run time, not a count of a UTC day.** A full day is about 1,200 graduations (1,168 to 1,492 a day on 10-01..07 [measured, g_october inv B F8]); one `getTransaction` each is far beyond the public-RPC budget. The run is at about 06:41Z every day, so the time-of-day effect is the same on every run.
+- **It is a rate at run time, not a count of a UTC day.** A full day is about 1,200 graduations (1,168 to 1,492 a day on 10-01..07 [inferred]: the implied ok / mean ratio in `inv_b/s09_mig_daily.txt`, g_october inv B F8); one `getTransaction` each is far beyond the public-RPC budget. The run is at about 06:41Z every day, so the time-of-day effect is the same on every run.
 - **The sample is about one hour of flow.** With 60 graduations over about 4,100 to 4,300 s, a single USDC BOOST graduation already estimates about 20 a day, so in practice a day qualifies when the sample holds at least one. The "10 a day" bar is a rate bar, not a count bar.
 - **Detector power is low at the trigger's own level** (computed below).
 - **Not recorded:** slot-0 buy relative to V and the number of distinct traders in the first 300 s, by quote class. The migrate-tx sample does not contain them. They need each pool's own tape (a signature list and transactions per pool) and trade sizes the monitor never reads. Skipped, not approximated.
@@ -66,7 +67,7 @@ Limits, stated up front:
 
 ### Power of the pre-registered rule [computed; not measured]
 
-Assumptions: Poisson arrivals of USDC BOOST graduations, 1,200 graduations a day, a 60-graduation sample spanning 4,320 s (so a day qualifies when the sample holds at least one), 61 daily runs from 2026-10-09 to the kill date.
+Assumptions: Poisson arrivals of USDC BOOST graduations, 1,200 graduations a day, a 60-graduation sample spanning 4,320 s (so a day qualifies when the sample holds at least one), 61 daily runs from 2026-10-09 to the kill date, the regime present for all 61 runs. This is the power of the count part (Part A) alone.
 
 | True USDC BOOST graduations/day | P(a day qualifies) | P(5 in a row at a given start) | P(fires within 61 runs) |
 | --- | --- | --- | --- |
@@ -79,35 +80,52 @@ Assumptions: Poisson arrivals of USDC BOOST graduations, 1,200 graduations a day
 | 50 | 0.918 | 0.652 | 1.000 |
 | 100 | 0.993 | 0.967 | 1.000 |
 
-So the tripwire catches a return at about the 09-04..14 rate (24.6 a day) or higher, almost surely within the window. At the bar itself (10 a day) it fires within the window only about 29% of the time. **"Not fired by 2026-12-08" is weak evidence of absence below about 20 a day.** It is not evidence that a smaller regime does not exist.
+Caveats [computed unless marked]:
+
+- **1,200 a day is the low end of 1,168 to 1,492 (mean 1,286)**, and a higher flow shortens the sample span and lowers power. Across that range P(fires within 61 runs) is 0.14 to 0.31 at 10/day, 0.47 to 0.74 at 15/day, 0.79 to 0.95 at 20/day, and 0.93 to 0.99 at 24.6/day [quant-proof recompute]. The table above is the optimistic end.
+- **The table assumes the regime holds for all 61 runs and arrives evenly.** The daily sample covers only about 05:20 to 06:33Z. With 20 runs left, P(fires) at 24.6/day is 0.75. If the regime clusters outside that hour, it is never seen.
+- Part B (below) can only lower the chance of a fire.
+- **"Not fired by 2026-12-08" is weak evidence of absence below about 20 a day.** It is not evidence that a smaller regime does not exist.
 
 ## 4. Trigger (pre-registered)
 
-`usdc_boost_regime` is a WARN in the daily monitor record. It fires when `usdc_boost_per_day_est >= 10` on **5 consecutive daily runs**, one per UTC date, read from `daily.jsonl`. Exact rules, tested in `tools/test_pump_structure_monitor.py`:
+The trigger has two parts. **Both** must hold.
 
-- A date with no record ends the streak (a gap resets it).
+**Part A, the count (the monitor WARN).** `usdc_boost_regime` is raised in the daily monitor record when `usdc_boost_per_day_est >= 10` on **5 consecutive daily runs**, one per UTC date, read from `daily.jsonl`. The `usdc_boost_regime` WARN is only the count part. The trigger fires only if, over the same 5 streak days, report-only paper net is ≥ +2% and ≥ 4 of 5 days are positive. If that step cannot run, the trigger cannot fire.
+
+Exact rules for Part A, tested in `tools/test_pump_structure_monitor.py`:
+
+- A date with no record ends the streak (a gap resets it). A missed day resets the streak with no warning.
 - A date whose record has no estimate (sample too small or too short, quote-mix stage failed, or a record from before this rule existed) ends the streak.
-- A date below 10.0 ends the streak. Exactly 10.0 counts.
-- One value per UTC date: the newest record of that date. A re-run on the same date replaces the earlier value and is not added to it.
+- A date below 10.0 ends the streak. Exactly 10.0 counts. The estimate is rounded to 0.1 before `>= 10` is applied (9.96 counts).
+- One value per UTC date: the newest record of that date. A re-run on the same date replaces the earlier value and is not added to it, so a late ad-hoc run's record overwrites the 06:41Z value for that date.
+- If the quote-mix extension fails, n drops to 20 (the graduation sample alone).
 - Records dated after the run are ignored.
 - It never halts. It has no side effect.
 
-## 5. If it fires
+**Part B, report-only paper net over the same 5 streak days [pinned].** Everything below is fixed here, before any streak-day outcome is read.
 
-1. The manager opens a **new pre-registered EXP** with its **own fresh forward window**. The window starts after the run that fired. Nothing is tuned on past data: not on Aug or Sep, not on the post-hoc whale split, not on the 09-19..24 block.
-2. The new EXP fixes before any read: the USDC fee tier and costs (the judge's 1.25% per leg is [inferred] for USDC, "not measured"), the fail model, the entry rule, and whether a whale-type filter is tested at all. A filter is allowed only if it is written down in the new EXP and tested on its fresh window.
-3. The **report-only paper check** inside that EXP:
-   - book: k5 entry (the end of slot s0+5) to a 300 s cap, on every USDC-quoted BOOST pool;
-   - run **only after the trigger** and **only on post-trigger hours**; earlier hours are not scored;
-   - bar: net >= +2% and >= 4 of 5 post-trigger UTC days positive;
-   - this is a look, not the promotion gate. Passing it earns only the next step: the gate in `CLAUDE.md` (>= 100 out-of-sample trades, >= 5 distinct UTC days with a majority positive, lower 90% CI bound > 0, positive after removing the top 3 trades, under both fail models) and then the owner's approval.
-4. It is scored from the walk-2 tape and the A8 decoder when they are live, not from new Helius spend. Any credit use is decided in the new EXP.
+- **Book:** every USDC-quoted BOOST pool graduating on the streak days, unfiltered.
+- **Entry:** k = 5 slots after the migrate slot. **Exit:** 300 s after landing (cap).
+- **Stake:** 0.1 SOL-equivalent. **Costs:** 55,000 lamports per send, and the PumpSwap fee tiers.
+- **Fail model:** flat 15% is binding; the pressure model is report-only.
+- **Statistic:** the per-pool net return in % of stake, clipped to [-90%, +100%].
+- **Pass:** the pooled clipped mean is ≥ +2%, **and** the daily clipped mean is > 0 on ≥ 4 of the 5 days.
+- **Tape:** the walk-2 tape (event-V decoder) if it covers the streak days. Otherwise a targeted backfill of exactly those days, which is a manager decision logged in a dated note. If neither exists, the trigger cannot fire.
+- **Scorer:** not built now. It is built only while the WARN is up, under these rules, before it reads any streak-day outcome.
+
+## 5. If it fires (both parts)
+
+1. The manager opens a **new pre-registered EXP** with its **own fresh forward window**. The window starts after the run that fired. Nothing is tuned on past data: not on Aug or Sep, not on the post-hoc whale split, not on the 09-19..24 block, not on the streak days.
+2. The new EXP fixes before any read: the USDC fee tier and costs (the judge's 1.25% per leg is [inferred] for USDC, "not measured"), the fail model, the entry rule. The primary book is unfiltered. The only allowed filter is the existing split at exactly slot-0 buy ≥ 2.84 V, as one secondary book declared before the fresh window. No threshold may be chosen from the trigger days or any earlier data.
+3. The streak-day paper net (Part B) is the trigger, not evidence for the new EXP. The new EXP is scored on its fresh window only. It is a look, not the promotion gate. Passing it earns only the next step: the gate in `CLAUDE.md` (>= 100 out-of-sample trades, >= 5 distinct UTC days with a majority positive, lower 90% CI bound > 0, positive after removing the top 3 trades, under both fail models) and then the owner's approval.
+4. Any Helius credit use (for example the targeted backfill in Part B) is decided and logged by the manager, not assumed.
 
 ## 6. Kill
 
-- **Kill date: 2026-12-08.** If `usdc_boost_regime` has not fired by then, EXP-023 is closed as NOT FIRED. The extra quote-mix sampling (`--quote-mix-extra`) is then set to 0 by the manager. This closing step is this plan's own wording of the judge's "stop if nothing actionable appears by 2026-12-08".
+- **Kill date: 2026-12-08.** If the trigger (both parts) has not fired by then, EXP-023 is closed as NOT FIRED. The extra quote-mix sampling (`--quote-mix-extra`) is then set to 0 by the manager. This closing step is this plan's own wording of the judge's "stop if nothing actionable appears by 2026-12-08".
 - The program-hash and docs watches stay: the judge values them as protection for CAP-PICK, not as a profit candidate.
-- **No USDC execution is built unless the tripwire fires and the new EXP's paper check passes.** No USDC float, no USDC fee tier work, no decoder work for USDC execution before that.
+- **No USDC execution is built unless the trigger (both parts) fires and the new EXP then clears the gate path in section 5.** No USDC float, no USDC fee tier work, no decoder work for USDC execution before that.
 - Cost while running: about 15 minutes of monitor runtime a day, 0 Helius credits, no paid data.
 
 ## 7. What this plan does not claim
