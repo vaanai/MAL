@@ -14,8 +14,15 @@ from 2026-10-02 onwards (the forward-read window, read once ~10-16). Enforcement
   * only the tape hours spanning the live trades are opened;
   * the paper runner's positions.jsonl, runner-status*, pnl and decisions/intents files are never opened.
 
-Tape row assumption (UNVERIFIED): `quote_reserve` / `base_reserve` / `virtual_quote_reserve` on a row are the pool
-state after that trade; the state "before slot S" is the last row with slot < S.
+Tape row convention (VERIFIED, audit 2026-10-08 xcheck_reserves, 99.04% of 6.1M consecutive PumpSwap pairs): a PumpSwap
+row's `quote_reserve` / `base_reserve` are the pool vaults BEFORE that trade (bonding-curve rows are POST-trade; this tool
+reads PumpSwap rows only). Every state this tool prices is the POST-trade state of a row, taken in this order:
+  1. the next row of the same pool's pre-trade reserves (chain truth; the same event twice, same slot / tx_index /
+     event_index / pre-state, is one trade and is skipped);
+  2. else the row advanced by its own trade (`_print`, `paper_price_path.pumpswap_post_trade_reserves`; exact in base,
+     approximate in quote, so it is only the fallback for the last row of a pool);
+  3. else the raw row (pre-trade, wrong; counted in SNAP_FALLBACK_RAW and in `post_state_sources`).
+The state "before slot S" is the post-trade state of the last row with slot < S.
 
     python -m tools.probe_sim_calibration --fills FILLS.jsonl --tape-dir DIR --out-dir OUT
 """
@@ -27,14 +34,14 @@ import datetime as dt
 import json
 import statistics
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
 from tools import latency_curve as lc
 from tools import paper_curve_math as pcm
 from tools import pumpswap_virtual_adapter as psva
-from tools.paper_price_path import TapePrint, print_from_trade_row
+from tools.paper_price_path import VENUE_BONDING, TapePrint, print_from_trade_row
 from tools import probe_executor as pe
 from tools import pumpswap_tx as tx
 
@@ -164,7 +171,36 @@ def read_tape_rows(tape_dir: Path, hours: Iterable[str], mints: set[str]) -> dic
                 proc.wait()
     for rows in keep.values():
         rows.sort(key=lambda r: (r["slot"], r.get("tx_index") or 0, r.get("event_index") or 0))
+        attach_post_state(rows)
     return keep
+
+
+def attach_post_state(rows: list[dict[str, Any]]) -> None:
+    """Set `_post_q` / `_post_b` (post-trade vault, base) on PumpSwap rows sorted by (slot, tx_index, event_index).
+
+    PumpSwap rows carry PRE-trade reserves, so the post-trade state of row i is the pre-trade state of the next row of
+    the SAME pool (a mint's rows can span pools). A next row with the same (slot, tx_index, event_index) AND the same
+    pre-state is the same event seen twice, not a later trade: the row shares that duplicate's post state. The last
+    row of a pool gets none (snap_of falls back). Rows of another venue are left alone. Idempotent."""
+
+    def ident(r: dict[str, Any]) -> tuple[Any, ...]:
+        return (r["slot"], r.get("tx_index"), r.get("event_index"), r["quote_reserve"], r["base_reserve"])
+
+    nxt: dict[Any, dict[str, Any]] = {}
+    for r in reversed(rows):
+        r.pop("_post_q", None)
+        r.pop("_post_b", None)
+        if r.get("venue") == VENUE_BONDING:  # already post-trade
+            continue
+        n = nxt.get(r.get("pool"))
+        if n is not None:
+            if ident(n) == ident(r):
+                q, b = n.get("_post_q"), n.get("_post_b")
+            else:
+                q, b = n["quote_reserve"], n["base_reserve"]
+            if q is not None and b is not None:
+                r["_post_q"], r["_post_b"] = q, b
+        nxt[r.get("pool")] = r
 
 
 def print_of(r: dict[str, Any]) -> TapePrint | None:
@@ -221,9 +257,30 @@ def row_ms(r: dict[str, Any]) -> int | None:
     return None
 
 
+SNAP_FALLBACK_RAW = {"n": 0}  # snap_of CALLS that had to read a PumpSwap row's raw (pre-trade) reserves
+
+
+def post_state_of(r: dict[str, Any]) -> tuple[str, int, int]:
+    """(source, vault, base) of the POST-trade state of tape row r. source: "next_row" | "print" | "raw" | "post_trade_venue"."""
+    if r.get("venue") == VENUE_BONDING:
+        return "post_trade_venue", r["quote_reserve"], r["base_reserve"]
+    if isinstance(r.get("_post_q"), int) and isinstance(r.get("_post_b"), int):
+        return "next_row", r["_post_q"], r["_post_b"]
+    v, pr = r.get("virtual_quote_reserve"), r.get("_print")
+    # pr.base_reserve == the row's base means the lab's advance did not run (it returns None without sol_lamports /
+    # token_raw), so the print is still the pre-trade state: not an advanced print
+    if pr is not None and isinstance(v, int) and v > 0 and pr.base_reserve != r["base_reserve"]:
+        return "print", pr.quote_reserve - v, pr.base_reserve
+    return "raw", r["quote_reserve"], r["base_reserve"]
+
+
 def snap_of(r: dict[str, Any]) -> pe.Snapshot:
+    """POST-trade state of tape row r (see the module docstring). Counts a raw (pre-trade) read in SNAP_FALLBACK_RAW."""
     v = r.get("virtual_quote_reserve")
-    return pe.Snapshot(ps=None, slot=r["slot"], quote_vault=r["quote_reserve"], base_reserve=r["base_reserve"],  # type: ignore[arg-type]
+    src, q, b = post_state_of(r)
+    if src == "raw":
+        SNAP_FALLBACK_RAW["n"] += 1
+    return pe.Snapshot(ps=None, slot=r["slot"], quote_vault=q, base_reserve=b,  # type: ignore[arg-type]
                        v=v if isinstance(v, int) else None)
 
 
@@ -249,7 +306,7 @@ def sim_buy(row: dict[str, Any], spend: int) -> dict[str, Any] | None:
 
 
 BOOKS = ("executor", "correct")  # "executor" = legacy double-count (pre-#324 executor); key kept so old JSON stays readable; executor-identical (adds our buy again) vs raw tape book (our buy already in the tape)
-SCHEMA_VERSION = 3  # 3: live_* = mark from the post-buy state (the buy-tx method); live_legacy_* = send-state mark; live_snapshot_* = #330 first-snapshot mark. 2 (#330) meant live_* = first snapshot.
+SCHEMA_VERSION = 4  # 4: PumpSwap tape rows read as PRE-trade (post state = next row of the pool; audit 2026-10-08); 3 and below priced the pre-trade state as post-trade, so their numbers are not comparable. 3: live_* = mark from the post-buy state (the buy-tx method); live_legacy_* = send-state mark; live_snapshot_* = #330 first-snapshot mark. 2 (#330) meant live_* = first snapshot.
 POSITIONS = ("sim", "live", "live_legacy", "live_snapshot")
 VARIANTS = tuple(f"{p}_{b}" for p in POSITIONS for b in BOOKS)
 
@@ -402,6 +459,7 @@ def simulate_trade(trade: dict[str, Any], rows: list[dict[str, Any]], fill_mints
     mint = b["mint"]
     if mint not in fill_mints:  # seal
         raise ValueError("seal: mint is not in the live fills file")
+    attach_post_state(rows)  # idempotent; rows not from read_tape_rows would otherwise be read as pre-trade
     spend = int(b["spend_lamports"])
     primary = "sim_correct" if own_trade_in_tape else "sim_executor"
     out: dict[str, Any] = {"mint": mint, "build": build_of(b["ts_ms"], builds), "buy_ts_ms": b["ts_ms"], "landed_slot": b["landed_slot"],
@@ -612,7 +670,9 @@ def to_markdown(results: list[dict[str, Any]], agg: dict[str, Any]) -> str:
     for r in results:
         L.append(f"| {r['build']} | {r['mint'][:8]} | {f(r['live_exit_reason'])} / {f(r.get('live_ret'))} | "
                  + " | ".join(vr(r, v) for v in ("sim_correct", "live_correct", "live_snapshot_correct", "live_legacy_correct")) + " |")
-    L += ["", "Unverified: tape reserves are post-trade state; live trigger time approximated by the sell's first_send_ms; "
+    L += ["", "Tape convention (verified, audit 2026-10-08): PumpSwap rows are PRE-trade, priced at the post-trade state "
+          "(next row of the pool, else the row advanced by its own trade, else raw; counts in calibration.json "
+          "`post_state_sources`). Unverified: live trigger time approximated by the sell's first_send_ms; "
           "sell delay = live sell landed_slot - live sell snapshot_slot; a time stop is emitted when the tape file of the "
           "deadline hour exists, even if no row follows."]
     return "\n".join(L) + "\n"
@@ -624,6 +684,8 @@ def run(fills_path: Path, tape_dir: Path, out_dir: Path, own_trade_in_tape: bool
     fill_mints = {t["buy"]["mint"] for t in trades}
     hours = hours_needed(trades)
     tape = read_tape_rows(tape_dir, hours, fill_mints)
+    SNAP_FALLBACK_RAW["n"] = 0
+    sources = dict(Counter(post_state_of(r)[0] for rows in tape.values() for r in rows))  # distinct tape rows by post-state source
     present = {h for h in hours if (tape_dir / f"trades-{h}.jsonl").exists() or (tape_dir / f"trades-{h}.jsonl.zst").exists()}
     results = []
     for t in trades:
@@ -635,6 +697,8 @@ def run(fills_path: Path, tape_dir: Path, out_dir: Path, own_trade_in_tape: bool
     (out_dir / "calibration.json").write_text(
         json.dumps({"schema_version": SCHEMA_VERSION, "label": "arithmetic on n trades, not evidence", "own_trade_in_tape": own_trade_in_tape,
                     "builds": [list(b) for b in sorted(builds if builds is not None else BUILDS)],
+                    "tape_convention": "pumpswap_pre_trade", "post_state_sources": sources,
+                    "snap_fallback_raw_calls": SNAP_FALLBACK_RAW["n"],
                     "aggregate": agg, "trades": results}, indent=1))
     (out_dir / "calibration.md").write_text(to_markdown(results, agg))
     return agg
