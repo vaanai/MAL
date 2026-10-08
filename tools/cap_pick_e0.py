@@ -42,6 +42,9 @@ PINS (EXP-022 2.1 item 4)
   files Python actually imported hash to those blobs. `run` refuses unless the git tree is clean (untracked files count) and HEAD is contained in a remote
   branch `origin/*` known locally (no fetch is done: no network). `check` repeats the pin comparison against HEAD, and the working copy, of any worktree.
 
+SURFACE USED FROM tools/cap_pick_gate_replay (nothing else): Block, BLOCKS, SCHEMA, Refused, build_engine, replay_view(block, days, engine=, roots=, log=),
+hour_files, stage_creates, iter_json_rows, iter_lines, quick_mint, create_signal_from_row, check_days; load_online in the tests only.
+
 Exit codes: 0 every check holds; 1 a check failed (A != B, C != B picks in U, ...); 2 refused or a step could not run.
 """
 
@@ -81,6 +84,12 @@ SCORER_SOURCE: dict[str, tuple[str, str]] = {
     "oracle-insample-0922": ("--p1-oracle-insample-dir", "single"),
 }
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _day_start_ms(day: str) -> int:
+    import calendar
+
+    return calendar.timegm(time.strptime(day, "%Y-%m-%d")) * 1000
 
 
 class E0Error(Exception):
@@ -299,7 +308,7 @@ def run_side_a(block: cp.Block, files: dict[str, dict[str, Path]], roots: Sequen
     """A: the runner's `replay_rows` on the day. Returns the gate rows read back from its `exp012_gate` JsonlLog and a stats dict."""
     from tools.forward_paper import JsonlLog, replay_rows
 
-    boot_ms = cp._calendar_ms(day)
+    boot_ms = _day_start_ms(day)
     end_ms = boot_ms + DAY_MS - 1
     hours = sorted(h for h in files if h[:10] == day and "trades" in files[h])
     stats: dict[str, Any] = {"hours": len(hours), "rows_fed": 0, "rows_no_create": 0, "rows_past_day_end": 0, "rows_t_recv_imputed": 0, "tape_end_ms": end_ms}
@@ -387,10 +396,11 @@ def default_engine_factory() -> Any:
 
 
 def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, engine_factory: Callable[[], Any] | None = None,
-           scorer: Scorer | None = None, repo: Path = REPO, scorer_repo: Path | None = None, scorer_extra: Sequence[str] = (),
+           scorer: Scorer | None = None, repo: Path | None = None, scorer_repo: Path | None = None, scorer_extra: Sequence[str] = (),
            skip_c: bool = False, log: Any = sys.stderr) -> dict[str, Any]:
     """The whole E0 for one view-day. Writes A.canon, B.canon, B.jsonl, C.list, Bpicks_in_U.list, the md5 files, diff.tsv (if A != B) and e0.json."""
     t_start = time.monotonic()
+    repo = repo or REPO
     if not _DAY_RE.match(day):
         raise E0Error(f"--day must be YYYY-MM-DD, got {day!r}")
     block = block or cp.BLOCKS[view]

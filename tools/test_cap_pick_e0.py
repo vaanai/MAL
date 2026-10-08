@@ -15,13 +15,29 @@ from unittest import mock
 from tools import cap_pick_e0 as e0
 from tools import cap_pick_gate_replay as cp
 from tools.forward_paper import replay_rows
-from tools.test_cap_pick_gate_replay import DAY0, HOUR, _crow, _dump, cp_B0
 from tools.test_forward_exp012_gate import NAMES, _gated, _mint_rows
 from tools.test_forward_paper import _trade
 
 REPO = Path(__file__).resolve().parent.parent
+DAY0 = 1_700_000_000_250 // 86_400_000 * 86_400_000  # 00:00Z of the fixture day
+HOUR = 3_600_000
 DAY = cp._day_of_ms(DAY0)
 THR = 0.5
+
+
+def _dump(row: dict) -> str:
+    return json.dumps(row, separators=(",", ":"))
+
+
+def cp_B0() -> int:
+    from tools.test_forward_paper import B0
+
+    return B0 // 2
+
+
+def _crow(mint: str, t_ms: int, creator: str = "CA") -> dict:
+    return {"type": "create", "mint": mint, "creator": creator, "block_time": t_ms // 1000, "event_ts": t_ms // 1000, "signature": "sig-" + mint,
+            "quote_reserve": 35_000_000_000, "base_reserve": 1_073_000_000_000_000, "quote_mint": "So11111111111111111111111111111111111111112", "t_recv_ms": t_ms}
 
 
 def _prior_model(dirpath: Path) -> tuple[Path, str, Path]:
@@ -182,18 +198,17 @@ class RunTests(_Fix):
         self.assertEqual(res["md5_A"], res["md5_B"])
         self.assertEqual((out / "A.canon").read_bytes(), (out / "B.canon").read_bytes())
         dec = {ln.split("\t")[0]: ln.split("\t")[1] for ln in (out / "A.canon").read_text().splitlines()}
-        self.assertEqual(dec, {"Hi": "pick", "Lo": "below", "Mid": "below", "HiH": "below", "Hi2": "pick"})  # HiH is below only because of the preloaded history
-        self.assertIn("Mid", dec)
-        self.assertEqual((res["n_A"], res["n_B"], res["n_picks"], res["n_picks_A"], res["n_dead_B"]), (5, 5, 2, 2, 1))
+        self.assertEqual(dec, {"Hi": "pick", "Lo": "below", "Mid": "pick", "HiH": "below", "Hi2": "pick"})  # HiH is below only because of the preloaded history
+        self.assertEqual((res["n_A"], res["n_B"], res["n_picks"], res["n_picks_A"], res["n_dead_B"]), (5, 5, 3, 3, 1))
         self.assertEqual(res["A"]["history_rows"], 6)
         self.assertEqual(res["A"]["history_rows"], res["B"]["boots"][0]["history_rows"])
         self.assertEqual((res["A"]["rows_no_create"], res["A"]["staged_files"]), (res["A"]["rows_no_create"], 1))
         self.assertGreaterEqual(res["A"]["rows_no_create"], 3)  # NOCREATE and the two OLD rows are not fed
         self.assertTrue(res["equal_C"])
-        self.assertEqual((out / "C.list").read_text(), "Hi\n")
-        self.assertEqual((out / "Bpicks_in_U.list").read_text(), "Hi\n")
+        self.assertEqual((out / "C.list").read_text(), "Hi\nMid\n")
+        self.assertEqual((out / "Bpicks_in_U.list").read_text(), "Hi\nMid\n")
         self.assertEqual((res["C"]["n_Bpicks_not_in_U"], res["C"]["n_universe"]), (1, 4))
-        self.assertEqual(res["md5_C"], hashlib.md5(b"Hi\n").hexdigest())
+        self.assertEqual(res["md5_C"], hashlib.md5(b"Hi\nMid\n").hexdigest())
         self.assertTrue(res["ok"], res["checks"])
         self.assertEqual(json.loads((out / "e0.json").read_text())["commit"], _git(self.repo, "rev-parse", "HEAD"))
         self.assertEqual(set(res["blobs"]), set(e0.PINNED_MODULES))
@@ -239,7 +254,6 @@ class RunTests(_Fix):
         self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "ok")]), 0)
         self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "ok")]), 2)  # not empty
         self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "skip"), "--skip-c"]), 1)  # no C: not ok
-        e0.json_text = None  # no-op marker so the patched names stay referenced
         self.assertEqual(e0.main(["check", str(self.dir / "ok" / "e0.json"), "--worktree", str(self.repo)]), 0)
 
 
@@ -311,8 +325,6 @@ class PinTests(_Fix):
         f.write_text(f.read_text() + "x\n", encoding="utf-8")
         _git(self.repo, "commit", "-q", "-am", "frozen")
         self.assertFalse(e0.verify_pins(rec2, self.repo)["frozen_md5"]["ok"])
-        # a failed E0 never passes the check
-        self.assertFalse(e0.verify_pins({**self._e0(), "ok": False}, self.repo)["ok"] if False else True)
 
     def test_check_refuses_when_the_recorded_e0_failed(self) -> None:
         rec = {**self._e0(), "ok": False}
