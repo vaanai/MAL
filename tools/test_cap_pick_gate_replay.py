@@ -599,6 +599,439 @@ class NoGrantUnchangedTests(_Base):
         self.assertNotIn("grant", [a.dest for a in cp.build_parser()._subparsers._group_actions[0].choices["replay"]._actions])
 
 
+# ---- sealed walk-2 read mode: ReadGrant --------------------------------------------------------------------------------
+B16 = cp._calendar_ms("2026-10-16")  # 00:00Z of the first walk-2 day (the first boot)
+
+
+def walk2_fixture(walk: Path, fwd: Path, *, event_v: bool = False) -> list[str]:
+    """Walker-layout hour files for 2026-10-16 and 2026-10-17: forward-1002 buffer files under `fwd` (creates before
+    10-16T00, creates and trades of 10-16T00), walk-2 files under `walk`. Sealed with the walker's own seal_jsonl.
+    event_v adds the walk-2 trade keys to every trade row."""
+    from tools.pump_history_backfill import seal_jsonl
+
+    creates: dict[str, list[dict]] = {}
+    trades: dict[str, list[dict]] = {}
+
+    def add_create(row: dict) -> None:
+        creates.setdefault(cp._hour_of_ms(row["t_recv_ms"]), []).append(row)
+
+    def add_trades(rows: list[dict]) -> None:
+        for r in rows:
+            trades.setdefault(cp._hour_of_ms(r["t_recv_ms"]), []).append(r)
+
+    add_create(_crow("H1", B16 - 4 * HOUR + 1_000, "C1"))
+    add_create(_crow("H2", B16 - 4 * HOUR + 2_000, "C1"))
+    t_pre = B16 - HOUR + 20 * 60_000  # created 23:20 on 10-15: a pre_restart record when it migrates
+    add_create(_crow("PRE", t_pre, "CP"))
+    t_e0 = B16 + 10 * 60_000  # created in the 10-16T00 buffer hour, migrates in it
+    add_create(_crow("E0m", t_e0, "C1"))
+    add_trades(_mint_rows("E0m", 7, t0=t_e0))
+    t2 = B16 + 2 * HOUR
+    for mint, creator, t0 in (("Hi", "C1", t2), ("Lo", "C2", t2 + 30_000)):
+        add_create(_crow(mint, t0, creator))
+    add_trades(_mint_rows("Hi", 7, t0=t2) + _mint_rows("Lo", 1, t0=t2 + 30_000))
+    add_trades([dict(_trade("PRE", t2 + 90_000, venue="pumpswap", slot=5, quote=70_000_000_000, base=cp_B0()), tx_index=3)])
+    t_late = B16 + 23 * HOUR + 50 * 60_000
+    add_create(_crow("LATE", t_late, "C4"))
+    add_trades(_mint_rows("LATE", 6, t0=t_late, mig_after_ms=20 * 60_000))
+    t5 = B16 + 24 * HOUR + 5 * HOUR
+    add_create(_crow("D1Hi", t5, "C1"))
+    add_create(_crow("D1Lo", t5 + 10_000, "C5"))
+    add_trades(_mint_rows("D1Hi", 7, t0=t5) + _mint_rows("D1Lo", 2, t0=t5 + 10_000))
+    if event_v:
+        for rows in trades.values():
+            for r in rows:
+                r.update(EVENT_V_ROW_KEYS)
+    for kind, by_hour in (("creates", creates), ("trades", trades)):
+        for hour, rows in sorted(by_hour.items()):
+            root = fwd if (hour < "2026-10-16T01") else walk
+            (root / kind).mkdir(parents=True, exist_ok=True)
+            rows.sort(key=lambda r: r["t_recv_ms"])
+            plain = root / kind / f"{kind}-{hour}.jsonl"
+            plain.write_bytes(b"".join(_lines(rows)))
+            assert seal_jsonl(plain) == root / kind / f"{kind}-{hour}.jsonl.zst"
+    return ["2026-10-16", "2026-10-17"]
+
+
+# the keys --event-v adds to a walk-2 trade row (observe.trade_decode.EVENT_V_KEYS), with plausible values
+EVENT_V_ROW_KEYS = {"virtual_quote_reserves": 17_580_000_000, "ix_name": "buy", "creator_fee_unclaimed": 123_456, "buyback_fee": 777,
+                    "fee_recipient_zero": False}
+
+
+class GrantTests(_Base):
+    def setUp(self) -> None:
+        super().setUp()
+        if shutil.which("zstd") is None:
+            self.skipTest("zstd binary not available")
+        self.walk = self.dir / "walk2"
+        self.fwd = self.dir / "fwd1002"
+        self.ledger = self.dir / "ledger" / "FINAL_READS.jsonl"
+        for name, val in (("WALK2_DIR", str(self.walk)), ("FWD1002_DIR", str(self.fwd))):
+            p = mock.patch.object(cp, name, val)
+            p.start()
+            self.addCleanup(p.stop)
+        self.days = walk2_fixture(self.walk, self.fwd)
+        self.write_final()
+
+    def write_final(self, **kw) -> None:
+        from tools import exp012_forward as ef
+
+        out_dir = self.dir / "final_out"
+        out_dir.mkdir(exist_ok=True)
+        (out_dir / ef.LOCK_NAME).write_bytes(b"lock")
+        ef.ledger_append(self.ledger, ef._final_docs(out_dir, "a" * 64, kw.get("clean", "2026-10-06T00:00:00Z"),
+                                                    kw.get("end", "2026-10-16T00:00:00Z"), kw.get("test_window", False),
+                                                    kw.get("experiment", "EXP-012")))
+
+    def grant(self, drop=(), extra=None) -> cp.ReadGrant:
+        hours: dict[str, dict] = {}
+        for root in (self.walk, self.fwd):
+            for kind in cp.GRANT_KINDS:
+                d = root / kind
+                if not d.is_dir():
+                    continue
+                for f in sorted(d.iterdir()):
+                    hour = f.name[len(kind) + 1: -len(".jsonl.zst")]
+                    if (hour, kind) not in drop:
+                        hours.setdefault(hour, {})[kind] = (str(f), hashlib.sha256(f.read_bytes()).hexdigest())
+        for hour, kinds in (extra or {}).items():
+            hours.setdefault(hour, {}).update(kinds)
+        return cp.ReadGrant(hours)
+
+    def run_grant(self, grant=None, days=None, **kw):
+        return cp.replay_view(cp.WALK2_BLOCK, days or self.days, engine=self.engine(), grant=grant or self.grant(),
+                              _test_final_ledger=kw.pop("ledger", self.ledger), **kw)
+
+    # --- it reads what a plain replay reads ---------------------------------------------------------------
+    def test_grant_mode_decides_exactly_as_the_exploration_replay_on_the_same_files(self) -> None:
+        recs, meta = self.run_grant()
+        self.assertEqual({r["mint"]: r["decision"] for r in recs if r["kind"] == "decision"},
+                         {"E0m": "pick", "Hi": "pick", "Lo": "below", "D1Hi": "pick", "D1Lo": "below"})
+        self.assertEqual({r["mint"] for r in recs if r["kind"] == "dead"}, {"PRE", "LATE"})
+        # the same files through the no-grant path (its cutoff lifted for the test) give the same records and meta
+        blk = cp.Block(cp.WALK2_BLOCK.name, (str(self.walk), str(self.fwd)), ".jsonl.zst", False)
+        with mock.patch.object(cp, "CUTOFF", "2099-01-01T00"):
+            recs2, meta2 = cp.replay_view(blk, self.days, engine=self.engine(), roots=[str(self.walk), str(self.fwd)])
+        self.assertEqual(recs, recs2)
+        g = meta.pop("grant")
+        for b in meta["boots"]:
+            self.assertIsInstance(b.pop("staging_hours_not_in_grant"), list)
+        self.assertEqual(canonical(recs, meta), canonical(recs2, meta2))
+        self.assertTrue(g["forward_1002_granted"])
+        self.assertEqual(g["final_ledger"], str(self.ledger))
+        self.assertTrue(g["final_ledger_overridden"])  # a test run says so in its meta
+        self.assertEqual(g["replayed_hours_not_in_grant"][:2], ["2026-10-16T01", "2026-10-16T03"])
+        opened = {(h, k) for h, k, _sha in g["opened"]}
+        self.assertIn(("2026-10-16T00", "trades"), opened)
+        self.assertIn(("2026-10-15T23", "creates"), opened)  # boot staging
+        self.assertEqual({(h, k): sha for h, k, sha in g["opened"]}[("2026-10-16T02", "trades")],
+                         hashlib.sha256((self.walk / "trades" / "trades-2026-10-16T02.jsonl.zst").read_bytes()).hexdigest())
+
+    def test_first_boot_reads_the_documented_forward_1002_hours(self) -> None:
+        hours = cp._staging_hours(B16)
+        self.assertEqual((len(hours), hours[0], hours[-1]), (27, "2026-10-14T21", "2026-10-15T23"))
+        self.assertTrue(all(cp.FWD1002_BUFFER[0] <= h < cp.FWD1002_BUFFER[1] for h in hours))
+        self.assertEqual(cp.FWD1002_CREATES_HOURS[0], hours[0])  # the creates bound is the first boot's staging window
+        self.assertEqual(cp.FWD1002_CREATES_HOURS[1], cp.FWD1002_BUFFER[1])  # plus feed hour 2026-10-16T00
+        self.assertTrue(cp.FWD1002_BUFFER[0] <= cp.FWD1002_CREATES_HOURS[0] and cp.FWD1002_CREATES_HOURS[1] <= cp.FWD1002_BUFFER[1])
+        self.assertEqual(cp.FWD1002_TRADES_HOURS, (cp.FIRST_BOOT_HOUR,))
+        self.assertEqual(cp.GRANT_DAYS[0], cp.FIRST_BOOT_HOUR[:10])
+        self.assertEqual(cp.WALK2_HOURS, ("2026-10-16T01", "2026-11-06T01"))
+        # every later boot's forward-1002 creates stay inside the allowed range, and no boot after 10-17 reaches into it
+        for day, expect_fwd in (("2026-10-16", True), ("2026-10-17", True), ("2026-10-18", False)):
+            fwd_hours = [h for h in cp._staging_hours(cp._calendar_ms(day)) if h < cp.WALK2_HOURS[0]]
+            self.assertEqual(bool([h for h in fwd_hours if h >= cp.FWD1002_BUFFER[0]]), expect_fwd, day)
+            self.assertTrue(all(cp.FWD1002_CREATES_HOURS[0] <= h < cp.FWD1002_CREATES_HOURS[1] for h in fwd_hours), day)
+
+    def test_constants_match_the_walker_and_the_final_ledger_writer(self) -> None:
+        from tools import exp012_forward as ef
+        from tools import forward_family as ff
+
+        self.assertEqual(cp.FINAL_SCHEMA, ef.SCHEMA_MARKER)
+        self.assertEqual(cp.FINAL_EXPERIMENT, ff.PRIMARY_EXPERIMENT)
+        self.assertEqual(cp.FINAL_WINDOW, (ef.PINNED_CLEAN_CLOCK, ef.PINNED_READ_END))
+        self.assertEqual(cp.FINAL_LEDGER, str(ef.DEFAULT_LEDGER))
+        self.assertEqual(cp.FINAL_LEDGER, str(ff.PRIMARY_LEDGER))
+        self.assertEqual((cp.WALK2_DIR, cp.FWD1002_DIR), (str(self.walk), str(self.fwd)))  # patched by setUp
+        self.assertEqual(cp.GRANT_SUFFIX, ".jsonl.zst")
+
+    # --- grant shape ------------------------------------------------------------------------------------------
+    def test_grant_is_frozen_and_only_creates_and_trades(self) -> None:
+        g = self.grant()
+        with self.assertRaises(Exception):
+            g.hours = {}  # frozen dataclass
+        with self.assertRaises(TypeError):
+            g.hours["2026-10-16T05"] = {}  # the map is read-only
+        good = ("/x/y", "0" * 64)
+        for bad_kind in ("events", "migrations", "pools"):
+            with self.assertRaises(cp.Refused, msg=bad_kind):
+                cp.ReadGrant({"2026-10-16T05": {bad_kind: good}})
+        for bad in (("/x",), ("/x", "NOTHEX"), ("/x", "A" * 64), (1, "0" * 64)):
+            with self.assertRaises(cp.Refused, msg=str(bad)):
+                cp.ReadGrant({"2026-10-16T05": {"trades": bad}})
+        with self.assertRaises(cp.Refused):
+            cp.ReadGrant({"2026-10-16": {"trades": good}})
+        with self.assertRaises(cp.Refused):
+            cp.ReadGrant({"2026-10-16T05": {}})
+
+    # --- allowed roots, layout, hour bounds ---------------------------------------------------------------------
+    def test_paths_outside_the_two_roots_or_layout_refuse(self) -> None:
+        sha = "0" * 64
+        walk, fwd = str(self.walk), str(self.fwd)
+        for path in (
+            f"/data/mal/clean-view/explore-0814/w1/trades/trades-2026-10-16T05{cp.GRANT_SUFFIX}",  # an exploration root
+            f"{walk}/events/events-2026-10-16T05{cp.GRANT_SUFFIX}",  # the --event-v stream
+            f"{walk}/migrations/migrations-2026-10-16T05{cp.GRANT_SUFFIX}",
+            f"{walk}/trades/trades-2026-10-16T06{cp.GRANT_SUFFIX}",  # names another hour
+            f"{walk}/trades/../trades/trades-2026-10-16T05{cp.GRANT_SUFFIX}",  # not normalised
+            f"{walk}/trades/trades-2026-10-16T05.jsonl",  # not sealed
+            f"{walk}x/trades/trades-2026-10-16T05{cp.GRANT_SUFFIX}",  # a prefix of the root is not the root
+            f"trades/trades-2026-10-16T05{cp.GRANT_SUFFIX}",
+        ):
+            with self.subTest(path=path), self.assertRaises(cp.Refused):
+                self.run_grant(cp.ReadGrant({"2026-10-16T05": {"trades": (path, sha)}}))
+        # the layout under a root is exact, so a root that names a forbidden word is still fine (the roots are exempt)
+        # while a forbidden name below a root has no way in: events/ and migrations/ above are refused as layout
+        self.assertEqual(cp._grant_root("2026-10-16T05", "trades", f"{fwd}/trades/trades-2026-10-16T05{cp.GRANT_SUFFIX}"), fwd)
+
+    def test_hour_bounds(self) -> None:
+        sha = "0" * 64
+        walk, fwd = str(self.walk), str(self.fwd)
+
+        def g(root: str, kind: str, hour: str) -> cp.ReadGrant:
+            return cp.ReadGrant({hour: {kind: (f"{root}/{kind}/{kind}-{hour}{cp.GRANT_SUFFIX}", sha)}})
+
+        allowed = [(walk, "trades", "2026-10-16T01"), (walk, "creates", "2026-10-16T01"), (walk, "trades", "2026-11-06T00"),
+                   (fwd, "trades", "2026-10-16T00"), (fwd, "creates", "2026-10-16T00"), (fwd, "creates", "2026-10-14T21"),
+                   (fwd, "creates", "2026-10-15T23")]
+        for root, kind, hour in allowed:
+            with self.subTest(allowed=(kind, hour)):
+                cp._GrantSession(g(root, kind, hour), self.ledger)
+        refused = [(walk, "trades", "2026-10-16T00"), (walk, "trades", "2026-11-06T01"), (walk, "creates", "2026-11-07T00"),
+                   (walk, "trades", "2026-10-15T12"), (walk, "trades", "2026-09-20T00"),
+                   (fwd, "trades", "2026-10-15T23"), (fwd, "trades", "2026-10-14T01"), (fwd, "trades", "2026-10-16T01"),
+                   (fwd, "creates", "2026-10-14T20"), (fwd, "creates", "2026-10-14T01"), (fwd, "creates", "2026-10-16T01"),
+                   (fwd, "creates", "2026-10-02T09")]
+        for root, kind, hour in refused:
+            with self.subTest(refused=(kind, hour)), self.assertRaises(cp.Refused):
+                cp._GrantSession(g(root, kind, hour), self.ledger)
+
+    def test_days_outside_the_walk_are_refused(self) -> None:
+        for days in (["2026-10-15"], ["2026-11-07"], ["2026-10-16", "2026-10-02"], ["2026-10-1"], ["2026-08-15"]):
+            with self.subTest(days=days), self.assertRaises(cp.Refused):
+                self.run_grant(days=days)
+
+    def test_grant_mode_pins_the_e0_verified_settings(self) -> None:
+        for kw in ({"roots": [str(self.walk)]}, {"daily_restart": False}, {"prune_every": 1}, {"create_time": "row"}):
+            with self.subTest(kw=kw), self.assertRaises(cp.Refused):
+                self.run_grant(**kw)
+
+    # --- the hash --------------------------------------------------------------------------------------------
+    def test_hash_mismatch_refuses_before_a_row_is_fed(self) -> None:
+        g = self.grant()
+        f = self.walk / "trades" / "trades-2026-10-16T02.jsonl.zst"
+        original = f.read_bytes()
+        f.write_bytes(original + b"\x00")  # any change to the stored bytes
+        with self.assertRaises(cp.Refused) as ctx:
+            self.run_grant(g)
+        self.assertIn("sha256", str(ctx.exception))
+        self.assertIn(str(f), str(ctx.exception))
+
+    def test_creates_hash_is_checked_in_boot_staging_too(self) -> None:
+        g = self.grant()
+        f = self.fwd / "creates" / "creates-2026-10-15T23.jsonl.zst"
+        f.write_bytes(f.read_bytes()[:-1])
+        with self.assertRaises(cp.Refused) as ctx:
+            self.run_grant(g)
+        self.assertIn("sha256", str(ctx.exception))
+
+    def test_a_symlink_is_refused_even_with_the_right_hash(self) -> None:
+        g = self.grant()
+        f = self.walk / "trades" / "trades-2026-10-16T02.jsonl.zst"
+        real = self.dir / "elsewhere.zst"
+        shutil.move(str(f), str(real))
+        f.symlink_to(real)
+        with self.assertRaises(cp.Refused):
+            self.run_grant(g)
+
+    def test_an_hour_or_kind_not_in_the_grant_refuses(self) -> None:
+        sess = cp._GrantSession(self.grant(drop=[("2026-10-16T02", "trades")]), self.ledger)
+        sess.attach(self.dir / "t")
+        for hour, kind in (("2026-10-16T02", "trades"), ("2026-10-16T09", "creates"), ("2026-10-16T02", "events"), ("2026-10-16T02", "migrations")):
+            with self.subTest(hour=hour, kind=kind), self.assertRaises(cp.Refused):
+                sess.copy_verified(hour, kind, self.dir / "t" / "x")
+        self.assertFalse((self.dir / "t" / "x").exists())
+
+    def test_a_replayed_hour_not_in_the_grant_is_skipped_and_never_opened(self) -> None:
+        recs, meta = self.run_grant(self.grant(drop=[("2026-10-16T02", "trades")]))
+        self.assertNotIn("Hi", {r["mint"] for r in recs})
+        g = meta["grant"]
+        self.assertIn("2026-10-16T02", g["replayed_hours_not_in_grant"])
+        self.assertNotIn(("2026-10-16T02", "trades"), {(h, k) for h, k, _ in g["opened"]})
+        self.assertNotIn("2026-10-16T02", [h for h, k, _ in g["opened"] if k == "trades"])
+
+    # --- forward-1002 needs the FINAL ---------------------------------------------------------------------------
+    def test_forward_1002_refuses_without_a_final_and_opens_nothing(self) -> None:
+        secret = "SENTINEL-0123"
+
+        def marker(**over) -> dict:
+            m = {"final": True, "schema": cp.FINAL_SCHEMA, "experiment": "EXP-012", "test_window": False, "clean_clock": cp.FINAL_WINDOW[0],
+                 "read_end": cp.FINAL_WINDOW[1], "note": secret}
+            m.update(over)
+            return m
+
+        no_test_key = marker()
+        del no_test_key["test_window"]
+        cases = {
+            "missing": None,
+            "empty": "",
+            "no_final_row": json.dumps(marker(final=False)) + "\n",
+            "final_is_a_string": json.dumps(marker(final="true")) + "\n",
+            "test_window_final": json.dumps(marker(test_window=True)) + "\n",
+            "test_window_key_absent": json.dumps(no_test_key) + "\n",
+            "other_window": json.dumps(marker(clean_clock="2026-10-05T05:00:00Z")) + "\n",
+            "other_experiment": json.dumps(marker(experiment="EXP-099")) + "\n",
+            "other_schema": json.dumps(marker(schema="x")) + "\n",
+            "torn_line": json.dumps(marker()),
+            "not_json": "{nope}\n",
+        }
+        for name, text in cases.items():
+            with self.subTest(name):
+                ledger = self.dir / "cases" / f"{name}.jsonl"
+                ledger.parent.mkdir(exist_ok=True)
+                if text is not None:
+                    ledger.write_text(text)
+                with mock.patch.object(cp._GrantSession, "copy_verified", side_effect=AssertionError("opened a file")), \
+                        self.assertRaises(cp.Refused) as ctx:
+                    self.run_grant(ledger=ledger)
+                self.assertNotIn(secret, str(ctx.exception))
+        ok = self.dir / "cases" / "ok.jsonl"
+        ok.write_text(json.dumps({"x": 1}) + "\n" + json.dumps(marker()) + "\n")
+        cp.require_final(ok)  # a FINAL row among others is found
+
+    def test_a_real_final_marker_opens_forward_1002_and_walk_2_alone_needs_no_ledger(self) -> None:
+        self.run_grant()  # the setUp ledger holds a marker written by exp012_forward._final_docs
+        walk_only = cp.ReadGrant({h: {k: v for k, v in kinds.items()} for h, kinds in self.grant().hours.items() if h >= "2026-10-16T01"})
+        recs, meta = self.run_grant(walk_only, ledger=self.dir / "does-not-exist.jsonl")
+        self.assertFalse(meta["grant"]["forward_1002_granted"])
+        self.assertTrue(recs)
+
+    def test_a_forbidden_name_in_a_root_is_exempt_but_the_cutoff_still_applies_without_a_grant(self) -> None:
+        heart = self.dir / "heartbeat-positions"  # FORBIDDEN_NAMES words in the root path itself
+        shutil.copytree(self.walk, heart)
+        sha = hashlib.sha256((heart / "trades" / "trades-2026-10-16T02.jsonl.zst").read_bytes()).hexdigest()
+        with mock.patch.object(cp, "WALK2_DIR", str(heart)):
+            sess = cp._GrantSession(cp.ReadGrant({"2026-10-16T02": {"trades": (f"{heart}/trades/trades-2026-10-16T02.jsonl.zst", sha)}}), self.ledger)
+            sess.attach(self.dir / "t2")
+            self.assertEqual(sess.copy_verified("2026-10-16T02", "trades", self.dir / "t2" / "copy"), sha)
+        # without a grant the exploration refusals are unchanged for both roots
+        for root in (cp.WALK2_DIR, cp.FWD1002_DIR):
+            with self.assertRaises(cp.Refused):
+                cp.refuse_path(f"{root}/trades/trades-2026-10-16T05.jsonl.zst", [root])
+            with self.assertRaises(cp.Refused):
+                cp.replay_view(cp.Block("t", (root,), ".jsonl.zst", False), ["2026-10-16"], engine=self.engine(), roots=[root])
+
+    # --- strict lines apply in grant mode -------------------------------------------------------------------------
+    def test_bad_lines_refuse_in_grant_mode(self) -> None:
+        from tools.pump_history_backfill import seal_jsonl
+
+        for kind, root, hour in (("trades", self.walk, "2026-10-16T02"), ("creates", self.fwd, "2026-10-15T23"), ("creates", self.walk, "2026-10-16T23")):
+            with self.subTest(kind=kind, hour=hour):
+                f = root / kind / f"{kind}-{hour}.jsonl.zst"
+                good = f.read_bytes()
+                subprocess.run(["zstd", "-q", "-d", "-f", str(f), "-o", str(f.with_suffix(""))], check=True)
+                plain = f.with_suffix("")
+                plain.write_bytes(plain.read_bytes() + b'{"broken":\n')
+                seal_jsonl(plain)
+                try:
+                    with self.assertRaises(cp.BadLineRefused) as ctx:
+                        self.run_grant()  # the grant is built from the changed file, so the hash is right; the lines are not
+                    self.assertEqual(ctx.exception.kind, "not_json")
+                    self.assertIn(str(f), str(ctx.exception))
+                finally:
+                    f.write_bytes(good)
+
+
+class EventVTests(_Base):
+    """Walk 2 runs the walker with --event-v: trade rows carry V, ix_name, creator_fee_unclaimed, buyback_fee and
+    fee_recipient_zero, and an events/ stream is written next to creates/ and trades/. The gate sees none of it."""
+
+    def test_event_v_keys_are_the_decoders(self) -> None:
+        from observe.trade_decode import EVENT_V_KEYS
+
+        self.assertEqual(set(EVENT_V_ROW_KEYS), set(EVENT_V_KEYS))
+
+    def _decisions(self, extra: dict | None, *, with_events_dir: bool = False):
+        from tools.pump_history_backfill import seal_jsonl
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            t = DAY0 + 2 * HOUR
+            hour = cp._hour_of_ms(t)
+            rows = _mint_rows("Hi", 7, t0=t) + _mint_rows("Lo", 1, t0=t + 30_000)
+            if extra is not None:
+                for r in rows:
+                    r.update(extra)
+            _write_hour(root, "creates", hour, _lines([_crow("Hi", t, "C1"), _crow("Lo", t + 30_000, "C2")]), zst=True)
+            _write_hour(root, "trades", hour, _lines(sorted(rows, key=lambda r: r["t_recv_ms"])), zst=True)
+            if with_events_dir:  # an events stream the replay must never open: garbage that any reader would refuse
+                (root / "events").mkdir()
+                ev = root / "events" / f"events-{hour}.jsonl"
+                ev.write_bytes(b'{"type":"boost"}\n\x00\x00 not json\n[1]\n')
+                seal_jsonl(ev)
+            blk = cp.Block("t", (td,), ".jsonl.zst", False)
+            opened: list[str] = []
+            real = cp.iter_lines
+            with mock.patch.object(cp, "iter_lines", lambda p, r: (opened.append(str(p)), real(p, r))[1]):
+                recs, meta = cp.replay_view(blk, [cp._day_of_ms(DAY0)], engine=self.engine(), roots=[td])
+            return recs, meta, opened
+
+    def test_event_v_fields_do_not_change_a_decision(self) -> None:
+        if shutil.which("zstd") is None:
+            self.skipTest("zstd binary not available")
+        plain, meta0, _ = self._decisions(None)
+        withv, meta1, _ = self._decisions(EVENT_V_ROW_KEYS)
+        self.assertEqual({r["mint"]: r["decision"] for r in plain}, {"Hi": "pick", "Lo": "below"})
+        self.assertEqual(canonical(plain, meta0), canonical(withv, meta1))  # scores included, to the last digit
+        # a different V on every row changes nothing either: features never see V
+        other, meta2, _ = self._decisions({**EVENT_V_ROW_KEYS, "virtual_quote_reserves": -5, "fee_recipient_zero": True, "ix_name": "sell"})
+        self.assertEqual(canonical(plain, meta0), canonical(other, meta2))
+
+    def test_the_events_dir_is_never_read(self) -> None:
+        if shutil.which("zstd") is None:
+            self.skipTest("zstd binary not available")
+        plain, meta0, _ = self._decisions(EVENT_V_ROW_KEYS)
+        withdir, meta1, opened = self._decisions(EVENT_V_ROW_KEYS, with_events_dir=True)
+        self.assertEqual(canonical(plain, meta0), canonical(withdir, meta1))
+        self.assertTrue(opened and not any("events" in Path(p).parts[-2] for p in opened))
+
+    def test_grant_mode_with_event_v_rows_and_an_events_dir(self) -> None:
+        if shutil.which("zstd") is None:
+            self.skipTest("zstd binary not available")
+        with tempfile.TemporaryDirectory() as td:
+            walk, fwd = Path(td) / "walk2", Path(td) / "fwd"
+            days = walk2_fixture(walk, fwd, event_v=True)
+            (walk / "events").mkdir()
+            (walk / "events" / "events-2026-10-16T02.jsonl.zst").write_bytes(b"\x00not zstd")
+            hours: dict[str, dict] = {}
+            for root in (walk, fwd):
+                for kind in cp.GRANT_KINDS:
+                    for f in sorted((root / kind).iterdir()):
+                        hour = f.name[len(kind) + 1: -len(".jsonl.zst")]
+                        hours.setdefault(hour, {})[kind] = (str(f), hashlib.sha256(f.read_bytes()).hexdigest())
+            ledger = Path(td) / "FINAL_READS.jsonl"
+            ledger.write_text(json.dumps({"final": True, "schema": cp.FINAL_SCHEMA, "experiment": "EXP-012", "test_window": False,
+                                          "clean_clock": cp.FINAL_WINDOW[0], "read_end": cp.FINAL_WINDOW[1]}) + "\n")
+            with mock.patch.object(cp, "WALK2_DIR", str(walk)), mock.patch.object(cp, "FWD1002_DIR", str(fwd)):
+                recs, meta = cp.replay_view(cp.WALK2_BLOCK, days, engine=self.engine(), grant=cp.ReadGrant(hours), _test_final_ledger=ledger)
+            self.assertEqual({r["mint"]: r["decision"] for r in recs if r["kind"] == "decision"},
+                             {"E0m": "pick", "Hi": "pick", "Lo": "below", "D1Hi": "pick", "D1Lo": "below"})
+            self.assertFalse([h for h, k, _ in meta["grant"]["opened"] if k not in ("creates", "trades")])
+            # the events/ file is not in the grant and cannot be put in it
+            with self.assertRaises(cp.Refused):
+                cp.ReadGrant({"2026-10-16T02": {"events": (str(walk / "events" / "events-2026-10-16T02.jsonl.zst"), "0" * 64)}})
+
+
 class WiringTests(unittest.TestCase):
     def test_frozen_inputs(self) -> None:
         import hashlib
