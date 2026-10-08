@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import random
 import shutil
 import subprocess
@@ -25,6 +26,7 @@ from unittest import mock
 import tools.exp011_score as e11
 import tools.exp012_forward as fw
 import tools.exp012_score as s12
+import tools.tape_lines as tape_lines
 from tools.exp012_fixtures import hour_start_s, mint_tape, write_zst_jsonl
 from tools.test_exp012_score import FREEZE_COMMIT, write_frozen_artifacts
 
@@ -185,6 +187,49 @@ class RefusalTests(Base):
             (walk / "verify.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
             rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
             self.assert_refused(out, rc, err, "hour 2026-10-05T06 has no OK line")
+
+    def test_a_verify_line_with_bad_lines_is_not_ok(self) -> None:
+        good = {"issues": [], "content": {"trades": {"rows": 3, "unique": 3, "duplicates": 0, "bad_lines": 0}}, "sha256": {"trades": "a", "creates": "b"}}
+        self.assertTrue(fw._line_ok(dict(good, bad_lines=0)))
+        self.assertTrue(fw._line_ok(dict(good)))  # a pre-A8 line has no bad_lines key and stays OK
+        self.assertFalse(fw._line_ok(dict(good, bad_lines=1)))
+        worse = {**good, "content": {"trades": {"rows": 3, "unique": 3, "duplicates": 0, "bad_lines": 2}}}
+        self.assertFalse(fw._line_ok(worse))
+
+    def _plant_nul_line(self, walk: Path, hour: str, legacy_verify: bool) -> None:
+        """Append a NUL-hole line to the hour's sealed trades file and make verify.jsonl match its new bytes."""
+        z = walk / "trades" / f"trades-{hour}.jsonl.zst"
+        raw = subprocess.run(["zstd", "-dc", "-q", str(z)], check=True, capture_output=True).stdout
+        z.unlink()
+        plain = z.with_suffix("")
+        plain.write_bytes(raw + b"\x00" * 2048 + b"\n")
+        subprocess.run(["zstd", "-q", "--rm", "-f", str(plain)], check=True)
+        rec = fw.verify_line(walk, hour)
+        self.assertEqual(rec["bad_lines"], 1)
+        if legacy_verify:  # what a verify line from before A8 would say about the same bytes
+            rec["issues"] = []
+            rec.pop("bad_lines")
+            for st in rec["content"].values():
+                for k in ("bad_lines", "nul", "not_json", "non_object", "lenient"):
+                    st.pop(k, None)
+        lines = [x for x in (walk / "verify.jsonl").read_text().splitlines() if json.loads(x)["hour"] != hour]
+        (walk / "verify.jsonl").write_text("".join(x + "\n" for x in lines) + json.dumps(rec, sort_keys=True) + "\n")
+
+    def test_new_verify_flags_a_nul_hole_hour_and_score_names_it(self) -> None:
+        walk, art, out = self.fresh()
+        self._plant_nul_line(walk, "2026-10-05T07", legacy_verify=False)
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assert_refused(out, rc, err, "hour 2026-10-05T07 has no OK line")
+
+    def test_score_reads_walk_tape_strict_and_refuses_a_nul_hole_even_with_a_legacy_verify_line(self) -> None:
+        walk, art, out = self.fresh()
+        self._plant_nul_line(walk, "2026-10-05T07", legacy_verify=True)
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 2, err)
+        self.assertIn("REFUSED: bad tape lines, hour not decidable:", err)
+        self.assertIn("trades-2026-10-05T07.jsonl.zst: 1 bad line(s)", err)
+        self.assertFalse((out / "rows.jsonl").exists())  # nothing appended
+        self.assertNotIn(tape_lines.STRICT_ENV, os.environ)  # the switch was restored
 
     def test_unsealed_hour_is_named(self) -> None:
         walk, art, out = self.fresh()
