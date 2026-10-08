@@ -451,6 +451,17 @@ def _events(blobs: Iterable[bytes], decoder: Callable[[bytes], dict[str, Any] | 
     return [e for e in (decoder(b) for b in blobs) if e is not None]
 
 
+def post_complete_buy_seen(blobs: Iterable[bytes], mint: str) -> tuple[bool, bool | None]:
+    """(seen, mint_match). `seen` is true on the PostCompleteBuyEvent discriminator alone, so a layout change or a
+    mint-decode miss over-counts synthetic migrations instead of hiding them (this feeds a kill-switch).
+    `mint_match` is the refinement: True / False when the event decodes, None when it carries the discriminator but is too short."""
+    hits = [b for b in blobs if b[:8] == DISC_POST_COMPLETE_BUY]
+    if not hits:
+        return False, None
+    decoded = _events(hits, decode_post_complete_buy)
+    return True, (any(e["mint"] == mint for e in decoded) if decoded else None)
+
+
 def parse_migrate_tx(tx: Mapping[str, Any]) -> dict[str, Any] | None:
     """Structure fields of one migrate tx, or None when it carries no CompletePumpAmmMigrationEvent."""
     blobs = tx_event_blobs(tx)
@@ -462,6 +473,7 @@ def parse_migrate_tx(tx: Mapping[str, Any]) -> dict[str, Any] | None:
     pump_ix = program_instructions(logs, PUMP_PROGRAM)
     amm_ix = program_instructions(logs, PUMPSWAP_PROGRAM)
     wsol = ev["quote_mint"] == WSOL_MINT
+    pcb_seen, pcb_match = post_complete_buy_seen(blobs, ev["mint"])
     budget_lamports = None
     if wsol:  # budget = lamport delta of the boost vault in the migrate tx (includes token-account rent)
         keys = tx_keys(tx)
@@ -480,18 +492,20 @@ def parse_migrate_tx(tx: Mapping[str, Any]) -> dict[str, Any] | None:
         "slot": int(tx["slot"]),
         "block_time": tx.get("blockTime"),
         "complete_in_tx": any(e["mint"] == ev["mint"] for e in _events(blobs, decode_complete_event)),
-        "post_complete_in_tx": any(e["mint"] == ev["mint"] for e in _events(blobs, decode_post_complete_buy)),
+        "post_complete_in_tx": pcb_seen,
+        "post_complete_mint_match_in_tx": pcb_match,
         "budget_lamports": budget_lamports,
     }
 
 
 def completion_info(tx: Mapping[str, Any], mint: str) -> dict[str, Any] | None:
-    """If `tx` carries the CompleteEvent for `mint`, return its slot and whether a PostCompleteBuyEvent rode along."""
+    """If `tx` carries the CompleteEvent for `mint`, return its slot and whether a PostCompleteBuyEvent rode along
+    (`synthetic`: discriminator seen; `synthetic_mint_match`: the refinement, see post_complete_buy_seen)."""
     blobs = tx_event_blobs(tx)
     if not any(e["mint"] == mint for e in _events(blobs, decode_complete_event)):
         return None
-    synthetic = any(e["mint"] == mint for e in _events(blobs, decode_post_complete_buy))
-    return {"slot": int(tx["slot"]), "synthetic": synthetic}
+    synthetic, mint_match = post_complete_buy_seen(blobs, mint)
+    return {"slot": int(tx["slot"]), "synthetic": synthetic, "synthetic_mint_match": mint_match}
 
 
 # =============================================================================================
@@ -738,9 +752,11 @@ def annotate_completion(client: RpcClient, grads: list[dict[str, Any]], *, max_t
     """Find the completing curve tx (newest successful curve tx before the migrate tx with a CompleteEvent)."""
     for g in grads:
         g["synthetic"] = None
+        g["synthetic_mint_match"] = None
         g["complete_to_migrate_slots"] = None
         if g["complete_in_tx"]:  # CompleteEvent rode in the migrate tx itself
             g["synthetic"] = g["post_complete_in_tx"]
+            g["synthetic_mint_match"] = g["post_complete_mint_match_in_tx"]
             g["complete_to_migrate_slots"] = 0
             continue
         sigs = client.call("getSignaturesForAddress", [g["curve"], {"limit": 10, "before": g["sig"], "commitment": "finalized"}]) or []
@@ -755,6 +771,7 @@ def annotate_completion(client: RpcClient, grads: list[dict[str, Any]], *, max_t
             info = completion_info(tx, g["mint"]) if tx else None
             if info:
                 g["synthetic"] = info["synthetic"] or g["post_complete_in_tx"]
+                g["synthetic_mint_match"] = info["synthetic_mint_match"] if info["synthetic"] else g["post_complete_mint_match_in_tx"]
                 g["complete_to_migrate_slots"] = g["slot"] - info["slot"]
                 break
 
@@ -846,6 +863,7 @@ def summarize_graduations(grads: Sequence[Mapping[str, Any]], n_requested: int, 
         "synthetic": {
             "n_checked": len(synth_known),
             "n_synthetic": sum(1 for g in synth_known if g["synthetic"]),
+            "n_mint_match": sum(1 for g in synth_known if g["synthetic"] and g.get("synthetic_mint_match") is True),  # refinement; the halt uses n_synthetic
             "share": share(sum(1 for g in synth_known if g["synthetic"]), len(synth_known)),
             "n_completion_not_found": len(grads) - len(synth_known),
         },

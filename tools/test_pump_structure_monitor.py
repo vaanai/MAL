@@ -278,15 +278,19 @@ def test_migrate_tx_log_path_and_variants():
 
 def test_completion_recorded_and_synthetic_constructed():
     mig, comp = m.parse_migrate_tx(fx("migrate_tx_sep20.json")), fx("completing_tx_sep20.json")
-    assert m.completion_info(comp, mig["mint"]) == {"slot": 448641728, "synthetic": False}
+    assert m.completion_info(comp, mig["mint"]) == {"slot": 448641728, "synthetic": False, "synthetic_mint_match": None}
     assert m.completion_info(comp, m.b58encode(k(3))) is None
     mint, curve = m.b58decode(mig["mint"]), m.b58decode(mig["curve"])
-    synth = copy.deepcopy(comp)
-    synth["meta"]["logMessages"].append(data_line(post_complete_event(mint, curve)))
-    assert m.completion_info(synth, mig["mint"])["synthetic"] is True
-    other_mint = copy.deepcopy(comp)  # a PostCompleteBuyEvent for another mint must not count
-    other_mint["meta"]["logMessages"].append(data_line(post_complete_event(k(9), curve)))
-    assert m.completion_info(other_mint, mig["mint"])["synthetic"] is False
+
+    def with_event(blob):
+        tx = copy.deepcopy(comp)
+        tx["meta"]["logMessages"].append(data_line(blob))
+        return m.completion_info(tx, mig["mint"])
+
+    assert with_event(post_complete_event(mint, curve)) == {"slot": 448641728, "synthetic": True, "synthetic_mint_match": True}
+    # The discriminator alone counts (a kill-switch over-counts rather than misses); the mint match is only a refinement.
+    assert with_event(post_complete_event(k(9), curve)) == {"slot": 448641728, "synthetic": True, "synthetic_mint_match": False}
+    assert with_event(m.DISC_POST_COMPLETE_BUY + bytes(20)) == {"slot": 448641728, "synthetic": True, "synthetic_mint_match": None}  # layout changed / truncated
 
 
 def test_program_instruction_attribution():
@@ -542,6 +546,7 @@ def test_end_to_end_synthetic_four_of_ten_and_changed_config_halt(tmp_path):
     rc, out = run_main(tmp_path, chain)
     rec = json.loads(out.read_text())
     assert rc == 0 and rec["halt"]["flags"]["synthetic_share_high"]["halt"] and rec["halt"]["any"]
+    assert rec["graduations"]["synthetic"]["n_synthetic"] == 4 and rec["graduations"]["synthetic"]["n_mint_match"] == 4
     chain = Chain(n=10, config=config_result(flip_global_config))
     rc, out = run_main(tmp_path / "b", chain)
     rec = json.loads(out.read_text())
