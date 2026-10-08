@@ -530,6 +530,38 @@ The read tool is a sealed read mode of `tools/cap_pick_score.py`. It must merge 
 - A11's DEC-016 amendment: a separate manager PR, to merge before 2026-10-16T00Z.
 - No `data/tries.jsonl` line. The lab writes tries lines when a try is spent, not at registration. No earlier pre-registration PR added one.
 
+## Amendments
+
+### Amendment 1 (2026-10-08, before any counted hour): the E0 comparison set (section 2.1 item 2)
+
+No CAP-PICK outcome was computed or read to make this amendment.
+
+**Finding [measured].** A dry run was made with the E0 harness `tools/cap_pick_e0.py` (PR #473, head 71d03c2) on explore-0814, 2026-08-17. That is not the E0 day.
+- Of the mints that migrate at most 60 min after their create, 857 of 857 match exactly on mint, decision, mig_ms and repr(score).
+- All 56 mismatching lines are mints that migrate 3,734 to 49,214 s after their create. B marks them `no_features`, as section 2 defines (the 60-minute skip; `tools/forward_exp012_gate.py:42-44` and `:82`). A scores them (42 `below`, 14 `pick`).
+- Item 3 matched: C = B's picks in the universe, 122 mints, md5 fa77cc835084c4ec08ce2b43caa488fc.
+
+**Cause [inferred from code].**
+- `replay_rows` (`tools/forward_paper.py:2848`) runs without a live clock: its `LatencyMeter` has no `now_ms` (`:2872`). The engine then prunes only when its print count equals a multiple of 50,000 at the end of a time step (`tools/forward_paper.py:1609-1611`). On second-resolution exploration time steps that rarely happens, so A seldom applies the 60-minute drop.
+- The live runner has a live clock. It checks a multiple of 5,000 at millisecond steps (same lines), and `Exp012Online.prune` rate-limits itself to once per 60 s (`PRUNE_EVERY_MS`, `tools/forward_exp012_gate.py:85`; `prune`, `:395-399`; called from `ForwardEngine._prune`, `tools/forward_paper.py:2704`). Live therefore drops these mints within about a minute of the 60-minute mark, as B does.
+- The live gate's own rows stay sealed until the DEC-016 FINAL, so this is not measured on live output.
+
+**Amended item 2 [pinned].** md5(A) = md5(B) is required over the canonical lists restricted to mints with `mig_ms − create_ms ≤ DROP_AFTER_CREATE_MS` (3,600,000 ms, `tools/forward_exp012_gate.py:82`).
+- Each side uses its own create time. A disagreement on a mint's create time counts as a mismatch.
+- The full-list md5s, and an A label × B label crosstab for the older mints, are reported and never decide.
+- A mint that migrates more than 60 min after create stays `no_features` in the book, as section 2 says. This amendment changes no book rule.
+
+**E0 day [pinned].** explore-0814, 2026-08-20, both sides booting at 2026-08-20T00:00Z. 2026-08-17 was used only for the dry run.
+
+**A-side construction, disclosed.**
+- (a) A's creates are built with the gate replay's `create_signal_from_row`, a shared input, so E0 tests the gate decision path, not create parsing.
+- (b) A is fed only the trade rows of mints that have a create in the day. This is a memory bound, since `replay_rows` buffers other rows in `engine.early`. B drops the same rows. The count of dropped rows is recorded in `e0.json`.
+- (c) A's preload runs without `tape_dir`, as B's does.
+- (d) Labels map as follows: `entered` → `pick`; reason `below_threshold` → `below`; any other reason verbatim.
+- (e) A needs about 9–10 GB for one explore-0814 day, so the official run is a MiScusi job with 16 GB.
+
+**Unchanged:** items 1, 3 and 4; the book; the pick rule and threshold; the looks; the gate.
+
 ## Sources
 
 - The audit: `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md` and `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.
