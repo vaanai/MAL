@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
+import random
+import re
 import struct
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -27,6 +31,10 @@ KEEPER = "HTVZVEQMBsNanubDPTs3CxDAEGNFQHJY8c1441iy2S5r"  # GlobalConfig.boost_au
 
 def fx(name: str):
     return json.loads((FX / name).read_text())
+
+
+REAL_URLLIB_GET = m.urllib_get  # the real unauthenticated GET, kept for the one test that inspects its request
+TODAY = datetime.fromtimestamp(NOW, timezone.utc).date()
 
 
 def acct(data: bytes, owner: str = "11111111111111111111111111111111") -> dict:
@@ -88,6 +96,10 @@ def k(i: int, j: int = 0) -> bytes:
     return bytes([i, j]) + bytes(30)
 
 
+USDC = m.b58decode(m.USDC_MINT)
+PUMP_QUOTE = k(77, 7)  # a pump-token quote mint (constructed): the "other" class
+
+
 def migration_event(mint, curve, pool, quote=bytes(32), ts=1_790_000_000) -> bytes:
     blob = m.DISC_MIGRATE + bytes(32) + mint + struct.pack("<QQQ", 1, 2, 3) + curve + struct.pack("<q", ts) + pool + quote
     assert len(blob) == 200
@@ -118,10 +130,68 @@ def mini_tx(slot, bt, logs, keys=None, pre=None, post=None, signers=1) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------------------------
+# change watch fixtures: a fake GitHub (recorded commit list) and constructed programdata. No network anywhere.
+# ---------------------------------------------------------------------------------------------
+def docs_body(n_new: int = 0) -> bytes:
+    """The recorded 30-commit list (public repo pump-fun/pump-public-docs, 2026-10-08, trimmed to sha/message/dates), with `n_new` constructed newer commits in front."""
+    new = [{"sha": f"{0xdead00 + i:040x}", "commit": {"message": f"docs: constructed change {i}\n\nbody", "committer": {"date": f"2026-10-0{i + 1}T12:00:00Z"}}} for i in range(n_new)]
+    return json.dumps(list(reversed(new)) + fx("docs_commits.json")).encode()
+
+
+def fake_github(*responses, calls=None):
+    """A stand-in for m.urllib_get. Each response is an exception instance (raised) or (status, body); the last one repeats."""
+    script = list(responses) or [(200, docs_body())]
+    seen = calls if calls is not None else []
+
+    def get(url, timeout):
+        seen.append(url)
+        r = script[min(len(seen), len(script)) - 1]
+        if isinstance(r, Exception):
+            raise r
+        return r[0], {}, r[1]
+
+    return get
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    def refuse(*a, **kw):
+        raise AssertionError("a test reached the network")
+
+    monkeypatch.setattr(m.urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(m, "urllib_get", fake_github())  # healthy GitHub by default
+
+
+def _program_addrs() -> dict:
+    node = Node({"getMultipleAccounts": lambda p: config_result()})
+    return m.stage_accounts(client_for(node), fx("epoch_info.json"), NOW)["program_accounts"]
+
+
+PROGRAMDATA_ADDR = _program_addrs()  # program name -> programdata address, from the recorded program accounts
+
+
+def programdata_bytes(name: str, tweak: bytes = b"", slot: int | None = None) -> bytes:
+    """Constructed UpgradeableLoaderState::ProgramData (tag 3, slot, Some(authority)) followed by a stand-in binary."""
+    slot = PINS["programs"][name]["deploy_slot"] if slot is None else slot
+    return struct.pack("<IQ", 3, slot) + b"\x01" + bytes(32) + (name.encode() + b"-elf") * 40 + tweak
+
+
+def with_program_hashes(pins: dict) -> dict:
+    pins = copy.deepcopy(pins)
+    for name, p in pins["programs"].items():
+        data = programdata_bytes(name)
+        p["sha256"], p["data_len"] = hashlib.sha256(data).hexdigest(), len(data)
+    return pins
+
+
+TEST_PINS = with_program_hashes(PINS)  # the committed pins, with the program hashes of the constructed programdata
+
+
 class Chain:
     """A tiny constructed chain: graduations (migrate tx + completing tx + BOOST slices + Pool account) plus the recorded config."""
 
-    def __init__(self, n=10, mayhem=(0, 1), no_boost=(), synthetic=(), config=None, slices=29, last_slice_s=342, fail_pools=False, bad_txs=(), slice_signer=KEEPER):
+    def __init__(self, n=10, mayhem=(0, 1), no_boost=(), synthetic=(), config=None, slices=29, last_slice_s=342, fail_pools=False, bad_txs=(), slice_signer=KEEPER, usdc=(), other=(), tweak=None):
         self.fail_pools = fail_pools
         self.bad_txs = set(bad_txs)  # signatures whose getTransaction answers with a JSON-RPC error
         self.sigs: dict[str, list] = {m.MIGRATION_FEE_ACCOUNT: []}
@@ -130,6 +200,7 @@ class Chain:
         self.mints: list[str] = []
         self.config = config or config_result()
         self.all_ids: list[str] = []
+        self.programdata = {PROGRAMDATA_ADDR[name]: programdata_bytes(name, (tweak or {}).get(name, b"")) for name in PROGRAMDATA_ADDR}
         for i in range(n):
             mint, curve, pool = k(i + 1, 1), k(i + 1, 2), k(i + 1, 3)
             smint, scurve, spool = m.b58encode(mint), m.b58encode(curve), m.b58encode(pool)
@@ -139,7 +210,8 @@ class Chain:
             logs = [f"Program {m.PUMP_PROGRAM} invoke [1]", "Program log: Instruction: MigrateV2"]
             if boost:
                 logs += [f"Program {m.PUMPSWAP_PROGRAM} invoke [2]", "Program log: Instruction: InitBoost", f"Program {m.PUMPSWAP_PROGRAM} success"]
-            logs += [data_line(migration_event(mint, curve, pool, ts=bt)), f"Program {m.PUMP_PROGRAM} success"]
+            quote = USDC if i in usdc else PUMP_QUOTE if i in other else bytes(32)
+            logs += [data_line(migration_event(mint, curve, pool, quote=quote, ts=bt)), f"Program {m.PUMP_PROGRAM} success"]
             vault = m.boost_vault(spool)
             budget = 17_585_993_728
             self.txs[f"mig{i}"] = mini_tx(slot, bt, logs, [m.NATIVE_SOL, vault], [0, 0], [0, budget if boost else 0])
@@ -167,6 +239,7 @@ class Chain:
         mig.insert(1, {"signature": "failed", "slot": 1_999_000, "blockTime": NOW - 700, "err": {"InstructionError": [0, "x"]}})
         mig.insert(2, {"signature": "other", "slot": 1_998_000, "blockTime": NOW - 701, "err": None})
         self.txs["other"] = mini_tx(1_998_000, NOW - 701, ["Program log: Instruction: Buy"])
+        self.txs["young"] = mini_tx(2_000_000, NOW - 100, ["Program log: Instruction: Buy"])  # read only by a run made a day later
         trade_logs = [f"Program {m.PUMPSWAP_PROGRAM} invoke [1]", "Program log: Instruction: BuyV2", f"Program {m.PUMPSWAP_PROGRAM} success",
                       f"Program {m.PUMPSWAP_PROGRAM} invoke [1]", "Program log: Instruction: Sell", f"Program {m.PUMPSWAP_PROGRAM} success"]
         self.sigs[m.PUMPSWAP_PROGRAM] = [{"signature": f"amm{j}", "slot": 3_000_000, "blockTime": NOW - 5, "err": None} for j in range(50)]
@@ -185,6 +258,18 @@ class Chain:
             return self.config
         return {"context": {"slot": 1}, "value": [None for _ in keys]}  # boost vaults: drained
 
+    def sigs_for(self, params):
+        lst = self.sigs.get(params[0], [])
+        before = (params[1] if len(params) > 1 else {}).get("before")
+        for i, s_ in enumerate(lst):
+            if before and s_["signature"] == before:
+                return lst[i + 1 :]
+        return lst
+
+    def account_info(self, params):
+        data = self.programdata.get(params[0])
+        return {"context": {"slot": 1}, "value": None if data is None else acct(data, "BPFLoaderUpgradeab1e11111111111111111111111")}
+
     def get_tx(self, params):
         if params[0] in self.bad_txs:
             raise NodeError()
@@ -195,7 +280,8 @@ class Chain:
             "getEpochInfo": lambda p: fx("epoch_info.json"),
             "getRecentPerformanceSamples": lambda p: fx("perf_samples.json"),
             "getMultipleAccounts": self.multi,
-            "getSignaturesForAddress": lambda p: self.sigs.get(p[0], []),
+            "getSignaturesForAddress": self.sigs_for,
+            "getAccountInfo": self.account_info,
             "getTransaction": self.get_tx,
             "getBlockTime": lambda p: 1_790_000_000,
         })
@@ -595,9 +681,14 @@ def test_zero_keeper_slices_halt_not_crash():
 # ---------------------------------------------------------------------------------------------
 # end to end on the constructed chain (real RpcClient, real stages, real file output)
 # ---------------------------------------------------------------------------------------------
-def run_main(tmp_path, chain, extra=(), url="https://rpc.test/?k=SECRET"):
+def run_main(tmp_path, chain, extra=(), url="https://rpc.test/?k=SECRET", history=(), pins=None):
     out = tmp_path / "sub" / "daily.jsonl"
-    rc = m.main(["--rpc-url", url, "--out", str(out), "--n", "10", "--min-interval", "0", *extra], client=client_for(chain.node()), now=NOW)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if history:
+        out.write_text("".join(json.dumps(h) + "\n" for h in history))
+    pins_path = tmp_path / "pins.json"
+    pins_path.write_text(json.dumps(pins or TEST_PINS))
+    rc = m.main(["--rpc-url", url, "--out", str(out), "--pins", str(pins_path), "--n", "10", "--min-interval", "0", *extra], client=client_for(chain.node()), now=NOW)
     return rc, out
 
 
@@ -618,6 +709,9 @@ def test_end_to_end_healthy_run(tmp_path, capsys):
     assert rec["pumpswap_trade_mix"]["v2_share"] == 0.5
     assert rec["halt"]["any"] is False and rec["halt"]["flags"]["pins_changed"]["halt"] is False
     assert rec["halt"]["n_not_evaluated"] == 0 and rec["halt"]["all_evaluated"] is True
+    # the three change-watch rules are reported apart, in rec["watch"]: day one has no docs baseline, and 10 graduations are too few for the USDC rate
+    assert rec["watch"] == {"n_not_evaluated": 2, "all_evaluated": False, "rules_not_evaluated": ["docs_changed", "usdc_boost_regime"]}
+    assert set(rec["halt"]) == {"any", "n_not_evaluated", "all_evaluated", "flags"}
     assert rec["rpc"]["calls"] < 400 and rec["rpc"]["cap"] == 400
     # privacy: no mint, pool, curve or signature ids, and no URL query (key) in the record
     for ident in chain.all_ids + ["SECRET", "?k="]:
@@ -631,6 +725,7 @@ def test_end_to_end_healthy_run(tmp_path, capsys):
     rc = m.main(["--rpc-url", "https://rpc.test", "--out", str(out), "--n", "10", "--min-interval", "0"], client=client_for(node), now=NOW)
     second = json.loads(out.read_text().splitlines()[1])
     assert rc == 0 and second["prev_ms_per_slot"] == rec["slot_time"]["ms_per_slot_median"] and second["warn"]["flags"]["ms_per_slot_moved"]["warn"] is True
+    assert second["docs_watch"]["prev_sha"] == rec["docs_watch"]["latest_sha"]  # the second run's docs baseline is the first run's head
 
 
 def test_end_to_end_synthetic_four_of_ten_and_changed_config_halt(tmp_path):
@@ -664,6 +759,7 @@ def test_end_to_end_boost_off_world_halts_and_timing_rules_are_not_evaluated(tmp
     assert rec["boost"]["n_profiled"] == 0
     assert not f["boost_last_slice_early"]["evaluated"] and not f["boost_budget_or_slices_changed"]["evaluated"]
     assert rec["halt"]["any"] and rec["halt"]["n_not_evaluated"] == 2 and rec["halt"]["all_evaluated"] is False
+    assert rec["watch"]["n_not_evaluated"] == 2  # docs baseline and the too-small USDC sample: not counted in the halt line
     summary = capsys.readouterr().out
     assert "HALT boost_share_low" in summary and "(2 rules not evaluated)" in summary
 
@@ -685,7 +781,10 @@ def test_summary_and_record_say_when_rules_were_not_evaluated(tmp_path, capsys):
     rc, out = run_main(tmp_path, Chain(n=4), extra=("--n", "4"))  # 4 graduations: share, timing, size and synthetic rules all lack a sample
     rec = json.loads(out.read_text())
     assert rc == 0 and rec["halt"]["any"] is False and rec["halt"]["n_not_evaluated"] == 4 and rec["halt"]["all_evaluated"] is False
-    assert "HALT: none (4 rules not evaluated)" in capsys.readouterr().out
+    assert rec["watch"]["n_not_evaluated"] == 2 and rec["watch"]["all_evaluated"] is False  # docs baseline and the too-small USDC sample
+    out_text = capsys.readouterr().out
+    assert "HALT: none (4 rules not evaluated)" in out_text and "watch: 2 of 3 rules not evaluated" in out_text
+    assert "NOT EVALUATED docs_changed" in out_text and "NOT EVALUATED usdc_boost_regime" in out_text
 
 
 def test_end_to_end_early_last_slice_halts(tmp_path):
@@ -781,13 +880,21 @@ def test_helius_urls_are_refused_before_any_call(tmp_path):
     assert node.methods == []
 
 
-def test_write_pins_reproduces_committed_pins(tmp_path):
-    node = Node({"getEpochInfo": lambda p: fx("epoch_info.json"), "getMultipleAccounts": lambda p: fx("programdata.json") if p[1].get("dataSlice") else config_result(), "getBlockTime": lambda p: 0})
+def test_write_pins_reproduces_committed_pins(tmp_path, monkeypatch):
+    by_addr = {addr: name for name, addr in PROGRAMDATA_ADDR.items()}
+    node = Node({
+        "getEpochInfo": lambda p: fx("epoch_info.json"), "getMultipleAccounts": lambda p: fx("programdata.json") if p[1].get("dataSlice") else config_result(), "getBlockTime": lambda p: 0,
+        "getAccountInfo": lambda p: {"context": {"slot": 1}, "value": acct(programdata_bytes(by_addr[p[0]]))},
+    })
+    github_calls: list = []
+    monkeypatch.setattr(m, "urllib_get", fake_github(calls=github_calls))
     path = tmp_path / "pins.json"
     assert m.main(["--write-pins", str(path), "--min-interval", "0"], client=client_for(node), now=NOW) == 0
     new = json.loads(path.read_text())
     assert new["accounts"] == PINS["accounts"] and {k_: v["deploy_slot"] for k_, v in new["programs"].items()} == {k_: v["deploy_slot"] for k_, v in PINS["programs"].items()}
     assert new["boost"] == PINS["boost"] == {"budget_sol": 17.585, "slices": 29}
+    assert new["programs"] == TEST_PINS["programs"]  # deploy slot, block time, and the sha256 / length of the whole programdata account
+    assert github_calls == [] and node.methods.count("getAccountInfo") == 3  # pinning reads chain state only: no docs call
 
 
 def test_last_ms_per_slot_reads_the_tail_and_skips_garbage(tmp_path):
@@ -800,3 +907,608 @@ def test_last_ms_per_slot_reads_the_tail_and_skips_garbage(tmp_path):
 def test_dist_helper():
     assert m.dist([3, None, 1, 2]) == {"n": 3, "min": 1, "median": 2, "max": 3}
     assert m.dist([]) is None and m.share(1, 0) is None
+
+
+# =============================================================================================
+# change watch (T1 of the 2026-10-08 edge scan; plan: EXP/EXP-023-usdc-boost-tripwire-plan.md). Fixture tests, no network.
+# =============================================================================================
+HEAD = fx("docs_commits.json")[0]["sha"]
+
+
+def healthy_hashes():
+    rec = healthy()
+    for name in rec["programs"]:
+        data = programdata_bytes(name)
+        rec["programs"][name].update(sha256=hashlib.sha256(data).hexdigest(), data_len=len(data))
+    return rec
+
+
+def watch(rec, history=(), pins=TEST_PINS):
+    return m.compute_flags(rec, pins, 268.0, history=history)
+
+
+# ---- 1. program fingerprints ----------------------------------------------------------------
+def test_program_hashes_are_the_whole_programdata_account():
+    node = Chain(n=2).node()
+    got = m.stage_program_hashes(client_for(node), PROGRAMDATA_ADDR)
+    assert set(got) == {"pump", "pumpswap", "fees"} and node.methods == ["getAccountInfo"] * 3
+    for name, h in got.items():
+        data = programdata_bytes(name)
+        assert h == {"sha256": hashlib.sha256(data).hexdigest(), "data_len": len(data)}
+    assert got["pump"]["sha256"] != got["pumpswap"]["sha256"]
+
+
+def test_program_hash_read_failure_is_unread_not_a_change():
+    node = Chain(n=2).node()
+    node.handlers["getAccountInfo"] = lambda p: (_ for _ in ()).throw(NodeError())
+    errs = Counter()
+    assert m.stage_program_hashes(client_for(node), PROGRAMDATA_ADDR, errs) == {} and errs["program_hashes: RpcError"] == 3
+    rec = healthy()  # no hash read at all
+    _, w = watch(rec)
+    assert not w["program_changed"]["evaluated"] and not w["program_changed"]["warn"] and "unread" in w["program_changed"]["reason"]
+
+
+def test_program_changed_warns_with_old_and_new_values_and_does_not_duplicate_the_slot_halt():
+    rec = healthy_hashes()
+    h, w = watch(rec)
+    assert w["program_changed"] == {"warn": False, "evaluated": True, "reason": "3 programdata hashes unchanged"} and not any(v["halt"] for v in h.values())
+    # the bytes changed, the deploy slot did not: a WARN with old and new values, no halt
+    rec["programs"]["pump"].update(sha256="ab" * 32, data_len=999)
+    h, w = watch(rec)
+    pc = w["program_changed"]
+    ch = pc["changes"][0]
+    assert pc["warn"] and pc["evaluated"] and not h["pins_changed"]["halt"] and len(pc["changes"]) == 1
+    assert ch["program"] == "pump" and ch["old_sha256"] == TEST_PINS["programs"]["pump"]["sha256"] and ch["new_sha256"] == "ab" * 32
+    assert ch["old_data_len"] == TEST_PINS["programs"]["pump"]["data_len"] and ch["new_data_len"] == 999
+    assert "program_pump" in pc["reason"] and ("ab" * 8) in pc["reason"] and TEST_PINS["programs"]["pump"]["sha256"][:16] in pc["reason"] and "pins_changed" not in pc["reason"]
+    # slot and bytes both changed: the one existing HALT stays in pins_changed, and the WARN only quotes the slot
+    rec["programs"]["pump"]["deploy_slot"] += 5
+    h, w = watch(rec)
+    assert [k_ for k_, v in h.items() if v["halt"]] == ["pins_changed"] and "program_pump deploy_slot" in h["pins_changed"]["reason"]
+    assert w["program_changed"]["warn"] and "halts in pins_changed" in w["program_changed"]["reason"]
+    # the slot moved but the same bytes were redeployed: the existing halt, and no WARN
+    rec = healthy_hashes()
+    rec["programs"]["fees"]["deploy_slot"] += 1
+    h, w = watch(rec)
+    assert h["pins_changed"]["halt"] and not w["program_changed"]["warn"] and w["program_changed"]["evaluated"]
+
+
+def test_program_changed_needs_a_pin_and_a_read():
+    pins = copy.deepcopy(TEST_PINS)
+    for p in pins["programs"].values():
+        p["sha256"] = None
+    _, w = watch(healthy_hashes(), pins=pins)
+    assert not w["program_changed"]["evaluated"] and not w["program_changed"]["warn"] and "unpinned" in w["program_changed"]["reason"]
+    rec = healthy_hashes()
+    rec["programs"]["fees"].pop("sha256")  # one program unread: the others still compare, and the reason names the gap
+    _, w = watch(rec)
+    assert w["program_changed"]["evaluated"] and not w["program_changed"]["warn"] and "unread: ['fees']" in w["program_changed"]["reason"]
+
+
+def test_committed_program_hash_pins_are_well_formed_when_present():
+    # The hash pins are added through the --write-pins review path; until then program_changed reports "unpinned" (not a change).
+    assert set(PINS["programs"]) == {"pump", "pumpswap", "fees"}
+    for p in PINS["programs"].values():
+        assert p.get("sha256") is None or (re.fullmatch(r"[0-9a-f]{64}", p["sha256"]) and p["data_len"] > 45)
+
+
+def test_end_to_end_program_hash_change_is_a_warn_not_a_halt(tmp_path):
+    rc, out = run_main(tmp_path, Chain(n=10, tweak={"pumpswap": b"\x01new-instruction"}))
+    rec = json.loads(out.read_text())
+    assert rc == 0 and rec["warn"]["flags"]["program_changed"]["warn"] and rec["halt"]["any"] is False and rec["halt"]["flags"]["pins_changed"]["halt"] is False
+    assert "program_pumpswap" in rec["warn"]["flags"]["program_changed"]["reason"] and rec["programs"]["pumpswap"]["data_len"] == len(programdata_bytes("pumpswap")) + 16
+    assert rec["programs"]["pump"]["sha256"] == TEST_PINS["programs"]["pump"]["sha256"]
+
+
+# ---- 2. docs watch --------------------------------------------------------------------------
+def test_docs_commit_list_parses_and_rejects_garbage():
+    commits = m.parse_docs_commits(json.dumps(fx("docs_commits.json")).encode())
+    assert len(commits) == 30 and commits[0]["sha"] == HEAD and commits[0]["date"] == "2026-10-07T20:11:31Z" and commits[0]["title"].startswith("docs: v3 / v2 trades")
+    assert all(len(c["sha"]) == 40 and c["title"] and "\n" not in c["title"] for c in commits)
+    for bad in (b"[]", b"{}", b"not json", b'[{"sha": "zz"}]', b'[{"commit": {}}]'):
+        with pytest.raises(ValueError):
+            m.parse_docs_commits(bad)
+
+
+def test_docs_first_run_is_a_baseline_and_not_evaluated():
+    calls: list = []
+    dw = m.stage_docs(fake_github(calls=calls), None)
+    assert dw["ok"] and dw["calls"] == 1 and dw["latest_sha"] == HEAD and dw["n_new"] == 0 and dw["new_commits"] == []
+    f = m.compute_watch_flags({"docs_watch": dw}, TEST_PINS, [])["docs_changed"]
+    assert not f["evaluated"] and not f["warn"] and f"baseline {HEAD[:7]}" in f["reason"]
+    assert calls == [m.DOCS_API.format(repo="pump-fun/pump-public-docs", n=30)] and calls[0].startswith("https://api.github.com/repos/pump-fun/pump-public-docs/commits")
+
+
+def test_docs_unchanged_head_is_evaluated_and_quiet():
+    dw = m.stage_docs(fake_github(), HEAD)
+    f = m.compute_watch_flags({"docs_watch": dw}, TEST_PINS, [])["docs_changed"]
+    assert dw["ok"] and dw["n_new"] == 0 and f["evaluated"] and not f["warn"] and "unchanged" in f["reason"]
+
+
+def test_docs_new_commits_warn_and_list_the_titles():
+    dw = m.stage_docs(fake_github((200, docs_body(n_new=2))), HEAD)  # the last run saw HEAD; two commits have landed since
+    f = m.compute_watch_flags({"docs_watch": dw}, TEST_PINS, [])["docs_changed"]
+    assert dw["n_new"] == 2 and not dw["window_overflow"] and dw["latest_sha"] == f"{0xdead00 + 1:040x}"
+    assert [c["title"] for c in dw["new_commits"]] == ["docs: constructed change 1", "docs: constructed change 0"]
+    assert f["warn"] and f["evaluated"] and "2 new commit(s)" in f["reason"] and "docs: constructed change 1" in f["reason"] and "docs: constructed change 0" in f["reason"]
+    assert HEAD[:7] in f["reason"]  # "since <previous head>"
+
+
+def test_docs_previous_head_outside_the_window_is_flagged_not_guessed():
+    dw = m.stage_docs(fake_github(), "c" * 40)  # a head we have never seen in the newest 30: at least 30 are new
+    f = m.compute_watch_flags({"docs_watch": dw}, TEST_PINS, [])["docs_changed"]
+    assert dw["window_overflow"] and dw["n_new"] == 30 and len(dw["new_commits"]) == m.DOCS_TITLES_SHOWN
+    assert f["warn"] and "at least 30" in f["reason"] and "(+20 more)" in f["reason"]
+
+
+@pytest.mark.parametrize("responses, calls, why", [
+    ((OSError("down"),), 2, "network OSError"),  # one retry, then give up
+    (((500, b""),), 2, "http 500"),
+    (((403, b'{"message": "rate limit"}'),), 1, "rate limited"),  # not retried
+    (((404, b""),), 1, "http 404"),
+    (((200, b"garbage"),), 1, "undecodable"),
+    (((200, b"[]"),), 1, "undecodable"),
+])
+def test_docs_unreachable_is_not_evaluated_and_never_raises(responses, calls, why):
+    seen: list = []
+    dw = m.stage_docs(fake_github(*responses, calls=seen), HEAD, sleep=lambda s: None)
+    f = m.compute_watch_flags({"docs_watch": dw}, TEST_PINS, [])["docs_changed"]
+    assert not dw["ok"] and dw["calls"] == calls == len(seen) <= m.DOCS_MAX_CALLS and why in dw["error"]
+    assert not f["evaluated"] and not f["warn"] and why in f["reason"]
+
+
+def test_docs_one_retry_after_a_server_error_recovers():
+    seen: list = []
+    dw = m.stage_docs(fake_github((502, b""), (200, docs_body()), calls=seen), HEAD, sleep=lambda s: None)
+    assert dw["ok"] and dw["calls"] == 2 and dw["latest_sha"] == HEAD
+
+
+def test_docs_baseline_comes_from_the_newest_record_that_has_a_head():
+    hist = [{"docs_watch": {"latest_sha": "a" * 40}}, {"docs_watch": {"latest_sha": "b" * 40}}, {"docs_watch": {"latest_sha": None, "ok": False}}, {"no": "docs"}]
+    assert m.last_docs_sha(hist) == "b" * 40 and m.last_docs_sha([]) is None and m.last_docs_sha([{"docs_watch": {"latest_sha": "short"}}]) is None
+
+
+def test_docs_request_is_unauthenticated_and_no_token_is_read(monkeypatch):
+    seen = {}
+
+    class Resp:
+        status = 200
+        headers = {"x": "y"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"[]"
+
+    def fake_urlopen(req, timeout=None):
+        seen.update(url=req.full_url, headers={k_.lower(): v for k_, v in req.header_items()}, timeout=timeout)
+        return Resp()
+
+    monkeypatch.setattr(m.urllib.request, "urlopen", fake_urlopen)
+    assert REAL_URLLIB_GET("https://api.github.com/repos/x/y/commits", 5.0)[0] == 200
+    assert seen["url"].startswith("https://api.github.com/") and set(seen["headers"]) <= {"accept", "user-agent"} and seen["timeout"] == 5.0
+    src = Path(m.__file__).read_text()
+    assert "environ" not in src and "getenv" not in src and "Authorization" not in src.replace("no Authorization header", "")
+
+
+def test_end_to_end_docs_change_warns_and_the_second_run_sees_only_new_commits(tmp_path, monkeypatch, capsys):
+    chain = Chain(n=10)
+    rc, out = run_main(tmp_path, chain)  # day 1: baseline
+    first = json.loads(out.read_text())
+    assert rc == 0 and first["docs_watch"]["latest_sha"] == HEAD and first["docs_watch"]["calls"] == 1 and not first["warn"]["flags"]["docs_changed"]["evaluated"]
+    monkeypatch.setattr(m, "urllib_get", fake_github((200, docs_body(n_new=1))))
+    rc = m.main(["--out", str(out), "--pins", str(tmp_path / "pins.json"), "--n", "10", "--min-interval", "0"], client=client_for(chain.node()), now=NOW + 86400)
+    second = json.loads(out.read_text().splitlines()[1])
+    capsys.readouterr()
+    f = second["warn"]["flags"]["docs_changed"]
+    assert rc == 0 and f["warn"] and f["evaluated"] and "docs: constructed change 0" in f["reason"] and second["warn"]["any"] is True and second["halt"]["any"] is False
+    rc = m.main(["--out", str(out), "--pins", str(tmp_path / "pins.json"), "--n", "10", "--min-interval", "0"], client=client_for(chain.node()), now=NOW + 2 * 86400)
+    third = json.loads(out.read_text().splitlines()[2])
+    assert rc == 0 and third["warn"]["flags"]["docs_changed"]["evaluated"] and not third["warn"]["flags"]["docs_changed"]["warn"]
+    assert "docs pump-fun/pump-public-docs" in capsys.readouterr().out
+
+
+def test_end_to_end_docs_unreachable_is_not_evaluated_and_does_not_fail_the_run(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(m, "urllib_get", fake_github(OSError("github down")))
+    monkeypatch.setattr(m.time, "sleep", lambda s: None)
+    rc, out = run_main(tmp_path, Chain(n=10))
+    rec = json.loads(out.read_text())
+    assert rc == 0 and rec["status"] == "ok" and rec["docs_watch"]["ok"] is False and rec["docs_watch"]["calls"] == 2
+    assert not rec["warn"]["flags"]["docs_changed"]["evaluated"] and "docs_changed" in rec["watch"]["rules_not_evaluated"] and rec["halt"]["all_evaluated"] is True
+    assert "NOT EVALUATED docs_changed: docs repo not read: network OSError" in capsys.readouterr().out
+
+
+def test_no_docs_flag_makes_no_github_call(tmp_path, monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(m, "urllib_get", fake_github(calls=seen))
+    rc, out = run_main(tmp_path, Chain(n=10), extra=("--no-docs",))
+    rec = json.loads(out.read_text())
+    assert rc == 0 and seen == [] and "docs_watch" not in rec and not rec["warn"]["flags"]["docs_changed"]["evaluated"]
+
+
+# ---- 3. BOOST quote mix ---------------------------------------------------------------------
+def test_quote_mix_counts_boost_graduations_by_quote_class(tmp_path):
+    # 30 graduations; the main sample takes the newest 10, the extension reads the 20 older. USDC: 3, 4, 5 (no BOOST), 20. Pump-token quote: 6, 7 (no BOOST).
+    chain = Chain(n=30, mayhem=(), no_boost=(5, 7), usdc=(3, 4, 5, 20), other=(6, 7))
+    rc, out = run_main(tmp_path, chain)
+    text = out.read_text()
+    rec = json.loads(text)
+    qm = rec["quote_mix"]
+    assert rc == 0 and rec["errors"] == [] and rec["graduations"]["n"] == 10
+    assert qm["n"] == 30 and qm["n_main"] == 10 and qm["n_extra"] == 20 and qm["span_s"] == 29 * 40
+    assert qm["by_quote"] == {"wsol": {"n": 24, "n_init_boost": 24}, "usdc": {"n": 4, "n_init_boost": 3}, "other": {"n": 2, "n_init_boost": 1}}
+    assert qm["n_other_quote_mints"] == 1  # both pump-token pools share one quote mint
+    assert qm["usdc_boost_per_day_est"] == round(3 * 86400 / (29 * 40), 1)
+    assert "slot-0 buy/V" in qm["not_recorded"]
+    for ident in chain.all_ids + [m.USDC_MINT, m.b58encode(PUMP_QUOTE), "SECRET"]:  # counts only: no mint of any kind in the record
+        assert ident not in text, ident
+
+
+def test_quote_mix_extension_costs_one_page_and_one_fetch_per_graduation(tmp_path):
+    with_ext = json.loads(run_main(tmp_path / "a", Chain(n=30))[1].read_text())
+    no_ext = json.loads(run_main(tmp_path / "b", Chain(n=30), extra=("--quote-mix-extra", "0"))[1].read_text())
+    assert no_ext["quote_mix"]["n"] == 10 and no_ext["quote_mix"]["n_extra"] == 0 and with_ext["quote_mix"]["n"] == 30
+    assert with_ext["rpc"]["calls"] - no_ext["rpc"]["calls"] == 1 + 20  # one signature page and one getTransaction per extra graduation
+    assert with_ext["rpc"]["by_method"]["getAccountInfo"] == no_ext["rpc"]["by_method"]["getAccountInfo"] == 3
+    assert with_ext["graduations"] == no_ext["graduations"] and with_ext["boost"] == no_ext["boost"]  # the halt-rule inputs do not change
+
+
+def test_quote_mix_rate_is_not_estimated_from_a_small_or_short_sample():
+    def g(i, usdc, bt):
+        return {"quote_mint": m.USDC_MINT if usdc else m.WSOL_MINT, "quote_wsol": not usdc, "init_boost": True, "block_time": bt}
+
+    small = m.summarize_quote_mix([g(i, True, 1_000 + 100 * i) for i in range(19)], 19, 0)
+    assert small["usdc_boost_per_day_est"] is None and small["by_quote"]["usdc"] == {"n": 19, "n_init_boost": 19}
+    short = m.summarize_quote_mix([g(i, True, 1_000 + 10 * i) for i in range(20)], 20, 0)  # 190 s span
+    assert short["usdc_boost_per_day_est"] is None
+    ok = m.summarize_quote_mix([g(i, i < 2, 1_000 + 20 * i) for i in range(20)], 20, 0)  # 2 USDC BOOST in 380 s
+    assert ok["usdc_boost_per_day_est"] == round(2 * 86400 / 380, 1)
+    empty = m.summarize_quote_mix([], 0, 40)
+    assert empty["n"] == 0 and empty["usdc_boost_per_day_est"] is None and empty["span_s"] is None
+
+
+def test_quote_mix_failed_extension_keeps_the_main_sample(tmp_path):
+    chain = Chain(n=30)
+    bad = {f"mig{i}" for i in range(10, 30)}  # every extension fetch fails
+    chain.bad_txs = bad
+    rc, out = run_main(tmp_path, chain)
+    rec = json.loads(out.read_text())
+    assert rc == 0 and rec["quote_mix"]["n"] == 10 and rec["quote_mix"]["n_extra"] == 0 and rec["item_errors"]["quote_mix: RpcError"] == 20
+    assert not rec["warn"]["flags"]["usdc_boost_regime"]["evaluated"] and rec["graduations"]["n"] == 10
+
+
+# ---- 4. USDC-BOOST tripwire: 10 a day on 5 consecutive daily runs --------------------------------
+def day_rec(est, days_ago=0, quote_mix=True):
+    d = TODAY - timedelta(days=days_ago)
+    rec = {"schema": m.SCHEMA, "run_utc": f"{d.isoformat()}T06:41:00Z"}
+    if quote_mix:
+        rec["quote_mix"] = {"n": 60, "span_s": 4000, "by_quote": {"usdc": {"n": 3, "n_init_boost": 3}}, "usdc_boost_per_day_est": est}
+    return rec
+
+
+def regime(est, history):
+    return m.compute_watch_flags(day_rec(est), TEST_PINS, history)["usdc_boost_regime"]
+
+
+def test_tripwire_fires_on_five_consecutive_daily_runs_at_ten_a_day():
+    f = regime(12.0, [day_rec(11.0, i) for i in (1, 2, 3, 4)])
+    assert f["warn"] and f["evaluated"] and f["streak_days"] == 5 and "5 of 5 consecutive daily runs" in f["reason"]
+    assert [d for d, _ in f["estimates_newest_first"]] == [(TODAY - timedelta(days=i)).isoformat() for i in range(5)]
+    assert regime(12.0, [day_rec(11.0, i) for i in (1, 2, 3, 4, 5, 6, 7)])["warn"]  # a longer run still fires
+
+
+def test_tripwire_does_not_fire_on_four_days_or_below_the_bar():
+    f = regime(12.0, [day_rec(11.0, i) for i in (1, 2, 3)])
+    assert not f["warn"] and f["evaluated"] and f["streak_days"] == 4 and "4 of 5" in f["reason"]
+    assert regime(12.0, [])["streak_days"] == 1 and not regime(12.0, [])["warn"]  # a fresh history is evaluated, it simply cannot fire yet
+    assert regime(10.0, [day_rec(10.0, i) for i in (1, 2, 3, 4)])["warn"]  # exactly 10 a day counts
+    f = regime(9.9, [day_rec(50.0, i) for i in (1, 2, 3, 4)])
+    assert not f["warn"] and f["streak_days"] == 0  # today is below the bar
+    f = regime(12.0, [day_rec(50.0, 1), day_rec(50.0, 2), day_rec(9.9, 3), day_rec(50.0, 4)])
+    assert not f["warn"] and f["streak_days"] == 3  # a day below the bar resets the count
+
+
+def test_tripwire_resets_on_a_gap():
+    f = regime(12.0, [day_rec(11.0, i) for i in (1, 2, 4, 5)])  # no run on day -3
+    assert not f["warn"] and f["streak_days"] == 3
+    assert regime(12.0, [day_rec(11.0, i) for i in (2, 3, 4, 5)])["streak_days"] == 1  # yesterday missing: only today counts
+    assert regime(12.0, [day_rec(11.0, i) for i in (1, 2, 3, 4)])["warn"]  # the same days without the gap fire
+    f = regime(12.0, [day_rec(11.0, 1), day_rec(11.0, 2), day_rec(None, 3), day_rec(11.0, 4), day_rec(11.0, 5)])
+    assert not f["warn"] and f["streak_days"] == 3  # a run whose estimate was not evaluable counts as no evidence
+    f = regime(12.0, [day_rec(11.0, 1), day_rec(11.0, 2), day_rec(0, 3, quote_mix=False), day_rec(11.0, 4), day_rec(11.0, 5)])
+    assert not f["warn"] and f["streak_days"] == 3  # a record from before the quote mix existed is no evidence either
+
+
+def test_tripwire_one_value_per_utc_day_and_order_does_not_matter():
+    hist = [day_rec(11.0, i) for i in (1, 2, 3)] + [day_rec(80.0, 0)]  # an earlier run today is replaced by this run, not added to it
+    f = regime(12.0, hist)
+    assert not f["warn"] and f["streak_days"] == 4
+    hist = [day_rec(11.0, i) for i in (1, 2, 3, 4)] + [day_rec(11.0, 2)]  # two runs on day -2: still one day
+    assert regime(12.0, hist)["streak_days"] == 5
+    hist = [day_rec(11.0, 1), day_rec(11.0, 2), day_rec(11.0, 3), day_rec(3.0, 3), day_rec(11.0, 4)]  # the later line of a date wins
+    assert regime(12.0, hist)["streak_days"] == 3
+    hist = [day_rec(11.0, i) for i in (1, 2, 3, 4)]
+    random.Random(1).shuffle(hist)
+    assert regime(12.0, hist)["warn"]
+    assert regime(12.0, [day_rec(11.0, i) for i in (1, 2, 3)] + [day_rec(500.0, -1)])["streak_days"] == 4  # tomorrow's record (clock skew) is ignored
+    assert regime(12.0, [day_rec(11.0, 1), {"run_utc": "garbage", "quote_mix": {"usdc_boost_per_day_est": 99}}])["streak_days"] == 2
+
+
+def test_tripwire_is_not_evaluated_without_a_rate_this_run():
+    rec = day_rec(None)
+    f = m.compute_watch_flags(rec, TEST_PINS, [day_rec(11.0, i) for i in (1, 2, 3, 4)])["usdc_boost_regime"]
+    assert not f["evaluated"] and not f["warn"] and "not evaluable" in f["reason"]
+    assert not m.compute_watch_flags({"run_utc": rec["run_utc"]}, TEST_PINS, [])["usdc_boost_regime"]["evaluated"]
+
+
+def test_end_to_end_tripwire_fires_and_prints_after_four_prior_days(tmp_path, capsys):
+    chain = Chain(n=30, mayhem=(), usdc=(3, 12, 25))  # 3 USDC BOOST graduations in 1,160 s: well over 10 a day
+    rc, out = run_main(tmp_path, chain, history=[day_rec(11.0, i) for i in (4, 3, 2, 1)])
+    rec = json.loads(out.read_text().splitlines()[-1])
+    f = rec["warn"]["flags"]["usdc_boost_regime"]
+    assert rc == 0 and f["warn"] and f["streak_days"] == 5 and rec["warn"]["any"] is True and rec["halt"]["any"] is False
+    summary = capsys.readouterr().out
+    assert "WARN usdc_boost_regime: USDC-quoted BOOST graduations: 3 in 30 sampled" in summary and "HALT: none" in summary and "quote mix: 30 graduations" in summary
+    # the same history with a missing day does not fire
+    rc, out = run_main(tmp_path / "gap", chain, history=[day_rec(11.0, i) for i in (5, 3, 2, 1)])
+    f = json.loads(out.read_text().splitlines()[-1])["warn"]["flags"]["usdc_boost_regime"]
+    assert rc == 0 and f["evaluated"] and not f["warn"] and f["streak_days"] == 4  # today and days -1..-3; day -4 is missing
+    assert "WARN usdc_boost_regime" not in capsys.readouterr().out
+
+
+def test_end_to_end_no_usdc_pools_means_zero_rate_and_no_warn(tmp_path):
+    rc, out = run_main(tmp_path, Chain(n=30))
+    rec = json.loads(out.read_text())
+    f = rec["warn"]["flags"]["usdc_boost_regime"]
+    assert rc == 0 and rec["quote_mix"]["usdc_boost_per_day_est"] == 0.0 and f["evaluated"] and not f["warn"] and f["streak_days"] == 0
+
+
+# ---- 5. output: backward compatible, new rules counted ----------------------------------------
+def test_halt_counts_stay_halt_only_and_the_watch_rules_are_counted_apart(tmp_path, capsys):
+    chain = Chain(n=30)
+    rc, out = run_main(tmp_path, chain)  # day 1: no docs baseline
+    first = json.loads(out.read_text())
+    assert rc == 0 and first["halt"]["n_not_evaluated"] == 0 and first["halt"]["all_evaluated"] is True  # a missing docs baseline is not a missing halt evaluation
+    assert first["watch"] == {"n_not_evaluated": 1, "all_evaluated": False, "rules_not_evaluated": ["docs_changed"]}
+    text = capsys.readouterr().out
+    assert "HALT: none\n" in text + "\n" and "rules not evaluated)" not in text and "watch: 1 of 3 rules not evaluated" in text
+    rc = m.main(["--out", str(out), "--pins", str(tmp_path / "pins.json"), "--n", "10", "--min-interval", "0"], client=client_for(chain.node()), now=NOW + 86400)
+    second = json.loads(out.read_text().splitlines()[1])
+    assert rc == 0 and second["watch"] == {"n_not_evaluated": 0, "all_evaluated": True, "rules_not_evaluated": []}
+    assert "watch: all 3 rules evaluated" in capsys.readouterr().out
+    # the halt block has exactly the keys it has on main, with their earlier meaning
+    assert set(second["halt"]) == {"any", "n_not_evaluated", "all_evaluated", "flags"} and second["halt"]["all_evaluated"] is True
+    assert set(second["halt"]["flags"]) == {"pins_changed", "boost_disabled", "boost_share_low", "boost_last_slice_early", "boost_budget_or_slices_changed", "synthetic_share_high"}
+    for key in ("any", "flags"):
+        assert key in second["warn"]
+    assert {"ms_per_slot_moved", "graduation_sample_short", "rules_not_evaluated"} <= set(second["warn"]["flags"]) and {"program_changed", "docs_changed", "usdc_boost_regime"} <= set(second["warn"]["flags"])
+    # an unreachable GitHub changes the watch block only
+    rc, out = run_main(tmp_path / "down", chain)
+    assert rc == 0
+
+
+def test_summary_lists_the_new_rules(tmp_path, capsys):
+    rc, out = run_main(tmp_path, Chain(n=30, mayhem=(), usdc=(3,), other=(6,)))
+    summary = capsys.readouterr().out
+    assert rc == 0
+    assert "program fingerprints: pump " in summary and "pumpswap " in summary and "fees " in summary
+    assert "quote mix: 30 graduations (10 + 20 older) over 1160 s; InitBoost/total wsol 28/28, usdc 1/1, other 1/1 (1 quote mints)" in summary
+    assert "docs pump-fun/pump-public-docs: head 8cda1fa" in summary and "1 http call(s)" in summary
+
+
+def test_read_tail_records_skips_garbage_and_a_cut_first_line(tmp_path):
+    p = tmp_path / "d.jsonl"
+    assert m.read_tail_records(p) == []
+    p.write_text('{"a": 1}\nnot json\n[1, 2]\n{"b": 2}\n')
+    assert m.read_tail_records(p) == [{"a": 1}, {"b": 2}]
+    assert m.read_tail_records(p, max_bytes=12) == [{"b": 2}]  # the cut first line fails to parse and is skipped
+
+
+def test_watch_stages_run_after_the_halt_rule_stages(tmp_path):
+    # a tight cap starves the watch, never a halt rule: with the cap at 24 the halt inputs are as before (test above) and the watch reports errors
+    chain = Chain(n=10)
+    out = tmp_path / "d.jsonl"
+    rc = m.main(["--out", str(out), "--n", "10", "--min-interval", "0"], client=client_for(chain.node(), max_calls=24), now=NOW)
+    rec = json.loads(out.read_text())
+    assert rc == 0 and rec["rpc"]["calls"] == 24 and rec["graduations"]["n"] == 10
+    assert rec["item_errors"]["program_hashes: call cap"] == 1 and rec["item_errors"]["quote_mix: call cap"] == 1
+    assert not rec["warn"]["flags"]["program_changed"]["evaluated"] and not rec["warn"]["flags"]["usdc_boost_regime"]["evaluated"]
+
+
+# ---- 6. a failing watch stage can never stop halt evaluation, the summary or the record write ----------------------------
+def _boom(*a, **kw):
+    raise RuntimeError("constructed watch failure")  # not an ITEM_ERRORS member: it reaches the stage guard
+
+
+def _boom_on_quote_mix(real):
+    def wrapped(*a, **kw):
+        if kw.get("stage") == "quote_mix":
+            raise RuntimeError("constructed watch failure")
+        return real(*a, **kw)
+
+    return wrapped
+
+
+WATCH_FAILURES = {
+    "program_hashes": lambda mp: mp.setattr(m, "stage_program_hashes", _boom),
+    "docs_stage": lambda mp: mp.setattr(m, "stage_docs", _boom),
+    "docs_transport": lambda mp: mp.setattr(m, "urllib_get", _boom),
+    "quote_mix_extension": lambda mp: mp.setattr(m, "sample_graduations", _boom_on_quote_mix(m.sample_graduations)),
+    "quote_mix_summary": lambda mp: mp.setattr(m, "summarize_quote_mix", _boom),
+    "watch_flags": lambda mp: mp.setattr(m, "compute_watch_flags", _boom),
+    "all_stages": lambda mp: [f(mp) for n_, f in WATCH_FAILURES.items() if n_ not in ("all_stages", "watch_flags")],
+}
+
+
+@pytest.mark.parametrize("failure", list(WATCH_FAILURES))
+def test_a_raising_watch_stage_leaves_halt_evaluation_and_the_record_intact(tmp_path, capsys, monkeypatch, failure):
+    base_rc, base_out = run_main(tmp_path / "ok", Chain(n=10))
+    base = json.loads(base_out.read_text())
+    base_summary = capsys.readouterr().out
+    WATCH_FAILURES[failure](monkeypatch)
+    rc, out = run_main(tmp_path / "boom", Chain(n=10))
+    lines = out.read_text().splitlines()
+    rec = json.loads(lines[0])
+    summary = capsys.readouterr().out
+    assert rc == base_rc == 0 and len(lines) == 1  # the record was written and the exit code is unchanged
+    assert set(rec["halt"]["flags"]) == set(base["halt"]["flags"]) and len(rec["halt"]["flags"]) == 6
+    assert all(v["evaluated"] for v in rec["halt"]["flags"].values())  # all six halt flags evaluated
+    assert rec["halt"]["all_evaluated"] is True and rec["halt"]["n_not_evaluated"] == 0 and rec["halt"]["any"] is False
+    assert {k: (v["halt"], v["evaluated"], v["reason"]) for k, v in rec["halt"]["flags"].items()} == {k: (v["halt"], v["evaluated"], v["reason"]) for k, v in base["halt"]["flags"].items()}
+    assert rec["graduations"] == base["graduations"] and rec["boost"] == base["boost"] and rec["accounts"] == base["accounts"]  # halt-rule inputs untouched
+    assert "HALT: none" in summary and "HALT: none" in base_summary and "watch" in summary
+    if failure == "watch_flags":
+        assert rec["watch"]["rules_not_evaluated"] == sorted(m.WATCH_RULES) and "watch rule failed: RuntimeError" in rec["warn"]["flags"]["docs_changed"]["reason"]
+    else:
+        assert any("RuntimeError" in e for e in rec["errors"]) and rec["status"] == "partial" and rec["warn"]["flags"]["stage_errors"]["warn"]
+
+
+def test_a_halt_still_halts_when_every_watch_stage_raises(tmp_path, capsys, monkeypatch):
+    WATCH_FAILURES["all_stages"](monkeypatch)
+    rc, out = run_main(tmp_path, Chain(n=10, config=config_result(flip_global_config)))
+    rec = json.loads(out.read_text())
+    assert rc == 0 and rec["halt"]["any"] is True and rec["halt"]["flags"]["pins_changed"]["halt"] is True and rec["halt"]["all_evaluated"] is True
+    assert "HALT pins_changed" in capsys.readouterr().out
+
+
+def test_a_malformed_watch_block_does_not_cost_the_halt_lines():
+    rec = {"run_utc": "2026-10-08T00:00:00Z", "rpc_host": "h", "rpc": {"calls": 1}, "status": "ok", "errors": [], "quote_mix": {"n": 1},
+           "docs_watch": {"repo": "r"}, "watch": {"rules_not_evaluated": ["docs_changed"]},
+           "halt": {"any": False, "n_not_evaluated": 0, "all_evaluated": True, "flags": {}}, "warn": {"any": False, "flags": {}}}
+    text = m.format_summary(rec)
+    assert "HALT: none" in text and "watch info unavailable: KeyError" in text and "watch status unavailable: KeyError" in text
+
+
+# ---- 7. review fixes: stdout, write-pins hashes, per-rule guards, bad blobs ---------------------------------------------
+class AsciiOnlyOut:
+    """A stdout that, like a C-locale pipe, raises UnicodeEncodeError on anything that is not ASCII."""
+
+    def __init__(self):
+        self.chunks: list[str] = []
+
+    def write(self, text):
+        text.encode("ascii")
+        self.chunks.append(text)
+        return len(text)
+
+    def flush(self):
+        pass
+
+    @property
+    def text(self):
+        return "".join(self.chunks)
+
+
+def test_docs_titles_dates_and_errors_are_ascii_and_capped():
+    message = "docs: café \U0001f680 \udc00 lone surrogate " + "x" * 500 + "\nbody line"
+    body = json.dumps([{"sha": "a" * 40, "commit": {"message": message, "committer": {"date": "2026-10-08T00:00:00Z" + "é" * 30}}}]).encode()
+    [c] = m.parse_docs_commits(body)
+    assert c["title"].isascii() and len(c["title"]) == 120 and c["title"].startswith("docs: caf? ? ? lone surrogate x")
+    assert c["date"].isascii() and len(c["date"]) == 20
+    c["title"].encode("ascii")  # does not raise
+    assert m.ascii_text("\ud800✓abc", 3) == "??a"
+
+
+def test_summary_survives_a_stdout_that_cannot_encode(tmp_path, monkeypatch):
+    real = m.format_summary
+    monkeypatch.setattr(m, "format_summary", lambda rec: real(rec) + "\nnote ✓ \ud800")
+    fake = AsciiOnlyOut()
+    monkeypatch.setattr(m.sys, "stdout", fake)
+    rc, out = run_main(tmp_path, Chain(n=10, config=config_result(flip_global_config)))
+    lines = out.read_text().splitlines()
+    assert rc == 0 and len(lines) == 1 and json.loads(lines[0])["halt"]["flags"]["pins_changed"]["halt"] is True  # record written, rc unchanged
+    assert fake.text.isascii() and "HALT pins_changed" in fake.text and "\\u2713" in fake.text and "\\ud800" in fake.text  # the escaped fallback carries the HALT lines
+
+
+def test_a_docs_title_with_a_lone_surrogate_reaches_an_ascii_only_stdout(tmp_path, monkeypatch):
+    new = {"sha": f"{0xbeef:040x}", "commit": {"message": "docs: bad \ud800 title ✓", "committer": {"date": "2026-10-08T00:00:00Z"}}}
+    monkeypatch.setattr(m, "urllib_get", fake_github((200, json.dumps([new] + fx("docs_commits.json")).encode())))
+    fake = AsciiOnlyOut()
+    monkeypatch.setattr(m.sys, "stdout", fake)
+    rc, out = run_main(tmp_path, Chain(n=10, config=config_result(flip_global_config)), history=[{"schema": m.SCHEMA, "run_utc": f"{TODAY - timedelta(days=1)}T06:41:00Z", "docs_watch": {"latest_sha": HEAD}}])
+    rec = json.loads(out.read_text().splitlines()[-1])
+    assert rc == 0 and rec["warn"]["flags"]["docs_changed"]["warn"] and "docs: bad ? title ?" in rec["warn"]["flags"]["docs_changed"]["reason"]
+    assert "WARN docs_changed" in fake.text and "HALT pins_changed" in fake.text and fake.text.isascii()  # no fallback was needed: the title was sanitized at parse time
+
+
+def test_a_summary_that_cannot_be_built_still_prints_the_halt_lines(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(m, "format_summary", _boom)
+    rc, out = run_main(tmp_path, Chain(n=10, config=config_result(flip_global_config)))
+    text = capsys.readouterr().out
+    assert rc == 0 and len(out.read_text().splitlines()) == 1 and "summary unavailable (RuntimeError)" in text and "HALT pins_changed" in text
+
+
+def test_a_closed_stdout_changes_neither_the_record_nor_the_exit_code(tmp_path, monkeypatch):
+    class Closed:
+        def write(self, text):
+            raise BrokenPipeError("closed")
+
+        def flush(self):
+            raise BrokenPipeError("closed")
+
+    monkeypatch.setattr(m.sys, "stdout", Closed())
+    rc, out = run_main(tmp_path, Chain(n=10))
+    assert rc == 0 and len(out.read_text().splitlines()) == 1
+
+
+def _pins_node(pump_reply):
+    by_addr = {addr: name for name, addr in PROGRAMDATA_ADDR.items()}
+
+    def account_info(p):
+        if by_addr[p[0]] == "pump":
+            return pump_reply()
+        return {"context": {"slot": 1}, "value": acct(programdata_bytes(by_addr[p[0]]))}
+
+    return Node({"getEpochInfo": lambda p: fx("epoch_info.json"), "getMultipleAccounts": lambda p: fx("programdata.json") if p[1].get("dataSlice") else config_result(),
+                 "getBlockTime": lambda p: 0, "getAccountInfo": account_info})
+
+
+@pytest.mark.parametrize("reply", [
+    lambda: (_ for _ in ()).throw(NodeError()),  # the read fails
+    lambda: {"context": {"slot": 1}, "value": None},  # no such account
+    lambda: {"context": {"slot": 1}, "value": {"data": ["A", "base64"]}},  # an undecodable blob
+])
+def test_write_pins_refuses_when_a_program_hash_is_missing(tmp_path, capsys, reply):
+    path = tmp_path / "pins.json"
+    rc = m.main(["--write-pins", str(path), "--min-interval", "0"], client=client_for(_pins_node(reply)), now=NOW)
+    assert rc == 2 and not path.exists()
+    assert "pins not written" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", [
+    {"data": ["A", "base64"]},  # binascii.Error
+    {"data": []},  # IndexError
+    {"data": None},  # TypeError
+    {"nodata": 1},  # KeyError
+])
+def test_one_bad_programdata_blob_costs_only_that_program(value):
+    node = Chain(n=2).node()
+    good = node.handlers["getAccountInfo"]
+    node.handlers["getAccountInfo"] = lambda p: {"context": {"slot": 1}, "value": value} if p[0] == PROGRAMDATA_ADDR["pump"] else good(p)
+    errs = Counter()
+    got = m.stage_program_hashes(client_for(node), PROGRAMDATA_ADDR, errs)
+    assert set(got) == {"pumpswap", "fees"} and sum(errs.values()) == 1 and all(k.startswith("program_hashes: ") for k in errs)
+    assert got["fees"]["sha256"] == hashlib.sha256(programdata_bytes("fees")).hexdigest()
+
+
+def test_a_malformed_input_to_one_watch_rule_does_not_drop_another_rules_flag():
+    rec = healthy_hashes()
+    rec["programs"]["pump"].update(sha256="ab" * 32, data_len=999)  # program_changed fires
+    rec["quote_mix"] = day_rec(12.0)["quote_mix"]
+    rec["run_utc"] = day_rec(12.0)["run_utc"]
+    h, w = watch(rec, history=[{"run_utc": day_rec(0, 1)["run_utc"], "quote_mix": "garbage"}])  # a malformed history record breaks the USDC rule only
+    assert w["program_changed"]["warn"] and w["program_changed"]["evaluated"] and "pump" in w["program_changed"]["reason"]
+    assert not w["usdc_boost_regime"]["evaluated"] and "watch rule failed: AttributeError" in w["usdc_boost_regime"]["reason"]
+    rec["docs_watch"] = {"ok": True, "prev_sha": "a" * 40, "latest_sha": 5, "n_new": 1, "new_commits": []}  # a malformed docs block breaks the docs rule only
+    h, w = watch(rec, history=[])
+    assert w["program_changed"]["warn"] and not w["docs_changed"]["evaluated"] and "watch rule failed: TypeError" in w["docs_changed"]["reason"]
+    assert w["usdc_boost_regime"]["evaluated"] and not any(v["halt"] for v in h.values())
+
+
+def test_the_usdc_warn_says_it_is_only_the_count_part_of_the_trigger():
+    f = regime(12.0, [day_rec(11.0, i) for i in (1, 2, 3, 4)])
+    assert f["warn"] and "count part of the EXP-023 trigger only" in f["reason"]
