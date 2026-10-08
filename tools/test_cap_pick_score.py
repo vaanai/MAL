@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import dataclasses
 import json
 import math
 import shutil
@@ -893,3 +895,210 @@ def test_book_must_be_all_or_picks():
     cps.Config(book="picks").validate()
     with pytest.raises(cps.Refused):
         cps.Config(book="pickz").validate()
+
+
+# --- P2-8: end to end on the fixture: defaults are phase 1, every switch flows through run() and the CLI ----------------------------------
+
+GOLD = Path(__file__).parent / "fixtures" / "cap_pick_score"  # written by the PHASE-1 scorer (commit 06ee68e) on write_fixture()
+PICKED = ("Mint01", "Mint02", "Mint03", "Mint06", "Mint09", "Mint12")  # Mint03 is guarded out at the defaults; Mint16 is left unscored
+
+
+def read_rows_csv(path):
+    with open(path, newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+def write_out(tmp_path, s, rows, name="out"):
+    s = dict(s, _rows=rows)
+    out = tmp_path / name
+    cps.write_outputs(s, out)
+    return out, json.loads((out / "summary.json").read_text()), read_rows_csv(out / "rows.csv")
+
+
+@needs_zstd
+def test_defaults_reproduce_phase_1_byte_for_byte(tmp_path):
+    view, vpath = write_fixture(tmp_path)
+    s, rows = run_fix(view, vpath)
+    out, summary, new_rows = write_out(tmp_path, s, rows)
+    gold = (GOLD / "phase1_rows.csv").read_text().splitlines()
+    got = (out / "rows.csv").read_text().splitlines()
+    n = len(gold[0].split(","))
+    assert n == 25 and len(gold) == len(got) == 17
+    assert [",".join(line.split(",")[:n]) for line in got] == gold  # the phase-1 columns, row for row, byte for byte
+    assert got[0].split(",")[n:] == ["s0_minus_mslot", "hour", "ms_per_slot_hour", "exit_lag_slots", "exec_ratio_gross", "cap_anchor_used", "rent", "pick_decision"]
+    gs = json.loads((GOLD / "phase1_summary_part.json").read_text())
+    for scope, cell in gs["books"]["all"].items():
+        for key, val in cell.items():
+            assert summary["books"]["all"][scope][key] == val, (scope, key)  # the per-leg stats of phase 1 are unchanged
+    for key, val in gs["counts"].items():
+        assert summary["counts"][key] == val, key
+    for key, val in gs["fail_legs"].items():
+        assert summary["fail_legs"][key] == val, key
+    # what the new columns say under the defaults: the day-mean clock, slot lag 2, no hour measurement, no rent, no cap fallback
+    assert {r["cap_anchor_used"] for r in new_rows if r["status"] == "filled"} == {"day-mean"} and {r["cap_anchor_used"] for r in new_rows if r["status"] == "guarded"} == {""} and {r["exit_lag_slots"] for r in new_rows} == {"2"} and {r["rent"] for r in new_rows} == {"0"}
+    assert {r["ms_per_slot_hour"] for r in new_rows} == {""} and summary["hour_sph"] == {} and summary["counts"]["hour_sph_fallback"] == 0
+    assert set(summary["books"]) == {"all"} and summary["picks"] is None and summary["phase"] == 2
+    assert all(int(r["s0_minus_mslot"]) == int(r["s0"]) - FIX_BASE_SLOT[r["day"]] for r in new_rows)
+
+
+@needs_zstd
+def test_s0_minus_migrate_slot_is_recorded_per_attempt(tmp_path):
+    view, vpath = write_fixture(tmp_path)
+    s, rows = run_fix(view, vpath)
+    assert len(rows) == 16
+    for r in rows:
+        assert r["mslot"] == FIX_BASE_SLOT[r["day"]] and r["s0_minus_mslot"] == r["s0"] - r["mslot"] and 1 <= r["s0_minus_mslot"] <= 3
+        assert r["landing_slot"] == r["s0"] + r["k"]  # the anchor is s0 (the pool-create slot), never the migrate slot
+
+
+@needs_zstd
+def test_k_mode_hour_and_exit_lag_ms_use_the_hour_measured_on_the_tape(tmp_path):
+    view, vpath = write_fixture(tmp_path)
+    s, rows = run_fix(view, vpath, cps.Config(k_mode="hour", exit_lag_ms=550))
+    # the fixture's chain clock is 0.4 s per slot: (7500 - 1) slots over ~3,000 s of block_time -> ~9,000 slots per hour
+    hs = s["hour_sph"]
+    assert set(hs) == {"2026-08-15T00", "2026-08-16T00"} and {v["source"] for v in hs.values()} == {"tape"}
+    assert all(v["slots_per_hour"] == pytest.approx(9000.0, rel=0.002) and v["ms_per_slot"] == pytest.approx(400.0, rel=0.002) for v in hs.values())
+    assert {r["k"] for r in rows} == {3} and {r["exit_lag_slots"] for r in rows} == {2}  # round(3.25) = 3; ceil(550 / 400) = 2
+    assert all(r["ms_per_slot_hour"] == pytest.approx(400.0, rel=0.002) for r in rows) and s["counts"]["hour_sph_fallback"] == 0
+    s2, rows2 = run_fix(view, vpath, cps.Config(k_mode="hour", k_rounding="ceil", exit_lag_ms=1350))
+    assert {r["k"] for r in rows2} == {4} and {r["exit_lag_slots"] for r in rows2} == {4}  # ceil(3.25) = 4; ceil(1350 / 400) = ceil(3.37) = 4
+    # a json override (200 ms slots): 1.3 s is 6.5 slots, round -> 6 (half to even), ceil -> 7
+    hj = tmp_path / "hours.json"
+    hj.write_text(json.dumps({"2026-08-15T00": 18000.0, "2026-08-16T00": 18000.0}))
+    s3, rows3 = run_fix(view, vpath, cps.Config(k_mode="hour"), hour_sph_json=str(hj))
+    assert {r["k"] for r in rows3} == {6} and {v["source"] for v in s3["hour_sph"].values()} == {"json"}
+    assert {r["k"] for r in run_fix(view, vpath, cps.Config(k_mode="hour", k_rounding="ceil"), hour_sph_json=str(hj))[1]} == {7}
+    # the day-mode default ignores both the hour json and the tape
+    assert {r["k"] for r in run_fix(view, vpath, hour_sph_json=str(hj))[1]} == {3}
+    # an hour that cannot be measured falls back to the day table, and is counted
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    view2, vpath2 = write_fixture(bare, with_bt=False)
+    s4, rows4 = run_fix(view2, vpath2, cps.Config(k_mode="hour"))
+    assert s4["counts"]["hour_sph_fallback"] == 2 and {v["source"] for v in s4["hour_sph"].values()} == {"day-table-fallback"}
+    assert {r["k"] for r in rows4} == {3} and rows4[0]["ms_per_slot_hour"] == pytest.approx(3.6e6 / cps.SLOTS_PER_HOUR[rows4[0]["day"]])
+
+
+@needs_zstd
+def test_cap_anchor_block_time_flows_through_run_and_falls_back_without_block_time(tmp_path):
+    view, vpath = write_fixture(tmp_path)
+    base_s, base = run_fix(view, vpath)
+    s, rows = run_fix(view, vpath, cps.Config(cap_anchor="block-time"))
+    assert {r["cap_anchor_used"] for r in rows if r["status"] == "filled"} == {"block-time"} and s["counts"]["cap_bt_fallback"] == 0
+    assert all(r["hold_slots"] >= 750 for r in rows if r["exit_type"] == "deadline")  # 300 s on a 0.4 s chain clock; the day table says 721 slots
+    assert any(r["exit_type"] == "deadline" for r in base) and all(r["hold_slots"] == 721 for r in base if r["exit_type"] == "deadline")
+    assert [r["status"] for r in rows] == [r["status"] for r in base]  # the cap anchor never touches the guard
+    # block_time absent from the tape: every attempt uses G's day-mean slots, and the result is the default book
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    view2, vpath2 = write_fixture(bare, with_bt=False)
+    s2, rows2 = run_fix(view2, vpath2, cps.Config(cap_anchor="block-time"))
+    assert {r["cap_anchor_used"] for r in rows2 if r["status"] == "filled"} == {"day-mean-fallback"} and s2["counts"]["cap_bt_fallback"] == 14  # 14 fills, 2 guarded (no deadline)
+    assert [r["pnl_nofail"] for r in rows2] == [r["pnl_nofail"] for r in base]
+
+
+@needs_zstd
+def test_rent_and_gross_guard_flow_through_run(tmp_path):
+    view, vpath = write_fixture(tmp_path)
+    _, base = run_fix(view, vpath)
+    _, rent = run_fix(view, vpath, cps.Config(rent_mode="always", rent_lamports=RENT))
+    for a, b in zip(base, rent):
+        assert a["mint"] == b["mint"] and a["status"] == b["status"]
+        if a["status"] == "filled":
+            assert b["pnl_nofail"] == pytest.approx(a["pnl_nofail"] - RENT) and b["rent"] == RENT
+        else:
+            assert b["pnl_nofail"] == a["pnl_nofail"] == -55000.0 and b["rent"] == 0
+    _, gross = run_fix(view, vpath, GROSS)
+    assert sum(r["status"] == "guarded" for r in gross) >= sum(r["status"] == "guarded" for r in base) == 2
+    assert all(g["status"] == "guarded" for a, g in zip(base, gross) if a["status"] == "guarded")
+    assert all(r["exec_ratio_gross"] >= r["exec_ratio"] for r in gross)
+    # the gross guard is the integer test on the recorded landing price: guarded iff the gross execution ratio is above 1.15 (up to the integer rounding)
+    assert all((r["status"] == "guarded") == (r["exec_ratio_gross"] > 1.15) for r in gross if abs(r["exec_ratio_gross"] - 1.15) > 1e-9)
+
+
+def _write_picks(tmp_path, kind):
+    mints = [f"Mint{i:02d}" for i in range(1, 16)]  # Mint16 stays unscored
+    if kind == "csv":
+        p = tmp_path / "scores.csv"
+        p.write_text("mint,score\n" + "".join(f"{m},{0.9 if m in PICKED else 0.1}\n" for m in mints))
+    else:
+        p = tmp_path / "decisions.jsonl"
+        lines = [{"schema": "x", "kind": "meta", "view": "v", "days": list(FIX_DAYS)}]
+        lines += [{"schema": "x", "kind": "decision", "view": "v", "mint": m, "decision": "pick" if m in PICKED else "below", "score": 0.5} for m in mints]
+        p.write_text("".join(json.dumps(x) + "\n" for x in lines))
+    return p
+
+
+@needs_zstd
+def test_picks_book_all_reports_the_pick_subset_and_picks_book_keeps_only_the_picks(tmp_path):
+    view, vpath = write_fixture(tmp_path)
+    for kind in ("csv", "jsonl"):
+        picks = _write_picks(tmp_path, kind)
+        s, rows = run_fix(view, vpath, picks=str(picks))
+        assert s["counts"]["attempts"] == 16 and (s["counts"]["pick_attempts"], s["counts"]["non_pick_attempts"], s["counts"]["unscored_attempts"]) == (6, 9, 1)
+        assert s["picks"]["format"] == kind and set(s["books"]) == {"all", "picks", "non_picks"}
+        assert sorted(r["mint"] for r in rows if r["pick"] == "pick") == sorted(PICKED)
+        pk = s["books"]["picks"]["all"]["gate"]["flat"]
+        assert pk["n_attempts"] == 6 and pk["n_fills"] == 5  # Mint03 is guarded out
+        assert s["books"]["all"]["all"]["gate"]["flat"]["n_attempts"] == 16
+        assert s["books"]["non_picks"]["all"]["gate"]["flat"]["n_attempts"] == 9  # unscored mints are in the all-book only
+        # --book picks: only the picks are attempts, the pressure intercept is refit on their own fills
+        sp, rp = run_fix(view, vpath, cps.Config(book="picks"), picks=str(picks))
+        assert sorted(r["mint"] for r in rp) == sorted(PICKED) and sp["counts"]["attempts"] == 6 and sp["counts"]["attempts_before_book_filter"] == 16
+        assert set(sp["books"]) == {"picks"} and sp["books"]["picks"]["all"]["gate"]["flat"]["n_attempts"] == 6
+        fills = [r for r in rp if r["status"] == "filled"]
+        assert sum(r["p_press"] for r in fills) / len(fills) == pytest.approx(cps.TARGET_FAIL_RATE, abs=1e-9)
+        assert sp["fail_legs"]["pressure_intercept"] != s["fail_legs"]["pressure_intercept"]
+        # the simulated path of a pick does not depend on the book
+        by = {r["mint"]: r for r in rows}
+        assert all(by[r["mint"]]["pnl_nofail"] == r["pnl_nofail"] and by[r["mint"]]["pnl_flat"] == r["pnl_flat"] for r in rp)
+    with pytest.raises(cps.Refused):
+        run_fix(view, vpath, cps.Config(book="picks"))  # needs --picks
+    # no --picks: no pick books at all
+    s0, _ = run_fix(view, vpath)
+    assert set(s0["books"]) == {"all"}
+
+
+@needs_zstd
+def test_cli_flags_reach_the_config_and_the_outputs(tmp_path, capsys):
+    view, vpath = write_fixture(tmp_path)
+    hj = tmp_path / "hours.json"
+    hj.write_text(json.dumps({"2026-08-15T00": 18000.0, "2026-08-16T00": 18000.0}))
+    picks = _write_picks(tmp_path, "jsonl")
+    out = tmp_path / "cli-out"
+    argv = ["--p2-view-dir", str(view), "--vmap", str(vpath), "--out-dir", str(out), "--hour-sph-json", str(hj), "--picks", str(picks), "--book", "picks",
+            "--entry-latency-ms", "1300", "--k-mode", "hour", "--k-rounding", "ceil", "--exit-lag-ms", "550", "--guard-basis", "gross", "--cap-anchor", "block-time",
+            "--rent-mode", "always", "--rent-lamports", str(RENT)]
+    assert cps.main(argv) == 0
+    summary = json.loads((out / "summary.json").read_text())
+    c = summary["config"]
+    assert (c["k_seconds"], c["k_mode"], c["k_rounding"], c["exit_lag_ms"], c["guard_basis"], c["cap_anchor"], c["rent_mode"], c["rent_lamports"], c["book"]) == (
+        1.3, "hour", "ceil", 550.0, "gross", "block-time", "always", RENT, "picks")
+    rows = read_rows_csv(out / "rows.csv")
+    assert {r["k"] for r in rows} == {"7"} and {r["exit_lag_slots"] for r in rows} == {"3"} and {r["cap_anchor_used"] for r in rows if r["status"] == "filled"} == {"block-time"}
+    assert {r["pick"] for r in rows} == {"pick"} and {r["pick_decision"] for r in rows} == {"pick"} and len(rows) == 6
+    assert {r["ms_per_slot_hour"] for r in rows} == {"200.0"}
+    assert {r["rent"] for r in rows if r["status"] == "filled"} == {str(RENT)}
+    # defaults on the CLI are G's
+    out2 = tmp_path / "cli-out2"
+    assert cps.main(["--p2-view-dir", str(view), "--vmap", str(vpath), "--out-dir", str(out2)]) == 0
+    c2 = json.loads((out2 / "summary.json").read_text())["config"]
+    assert c2 == dataclasses.asdict(cps.Config())
+    # contradictory or incomplete flags are refused (exit 2)
+    for bad in (["--k-seconds", "1.3", "--entry-latency-ms", "1300"], ["--exit-lag", "2", "--exit-lag-ms", "550"], ["--rent-mode", "always"], ["--rent-lamports", "5"],
+                ["--book", "picks"], ["--k-mode", "hour", "--k-seconds", "0"]):
+        capsys.readouterr()
+        assert cps.main(["--p2-view-dir", str(view), "--vmap", str(vpath), "--out-dir", str(tmp_path / "bad")] + bad) == 2
+        assert "REFUSED" in capsys.readouterr().err
+
+
+def test_config_from_args_maps_every_flag():
+    ns = cps._parser().parse_args(["--out-dir", "o", "--exit-lag", "4", "--k-seconds", "0.9", "--guard-ratio", "1.2", "--cap-seconds", "200", "--tp", "0.4", "--sl", "0.2",
+                                   "--size-lamports", "100000000", "--fee-lamports", "10000", "--live-fail", "0.05", "--flat-fail", "0.2", "--final-state", "g"])
+    c = cps.config_from_args(ns)
+    assert (c.exit_lag, c.k_seconds, c.guard_ratio, c.cap_seconds, c.tp, c.sl, c.size_lamports, c.fee_lamports, c.live_fail, c.flat_fail, c.final_state) == (
+        4, 0.9, 1.2, 200.0, 0.4, 0.2, 100_000_000, 10_000, 0.05, 0.2, "g")
+    assert c.exit_lag_ms is None
+    d = cps.config_from_args(cps._parser().parse_args(["--out-dir", "o"]))
+    assert d == cps.Config()

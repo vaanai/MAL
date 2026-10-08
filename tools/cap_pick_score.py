@@ -44,11 +44,13 @@ CAP ANCHOR (--cap-anchor day-mean|block-time)
   block-time: the deadline is the first print whose block_time >= block_time(landing) + 300 s, where block_time(landing) is that of the last print at slot
   <= X (prints are the only slot clock on the tape). D = the slot of that print; triggers are scanned over prints before it; the deadline sell fills at the
   first print with slot >= D + lag + 1. If no print reaches the deadline the fill is the state after the last print. A block_time that is null on the
-  landing print (or all prints) falls back to day-mean for that attempt (`cap_anchor_used` per row, `counts.cap_bt_fallback`).
+  landing print (or all prints) falls back to day-mean for that attempt (`cap_anchor_used` per row: day-mean | block-time | day-mean-fallback, empty on a
+  guarded-out row, which has no deadline; `counts.cap_bt_fallback` counts the fallbacks). The exit lag applies to the deadline sell as well as to a tp / sl sell.
 
 RENT (--rent-lamports, --rent-mode none|always)
   none (G, default): no rent. always: rent_lamports is charged on every FILLED trip, before the fail mix (a stress leg: the real executor refunds the
   token-account rent when the sell closes the account; the lab constant is 2,039,280). A guarded-out buy creates no account and pays no rent.
+  The two flags must agree (mode always needs lamports > 0; lamports > 0 needs mode always), so a forgotten flag cannot silently charge nothing.
 
 GATE STATISTICS (`books.<scope>.gate.<leg>` in summary.json; flat and press are the binding legs, live and nofail are report-only)
   Per scope (each block, P1, P2-P4, all; and `picks` / `non_picks` when --picks is given) and leg: n attempts, n fills, mean per attempt and per fill (% of
