@@ -47,7 +47,7 @@ def test_only_in_one_side_and_a_lamport_shift_are_reported_and_classified():
     assert cls["lamports only"] == 1 and cls["status tool=guarded G=filled"] == 1 and cls["exit_type tool=sl G=tp"] == 1 and cls["hold_slots"] == 1
     nf = rep["groups"]["all"]["nofail"]
     assert nf["n_exact_equal"] == 25 and nf["max_abs_lamports"] == pytest.approx(1_745_000.0)  # the guarded m2: -55,000 against -1,800,000
-    assert rep["mismatches_largest"][0]["mint"] == "m1"
+    assert [r["mint"] for r in rep["mismatches_largest"]][:2] == ["m2", "m1"]  # largest first: the guarded row, then the 50,000-lamport shift
 
 
 def test_mean_difference_is_in_percentage_points_of_stake_and_flags_the_target():
