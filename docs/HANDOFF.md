@@ -92,16 +92,15 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - `--hour-sph-json` must be absent (tape-only hours; an unmeasurable hour refuses);
   - bad-reserves picks stay `status=attempt` with `priced=false`.
   **Next: a quant-proof re-check of 86355b3..be7cdb2, then merge.** The read-tool (P4) items are listed in the PR body. |
-| **#480** `claude/cap-pick-e0-exp022` | E0 harness on `--exp022 --exp022-source exploration --book picks`, U from universe.csv | Reviewer APPROVE on 8de674d. **Quant-proof NOT-OK** (comment 6068717562), for one guard.
-  - **Being fixed** (builder `ac12844d0ae1b5598`): fail E0 if any B pick is in `picks_not_attempts` (for example `mayhem_unknown_no_create_event`) with an unexpected reason (empty allowlist); merge main.
-  - **Then:** quant-proof re-check, merge #480, then the official E0 on main (28 GB MiScusi job, no `--dry-run`), then the E0 record amendment.
-  - **#479 is MERGED** (d6b32af; scorer blob b8e37774).
-  - **The E0 record amendment must disclose the 08-20 dry-run precount:**
-    - harness 5485459, scorer 86355b3;
-    - decide md5 bed92c12…, 889 mints;
-    - C md5 196cbbd8…, n_C 98, U 772;
-    - file `scratchpad/e0-precount-0820/e0.json`.
-    Amendment 1 named 08-17 as the only dry run, so the official run is a second look at the E0 day. |
+| **#480** (merged **6b9b4fc**) | E0 harness on the scorer's EXP-022 mode, plus the B-pick guard (empty allowlist) | Quant-proof OK on 6a6b4d6 (comment 6068792855). Reviewer APPROVE. **The OFFICIAL E0 is MiScusi job #397**: main 6b9b4fc, out `/data/mal/exp022/e0-official/`, log `/data/mal/exp022/e0-official.log`, followed by `check`.
+  - **If it passes, write the E0 record amendment** (dated, with quant-proof) before 10-16T01Z. It must include:
+    1. the four blobs, `imported_module_blobs` and the venv versions, plus `FROZEN.md5`;
+    2. the first-boot staging hours (10-14T21..10-15T23, plus the 10-16T00 feed hour);
+    3. the exploration-vs-walk2 adapter differences (#479 body);
+    4. **the 08-20 dry-run precount disclosure** (harness 5485459, scorer 86355b3, decide md5 bed92c12…, C md5 196cbbd8…, n_C 98);
+    5. **the empty pick allowlist as a tightening of §2.1 item 3**;
+    6. the pick_oracle and seal.
+  - **If it fails, do NOT retry blindly.** Diagnose. Nothing may be fixed and retried after the window starts, but before 10-16T01 a fix and re-run is allowed (§2.1). |
 
 **MiScusi jobs**
 
