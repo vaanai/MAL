@@ -93,7 +93,10 @@ class RefusalTests(unittest.TestCase):
             with self.assertRaises(cp.Refused):
                 cp.replay_view(cp.Block("t", (td,), ".jsonl.zst"), ["2026-09-16"], roots=[td])
             with self.assertRaises(cp.Refused):
-                cp.replay_view(cp.Block("t", (td,), ".jsonl.zst"), ["2026-10-02"], roots=[td])
+                cp.replay_view(cp.Block("t", (td,), ".jsonl.zst"), ["2026-10-03"], roots=[td])
+            cp.check_days(["2026-09-15", "2026-09-18", "2026-10-02"])  # partly allowed days: refused hours are never listed
+            with self.assertRaises(cp.Refused):
+                cp.check_days(["2026-09-17"])
             with self.assertRaises(cp.Refused):
                 list(cp.iter_lines(Path(td) / "trades" / "trades-2026-09-15T12.jsonl.zst", [td]))
 

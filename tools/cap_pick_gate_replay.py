@@ -500,13 +500,26 @@ def days_between(a: str, b: str) -> list[str]:
     return out
 
 
+def check_days(days: Sequence[str]) -> None:
+    """A day is refused if none of its hours is allowed. Refused hours of a partly allowed day (09-15, 09-18, 10-02)
+    are never listed, so never read."""
+    for d in days:
+        ok = 0
+        for h in range(24):
+            try:
+                refuse_hour(f"{d}T{h:02d}")
+                ok += 1
+            except Refused:
+                pass
+        if not ok:
+            refuse_hour(f"{d}T12", f"day {d}")
+
+
 def replay_view(block: Block, days: Sequence[str], *, daily_restart: bool = True, prune_every: int = 5000, create_time: str = "sig",
                 roots: Sequence[str] | None = None, engine: Any = None, log: Any = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Replay `days` (UTC) of one block. With `daily_restart`, state is dropped at each 00:00Z and rebuilt by preload."""
     use_roots = list(roots if roots is not None else block.roots)
-    for d in days:
-        refuse_hour(f"{d}T00")
-        refuse_hour(f"{d}T23")
+    check_days(days)
     files = hour_files(block, use_roots)
     rep = Replayer(engine or build_engine(), block.name, prune_every=prune_every, create_time=create_time, null_tx_index=block.null_tx_index)
     out: list[dict[str, Any]] = []
