@@ -1381,3 +1381,134 @@ def test_a_malformed_watch_block_does_not_cost_the_halt_lines():
            "halt": {"any": False, "n_not_evaluated": 0, "all_evaluated": True, "flags": {}}, "warn": {"any": False, "flags": {}}}
     text = m.format_summary(rec)
     assert "HALT: none" in text and "watch info unavailable: KeyError" in text and "watch status unavailable: KeyError" in text
+
+
+# ---- 7. review fixes: stdout, write-pins hashes, per-rule guards, bad blobs ---------------------------------------------
+class AsciiOnlyOut:
+    """A stdout that, like a C-locale pipe, raises UnicodeEncodeError on anything that is not ASCII."""
+
+    def __init__(self):
+        self.chunks: list[str] = []
+
+    def write(self, text):
+        text.encode("ascii")
+        self.chunks.append(text)
+        return len(text)
+
+    def flush(self):
+        pass
+
+    @property
+    def text(self):
+        return "".join(self.chunks)
+
+
+def test_docs_titles_dates_and_errors_are_ascii_and_capped():
+    message = "docs: café \U0001f680 \udc00 lone surrogate " + "x" * 500 + "\nbody line"
+    body = json.dumps([{"sha": "a" * 40, "commit": {"message": message, "committer": {"date": "2026-10-08T00:00:00Z" + "é" * 30}}}]).encode()
+    [c] = m.parse_docs_commits(body)
+    assert c["title"].isascii() and len(c["title"]) == 120 and c["title"].startswith("docs: caf? ? ? lone surrogate x")
+    assert c["date"].isascii() and len(c["date"]) == 20
+    c["title"].encode("ascii")  # does not raise
+    assert m.ascii_text("\ud800✓abc", 3) == "??a"
+
+
+def test_summary_survives_a_stdout_that_cannot_encode(tmp_path, monkeypatch):
+    real = m.format_summary
+    monkeypatch.setattr(m, "format_summary", lambda rec: real(rec) + "\nnote ✓ \ud800")
+    fake = AsciiOnlyOut()
+    monkeypatch.setattr(m.sys, "stdout", fake)
+    rc, out = run_main(tmp_path, Chain(n=10, config=config_result(flip_global_config)))
+    lines = out.read_text().splitlines()
+    assert rc == 0 and len(lines) == 1 and json.loads(lines[0])["halt"]["flags"]["pins_changed"]["halt"] is True  # record written, rc unchanged
+    assert fake.text.isascii() and "HALT pins_changed" in fake.text and "\\u2713" in fake.text and "\\ud800" in fake.text  # the escaped fallback carries the HALT lines
+
+
+def test_a_docs_title_with_a_lone_surrogate_reaches_an_ascii_only_stdout(tmp_path, monkeypatch):
+    new = {"sha": f"{0xbeef:040x}", "commit": {"message": "docs: bad \ud800 title ✓", "committer": {"date": "2026-10-08T00:00:00Z"}}}
+    monkeypatch.setattr(m, "urllib_get", fake_github((200, json.dumps([new] + fx("docs_commits.json")).encode())))
+    fake = AsciiOnlyOut()
+    monkeypatch.setattr(m.sys, "stdout", fake)
+    rc, out = run_main(tmp_path, Chain(n=10, config=config_result(flip_global_config)), history=[{"schema": m.SCHEMA, "run_utc": f"{TODAY - timedelta(days=1)}T06:41:00Z", "docs_watch": {"latest_sha": HEAD}}])
+    rec = json.loads(out.read_text().splitlines()[-1])
+    assert rc == 0 and rec["warn"]["flags"]["docs_changed"]["warn"] and "docs: bad ? title ?" in rec["warn"]["flags"]["docs_changed"]["reason"]
+    assert "WARN docs_changed" in fake.text and "HALT pins_changed" in fake.text and fake.text.isascii()  # no fallback was needed: the title was sanitized at parse time
+
+
+def test_a_summary_that_cannot_be_built_still_prints_the_halt_lines(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(m, "format_summary", _boom)
+    rc, out = run_main(tmp_path, Chain(n=10, config=config_result(flip_global_config)))
+    text = capsys.readouterr().out
+    assert rc == 0 and len(out.read_text().splitlines()) == 1 and "summary unavailable (RuntimeError)" in text and "HALT pins_changed" in text
+
+
+def test_a_closed_stdout_changes_neither_the_record_nor_the_exit_code(tmp_path, monkeypatch):
+    class Closed:
+        def write(self, text):
+            raise BrokenPipeError("closed")
+
+        def flush(self):
+            raise BrokenPipeError("closed")
+
+    monkeypatch.setattr(m.sys, "stdout", Closed())
+    rc, out = run_main(tmp_path, Chain(n=10))
+    assert rc == 0 and len(out.read_text().splitlines()) == 1
+
+
+def _pins_node(pump_reply):
+    by_addr = {addr: name for name, addr in PROGRAMDATA_ADDR.items()}
+
+    def account_info(p):
+        if by_addr[p[0]] == "pump":
+            return pump_reply()
+        return {"context": {"slot": 1}, "value": acct(programdata_bytes(by_addr[p[0]]))}
+
+    return Node({"getEpochInfo": lambda p: fx("epoch_info.json"), "getMultipleAccounts": lambda p: fx("programdata.json") if p[1].get("dataSlice") else config_result(),
+                 "getBlockTime": lambda p: 0, "getAccountInfo": account_info})
+
+
+@pytest.mark.parametrize("reply", [
+    lambda: (_ for _ in ()).throw(NodeError()),  # the read fails
+    lambda: {"context": {"slot": 1}, "value": None},  # no such account
+    lambda: {"context": {"slot": 1}, "value": {"data": ["A", "base64"]}},  # an undecodable blob
+])
+def test_write_pins_refuses_when_a_program_hash_is_missing(tmp_path, capsys, reply):
+    path = tmp_path / "pins.json"
+    rc = m.main(["--write-pins", str(path), "--min-interval", "0"], client=client_for(_pins_node(reply)), now=NOW)
+    assert rc == 2 and not path.exists()
+    assert "pins not written" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", [
+    {"data": ["A", "base64"]},  # binascii.Error
+    {"data": []},  # IndexError
+    {"data": None},  # TypeError
+    {"nodata": 1},  # KeyError
+])
+def test_one_bad_programdata_blob_costs_only_that_program(value):
+    node = Chain(n=2).node()
+    good = node.handlers["getAccountInfo"]
+    node.handlers["getAccountInfo"] = lambda p: {"context": {"slot": 1}, "value": value} if p[0] == PROGRAMDATA_ADDR["pump"] else good(p)
+    errs = Counter()
+    got = m.stage_program_hashes(client_for(node), PROGRAMDATA_ADDR, errs)
+    assert set(got) == {"pumpswap", "fees"} and sum(errs.values()) == 1 and all(k.startswith("program_hashes: ") for k in errs)
+    assert got["fees"]["sha256"] == hashlib.sha256(programdata_bytes("fees")).hexdigest()
+
+
+def test_a_malformed_input_to_one_watch_rule_does_not_drop_another_rules_flag():
+    rec = healthy_hashes()
+    rec["programs"]["pump"].update(sha256="ab" * 32, data_len=999)  # program_changed fires
+    rec["quote_mix"] = day_rec(12.0)["quote_mix"]
+    rec["run_utc"] = day_rec(12.0)["run_utc"]
+    h, w = watch(rec, history=[{"run_utc": day_rec(0, 1)["run_utc"], "quote_mix": "garbage"}])  # a malformed history record breaks the USDC rule only
+    assert w["program_changed"]["warn"] and w["program_changed"]["evaluated"] and "pump" in w["program_changed"]["reason"]
+    assert not w["usdc_boost_regime"]["evaluated"] and "watch rule failed: AttributeError" in w["usdc_boost_regime"]["reason"]
+    rec["docs_watch"] = {"ok": True, "prev_sha": "a" * 40, "latest_sha": 5, "n_new": 1, "new_commits": []}  # a malformed docs block breaks the docs rule only
+    h, w = watch(rec, history=[])
+    assert w["program_changed"]["warn"] and not w["docs_changed"]["evaluated"] and "watch rule failed: TypeError" in w["docs_changed"]["reason"]
+    assert w["usdc_boost_regime"]["evaluated"] and not any(v["halt"] for v in h.values())
+
+
+def test_the_usdc_warn_says_it_is_only_the_count_part_of_the_trigger():
+    f = regime(12.0, [day_rec(11.0, i) for i in (1, 2, 3, 4)])
+    assert f["warn"] and "count part of the EXP-023 trigger only" in f["reason"]

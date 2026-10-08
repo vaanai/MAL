@@ -23,15 +23,17 @@ Change watch (T1 of the 2026-10-08 edge scan; plan and trigger in EXP/EXP-023-us
   - docs_changed: newest commits of the public pump.fun docs repo (github.com/pump-fun/pump-public-docs), 1 unauthenticated
     GitHub API call (at most 2 with one retry), no token. Unreachable = not evaluated.
   - usdc_boost_regime: BOOST (InitBoost) graduations by quote mint (WSOL / USDC / other), from the graduation sample plus up to
-    --quote-mix-extra older migrate txs (about 40 more getTransaction calls, parsed for quote mint and InitBoost only). The
-    tripwire fires on 5 consecutive daily runs at >= 10 USDC BOOST graduations per day (rate estimated from the sample span).
+    --quote-mix-extra older migrate txs (about 40 more getTransaction calls, parsed for quote mint and InitBoost only). This WARN
+    is only the count part of the EXP-023 trigger (>= 10 USDC BOOST graduations per day, rate estimated from the sample span, on 5
+    consecutive daily runs); the paper-net part is not computed here.
   Not recorded: slot-0 buy relative to V and the distinct traders in the first 300 s per quote class. Neither is in the migrate-tx
     sample (they need each pool's own tape: a signature list plus transactions per pool, and trade sizes this monitor never reads).
 
 What it never reads or writes: prices, reserves, returns, P&L, per-mint or per-wallet values,
 non-BOOST trade amounts, the lab tape, forward-1002 files, any API key or .env (it refuses
 Helius URLs; 0 Helius credits). Output carries distributions (min/median/max), shares and
-counts only. No mint, pool, wallet or signature is written.
+counts only, except the docs watch, which writes the public docs repo's commit SHAs, dates and
+titles (ASCII, titles capped at 120 characters). No mint, pool, wallet or signature is written.
 
 Exit code 0, except 2 when the RPC is unreachable before any data was read, and 1 when the
 JSON line cannot be written (the summary is printed first, so a HALT is never lost). Halts
@@ -1016,11 +1018,14 @@ def stage_program_hashes(client: RpcClient, program_accounts: Mapping[str, str |
             continue
         try:
             res = client.call("getAccountInfo", [addr, {"encoding": "base64", "commitment": "finalized"}])
+            data = _account_bytes((res or {}).get("value"))
         except ITEM_ERRORS as exc:
             if _skip(errs, "program_hashes", exc):
                 break
             continue
-        data = _account_bytes((res or {}).get("value"))
+        except (ValueError, KeyError, IndexError, TypeError) as exc:  # a bad blob costs this program only
+            errs[f"program_hashes: {type(exc).__name__}"] += 1
+            continue
         if data is not None:
             out[p] = {"sha256": sha256_hex(data), "data_len": len(data)}
     return out
@@ -1070,6 +1075,11 @@ def urllib_get(url: str, timeout: float) -> tuple[int, Mapping[str, str], bytes]
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
+def ascii_text(value: Any, limit: int) -> str:
+    """Printable ASCII only (anything else becomes '?', lone surrogates included), capped at `limit` characters."""
+    return str(value).encode("ascii", "replace").decode("ascii")[:limit]
+
+
 def parse_docs_commits(body: bytes) -> list[dict[str, str]]:
     """GitHub 'list commits' JSON (newest first) -> [{sha, date, title}]. Raises ValueError on anything else."""
     obj = json.loads(body)
@@ -1083,7 +1093,7 @@ def parse_docs_commits(body: bytes) -> list[dict[str, str]]:
         commit = c.get("commit") or {}
         stamp = ((commit.get("committer") or {}).get("date")) or ((commit.get("author") or {}).get("date")) or ""
         message = str(commit.get("message") or "").strip()
-        out.append({"sha": sha, "date": str(stamp)[:20], "title": message.splitlines()[0][:120] if message else ""})
+        out.append({"sha": sha, "date": ascii_text(stamp, 20), "title": ascii_text(message.splitlines()[0], 120) if message else ""})
     return out
 
 
@@ -1126,7 +1136,7 @@ def stage_docs(http_get: HttpGet, prev_sha: str | None, *, repo: str = DOCS_REPO
             commits = parse_docs_commits(body)
             out["error"] = None
         except ValueError as exc:
-            out["error"] = f"undecodable body: {str(exc)[:60]}"
+            out["error"] = f"undecodable body: {ascii_text(exc, 60)}"
         break
     if commits:
         new, overflow = new_docs_commits(commits, prev_sha)
@@ -1226,10 +1236,7 @@ def usdc_boost_streak(history: Sequence[Mapping[str, Any]], today: date, current
     return streak, days
 
 
-def compute_watch_flags(rec: Mapping[str, Any], pins: Mapping[str, Any], history: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The three change-watch WARN rules, each {warn, evaluated, reason}. None of them halts."""
-    out: dict[str, Any] = {}
-
+def _flag_program_changed(rec: Mapping[str, Any], pins: Mapping[str, Any]) -> dict[str, Any]:
     # program_changed: programdata sha256 vs pins. A deploy-slot change halts in pins_changed and is only quoted here.
     ph = compare_program_hashes(rec, pins)
     if ph["changed"]:
@@ -1237,42 +1244,59 @@ def compute_watch_flags(rec: Mapping[str, Any], pins: Mapping[str, Any], history
         for c in ph["changed"]:
             slot = "" if c["old_deploy_slot"] == c["new_deploy_slot"] else f"; deploy_slot {c['old_deploy_slot']} -> {c['new_deploy_slot']} (halts in pins_changed)"
             parts.append(f"program_{c['program']} sha256 {c['old_sha256'][:16]} -> {c['new_sha256'][:16]}, len {c['old_data_len']} -> {c['new_data_len']}{slot}")
-        out["program_changed"] = {"warn": True, "evaluated": True, "reason": "; ".join(parts), "changes": ph["changed"]}
-    elif ph["ok"]:
+        return {"warn": True, "evaluated": True, "reason": "; ".join(parts), "changes": ph["changed"]}
+    if ph["ok"]:
         extra = [f"{k}: {ph[k]}" for k in ("unpinned", "unread") if ph[k]]
-        out["program_changed"] = {"warn": False, "evaluated": True, "reason": f"{len(ph['ok'])} programdata hashes unchanged" + (f" ({'; '.join(extra)})" if extra else "")}
-    else:
-        out["program_changed"] = {"warn": False, "evaluated": False, "reason": f"no programdata hash comparable (unpinned: {ph['unpinned']}, unread: {ph['unread']})"}
+        return {"warn": False, "evaluated": True, "reason": f"{len(ph['ok'])} programdata hashes unchanged" + (f" ({'; '.join(extra)})" if extra else "")}
+    return {"warn": False, "evaluated": False, "reason": f"no programdata hash comparable (unpinned: {ph['unpinned']}, unread: {ph['unread']})"}
 
+
+def _flag_docs_changed(rec: Mapping[str, Any]) -> dict[str, Any]:
     # docs_changed: newest commits of the public docs repo vs the last head on record.
     dw = rec.get("docs_watch")
     if not dw or not dw.get("ok"):
         why = (dw or {}).get("error") or "docs watch not run"
-        out["docs_changed"] = {"warn": False, "evaluated": False, "reason": f"docs repo not read: {why}"}
-    elif dw.get("prev_sha") is None:
-        out["docs_changed"] = {"warn": False, "evaluated": False, "reason": f"no earlier docs head on record; baseline {dw['latest_sha'][:7]} {dw.get('latest_date')}"}
-    elif dw.get("n_new"):
+        return {"warn": False, "evaluated": False, "reason": f"docs repo not read: {why}"}
+    if dw.get("prev_sha") is None:
+        return {"warn": False, "evaluated": False, "reason": f"no earlier docs head on record; baseline {dw['latest_sha'][:7]} {dw.get('latest_date')}"}
+    if dw.get("n_new"):
         titles = " | ".join(f"{c['sha']} {c['title']}" for c in dw["new_commits"])
         more = "" if dw["n_new"] <= len(dw["new_commits"]) else f" (+{dw['n_new'] - len(dw['new_commits'])} more)"
         lead = f"at least {dw['n_new']}" if dw.get("window_overflow") else str(dw["n_new"])
-        out["docs_changed"] = {"warn": True, "evaluated": True, "reason": f"{lead} new commit(s) since {dw['prev_sha'][:7]}, head {dw['latest_sha'][:7]} {dw.get('latest_date')}: {titles}{more}"}
-    else:
-        out["docs_changed"] = {"warn": False, "evaluated": True, "reason": f"docs head {dw['latest_sha'][:7]} {dw.get('latest_date')} unchanged"}
+        return {"warn": True, "evaluated": True, "reason": f"{lead} new commit(s) since {dw['prev_sha'][:7]}, head {dw['latest_sha'][:7]} {dw.get('latest_date')}: {titles}{more}"}
+    return {"warn": False, "evaluated": True, "reason": f"docs head {dw['latest_sha'][:7]} {dw.get('latest_date')} unchanged"}
 
-    # usdc_boost_regime: >= 10 USDC-quoted BOOST graduations a day on 5 consecutive daily runs (EXP-023).
+
+def _flag_usdc_boost(rec: Mapping[str, Any], history: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    # usdc_boost_regime: the COUNT part of the EXP-023 trigger (>= 10 USDC-quoted BOOST graduations a day on 5 consecutive daily
+    # runs). The paper-net part of the trigger is not computed here.
     qm = rec.get("quote_mix") or {}
     cur = qm.get("usdc_boost_per_day_est")
     if cur is None or _run_date(rec) is None:
-        out["usdc_boost_regime"] = {"warn": False, "evaluated": False,
-                                    "reason": f"quote mix not evaluable this run (sample {qm.get('n', 0)} of >= {QUOTE_MIX_MIN_N}, span {qm.get('span_s')} s of >= {QUOTE_MIX_MIN_SPAN_S})"}
-    else:
-        streak, days = usdc_boost_streak(history, _run_date(rec), float(cur))
-        fire = streak >= USDC_BOOST_STREAK_DAYS
-        n_usdc = qm["by_quote"]["usdc"]["n_init_boost"]
-        out["usdc_boost_regime"] = {
-            "warn": fire, "evaluated": True, "streak_days": streak, "estimates_newest_first": days,
-            "reason": f"USDC-quoted BOOST graduations: {n_usdc} in {qm['n']} sampled over {qm['span_s']} s = est {cur}/day; {streak} of {USDC_BOOST_STREAK_DAYS} consecutive daily runs at >= {USDC_BOOST_PER_DAY_MIN:g}/day",
-        }
+        return {"warn": False, "evaluated": False,
+                "reason": f"quote mix not evaluable this run (sample {qm.get('n', 0)} of >= {QUOTE_MIX_MIN_N}, span {qm.get('span_s')} s of >= {QUOTE_MIX_MIN_SPAN_S})"}
+    streak, days = usdc_boost_streak(history, _run_date(rec), float(cur))
+    n_usdc = qm["by_quote"]["usdc"]["n_init_boost"]
+    return {
+        "warn": streak >= USDC_BOOST_STREAK_DAYS, "evaluated": True, "streak_days": streak, "estimates_newest_first": days,
+        "reason": f"USDC-quoted BOOST graduations: {n_usdc} in {qm['n']} sampled over {qm['span_s']} s = est {cur}/day; {streak} of {USDC_BOOST_STREAK_DAYS} consecutive daily runs at >= {USDC_BOOST_PER_DAY_MIN:g}/day (count part of the EXP-023 trigger only)",
+    }
+
+
+def compute_watch_flags(rec: Mapping[str, Any], pins: Mapping[str, Any], history: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The three change-watch WARN rules, each {warn, evaluated, reason}. None of them halts. Each rule is guarded on its own:
+    a malformed input to one rule (a bad history record, a bad docs block) costs that rule only and never drops another's flag."""
+    rules: dict[str, Callable[[], dict[str, Any]]] = {
+        "program_changed": lambda: _flag_program_changed(rec, pins),
+        "docs_changed": lambda: _flag_docs_changed(rec),
+        "usdc_boost_regime": lambda: _flag_usdc_boost(rec, history),
+    }
+    out: dict[str, Any] = {}
+    for name, fn in rules.items():
+        try:
+            out[name] = fn()
+        except Exception as exc:  # noqa: BLE001
+            out[name] = {"warn": False, "evaluated": False, "reason": f"watch rule failed: {type(exc).__name__}: {ascii_text(exc, 80)}"}
     return out
 
 
@@ -1436,7 +1460,7 @@ def compute_flags(
     try:
         warn.update(compute_watch_flags(rec, pins, history))
     except Exception as exc:  # noqa: BLE001 - a broken watch rule must never cost a halt flag
-        why = f"watch rule failed: {type(exc).__name__}: {str(exc)[:80]}"
+        why = f"watch rule failed: {type(exc).__name__}: {ascii_text(exc, 80)}"
         warn.update({k: {"warn": False, "evaluated": False, "reason": why} for k in WATCH_RULES})
     return halt, warn
 
@@ -1691,6 +1715,26 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def emit_summary(rec: Mapping[str, Any]) -> None:
+    """Print the summary. A summary that cannot be built or encoded falls back to an ASCII-escaped one that still carries the HALT
+    lines; a stdout that is gone is ignored. The record write and the exit code never depend on this."""
+    try:
+        text = format_summary(rec)
+    except Exception as exc:  # noqa: BLE001
+        flags = ((rec.get("halt") or {}).get("flags") or {}) if isinstance(rec, Mapping) else {}
+        halts = [f"HALT {k}: {v.get('reason')}" for k, v in flags.items() if v.get("halt")]
+        text = f"summary unavailable ({type(exc).__name__})\n" + "\n".join(halts or ["HALT: none"])
+    try:
+        print(text, flush=True)
+    except UnicodeError:
+        try:
+            print(text.encode("ascii", "backslashreplace").decode("ascii"), flush=True)
+        except Exception:  # noqa: BLE001 - stdout is unusable; the record and the exit code still stand
+            pass
+    except (OSError, ValueError):  # closed or broken stdout
+        pass
+
+
 def rpc_host(url: str) -> str:
     """hostname[:port] only. Never userinfo, path or query: any of them can carry a credential."""
     try:
@@ -1728,8 +1772,8 @@ def main(argv: Sequence[str] | None = None, *, client: RpcClient | None = None, 
     out_path = Path(args.out)
     if args.write_pins:
         rec = build_record(client, epoch_info, pins, now=t_now, n_grads=0, settle_s=args.settle_s, v2_sample=0, min_eval_n=args.min_eval_n, prev_ms_per_slot=None, rpc_host=host, pins_error=pins_error)
-        if not rec["accounts"] or not rec["programs"]:
-            print("pins not written: config or program read failed: " + "; ".join(rec["errors"]), file=sys.stderr)
+        if not rec["accounts"] or not rec["programs"] or any(not o.get("sha256") for o in rec["programs"].values()):
+            print("pins not written: config, program or programdata-hash read failed: " + "; ".join(rec["errors"]), file=sys.stderr)
             return 2
         Path(args.write_pins).write_text(json.dumps(build_pins(rec, pins), indent=2) + "\n", encoding="utf-8")
         print(f"wrote pins to {args.write_pins} from slot {rec.get('accounts_context_slot')}")
@@ -1740,7 +1784,7 @@ def main(argv: Sequence[str] | None = None, *, client: RpcClient | None = None, 
         prev_ms_per_slot=last_ms_per_slot(out_path), rpc_host=host, pins_error=pins_error,
         history=read_tail_records(out_path), docs_get=None if args.no_docs else (docs_get or urllib_get), quote_mix_extra=max(0, args.quote_mix_extra),
     )
-    print(format_summary(rec), flush=True)  # first: a HALT must reach the log even when the file write fails
+    emit_summary(rec)  # first: a HALT must reach the log even when the file write fails. Never raises: the record write and rc do not depend on stdout
     try:
         append_record(out_path, rec)
     except OSError as exc:
