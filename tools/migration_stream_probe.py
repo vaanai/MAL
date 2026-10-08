@@ -41,6 +41,13 @@ DEFAULT_ENV_FILE = "/var/lib/mal/fast-listener/helius.env"
 DEFAULT_OUT = "/var/lib/mal/sealed/fast-migration-stream"
 DEFAULT_TIP_DIR = "/var/lib/mal/sealed/fast-trades-tip"
 SOURCE = "stream_processed"
+# Highest transaction version a full-transaction request accepts. 0 returns JSON-RPC -32015 (or drops
+# the notification) for every version-1 transaction, which has been on mainnet since 2026-09-20 and
+# carries the compute budget in message.transactionConfig. 1 returns legacy, v0 and v1.
+# Helius: https://www.helius.dev/docs/rpc/transaction-v1 (getTransaction, getBlock, transactionSubscribe,
+# blockSubscribe); https://www.helius.dev/docs/enhanced-websockets/transaction-subscribe
+# Solana: https://solana.com/docs/rpc/http/gettransaction ; v1 format: SIMD-0385.
+MAX_SUPPORTED_TX_VERSION = 1
 _FILE_RE = re.compile(r"^migrations-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl$")
 
 
@@ -79,7 +86,7 @@ def subscribe_request(encoding: str = "json", req_id: int = 1) -> dict[str, Any]
                 "commitment": "processed",
                 "encoding": encoding,
                 "transactionDetails": "full",
-                "maxSupportedTransactionVersion": 0,
+                "maxSupportedTransactionVersion": MAX_SUPPORTED_TX_VERSION,
                 "showRewards": False,
             },
         ],

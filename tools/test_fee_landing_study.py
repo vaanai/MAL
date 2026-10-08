@@ -104,6 +104,113 @@ class Decoding(unittest.TestCase):
         self.assertEqual(f._account_keys(t)[-2:], ["W", "R"])
 
 
+# Header of a real version-1 transaction (mainnet slot 454508506, 2026-10-08, public getBlock with
+# maxSupportedTransactionVersion 1): total priority fee in lamports, null where the sender set nothing.
+REAL_V1_CONFIG = {"computeUnitLimit": 81700, "heapSize": None, "loadedAccountsDataSizeLimit": 16777216, "priorityFee": 2341}
+
+
+def make_tx_v1(signer, mint, config=REAL_V1_CONFIG, cb_ix_price=None, tip=0, err=None, disc=f.DISC_BUY, pool="POOL"):
+    """A version-1 getBlock entry (json encoding): "version": 1, message.transactionConfig, no
+    addressTableLookups, empty loadedAddresses. cb_ix_price adds a ComputeBudget price instruction, which
+    SIMD-0385 says a v1 transaction ignores."""
+    t = make_tx(signer, mint, price=cb_ix_price, tip=tip, err=err, disc=disc, pool=pool)
+    msg = t["transaction"]["message"]
+    msg["header"] = {"numRequiredSignatures": 1, "numReadonlySignedAccounts": 0, "numReadonlyUnsignedAccounts": 5}
+    msg["recentBlockhash"] = "11111111111111111111111111111111"
+    if config is not None:
+        msg["transactionConfig"] = dict(config)
+    t["transaction"]["signatures"] = ["SIG"]
+    t["meta"].update({"loadedAddresses": {"writable": [], "readonly": []}})
+    t["version"] = 1
+    return t
+
+
+class TransactionV1(unittest.TestCase):
+    def test_get_block_asks_for_version_1(self):
+        from unittest import mock
+
+        seen = {}
+
+        class Resp:
+            def read(self):
+                return b'{"jsonrpc": "2.0", "id": 1, "result": {"transactions": []}}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            seen["body"] = json.loads(req.data)
+            return Resp()
+
+        with mock.patch.object(f.urllib.request, "urlopen", fake_urlopen):
+            block, code = f.make_fetcher("https://example.invalid/?api-key=K")(123)
+        self.assertEqual((block, code), ({"transactions": []}, None))
+        self.assertEqual(seen["body"]["method"], "getBlock")
+        self.assertEqual(seen["body"]["params"][1]["maxSupportedTransactionVersion"], 1)
+        self.assertEqual(f.MAX_SUPPORTED_TX_VERSION, 1)
+
+    def test_v1_fee_comes_from_the_header(self):
+        (b,) = f.extract_buys({"transactions": [make_tx_v1("S", "M")]}, 7)
+        self.assertEqual(b["priority_lamports"], 2341)  # the header value is the total, not price x limit
+        self.assertEqual(b["cu_limit"], 81_700)
+        self.assertTrue(b["limit_explicit"])
+        self.assertEqual(b["cu_price"], -(-2341 * 1_000_000 // 81_700))  # derived, microlamports per CU
+        self.assertEqual(b["cu_price"], 28_654)
+        self.assertEqual(b["our_equiv_lamports"], f.our_equiv_lamports(28_654))
+        self.assertEqual((b["mint"], b["pool"], b["signer"], b["slot"]), ("M", "POOL", "S", 7))
+
+    def test_v1_ignores_compute_budget_instructions(self):
+        # A v1 transaction can still carry ComputeBudget instructions; the runtime ignores them.
+        cfg = {"computeUnitLimit": 1_000, "heapSize": None, "loadedAccountsDataSizeLimit": None, "priorityFee": 500}
+        (b,) = f.extract_buys({"transactions": [make_tx_v1("S", "M", config=cfg, cb_ix_price=9_999_999)]}, 1)
+        self.assertEqual((b["priority_lamports"], b["cu_limit"], b["cu_price"]), (500, 1_000, 500_000))
+
+    def test_v1_unset_header_fields_are_null_not_a_crash(self):
+        empty = {"computeUnitLimit": None, "heapSize": None, "loadedAccountsDataSizeLimit": None, "priorityFee": None}
+        for cfg in (empty, {}, {"priorityFee": 0, "computeUnitLimit": 0}, {"priorityFee": 300}, {"computeUnitLimit": 90_000}):
+            (b,) = f.extract_buys({"transactions": [make_tx_v1("S", "M", config=cfg)]}, 1)
+            self.assertEqual(b["cu_price"], 0, cfg)  # no price: excluded from the fee buckets like a legacy no-price buy
+            self.assertEqual(b["priority_lamports"], cfg.get("priorityFee") or 0, cfg)
+            self.assertEqual(b["cu_limit"], cfg.get("computeUnitLimit"), cfg)
+        # version 1 with the header stripped by a proxy: still not read as a legacy ComputeBudget transaction
+        (b,) = f.extract_buys({"transactions": [make_tx_v1("S", "M", config=None, cb_ix_price=7_000_000)]}, 1)
+        self.assertEqual((b["cu_price"], b["priority_lamports"], b["cu_limit"]), (0, 0, None))
+
+    def test_v1_malformed_header_values_read_as_unset(self):
+        self.assertEqual(f.v1_compute_budget({"priorityFee": "5", "computeUnitLimit": True}), (None, None, 0))
+        self.assertEqual(f.v1_compute_budget({"priorityFee": -5, "computeUnitLimit": -1}), (None, None, 0))
+        self.assertEqual(f.v1_compute_budget({"priorityFee": 1, "computeUnitLimit": 3}), (333_334, 3, 1))  # ceil
+
+    def test_legacy_and_v0_still_read_compute_budget_instructions(self):
+        legacy = make_tx("S", "M", price=1_000_000, limit=150_000)
+        v0 = dict(make_tx("S2", "M", price=2_000_000, limit=100_000), version=0)
+        self.assertIsNone(f.v1_config(legacy))
+        self.assertIsNone(f.v1_config(v0))
+        a, b = f.extract_buys({"transactions": [legacy, v0]}, 1)
+        self.assertEqual((a["cu_price"], a["priority_lamports"]), (1_000_000, 150_000))
+        self.assertEqual((b["cu_price"], b["priority_lamports"]), (2_000_000, 200_000))
+
+    def test_mixed_block_and_v1_tip_and_account_keys(self):
+        blk = {"transactions": [make_tx("L", "M", price=1_000_000, limit=100_000),
+                                make_tx_v1("V", "M"),
+                                make_tx_v1("T", "OTHER", tip=5_000)]}
+        got = f.extract_buys(blk, 1)
+        self.assertEqual([(g["idx"], g["signer"]) for g in got], [(0, "L"), (1, "V"), (2, "T")])
+        self.assertEqual([g["tip_in_tx"] for g in got], [False, False, True])
+        self.assertEqual(f._account_keys(blk["transactions"][1])[-1], "Q")  # no loaded addresses added
+        self.assertEqual(f.slot_tips(blk), {"T": {"tipped": True, "services": ["jito"]}})
+
+    def test_v1_buy_flows_through_join_and_is_priced(self):
+        blk = {"transactions": [make_tx_v1("V", "M")]}
+        rec = {"slot": 100, "status": "ok", "buys": f.extract_buys(blk, 100), "tips": f.slot_tips(blk)}
+        (r,) = f.join_buys([{"mint": "M", "slot": 100, "day": "d"}], {100: rec})
+        self.assertFalse(r["no_price"])
+        self.assertEqual((r["k"], r["priority_lamports"]), (0, 2341))
+
+
 class KeyHandling(unittest.TestCase):
     def test_redact_and_env_file_never_in_errors(self):
         self.assertNotIn("SECRET", f.redact_rpc_url("x https://h/?api-key=SECRET&a=1"))

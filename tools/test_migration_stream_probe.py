@@ -159,8 +159,59 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual(flt, {"accountInclude": [p.MIGRATION_ACCOUNT], "failed": False, "vote": False})
         self.assertEqual(opts["commitment"], "processed")
         self.assertEqual(opts["transactionDetails"], "full")
-        self.assertEqual(opts["maxSupportedTransactionVersion"], 0)
+        # 0 errors (-32015) or drops version-1 transactions; 1 returns legacy, v0 and v1
+        self.assertEqual(opts["maxSupportedTransactionVersion"], 1)
+        self.assertEqual(p.MAX_SUPPORTED_TX_VERSION, 1)
         self.assertFalse(opts["showRewards"])
+
+
+# Header of a real version-1 transaction (mainnet slot 454508506, 2026-10-08, public getBlock with
+# maxSupportedTransactionVersion 1). v1 has no ComputeBudget instructions in effect, no
+# addressTableLookups, and the entry carries "version": 1.
+REAL_V1_CONFIG = {"computeUnitLimit": 81700, "heapSize": None, "loadedAccountsDataSizeLimit": 16777216, "priorityFee": 2341}
+
+
+def v1_notif(instructions, keys, logs=("Program log: Instruction: Migrate",), slot=9, cb_ix=False):
+    """transactionNotification for a version-1 transaction in the json encoding."""
+    if cb_ix:  # a v1 tx may still carry a ComputeBudget instruction; the runtime ignores it
+        keys = list(keys) + ["ComputeBudget111111111111111111111111111111"]
+        instructions = [{"programIdIndex": len(keys) - 1, "accounts": [], "data": b58encode(b"\x03" + bytes(8))}] + list(instructions)
+    msg = {
+        "accountKeys": list(keys),
+        "header": {"numRequiredSignatures": 1, "numReadonlySignedAccounts": 0, "numReadonlyUnsignedAccounts": 2},
+        "instructions": list(instructions),
+        "recentBlockhash": "11111111111111111111111111111111",
+        "transactionConfig": dict(REAL_V1_CONFIG),
+    }
+    meta = {"err": None, "logMessages": list(logs), "loadedAddresses": {"writable": [], "readonly": []}}
+    result = {"signature": SIG, "slot": slot,
+              "transaction": {"transaction": {"signatures": [SIG], "message": msg}, "meta": meta, "version": 1}}
+    return {"jsonrpc": "2.0", "method": "transactionNotification", "params": {"subscription": 7, "result": result}}
+
+
+class VersionOneTests(unittest.TestCase):
+    def test_v1_migrate_instruction_row(self) -> None:
+        keys = [b58encode(_pk(n)) for n in (10, 11, 12, 13)] + [p.PUMP_PROGRAM]
+        for disc in ("9beae792ec9ea21e", "bbcb121fceedfe29"):
+            ix = {"programIdIndex": 4, "accounts": [0, 1, 2, 3], "data": b58encode(bytes.fromhex(disc) + b"\x01")}
+            for cb_ix in (False, True):
+                row = p.row_from_notification(v1_notif([ix], keys, cb_ix=cb_ix), T0)
+                self.assertTrue(row["is_migration"], (disc, cb_ix))
+                self.assertEqual((row["mint"], row["signature"], row["slot"]), (keys[2], SIG, 9))
+
+    def test_v1_migration_event_logs_row(self) -> None:
+        keys = [b58encode(_pk(n)) for n in (10, 11)]
+        row = p.row_from_notification(v1_notif([], keys, logs=["x", _migration_log()]), T0)
+        self.assertTrue(row["is_migration"])
+        self.assertEqual(row["mint"], b58encode(_pk(2)))
+
+    def test_v1_non_migrate_is_a_row_not_a_crash(self) -> None:
+        keys = [b58encode(_pk(n)) for n in (10, 11, 12)] + [p.PUMP_PROGRAM]
+        ix = {"programIdIndex": 3, "accounts": [0, 1, 2], "data": b58encode(bytes.fromhex("33e685a4017f83ad"))}
+        row = p.row_from_notification(v1_notif([ix], keys), T0)
+        self.assertFalse(row["is_migration"])
+        self.assertIsNone(row["mint"])
+        self.assertIsNone(row["err"])
 
 
 class RedactionTests(unittest.TestCase):

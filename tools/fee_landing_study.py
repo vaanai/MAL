@@ -8,10 +8,12 @@ Question: does a cheaper priority fee (150k or 250k lamports per side, vs the pr
 land a PumpSwap buy as early after migration? The live probe lands 5-6 slots after migration at 500k.
 
 For every migration (slot m) on the chosen exploration days, fetch getBlock for slots m..m+16 (full
-transactions, maxSupportedTransactionVersion 0) and record every successful PumpSwap BUY on the
-migrated mint: slot offset k, index in block, compute-unit price and limit (ComputeBudget), raw
-priority lamports, "our-equivalent fee" = cu_price * DEFAULT_BUY_CU_LIMIT / 1e6 (what that CU price
-would cost at the probe's own CU limit), and the signer. No trade amounts.
+transactions, maxSupportedTransactionVersion 1 so a version-1 transaction does not fail the call) and
+record every successful PumpSwap BUY on the migrated mint: slot offset k, index in block, compute-unit
+price and limit (ComputeBudget instructions for legacy/v0; message.transactionConfig for v1, where the
+price is derived from the total priorityFee), raw priority lamports, "our-equivalent fee" =
+cu_price * DEFAULT_BUY_CU_LIMIT / 1e6 (what that CU price would cost at the probe's own CU limit), and
+the signer. No trade amounts.
 
 Why our-equivalent: leaders order by fee per compute unit, so buckets (b) and (c) are on cu_price
 scaled to our CU limit. Raw lamports are report-only.
@@ -134,6 +136,9 @@ K_LAND = 6
 OUR_CU_LIMIT = DEFAULT_BUY_CU_LIMIT
 BUCKETS = (("le150k", 0, 150_000), ("150k_250k", 150_000, 250_000), ("250k_500k", 250_000, 500_000), ("gt500k", 500_000, None))
 SKIP_CODES = frozenset({-32007, -32009})
+# 0 makes getBlock fail (-32015) for the whole block if it holds one version-1 transaction (on mainnet since
+# 2026-09-20). 1 returns legacy, v0 and v1. https://www.helius.dev/docs/rpc/transaction-v1
+MAX_SUPPORTED_TX_VERSION = 1
 MAX_RPS = 5.0
 DEFAULT_CAP = 60_000
 EXIT_CAP = 3
@@ -192,6 +197,37 @@ def decode_compute_budget(instrs: list[tuple[str, bytes]]) -> tuple[int | None, 
         elif data[0] == 2 and len(data) >= 5:
             limit = int.from_bytes(data[1:5], "little")
     return price, limit
+
+
+def _is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def v1_config(tx: dict) -> dict | None:
+    """The v1 header block (message.transactionConfig) if this is a version-1 transaction, else None.
+
+    A v1 transaction has no ComputeBudget instructions in effect (SIMD-0385: they are ignored, even when
+    present); its limit and total priority fee sit in message.transactionConfig, any field null when the
+    sender did not set it. Branch on the header or on version == 1, never on whether ComputeBudget
+    instructions exist. A v1 entry whose header was stripped yields {} (no fee data), not a legacy read."""
+    msg = (tx.get("transaction") or {}).get("message") or {}
+    cfg = msg.get("transactionConfig")
+    if isinstance(cfg, dict):
+        return cfg
+    return {} if tx.get("version") == 1 else None
+
+
+def v1_compute_budget(cfg: dict) -> tuple[int | None, int | None, int]:
+    """(derived price in microlamports per CU or None, unit limit or None, total priority lamports).
+
+    transactionConfig.priorityFee is the TOTAL fee in lamports, not a price per CU. The price used by the
+    fee buckets is derived: ceil(priorityFee * 1e6 / computeUnitLimit). It is None when the fee or the
+    limit is unset or 0. Missing, null or malformed fields read as unset."""
+    fee, limit = cfg.get("priorityFee"), cfg.get("computeUnitLimit")
+    fee = fee if _is_int(fee) and fee > 0 else None
+    limit = limit if _is_int(limit) and limit >= 0 else None
+    price = -(-fee * 1_000_000 // limit) if fee and limit else None
+    return price, limit, fee or 0
 
 
 def priority_lamports(price: int | None, limit: int | None, n_other_ix: int) -> tuple[int, bool]:
@@ -265,9 +301,14 @@ def extract_buys(block: dict, slot: int) -> list[dict]:
                     break
         if buy is None:
             continue
-        price, limit = decode_compute_budget([(p, b58decode(i["data"])) for p, i in decoded])
-        n_other = sum(1 for p, _ in decoded if p != COMPUTE_BUDGET_PROGRAM)
-        lam, explicit = priority_lamports(price, limit, n_other)
+        cfg = v1_config(tx)
+        if cfg is not None:
+            price, limit, lam = v1_compute_budget(cfg)
+            explicit = limit is not None
+        else:
+            price, limit = decode_compute_budget([(p, b58decode(i["data"])) for p, i in decoded])
+            n_other = sum(1 for p, _ in decoded if p != COMPUTE_BUDGET_PROGRAM)
+            lam, explicit = priority_lamports(price, limit, n_other)
         out.append(
             {
                 "slot": slot,
@@ -412,7 +453,7 @@ def fetch_all(
 
 def make_fetcher(url: str) -> Callable[[int], tuple[dict | None, int | None]]:
     def fetch(slot: int):
-        params = [slot, {"encoding": "json", "transactionDetails": "full", "rewards": False, "commitment": "confirmed", "maxSupportedTransactionVersion": 0}]
+        params = [slot, {"encoding": "json", "transactionDetails": "full", "rewards": False, "commitment": "confirmed", "maxSupportedTransactionVersion": MAX_SUPPORTED_TX_VERSION}]
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getBlock", "params": params}).encode()
         req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
         try:
@@ -652,7 +693,7 @@ def analyze(migrations: list[dict], done: dict[int, dict], n_boot: int = 1000, s
         "definitions": {
             "k": "landing slot minus the slot of the 'complete' event (migration slot m); fetched k = 0..16",
             "our_equiv_lamports": f"ceil(cu_price * {OUR_CU_LIMIT} / 1e6), {OUR_CU_LIMIT} = DEFAULT_BUY_CU_LIMIT of the probe; leaders order by fee per CU, so (b) and (c) bucket on this. Raw priority lamports are report-only (a)",
-            "raw_priority": "ceil(cu_price * cu_limit / 1e6); limit defaults to 200k per non-ComputeBudget instruction when unset",
+            "raw_priority": "ceil(cu_price * cu_limit / 1e6); limit defaults to 200k per non-ComputeBudget instruction when unset. Version-1 transactions: the total priorityFee in message.transactionConfig, and cu_price is derived as ceil(priorityFee * 1e6 / computeUnitLimit) (none if either is unset)",
             "has_tip": "the buy's signer sent a transfer to a known tip account in ANY successful tx of the same slot",
             "scope": "successful top-level PumpSwap buy / buy_exact_quote_in instructions on the migrated mint; buys via a router/CPI are not seen",
             "p_land": f"P(k <= {K_LAND}) among each wallet's first buy per mint, conditional on that buy landing within k <= {K_MAX}; wallets that never landed in the window are not in the denominator. Late landers (k 9..16) are counted per bucket",

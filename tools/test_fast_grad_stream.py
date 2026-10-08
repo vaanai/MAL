@@ -229,6 +229,59 @@ class SubscriberTests(unittest.TestCase):
         asyncio.run(go())
 
 
+# Header of a real version-1 transaction (mainnet slot 454508506, 2026-10-08, public getBlock with
+# maxSupportedTransactionVersion 1). v1 has no ComputeBudget instructions in effect, no
+# addressTableLookups, and the entry carries "version": 1.
+REAL_V1_CONFIG = {"computeUnitLimit": 81700, "heapSize": None, "loadedAccountsDataSizeLimit": 16777216, "priorityFee": 2341}
+
+
+def v1_notif(logs, keys, instructions=(), slot=100, sig=SIG):
+    msg = {"accountKeys": list(keys),
+           "header": {"numRequiredSignatures": 1, "numReadonlySignedAccounts": 0, "numReadonlyUnsignedAccounts": 1},
+           "instructions": list(instructions), "recentBlockhash": "11111111111111111111111111111111",
+           "transactionConfig": dict(REAL_V1_CONFIG)}
+    meta = {"err": None, "logMessages": list(logs), "loadedAddresses": {"writable": [], "readonly": []}}
+    return {"method": "transactionNotification", "params": {"subscription": 7, "result": {
+        "signature": sig, "slot": slot,
+        "transaction": {"transaction": {"signatures": [sig], "message": msg}, "meta": meta, "version": 1}}}}
+
+
+class VersionOneTests(unittest.TestCase):
+    def test_subscribe_asks_for_version_1(self) -> None:
+        # 0 errors (-32015) or drops version-1 transactions; 1 returns legacy, v0 and v1
+        opts = g.subscribe_request(["A", "B"], 5)["params"][1]
+        self.assertEqual(opts["maxSupportedTransactionVersion"], 1)
+        self.assertEqual(g.MAX_SUPPORTED_TX_VERSION, 1)
+        self.assertEqual((opts["commitment"], opts["transactionDetails"]), ("processed", "full"))
+
+    def test_v1_trade_and_complete_rows(self) -> None:
+        mint = _pk(2)
+        m = b58encode(mint)
+        rows = g.rows_from_notification(v1_notif([_trade_log(mint), _complete_log(mint)], ["S", "X"]), T0,
+                                        g.PdaCache(fn=str), {m})
+        self.assertEqual(sorted(r["kind"] for r in rows), ["complete", "trade"])
+        self.assertTrue(all(r["signature"] == SIG and r["mint"] == m for r in rows))
+
+    def test_v1_migrate_by_instruction_without_compute_budget(self) -> None:
+        keys = [b58encode(_pk(n)) for n in (10, 11, 12, 13)] + [g.PUMP_PROGRAM]
+        for disc in ("9beae792ec9ea21e", "bbcb121fceedfe29"):
+            ix = {"programIdIndex": 4, "accounts": [0, 1, 2, 3], "data": b58encode(bytes.fromhex(disc) + b"\x01")}
+            rows = g.rows_from_notification(v1_notif(["Program log: Instruction: Migrate"], keys, [ix]), T0,
+                                            g.PdaCache(fn=str), set())
+            self.assertEqual([(r["kind"], r["mint"]) for r in rows], [("migrate", keys[2])], disc)
+
+    def test_v1_keys_and_other_row(self) -> None:
+        entry = v1_notif(["noise"], ["CURVE", "S"])["params"]["result"]["transaction"]
+        self.assertEqual(g.tx_keys(entry), ["CURVE", "S"])  # empty loadedAddresses, no addressTableLookups
+        pdas = g.PdaCache(fn=lambda m: "CURVE")
+        pdas.curve("MINTX")
+        rows = g.rows_from_notification(v1_notif(["noise"], ["CURVE", "S"]), T0, pdas, set())
+        self.assertEqual([(r["kind"], r["mint"]) for r in rows], [("other", "MINTX")])
+        failed = v1_notif([_trade_log(_pk(2))], ["S"])
+        failed["params"]["result"]["transaction"]["meta"]["err"] = {"InstructionError": [0, "x"]}
+        self.assertEqual(g.rows_from_notification(failed, T0, pdas, {b58encode(_pk(2))}), [])
+
+
 class DecodeTests(unittest.TestCase):
     def test_trade_and_complete_rows(self) -> None:
         mint = _pk(2)
