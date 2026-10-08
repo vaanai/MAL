@@ -80,12 +80,12 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - **Live needs Helm:** a systemd unit with `LoadCredential` for the probe key, which is root-only (so live is NOT a MiScusi job; the dry run is), plus a root-run `sell-and-close` tool for abandoned positions.
   - **Manager:** LIVE_OK, the `end_ms` config, the `FINAL_WRITTEN` marker after the FINAL, and updating the 12:17Z probe-check cron (the PR body has the change).
   - **Next:** reviewer, then a dry run on fast-0 against the shadow output. |
-| #478 `claude/exp024-h5-prereg` | EXP-024 Part 1 plus DEC-023 (family), DEC-024 (canary and owner override), DEC-021 Am.2, DEC-016 Am.7, EXP-012 Am.3, EXP-022 Am.2, ledger | Head **332865d**, all edits done:
-  - declared observation for Look 1's window only (EXP-024 §3.1, DEC-024 §6);
-  - EXP-022 seal untouched;
-  - `OWNER_OVERRIDE_CONFIRMED` filled; provenance is notebook n_v3FFb1ibpGKmRQ with the verbatim Q&A.
-  **Quant-proof running on 332865d** (launched at handoff). Apply any edits, re-check, then **MERGE BEFORE 2026-10-10T00:00Z**. Otherwise refile from 10-11T00, and after that Look 1 is dropped. Cron 7b7a30bc fires at 10-09 18:13Z.
-  Open item: the owner has not stated the stake, open cap or stops at 1 SOL. Ask before scaling. |
+| #478 (merged **9b82bc0**, 2026-10-08T20:25Z) | EXP-024 Part 1, DEC-023, DEC-024, DEC-021 Am.2, DEC-016 Am.7, EXP-012 Am.3, EXP-022 Am.2, ledger | **MERGED** with quant-proof OK on 8a20a82 (comment 6068403337). The EXP-024 deadline is met.
+  - Live canary trades may start once the executor is reviewed and the Helm unit exists.
+  - Declared observation covers Look 1's window [10-10T00, 10-16T00).
+  - Pins: E0-H5 day 2026-09-20; monitor blob 1ca0a88c.
+  - **Open:** the owner must state the 1 SOL stake, open cap and stops in writing in DEC-024 before any scale-up. DEC-024 needs ≥100 fills and ≥20 landed buys for the scale-up checks.
+  - Cron 7b7a30bc (10-09 18:13Z) is now moot. |
 | #476 `claude/h5-boostfloor-score` | H5 scorer port (32/32 cells and every trade reproduced) | Draft. Still needs a forward mode, V(t) pricing, the correction and the day-level t for Look 1 (by 10-16T00Z) |
 | #479 `claude/cap-pick-exp022-mode` | `--exp022` mode in cap_pick_score: constants and `exp022_universe()` with walk2 and exploration adapters | Quant-proof OK-WITH-EDITS on 86355b3 (comment 6068166437). Edits done at **be7cdb2**, 229 tests:
   - the exploration source pins `--vmap` to `/data/mal/pumpswap-virtual/pool_v_0909.json`;
