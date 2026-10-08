@@ -127,3 +127,14 @@ For CAP-PICK only:
 - **§8 (cumulative error).** CAP-PICK is the walk-2 family, tested at α = 0.025, and no other arm joins it. The Bonferroni-across-walks rule is unchanged.
 
 **Not changed:** §1 (honoured through §4 above), §6, §9, the promotion gate, and DEC-016 Am.2 and Am.3. No forward-1002 hour is read for CAP-PICK before the FINAL is written.
+
+## Amendment 2 (2026-10-08): §8's second α slot goes to EXP-024 (H5-BOOSTFLOOR)
+
+Proposed by the manager on 2026-10-08. The owner's OK is asked by 2026-10-09T20:00Z; if he has not answered, the manager decides under the owner's 2026-10-08 mandate and records it in the notebook ([DEC-023](DEC-023-h5-family.md)). It takes effect on merge, before 2026-10-10T00:00Z. It covers **[EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) only**. No hour was read to write it.
+
+- **§8 (cumulative error).** The two α = 0.025 slots are now used: **EXP-022 holds the first, EXP-024 the second.** The overall rate across the promotion-eligible October families stays ≤ 0.05. A third family or walk needs a new DEC.
+- **Inside EXP-024's slot.** α = 0.025 is split over two looks, 0.020 at Look 1 and 0.005 at Look 2, with k = 1 and no Holm (DEC-023 §2).
+- **The walk-2 family is unchanged.** Amendment 1 says no other arm joins CAP-PICK. EXP-024 is not an arm of that family. It is a separate DEC-014 family with its own α, its own reads and its own tool. Its Look 1 reads forward-1002, and its Look 2 reads walk 2 only after EXP-022's read has ended (EXP-022 Amendment 2). EXP-022's thresholds (0.005, 0.008, 0.012), counted window and seal are unchanged.
+- **§2, §3, §6 and §7 do not apply to EXP-024.** It is not a challenger to a champion and has no sim arm to pair. As in Amendment 1 for CAP-PICK, no backward-block PASS is required (DEC-023 §6 gives the reasons). A pass leads only to the DEC-018 path, the second branch of §7. The 10-16 FINAL stays reported compromised (DEC-016 Am.2).
+
+**Not changed:** §1, §4, §5 (for EXP-022), §6, §9, the promotion gate, and DEC-016 Am.2 and Am.3.

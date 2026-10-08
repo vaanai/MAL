@@ -236,6 +236,17 @@ Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3 and DEC-
 
 **Option X rejected.** Option X, under which EXP-022 would have been a second owner counting `[2026-10-10T00, 2026-10-16T01)`, was considered and rejected on 2026-10-08 (EXP-022 §0).
 
+## Amendment 3 (2026-10-08): EXP-024 (H5-BOOSTFLOOR) reads of the forward walk's hours
+
+Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3 and DEC-014(a). Nothing frozen above changes. The FINAL is unchanged. DEC-016 changes only by its Amendment 7.
+
+[EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) is a **non-owner counted reader** of forward-1002 `[2026-10-09T23, 2026-10-16T01)`, with a counted s0 window of `[2026-10-10T00, 2026-10-16T00)`. The ledger exception is [DEC-023](../DEC/DEC-023-h5-family.md) §3.
+- **Only after the FINAL.** No H5 process opens any hour of this block before EXP-012's FINAL (A) report is written.
+- **No EXP-012 component.** EXP-024's rule (H5-BOOSTFLOOR v1) has no EXP-012 model, threshold, feature set or pick list. It prices every V-range pool with its own trigger, exit and costs. It uses none of this experiment's decisions, and nothing it computes feeds this experiment's FINAL, which is already written when it reads.
+- **Its own V fetch.** It does not use the book (B) V files, and it opens no file that DEC-016 Amendment 2 keeps closed.
+- **Not Option X.** The rejected Option X made EXP-022 a second owner whose counted picks the FINAL would have priced first. EXP-024 is a reader, after the FINAL, of hours the FINAL already priced for EXP-012's own entries.
+- **The FINAL remains reported compromised** under DEC-016 Amendment 2. This amendment does not change that.
+
 ## Sources
 
 [EXP-011](EXP-011-migrate-entry-model-prereg.md) §1, §1a, §3, §4, §6–§8, §10 and Result; `tools/exp011_freeze.py`, `tools/exp011_build_table.py`, `tools/exp011_score.py`; [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md); [dedupe note](../ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md); [clean B3 re-run](../ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md); [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md).

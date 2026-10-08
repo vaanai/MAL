@@ -352,3 +352,13 @@ Outcome-blind, written before 2026-10-16T00Z. No forward outcome was read to mak
 **(g) D tool: not planned (manager, 2026-10-08).** No merged tool computes the conservative variant, and the manager does not plan one. If no variant tool is merged and its commit recorded here before 2026-10-16T00:00Z, the variant is not computed and Amendment 3 (a) gives no live support for this window. This only removes support. The read still runs as written, and it will be reported as compromised under Amendment 2.
 
 The 10-16 FINAL remains reported compromised under Amendment 2, and this amendment does not change that.
+
+## Amendment 7 (2026-10-08, before any counted hour): EXP-024 reads forward-1002 only after the FINAL
+
+No forward outcome was read to make this amendment: no runner row, no scored P&L, no `rows.jsonl`, and no file Amendment 2 keeps closed. Nothing in the FINAL's window, read, verdict or seal changes.
+
+- **A second counted reader.** [EXP-024](../EXP/EXP-024-h5-boostfloor-part1-prereg.md) (H5-BOOSTFLOOR, [DEC-023](DEC-023-h5-family.md)) also reads forward-1002 `[2026-10-09T23, 2026-10-16T01)`, with its own tool, **only after the FINAL (A) report is written**. Its counted s0 window is `[2026-10-10T00, 2026-10-16T00)`. Hour 2026-10-09T23 is read for universe membership only. This is disclosed in [EXP-012 Amendment 3](../EXP/EXP-012-migrate-entry-model-refreeze-prereg.md) (DEC-014(a)) and in the ledger.
+- **Its own V fetch.** It does not use the (B) V-map files (Amendment 5). It fetches V0 and V(t) by `getTransaction` after the FINAL (EXP-024 §4).
+- **Closed files stay closed.** EXP-024 opens none of `OUT/rows.jsonl`, `OUT/scratch/*.jsonl` or a FINAL `report.json` / `report.md`. Its tool checks only the FINAL marker, the entry in the external FINAL ledger `/data/mal/exp012-forward/FINAL_READS.jsonl`.
+- **The H5 seal applies** to these hours from this merge: no H5 trigger outcome, fill, exit or P&L is computed, opened or printed before the look (EXP-024 §3). This does not relax Amendment 2 or Amendment 3's seal extension.
+- **Unchanged.** The FINAL's pre-registered computation, window, tools and verdict. It remains **reported compromised** under Amendment 2. The E1 run and the A11 check keep their order, and EXP-024's Look 1 needs E1.
