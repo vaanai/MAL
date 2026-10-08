@@ -347,6 +347,8 @@ Outcome-blind, written before 2026-10-16T00Z. No forward outcome was read to mak
 - **G. Not affected,** all in milliseconds: the runner's 5 s stale cap (`tools/forward_paper.py:502`), the export's 500 ms block-time offset, the 30-minute exit cap and the 2 s nearby window.
 - **H. Report-only, cannot change the verdict.** After the read, report each gate leg split by migrations before versus after the first 200 ms-era slot.
 
-**Tool PR:** `claude/slot-span-200ms`. Its merge commit is recorded here by the manager on merge.
+**Tool PR:** `claude/slot-span-200ms`, merged as #454, merge commit `2bd45f1981551693463f370c87438bc4e0874ff8` (2026-10-08). The forward walk was resubmitted on that commit as MiScusi job #382.
+
+**(g) D tool: not planned (manager, 2026-10-08).** No tool computes the conservative variant, and the manager does not plan one before 2026-10-16T00Z. The 2026-10-08 profitability audit retired the EXP-012 book, and the FINAL is already reported compromised. Under the pinned rule, live support needs the conservative variant to pass, so without it the 10-16 read gives no live support through Amendment 3. The read still runs as written.
 
 The 10-16 FINAL remains reported compromised under Amendment 2, and this amendment does not change that.
