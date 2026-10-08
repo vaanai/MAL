@@ -686,7 +686,10 @@ class ReconnectTests(unittest.TestCase):
         async def fake_sleep(s):
             sleeps.append(s)
 
-        sources = [FakeSource([fixture_notice("sell_v2_kept.json")], "raise"), FakeSource([], "raise"), FakeSource([fixture_notice("sell_v2_kept.json", 5)], "stop")]
+        def quiet(slot):
+            return Notice(slot, f"s{slot}", False, ("Program log: nothing to decode",), 1_800_000_000_000 + slot, "confirmed", "f")
+
+        sources = [FakeSource([quiet(1001)], "raise"), FakeSource([], "raise"), FakeSource([quiet(1006)], "stop")]
         made = []
 
         def factory():
@@ -757,8 +760,8 @@ class ModuleTests(unittest.TestCase):
 # ---- replay vs the frozen rule's own trigger list (exploration tape; skipped where the data or pandas is absent) ------
 TAPE = "/data/mal/audit-1008/tape"
 FROZEN = "/data/mal/hunt-1008/h5-flows/out/boostdip_frozen_conf.parquet"
-REPLAY_HOURS = ("2026-09-20T13", "2026-09-20T14")
-REPLAY_S0 = "2026-09-20T13"
+REPLAY_HOURS = ("2026-09-20T20", "2026-09-20T21")
+REPLAY_S0 = "2026-09-20T20"
 
 
 def _have_replay() -> bool:
@@ -781,7 +784,7 @@ class ReplayVsFrozenTests(unittest.TestCase):
 
     def test_trigger_list_matches_the_frozen_rule_with_its_per_pool_sps(self):
         cmp_, records = self.run_replay("pool")
-        self.assertGreaterEqual(cmp_["frozen"], 3)
+        self.assertGreaterEqual(cmp_["frozen"], 8)
         self.assertEqual(cmp_["only_mine"], [])
         self.assertEqual(cmp_["only_frozen"], [])
         self.assertEqual(cmp_["both"], cmp_["frozen"])
