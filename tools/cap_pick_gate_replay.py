@@ -23,6 +23,49 @@ How it mirrors the runner (reuse, not copy, wherever the runner exposes a functi
 Places where this is a guess about the live wiring are listed in `GUESSES` and in the PR body.
 
 Subcommands: `replay` (needs lightgbm: /data/mal/venv), `compare` (numpy; pyarrow only for --g-rows).
+
+Read-ready (EXP-022 E0)
+-----------------------
+EXP-022 pins this file's git blob sha at E0; after E0 it cannot change. Everything the sealed walk-2 read needs from it
+is here. The read tool itself (lock, LOOK_READS, look schedule) lives in tools/cap_pick_score.py and calls this module.
+
+Frozen surface: the output schema `SCHEMA` (`cap_pick_gate_replay_v1`) and its record keys, and the positional
+parameters of `replay_view(block, days)`. Only keyword-only parameters were added (`grant`, `_test_final_ledger`).
+
+Strict lines (always on, no flag; audit A8). Every creates and trades line read in replay, and every staged creates
+file in boot staging, goes through tools/tape_lines.py. A NUL, a truncated final line or a line that is not a JSON
+object raises `BadLineRefused` (a `Refused`) naming the file, the first bad physical line and its kind; a truncated or
+corrupt .zst raises `Refused`. `main` exits 3 on any `Refused`. Boot staging copies each creates file and scans the
+copy, because `Exp012Online.preload` swallows errors. Not covered: a line that parses only with strict=False (a raw
+control character in a string) is counted `lenient` by tape_lines and skipped by the row parser, as before.
+
+Without a `ReadGrant` nothing changes: same roots, same refusals (sealed pools, EXP-009 hours, anything at or after
+2026-10-02T10Z), same output. The CLI `replay` never builds a grant, and `BLOCKS` does not name walk 2.
+
+With `replay_view(..., grant=ReadGrant(...))` a Python caller gets the sealed walk-2 read mode.
+Allowed:
+- files named in the grant, `{hour: {"creates": (path, sha256), "trades": (path, sha256)}}`, at exactly
+  `<root>/<kind>/<kind>-<hour>.jsonl.zst` with `<root>` WALK2_DIR (`/data/mal/blocks/forward-1016`) or FWD1002_DIR
+  (`/data/mal/blocks/forward-1002`) and `<kind>` creates or trades;
+- walk-2 hours in WALK2_HOURS `[2026-10-16T01, 2026-11-06T01)`;
+- forward-1002 trades for hour 2026-10-16T00 only, and forward-1002 creates in FWD1002_CREATES_HOURS
+  `[2026-10-14T21, 2026-10-16T01)` (the first boot's staging window, plus feed hour 10-16T00), all inside the disclosed
+  buffer FWD1002_BUFFER `[2026-10-14T01, 2026-10-16T01)`;
+- UTC days GRANT_DAYS `2026-10-16 .. 2026-11-06`, booted at 00:00Z each, as the runner restarts.
+Refused:
+- any root, layout, hour, kind or path not in the grant above (`events/` and `migrations/` cannot be granted; a symlink,
+  a non-regular file or a path that resolves outside its root is refused);
+- any file whose sha256, hashed while it is copied to a private path that is then the only thing read, is not the
+  grant's (so a re-walk during a read cannot change what is read);
+- any forward-1002 file unless the FINAL ledger (FINAL_LEDGER, DEC-016) holds EXP-012's FINAL marker: `final` true,
+  the exp012_forward marker schema, experiment EXP-012, `test_window` false, the pinned window (2026-10-06T00:00:00Z,
+  2026-10-16T00:00:00Z). The ledger is read for those keys only and never printed. Tests may name another ledger
+  through `_test_final_ledger`; `meta["grant"]` records that;
+- `roots`, `daily_restart=False`, `prune_every` != 5000 or `create_time` != "sig" together with a grant;
+- FORBIDDEN_NAMES below the roots (the roots themselves are exempt).
+A replayed hour that is not in the grant is skipped and listed in `meta["grant"]["replayed_hours_not_in_grant"]`; every
+file opened is listed with its sha256 in `meta["grant"]["opened"]`. Walk-2 rows carry the --event-v keys; the gate
+never reads them, and the `events/` stream is never opened.
 """
 
 from __future__ import annotations
