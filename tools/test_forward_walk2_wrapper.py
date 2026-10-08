@@ -393,7 +393,7 @@ class ScriptTextTests(unittest.TestCase):
         subprocess.run(["bash", "-n", str(SCRIPT)], check=True, stdin=subprocess.DEVNULL)
 
     def test_job_constants(self) -> None:
-        self.assertIn("D=/data/mal/blocks/forward-walk2;", self.text)
+        self.assertIn("D=/data/mal/blocks/forward-1016;", self.text)
         self.assertIn("COUNT_START=2026-10-16T01\n", self.text)
         self.assertIn("/data/mal/locks", self.text)
         self.assertIn("/var/lib/mal/backfill/helius.env", self.text)
@@ -402,7 +402,8 @@ class ScriptTextTests(unittest.TestCase):
         code = [x for x in self.text.splitlines() if not x.lstrip().startswith("#")]
         for line in code:
             self.assertNotIn("forward-1002", line)
-            self.assertNotIn("forward-1016", line)
+            self.assertNotIn("forward-walk2", line)
+        self.assertEqual(sum("forward-1016" in x for x in code), 1, "D= is the only line that names the walk dir")
 
     def test_no_trace_or_env_dump(self) -> None:
         code = "\n".join(x for x in self.text.splitlines() if not x.lstrip().startswith("#"))

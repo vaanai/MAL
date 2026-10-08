@@ -3,7 +3,7 @@
 # 2026-10-16T01 (EXP/EXP-022-cap-pick-part1-prereg.md, DEC-021 Amendment 1). Based on forward-walk.sh (walk 1,
 # forward-1002, MiScusi #382), which stays as it is.
 #
-# Submit (before 2026-10-16T01:05Z):
+# Submit so the job STARTS before 2026-10-16T01:00Z (EXP-022 section 10 P3), e.g. at 00:30Z:
 #   miscusi_job_submit machine=mal-research-0 params={"start":"2026-10-16T01"} resumable=true
 #   command: bash scripts/research/forward-walk2.sh   (time limit 10080 min, memory ~6 GB; resubmit weekly;
 #   idempotent: a resubmit resumes from D/checkpoint.json and D/verify.jsonl)
@@ -13,7 +13,7 @@
 # appends to D/verify.jsonl with sha256; a NUL / non-JSON line or a truncated zstd stream makes the hour NOT OK).
 #
 # How it differs from walk 1:
-#   1. Output D=/data/mal/blocks/forward-walk2, with its own checkpoint.json, verify.jsonl, refusals.jsonl and
+#   1. Output D=/data/mal/blocks/forward-1016 (the name EXP-022 section 9 and the HOLDOUT_LEDGER row give), with its own checkpoint.json, verify.jsonl, refusals.jsonl and
 #      alerts.jsonl. It never touches forward-1002.
 #   2. START must be 2026-10-16T01 (EXP-022 pins it with EXP022_COUNT_START). Any other value is refused before
 #      anything is created.
@@ -68,7 +68,7 @@ if [ -n "${FW2_TEST_ROOT:-}" ]; then
   PY="${FW2_TEST_PY:-python3}"; TEST_PASSES="${FW2_TEST_PASSES:-1}"
   echo "TEST MODE (FW2_TEST_ROOT is set): output $D, $TEST_PASSES pass(es)"
 else
-  D=/data/mal/blocks/forward-walk2; LOCKDIR=/data/mal/locks; HELIUS_ENV=/var/lib/mal/backfill/helius.env
+  D=/data/mal/blocks/forward-1016; LOCKDIR=/data/mal/locks; HELIUS_ENV=/var/lib/mal/backfill/helius.env
   PY=/data/mal/venv/bin/python; TEST_PASSES=0
 fi
 
