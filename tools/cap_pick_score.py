@@ -45,7 +45,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -437,6 +437,14 @@ def tail_max_slot(path: Path, tail_bytes: int = 400_000) -> int | None:
     return max(slots) if slots else None
 
 
+def order_key(slot: int, tx_index: int | None, event_index: int, seq: int) -> tuple[int, int, int, int]:
+    """Within-slot order: (slot, tx_index, event_index); a row with a null tx_index (oracle-insample-0922) is ordered by file order (`seq`) alone, as the audit did.
+    `seq` is the read sequence (hour-file order, then row order) and breaks every remaining tie, so the order is deterministic."""
+    if tx_index is None:
+        return (slot, 0, 0, seq)
+    return (slot, tx_index, event_index, seq)
+
+
 def _num(v: Any) -> float:
     return float(v) if v is not None else float("nan")
 
@@ -522,7 +530,7 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
         if not (s0 + UNCENSORED_HORIZON <= max_slot and s0 - mslot <= MAX_S0_GAP):
             diag["censored"] += 1
             continue
-        path_rows = sorted((rr for rr in rows if rr[4] == pool), key=lambda rr: (rr[0], rr[1] if rr[1] is not None else 0, rr[2], rr[3]))
+        path_rows = sorted((rr for rr in rows if rr[4] == pool), key=lambda rr: order_key(rr[0], rr[1], rr[2], rr[3]))
         out[m] = {"pool": pool, "v": float(vband[pool]), "s0": s0, "mslot": mslot, "block": mig[m][2], "rows": path_rows}
     return out, diag
 

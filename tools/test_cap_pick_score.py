@@ -237,6 +237,14 @@ def test_final_state_uses_the_lab_pumpswap_handling_and_g_keeps_its_constant():
     assert gs == (q - sol / (1 - 0.0125), b + tok)
 
 
+def test_within_slot_order_is_tx_then_event_and_file_order_when_tx_is_null():
+    rows = [(7, 5, 1, 1), (7, 3, 2, 2), (7, 3, 0, 3), (6, 9, 9, 4)]
+    assert sorted(rows, key=lambda r: cps.order_key(*r)) == [(6, 9, 9, 4), (7, 3, 0, 3), (7, 3, 2, 2), (7, 5, 1, 1)]
+    # oracle-insample-0922: tx_index is null -> (slot, file order); event_index is ignored, as the audit did
+    nul = [(7, None, 5, 1), (7, None, 0, 2), (7, None, 9, 3)]
+    assert sorted(nul, key=lambda r: cps.order_key(*r)) == nul
+
+
 # --- hard limits -----------------------------------------------------------------------------------------------------------------------
 
 
