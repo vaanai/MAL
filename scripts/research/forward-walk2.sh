@@ -13,8 +13,8 @@
 # appends to D/verify.jsonl with sha256; a NUL / non-JSON line or a truncated zstd stream makes the hour NOT OK).
 #
 # How it differs from walk 1:
-#   1. Output D=/data/mal/blocks/forward-1016 (the name EXP-022 section 9 and the HOLDOUT_LEDGER row give), with its own checkpoint.json, verify.jsonl, refusals.jsonl and
-#      alerts.jsonl. It never touches forward-1002.
+#   1. Output D=/data/mal/blocks/forward-1016 (the name EXP-022 section 9 and the HOLDOUT_LEDGER row give), with its
+#      own checkpoint.json, verify.jsonl, refusals.jsonl and alerts.jsonl. It never touches forward-1002.
 #   2. START must be 2026-10-16T01 (EXP-022 pins it with EXP022_COUNT_START). Any other value is refused before
 #      anything is created.
 #   3. Every walker call carries --event-v; every verify call carries --strict-lines.

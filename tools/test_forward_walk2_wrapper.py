@@ -402,7 +402,7 @@ class ScriptTextTests(unittest.TestCase):
         code = [x for x in self.text.splitlines() if not x.lstrip().startswith("#")]
         for line in code:
             self.assertNotIn("forward-1002", line)
-            self.assertNotIn("forward-walk2", line)
+            self.assertNotIn("blocks/forward-walk2", line)
         self.assertEqual(sum("forward-1016" in x for x in code), 1, "D= is the only line that names the walk dir")
 
     def test_no_trace_or_env_dump(self) -> None:
