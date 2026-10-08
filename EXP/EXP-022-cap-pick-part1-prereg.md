@@ -563,6 +563,16 @@ No CAP-PICK outcome was computed or read to make this amendment.
 
 **Unchanged:** items 1, 3 and 4; the book; the pick rule and threshold; the looks; the gate.
 
+### Amendment 2 (2026-10-08, before any counted hour): EXP-024 (H5-BOOSTFLOOR) and walk 2
+
+No CAP-PICK outcome was computed or read to make this amendment. EXP-022's thresholds, counted window, pinned counting-start line, seal (section 9), looks, correction and gate are unchanged.
+
+[EXP-024](EXP-024-h5-boostfloor-part1-prereg.md) is a separate DEC-014 family that takes DEC-021's second α slot ([DEC-021 Amendment 2](../DEC/DEC-021-champion-challenger.md), [DEC-023](../DEC/DEC-023-h5-family.md)). H5 prices the same V-band pools in the same first 330 s as CAP-PICK, so its outcomes overlap CAP-PICK's counted picks wherever the mints coincide. To keep section 9, these rules apply:
+1. **EXP-024 Look 2 waits.** It reads walk-2 hours `[2026-10-16T01, 2026-11-06T01)` only after EXP-022's read has ended: a PASS at some look, look 3 done or NOT_DECIDABLE, a halt, or a withdrawal. Its tool refuses a walk-2 hour until EXP-022's `LOOK_READS.jsonl` shows a terminal state, and it reads that state only. EXP-024's Look 1 reads forward-1002 hours and counts no walk-2 hour.
+2. **H5 trades exclude CAP-PICK picks.** From 2026-10-16T01 to the end of EXP-022's read, no H5 trade, live (DEC-024) or paper, is taken on a mint the EXP-022 gate picked, and no H5 record is joined to a CAP-PICK pick. No per-pool H5 P&L is produced before each CAP-PICK look. The gate's decisions are online, so the set is known in real time. The H5 side reads only the `mint` field of the decision-time intents, into memory, and writes no CAP-PICK field into any H5 record. If the pick feed is missing or stale for more than 60 s, H5 buys halt (fail closed; DEC-024 section 6). A breach is recorded here and the H5 read is reported compromised.
+3. **Walk 2 runs to at least 2026-11-06T02**, whatever EXP-022's status, so that EXP-024's Look 2 has its last hour. This does not extend EXP-022's counted window `[2026-10-16T01, 2026-11-06T01)`; hour 2026-11-06T01 stays read only for the exits of counted attempts.
+4. **Disclosure.** EXP-024's reads of walk 2 are non-owner reads of an EXP-022 block (ledger rule 3), made only after EXP-022's read has ended.
+
 ## Sources
 
 - The audit: `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md` and `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.
