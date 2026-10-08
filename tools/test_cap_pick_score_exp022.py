@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import dataclasses
 import hashlib
@@ -10,6 +11,7 @@ import json
 import math
 
 import pytest
+from unittest import mock
 
 from tools import cap_pick_score as cps
 from tools.test_cap_pick_score import _write_zst, attempt, needs_zstd, run_fix, states, write_fixture, write_out
@@ -18,7 +20,7 @@ WSOL = cps.WSOL_MINT
 Q0, B0 = cps.SEED_Q, cps.SEED_B
 V_OK = 17_600_000_000
 HOURS = {"exploration": ("2026-08-20T04", "2026-08-20T05"), "walk2": ("2026-10-16T01", "2026-10-16T02")}
-BASE = dict(pool=None, v=V_OK, quote=WSOL, mayhem=False, create=True, migration=True, vq=True, map_v=None, gap_slots=5, gap_s=1, hour=0, tail=True)
+BASE = dict(bad_q=False, pool=None, v=V_OK, quote=WSOL, mayhem=False, create=True, migration=True, vq=True, map_v=None, gap_slots=5, gap_s=1, hour=0, tail=True)
 PRIMARY = cps.exp022_config(1300, 550, "conditional")
 
 
@@ -49,7 +51,7 @@ def build_tree(tmp_path, source, mints):
             cre[h].append({"type": "create", "mint": name, "is_mayhem_mode": sp["mayhem"], "slot": ms - 50, "block_time": cbt - 10})
         tok = int(1e9 * B0 / (Q0 + V_OK))  # the same for every V0, so two trees that differ only in V0 share one tape
         for tx, off in enumerate((0, 5, 10, 1600, 1700) if sp["tail"] else (0, 5, 10, 1600), 1):
-            row = {"v": 2, "venue": "pumpswap", "mint": name, "trader": "t", "side": "buy", "sol_lamports": 10**9, "token_raw": tok, "quote_reserve": Q0 + (5_000_000_000 if off >= 1600 else 0), "base_reserve": B0,
+            row = {"v": 2, "venue": "pumpswap", "mint": name, "trader": "t", "side": "buy", "sol_lamports": 10**9, "token_raw": tok, "quote_reserve": -sp["v"] if sp["bad_q"] else Q0 + (5_000_000_000 if off >= 1600 else 0), "base_reserve": B0,
                    "pool": pool, "slot": s0 + off, "event_index": 0, "block_time": s0bt + off // 5, "tx_index": tx}
             if sp["vq"]:
                 row["virtual_quote_reserves"] = sp["v"]
@@ -67,6 +69,16 @@ def build_tree(tmp_path, source, mints):
     return view, vp
 
 
+@contextlib.contextmanager
+def pinned(source, vp, hj):
+    """The exploration adapter pins its inputs to canonical /data/mal paths; the tests point the pins at their own tmp files."""
+    if source != "exploration":
+        yield
+        return
+    with mock.patch.dict(cps.EXP022_INPUTS, {"exploration": {"vmap": str(vp), "hour_sph_json": None if hj is None else str(hj)}}):
+        yield
+
+
 def write_picks(tmp_path, picks, others=()):
     p = tmp_path / "decisions.jsonl"
     lines = [{"kind": "decision", "mint": m, "decision": "pick"} for m in picks] + [{"kind": "decision", "mint": m, "decision": "below"} for m in others]
@@ -82,7 +94,8 @@ def run_exp(tmp_path, source, mints, picks=None, others=(), sph=18000.0, hour_js
     d = dict(p1_fast_dir=None, p1_oracle_insample_dir=None, p2_view_dir=[str(view)], p3_root=None, p4_view_dir=None, vmap=str(vp), picks=str(pk), only_day=None, sph_json=None,
              hour_sph_json=str(hj) if hour_json else None, exp022=True, exp022_source=source)
     d.update(ns)
-    s = cps.run(argparse.Namespace(**d), PRIMARY, lambda m: None)
+    with pinned(source, vp, hj if hour_json else None):
+        s = cps.run(argparse.Namespace(**d), PRIMARY, lambda m: None)
     return s, s["_rows"]
 
 
@@ -402,7 +415,8 @@ def test_exploration_v_null_in_the_map_is_a_named_exclusion(tmp_path):
     hj.write_text(json.dumps({h: 18000.0 for h in HOURS["exploration"]}))
     args = argparse.Namespace(p1_fast_dir=None, p1_oracle_insample_dir=None, p2_view_dir=[str(view)], p3_root=None, p4_view_dir=None, vmap=str(vp), picks=str(pk), only_day=None,
                               sph_json=None, hour_sph_json=str(hj), exp022=True, exp022_source="exploration")
-    s = cps.run(args, PRIMARY, lambda m: None)
+    with pinned("exploration", vp, hj):
+        s = cps.run(args, PRIMARY, lambda m: None)
     assert s["_rows"] == [] and s["picks_not_attempts"] == {cps.R_V_NULL: ["MintNull"]}
 
 
@@ -425,7 +439,8 @@ def test_exploration_keeps_the_6900_slot_tape_rule_end_to_end(tmp_path):
     hj.write_text(json.dumps({h: 18000.0 for h in HOURS["exploration"]}))
     args = argparse.Namespace(p1_fast_dir=None, p1_oracle_insample_dir=None, p2_view_dir=[str(view)], p3_root=None, p4_view_dir=None, vmap=str(vp), picks=str(pk), only_day=None,
                               sph_json=None, hour_sph_json=str(hj), exp022=True, exp022_source="exploration")
-    s = cps.run(args, PRIMARY, lambda m: None)
+    with pinned("exploration", vp, hj):
+        s = cps.run(args, PRIMARY, lambda m: None)
     assert s["_rows"] == [] and s["picks_not_attempts"] == {cps.X_TAPE: ["MintA"]}
 
 
@@ -491,3 +506,62 @@ def test_exp022_book_is_the_pick_set_inside_the_universe(tmp_path):
     s, rows = run_exp(tmp_path, "exploration", {"MintA": {}, "MintB": {}, "MintC": {"mayhem": True}}, picks=["MintA", "MintC"], others=["MintB"])
     assert [r["mint"] for r in rows] == ["MintA"] and s["books"]["picks"]["all"]["gate"]["flat"]["n_attempts"] == 1
     assert s["counts"]["pick_attempts"] == 1 and s["picks_not_attempts"] == {cps.X_MAYHEM: ["MintC"]}
+
+
+# --- pinned inputs (exploration) and unpriced picks -----------------------------------------------------------------------------------------
+
+
+def _ns(view, vp, pk, hj, **kw):
+    d = dict(p1_fast_dir=None, p1_oracle_insample_dir=None, p2_view_dir=[str(view)], p3_root=None, p4_view_dir=None, vmap=str(vp), picks=str(pk), only_day=None, sph_json=None,
+             hour_sph_json=None if hj is None else str(hj), exp022=True, exp022_source="exploration")
+    d.update(kw)
+    return argparse.Namespace(**d)
+
+
+def test_exploration_pins_the_static_map_and_the_hour_source(tmp_path):
+    assert cps.EXP022_INPUTS["exploration"] == {"vmap": "/data/mal/pumpswap-virtual/pool_v_0909.json", "hour_sph_json": None} and "walk2" not in cps.EXP022_INPUTS
+    view, vp = build_tree(tmp_path, "exploration", {"MintA": {}})
+    pk = write_picks(tmp_path, ["MintA"])
+    hj = tmp_path / "h.json"
+    hj.write_text(json.dumps({h: 18000.0 for h in HOURS["exploration"]}))
+    other = tmp_path / "other_v.json"
+    other.write_text(vp.read_text())
+    with pinned("exploration", vp, hj):  # the pins are these files: accepted, recorded, and --only-day stays allowed
+        s = cps.run(_ns(view, vp, pk, hj, only_day=["2026-08-20"]), PRIMARY, lambda m: None)
+        assert s["exp022"]["inputs_pinned"] == {"vmap": str(vp), "hour_sph_json": str(hj)} and len(s["_rows"]) == 1 and s["days"] == ["2026-08-20"]
+        with pytest.raises(cps.Refused, match="pins --vmap"):
+            cps.run(_ns(view, other, pk, hj), PRIMARY, lambda m: None)  # same bytes, another path
+        with pytest.raises(cps.Refused, match="pins --hour-sph-json"):
+            other_h = tmp_path / "h2.json"
+            other_h.write_text(hj.read_text())
+            cps.run(_ns(view, vp, pk, other_h), PRIMARY, lambda m: None)
+    with pinned("exploration", vp, None):  # the shipped hour pin is "no file": any --hour-sph-json is refused
+        with pytest.raises(cps.Refused, match="pins --hour-sph-json to None"):
+            cps.run(_ns(view, vp, pk, hj), PRIMARY, lambda m: None)
+    with pytest.raises(cps.Refused, match="pins --vmap"):  # the shipped pins are the /data/mal paths, not these tmp files
+        cps.run(_ns(view, vp, pk, None), PRIMARY, lambda m: None)
+
+
+def test_main_refuses_another_vmap_or_hour_json_for_the_exploration_adapter(tmp_path, capsys):
+    base = ["--exp022", "--exp022-source", "exploration", "--picks", "p.jsonl", "--out-dir", str(tmp_path / "o"), "--p2-view-dir", str(tmp_path)]
+    assert cps.main(base + ["--vmap", "/tmp/other_v.json"]) == 2 and "pins --vmap" in capsys.readouterr().err
+    assert cps.main(base + ["--hour-sph-json", "/tmp/h.json"]) == 2 and "pins --hour-sph-json" in capsys.readouterr().err
+    assert not (tmp_path / "o").exists()
+
+
+@pytest.mark.parametrize("source", ["exploration", "walk2"])
+def test_a_bad_reserves_pick_stays_in_the_universe_marked_unpriced(tmp_path, source):
+    tree = {"MintOK": {}, "MintBad": {"bad_q": True}, "MintNonPick": {}}
+    s, rows = run_exp(tmp_path, source, tree, picks=["MintOK", "MintBad"], others=["MintNonPick"])
+    assert [r["mint"] for r in rows] == ["MintOK"] and s["picks_not_attempts"] == {cps.R_BAD_RESERVES: ["MintBad"]} and s["counts"]["bad_reserves"] == 1
+    assert s["exp022"]["universe"]["unpriced_picks"] == {cps.R_BAD_RESERVES: ["MintBad"]}
+    out, _summary, new_rows = write_out(tmp_path, s, rows)
+    u = {r["mint"]: r for r in csv.DictReader(open(out / "universe.csv"))}
+    assert (u["MintBad"]["status"], u["MintBad"]["priced"], u["MintBad"]["unpriced_reason"], u["MintBad"]["pick"]) == ("attempt", "false", cps.R_BAD_RESERVES, "1")
+    assert (u["MintOK"]["status"], u["MintOK"]["priced"], u["MintOK"]["unpriced_reason"]) == ("attempt", "true", "")
+    assert (u["MintNonPick"]["status"], u["MintNonPick"]["priced"]) == ("attempt", "")  # not a pick: never simulated, so no flag
+    # the harness's C-vs-U check: U keeps the bad-reserves pick, C (rows.csv) does not, so the md5s differ
+    c_mints = sorted(r["mint"] for r in new_rows)
+    u_picks = sorted(m for m, r in u.items() if r["status"] == "attempt" and r["pick"] == "1")
+    assert c_mints == ["MintOK"] and u_picks == ["MintBad", "MintOK"]
+    assert hashlib.md5("\n".join(c_mints).encode()).hexdigest() != hashlib.md5("\n".join(u_picks).encode()).hexdigest()

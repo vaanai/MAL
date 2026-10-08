@@ -1113,6 +1113,10 @@ EXP022_FLAGS: dict[str, Any] = {
     "size_lamports": 100_000_000, "fee_lamports": 55_000, "rent_lamports": 2_039_280, "rent_mode": "conditional", "live_fail": 1.0 / 62.0, "flat_fail": 0.15,
     "final_state": "lab", "boot_p_draws": BOOT_P_DRAWS, "pick_threshold": PICK_THRESHOLD, "book": "picks", "sph_json": None,
 }
+# Inputs that are not deciding flags but are still pinned per source (EXP-022 section 3). exploration: the V0 and the WSOL proxy come from ONE static V map, and the ms/slot of
+# every hour is measured on its own tape rows (hour_sph_json None: the exploration blocks have no sealed verify line, so no file stands in for an unmeasurable hour).
+# Another value is refused. --only-day is not pinned (E0 needs it). walk2 has no pin yet: its sealed-slot-span source is the read tool's.
+EXP022_INPUTS: dict[str, dict[str, Any]] = {"exploration": {"vmap": DEFAULT_VMAP, "hour_sph_json": None}}
 X_NO_MIGRATION = "no_migration_event"
 X_NOT_WSOL = "quote_not_wsol"
 X_NO_CREATE = "mayhem_unknown_no_create_event"
@@ -1164,6 +1168,14 @@ def check_exp022_flags(explicit: Mapping[str, Any]) -> None:
             conflict = not math.isclose(float(val), float(want), rel_tol=0.0, abs_tol=1e-12)
         if conflict:
             raise Refused(f"--exp022 pins {flag} to {want!r}; {val!r} conflicts. There is no override (EXP-022 section 12)")
+
+
+def _check_pinned_input(source: str, flag: str, got: Any, want: str | None) -> None:
+    """Refuse `got` unless it is the pinned input `want` (compared after symlink resolution; None = the flag may not be given). Only `readlink` runs here."""
+    given = got not in (None, "")
+    same = (not given and want is None) or (given and want is not None and os.path.realpath(os.fspath(got)) == os.path.realpath(want))
+    if not same:
+        raise Refused(f"--exp022 --exp022-source {source} pins {flag} to {want!r}; {got!r} conflicts. There is no override (EXP-022 section 12)")
 
 
 @dataclass
@@ -1449,6 +1461,10 @@ def run_exp022(args: argparse.Namespace, log: Any) -> dict[str, Any]:
     check_exp022_flags({d: getattr(args, d) for d in EXP022_FLAGS if getattr(args, d, None) is not None})  # main() has already refused the typed ones; a direct caller is checked here
     if getattr(args, "sph_json", None):
         raise Refused("--exp022 takes no --sph-json: the day table is a fallback the pinned book does not have (EXP-022 4.1)")
+    pins = EXP022_INPUTS.get(source)
+    if pins is not None:  # before anything is opened
+        _check_pinned_input(source, "--vmap", getattr(args, "vmap", None), pins["vmap"])
+        _check_pinned_input(source, "--hour-sph-json", getattr(args, "hour_sph_json", None), pins["hour_sph_json"])
     if not args.picks:
         raise Refused("--exp022 needs --picks (the book is the pick set inside the universe)")
     cells = exp022_cells()
@@ -1473,6 +1489,7 @@ def run_exp022(args: argparse.Namespace, log: Any) -> dict[str, Any]:
     hour_sph: dict[str, dict[str, Any]] = {}
     not_attempt: dict[str, str] = {}
     universe_rows: list[dict[str, Any]] = []
+    urow: dict[str, dict[str, Any]] = {}
     tape_short: list[str] = []
     days_done: list[str] = []
     days_skipped: list[str] = []
@@ -1502,10 +1519,12 @@ def run_exp022(args: argparse.Namespace, log: Any) -> dict[str, Any]:
             continue
         days_done.append(day)
         tape_short += uni.report_only["tape_coverage_short"]
-        for m in sorted(uni.attempts):
-            universe_rows.append({"mint": m, "status": "attempt", "reason": "", "pick": int(m in pick_mints), "v0_missing": int(uni.attempts[m]["v0_missing"])})
+        for m in sorted(uni.attempts):  # priced: "true" = a pick that was simulated; "" = not a pick (never simulated); "false" is set below, with its reason
+            urow[m] = {"mint": m, "status": "attempt", "reason": "", "pick": int(m in pick_mints), "v0_missing": int(uni.attempts[m]["v0_missing"]),
+                       "priced": "true" if m in pick_mints else "", "unpriced_reason": ""}
+            universe_rows.append(urow[m])
         for m in sorted(uni.excluded):
-            universe_rows.append({"mint": m, "status": "excluded", "reason": uni.excluded[m], "pick": int(m in pick_mints), "v0_missing": 0})
+            universe_rows.append({"mint": m, "status": "excluded", "reason": uni.excluded[m], "pick": int(m in pick_mints), "v0_missing": 0, "priced": "", "unpriced_reason": ""})
         for m in sorted(meta):
             md = meta[m]
             slot, isbuy, sol, tok, q, b = (md[c] for c in ("slot", "buy", "sol", "tok", "q", "b"))
@@ -1514,6 +1533,7 @@ def run_exp022(args: argparse.Namespace, log: Any) -> dict[str, Any]:
             if any(st is None for st in sts):
                 tot["bad_reserves"] += 1
                 not_attempt.setdefault(m, R_BAD_RESERVES)
+                urow[m].update(priced="false", unpriced_reason=R_BAD_RESERVES)  # still status=attempt in the universe: U keeps it, C (rows.csv) does not, so the md5s differ
                 continue
             tot["final_state_fallback"] += sum(st[2] for st in sts if st is not None)
             hs = hour_seconds(md["hour"])
@@ -1558,9 +1578,11 @@ def run_exp022(args: argparse.Namespace, log: Any) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "schema": SCHEMA, "tool": TOOL, "phase": 2, "mode": "exp022",
         "banner": "LAB SCORER, EXP-022 MODE. NOT A PROMOTE, NOT GATE EVIDENCE. Every deciding parameter is a constant; the read tool (lock, ledger, looks, 24 h blocks, section 8) is not here.",
-        "exp022": {"source": source, "adapter": ADAPTER_NOTES[source], "constants": EXP022, "flags_pinned": EXP022_FLAGS, "cells": cell_info,
+        "exp022": {"source": source, "adapter": ADAPTER_NOTES[source], "constants": EXP022, "flags_pinned": EXP022_FLAGS, "inputs_pinned": pins, "cells": cell_info,
                    "universe": {"attempts_in_universe": n_univ, "pick_attempts": n_picks, "excluded_by_reason": dict(sorted(excl_counts.items())),
-                                "report_only": {"tape_coverage_short": sorted(tape_short)}, "missing_v0": missing_v0_report(final)}},
+                                "report_only": {"tape_coverage_short": sorted(tape_short)}, "missing_v0": missing_v0_report(final),
+                                "unpriced_picks": {why_: sorted(u["mint"] for u in universe_rows if u["priced"] == "false" and u["unpriced_reason"] == why_)
+                                                   for why_ in sorted({u["unpriced_reason"] for u in universe_rows if u["priced"] == "false"})}}},
         "config": asdict(primary), "sources": {s_.block: [str(d) for d in s_.dirs] for s_ in sources}, "days": days_done, "days_skipped_incomplete_migrations": days_skipped,
         "picks_in_input": picks_in_input, "picks_not_attempts": picks_not_attempts,
         "picks": {"path": str(args.picks), "sha256": hashlib.sha256(Path(args.picks).read_bytes()).hexdigest(), "format": picks.kind, "scored": len(picks),
@@ -1721,7 +1743,7 @@ def write_outputs(summary: dict[str, Any], out_dir: Path) -> None:
         write_rows(out_dir / f"rows_{name}.csv", rs)
     if universe is not None:  # every mint the universe function saw: attempt or the reason it is not
         with open(out_dir / "universe.csv", "w", newline="", encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=("mint", "status", "reason", "pick", "v0_missing"))
+            w = csv.DictWriter(fh, fieldnames=("mint", "status", "reason", "pick", "v0_missing", "priced", "unpriced_reason"))
             w.writeheader()
             for u in sorted(universe, key=lambda u: u["mint"]):
                 w.writerow(u)
