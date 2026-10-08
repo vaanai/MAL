@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | **Decided 2026-10-06** (owner, in the manager session): approved as written, and the owner **delegates §6(f) to the manager**. A challenger that meets every condition in §6(a)–(e) and §7 replaces the champion without waiting for the owner. The owner's own reviewers check the work in parallel. Rev 4 passed quant-proof as sound. |
+| **Status** | **Decided 2026-10-06** (owner, in the manager session): approved as written, and the owner **delegates §6(f) to the manager**. A challenger that meets every condition in §6(a)–(e) and §7 replaces the champion without waiting for the owner. The owner's own reviewers check the work in parallel. Rev 4 passed quant-proof as sound. **Amendment 1 (2026-10-08, owner O2/O3):** CAP-PICK (EXP-022) is the walk-2 primary-promotion arm; see the end of this file. |
 | **Decider** | Vaan (owner) for §6. The Claude manager runs the rest. |
 | **Builds on** | DEC-014, DEC-016 (Am.1–4), DEC-017, DEC-019, DEC-020 (Option A). |
 | **Amends** | **DEC-016 Am.1 §5** and **DEC-018 §1**, only in this respect: a challenger that clears §6 may replace the live strategy, after the same pre-live checks the champion had to pass (§7). |
@@ -81,3 +81,41 @@ This uses per-trade SD about 0.02 SOL at 0.05 SOL size, n = 100, a normal approx
 
 - Approve §6 (the switch rule) and §8 (two walks at α = 0.025 each), or change them.
 - The first candidates are EXP-015 (pooled retrain, PR #352) and EXP-013 (curve entry), but only if their screens and confirmation reads pass.
+
+## Amendment 1 (2026-10-08): CAP-PICK (EXP-022) as the walk-2 primary-promotion arm (owner O2/O3)
+
+**Approved by the owner on 2026-10-08** (O2, and O3 for the early count), with the audit recommendations (MiScusi notebook `n_vS9qHGmF7-jinQ`; `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md:457-458`). It covers **CAP-PICK, [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md), only**. Every other challenger stays under the text above.
+
+**Why.** Two parts of the text above cannot be met for CAP-PICK (SYNTHESIS.md:250, D3):
+- §2 requires a backward-block PASS. DEC-014 bars an EXP-012 retune from any further sealed block (`DEC/DEC-014-holdout-ledger-and-multiplicity.md:109`), and every block predates the 2026-10-02 program upgrade.
+- §5's single read at α 0.025 has no early stop.
+
+The audit judge also showed that a trade-level p fails to hold α under day clustering (`ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md:115-123`).
+
+For CAP-PICK only:
+
+- **§2 (confirmation before registration).** No backward-block PASS is required. CAP-PICK is a **kill test**, registered directly as the walk-2 primary-promotion arm. Its exploration evidence is in-sample for the book design (capv_JUDGE.md:16), and it is never cited as confirmation.
+- **§3 (registration and window).**
+  - The counted window is set by the single line `EXP022_COUNT_START` in EXP-022 §0. The manager sets it at merge, to one of:
+    - **Option X:** `[2026-10-10T00, 2026-10-31T00)`. Only if EXP-022 merges with quant-proof OK before 2026-10-10T00:00Z.
+    - **Option Y:** `[2026-10-16T01, 2026-11-06T01)`, plus the A11 October report-only check.
+  - Under X, EXP-022 is a ledger-exception second owner of forward-1002 hours `[2026-10-10T00, 2026-10-16T01)`, which stay sealed for it until the 10-16 FINAL is written ([HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md); [EXP-012 Amendment 2](../EXP/EXP-012-migrate-entry-model-refreeze-prereg.md)).
+  - "Merged before the first hour of the walk" here means merged before the first counted hour.
+  - This is not a DEC-017 secondary. Its window differs from the FINAL's.
+- **§4 (sim optimism in (c)).** The named calibration set is build **faa3192's closed round trips, priced by E1** (`tools/probe_sim_calibration.py`, #463).
+  - r̄ is scaled linearly from 0.05 to 0.1 SOL, and min(0, r̄) is applied to each filled attempt.
+  - If r̄ ≥ 0, there is no adjustment.
+  - E1 runs after the 10-16 FINAL is written (DEC-016:162), and under Option Y also after the A11 read.
+  - No look runs before E1 is recorded.
+  - The drift monitor of §4 belongs to the switch family, and it does not apply.
+- **§5 (read).** Three pre-registered looks, at days 7, 14 and 21, replace the single read and the "no interim peeking" line.
+  - **Deciding p:** a day-level p, a one-sided t on the UTC-date means of SOL per attempt with W − 1 df. The larger of the flat and pressure p decides.
+  - **Thresholds:** p ≤ 0.005 at day 7, 0.008 at day 14 and 0.012 at day 21. The Bonferroni sum is 0.025, the family α, with **Holm k = 1**.
+  - **Gate:** at the look, the full promotion gate must also hold under both fail models, together with EXP-022's binding ex-best-day and 1.9 s conditions.
+  - **Reported only:** the one-sided bootstrap p (10,000 draws, seed 1). It is reported at every look and never decides.
+  - **Futility:** day-7 futility (flat and pressure means ≤ 0) is non-binding. It pauses build spending only.
+  - **Window:** fixed in time (21 days), not in migrations. Its power is stated in EXP-022 §14: day-level p, template between-day SD, false pass 0.8%, power 5.1% at +1.0% flat and 22.2% at +1.9% flat (capv_JUDGE.md:119).
+- **§7 (serial gatekeeping).** Not changed. Its second branch applies. The 10-16 FINAL is reported compromised (DEC-016 Am.2) and cannot by itself support live, so walk 2 has no gated champion. CAP-PICK is read as a primary-promotion family at k = 1, and a pass leads only to the DEC-018 path. The pre-live checks are at CAP-PICK's own operating point, and the 55k priority first needs a live calibration under a DEC-019 amendment.
+- **§8 (cumulative error).** CAP-PICK is the walk-2 family, tested at α = 0.025, and no other arm joins it. Under Option X, the forward-1002 part of its window counts toward walk 2's family. The Bonferroni-across-walks rule is unchanged.
+
+**Not changed:** §1, §6, §9, the promotion gate, and DEC-016 Am.2 and Am.3 (no forward-1002 hour is read for CAP-PICK before the FINAL is written).

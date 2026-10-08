@@ -31,6 +31,7 @@ EXP022_COUNT_START: PENDING
   - `2026-10-10T00` (Option X);
   - `2026-10-16T01` (Option Y).
 - **When X is allowed.** `2026-10-10T00` is allowed only if this file merges, with quant-proof OK on its final head, before 2026-10-10T00:00Z. Otherwise the value is `2026-10-16T01` (JUDGE:230; SYN:251, :529-532).
+- **If even Y is missed.** If the merge cannot happen before 2026-10-16T01:00Z, this file does not count on walk 2. A later start needs a new dated amendment, and the owner.
 - **While it reads `PENDING`,** nothing counts and nothing is read. The read tool refuses unless:
   - the line appears exactly once, with an allowed value;
   - this file is clean against HEAD.
@@ -297,11 +298,13 @@ The trade-level one-sided bootstrap p: the share of 10,000 seed-1 bootstrap mean
 - **P4.** The read tool is merged (section 12).
 - **P5.** E1 is recorded (section 8).
 - **P6.** Option X only: the forward-1002 V0 map is pinned (section 3).
-- **P7.** The A2 kill check has passed (SYN:292-308). It runs on exploration rows only:
-  - books: the live-tradable picks from the #462 full replay, scored by the #461 scorer with every section 4–5 parameter at its pinned value;
-  - success: the P2–P4 flat mean ≥ +1.0% per attempt, with the date-cluster CI90 lower bound > 0 on the flat leg and mean > 0 at 1.9 s (SYN:307);
-  - P1 and oracle are reported lines (JUDGE:228);
-  - a kill withdraws CAP-PICK (SYN:308) with no walk outcome read.
+- **P7.** The A2 kill check has passed (SYN:292-308).
+  - Its first bar, reproduction to ≤ 0.01 pp, was met in phase 1: job #386 matched P2–P4 on 19,234 of 19,234 attempts to the lamport [measured, MiScusi notebook result for job #386, draft #461].
+  - It runs on exploration rows only:
+    - books: the live-tradable picks from the #462 full replay, scored by the #461 scorer with every section 4–5 parameter at its pinned value;
+    - success: the P2–P4 flat mean ≥ +1.0% per attempt, with the date-cluster CI90 lower bound > 0 on the flat leg and mean > 0 at 1.9 s (SYN:307);
+    - P1 and oracle are reported lines (JUDGE:228);
+    - a kill withdraws CAP-PICK (SYN:308) with no walk outcome read.
 
 **At every look:**
 - **Bad lines.** The readers refuse bad lines (a NUL byte, or a line that is not a JSON object), and the hour that holds one is bad. Today #461 counts bad lines and #462 skips them (`cap_pick_score.py@ebb77f4:780`; `cap_pick_gate_replay.py@8fd49e5:339-341`). The read mode must refuse.

@@ -221,6 +221,18 @@ Run `--dry-run-preconditions` with the same arguments first. Any refusal there s
 
 Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3. Nothing frozen above changes. `[2026-10-14T01, 2026-10-16T01)` is also read for features only as walk 2's buffer (DEC-021 §3); no outcome is used. That read runs only after EXP-012's FINAL is written.
 
+## Amendment 2 (2026-10-08): EXP-022 as a second reader of forward-1002 hours (Option X only)
+
+Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3 and DEC-014(a). Nothing frozen above changes, and nothing in DEC-016 changes.
+
+- **When it applies.** Only if `EXP022_COUNT_START` in [EXP-022](EXP-022-cap-pick-part1-prereg.md) §0 is `2026-10-10T00` (Option X; owner O3, 2026-10-08).
+- **What EXP-022 reads then:**
+  - it counts CAP-PICK outcomes on the forward walk's hours `[2026-10-10T00, 2026-10-16T01)`;
+  - it reads the creates of `[2026-10-09T00, 2026-10-10T00)` for creator history (features only).
+- **When it reads them.** Neither read happens before EXP-012's FINAL is written. The DEC-016 Am.2 and Am.3 seal is unchanged, and so are the FINAL's window, read and verdict.
+- **Under Option Y,** EXP-022 reads no hour of this block beyond the walk-2 buffer in Amendment 1.
+- **Disclosure.** The two reads overlap on `[10-10, 10-16)`. The books differ (EXP-022 is a 300 s-cap, guarded, 0.1 SOL retune). The FINAL is reported compromised and cannot by itself support live (DEC-016 Am.2).
+
 ## Sources
 
 [EXP-011](EXP-011-migrate-entry-model-prereg.md) §1, §1a, §3, §4, §6–§8, §10 and Result; `tools/exp011_freeze.py`, `tools/exp011_build_table.py`, `tools/exp011_score.py`; [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md); [dedupe note](../ARTIFACTS/lab/dedupe-exploration-pool-2026-10-01.md); [clean B3 re-run](../ARTIFACTS/lab/exploration-entry-model-b3-clean-2026-10-01.md); [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md).
