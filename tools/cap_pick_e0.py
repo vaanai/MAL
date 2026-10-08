@@ -2,7 +2,8 @@
 
 Exploration pools only. One UTC day of one exploration view, never forward-walk, walk-2 or any sealed block. Offline, no network, no key.
 
-    python -m tools.cap_pick_e0 run   --view explore-0814 --day 2026-08-17 --out DIR
+    python -m tools.cap_pick_e0 run   --view explore-0814 --day 2026-08-20 --out DIR          (the E0 record: E0_VIEW, E0_DAY)
+    python -m tools.cap_pick_e0 run   --view V --day D --out DIR --dry-run [--scorer-arg ...]   (anything else)
     python -m tools.cap_pick_e0 check DIR/e0.json [--worktree PATH]
 
 THE THREE LISTS (all for the same day; both sides boot at 00:00Z of that day)
@@ -23,8 +24,8 @@ THE THREE LISTS (all for the same day; both sides boot at 00:00Z of that day)
             A mint of D that one side lacks is a line missing on that side, so the md5s differ.
   Create-time sources (the create time the side's gate used for `time_to_migrate`):
     B  its decision record's `create_ms` (the gate accumulator's create time: the create row's second, or the first matching bonding print's chain second).
-    A  the same quantity from A's gate row: `mig_ms - time_to_migrate_s*1000` when the row has features; else the `note_create` time of A's CreateSignal, which
-       is the floor-second of its `t_signal_ms` (`replay_rows` gives the gate no chain time).
+    A  the same quantity from A's gate row: `mig_ms - time_to_migrate_s*1000` when the row has features; else the CreateSignal's raw `t_signal_ms`, which is B's
+       fallback too (`Replayer._on_signal`: `m.create.t_signal_ms` when the accumulator is gone) and what EXP-022 Amendment 1 specifies.
   A create-time disagreement on any mint of D (a mint both sides decided) is a mismatch: it goes to `diff.tsv` and `equal_decide` is false.
   Mints older than 60 min at migration on either side: a crosstab of A label x B label in `e0.json` (`crosstab_gt60`) and their lines in `diff_gt60.tsv` (a column
   says which of them are in D: the B picks).
@@ -55,10 +56,16 @@ too, with `--scorer-worktree`), not only the four pinned ones. `Bpicks_not_in_U`
 SANITY CHECKS (also required for exit 0, so an equal result cannot be vacuous or built on different inputs): A's preload row count and staged file count
 equal B's; A's gate log rows equal the engine's rows; the deciding set D and B's picks are not empty.
 
-MEMORY (--mem-note): A needs about 9-10 GB RSS for one explore-0814 day by the early estimate, and the sampled peak of the 2026-08-17 dry run was 13.3 GB
-(`ps` every 10 s, so a lower bound; 2 h of the day took 781 MB and 5 h took 2.1 GB), because `replay_rows` queues every print in the engine inbox before
-it drains. The official run is a MiScusi job with mem 16 GB; that leaves about 20% over the sampled peak, so a busier day wants more. It does not fit in
-3 GB. B needs about 2 GB; the scorer is a subprocess in the same cgroup.
+MEMORY: A peaked at 13.3 GB (sampled, lower bound) on 08-17; run E0 as a MiScusi job with mem 28 GB. `replay_rows` queues every print in the engine inbox
+before it drains (2 h of that day took 781 MB, 5 h took 2.1 GB), so A does not fit in 3 GB. B needs about 2 GB; the scorer is a subprocess in the same cgroup.
+
+THE E0 RECORD IS PINNED (quant-proof and reviewer edits on #473)
+  * `E0_VIEW` and `E0_DAY` are module constants (explore-0814, 2026-08-20). `run` refuses any other view or day unless `--dry-run` is given. A dry run writes
+    `"dry_run": true` in `e0.json`, and `check` refuses a dry-run file as the E0 record (exit 2).
+  * `--scorer-arg` is refused unless `--dry-run`: an extra scorer argument could carry a sealed or forward path.
+  * `check` does not trust the stored `ok`. It recomputes it from the recorded fields: `md5_A_decide == md5_B_decide` with no create-time disagreement,
+    `md5_C == md5_Bpicks_U`, the recorded sanity checks, the view and day equal to E0_VIEW and E0_DAY, `dry_run` false, the criterion name, no
+    `imported_module_mismatches`, and the blob and module comparisons it makes itself against the worktree. The stored `ok` is shown beside the result.
 
 Exit codes: 0 the criterion and the sanity checks hold; 1 a check failed (A != B on D, C != B picks in U, ...); 2 refused or a step could not run.
 """
@@ -86,6 +93,8 @@ from tools.forward_exp012_gate import DROP_AFTER_CREATE_MS
 REPO = Path(__file__).resolve().parent.parent
 SCHEMA = "cap_pick_e0_v1"
 E0_CRITERION = "le60_either_plus_B_picks"  # the A-vs-B set that decides exit 0; the full list is report only (EXP-022 E0 amendment)
+E0_VIEW = "explore-0814"  # the E0 record is this view on this day; anything else needs --dry-run
+E0_DAY = "2026-08-20"
 DAY_MS = 86_400_000
 PINNED_MODULES = ("tools/forward_exp012_gate.py", "tools/forward_paper.py", "tools/exploration_entry_model.py", "tools/cap_pick_gate_replay.py")
 FROZEN_MD5_PATH = "ARTIFACTS/exp012/FROZEN.md5"
@@ -250,6 +259,24 @@ def verify_imported_modules(e0: dict[str, Any], worktree: Path, scorer_worktree:
     return {"ok": not bad, "n": len(recorded) + len(srec), "bad": bad}
 
 
+SANITY_KEYS = ("boot_history_equal", "A_log_rows_equal_engine_rows", "nonempty")
+
+
+def recompute_ok(e0: dict[str, Any]) -> dict[str, Any]:
+    """The parts of `ok` that follow from the recorded fields alone. The stored `ok` is never read."""
+    chk = e0.get("checks") or {}
+    parts = {
+        "equal_decide": e0.get("md5_A_decide") is not None and e0.get("md5_A_decide") == e0.get("md5_B_decide") and e0.get("n_create_ms_disagree") == 0,
+        "equal_C": e0.get("md5_C") is not None and e0.get("md5_C") == e0.get("md5_Bpicks_U"),
+        "sanity": all(chk.get(k) is True for k in SANITY_KEYS),
+        "scope": e0.get("view") == E0_VIEW and e0.get("day") == E0_DAY,
+        "not_a_dry_run": e0.get("dry_run") is False,
+        "criterion": e0.get("e0_criterion") == E0_CRITERION,
+        "no_import_mismatch": e0.get("imported_module_mismatches") == [],
+    }
+    return {"parts": parts, "ok": all(parts.values())}
+
+
 def verify_pins(e0: dict[str, Any], worktree: Path, scorer_worktree: Path | None = None) -> dict[str, Any]:
     """Recorded pins against HEAD and the working copy of `worktree`. A pin holds if both equal the recorded blob; FROZEN.md5 must hash to the expected md5."""
     mods: dict[str, Any] = {}
@@ -265,9 +292,10 @@ def verify_pins(e0: dict[str, Any], worktree: Path, scorer_worktree: Path | None
     frozen = {"recorded": want_md5, "expected": FROZEN_MD5_EXPECTED, "head": md5_head, "worktree_file": md5_disk,
               "ok": want_md5 == FROZEN_MD5_EXPECTED and md5_head == want_md5 and md5_disk == want_md5}
     imports = verify_imported_modules(e0, worktree, scorer_worktree)
+    rec = recompute_ok(e0)
     return {"worktree": str(worktree), "head": _git(worktree, "rev-parse", "HEAD").strip(), "recorded_commit": e0.get("commit"),
-            "e0_ok": bool(e0.get("ok")), "modules": mods, "frozen_md5": frozen, "imported_modules": imports,
-            "ok": all(m["ok"] for m in mods.values()) and frozen["ok"] and imports["ok"] and bool(e0.get("ok"))}
+            "stored_ok": e0.get("ok"), "recomputed": rec, "modules": mods, "frozen_md5": frozen, "imported_modules": imports,
+            "ok": all(m["ok"] for m in mods.values()) and frozen["ok"] and imports["ok"] and rec["ok"]}
 
 
 # ---- canonical lists ----------------------------------------------------------------------------------
@@ -305,8 +333,8 @@ def md5_text(text: str) -> str:
 
 
 def a_side_rows(gate_rows: Iterable[dict[str, Any]], signal_ms: dict[str, int]) -> list[Any]:
-    """A's decisions with the create time A's gate used: `mig_ms - time_to_migrate_s*1000` from the gate row's features, else `note_create`'s
-    floor-second of the CreateSignal's `t_signal_ms` (a row with no features: no_features, no_bond_history, gate_error)."""
+    """A's decisions with the create time A's gate used: `mig_ms - time_to_migrate_s*1000` from the gate row's features, else the
+    CreateSignal's raw `t_signal_ms`, which is B's fallback (a row with no features: no_features, no_bond_history, gate_error)."""
     out = []
     for r in gate_rows:
         m = r["mint"]
@@ -316,7 +344,7 @@ def a_side_rows(gate_rows: Iterable[dict[str, Any]], signal_ms: dict[str, int]) 
         if isinstance(ttm, (int, float)) and not isinstance(ttm, bool):
             create = r["mig_ms"] - round(ttm * 1000)
         else:
-            create = (signal_ms[m] // 1000) * 1000
+            create = signal_ms[m]
         out.append((m, label_from_gate_row(r), r["mig_ms"], r["score"], create))
     return out
 
@@ -549,11 +577,22 @@ def default_engine_factory() -> Any:
     return cp.build_engine()
 
 
+def check_scope(view: str, day: str, dry_run: bool, scorer_extra: Sequence[str] = ()) -> None:
+    """The E0 record is E0_VIEW on E0_DAY with the scorer's own flags; anything else, or an extra scorer argument, is a dry run."""
+    if dry_run:
+        return
+    if view != E0_VIEW or day != E0_DAY:
+        raise E0Error(f"the E0 record is {E0_VIEW} {E0_DAY}; {view} {day} needs --dry-run")
+    if scorer_extra:
+        raise E0Error("--scorer-arg needs --dry-run (an extra scorer argument could carry a sealed or forward path)")
+
+
 def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, engine_factory: Callable[[], Any] | None = None,
            scorer: Scorer | None = None, repo: Path | None = None, scorer_repo: Path | None = None, scorer_extra: Sequence[str] = (),
-           skip_c: bool = False, log: Any = sys.stderr) -> dict[str, Any]:
+           skip_c: bool = False, dry_run: bool = False, log: Any = sys.stderr) -> dict[str, Any]:
     """The whole E0 for one view-day. Writes A.canon, B.canon, B.jsonl, C.list, Bpicks_in_U.list, the md5 files, diff.tsv (if A != B) and e0.json."""
     t_start = time.monotonic()
+    check_scope(view, day, dry_run, scorer_extra)
     repo = repo or REPO
     if not _DAY_RE.match(day):
         raise E0Error(f"--day must be YYYY-MM-DD, got {day!r}")
@@ -676,7 +715,8 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
     wall["total"] = round(time.monotonic() - t_start, 1)
     e0: dict[str, Any] = {
         "schema": SCHEMA, "view": view, "day": day, "commit": state["head"], "origin_branches": state["origin_branches"],
-        "e0_criterion": E0_CRITERION, "drop_after_create_ms": DROP_AFTER_CREATE_MS,
+        "e0_criterion": E0_CRITERION, "drop_after_create_ms": DROP_AFTER_CREATE_MS, "dry_run": bool(dry_run),
+        "e0_pin": {"view": E0_VIEW, "day": E0_DAY},
         "view_sha256": view_sha,
         "md5_A_decide": md5_ad, "md5_B_decide": md5_bd, "equal_decide": equal_decide,
         "md5_A_full": md5_a, "md5_B_full": md5_b, "equal_full": equal_full,
@@ -702,7 +742,7 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
 # ---- CLI ----------------------------------------------------------------------------------------------
 def cmd_run(args: argparse.Namespace) -> int:
     e0 = run_e0(args.view, args.day, Path(args.out), scorer_repo=Path(args.scorer_repo) if args.scorer_repo else None,
-                scorer_extra=args.scorer_arg or (), skip_c=args.skip_c)
+                scorer_extra=args.scorer_arg or (), skip_c=args.skip_c, dry_run=args.dry_run)
     keys = ("view", "day", "commit", "e0_criterion", "md5_A_decide", "md5_B_decide", "equal_decide", "md5_A_full", "md5_B_full", "equal_full", "md5_C", "md5_Bpicks_U",
             "equal_C", "n_A_full", "n_B_full", "n_decide_set", "n_gt60", "n_gt60_in_decide", "crosstab_gt60", "n_create_ms_disagree", "n_picks", "n_diff", "checks", "wall_s", "ok")
     print(json.dumps({k: e0[k] for k in keys}, indent=2, sort_keys=True))
@@ -713,6 +753,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     e0 = json.loads(Path(args.e0).read_text(encoding="utf-8"))
     if e0.get("schema") != SCHEMA:
         raise E0Error(f"{args.e0}: not a {SCHEMA} file")
+    if e0.get("dry_run") is not False:
+        raise E0Error(f"{args.e0}: dry_run is {e0.get('dry_run')!r}; only a run with dry_run false can be the E0 record")
     res = verify_pins(e0, Path(args.worktree), Path(args.scorer_worktree) if args.scorer_worktree else None)
     print(json.dumps(res, indent=2, sort_keys=True))
     return 0 if res["ok"] else 1
@@ -726,7 +768,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--day", required=True, help="UTC day YYYY-MM-DD")
     r.add_argument("--out", required=True, help="empty or new directory")
     r.add_argument("--scorer-repo", help="a clean git tree on origin holding tools/cap_pick_score.py, if it is not this tree (default: this tree)")
-    r.add_argument("--scorer-arg", action="append", help="an extra scorer argument for both runs (repeatable), e.g. a read-ready flag")
+    r.add_argument("--scorer-arg", action="append", help="an extra scorer argument for both runs (repeatable; write a flag as --scorer-arg=--k-mode); needs --dry-run")
+    r.add_argument("--dry-run", action="store_true", help=f"required for any view or day but {E0_VIEW} {E0_DAY} and for --scorer-arg; marks e0.json dry_run, which `check` refuses")
     r.add_argument("--skip-c", action="store_true", help="development only: skip the scorer; the run then reports ok=false")
     r.set_defaults(fn=cmd_run)
     c = sub.add_parser("check", help="re-verify the recorded blob shas against HEAD and the working copy of a worktree")

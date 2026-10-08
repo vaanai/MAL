@@ -130,6 +130,18 @@ def make_scorer_tree(root: Path) -> Path:
     return tree
 
 
+def good_record(repo: Path, **over) -> dict:
+    """An e0.json record that `check` accepts against `repo`: the real pins and imported modules, equal md5s, no dry run, the pinned scope."""
+    pins = e0.collect_pins(repo)
+    mods = e0.collect_imported_modules(repo, e0.loaded_tools_modules())
+    rec = {"schema": e0.SCHEMA, "view": e0.E0_VIEW, "day": e0.E0_DAY, "dry_run": False, "e0_criterion": e0.E0_CRITERION, "ok": True,
+           "blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "commit": _git(repo, "rev-parse", "HEAD"),
+           "md5_A_decide": "aa", "md5_B_decide": "aa", "n_create_ms_disagree": 0, "md5_C": "cc", "md5_Bpicks_U": "cc",
+           "checks": {k: True for k in e0.SANITY_KEYS}, "imported_module_mismatches": [], "imported_module_blobs": mods["blobs"]}
+    rec.update(over)
+    return rec
+
+
 class _Fix(unittest.TestCase):
     """A one-root view with a day of creates and trades (plain .jsonl), a creator with history, a mint created before the restart."""
 
@@ -183,6 +195,7 @@ class _Fix(unittest.TestCase):
         return run
 
     def run_e0(self, out: str = "out", **kw):
+        kw.setdefault("dry_run", True)
         return e0.run_e0("fix", DAY, self.dir / out, block=self.block, engine_factory=self.factory(), repo=self.repo, log=open("/dev/null", "w"), **kw)
 
 
@@ -293,7 +306,8 @@ class RunTests(_Fix):
             calls.append(1)
             return cp.build_engine(self.model, self.md5, self.feats, THR if len(calls) == 1 else 0.999, kill_dir=self.dir)
 
-        res = e0.run_e0("fix", DAY, self.dir / "bad", block=self.block, engine_factory=factory, repo=self.repo, scorer=self.fake_scorer(), log=open("/dev/null", "w"))
+        res = e0.run_e0("fix", DAY, self.dir / "bad", block=self.block, engine_factory=factory, repo=self.repo, scorer=self.fake_scorer(), log=open("/dev/null", "w"),
+                        dry_run=True)
         out = self.dir / "bad"
         self.assertFalse(res["equal_full"])
         self.assertFalse(res["equal_decide"])
@@ -312,10 +326,10 @@ class RunTests(_Fix):
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-        self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "ok")]), 0)
-        self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "ok")]), 2)  # not empty
-        self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "skip"), "--skip-c"]), 1)  # no C: not ok
-        self.assertEqual(e0.main(["check", str(self.dir / "ok" / "e0.json"), "--worktree", str(self.repo)]), 0)
+        self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "ok"), "--dry-run"]), 0)
+        self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "ok"), "--dry-run"]), 2)  # not empty
+        self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "skip"), "--skip-c", "--dry-run"]), 1)  # no C: not ok
+        self.assertEqual(e0.main(["check", str(self.dir / "ok" / "e0.json"), "--worktree", str(self.repo)]), 2)  # a dry-run file is not the E0 record
 
 
 class CompareTests(unittest.TestCase):
@@ -377,13 +391,22 @@ class CompareTests(unittest.TestCase):
         r = e0.compare_sides([("N", "below", 4_000_000, 0.2, 0)], [("N", "no_features", 4_000_000, None, 1_000)])
         self.assertEqual(r["create_disagree"], [])
 
-    def test_a_create_time_comes_from_the_gate_row_else_the_floor_second(self) -> None:
+    def test_a_create_time_comes_from_the_gate_row_else_the_raw_signal_time(self) -> None:
         rows = [{"mint": "F", "entered": True, "reason": None, "mig_ms": 7_000_000, "score": 0.9, "features": {"time_to_migrate_s": 1000.0}},
                 {"mint": "N", "entered": False, "reason": "no_features", "mig_ms": 9_000_000, "score": None, "features": None}]
         out = e0.a_side_rows(rows, {"F": 5_999_500, "N": 8_000_999})
-        self.assertEqual([(r[0], r[4]) for r in out], [("F", 6_000_000), ("N", 8_000_000)])
+        self.assertEqual([(r[0], r[4]) for r in out], [("F", 6_000_000), ("N", 8_000_999)])
         with self.assertRaises(e0.E0Error):
             e0.a_side_rows(rows, {"F": 1})
+
+    def test_no_feature_row_with_a_subsecond_create_time_is_equal_when_both_sides_use_the_raw_value(self) -> None:
+        sig = 8_000_999
+        a_rows = e0.a_side_rows([{"mint": "N", "entered": False, "reason": "no_bond_history", "mig_ms": 9_000_000, "score": None, "features": None}], {"N": sig})
+        b_rows, _dead = e0.b_side_rows([{"kind": "decision", "mint": "N", "decision": "no_bond_history", "mig_ms": 9_000_000, "score": None, "create_ms": sig}])
+        r = e0.compare_sides(a_rows, b_rows)
+        self.assertEqual(r["n_decide_set"], 1)  # 999,001 ms old: inside 60 min
+        self.assertEqual(r["a_decide"], ["N\tno_bond_history\t9000000\t"])
+        self.assertEqual((r["a_decide"], r["diff_decide"], r["create_disagree"]), (r["b_decide"], [], []))
 
     def test_mint_on_one_side_only_and_missing_create_time(self) -> None:
         r = e0.compare_sides([("X", "pick", self.LIMIT + 10, 0.9, 0)], [])
@@ -433,7 +456,7 @@ class LateMigratorTests(_Fix):
         for p_ in patches:
             p_.start()
             self.addCleanup(p_.stop)
-        self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "late")]), 0)
+        self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "late"), "--dry-run"]), 0)
         self.assertEqual(json.loads((self.dir / "late" / "e0.json").read_text())["e0_criterion"], "le60_either_plus_B_picks")
 
 
@@ -462,23 +485,20 @@ class RefusalTests(_Fix):
         with self.assertRaises(e0.E0Error):
             self.run_e0(scorer=self.fake_scorer())
         with self.assertRaises(e0.E0Error):
-            e0.run_e0("fix", "2026-8-17", self.dir / "x", block=self.block, repo=self.repo)
+            e0.run_e0("fix", "2026-8-17", self.dir / "x", block=self.block, repo=self.repo, dry_run=True)
         with self.assertRaises(cp.Refused):  # sealed / void hours are refused by the replay's own rule
             (self.view / "VIEW.sha256").write_text("x", encoding="utf-8")
-            e0.run_e0("fix", "2026-10-03", self.dir / "y", block=self.block, repo=self.repo)
+            e0.run_e0("fix", "2026-10-03", self.dir / "y", block=self.block, repo=self.repo, dry_run=True)
 
     def test_main_exit_2_on_refusal(self) -> None:
         (self.repo / "scratch.txt").write_text("x", encoding="utf-8")
         with mock.patch.object(cp, "BLOCKS", {"fix": self.block}), mock.patch.object(e0, "REPO", self.repo):
-            self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "o")]), 2)
+            self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "o"), "--dry-run"]), 2)
 
 
 class PinTests(_Fix):
     def _e0(self) -> dict:
-        pins = e0.collect_pins(self.repo)
-        mods = e0.collect_imported_modules(self.repo, e0.loaded_tools_modules())
-        return {"blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "commit": _git(self.repo, "rev-parse", "HEAD"), "ok": True,
-                "imported_module_blobs": mods["blobs"]}
+        return good_record(self.repo)
 
     def test_blobs_match_git_and_frozen_md5_is_the_pinned_value(self) -> None:
         pins = e0.collect_pins(self.repo)
@@ -508,16 +528,93 @@ class PinTests(_Fix):
         _git(self.repo, "commit", "-q", "-am", "frozen")
         self.assertFalse(e0.verify_pins(rec2, self.repo)["frozen_md5"]["ok"])
 
-    def test_check_refuses_when_the_recorded_e0_failed(self) -> None:
-        rec = {**self._e0(), "ok": False}
-        res = e0.verify_pins(rec, self.repo)
-        self.assertTrue(all(m["ok"] for m in res["modules"].values()))
-        self.assertFalse(res["ok"])
+    def test_check_recomputes_ok_and_ignores_the_stored_one(self) -> None:
+        good = e0.verify_pins(good_record(self.repo), self.repo)
+        self.assertTrue(good["ok"], good["recomputed"])
+        bad_fields = {
+            "equal_decide": {"md5_B_decide": "bb"},
+            "create_ms_disagreement": {"n_create_ms_disagree": 1},
+            "equal_C": {"md5_Bpicks_U": "dd"},
+            "sanity": {"checks": {"boot_history_equal": True, "A_log_rows_equal_engine_rows": True, "nonempty": False}},
+            "scope": {"day": "2026-08-17"},
+            "criterion": {"e0_criterion": "le60"},
+            "no_import_mismatch": {"imported_module_mismatches": [{"module": "tools.laya_v0"}]},
+            "not_a_dry_run": {"dry_run": True},
+        }
+        for part, over in bad_fields.items():
+            res = e0.verify_pins(good_record(self.repo, ok=True, **over), self.repo)  # the stored ok says True
+            self.assertFalse(res["ok"], part)
+            self.assertFalse(res["recomputed"]["parts"][part if part != "create_ms_disagreement" else "equal_decide"], part)
+        self.assertTrue(res["stored_ok"])
+        # a stored False does not matter either: the fields decide
+        res = e0.verify_pins(good_record(self.repo, ok=False), self.repo)
+        self.assertTrue(res["ok"])
+        self.assertIs(res["stored_ok"], False)
+        self.assertFalse(e0.verify_pins({k: v for k, v in good_record(self.repo).items() if k != "dry_run"}, self.repo)["ok"])  # an old record has no dry_run
+
+    def test_check_refuses_a_dry_run_record(self) -> None:
+        rec = good_record(self.repo, dry_run=True)
+        self.assertFalse(e0.verify_pins(rec, self.repo)["ok"])
+        path = self.dir / "dry.json"
+        path.write_text(json.dumps(rec), encoding="utf-8")
+        self.assertEqual(e0.main(["check", str(path), "--worktree", str(self.repo)]), 2)
+        path.write_text(json.dumps(good_record(self.repo)), encoding="utf-8")
+        self.assertEqual(e0.main(["check", str(path), "--worktree", str(self.repo)]), 0)
 
     def test_imported_modules_hash_to_the_head_blobs(self) -> None:
         imp = e0.imported_blobs(self.repo)
         pins = e0.collect_pins(self.repo)
         self.assertEqual({k: v["blob"] for k, v in imp.items()}, pins["blobs"])
+
+
+class ScopeTests(_Fix):
+    def pinned(self):
+        for p in (mock.patch.object(e0, "E0_VIEW", "fix"), mock.patch.object(e0, "E0_DAY", DAY)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_other_view_or_day_needs_dry_run(self) -> None:
+        for view, day in (("explore-0814", "2026-08-17"), ("fix", DAY), ("exp011-0909", "2026-08-20")):
+            with self.assertRaises(e0.E0Error) as cm:
+                e0.run_e0(view, day, self.dir / "x", block=self.block, repo=self.repo, scorer=self.fake_scorer())
+            self.assertIn("--dry-run", str(cm.exception))
+            self.assertFalse((self.dir / "x").exists())
+        self.assertEqual(e0.E0_VIEW, "explore-0814")
+        self.assertEqual(e0.E0_DAY, "2026-08-20")
+        with mock.patch.object(cp, "BLOCKS", {"fix": self.block}):
+            self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "y")]), 2)
+
+    def test_pinned_scope_runs_without_dry_run_and_check_accepts_the_record(self) -> None:
+        self.pinned()
+        res = e0.run_e0("fix", DAY, self.dir / "rec", block=self.block, engine_factory=self.factory(), repo=self.repo, scorer=self.fake_scorer(),
+                        log=open("/dev/null", "w"))
+        self.assertIs(res["dry_run"], False)
+        self.assertEqual(res["e0_pin"], {"view": "fix", "day": DAY})
+        self.assertTrue(res["ok"], res["checks"])
+        path = self.dir / "rec" / "e0.json"
+        self.assertEqual(e0.main(["check", str(path), "--worktree", str(self.repo)]), 0)
+        # a hand-edited record with a stored ok is still recomputed
+        doc = json.loads(path.read_text())
+        doc["md5_B_decide"] = "tampered"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        self.assertEqual(e0.main(["check", str(path), "--worktree", str(self.repo)]), 1)
+
+    def test_scorer_arg_needs_dry_run(self) -> None:
+        self.pinned()
+        with self.assertRaises(e0.E0Error) as cm:
+            e0.run_e0("fix", DAY, self.dir / "z", block=self.block, engine_factory=self.factory(), repo=self.repo, scorer=self.fake_scorer(), scorer_extra=["--k-mode", "hour"])
+        self.assertIn("--scorer-arg", str(cm.exception))
+        self.assertFalse((self.dir / "z").exists())
+        with mock.patch.object(cp, "BLOCKS", {"fix": self.block}):
+            self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "z2"), "--scorer-arg=--k-mode", "--scorer-arg=hour"]), 2)
+        res = self.run_e0("dz", scorer=self.fake_scorer(), scorer_extra=["--k-mode", "hour"])  # a dry run passes the guard
+        self.assertIs(res["dry_run"], True)
+
+    def test_a_dry_run_is_marked_and_check_refuses_it(self) -> None:
+        res = self.run_e0(scorer=self.fake_scorer())
+        self.assertIs(res["dry_run"], True)
+        self.assertTrue(json.loads((self.dir / "out" / "e0.json").read_text())["dry_run"])
+        self.assertEqual(e0.main(["check", str(self.dir / "out" / "e0.json"), "--worktree", str(self.repo)]), 2)
 
 
 class ImportedModuleTests(_Fix):
@@ -553,7 +650,7 @@ class ImportedModuleTests(_Fix):
     def test_scorer_modules_come_from_importtime_and_are_recorded_apart_for_another_tree(self) -> None:
         tree = make_scorer_tree(self.dir)
         res = e0.run_e0("explore-0814", DAY, self.dir / "sc", block=self.block, engine_factory=self.factory(), repo=self.repo, scorer_repo=tree,
-                        log=open("/dev/null", "w"))
+                        log=open("/dev/null", "w"), dry_run=True)
         self.assertTrue(res["equal_C"], res["C"])
         self.assertEqual(sorted(res["scorer_imported_module_blobs"]), ["tools.cap_pick_score", "tools.helper_mod"])
         for name in ("tools.helper_mod", "tools.cap_pick_score"):
@@ -566,7 +663,9 @@ class ImportedModuleTests(_Fix):
         self.assertFalse(e0.verify_pins(res, self.repo)["imported_modules"]["ok"])
         ok = e0.verify_pins(res, self.repo, tree)
         self.assertTrue(ok["imported_modules"]["ok"], ok["imported_modules"])
-        self.assertTrue(ok["ok"])
+        # everything else recomputes true; this record is a dry run on a non-pinned day, so only those two parts fail
+        self.assertEqual([k for k, v in ok["recomputed"]["parts"].items() if not v], ["scope", "not_a_dry_run"])
+        self.assertFalse(ok["ok"])
 
     def test_same_tree_scorer_modules_merge_into_the_flat_dict(self) -> None:
         r = e0.collect_imported_modules(self.repo, {}, {"tools.laya_v0", "tools.nope"}, self.repo)
@@ -601,10 +700,7 @@ class ImportedModuleTests(_Fix):
         self.assertFalse(e0.verify_pins(no_mods, self.repo)["imported_modules"]["ok"])
 
     def _rec(self) -> dict:
-        pins = e0.collect_pins(self.repo)
-        mods = e0.collect_imported_modules(self.repo, e0.loaded_tools_modules())
-        return {"blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "commit": _git(self.repo, "rev-parse", "HEAD"), "ok": True,
-                "imported_module_blobs": mods["blobs"]}
+        return good_record(self.repo)
 
 
 class ScorerTests(unittest.TestCase):
