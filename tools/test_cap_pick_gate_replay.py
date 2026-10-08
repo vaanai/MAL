@@ -571,8 +571,7 @@ class NoGrantUnchangedTests(_Base):
             return cp.replay_view(blk, days, engine=self.engine(), roots=[td], prune_every=1)
 
     def test_output_is_byte_identical_to_the_pre_change_module(self) -> None:
-        if self.md5 != GOLDEN_MODEL_MD5:
-            self.skipTest(f"fixture model md5 {self.md5} differs from the golden's (lightgbm build); compare by hand")
+        self.assertEqual(self.md5, GOLDEN_MODEL_MD5, "the fixture model is not the one the golden digest was computed with")
         recs, meta = self._run(False)
         self.assertEqual({(r["kind"], r["decision"]) for r in recs},
                          {("dead", "pre_restart"), ("decision", "below"), ("decision", "no_features"), ("decision", "pick")})
@@ -714,8 +713,10 @@ class GrantTests(_Base):
         return cp.ReadGrant(hours)
 
     def run_grant(self, grant=None, days=None, **kw):
-        return cp.replay_view(cp.WALK2_BLOCK, days or self.days, engine=self.engine(), grant=grant or self.grant(),
-                              _test_final_ledger=kw.pop("ledger", self.ledger), **kw)
+        eng = self.engine()  # the tiny fixture model; grant mode refuses an injected engine, so build_engine is swapped
+        with mock.patch.object(cp, "build_engine", lambda *a, **k: eng):
+            return cp.replay_view(cp.WALK2_BLOCK, days or self.days, grant=grant or self.grant(),
+                                  _test_final_ledger=kw.pop("ledger", self.ledger), **kw)
 
     # --- it reads what a plain replay reads ---------------------------------------------------------------
     def test_grant_mode_decides_exactly_as_the_exploration_replay_on_the_same_files(self) -> None:
@@ -966,6 +967,91 @@ class GrantTests(_Base):
                 finally:
                     f.write_bytes(good)
 
+    # --- review changes: lenient lines, hours without creates, engine, anchors --------------------------------
+    def _append_to(self, f: Path, extra: bytes) -> tuple[bytes, int]:
+        """Rewrite the sealed hour file `f` with `extra` appended. Returns (original sealed bytes, line count before)."""
+        from tools.pump_history_backfill import seal_jsonl
+
+        good = f.read_bytes()
+        plain = f.with_suffix("")
+        subprocess.run(["zstd", "-q", "-d", "-f", str(f), "-o", str(plain)], check=True)
+        n = len(plain.read_bytes().splitlines())
+        plain.write_bytes(plain.read_bytes() + extra)
+        seal_jsonl(plain)
+        return good, n
+
+    def test_a_lenient_line_refuses_in_grant_mode_naming_file_line_and_kind(self) -> None:
+        lenient = b'{"type":"trade","mint":"M","trader":"a\tb"}\n'  # a raw TAB inside a string: json strict fails, strict=False parses
+        for kind, root, hour in (("trades", self.walk, "2026-10-16T02"), ("creates", self.fwd, "2026-10-15T23"), ("creates", self.walk, "2026-10-16T23")):
+            with self.subTest(kind=kind, hour=hour):
+                f = root / kind / f"{kind}-{hour}.jsonl.zst"
+                good, n = self._append_to(f, lenient)
+                try:
+                    with self.assertRaises(cp.BadLineRefused) as ctx:
+                        self.run_grant()  # the grant is built from the changed file: the hash is right, the line is not
+                    self.assertEqual((ctx.exception.kind, ctx.exception.line), ("lenient", n + 1))
+                    self.assertIn(str(f), str(ctx.exception))
+                    self.assertIn("kind lenient", str(ctx.exception))
+                finally:
+                    f.write_bytes(good)
+
+    def test_a_replayed_trades_hour_without_creates_is_listed(self) -> None:
+        _recs, meta = self.run_grant()
+        self.assertEqual(meta["grant"]["replayed_hours_without_creates"], ["2026-10-17T00"])  # LATE's migration spills into an hour with no creates file
+        _recs, meta = self.run_grant(self.grant(drop=[("2026-10-16T02", "creates")]))
+        self.assertEqual(meta["grant"]["replayed_hours_without_creates"], ["2026-10-16T02", "2026-10-17T00"])
+
+    def test_an_injected_engine_is_refused_in_grant_mode(self) -> None:
+        with self.assertRaises(cp.Refused) as ctx:
+            cp.replay_view(cp.WALK2_BLOCK, self.days, engine=self.engine(), grant=self.grant(), _test_final_ledger=self.ledger)
+        self.assertIn("engine", str(ctx.exception))
+
+    def test_anchored_patterns_and_the_experiment_key(self) -> None:
+        good = ("/x/y", "0" * 64)
+        for hour in ("2026-10-16T05\n", "\uff12026-10-16T05", "2026-10-16T05 "):
+            with self.subTest(hour=hour), self.assertRaises(cp.Refused):
+                cp.ReadGrant({hour: {"trades": good}})
+        for sha in ("0" * 64 + "\n", "0" * 63 + "\uff10"):
+            with self.subTest(sha=sha), self.assertRaises(cp.Refused):
+                cp.ReadGrant({"2026-10-16T05": {"trades": ("/x/y", sha)}})
+        for day in ("2026-10-16\n", "\uff12026-10-16"):
+            with self.subTest(day=day), self.assertRaises(cp.Refused):
+                cp.check_grant_days([day])
+        m = {"final": True, "schema": cp.FINAL_SCHEMA, "experiment": cp.FINAL_EXPERIMENT, "test_window": False,
+             "clean_clock": cp.FINAL_WINDOW[0], "read_end": cp.FINAL_WINDOW[1]}
+        self.assertTrue(cp._is_final_marker(m))
+        self.assertFalse(cp._is_final_marker({k: v for k, v in m.items() if k != "experiment"}))  # no default: the key must be there
+
+
+class DefaultModeLenientTests(_Base):
+    def test_lenient_lines_are_skipped_as_before_and_counted_in_meta(self) -> None:
+        def lenient_line(row: dict) -> bytes:
+            return (_dump(row).replace('"trader":"a"', '"trader":"a\tb"').replace('"creator":"CL"', '"creator":"C\tL"') + "\n").encode()
+
+        def build(with_lenient: bool):
+            td = tempfile.TemporaryDirectory()
+            self.addCleanup(td.cleanup)
+            root = Path(td.name)
+            t = DAY0 + 2 * HOUR
+            hour, hist = cp._hour_of_ms(t), cp._hour_of_ms(DAY0 - 2 * HOUR)
+            hist_rows = _lines([_crow("OLD", DAY0 - 2 * HOUR, "CO")]) + ([lenient_line(_crow("OLD2", DAY0 - 2 * HOUR + 500, "CL"))] if with_lenient else [])
+            _write_hour(root, "creates", hist, hist_rows, zst=False)
+            c_rows = _lines([_crow("Hi", t, "C1"), _crow("Lo", t + 30_000, "C2")]) + ([lenient_line(_crow("M2", t + 40_000, "CL"))] if with_lenient else [])
+            _write_hour(root, "creates", hour, c_rows, zst=False)
+            t_rows = _lines(sorted(_mint_rows("Hi", 7, t0=t) + _mint_rows("Lo", 1, t0=t + 30_000), key=lambda r: r["t_recv_ms"]))
+            if with_lenient:
+                t_rows.insert(2, lenient_line(dict(_trade("Hi", t + 1_500, trader="a"), tx_index=9)))
+            _write_hour(root, "trades", hour, t_rows, zst=False)
+            blk = cp.Block("t", (str(root),), ".jsonl", False)
+            return cp.replay_view(blk, [cp._day_of_ms(DAY0)], engine=self.engine(), roots=[str(root)])
+
+        recs_a, meta_a = build(True)
+        recs_b, meta_b = build(False)
+        self.assertEqual(recs_a, recs_b)  # the lenient lines were skipped, as before
+        self.assertEqual(meta_a.pop("lenient_lines_skipped"), 3)  # one in the history file, one in creates, one in trades
+        self.assertEqual(canonical(recs_a, meta_a), canonical(recs_b, meta_b))
+        self.assertNotIn("lenient_lines_skipped", meta_b)  # absent at 0, so a clean run's meta (and the golden digest) is unchanged
+
 
 class EventVTests(_Base):
     """Walk 2 runs the walker with --event-v: trade rows carry V, ix_name, creator_fee_unclaimed, buyback_fee and
@@ -997,7 +1083,7 @@ class EventVTests(_Base):
             blk = cp.Block("t", (td,), ".jsonl.zst", False)
             opened: list[str] = []
             real = cp.iter_lines
-            with mock.patch.object(cp, "iter_lines", lambda p, r: (opened.append(str(p)), real(p, r))[1]):
+            with mock.patch.object(cp, "iter_lines", lambda p, r, **kw: (opened.append(str(p)), real(p, r, **kw))[1]):
                 recs, meta = cp.replay_view(blk, [cp._day_of_ms(DAY0)], engine=self.engine(), roots=[td])
             return recs, meta, opened
 
@@ -1037,8 +1123,10 @@ class EventVTests(_Base):
             ledger = Path(td) / "FINAL_READS.jsonl"
             ledger.write_text(json.dumps({"final": True, "schema": cp.FINAL_SCHEMA, "experiment": "EXP-012", "test_window": False,
                                           "clean_clock": cp.FINAL_WINDOW[0], "read_end": cp.FINAL_WINDOW[1]}) + "\n")
-            with mock.patch.object(cp, "WALK2_DIR", str(walk)), mock.patch.object(cp, "FWD1002_DIR", str(fwd)):
-                recs, meta = cp.replay_view(cp.WALK2_BLOCK, days, engine=self.engine(), grant=cp.ReadGrant(hours), _test_final_ledger=ledger)
+            eng = self.engine()
+            with mock.patch.object(cp, "WALK2_DIR", str(walk)), mock.patch.object(cp, "FWD1002_DIR", str(fwd)), \
+                    mock.patch.object(cp, "build_engine", lambda *a, **k: eng):
+                recs, meta = cp.replay_view(cp.WALK2_BLOCK, days, grant=cp.ReadGrant(hours), _test_final_ledger=ledger)
             self.assertEqual({r["mint"]: r["decision"] for r in recs if r["kind"] == "decision"},
                              {"E0m": "pick", "Hi": "pick", "Lo": "below", "D1Hi": "pick", "D1Lo": "below"})
             self.assertFalse([h for h, k, _ in meta["grant"]["opened"] if k not in ("creates", "trades")])
