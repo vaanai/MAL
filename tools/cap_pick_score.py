@@ -1765,7 +1765,8 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--size-lamports", type=int, default=d.size_lamports)
     ap.add_argument("--fee-lamports", type=int, default=d.fee_lamports)
     ap.add_argument("--rent-lamports", type=int, default=d.rent_lamports, help="token-account rent per filled trip when --rent-mode always (lab constant 2039280)")
-    ap.add_argument("--rent-mode", choices=("none", "always"), default=d.rent_mode, help="none = G; always = charge the rent on every filled trip (stress leg)")
+    ap.add_argument("--rent-mode", choices=("none", "always", "conditional"), default=d.rent_mode,
+                    help="none = G; always = charge the rent on every filled trip (stress leg); conditional = only when the sell cannot fill (EXP-022 4.5)")
     ap.add_argument("--live-fail", type=float, default=d.live_fail)
     ap.add_argument("--flat-fail", type=float, default=d.flat_fail)
     ap.add_argument("--boot-p-draws", type=int, default=d.boot_p_draws, help="bootstrap draws (seed 1) for the REPORT-ONLY trade-level p_trade_boot (DEC-021 section 5: 10,000); the CI90 lower bounds keep the gate's 1,000 draws")
