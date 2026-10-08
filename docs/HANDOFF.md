@@ -47,7 +47,7 @@ These are the owner's instructions and targets. They are not measurements.
 
 ### Job #387 result: NOT a kill
 
-The gate-replay kill check (#462 at 8fd49e5) passed. The ≤ 32 min pick sets match. The P2–P4 online-pick book is **+3.278% live [CI lo +1.17]**, **+2.334% press**, positive on 19 of 29 days. This is exploration, in-sample, and not gate evidence. The known 60-min skip is not a kill; Amendment 1 sets the E0 set at ≤ 60 min. Output is in `/data/mal/cap-pick-score/gate-replay/` (compare.md, compare.json).
+The gate-replay kill check (#462 at 8fd49e5) did not trigger a kill. At ≤ 32 min the pick sets nearly match on P2–P4 (both 381/1289/415 of offline 382/1294/415) but not on P1 (fast-pool-0918 213 shared of 261/289; oracle-insample-0922 282 of 349/356). The P2–P4 online-pick book is **+3.278% live [date-cluster CI90 lo +1.17]**, **+2.334% press**, positive on 19 of 29 days. This is exploration, in-sample, and not gate evidence. The known 60-min skip is not a kill; Amendment 1 sets the E0 set at ≤ 60 min. Output is in `/data/mal/cap-pick-score/gate-replay/` (compare.md, compare.json).
 
 ### A11: not adopted (notebook n_JESu6g8jAbyesA)
 

@@ -1,6 +1,6 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-08T18:06:13Z",
+  "updated_utc": "2026-10-08T18:09:43Z",
   "review_windows": [],
   "events": [
     {
@@ -23,7 +23,7 @@
       "id": "exp022-gate-replay-387",
       "kind": "result",
       "title": "Job #387 (live-gate replay): not a kill for CAP-PICK",
-      "detail": "The pick sets match at <= 32 min. The P2-P4 online-pick book is +3.278% live [CI lo +1.17], +2.334% press, positive on 19 of 29 days. Exploration, in-sample; not gate evidence. The known 60-min skip is not a kill and EXP-022 Amendment 1 (#474) sets the E0 comparison set at <= 60 min. A11 is not adopted. Time is approximate.",
+      "detail": "At ≤ 32 min the pick sets nearly match on P2–P4 (both 381/1289/415 of offline 382/1294/415) but not on P1 (fast-pool-0918 213 shared of 261/289; oracle-insample-0922 282 of 349/356). The P2-P4 online-pick book is +3.278% live [date-cluster CI90 lo +1.17], +2.334% press, positive on 19 of 29 days. Exploration, in-sample; not gate evidence. The known 60-min skip is not a kill and EXP-022 Amendment 1 (#474) sets the E0 comparison set at <= 60 min. A11 is not adopted. Time is approximate.",
       "atUtc": "2026-10-08T18:00:00Z",
       "approx": true
     },
@@ -479,7 +479,7 @@
       "id": "s-20261008-1804-evening",
       "from": "claude",
       "kind": "status",
-      "text": "Evening 10-08: owner goal recorded ($1000 real by 10-31, $400 minimum; the gate is kept). Merged #470 (change watch + EXP-023 tripwire), #472 (walk-2 wrapper guards) and #474 (EXP-022 Amendment 1, the E0 deciding set). Job #387 is not a kill: the pick sets match at <= 32 min; the P2-P4 online-pick book is +3.278% live [CI lo +1.17], +2.334% press, 19 of 29 days (exploration, in-sample). A11 not adopted. Strategy hunts launched on the exploration tape (hunt-1, hunt-3 LAYA, the LLM-trader test and hunt-2, resumed at about 18:05Z, running; hunt-4 still stopped for disk until hunt-1 and hunt-3 finish). Research-0 disk reached 81%, now 74% after Helm's cleanup and new rules for every hunt. Still open: #461 (after job #389), #462 (reviewer CHANGES), #471 and #473 drafts, and the E0 record amendment before 10-16T01Z.",
+      "text": "Evening 10-08: owner goal recorded ($1000 real by 10-31, $400 minimum; the gate is kept). Merged #470 (change watch + EXP-023 tripwire), #472 (walk-2 wrapper guards) and #474 (EXP-022 Amendment 1, the E0 deciding set). Job #387 is not a kill: the pick sets nearly match at <= 32 min on P2-P4, not on P1; the P2-P4 online-pick book is +3.278% live [date-cluster CI90 lo +1.17], +2.334% press, 19 of 29 days (exploration, in-sample, not gate evidence). A11 not adopted. Strategy hunts launched on the exploration tape (hunt-1, hunt-3 LAYA, the LLM-trader test and hunt-2, resumed at about 18:05Z, running; hunt-4 still stopped for disk until hunt-1 and hunt-3 finish). Research-0 disk reached 81%, now 74% after Helm's cleanup and new rules for every hunt. Still open: #461 (after job #389), #462 (reviewer CHANGES), #471 and #473 drafts, and the E0 record amendment before 10-16T01Z.",
       "atUtc": "2026-10-08T18:04:46Z"
     },
     {
