@@ -581,6 +581,21 @@ class NoGrantUnchangedTests(_Base):
     def test_zst_and_plain_give_the_same_output(self) -> None:
         self.assertEqual(canonical(*self._run(False)), canonical(*self._run(True)))
 
+    def test_public_surface_is_frozen(self) -> None:
+        """The E0 harness is written against these: the schema, the record keys and replay_view's positional parameters."""
+        import inspect
+
+        params = list(inspect.signature(cp.replay_view).parameters.values())
+        self.assertEqual([p.name for p in params if p.kind is not p.KEYWORD_ONLY], ["block", "days"])
+        self.assertEqual([p.name for p in params if p.kind is p.KEYWORD_ONLY],
+                         ["daily_restart", "prune_every", "create_time", "roots", "engine", "log", "grant", "_test_final_ledger"])
+        recs, _meta = self._run(False)
+        by_kind = {r["kind"]: sorted(r) for r in recs}
+        self.assertEqual(by_kind["decision"], sorted(["schema", "kind", "view", "mint", "day", "mig_ms", "create_ms", "ttm_s", "score", "decision",
+                                                      "entered", "error", "time_fallbacks", "tx_index_null"]))
+        self.assertEqual(by_kind["dead"], sorted(["schema", "kind", "view", "mint", "first_pumpswap_ms", "day", "decision", "tx_index_null"]))
+        self.assertEqual({r["schema"] for r in recs}, {cp.SCHEMA})
+
     def test_no_grant_keys_in_meta_and_cli_never_builds_a_grant(self) -> None:
         recs, meta = self._run(False)
         self.assertNotIn("grant", meta)
