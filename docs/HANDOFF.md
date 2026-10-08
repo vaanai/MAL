@@ -92,10 +92,16 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - `--hour-sph-json` must be absent (tape-only hours; an unmeasurable hour refuses);
   - bad-reserves picks stay `status=attempt` with `priced=false`.
   **Next: a quant-proof re-check of 86355b3..be7cdb2, then merge.** The read-tool (P4) items are listed in the PR body. |
-| **#480** `claude/cap-pick-e0-exp022` | E0 harness on `--exp022 --exp022-source exploration --book picks`, U from universe.csv | Head **8de674d**, 51 tests.
-  - **08-20 dry-run precount PASSED:** equal_decide (889) and equal_C (n_C 98, U 772) true; no picks outside the universe; layout checks all true; 16.8 GiB peak.
-  - **Running at compaction:** reviewer `a70139af1577132a7`; quant-proof `a4efdfa6397dca01f`; the #479 re-check by `ad2e39687ffc72eeb`.
-  - **Then:** merge #479, then merge #480, then the official E0 on main (28 GB MiScusi job, no `--dry-run`), then the E0 record amendment. |
+| **#480** `claude/cap-pick-e0-exp022` | E0 harness on `--exp022 --exp022-source exploration --book picks`, U from universe.csv | Reviewer APPROVE on 8de674d. **Quant-proof NOT-OK** (comment 6068717562), for one guard.
+  - **Being fixed** (builder `ac12844d0ae1b5598`): fail E0 if any B pick is in `picks_not_attempts` (for example `mayhem_unknown_no_create_event`) with an unexpected reason (empty allowlist); merge main.
+  - **Then:** quant-proof re-check, merge #480, then the official E0 on main (28 GB MiScusi job, no `--dry-run`), then the E0 record amendment.
+  - **#479 is MERGED** (d6b32af; scorer blob b8e37774).
+  - **The E0 record amendment must disclose the 08-20 dry-run precount:**
+    - harness 5485459, scorer 86355b3;
+    - decide md5 bed92c12…, 889 mints;
+    - C md5 196cbbd8…, n_C 98, U 772;
+    - file `scratchpad/e0-precount-0820/e0.json`.
+    Amendment 1 named 08-17 as the only dry run, so the official run is a second look at the E0 day. |
 
 **MiScusi jobs**
 
