@@ -259,10 +259,10 @@ BASE = 1_000_000
 DAY = "2026-08-15"  # 8,657.5 slots an hour: k = 3, the 300 s cap is 721 slots
 
 
-def write_keeper_fixture(tmp_path, cadence=20):
+def write_keeper_fixture(tmp_path, cadence=20, first=8):
     """One mint, one pool, V = 17.6 SOL. Others print at base+1 (s0), base+600 and base+650; the keeper buys 0.6 SOL x 29 from base+8 every `cadence` slots; a late print makes
     the mint uncensored. Reserves are the constant-product tape for those events."""
-    keeper = [(BASE + 8 + i * cadence, "KEEPER", "buy", 600_000_000) for i in range(29)]
+    keeper = [(BASE + first + i * cadence, "KEEPER", "buy", 600_000_000) for i in range(29)]
     ev = sorted([(BASE + 1, "o1", "buy", 10**9), (BASE + 600, "o2", "sell", 5 * 10**12), (BASE + 650, "o3", "buy", 2 * 10**9), (BASE + 7500, "o4", "buy", 10**9)] + keeper, key=lambda e: e[0])
     t = _cp_tape(ev)
     view = tmp_path / "viewK"

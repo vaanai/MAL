@@ -85,7 +85,10 @@ T2: REPORT-ONLY BOOST-PROGRESS EXIT (--exit-mode, --boost-cut, --paired; ARTIFAC
   per attempt in pp of stake, with the date-cluster CI90 (1,000 UTC-date resamples, seed 1), per scope and leg. --boost-cut f (0 < f <= 1) is a STRESS REPLAY: the
   detected keeper's buys are kept while its cumulative buy SOL <= f x 17.585 SOL and the later ones are removed; the constant-product path is re-simulated from the
   remaining prints' amounts (buys keep SOL in, sells keep tokens in; PRE-trade convention, V on the quote) from the first removed print on. Approximations are in
-  `cut_boost_path`. For f < 0.9 B90 cannot fire on a cut path (declared in the pre-declaration). None of this is gate evidence and none of it touches EXP-022.
+  `cut_boost_path`. For f < 0.9 the KEEPER cannot make B90 fire on a cut path (pre-declaration section 3 and erratum 6). --boost-shift s (0 <= s < 1; 0 = no-op; exclusive
+  with --boost-cut) is the time-shift STRESS REPLAY of REPORT section T2 (pre-declaration amendment 7): every print of the detected keeper moves to
+  s0 + floor((slot - s0) x (1 - s)), is re-inserted after the non-keeper prints of its slot, and the path is re-simulated from the first changed position (`shift_boost_path`);
+  the entry is re-simulated too, and attempts whose entry the shift touches are counted (`boost_shift_entry_overlap`). None of this is gate evidence and none of it touches EXP-022.
 
 Hard limits (asserted; see `check_path_allowed` / `check_inputs_allowed` / `check_hour_allowed`): exploration pools only. Never fresh-0802, fresh-0808, fresh-0828,
 any forward or oracle-live path, the EXP-009 hours [2026-09-15T12, 2026-09-18T23), or any hour at or after 2026-10-02T10. Oracle in-sample hours stop at 2026-09-25T06.
@@ -110,6 +113,7 @@ import sys
 import time
 from array import array
 from dataclasses import asdict, dataclass, replace
+from fractions import Fraction
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
@@ -272,6 +276,7 @@ class Config:
     exit_mode: str = "cap"  # "cap" (G: the 300 s cap) | "boost90" (T2 rule B90, report-only)
     boost_cut: float | None = None  # T2 stress replay: keep the keeper's buys up to this share of the BOOST budget; None = the tape as it is
     paired: bool = False  # T2: also simulate the other exit mode on the same path and report B90 minus cap
+    boost_shift: float | None = None  # T2 stress replay (REPORT section T2): move the keeper's prints to s0 + floor((slot - s0) x (1 - s)); None or 0 = the tape as it is
 
     def validate(self) -> None:
         if self.bound not in ("END", "START"):
@@ -297,13 +302,21 @@ class Config:
             raise Refused(f"exit-mode must be one of {EXIT_MODES}, got {self.exit_mode}")
         if self.boost_cut is not None and not (isinstance(self.boost_cut, (int, float)) and not isinstance(self.boost_cut, bool) and 0.0 < self.boost_cut <= 1.0):
             raise Refused(f"boost-cut must be in (0, 1], got {self.boost_cut!r}")
+        if self.boost_shift is not None and not (isinstance(self.boost_shift, (int, float)) and not isinstance(self.boost_shift, bool) and 0.0 <= self.boost_shift < 1.0):
+            raise Refused(f"boost-shift must be in [0, 1), got {self.boost_shift!r}")
+        if self.boost_cut is not None and self.boost_shift is not None:
+            raise Refused("--boost-cut and --boost-shift are mutually exclusive")
         if (self.rent_mode == "always") != (self.rent_lamports > 0):  # a rent amount without the mode (or the mode without an amount) would silently charge nothing
             raise Refused("--rent-mode always needs --rent-lamports > 0, and --rent-lamports > 0 needs --rent-mode always (default: none, 0)")
 
     @property
+    def shift_active(self) -> bool:
+        return self.boost_shift is not None and self.boost_shift != 0
+
+    @property
     def needs_trader(self) -> bool:
         """The T2 switches read the tape's `trader` field. With none of them set the field is not read at all, so the default run is the phase-1 run."""
-        return self.exit_mode != "cap" or self.boost_cut is not None or self.paired
+        return self.exit_mode != "cap" or self.boost_cut is not None or self.paired or self.shift_active
 
     @property
     def needs_hour_sph(self) -> bool:
@@ -503,18 +516,29 @@ def cut_boost_path(f: float, *, trader: np.ndarray, slot: np.ndarray, isbuy: np.
     n = len(slot)
     drop = np.zeros(n, bool)
     drop[drop_idx] = True
-    i0 = int(drop_idx[0])
     kept = np.flatnonzero(~drop)
-    sol2, tok2 = sol[kept].astype(float).copy(), tok[kept].astype(float).copy()
-    q2, b2 = np.empty(len(kept) + 1), np.empty(len(kept) + 1)
+    out.update(_resim_path(order=kept, slot_new=slot[kept], i0=int(drop_idx[0]), trader=trader, isbuy=isbuy, sol=sol, tok=tok, qpre=qpre, bpre=bpre, bt=bt), dropped=int(drop_idx.size))
+    return out
+
+
+def _resim_path(*, order: np.ndarray, slot_new: np.ndarray, i0: int, trader: np.ndarray, isbuy: np.ndarray, sol: np.ndarray, tok: np.ndarray, qpre: np.ndarray,
+                bpre: np.ndarray, bt: np.ndarray) -> dict[str, Any]:
+    """Constant-product re-simulation shared by the budget cut and the time shift. `order` = indices into the tape arrays in the NEW path order, `slot_new` = the new path's
+    slots, `i0` = the first position at which the new path differs from the tape (positions before it are the tape, so the state before position i0 is the tape's
+    `qpre[i0]`, `bpre[i0]`). From i0 on, each print is applied to the running state (X = quote + V, B = base) with the fee tier from `fee_ppm(X, B)`:
+        buy  keeps its SOL S in:    net = S x (1 - fee); tokens = B x net / (X + net); X += net; B -= tokens
+        sell keeps its tokens T in: gross = X x T / (B + T); SOL out = gross x (1 - fee); X -= gross; B += T"""
+    sol2, tok2 = sol[order].astype(float).copy(), tok[order].astype(float).copy()
+    ib = isbuy[order]
+    q2, b2 = np.empty(len(order) + 1), np.empty(len(order) + 1)
     x, b = float(qpre[i0]), float(bpre[i0])
-    for pos, j in enumerate(kept):
-        if j < i0:  # before the first removal the observed state stands
-            q2[pos], b2[pos] = qpre[j], bpre[j]
+    for pos in range(len(order)):
+        if pos < i0:  # before the first change the observed state stands
+            q2[pos], b2[pos] = qpre[pos], bpre[pos]
             continue
         q2[pos], b2[pos] = x, b
         fee = float(fee_ppm(x, b)) / 1e6
-        if isbuy[j]:
+        if ib[pos]:
             net = sol2[pos] * (1 - fee)
             t = b * net / (x + net)
             tok2[pos] = t
@@ -524,7 +548,45 @@ def cut_boost_path(f: float, *, trader: np.ndarray, slot: np.ndarray, isbuy: np.
             sol2[pos] = gross * (1 - fee)
             x, b = x - gross, b + tok2[pos]
     q2[-1], b2[-1] = x, b
-    out.update(trader=trader[kept], slot=slot[kept], isbuy=isbuy[kept], sol=sol2, tok=tok2, qpre=q2, bpre=b2, bt=bt[kept], dropped=int(drop_idx.size))
+    return dict(trader=trader[order], slot=slot_new, isbuy=ib, sol=sol2, tok=tok2, qpre=q2, bpre=b2, bt=bt[order])
+
+
+def shift_boost_path(shift: float, *, trader: np.ndarray, slot: np.ndarray, isbuy: np.ndarray, sol: np.ndarray, tok: np.ndarray, qpre: np.ndarray, bpre: np.ndarray,
+                     bt: np.ndarray, s0: int) -> dict[str, Any]:
+    """T2 time-shift stress replay (--boost-shift s; REPORT section T2, pre-declaration amendment 7). The keeper is the wallet `boost_scan` finds on the ORIGINAL path. Every print
+    of it moves from `slot` to `s0 + floor((slot - s0) x (1 - s))` (exact integer arithmetic on the fraction 1 - s). Amounts and the total budget are unchanged. Moved prints are
+    re-inserted by (new slot, keeper after the non-keeper prints of that slot, original position), so the keeper prints keep their relative order and every other print keeps its
+    slot and order. The path is re-simulated by `_resim_path` from the first position at which it differs from the tape. APPROXIMATIONS: those of `cut_boost_path`, and the other
+    traders keep their slots, so the keeper's impact arrives earlier relative to them and they do not react to it. The ENTRY is taken from the shifted path (re-simulated too);
+    `first_change_slot` (the smaller of the tape's and the new slot at the first changed position) lets the caller count the attempts whose entry the shift touches.
+    Returns the same arrays when there is no keeper or nothing changes (`moved` = keeper prints whose slot changed)."""
+    out: dict[str, Any] = dict(trader=trader, slot=slot, isbuy=isbuy, sol=sol, tok=tok, qpre=qpre, bpre=bpre, bt=bt, moved=0, keeper=0, first_change_slot=None)
+    hit = boost_scan(trader, isbuy, sol, slot, s0)
+    if hit is None:
+        return out
+    wid = hit[1]
+    out["keeper"] = wid
+    keep = Fraction(str(shift))
+    keep = 1 - keep
+    kmask = trader == wid
+    new_slot = slot.astype(np.int64).copy()
+    new_slot[kmask] = s0 + ((slot[kmask].astype(np.int64) - s0) * keep.numerator) // keep.denominator
+    n = len(slot)
+    order = np.lexsort((np.arange(n), kmask.astype(np.int8), new_slot))
+    new_at = new_slot[order]  # the new path's slots, position by position
+    order_changed = order != np.arange(n)
+    any_change = np.flatnonzero(order_changed | (new_at != slot))
+    if any_change.size == 0:
+        return out
+    p0 = int(any_change[0])
+    first_change = int(min(slot[p0], new_at[p0]))
+    moved = int((new_slot != slot).sum())
+    if not order_changed.any():  # same print order, only slot labels moved: the tape's states stand, nothing to re-simulate
+        out.update(slot=new_at, moved=moved, first_change_slot=first_change)
+        return out
+    i0 = int(np.flatnonzero(order_changed)[0])
+    res = _resim_path(order=order, slot_new=new_at, i0=i0, trader=trader, isbuy=isbuy, sol=sol, tok=tok, qpre=qpre, bpre=bpre, bt=bt)
+    out.update(res, moved=moved, first_change_slot=first_change)
     return out
 
 
@@ -1226,7 +1288,7 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
                 continue
             tot["final_state_fallback"] += st[2]
             hs = hour_seconds(md["hour"], day) if cfg.needs_hour_sph else None
-            qpre, bpre, bt_, boost_idx = st[0], st[1], md["bt"], None
+            qpre, bpre, bt_, boost_idx, first_change = st[0], st[1], md["bt"], None, None
             t2: dict[str, Any] = {}
             if cfg.needs_trader:  # T2: stress cut, then the causal detector on the path the book actually trades
                 trd = md["tr"]
@@ -1234,11 +1296,18 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
                     c = cut_boost_path(cfg.boost_cut, trader=trd, slot=slot, isbuy=isbuy, sol=sol, tok=tok, qpre=qpre, bpre=bpre, bt=bt_, s0=md["s0"])
                     trd, slot, isbuy, sol, qpre, bpre, bt_ = (c[k_] for k_ in ("trader", "slot", "isbuy", "sol", "qpre", "bpre", "bt"))
                     t2.update(boost_cut_dropped=c["dropped"], boost_cut_keeper=int(c["keeper"] != 0))
+                elif cfg.shift_active:
+                    c = shift_boost_path(cfg.boost_shift, trader=trd, slot=slot, isbuy=isbuy, sol=sol, tok=tok, qpre=qpre, bpre=bpre, bt=bt_, s0=md["s0"])  # type: ignore[arg-type]
+                    trd, slot, isbuy, sol, qpre, bpre, bt_ = (c[k_] for k_ in ("trader", "slot", "isbuy", "sol", "qpre", "bpre", "bt"))
+                    first_change = c["first_change_slot"]
+                    t2.update(boost_shift_moved=c["moved"], boost_shift_keeper=int(c["keeper"] != 0))
                 scan = boost_scan(trd, isbuy, sol, slot, md["s0"])
                 boost_idx = None if scan is None else scan[0]
                 t2.update(boost_found=int(scan is not None), boost_trigger_slot="" if scan is None else int(slot[scan[0]]))
             common = dict(day=day, sph=sph, v=md["v"], s0=md["s0"], slot=slot, isbuy=isbuy, sol=sol, qpre=qpre, bpre=bpre, hour=md["hour"], hour_s=hs, bt=bt_, boost_idx=boost_idx)
             r = simulate_attempt(cfg, **common)
+            if cfg.shift_active:  # the shift touches this attempt's entry when the path first differs from the tape at or before the landing slot
+                t2["boost_shift_entry_overlap"] = int(first_change is not None and first_change <= r["landing_slot"])
             if cfg.paired:
                 ra = simulate_attempt(replace(cfg, exit_mode="cap" if cfg.exit_mode == "boost90" else "boost90"), **common)
                 r.update(alt_exit_type=ra["exit_type"], alt_hold_slots=ra["hold_slots"], pnl_alt=ra["pnl"])
@@ -1281,10 +1350,12 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
             summary["books"]["non_picks"] = book_stats([r for r in rows if r["pick"] == "non_pick"], size, cfg.boot_p_draws)
     if cfg.needs_trader:
         summary["t2"] = {
-            "banner": "REPORT-ONLY, EXPLORATION ONLY. Not gate evidence; does not touch EXP-022.", "exit_mode": cfg.exit_mode, "boost_cut": cfg.boost_cut, "paired": cfg.paired,
+            "banner": "REPORT-ONLY, EXPLORATION ONLY. Not gate evidence; does not touch EXP-022.", "exit_mode": cfg.exit_mode, "boost_cut": cfg.boost_cut, "boost_shift": cfg.boost_shift, "paired": cfg.paired,
             "budget_lamports": BOOST_BUDGET_LAMPORTS, "b90_frac": B90_FRAC, "window_slots": BOOST_WINDOW_SLOTS, "detector": "G's causal behavioural detector on the tape `trader` field",
             "counts": {"attempts": len(rows), "boost_found": sum(int(r.get("boost_found", 0)) for r in rows), "keepers_cut": sum(int(r.get("boost_cut_keeper", 0)) for r in rows),
-                       "mints_with_prints_removed": sum(1 for r in rows if r.get("boost_cut_dropped", 0)), "prints_removed": sum(int(r.get("boost_cut_dropped", 0)) for r in rows)},
+                       "mints_with_prints_removed": sum(1 for r in rows if r.get("boost_cut_dropped", 0)), "prints_removed": sum(int(r.get("boost_cut_dropped", 0)) for r in rows),
+                       "shift_keepers": sum(int(r.get("boost_shift_keeper", 0)) for r in rows), "shift_mints_moved": sum(1 for r in rows if r.get("boost_shift_moved", 0)),
+                       "shift_prints_moved": sum(int(r.get("boost_shift_moved", 0)) for r in rows), "shift_entry_overlap": sum(int(r.get("boost_shift_entry_overlap", 0)) for r in rows)},
         }
         if cfg.paired:
             summary["paired"] = paired_report(rows, cfg, picks is not None)
@@ -1301,14 +1372,15 @@ ROW_COLUMNS = (
 
 
 # T2 columns, appended only when a T2 switch is on (so the default rows.csv header is the phase-2 header)
-ROW_COLUMNS_T2 = ("boost_found", "boost_trigger_slot", "boost_cut_dropped", "boost_cut_keeper", "alt_exit_type", "alt_hold_slots", "pnl_alt_nofail", "pnl_alt_live", "pnl_alt_flat", "pnl_alt_press")
+ROW_COLUMNS_T2 = ("boost_found", "boost_trigger_slot", "boost_cut_dropped", "boost_cut_keeper", "alt_exit_type", "alt_hold_slots", "pnl_alt_nofail", "pnl_alt_live", "pnl_alt_flat", "pnl_alt_press",
+                  "boost_shift_moved", "boost_shift_keeper", "boost_shift_entry_overlap")
 
 
 def write_outputs(summary: dict[str, Any], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = summary.pop("_rows")
     cf = summary.get("config", {})
-    cols = ROW_COLUMNS + (ROW_COLUMNS_T2 if (cf.get("exit_mode", "cap") != "cap" or cf.get("boost_cut") is not None or cf.get("paired")) else ())
+    cols = ROW_COLUMNS + (ROW_COLUMNS_T2 if (cf.get("exit_mode", "cap") != "cap" or cf.get("boost_cut") is not None or cf.get("paired") or cf.get("boost_shift")) else ())
     with open(out_dir / "rows.csv", "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
@@ -1360,6 +1432,7 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--boot-p-draws", type=int, default=d.boot_p_draws, help="bootstrap draws (seed 1) for the REPORT-ONLY trade-level p_trade_boot (DEC-021 section 5: 10,000); the CI90 lower bounds keep the gate's 1,000 draws")
     ap.add_argument("--exit-mode", choices=EXIT_MODES, default=d.exit_mode, help="cap = G's 300 s cap (default, byte-identical to phase 1); boost90 = T2 rule B90, report-only")
     ap.add_argument("--boost-cut", type=float, default=None, help="T2 stress replay: keep the keeper's buys up to this share (0 < f <= 1) of the 17.585 SOL budget and re-simulate the path (default: the tape as it is)")
+    ap.add_argument("--boost-shift", type=float, default=None, help="T2 stress replay (REPORT section T2): move the keeper's prints to s0 + floor((slot - s0) x (1 - s)), 0 <= s < 1 (0 = no-op), and re-simulate; exclusive with --boost-cut")
     ap.add_argument("--paired", action="store_true", help="T2: also simulate the other exit mode on the same path; adds summary.paired (B90 minus cap, pp of stake, date-cluster CI90) and the alt_* / boost_* row columns")
     ap.add_argument("--final-state", choices=("lab", "g"), default=d.final_state, help="state after the last print: lab = pumpswap_post_trade_reserves; g = the audit's 1.25%% constant")
     return ap
@@ -1377,7 +1450,7 @@ def config_from_args(a: argparse.Namespace) -> Config:
         tp=a.tp, sl=a.sl, size_lamports=a.size_lamports, fee_lamports=a.fee_lamports, live_fail=a.live_fail, flat_fail=a.flat_fail, final_state=a.final_state,
         pick_threshold=a.pick_threshold, k_mode=a.k_mode, k_rounding=a.k_rounding, exit_lag_ms=a.exit_lag_ms, guard_basis=a.guard_basis, cap_anchor=a.cap_anchor,
         rent_lamports=a.rent_lamports, rent_mode=a.rent_mode, book=a.book, boot_p_draws=a.boot_p_draws,
-        exit_mode=getattr(a, "exit_mode", d.exit_mode), boost_cut=getattr(a, "boost_cut", None), paired=bool(getattr(a, "paired", False)),
+        exit_mode=getattr(a, "exit_mode", d.exit_mode), boost_cut=getattr(a, "boost_cut", None), paired=bool(getattr(a, "paired", False)), boost_shift=getattr(a, "boost_shift", None),
     )
 
 
