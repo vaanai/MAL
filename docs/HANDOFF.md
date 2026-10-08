@@ -71,7 +71,11 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 | `claude/h5-executor` (PR pending) | H5 live executor on the probe_executor core | 102 tests pushed (d45cfe4). The reconcile tool is being committed. Dry-run by default. LIVE needs a LIVE_OK file, a config flag and EXP-024 merged on main. 0.02 SOL stake, max 2 open, 30/day, stops 0.08 daily / 0.12 total. Live-halt rules. Seal guard (pick_oracle) from 10-16T01. Then reviewer, then ask the owner to fund. |
 | #478 `claude/exp024-h5-prereg` | EXP-024 Part 1 plus DEC-023 (family), DEC-024 (canary and owner override), DEC-021 Am.2, DEC-016 Am.7, EXP-012 Am.3, EXP-022 Am.2, ledger | Builder is adding the declared-observation rule and the filled `OWNER_OVERRIDE_CONFIRMED` line. Then quant-proof on the final head. **MUST MERGE BEFORE 2026-10-10T00:00Z** (otherwise refile from 10-11T00, and after that Look 1 is dropped). Cron 7b7a30bc fires at 10-09 18:13Z as a reminder. |
 | #476 `claude/h5-boostfloor-score` | H5 scorer port (32/32 cells and every trade reproduced) | Draft. Still needs a forward mode, V(t) pricing, the correction and the day-level t for Look 1 (by 10-16T00Z) |
-| #479 `claude/cap-pick-exp022-mode` | `--exp022` mode in cap_pick_score: constants and `exp022_universe()` with walk2 and exploration adapters | Quant-proof OK-WITH-EDITS (comment 6068166437). Builder is pinning vmap and hour-sph under exploration and flagging bad-reserves picks. The read-tool items stay open (listed in the PR body). |
+| #479 `claude/cap-pick-exp022-mode` | `--exp022` mode in cap_pick_score: constants and `exp022_universe()` with walk2 and exploration adapters | Quant-proof OK-WITH-EDITS on 86355b3 (comment 6068166437). Edits done at **be7cdb2**, 229 tests:
+  - the exploration source pins `--vmap` to `/data/mal/pumpswap-virtual/pool_v_0909.json`;
+  - `--hour-sph-json` must be absent (tape-only hours; an unmeasurable hour refuses);
+  - bad-reserves picks stay `status=attempt` with `priced=false`.
+  **Next: a quant-proof re-check of 86355b3..be7cdb2, then merge.** The read-tool (P4) items are listed in the PR body. |
 | `claude/cap-pick-e0-exp022` (PR pending) | E0 harness switched to `--exp022 --exp022-source exploration --book picks`, U from universe.csv | Builder also fixes a broken test and runs the **real-layout count-only precount on 08-20** (booleans only) |
 
 **MiScusi jobs**
