@@ -147,8 +147,16 @@ def prepare(root: Path, cfg: dict) -> None:
 
 
 def run(root: Path, *, cfg: dict | None = None, now: str = "2026-10-16T04:10:00Z", start: str | None = START,
-        passes: int = 1, env_extra: dict | None = None) -> Result:
+        passes: int = 1, env_extra: dict | None = None, helius_env: str | None = "default",
+        helius_mode: int | None = None) -> Result:
+    """helius_env: the env file's text, None for no file, "default" for a file holding SENTINEL as the key."""
     prepare(root, cfg or {})
+    if helius_env is None:
+        (root / "helius.env").unlink()
+    elif helius_env != "default":
+        (root / "helius.env").write_text(helius_env)
+    if helius_mode is not None:
+        (root / "helius.env").chmod(helius_mode)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("MISCUSI_", "FW2_", "HELIUS"))}
     env.update(
         PATH=f"{root / 'bin'}:{env.get('PATH', '/usr/bin:/bin')}",
@@ -257,6 +265,112 @@ class HappyPathTests(WrapperCase):
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         r = self.run_w(now="2026-10-16T01:30:00Z")
         self.assertIn("holding helius slot 3", r.out)
+
+
+class HeliusEnvGuardTests(WrapperCase):
+    """Guard: the Helius env must give a key before the walk loop. Walker reads HELIUS_API_KEY (resolve_rpc_url)."""
+
+    def assert_refused_for_env(self, r: Result) -> None:
+        self.assertEqual(r.rc, 6, r.err)
+        self.assertEqual(r.calls(), [], "nothing walked or verified: no credit spent")
+        self.assertFalse((r.walk / "checkpoint.json").exists())
+        (a,) = r.alerts()
+        self.assertEqual((a["kind"], a["hour"], a["rc"]), ("helius_env", "-", 6))
+        self.assertIn("ALERT helius_env", r.out)
+        self.assertTrue(r.progress()["note"].startswith("ALERT helius_env"), r.progress())
+        self.assertEqual(r.progress()["kind"], "helius_env")
+        # the slot is released: the lock file can be taken again
+        with open(r.root / "locks" / "helius-4.lock", "w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertNotIn(SENTINEL, r.every_text())
+        self.assertNotIn("HELIUS_API_KEY", r.out + r.err)
+
+    def test_empty_key_refuses_with_an_alert_and_walks_nothing(self) -> None:
+        r = self.run_w(helius_env=f"OTHER_VALUE={SENTINEL}\nHELIUS_API_KEY=\n")
+        self.assert_refused_for_env(r)
+        self.assertIn("no key", r.alerts()[0]["msg"])
+
+    def test_unset_and_blank_keys_refuse(self) -> None:
+        for name, text in (("absent", f"OTHER_VALUE={SENTINEL}\n"), ("empty file", ""),
+                           ("blank", 'HELIUS_API_KEY="   \t "\n'), ("comment only", "# HELIUS_API_KEY=x\n")):
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                self.assert_refused_for_env(run(Path(tmp), helius_env=text))
+
+    def test_inherited_key_does_not_hide_an_empty_file_key(self) -> None:
+        # the file sets the key empty: sourcing overrides whatever the job environment carried
+        r = self.run_w(helius_env="HELIUS_API_KEY=\n", env_extra={"HELIUS_API_KEY": SENTINEL})
+        self.assert_refused_for_env(r)
+
+    def test_missing_env_file_refuses_the_same_way(self) -> None:
+        r = self.run_w(helius_env=None)
+        self.assert_refused_for_env(r)
+        self.assertIn("missing or unreadable", r.alerts()[0]["msg"])
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads any file")
+    def test_unreadable_env_file_refuses_the_same_way(self) -> None:
+        r = self.run_w(helius_mode=0o000)
+        self.assert_refused_for_env(r)
+        self.assertIn("missing or unreadable", r.alerts()[0]["msg"])
+
+    def test_malformed_env_file_does_not_echo_its_lines(self) -> None:
+        # bash prints the offending line of a file it cannot parse, and that line is the key
+        r = self.run_w(helius_env=f"HELIUS_API_KEY={SENTINEL}(\n")
+        self.assert_refused_for_env(r)
+
+    def test_env_file_that_references_an_unset_variable_gets_the_normal_refusal(self) -> None:
+        # Under set -u, $FW2_NEVER_DEFINED in the sourced file would exit 1 with stderr off and no alert.
+        r = self.run_w(helius_env=f"OTHER_VALUE={SENTINEL}\nHELIUS_API_KEY=$FW2_NEVER_DEFINED\n")
+        self.assert_refused_for_env(r)
+        self.assertNotIn("FW2_NEVER_DEFINED", r.every_text())
+
+    def test_a_good_key_still_walks(self) -> None:
+        r = self.run_w(helius_env=f"HELIUS_API_KEY={SENTINEL}\n")
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertEqual(r.hours("walker"), [H1, H2, H3])
+        self.assertEqual(r.alerts(), [])
+
+    def test_a_key_with_surrounding_quotes_and_export_walks(self) -> None:
+        r = self.run_w(helius_env=f'export HELIUS_API_KEY="{SENTINEL}"\n')
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertTrue(all(c["has_key"] for c in r.calls("walker")))
+
+    def test_the_guard_sits_before_the_walk_loop_and_releases_the_lock(self) -> None:
+        text = SCRIPT.read_text()
+        guard = text.index("helius_env_refuse()")
+        self.assertLess(text.index('. "$HELIUS_ENV"'), text.index("while :; do"))
+        self.assertLess(guard, text.index("while :; do"))
+        body = text[guard:text.index("}", guard)]
+        self.assertIn("alert helius_env - 6", body)
+        self.assertLess(body.index("exec 9>&-"), body.index("exit 6"))
+
+
+class TestHookInJobTests(WrapperCase):
+    def test_test_root_with_a_job_id_refuses_before_anything_is_created(self) -> None:
+        r = self.run_w(env_extra={"MISCUSI_JOB_ID": "1234"})
+        self.assertEqual(r.rc, 2, r.err)
+        self.assertEqual(len([x for x in r.err.splitlines() if x.strip()]), 1, r.err)
+        self.assertIn("FW2_TEST_ROOT", r.err)
+        self.assertIn("MISCUSI_JOB_ID", r.err)
+        self.assertNotIn("TEST MODE", r.out)
+        self.assertFalse(r.walk.exists(), "D must not be created")
+        self.assertEqual(list((self.root / "locks").iterdir()), [], "no lock file may be created")
+        self.assertFalse((self.root / "progress.json").exists())
+        self.assertEqual(r.calls(), [])
+
+    def test_an_empty_job_id_still_refuses(self) -> None:
+        r = self.run_w(env_extra={"MISCUSI_JOB_ID": ""})
+        self.assertEqual(r.rc, 2, r.err)
+        self.assertFalse(r.walk.exists())
+
+    def test_without_a_job_id_the_hook_still_works(self) -> None:
+        r = self.run_w(now="2026-10-16T01:30:00Z")
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertIn("TEST MODE", r.out)
+
+    def test_the_check_is_the_first_thing_after_the_bash_check(self) -> None:
+        text = SCRIPT.read_text()
+        self.assertLess(text.index("MISCUSI_JOB_ID"), text.index("COUNT_START=2026"))
+        self.assertLess(text.index("MISCUSI_JOB_ID"), text.index('mkdir -p "$D"'))
 
 
 class FailureTests(WrapperCase):
