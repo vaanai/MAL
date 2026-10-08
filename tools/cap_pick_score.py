@@ -735,6 +735,7 @@ def index_hours(sources: Sequence[Source]) -> dict[str, dict[str, tuple[Path, st
                 if not kdir.is_dir():
                     continue
                 for f in sorted(kdir.glob("*.jsonl.zst")):
+                    check_path_allowed(f)  # EVERY file, not only its directory: a symlink named like an allowed hour can point into a refused path
                     m = HOUR_RE.match(f.name)
                     if not m or m.group(1) != kind:
                         continue
@@ -825,22 +826,12 @@ def _num(v: Any) -> float:
     return float(v) if v is not None else float("nan")
 
 
-def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband: Mapping[str, int], cfg: Config, log: Any) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
-    """meta + ordered path arrays per uncensored canonical migration of one UTC day. Mirrors G's extract.py (hours of the day + the next two trade hours;
-    `complete` events of the day's hours; PumpSwap prints of canonical V-band pools in [mslot, mslot + 7300))."""
-    diag = {"hours": 0, "migrations": 0, "mints_with_canonical_pool": 0, "censored": 0, "multipool": 0, "bad_json": 0, "skipped_incomplete_migrations": 0}
-    dh = sorted(h for h in idx["trades"] if h[:10] == day)
-    if not dh:
-        return {}, diag
-    last = datetime.strptime(dh[-1], "%Y-%m-%dT%H")
-    nxt = [(last + timedelta(hours=i)).strftime("%Y-%m-%dT%H") for i in (1, 2)]
-    tf = dh + [h for h in nxt if h in idx["trades"]]
-    if len([h for h in dh if h in idx["migrations"]]) < len(dh):
-        diag["skipped_incomplete_migrations"] = 1
-        return {}, diag
-    diag["hours"] = len(dh)
-    mig: dict[str, list[Any]] = {}  # mint -> [mslot, mbt, block, hour of the file holding the earliest `complete`]
-    for h in dh:
+def _read_completes(hours: Sequence[str], idx: Mapping[str, Mapping[str, tuple[Path, str]]], diag: dict[str, int]) -> dict[str, list[Any]]:
+    """mint -> [mslot, mbt, block, hour of the file holding the earliest `complete`], from the migrations files of `hours` (the ones that exist)."""
+    mig: dict[str, list[Any]] = {}
+    for h in hours:
+        if h not in idx["migrations"]:
+            continue
         path, block = idx["migrations"][h]
         for line in zcat_grep(path, '"complete"'):
             try:
@@ -860,6 +851,42 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
                     cur[0], cur[2], cur[3] = r["slot"], block, h
                 if isinstance(bt, int) and (cur[1] is None or bt < cur[1]):
                     cur[1] = bt
+    return mig
+
+
+# Why a mint with a `complete` event is not an attempt (`read_day(..., reasons=...)`; `run()` adds bad_reserves). Used to account for every pick of --picks.
+R_SKIPPED_DAY = "skipped_incomplete_migrations"  # the day has a trade hour without a migrations file; the mint's complete is in an hour that exists
+R_NO_PRINT = "no_pumpswap_print_in_window"  # no PumpSwap print of the mint in [mslot, mslot + window) in the hours read
+R_NOT_IN_VMAP = "pool_not_in_vmap"  # PumpSwap prints exist, but only on pools absent from the V map
+R_V_NULL = "v_null_in_vmap"  # ... pools in the V map whose V is null
+R_V_OUT = "v_outside_band"  # ... pools in the V map whose V is outside [v_lo, v_hi]
+R_CENSORED = "censored"  # s0 + 6900 > the last slot loaded, or s0 - mslot > 400
+R_BAD_RESERVES = "bad_reserves"  # a non-positive reserve on the path
+R_NO_COMPLETE = "no_complete_event_in_days_read"  # no `complete` event for the mint in any day this run read (other day, other block, or not on the tape)
+
+
+def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband: Mapping[str, int], cfg: Config, log: Any,
+             reasons: dict[str, str] | None = None, vall: Mapping[str, int | None] | None = None) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    """meta + ordered path arrays per uncensored canonical migration of one UTC day. Mirrors G's extract.py (hours of the day + the next two trade hours;
+    `complete` events of the day's hours; PumpSwap prints of canonical V-band pools in [mslot, mslot + 7300)).
+    `reasons` (optional, filled in place): mint -> why a mint with a `complete` event is NOT an attempt (the R_* constants). `vall` (optional) is the whole V map
+    (pool -> V or None): it lets the reason tell a pool absent from the map from one whose V is null or outside the band. Neither changes what is returned."""
+    diag = {"hours": 0, "migrations": 0, "mints_with_canonical_pool": 0, "censored": 0, "multipool": 0, "bad_json": 0, "skipped_incomplete_migrations": 0}
+    dh = sorted(h for h in idx["trades"] if h[:10] == day)
+    if not dh:
+        return {}, diag
+    last = datetime.strptime(dh[-1], "%Y-%m-%dT%H")
+    nxt = [(last + timedelta(hours=i)).strftime("%Y-%m-%dT%H") for i in (1, 2)]
+    tf = dh + [h for h in nxt if h in idx["trades"]]
+    if len([h for h in dh if h in idx["migrations"]]) < len(dh):
+        diag["skipped_incomplete_migrations"] = 1
+        if reasons is not None:  # the day is dropped, but name the mints whose `complete` is in a migrations hour that exists (a throwaway diag: the counts stay as before)
+            for m in _read_completes(dh, idx, {"bad_json": 0}):
+                reasons.setdefault(m, R_SKIPPED_DAY)
+        return {}, diag
+    diag["hours"] = len(dh)
+    mig = _read_completes(dh, idx, diag)
+    other_pool: dict[str, str] = {}  # mint -> reason, for mints whose in-window PumpSwap prints are all on pools outside the band
     diag["migrations"] = len(mig)
     by_mint: dict[str, _Rows] = {}
     pool_ids: dict[str, int] = {}
@@ -883,9 +910,14 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
             if r.get("venue") != "pumpswap":
                 continue
             pool = r.get("pool")
-            if pool not in vband:
-                continue
             slot = r.get("slot")
+            if pool not in vband:
+                if reasons is not None and isinstance(slot, int) and mg[0] <= slot < mg[0] + cfg.window_slots:
+                    if vall is None or pool not in vall:
+                        other_pool.setdefault(m, R_NOT_IN_VMAP)
+                    else:
+                        other_pool.setdefault(m, R_V_NULL if vall[pool] is None else R_V_OUT)
+                continue
             if not isinstance(slot, int) or not (mg[0] <= slot < mg[0] + cfg.window_slots):
                 continue
             seq += 1
@@ -912,12 +944,24 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
         mslot = mig[m][0]
         if not (s0 + UNCENSORED_HORIZON <= max_slot and s0 - mslot <= MAX_S0_GAP):
             diag["censored"] += 1
+            if reasons is not None:
+                reasons.setdefault(m, R_CENSORED)
             continue
         keep = np.flatnonzero(a["pid"] == pid)
         perm = keep[order_perm(a["slot"][keep], a["tx"][keep], a["ev"][keep], a["seq"][keep])]
         out[m] = {"pool": pool, "v": float(vband[pool]), "s0": s0, "mslot": mslot, "block": mig[m][2], "hour": mig[m][3],
                   **{c: a[c][perm] for c in ("slot", "bt", "buy", "sol", "tok", "q", "b")}}
+    if reasons is not None:
+        for m in mig:
+            if m not in by_mint:
+                reasons.setdefault(m, other_pool.get(m, R_NO_PRINT))
     return out, diag
+
+
+def load_vmap(path: str | Path) -> dict[str, int | None]:
+    """The whole V map: pool -> V in lamports, or None when the pool's V was unreadable."""
+    v = json.loads(Path(path).read_text())["v"]
+    return {k: (None if x is None else int(x)) for k, x in v.items()}
 
 
 def load_vband(path: str | Path, lo: int, hi: int) -> dict[str, int]:
@@ -936,6 +980,12 @@ class PickSet:
 
     def __len__(self) -> int:
         return len(self.decision) if self.kind == "jsonl" else len(self.score)
+
+    def pick_mints(self, threshold: float) -> set[str]:
+        """Every mint the input calls a pick: decision == "pick" (JSONL), or score >= threshold (CSV)."""
+        if self.kind == "jsonl":
+            return {m for m, d in self.decision.items() if d == "pick"}
+        return {m for m, sc in self.score.items() if sc >= threshold}
 
     def label(self, mint: str, threshold: float) -> tuple[str, str, str]:
         """(pick | non_pick | unscored, score as text, raw decision)."""
@@ -990,6 +1040,18 @@ def load_picks(path: str | Path) -> PickSet:
     return PickSet("csv", out, {})
 
 
+def pick_accounting(picks: PickSet | None, threshold: float, attempt_mints: set[str], not_attempt: Mapping[str, str]) -> tuple[int | None, dict[str, list[str]] | None]:
+    """(number of picks in the input, {reason: sorted mints} for every pick that is NOT an attempt). No pick vanishes without a reason: a pick with no recorded reason
+    (no `complete` event in any day this run read) is R_NO_COMPLETE. With no --picks both are None."""
+    if picks is None:
+        return None, None
+    in_input = picks.pick_mints(threshold)
+    lost: dict[str, list[str]] = {}
+    for m in sorted(in_input - attempt_mints):
+        lost.setdefault(not_attempt.get(m, R_NO_COMPLETE), []).append(m)
+    return len(in_input), dict(sorted(lost.items()))
+
+
 def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
     check_inputs_allowed(args)  # first: a refused input path is never opened, listed or read
     cfg.validate()
@@ -1015,6 +1077,9 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
     tot = {"hours": 0, "migrations": 0, "mints_with_canonical_pool": 0, "censored": 0, "multipool": 0, "bad_json": 0, "skipped_incomplete_migrations": 0,
            "bad_reserves": 0, "final_state_fallback": 0, "hour_sph_fallback": 0, "cap_bt_fallback": 0}
     days_done: list[str] = []
+    days_skipped: list[str] = []
+    not_attempt: dict[str, str] = {}  # mint -> why a mint with a `complete` event is not an attempt (the R_* constants)
+    vall = load_vmap(args.vmap)
 
     def hour_seconds(h: str, day: str) -> float:
         if h not in hour_sph:
@@ -1030,9 +1095,11 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
         return 3600.0 / hour_sph[h]["slots_per_hour"]
 
     for day in days:
-        meta, diag = read_day(day, idx, vband, cfg, log)
+        meta, diag = read_day(day, idx, vband, cfg, log, reasons=not_attempt, vall=vall)
         for k_, v_ in diag.items():
             tot[k_] += v_
+        if diag["skipped_incomplete_migrations"]:
+            days_skipped.append(day)
         if not meta:
             log(f"{day}: no attempts ({diag})")
             continue
@@ -1043,6 +1110,7 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
             st = build_states(slot, isbuy, sol, tok, q, b, md["v"], cfg.final_state)
             if st is None:
                 tot["bad_reserves"] += 1
+                not_attempt.setdefault(m, R_BAD_RESERVES)
                 continue
             tot["final_state_fallback"] += st[2]
             hs = hour_seconds(md["hour"], day) if cfg.needs_hour_sph else None
@@ -1059,13 +1127,17 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
         log(f"{day}: attempts so far {len(rows)}")
     n_before = len(rows)
     n_picks, n_non, n_unscored = (sum(1 for r in rows if r["pick"] == lab) for lab in ("pick", "non_pick", "unscored"))
+    picks_in_input, picks_not_attempts = pick_accounting(picks, cfg.pick_threshold, {r["mint"] for r in rows}, not_attempt)
+    if picks_in_input is not None and picks_in_input != n_picks + sum(len(v_) for v_ in (picks_not_attempts or {}).values()):
+        raise Refused("internal: the pick accounting does not add up (a pick vanished without a reason)")
     if cfg.book == "picks":  # the pick-only book: unscored and non-pick mints are not attempts; the pressure intercept refits on the picks' own fills
         rows = [r for r in rows if r["pick"] == "pick"]
     leg_info = apply_legs(rows, cfg)
     size = float(cfg.size_lamports)
     summary: dict[str, Any] = {
         "schema": SCHEMA, "tool": TOOL, "phase": 2, "banner": "LAB SCORER. NOT A PROMOTE, NOT GATE EVIDENCE. G's P_primary plus the judge's spec switches (all default to G); must not merge before owner O2/O3.",
-        "config": asdict(cfg), "sources": {s.block: [str(d) for d in s.dirs] for s in sources}, "days": days_done,
+        "config": asdict(cfg), "sources": {s.block: [str(d) for d in s.dirs] for s in sources}, "days": days_done, "days_skipped_incomplete_migrations": days_skipped,
+        "picks_in_input": picks_in_input, "picks_not_attempts": picks_not_attempts,
         "vmap": {"path": str(args.vmap), "sha256": hashlib.sha256(Path(args.vmap).read_bytes()).hexdigest(), "pools_in_band": len(vband)},
         "picks": None if picks is None else {"path": str(args.picks), "sha256": hashlib.sha256(Path(args.picks).read_bytes()).hexdigest(), "format": picks.kind,
                                              "scored": len(picks), "threshold": cfg.pick_threshold if picks.kind == "csv" else None},
