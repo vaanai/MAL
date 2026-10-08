@@ -23,24 +23,78 @@ How it mirrors the runner (reuse, not copy, wherever the runner exposes a functi
 Places where this is a guess about the live wiring are listed in `GUESSES` and in the PR body.
 
 Subcommands: `replay` (needs lightgbm: /data/mal/venv), `compare` (numpy; pyarrow only for --g-rows).
+
+Read-ready (EXP-022 E0)
+-----------------------
+EXP-022 pins this file's git blob sha at E0; after E0 it cannot change. Everything the sealed walk-2 read needs from it
+is here. The read tool itself (lock, LOOK_READS, look schedule) lives in tools/cap_pick_score.py and calls this module.
+
+Frozen surface: the output schema `SCHEMA` (`cap_pick_gate_replay_v1`) and its record keys, and the positional
+parameters of `replay_view(block, days)`. Only keyword-only parameters were added (`grant`, `_test_final_ledger`).
+
+Strict lines (always on, no flag; audit A8). Every creates and trades line read in replay, and every staged creates
+file in boot staging, goes through tools/tape_lines.py. A NUL, a truncated final line or a line that is not a JSON
+object raises `BadLineRefused` (a `Refused`) naming the file, the first bad physical line and its kind; a truncated or
+corrupt .zst raises `Refused`. `main` exits 3 on any `Refused`. Boot staging copies each creates file and scans the
+copy, because `Exp012Online.preload` swallows errors. A `lenient` line (JSON that fails only on a raw control
+character inside a string; tape_lines does not call it bad) is skipped by the row parsers. Default mode counts
+such lines in `meta["lenient_lines_skipped"]` (the key is absent when the count is 0, so a clean run's meta is
+unchanged); grant mode refuses the file, kind `lenient`, with its first line number.
+
+Without a `ReadGrant` nothing changes: same roots, same refusals (sealed pools, EXP-009 hours, anything at or after
+2026-10-02T10Z), same output. The CLI `replay` never builds a grant, and `BLOCKS` does not name walk 2.
+
+With `replay_view(..., grant=ReadGrant(...))` a Python caller gets the sealed walk-2 read mode.
+Allowed:
+- files named in the grant, `{hour: {"creates": (path, sha256), "trades": (path, sha256)}}`, at exactly
+  `<root>/<kind>/<kind>-<hour>.jsonl.zst` with `<root>` WALK2_DIR (`/data/mal/blocks/forward-1016`) or FWD1002_DIR
+  (`/data/mal/blocks/forward-1002`) and `<kind>` creates or trades;
+- walk-2 hours in WALK2_HOURS `[2026-10-16T01, 2026-11-06T01)`;
+- forward-1002 trades for hour 2026-10-16T00 only, and forward-1002 creates in FWD1002_CREATES_HOURS
+  `[2026-10-14T21, 2026-10-16T01)` (the first boot's staging window, plus feed hour 10-16T00), all inside the disclosed
+  buffer FWD1002_BUFFER `[2026-10-14T01, 2026-10-16T01)`;
+- UTC days GRANT_DAYS `2026-10-16 .. 2026-11-06`, booted at 00:00Z each, as the runner restarts.
+Refused:
+- any root, layout, hour, kind or path not in the grant above (`events/` and `migrations/` cannot be granted; a symlink,
+  a non-regular file or a path that resolves outside its root is refused);
+- any file whose sha256, hashed while it is copied to a private path that is then the only thing read, is not the
+  grant's (so a re-walk during a read cannot change what is read);
+- any forward-1002 file unless the FINAL ledger (FINAL_LEDGER, DEC-016) holds EXP-012's FINAL marker: `final` true,
+  the exp012_forward marker schema, experiment EXP-012, `test_window` false, the pinned window (2026-10-06T00:00:00Z,
+  2026-10-16T00:00:00Z). The ledger is read for those keys only and never printed. Tests may name another ledger
+  through `_test_final_ledger`; `meta["grant"]` records that;
+- `roots`, `engine=` (grant mode builds the frozen engine itself), `daily_restart=False`, `prune_every` != 5000 or
+  `create_time` != "sig" together with a grant;
+- a lenient line in any creates or trades file it reads, staged or fed (the walker cannot write one);
+- FORBIDDEN_NAMES below the roots (the roots themselves are exempt).
+A replayed hour that is not in the grant is skipped and listed in `meta["grant"]["replayed_hours_not_in_grant"]`; a
+replayed trades hour with no creates entry is listed in `meta["grant"]["replayed_hours_without_creates"]`; every
+file opened is listed with its sha256 in `meta["grant"]["opened"]`. Walk-2 rows carry the --event-v keys; the gate
+never reads them, and the `events/` stream is never opened.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import glob
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Iterable, Iterator, Sequence
+
+from tools.tape_lines import BadLinesError, LineCounts, scan_file
 
 REPO = Path(__file__).resolve().parent.parent
 MODEL = REPO / "ARTIFACTS" / "exp012" / "model.txt"
@@ -77,6 +131,99 @@ _HOUR_RE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2})")
 
 class Refused(Exception):
     pass
+
+
+class BadLineRefused(Refused):
+    """A tape file held a NUL, a truncated or a non-JSON line (audit A8). Names the file, the first bad physical
+    line (1-based, blank lines counted) and its kind: `nul`, `not_json` or `non_object`."""
+
+    def __init__(self, label: str, line: int | None, kind: str | None, counts: dict[str, Any]) -> None:
+        super().__init__(
+            f"{label}: refused (bad tape line: kind {kind} at physical line {line}; {counts.get('bad_lines')} bad of "
+            f"{counts.get('lines')} lines: nul={counts.get('nul')}, not_json={counts.get('not_json')}, "
+            f"non_object={counts.get('non_object')}, lenient={counts.get('lenient', 0)}; a data hole, not a row)")
+        self.label, self.line, self.kind, self.counts = label, line, kind, counts
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (BadLineRefused, (self.label, self.line, self.kind, self.counts))
+
+
+def _bad_lines_refusal(read_path: str | Path, label: str | Path, exc: BadLinesError) -> Refused:
+    """Name the first bad line and its kind. the BadLinesError only carries counts, so this re-scans the file once,
+    on the failure path only (`scan_file` keeps the first bad line's kind)."""
+    try:
+        c = scan_file(read_path)
+    except (RuntimeError, OSError):
+        c = None
+    if c is not None and c.bad:
+        return BadLineRefused(str(label), c.first_bad_line, c.first_bad_kind, {**c.as_dict(), "first_bad_kind": c.first_bad_kind})
+    return BadLineRefused(str(label), exc.counts.get("first_bad_line"), None, exc.counts)
+
+
+def _strict_text_lines(read_path: Path, label: str | Path | None = None, *, refuse_lenient: bool = False,
+                       lenient_sink: dict[str, int] | None = None) -> Iterator[str]:
+    """Every line of `read_path` (plain, .gz or .zst), unchanged. After the last line, `Refused` if the file held a
+    NUL, a truncated final line or any line that is not a JSON object; also `Refused` for a truncated or corrupt
+    zstd stream or bytes that are not UTF-8. Strict is the only mode: there is no switch that skips bad lines.
+
+    A `lenient` line (JSON that fails `json.loads` only on a raw control character inside a string) is not bad for
+    tape_lines. The row parsers skip it. Default: it is counted per file in `lenient_sink`. `refuse_lenient` (grant
+    mode): the file is refused after the last line, naming the first such line and the kind `lenient`.
+    One `LineCounts.add` per line: the same cost as `tape_lines.strict_lines`."""
+    from tools.paper_price_path import open_text
+
+    name = str(label if label is not None else read_path)
+    counts = LineCounts()
+    first_lenient: int | None = None
+    try:
+        with open_text(read_path) as fh:
+            for line in fh:
+                if counts.add(line) == "lenient" and first_lenient is None:
+                    first_lenient = counts.physical
+                yield line
+            if lenient_sink is not None and counts.lenient:
+                lenient_sink[name] = max(lenient_sink.get(name, 0), counts.lenient)
+            if counts.bad:
+                raise BadLinesError(name, counts.as_dict())
+            if refuse_lenient and counts.lenient:
+                raise BadLineRefused(name, first_lenient, "lenient", {**counts.as_dict(), "bad_lines": counts.lenient})
+    except BadLinesError as exc:
+        raise _bad_lines_refusal(read_path, name, exc) from None
+    except UnicodeDecodeError as exc:
+        raise Refused(f"{name}: refused (bad tape line: kind not_utf8; {exc.reason} at byte {exc.start})") from None
+    except RuntimeError as exc:
+        raise Refused(f"{name}: refused (truncated or corrupt compressed stream: {exc})") from None
+
+
+def _json_rows(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:  # only a `lenient` line gets here (every bad one is already counted)
+            continue
+        if isinstance(row, dict):
+            yield row
+
+
+def _require_clean(copy: Path, label: str | Path, *, refuse_lenient: bool = False, lenient_sink: dict[str, int] | None = None) -> None:
+    """Refuse unless the staged copy holds only rows. `Exp012Online.preload` swallows every error, so an unscanned
+    bad creates file would silently shrink the creator history. A lenient line is counted (default) or refused
+    (grant mode; a second pass finds its line number)."""
+    try:
+        c = scan_file(copy)
+    except RuntimeError as exc:
+        raise Refused(f"{label}: refused (truncated or corrupt compressed stream: {exc})") from None
+    if c.bad:
+        raise BadLineRefused(str(label), c.first_bad_line, c.first_bad_kind, {**c.as_dict(), "first_bad_kind": c.first_bad_kind})
+    if c.lenient:
+        if refuse_lenient:
+            for _ in _strict_text_lines(copy, label, refuse_lenient=True):
+                pass
+        if lenient_sink is not None:
+            lenient_sink[str(label)] = max(lenient_sink.get(str(label), 0), c.lenient)
 
 
 def refuse_name(path: str | Path) -> None:
@@ -127,6 +274,9 @@ BLOCKS: dict[str, Block] = {
     "fast-pool-0918": Block("fast-pool-0918", ("/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00",), ".jsonl.zst"),
     "oracle-insample-0922": Block("oracle-insample-0922", ("/data/mal/clean-view/oracle-insample-2026-09-22_25",), ".jsonl.zst", True),
 }
+# Names the walk-2 view in grant mode. It is NOT in BLOCKS (the CLI never replays it) and has no roots: grant mode takes
+# every file from the ReadGrant and never lists a directory.
+WALK2_BLOCK = Block("walk2-1016", (), ".jsonl.zst")
 
 
 def hour_files(block: Block, roots: Sequence[str] | None = None) -> dict[str, dict[str, Path]]:
@@ -166,16 +316,22 @@ def _hour_of_ms(ms: int) -> str:
     return time.strftime("%Y-%m-%dT%H", time.gmtime(ms / 1000.0))
 
 
-def stage_creates(files: dict[str, dict[str, Path]], boot_ms: int, dest: Path, roots: Sequence[str | Path] | None) -> int:
+def _staging_hours(boot_ms: int) -> list[str]:
+    """The creates hours a boot stages: from `boot - HIST_KEEP_MS - 1 h` (floored to the hour) up to the hour before
+    `boot_ms`. 27 hours for a 00:00Z boot. Grant mode stages exactly these, so it matches the runner's preload."""
+    from tools.forward_exp012_gate import HIST_KEEP_MS
+
+    lo = boot_ms - HIST_KEEP_MS - 3_600_000
+    return [_hour_of_ms(t) for t in range(lo - lo % 3_600_000, boot_ms, 3_600_000)]
+
+
+def stage_creates(files: dict[str, dict[str, Path]], boot_ms: int, dest: Path, roots: Sequence[str | Path] | None, *,
+                  lenient_sink: dict[str, int] | None = None) -> int:
     """Copy `creates-{hour}.jsonl[.zst]` for the history window before `boot_ms` into `dest`, so the runner's own
     `Exp012Online.preload` can read them under its fast-format file names. Copies, not symlinks: `zstd -dc` refuses
     a symlink (exit 1) and preload swallows the error, which would leave the creator history silently empty."""
-    from tools.forward_exp012_gate import HIST_KEEP_MS
-
     n = 0
-    lo = boot_ms - HIST_KEEP_MS - 3_600_000
-    for t in range(lo - lo % 3_600_000, boot_ms, 3_600_000):
-        hour = _hour_of_ms(t)
+    for hour in _staging_hours(boot_ms):
         src = files.get(hour, {}).get("creates")
         if src is None:
             continue
@@ -183,6 +339,7 @@ def stage_creates(files: dict[str, dict[str, Path]], boot_ms: int, dest: Path, r
         link = dest / (f"creates-{hour}.jsonl.zst" if src.name.endswith(".zst") else f"creates-{hour}.jsonl")
         if not link.exists():
             shutil.copyfile(src, link)
+            _require_clean(link, src, lenient_sink=lenient_sink)  # the copy is what preload reads, so the copy is what is scanned
         n += 1
     return n
 
@@ -465,30 +622,224 @@ class Replayer:
                 for m, t in self.dead_hits.items() if m not in self.decided]
 
 
+# ---- sealed walk-2 read mode (EXP-022): ReadGrant ----------------------------------------------------------------
+WALK2_DIR = "/data/mal/blocks/forward-1016"  # walk 2 (EXP-022 s9)
+FWD1002_DIR = "/data/mal/blocks/forward-1002"  # walk 1 (EXP-012); its buffer hours only, and only after the FINAL
+WALK2_HOURS = ("2026-10-16T01", "2026-11-06T01")  # [lo, hi): the counted window
+FWD1002_BUFFER = ("2026-10-14T01", "2026-10-16T01")  # [lo, hi): the walk-2 feature buffer disclosed in DEC-021 s3
+FWD1002_TRADES_HOURS = ("2026-10-16T00",)  # the one forward-1002 trades hour: the first replayed hour of the first boot
+FWD1002_CREATES_HOURS = ("2026-10-14T21", "2026-10-16T01")  # [lo, hi): the first boot's staging window, plus feed hour 10-16T00
+FIRST_BOOT_HOUR = "2026-10-16T00"
+GRANT_DAYS = ("2026-10-16", "2026-11-06")  # [lo, hi] UTC days a grant may replay (the last day only has its 00:00Z hour)
+GRANT_SUFFIX = ".jsonl.zst"  # as the walker seals them (tools/pump_history_backfill.py run_hour)
+GRANT_KINDS = ("creates", "trades")  # `migrations/` and `events/` (--event-v) are never granted
+FINAL_LEDGER = "/data/mal/exp012-forward/FINAL_READS.jsonl"  # DEC-016: EXP-012's external, append-only FINAL ledger
+# What tools/exp012_forward.py _final_docs writes for the pre-registered FINAL (drift is checked in the tests).
+FINAL_SCHEMA = "exp012_forward_final_marker_v1"
+FINAL_EXPERIMENT = "EXP-012"
+FINAL_WINDOW = ("2026-10-06T00:00:00Z", "2026-10-16T00:00:00Z")  # (clean_clock, read_end)
+_FULL_HOUR_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}")
+_DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_SHA_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class ReadGrant:
+    """The files a sealed walk-2 read may open: {hour: {"creates": (path, sha256), "trades": (path, sha256)}}.
+
+    `sha256` is of the file's bytes as stored (the .zst), as `sha256sum` prints it. Only a Python caller can build
+    one; the CLI never does. Construction checks the shape and freezes the map; `replay_view(grant=...)` checks the
+    layout, hour bounds and the FINAL ledger before it opens anything, and re-hashes every file it opens."""
+
+    hours: Mapping[str, Mapping[str, tuple[str, str]]]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.hours, Mapping):
+            raise Refused("grant: hours must be a mapping {hour: {kind: (path, sha256)}}")
+        frozen: dict[str, Mapping[str, tuple[str, str]]] = {}
+        for hour, kinds in self.hours.items():
+            if not (isinstance(hour, str) and _FULL_HOUR_RE.fullmatch(hour)):
+                raise Refused(f"grant: {hour!r} is not an hour (YYYY-MM-DDTHH)")
+            if not isinstance(kinds, Mapping) or not kinds:
+                raise Refused(f"grant: hour {hour} needs a non-empty mapping of kinds")
+            ents: dict[str, tuple[str, str]] = {}
+            for kind, ent in kinds.items():
+                if kind not in GRANT_KINDS:
+                    raise Refused(f"grant: hour {hour} names {kind!r}; only {GRANT_KINDS} hour files can be granted")
+                if not (isinstance(ent, (tuple, list)) and len(ent) == 2 and isinstance(ent[0], (str, os.PathLike)) and isinstance(ent[1], str)):
+                    raise Refused(f"grant: {kind} {hour} must be (path, sha256)")
+                path, sha = os.fspath(ent[0]), ent[1]
+                if not _SHA_RE.fullmatch(sha):
+                    raise Refused(f"grant: {kind} {hour}: {sha!r} is not a lowercase hex sha256")
+                ents[kind] = (path, sha)
+            frozen[hour] = MappingProxyType(ents)
+        object.__setattr__(self, "hours", MappingProxyType(frozen))
+
+
+def _grant_root(hour: str, kind: str, path: str) -> str:
+    """The allowed root that `path` names as `<root>/<kind>/<kind>-<hour>.jsonl.zst`, else Refused. Roots are the module
+    constants read at call time; nothing else is an allowed root."""
+    for root in (WALK2_DIR, FWD1002_DIR):
+        r = os.path.normpath(root)
+        if path == f"{r}/{kind}/{kind}-{hour}{GRANT_SUFFIX}":
+            refuse_name(path[len(r) + 1:])  # FORBIDDEN_NAMES applies below the allowed roots, not to the roots themselves
+            return r
+    raise Refused(f"{path}: refused (grant: not <root>/{kind}/{kind}-{hour}{GRANT_SUFFIX} under {WALK2_DIR} or {FWD1002_DIR})")
+
+
+def _grant_bounds(root: str, hour: str, kind: str, path: str) -> None:
+    if root == os.path.normpath(WALK2_DIR):
+        lo, hi = WALK2_HOURS
+        if not lo <= hour < hi:
+            raise Refused(f"{path}: refused (grant: walk-2 hour {hour} is outside [{lo}, {hi}))")
+        return
+    if kind == "trades":
+        if hour not in FWD1002_TRADES_HOURS:
+            raise Refused(f"{path}: refused (grant: forward-1002 trades are allowed only for {FWD1002_TRADES_HOURS}, not {hour})")
+        return
+    lo, hi = FWD1002_CREATES_HOURS
+    if not lo <= hour < hi:
+        raise Refused(f"{path}: refused (grant: forward-1002 creates are allowed only for [{lo}, {hi}), not {hour})")
+
+
+def check_grant_days(days: Sequence[str]) -> None:
+    lo, hi = GRANT_DAYS
+    for d in days:
+        if not (isinstance(d, str) and _DAY_RE.fullmatch(d) and lo <= d <= hi):
+            raise Refused(f"day {d!r}: refused (grant mode replays UTC days [{lo}, {hi}] only)")
+
+
+def _is_final_marker(m: Any) -> bool:
+    """A FINAL row as `exp012_forward._final_docs` writes it. A test-window FINAL or another window is not the FINAL."""
+    return (isinstance(m, dict) and m.get("final") is True and m.get("schema") == FINAL_SCHEMA
+            and m.get("experiment") == FINAL_EXPERIMENT and m.get("test_window") is False
+            and (m.get("clean_clock"), m.get("read_end")) == FINAL_WINDOW)
+
+
+def require_final(ledger: str | Path) -> None:
+    """Refuse unless the DEC-016 FINAL ledger holds EXP-012's FINAL marker. Looks at the marker keys only. Nothing from
+    the ledger is printed: a refusal names the path and, for a torn or invalid line, its number."""
+    p = Path(ledger)
+    if not p.is_file():
+        raise Refused(f"{p}: refused (forward-1002 is read only after EXP-012's FINAL; the FINAL ledger is missing)")
+    text = p.read_text(encoding="utf-8")
+    if text and not text.endswith("\n"):
+        raise Refused(f"{p}: refused (the FINAL ledger ends with a torn line)")
+    found = False
+    for n, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            raise Refused(f"{p}: refused (FINAL ledger line {n} is not valid JSON)") from None
+        found = found or _is_final_marker(row)
+    if not found:
+        raise Refused(f"{p}: refused (forward-1002 is read only after EXP-012's FINAL; the ledger holds no FINAL marker)")
+
+
+class _GrantSession:
+    """The only way grant mode opens a file. Static checks and the FINAL ledger first; then every open copies the file to
+    a private path while hashing the same bytes, so what is hashed is what is read (a re-walk cannot swap it)."""
+
+    def __init__(self, grant: ReadGrant, final_ledger: str | Path | None = None) -> None:
+        self.ledger = Path(final_ledger) if final_ledger is not None else Path(FINAL_LEDGER)
+        self.ledger_overridden = final_ledger is not None
+        self.tmp: Path | None = None
+        self.entries: dict[tuple[str, str], tuple[str, str, str]] = {}  # (hour, kind) -> (path, sha256, root)
+        for hour, kinds in grant.hours.items():
+            for kind, (path, sha) in kinds.items():
+                root = _grant_root(hour, kind, path)
+                _grant_bounds(root, hour, kind, path)
+                self.entries[(hour, kind)] = (path, sha, root)
+        fwd = os.path.normpath(FWD1002_DIR)
+        self.forward_1002 = any(e[2] == fwd for e in self.entries.values())
+        if self.forward_1002:
+            require_final(self.ledger)
+        self.opened: dict[tuple[str, str], str] = {}
+
+    def attach(self, tmp: Path) -> None:
+        self.tmp = Path(tmp)
+        self.tmp.mkdir(exist_ok=True)
+
+    def has(self, hour: str, kind: str) -> bool:
+        return (hour, kind) in self.entries
+
+    def path(self, hour: str, kind: str) -> str:
+        return self.entries[(hour, kind)][0]
+
+    def copy_verified(self, hour: str, kind: str, dest: Path) -> str:
+        """Copy the granted file to `dest` (created exclusively) and return its sha256, or Refused: not in the grant, a
+        symlink or not a regular file, outside its root, or a sha256 that is not the grant's."""
+        ent = self.entries.get((hour, kind))
+        if ent is None:
+            raise Refused(f"{kind} {hour}: refused (not in the grant)")
+        path, want, root = ent
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise Refused(f"{path}: refused (cannot open: {exc.strerror})") from None
+        h = hashlib.sha256()
+        try:
+            with os.fdopen(fd, "rb") as src:
+                if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+                    raise Refused(f"{path}: refused (not a regular file)")
+                if not os.path.realpath(path).startswith(os.path.realpath(root) + os.sep):
+                    raise Refused(f"{path}: refused (resolves outside {root})")
+                with os.fdopen(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as dst:
+                    while True:
+                        chunk = src.read(1 << 22)
+                        if not chunk:
+                            break
+                        h.update(chunk)
+                        dst.write(chunk)
+        except BaseException:
+            dest.unlink(missing_ok=True)
+            raise
+        got = h.hexdigest()
+        if got != want:
+            dest.unlink(missing_ok=True)
+            raise Refused(f"{path}: refused (sha256 {got} is not the grant's {want})")
+        self.opened[(hour, kind)] = got
+        return got
+
+    @contextlib.contextmanager
+    def verified(self, hour: str, kind: str) -> Iterator[Path]:
+        assert self.tmp is not None
+        dest = self.tmp / f"read-{kind}-{hour}{GRANT_SUFFIX}"
+        try:
+            self.copy_verified(hour, kind, dest)
+            yield dest
+        finally:
+            dest.unlink(missing_ok=True)
+
+    def stage_creates(self, boot_ms: int, dest: Path) -> tuple[int, list[str]]:
+        """`stage_creates` for a grant: the same hours, each file verified, copied and scanned. Returns (staged, hours
+        of the staging window that are not in the grant)."""
+        n, missing = 0, []
+        for hour in _staging_hours(boot_ms):
+            if not self.has(hour, "creates"):
+                missing.append(hour)
+                continue
+            out = dest / f"creates-{hour}.jsonl.zst"
+            self.copy_verified(hour, "creates", out)
+            _require_clean(out, self.path(hour, "creates"), refuse_lenient=True)
+            n += 1
+        return n, missing
+
+
 # ---- driver over files --------------------------------------------------------------------------------
-def iter_json_rows(path: Path, roots: Sequence[str | Path] | None) -> Iterator[dict[str, Any]]:
-    from tools.paper_price_path import open_text
-
+def iter_json_rows(path: Path, roots: Sequence[str | Path] | None, *, lenient_sink: dict[str, int] | None = None) -> Iterator[dict[str, Any]]:
+    """The object rows of one hour file. Strict: a NUL, a truncated or a non-JSON line raises `Refused` after the
+    last line (audit A8); it is never skipped."""
     refuse_path(path, roots)
-    with open_text(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict):
-                yield row
+    yield from _json_rows(_strict_text_lines(Path(path), lenient_sink=lenient_sink))
 
 
-def iter_lines(path: Path, roots: Sequence[str | Path] | None) -> Iterator[str]:
-    from tools.paper_price_path import open_text
-
+def iter_lines(path: Path, roots: Sequence[str | Path] | None, *, lenient_sink: dict[str, int] | None = None) -> Iterator[str]:
+    """The raw lines of one hour file, with the same strict refusal as `iter_json_rows`."""
     refuse_path(path, roots)
-    with open_text(path) as fh:
-        yield from fh
+    yield from _strict_text_lines(Path(path), lenient_sink=lenient_sink)
 
 
 def days_between(a: str, b: str) -> list[str]:
@@ -516,32 +867,77 @@ def check_days(days: Sequence[str]) -> None:
 
 
 def replay_view(block: Block, days: Sequence[str], *, daily_restart: bool = True, prune_every: int = 5000, create_time: str = "sig",
-                roots: Sequence[str] | None = None, engine: Any = None, log: Any = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Replay `days` (UTC) of one block. With `daily_restart`, state is dropped at each 00:00Z and rebuilt by preload."""
-    use_roots = list(roots if roots is not None else block.roots)
-    check_days(days)
-    files = hour_files(block, use_roots)
+                roots: Sequence[str] | None = None, engine: Any = None, log: Any = None, grant: ReadGrant | None = None,
+                _test_final_ledger: str | Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Replay `days` (UTC) of one block. With `daily_restart`, state is dropped at each 00:00Z and rebuilt by preload.
+
+    `grant` is the sealed walk-2 read mode (module docstring, "Read-ready"). Without it nothing here differs from the
+    exploration replay. With it the block only names the view; files, roots and hours come from the grant alone, and
+    `roots`, `daily_restart=False`, `prune_every` and `create_time` other than their defaults are refused.
+    `_test_final_ledger` is for tests: it replaces the FINAL ledger path and is recorded in `meta["grant"]`."""
+    sess: _GrantSession | None = None
+    if grant is not None:
+        if not isinstance(grant, ReadGrant):
+            raise Refused("grant: not a ReadGrant")
+        if roots is not None:
+            raise Refused("grant mode: `roots` is not accepted; the only roots are WALK2_DIR and FWD1002_DIR")
+        if engine is not None:
+            raise Refused("grant mode builds the frozen engine itself; `engine=` is not accepted")
+        if not daily_restart or prune_every != 5000 or create_time != "sig":
+            raise Refused("grant mode runs the E0-verified replay: daily_restart on, prune_every 5000, create_time 'sig'")
+        check_grant_days(days)
+        sess = _GrantSession(grant, _test_final_ledger)  # layout, hour bounds and the FINAL ledger, before any file is opened
+        use_roots: list[str] = []
+        files: dict[str, dict[str, Path]] = {}
+    else:
+        use_roots = list(roots if roots is not None else block.roots)
+        check_days(days)
+        files = hour_files(block, use_roots)
     rep = Replayer(engine or build_engine(), block.name, prune_every=prune_every, create_time=create_time, null_tx_index=block.null_tx_index)
     out: list[dict[str, Any]] = []
+    not_in_grant: list[str] = []
+    no_creates: list[str] = []
+    lenient: dict[str, int] = {}
     with tempfile.TemporaryDirectory(prefix="cap_pick_stage_") as td:
+        if sess is not None:
+            sess.attach(Path(td) / "read")
         for i, day in enumerate(days):
             if i == 0 or daily_restart:
                 boot_ms = _calendar_ms(day)
                 stage = Path(td) / f"boot-{day}"
                 stage.mkdir()
-                staged = stage_creates(files, boot_ms, stage, use_roots)
+                if sess is None:
+                    staged = stage_creates(files, boot_ms, stage, use_roots, lenient_sink=lenient)
+                else:
+                    staged, stage_missing = sess.stage_creates(boot_ms, stage)
                 n_hist = rep.boot(boot_ms, stage)
                 rep.boots[-1]["staged_files"] = staged
+                if sess is not None:
+                    rep.boots[-1]["staging_hours_not_in_grant"] = stage_missing
                 if staged and not n_hist and log is not None:
                     print(f"[{block.name}] WARNING boot {day}: {staged} creates files staged but 0 history rows read", file=log, flush=True)
             for h in range(24):
                 hour = f"{day}T{h:02d}"
-                f = files.get(hour)
-                if not f or "trades" not in f:
-                    continue
                 t0 = time.monotonic()
-                crows = iter_json_rows(f["creates"], use_roots) if "creates" in f else iter(())
-                rep.feed_hour(crows, iter_lines(f["trades"], use_roots))
+                if sess is not None:
+                    if not sess.has(hour, "trades"):
+                        not_in_grant.append(hour)  # never opened; the read tool's coverage rules own what a missing hour costs
+                        continue
+                    with contextlib.ExitStack() as stack:
+                        crows: Iterable[dict[str, Any]] = iter(())
+                        if sess.has(hour, "creates"):
+                            cpath = stack.enter_context(sess.verified(hour, "creates"))
+                            crows = _json_rows(_strict_text_lines(cpath, sess.path(hour, "creates"), refuse_lenient=True))
+                        else:
+                            no_creates.append(hour)  # mints created in this hour get no create row, so no decision
+                        tpath = stack.enter_context(sess.verified(hour, "trades"))
+                        rep.feed_hour(crows, _strict_text_lines(tpath, sess.path(hour, "trades"), refuse_lenient=True))
+                else:
+                    f = files.get(hour)
+                    if not f or "trades" not in f:
+                        continue
+                    crows = iter_json_rows(f["creates"], use_roots, lenient_sink=lenient) if "creates" in f else iter(())
+                    rep.feed_hour(crows, iter_lines(f["trades"], use_roots, lenient_sink=lenient))
                 if log is not None:
                     print(f"[{block.name}] {hour} decisions={len(rep.records)} lib={len(rep.lib)} prints={rep.prints} {time.monotonic() - t0:.1f}s", file=log, flush=True)
             if daily_restart:
@@ -555,6 +951,17 @@ def replay_view(block: Block, days: Sequence[str], *, daily_restart: bool = True
     meta = {"view": block.name, "days": list(days), "daily_restart": daily_restart, "prune_every": prune_every, "create_time": create_time,
             "boots": rep.boots, "create_rows_t_recv_imputed": rep.imputed[0], "trade_rows_t_recv_imputed": rep.imputed_prints,
             "tx_index_null_view": block.null_tx_index, "guesses": list(GUESSES)}
+    if lenient and sum(lenient.values()):
+        meta["lenient_lines_skipped"] = sum(lenient.values())  # default mode only; absent when 0, so a clean run's meta is unchanged
+    if sess is not None:
+        meta["grant"] = {
+            "roots": [os.path.normpath(WALK2_DIR), os.path.normpath(FWD1002_DIR)],
+            "hours_granted": len(grant.hours) if grant is not None else 0, "files_granted": len(sess.entries),
+            "forward_1002_granted": sess.forward_1002, "final_ledger": str(sess.ledger), "final_ledger_overridden": sess.ledger_overridden,
+            "replayed_hours_not_in_grant": not_in_grant,
+            "replayed_hours_without_creates": no_creates,
+            "opened": [[h, k, sha] for (h, k), sha in sorted(sess.opened.items())],
+        }
     return out, meta
 
 
@@ -877,7 +1284,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return args.fn(args)
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
-        return 2
+        return 3  # the walker's fatal code; argparse keeps 2 for usage errors
 
 
 if __name__ == "__main__":

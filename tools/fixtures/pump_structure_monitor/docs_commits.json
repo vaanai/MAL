@@ -1,0 +1,362 @@
+[
+ {
+  "sha": "8cda1fa30ea658b20909d8aedf002047119388d2",
+  "commit": {
+   "message": "docs: v3 / v2 trades, multi-hop swap, pump coins as quote mints, fee sweeps, synthetic migration\n\nAdd docs for the pump-programs-monorepo #60 / #62 release:\n\n- Bonding curve trades v3 and PumpSwap trades v2 (17 accounts)\n- multi_hop_swap, with PumpSwap-first and bonding-curve-first examples\n- create",
+   "committer": {
+    "date": "2026-10-07T20:11:31Z"
+   },
+   "author": {
+    "date": "2026-10-07T20:11:31Z"
+   }
+  }
+ },
+ {
+  "sha": "cb188ce08b5069196eef1f3e4a0c43b70099793b",
+  "commit": {
+   "message": "docs: negative virtual quote reserves on PumpSwap pools\n\nAnnounce that Pool::virtual_quote_reserves can be negative starting\nSeptember 30, and add an integration guide with TypeScript and Rust\nexamples for computing effective quote reserves.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n",
+   "committer": {
+    "date": "2026-09-29T11:50:38Z"
+   },
+   "author": {
+    "date": "2026-09-29T11:50:38Z"
+   }
+  }
+ },
+ {
+  "sha": "81091419e4457566469d4e2a27f64ed84d42419c",
+  "commit": {
+   "message": "Merge pull request #46 from pump-fun/fix/holder-docs\n\ndocs: fix holder rewards irreversibility wording",
+   "committer": {
+    "date": "2026-09-14T06:57:49Z"
+   },
+   "author": {
+    "date": "2026-09-14T06:57:49Z"
+   }
+  }
+ },
+ {
+  "sha": "6751052583f778c217d7e87e9c25c18537da5983",
+  "commit": {
+   "message": "docs: holder rewards choice can be changed via CTO, not irreversible\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_016orPEBRUJrma5UN5JQVpaw",
+   "committer": {
+    "date": "2026-09-14T06:52:07Z"
+   },
+   "author": {
+    "date": "2026-09-14T06:52:07Z"
+   }
+  }
+ },
+ {
+  "sha": "f216b6724c6ede79d7cef9ce210b741f7e17e93b",
+  "commit": {
+   "message": "Merge pull request #45 from pump-fun/feat/holder-rewards\n\ndocs: holder rewards coins, cashback deprecated, create_v2 is_holder_reward",
+   "committer": {
+    "date": "2026-09-12T15:58:18Z"
+   },
+   "author": {
+    "date": "2026-09-12T15:58:18Z"
+   }
+  }
+ },
+ {
+  "sha": "e0687ae9b7e064a0f54efc7297c65eecfbba3a8f",
+  "commit": {
+   "message": "chore(idl): refresh pump, pump_amm and pump_fees IDLs\n\nFrom pump-programs-monorepo feat/add-holder-fee-distribution @ 062c00b\n(idls-top-level / idls-ts).\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KgjQ6PdurtrD9CS7GGWjve",
+   "committer": {
+    "date": "2026-09-12T14:28:42Z"
+   },
+   "author": {
+    "date": "2026-09-12T14:28:42Z"
+   }
+  }
+ },
+ {
+  "sha": "4795463147b4469fb9a996487b01cbbe13f6826c",
+  "commit": {
+   "message": "docs: holder rewards coins, cashback deprecated, create_v2 is_holder_reward\n\nNew docs/HOLDER_REWARDS_README.md (what a holder rewards coin is, how to create\none, no trade interface changes, new account / event fields, cashback\ndeprecation, contact the CTO team for custom-pair creator fee bps or to c",
+   "committer": {
+    "date": "2026-09-12T14:28:42Z"
+   },
+   "author": {
+    "date": "2026-09-12T14:28:42Z"
+   }
+  }
+ },
+ {
+  "sha": "9c82f61cb711b044a17f770ab8ce9f9bdf78f333",
+  "commit": {
+   "message": "chore: README virtual quotes reserves",
+   "committer": {
+    "date": "2026-07-15T18:22:27Z"
+   },
+   "author": {
+    "date": "2026-07-15T18:22:27Z"
+   }
+  }
+ },
+ {
+  "sha": "2c22246b670812e2392e5f94b9543f500d6c9e15",
+  "commit": {
+   "message": "feat: pool virtual quotes reserves",
+   "committer": {
+    "date": "2026-07-15T18:13:17Z"
+   },
+   "author": {
+    "date": "2026-07-15T18:13:17Z"
+   }
+  }
+ },
+ {
+  "sha": "1b822158844a60ca577df6ca122211b595a1a578",
+  "commit": {
+   "message": "Merge pull request #35 from pump-fun/feat/creator-fee-related-examples\n\nfeat: add rust examples for public docs",
+   "committer": {
+    "date": "2026-05-18T19:24:11Z"
+   },
+   "author": {
+    "date": "2026-05-18T19:24:11Z"
+   }
+  }
+ },
+ {
+  "sha": "a313d980b16f4733a6244734cdc5990fd9c3f8a6",
+  "commit": {
+   "message": "feat: add rust examples for public docs",
+   "committer": {
+    "date": "2026-05-18T19:21:50Z"
+   },
+   "author": {
+    "date": "2026-05-18T19:21:50Z"
+   }
+  }
+ },
+ {
+  "sha": "3c6721a67c0b206b39130b454c8ba22a83ce972e",
+  "commit": {
+   "message": "Add creator fee docs",
+   "committer": {
+    "date": "2026-05-18T19:03:28Z"
+   },
+   "author": {
+    "date": "2026-05-18T19:03:28Z"
+   }
+  }
+ },
+ {
+  "sha": "91db6800e55bf341696564bd30a08ed4e3fc7491",
+  "commit": {
+   "message": "USDC paired coins",
+   "committer": {
+    "date": "2026-05-07T17:09:01Z"
+   },
+   "author": {
+    "date": "2026-05-07T17:09:01Z"
+   }
+  }
+ },
+ {
+  "sha": "7de0b959fa2bdab379a2f75f5433d3de1e35d229",
+  "commit": {
+   "message": "Create BREAKING_FEE_RECIPIENT.md",
+   "committer": {
+    "date": "2026-04-22T21:06:52Z"
+   },
+   "author": {
+    "date": "2026-04-22T21:06:52Z"
+   }
+  }
+ },
+ {
+  "sha": "9d874ec2763ac60f510d2bba80c5126c1fe133a8",
+  "commit": {
+   "message": "feat: permanent fee distribution",
+   "committer": {
+    "date": "2026-03-19T11:57:50Z"
+   },
+   "author": {
+    "date": "2026-03-19T11:04:03Z"
+   }
+  }
+ },
+ {
+  "sha": "1059c0d95d1943c3bed41f2abc0dafbd70cd2e68",
+  "commit": {
+   "message": "feat: github fees",
+   "committer": {
+    "date": "2026-03-05T11:47:41Z"
+   },
+   "author": {
+    "date": "2026-03-05T11:47:41Z"
+   }
+  }
+ },
+ {
+  "sha": "5ea63cdb1fbe546769339c659d1529252cd80b4d",
+  "commit": {
+   "message": "Merge pull request #23 from pump-fun/feat/cashback\n\nfeat: cashback update",
+   "committer": {
+    "date": "2026-02-17T18:03:58Z"
+   },
+   "author": {
+    "date": "2026-02-17T18:03:58Z"
+   }
+  }
+ },
+ {
+  "sha": "a0a28de6073ed351bad1435706ad53024dae8043",
+  "commit": {
+   "message": "chore: mention versions to use with sdks",
+   "committer": {
+    "date": "2026-02-17T18:03:47Z"
+   },
+   "author": {
+    "date": "2026-02-17T18:03:47Z"
+   }
+  }
+ },
+ {
+  "sha": "82dacacf15ca93dc0444ab38714f2226210a0a3d",
+  "commit": {
+   "message": "feat: cashback update",
+   "committer": {
+    "date": "2026-02-17T17:35:12Z"
+   },
+   "author": {
+    "date": "2026-02-17T17:35:12Z"
+   }
+  }
+ },
+ {
+  "sha": "f0ef005c386adeeb783c27fdcc4ddd9d49b255c5",
+  "commit": {
+   "message": "feat: creator rewards sharing",
+   "committer": {
+    "date": "2026-01-09T17:51:59Z"
+   },
+   "author": {
+    "date": "2026-01-09T17:51:59Z"
+   }
+  }
+ },
+ {
+  "sha": "7d7abd77403f0646ea17468d7cb6e66b33dbc3ed",
+  "commit": {
+   "message": "Immutable global volume accumulator and reserved fee recipients",
+   "committer": {
+    "date": "2025-11-15T19:58:24Z"
+   },
+   "author": {
+    "date": "2025-11-15T19:58:24Z"
+   }
+  }
+ },
+ {
+  "sha": "f5aa8e1589db211eff5526005d60b765995c893f",
+  "commit": {
+   "message": "chore: solscan links",
+   "committer": {
+    "date": "2025-11-11T11:16:49Z"
+   },
+   "author": {
+    "date": "2025-11-11T11:16:05Z"
+   }
+  }
+ },
+ {
+  "sha": "bec9a97a5ce4586c7c889647122be0e9ca12f620",
+  "commit": {
+   "message": "readme for release notes",
+   "committer": {
+    "date": "2025-11-07T15:59:58Z"
+   },
+   "author": {
+    "date": "2025-11-07T15:59:58Z"
+   }
+  }
+ },
+ {
+  "sha": "864c072f4c331354288232e73b88ae849215ce7b",
+  "commit": {
+   "message": "Idl and type files for mayhem mode and create v2",
+   "committer": {
+    "date": "2025-11-07T15:30:21Z"
+   },
+   "author": {
+    "date": "2025-11-07T15:30:21Z"
+   }
+  }
+ },
+ {
+  "sha": "ff9cbf8238b4e459864fed415465cc8163113d1c",
+  "commit": {
+   "message": "Make pool accounts mutable",
+   "committer": {
+    "date": "2025-10-31T04:05:28Z"
+   },
+   "author": {
+    "date": "2025-10-31T04:05:28Z"
+   }
+  }
+ },
+ {
+  "sha": "33590255feea4f54dbc9717fd90f64353328e3ba",
+  "commit": {
+   "message": "Update IDLs",
+   "committer": {
+    "date": "2025-10-17T17:02:25Z"
+   },
+   "author": {
+    "date": "2025-10-17T17:01:23Z"
+   }
+  }
+ },
+ {
+  "sha": "7645c16c68ae9dd3a7487b543edcdc94adf7b5e0",
+  "commit": {
+   "message": "Make fee accounts required",
+   "committer": {
+    "date": "2025-08-29T21:53:26Z"
+   },
+   "author": {
+    "date": "2025-08-29T21:53:26Z"
+   }
+  }
+ },
+ {
+  "sha": "f9bb0bed41f9817839863c02a8916c6e86160032",
+  "commit": {
+   "message": "Publish fee program README",
+   "committer": {
+    "date": "2025-08-29T21:03:12Z"
+   },
+   "author": {
+    "date": "2025-08-29T20:58:43Z"
+   }
+  }
+ },
+ {
+  "sha": "0c64400690baaa4b5f5cca0e08e15af808bbd0c3",
+  "commit": {
+   "message": "Update IDLs",
+   "committer": {
+    "date": "2025-08-28T18:10:19Z"
+   },
+   "author": {
+    "date": "2025-08-28T18:10:19Z"
+   }
+  }
+ },
+ {
+  "sha": "d1b721d7bf8af75cf59f87fd11271109cfb0bdd3",
+  "commit": {
+   "message": "Update IDLs",
+   "committer": {
+    "date": "2025-08-07T12:21:39Z"
+   },
+   "author": {
+    "date": "2025-08-07T12:21:39Z"
+   }
+  }
+ }
+]
