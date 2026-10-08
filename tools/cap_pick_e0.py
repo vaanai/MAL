@@ -15,38 +15,26 @@ THE THREE LISTS (all for the same day; both sides boot at 00:00Z of that day)
      flags that cover the view (its roots, from `cap_pick_gate_replay.BLOCKS`), so it reads D's trade hours plus its own two look-ahead hours.
   Canonical decision list: one line per mint, sorted by mint, `mint<TAB>decision<TAB>mig_ms<TAB>repr(score)`, an empty field when the score is null.
   Both canonical files are built by `canon_lines`. Two versions of the A and B lists are written and hashed:
-    full   every decided mint (`A.canon`, `B.canon`; `md5_A_full`, `md5_B_full`, `equal_full`). REPORT ONLY.
-    le60   only mints with `mig_ms - create_ms <= DROP_AFTER_CREATE_MS` (60 min, imported from `forward_exp012_gate`), each side using the create time it
-           used: B's decision record `create_ms`, A's CreateSignal `t_signal_ms` (`A.le60.canon`, `B.le60.canon`; `md5_A_le60`, `md5_B_le60`, `equal_le60`).
-           A mint on which the two sides disagree about the create time is a mismatch: it goes to `diff.tsv` and `equal_le60` is false.
-  Mints older than 60 min at migration (on either side): a crosstab of A label x B label in `e0.json` (`crosstab_gt60`) and their lines in `diff_gt60.tsv`.
-  Why two lists: the 60-minute skip (gate note 5) is done by `Exp012Online.prune`, which the engine calls from `_at_time` when `_prints % every == 0` at a
+    full    every decided mint (`A.canon`, `B.canon`; `md5_A_full`, `md5_B_full`, `equal_full`). REPORT ONLY.
+    decide  the deciding set D, the same set of mints for A and for B (`A.decide.canon`, `B.decide.canon`; `md5_A_decide`, `md5_B_decide`, `equal_decide`):
+              * every mint with `mig_ms - create_ms <= DROP_AFTER_CREATE_MS` (60 min, imported from `forward_exp012_gate`) on EITHER side, each side using its
+                own create time; PLUS
+              * every mint B decides `pick`, whatever its age.
+            A mint of D that one side lacks is a line missing on that side, so the md5s differ.
+  Create-time sources (the create time the side's gate used for `time_to_migrate`):
+    B  its decision record's `create_ms` (the gate accumulator's create time: the create row's second, or the first matching bonding print's chain second).
+    A  the same quantity from A's gate row: `mig_ms - time_to_migrate_s*1000` when the row has features; else the `note_create` time of A's CreateSignal, which
+       is the floor-second of its `t_signal_ms` (`replay_rows` gives the gate no chain time).
+  A create-time disagreement on any mint of D (a mint both sides decided) is a mismatch: it goes to `diff.tsv` and `equal_decide` is false.
+  Mints older than 60 min at migration on either side: a crosstab of A label x B label in `e0.json` (`crosstab_gt60`) and their lines in `diff_gt60.tsv` (a column
+  says which of them are in D: the B picks).
+  Why the age cut: the 60-minute skip (gate note 5) is done by `Exp012Online.prune`, which the engine calls from `_at_time` when `_prints % every == 0` at a
   step end, `every` = 5,000 with a live clock (the live runner: ms steps, so within about a minute of the 60-minute mark; B does the same) and 50,000
   without one (`replay_rows`: second steps, so it almost never fires). A scoring a mint older than 60 min is therefore a replay artifact, not live behaviour.
+  The B picks are added so that a mint B picks at any age must be decided the same way by A.
   Dry run 2026-08-17 on explore-0814 (commit 71d03c2): all 56 full-list differences were such mints.
-  E0_CRITERION = "le60" (a module constant, not a flag; it follows the EXP-022 E0 amendment recorded by the manager). Exit 0 iff `equal_le60` AND `equal_C`
+  E0_CRITERION = "le60_either_plus_B_picks" (a module constant, not a flag; it follows the EXP-022 E0 amendment). Exit 0 iff `equal_decide` AND `equal_C`
   AND the pins check pass (and the sanity checks below). `equal_full` decides nothing. md5(C list) must equal md5(B pick mints in U).
-
-LABEL MAPPING (A's gate rows carry `entered` and `reason`, not a label; B's records carry `decision`). Applied to A only, and 1:1:
-  entered true                       -> pick
-  entered false, reason below_threshold -> below
-  entered false, any other reason    -> that reason (no_features, no_bond_history, gate_error, ...); a null reason -> unknown
-  This is the mapping `Replayer._on_signal` applies to the very same `_exp012_pass` row, so B's label is a function of the same two fields. No label of B
-  collides with a different A reason. `mig_ms` and `score` have the same name and value on both sides (the gate row's `mig_ms` and `score`).
-
-WHAT IS SHARED, NOT UNDER TEST (disclosed; they are inputs, not the runner)
-  * Creates are built by `cap_pick_gate_replay.create_signal_from_row` on both sides (the live observe path's create handling is what B mirrors).
-    First create row of a mint wins across the day, in file order, as B does. Only hours with a trades file are read, as B does.
-  * Trade rows: the day's rows in file order, `t_recv_ms` imputed as block_time*1000 where null (B's rule), A drops rows past the end of the day
-    (`replay_rows` does; counted as `rows_past_day_end`).
-  * A is fed only trade rows of mints that have a create row in the day at or before the row's hour (counted in `rows_no_create`). `replay_rows` has no dead-mint
-    set, so it would buffer every other row in `engine.early` for ever and never decide on it; B drops the same rows. This is a memory bound, not a decision
-    filter, and it is the one place A's input is narrower than "the day's trade rows".
-  * The staged creates files are the ones B stages (`cap_pick_gate_replay.stage_creates`, same inputs). The hook preloads without a `tape_dir`
-    (B does not pass one either; `main` does, when a tape directory exists).
-  * `dead` rows (a mint created before the 00:00Z restart, which the runner never decides) are dropped from B's canonical list. A has no create for them and
-    no decision. Their count is recorded (`n_dead_B`).
-  * The frozen gated book: the BookSpec of `cap_pick_gate_replay.build_engine` (model md5 checked at load, threshold 0.8030766588450794).
 
 PINS (EXP-022 2.1 item 4)
   Git blob shas at HEAD of the four pinned modules, the md5 of ARTIFACTS/exp012/FROZEN.md5 (must be a01f05dfb1e622f78b2bba55d174be09), and a check that the
@@ -57,13 +45,13 @@ SURFACE USED FROM tools/cap_pick_gate_replay (nothing else): Block, BLOCKS, SCHE
 hour_files, stage_creates, iter_json_rows, iter_lines, quick_mint, create_signal_from_row, check_days; load_online in the tests only.
 
 SANITY CHECKS (also required for exit 0, so an equal result cannot be vacuous or built on different inputs): A's preload row count and staged file count
-equal B's; A's gate log rows equal the engine's rows; A's le60 list and B's picks are not empty.
+equal B's; A's gate log rows equal the engine's rows; the deciding set D and B's picks are not empty.
 
 MEMORY (--mem-note): A needs about 9-10 GB RSS for one explore-0814 day (9.07 GB observed while loading 2026-08-17; 2 h of it took 781 MB and 5 h took
 2.1 GB), because `replay_rows` queues every print in the engine inbox before it drains. The official run is a MiScusi job with mem 16 GB. It does not
 fit in 3 GB. B needs about 2 GB; the scorer is a subprocess in the same cgroup.
 
-Exit codes: 0 the criterion and the sanity checks hold; 1 a check failed (A != B on le60, C != B picks in U, ...); 2 refused or a step could not run.
+Exit codes: 0 the criterion and the sanity checks hold; 1 a check failed (A != B on D, C != B picks in U, ...); 2 refused or a step could not run.
 """
 
 from __future__ import annotations
@@ -88,7 +76,7 @@ from tools.forward_exp012_gate import DROP_AFTER_CREATE_MS
 
 REPO = Path(__file__).resolve().parent.parent
 SCHEMA = "cap_pick_e0_v1"
-E0_CRITERION = "le60"  # the A-vs-B list that decides exit 0; "full" is report only (module note, EXP-022 E0 amendment)
+E0_CRITERION = "le60_either_plus_B_picks"  # the A-vs-B set that decides exit 0; the full list is report only (EXP-022 E0 amendment)
 DAY_MS = 86_400_000
 PINNED_MODULES = ("tools/forward_exp012_gate.py", "tools/forward_paper.py", "tools/exploration_entry_model.py", "tools/cap_pick_gate_replay.py")
 FROZEN_MD5_PATH = "ARTIFACTS/exp012/FROZEN.md5"
@@ -221,13 +209,20 @@ def md5_text(text: str) -> str:
 
 
 
-def a_side_rows(gate_rows: Iterable[dict[str, Any]], create_ms: dict[str, int]) -> list[Any]:
-    """A's decisions with A's CreateSignal time (`t_signal_ms`) for each mint."""
+def a_side_rows(gate_rows: Iterable[dict[str, Any]], signal_ms: dict[str, int]) -> list[Any]:
+    """A's decisions with the create time A's gate used: `mig_ms - time_to_migrate_s*1000` from the gate row's features, else `note_create`'s
+    floor-second of the CreateSignal's `t_signal_ms` (a row with no features: no_features, no_bond_history, gate_error)."""
     out = []
     for r in gate_rows:
-        if r["mint"] not in create_ms:
-            raise E0Error(f"A decided mint {r['mint']} that has no CreateSignal")
-        out.append((r["mint"], label_from_gate_row(r), r["mig_ms"], r["score"], create_ms[r["mint"]]))
+        m = r["mint"]
+        if m not in signal_ms:
+            raise E0Error(f"A decided mint {m} that has no CreateSignal")
+        ttm = (r.get("features") or {}).get("time_to_migrate_s")
+        if isinstance(ttm, (int, float)) and not isinstance(ttm, bool):
+            create = r["mig_ms"] - round(ttm * 1000)
+        else:
+            create = (signal_ms[m] // 1000) * 1000
+        out.append((m, label_from_gate_row(r), r["mig_ms"], r["score"], create))
     return out
 
 
@@ -255,12 +250,14 @@ def _lines(rows: Iterable[Any], side: str) -> list[str]:
 
 
 def compare_sides(a_rows: Sequence[Any], b_rows: Sequence[Any]) -> dict[str, Any]:
-    """Full and le60 canonical lists of both sides, the create-time disagreements, and the mints older than 60 min with their label crosstab."""
-    a_full, b_full = _lines(a_rows, "A"), _lines(b_rows, "B")
-    a_le = _lines([r for r in a_rows if is_le60(r, "A")], "A")
-    b_le = _lines([r for r in b_rows if is_le60(r, "B")], "B")
+    """Full and deciding-set canonical lists of both sides, create-time disagreements in the set, and the mints older than 60 min with their label crosstab.
+    The deciding set D: mints le60 on either side (each side's own create time) plus every mint B decides `pick`."""
     by_a, by_b = {r[0]: r for r in a_rows}, {r[0]: r for r in b_rows}
-    disagree = sorted(m for m in by_a.keys() & by_b.keys() if by_a[m][4] != by_b[m][4])
+    d_set = ({r[0] for r in a_rows if is_le60(r, "A")} | {r[0] for r in b_rows if is_le60(r, "B")} | {r[0] for r in b_rows if r[1] == "pick"})
+    a_full, b_full = _lines(a_rows, "A"), _lines(b_rows, "B")
+    a_dec = _lines([r for r in a_rows if r[0] in d_set], "A")
+    b_dec = _lines([r for r in b_rows if r[0] in d_set], "B")
+    disagree = sorted(m for m in d_set if m in by_a and m in by_b and by_a[m][4] != by_b[m][4])
     gt = sorted({r[0] for r in a_rows if not is_le60(r, "A")} | {r[0] for r in b_rows if not is_le60(r, "B")})
     cross: dict[str, dict[str, int]] = {}
     for m in gt:
@@ -271,8 +268,8 @@ def compare_sides(a_rows: Sequence[Any], b_rows: Sequence[Any]) -> dict[str, Any
     ln_a = {x.split("\t", 1)[0]: x for x in a_full}
     ln_b = {x.split("\t", 1)[0]: x for x in b_full}
     gt_rows = [(m, ln_a.get(m, "<absent>").replace("\t", "|"), ln_b.get(m, "<absent>").replace("\t", "|"),
-                by_a[m][4] if m in by_a else "", by_b[m][4] if m in by_b else "") for m in gt]
-    return {"a_full": a_full, "b_full": b_full, "a_le60": a_le, "b_le60": b_le, "diff_le60": diff_rows(a_le, b_le),
+                by_a[m][4] if m in by_a else "", by_b[m][4] if m in by_b else "", "yes" if m in d_set else "no") for m in gt]
+    return {"a_full": a_full, "b_full": b_full, "a_decide": a_dec, "b_decide": b_dec, "n_decide_set": len(d_set), "diff_decide": diff_rows(a_dec, b_dec),
             "create_disagree": [(m, by_a[m][4], by_b[m][4]) for m in disagree], "gt60": gt_rows, "crosstab_gt60": cross}
 
 
@@ -496,28 +493,28 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
     t = time.monotonic()
     files = cp.hour_files(block, roots)
     specs = [run.spec for run in engine_factory().books]
-    a_gate_rows, astats, a_create_ms = run_side_a(block, files, roots, day, specs, out)
+    a_gate_rows, astats, a_signal_ms = run_side_a(block, files, roots, day, specs, out)
     wall["A"] = round(time.monotonic() - t, 1)
-    a_rows = a_side_rows(a_gate_rows, a_create_ms)
-    del a_create_ms
+    a_rows = a_side_rows(a_gate_rows, a_signal_ms)
+    del a_signal_ms
 
     cmpd = compare_sides(a_rows, b_rows)
     a_lines, b_lines = cmpd["a_full"], cmpd["b_full"]
     texts = {"A.canon": canon_text(a_lines), "B.canon": canon_text(b_lines),
-             "A.le60.canon": canon_text(cmpd["a_le60"]), "B.le60.canon": canon_text(cmpd["b_le60"])}
+             "A.decide.canon": canon_text(cmpd["a_decide"]), "B.decide.canon": canon_text(cmpd["b_decide"])}
     md5s = {}
     for name, text in texts.items():
         _write(out / name, text)
         md5s[name] = md5_text(text)
         _write(out / (name[: -len("canon")] + "md5"), f"{md5s[name]}  {name}\n")
-    md5_a, md5_b, md5_a60, md5_b60 = md5s["A.canon"], md5s["B.canon"], md5s["A.le60.canon"], md5s["B.le60.canon"]
-    diff = [(m, x, y) for m, x, y in cmpd["diff_le60"]] + [(m, f"create_ms={x}", f"create_ms={y}") for m, x, y in cmpd["create_disagree"]]
+    md5_a, md5_b, md5_ad, md5_bd = md5s["A.canon"], md5s["B.canon"], md5s["A.decide.canon"], md5s["B.decide.canon"]
+    diff = [(m, x, y) for m, x, y in cmpd["diff_decide"]] + [(m, f"create_ms={x}", f"create_ms={y}") for m, x, y in cmpd["create_disagree"]]
     if diff:
         _write(out / "diff.tsv", "mint\tA_line\tB_line\n" + "".join(f"{m}\t{x}\t{y}\n" for m, x, y in diff))
     if cmpd["gt60"]:
-        _write(out / "diff_gt60.tsv", "mint\tA_line\tB_line\tA_create_ms\tB_create_ms\n" + "".join("\t".join(str(v) for v in row) + "\n" for row in cmpd["gt60"]))
+        _write(out / "diff_gt60.tsv", "mint\tA_line\tB_line\tA_create_ms\tB_create_ms\tin_decide\n" + "".join("\t".join(str(v) for v in row) + "\n" for row in cmpd["gt60"]))
     equal_full = md5_a == md5_b
-    equal_le60 = md5_a60 == md5_b60 and not cmpd["create_disagree"]
+    equal_decide = md5_ad == md5_bd and not cmpd["create_disagree"]
     b_picks = sorted(r[0] for r in b_rows if r[1] == "pick")
     a_picks = sorted(r[0] for r in a_rows if r[1] == "pick")
 
@@ -560,23 +557,24 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
     boots = bmeta.get("boots") or [{}]
     pins_ok = all(imported[m]["blob"] == pins["blobs"][m] for m in PINNED_MODULES) and pins["frozen_md5"]["ok"]
     checks = {  # every one is required for exit 0; `equal_full` is report only
-        "equal_le60": equal_le60,
+        "equal_decide": equal_decide,
         "equal_C": equal_c if equal_c is not None else False,
         "pins": pins_ok,
         "boot_history_equal": astats["history_rows"] == boots[0].get("history_rows") and astats["staged_files"] == boots[0].get("staged_files"),
         "A_log_rows_equal_engine_rows": len(a_gate_rows) == astats["engine_gate_rows"],
-        "nonempty": bool(cmpd["a_le60"]) and bool(b_picks),
+        "nonempty": bool(cmpd["a_decide"]) and bool(b_picks),
     }
     wall["total"] = round(time.monotonic() - t_start, 1)
     e0: dict[str, Any] = {
         "schema": SCHEMA, "view": view, "day": day, "commit": state["head"], "origin_branches": state["origin_branches"],
         "e0_criterion": E0_CRITERION, "drop_after_create_ms": DROP_AFTER_CREATE_MS,
         "view_sha256": view_sha,
-        "md5_A_le60": md5_a60, "md5_B_le60": md5_b60, "equal_le60": equal_le60,
+        "md5_A_decide": md5_ad, "md5_B_decide": md5_bd, "equal_decide": equal_decide,
         "md5_A_full": md5_a, "md5_B_full": md5_b, "equal_full": equal_full,
         "md5_C": md5_c, "md5_Bpicks_U": md5_bu, "equal_C": equal_c,
-        "n_A_full": len(a_lines), "n_B_full": len(b_lines), "n_A_le60": len(cmpd["a_le60"]), "n_B_le60": len(cmpd["b_le60"]),
-        "n_gt60": len(cmpd["gt60"]), "crosstab_gt60": cmpd["crosstab_gt60"], "n_diff_le60": len(cmpd["diff_le60"]),
+        "n_A_full": len(a_lines), "n_B_full": len(b_lines), "n_decide_set": cmpd["n_decide_set"], "n_A_decide": len(cmpd["a_decide"]), "n_B_decide": len(cmpd["b_decide"]),
+        "n_gt60": len(cmpd["gt60"]), "n_gt60_in_decide": sum(1 for r in cmpd["gt60"] if r[5] == "yes"), "crosstab_gt60": cmpd["crosstab_gt60"],
+        "n_diff_decide": len(cmpd["diff_decide"]),
         "n_create_ms_disagree": len(cmpd["create_disagree"]), "n_diff": len(diff),
         "n_picks": len(b_picks), "n_picks_A": len(a_picks), "n_dead_B": n_dead,
         "blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "imported": imported,
@@ -593,8 +591,8 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
 def cmd_run(args: argparse.Namespace) -> int:
     e0 = run_e0(args.view, args.day, Path(args.out), scorer_repo=Path(args.scorer_repo) if args.scorer_repo else None,
                 scorer_extra=args.scorer_arg or (), skip_c=args.skip_c)
-    keys = ("view", "day", "commit", "e0_criterion", "md5_A_le60", "md5_B_le60", "equal_le60", "md5_A_full", "md5_B_full", "equal_full", "md5_C", "md5_Bpicks_U",
-            "equal_C", "n_A_full", "n_B_full", "n_A_le60", "n_B_le60", "n_gt60", "crosstab_gt60", "n_create_ms_disagree", "n_picks", "n_diff", "checks", "wall_s", "ok")
+    keys = ("view", "day", "commit", "e0_criterion", "md5_A_decide", "md5_B_decide", "equal_decide", "md5_A_full", "md5_B_full", "equal_full", "md5_C", "md5_Bpicks_U",
+            "equal_C", "n_A_full", "n_B_full", "n_decide_set", "n_gt60", "n_gt60_in_decide", "crosstab_gt60", "n_create_ms_disagree", "n_picks", "n_diff", "checks", "wall_s", "ok")
     print(json.dumps({k: e0[k] for k in keys}, indent=2, sort_keys=True))
     return 0 if e0["ok"] else 1
 

@@ -194,18 +194,18 @@ class RunTests(_Fix):
     def test_a_equals_b_with_boot_history_and_c_equals_b_picks_in_universe(self) -> None:
         res = self.run_e0(scorer=self.fake_scorer(drop="Hi2"))
         out = self.dir / "out"
-        self.assertTrue(res["equal_full"] and res["equal_le60"], (out / "diff.tsv").read_text() if (out / "diff.tsv").exists() else "")
+        self.assertTrue(res["equal_full"] and res["equal_decide"], (out / "diff.tsv").read_text() if (out / "diff.tsv").exists() else "")
         self.assertFalse((out / "diff.tsv").exists())
         self.assertFalse((out / "diff_gt60.tsv").exists())  # no mint is older than 60 min here
-        self.assertEqual(res["e0_criterion"], "le60")
+        self.assertEqual(res["e0_criterion"], "le60_either_plus_B_picks")
         self.assertEqual(res["md5_A_full"], res["md5_B_full"])
-        self.assertEqual(res["md5_A_le60"], res["md5_B_le60"])
+        self.assertEqual(res["md5_A_decide"], res["md5_B_decide"])
         self.assertEqual((out / "A.canon").read_bytes(), (out / "B.canon").read_bytes())
-        self.assertEqual((out / "A.le60.canon").read_bytes(), (out / "A.canon").read_bytes())
-        self.assertEqual((out / "A.le60.md5").read_text(), f"{res['md5_A_le60']}  A.le60.canon\n")
+        self.assertEqual((out / "A.decide.canon").read_bytes(), (out / "A.canon").read_bytes())
+        self.assertEqual((out / "A.decide.md5").read_text(), f"{res['md5_A_decide']}  A.decide.canon\n")
         dec = {ln.split("\t")[0]: ln.split("\t")[1] for ln in (out / "A.canon").read_text().splitlines()}
         self.assertEqual(dec, {"Hi": "pick", "Lo": "below", "Mid": "pick", "HiH": "below", "Hi2": "pick"})  # HiH is below only because of the preloaded history
-        self.assertEqual((res["n_A_full"], res["n_B_full"], res["n_A_le60"], res["n_B_le60"], res["n_gt60"], res["n_picks"], res["n_picks_A"], res["n_dead_B"]), (5, 5, 5, 5, 0, 3, 3, 1))
+        self.assertEqual((res["n_A_full"], res["n_B_full"], res["n_A_decide"], res["n_B_decide"], res["n_gt60"], res["n_picks"], res["n_picks_A"], res["n_dead_B"]), (5, 5, 5, 5, 0, 3, 3, 1))
         self.assertEqual(res["A"]["history_rows"], 6)
         self.assertEqual(res["A"]["history_rows"], res["B"]["boots"][0]["history_rows"])
         self.assertEqual((res["A"]["rows_no_create"], res["A"]["staged_files"]), (res["A"]["rows_no_create"], 1))
@@ -242,9 +242,9 @@ class RunTests(_Fix):
         res = e0.run_e0("fix", DAY, self.dir / "bad", block=self.block, engine_factory=factory, repo=self.repo, scorer=self.fake_scorer(), log=open("/dev/null", "w"))
         out = self.dir / "bad"
         self.assertFalse(res["equal_full"])
-        self.assertFalse(res["equal_le60"])
+        self.assertFalse(res["equal_decide"])
         self.assertFalse(res["ok"])
-        self.assertNotEqual(res["md5_A_le60"], res["md5_B_le60"])
+        self.assertNotEqual(res["md5_A_decide"], res["md5_B_decide"])
         diff = (out / "diff.tsv").read_text().splitlines()
         self.assertEqual(diff[0], "mint\tA_line\tB_line")
         self.assertEqual(len(diff) - 1, res["n_diff"])
@@ -267,24 +267,69 @@ class RunTests(_Fix):
 class CompareTests(unittest.TestCase):
     LIMIT = 3_600_000
 
-    def test_le60_edge_crosstab_and_gt60_lines(self) -> None:
+    def test_decide_set_edge_crosstab_and_gt60_lines(self) -> None:
         a = [("E", "pick", 5_000 + self.LIMIT, 0.9, 5_000), ("L", "below", 6_001 + self.LIMIT, 0.2, 6_000), ("S", "pick", 100, 0.9, 0), ("G", "pick", 9 + self.LIMIT, 0.8, 8)]
         b = [("E", "pick", 5_000 + self.LIMIT, 0.9, 5_000), ("L", "no_features", 6_001 + self.LIMIT, None, 6_000), ("S", "pick", 100, 0.9, 0), ("G", "no_features", 9 + self.LIMIT, None, 8)]
         r = e0.compare_sides(a, b)
-        self.assertEqual(r["a_le60"], ["E\tpick\t3605000\t0.9", "S\tpick\t100\t0.9"])  # exactly 60 min is kept, 1 ms over is not
-        self.assertEqual(r["a_le60"], r["b_le60"])
-        self.assertEqual(r["diff_le60"], [])
+        self.assertEqual(r["a_decide"], ["E\tpick\t3605000\t0.9", "S\tpick\t100\t0.9"])  # exactly 60 min is kept, 1 ms over is not
+        self.assertEqual(r["a_decide"], r["b_decide"])
+        self.assertEqual((r["diff_decide"], r["n_decide_set"]), ([], 2))
         self.assertEqual(r["crosstab_gt60"], {"below": {"no_features": 1}, "pick": {"no_features": 1}})
         self.assertEqual([x[0] for x in r["gt60"]], ["G", "L"])
         self.assertEqual(r["gt60"][1][1:3], ("L|below|3606001|0.2", "L|no_features|3606001|"))
+        self.assertEqual([x[5] for x in r["gt60"]], ["no", "no"])
         self.assertNotEqual(r["a_full"], r["b_full"])
 
-    def test_create_time_disagreement_is_a_mismatch(self) -> None:
+    def test_a_only_score_at_61_min_with_b_no_features_gives_equal(self) -> None:
+        old = 61 * 60_000
+        r = e0.compare_sides([("M", "pick", old, 0.9, 0), ("K", "below", 1000, 0.1, 0)], [("M", "no_features", old, None, 0), ("K", "below", 1000, 0.1, 0)])
+        self.assertEqual(r["a_decide"], r["b_decide"])
+        self.assertEqual(r["a_decide"], ["K\tbelow\t1000\t0.1"])
+        self.assertNotEqual(r["a_full"], r["b_full"])
+        self.assertEqual(r["crosstab_gt60"], {"pick": {"no_features": 1}})
+
+    def test_b_pick_at_61_min_that_a_scores_below_gives_not_equal(self) -> None:
+        old = 61 * 60_000
+        r = e0.compare_sides([("M", "below", old, 0.2, 0), ("K", "below", 1000, 0.1, 0)], [("M", "pick", old, 0.9, 0), ("K", "below", 1000, 0.1, 0)])
+        self.assertNotEqual(r["a_decide"], r["b_decide"])
+        self.assertEqual(r["diff_decide"], [("M", "M|below|3660000|0.2", "M|pick|3660000|0.9")])
+        self.assertEqual([x[5] for x in r["gt60"]], ["yes"])
+        # the same pick, decided the same way by A, is equal
+        r2 = e0.compare_sides([("M", "pick", old, 0.9, 0)], [("M", "pick", old, 0.9, 0)])
+        self.assertEqual((r2["a_decide"], r2["diff_decide"]), (r2["b_decide"], []))
+        self.assertEqual(len(r2["a_decide"]), 1)
+        # a B pick that A never decided is a missing line on A
+        r3 = e0.compare_sides([], [("M", "pick", old, 0.9, 0)])
+        self.assertEqual(r3["diff_decide"], [("M", "<absent>", "M|pick|3660000|0.9")])
+
+    def test_a_pick_at_61_min_that_b_does_not_pick_is_outside_the_set(self) -> None:
+        r = e0.compare_sides([("M", "pick", 61 * 60_000, 0.9, 0)], [("M", "no_features", 61 * 60_000, None, 0)])
+        self.assertEqual((r["a_decide"], r["b_decide"], r["n_decide_set"]), ([], [], 0))
+
+    def test_le60_on_either_side_puts_the_mint_in_the_set(self) -> None:
+        # the sides disagree about the create time: within 60 min for A, 61 min for B. Both are in the set, the create-time mismatch is reported
+        r = e0.compare_sides([("M", "below", 3_000_000, 0.2, 0)], [("M", "no_features", 3_000_000, None, -700_000)])
+        self.assertEqual(r["n_decide_set"], 1)
+        self.assertNotEqual(r["a_decide"], r["b_decide"])
+        self.assertEqual(r["create_disagree"], [("M", 0, -700_000)])
+
+    def test_create_time_disagreement_in_the_set_is_a_mismatch(self) -> None:
         a = [("M", "pick", 100, 0.9, 0)]
         b = [("M", "pick", 100, 0.9, 1_000)]  # same line, different create time
         r = e0.compare_sides(a, b)
-        self.assertEqual(r["a_le60"], r["b_le60"])
+        self.assertEqual(r["a_decide"], r["b_decide"])
         self.assertEqual(r["create_disagree"], [("M", 0, 1_000)])
+        # outside the set (older than 60 min on both sides, not a B pick) a create-time difference is not reported as a decision mismatch
+        r = e0.compare_sides([("N", "below", 4_000_000, 0.2, 0)], [("N", "no_features", 4_000_000, None, 1_000)])
+        self.assertEqual(r["create_disagree"], [])
+
+    def test_a_create_time_comes_from_the_gate_row_else_the_floor_second(self) -> None:
+        rows = [{"mint": "F", "entered": True, "reason": None, "mig_ms": 7_000_000, "score": 0.9, "features": {"time_to_migrate_s": 1000.0}},
+                {"mint": "N", "entered": False, "reason": "no_features", "mig_ms": 9_000_000, "score": None, "features": None}]
+        out = e0.a_side_rows(rows, {"F": 5_999_500, "N": 8_000_999})
+        self.assertEqual([(r[0], r[4]) for r in out], [("F", 6_000_000), ("N", 8_000_000)])
+        with self.assertRaises(e0.E0Error):
+            e0.a_side_rows(rows, {"F": 1})
 
     def test_mint_on_one_side_only_and_missing_create_time(self) -> None:
         r = e0.compare_sides([("X", "pick", self.LIMIT + 10, 0.9, 0)], [])
@@ -307,14 +352,14 @@ class LateMigratorTests(_Fix):
         tick = [dict(_trade("TICK", tick_t0 + 6 * i, trader=f"w{i % 50}", slot=300 + i // 5, event_index=1 + i % 5), tx_index=i % 7) for i in range(5_001)]
         self.put("trades", h4, sorted([r for r in slow if r["t_recv_ms"] >= t4] + tick, key=lambda r: r["t_recv_ms"]))
 
-    def test_a_scores_it_b_drops_it_and_the_criterion_passes(self) -> None:
+    def test_a_only_score_at_61_min_with_b_no_features_is_equal(self) -> None:
         res = self.run_e0(scorer=self.fake_scorer())
         out = self.dir / "out"
         self.assertFalse(res["equal_full"])
-        self.assertTrue(res["equal_le60"])
+        self.assertTrue(res["equal_decide"])
         self.assertNotEqual(res["md5_A_full"], res["md5_B_full"])
-        self.assertEqual(res["md5_A_le60"], res["md5_B_le60"])
-        self.assertEqual((res["n_A_full"], res["n_B_full"], res["n_A_le60"], res["n_B_le60"], res["n_gt60"]), (6, 6, 5, 5, 1))
+        self.assertEqual(res["md5_A_decide"], res["md5_B_decide"])
+        self.assertEqual((res["n_A_full"], res["n_B_full"], res["n_A_decide"], res["n_B_decide"], res["n_gt60"]), (6, 6, 5, 5, 1))
         self.assertEqual(res["crosstab_gt60"], {"pick": {"no_features": 1}})
         self.assertEqual(res["n_create_ms_disagree"], 0)
         self.assertTrue(res["equal_C"])
@@ -323,11 +368,11 @@ class LateMigratorTests(_Fix):
         self.assertEqual(len(gt), 2)
         self.assertTrue(gt[1].startswith("SLOW\tSLOW|pick|") and "\tSLOW|no_features|" in gt[1], gt)
         self.assertFalse((out / "diff.tsv").exists())  # diff.tsv holds the criterion's differences only
-        self.assertNotIn("SLOW", (out / "B.le60.canon").read_text())
+        self.assertNotIn("SLOW", (out / "B.decide.canon").read_text())
         self.assertIn("SLOW\tpick", (out / "A.canon").read_text())
-        self.assertNotIn("SLOW", (out / "A.le60.canon").read_text())
+        self.assertNotIn("SLOW", (out / "A.decide.canon").read_text())
 
-    def test_main_exits_0_on_the_le60_criterion(self) -> None:
+    def test_main_exits_0_on_the_deciding_set_criterion(self) -> None:
         patches = [mock.patch.object(cp, "BLOCKS", {"fix": self.block}), mock.patch.object(e0, "REPO", self.repo),
                    mock.patch.object(e0, "default_engine_factory", self.factory()),
                    mock.patch.object(e0, "subprocess_scorer", lambda *a, **k: self.fake_scorer()(a[6], a[4], a[5]))]
@@ -335,7 +380,7 @@ class LateMigratorTests(_Fix):
             p_.start()
             self.addCleanup(p_.stop)
         self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "late")]), 0)
-        self.assertEqual(json.loads((self.dir / "late" / "e0.json").read_text())["e0_criterion"], "le60")
+        self.assertEqual(json.loads((self.dir / "late" / "e0.json").read_text())["e0_criterion"], "le60_either_plus_B_picks")
 
 
 class RefusalTests(_Fix):
