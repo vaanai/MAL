@@ -72,7 +72,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 
 | Branch / PR | What | State |
 | --- | --- | --- |
-| #477 `claude/h5-shadow` | H5 live shadow detector (fast-0, public RPC, no keys) | Head **ff31026**, 86 tests. Replay matched the frozen triggers 72/72 on 09-20, and 11/11 again on hour 09-20T20 at ff31026. The reviewer's SHOULD-FIX 1–7 and the nits are applied: the seal hook `suppress_outcome` fails closed from 10-16T01; there is an exit strip; the sps fit is ready in about 8 s; gap records name each reconnect cause; reject records list both mints. Smoke #395 (old head) passed, with 3/3 CreatePool rejected as non-WSOL (maybe genuine non-WSOL pools; reject records will show) and 3 reconnects in 2 min. **Smoke #396** (10 min, 3 sockets, ff31026) was submitted at handoff: check the reject mints, the triggers, `unannounced_fresh` and reconnects. Next: a quick delta review, then the long MiScusi job on fast-0 (`bash scripts/research/h5-shadow.sh`, `H5_SOCKETS=3`, resumable, ≤1.9 GB, out `$HOME/data/h5-shadow`). **Do not score its outcomes until EXP-024 is merged.** |
+| #477 `claude/h5-shadow` | H5 live shadow detector (fast-0, public RPC, no keys) | Head **ff31026**, 86 tests. Replay matched the frozen triggers 72/72 on 09-20, and 11/11 again on hour 09-20T20 at ff31026. The reviewer's SHOULD-FIX 1–7 and the nits are applied: the seal hook `suppress_outcome` fails closed from 10-16T01; there is an exit strip; the sps fit is ready in about 8 s; gap records name each reconnect cause; reject records list both mints. Smoke #395 (old head) passed, with 3/3 CreatePool rejected as non-WSOL (maybe genuine non-WSOL pools; reject records will show) and 3 reconnects in 2 min. **Smoke #396 passed** (10 min, 3 sockets, ff31026): 7 pools tracked; 1 trigger, logged as both the `pv` and `fv` variants on one pool; 1 outcome and 1 strip; sps 0.2705 s (pre-200 ms); 298 MB peak. **42 gap records in 10 min:** public-RPC coverage is the risk, so check the gap causes in the long run's records. Next: a quick delta review, then the long MiScusi job on fast-0 (`bash scripts/research/h5-shadow.sh`, `H5_SOCKETS=3`, resumable, ≤1.9 GB, out `$HOME/data/h5-shadow`). **Do not score its outcomes until EXP-024 is merged.** |
 | **#484** `claude/h5-executor` | H5 live executor on the probe_live / probe_executor core | Head **e436b28**, 132 new tests, plus the 299 probe tests still passing. Dry-run by default. It parses #477's trigger, gap, hb and pool records (pv variant).
   - **Limits:** 0.02 SOL stake, max 2 open, 30/day, stops 0.08 / 0.12.
   - **Sell:** prebuilt and timed to land at the exit slot. Set `exit_land_offset_s: 0.55` to match the frozen rule exactly. An emergency sell runs at 400 s. Token and WSOL accounts are closed for rent.
@@ -123,7 +123,23 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
    - E1 (cron 3d374658);
    - A2.
 
-## First things to do in a new session
+## After a compaction (same session, owner's plan 10-08 ~20:40Z)
+- **What survives a compaction:** crons (check with CronList), background agents, workflows and background shell loops. **Verify, don't recreate**, unless CronList shows one missing.
+- **Watchdogs** (background loops on research-0):
+  - the disk watchdog (task b975b8ddl): warns at 86%, SIGSTOPs hunts at 90%, syncs reports;
+  - the CPU guard, restarted at handoff (task bf3f9fmn1): renices hunts at load 48.
+  - If either is missing (`pgrep -af 'df --output=pcent'` or `pgrep -af loadavg`), restart it.
+- **Agent ids, to resume with SendMessage:**
+  - EXP-024 bundle builder `adc69e946dde3c975` (applying quant-proof edits 1–5 and the pins on #478); EXP-024 quant-proof `a68da208e5f9cdb81`;
+  - H5 shadow builder `accfdac84de54afb2`; shadow reviewer `a16726a9ec630a41f`;
+  - H5 executor builder `ab84c2d698b6716d6`;
+  - #479 builder `a31eac1461a68c989`; #479 quant-proof `ad2e39687ffc72eeb`;
+  - E0 harness builder `ac12844d0ae1b5598` (branch `claude/cap-pick-e0-exp022`, plus the precount); harness reviewer `a70139af1577132a7`; harness quant-proof `a4efdfa6397dca01f`;
+  - T2 builder `a7815fa1df1ceed25`.
+- **Workflows:** hunt-2 `w9v7nomhy`, hunt-4 `w9b4m533o`, LAYA-opt `wo1wq4khh`.
+- **MiScusi hand-off ho_Mkus_DAfsz-6iw** was prepared, but the owner chose to compact instead. Ignore it.
+
+## First things to do in a new session (only if the session is replaced)
 1. Run `miscusi_worker_start` with `inbox: true`, name `manager9`.
 2. **Recreate the crons with CronCreate.** They are session-only, so they are gone.
    - **Daily structure monitor, 06:41Z.** Research-0, ops, 300 MB, 20 min: `/data/mal/venv/bin/python -m tools.pump_structure_monitor --out /data/mal/structure-monitor/daily.jsonl`. Read `halt.*`, `warn.*` and the new `watch.*` (#470). A halt before counting withdraws EXP-022.
