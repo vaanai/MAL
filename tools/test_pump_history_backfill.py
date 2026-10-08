@@ -939,13 +939,15 @@ class RunHourCrashResumeTests(_TimeBoundedTestCase):
         self.assertNotIn(b"\x00", trades.read_bytes())
         self.assertFalse((out_dir / f"stats-{self.START_KEY}.json").exists())
 
-    def test_forced_nul_hole_resume_refuses_via_main_with_exit_3(self) -> None:
+    def test_forced_nul_hole_resume_refuses_via_main_without_touching_the_checkpoint(self) -> None:
         def hole(trades: Path, offset: int) -> None:
             raw = bytearray(trades.read_bytes())
             raw[10:60] = b"\x00" * 50
             trades.write_bytes(bytes(raw))
 
         out_dir, checkpoint, checkpoint_path = self._crash_and_damage(hole)
+        checkpoint_before = checkpoint_path.read_bytes()
+        files_before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
         calls = []
         real = backfill_mod.run_hour
 
@@ -954,10 +956,14 @@ class RunHourCrashResumeTests(_TimeBoundedTestCase):
             kw.update(slot_start=0, slot_end=self.N_SLOTS, min_slots_per_hour=1, max_slots_per_hour=1000)
             return real(**kw)
 
-        env = {"HELIUS_API_KEY": ""}
+        def locate_and_spend(*a, **k):  # the locate step spends 7 credits (slots_between is given the budget)
+            a[4].used += 7
+            return list(range(self.N_SLOTS))
+
         err = io.StringIO()
         until = datetime.fromtimestamp(self.end_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with patch.dict(os.environ, env, clear=True), patch.object(backfill_mod, "run_hour", run_hour_with_fixture), \
+        with patch.dict(os.environ, {"HELIUS_API_KEY": ""}, clear=True), patch.object(backfill_mod, "run_hour", run_hour_with_fixture), \
+                patch.object(backfill_mod, "slots_between", locate_and_spend), \
                 patch.object(backfill_mod, "skip_hour_for_live_tape", lambda *a, **k: False), \
                 contextlib.redirect_stderr(err):
             rc = backfill_mod.main(["--until", until, "--hours", "1", "--out", str(out_dir), "--rpc", "http://x"])
@@ -965,6 +971,16 @@ class RunHourCrashResumeTests(_TimeBoundedTestCase):
         self.assertEqual(calls, [self.start_ts])
         self.assertIn("REFUSED (data hole)", err.getvalue())
         self.assertIn("NUL byte at offset 10", err.getvalue())
+        self.assertIn("7 credits were spent this run", err.getvalue())
+        # checkpoint.json is byte-identical, even with a nonzero credit spend; so is every other file that existed
+        self.assertEqual(checkpoint_path.read_bytes(), checkpoint_before)
+        for path, data in files_before.items():
+            self.assertEqual(path.read_bytes(), data, path)
+        # the spend is recorded next to it, in a separate log
+        log = [json.loads(x) for x in (out_dir / "refusals.jsonl").read_text().splitlines()]
+        self.assertEqual(len(log), 1)
+        self.assertEqual((log[0]["hour"], log[0]["credits_spent_this_run"]), (self.START_KEY, 7))
+        self.assertIn("NUL byte at offset 10", log[0]["reason"])
 
     def test_crash_with_held_rows_pending_is_recovered(self) -> None:
         # Odd slots go through the held (unresolved pool lookup) path. Crash
@@ -1066,6 +1082,52 @@ class SealedButPartialCheckpointHealsTests(_TimeBoundedTestCase):
             self.assertNotEqual(resealed.read_bytes(), b"truncated")
             self.assertFalse(plain_migr.exists())
             self.assertEqual(fetched, [])
+
+
+    # --- A8: the heal path seals a leftover plain file only after the same hole / NUL check -----------------------
+
+    def _heal_refusal(self, creates_bytes: bytes, creates_offset: int, creates_count: int = 0) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            key = "2026-09-11T09"
+            for sub in ("trades", "creates", "migrations"):
+                (out_dir / sub).mkdir(parents=True)
+            sealed_trades = out_dir / "trades" / f"trades-{key}.jsonl.zst"
+            sealed_trades.write_bytes(b"sealed-trades-bytes")
+            plain_creates = out_dir / "creates" / f"creates-{key}.jsonl"
+            plain_creates.write_bytes(creates_bytes)
+            stale_zst = out_dir / "creates" / f"creates-{key}.jsonl.zst"
+            stale_zst.write_bytes(b"truncated")
+            start_ts, end_ts = _hour_bounds(key)
+            checkpoint = empty_checkpoint()
+            checkpoint["hours"][key] = {
+                "status": "partial", "start_slot": 100, "end_slot": 12100, "next_slot": None, "stop_reason": None,
+                "counts": {"slots_done": 12000, "creates": creates_count},
+                "offsets": {"trades": 0, "creates": creates_offset, "migrations": 0},
+            }
+            before = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+            limiter = RateLimiter(1000)
+            with patch.object(backfill_mod, "slots_between", lambda *a, **k: list(range(100, 12100))):
+                with self.assertRaises(SinkResumeRefused):
+                    run_hour(
+                        url="http://x", start_ts=start_ts, end_ts=end_ts, out_dir=out_dir,
+                        limiter=limiter, lookup_limiter=limiter, pool_mints={}, workers=1,
+                        max_bytes=10**9, anchor_slot=450278777, anchor_time=1790319576,
+                        budget=CreditBudget(10**9, 0), checkpoint=checkpoint,
+                        checkpoint_path=out_dir / "checkpoint.json", slot_start=100, slot_end=12100,
+                    )
+            after = {p: p.read_bytes() for p in out_dir.rglob("*") if p.is_file()}
+            self.assertEqual(before, after)  # the stale .zst was not dropped, nothing sealed, nothing unlinked
+            self.assertEqual(checkpoint["hours"][key]["status"], "partial")
+
+    def test_heal_refuses_to_seal_a_plain_leftover_with_a_nul_hole(self) -> None:
+        self._heal_refusal(b'{"a":1}\n' + b"\x00" * 40 + b'\n{"a":2}\n', 0)
+
+    def test_heal_refuses_to_seal_a_plain_leftover_shorter_than_the_checkpoint_offset(self) -> None:
+        self._heal_refusal(b'{"a":1}\n', 64, 2)
+
+    def test_heal_refuses_to_seal_a_torn_last_line(self) -> None:
+        self._heal_refusal(b'{"a":1}\n{"a":', 0)
 
 
 if __name__ == "__main__":

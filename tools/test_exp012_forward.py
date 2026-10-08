@@ -26,7 +26,6 @@ from unittest import mock
 import tools.exp011_score as e11
 import tools.exp012_forward as fw
 import tools.exp012_score as s12
-import tools.tape_lines as tape_lines
 from tools.exp012_fixtures import hour_start_s, mint_tape, write_zst_jsonl
 from tools.test_exp012_score import FREEZE_COMMIT, write_frozen_artifacts
 
@@ -201,22 +200,20 @@ class RefusalTests(Base):
         self.assertFalse(fw._line_ok(dict(good, bad_lines=1), True))
         self.assertFalse(fw._line_ok(worse, True))
 
-    def _plant_nul_line(self, walk: Path, hour: str, strict_verify: bool = False, legacy_verify: bool = False) -> dict:
-        """Append a NUL-hole line to the hour's sealed trades file and make verify.jsonl match its new bytes."""
+    def _plant_nul_line(self, walk: Path, hour: str, mode: str = "off") -> dict:
+        """Append a NUL-hole line to the hour's sealed trades file and make verify.jsonl match its new bytes.
+        `mode`: how the verify line is written: "off" (default verify), "report" or "strict"."""
         z = walk / "trades" / f"trades-{hour}.jsonl.zst"
         raw = subprocess.run(["zstd", "-dc", "-q", str(z)], check=True, capture_output=True).stdout
         z.unlink()
         plain = z.with_suffix("")
         plain.write_bytes(raw + b"\x00" * 2048 + b"\n")
         subprocess.run(["zstd", "-q", "--rm", "-f", str(plain)], check=True)
-        rec = fw.verify_line(walk, hour, strict_verify)
-        self.assertEqual(rec["bad_lines"], 1)
-        if legacy_verify:  # what a verify line from before A8 would say about the same bytes
-            rec["issues"] = []
-            rec.pop("bad_lines")
-            for st in rec["content"].values():
-                for k in ("bad_lines", "nul", "not_json", "non_object", "lenient"):
-                    st.pop(k, None)
+        rec = fw.verify_line(walk, hour, mode == "strict", mode == "report")
+        if mode == "off":
+            self.assertNotIn("bad_lines", rec)
+        else:
+            self.assertEqual(rec["bad_lines"], 1)
         lines = [x for x in (walk / "verify.jsonl").read_text().splitlines() if json.loads(x)["hour"] != hour]
         (walk / "verify.jsonl").write_text("".join(x + "\n" for x in lines) + json.dumps(rec, sort_keys=True) + "\n")
         return rec
@@ -227,23 +224,28 @@ class RefusalTests(Base):
             rc = fw.main(["verify", "--walk-dir", str(walk), "--hour", hour, *extra])
         return rc, err.getvalue()
 
-    def test_default_verify_on_a_nul_line_decides_as_before_and_only_reports_bad_lines(self) -> None:
+    # the keys of a verify line on main (captured from origin/main's verify_line on this fixture)
+    MAIN_VERIFY_KEYS = ["checkpoint_status", "content", "end_slot", "files", "hour", "issues", "sealed", "sha256", "slots_done", "start_slot", "stats_present"]
+
+    def test_default_verify_line_has_exactly_the_pre_a8_shape_and_a_reverify_is_identical(self) -> None:
         walk, _art, _out = self.fresh()
         self._plant_nul_line(walk, "2026-10-05T07")
         rec = fw.verify_line(walk, "2026-10-05T07")
+        self.assertEqual(sorted(rec), self.MAIN_VERIFY_KEYS)
+        self.assertEqual({k: sorted(v) for k, v in rec["content"].items()}, {"creates": ["duplicates", "rows", "unique"], "trades": ["duplicates", "rows", "unique"]})
         self.assertEqual(rec["issues"], [])  # exactly what main reports for this file
         self.assertTrue(fw._line_ok(rec))
-        self.assertEqual((rec["bad_lines"], rec["content"]["trades"]["nul"]), (1, 1))  # the report
+        _rec, appended = fw.run_verify(walk, "2026-10-05T07")
+        self.assertFalse(appended)  # byte-identical to the line already in verify.jsonl
         rc, err = self._verify_cli(walk, "2026-10-05T07")
         self.assertEqual(rc, 0, err)
-        self.assertIn("OK", err)
-        self.assertNotIn("NOT OK", err)
+        self.assertIn("OK; identical line already present", err)
 
     def test_default_score_on_a_nul_line_is_identical_to_the_skip_behaviour_of_main(self) -> None:
         clean_walk, art, clean_out = self.fresh()
         rc0, err0 = self.run_score(clean_walk, art, clean_out, "--to", "2026-10-05T09")
         self.assertEqual(rc0, 0, err0)
-        for env in ({}, {tape_lines.STRICT_ENV: "1"}):  # an inherited MAL_STRICT_LINES must not change the FINAL either
+        for env in ({}, {"MAL_STRICT_LINES": "1"}):  # no exported variable switches anything
             walk, art2, out = self.fresh()
             self._plant_nul_line(walk, "2026-10-05T07")
             with mock.patch.dict(os.environ, env):
@@ -253,6 +255,24 @@ class RefusalTests(Base):
             # main drops the NUL line without a count, so the rows are byte-identical to the clean walk's
             self.assertEqual((out / "rows.jsonl").read_bytes(), (clean_out / "rows.jsonl").read_bytes())
 
+    def test_strict_score_on_a_clean_walk_gives_the_same_rows_as_the_default(self) -> None:
+        walk, art, out = self.fresh()
+        rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09")
+        self.assertEqual(rc, 0, err)
+        walk2, art2, out2 = self.fresh()
+        rc2, err2 = self.run_score(walk2, art2, out2, "--to", "2026-10-05T09", "--strict-lines")
+        self.assertEqual(rc2, 0, err2)
+        self.assertEqual((out2 / "rows.jsonl").read_bytes(), (out / "rows.jsonl").read_bytes())
+
+    def test_report_bad_lines_flag_adds_the_keys_and_keeps_the_status(self) -> None:
+        walk, _art, _out = self.fresh()
+        self._plant_nul_line(walk, "2026-10-05T07", "report")
+        rc, err = self._verify_cli(walk, "2026-10-05T07", "--report-bad-lines")
+        self.assertEqual(rc, 0, err)
+        rec = fw.verify_line(walk, "2026-10-05T07", report_bad_lines=True)
+        self.assertEqual((rec["bad_lines"], rec["content"]["trades"]["nul"], rec["issues"]), (1, 1, []))
+        self.assertTrue(fw._line_ok(rec))
+
     def test_strict_verify_flag_makes_the_hour_not_ok(self) -> None:
         walk, _art, _out = self.fresh()
         self._plant_nul_line(walk, "2026-10-05T07")
@@ -260,24 +280,22 @@ class RefusalTests(Base):
         self.assertEqual(rc, 1, err)
         self.assertIn("NOT OK", err)
         self.assertIn("bad lines (nul=1", err)
-        rec = fw.verify_line(walk, "2026-10-05T07", True)
-        self.assertFalse(fw._line_ok(rec, True))
+        self.assertFalse(fw._line_ok(fw.verify_line(walk, "2026-10-05T07", True), True))
 
     def test_strict_score_names_an_hour_whose_strict_verify_line_is_not_ok(self) -> None:
         walk, art, out = self.fresh()
-        self._plant_nul_line(walk, "2026-10-05T07", strict_verify=True)
+        self._plant_nul_line(walk, "2026-10-05T07", "strict")
         rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09", "--strict-lines")
         self.assert_refused(out, rc, err, "hour 2026-10-05T07 has no OK line")
 
     def test_strict_score_reads_the_tape_and_refuses_a_nul_hole_even_with_a_pre_a8_verify_line(self) -> None:
         walk, art, out = self.fresh()
-        self._plant_nul_line(walk, "2026-10-05T07", legacy_verify=True)
+        self._plant_nul_line(walk, "2026-10-05T07")  # the default (pre-A8) verify line: OK, no bad_lines key
         rc, err = self.run_score(walk, art, out, "--to", "2026-10-05T09", "--strict-lines")
         self.assertEqual(rc, 2, err)
         self.assertIn("REFUSED: bad tape lines, hour not decidable:", err)
         self.assertIn("trades-2026-10-05T07.jsonl.zst: 1 bad line(s)", err)
         self.assertFalse((out / "rows.jsonl").exists())  # nothing appended
-        self.assertNotIn(tape_lines.STRICT_ENV, os.environ)  # the switch was restored
 
     def test_unsealed_hour_is_named(self) -> None:
         walk, art, out = self.fresh()

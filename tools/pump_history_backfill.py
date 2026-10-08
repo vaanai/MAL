@@ -505,6 +505,24 @@ class SinkResumeRefused(RuntimeError):
 RESUME_SCAN_CHUNK = 8 << 20
 
 
+def _scan_region(path: Path, limit: int | None) -> tuple[int, bytes, int | None, int]:
+    """(newlines, last byte, offset of the first NUL or None, bytes read) over the first `limit` bytes (None: all)."""
+    lines, last, done, nul_at = 0, b"", 0, None
+    with path.open("rb") as fh:
+        while limit is None or done < limit:
+            chunk = fh.read(RESUME_SCAN_CHUNK if limit is None else min(RESUME_SCAN_CHUNK, limit - done))
+            if not chunk:
+                break
+            nul = chunk.find(b"\x00")
+            if nul >= 0:
+                nul_at = done + nul
+                break
+            lines += chunk.count(b"\n")
+            last = chunk[-1:]
+            done += len(chunk)
+    return lines, last, nul_at, done
+
+
 def check_resume_file(path: Path, resume_bytes: int, resume_lines: int | None = None) -> dict[str, int]:
     """Read-only. Raise SinkResumeRefused unless `path` holds the checkpoint's first `resume_bytes` intact.
 
@@ -530,23 +548,13 @@ def check_resume_file(path: Path, resume_bytes: int, resume_lines: int | None = 
             path, f"file is {size} bytes, shorter than the checkpoint offset {keep} (short by {keep - size}); "
             "truncate would pad it with NUL bytes. The rows of those slots are not on disk"
         )
-    lines = 0
-    last = b""
-    done = 0
-    with path.open("rb") as fh:
-        while done < keep:
-            chunk = fh.read(min(RESUME_SCAN_CHUNK, keep - done))
-            if not chunk:
-                raise SinkResumeRefused(path, f"read ended at {done} bytes, before the checkpoint offset {keep}")
-            nul = chunk.find(b"\x00")
-            if nul >= 0:
-                raise SinkResumeRefused(
-                    path, f"NUL byte at offset {done + nul} (before the checkpoint offset {keep}); "
-                    "the kept region has a hole"
-                )
-            lines += chunk.count(b"\n")
-            last = chunk[-1:]
-            done += len(chunk)
+    lines, last, nul_at, done = _scan_region(path, keep)
+    if nul_at is not None:
+        raise SinkResumeRefused(
+            path, f"NUL byte at offset {nul_at} (before the checkpoint offset {keep}); the kept region has a hole"
+        )
+    if done < keep:
+        raise SinkResumeRefused(path, f"read ended at {done} bytes, before the checkpoint offset {keep}")
     if keep > 0 and last != b"\n":
         raise SinkResumeRefused(path, f"the {keep} checkpoint bytes do not end on a newline")
     if want_lines is not None and lines != want_lines:
@@ -554,6 +562,24 @@ def check_resume_file(path: Path, resume_bytes: int, resume_lines: int | None = 
             path, f"the first {keep} bytes hold {lines} lines but the checkpoint counts {want_lines} rows for this file"
         )
     return {"kept": keep, "size": size, "dropped": size - keep}
+
+
+def check_complete_file(path: Path, min_bytes: int = 0, min_lines: int = 0) -> None:
+    """Read-only, for a plain file that is about to be sealed to .zst (the heal path: every slot was consumed, so
+    the whole file is the hour). Refused when it is shorter than the checkpoint's last offset, has fewer lines than
+    the checkpoint's last row count, has any NUL byte, or does not end on a newline."""
+    if not path.is_file():
+        return
+    size = path.stat().st_size
+    if size < max(0, int(min_bytes)):
+        raise SinkResumeRefused(path, f"file is {size} bytes, shorter than the checkpoint offset {min_bytes}; refusing to seal a hole")
+    lines, last, nul_at, _done = _scan_region(path, None)
+    if nul_at is not None:
+        raise SinkResumeRefused(path, f"NUL byte at offset {nul_at}; refusing to seal a hole")
+    if size > 0 and last != b"\n":
+        raise SinkResumeRefused(path, "the file does not end on a newline; refusing to seal a torn last line")
+    if lines < max(0, int(min_lines)):
+        raise SinkResumeRefused(path, f"the file holds {lines} lines, fewer than the checkpoint's {min_lines}; refusing to seal a hole")
 
 
 class JsonlSink:
@@ -1240,6 +1266,23 @@ def run_hour(
     # A trades .zst (complete, or truncated mid-zstd) only exists once sealing began,
     # i.e. after the whole hour was consumed.
     if resume and sealed_trades.is_file():
+        # Seal a leftover plain file only if it passes the same hole and NUL check as a resume. All three are
+        # checked before any .zst is dropped or any file sealed, so a refusal leaves the hour as found.
+        heal_off = partial.get("offsets") if isinstance(partial.get("offsets"), dict) else {}
+        heal_cnt = partial.get("counts") if isinstance(partial.get("counts"), dict) else {}
+        heal_lines = {
+            "trades": int(heal_cnt.get("trades") or 0),
+            "creates": int(heal_cnt.get("creates") or 0),
+            "migrations": int(heal_cnt.get("migrations") or 0) + int(heal_cnt.get("completes") or 0),
+        }
+        for sub, prefix in (("trades", "trades"), ("creates", "creates"), ("migrations", "migrations")):
+            off = heal_off.get(sub, 0)
+            check_complete_file(
+                out_dir / sub / f"{prefix}-{key}.jsonl",
+                int(off) if isinstance(off, int) and not isinstance(off, bool) else 0,
+                heal_lines[sub],
+            )
+    if resume and sealed_trades.is_file():
         for sub, prefix in (("trades", "trades"), ("creates", "creates"), ("migrations", "migrations")):
             plain = out_dir / sub / f"{prefix}-{key}.jsonl"
             if plain.is_file():
@@ -1776,13 +1819,31 @@ def _main(argv: Sequence[str] | None = None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     proof_hours = set(args.live_tape_proof_hour or ["2026-09-25T07"])
     gap_end_ts = parse_utc(args.live_tape_gap_end) if args.live_tape_gap_end else None
+    credits_at_start = budget.used
+
     def _guarded_run_hour(**kw: Any) -> dict[str, Any]:
         try:
             return run_hour(**kw)
-        except SinkResumeRefused:
-            # Keep the credit accounting of this process; the hours entries stay as loaded.
-            checkpoint["credits_used"] = budget.used
-            save_checkpoint(checkpoint_path, checkpoint)
+        except SinkResumeRefused as exc:
+            # checkpoint.json is NOT touched on a refusal (not even credits_used). The credits this process spent
+            # before it refused go to stderr and to refusals.jsonl next to the checkpoint.
+            spent = budget.used - credits_at_start
+            rec = {
+                "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "hour": hour_key(int(kw["start_ts"])),
+                "file": exc.path,
+                "reason": exc.reason,
+                "credits_spent_this_run": spent,
+                "credits_used_in_checkpoint": credits_at_start,
+            }
+            print(
+                f"refusal: {spent} credits were spent this run before the refusal; checkpoint.json is untouched "
+                f"(credits_used stays {credits_at_start}); recorded in {checkpoint_path.parent / REFUSALS_NAME}",
+                file=sys.stderr,
+                flush=True,
+            )
+            with (checkpoint_path.parent / REFUSALS_NAME).open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, sort_keys=True) + "\n")
             raise
 
     for index, (start_ts, plan_end_ts) in enumerate(plan_hours(until, args.hours)):
@@ -1850,6 +1911,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
 
 
 SINK_REFUSED_EXIT = 3
+REFUSALS_NAME = "refusals.jsonl"
 
 
 def main(argv: Sequence[str] | None = None) -> int:

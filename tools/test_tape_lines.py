@@ -101,9 +101,7 @@ class IterTradesTests(unittest.TestCase):
         self.path = write(Path(self._td.name) / "trades.jsonl", [GOOD, NUL_HOLE, LENIENT, TORN, GOOD])
 
     def test_default_behaviour_is_unchanged_bad_lines_are_skipped_silently(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop(tl.STRICT_ENV, None)
-            rows = list(_iter_trades(self.path))
+        rows = list(_iter_trades(self.path))
         self.assertEqual([r["mint"] for r in rows], ["m1", "m1"])  # lenient row dropped by the strict-JSON parse, as before
 
     def test_strict_arg_raises_after_the_file_with_the_count(self) -> None:
@@ -116,14 +114,11 @@ class IterTradesTests(unittest.TestCase):
         self.assertEqual(ctx.exception.counts["lenient"], 1)
         self.assertIn("trades.jsonl", str(ctx.exception))
 
-    def test_env_switch_and_context_manager(self) -> None:
-        os.environ.pop(tl.STRICT_ENV, None)
-        with tl.strict_env(True):
-            self.assertEqual(os.environ[tl.STRICT_ENV], "1")
-            with self.assertRaises(tl.BadLinesError):
-                list(_iter_trades(self.path))
-        self.assertNotIn(tl.STRICT_ENV, os.environ)  # restored
-        self.assertEqual(len(list(_iter_trades(self.path))), 2)
+    def test_no_environment_variable_switches_the_reader(self) -> None:
+        with mock.patch.dict(os.environ, {"MAL_STRICT_LINES": "1"}):
+            self.assertEqual(len(list(_iter_trades(self.path))), 2)  # still the lenient reader, no raise
+        for name in ("STRICT_ENV", "strict_enabled", "strict_env"):
+            self.assertFalse(hasattr(tl, name), name)
 
     def test_strict_on_a_clean_file_yields_identical_rows(self) -> None:
         clean = write(Path(self._td.name) / "c.jsonl", [GOOD, LENIENT, "\n", GOOD])

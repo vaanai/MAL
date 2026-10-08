@@ -25,22 +25,19 @@ Opt in:
     `BadLinesError(path, counts)` if any line was bad. The raise happens after the hour is read,
     so the error carries the whole-hour count.
   - `scan_file(path)` is a counts-only pass over a plain, .zst or .gz file.
-  - `latency_curve._iter_trades(path, strict=None)` turns this on when `strict=True` or when
-    the environment variable `MAL_STRICT_LINES=1` is set (spawned scorer workers inherit it).
+  - `latency_curve._iter_trades(path, strict=False)` turns this on only for `strict=True`. There is no
+    environment switch: strict reading happens through an explicit parameter or flag, never by an exported variable.
 """
 
 from __future__ import annotations
 
 import gzip
 import json
-import os
 import subprocess
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-STRICT_ENV = "MAL_STRICT_LINES"
 BAD_KINDS = ("nul", "not_json", "non_object")
 
 
@@ -190,25 +187,3 @@ def require_clean(path: Path | str) -> LineCounts:
     if counts.bad:
         raise BadLinesError(str(path), counts.as_dict())
     return counts
-
-
-def strict_enabled() -> bool:
-    return os.environ.get(STRICT_ENV) == "1"
-
-
-@contextmanager
-def strict_env(on: bool = True) -> Iterator[None]:
-    """Set (on) or clear (off) MAL_STRICT_LINES for the duration, then restore it. Spawned workers inherit it.
-    Off clears an externally set variable on purpose: a caller that says "not strict" gets exactly that."""
-    old = os.environ.get(STRICT_ENV)
-    if on:
-        os.environ[STRICT_ENV] = "1"
-    else:
-        os.environ.pop(STRICT_ENV, None)
-    try:
-        yield
-    finally:
-        if old is None:
-            os.environ.pop(STRICT_ENV, None)
-        else:
-            os.environ[STRICT_ENV] = old

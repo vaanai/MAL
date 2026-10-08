@@ -284,22 +284,33 @@ if __name__ == "__main__":
 
 
 class BadLinesVerifyTests(unittest.TestCase):
-    """A8: --content reports bad_lines per hour (raw NUL, not JSON, not an object) and flags the hour."""
+    """A8: bad_lines (raw NUL, not JSON, not an object) is opt-in: off by default (the report is the pre-A8 one),
+    `report` adds the keys, `strict` also flags the hour."""
 
     HOUR = "2026-10-16T01"
     NEXT = "2026-10-16T02"
     GOOD = ['{"a":1}', '{"a":2}']
+    NEW_KEYS = {"bad_lines", "nul", "not_json", "non_object", "lenient"}
 
-    def _verify(self, trades: list[str], creates: list[str] | None = None) -> dict:
+    def _build(self, walker: Path, mode: str) -> dict:
+        return build_report(walker, self.HOUR, self.NEXT, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=MAX_SLOTS_PER_HOUR, bad_lines=mode)["hours"][0]
+
+    def _verify(self, trades: list[str], creates: list[str] | None = None, mode: str = "strict") -> dict:
         with tempfile.TemporaryDirectory() as tmp:
             walker = Path(tmp)
             _write_jsonl_zst(walker / "trades" / f"trades-{self.HOUR}.jsonl.zst", trades)
             _write_jsonl_zst(walker / "creates" / f"creates-{self.HOUR}.jsonl.zst", creates or self.GOOD)
             _write_checkpoint(walker, {self.HOUR: {"status": "sealed"}})
             _write_stats(walker, self.HOUR)
-            return build_report(walker, self.HOUR, self.NEXT, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=MAX_SLOTS_PER_HOUR)["hours"][0]
+            return self._build(walker, mode)
 
-    def test_clean_hour_has_bad_lines_zero_and_is_not_flagged(self) -> None:
+    def test_default_mode_has_none_of_the_new_keys_and_flags_nothing(self) -> None:
+        rec = self._verify(self.GOOD + ["\x00" * 5000], mode="off")
+        self.assertNotIn("bad_lines", rec)
+        self.assertEqual(set(rec["content"]["trades"]), {"rows", "unique", "duplicates"})
+        self.assertEqual(rec["issues"], [])
+
+    def test_clean_hour_strict_has_bad_lines_zero_and_is_not_flagged(self) -> None:
         rec = self._verify(self.GOOD)
         self.assertEqual(rec["bad_lines"], 0)
         self.assertEqual(rec["content"]["trades"]["bad_lines"], 0)
@@ -311,11 +322,14 @@ class BadLinesVerifyTests(unittest.TestCase):
         self.assertEqual(rec["content"]["trades"]["lenient"], 1)
         self.assertEqual(rec["issues"], [])
 
-    def test_nul_hole_line_flags_the_hour(self) -> None:
+    def test_nul_hole_line_flags_the_hour_in_strict_only(self) -> None:
         rec = self._verify(self.GOOD + ["\x00" * 5000])
         self.assertEqual(rec["bad_lines"], 1)
         self.assertEqual(rec["content"]["trades"]["nul"], 1)
         self.assertTrue(any(i.startswith("trades: 1 bad lines (nul=1") for i in rec["issues"]), rec["issues"])
+        reported = self._verify(self.GOOD + ["\x00" * 5000], mode="report")
+        self.assertEqual(reported["bad_lines"], 1)
+        self.assertEqual(reported["issues"], [])  # report only
 
     def test_not_json_and_non_object_lines_count_in_both_files(self) -> None:
         rec = self._verify(self.GOOD + ['{"torn":"x'], creates=self.GOOD + ["[1,2]"])
@@ -323,26 +337,29 @@ class BadLinesVerifyTests(unittest.TestCase):
         self.assertEqual(rec["content"]["trades"]["not_json"], 1)
         self.assertEqual(rec["content"]["creates"]["non_object"], 1)
 
-    def test_main_exits_1_on_a_bad_line(self) -> None:
+    def test_cli_flags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             walker = Path(tmp)
             _write_jsonl_zst(walker / "trades" / f"trades-{self.HOUR}.jsonl.zst", self.GOOD + ["\x00\x00"])
             _write_checkpoint(walker, {self.HOUR: {"status": "sealed"}})
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                code = main(["--dir", str(walker), "--from", self.HOUR, "--to", self.NEXT, "--content"])
-            self.assertEqual(code, 1)
-            self.assertEqual(json.loads(buf.getvalue())["hours"][0]["bad_lines"], 1)
+            base = ["--dir", str(walker), "--from", self.HOUR, "--to", self.NEXT, "--content"]
+            for extra, code, has_key in (([], 0, False), (["--report-bad-lines"], 0, True), (["--strict-lines"], 1, True)):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = main(base + extra)
+                hour = json.loads(buf.getvalue())["hours"][0]
+                self.assertEqual(rc, code, extra)
+                self.assertEqual("bad_lines" in hour, has_key, extra)
+                if has_key:
+                    self.assertEqual(hour["bad_lines"], 1)
 
-    def test_truncated_zst_is_flagged_not_silently_short(self) -> None:
+    def test_truncated_zst_is_flagged_only_in_strict(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             walker = Path(tmp)
             path = walker / "trades" / f"trades-{self.HOUR}.jsonl.zst"
             _write_jsonl_zst(path, ['{"a":%d,"pad":"%s"}' % (i, "x" * 40) for i in range(20000)])
             path.write_bytes(path.read_bytes()[:-8])
             _write_checkpoint(walker, {self.HOUR: {"status": "sealed"}})
-            rec = build_report(walker, self.HOUR, self.NEXT, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=MAX_SLOTS_PER_HOUR)["hours"][0]
-            self.assertTrue(any("zstd stream failed" in i for i in rec["issues"]), rec["issues"])
-            # the DEC-016 verify step (exp012_forward.verify_line) turns the rc check off by default: no new issue
-            quiet = build_report(walker, self.HOUR, self.NEXT, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=MAX_SLOTS_PER_HOUR, check_zstd_rc=False)["hours"][0]
-            self.assertFalse(any("zstd stream failed" in i for i in quiet["issues"]), quiet["issues"])
+            self.assertTrue(any("zstd stream failed" in i for i in self._build(walker, "strict")["issues"]))
+            for mode in ("report", "off"):
+                self.assertFalse(any("zstd stream failed" in i for i in self._build(walker, mode)["issues"]), mode)
