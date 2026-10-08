@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -166,8 +167,9 @@ def _hour_of_ms(ms: int) -> str:
 
 
 def stage_creates(files: dict[str, dict[str, Path]], boot_ms: int, dest: Path, roots: Sequence[str | Path] | None) -> int:
-    """Symlink `creates-{hour}.jsonl.zst` for the history window before `boot_ms` into `dest`, so the
-    runner's own `Exp012Online.preload` can read them under its fast-format file names."""
+    """Copy `creates-{hour}.jsonl[.zst]` for the history window before `boot_ms` into `dest`, so the runner's own
+    `Exp012Online.preload` can read them under its fast-format file names. Copies, not symlinks: `zstd -dc` refuses
+    a symlink (exit 1) and preload swallows the error, which would leave the creator history silently empty."""
     from tools.forward_exp012_gate import HIST_KEEP_MS
 
     n = 0
@@ -180,7 +182,7 @@ def stage_creates(files: dict[str, dict[str, Path]], boot_ms: int, dest: Path, r
         refuse_path(src, roots)
         link = dest / (f"creates-{hour}.jsonl.zst" if src.name.endswith(".zst") else f"creates-{hour}.jsonl")
         if not link.exists():
-            link.symlink_to(src)
+            shutil.copyfile(src, link)
         n += 1
     return n
 
@@ -514,8 +516,11 @@ def replay_view(block: Block, days: Sequence[str], *, daily_restart: bool = True
                 boot_ms = _calendar_ms(day)
                 stage = Path(td) / f"boot-{day}"
                 stage.mkdir()
-                stage_creates(files, boot_ms, stage, use_roots)
-                rep.boot(boot_ms, stage)
+                staged = stage_creates(files, boot_ms, stage, use_roots)
+                n_hist = rep.boot(boot_ms, stage)
+                rep.boots[-1]["staged_files"] = staged
+                if staged and not n_hist and log is not None:
+                    print(f"[{block.name}] WARNING boot {day}: {staged} creates files staged but 0 history rows read", file=log, flush=True)
             for h in range(24):
                 hour = f"{day}T{h:02d}"
                 f = files.get(hour)

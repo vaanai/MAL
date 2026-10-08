@@ -201,6 +201,27 @@ class RestartAndSkipTests(_Base):
             self.assertEqual(meta["boots"][0]["history_rows"], 1)
             self.assertTrue(sfx)
 
+    def test_zst_history_is_read_through_staging(self) -> None:
+        """The real pools are .zst; zstd -dc refuses symlinks, so staging must copy (history was 0 with symlinks)."""
+        import shutil
+        import subprocess
+
+        if shutil.which("zstd") is None:
+            self.skipTest("zstd binary not available")
+        with tempfile.TemporaryDirectory() as td:
+            for kind in ("creates", "trades"):
+                (Path(td) / kind).mkdir()
+            t = DAY0 - HOUR + 20 * 60_000
+            hc = cp._hour_of_ms(t)
+            raw = Path(td) / "creates" / f"creates-{hc}.jsonl"
+            raw.write_text(_dump(_crow("PRE", t, "CP")) + "\n", encoding="utf-8")
+            subprocess.run(["zstd", "-q", "--rm", str(raw)], check=True)
+            (Path(td) / "trades" / f"trades-{hc}.jsonl.zst").write_bytes(b"")
+            blk = cp.Block("t", (td,), ".jsonl.zst", False)
+            recs, meta = cp.replay_view(blk, [cp._day_of_ms(DAY0)], engine=self.engine(), roots=[td])
+            self.assertEqual(meta["boots"][0]["history_rows"], 1)
+            self.assertEqual(meta["boots"][0]["staged_files"], 1)
+
     def test_migration_after_60_minutes_is_no_features(self) -> None:
         rep = self.rep(prune_every=1)
         t = DAY0 + 2 * HOUR
