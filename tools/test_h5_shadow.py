@@ -554,14 +554,38 @@ class GapTests(unittest.TestCase):
 
 
 class SlotClockTests(unittest.TestCase):
-    def test_estimates_sps_and_waits_for_a_window(self):
+    def test_bootstrap_is_ready_within_about_ten_seconds_then_sharpens(self):
         c = h5.SlotClock()
-        for s in range(0, 200):  # 80 s at 0.4 s per slot: not enough span yet
+        ready_at = None
+        for s in range(0, 1000):  # one event per slot at 0.4 s per slot
+            c.observe(1000 + s, 1_800_000_000 + int(s * 0.4))
+            if ready_at is None and c.sps() is not None:
+                ready_at = s * 0.4
+        self.assertIsNotNone(ready_at)
+        self.assertLessEqual(ready_at, 11.0)
+        self.assertAlmostEqual(c.sps(), 0.4, delta=0.004)  # 400 s of events: well inside 1 %
+        early = h5.SlotClock()
+        for s in range(0, 25):  # 10 s
+            early.observe(1000 + s, 1_800_000_000 + int(s * 0.4))
+        self.assertAlmostEqual(early.sps(), 0.4, delta=0.4 * 0.06)
+
+    def test_not_ready_before_eight_seconds(self):
+        c = h5.SlotClock()
+        for s in range(0, 14):  # 5.6 s
             c.observe(1000 + s, 1_800_000_000 + int(s * 0.4))
         self.assertIsNone(c.sps())
-        for s in range(200, 1000):
-            c.observe(1000 + s, 1_800_000_000 + int(s * 0.4))
-        self.assertAlmostEqual(c.sps(), 0.4, delta=0.01)
+
+    def test_any_pumpswap_print_warms_the_clock_not_only_tracked_pools(self):
+        out: list[dict] = []
+        eng = h5.Engine(out.append, pda_fn=lambda p: "PDA", seal_start_ms=None)
+        t = Tape(pool="OtherUnannouncedPool")
+        for k in range(40):  # 16 s of prints on a pool nobody announced
+            t.row(1000 + k, "buy", "A", SOL // 100)
+        for r in t.rows:
+            eng.on_trade(r)
+        self.assertEqual(eng.pools, {})
+        self.assertTrue(h5.sps_ok(eng.clock.sps()))
+        self.assertAlmostEqual(eng.clock.sps(), SPS, delta=SPS * 0.1)
 
     def test_200ms_era(self):
         c = h5.SlotClock()
@@ -570,14 +594,254 @@ class SlotClockTests(unittest.TestCase):
         self.assertAlmostEqual(c.sps(), 0.2, delta=0.01)
         self.assertTrue(h5.sps_ok(c.sps()))
 
-    def test_engine_uses_the_rolling_clock_by_default(self):
-        out: list[dict] = []
-        eng = h5.Engine(out.append, pda_fn=lambda p: "PDA")
+
+
+class SmokeRoundTests(unittest.TestCase):
+    def test_graduation_pool_from_a_recorded_migrate_tx_is_tracked_not_rejected_as_non_wsol(self):
+        n = fixture_notice("create_pool_init_boost.json")
+        eng, out = make_engine()
+        h5.decode_notice(eng, n, {})
+        (pool,) = eng.announced
+        _slot, _recv, base_mint, quote_mint = eng.announced[pool]
+        self.assertEqual(quote_mint, h5.WSOL_MINT)  # CreatePoolEvent: base_mint at 50, quote_mint at 82, pool at 173
+        self.assertEqual(h5.WSOL_MINT, "So11111111111111111111111111111111111111112")
+        self.assertNotEqual(base_mint, h5.WSOL_MINT)
+        t = Tape(pool=pool, slot0=n.slot + 1)
+        t.row(n.slot + 1, "buy", "A", SOL // 10)
+        eng.on_trade(t.rows[0])
+        self.assertIn(pool, eng.pools)
+        self.assertEqual(eng.pools[pool].mint, base_mint)
+        self.assertEqual(eng.counters["rejected_quote_mint"], 0)
+        self.assertEqual(types(out, "reject"), [])
+
+    def test_non_wsol_create_pool_is_rejected_with_both_mints_in_the_record(self):
+        eng, out = make_engine()
+        eng.on_create_pool(POOL, "BaseMintXYZ", "USDCmintXYZ", 999, 0)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        self.assertEqual(eng.pools, {})
+        (rej,) = types(out, "reject")
+        self.assertEqual((rej["reason"], rej["pool"], rej["base_mint"], rej["quote_mint"]), ("quote_mint", POOL, "BaseMintXYZ", "USDCmintXYZ"))
+        self.assertEqual(eng.counters["rejected_quote_mint"], 1)
+
+    def test_reject_records_are_capped_but_counted(self):
+        eng, out = make_engine()
+        for i in range(h5.REJECT_LOG_MAX + 5):
+            pool = f"P{i}"
+            eng.on_create_pool(pool, "B", "OTHER", 999, 0)
+            t = Tape(pool=pool)
+            t.row(1000, "buy", "A", SOL // 10)
+            eng.on_trade(t.rows[0])
+        self.assertEqual(len(types(out, "reject")), h5.REJECT_LOG_MAX)
+        self.assertEqual(eng.counters["rejected_quote_mint"], h5.REJECT_LOG_MAX + 5)
+
+    def test_unannounced_pools_check_v_first_and_count_only_fresh_looking_ones(self):
+        def go(**tape_kw):
+            eng, out = make_engine()
+            t = Tape(**tape_kw)
+            t.row(1000, "buy", "A", SOL // 10)
+            eng.on_trade(t.rows[0])
+            return eng
+
+        e = go()  # V in range, low real quote, base near the initial pool base
+        self.assertEqual((e.counters["rejected_unannounced"], e.counters["unannounced_fresh"]), (1, 1))
+        e = go(q=500 * SOL)  # an established pool
+        self.assertEqual((e.counters["rejected_unannounced"], e.counters["unannounced_fresh"]), (1, 0))
+        e = go(b=int(6e14))  # base reserve far above the initial 2.069e14: not a first print
+        self.assertEqual((e.counters["rejected_unannounced"], e.counters["unannounced_fresh"]), (1, 0))
+        e = go(v=1 * SOL)  # V out of range: not counted as unannounced at all
+        self.assertEqual((e.counters["rejected_unannounced"], e.counters["unannounced_fresh"], e.counters["rejected_v_range"]), (0, 0, 1))
+
+    def test_mint_pools_is_pruned_when_announcements_expire(self):
+        eng, out = make_engine()
+        eng.on_create_pool("P1", "M1", h5.WSOL_MINT, 1, 1_000)
+        eng.on_create_pool("P2", "M1", h5.WSOL_MINT, 2, 2_000)
+        eng.on_create_pool("P3", "M3", h5.WSOL_MINT, 3, 3_000)
+        self.assertEqual(set(eng.mint_pools["M1"]), {"P1", "P2"})
+        eng.tick(1_000 + h5.ANNOUNCE_TTL_S * 1000 + 1)  # P1 expires
+        self.assertEqual(set(eng.mint_pools["M1"]), {"P2"})
+        eng.tick(10**13)
+        self.assertEqual((eng.announced, eng.mint_pools), ({}, {}))
+        eng.on_create_pool("P4", "M4", h5.WSOL_MINT, 4, 10**13)  # eviction also runs on a new announcement
+        eng.on_create_pool("P5", "M5", h5.WSOL_MINT, 5, 10**13 + h5.ANNOUNCE_TTL_S * 1000 + 5)
+        self.assertEqual(list(eng.mint_pools), ["M5"])
+
+    def test_announce_ttl_is_not_shorter_than_seen_ttl(self):
+        self.assertGreaterEqual(h5.ANNOUNCE_TTL_S, h5.SEEN_TTL_S)
+
+    def test_slot_regress_is_counted_separately_from_base_breaks(self):
+        eng, out = make_engine()
         announce(eng)
         t = Tape()
-        for i in range(800):  # warm the clock with other traffic
-            eng.advance(900 + i // 3 * 3 - 1000 + 1000, 10**12, 1_799_999_000 + int(i * 0.4 * 3 / 3))
-        self.assertIsNone(eng.clock.sps()) if eng.clock.sps() is None else self.assertTrue(h5.sps_ok(eng.clock.sps()) or True)
+        t.row(1000, "buy", "A", SOL // 10)
+        t.row(1010, "buy", "A", SOL // 10)
+        t.row(1005, "buy", "A", SOL // 10)  # arrives after slot 1010 but chains correctly
+        run(eng, t)
+        p = eng.pools[POOL]
+        self.assertEqual((p.slot_regress, p.base_breaks), (1, 0))
+        self.assertEqual(eng.counters["slot_regress"], 1)
+        eng.close_all("t")
+        self.assertEqual(types(out, "pool")[0]["slot_regress"], 1)
+
+    def test_prints_skipped_for_missing_sps_leave_a_would_have_triggered_record(self):
+        eng, out = make_engine(sps_fn=lambda p: None)
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1200, 30.0)
+        t.row(1210, "sell", "B", SOL // 50)
+        run(eng, t)
+        (rec,) = types(out, "skipped_no_sps")  # once per pool
+        self.assertEqual((rec["slot"], rec["slot_offset"], rec["sps"]), (1200, 200, None))
+        self.assertLessEqual(rec["q_pv_post_sol"], 40.0)
+        self.assertEqual(types(out, "trigger"), [])
+        self.assertEqual(eng.counters["skipped_no_sps_would_trigger"], 1)
+
+    def test_a_skipped_print_that_would_not_have_qualified_logs_nothing(self):
+        eng, out = make_engine(sps_fn=lambda p: None)
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        drain(t, 1200, 60.0)
+        run(eng, t)
+        self.assertEqual(types(out, "skipped_no_sps"), [])
+
+
+class FeedCauseTests(unittest.TestCase):
+    def snap(self, per_socket, closes=None, rejections=None, errors=None):
+        return {"reconnects": sum(per_socket), "closes": closes or {}, "rejections": rejections or {}, "errors": errors or {}, "per_socket": per_socket,
+                "sockets": len(per_socket)}
+
+    def test_reconnect_is_a_gap_record_with_cause_deltas(self):
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        eng.note_feed_stats(1, self.snap([0, 0]), 0)
+        self.assertEqual(types(out, "gap"), [])
+        eng.note_feed_stats(1, self.snap([1, 0], closes={"1006": 1}), 10)
+        (g,) = types(out, "gap")
+        self.assertEqual((g["kind"], g["delta_reconnects"], g["redundant"], g["flags_pools"]), ("socket_reconnect", 1, True, False))
+        self.assertEqual((g["delta_closes"], g["per_socket_delta"]), ({"1006": 1}, [1, 0]))
+        self.assertFalse(eng.pools[POOL].gaps)  # the other socket covered: the open pool is not flagged
+        eng.note_feed_stats(1, self.snap([2, 1], closes={"1006": 2}, rejections={"413": 1}), 20)  # both sockets went: a real hole is possible
+        g2 = types(out, "gap")[1]
+        self.assertTrue(g2["flags_pools"])
+        self.assertEqual((g2["delta_reconnects"], g2["delta_closes"], g2["delta_rejections"]), (2, {"1006": 1}, {"413": 1}))
+        self.assertTrue(eng.pools[POOL].gaps)
+        eng.note_feed_stats(1, self.snap([2, 1], closes={"1006": 2}, rejections={"413": 1}), 30)  # no advance, no record
+        self.assertEqual(len(types(out, "gap")), 2)
+
+    def test_single_socket_reconnect_always_flags_open_pools(self):
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        eng.note_feed_stats(1, self.snap([0]), 0)
+        eng.note_feed_stats(1, self.snap([1]), 5)
+        self.assertTrue(types(out, "gap")[0]["flags_pools"])
+        self.assertTrue(eng.pools[POOL].gaps)
+
+    def test_rebuilt_source_starts_from_zero(self):
+        eng, out = make_engine()
+        eng.note_feed_stats(1, self.snap([5, 5]), 0)
+        n = len(types(out, "gap"))
+        eng.note_feed_stats(2, self.snap([0, 0]), 1)  # a new source object: no phantom delta
+        self.assertEqual(len(types(out, "gap")), n)
+
+    def test_feed_snapshot_reads_single_and_merged_stats(self):
+        from types import SimpleNamespace as NS
+
+        single = NS(stats=NS(reconnects=3, closes={1006: 2}, rejections={413: 1}))
+        s = h5.feed_snapshot(single)
+        self.assertEqual((s["reconnects"], s["closes"], s["rejections"], s["sockets"]), (3, {"1006": 2}, {"413": 1}, 1))
+        merged = NS(stats=NS(reconnects=3, sockets=[NS(reconnects=2, closes={1006: 2}, rejections={}, errors={}), NS(reconnects=1, closes={}, rejections={413: 1}, errors={"X": 1})]))
+        m = h5.feed_snapshot(merged)
+        self.assertEqual((m["per_socket"], m["closes"], m["rejections"], m["errors"], m["sockets"]), ([2, 1], {"1006": 2}, {"413": 1}, {"X": 1}, 2))
+        self.assertIsNone(h5.feed_snapshot(object()))
+
+
+class EngineErrorTests(unittest.TestCase):
+    def test_a_decode_error_is_counted_logged_and_keeps_the_sockets_up(self):
+        eng, out = make_engine()
+        made, seen = [], []
+        real = h5.decode_notice
+
+        def flaky(engine, note, cache):
+            seen.append(note.slot)
+            if note.slot == 2:
+                raise ValueError("bad notice")
+            return real(engine, note, cache)
+
+        def quiet(slot):
+            return Notice(slot, f"s{slot}", False, ("Program log: x",), 1_800_000_000_000 + slot, "confirmed", "f")
+
+        class Src:
+            async def notices(self, stop):
+                for s in (1, 2, 3):
+                    yield quiet(s)
+                stop.set()
+
+        errs = []
+        with tempfile.TemporaryDirectory() as d:
+            elog = h5.ErrorLog(Path(d) / "errors.log")
+            h5.decode_notice = flaky
+            try:
+                asyncio.run(h5.run_feed(lambda: (made.append(1), Src())[1], eng, asyncio.Event(), on_decode_error=lambda e, n: (errs.append(e), elog.log(e, {"slot": n.slot}))))
+            finally:
+                h5.decode_notice = real
+            text = (Path(d) / "errors.log").read_text()
+        self.assertEqual(seen, [1, 2, 3])  # the notice after the bad one was still processed
+        self.assertEqual(len(made), 1)  # no source restart
+        self.assertEqual(eng.counters["decode_errors"], 1)
+        self.assertEqual(eng.counters["feed_restarts"], 0)
+        self.assertIn("Traceback", text)
+        self.assertIn("ValueError: bad notice", text)
+        self.assertEqual(types(out, "error")[0]["exc"], "ValueError")
+        self.assertEqual(types(out, "gap"), [])
+
+    def test_error_log_is_capped(self):
+        with tempfile.TemporaryDirectory() as d:
+            elog = h5.ErrorLog(Path(d) / "e.log", max_bytes=300)
+            for i in range(50):
+                try:
+                    raise RuntimeError("x" * 100)
+                except RuntimeError as e:
+                    elog.log(e)
+            self.assertGreater(elog.dropped, 0)
+            self.assertLess((Path(d) / "e.log").stat().st_size, 3000)
+
+
+class OutDirAndArgvTests(unittest.TestCase):
+    def test_default_out_dir_is_user_writable(self):
+        self.assertEqual(h5.DEFAULT_OUT_DIR, os.path.join(os.path.expanduser("~"), "data", "h5-shadow"))
+        self.assertIsNone(h5.build_parser().parse_args([]).out_dir)  # replay writes nothing unless --out-dir is given
+
+    def test_dotdot_is_refused(self):
+        with self.assertRaises(ValueError):
+            h5.check_out_dir("/tmp/../etc/x")
+        self.assertEqual(h5.check_out_dir("/tmp/h5-x"), Path("/tmp/h5-x"))
+
+    def test_wrapper_refuses_dotdot_under_an_allowed_prefix(self):
+        import subprocess
+
+        script = Path(__file__).resolve().parent.parent / "scripts" / "research" / "h5-shadow.sh"
+        for bad in ("/tmp/../etc/x", "/var/lib/mal/h5-shadow/../../x"):
+            r = subprocess.run(["bash", str(script)], env={"PATH": os.environ["PATH"], "HOME": "/home/x", "H5_OUT_DIR": bad}, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, bad)
+
+    def test_ws_url_query_is_redacted_in_the_logged_argv(self):
+        argv = ["--sockets", "2", "--ws-url", "wss://host.example/ws?api-key=SECRET", "--ws-url=wss://u:p@h2.example:8900/x?k=SECRET#frag", "--ws-url", "wss://plain.example/"]
+        out = h5.redact_argv(argv)
+        self.assertNotIn("SECRET", json.dumps(out))
+        self.assertNotIn("u:p", json.dumps(out))
+        self.assertEqual(out[3], "wss://host.example/ws?REDACTED")
+        self.assertEqual(out[4], "--ws-url=wss://h2.example:8900/x?REDACTED")
+        self.assertEqual(out[6], "wss://plain.example/")
 
 
 class DisclosedAdditionsTests(unittest.TestCase):
@@ -952,7 +1216,7 @@ class ModuleTests(unittest.TestCase):
 
         script = Path(__file__).resolve().parent.parent / "scripts" / "research" / "h5-shadow.sh"
         self.assertEqual(subprocess.run(["bash", "-n", str(script)]).returncode, 0)
-        r = subprocess.run(["bash", str(script)], env={"PATH": os.environ["PATH"], "H5_OUT_DIR": "/etc/x"}, capture_output=True, text=True)
+        r = subprocess.run(["bash", str(script)], env={"PATH": os.environ["PATH"], "HOME": "/home/x", "H5_OUT_DIR": "/etc/x"}, capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
         self.assertIn("refusing out dir", r.stderr)
 

@@ -53,7 +53,9 @@ import os
 import signal
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Sequence
 
@@ -73,7 +75,7 @@ log = logging.getLogger("mal.h5_shadow")
 SCHEMA = "h5_shadow_v1"
 RULE_ID = "H5-BOOSTFLOOR v1"
 RULE_SHA256 = "c66b1a5990468080d56a97d67619c035cd81e2782eac89c48b94b8c9c9abe56c"  # /data/mal/hunt-1008/h5-flows/RULE.md
-DEFAULT_OUT_DIR = "/var/lib/mal/h5-shadow"
+DEFAULT_OUT_DIR = os.path.join(os.path.expanduser("~"), "data", "h5-shadow")  # user-writable; no sudo needed on fast-0
 
 # ---- the rule's numbers (RULE.md). Do not edit without a new pre-registration ---------------------------------
 V_LO = 17.5e9  # lamports, universe: first print's V in [V_LO, V_HI]
@@ -101,7 +103,8 @@ CHAIN_TOL = 2e-3  # |Q_pre(i+1) - Q_post(i)| / Q above this counts as a quote-ch
 GAP_SLOTS = 30  # a jump of more than this many slots between consecutive events is logged as a gap
 SILENCE_S = 20.0  # no event for this long is logged as a gap
 SPS_WINDOW_S = 300
-SPS_MIN_SPAN_S = 120
+SPS_MIN_SPAN_S = 8  # bootstrap: ready about 10 s after the first PumpSwap print of ANY pool; the fit sharpens as the window fills
+SPS_MIN_POINTS = 8
 VARIANTS = ("pv", "fv")
 STRIP_MAX_ROWS = 20_000  # per triggered pool; a longer strip is cut and flagged
 # CAP-PICK seal: the counted walk-2 window starts 2026-10-16T01:00Z. Inside it, a pool's outcome states and price strip are withheld unless a
@@ -109,7 +112,13 @@ STRIP_MAX_ROWS = 20_000  # per triggered pool; a longer strip is cut and flagged
 SEAL_START_MS = int(datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc).timestamp() * 1000)
 SEAL_REASON = "cap_pick_seal"
 SEEN_TTL_S = 1200.0
-ANNOUNCE_TTL_S = 900.0
+ANNOUNCE_TTL_S = 1200.0  # must be >= SEEN_TTL_S: an announcement may not expire before the pool it announced can be forgotten
+REJECT_LOG_MAX = 50  # reject records written per run (the counters are unbounded)
+# heuristic only (counter unannounced_fresh): a first-seen print that looks like a new pool's first print
+FRESH_REAL_QUOTE_MAX = 100 * 10**9
+FRESH_BASE_MIN, FRESH_BASE_MAX = 1.8e14, 2.1e14
+ERRORS_MAX_BYTES = 5_000_000
+ERROR_RECORDS_MAX = 20
 
 _CREATE_POOL_PREFIX = base64.b64encode(bytes.fromhex("b1310cd2a076a774")).decode()[:10]
 _BOOST_EVENT_PREFIX = base64.b64encode(bytes.fromhex("3f451c16305cc2b9")).decode()[:10]
@@ -150,9 +159,10 @@ class SlotClock:
     """Seconds per slot from (slot, unix block time) pairs of the events themselves: a rolling window of the first slot seen in each
     new block-time second. No RPC. None until the window spans SPS_MIN_SPAN_S."""
 
-    def __init__(self, window_s: int = SPS_WINDOW_S, min_span_s: int = SPS_MIN_SPAN_S) -> None:
-        self.window_s, self.min_span_s = window_s, min_span_s
+    def __init__(self, window_s: int = SPS_WINDOW_S, min_span_s: int = SPS_MIN_SPAN_S, min_points: int = SPS_MIN_POINTS) -> None:
+        self.window_s, self.min_span_s, self.min_points = window_s, min_span_s, min_points
         self._pts: collections.deque[tuple[int, int]] = collections.deque()  # (block time s, first slot seen)
+        self._dirty, self._cache = True, None
 
     def observe(self, slot: int, ts: int | None) -> None:
         if not ts:
@@ -162,14 +172,33 @@ class SlotClock:
         self._pts.append((int(ts), int(slot)))
         while len(self._pts) > 2 and self._pts[-1][0] - self._pts[0][0] > self.window_s:
             self._pts.popleft()
+        self._dirty = True
+
+    def n_points(self) -> int:
+        return len(self._pts)
+
+    def span_s(self) -> int:
+        return self._pts[-1][0] - self._pts[0][0] if len(self._pts) >= 2 else 0
 
     def sps(self) -> float | None:
-        if len(self._pts) < 2:
+        """Least-squares slope of block time on slot over the window (cached until a new second arrives)."""
+        if self._dirty:
+            self._dirty, self._cache = False, self._fit()
+        return self._cache
+
+    def _fit(self) -> float | None:
+        n = len(self._pts)
+        if n < self.min_points or self.span_s() < self.min_span_s:
             return None
-        (t0, s0), (t1, s1) = self._pts[0], self._pts[-1]
-        if t1 - t0 < self.min_span_s or s1 <= s0:
+        t0, s0 = self._pts[0]
+        xs = [s - s0 for _, s in self._pts]
+        ys = [t - t0 for t, _ in self._pts]
+        mx, my = sum(xs) / n, sum(ys) / n
+        sxx = sum((x - mx) ** 2 for x in xs)
+        if sxx <= 0:
             return None
-        return (t1 - t0) / (s1 - s0)
+        slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
+        return slope if slope > 0 else None
 
 
 # ---- pool arithmetic ----------------------------------------------------------------------------------------
@@ -252,6 +281,8 @@ class Pool:
         self.min_q_fv: float | None = None
         self.no_sps = 0
         self.disagree = 0  # sells in [0, 300] s where the per-print-V and fixed-V Q fall on different sides of 40 SOL
+        self.slot_regress = 0  # prints whose slot is lower than the previous print's (arrival order is not slot order)
+        self.skip_logged = False
         self.closed = False
 
 
@@ -290,6 +321,7 @@ class Engine:
         self.feed_epoch_ms: int | None = None  # time of the last feed (re)start; pools announced before it may have missed prints
         self.counters: collections.Counter = collections.Counter()
         self.mint_pools: dict[str, set[str]] = {}
+        self._feed_prev: dict[int, dict] = {}
 
     # ---- emit -----------------------------------------------------------------------------------------------
     def emit(self, rec: dict) -> None:
@@ -305,8 +337,21 @@ class Engine:
         self.announced.move_to_end(pool)
         if mint:
             self.mint_pools.setdefault(mint, set()).add(pool)
-        while self.announced and next(iter(self.announced.values()))[1] < recv_ms - ANNOUNCE_TTL_S * 1000:
-            self.announced.popitem(last=False)
+        self._evict_announced(recv_ms)
+
+    def _evict_announced(self, now_ms_: int) -> None:
+        """Drop announcements older than ANNOUNCE_TTL_S, and the mint_pools entries that pointed at them (bounded memory)."""
+        cut = now_ms_ - ANNOUNCE_TTL_S * 1000
+        while self.announced:
+            pool, (_slot, rms, mint, _q) = next(iter(self.announced.items()))
+            if rms >= cut:
+                break
+            del self.announced[pool]
+            pools = self.mint_pools.get(mint) if mint else None
+            if pools is not None:
+                pools.discard(pool)
+                if not pools:
+                    del self.mint_pools[mint]
 
     def on_boost_event(self, ev: dict, slot: int, recv_ms: int) -> None:
         """BoostBuyAndBurn event: learn the BOOST signer and the vault's remaining budget for a tracked pool (cross-check; report only)."""
@@ -346,6 +391,7 @@ class Engine:
             self.silence_open = True
             self._gap("silence", silent_ms=now - self.last_event_ms)
         self._close_due(now)
+        self._evict_announced(now)
         cut = now - SEEN_TTL_S * 1000
         while self.seen and next(iter(self.seen.values())) < cut:
             self.seen.popitem(last=False)
@@ -356,12 +402,33 @@ class Engine:
         self._gap("feed_restart", reason=reason)
         self.hw_slot = None  # the next event is a fresh reference; do not report a slot jump across a known restart
 
-    def _gap(self, kind: str, **kw: Any) -> None:
+    def _gap(self, kind: str, *, flag_pools: bool = True, **kw: Any) -> None:
         self.counters["gaps"] += 1
-        rec = {"type": "gap", "kind": kind, "open_pools": len(self.pools), **kw}
-        for p in self.pools.values():
-            p.gaps.append({"kind": kind, **{k: v for k, v in kw.items() if isinstance(v, (int, str))}})
+        rec = {"type": "gap", "kind": kind, "open_pools": len(self.pools), "flags_pools": flag_pools, **kw}
+        if flag_pools:
+            for p in self.pools.values():
+                p.gaps.append({"kind": kind, **{k: v for k, v in kw.items() if isinstance(v, (int, str))}})
         self.emit(rec)
+
+    def note_feed_stats(self, key: int, snap: dict, now_ms_: int) -> None:
+        """Compare the source's reconnect counters with the last look. Any advance is a gap record carrying the cause (close codes, handshake
+        rejections, errors, which socket). On a redundant feed the open pools are flagged only when every socket reconnected (delta >= sockets);
+        on a single socket every reconnect flags them."""
+        prev = self._feed_prev.get(key) or {"reconnects": 0, "closes": {}, "rejections": {}, "errors": {}, "per_socket": []}
+        self._feed_prev = {key: snap}  # a rebuilt source starts at zero: only the current one is tracked
+        delta = snap["reconnects"] - prev["reconnects"]
+        if delta <= 0:
+            return
+
+        def dd(a: dict, b: dict) -> dict:
+            return {k: v - b.get(k, 0) for k, v in a.items() if v > b.get(k, 0)}
+
+        n = int(snap.get("sockets") or 1)
+        ps_prev = prev.get("per_socket") or [0] * n
+        per_socket = [c - (ps_prev[i] if i < len(ps_prev) else 0) for i, c in enumerate(snap.get("per_socket") or [])]
+        self._gap("socket_reconnect", flag_pools=(n == 1 or delta >= n), delta_reconnects=delta, reconnects_total=snap["reconnects"], sockets=n,
+                  redundant=n > 1, per_socket_delta=per_socket, delta_closes=dd(snap["closes"], prev["closes"]),
+                  delta_rejections=dd(snap["rejections"], prev["rejections"]), delta_errors=dd(snap["errors"], prev["errors"]))
 
     # ---- trades ---------------------------------------------------------------------------------------------
     def on_trade(self, row: dict) -> None:
@@ -395,19 +462,26 @@ class Engine:
     def _maybe_track(self, row: dict, slot: int, recv_ms: int) -> Pool | None:
         pool = row["pool"]
         self.seen[pool] = recv_ms
-        ann = self.announced.get(pool)
-        if ann is None and self.require_announce:
-            self.counters["rejected_unannounced"] += 1
-            return None
-        if ann is not None and ann[3] is not None and ann[3] != WSOL_MINT:
-            self.counters["rejected_quote_mint"] += 1
-            return None
         v_raw = row.get("virtual_quote_reserves")
         if v_raw is None:
             self.counters["rejected_no_event_v"] += 1
             return None
-        if not (V_LO <= v_raw <= V_HI):
+        if not (V_LO <= v_raw <= V_HI):  # V range first: most pools on the tape are not BOOST-era graduations at all
             self.counters["rejected_v_range"] += 1
+            return None
+        ann = self.announced.get(pool)
+        if ann is None and self.require_announce:
+            self.counters["rejected_unannounced"] += 1
+            q, b = int(row["quote_reserve"]), int(row["base_reserve"])
+            if q <= FRESH_REAL_QUOTE_MAX and FRESH_BASE_MIN <= b <= FRESH_BASE_MAX:  # heuristic: a first print of a pool that looks new
+                self.counters["unannounced_fresh"] += 1
+            return None
+        if ann is not None and ann[3] is not None and ann[3] != WSOL_MINT:
+            self.counters["rejected_quote_mint"] += 1
+            if self.counters["reject_records"] < REJECT_LOG_MAX:
+                self.counters["reject_records"] += 1
+                self.emit({"type": "reject", "reason": "quote_mint", "pool": pool, "slot": slot, "base_mint": ann[2], "quote_mint": ann[3],
+                           "wsol_expected": WSOL_MINT, "v": int(v_raw)})
             return None
         mint = ann[2] if ann else row.get("mint")
         first = Pr(recv_ms=recv_ms, ts=row.get("event_ts"))
@@ -434,6 +508,9 @@ class Engine:
         # chain: base reserves are exact, so a mismatch means a missed or reordered print; the quote chain is informational
         if p.prints:
             prev = p.prints[-1]
+            if pr.slot < prev.slot:
+                p.slot_regress += 1
+                self.counters["slot_regress"] += 1
             if pr.b != prev.b_post:
                 p.base_breaks += 1
                 self.counters["base_breaks"] += 1
@@ -511,6 +588,14 @@ class Engine:
         if not sps_ok(sps):
             p.no_sps += 1
             self.counters["no_sps_evals"] += 1
+            if not p.skip_logged and min(pr.q_post("pv", p.v0), pr.q_post("fv", p.v0)) / 1e9 <= Q_STAR_SOL:
+                spent, ident, src = self.boost_spent(p)
+                if not (ident is not None and pr.trader == ident) and spent < BOOST_BUDGET * BOOST_DONE_FRAC:
+                    p.skip_logged = True  # once per pool: this sell would have been evaluated as a trigger candidate if sps had been known
+                    self.counters["skipped_no_sps_would_trigger"] += 1
+                    self.emit({"type": "skipped_no_sps", "pool": p.pool, "mint": p.mint, "s0": p.s0, "slot": pr.slot, "slot_offset": pr.slot - p.s0,
+                               "sps": sps, "t_recv_ms": pr.recv_ms, "signature": pr.sig, "q_pv_post_sol": pr.q_post("pv", p.v0) / 1e9,
+                               "q_fv_post_sol": pr.q_post("fv", p.v0) / 1e9, "boost_spent_sol": spent / 1e9, "boost_src": src})
             return
         t = (pr.slot - p.s0) * sps
         if not (T_MIN_S <= t <= T_MAX_S):
@@ -548,7 +633,8 @@ class Engine:
             "boost_vault_remaining_sol": None if p.boost_remaining is None else p.boost_remaining / 1e9,
             "landing_slot_primary": pr.slot + k_p, "landing_slot_binding": pr.slot + k_b, "entry_slots": {"primary": k_p, "binding": k_b},
             "exit_trigger_slot": exit_slot, "exit_landing_slot": exit_slot + el, "exit_lag_slots": el,
-            "prints_seen": len(p.prints), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks,
+            "prints_seen": len(p.prints), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "slot_regress": p.slot_regress,
+            "sps_n": None if self.sps_fn else self.clock.n_points(), "sps_span_s": None if self.sps_fn else self.clock.span_s(),
             "gap": bool(p.gaps), "gaps": p.gaps[:5], "announced": p.announced_slot is not None, "v_missing": pr.v_missing,
         }
         p.trig[var] = rec
@@ -703,7 +789,8 @@ class Engine:
             "min_q_pv_sol": None if (sealed or p.min_q_pv is None) else p.min_q_pv / 1e9,
             "min_q_fv_sol": None if (sealed or p.min_q_fv is None) else p.min_q_fv / 1e9, "sealed": sealed,
             "sps_path": self._sps_path(p), "pv_fv_disagree_sells": p.disagree,
-            "triggered": sorted(p.trig), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "chain_max_rel_err": p.chain_max_rel,
+            "triggered": sorted(p.trig), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "slot_regress": p.slot_regress,
+            "chain_max_rel_err": p.chain_max_rel,
             "gap": bool(p.gaps), "gaps": p.gaps[:5],
         }
         self.emit(rec)
@@ -762,6 +849,76 @@ class JsonlSink:
             self._fh = None
 
 
+class ErrorLog:
+    """Full tracebacks of engine / decode failures, kept out of the JSONL. Capped so a stuck bug cannot fill the disk."""
+
+    def __init__(self, path: str | Path, max_bytes: int = ERRORS_MAX_BYTES) -> None:
+        self.path, self.max_bytes, self.bytes, self.dropped = Path(path), max_bytes, 0, 0
+
+    def log(self, exc: BaseException, ctx: dict | None = None) -> None:
+        if self.bytes >= self.max_bytes:
+            self.dropped += 1
+            return
+        head = json.dumps(clean({"t_ms": now_ms(), "exc": type(exc).__name__, "msg": str(exc)[:300], **(ctx or {})}), allow_nan=False)
+        text = head + "\n" + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)) + "\n"
+        with open(self.path, "a", encoding="utf-8") as fh:
+            fh.write(text)
+        self.bytes += len(text)
+
+
+def _strip_url(u: str) -> str:
+    """scheme://host/path only: no userinfo, query or fragment (public RPC URLs can carry an api-key query)."""
+    try:
+        sp = urlsplit(u)
+    except ValueError:
+        return "REDACTED"
+    if not sp.scheme or not sp.hostname:
+        return "REDACTED"
+    return f"{sp.scheme}://{sp.hostname}{':' + str(sp.port) if sp.port else ''}{sp.path}" + ("?REDACTED" if sp.query else "")
+
+
+def redact_argv(argv: Sequence[str]) -> list[str]:
+    out: list[str] = []
+    nxt = False
+    for a in argv:
+        if nxt:
+            out.append(_strip_url(a))
+            nxt = False
+        elif a == "--ws-url":
+            out.append(a)
+            nxt = True
+        elif a.startswith("--ws-url="):
+            out.append("--ws-url=" + _strip_url(a.split("=", 1)[1]))
+        else:
+            out.append(a)
+    return out
+
+
+def check_out_dir(path: str) -> Path:
+    if ".." in Path(path).parts:
+        raise ValueError(f"out dir {path!r} contains '..'")
+    return Path(path)
+
+
+def feed_snapshot(source: Any) -> dict | None:
+    """Reconnect counters of a trade_source feed (single socket or merged), merged across sockets, for note_feed_stats."""
+    stats = getattr(source, "stats", None)
+    if stats is None or not isinstance(getattr(stats, "reconnects", None), int):
+        return None
+    socks = getattr(stats, "sockets", None)
+    parts = list(socks) if socks else [stats]
+
+    def merged(attr: str) -> dict:
+        out: dict[str, int] = {}
+        for s in parts:
+            for k, v in (getattr(s, attr, None) or {}).items():
+                out[str(k)] = out.get(str(k), 0) + int(v)
+        return out
+
+    return {"reconnects": stats.reconnects, "closes": merged("closes"), "rejections": merged("rejections"), "errors": merged("errors"),
+            "per_socket": [int(getattr(s, "reconnects", 0)) for s in parts], "sockets": len(parts)}
+
+
 def write_status(path: Path, status: dict) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(clean(status), indent=1, sort_keys=True, allow_nan=False) + "\n")
@@ -810,7 +967,8 @@ def decode_notice(engine: Engine, note: Any, pool_mints: dict[str, tuple[str, st
 
 # ---- live runner ----------------------------------------------------------------------------------------------
 async def run_feed(source_factory: Callable[[], Any], engine: Engine, stop: asyncio.Event, *, backoff0: float = 1.0, backoff_max: float = 60.0,
-                   max_seconds: float | None = None, sleep: Callable[[float], Any] = asyncio.sleep) -> None:
+                   max_seconds: float | None = None, sleep: Callable[[float], Any] = asyncio.sleep,
+                   on_decode_error: Callable[[BaseException, Any], None] | None = None) -> None:
     """Consume notices until stop. A source that raises or ends is rebuilt after a backoff; each restart is a logged gap that flags open pools."""
     pool_mints: dict[str, tuple[str, str]] = {}
     started = time.monotonic()
@@ -824,7 +982,18 @@ async def run_feed(source_factory: Callable[[], Any], engine: Engine, stop: asyn
             source = source_factory()
             async for note in source.notices(stop):
                 backoff = backoff0
-                decode_notice(engine, note, pool_mints)
+                try:  # an engine / decode bug on one notice must not take the sockets down
+                    decode_notice(engine, note, pool_mints)
+                except Exception as exc:  # noqa: BLE001
+                    engine.counters["decode_errors"] += 1
+                    if engine.counters["decode_errors"] <= ERROR_RECORDS_MAX:
+                        engine.emit({"type": "error", "where": "decode", "exc": type(exc).__name__, "msg": str(exc)[:200], "slot": getattr(note, "slot", None),
+                                     "signature": getattr(note, "signature", None)})
+                    if on_decode_error is not None:
+                        try:
+                            on_decode_error(exc, note)
+                        except Exception:  # noqa: BLE001
+                            pass
                 if len(pool_mints) > 50_000:
                     for k in list(pool_mints)[:25_000]:
                         del pool_mints[k]
@@ -845,7 +1014,7 @@ async def run_feed(source_factory: Callable[[], Any], engine: Engine, stop: asyn
 
 
 async def housekeeping(engine: Engine, sink: JsonlSink, status_path: Path, stop: asyncio.Event, source_ref: dict, interval_s: float = 5.0,
-                       hb_s: float = 60.0) -> None:
+                       hb_s: float = 60.0, on_error: Callable[[BaseException, dict], None] | None = None) -> None:
     last_hb = 0.0
     while not stop.is_set():
         try:
@@ -853,17 +1022,28 @@ async def housekeeping(engine: Engine, sink: JsonlSink, status_path: Path, stop:
         except asyncio.TimeoutError:
             pass
         now = engine.wall()
-        engine.tick(now)
-        if time.monotonic() - last_hb >= hb_s or stop.is_set():
-            last_hb = time.monotonic()
-            st = status_snapshot(engine, sink, source_ref.get("source"))
-            engine.emit({"type": "hb", **st})
-            write_status(status_path, {"schema": SCHEMA, "updated_ms": now, **st})
+        try:
+            engine.tick(now)
+            src = source_ref.get("source")
+            snap = feed_snapshot(src)
+            if snap is not None:
+                engine.note_feed_stats(id(src), snap, now)
+            if time.monotonic() - last_hb >= hb_s or stop.is_set():
+                last_hb = time.monotonic()
+                st = status_snapshot(engine, sink, src)
+                engine.emit({"type": "hb", **st})
+                write_status(status_path, {"schema": SCHEMA, "updated_ms": now, **st})
+        except Exception as exc:  # noqa: BLE001 - housekeeping must not die
+            engine.counters["housekeeping_errors"] += 1
+            if on_error is not None:
+                on_error(exc, {"where": "housekeeping"})
 
 
 def status_snapshot(engine: Engine, sink: JsonlSink | None, source: Any) -> dict:
     s = {
         "hw_slot": engine.hw_slot, "last_event_ms": engine.last_event_ms, "open_pools": len(engine.pools), "sps": engine.clock.sps(),
+        "sps_points": engine.clock.n_points(), "sps_span_s": engine.clock.span_s(), "announced": len(engine.announced),
+        "mint_pools": len(engine.mint_pools), "seen": len(engine.seen),
         "counters": dict(engine.counters),
     }
     if sink is not None:
@@ -885,8 +1065,9 @@ def build_source(ws_urls: Sequence[str], sockets: int, commitment: str) -> Any:
 
 
 async def run_live(args: argparse.Namespace) -> int:
-    out_dir = Path(args.out_dir)
+    out_dir = check_out_dir(args.out_dir or DEFAULT_OUT_DIR)
     sink = JsonlSink(out_dir)
+    errlog = ErrorLog(out_dir / "h5-shadow-errors.log")
     engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -898,13 +1079,14 @@ async def run_live(args: argparse.Namespace) -> int:
         source_ref["source"] = build_source(args.ws_url or [], args.sockets, args.commitment)
         return source_ref["source"]
 
-    engine.emit({"type": "start", "rule": RULE_ID, "rule_sha256": RULE_SHA256, "argv": sys.argv[1:], "pid": os.getpid(), "sockets": args.sockets,
+    engine.emit({"type": "start", "rule": RULE_ID, "rule_sha256": RULE_SHA256, "argv": redact_argv(sys.argv[1:]), "out_dir": str(out_dir), "pid": os.getpid(), "sockets": args.sockets,
                  "commitment": args.commitment, "boost_mode": args.boost_mode, "keys": "none", "sends": "none",
                  "seal": {"reason": SEAL_REASON, "start_ms": SEAL_START_MS, "oracle": "stub_always_true"}})
     engine.feed_epoch_ms = engine.wall()
-    hk = asyncio.create_task(housekeeping(engine, sink, out_dir / "h5-shadow-status.json", stop, source_ref))
+    hk = asyncio.create_task(housekeeping(engine, sink, out_dir / "h5-shadow-status.json", stop, source_ref, on_error=lambda e, ctx: errlog.log(e, ctx)))
     try:
-        await run_feed(factory, engine, stop, max_seconds=args.max_seconds)
+        await run_feed(factory, engine, stop, max_seconds=args.max_seconds,
+                       on_decode_error=lambda e, note: errlog.log(e, {"where": "decode", "slot": getattr(note, "slot", None), "signature": getattr(note, "signature", None)}))
     finally:
         stop.set()
         await hk
@@ -1048,9 +1230,9 @@ def run_replay(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="H5-BOOSTFLOOR v1 live shadow detector (paper only; no keys, no transactions)")
-    ap.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
+    ap.add_argument("--out-dir", default=None, help=f"live: output dir (default {DEFAULT_OUT_DIR}); replay: written only when given")
     ap.add_argument("--ws-url", action="append", default=None, help="public RPC websocket; repeatable (socket i uses url i mod n)")
     ap.add_argument("--sockets", type=int, default=2, help="redundant logsSubscribe sockets merged by signature")
     ap.add_argument("--commitment", default="confirmed", choices=("processed", "confirmed", "finalized"))
@@ -1063,7 +1245,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--sps", default="pool", choices=("pool", "rolling"), help="replay: frozen per-pool sps (parity) or the live rolling slot clock")
     ap.add_argument("--compare-frozen", default=None, help="parquet of the frozen rule's trades (boostdip_frozen_conf.parquet)")
     ap.add_argument("--compare-s0", default=None, help="compare pools whose first print is in this UTC hour or day prefix (default: the first replayed hour)")
+    return ap
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    ap = build_parser()
     args = ap.parse_args(argv)
+    if args.out_dir:
+        try:
+            check_out_dir(args.out_dir)
+        except ValueError as e:
+            ap.error(str(e))
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if args.sockets < 1:
         ap.error("--sockets must be >= 1")
