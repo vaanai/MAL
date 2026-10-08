@@ -610,6 +610,38 @@ class ScopeTests(_Fix):
         res = self.run_e0("dz", scorer=self.fake_scorer(), scorer_extra=["--k-mode", "hour"])  # a dry run passes the guard
         self.assertIs(res["dry_run"], True)
 
+    def test_scorer_repo_needs_dry_run(self) -> None:
+        self.pinned()
+        tree = make_scorer_tree(self.dir)
+        with self.assertRaises(e0.E0Error) as cm:
+            e0.run_e0("fix", DAY, self.dir / "w", block=self.block, engine_factory=self.factory(), repo=self.repo, scorer_repo=tree)
+        self.assertIn("--scorer-repo", str(cm.exception))
+        self.assertFalse((self.dir / "w").exists())
+        with mock.patch.object(cp, "BLOCKS", {"fix": self.block}):
+            self.assertEqual(e0.main(["run", "--view", "fix", "--day", DAY, "--out", str(self.dir / "w2"), "--scorer-repo", str(tree)]), 2)
+
+    def test_non_dry_run_needs_the_scorer_at_head(self) -> None:
+        self.pinned()
+        with self.assertRaises(e0.E0Error) as cm:  # the throwaway tree has no tools/cap_pick_score.py
+            e0.run_e0("fix", DAY, self.dir / "n", block=self.block, engine_factory=self.factory(), repo=self.repo)
+        self.assertIn("tools/cap_pick_score.py must exist at HEAD", str(cm.exception))
+        self.assertFalse((self.dir / "n").exists())
+        # with the scorer committed at HEAD, a non-dry run uses it from this same tree
+        (self.repo / "tools" / "cap_pick_score.py").write_text(FAKE_SCORER, encoding="utf-8")
+        (self.repo / "tools" / "helper_mod.py").write_text("X = 1\n", encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "scorer at HEAD")
+        _git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        with mock.patch.object(e0, "E0_VIEW", "explore-0814"):  # the real scorer command needs a view it knows
+            res = e0.run_e0("explore-0814", DAY, self.dir / "n2", block=self.block, engine_factory=self.factory(), repo=self.repo, log=open("/dev/null", "w"))
+        self.assertIs(res["dry_run"], False)
+        self.assertTrue(res["equal_C"], res["C"])
+        self.assertEqual(res["C"]["scorer_head"], _git(self.repo, "rev-parse", "HEAD"))
+        self.assertEqual(res["scorer_imported_module_blobs"], {})
+        self.assertEqual(res["imported_module_blobs"]["tools.cap_pick_score"], _git(self.repo, "rev-parse", "HEAD:tools/cap_pick_score.py"))
+        self.assertIn("scorer", res["imported_module_sides"]["tools.helper_mod"])
+        self.assertTrue(res["ok"], res["checks"])
+
     def test_a_dry_run_is_marked_and_check_refuses_it(self) -> None:
         res = self.run_e0(scorer=self.fake_scorer())
         self.assertIs(res["dry_run"], True)

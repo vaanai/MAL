@@ -26,6 +26,8 @@ THE THREE LISTS (all for the same day; both sides boot at 00:00Z of that day)
     B  its decision record's `create_ms` (the gate accumulator's create time: the create row's second, or the first matching bonding print's chain second).
     A  the same quantity from A's gate row: `mig_ms - time_to_migrate_s*1000` when the row has features; else the CreateSignal's raw `t_signal_ms`, which is B's
        fallback too (`Replayer._on_signal`: `m.create.t_signal_ms` when the accumulator is gone) and what EXP-022 Amendment 1 specifies.
+  Disclosed: for a no-feature row where B's accumulator still exists (no_bond_history, gate_error) B's `create_ms` is the accumulator's floor-second while A
+  uses the raw `t_signal_ms`; they differ only on a tape with sub-second creates (explore-0814 creates are whole seconds).
   A create-time disagreement on any mint of D (a mint both sides decided) is a mismatch: it goes to `diff.tsv` and `equal_decide` is false.
   Mints older than 60 min at migration on either side: a crosstab of A label x B label in `e0.json` (`crosstab_gt60`) and their lines in `diff_gt60.tsv` (a column
   says which of them are in D: the B picks).
@@ -63,6 +65,8 @@ THE E0 RECORD IS PINNED (quant-proof and reviewer edits on #473)
   * `E0_VIEW` and `E0_DAY` are module constants (explore-0814, 2026-08-20). `run` refuses any other view or day unless `--dry-run` is given. A dry run writes
     `"dry_run": true` in `e0.json`, and `check` refuses a dry-run file as the E0 record (exit 2).
   * `--scorer-arg` is refused unless `--dry-run`: an extra scorer argument could carry a sealed or forward path.
+  * `--scorer-repo` is refused unless `--dry-run`: the E0 record runs the scorer from the same clean HEAD as everything else (EXP-022 2.1 item 3 names the
+    read-ready scorer at the E0 commit), and a non-dry run is refused unless `tools/cap_pick_score.py` exists at HEAD.
   * `check` does not trust the stored `ok`. It recomputes it from the recorded fields: `md5_A_decide == md5_B_decide` with no create-time disagreement,
     `md5_C == md5_Bpicks_U`, the recorded sanity checks, the view and day equal to E0_VIEW and E0_DAY, `dry_run` false, the criterion name, no
     `imported_module_mismatches`, and the blob and module comparisons it makes itself against the worktree. The stored `ok` is shown beside the result.
@@ -577,7 +581,7 @@ def default_engine_factory() -> Any:
     return cp.build_engine()
 
 
-def check_scope(view: str, day: str, dry_run: bool, scorer_extra: Sequence[str] = ()) -> None:
+def check_scope(view: str, day: str, dry_run: bool, scorer_extra: Sequence[str] = (), scorer_repo: Path | None = None) -> None:
     """The E0 record is E0_VIEW on E0_DAY with the scorer's own flags; anything else, or an extra scorer argument, is a dry run."""
     if dry_run:
         return
@@ -585,6 +589,8 @@ def check_scope(view: str, day: str, dry_run: bool, scorer_extra: Sequence[str] 
         raise E0Error(f"the E0 record is {E0_VIEW} {E0_DAY}; {view} {day} needs --dry-run")
     if scorer_extra:
         raise E0Error("--scorer-arg needs --dry-run (an extra scorer argument could carry a sealed or forward path)")
+    if scorer_repo is not None:
+        raise E0Error("--scorer-repo needs --dry-run (the E0 record runs the scorer from the same clean HEAD as the rest)")
 
 
 def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, engine_factory: Callable[[], Any] | None = None,
@@ -592,8 +598,13 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
            skip_c: bool = False, dry_run: bool = False, log: Any = sys.stderr) -> dict[str, Any]:
     """The whole E0 for one view-day. Writes A.canon, B.canon, B.jsonl, C.list, Bpicks_in_U.list, the md5 files, diff.tsv (if A != B) and e0.json."""
     t_start = time.monotonic()
-    check_scope(view, day, dry_run, scorer_extra)
+    check_scope(view, day, dry_run, scorer_extra, scorer_repo)
     repo = repo or REPO
+    if not dry_run and not skip_c and scorer is None:
+        try:
+            head_blob(repo, SCORER_PATH)
+        except E0Error:
+            raise E0Error(f"non-dry run: {SCORER_PATH} must exist at HEAD of {repo} (the scorer runs from the same clean HEAD)") from None
     if not _DAY_RE.match(day):
         raise E0Error(f"--day must be YYYY-MM-DD, got {day!r}")
     block = block or cp.BLOCKS[view]
