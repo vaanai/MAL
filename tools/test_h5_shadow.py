@@ -71,6 +71,7 @@ def make_engine(**kw):
     out: list[dict] = []
     kw.setdefault("sps_fn", lambda p: SPS)
     kw.setdefault("pda_fn", lambda pool: "PDA_" + pool)
+    kw.setdefault("seal_start_ms", None)  # synthetic tape times are in 2027; the seal is tested on its own
     now = [1_800_000_000_000]
     eng = h5.Engine(out.append, wall=lambda: now[0], **kw)
     eng.now = now
@@ -650,6 +651,132 @@ class DisclosedAdditionsTests(unittest.TestCase):
         self.assertEqual(rec["triggered"], ["fv", "pv"])
         self.assertAlmostEqual(rec["boost_last_slice_s"], (1000 + 20 + 25 * 3 - 1000) * SPS)
         self.assertEqual(rec["boost_last_slice_slot"], 1095)
+
+
+class SealAndStripTests(unittest.TestCase):
+    TS0 = 1_800_000_000
+
+    def sealed_run(self, **kw):
+        kw.setdefault("seal_start_ms", self.TS0 * 1000)  # the pool's first print is exactly at the window start
+        eng, out = make_engine(**kw)
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1200, 35.0)
+        t.row(1210, "buy", "X", SOL)
+        t.row(1900, "buy", "W", SOL)
+        for r in t.rows:
+            eng.on_trade(r)
+        eng.close_all("t")
+        return eng, out, t
+
+    def test_oracle_true_inside_the_window_suppresses_outcome_strip_and_min_q(self):
+        eng, out, t = self.sealed_run(suppress_outcome=lambda m: True)
+        outs = types(out, "outcome")
+        self.assertEqual(len(outs), 2)
+        for o in outs:
+            self.assertEqual(o["suppressed"], "cap_pick_seal")
+            for k in ("legs", "exit", "exit_ladder", "complete"):
+                self.assertNotIn(k, o)
+        (strip,) = types(out, "strip")
+        self.assertEqual(strip["suppressed"], "cap_pick_seal")
+        self.assertNotIn("rows", strip)
+        (pool,) = types(out, "pool")
+        self.assertIsNone(pool["min_q_pv_sol"])
+        self.assertIsNone(pool["min_q_fv_sol"])
+        self.assertTrue(pool["sealed"])
+        self.assertEqual((eng.counters["outcomes_suppressed"], eng.counters["strips_suppressed"]), (2, 1))
+        self.assertEqual(eng.counters["outcomes"], 0)
+        self.assertEqual(len(types(out, "trigger")), 2)  # decision-time records are not sealed
+
+    def test_before_the_window_nothing_is_suppressed(self):
+        eng, out, t = self.sealed_run(suppress_outcome=lambda m: True, seal_start_ms=(self.TS0 + 1) * 1000)
+        self.assertEqual(eng.counters["outcomes_suppressed"], 0)
+        self.assertIn("legs", types(out, "outcome")[0])
+        self.assertIn("rows", types(out, "strip")[0])
+        self.assertIsNotNone(types(out, "pool")[0]["min_q_pv_sol"])
+        self.assertFalse(types(out, "pool")[0]["sealed"])
+
+    def test_oracle_false_inside_the_window_lets_the_non_pick_through(self):
+        eng, out, t = self.sealed_run(suppress_outcome=lambda m: False)
+        self.assertEqual(eng.counters["outcomes_suppressed"], 0)
+        self.assertIn("legs", types(out, "outcome")[0])
+
+    def test_fail_closed(self):
+        def boom(m):
+            raise RuntimeError("oracle down")
+
+        for kw in ({"suppress_outcome": boom}, {"suppress_outcome": None}):
+            eng, out, t = self.sealed_run(**kw)
+            self.assertEqual(eng.counters["outcomes_suppressed"], 2, kw)
+        # no mint: suppressed even though the oracle would say no
+        eng, out = make_engine(seal_start_ms=self.TS0 * 1000, suppress_outcome=lambda m: False)
+        eng.on_create_pool(POOL, None, h5.WSOL_MINT, 999, 0)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10, mint=None)
+        boost_buys(t, 1000)
+        drain(t, 1200, 35.0)
+        for r in t.rows:
+            eng.on_trade(r)
+        eng.close_all("t")
+        self.assertEqual(eng.pools, {})
+        self.assertEqual(eng.counters["outcomes_suppressed"], 2)
+
+    def test_stub_oracle_and_default_window(self):
+        self.assertTrue(h5.cap_pick_seal_oracle_stub("anything"))
+        self.assertTrue(h5.cap_pick_seal_oracle_stub(None))
+        self.assertEqual(h5.SEAL_START_MS, 1_792_112_400_000)  # 2026-10-16T01:00:00Z
+        self.assertEqual(h5.iso_from_ms(h5.SEAL_START_MS), "2026-10-16T01:00:00.000Z")
+        eng = h5.Engine(lambda r: None, pda_fn=lambda p: "x", suppress_outcome=h5.cap_pick_seal_oracle_stub)
+        before = h5.Pool("p", "m", 1, h5.Pr(recv_ms=1_792_112_399_000, ts=1_792_112_399), V0, None, None)
+        after = h5.Pool("p", "m", 1, h5.Pr(recv_ms=1_792_112_400_000, ts=1_792_112_400), V0, None, None)
+        self.assertFalse(eng._sealed(before))
+        self.assertTrue(eng._sealed(after))
+
+    def test_strip_reprices_any_slot_exactly(self):
+        eng, out, t = self.sealed_run(seal_start_ms=None)
+        (strip,) = types(out, "strip")
+        o = [x for x in types(out, "outcome") if x["variant"] == "pv"][0]
+        rows, post = strip["rows"], strip["post_last"]
+        self.assertEqual(strip["cols"], ["slot", "q_pv_pre", "q_fv_pre", "base_pre"])
+        self.assertEqual(strip["from_slot"], 1200)
+        self.assertFalse(strip["truncated"])
+
+        def state(X, col):  # the scorer's rule
+            for r in rows:
+                if r[0] > X:
+                    return r[col], r[3]
+            return post[col], post[3]
+
+        for X, want in ((o["exit"]["landing_slot"], o["exit"]), (o["legs"]["primary"]["landing_slot"], o["legs"]["primary"])):
+            q, b = state(X, 1)
+            self.assertAlmostEqual(q, want["q_sol"] * 1e9, delta=1)
+            self.assertAlmostEqual(b, want["base"], delta=1)
+        for T, want in o["exit_ladder"].items():  # every ladder point, from the strip alone
+            q, b = state(want["landing_slot"], 1)
+            self.assertAlmostEqual(q, want["q_sol"] * 1e9, delta=1)
+        self.assertEqual(post[0], 1900)
+
+    def test_no_strip_for_untriggered_pools(self):
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        run(eng, t)
+        eng.close_all("t")
+        self.assertEqual(types(out, "strip"), [])
+
+    def test_strip_is_cut_and_flagged_when_huge(self):
+        old = h5.STRIP_MAX_ROWS
+        h5.STRIP_MAX_ROWS = 2
+        try:
+            eng, out, t = self.sealed_run(seal_start_ms=None)
+        finally:
+            h5.STRIP_MAX_ROWS = old
+        (strip,) = types(out, "strip")
+        self.assertEqual(len(strip["rows"]), 2)
+        self.assertTrue(strip["truncated"])
 
 
 class SinkTests(unittest.TestCase):

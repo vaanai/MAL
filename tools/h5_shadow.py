@@ -103,6 +103,11 @@ SILENCE_S = 20.0  # no event for this long is logged as a gap
 SPS_WINDOW_S = 300
 SPS_MIN_SPAN_S = 120
 VARIANTS = ("pv", "fv")
+STRIP_MAX_ROWS = 20_000  # per triggered pool; a longer strip is cut and flagged
+# CAP-PICK seal: the counted walk-2 window starts 2026-10-16T01:00Z. Inside it, a pool's outcome states and price strip are withheld unless a
+# pick oracle says the mint is NOT a pick. Fail closed. Decision-time records (trigger) are unaffected.
+SEAL_START_MS = int(datetime(2026, 10, 16, 1, 0, tzinfo=timezone.utc).timestamp() * 1000)
+SEAL_REASON = "cap_pick_seal"
 SEEN_TTL_S = 1200.0
 ANNOUNCE_TTL_S = 900.0
 
@@ -128,6 +133,12 @@ def clean(obj: Any) -> Any:
     if isinstance(obj, (list, tuple)):
         return [clean(v) for v in obj]
     return obj
+
+
+def cap_pick_seal_oracle_stub(mint: str | None) -> bool:
+    """Placeholder pick oracle: True = suppress. Inside the seal window every mint is treated as a possible pick, so everything is suppressed
+    until a real oracle (the pick set, known to the sealed reader only) replaces this."""
+    return True
 
 
 def sps_ok(sps: float | None) -> bool:
@@ -257,6 +268,8 @@ class Engine:
         clock: SlotClock | None = None,
         wall: Callable[[], int] = now_ms,
         pda_fn: Callable[[str], str] | None = None,
+        suppress_outcome: Callable[[str | None], bool] | None = None,  # seal oracle: True = withhold this mint's outcome / strip
+        seal_start_ms: int | None = SEAL_START_MS,  # None disables the seal (replay of exploration data)
     ) -> None:
         if boost_mode not in ("auto", "pda", "behavioural"):
             raise ValueError("boost_mode")
@@ -266,6 +279,7 @@ class Engine:
         if pda_fn is None:
             from tools.pump_structure_monitor import boost_vault_authority as pda_fn  # pure python, no network
         self.pda_fn = pda_fn
+        self.suppress_outcome, self.seal_start_ms = suppress_outcome, seal_start_ms
         self.pools: dict[str, Pool] = {}
         self.announced: collections.OrderedDict[str, tuple[int, int, str | None, str | None]] = collections.OrderedDict()
         self.seen: collections.OrderedDict[str, int] = collections.OrderedDict()  # pool -> recv_ms of first sight (rejected or tracked)
@@ -566,6 +580,11 @@ class Engine:
         if pend not in p.pending:
             return
         p.pending.remove(pend)
+        if self._sealed(p):
+            self.counters["outcomes_suppressed"] += 1
+            self.emit({"type": "outcome", "variant": pend["variant"], "pool": p.pool, "mint": p.mint, "s0": p.s0, "trigger_slot": pend["trig_slot"],
+                       "suppressed": SEAL_REASON})
+            return
         var, sps, X_exit = pend["variant"], pend["sps"], pend["exit_land"]
         complete = (self.hw_slot is not None and self.hw_slot >= pend["resolve_at"]) or not final
         legs: dict[str, Any] = {}
@@ -608,6 +627,41 @@ class Engine:
             self.counters["outcomes_incomplete"] += 1
         self.emit(rec)
 
+    def _sealed(self, p: Pool) -> bool:
+        """True when this pool's post-decision states must not be written. Fail closed: no mint, no oracle, or an oracle that raises inside
+        the window all suppress. Before the window nothing is suppressed."""
+        if self.seal_start_ms is None:
+            return False
+        t = p.s0_ts * 1000 if p.s0_ts else p.s0_recv_ms
+        if t < self.seal_start_ms:
+            return False
+        if p.mint is None or self.suppress_outcome is None:
+            return True
+        try:
+            return bool(self.suppress_outcome(p.mint))
+        except Exception:  # noqa: BLE001 - fail closed
+            self.counters["seal_oracle_errors"] += 1
+            return True
+
+    def _emit_strip(self, p: Pool, sealed: bool) -> None:
+        """Compact per-print pre-trade states of a TRIGGERED pool from its first trigger print to the end of its life, so an offline scorer can
+        reprice any landing / exit slot exactly (state at X = pre of the first row with slot > X, else post_last), e.g. s0 + round(330 / sps_path)."""
+        if not p.trig:
+            return
+        start = min(r["slot"] for r in p.trig.values())
+        base = {"type": "strip", "pool": p.pool, "mint": p.mint, "s0": p.s0, "from_slot": start, "variants": sorted(p.trig)}
+        if sealed:
+            self.counters["strips_suppressed"] += 1
+            self.emit({**base, "suppressed": SEAL_REASON})
+            return
+        prints = [r for r in p.prints if r.slot >= start]
+        rows = [[r.slot, int(round(r.q_pre("pv", p.v0))), int(round(r.q_pre("fv", p.v0))), int(r.b)] for r in prints[:STRIP_MAX_ROWS]]
+        last = p.prints[-1]
+        self.counters["strips"] += 1
+        self.emit({**base, "sps_path": self._sps_path(p), "sps_trigger": {v: r["sps"] for v, r in p.trig.items()}, "n_prints": len(p.prints),
+                   "cols": ["slot", "q_pv_pre", "q_fv_pre", "base_pre"], "rows": rows, "truncated": len(prints) > STRIP_MAX_ROWS,
+                   "post_last": [last.slot, int(round(last.q_post("pv", p.v0))), int(round(last.q_post("fv", p.v0))), int(last.b_post)]})
+
     # ---- pool close -----------------------------------------------------------------------------------------
     def _close_due(self, now_ms_: int) -> None:
         for pool in [k for k, p in self.pools.items() if self._due(p, now_ms_)]:
@@ -622,6 +676,8 @@ class Engine:
     def _close(self, p: Pool, reason: str) -> None:
         for pend in list(p.pending):
             self._resolve(p, pend, final=True)
+        sealed = self._sealed(p)
+        self._emit_strip(p, sealed)
         ident, src = self.boost_identity(p)
         if ident is None and p.best is not None:
             ident, src = p.best, "behavioural"
@@ -644,7 +700,8 @@ class Engine:
             "boost_first_slice_s": first_rel, "boost_last_slice_s": last_rel, "boost_last_slice_s_blocktime": last_rel_ts,
             "boost_last_slice_s_recv": last_rel_recv, "boost_last_slice_slot": None if st is None else st[4],
             "boost_vault_remaining_sol": None if p.boost_remaining is None else p.boost_remaining / 1e9,
-            "min_q_pv_sol": None if p.min_q_pv is None else p.min_q_pv / 1e9, "min_q_fv_sol": None if p.min_q_fv is None else p.min_q_fv / 1e9,
+            "min_q_pv_sol": None if (sealed or p.min_q_pv is None) else p.min_q_pv / 1e9,
+            "min_q_fv_sol": None if (sealed or p.min_q_fv is None) else p.min_q_fv / 1e9, "sealed": sealed,
             "sps_path": self._sps_path(p), "pv_fv_disagree_sells": p.disagree,
             "triggered": sorted(p.trig), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "chain_max_rel_err": p.chain_max_rel,
             "gap": bool(p.gaps), "gaps": p.gaps[:5],
@@ -830,7 +887,7 @@ def build_source(ws_urls: Sequence[str], sockets: int, commitment: str) -> Any:
 async def run_live(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir)
     sink = JsonlSink(out_dir)
-    engine = Engine(sink.write, boost_mode=args.boost_mode)
+    engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -842,7 +899,8 @@ async def run_live(args: argparse.Namespace) -> int:
         return source_ref["source"]
 
     engine.emit({"type": "start", "rule": RULE_ID, "rule_sha256": RULE_SHA256, "argv": sys.argv[1:], "pid": os.getpid(), "sockets": args.sockets,
-                 "commitment": args.commitment, "boost_mode": args.boost_mode, "keys": "none", "sends": "none"})
+                 "commitment": args.commitment, "boost_mode": args.boost_mode, "keys": "none", "sends": "none",
+                 "seal": {"reason": SEAL_REASON, "start_ms": SEAL_START_MS, "oracle": "stub_always_true"}})
     engine.feed_epoch_ms = engine.wall()
     hk = asyncio.create_task(housekeeping(engine, sink, out_dir / "h5-shadow-status.json", stop, source_ref))
     try:
