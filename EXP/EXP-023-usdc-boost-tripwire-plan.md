@@ -107,7 +107,7 @@ Exact rules for Part A, tested in `tools/test_pump_structure_monitor.py`:
 
 - **Book:** every USDC-quoted BOOST pool graduating on the streak days, unfiltered.
 - **Entry:** k = 5 slots after the migrate slot. **Exit:** 300 s after landing (cap).
-- **Stake:** 0.1 SOL-equivalent. **Costs:** 55,000 lamports per send, and the PumpSwap fee tiers.
+- **Stake:** 0.1 SOL-equivalent. **Costs:** 55,000 lamports per send, and 1.25% per leg, fixed for every pool ([inferred] for USDC; no tier mapping chosen later).
 - **Fail model:** flat 15% is binding; the pressure model is report-only.
 - **Statistic:** the per-pool net return in % of stake, clipped to [-90%, +100%].
 - **Pass:** the pooled clipped mean is ≥ +2%, **and** the daily clipped mean is > 0 on ≥ 4 of the 5 days.
@@ -118,7 +118,7 @@ Exact rules for Part A, tested in `tools/test_pump_structure_monitor.py`:
 
 1. The manager opens a **new pre-registered EXP** with its **own fresh forward window**. The window starts after the run that fired. Nothing is tuned on past data: not on Aug or Sep, not on the post-hoc whale split, not on the 09-19..24 block, not on the streak days.
 2. The new EXP fixes before any read: the USDC fee tier and costs (the judge's 1.25% per leg is [inferred] for USDC, "not measured"), the fail model, the entry rule. The primary book is unfiltered. The only allowed filter is the existing split at exactly slot-0 buy ≥ 2.84 V, as one secondary book declared before the fresh window. No threshold may be chosen from the trigger days or any earlier data.
-3. The streak-day paper net (Part B) is the trigger, not evidence for the new EXP. The new EXP is scored on its fresh window only. It is a look, not the promotion gate. Passing it earns only the next step: the gate in `CLAUDE.md` (>= 100 out-of-sample trades, >= 5 distinct UTC days with a majority positive, lower 90% CI bound > 0, positive after removing the top 3 trades, under both fail models) and then the owner's approval.
+3. The streak-day paper net (Part B) is the trigger, not evidence for the new EXP. The new EXP is scored on its fresh window only, against the gate in `CLAUDE.md` (>= 100 out-of-sample trades, >= 5 distinct UTC days with a majority positive, lower 90% CI bound > 0, positive after removing the top 3 trades, under both fail models), and then the owner's approval.
 4. Any Helius credit use (for example the targeted backfill in Part B) is decided and logged by the manager, not assumed.
 
 ## 6. Kill
