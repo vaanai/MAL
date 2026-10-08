@@ -221,17 +221,20 @@ Run `--dry-run-preconditions` with the same arguments first. Any refusal there s
 
 Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3. Nothing frozen above changes. `[2026-10-14T01, 2026-10-16T01)` is also read for features only as walk 2's buffer (DEC-021 §3); no outcome is used. That read runs only after EXP-012's FINAL is written.
 
-## Amendment 2 (2026-10-08): EXP-022 as a second reader of forward-1002 hours (Option X only)
+## Amendment 2 (2026-10-08): EXP-022 (CAP-PICK) reads of the forward walk's hours
 
-Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3 and DEC-014(a). Nothing frozen above changes, and nothing in DEC-016 changes.
+Appended per [docs/HOLDOUT_LEDGER.md](../docs/HOLDOUT_LEDGER.md) rule 3 and DEC-014(a). Nothing frozen above changes. Nothing in DEC-016 changes here.
 
-- **When it applies.** Only if `EXP022_COUNT_START` in [EXP-022](EXP-022-cap-pick-part1-prereg.md) §0 is `2026-10-10T00` (Option X; owner O3, 2026-10-08).
-- **What EXP-022 reads then:**
-  - it counts CAP-PICK outcomes on the forward walk's hours `[2026-10-10T00, 2026-10-16T01)`;
-  - it reads the creates of `[2026-10-09T00, 2026-10-10T00)` for creator history (features only).
-- **When it reads them.** Neither read happens before EXP-012's FINAL is written. The DEC-016 Am.2 and Am.3 seal is unchanged, and so are the FINAL's window, read and verdict.
-- **Under Option Y,** EXP-022 reads no hour of this block beyond the walk-2 buffer in Amendment 1.
-- **Disclosure.** The two reads overlap on `[10-10, 10-16)`. The books differ (EXP-022 is a 300 s-cap, guarded, 0.1 SOL retune). The FINAL is reported compromised and cannot by itself support live (DEC-016 Am.2).
+[EXP-022](EXP-022-cap-pick-part1-prereg.md) counts from 2026-10-16T01, on walk 2 (Option Y). It counts no hour of this block. It reads this block in two ways, both only after EXP-012's FINAL is written.
+
+1. **Walk-2 feature buffer.** This is already covered by Amendment 1 and DEC-021 §3. The gate replay's first boot reads the creates of `[2026-10-15T00, 2026-10-16T01)` and the prints of hour 2026-10-16T00, for features only. Both sit inside `[2026-10-14T01, 2026-10-16T01)`. No outcome is used.
+2. **A11 October check** (SYNTHESIS A11), report-only, on `[2026-10-06T00, 2026-10-16T00)`. It reads CAP-PICK outcomes on this block's FINAL window, plus its own creator-history preload from this block's creates.
+   - It runs only if a **separate DEC-016 amendment**, a manager PR, registers it before 2026-10-16T00:00Z.
+   - It decides nothing in EXP-012 or EXP-022, and it is never gate evidence.
+   - Its only effect is a spending pause (EXP-022 §7.5).
+   - The FINAL's window, read and verdict, and the DEC-016 Am.2 and Am.3 seal, are unchanged.
+
+**Option X rejected.** Option X, under which EXP-022 would have been a second owner counting `[2026-10-10T00, 2026-10-16T01)`, was considered and rejected on 2026-10-08 (EXP-022 §0).
 
 ## Sources
 

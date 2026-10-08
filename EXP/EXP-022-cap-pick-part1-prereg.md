@@ -1,15 +1,15 @@
 # EXP-022 Part 1: CAP-PICK walk-2 read, pre-registration
 
-**Written and merged before the first counted hour.** No row under `/data/mal`, no forward-walk file and no runner file was opened to write this file. It is docs only. The read tool, the pick-set replay and the integrity code are separate PRs (sections 2.1, 10 and 12). Nothing in this file says or implies that any book is positive. A fail is the expected outcome (section 14).
+**Written and merged before the first counted hour.** No row under `/data/mal`, no forward-walk file and no runner file was opened to write this file. The one exception is the sha256 of the probe fills ledger in section 8, which is a hash of that file only. This file is docs only. The read tool, the pick-set replay and the integrity code are separate PRs (sections 2.1, 10 and 12). Nothing in this file says or implies that any book is positive. A fail is the expected outcome (section 14).
 
 | Field | Value |
 | --- | --- |
 | **ID** | `EXP-022-cap-pick-part1-prereg` |
-| **Status** | **planned**. Counting starts at the `EXP022_COUNT_START` line in section 0, which the manager sets at merge. |
+| **Status** | **planned**. Option Y: counting starts at 2026-10-16T01 (section 0). |
 | **Declared (UTC)** | 2026-10-08 |
-| **Owner decision** | The owner approved the audit recommendations on 2026-10-08, including O2 and O3 (MiScusi notebook `n_vS9qHGmF7-jinQ`; `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md:457-458`). O2 is [DEC-021 Amendment 1](../DEC/DEC-021-champion-challenger.md), in this PR. O3 is the early count (Option X), which needs this file merged with quant-proof OK before 2026-10-10T00:00Z. |
+| **Owner decision** | The owner approved the audit recommendations on 2026-10-08, including O2 and O3 (MiScusi notebook `n_vS9qHGmF7-jinQ`; `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md:457-458`). O2 is [DEC-021 Amendment 1](../DEC/DEC-021-champion-challenger.md), in this PR. O3 included the pre-approved fallback "count from 10-16T01 if the Part 1 can't merge in time"; the manager chose that fallback (section 0). |
 | **Parent** | The 10-08 audit: `capv_JUDGE.md` §4 items 1–10 (binding) and §5; `SYNTHESIS.md` A1–A3, A8, A9, A11, A12 and D5. [EXP-012](EXP-012-migrate-entry-model-refreeze-prereg.md) (the frozen selector). [DEC-021](../DEC/DEC-021-champion-challenger.md) Amendment 1. [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md). [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md) Am.2, Am.3 and Am.6. [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md). |
-| **Hypothesis** | The CAP-PICK book has mean SOL per attempt > 0 at a 0.1 SOL stake on post-upgrade October chain hours, under both fail models, at a reachable latency. The book is: frozen EXP-012 picks as the live gate makes them, an on-chain min_out at seed × 1.15, a 300 s wall-clock exit, and 55,000 lamports per send. |
+| **Hypothesis** | The CAP-PICK book has mean SOL per attempt > 0 at a 0.1 SOL stake on post-upgrade October chain hours, under both fail models, at a reachable latency, after the live−sim correction. The book is: frozen EXP-012 picks as the live gate makes them, an on-chain min_out at seed × 1.15, a 300 s wall-clock exit, and 55,000 lamports per send. |
 | **Kill condition** | No look passes (section 7) by day 21; or a structure halt (section 11); or a precondition fails (section 10). One read with three looks. No retune, no re-read. |
 | **Expected outcome** | **FAIL.** P(pass) is about 5–7% with the day-level p (section 14). A fail leads to A12, the cost wind-down, which the owner has pre-agreed. |
 | **Tools** | **Read:** a sealed read mode of `tools/cap_pick_score.py` (draft #461), which must merge with quant-proof before the day-7 look (section 12). **Picks:** `tools/cap_pick_gate_replay.py` (draft #462). **Halt:** `tools/pump_structure_monitor.py` (#456). **Calibration:** `tools/probe_sim_calibration.py` (#463). |
@@ -19,35 +19,33 @@
 - **[inferred]**: reasoned, by the cited author or here.
 - **[pinned]**: a design value this file fixes. Not evidence.
 
-Draft-PR code is cited at a commit: `cap_pick_score.py@ebb77f4` (#461) and `cap_pick_gate_replay.py@8fd49e5` (#462). `JUDGE` is `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md`, and `SYN` is `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.
+**Citation shorthand.**
+- Draft-PR code is cited at a commit: `cap_pick_score.py@ebb77f4` or `@2bab07b` (#461), and `cap_pick_gate_replay.py@8fd49e5` (#462).
+- `JUDGE` is `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md`.
+- `SYN` is `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.
 
 ## 0. Counting start (the one pinned line)
 
 ```
-EXP022_COUNT_START: PENDING
+EXP022_COUNT_START: 2026-10-16T01
 ```
 
-- **Who sets it.** The manager replaces `PENDING` in a commit on this branch before merging. There are only two allowed values:
-  - `2026-10-10T00` (Option X);
-  - `2026-10-16T01` (Option Y).
-- **When X is allowed.** `2026-10-10T00` is allowed only if this file merges, with quant-proof OK on its final head, before 2026-10-10T00:00Z. Otherwise the value is `2026-10-16T01` (JUDGE:230; SYN:251, :529-532).
-- **If even Y is missed.** If the merge cannot happen before 2026-10-16T01:00Z, this file does not count on walk 2. A later start needs a new dated amendment, and the owner.
-- **While it reads `PENDING`,** nothing counts and nothing is read. The read tool refuses unless:
-  - the line appears exactly once, with an allowed value;
-  - this file is clean against HEAD.
-- **It is never changed after merge.** Everything below follows from it.
+- **Format.** The line must match the regex `^EXP022_COUNT_START: (2026-10-10T00|2026-10-16T01)$` exactly once in this file. The read tool refuses unless it does, and unless this file is clean against HEAD. The value is never changed after merge.
+- **Manager decision (2026-10-08): Option Y.** The owner pre-approved this fallback ("count from 10-16T01 if the Part 1 can't merge in time"; notebook `n_vS9qHGmF7-jinQ`; SYN:458).
+- **Why not Option X** (`[2026-10-10T00, 2026-10-31T00)`, considered and rejected), for two reasons:
+  - Under X, the 10-16 FINAL, its book (B) and the DEC-016 Am.3(a) re-score would price EXP-012's entered mints on `[10-10T00, 10-16T00)`. Those are mostly CAP-PICK's counted picks, so look 1 would not be blind on 6 of its 7 dates.
+  - E0, the read tool and the seal exceptions could not be built and reviewed before 2026-10-10T00Z.
+- **Deadline.** E0 (section 2.1) and P2 (section 10) must be met before 2026-10-16T01:00Z. Otherwise CAP-PICK is withdrawn. There is no later start without a new dated amendment and the owner.
+- **Final head.** After the manager's final commit on this branch, quant-proof re-OKs that final head before merge.
 
-| | Option X (`2026-10-10T00`) | Option Y (`2026-10-16T01`) |
-| --- | --- | --- |
-| Counted window | `[2026-10-10T00, 2026-10-31T00)` | `[2026-10-16T01, 2026-11-06T01)` |
-| Part on forward-1002 (walk #382) | `[2026-10-10T00, 2026-10-16T01)`. EXP-022 is the second owner (O3 ledger exception), and these hours stay sealed for it until the 10-16 FINAL is written. | none |
-| Part on walk 2 | `[2026-10-16T01, 2026-10-31T00)` | the whole window |
-| Data at looks 1 / 2 / 3 (days 7 / 14 / 21) | `[start, 2026-10-17T00)`, `[start, 2026-10-24T00)`, `[start, 2026-10-31T00)` | `[start, 2026-10-23T01)`, `[start, 2026-10-30T01)`, `[start, 2026-11-06T01)` |
-| UTC dates at looks 1 / 2 / 3 | 7 / 14 / 21 | 8 / 15 / 22 (the first and last dates are partial) |
-| A11 October check | not run (SYN:257) | report-only, binding for spending only (section 7.5). It needs its own DEC-016 amendment, merged before the FINAL. |
-| E1 calibration runs after | the FINAL is written | the FINAL is written and the A11 read is done (`docs/HANDOFF.md:93`) |
-
-Option X includes hour `2026-10-16T00`, because its window is continuous. O3's text says `[10-10, 10-16)` (SYN:458). The ledger edit names `[2026-10-10T00, 2026-10-16T01)`.
+| | Option Y |
+| --- | --- |
+| Counted window | `[2026-10-16T01, 2026-11-06T01)`, all on walk 2 |
+| Data at looks 1 / 2 / 3 (days 7 / 14 / 21) | `[start, 2026-10-23T01)`, `[start, 2026-10-30T01)`, `[start, 2026-11-06T01)` |
+| Day-level t clusters at looks 1 / 2 / 3 | 7 / 14 / 21 blocks of 24 h, each starting at 01:00Z, from 2026-10-16T01 (section 7.2) |
+| UTC dates for the gate's day count, at looks 1 / 2 / 3 | 8 / 15 / 22. The first and last dates are partial. |
+| A11 October check | Report-only, binding for spending only (section 7.5), on `[2026-10-06T00, 2026-10-16T00)`. It needs its own DEC-016 amendment, merged before 2026-10-16T00:00Z. That amendment is a separate manager PR and is not written here. |
+| E1 calibration runs after | the 10-16 FINAL is written and the A11 read is done (`docs/HANDOFF.md:93`) |
 
 ## 1. The book: every parameter, in ms and SOL
 
@@ -59,10 +57,11 @@ Option X includes hour `2026-10-16T00`, because its window is continuous. O3's t
 | Binding latency leg | 1,900 ms, same rule | JUDGE:194 | [pinned] |
 | Guard | min_out at seed × 1.15, gross basis, floored to base units | JUDGE:202-206 | [pinned] |
 | Exit | tp +50% / sl −30% on post-trade spot against the post-buy mark. A 300 s wall-clock cap from the landing print's block_time, sold by a timer. | SYN:275; JUDGE:207-209 | [pinned] |
-| Exit lag | 550 ms primary, as ceil to slots per hour, on every sell including the deadline sell. 1,350 ms is report-only. | JUDGE:198-201 | [pinned] |
+| Exit lag | 550 ms primary, as ceil to slots per hour, on every sell, the deadline sell included. 1,350 ms is report-only, also on every sell. | JUDGE:198-201 | [pinned] |
 | Stake | 0.1 SOL (100,000,000 lamports) | SYN:260, :277 | [pinned] |
 | Cost per send | 55,000 lamports | SYN:276 | [pinned] |
-| Rent | 0 primary; 2,039,280 lamports per fill report-only | JUDGE:215 | [pinned] |
+| Live−sim correction | Per filled attempt: the larger of DEC-021 §1's live haircut and the E1 penalty (section 8) | DEC-021:39, :54 | [pinned] |
+| Rent | 2,039,280 lamports on a filled attempt whose sell cannot fill its full balance; otherwise 0. The "always" leg is report-only. | JUDGE:215 | [pinned] |
 | Fail legs | flat 15% and pressure at slope scale 1, both binding; live 1/62 report-only | SYN:278; CLAUDE.md promotion gate | [pinned] |
 | Statistic | Mean SOL per attempt | JUDGE:211 | [pinned] |
 
@@ -71,8 +70,12 @@ Option X includes hour `2026-10-16T00`, because its window is continuous. O3's t
 The read's picks are the mints that the live EXP-012 gate decides `pick` on the walk tape (JUDGE:177-181). The gate is `Exp012Online` (`tools/forward_exp012_gate.py`) with `ForwardEngine._exp012_pass` (`tools/forward_paper.py`), applied by `tools/cap_pick_gate_replay.py`. The replay reuses the runner's own functions; it does not copy them (`cap_pick_gate_replay.py@8fd49e5:1-22`). It behaves as the runner does:
 - **Truncation.** Feature recording stops exactly 32 min after the create (module note 4, `tools/forward_exp012_gate.py:35-41`).
 - **60-minute skip.** A mint that migrates more than 60 min after its create gets `no_features` (note 5, `:42-44`; `DROP_AFTER_CREATE_MS`, `:82`).
-- **Daily restart at 00:00Z.** State is dropped and creator history is rebuilt from the creates of the previous and current UTC day. A mint created before the restart gets no decision (note 7, `:48-59`; note 8, `:60`). The replay boots at 00:00Z on every UTC day of the window, the first day included.
+- **Daily restart at 00:00Z.** State is dropped and creator history is rebuilt from the creates of the previous and current UTC day. A mint created before the restart gets no decision (note 7, `:48-59`; note 8, `:60`).
+  - The replay boots at 00:00Z on every UTC day of the window. The first boot is 2026-10-16T00Z.
+  - Only decisions at or after 2026-10-16T01 count.
+  - The first boot's preload and the 10-16T00 hour are inside the disclosed walk-2 feature buffer (section 9).
 - **Receive time.** The walk tape has no receive time, so `t_recv_ms` is taken as `block_time × 1000`, a zero receive lag (`cap_pick_gate_replay.py@8fd49e5:55`; disclosure 11).
+- **Uptime.** The replay assumes 100% runner uptime. The live runner's downtime skips are not modelled (disclosure 19).
 
 Only `pick` decisions can be attempts. `below`, `no_features`, `no_bond_history` and dead (pre-restart) mints are not attempts.
 
@@ -86,18 +89,21 @@ Only `pick` decisions can be attempts. `below`, `no_features`, `no_bond_history`
 
 The all-picks figure, +3.819% (JUDGE:58), includes the 188 P2–P4 picks (8.0%) that the live gate cannot trade. It is never used as the effect size.
 
-### 2.1 E0: md5 decision-equivalence, before the first counted hour
+### 2.1 E0: md5 decision-equivalence, before 2026-10-16T01:00Z
 
-Before `EXP022_COUNT_START` begins in real time, a dated amendment to this file records all four items below:
+Before the first counted hour, a dated amendment to this file records all four items below:
 
-1. **Replay span.** At least one full UTC day of exploration tape, pinned by its `VIEW.sha256`. Never forward-walk or walk-2 data.
+1. **Replay span.** Exactly one UTC day of exploration tape, pinned by its `VIEW.sha256`. Never forward-walk or walk-2 data. Both sides boot at 00:00Z of that day.
 2. **Runner equivalence.**
-   - A = the runner's own replay path, `tools/forward_paper.py` `replay_rows` (`:2848`), with the frozen gated book, on that span.
-   - B = `tools/cap_pick_gate_replay.py replay` on the same span.
+   - A = the runner's own replay path, `tools/forward_paper.py` `replay_rows` (`:2848`), with the frozen gated book, on that day.
+   - B = `tools/cap_pick_gate_replay.py replay` on the same day. It must be the **read-ready version**: the file and commit that will read the walk-2 hours.
    - Each side gives a canonical decision list: one line per mint, sorted by mint, `mint<TAB>decision<TAB>mig_ms<TAB>repr(score)` (an empty score when there is none).
    - md5(A) must equal md5(B).
-3. **Scorer equivalence.** C = the mint list that `tools/cap_pick_score.py --book picks` counts as attempts when given B's decisions on that span. C must equal, by md5, B's `pick` mints restricted to the section 3 universe.
-4. **Code pins.** The git blob shas of `tools/forward_exp012_gate.py`, `tools/forward_paper.py`, `tools/exploration_entry_model.py` and `tools/cap_pick_gate_replay.py`, and the md5 of `ARTIFACTS/exp012/FROZEN.md5` (`a01f05dfb1e622f78b2bba55d174be09`, `EXP/EXP-012-migrate-entry-model-refreeze-prereg.md:183`). Every look refuses if any of them differs.
+3. **Scorer equivalence.** C = the mint list that the read-ready `tools/cap_pick_score.py --book picks` counts as attempts when given B's decisions on that day. C must equal, by md5, B's `pick` mints restricted to the section 3 universe.
+4. **Code pins.** The git blob shas of `tools/forward_exp012_gate.py`, `tools/forward_paper.py`, `tools/exploration_entry_model.py` and `tools/cap_pick_gate_replay.py` at the E0 commit. Also the md5 of `ARTIFACTS/exp012/FROZEN.md5` (`a01f05dfb1e622f78b2bba55d174be09`, `EXP/EXP-012-migrate-entry-model-refreeze-prereg.md:183`).
+   - Each look runs in a worktree at a recorded commit where those four blobs match.
+   - The read tool hashes the modules it actually imports, records them, and refuses if a pinned module differs.
+   - Later changes on `main` (for example A5's re-pointing of the paper runner) do not reach the read.
 
 **If E0 is missing, or any md5 differs,** CAP-PICK is withdrawn before counting (JUDGE:251). Nothing is fixed and retried after the window starts.
 
@@ -108,7 +114,7 @@ One attempt per mint. A mint is an attempt only if all of these hold:
 - its canonical pool is the pool its migrate tx created: the `pool` field of its `migration` event (`tools/pump_history_backfill.py:275-292`);
 - the quote mint is WSOL: `quote_mint` on that event (`:292`);
 - it is non-mayhem: `is_mayhem_mode` is false on its create event (`:233-255`);
-- V0, as defined below, is in [17,500,000,000, 17,700,000,000] lamports (SYN:271; `cap_pick_score.py@ebb77f4:116`);
+- V0, as defined below, is in [17,500,000,000, 17,700,000,000] lamports (SYN:271; `cap_pick_score.py@ebb77f4:116`). The missing-V0 rule below covers a pool with no V0;
 - the block_time of s0 (the decision print, defined in section 4.1) is in the counted window;
 - s0's block_time is at most 80 s after the block_time of the mint's `complete` event. This restates G's "s0 − complete slot ≤ 400 slots" (`cap_pick_score.py@ebb77f4:115`) in ms, at 200 ms. The count of mints this excludes is reported.
 
@@ -120,14 +126,13 @@ One attempt per mint. A mint is an attempt only if all of these hold:
 
 BOOST health is covered instead by the A3 monitor's `boost_share_low` rule, which halts when InitBoost is on fewer than 80% of sampled non-mayhem WSOL graduations (`tools/pump_structure_monitor.py:113`, `:1060-1072`). Pools without BOOST stay in the book. In exploration, BOOST was detected on 94–99% of V>0 graduations [measured, single investigator; SYN:50].
 
-**V0: the pool's V at decision time.** This is the value a pool-account read would return at the decision print.
-- **Walk-2 hours:** V0 comes from the A8 event-V decoder (SYN:389). It is the V in force at the decision print, with the decoder's pre-/post-trade convention fixed by its fixture tests.
-- **Forward-1002 hours (Option X only):** V0 comes from a pool → V0 map built by `tools/exp012_forward_vmap.py`. In that map V0 is constant except at LP events (`tools/exp012_forward_vmap.py:15-17`).
-  - It is built after the FINAL is written, from the canonical pools of the counted forward-1002 hours. It may reuse the FINAL's merged map where that map covers the pool.
-  - A dated amendment pins its sha256 before the day-7 look.
-  - The 10-08 synthesis (SYN:259, D12) calls for the V map on pre-10-16 hours.
+**V0.**
+- **Source.** V0 is the `virtual_quote_reserves` that the A8 event-V decoder (SYN:389) gives for the pool at the decision print. The decoder's pre-/post-trade convention is fixed by its fixture tests.
+- **Not an account read.** For v2 pools, V moves per trade, so V0 can differ from what a pool-account read at that instant would return. On 10-04..10-08, 1.2% of trades moved V, with at most 1.22 bp of drift in a fresh pool's first 30 min [measured, single investigator; SYN:105].
 - **Pricing.** PumpSwap tape rows carry pre-trade reserves, and price = (quote vault + V) / base (`cap_pick_score.py@ebb77f4:67-73`; `docs/HANDOFF.md:71`). The path is priced with V0 held constant over the hold.
-- **Disclosed.** Per-trade V since 09-30: 1.2% of trades moved V on 10-04..10-08, with at most 1.22 bp of drift in a fresh pool's first 30 min [measured, single investigator; SYN:105].
+- **Missing V0** (a pick that meets every other universe condition but whose pool has no decodable V0). Such attempts are not excluded:
+  - If any of them is in the top 3 attempts of either binding leg, or they are more than 1% of the look's attempts, the look is NOT_DECIDABLE. This follows the DEC-016 Am.4 §3 rule.
+  - Otherwise each is scored at V0 = 17,500,000,000 and at 17,700,000,000, and takes the lower P&L per leg.
 
 ## 4. Execution (paper)
 
@@ -150,7 +155,7 @@ BOOST health is covered instead by the A3 monitor's `boost_share_low` rule, whic
 - **Exit lag** L = ceil(550 / ms_per_slot(h) − 1e-9) slots, which is 3 at 200 ms.
 - **Fill.** A triggered sell fills at the state before the first print whose slot is ≥ trigger slot + L + 1 (END).
 - **Deadline sell.** The same lag applies to the deadline sell.
-- **Report-only lag.** 1,350 ms (7 slots at 200 ms).
+- **Report-only lag.** 1,350 ms (7 slots at 200 ms). It applies to every sell, the deadline sell included (JUDGE:200).
 - **Source of the lag values.** 550 ms and 1,350 ms are about the lab's lag 2 and lag 5 at 267 ms (`ARTIFACTS/lab/probe-final-2026-10-07.md:198`; JUDGE:199) [inferred].
 
 ### 4.3 Guard (gross, as the executor would send it)
@@ -166,25 +171,28 @@ BOOST health is covered instead by the A3 monitor's `boost_share_low` rule, whic
 
 ### 4.4 Cap
 
-- **Deadline.** The deadline print is the first print whose block_time ≥ the landing block_time + 300 s. The landing block_time is that of the last print at slot ≤ X (`cap_pick_score.py@ebb77f4:42-48`).
+- **Deadline.** The deadline print D is the first print whose block_time ≥ the landing block_time + 300 s. The landing block_time is that of the last print at slot ≤ X (`cap_pick_score.py@ebb77f4:42-48`).
 - **Deadline sell.** It fills at the first print with slot ≥ D + L + 1. Live, it is a pre-signed timer.
 - **No day-mean fallback.** A counted attempt whose path has no usable block_time is a refusal. Every walk row carries block_time (`tools/pump_history_backfill.py:352`).
 
 ### 4.5 Costs, rent, stake
 
 - **Costs.** 55,000 lamports per send (`cap_pick_score.py@ebb77f4:189`). A filled round trip pays two sends, and a reject pays one.
-- **Rent, primary 0.** The token-account rent is refunded when the sell closes the account (`tools/probe_executor.py:1304`). The probe measured 1,513,840 lamports charged and 1,513,840 refunded, net 0, over 61 round trips [measured, `ARTIFACTS/lab/probe-final-2026-10-07.md:53`].
-- **Rent, report-only "always" leg.** 2,039,280 lamports per fill, the lab constant (JUDGE:215).
+- **Rent, primary.** 2,039,280 lamports, the lab constant (JUDGE:215), is charged on any filled attempt whose sell cannot fill its full balance. That means there is no print at or after D + L + 1 in covered hours, or base is left over. The count is reported.
+- **Rent otherwise is 0.** The token-account rent is refunded when the sell closes the account (`tools/probe_executor.py:1304`). On the probe, the mean rent per round trip was 1,513,840 lamports charged and 1,513,840 refunded, net 0, over 61 round trips [measured, `ARTIFACTS/lab/probe-final-2026-10-07.md:53`].
+- **Rent, report-only "always" leg.** 2,039,280 lamports on every fill.
 - **Stake.** 0.1 SOL. The 0.05, 0.25 and 0.5 SOL lines are report-only projections (SYN:279).
 
 ## 5. Fail legs and pressure
 
-- **Flat 15%.** A filled attempt is 0.85 × pnl + 0.15 × (−55,000) (`cap_pick_score.py@ebb77f4:468`).
+- **Flat 15%.** A filled attempt i is 0.85 × pnl_i + 0.15 × (−55,000) (`cap_pick_score.py@ebb77f4:468`).
 - **Pressure, slope scale 1.**
-  - p = sigmoid(c + 0.8 × log1p(same_slot_buys) + 0.35 × log1p(nearby SOL)) (`tools/latency_curve.py:39-40`; `DEC/DEC-016-exp012-forward-on-chain-hours.md:341`).
+  - A filled attempt i is (1 − p_i) × pnl_i + p_i × (−55,000) (`cap_pick_score.py@ebb77f4:469`).
+  - p_i = sigmoid(c + 0.8 × log1p(same_slot_buys) + 0.35 × log1p(nearby SOL)) (`tools/latency_curve.py:39-40`; `DEC/DEC-016-exp012-forward-on-chain-hours.md:341`).
   - The intercept c is fitted by `tools.latency_curve.fit_curve` so that mean p = 0.289 over the read's own fills of that cell (`tools/latency_curve.py:41`, `:90-94`). It is fitted separately for every cell (1.3 s, 1.9 s, and each report-only leg) and at every look.
   - same_slot_buys is the number of buys in the landing slot.
-  - nearby is the buy lamports in the 2 s up to and including the landing slot. 2 s is converted to slots with the hour's ms per slot (`cap_pick_score.py@ebb77f4:395`).
+  - nearby is the buy lamports in the round(2,000 / ms_per_slot(h)) slots up to and including the landing slot (`cap_pick_score.py@ebb77f4:395`).
+- **pnl_i** is after the section 8 correction and the section 4.5 rent.
 - **Live 1/62.** Report-only. It was measured at 500k priority, not 55k (JUDGE:225).
 - **Guard rejects** are −55,000 on every leg and are not mixed.
 - **Disclosed.** Shorter slots mean fewer same-slot buys (DEC-016:341). Because the intercept is refitted to mean p = 0.289 at each look, only the cross-section of p moves.
@@ -192,9 +200,10 @@ BOOST health is covered instead by the A3 monitor's `boost_share_low` rule, whic
 ## 6. Unit and accounting
 
 - **Attempt.** A mint in the universe with a `pick` (sections 2–3). It is one row: either a filled round trip, or a guard reject at −55,000. Unscored or skipped mints are not attempts (JUDGE:211).
-- **Deciding statistic.** Mean SOL per attempt at the 0.1 SOL stake, after the section 8 adjustment.
+- **Deciding statistic.** Mean SOL per attempt at the 0.1 SOL stake, after the section 8 correction.
 - **Fills.** Attempts that passed the guard. The ≥ 100 count is fills (JUDGE:212). The per-fill mean is reported.
-- **Dates.** The UTC date of the block_time of s0.
+- **Dates.** The UTC date of the block_time of s0, used for the gate's day count, ex-best-day and the report-only date-cluster CI90.
+- **Blocks.** The 24 h block from 2026-10-16T01 that holds the block_time of s0, used for the day-level t (section 7.2).
 
 ## 7. Looks and the decision rule
 
@@ -202,7 +211,7 @@ BOOST health is covered instead by the A3 monitor's `boost_share_low` rule, whic
 
 There are three looks, at days 7, 14 and 21 of the counted window, each on cumulative data (section 0). Each runs once, and only when all of these hold:
 - (a) every hour of `[start, look end + 1 h)` is sealed, verified and checked (section 10);
-- (b) E1 is recorded (section 8);
+- (b) E1 is recorded with n ≥ 20 (section 8);
 - (c) the read tool is merged (section 12);
 - (d) no halt has fired (section 11).
 
@@ -218,22 +227,26 @@ The deciding cell is section 1's book. A look passes iff every condition below h
 - (iv) total SOL is > 0 after removing the top 3 attempts;
 - (v) total SOL is > 0 after removing the best UTC date. **Binding** (JUDGE:213);
 - (vi) the **day-level p** is ≤ α_L:
-  - it is a one-sided t on the UTC-date means of SOL per attempt: t = mean of date means / (sd / √W), with W − 1 df;
+  - clusters are the W 24 h blocks from 2026-10-16T01 (W = 7 / 14 / 21);
+  - m_b is the mean SOL per attempt in block b; sd is the sample SD of the W block means (ddof 1); t = mean(m_b) / (sd / √W); p = P(T_{W−1} ≥ t), one-sided (`cap_pick_score.py@ebb77f4:551-554`, there on UTC dates);
   - α is 0.005 at day 7, 0.008 at day 14 and 0.012 at day 21 (SYN:252, :280);
   - the larger of the flat and pressure p decides;
-- (vii) the **1.9 s leg** has mean SOL per attempt > 0 and total SOL ex-top-3 > 0. **Binding** (JUDGE:194).
+- (vii) the **1.9 s leg** has mean SOL per attempt > 0 and total SOL ex-top-3 > 0, after the section 8 correction. **Binding** (JUDGE:194).
 
 Items (i)–(iv) are CLAUDE.md's promotion gate, unchanged.
 
+**Two kinds of day.** The gate's "≥ 5 distinct UTC days, majority positive" counts UTC dates (8 / 15 / 22, partial dates included). The day-level t uses the 24 h blocks, so that a 1-hour date such as 10-23T00 at look 1 does not get full weight.
+
 ### 7.3 Reported at every look, never deciding
 
-The trade-level one-sided bootstrap p: the share of 10,000 seed-1 bootstrap means ≤ 0, under both legs (DEC-021:57; JUDGE:192).
+- The trade-level one-sided bootstrap p: the share of 10,000 seed-1 bootstrap means ≤ 0, under both legs (DEC-021:57; JUDGE:192).
+- The draft already uses 10,000 draws for this p: `--boot-p-draws`, default 10,000, report-only (`cap_pick_score.py@2bab07b:128`). The CI90 keeps 1,000 draws.
 
 ### 7.4 Outcome
 
 - **PASS.** The read ends at the first look that passes.
 - **FAIL.** No look passes. The result is FAIL after look 3.
-- **NOT_DECIDABLE look.** It is not a pass. The read continues to the next look.
+- **NOT_DECIDABLE look.** It is not a pass, and its alpha is not carried forward. The read continues to the next look.
 - **Halt.** See section 11.
 
 ### 7.5 Futility (binding for spending only)
@@ -242,76 +255,92 @@ The trade-level one-sided bootstrap p: the share of 10,000 seed-1 bootstrap mean
   - A5, A6 and A7 spending pauses;
   - the owner is told that failure is likely;
   - the read continues (SYN:252, :427; JUDGE:248).
-- **Option Y only.** The A11 rule applies too: the flat and pressure means ≤ 0 and ex-best-day ≤ 0 on `[2026-10-06, 2026-10-16)` (SYN:423). This applies only if a DEC-016 amendment registers A11 before the FINAL.
+- **A11 October check.** It applies only if a separate DEC-016 amendment registers it before 2026-10-16T00Z.
+  - It covers `[2026-10-06T00, 2026-10-16T00)` and is report-only.
+  - It is read after the FINAL is written.
+  - Its spending rule: if the flat and pressure means ≤ 0 and ex-best-day ≤ 0, spending pauses (SYN:417-424).
+  - It never decides this read, and it is never gate evidence.
 
 ### 7.6 Family α
 
 0.005 + 0.008 + 0.012 = 0.025, which is DEC-021's family α at k = 1 (DEC-021 Am.1 §5). The Bonferroni bound holds whatever the futility rule does.
 
-## 8. DEC-021 §4 calibration (named set: faa3192 via E1)
+## 8. Live−sim correction (DEC-021 §1 and §4; named set: faa3192 via E1)
 
-- **Named set.** Build faa3192's closed round trips: 33 trips [measured, `ARTIFACTS/lab/probe-final-2026-10-07.md:42`]. They are priced by E1: `tools/probe_sim_calibration.py` at #463 (`c745411`), the reserve-convention patch, on the tip tape of those trips.
-- **r̄** = mean (live − sim) lamports per closed trip, at the probe's 0.05 SOL stake.
-- **Applied.** Every filled attempt in every binding cell (1.3 s and 1.9 s) gets pnl += min(0, 2 × r̄) before the fail mix. The 2 scales linearly from 0.05 to 0.1 SOL. If r̄ ≥ 0, there is no adjustment (DEC-021:54; SYN:282).
-- **Timing.** E1 runs after the 10-16 FINAL is written, because of DEC-016's seal extension (`DEC/DEC-016-exp012-forward-on-chain-hours.md:162`). Under Option Y it also runs after the A11 read (`docs/HANDOFF.md:93`).
-- **Record.** Its job id, commit, fills sha256 and r̄ go in a dated amendment before the first look. No look runs without it.
-- **Context.**
-  - On 2026-10-06 the faa3192 set was n = 8, mean −384,022 and median −209,670 lamports [measured, DEC-021:54].
-  - The audit's corrected transfer estimate of live − sim is +0.84% [measured, single investigator; SYN:282], with CI90 −1.37% to +3.20% (`docs/HANDOFF.md:92`).
-  - faa3192 traded a different book: a 30-minute hold, a fresh-quote min_out and 500k priority (SYN:217). So r̄ carries over to CAP-PICK by assumption [inferred].
+**Rule.** Every filled attempt in every binding cell (1.3 s and 1.9 s) loses the **larger** of (a) and (b), before rent and the fail mix:
+
+- **(a) DEC-021 §1's live haircut** (DEC-021:39; job #175): sell −16 bps of proceeds and entry +26.08 bps.
+  - In lamports: H = P × (1 − (1 − 0.002608) × (1 − 0.0016)).
+  - P is the sell proceeds after the pool fee and before send fees.
+  - This is the lab's formula (`tools/exp012_backcheck.py:495-505`).
+- **(b) The §4 penalty:** max(0, −2 × r̄). The 2 scales r̄ linearly from the probe's 0.05 SOL to 0.1 SOL. If r̄ ≥ 0, (b) is 0 (DEC-021:54; SYN:282).
+
+It is the larger of the two, not their sum, because both estimate the same live−sim gap. This is conservative: it honours DEC-021 §1, and it can only lower the book. The book with only (a) and the book with only (b) are each reported, as report-only lines.
+
+**E1, pinned.**
+- **Command,** run at `c745411` (#463), with default flags only, no `--build`:
+  ```
+  python -m tools.probe_sim_calibration --fills /data/mal/probe-final/probe-fills-20261007.jsonl --tape-dir /data/mal/tip-tape-archive/fast-trades-tip --out-dir <a new, empty directory>
+  ```
+- **Fills sha256:** `8c0567ff872e2e62e79d53f8eb4adce88e236cdfa8b8e7d8674a7cd3dd78fdbc` [measured, `sha256sum` of the fills ledger only, 2026-10-08].
+- **Tape dir:** pinned by path. It was not read to write this file.
+- **r̄** = `aggregate["faa3192"]["pnl_gap_lamports_live_minus_sim"]["mean"]` in `calibration.json` (`tools/probe_sim_calibration.py:611`, `:702`). Its n is the `"n"` of the same object.
+- **n < 20.** If n < 20, condition (c) is NOT_DECIDABLE, and no look runs (DEC-021 §4).
+- **Reported:** n; the faa3192 trips excluded from n (of 33 [measured, `ARTIFACTS/lab/probe-final-2026-10-07.md:42`]), each with its reason; and the median.
+- **Not used:** the 55-trip pooled figure (`docs/HANDOFF.md:93`).
+- **Timing.** E1 runs after the 10-16 FINAL is written, because of DEC-016's seal extension (`DEC/DEC-016-exp012-forward-on-chain-hours.md:162`). It also runs after the A11 read.
+- **Record.** Its MiScusi job id, commit, output sha256, n and r̄ go in a dated amendment before the first look.
+
+**Context.**
+- On 2026-10-06, the faa3192 set was n = 8, mean −384,022 and median −209,670 lamports [measured, DEC-021:54].
+- The audit's corrected transfer estimate of live − sim is +0.84% [measured, single investigator; SYN:282], with CI90 −1.37% to +3.20% (`docs/HANDOFF.md:92`).
+- faa3192 traded a different book: a 30-minute hold, a fresh-quote min_out and 500k priority (SYN:217). So both (a) and (b) carry over to CAP-PICK by assumption [inferred].
 
 ## 9. Data, ledger and seal
 
-- **Hours.**
-  - Forward-1002 (`/data/mal/blocks/forward-1002`, MiScusi job #382 on `2bd45f1`; `docs/HANDOFF.md:51`), Option X only.
-  - Walk 2 (`/data/mal/blocks/forward-1016`, planned; ledger row "Forward walk 2").
-  - Every opened hour needs a `backfill_verify --content` OK line and a sha256 line (DEC-016:26).
-- **Ledger** (this PR).
-  - Forward walk 2: owner EXP-022.
-  - Forward walk: the Option X second-owner exception and the feature reads, disclosed in [EXP-012 Amendment 2](EXP-012-migrate-entry-model-refreeze-prereg.md) under DEC-014(a).
-- **Option X second owner.** Nothing reads forward-1002 hours for CAP-PICK before the 10-16 FINAL is written. DEC-016 Am.2 and Am.3 are unchanged.
-- **Feature reads, no outcome.**
-  - Option X: the creates of `[2026-10-09T00, 2026-10-10T00)` (forward-1002), for creator history at the first boot.
-  - Option Y: within the already disclosed walk-2 buffer `[2026-10-14T01, 2026-10-16T01)` (DEC-021 §3; EXP-012 Amendment 1).
+- **Hours.** Walk 2 only: `/data/mal/blocks/forward-1016` (planned; ledger row "Forward walk 2", owner EXP-022). Every opened hour needs a `backfill_verify --content` OK line and a sha256 line (DEC-016:26).
+- **No overlap with the FINAL.** The counted window starts after the FINAL's window `[2026-10-06T00, 2026-10-16T00)` ends, so the FINAL, its book (B) and its Am.3(a) re-score price no counted pick. The A11 check is report-only and lies outside the counted window.
+- **Feature reads on forward-1002, no outcome.** At the first boot, the gate replay reads the creates of `[2026-10-15T00, 2026-10-16T01)` and the prints of hour `2026-10-16T00`. Both are inside the walk-2 buffer `[2026-10-14T01, 2026-10-16T01)` already disclosed by DEC-021 §3 and EXP-012 Amendment 1.
+- **The A11 read** of `[2026-10-06T00, 2026-10-16T00)`, if its DEC-016 amendment registers it, is disclosed in [EXP-012 Amendment 2](EXP-012-migrate-entry-model-refreeze-prereg.md) (DEC-014(a)).
+- **Nothing before the FINAL.** No CAP-PICK process reads any forward-1002 hour, buffer included, before EXP-012's FINAL is written. The gate-decision-count monitoring never runs on forward-1002 hours before the FINAL.
 - **Seal between looks.** No person, agent or job does any of these, except the sealed look itself:
   - opens a CAP-PICK outcome row of a counted hour;
   - prints a P&L, fill, exit, reject count, mean, CI or day sign for one;
   - prices the counted picks from any source.
 
-  Monitoring may print only hour counts (sealed, verified, bad) and gate decision counts. A breach is recorded here, dated, and the read is reported compromised; it cannot then support a live request. This follows DEC-016 Am.2 (`DEC/DEC-016-exp012-forward-on-chain-hours.md:85-94`).
+  Monitoring may print only hour counts (sealed, verified, bad) and gate decision counts. This follows DEC-016 Am.2 (`DEC/DEC-016-exp012-forward-on-chain-hours.md:85-94`).
+- **Paper twin.** The fast-0 paper twin's CAP-PICK fields stay sealed until the read ends: pnl, exit, fill, reject and daily totals, wherever they appear (positions.jsonl, runner-status, reports, Console). This is the same rule as DEC-016 Am.3's seal extension (`:155-164`). Health checks print lag, heartbeat and counts only.
+- **A breach** is recorded here, dated, and the read is reported compromised. It cannot then support a live request.
 
 ## 10. Preconditions and integrity
 
-**Before the first counted hour.** If any of these is not met, CAP-PICK is withdrawn before counting (JUDGE:251):
-- **P0.** This file is merged with quant-proof OK, and the section 0 line is set.
+**Before 2026-10-16T01:00Z, the first counted hour.** If any of these is not met, CAP-PICK is withdrawn before counting (JUDGE:251):
+- **P0.** This file is merged, with quant-proof OK on its final head.
 - **P1.** E0 is recorded with equal md5s (section 2.1).
 - **P2.** The A3 monitor's last daily run before the first counted hour has no halt, and no core rule went unevaluated on two consecutive days (section 11).
-
-**Before 2026-10-16T01 (both options).**
-- **P3.** The A8 integrity items are merged, and the walk-2 job starts on a commit that has them (SYN:390-392):
+- **P3.** The A8 integrity items are merged, and the walk-2 job starts on a commit that has them (SYN:389-392):
+  - the event-V decoder;
   - the walker's `JsonlSink` refuses to resume when the file is shorter than its checkpoint;
   - the gate readers refuse bad lines;
   - the scorer has per-hour slot_ms.
-- If P3 fails, CAP-PICK is withdrawn. Under Option X this happens before any outcome is read.
 
 **Before the first look** (a look without them does not run):
-- **P4.** The read tool is merged (section 12).
-- **P5.** E1 is recorded (section 8).
-- **P6.** Option X only: the forward-1002 V0 map is pinned (section 3).
-- **P7.** The A2 kill check has passed (SYN:292-308).
+- **P4.** The read tool is merged, with quant-proof OK, before the day-7 look, 2026-10-23T01 (section 12). No CAP-PICK outcome is read before then.
+- **P5.** E1 is recorded, with n ≥ 20 (section 8).
+- **P6.** The A2 kill check has passed (SYN:292-308).
   - Its first bar, reproduction to ≤ 0.01 pp, was met in phase 1: job #386 matched P2–P4 on 19,234 of 19,234 attempts to the lamport [measured, MiScusi notebook result for job #386, draft #461].
   - It runs on exploration rows only:
-    - books: the live-tradable picks from the #462 full replay, scored by the #461 scorer with every section 4–5 parameter at its pinned value;
+    - books: the live-tradable picks from the #462 full replay, scored by the #461 scorer with every section 4–5 and section 8 parameter at its pinned value;
     - success: the P2–P4 flat mean ≥ +1.0% per attempt, with the date-cluster CI90 lower bound > 0 on the flat leg and mean > 0 at 1.9 s (SYN:307);
     - P1 and oracle are reported lines (JUDGE:228);
     - a kill withdraws CAP-PICK (SYN:308) with no walk outcome read.
 
 **At every look:**
 - **Bad lines.** The readers refuse bad lines (a NUL byte, or a line that is not a JSON object), and the hour that holds one is bad. Today #461 counts bad lines and #462 skips them (`cap_pick_score.py@ebb77f4:780`; `cap_pick_gate_replay.py@8fd49e5:339-341`). The read mode must refuse.
-- **Re-walks.** A bad or unverified walk-2 hour may be re-walked once, outcome-blind, before the look. Forward-1002 hours are not re-walked, because they are EXP-012's FINAL inputs.
-- **Attempt coverage.** An attempt counts only if every hour from its mint's create hour to its exit hour is good. Excluded attempts are counted and reported.
+- **Re-walks.** A bad or unverified walk-2 hour is re-walked once, outcome-blind, before the next look; the result stands.
+- **Attempt coverage.** An attempt counts only if every hour is good, from its mint's create hour through the hour that holds the landing block_time + 300 s + 60 s. Excluded attempts are counted and reported.
 - **Bad-hour ceiling.** If more than 5% of the look's window hours are bad, the look is NOT_DECIDABLE.
-- **V0 ceiling (Option X).** Pools without a V0 in the pinned map are excluded, outcome-blind. If they exceed 1% of the canonical pools of counted forward-1002 hours, the look is NOT_DECIDABLE.
+- **Missing V0.** See section 3.
 - **Decision stability.** Each look re-derives every decision from the window start. For hours an earlier look read, the decisions must match that look's record by md5, or the look refuses.
 
 ## 11. Structure halt (A3)
@@ -340,47 +369,65 @@ The trade-level one-sided bootstrap p: the share of 10,000 seed-1 bootstrap mean
 
 ## 12. Read tool (precondition for the first look)
 
-The read tool is a sealed read mode of `tools/cap_pick_score.py`. It must merge with quant-proof OK before the day-7 look. Until then, no CAP-PICK outcome of a counted hour is read. It must:
+The read tool is a sealed read mode of `tools/cap_pick_score.py`. It must merge with quant-proof OK before the day-7 look (2026-10-23T01). Until then, no CAP-PICK outcome of a counted hour is read. It must:
 - refuse unless:
-  - this file is clean against HEAD and section 0 is set;
+  - the section 0 line matches its regex exactly once, and this file is clean against HEAD;
   - `FROZEN.md5` hashes to `a01f05dfb1e622f78b2bba55d174be09`;
-  - E0's code pins match;
-  - the E1 amendment (and, under Option X, the V0-map amendment) is merged;
+  - it runs in a worktree at a recorded commit where E0's four blobs match, and the modules it imports hash to their recorded values;
+  - the E1 amendment is merged, with n ≥ 20;
+- read only walk-2 counted hours, plus the forward-1002 buffer hours of section 9 for features, and refuse every other forward-1002 hour. It reads no forward-1002 hour before EXP-012's FINAL is written;
 - take an O_EXCL lock per look before the first outcome row;
 - append `started`, `completed` or `aborted` for each look to an external ledger, `/data/mal/exp022/LOOK_READS.jsonl`;
 - refuse a second read of a look, a look before its conditions (section 7.1), and any look after a PASS or a halt;
 - implement sections 2–8 with the deciding parameters as constants. There is no CLI override for any of them;
+- use 10,000 draws for the trade-level p (section 7.3; `cap_pick_score.py@2bab07b:128`);
 - apply section 10's refusals;
 - print the verdict and the report to stderr before writing any file;
 - report both p-values and every section 13 line;
 - reproduce E0's C md5 at its merge commit.
 
-**Commits.** Its merge commit is recorded in a dated amendment. After the first look, it may change only to fix a defect, by a dated amendment before the next look, with the E0 and fixture md5s unchanged. A fix never changes a parameter.
+**Catalog guard (conditional).** `mal_catalog.check_read` denies EXP-022 on forward-1002 hours, whose owner of record is EXP-012. This matters only if the read tool (or the A11 leg) guards its reads with `check_read` as EXP-022. In that case, the second-owner support in the separate PR `claude/catalog-second-owner` must merge first, with markers limited to the section 9 buffer hours (and the A11 range, if registered). Otherwise the tool allowlists exactly those hours, as above.
+
+**Commits.**
+- The read tool's merge commit is recorded in a dated amendment.
+- After the first look, the tool may change only to fix a defect, by a dated amendment before the next look.
+- That fix must reproduce the previous look's per-attempt output byte for byte on that look's window: the rows sha256, on every binding leg. Otherwise it is not applied.
+- A fix never changes a parameter.
 
 ## 13. Report-only (never deciding)
 
-- Legs: live 1/62, the 1,350 ms exit lag, the rent "always" leg, and 0.05 / 0.25 / 0.5 SOL.
-- Statistics: per-fill means; the date-cluster CI90 (1,000 date resamples, seed 1); the trade-level bootstrap p (section 7.3).
+- Legs:
+  - live 1/62;
+  - the 1,350 ms exit lag, on every sell;
+  - the rent "always" leg;
+  - 0.05 / 0.25 / 0.5 SOL;
+  - the book with only section 8 (a), and with only (b).
+- Statistics:
+  - per-fill means;
+  - the date-cluster CI90 on UTC dates (1,000 date resamples, seed 1);
+  - the trade-level bootstrap p (section 7.3);
+  - the count of rent-charged fills (section 4.5).
 - Judge item 11 (JUDGE:219-222):
   - pick − exposure-matched control (guard-passing, organic, slower non-picks; fill share ≈ 0.88);
   - pick − guarded baseline;
   - the paired cap − 30-min hold on picks;
   - first-half and second-half means;
   - the exit-type split (tp / sl / deadline), and the fill quality of deadline exits.
-- The BOOST-90% exit by `boost_vault` (SYN:248, :279), where the tape carries BOOST events (walk-2 hours with the A8 decoder).
+- The BOOST-90% exit by `boost_vault` (SYN:248, :279), where the tape carries BOOST events.
 - Diagnostics:
   - k, L and ms per slot per hour;
   - s0 − complete;
   - the guard-reject share and the count of synthetic pools;
   - V0 against event V over the hold;
+  - missing-V0 attempts;
   - excluded hours and attempts;
   - decisions by label.
 
 ## 14. Honest expectation, power and framing
 
 **On exploration rows, as an approximation of this book** [measured, JUDGE:92-96]:
-- Cell: 0.1 SOL, live-tradable picks, lag 2 slots, day-mean k with round.
-- It is not this file's pinned per-hour ceil, the 550 ms lag, the gross guard or the block_time cap, so it is close to the pinned book but not the same.
+- Cell: 0.1 SOL, live-tradable picks, lag 2 slots, day-mean k with round, no live−sim correction.
+- It is not this file's pinned per-hour ceil, the 550 ms lag, the gross guard, the block_time cap or the section 8 correction, so it is close to the pinned book but not the same.
 
 | Leg, entry | P2–P4 | P1 (OOF) | oracle |
 | --- | --- | --- | --- |
@@ -392,8 +439,12 @@ The read tool is a sealed read mode of `tools/cap_pick_score.py`. It must merge 
 **Best honest estimate** [inferred, by the judge]:
 - August–September: about +1.5% per attempt on the live leg, range +0.5 to +2.5 (JUDGE:144); about +1.3 flat and +1.1 pressure at 0.1 SOL (JUDGE:145).
 - October: about +0.3% to +0.5% on the live leg, flat about +0.3. The true mean is −1.5 to +2.0 at 80%, and P(≤ 0) is about 40% (JUDGE:146).
+- Section 8's correction lowers the scored book further. DEC-021 §1's haircut alone is about 0.4% of stake per fill [inferred, from 26.08 + 16 bps of proceeds].
 
-**A selection haircut, not an execution one.** The step from +3.49 to about +1.5 is a design-selection haircut of 1.8–2.1 pp (JUDGE:144). D6's "no pre-registered haircut" covers execution only (JUDGE:187; SYN:253). No haircut enters the scoring except section 8's min(0, r̄).
+**A selection haircut, not an execution one.**
+- The step from +3.49 to about +1.5 is a design-selection haircut of 1.8–2.1 pp (JUDGE:144). It sits in the expectation, not in the scoring.
+- D6's "no pre-registered haircut" covers execution only (JUDGE:187; SYN:253).
+- The scoring applies only section 8's measured live−sim correction.
 
 **Running cost** [inferred]:
 - About 0.11 SOL/day (SYN:284).
@@ -409,12 +460,13 @@ The read tool is a sealed read mode of `tools/cap_pick_score.py`. It must merge 
 | Power at +1.9% flat | 22.2% | 45.3% |
 
 - At 1.5× and 2× the template SD, the day-level false pass stays at 0.9% and 1.0%, and power at +1.9% falls to 15.2% and 10.4%.
-- The judge's simulation used a binding day-7 futility (JUDGE:115). Here futility does not bind the read.
+- These figures were simulated with a binding day-7 futility and day clusters (JUDGE:115), without the section 8 correction. Here futility does not bind the read.
 - **Power at +0.5% flat:** "about 6%" (JUDGE:185). The judge does not say which p that figure uses. Under the day-level p it is at most the 5.1% at +1.0% [inferred here].
 
 **P(pass)** [inferred, by the judge]:
 - About 10% (5–20%) with the trade-level p and the binding 1.9 s leg (JUDGE:133, :244).
 - About 5–7% with the day-level p used here (JUDGE:133).
+- Section 8 can only lower these.
 - The synthesis's 25–30% (SYN:225, :543) is superseded and not used.
 
 **Other figures** [inferred]:
@@ -427,8 +479,11 @@ The read tool is a sealed read mode of `tools/cap_pick_score.py`. It must merge 
 
 - **k = 1.** One arm, no Holm. The family α is 0.025, spread over the three looks by Bonferroni. DEC-021 §8's cross-walk accounting is unchanged.
 - **No sealed block.** EXP-022 is a retune of EXP-012 (cap, guard, exit, size, priority), so it belongs to EXP-012's lineage. It can never claim a sealed block (`DEC/DEC-014-holdout-ledger-and-multiplicity.md:106`, `:109`).
-- **m.** The audit read CAP-PICK outcomes on the 27 non-P1 dates (JUDGE:5, :12), and the A2 check reads them again. DEC-014 counts distinct EXP numbers (`:134`), so EXP-022 is counted from this merge, and the next block claim uses m = max(13, the count at claim). This only tightens. The manager confirms the count at that claim.
-- **Overlap with the 10-16 FINAL (Option X).** Hours `[10-10, 10-16)` are read by both. The two books differ, and the FINAL cannot by itself support live (`DEC/DEC-016-exp012-forward-on-chain-hours.md:91-93`). So the overlap cannot give two live supports from one stretch of data.
+- **m.**
+  - The audit read CAP-PICK outcomes on the 27 non-P1 dates: P2–P4, 28 day-units (JUDGE:58; DEC-014:114). The A2 check reads them again.
+  - DEC-014 counts distinct EXP numbers (`:134`), so EXP-022 adds one from this merge: m ≥ 13. The ledger notes this.
+  - The audit's own reads (SYN §11.2) are unlisted readers, so 13 is a floor. This only tightens. The manager recounts at the next claim.
+- **No overlap with the 10-16 FINAL.** The counted window starts after the FINAL window (section 9). The A11 check overlaps the FINAL window, but it is report-only and never gate evidence.
 
 ## 16. After the read
 
@@ -458,19 +513,25 @@ The read tool is a sealed read mode of `tools/cap_pick_score.py`. It must merge 
 11. **Zero receive lag.** The replay assumes zero receive lag (`cap_pick_gate_replay.py@8fd49e5:55`). Live decisions come seconds later.
 12. **The pick sets differ both ways.** On the #462 smoke day (2026-08-15, one day), the online and offline pick sets differed in both directions: jaccard 0.516, with 21 online-only picks absent from the offline table [measured, PR #462 body]. The 32–60 min band was not measured by the judge (JUDGE:65, :255).
 13. **Per-trade V** (SYN:105). V0 is held constant over the hold.
-14. **The day-level t** assumes roughly normal date means, with W from 7 to 22.
-15. **Unpriced regime changes:** the 10-02 redeploy, 200 ms slots from about 10-09T14:34Z, per-trade V, synthetic migration, and BOOST cadence set off-chain (JUDGE:152; SYN:102-106). Every counted hour is after the 200 ms step, and after the 10-05..10-07 seal-exposure days (SYN:251).
-16. **Walk integrity.** Option X counts forward-1002 hours walked before the A8 resume guard. The reader-side refusal catches bad lines only. A truncated hour of about 10.5k–16k slots passes verify (DEC-016:336), on both walks.
-17. **Partial dates.** Under Option Y, the first and last dates of each look are partial days.
+14. **The day-level t** assumes roughly normal block means, with W from 7 to 21.
+15. **Unpriced regime changes:** the 10-02 redeploy, 200 ms slots, per-trade V, synthetic migration, and BOOST cadence set off-chain (JUDGE:152; SYN:102-106). Every counted hour is **expected** to fall after the 200 ms step. That step is a forecast for epoch 1053, about 2026-10-09T14:30Z (DEC-016 Am.6, `:320`), not a measurement.
+16. **Walk integrity.** Walk 2 runs with the A8 resume guard (P3). A truncated hour of about 10.5k–16k slots still passes verify (DEC-016:336).
+17. **Partial UTC dates.** The gate's date count includes the partial first and last dates; the day-level t does not use them (section 7.2).
 18. **InitBoost** is not applied (section 3).
+19. **Runner uptime.** The replay assumes 100% runner uptime. The downtime skips in JUDGE:178 are not modelled.
 
 ## 18. Out of scope
 
-- Any tool code: the read mode, the A8 items, E0, E1, the V0 map and the A2 run each come separately.
+- Any tool code: the read mode, the A8 items, E0, E1, the A2 run and the catalog second-owner change each come separately.
 - The executor's min_out replacement (A5), the canaries (A6), and the live-trial terms (A7, O4/O5).
-- A11's DEC-016 amendment (Option Y only).
+- A11's DEC-016 amendment: a separate manager PR, to merge before 2026-10-16T00Z.
 - No `data/tries.jsonl` line. The lab writes tries lines when a try is spent, not at registration. No earlier pre-registration PR added one.
 
 ## Sources
 
-`ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md`; `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`; [DEC-021](../DEC/DEC-021-champion-challenger.md) Amendment 1; [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md); [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md); [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md); [EXP-012](EXP-012-migrate-entry-model-refreeze-prereg.md); `ARTIFACTS/lab/probe-final-2026-10-07.md`; `docs/HANDOFF.md` (2026-10-08); `tools/forward_exp012_gate.py`, `tools/forward_paper.py`, `tools/pump_history_backfill.py`, `tools/pump_structure_monitor.py`, `tools/pump_structure_pins.json`, `tools/latency_curve.py`, `tools/probe_executor.py`, `tools/exp012_forward_vmap.py`, `tools/probe_sim_calibration.py` (#463); drafts #461 (`ebb77f4`) and #462 (`8fd49e5`).
+- The audit: `ARTIFACTS/lab/audit-2026-10-08/capv_JUDGE.md` and `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md`.
+- Decisions: [DEC-021](../DEC/DEC-021-champion-challenger.md) Amendment 1; [DEC-014](../DEC/DEC-014-holdout-ledger-and-multiplicity.md); [DEC-016](../DEC/DEC-016-exp012-forward-on-chain-hours.md).
+- Ledger and experiments: [HOLDOUT_LEDGER](../docs/HOLDOUT_LEDGER.md); [EXP-012](EXP-012-migrate-entry-model-refreeze-prereg.md).
+- Lab notes: `ARTIFACTS/lab/probe-final-2026-10-07.md`; `docs/HANDOFF.md` (2026-10-08).
+- Tools on main: `tools/forward_exp012_gate.py`, `tools/forward_paper.py`, `tools/pump_history_backfill.py`, `tools/pump_structure_monitor.py`, `tools/pump_structure_pins.json`, `tools/latency_curve.py`, `tools/probe_executor.py`, `tools/exp012_backcheck.py`, `tools/probe_sim_calibration.py` (#463).
+- Drafts: #461 (`ebb77f4`, `2bab07b`) and #462 (`8fd49e5`).
