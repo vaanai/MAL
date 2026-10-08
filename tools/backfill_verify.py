@@ -15,7 +15,10 @@ exceeds the resolved slot span -- the signature of the duplicate-row
 resume bug this tool exists to catch.
 
 --content additionally streams each hour's files (zstdcat for sealed
-ones) and counts rows vs unique lines. Memory use scales with the
+ones) and counts rows vs unique lines, and bad lines (a raw NUL, not JSON,
+not an object; a line that parses only with strict=False is `lenient` and
+not bad). An hour with bad_lines > 0, or whose zstd stream does not end rc 0,
+is flagged. Memory use scales with the
 number of distinct lines in the largest file being checked, since exact
 dedup detection needs to remember every line seen so far.
 
@@ -35,6 +38,8 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
+
+from tools.tape_lines import LineCounts
 
 SUBS = ("trades", "creates", "migrations")
 
@@ -195,17 +200,25 @@ def verify_metadata(
     }
 
 
+class ZstdStreamError(RuntimeError):
+    """zstdcat did not finish with rc 0: the sealed file is truncated or corrupt, so its rows are not all here."""
+
+
 def _stream_lines(path: Path) -> Iterator[str]:
     if path.suffix == ".zst":
         proc = subprocess.Popen(["zstdcat", str(path)], stdout=subprocess.PIPE, text=True)
         assert proc.stdout is not None
+        finished = False
         try:
             for line in proc.stdout:
                 if line.strip():
                     yield line
+            finished = True
         finally:
             proc.stdout.close()
-            proc.wait()
+            rc = proc.wait()
+        if finished and rc != 0:
+            raise ZstdStreamError(f"{path}: zstdcat exited {rc}")
         return
     with path.open(encoding="utf-8") as fh:
         for line in fh:
@@ -213,28 +226,59 @@ def _stream_lines(path: Path) -> Iterator[str]:
                 yield line
 
 
-def count_rows_and_unique(path: Path) -> tuple[int, int]:
-    """Row count and unique-line count. Only counts leave this function."""
+def scan_content(path: Path) -> tuple[int, int, LineCounts]:
+    """Row count, unique-line count and the bad-line counts (NUL / not JSON / not an object).
+    A line that parses only with strict=False (a raw control character in a string) is `lenient`, not bad.
+    Only counts leave this function."""
     rows = 0
     seen: set[str] = set()
+    counts = LineCounts()
     for line in _stream_lines(path):
         rows += 1
         seen.add(line)
-    return rows, len(seen)
+        counts.add(line)
+    return rows, len(seen), counts
+
+
+def count_rows_and_unique(path: Path) -> tuple[int, int]:
+    """Row count and unique-line count. Only counts leave this function."""
+    rows, unique, _counts = scan_content(path)
+    return rows, unique
 
 
 def verify_content(report: dict[str, Any]) -> dict[str, Any]:
     for hour_report in report["hours"]:
         content: dict[str, Any] = {}
+        bad_total = 0
         for sub in SUBS:
             raw = hour_report["files"].get(sub)
             if not raw:
                 continue
-            rows, unique = count_rows_and_unique(Path(raw))
-            content[sub] = {"rows": rows, "unique": unique, "duplicates": rows - unique}
+            try:
+                rows, unique, counts = scan_content(Path(raw))
+            except ZstdStreamError as exc:
+                hour_report["issues"].append(f"{sub}: zstd stream failed ({exc}); the sealed file is truncated or corrupt")
+                continue
+            content[sub] = {
+                "rows": rows,
+                "unique": unique,
+                "duplicates": rows - unique,
+                "bad_lines": counts.bad,
+                "nul": counts.nul,
+                "not_json": counts.not_json,
+                "non_object": counts.non_object,
+                "lenient": counts.lenient,
+            }
+            bad_total += counts.bad
             if rows != unique:
                 hour_report["issues"].append(f"{sub}: {rows - unique} duplicate rows")
+            if counts.bad:
+                hour_report["issues"].append(
+                    f"{sub}: {counts.bad} bad lines (nul={counts.nul}, not_json={counts.not_json}, "
+                    f"non_object={counts.non_object}; first at line {counts.first_bad_line})"
+                )
         hour_report["content"] = content
+        hour_report["bad_lines"] = bad_total
     report["hours_flagged"] = len([h for h in report["hours"] if h["issues"]])
     return report
 

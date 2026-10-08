@@ -124,6 +124,7 @@ import tools.exploration_entry_model as eem
 import tools.exp012_score as s12
 from tools.exp011_freeze import FROZEN_MANIFEST_NAME, _git_commit, _md5_of_file
 import tools.backfill_verify as bv
+import tools.tape_lines as tape_lines
 import tools.forward_family as ff
 from tools.latency_curve import _hour_file
 
@@ -247,6 +248,13 @@ def _sha256_file(path: Path) -> str:
 def _line_ok(rec: dict[str, Any]) -> bool:
     if rec.get("issues") != [] or not isinstance(rec.get("content"), dict):
         return False
+    # A line written by the A8 verify carries bad_lines (NUL / not JSON / not an object). A line from before
+    # it has no such key and stays OK here; the score run's strict reader (run_score) still checks the bytes.
+    if rec.get("bad_lines") not in (None, 0):
+        return False
+    for stats in rec["content"].values():
+        if isinstance(stats, dict) and stats.get("bad_lines") not in (None, 0):
+            return False
     sha = rec.get("sha256")
     if not isinstance(sha, dict) or not all(isinstance(sha.get(sub), str) for sub in ("trades", "creates")):
         return False
@@ -670,7 +678,13 @@ def run_score(walk_dir: Path, out_dir: Path, artifact_dir: Path, clean_clock: da
         raise Refused([f"{runs_path} belongs to another experiment than {experiment}; every experiment has its own --out-dir"])
 
     t0 = time.time()
-    rows, threshold = score_hours(walk_dir, pool, artifact_dir, out_dir / "scratch", spec.exit_spec_id if secondary else None)
+    # Walk tape is read strict: a NUL / non-JSON line in any hour is a data hole, so the run refuses (nothing
+    # appended) instead of scoring around it. MAL_STRICT_LINES is inherited by the spawned scorer workers.
+    try:
+        with tape_lines.strict_env(True):
+            rows, threshold = score_hours(walk_dir, pool, artifact_dir, out_dir / "scratch", spec.exit_spec_id if secondary else None)
+    except tape_lines.BadLinesError as exc:
+        raise Refused([f"bad tape lines, hour not decidable: {exc}"])
     lo, hi = ms(clean_clock), min(ms(to), ms(read_end))
     band = spec.band if secondary else None
     fresh = [make_row(r, threshold, band) for r in rows if lo <= int(r["mig_ms"]) < hi]
