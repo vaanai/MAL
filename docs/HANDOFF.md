@@ -95,7 +95,7 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - `--hour-sph-json` must be absent (tape-only hours; an unmeasurable hour refuses);
   - bad-reserves picks stay `status=attempt` with `priced=false`.
   **Next: a quant-proof re-check of 86355b3..be7cdb2, then merge.** The read-tool (P4) items are listed in the PR body. |
-| **#480** (merged **6b9b4fc**) | E0 harness on the scorer's EXP-022 mode, plus the B-pick guard (empty allowlist) | Quant-proof OK on 6a6b4d6 (comment 6068792855). Reviewer APPROVE. **The OFFICIAL E0 is MiScusi job #397**: main 6b9b4fc, out `/data/mal/exp022/e0-official/`, log `/data/mal/exp022/e0-official.log`, followed by `check`.
+| **#480** (merged **6b9b4fc**) | E0 harness on the scorer's EXP-022 mode, plus the B-pick guard (empty allowlist) | Quant-proof OK on 6a6b4d6 (comment 6068792855). Reviewer APPROVE. **The OFFICIAL E0 PASSED** (job #397, main 6b9b4fc; all `check` flags true; out `/data/mal/exp022/e0-official/`). **The E0 record amendment (Am.3) is being written** by builder `aaf1fd2c95062dbe7` on `claude/exp022-e0-record`; then quant-proof, then merge before 10-16T01Z.
   - **If it passes, write the E0 record amendment** (dated, with quant-proof) before 10-16T01Z. It must include:
     1. the four blobs, `imported_module_blobs` and the venv versions, plus `FROZEN.md5`;
     2. the first-boot staging hours (10-14T21..10-15T23, plus the 10-16T00 feed hour);
