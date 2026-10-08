@@ -30,8 +30,8 @@
 EXP022_COUNT_START: 2026-10-16T01
 ```
 
-- **Format.** The line must match the regex `^EXP022_COUNT_START: (2026-10-10T00|2026-10-16T01)$` exactly once in this file. The read tool refuses unless it does, and unless this file is clean against HEAD. The value is never changed after merge.
-- **Manager decision (2026-10-08): Option Y.** The owner pre-approved this fallback ("count from 10-16T01 if the Part 1 can't merge in time"; notebook `n_vS9qHGmF7-jinQ`; SYN:458).
+- **Format.** The line must match the regex `^EXP022_COUNT_START: 2026-10-16T01$` exactly once in this file. The read tool refuses unless it does, and unless this file is clean against HEAD. The value is never changed after merge.
+- **Manager decision (2026-10-08): Option Y.** The owner pre-approved this fallback (SYN:458: "Yes, if the Part 1 can merge before 10-10T00Z; otherwise count from 10-16T01"; notebook `n_vS9qHGmF7-jinQ`; SYN:458).
 - **Why not Option X** (`[2026-10-10T00, 2026-10-31T00)`, considered and rejected), for two reasons:
   - Under X, the 10-16 FINAL, its book (B) and the DEC-016 Am.3(a) re-score would price EXP-012's entered mints on `[10-10T00, 10-16T00)`. Those are mostly CAP-PICK's counted picks, so look 1 would not be blind on 6 of its 7 dates.
   - E0, the read tool and the seal exceptions could not be built and reviewed before 2026-10-10T00Z.
@@ -227,7 +227,7 @@ The deciding cell is section 1's book. A look passes iff every condition below h
 - (iv) total SOL is > 0 after removing the top 3 attempts;
 - (v) total SOL is > 0 after removing the best UTC date. **Binding** (JUDGE:213);
 - (vi) the **day-level p** is ≤ α_L:
-  - clusters are the W 24 h blocks from 2026-10-16T01 (W = 7 / 14 / 21);
+  - clusters are the 24 h blocks from 2026-10-16T01 (7 / 14 / 21 blocks). A block with no attempts is dropped; W is the number of blocks with at least one attempt (reported), and df = W − 1;
   - m_b is the mean SOL per attempt in block b; sd is the sample SD of the W block means (ddof 1); t = mean(m_b) / (sd / √W); p = P(T_{W−1} ≥ t), one-sided (`cap_pick_score.py@ebb77f4:551-554`, there on UTC dates);
   - α is 0.005 at day 7, 0.008 at day 14 and 0.012 at day 21 (SYN:252, :280);
   - the larger of the flat and pressure p decides;
@@ -327,7 +327,7 @@ It is the larger of the two, not their sum, because both estimate the same live�
 **Before the first look** (a look without them does not run):
 - **P4.** The read tool is merged, with quant-proof OK, before the day-7 look, 2026-10-23T01 (section 12). No CAP-PICK outcome is read before then.
 - **P5.** E1 is recorded, with n ≥ 20 (section 8).
-- **P6.** The A2 kill check has passed (SYN:292-308).
+- **P6.** The A2 kill check has passed (SYN:292-308). A2 runs after E1, because it uses the section 8 correction.
   - Its first bar, reproduction to ≤ 0.01 pp, was met in phase 1: job #386 matched P2–P4 on 19,234 of 19,234 attempts to the lamport [measured, MiScusi notebook result for job #386, draft #461].
   - It runs on exploration rows only:
     - books: the live-tradable picks from the #462 full replay, scored by the #461 scorer with every section 4–5 and section 8 parameter at its pinned value;
@@ -375,7 +375,7 @@ The read tool is a sealed read mode of `tools/cap_pick_score.py`. It must merge 
   - `FROZEN.md5` hashes to `a01f05dfb1e622f78b2bba55d174be09`;
   - it runs in a worktree at a recorded commit where E0's four blobs match, and the modules it imports hash to their recorded values;
   - the E1 amendment is merged, with n ≥ 20;
-- read only walk-2 counted hours, plus the forward-1002 buffer hours of section 9 for features, and refuse every other forward-1002 hour. It reads no forward-1002 hour before EXP-012's FINAL is written;
+- read only walk-2 hours in `[2026-10-16T01, look end + 1 h)`; hours from 2026-11-06T01 on are read only for the exits of attempts already counted. Plus the forward-1002 buffer hours of section 9 for features, and refuse every other forward-1002 hour. It reads no forward-1002 hour before EXP-012's FINAL is written;
 - take an O_EXCL lock per look before the first outcome row;
 - append `started`, `completed` or `aborted` for each look to an external ledger, `/data/mal/exp022/LOOK_READS.jsonl`;
 - refuse a second read of a look, a look before its conditions (section 7.1), and any look after a PASS or a halt;
@@ -386,7 +386,7 @@ The read tool is a sealed read mode of `tools/cap_pick_score.py`. It must merge 
 - report both p-values and every section 13 line;
 - reproduce E0's C md5 at its merge commit.
 
-**Catalog guard (conditional).** `mal_catalog.check_read` denies EXP-022 on forward-1002 hours, whose owner of record is EXP-012. This matters only if the read tool (or the A11 leg) guards its reads with `check_read` as EXP-022. In that case, the second-owner support in the separate PR `claude/catalog-second-owner` must merge first, with markers limited to the section 9 buffer hours (and the A11 range, if registered). Otherwise the tool allowlists exactly those hours, as above.
+**Catalog guard (conditional).** `mal_catalog.check_read` denies EXP-022 on forward-1002 hours, whose owner of record is EXP-012. This matters only if the read tool (or the A11 leg) guards its reads with `check_read` as EXP-022. In that case, a disclosed non-owner read allowance in `mal_catalog` (PR #465, `claude/catalog-second-owner`, adapted) must merge first, limited to the section 9 buffer hours and the A11 range. It grants no ownership; EXP-012 stays the sole owner of every forward-1002 hour. Otherwise the tool allowlists exactly those hours, as above.
 
 **Commits.**
 - The read tool's merge commit is recorded in a dated amendment.
@@ -519,10 +519,13 @@ The read tool is a sealed read mode of `tools/cap_pick_score.py`. It must merge 
 17. **Partial UTC dates.** The gate's date count includes the partial first and last dates; the day-level t does not use them (section 7.2).
 18. **InitBoost** is not applied (section 3).
 19. **Runner uptime.** The replay assumes 100% runner uptime. The downtime skips in JUDGE:178 are not modelled.
+20. **A11 before the read tool.** The A11 report-only check gives October CAP-PICK outcomes on `[2026-10-06T00, 2026-10-16T00)` before the read tool must merge (2026-10-23T01). Those hours are not counted, and every parameter of the counted read is pinned in this file before then.
+21. **Section 8 formula.** Per filled attempt i in each binding cell: pnl_i ← pnl_i − max(H_i, max(0, −2·r̄)), where H_i is the DEC-021 §1 haircut of attempt i.
+22. **E1 tape files.** The E1 record also gives the sha256 of every tape file E1 opens.
 
 ## 18. Out of scope
 
-- Any tool code: the read mode, the A8 items, E0, E1, the A2 run and the catalog second-owner change each come separately.
+- Any tool code: the read mode, the A8 items, E0, E1, the A2 run and the catalog non-owner read allowance each come separately.
 - The executor's min_out replacement (A5), the canaries (A6), and the live-trial terms (A7, O4/O5).
 - A11's DEC-016 amendment: a separate manager PR, to merge before 2026-10-16T00Z.
 - No `data/tries.jsonl` line. The lab writes tries lines when a try is spent, not at registration. No earlier pre-registration PR added one.

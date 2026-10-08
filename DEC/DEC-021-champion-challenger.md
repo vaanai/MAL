@@ -84,7 +84,7 @@ This uses per-trade SD about 0.02 SOL at 0.05 SOL size, n = 100, a normal approx
 
 ## Amendment 1 (2026-10-08): CAP-PICK (EXP-022) as the walk-2 primary-promotion arm (owner O2/O3)
 
-**Approved by the owner on 2026-10-08** (O2, and O3 with its pre-approved fallback "count from 10-16T01 if the Part 1 can't merge in time"), with the audit recommendations (MiScusi notebook `n_vS9qHGmF7-jinQ`; `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md:457-458`). It covers **CAP-PICK, [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md), only**. Every other challenger stays under the text above.
+**Approved by the owner on 2026-10-08** (O2, and O3 with its pre-approved fallback, SYN:458: "Yes, if the Part 1 can merge before 10-10T00Z; otherwise count from 10-16T01"), with the audit recommendations (MiScusi notebook `n_vS9qHGmF7-jinQ`; `ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md:457-458`). It covers **CAP-PICK, [EXP-022](../EXP/EXP-022-cap-pick-part1-prereg.md), only**. Every other challenger stays under the text above.
 
 **Why.** Two parts of the text above cannot be met for CAP-PICK (SYNTHESIS.md:250, D3):
 - §2 requires a backward-block PASS. DEC-014 bars an EXP-012 retune from any further sealed block (`DEC/DEC-014-holdout-ledger-and-multiplicity.md:109`), and every block predates the 2026-10-02 program upgrade.
@@ -114,7 +114,7 @@ For CAP-PICK only:
   - **Drift monitor.** §4's drift monitor belongs to the switch family and does not apply.
 - **§5 (read).** Three pre-registered looks, at days 7, 14 and 21, replace the single read and the "no interim peeking" line.
   - **Deciding p:** a day-level p, one-sided.
-    - The W clusters are 24 h blocks from 2026-10-16T01 (W = 7 / 14 / 21).
+    - The clusters are 24 h blocks from 2026-10-16T01 (7 / 14 / 21 blocks). A block with no attempts is dropped; W is the number of blocks with at least one attempt (reported), and df = W − 1.
     - m_b is the mean SOL per attempt in block b, and sd is the sample SD of the W block means (ddof 1).
     - t = mean(m_b) / (sd / √W), and p = P(T_{W−1} ≥ t).
     - The larger of the flat and pressure p decides.
