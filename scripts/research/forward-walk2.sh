@@ -31,8 +31,9 @@
 #      under the cap writes an alert and exits 5 instead of starting a partial hour.
 #
 # Exit codes: the loop never ends by itself in a job (the time limit or a cancel ends it; 0 only under the test hook),
-# 2 refused start or bash, 3 walker refused, 4 three consecutive failures on one hour, 5 credit cap, unreadable
-# credit state or the unverified-hour list failing three passes in a row.
+# 2 refused start, bash or test hook in a job, 3 walker refused, 4 three consecutive failures on one hour, 5 credit
+# cap, unreadable credit state or the unverified-hour list failing three passes in a row, 6 Helius env file missing,
+# unreadable or without a key (alert kind helius_env; nothing walked).
 #
 # Credit cap arithmetic (SYNTHESIS A8, ARTIFACTS/lab/audit-2026-10-08/SYNTHESIS.md:393). After the 200 ms slot step
 # (epoch 1053, ~2026-10-09T14:34Z) walk 2 costs about 410-430k credits a day at 1 credit per getBlock (13.4k a
@@ -49,11 +50,17 @@
 #
 # Test hook: FW2_TEST_ROOT (with FW2_TEST_PY, FW2_TEST_PASSES) points D, the lock dir and the Helius env at a temp
 # dir and ends the job after FW2_TEST_PASSES hourly passes. It exists for tools/test_forward_walk2_wrapper.py and
-# is never set in a job.
+# is never set in a job: with MISCUSI_JOB_ID also set the script refuses at the top (exit 2).
 set -u
 export PYTHONPATH="$PWD" PYTHONUNBUFFERED=1
 
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then echo "refused: forward-walk2.sh needs bash >= 4" >&2; exit 2; fi
+
+# The test hook never runs in a real MiScusi job (MISCUSI_JOB_ID is set there): refuse before anything is created.
+if [ -n "${FW2_TEST_ROOT:-}" ] && [ -n "${MISCUSI_JOB_ID+set}" ]; then
+  echo "refused: FW2_TEST_ROOT is a test hook and is set in a MiScusi job (MISCUSI_JOB_ID is set); unset it." >&2
+  exit 2
+fi
 
 COUNT_START=2026-10-16T01
 START="${MISCUSI_PARAM_START:-}"
@@ -124,7 +131,20 @@ PYEOF
 echo '{"pct":1,"note":"waiting for Helius slot (blocking)"}' > "$PROGRESS"
 L=""; while [ -z "$L" ]; do for i in 4 3 2 1; do exec 9>"$LOCKDIR/helius-$i.lock"; if flock -n 9; then L=$i; break; fi; exec 9>&-; done; [ -n "$L" ] || sleep 15; done
 echo "holding helius slot $L"
-set -a; . "$HELIUS_ENV"; set +a
+# Helius key guard (before the walk loop, so no credit is spent). The walker reads HELIUS_API_KEY and strips it; an
+# empty key makes it fall back to the public RPC, so an unset, empty or all-blank key is refused here. The env file
+# is checked before it is sourced. Sourcing runs with stderr off: bash echoes the offending line of a malformed
+# file, and that line is the key. Nothing below prints the file or the key.
+helius_env_refuse() {
+  alert helius_env - 6 "$1; job stopped before any walk"
+  exec 9>&-    # release the Helius slot
+  exit 6
+}
+if [ ! -f "$HELIUS_ENV" ] || [ ! -r "$HELIUS_ENV" ]; then helius_env_refuse "Helius env file missing or unreadable"; fi
+set -a; . "$HELIUS_ENV" 2>/dev/null; set +a
+KEYCHK=${HELIUS_API_KEY-}; KEYCHK=${KEYCHK//[[:space:]]/}
+if [ -z "$KEYCHK" ]; then helius_env_refuse "Helius env file gave no key (unset or empty)"; fi
+unset KEYCHK
 
 declare -A FAILS=()
 PASS=0
