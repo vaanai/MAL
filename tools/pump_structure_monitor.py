@@ -22,7 +22,8 @@ non-BOOST trade amounts, the lab tape, forward-1002 files, any API key or .env (
 Helius URLs; 0 Helius credits). Output carries distributions (min/median/max), shares and
 counts only. No mint, pool, wallet or signature is written.
 
-Exit code 0 always, except 2 when the RPC is unreachable before any data was read. Halts
+Exit code 0, except 2 when the RPC is unreachable before any data was read, and 1 when the
+JSON line cannot be written (the summary is printed first, so a HALT is never lost). Halts
 are data in the JSON line, not crashes. HALT and WARN flags have no side effects.
 
 Decoding logic is adapted from the 2026-10-08 audit prototypes (all read-only public RPC):
@@ -1221,9 +1222,19 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def rpc_host(url: str) -> str:
+    """hostname[:port] only. Never userinfo, path or query: any of them can carry a credential."""
+    try:
+        parsed = urlparse(url)
+        host, port = parsed.hostname or "unknown", parsed.port
+    except ValueError:
+        return "unknown"
+    return f"{host}:{port}" if port else host
+
+
 def main(argv: Sequence[str] | None = None, *, client: RpcClient | None = None, now: float | None = None) -> int:
     args = parse_args(argv)
-    host = urlparse(args.rpc_url).netloc or "unknown"
+    host = rpc_host(args.rpc_url)
     if "helius" in args.rpc_url.lower():
         print("refused: this monitor uses public RPC only (0 Helius credits)", file=sys.stderr)
         return 64
@@ -1259,8 +1270,12 @@ def main(argv: Sequence[str] | None = None, *, client: RpcClient | None = None, 
         client, epoch_info, pins, now=t_now, n_grads=args.n, settle_s=args.settle_s, v2_sample=args.v2_sample, min_eval_n=args.min_eval_n,
         prev_ms_per_slot=last_ms_per_slot(out_path), rpc_host=host, pins_error=pins_error,
     )
-    append_record(out_path, rec)
-    print(format_summary(rec))
+    print(format_summary(rec), flush=True)  # first: a HALT must reach the log even when the file write fails
+    try:
+        append_record(out_path, rec)
+    except OSError as exc:
+        print(f"WRITE FAILED {out_path}: {type(exc).__name__}: {str(exc)[:160]}", file=sys.stderr)
+        return 1
     return 0
 
 

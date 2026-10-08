@@ -587,6 +587,26 @@ def test_unreachable_rpc_exits_2_and_writes_nothing(tmp_path):
     assert not out.exists()
 
 
+def test_rpc_host_never_carries_userinfo_path_or_query(tmp_path):
+    assert m.rpc_host("https://api.mainnet-beta.solana.com") == "api.mainnet-beta.solana.com"
+    assert m.rpc_host("https://uname77:pw99@rpc.test:8899/p/ath?k=SECRET") == "rpc.test:8899"
+    assert m.rpc_host("https://uname77@[::1]:8899/") == "::1:8899"
+    assert m.rpc_host("https://h:notaport/") == "unknown" and m.rpc_host("") == "unknown"
+    rc, out = run_main(tmp_path, Chain(n=10), url="https://uname77:pw99@rpc.test:8899/?k=SECRET")
+    text = out.read_text()
+    assert rc == 0 and json.loads(text)["rpc_host"] == "rpc.test:8899"
+    assert not any(s in text for s in ("uname77", "pw99", "SECRET"))
+
+
+def test_halt_is_printed_before_a_failed_write_and_exit_is_1(tmp_path, capsys):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")  # --out under a regular file: mkdir/open raises OSError
+    chain = Chain(n=10, config=config_result(flip_global_config))
+    rc = m.main(["--out", str(blocker / "d.jsonl"), "--n", "10", "--min-interval", "0"], client=client_for(chain.node()), now=NOW)
+    cap = capsys.readouterr()
+    assert rc == 1 and "HALT pins_changed" in cap.out and "WRITE FAILED" in cap.err
+
+
 def test_helius_urls_are_refused_before_any_call(tmp_path):
     node = Node({})
     assert m.main(["--rpc-url", "https://mainnet.helius-rpc.com/?api-key=abc", "--out", str(tmp_path / "d.jsonl")], client=client_for(node)) == 64
