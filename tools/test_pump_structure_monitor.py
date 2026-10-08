@@ -708,9 +708,10 @@ def test_end_to_end_healthy_run(tmp_path, capsys):
     assert b["budget_sol"]["median"] == pytest.approx(17.586, abs=1e-3) and b["sol_total"]["median"] == b["budget_sol"]["median"]
     assert rec["pumpswap_trade_mix"]["v2_share"] == 0.5
     assert rec["halt"]["any"] is False and rec["halt"]["flags"]["pins_changed"]["halt"] is False
-    assert rec["halt"]["n_halt_not_evaluated"] == 0 and rec["halt"]["all_halt_evaluated"] is True  # the six halt rules, as before
-    # n_not_evaluated / all_evaluated also count the three change-watch rules: day one has no docs baseline, and 10 graduations are too few for the USDC rate
-    assert rec["halt"]["watch_rules_not_evaluated"] == ["docs_changed", "usdc_boost_regime"] and rec["halt"]["n_not_evaluated"] == 2 and rec["halt"]["all_evaluated"] is False
+    assert rec["halt"]["n_not_evaluated"] == 0 and rec["halt"]["all_evaluated"] is True
+    # the three change-watch rules are reported apart, in rec["watch"]: day one has no docs baseline, and 10 graduations are too few for the USDC rate
+    assert rec["watch"] == {"n_not_evaluated": 2, "all_evaluated": False, "rules_not_evaluated": ["docs_changed", "usdc_boost_regime"]}
+    assert set(rec["halt"]) == {"any", "n_not_evaluated", "all_evaluated", "flags"}
     assert rec["rpc"]["calls"] < 400 and rec["rpc"]["cap"] == 400
     # privacy: no mint, pool, curve or signature ids, and no URL query (key) in the record
     for ident in chain.all_ids + ["SECRET", "?k="]:
@@ -757,10 +758,10 @@ def test_end_to_end_boost_off_world_halts_and_timing_rules_are_not_evaluated(tmp
     assert f["boost_share_low"]["halt"] and f["boost_share_low"]["evaluated"] and "fallback" in f["boost_share_low"]["reason"]
     assert rec["boost"]["n_profiled"] == 0
     assert not f["boost_last_slice_early"]["evaluated"] and not f["boost_budget_or_slices_changed"]["evaluated"]
-    assert rec["halt"]["any"] and rec["halt"]["n_halt_not_evaluated"] == 2 and rec["halt"]["all_halt_evaluated"] is False
-    assert rec["halt"]["n_not_evaluated"] == 4 and rec["halt"]["all_evaluated"] is False  # + docs baseline and the too-small USDC sample
+    assert rec["halt"]["any"] and rec["halt"]["n_not_evaluated"] == 2 and rec["halt"]["all_evaluated"] is False
+    assert rec["watch"]["n_not_evaluated"] == 2  # docs baseline and the too-small USDC sample: not counted in the halt line
     summary = capsys.readouterr().out
-    assert "HALT boost_share_low" in summary and "(4 rules not evaluated)" in summary
+    assert "HALT boost_share_low" in summary and "(2 rules not evaluated)" in summary
 
 
 def test_end_to_end_mayhem_stage_failure_falls_back_to_all_wsol(tmp_path):
@@ -779,10 +780,11 @@ def test_end_to_end_mayhem_stage_failure_falls_back_to_all_wsol(tmp_path):
 def test_summary_and_record_say_when_rules_were_not_evaluated(tmp_path, capsys):
     rc, out = run_main(tmp_path, Chain(n=4), extra=("--n", "4"))  # 4 graduations: share, timing, size and synthetic rules all lack a sample
     rec = json.loads(out.read_text())
-    assert rc == 0 and rec["halt"]["any"] is False and rec["halt"]["n_halt_not_evaluated"] == 4 and rec["halt"]["all_halt_evaluated"] is False
-    assert rec["halt"]["n_not_evaluated"] == 6 and rec["halt"]["all_evaluated"] is False  # + docs baseline and the too-small USDC sample
+    assert rc == 0 and rec["halt"]["any"] is False and rec["halt"]["n_not_evaluated"] == 4 and rec["halt"]["all_evaluated"] is False
+    assert rec["watch"]["n_not_evaluated"] == 2 and rec["watch"]["all_evaluated"] is False  # docs baseline and the too-small USDC sample
     out_text = capsys.readouterr().out
-    assert "HALT: none (6 rules not evaluated)" in out_text and "NOT EVALUATED docs_changed" in out_text and "NOT EVALUATED usdc_boost_regime" in out_text
+    assert "HALT: none (4 rules not evaluated)" in out_text and "watch: 2 of 3 rules not evaluated" in out_text
+    assert "NOT EVALUATED docs_changed" in out_text and "NOT EVALUATED usdc_boost_regime" in out_text
 
 
 def test_end_to_end_early_last_slice_halts(tmp_path):
@@ -1116,7 +1118,7 @@ def test_end_to_end_docs_unreachable_is_not_evaluated_and_does_not_fail_the_run(
     rc, out = run_main(tmp_path, Chain(n=10))
     rec = json.loads(out.read_text())
     assert rc == 0 and rec["status"] == "ok" and rec["docs_watch"]["ok"] is False and rec["docs_watch"]["calls"] == 2
-    assert not rec["warn"]["flags"]["docs_changed"]["evaluated"] and "docs_changed" in rec["halt"]["watch_rules_not_evaluated"]
+    assert not rec["warn"]["flags"]["docs_changed"]["evaluated"] and "docs_changed" in rec["watch"]["rules_not_evaluated"] and rec["halt"]["all_evaluated"] is True
     assert "NOT EVALUATED docs_changed: docs repo not read: network OSError" in capsys.readouterr().out
 
 
@@ -1266,24 +1268,27 @@ def test_end_to_end_no_usdc_pools_means_zero_rate_and_no_warn(tmp_path):
 
 
 # ---- 5. output: backward compatible, new rules counted ----------------------------------------
-def test_n_not_evaluated_counts_the_watch_rules_and_the_halt_only_counts_are_kept(tmp_path, capsys):
+def test_halt_counts_stay_halt_only_and_the_watch_rules_are_counted_apart(tmp_path, capsys):
     chain = Chain(n=30)
     rc, out = run_main(tmp_path, chain)  # day 1: no docs baseline
     first = json.loads(out.read_text())
-    assert rc == 0 and first["halt"]["watch_rules_not_evaluated"] == ["docs_changed"] and first["halt"]["n_not_evaluated"] == 1 and first["halt"]["all_evaluated"] is False
-    assert first["halt"]["n_halt_not_evaluated"] == 0 and first["halt"]["all_halt_evaluated"] is True
-    assert "HALT: none (1 rules not evaluated)" in capsys.readouterr().out
+    assert rc == 0 and first["halt"]["n_not_evaluated"] == 0 and first["halt"]["all_evaluated"] is True  # a missing docs baseline is not a missing halt evaluation
+    assert first["watch"] == {"n_not_evaluated": 1, "all_evaluated": False, "rules_not_evaluated": ["docs_changed"]}
+    text = capsys.readouterr().out
+    assert "HALT: none\n" in text + "\n" and "rules not evaluated)" not in text and "watch: 1 of 3 rules not evaluated" in text
     rc = m.main(["--out", str(out), "--pins", str(tmp_path / "pins.json"), "--n", "10", "--min-interval", "0"], client=client_for(chain.node()), now=NOW + 86400)
     second = json.loads(out.read_text().splitlines()[1])
-    assert rc == 0 and second["halt"]["watch_rules_not_evaluated"] == [] and second["halt"]["n_not_evaluated"] == 0 and second["halt"]["all_evaluated"] is True
-    assert "HALT: none\n" in capsys.readouterr().out + "\n"
-    # the earlier keys are all still there, with the earlier meaning
-    for key in ("any", "n_not_evaluated", "all_evaluated", "flags"):
-        assert key in second["halt"]
+    assert rc == 0 and second["watch"] == {"n_not_evaluated": 0, "all_evaluated": True, "rules_not_evaluated": []}
+    assert "watch: all 3 rules evaluated" in capsys.readouterr().out
+    # the halt block has exactly the keys it has on main, with their earlier meaning
+    assert set(second["halt"]) == {"any", "n_not_evaluated", "all_evaluated", "flags"} and second["halt"]["all_evaluated"] is True
     assert set(second["halt"]["flags"]) == {"pins_changed", "boost_disabled", "boost_share_low", "boost_last_slice_early", "boost_budget_or_slices_changed", "synthetic_share_high"}
     for key in ("any", "flags"):
         assert key in second["warn"]
     assert {"ms_per_slot_moved", "graduation_sample_short", "rules_not_evaluated"} <= set(second["warn"]["flags"]) and {"program_changed", "docs_changed", "usdc_boost_regime"} <= set(second["warn"]["flags"])
+    # an unreachable GitHub changes the watch block only
+    rc, out = run_main(tmp_path / "down", chain)
+    assert rc == 0
 
 
 def test_summary_lists_the_new_rules(tmp_path, capsys):
@@ -1312,3 +1317,67 @@ def test_watch_stages_run_after_the_halt_rule_stages(tmp_path):
     assert rc == 0 and rec["rpc"]["calls"] == 24 and rec["graduations"]["n"] == 10
     assert rec["item_errors"]["program_hashes: call cap"] == 1 and rec["item_errors"]["quote_mix: call cap"] == 1
     assert not rec["warn"]["flags"]["program_changed"]["evaluated"] and not rec["warn"]["flags"]["usdc_boost_regime"]["evaluated"]
+
+
+# ---- 6. a failing watch stage can never stop halt evaluation, the summary or the record write ----------------------------
+def _boom(*a, **kw):
+    raise RuntimeError("constructed watch failure")  # not an ITEM_ERRORS member: it reaches the stage guard
+
+
+def _boom_on_quote_mix(real):
+    def wrapped(*a, **kw):
+        if kw.get("stage") == "quote_mix":
+            raise RuntimeError("constructed watch failure")
+        return real(*a, **kw)
+
+    return wrapped
+
+
+WATCH_FAILURES = {
+    "program_hashes": lambda mp: mp.setattr(m, "stage_program_hashes", _boom),
+    "docs_stage": lambda mp: mp.setattr(m, "stage_docs", _boom),
+    "docs_transport": lambda mp: mp.setattr(m, "urllib_get", _boom),
+    "quote_mix_extension": lambda mp: mp.setattr(m, "sample_graduations", _boom_on_quote_mix(m.sample_graduations)),
+    "quote_mix_summary": lambda mp: mp.setattr(m, "summarize_quote_mix", _boom),
+    "watch_flags": lambda mp: mp.setattr(m, "compute_watch_flags", _boom),
+    "all_stages": lambda mp: [f(mp) for n_, f in WATCH_FAILURES.items() if n_ not in ("all_stages", "watch_flags")],
+}
+
+
+@pytest.mark.parametrize("failure", list(WATCH_FAILURES))
+def test_a_raising_watch_stage_leaves_halt_evaluation_and_the_record_intact(tmp_path, capsys, monkeypatch, failure):
+    base_rc, base_out = run_main(tmp_path / "ok", Chain(n=10))
+    base = json.loads(base_out.read_text())
+    base_summary = capsys.readouterr().out
+    WATCH_FAILURES[failure](monkeypatch)
+    rc, out = run_main(tmp_path / "boom", Chain(n=10))
+    lines = out.read_text().splitlines()
+    rec = json.loads(lines[0])
+    summary = capsys.readouterr().out
+    assert rc == base_rc == 0 and len(lines) == 1  # the record was written and the exit code is unchanged
+    assert set(rec["halt"]["flags"]) == set(base["halt"]["flags"]) and len(rec["halt"]["flags"]) == 6
+    assert all(v["evaluated"] for v in rec["halt"]["flags"].values())  # all six halt flags evaluated
+    assert rec["halt"]["all_evaluated"] is True and rec["halt"]["n_not_evaluated"] == 0 and rec["halt"]["any"] is False
+    assert {k: (v["halt"], v["evaluated"], v["reason"]) for k, v in rec["halt"]["flags"].items()} == {k: (v["halt"], v["evaluated"], v["reason"]) for k, v in base["halt"]["flags"].items()}
+    assert rec["graduations"] == base["graduations"] and rec["boost"] == base["boost"] and rec["accounts"] == base["accounts"]  # halt-rule inputs untouched
+    assert "HALT: none" in summary and "HALT: none" in base_summary and "watch" in summary
+    if failure == "watch_flags":
+        assert rec["watch"]["rules_not_evaluated"] == sorted(m.WATCH_RULES) and "watch rule failed: RuntimeError" in rec["warn"]["flags"]["docs_changed"]["reason"]
+    else:
+        assert any("RuntimeError" in e for e in rec["errors"]) and rec["status"] == "partial" and rec["warn"]["flags"]["stage_errors"]["warn"]
+
+
+def test_a_halt_still_halts_when_every_watch_stage_raises(tmp_path, capsys, monkeypatch):
+    WATCH_FAILURES["all_stages"](monkeypatch)
+    rc, out = run_main(tmp_path, Chain(n=10, config=config_result(flip_global_config)))
+    rec = json.loads(out.read_text())
+    assert rc == 0 and rec["halt"]["any"] is True and rec["halt"]["flags"]["pins_changed"]["halt"] is True and rec["halt"]["all_evaluated"] is True
+    assert "HALT pins_changed" in capsys.readouterr().out
+
+
+def test_a_malformed_watch_block_does_not_cost_the_halt_lines():
+    rec = {"run_utc": "2026-10-08T00:00:00Z", "rpc_host": "h", "rpc": {"calls": 1}, "status": "ok", "errors": [], "quote_mix": {"n": 1},
+           "docs_watch": {"repo": "r"}, "watch": {"rules_not_evaluated": ["docs_changed"]},
+           "halt": {"any": False, "n_not_evaluated": 0, "all_evaluated": True, "flags": {}}, "warn": {"any": False, "flags": {}}}
+    text = m.format_summary(rec)
+    assert "HALT: none" in text and "watch info unavailable: KeyError" in text and "watch status unavailable: KeyError" in text

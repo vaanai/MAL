@@ -142,7 +142,7 @@ QUOTE_MIX_MIN_N = 20  # the USDC-BOOST rate is estimated only from a sample of a
 QUOTE_MIX_MIN_SPAN_S = 300  # ... spanning at least this many seconds
 USDC_BOOST_PER_DAY_MIN = 10.0  # tripwire: estimated USDC-quoted BOOST graduations per day, per daily run
 USDC_BOOST_STREAK_DAYS = 5  # ... on this many consecutive UTC days
-WATCH_RULES = ("program_changed", "docs_changed", "usdc_boost_regime")  # WARN rules counted in n_not_evaluated / all_evaluated
+WATCH_RULES = ("program_changed", "docs_changed", "usdc_boost_regime")  # WARN rules reported in rec["watch"]; rec["halt"] stays halt-rules only
 
 V1_TRADE_IX = frozenset({"Buy", "Sell", "BuyExactQuoteIn"})
 V2_TRADE_IX = frozenset({"BuyV2", "SellV2", "BuyExactQuoteInV2"})
@@ -1433,7 +1433,11 @@ def compute_flags(
     warn["rules_not_evaluated"] = {"warn": bool(not_eval), "evaluated": True, "reason": ", ".join(not_eval) if not_eval else "all halt rules evaluated"}
     if rec.get("errors"):
         warn["stage_errors"] = {"warn": True, "evaluated": True, "reason": f"{len(rec['errors'])} stage error(s), see errors"}
-    warn.update(compute_watch_flags(rec, pins, history))
+    try:
+        warn.update(compute_watch_flags(rec, pins, history))
+    except Exception as exc:  # noqa: BLE001 - a broken watch rule must never cost a halt flag
+        why = f"watch rule failed: {type(exc).__name__}: {str(exc)[:80]}"
+        warn.update({k: {"warn": False, "evaluated": False, "reason": why} for k in WATCH_RULES})
     return halt, warn
 
 
@@ -1499,15 +1503,18 @@ def build_record(
 
     # change watch: programdata fingerprints (also read for --write-pins), docs head, BOOST quote mix. Runs after the halt-rule stages so
     # a tight call cap starves the watch, never a halt rule.
-    for p, h in (_stage(errors, "program_hashes", lambda: stage_program_hashes(client, acc.get("program_accounts", {}), item_errs), {}) or {}).items():
-        if p in rec["programs"]:
-            rec["programs"][p].update(h)
+    def read_program_hashes() -> None:
+        for p, h in stage_program_hashes(client, acc.get("program_accounts", {}), item_errs).items():
+            if p in rec["programs"]:
+                rec["programs"][p].update(h)
+
+    _stage(errors, "program_hashes", read_program_hashes)
     if n_grads > 0:
         sample = list(grads)
         if grads and quote_mix_extra > 0:
             more = _stage(errors, "quote_mix", lambda: sample_graduations(client, quote_mix_extra, cutoff_bt, item_errs, max_pages=2, before=grads[-1]["sig"], seen={g["mint"] for g in grads}, stage="quote_mix"), []) or []
             sample += more
-        rec["quote_mix"] = summarize_quote_mix(sample, len(grads), quote_mix_extra)
+        rec["quote_mix"] = _stage(errors, "quote_mix_summary", lambda: summarize_quote_mix(sample, len(grads), quote_mix_extra), None)
     if docs_get is not None:
         rec["docs_watch"] = _stage(errors, "docs_watch", lambda: stage_docs(docs_get, last_docs_sha(history)), None)
 
@@ -1523,13 +1530,12 @@ def build_record(
         obs["pinned_deploy_slot"] = ((pins.get("programs") or {}).get(name) or {}).get("deploy_slot")
     halt, warn = compute_flags(rec, pins, prev_ms_per_slot, min_eval_n=min_eval_n, history=history)
     rec["prev_ms_per_slot"] = prev_ms_per_slot
-    n_halt_ne = sum(1 for v in halt.values() if not v["evaluated"])
+    n_not_eval = sum(1 for v in halt.values() if not v["evaluated"])
     watch_ne = sorted(k for k in WATCH_RULES if not warn[k]["evaluated"])
-    n_not_eval = n_halt_ne + len(watch_ne)
-    # "no halt" is only an all-clear when every rule was evaluated: n_not_evaluated / all_evaluated say which it is. They count the six halt
-    # rules plus the three change-watch WARN rules; n_halt_not_evaluated / all_halt_evaluated keep the halt-only meaning of the earlier records.
-    rec["halt"] = {"any": any(v["halt"] for v in halt.values()), "n_not_evaluated": n_not_eval, "all_evaluated": n_not_eval == 0,
-                   "n_halt_not_evaluated": n_halt_ne, "all_halt_evaluated": n_halt_ne == 0, "watch_rules_not_evaluated": watch_ne, "flags": halt}
+    # "no halt" is only an all-clear when every halt rule was evaluated: n_not_evaluated / all_evaluated say which it is (halt rules only).
+    rec["halt"] = {"any": any(v["halt"] for v in halt.values()), "n_not_evaluated": n_not_eval, "all_evaluated": n_not_eval == 0, "flags": halt}
+    # The three change-watch WARN rules are reported apart from the halt rules, so a GitHub outage never reads as a missing halt evaluation.
+    rec["watch"] = {"n_not_evaluated": len(watch_ne), "all_evaluated": not watch_ne, "rules_not_evaluated": watch_ne}
     rec["warn"] = {"any": any(v["warn"] for v in warn.values()), "flags": warn}
     rec["status"] = "ok" if not errors else "partial"
     return rec
@@ -1562,6 +1568,40 @@ def append_record(path: Path, rec: Mapping[str, Any]) -> None:
         fh.write(line)
         fh.flush()
         os.fsync(fh.fileno())
+
+
+def watch_info_lines(rec: Mapping[str, Any]) -> list[str]:
+    """Program fingerprint, quote mix and docs lines. Guarded: a malformed watch block must never cost the HALT lines."""
+    lines: list[str] = []
+    try:
+        progs = rec.get("programs") or {}
+        if any(o.get("sha256") for o in progs.values()):
+            lines.append("program fingerprints: " + ", ".join(f"{n} {str(o.get('sha256') or 'unread')[:12]} len {o.get('data_len')} slot {o.get('deploy_slot')}" for n, o in progs.items()))
+        qm = rec.get("quote_mix")
+        if qm:
+            bq = qm["by_quote"]
+            lines.append(
+                f"quote mix: {qm['n']} graduations ({qm['n_main']} + {qm['n_extra']} older) over {qm['span_s']} s; InitBoost/total wsol {bq['wsol']['n_init_boost']}/{bq['wsol']['n']}, "
+                f"usdc {bq['usdc']['n_init_boost']}/{bq['usdc']['n']}, other {bq['other']['n_init_boost']}/{bq['other']['n']} ({qm['n_other_quote_mints']} quote mints); usdc BOOST est {qm['usdc_boost_per_day_est']}/day"
+            )
+        dw = rec.get("docs_watch")
+        if dw:
+            lines.append(f"docs {dw['repo']}: " + (f"head {dw['latest_sha'][:7]} {dw.get('latest_date')} '{dw.get('latest_title')}', {dw['n_new']} new since last run" if dw.get("ok") else f"not read ({dw.get('error')})") + f", {dw['calls']} http call(s)")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"watch info unavailable: {type(exc).__name__}")
+    return lines
+
+
+def watch_status_lines(rec: Mapping[str, Any]) -> list[str]:
+    """One line for the three change-watch rules (kept apart from the HALT line), then a reason per rule that was not evaluated."""
+    try:
+        w = rec.get("watch") or {}
+        ne = w.get("rules_not_evaluated", [])
+        if not ne:
+            return [f"watch: all {len(WATCH_RULES)} rules evaluated"]
+        return [f"watch: {len(ne)} of {len(WATCH_RULES)} rules not evaluated"] + [f"NOT EVALUATED {k}: {rec['warn']['flags'][k]['reason']}" for k in ne]
+    except Exception as exc:  # noqa: BLE001
+        return [f"watch status unavailable: {type(exc).__name__}"]
 
 
 def format_summary(rec: Mapping[str, Any]) -> str:
@@ -1597,19 +1637,7 @@ def format_summary(rec: Mapping[str, Any]) -> str:
         )
     if mix:
         lines.append(f"pumpswap trade ix sample: {mix.get('n_txs')} txs, v2 {mix.get('trade_ix_v2')} / v1 {mix.get('trade_ix_v1')} (v2 share {mix.get('v2_share')})")
-    progs = rec.get("programs") or {}
-    if any(o.get("sha256") for o in progs.values()):
-        lines.append("program fingerprints: " + ", ".join(f"{n} {str(o.get('sha256') or 'unread')[:12]} len {o.get('data_len')} slot {o.get('deploy_slot')}" for n, o in progs.items()))
-    qm = rec.get("quote_mix")
-    if qm:
-        bq = qm["by_quote"]
-        lines.append(
-            f"quote mix: {qm['n']} graduations ({qm['n_main']} + {qm['n_extra']} older) over {qm['span_s']} s; InitBoost/total wsol {bq['wsol']['n_init_boost']}/{bq['wsol']['n']}, "
-            f"usdc {bq['usdc']['n_init_boost']}/{bq['usdc']['n']}, other {bq['other']['n_init_boost']}/{bq['other']['n']} ({qm['n_other_quote_mints']} quote mints); usdc BOOST est {qm['usdc_boost_per_day_est']}/day"
-        )
-    dw = rec.get("docs_watch")
-    if dw:
-        lines.append(f"docs {dw['repo']}: " + (f"head {dw['latest_sha'][:7]} {dw.get('latest_date')} '{dw.get('latest_title')}', {dw['n_new']} new since last run" if dw.get("ok") else f"not read ({dw.get('error')})") + f", {dw['calls']} http call(s)")
+    lines.extend(watch_info_lines(rec))
     halts = [(k, v) for k, v in rec["halt"]["flags"].items() if v["halt"]]
     n_ne = rec["halt"].get("n_not_evaluated", 0)
     suffix = f" ({n_ne} rules not evaluated)" if n_ne else ""  # not an all-clear: see the HANDOFF note
@@ -1623,8 +1651,7 @@ def format_summary(rec: Mapping[str, Any]) -> str:
     for k, v in rec["warn"]["flags"].items():
         if v["warn"]:
             lines.append(f"WARN {k}: {v['reason']}")
-    for k in rec["halt"].get("watch_rules_not_evaluated", []):
-        lines.append(f"NOT EVALUATED {k}: {rec['warn']['flags'][k]['reason']}")
+    lines.extend(watch_status_lines(rec))
     for e in rec.get("errors", []):
         lines.append(f"ERROR {e}")
     return "\n".join(lines)
