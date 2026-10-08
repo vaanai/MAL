@@ -207,6 +207,9 @@ class H5Trigger:
     def public(self) -> dict[str, Any]:
         return asdict(self)
 
+    def log_fields(self) -> dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if k != "mint"}  # the ledger row carries the mint itself
+
 
 def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
@@ -752,7 +755,7 @@ class H5Executor(pl.LiveExecutor):
         self.save()
         if trg.mint not in st.pending:  # the kill switch fired between the gate and the send: nothing was sent
             return
-        self._log("decision", trg.mint, **trg.public(), stake_lamports=spend, expected_tokens=terms["expected_tokens"], min_out=terms["min_out"],
+        self._log("decision", trg.mint, **trg.log_fields(), stake_lamports=spend, expected_tokens=terms["expected_tokens"], min_out=terms["min_out"],
                   fee_ppm=terms["fee_ppm"], tolerance_bps=self.h5.entry_tolerance_bps, plan=plan.public(), signature=signature,
                   built_ms=t_built, sent_ms=p.get("first_send_ms"), ms_decision_to_send=(p["first_send_ms"] - trg.decision_ms) if p.get("first_send_ms") else None,
                   drift_vs_trigger=drift, priority_lamports=self.h5.buy_priority_lamports)
@@ -785,7 +788,7 @@ class H5Executor(pl.LiveExecutor):
         if self.state.first_attempt_ms is None:
             self.state.first_attempt_ms = now
         self.counters.day(day_key(now))["trades"] += 1
-        self._log("decision", trg.mint, **trg.public(), stake_lamports=self.h5.stake_lamports, expected_tokens=terms["expected_tokens"],
+        self._log("decision", trg.mint, **trg.log_fields(), stake_lamports=self.h5.stake_lamports, expected_tokens=terms["expected_tokens"],
                   min_out=terms["min_out"], fee_ppm=terms["fee_ppm"], tolerance_bps=self.h5.entry_tolerance_bps, plan=plan.public(),
                   would_have_halted=would, live_validate_err=validate_err, sim_tokens=sim_tokens, drift_vs_trigger=drift,
                   err=res.get("err"), cu_used=res.get("unitsConsumed"), ms_decision_to_built=t_built - trg.decision_ms,
@@ -1092,15 +1095,18 @@ class H5Executor(pl.LiveExecutor):
         if pos is None or h5 is None:
             return
         pos["h5"] = {**h5, "buy_landed_slot": m["slot"]}
-        trg = h5["trigger"]
         if m.get("slot"):
-            sec = (m["slot"] - trg["trigger_slot"]) * trg["sps"]  # trigger print to landing, in seconds of slot time
-            self.counters.landing_s = [*self.counters.landing_s, round(sec, 4)][-50:]
-            self.counters.save(self.counters_path)
-            last = self.counters.landing_s[-LANDING_WINDOW:]
-            if len(last) >= LANDING_WINDOW and statistics.median(last) > LANDING_MEDIAN_MAX_S:
-                self._latch("landing_median_gt_3s", median_s=round(statistics.median(last), 4), n=len(last))
+            self._note_buy_landing(h5["trigger"]["trigger_slot"], m["slot"], h5["trigger"]["sps"])
         self.save()
+
+    def _note_buy_landing(self, trigger_slot: int, landed_slot: int, sps: float) -> None:
+        """Halt rule: median trigger-to-landing over the last 10 fills above 3.0 s (strictly above; fewer than 10 fills: no halt)."""
+        sec = (landed_slot - trigger_slot) * sps  # trigger print to landing, in seconds of slot time
+        self.counters.landing_s = [*self.counters.landing_s, round(sec, 4)][-50:]
+        self.counters.save(self.counters_path)
+        last = self.counters.landing_s[-LANDING_WINDOW:]
+        if len(last) >= LANDING_WINDOW and statistics.median(last) > LANDING_MEDIAN_MAX_S:
+            self._latch("landing_median_gt_3s", median_s=round(statistics.median(last), 4), n=len(last))
 
     @pe.critical
     def _finish_sell(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
@@ -1111,15 +1117,19 @@ class H5Executor(pl.LiveExecutor):
         self._bal = None
         self._book_realized(self.state.realized_lamports - before)
         if m.get("err") is None and plan is not None and mint not in self.state.open and m.get("slot"):
-            c = self.counters
-            c.sells_landed += 1
-            late = m["slot"] > plan["late_slot"]
-            c.sells_late += 1 if late else 0
-            self._log("exit_landing", mint, landed_slot=m["slot"], exit_slot=plan["exit_slot"], land_slot=plan["land_slot"],
-                      error_slots=m["slot"] - plan["land_slot"], late=late, emergency=bool(p.get("h5", {}).get("emergency")))
-            c.save(self.counters_path)
-            if c.sells_landed >= self.h5.late_sell_min_n and c.sells_late / c.sells_landed > LATE_SELL_FRAC:
-                self._latch("late_sells_gt_5pct", late=c.sells_late, landed=c.sells_landed)
+            self._note_sell_landing(mint, plan, m["slot"], bool(p.get("h5", {}).get("emergency")))
+
+    def _note_sell_landing(self, mint: str, plan: dict[str, Any], landed_slot: int, emergency: bool) -> None:
+        """Halt rule: more than 5% of our landed sells landing after s0 + 335 s (strictly more than 5%)."""
+        c = self.counters
+        c.sells_landed += 1
+        late = landed_slot > plan["late_slot"]
+        c.sells_late += 1 if late else 0
+        self._log("exit_landing", mint, landed_slot=landed_slot, exit_slot=plan["exit_slot"], land_slot=plan["land_slot"],
+                  error_slots=landed_slot - plan["land_slot"], late=late, emergency=emergency)
+        c.save(self.counters_path)
+        if c.sells_landed >= self.h5.late_sell_min_n and c.sells_late / c.sells_landed > LATE_SELL_FRAC:
+            self._latch("late_sells_gt_5pct", late=c.sells_late, landed=c.sells_landed)
 
     @pe.critical
     def _resolve_expired(self, mint: str, p: dict[str, Any]) -> None:
@@ -1261,29 +1271,29 @@ def main(argv: list[str] | None = None) -> int:
     if warn:
         print(f"h5_executor WARNING {warn}", flush=True)
     lock_fd = acquire_lock(Path(cfg["state_dir"]) / "h5-executor.lock")
-    oracle = JsonlPickOracle(cfg["pick_file"]) if cfg.get("pick_file") else None
-    if mode == LIVE:
-        why = start_refusal(cfg)
-        if why:
-            print(f"h5_executor ALERT startup_refused {why}", flush=True)
-            return 2
-        rc = pe.startup_rpc_env_check(True)
-        if rc:
-            return rc
-        pl.harden_process()  # before the key is read
-        if "key_path" in cfg:
-            raise SystemExit("live mode has no key path override: the key comes from the systemd credential only")
-        if not (os.environ.get("HELIUS_API_KEY") or "").strip():
-            print("h5_executor ALERT startup_refused rpc_key_missing", flush=True)
-            return 2
-        kp = pl.load_probe_key()
-        rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file, use_env_file=False)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
-        ex = H5Executor(rpc, cfg, kp, pick_oracle=oracle)
-    else:
-        rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
-        ex = H5Executor(rpc, cfg, None, pick_oracle=oracle)
-    print(f"h5_executor mode={ex.run_mode} user={ex.user} limits={ex.h5}", flush=True)
     try:
+        oracle = JsonlPickOracle(cfg["pick_file"]) if cfg.get("pick_file") else None
+        if mode == LIVE:
+            why = start_refusal(cfg)
+            if why:
+                print(f"h5_executor ALERT startup_refused {why}", flush=True)
+                return 2
+            rc = pe.startup_rpc_env_check(True)
+            if rc:
+                return rc
+            pl.harden_process()  # before the key is read
+            if "key_path" in cfg:
+                raise SystemExit("live mode has no key path override: the key comes from the systemd credential only")
+            if not (os.environ.get("HELIUS_API_KEY") or "").strip():
+                print("h5_executor ALERT startup_refused rpc_key_missing", flush=True)
+                return 2
+            kp = pl.load_probe_key()
+            rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file, use_env_file=False)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
+            ex = H5Executor(rpc, cfg, kp, pick_oracle=oracle)
+        else:
+            rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, args.env_file)), rps=float(cfg.get("rps", 8.0)), max_rps=H5_MAX_RPS)
+            ex = H5Executor(rpc, cfg, None, pick_oracle=oracle)
+        print(f"h5_executor mode={ex.run_mode} user={ex.user} limits={ex.h5}", flush=True)
         if args.once:
             ex.tick()
             return 0
