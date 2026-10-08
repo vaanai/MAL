@@ -2864,7 +2864,9 @@ def replay_rows(
     logs: dict[str, JsonlLog] | None = None,
     pumpswap_virtual: str = "off",
     early_arm_rows: Iterable[dict[str, Any]] | None = None,
+    exp012_boot: tuple[Path, int] | None = None,
 ) -> ForwardEngine:
+    """`exp012_boot=(creates_dir, boot_ms)` preloads gate creator history as `main` does at boot (EXP-022 E0); None = off."""
     engine = ForwardEngine(
         books,
         pumpswap_virtual=pumpswap_virtual,
@@ -2886,6 +2888,8 @@ def replay_rows(
         barrier.maybe_reload(force=True)
     if swing is not None:
         swing.maybe_reload(force=True)
+    if exp012_boot is not None and engine.exp012 is not None:
+        engine.exp012.preload(*exp012_boot)
     arm = None
     if early_arm_rows is not None and engine.exp012 is not None and "intents" in engine.logs and "arm_audit" in engine.logs:
         from tools.forward_early_arm import EarlyArm
