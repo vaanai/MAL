@@ -25,8 +25,13 @@ OUTPUT. <out-dir>/h5-shadow-<UTC hour>.jsonl, strict JSON lines flushed per line
 A gap record (slot jump, silence, feed restart) also flags every pool open at the time (gap=true on its pool/trigger/outcome records); an
 hour with a gap record or a missing hb is a bad hour.
 
+EXIT LADDER. Every outcome record also carries the pool at the exit landing slot for exit triggers at s0 + 310/320/330/335/340/345/350 s
+(the rule exits at 330 s; VERIFY.md found the exit sits on a cliff). Report-only; the rule's exit is the 330 s row.
+
 REPLAY. --replay-tape runs the SAME engine over the audit's exploration tape (/data/mal/audit-1008/tape) so the live code can be checked
-against the frozen rule's own trigger list. See ARTIFACTS/lab/h5-shadow-replay-2026-10-08.md (the PR body carries the numbers).
+against the frozen rule's own trigger list (--compare-frozen). The PR body carries the numbers.
+
+Run: python -m tools.h5_shadow --out-dir /var/lib/mal/h5-shadow   (MiScusi job: bash scripts/research/h5-shadow.sh)
 """
 
 from __future__ import annotations
@@ -82,6 +87,7 @@ BOOST_MIN_BUYS, BOOST_BUY_MIN, BOOST_BUY_MAX, BOOST_TOTAL_MAX = 3, 0.2e9, 2.0e9,
 ENTRY_S = {"primary": 1.3, "binding": 1.9}
 EXIT_AFTER_S0_S = 330.0
 EXIT_LAG_S = 0.55
+EXIT_LADDER_S = (310.0, 320.0, 330.0, 335.0, 340.0, 345.0, 350.0)  # report-only exit-shift sensitivity (VERIFY.md: the exit sits on a cliff)
 PRESSURE_WINDOW_S = 2.0
 PRIO_LAMPORTS = 55_000
 STAKES = (("0.1", 100_000_000), ("0.25", 250_000_000))
@@ -234,6 +240,7 @@ class Pool:
         self.min_q_pv: float | None = None
         self.min_q_fv: float | None = None
         self.no_sps = 0
+        self.disagree = 0  # sells in [0, 300] s where the per-print-V and fixed-V Q fall on different sides of 40 SOL
         self.closed = False
 
 
@@ -494,6 +501,9 @@ class Engine:
         t = (pr.slot - p.s0) * sps
         if not (T_MIN_S <= t <= T_MAX_S):
             return
+        if (pr.q_post("pv", p.v0) / 1e9 <= Q_STAR_SOL) != (pr.q_post("fv", p.v0) / 1e9 <= Q_STAR_SOL):
+            p.disagree += 1
+            self.counters["pv_fv_disagree_sells"] += 1
         spent, ident, src = self.boost_spent(p)
         if ident is not None and pr.trader == ident:
             return
@@ -528,8 +538,10 @@ class Engine:
             "gap": bool(p.gaps), "gaps": p.gaps[:5], "announced": p.announced_slot is not None, "v_missing": pr.v_missing,
         }
         p.trig[var] = rec
+        ladder = {T: p.s0 + int(round(T / sps)) for T in EXIT_LADDER_S}  # exit trigger slot per ladder point
+        rec["exit_ladder_trigger_slots"] = {str(int(T)): v for T, v in ladder.items()}
         p.pending.append({"variant": var, "idx": idx, "sps": sps, "k": {"primary": k_p, "binding": k_b}, "exit_slot": exit_slot, "exit_land": exit_slot + el,
-                          "trig_slot": pr.slot})
+                          "trig_slot": pr.slot, "el": el, "ladder": ladder, "resolve_at": max(ladder.values()) + el})
         self.counters[f"triggers_{var}"] += 1
         self.emit(rec)
 
@@ -547,7 +559,7 @@ class Engine:
             return
         for p in self.pools.values():
             if p.pending:
-                for pend in [x for x in p.pending if self.hw_slot >= x["exit_land"] + OUTCOME_GRACE_SLOTS]:
+                for pend in [x for x in p.pending if self.hw_slot >= x["resolve_at"] + OUTCOME_GRACE_SLOTS]:
                     self._resolve(p, pend, final=False)
 
     def _resolve(self, p: Pool, pend: dict, final: bool) -> None:
@@ -555,7 +567,7 @@ class Engine:
             return
         p.pending.remove(pend)
         var, sps, X_exit = pend["variant"], pend["sps"], pend["exit_land"]
-        complete = (self.hw_slot is not None and self.hw_slot >= X_exit) or not final
+        complete = (self.hw_slot is not None and self.hw_slot >= pend["resolve_at"]) or not final
         legs: dict[str, Any] = {}
         qx, bx, xsrc = self._state_at(p, X_exit, var)
         w = int(round(PRESSURE_WINDOW_S / sps))
@@ -574,10 +586,21 @@ class Engine:
                     pnl, gross = fill_round_trip(qe, be, qx, bx, float(stake))
                     entry["net"][label] = {"pnl_nofail_lamports": pnl, "net_pct_nofail": 100 * pnl / stake, "gross": gross}
             legs[leg] = entry
+        ladder_out: dict[str, Any] = {}
+        for T, trig_slot in pend["ladder"].items():
+            land = trig_slot + pend["el"]
+            lq, lb, lsrc = self._state_at(p, land, var)
+            row = {"trigger_slot": trig_slot, "landing_slot": land, "q_sol": lq / 1e9, "base": lb, "state_src": lsrc}
+            for leg in ("primary", "binding"):
+                ent = legs[leg]
+                if trig_slot > ent["landing_slot"]:
+                    pnl, _ = fill_round_trip(ent["q_sol"] * 1e9, ent["base"], lq, lb, float(STAKES[0][1]))
+                    row[f"net_pct_{leg}_0.1"] = 100 * pnl / STAKES[0][1]
+            ladder_out[str(int(T))] = row
         rec = {
             "type": "outcome", "variant": var, "pool": p.pool, "mint": p.mint, "s0": p.s0, "trigger_slot": pend["trig_slot"], "sps": sps,
             "exit": {"trigger_slot": pend["exit_slot"], "landing_slot": X_exit, "q_sol": qx / 1e9, "base": bx, "state_src": xsrc},
-            "legs": legs, "complete": bool(complete), "hw_slot": self.hw_slot, "prints_seen": len(p.prints),
+            "legs": legs, "exit_ladder": ladder_out, "complete": bool(complete), "hw_slot": self.hw_slot, "prints_seen": len(p.prints),
             "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "gap": bool(p.gaps), "gaps": p.gaps[:5],
         }
         self.counters["outcomes"] += 1
@@ -622,12 +645,21 @@ class Engine:
             "boost_last_slice_s_recv": last_rel_recv, "boost_last_slice_slot": None if st is None else st[4],
             "boost_vault_remaining_sol": None if p.boost_remaining is None else p.boost_remaining / 1e9,
             "min_q_pv_sol": None if p.min_q_pv is None else p.min_q_pv / 1e9, "min_q_fv_sol": None if p.min_q_fv is None else p.min_q_fv / 1e9,
+            "sps_path": self._sps_path(p), "pv_fv_disagree_sells": p.disagree,
             "triggered": sorted(p.trig), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "chain_max_rel_err": p.chain_max_rel,
             "gap": bool(p.gaps), "gaps": p.gaps[:5],
         }
         self.emit(rec)
         p.closed = True
         del self.pools[p.pool]
+
+    @staticmethod
+    def _sps_path(p: Pool) -> float | None:
+        """The pool's own seconds per slot over the prints it was followed for (the rule's per-pool sps, on this pool's first 400 s only)."""
+        pts = [(r.slot, r.ts) for r in p.prints if r.ts]
+        if len(pts) < 3 or pts[-1][0] <= pts[0][0] + 300:
+            return None
+        return (pts[-1][1] - pts[0][1]) / (pts[-1][0] - pts[0][0])
 
     def close_all(self, reason: str) -> None:
         for p in list(self.pools.values()):

@@ -579,6 +579,79 @@ class SlotClockTests(unittest.TestCase):
         self.assertIsNone(eng.clock.sps()) if eng.clock.sps() is None else self.assertTrue(h5.sps_ok(eng.clock.sps()) or True)
 
 
+class DisclosedAdditionsTests(unittest.TestCase):
+    """Coordinator additions: per-print V next to the frozen fixed V, the exit ladder, BOOST last slice on every pool."""
+
+    def triggered_pool(self):
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)  # last BOOST slice at slot 1095
+        drain(t, 1200, 35.0)
+        t.row(1210, "buy", "X", SOL)
+        t.row(1900, "buy", "W", SOL)
+        for r in t.rows:
+            eng.on_trade(r)
+        return eng, out
+
+    def test_exit_ladder_330_equals_the_rule_exit(self):
+        eng, out = self.triggered_pool()
+        o = [x for x in types(out, "outcome") if x["variant"] == "pv"][0]
+        self.assertEqual(sorted(o["exit_ladder"], key=int), ["310", "320", "330", "335", "340", "345", "350"])
+        self.assertEqual(o["exit_ladder"]["330"]["landing_slot"], o["exit"]["landing_slot"])
+        self.assertAlmostEqual(o["exit_ladder"]["330"]["net_pct_primary_0.1"], o["legs"]["primary"]["net"]["0.1"]["net_pct_nofail"], places=9)
+        self.assertEqual(o["exit_ladder"]["350"]["trigger_slot"], 1000 + round(350 / SPS))
+        trig = types(out, "trigger")[0]
+        self.assertEqual(trig["exit_ladder_trigger_slots"]["330"], trig["exit_trigger_slot"])
+
+    def test_outcome_waits_for_the_whole_ladder(self):
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        drain(t, 1200, 35.0)
+        t.row(1840, "buy", "W", SOL)  # past the 330 s exit landing (1827) but not the 350 s ladder end (1877)
+        for r in t.rows:
+            eng.on_trade(r)
+        self.assertEqual(types(out, "outcome"), [])
+
+    def test_disagreement_is_counted(self):
+        eng, out = make_engine()
+        announce(eng)
+        t = Tape()
+        t.row(1000, "buy", "A", SOL // 10)
+        boost_buys(t, 1000)
+        t.v -= 2 * SOL
+        t.q += 2 * SOL
+        drain(t, 1200, 38.5)
+        for r in t.rows:
+            eng.on_trade(r)
+        self.assertEqual(eng.pools[POOL].disagree, 1)
+        self.assertEqual(eng.counters["pv_fv_disagree_sells"], 1)
+        eng.close_all("t")
+        self.assertEqual(types(out, "pool")[0]["pv_fv_disagree_sells"], 1)
+
+    def test_both_qs_are_in_trigger_and_pool_records(self):
+        eng, out = self.triggered_pool()
+        trig = types(out, "trigger")[0]
+        for k in ("q_pv_post_sol", "q_fv_post_sol", "q_pv_pre_sol", "q_fv_pre_sol", "v_print", "v0", "pv_fv_disagree_at_trigger"):
+            self.assertIn(k, trig)
+        eng.close_all("t")
+        rec = types(out, "pool")[0]
+        for k in ("min_q_pv_sol", "min_q_fv_sol", "sps_path"):
+            self.assertIn(k, rec)
+
+    def test_triggered_pool_also_logs_the_boost_last_slice(self):
+        eng, out = self.triggered_pool()
+        eng.close_all("t")
+        rec = types(out, "pool")[0]
+        self.assertEqual(rec["triggered"], ["fv", "pv"])
+        self.assertAlmostEqual(rec["boost_last_slice_s"], (1000 + 20 + 25 * 3 - 1000) * SPS)
+        self.assertEqual(rec["boost_last_slice_slot"], 1095)
+
+
 class SinkTests(unittest.TestCase):
     def test_hourly_files_strict_json_and_flush_per_line(self):
         with tempfile.TemporaryDirectory() as d:
@@ -747,6 +820,15 @@ class RefusalTests(unittest.TestCase):
 
 
 class ModuleTests(unittest.TestCase):
+    def test_job_wrapper_parses_and_refuses_foreign_out_dirs(self):
+        import subprocess
+
+        script = Path(__file__).resolve().parent.parent / "scripts" / "research" / "h5-shadow.sh"
+        self.assertEqual(subprocess.run(["bash", "-n", str(script)]).returncode, 0)
+        r = subprocess.run(["bash", str(script)], env={"PATH": os.environ["PATH"], "H5_OUT_DIR": "/etc/x"}, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("refusing out dir", r.stderr)
+
     def test_no_key_no_send_surface(self):
         src = Path(h5.__file__).read_text()
         for word in ("sendTransaction", "Keypair", "private_key", "secret", "signTransaction", "HELIUS_API_KEY", "api-key"):
