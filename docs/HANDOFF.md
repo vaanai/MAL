@@ -64,7 +64,10 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
 
 | Task id | What | Output |
 | --- | --- | --- |
-| w9v7nomhy (wf_84831245-793) | Hunt-2: 12 graduated-token and other theses, resumed under the disk rules | /data/mal/hunt-1008/JUDGE-2.md |
+| w9v7nomhy (wf_84831245-793) | Hunt-2 (DONE) | /data/mal/hunt-1008/JUDGE-2.md (extracted from the journal); notebook "Hunt-2 judged".
+  - **G4-FLOORDIP** is the 2nd candidate and BOOST-independent: +1.88% / +1.56%, 13/15 days. It needs about 31 concurrent positions, so only about 0.016 SOL/day at 1 SOL; a scaling candidate.
+  - **Ingredients:** the G7 R' veto and the O4 regime overlay.
+  - **Nine frozen v1s failed;** they go to the post-H5 iterate loops. |
 | w9b4m533o (wf_0d1a560e-ebe) | Hunt-4: LAYA-filter cascades, analog trader, 9 strategy-tree leaves | /data/mal/hunt-1008/JUDGE-4.md, STRATEGY-TREE.md |
 | wo1wq4khh (wf_f304b5f5-877) | LAYA after-graduation consistency optimization: walk-forward harness, 4 rounds, freeze top 2 | /data/mal/hunt-1008/laya-opt/REPORT.md, FROZEN-*.md |
 
