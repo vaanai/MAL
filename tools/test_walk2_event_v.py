@@ -18,7 +18,10 @@ from pathlib import Path
 
 import tools.pump_history_backfill as bf
 from observe.trade_decode import (
+    ANCHOR_EVENT_IX_TAG,
     EVENT_V_KEYS,
+    PUMP_BONDING_PROGRAM,
+    PUMPSWAP_PROGRAM,
     WSOL_MINT,
     b58decode,
     b58encode,
@@ -104,7 +107,8 @@ class DefaultOffTests(unittest.TestCase):
             off = _decode(path.name, event_v=False)
             on = _decode(path.name, event_v=True)
             for bucket in ("trades", "creates", "migrations", "unresolved"):
-                stripped = [{k: v for k, v in r.items() if k not in NEW_ROW_KEYS} for r in on[bucket]]
+                # rows only event_v can produce (migration recovered from a self-CPI) are additions, not legacy rows
+                stripped = [{k: v for k, v in r.items() if k not in NEW_ROW_KEYS} for r in on[bucket] if r.get("event_source") != "inner_event"]
                 self.assertEqual(
                     [json.dumps(r, sort_keys=True) for r in stripped],
                     [json.dumps(r, sort_keys=True) for r in off[bucket]],
@@ -288,13 +292,13 @@ class InitBoostTests(unittest.TestCase):
     def test_recorded_migrate_txs_carry_init_boost(self) -> None:
         res = _decode("create_pool_init_boost.json", event_v=True)
         (ev,) = res["events"]
-        self.assertEqual((ev["type"], ev["source"]), ("init_boost", "inner_event"))
+        self.assertEqual((ev["type"], ev["event_source"]), ("init_boost", "inner_event"))
         self.assertEqual(ev["virtual_quote_reserves"], 17584505288)
         # the 09-20 migrate tx (pre-redeploy, full getTransaction shape) has the same self-CPI InitBoostEvent
         sept = _load("migrate_tx_sep20.json", SEPT)
         block = {"slot": sept["slot"], "blockTime": sept["blockTime"], "transactions": [{"transaction": sept["transaction"], "meta": sept["meta"]}]}
         (ev2,) = rows_from_block(block, {}, "t", event_v=True)["events"]
-        self.assertEqual((ev2["type"], ev2["source"]), ("init_boost", "inner_event"))
+        self.assertEqual((ev2["type"], ev2["event_source"]), ("init_boost", "inner_event"))
 
     def test_logs_of_the_recorded_migrate_tx_are_truncated(self) -> None:
         """Why InitBoost is read from instructions: the log is cut before the event."""
@@ -308,7 +312,7 @@ class InitBoostTests(unittest.TestCase):
             group["instructions"] = [i for i in group["instructions"] if not (b58decode(i["data"]) or b"")[:8].hex() == "e445a52e51cb9a1d"]
         res = rows_from_block(_block(doc), {}, "t", event_v=True)
         (ev,) = res["events"]
-        self.assertEqual(ev["source"], "instruction")
+        self.assertEqual(ev["event_source"], "instruction")
         self.assertEqual(ev["pool"], _decode("create_pool_init_boost.json", event_v=True)["events"][0]["pool"])
         self.assertIn(ev["pool"], keys)
 
@@ -319,7 +323,7 @@ class InitBoostTests(unittest.TestCase):
         self.assertEqual(rows_from_block(_block(doc), {}, "t", event_v=True)["events"], [])
         doc["meta"]["logMessages"] = ["Program log: Instruction: InitBoost"] + doc["meta"]["logMessages"]
         (ev,) = rows_from_block(_block(doc), {}, "t", event_v=True)["events"]
-        self.assertEqual((ev["source"], ev["pool"]), ("log", None))
+        self.assertEqual((ev["event_source"], ev["pool"]), ("log_line", None))
 
     def test_migration_and_complete_rows_carry_the_flag(self) -> None:
         """A migration row exists only when the logs keep CompletePumpAmmMigrationEvent. Built here (synthetic)."""
@@ -334,7 +338,9 @@ class InitBoostTests(unittest.TestCase):
         self.assertEqual([m["type"] for m in on["migrations"]], ["migration"])
         self.assertTrue(on["migrations"][0]["init_boost"])
         self.assertNotIn("init_boost", off["migrations"][0])
-        stripped = {k: v for k, v in on["migrations"][0].items() if k != "init_boost"}
+        self.assertEqual(on["migrations"][0]["event_source"], "log")
+        self.assertEqual(on["migrations"][0]["source"], "backfill")  # the legacy `source` key keeps its value
+        stripped = {k: v for k, v in on["migrations"][0].items() if k not in ("init_boost", "event_source")}
         self.assertEqual(stripped, off["migrations"][0])
         # a completing-buy tx has no InitBoost
         comp = _load("completing_tx_sep20.json", SEPT)
@@ -441,14 +447,61 @@ class RunHourEventVTests(unittest.TestCase):
 
         bf.fetch_block = fake_fetch
 
-    def _run(self, out: Path, event_v: bool) -> dict:
+    def _run(self, out: Path, event_v: bool, *, checkpoint=None, checkpoint_path=None, max_slots=None) -> dict:
         lim = RateLimiter(1000)
         return run_hour(
             url="http://x", start_ts=self.start_ts, end_ts=self.end_ts, out_dir=out, limiter=lim, lookup_limiter=lim, pool_mints={},
             workers=1, max_bytes=10**9, anchor_slot=450278777, anchor_time=1790319576, slot_start=0, slot_end=len(self.blocks),
-            min_slots_per_hour=1, max_slots_per_hour=1000, budget=CreditBudget(10**9, 0), checkpoint=None, checkpoint_path=None,
-            event_v=event_v,
+            min_slots_per_hour=1, max_slots_per_hour=1000, budget=CreditBudget(10**9, 0), checkpoint=checkpoint, checkpoint_path=checkpoint_path,
+            event_v=event_v, max_slots=max_slots,
         )
+
+    @staticmethod
+    def _snapshot(root: Path) -> dict[str, bytes]:
+        return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+    def _toggle_case(self, first: bool, second: bool) -> None:
+        from tools.pump_history_backfill import empty_checkpoint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            ckpt_path = out / "checkpoint.json"
+            ckpt = empty_checkpoint()
+            part = self._run(out, first, checkpoint=ckpt, checkpoint_path=ckpt_path, max_slots=3)
+            self.assertEqual(ckpt["hours"][self.KEY]["status"], "partial", part)
+            before, ckpt_before = self._snapshot(out), json.dumps(ckpt, sort_keys=True)
+            with self.assertRaises(bf.EventVResumeMismatch) as cm:
+                self._run(out, second, checkpoint=ckpt, checkpoint_path=ckpt_path)
+            self.assertIn(f"event_v={first}", str(cm.exception))
+            self.assertIn(f"event_v={second}", str(cm.exception))
+            self.assertEqual(self._snapshot(out), before)  # files untouched
+            self.assertEqual(json.dumps(ckpt, sort_keys=True), ckpt_before)  # checkpoint untouched
+            # same flag resumes and finishes
+            done = self._run(out, first, checkpoint=ckpt, checkpoint_path=ckpt_path)
+            self.assertIsNone(done["stop_reason"])
+            self.assertEqual(ckpt["hours"][self.KEY]["status"], "sealed")
+
+    def test_resume_with_event_v_turned_on_is_refused(self) -> None:
+        self._toggle_case(first=False, second=True)
+
+    def test_resume_with_event_v_turned_off_is_refused(self) -> None:
+        self._toggle_case(first=True, second=False)
+
+    def test_main_exits_3_on_toggle(self) -> None:
+        import contextlib
+        import io
+
+        def boom(**kwargs):
+            raise bf.EventVResumeMismatch("backfill X: event_v mismatch")
+
+        orig = bf.run_hour
+        bf.run_hour = boom
+        self.addCleanup(setattr, bf, "run_hour", orig)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            bf._run_hour_exit3(url="x")
+        self.assertEqual(cm.exception.code, 3)
+        self.assertIn("event_v mismatch", err.getvalue())
 
     def test_events_stream_and_legacy_streams(self) -> None:
         with tempfile.TemporaryDirectory() as t_off, tempfile.TemporaryDirectory() as t_on:
@@ -469,13 +522,194 @@ class RunHourEventVTests(unittest.TestCase):
             for sub in ("trades", "creates", "migrations"):
                 a = [r for r in iter_jsonl(off / sub / f"{sub}-{self.KEY}.jsonl.zst")] if (off / sub / f"{sub}-{self.KEY}.jsonl.zst").exists() else []
                 b = [r for r in iter_jsonl(on / sub / f"{sub}-{self.KEY}.jsonl.zst")] if (on / sub / f"{sub}-{self.KEY}.jsonl.zst").exists() else []
-                strip = lambda rows: [{k: v for k, v in r.items() if k not in NEW_ROW_KEYS} for r in rows]  # noqa: E731
+                strip = lambda rows: [{k: v for k, v in r.items() if k not in NEW_ROW_KEYS} for r in rows if r.get("event_source") != "inner_event"]  # noqa: E731
                 self.assertEqual(strip(b), a, sub)
-                self.assertEqual(len(a), len(b))
+                # the only extra rows are migration rows recovered from self-CPIs of the two migrate fixtures
+                self.assertEqual(len(b) - len(a), 2 if sub == "migrations" else 0, sub)
             for key in s_off:
                 if key in ("elapsed_s", "files", "bytes"):
                     continue
-                self.assertEqual(s_on[key], s_off[key], key)
+                expect = s_off[key] + 2 if key == "migrations" else s_off[key]
+                self.assertEqual(s_on[key], expect, key)
+            self.assertEqual(s_on["cpi_disc"].get("bde95db95c94ea94"), 2)
+            self.assertEqual(s_on["event_types"], {"boost_buy_and_burn": 2, "init_boost": 2})
+            self.assertIs(s_on["post_complete_buy_missing"], False)
+
+
+def _tx_from(doc: dict, base: Path) -> dict:
+    """A getBlock-shaped tx from either fixture format (trimmed walk2_event_v, or full pump_structure_monitor)."""
+    doc = copy.deepcopy(doc)  # tests mutate the tx; never share nested dicts with the loaded fixture
+    if "accountKeys" in doc:
+        return {"transaction": {"signatures": [doc["signature"]], "message": {"accountKeys": doc["accountKeys"], "instructions": []}}, "meta": doc["meta"]}
+    return {"transaction": doc["transaction"], "meta": doc["meta"]}
+
+
+def _blk(doc: dict, tx: dict) -> dict:
+    return {"slot": doc["slot"], "blockTime": doc["blockTime"], "transactions": [tx]}
+
+
+def _add_cpi(tx: dict, program: str, blob: bytes) -> None:
+    """Append an Anchor emit_cpi! self-CPI (tag + event blob) as an inner instruction of `program`."""
+    keys = tx["transaction"]["message"]["accountKeys"]
+    ins = {"programIdIndex": keys.index(program), "accounts": [], "data": b58encode(ANCHOR_EVENT_IX_TAG + blob)}
+    tx["meta"].setdefault("innerInstructions", []).append({"index": 0, "instructions": [ins]})
+
+
+MIGRATE_DISC_HEX = "bde95db95c94ea94"
+PCB_HEX = "6fb06d8b316cd5fb"
+MIGRATE_FIXTURES = ((FIX, "create_pool_init_boost.json"), (SEPT, "migrate_tx_sep20.json"))
+
+
+class CpiRecoveryTests(unittest.TestCase):
+    """Self-CPI events (tag e445a52e51cb9a1d + disc + payload) of pump / pump_amm, read from inner instructions."""
+
+    def test_migration_row_recovered_from_cpi_on_both_recorded_migrate_txs(self) -> None:
+        for base, name in MIGRATE_FIXTURES:
+            doc = _load(name, base)
+            blk = _blk(doc, _tx_from(doc, base))
+            off = rows_from_block(blk, {}, "t")
+            on = rows_from_block(blk, {}, "t", event_v=True)
+            self.assertEqual(off["migrations"], [], name)  # legacy walks lose it: the log is cut before the event
+            self.assertTrue(any("truncated" in line for line in doc["meta"]["logMessages"]), name)
+            (row,) = on["migrations"]
+            self.assertEqual((row["type"], row["event_source"], row["init_boost"], row["source"]), ("migration", "inner_event", True, "backfill"), name)
+            (ib,) = [e for e in on["events"] if e["type"] == "init_boost"]
+            self.assertEqual(row["pool"], ib["pool"], name)
+            self.assertEqual(row["sol_lamports"] > 0 and row["migration_fee"] > 0, True, name)
+            # same legacy fields the log decoder would have produced from that blob
+            blob = [b for b in bf.cpi_events_from_tx(_tx_from(doc, base)) if b[:8].hex() == MIGRATE_DISC_HEX][0]
+            expect = bf.decode_migration_event(blob)
+            for key, value in expect.items():
+                self.assertEqual(row[key], value, (name, key))
+            # the other legacy buckets are untouched
+            for bucket in ("trades", "creates", "unresolved"):
+                self.assertEqual(on[bucket], off[bucket], (name, bucket))
+
+    def test_cpi_counters(self) -> None:
+        doc = _load("create_pool_init_boost.json")
+        on = rows_from_block(_blk(doc, _tx_from(doc, FIX)), {}, "t", event_v=True)
+        self.assertEqual(on["cpi_disc"], {"b1310cd2a076a774": 1, "ae7c4af90451f611": 1, MIGRATE_DISC_HEX: 1})
+        # CreatePoolEvent is in the log too; the migration and InitBoost events are only in the CPIs
+        self.assertEqual(on["cpi_only_disc"], {"ae7c4af90451f611": 1, MIGRATE_DISC_HEX: 1})
+        off = rows_from_block(_blk(doc, _tx_from(doc, FIX)), {}, "t")
+        self.assertNotIn("cpi_disc", off)
+
+    def test_event_in_both_log_and_cpi_is_one_row_from_the_log(self) -> None:
+        doc = _load("create_pool_init_boost.json")
+        tx = _tx_from(doc, FIX)
+        blob = [b for b in bf.cpi_events_from_tx(tx) if b[:8].hex() == MIGRATE_DISC_HEX][0]
+        tx["meta"]["logMessages"] = [_program_data_line(blob)] + tx["meta"]["logMessages"]
+        on = rows_from_block(_blk(doc, tx), {}, "t", event_v=True)
+        (row,) = on["migrations"]
+        self.assertEqual((row["event_source"], row["init_boost"]), ("log", True))
+        self.assertNotIn(MIGRATE_DISC_HEX, on["cpi_only_disc"])
+        # a log migration row that differs from the CPI one still wins: one row per tx
+        other = bytearray(blob)
+        other[88:96] = (1).to_bytes(8, "little")  # migration_fee differs
+        tx2 = _tx_from(doc, FIX)
+        tx2["meta"]["logMessages"] = [_program_data_line(bytes(other))] + tx2["meta"]["logMessages"]
+        on2 = rows_from_block(_blk(doc, tx2), {}, "t", event_v=True)
+        self.assertEqual([(m["event_source"], m["migration_fee"]) for m in on2["migrations"]], [("log", 1)])
+
+    def test_other_events_from_cpi_when_absent_from_logs_and_deduplicated(self) -> None:
+        pool_sweep = bytes.fromhex("82a42461e48287a5") + (1_700_000_009).to_bytes(8, "little", signed=True) + b"".join(bytes([i]) * 32 for i in range(5, 10)) + (777).to_bytes(8, "little") + bytes([1])
+        doc = _load("create_pool_init_boost.json")
+        tx = _tx_from(doc, FIX)
+        _add_cpi(tx, PUMPSWAP_PROGRAM, pool_sweep)
+        _add_cpi(tx, PUMP_BONDING_PROGRAM, _synthetic_post_complete_buy())
+        on = rows_from_block(_blk(doc, tx), {}, "t", event_v=True)
+        by_type = {e["type"]: e for e in on["events"]}
+        self.assertEqual(sorted(by_type), ["init_boost", "post_complete_buy", "sweep_pool_fee"])
+        self.assertEqual(by_type["sweep_pool_fee"]["event_source"], "inner_event")
+        self.assertEqual(by_type["post_complete_buy"]["event_source"], "inner_event")
+        self.assertEqual(on["cpi_disc"][PCB_HEX], 1)
+        # the same two events also in the logs: still one row each, now from the log
+        tx2 = _tx_from(doc, FIX)
+        _add_cpi(tx2, PUMPSWAP_PROGRAM, pool_sweep)
+        _add_cpi(tx2, PUMP_BONDING_PROGRAM, _synthetic_post_complete_buy())
+        tx2["meta"]["logMessages"] = [_program_data_line(pool_sweep), _program_data_line(_synthetic_post_complete_buy())] + tx2["meta"]["logMessages"]
+        on2 = rows_from_block(_blk(doc, tx2), {}, "t", event_v=True)
+        self.assertEqual(sorted(e["type"] for e in on2["events"]), ["init_boost", "post_complete_buy", "sweep_pool_fee"])
+        self.assertEqual({e["type"]: e["event_source"] for e in on2["events"]}["post_complete_buy"], "log")
+
+    def test_flag_off_ignores_cpi_events_entirely(self) -> None:
+        doc = _load("create_pool_init_boost.json")
+        tx = _tx_from(doc, FIX)
+        _add_cpi(tx, PUMP_BONDING_PROGRAM, _synthetic_post_complete_buy())
+        off = rows_from_block(_blk(doc, tx), {}, "t")
+        self.assertEqual(set(off), {"trades", "creates", "migrations", "unresolved"})
+        self.assertEqual(off["migrations"], [])
+
+    def test_post_complete_buy_detector(self) -> None:
+        """Rule: PostCompleteBuy (6fb06d8b316cd5fb) in cpi_disc while events/ holds 0 post_complete_buy rows = missing."""
+        self.assertTrue(bf.post_complete_buy_missing({"cpi_disc": {PCB_HEX: 3}, "event_types": {"init_boost": 2}}))
+        self.assertFalse(bf.post_complete_buy_missing({"cpi_disc": {PCB_HEX: 3}, "event_types": {"post_complete_buy": 3}}))
+        self.assertFalse(bf.post_complete_buy_missing({"cpi_disc": {}, "event_types": {}}))
+        self.assertFalse(bf.post_complete_buy_missing({}))
+        doc = _load("create_pool_init_boost.json")
+        # a decodable CPI event: rows exist, detector quiet
+        tx = _tx_from(doc, FIX)
+        _add_cpi(tx, PUMP_BONDING_PROGRAM, _synthetic_post_complete_buy())
+        res = rows_from_block(_blk(doc, tx), {}, "t", event_v=True)
+        stats = {"cpi_disc": res["cpi_disc"], "event_types": {t: sum(1 for e in res["events"] if e["type"] == t) for t in {e["type"] for e in res["events"]}}}
+        self.assertFalse(bf.post_complete_buy_missing(stats))
+        # a CPI event the decoder cannot read (short blob): seen but no row -> detector fires, and bad_disc counts it
+        tx = _tx_from(doc, FIX)
+        _add_cpi(tx, PUMP_BONDING_PROGRAM, _synthetic_post_complete_buy()[:100])
+        res = rows_from_block(_blk(doc, tx), {}, "t", event_v=True)
+        stats = {"cpi_disc": res["cpi_disc"], "event_types": {t: sum(1 for e in res["events"] if e["type"] == t) for t in {e["type"] for e in res["events"]}}}
+        self.assertTrue(bf.post_complete_buy_missing(stats))
+        self.assertEqual(res["bad_disc"], {PCB_HEX: 1})
+
+
+class ValidationTests(unittest.TestCase):
+    def _buy_blob(self) -> bytearray:
+        return bytearray(_event_blob(_load("buy_v1_481_wsol.json"), "67f4521f2cf57777"))
+
+    def test_ix_name_must_be_printable_ascii_1_to_64(self) -> None:
+        good = self._buy_blob()
+        self.assertEqual(event_v_fields(bytes(good))["ix_name"], "buy")
+        for label, mutate in (
+            ("control char", lambda b: b.__setitem__(slice(405, 408), b"b\x01y")),
+            ("non-ascii", lambda b: b.__setitem__(slice(405, 408), "bü".encode()[:3])),
+            ("length 0", lambda b: b.__setitem__(slice(401, 405), (0).to_bytes(4, "little"))),
+            ("length 65", lambda b: b.__setitem__(slice(401, 405), (65).to_bytes(4, "little"))),
+        ):
+            blob = self._buy_blob()
+            mutate(blob)
+            self.assertEqual(event_v_fields(bytes(blob)), {}, label)
+
+    def test_bad_ix_name_is_counted_and_legacy_row_survives(self) -> None:
+        doc = _load("buy_v1_481_wsol.json")
+        blob = self._buy_blob()
+        blob[405:408] = b"b\x01y"
+        tx = _tx_from(doc, FIX)
+        tx["meta"]["logMessages"] = [
+            _program_data_line(bytes(blob)) if "Program data: " in line and base64.b64decode(line.split("Program data: ", 1)[1].strip())[:8].hex() == "67f4521f2cf57777" else line
+            for line in tx["meta"]["logMessages"]
+        ]
+        on = rows_from_block(_blk(doc, tx), {"x": ("m", WSOL_MINT)}, "t", event_v=True)
+        off = rows_from_block(_blk(doc, tx), {"x": ("m", WSOL_MINT)}, "t")
+        self.assertEqual(on["bad_disc"], {"67f4521f2cf57777": 1})
+        rows = on["trades"] + on["unresolved"]
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(set(rows[0]) & set(EVENT_V_KEYS))
+        self.assertEqual(len(off["trades"] + off["unresolved"]), 1)
+
+    def test_extra_event_timestamp_sanity(self) -> None:
+        good = _synthetic_post_complete_buy()
+        self.assertIsNotNone(decode_extra_event(good))
+        for ts in (5, 2_000_000_000, -1):
+            bad = bytearray(good)
+            bad[136:144] = ts.to_bytes(8, "little", signed=True)
+            self.assertIsNone(decode_extra_event(bytes(bad)), ts)
+        sweep = bytes.fromhex("82a42461e48287a5") + (5).to_bytes(8, "little", signed=True) + b"\x01" * 32 * 5 + (1).to_bytes(8, "little") + b"\x00"
+        self.assertIsNone(decode_extra_event(sweep))
+        doc = _load("create_pool_init_boost.json")
+        tx = _tx_from(doc, FIX)
+        tx["meta"]["logMessages"] = [_program_data_line(sweep)] + tx["meta"]["logMessages"]
+        res = rows_from_block(_blk(doc, tx), {}, "t", event_v=True)
+        self.assertEqual(res["bad_disc"], {"82a42461e48287a5": 1})
 
 
 if __name__ == "__main__":

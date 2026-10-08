@@ -32,7 +32,10 @@ FIXTURE_DIRS = (
 )
 # fixtures in those dirs that are a getTransaction result or a trimmed one; others are ignored
 _TX_FILES_PREFIX = ("migrate_tx", "completing_tx")
-NEW_ROW_KEYS = ("virtual_quote_reserves", "ix_name", "creator_fee_unclaimed", "buyback_fee", "fee_recipient_zero", "init_boost")
+NEW_ROW_KEYS = (
+    "virtual_quote_reserves", "ix_name", "creator_fee_unclaimed", "buyback_fee", "fee_recipient_zero",
+    "init_boost", "event_source",
+)
 
 
 def fixture_blocks(dirs: tuple[Path, ...] = FIXTURE_DIRS) -> list[dict[str, Any]]:
@@ -83,7 +86,13 @@ def decode_fixtures(blocks: list[dict[str, Any]], *, event_v: bool | None) -> li
 
 
 def strip_new_keys(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{k: v for k, v in r.items() if k not in NEW_ROW_KEYS} for r in rows]
+    """Legacy view of event_v rows: new keys dropped, and rows that only event_v can produce (migration
+    rows recovered from inner instructions, event_source == "inner_event") left out and counted apart."""
+    return [{k: v for k, v in r.items() if k not in NEW_ROW_KEYS} for r in rows if r.get("event_source") != "inner_event"]
+
+
+def recovered_rows(decoded: list[dict[str, Any]]) -> int:
+    return sum(1 for item in decoded for rows in item["legacy"].values() for r in rows if r.get("event_source") == "inner_event")
 
 
 def legacy_stream(decoded: list[dict[str, Any]], *, strip: bool) -> str:
@@ -106,7 +115,9 @@ def dump_cli(tree: str, event_v: str) -> None:
     sys.path.insert(0, tree)
     flag = {"none": None, "off": False, "on": True}[event_v]
     decoded = decode_fixtures(fixture_blocks(), event_v=flag)
-    print(json.dumps({"md5": md5_hex(legacy_stream(decoded, strip=flag is True)), "n_rows": sum(len(r) for d in decoded for r in d["legacy"].values())}))
+    recovered = recovered_rows(decoded) if flag is True else 0
+    n_rows = sum(len(r) for d in decoded for r in d["legacy"].values()) - recovered
+    print(json.dumps({"md5": md5_hex(legacy_stream(decoded, strip=flag is True)), "n_rows": n_rows, "recovered": recovered}))
 
 
 def _run_tree(tree: Path, event_v: str) -> dict[str, Any]:
@@ -145,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         "new_event_v_off_md5": new_off["md5"],
         "new_event_v_on_stripped_md5": new_on["md5"],
         "rows": baseline["n_rows"],
+        "event_v_only_rows_recovered_from_cpi": new_on["recovered"],
         "off_equals_baseline": baseline["md5"] == new_off["md5"] and baseline["n_rows"] == new_off["n_rows"],
         "on_stripped_equals_baseline": baseline["md5"] == new_on["md5"] and baseline["n_rows"] == new_on["n_rows"],
     }

@@ -35,13 +35,14 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from observe.trade_decode import (
     ANCHOR_EVENT_IX_TAG,
     KNOWN_DISCS,
+    PUMP_BONDING_PROGRAM,
     PUMPSWAP_INIT_BOOST_IX,
     PUMPSWAP_PROGRAM,
-    b58decode,
-    decode_extra_event,
-WSOL_MINT,
+    WSOL_MINT,
     apply_pool_mints,
+    b58decode,
     b58encode,
+    decode_extra_event,
     decode_pool_account,
     decode_program_data,
     records_from_logs,
@@ -67,9 +68,11 @@ _CREATE_DISC = bytes.fromhex("1b72a94ddeeb6376")
 _COMPLETE_DISC = bytes.fromhex("5f72619cd42e9808")
 _MIGRATE_DISC = bytes.fromhex("bde95db95c94ea94")
 _SKIP_CODES = frozenset({-32007, -32009, -32004})
-_TRADE_DISCS = frozenset(
-    bytes.fromhex(h) for h in ("bddb7fd34ee661ee", "67f4521f2cf57777", "3e2f370aa503dc2a")  # Trade, Buy, Sell
-)
+_TRADE_DISC_BYTES = bytes.fromhex("bddb7fd34ee661ee")
+_BUY_DISC_BYTES = bytes.fromhex("67f4521f2cf57777")
+_SELL_DISC_BYTES = bytes.fromhex("3e2f370aa503dc2a")
+_TRADE_DISCS = frozenset({_TRADE_DISC_BYTES, _BUY_DISC_BYTES, _SELL_DISC_BYTES})
+_INIT_BOOST_EVENT_DISC_BYTES = bytes.fromhex("ae7c4af90451f611")
 # Event discriminators decode_extra_event handles: a known disc whose blob is too short is counted as bad_disc.
 _EXTRA_DISCS = frozenset(
     bytes.fromhex(h)
@@ -462,19 +465,71 @@ def init_boost_from_tx(tx: Mapping[str, Any], logs: Sequence[str]) -> dict[str, 
         if data[:8] == ANCHOR_EVENT_IX_TAG:
             ev = decode_extra_event(data[8:])
             if ev is not None and ev["type"] == "init_boost":
-                ev["source"] = "inner_event"
+                ev["event_source"] = "inner_event"
                 return ev
         elif data[:8] == PUMPSWAP_INIT_BOOST_IX and found is None:
             accts = ins.get("accounts")
             pool = None
             if isinstance(accts, list) and accts and isinstance(accts[0], int) and accts[0] < len(keys):
                 pool = keys[accts[0]]
-            found = {"type": "init_boost", "venue": "pumpswap", "pool": pool, "source": "instruction"}
+            found = {"type": "init_boost", "venue": "pumpswap", "pool": pool, "event_source": "instruction"}
     if found is not None:
         return found
     if any(isinstance(line, str) and "Program log: Instruction: InitBoost" in line for line in logs):
-        return {"type": "init_boost", "venue": "pumpswap", "pool": None, "source": "log"}
+        return {"type": "init_boost", "venue": "pumpswap", "pool": None, "event_source": "log_line"}
     return None
+
+
+_CPI_PROGRAMS = frozenset({PUMP_BONDING_PROGRAM, PUMPSWAP_PROGRAM})
+POST_COMPLETE_BUY_DISC_HEX = "6fb06d8b316cd5fb"
+
+
+class EventVResumeMismatch(RuntimeError):
+    """A partial-hour checkpoint and the resume disagree on --event-v. main() exits 3 on this."""
+
+
+def cpi_events_from_tx(tx: Mapping[str, Any]) -> list[bytes]:
+    """Anchor emit_cpi! events of pump / pump_amm from the inner instructions: discriminator + payload.
+
+    The instruction data is the 8-byte tag e445a52e51cb9a1d, then the event discriminator and payload (the
+    same bytes a `Program data:` log line carries). Inner instructions are not cut at 10 KB like logMessages.
+    """
+    keys = tx_account_keys(tx)
+    meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
+    out: list[bytes] = []
+    for group in meta.get("innerInstructions") or []:
+        if not isinstance(group, dict):
+            continue
+        for ins in group.get("instructions") or []:
+            if not isinstance(ins, dict):
+                continue
+            pid = ins.get("programIdIndex")
+            if not isinstance(pid, int) or pid >= len(keys) or keys[pid] not in _CPI_PROGRAMS:
+                continue
+            data = b58decode(ins["data"]) if isinstance(ins.get("data"), str) else None
+            if data and len(data) >= 16 and data[:8] == ANCHOR_EVENT_IX_TAG:
+                out.append(data[8:])
+    return out
+
+
+def post_complete_buy_missing(stats: Mapping[str, Any]) -> bool:
+    """Detector: PostCompleteBuyEvent was seen as a self-CPI this hour, yet events/ holds no post_complete_buy row.
+
+    stats is an hour's stats dict (cpi_disc and event_types as run_hour writes them under event_v).
+    True means the walker is missing the event (decode failed or the row was not written).
+    """
+    seen = int((stats.get("cpi_disc") or {}).get(POST_COMPLETE_BUY_DISC_HEX, 0))
+    rows = int((stats.get("event_types") or {}).get("post_complete_buy", 0))
+    return seen > 0 and rows == 0
+
+
+def _event_v_complete(disc: bytes, row: Mapping[str, Any]) -> bool:
+    """Did event_v decoding recover what this trade event type should carry (V, or ix_name on a bonding trade)?"""
+    if disc == _TRADE_DISC_BYTES:
+        return "ix_name" in row
+    if disc == _BUY_DISC_BYTES:
+        return "ix_name" in row and "virtual_quote_reserves" in row
+    return "virtual_quote_reserves" in row
 
 
 def _stamp_event(
@@ -489,7 +544,7 @@ def _stamp_event(
 ) -> dict[str, Any]:
     row = dict(ev)
     row["v"] = 1
-    row["source"] = SOURCE if "source" not in row else row["source"]
+    row["source"] = SOURCE
     row["feed"] = feed
     row["slot"] = int(slot)
     row["signature"] = signature
@@ -524,10 +579,14 @@ def rows_from_block(
     """Decode one getBlock result. Mutates pool_mints with CreatePool events.
 
     event_v=False (default): the four legacy buckets, byte-identical to before.
-    event_v=True: trade rows also carry the optional EVENT_V_KEYS, migration/complete rows carry a
-    boolean `init_boost`, and the result gains `events` (post_complete_buy, boost_buy_and_burn,
-    sweep_pool_fee, sweep_curve_fee, init_boost rows), `unknown_disc` and `bad_disc` (hex -> count).
-    No legacy key changes value.
+    event_v=True: trade rows also carry the optional EVENT_V_KEYS; migration/complete rows carry a
+    boolean `init_boost` and `event_source` ("log" or "inner_event"); the result gains `events`
+    (post_complete_buy, boost_buy_and_burn, sweep_pool_fee, sweep_curve_fee, init_boost rows),
+    `unknown_disc`, `bad_disc`, `cpi_disc` (self-CPI events seen, by discriminator) and `cpi_only_disc`
+    (txs where a discriminator is in the CPIs but not in that tx's Program data), each hex -> count.
+    A CompletePumpAmmMigrationEvent that only the inner instructions carry (logs cut at 10 KB) becomes a
+    migration row with event_source "inner_event"; so do post_complete_buy, boost and sweep events.
+    The legacy `source` key ("backfill") is never changed; no legacy key changes value.
     """
     block_time = block.get("blockTime")
     slot = block.get("slot")
@@ -536,7 +595,7 @@ def rows_from_block(
     if not isinstance(block_time, int):
         empty: dict[str, Any] = {"trades": [], "creates": [], "migrations": [], "unresolved": []}
         if event_v:
-            empty.update({"events": [], "unknown_disc": {}, "bad_disc": {}})
+            empty.update({"events": [], "unknown_disc": {}, "bad_disc": {}, "cpi_disc": {}, "cpi_only_disc": {}})
         return empty
     if not isinstance(slot, int):
         slot = int(parent) + 1 if isinstance(parent, int) else 0
@@ -547,6 +606,8 @@ def rows_from_block(
     events: list[dict[str, Any]] = []
     unknown: dict[str, int] = {}
     bad: dict[str, int] = {}
+    cpi_disc: dict[str, int] = {}
+    cpi_only: dict[str, int] = {}
     txs = block.get("transactions") or []
     for tx_index, tx in enumerate(txs):
         if not isinstance(tx, dict):
@@ -563,16 +624,58 @@ def rows_from_block(
         if event_v:
             count_unknown_discs(logs, unknown)
             tx_events: list[dict[str, Any]] = []
+            log_blobs: list[bytes] = []
             for line in logs:
                 raw = _program_data(line) if isinstance(line, str) else None
                 if raw is None or len(raw) < 8:
                     continue
+                log_blobs.append(raw)
                 ev = decode_extra_event(raw)
                 if ev is not None:
+                    ev["event_source"] = "log"
                     tx_events.append(ev)
-                elif raw[:8] in _EXTRA_DISCS or (raw[:8] in _TRADE_DISCS and decode_program_data(raw) is None):
-                    # a known event the decoder rejected (short blob, or outside the sanity window)
+                elif raw[:8] in _EXTRA_DISCS:
+                    # a known event the decoder rejected (short blob, or timestamp outside the sanity window)
                     bad[raw[:8].hex()] = bad.get(raw[:8].hex(), 0) + 1
+                elif raw[:8] in _TRADE_DISCS:
+                    # Trade/Buy/Sell: rejected by the legacy sanity window, or no event-V tail / bad ix_name
+                    row_v = decode_program_data(raw, event_v=True)
+                    if row_v is None or not _event_v_complete(raw[:8], row_v):
+                        bad[raw[:8].hex()] = bad.get(raw[:8].hex(), 0) + 1
+            for ev in moved:
+                ev["event_source"] = "log"
+            # Anchor emit_cpi! self-CPIs: counted per discriminator; the ones the logs lack are decoded.
+            cpi_blobs = cpi_events_from_tx(tx)
+            log_discs = {b[:8] for b in log_blobs}
+            for blob in cpi_blobs:
+                key = blob[:8].hex()
+                cpi_disc[key] = cpi_disc.get(key, 0) + 1
+            for disc in {b[:8] for b in cpi_blobs} - log_discs:
+                cpi_only[disc.hex()] = cpi_only.get(disc.hex(), 0) + 1
+            unseen: dict[bytes, int] = {}
+            for blob in log_blobs:
+                unseen[blob] = unseen.get(blob, 0) + 1
+            for blob in cpi_blobs:
+                if unseen.get(blob, 0) > 0:  # the same event is in the logs: one row per tx, from the log
+                    unseen[blob] -= 1
+                    continue
+                disc = blob[:8]
+                if disc == _MIGRATE_DISC:
+                    if any(m.get("type") == "migration" for m in moved):
+                        continue  # the logs already gave this tx's migration row
+                    mig = decode_migration_event(blob)
+                    if mig is None:
+                        bad[disc.hex()] = bad.get(disc.hex(), 0) + 1
+                    else:
+                        mig["event_source"] = "inner_event"
+                        moved.append(mig)
+                elif disc in _EXTRA_DISCS and disc != _INIT_BOOST_EVENT_DISC_BYTES:
+                    ev = decode_extra_event(blob)
+                    if ev is None:
+                        bad[disc.hex()] = bad.get(disc.hex(), 0) + 1
+                    else:
+                        ev["event_source"] = "inner_event"
+                        tx_events.append(ev)
             ib = init_boost_from_tx(tx, logs)
             if ib is not None and not any(e["type"] == "init_boost" for e in tx_events):
                 tx_events.append(ib)
@@ -626,6 +729,8 @@ def rows_from_block(
         out["events"] = events
         out["unknown_disc"] = unknown
         out["bad_disc"] = bad
+        out["cpi_disc"] = cpi_disc
+        out["cpi_only_disc"] = cpi_only
     return out
 
 
@@ -1295,6 +1400,18 @@ def run_hour(
         return {"hour": key, "skipped": True, "stop_reason": "credit", "credits_used": budget.used}
     start_slot, end_slot, slots, resume, partial = located
 
+    # A partial hour written with one decoder mode must not be finished with the other: the hour would mix
+    # rows with and without the event-V keys and the events stream would miss the first part. Refuse before
+    # any file is opened, truncated or unlinked.
+    if resume and isinstance(partial, dict):
+        prior_flag = bool((partial.get("counts") or {}).get("event_v"))
+        if prior_flag != bool(event_v):
+            raise EventVResumeMismatch(
+                f"backfill {key}: the partial-hour checkpoint was written with event_v={prior_flag} but this "
+                f"run has event_v={bool(event_v)}. Resume with the same --event-v setting, or delete this "
+                f"hour's partial files and its checkpoint entry first. No file was touched."
+            )
+
     # A backwards or wildly-sized range means slot_for_time resolved this
     # hour's boundary wrong (see the docstring on slot_for_time). Refuse to
     # touch any file for it rather than seal a near-empty or bogus hour.
@@ -1416,6 +1533,9 @@ def run_hour(
         counts["event_rows"] = int(prior.get("event_rows") or 0)
         counts["unknown_disc"] = dict(prior.get("unknown_disc") or {})
         counts["bad_disc"] = dict(prior.get("bad_disc") or {})
+        counts["cpi_disc"] = dict(prior.get("cpi_disc") or {})
+        counts["cpi_only_disc"] = dict(prior.get("cpi_only_disc") or {})
+        counts["event_types"] = dict(prior.get("event_types") or {})
     # Records pending a pool-account lookup (PumpSwap venue resolution) live
     # only in this list until they hit the 250-item flush threshold or the
     # hour ends. A checkpoint that does not carry them is a checkpoint that
@@ -1526,7 +1646,8 @@ def run_hour(
                     for row in decoded["events"]:
                         events.write(row)
                         counts["event_rows"] += 1
-                    for name in ("unknown_disc", "bad_disc"):
+                        counts["event_types"][row["type"]] = counts["event_types"].get(row["type"], 0) + 1
+                    for name in ("unknown_disc", "bad_disc", "cpi_disc", "cpi_only_disc"):
                         for disc, n in decoded[name].items():
                             counts[name][disc] = counts[name].get(disc, 0) + n
         # Count a slot as done only once it is fully handled. Incrementing
@@ -1597,6 +1718,15 @@ def run_hour(
         }
         if events is not None:
             sealed["events"] = events.close(seal=finished)
+    if event_v and finished:
+        counts["post_complete_buy_missing"] = post_complete_buy_missing(counts)
+        if counts["post_complete_buy_missing"]:
+            print(
+                f"backfill {key}: PostCompleteBuyEvent seen in self-CPIs but events/ has no post_complete_buy "
+                "row -- the walker is missing it",
+                file=sys.stderr,
+                flush=True,
+            )
     counts["elapsed_s"] = round(time.time() - t0, 1)
     counts["credits_used"] = budget.used
     counts["stop_reason"] = stop_reason
@@ -1790,6 +1920,15 @@ def parse_utc(text: str) -> int:
     return int(dt.timestamp())
 
 
+def _run_hour_exit3(**kwargs: Any) -> dict[str, Any]:
+    """run_hour, but a --event-v toggle on resume ends the process with exit code 3 and a clear message."""
+    try:
+        return run_hour(**kwargs)
+    except EventVResumeMismatch as exc:
+        print(f"error: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(3) from exc
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Backfill pump.fun history from getBlock")
     parser.add_argument("--until", help="Exclusive UTC end, ISO-8601 (newest edge)")
@@ -1927,7 +2066,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
             flush=True,
         )
-        summary = run_hour(
+        summary = _run_hour_exit3(
             url=url,
             start_ts=start_ts,
             end_ts=end_ts,

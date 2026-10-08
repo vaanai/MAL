@@ -124,16 +124,20 @@ def b58decode(text: str) -> bytes | None:
 
 
 def _ix_name(raw: bytes, off: int) -> tuple[str | None, int]:
-    """Borsh string (u32 length + utf-8) at off. (None, off) if it does not fit or is not text."""
+    """Borsh string (u32 length + bytes) at off, accepted only as 1-64 printable ASCII characters.
+
+    Instruction names (`buy`, `buy_exact_quote_in_v2`, ...) are ASCII. Anything else means the offset is
+    wrong for this blob, so the caller gets (None, off) and the tail is not decoded from a bad position.
+    """
     if off + 4 > len(raw):
         return None, off
     size = int.from_bytes(raw[off : off + 4], "little")
-    if size > 64 or off + 4 + size > len(raw):
+    if size < 1 or size > 64 or off + 4 + size > len(raw):
         return None, off
-    try:
-        return raw[off + 4 : off + 4 + size].decode("utf-8"), off + 4 + size
-    except UnicodeDecodeError:
+    body = raw[off + 4 : off + 4 + size]
+    if not all(0x20 <= b <= 0x7E for b in body):
         return None, off
+    return body.decode("ascii"), off + 4 + size
 
 
 def price_sol_per_token(quote_lamports: int, base_raw: int) -> float | None:
@@ -214,11 +218,19 @@ def event_v_fields(raw: bytes) -> dict[str, Any]:
 
 
 def decode_extra_event(raw: bytes) -> dict[str, Any] | None:
-    """New pump / pump_amm events that are not trades. None when the disc is not one of them or the blob is short.
+    """New pump / pump_amm events that are not trades. None when the disc is not one of them, the blob is
+    short, or its timestamp is outside the window the legacy decoders accept (a wrong-layout blob).
 
     type is one of post_complete_buy, boost_buy_and_burn, sweep_pool_fee, sweep_curve_fee, init_boost.
     Reserve fields are copied as the event states them. No price is computed here.
     """
+    ev = _decode_extra_event_raw(raw)
+    if ev is not None and not _sane_ts(int(ev["event_ts"])):
+        return None
+    return ev
+
+
+def _decode_extra_event_raw(raw: bytes) -> dict[str, Any] | None:
     if len(raw) < 8:
         return None
     disc = raw[:8]
@@ -303,7 +315,6 @@ def decode_extra_event(raw: bytes) -> dict[str, Any] | None:
             "pool": _pubkey(raw, 80),
             "virtual_quote_reserves": _i128(raw, 112),
             "real_quote_reserves_after": _u64(raw, 128),
-            "source": "event",
         }
     return None
 
