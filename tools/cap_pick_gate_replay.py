@@ -36,6 +36,7 @@ import re
 import sys
 import tempfile
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
@@ -45,6 +46,7 @@ MODEL = REPO / "ARTIFACTS" / "exp012" / "model.txt"
 FEATURES = REPO / "ARTIFACTS" / "exp012" / "features.json"
 FROZEN_MD5 = REPO / "ARTIFACTS" / "exp012" / "FROZEN.md5"
 THRESHOLD = 0.8030766588450794
+DROP_AFTER_CREATE_MS = 60 * 60 * 1000  # == forward_exp012_gate.DROP_AFTER_CREATE_MS (checked in the tests)
 BOOK_ID = "cap_pick_replay"
 SCHEMA = "cap_pick_gate_replay_v1"
 
@@ -57,7 +59,8 @@ GUESSES = (
     "Time steps are whole seconds (live steps are ms). The runner prunes when prints % 5000 == 0 at a step "
     "end; at second steps that rarely lands exactly, so prune runs when the print count crosses a multiple of "
     "--prune-every (default 5000); Exp012Online.prune still rate-limits itself to once per 60 s.",
-    "Post-decision prints of a mint are counted (for the prune cadence) but not deduped, to bound memory.",
+    "Dedupe keys are stored as hashes and dropped 60 min after create (or at the decision); later prints of the mint "
+    "are counted for the prune cadence but not deduped. TxOrder is pruned per hour with the runner's TX_ORDER_PRUNE_MS.",
     "Rows of mints created before the block start, or whose create is missing, get no decision (as live).",
     "Boot history: creates files only (fast-format creates-{hour}); no observe-{day} files exist for these pools.",
 )
@@ -175,7 +178,7 @@ def stage_creates(files: dict[str, dict[str, Path]], boot_ms: int, dest: Path, r
         if src is None:
             continue
         refuse_path(src, roots)
-        link = dest / f"creates-{hour}.jsonl.zst"
+        link = dest / (f"creates-{hour}.jsonl.zst" if src.name.endswith(".zst") else f"creates-{hour}.jsonl")
         if not link.exists():
             link.symlink_to(src)
         n += 1
@@ -189,10 +192,14 @@ _MINT_KEY = '"mint":"'
 def quick_mint(line: str) -> str | None:
     """The row's mint, by string search (no json parse). `"mint":"` does not match `quote_mint` or `mint_source`."""
     i = line.find(_MINT_KEY)
-    if i < 0:
-        return None
-    j = line.find('"', i + 8)
-    return line[i + 8:j] if j > 0 else None
+    off = 8
+    if i < 0:  # tolerate `"mint": "` (non-compact json); the real files are compact
+        i = line.find('"mint": "')
+        off = 9
+        if i < 0:
+            return None
+    j = line.find('"', i + off)
+    return line[i + off:j] if j > 0 else None
 
 
 def create_signal_from_row(row: dict[str, Any], *, imputed: list[int] | None = None):
@@ -275,6 +282,7 @@ class Replayer:
         self.imputed_prints = 0
         self.rows_parsed = 0
         self.lib: dict[str, _M] = {}
+        self._expiry: deque[tuple[int, str]] = deque()
         self.dead: dict[str, int] = {}
         self.dead_hits: dict[str, int] = {}
         self._order = 0
@@ -292,6 +300,7 @@ class Replayer:
         n = ex.preload(creates_dir, boot_ms) if creates_dir is not None else 0
         self.engine.exp012 = ex
         self.lib = {}
+        self._expiry = deque()
         self.tx = TxOrder()
         self.prints = 0
         self._bucket = 0
@@ -302,7 +311,7 @@ class Replayer:
     # --- one hour --------------------------------------------------------------------------------------
     def feed_hour(self, create_rows: Iterable[dict[str, Any]], trade_lines: Iterable[str]) -> None:
         from tools.forward_exp012_gate import create_chain_ms
-        from tools.forward_paper import _event_ts, flow_from_tape_row
+        from tools.forward_paper import TX_ORDER_PRUNE_MS, _event_ts, flow_from_tape_row
 
         events: list[tuple[tuple, Any]] = []
         new: dict[str, _M] = {}
@@ -369,10 +378,13 @@ class Replayer:
                 self._add_print(mint, pr, ets, queued)
         if cur is not None:
             self._end_step(cur, queued)
+            # the runner prunes TxOrder the same way (serve passes tx_order_prune_ms=TX_ORDER_PRUNE_MS)
+            self.tx.prune_before_ms(cur - TX_ORDER_PRUNE_MS)
 
     def _register(self, m: _M) -> None:
         c = m.create
         ex = self.engine.exp012
+        self._expiry.append((c.t_signal_ms, c.mint))
         first = c.v_sol / c.v_token_ui if c.v_sol and c.v_token_ui and c.v_sol > 0 and c.v_token_ui > 0 else None
         if self.create_time == "row" and m.chain_ms is not None:
             ex.note_create(c.mint, c.creator, m.chain_ms, first, chain=True, signature=c.signature)
@@ -384,7 +396,7 @@ class Replayer:
         if m.seen is not None:
             from tools.forward_paper import _dedupe_key
 
-            key = _dedupe_key(pr)
+            key = hash(_dedupe_key(pr))  # the hash, not the tuple: bounds memory; a collision is ~n^2/2^64
             if key in m.seen:
                 return
             m.seen.add(key)
@@ -403,6 +415,9 @@ class Replayer:
         if self.prune_every and self.prints // self.prune_every != self._bucket:
             self._bucket = self.prints // self.prune_every
             self.engine.exp012.prune(t_ms)
+        # the gate drops a mint's accumulator 60 min after create; dedupe state past that cannot change a decision
+        while self._expiry and self._expiry[0][0] + DROP_AFTER_CREATE_MS < t_ms:
+            self.lib[self._expiry.popleft()[1]].seen = None
 
     def _on_signal(self, mint: str, t_ms: int) -> None:
         from tools.laya_v0 import MintBook
