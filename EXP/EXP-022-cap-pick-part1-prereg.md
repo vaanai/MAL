@@ -556,7 +556,7 @@ No CAP-PICK outcome was computed or read to make this amendment.
 
 **A-side construction, disclosed.**
 - (a) A's creates are built with the gate replay's `create_signal_from_row`, a shared input, so E0 tests the gate decision path, not create parsing.
-- (b) A is fed only the trade rows of mints that have a first create row in the day at or before the row's hour. This is a memory bound, since `replay_rows` buffers other rows in `engine.early`. B drops the same rows. The count of dropped rows is recorded in `e0.json`.
+- (b) A is fed only the trade rows of mints that have a first create row in the day at or before the row's hour. This is a memory bound, since `replay_rows` buffers other rows in `engine.early`. B never decides a mint without a create either. The fed row counts differ, though: A was fed 8,697,138 trade rows and B imputed 8,701,079 on 2026-08-17 [measured, dry-run e0.json]. So the inputs are not shown to be identical; any decision effect of that difference is caught by the md5. The count of dropped rows is recorded in `e0.json`.
 - (c) A's preload runs without `tape_dir`, as B's does.
 - (d) Labels map as follows: `entered` → `pick`; reason `below_threshold` → `below`; any other reason verbatim; null → `unknown`.
 - (e) A needs about 9–10 GB (builder's report; not in `e0.json`) for one explore-0814 day, so the official run is a MiScusi job with 16 GB.
