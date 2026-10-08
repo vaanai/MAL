@@ -44,6 +44,14 @@ PINS (EXP-022 2.1 item 4)
 SURFACE USED FROM tools/cap_pick_gate_replay (nothing else): Block, BLOCKS, SCHEMA, Refused, build_engine, replay_view(block, days, engine=, roots=, log=),
 hour_files, stage_creates, iter_json_rows, iter_lines, quick_mint, create_signal_from_row, check_days; load_online in the tests only.
 
+IMPORTED MODULES (quant-proof edit on #473). After A, B and the scorer have run, `e0.json` records `imported_module_blobs` (module name -> git blob sha at HEAD) for
+every `tools.*` module actually imported: by A and B (read from `sys.modules`; the file Python loaded) and by the scorer (its two runs use `-X importtime`; the
+`tools.*` names are read from the logs, plus the scorer module itself). Each is compared with `git rev-parse HEAD:<path>` and with the hash of the file as
+loaded; any mismatch, a module outside the tree or an untracked module fails `ok` (`imported_module_mismatches`). `imported_module_sides` says which side
+imported each. If the scorer runs from another tree (`--scorer-repo`, dry runs only) its modules are recorded and checked in that tree, under
+`scorer_imported_module_blobs`. `check e0.json` verifies every recorded module against HEAD and the working copy of the given worktree (the scorer's
+too, with `--scorer-worktree`), not only the four pinned ones. `Bpicks_not_in_U` lists the B pick mints the scorer's universe lacks (report only).
+
 SANITY CHECKS (also required for exit 0, so an equal result cannot be vacuous or built on different inputs): A's preload row count and staged file count
 equal B's; A's gate log rows equal the engine's rows; the deciding set D and B's picks are not empty.
 
@@ -157,7 +165,92 @@ def imported_blobs(repo: Path) -> dict[str, dict[str, str]]:
     return out
 
 
-def verify_pins(e0: dict[str, Any], worktree: Path) -> dict[str, Any]:
+def loaded_tools_modules() -> dict[str, Path]:
+    """Every `tools.*` module in `sys.modules` that has a file: name -> the file Python loaded."""
+    return {n: Path(m.__file__).resolve() for n, m in list(sys.modules.items()) if n.startswith("tools.") and getattr(m, "__file__", None)}
+
+
+def module_rel_in_tree(name: str, root: Path) -> str:
+    """The repo path of module `name` in `root`: `tools/x.py`, else `tools/x/__init__.py`; the first form if neither exists."""
+    base = name.replace(".", "/")
+    if not (root / f"{base}.py").is_file() and (root / base / "__init__.py").is_file():
+        return f"{base}/__init__.py"
+    return f"{base}.py"
+
+
+_IMPORTTIME = re.compile(r"^import time:\s+\d+\s*\|\s*\d+\s*\|\s*(\S+)\s*$")
+
+
+def modules_from_importtime(text: str) -> set[str]:
+    """The `tools.*` module names in a `python -X importtime` log."""
+    out = set()
+    for line in text.splitlines():
+        m = _IMPORTTIME.match(line)
+        if m and m.group(1).startswith("tools."):
+            out.add(m.group(1))
+    return out
+
+
+def _check_module(root: Path, rel: str, file: Path) -> tuple[str | None, str | None]:
+    """(blob at HEAD of `rel` in `root`, hash of `file` as loaded); None where absent."""
+    try:
+        head: str | None = head_blob(root, rel)
+    except E0Error:
+        head = None
+    return head, (file_blob(root, file) if file.is_file() else None)
+
+
+def collect_imported_modules(repo: Path, loaded: dict[str, Path], scorer_names: Iterable[str] = (), scorer_root: Path | None = None) -> dict[str, Any]:
+    """Blob shas at HEAD of every imported `tools.*` module. `loaded` is A's and B's (name -> file loaded); `scorer_names` the scorer's, resolved in
+    `scorer_root` (default: `repo`; a different tree is recorded apart). A module whose loaded file does not hash to its HEAD blob is a mismatch."""
+    blobs: dict[str, str | None] = {}
+    sides: dict[str, list[str]] = {}
+    scorer_blobs: dict[str, str | None] = {}
+    bad: list[dict[str, Any]] = []
+    for name, f in sorted(loaded.items()):
+        rel = f"{name.replace('.', '/')}/__init__.py" if f.name == "__init__.py" else f"{name.replace('.', '/')}.py"
+        head, disk = _check_module(repo, rel, f)
+        blobs[name] = head
+        sides.setdefault(name, []).append("A_B")
+        if head is None or head != disk:
+            bad.append({"module": name, "side": "A_B", "path": rel, "head_blob": head, "file_blob": disk})
+    sroot = Path(scorer_root) if scorer_root is not None else Path(repo)
+    same = sroot.resolve() == Path(repo).resolve()
+    for name in sorted(set(scorer_names)):
+        rel = module_rel_in_tree(name, sroot)
+        head, disk = _check_module(sroot, rel, sroot / rel)
+        (blobs if same else scorer_blobs)[name] = head
+        sides.setdefault(name, []).append("scorer")
+        if head is None or head != disk:
+            bad.append({"module": name, "side": "scorer", "path": rel, "head_blob": head, "file_blob": disk})
+    return {"blobs": blobs, "scorer_blobs": scorer_blobs, "sides": sides, "mismatches": bad}
+
+
+def verify_imported_modules(e0: dict[str, Any], worktree: Path, scorer_worktree: Path | None = None) -> dict[str, Any]:
+    """Every recorded module against HEAD and the working copy of `worktree` (the scorer-only ones against `scorer_worktree`)."""
+    recorded = e0.get("imported_module_blobs")
+    if not isinstance(recorded, dict) or not recorded:
+        return {"ok": False, "n": 0, "bad": [{"module": None, "why": "e0.json records no imported_module_blobs"}]}
+    bad: list[dict[str, Any]] = []
+
+    def one(root: Path, name: str, want: Any) -> None:
+        rel = module_rel_in_tree(name, root)
+        head, disk = _check_module(root, rel, root / rel)
+        if want is None or head != want or disk != want:
+            bad.append({"module": name, "path": rel, "recorded": want, "head": head, "worktree_file": disk})
+
+    for name, want in recorded.items():
+        one(Path(worktree), name, want)
+    srec = e0.get("scorer_imported_module_blobs") or {}
+    if srec and scorer_worktree is None:
+        bad.append({"module": None, "why": "scorer_imported_module_blobs is recorded: pass --scorer-worktree"})
+    elif srec:
+        for name, want in srec.items():
+            one(Path(scorer_worktree), name, want)
+    return {"ok": not bad, "n": len(recorded) + len(srec), "bad": bad}
+
+
+def verify_pins(e0: dict[str, Any], worktree: Path, scorer_worktree: Path | None = None) -> dict[str, Any]:
     """Recorded pins against HEAD and the working copy of `worktree`. A pin holds if both equal the recorded blob; FROZEN.md5 must hash to the expected md5."""
     mods: dict[str, Any] = {}
     for rel, want in e0["blobs"].items():
@@ -171,9 +264,10 @@ def verify_pins(e0: dict[str, Any], worktree: Path) -> dict[str, Any]:
     want_md5 = e0["frozen_md5"]["md5"]
     frozen = {"recorded": want_md5, "expected": FROZEN_MD5_EXPECTED, "head": md5_head, "worktree_file": md5_disk,
               "ok": want_md5 == FROZEN_MD5_EXPECTED and md5_head == want_md5 and md5_disk == want_md5}
+    imports = verify_imported_modules(e0, worktree, scorer_worktree)
     return {"worktree": str(worktree), "head": _git(worktree, "rev-parse", "HEAD").strip(), "recorded_commit": e0.get("commit"),
-            "e0_ok": bool(e0.get("ok")), "modules": mods, "frozen_md5": frozen,
-            "ok": all(m["ok"] for m in mods.values()) and frozen["ok"] and bool(e0.get("ok"))}
+            "e0_ok": bool(e0.get("ok")), "modules": mods, "frozen_md5": frozen, "imported_modules": imports,
+            "ok": all(m["ok"] for m in mods.values()) and frozen["ok"] and imports["ok"] and bool(e0.get("ok"))}
 
 
 # ---- canonical lists ----------------------------------------------------------------------------------
@@ -410,7 +504,7 @@ def scorer_source_flags(view: str, roots: Sequence[str]) -> list[str]:
 
 
 def scorer_cmd(view: str, roots: Sequence[str], day: str, picks: Path, out_dir: Path, book: str, extra: Sequence[str]) -> list[str]:
-    return [sys.executable, "-m", SCORER_MODULE, *scorer_source_flags(view, roots), "--only-day", day, "--book", book, "--picks", str(picks),
+    return [sys.executable, "-X", "importtime", "-m", SCORER_MODULE, *scorer_source_flags(view, roots), "--only-day", day, "--book", book, "--picks", str(picks),
             "--out-dir", str(out_dir), *extra]
 
 
@@ -521,6 +615,8 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
 
     # C
     c: dict[str, Any] = {"skipped": True}
+    scorer_root: Path = Path(repo)
+    bpicks_missing: list[str] = []
     md5_c = md5_bu = None
     equal_c: bool | None = None
     if not skip_c:
@@ -538,6 +634,8 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
         c_list = sorted(pick_mints)
         bu = sorted(m for m in b_picks if m in universe)
         c_text, bu_text = "".join(m + "\n" for m in c_list), "".join(m + "\n" for m in bu)
+        bpicks_missing = sorted(m for m in b_picks if m not in universe)
+        _write(out / "Bpicks_not_in_U.list", "".join(m + "\n" for m in bpicks_missing))
         _write(out / "C.list", c_text)
         _write(out / "Bpicks_in_U.list", bu_text)
         md5_c, md5_bu = md5_text(c_text), md5_text(bu_text)
@@ -555,12 +653,22 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
             except E0Error:
                 c["scorer_blob"] = None
 
+    scorer_names: set[str] = set()
+    scorer_logs = sorted(out.glob("scorer_*.log")) if not skip_c else []
+    for lg in scorer_logs:
+        scorer_names |= modules_from_importtime(lg.read_text(encoding="utf-8", errors="replace"))
+    if scorer_logs:
+        scorer_names.add(SCORER_MODULE)
+    loaded = loaded_tools_modules()
+    loaded.setdefault("tools.cap_pick_e0", Path(__file__).resolve())  # run as a script this module is __main__, and it is code under test
+    mods = collect_imported_modules(repo, loaded, scorer_names, scorer_root if scorer_logs else None)
     boots = bmeta.get("boots") or [{}]
     pins_ok = all(imported[m]["blob"] == pins["blobs"][m] for m in PINNED_MODULES) and pins["frozen_md5"]["ok"]
     checks = {  # every one is required for exit 0; `equal_full` is report only
         "equal_decide": equal_decide,
         "equal_C": equal_c if equal_c is not None else False,
         "pins": pins_ok,
+        "imported_modules": not mods["mismatches"],
         "boot_history_equal": astats["history_rows"] == boots[0].get("history_rows") and astats["staged_files"] == boots[0].get("staged_files"),
         "A_log_rows_equal_engine_rows": len(a_gate_rows) == astats["engine_gate_rows"],
         "nonempty": bool(cmpd["a_decide"]) and bool(b_picks),
@@ -579,6 +687,9 @@ def run_e0(view: str, day: str, out: Path, *, block: cp.Block | None = None, eng
         "n_create_ms_disagree": len(cmpd["create_disagree"]), "n_diff": len(diff),
         "n_picks": len(b_picks), "n_picks_A": len(a_picks), "n_dead_B": n_dead,
         "blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "imported": imported,
+        "imported_module_blobs": mods["blobs"], "imported_module_sides": mods["sides"], "scorer_imported_module_blobs": mods["scorer_blobs"],
+        "imported_module_mismatches": mods["mismatches"], "n_imported_modules": len(mods["blobs"]) + len(mods["scorer_blobs"]),
+        "Bpicks_not_in_U": bpicks_missing,
         "A": astats, "B": {k: bmeta.get(k) for k in ("wall_s", "boots", "create_rows_t_recv_imputed", "trade_rows_t_recv_imputed", "tx_index_null_view",
                                                       "daily_restart", "prune_every", "create_time")},
         "C": c, "wall_s": wall, "checks": checks, "ok": all(checks.values()),
@@ -602,7 +713,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     e0 = json.loads(Path(args.e0).read_text(encoding="utf-8"))
     if e0.get("schema") != SCHEMA:
         raise E0Error(f"{args.e0}: not a {SCHEMA} file")
-    res = verify_pins(e0, Path(args.worktree))
+    res = verify_pins(e0, Path(args.worktree), Path(args.scorer_worktree) if args.scorer_worktree else None)
     print(json.dumps(res, indent=2, sort_keys=True))
     return 0 if res["ok"] else 1
 
@@ -621,6 +732,7 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("check", help="re-verify the recorded blob shas against HEAD and the working copy of a worktree")
     c.add_argument("e0", help="e0.json")
     c.add_argument("--worktree", default=str(REPO))
+    c.add_argument("--scorer-worktree", help="the tree the scorer ran from, if e0.json records scorer_imported_module_blobs (dry runs with --scorer-repo)")
     c.set_defaults(fn=cmd_check)
     return ap
 

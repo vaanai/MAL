@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import shutil
@@ -64,19 +65,69 @@ def _git(repo: Path, *args: str) -> str:
     return r.stdout.strip()
 
 
-def make_repo(root: Path, on_origin: bool = True) -> Path:
-    """A throwaway git repo holding copies of the pinned files; `origin/main` points at HEAD when `on_origin`."""
-    repo = root / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-q", "-b", "main")
-    for rel in (*e0.PINNED_MODULES, e0.FROZEN_MD5_PATH):
-        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(REPO / rel, repo / rel)
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "pins")
-    if on_origin:
+_TEMPLATE: list[Path] = []
+
+
+def _template() -> Path:
+    """One git repo holding a copy of tools/ and FROZEN.md5, built once per process: every imported tools.* module has a blob at HEAD in it."""
+    if not _TEMPLATE:
+        td = Path(tempfile.mkdtemp(prefix="e0_tpl_"))
+        atexit.register(shutil.rmtree, td, True)
+        repo = td / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        shutil.copytree(REPO / "tools", repo / "tools", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        (repo / e0.FROZEN_MD5_PATH).parent.mkdir(parents=True)
+        shutil.copyfile(REPO / e0.FROZEN_MD5_PATH, repo / e0.FROZEN_MD5_PATH)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "pins")
         _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        _TEMPLATE.append(repo)
+    return _TEMPLATE[0]
+
+
+def make_repo(root: Path, on_origin: bool = True) -> Path:
+    """A throwaway copy of the template repo; `origin/main` points at HEAD when `on_origin`."""
+    repo = root / "repo"
+    shutil.copytree(_template(), repo, symlinks=True)
+    if not on_origin:
+        _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
     return repo
+
+
+FAKE_SCORER = """import argparse, csv, json, pathlib
+from tools import helper_mod
+ap = argparse.ArgumentParser()
+for f in ("--out-dir", "--book", "--picks", "--only-day"):
+    ap.add_argument(f)
+ap.add_argument("--p2-view-dir", action="append")
+a = ap.parse_args()
+dec = {}
+for ln in open(a.picks):
+    r = json.loads(ln)
+    if r.get("kind") == "decision":
+        dec[r["mint"]] = r["decision"]
+mints = sorted(dec) if a.book == "all" else sorted(m for m, d in dec.items() if d == "pick")
+o = pathlib.Path(a.out_dir)
+o.mkdir(parents=True)
+w = csv.writer(open(o / "rows.csv", "w", newline=""))
+w.writerow(["day", "mint"])
+[w.writerow([a.only_day, m]) for m in mints]
+"""
+
+
+def make_scorer_tree(root: Path) -> Path:
+    """A clean git tree on origin holding a fake scorer that imports one helper module."""
+    tree = root / "scorer_tree"
+    (tree / "tools").mkdir(parents=True)
+    (tree / "tools" / "__init__.py").write_text("", encoding="utf-8")
+    (tree / "tools" / "helper_mod.py").write_text("X = 1\n", encoding="utf-8")
+    (tree / "tools" / "cap_pick_score.py").write_text(FAKE_SCORER, encoding="utf-8")
+    _git(tree, "init", "-q", "-b", "main")
+    _git(tree, "add", "-A")
+    _git(tree, "commit", "-q", "-m", "scorer")
+    _git(tree, "update-ref", "refs/remotes/origin/main", "HEAD")
+    return tree
 
 
 class _Fix(unittest.TestCase):
@@ -214,6 +265,9 @@ class RunTests(_Fix):
         self.assertEqual((out / "C.list").read_text(), "Hi\nMid\n")
         self.assertEqual((out / "Bpicks_in_U.list").read_text(), "Hi\nMid\n")
         self.assertEqual((res["C"]["n_Bpicks_not_in_U"], res["C"]["n_universe"]), (1, 4))
+        self.assertEqual(res["Bpicks_not_in_U"], ["Hi2"])  # the mints, not only the count; report only
+        self.assertEqual((out / "Bpicks_not_in_U.list").read_text(), "Hi2\n")
+        self.assertEqual(json.loads((out / "e0.json").read_text())["Bpicks_not_in_U"], ["Hi2"])
         self.assertEqual(res["md5_C"], hashlib.md5(b"Hi\nMid\n").hexdigest())
         self.assertTrue(res["ok"], res["checks"])
         self.assertEqual(json.loads((out / "e0.json").read_text())["commit"], _git(self.repo, "rev-parse", "HEAD"))
@@ -422,7 +476,9 @@ class RefusalTests(_Fix):
 class PinTests(_Fix):
     def _e0(self) -> dict:
         pins = e0.collect_pins(self.repo)
-        return {"blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "commit": _git(self.repo, "rev-parse", "HEAD"), "ok": True}
+        mods = e0.collect_imported_modules(self.repo, e0.loaded_tools_modules())
+        return {"blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "commit": _git(self.repo, "rev-parse", "HEAD"), "ok": True,
+                "imported_module_blobs": mods["blobs"]}
 
     def test_blobs_match_git_and_frozen_md5_is_the_pinned_value(self) -> None:
         pins = e0.collect_pins(self.repo)
@@ -464,6 +520,93 @@ class PinTests(_Fix):
         self.assertEqual({k: v["blob"] for k, v in imp.items()}, pins["blobs"])
 
 
+class ImportedModuleTests(_Fix):
+    def test_run_records_every_imported_tools_module_against_head(self) -> None:
+        res = self.run_e0(scorer=self.fake_scorer())
+        blobs = res["imported_module_blobs"]
+        for name in ("tools.forward_paper", "tools.forward_exp012_gate", "tools.exploration_entry_model", "tools.cap_pick_gate_replay", "tools.paper_price_path",
+                     "tools.laya_v0", "tools.cap_pick_e0"):
+            self.assertIn(name, blobs)
+            self.assertEqual(blobs[name], _git(self.repo, "rev-parse", f"HEAD:{name.replace('.', '/')}.py"), name)
+        self.assertGreater(res["n_imported_modules"], 10)
+        self.assertEqual(res["imported_module_mismatches"], [])
+        self.assertTrue(res["checks"]["imported_modules"])
+        self.assertEqual(res["imported_module_sides"]["tools.laya_v0"], ["A_B"])
+        self.assertEqual(res["scorer_imported_module_blobs"], {})
+        self.assertEqual(json.loads((self.dir / "out" / "e0.json").read_text())["imported_module_blobs"], blobs)
+        self.assertTrue(res["ok"], res["checks"])
+
+    def test_an_imported_module_that_differs_from_head_fails_ok(self) -> None:
+        """The loaded laya_v0.py is the real one; the tree's HEAD holds an edited laya_v0.py, committed, clean and on origin."""
+        f = self.repo / "tools" / "laya_v0.py"
+        f.write_text(f.read_text(encoding="utf-8") + "\n# a different file at HEAD\n", encoding="utf-8")
+        _git(self.repo, "commit", "-q", "-am", "edit laya_v0")
+        _git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        res = self.run_e0(scorer=self.fake_scorer())
+        self.assertTrue(res["equal_decide"] and res["equal_C"])
+        self.assertFalse(res["checks"]["imported_modules"])
+        self.assertFalse(res["ok"])
+        self.assertEqual([m["module"] for m in res["imported_module_mismatches"]], ["tools.laya_v0"])
+        m = res["imported_module_mismatches"][0]
+        self.assertNotEqual(m["head_blob"], m["file_blob"])
+
+    def test_scorer_modules_come_from_importtime_and_are_recorded_apart_for_another_tree(self) -> None:
+        tree = make_scorer_tree(self.dir)
+        res = e0.run_e0("explore-0814", DAY, self.dir / "sc", block=self.block, engine_factory=self.factory(), repo=self.repo, scorer_repo=tree,
+                        log=open("/dev/null", "w"))
+        self.assertTrue(res["equal_C"], res["C"])
+        self.assertEqual(sorted(res["scorer_imported_module_blobs"]), ["tools.cap_pick_score", "tools.helper_mod"])
+        for name in ("tools.helper_mod", "tools.cap_pick_score"):
+            self.assertEqual(res["scorer_imported_module_blobs"][name], _git(tree, "rev-parse", f"HEAD:{name.replace('.', '/')}.py"))
+            self.assertIn("scorer", res["imported_module_sides"][name])
+        self.assertNotIn("tools.helper_mod", res["imported_module_blobs"])
+        self.assertEqual(res["imported_module_mismatches"], [])
+        self.assertTrue(res["ok"], res["checks"])
+        # check: the scorer-only modules need the scorer tree
+        self.assertFalse(e0.verify_pins(res, self.repo)["imported_modules"]["ok"])
+        ok = e0.verify_pins(res, self.repo, tree)
+        self.assertTrue(ok["imported_modules"]["ok"], ok["imported_modules"])
+        self.assertTrue(ok["ok"])
+
+    def test_same_tree_scorer_modules_merge_into_the_flat_dict(self) -> None:
+        r = e0.collect_imported_modules(self.repo, {}, {"tools.laya_v0", "tools.nope"}, self.repo)
+        self.assertEqual(sorted(r["blobs"]), ["tools.laya_v0", "tools.nope"])
+        self.assertEqual(r["scorer_blobs"], {})
+        self.assertEqual([m["module"] for m in r["mismatches"]], ["tools.nope"])  # absent at HEAD
+        self.assertEqual(r["blobs"]["tools.nope"], None)
+
+    def test_importtime_parser(self) -> None:
+        text = ("import time: self [us] | cumulative | imported package\n"
+                "import time:       120 |        120 |   _io\n"
+                "import time:       300 |       4500 | tools\n"
+                "import time:       210 |       2100 |     tools.paper_price_path\n"
+                "import time:        55 |         55 |   tools.laya_v0\n"
+                "import time:        10 |         10 |   mytools.nope\n"
+                "scorer said import time: nothing\n")
+        self.assertEqual(e0.modules_from_importtime(text), {"tools.paper_price_path", "tools.laya_v0"})
+
+    def test_check_verifies_all_recorded_modules_not_only_the_pinned_four(self) -> None:
+        rec = self._rec()
+        self.assertTrue(e0.verify_pins(rec, self.repo)["ok"])
+        f = self.repo / "tools" / "paper_price_path.py"  # not one of the four pins
+        f.write_text(f.read_text(encoding="utf-8") + "\n# edit\n", encoding="utf-8")
+        _git(self.repo, "commit", "-q", "-am", "edit paper_price_path")
+        res = e0.verify_pins(rec, self.repo)
+        self.assertTrue(all(m["ok"] for m in res["modules"].values()))  # the four pins still match
+        self.assertFalse(res["imported_modules"]["ok"])
+        self.assertEqual([b["module"] for b in res["imported_modules"]["bad"]], ["tools.paper_price_path"])
+        self.assertFalse(res["ok"])
+        # an e0.json that recorded no modules cannot be checked
+        no_mods = {k: v for k, v in rec.items() if k != "imported_module_blobs"}
+        self.assertFalse(e0.verify_pins(no_mods, self.repo)["imported_modules"]["ok"])
+
+    def _rec(self) -> dict:
+        pins = e0.collect_pins(self.repo)
+        mods = e0.collect_imported_modules(self.repo, e0.loaded_tools_modules())
+        return {"blobs": pins["blobs"], "frozen_md5": pins["frozen_md5"], "commit": _git(self.repo, "rev-parse", "HEAD"), "ok": True,
+                "imported_module_blobs": mods["blobs"]}
+
+
 class ScorerTests(unittest.TestCase):
     def test_source_flags_per_view(self) -> None:
         roots7 = [f"/data/mal/clean-view/explore-0814/w{i}" for i in range(1, 8)]
@@ -475,7 +618,7 @@ class ScorerTests(unittest.TestCase):
             self.assertIn(view, e0.SCORER_SOURCE)
             e0.scorer_source_flags(view, block.roots)
         cmd = e0.scorer_cmd("explore-0814", roots7, "2026-08-17", Path("/o/B.jsonl"), Path("/o/s"), "picks", ["--k-mode", "hour"])
-        self.assertEqual(cmd[1:3], ["-m", "tools.cap_pick_score"])
+        self.assertEqual(cmd[1:5], ["-X", "importtime", "-m", "tools.cap_pick_score"])
         self.assertEqual(cmd[cmd.index("--only-day") + 1], "2026-08-17")
         self.assertEqual((cmd[cmd.index("--book") + 1], cmd[cmd.index("--picks") + 1]), ("picks", "/o/B.jsonl"))
         self.assertEqual(cmd[-2:], ["--k-mode", "hour"])
