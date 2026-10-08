@@ -243,6 +243,12 @@ def test_within_slot_order_is_tx_then_event_and_file_order_when_tx_is_null():
     # oracle-insample-0922: tx_index is null -> (slot, file order); event_index is ignored, as the audit did
     nul = [(7, None, 5, 1), (7, None, 0, 2), (7, None, 9, 3)]
     assert sorted(nul, key=lambda r: cps.order_key(*r)) == nul
+    # the vectorised permutation used by the loader agrees with the reference key (tx = -1 is a null tx_index)
+    mixed = [(7, 5, 1, 1), (7, 3, 2, 2), (7, 3, 0, 3), (6, 9, 9, 4), (8, -1, 4, 5), (8, -1, 0, 6), (7, 3, 0, 7)]
+    cols = [np.array(c, dtype=np.int64) for c in zip(*mixed)]
+    perm = cps.order_perm(*cols)
+    ref = sorted(range(len(mixed)), key=lambda i: cps.order_key(mixed[i][0], None if mixed[i][1] < 0 else mixed[i][1], mixed[i][2], mixed[i][3]))
+    assert perm.tolist() == ref
 
 
 # --- hard limits -----------------------------------------------------------------------------------------------------------------------
@@ -336,7 +342,7 @@ def test_end_to_end_one_attempt_per_mint_and_filters(tmp_path):
     assert s["counts"]["attempts"] == 1 and s["counts"]["censored"] == 1
     # within-slot order is (tx_index): the slot-1005 sell (tx 3) is before the buy (tx 9)
     meta, _ = cps.read_day("2026-08-15", cps.index_hours(cps.build_sources(args)), cps.load_vband(vmap, cps.V_LO, cps.V_HI), cps.Config(), lambda m: None)
-    assert [x[5] for x in meta["MintOK"]["rows"]] == [True, False, True, True]
+    assert meta["MintOK"]["buy"].tolist() == [True, False, True, True]
     assert meta["MintOK"]["v"] == 17_600_000_000.0
     out = tmp_path / "out"
     s["_rows"] = rows

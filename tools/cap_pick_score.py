@@ -42,6 +42,7 @@ import re
 import subprocess
 import sys
 import time
+from array import array
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -445,6 +446,41 @@ def order_key(slot: int, tx_index: int | None, event_index: int, seq: int) -> tu
     return (slot, tx_index, event_index, seq)
 
 
+class _Rows:
+    """One mint's kept PumpSwap rows as typed arrays (about 70 bytes a row; a day holds millions, so no per-row tuples)."""
+
+    __slots__ = ("slot", "tx", "ev", "seq", "pid", "buy", "sol", "tok", "q", "b")
+
+    def __init__(self) -> None:
+        self.slot, self.tx, self.ev, self.seq, self.pid = (array("q") for _ in range(5))
+        self.buy = array("b")
+        self.sol, self.tok, self.q, self.b = (array("d") for _ in range(4))
+
+    def add(self, slot: int, tx: int, ev: int, seq: int, pid: int, buy: bool, sol: float, tok: float, q: float, b: float) -> None:
+        self.slot.append(slot)
+        self.tx.append(tx)
+        self.ev.append(ev)
+        self.seq.append(seq)
+        self.pid.append(pid)
+        self.buy.append(1 if buy else 0)
+        self.sol.append(sol)
+        self.tok.append(tok)
+        self.q.append(q)
+        self.b.append(b)
+
+    def arrays(self) -> dict[str, np.ndarray]:
+        out = {k: np.frombuffer(getattr(self, k), dtype=np.int64) for k in ("slot", "tx", "ev", "seq", "pid")}
+        out["buy"] = np.frombuffer(self.buy, dtype=np.int8).astype(bool)
+        out.update({k: np.frombuffer(getattr(self, k), dtype=np.float64) for k in ("sol", "tok", "q", "b")})
+        return out
+
+
+def order_perm(slot: np.ndarray, tx: np.ndarray, ev: np.ndarray, seq: np.ndarray) -> np.ndarray:
+    """Permutation sorting by `order_key` (tx = -1 stands for a null tx_index)."""
+    null = tx < 0
+    return np.lexsort((seq, np.where(null, 0, ev), np.where(null, 0, tx), slot))
+
+
 def _num(v: Any) -> float:
     return float(v) if v is not None else float("nan")
 
@@ -485,7 +521,8 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
                 if isinstance(bt, int) and (cur[1] is None or bt < cur[1]):
                     cur[1] = bt
     diag["migrations"] = len(mig)
-    by_mint: dict[str, list[tuple]] = {}
+    by_mint: dict[str, _Rows] = {}
+    pool_ids: dict[str, int] = {}
     seq = 0
     for h in tf:
         path, _block = idx["trades"][h]
@@ -512,26 +549,32 @@ def read_day(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], vband:
             if not isinstance(slot, int) or not (mg[0] <= slot < mg[0] + cfg.window_slots):
                 continue
             seq += 1
-            by_mint.setdefault(m, []).append((slot, r.get("tx_index"), r.get("event_index") or 0, seq, pool, r.get("side") == "buy",
-                                              _num(r.get("sol_lamports")), _num(r.get("token_raw")), _num(r.get("quote_reserve")), _num(r.get("base_reserve"))))
+            rows = by_mint.get(m)
+            if rows is None:
+                rows = by_mint[m] = _Rows()
+            tx = r.get("tx_index")
+            rows.add(slot, -1 if tx is None else int(tx), int(r.get("event_index") or 0), seq, pool_ids.setdefault(pool, len(pool_ids)), r.get("side") == "buy",
+                     _num(r.get("sol_lamports")), _num(r.get("token_raw")), _num(r.get("quote_reserve")), _num(r.get("base_reserve")))
         log(f"{day} {h} pumpswap rows kept so far={seq} ({time.time() - t0:.0f}s)")
     max_slot = max([s for s in (tail_max_slot(idx["trades"][h][0]) for h in tf[-2:]) if s is not None] or [0])
+    pool_names = {i: p for p, i in pool_ids.items()}
     out: dict[str, dict[str, Any]] = {}
     for m, rows in by_mint.items():
-        s0_by_pool: dict[str, int] = {}
-        for rr in rows:
-            if rr[4] not in s0_by_pool or rr[0] < s0_by_pool[rr[4]]:
-                s0_by_pool[rr[4]] = rr[0]
-        pool = min(s0_by_pool, key=lambda p: (s0_by_pool[p], p))
+        a = rows.arrays()
+        s0_by_pool = {int(pid): int(a["slot"][a["pid"] == pid].min()) for pid in np.unique(a["pid"])}
+        pid = min(s0_by_pool, key=lambda i: (s0_by_pool[i], pool_names[i]))
+        pool = pool_names[pid]
         diag["mints_with_canonical_pool"] += 1
         diag["multipool"] += int(len(s0_by_pool) > 1)
-        s0 = s0_by_pool[pool]
+        s0 = s0_by_pool[pid]
         mslot = mig[m][0]
         if not (s0 + UNCENSORED_HORIZON <= max_slot and s0 - mslot <= MAX_S0_GAP):
             diag["censored"] += 1
             continue
-        path_rows = sorted((rr for rr in rows if rr[4] == pool), key=lambda rr: order_key(rr[0], rr[1], rr[2], rr[3]))
-        out[m] = {"pool": pool, "v": float(vband[pool]), "s0": s0, "mslot": mslot, "block": mig[m][2], "rows": path_rows}
+        keep = np.flatnonzero(a["pid"] == pid)
+        perm = keep[order_perm(a["slot"][keep], a["tx"][keep], a["ev"][keep], a["seq"][keep])]
+        out[m] = {"pool": pool, "v": float(vband[pool]), "s0": s0, "mslot": mslot, "block": mig[m][2],
+                  **{c: a[c][perm] for c in ("slot", "buy", "sol", "tok", "q", "b")}}
     return out, diag
 
 
@@ -569,13 +612,7 @@ def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
         days_done.append(day)
         for m in sorted(meta):
             md = meta[m]
-            cols = list(zip(*md["rows"]))
-            slot = np.array(cols[0], dtype=np.int64)
-            isbuy = np.array(cols[5], dtype=bool)
-            sol = np.array(cols[6], dtype=float)
-            tok = np.array(cols[7], dtype=float)
-            q = np.array(cols[8], dtype=float)
-            b = np.array(cols[9], dtype=float)
+            slot, isbuy, sol, tok, q, b = (md[c] for c in ("slot", "buy", "sol", "tok", "q", "b"))
             st = build_states(slot, isbuy, sol, tok, q, b, md["v"], cfg.final_state)
             if st is None:
                 tot["bad_reserves"] += 1
