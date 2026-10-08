@@ -1,190 +1,196 @@
-# Manager handoff 2026-10-08 ~18:00Z (manager9 → next manager, or manager9 after compaction)
+# Manager handoff 2026-10-08 ~20:20Z (manager9 → next manager)
 
 Replace this page at the next handoff; don't append. Read it first. Then read:
-- [EXP-022 CAP-PICK Part 1](../EXP/EXP-022-cap-pick-part1-prereg.md), §0, §2.1, §9, §12 and §17, **Amendment 1 (the E0 deciding set)**, plus [DEC-021](../DEC/DEC-021-champion-challenger.md) Amendment 1;
-- the 10-08 audit note [ARTIFACTS/lab/audit-2026-10-08/](../ARTIFACTS/lab/audit-2026-10-08/README.md), the judge (`capv_JUDGE.md`) first;
-- [LAB_STATE.md](../LAB_STATE.md);
-- DEC-016 Amendments 2, 5 §7 and 6;
-- DEC-014's 2026-10-07 block-budget amendment;
-- memory notes `owner-goal-october`, `feedback-fan-out`, `audit-2026-10-08`, `exp022-cap-pick`, `owner-plan-1008`, `feedback-reserve-convention-brief`, `feedback-pinned-exit-gates`, `feedback-seal-outcome-counts`;
-- MiScusi notebook entries from 10-08: n_yBVJLKQFcVuUTg, n_20cYMHbO0UyGzA, n_1fzsuRLAhvkgqg, n_6FKDVJWrbaoGYg, n_vS9qHGmF7-jinQ, n_JESu6g8jAbyesA.
+- **H5 (the live candidate):** `/data/mal/hunt-1008/h5-work/PLAN.md`, `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md`, `/data/mal/hunt-1008/JUDGE.md`. The PRs are listed below.
+- **EXP-022 CAP-PICK Part 1:** [EXP/EXP-022-cap-pick-part1-prereg.md](../EXP/EXP-022-cap-pick-part1-prereg.md) §0, §2.1, §3, §9, §12, §17, and **Amendment 1**.
+- **Memory notes:** `owner-goal-october`, `h5-boostfloor`, `feedback-fan-out`, `exp022-cap-pick`, `openrouter-key`, `audit-2026-10-08`, `feedback-seal-outcome-counts`, `long-jobs-via-miscusi`.
+- **MiScusi notebook, 10-08 evening:**
+  - H5: n_aKkhDDVDD8NWzA, n_XAOeNSejKdoCqA, n_hZAyYYgXzwukSQ;
+  - E0 and scorer: n__JG6lTs4tLlSjQ, n_XhHuUT1hSpMCkw, n_YFa8N7PGPyraOg;
+  - hunts: n_cvvYNpFkW0uNOQ, n_qWUXcU6JLYp7cA, n_DJQLZZS9jA-TjA.
 
 ## Where things stand
 
-### Owner mandate (10-08 ~17:00Z; memory `owner-goal-october`, `feedback-fan-out`)
+### Owner mandate and decisions (10-08)
+- **Goal.** $1000 of REAL income by 10-31, with $400 as the minimum. The owner says "7 SOL in the wallet" from a 1 SOL start.
+  - Full autonomy. Fan out many parallel tests.
+  - $0 extra budget is unchanged. The sniper route is closed.
+- **H5 live, owner-approved.**
+  - **Canary.** About 0.25 SOL. The owner sends it to the Helm-held probe wallet on fast-0 **when the manager asks**. The ask comes after the executor is reviewed and EXP-024 is merged.
+  - **Gate override, H5 only.** The owner answered "Yes, full 1 SOL" in session to scaling to 1 SOL BEFORE the formal EXP-024 read passes. The conditions are that live execution matches the sim and that the shadow and canary results are not negative, at about 10-12..14. It goes into DEC-024 as `OWNER_OVERRIDE_CONFIRMED`.
+  - **Every other book keeps the gate.**
+- **OpenRouter.** The key is at `/var/lib/mal/openrouter/openrouter.env` (research-0) with a $3 cap. The runner hard-stops at $1.50. Never print it.
+- **LAYA.** Optimize the after-graduation books into a consistent base strategy that runs while short-lived edges rotate.
+- **Priority (owner, 10-08 ~20:30Z).** **H5 is the absolute priority.** Other work continues only if it does not slow H5 down.
+  - After H5, take an **improvement / self-improving path**. Do NOT close failed lines after one frozen test.
+  - Iterate them (the LLM trader, LAYA, the cascades, …) with propose → evaluate → learn loops on development data until there are solid options.
+  - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
+  - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
-These are the owner's instructions and targets. They are not measurements.
-- **Goal:** real income of **$1000 by 10-31**, **$400 minimum**. The wallet goes to **7 SOL from a 1 SOL start**, funded once a book clears the gate.
-- **Full autonomy.** Fan out many parallel strategy tests.
-- **The gate is kept.** Nothing goes live before a book clears the promotion gate on both fail models.
-- Earlier on 10-08 (memory `owner-plan-1008`): the sniper / same-slot route is closed for now, and the extra budget is $0 for two weeks. The mandate does not say it changes either; treat both as unchanged until the owner says otherwise.
+### H5 BOOST-floor: the one real candidate
+- **Rule.** After a non-mayhem graduation, if a sell drains the pool to Q = real quote + V ≤ 40 SOL within 0–300 s of the first print while BOOST still has budget, buy at 1.3 s and sell at s0 + 330 s.
+- **Sep confirmation,** read once, 21 days, n 1,124, 0.25 SOL:
+  - flat +13.221% [CI90 +8.281], 17/21 days;
+  - press +11.434% [+7.165];
+  - the verifier reproduced it.
+- **Decaying:** +26.7 → +11.7 → +5.4 → +6.8%.
+- **October risks:**
+  - BOOST's last slice comes earlier, median 337 s (n 8), so the 330 s exit sits near the cliff;
+  - since 09-30, v2 trades keep fees in the vault, so per-print V is needed;
+  - 200 ms slots from about 10-09T14:30Z.
+- **Judge prior** that it is still positive in October: 0.35. Net if real, after haircuts: +1.4..+3.1% per attempt.
+- **One BOOST switch-off kills H5, H4 and CAP-PICK together.**
 
-### Owner decisions earlier on 10-08
+### Other hunt results (exploration tape; JUDGE.md, JUDGE-3.md)
+- **Dead:** H1 pre-graduation, H3 hours, H6 census, G2 momentum, G1 post-BOOST dip, L2, L3 primary, LAYA v0, and the LLM trader (Claude −7.57%; selection lift p 0.19).
+- **Weak:** H4 mid-BOOST; L1 RULE B (+1.28% flat / +0.81% press; fails under rent and cost stress).
+- **H2 wallets:** one wallet (4XWC649w…) carries it.
+- **Leads, unverified:** the L1 pool-entry sub-book; L3's hourly top-10.
+- **G4 survivors:** reported promising and was being verified when hunt-2 was stopped and resumed. Check hunt-2's results.
 
-- **Audit delivered.** It is the claude.ai artifact "MAL Profit Audit". The fast-entry retail thesis is refuted at MAL's ~1.3–1.6 s landing.
-- **Owner approved the recommendations**, notebook n_vS9qHGmF7-jinQ:
-  - O1: the EXP-021 screen is paused. The freeze pins are in #458; fresh-0802 stays unread.
-  - O2: DEC-021 Amendment 1.
-  - O3: taken with its fallback. **CAP-PICK counts from 2026-10-16T01 (Option Y).**
-  - O6: the cost wind-down is pre-agreed if CAP-PICK fails.
-  - O4/O5: deferred.
-- **CAP-PICK is EXP-022, pre-registered** (#464, 30aafef; quant-proof OK on the final head).
-  - Counted window: walk-2 hours `[2026-10-16T01, 2026-11-06T01)`. Looks at 10-23T01, 10-30T01 and 11-06T01.
-  - Deciding rule: day-level t on 24 h blocks at p ≤ 0.005 / 0.008 / 0.012, plus the full gate on both legs, plus ex-best-day > 0, plus the binding 1.9 s leg.
-  - P(pass) about 5–7% [inferred]. **A fail is the expected outcome** and leads to the wind-down.
-- **Research results** (notebook n_1fzsuRLAhvkgqg):
-  - 16 alternative meme strategies: 11 killed, 5 weakened, none survives.
-  - Same-slot: 94.5% / 97.5% of first-follower value sits in the token's creation slot. Outside it: first follower +2.10% / +0.29% (bundle-like co-landing excluded) [measured, Aug/Sep exploration, first seat only], second −1.21% / −2.11%. MAL lands a median 5–6 slots late; break-even needs the first seat on 36.6–68.9% (Aug) / 87.9–93.9% (Sep) of tries.
-  - Reports: `/data/mal/audit-1008/work/edge-scan-1008/REPORT.md` and `/data/mal/audit-1008/work/speed-recon-1008/PLAN.md`.
-- **Data finding** (notebook n_6FKDVJWrbaoGYg): 95.35% of canonical migrations have no `migration` row on the walker tape, because migrate-tx logs go over the 10 KB cap. 24,224 of 24,272 have a `complete` row (99.80%), and 23,099 of the 23,143 missing a migration row do (99.81%). So the CAP-PICK and EXP-012 universes are fine [inferred]. #467 recovers the rows under `--event-v`.
-- **Still with the owner:** O8 (the monthly bill split) and O9 (Helm excluding `/data/mal/audit-1008` from the nightly backup).
+### Disk incident (10-08)
+- Hunts wrote per-branch tape copies and research-0 hit 81%. Fixed by stopping hunts, Helm's cleanup (56 GB) and `.nobackup` on `/data/mal/hunt-1008` and `/data/mal/audit-1008/{tape,work,tmp}`.
+- **Rules for all hunts:**
+  - use the shared layer `/data/mal/hunt-shared` (job #393, 9.2 GB, zstd) and no tape copies;
+  - a 5 GB budget each;
+  - `systemd-run MemoryMax` with `nice 19 ionice -c3`;
+  - at most 4 at a time per workflow.
+- **Small reports** are copied to `/data/mal/hunt-reports` (backed up).
+- **`rm -rf` is denied to this session.** Write a script and ask the owner or Helm to run it.
 
-### Merged today since the last handoff
+## In flight at handoff (all on research-0 unless noted)
 
-- **#470** T1 pump.fun change watch plus the EXP-023 USDC-BOOST tripwire plan (quant-proof OK on a8ab1c3).
-- **#472** walk-2 wrapper guards: an empty Helius key exits 6, and the test hook inside a job exits 2. (The wrapper itself, #469, merged before it.)
-- **#474** EXP-022 Amendment 1, the E0 deciding set: mints with mig − create ≤ 60 min on either side, plus every B pick. E0 day is explore-0814, 2026-08-20. Quant-proof OK on 3ece9c0.
+**Workflows.** Their results land in files even if this session ends. Check them.
 
-### Job #387 result: NOT a kill
-
-The gate-replay kill check (#462 at 8fd49e5) did not trigger a kill. At ≤ 32 min the pick sets nearly match on P2–P4 (both 381/1289/415 of offline 382/1294/415) but not on P1 (fast-pool-0918 213 shared of 261/289; oracle-insample-0922 282 of 349/356). The P2–P4 online-pick book is **+3.278% live [date-cluster CI90 lo +1.17]**, **+2.334% press**, positive on 19 of 29 days. This is exploration, in-sample, and not gate evidence. The known 60-min skip is not a kill; Amendment 1 sets the E0 set at ≤ 60 min. Output is in `/data/mal/cap-pick-score/gate-replay/` (compare.md, compare.json).
-
-### A11: not adopted (notebook n_JESu6g8jAbyesA)
-
-There is no A11 October report-only check. So #465 stays parked unless the read tool guards its reads through `check_read`.
-
-### Strategy hunts (exploration tape only)
-
-Protocol for every hunt: Aug discovery → `RULE.md` sha256 → one Sep confirmation → adversarial verify → judge. Results go to `/data/mal/hunt-1008/JUDGE*.md`, and reports are copied to `/data/mal/hunt-reports`. A hunt is exploration. It is not gate evidence, and a survivor still has to clear the promotion gate.
-
-| Hunt | Workflow | State |
+| Task id | What | Output |
 | --- | --- | --- |
-| hunt-1 (H1–H6) | wf_1b74c222-805 | Running |
-| hunt-3 LAYA (L1–L3) | wf_4f61363d-351 | Running |
-| LLM-trader test: Claude agents as the trader | wf_3b8d9808-907 | Running |
-| LLM-trader OpenRouter arm | `/data/mal/hunt-1008/llm-trader/openrouter` | Ready. Free model `nvidia/nemotron-3-ultra-550b-a55b:free`, paid `deepseek/deepseek-chat`. **Budget hard stop $1.50.** Key at `/var/lib/mal/openrouter/openrouter.env`, never printed. |
-| hunt-2 (12 theses) | wf_84831245-793 (task w9v7nomhy) | **RESUMED at about 18:05Z** under the new disk rules, at most 4 at once, same run id. Each investigation continues from its existing files. It uses the shared layer if `/data/mal/hunt-shared/README.md` exists, and otherwise queries the tape directly with no copies. |
-| hunt-4 (cascades + strategy tree) | wf_0d1a560e-ebe | **STOPPED for disk.** Resumes after hunt-1 and hunt-3 finish. |
+| w9v7nomhy (wf_84831245-793) | Hunt-2: 12 graduated-token and other theses, resumed under the disk rules | /data/mal/hunt-1008/JUDGE-2.md |
+| w9b4m533o (wf_0d1a560e-ebe) | Hunt-4: LAYA-filter cascades, analog trader, 9 strategy-tree leaves | /data/mal/hunt-1008/JUDGE-4.md, STRATEGY-TREE.md |
+| wo1wq4khh (wf_f304b5f5-877) | LAYA after-graduation consistency optimization: walk-forward harness, 4 rounds, freeze top 2 | /data/mal/hunt-1008/laya-opt/REPORT.md, FROZEN-*.md |
 
-`/data/mal/hunt-shared` is the shared zstd data layer, built as a MiScusi job. Hunt-2 uses it once `/data/mal/hunt-shared/README.md` exists and queries the tape directly (no copies) until then. Resume hunt-4 under the disk rules below after hunt-1 and hunt-3 finish.
+**Builder agents.** If one is gone, check its branch; resume it or start a fresh builder.
 
-### Disk incident 10-08
-
-- research-0 reached **81%** at about +100 GB/h, from the hunts' per-branch extracts.
-- **Fixed by:** stopping 2 hunts (hunt-2, hunt-4; hunt-2 was resumed at about 18:05Z, see above); Helm's cleanup, which freed 56 GB (now **74%**); and `.nobackup` on `hunt-1008` and `audit-1008/{tape,work,tmp}`.
-- **New rules for all hunts:**
-  - use the shared layer only, with no per-branch tape copies;
-  - zstd Parquet or `savez_compressed`;
-  - a 5 GB disk budget each;
-  - heavy steps as MiScusi jobs, at most 4–5 at once.
-- **Background watchdogs:** the disk watchdog warns at 86% and SIGSTOPs hunt processes at 90%. The CPU watchdog renices hunt processes above load 52.
-
-## EXP-022 deadlines (withdrawn if a P1–P3 item is missed)
-
-| By | What | State at handoff |
+| Branch / PR | What | State |
 | --- | --- | --- |
-| Before 2026-10-16T01Z | **P1 E0** (EXP-022 §2.1, all four items, recorded in a dated amendment). The deciding set is now Amendment 1 (#474): mints with mig − create ≤ 60 min on either side, plus every B pick, on E0 day explore-0814 2026-08-20. Items: (1) one exploration UTC day pinned by `VIEW.sha256`, both sides booting at 00:00Z; (2) runner equivalence, md5 of `forward_paper.replay_rows` = md5 of the **read-ready** gate replay (#462 plus strict lines); (3) scorer equivalence, the read-ready `cap_pick_score.py --book picks` attempt list = B's picks inside the universe, by md5. **A read-ready scorer is needed before 10-16T01, not only by 10-23.** (4) code pins: the blob shas of `forward_exp012_gate.py`, `forward_paper.py`, `exploration_entry_model.py` and `cap_pick_gate_replay.py`, plus `FROZEN.md5` = `a01f05dfb1e622f78b2bba55d174be09` | Amendment 1 merged. The harness is #473 (draft). **The E0 record amendment is still to write**, see below |
-| Before 2026-10-16T01Z | **P2:** a clean A3 monitor run | Daily cron |
-| Before 2026-10-16T01Z | **P3:** A8: decoder, sink resume guard, gate readers that refuse bad lines, per-hour slot_ms in the scorer. Walk 2 must start on a commit that has all four | **Partly done**: #466 (sink resume guard; opt-in strict lines) and #467 (decoder) are merged. Still open: the gate replay refusing bad lines (#462, changes in progress) and per-hour slot_ms in the scorer (#461 has `--k-mode hour`; it must merge) |
-| Job must START before 2026-10-16T01:00Z (submit about 00:30Z) | **Walk 2**: `scripts/research/forward-walk2.sh` (merged: #469, with the #472 guards). MiScusi job on research-0, command `bash scripts/research/forward-walk2.sh`, params `{"start":"2026-10-16T01"}`, resumable, 10080 min, about 6 GB. It uses `--event-v` and `--strict-lines`, the dir `/data/mal/blocks/forward-1016` (as EXP-022 §9 and the ledger name it), and treats walker exit 3 as fatal. Credit cap 11,825,000 = 430,000 × 22 × 1.25 | Wrapper merged; the job is not submitted |
-| Before 2026-10-23T01Z | **P4:** the read tool (sealed read mode of `tools/cap_pick_score.py`: lock, `LOOK_READS.jsonl`, look schedule, strict lines, refusals) merged with quant-proof | Not started |
-| Before 2026-10-23T01Z | **P5:** E1 recorded (after the FINAL; cron 3d374658 at 10-16 06:13Z), with n ≥ 20; otherwise condition (c) is NOT_DECIDABLE and no look runs (EXP-022:288). It is recorded in a dated amendment before the first look. **P6:** the A2 check, after E1 | Patched tool merged (#463). A11 is not adopted, so E1 does not wait on it |
+| #477 `claude/h5-shadow` | H5 live shadow detector (fast-0, public RPC, no keys) | Head **ff31026**, 86 tests. Replay matched the frozen triggers 72/72 on 09-20, and 11/11 again on hour 09-20T20 at ff31026. The reviewer's SHOULD-FIX 1–7 and the nits are applied: the seal hook `suppress_outcome` fails closed from 10-16T01; there is an exit strip; the sps fit is ready in about 8 s; gap records name each reconnect cause; reject records list both mints. Smoke #395 (old head) passed, with 3/3 CreatePool rejected as non-WSOL (maybe genuine non-WSOL pools; reject records will show) and 3 reconnects in 2 min. **Smoke #396 passed** (10 min, 3 sockets, ff31026): 7 pools tracked; 1 trigger, logged as both the `pv` and `fv` variants on one pool; 1 outcome and 1 strip; sps 0.2705 s (pre-200 ms); 298 MB peak. **42 gap records in 10 min:** public-RPC coverage is the risk, so check the gap causes in the long run's records. Next: a quick delta review, then the long MiScusi job on fast-0 (`bash scripts/research/h5-shadow.sh`, `H5_SOCKETS=3`, resumable, ≤1.9 GB, out `$HOME/data/h5-shadow`). **Do not score its outcomes until EXP-024 is merged.** |
+| **#484** `claude/h5-executor` | H5 live executor on the probe_live / probe_executor core | Head **e436b28**, 132 new tests, plus the 299 probe tests still passing. Dry-run by default. It parses #477's trigger, gap, hb and pool records (pv variant).
+  - **Limits:** 0.02 SOL stake, max 2 open, 30/day, stops 0.08 / 0.12.
+  - **Sell:** prebuilt and timed to land at the exit slot. Set `exit_land_offset_s: 0.55` to match the frozen rule exactly. An emergency sell runs at 400 s. Token and WSOL accounts are closed for rent.
+  - **Halt and seal:** live-halt rules are latched. The seal `pick_oracle` refuses every buy in the seal window until a boolean picks exporter exists (none yet). Live refuses until EXP-024 is on main.
+  - **Live needs Helm:** a systemd unit with `LoadCredential` for the probe key, which is root-only (so live is NOT a MiScusi job; the dry run is), plus a root-run `sell-and-close` tool for abandoned positions.
+  - **Manager:** LIVE_OK, the `end_ms` config, the `FINAL_WRITTEN` marker after the FINAL, and updating the 12:17Z probe-check cron (the PR body has the change).
+  - **Next:** reviewer, then a dry run on fast-0 against the shadow output. |
+| #478 (merged **9b82bc0**, 2026-10-08T20:25Z) | EXP-024 Part 1, DEC-023, DEC-024, DEC-021 Am.2, DEC-016 Am.7, EXP-012 Am.3, EXP-022 Am.2, ledger | **MERGED** with quant-proof OK on 8a20a82 (comment 6068403337). The EXP-024 deadline is met.
+  - Live canary trades may start once the executor is reviewed and the Helm unit exists.
+  - Declared observation covers Look 1's window [10-10T00, 10-16T00).
+  - Pins: E0-H5 day 2026-09-20; monitor blob 1ca0a88c.
+  - **Open:** the owner must state the 1 SOL stake, open cap and stops in writing in DEC-024 before any scale-up. DEC-024 needs ≥100 fills and ≥20 landed buys for the scale-up checks.
+  - Cron 7b7a30bc (10-09 18:13Z) is now moot. |
+| #476 `claude/h5-boostfloor-score` | H5 scorer port (32/32 cells and every trade reproduced) | Draft. Still needs a forward mode, V(t) pricing, the correction and the day-level t for Look 1 (by 10-16T00Z) |
+| #479 `claude/cap-pick-exp022-mode` | `--exp022` mode in cap_pick_score: constants and `exp022_universe()` with walk2 and exploration adapters | Quant-proof OK-WITH-EDITS on 86355b3 (comment 6068166437). Edits done at **be7cdb2**, 229 tests:
+  - the exploration source pins `--vmap` to `/data/mal/pumpswap-virtual/pool_v_0909.json`;
+  - `--hour-sph-json` must be absent (tape-only hours; an unmeasurable hour refuses);
+  - bad-reserves picks stay `status=attempt` with `priced=false`.
+  **Next: a quant-proof re-check of 86355b3..be7cdb2, then merge.** The read-tool (P4) items are listed in the PR body. |
+| **#480** `claude/cap-pick-e0-exp022` | E0 harness on `--exp022 --exp022-source exploration --book picks`, U from universe.csv | Reviewer APPROVE on 8de674d. **Quant-proof NOT-OK** (comment 6068717562), for one guard.
+  - **Being fixed** (builder `ac12844d0ae1b5598`): fail E0 if any B pick is in `picks_not_attempts` (for example `mayhem_unknown_no_create_event`) with an unexpected reason (empty allowlist); merge main.
+  - **Then:** quant-proof re-check, merge #480, then the official E0 on main (28 GB MiScusi job, no `--dry-run`), then the E0 record amendment.
+  - **#479 is MERGED** (d6b32af; scorer blob b8e37774).
+  - **The E0 record amendment must disclose the 08-20 dry-run precount:**
+    - harness 5485459, scorer 86355b3;
+    - decide md5 bed92c12…, 889 mints;
+    - C md5 196cbbd8…, n_C 98, U 772;
+    - file `scratchpad/e0-precount-0820/e0.json`.
+    Amendment 1 named 08-17 as the only dry run, so the official run is a second look at the E0 day. |
 
-### E0 record amendment, still to write before 10-16T01Z
-
-- Pin `tools/tape_lines.py` too.
-- Record the first-boot staging hours: forward-1002 creates **2026-10-14T21 through 10-15T23** (27 staged, 26 opened), plus feed hour **10-16T00**. All of them sit inside the buffer `[10-14T01, 10-16T01)`.
-- The official E0 run is a **16 GB MiScusi job**.
-
-## Open PRs
-
-- **#461 `claude/cap-pick-score`** (draft). The CAP-PICK scorer; phases 1 and 2 are done, head 2bab07b.
-  - Phase-1 reproduction #386: 24,272 attempts, P2–P4 exact to the lamport.
-  - The phase-2 review was OK, and the hardening (path guard, 10,000-draw p) is done.
-  - **Merge it after job #389 (full-book phase-2 regression at 04d2d1f) is exact on P2–P4.** rows.csv is unchanged by 2bab07b.
-  - EXP-022 pins it at `ebb77f4`. The read tool builds on it.
-- **#462 `claude/cap-pick-gate-replay`** (draft). The live-gate replay, with a ReadGrant mode and strict lines.
-  - The reviewer's verdict was **CHANGES**. Fixes are in progress.
-  - Its blob is pinned at E0.
-- **#471 T2 B90 exit** (draft). The full run is job #391, after #389. Its pre-declaration must be committed before any scoring.
-- **#473 E0 harness** (draft). It is implementing the Amendment 1 deciding set. A dry run on 08-17 matched 857/857 at ≤ 60 min, with C equal at 122 mints.
-- **#465 `claude/catalog-second-owner`**: parked. Merge it only if the read tool guards its reads through `check_read`, and adapt it to a non-owner read allowance (EXP-022 §12).
-- **#90**: old Cursor draft, keep.
-
-## First things to do after a compaction or new session
-
-1. **Become the inbox reader:** `miscusi_worker_start` with `inbox: true`, name `manager9`.
-2. **Check the crons with CronList.** Recreate any that are missing (they die with the session, not with a compaction).
-   - **Daily structure monitor, 06:41Z.** Research-0, ops, 300 MB, 20 min: `/data/mal/venv/bin/python -m tools.pump_structure_monitor --out /data/mal/structure-monitor/daily.jsonl`.
-     - Read `halt.flags`, `warn.flags` and `halt.all_evaluated`.
-     - A halt before counting means withdraw EXP-022. During counting it suspends counting the same day.
-     - Two days with a core rule not evaluated count as a halt.
-     - Expect `ms_per_slot_moved` around 10-09T14:30Z.
-   - **Daily decommissioned-probe check, 12:17Z.** Fast-0, the job #385 command. Alert on: executor or timer active or enabled, STOP missing, attempts > 62, or realized ≠ −0.210755.
-   - **Daily tip-tape archive, 03:23Z.** Fast-0, the job #352 command; expect `mismatched=0`.
-   - **One-shots:**
-     - 10-09 15:13Z: slot step;
-     - 10-13 09:17Z: EXP-022 readiness;
-     - 10-14 10:07Z: (e′) dry run;
-     - 10-14 12:41Z: probe rent audit, job #363 command;
-     - 10-16 06:13Z: E1.
-3. **Forward walk #382 has a 7-day limit and ends about 10-15T11Z.** Resubmit it, or `miscusi_job_extend` it, **before then**, so forward-1002 reaches 10-16T01 for the FINAL. Use the same command and params `{"start":"2026-10-02T15"}`; it is idempotent. It runs on a pinned jobtree at 2bd45f1.
-4. **Heavy jobs go on research-0 only**, one at a time (hunts: at most 4–5 at once, under the disk rules above). fast-0 jobs stay ≤ 1.9 GB.
-5. **Check the hunts' watchdogs and `df` on research-0** before starting anything heavy. Hunt-2 is running (resumed about 18:05Z); resume hunt-4 only after hunt-1 and hunt-3 finish.
-
-## Running jobs at handoff
+**MiScusi jobs**
 
 | Job | What | Notes |
 | --- | --- | --- |
-| #382 | Forward walk 1 (forward-1002) from 10-02T15, on 2bd45f1 | Through 10-08T13 and 1,926,575 credits cumulative at the 16:00Z handoff. Never open its outputs before the FINAL. **Extend or resubmit before about 10-15T11Z.** |
-| #389 | Phase-2 full-book regression of the scorer (04d2d1f) | Pass = P2–P4 exact, like #386. Then #461 merges. |
-| #391 | T2 B90 exit full run (#471) | Queued after #389. |
-| #371 | DEC-022 Phase A stream | Ends about 10-08T20:30Z. Do not extend it; Phase B is stopped. |
-| shared-layer build | `/data/mal/hunt-shared`, the shared zstd data layer for the hunts | MiScusi job. Hunt-2 uses it once `/data/mal/hunt-shared/README.md` exists; hunt-4 waits on hunt-1 and hunt-3 as well. |
+| #382 | Forward walk 1 (forward-1002) | **Extend or resubmit before ~10-15T11Z** (cron a676221a). Never open its outputs before the FINAL. |
+| #391 | T2 B90 full run (#471), 5 configs | Report-only. Read the picks P2–P4 scopes against the §7 kill rule in `ARTIFACTS/lab/cap-pick-t2-boost-exit-predeclare-2026-10-08.md` |
+| #394 | OpenRouter arm of the LLM trader | **Done, dead** (notebook n_o6OGSKeiRBB5Rg). Nemotron free −6.64% flat (n 90). DeepSeek paid −6.28% flat (n 40). Both FAIL. The named arm produced no file. Spend $0.08. The LLM-trader line is closed. |
 
-#387 is done (see above).
+## EXP-022 (CAP-PICK) path to 10-16T01Z
+
+**Merged.** #461 scorer (7c2e587), #462 gate replay (blob 7d208874), #473 harness, #474 Amendment 1. The #387 kill check came back not a kill.
+
+**Remaining, in order:**
+1. **Merge #479**, after its edits and a quant-proof re-check.
+2. **Merge the E0 harness PR**, after review and quant-proof.
+3. **Official E0** on main as a **28 GB MiScusi job**: `run` with the pinned view explore-0814 and day 2026-08-20, no `--dry-run`. Then `check e0.json`.
+4. **E0 record amendment,** in a dated EXP-022 amendment with quant-proof. It must include:
+   - the four blobs plus every imported module blob (from `e0.json imported_module_blobs`) and the venv versions;
+   - `FROZEN.md5`;
+   - the first-boot staging hours: forward-1002 creates 10-14T21..10-15T23 (27 staged, 26 opened) plus the feed hour 10-16T00, all inside the buffer;
+   - every difference between the exploration and walk2 adapters (from #479's body);
+   - the pick_oracle and seal.
+5. **Walk 2** submitted at about 10-16T00:30Z (cron 01c21bbd). Run `bash scripts/research/forward-walk2.sh` with params `{"start":"2026-10-16T01"}`, resumable, 10080 min, about 6 GB.
+6. **A clean A3 monitor run** before 10-16T01 (the daily cron).
+7. **Before 10-23T01:**
+   - the read tool (P4), including the open items in #479's body and the notebook entry n_XhHuUT1hSpMCkw;
+   - E1 (cron 3d374658);
+   - A2.
+
+## After a compaction (same session, owner's plan 10-08 ~20:40Z)
+- **What survives a compaction:** crons (check with CronList), background agents, workflows and background shell loops. **Verify, don't recreate**, unless CronList shows one missing.
+- **Watchdogs** (background loops on research-0):
+  - the disk watchdog (task b975b8ddl): warns at 86%, SIGSTOPs hunts at 90%, syncs reports;
+  - the CPU guard, restarted at handoff (task bf3f9fmn1): renices hunts at load 48.
+  - If either is missing (`pgrep -af 'df --output=pcent'` or `pgrep -af loadavg`), restart it.
+- **Agent ids, to resume with SendMessage:**
+  - EXP-024 bundle builder `adc69e946dde3c975` (applying quant-proof edits 1–5 and the pins on #478); EXP-024 quant-proof `a68da208e5f9cdb81`;
+  - H5 shadow builder `accfdac84de54afb2`; shadow reviewer `a16726a9ec630a41f`;
+  - H5 executor builder `ab84c2d698b6716d6`;
+  - #479 builder `a31eac1461a68c989`; #479 quant-proof `ad2e39687ffc72eeb`;
+  - E0 harness builder `ac12844d0ae1b5598` (branch `claude/cap-pick-e0-exp022`, plus the precount); harness reviewer `a70139af1577132a7`; harness quant-proof `a4efdfa6397dca01f`;
+  - T2 builder `a7815fa1df1ceed25`.
+- **Workflows:** hunt-2 `w9v7nomhy`, hunt-4 `w9b4m533o`, LAYA-opt `wo1wq4khh`.
+- **MiScusi hand-off ho_Mkus_DAfsz-6iw** was prepared, but the owner chose to compact instead. Ignore it.
+
+## First things to do in a new session (only if the session is replaced)
+1. Run `miscusi_worker_start` with `inbox: true`, name `manager9`.
+2. **Recreate the crons with CronCreate.** They are session-only, so they are gone.
+   - **Daily structure monitor, 06:41Z.** Research-0, ops, 300 MB, 20 min: `/data/mal/venv/bin/python -m tools.pump_structure_monitor --out /data/mal/structure-monitor/daily.jsonl`. Read `halt.*`, `warn.*` and the new `watch.*` (#470). A halt before counting withdraws EXP-022.
+   - **Daily decommissioned-probe check, 12:17Z.** Fast-0, the job #385 command. **Update it before the H5 canary is funded**, because it alerts when the probe wallet is active.
+   - **Daily tip-tape archive, 03:23Z.** Fast-0, the job #352 command.
+   - **One-shots:**
+     - 10-09 15:13Z: the slot step;
+     - 10-09 18:13Z: the EXP-024 merge check;
+     - 10-13 09:17Z: EXP-022 readiness;
+     - 10-14 10:07Z: (e′) dry run;
+     - 10-14 11:23Z: extend #382;
+     - 10-14 12:41Z: probe rent audit;
+     - 10-16 00:23Z: submit walk 2;
+     - 10-16 06:13Z: E1.
+3. **Check the watchdogs on research-0** (they died with the session):
+   - **Disk:** warn at 86%; at 90%, SIGSTOP the hunt processes.
+   - **CPU:** renice hunt processes to 19 when load is 48 or more.
+   - **Reports:** sync `/data/mal/hunt-1008` small files to `/data/mal/hunt-reports` every 10 min.
+   Restart them as background loops (see this session's commands in the transcript), or as a cron.
+4. **Collect results:** JUDGE-2, JUDGE-4, laya-opt REPORT, job #391, job #394. Report them to the owner.
 
 ## Rules that bite
-
-- **The 10-16 FINAL** runs as written at about 10-16T02Z (DEC-016 Am.5 §7).
-  - It will be reported compromised (Am.2).
-  - There is no live support through Am.3 (a) (Am.6 (g) D).
-  - Run `exp012_forward` score and verify **without** `--strict-lines`. #466 kept them byte-identical to main by default.
-  - The (e′) dry run is required before 10-15T23:00Z. Record its merge meta sha256 and commit in DEC-016. If it still fails at 10-15T23:00Z, record the failure and the counts; the read proceeds as written (DEC-016:300-305).
-- **Seal.**
-  - Before the FINAL, runner side files are read only through `tools/runner_timing_read.py`.
-  - Never open forward-walk or forward-paper P&L, positions, decisions or intents.
-  - For EXP-022 (§9): no person, agent or job opens, prints or prices a CAP-PICK outcome of a counted hour, from any source, except the sealed look itself run by the merged read tool. This holds before day 7 and between looks. Monitoring prints only hour counts and gate decision counts. No CAP-PICK process reads any forward-1002 hour, buffer included, before the FINAL is written. The fast-0 paper twin's CAP-PICK P&L fields stay sealed until the read ends.
-- **Hunts stay on exploration tape.** No hunt reads forward-1002, forward-walk or forward-paper output.
-- **Sealed blocks:** fresh-0802, fresh-0808 and fresh-0828.
-- **Reserve convention:** PumpSwap rows are PRE-trade; bonding rows are POST-trade.
-- **BOOST:** pump.fun's keeper `HTVZ…S2r` buys 17.585 SOL in about 29 slices, ending about 337–345 s after migrate. CAP-PICK depends on it.
-- **Multiplicity:** EXP-022 makes the DEC-014 family count m ≥ 13.
-
-## Live probe (DEC-019): stopped and decommissioned
-
-The final result was 62/90 attempts, −0.210755 SOL. The wallet is at 0 lamports (withdrawn to the owner on 10-07). Helm does every restart step, and only after a gated book, a reviewed build and the owner's yes.
-- **Canary wallet** (explained to the owner on 10-08): a Helm-held key, funded with ≤ 0.05 SOL, under DEC-019-style limits. It is only relevant after a CAP-PICK pass (O4). The 10-08 ~17:00Z mandate funds the wallet only once a book clears the gate.
+- **The 10-16 FINAL** runs as written at about 10-16T02Z. It is reported compromised, and `exp012_forward` runs without `--strict-lines`. The (e′) dry run is due before 10-15T23Z.
+- **EXP-022 seal (§9).** No outcome of a counted CAP-PICK hour is opened, priced or printed from any source except the sealed look. From 10-16T01, H5 (live and shadow) must not trade or price CAP-PICK picks: the pick_oracle reads only a boolean after the FINAL and fails closed.
+- **EXP-024 declared observation.** The canary and shadow outcomes in Look 1's window [10-10, 10-16) are watched live. Look 1 is always read and reported as written, and nothing it shows changes EXP-024.
+- **Hunts use exploration tape only.** Sealed blocks fresh-0802, fresh-0808 and fresh-0828 are never read.
+- **Reserve convention:** PumpSwap rows are PRE-trade with V; bonding rows are POST-trade.
+- **Subagents.** Builders stop at about 40 turns and reviewers at about 20; resume them with SendMessage. Builder-type agents can't call MiScusi tools, so the manager submits jobs. A reviewer once detached another agent's worktree, so always tell reviewers to use their own scratch worktree.
 
 ## Clocks
-
 | When | What |
 | --- | --- |
-| ~10-08T20:30Z | #371 ends |
-| ~10-09T14:30Z | 200 ms step (epoch 1053) |
-| 10-13 | EXP-022 readiness check |
-| before ~10-15T11Z | Extend or resubmit #382 |
-| before 10-15T23:00Z | (e′) dry run |
-| before 10-16T01Z | E0 and its record amendment, a clean monitor run, walk 2 submitted |
-| ~10-16T02Z | FINAL (compromised, as written) |
-| after the FINAL | E1 |
-| before 10-23T01Z | Read tool merged; E1; A2 |
-| 10-23T01 / 10-30T01 / 11-06T01 | EXP-022 looks |
-| 2026-10-31 | Owner's income goal date ($1000; $400 minimum) |
-| 2026-12-08 | T1 tripwire kill date if nothing fires |
-
-## Ops
-
-- **Waiting on the owner or Helm:** O8, O9; the Oracle attn book and observe.attention stop; retiring the V-less books; runner-restarts.jsonl access.
-- **GitHub hiccups:** use `timeout 60 … </dev/null` and retry. Pushes sometimes fail transiently.
-- **Subagent turn limits:** builders stop at about 40 turns, reviewers at about 20. Resume them with SendMessage and ask for "verdict now". Workflow `agent()` calls with a schema can fail on a turn limit, so wrap them in try/catch.
+| ~10-09T14:30Z | 200 ms slots |
+| 10-09 | H5 executor review; shadow long run; ask the owner for the 0.25 SOL once EXP-024 is merged and the executor is reviewed |
+| **before 10-10T00:00Z** | **EXP-024 bundle merged (#478)** |
+| ~10-10..15 | H5 canary live (0.02 SOL stakes) |
+| ~10-12..14 | Scale H5 to 1 SOL per the owner override, if the conditions hold |
+| before ~10-15T11Z | Extend #382 |
+| before 10-15T23Z | (e′) dry run |
+| before 10-16T00Z | #476 forward mode for EXP-024 Look 1 |
+| before 10-16T01Z | E0 and its record amendment; clean monitor; walk 2 submitted |
+| ~10-16T02Z | FINAL |
+| ~10-16T07Z..10-17T12Z | EXP-024 Look 1 |
+| 10-23 / 10-30 / 11-06 T01 | EXP-022 looks |
+| 10-31 | Owner's income goal |

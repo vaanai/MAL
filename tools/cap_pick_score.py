@@ -77,6 +77,21 @@ RESERVE CONVENTIONS (this broke the audit once)
     kept so the reproduction can separate that one difference.
   * Within-slot order: (slot, tx_index, event_index). A row with a null tx_index (oracle-insample-0922) is ordered by file order instead.
 
+EXP-022 MODE (--exp022 --exp022-source walk2|exploration; EXP/EXP-022-cap-pick-part1-prereg.md sections 1, 3, 4, 5)
+  Every deciding parameter is a CONSTANT (`EXP022`, `EXP022_CELLS`, `EXP022_FLAGS`); a deciding flag that conflicts with its constant is REFUSED (an equal one is
+  accepted). k = ceil(1,300 ms / that hour's ms-per-slot), no day fallback; binding 1,900 ms leg; END bound; gross min_out at seed x 1.15 FLOORED to base units;
+  tp +50% / sl -30%; a 300 s cap from the landing print's block_time (refused when block_time is missing); exit lag 550 ms as ceil to slots per hour on every sell
+  (1,350 ms report-only); 0.1 SOL; 55,000 lamports per send; rent 2,039,280 on a filled attempt whose sell cannot fill (the "always" leg is report-only); flat 15%
+  and pressure at slope scale 1 (intercept refit per cell). The book is the picks (--picks is required; --book is picks).
+  `exp022_universe()` is the ONE function that decides which mints are attempts, behind an explicit source adapter:
+    walk2        canonical pool = the `migration` event's `pool`; quote mint WSOL from that event; non-mayhem on the create; V0 = the `virtual_quote_reserves` of the
+                 pool's first print (s0); a missing V0 is kept and scored at 17.5e9 and 17.7e9 (lower P&L per leg); s0 block_time in the counted window; s0 block_time
+                 <= complete block_time + 80 s. A tape that ends before s0 + 6,900 slots is REPORT-ONLY (section 3 does not drop it).
+    exploration  (E0 only: the tape has no migration event or event V) canonical pool = the earliest V-band pool (G); WSOL = V-band membership in the static V map;
+                 V0 = the static map; mayhem from the creates; the same 80 s rule from the complete event; NO counted-window filter; the 6,900-slot tape coverage
+                 still drops (G).
+  The 24 h block clusters, the section 8 live-sim correction, the report-only stake lines and the sealed read (lock, ledger, looks) are NOT here: they are the read tool.
+
 Hard limits (asserted; see `check_path_allowed` / `check_inputs_allowed` / `check_hour_allowed`): exploration pools only. Never fresh-0802, fresh-0808, fresh-0828,
 any forward or oracle-live path, the EXP-009 hours [2026-09-15T12, 2026-09-18T23), or any hour at or after 2026-10-02T10. Oracle in-sample hours stop at 2026-09-25T06.
 INPUT PATHS (--picks, --hour-sph-json, --sph-json, --vmap, and every tape source dir) are checked first in `run()`, before anything is opened, listed or read. A path
@@ -99,8 +114,8 @@ import subprocess
 import sys
 import time
 from array import array
-from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -253,6 +268,8 @@ class Config:
     window_slots: int = WINDOW_SLOTS
     pick_threshold: float = PICK_THRESHOLD
     boot_p_draws: int = BOOT_P_DRAWS  # report-only p_trade_boot; the CI90 draws stay at BOOT_DRAWS (the gate)
+    guard_min_out_rounding: str = "ceil"  # gross guard: "ceil" (the #461 draft) | "floor" (EXP-022 4.3: floor(size / (ratio x seed)))
+    cap_missing: str = "fallback"  # block-time cap on a path with no usable block_time: "fallback" (day-mean slots) | "refuse" (EXP-022 4.4)
 
     def validate(self) -> None:
         if self.bound not in ("END", "START"):
@@ -265,7 +282,8 @@ class Config:
             raise Refused("k, cap, size must be positive and lag, fee non-negative")
         for name, val, ok in (("k-mode", self.k_mode, ("day", "hour")), ("k-rounding", self.k_rounding, ("round", "ceil")),
                               ("guard-basis", self.guard_basis, ("net", "gross")), ("cap-anchor", self.cap_anchor, ("day-mean", "block-time")),
-                              ("rent-mode", self.rent_mode, ("none", "always")), ("book", self.book, ("all", "picks"))):
+                              ("rent-mode", self.rent_mode, ("none", "always", "conditional")), ("book", self.book, ("all", "picks")),
+                              ("guard-min-out-rounding", self.guard_min_out_rounding, ("ceil", "floor")), ("cap-missing", self.cap_missing, ("fallback", "refuse"))):
             if val not in ok:
                 raise Refused(f"{name} must be one of {ok}, got {val}")
         if self.exit_lag_ms is not None and not self.exit_lag_ms >= 0:
@@ -274,8 +292,8 @@ class Config:
             raise Refused("rent-lamports must be non-negative")
         if isinstance(self.boot_p_draws, bool) or not isinstance(self.boot_p_draws, int) or self.boot_p_draws < 1:
             raise Refused(f"boot-p-draws must be a positive integer, got {self.boot_p_draws!r}")
-        if (self.rent_mode == "always") != (self.rent_lamports > 0):  # a rent amount without the mode (or the mode without an amount) would silently charge nothing
-            raise Refused("--rent-mode always needs --rent-lamports > 0, and --rent-lamports > 0 needs --rent-mode always (default: none, 0)")
+        if (self.rent_mode != "none") != (self.rent_lamports > 0):  # a rent amount without the mode (or the mode without an amount) would silently charge nothing
+            raise Refused("--rent-mode always|conditional needs --rent-lamports > 0, and --rent-lamports > 0 needs --rent-mode always|conditional (default: none, 0)")
 
     @property
     def needs_hour_sph(self) -> bool:
@@ -455,7 +473,8 @@ def simulate_attempt(
         if cfg.guard_basis == "net":
             rejected = exec_ratio > cfg.guard_ratio
         else:  # gross: the executor's integer min_out against the floored tokens out
-            rejected = math.floor(tokens) < math.ceil(size / (cfg.guard_ratio * seed_p))
+            min_out_f = size / (cfg.guard_ratio * seed_p)
+            rejected = math.floor(tokens) < (math.floor(min_out_f) if cfg.guard_min_out_rounding == "floor" else math.ceil(min_out_f))
         if rejected:
             return dict(base, status="guarded", exit_type="guard", hold_slots=0, pnl=-float(fee))
     n = len(slot)
@@ -467,6 +486,8 @@ def simulate_attempt(
         d = max(int(slot[icap]) if observed else int(slot[-1]), x)
         base["cap_anchor_used"] = "block-time"
     else:
+        if cfg.cap_anchor == "block-time" and cfg.cap_missing == "refuse":  # EXP-022 4.4: no day-mean fallback
+            raise Refused(f"no usable block_time on the path of this {day} attempt (s0={s0}, landing slot {x}): the 300 s cap needs the landing print's block_time")
         if cfg.cap_anchor == "block-time":  # block_time unusable on this path: G's day-mean slots
             s_cap = sec_per_slot(day, sph)
             base["cap_anchor_used"] = "day-mean-fallback"
@@ -496,16 +517,18 @@ def simulate_attempt(
     gross = tokens * qa_f / (ba_f + tokens)
     sellval = gross * (1 - fee_ppm(qa_f, ba_f) / 1e6)
     pnl = float(sellval) - size - 2 * fee
-    if cfg.rent_mode == "always" and cfg.rent_lamports:
+    if (cfg.rent_mode == "always" and cfg.rent_lamports) or (cfg.rent_mode == "conditional" and fi >= n):
+        # always = a stress leg on every fill. conditional (EXP-022 4.5) = only a fill whose sell has no print at or after its fill slot (fi == n: the sell cannot
+        # fill). The sim sells the whole balance, so "base left over" cannot occur here.
         pnl -= cfg.rent_lamports
         base["rent"] = cfg.rent_lamports
     return dict(base, status="filled", exit_type=exit_type, hold_slots=xs - int(x), pnl=pnl)
 
 
-def apply_legs(rows: list[dict[str, Any]], cfg: Config) -> dict[str, Any]:
+def apply_legs(rows: list[dict[str, Any]], cfg: Config, fit_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Fail legs on each attempt, in place. A guarded-out row is already -fee on every leg and is not mixed. Pressure intercept: `latency_curve.fit_curve`
-    over the guard-passed sends of THIS run."""
-    fills = [r for r in rows if r["status"] == "filled"]
+    over the guard-passed sends of THIS run (`fit_rows`, a subset of `rows`, when given: EXP-022 fits on one row per attempt)."""
+    fills = [r for r in (rows if fit_rows is None else fit_rows) if r["status"] == "filled"]
     curve = fit_curve([Pressure(r["ssb"], int(r["nearby_lamports"])) for r in fills]) if fills else None
     for r in rows:
         pnl, fee = r["pnl"], float(r["fee"])
@@ -724,13 +747,13 @@ def build_sources(args: argparse.Namespace) -> list[Source]:
     return out
 
 
-def index_hours(sources: Sequence[Source]) -> dict[str, dict[str, tuple[Path, str]]]:
+def index_hours(sources: Sequence[Source], kinds: Sequence[str] = ("trades", "migrations")) -> dict[str, dict[str, tuple[Path, str]]]:
     """kind -> hour -> (file, block). First file wins a duplicated hour; `trades-H.deduped.jsonl.zst` sorts before `trades-H.jsonl.zst`, as in the audit."""
-    idx: dict[str, dict[str, tuple[Path, str]]] = {"trades": {}, "migrations": {}}
+    idx: dict[str, dict[str, tuple[Path, str]]] = {k: {} for k in kinds}
     for src in sources:
         for d in src.dirs:
             check_path_allowed(d)
-            for kind in ("trades", "migrations"):
+            for kind in kinds:
                 kdir = d / kind
                 if not kdir.is_dir():
                     continue
@@ -789,14 +812,17 @@ def order_key(slot: int, tx_index: int | None, event_index: int, seq: int) -> tu
 class _Rows:
     """One mint's kept PumpSwap rows as typed arrays (about 70 bytes a row; a day holds millions, so no per-row tuples)."""
 
-    __slots__ = ("slot", "tx", "ev", "seq", "pid", "bt", "buy", "sol", "tok", "q", "b")
+    __slots__ = ("slot", "tx", "ev", "seq", "pid", "bt", "buy", "sol", "tok", "q", "b", "vq")
 
-    def __init__(self) -> None:
+    def __init__(self, with_vq: bool = False) -> None:
+        self.vq = array("d") if with_vq else None  # the print's `virtual_quote_reserves` (walk-2 tape); NaN when the row has none
         self.slot, self.tx, self.ev, self.seq, self.pid, self.bt = (array("q") for _ in range(6))
         self.buy = array("b")
         self.sol, self.tok, self.q, self.b = (array("d") for _ in range(4))
 
-    def add(self, slot: int, tx: int, ev: int, seq: int, pid: int, buy: bool, sol: float, tok: float, q: float, b: float, bt: int = -1) -> None:
+    def add(self, slot: int, tx: int, ev: int, seq: int, pid: int, buy: bool, sol: float, tok: float, q: float, b: float, bt: int = -1, vq: float = float("nan")) -> None:
+        if self.vq is not None:
+            self.vq.append(vq)
         self.bt.append(bt)
         self.slot.append(slot)
         self.tx.append(tx)
@@ -813,6 +839,8 @@ class _Rows:
         out = {k: np.frombuffer(getattr(self, k), dtype=np.int64) for k in ("slot", "tx", "ev", "seq", "pid", "bt")}
         out["buy"] = np.frombuffer(self.buy, dtype=np.int8).astype(bool)
         out.update({k: np.frombuffer(getattr(self, k), dtype=np.float64) for k in ("sol", "tok", "q", "b")})
+        if self.vq is not None:
+            out["vq"] = np.frombuffer(self.vq, dtype=np.float64)
         return out
 
 
@@ -1052,7 +1080,533 @@ def pick_accounting(picks: PickSet | None, threshold: float, attempt_mints: set[
     return len(in_input), dict(sorted(lost.items()))
 
 
+
+# --- EXP-022 mode --------------------------------------------------------------------------------------------------------------------------
+
+WSOL_MINT = "So11111111111111111111111111111111111111112"
+EXP022_SOURCES = ("walk2", "exploration")
+EXP022_COUNT_START, EXP022_COUNT_END = "2026-10-16T01", "2026-11-06T01"  # section 0: the counted window [start, end), applied by the walk2 adapter only
+# Every deciding parameter, from EXP-022 sections 0, 1, 3, 4 and 5. None of it has a CLI override.
+EXP022: dict[str, Any] = {
+    "entry_latency_ms": 1300, "binding_latency_ms": 1900, "k_mode": "hour", "k_rounding": "ceil", "k_day_fallback": False, "bound": "END",
+    "guard": "min_out", "guard_basis": "gross", "guard_ratio": 1.15, "guard_min_out_rounding": "floor",
+    "tp": 0.5, "sl": 0.3, "cap_seconds": 300.0, "cap_anchor": "block-time", "cap_without_block_time": "refuse",
+    "exit_lag_ms": 550, "exit_lag_ms_report_only": 1350, "size_lamports": 100_000_000, "fee_lamports": 55_000,
+    "rent_lamports": 2_039_280, "rent_mode": "conditional", "rent_always_report_only": True,
+    "flat_fail": 0.15, "live_fail": 1.0 / 62.0, "live_fail_role": "report-only", "pressure_slope_scale": 1, "pressure_target_mean_p": TARGET_FAIL_RATE,
+    "book": "picks", "final_state": "lab", "boot_p_draws": BOOT_P_DRAWS, "pick_threshold": PICK_THRESHOLD,
+    "v_lo": V_LO, "v_hi": V_HI, "quote_mint": WSOL_MINT, "mayhem_mode": False, "s0_max_gap_after_complete_s": 80,
+    "counted_window_utc": [EXP022_COUNT_START, EXP022_COUNT_END], "missing_v0_bounds": [V_LO, V_HI], "missing_v0_share_limit": 0.01, "missing_v0_top_n": 3,
+    "hour_ms_per_slot": "measured on the hour's tape rows; else the sealed slot span (--hour-sph-json); else REFUSED (no day table)",
+}
+# (cell, role, entry latency ms, exit lag ms, rent mode). The first two are binding; the others are report-only (section 13).
+EXP022_CELLS: tuple[tuple[str, str, int, int, str], ...] = (
+    ("primary_1300", "binding", 1300, 550, "conditional"),
+    ("latency_1900", "binding", 1900, 550, "conditional"),
+    ("exit_lag_1350", "report-only", 1300, 1350, "conditional"),
+    ("rent_always", "report-only", 1300, 550, "always"),
+)
+# Deciding flags (argparse dest -> the only value --exp022 accepts; None = may not be given at all). An equal value is accepted, a conflicting one is refused.
+EXP022_FLAGS: dict[str, Any] = {
+    "k_seconds": 1.3, "entry_latency_ms": 1300.0, "k_mode": "hour", "k_rounding": "ceil", "bound": "END", "exit_lag": None, "exit_lag_ms": 550.0,
+    "guard": "min_out", "guard_ratio": 1.15, "guard_basis": "gross", "cap_seconds": 300.0, "cap_anchor": "block-time", "tp": 0.5, "sl": 0.3,
+    "size_lamports": 100_000_000, "fee_lamports": 55_000, "rent_lamports": 2_039_280, "rent_mode": "conditional", "live_fail": 1.0 / 62.0, "flat_fail": 0.15,
+    "final_state": "lab", "boot_p_draws": BOOT_P_DRAWS, "pick_threshold": PICK_THRESHOLD, "book": "picks", "sph_json": None,
+}
+# Inputs that are not deciding flags but are still pinned per source (EXP-022 section 3). exploration: the V0 and the WSOL proxy come from ONE static V map, and the ms/slot of
+# every hour is measured on its own tape rows (hour_sph_json None: the exploration blocks have no sealed verify line, so no file stands in for an unmeasurable hour).
+# Another value is refused. --only-day is not pinned (E0 needs it). walk2 has no pin yet: its sealed-slot-span source is the read tool's.
+EXP022_INPUTS: dict[str, dict[str, Any]] = {"exploration": {"vmap": DEFAULT_VMAP, "hour_sph_json": None}}
+X_NO_MIGRATION = "no_migration_event"
+X_NOT_WSOL = "quote_not_wsol"
+X_NO_CREATE = "mayhem_unknown_no_create_event"
+X_MAYHEM = "mayhem"
+X_NO_POOL_PRINT = "no_canonical_pool_print"
+X_V0_RANGE = "v0_outside_17.5e9_17.7e9"
+X_WINDOW = "s0_outside_counted_window"
+X_NO_BT = "block_time_missing"
+X_GAP = "s0_more_than_80s_after_complete"
+X_TAPE = "censored_tape_coverage"
+ADAPTER_NOTES = {
+    "walk2": "canonical pool = migration event pool; WSOL = migration event quote_mint; mayhem from the create; V0 = virtual_quote_reserves of the pool's first print "
+             "(missing V0 kept, scored at both bounds); counted window on s0 block_time; 80 s from the complete event; tape coverage report-only",
+    "exploration": "canonical pool = earliest V-band pool by s0 (G); WSOL = V-band membership in the static V map; mayhem from the creates; V0 = the static map; "
+                   "80 s from the complete event; NO counted window; tape coverage (s0 + 6,900 slots) still drops",
+}
+
+
+def vband_of(vmap: Mapping[str, int | None], lo: int, hi: int) -> dict[str, int]:
+    return {k: x for k, x in vmap.items() if x is not None and lo <= x <= hi}
+
+
+def exp022_config(entry_ms: float, lag_ms: float, rent_mode: str) -> Config:
+    """One cell's Config, built from the constants only."""
+    c = EXP022
+    return Config(k_seconds=entry_ms / 1000.0, bound=c["bound"], exit_lag=2, guard=c["guard"], guard_ratio=c["guard_ratio"], cap_seconds=c["cap_seconds"], tp=c["tp"], sl=c["sl"],
+                  size_lamports=c["size_lamports"], fee_lamports=c["fee_lamports"], live_fail=c["live_fail"], flat_fail=c["flat_fail"], final_state=c["final_state"],
+                  pick_threshold=c["pick_threshold"], k_mode=c["k_mode"], k_rounding=c["k_rounding"], exit_lag_ms=float(lag_ms), guard_basis=c["guard_basis"],
+                  cap_anchor=c["cap_anchor"], rent_lamports=c["rent_lamports"], rent_mode=rent_mode, book=c["book"], boot_p_draws=c["boot_p_draws"],
+                  guard_min_out_rounding=c["guard_min_out_rounding"], cap_missing="refuse")
+
+
+def exp022_cells() -> dict[str, Config]:
+    return {name: exp022_config(ems, lms, rm) for name, _role, ems, lms, rm in EXP022_CELLS}
+
+
+def check_exp022_flags(explicit: Mapping[str, Any]) -> None:
+    """Refuse every explicitly given deciding flag whose value conflicts with its EXP-022 constant. `explicit` = dest -> the value the user passed."""
+    for dest, val in explicit.items():
+        if dest not in EXP022_FLAGS:
+            continue
+        want = EXP022_FLAGS[dest]
+        flag = "--" + dest.replace("_", "-")
+        if want is None:
+            raise Refused(f"--exp022 does not take {flag}: it is not a parameter of the pinned book (EXP-022 sections 1, 4)")
+        if isinstance(want, str) or isinstance(val, str):
+            conflict = val != want
+        else:
+            conflict = not math.isclose(float(val), float(want), rel_tol=0.0, abs_tol=1e-12)
+        if conflict:
+            raise Refused(f"--exp022 pins {flag} to {want!r}; {val!r} conflicts. There is no override (EXP-022 section 12)")
+
+
+def _check_pinned_input(source: str, flag: str, got: Any, want: str | None) -> None:
+    """Refuse `got` unless it is the pinned input `want` (compared after symlink resolution; None = the flag may not be given). Only `readlink` runs here."""
+    given = got not in (None, "")
+    same = (not given and want is None) or (given and want is not None and os.path.realpath(os.fspath(got)) == os.path.realpath(want))
+    if not same:
+        raise Refused(f"--exp022 --exp022-source {source} pins {flag} to {want!r}; {got!r} conflicts. There is no override (EXP-022 section 12)")
+
+
+@dataclass
+class PoolFirst:
+    """The first print (within-slot order) of one pool inside the window after `complete`."""
+
+    s0: int
+    bt: int | None
+    vq: float | None  # that print's virtual_quote_reserves; None when the row carries none
+
+
+@dataclass
+class MintEvidence:
+    """What the tape says about one mint with a `complete` event. The adapters read different parts of it."""
+
+    mint: str
+    complete_slot: int
+    complete_bt: int | None
+    pools: dict[str, PoolFirst] = field(default_factory=dict)  # walk2: the migration pool only; exploration: V-band pools
+    migration_pool: str | None = None
+    migration_quote_mint: str | None = None
+    mayhem: bool | None = None  # is_mayhem_mode on the create; None = no create event (or no such field)
+    other_pool_reason: str | None = None  # exploration: why the mint's only prints are on pools outside the V band
+
+
+@dataclass
+class UniverseResult:
+    attempts: dict[str, dict[str, Any]]  # mint -> pool, v0 (None when missing), v0_missing, v0_source, s0, s0_bt, complete_bt, gap_s
+    excluded: dict[str, str]  # mint -> reason
+    report_only: dict[str, list[str]]
+
+
+def exp022_universe(source: str, evidence: Mapping[str, MintEvidence], *, vband: Mapping[str, int] | None = None, max_slot: int | None = None,
+                    window: tuple[int, int] | None = None) -> UniverseResult:
+    """EXP-022 section 3: which mints are attempts. One attempt per mint (the evidence is keyed by mint). The SOURCE ADAPTER is explicit:
+      walk2        needs migration_pool / migration_quote_mint, the pool's first print (with its V) and, for the counted window, `window` = [lo, hi) epoch seconds.
+      exploration  needs `vband` (pool -> V of the static map, V-band pools only); it applies no counted window.
+    The first failing condition names the reason. Picks are not looked at here: the book is the universe intersected with the pick set."""
+    if source not in EXP022_SOURCES:
+        raise Refused(f"--exp022-source must be one of {EXP022_SOURCES}, got {source!r}")
+    if source == "exploration" and vband is None:
+        raise Refused("the exploration adapter needs the static V map")
+    attempts: dict[str, dict[str, Any]] = {}
+    excluded: dict[str, str] = {}
+    report: dict[str, list[str]] = {"tape_coverage_short": []}
+    lo, hi, gap_max = EXP022["v_lo"], EXP022["v_hi"], EXP022["s0_max_gap_after_complete_s"]
+    for m in sorted(evidence):
+        e = evidence[m]
+        v0: int | None = None
+        if source == "walk2":
+            if e.migration_pool is None:
+                excluded[m] = X_NO_MIGRATION
+                continue
+            if e.migration_quote_mint != WSOL_MINT:
+                excluded[m] = X_NOT_WSOL
+                continue
+            pool = e.migration_pool
+        else:
+            cands = sorted((pf.s0, p) for p, pf in e.pools.items() if vband is not None and p in vband)
+            if not cands:
+                excluded[m] = e.other_pool_reason or R_NO_PRINT
+                continue
+            pool = cands[0][1]
+        if e.mayhem is None:
+            excluded[m] = X_NO_CREATE
+            continue
+        if e.mayhem:
+            excluded[m] = X_MAYHEM
+            continue
+        pf = e.pools.get(pool)
+        if pf is None:
+            excluded[m] = X_NO_POOL_PRINT
+            continue
+        if source == "walk2":
+            v0_source = "event_v"
+            if pf.vq is not None:
+                v0 = int(pf.vq)
+                if not lo <= v0 <= hi:
+                    excluded[m] = X_V0_RANGE
+                    continue
+        else:
+            v0_source = "static_map"
+            v0 = int(vband[pool])  # type: ignore[index]
+        if pf.bt is None or e.complete_bt is None:
+            excluded[m] = X_NO_BT
+            continue
+        if source == "walk2" and window is not None and not (window[0] <= pf.bt < window[1]):
+            excluded[m] = X_WINDOW
+            continue
+        gap = pf.bt - e.complete_bt
+        if gap > gap_max:
+            excluded[m] = X_GAP
+            continue
+        if max_slot is not None and pf.s0 + UNCENSORED_HORIZON > max_slot:
+            if source == "exploration":
+                excluded[m] = X_TAPE
+                continue
+            report["tape_coverage_short"].append(m)  # walk2: section 3 does not drop it; the sim fills at the last state and charges the rent
+        attempts[m] = {"pool": pool, "v0": v0, "v0_missing": v0 is None, "v0_source": v0_source, "s0": pf.s0, "s0_bt": pf.bt, "complete_bt": e.complete_bt, "gap_s": gap}
+    return UniverseResult(attempts, excluded, report)
+
+
+def _hour_epoch(h: str) -> int:
+    return int(datetime.strptime(h, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp())
+
+
+def _utc_date(epoch: int) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def read_day_exp022(day: str, idx: Mapping[str, Mapping[str, tuple[Path, str]]], source: str, vall: Mapping[str, int | None], pick_mints: set[str],
+                    window: tuple[int, int] | None, log: Any) -> tuple[dict[str, dict[str, Any]], dict[str, int], UniverseResult | None, dict[str, str]]:
+    """Gather the evidence of one UTC day, run `exp022_universe` on it, and return (path arrays of the PICK attempts, diag, the universe, reasons for the mints
+    that are not attempts). Same hours as `read_day`: the day's hours plus the next two trade hours; creates also from the two hours before the day."""
+    diag = {"hours": 0, "migrations": 0, "mints_with_canonical_pool": 0, "censored": 0, "multipool": 0, "bad_json": 0, "skipped_incomplete_migrations": 0}
+    reasons: dict[str, str] = {}
+    dh = sorted(h for h in idx["trades"] if h[:10] == day)
+    if not dh:
+        return {}, diag, None, reasons
+    last = datetime.strptime(dh[-1], "%Y-%m-%dT%H")
+    tf = dh + [h for h in [(last + timedelta(hours=i)).strftime("%Y-%m-%dT%H") for i in (1, 2)] if h in idx["trades"]]
+    if len([h for h in dh if h in idx["migrations"]]) < len(dh):
+        diag["skipped_incomplete_migrations"] = 1
+        for m in _read_completes(dh, idx, {"bad_json": 0}):
+            reasons.setdefault(m, R_SKIPPED_DAY)
+        return {}, diag, None, reasons
+    diag["hours"] = len(dh)
+    mig = _read_completes(dh, idx, diag)
+    diag["migrations"] = len(mig)
+    vband = vband_of(vall, EXP022["v_lo"], EXP022["v_hi"])
+    migev: dict[str, tuple[tuple[int, int, int], str, Any]] = {}
+    if source == "walk2":  # the migration event (the walker recovers it from the inner instructions too, event_source "inner_event")
+        for h in dh:
+            for line in zcat_grep(idx["migrations"][h][0], '"migration"'):
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    diag["bad_json"] += 1
+                    continue
+                mm, pl = r.get("mint"), r.get("pool")
+                if r.get("type") != "migration" or not isinstance(mm, str) or not isinstance(pl, str):
+                    continue
+                sl = r.get("slot")
+                key = (sl if isinstance(sl, int) else 1 << 62, int(r.get("tx_index") or 0), int(r.get("event_index") or 0))
+                cur = migev.get(mm)
+                if cur is None or key < cur[0]:
+                    migev[mm] = (key, pl, r.get("quote_mint"))
+    mayhem: dict[str, bool | None] = {}
+    first_h = datetime.strptime(dh[0], "%Y-%m-%dT%H")
+    for h in [(first_h - timedelta(hours=i)).strftime("%Y-%m-%dT%H") for i in (2, 1)] + dh:
+        if h not in idx.get("creates", {}):
+            continue
+        for line in zcat_grep(idx["creates"][h][0], '"create"'):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                diag["bad_json"] += 1
+                continue
+            mm = r.get("mint")
+            if r.get("type") == "create" and isinstance(mm, str) and mm in mig and mm not in mayhem:
+                v = r.get("is_mayhem_mode")
+                mayhem[mm] = v if isinstance(v, bool) else None
+    by_mint: dict[str, _Rows] = {}
+    pool_ids: dict[str, int] = {}
+    other_pool: dict[str, str] = {}
+    seq = 0
+    for h in tf:
+        t0 = time.time()
+        for line in zcat_grep(idx["trades"][h][0], '"pumpswap"'):
+            i = line.find('"mint":"')
+            if i < 0:
+                continue
+            m = line[i + 8 : line.find('"', i + 8)]
+            mg = mig.get(m)
+            if mg is None:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                diag["bad_json"] += 1
+                continue
+            if r.get("venue") != "pumpswap":
+                continue
+            pool, slot = r.get("pool"), r.get("slot")
+            in_window = isinstance(slot, int) and mg[0] <= slot < mg[0] + WINDOW_SLOTS
+            if not in_window:
+                continue
+            if source == "walk2":
+                if m not in migev or pool != migev[m][1]:
+                    continue
+            elif pool not in vband:
+                other_pool.setdefault(m, R_NOT_IN_VMAP if pool not in vall else (R_V_NULL if vall[pool] is None else R_V_OUT))
+                continue
+            seq += 1
+            rows = by_mint.get(m)
+            if rows is None:
+                rows = by_mint[m] = _Rows(with_vq=True)
+            tx, btv, vq = r.get("tx_index"), r.get("block_time"), r.get("virtual_quote_reserves")
+            rows.add(slot, -1 if tx is None else int(tx), int(r.get("event_index") or 0), seq, pool_ids.setdefault(pool, len(pool_ids)), r.get("side") == "buy",
+                     _num(r.get("sol_lamports")), _num(r.get("token_raw")), _num(r.get("quote_reserve")), _num(r.get("base_reserve")),
+                     btv if isinstance(btv, int) and not isinstance(btv, bool) and btv > 0 else -1,
+                     float(vq) if isinstance(vq, (int, float)) and not isinstance(vq, bool) else float("nan"))
+        log(f"{day} {h} pumpswap rows kept so far={seq} ({time.time() - t0:.0f}s)")
+    max_slot = max([s for s in (tail_max_slot(idx["trades"][h][0]) for h in tf[-2:]) if s is not None] or [0])
+    pool_names = {i: p for p, i in pool_ids.items()}
+    arrs: dict[str, dict[str, np.ndarray]] = {}
+    perms: dict[tuple[str, str], np.ndarray] = {}
+    evidence: dict[str, MintEvidence] = {}
+    for m, mg in mig.items():
+        bt = mg[1] if isinstance(mg[1], int) and not isinstance(mg[1], bool) and mg[1] > 0 else None
+        e = MintEvidence(m, mg[0], bt, mayhem=mayhem.get(m), other_pool_reason=other_pool.get(m))
+        if m in migev:
+            e.migration_pool, e.migration_quote_mint = migev[m][1], migev[m][2]
+        rows = by_mint.get(m)
+        if rows is not None:
+            a = arrs[m] = rows.arrays()
+            diag["mints_with_canonical_pool"] += 1
+            for pid in np.unique(a["pid"]):
+                keep = np.flatnonzero(a["pid"] == pid)
+                perm = keep[order_perm(a["slot"][keep], a["tx"][keep], a["ev"][keep], a["seq"][keep])]
+                f = int(perm[0])
+                vq = float(a["vq"][f])
+                perms[(m, pool_names[int(pid)])] = perm
+                e.pools[pool_names[int(pid)]] = PoolFirst(int(a["slot"][f]), int(a["bt"][f]) if a["bt"][f] > 0 else None, None if math.isnan(vq) else vq)
+            diag["multipool"] += int(len(e.pools) > 1)
+        evidence[m] = e
+    uni = exp022_universe(source, evidence, vband=vband, max_slot=max_slot, window=window)
+    reasons.update(uni.excluded)
+    diag["censored"] = sum(1 for r_ in uni.excluded.values() if r_ == X_TAPE)
+    out: dict[str, dict[str, Any]] = {}
+    for m, at in uni.attempts.items():
+        if m not in pick_mints:
+            continue
+        a, perm = arrs[m], perms[(m, at["pool"])]
+        out[m] = {"pool": at["pool"], "v": at["v0"], "v0_missing": at["v0_missing"], "v0_source": at["v0_source"], "s0": at["s0"], "s0_bt": at["s0_bt"],
+                  "complete_bt": at["complete_bt"], "gap_s": at["gap_s"], "mslot": mig[m][0], "block": mig[m][2], "hour": mig[m][3],
+                  **{c: a[c][perm] for c in ("slot", "bt", "buy", "sol", "tok", "q", "b")}}
+    return out, diag, uni, reasons
+
+
+def finalize_cell(cfg: Config, singles: list[dict[str, Any]], pairs: list[tuple[dict[str, Any], dict[str, Any]]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fail legs for one cell. `singles` have a known V0. `pairs` = (row at V=17.5e9, row at V=17.7e9) for a missing V0 (EXP-022 section 3): the pressure fit uses
+    the variant with the LOWER pnl (ties: the lower bound), and the final row takes the LOWER P&L per leg of the two."""
+    allv = list(singles)
+    fit = list(singles)
+    chosen = []
+    for lo_r, hi_r in pairs:
+        worse = lo_r if lo_r["pnl"] <= hi_r["pnl"] else hi_r
+        allv += [lo_r, hi_r]
+        fit.append(worse)
+        chosen.append((lo_r, hi_r, worse))
+    info = apply_legs(allv, cfg, fit_rows=fit)
+    final = list(singles)
+    for lo_r, hi_r, worse in chosen:
+        r = dict(worse)
+        for k in ("pnl_nofail", "pnl_live", "pnl_flat", "pnl_press"):
+            r[k] = min(lo_r[k], hi_r[k])
+        r["v0_variant"] = "min(lo,hi)"
+        final.append(r)
+    return final, info
+
+
+def missing_v0_report(cells: Mapping[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """EXP-022 section 3, missing V0: the inputs of the look's NOT_DECIDABLE rule (a missing-V0 attempt in the top 3 of a binding leg, or more than 1% of the attempts).
+    The verdict itself is the read tool's."""
+    n = max((len(rs) for rs in cells.values()), default=0)
+    miss = sorted(r["mint"] for r in next(iter(cells.values()), []) if r.get("v0_missing"))
+    top: dict[str, bool] = {}
+    for name, role in (("primary_1300", "binding"), ("latency_1900", "binding")):
+        for leg in ("flat", "press"):
+            best = sorted(cells.get(name, []), key=lambda r: (-r["pnl_" + leg], r["mint"]))[: EXP022["missing_v0_top_n"]]
+            top[f"{name}.{leg}"] = any(r.get("v0_missing") for r in best)
+    share = (len(miss) / n) if n else 0.0
+    return {"n_missing_v0": len(miss), "mints": miss, "share_of_attempts": share, "share_limit": EXP022["missing_v0_share_limit"], "in_top3": top,
+            "look_not_decidable_inputs": bool(share > EXP022["missing_v0_share_limit"] or any(top.values()))}
+
+
+def run_exp022(args: argparse.Namespace, log: Any) -> dict[str, Any]:
+    check_inputs_allowed(args)  # first: a refused input path is never opened, listed or read
+    source = getattr(args, "exp022_source", None)
+    if source not in EXP022_SOURCES:
+        raise Refused(f"--exp022 needs --exp022-source {'|'.join(EXP022_SOURCES)}")
+    check_exp022_flags({d: getattr(args, d) for d in EXP022_FLAGS if getattr(args, d, None) is not None})  # main() has already refused the typed ones; a direct caller is checked here
+    if getattr(args, "sph_json", None):
+        raise Refused("--exp022 takes no --sph-json: the day table is a fallback the pinned book does not have (EXP-022 4.1)")
+    pins = EXP022_INPUTS.get(source)
+    if pins is not None:  # before anything is opened
+        _check_pinned_input(source, "--vmap", getattr(args, "vmap", None), pins["vmap"])
+        _check_pinned_input(source, "--hour-sph-json", getattr(args, "hour_sph_json", None), pins["hour_sph_json"])
+    if not args.picks:
+        raise Refused("--exp022 needs --picks (the book is the pick set inside the universe)")
+    cells = exp022_cells()
+    for c in cells.values():
+        c.validate()
+    primary = cells["primary_1300"]
+    sources = build_sources(args)
+    idx = index_hours(sources, kinds=("trades", "migrations", "creates"))
+    vall = load_vmap(args.vmap)
+    hour_json = {h: float(x) for h, x in json.loads(Path(args.hour_sph_json).read_text()).items()} if getattr(args, "hour_sph_json", None) else {}
+    picks = load_picks(args.picks)
+    pick_mints = picks.pick_mints(primary.pick_threshold)
+    window = (_hour_epoch(EXP022_COUNT_START), _hour_epoch(EXP022_COUNT_END)) if source == "walk2" else None
+    days = sorted({h[:10] for h in idx["trades"]})
+    if args.only_day:
+        unknown = sorted(set(args.only_day) - set(days))
+        if unknown:
+            raise Refused(f"no trade hours for --only-day {unknown}")
+        days = [d for d in days if d in args.only_day]
+    tot = {"hours": 0, "migrations": 0, "mints_with_canonical_pool": 0, "censored": 0, "multipool": 0, "bad_json": 0, "skipped_incomplete_migrations": 0,
+           "bad_reserves": 0, "final_state_fallback": 0}
+    hour_sph: dict[str, dict[str, Any]] = {}
+    not_attempt: dict[str, str] = {}
+    universe_rows: list[dict[str, Any]] = []
+    urow: dict[str, dict[str, Any]] = {}
+    tape_short: list[str] = []
+    days_done: list[str] = []
+    days_skipped: list[str] = []
+    singles: dict[str, list[dict[str, Any]]] = {n: [] for n in cells}
+    pairs: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {n: [] for n in cells}
+
+    def hour_seconds(h: str) -> float:  # EXP-022 4.1: the hour's rows, else its sealed slot span, else the hour is bad. NO day table.
+        if h not in hour_sph:
+            m_ = measure_hour_sph(idx["trades"][h][0])
+            if m_ is not None:
+                hour_sph[h] = {"slots_per_hour": m_, "source": "tape"}
+            elif h in hour_json:
+                hour_sph[h] = {"slots_per_hour": hour_json[h], "source": "sealed-slot-span-json"}
+            else:
+                raise Refused(f"hour {h}: ms/slot is not measurable on its tape rows and no sealed slot span is given: the hour is bad (EXP-022 4.1, no day-table fallback)")
+        return 3600.0 / hour_sph[h]["slots_per_hour"]
+
+    for day in days:
+        meta, diag, uni, why = read_day_exp022(day, idx, source, vall, pick_mints, window, log)
+        for k_, v_ in diag.items():
+            tot[k_] += v_
+        not_attempt.update({m: r_ for m, r_ in why.items() if m not in not_attempt})
+        if diag["skipped_incomplete_migrations"]:
+            days_skipped.append(day)
+        if uni is None:
+            log(f"{day}: no attempts ({diag})")
+            continue
+        days_done.append(day)
+        tape_short += uni.report_only["tape_coverage_short"]
+        for m in sorted(uni.attempts):  # priced: "true" = a pick that was simulated; "" = not a pick (never simulated); "false" is set below, with its reason
+            urow[m] = {"mint": m, "status": "attempt", "reason": "", "pick": int(m in pick_mints), "v0_missing": int(uni.attempts[m]["v0_missing"]),
+                       "priced": "true" if m in pick_mints else "", "unpriced_reason": ""}
+            universe_rows.append(urow[m])
+        for m in sorted(uni.excluded):
+            universe_rows.append({"mint": m, "status": "excluded", "reason": uni.excluded[m], "pick": int(m in pick_mints), "v0_missing": 0, "priced": "", "unpriced_reason": ""})
+        for m in sorted(meta):
+            md = meta[m]
+            slot, isbuy, sol, tok, q, b = (md[c] for c in ("slot", "buy", "sol", "tok", "q", "b"))
+            variants = [("main", float(md["v"]))] if not md["v0_missing"] else [("lo", float(EXP022["v_lo"])), ("hi", float(EXP022["v_hi"]))]
+            sts = [build_states(slot, isbuy, sol, tok, q, b, v_, primary.final_state) for _t, v_ in variants]
+            if any(st is None for st in sts):
+                tot["bad_reserves"] += 1
+                not_attempt.setdefault(m, R_BAD_RESERVES)
+                urow[m].update(priced="false", unpriced_reason=R_BAD_RESERVES)  # still status=attempt in the universe: U keeps it, C (rows.csv) does not, so the md5s differ
+                continue
+            tot["final_state_fallback"] += sum(st[2] for st in sts if st is not None)
+            hs = hour_seconds(md["hour"])
+            lab, sc, dec = picks.label(m, primary.pick_threshold)
+            info = dict(day=_utc_date(md["s0_bt"]), block=md["block"], mint=m, pool=md["pool"], mslot=md["mslot"], s0=md["s0"], s0_minus_mslot=md["s0"] - md["mslot"],
+                        hour=md["hour"], ms_per_slot_hour=hs * 1000.0, pick=lab, score=sc, pick_decision=dec, v0_source=md["v0_source"], v0_missing=int(md["v0_missing"]),
+                        s0_bt=md["s0_bt"], complete_bt=md["complete_bt"], s0_gap_s=md["gap_s"])
+            for name, cfg_c in cells.items():
+                rs = []
+                for (tag, v_), st in zip(variants, sts):
+                    assert st is not None
+                    r = simulate_attempt(cfg_c, day=info["day"], sph={}, v=v_, s0=md["s0"], slot=slot, isbuy=isbuy, sol=sol, qpre=st[0], bpre=st[1], hour=md["hour"], hour_s=hs, bt=md["bt"])
+                    r.update(info, v=int(v_) if tag == "main" else "missing", v0_variant=tag)
+                    rs.append(r)
+                if len(rs) == 1:
+                    singles[name].append(rs[0])
+                else:
+                    pairs[name].append((rs[0], rs[1]))
+        log(f"{day}: universe attempts so far {sum(1 for u in universe_rows if u['status'] == 'attempt')}, pick attempts {len(singles['primary_1300']) + len(pairs['primary_1300'])}")
+    final: dict[str, list[dict[str, Any]]] = {}
+    infos: dict[str, dict[str, Any]] = {}
+    for name, cfg_c in cells.items():
+        final[name], infos[name] = finalize_cell(cfg_c, singles[name], pairs[name])
+    rows = final["primary_1300"]
+    picks_in_input, picks_not_attempts = pick_accounting(picks, primary.pick_threshold, {r["mint"] for r in rows}, not_attempt)
+    n_picks = len(rows)
+    if picks_in_input != n_picks + sum(len(v_) for v_ in (picks_not_attempts or {}).values()):
+        raise Refused("internal: the pick accounting does not add up (a pick vanished without a reason)")
+    size = float(primary.size_lamports)
+    excl_counts: dict[str, int] = {}
+    for u in universe_rows:
+        if u["status"] == "excluded":
+            excl_counts[u["reason"]] = excl_counts.get(u["reason"], 0) + 1
+    cell_info = {}
+    for name, role, ems, lms, rm in EXP022_CELLS:
+        rs = final[name]
+        cell_info[name] = {"role": role, "entry_latency_ms": ems, "exit_lag_ms": lms, "rent_mode": rm, "attempts": len(rs), "fills": sum(1 for r in rs if r["status"] == "filled"),
+                           "guarded": sum(1 for r in rs if r["status"] == "guarded"), "rent_charged_fills": sum(1 for r in rs if r["status"] == "filled" and r["rent"] > 0),
+                           "fail_legs": {"live": cells[name].live_fail, "flat": cells[name].flat_fail, "pressure_target_mean_p": cells[name].target_fail, **infos[name]},
+                           "book": book_stats(rs, size, cells[name].boot_p_draws)}
+    n_univ = sum(1 for u in universe_rows if u["status"] == "attempt")
+    summary: dict[str, Any] = {
+        "schema": SCHEMA, "tool": TOOL, "phase": 2, "mode": "exp022",
+        "banner": "LAB SCORER, EXP-022 MODE. NOT A PROMOTE, NOT GATE EVIDENCE. Every deciding parameter is a constant; the read tool (lock, ledger, looks, 24 h blocks, section 8) is not here.",
+        "exp022": {"source": source, "adapter": ADAPTER_NOTES[source], "constants": EXP022, "flags_pinned": EXP022_FLAGS, "inputs_pinned": pins, "cells": cell_info,
+                   "universe": {"attempts_in_universe": n_univ, "pick_attempts": n_picks, "excluded_by_reason": dict(sorted(excl_counts.items())),
+                                "report_only": {"tape_coverage_short": sorted(tape_short)}, "missing_v0": missing_v0_report(final),
+                                "unpriced_picks": {why_: sorted(u["mint"] for u in universe_rows if u["priced"] == "false" and u["unpriced_reason"] == why_)
+                                                   for why_ in sorted({u["unpriced_reason"] for u in universe_rows if u["priced"] == "false"})}}},
+        "config": asdict(primary), "sources": {s_.block: [str(d) for d in s_.dirs] for s_ in sources}, "days": days_done, "days_skipped_incomplete_migrations": days_skipped,
+        "picks_in_input": picks_in_input, "picks_not_attempts": picks_not_attempts,
+        "picks": {"path": str(args.picks), "sha256": hashlib.sha256(Path(args.picks).read_bytes()).hexdigest(), "format": picks.kind, "scored": len(picks),
+                  "threshold": primary.pick_threshold if picks.kind == "csv" else None},
+        "vmap": {"path": str(args.vmap), "sha256": hashlib.sha256(Path(args.vmap).read_bytes()).hexdigest(), "pools_in_band": len(vband_of(vall, EXP022["v_lo"], EXP022["v_hi"]))},
+        "bootstrap": {"ci90_draws": BOOT_DRAWS, "ci90_seed": BOOT_SEED, "p_trade_boot_draws": primary.boot_p_draws, "p_trade_boot_seed": BOOT_SEED, "p_trade_boot_role": "report-only"},
+        "forbidden": {"path_parts": list(FORBIDDEN_PATH_PARTS), "path_prefixes": list(FORBIDDEN_PATH_PREFIXES), "exp009_hours": list(EXP009_HOURS), "cutoff_hour": CUTOFF_HOUR,
+                      "oracle_insample_last_hour": ORACLE_INSAMPLE_LAST_HOUR},
+        "counts": {**tot, "attempts": len(rows), "fills": cell_info["primary_1300"]["fills"], "guarded": cell_info["primary_1300"]["guarded"], "pick_attempts": n_picks},
+        "hour_sph": {h: {**v_, "ms_per_slot": 3.6e6 / v_["slots_per_hour"]} for h, v_ in sorted(hour_sph.items())},
+        "fail_legs": cell_info["primary_1300"]["fail_legs"],
+        "exit_types": {t: sum(1 for r in rows if r["exit_type"] == t) for t in ("tp", "sl", "deadline", "guard")},
+        "books": {"picks": cell_info["primary_1300"]["book"]},
+    }
+    summary["_rows"] = rows
+    summary["_columns"] = EXP022_ROW_COLUMNS
+    summary["_cell_rows"] = {n: final[n] for n in cells if n != "primary_1300"}
+    summary["_universe"] = universe_rows
+    return summary
+
+
 def run(args: argparse.Namespace, cfg: Config, log: Any) -> dict[str, Any]:
+    if getattr(args, "exp022", False):
+        return run_exp022(args, log)
     check_inputs_allowed(args)  # first: a refused input path is never opened, listed or read
     cfg.validate()
     sources = build_sources(args)
@@ -1166,16 +1720,33 @@ ROW_COLUMNS = (
     # phase 2 (appended: the 25 columns above are byte-identical to phase 1 under the defaults)
     "s0_minus_mslot", "hour", "ms_per_slot_hour", "exit_lag_slots", "exec_ratio_gross", "cap_anchor_used", "rent", "pick_decision",
 )
+# EXP-022 mode: the same columns, then the universe and V0 facts of each attempt (the default rows.csv never gets these)
+EXP022_ROW_COLUMNS = ROW_COLUMNS + ("v0_source", "v0_missing", "v0_variant", "s0_bt", "complete_bt", "s0_gap_s")
 
 
 def write_outputs(summary: dict[str, Any], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = summary.pop("_rows")
-    with open(out_dir / "rows.csv", "w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=ROW_COLUMNS, extrasaction="ignore")
-        w.writeheader()
-        for r in sorted(rows, key=lambda r: (r["day"], r["mint"])):
-            w.writerow({c: (repr(r[c]) if isinstance(r.get(c), float) else r.get(c, "")) for c in ROW_COLUMNS})
+    cols = summary.pop("_columns", ROW_COLUMNS)
+    cell_rows = summary.pop("_cell_rows", {})
+    universe = summary.pop("_universe", None)
+
+    def write_rows(path: Path, rs: list[dict[str, Any]]) -> None:
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+            w.writeheader()
+            for r in sorted(rs, key=lambda r: (r["day"], r["mint"])):
+                w.writerow({c: (repr(r[c]) if isinstance(r.get(c), float) else r.get(c, "")) for c in cols})
+
+    write_rows(out_dir / "rows.csv", rows)
+    for name, rs in cell_rows.items():
+        write_rows(out_dir / f"rows_{name}.csv", rs)
+    if universe is not None:  # every mint the universe function saw: attempt or the reason it is not
+        with open(out_dir / "universe.csv", "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=("mint", "status", "reason", "pick", "v0_missing", "priced", "unpriced_reason"))
+            w.writeheader()
+            for u in sorted(universe, key=lambda u: u["mint"]):
+                w.writerow(u)
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -1216,10 +1787,13 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--size-lamports", type=int, default=d.size_lamports)
     ap.add_argument("--fee-lamports", type=int, default=d.fee_lamports)
     ap.add_argument("--rent-lamports", type=int, default=d.rent_lamports, help="token-account rent per filled trip when --rent-mode always (lab constant 2039280)")
-    ap.add_argument("--rent-mode", choices=("none", "always"), default=d.rent_mode, help="none = G; always = charge the rent on every filled trip (stress leg)")
+    ap.add_argument("--rent-mode", choices=("none", "always", "conditional"), default=d.rent_mode,
+                    help="none = G; always = charge the rent on every filled trip (stress leg); conditional = only when the sell cannot fill (EXP-022 4.5)")
     ap.add_argument("--live-fail", type=float, default=d.live_fail)
     ap.add_argument("--flat-fail", type=float, default=d.flat_fail)
     ap.add_argument("--boot-p-draws", type=int, default=d.boot_p_draws, help="bootstrap draws (seed 1) for the REPORT-ONLY trade-level p_trade_boot (DEC-021 section 5: 10,000); the CI90 lower bounds keep the gate's 1,000 draws")
+    ap.add_argument("--exp022", action="store_true", help="EXP-022 mode: every deciding parameter is a constant (EXP-022 sections 1, 3, 4, 5); a conflicting deciding flag is refused; needs --picks and --exp022-source")
+    ap.add_argument("--exp022-source", choices=EXP022_SOURCES, default=None, help="the universe adapter: walk2 (event-V tape, the read) | exploration (no event V, E0 only)")
     ap.add_argument("--final-state", choices=("lab", "g"), default=d.final_state, help="state after the last print: lab = pumpswap_post_trade_reserves; g = the audit's 1.25%% constant")
     return ap
 
@@ -1239,8 +1813,32 @@ def config_from_args(a: argparse.Namespace) -> Config:
     )
 
 
+def parse_args(argv: Sequence[str] | None) -> tuple[argparse.Namespace, dict[str, Any]]:
+    """(args, explicit): in --exp022 mode every deciding flag defaults to "absent", so a flag the user typed (even abbreviated) is `explicit`."""
+    ap = _parser()
+    first, _rest = ap.parse_known_args(argv)
+    if not first.exp022:
+        if first.exp022_source is not None:
+            raise Refused("--exp022-source needs --exp022")
+        return ap.parse_args(argv), {}
+    ap = _parser()
+    for a in ap._actions:
+        if a.dest in EXP022_FLAGS:
+            a.default = argparse.SUPPRESS
+    args = ap.parse_args(argv)
+    explicit = {d: getattr(args, d) for d in EXP022_FLAGS if hasattr(args, d)}
+    check_exp022_flags(explicit)
+    for d, want in EXP022_FLAGS.items():
+        setattr(args, d, want)  # the namespace now carries the constants, never anything else
+    return args, explicit
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    try:
+        args, _explicit = parse_args(argv)
+    except Refused as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
+        return 2
     if args.default_roots:
         for k_, v_ in DEFAULT_ROOTS.items():
             if not getattr(args, k_):
@@ -1250,7 +1848,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[{time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
 
     try:
-        summary = run(args, config_from_args(args), log)
+        summary = run(args, exp022_config(EXP022["entry_latency_ms"], EXP022["exit_lag_ms"], EXP022["rent_mode"]) if args.exp022 else config_from_args(args), log)
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2
