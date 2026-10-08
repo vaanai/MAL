@@ -15,7 +15,15 @@ What is reused from the DEC-019 probe (nothing is copied; this module subclasses
                       exit_check, fee_ppm_for, sell_probe_message, sim_message, STOP/HALT file checks
   tools.pumpswap_tx   build_buy/buy_instructions/sell_instructions, cp_buy_out, min_out_with_slippage, canonical_pool
 
-Trigger interface (the shadow detector writes JSONL rows; this module only reads them, it has no detection logic):
+Trigger interface. The shadow detector (tools/h5_shadow.py, PR #477) writes JSONL; this module only reads it and has no detection logic.
+Primary input, #477's own records (intents_file may be a file or the detector's output directory; the newest hourly file is followed and
+the previous hour is drained first on a roll):
+  type "trigger"  variant "pv" only; mint, pool, s0, slot, sps, t_detect_ms, q_trigger_sol (post-trade Q, quote + the print's V), base_pre +
+                  sell_token_raw (post-trade base), v_print, gap (this pool saw a feed gap -> refused)
+  type "gap"      detector lost prints: buys refused for gap_hold_ms (20 s minimum)
+  type "hb"       heartbeat (used when feed_heartbeat_max_age_ms is set)
+  type "pool"     close record; boost_last_slice_s (else the block-time, else the wall-clock figure) feeds the BOOST halt rules
+Alternative flat rows, same meaning, for tests and other detectors:
   h5_intent_v1  mint, pool, s0_slot, sps, trigger_slot, q_lamports (post-trade real quote + V), base_reserve
                 (post-trade raw base), v_lamports (per-print V), decision_ms (wall clock of the decision)
   h5_feed_v1    gap (bool), ms                 feed gap / heartbeat
@@ -140,6 +148,7 @@ class H5Limits:
     buy_cu_limit: int = tx.DEFAULT_BUY_CU_LIMIT
     sell_cu_limit: int = tx.DEFAULT_SELL_CU_LIMIT
     track_volume: bool = True  # the probe's proven live shape; set false only after a dry-run simulate comparison
+    gap_hold_ms: int = 20_000  # a detector `gap` record refuses buys for this long (#477 also flags the pools open at the time)
     late_sell_min_n: int = 1  # literal reading of "more than 5% of sells"; config may only raise it
     dry_run_balance_lamports: int = 250_000_000  # dry run has no wallet: balance guard runs against this
     end_ms: int | None = None
@@ -176,6 +185,7 @@ class H5Limits:
         kw["buy_cu_limit"] = num("buy_cu_limit", tx.DEFAULT_BUY_CU_LIMIT, 50_000, 400_000)
         kw["sell_cu_limit"] = num("sell_cu_limit", tx.DEFAULT_SELL_CU_LIMIT, 50_000, 400_000)
         kw["late_sell_min_n"] = num("late_sell_min_n", 1, 1, 10_000)
+        kw["gap_hold_ms"] = max(20_000, num("gap_hold_ms", 20_000, 0, 600_000))  # config may lengthen the hold, never shorten it
         kw["dry_run_balance_lamports"] = num("dry_run_balance_lamports", 250_000_000, 0, 10**12)
         tv = cfg.get("track_volume", True)
         if not isinstance(tv, bool):
@@ -203,6 +213,7 @@ class H5Trigger:
     base_reserve: int  # post-trade raw base reserve
     v_lamports: int  # per-print V (logged; Q already contains it)
     decision_ms: int
+    gap: bool = False  # the detector flagged this pool as having seen a feed gap
 
     def public(self) -> dict[str, Any]:
         return asdict(self)
@@ -237,7 +248,32 @@ def parse_trigger(row: Any) -> tuple[H5Trigger | None, str | None]:
     except KeyError as exc:
         return None, f"bad_intent:missing_{exc.args[0]}"
     return H5Trigger(mint, pool, row["s0_slot"], float(sps), row["trigger_slot"], row["q_lamports"], row["base_reserve"],
-                     row["v_lamports"], row["decision_ms"]), None
+                     row["v_lamports"], row["decision_ms"], bool(row.get("gap"))), None
+
+
+def parse_shadow_trigger(row: Any, variant: str = "pv") -> tuple[H5Trigger | None, str | None]:
+    """A `type: "trigger"` record of tools/h5_shadow.py (PR #477) -> H5Trigger. Only the chosen Q variant is acted on ("pv": quote +
+    the print's own V, the primary; "fv" is the rule's literal fixed V and is ignored here). Mapping, all from fields #477 writes:
+      s0 -> s0_slot, slot -> trigger_slot, q_trigger_sol * 1e9 -> q_lamports (post-trade Q of that variant),
+      base_pre + sell_token_raw -> base_reserve (a sell adds its tokens to the pool), v_print -> v_lamports, t_detect_ms -> decision_ms,
+      gap -> gap. (None, None) for any other record or the other variant."""
+    if not isinstance(row, dict) or row.get("type") != "trigger" or row.get("variant") != variant:
+        return None, None
+    try:
+        q_sol, base_pre, tok = row["q_trigger_sol"], row["base_pre"], row["sell_token_raw"]
+        v = row["v_print"]
+        if isinstance(q_sol, bool) or not isinstance(q_sol, (int, float)) or not math.isfinite(q_sol) or q_sol <= 0:
+            return None, "bad_intent:q_trigger_sol"
+        if not _is_int(base_pre) or not _is_int(tok) or tok <= 0:
+            return None, "bad_intent:base"
+        if not _is_int(v) or v <= 0:
+            return None, "bad_intent:v_print"  # #477 writes v_print null when the print had no V (v_missing): not tradable
+        return parse_trigger({"schema": SCHEMA_INTENT, "mint": row["mint"], "pool": row["pool"], "s0_slot": row["s0"], "sps": row["sps"],
+                              "trigger_slot": row["slot"], "q_lamports": int(round(q_sol * 1e9)), "base_reserve": base_pre + tok,
+                              "v_lamports": v, "decision_ms": row["t_detect_ms"] if not isinstance(row["t_detect_ms"], float) else int(row["t_detect_ms"]),
+                              "gap": row.get("gap")})
+    except KeyError as exc:
+        return None, f"bad_intent:missing_{exc.args[0]}"
 
 
 # --- slot arithmetic (the part the tests pin at 200 ms and 400 ms slots) --------------------------------------------
@@ -521,6 +557,11 @@ class H5Executor(pl.LiveExecutor):
         self.pool_cache: dict[str, tuple[tx.PoolState, int]] = {}
         self.armed: dict[str, dict[str, Any]] = {}
         self.feed_gap = False
+        self._gap_until_ms = 0
+        self._tail_path: Path | None = None
+        self._glob_path: Path | None = None
+        self._glob_ms = 0
+        self.trigger_variant = str(cfg.get("trigger_variant") or "pv")
         self.feed_last_ms: int | None = None
         self.heartbeat_max_age_ms = int(cfg.get("feed_heartbeat_max_age_ms") or 0)
         self.refusals: dict[str, int] = {}
@@ -607,7 +648,7 @@ class H5Executor(pl.LiveExecutor):
             return why
         if now + pl.CLOCK_BACK_TOLERANCE_MS < self.state.max_seen_ms:
             return "clock_backwards"
-        if self.feed_gap:
+        if self.feed_gap or trg.gap or now < self._gap_until_ms:
             return "feed_gap"
         if self.heartbeat_max_age_ms and (self.feed_last_ms is None or now - self.feed_last_ms > self.heartbeat_max_age_ms):
             return "feed_stale"
@@ -863,19 +904,44 @@ class H5Executor(pl.LiveExecutor):
     def signal_tick(self) -> int:
         return self.intent_tick()
 
+    def _resolve_intents(self) -> Path | None:
+        """`intents_file` is a file, or the shadow detector's output directory (hourly h5-shadow-<UTC hour>.jsonl): then the newest hour."""
+        p = self.intents_path
+        if not p.is_dir():
+            return p
+        now = self.now_ms()
+        if self._glob_path is None or now - self._glob_ms >= 1_000:
+            self._glob_ms = now
+            files = sorted(p.glob("h5-shadow-????-??-??T??.jsonl"))
+            self._glob_path = files[-1] if files else None
+        return self._glob_path
+
     def intent_tick(self) -> int:
         if self._crit:
             return 0
+        path = self._resolve_intents()
         try:
-            s = self.intents_path.stat()
+            if path is None:
+                raise FileNotFoundError
+            s = path.stat()
         except FileNotFoundError:
             self._signals_absent()
             return 0
         st = self.state
-        if st.started and st.inode == s.st_ino and s.st_size == st.offset:
+        rolled = self._tail_path is not None and path != self._tail_path
+        if not rolled and st.started and st.inode == s.st_ino and s.st_size == st.offset:
             return 0
         before = (st.started, st.offset, st.inode)
-        lines = tail_lines(self.intents_path, st)
+        lines: list[str] = []
+        if rolled:  # the hour changed: finish the old file before the new one, so no row between the last look and the roll is lost
+            while True:
+                chunk = tail_lines(self._tail_path, st)  # type: ignore[arg-type]
+                if not chunk:
+                    break
+                lines += chunk
+            st.inode = None  # the new file is read from its start
+        self._tail_path = path
+        lines += tail_lines(path, st)
         seen = self.now_ms()
         if (st.started, st.offset, st.inode) != before:
             self.save()  # the offset first: a crash mid-trigger must not replay it
@@ -889,7 +955,25 @@ class H5Executor(pl.LiveExecutor):
             if not isinstance(row, dict):
                 continue
             schema = row.get("schema")
-            if schema == SCHEMA_FEED:
+            rtype = row.get("type")
+            if rtype == "trigger":  # tools/h5_shadow.py (PR #477)
+                trg, bad = parse_shadow_trigger(row, self.trigger_variant)
+                if trg is not None:
+                    triggers.append(trg)
+                elif bad:
+                    self._log("skip", str(row.get("mint") or ""), reason=bad)
+            elif rtype == "gap":  # the detector lost prints: refuse for a while (it also flags the open pools' own records)
+                self._gap_until_ms = self.now_ms() + self.h5.gap_hold_ms
+                self._log("feed_gap", "", gap=True, kind_=row.get("kind"))
+            elif rtype == "hb":
+                self.feed_last_ms = self.now_ms()
+            elif rtype == "pool":  # per-pool close record: BOOST last-slice timing. The rule's own clock (slots x sps) first.
+                for k in ("boost_last_slice_s", "boost_last_slice_s_blocktime", "boost_last_slice_s_recv"):
+                    v = row.get(k)
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        self.on_boost_row(str(row.get("mint") or ""), None, None, None, float(v))
+                        break
+            elif schema == SCHEMA_FEED:
                 self.on_feed_status(bool(row.get("gap")))
             elif schema == SCHEMA_BOOST:
                 self.on_boost_row(str(row.get("mint") or ""), row.get("s0_slot") if _is_int(row.get("s0_slot")) else None,
