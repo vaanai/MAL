@@ -41,6 +41,7 @@ from observe.trade_decode import (
     records_from_logs,
 )
 from observe.trade_store import stored_trade
+from tools.backfill_verify import MAX_SLOTS_PER_HOUR
 
 DEFAULT_RPC = "https://api.mainnet-beta.solana.com"
 HELIUS_HTTP = "https://mainnet.helius-rpc.com"
@@ -66,9 +67,12 @@ DEFAULT_MAX_BYTES = 40 * 1024**3
 HEADROOM_RATIO = 0.20
 # Observed slot spans are ~11.2k-13.6k per hour (2026-09 stats; the 20-30k "slots"
 # values seen there were resume-inflated counters, not spans). Anything outside
-# [10.5k, 14k] is treated as a slot_for_time resolution bug, not a quiet hour.
+# [10.5k, 19.5k] is treated as a slot_for_time resolution bug, not a quiet hour.
+# The upper bound is the shared tools.backfill_verify.MAX_SLOTS_PER_HOUR (see the reason
+# there: 200 ms slots from epoch 1053, SIMD-0525). Historical September hours are still
+# ~13.5k; pass --max-slots-per-hour 14000 to keep the tighter bound on a pre-change block.
 DEFAULT_MIN_SLOTS_PER_HOUR = 10_500
-DEFAULT_MAX_SLOTS_PER_HOUR = 14_000
+DEFAULT_MAX_SLOTS_PER_HOUR = MAX_SLOTS_PER_HOUR
 
 
 def budget_bytes(volume_total: int, volume_avail: int, cap_bytes: int = DEFAULT_MAX_BYTES) -> int:

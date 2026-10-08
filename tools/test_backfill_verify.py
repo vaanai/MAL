@@ -11,6 +11,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from tools.backfill_verify import (
+    MAX_SLOTS_PER_HOUR,
     build_report,
     count_rows_and_unique,
     hour_range,
@@ -64,7 +65,7 @@ class MetadataVerifyTests(unittest.TestCase):
             report = build_report(
                 walker, hour, "2026-09-19T03",
                 content=False, dedupe_out=None,
-                min_slots_per_hour=9000, max_slots_per_hour=14000,
+                min_slots_per_hour=9000, max_slots_per_hour=MAX_SLOTS_PER_HOUR,
             )
             self.assertEqual(report["hours_flagged"], 0)
             self.assertEqual(report["hours"][0]["checkpoint_status"], "sealed")
@@ -84,7 +85,7 @@ class MetadataVerifyTests(unittest.TestCase):
             report = build_report(
                 walker, hour, "2026-09-19T17",
                 content=False, dedupe_out=None,
-                min_slots_per_hour=9000, max_slots_per_hour=14000,
+                min_slots_per_hour=9000, max_slots_per_hour=MAX_SLOTS_PER_HOUR,
             )
             self.assertEqual(report["hours_flagged"], 1)
             self.assertIn("resumed: duplicate risk", report["hours"][0]["issues"])
@@ -107,7 +108,7 @@ class MetadataVerifyTests(unittest.TestCase):
             report = build_report(
                 walker, hour, "2026-09-11T04",
                 content=False, dedupe_out=None,
-                min_slots_per_hour=9000, max_slots_per_hour=14000,
+                min_slots_per_hour=9000, max_slots_per_hour=MAX_SLOTS_PER_HOUR,
             )
             self.assertIn("backwards_slot_range", report["hours"][0]["issues"])
 
@@ -131,7 +132,7 @@ class MetadataVerifyTests(unittest.TestCase):
             report = build_report(
                 walker, hour, "2026-09-19T21",
                 content=False, dedupe_out=None,
-                min_slots_per_hour=9000, max_slots_per_hour=14000,
+                min_slots_per_hour=9000, max_slots_per_hour=MAX_SLOTS_PER_HOUR,
             )
             self.assertIn(
                 "sealed_files_alongside_partial_checkpoint", report["hours"][0]["issues"]
@@ -143,10 +144,57 @@ class MetadataVerifyTests(unittest.TestCase):
             report = build_report(
                 walker, "2026-09-19T01", "2026-09-19T02",
                 content=False, dedupe_out=None,
-                min_slots_per_hour=9000, max_slots_per_hour=14000,
+                min_slots_per_hour=9000, max_slots_per_hour=MAX_SLOTS_PER_HOUR,
             )
             self.assertEqual(report["hours"][0]["checkpoint_status"], "unknown")
             self.assertEqual(report["hours_flagged"], 0)
+
+
+class SlotSpanBoundTests(unittest.TestCase):
+    """The shared upper bound (SIMD-0525: ~200 ms slots from epoch 1053, ~18,000 slots/hour).
+
+    Uses the CLI with no --min/--max flags, so the shipped defaults are what is tested.
+    """
+
+    HOUR = "2026-10-10T03"
+    NEXT = "2026-10-10T04"
+
+    def _run_cli(self, span: int) -> tuple[int, dict]:
+        with tempfile.TemporaryDirectory() as tmp:
+            walker = Path(tmp)
+            for sub in ("trades", "creates", "migrations"):
+                _write_jsonl_zst(walker / sub / f"{sub}-{self.HOUR}.jsonl.zst", ['{"a":1}', '{"a":2}'])
+            _write_stats(walker, self.HOUR, start_slot=455_000_000, end_slot=455_000_000 + span, slots_done=span)
+            _write_checkpoint(walker, {self.HOUR: {"status": "sealed", "stop_reason": None}})
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = main(["--dir", str(walker), "--from", self.HOUR, "--to", self.NEXT, "--content"])
+        return code, json.loads(buf.getvalue())
+
+    def test_shared_upper_bound_value(self) -> None:
+        self.assertEqual(MAX_SLOTS_PER_HOUR, 19_500)
+
+    def test_18000_slot_hour_verifies_clean(self) -> None:
+        code, report = self._run_cli(18_000)
+        self.assertEqual(code, 0, report["hours"][0]["issues"])
+        self.assertEqual(report["hours"][0]["issues"], [])
+        self.assertEqual(report["hours"][0]["slot_span"], 18_000)
+
+    def test_current_267ms_hour_still_verifies_clean(self) -> None:
+        code, report = self._run_cli(13_473)
+        self.assertEqual(code, 0, report["hours"][0]["issues"])
+
+    def test_30000_slot_hour_is_still_flagged(self) -> None:
+        code, report = self._run_cli(30_000)
+        self.assertEqual(code, 1)
+        self.assertIn("implausible_slot_span", report["hours"][0]["issues"])
+
+    def test_edges_of_the_default_range(self) -> None:
+        for span, flagged in ((9_000, False), (19_500, False), (8_999, True), (19_501, True)):
+            with self.subTest(span=span):
+                code, report = self._run_cli(span)
+                self.assertEqual("implausible_slot_span" in report["hours"][0]["issues"], flagged)
+                self.assertEqual(code, 1 if flagged else 0)
 
 
 class ContentVerifyTests(unittest.TestCase):

@@ -38,6 +38,17 @@ from typing import Any, Iterator
 
 SUBS = ("trades", "creates", "migrations")
 
+# The one upper bound on a UTC hour's slot span (end_slot - start_slot). It is shared by
+# tools/pump_history_backfill.py (seal check and CLI default), this module's CLI default and
+# tools/exp012_forward.verify_line (the DEC-016 per-hour verify).
+# Why 19,500: Solana slot time is 267 ms in 2026-10 (about 13,473 slots per hour). SIMD-0525
+# (200 ms slots) activated at the start of epoch 1052, and slot time has changed one epoch
+# after activation on past steps, so expect about 200-215 ms from epoch 1053 (slot 454,896,000,
+# about 2026-10-09T14:30Z): 16,700-18,000 slots per hour. 19,500 is 18,000 plus margin (it
+# covers slots down to about 185 ms). It stays below the 20-30k values that slot_for_time
+# resolution bugs and resume-inflated counters produced, which this bound exists to catch.
+MAX_SLOTS_PER_HOUR = 19_500
+
 
 def parse_hour(text: str) -> datetime:
     return datetime.strptime(text.strip(), "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
@@ -311,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--content", action="store_true", help="Stream files, count rows vs unique lines")
     parser.add_argument("--dedupe-out", type=Path, default=None, help="Write deduplicated copies here")
     parser.add_argument("--min-slots-per-hour", type=int, default=9_000)
-    parser.add_argument("--max-slots-per-hour", type=int, default=14_000)
+    parser.add_argument("--max-slots-per-hour", type=int, default=MAX_SLOTS_PER_HOUR)
     args = parser.parse_args(argv)
 
     report = build_report(
