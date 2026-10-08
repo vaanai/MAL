@@ -35,6 +35,13 @@ def acct(data: bytes, owner: str = "11111111111111111111111111111111") -> dict:
 # ---------------------------------------------------------------------------------------------
 # fake node behind the real RpcClient (so the JSON/retry path is exercised too)
 # ---------------------------------------------------------------------------------------------
+class NodeError(Exception):
+    """Raised by a handler to make the fake node answer with a JSON-RPC error (not retried unless the code says so)."""
+
+    def __init__(self, code=-32602):
+        self.code = code
+
+
 class Node:
     def __init__(self, handlers):
         self.handlers = handlers
@@ -43,7 +50,11 @@ class Node:
     def __call__(self, url, body, timeout):
         req = json.loads(body)
         self.methods.append(req["method"])
-        return 200, {}, json.dumps({"jsonrpc": "2.0", "id": 1, "result": self.handlers[req["method"]](req["params"])}).encode()
+        try:
+            reply = {"result": self.handlers[req["method"]](req["params"])}
+        except NodeError as exc:
+            reply = {"error": {"code": exc.code, "message": "constructed failure"}}
+        return 200, {}, json.dumps({"jsonrpc": "2.0", "id": 1, **reply}).encode()
 
 
 def client_for(node, **kw) -> m.RpcClient:
@@ -109,7 +120,8 @@ def mini_tx(slot, bt, logs, keys=None, pre=None, post=None, signers=1) -> dict:
 class Chain:
     """A tiny constructed chain: graduations (migrate tx + completing tx + BOOST slices + Pool account) plus the recorded config."""
 
-    def __init__(self, n=10, mayhem=(0, 1), no_boost=(), synthetic=(), config=None, slices=29, last_slice_s=342):
+    def __init__(self, n=10, mayhem=(0, 1), no_boost=(), synthetic=(), config=None, slices=29, last_slice_s=342, fail_pools=False):
+        self.fail_pools = fail_pools
         self.sigs: dict[str, list] = {m.MIGRATION_FEE_ACCOUNT: []}
         self.txs: dict[str, dict] = {}
         self.pools: dict[str, dict] = {}
@@ -164,6 +176,8 @@ class Chain:
         if opts.get("dataSlice", {}).get("length") == 45:
             return fx("programdata.json")
         if keys[0] in self.pools:
+            if self.fail_pools:
+                raise NodeError()
             return {"context": {"slot": 1}, "value": [self.pools.get(a) for a in keys]}
         if keys[0] == m.GATES["350ms"] or keys[0] == m.BONDING_FEE_CONFIG:
             return self.config
@@ -378,7 +392,8 @@ def healthy():
         "accounts": {n: {"pinned": True, "sha256": PINS["accounts"][n]["sha256"]} for n in PINS["accounts"]},
         "programs": {n: {"deploy_slot": PINS["programs"][n]["deploy_slot"]} for n in PINS["programs"]},
         "global_config": {"boost_enabled": True, "layout_ok": True, "len": 949},
-        "graduations": {"n_requested": 20, "n": 20, "boost_denominator": {"n_nonmayhem_wsol": 10, "n_init_boost": 10}, "synthetic": {"n_checked": 10, "n_synthetic": 0}},
+        "graduations": {"n_requested": 20, "n": 20, "boost_denominator": {"n_nonmayhem_wsol": 10, "n_init_boost": 10}, "wsol_all": {"n": 10, "n_init_boost": 10},
+                        "synthetic": {"n_checked": 10, "n_synthetic": 0}},
         "boost": {"n_profiled": 10, "slices": {"n": 10, "median": 29}, "budget_sol": {"n": 10, "median": 17.586}, "last_slice_after_migrate_s": {"n": 10, "median": 337}},
         "slot_time": {"ms_per_slot_median": 268.0},
         "errors": [],
@@ -448,8 +463,23 @@ def test_boost_disabled_halts_only_on_a_trusted_layout():
 
 def with_grads(rec, den, n_boost, n_checked, n_syn):
     rec["graduations"]["boost_denominator"] = {"n_nonmayhem_wsol": den, "n_init_boost": n_boost}
+    rec["graduations"]["wsol_all"] = {"n": den, "n_init_boost": n_boost}
     rec["graduations"]["synthetic"] = {"n_checked": n_checked, "n_synthetic": n_syn}
     return rec
+
+
+def test_share_rule_falls_back_to_all_wsol_and_only_judges_none_at_all():
+    rec = with_grads(healthy(), 3, 3, 10, 0)  # only 3 non-mayhem WSOL graduations known
+    rec["graduations"]["wsol_all"] = {"n": 10, "n_init_boost": 3}
+    h = flags(rec)[0]["boost_share_low"]
+    assert h["evaluated"] and not h["halt"] and "fallback" in h["reason"]  # mayhem pools lack InitBoost, so the share itself is not judged here
+    rec["graduations"]["wsol_all"] = {"n": 10, "n_init_boost": 0}
+    assert flags(rec)[0]["boost_share_low"]["halt"]
+    rec["graduations"]["wsol_all"] = {"n": 4, "n_init_boost": 0}  # too few even on the fallback basis
+    assert not flags(rec)[0]["boost_share_low"]["evaluated"]
+    rec["graduations"].update(boost_denominator={"n_nonmayhem_wsol": 0, "n_init_boost": 0}, wsol_all={"n": 12, "n_init_boost": 0}, mayhem_stage_failed=True)
+    h = flags(rec)[0]["boost_share_low"]
+    assert h["halt"] and "mayhem flags unavailable" in h["reason"]
 
 
 def test_boost_share_seven_of_ten_halts():
@@ -526,6 +556,7 @@ def test_end_to_end_healthy_run(tmp_path, capsys):
     assert b["budget_sol"]["median"] == pytest.approx(17.586, abs=1e-3) and b["sol_total"]["median"] == b["budget_sol"]["median"]
     assert rec["pumpswap_trade_mix"]["v2_share"] == 0.5
     assert rec["halt"]["any"] is False and rec["halt"]["flags"]["pins_changed"]["halt"] is False
+    assert rec["halt"]["n_not_evaluated"] == 0 and rec["halt"]["all_evaluated"] is True
     assert rec["rpc"]["calls"] < 400 and rec["rpc"]["cap"] == 400
     # privacy: no mint, pool, curve or signature ids, and no URL query (key) in the record
     for ident in chain.all_ids + ["SECRET", "?k="]:
@@ -558,6 +589,42 @@ def test_end_to_end_boost_share_seven_of_ten(tmp_path):
     rc, out = run_main(tmp_path, chain)
     rec = json.loads(out.read_text())
     assert rc == 0 and rec["graduations"]["boost_denominator"]["n_init_boost"] == 7 and rec["halt"]["flags"]["boost_share_low"]["halt"]
+
+
+def test_end_to_end_boost_off_world_halts_and_timing_rules_are_not_evaluated(tmp_path, capsys):
+    # BOOST switched off: no InitBoost anywhere, so nothing is profiled and only the share rule can see it. Most
+    # graduations are mayhem here, so the non-mayhem denominator (2) is below 5 and the all-WSOL fallback must catch it.
+    chain = Chain(n=10, mayhem=tuple(range(8)), no_boost=(8, 9))
+    rc, out = run_main(tmp_path, chain)
+    rec = json.loads(out.read_text())
+    f = rec["halt"]["flags"]
+    assert rc == 0 and rec["graduations"]["boost_denominator"]["n_nonmayhem_wsol"] == 2 and rec["graduations"]["wsol_all"] == {"n": 10, "n_init_boost": 0}
+    assert f["boost_share_low"]["halt"] and f["boost_share_low"]["evaluated"] and "fallback" in f["boost_share_low"]["reason"]
+    assert rec["boost"]["n_profiled"] == 0
+    assert not f["boost_last_slice_early"]["evaluated"] and not f["boost_budget_or_slices_changed"]["evaluated"]
+    assert rec["halt"]["any"] and rec["halt"]["n_not_evaluated"] == 2 and rec["halt"]["all_evaluated"] is False
+    summary = capsys.readouterr().out
+    assert "HALT boost_share_low" in summary and "(2 rules not evaluated)" in summary
+
+
+def test_end_to_end_mayhem_stage_failure_falls_back_to_all_wsol(tmp_path):
+    rc, out = run_main(tmp_path, Chain(n=10, fail_pools=True))  # Pool accounts unreadable; BOOST itself healthy (8 of 10)
+    rec = json.loads(out.read_text())
+    g, h = rec["graduations"], rec["halt"]["flags"]["boost_share_low"]
+    assert rc == 0 and g["mayhem"] == {"true": 0, "false": 0, "unknown": 10} and g["mayhem_stage_failed"] is True
+    assert any(e.startswith("graduations.mayhem") for e in rec["errors"]) and rec["status"] == "partial" and rec["warn"]["flags"]["stage_errors"]["warn"]
+    assert h["evaluated"] and not h["halt"] and "mayhem stage failed" in h["reason"]
+    # the same failure with BOOST off must still halt: without the fallback this was an all-clear
+    rc, out = run_main(tmp_path / "off", Chain(n=10, fail_pools=True, mayhem=(), no_boost=tuple(range(10))))
+    rec = json.loads(out.read_text())
+    assert rc == 0 and rec["halt"]["flags"]["boost_share_low"]["halt"] and rec["halt"]["any"]
+
+
+def test_summary_and_record_say_when_rules_were_not_evaluated(tmp_path, capsys):
+    rc, out = run_main(tmp_path, Chain(n=4), extra=("--n", "4"))  # 4 graduations: share, timing, size and synthetic rules all lack a sample
+    rec = json.loads(out.read_text())
+    assert rc == 0 and rec["halt"]["any"] is False and rec["halt"]["n_not_evaluated"] == 4 and rec["halt"]["all_evaluated"] is False
+    assert "HALT: none (4 rules not evaluated)" in capsys.readouterr().out
 
 
 def test_end_to_end_early_last_slice_halts(tmp_path):

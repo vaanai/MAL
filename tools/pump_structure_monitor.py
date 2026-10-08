@@ -837,6 +837,7 @@ def summarize_graduations(grads: Sequence[Mapping[str, Any]], n_requested: int, 
         return "?" if v is None else str(int(bool(v)))
 
     nonmayhem_wsol = [g for g in grads if g.get("mayhem") is False and g["quote_wsol"]]
+    all_wsol = [g for g in grads if g["quote_wsol"]]
     synth_known = [g for g in grads if g.get("synthetic") is not None]
     patterns = Counter(
         f"mayhem={flag(g.get('mayhem'))},quote={'wsol' if g['quote_wsol'] else 'other'},init_boost={flag(g['init_boost'])},synthetic={flag(g.get('synthetic'))}"
@@ -861,6 +862,9 @@ def summarize_graduations(grads: Sequence[Mapping[str, Any]], n_requested: int, 
             "n_init_boost": sum(1 for g in nonmayhem_wsol if g["init_boost"]),
             "share": share(sum(1 for g in nonmayhem_wsol if g["init_boost"]), len(nonmayhem_wsol)),
         },
+        # Fallback basis for boost_share_low when the non-mayhem denominator is too small or the mayhem stage failed.
+        "wsol_all": {"n": len(all_wsol), "n_init_boost": sum(1 for g in all_wsol if g["init_boost"])},
+        "mayhem_stage_failed": bool(grads) and all(g.get("mayhem") is None for g in grads),
         "synthetic": {
             "n_checked": len(synth_known),
             "n_synthetic": sum(1 for g in synth_known if g["synthetic"]),
@@ -984,11 +988,18 @@ def compute_flags(rec: Mapping[str, Any], pins: Mapping[str, Any], prev_ms_per_s
     n_den, n_ib = den.get("n_nonmayhem_wsol", 0), den.get("n_init_boost", 0)
 
     # 3. BOOST present on < 80% of sampled non-mayhem WSOL graduations
-    if n_den < min_eval_n:
-        halt["boost_share_low"] = _flag(False, f"only {n_den} non-mayhem WSOL graduations sampled, need >= {min_eval_n}", evaluated=False)
-    else:
+    wa = grads.get("wsol_all") or {}
+    n_all, n_all_ib = wa.get("n", 0), wa.get("n_init_boost", 0)
+    if n_den >= min_eval_n:
         sh = n_ib / n_den
         halt["boost_share_low"] = _flag(sh < BOOST_SHARE_MIN, f"InitBoost on {n_ib}/{n_den} = {sh:.3f} of non-mayhem WSOL graduations (halt below {BOOST_SHARE_MIN})")
+    elif n_all >= min_eval_n:
+        # Blind-spot guard: with BOOST off nothing is profiled, so this is the only rule left that can see it. Mayhem pools
+        # legitimately lack InitBoost, so on the all-WSOL basis the share is not judged, only "none at all carry it".
+        why = "mayhem flags unavailable (mayhem stage failed)" if grads.get("mayhem_stage_failed") else f"only {n_den} non-mayhem WSOL graduations"
+        halt["boost_share_low"] = _flag(n_all_ib == 0, f"fallback to all WSOL graduations ({why}): InitBoost on {n_all_ib}/{n_all}; halts only when none carry it")
+    else:
+        halt["boost_share_low"] = _flag(False, f"only {n_den} non-mayhem and {n_all} WSOL graduations sampled, need >= {min_eval_n}", evaluated=False)
 
     boost = rec.get("boost") or {}
     n_pools = boost.get("n_profiled", 0)
@@ -1108,7 +1119,9 @@ def build_record(
         obs["pinned_deploy_slot"] = ((pins.get("programs") or {}).get(name) or {}).get("deploy_slot")
     halt, warn = compute_flags(rec, pins, prev_ms_per_slot, min_eval_n=min_eval_n)
     rec["prev_ms_per_slot"] = prev_ms_per_slot
-    rec["halt"] = {"any": any(v["halt"] for v in halt.values()), "flags": halt}
+    n_not_eval = sum(1 for v in halt.values() if not v["evaluated"])
+    # "no halt" is only an all-clear when every rule was evaluated: n_not_evaluated / all_evaluated say which it is.
+    rec["halt"] = {"any": any(v["halt"] for v in halt.values()), "n_not_evaluated": n_not_eval, "all_evaluated": n_not_eval == 0, "flags": halt}
     rec["warn"] = {"any": any(v["warn"] for v in warn.values()), "flags": warn}
     rec["status"] = "ok" if not errors else "partial"
     return rec
@@ -1177,11 +1190,15 @@ def format_summary(rec: Mapping[str, Any]) -> str:
     if mix:
         lines.append(f"pumpswap trade ix sample: {mix.get('n_txs')} txs, v2 {mix.get('trade_ix_v2')} / v1 {mix.get('trade_ix_v1')} (v2 share {mix.get('v2_share')})")
     halts = [(k, v) for k, v in rec["halt"]["flags"].items() if v["halt"]]
+    n_ne = rec["halt"].get("n_not_evaluated", 0)
+    suffix = f" ({n_ne} rules not evaluated)" if n_ne else ""  # not an all-clear: see the HANDOFF note
     if halts:
         for k, v in halts:
             lines.append(f"HALT {k}: {v['reason']}")
+        if suffix:
+            lines.append(f"HALT also:{suffix}")
     else:
-        lines.append("HALT: none")
+        lines.append("HALT: none" + suffix)
     for k, v in rec["warn"]["flags"].items():
         if v["warn"]:
             lines.append(f"WARN {k}: {v['reason']}")
