@@ -65,3 +65,27 @@ Exploration pools only. The scorer's refusals are unchanged and not loosened. No
 ## 6. Erratum, 2026-10-08, after the one-day smoke and before any full run (no rule, threshold or kill-rule change)
 
 Section 3 says B90 "never fires" on a cut path. That is true of the **keeper**: its cumulative buys stop at f x 17.585 SOL, below 0.9 x 17.585 SOL. The detector is behavioural, though, so any other wallet that looks like BOOST (no sell, every buy <= 2 SOL, >= 8 buys, >= 15.8265 SOL of buys by s0 + 2,500 slots) can trigger it. On the smoke day (explore-0814, 2026-08-15, 644 attempts) the detector found such a wallet on the cut path for 11 attempts at both f = 0.8 and f = 0.6. None fired before the cap (b90_fires 0), so the paired difference was exactly 0 there. On a full run it need not be exactly 0. Condition (d)(ii) is read on the numbers as produced; "paired mean > 0" is not relaxed or tightened. Section 4's note that the keeper-only argument makes (ii) unreachable stands as a statement about the keeper, and the full run shows how far the other-wallet effect moves it.
+
+## 7. Amendment, 2026-10-08: restore REPORT section T2's time-shift stress (before any full run and before any shifted scoring)
+
+**Why.** The owner-approved spec (`edge-scan-1008/REPORT.md` section T2) says "replay with BOOST slice times shifted -20% and -40%", with the kill rule "avoids the post-BOOST drop in both shifted replays". The budget cut of section 3 was a substitution in the task brief, not the spec. Section 4 flagged that the cut makes (ii) unreachable for the keeper. The reason for this amendment is that spec mismatch. It is not any outcome: no full run has happened and no shifted replay has been scored on any day.
+
+**What has been seen before this amendment** (one day, not evidence). The smoke on explore-0814, 2026-08-15 (644 attempts, 43 picks), cap-primary and B90-primary arms:
+- today's timing: B90 fires on 6 of 644 attempts (2 of 43 picks). B90 minus cap, all: +0.0057 pp flat, +0.0012 pp press. B90 minus cap, picks: -0.157 pp flat, -0.119 pp press. One date, so no CI.
+- cut f = 0.8 and f = 0.6: no B90 fire; B90 minus cap exactly 0 on every leg. The cap book on picks (flat) moves from 7.296 to 6.177 (f = 0.8) and 5.045 (f = 0.6); all-attempts flat from 1.696 to 1.472 and 1.061. The detector found some wallet on a cut path for 11 of 644 attempts (section 6).
+
+**Shift stress [pinned].** For s = **0.2** and s = **0.4**:
+- The keeper is the section 1 detector's wallet on the **uncut** path, as in section 3. A mint with no detected wallet is unchanged.
+- Every print of that wallet moves from slot to `s0 + floor((slot - s0) x (1 - s))` (exact integer arithmetic on the fraction 1 - s; `s0` is the pool's first print, the anchor the scorer already uses). Amounts and the total budget are unchanged.
+- Moved prints are re-inserted in path order: by new slot, and within a slot **after** that slot's non-keeper prints. Keeper prints keep their relative order. Non-keeper prints keep their slots and their order.
+- Re-simulation is the section 3 constant-product rule and approximations (1) to (4), from the first position at which the shifted path differs from the tape. Approximation (5) is replaced by: the entry state is **re-simulated too**. The attempt's entry is taken from the shifted path (no attempt is excluded). An attempt **overlaps** when the first position at which the shifted path differs from the tape has a slot (the tape's or the new one, whichever is smaller) at or before the landing slot. Overlaps are counted per attempt (`boost_shift_entry_overlap`) and in `t2.counts.shift_entry_overlap`, and reported next to the result.
+- New approximation (6): other traders keep their slots, so the keeper's price impact arrives earlier relative to them, and they do not react to it.
+- `--boost-shift 0` is a no-op (the default run, byte for byte). `--boost-shift` and `--boost-cut` are mutually exclusive.
+
+**Kill rule (d)(ii), amended [pinned].** B90 minus cap, paired mean **> 0** on the picks, P2-P4, on **both** binding legs (flat and pressure), in **both** shifted replays (s = 0.2 and s = 0.4). Condition (i) is unchanged. Otherwise close with no retune. B90 never decides a gate on its own.
+
+**Budget cuts stay report-only.** f = 0.8 and f = 0.6 measure the cap book's exposure to a shorter budget. They no longer feed the kill rule.
+
+**Disclosed.** The A3 halt `boost_last_slice_early` (median last slice below 315 s) would catch a -20% shift (about 273 s) at the next daily run. So the insurance T2 buys covers at most the gap of about 24 h; REPORT section T2 values it at about 0.15 SOL [inferred].
+
+Nothing else changes: the B90 definition, the 0.9 threshold, the 300 s cap, the pairing, the legs and the limits of sections 1, 2 and 5.
