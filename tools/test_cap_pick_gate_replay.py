@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import math
@@ -505,6 +506,97 @@ class StrictLinesTests(_Base):
         err = io.StringIO()
         with mock.patch.dict(cp.BLOCKS, {"fix": blk}), redirect_stderr(err):
             self.assertEqual(cp.main(["replay", "--view", "fix", "--from-day", "2026-10-03", "--out", str(out)]), 3)
+
+
+# ---- the no-grant path is unchanged ---------------------------------------------------------------------------------
+def golden_fixture(root: Path, *, zst: bool = False) -> list[str]:
+    """Two replayed UTC days of a small clean view (creates + trades hour files under `root`). Returns the days.
+    It covers a pick, a below, a 61-minute no_features, a mint created before the 00:00Z restart, creator history
+    from before day 0, and the second daily boot."""
+    creates: dict[str, list[dict]] = {}
+    trades: dict[str, list[dict]] = {}
+
+    def add_create(row: dict) -> None:
+        creates.setdefault(cp._hour_of_ms(row["t_recv_ms"]), []).append(row)
+
+    def add_trades(rows: list[dict]) -> None:
+        for r in rows:
+            trades.setdefault(cp._hour_of_ms(r["t_recv_ms"]), []).append(r)
+
+    t_old = DAY0 - 5 * HOUR
+    add_create(_crow("H1", t_old + 1_000, "C1"))
+    add_create(_crow("H2", t_old + 2_000, "C1"))
+    t_pre = DAY0 - HOUR + 20 * 60_000  # created 23:20 the day before day 0: no decision, a pre_restart record
+    add_create(_crow("PRE", t_pre, "CP"))
+    add_trades([dict(_trade("PRE", t_pre + 5_000), tx_index=1)])
+    t2 = DAY0 + 2 * HOUR
+    for mint, creator, t0 in (("Hi", "C1", t2), ("Lo", "C2", t2 + 30_000), ("SLOW", "C3", t2 + 60_000)):
+        add_create(_crow(mint, t0, creator))
+    add_trades(_mint_rows("Hi", 7, t0=t2) + _mint_rows("Lo", 1, t0=t2 + 30_000) + _mint_rows("SLOW", 7, t0=t2 + 60_000, mig_after_ms=61 * 60_000))
+    add_trades([dict(_trade("PRE", t2 + 90_000, venue="pumpswap", slot=5, quote=70_000_000_000, base=cp_B0()), tx_index=3)])
+    # a print 60 min 30 s after SLOW's create drives the prune (replay with prune_every=1), as in the 60-minute test
+    add_trades([dict(_trade("SLOW", t2 + 60_000 + 60 * 60_000 + 30_000, trader="tick", slot=60), tx_index=0)])
+    t_late = DAY0 + 23 * HOUR + 50 * 60_000  # created before the second boot, migrates after it
+    add_create(_crow("LATE", t_late, "C4"))
+    add_trades(_mint_rows("LATE", 6, t0=t_late, mig_after_ms=20 * 60_000))
+    t5 = DAY0 + 24 * HOUR + 5 * HOUR  # day 1
+    add_create(_crow("D1Hi", t5, "C1"))
+    add_create(_crow("D1Lo", t5 + 10_000, "C5"))
+    add_trades(_mint_rows("D1Hi", 7, t0=t5) + _mint_rows("D1Lo", 2, t0=t5 + 10_000))
+    for hour, rows in sorted(creates.items()):
+        _write_hour(root, "creates", hour, _lines(rows), zst=zst)
+    for hour, rows in sorted(trades.items()):
+        rows.sort(key=lambda r: r["t_recv_ms"])
+        _write_hour(root, "trades", hour, _lines(rows), zst=zst)
+    return [cp._day_of_ms(DAY0), cp._day_of_ms(DAY0 + 24 * HOUR)]
+
+
+def canonical(recs: list[dict], meta: dict) -> str:
+    return json.dumps({"records": recs, "meta": meta}, sort_keys=True)
+
+
+# sha256 of canonical(records, meta) for golden_fixture(), computed by the module at 8fd49e5 (before any read-ready change)
+# with the model below and prune_every=1. The same digest from the working tree is the "no grant: byte-identical" proof.
+GOLDEN_SHA256 = "c721097c0e1febd0866d46fa6a36bd94db4bbd839e3e15ab103182681a7535e2"
+GOLDEN_MODEL_MD5 = "05892b317dce5afdeda0465ad32c46dd"
+
+
+class NoGrantUnchangedTests(_Base):
+    def _run(self, zst: bool) -> tuple[list[dict], dict]:
+        if zst and shutil.which("zstd") is None:
+            self.skipTest("zstd binary not available")
+        with tempfile.TemporaryDirectory() as td:
+            days = golden_fixture(Path(td), zst=zst)
+            blk = cp.Block("t", (td,), ".jsonl.zst" if zst else ".jsonl", False)
+            return cp.replay_view(blk, days, engine=self.engine(), roots=[td], prune_every=1)
+
+    def test_output_is_byte_identical_to_the_pre_change_module(self) -> None:
+        if self.md5 != GOLDEN_MODEL_MD5:
+            self.skipTest(f"fixture model md5 {self.md5} differs from the golden's (lightgbm build); compare by hand")
+        recs, meta = self._run(False)
+        self.assertEqual({(r["kind"], r["decision"]) for r in recs},
+                         {("dead", "pre_restart"), ("decision", "below"), ("decision", "no_features"), ("decision", "pick")})
+        self.assertEqual(hashlib.sha256(canonical(recs, meta).encode()).hexdigest(), GOLDEN_SHA256)
+
+    def test_zst_and_plain_give_the_same_output(self) -> None:
+        self.assertEqual(canonical(*self._run(False)), canonical(*self._run(True)))
+
+    def test_no_grant_keys_in_meta_and_cli_never_builds_a_grant(self) -> None:
+        recs, meta = self._run(False)
+        self.assertNotIn("grant", meta)
+        self.assertEqual(list(meta), ["view", "days", "daily_restart", "prune_every", "create_time", "boots", "create_rows_t_recv_imputed",
+                                      "trade_rows_t_recv_imputed", "tx_index_null_view", "guesses"])
+        self.assertEqual(cp.SCHEMA, "cap_pick_gate_replay_v1")
+        seen: dict = {}
+
+        def fake(block, days, **kw):
+            seen.update(kw)
+            return [], {"view": block.name, "days": list(days)}
+
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(cp, "replay_view", fake), redirect_stderr(io.StringIO()):
+            cp.main(["replay", "--view", "explore-0814", "--from-day", "2026-08-15", "--out", str(Path(td) / "o.jsonl")])
+        self.assertNotIn("grant", seen)
+        self.assertNotIn("grant", [a.dest for a in cp.build_parser()._subparsers._group_actions[0].choices["replay"]._actions])
 
 
 class WiringTests(unittest.TestCase):
