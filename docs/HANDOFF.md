@@ -21,6 +21,11 @@ Replace this page at the next handoff; don't append. Read it first. Then read:
   - **Every other book keeps the gate.**
 - **OpenRouter.** The key is at `/var/lib/mal/openrouter/openrouter.env` (research-0) with a $3 cap. The runner hard-stops at $1.50. Never print it.
 - **LAYA.** Optimize the after-graduation books into a consistent base strategy that runs while short-lived edges rotate.
+- **Priority (owner, 10-08 ~20:30Z).** **H5 is the absolute priority.** Other work continues only if it does not slow H5 down.
+  - After H5, take an **improvement / self-improving path**. Do NOT close failed lines after one frozen test.
+  - Iterate them (the LLM trader, LAYA, the cascades, …) with propose → evaluate → learn loops on development data until there are solid options.
+  - Freeze before any fresh read. Memory: `feedback-iterate-not-close`.
+  - So the "closed" note on the LLM trader means only that its frozen v1 failed.
 
 ### H5 BOOST-floor: the one real candidate
 - **Rule.** After a non-mayhem graduation, if a sell drains the pool to Q = real quote + V ≤ 40 SOL within 0–300 s of the first print while BOOST still has budget, buy at 1.3 s and sell at s0 + 330 s.
