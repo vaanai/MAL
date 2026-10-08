@@ -1,8 +1,15 @@
 {
   "schema_version": "console.v1",
-  "updated_utc": "2026-10-07T23:42:26Z",
+  "updated_utc": "2026-10-08T10:29:20Z",
   "review_windows": [],
   "events": [
+    {
+      "id": "audit-1008",
+      "kind": "finding",
+      "title": "Full profitability audit: the fast-entry retail thesis is refuted at MAL's latency; one weak candidate (CAP-PICK) remains",
+      "detail": "About 100 agents over 885,012,060 exploration-pool trades, 0 Helius credits. Bonding curve: 0 of 3,168 tradeable cells net-positive. Migration: 0 of 1,008 unselected cells robust, none at k>=3. KOL/app follow: 36/36 negative at k5. Identified Fomo retail arrives in minutes (0.8% of buy SOL by 10 s). Wallets entering where MAL lands (k3-5) lost -8.09% (Aug) / -30.33% (Sep). CAP-PICK (EXP-012 picks + seed x1.15 guard + 300 s cap + 55k priority): exploration +3.819% per attempt reproduces exactly, but honest Aug-Sep is about +1.5% and October about +0.3 to +0.5% (P<=0 about 40%); P(pass) of a walk-2 read is about 10%. Report: https://claude.ai/artifact/Ngo8HbFVTAtWiHn5M2VrZk",
+      "atUtc": "2026-10-08T10:29:20Z"
+    },
     {
       "id": "seal-breach-consequence-1007",
       "kind": "decision",
@@ -140,10 +147,10 @@
       "id": "EXP-012",
       "title": "EXP-012 entry model (re-freeze)",
       "stage": "passed",
-      "note": "One-shot read PASSED the gate (replay): 451 trades, flat +0.035 / pressure +0.021 SOL per trade, 6/7 days. Favourable block; edge mostly fill prediction. Forward paper on mal-fast-0 after 10-05.",
+      "note": "One-shot read PASSED the gate (replay), but the 10-01 audit shows the pass was a scoring-setup artifact: +6.97% at k1 START vs +0.145% at realistic execution on the same 451 trades; at the gate setup even buy-all passes. The traded book (30-min hold, 0.05 SOL, 500k) is dead at realistic cost. Successor candidate: CAP-PICK (picks + seed guard + 300 s cap), weak.",
       "tag": {
-        "text": "gate passed (replay)",
-        "tone": "accent"
+        "text": "pass was an artifact",
+        "tone": "muted"
       },
       "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-012-migrate-entry-model-refreeze-prereg.md"
     },
@@ -289,6 +296,12 @@
   ],
   "for_you": [
     {
+      "id": "fy-20261008-1029-audit",
+      "from": "claude",
+      "text": "Your decisions from the audit (https://claude.ai/artifact/Ngo8HbFVTAtWiHn5M2VrZk): O1 pause the EXP-021 screen (recommend yes); O2 amend DEC-021 so CAP-PICK can register on walk 2 as a zero-credit kill test with day-level p (yes, if you want the test); O3 start counting 10-10 (yes if the Part 1 merges in time); O4/O5 live canaries and trial terms (defer until a look is not futile); O6 pre-agree a cost wind-down if CAP-PICK fails (yes); O7 the same-slot sniper arena (not now); O8 share the monthly bill split; O9 ask Helm to exclude /data/mal/audit-1008 from the nightly backup.",
+      "atUtc": "2026-10-08T10:29:20Z"
+    },
+    {
       "id": "fy-20261007-1554-oracle",
       "from": "claude",
       "text": "Your call (Lyra, 10-07): the old Oracle books keep losing on paper and are never going live. attn_first_hold_60m: n 2,162 clean, mean −57.68%, 0 of 10 days positive; buy_all is now about −226 SOL total. Oracle's >5 s exclusions rose to 19.7% and its feed lag p50 went from 1.6 s to 3.7 s, and observe.attention has logged 805 errors since its restart. I can't change Oracle (read-only). Should Helm (1) stop the attn book and observe.attention, (2) retire the V-less books, (3) move runner-restarts.jsonl somewhere mal-ro can read? I recommend yes to all three.",
@@ -386,6 +399,13 @@
     }
   ],
   "stream": [
+    {
+      "id": "s-20261008-1029-audit",
+      "from": "claude",
+      "kind": "finding",
+      "text": "Audit done (https://claude.ai/artifact/Ngo8HbFVTAtWiHn5M2VrZk). Root causes: wrong side of the flow at our ~1.3 s landing (~35%), the 30-min exit rode through the end of pump.fun's BOOST bid (~20%), no seed-anchored price guard (~15%), measurement artifacts (the 10-01 PASS was +6.97% at the gate setup vs +0.145% realistic), priority overpaid about 10x, and a market that changed under us (10-02 redeploy, 200 ms slots on 10-09). Merged today: #454 slot-span bound + forward walk resubmitted (#382), #455 v1 transactions, #456 daily structure monitor.",
+      "atUtc": "2026-10-08T10:29:20Z"
+    },
     {
       "id": "s-20261007-234226-c",
       "from": "claude",
