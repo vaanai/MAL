@@ -312,3 +312,20 @@ The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded 
   - (c) moves (B) by the V0 the chain used. Where an LP event falls inside a hold, it takes the worse case.
   - Unexplained or unresolved moves can only make (B) NOT_DECIDABLE.
   - The tool PRs get quant-proof before merge, and their merge commits are recorded here.
+
+## Amendment 6 (2026-10-08): slot-span verify bound
+
+Outcome-blind. No forward outcome was read to make this change: no runner row, no scored P&L, no `rows.jsonl`, and no file Amendment 2 keeps closed was opened. The reason is a change in the chain's slot time, not in any result.
+
+**Reason.** Solana slot time is 267.2 ms today, about 13,473 slots per UTC hour. SIMD-0525 (200 ms slots) activated at the start of epoch 1052, and on past steps slot time changed one epoch after activation. So expect about 200-215 ms from epoch 1053 (slot 454,896,000, about 2026-10-09T14:30Z), which is 16,700-18,000 slots per hour. The per-hour verify (`tools.exp012_forward.verify_line`, run by `scripts/research/forward-walk.sh` for every hour) flagged any slot span above 14,000 as `implausible_slot_span`, and the walker refused to seal such an hour (`bad_slot_span`). From the switch on, every hour would have had no OK line.
+
+**Change.** Only the upper slot-span bound, from 14,000 to 19,500.
+- It is now one constant, `tools.backfill_verify.MAX_SLOTS_PER_HOUR`. The per-hour verify (`verify_line`), the `backfill_verify` CLI default and the walker's seal check and CLI default (`tools/pump_history_backfill.py`) all read it. The walker is included because an hour it refuses to seal never reaches the verify.
+- 19,500 is 18,000 plus margin (slots down to about 185 ms). It stays below the 20-30k values that `slot_for_time` resolution bugs and resume-inflated counters produced, so those are still flagged or refused. The `resumed: duplicate risk` check (`slots_done` above the span) is unchanged.
+- The lower bounds do not change: 10,500 for the walker, 9,000 for the verify.
+
+**Hours verified before it are unchanged.** Their `verify.jsonl` lines are not rewritten, and a span at or below 14,000 gets the same result under both bounds.
+
+**Nothing in scoring changes.** The model, threshold, features, execution, size, both fail models, the window, the read date, the seal and the trial terms are as written. The spent-block scorer `tools/exp012_score.py` keeps its own 9,000 / 14,000 call: that block's hours are September hours of about 13.5k slots. One consequence follows from measured data, not from a tuned input: hours with a span over 14,000 now get an OK line, so they enter the latency export's `slot_ms` (3,600,000 / mean slot span of the window's used hours, `tools/exp012_runner_latency_export.py`) as they should.
+
+**Tool PR:** `claude/slot-span-200ms`. Its merge commit is recorded here by the manager on merge.
