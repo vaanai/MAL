@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import random
+import shutil
 import signal
 import tempfile
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from unittest.mock import patch
 
 import tools.pump_history_backfill as backfill_mod
 from observe.trade_decode import WSOL_MINT, b58encode, records_from_logs
+from tools.backfill_verify import MAX_SLOTS_PER_HOUR
 from tools.pump_history_backfill import (
     BUDGET_CODE,
     SOURCE,
@@ -574,6 +576,91 @@ class RunHourGuardTests(_TimeBoundedTestCase):
             self.assertTrue(summary["skipped"])
             self.assertEqual(summary["stop_reason"], "bad_slot_span")
             self.assertFalse((Path(tmp) / "trades").exists())
+
+    # --- default slot-span bounds (SIMD-0525: 200 ms slots from epoch 1053) ----------
+    # These run run_hour WITHOUT min/max kwargs, so they exercise the shipped defaults.
+
+    def _run_default_bounds(self, span: int, hour: str) -> tuple[dict, Path]:
+        backfill_mod.slots_between = lambda *a, **k: list(range(0, span))
+
+        def fake_fetch_block(url, slot, limiter, budget=None, header_out=None, *, full=True):
+            return {"slot": slot, "blockTime": 0, "transactions": []}, 1, None
+
+        orig_fetch = backfill_mod.fetch_block
+        backfill_mod.fetch_block = fake_fetch_block
+        self.addCleanup(setattr, backfill_mod, "fetch_block", orig_fetch)
+        start_ts, end_ts = _hour_bounds(hour)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        summary = run_hour(start_ts=start_ts, end_ts=end_ts, slot_start=0, slot_end=span, **self._common_kwargs(tmp))
+        return summary, Path(tmp)
+
+    def test_default_upper_bound_is_the_shared_constant(self) -> None:
+        self.assertIs(backfill_mod.DEFAULT_MAX_SLOTS_PER_HOUR, MAX_SLOTS_PER_HOUR)
+        self.assertEqual(MAX_SLOTS_PER_HOUR, 19_500)
+        self.assertEqual(backfill_mod.DEFAULT_MIN_SLOTS_PER_HOUR, 10_500)
+
+    def test_cli_defaults_are_the_shared_bounds(self) -> None:
+        seen: list[dict] = []
+
+        def fake_run_hour(**kw):
+            seen.append(kw)
+            return {"hour": "x", "skipped": True, "stop_reason": "test"}  # a skipped hour stops the loop
+
+        env = {k: v for k, v in os.environ.items() if k != "HELIUS_API_KEY"}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, env, clear=True), \
+                patch.object(backfill_mod, "run_hour", fake_run_hour), \
+                patch.object(backfill_mod, "skip_hour_for_live_tape", lambda *a, **k: False):
+            code = main(["--until", "2026-10-09T15:00:00Z", "--hours", "1", "--out", tmp, "--rpc", "http://x"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["min_slots_per_hour"], 10_500)
+        self.assertEqual(seen[0]["max_slots_per_hour"], MAX_SLOTS_PER_HOUR)
+
+    def test_18000_slot_hour_seals_with_default_bounds(self) -> None:
+        # ~200 ms slots: 3600 s / 0.2 s = 18,000 slots in the hour.
+        key = "2026-10-10T03"
+        summary, out = self._run_default_bounds(18_000, key)
+        self.assertIsNone(summary.get("stop_reason"))
+        self.assertFalse(summary.get("skipped"))
+        self.assertEqual(summary["slots_done"], 18_000)
+        self.assertEqual(summary["end_slot"] - summary["start_slot"], 18_000)
+        self.assertTrue((out / f"stats-{key}.json").is_file(), "a sealed hour writes its stats file")
+
+    def test_default_bounds_edges(self) -> None:
+        # The edges of [10_500, 19_500] seal; one slot outside either edge is refused.
+        for span, sealed in ((10_500, True), (19_500, True), (10_499, False), (19_501, False)):
+            with self.subTest(span=span):
+                key = "2026-10-10T04"
+                summary, out = self._run_default_bounds(span, key)
+                if sealed:
+                    self.assertIsNone(summary.get("stop_reason"))
+                    self.assertTrue((out / f"stats-{key}.json").is_file())
+                else:
+                    self.assertTrue(summary["skipped"])
+                    self.assertEqual(summary["stop_reason"], "bad_slot_span")
+                    self.assertEqual(summary["slot_span"], span)
+                    self.assertFalse((out / f"stats-{key}.json").exists())
+
+    def test_30000_slot_hour_is_still_refused_with_default_bounds(self) -> None:
+        # A span this wild is a slot_for_time boundary error, which the upper bound guards against.
+        # (The 20-30k values seen in 2026-09 were resume-inflated slots_done counters, not spans;
+        # the slots_done > span check in backfill_verify catches those, not this bound.)
+        key = "2026-10-10T05"
+        summary, out = self._run_default_bounds(30_000, key)
+        self.assertTrue(summary["skipped"])
+        self.assertEqual(summary["stop_reason"], "bad_slot_span")
+        self.assertEqual(summary["slot_span"], 30_000)
+        self.assertFalse((out / "trades").exists())
+        self.assertFalse((out / f"stats-{key}.json").exists())
+
+    def test_9500_slot_hour_is_still_refused_by_the_walker_minimum(self) -> None:
+        key = "2026-10-10T06"
+        summary, out = self._run_default_bounds(9_500, key)
+        self.assertTrue(summary["skipped"])
+        self.assertEqual(summary["stop_reason"], "bad_slot_span")
+        self.assertEqual(summary["slot_span"], 9_500)
+        self.assertFalse((out / f"stats-{key}.json").exists())
 
     def test_min_max_slots_per_hour_are_configurable(self) -> None:
         backfill_mod.slots_between = lambda *a, **k: list(range(0, 50))

@@ -514,6 +514,42 @@ class CreatesAndShaTests(Base):
         self.assertIn(f"hour {h}: creates bytes do not match", err)
 
 
+class VerifyLineSlotSpanTests(unittest.TestCase):
+    """`verify_line` is the per-hour verify the DEC-016 forward walk runs. Its slot-span
+    range is [9,000, bv.MAX_SLOTS_PER_HOUR]: 200 ms slots (SIMD-0525, epoch 1053) give ~18,000 an hour."""
+
+    HOUR = "2026-10-10T03"
+
+    def line(self, span: int) -> dict:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        write_zst_jsonl(d / "trades" / f"trades-{self.HOUR}.jsonl.zst", [{"signature": "a"}, {"signature": "b"}])
+        write_zst_jsonl(d / "creates" / f"creates-{self.HOUR}.jsonl.zst", [{"mint": "m"}])
+        (d / f"stats-{self.HOUR}.json").write_text(json.dumps({"start_slot": 455_000_000, "end_slot": 455_000_000 + span, "slots_done": span}))
+        (d / "checkpoint.json").write_text(json.dumps({"hours": {self.HOUR: {"status": "sealed", "stop_reason": None}}}))
+        return fw.verify_line(d, self.HOUR)
+
+    def test_the_bound_is_the_shared_constant(self) -> None:
+        self.assertEqual(fw.bv.MAX_SLOTS_PER_HOUR, 19_500)
+
+    def test_an_18000_slot_hour_verifies_clean(self) -> None:
+        rec = self.line(18_000)
+        self.assertEqual(rec["issues"], [])
+        self.assertEqual(rec["slot_span"], 18_000)
+        self.assertEqual(sorted(rec["sha256"]), ["creates", "trades"])
+
+    def test_a_267ms_hour_still_verifies_clean(self) -> None:
+        self.assertEqual(self.line(13_473)["issues"], [])
+
+    def test_a_30000_slot_hour_is_still_flagged(self) -> None:
+        self.assertIn("implausible_slot_span", self.line(30_000)["issues"])
+
+    def test_edges(self) -> None:
+        for span, flagged in ((9_000, False), (19_500, False), (8_999, True), (19_501, True)):
+            with self.subTest(span=span):
+                self.assertEqual("implausible_slot_span" in self.line(span)["issues"], flagged)
+
+
 class AtomicTests(Base):
     def test_torn_trailing_line_is_refused_with_a_clear_message(self) -> None:
         walk, art, out = self.fresh()

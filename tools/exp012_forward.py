@@ -303,7 +303,7 @@ def hour_problems(walk_dir: Path, hours: Sequence[str]) -> list[str]:
 def verify_line(walk_dir: Path, hour: str) -> dict[str, Any]:
     """`tools.backfill_verify` with --content for [hour, hour+1), plus the sha256 of each sealed file."""
     nxt = hour_key(hour_dt(hour) + timedelta(hours=1))
-    report = bv.build_report(walk_dir, hour, nxt, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=14_000)
+    report = bv.build_report(walk_dir, hour, nxt, content=True, dedupe_out=None, min_slots_per_hour=9_000, max_slots_per_hour=bv.MAX_SLOTS_PER_HOUR)
     rec = report["hours"][0]
     if rec["files"].get("trades") is None and "sealed_with_no_trades_file" not in rec["issues"]:
         rec["issues"].append("no_trades_file")

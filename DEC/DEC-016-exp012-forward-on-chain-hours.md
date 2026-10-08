@@ -312,3 +312,41 @@ The FINAL (B) runs use `main` at or after `7253e07`, and its commit is recorded 
   - (c) moves (B) by the V0 the chain used. Where an LP event falls inside a hold, it takes the worse case.
   - Unexplained or unresolved moves can only make (B) NOT_DECIDABLE.
   - The tool PRs get quant-proof before merge, and their merge commits are recorded here.
+
+## Amendment 6 (2026-10-08): slot-span verify bound
+
+Outcome-blind, written before 2026-10-16T00Z. No forward outcome was read to make this change: no runner row, no scored P&L, no `rows.jsonl`, and no file Amendment 2 keeps closed was opened. The reason is a change in the chain's slot time, not in any result.
+
+**Reason.** Solana slot time is 267.2 ms today, about 13,473 slots per UTC hour. SIMD-0525 (200 ms slots) activated at the start of epoch 1052, and on past steps slot time changed one epoch after activation. So expect about 200-215 ms from epoch 1053 (slot 454,896,000, about 2026-10-09T14:30Z), which is 16,700-18,000 slots per hour. The per-hour verify (`tools.exp012_forward.verify_line`, run by `scripts/research/forward-walk.sh` for every hour) flagged any slot span above 14,000 as `implausible_slot_span`, and the walker refused to seal such an hour (`bad_slot_span`).
+
+**Change.** Only the upper slot-span bound, from 14,000 to 19,500.
+- It is now one constant, `tools.backfill_verify.MAX_SLOTS_PER_HOUR`. The per-hour verify (`verify_line`), the `backfill_verify` CLI default and the walker's seal check and CLI default (`tools/pump_history_backfill.py`) all read it. The walker is included because an hour it refuses to seal never reaches the verify.
+- 19,500 is 18,000 plus margin (slots down to about 185 ms).
+- What the bound is for: it guards against `slot_for_time` boundary errors. The 20-30k values seen in the 2026-09 stats were resume-inflated `slots_done` counters, not spans, and the unchanged `slots_done` above the span check (`resumed: duplicate risk`) catches those.
+- The lower bounds do not change: 10,500 for the walker, 9,000 for the verify. See (e).
+
+**(a) Measured state at the amendment.** 135 verified forward hours, 2026-10-02T15 to 2026-10-08T05. Slot spans 13,269-13,545, and none was ever flagged `implausible_slot_span`. All 134 adjacent pairs tile exactly (the next hour's start slot equals this hour's end slot). So no existing hour changes status, and their `verify.jsonl` lines are not rewritten. A span at or below 14,000 gets the same result under both bounds. These are slot-range figures; no outcome was read to get them.
+
+**(b) Scoring code.** No scoring code changes. The scoring inputs listed in (g) change meaning at epoch 1053, inside the window; they are disclosed here before the read. The model, threshold, features, execution, size, both fail models, the window, the read date, the seal and the trial terms are as written. The spent-block scorer `tools/exp012_score.py` keeps its own 9,000 / 14,000 call: that block's hours are September hours of about 13.5k slots.
+
+**(c) What the old bound would have broken.** From the switch on, every hour would have had no OK line, and the read refuses an unverified hour. A second consequence: the runner latency export needs at least 24 clean hours per window day (`tools/exp012_runner_latency_export.py:176-177`), so it would also have gone NOT_DECIDABLE. Hours with a span over 14,000 now get an OK line and so enter the export's `slot_ms` as measured chain data, which (g) D discloses.
+
+**(d) Fallback.** If spans pass 19,500 (slots under about 185 ms) or the step comes late, the bound is raised again only by a new dated, outcome-blind amendment before 2026-10-16T00Z. Until then, unverified hours refuse the read.
+
+**(e) Known weakness: the lower bounds.** The lower bounds weaken in relative terms after the switch. 10,500 (walker) and 9,000 (verify) are 58% and 50% of an 18,000-slot hour, against 78% and 67% of today's 13,473. There is no cross-hour contiguity check in `tools/backfill_verify.py` (`hour_metadata` tests each hour's span alone), so a truncated hour of about 10.5k-16k slots would pass. This is disclosed as a known weakness and is not fixed here. The exact tiling in (a) is a measurement of past hours, not a check.
+
+**(f) Stale figures elsewhere in this DEC.** The 268 ms figure in Amendment 3 (a) and the cost lines in the Decision (about 13.4k credits per hour, about 0.32M per day, about 9.7M per month, an hour sealing in about 28 minutes at `--rps 8`) describe the chain before the switch. After it: about 18k credits per hour, about 0.43M per day (about 13M per month, inside the same budget line), about 37.5 minutes per hour at `--rps 8`. The 268 ms is a lab figure, not an input: the latency export computes `slot_ms` from the window's verified spans. Those earlier sections are not edited.
+
+**(g) Slot-time effects on the FINAL path, disclosed before the read.** Outcome-blind; no computation changes.
+- **A. Pressure fail model.** It is per-slot with a frozen intercept: p = sigmoid(-1.4549 + 0.8 * log1p(same_slot_buys) + 0.35 * log1p(nearby SOL)) (`tools/latency_curve.py:39,61-66`; `tools/exploration_exits.py:126,131-132`). `same_slot_buys` counts buys in the entry state's slot (`tools/latency_curve.py:185-198`), so shorter slots mean fewer same-slot buys, a lower fail probability p, and a pressure leg tilted toward profit after the switch. The flat 15% leg is unaffected.
+- **B. Frozen model features.** They are not slot-based. `same_slot_buys` and `nearby_buy_sol` were dropped as lookahead (`ARTIFACTS/exp012/features.json`); the rest are time- or count-based.
+- **C. k = 1 entries and trigger exits.** A slot+1 entry or a trigger exit means about 200 ms instead of 267 ms after the switch (`tools/exploration_entry_model.py:380-383`; `tools/exploration_exits.py:206-216`). The (A)/(B) books at k = 1 assume a tighter latency budget for about 6.4 of the 10 window days.
+- **D. Latency export and the Amendment 3 sensitivity.** The export uses one window-mean `slot_ms` = 3,600,000 / mean span (`tools/exp012_runner_latency_export.py:107-136`) and k_i = 1 + ceil(L_i / slot_ms) (`:139-143`). One k(p50) and one k(p90), in slots, are applied to every trade, and the time-cap lag uses (k - 1) * `slot_ms` (`tools/exp012_forward_sensitivity.py:231,312`). Across the switch this can lean optimistic by up to about one slot. **Pinned rule, written now and outcome-blind:** the Amendment 3 sensitivity reports both the window-mean result (as written) and a conservative variant that uses, for each of k(p50) and k(p90), the worse (larger) of the window-mean k and the post-switch-hours k. The variant does not replace the as-written result. Live support requires the as-written result and the conservative variant to pass. This rule can only remove support, never add it.
+- **E. `SLOT_MS = 400`** (`tools/latency_curve.py:98`) is on the FINAL path. In `_delayed`, `t_exit = t_recv + k * 400` (`:270-276`) is used for tape-end censoring (`tools/exploration_exits.py:266-272`); that is inert here, because tape coverage runs to read end + 1 h. It is also the trigger-exit `exit_ms` in the max-concurrent-3 trial book (`tools/exp012_forward_sensitivity.py:44-51`), where hold ends are overstated by k * (400 - `slot_ms`). Disclosed, not changed.
+- **F. `SensHours.slot_ms = 268.0`** (`tools/exp012_forward_sensitivity.py:204`) is a dataclass default and is inert on the real window, because `slot_ms` comes from the latency summary (`:561-593`).
+- **G. Not affected,** all in milliseconds: the runner's 5 s stale cap (`tools/forward_paper.py:502`), the export's 500 ms block-time offset, the 30-minute exit cap and the 2 s nearby window.
+- **H. Report-only, cannot change the verdict.** After the read, report each gate leg split by migrations before versus after the first 200 ms-era slot.
+
+**Tool PR:** `claude/slot-span-200ms`. Its merge commit is recorded here by the manager on merge.
+
+The 10-16 FINAL remains reported compromised under Amendment 2, and this amendment does not change that.

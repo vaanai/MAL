@@ -4,7 +4,8 @@
 #   command: bash scripts/research/forward-walk.sh   (time limit 10080 min; resubmit to continue; idempotent)
 # Takes one Helius lock slot (blocking), walks each complete hour >= START about 5 min after it ends,
 # then runs `tools.exp012_forward verify` on it (writes D/verify.jsonl with sha256).
-# ~13.4k getBlock credits per hour at 1 credit each (~0.32M/day). Output /data/mal/blocks/forward-1002.
+# ~18k getBlock credits per hour at 1 credit each (~0.43M/day), about 37.5 min per hour at --rps 8, after the
+# 200 ms slot step (SIMD-0525, epoch 1053, ~2026-10-09T14:30Z; it was ~13.4k credits, ~0.32M/day before). Output /data/mal/blocks/forward-1002.
 set -u
 export PYTHONPATH="$PWD" PYTHONUNBUFFERED=1; PY=/data/mal/venv/bin/python
 D=/data/mal/blocks/forward-1002; START="${MISCUSI_PARAM_START:?start hour YYYY-MM-DDTHH}"; mkdir -p $D
