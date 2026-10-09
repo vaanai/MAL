@@ -86,6 +86,7 @@ The Helm message is ready at `/data/mal/hunt-1008/h5-work/HELM-GO-H5-v2.md`. The
 6. **C1-NF:** draft DEC-026 is #522, awaiting the owner's 7 [OWNER CHOOSES] items and 13 quant-proof questions.
    - **Key point:** at 0.02 SOL and 505k lamports per send, fixed costs are about 5% of stake, which is more than C1-NF's edge. The first tier must be larger, or the fee lower.
    - #504 was closed unmerged and needs a rebase. #503 lacks decision-time reserves.
+7. **H5 champion-challenger:** draft `DEC/DEC-027-h5-champion-challenger.md` (docs only, draft PR). Rev 2 after quant-proof's NOT OK on 975d8db. At most 2 challengers ever frozen: C-Q35 (Q\* 35, a threshold retune with a numeric withdrawal rule) and C-LF (loss filter, not freezable until rule text and a REPORT). C-BX is parked; C-SYN is blocked until Look 2 is read (EXP-024 Am.4 D1). One root-owned `/etc/mal-h5/VARIANT` file, switch only at 00:00Z with 0 open positions. Switching rule: 100 paired pools, +3.0 pp, Holm over k and Bonferroni over 2 looks, one switch at most, power low, expected result no switch. Gating item G1: the companion EXP-024 amendment must merge before any multi-rule shadow starts. A live challenger after a likely Look 1 FAIL needs a new owner override.
 
 ### STATE 10-09 ~07:35Z (older)
 
