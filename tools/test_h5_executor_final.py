@@ -93,7 +93,7 @@ class WallAnchorTests(Case):
             e.ex.handle_trigger(parse(e.clock, **kw))
         self.assertEqual((e.refusals(), e.rpc.sent), (["s0_before_history"] * 3, []))
         # a flat row with no claim at all is refused the same way
-        flat = {"schema": "h5_intent_v1", "mint": MINT, "pool": POOL, "s0_slot": S0, "sps": SPS, "trigger_slot": TRIG_SLOT, "q_lamports": Q,
+        flat = {"schema": "h5_intent_v1", "synthetic": False, "synthetic_src": "rpc", "mint": MINT, "pool": POOL, "s0_slot": S0, "sps": SPS, "trigger_slot": TRIG_SLOT, "q_lamports": Q,
                 "base_reserve": BASE0, "v_lamports": V, "decision_ms": now}
         t, bad = h.parse_trigger(flat)
         self.assertIsNone(bad)

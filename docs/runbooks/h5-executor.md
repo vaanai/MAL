@@ -482,9 +482,12 @@ Executor `alert` rows the daily check and the watchdog forward as `h5_executor_a
 | --- | --- |
 | `config_clamps_tier` | a config holds a tier-scaled limit (`stake_lamports`, `max_open`, `max_trades_per_day`, `daily_loss_lamports`, `total_loss_lamports`) below the active tier's table value, so that tier runs at the config's numbers. The shipped configs set none: someone edited a config. Fix the config in a reviewed sha; do not step the tier |
 | `shadow_schema_mismatch` | a shadow record lacks keys the executor requires; the triggers are refused as `bad_intent:missing_<key>`. The shadow job is not at #477 head `d3b69d0` or later: the manager restarts it on that head |
+| `shadow_synthetic_missing` | a shadow trigger record has no `synthetic` key: the shadow job is not on the head that classifies synthetic migrations (DEC-024 Amendment 2). Every trigger is refused as `synthetic_unconfirmed` until the manager restarts the shadow on that head. At most once per 10 minutes |
 | `trigger_pre_unlinked` | hourly, with a count: triggers were traded although their predecessor print may be missing. They are marked on the decision row and left out of the sim-match comparison; more than 15% of landed buys halts as `pre_unlinked_share` |
 | `tier_file_problem`, `tier_step_down_due` | see "Step up / step down a tier" |
 | `s0_anchor_refusals` | several triggers refused on the s0 anchor in a short time |
+
+The classifying shadow (DEC-024 Amendment 2) also writes `excluded` records for pools it kept out of H5 (synthetic migration, or unclassifiable). The executor only counts them: `--status` shows `excluded=<n> (synthetic:<n>,unclassified:<n>)`. There is no ledger row, no alert and no halt for them, so they never show in the daily check.
 
 Trigger refusals (`skip` rows with `reason=...`; a refusal costs a trade, not safety):
 
@@ -496,6 +499,8 @@ Trigger refusals (`skip` rows with `reason=...`; a refusal costs a trade, not sa
 | `bad_intent:s0_minus_announced_slots` | the pool's first print we call s0 came more than 2 slots after its CreatePool, or the field is missing or null |
 | `bad_intent:base_breaks_unresolved_settled` | the gate: the order-independent missed-print count over the settled prints is not 0, or the field is missing or null (an older #477 head) |
 | `bad_intent:missing_<key>` | a key the executor requires is absent from the shadow record (any of them, `base_breaks_unresolved` included): an older #477 head. The executor also alerts `shadow_schema_mismatch` (at most once per 10 minutes) |
+| `synthetic_unconfirmed` | the trigger's `synthetic` is not the literal `false`, or its `synthetic_src` is not exactly `rpc` (absent, null, true, a non-bool, or a `false` from `ws`, `pre_event_binary`, no source or junk): never a buy, in dry run and live. The ledger row is written once per pool and says what was seen (`synthetic_seen`, `synthetic_src_seen`); every one is counted (`--status`: `synthetic_unconfirmed=`). A healthy classifying shadow writes `excluded` instead of such a trigger, so any count above 0 is a stale or buggy shadow. An absent `synthetic` key also alerts `shadow_synthetic_missing`; a present wrong value, or a `false` from a source other than `rpc`, counts toward `bad_intent_rate` |
+| `excluded_pool` | the shadow wrote an `excluded` record for this pool or mint (synthetic, or unclassifiable) and a trigger for it arrived anyway: refused |
 | `bad_intent:suppressed` | #477's sealed stub from 2026-10-16T01Z: expected, never an alert |
 | other `bad_intent:*` (`v_missing`, `gap`, `sps_span`, `boost_spent`, ...) | data-quality refusals of one trigger, shown in the INFO line only |
 
