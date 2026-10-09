@@ -124,6 +124,8 @@ LATE_SELL_S = 335.0  # a sell landing after s0 + this is late
 LATE_SELL_FRAC = 0.05  # more than 5% of our landed sells late -> halt
 LANDING_MEDIAN_MAX_S = 3.0  # median trigger-to-landing over the last LANDING_WINDOW fills above this -> halt
 LANDING_WINDOW = 10
+PRE_UNLINKED_MIN_LANDED = 20  # a trigger whose predecessor print may be missing (see pre_unlinked) is traded, but if more than this share of
+PRE_UNLINKED_MAX_SHARE = 0.15  # our landed buys, from 20 landed on, are such triggers, the share is a halt (pre_unlinked_share)
 
 # --- EXP-022 seal guard ---------------------------------------------------------------------------------------------
 SEAL_START_MS = 1792112400000  # 2026-10-16T01:00:00Z
@@ -291,15 +293,27 @@ class H5Trigger:
     s0_reanchored_slots: int | None = None  # ledgered: how far s0 moved down when an earlier print arrived late (before any trigger)
     s0_minus_announced_slots: int | None = None
 
+    @property
+    def pre_unlinked(self) -> bool:
+        return pre_unlinked(self.base_breaks_unresolved, self.base_breaks_unresolved_settled)
+
     def public(self) -> dict[str, Any]:
         return asdict(self)
 
     def log_fields(self) -> dict[str, Any]:
-        return {k: v for k, v in asdict(self).items() if k != "mint"}  # the ledger row carries the mint itself
+        return {**{k: v for k, v in asdict(self).items() if k != "mint"}, "trigger_pre_unlinked": self.pre_unlinked}  # the ledger row carries the mint itself
 
 
 def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
+
+
+def pre_unlinked(unresolved: Any, settled: Any) -> bool:
+    """The detector's settled gate cannot see a missing print DIRECTLY before the trigger print (the trigger is the newest print, so its own pre
+    is never checked). What it can show is the unsettled count: >= 1 with a settled count of 0 means a break that may be that predecessor, or a
+    print still in flight. Manager ruling for the canary: such a trigger is traded, but marked (`trigger_pre_unlinked` on the decision row), counted
+    per hour, left out of the sim-match comparison in h5_reconcile, and a halt if it is more than 15% of landed buys (from 20 landed)."""
+    return _is_int(unresolved) and unresolved >= 1 and _is_int(settled) and settled == 0
 
 
 def parse_trigger(row: Any) -> tuple[H5Trigger | None, str | None]:
@@ -537,6 +551,8 @@ class H5Counters:
     plans: dict[str, dict[str, Any]] = field(default_factory=dict)  # open or in-flight position -> its exit plan and trigger, durable BEFORE the first send
     tier_state: dict[str, Any] = field(default_factory=dict)  # {tier, since_ms, wallet_lamports, realized_at_start}: the active tier, the wallet and the run's realized P&L when it started
     tier_attempts: int = 0  # buy attempts since the active tier started: what max_attempts caps. Reset at every tier_change.
+    landed_buys: int = 0  # buys that landed (a position opened), for the pre-unlinked share
+    pre_unlinked_landed: int = 0  # ... of which the trigger was pre-unlinked (see pre_unlinked)
     tail_path: str | None = None  # the intents file being read, so a restart finishes it before it moves to the newest hour
 
     def day(self, key: str) -> dict[str, Any]:
@@ -869,6 +885,7 @@ class H5Executor(pl.LiveExecutor):
         self._counts_hour: int | None = None
         self._refusal_counts: dict[str, int] = {}
         self._accepted_hour = 0
+        self._pre_unlinked_hour = 0
         self._glob_path: Path | None = None
         self._glob_ms = 0
         self.trigger_variant = TRIGGER_VARIANT  # the traded rule is not a config value
@@ -1130,8 +1147,12 @@ class H5Executor(pl.LiveExecutor):
         elif hour != self._counts_hour:
             if self._refusal_counts or self._accepted_hour:
                 self._log("refusal_counts", "", hour_start_ms=self._counts_hour * 3_600_000, accepted=self._accepted_hour,
-                          refused=sum(self._refusal_counts.values()), by_reason=dict(sorted(self._refusal_counts.items())))
-            self._counts_hour, self._refusal_counts, self._accepted_hour = hour, {}, 0
+                          refused=sum(self._refusal_counts.values()), by_reason=dict(sorted(self._refusal_counts.items())),
+                          pre_unlinked=self._pre_unlinked_hour)
+            if self._pre_unlinked_hour:  # hourly, with a count: triggers traded although their predecessor print may be missing
+                self._alert("trigger_pre_unlinked", "", hour_start_ms=self._counts_hour * 3_600_000, count=self._pre_unlinked_hour,
+                            accepted=self._accepted_hour)
+            self._counts_hour, self._refusal_counts, self._accepted_hour, self._pre_unlinked_hour = hour, {}, 0, 0
 
     def _count_refusal(self, reason: str) -> None:
         now = self.now_ms()
@@ -1287,7 +1308,7 @@ class H5Executor(pl.LiveExecutor):
         self.save()
         if trg.mint not in st.pending:  # the kill switch fired between the gate and the send: nothing was sent
             return
-        self._count_accepted()
+        self._count_accepted(trg.pre_unlinked)
         self._log("decision", trg.mint, **trg.log_fields(), anchor=self._anchor_info, stake_lamports=spend, expected_tokens=terms["expected_tokens"], min_out=terms["min_out"],
                   fee_ppm=terms["fee_ppm"], tolerance_bps=self.h5.entry_tolerance_bps, plan=plan.public(), signature=signature,
                   built_ms=t_built, sent_ms=p.get("first_send_ms"), ms_decision_to_send=(p["first_send_ms"] - trg.decision_ms) if p.get("first_send_ms") else None,
@@ -1322,7 +1343,7 @@ class H5Executor(pl.LiveExecutor):
         if self.state.first_attempt_ms is None:
             self.state.first_attempt_ms = now
         self.counters.day(day_key(now))["trades"] += 1
-        self._count_accepted()
+        self._count_accepted(trg.pre_unlinked)
         self._log("decision", trg.mint, **trg.log_fields(), anchor=self._anchor_info, stake_lamports=self.h5.stake_lamports, expected_tokens=terms["expected_tokens"],
                   min_out=terms["min_out"], fee_ppm=terms["fee_ppm"], tolerance_bps=self.h5.entry_tolerance_bps, plan=plan.public(),
                   would_have_halted=would, live_validate_err=validate_err, sim_tokens=sim_tokens, drift_vs_trigger=drift,
@@ -1438,9 +1459,10 @@ class H5Executor(pl.LiveExecutor):
         if c.bvs_n >= BOOST_BEFORE_SELL_MIN_SELLS and share > BOOST_BEFORE_SELL_FRAC:
             self._latch("boost_before_sell_gt_15pct", n=c.bvs_n, before=c.bvs_before, share=round(share, 4))
 
-    def _count_accepted(self) -> None:
+    def _count_accepted(self, unlinked: bool = False) -> None:
         self._hour_roll(self.now_ms())
         self._accepted_hour += 1
+        self._pre_unlinked_hour += 1 if unlinked else 0
 
     def _bad_intent(self, row: dict[str, Any], why: str, shadow: bool = False) -> None:
         """A trigger record that cannot be traded on. Ledgered. A shadow record that LACKS a required key is a schema mismatch (a detector that is
@@ -1854,6 +1876,7 @@ class H5Executor(pl.LiveExecutor):
         if pos is None or h5 is None:
             return
         pos["h5"] = {**h5, "buy_landed_slot": m["slot"]}
+        self._note_landed_buy(h5["trigger"])
         if m.get("slot"):
             trg, plan = h5["trigger"], h5["plan"]
             self._note_buy_landing(trg["trigger_slot"], m["slot"], trg["sps"])
@@ -1865,6 +1888,16 @@ class H5Executor(pl.LiveExecutor):
                           slots_after_trigger=m["slot"] - trg["trigger_slot"])
                 self._latch("out_of_rule_entry", landed_slot=m["slot"], slots_after_trigger=m["slot"] - trg["trigger_slot"])
         self.save()
+
+    def _note_landed_buy(self, trigger: dict[str, Any]) -> None:
+        """Halt rule: pre-unlinked triggers (see pre_unlinked) above 15% of landed buys, judged from 20 landed buys on."""
+        c = self.counters
+        c.landed_buys += 1
+        c.pre_unlinked_landed += 1 if pre_unlinked(trigger.get("base_breaks_unresolved"), trigger.get("base_breaks_unresolved_settled")) else 0
+        c.save(self.counters_path)
+        if c.landed_buys >= PRE_UNLINKED_MIN_LANDED and c.pre_unlinked_landed / c.landed_buys > PRE_UNLINKED_MAX_SHARE:
+            self._latch("pre_unlinked_share", landed=c.landed_buys, pre_unlinked=c.pre_unlinked_landed,
+                        share=round(c.pre_unlinked_landed / c.landed_buys, 4))
 
     def _note_buy_landing(self, trigger_slot: int, landed_slot: int, sps: float) -> None:
         """Halt rule: median trigger-to-landing over the last 10 fills above 3.0 s (strictly above; fewer than 10 fills: no halt)."""

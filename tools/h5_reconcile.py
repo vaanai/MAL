@@ -13,6 +13,11 @@ Sim-states file (one row per mint, written by the scorer or a tape replay, not b
   sim_pnl_lamports         optional: used when the states are absent
   boost_last_slice_slot    optional: BOOST's last slice, as a slot (or boost_last_slice_s, seconds after s0)
 
+Trades whose trigger was PRE-UNLINKED (the decision row's `trigger_pre_unlinked`, or base_breaks_unresolved >= 1 with a settled count of 0 on an
+older row: the trigger's predecessor print may have been lost, so the sim may have entered on a different print) are left out of the
+sim-match comparison (gap fields, n_with_sim) and reported separately under `pre_unlinked`. Execution measures (landing, fail rate, exit
+timing) still include them: those do not depend on which print the sim would have entered on.
+
 Without a sim row for a mint the tool still reports the live side and, for the entry, the trigger-state model (zero landing
 delay). Per-trade rows carry P&L, so they are OFF by default and refused inside the EXP-022 seal window; the aggregate is not
 a per-pool P&L.
@@ -109,6 +114,8 @@ def build_trades(ledger: list[dict[str, Any]], sim: dict[str, dict[str, Any]]) -
             "landing_slots": (b["landed_slot"] - d["trigger_slot"]) if b.get("landed_slot") else None,
             "decision_to_send_ms": d.get("ms_decision_to_send"), "send_to_confirm_ms": b.get("ms_send_to_confirm"),
             "entry_vs_quote_bps": b.get("entry_vs_quote_bps"), "sends": len(t["sell_sent"]),
+            "pre_unlinked": bool(d["trigger_pre_unlinked"]) if "trigger_pre_unlinked" in d else
+            h5.pre_unlinked(d.get("base_breaks_unresolved"), d.get("base_breaks_unresolved_settled")),
         }
         row["landing_ms_est"] = None if row["landing_slots"] is None else row["landing_slots"] * sps * 1000.0
         ok_sells = [s for s in t["sells"] if s.get("landed")]
@@ -137,7 +144,9 @@ def build_trades(ledger: list[dict[str, Any]], sim: dict[str, dict[str, Any]]) -
         row["trigger_state_tokens"] = sim_entry(d["stake_lamports"], d["q_lamports"], d["base_reserve"])[0]  # zero-delay entry on the trigger's state
         if row["buy_landed"] and b.get("tokens_received"):
             row["entry_vs_trigger_state_bps"] = round((b["tokens_received"] / row["trigger_state_tokens"] - 1.0) * 10_000, 2)
-        if row.get("live_pnl_comparable") is not None and row["sim"] is not None:
+        if row["pre_unlinked"]:
+            row["sim_match_excluded"] = True  # reported under summary["pre_unlinked"], never in the gap statistics
+        elif row.get("live_pnl_comparable") is not None and row["sim"] is not None:
             row["gap_lamports"] = row["live_pnl_comparable"] - row["sim"]["pnl"]
             row["gap_pct_of_stake"] = 100.0 * row["gap_lamports"] / d["stake_lamports"]
         bl = (sm or {}).get("boost_last_slice_slot")
@@ -168,6 +177,8 @@ def summarize(trades: list[dict[str, Any]]) -> dict[str, Any]:
     gaps = [t["gap_lamports"] for t in closed if "gap_lamports" in t]
     gpc = [t["gap_pct_of_stake"] for t in closed if "gap_pct_of_stake" in t]
     margins = [t["boost_margin_ms_est"] for t in closed if "boost_margin_ms_est" in t]
+    unl = [t for t in trades if t["pre_unlinked"]]
+    unl_landed = [t for t in unl if t["buy_landed"]]
     return {
         "n_decisions": len(trades), "n_buys_resolved": len(resolved), "n_buys_landed": len(landed), "n_closed": len(closed),
         "buy_fail_rate": (len(resolved) - len(landed)) / len(resolved) if resolved else None, "buy_fail_classes": fails,
@@ -180,6 +191,11 @@ def summarize(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "gap_pct_of_stake_mean": statistics.fmean(gpc) if gpc else None,
         "n_with_boost_margin": len(margins), "boost_margin_ms_median": _med(margins),
         "exit_after_boost_end_share": (sum(1 for x in margins if x < 0) / len(margins)) if margins else None,
+        "pre_unlinked": {  # triggers whose predecessor print may be missing: excluded from n_with_sim and the gap statistics above
+            "n_decisions": len(unl), "n_buys_landed": len(unl_landed), "n_closed": sum(1 for t in unl_landed if t["sell_landed"]),
+            "share_of_landed": (len(unl_landed) / len(landed)) if landed else None, "halt_share": h5.PRE_UNLINKED_MAX_SHARE,
+            "n_excluded_from_sim_match": sum(1 for t in closed if t["pre_unlinked"]),
+        },
         "model_reference": {"flat_fail_share": 0.15, "pressure_fail_mean_p": 0.289, "entry_assumed_s": [1.3, 1.9], "exit_assumed_lag_s": 0.55},
         "caveat": "execution measurement only; live fills are never gate evidence; n below 30 is not a statistic",
     }
