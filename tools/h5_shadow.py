@@ -77,6 +77,17 @@ from observe.trade_decode import (
 )
 from observe.link_state import GAP_EDGES_MS, REL_SILENT_MS_DEFAULT, SILENT_MS_DEFAULT
 from tools.paper_curve_math import pumpswap_sol_fee_ppm
+from tools.pump_structure_monitor import (  # pure python; the classifier semantics are the monitor's, not re-implemented here
+    DEFAULT_RPC,
+    DISC_COMPLETE,
+    PUMP_PROGRAM,
+    RpcClient,
+    b58decode,
+    completion_info,
+    decode_complete_event,
+    find_program_address,
+    post_complete_buy_seen,
+)
 
 log = logging.getLogger("mal.h5_shadow")
 
@@ -141,6 +152,28 @@ FRESH_REAL_QUOTE_MAX = 100 * 10**9
 FRESH_BASE_MIN, FRESH_BASE_MAX = 1.8e14, 2.1e14
 ERRORS_MAX_BYTES = 5_000_000
 ERROR_RECORDS_MAX = 20
+
+# ---- synthetic-migration class (EXP-024 Amendment 4 / DEC-024 Amendment 2): H5 buys nothing on a synthetic or unclassifiable pool ----------------
+# A pool is synthetic iff the mint's CompleteEvent tx carries a PostCompleteBuyEvent (tools.pump_structure_monitor.post_complete_buy_seen: the
+# discriminator alone, so a layout change over-counts synthetic rather than hiding it). Sources, in order: the pump.fun logsSubscribe (ws), an
+# off-hot-path RPC lookup of the curve's completing tx (rpc), else unknown (None -> excluded as "unclassified").
+# Replay only: PCB_FIRST_DEPLOY_SLOT is the first pump deploy that can emit the event. EVIDENCE: the first PostCompleteBuyEvent anywhere in MAL's data
+# is slot 454600658 (2026-10-08T16:39Z, 40/40 sampled synthetic completions are >= it, synthetic-1009/grads.jsonl), after the pump redeploy of
+# 2026-10-08T16:20Z (deploy slot 454596459, docs/HANDOFF.md); the binary live from the 2026-10-02T15:47Z deploy (slot 452654932) through 10-08 had no
+# PostCompleteBuy instruction (g_october_structure_check s04 at slot 454473446: BuyV3/MigrateV2 present, PostCompleteBuy 0) and the IDL naming the
+# event was published 2026-10-07; walk-2 decoders saw 0 sightings before. The s05 discriminator scan is NOT used: it reports found=0 for every event
+# including TradeEvent, so it cannot discriminate. Every replayable hour (< 2026-10-02T10) lies below both deploys, so the choice between the two
+# slots cannot change a replay; the later one is the first deploy with positive evidence of the event.
+PCB_FIRST_DEPLOY_SLOT = 454_596_459
+PRE_EVENT_SRC = "pre_event_binary"
+SYN_MAX = 50_000  # classified mints kept (count-bounded)
+RPC_ATTEMPT_DELAYS_S = (0.0, 3.0, 6.0)  # RPC fallback: attempts and the wait before each (a few attempts, bounded)
+RPC_ATTEMPT_TIMEOUT_S = 12.0  # wall bound of one attempt, enforced on the awaiting side; the worker thread is bounded by its client's own timeout
+RPC_SIGS_LIMIT = 25  # getSignaturesForAddress(curve) page: the completing tx sits behind the migrate tx(s)
+RPC_TX_PER_ATTEMPT = 5  # non-failed txs fetched per attempt, newest first
+RPC_MAX_INFLIGHT = 8  # concurrent fallback lookups; a request beyond this is dropped (the pool stays unclassified -> excluded)
+RPC_MIN_INTERVAL_S = 0.25  # pacing of the public RPC client
+_COMPLETE_EVENT_PREFIX = base64.b64encode(DISC_COMPLETE).decode()[:10]
 
 _CREATE_POOL_PREFIX = base64.b64encode(bytes.fromhex("b1310cd2a076a774")).decode()[:10]
 _BOOST_EVENT_PREFIX = base64.b64encode(bytes.fromhex("3f451c16305cc2b9")).decode()[:10]
@@ -324,6 +357,177 @@ def common_down(states: Sequence[dict], now_ms_: int, rel_silent_ms: int = REL_S
     return out
 
 
+# ---- synthetic-migration classifier ---------------------------------------------------------------------------
+class SynClassifier:
+    """mint -> (synthetic, src). Written by the pump.fun ws side feed ("ws") and the RPC fallback ("rpc"); read by the Engine (`lookup`) at trigger and
+    close time. First writer wins, except that True is sticky: a conflict resolves toward exclusion. No IO here and no engine access, so the side feed
+    can never touch the PumpSwap feed's clock, link state or records."""
+
+    def __init__(self, max_n: int = SYN_MAX) -> None:
+        self.max_n = max_n
+        self._m: collections.OrderedDict[str, tuple[bool, str]] = collections.OrderedDict()
+        self.stats: collections.Counter = collections.Counter()
+
+    def record(self, mint: str, syn: bool, src: str) -> None:
+        old = self._m.get(mint)
+        if old is not None:
+            if old[0] == syn:
+                return
+            self.stats["conflicts"] += 1
+            if not syn:
+                return
+        self._m[mint] = (bool(syn), src)
+        self._m.move_to_end(mint)
+        self.stats[f"{src}_{'synthetic' if syn else 'plain'}"] += 1
+        while len(self._m) > self.max_n:
+            self._m.popitem(last=False)
+
+    def lookup(self, mint: str | None, s0: int | None = None) -> tuple[bool | None, str | None]:
+        got = self._m.get(mint) if mint else None
+        return (got[0], got[1]) if got is not None else (None, None)
+
+    def observe_notice(self, note: Any) -> int:
+        """One pump.fun logsSubscribe notice. Records the class of every mint whose CompleteEvent it carries; returns how many. A failed tx carries no
+        committed event. A notice with truncated logs is NOT classified here (the PostCompleteBuyEvent line may be the cut part): the RPC path reads
+        the tx's inner instructions as well."""
+        if note.failed:
+            return 0
+        cand = [ln for ln in note.logs if "Program data: " in ln]
+        if not cand or not any(ln[ln.find("Program data: ") + 14:].lstrip().startswith(_COMPLETE_EVENT_PREFIX) for ln in cand):
+            return 0
+        self.stats["ws_complete_notices"] += 1
+        if any("Log truncated" in ln for ln in note.logs):
+            self.stats["ws_truncated"] += 1
+            return 0
+        blobs = [b for b in (_program_data_bytes(ln) for ln in cand) if b]
+        n = 0
+        for ev in (e for e in (decode_complete_event(b) for b in blobs) if e is not None):
+            self.record(ev["mint"], post_complete_buy_seen(blobs, ev["mint"])[0], "ws")
+            n += 1
+        return n
+
+
+class PreEventClassifier:
+    """Replay classifier (md5 proof). A pool whose first print is below PCB_FIRST_DEPLOY_SLOT completed its curve below it too, on a pump binary
+    that cannot emit PostCompleteBuyEvent: syn=False, src="pre_event_binary". At or above it the class is unknown (None -> excluded, fail closed)."""
+
+    def __init__(self, first_deploy_slot: int = PCB_FIRST_DEPLOY_SLOT) -> None:
+        self.first_deploy_slot = first_deploy_slot
+        self.stats: collections.Counter = collections.Counter()
+
+    def lookup(self, mint: str | None, s0: int | None = None) -> tuple[bool | None, str | None]:
+        if s0 is not None and s0 < self.first_deploy_slot:
+            return False, PRE_EVENT_SRC
+        return None, None
+
+
+class StaticClassifier:
+    """Fixed answer for every mint (tests, drills)."""
+
+    def __init__(self, syn: bool | None, src: str | None = "test") -> None:
+        self.syn, self.src = syn, src
+        self.stats: collections.Counter = collections.Counter()
+
+    def lookup(self, mint: str | None, s0: int | None = None) -> tuple[bool | None, str | None]:
+        return (self.syn, self.src) if self.syn is not None else (None, None)
+
+
+def _rpc_get_tx(client: Any, sig: str) -> dict | None:
+    """getTransaction at confirmed (the monitor's fetch_tx pins finalized, ~13 s later); retries once at the tx version a -32015 reply names."""
+    from tools.pump_structure_monitor import _VERSION_HINT, MAX_TX_VERSION, RpcError
+
+    version = MAX_TX_VERSION
+    for _ in range(2):
+        try:
+            return client.call("getTransaction", [sig, {"encoding": "json", "maxSupportedTransactionVersion": version, "commitment": "confirmed"}])
+        except RpcError as exc:
+            hint = _VERSION_HINT.search(str(exc))
+            if "-32015" in str(exc) and hint and int(hint.group(1)) > version:
+                version = int(hint.group(1))
+                continue
+            raise
+    return None
+
+
+def classify_via_rpc(client: Any, mint: str) -> bool | None:
+    """Blocking. The curve PDA's newest signatures (newest first, failed txs skipped), up to RPC_TX_PER_ATTEMPT getTransaction calls, until one carries
+    the mint's CompleteEvent (monitor.completion_info). True/False = that tx's PostCompleteBuyEvent verdict; None = not found yet."""
+    curve = find_program_address([b"bonding-curve", b58decode(mint)], PUMP_PROGRAM)[0]
+    sigs = client.call("getSignaturesForAddress", [curve, {"limit": RPC_SIGS_LIMIT, "commitment": "confirmed"}]) or []
+    tried = 0
+    for s in sigs:
+        if s.get("err") is not None:
+            continue
+        if tried >= RPC_TX_PER_ATTEMPT:
+            break
+        tried += 1
+        tx = _rpc_get_tx(client, s["signature"])
+        info = completion_info(tx, mint) if tx else None
+        if info is not None:
+            return bool(info["synthetic"])
+    return None
+
+
+class RpcFallback:
+    """Off-hot-path lookup for a pool still unclassified at s0. `request(mint)` returns at once; the blocking RPC runs in a worker thread, awaited with a
+    per-attempt timeout, a few attempts with delays, at most RPC_MAX_INFLIGHT at a time. It writes only to the SynClassifier. Any failure leaves the
+    mint unclassified, which the Engine turns into an exclusion: this path can never let a trade through."""
+
+    def __init__(self, classifier: SynClassifier, rpc_url: str = DEFAULT_RPC, *, client_factory: Callable[[], Any] | None = None,
+                 delays: Sequence[float] = RPC_ATTEMPT_DELAYS_S, attempt_timeout_s: float = RPC_ATTEMPT_TIMEOUT_S, max_inflight: int = RPC_MAX_INFLIGHT,
+                 sleep: Callable[[float], Any] = asyncio.sleep) -> None:
+        self.classifier, self.delays, self.attempt_timeout_s, self.max_inflight, self._sleep = classifier, tuple(delays), attempt_timeout_s, max_inflight, sleep
+        self._client_factory = client_factory or (lambda: RpcClient(rpc_url, min_interval=RPC_MIN_INTERVAL_S, max_retries=1, timeout=8.0,
+                                                                     max_calls=RPC_TX_PER_ATTEMPT + 3))
+        self._inflight: dict[str, asyncio.Task] = {}
+        self.calls = 0  # RPC calls made by finished attempts (RpcClient.total_calls), for the cost report
+
+    def request(self, mint: str) -> bool:
+        if not mint or mint in self._inflight:
+            return False
+        if len(self._inflight) >= self.max_inflight:
+            self.classifier.stats["rpc_dropped"] += 1
+            return False
+        self.classifier.stats["rpc_requests"] += 1
+        self._inflight[mint] = asyncio.get_running_loop().create_task(self._run(mint))
+        return True
+
+    async def _run(self, mint: str) -> None:
+        try:
+            for delay in self.delays:
+                if delay:
+                    await self._sleep(delay)
+                if self.classifier.lookup(mint)[0] is not None:  # the ws path (or an earlier attempt) classified it meanwhile
+                    return
+                client = self._client_factory()
+                self.classifier.stats["rpc_attempts"] += 1
+                try:
+                    res = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, classify_via_rpc, client, mint), self.attempt_timeout_s)
+                except asyncio.TimeoutError:
+                    self.classifier.stats["rpc_timeouts"] += 1
+                    res = None
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - RpcError / RpcUnreachable / CallBudgetExceeded / a decode surprise: try again, then give up
+                    self.classifier.stats["rpc_errors"] += 1
+                    log.warning("syn rpc fallback %s: %s", type(exc).__name__, str(exc)[:120])
+                    res = None
+                self.calls += getattr(client, "total_calls", 0) or 0
+                self.classifier.stats["rpc_calls"] = self.calls
+                if res is not None:
+                    self.classifier.record(mint, res, "rpc")
+                    return
+            self.classifier.stats["rpc_gave_up"] += 1
+        finally:
+            self._inflight.pop(mint, None)
+
+    async def close(self) -> None:
+        tasks = list(self._inflight.values())
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class Pool:
     @property
     def base_unresolved(self) -> int:
@@ -370,6 +574,7 @@ class Pool:
         self.sealed_cache: bool | None = None
         self.h5_sealed_cache: bool | None = None
         self.skip_logged = False
+        self.excluded: str | None = None  # "synthetic" | "unclassified" once a trigger of this pool was withheld (sticky: no variant of it fires later)
         self.closed = False
 
 
@@ -390,6 +595,7 @@ class Engine:
         seal_start_ms: int | None = SEAL_START_MS,  # None disables the seal (replay of exploration data)
         h5_look2_start_ms: int | None = H5_LOOK2_START_MS,  # None disables the H5 Look-2 outcome seal (tests on synthetic 2027 times)
         h5_look2_observed: bool = False,  # True only with the declared observation of EXP-024 Amendment 2 (run_live validates the reference)
+        classifier: Any = None,  # synthetic-migration class source: .lookup(mint, s0) -> (syn, src). None = nothing is classified: every trigger is excluded
     ) -> None:
         if boost_mode not in ("auto", "pda", "behavioural"):
             raise ValueError("boost_mode")
@@ -410,6 +616,10 @@ class Engine:
         self.silence_open = False
         self.last_flag_gap_ms: int | None = None  # time of the last gap that flagged pools; a CreatePool announced before it may have lost first prints
         self.counters: collections.Counter = collections.Counter()
+        self.counters["excluded_synthetic"] = 0  # present in every hb, even at zero
+        self.counters["excluded_unclassified"] = 0
+        self.classifier = classifier
+        self.syn_request: Callable[[str], Any] | None = None  # run_live: RpcFallback.request; called once for a pool unclassified at s0, must not block
         self.mint_pools: dict[str, set[str]] = {}
         self._feed_prev: dict[int, dict] = {}
         self._looks: collections.deque = collections.deque(maxlen=LOOKS_WINDOW)
@@ -626,9 +836,31 @@ class Engine:
             self.counters["h5_look2_sealed_pools"] += 1  # a pool count only; its trigger records are still written
         if mint and len(self.mint_pools.get(mint, ())) > 1:
             p.gaps.append({"kind": "ambiguous_mint"})
+        if self.syn_request is not None and mint and not self._sealed(p) and self._syn(p)[0] is None:  # still unclassified at s0: ask the RPC fallback (async)
+            try:
+                self.syn_request(mint)
+            except Exception:  # noqa: BLE001 - the fallback may not take the feed down; the pool stays unclassified and is excluded
+                self.counters["syn_request_errors"] += 1
         if ann is not None and self.last_flag_gap_ms is not None and ann[1] < self.last_flag_gap_ms:
             p.gaps.append({"kind": "announced_before_gap"})  # first prints may have been lost in a gap between the CreatePool and this s0
         return p
+
+    def _syn(self, p: Pool) -> tuple[bool | None, str | None]:
+        """(synthetic, src) of the pool's mint right now: (True|False, src) or (None, None) when unknown (no classifier, no mint, nothing recorded)."""
+        if self.classifier is None or not p.mint:
+            return None, None
+        return self.classifier.lookup(p.mint, p.s0)
+
+    def _exclude(self, p: Pool, pr: Pr, var: str, reason: str) -> None:
+        """A trigger the rule would have written, withheld because the pool is synthetic or unclassified. One `excluded` record per pool, no Q, price, V or
+        outcome field, no pending outcome and no strip: nothing about its paper result is computed. The variant is marked fired (as a stub without a slot) so
+        _eval stops exactly as it does after a real trigger."""
+        p.trig[var] = {"excluded": p.excluded or reason}
+        if p.excluded is not None:
+            return
+        p.excluded = reason
+        self.counters[f"excluded_{reason}"] += 1
+        self.emit({"type": "excluded", "reason": reason, "pool": p.pool, "mint": p.mint, "s0": p.s0, "slot": pr.slot})
 
     def _sps(self, p: Pool) -> float | None:
         s = self.sps_fn(p) if self.sps_fn else self.clock.sps()
@@ -805,6 +1037,10 @@ class Engine:
             p.trig[var] = {"sealed": True}
             self._note_sealed_decision(p.s0_recv_ms)
             return
+        syn, syn_src = self._syn(p)
+        if p.excluded is not None or syn is not False:  # EXP-024 Am.4: no buy on a synthetic or unclassifiable pool
+            self._exclude(p, pr, var, "synthetic" if syn else "unclassified")
+            return
         rec = {
             "type": "trigger", "variant": var, "pool": p.pool, "mint": p.mint, "s0": p.s0, "s0_t_recv_ms": p.s0_recv_ms,
             "slot": pr.slot, "signature": pr.sig, "t_since_s0_s": t, "sps": sps,
@@ -825,6 +1061,7 @@ class Engine:
             "s0_reanchored_slots": p.s0_reanchored_slots,
             "sps_n": None if self.sps_fn else self.clock.n_points(), "sps_span_s": None if self.sps_fn else self.clock.span_s(),
             "gap": bool(p.gaps), "gaps": p.gaps[:5], "announced": p.announced_slot is not None, "v_missing": pr.v_missing,
+            "synthetic": False, "synthetic_src": syn_src,
         }
         p.trig[var] = rec
         if self._h5_sealed(p):  # EXP-024 Look 2's added window without the declared observation: the decision-time record only, no ladder, no outcome
@@ -990,6 +1227,7 @@ class Engine:
         ident, src = self.boost_identity(p)
         if ident is None and p.best is not None:
             ident, src = p.best, "behavioural"
+        syn, syn_src = self._syn(p)
         st = p.traders.get(ident) if ident else None
         sps = p.sps_last or p.sps0
         last_rel = last_rel_ts = last_rel_recv = first_rel = None
@@ -1012,7 +1250,8 @@ class Engine:
             "min_q_pv_sol": None if (sealed or h5s or p.min_q_pv is None) else p.min_q_pv / 1e9,
             "min_q_fv_sol": None if (sealed or h5s or p.min_q_fv is None) else p.min_q_fv / 1e9, "sealed": sealed,
             "sps_path": self._sps_path(p), "pv_fv_disagree_sells": None if sealed else p.disagree,
-            "triggered": None if sealed else sorted(p.trig), "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "slot_regress": p.slot_regress,
+            "triggered": None if sealed else sorted(v for v, r in p.trig.items() if "excluded" not in r),
+            "synthetic": syn, "synthetic_src": syn_src, "chain_breaks": p.chain_breaks, "base_breaks": p.base_breaks, "slot_regress": p.slot_regress,
             "base_breaks_unresolved": p.base_unresolved, "base_breaks_unresolved_settled": self.unresolved_settled(p),
             "s0_minus_announced_slots": None if p.announced_slot is None else p.s0 - p.announced_slot,
             "s0_reanchored_slots": p.s0_reanchored_slots,
@@ -1342,6 +1581,9 @@ def status_snapshot(engine: Engine, sink: JsonlSink | None, source: Any) -> dict
         "mint_pools": len(engine.mint_pools), "seen": len(engine.seen),
         "counters": dict(engine.counters),
     }
+    clf_stats = getattr(engine.classifier, "stats", None)
+    if clf_stats is not None:
+        s["syn_class"] = dict(clf_stats)
     if sink is not None:
         s["lines"] = sink.lines
     stats = getattr(source, "stats", None)
@@ -1388,6 +1630,57 @@ def build_source(ws_urls: Sequence[str], sockets: int, commitment: str) -> Any:
     return LogsSubscribeSource(ws_url=urls[0], programs=(PUMPSWAP_PROGRAM,), commitment=commitment)
 
 
+def build_pump_source(ws_urls: Sequence[str], sockets: int, commitment: str) -> Any:
+    """The pump.fun bonding-curve logsSubscribe, a side feed for the synthetic-migration class only (the PumpSwap feed above does not carry the
+    CompleteEvent). Its own source object: it is never in source_ref, so the engine's clock, link state and gap records do not see it."""
+    from observe.trade_source import DEFAULT_PUBLIC_WS, LogsSubscribeSource, MultiSocketLogsSource
+    from observe.trade_decode import PUMP_BONDING_PROGRAM
+
+    urls = list(ws_urls) or [DEFAULT_PUBLIC_WS]
+    if sockets > 1:
+        return MultiSocketLogsSource(ws_urls=urls, sockets=sockets, programs=(PUMP_BONDING_PROGRAM,), commitment=commitment)
+    return LogsSubscribeSource(ws_url=urls[0], programs=(PUMP_BONDING_PROGRAM,), commitment=commitment)
+
+
+async def run_pump_feed(source_factory: Callable[[], Any], classifier: SynClassifier, stop: asyncio.Event, *, backoff0: float = 1.0, backoff_max: float = 60.0,
+                        sleep: Callable[[float], Any] = asyncio.sleep, on_error: Callable[[BaseException, dict], None] | None = None) -> None:
+    """Feed pump.fun notices to the classifier until stop. A source that raises or ends is rebuilt after a backoff. Nothing here writes a record or
+    touches the engine: a failure only leaves mints unclassified, which the RPC fallback and then the exclusion rule cover."""
+    backoff = backoff0
+    while not stop.is_set():
+        try:
+            source = source_factory()
+            async for note in source.notices(stop):
+                backoff = backoff0
+                try:
+                    classifier.observe_notice(note)
+                except Exception as exc:  # noqa: BLE001 - one bad notice must not take the side feed down
+                    classifier.stats["ws_decode_errors"] += 1
+                    if on_error is not None:
+                        try:
+                            on_error(exc, {"where": "syn_ws", "slot": getattr(note, "slot", None), "signature": getattr(note, "signature", None)})
+                        except Exception:  # noqa: BLE001
+                            pass
+            if stop.is_set():
+                break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            classifier.stats["ws_feed_errors"] += 1
+            log.warning("pump side feed error %s: %s", type(exc).__name__, str(exc)[:200])
+        classifier.stats["ws_restarts"] += 1
+        await sleep(backoff)
+        backoff = min(backoff * 2, backoff_max)
+
+
+def check_rpc_url(url: str) -> str:
+    """The RPC fallback is public RPC only: no Helius URL (0 credits), no key in the URL."""
+    u = urlsplit(url)
+    if u.scheme != "https" or "helius" in (u.hostname or "").lower() or u.query or u.username or u.password:
+        raise ValueError("--rpc-url must be a plain https public RPC URL (no Helius, no query string, no credentials)")
+    return url
+
+
 def check_look2_ref(ref: str | None) -> str | None:
     """The declared-observation flag of EXP-024 Amendment 2. None (absent) keeps the H5 Look-2 outcome seal; the only value that lifts it is the
     literal H5_LOOK2_AMENDMENT_REF. Anything else, an empty string included, is refused rather than ignored."""
@@ -1410,7 +1703,12 @@ async def run_live(args: argparse.Namespace) -> int:
     sink = JsonlSink(out_dir)
     errlog = ErrorLog(out_dir / "h5-shadow-errors.log")
     look2_ref = check_look2_ref(getattr(args, "h5_look2_observed", None))
-    engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub, h5_look2_observed=look2_ref is not None)
+    rpc_url = check_rpc_url(getattr(args, "rpc_url", None) or DEFAULT_RPC)
+    classifier = SynClassifier()
+    fallback = RpcFallback(classifier, rpc_url)
+    engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub, h5_look2_observed=look2_ref is not None,
+                    classifier=classifier)
+    engine.syn_request = fallback.request
     engine.on_error = errlog.log
     if look2_ref is not None:
         log.warning("H5 Look-2 outcomes are DECLARED-OBSERVED (%s): pools with s0 in [%s, %s) write outcomes; CAP-PICK picks stay sealed", look2_ref,
@@ -1428,7 +1726,10 @@ async def run_live(args: argparse.Namespace) -> int:
     engine.emit({"type": "start", "rule": RULE_ID, "rule_sha256": RULE_SHA256, "argv": redact_argv(sys.argv[1:]), "out_dir": str(out_dir), "pid": os.getpid(), "sockets": args.sockets,
                  "commitment": args.commitment, "boost_mode": args.boost_mode, "keys": "none", "sends": "none",
                  "seal": {"reason": SEAL_REASON, "start_ms": SEAL_START_MS, "oracle": "stub_always_true"},
-                 "h5_look2": look2_start_info(look2_ref)})
+                 "h5_look2": look2_start_info(look2_ref),
+                 "synthetic_gate": {"rule": "no buy on a synthetic or unclassified pool (EXP-024 Am.4)", "sources": ["ws", "rpc"], "ws_program": "pump.fun logsSubscribe",
+                                    "syn_sockets": getattr(args, "syn_sockets", 1), "rpc": "public getSignaturesForAddress+getTransaction", "rpc_attempt_delays_s": list(RPC_ATTEMPT_DELAYS_S)}})
+
     def probe() -> tuple[int, dict] | None:
         src = source_ref.get("source")
         snap = feed_snapshot(src)
@@ -1436,12 +1737,17 @@ async def run_live(args: argparse.Namespace) -> int:
 
     engine.link_probe = probe
     hk = asyncio.create_task(housekeeping(engine, sink, out_dir / "h5-shadow-status.json", stop, source_ref, on_error=lambda e, ctx: errlog.log(e, ctx)))
+    pump_task = asyncio.create_task(run_pump_feed(lambda: build_pump_source(args.ws_url or [], max(1, getattr(args, "syn_sockets", 1)), args.commitment), classifier,
+                                                  stop, on_error=lambda e, ctx: errlog.log(e, ctx)))
     try:
         await run_feed(factory, engine, stop, max_seconds=args.max_seconds,
                        on_decode_error=lambda e, note: errlog.log(e, {"where": "decode", "slot": getattr(note, "slot", None), "signature": getattr(note, "signature", None)}))
     finally:
         stop.set()
         await hk
+        pump_task.cancel()
+        await asyncio.gather(pump_task, return_exceptions=True)
+        await fallback.close()
         engine.close_all("shutdown")
         engine.emit({"type": "stop", **status_snapshot(engine, sink, source_ref.get("source"))})
         sink.close()
@@ -1583,7 +1889,7 @@ def run_replay(args: argparse.Namespace) -> int:
         rows = shuffle_within_slot(rows, args.shuffle_slot_seed)
     records: list[dict] = []
     sps_fn = (lambda p: sps_pool.get(p.pool)) if args.sps == "pool" else None
-    engine = Engine(records.append, boost_mode=args.boost_mode, sps_fn=sps_fn)
+    engine = Engine(records.append, boost_mode=args.boost_mode, sps_fn=sps_fn, classifier=PreEventClassifier())  # every replayable hour is pre-event
     replay(rows, meta, engine)
     if args.out_dir:
         sink = JsonlSink(args.out_dir, prefix="h5-replay")
@@ -1606,6 +1912,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--ws-url", action="append", default=None, help="public RPC websocket; repeatable (socket i uses url i mod n)")
     ap.add_argument("--sockets", type=int, default=2, help="redundant logsSubscribe sockets merged by signature")
     ap.add_argument("--commitment", default="confirmed", choices=("processed", "confirmed", "finalized"))
+    ap.add_argument("--syn-sockets", type=int, default=1, help="logsSubscribe sockets on the pump.fun program for the synthetic-migration class (side feed; the RPC fallback covers a miss)")
+    ap.add_argument("--rpc-url", default=DEFAULT_RPC, help="public RPC for the synthetic-class fallback (default %(default)s); Helius URLs are refused")
     ap.add_argument("--boost-mode", default="auto", choices=("auto", "pda", "behavioural"))
     ap.add_argument("--max-seconds", type=float, default=None, help="stop after this many seconds (smoke test)")
     ap.add_argument("--h5-look2-observed", default=None, metavar="AMENDMENT_REF",

@@ -77,6 +77,7 @@ def make_engine(**kw):
     out: list[dict] = []
     kw.setdefault("sps_fn", lambda p: SPS)
     kw.setdefault("pda_fn", lambda pool: "PDA_" + pool)
+    kw.setdefault("classifier", h5.StaticClassifier(False))  # every test pool is non-synthetic unless a test says otherwise
     kw.setdefault("seal_start_ms", None)  # synthetic tape times are in 2027; the seal is tested on its own
     kw.setdefault("h5_look2_start_ms", None)  # likewise the H5 Look-2 outcome seal (tested in H5Look2SealTests)
     now = [1_800_000_000_000]
@@ -309,7 +310,7 @@ class BoostTests(unittest.TestCase):
         from tools.pump_structure_monitor import boost_vault_authority
 
         out: list[dict] = []
-        eng = h5.Engine(out.append, sps_fn=lambda p: SPS)
+        eng = h5.Engine(out.append, sps_fn=lambda p: SPS, classifier=h5.StaticClassifier(False))
         pool = "FLQVyU2S84Bi3i2nJ4vYbUfir9gZKrmbqCEF9uhxs11H"
         eng.on_create_pool(pool, MINT, h5.WSOL_MINT, 999, 0)
         t = Tape(pool=pool)
@@ -584,7 +585,7 @@ class SlotClockTests(unittest.TestCase):
 
     def test_any_pumpswap_print_warms_the_clock_not_only_tracked_pools(self):
         out: list[dict] = []
-        eng = h5.Engine(out.append, pda_fn=lambda p: "PDA", seal_start_ms=None)
+        eng = h5.Engine(out.append, pda_fn=lambda p: "PDA", seal_start_ms=None, classifier=h5.StaticClassifier(False))
         t = Tape(pool="OtherUnannouncedPool")
         for k in range(40):  # 16 s of prints on a pool nobody announced
             t.row(1000 + k, "buy", "A", SOL // 100)
@@ -2002,8 +2003,9 @@ class LinkStateRound6Tests(unittest.TestCase):
         run(eng, t)
         eng.close_all("t")
         envelope = {"v", "schema", "t_ms"}
-        self.assertEqual(set(types(out, "trigger")[0]) - envelope, set(fx["trigger"]))
-        self.assertEqual(set(types(out, "pool")[0]) - envelope, set(fx["pool"]))
+        added = {"synthetic", "synthetic_src"}  # EXP-024 Am.4: additive keys on both records; the executor reads by key, so adding them breaks nothing there
+        self.assertEqual(set(types(out, "trigger")[0]) - envelope, set(fx["trigger"]) | added)
+        self.assertEqual(set(types(out, "pool")[0]) - envelope, set(fx["pool"]) | added)
 
     def test_the_stale_comment_is_gone(self):
         self.assertNotIn("old comment follows", Path(h5.__file__).read_text())
@@ -2832,7 +2834,7 @@ class H5Look2SealTests(unittest.TestCase):
 
     def test_the_engine_defaults_fail_closed(self):
         out: list[dict] = []
-        eng = h5.Engine(out.append, wall=lambda: 1_800_000_000_000, sps_fn=lambda p: SPS, pda_fn=lambda p: "PDA", seal_start_ms=None)  # no h5 kwargs
+        eng = h5.Engine(out.append, wall=lambda: 1_800_000_000_000, sps_fn=lambda p: SPS, pda_fn=lambda p: "PDA", seal_start_ms=None, classifier=h5.StaticClassifier(False))  # no h5 kwargs
         self.assertEqual((eng.h5_look2_start_ms, eng.h5_look2_observed), (h5.H5_LOOK2_START_MS, False))
         announce(eng)
         t = Tape(ts0=self.T_0030)
