@@ -169,6 +169,40 @@ def test_engine_matches_batch_reference_lookahead_state():
     _compare_mode(live=False)
 
 
+def test_next_state_argument_equals_lookahead_ingestion():
+    rows = make_prints(11)
+    slots = [r["slot"] for r in rows]
+    for T in cf.grid_times(G0)[::40]:
+        SD = clock_sd(int(T))
+        i1 = int(np.searchsorted(slots, SD, "left"))
+        if i1 >= len(rows):
+            continue
+        a = new_engine(rows); b = new_engine(rows)
+        for r in rows[:i1]:
+            feed(a, r); feed(b, r)
+        feed(b, rows[i1])                                   # look-ahead: next print ingested
+        ra = a.features_at("POOL", int(T), sd=SD, next_state=(rows[i1]["q"], rows[i1]["b"]))
+        rb = b.features_at("POOL", int(T), sd=SD)
+        if ra is None or rb is None:
+            assert ra is None and rb is None
+            continue
+        assert ra.pre == rb.pre
+        for name in cf.FEATURE_NAMES:
+            assert close(ra.get(name), rb.get(name)), (int(T), name)
+
+
+def test_market_keep_window_in_expire():
+    eng = cf.FeatureEngine()
+    eng.on_trade("pumpswap", "M", "A", True, 1e9, 1e12, 70e9, 206e12, "P", 1, G0)
+    eng.on_trade("pumpswap", "M", "A", True, 1e9, 1e12, 70e9, 206e12, "P", 2, G0 + 3 * 3600)
+    eng.expire(G0 + 3 * 3600)
+    assert (G0 // 60 * 60) not in eng._mk
+    eng2 = cf.FeatureEngine()
+    eng2.on_trade("pumpswap", "M", "A", True, 1e9, 1e12, 70e9, 206e12, "P", 1, G0)
+    eng2.expire(G0 + 3 * 3600, market_keep_s=10 ** 9)
+    assert (G0 // 60 * 60) in eng2._mk
+
+
 def test_slot_clock_and_alive_window():
     c = cf.SlotClock()
     for s, bt in ((100, 10), (101, 10), (102, 11), (110, 13)):

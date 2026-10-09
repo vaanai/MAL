@@ -441,7 +441,7 @@ class FeatureEngine:
         if P.creator is not None:
             self._cr_pools.setdefault(P.creator, []).append(P)
 
-    def expire(self, now_bt: int) -> int:
+    def expire(self, now_bt: int, market_keep_s: int = 2 * 3600) -> int:
         """Free pool arrays older than the decision window; keep the 6 h outcome for the creator record. Returns pools freed."""
         n = 0
         for pid in [p for p, P in self._pools.items() if (P.g0 is not None and now_bt > P.g0 + GRID_END + 3600) or
@@ -450,7 +450,7 @@ class FeatureEngine:
             if P.outcome is None and P.eligible:
                 P.outcome = P.outcome_now()
             P.free(); n += 1
-        for m in [m for m, v in self._mk.items() if m < now_bt - 2 * 3600]:
+        for m in [m for m, v in self._mk.items() if m < now_bt - market_keep_s]:
             del self._mk[m]
         for p in [p for p, bt in self._rejected.items() if bt != -1 and bt < now_bt - 86400]:
             del self._rejected[p]
@@ -468,7 +468,9 @@ class FeatureEngine:
             self._ledger_cache = {day: self.ledger.snapshot_for_day(day)}
         return self._ledger_cache[day]
 
-    def features_at(self, pool: str, T: int, sd: Optional[int] = None) -> Optional[Features]:
+    def features_at(self, pool: str, T: int, sd: Optional[int] = None, next_state: Optional[tuple[float, float]] = None) -> Optional[Features]:
+        """next_state = (quote_reserve, base_reserve) PRE-trade of the first print with slot >= SD, when the caller already knows it
+        (parity harness "exact" mode). Live callers leave it None and get the fee-model post-trade estimate."""
         P = self._pools.get(pool)
         if P is None or not P.eligible or P.dead or P.bad:
             return None
@@ -483,7 +485,11 @@ class FeatureEngine:
         i60 = min(bisect.bisect_left(bt, T - 3600), i1)
         if i1 - i60 <= 0:
             return None
-        if i1 == n and P.est is None:
+        est = P.est
+        if i1 == n and next_state is not None:
+            qq = next_state[0] + P.V
+            est = (qq, next_state[1], qq / next_state[1]) if (qq > 0 and next_state[1] > 0) else None
+        if i1 == n and est is None:
             return None
         g0 = P.g0
         bl = bisect.bisect_left
@@ -491,9 +497,9 @@ class FeatureEngine:
         V = P.V
 
         def price(i: int) -> float:
-            return P.ppre[i] if i < n else P.est[2]
+            return P.ppre[i] if i < n else est[2]
 
-        qstate = P.qpre[i1] if i1 < n else P.est[0]
+        qstate = P.qpre[i1] if i1 < n else est[0]
         spot = price(i1)
         cv, cb, cs_ = P.cs_vol, P.cs_bs, P.cs_ss
         v1 = (cv[i1] - cv[i1m]) / 1e9; v5 = (cv[i1] - cv[i5]) / 1e9; v15 = (cv[i1] - cv[i15]) / 1e9; v60 = (cv[i1] - cv[i60]) / 1e9
@@ -519,7 +525,7 @@ class FeatureEngine:
         def csl_at(k: int) -> float:
             if k < n:
                 return P.csl[k]
-            d = math.log(P.est[2]) - P.lp[n - 1]
+            d = math.log(est[2]) - P.lp[n - 1]
             return P.csl[n - 1] + d * d
 
         c1 = csl_at(i1)
