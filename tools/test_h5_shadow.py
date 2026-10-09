@@ -2673,6 +2673,7 @@ class H5Look2SealTests(unittest.TestCase):
     T_LOOK2 = 1_792_108_800  # 2026-10-16T00:00:00Z
     T_0030 = T_LOOK2 + 1800  # 00:30Z, inside Look 2's window and before the CAP-PICK seal
     T_0200 = 1_792_116_000  # 2026-10-16T02:00:00Z, inside both seals
+    T_END = 1_793_923_200  # 2026-11-06T00:00:00Z, the end of the declared window
     T_LOOK1 = 1_791_849_600  # 2026-10-13T00:00:00Z, Look 1's window
     OUTCOME_WORDS = ("legs", "exit_ladder", "net_pct", "pnl_nofail", "price_lamports_per_raw", "gross", "\"landing_slot\"", "state_src")
 
@@ -2774,6 +2775,20 @@ class H5Look2SealTests(unittest.TestCase):
         eng, out = self.run_pool(self.T_LOOK2 - 1)  # 10-15T23:59:59Z: Look 1's window, the pool then runs on past midnight
         self.assert_outcomes(out)
 
+    def test_the_declared_window_ends_at_1106_0000_and_the_flag_does_not_reach_past_it(self):
+        eng, out = self.run_pool(self.T_END - 1, observed=True)  # 11-05T23:59:59Z: the last second inside the window
+        self.assert_outcomes(out)
+        for ts0 in (self.T_END, self.T_END + 1, self.T_END + 2 * 86400):  # exactly 11-06T00:00:00Z, one second after, two days after
+            for observed in (True, False):
+                eng, out = self.run_pool(ts0, observed=observed)
+                self.assert_decision_only(eng, out)
+                self.assertEqual(eng.counters["h5_look2_sealed_pools"], 1, (ts0, observed))
+
+    def test_a_pool_past_the_end_is_also_sealed_by_the_pick_oracle_with_the_flag(self):
+        eng, out = self.run_pool(self.T_END + 3600, observed=True, oracle=lambda m: True)
+        self.assertEqual([r["type"] for r in out if r.get("pool") == POOL], ["pool"])
+        self.assertEqual(set(types(out, "pool")[0]), SEALED_POOL_KEYS)
+
     def test_look_1_pools_are_unaffected_with_or_without_the_flag(self):
         for observed in (False, True):
             for ts0 in (self.T_LOOK1, self.T_LOOK2 - 3600, self.T_LOOK2 - 1):
@@ -2844,6 +2859,9 @@ class H5Look2SealTests(unittest.TestCase):
         self.assertEqual(h5.H5_LOOK2_START_MS, 1_792_108_800_000)
         self.assertEqual(h5.iso_from_ms(h5.H5_LOOK2_START_MS), "2026-10-16T00:00:00.000Z")
         self.assertEqual(h5.H5_LOOK2_START_MS + 3_600_000, h5.SEAL_START_MS)  # one hour before the CAP-PICK seal
+        self.assertEqual(h5.H5_LOOK2_END_MS, 1_793_923_200_000)
+        self.assertEqual(h5.iso_from_ms(h5.H5_LOOK2_END_MS), "2026-11-06T00:00:00.000Z")
+        self.assertEqual(h5.H5_LOOK2_END_MS - h5.H5_LOOK2_START_MS, 21 * 86_400_000)  # [10-16T00, 11-06T00): 21 days
         self.assertEqual(h5.H5_LOOK2_AMENDMENT_REF, "EXP-024-Am2")
 
     # ---- the flag ------------------------------------------------------------------------------------------------------------------
@@ -2871,6 +2889,8 @@ class H5Look2SealTests(unittest.TestCase):
         self.assertEqual((off["observed"], off["amendment_ref"]), (False, None))
         self.assertEqual((on["observed"], on["amendment_ref"]), (True, "EXP-024-Am2"))
         self.assertEqual((on["start"], on["start_ms"]), ("2026-10-16T00:00:00.000Z", h5.H5_LOOK2_START_MS))
+        self.assertEqual((on["end"], on["end_ms"]), ("2026-11-06T00:00:00.000Z", h5.H5_LOOK2_END_MS))
+        self.assertEqual((off["end"], off["end_ms"]), (on["end"], on["end_ms"]))
 
     def run_live_start_record(self, extra):
         import argparse

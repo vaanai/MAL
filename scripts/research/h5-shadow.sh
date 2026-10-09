@@ -14,8 +14,10 @@
 #                   starves the canary. All sockets share one default endpoint, so prefer 2+ distinct endpoints in H5_WS_URLS.
 #   H5_ALLOW_FEW_SOCKETS  set to 1 to allow H5_SOCKETS below 3 (smoke tests and manual runs whose records feed nothing)
 #   H5_LOOK2_OBSERVED  set to exactly EXP-024-Am2 to start the shadow with EXP-024 Amendment 2's declared observation of Look 2's added window
-#                   (pools with s0 >= 2026-10-16T00Z write outcomes). Unset or empty keeps the H5 seal: those pools get trigger records only.
-#                   Any other value is refused. CAP-PICK picks (from 2026-10-16T01Z) stay sealed whatever this says.
+#                   (pools with s0 in [2026-10-16T00Z, 2026-11-06T00Z) write outcomes). Unset or empty keeps the H5 seal: pools with s0 >= 2026-10-16T00Z
+#                   get trigger records only, and pools with s0 >= 2026-11-06T00Z get them even with the flag. Any other value is refused.
+#                   CAP-PICK picks (from 2026-10-16T01Z) stay sealed whatever this says. A MiScusi resume or re-run must set the variable again:
+#                   the daily check alerts when the newest start record of a shadow running past 2026-10-16T00Z shows h5_look2.observed false.
 #   H5_MAX_SECONDS  stop after this many seconds (smoke test: H5_MAX_SECONDS=120 H5_OUT_DIR=/tmp/h5-smoke bash scripts/research/h5-shadow.sh)
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"

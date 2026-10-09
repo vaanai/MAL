@@ -70,6 +70,7 @@ class FakeHost(dc.Host):
         self.execstart = LIVE_EXEC
         self.balance_lamports = FUNDED - 1_000_000
         self.feed = ("h5-shadow-2026-10-09T14.jsonl", NOW - 60)
+        self.shadow_start: dict | None = {"type": "start", "h5_look2": {"observed": True, "amendment_ref": "EXP-024-Am2"}}  # the newest shadow start record
         self.birth_t: float | None = NOW - 86400  # the shadow directory is a day old: older than the unit's run, so the unit's bind is the real one
         self.sudo = True
 
@@ -104,6 +105,9 @@ class FakeHost(dc.Host):
 
     def newest_hourly(self, directory):
         return self.feed
+
+    def newest_shadow_start(self, directory, max_files=400):
+        return self.shadow_start
 
     def systemctl(self, *argv):
         if self.systemctl_rc:
@@ -571,6 +575,107 @@ def test_newest_hourly_ignores_the_status_file_and_the_error_log(tmp_path):
     name, mtime = dc.Host().newest_hourly(str(tmp_path))
     assert name == "h5-shadow-2026-10-09T14.jsonl"
     assert dc.Host().newest_hourly(str(tmp_path / "nope")) is None
+
+
+# ---- EXP-024 Amendment 2: the shadow must run with the declared observation inside [2026-10-16T00Z, 2026-11-06T00Z) -----------------
+WIN = 1_792_108_800 + 3600  # 2026-10-16T01:00:00Z, inside the window
+
+
+def look2_alerts(host, now, live_ok=True):
+    lines: list[str] = []
+    rep = dc.Report(lines.append)
+    dc.check_look2_flag(host, rep, live_ok, "/shadow", now)
+    return [n for n, _ in rep.alert_list], lines
+
+
+def test_look2_window_constants_equal_the_shadows():
+    from tools import h5_shadow
+
+    assert (dc.LOOK2_START_S * 1000, dc.LOOK2_END_S * 1000) == (h5_shadow.H5_LOOK2_START_MS, h5_shadow.H5_LOOK2_END_MS)
+    assert dc.START_MARK == b'{"type":"start"'  # the shadow's JsonlSink writes compact JSON with "type" first
+
+
+def test_look2_flag_unset_after_1016_with_live_ok_alerts():
+    h = FakeHost()
+    for start, why in ((None, "no start record was found"), ({"type": "start"}, "has no h5_look2 field"),
+                       ({"type": "start", "h5_look2": {"observed": False, "amendment_ref": None}}, "shows h5_look2.observed false")):
+        h.shadow_start = start
+        names, lines = look2_alerts(h, WIN)
+        assert names == ["h5_look2_not_observed"], why
+        assert "H5_LOOK2_OBSERVED=EXP-024-Am2" in lines[0] and why in lines[0], lines[0]
+    h.shadow_start = {"type": "start", "h5_look2": {"observed": "yes"}}  # only the boolean true counts
+    assert look2_alerts(h, WIN)[0] == ["h5_look2_not_observed"]
+
+
+def test_look2_flag_set_is_ok_and_silent():
+    names, lines = look2_alerts(FakeHost(), WIN)
+    assert names == [] and lines[0].startswith("OK") and "Look 2 observation" in lines[0]
+
+
+def test_look2_flag_only_matters_inside_the_window_with_live_ok_and_a_feed():
+    h = FakeHost()
+    h.shadow_start = {"type": "start", "h5_look2": {"observed": False}}
+    assert look2_alerts(h, dc.LOOK2_START_S - 1)[0] == []  # before 10-16T00Z
+    assert look2_alerts(h, dc.LOOK2_START_S)[0] == ["h5_look2_not_observed"]  # exactly 10-16T00:00:00Z
+    assert look2_alerts(h, dc.LOOK2_END_S - 1)[0] == ["h5_look2_not_observed"]
+    assert look2_alerts(h, dc.LOOK2_END_S)[0] == []  # the declared window has ended: the flag changes nothing from 11-06T00Z
+    assert look2_alerts(h, WIN, live_ok=False)[0] == []  # gate closed: no canary
+    h.feed = None
+    assert look2_alerts(h, WIN)[0] == []  # no feed at all is h5_feed_stale's alert
+
+
+def test_look2_flag_is_a_step_of_the_run_and_never_prints_the_record(tmp_path):
+    h = FakeHost()
+    h.shadow_start = {"type": "start", "h5_look2": {"observed": False}, "argv": ["--ws-url", "wss://SECRETHOST/key"], "out_dir": "/home/x/SECRETDIR"}
+    lines: list[str] = []
+    rep = dc.run_checks(dc.build_parser().parse_args(["--shadow-dir", "/x", "--baseline", str(tmp_path / "b.json")]), h, lines.append, lambda w, e: 0, WIN)
+    assert "h5_look2_not_observed" in [n for n, _ in rep.alert_list]
+    assert "SECRET" not in "\n".join(lines)
+
+
+def shadow_line(**kw) -> str:
+    return json.dumps({"type": "start", "v": 1, "t_ms": 1, **kw}, separators=(",", ":")) + "\n"
+
+
+def test_newest_shadow_start_reads_the_last_start_record_of_the_newest_file_that_has_one(tmp_path):
+    d = tmp_path
+    (d / "h5-shadow-2026-10-16T01.jsonl").write_text(shadow_line(h5_look2={"observed": False}) + '{"type":"hb"}\n')
+    (d / "h5-shadow-2026-10-16T02.jsonl").write_text('{"type":"hb"}\n' + shadow_line(h5_look2={"observed": False}) + '{"type":"pool"}\n'
+                                                      + shadow_line(h5_look2={"observed": True}) + '{"type":"hb"}\n')  # a restart in the same hour: the last one wins
+    (d / "h5-shadow-2026-10-16T03.jsonl").write_text('{"type":"hb"}\n{"type":"pool"}\n')  # newest file, no start record: look back
+    (d / "h5-shadow-status.json").write_text(shadow_line(h5_look2={"observed": False}))  # not an hourly file
+    rec = dc.Host().newest_shadow_start(str(d))
+    assert rec["type"] == "start" and rec["h5_look2"] == {"observed": True}
+    assert dc.Host().newest_shadow_start(str(d / "nope")) is None
+    (d / "h5-shadow-2026-10-16T04.jsonl").write_text(shadow_line(h5_look2={"observed": False}))
+    assert dc.Host().newest_shadow_start(str(d))["h5_look2"] == {"observed": False}  # a newer file with a start record wins
+
+
+def test_newest_shadow_start_ignores_the_marker_inside_another_record_a_torn_line_and_unsafe_files(tmp_path):
+    d = tmp_path
+    inner = json.dumps({"type": "error", "msg": '{"type":"start","h5_look2":{"observed":true}}'}, separators=(",", ":"))  # marker text inside a record
+    (d / "h5-shadow-2026-10-16T01.jsonl").write_text(shadow_line(h5_look2={"observed": False}) + inner + "\n"
+                                                      + '{"type":"start","h5_look2":{"observed":tr')  # the last line is still being written
+    assert dc.Host().newest_shadow_start(str(d))["h5_look2"] == {"observed": False}
+    (d / "h5-shadow-2026-10-16T02.jsonl").write_text("")  # an empty file is skipped, not an error
+    assert dc.Host().newest_shadow_start(str(d))["h5_look2"] == {"observed": False}
+    real = d / "real.txt"
+    real.write_text(shadow_line(h5_look2={"observed": True}))
+    (d / "h5-shadow-2026-10-16T03.jsonl").symlink_to(real)  # a symlink is never followed
+    assert dc.Host().newest_shadow_start(str(d))["h5_look2"] == {"observed": False}
+    os.link(real, d / "h5-shadow-2026-10-16T04.jsonl")  # a hard-linked file is refused
+    assert dc.Host().newest_shadow_start(str(d))["h5_look2"] == {"observed": False}
+
+
+def test_newest_shadow_start_of_a_real_shadow_start_record_round_trips(tmp_path):
+    from tools import h5_shadow
+
+    rec = {"type": "start", "rule": h5_shadow.RULE_ID, "argv": ["--h5-look2-observed", "EXP-024-Am2"], "h5_look2": h5_shadow.look2_start_info("EXP-024-Am2")}
+    sink = h5_shadow.JsonlSink(tmp_path)
+    sink.write({**rec, "v": 1, "t_ms": 1_792_112_400_000})
+    sink.close()
+    got = dc.Host().newest_shadow_start(str(tmp_path))
+    assert got["h5_look2"]["observed"] is True and got["h5_look2"]["amendment_ref"] == "EXP-024-Am2"
 
 
 def test_script_is_read_only_and_keyless():

@@ -30,9 +30,10 @@ EXIT LADDER. Every outcome record also carries the pool at the exit landing slot
 
 H5 LOOK-2 SEAL (EXP-024 section 3.1, Amendment 2). Pools whose s0 block time is at or after H5_LOOK2_START_MS (2026-10-16T00:00Z, Look 2's
 added window) have every outcome-bearing record withheld (outcome, legs, exit ladder, strip, min_q), exactly as the CAP-PICK seal withholds them,
-unless the process was started with --h5-look2-observed EXP-024-Am2 (declared observation, Amendment 2). Trigger records, which carry the
-decision-time state the executor needs, are still written for such pools. The CAP-PICK seal (from 2026-10-16T01Z) applies on top and does not
-depend on the flag: a pick stays fully sealed.
+unless the process was started with --h5-look2-observed EXP-024-Am2 (declared observation, Amendment 2). The declaration covers
+[2026-10-16T00:00Z, 2026-11-06T00:00Z) only (H5_LOOK2_END_MS): a pool with s0 at or after the end stays withheld whatever the flag says.
+Trigger records, which carry the decision-time state the executor needs, are still written for such pools. The CAP-PICK seal (from
+2026-10-16T01Z) applies on top and does not depend on the flag: a pick stays fully sealed.
 
 REPLAY. --replay-tape runs the SAME engine over the audit's exploration tape (/data/mal/audit-1008/tape) so the live code can be checked
 against the frozen rule's own trigger list (--compare-frozen). The PR body carries the numbers.
@@ -121,6 +122,9 @@ SEAL_REASON = "cap_pick_seal"
 # H5 seal for EXP-024 Look 2's added window (EXP-024 section 3: the section 3 seal applies to the canary's and shadow's outcomes for pools with
 # s0 at or after 2026-10-16T00 until Look 2 is read), lifted only by Amendment 2's declared observation. Independent of the CAP-PICK seal above.
 H5_LOOK2_START_MS = int(datetime(2026, 10, 16, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+# The declared window is [H5_LOOK2_START_MS, H5_LOOK2_END_MS) only (Amendment 2). A pool with s0 at or after the end is outside it: its outcomes
+# stay withheld whatever the flag says.
+H5_LOOK2_END_MS = int(datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
 H5_LOOK2_AMENDMENT_REF = "EXP-024-Am2"  # the only value --h5-look2-observed accepts
 H5_LOOK2_SEAL_REASON = "h5_look2_seal"
 SEEN_TTL_S = 1200.0
@@ -929,10 +933,14 @@ class Engine:
         return p.h5_sealed_cache
 
     def _h5_sealed_now(self, p: Pool) -> bool:
-        if self.h5_look2_start_ms is None or self.h5_look2_observed:
+        if self.h5_look2_start_ms is None:
             return False
         t = p.s0_ts * 1000 if p.s0_ts else p.s0_recv_ms
-        return t >= self.h5_look2_start_ms
+        if t < self.h5_look2_start_ms:
+            return False
+        if t >= H5_LOOK2_END_MS:
+            return True  # outside the declared window [start, end): sealed whatever the flag says
+        return not self.h5_look2_observed
 
     def _emit_strip(self, p: Pool, sealed: bool) -> None:
         """Compact per-print pre-trade states of a TRIGGERED pool from its first trigger print to the end of its life, so an offline scorer can
@@ -1393,6 +1401,7 @@ def check_look2_ref(ref: str | None) -> str | None:
 def look2_start_info(look2_ref: str | None) -> dict:
     """The H5 Look-2 seal state, as the `start` record logs it."""
     return {"reason": H5_LOOK2_SEAL_REASON, "start_ms": H5_LOOK2_START_MS, "start": iso_from_ms(H5_LOOK2_START_MS),
+            "end_ms": H5_LOOK2_END_MS, "end": iso_from_ms(H5_LOOK2_END_MS),
             "observed": look2_ref is not None, "amendment_ref": look2_ref}
 
 
@@ -1404,7 +1413,8 @@ async def run_live(args: argparse.Namespace) -> int:
     engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub, h5_look2_observed=look2_ref is not None)
     engine.on_error = errlog.log
     if look2_ref is not None:
-        log.warning("H5 Look-2 outcomes are DECLARED-OBSERVED (%s): pools with s0 >= %s write outcomes; CAP-PICK picks stay sealed", look2_ref, iso_from_ms(H5_LOOK2_START_MS))
+        log.warning("H5 Look-2 outcomes are DECLARED-OBSERVED (%s): pools with s0 in [%s, %s) write outcomes; CAP-PICK picks stay sealed", look2_ref,
+                    iso_from_ms(H5_LOOK2_START_MS), iso_from_ms(H5_LOOK2_END_MS))
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -1599,8 +1609,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--boost-mode", default="auto", choices=("auto", "pda", "behavioural"))
     ap.add_argument("--max-seconds", type=float, default=None, help="stop after this many seconds (smoke test)")
     ap.add_argument("--h5-look2-observed", default=None, metavar="AMENDMENT_REF",
-                    help=f"live: declare EXP-024 Amendment 2's observation of Look 2 outcomes; the value must be exactly {H5_LOOK2_AMENDMENT_REF}. Without it, pools with "
-                         "s0 >= 2026-10-16T00Z get trigger records only (no outcome, strip, legs, ladder or min_q). CAP-PICK picks stay sealed either way.")
+                    help=f"live: declare EXP-024 Amendment 2's observation of Look 2 outcomes for pools with s0 in [2026-10-16T00Z, 2026-11-06T00Z); the value must be "
+                         f"exactly {H5_LOOK2_AMENDMENT_REF}. Without it, pools with s0 >= 2026-10-16T00Z get trigger records only (no outcome, strip, legs, ladder or "
+                         "min_q); pools with s0 >= 2026-11-06T00Z are withheld with it too. CAP-PICK picks stay sealed either way.")
     ap.add_argument("--log-level", default="INFO")
     ap.add_argument("--replay-tape", default=None, help="run the engine over this exploration tape dir instead of the live feed")
     ap.add_argument("--replay-hours", default=None, help="comma-separated tape hours, e.g. 2026-09-20T12,2026-09-20T13")

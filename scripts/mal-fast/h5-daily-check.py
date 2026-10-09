@@ -22,6 +22,10 @@ is never echoed into an alert. A failing `sudo -n` is an ALERT (sudo_unavailable
   IDLE CANARY   stale shadow feed (newest hourly file older than 10 min); a shadow directory created AFTER the unit started (the unit's
                 bind points at nothing or at the old directory); LIVE_OK present but the unit not active and enabled, the running ExecStart
                 without --live, or STOP present (the H5 one or the wallet-wide one); LIVE_OK older than 6 h with no buy/skip/decision row.
+  LOOK 2 FLAG   from 2026-10-16T00Z to 2026-11-06T00Z with LIVE_OK present: the newest `start` record in the shadow directory must show
+                h5_look2.observed true (EXP-024 Amendment 2). Without it the shadow withholds the outcomes of every pool in that window, the
+                canary has no paper twin and the divergence halt (DEC-024 section 5 item 4) can never fire. A MiScusi resume must set
+                H5_LOOK2_OBSERVED again (alert h5_look2_not_observed).
   WATCHDOG      the watch timer not enabled and active; mal-h5-watch.service Result not success; its state `ts` older than 15 min; its
                 installed unit files differing from the pinned copies or any drop-in on them.
   STOPS/ALERTS  from the live ledger (window = --window-hours, default 6): executor budget stops (total_loss_stop, daily_loss_stop,
@@ -39,6 +43,7 @@ import grp
 import hashlib
 import importlib.util
 import json
+import mmap
 import os
 import pwd
 import re
@@ -87,6 +92,12 @@ IDLE_KINDS = ("buy", "skip", "decision")
 MAX_READ = 8 * 1024 * 1024  # a bigger file is reported (unsafe_path), never read: the watchdog has 256 MB
 LEDGER_TAIL = 4_000_000
 HOURLY_RE = r"^h5-shadow-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl$"
+# EXP-024 Amendment 2: the declared observation covers pools with s0 in [2026-10-16T00Z, 2026-11-06T00Z). These mirror H5_LOOK2_START_MS and
+# H5_LOOK2_END_MS in tools/h5_shadow.py (a test keeps them equal). The shadow writes one `start` record per process start, first key "type".
+LOOK2_START_S, LOOK2_END_S = 1_792_108_800, 1_793_923_200
+START_MARK = b'{"type":"start"'
+START_SCAN_FILES = 400  # newest hourly files searched for a start record (about 16 days; a shadow job's limit is shorter)
+START_LINE_MAX = 65_536
 ACTIVE_STATES = {"active", "activating", "reloading", "deactivating"}
 ENABLED_STATES = {"enabled", "enabled-runtime", "linked", "linked-runtime", "alias"}
 # Live halts the executor latches (tools/h5_executor.py _latch names at 9c5618b); cleared only by --clear-halt. Unknown names are still shown.
@@ -293,6 +304,54 @@ class Host:
             return None
         newest = max(names)
         return newest, os.lstat(os.path.join(directory, newest)).st_mtime
+
+    def newest_shadow_start(self, directory: str, max_files: int = START_SCAN_FILES) -> dict | None:
+        """The last `start` record of the newest hourly shadow file that has one (the record of the process that wrote last), or None. Files
+        are opened O_NOFOLLOW, must be regular, single-link and non-empty, and are searched with mmap.rfind, so a large hourly file is not read
+        into memory. Only the parsed record is returned; the caller prints fixed strings, never its content."""
+        try:
+            names = sorted((n for n in os.listdir(directory) if re.match(HOURLY_RE, n)), reverse=True)[:max_files]
+        except OSError:
+            return None
+        for name in names:
+            rec = self._last_start_in(os.path.join(directory, name))
+            if rec is not None:
+                return rec
+        return None
+
+    @staticmethod
+    def _last_start_in(path: str) -> dict | None:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            return None
+        try:
+            st = os.fstat(fd)
+            if not stat_mod.S_ISREG(st.st_mode) or st.st_nlink > 1 or st.st_size == 0:
+                return None
+            with mmap.mmap(fd, 0, access=mmap.ACCESS_READ) as mm:
+                end = len(mm)
+                while True:
+                    pos = mm.rfind(START_MARK, 0, end)
+                    if pos < 0:
+                        return None
+                    end = pos  # the next search looks only before this match
+                    if pos != 0 and mm[pos - 1:pos] != b"\n":
+                        continue  # the marker text inside another record, not a line start
+                    eol = mm.find(b"\n", pos)
+                    line = mm[pos:(len(mm) if eol < 0 else eol)]
+                    if len(line) > START_LINE_MAX:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue  # a line still being written
+                    if isinstance(rec, dict) and rec.get("type") == "start":
+                        return rec
+        except (OSError, ValueError):
+            return None
+        finally:
+            os.close(fd)
 
     def birth(self, path: str) -> float | None:
         """Birth time of a path (statx btime via `stat -c %W`), or None if the file system does not record it."""
@@ -701,6 +760,31 @@ def check_canary_idle(host: Host, rep: Report, unit: UnitInfo, live_ok: bool, sh
                                         f"{IDLE_LEDGER_S // 3600} h: the canary sees no triggers (feed, detector or executor)")
 
 
+def check_look2_flag(host: Host, rep: Report, live_ok: bool, shadow_dir: str, now: float) -> None:
+    """EXP-024 Amendment 2 / DEC-024 section 6. From 2026-10-16T00Z to 2026-11-06T00Z, while LIVE_OK is set, the shadow must have been started
+    with the declared observation: its newest start record must show h5_look2.observed true. Started without it, the shadow withholds the
+    outcomes of every pool in the window, the canary has no paper twin and the divergence halt (DEC-024 section 5 item 4) can never fire. Before
+    the window, after it, or with LIVE_OK absent there is nothing to check. A missing feed is h5_feed_stale's alert, not this one."""
+    if not live_ok or not (LOOK2_START_S <= now < LOOK2_END_S):
+        return
+    if host.newest_hourly(shadow_dir) is None:
+        return
+    start = host.newest_shadow_start(shadow_dir)
+    info = start.get("h5_look2") if isinstance(start, dict) else None
+    if isinstance(info, dict) and info.get("observed") is True:
+        rep.ok("shadow declares the Look 2 observation (h5_look2.observed true in its newest start record)")
+        return
+    if start is None:
+        why = "no start record was found in the newest shadow files"
+    elif not isinstance(info, dict):
+        why = "the newest start record has no h5_look2 field (the shadow job predates EXP-024 Amendment 2)"
+    else:
+        why = "the newest start record shows h5_look2.observed false"
+    rep.alert("h5_look2_not_observed", f"LIVE_OK is present inside the Look 2 window and {why}: the shadow withholds the outcomes of every pool in the window, "
+                                       "so the canary has no paper twin and the divergence halt cannot fire. Restart the shadow job with "
+                                       "H5_LOOK2_OBSERVED=EXP-024-Am2 (a MiScusi resume must set it again)")
+
+
 def check_watch(host: Host, rep: Report, live_ok: bool, now: float) -> None:
     """The watchdog itself: timer on, service not failing, state fresh, unit files as pinned. Its failures would otherwise be silent."""
     svc = sysctl_show(host, rep, WATCH_SERVICE, "LoadState", "ActiveState", "Result", "ExecMainStatus", "FragmentPath", "DropInPaths")
@@ -828,6 +912,7 @@ def run_checks(args: argparse.Namespace, host: Host, out: Callable[[str], None] 
               ("h5_state", lambda: check_h5_state(host, rep, funded, args.wallet, args.rpc_env, ctx["unit"], ctx["live_ok"], balance_fn, args.public_rpc,
                                                        ctx["tier_file"], now)),
               ("h5_idle", lambda: check_canary_idle(host, rep, ctx["unit"], ctx["live_ok"], args.shadow_dir, now)),
+              ("h5_look2", lambda: check_look2_flag(host, rep, ctx["live_ok"], args.shadow_dir, now)),
               ("h5_watch", lambda: check_watch(host, rep, ctx["live_ok"], now)),
               ("h5_refusals", lambda: check_refusals(host, rep, now, window_s))]
     for name, step in steps:
