@@ -39,7 +39,9 @@ WSVC = (FAST / "mal-c1nf-watch.service").read_bytes()
 WTMR = (FAST / "mal-c1nf-watch.timer").read_bytes()
 WATCH_SVC, WATCH_TMR = dc.WATCH_FILES[0][0], dc.WATCH_FILES[1][0]
 LIVE_CFG = {"mode": "live", "state_dir": dc.C1NF_DIR, "stake_lamports": 50_000_000, "buy_priority_lamports": 505_000, "end_ms": 1_792_801_800_000,
-            "max_pick_age_s": 3.0, "wallet_floor_lamports": 50_000_000}
+            "max_pick_age_s": 3.0, "wallet_floor_lamports": 50_000_000,
+            # claude/c1nf-executor-v2 @ 156a941, scripts/mal-fast/c1nf-executor-live.json
+            "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000}
 
 
 def ledger(*rows) -> bytes:
@@ -254,7 +256,10 @@ def test_watch_refuses_to_post_a_line_naming_the_class(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("key,val", [("stake_lamports", 100_000_000), ("buy_priority_lamports", 55_000), ("end_ms", None), ("max_open", 3),
                                      ("total_loss_lamports", 400_000_000), ("max_pick_age_s", 4.0), ("wallet_floor_lamports", 10_000_000),
-                                     ("state_dir", "/var/lib/mal-live/h5")])
+                                     ("state_dir", "/var/lib/mal-live/h5"),
+                                     ("jito_enabled", True), ("jito_enabled", None), ("jito_enabled", 0), ("jito_tip_lamports", 1_000),
+                                     ("jito_tip_lamports", None), ("jito_tip_lamports", False), ("entry_tolerance_bps", 2_000),
+                                     ("feed_heartbeat_max_age_ms", 300_000), ("feed_heartbeat_max_age_ms", "150000")])
 def test_live_config_outside_dec026_alerts(key, val):
     host = FakeHost()
     cfg = dict(LIVE_CFG)
@@ -344,20 +349,70 @@ def test_budget_stop_and_feed_refusals():
     assert {"c1nf_budget_stop_total_loss_stop", "c1nf_feed_refusals", "c1nf_stale_picks"} <= set(a)
 
 
-def test_guard_inputs_missing_alerts():
+def v2_refusal(t_ms: int, reason: str, i: int = 0) -> list[dict]:
+    """What v2 (156a941) writes for one refusal: C1NFExecutor._refuse -> H5's skip row, then _set_status's pick_status row, same reason."""
+    return [{"kind": "skip", "ts_ms": t_ms, "mint": f"M{i}", "reason": reason},
+            {"kind": "pick_status", "ts_ms": t_ms, "mint": f"M{i}", "pick_id": f"p{i}", "status": "unfilled", "reason": reason, "monitored": True}]
+
+
+@pytest.mark.parametrize("reason", ["bad_pick:ref_state_missing", "bad_pick:ref_state", "bad_pick:missing_q_lamports",
+                                    "bad_pick:missing_base_reserve", "bad_intent:missing_q_lamports"])
+def test_guard_inputs_missing_alerts(reason):
+    # v2's parse_pick reasons go to the ledger through H5's _bad_intent as a bare skip row (no pick_status: the pick never parsed)
     host = FakeHost()
-    host.files[dc.LEDGER_FILE] = ledger(*[{"kind": "skip", "ts_ms": ms(NOW - 60 - i), "reason": "bad_intent:missing_q_lamports"} for i in range(5)])
+    host.files[dc.LEDGER_FILE] = ledger(*[{"kind": "skip", "ts_ms": ms(NOW - 60 - i), "reason": reason} for i in range(5)])
     assert "c1nf_feed_schema" in alerts(go(host)[1])
 
 
-@pytest.mark.parametrize("now,expect", [(NOW, True), (dc.SEAL_START_S - 3600, False)])
-def test_oracle_unavailable_pauses_from_the_seal(now, expect):
+def test_guard_inputs_below_the_line_do_not_alert():
     host = FakeHost()
-    host.files[dc.LEDGER_FILE] = ledger(*[{"kind": "skip", "ts_ms": ms(now - 60 - i), "reason": "oracle_stale"} for i in range(4)],
-                                        {"kind": "skip", "ts_ms": ms(now - 30), "reason": "cap_pick_seal"})
+    host.files[dc.LEDGER_FILE] = ledger(*[{"kind": "skip", "ts_ms": ms(NOW - 60 - i), "reason": "bad_pick:ref_state_missing"} for i in range(4)])
+    assert "c1nf_feed_schema" not in alerts(go(host)[1])
+
+
+def test_refusals_are_counted_once_with_v2s_paired_rows():
+    host = FakeHost()
+    host.files[dc.LEDGER_FILE] = ledger(*[r for i in range(2) for r in v2_refusal(ms(NOW - 60 - i), "feed_stale", i)])
+    rc, out = go(host)
+    assert "c1nf_feed_refusals" not in alerts(out)  # two real refusals, under REFUSAL_ALERT_N = 3
+    assert "feed_stale x2" in out and "feed_stale x4" not in out
+    host.files[dc.LEDGER_FILE] = ledger(*[r for i in range(3) for r in v2_refusal(ms(NOW - 60 - i), "feed_stale", i)])
+    assert "c1nf_feed_refusals" in alerts(go(host)[1])
+
+
+def seal_rows(now: float, before: int, after: int) -> list[dict]:
+    """H5's tick writes a count-only seal_count row (seal_skips=<total>) at most once a minute; a seal refusal has no per-mint row."""
+    return [{"kind": "seal_count", "ts_ms": ms(now - 30 * 3600), "mint": "", "seal_skips": before},
+            {"kind": "seal_count", "ts_ms": ms(now - 120), "mint": "", "seal_skips": after}]
+
+
+@pytest.mark.parametrize("now,expect", [(NOW, True), (dc.SEAL_START_S - 3600, False)])
+def test_seal_pause_alerts_from_the_seal_start(now, expect):
+    host = FakeHost()
+    host.files[dc.LEDGER_FILE] = ledger(*seal_rows(now, 7, 11))
+    host.files[dc.COUNTERS_FILE] = json.dumps({"seal_skips": 12}).encode()  # the counters file is fresher than the last ledger row
     rc, out = go(host, now=now)
     assert ("c1nf_oracle_unavailable" in alerts(out)) is expect
-    assert "CAP-PICK seal x1" in out
+    assert "CAP-PICK seal x5 (count only)" in out
+
+
+def test_seal_pause_from_the_ledger_alone_and_not_when_a_pick_was_acted_on():
+    host = FakeHost()
+    host.files[dc.LEDGER_FILE] = ledger(*seal_rows(NOW, 0, 4))
+    assert "c1nf_oracle_unavailable" in alerts(go(host)[1])
+    host.files[dc.LEDGER_FILE] = ledger(*seal_rows(NOW, 0, 4), {"kind": "buy", "ts_ms": ms(NOW - 60), "mint": "M"})
+    assert "c1nf_oracle_unavailable" not in alerts(go(host)[1])
+    host.files[dc.LEDGER_FILE] = ledger(*seal_rows(NOW, 4, 4))  # no rise in the window
+    rc, out = go(host)
+    assert "c1nf_oracle_unavailable" not in alerts(out) and "CAP-PICK seal" not in out
+
+
+def test_seal_pause_needs_live_ok():
+    host = FakeHost()
+    host.files[dc.LEDGER_FILE] = ledger(*seal_rows(NOW, 0, 4))
+    for d in (host.files, host.modes, host.mtimes):
+        d.pop(dc.LIVE_OK, None)
+    assert "c1nf_oracle_unavailable" not in alerts(go(host)[1])
 
 
 def test_fill_rate_under_line_is_info():

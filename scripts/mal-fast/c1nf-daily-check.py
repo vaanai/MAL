@@ -36,13 +36,15 @@ look; this check and the watchdog print nothing by class. Concretely:
   WATCHDOG      mal-c1nf-watch.timer on, its service not failing, its state fresh, its unit files as pinned.
   STOPS/ALERTS  executor budget stops, every executor `alert` row, refusals by reason name (counts only), the fill-rate alert (DEC-026
                 section 7 rule 8: more than 28.9% of the last 30 monitored picks unfilled), late sells (rule 5: more than 10% of landed
-                sells), picks refused for missing decision-time guard inputs, feed_stale refusals, and the CAP-PICK seal from
-                2026-10-16T01Z: seal refusals are a count only; every pick refused because the oracle is unavailable is an alert (paused).
+                sells), picks refused for missing decision-time guard inputs (v2's bad_pick:ref_state_missing / ref_state /
+                missing_*), feed_stale refusals, and the CAP-PICK seal from 2026-10-16T01Z: a seal refusal is never ledgered per
+                mint, so the check reads the count-only seal_skips (seal_count rows, the counters file); a rise with no decision and
+                no buy in the window while LIVE_OK is present is an alert (paused). Refusals are counted from skip rows only (v2 also
+                writes a pick_status row per refusal; those feed only the fill-rate window).
 
-DEPENDENCY. The file names in the state dir, the halt names, the skip-reason names and the live-config keys are #504's (branch
-claude/c1nf-executor at a98ff07, built on the H5 executor: live/state-live.json, live/h5-counters.json, live/h5-ledger.jsonl). The rebuilt
-executor (claude/c1nf-executor-v2) must keep them or this file must follow it before the install; tools/test_c1nf_daily_check.py
-pins them in one place (the constants below).
+DEPENDENCY. The file names in the state dir, the halt names, the skip-reason names and the live-config keys follow the executor branch
+claude/c1nf-executor-v2 at 156a941 (built on the H5 executor: live/state-live.json, live/h5-counters.json, live/h5-ledger.jsonl). If the
+merged executor differs, this file follows it before the install; tools/test_c1nf_daily_check.py pins them in one place.
 """
 from __future__ import annotations
 
@@ -121,11 +123,17 @@ MAX_PICK_AGE_S = 3.0
 END_MS = calendar.timegm((2026, 10, 24, 0, 30, 0)) * 1000  # 2026-10-24T00:30Z (O-4)
 SEAL_START_S = calendar.timegm((2026, 10, 16, 1, 0, 0))  # CAP-PICK seal: the oracle fails closed from here (DEC-026 section 9.1)
 # live-config key -> (rule, value). "eq": must be present and equal. "le"/"ge": absent means the code constant applies; present may only be
-# lower (le) or higher (ge). Key names are #504's.
+# lower (le) or higher (ge). Key names are claude/c1nf-executor-v2's (156a941).
+ENTRY_TOLERANCE_BPS = 1500  # the 1.15x buy guard (DEC-026 section 6); config may only tighten it
+FEED_HEARTBEAT_MAX_AGE_MS = 150_000  # rule 7's 150 s feed line; config may only tighten it
 CONFIG_RULES = {
     "stake_lamports": ("eq", STAKE_LAMPORTS),
     "buy_priority_lamports": ("eq", PRIORITY_LAMPORTS),
     "end_ms": ("eq", END_MS),
+    "jito_enabled": ("eq", False),  # $0 extra (DEC-026 section 5, owner plan 10-08): no Jito tips
+    "jito_tip_lamports": ("eq", 0),
+    "entry_tolerance_bps": ("le", ENTRY_TOLERANCE_BPS),
+    "feed_heartbeat_max_age_ms": ("le", FEED_HEARTBEAT_MAX_AGE_MS),
     "max_open": ("le", MAX_OPEN),
     "max_trades_per_day": ("le", MAX_ATTEMPTS_DAY),
     "daily_loss_lamports": ("le", DAILY_STOP_LAMPORTS),
@@ -139,7 +147,7 @@ LATE_SELL_SHARE = 0.10  # rule 5: more than 10% of sells landing later than land
 LATE_SELL_MIN = 10
 
 # The only ledger keys ever looked at. Nothing else of a row is read, so a class field or an outcome on a row cannot reach the output.
-LEDGER_KEYS = ("kind", "ts_ms", "reason", "alert", "status", "monitored", "user", "from_tier", "to_tier", "problem")
+LEDGER_KEYS = ("kind", "ts_ms", "reason", "alert", "status", "monitored", "user", "from_tier", "to_tier", "problem", "seal_skips")
 NAME_RE = r"^[A-Za-z0-9_:.\-]{1,60}$"
 CLASS_RE = re.compile(r"synth|migration_class|mig_class", re.I)
 CLASS_ALLOWED = ("synthetic_share_high",)  # the A3 structure flag: a share of graduations, alert only (DEC-026 section 7 rule 6)
@@ -174,11 +182,17 @@ ALERT_MEANING = {
     "boost_share_low": "BOOST regime alert (alert only for C1-NF, rule 6)",
     "boost_budget_or_slices_changed": "BOOST regime alert (alert only for C1-NF, rule 6)",
 }
-GUARD_INPUT_REFUSALS = ("bad_intent:missing_q_lamports", "bad_intent:missing_base_reserve")  # DEC-026 section 6 buy guard: fail closed
+# DEC-026 section 6 buy guard, fail closed: a pick without the decision-time q_lamports / base_reserve. v2 (156a941) refuses it as
+# bad_pick:ref_state_missing (absent) or bad_pick:ref_state (not a positive int); the bad_pick:missing_* / bad_intent:missing_* forms are
+# matched too (a required key absent: v2's KeyError spelling and H5's / #504's).
+GUARD_INPUT_REFUSALS = ("bad_pick:ref_state_missing", "bad_pick:ref_state")
+GUARD_INPUT_PREFIXES = ("bad_pick:missing_", "bad_intent:missing_")
 FEED_REFUSALS = ("feed_stale", "feed_gap")
 STALE_REFUSALS = ("pick_stale", "stale_pick", "max_pick_age")
-SEAL_PREFIXES = ("seal", "cap_pick")  # CAP-PICK seal refusals: a count only, never per mint (DEC-026 section 9.1)
-ORACLE_DOWN_PREFIXES = ("oracle_",)  # oracle missing, stale, erroring, non-boolean or undecided: no buy
+# CAP-PICK seal refusals (h5.SEAL_REASONS: seal_window_no_oracle, seal_oracle_error, seal_pick) are never ledgered per mint: the executor
+# only raises counters.seal_skips and writes a count-only `seal_count` row (seal_skips=<total>) at most once a minute. The seal check reads
+# that count and the counters file's seal_skips. A row whose reason starts with seal / cap_pick is hidden from the reason list if one appears.
+SEAL_PREFIXES = ("seal", "cap_pick")
 REFUSAL_ALERT_N = 3
 SCHEMA_REFUSAL_ALERT_N = 5
 
@@ -646,7 +660,7 @@ def check_live_config(host: Host, rep: Report) -> None:
         v = cfg.get(key)
         num = isinstance(v, (int, float)) and not isinstance(v, bool)
         if rule == "eq":
-            if not num or v != want:
+            if not (v is want if isinstance(want, bool) else num and v == want):  # bool: exactly the JSON literal (0 is not false)
                 bad.append(f"{key} is {'absent' if v is None else 'not ' + str(want)} (DEC-026: {want})")
         elif v is None:
             notes.append(f"{key} not set (code constant)")
@@ -835,29 +849,44 @@ def check_watch(host: Host, rep: Report, live_ok: bool, now: float) -> None:
 
 
 def check_refusals(host: Host, rep: Report, now: float, live_ok: bool, window_s: float = 6 * 3600) -> None:
-    """The live ledger's last window. Counts by reason NAME only (never a mint, never an outcome, never a class)."""
+    """The live ledger's last window. Counts by reason NAME only (never a mint, never an outcome, never a class).
+
+    Refusals are counted from `skip` rows only: v2's _refuse writes a skip row AND a pick_status row with the same reason, so counting both
+    doubled every refusal. pick_status rows feed only the rule 8 fill-rate window. The CAP-PICK seal is read from the count-only
+    `seal_count` rows (and the counters file's seal_skips), because a seal refusal is never ledgered per mint."""
     raw = host.read(LEDGER_FILE, LEDGER_TAIL)
     if not raw:
         return
     hours = max(1, int(round(window_s / 3600)))
     counts: Counter = Counter()
     alert_rows: Counter = Counter()
-    decisions = withheld = 0
+    decisions = buys = withheld = 0
     changes: list[tuple] = []
     picks: list[str] = []  # pick_status of monitored picks, oldest first (whole tail, not the window: rule 8 is a rolling 30)
+    seal_before = seal_last = None  # seal_skips totals: the last one before the window, the last one inside it
     for row in ledger_rows(raw):
         kind = row.get("kind")
         if kind == "pick_status" and row.get("monitored") is True and row.get("status") in ("filled", "unfilled"):
             picks.append(row["status"])
         ts = row.get("ts_ms")
-        if not isinstance(ts, (int, float)) or ts / 1000.0 < now - window_s:
+        if not isinstance(ts, (int, float)):
+            continue
+        in_window = ts / 1000.0 >= now - window_s
+        if kind == "seal_count" and isinstance(row.get("seal_skips"), int) and not isinstance(row.get("seal_skips"), bool):
+            if in_window:
+                seal_last = row["seal_skips"]
+            else:
+                seal_before = row["seal_skips"]
+        if not in_window:
             continue
         if kind == "tier_change":
             changes.append((int(ts), *(row.get(k) if row.get(k) in TIERS else None for k in ("from_tier", "to_tier")),
                             row["problem"] if printable(row.get("problem")) else None))
         elif kind == "decision":
             decisions += 1
-        elif kind in ("skip", "pick_status") and "reason" in row:
+        elif kind == "buy":
+            buys += 1
+        elif kind == "skip" and "reason" in row:
             if printable(row.get("reason")):
                 counts[row["reason"]] += 1
             elif isinstance(row.get("reason"), str):
@@ -870,12 +899,17 @@ def check_refusals(host: Host, rep: Report, now: float, live_ok: bool, window_s:
     rep.facts["tier_changes"] = changes
     for ts, old, new, problem in changes:
         rep.info(f"tier_change {old or 'none'} -> {new or '?'} at {time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(ts / 1000))}" + (f" (problem: {problem})" if problem else ""))
-    seal = sum(n for r, n in counts.items() if r.startswith(SEAL_PREFIXES))
-    oracle_down = sum(n for r, n in counts.items() if r.startswith(ORACLE_DOWN_PREFIXES))
-    shown = [(r, n) for r, n in counts.most_common() if not r.startswith(SEAL_PREFIXES + ORACLE_DOWN_PREFIXES)]
-    if shown or seal or oracle_down:
-        rep.info(f"refusals in the last {hours} h ({decisions} decision(s)): " + ", ".join(f"{r} x{n}" for r, n in shown[:8])
-                 + (f"; CAP-PICK seal x{seal}" if seal else "") + (f"; oracle unavailable x{oracle_down}" if oracle_down else ""))
+    # The seal count: the counters file is the freshest total (the ledger row lags up to a minute); the baseline is the last seal_count
+    # row before the window, else 0 (a ledger tail that starts inside the window can only over-count, which errs toward an alert).
+    counters = _json(host, COUNTERS_FILE) or {}
+    total = counters.get("seal_skips") if isinstance(counters, dict) else None
+    if not isinstance(total, int) or isinstance(total, bool):
+        total = seal_last
+    seal = max(0, (total if total is not None else 0) - (seal_before or 0))
+    shown = [(r, n) for r, n in counts.most_common() if not r.startswith(SEAL_PREFIXES)]
+    if shown or seal:
+        rep.info(f"refusals in the last {hours} h ({decisions} decision(s), {buys} buy(s)): " + ", ".join(f"{r} x{n}" for r, n in shown[:8])
+                 + (f"; CAP-PICK seal x{seal} (count only)" if seal else ""))
     if withheld:
         rep.info(f"{withheld} refusal or alert row(s) whose name is not printable were counted and not shown")
     for reason, meaning in BUDGET_STOPS.items():
@@ -885,19 +919,21 @@ def check_refusals(host: Host, rep: Report, now: float, live_ok: bool, window_s:
     for what, n in alert_rows.most_common():
         rep.alert(f"c1nf_executor_alert_{what}", f"the executor wrote {n} ALERT {what} row(s) in the last {hours} h"
                   + (f" ({ALERT_MEANING[what]})" if what in ALERT_MEANING else "") + f" (see the ledger and journalctl -u {C1NF_UNIT})")
-    guard = sum(counts[r] for r in GUARD_INPUT_REFUSALS) + sum(n for r, n in counts.items() if r.startswith("bad_intent:missing_") and r not in GUARD_INPUT_REFUSALS)
+    guard = sum(n for r, n in counts.items() if r in GUARD_INPUT_REFUSALS or r.startswith(GUARD_INPUT_PREFIXES))
     if guard >= SCHEMA_REFUSAL_ALERT_N and decisions == 0:
-        rep.alert("c1nf_feed_schema", f"{guard} pick(s) refused for missing fields in {hours} h and none acted on: the shadow's picks lack the decision-time "
-                                      "q_lamports and base_reserve the buy guard needs (DEC-026 section 6: no buy without them)")
+        rep.alert("c1nf_feed_schema", f"{guard} pick(s) refused for missing or invalid fields in {hours} h and none acted on: the shadow's picks lack "
+                                      "a required field or the decision-time q_lamports and base_reserve the buy guard needs (DEC-026 section 6: "
+                                      "no buy without them)")
     feed = sum(counts[r] for r in FEED_REFUSALS)
     if feed >= REFUSAL_ALERT_N:
         rep.alert("c1nf_feed_refusals", f"{feed} pick(s) refused as feed_stale or feed_gap in {hours} h (DEC-026 section 7 rule 7)")
     stale = sum(counts[r] for r in STALE_REFUSALS)
     if stale >= REFUSAL_ALERT_N:
         rep.alert("c1nf_stale_picks", f"{stale} pick(s) older than 3 s of chain age refused in {hours} h: the shadow is late")
-    if oracle_down and live_ok and now >= SEAL_START_S and decisions == 0:
-        rep.alert("c1nf_oracle_unavailable", f"{oracle_down} pick(s) refused in {hours} h because the CAP-PICK oracle is missing, stale or undecided, and none "
-                                             "was acted on: the canary is paused by the seal (DEC-026 section 9.1, #509)")
+    if seal and live_ok and now >= SEAL_START_S and decisions == 0 and buys == 0:
+        rep.alert("c1nf_oracle_unavailable", f"seal_skips rose by {seal} in {hours} h and no pick was acted on: every pick met the CAP-PICK seal "
+                                             "(no oracle, an oracle error, or sealed), so the canary is paused by the seal (DEC-026 section 9.1, #509). "
+                                             "Check that the live config has a working pick_file")
     last = picks[-FILL_RATE_WINDOW:]
     if len(last) >= FILL_RATE_WINDOW:
         unfilled = last.count("unfilled")

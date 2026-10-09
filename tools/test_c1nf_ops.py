@@ -17,11 +17,13 @@ FAST = ROOT / "scripts/mal-fast"
 INST = FAST / "install-c1nf-executor-pinned.sh"
 MAKE = FAST / "make-c1nf-manifest.sh"
 TEXT = INST.read_text()
-# Files the executor PR (claude/c1nf-executor-v2) ships. Everything else the installer names must already be in this tree.
-FROM_EXECUTOR_PR = {"tools/c1nf_executor.py", "scripts/mal-fast/c1nf_exec_launcher.py", "scripts/mal-fast/c1nf-executor-live.json",
-                    "scripts/mal-fast/c1nf-executor.json", "scripts/mal-fast/mal-c1nf-executor-live-pinned.conf",
-                    "scripts/mal-fast/mal-c1nf-executor-shadow-feed.conf", "scripts/mal-fast/mal-c1nf-executor.service",
-                    "scripts/mal-fast/check-c1nf-unit.py"}
+# Files the executor PR (claude/c1nf-executor-v2 @ 156a941) ships: the module and the two JSON configs, nothing else. Everything else the
+# installer names (the launcher, the base unit, both drop-ins and check-c1nf-unit.py included) must already be in this tree.
+FROM_EXECUTOR_PR = {"tools/c1nf_executor.py", "scripts/mal-fast/c1nf-executor-live.json", "scripts/mal-fast/c1nf-executor.json"}
+OURS = ("scripts/mal-fast/c1nf-watch.py", "scripts/mal-fast/c1nf-daily-check.py", "scripts/mal-fast/check-c1nf-watch-unit.py",
+        "scripts/mal-fast/mal-c1nf-watch.service", "scripts/mal-fast/mal-c1nf-watch.timer", "EXP/EXP-025-c1nf-part1-prereg.md",
+        "scripts/mal-fast/c1nf_exec_launcher.py", "scripts/mal-fast/mal-c1nf-executor.service", "scripts/mal-fast/check-c1nf-unit.py",
+        "scripts/mal-fast/mal-c1nf-executor-live-pinned.conf", "scripts/mal-fast/mal-c1nf-executor-shadow-feed.conf")
 
 
 def var(name: str) -> str:
@@ -50,10 +52,15 @@ def test_manifest_script_reads_the_c1nf_installer():
 def test_every_path_exists_or_comes_from_the_executor_pr():
     missing = {p for p in paths() if not (ROOT / p).is_file()}
     assert missing <= FROM_EXECUTOR_PR, sorted(missing - FROM_EXECUTOR_PR)
-    for ours in ("scripts/mal-fast/c1nf-watch.py", "scripts/mal-fast/c1nf-daily-check.py", "scripts/mal-fast/check-c1nf-watch-unit.py",
-                 "scripts/mal-fast/mal-c1nf-watch.service", "scripts/mal-fast/mal-c1nf-watch.timer", "EXP/EXP-025-c1nf-part1-prereg.md"):
-        assert ours in paths() and (ROOT / ours).is_file()
+    for ours in OURS:
+        assert ours in paths() and (ROOT / ours).is_file(), ours
     assert len(paths()) == len(set(paths()))
+
+
+def test_installer_allowlist_checks_pass_on_the_files_it_installs():
+    for flag, src in (("--base", var("BASE_UNIT_SRC")), ("--dropin", var("DROPIN_SRC"))):
+        r = subprocess.run([sys.executable, "-I", str(ROOT / var("BASE_UNIT_CHECK")), flag, str(ROOT / src)], capture_output=True, text=True)
+        assert r.returncode == 0, (flag, r.stderr)
 
 
 def test_installed_names_match_what_the_daily_check_reads():
@@ -83,11 +90,18 @@ def _config_check() -> str:
     return m.group(1)
 
 
-GOOD = {"mode": "live", "state_dir": "/var/lib/mal-live/c1nf", "stake_lamports": 50_000_000, "buy_priority_lamports": 505_000, "end_ms": 1_792_801_800_000}
+GOOD = {"mode": "live", "state_dir": "/var/lib/mal-live/c1nf", "stake_lamports": 50_000_000, "buy_priority_lamports": 505_000, "end_ms": 1_792_801_800_000,
+        "jito_enabled": False, "jito_tip_lamports": 0, "entry_tolerance_bps": 1500, "feed_heartbeat_max_age_ms": 150_000}  # v2 @ 156a941
 
 
 @pytest.mark.parametrize("change,ok", [({}, True), ({"stake_lamports": 100_000_000}, False), ({"buy_priority_lamports": 55_000}, False),
-                                       ({"end_ms": None}, False), ({"state_dir": "/var/lib/mal-live/h5"}, False), ({"mode": "dry"}, False)])
+                                       ({"end_ms": None}, False), ({"state_dir": "/var/lib/mal-live/h5"}, False), ({"mode": "dry"}, False),
+                                       ({"jito_enabled": True}, False), ({"jito_enabled": None}, False), ({"jito_enabled": 0}, False),
+                                       ({"jito_tip_lamports": 1_000}, False), ({"jito_tip_lamports": None}, False),
+                                       ({"jito_tip_lamports": False}, False), ({"entry_tolerance_bps": 2_000}, False),
+                                       ({"entry_tolerance_bps": 1_000}, True), ({"entry_tolerance_bps": None}, True),
+                                       ({"feed_heartbeat_max_age_ms": 300_000}, False), ({"feed_heartbeat_max_age_ms": 60_000}, True),
+                                       ({"feed_heartbeat_max_age_ms": 150_000.0}, False)])
 def test_installer_live_config_check(tmp_path, change, ok):
     cfg = {**GOOD, **change}
     f = tmp_path / "c.json"

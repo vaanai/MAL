@@ -17,10 +17,11 @@
 # /etc/systemd/system/mal-c1nf-executor.service; the live DROP-IN (the only thing that hands over the second wallet's key, via
 # LoadCredential=c1nf-wallet) is never installed here: Helm installs it from the verified <sha>/ copy (docs/runbooks/c1nf-executor.md).
 # It also refuses unless the live config at <sha> holds DEC-026 section 6's stake (0.05 SOL), priority (505,000 lamports), end_ms
-# (2026-10-24T00:30Z) and state_dir (/var/lib/mal-live/c1nf).
-# DEPENDENCY: MODULES, the launcher, the configs, the base unit, the live and shadow-feed drop-ins and check-c1nf-unit.py come from the
-# executor PR (claude/c1nf-executor-v2). MODULES below is #504's closure (tools.c1nf_executor on top of tools.h5_executor); if v2 imports
-# more, tools/test_c1nf_ops.py fails once tools/c1nf_executor.py is on the branch. A sha without every file refuses ("missing or empty").
+# (2026-10-24T00:30Z) and state_dir (/var/lib/mal-live/c1nf), Jito off with a zero tip, and no wider buy guard or feed line.
+# DEPENDENCY: tools/c1nf_executor.py and the two JSON configs come from the executor PR (claude/c1nf-executor-v2, reference sha 156a941);
+# the launcher, the base unit, the live and shadow-feed drop-ins and check-c1nf-unit.py are in this PR (built from H5's). MODULES below
+# matches v2's import closure at 156a941 (tools.c1nf_executor on top of tools.h5_executor); tools/test_c1nf_ops.py checks it once
+# tools/c1nf_executor.py is on the branch. A sha without every file refuses ("missing or empty").
 set -euo pipefail
 # A root script must not inherit the caller's search path, working directory or Python environment: install, mv, sha256sum, awk, find,
 # chown and systemctl resolve from this PATH only, and `python3 -m venv` would otherwise put the current directory first on sys.path.
@@ -176,13 +177,20 @@ if [ -L "$KEY_DIR/c1nf-wallet.json" ] || { [ -e "$KEY_DIR/c1nf-wallet.json" ] &&
   exit 1
 fi
 # DEC-026 section 6: the live config at this commit must hold the canary's stake, priority, end and state dir exactly (config only lowers
-# the 0.10 SOL code ceiling to 0.05). Checked on the manifest-verified blob, with the system python and no site packages.
+# the 0.10 SOL code ceiling to 0.05), Jito off with a zero tip ($0 extra, DEC-026 section 5), and may only tighten the 1.15x buy guard
+# (entry_tolerance_bps <= 1500) and the 150 s feed line (feed_heartbeat_max_age_ms <= 150000). Types are exact: 0 is not false, false
+# is not 0. Checked on the manifest-verified blob, with the system python and no site packages.
 /usr/bin/python3 -I -S -c '
 import json, sys
 c = json.load(open(sys.argv[1]))
-want = {"mode": "live", "state_dir": "/var/lib/mal-live/c1nf", "stake_lamports": 50000000, "buy_priority_lamports": 505000, "end_ms": 1792801800000}
-bad = [k for k, v in want.items() if c.get(k) != v or isinstance(c.get(k), bool)]
-sys.exit("refusing: the live config differs from DEC-026 section 6 in: " + ", ".join(bad) if bad else 0)
+want = {"mode": "live", "state_dir": "/var/lib/mal-live/c1nf", "stake_lamports": 50000000, "buy_priority_lamports": 505000, "end_ms": 1792801800000,
+        "jito_enabled": False, "jito_tip_lamports": 0}
+bad = [k for k, v in want.items() if type(c.get(k)) is not type(v) or c.get(k) != v]
+for k, top in (("entry_tolerance_bps", 1500), ("feed_heartbeat_max_age_ms", 150000)):
+    v = c.get(k)
+    if v is not None and (type(v) is not int or v > top):
+        bad.append(k)
+sys.exit("refusing: the live config differs from DEC-026 sections 5-6 in: " + ", ".join(bad) if bad else 0)
 ' "$TMP/$LIVE_CFG_SRC"
 
 install -d -m 0755 -o root -g root "$DEST"
