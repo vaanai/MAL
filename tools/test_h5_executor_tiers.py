@@ -337,6 +337,96 @@ class TotalStopSinceTierStartTests(TierCase):
         self.assertIsNone(self.stop_at(e, -499_999_999))
 
 
+class StepDownTests(TierCase):
+    """H1 (manager ruling): after a step-down T0 keeps trading. The run-cumulative check is against the highest total stop of any tier entered in
+    this run (persisted), and T0's own since-start limit, min(0.12, 35% of the wallet at T0 start), binds. A stop at T0 alerts."""
+
+    def stepped_down(self, t1_loss: int = 300_000_000, balance: int = 10 * SOL) -> Env:
+        e = self.tier_env("T1", balance=balance)
+        e.ex._refresh_tier(e.clock())
+        e.ex.state.realized_lamports = -t1_loss  # T1 lost this much (inside its 0.60)
+        self.write_tier("T0\n")
+        e.ex._refresh_tier(e.clock())
+        return e
+
+    def stop_at(self, e: Env, realized: int):
+        e.ex.state.realized_lamports = realized
+        return e.ex._budget_stop(e.clock())
+
+    def test_step_down_after_t1_losses_keeps_t0_trading(self):
+        e = self.stepped_down()  # the reviewer's repro, inverted: it used to refuse every T0 buy for good
+        self.assertEqual((e.ex.tier, e.ex.counters.tier_state["realized_at_start"], e.ex._tier_realized()), ("T0", -300_000_000, 0))
+        self.assertIsNone(e.ex._budget_stop(e.clock()))
+        e.ex.counters.days.clear()
+        self.assertIsNone(e.ex._budget_stop(e.clock() + 2 * 86_400_000))  # and the next day
+        e.fire()
+        self.assertEqual((e.refusals(), buy_args(e.sent()[0])[0]), ([], 20_000_000))
+        self.assertEqual(e.alerts("t0_budget_stop"), [])
+
+    def test_t0s_own_since_start_limit_binds_after_the_step_down(self):
+        e = self.stepped_down()
+        self.assertIsNone(self.stop_at(e, -300_000_000 - 99_999_999))  # 0.12 from T0's start, this 0.02 stake included
+        self.assertEqual(self.stop_at(e, -300_000_000 - 100_000_000), "total_loss_stop")
+
+    def test_t0s_35_percent_of_its_own_start_wallet_binds_too(self):
+        e = self.stepped_down(t1_loss=100_000_000, balance=250_000_000)  # 35% of the 0.25 SOL wallet at T0's start = 0.0875
+        self.assertEqual(e.ex._total_stop_lamports(), 87_500_000)
+        self.assertIsNone(self.stop_at(e, -100_000_000 - 67_499_999))
+        self.assertEqual(self.stop_at(e, -100_000_000 - 67_500_000), "total_loss_stop")
+
+    def test_the_run_cumulative_check_is_against_the_highest_tier_total_entered_and_is_persisted(self):
+        e = self.stepped_down()
+        self.assertEqual(e.ex.counters.max_total_loss_lamports, 600_000_000)  # T1's, entered earlier in this run
+        self.assertEqual(e.ex._run_total_stop_lamports(), 600_000_000)
+        e.ex.save()
+        e.ex = e.build()
+        self.assertEqual((e.ex.tier, e.ex._run_total_stop_lamports()), ("T0", 600_000_000))  # a restart keeps it
+        e.ex.state.realized_lamports = -500_000_000  # (T0 lost 0.20 on top; its own limit is not what this test is about)
+        self.write_tier("T1\n")  # a real tier change: T1 starts afresh, so only the run-cumulative check can still bind
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual((e.ex.tier, e.ex._tier_realized(), e.ex._run_total_stop_lamports()), ("T1", 0, 600_000_000))
+        self.assertEqual(self.stop_at(e, -500_000_000), "total_loss_stop")  # -0.50 and this 0.10 stake reach the highest total, 0.60
+        self.assertIsNone(self.stop_at(e, -499_999_999))
+
+    def test_the_stored_maximum_is_the_effective_total_after_config_tightens_it(self):
+        e = self.tier_env("T1", balance=10 * SOL, total_loss_lamports=300_000_000)
+        e.ex._refresh_tier(e.clock())
+        self.assertEqual(e.ex.counters.max_total_loss_lamports, 300_000_000)
+
+    def test_a_stop_at_t0_alerts_once_per_reason_and_day(self):
+        e = self.tier_env()
+        e.ex._refresh_tier(e.clock())
+        e.ex.state.realized_lamports = -100_000_000  # T0: -0.10 - this 0.02 stake <= -0.12
+        e.fire()
+        e.fire()
+        alerts = e.alerts("t0_budget_stop")
+        self.assertEqual((e.refusals(), len(alerts), alerts[0]["why"]), (["total_loss_stop"] * 2, 1, "total_loss_stop"))
+        e.jump(86_400_000)  # the next UTC day
+        e.fire()
+        self.assertEqual(len(e.alerts("t0_budget_stop")), 2)
+        e.ex.counters.day(h.day_key(e.clock()))["trades"] = 30  # a different reason the same day
+        e.ex.state.realized_lamports = 0
+        e.fire()
+        self.assertEqual([a["why"] for a in e.alerts("t0_budget_stop")], ["total_loss_stop", "total_loss_stop", "max_trades_day"])
+
+    def test_no_t0_alert_at_a_higher_tier_or_for_a_latched_halt_or_in_a_dry_run(self):
+        e = self.tier_env("T1")
+        e.ex._refresh_tier(e.clock())
+        e.ex.state.realized_lamports = -500_000_000
+        e.fire()
+        self.assertEqual((e.refusals(), e.alerts("t0_budget_stop")), (["total_loss_stop"], []))  # T1: the step-down alert is the one that fires
+        d = Env(self.sub("dry"), live=False)
+        d.ex._refresh_tier(d.clock())
+        d.ex.state.realized_lamports = -100_000_000
+        d.fire()
+        self.assertEqual(d.alerts("t0_budget_stop"), [])  # a dry run records the stop as would_have_halted, it refuses nothing
+
+    def sub(self, name: str):
+        d = self.tmp / name
+        d.mkdir()
+        return d
+
+
 class OneTierReadPerTriggerTests(TierCase):
     """G2: the tier file is read ONCE per trigger. A rewrite between two reads (the reviewer's TOCTOU repros) cannot make the buy go out at a
     tier that the earlier checks did not judge, and the T2 guard has a second line of defence in the build and in the signer."""

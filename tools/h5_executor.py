@@ -90,6 +90,7 @@ SHADOW_REQUIRED_KEYS = (
     "s0_reanchored_slots", "sps_span_s", "gap",
 )
 SCHEMA_ALERT_WINDOW_MS = 600_000
+T0_ALERT_STOPS = frozenset({"total_loss_stop", "daily_loss_stop", "max_trades_day", "max_attempts", "max_days", "end_instant"})  # a refusal at T0 alerts
 ESCALATE_S = 345.0  # from here on a sell retry uses the escalated ladder level
 EXP024_PART1 = "EXP/EXP-024-h5-boostfloor-part1-prereg.md"  # live is honoured only if this is in the deployed tree
 
@@ -551,6 +552,7 @@ class H5Counters:
     plans: dict[str, dict[str, Any]] = field(default_factory=dict)  # open or in-flight position -> its exit plan and trigger, durable BEFORE the first send
     tier_state: dict[str, Any] = field(default_factory=dict)  # {tier, since_ms, wallet_lamports, realized_at_start}: the active tier, the wallet and the run's realized P&L when it started
     tier_attempts: int = 0  # buy attempts since the active tier started: what max_attempts caps. Reset at every tier_change.
+    max_total_loss_lamports: int = 0  # the highest total stop of any tier entered in this run: the run-cumulative loss is checked against it
     landed_buys: int = 0  # buys that landed (a position opened), for the pre-unlinked share
     pre_unlinked_landed: int = 0  # ... of which the trigger was pre-unlinked (see pre_unlinked)
     tail_path: str | None = None  # the intents file being read, so a restart finishes it before it moves to the newest hour
@@ -842,6 +844,7 @@ class H5Executor(pl.LiveExecutor):
         self._tier_limits: dict[str, H5Limits] = {}
         self._tier_problem: str | None = None
         self._stepdown_seen: set[tuple[str, str, str]] = set()
+        self._t0_stop_seen: set[tuple[str, str]] = set()
         H5Limits.from_config(cfg)  # a bad config fails here, at T0
         self.dry_run = keypair is None
         self.run_mode = DRYRUN if self.dry_run else LIVE
@@ -947,6 +950,7 @@ class H5Executor(pl.LiveExecutor):
         wallet = self._balance_value(now)  # the total stop is also capped at 35% of this
         in_tier = self.counters.tier_attempts  # what the old tier used, for the ledger; the cap starts again from zero in the new one
         self.tier = tier
+        self.counters.max_total_loss_lamports = max(self.counters.max_total_loss_lamports, self.h5.total_loss_lamports)  # (persisted below)
         realized_at_start = self.state.realized_lamports  # the tier's loss allowance counts from here, not from the start of the run
         self.counters.tier_state = {"tier": tier, "since_ms": now, "wallet_lamports": wallet, "realized_at_start": realized_at_start}
         self.counters.tier_attempts = 0
@@ -973,10 +977,25 @@ class H5Executor(pl.LiveExecutor):
         wallet = self.counters.tier_state.get("wallet_lamports")
         return None if wallet is None else min(self.h5.total_loss_lamports, int(TIER_WALLET_FRAC * wallet))
 
+    def _run_total_stop_lamports(self) -> int:
+        """What the run's cumulative realized loss may reach: the highest total stop of any tier entered in this run (persisted), never less than
+        the active tier's own. After a step-down the lower tier is judged by its own since-start limit; this only stops a run that has lost more
+        than every tier it entered would allow."""
+        return max(self.counters.max_total_loss_lamports, self.h5.total_loss_lamports)
+
     def _tier_realized(self) -> int:
         """Realized P&L since the active tier started. A profit made before the tier change must not widen the new tier's loss allowance (the
         35% cap is a share of the wallet measured at tier start). A counters file with no `realized_at_start` counts from the run's start."""
         return self.state.realized_lamports - int(self.counters.tier_state.get("realized_at_start") or 0)
+
+    def _t0_budget_stop(self, why: str, now: int) -> None:
+        """A budget stop that refuses a buy at the bottom tier: there is no lower tier to step down to, so it is never silent. One alert per
+        reason and UTC day."""
+        key = (why, day_key(now))
+        if key not in self._t0_stop_seen:
+            self._t0_stop_seen.add(key)
+            self._alert("t0_budget_stop", "", why=why, realized_lamports=self.state.realized_lamports, since_tier_start_lamports=self._tier_realized(),
+                        held_tier=self.counters.tier_state.get("tier"), tier_problem=self._tier_problem)
 
     def _tier_step_down_due(self, why: str) -> None:
         """A halt or a loss stop above T0: the file is NOT changed here. An alert for the watchdog; Helm or the manager edits the file."""
@@ -1060,8 +1079,8 @@ class H5Executor(pl.LiveExecutor):
                    + sum(int(p.get("spend") or 0) for p in st.pending.values() if p["kind"] == "buy") + h5.stake_lamports)
         if self._tier_realized() - at_risk <= -total_stop:  # the loss since this tier started, against min(tier total, 35% of the wallet then)
             return "total_loss_stop"
-        if st.realized_lamports - at_risk <= -h5.total_loss_lamports:  # and the run-cumulative loss against the tier's own total: a tier-file
-            return "total_loss_stop"                                  # flicker (T1, T0, T1) restarts the check above and cannot reset this one
+        if st.realized_lamports - at_risk <= -self._run_total_stop_lamports():  # and the run-cumulative loss against the HIGHEST total of any tier
+            return "total_loss_stop"                                         # entered in this run: a step-down does not stop the bottom tier for good
         day = self.counters.day(day_key(now))
         if day["realized"] - at_risk <= -h5.daily_loss_lamports:
             return "daily_loss_stop"
@@ -1237,6 +1256,8 @@ class H5Executor(pl.LiveExecutor):
             budget = self._budget_stop(now)
             if budget in ("total_loss_stop", "daily_loss_stop"):
                 self._tier_step_down_due(budget)
+            if budget in T0_ALERT_STOPS and self.tier == "T0" and not self.dry_run:
+                self._t0_budget_stop(budget, now)
             if budget and not self.dry_run:
                 why = budget
             elif budget:
