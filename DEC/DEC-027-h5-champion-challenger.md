@@ -159,3 +159,27 @@ All are decision-time fields, written on the trigger or `pool` record, never joi
 - **D1** (EXP-024 Amendment 4, line 691). No synthetic class is joined to any challenger outcome for a counted-window pool before Look 2 is read. The shadow writes no outcome for such pools, and the paired scorer has no class column.
 - **No challenger outcome may change any EXP-024 parameter** (rule, Q\* = 40, 330 s exit, 15% guard, 1.9 s deciding cell, windows, alpha, universe, classifier, kill rules), delay a look, or re-scope it.
 - **Disclosure the Look reports must carry.** The Look 1 and Look 2 reports add which variant was live on each UTC date (from the `variant_change` rows, section 7), and that challenger outcomes were observed in real time and could have influenced the choice of live variant. A live variant's trades are ordinary tape rows (EXP-024 section 3). A C-BX sell can land before v1's exit state on the same pool, and at 0.02 to 0.10 SOL against a pool of about 40 SOL that is about 0.05 to 0.25% of the pool. It is disclosed and not corrected.
+
+## 6. The switching rule (written before any challenger outcome)
+
+Every threshold here is **[PROPOSED, quant-proof to set]**. A switch needs all items. They can only remove a switch.
+
+1. **Sample.** At least **80 paired pools** [PROPOSED], at least **50** pools the challenger itself trades [PROPOSED], and at least **5 distinct UTC dates** of s0, counted from the challenger's window. The promotion gate asks for 100 trades. A paired switch is not promotion, so 80 is the proposed floor. It is below the gate's, and every report says so.
+2. **The paired difference** (challenger minus champion, per eligible pool, SOL, deciding cell D), under **both** the flat and the pressure fail model:
+   - the lower bound of the Bonferroni-corrected interval is above 0, from **both** a pool-level bootstrap (10,000 draws, seed 1) and a date-cluster bootstrap (10,000 date resamples, seed 1) [PROPOSED];
+   - the point estimate is at least **+1.0 pp of stake** [PROPOSED]. The reason: DEC-024 section 5 item 4 halts on a live-minus-twin gap of 1 pp, so a gain smaller than that is below the resolution at which live execution is checked;
+   - the difference is positive on a majority of dates.
+3. **The challenger's own book**, under both fail models, at D, B1 (3 s entry) and B2 (15% guard): mean SOL per trade above 0, total above 0 after removing the top 3 trades, and total above 0 after removing the best UTC date [PROPOSED].
+4. **Multiplicity.** The corrected interval uses the 5th percentile divided by **k x L** [PROPOSED]. k is the number of challengers frozen, counted from their freeze, including any dropped later. L is the number of scheduled decision looks (item 5). Example: k = 3, L = 2 gives the 0.83rd percentile. Quant-proof may choose Holm over Bonferroni if it is valid here. The k tests share one champion, so they are positively dependent and Bonferroni is conservative [inferred].
+5. **Looks, fixed in advance.** L = 2 [PROPOSED]. The first is at the later of "item 1 met" and 2026-10-17T00Z. The second is 7 days after the first. There is no other look. Real-time observation of challenger outcomes is declared (section 5.4) but is not a look, and nobody switches on a reading outside a look. A challenger that fails at the first look is not given more hours to rescue it. A challenger frozen after the first look joins at the second look only, on its own pairs [PROPOSED].
+6. **The owner's dated line.** The only thing that authorizes a switch. It lives at the end of this file in the form below, and Helm writes the file only after it exists. The manager first posts a MiScusi notebook decision and a Console entry with every number of items 1 to 4 (the DEC-021 Section 6(f) practice).
+
+   ```
+   OWNER_VARIANT_SWITCH: <date> (owner, in session, asked by <manager>). Variant: <id>. Tier in force: <T>. DEC-024 override extended to this variant: yes|no.
+   ```
+
+   If "no", the switch is refused: the live trial's override was given for v1 only (section 0).
+7. **Preconditions on the day.** No DEC-024 section 5 halt and no stop that ends the canary has fired and is unresolved. The A3 monitor shows none of the five flags. No seal breach. The variant is compiled in with its proofs (section 7, item 5). The champion's live-versus-twin check has not tripped.
+8. **Dwell.** No second discretionary switch within **7 days** of the last one [PROPOSED]. A fail-safe return to v1 (the file missing or invalid, a halt, or a failed first-20 check) is not a switch. Going back to a variant after any return is a new switch: a new line and a new dwell.
+9. **quant-proof** agrees with the numbers before the owner is asked.
+10. **Power, stated before the first look.** DEC-021 Section 5 requires the DEC to state the power at the minimum effect, even below 0.5. This DEC does not compute it. Quant-proof does, from exploration SD and ρ (not October outcomes), and it goes in each Freeze record. For orientation only, DEC-021's table (a different book, n = 100) shows a low-ρ selector is not reliably detected in a week even at +0.006 SOL per 0.05 SOL trade, while a high-ρ variant is detectable from about +0.003. **The expected outcome of the first look is no switch** [inferred].
