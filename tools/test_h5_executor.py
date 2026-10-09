@@ -234,7 +234,7 @@ class Case(unittest.TestCase):
         os.chmod(self.etc, 0o755)
         self.probe_dir = self.tmp / "probe-live-dir"
         self.probe_dir.mkdir()
-        for target, attr, val in ((h, "LIVE_OK_PATH", self.etc / "LIVE_OK"), (h, "LIVE_OK_UID", os.getuid()), (pe, "LIVE_DIR", self.probe_dir)):
+        for target, attr, val in ((h, "LIVE_OK_PATH", self.etc / "LIVE_OK"), (h, "LIVE_OK_UID", os.getuid()), (h, "LIVE_OK_GID", os.getgid()), (pe, "LIVE_DIR", self.probe_dir)):
             patcher = mock.patch.object(target, attr, val)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -261,8 +261,7 @@ class LimitsTests(Case):
     def test_config_cannot_raise_maxima(self):
         l = h.H5Limits.from_config({"stake_lamports": 10**10, "max_open": 50, "max_trades_per_day": 500, "daily_loss_lamports": 10**12,
                                     "total_loss_lamports": 10**12, "max_attempts": 10**6, "max_days": 99, "buy_priority_lamports": 10**8,
-                                    "entry_tolerance_bps": 9000, "deadline_s": 900, "max_trigger_age_ms": 10**9,
-                                    "sell_priority_lamports": 10**8, "escalated_priority_lamports": 10**8})
+                                    "entry_tolerance_bps": 9000, "deadline_s": 900, "max_trigger_age_ms": 10**9})
         for k, cap in h.H5_MAX.items():
             self.assertEqual(getattr(l, k), cap, k)
         self.assertEqual(l.deadline_s, 400.0)
