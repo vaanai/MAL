@@ -631,6 +631,89 @@ By the owner's decision of 2026-10-09 ([DEC-024](../DEC/DEC-024-h5-live-canary.m
 - Section 3.1's sentences apply unchanged. Look 1 is always read and reported as written. It is never skipped, delayed, withdrawn, re-filed, re-scoped or re-thresholded because of anything the canary or shadow shows, including outcomes for pools with s0 before 2026-10-10T00. The read tool's inputs are unchanged.
 - The Look 1 report's section 12 disclosure adds: canary and shadow outcomes for pools with s0 before 2026-10-10T00 were observed in real time, from about 2026-10-08T21:30Z (shadow) and from the first canary send (canary).
 
+### Amendment 4 (2026-10-09, drafted from 07:58Z; before any counted hour, before the official P2 run of the A3 monitor, and before the synthetic classifier is run on any counted pool): synthetic-migration pools leave the universe (a population restriction), the A3 halt list drops `synthetic_share_high`, P2 is read as the last run, and the official P2 run is declared
+
+**This amendment is blind to every counted-window outcome. It is not outcome-blind.** No pool with s0 at or after 2026-10-10T00 exists yet, so no outcome of a counted pool has been seen. What was in view is listed in items 1 to 4. To write it, the author opened no row, report or scratch file of forward-1002, forward-1002ev, walk 2, forward-paper, a runner, the shadow or the canary, and computed no H5 outcome. Its inputs are this file, DEC-024, `tools/pump_structure_monitor.py`, the A3 re-pin note on PR #517 (`ARTIFACTS/lab/a3-repin-2026-10-09.md`), the program-upgrade review it copies, and the manager's relay of quant-proof's ruling and the owner's decision. **Line numbers below are those of this file on main at `ecdc7af`, before this amendment.**
+
+**What was in view (disclosed, not hidden)**
+1. **The readings.** [measured; the A3 re-pin note, section 5, and the program-upgrade review]
+   - The review: a PostCompleteBuyEvent in the curve-completing transaction on 0 of 61 graduations before the 2026-10-08T16:20Z redeploy, and 12 of 61 after (windows 1/15, 3/14, 2/16, 6/16; pooled 0.197).
+   - The monitor's `synthetic_share_high` at the daily run of 2026-10-09T07:11:06Z (job #445): **6/19 = 0.316**, no halt from that flag. At the dry check of 07:38:11Z: **7/19 = 0.368, a halt** against the 0.35 line. The two samples overlap in slot range 454788273 to 454793322, so they are not independent.
+   - The H5 evidence for the rule (September) had 0 synthetic pools. This amendment is written with those two readings known, so it is not a rule fixed before the share was seen.
+2. **The dry check is not the P2 run.** It ran once, at 07:38:11Z, on the unmerged pins of PR #517 (head `f654bdd` at the time of writing), writing to a scratch `--out` seeded with a copy of `daily.jsonl`. The official `/data/mal/structure-monitor/daily.jsonl` was only read; the note records its md5 and its 2-line length as unchanged. Besides `synthetic_share_high`, every other halt flag was clear, and `program_changed` was evaluated and clear. It is disclosed here and in every amendment that touches the synthetic share. It is not counted as the last A3 run before 10-10T00Z.
+3. **Amendment 3's aggregate pre-window shadow outcomes were in view.** Shadow outcomes for pools with s0 before 2026-10-10T00 have been observable since about 2026-10-08T21:30Z (Amendment 3), and the aggregate of them, not split by any class, was in view of the people who decided this exclusion. Those pools are in no counted window. The basis of the exclusion (item A2) does not include them.
+4. **Attestation (made by the manager, who merges this amendment).**
+   - No H5 outcome (a fill, exit, P&L, mean, CI, day sign, win or loss, or any field derived from one) has been split by synthetic class. No synthetic class, from the program-upgrade review or from the monitor classifier, has been joined to any shadow, canary or tape outcome, fill or P&L field. The review's synthetic mints were never joined to canary records or to shadow outcome records.
+   - **One structure-only join exists, and it is disclosed.** On 2026-10-09 at about 07:50Z the manager started MiScusi job #448 (output under `/data/mal/hunt-1008/h5-work/synthetic-1009/`). It projected only `pool`, `mint`, s0, the trigger slot and the BOOST last slice from the shadow's `trigger` and `pool` records, and classified those pools as synthetic or not with the monitor classifier. It was for counts: triggers by class, s0 lag by class and BOOST timing by class. It read no outcome record and no P&L field, and joined the class to none. So synthetic class was joined to shadow trigger and pool structure fields for counts only, and never to any outcome or P&L field.
+   - The basis (item A2) does not use job #448's numbers, and nothing below depends on them.
+
+#### A. The population restriction
+
+**A1. What changes.** Synthetic-migration pools are excluded from the deciding cell D and from every leg: the binding legs B1 and B2 and every report-only leg of section 13. Pools that cannot be classified (item B3) are excluded the same way. The trade set of every look is the rule's universe restricted to pools classified non-synthetic.
+- **Replaces section 4, line 164** ("**Universe.** Exactly the rule's universe: every `complete` graduation whose canonical PumpSwap pool, the first V-range pool after `complete`, has V0 in [17.5, 17.7] SOL. s0 is that pool's first print."). New text: *The rule's universe, restricted to pools classified non-synthetic (Amendment 4, item B). s0 is the canonical pool's first print, as the rule says.*
+- **Replaces section 4, line 198** ("**Synthetic-migration pools** (pool opens above the seed) stay in the universe. Their count is reported."). New text: *Synthetic-migration pools, as classified in Amendment 4 item B, are excluded from D and every leg. Pools that cannot be classified are excluded. Both counts are reported, per date (P6).*
+- "Synthetic" in this file now means item B1's classifier, not "pool opens above the seed". The two are not claimed to be the same set.
+- The two replaced lines are superseded where they conflict with this amendment. They are not edited in place, as in Amendment 1. Section 13's diagnostic "synthetic-pool count" (line 395) stands. Section 16 item 11's "synthetic migration (unused 0/10)" (line 514) is a statement of what September could not measure; item 1 above is the October disclosure.
+
+**A2. A population restriction, not a retune.**
+- **Unchanged:** the RULE block (the section 2 `sed … | sha256sum` check still gives `c66b1a59…9abe56c`, because the block is untouched), its trigger, Q* = 40 SOL, entry, exit at 330 s, costs and fail legs, the deciding cell and both binding legs, the correction, the V-range universe condition, sps, the windows, and the gate statistics of section 7.
+- **What it does:** it removes a class of pools that the rule's evidence never contained (0 synthetic pools in September, section 16). It is a restriction of the population the frozen rule is read on. No parameter of the rule moves.
+- **Basis: A3 and the program-upgrade review only.** The grounds are the monitor's structure readings (item 1) and the review's finding that the redeploy added synthetic migrations the rule's evidence did not contain. Amendment 3 (line 631) forbids re-scoping Look 1 "because of anything the canary or shadow shows". Nothing the canary or the shadow shows is a basis here. If any such thing were, this amendment would be void.
+- **Cost, stated plainly.** The trade count falls by the synthetic share, about 0.20 to 0.37 on the readings in item 1 [inferred, not a forecast]. Section 15's power arithmetic was computed on September rows, which have 0 synthetic pools, so it applies per trade to the restricted population; it is not re-run, and with fewer trades the chance of a pass is, if anything, lower than section 15 says [inferred].
+- **Counting floors.** P6's counts and section 11's "fewer than 100 triggers, or fewer than 5 dates with a trigger" are counted on the restricted population. The thresholds are not changed.
+
+**A3. Multiplicity.** k = 1 and α are unchanged: α_1 = 0.020 and α_2 = 0.005 (sections 7 and 9). The restriction adds no arm, cell, look or α, and does not touch m. **The full-universe book (synthetic pools included) never decides.** It is not computed or reported before Look 2 has been read (item D1). If it is reported after that, it is report-only.
+
+#### B. The classifier, the source order and unclassified pools
+
+**B1. The classifier.** `post_complete_buy_seen` (`tools/pump_structure_monitor.py:482-490`, in the monitor blob `1ca0a88c…`). A pool is synthetic if and only if its first return value, `seen`, is true. That value is true on the PostCompleteBuyEvent discriminator `DISC_POST_COMPLETE_BUY` (`:115`) **alone**. The `mint_match` refinement is not used.
+- It is applied to **the transaction that carries the mint's CompleteEvent** (the curve-completing transaction; in the monitor, `annotate_completion`, `:823` onward).
+- By construction the discriminator-alone test can over-count (a mint-decode miss or a layout change counts as synthetic, `:484`). That direction removes pools. It never hides a synthetic one.
+- The classifier code does not change. The monitor blob stays `1ca0a88cecf0853d94336ea046ba1a910b79f198`, as section 10 pins it.
+
+**B2. The source order (fixed; never chosen by effect).** Both sources are read after the EXP-012 FINAL (A) is written, by the read tool, and neither opens an outcome. For each V-range pool, in this order:
+1. **The tape.** The mint's `complete` row (`type` `complete`) gives the CompleteEvent transaction. The tape settles the class when that row is present in a good hour whose walker `post_complete_buy_missing` flag (`tools/pump_history_backfill.py:515-522`) is false: a `post_complete_buy` row (`observe/trade_decode.py:241`) in the same transaction means synthetic, and none means non-synthetic. If the hour's flag is not recorded, the tape does not settle the class.
+2. **`getTransaction`** (`maxSupportedTransactionVersion` 1) of the CompleteEvent transaction, when the tape does not settle the class (no `complete` row, a bad hour, or the flag set or unrecorded). Its event blobs are tested with `post_complete_buy_seen`.
+- The choice between sources depends only on whether the tape settles the class. It is never made by looking at a pool's trigger, P&L, day or any outcome. If neither source yields a transaction to test, the pool is unclassified (B3).
+
+**B3. Unclassified pools.** An unclassified pool is excluded and counted. **If more than 1% of the look's V-range pools (s0 in the look's counted window, before the synthetic exclusion) are unclassified, the look is NOT_DECIDABLE.** This is added to the section 11 NOT_DECIDABLE list. The classification is part of P6, so it is computed before any outcome. A refusal on it falls under section 11, Spending.
+
+#### C. The A3 halt list and the precount
+
+**C1. Section 11, line 328 and line 324.** The A3 halt is now **five** flags: `pins_changed`, `boost_disabled`, `boost_share_low`, `boost_last_slice_early` and `boost_budget_or_slices_changed`, or a core rule unevaluated on two consecutive daily runs. "Any A3 halt flag" in the NOT_DECIDABLE list (line 324) and "any A3 halt after the pass" in the no-live rules (line 347) mean these five.
+- **`synthetic_share_high` is recorded and reported at every look. It never decides.** The monitor still computes it, because its blob does not change.
+- P2 and section 11 read the five flags one by one from the record's `halt.flags`. They do not read `halt.any`, which also counts the sixth. A run on which `synthetic_share_high` is the only flag that fired counts as a run with no halt.
+- Lines 329-330 (before 10-10T00Z: withdrawn; inside a counted window: NOT_DECIDABLE, no resumption) are unchanged and apply to the five.
+
+**C2. P6 (section 10, line 311)** also prints **per-date synthetic and non-synthetic counts** of V-range pools (by s0 date), and the per-date unclassified count. Counts only. The trigger count per date is taken on the restricted population, and no trigger-by-class table is printed.
+
+#### D. The seal
+
+**D1. A breach.** Joining synthetic class to any H5 outcome (a fill, exit, P&L, mean, CI, day sign, win or loss, or any field derived from one), from any source, for any pool with s0 in a counted window, **before Look 2 is read**, is a breach of section 3 (line 146): it is recorded here, dated, and the read is reported compromised. A compromised read cannot support a live request. Counts of pools and triggers by class (C2) are not outcomes. Section 3.1's real-time observation of the canary's and the shadow's aggregate outcomes stands, and does not extend to splitting them by class.
+
+#### E. Clarification: P2 is the last run (not a change)
+
+P2 (section 10, line 296) names the test: **"The last A3 run before 10-10T00Z shows no halt"**, and no core rule unevaluated on two consecutive days. Section 11 (lines 328-329, "Before 10-10T00Z: H5 is withdrawn") is the consequence of that test. It is not a second, stricter test that every earlier run must also pass. So:
+- **A reviewed re-pin plus a clean last run cures `pins_changed`.** The 07:11:06Z halt on `pins_changed` (job #445) is cured if PR #517, the re-pin, is merged after review, and the last official run before 10-10T00Z shows none of the five flags.
+- **The reading cuts both ways.** A halt on any of the five flags in the last run before 10-10T00Z withdraws H5, whatever ran clean earlier.
+- The same reading is recorded for EXP-022 (P2 at line 320 against line 358) in that file, before the 2026-10-10T06:41Z daily run.
+
+#### F. The official P2 run: the protocol, declared before the run
+
+The dry check (item 2) is not the P2 run. One more run is allowed, under this protocol, which is fixed here before it starts:
+1. **Exactly one official run**, with default arguments and `--out /data/mal/structure-monitor/daily.jsonl` (the default output, written out), that is `python -m tools.pump_structure_monitor --out /data/mal/structure-monitor/daily.jsonl`, run as a MiScusi job.
+2. **Code and pins:** `main` at the merge commit of PR #517, where `tools/pump_structure_monitor.py` is the blob `1ca0a88cecf0853d94336ea046ba1a910b79f198` and `tools/pump_structure_pins.json` is the blob `7486f57f372e79c7d852f9cb70991d20043d4a8f` (`git rev-parse HEAD:<path>` is recorded in the job's start record).
+3. **Start time (UTC): `<TO BE FIXED BY MANAGER>`.** It is fixed in this declaration, after this amendment, EXP-022's clarification, DEC-024 Amendment 2 and PR #517 have merged, and before 2026-10-10T00:00Z.
+4. **No other monitor run of any kind before 2026-10-10T00:00Z.** That covers scheduled, manual, dry, scratch-`--out` and `--write-pins` runs.
+5. **An errored run counts as it stands, with no retry.** Its record, or its lack of one, is the last A3 run before 10-10T00Z, and P2 is read on that. If it leaves no record, the last record is the 07:11:06Z run, which showed `pins_changed`, and P2 is not met.
+6. Section C1 governs the reading: the five flags, one by one. The run's `synthetic_share_high` value is recorded and reported, and decides nothing.
+
+#### G. Conditions for this amendment to take effect
+
+It carries **quant-proof's OK on its final head** and **the owner's approval**: MiScusi notebook entry `n_xtknDqL-ychBNg` (2026-10-09), which the manager relayed; the author did not open the entry. It merges **before the official run (item F) and before 2026-10-10T00:00Z**. If it does not, items A, B and C do not apply, section 11 stands as pinned, and a halt on `synthetic_share_high` in the last run withdraws H5. The companion text is DEC-024 Amendment 2 (the executor and the shadow apply the same classifier at decision time).
+
+**Not changed.** The rule, parameters, trigger, entry, exit, fill pricing, costs, legs, correction, gate statistics (every item of section 7), look schedule, futility, α, k = 1 and m, the pinned counting start (section 0), windows, hours read, the read tool's hour allowlist, the seal of section 3 apart from item D1, the CAP-PICK seal, and every NOT_DECIDABLE condition apart from item B3. EXP-022 is not amended here.
+
 ## Sources
 
 - `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md` and `out/`
